@@ -15,9 +15,10 @@ import { ConfigError, toJevCodeError } from '../errors.js';
 import { CONDITION_ORDER, buildEngineOptions, conditionConfig, createEngineFor } from './conditions.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { renderComparison } from './report.js';
-import { loadSwebenchSources } from './swebench/loader.js';
+import { BENCH_CACHE_DIR, loadSwebenchSources } from './swebench/loader.js';
 import { modelNameOrPath, readSavedModelPatch, writePredictions, type PredictionEntry } from './swebench/predictions.js';
 import { loadTerminalBenchSources } from './terminalbench/loader.js';
+import { TB_VENV_DIR } from './terminalbench/shim.js';
 import type { BenchOptions, BenchRunOutput, BenchSetupTools, BenchTask, BenchTaskSource, CommandRunner, Evaluation, PatchExtraction, Summary, SuiteMetrics } from './types.js';
 
 export const TASKS_FILE = 'tasks.jsonl';
@@ -369,7 +370,16 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
           await mkdir(root, { recursive: true });
           await mkdir(sandboxRunDir, { recursive: true });
           // bench infrastructure (clone, pip) needs the network regardless of the agent's --no-network
-          return deps.createSandbox({ workspaceRoot: root, runDir: sandboxRunDir, profile: opts.sandboxProfile, noNetwork: false, secretReadDenies: opts.secretPaths, redact: opts.redact });
+          return deps.createSandbox({
+            workspaceRoot: root,
+            runDir: sandboxRunDir,
+            profile: opts.sandboxProfile,
+            noNetwork: false,
+            secretReadDenies: opts.secretPaths,
+            redact: opts.redact,
+            // setup and evaluation clone from the bare cache and run the verifier venv; both live under the read-denied jevcode home
+            extraReadable: [join(opts.runsDir, BENCH_CACHE_DIR), join(opts.runsDir, TB_VENV_DIR)],
+          });
         })();
         sandboxes.set(root, p);
       }
@@ -449,6 +459,8 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
         ...(resumeRunId !== null ? { resume: { runId: resumeRunId, force: false } } : {}),
         // §13: the shimmed instruction points at aux/output, aux/results, aux/logs; the sandbox must let the agent write there
         ...(source.suite === 'terminal-bench' ? { extraWritableRoots: [auxDir] } : {}),
+        // the agent workspace is a `git clone --shared` of the bare cache: its objects live there (read-only for the agent)
+        ...(source.suite === 'swebench' ? { extraReadableRoots: [join(opts.runsDir, BENCH_CACHE_DIR)] } : {}),
       },
       opts,
     );

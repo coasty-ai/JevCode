@@ -28,6 +28,8 @@ export interface ProfileOptions {
   home?: string;
   /** further writable roots (bench stand-ins for /output, /results, /logs); canonicalised like every other path */
   extraWritable?: readonly string[];
+  /** further read-only roots under a read-denied prefix (the bench's shared git object cache) */
+  extraReadable?: readonly string[];
 }
 
 /** SBPL string literal: double-quoted with backslash and quote escaped. */
@@ -89,7 +91,13 @@ export function buildProfile(opts: ProfileOptions): string {
   lines.push(`(deny file-read-data (subpath ${sbplString(jevHome)}))`);
   // A deny on the specific operation outranks a later allow on the `file-read*` family, so the
   // re-allow names file-read-data explicitly (verified on macOS 26).
-  const roots = `(subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${extra.map((p) => ` (subpath ${sbplString(p)})`).join('')}`;
+  const readable: string[] = [];
+  for (const p of opts.extraReadable ?? []) {
+    if (typeof p !== 'string' || p.length === 0) continue;
+    const canon = canonicalPathSync(p);
+    if (canon !== ws && canon !== runTmp && canon !== runHome && !extra.includes(canon) && !readable.includes(canon)) readable.push(canon);
+  }
+  const roots = `(subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${[...extra, ...readable].map((p) => ` (subpath ${sbplString(p)})`).join('')}`;
   lines.push(`(allow file-read-data ${roots})`);
   lines.push(`(allow file-read* ${roots})`);
 

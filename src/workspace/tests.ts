@@ -79,12 +79,35 @@ function num(s: string | undefined): number {
   return Number.isFinite(n) ? n : 0;
 }
 
+/**
+ * Fallback for `pytest -qq` (e.g. `-q` on the command line on top of `addopts = -q`), which
+ * prints no summary line at all: count the progress characters of lines such as
+ * `tests/test_a.py ..F.s  [ 71%]` or `.......  [100%]` (`.` pass, `F` fail, `E` error,
+ * `s`/`x` skipped or xfail, `X` xpass).
+ */
+export function parsePytestProgress(text: string): TestCounts | null {
+  const counts: TestCounts = { passed: 0, failed: 0, errors: 0, skipped: 0 };
+  let seen = false;
+  for (const line of text.split('\n')) {
+    const pm = /^(?:\S+\s+)?([.FEsxX]+)\s+\[\s*\d+%\]\s*$/.exec(line.trimEnd());
+    if (!pm) continue;
+    seen = true;
+    for (const ch of pm[1]!) {
+      if (ch === '.' || ch === 'X') counts.passed += 1;
+      else if (ch === 'F') counts.failed += 1;
+      else if (ch === 'E') counts.errors += 1;
+      else counts.skipped += 1;
+    }
+  }
+  return seen ? counts : null;
+}
+
 /** `===== 3 passed, 1 failed, 2 errors, 1 skipped in 0.12s =====` (any subset, any order). */
 export function parsePytest(text: string): TestCounts | null {
   const m = lastMatch(text, /^[=\s]*((?:\d+ [a-z]+(?:, )?)+) in \d+(?:\.\d+)?s(?: \([^)]*\))?[=\s]*$/gm);
   if (!m) {
     if (/^[=\s]*no tests ran in \d+(?:\.\d+)?s/m.test(text)) return { passed: 0, failed: 0, errors: 0, skipped: 0 };
-    return null;
+    return parsePytestProgress(text);
   }
   const counts: TestCounts = { passed: 0, failed: 0, errors: 0, skipped: 0 };
   let seen = false;

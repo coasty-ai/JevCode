@@ -732,6 +732,8 @@ export interface EngineOptions {
   deciderModel: { configured: string; pinned: boolean };
   /** extra directories the sandbox may write to (bench stand-ins for /output etc.); realpath'ed into the profile */
   extraWritableRoots?: readonly string[];
+  /** extra directories the sandbox may read but not write (bench object caches) */
+  extraReadableRoots?: readonly string[];
   /** injectable clock for perf/unit tests */
   now?: () => number;
   /** injected exit for tests of the forced second Ctrl-C path */
@@ -997,6 +999,8 @@ export interface SandboxCreateOptions {
   redact: (s: string) => string;
   /** additional writable roots beyond the workspace and run dir */
   extraWritable?: readonly string[];
+  /** additional read-only roots (e.g. a shared git object cache the workspace's --shared clone points at) */
+  extraReadable?: readonly string[];
 }
 
 /** Everything the bench runner needs, injected so bench/* compiles and tests without the real modules. */

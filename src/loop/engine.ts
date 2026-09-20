@@ -1490,6 +1490,7 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     secretReadDenies: opts.secretPaths,
     redact,
     ...(opts.extraWritableRoots ? { extraWritable: opts.extraWritableRoots } : {}),
+    ...(opts.extraReadableRoots ? { extraReadable: opts.extraReadableRoots } : {}),
   });
   const workspace = await d.createWorkspace(root, runDir, { sandbox, secretPaths: opts.secretPaths, redact });
   const wsInfo = await workspace.info();

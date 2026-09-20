@@ -150,6 +150,10 @@ function defaultNoul(id: string, question: Question, state: Json, chosen: Readon
     const allPassed = at(state, 'workspace', 'lastTestRun', 'allPassed') === true;
     const remaining = at(state, 'plan', 'remaining');
     const nothingLeft = at(state, 'proposal', 'claimsDone') === true || (Array.isArray(remaining) && remaining.length === 0);
+    // A workspace without a test suite (many Terminal-Bench tasks) cannot show a passing run;
+    // the heuristic then accepts completion when the plan claims nothing remains.
+    const hasTests = at(state, 'workspace', 'hasTests');
+    if (hasTests === false) return noulAnswer(nothingLeft ? 0.95 : 0.05);
     return noulAnswer(testsCurrent && allPassed && nothingLeft ? 0.95 : 0.05);
   }
   if (id.startsWith('done_')) return noulAnswer(execOk(state) ? 0.9 : 0.1);

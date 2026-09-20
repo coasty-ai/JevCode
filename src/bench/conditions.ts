@@ -66,6 +66,7 @@ export interface EngineBuildInput {
   now?: () => number;
   /** Terminal-Bench aux dir (stand-ins for /output, /results, /logs): the agent may write where the shimmed instruction says */
   extraWritableRoots?: readonly string[];
+  extraReadableRoots?: readonly string[];
 }
 
 /** EngineOptions for one run; only `mode`, the task text, workspace, provider/decider/meter differ per pair. */
@@ -91,6 +92,7 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   if (input.resume) out.resume = input.resume;
   if (input.now) out.now = input.now;
   if (input.extraWritableRoots && input.extraWritableRoots.length > 0) out.extraWritableRoots = [...input.extraWritableRoots];
+  if (input.extraReadableRoots && input.extraReadableRoots.length > 0) out.extraReadableRoots = [...input.extraReadableRoots];
   return out;
 }
 
