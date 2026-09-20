@@ -192,3 +192,8 @@ the linter verify. The question this document answers by experiment is which dec
   script with a code-computed pass criterion and verifies it fails on the base commit; plus
   native test-runner detection and test scoping for large repositories; and a regression-only
   best-guess commit when no oracle can be extracted.
+- 2026-09-20: **ladder rung 2, third pass** (`bench/results/jev-only-ladder-4`, after the controller step
+  policy and the claiming-run rubric clause): **11/12 solved**, $0.137, generator calls 0. Only the
+  3-hunk `account` misses; four solved tasks still ran to the step budget with 6–14 blocked proposals,
+  so the outer loop still spends steps it does not need. The QuixBugs insertion round repaired all four
+  insertion bugs live (3 gold-identical); the skew-timeout and overfit rounds are in flight.
