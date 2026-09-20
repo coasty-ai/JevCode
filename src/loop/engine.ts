@@ -121,35 +121,25 @@ interface ResolvedDeps {
   loadForResume: ResumeLoader;
 }
 
-/** Import a sibling module by a runtime string so this module compiles before the sibling exists. */
-async function importModule<T>(spec: string): Promise<T> {
-  const mod: unknown = await import(spec);
-  return mod as T;
-}
-
-// Real module shapes (checkpoint/store.ts, checkpoint/resume.ts) as written by their owner.
-type RealStoreModule = { createCheckpointStore: (runDir: string, redact: Redact) => CheckpointStore };
-type RealResumeModule = {
-  loadForResume: (runsDir: string, runId: string, opts: { redact: Redact }) => Promise<{ store: CheckpointStore; meta: RunMeta; state: CheckpointState; recoveredFrom: 'state' | 'prev'; foldedSteps: StepRecord[]; previousStopReason: StopReason | null }>;
-};
+// Real sibling modules (static imports: esbuild bundles them; tests still inject fakes via EngineDeps).
+import { createCheckpointStore as realCreateCheckpointStore } from '../checkpoint/store.js';
+import { newRunId as realNewRunId } from '../checkpoint/run-id.js';
+import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
+import { createSandbox as realCreateSandbox } from '../sandbox/run.js';
+import { createWorkspace as realCreateWorkspace } from '../workspace/files.js';
 
 async function resolveDeps(deps: EngineDeps): Promise<ResolvedDeps> {
-  const createCheckpointStore =
-    deps.createCheckpointStore ??
-    (await (async (): Promise<CheckpointStoreFactory> => {
-      const real = await importModule<RealStoreModule>('../checkpoint/store.js');
-      return (runsDir, runId, redact) => real.createCheckpointStore(join(runsDir, runId), redact);
-    })());
-  const newRunId = deps.newRunId ?? (await importModule<{ newRunId: (now: Date) => string }>('../checkpoint/run-id.js')).newRunId;
-  const createSandbox = deps.createSandbox ?? (await importModule<{ createSandbox: SandboxFactory }>('../sandbox/run.js')).createSandbox;
-  const createWorkspace = deps.createWorkspace ?? (await importModule<{ createWorkspace: WorkspaceFactory }>('../workspace/files.js')).createWorkspace;
+  const createCheckpointStore: CheckpointStoreFactory =
+    deps.createCheckpointStore ?? ((runsDir, runId, redact) => realCreateCheckpointStore(join(runsDir, runId), redact));
+  const newRunId = deps.newRunId ?? realNewRunId;
+  const createSandbox: SandboxFactory = deps.createSandbox ?? realCreateSandbox;
+  const createWorkspace: WorkspaceFactory = deps.createWorkspace ?? realCreateWorkspace;
   let loadForResume = deps.loadForResume;
   if (!loadForResume) {
     if (deps.createCheckpointStore) loadForResume = storeBasedLoadForResume;
     else {
-      const real = await importModule<RealResumeModule>('../checkpoint/resume.js');
       loadForResume = async (runsDir, runId, redact) => {
-        const r = await real.loadForResume(runsDir, runId, { redact });
+        const r = await realLoadForResume(runsDir, runId, { redact });
         return { meta: r.meta, state: r.state, recoveredFrom: r.recoveredFrom, foldedSteps: r.foldedSteps, previousStopReason: r.previousStopReason, prepared: true, store: r.store };
       };
     }
