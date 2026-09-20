@@ -244,8 +244,16 @@ function codeTokenTexts(text: string): string[] {
  * extra edits appended as further lines. Identifiers and literals are kept verbatim (see the
  * header for why `normaliseLine` is not used).
  */
-export function canonicalText(candidate: Pick<Candidate, 'text' | 'extraEdits'>): string {
-  return candidateTexts(candidate).map((t) => codeTokenTexts(t).join(' ')).join('\n');
+export function canonicalText(candidate: Pick<Candidate, 'text' | 'extraEdits'> & { site?: Pick<Site, 'kind'> }): string {
+  const texts = candidateTexts(candidate).map((t) => codeTokenTexts(t).join(' '));
+  // At an insert site the indentation is part of the program (which block the statement joins), so
+  // two indentations of one statement are two different candidates; the run that found this
+  // (shunting_yard, QuixBugs) had the correct level deduplicated away behind the wrong one.
+  if (candidate.site?.kind === 'insert') {
+    const indent = candidate.text.length - candidate.text.trimStart().length;
+    return `${indent}\u0000${texts.join('\n')}`;
+  }
+  return texts.join('\n');
 }
 
 /** One key per edit location: file, line and kind (a replace and an insert at the same line are different sites). */

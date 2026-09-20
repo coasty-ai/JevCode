@@ -23,3 +23,15 @@ describe('vocabulary pre-check: import module paths are not names the file must 
     expect(missingFromVocab(cand('tags = Kounter(text)'), vocab)).toEqual(['Kounter']);
   });
 });
+
+describe('dedupe key: insert candidates differ by indentation', () => {
+  it('keeps two indentations of one statement apart at an insert site, and merges them at a replace site', async () => {
+    const { canonicalText } = await import('../../../../src/synth/sieve/queue.js');
+    const a = { text: '        opstack.append(token)', site: { kind: 'insert' as const } };
+    const b = { text: '            opstack.append(token)', site: { kind: 'insert' as const } };
+    expect(canonicalText(a)).not.toBe(canonicalText(b));
+    const c = { text: '        x = 1', site: { kind: 'replace' as const } };
+    const d = { text: 'x = 1', site: { kind: 'replace' as const } };
+    expect(canonicalText(c)).toBe(canonicalText(d));
+  });
+});
