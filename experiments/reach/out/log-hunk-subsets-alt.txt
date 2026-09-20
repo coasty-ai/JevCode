@@ -1,0 +1,35 @@
+Preparing worktree (detached HEAD d7c3045115)
+Updating files:  86% (1236/1422)Updating files:  87% (1238/1422)Updating files:  88% (1252/1422)Updating files:  89% (1266/1422)Updating files:  90% (1280/1422)Updating files:  91% (1295/1422)Updating files:  92% (1309/1422)Updating files:  93% (1323/1422)Updating files:  94% (1337/1422)Updating files:  95% (1351/1422)Updating files:  96% (1366/1422)Updating files:  97% (1380/1422)Updating files:  98% (1394/1422)Updating files:  99% (1408/1422)Updating files: 100% (1422/1422)Updating files: 100% (1422/1422), done.
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/solvers/diophantine.py:3188: SyntaxWarning: "is" with a literal. Did you mean "=="?
+  if feasible is 1:  # it's prime and k == 2
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+sympy__sympy-12096: sympy resolves to /private/tmp/jevonly/reach/sympy__sympy-12096/sympy/__init__.py (plain) / /private/tmp/jevonly/reach/sympy__sympy-12096/sympy/__init__.py (PYTHONPATH=worktree)
+  FAIL 8117 ms  gold (`*[i.evalf(prec) for i in self.args]`)
+  FAIL 8473 ms  one-line alternative: `.evalf(prec)` appended to the `_imp_` result (`Float(self._imp_(*self.args).evalf(prec), prec)`)
+sympy__sympy-19954: sympy resolves to /private/tmp/jevonly/reach/sympy__sympy-19954/sympy/__init__.py (plain) / /private/tmp/jevonly/reach/sympy__sympy-19954/sympy/__init__.py (PYTHONPATH=worktree)
+  PASS 15046 ms  gold (3 hunks)
+  FAIL 11942 ms  first hunk only (`blocks_remove_mask = ...`)
+  PASS 8331 ms  one-line alternative: iterate `reversed(list(enumerate(rep_blocks)))` so the in-loop `del` cannot shift later indices
+Preparing worktree (detached HEAD 360290c4c4)
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/solvers/diophantine.py:2972: SyntaxWarning: "is" with a literal. Did you mean "=="?
+  if feasible is 1:  # it's prime and k == 2
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+sympy__sympy-11618: sympy resolves to /private/tmp/jevonly/reach/sympy__sympy-11618/sympy/__init__.py (plain) / /private/tmp/jevonly/reach/sympy__sympy-11618/sympy/__init__.py (PYTHONPATH=worktree)
+  FAIL 2564 ms  gold (14-line dimension-padding branch)
+  FAIL 3086 ms  one-line alternative + import: `zip(...)` → `zip_longest(..., fillvalue=0)` in distance()
+
+written /Users/prateekjannu/Documents/vscode/JevCode/experiments/reach/out/hunk-subsets.json

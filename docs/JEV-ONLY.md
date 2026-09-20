@@ -255,3 +255,18 @@ the linter verify. The question this document answers by experiment is which dec
   while the reproduction costs 2 s — so the cap is being re-derived from the measured oracle (runs =
   test wall / t_run, bounded) with the park rule counting only steps that visited nothing new. The
   full 30 re-run follows with that change.
+- 2026-09-20: **reach study at the gold site, nine oracle instances** (`experiments/results/swebench-reach-oracle-9.md`,
+  scripts under `experiments/reach/`, $0 of Jev). With the gold site given, a test-passing patch is in
+  some source's set on **3/9** (requests-2931 the gold line itself; sympy-12096 a callee substitution
+  that passes the failing test; django-15315 only degenerate constant-hash passers); the gold text is
+  reached on 1/9. Two facts precede the sources: the workspace loader kept the first 400 files in path
+  order, which left 5/9 gold files outside the localiser's and every source's corpus (raised to 1200
+  with task-named files first in the repository-mode commit), and replace sites are physical lines so a
+  five-line statement cannot be rewritten. Ranked missing capabilities, each Jev-only (code proposes
+  from facts in the workspace, Jev chooses, tests verify): introspected names from the failing call
+  (`__mro__` class names, `is_*` predicates) feeding the vocabulary plus an attribute-predicate guard
+  and a method-alias production (2/9); a git-history source (1/9); statement-level replace sites (1/9);
+  stdlib-sibling callee substitution carrying its import (1/9); depth-2 wraps (1/9); parameter threading
+  (1/9). Also found: the composite signature-unit enumerator did not return in 27 min at one sympy site
+  (unbounded scan of every statement of every file) — being bounded. Two agents are implementing
+  capabilities 2–6 now; wiring into the controller follows once the search files are free.

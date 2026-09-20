@@ -1,0 +1,22 @@
+== sympy__sympy-12096
+  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=254 mutation: 237 cands 22 ms hunk=0 first=0
+  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=254 template: 152 cands 15 ms hunk=0 first=0
+  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=254 donor: 254 cands 4175 ms hunk=0 first=0
+  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=254 donor_units: 48 cands 28697 ms hunk=0 first=0
+  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=1000000 mutation: 237 cands 4 ms hunk=0 first=0
+  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=1000000 template: 152 cands 9 ms hunk=0 first=0
+  sympy__sympy-12096 sympy/core/function.py:510 replace@510 engine cap=1000000 donor: 1876 cands 989 ms hunk=0 first=0
+   done in 89.1 s; all hunks reachable: false
+
+### sympy__sympy-12096 — oracle valid_weak, differs_from_actual (weak), t_run 245 ms; gold file rank 133/627 (in engine corpus: true); all hunks reachable: false
+- sympy/core/function.py:510 single_line_modification (-1/+1, code +1) in _eval_evalf (48 lines)
+  gold first line: return Float ( self . _imp_ ( * [ i . evalf ( prec ) for i in self . args ] ) , prec )
+  mutation|replace@510|engine: n=237 (uncapped 237) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@510|engine: n=152 (uncapped 152) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@510|engine: n=254 (uncapped 1876) hunk hit: 0/0 first-line hit: 0/0
+  donor_units|replace@510|engine: n=48 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 113 (uncapped 114); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 26 tokens (≤25: false); missing ["i","evalf","i"]; vocab 250
+  queue vocab missing: {}
+
+written /Users/prateekjannu/Documents/vscode/JevCode/experiments/reach/out/reach-oracle-9.sympy__sympy-12096.units.json

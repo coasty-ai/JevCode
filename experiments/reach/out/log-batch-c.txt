@@ -1,0 +1,167 @@
+== django__django-15563
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 engine cap=254 mutation: 89 cands 60 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 engine cap=254 template: 155 cands 73 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 engine cap=254 donor: 254 cands 1944 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 engine cap=254 composite: 100 cands 1088 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 engine cap=1000000 mutation: 89 cands 1 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 engine cap=1000000 template: 155 cands 9 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 engine cap=1000000 donor: 2422 cands 741 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 full cap=254 template: 155 cands 87 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 full cap=254 donor: 254 cands 3224 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 full cap=1000000 template: 155 cands 13 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1839 replace@1839 full cap=1000000 donor: 2486 cands 1050 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 engine cap=254 mutation: 254 cands 3 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 engine cap=254 template: 176 cands 74 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 engine cap=254 donor: 254 cands 274 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 engine cap=254 composite: 0 cands 0 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) engine cap=254 mutation: 65 cands 7 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) engine cap=254 template: 254 cands 27 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) engine cap=254 donor: 254 cands 602 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) engine cap=254 composite: 100 cands 1154 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) engine cap=254 mutation: 149 cands 3 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) engine cap=254 template: 254 cands 70 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) engine cap=254 donor: 254 cands 600 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) engine cap=254 composite: 100 cands 1515 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 engine cap=1000000 mutation: 368 cands 2 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 engine cap=1000000 template: 176 cands 3 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 engine cap=1000000 donor: 2946 cands 501 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) engine cap=1000000 mutation: 65 cands 6 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) engine cap=1000000 template: 288 cands 105 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) engine cap=1000000 donor: 2983 cands 516 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) engine cap=1000000 mutation: 149 cands 4 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) engine cap=1000000 template: 441 cands 187 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) engine cap=1000000 donor: 3186 cands 835 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 full cap=254 template: 176 cands 32 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 full cap=254 donor: 254 cands 767 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) full cap=254 template: 254 cands 5 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) full cap=254 donor: 254 cands 927 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) full cap=254 template: 254 cands 20 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) full cap=254 donor: 254 cands 1077 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 full cap=1000000 template: 176 cands 3 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 insert@1854 full cap=1000000 donor: 2952 cands 339 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) full cap=1000000 template: 288 cands 32 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1853(before gap) full cap=1000000 donor: 3007 cands 1552 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) full cap=1000000 template: 441 cands 36 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1854 replace@1854(after gap) full cap=1000000 donor: 3222 cands 2048 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 engine cap=254 mutation: 254 cands 5 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 engine cap=254 template: 220 cands 12 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 engine cap=254 donor: 254 cands 586 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 engine cap=254 composite: 0 cands 1 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) engine cap=254 mutation: 97 cands 3 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) engine cap=254 template: 254 cands 53 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) engine cap=254 donor: 254 cands 709 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) engine cap=254 composite: 100 cands 851 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) engine cap=254 mutation: 100 cands 1 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) engine cap=254 template: 254 cands 19 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) engine cap=254 donor: 254 cands 89 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) engine cap=254 composite: 100 cands 497 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 engine cap=1000000 mutation: 368 cands 14 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 engine cap=1000000 template: 220 cands 4 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 engine cap=1000000 donor: 2962 cands 498 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) engine cap=1000000 mutation: 97 cands 3 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) engine cap=1000000 template: 525 cands 39 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) engine cap=1000000 donor: 3015 cands 602 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) engine cap=1000000 mutation: 100 cands 1 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) engine cap=1000000 template: 393 cands 34 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) engine cap=1000000 donor: 3075 cands 213 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 full cap=254 template: 220 cands 17 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 full cap=254 donor: 254 cands 366 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) full cap=254 template: 254 cands 88 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) full cap=254 donor: 254 cands 673 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) full cap=254 template: 254 cands 12 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) full cap=254 donor: 254 cands 209 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 full cap=1000000 template: 220 cands 3 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 insert@1856 full cap=1000000 donor: 2963 cands 1193 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) full cap=1000000 template: 525 cands 24 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1855(before gap) full cap=1000000 donor: 3006 cands 517 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) full cap=1000000 template: 393 cands 18 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1856 replace@1856(after gap) full cap=1000000 donor: 3220 cands 296 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 engine cap=254 mutation: 101 cands 13 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 engine cap=254 template: 254 cands 15 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 engine cap=254 donor: 254 cands 183 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 engine cap=254 composite: 100 cands 448 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 engine cap=1000000 mutation: 101 cands 1 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 engine cap=1000000 template: 525 cands 14 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 engine cap=1000000 donor: 3448 cands 282 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 full cap=254 template: 254 cands 16 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 full cap=254 donor: 254 cands 209 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 full cap=1000000 template: 525 cands 10 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/compiler.py:1857 replace@1857 full cap=1000000 donor: 4112 cands 177 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 engine cap=254 mutation: 63 cands 1 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 engine cap=254 template: 254 cands 7 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 engine cap=254 donor: 254 cands 173 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 engine cap=254 composite: 100 cands 334 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 engine cap=1000000 mutation: 63 cands 0 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 engine cap=1000000 template: 353 cands 6 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 engine cap=1000000 donor: 1070 cands 61 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 full cap=254 template: 254 cands 9 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 full cap=254 donor: 254 cands 539 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 full cap=1000000 template: 353 cands 6 ms hunk=0 first=0
+  django__django-15563 django/db/models/sql/subqueries.py:137 replace@137 full cap=1000000 donor: 891 cands 546 ms hunk=0 first=0
+   done in 1439.4 s; all hunks reachable: false
+== django__django-15128
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 engine cap=254 mutation: 254 cands 3 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 engine cap=254 template: 175 cands 9 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 engine cap=254 donor: 254 cands 1250 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 engine cap=254 composite: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) engine cap=254 mutation: 66 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) engine cap=254 template: 254 cands 21 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) engine cap=254 donor: 254 cands 77 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) engine cap=254 composite: 100 cands 168 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 engine cap=1000000 mutation: 368 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 engine cap=1000000 template: 175 cands 71 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 engine cap=1000000 donor: 2199 cands 75 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) engine cap=1000000 mutation: 66 cands 4 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) engine cap=1000000 template: 593 cands 109 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) engine cap=1000000 donor: 2857 cands 288 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 full cap=254 template: 175 cands 5 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 full cap=254 donor: 254 cands 1353 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) full cap=254 template: 254 cands 18 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) full cap=254 donor: 254 cands 645 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 full cap=1000000 template: 175 cands 4 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 insert@575 full cap=1000000 donor: 2239 cands 527 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) full cap=1000000 template: 593 cands 42 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:575 replace@573(before gap) full cap=1000000 donor: 3831 cands 614 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 engine cap=254 mutation: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 engine cap=254 template: 254 cands 7 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 engine cap=254 donor: 254 cands 51 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 engine cap=254 composite: 15 cands 380 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 engine cap=1000000 mutation: 0 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 engine cap=1000000 template: 776 cands 8 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 engine cap=1000000 donor: 3552 cands 114 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 full cap=254 template: 254 cands 122 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 full cap=254 donor: 254 cands 341 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 full cap=1000000 template: 776 cands 6 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:592 replace@592 full cap=1000000 donor: 3598 cands 346 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 engine cap=254 mutation: 1 cands 3 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 engine cap=254 template: 254 cands 345 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 engine cap=254 donor: 254 cands 401 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 engine cap=254 composite: 9 cands 477 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 engine cap=1000000 mutation: 1 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 engine cap=1000000 template: 386 cands 275 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 engine cap=1000000 donor: 1340 cands 179 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 full cap=254 template: 254 cands 146 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 full cap=254 donor: 254 cands 860 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 full cap=1000000 template: 386 cands 465 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:882 replace@882 full cap=1000000 donor: 1521 cands 242 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 engine cap=254 mutation: 0 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 engine cap=254 template: 0 cands 4 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 engine cap=254 donor: 254 cands 70 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 engine cap=254 composite: 23 cands 429 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 engine cap=1000000 mutation: 0 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 engine cap=1000000 template: 0 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 engine cap=1000000 donor: 1174 cands 116 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 full cap=254 template: 0 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 full cap=254 donor: 254 cands 98 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 full cap=1000000 template: 0 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:885 replace@885 full cap=1000000 donor: 1283 cands 131 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 engine cap=254 mutation: 0 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 engine cap=254 template: 0 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 engine cap=254 donor: 254 cands 109 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 engine cap=254 composite: 3 cands 316 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 engine cap=1000000 mutation: 0 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 engine cap=1000000 template: 0 cands 3 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 engine cap=1000000 donor: 1241 cands 53 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 full cap=254 template: 0 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 full cap=254 donor: 254 cands 290 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 full cap=1000000 template: 0 cands 2 ms hunk=0 first=0

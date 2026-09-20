@@ -1,0 +1,373 @@
+{
+ "ran_at": "2026-09-20T22:53:44.293Z",
+ "spend_usd": 0,
+ "instances": [
+  {
+   "instance": "django__django-15315",
+   "criterion": {
+    "form": "no_exception"
+   },
+   "base_ms": 1953,
+   "gold_ms": 2039,
+   "candidates": 2171,
+   "by_source": {
+    "mutation": 400,
+    "template": 190,
+    "donor": 1265,
+    "composite": 316
+   },
+   "lanes": 4,
+   "wall_ms": 859226,
+   "median_run_ms": 1308,
+   "pass": 38,
+   "fail": 990,
+   "syntax_error": 0,
+   "timeout": 0,
+   "error": 1143,
+   "passers": [
+    {
+     "source": "mutation",
+     "op": "negation",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "return not hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2232
+    },
+    {
+     "source": "template",
+     "op": "guard_none_return_before",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "if self is None : return None return hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2536
+    },
+    {
+     "source": "template",
+     "op": "guard_empty_raise_before",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "if not self : raise ValueError ( \"self must not be empty\" ) return hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2603
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_before",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "self . allow_folders = None return hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2426
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_before",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "self . default = None return hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2374
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_before",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "self . unique_for_year = None return hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2337
+    },
+    {
+     "source": "template",
+     "op": "insert_return_before",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "return 0 return hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2490
+    },
+    {
+     "source": "template",
+     "op": "insert_return_before",
+     "site": "django/db/models/fields/__init__.py:545",
+     "text": "return False return hash ( (",
+     "status": "pass",
+     "detail": "",
+     "ms": 2452
+    },
+    {
+     "source": "mutation",
+     "op": "off_by_one_atom",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . creation_counter - 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1491
+    },
+    {
+     "source": "mutation",
+     "op": "identifier_substitution",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "CharField . creation_counter ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1464
+    },
+    {
+     "source": "mutation",
+     "op": "attribute_substitution+off_by_one_atom",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . auto_creation_counter + 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2397
+    },
+    {
+     "source": "mutation",
+     "op": "off_by_one_atom+arithmetic_swap",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . creation_counter * 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1826
+    },
+    {
+     "source": "mutation",
+     "op": "off_by_one_atom+arithmetic_swap",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . creation_counter / 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1971
+    },
+    {
+     "source": "mutation",
+     "op": "off_by_one_atom+negation",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . creation_counter + - 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2238
+    },
+    {
+     "source": "mutation",
+     "op": "off_by_one_atom+off_by_one_literal",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . creation_counter - 2 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2074
+    },
+    {
+     "source": "mutation",
+     "op": "attribute_substitution",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . blank ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2486
+    },
+    {
+     "source": "mutation",
+     "op": "attribute_substitution+off_by_one_atom",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . _unique - 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2910
+    },
+    {
+     "source": "mutation",
+     "op": "identifier_substitution+off_by_one_atom",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "DateTimeField . creation_counter + 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2626
+    },
+    {
+     "source": "template",
+     "op": "attr_subst",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . get_choices ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2700
+    },
+    {
+     "source": "composite",
+     "op": "pair:identifier_substitution>attribute_substitution+off_by_one_atom",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "CharField . auto_creation_counter - 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2021
+    },
+    {
+     "source": "composite",
+     "op": "pair:attr_subst>off_by_one_atom+arithmetic_swap",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "self . auto_creation_counter * 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1953
+    },
+    {
+     "source": "composite",
+     "op": "pair:identifier_substitution>off_by_one_atom+negation",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "CharField . creation_counter + - 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2134
+    },
+    {
+     "source": "composite",
+     "op": "pair:attribute_substitution+off_by_one_atom>identifier_substitution",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "DateField . auto_creation_counter + 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1082
+    },
+    {
+     "source": "composite",
+     "op": "pair:off_by_one_atom+arithmetic_swap>identifier_substitution",
+     "site": "django/db/models/fields/__init__.py:546",
+     "text": "BooleanField . creation_counter * 1 ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1993
+    },
+    {
+     "source": "mutation",
+     "op": "constant_substitution",
+     "site": "django/db/models/fields/__init__.py:547",
+     "text": "self . model . _meta . app_label if hasattr ( self , 'model' ) else '' ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2409
+    },
+    {
+     "source": "mutation",
+     "op": "identifier_substitution",
+     "site": "django/db/models/fields/__init__.py:547",
+     "text": "self . model . _meta . app_label if hasattr ( BooleanField , 'model' ) else None ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2709
+    },
+    {
+     "source": "mutation",
+     "op": "string_substitution",
+     "site": "django/db/models/fields/__init__.py:548",
+     "text": "self . model . _meta . model_name if hasattr ( self , 'field_type' ) else None ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2374
+    },
+    {
+     "source": "mutation",
+     "op": "identifier_substitution",
+     "site": "django/db/models/fields/__init__.py:548",
+     "text": "self . model . _meta . model_name if hasattr ( __all__ , 'model' ) else None ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1930
+    },
+    {
+     "source": "mutation",
+     "op": "identifier_substitution",
+     "site": "django/db/models/fields/__init__.py:548",
+     "text": "self . model . _meta . model_name if hasattr ( DateTimeCheckMixin , 'model' ) else None ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 1792
+    },
+    {
+     "source": "mutation",
+     "op": "attribute_substitution",
+     "site": "django/db/models/fields/__init__.py:548",
+     "text": "self . model . _meta . model if hasattr ( self , 'model' ) else None ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2106
+    },
+    {
+     "source": "mutation",
+     "op": "identifier_substitution",
+     "site": "django/db/models/fields/__init__.py:548",
+     "text": "self . model . _meta . model_name if hasattr ( self , 'model' ) else DateField ,",
+     "status": "pass",
+     "detail": "",
+     "ms": 2392
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_after",
+     "site": "django/db/models/fields/__init__.py:549",
+     "text": ") ) self . allow_files = None",
+     "status": "pass",
+     "detail": "",
+     "ms": 1779
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_after",
+     "site": "django/db/models/fields/__init__.py:549",
+     "text": ") ) self . attname = None",
+     "status": "pass",
+     "detail": "",
+     "ms": 1983
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_after",
+     "site": "django/db/models/fields/__init__.py:549",
+     "text": ") ) self . db_collation = None",
+     "status": "pass",
+     "detail": "",
+     "ms": 2192
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_after",
+     "site": "django/db/models/fields/__init__.py:549",
+     "text": ") ) self . default = None",
+     "status": "pass",
+     "detail": "",
+     "ms": 1924
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_after",
+     "site": "django/db/models/fields/__init__.py:549",
+     "text": ") ) self . max_length = None",
+     "status": "pass",
+     "detail": "",
+     "ms": 1311
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_after",
+     "site": "django/db/models/fields/__init__.py:549",
+     "text": ") ) self . max_digits = None",
+     "status": "pass",
+     "detail": "",
+     "ms": 1436
+    },
+    {
+     "source": "template",
+     "op": "insert_attr_none_after",
+     "site": "django/db/models/fields/__init__.py:549",
+     "text": ") ) self . serialize = None",
+     "status": "pass",
+     "detail": "",
+     "ms": 1417
+    }
+   ]
+  }
+ ]
+}

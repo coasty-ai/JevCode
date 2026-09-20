@@ -1,0 +1,24 @@
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-12096/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+sympy__sympy-12096: sympy resolves to /private/tmp/jevonly/reach/sympy__sympy-12096/sympy/__init__.py (plain) / /private/tmp/jevonly/reach/sympy__sympy-12096/sympy/__init__.py (PYTHONPATH=worktree)
+  PASS 2830 ms  gold (`*[i.evalf(prec) for i in self.args]`)
+  PASS 2740 ms  one-line alternative: `.evalf(prec)` appended to the `_imp_` result (`Float(self._imp_(*self.args).evalf(prec), prec)`)
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/core/basic.py:3: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Mapping
+/private/tmp/jevonly/reach/sympy__sympy-11618/sympy/plotting/plot.py:28: DeprecationWarning: Using or importing the ABCs from 'collections' instead of from 'collections.abc' is deprecated since Python 3.3, and in 3.10 it will stop working
+  from collections import Callable
+sympy__sympy-11618: sympy resolves to /private/tmp/jevonly/reach/sympy__sympy-11618/sympy/__init__.py (plain) / /private/tmp/jevonly/reach/sympy__sympy-11618/sympy/__init__.py (PYTHONPATH=worktree)
+  PASS 2856 ms  gold (14-line dimension-padding branch)
+  PASS 3060 ms  one-line alternative + import: `zip(...)` → `zip_longest(..., fillvalue=0)` in distance()
+
+written /Users/prateekjannu/Documents/vscode/JevCode/experiments/reach/out/hunk-subsets.json

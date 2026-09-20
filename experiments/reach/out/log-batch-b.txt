@@ -1,0 +1,153 @@
+== sympy__sympy-15345
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 engine cap=254 mutation: 0 cands 0 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 engine cap=254 template: 0 cands 4 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 engine cap=254 donor: 103 cands 17880 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 engine cap=254 composite: 100 cands 587 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 engine cap=1000000 mutation: 0 cands 0 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 engine cap=1000000 template: 0 cands 0 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 engine cap=1000000 donor: 103 cands 591 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 full cap=254 template: 0 cands 0 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 full cap=254 donor: 254 cands 6467 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 full cap=1000000 template: 0 cands 1 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:34 replace@34 full cap=1000000 donor: 366 cands 908 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 engine cap=254 mutation: 254 cands 2 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 engine cap=254 template: 0 cands 20 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 engine cap=254 donor: 159 cands 497 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 engine cap=254 composite: 0 cands 0 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) engine cap=254 mutation: 185 cands 58 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) engine cap=254 template: 204 cands 93 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) engine cap=254 donor: 254 cands 2834 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) engine cap=254 composite: 100 cands 3928 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) engine cap=254 mutation: 1 cands 1 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) engine cap=254 template: 27 cands 3 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) engine cap=254 donor: 254 cands 10452 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) engine cap=254 composite: 3 cands 2109 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 engine cap=1000000 mutation: 368 cands 2 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 engine cap=1000000 template: 0 cands 1 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 engine cap=1000000 donor: 159 cands 219 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) engine cap=1000000 mutation: 185 cands 78 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) engine cap=1000000 template: 204 cands 29 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) engine cap=1000000 donor: 509 cands 1882 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) engine cap=1000000 mutation: 1 cands 0 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) engine cap=1000000 template: 27 cands 5 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) engine cap=1000000 donor: 338 cands 1204 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 full cap=254 template: 0 cands 1 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 full cap=254 donor: 254 cands 444 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) full cap=254 template: 204 cands 11 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) full cap=254 donor: 254 cands 2432 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) full cap=254 template: 27 cands 2 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) full cap=254 donor: 254 cands 13646 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 full cap=1000000 template: 0 cands 1 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 insert@104 full cap=1000000 donor: 684 cands 862 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) full cap=1000000 template: 204 cands 12 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@102(before gap) full cap=1000000 donor: 615 cands 4495 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) full cap=1000000 template: 27 cands 1 ms hunk=0 first=0
+  sympy__sympy-15345 sympy/printing/mathematica.py:104 replace@104(after gap) full cap=1000000 donor: 451 cands 4182 ms hunk=0 first=0
+   done in 121.8 s; all hunks reachable: false
+== sympy__sympy-17139
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 engine cap=254 mutation: 254 cands 4 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 engine cap=254 template: 104 cands 5 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 engine cap=254 donor: 254 cands 12383 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 engine cap=254 composite: 0 cands 0 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) engine cap=254 mutation: 114 cands 6 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) engine cap=254 template: 128 cands 11 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) engine cap=254 donor: 254 cands 2403 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) engine cap=254 composite: 100 cands 2364 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 engine cap=1000000 mutation: 368 cands 32 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 engine cap=1000000 template: 104 cands 22 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 engine cap=1000000 donor: 2468 cands 1453 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) engine cap=1000000 mutation: 114 cands 2 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) engine cap=1000000 template: 128 cands 12 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) engine cap=1000000 donor: 2585 cands 2132 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 full cap=254 template: 104 cands 8 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 full cap=254 donor: 254 cands 9019 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) full cap=254 template: 128 cands 3 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) full cap=254 donor: 254 cands 8641 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 full cap=1000000 template: 104 cands 39 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 insert@503 full cap=1000000 donor: 2426 cands 1562 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) full cap=1000000 template: 128 cands 5 ms hunk=0 first=0
+  sympy__sympy-17139 sympy/simplify/fu.py:503 replace@502(before gap) full cap=1000000 donor: 2603 cands 6614 ms hunk=0 first=0
+   done in 684.2 s; all hunks reachable: false
+== django__django-15315
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 engine cap=254 mutation: 21 cands 3 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 engine cap=254 template: 92 cands 95 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 engine cap=254 donor: 254 cands 2607 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 engine cap=254 composite: 16 cands 1407 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 engine cap=1000000 mutation: 21 cands 2 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 engine cap=1000000 template: 92 cands 13 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 engine cap=1000000 donor: 866 cands 510 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 full cap=254 template: 92 cands 28 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 full cap=254 donor: 254 cands 2994 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 full cap=1000000 template: 92 cands 87 ms hunk=0 first=0
+  django__django-15315 django/db/models/fields/__init__.py:545 replace@545 full cap=1000000 donor: 788 cands 894 ms hunk=0 first=0
+   done in 137.4 s; all hunks reachable: false
+
+### sympy__sympy-15345 — oracle valid, values (strong), t_run 1161 ms; gold file rank 588/746 (in engine corpus: false); all hunks reachable: false
+- sympy/printing/mathematica.py:34 pure_insertion (-1/+2, code +2) in <module>; statement spans 25 lines
+  gold first line: "Max" : [ ( lambda * x : True , "Max" ) ] ,
+  mutation|replace@34|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@34|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@34|engine: n=103 (uncapped 103) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@34|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@34|full: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@34|full: n=254 (uncapped 366) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 0 (uncapped 0); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 14 tokens (≤25: true); missing ["\"Max\"","\"Max\""]; vocab 146
+  queue vocab missing: {}
+- sympy/printing/mathematica.py:104 pure_insertion (-0/+2, code +1) in MCodePrinter (80 lines); gap slot legal: false
+  gold first line: _print_MinMaxBase = _print_Function
+  mutation|insert@104|engine: n=254 (uncapped 368) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@104|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@104|engine: n=159 (uncapped 159) hunk hit: 0/0 first-line hit: 0/0
+  composite|insert@104|engine: n=0 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@102(before gap)|engine: n=185 (uncapped 185) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@102(before gap)|engine: n=204 (uncapped 204) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@102(before gap)|engine: n=254 (uncapped 509) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@102(before gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@104(after gap)|engine: n=1 (uncapped 1) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@104(after gap)|engine: n=27 (uncapped 27) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@104(after gap)|engine: n=254 (uncapped 338) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@104(after gap)|engine: n=3 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@104|full: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@104|full: n=254 (uncapped 684) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@102(before gap)|full: n=204 (uncapped 204) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@102(before gap)|full: n=254 (uncapped 615) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@104(after gap)|full: n=27 (uncapped 27) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@104(after gap)|full: n=254 (uncapped 451) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 56 (uncapped 71); gold shape at 1 (P11; uncapped true); holes [{"i":0,"gold":"_print_MinMaxBase","cls":"value","inSlotVocab":false},{"i":2,"gold":"_print_Function","cls":"value","inSlotVocab":true}]; fillable false
+  beam vocab: 3 tokens (≤25: true); missing ["_print_MinMaxBase"]; vocab 171
+  queue vocab missing: {"_print_MinMaxBase":"nowhere (new name)"}
+
+### sympy__sympy-17139 — oracle valid, no_exception (strong), t_run 2169 ms; gold file rank 650/755 (in engine corpus: false); all hunks reachable: false
+- sympy/simplify/fu.py:503 pure_insertion (-0/+2, code +2) in _f (27 lines); gap slot legal: true
+  gold first line: if not rv . exp . is_real :
+  mutation|insert@503|engine: n=254 (uncapped 368) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@503|engine: n=104 (uncapped 104) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@503|engine: n=254 (uncapped 2468) hunk hit: 0/0 first-line hit: 0/0
+  composite|insert@503|engine: n=0 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@502(before gap)|engine: n=114 (uncapped 114) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@502(before gap)|engine: n=128 (uncapped 128) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@502(before gap)|engine: n=254 (uncapped 2585) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@502(before gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@503|full: n=104 (uncapped 104) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@503|full: n=254 (uncapped 2426) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@502(before gap)|full: n=128 (uncapped 128) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@502(before gap)|full: n=254 (uncapped 2603) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 40 (uncapped 52); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 8 tokens (≤25: true); missing ["is_real"]; vocab 223
+  queue vocab missing: {"is_real":"repo: 45 files (sympy/assumptions/handlers/sets.py, sympy/calculus/singularities.py); tests: sympy/calculus/tests/test_util.py, sympy/codegen/tests/test_cfunctions.py"}
+
+### django__django-15315 — oracle valid, no_exception (strong), t_run 475 ms; gold file rank 687/858 (in engine corpus: false); all hunks reachable: false
+- django/db/models/fields/__init__.py:545 multi_line_modification (-5/+1, code +1) in __hash__ (6 lines); statement spans 5 lines
+  gold first line: return hash ( self . creation_counter )
+  mutation|replace@545|engine: n=21 (uncapped 21) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@545|engine: n=92 (uncapped 92) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@545|engine: n=254 (uncapped 866) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@545|engine: n=16 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@545|full: n=92 (uncapped 92) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@545|full: n=254 (uncapped 788) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 47 (uncapped 49); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 7 tokens (≤25: true); missing ["hash"]; vocab 250
+  queue vocab missing: {}
+
+written /Users/prateekjannu/Documents/vscode/JevCode/experiments/reach/out/reach-oracle-9.sympy__sympy-15345_sympy__sympy-17139_django__django-15315.json

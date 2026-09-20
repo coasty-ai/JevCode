@@ -1,0 +1,34 @@
+{
+ "ran_at": "2026-09-20T22:40:35.654Z",
+ "spend_usd": 0,
+ "results": [
+  {
+   "instance": "sympy__sympy-12096",
+   "variant": "gold (`*[i.evalf(prec) for i in self.args]`)",
+   "pass": true,
+   "ms": 2830,
+   "tail": "ollections import Callable\n============================= test process starts ==============================\nexecutable:         /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-12096/jev-only/workspace/.venv/bin/python  (3.9.6-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nrandom seed:        51004094\nhash randomization: on (PYTHONHASHSEED=2057260971)\n\nsympy/utilities/tests/test_lambdify.py[1] .                                 [OK]\n\n================== tests finished: 1 passed, in 0.21 seconds ===================\n"
+  },
+  {
+   "instance": "sympy__sympy-12096",
+   "variant": "one-line alternative: `.evalf(prec)` appended to the `_imp_` result (`Float(self._imp_(*self.args).evalf(prec), prec)`)",
+   "pass": true,
+   "ms": 2740,
+   "tail": "ollections import Callable\n============================= test process starts ==============================\nexecutable:         /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-12096/jev-only/workspace/.venv/bin/python  (3.9.6-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nrandom seed:        45082143\nhash randomization: on (PYTHONHASHSEED=1664052546)\n\nsympy/utilities/tests/test_lambdify.py[1] .                                 [OK]\n\n================== tests finished: 1 passed, in 0.17 seconds ===================\n"
+  },
+  {
+   "instance": "sympy__sympy-11618",
+   "variant": "gold (14-line dimension-padding branch)",
+   "pass": true,
+   "ms": 2856,
+   "tail": "collections import Callable\n============================= test process starts ==============================\nexecutable:         /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-11618/jev-only/workspace/.venv/bin/python  (3.9.6-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nrandom seed:        93751789\nhash randomization: on (PYTHONHASHSEED=559163532)\n\nsympy/geometry/tests/test_point.py[1] .                                     [OK]\n\n================== tests finished: 1 passed, in 0.12 seconds ===================\n"
+  },
+  {
+   "instance": "sympy__sympy-11618",
+   "variant": "one-line alternative + import: `zip(...)` → `zip_longest(..., fillvalue=0)` in distance()",
+   "pass": true,
+   "ms": 3060,
+   "tail": "ollections import Callable\n============================= test process starts ==============================\nexecutable:         /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-11618/jev-only/workspace/.venv/bin/python  (3.9.6-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nrandom seed:        72964361\nhash randomization: on (PYTHONHASHSEED=3068521745)\n\nsympy/geometry/tests/test_point.py[1] .                                     [OK]\n\n================== tests finished: 1 passed, in 0.07 seconds ===================\n"
+  }
+ ]
+}

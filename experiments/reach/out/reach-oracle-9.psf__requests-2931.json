@@ -1,0 +1,1121 @@
+{
+ "ran_at": "2026-09-20T22:24:23.060Z",
+ "spend_usd": 0,
+ "jev_requests": 0,
+ "max_workspace_py_files": 400,
+ "enumerate_cap": 254,
+ "instances": [
+  {
+   "id": "psf__requests-2931",
+   "oracle": "valid",
+   "criterion": "no_exception (strong)",
+   "tRunMs": 138,
+   "goldFileRank": 12,
+   "nonTestPyFiles": 83,
+   "goldFileInEngineCorpus": true,
+   "corpusMs": 84,
+   "hunks": [
+    {
+     "file": "requests/models.py",
+     "oldLine": 84,
+     "kind": "single_line_modification",
+     "removed": 1,
+     "added": 1,
+     "addedCode": 1,
+     "goldFirst": "return data",
+     "block": "_encode_params",
+     "blockLines": 26,
+     "statementSpan": 1,
+     "gapSlotLegal": null,
+     "fileInEngineCorpus": true,
+     "sites": [
+      "replace@84"
+     ],
+     "runs": [
+      {
+       "source": "mutation",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "count": 159,
+       "ms": 4,
+       "hunkHits": [
+        {
+         "op": "unwrap_call",
+         "index": 16,
+         "text": "            return data"
+        }
+       ],
+       "firstLineHits": [
+        {
+         "op": "unwrap_call",
+         "index": 16,
+         "text": "            return data"
+        }
+       ]
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "count": 72,
+       "ms": 6,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "guard_none_return_default_before",
+         "index": 6,
+         "text": "            if data is None: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "guard_empty_return_before",
+         "index": 10,
+         "text": "            if not data: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_before",
+         "index": 17,
+         "text": "            return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_after",
+         "index": 21,
+         "text": "            return to_native_string(data) ⏎             return data"
+        },
+        {
+         "op": "insert_return_after_dedent",
+         "index": 23,
+         "text": "            return to_native_string(data) ⏎         return data"
+        }
+       ]
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 100,
+       "hunkHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        }
+       ],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "count": 149,
+       "ms": 2288,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "mutation",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "count": 159,
+       "ms": 1,
+       "hunkHits": [
+        {
+         "op": "unwrap_call",
+         "index": 16,
+         "text": "            return data"
+        }
+       ],
+       "firstLineHits": [
+        {
+         "op": "unwrap_call",
+         "index": 16,
+         "text": "            return data"
+        }
+       ]
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "count": 72,
+       "ms": 2,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "guard_none_return_default_before",
+         "index": 6,
+         "text": "            if data is None: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "guard_empty_return_before",
+         "index": 10,
+         "text": "            if not data: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_before",
+         "index": 17,
+         "text": "            return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_after",
+         "index": 21,
+         "text": "            return to_native_string(data) ⏎             return data"
+        },
+        {
+         "op": "insert_return_after_dedent",
+         "index": 23,
+         "text": "            return to_native_string(data) ⏎         return data"
+        }
+       ]
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "count": 664,
+       "ms": 15,
+       "hunkHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        }
+       ],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        },
+        {
+         "op": "statement_donor",
+         "index": 256,
+         "text": "            if not data: ⏎                 return data"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "count": 149,
+       "ms": 2280,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 254,
+       "count": 72,
+       "ms": 2,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "guard_none_return_default_before",
+         "index": 6,
+         "text": "            if data is None: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "guard_empty_return_before",
+         "index": 10,
+         "text": "            if not data: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_before",
+         "index": 17,
+         "text": "            return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_after",
+         "index": 21,
+         "text": "            return to_native_string(data) ⏎             return data"
+        },
+        {
+         "op": "insert_return_after_dedent",
+         "index": 23,
+         "text": "            return to_native_string(data) ⏎         return data"
+        }
+       ]
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|full",
+       "cap": 254,
+       "count": 254,
+       "ms": 13,
+       "hunkHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        }
+       ],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@84|full",
+       "cap": 254,
+       "count": 149,
+       "ms": 2280,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "count": 72,
+       "ms": 2,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "guard_none_return_default_before",
+         "index": 6,
+         "text": "            if data is None: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "guard_empty_return_before",
+         "index": 10,
+         "text": "            if not data: ⏎                 return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_before",
+         "index": 17,
+         "text": "            return data ⏎             return to_native_string(data)"
+        },
+        {
+         "op": "insert_return_after",
+         "index": 21,
+         "text": "            return to_native_string(data) ⏎             return data"
+        },
+        {
+         "op": "insert_return_after_dedent",
+         "index": 23,
+         "text": "            return to_native_string(data) ⏎         return data"
+        }
+       ]
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "count": 664,
+       "ms": 13,
+       "hunkHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        }
+       ],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 54,
+         "text": "            return data"
+        },
+        {
+         "op": "statement_donor",
+         "index": 256,
+         "text": "            if not data: ⏎                 return data"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "count": 149,
+       "ms": 2271,
+       "hunkHits": [],
+       "firstLineHits": []
+      }
+     ],
+     "sketch": {
+      "poolSize": 66,
+      "uncappedSize": 69,
+      "matchIndex": 3,
+      "matchProduction": "P10",
+      "matchUncapped": true,
+      "holes": [
+       {
+        "i": 1,
+        "gold": "data",
+        "cls": "value",
+        "inSlotVocab": true
+       }
+      ],
+      "fillable": true
+     },
+     "beam": {
+      "tokens": 2,
+      "withinMaxTokens": true,
+      "missing": [],
+      "vocabSize": 221
+     },
+     "vocab": {
+      "missing": [],
+      "where": {}
+     },
+     "reachable": [
+      {
+       "source": "mutation",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "unwrap_call",
+       "index": 16
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "statement_donor",
+       "index": 54
+      },
+      {
+       "source": "mutation",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "unwrap_call",
+       "index": 16
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 54
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|full",
+       "cap": 254,
+       "op": "statement_donor",
+       "index": 54
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 54
+      }
+     ],
+     "firstLineOnly": [
+      {
+       "source": "mutation",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "unwrap_call",
+       "index": 16
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "guard_none_return_default_before",
+       "index": 6
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "guard_empty_return_before",
+       "index": 10
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "insert_return_before",
+       "index": 17
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "insert_return_after",
+       "index": 21
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "insert_return_after_dedent",
+       "index": 23
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|engine",
+       "cap": 254,
+       "op": "statement_donor",
+       "index": 54
+      },
+      {
+       "source": "mutation",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "unwrap_call",
+       "index": 16
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "guard_none_return_default_before",
+       "index": 6
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "guard_empty_return_before",
+       "index": 10
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "insert_return_before",
+       "index": 17
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "insert_return_after",
+       "index": 21
+      },
+      {
+       "source": "template",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "insert_return_after_dedent",
+       "index": 23
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 54
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|engine",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 256
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 254,
+       "op": "guard_none_return_default_before",
+       "index": 6
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 254,
+       "op": "guard_empty_return_before",
+       "index": 10
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 254,
+       "op": "insert_return_before",
+       "index": 17
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 254,
+       "op": "insert_return_after",
+       "index": 21
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 254,
+       "op": "insert_return_after_dedent",
+       "index": 23
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|full",
+       "cap": 254,
+       "op": "statement_donor",
+       "index": 54
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "guard_none_return_default_before",
+       "index": 6
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "guard_empty_return_before",
+       "index": 10
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "insert_return_before",
+       "index": 17
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "insert_return_after",
+       "index": 21
+      },
+      {
+       "source": "template",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "insert_return_after_dedent",
+       "index": 23
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 54
+      },
+      {
+       "source": "donor",
+       "site": "replace@84|full",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 256
+      }
+     ]
+    },
+    {
+     "file": "requests/models.py",
+     "oldLine": 388,
+     "kind": "pure_insertion",
+     "removed": 0,
+     "added": 3,
+     "addedCode": 2,
+     "goldFirst": "if isinstance ( params , ( str , bytes ) ) :",
+     "block": "prepare_url",
+     "blockLines": 73,
+     "statementSpan": null,
+     "gapSlotLegal": false,
+     "fileInEngineCorpus": true,
+     "sites": [
+      "insert@388",
+      "replace@386(before gap)",
+      "replace@388(after gap)"
+     ],
+     "runs": [
+      {
+       "source": "mutation",
+       "site": "insert@388|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 1,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "insert@388|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 4,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "insert@388|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 8,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "composite",
+       "site": "insert@388|engine",
+       "cap": 254,
+       "count": 0,
+       "ms": 0,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "mutation",
+       "site": "replace@386(before gap)|engine",
+       "cap": 254,
+       "count": 92,
+       "ms": 1,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@386(before gap)|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 11,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@386(before gap)|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 12,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "composite",
+       "site": "replace@386(before gap)|engine",
+       "cap": 254,
+       "count": 148,
+       "ms": 2538,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "mutation",
+       "site": "replace@388(after gap)|engine",
+       "cap": 254,
+       "count": 132,
+       "ms": 1,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@388(after gap)|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 4,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@388(after gap)|engine",
+       "cap": 254,
+       "count": 254,
+       "ms": 16,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "composite",
+       "site": "replace@388(after gap)|engine",
+       "cap": 254,
+       "count": 148,
+       "ms": 3808,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "mutation",
+       "site": "insert@388|engine",
+       "cap": 1000000,
+       "count": 368,
+       "ms": 1,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "insert@388|engine",
+       "cap": 1000000,
+       "count": 378,
+       "ms": 3,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "insert@388|engine",
+       "cap": 1000000,
+       "count": 2586,
+       "ms": 38,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 878,
+         "text": "        if isinstance(params, (str, bytes)): ⏎             return to_native_string(params)"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "insert@388|engine",
+       "cap": 1000000,
+       "count": 0,
+       "ms": 0,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "mutation",
+       "site": "replace@386(before gap)|engine",
+       "cap": 1000000,
+       "count": 92,
+       "ms": 0,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@386(before gap)|engine",
+       "cap": 1000000,
+       "count": 1256,
+       "ms": 9,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@386(before gap)|engine",
+       "cap": 1000000,
+       "count": 2947,
+       "ms": 40,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 1230,
+         "text": "                if isinstance(params, (str, bytes)): ⏎                     return to_native_string(params)"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@386(before gap)|engine",
+       "cap": 1000000,
+       "count": 148,
+       "ms": 2629,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "mutation",
+       "site": "replace@388(after gap)|engine",
+       "cap": 1000000,
+       "count": 132,
+       "ms": 0,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@388(after gap)|engine",
+       "cap": 1000000,
+       "count": 754,
+       "ms": 4,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@388(after gap)|engine",
+       "cap": 1000000,
+       "count": 3335,
+       "ms": 50,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 1605,
+         "text": "        if isinstance(params, (str, bytes)): ⏎             return to_native_string(params)"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@388(after gap)|engine",
+       "cap": 1000000,
+       "count": 148,
+       "ms": 3862,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "insert@388|full",
+       "cap": 254,
+       "count": 254,
+       "ms": 2,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "insert@388|full",
+       "cap": 254,
+       "count": 254,
+       "ms": 6,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "composite",
+       "site": "insert@388|full",
+       "cap": 254,
+       "count": 0,
+       "ms": 0,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@386(before gap)|full",
+       "cap": 254,
+       "count": 254,
+       "ms": 8,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@386(before gap)|full",
+       "cap": 254,
+       "count": 254,
+       "ms": 10,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "composite",
+       "site": "replace@386(before gap)|full",
+       "cap": 254,
+       "count": 148,
+       "ms": 2608,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@388(after gap)|full",
+       "cap": 254,
+       "count": 254,
+       "ms": 3,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@388(after gap)|full",
+       "cap": 254,
+       "count": 254,
+       "ms": 15,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "composite",
+       "site": "replace@388(after gap)|full",
+       "cap": 254,
+       "count": 148,
+       "ms": 3911,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "insert@388|full",
+       "cap": 1000000,
+       "count": 378,
+       "ms": 2,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "insert@388|full",
+       "cap": 1000000,
+       "count": 2586,
+       "ms": 32,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 878,
+         "text": "        if isinstance(params, (str, bytes)): ⏎             return to_native_string(params)"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "insert@388|full",
+       "cap": 1000000,
+       "count": 0,
+       "ms": 0,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@386(before gap)|full",
+       "cap": 1000000,
+       "count": 1256,
+       "ms": 8,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@386(before gap)|full",
+       "cap": 1000000,
+       "count": 2947,
+       "ms": 41,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 1230,
+         "text": "                if isinstance(params, (str, bytes)): ⏎                     return to_native_string(params)"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@386(before gap)|full",
+       "cap": 1000000,
+       "count": 148,
+       "ms": 2644,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "template",
+       "site": "replace@388(after gap)|full",
+       "cap": 1000000,
+       "count": 754,
+       "ms": 4,
+       "hunkHits": [],
+       "firstLineHits": []
+      },
+      {
+       "source": "donor",
+       "site": "replace@388(after gap)|full",
+       "cap": 1000000,
+       "count": 3335,
+       "ms": 56,
+       "hunkHits": [],
+       "firstLineHits": [
+        {
+         "op": "statement_donor",
+         "index": 1605,
+         "text": "        if isinstance(params, (str, bytes)): ⏎             return to_native_string(params)"
+        }
+       ]
+      },
+      {
+       "source": "composite",
+       "site": "replace@388(after gap)|full",
+       "cap": 1000000,
+       "count": 148,
+       "ms": 3908,
+       "hunkHits": [],
+       "firstLineHits": []
+      }
+     ],
+     "sketch": {
+      "poolSize": 51,
+      "uncappedSize": 79,
+      "matchIndex": -1,
+      "matchProduction": null,
+      "matchUncapped": false,
+      "holes": [],
+      "fillable": null
+     },
+     "beam": {
+      "tokens": 12,
+      "withinMaxTokens": true,
+      "missing": [],
+      "vocabSize": 249
+     },
+     "vocab": {
+      "missing": [],
+      "where": {}
+     },
+     "reachable": [],
+     "firstLineOnly": [
+      {
+       "source": "donor",
+       "site": "insert@388|engine",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 878
+      },
+      {
+       "source": "donor",
+       "site": "replace@386(before gap)|engine",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 1230
+      },
+      {
+       "source": "donor",
+       "site": "replace@388(after gap)|engine",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 1605
+      },
+      {
+       "source": "donor",
+       "site": "insert@388|full",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 878
+      },
+      {
+       "source": "donor",
+       "site": "replace@386(before gap)|full",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 1230
+      },
+      {
+       "source": "donor",
+       "site": "replace@388(after gap)|full",
+       "cap": 1000000,
+       "op": "statement_donor",
+       "index": 1605
+      }
+     ]
+    }
+   ],
+   "allHunksReachable": false,
+   "wallMs": 72027
+  }
+ ]
+}

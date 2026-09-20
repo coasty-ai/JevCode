@@ -1,0 +1,516 @@
+[
+ {
+  "id": "sympy__sympy-15345",
+  "oracle": "valid",
+  "criterion": "values (strong)",
+  "tRunMs": 1161,
+  "goldFileRank": 588,
+  "nonTestPyFiles": 746,
+  "goldFileInEngineCorpus": false,
+  "corpusMs": 1743,
+  "hunks": [
+   {
+    "file": "sympy/printing/mathematica.py",
+    "oldLine": 34,
+    "kind": "pure_insertion",
+    "removed": 1,
+    "added": 2,
+    "addedCode": 2,
+    "goldFirst": "\"Max\" : [ ( lambda * x : True , \"Max\" ) ] ,",
+    "block": null,
+    "blockLines": null,
+    "statementSpan": 25,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "replace@34"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "replace@34|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@34|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@34|engine",
+      "cap": 254,
+      "count": 103,
+      "ms": 1693,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@34|engine",
+      "cap": 254,
+      "count": 100,
+      "ms": 80,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@34|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@34|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@34|engine",
+      "cap": 1000000,
+      "count": 103,
+      "ms": 58,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@34|full",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@34|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 897,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@34|full",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@34|full",
+      "cap": 1000000,
+      "count": 366,
+      "ms": 108,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 0,
+     "uncappedSize": 0,
+     "matchIndex": -1,
+     "matchProduction": null,
+     "matchUncapped": false,
+     "holes": [],
+     "fillable": null
+    },
+    "beam": {
+     "tokens": 14,
+     "withinMaxTokens": true,
+     "missing": [
+      "\"Max\"",
+      "\"Max\""
+     ],
+     "vocabSize": 146
+    },
+    "vocab": {
+     "missing": [],
+     "where": {}
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "sympy/printing/mathematica.py",
+    "oldLine": 104,
+    "kind": "pure_insertion",
+    "removed": 0,
+    "added": 2,
+    "addedCode": 1,
+    "goldFirst": "_print_MinMaxBase = _print_Function",
+    "block": "MCodePrinter",
+    "blockLines": 80,
+    "statementSpan": null,
+    "gapSlotLegal": false,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "insert@104",
+     "replace@102(before gap)",
+     "replace@104(after gap)"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "insert@104|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@104|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@104|engine",
+      "cap": 254,
+      "count": 159,
+      "ms": 65,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "insert@104|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@102(before gap)|engine",
+      "cap": 254,
+      "count": 185,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@102(before gap)|engine",
+      "cap": 254,
+      "count": 204,
+      "ms": 6,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@102(before gap)|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 454,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@102(before gap)|engine",
+      "cap": 254,
+      "count": 148,
+      "ms": 66527,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@104(after gap)|engine",
+      "cap": 254,
+      "count": 1,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@104(after gap)|engine",
+      "cap": 254,
+      "count": 27,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@104(after gap)|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 1618,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@104(after gap)|engine",
+      "cap": 254,
+      "count": 3,
+      "ms": 332,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "insert@104|engine",
+      "cap": 1000000,
+      "count": 368,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@104|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@104|engine",
+      "cap": 1000000,
+      "count": 159,
+      "ms": 63,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@102(before gap)|engine",
+      "cap": 1000000,
+      "count": 185,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@102(before gap)|engine",
+      "cap": 1000000,
+      "count": 204,
+      "ms": 4,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@102(before gap)|engine",
+      "cap": 1000000,
+      "count": 509,
+      "ms": 433,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@104(after gap)|engine",
+      "cap": 1000000,
+      "count": 1,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@104(after gap)|engine",
+      "cap": 1000000,
+      "count": 27,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@104(after gap)|engine",
+      "cap": 1000000,
+      "count": 338,
+      "ms": 313,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@104|full",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@104|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 128,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@102(before gap)|full",
+      "cap": 254,
+      "count": 204,
+      "ms": 5,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@102(before gap)|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 656,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@104(after gap)|full",
+      "cap": 254,
+      "count": 27,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@104(after gap)|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 1860,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@104|full",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@104|full",
+      "cap": 1000000,
+      "count": 684,
+      "ms": 120,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@102(before gap)|full",
+      "cap": 1000000,
+      "count": 204,
+      "ms": 4,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@102(before gap)|full",
+      "cap": 1000000,
+      "count": 615,
+      "ms": 674,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@104(after gap)|full",
+      "cap": 1000000,
+      "count": 27,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@104(after gap)|full",
+      "cap": 1000000,
+      "count": 451,
+      "ms": 613,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 56,
+     "uncappedSize": 71,
+     "matchIndex": 1,
+     "matchProduction": "P11",
+     "matchUncapped": true,
+     "holes": [
+      {
+       "i": 0,
+       "gold": "_print_MinMaxBase",
+       "cls": "value",
+       "inSlotVocab": false
+      },
+      {
+       "i": 2,
+       "gold": "_print_Function",
+       "cls": "value",
+       "inSlotVocab": true
+      }
+     ],
+     "fillable": false
+    },
+    "beam": {
+     "tokens": 3,
+     "withinMaxTokens": true,
+     "missing": [
+      "_print_MinMaxBase"
+     ],
+     "vocabSize": 171
+    },
+    "vocab": {
+     "missing": [
+      "_print_MinMaxBase"
+     ],
+     "where": {
+      "_print_MinMaxBase": "nowhere (new name)"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   }
+  ],
+  "allHunksReachable": false,
+  "wallMs": 83238
+ }
+]
