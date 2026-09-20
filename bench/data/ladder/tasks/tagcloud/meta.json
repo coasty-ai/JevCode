@@ -1,0 +1,8 @@
+{
+  "name": "tagcloud",
+  "hunks": 1,
+  "kinds": ["import"],
+  "files": ["src/tagcloud.py"],
+  "difficulty": 1,
+  "description": "The module uses collections.Counter in three functions but never imports it; because the annotations are postponed the module imports fine and the NameError only appears when tag_counts/top_tags/co_occurrence run. The fix adds one import line. Four tests fail, five pass."
+}

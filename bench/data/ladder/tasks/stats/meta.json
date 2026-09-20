@@ -1,0 +1,8 @@
+{
+  "name": "stats",
+  "hunks": 1,
+  "kinds": ["guard"],
+  "files": ["src/stats.py"],
+  "difficulty": 2,
+  "description": "median lacks the empty-sequence guard every sibling has, so median([]) raises IndexError instead of ValueError. The fix inserts `if not values: raise ValueError(...)`. Two tests fail (one direct, one via summary(), which evaluates median first), eight pass. mean/mode/variance directly above show the exact guard to copy."
+}

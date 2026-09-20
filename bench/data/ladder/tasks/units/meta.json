@@ -1,0 +1,8 @@
+{
+  "name": "units",
+  "hunks": 1,
+  "kinds": ["new_branch", "rename"],
+  "files": ["src/units.py"],
+  "difficulty": 4,
+  "description": "Donor-code case: the three-line body of parse_duration is wrong (it slices off the last character as the unit and calls int()), so it cannot handle 'ms', fractions, bare numbers or upper-case units. The sibling parse_size directly above has the correct five-line shape; the fix is to copy it with SIZE_UNITS->DURATION_UNITS and upper()->lower(). One contiguous hunk. Four tests fail, six pass."
+}

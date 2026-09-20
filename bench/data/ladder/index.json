@@ -1,0 +1,168 @@
+[
+  {
+    "name": "account",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "off_by_one",
+      "rename"
+    ],
+    "files": [
+      "src/account.py"
+    ],
+    "difficulty": 3,
+    "description": "Three independent bugs in one file: withdraw rejects an amount equal to the balance (>= should be >), statement numbers entries from 0 (enumerate needs start=1), and transfer calls dst.withdraw instead of dst.deposit (wrong call target). Three tests fail, one per bug; seven pass. The transfer test fails with an exception rather than a wrong value.",
+    "path": "tasks/account"
+  },
+  {
+    "name": "calendar_utils",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "off_by_one",
+      "call_args"
+    ],
+    "files": [
+      "src/calendar_utils.py"
+    ],
+    "difficulty": 3,
+    "description": "Three independent bugs in one file: is_leap_year joins its two clauses with `and` instead of `or` (so no year is ever leap), day_of_year subtracts 1 at the end, and parse_iso passes maxsplit=1 to split so a full date never yields three parts. Five tests fail, five pass. Leap-year failures surface both directly and through days_in_month, so localisation must attribute the February failure to is_leap_year.",
+    "path": "tasks/calendar_utils"
+  },
+  {
+    "name": "events",
+    "hunks": 1,
+    "kinds": [
+      "attribute"
+    ],
+    "files": [
+      "src/events.py"
+    ],
+    "difficulty": 1,
+    "description": "agenda_line reads event.end_at, but the Event dataclass field is ends_at (AttributeError). The fix renames one attribute access; the receiver's fields are visible in the same file, so a Choice over Event's attributes finds it. Three tests fail (agenda_line twice, agenda once), six pass.",
+    "path": "tasks/events"
+  },
+  {
+    "name": "grades",
+    "hunks": 2,
+    "kinds": [
+      "operator",
+      "rename"
+    ],
+    "files": [
+      "src/grades.py"
+    ],
+    "difficulty": 2,
+    "description": "Two independent one-line bugs in one file: letter_grade uses > where the docstring and tests say boundaries are inclusive (>=), and weighted_average divides by len(weights) instead of sum(weights) (wrong identifier). Three tests fail, seven pass.",
+    "path": "tasks/grades"
+  },
+  {
+    "name": "inventory",
+    "hunks": 2,
+    "kinds": [
+      "operator",
+      "off_by_one"
+    ],
+    "files": [
+      "src/inventory.py"
+    ],
+    "difficulty": 2,
+    "description": "Two independent one-line bugs in one file: total_value adds qty and price instead of multiplying (operator), and page() treats the 1-based page number as 0-based (off by one). Four tests fail (two per bug), six pass; each bug is exercised by its own tests so the outer loop can fix one failing test at a time.",
+    "path": "tasks/inventory"
+  },
+  {
+    "name": "profiles",
+    "hunks": 1,
+    "kinds": [
+      "guard"
+    ],
+    "files": [
+      "src/profiles.py"
+    ],
+    "difficulty": 2,
+    "description": "display_name calls .strip() on user.nickname, which is None for users without a nickname (AttributeError). The fix inserts a guard, `if user.nickname is None: return user.full_name`, before the call. Two tests fail (one direct, one through card()), eight pass. short_bio and mask_email in the same file show the None-guard pattern.",
+    "path": "tasks/profiles"
+  },
+  {
+    "name": "shipping",
+    "hunks": 1,
+    "kinds": [
+      "constant"
+    ],
+    "files": [
+      "src/shipping.py"
+    ],
+    "difficulty": 2,
+    "description": "The free-shipping threshold in the module-level CONFIG dict is 500.0 instead of 50.0, so no test order ever ships free. The fix changes one literal inside the dict; the correct value appears both in the task text and as a literal in the failing tests. Four tests fail, six pass.",
+    "path": "tasks/shipping"
+  },
+  {
+    "name": "stats",
+    "hunks": 1,
+    "kinds": [
+      "guard"
+    ],
+    "files": [
+      "src/stats.py"
+    ],
+    "difficulty": 2,
+    "description": "median lacks the empty-sequence guard every sibling has, so median([]) raises IndexError instead of ValueError. The fix inserts `if not values: raise ValueError(...)`. Two tests fail (one direct, one via summary(), which evaluates median first), eight pass. mean/mode/variance directly above show the exact guard to copy.",
+    "path": "tasks/stats"
+  },
+  {
+    "name": "table",
+    "hunks": 3,
+    "kinds": [
+      "two_files",
+      "call_args"
+    ],
+    "files": [
+      "src/fmt.py",
+      "src/table.py"
+    ],
+    "difficulty": 4,
+    "description": "Two files must change consistently: the helper fmt.pad must gain a `fill` parameter (signature line plus the line that uses it, two hunks in fmt.py) and the caller table.render must pass its own `fill` through to pad (one hunk in table.py). tests/test_fmt.py pins the new helper signature and tests/test_table.py pins the rendered output, so neither file alone suffices; applying only the body hunk in fmt.py breaks every fmt test with a NameError. pad_left in the same file shows the target signature. Four tests fail (two per test file), six pass.",
+    "path": "tasks/table"
+  },
+  {
+    "name": "tagcloud",
+    "hunks": 1,
+    "kinds": [
+      "import"
+    ],
+    "files": [
+      "src/tagcloud.py"
+    ],
+    "difficulty": 1,
+    "description": "The module uses collections.Counter in three functions but never imports it; because the annotations are postponed the module imports fine and the NameError only appears when tag_counts/top_tags/co_occurrence run. The fix adds one import line. Four tests fail, five pass.",
+    "path": "tasks/tagcloud"
+  },
+  {
+    "name": "textstats",
+    "hunks": 2,
+    "kinds": [
+      "call_args",
+      "off_by_one"
+    ],
+    "files": [
+      "src/textstats.py"
+    ],
+    "difficulty": 3,
+    "description": "Two independent one-line bugs in one file: most_common sorts ascending because the sorted() call lacks reverse=True (a keyword argument must be added, not swapped), and ngrams drops the last n-gram because its range is short by one. Four tests fail (two per bug), six pass.",
+    "path": "tasks/textstats"
+  },
+  {
+    "name": "units",
+    "hunks": 1,
+    "kinds": [
+      "new_branch",
+      "rename"
+    ],
+    "files": [
+      "src/units.py"
+    ],
+    "difficulty": 4,
+    "description": "Donor-code case: the three-line body of parse_duration is wrong (it slices off the last character as the unit and calls int()), so it cannot handle 'ms', fractions, bare numbers or upper-case units. The sibling parse_size directly above has the correct five-line shape; the fix is to copy it with SIZE_UNITS->DURATION_UNITS and upper()->lower(). One contiguous hunk. Four tests fail, six pass.",
+    "path": "tasks/units"
+  }
+]

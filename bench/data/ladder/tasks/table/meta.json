@@ -1,0 +1,8 @@
+{
+  "name": "table",
+  "hunks": 3,
+  "kinds": ["two_files", "call_args"],
+  "files": ["src/fmt.py", "src/table.py"],
+  "difficulty": 4,
+  "description": "Two files must change consistently: the helper fmt.pad must gain a `fill` parameter (signature line plus the line that uses it, two hunks in fmt.py) and the caller table.render must pass its own `fill` through to pad (one hunk in table.py). tests/test_fmt.py pins the new helper signature and tests/test_table.py pins the rendered output, so neither file alone suffices; applying only the body hunk in fmt.py breaks every fmt test with a NameError. pad_left in the same file shows the target signature. Four tests fail (two per test file), six pass."
+}

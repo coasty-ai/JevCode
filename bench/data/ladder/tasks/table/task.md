@@ -1,0 +1,1 @@
+Tables should support a custom fill character: `render(rows, fill=".")` must pad cells with dots, and `fmt.pad` needs to accept the fill the way `pad_left` already does. Make everything under tests/ pass without editing the tests.

@@ -1,0 +1,8 @@
+{
+  "name": "profiles",
+  "hunks": 1,
+  "kinds": ["guard"],
+  "files": ["src/profiles.py"],
+  "difficulty": 2,
+  "description": "display_name calls .strip() on user.nickname, which is None for users without a nickname (AttributeError). The fix inserts a guard, `if user.nickname is None: return user.full_name`, before the call. Two tests fail (one direct, one through card()), eight pass. short_bio and mask_email in the same file show the None-guard pattern."
+}

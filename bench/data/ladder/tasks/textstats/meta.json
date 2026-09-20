@@ -1,0 +1,8 @@
+{
+  "name": "textstats",
+  "hunks": 2,
+  "kinds": ["call_args", "off_by_one"],
+  "files": ["src/textstats.py"],
+  "difficulty": 3,
+  "description": "Two independent one-line bugs in one file: most_common sorts ascending because the sorted() call lacks reverse=True (a keyword argument must be added, not swapped), and ngrams drops the last n-gram because its range is short by one. Four tests fail (two per bug), six pass."
+}
