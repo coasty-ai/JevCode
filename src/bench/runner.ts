@@ -278,6 +278,9 @@ export function planPair(existing: BenchTaskRecord | undefined): PairMode {
     if (existing.reason === IN_PROGRESS && existing.runId) return { kind: 'resume', runId: existing.runId };
     return { kind: 'fresh' };
   }
+  // A setup failure (no engine run: zero steps, no evaluator, stopReason error) is infrastructure,
+  // not a verdict: re-run it, so a fixed evaluator or a restored network completes the pair.
+  if (existing.pass === null && existing.evaluator === 'none' && existing.steps === 0 && existing.stopReason === 'error') return { kind: 'fresh' };
   // finished records (pass true/false, or a terminal null verdict such as invalid/none/error) are kept
   return { kind: 'skip', record: existing };
 }
