@@ -6,7 +6,9 @@
  *
  * - `change_approach`  → rotate the active goal's source order (its exhausted set is kept),
  *                        widen the site beam 6 → 10 and, on repositories, allow the WIDENED
- *                        phase over the beam functions; the step then searches as usual.
+ *                        phase over the beam functions; the step then searches as usual. With
+ *                        every goal parked, every parked goal is reopened (ledger order), each
+ *                        with its source order rotated and its sites rebuilt.
  * - `gather_context`   → on a repository, `read` the goal's suspected files the context stage
  *                        has not shown; otherwise re-localise with the latest failure text and a
  *                        top-10 file beam.
@@ -162,19 +164,24 @@ export async function handleDirective(ctx: SynthesisContext, mem: DirectiveMemor
 
   switch (move) {
     case 'change_approach': {
-      let goal = activeGoal(mem);
-      if (goal === null) {
-        // Every goal parked: the directive is the one occasion to give the newest parked goal another go.
-        const parked = mem.goals.filter((g) => g.status === 'parked').at(-1);
-        if (parked) {
-          parked.status = 'open';
-          parked.budgetHits = 0;
-          delete parked.parkedReason;
-          goal = parked;
-          changes.push(`reopened ${goal.id}`);
+      const active = activeGoal(mem);
+      const targets: Goal[] = active === null ? [] : [active];
+      if (active === null) {
+        // Every goal parked: the directive is the one occasion to give EVERY parked goal another
+        // go, in ledger order. Reopening only the newest (`.at(-1)`) left ladder `account`'s g1 —
+        // whose two gold half-fixes were remembered partials — parked for the rest of the run
+        // while g2 was reopened twice (jev-only-ladder-4-analysis.md §1.2). The picker (Q1) then
+        // chooses among the reopened goals as among any open ones.
+        const parked = mem.goals.filter((g) => g.status === 'parked');
+        for (const g of parked) {
+          g.status = 'open';
+          g.budgetHits = 0;
+          delete g.parkedReason;
+          targets.push(g);
         }
+        if (parked.length > 0) changes.push(`reopened ${parked.map((g) => g.id).join(', ')}`);
       }
-      if (goal) {
+      for (const goal of targets) {
         mem.overrides.sourceRotation[goal.id] = (mem.overrides.sourceRotation[goal.id] ?? 0) + 1;
         changes.push(`rotated source order of ${goal.id} (${mem.overrides.sourceRotation[goal.id]})`);
         if (mem.localizeCache.delete(goal.id)) changes.push(`sites of ${goal.id} rebuilt`);

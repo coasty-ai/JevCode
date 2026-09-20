@@ -10,7 +10,9 @@
  *     on 7/38 but top-5 on 34/38, experiments/results/lit-search-based-repair.md §6; the union of
  *     two top-3 lists covered 38/40, probe-localization.md §8.2).
  *   insert sites  = the gap after AND before each of the top-3 Jev anchors (both neighbours of
- *     the four QuixBugs insertion points sit at D ranks 2–5, probe-localization.md §3.4)
+ *     the four QuixBugs insertion points sit at D ranks 2–5, probe-localization.md §3.4), plus
+ *     the gap the innermost loop around the anchor exits into (`loopExitGap`: `wrap`'s and
+ *     `shunting_yard`'s golds sit there, one level out of the block Jev's line is in)
  *                 + Q6 `insert_after` top-3 gaps when a template statement is known (4/4 given
  *     the statement, 2/4 without: a site list, never a pick, probe-donor-and-templates.md §4)
  *                 + the gap after the last executed line of the failing test when the spectrum
@@ -40,7 +42,15 @@
  * excluded, plus every gap slot of the functions of ≤ 40 lines, interleaved in line order (the
  * gap before a line precedes the line), handed out in chunks with a cursor the caller carries
  * across steps in `mem.widenCursor` (median 23.8 s, max 119 s per QuixBugs program at 12-way,
- * contrarian-exhaustive.all.jsonl, so one step rarely runs it all).
+ * contrarian-exhaustive.all.jsonl, so one step rarely runs it all). `orderWidenedSites` puts the
+ * list in the order the run-cost budget should spend it: by the Jev line evidence the SEEDS
+ * localisation gathered (Q5 p, Q5n Noul; a gap scores the better of its two neighbouring lines),
+ * then by distance from the top-1 line, cut at WIDENED_SITES_MAX. Four `wrap` runs never reached
+ * the gap before `return lines` (indent 4): Q5 put the function's mass on L7 and the gap's Noul
+ * (0.16–0.21) tied with L6, so the 6-cut of the SEEDS insert list left it out and the line-ordered
+ * WIDENED list had it last (jev-only-rungs-1-2.md §13.4). The evidence travels beside the SEEDS
+ * list `buildGoalSites` returns (`lineEvidenceOf`), so the loop needs no new field on
+ * `LocalizeResult`.
  *
  * Every Jev question here goes through the caller's `ask` (the engine's `ctx.ask`) with the
  * measured wording; nothing asks Jev to count or compare numbers.
@@ -59,6 +69,7 @@ import type { Anchor, GapSlot } from '../localize/sites.js';
 import type { FunctionEntry } from '../localize/types.js';
 import { indentOf } from '../py/edits.js';
 import { scopeAt, statementAt } from '../py/structure.js';
+import type { Statement } from '../py/structure.js';
 import type { PerTestResult, RankedLine } from '../sbfl/types.js';
 import { isFailing } from '../sbfl/ochiai.js';
 import { importInsertLine, unboundNames } from '../templates/imports.js';
@@ -103,6 +114,14 @@ export const Q6_FALLBACK_MIN_P = 0.2;
 export const Q6_FALLBACK_MIN_GAPS = 3;
 /** Q6 fallback is asked over functions of at most this many code lines (options = one per line + the escape). */
 export const Q6_FALLBACK_MAX_LINES = 60;
+/**
+ * WIDENED sites per goal after the SEEDS sites are excluded: a 40-line function has ≈ 40 lines and
+ * ≈ 40 gap slots, each worth ≈ 150 SIEVE candidates at QuixBugs scale (≈ 1,500 runs = one step's
+ * run cap per 10 sites), so 24 is between two and three steps of WIDENED; `wrap` has 6 left after
+ * its 10 SEEDS sites. The evidence order puts the lines Jev rated first, so the cut costs the
+ * sites nothing pointed at.
+ */
+export const WIDENED_SITES_MAX = 24;
 
 // ---------------------------------------------------------------------------------------
 // Inputs and outputs
@@ -365,6 +384,42 @@ function gapNote(slot: GapSlot): string {
 export function functionGapSites(fn: Pick<FunctionCandidate, 'file' | 'name' | 'startLine' | 'endLine'>, maxLines: number = GAP_FUNCTION_MAX_LINES): Site[] {
   if (fn.endLine - fn.startLine + 1 > maxLines) return [];
   return functionGapSlots(fn.file, fn.startLine, fn.endLine).map((slot) => gapSlotSite(fn.file, slot, { notes: [gapNote(slot), `in ${fn.name}`] }));
+}
+
+/** Prefix of the evidence note that marks a loop-exit gap (`loopExitGap`). */
+export const LOOP_EXIT_GAP_NOTE = 'exit gap of the loop enclosing';
+
+/**
+ * The gap the innermost `for` / `while` enclosing `line` (or headed at `line`) exits into: the
+ * block-end slot of `functionGapSlots` at the loop's own indent between the end of its body and
+ * the statement that follows it (the function's end when none). Two of the four QuixBugs
+ * insertion golds sit exactly there — `wrap`'s `lines.append(text)` after the `while` whose body
+ * holds Jev's top line (L7, p 0.61–0.67 in every live run), `shunting_yard`'s
+ * `opstack.append(token)` after the inner `while` — and neither gap is a neighbour of the anchor
+ * line in the ±1 sense §2.5 item 2 builds, so the 6-cut of the insert list never held it
+ * (jev-only-rungs-1-2.md §13.4). Null when `line` lies in no loop of the function or the body's
+ * end has no legal slot at that indent (a `while … else:`).
+ */
+export function loopExitGap(file: SourceFile, line: number, fn: Pick<FunctionCandidate, 'startLine' | 'endLine'>): GapSlot | null {
+  const mod = file.mod;
+  const at = statementAt(mod, line);
+  if (at === undefined || at.startLine < fn.startLine || at.startLine > fn.endLine) return null;
+  let loop: Statement | null = at.kind === 'for' || at.kind === 'while' ? at : null;
+  let cur = at.indent;
+  for (let k = at.index - 1; k >= 0 && loop === null; k--) {
+    const s = mod.statements[k];
+    if (s === undefined || s.startLine < fn.startLine) break;
+    if (s.kind === 'decorator' || s.indent >= cur) continue;
+    if (s.kind === 'for' || s.kind === 'while') loop = s;
+    else if (s.kind === 'def' || s.kind === 'class') break;
+    cur = s.indent;
+  }
+  if (loop === null) return null;
+  const next = mod.statements.find((s) => s.startLine > loop.endLine && s.startLine <= fn.endLine && s.indent <= loop.indent && s.kind !== 'decorator');
+  const exitLine = next?.startLine ?? fn.endLine + 1;
+  const loopIndent = indentOf(mod.lines[loop.startLine - 1] ?? '');
+  const slots = functionGapSlots(file, fn.startLine, fn.endLine).filter((g) => g.indent === loopIndent && g.line > loop.endLine && g.line <= exitLine && g.afterLine > loop.startLine);
+  return slots.at(-1) ?? null;
 }
 
 /** Prefix of the evidence note that marks a module-level import gap (`isImportGap`). */
@@ -710,6 +765,11 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
     const before = built.find((s) => s.kind === 'insert' && s.line === a.line);
     if (after !== undefined) pushInsert(after, a);
     if (before !== undefined) pushInsert(before, a);
+    // the anchor's third gap: the one the loop around it exits into (`loopExitGap`; wrap, shunting_yard)
+    if (entry !== null) {
+      const exit = loopExitGap(a.file, a.line, entry);
+      if (exit !== null) pushInsert(gapSlotSite(a.file, exit, { notes: [`${LOOP_EXIT_GAP_NOTE} L${a.line}`, gapNote(exit), `in ${entry.qualname}`] }), a);
+    }
   }
   const statements = (options.missingStatements ?? []).map((s) => s.trim()).filter((s) => s !== '').slice(0, Q6_MAX_STATEMENTS);
   const top = fns[0];
@@ -766,6 +826,14 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
   const insertFirst = insertSitesFirst(options.q5EscapeProbability, options.insertNewLineProbability) || q6Fallback.size > 0;
   const g: GoalSites = { replace: replaceSites, insert: insertSites, ordered: [], insertFirst, shortCircuit, insertAnchors, lineNouls, q6Fallback, requests, notes };
   g.ordered = orderGoalSites(g, insertFirst);
+  // the line evidence behind this list, for the WIDENED order (`orderWidenedSites`): Q5 p of every anchor, Q5n Noul of every judged line
+  const evidence = new Map<string, number>();
+  for (const a of anchors) {
+    const k = sbflKey(a.file.path, a.line);
+    evidence.set(k, Math.max(evidence.get(k) ?? 0, a.evidence.jevProbability ?? 0));
+  }
+  for (const [k, p] of lineNouls) evidence.set(k, Math.max(evidence.get(k) ?? 0, p));
+  LINE_EVIDENCE.set(g.ordered, evidence);
   return g;
 }
 
@@ -896,6 +964,56 @@ export function widenedSites(functions: readonly Pick<FunctionCandidate, 'file' 
     }
   });
   return out;
+}
+
+/** Jev line evidence (Q5 p or Q5n Noul) of a line of a file; 0 where Jev was not asked or said nothing. */
+export type LineEvidence = (file: Pick<SourceFile, 'path'>, line: number) => number;
+
+/** The evidence behind a `buildGoalSites` list, keyed by the `ordered` array it returned (the array `LocalizeResult.sites` carries). */
+const LINE_EVIDENCE = new WeakMap<readonly Site[], ReadonlyMap<string, number>>();
+
+/**
+ * The line evidence of a goal's SEEDS site list: the map `buildGoalSites` recorded for it, else
+ * (a list built elsewhere, tests) the `jevProbability` its replace sites carry.
+ */
+export function lineEvidenceOf(sites: readonly Site[]): LineEvidence {
+  const recorded = LINE_EVIDENCE.get(sites);
+  if (recorded !== undefined) return (file, line) => recorded.get(sbflKey(file.path, line)) ?? 0;
+  const fromSites = new Map<string, number>();
+  for (const s of sites) {
+    if (s.kind !== 'replace' || s.evidence.jevProbability === undefined) continue;
+    const k = sbflKey(s.file.path, s.line);
+    fromSites.set(k, Math.max(fromSites.get(k) ?? 0, s.evidence.jevProbability));
+  }
+  return (file, line) => fromSites.get(sbflKey(file.path, line)) ?? 0;
+}
+
+/** The nearest code line above `line` (the statement a gap before `line` follows); 0 when there is none. */
+function previousCodeLine(file: SourceFile, line: number): number {
+  for (let l = line - 1; l >= 1; l--) if (isCodeLine(file, l)) return l;
+  return 0;
+}
+
+/** The evidence score of a widened site: a line's own; for a gap, the better of the line it follows and the line it precedes. */
+export function widenedSiteScore(site: Site, lineP: LineEvidence): number {
+  if (site.kind === 'replace') return lineP(site.file, site.line);
+  const above = previousCodeLine(site.file, site.line);
+  return Math.max(above === 0 ? 0 : lineP(site.file, above), lineP(site.file, site.line));
+}
+
+/**
+ * The WIDENED list in spending order: evidence score descending, then distance from the top-1
+ * line (same file; another file sorts after every line of the top file), then the line order
+ * `widenedSites` produced; cut at `max`. Deterministic, so the cursor carried across steps in
+ * `mem.widenCursor` keeps its meaning while the localisation stands.
+ */
+export function orderWidenedSites(all: readonly Site[], lineP: LineEvidence, top: Pick<Site, 'file' | 'line'> | null, max: number = WIDENED_SITES_MAX): Site[] {
+  const distance = (s: Site): number => (top === null ? 0 : s.file.path === top.file.path ? Math.abs(s.line - top.line) : Number.MAX_SAFE_INTEGER);
+  return all
+    .map((s, i) => ({ s, i, score: widenedSiteScore(s, lineP), distance: distance(s) }))
+    .sort((a, b) => b.score - a.score || a.distance - b.distance || a.i - b.i)
+    .slice(0, Math.max(0, max))
+    .map((x) => x.s);
 }
 
 /** The next `size` widened sites from `cursor` (0-based into `all`); `size` ≤ 0 takes everything left. */

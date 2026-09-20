@@ -510,6 +510,49 @@ describe('runQueue on pytest (worktree lanes, scripted output)', () => {
     expect(fullRuns()).toBe(MAX_FULL_SUITE_RUNS_PER_STEP + 2);
     expect(mem.deferred?.get(pyGoal.id)).toHaveLength(0);
   });
+  it('in-flight timeouts: a batch whose every run the sandbox killed under load is re-queued once (not tried) with the lane timeout scaled by the load and classified by that retry; a killed run beside a finished one is a hang', async () => {
+    writeFileSync(join(ws, 'mod.py'), 'X = 1\n');
+    let starved = true;
+    const timeouts: number[] = [];
+    const ALL_GREEN = 'tests/test_a.py::test_x PASSED\ntests/test_a.py::test_y PASSED\ntests/test_b.py::test_z PASSED\n3 passed in 0.02s\n';
+    const sb = fakeSandbox((cmd, opts): Partial<ExecResult> => {
+      if (!cmd.startsWith('python3')) return {};
+      timeouts.push(opts.timeoutMs);
+      const src = readFileSync(join(opts.cwd ?? '', 'mod.py'), 'utf8');
+      // the starved lanes return nothing before the sandbox kills the run; `X = 4` never returns, load or not
+      if (starved || src.includes('X = 4')) return { killedBy: 'timeout', exitCode: null, stdout: '', durationMs: opts.timeoutMs };
+      const fixed = src.includes('X = 2');
+      if (cmd === `python3 -m pytest -q 'tests/test_a.py'`) return { stdout: subsetOut(fixed), exitCode: fixed ? 0 : 1, durationMs: 800 };
+      return { stdout: ALL_GREEN, exitCode: 0, durationMs: 900 };
+    });
+    // the ladder shape: pytest without per-case knobs, a 0.5 s subset, lane timeout 3 × 500 + 10 000 ms
+    const o = oracle({ runner: 'pytest', lanes: 2, perTestTimeoutMs: null, tRunMs: { goalSubset: 500, fullSuite: 500 }, runTimeoutMs: 11_500 });
+    const laneTimeout = laneRunTimeout(o, PY_BASE);
+    expect(laneTimeout).toBe(11_500);
+    const mem = memFor(o, { baseline: PY_BASE });
+    const ctx = ctxFor(sb);
+    const out = await runQueue(ctx, mem, fifoQueue([job(candidate(site(mod, 1), 'X = 2'), pyBase), job(candidate(site(mod, 1), 'X = 3'), pyBase)]), pyGoal, 10);
+    // nothing classified, nothing tried: both wait for their retry, whose lane timeout is twice the batch's (the load read 23×, the factor bounds it)
+    expect(out).toEqual([]);
+    expect(mem.tried.size).toBe(0);
+    expect(mem.retryTimeouts?.get(pyGoal.id)?.map((r) => r.runTimeoutMs)).toEqual([laneTimeout * 2, laneTimeout * 2]);
+    expect(timeouts).toEqual([laneTimeout, laneTimeout]);
+    expect(mem.stepBudget.testRunsLeft).toBe(1500 - 2);
+    expect(ctx.events[0]?.detail).toMatch(/0 tested on 2 lanes \(nothing ran\).*; 2 in-flight timeouts under load ×23\.0: re-queued once, lane timeout 11500→23000 ms/);
+    // the next call for the goal: the retries run first, at the scaled timeout, and classify (the gold: subset then full suite)
+    starved = false;
+    const again = await runQueue(ctxFor(sb), mem, fifoQueue([]), pyGoal, 10);
+    expect(again.map((r) => r.status)).toEqual(['plausible', 'unchanged']);
+    expect(timeouts.slice(2)).toEqual([laneTimeout * 2, laneTimeout * 2, laneTimeout * 2]);
+    expect(mem.tried.size).toBe(2);
+    expect(mem.retryTimeouts?.get(pyGoal.id)).toHaveLength(0);
+    // one killed run beside a finished one is the candidate's own hang: final, tried, no retry
+    const mem2 = memFor(o, { baseline: PY_BASE });
+    const out2 = await runQueue(ctxFor(sb), mem2, fifoQueue([job(candidate(site(mod, 1), 'X = 4'), pyBase), job(candidate(site(mod, 1), 'X = 3'), pyBase)]), pyGoal, 10);
+    expect(out2.map((r) => r.status)).toEqual(['timeout', 'unchanged']);
+    expect(mem2.tried.size).toBe(2);
+    expect(mem2.retryTimeouts?.get(pyGoal.id)).toHaveLength(0);
+  });
   it('a lane that cannot be restored stops dispatch, keeps the batch outcomes, defers its job; with nothing completed it throws', async () => {
     writeFileSync(join(ws, 'mod.py'), 'X = 1\n');
     let resets = 0;

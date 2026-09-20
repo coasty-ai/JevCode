@@ -17,7 +17,9 @@ import type { Goal, PersistedSearchState } from '../../../../src/synth/search/ty
 import { isPersistedSearchState } from '../../../../src/synth/search/types.js';
 import type { SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
-import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, siteAt, sourceFile, summary } from './controller-fakes.js';
+import { sha12 } from '../../../../src/core/hash.js';
+import { freshPairsOfPartials, guardState, improvedBase, pairsOfPartials, partialsFromPersisted, partialsOf, siteKeyOf } from '../../../../src/synth/search/bases.js';
+import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary } from './controller-fakes.js';
 import { makeTrace, patchEntry, runEntry } from './proposal-helpers.js';
 
 // ---------------------------------------------------------------------------------------
@@ -697,5 +699,101 @@ describe('step policy: the establishing run, one claim per verdict, done after t
     expect(noNewRun).toEqual({ claims: [], deferred: [{ item, claim: { step: 3, judged: 0.1 } }] });
     mem.lastEngineRun = { step: 6, action: `run ${TEST_COMMAND}`, passed: 2, failed: 0, errors: 0 };
     expect(splitClaims(ctxFor({ runId, step: 7, engineRun: false, plan: { remaining: [item, VERIFY_ITEM] } }), { ...notGreen, lastEngineRun: mem.lastEngineRun })).toEqual({ claims: [item], deferred: [] });
+  });
+});
+
+describe('controller bookkeeping: partials survive a park, untested pairs keep the goal open, a held passer is committed before any park', () => {
+  const TWO = 'tests/test_gcd.py::test_two';
+  const FILE = sourceFile('gcd.py', GCD_BUGGY);
+
+  /** Two complementary partials of `goal` on the committed base: half 1 passes GCD_TEST at L5, half 2 passes TWO at the gap after it. */
+  function rememberHalves(mem: RunMemory, goal: Goal): void {
+    const committed = mem.bases.find((b) => b.origin === 'committed');
+    if (committed === undefined) throw new Error('no committed base');
+    const h1 = outcomeOf(jobOf(cand(siteAt(FILE, 5), 'return gcd(b, a % b)  # half 1'), committed), 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, GCD_TEST], failing: [TWO] }) });
+    const h2 = outcomeOf(jobOf(cand(siteAt(FILE, 6, 'insert'), 'return a  # half 2', { source: 'template' }), committed), 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, TWO], failing: [GCD_TEST] }) });
+    guardState(mem).partials.push({ goalId: goal.id, outcome: h1 }, { goalId: goal.id, outcome: h2 });
+  }
+
+  it('a budget exit with an untested pair of complementary partials keeps the goal open; once the pair ran the §5.3 park applies, the partials are kept and persisted (≤ 4 per goal), and a resumed run restores them', async () => {
+    const h = harness({
+      baselines: [failingBaseline([GCD_TEST, TWO], [GCD_OTHER_TEST])],
+      results: [
+        (goal, mem) => {
+          if (guardState(mem).partials.length === 0) rememberHalves(mem, goal);
+          return budget()(goal);
+        },
+      ],
+      pickFirstOpen: true,
+    });
+    const runId = 'ctl-pairs';
+    const first = ctxFor({ runId, step: 1 });
+    const p1 = await h.synth.synthesize(first);
+    const mem = runMemory(runId);
+    const g1 = mem.goals.find((g) => g.tests.includes(GCD_TEST));
+    if (g1 === undefined) throw new Error('no goal for the gcd test');
+    // the search ended on the budget, but the pair of the two halves is untested: the goal stays open, no budget hit is counted
+    expect(p1.action.kind).toBe('run');
+    expect(g1).toMatchObject({ status: 'open', budgetHits: 0 });
+    expect(first.events.some((e) => e.type === 'synth' && e.phase === 'pairs' && /1 untested pair of complementary partials; the goal stays open/.test(e.detail))).toBe(true);
+    expect(freshPairsOfPartials(mem, g1)).toHaveLength(1);
+    // persisted beside the ledger (same coverage, so the smaller edit first)
+    const records = partialsFromPersisted(toJson(persistedOf(first)));
+    expect(records.map((r) => `${r.goalId}:${r.line}:${r.kind}`)).toEqual([`${g1.id}:6:insert`, `${g1.id}:5:replace`]);
+    expect(records[1]).toMatchObject({ path: 'gcd.py', text: 'return gcd(b, a % b)  # half 1', newlyPassing: [GCD_TEST], source: 'mutation' });
+
+    // the pair ran (tried) and found nothing: the usual rule counts budget hits and parks at the second, the partials survive the park
+    const committed = mem.bases.find((b) => b.origin === 'committed');
+    if (committed === undefined) throw new Error('no committed base');
+    for (const c of freshPairsOfPartials(mem, g1)) mem.tried.add(sha12(applyCandidate(c, committed.files).diff));
+    const window = [executedRun(1, `${TEST_COMMAND} tests/test_gcd.py`, { passed: 1, failed: 2 })];
+    await h.synth.synthesize(ctxFor({ runId, step: 2, window }));
+    expect(g1).toMatchObject({ status: 'open', budgetHits: 1 });
+    const third = ctxFor({ runId, step: 3, window });
+    await h.synth.synthesize(third);
+    expect(g1.status).toBe('parked');
+    expect(g1.parkedReason).toMatch(/2 consecutive budget-hit steps/);
+    expect(partialsOf(mem, g1)).toHaveLength(2);
+    expect(improvedBase(mem)).toBeUndefined();
+    const checkpoint = toJson(persistedOf(third));
+    expect(partialsFromPersisted(checkpoint)).toHaveLength(2);
+    // the checkpoint keeps at most four per goal, the most covering first
+    for (let i = 0; i < 5; i++) guardState(mem).partials.push({ goalId: g1.id, outcome: outcomeOf(jobOf(cand(siteAt(FILE, 5), `return gcd(b, a % b)  # dup ${i}`), committed), 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, GCD_TEST], failing: [TWO] }) }) });
+    const fourth = ctxFor({ runId, step: 4, window });
+    await h.synth.synthesize(fourth);
+    expect(partialsFromPersisted(toJson(persistedOf(fourth))).filter((r) => r.goalId === g1.id)).toHaveLength(4);
+
+    // a new process resumes from the checkpoint: the two halves are restored on the fresh baseline and their pair is enumerable again
+    const resumed = ctxFor({ runId: 'ctl-pairs-resume', step: 6, synthState: checkpoint });
+    await h.synth.synthesize(resumed);
+    const mem2 = runMemory('ctl-pairs-resume');
+    const g1b = mem2.goals.find((g) => g.tests.includes(GCD_TEST));
+    if (g1b === undefined) throw new Error('no restored goal for the gcd test');
+    expect(resumed.events.some((e) => e.type === 'synth' && e.phase === 'pairs' && /2 remembered partials restored from the checkpoint/.test(e.detail))).toBe(true);
+    expect(partialsOf(mem2, g1b)).toHaveLength(2);
+    expect(pairsOfPartials(mem2, g1b)).toHaveLength(1);
+  });
+
+  it('a `budget` result while the guard holds a passer: the controller commits it as the patch — a hold is decided, never parked away', async () => {
+    const h = harness({
+      results: [
+        (goal, mem) => {
+          const committed = mem.bases.find((b) => b.origin === 'committed');
+          if (committed === undefined) throw new Error('no committed base');
+          const o = outcomeOf(jobOf(cand(siteAt(FILE, 5), FIX_TEXT), committed), 'plausible');
+          guardState(mem).pending = { goalId: goal.id, outcome: o, siteKey: siteKeyOf(o.applied.candidate), phase: 'SEEDS' };
+          return budget()(goal);
+        },
+      ],
+    });
+    const ctx = ctxFor({ step: 1 });
+    const p = await h.synth.synthesize(ctx);
+    expect(p.action.kind).toBe('patch');
+    if (p.action.kind === 'patch') expect(p.action.diff).toContain(FIX_TEXT);
+    const mem = runMemory(ctx.runId);
+    expect(mem.goals[0]?.status).toBe('fixed');
+    expect(guardState(mem).pending).toBeNull();
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'guard' && /search ended budget with a held passer; committing it/.test(e.detail))).toBe(true);
+    expect(ledgerOf(ctx)).toEqual(['fixed 1, open 0, parked 0']);
   });
 });

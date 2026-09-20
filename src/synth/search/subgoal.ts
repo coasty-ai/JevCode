@@ -22,15 +22,16 @@ import { EDIT_CLASS_IDS } from '../sketch/productions.js';
 import type { EditClass } from '../sketch/productions.js';
 import { EDIT_CLASSES, EDIT_CLASS_INSTRUCTIONS, EDIT_CLASS_QUESTION_ID } from '../sketch/questions.js';
 import type { Candidate, CandidateSource, CandidateSourceName, EnumerateOptions, FailureView, LocalizeResult, RankResult, Site, SourceFile } from '../types.js';
+import type { RunnerMemory } from '../sieve/runner.js';
 import { applyCandidate } from '../verify/apply.js';
 import { commitPartial } from './bases.js';
 import type { GuardMemory } from './bases.js';
-import { decideRunPlan } from './budget.js';
+import { SIEVE_MAX_T_RUN_MS, decideRunPlan, runsLeft } from './budget.js';
 import type { SearchOverrides } from './directive.js';
 import { commitSuspect } from './guard.js';
 import type { SearchMemory } from './memory.js';
 import { wasTried } from './memory.js';
-import { nextWidenChunk, siteKey, widenedSites } from './sites.js';
+import { WIDENED_SITES_MAX, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, widenedSites } from './sites.js';
 import type { Base, Decision, Goal, GoalSearchTrace, OracleModel, Phase, VerifyJob, VerifyOutcome } from './types.js';
 import { PHASES } from './types.js';
 
@@ -52,6 +53,17 @@ export const BEAM_TOP_SITES = 2;
 export const BEAM_MIN_JEV_REQUESTS_LEFT = 35;
 /** Pairs of partials tested after SEEDS (§2.3 / §4.3: "≤ 10 runs"). */
 export const PAIRS_OF_PARTIALS_MAX = 10;
+/**
+ * The pairs reserve (jev-only-ladder-4-analysis.md §1.2, the `account` partial trap; the guard's
+ * HOLD_RESERVE_* are its mirror): while the goal holds complementary partials whose pair is
+ * untested, a source batch that would take the step inside this reserve is preceded by the pairs
+ * (≤ PAIRS_OF_PARTIALS_MAX runs), and a step that ends on the budget runs them before it returns.
+ * ~15 median QuixBugs runs per lane, two lanes' worth of SIEVE batches; on repository-class
+ * budgets (16 runs a step) the reserve is the whole step, so the pairs run before the first
+ * batch — they are the likeliest fix of a goal that already has two half-fixes.
+ */
+export const PAIRS_RESERVE_WALL_MS = 15_000;
+export const PAIRS_RESERVE_RUNS = 16;
 /** Q7 `insert_new_line` at or above this puts templates/donors and insert sites first (§2.7 Q7 consumer; insert_new_line top-1 4/4 in Appendix A). */
 export const INSERT_FIRST_MIN_P = 0.5;
 /**
@@ -195,8 +207,8 @@ export function sourcePriorAt(index: number): number {
 // Collaborator contracts (the §6 table, as this module consumes them)
 // ---------------------------------------------------------------------------------------
 
-/** The run memory this loop reads: the §2.1 record, the guard's beam of bases and the directive overrides. */
-export type SubGoalMemory = SearchMemory & GuardMemory & { overrides: SearchOverrides };
+/** The run memory this loop reads: the §2.1 record, the guard's beam of bases, the directive overrides and the runner's pending retries (drained at step end). */
+export type SubGoalMemory = SearchMemory & GuardMemory & { overrides: SearchOverrides } & Partial<Pick<RunnerMemory, 'retryTimeouts'>>;
 
 /** What a Jev-driven source (SKETCH: sketch Choice → slot fill; BEAM: token beam) returns for one site. */
 export interface JevEnumeration {
@@ -408,6 +420,8 @@ interface LoopState {
   queue: SearchQueue;
   prior: EditClassPrior | null;
   rotation: number;
+  /** a pairs batch is running (its own decision must not trigger another pairs batch) */
+  pairing: boolean;
 }
 
 /**
@@ -418,12 +432,14 @@ interface LoopState {
  */
 type BatchOutcome = { kind: 'exit'; decision: Decision } | { kind: 'continue'; queued: number; completed: number };
 
-/** Queue `jobs`, run them, decide. Records tests/plausibles/clusters on the trace. */
-async function runBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: number): Promise<BatchOutcome> {
-  const { ctx, mem, goal, deps, trace } = st;
-  const { queued } = st.queue.addAll(jobs);
-  if (queued.length === 0) return { kind: 'continue', queued: 0, completed: 0 };
-  const results = await deps.runQueue(ctx, mem, st.queue, goal, runsAllowed);
+const BUDGET_EXIT: BatchOutcome = { kind: 'exit', decision: { kind: 'budget' } };
+
+function note(st: LoopState, phase: string, detail: string): void {
+  st.ctx.emit({ type: 'synth', step: st.ctx.step, phase, detail });
+}
+
+/** Record classified outcomes on the trace (tests, runs, per-source rows). */
+function recordResults(trace: GoalSearchTrace, results: readonly VerifyOutcome[]): void {
   trace.candidatesTested += results.length;
   trace.testRuns += results.reduce((n, r) => n + 1 + (r.full === undefined ? 0 : 1), 0);
   for (const r of results) {
@@ -431,6 +447,28 @@ async function runBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: 
     row.tested += 1;
     if (r.status === 'plausible') row.passed += 1;
   }
+}
+
+/** Queue `jobs` and run them (the runner charges the budget and `tried`); nothing is decided here. */
+async function runJobs(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: number): Promise<{ queued: readonly VerifyJob[]; results: VerifyOutcome[] }> {
+  const { ctx, mem, goal, deps, trace } = st;
+  const { queued } = st.queue.addAll(jobs);
+  if (queued.length === 0) return { queued, results: [] };
+  const results = await deps.runQueue(ctx, mem, st.queue, goal, runsAllowed);
+  recordResults(trace, results);
+  return { queued, results };
+}
+
+/** Queue `jobs`, run them, decide. Records tests/plausibles/clusters on the trace. */
+async function runBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: number): Promise<BatchOutcome> {
+  const { queued, results } = await runJobs(st, jobs, runsAllowed);
+  if (queued.length === 0) return { kind: 'continue', queued: 0, completed: 0 };
+  return decideBatch(st, results, queued.length);
+}
+
+/** The guard's decision on one batch (§2.6), recorded on the trace: one decision per batch, whatever it held. */
+async function decideBatch(st: LoopState, results: readonly VerifyOutcome[], queued: number): Promise<BatchOutcome> {
+  const { ctx, mem, goal, deps, trace } = st;
   const decision = await deps.decide(ctx, mem, goal, results);
   const plausible = decision.plausible ?? results.filter((r) => r.status === 'plausible').length;
   trace.plausible += plausible;
@@ -447,33 +485,115 @@ async function runBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: 
   }
   if (decision.kind === 'budget' || decision.kind === 'parked') return { kind: 'exit', decision };
   // 'continue': no passer, or every passer flagged (the guard keeps the smallest edit as the step's suspect).
-  return { kind: 'continue', queued: queued.length, completed: results.length };
+  return { kind: 'continue', queued, completed: results.length };
 }
 
-/** Enumerate one source at one site on one base and run what the plan allows. */
-async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, source: CandidateSourceName, position: number, isLastSite: boolean): Promise<BatchOutcome> {
+// ---------------------------------------------------------------------------------------
+// Pairs of partials and their reserve (§2.3 contrarian source 5; jev-only-ladder-4-analysis.md §1.2)
+// ---------------------------------------------------------------------------------------
+
+/** The untested pairs of complementary partials of the goal, ≤ PAIRS_OF_PARTIALS_MAX, on the committed base. */
+function freshPairs(st: LoopState): { committed: Base; pairs: Candidate[] } | null {
+  const committed = st.mem.bases.find((b) => b.origin === 'committed');
+  if (committed === undefined) return null;
+  const pairs = st.deps.pairsOfPartials(st.mem, st.goal).slice(0, PAIRS_OF_PARTIALS_MAX).filter((c) => !alreadyTried(c, committed, st.mem));
+  return pairs.length === 0 ? null : { committed, pairs };
+}
+
+/** Runs the step can still spend before the pairs reserve (PAIRS_RESERVE_*) would be touched. */
+export function runsBeforeReserve(mem: Pick<SubGoalMemory, 'oracle' | 'stepBudget'>): number {
+  const b = mem.stepBudget;
+  if (b.testWallLeftMs < PAIRS_RESERVE_WALL_MS || b.testRunsLeft < PAIRS_RESERVE_RUNS) return 0;
+  const tRun = Math.max(1, mem.oracle.tRunMs.goalSubset);
+  const reserveRuns = Math.max(PAIRS_RESERVE_RUNS, Math.ceil((PAIRS_RESERVE_WALL_MS * Math.max(1, mem.oracle.lanes)) / tRun));
+  return Math.max(0, runsLeft(mem.oracle, b) - reserveRuns);
+}
+
+/** The pairs are due before a batch of `runs` when the goal holds untested pairs and the batch would take the step inside the reserve. */
+function pairsDue(st: LoopState, runs: number): boolean {
+  if (st.pairing || runs <= runsBeforeReserve(st.mem)) return false;
+  return freshPairs(st) !== null;
+}
+
+/**
+ * §2.3 line "if phase == SEEDS and pairsOfPartials nonEmpty: test ≤ 10 pairs; commit if one is
+ * plausible" — also run before a batch that would spend the pairs reserve, at the start of a
+ * step that resumes with remembered partials, and before every `budget` or `parked` exit.
+ */
+async function visitPairs(st: LoopState): Promise<BatchOutcome> {
+  if (st.pairing) return CONTINUE;
+  const fresh = freshPairs(st);
+  if (fresh === null) return CONTINUE;
+  st.pairing = true;
+  try {
+    st.trace.candidatesEnumerated += fresh.pairs.length;
+    for (const c of fresh.pairs) st.trace.bySource[c.source].enumerated += 1;
+    note(st, 'pairs', `${st.goal.id}: testing ${fresh.pairs.length} pair${fresh.pairs.length === 1 ? '' : 's'} of complementary partials (runs left ${st.mem.stepBudget.testRunsLeft}, test wall left ${Math.round(st.mem.stepBudget.testWallLeftMs / 1000)} s)`);
+    const prior = sourcePriorAt(SEED_SOURCES.length);
+    return await runBatch(st, jobsFor(fresh.pairs, fresh.committed, prior, (_c, i) => prior - i * SIEVE_ORDER_EPSILON), fresh.pairs.length);
+  } finally {
+    st.pairing = false;
+  }
+}
+
+/**
+ * In-flight timeouts the runner re-queued (sieve/runner.ts `mem.retryTimeouts`) run once more
+ * before the goal is parked, when the step can still afford a run: a call with nothing new to
+ * dispatch (`runsAllowed` 0) is the runner's retry phase alone.
+ */
+async function drainRetries(st: LoopState): Promise<BatchOutcome> {
+  const { ctx, mem, goal, deps, trace } = st;
+  const pending = mem.retryTimeouts?.get(goal.id) ?? [];
+  if (pending.length === 0 || mem.stepBudget.exhausted()) return CONTINUE;
+  note(st, 'retry', `${goal.id}: ${pending.length} re-queued timeout${pending.length === 1 ? '' : 's'} retried before the step ends`);
+  const results = await deps.runQueue(ctx, mem, st.queue, goal, 0);
+  if (results.length === 0) return CONTINUE;
+  recordResults(trace, results);
+  return decideBatch(st, results, results.length);
+}
+
+// ---------------------------------------------------------------------------------------
+// Sources at a site
+// ---------------------------------------------------------------------------------------
+
+function seedSource(deps: SubGoalDeps, source: CandidateSourceName): CandidateSource {
+  return source === 'composite' ? deps.seeds.composite : source === 'template' ? deps.seeds.template : source === 'donor' ? deps.seeds.donor : deps.seeds.mutation;
+}
+
+/** §2.3: `\ mem.tried \ {site.currentLine}` (the queue repeats both checks and adds the vocabulary filter), counted on the trace. */
+function freshOf(st: LoopState, enumerated: readonly Candidate[], base: Base): Candidate[] {
+  const fresh = orderCandidates(enumerated, st.prior).filter((c) => !(c.site.kind === 'replace' && c.text.trim() === c.site.currentLine.trim()) && !alreadyTried(c, base, st.mem));
+  st.trace.candidatesEnumerated += fresh.length;
+  for (const c of fresh) st.trace.bySource[c.source].enumerated += 1;
+  return fresh;
+}
+
+/** Enumerate one seed source at one site on one base: its fresh candidates. */
+function enumerateSeed(st: LoopState, base: Base, site: Site, source: CandidateSourceName): Candidate[] {
+  return freshOf(st, seedSource(st.deps, source).enumerate(site, enumerateOptions(base, st.goal, st.ctx.task)), base);
+}
+
+/**
+ * Enumerate one source at one site on one base and run what the plan allows. `preEnumerated`
+ * hands over candidates `visitSeedBatch` already enumerated (and counted) when the site's union
+ * needs Jev's ranking source by source.
+ */
+async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, source: CandidateSourceName, position: number, isLastSite: boolean, preEnumerated?: readonly Candidate[]): Promise<BatchOutcome> {
   const { ctx, mem, goal, deps, trace } = st;
   checkAborted(ctx);
-  if (mem.stepBudget.exhausted()) return { kind: 'exit', decision: { kind: 'budget' } };
+  if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
   const exhausted = exhaustedAt(goal, site, phase);
-  const opts = enumerateOptions(base, goal, ctx.task);
-  let enumerated: Candidate[];
-  if (phase === 'SKETCH' || phase === 'BEAM') {
-    if (mem.stepBudget.jevRequestsLeft <= 0) return { kind: 'exit', decision: { kind: 'budget' } };
+  let fresh: Candidate[];
+  if (preEnumerated !== undefined) fresh = [...preEnumerated];
+  else if (phase === 'SKETCH' || phase === 'BEAM') {
+    if (mem.stepBudget.jevRequestsLeft <= 0) return BUDGET_EXIT;
     const jev = phase === 'SKETCH' ? deps.sketch : deps.beam;
-    const r = await jev.enumerate({ ctx, mem, goal, site, opts, prior: st.prior });
+    const r = await jev.enumerate({ ctx, mem, goal, site, opts: enumerateOptions(base, goal, ctx.task), prior: st.prior });
     spend(mem, r.requests);
     trace.jevRequests += r.requests;
     if (st.prior === null && r.editClass !== undefined) st.prior = r.editClass;
-    enumerated = r.candidates;
-  } else {
-    const src = source === 'composite' ? deps.seeds.composite : source === 'template' ? deps.seeds.template : source === 'donor' ? deps.seeds.donor : deps.seeds.mutation;
-    enumerated = src.enumerate(site, opts);
-  }
-  // §2.3: \ mem.tried \ {site.currentLine}; the queue repeats both checks and adds the vocabulary filter.
-  const fresh = orderCandidates(enumerated, st.prior).filter((c) => !(c.site.kind === 'replace' && c.text.trim() === c.site.currentLine.trim()) && !alreadyTried(c, base, mem));
-  trace.candidatesEnumerated += fresh.length;
-  for (const c of fresh) trace.bySource[c.source].enumerated += 1;
+    fresh = freshOf(st, r.candidates, base);
+  } else fresh = enumerateSeed(st, base, site, source);
   if (fresh.length === 0) {
     exhausted.add(source);
     return { kind: 'continue', queued: 0, completed: 0 };
@@ -482,7 +602,12 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
   trace.runMode = plan.mode;
   // §2.4 `runsLeft` is 0 (the wall left cannot fit one measured run, or no run is left): nothing
   // could be verified this step, so no ranking request is spent on it; the step ends here.
-  if (plan.runsAllowed <= 0) return { kind: 'exit', decision: { kind: 'budget' } };
+  if (plan.runsAllowed <= 0) return BUDGET_EXIT;
+  // the pairs reserve: untested pairs of complementary partials run before a batch that would spend it
+  if (pairsDue(st, plan.runsAllowed)) {
+    const p = await visitPairs(st);
+    if (p.kind === 'exit') return p;
+  }
   const sourcePrior = sourcePriorAt(position);
   let jobs: VerifyJob[];
   let everythingQueued: boolean;
@@ -490,7 +615,7 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
     jobs = jobsFor(fresh, base, sourcePrior, (_c, i) => sourcePrior - i * SIEVE_ORDER_EPSILON);
     everythingQueued = true;
   } else {
-    if (mem.stepBudget.jevRequestsLeft <= 0) return { kind: 'exit', decision: { kind: 'budget' } };
+    if (mem.stepBudget.jevRequestsLeft <= 0) return BUDGET_EXIT;
     const ranked = await deps.rank(ctx, mem, fresh, site, goal);
     spend(mem, ranked.requests);
     trace.jevRequests += ranked.requests;
@@ -517,6 +642,90 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
 
 const CONTINUE: BatchOutcome = { kind: 'continue', queued: 0, completed: 0 };
 
+/**
+ * jev-only-rungs-1-2.md §13.4 (a), the controller-side form of "decide sees the whole site
+ * batch": in SEEDS and WIDENED on a SIEVE oracle the seed sources still open at a site are
+ * enumerated together and, when their union fits the run budget (§2.4 SIEVE), queued as ONE batch
+ * and decided ONCE. The sources whose every queued candidate completed are marked exhausted
+ * BEFORE the decision, so the guard's rule (a) (`sieveHoldApplies` reads `goal.exhausted`) sees
+ * the site's seed batch as done and a lone passer is committed here rather than held for the next
+ * site's decision (run 3 committed `detect_cycle`'s and `wrap`'s first lone passer while their
+ * gold's site was unvisited; the guard's hold then waited on a `visitSource` that found nothing
+ * fresh and made no decision). A site with nothing fresh consumes no decision. When the union
+ * needs RANK (Jev orders each set), the sources are visited one by one from the same enumeration.
+ */
+async function visitSeedBatch(st: LoopState, phase: Phase, base: Base, site: Site, isLastSite: boolean, exhausted: Set<CandidateSourceName>, visited: Set<CandidateSourceName>): Promise<BatchOutcome> {
+  const { ctx, mem, trace } = st;
+  checkAborted(ctx);
+  if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
+  const order = orderSources(phase, st.prior, exhausted, st.rotation).filter((s) => SEED_SOURCES.includes(s));
+  if (order.length === 0) return CONTINUE;
+  const positions = orderSources(phase, st.prior, new Set(), st.rotation);
+  const sets = order.map((source) => ({ source, position: Math.max(0, positions.indexOf(source)), fresh: enumerateSeed(st, base, site, source) }));
+  for (const s of sets) visited.add(s.source);
+  const union = sets.flatMap((s) => s.fresh);
+  if (union.length === 0) {
+    for (const s of sets) exhausted.add(s.source);
+    return CONTINUE;
+  }
+  const plan = decideRunPlan(union, site, mem.oracle, mem.stepBudget);
+  trace.runMode = plan.mode;
+  if (plan.runsAllowed <= 0) return BUDGET_EXIT;
+  if (plan.mode !== 'SIEVE') {
+    for (const s of sets) {
+      if (s.fresh.length === 0) {
+        exhausted.add(s.source);
+        continue;
+      }
+      const r = await visitSource(st, phase, base, site, s.source, s.position, isLastSite, s.fresh);
+      if (r.kind === 'exit') return r;
+      if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
+    }
+    return CONTINUE;
+  }
+  if (pairsDue(st, plan.runsAllowed)) {
+    const p = await visitPairs(st);
+    if (p.kind === 'exit') return p;
+  }
+  const jobs = sets.flatMap((s) => {
+    const prior = sourcePriorAt(s.position);
+    return jobsFor(s.fresh, base, prior, (_c, i) => prior - i * SIEVE_ORDER_EPSILON);
+  });
+  // the transcript names the site of every batch (the verify event only counts): what the run dissections read the search order from
+  note(st, 'site', `${st.goal.id}: ${siteKey(site)}${site.kind === 'insert' ? ` (gap, indent ${site.indent.length})` : ''} on ${base.id}: ${sets.map((s) => `${s.source} ${s.fresh.length}`).join(', ')}${site.evidence.notes.length > 0 ? ` — ${site.evidence.notes.slice(0, 2).join('; ')}` : ''}`);
+  const { queued, results } = await runJobs(st, jobs, plan.runsAllowed);
+  const completed = new Set(results.map((r) => r.job.candidate.id));
+  for (const s of sets) {
+    const ids = new Set(s.fresh.map((c) => c.id));
+    if (queued.filter((j) => ids.has(j.candidate.id)).every((j) => completed.has(j.candidate.id))) exhausted.add(s.source);
+  }
+  if (queued.length === 0) return CONTINUE;
+  return decideBatch(st, results, queued.length);
+}
+
+/** Every source at one site on one base: the seed sources as one batch where SIEVE allows, then the rest (composite, or every source under RANK) one by one. */
+async function visitSite(st: LoopState, phase: Phase, base: Base, site: Site, isLastSite: boolean): Promise<BatchOutcome> {
+  const { mem, goal } = st;
+  const exhausted = exhaustedAt(goal, site, phase);
+  const visited = new Set<CandidateSourceName>();
+  if ((phase === 'SEEDS' || phase === 'WIDENED') && mem.oracle.tRunMs.goalSubset <= SIEVE_MAX_T_RUN_MS) {
+    const r = await visitSeedBatch(st, phase, base, site, isLastSite, exhausted, visited);
+    if (r.kind === 'exit') return r;
+    if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
+  }
+  // Re-derive the order after every source: composite unlocks as soon as 1–3 are exhausted here (§3 row 4).
+  for (;;) {
+    const source = orderSources(phase, st.prior, exhausted, st.rotation).find((s) => !visited.has(s));
+    if (source === undefined) break;
+    visited.add(source);
+    const position = orderSources(phase, st.prior, new Set(), st.rotation).indexOf(source);
+    const r = await visitSource(st, phase, base, site, source, Math.max(0, position), isLastSite);
+    if (r.kind === 'exit') return r;
+    if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
+  }
+  return CONTINUE;
+}
+
 async function visitPhase(st: LoopState, phase: Phase, sites: readonly Site[]): Promise<BatchOutcome> {
   const { mem, goal } = st;
   goal.phase = phase;
@@ -526,34 +735,11 @@ async function visitPhase(st: LoopState, phase: Phase, sites: readonly Site[]): 
     for (const [i, raw] of sites.entries()) {
       const site = siteOnBase(raw, base);
       if (site === null) continue;
-      const exhausted = exhaustedAt(goal, site, phase);
-      // Re-derive the order after every source: composite unlocks as soon as 1–3 are exhausted here (§3 row 4).
-      const visited = new Set<CandidateSourceName>();
-      for (;;) {
-        const source = orderSources(phase, st.prior, exhausted, st.rotation).find((s) => !visited.has(s));
-        if (source === undefined) break;
-        visited.add(source);
-        const position = orderSources(phase, st.prior, new Set(), st.rotation).indexOf(source);
-        const r = await visitSource(st, phase, base, site, source, Math.max(0, position), i === sites.length - 1);
-        if (r.kind === 'exit') return r;
-        if (mem.stepBudget.exhausted()) return { kind: 'exit', decision: { kind: 'budget' } };
-      }
+      const r = await visitSite(st, phase, base, site, i === sites.length - 1);
+      if (r.kind === 'exit') return r;
     }
   }
   return CONTINUE;
-}
-
-/** §2.3 line "if phase == SEEDS and pairsOfPartials nonEmpty: test ≤ 10 pairs; commit if one is plausible". */
-async function visitPairs(st: LoopState): Promise<BatchOutcome> {
-  const committed = st.mem.bases.find((b) => b.origin === 'committed');
-  if (committed === undefined) return CONTINUE;
-  const pairs = st.deps.pairsOfPartials(st.mem, st.goal).slice(0, PAIRS_OF_PARTIALS_MAX);
-  const fresh = pairs.filter((c) => !alreadyTried(c, committed, st.mem));
-  if (fresh.length === 0) return CONTINUE;
-  st.trace.candidatesEnumerated += fresh.length;
-  for (const c of fresh) st.trace.bySource[c.source].enumerated += 1;
-  const prior = sourcePriorAt(SEED_SOURCES.length);
-  return runBatch(st, jobsFor(fresh, committed, prior, (_c, i) => prior - i * SIEVE_ORDER_EPSILON), fresh.length);
 }
 
 function finish(st: LoopState, decision: Decision): SubGoalResult {
@@ -563,6 +749,26 @@ function finish(st: LoopState, decision: Decision): SubGoalResult {
   } else if (decision.kind === 'budget') st.trace.outcome = 'budget';
   else if (decision.kind === 'parked') st.trace.outcome = 'exhausted';
   return { ...decision, trace: st.trace };
+}
+
+/**
+ * The step ends on its budget (§13.4 (b)): the pairs of partials get their reserve, a passer the
+ * guard still holds (rule (a) pending, rule (b) suspect) is committed rather than dropped with
+ * the goal's bookkeeping, and only then does the step return `budget`.
+ */
+async function exitOnBudget(st: LoopState): Promise<SubGoalResult> {
+  const pairs = await visitPairs(st);
+  if (pairs.kind === 'exit' && pairs.decision.kind === 'commit') return finish(st, pairs.decision);
+  const held = commitSuspect(st.mem, st.goal);
+  if (held !== null) {
+    note(st, 'guard', `${st.goal.id}: the step ends on its budget; committing the held passer${held.kind === 'commit' && held.note !== undefined ? ` as ${held.note}` : ''}`);
+    return finish(st, held);
+  }
+  return finish(st, { kind: 'budget' });
+}
+
+function exitOn(st: LoopState, decision: Decision): Promise<SubGoalResult> {
+  return decision.kind === 'budget' ? exitOnBudget(st) : Promise.resolve(finish(st, decision));
 }
 
 /**
@@ -598,11 +804,16 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
     trace.jevRequests += 1;
   }
 
-  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior, rotation: mem.overrides.sourceRotation[goal.id] ?? 0 };
+  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior, rotation: mem.overrides.sourceRotation[goal.id] ?? 0, pairing: false };
   const sites = orderSites(loc.sites, prior);
   trace.sitesConsidered = sites.length;
   const committed = mem.bases.find((b) => b.origin === 'committed');
   const singleFile = committed !== undefined && isSingleFileWorkspace(committed.files);
+
+  // Partials remembered from earlier steps (kept across a park, restored from the checkpoint):
+  // their untested pairs are the first batch of the step.
+  const resumed = await visitPairs(st);
+  if (resumed.kind === 'exit') return exitOn(st, resumed.decision);
 
   for (const phase of PHASES) {
     let r: BatchOutcome = CONTINUE;
@@ -627,8 +838,20 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
       case 'WIDENED': {
         // Single-file workspaces only, or repositories under a `change_approach` directive (§2.3, §5.4).
         if (!(singleFile || mem.overrides.widenedOnRepos) || !sites.every((s) => seedsExhaustedAt(goal, s))) break;
-        const all = widenedSites(loc.functions, new Set(sites.map(siteKey)));
+        // Every code line and statement gap of the located functions the SEEDS list did not cover,
+        // in the order of the localisation's line evidence (Q5 p, Q5n Noul; a gap scores its better
+        // neighbour), then distance from the top-1 line, cut at WIDENED_SITES_MAX (sites.ts; `wrap`'s
+        // gap before `return lines` sat last in line order and was never reached, §13.4).
+        const top = loc.sites.find((s) => s.kind === 'replace') ?? null;
+        const all = orderWidenedSites(widenedSites(loc.functions, new Set(sites.map(siteKey))), lineEvidenceOf(loc.sites), top, WIDENED_SITES_MAX);
         trace.sitesConsidered += all.length;
+        const cursor0 = mem.widenCursor.get(goal.id) ?? 0;
+        const before = { enumerated: trace.candidatesEnumerated, tested: trace.candidatesTested, runs: trace.testRuns };
+        if (all.length > 0 && cursor0 < all.length) {
+          const gaps = all.filter((s) => s.kind === 'insert').length;
+          const head = all.slice(cursor0, cursor0 + 3).map((s) => `${s.file.path}:${s.line}${s.kind === 'insert' ? ` (gap, indent ${s.indent.length})` : ''}`);
+          note(st, 'widened', `${goal.id}: ${all.length} sites (${gaps} gaps, ${all.length - gaps} lines) over ${loc.functions.length} function${loc.functions.length === 1 ? '' : 's'}, by line evidence then distance from ${top === null ? 'the top' : `L${top.line}`}, cut ${WIDENED_SITES_MAX}; resuming at ${cursor0}: ${head.join(', ')}`);
+        }
         for (;;) {
           const chunk = nextWidenChunk(all, mem.widenCursor.get(goal.id) ?? 0, WIDEN_CHUNK_SITES);
           if (chunk.sites.length === 0) break;
@@ -636,14 +859,21 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
           r = await visitPhase(st, phase, orderSites(chunk.sites, st.prior));
           if (r.kind === 'exit' || chunk.done) break;
         }
+        const enumerated = trace.candidatesEnumerated - before.enumerated;
+        if (enumerated > 0) note(st, 'widened', `${goal.id}: WIDENED cost ${enumerated} candidates enumerated, ${trace.candidatesTested - before.tested} tested, ${trace.testRuns - before.runs} runs; cursor ${mem.widenCursor.get(goal.id) ?? 0}/${all.length}`);
         break;
       }
     }
-    if (r.kind === 'exit') return finish(st, r.decision);
-    if (mem.stepBudget.exhausted()) return finish(st, { kind: 'budget' });
+    if (r.kind === 'exit') return exitOn(st, r.decision);
+    if (mem.stepBudget.exhausted()) return exitOnBudget(st);
   }
 
-  // Step end (§2.3 tail): a flagged passer beats nothing (the guard never overrides the tests); then the held partial; else park.
+  // Step end (§2.3 tail): untested pairs of partials and re-queued timeouts first; then a flagged
+  // passer beats nothing (the guard never overrides the tests); then the held partial; else park.
+  const pairs = await visitPairs(st);
+  if (pairs.kind === 'exit') return exitOn(st, pairs.decision);
+  const retried = await drainRetries(st);
+  if (retried.kind === 'exit') return exitOn(st, retried.decision);
   const suspect = commitSuspect(mem, goal);
   if (suspect !== null) return finish(st, suspect);
   const partial = commitPartial(mem, goal);

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Answer, Question } from '../../../../src/core/types.js';
+import type { Answer, Json, Question } from '../../../../src/core/types.js';
 import {
   MAX_BASE_DEPTH,
   MAX_PARTIAL_PAIRS,
@@ -9,14 +9,21 @@ import {
   commitPartial,
   createGuardMemory,
   forgetGoal,
+  forgetHeld,
+  freshPairsOfPartials,
   guardState,
   holdBestPartial,
   improvedBase,
   improvedBaseFor,
   isPartial,
   pairsOfPartials,
+  partialsFromPersisted,
+  partialsOf,
+  persistPartials,
+  restorePartials,
   siteKeyOf,
 } from '../../../../src/synth/search/bases.js';
+import { sha12 } from '../../../../src/core/hash.js';
 import type { Base } from '../../../../src/synth/search/types.js';
 import type { Candidate, SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
@@ -266,5 +273,65 @@ describe('commitPartial and forgetGoal', () => {
     expect(guardState(mem).partials).toEqual([]);
     expect(improvedBase(mem)).toBeUndefined();
     expect(guardState(mem).closeness.size).toBe(0);
+  });
+});
+
+describe('partials across a park and a checkpoint (jev-only-ladder-4-analysis.md §1.2, the `account` partial trap)', () => {
+  it('forgetHeld keeps the remembered partials (the held passers, fallbacks and the improved base go); freshPairsOfPartials lists the untested pairs', async () => {
+    const mem = { ...createGuardMemory(BASE), tried: new Set<string>() };
+    const a = partialOutcome(at(2, '    a = xs[0] + 1', 'a'), BASE, [TESTS[0]!]);
+    const b = partialOutcome(at(3, '    b = xs[1] + 1', 'b'), BASE, [TESTS[1]!]);
+    await holdBestPartial(mem, [a, b], GOAL);
+    guardState(mem).suspect = { goalId: GOAL.id, outcome: a };
+    guardState(mem).closeness.set(improvedBase(mem)!.id, 2);
+    expect(freshPairsOfPartials(mem, GOAL)).toHaveLength(1);
+    forgetHeld(mem, GOAL);
+    expect(guardState(mem).partials.map((p) => p.outcome.applied.candidate.id)).toEqual(['a', 'b']);
+    expect(partialsOf(mem, GOAL)).toHaveLength(2);
+    expect(guardState(mem).suspect).toBeNull();
+    expect(improvedBase(mem)).toBeUndefined();
+    expect(guardState(mem).closeness.size).toBe(0);
+    // once the pair's diff was run it is no longer fresh; a commit forgets everything
+    const pair = freshPairsOfPartials(mem, GOAL)[0]!;
+    mem.tried.add(sha12(applyCandidate(pair, BASE.files).diff));
+    expect(freshPairsOfPartials(mem, GOAL)).toEqual([]);
+    forgetGoal(mem, GOAL);
+    expect(guardState(mem).partials).toEqual([]);
+  });
+
+  it('persistPartials / restorePartials: ≤ 4 records per unfixed goal (most tests covered first), restored as committed-base partials whose pairs apply; stale, fixed or malformed records are dropped', async () => {
+    const mem = createGuardMemory(BASE);
+    const outs = [
+      partialOutcome(at(2, '    a = xs[0] + 1', 'p2'), BASE, [TESTS[0]!]),
+      partialOutcome(at(3, '    b = xs[1] + 1', 'p3'), BASE, [TESTS[1]!, TESTS[2]!]),
+      partialOutcome(at(4, '    c = xs[2] + 1', 'p4'), BASE, [TESTS[2]!]),
+      partialOutcome(at(5, '    d = xs[3] + 1', 'p5'), BASE, [TESTS[3]!]),
+      partialOutcome(at(6, '    return a + b + c + d + k + 1', 'p6'), BASE, [TESTS[3]!]),
+    ];
+    await holdBestPartial(mem, outs, GOAL);
+    const g2 = goal([failure('other()')], { id: 'g2' });
+    await holdBestPartial(mem, [partialOutcome(at(2, '    a = xs[0] + 2', 'q2'), BASE, [TESTS[0]!])], g2);
+    // g2 is fixed: nothing of it is written; g1 keeps four of five, the two-test partial first, then the smaller edits by id
+    const recs = persistPartials(mem, [GOAL, { id: 'g2', status: 'fixed' }]);
+    expect(recs.map((r) => `${r.goalId}:${r.line}`)).toEqual([`${GOAL.id}:3`, `${GOAL.id}:2`, `${GOAL.id}:4`, `${GOAL.id}:5`]);
+    expect(recs[0]).toMatchObject({ path: 'prog.py', line: 3, kind: 'replace', text: '    b = xs[1] + 1', newlyPassing: [TESTS[1], TESTS[2]], passed: 4, source: 'mutation' });
+    expect(recs.every((r) => r.extraEdits === undefined)).toBe(true);
+    // JSON round trip into a fresh memory over the same baseline: four committed-base partials, their pairs enumerable
+    const state = JSON.parse(JSON.stringify({ version: 1, tried: [], partials: recs })) as Json;
+    const fresh = createGuardMemory(BASE);
+    expect(restorePartials(fresh, partialsFromPersisted(state), [GOAL])).toBe(4);
+    expect(guardState(fresh).partials.every((p) => p.outcome.status === 'partial' && p.outcome.job.base === BASE && isPartial(p.outcome))).toBe(true);
+    expect(guardState(fresh).partials.map((p) => p.outcome.progress.newlyPassing.length)).toEqual([2, 1, 1, 1]);
+    expect(pairsOfPartials(fresh, GOAL).length).toBeGreaterThan(0);
+    // restoring twice adds nothing (same diffs)
+    expect(restorePartials(fresh, partialsFromPersisted(state), [GOAL])).toBe(0);
+    // stale: the tests a record passed no longer fail (or it would now pass everything), or its goal is fixed
+    const greener = committedBase(FILE, summary({ passed: 5, failing: [TESTS[3]!], failures: [failure(TESTS[3]!)] }));
+    expect(restorePartials(createGuardMemory(greener), partialsFromPersisted(state), [GOAL])).toBe(0);
+    expect(restorePartials(createGuardMemory(BASE), partialsFromPersisted(state), [{ id: GOAL.id, status: 'fixed' }])).toBe(0);
+    // malformed records and older checkpoints carry none
+    expect(partialsFromPersisted(null)).toEqual([]);
+    expect(partialsFromPersisted({ version: 1, tried: [] })).toEqual([]);
+    expect(partialsFromPersisted({ version: 1, tried: [], partials: [{ goalId: 'g1' }, 'junk', { ...recs[0], source: 'nope' }] })).toEqual([]);
   });
 });

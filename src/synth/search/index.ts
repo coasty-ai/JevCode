@@ -20,11 +20,12 @@ import { subsetCommand } from '../sieve/runner.js';
 import type { RunnerMemory } from '../sieve/runner.js';
 import type { AppliedCandidate, SourceFile, TestRunSummary } from '../types.js';
 import { DEFAULT_TEST_OUTPUT_BYTES, summarize } from '../verify/index.js';
-import { forgetGoal } from './bases.js';
+import { PERSISTED_PARTIALS_KEY, forgetGoal, forgetHeld, freshPairsOfPartials, partialsFromPersisted, persistPartials, restorePartials } from './bases.js';
 import { fitOracle, freshBudget } from './budget.js';
 import { defaultOverrides, handleDirective, invalidateStaleSites } from './directive.js';
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
 import { clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
+import { commitSuspect } from './guard.js';
 import type { GoalPick } from './goals.js';
 import { diffHash, getMemory, rebuildFromPlan, recordClaims, recordCommit, resolveClaims, restoreMemory, toPersisted } from './memory.js';
 import type { SearchMemory } from './memory.js';
@@ -343,8 +344,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       if (proposal.action.kind === 'run' && proposal.plan.done.length > 0) recordClaims(mem, proposal.plan.done, ctx.step);
       return proposal;
     } finally {
-      // §5.2: what survives a checkpoint, every step; the ledger line every step.
-      ctx.setSynthState(toJson(toPersisted(mem)));
+      // §5.2: what survives a checkpoint, every step (the remembered partials beside memory.ts's record: bases.ts persistPartials); the ledger line every step.
+      ctx.setSynthState(toJson({ ...toPersisted(mem), [PERSISTED_PARTIALS_KEY]: persistPartials(mem, mem.goals) }));
       this.emit(ctx, 'ledger', ledgerLine(mem.goals));
     }
   }
@@ -474,6 +475,16 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       evidence = stash.evidence;
     } else {
       r = await this.deps.searchSubGoal(ctx, mem, goal);
+      if (r.kind !== 'commit') {
+        // §13.4 (b): a passer the guard still holds for this goal is decided here — committed —
+        // never dropped with the goal's bookkeeping on a park (the search drains it itself; this
+        // is the controller's own guarantee).
+        const held = commitSuspect(mem, goal);
+        if (held !== null && held.kind === 'commit') {
+          this.emit(ctx, 'guard', `${goal.id}: search ended ${r.kind} with a held passer; committing it${held.note === undefined ? '' : ` as ${held.note}`}`);
+          r = { ...held, trace: { ...r.trace, outcome: 'fixed', winner: held.applied } };
+        }
+      }
       if (r.kind === 'commit') evidence = commitEvidence(mem, r, goal);
     }
     this.emit(ctx, 'search', `${goal.id} ${r.kind}${r.kind === 'parked' ? `: ${r.reason}` : ''} (phase ${r.trace.phase}, ${r.trace.runMode}, sites ${r.trace.sitesConsidered}, requests ${r.trace.jevRequests}, runs ${r.trace.testRuns}, plausible ${r.trace.plausible})`, {
@@ -495,8 +506,10 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         return proposePatch(ctx, r.applied, goal, mem, r.note, r.trace, evidence);
       }
       case 'parked': {
+        // A park keeps the goal's remembered partials (bases.ts forgetHeld): they are the input of
+        // the pairs a reopened search runs first, and they are persisted with the ledger.
         park(goal, r.reason);
-        forgetGoal(mem, goal);
+        forgetHeld(mem, goal);
         if (!mem.stepBudget.recursed) {
           mem.stepBudget.recursed = true;
           return this.step(ctx, mem, scratch, true, r.trace);
@@ -504,13 +517,22 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         return this.subsetRun(ctx, mem, goal, r.trace);
       }
       case 'budget': {
+        // Untested pairs of complementary partials are progress the tests have not judged yet
+        // (ladder `account`: both gold half-fixes found with 2 s of wall left, then parked and
+        // forgotten): the goal stays open and the next step runs the pairs first.
+        const pairs = freshPairsOfPartials(mem, goal);
+        if (pairs.length > 0) {
+          goal.status = 'open';
+          this.emit(ctx, 'pairs', `${goal.id}: ${pairs.length} untested pair${pairs.length === 1 ? '' : 's'} of complementary partials; the goal stays open and resumes from them`);
+          return this.subsetRun(ctx, mem, goal, r.trace);
+        }
         // §5.3: two consecutive budget-hit steps or three searches without a commit park the goal; else it stays open and resumes next step.
         const hit = noteBudgetHit(goal);
         const reason = hit ?? parkReasonFor(goal);
         if (reason === null) goal.status = 'open';
         else {
           if (hit === null) park(goal, reason);
-          forgetGoal(mem, goal);
+          forgetHeld(mem, goal);
         }
         return this.subsetRun(ctx, mem, goal, r.trace);
       }
@@ -666,6 +688,9 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       restoreMemory(mem, rebuildFromPlan(ctx.plan, baseline, persisted, clusterOpts));
       mem.committed = committed;
       mem.bases = [committedBase(files, baseline)];
+      // the checkpoint's remembered partials (bases.ts), where their edits still apply and their tests still fail
+      const restored = restorePartials(mem, partialsFromPersisted(ctx.synthState), mem.goals);
+      if (restored > 0) this.emit(ctx, 'pairs', `${restored} remembered partial${restored === 1 ? '' : 's'} restored from the checkpoint`);
       scratch.restored = true;
     } else {
       mem.goals = reconcile(mem.goals, clusterFailures(baseline, clusterOpts), ctx.plan);

@@ -8,14 +8,15 @@
 import { describe, expect, it } from 'vitest';
 
 import { sha12 } from '../../../../src/core/hash.js';
-import { guardState } from '../../../../src/synth/search/bases.js';
-import { EDIT_CLASSES, EDIT_CLASS_QUESTION_ID, INSERT_FIRST_MIN_P, PERMUTATION_OPERATORS, alreadyTried, describeExhaustion, editClassQuestion, exhaustedKey, isSingleFileWorkspace, orderCandidates, orderSites, orderSources, priorFromAnswer, searchSubGoal, seedsExhaustedAt, siteOnBase, taskIdentifiers, testLiterals } from '../../../../src/synth/search/subgoal.js';
+import { guardState, pairsOfPartials, siteKeyOf } from '../../../../src/synth/search/bases.js';
+import { createDecide } from '../../../../src/synth/search/guard.js';
+import { EDIT_CLASSES, EDIT_CLASS_QUESTION_ID, INSERT_FIRST_MIN_P, PAIRS_RESERVE_RUNS, PAIRS_RESERVE_WALL_MS, PERMUTATION_OPERATORS, alreadyTried, describeExhaustion, editClassQuestion, exhaustedKey, isSingleFileWorkspace, orderCandidates, orderSites, orderSources, priorFromAnswer, runsBeforeReserve, searchSubGoal, seedsExhaustedAt, siteOnBase, taskIdentifiers, testLiterals } from '../../../../src/synth/search/subgoal.js';
 import type { EditClassPrior } from '../../../../src/synth/search/subgoal.js';
 import { siteKey } from '../../../../src/synth/search/sites.js';
 import type { Base, VerifyJob } from '../../../../src/synth/search/types.js';
 import type { Candidate, CandidateSourceName, Site } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
-import { GCD_OTHER_TEST, GCD_TEST, cand, choiceOn, fakeBudget, fakeCtx, fakeGoal, fakeMemory, fakeSubGoalDeps, fastOracle, gcdFixture, jobOf, outcomeOf, slowOracle, sourceFile, summary } from './controller-fakes.js';
+import { GCD_OTHER_TEST, GCD_TEST, cand, choiceOn, fakeBudget, fakeCtx, fakeGoal, fakeMemory, fakeSubGoalDeps, fastOracle, gcdFixture, jobOf, outcomeOf, siteAt, slowOracle, sourceFile, summary } from './controller-fakes.js';
 import { choiceAnswer } from './helpers.js';
 
 const NONE = new Set<CandidateSourceName>();
@@ -177,10 +178,11 @@ describe('searchSubGoal: SIEVE dispatch and the phase order on a fast oracle', (
     expect(deps.rec.sketchCalls).toEqual([5, 6]);
     expect(deps.rec.beamCalls).toEqual([5, 6]);
     // WIDENED: the other code lines of gcd (2, 3, 4) and its gap slots (before L2 after the def, before L3 after `if b == 0:`,
-    // before L5 after `else:`; nothing after the two `return`s), gap before line ahead of the line; never the def line, never the SEEDS sites
+    // before L5 after `else:`; nothing after the two `return`s); never the def line, never the SEEDS sites. Ordered by line
+    // evidence (none on this fixture) then by distance from the top-1 line L5, the gap before a line ahead of the line.
     const widened = deps.rec.enumerations.filter((e) => e.source === 'mutation').map((e) => e.line);
-    expect(widened).toEqual([5, 6, 2, 2, 3, 3, 4, 5]);
-    expect(deps.rec.enumerations.filter((e) => e.source === 'mutation').slice(2).map((e) => e.kind)).toEqual(['insert', 'replace', 'insert', 'replace', 'replace', 'insert']);
+    expect(widened).toEqual([5, 6, 5, 4, 3, 3, 2, 2]);
+    expect(deps.rec.enumerations.filter((e) => e.source === 'mutation').slice(2).map((e) => e.kind)).toEqual(['insert', 'replace', 'insert', 'replace', 'insert', 'replace']);
     expect(goal.phase).toBe('WIDENED');
     expect(mem.widenCursor.get(goal.id)).toBe(6);
     // every batch ran everything queued: 2 mutants, 1 template, 2 sketch lines, 2 beam lines, then per widened site one template statement at a gap or one mutant on a line (the `//` variant of a line without `%` is the unchanged line and is dropped)
@@ -235,7 +237,13 @@ describe('searchSubGoal: SIEVE dispatch and the phase order on a fast oracle', (
     expect(r.trace).toMatchObject({ outcome: 'fixed', plausible: 1, candidatesTested: 2, testRuns: 3 });
     expect(r.trace.winner?.candidate.text).toBe(FIX);
     expect(r.trace.bySource.mutation).toEqual({ enumerated: 2, tested: 2, passed: 1 });
-    expect(deps.rec.enumerations).toEqual([{ source: 'mutation', line: 5, kind: 'replace' }]);
+    // the site's three seed sources were enumerated together (one SIEVE batch, one decision); the search stopped at the commit
+    expect(deps.rec.enumerations).toEqual([
+      { source: 'mutation', line: 5, kind: 'replace' },
+      { source: 'template', line: 5, kind: 'replace' },
+      { source: 'donor', line: 5, kind: 'replace' },
+    ]);
+    expect(deps.rec.decideCalls).toHaveLength(1);
     expect(goal.exhausted.get(siteKey(replace))?.has('mutation')).toBe(true);
     expect(goal.status).toBe('active');
   });
@@ -443,5 +451,153 @@ describe('searchSubGoal: pairs of partials, the flagged suspect and the held par
     const r = await searchSubGoal(ctx, mem, fakeGoal(), deps);
     expect(r).toMatchObject({ kind: 'parked', reason: `no site located for ${GCD_TEST}` });
     expect(deps.rec.enumerations).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Controller bookkeeping (jev-only-ladder-4 round): whole-site batches, pairs before the reserve, the held passer on a budget exit
+// ---------------------------------------------------------------------------------------
+
+describe('whole-site batches, the pairs reserve and the held passer on a budget exit', () => {
+  const TWO = 'tests/test_gcd.py::test_two';
+
+  it("SIEVE: a site's seed sources run as ONE batch decided ONCE; the real guard commits a clean lone passer at once (no pending hold); an exhausted site consumes no decision", async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: fakeBudget() });
+    const goal = fakeGoal();
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) =>
+        source === 'mutation'
+          ? [cand(site, 'return gcd(a, b)', { op: 'identifier_substitution' }), cand(site, FIX, { op: 'argument_swap' })]
+          : source === 'template'
+            ? [cand(site, 'return a % b', { source: 'template', op: 'return_expr' })]
+            : source === 'donor'
+              ? [cand(site, 'return b', { source: 'donor', op: 'statement_donor' })]
+              : [],
+      statusOf: (job) => (job.candidate.text === FIX ? 'plausible' : 'unchanged'),
+    });
+    const guard = createDecide();
+    let decisions = 0;
+    deps.decide = (c, m, g, results) => {
+      decisions += 1;
+      return guard(c, m, g, results);
+    };
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') {
+      expect(r.applied.candidate.text).toBe(FIX);
+      expect(r.note).toBeUndefined();
+    }
+    // one batch of the four candidates of the three sources, one decision, no Jev question
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.text))).toEqual([['return gcd(a, b)', FIX, 'return a % b', 'return b']]);
+    expect(decisions).toBe(1);
+    expect(ctx.askCalls).toEqual([]);
+    // the site's sources were exhausted BEFORE the decision, so the guard's rule (a) saw the site batch as done and held nothing
+    expect([...(goal.exhausted.get(siteKey(replace)) ?? [])].sort()).toEqual(['donor', 'mutation', 'template']);
+    expect(guardState(mem).pending).toBeNull();
+    expect(r.trace).toMatchObject({ plausible: 1, candidatesTested: 4, runMode: 'SIEVE', outcome: 'fixed' });
+    // a later search finds nothing fresh at the site: no batch, no decision
+    goal.status = 'open';
+    mem.stepBudget = fakeBudget({ jev: 10 });
+    const again = await searchSubGoal(ctx, mem, goal, deps);
+    expect(again.kind).toBe('parked');
+    expect(decisions).toBe(1);
+    expect(deps.rec.runBatches).toHaveLength(1);
+  });
+
+  it('complementary partials: their untested pair runs before the batch that would spend the pairs reserve, and a passing pair is committed as one composite candidate', async () => {
+    const { file, replace, insert } = gcdFixture();
+    const ctx = fakeCtx();
+    const base = summary({ command: 'pytest -q', failing: [GCD_TEST, TWO], passing: [GCD_OTHER_TEST] });
+    // 40 runs on a 300 ms / 8-lane oracle: the 15 s pairs reserve is 400 runs, so any batch would spend it once a pair exists
+    const mem = fakeMemory([file], base, { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 40 }) });
+    expect(runsBeforeReserve(mem)).toBe(0);
+    expect(runsBeforeReserve({ oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1500, wallMs: 90_000 }) })).toBe(1500 - Math.max(PAIRS_RESERVE_RUNS, Math.ceil((PAIRS_RESERVE_WALL_MS * 8) / 300)));
+    const goal = fakeGoal({ tests: [GCD_TEST, TWO] });
+    const filler = siteAt(file, 2);
+    const deps = fakeSubGoalDeps({
+      sites: [replace, insert, filler],
+      seed: (source, site) =>
+        source === 'mutation' && site === replace
+          ? [cand(site, 'return gcd(b, a % b)  # half 1', { op: 'argument_swap' })]
+          : source === 'template' && site === insert
+            ? [cand(site, 'return a  # half 2', { source: 'template', op: 'insert_return' })]
+            : source === 'mutation' && site === filler
+              ? [cand(site, 'if b == 1:'), cand(site, 'if b != 0:'), cand(site, 'if b >= 0:')]
+              : [],
+    });
+    // the guard's bookkeeping, minimal: partials are remembered (bases.ts), a passer commits; the real pairing
+    deps.decide = async (_c, m, g, results) => {
+      for (const o of results) if (o.status === 'partial') guardState(m).partials.push({ goalId: g.id, outcome: o });
+      const w = results.find((o) => o.status === 'plausible');
+      return w === undefined ? { kind: 'continue' } : { kind: 'commit', applied: w.applied, allGoalTestsPass: true };
+    };
+    deps.pairsOfPartials = pairsOfPartials;
+    // the runner: half 1 passes GCD_TEST, half 2 passes TWO, their pair passes both, the filler changes nothing
+    deps.runQueue = async (_c, m, queue, _g, runsAllowed) => {
+      const jobs = queue.pop(runsAllowed);
+      deps.rec.runBatches.push(jobs);
+      m.stepBudget.testRunsLeft -= jobs.length;
+      const outcomes = jobs.map((j) => {
+        const t = j.candidate.text;
+        if (j.candidate.op === 'pair_of_partials') return outcomeOf(j, 'plausible');
+        if (t.includes('half 1')) return outcomeOf(j, 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, GCD_TEST], failing: [TWO] }) });
+        if (t.includes('half 2')) return outcomeOf(j, 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, TWO], failing: [GCD_TEST] }) });
+        return outcomeOf(j, 'unchanged');
+      });
+      for (const o of outcomes) m.tried.add(sha12(o.applied.diff));
+      return outcomes;
+    };
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') {
+      expect(r.applied.candidate.op).toBe('pair_of_partials');
+      expect(r.applied.candidate.extraEdits).toHaveLength(1);
+      expect(r.applied.files[0]?.after).toContain('half 1');
+      expect(r.applied.files[0]?.after).toContain('half 2');
+    }
+    // batches: half 1 at L5, half 2 at the gap, then the pair — the filler site was enumerated but its batch never ran
+    expect(deps.rec.runBatches.map((b) => b.length)).toEqual([1, 1, 1]);
+    expect(deps.rec.runBatches[2]?.[0]?.candidate.op).toBe('pair_of_partials');
+    expect(deps.rec.enumerations.some((e) => e.line === 2 && e.source === 'mutation')).toBe(true);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'pairs' && /testing 1 pair of complementary partials/.test(e.detail))).toBe(true);
+    expect(r.trace.bySource.composite).toEqual({ enumerated: 1, tested: 1, passed: 1 });
+    expect(r.trace.outcome).toBe('fixed');
+  });
+
+  it('a step that ends on its budget commits the passer the guard holds (pending or suspect) instead of returning `budget` with the hold dropped', async () => {
+    for (const hold of ['pending', 'suspect'] as const) {
+      const { file, replace } = gcdFixture();
+      const ctx = fakeCtx();
+      const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1 }) });
+      const goal = fakeGoal();
+      const deps = fakeSubGoalDeps({
+        sites: [replace],
+        seed: (source, site) => (source === 'mutation' ? [cand(site, 'return 13', { op: 'constant_substitution' })] : []),
+        statusOf: () => 'plausible',
+        decide: (results, _batch, m) => {
+          const first = results[0];
+          if (first === undefined) throw new Error('expected the one candidate');
+          if (hold === 'suspect') guardState(m).suspect = { goalId: 'g1', outcome: first, phase: 'SEEDS', signals: ['deletes_statement'], noul: 0.1 };
+          else guardState(m).pending = { goalId: 'g1', outcome: first, siteKey: siteKeyOf(first.applied.candidate), phase: 'SEEDS' };
+          return { kind: 'continue', plausible: 1 };
+        },
+      });
+      const r = await searchSubGoal(ctx, mem, goal, deps);
+      // the one run was spent: the budget ended the step, and the held passer left with it as the commit
+      expect(deps.rec.runBatches).toHaveLength(1);
+      expect(mem.stepBudget.exhausted()).toBe(true);
+      expect(r.kind).toBe('commit');
+      if (r.kind === 'commit') {
+        expect(r.applied.candidate.text).toBe('return 13');
+        expect(r.note).toBe(hold === 'suspect' ? 'possible overfit' : undefined);
+      }
+      expect(r.trace.outcome).toBe('fixed');
+      expect(guardState(mem).suspect).toBeNull();
+      expect(guardState(mem).pending).toBeNull();
+      expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'guard' && /ends on its budget; committing the held passer/.test(e.detail))).toBe(true);
+    }
   });
 });
