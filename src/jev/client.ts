@@ -6,6 +6,7 @@
  * engine's (§6), model pinning is decided by the engine through `checkServedModel` (§5.4
  * rule 7), and every string that can carry an HTTP body or a key passes through `redact`.
  */
+import { appendFileSync } from 'node:fs';
 import { ConfigError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError } from '../errors.js';
 import { sha12 } from '../core/hash.js';
 import { parseJson, toJson } from '../core/json.js';
@@ -117,7 +118,7 @@ function captureHeaders(h: Headers): JevResponseHeaders {
  * Read at most `maxBytes` of the body. `res.text()` would buffer whatever the edge sends; a
  * body over the cap is not a Jev answer, so the rest is cancelled and `truncated` reported.
  */
-async function readBodyBounded(res: Response, maxBytes: number): Promise<{ text: string; truncated: boolean }> {
+async function readBodyBounded(res: Response, maxBytes: number, signal?: AbortSignal): Promise<{ text: string; truncated: boolean }> {
   const declared = Number(res.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > maxBytes) {
     await res.body?.cancel().catch(() => undefined);
@@ -125,20 +126,42 @@ async function readBodyBounded(res: Response, maxBytes: number): Promise<{ text:
   }
   if (res.body === null) return { text: '', truncated: false };
   const reader = res.body.getReader();
+  // Every read() is raced against the attempt signal. undici does not settle a pending read()
+  // on a reader-locked body when the fetch is aborted after the headers arrived (observed live
+  // 2026-09-19: headers at t, Ctrl-C at t, body read pending forever), so the abort has to win
+  // here explicitly and the reader is cancelled by hand.
+  let onAbort: (() => void) | null = null;
+  const aborted = new Promise<never>((_resolve, reject) => {
+    if (!signal) return;
+    if (signal.aborted) {
+      reject(signal.reason);
+      return;
+    }
+    onAbort = (): void => reject(signal.reason);
+    signal.addEventListener('abort', onAbort, { once: true });
+  });
+  aborted.catch(() => undefined);
   const chunks: Uint8Array[] = [];
   let total = 0;
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    if (value === undefined) continue;
-    total += value.byteLength;
-    if (total > maxBytes) {
-      await reader.cancel().catch(() => undefined);
-      return { text: Buffer.concat(chunks).toString('utf8'), truncated: true };
+  try {
+    for (;;) {
+      const { done, value } = await Promise.race([reader.read(), aborted]);
+      if (done) break;
+      if (value === undefined) continue;
+      total += value.byteLength;
+      if (total > maxBytes) {
+        await reader.cancel().catch(() => undefined);
+        return { text: Buffer.concat(chunks).toString('utf8'), truncated: true };
+      }
+      chunks.push(value);
     }
-    chunks.push(value);
+    return { text: Buffer.concat(chunks).toString('utf8'), truncated: false };
+  } catch (e) {
+    await reader.cancel(e).catch(() => undefined);
+    throw e;
+  } finally {
+    if (signal && onAbort) signal.removeEventListener('abort', onAbort);
   }
-  return { text: Buffer.concat(chunks).toString('utf8'), truncated: false };
 }
 
 /** Jev rejects any state that is not a string, object or array (research 06 §1); fail before paying for the 400. */
@@ -154,6 +177,17 @@ type AttemptOutcome =
   | { kind: 'ok'; response: JevResponse; headers: JevResponseHeaders; latencyMs: number }
   | { kind: 'http'; error: JevHttpError }
   | { kind: 'invalid'; error: JevResponseError };
+
+/** Opt-in trace (JEVCODE_TRACE=<file>) for shutdown debugging; never affects the request. */
+function jtrace(msg: string): void {
+  const f = process.env['JEVCODE_TRACE'];
+  if (!f) return;
+  try {
+    appendFileSync(f, `${new Date().toISOString()} jev.client ${msg}\n`);
+  } catch {
+    // trace only
+  }
+}
 
 export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decider {
   // Every error message goes through redact; a missing function would surface as a bare
@@ -218,11 +252,15 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
     let truncated: boolean;
     let captured: JevResponseHeaders;
     try {
+      jtrace('attempt: fetch start');
       const res = await doFetch(cfg.baseUrl, { method: 'POST', headers, body, signal: attemptCtl.signal });
+      jtrace(`attempt: headers status=${res.status}`);
       status = res.status;
       captured = captureHeaders(res.headers);
-      ({ text, truncated } = await readBodyBounded(res, JEV_RESPONSE_BODY_MAX_BYTES));
+      ({ text, truncated } = await readBodyBounded(res, JEV_RESPONSE_BODY_MAX_BYTES, attemptCtl.signal));
+      jtrace(`attempt: body read bytes=${text.length}`);
     } catch (e) {
+      jtrace(`attempt: caught ${e instanceof Error ? e.name : typeof e} signalAborted=${signal.aborted}`);
       // The engine's abort wins over everything: rethrow its reason untouched (§5.1).
       if (signal.aborted) throw signal.reason;
       const timedOut = timedOutByTimer || isTimeoutError(e);
