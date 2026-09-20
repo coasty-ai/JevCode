@@ -6,6 +6,7 @@
  * bottom name the factory each module must export, so wiring code (cli/main.tsx) and the
  * bench can be written against this file alone.
  */
+// contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
 
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
@@ -79,7 +80,8 @@ export interface PlanUnverified {
   step: number;
   judged: number;
 }
-export type HarnessProblemKind = 'replan' | 'rejected_claim' | 'stale_plan';
+/** TUI-DESIGN §15 item 2: 'human' = a steer (step > 0) or a seed / undo note (step 0) */
+export type HarnessProblemKind = 'replan' | 'rejected_claim' | 'stale_plan' | 'human';
 export interface HarnessProblem {
   kind: HarnessProblemKind;
   text: string;
@@ -93,6 +95,13 @@ export interface Plan {
   /** generator entries, replaced each step */
   openProblems: string[];
   /** harness-owned (§6 Plan) */
+  harnessProblems: HarnessProblem[];
+}
+/** TUI-DESIGN §15 item 3: bounded plan snapshot written at commit for /rewind (each list <= 20 x 200 chars) */
+export interface PlanSnapshot {
+  done: PlanItemDone[];
+  remaining: string[];
+  unverified: PlanUnverified[];
   harnessProblems: HarnessProblem[];
 }
 
@@ -227,7 +236,11 @@ export type StopReason =
   | 'replan_stop'
   | 'impossible'
   | 'generator_done' // Jev-off only
-  | 'error';
+  | 'error'
+  | 'human_pause' // TUI-DESIGN §15 item 1: Esc / pause at the loop top; exit-4 family, resumable without --force
+  | 'token_cap'; // TUI-DESIGN §15 item 1: RunLimits.maxGeneratorTokens reached (allowUnpriced); a plain budget stop
+/** TUI-DESIGN §15 item 1: the signal behind abort('signal'); exitCodeFor maps to 130 / 143 / 129 */
+export type SignalName = 'SIGINT' | 'SIGTERM' | 'SIGHUP';
 
 export type ReplanMove = 'change_approach' | 'gather_context' | 'fix_environment' | 'revert_changes' | 'stop_and_report' | 'none_of_these';
 
@@ -294,6 +307,8 @@ export interface StepTiming {
   execMs: number;
   harnessMs: number;
   totalMs: number;
+  /** TUI-DESIGN §15 item 3: pre + post images (§12.3); already inside harnessMs, reported separately */
+  imagesMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -322,6 +337,8 @@ export interface StepRecord {
   interruptedAt?: { stage: StageName; reason: InterruptReason };
   /** stage failure (§6), redacted */
   error?: { stage: StageName; code: string; message: string };
+  /** TUI-DESIGN §15 item 3: the committed plan after this step, bounded, for /rewind */
+  planAfter?: PlanSnapshot;
 }
 
 export interface RunCounters {
@@ -339,6 +356,14 @@ export interface SerializedError {
   code: string;
   message: string;
   exitCode: number;
+  /** TUI-DESIGN §15 item 4: HTTP status when the error was an HTTP failure */
+  status?: number;
+  /** TUI-DESIGN §15 item 4 */
+  retryable?: boolean;
+  /** TUI-DESIGN §15 item 4 */
+  side?: 'jev' | 'generator';
+  /** TUI-DESIGN §15 item 4: response id / x-generation-id when known */
+  requestId?: string | null;
 }
 
 export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md)
@@ -407,11 +432,30 @@ export interface GenerateResult {
   stopReason: string;
   latencyMs: number;
 }
+/** TUI-DESIGN §15 item 5: why a client is about to sleep before a retry; message = redacted <= 200-char hint, never a body */
+export interface RetryCause {
+  kind: 'http' | 'network' | 'timeout' | 'invalid' | 'stream';
+  status: number | null;
+  code: string | null;
+  message: string;
+}
+/** TUI-DESIGN §15 item 5 */
+export interface RetryInfo {
+  attempt: number;
+  maxAttempts: number;
+  waitMs: number;
+  retryAfter: boolean;
+  cause: RetryCause;
+}
 export interface GenerateOptions {
   signal: AbortSignal;
   onDelta?: (text: string) => void;
   /** streamed tool-call argument fragments (for the TUI's "streaming action… N chars") */
   onToolDelta?: (fragment: string) => void;
+  /** TUI-DESIGN §15 item 5: called before each retry sleep */
+  onRetry?: (info: RetryInfo) => void;
+  /** TUI-DESIGN §15 item 5: a GETTER read before each sleep (one AbortController per sleep); clients: `await sleep(waitMs, signal, opts.wake?.())` */
+  wake?: () => AbortSignal | undefined;
 }
 export type ProviderName = 'anthropic' | 'openrouter' | 'mock';
 export interface Provider {
@@ -428,6 +472,10 @@ export interface AskOptions {
   signal: AbortSignal;
   stage: StageName;
   step: number;
+  /** TUI-DESIGN §15 item 5 */
+  onRetry?: (info: RetryInfo) => void;
+  /** TUI-DESIGN §15 item 5 */
+  wake?: () => AbortSignal | undefined;
 }
 export interface AskResult {
   answers: Record<string, Answer>;
@@ -454,10 +502,21 @@ export interface ConfirmRequest {
   step: number;
   proposal: Proposal;
   risk: RiskAssessment;
+  /** TUI-DESIGN §15 item 6: draft.matchesIntent -> row 8 of reviewHeaderLines (§6.1); spread in only when not null */
+  matchesIntent?: number | null;
+  /** TUI-DESIGN §15 item 6: the risk stage's Jev latency for the 120-column title */
+  jevLatencyMs?: number;
+}
+/** TUI-DESIGN §15 item 6: note = redacted, <= 600, one line; `...(note ? { note } : {})` */
+export interface ConfirmOutcome {
+  approved: boolean;
+  note?: string;
 }
 export interface Confirmer {
   /** Resolves true (approve) or false (decline). Rejects with AbortError when `signal` aborts. Never auto-approves. */
   confirm(req: ConfirmRequest, opts: { signal: AbortSignal }): Promise<boolean>;
+  /** TUI-DESIGN §15 item 6: preferred by the engine when present; the TUI implements it for the `d` note */
+  confirmDetailed?(req: ConfirmRequest, opts: { signal: AbortSignal }): Promise<ConfirmOutcome>;
   /** Human-readable identity used in the declined reason ("reviewer" | "no reviewer in bench runs" | ...). */
   readonly identity: string;
 }
@@ -473,6 +532,10 @@ export interface SpendSnapshot {
   totalUsd: number;
   capUsd: number;
   exceeded: boolean;
+  /** TUI-DESIGN §15 item 7: the parent (session) meter's exceeded(); present only with a parent (conditional spread) */
+  parentExceeded?: boolean;
+  /** TUI-DESIGN §15 item 7: the parent's totals; present only with a parent */
+  parent?: { totalUsd: number; capUsd: number };
 }
 export interface SpendMeter {
   /** never throws; records (and forwards to the parent) first, then evaluates */
@@ -484,6 +547,8 @@ export interface SpendMeter {
   restore(s: SpendSnapshot): void;
   /** bench: per-run meter under the shared bench meter */
   child(capUsd: number): SpendMeter;
+  /** TUI-DESIGN §15 item 7: root meter: replace the cap (USD or +Infinity); children keep forwarding to the same object; never recreate a meter */
+  setCap?(capUsd: number): void;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -528,7 +593,43 @@ export interface WorkspaceInfo {
   git: boolean;
   hasTests: boolean;
   testCommand: TestCommand | null;
+  /** TUI-DESIGN §15 item 12: the run-start probe (§12.1) when one was handed to createWorkspace */
+  gitState?: GitState;
 }
+
+// TUI-DESIGN §15 item 12: git facts probed once at run start (workspace/gitstate.ts, two unsandboxed spawns)
+export interface StatusEntryV2 {
+  xy: string;
+  sub: string;
+  path: string;
+  from?: string;
+  hH?: string;
+  hI?: string;
+  mode?: string;
+}
+export type GitHead = { kind: 'branch'; name: string; oid: string | null } | { kind: 'detached'; oid: string } | { kind: 'unborn'; name: string };
+export interface GitState {
+  repo: boolean;
+  reason?: 'not-a-repo' | 'git-missing' | 'bare' | 'timeout';
+  gitDir: string | null;
+  commonDir: string | null;
+  topLevel: string | null;
+  prefix: string;
+  linkedWorktree: boolean;
+  head: GitHead | null;
+  upstream: string | null;
+  ahead: number | null;
+  behind: number | null;
+  dirty: { modified: number; staged: number; untracked: number; renamed: number; unmerged: number; submodules: number; entries: StatusEntryV2[] };
+  probedAt: string;
+  probeMs: number;
+}
+/** TUI-DESIGN §15 item 12: what run.json keeps of the probe; `end` from the run:end re-probe (P51), `resumedOn` on --resume when head moved (P52) */
+export type RunGitMeta = Pick<GitState, 'repo' | 'reason' | 'head' | 'upstream' | 'linkedWorktree' | 'prefix'> & {
+  dirtyAtStart: { modified: number; staged: number; untracked: number };
+  end?: Pick<GitState, 'head' | 'upstream' | 'ahead' | 'behind'> & { dirty: { modified: number; staged: number; untracked: number } };
+  resumedOn?: GitHead | null;
+};
 export interface TargetInfo {
   path: string;
   existsBefore: boolean;
@@ -563,6 +664,12 @@ export interface Workspace {
   changedFiles(): Promise<string[]>;
   target(path: string, createdThisRun: ReadonlySet<string>): Promise<TargetInfo>;
   /** files the run created (write/patch), tracked by the engine and passed back for target() */
+  /** TUI-DESIGN §15 item 8: mention-only read of a secret path behind --allow-secret-mention (§10.4) */
+  readSecretForMention?(rel: string, maxBytes: number): Promise<FileView>;
+  /** TUI-DESIGN §15 item 8: the run-start probe handed in by createEngine (§12.1), refreshed by invalidateCandidates() */
+  gitState?(): GitState | null;
+  /** TUI-DESIGN §15 item 8: snapshotDirty ∪ statusEntries ∪ touched, in memory */
+  dirtySet?(): ReadonlySet<string>;
 }
 
 export type SandboxLevel = 'seatbelt' | 'none';
@@ -668,8 +775,32 @@ export interface CheckpointState {
   jevQuestions?: number;
   /** opaque jev-only synthesizer state (docs/JEV-ONLY-DESIGN.md §5.2); absent for other modes */
   synthState?: Json;
+  /** TUI-DESIGN §15 item 9: <= 8 steers queued and not yet applied (activeHuman is re-derived from plan.harnessProblems on resume, not stored) */
+  pendingDirectives?: PendingDirective[];
+  /** TUI-DESIGN §15 item 9: <= 20; carried from the seed or EngineOptions.undoLog, never written into a finished run */
+  undoLog?: UndoLogEntry[];
+  /** TUI-DESIGN §15 item 9 */
+  checkpointDegraded?: boolean;
   resumes: number;
   updatedAt: string;
+}
+
+/** TUI-DESIGN §15 item 9: a queued steer; raw in memory (§8.6), masked on disk by the store's write-time redaction (P56) */
+export interface PendingDirective {
+  text: string;
+  at: string;
+  index: number;
+}
+/** TUI-DESIGN §15 item 9 */
+export type UndoSkipReason = 'link' | 'escape' | 'submodule' | 'not-recoverable' | 'head-moved' | 'refused' | 'declined' | 'cap' | 'size';
+/** TUI-DESIGN §15 item 9 */
+export interface UndoLogEntry {
+  runId: string;
+  step: number;
+  at: string;
+  by: 'undo' | 'rewind';
+  restored: string[];
+  skipped: { path: string; reason: UndoSkipReason }[];
 }
 
 export interface CheckpointEnvelope {
@@ -697,6 +828,26 @@ export interface RunMeta {
   resumes: { resumedAt: string; previousStopReason: StopReason | null }[];
   resolvedJevModel: string | null;
   jevModelDrift: { step: number; served: string } | null;
+  /** TUI-DESIGN §15 item 10: the session this run belongs to (default: the run id itself) */
+  sessionId?: string;
+  /** TUI-DESIGN §15 item 10: the run this one was seeded from (§8.3) */
+  parentRunId?: string | null;
+  /** TUI-DESIGN §15 item 10 */
+  source?: RunSource;
+  /** TUI-DESIGN §15 item 10 */
+  title?: string;
+  /** TUI-DESIGN §15 item 10: scalar replace via updateMeta (run:end re-probe P51, resumedOn P52) */
+  git?: RunGitMeta;
+  /** TUI-DESIGN §15 item 10: AGENTS.md files folded into the generator system prompt */
+  instructions?: InstructionRecord[];
+}
+/** TUI-DESIGN §15 item 10 */
+export type RunSource = 'cli' | 'bench' | 'perf';
+/** TUI-DESIGN §15 item 10 */
+export interface InstructionRecord {
+  path: string;
+  sha256: string;
+  bytes: number;
 }
 
 export interface GeneratorCallRecord {
@@ -717,7 +868,8 @@ export interface CheckpointStore {
   create(meta: RunMeta): Promise<void>;
   /** CheckpointError, exit 3 */
   load(): Promise<{ meta: RunMeta; state: CheckpointState; recoveredFrom: 'state' | 'prev' }>;
-  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift'>>): Promise<void>;
+  /** TUI-DESIGN §15 item 10: patch type gains 'title' | 'instructions' | 'git' (git: scalar replace) */
+  updateMeta(patch: Partial<Pick<RunMeta, 'overrides' | 'resumes' | 'resolvedJevModel' | 'jevModelDrift' | 'title' | 'instructions' | 'git'>>): Promise<void>;
   /** write tmp + fsync; rename state.json -> state.prev.json; rename tmp -> state.json */
   writeState(state: CheckpointState): Promise<void>;
   /** synchronous last resort used by shutdown() on a second Ctrl-C or on 'exit' */
@@ -733,6 +885,8 @@ export interface CheckpointStore {
   flush(): Promise<void>;
   /** non-fatal warnings (prev fallback, torn steps.jsonl lines) */
   lastWarnings?(): readonly string[];
+  /** TUI-DESIGN §15 item 10: ui.json; optional so injected fakes still type-check */
+  writeUi?(ui: Json): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -749,6 +903,49 @@ export interface RunLimits {
   maxCommandTimeoutMs: number;
   maxOutputBytes: number;
   spendCapUsd: number;
+  /** TUI-DESIGN §15 item 11: only under allowUnpriced; reaching it stops with 'token_cap' */
+  maxGeneratorTokens?: number;
+}
+
+// TUI-DESIGN §15 item 11: session seeding, clamps and blocking pauses
+export interface EngineSeed {
+  parentRunId: string;
+  /** done/remaining/unverified from the parent (or planAfter of a rewound step); openProblems []; harnessProblems = step-0 human problems (§8.3) */
+  plan: Plan;
+  /** last 4 of the parent, notes += 'from run <id>' */
+  window: WindowEntry[];
+  createdThisRun: string[];
+  lastTestRun: LastTestRun | null;
+  undoLog?: UndoLogEntry[];
+  /** @-mentions: boosted into the context candidates, never past the caps */
+  pinnedFiles?: string[];
+}
+/** §9.3: main() emits budget:clamp from it right after run:ready */
+export interface SessionClamp {
+  runCapUsd: number;
+  clampedToUsd: number;
+  sessionSpentUsd: number;
+  sessionCapUsd: number;
+}
+export interface SessionRef {
+  sessionId: string | null;
+  parentRunId: string | null;
+  source: RunSource;
+  title?: string;
+  clamp?: SessionClamp;
+}
+export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable';
+export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin';
+export interface BlockingRequest {
+  id: string;
+  step: number;
+  kind: BlockingKind;
+  side?: 'jev' | 'generator';
+  detail: string;
+  sources?: string[];
+  retryInMs?: number;
+  stop: StopReason;
+  exitCode: number;
 }
 
 export interface EngineOptions {
@@ -783,8 +980,27 @@ export interface EngineOptions {
   synthesizer?: Synthesizer;
   /** injectable clock for perf/unit tests */
   now?: () => number;
-  /** injected exit for tests of the forced second Ctrl-C path */
+  /** injected exit for tests of the forced second Ctrl-C path (TUI-DESIGN §13.4: always injected by cli/session.ts) */
   exit?: (code: number) => never;
+  /** TUI-DESIGN §15 item 11: follow-up seed from the parent run (§8.3) */
+  seed?: EngineSeed;
+  /** TUI-DESIGN §15 item 11: an initial pending directive consumed at the first step start exactly like a steer: typed while `starting`, or the /undo note on /resume (§12.4) */
+  humanDirective?: string;
+  /** TUI-DESIGN §15 item 11: /resume after /undo or /rewind: merged into the restored undoLog (§12.4) */
+  undoLog?: UndoLogEntry[];
+  /** TUI-DESIGN §15 item 11: written into run.json; default { sessionId: null -> runId, parentRunId: null, source: 'cli' }; bench/conditions.ts passes source 'bench', the perf drivers `--source perf` */
+  session?: SessionRef;
+  /** TUI-DESIGN §15 item 11: AGENTS.md: text -> generator system prompt only; files -> run.json.instructions[] */
+  instructions?: { files: InstructionRecord[]; text: string };
+  /** TUI-DESIGN §15 item 11: count for the run:start secret-ack item (never values) */
+  secretsAcked?: number;
+  /** TUI-DESIGN §15 item 11 */
+  allowUnpriced?: boolean;
+  /** TUI-DESIGN §15 item 11: every blocking pause (§13.3) is awaited here at the loop top; absent -> every answer is 'stop' (bench, --plain pipe, --no-input, --json) */
+  blocker?: (req: BlockingRequest) => Promise<BlockingAnswer>;
+  /** TUI-DESIGN §15 item 11: resolved XDG + legacy jevcode config dirs -> seatbelt read denies (§12.7) */
+  configDirs?: readonly string[];
+  // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
 // ---------------------------------------------------------------------------------------
@@ -836,12 +1052,32 @@ export interface EngineStatus {
   stage: StageName | 'idle';
   spend: SpendSnapshot;
   stopReason: StopReason | null;
+  /** TUI-DESIGN §15 item 13 */
+  maxReplans?: number;
+  /** TUI-DESIGN §15 item 13 */
+  replans?: number;
+  /** TUI-DESIGN §15 item 13: pause() requested, run:end pending at the next loop top */
+  pausing?: boolean;
+  /** TUI-DESIGN §15 item 13: number of queued steers */
+  pendingDirectives?: number;
+  /** TUI-DESIGN §15 item 13: the blocking pause awaiting an answer (§13.3) */
+  blocked?: BlockingKind | null;
+  /** TUI-DESIGN §15 item 13: the active retry sleep (§13.2) */
+  retrying?: { side: 'jev' | 'generator'; attempt: number; maxAttempts: number; untilMs: number } | null;
+  /** TUI-DESIGN §15 item 13: generator tokens used against RunLimits.maxGeneratorTokens */
+  generatorTokens?: { used: number; cap: number | null };
 }
+
+// TUI-DESIGN §15 item 14: notices and renderer labels
+export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui';
+/** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1) */
+export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]';
 
 export type EngineEvent =
   | { type: 'synth'; step: number; phase: string; detail: string; candidates?: number; tested?: number } // jev-only synthesizer progress
   | { type: 'run:start'; runId: string; task: string; mode: EngineMode; resumedFromStep: number | null }
-  | { type: 'run:ready'; runId: string; step: number; maxSteps: number; task: string; resumed: boolean }
+  // TUI-DESIGN §15 item 14: optional session fields, built as `{ …, sessionId: session?.sessionId ?? runId, parentRunId: session?.parentRunId ?? null }`
+  | { type: 'run:ready'; runId: string; step: number; maxSteps: number; task: string; resumed: boolean; sessionId?: string; parentRunId?: string | null; sandbox?: SandboxLevel; noNetwork?: boolean; maxReplans?: number }
   | { type: 'step:start'; step: number; startedAt: string }
   | { type: 'stage:start'; step: number; stage: StageName }
   | { type: 'stage:end'; step: number; stage: StageName; ms: number }
@@ -856,7 +1092,7 @@ export type EngineEvent =
   | { type: 'proposal'; step: number; proposal: Proposal }
   | { type: 'risk'; step: number; risk: RiskAssessment }
   | { type: 'confirm:request'; request: ConfirmRequest }
-  | { type: 'confirm:resolved'; step: number; id: string; approved: boolean; aborted: boolean }
+  | { type: 'confirm:resolved'; step: number; id: string; approved: boolean; aborted: boolean; note?: string } // TUI-DESIGN §15 item 14: note from confirmDetailed
   | { type: 'exec:start'; step: number; action: Action }
   | { type: 'exec:output'; step: number; stream: 'stdout' | 'stderr'; chunk: string }
   | { type: 'outcome'; step: number; outcome: ActionOutcome }
@@ -869,7 +1105,24 @@ export type EngineEvent =
   | { type: 'status'; status: EngineStatus }
   | { type: 'transcript'; step: number | null; level: 'info' | 'warn' | 'error'; text: string }
   | { type: 'error'; step: number | null; error: SerializedError; fatal: boolean }
-  | { type: 'run:end'; result: RunResult };
+  | { type: 'run:end'; result: RunResult; exitCode?: number; resumable?: boolean; paths?: { runDir: string; transcript: string; log: string } } // TUI-DESIGN §15 item 14: optional fields
+  // TUI-DESIGN §15 item 14: new members (the `synth` member is NOT extended here: its structured fields are the synth team's optional extension)
+  | { type: 'steer:queued'; step: number; index: number; text: string; queued: number }
+  | { type: 'steer:applied'; step: number; count: number; superseded: string[] }
+  | { type: 'steer:withdrawn'; step: number; index: number }
+  | { type: 'pause:requested'; step: number }
+  | { type: 'budget:warn'; scope: 'run' | 'session'; pct: 50 | 80 | 95; spentUsd: number; capUsd: number; step: number; stepsLeftEstimate: number | null; restored: boolean; jevShare?: { jevUsd: number; generatorUsd: number } }
+  | { type: 'budget:stop'; scope: 'run' | 'session'; by: 'run' | 'session' | 'tokens'; spentUsd: number; capUsd: number; step: number; at: StoppedAt; raise: { command: string; flag: string; minimum: number } } // the follow-up refusal is a controller line (§9.3, §8.9), not an event
+  | { type: 'budget:clamp'; runCapUsd: number; clampedToUsd: number; sessionSpentUsd: number; sessionCapUsd: number } // emitted by main() after run:ready from EngineOptions.session.clamp (§9.3)
+  | { type: 'budget:override'; setting: string; from: string; to: string; appliesTo: 'resume'; source: '/budget' | 'flag' } // emitted by main() per run.json.overrides[] entry recorded on this resume (§9.4)
+  | { type: 'budget:unpriced'; side: SpendSource; model: string; step: number; tokens: { input: number; output: number } }
+  | { type: 'retry'; side: 'jev' | 'generator'; step: number | null; stage: StageName | null; info: RetryInfo }
+  | { type: 'retry:settled'; side: 'jev' | 'generator'; step: number | null; attempts: number; ok: boolean; totalWaitMs: number }
+  | { type: 'notice'; step: number | null; kind: NoticeKind; level: 'info' | 'warn' | 'error'; text: string; detail?: string; label?: UiLabel } // kind 'ui' + label = Engine.annotate() (§15.1); detail is the TUI-only body
+  | { type: 'workspace'; git: RunGitMeta; instructions: InstructionRecord[]; sandbox: SandboxLevel }
+  | { type: 'blocking:request'; request: BlockingRequest }
+  | { type: 'blocking:resolved'; id: string; answer: BlockingAnswer; auto: boolean } // auto = the jev-unreachable timer answered
+  | { type: 'secret-ack'; step: number | null; count: number };
 
 export type EngineEventType = EngineEvent['type'];
 
@@ -879,6 +1132,9 @@ export interface EngineEmitter {
   emit(e: EngineEvent): void;
 }
 
+/** TUI-DESIGN §15 item 15 */
+export type SteerResult = { ok: true; index: number; queued: number } | { ok: false; reason: 'empty' | 'full' | 'finished'; queued: number };
+
 export interface Engine {
   readonly runId: string;
   readonly events: EngineEmitter;
@@ -886,16 +1142,120 @@ export interface Engine {
   readonly signal: AbortSignal;
   /** resolves for every StopReason including 'error'; never rejects */
   run(): Promise<RunResult>;
-  /** idempotent; see §11 shutdown() */
-  abort(reason: 'human_abort' | 'signal'): void;
+  /**
+   * idempotent; see §11 shutdown(). TUI-DESIGN §15 item 15 (widened): 'error' stores opts.error as the fatal error
+   * (fatalExit, §13.4); opts.signal names the signal for exit codes 130 / 143 / 129 (§13.5)
+   */
+  abort(reason: 'human_abort' | 'signal' | 'error', opts?: { signal?: SignalName; error?: SerializedError }): void;
   status(): EngineStatus;
   /** current checkpoint state for the synchronous last-resort write (§11) */
   snapshotState(): CheckpointState | null;
+  /** TUI-DESIGN §15 item 15: queue a human directive for the next step start (<= 8 x 600 chars; raw in memory, masked on every artefact) */
+  steer(text: string, opts?: { secretsAcked?: number }): SteerResult;
+  /** TUI-DESIGN §15 item 15: withdraw the newest queued directive; null when none */
+  unsteer(): PendingDirective | null;
+  /** TUI-DESIGN §15 item 15: stop with 'human_pause' at the next §9.1 rule-1 point; idempotent */
+  pause(): void;
+  /** TUI-DESIGN §15 item 15: end the current retry sleep early (F12 `[r]`); false when no retry sleep is active */
+  retryNow(): boolean;
+  /** TUI-DESIGN §15 item 15: a renderer-originated transcript line while the run is live (§15.1); false once finished, then the renderer keeps it local */
+  annotate(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' }): boolean;
 }
 
 // ---------------------------------------------------------------------------------------
 // Renderer (TUI or plain), wired by cli/main.tsx
 // ---------------------------------------------------------------------------------------
+
+// TUI-DESIGN §15 item 16: launch settings fixed at mount; session settings through the full chain after firstFrame() (§16)
+/** resolveLaunchSettings(flags, env): flag > env > default; pure; no file */
+export interface LaunchSettings {
+  fps: number;
+  renderMode: 'standard' | 'incremental';
+  screenReader: boolean;
+  ascii: boolean;
+  noColor: boolean;
+}
+/** the LaunchSettings members repeat the mount-time values (source flag | env | default only) */
+export interface UiConfig extends LaunchSettings {
+  theme: 'dark' | 'light' | 'daltonized' | 'ansi';
+  title: boolean;
+  reducedMotion: boolean;
+  notify: boolean;
+  osc52: boolean;
+  history: boolean;
+  noInput: boolean;
+  trustWorkspace: boolean;
+  budgetWarnings: boolean;
+  allowSecretMention: boolean;
+  exitCode: 'zero' | 'last-run';
+  logLevel: 'error' | 'warn' | 'info' | 'debug' | 'trace';
+  logFile: string | null;
+  keybindingsFile: string | null;
+}
+/**
+ * TUI-DESIGN §15 item 19 / §10.1: one detected secret span. Declared here so SessionHost is self-contained;
+ * core/redact.ts (O7) exports `detectSecrets` returning this shape.
+ */
+export interface SecretHit {
+  family: string;
+  label: string;
+  start: number;
+  end: number;
+  warnOnly: boolean;
+}
+/** implemented by cli/session.ts over config.redact / config.addSecret; the renderer calls it, never the engine directly */
+export interface SessionHost {
+  /** addSecret('composer#n', span) per span BEFORE createEngine (§10.2) */
+  submit(text: string, opts: { kind: 'prompt' | 'follow-up'; secretSpans: readonly string[]; pinnedFiles: readonly string[] }): Promise<void>;
+  command(line: string): Promise<void>;
+  /** addSecret per span BEFORE engine.steer; secretsAcked = spans.length */
+  steer(text: string, opts: { secretSpans: readonly string[] }): SteerResult;
+  unsteer(): PendingDirective | null;
+  pause(): void;
+  abort(reason: 'human_abort'): void;
+  retryNow(): boolean;
+  /** a renderer-originated line: engine.annotate() while a run is live, else a local `[ui]` item + `--json` `ui` line (§15.1) */
+  note(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' }): void;
+  redact(s: string): string;
+  addSecret(name: string, value: string): boolean;
+  /** §10.2; before setHost the composer detects with patternRedact only and holds Enter (§4.9) */
+  detectSecrets(s: string): readonly SecretHit[];
+  exit(code: number): void;
+  index(): readonly SessionRow[];
+  history(): HistoryStore | null;
+  /** pre-run: files.ts listCandidates() once after firstFrame(); from run:ready: the live workspace.listCandidates() (§5.4) */
+  workspaceCandidates(): Promise<readonly Candidate[]>;
+}
+export interface RunRow {
+  runId: string;
+  parentRunId: string | null;
+  startedAt: string;
+  endedAt: string | null;
+  stopReason: StopReason | null;
+  steps: number | null;
+  costUsd: { generator: number; jev: number } | null;
+  exitCode: number | null;
+  resumable: boolean | null;
+  resumes: number;
+  live: boolean;
+}
+export interface SessionRow {
+  sessionId: string;
+  workspace: string;
+  title: string;
+  task60: string;
+  runs: RunRow[];
+  lastUsed: string;
+  createdAt: string;
+  totalUsd: number;
+  mode: EngineMode;
+  branch: string | null;
+}
+export interface HistoryStore {
+  entries(filter: 'workspace' | 'all'): readonly string[];
+  append(kind: 'prompt' | 'steer' | 'command', text: string): void;
+  clear(): void;
+}
 
 export interface RendererOptions {
   /** task text (or "resuming <run-id>") shown in the first frame */
@@ -907,6 +1267,12 @@ export interface RendererOptions {
   stdin?: NodeJS.ReadStream;
   /** plain mode when stdin is not a TTY: decline after this many ms (default 0 = immediately) */
   confirmTimeoutMs?: number;
+  /** TUI-DESIGN §15 item 16 */
+  mode?: 'one-shot' | 'session';
+  /** TUI-DESIGN §15 item 16: fixed at mount; `ui` (UiConfig) arrives through setUi() after resolveConfig */
+  launch?: LaunchSettings;
+  /** TUI-DESIGN §15 item 16 */
+  host?: SessionHost;
 }
 export interface Renderer {
   readonly confirmer: Confirmer;
@@ -915,13 +1281,22 @@ export interface Renderer {
   /** resolves after Ink has flushed the first frame (perf hook) */
   firstFrame(): Promise<void>;
   unmount(): Promise<void>;
+  /** TUI-DESIGN §15 item 16: after firstFrame() + resolveConfig; a held submission flushes here (§4.9) */
+  setHost?(host: SessionHost): void;
+  /** TUI-DESIGN §15 item 16: session settings; theme / notify / … apply to new items and the dynamic region only */
+  setUi?(ui: UiConfig): void;
+  /** TUI-DESIGN §15 item 16: appends a local item — idle time only (§15.1) */
+  notify?(text: string, opts?: { level?: 'info' | 'warn' | 'error'; detail?: string; label?: UiLabel }): void;
 }
 
 // ---------------------------------------------------------------------------------------
 // Resolved configuration (config/*; consumed by cli/main.tsx)
 // ---------------------------------------------------------------------------------------
 
-export type ConfigSource = 'flag' | 'env' | `dotenv:${string}` | `file:${string}` | 'default' | 'run.json';
+// TUI-DESIGN §15 item 17: 'ignored:launch' = a file key for a launch setting (§16)
+export type ConfigSource = 'flag' | 'env' | `dotenv:${string}` | `file:${string}` | 'default' | 'run.json' | 'wizard' | 'derived' | 'session:/budget' | 'ignored:launch';
+/** TUI-DESIGN §15 item 17 */
+export type SecretSettingName = 'generator.apiKey' | 'decider.apiKey';
 
 export interface Resolved<T> {
   value: T;
@@ -937,6 +1312,8 @@ export interface GeneratorConfig {
   maxTokens: number;
   /** USD per million tokens, used when the API returns no cost */
   pricing: { inputPerM: number; outputPerM: number; cacheReadPerM: number; cacheWritePerM: number };
+  /** TUI-DESIGN §15 item 17: OPTIONAL: validateGenerator always sets it; resolveConfig / validate.ts treat absent as false */
+  priced?: boolean;
 }
 
 export interface DeciderConfig {
@@ -972,6 +1349,19 @@ export interface ResolvedConfig {
   redactJson: (v: Json) => Json;
   /** masked table for run.json and `jevcode config` */
   record(): Record<string, ConfigRecordValue>;
+  // TUI-DESIGN §15 item 17 — OPTIONAL in contract 1.1 wave 0 (config/resolve.ts does not implement them yet); O6 makes them
+  // required in wave 1 together with the implementations (missingSecrets, ui, sessionSpendCap, addSecret, dropSecret, configDirs).
+  /** non-throwing; skips generator.apiKey for jev-only and --mock* */
+  missingSecrets?(mode: EngineMode): readonly SecretSettingName[];
+  /** session settings through the full chain; the launch members are copied from the argument, never re-resolved */
+  ui?(launch: LaunchSettings): UiConfig;
+  /** 'none' -> +Infinity */
+  sessionSpendCap?(mode: EngineMode): { value: number; source: ConfigSource; derived: boolean };
+  /** delegate to the redactor */
+  addSecret?(name: string, value: string): boolean;
+  dropSecret?(name: string): boolean;
+  /** resolved XDG + legacy jevcode dirs (§12.7) */
+  readonly configDirs?: readonly string[];
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1099,6 +1489,12 @@ export interface SandboxCreateOptions {
    * git-executed code). Bench infrastructure sandboxes that themselves `git clone` into the root pass false.
    */
   protectGit?: boolean;
+  /** TUI-DESIGN §15 item 18: the probe's gitDir (moved denies live there; §12.1) */
+  gitDir?: string;
+  /** TUI-DESIGN §15 item 18: the probe's commonDir for linked worktrees */
+  gitCommonDir?: string;
+  /** TUI-DESIGN §15 item 18: resolved jevcode config dirs appended to the file-read denies (§12.7) */
+  configDirs?: readonly string[];
 }
 
 /** Everything the bench runner needs, injected so bench/* compiles and tests without the real modules. */

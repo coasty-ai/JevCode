@@ -17,6 +17,7 @@ import type {
   RendererOptions,
   RiskAssessment,
   RiskDimension,
+  UiLabel,
 } from '../core/types.js';
 import { RISK_DIMENSIONS } from '../core/types.js';
 import { AbortError } from '../errors.js';
@@ -43,7 +44,19 @@ export type TranscriptKind =
   | 'replan'
   | 'transcript'
   | 'error'
-  | 'run:end';
+  | 'run:end'
+  // contract 1.1 (TUI-DESIGN §15 item 19): union members only in wave 0; itemsFromEvent cases land with O10 (wave 2) except `notice`
+  | 'steer:queued'
+  | 'steer:applied'
+  | 'steer:withdrawn'
+  | 'pause'
+  | 'budget'
+  | 'retry'
+  | 'notice'
+  | 'workspace'
+  | 'blocking'
+  | 'secret-ack'
+  | 'ui';
 
 export type TranscriptLevel = 'info' | 'warn' | 'error';
 
@@ -59,6 +72,10 @@ export interface TranscriptItem {
   readonly verdict?: 'ok' | 'review' | 'block';
   /** multi-line body shown under the line in the TUI only (never in plain / transcript.log) */
   readonly detail?: string;
+  /** TUI-DESIGN §15 item 19 / §15.1: a renderer-local item (no engine live): printed by --plain and the TUI, never in transcript.log */
+  readonly local?: boolean;
+  /** TUI-DESIGN §15 item 19 / §15.1: printed instead of stepLabel(); only notice kind 'ui' and local items set it */
+  readonly label?: UiLabel;
 }
 
 /** Caps keeping every transcript line bounded no matter what the generator or a command emits. */
@@ -204,7 +221,7 @@ export function synthText(e: Extract<EngineEvent, { type: 'synth' }>): string {
  * Events that feed the panes only (decision, status, stage:*, deltas, exec:output, ...) yield [].
  */
 export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
-  const make = (step: number | null, kind: TranscriptKind, text: string, level: TranscriptLevel = 'info', extra: { verdict?: 'ok' | 'review' | 'block'; detail?: string } = {}): TranscriptItem[] => {
+  const make = (step: number | null, kind: TranscriptKind, text: string, level: TranscriptLevel = 'info', extra: { verdict?: 'ok' | 'review' | 'block'; detail?: string; label?: UiLabel } = {}): TranscriptItem[] => {
     const item: TranscriptItem = {
       key: `${step ?? 'run'}:${kind}:${seq}`,
       seq,
@@ -214,6 +231,7 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
       text: clip(oneLine(text), TRANSCRIPT_TEXT_MAX),
       ...(extra.verdict ? { verdict: extra.verdict } : {}),
       ...(extra.detail ? { detail: extra.detail } : {}),
+      ...(extra.label ? { label: extra.label } : {}),
     };
     return [item];
   };
@@ -260,6 +278,9 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
       return make(e.step, 'transcript', e.level === 'info' ? e.text : `${e.level}: ${e.text}`, e.level);
     case 'error':
       return make(e.step, 'error', `error ${e.error.code}: ${e.error.message}${e.fatal ? ' (fatal)' : ''}`, 'error');
+    case 'notice':
+      // contract 1.1 (TUI-DESIGN §15.1): a labelled notice (Engine.annotate) prints `<label> <text>`; any other notice `notice <kind>: <text>`
+      return make(e.step, 'notice', e.label ? e.text : `notice ${e.kind}: ${e.text}`, e.level, { ...(e.detail ? { detail: clipDetail(e.detail) } : {}), ...(e.label ? { label: e.label } : {}) });
     case 'run:end': {
       const r = e.result;
       return make(
@@ -274,9 +295,9 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
   }
 }
 
-/** The one-line form written to transcript.log, by the plain renderer and by the TUI's <Static> rows. */
+/** The one-line form written to transcript.log, by the plain renderer and by the TUI's <Static> rows. A `label` (TUI-DESIGN §15.1) replaces the step label. */
 export function formatTranscriptItem(item: TranscriptItem): string {
-  return `${stepLabel(item.step)} ${item.text}`;
+  return `${item.label ?? stepLabel(item.step)} ${item.text}`;
 }
 
 // ---------------------------------------------------------------------------------------

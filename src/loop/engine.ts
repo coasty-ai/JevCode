@@ -44,6 +44,7 @@ import type { AskResult,
   Json,
   JsonObject,
   JudgeResult,
+  PendingDirective,
   Plan,
   Proposal,
   Question,
@@ -56,7 +57,9 @@ import type { AskResult,
   Sandbox,
   SandboxCreateOptions,
   SerializedError,
+  SignalName,
   StageName,
+  SteerResult,
   StepRecord,
   StepTiming,
   StepUsage,
@@ -66,6 +69,7 @@ import type { AskResult,
   TargetInfo,
   TestCounts,
   TokenUsage,
+  UiLabel,
   WindowEntry,
   Workspace,
   WorkspaceInfo,
@@ -75,7 +79,7 @@ import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
 import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provider/prompts.js';
-import { formatTranscriptItem, itemsFromEvent } from '../tui/plain.js';
+import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { applyPlanDraft, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
@@ -173,6 +177,9 @@ const RUN_DIR_ATTEMPTS = 5;
 export const SHUTDOWN_CHECKPOINT_BOUND_MS = 5_000;
 export const SYNTH_STATE_MAX_BYTES = 64 * 1024;
 const CONSECUTIVE_STAGE_FAILURE_LIMIT = 3;
+/** contract 1.1 (TUI-DESIGN §15 item 15, §8.6): at most 8 queued steers of at most 600 chars each */
+export const MAX_PENDING_DIRECTIVES = 8;
+export const DIRECTIVE_MAX_CHARS = 600;
 
 // ---------------------------------------------------------------------------------------
 // Stage context (what stages/*.ts see)
@@ -369,6 +376,20 @@ class EngineImpl implements Engine {
   /** a refused resume never touches the run dir, transcript.log included */
   private transcriptMuted = false;
 
+  // contract 1.1 (TUI-DESIGN §15.2 "fields"): steering, pause and the widened abort. Consumption of the
+  // directives at step start, retry waking and the blocker are wave 2.
+  /** steers queued and not yet applied (<= MAX_PENDING_DIRECTIVES); checkpointed, restored on --resume */
+  private pendingDirectives: PendingDirective[] = [];
+  private steerSeq = 0;
+  /** pause() was called: finish('human_pause') at the next loop top (§9.1 rule 1) */
+  private pauseRequested = false;
+  /** the signal behind abort('signal'), for exit codes 130 / 143 / 129 (§13.5) */
+  private signalName: SignalName | null = null;
+  /** abort('error', { error }): the fatal error the run ends with (§13.4); preferred over fatalError when set */
+  private fatalSerialized: SerializedError | null = null;
+  /** run() was called (set before the loop's synchronous prefix emits its first events, unlike `finished`) */
+  private started = false;
+
   constructor(init: {
     runId: string;
     opts: EngineOptions;
@@ -422,6 +443,9 @@ class EngineImpl implements Engine {
       this.resumes = s.resumes;
       this.jevCalls = s.jevLatencyMs.length;
       this.interrupted = s.interrupted;
+      // contract 1.1 (TUI-DESIGN §15.2): steers queued before the stop are consumed by the resumed run
+      this.pendingDirectives = (s.pendingDirectives ?? []).map((d) => ({ ...d }));
+      this.steerSeq = this.pendingDirectives.reduce((m, d) => Math.max(m, d.index + 1), 0);
       for (const rec of [...init.resume.foldedSteps].sort((a, b) => a.step - b.step)) {
         if (rec.step <= this.step) continue;
         this.window = foldStepRecord(this.window, rec);
@@ -484,18 +508,21 @@ class EngineImpl implements Engine {
     }
   }
 
-  abort(reason: 'human_abort' | 'signal'): void {
+  abort(reason: 'human_abort' | 'signal' | 'error', opts: { signal?: SignalName; error?: SerializedError } = {}): void {
     trace(`abort(${reason}) aborting=${this.aborting} stage=${this.currentStage} step=${this.step} lastResult=${this.lastResult !== null}`);
     // After run() resolved there is nothing to stop and the final checkpoint is already written;
     // installing the 'exit' writer here would leave a listener that rewrites state.json at exit.
     if (this.lastResult !== null) return;
+    // contract 1.1 (TUI-DESIGN §15 item 15): the signal name refines the exit code (§13.5); an 'error' abort carries the fatal error (§13.4)
+    if (opts.signal) this.signalName = opts.signal;
+    if (reason === 'error' && opts.error) this.fatalSerialized = opts.error;
     if (this.aborting) {
       // Second press while shutting down: synchronous last-resort write, then exit (§11).
-      if (this.lastResult === null) this.forceExit(reason === 'signal' ? 130 : 130);
+      if (this.lastResult === null) this.forceExit(exitCodeFor('signal', undefined, false, this.signalName ?? undefined));
       return;
     }
     this.aborting = true;
-    if (!this.controller.signal.aborted) this.controller.abort(new AbortError(reason));
+    if (!this.controller.signal.aborted) this.controller.abort(new AbortError(reason, this.signalName));
     void this.sandbox.killAll().catch(() => undefined);
     const handler = (): void => {
       try {
@@ -520,8 +547,70 @@ class EngineImpl implements Engine {
     exit(code);
   }
 
+  // -------------------------------------------------------------------------------------
+  // contract 1.1 (TUI-DESIGN §15 item 15): steering, pause, retry wake, renderer lines
+  // -------------------------------------------------------------------------------------
+
+  /**
+   * Queue a human directive for the next step start (§8.6). Raw in memory; every artefact sees it
+   * through the redacting emit / the store's write-time redaction. Consumption (applyPendingDirectives
+   * at the loop top) is wave 2; until then the queue is checkpointed and restored so nothing is lost.
+   */
+  steer(text: string, _opts: { secretsAcked?: number } = {}): SteerResult {
+    const trimmed = sanitizeStream(text).trim();
+    const queued = this.pendingDirectives.length;
+    if (trimmed === '') return { ok: false, reason: 'empty', queued };
+    if (this.lastResult !== null) return { ok: false, reason: 'finished', queued };
+    if (queued >= MAX_PENDING_DIRECTIVES) return { ok: false, reason: 'full', queued };
+    const index = this.steerSeq++;
+    const directive: PendingDirective = { text: trimmed.slice(0, DIRECTIVE_MAX_CHARS), at: nowIso(), index };
+    this.pendingDirectives.push(directive);
+    this.emit({ type: 'steer:queued', step: this.step + 1, index, text: directive.text, queued: this.pendingDirectives.length });
+    return { ok: true, index, queued: this.pendingDirectives.length };
+  }
+
+  /** Withdraw the newest queued directive; null when none. */
+  unsteer(): PendingDirective | null {
+    const d = this.pendingDirectives.pop();
+    if (d === undefined) return null;
+    this.emit({ type: 'steer:withdrawn', step: this.step + 1, index: d.index });
+    return d;
+  }
+
+  /** Stop with 'human_pause' at the next loop top (§9.1 rule 1: the in-flight step commits whole first); idempotent. */
+  pause(): void {
+    if (this.pauseRequested || this.lastResult !== null) return;
+    this.pauseRequested = true;
+    this.emit({ type: 'pause:requested', step: this.step + 1 });
+  }
+
+  /** End the current retry sleep early; false when none is active. No retry sleep is wakeable yet (wave 2 wires the waker). */
+  retryNow(): boolean {
+    return false;
+  }
+
+  /**
+   * A renderer-originated transcript line while the run is live (§15.1): it rides the engine's redacting
+   * emit and transcriptSeq, so transcript.log, --plain and the TUI stay line-identical. False once the run
+   * finished (or before it started): the renderer then keeps the item local.
+   */
+  annotate(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): boolean {
+    if (!this.started || this.lastResult !== null) return false;
+    this.emit({
+      type: 'notice',
+      step: this.draft?.step ?? null,
+      kind: 'ui',
+      level: opts.level ?? 'info',
+      text,
+      label: opts.label ?? '[ui]',
+      ...(opts.detail ? { detail: opts.detail } : {}),
+    });
+    return true;
+  }
+
   run(): Promise<RunResult> {
     if (this.finished) return this.finished;
+    this.started = true;
     this.finished = this.runGuarded();
     return this.finished;
   }
@@ -564,6 +653,8 @@ class EngineImpl implements Engine {
         this.emit({ type: 'transcript', step: null, level: 'info', text: `budget ${budget} reached at step start` });
         return this.finish(budget);
       }
+      // contract 1.1 (TUI-DESIGN §9.1, §15.2): a requested pause ends the run only here, after the in-flight step committed whole
+      if (this.pauseRequested) return this.finish('human_pause');
       const result = await this.runStep();
       trace(`runStep done step=${this.step} stop=${result.stop ?? 'null'}`);
       if (result.stop) return this.finish(result.stop, result.detail ? { detail: result.detail } : {});
@@ -661,6 +752,8 @@ class EngineImpl implements Engine {
       consecutiveStageFailures: this.consecutiveStageFailures,
       jevQuestions: this.jevQuestions,
       ...(this.synthState !== null ? { synthState: this.synthState } : {}),
+      // contract 1.1 (TUI-DESIGN §15 item 9): conditional spread, so an empty queue reads as absent (older readers unchanged)
+      ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -1503,9 +1596,14 @@ class EngineImpl implements Engine {
     this.stopReason = reason;
     let error: SerializedError | null = null;
     if (reason === 'error') {
-      const src = this.fatalError ?? this.lastStageError;
-      if (src !== null) error = serializeError(src, this.redact);
-      if (isJevCodeError(src) && !this.stateError) this.stateError = { stage: this.lastErrorStage ?? 'intent', code: src.code };
+      if (this.fatalSerialized !== null) {
+        // contract 1.1 (TUI-DESIGN §13.4): abort('error', { error }) named the fatal error
+        error = this.fatalSerialized;
+      } else {
+        const src = this.fatalError ?? this.lastStageError;
+        if (src !== null) error = serializeError(src, this.redact);
+        if (isJevCodeError(src) && !this.stateError) this.stateError = { stage: this.lastErrorStage ?? 'intent', code: src.code };
+      }
     }
     const snapshot = this.buildCheckpointState();
     const result = assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error });
@@ -1540,7 +1638,7 @@ class EngineImpl implements Engine {
       if (outcome === 'timeout') {
         this.events.emit({ type: 'transcript', step: null, level: 'error', text: `final checkpoint exceeded ${SHUTDOWN_CHECKPOINT_BOUND_MS} ms; writing state synchronously and exiting` });
         try {
-          this.forceExit(exitCodeFor(reason, error ?? undefined));
+          this.forceExit(exitCodeFor(reason, error ?? undefined, false, this.signalName ?? undefined));
         } catch {
           // an injected exit that throws (tests) must not re-enter the stop path
         }

@@ -231,7 +231,7 @@ export function createFakeEngineFactory(script: EngineScript, captured: Captured
       await mkdir(join(opts.runsDir, runId), { recursive: true });
       const events = createEmitter(() => undefined);
       const controller = new AbortController();
-      let abortReason: 'human_abort' | 'signal' | null = null;
+      let abortReason: 'human_abort' | 'signal' | 'error' | null = null;
       const s = script(opts.task, mode, opts);
       const engine: Engine = {
         runId,
@@ -242,6 +242,12 @@ export function createFakeEngineFactory(script: EngineScript, captured: Captured
           abortReason = reason;
           controller.abort(new Error(reason));
         },
+        // contract 1.1 (TUI-DESIGN §15 item 15): the bench never steers, pauses or annotates; no-ops keep the fake honest
+        steer: () => ({ ok: false, reason: 'finished', queued: 0 }),
+        unsteer: () => null,
+        pause: () => undefined,
+        retryNow: () => false,
+        annotate: () => false,
         status: () => ({ step: 0, maxSteps: opts.limits.maxSteps, wallMs: 0, maxWallMs: opts.limits.maxWallMs, stage: 'idle', spend: opts.meter.snapshot(), stopReason: null }),
         snapshotState: () => null,
         async run() {

@@ -4,6 +4,7 @@
  * Messages must already be redacted by the thrower when they can contain command output
  * or HTTP bodies (see core/redact.ts).
  */
+import type { SignalName } from './core/types.js';
 
 export type ErrorCode =
   | 'config'
@@ -185,7 +186,8 @@ export class FileNotFoundError extends JevCodeError {
   }
 }
 
-export type BudgetKind = 'spend_cap' | 'wall_time' | 'max_steps' | 'max_replans';
+/** TUI-DESIGN §15 item 19: 'token_cap' = RunLimits.maxGeneratorTokens reached (a plain budget stop) */
+export type BudgetKind = 'spend_cap' | 'wall_time' | 'max_steps' | 'max_replans' | 'token_cap';
 
 export class BudgetError extends JevCodeError {
   readonly reason: BudgetKind;
@@ -208,9 +210,12 @@ export type AbortReason = 'human_abort' | 'signal' | 'error';
 
 export class AbortError extends JevCodeError {
   readonly reason: AbortReason;
-  constructor(reason: AbortReason) {
-    super('abort', `aborted: ${reason}`, { exitCode: reason === 'signal' ? 130 : reason === 'human_abort' ? 130 : 1 });
+  /** TUI-DESIGN §15 item 19: the signal behind abort('signal'), read by exitCodeFor for 130 / 143 / 129 (§13.5) */
+  readonly signalName: SignalName | null;
+  constructor(reason: AbortReason, signalName: SignalName | null = null) {
+    super('abort', `aborted: ${reason}`, { exitCode: reason === 'signal' ? (signalName === 'SIGTERM' ? 143 : signalName === 'SIGHUP' ? 129 : 130) : reason === 'human_abort' ? 130 : 1 });
     this.reason = reason;
+    this.signalName = signalName;
   }
 }
 
@@ -243,4 +248,6 @@ export const EXIT_CODES = {
   sandbox: 6,
   sigint: 130,
   sigterm: 143,
+  /** TUI-DESIGN §13.5: SIGHUP / EIO */
+  sighup: 129,
 } as const;

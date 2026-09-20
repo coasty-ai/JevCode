@@ -91,26 +91,56 @@ export function mkRunResult(stopReason: RunResult['stopReason'] = 'complete'): R
 export interface FakeEngine {
   engine: Engine;
   emit(e: EngineEvent): void;
-  aborted: Array<'human_abort' | 'signal'>;
+  aborted: Array<'human_abort' | 'signal' | 'error'>;
+  /** contract 1.1 (TUI-DESIGN §15 item 15): what the renderer asked of the engine, in order */
+  steered: string[];
+  paused: number;
+  annotated: string[];
 }
 
 export function fakeEngine(): FakeEngine {
   const events = createEmitter(() => undefined);
   const controller = new AbortController();
-  const aborted: Array<'human_abort' | 'signal'> = [];
-  const engine: Engine = {
-    runId: 'r1',
-    events,
-    signal: controller.signal,
-    run: () => Promise.resolve(mkRunResult()),
-    abort: (reason) => {
-      aborted.push(reason);
-      controller.abort();
+  const aborted: Array<'human_abort' | 'signal' | 'error'> = [];
+  const steered: string[] = [];
+  const annotated: string[] = [];
+  const fake: FakeEngine = {
+    engine: {
+      runId: 'r1',
+      events,
+      signal: controller.signal,
+      run: () => Promise.resolve(mkRunResult()),
+      abort: (reason) => {
+        aborted.push(reason);
+        controller.abort();
+      },
+      status: () => mkStatus(0, 'idle'),
+      snapshotState: (): CheckpointState | null => null,
+      // contract 1.1 (TUI-DESIGN §15 item 15): recording no-ops; nothing is emitted (the tests emit events themselves)
+      steer: (text) => {
+        steered.push(text);
+        return { ok: true, index: steered.length - 1, queued: steered.length };
+      },
+      unsteer: () => {
+        const text = steered.pop();
+        return text === undefined ? null : { text, at: '2026-09-20T00:00:00.000Z', index: steered.length };
+      },
+      pause: () => {
+        fake.paused += 1;
+      },
+      retryNow: () => false,
+      annotate: (text) => {
+        annotated.push(text);
+        return false;
+      },
     },
-    status: () => mkStatus(0, 'idle'),
-    snapshotState: (): CheckpointState | null => null,
+    emit: (e) => events.emit(e),
+    aborted,
+    steered,
+    paused: 0,
+    annotated,
   };
-  return { engine, emit: (e) => events.emit(e), aborted };
+  return fake;
 }
 
 /** The scripted 2-step run in run-events.json. */
