@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import { toJson } from '../../core/json.js';
 import type { Json, MockTurn } from '../../core/types.js';
 import { ConfigError } from '../../errors.js';
+import { SPEC_FILE } from '../../workspace/tests.js';
 import type { BenchEvaluateContext, BenchSetupTools, BenchTask, BenchTaskSource, BuildTaskOptions, Evaluation } from '../types.js';
 import { SETUP_TIMEOUT_MS, buildEnvironment, cloneAt, ensureBareClone, evaluateSwebenchLocal, shellQuote, tail } from './evaluator.js';
 import { extractModelPatch } from './predictions.js';
@@ -29,6 +30,29 @@ export interface SwebenchTaskOptions extends BuildTaskOptions {
 
 export function normaliseTaskText(problemStatement: string): string {
   return problemStatement.split('\r\n').join('\n');
+}
+
+/** What `.jevcode-spec.json` carries: the harness's own test command and nothing else from the record. */
+export interface WorkspaceSpec {
+  test_cmd: string;
+}
+
+export function workspaceSpec(record: SwebenchRecord): WorkspaceSpec {
+  return { test_cmd: record.spec.test_cmd.trim() };
+}
+
+/**
+ * The agent workspace keeps the repository's native test entry points untouched (no pytest.ini
+ * or conftest.py is written into a checkout: Django's suite is `tests/runtests.py`, sympy's is
+ * `bin/test`, and a planted pytest.ini would make the workspace detector pick pytest over them).
+ * Only `.jevcode-spec.json` is added beside the checkout, so src/workspace/tests.ts can confirm the
+ * runner it detected from the tree; cloneAt() already excludes `.jevcode*` from git, so the file
+ * never reaches `git status`, the candidate list or the model patch. Detection works without it.
+ */
+export async function writeWorkspaceSpec(workspaceDir: string, record: SwebenchRecord): Promise<void> {
+  const spec = workspaceSpec(record);
+  if (spec.test_cmd === '') return;
+  await writeFile(join(workspaceDir, SPEC_FILE), `${JSON.stringify(spec, null, 2)}\n`, 'utf8');
 }
 
 /** A propose_action tool call as the real provider would return it. */
@@ -61,9 +85,10 @@ export function toBenchTask(record: SwebenchRecord, opts: SwebenchTaskOptions): 
     if (tools.mocked) {
       // mocked runs replay the gold patch; no interpreter is needed, only the tree at base_commit
       await cloneAt(tools.run, { cacheDir, commit: record.base_commit, timeoutMs: setupTimeoutMs });
-      return;
+    } else {
+      await buildEnvironment(record, { dir: workspaceDir, cacheDir, run: tools.run, timeoutMs: setupTimeoutMs, log: tools.log });
     }
-    await buildEnvironment(record, { dir: workspaceDir, cacheDir, run: tools.run, timeoutMs: setupTimeoutMs, log: tools.log });
+    await writeWorkspaceSpec(workspaceDir, record);
   }
 
   async function evaluateMock(ctx: BenchEvaluateContext): Promise<Evaluation> {

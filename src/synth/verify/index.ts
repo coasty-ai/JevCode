@@ -4,13 +4,15 @@
  * runner's output into numbers and ids, `progress` and `route` decide in code, `applyCandidate`
  * is pure text, and the Jev questions here are consistency checks and heuristics only.
  */
-import type { Json, Question, Sandbox, StageName } from '../../core/types.js';
+import type { Json, Question, Sandbox, StageName, TestCommand } from '../../core/types.js';
+import { scopeBuilderFor } from '../../workspace/tests.js';
 import type { AppliedCandidate, Candidate, FailureView, JevAsk, Move, Progress, SourceFile, TestRunSummary } from '../types.js';
 import { applyCandidate } from './apply.js';
 import { progress, route } from './progress.js';
 import { looksLikePytest, parsePytestOutput, summaryFromPytest } from './pytest.js';
 import { judgeProgress, pickNextFailingTest, progressQuestions, progressState } from './questions.js';
 import { parseRunTestsJson, summaryFromRunTests } from './quixbugs.js';
+import { looksLikeSympy, looksLikeUnittest, parseSympyOutput, parseUnittestOutput, summaryFromSympy, summaryFromUnittest } from './runners.js';
 import { RUN_FAILURE_ID, shellQuote, tail } from './text.js';
 import type { PickedTest, PickOptions, ProgressJudgment, RunTestsOptions, SearchState, TestOutputFormat, VerifierDeps, VerifyRunFn, VerifyRunResult } from './types.js';
 
@@ -38,6 +40,8 @@ export {
 export type { PickBatch, ProgressQuestionId, ProgressStateOptions } from './questions.js';
 export { parseRunTestsJson, QUIXBUGS_MAX_FAILURES, quixbugsTestCommand, quixbugsTestId, summaryFromRunTests } from './quixbugs.js';
 export type { RunTestsFailure, RunTestsReport, RunTestsSummaryContext } from './quixbugs.js';
+export { expectationFromTraceback, isTestFile, looksLikeSympy, looksLikeUnittest, parseSympyOutput, parseUnittestOutput, RELATED_TESTS_MAX, relatedTestFiles, summaryFromSympy, summaryFromUnittest, unittestLabelOf } from './runners.js';
+export type { RelatedTestsOptions, RunnerSummaryContext, SympyCounts, SympyParse, SympyStatus, UnittestCounts, UnittestParse, UnittestStatus } from './runners.js';
 export { OUTPUT_TAIL_BOUND, RUN_FAILURE_ID, VALUE_BOUND } from './text.js';
 export { VerifyError } from './types.js';
 export type { PickedTest, PickOptions, ProgressJudgment, RunTestsOptions, SearchState, TestOutputFormat, VerifierDeps, VerifyRunFn, VerifyRunOptions, VerifyRunResult } from './types.js';
@@ -57,11 +61,30 @@ export interface Verifier {
   pickNextFailingTest(failures: readonly FailureView[], ask: JevAsk, opts?: PickOptions & { stage?: StageName }): Promise<PickedTest>;
 }
 
-/** Which parser the output is for: the runner's JSON line wins, then anything pytest-shaped. */
+/**
+ * Which parser the output is for: the runner's JSON line wins, then anything pytest-shaped, then
+ * unittest's TextTestRunner (Django's runtests.py prints it), then sympy's bin/test.
+ */
 export function detectFormat(stdout: string, combined: string): TestOutputFormat {
   if (parseRunTestsJson(stdout) !== null) return 'quixbugs_json';
   if (looksLikePytest(parsePytestOutput(combined))) return 'pytest';
+  if (looksLikeUnittest(parseUnittestOutput(combined))) return 'unittest';
+  if (looksLikeSympy(parseSympyOutput(combined))) return 'sympy_bintest';
   return 'unknown';
+}
+
+/**
+ * The detected command restricted to `targets` (test file paths, node ids or runner labels):
+ * the command's own `scope` builder when detection attached one, else the builder for its runner
+ * (src/workspace/tests.ts: pytest appends paths / node ids, Django's runtests.py takes dotted
+ * labels derived from `tests/<app>/tests.py`, sympy's bin/test takes paths and `-k` names,
+ * unittest takes module names), else the paths appended shell-quoted. No targets: the full command.
+ */
+export function scopedTestCommand(info: TestCommand, targets: readonly string[]): string {
+  if (targets.length === 0) return info.command;
+  if (info.scope !== undefined) return info.scope(targets);
+  const builder = scopeBuilderFor(info.runner, info.command);
+  return builder === null ? `${info.command} ${targets.map(shellQuote).join(' ')}` : builder(targets);
 }
 
 /**
@@ -83,14 +106,19 @@ export function summarize(command: string, res: VerifyRunResult, durationMs: num
     if (report !== null && 'error' in report) summary = withRunFailure(summary, `run_tests.py: ${report.error}`);
   } else if (format === 'pytest') {
     summary = summaryFromPytest(parsePytestOutput(combined), ctx);
+  } else if (format === 'unittest') {
+    summary = summaryFromUnittest(parseUnittestOutput(combined), ctx);
+  } else if (format === 'sympy_bintest') {
+    summary = summaryFromSympy(parseSympyOutput(combined), ctx);
   } else {
     summary = { command, passed: 0, failed: 0, errors: 0, skipped: 0, total: 0, failing: [], passing: [], failures: [], exitCode: res.exitCode, timedOut, durationMs, outputTail: ctx.outputTail };
   }
   if (timedOut) return withRunFailure(summary, `timeout after ${Math.round(durationMs / 100) / 10} s`);
-  // The runner's exit status is part of the oracle (pytest and run_tests.py both exit 0 iff
-  // nothing failed). A non-zero exit with no parsed failure means the output was truncated, the
-  // run crashed or the format was not recognised; it must never read as a pass. Exit 5 is
-  // pytest's "no tests collected": nothing failed, nothing ran; the summary already says total 0.
+  // The runner's exit status is part of the oracle (pytest, run_tests.py, unittest / Django's
+  // runtests.py and sympy's bin/test all exit 0 iff nothing failed). A non-zero exit with no parsed
+  // failure means the output was truncated, the run crashed or the format was not recognised; it
+  // must never read as a pass. Exit 5 is pytest's "no tests collected": nothing failed, nothing
+  // ran; the summary already says total 0.
   if (res.exitCode !== 0 && res.exitCode !== 5 && summary.failed + summary.errors === 0) {
     const lastLine = combined.trim().split('\n').pop() ?? '';
     const why = format === 'unknown' ? '' : ' with no failing test in the parsed output (truncated or crashed run)';

@@ -40,8 +40,8 @@ export interface RunTestsOptions {
   cwd?: string;
 }
 
-/** Which runner produced the output the summary was built from. */
-export type TestOutputFormat = 'quixbugs_json' | 'pytest' | 'unknown';
+/** Which runner produced the output the summary was built from (unittest covers Django's runtests.py). */
+export type TestOutputFormat = 'quixbugs_json' | 'pytest' | 'unittest' | 'sympy_bintest' | 'unknown';
 
 /**
  * What the search has left to try when `route()` is asked for the next move. Counters are

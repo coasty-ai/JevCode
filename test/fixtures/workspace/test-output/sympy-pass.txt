@@ -1,0 +1,11 @@
+============================= test process starts ==============================
+executable:         /ws/.venv/bin/python  (3.9.6-final-0) [CPython]
+architecture:       64-bit
+cache:              no
+ground types:       python
+random seed:        4242
+hash randomization: on (PYTHONHASHSEED=0)
+
+sympy/core/tests/test_basic.py[24] ........................                    [OK]
+
+================== tests finished: 24 passed, in 0.31 seconds ==================

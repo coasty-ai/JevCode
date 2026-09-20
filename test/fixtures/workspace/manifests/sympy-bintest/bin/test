@@ -1,0 +1,6 @@
+#!/usr/bin/env python
+
+"""
+Program to execute tests using the py.test like interface.
+"""
+import sys

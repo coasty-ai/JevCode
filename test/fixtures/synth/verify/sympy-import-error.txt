@@ -1,0 +1,21 @@
+============================= test process starts ==============================
+executable:         /ws/.venv/bin/python  (3.9.6-final-0) [CPython]
+architecture:       64-bit
+cache:              no
+ground types:       python
+random seed:        99
+hash randomization: on (PYTHONHASHSEED=0)
+
+sympy/utilities/tests/test_lambdify.py[?]   Failed to import              [FAIL]
+
+________________________________________________________________________________
+____________________ sympy/utilities/tests/test_lambdify.py ____________________
+Traceback (most recent call last):
+  File "/ws/sympy/utilities/runtests.py", line 1190, in test_file
+    exec_(code, gl)
+  File "/ws/sympy/utilities/tests/test_lambdify.py", line 3, in <module>
+    from sympy.utilities.lambdify import implemented_function, lambdastr
+ImportError: cannot import name 'lambdastr'
+
+================== tests finished: 0 passed, 1 exceptions, in 0.02 seconds ==================
+DO *NOT* COMMIT!

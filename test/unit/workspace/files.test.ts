@@ -27,7 +27,8 @@ describe('createWorkspace', () => {
     const w = await createWorkspace(join(t.base, 'ws-link'), t.runDir, { sandbox: t.sandbox, secretPaths: [], redact: (s) => s });
     expect(w.root).toBe(t.ws);
     const info = await w.info();
-    expect(info).toEqual({ root: t.ws, git: true, hasTests: true, testCommand: { command: 'pytest -q', runner: 'pytest' } });
+    expect(info).toMatchObject({ root: t.ws, git: true, hasTests: true, testCommand: { command: 'python3 -m pytest -q', runner: 'pytest' } });
+    expect(typeof info.testCommand?.scope).toBe('function');
     expect(await w.info()).toBe(info);
   });
 

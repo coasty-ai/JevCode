@@ -1,0 +1,41 @@
+============================= test process starts ==============================
+executable:         /ws/.venv/bin/python  (3.9.6-final-0) [CPython]
+architecture:       64-bit
+cache:              no
+ground types:       python
+numpy:              None
+random seed:        12345
+hash randomization: on (PYTHONHASHSEED=0)
+
+sympy/utilities/tests/test_lambdify.py[7]
+test_no_args ok
+test_single_arg ok
+test_issue_12092 F
+test_tensorflow_basic E
+test_numpy_old Slow w
+test_sympy_lambda f
+test_math ok                                                            [FAIL]
+
+sympy/utilities/tests/test_decorator.py[2]
+test_threaded ok
+test_xthreaded X                                                          [OK]
+
+________________________________________________________________________________
+______ sympy/utilities/tests/test_lambdify.py:test_tensorflow_basic ______
+Traceback (most recent call last):
+  File "/ws/sympy/utilities/runtests.py", line 1306, in _timeout
+    function()
+  File "/ws/sympy/utilities/tests/test_lambdify.py", line 700, in test_tensorflow_basic
+    import tensorflow
+ModuleNotFoundError: No module named 'tensorflow'
+
+________________________________________________________________________________
+________ sympy/utilities/tests/test_lambdify.py:test_issue_12092 ________
+Traceback (most recent call last):
+  File "/ws/sympy/utilities/tests/test_lambdify.py", line 612, in test_issue_12092
+    assert f(f(2)).evalf() == Float(16)
+AssertionError
+
+======= tests finished: 4 passed, 1 failed, 1 skipped, 1 expected to fail, 
+1 expected to fail but passed, 1 exceptions, in 1.23 seconds =======
+DO *NOT* COMMIT!

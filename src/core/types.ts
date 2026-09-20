@@ -504,10 +504,18 @@ export interface FileView {
   bytes: number;
   truncatedBytes: number;
 }
-export type TestRunner = 'pytest' | 'jest' | 'vitest' | 'npm' | 'cargo' | 'go' | 'unknown';
+export type TestRunner = 'pytest' | 'django' | 'sympy_bintest' | 'unittest' | 'jest' | 'vitest' | 'npm' | 'cargo' | 'go' | 'unknown';
 export interface TestCommand {
   command: string;
   runner: TestRunner;
+  /**
+   * The command for a subset of the suite (test file paths, node ids or runner labels), built
+   * per runner by workspace/tests.ts: pytest appends paths / node ids, Django's runtests.py takes
+   * dotted labels, sympy's bin/test takes paths (+ `-k` names), unittest takes module names.
+   * Absent when the runner cannot scope. A function: JSON serialisation drops it, so states and
+   * checkpoints carry `command` and `runner` only.
+   */
+  scope?: (targets: readonly string[]) => string;
 }
 export interface TestCounts {
   passed: number;

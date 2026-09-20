@@ -3,9 +3,12 @@ import { readFileSync } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { goldTrajectory, loadSwebenchSources, normaliseTaskText, sourceFor, toBenchTask } from '../../../src/bench/swebench/loader.js';
+import { goldTrajectory, loadSwebenchSources, normaliseTaskText, sourceFor, toBenchTask, workspaceSpec } from '../../../src/bench/swebench/loader.js';
 import { addedLines, loadRecords, parseRecords, testCommandFromEvalScript, touchedFiles, type SwebenchRecord } from '../../../src/bench/swebench/tasks.js';
 import { runBenchWithSources } from '../../../src/bench/runner.js';
+import type { BenchSetupTools, CommandRunner } from '../../../src/bench/types.js';
+import { detectTestCommand, SPEC_FILE } from '../../../src/workspace/tests.js';
+import type { ManifestReader } from '../../../src/workspace/tests.js';
 import { baseOptions, createFakeDeps, createFakeSandboxFactory, tempDir, type EngineScript } from './helpers.js';
 
 const DATA = join(process.cwd(), 'bench', 'data', 'swebench-verified-30.json');
@@ -162,5 +165,83 @@ describe('swebench isolation, mocked end to end with real git', () => {
       await writeFile(join(t.dir, `${c}.diff`), p.model_patch);
       git(clean, 'apply', '--check', join(t.dir, `${c}.diff`));
     }
+  }, 20_000);
+});
+
+describe('swebench workspace setup keeps the native runner', () => {
+  it('writes only .jevcode-spec.json (git-excluded) beside a Django-style checkout; no pytest.ini; the detector then picks runtests.py', async () => {
+    const t = await tempDir();
+    cleanups.push(t.cleanup);
+    const upstream = join(t.dir, 'upstream');
+    await mkdir(join(upstream, 'tests', 'decorators'), { recursive: true });
+    await mkdir(join(upstream, 'django', 'utils'), { recursive: true });
+    git(upstream, 'init', '-q', '-b', 'main');
+    await writeFile(join(upstream, 'tests', 'runtests.py'), '#!/usr/bin/env python\nimport argparse\n');
+    await writeFile(join(upstream, 'tests', 'test_sqlite.py'), 'SECRET_KEY = "x"\n');
+    await writeFile(join(upstream, 'tests', 'decorators', '__init__.py'), '');
+    await writeFile(join(upstream, 'tests', 'decorators', 'tests.py'), 'from django.test import TestCase\n');
+    await writeFile(join(upstream, 'django', '__init__.py'), '');
+    await writeFile(join(upstream, 'django', 'utils', 'decorators.py'), 'def method_decorator(d):\n    return d\n');
+    await writeFile(join(upstream, 'setup.py'), 'from setuptools import setup\nsetup(name="Django")\n');
+    await writeFile(join(upstream, 'pyproject.toml'), '[build-system]\nrequires = ["setuptools"]\n');
+    git(upstream, 'add', '.');
+    git(upstream, 'commit', '-q', '-m', 'base');
+    const base = git(upstream, 'rev-parse', 'HEAD');
+    const record: SwebenchRecord = {
+      instance_id: 'acme__dj-1',
+      repo: 'acme/dj',
+      base_commit: base,
+      environment_setup_commit: base,
+      version: '4.1',
+      created_at: '2026-01-01T00:00:00Z',
+      difficulty: '<15 min fix',
+      problem_statement: 'method_decorator() should preserve wrapper assignments',
+      hints_text: '',
+      fail_to_pass: ['@method_decorator preserves wrapper assignments.'],
+      pass_to_pass: [],
+      test_patch: '',
+      test_files: ['tests/decorators/tests.py'],
+      spec: { python: '3.9', install: 'true', pre_install: [], pip_packages: [], packages: 'requirements.txt', test_cmd: './tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1' },
+      log_parser: 'parse_log_django',
+      eval_script: `: '>>>>> Start Test Output'\n./tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1 decorators.tests\n: '>>>>> End Test Output'\n`,
+    };
+    expect(workspaceSpec(record)).toEqual({ test_cmd: './tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1' });
+    const factory = createFakeSandboxFactory((c) => {
+      c.command = c.command.split(`'https://github.com/acme/dj.git'`).join(`'${upstream}'`);
+      return undefined;
+    }, 'real');
+    const signal = new AbortController().signal;
+    const makeRunner = (root: string): CommandRunner => {
+      const sb = factory.create({ workspaceRoot: root, runDir: join(t.dir, 'sbrun'), profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s });
+      return (command, opts = {}) => sb.run(command, { timeoutMs: opts.timeoutMs ?? 60_000, maxOutputBytes: opts.maxOutputBytes ?? 64 * 1024, signal, ...(opts.cwd === undefined ? {} : { cwd: opts.cwd }), ...(opts.env === undefined ? {} : { env: opts.env }) });
+    };
+    const workspaceDir = join(t.dir, 'ws');
+    await mkdir(workspaceDir, { recursive: true });
+    const tools: BenchSetupTools = { run: makeRunner(workspaceDir), makeRunner, mocked: true, runsDir: join(t.dir, 'runs'), signal, log: () => undefined };
+    const task = sourceFor(record, 'diff --git a/x b/x\n').build({ workspaceDir, auxDir: join(t.dir, 'aux'), mocked: true });
+    await task.setup(workspaceDir, tools);
+
+    // native entry points intact, nothing planted
+    expect(await readFile(join(workspaceDir, 'tests', 'runtests.py'), 'utf8')).toContain('#!/usr/bin/env python');
+    const top = await readdir(workspaceDir);
+    expect(top).not.toContain('pytest.ini');
+    expect(top).not.toContain('conftest.py');
+    expect(top).not.toContain('tox.ini');
+    expect(top).not.toContain('setup.cfg');
+    // the spec beside the checkout carries the harness's test command and nothing else from the record
+    const spec = JSON.parse(await readFile(join(workspaceDir, SPEC_FILE), 'utf8')) as Record<string, unknown>;
+    expect(spec).toEqual({ test_cmd: './tests/runtests.py --verbosity 2 --settings=test_sqlite --parallel 1' });
+    expect(JSON.stringify(spec)).not.toContain('decorators.tests');
+    // git never sees it (cloneAt excludes .jevcode*), so neither `git status` nor the model patch can
+    expect(git(workspaceDir, 'status', '--porcelain', '--untracked-files=all')).toBe('');
+    expect(git(workspaceDir, 'check-ignore', SPEC_FILE)).toBe(SPEC_FILE);
+    // the workspace detector picks the Django runner (from the tree; the spec confirms it) and scopes to labels
+    const reader: ManifestReader = {
+      read: async (rel) => readFile(join(workspaceDir, rel), 'utf8').catch(() => null),
+      list: async (rel) => readdir(join(workspaceDir, rel)).catch(() => null),
+    };
+    const detected = await detectTestCommand(reader);
+    expect(detected).toMatchObject({ command: 'python3 tests/runtests.py --parallel 1', runner: 'django' });
+    expect(detected?.scope?.(['tests/decorators/tests.py'])).toBe('python3 tests/runtests.py --parallel 1 decorators.tests');
   }, 20_000);
 });
