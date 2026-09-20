@@ -1078,3 +1078,154 @@ python3 /tmp/qb-insert-table.py bench/results/jev-only-quixbugs-3-insert-dfs dep
 ```
 Run ids: run A `20260920-212633-dqk74stb` (shunting_yard), `20260920-212633-5yahrgk6` (reverse_linked_list),
 `20260920-212748-f23lksyv` (depth_first_search), `20260920-212834-qbmrammd` (wrap); run B `20260920-213544-v7jdp7tl`.
+
+## 12. 2026-09-20 (later): the per-case timeout reads the tail, a `timeout` is provisional until the retry, the lanes see the load — skew set 5/5, `longest_common_subsequence` back
+
+Follow-up to `jev-only-quixbugs-3-inspection.md` §2 (the `longest_common_subsequence` miss in run 3: verifier false
+negative) and to §8 above, which introduced the rule that caused it. The facts, restated: §8's per-case limit was
+clamp(3 × mean finished-case time, 500, 2000) with the one-alarm stop rule; LCS's slowest case is ~40× its mean
+(184 ms buggy / 94 ms gold idle against ≤ 14 ms for the other nine; 330–350 ms buggy and 80 ms gold measured today at a
+load average of 45), so 3 × mean ≈ 60 ms fell to the floor and the 500 ms floor became the cap; under run 3's 4–9× CPU
+contention the gold's case 3 crossed it, the run was classified `timeout`, the hash went into `tried` for good and the
+sieve then spent the 90 s test wall on timeouts. Two defects, both in the verifier: the cap was skew-blind, and a verdict
+that only the cap could explain was final.
+
+### 12.1 What changed (src/synth/search/budget.ts, src/synth/sieve/runner.ts, src/synth/sieve/queue.ts doc)
+
+1. **The cap is fitted to the tail, not the mean** (`caseTail`, `CaseProfile.tailMs`, `perTestTimeout`).
+   `perTestTimeoutMs = clamp(3 × tail, 500, 2000)` where the tail is the maximum of the finished cases' times when there
+   are ≤ 20 of them (every case must fit; 20 samples give no percentile worth the name) and the p95 (nearest rank) above
+   (one pathological case of a large suite does not set the cap for all). Per-case times come from pytest's
+   `--durations` table when the output has one (`pytestCaseDurations`, the `call` rows; `-q` hides rows under 5 ms,
+   which cannot move a maximum) or from the caller (`FitOracleOptions.caseDurationsMs`, which replaces `perTestP50Ms`).
+   Without either — the bench's `pytest -q` baseline, run_tests.py's JSON — the tail is *bounded* by the finished cases'
+   total (every finished millisecond could be one case): honest about what is known, and it costs only hanging
+   candidates, which pay the cap once under the stop rule. Timed-out cases still never vote. On the live baselines:
+   LCS 570 ms (was 500), knapsack/lcs_length/kth 500 (uniform, quick), levenshtein 500 (one 2 s alarm, the rest quick);
+   the synthetic `mixed` fixture of §8 (six finished cases sharing 1.8 s, no per-case times) moves from 900 ms to the
+   2 s cap and its t_run from 2.9 s to 4.0 s (repository-class either way).
+2. **A `timeout` verdict is provisional unless the candidate is a genuine hang** (`timeoutKind`, runner.ts). Final
+   ('hang') when: the sandbox killed the run (its timeout is far above any per-case cap); or every alarmed case is one
+   the *baseline* alarmed on too and either the run was already at the 2 s cap (a retry could add nothing) or no case
+   passed at all (no improvement over the baseline anywhere: bitcount's 203 hanging candidates of §8.2 alarm on the
+   first case); or — sequential pytest only — the alarm fired on the very first case and the baseline finished that case
+   quickly (its own time from the durations table, else the tail bound, × 3 × the observed load fits under the cap).
+   Everything else — the run passed cases and then a case did not return under a cap fitted idle, with no case failing
+   on a value — is provisional: the candidate goes to `mem.retryTimeouts` (per goal) instead of `tried`; at the end of
+   the batch up to 16 (`RETRY_TIMEOUTS_MAX_PER_BATCH`) are re-run at the runners' full 2 s cap
+   (`RETRY_CASE_TIMEOUT_MS`) and only that run classifies them; the rest are retried first at the next call for the
+   goal, a re-enumerated copy of a pending candidate is skipped rather than run again, and a pending retry judged
+   against a baseline the memory no longer holds (index.ts re-baselines after a commit) is dropped, not `tried`.
+   `tried` is written only at the final classification (queue.ts's `tried` doc says so now).
+   Two departures from the brief, both measured: (a) the retry **keeps** the stop rule — it asks one question, does
+   the alarmed case finish at 2 s, and a genuine hang that reaches it then costs one alarm instead of (cases − passed)
+   × 2 s (bitcount 18 s, sqrt 12 s a retry; a candidate that hangs on one case is `timeout` with or without the rule
+   and never a base); (b) "the baseline hangs on the same case" alone is not final: `levenshtein`'s *reference*
+   solution is exponential and takes 1.02 s on the case the buggy program alarms on at 2 s (measured today), so at a
+   500 ms cap the gold alarms exactly where the baseline does — and finishes at the retry's 2 s. Known gap: a fix
+   slower than the cap on a case the buggy program hangs on, when that case is the suite's first, is final.
+3. **Load awareness** (`loadRatio`, `scaledCaseTimeout`, runner.ts). Once a batch has 4 measured runs
+   (`LOAD_SAMPLE_MIN_RUNS`) whose median exceeds 2× (`LOAD_SCALE_MIN_RATIO`) the oracle's t_run estimate, the per-case
+   cap of the rest of the batch is the oracle's × the observed ratio (monotone within the batch, bounded by 2 s), and
+   the verify event says so: `load ×2.6, case timeout 570→1490 ms`. The oracle's own cap is not rewritten (the next
+   batch re-measures); `refineTRun` still learns the median. Every lane run now carries its own settings (cap, stop
+   rule), so the QuixBugs runner's `--timeout` and the pytest module's `JEVCODE_CASE_TIMEOUT_MS` /
+   `JEVCODE_MAX_CASE_TIMEOUTS` follow per run, and the lane's sandbox timeout follows the cap it runs at
+   (`laneRunTimeout` at 2 s a case for a retry, bounded as before by the workspace command's timeout).
+4. **Found in the live run, fixed after it: the measured goal-subset baseline ran under the lane cap.** With a
+   `pytest -q` baseline (no passing ids) the runner measures the goal subset once on a clean lane and caches it per
+   base; that run used the adaptive cap and the stop rule. Under 2.6× load LCS's clean lane alarmed on case 3 at 570 ms,
+   the reference read 3/10 instead of 6/10 (cases 4–9 "not run"), and every no-op candidate that finished case 3 was
+   `improved` → `partial` for the rest of the run (the "17 partial", "28 partial", "30 partial" batches below; run 1
+   read them `unchanged`). It did not cost the repair (the gold was `plausible` on its own merits) but it fed the
+   guard a hundred false partials. The reference now runs at the module's defaults — 2 s a case, no stop rule — like
+   the workspace baseline it stands in for (`REFERENCE` settings in `runQueue`; unit test).
+
+Tests (test/unit/synth/search/budget.test.ts, test/unit/synth/sieve/runner.test.ts): `pytestCaseDurations` on the
+real `-q` table shape; `caseTail` (max ≤ 20, p95 at 21 and 100); the skewed baseline (one 184 ms case, nine 10 ms
+cases) → 540 ms from the two-decimal table, 552 ms from measured times, against the mean's 500; the tail bound without
+per-case times (LCS's live baseline → 1 200 ms idle; bitcount/sqrt unchanged); `loadRatio` / `scaledCaseTimeout`;
+`timeoutKind` on every rule (killed run; baseline-alarmed case with nothing passed / at the 2 s cap / with passes at a
+lower cap; first-case alarm with and without the durations table, at load 1 and 4; the QuixBugs runner's parallel
+cases; mid-run alarms); on the lanes with an LCS-shaped fake module: the gold slow on case 3 → provisional at 500,
+retried at 2 000 with the stop rule (subset, then full suite), `plausible`, `tried` only then, t_run learnt from the
+first runs only, the retry's lane timeout; genuine hangs classified in one run (first-case alarm at the fitted 1 200 ms
+cap, and at 500 ms with a durations table); a mid-run hang retried once and final; load scaling after four 1 150 ms
+runs (500→1150, the event text, the gold's slow case fitting its first run under the scaled cap; bounded at 2 s; nothing
+below 2×); 18 provisional → 16 retried, 2 pending, skipped when re-enumerated, retried first next call, untouched by
+another goal's call, dropped on re-baseline; a retry the wall cannot fit stays pending; the reference run at the
+module defaults. Gates: `tsc --noEmit` clean, `no-any` ok, the owned files 5/5 test files, 111 tests; test/unit/synth +
+test/unit/bench 84 files / 1 290 tests green after the item-4 fix.
+
+### 12.2 Live re-check (`bench/results/jev-only-quixbugs-4-skew`): the five skew-prone programs, concurrency 4
+
+Same flags as §8.2 with `--task-id longest_common_subsequence,knapsack,levenshtein,lcs_length,kth --concurrency 4`
+(four tasks starting together on a machine whose load average was 10–14 from other work: the contention is the point).
+Code = items 1–3 (item 4 landed after the run). Generator calls 0 on every record. "final `timeout`" counts
+`timeout` verdicts in the verify events; "provisional → retried" reads the new event fields.
+
+**Repaired 5/5, all five patches identical to `bench/data/quixbugs/correct/` (whitespace/comment-insensitive), Jev
+$0.0139, wall total 143 s.**
+
+| program | repaired | steps | baseline ms | class / lanes at step 1 | run median ms (min–max) | candidates run | final `timeout` | provisional → retried (verdicts) | batches load-scaled / total (max ×, cap →) | commit at step | wall s | Jev $ | stop |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| longest_common_subsequence | yes | 5 | 656 | QuixBugs / 8 | 256–1135 | 403 | 0 | 12 → 12 (12 partial) | 3/18 (×2.6, 570→1214/1442/1490) | 4 | 52 | 0.0060 | complete |
+| knapsack | yes | 4 | 478 | QuixBugs / 8 | 446 | 114 | 0 | 0 | 1/1 (×2.0, 500→1006) | 3 | 15 | 0.0022 | complete |
+| levenshtein | yes | 4 | 1646 | QuixBugs / 4 (4→8) | 242 | 115 | 0 | 0 | 0/1 | 3 | 47 | 0.0020 | complete |
+| lcs_length | yes | 4 | 482 | QuixBugs / 8 | 434 | 152 | 0 | 0 | 0/1 | 3 | 16 | 0.0018 | complete |
+| kth | yes | 4 | 578 | QuixBugs / 8 | 240 | 172 | 0 | 0 | 0/1 | 3 | 13 | 0.0019 | complete |
+
+Patches: `if weight <= j:` (knapsack), `dp[i - 1, j - 1] + 1` (lcs_length), `kth(above, k - num_lessoreq)` (kth),
+`return levenshtein(source[1:], target[1:])` (levenshtein), `longest_common_subsequence(a[1:], b[1:])` (LCS).
+
+`longest_common_subsequence` (run `20260920-215703-mstrth7d`), the program the section is about: baseline 6/10 in
+656 ms → cap 570 ms (the tail bound: 3 × ~190 ms of finished cases; §8's rule gave 500). Step 3's first batch ran at a
+1 135 ms median against a ~450 ms estimate: `load ×2.6, case timeout 570→1490 ms`, 6 provisional timeouts retried at
+2 000 ms, all six reclassified (`partial`: the no-op candidates, see item 4); the second batch (849 ms median) retried
+6 more, again none final; the fifth batch scaled again (×2.5, →1442). 152 candidates in step 3, 0 `timeout` verdicts,
+0 pending at the end of every batch; the step ended `budget` (the 90 s test wall, as in run 3 — but on real runs, not
+on alarms). Step 4: 251 candidates over nine batches, one scaled (×2.1, →1214), no provisional verdict; the 102-candidate
+batch that lost the gold in run 3 (`timeout` → `tried`) read "100 regressed, 1 partial, 1 plausible" at a 279 ms
+median — the gold `plausible` on its first run — commit, 10/10 at step 5, `complete`. Run 1 (idle, fixed 2 s cap):
+4 steps, $0.002; run 3 (§8's cap, load): 12 steps, $0.018, miss; here: 5 steps, $0.006, gold-identical.
+
+`levenshtein` (`-qp3jninl`): baseline 1/7 in 1 646 ms (case 2 at the 2 s alarm in the buggy program), fitted 4 lanes
+(t_run > 1 s from the alarm) and widened to 8 after the batch measured 242 ms; 115 candidates, 4 plausible, gold
+committed at step 3. The reference solution's 1.02 s on case 2 never met the 500 ms cap here because the lanes ran
+below 2× load on that batch — the departure (b) above is what would have carried it through a loaded batch.
+`knapsack` (`-nxacjirf`): one batch of 114 at 446 ms median against a ~220 ms estimate → ×2.0, 500→1006 ms; 3
+plausible, gold committed at step 3 (§1 and §8 never lost knapsack; the scaling is the observation). `lcs_length`,
+`kth`: one SIEVE batch each, one plausible, gold at step 3 — the control programs, unchanged.
+
+### 12.3 What remains
+
+- Item 4 (the reference run) is fixed but not re-measured live; the run above repaired LCS with the poisoned
+  reference, so the fix should only remove the false `partial`s (and the guard's work on them). Worth one re-run of
+  LCS at concurrency 4.
+- The tail bound without per-case times is loose on uniform suites (mergesort's 14 quick cases would fit a 1 170 ms cap
+  where 500 ms would do); it costs only hanging candidates, but the honest number is one `--durations=0` away — on the
+  baseline command (index.ts) or on the first lane batch (runner.ts), either of which would also make rule 3 exact.
+- Rule 2's known gap (a slow fix on a baseline-alarmed *first* case) has no QuixBugs instance in the 40; on a suite
+  where it does, `passed === 0` would need the load-aware quickness test rule 3 uses.
+- `RETRY_TIMEOUTS_MAX_PER_BATCH = 16` was never the binding constraint here (12 provisional over 18 batches); a
+  hang-dominated suite with many partially-hanging candidates (bitcount) is where it would bind, at 2.5 s a retry.
+
+### 12.4 Exact commands
+
+```
+# gates
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/synth/search/budget.test.ts test/unit/synth/sieve
+
+# per-case timings (workspaces built from src/bench/quixbugs/pytest.ts generatePytestModule + the JSON cases; buggy and correct programs)
+PYTHONDONTWRITEBYTECODE=1 ~/.jevcode/runs/ladder-venv/bin/python -m pytest -q --durations=0     # in each /tmp/qb-*/
+
+# the live re-check
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs \
+  --task-id longest_common_subsequence,knapsack,levenshtein,lcs_length,kth --conditions jev-only --live --spend-cap 1 \
+  --task-spend-cap 0.1 --concurrency 4 --max-steps 12 --max-wall 6m --out bench/results/jev-only-quixbugs-4-skew
+
+# the table (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/transcript.log; the gold check applies model_patch.diff to programs/<name>.py)
+python3 /tmp/qb-skew-table.py bench/results/jev-only-quixbugs-4-skew
+```
+Run ids: `20260920-215703-mstrth7d` (longest_common_subsequence), `-nxacjirf` (knapsack), `-qp3jninl` (levenshtein),
+`-e43gigil` (lcs_length), `20260920-215719-4wkivpep` (kth). Live spend for §12: **$0.0139** (generator $0 / 0 calls).

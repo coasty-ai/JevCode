@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  CASE_TAIL_MAX_CASES,
   caseProfile,
+  caseTail,
   COMPACT_NOUL_MIN_CANDIDATES,
   decideRunPlan,
   detectRunner,
@@ -10,11 +12,17 @@ import {
   freshBudget,
   LANE_MAX_CASE_TIMEOUTS,
   laneRunTimeout,
+  LOAD_SCALE_MIN_RATIO,
+  loadRatio,
   MIN_RUN_TIMEOUT_MS,
   oracleClass,
   parseQuixbugsCommand,
   perTestTimeout,
+  PER_TEST_TIMEOUT_FACTOR,
+  PER_TEST_TIMEOUT_MAX_MS,
+  PER_TEST_TIMEOUT_MIN_MS,
   PROCESS_OVERHEAD_MS,
+  pytestCaseDurations,
   pytestSessionMs,
   QUIXBUGS_JEV_REQUESTS_MAX,
   QUIXBUGS_TEST_RUNS_MAX,
@@ -22,8 +30,10 @@ import {
   refineTRun,
   REPO_JEV_REQUESTS_MAX,
   REPO_TEST_RUNS_MAX,
+  RETRY_CASE_TIMEOUT_MS,
   runsLeft,
   runTimeout,
+  scaledCaseTimeout,
   shellWords,
   SESSION_OVERHEAD_MS,
   SIEVE_KEEP_FACTOR,
@@ -107,9 +117,9 @@ describe('fitOracle (§4.1)', () => {
     expect(o).toMatchObject({ runner: 'quixbugs', lanes: 8, runTimeoutMs: 5000, perTestTimeoutMs: 500 });
     expect(fitOracle(summary({ command: 'pytest -q', failing: ['x'], durationMs: 200_000 }), { limits: { commandTimeoutMs: 900_000, maxWallMs: 100_000 }, workspaceInfo: { git: true } }).runTimeoutMs).toBe(100_000);
   });
-  it('per-test timeout uses the measured p50 when given and clamps at 2 s', () => {
-    expect(fitOracle(GCD_BASELINE, { ...LIMITS, perTestP50Ms: 400 }).perTestTimeoutMs).toBe(1200);
-    expect(fitOracle(GCD_BASELINE, { ...LIMITS, perTestP50Ms: 1000 }).perTestTimeoutMs).toBe(2000);
+  it('per-test timeout uses the measured per-case times when given (their tail) and clamps at 2 s', () => {
+    expect(fitOracle(GCD_BASELINE, { ...LIMITS, caseDurationsMs: [400] }).perTestTimeoutMs).toBe(1200);
+    expect(fitOracle(GCD_BASELINE, { ...LIMITS, caseDurationsMs: [10, 1000, 20] }).perTestTimeoutMs).toBe(2000);
     expect(perTestTimeout('quixbugs', 0)).toBe(500);
     expect(perTestTimeout('quixbugs', Number.NaN)).toBe(500);
     expect(perTestTimeout('quixbugs', null)).toBe(500);
@@ -141,17 +151,18 @@ describe('fitOracle (§4.1)', () => {
 
 describe('fitOracle on timeout-dominated baselines (§4.1 adaptive per-test timeout, §2.4 adjusted t_run)', () => {
   it('caseProfile reads the timed-out cases from the failure texts and spreads the rest over the finished ones', () => {
-    expect(caseProfile(BITCOUNT)).toEqual({ ran: 9, timeouts: 9, notRun: 0, finished: 0, caseLimitMs: 2000, sessionMs: null, startupMs: null, overheadMs: 200, finishedTotalMs: 38, finishedP50Ms: null });
+    expect(caseProfile(BITCOUNT)).toEqual({ ran: 9, timeouts: 9, notRun: 0, finished: 0, caseLimitMs: 2000, sessionMs: null, startupMs: null, overheadMs: 200, finishedTotalMs: 38, finishedMeanMs: null, caseDurations: null, tailMs: null });
     const sq = caseProfile(SQRT);
-    expect(sq).toMatchObject({ ran: 7, timeouts: 6, finished: 1, caseLimitMs: 2000, overheadMs: 200, finishedTotalMs: 29, finishedP50Ms: 29 });
-    // no timeout: everything but process start is the finished cases (gcd: 300 ms over 6 cases)
-    expect(caseProfile(GCD_BASELINE)).toMatchObject({ ran: 6, timeouts: 0, finished: 6, overheadMs: PROCESS_OVERHEAD_MS, finishedTotalMs: 100 });
+    expect(sq).toMatchObject({ ran: 7, timeouts: 6, finished: 1, caseLimitMs: 2000, overheadMs: 200, finishedTotalMs: 29, finishedMeanMs: 29, tailMs: 29 });
+    // no timeout: everything but process start is the finished cases (gcd: 300 ms over 6 cases); without
+    // per-case times the tail is bounded by their total (it could all be one case)
+    expect(caseProfile(GCD_BASELINE)).toMatchObject({ ran: 6, timeouts: 0, finished: 6, overheadMs: PROCESS_OVERHEAD_MS, finishedTotalMs: 100, caseDurations: null, tailMs: 100 });
     // the limit the cases ran under is read back (run_tests.py's text, 0.5 s); process start never exceeds what is left
     const rt = summary({ command: GCD_BASELINE.command, failing: ['gcd(13, 13)'], failures: [{ testId: 'gcd(13, 13)', call: 'gcd(13, 13)', expected: '13', actual: 'TIMEOUT after 0.5s' }], durationMs: 550 });
-    expect(caseProfile(rt)).toMatchObject({ timeouts: 1, caseLimitMs: 500, overheadMs: 50, finishedTotalMs: 0, finishedP50Ms: null });
+    expect(caseProfile(rt)).toMatchObject({ timeouts: 1, caseLimitMs: 500, overheadMs: 50, finishedTotalMs: 0, finishedMeanMs: null, tailMs: null });
     // stop-rule "not run" failures (lane runs) are neither finished nor timed out
     const nr = summary({ command: PYTEST, failing: ['a', 'b'], failures: [{ testId: 'a', call: 'a', expected: '', actual: CASE_TIMEOUT_2S }, { testId: 'b', call: 'b', expected: '', actual: 'test_x.CaseNotRun: not run: 1 earlier case(s) timed out' }], durationMs: 2300 });
-    expect(caseProfile(nr)).toMatchObject({ ran: 2, timeouts: 1, notRun: 1, finished: 0, finishedP50Ms: null });
+    expect(caseProfile(nr)).toMatchObject({ ran: 2, timeouts: 1, notRun: 1, finished: 0, finishedMeanMs: null, tailMs: null });
   });
   it('every case hangs (bitcount): 500 ms per test, one timeout per lane run, QuixBugs-class, 8 lanes; the raw 18.2 s stays for reporting', () => {
     const o = fitOracle(BITCOUNT, LIMITS);
@@ -168,19 +179,22 @@ describe('fitOracle on timeout-dominated baselines (§4.1 adaptive per-test time
     // the old arithmetic, for the record: a 2 s p50 → 2 s timeout, an 18.7 s t_run, repository class, 4 lanes
     expect(perTestTimeout('pytest', 18_238 / 9)).toBe(2000);
   });
-  it('mixed baseline: the per-test timeout is clamp(3 × p50 of the cases that finished) — the hung cases do not vote', () => {
+  it('mixed baseline: the per-test timeout is clamp(3 × the tail of the cases that finished) — the hung cases do not vote', () => {
     // sqrt: one finished case in the 29 ms left → 87 ms → floor 500
     const sq = fitOracle(SQRT, LIMITS);
     expect(sq.perTestTimeoutMs).toBe(500);
     expect(sq.tRunMs.goalSubset).toBe(200 + 29 + 500);
     expect(oracleClass(sq)).toBe('quixbugs_class');
-    // 4 hung cases at 2 s and 6 finished ones sharing 1.8 s: p50 300 → 900 ms; a hanging lane run then costs 200 + 1800 + 900
+    // 4 hung cases at 2 s and 6 finished ones sharing 1.8 s with no per-case times: the tail is bounded by the
+    // 1.8 s (3 × mean = 900 ms would have assumed the six are alike) → 2 s cap; a hanging lane run then costs 200 + 1800 + 2000
     const mixed = fitOracle(pytestBaseline({ hang: 4, wrong: 2, pass: 4, durationMs: 4 * 2000 + PROCESS_OVERHEAD_MS + 6 * 300 }), LIMITS);
-    expect(mixed.perTestTimeoutMs).toBe(900);
-    expect(mixed.tRunMs.goalSubset).toBe(2900);
+    expect(mixed.perTestTimeoutMs).toBe(2000);
+    expect(mixed.tRunMs.goalSubset).toBe(4000);
     expect(oracleClass(mixed)).toBe('repository_class');
-    // a measured p50 handed in wins over the profile's spread
-    expect(fitOracle(SQRT, { ...LIMITS, perTestP50Ms: 400 }).perTestTimeoutMs).toBe(1200);
+    // with the six measured alike (300 ms each) the tail is 300 → 900 ms
+    expect(fitOracle(pytestBaseline({ hang: 4, wrong: 2, pass: 4, durationMs: 4 * 2000 + PROCESS_OVERHEAD_MS + 6 * 300 }), { ...LIMITS, caseDurationsMs: [300, 300, 300, 300, 300, 300] }).perTestTimeoutMs).toBe(900);
+    // measured per-case times handed in win over the profile's bound
+    expect(fitOracle(SQRT, { ...LIMITS, caseDurationsMs: [400] }).perTestTimeoutMs).toBe(1200);
     // a baseline without case timeouts is its own estimate (mergesort's RecursionErrors, the ladder)
     expect(fitOracle(pytestBaseline({ hang: 0, wrong: 13, pass: 1, durationMs: 1960 }), LIMITS).tRunMs.goalSubset).toBe(1960);
   });
@@ -194,7 +208,7 @@ describe('fitOracle on timeout-dominated baselines (§4.1 adaptive per-test time
     // sqrt: 1 040 ms of the 13 370 ms wall was interpreter start-up (the engine, its Jev calls and three sibling
     // tasks starting together); the session's 330 ms outside the six alarms is collection + reports + one case
     const sq = caseProfile(SQRT_LOADED);
-    expect(sq).toMatchObject({ timeouts: 6, finished: 1, sessionMs: 12_330, startupMs: 1040, overheadMs: SESSION_OVERHEAD_MS, finishedTotalMs: 280, finishedP50Ms: 280 });
+    expect(sq).toMatchObject({ timeouts: 6, finished: 1, sessionMs: 12_330, startupMs: 1040, overheadMs: SESSION_OVERHEAD_MS, finishedTotalMs: 280, finishedMeanMs: 280, tailMs: 280 });
     const o = fitOracle(SQRT_LOADED, LIMITS);
     expect(o.perTestTimeoutMs).toBe(840); // 3 × 280 — the same baseline without the session clock read 3 × 1170 → 2 s
     expect(fitOracle({ ...SQRT_LOADED, outputTail: '' }, LIMITS).perTestTimeoutMs).toBe(2000);
@@ -269,6 +283,104 @@ describe('fitOracle on timeout-dominated baselines (§4.1 adaptive per-test time
     expect(laneRunTimeout(oracle({ runTimeoutMs: MIN_RUN_TIMEOUT_MS, tRunMs: { goalSubset: 1, fullSuite: 1 } }), GCD_BASELINE)).toBe(MIN_RUN_TIMEOUT_MS);
     // no per-test knob (runner other) or no baseline: 3 × t_run + 10 s
     expect(laneRunTimeout(oracle({ runner: 'other', runTimeoutMs: 120_000, tRunMs: { goalSubset: 5000, fullSuite: 5000 }, perTestTimeoutMs: null }), null)).toBe(25_000);
+  });
+});
+
+describe('per-test timeout from the tail of the per-case distribution (skew), load scaling', () => {
+  /** pytest's `--durations=0` table under `-q` (the real shape, longest_common_subsequence's buggy baseline idle). */
+  const LCS_IDS = Array.from({ length: 10 }, (_, i) => `tests/test_lcs.py::test_lcs[${i}-x]`);
+  const durationsTable = (ms: readonly number[]): string =>
+    `============================== slowest durations ===============================\n${ms
+      .map((m, i) => ({ m, i }))
+      .sort((a, b) => b.m - a.m)
+      .map(({ m, i }) => `${(m / 1000).toFixed(2)}s call     ${LCS_IDS[i]}`)
+      .join('\n')}\n0.01s setup    ${LCS_IDS[8]}\n\n(25 durations < 0.005s hidden.  Use -vv to show these durations.)\n`;
+  /** LCS-like: one 184 ms case, nine 10 ms cases; four fail on values, every case finished; the output tail carries the table. */
+  const skewed = (caseMs: readonly number[], over: Partial<TestRunSummary> = {}): TestRunSummary =>
+    summary({
+      command: PYTEST,
+      passing: LCS_IDS.filter((_, i) => ![3, 5, 6, 7].includes(i)),
+      failing: [3, 5, 6, 7].map((i) => LCS_IDS[i] ?? ''),
+      failures: [3, 5, 6, 7].map((i) => ({ testId: LCS_IDS[i] ?? '', call: LCS_IDS[i] ?? '', expected: "'BCBA'", actual: "'BBDAB'" })),
+      durationMs: 700,
+      outputTail: `${durationsTable(caseMs)}=========================== short test summary info ============================\nFAILED ${LCS_IDS[3]} - AssertionError\n4 failed, 6 passed in 0.45s\n`,
+      ...over,
+    });
+  const LCS_CASES = [10, 10, 10, 184, 10, 10, 10, 10, 10, 10];
+
+  it('pytestCaseDurations reads the `call` rows of the durations table (setup/teardown and the hidden note ignored); empty without a table', () => {
+    const rows = pytestCaseDurations(durationsTable(LCS_CASES));
+    expect(rows).toHaveLength(10);
+    expect(rows[0]).toEqual({ testId: LCS_IDS[3], ms: 180 }); // 0.18s: pytest prints two decimals
+    expect(rows.slice(1).every((r) => r.ms === 10)).toBe(true);
+    expect(pytestCaseDurations('4 failed, 6 passed in 0.45s\n')).toEqual([]);
+    expect(pytestCaseDurations('')).toEqual([]);
+    // run_tests.py's JSON has no table
+    expect(pytestCaseDurations('{"passed": 1, "failures": [{"actual": "TIMEOUT after 2s"}]}')).toEqual([]);
+  });
+  it('caseTail: the maximum up to 20 samples, the p95 (nearest rank) above; ignores non-finite samples; null when empty', () => {
+    expect(CASE_TAIL_MAX_CASES).toBe(20);
+    expect(caseTail(LCS_CASES)).toBe(184);
+    expect(caseTail([5])).toBe(5);
+    expect(caseTail([])).toBeNull();
+    expect(caseTail([Number.NaN, -1])).toBeNull();
+    // 21 samples: rank ceil(0.95 × 21) = 20 → the second largest; the one outlier no longer sets the cap
+    const twentyOne = [...Array.from({ length: 20 }, (_, i) => 10 + i), 5000];
+    expect(caseTail(twentyOne)).toBe(29);
+    // 100 samples: rank 95
+    const hundred = Array.from({ length: 100 }, (_, i) => i + 1);
+    expect(caseTail(hundred)).toBe(95);
+    expect(caseTail([...hundred].reverse())).toBe(95);
+  });
+  it('the skewed baseline (one 184 ms case, nine 10 ms cases): ≥ 552 ms, not the 500 ms floor the mean gave', () => {
+    const prof = caseProfile(skewed(LCS_CASES));
+    expect(prof.caseDurations).toHaveLength(10);
+    expect(prof.tailMs).toBe(180);
+    // the mean is skew-blind: (450 − 50) / 10 = 40 ms → 3 × 40 = 120 → the floor
+    expect(prof.finishedMeanMs).toBe(40);
+    expect(perTestTimeout('pytest', prof.finishedMeanMs)).toBe(PER_TEST_TIMEOUT_MIN_MS);
+    // the tail: 3 × 180 = 540 ms from the table (two-decimal rounding), 552 from the measured 184 ms
+    const o = fitOracle(skewed(LCS_CASES), LIMITS);
+    expect(o.perTestTimeoutMs).toBe(540);
+    expect(o.perTestTimeoutMs).toBeGreaterThan(PER_TEST_TIMEOUT_MIN_MS);
+    expect(fitOracle(skewed(LCS_CASES), { ...LIMITS, caseDurationsMs: LCS_CASES }).perTestTimeoutMs).toBe(PER_TEST_TIMEOUT_FACTOR * 184);
+    expect(PER_TEST_TIMEOUT_FACTOR * 184).toBeGreaterThanOrEqual(552);
+    // the estimate of a lane run does not change: it is the finished cases' total plus start-up either way
+    expect(o.tRunMs.goalSubset).toBe(PROCESS_OVERHEAD_MS + 450);
+    // a uniform suite (ten 10 ms cases) stays at the floor
+    expect(fitOracle(skewed(Array.from({ length: 10 }, () => 10)), LIMITS).perTestTimeoutMs).toBe(PER_TEST_TIMEOUT_MIN_MS);
+    // the cases that hit the alarm do not vote even when the table lists them (their row is the limit itself)
+    const withHang = skewed(LCS_CASES, { failures: [{ testId: LCS_IDS[3] ?? '', call: LCS_IDS[3] ?? '', expected: '', actual: CASE_TIMEOUT_2S }] });
+    expect(caseProfile(withHang).caseDurations?.some((d) => d.testId === LCS_IDS[3])).toBe(false);
+    expect(caseProfile(withHang).tailMs).toBe(10);
+  });
+  it('without per-case times the tail is bounded by the finished cases\' total (it could all be one case): LCS under `pytest -q`', () => {
+    // the live baseline: "4 failed, 6 passed in 0.45s", no durations table → 400 ms of cases → 3 × 400 = 1 200 ms, not the 500 ms floor
+    const plain = skewed(LCS_CASES, { outputTail: '4 failed, 6 passed in 0.45s\n' });
+    const prof = caseProfile(plain);
+    expect(prof.caseDurations).toBeNull();
+    expect(prof.tailMs).toBe(400);
+    expect(fitOracle(plain, LIMITS).perTestTimeoutMs).toBe(1200);
+    // the bound never exceeds the 2 s cap and never moves a hang-dominated suite off the floor (bitcount: nothing finished)
+    expect(fitOracle(BITCOUNT_LOADED, LIMITS).perTestTimeoutMs).toBe(PER_TEST_TIMEOUT_MIN_MS);
+    expect(fitOracle(SQRT_LOADED, LIMITS).perTestTimeoutMs).toBe(840);
+  });
+  it('loadRatio and scaledCaseTimeout: the cap follows a batch median above 2 × the estimate, bounded by 2 s, never below the oracle\'s', () => {
+    expect(LOAD_SCALE_MIN_RATIO).toBe(2);
+    expect(loadRatio(1150, 500)).toBe(2.3);
+    expect(loadRatio(300, 500)).toBe(1); // faster than estimated is not a load
+    expect(loadRatio(null, 500)).toBe(1);
+    expect(loadRatio(0, 500)).toBe(1);
+    expect(loadRatio(Number.NaN, 500)).toBe(1);
+    expect(loadRatio(1000, 0)).toBe(1000);
+    expect(scaledCaseTimeout(500, 2.3)).toBe(1150);
+    expect(scaledCaseTimeout(500, 1.9)).toBe(500);
+    expect(scaledCaseTimeout(500, 2)).toBe(1000);
+    expect(scaledCaseTimeout(500, 9)).toBe(PER_TEST_TIMEOUT_MAX_MS);
+    expect(scaledCaseTimeout(1200, 2.5)).toBe(PER_TEST_TIMEOUT_MAX_MS);
+    expect(scaledCaseTimeout(500, Number.NaN)).toBe(500);
+    // the retry of a provisional timeout runs at the runners' own default
+    expect(RETRY_CASE_TIMEOUT_MS).toBe(PER_TEST_TIMEOUT_MAX_MS);
   });
 });
 

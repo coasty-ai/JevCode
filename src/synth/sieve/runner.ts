@@ -11,34 +11,50 @@
  *               (a probable infinite loop; counts as a regression for routing, never held as a base)
  *   apply_failed the site is stale or the lane could not take the edit
  *
+ * A `timeout` is final only when the candidate is a genuine hang (`timeoutKind`): the buggy
+ * program hangs on the same case, or the alarm fired on the first case and the baseline
+ * finished that case quickly. Otherwise — the run stopped on the alarm after passing cases, with
+ * no case failing on a value — the verdict is PROVISIONAL: the candidate may be slow rather than
+ * hanging (the per-case cap is fitted idle to a skewed distribution and the lanes run under the
+ * bench's CPU contention: `longest_common_subsequence`'s gold, 94 ms idle on its slow case,
+ * crossed a 500 ms cap under 5× load and was lost for the run, jev-only-quixbugs-3-inspection.md
+ * §2). Provisional candidates go to `mem.retryTimeouts` instead of `tried`; at the end of the
+ * batch up to RETRY_TIMEOUTS_MAX_PER_BATCH of them are re-run with the runners' full 2 s cap
+ * (the stop rule kept, see `RunSettings`), and only that run classifies them (the rest wait for
+ * the next call for the goal).
+ *
  * The step's StepBudget is honoured (runs and wall), `ctx.signal` stops dispatching (in-flight
  * runs are bounded by their own timeout and killed by the sandbox), and up to `oracle.lanes`
  * runs overlap. Every lane run carries the oracle's adaptive per-test timeout (§4.1): as
  * `--timeout` on the QuixBugs runner's command, as JEVCODE_CASE_TIMEOUT_MS (with the
  * stop-after-one-timeout rule, JEVCODE_MAX_CASE_TIMEOUTS=1) in the environment of a pytest run,
  * which the bench's generated modules read; the sandbox timeout of a lane run is
- * `laneRunTimeout` (budget.ts), never the 120 s command default. After each batch the oracle
- * learns the measured run median (`refineTRun`, with the §2.4 hysteresis under load) and, once a
- * run measures under 1 s, the fast suite's lane count (`refineLanes`; the pool is widened at the
- * next call). A job whose run was aborted, killed on a timeout the step's remaining wall had
- * cut short, or deferred (five passers already, no run left for its full-suite check), is kept
- * in `mem.deferred` under its goal and dispatched first on the next call for that goal: the
- * queue reserves the texts of popped jobs, so nothing is ever pushed back into it, and a
- * candidate is marked `tried` only when a completed run classified it. Nothing here asks Jev
- * anything: progress is arithmetic on test ids and counts (`probe-progress-judgment.md`,
- * 240/240), the tests are the oracle.
+ * `laneRunTimeout` (budget.ts), never the 120 s command default. Load awareness: once a batch has
+ * LOAD_SAMPLE_MIN_RUNS measured runs whose median exceeds LOAD_SCALE_MIN_RATIO × the oracle's
+ * t_run estimate, the per-case timeout of the rest of the batch is scaled by the observed ratio
+ * (`scaledCaseTimeout`, bounded by 2 s) and the verify event says so ("load ×2.3, case timeout
+ * 500→1150 ms"). After each batch the oracle learns the measured run median (`refineTRun`, with
+ * the §2.4 hysteresis under load) and, once a run measures under 1 s, the fast suite's lane
+ * count (`refineLanes`; the pool is widened at the next call). A job whose run was aborted,
+ * killed on a timeout the step's remaining wall had cut short, or deferred (five passers
+ * already, no run left for its full-suite check), is kept in `mem.deferred` under its goal and
+ * dispatched first on the next call for that goal: the queue reserves the texts of popped jobs,
+ * so nothing is ever pushed back into it, and a candidate is marked `tried` only when a
+ * completed run gave it its final classification. Nothing here asks Jev anything: progress is
+ * arithmetic on test ids and counts (`probe-progress-judgment.md`, 240/240), the tests are the
+ * oracle.
  */
 import { isAbsolute, relative, resolve } from 'node:path';
 
 import { sha12 } from '../../core/hash.js';
 import type { Sandbox } from '../../core/types.js';
-import { LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, parseQuixbugsCommand, refineLanes, refineTRun, shellWords } from '../search/budget.js';
+import { caseProfile, DEFAULT_CASE_TIMEOUT_MS, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, LOAD_SAMPLE_MIN_RUNS, loadRatio, parseQuixbugsCommand, PER_TEST_TIMEOUT_FACTOR, refineLanes, refineTRun, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, scaledCaseTimeout, shellWords } from '../search/budget.js';
 import type { Goal, Lane, OracleModel, StepBudget, VerifyJob, VerifyOutcome, VerifyStatus } from '../search/types.js';
 import type { AppliedCandidate, Progress, TestRunSummary } from '../types.js';
 import { applyCandidate } from '../verify/apply.js';
 import { summarize } from '../verify/index.js';
 import { progress } from '../verify/progress.js';
-import { CASE_TIMEOUT_ENV, hangsOnEveryFailure, MAX_CASE_TIMEOUTS_ENV, quixbugsTestCommand } from '../verify/quixbugs.js';
+import { CASE_TIMEOUT_ENV, hangsOnEveryFailure, isCaseNotRun, isCaseTimeout, MAX_CASE_TIMEOUTS_ENV, quixbugsTestCommand } from '../verify/quixbugs.js';
 import { RUN_FAILURE_ID, shellQuote } from '../verify/text.js';
 import { createLanes, type LanePool } from './lanes.js';
 
@@ -63,12 +79,14 @@ export const LANE_RUN_ENV: Readonly<Record<string, string>> = { PYTHONDONTWRITEB
  * the stop rule that ends a run after LANE_MAX_CASE_TIMEOUTS case timeouts, so a hanging
  * candidate costs one timeout instead of cases × timeout). Other pytest suites ignore both. The
  * QuixBugs runner takes its limit on the command line instead (`quixbugsLaneCommand`).
+ * `stopRule: false` leaves the module's own default (no limit) for a caller that wants every
+ * case's verdict.
  */
-export function laneRunEnv(oracle: Pick<OracleModel, 'runner' | 'perTestTimeoutMs'>): Record<string, string> {
+export function laneRunEnv(oracle: Pick<OracleModel, 'runner' | 'perTestTimeoutMs'>, opts: { stopRule?: boolean } = {}): Record<string, string> {
   const env: Record<string, string> = { ...LANE_RUN_ENV };
   if (oracle.runner === 'pytest' && oracle.perTestTimeoutMs !== null) {
     env[CASE_TIMEOUT_ENV] = String(Math.max(1, Math.round(oracle.perTestTimeoutMs)));
-    env[MAX_CASE_TIMEOUTS_ENV] = String(LANE_MAX_CASE_TIMEOUTS);
+    if (opts.stopRule !== false) env[MAX_CASE_TIMEOUTS_ENV] = String(LANE_MAX_CASE_TIMEOUTS);
   }
   return env;
 }
@@ -110,6 +128,26 @@ export interface RunnerMemory {
    * because a job is only meaningful against the goal whose subset it was queued for.
    */
   deferred?: Map<string, VerifyJob[]>;
+  /**
+   * goal id → provisional timeouts awaiting their retry at the full cap (`timeoutKind`
+   * 'provisional'): not in `tried` until that run classifies them. Retried first at the next
+   * call for the goal; dropped when the memory has been re-baselined since (their verdict was
+   * against a baseline the search no longer holds, like `deferred`, which index.ts resets).
+   */
+  retryTimeouts?: Map<string, PendingRetry[]>;
+}
+
+/** A candidate whose first run was a provisional `timeout`, waiting for its retry at RETRY_CASE_TIMEOUT_MS without the stop rule. */
+export interface PendingRetry {
+  job: VerifyJob;
+  applied: AppliedCandidate;
+  /** sha12(applied.diff): a re-enumerated copy popped while the retry is pending is skipped, not run again */
+  diffHash: string;
+  /** the provisional run and the per-case cap it ran under */
+  subset: TestRunSummary;
+  caseTimeoutMs: number;
+  /** the memory's baseline when the provisional run was judged; a different object means the search re-baselined */
+  baseline: TestRunSummary;
 }
 
 /** The slice of the VerifyQueue (sieve/queue.ts) the runner consumes: the best `n` jobs in key order. */
@@ -259,6 +297,64 @@ export function classifyOutcome(input: ClassifyInput): VerifyStatus {
   return 'unchanged';
 }
 
+/** Whether a `timeout` verdict is final ('hang') or awaits a retry at the full cap ('provisional'). */
+export type TimeoutKind = 'hang' | 'provisional';
+
+export interface TimeoutKindInput {
+  /** the run classified `timeout` (the subset, or the full suite of a subset passer) */
+  run: TestRunSummary;
+  /** what that run was compared with (the goal-subset baseline, or the base's full summary) */
+  base: TestRunSummary;
+  runner: OracleModel['runner'];
+  /** the per-case cap the run ran under (ms) */
+  caseTimeoutMs: number;
+  /** the load the batch has measured so far (`loadRatio`; 1 when unknown) */
+  loadRatio: number;
+}
+
+/**
+ * Is a `timeout` verdict the candidate's, or the cap's? Final ('hang') when:
+ *
+ * 1. the sandbox killed the run: its timeout is far above any per-case cap (`laneRunTimeout`);
+ * 2. every case that hit the alarm is one the baseline hit it on too — the buggy program hangs
+ *    there — and either the run was already at the full RETRY_CASE_TIMEOUT_MS cap (a retry could
+ *    say nothing new) or no case passed at all (the candidate shows no improvement over the
+ *    baseline on any case: bitcount's 203 hanging candidates in the second live bench alarm on
+ *    the first case, none of them gets a retry). Not final when cases passed and the cap was
+ *    below 2 s: `levenshtein`'s reference solution is exponential and takes 1.0 s idle on the
+ *    case the buggy program alarms on at 2 s, so at a 500 ms cap the gold alarms exactly where
+ *    the baseline does — and finishes at the retry's 2 s;
+ * 3. (sequential pytest only) the alarm fired on the very first case — nothing passed, one
+ *    timeout, the rest not run — and the baseline finished that case quickly: its own time when
+ *    the baseline output has pytest's durations table, else the tail bound of the finished
+ *    cases, times PER_TEST_TIMEOUT_FACTOR and the observed load, fits under the cap. Even at the
+ *    observed load the case had three times its baseline time and did not return.
+ *
+ * Anything else is 'provisional': the candidate passed cases and then a case did not return
+ * under a cap fitted idle — slow, or hanging on that input; the retry at the full 2 s cap
+ * decides. The QuixBugs runner runs its cases in parallel, so rule 3's "first case" does not
+ * exist there. Known gap: a fix slower than the cap on a case the buggy program hangs on, when
+ * that case is the suite's first, is final under rule 2.
+ */
+export function timeoutKind(input: TimeoutKindInput): TimeoutKind {
+  const { run, base } = input;
+  if (run.timedOut) return 'hang';
+  const alarmed = run.failures.filter((f) => isCaseTimeout(f.actual)).map((f) => f.testId);
+  if (alarmed.length === 0) return 'hang';
+  const noValueFailure = run.failures.every((f) => isCaseTimeout(f.actual) || isCaseNotRun(f.actual));
+  const baseAlarmed = new Set(base.failures.filter((f) => isCaseTimeout(f.actual)).map((f) => f.testId));
+  if (alarmed.every((id) => baseAlarmed.has(id)) && (input.caseTimeoutMs >= RETRY_CASE_TIMEOUT_MS || (run.passed === 0 && noValueFailure))) return 'hang';
+  const firstCase = input.runner === 'pytest' && run.passed === 0 && alarmed.length === 1 && noValueFailure;
+  if (firstCase) {
+    const profile = caseProfile(base);
+    const own = profile.caseDurations?.find((d) => d.testId === alarmed[0])?.ms;
+    const baseMs = own ?? profile.tailMs;
+    const load = Number.isFinite(input.loadRatio) && input.loadRatio > 1 ? input.loadRatio : 1;
+    if (baseMs !== null && PER_TEST_TIMEOUT_FACTOR * baseMs * load <= input.caseTimeoutMs) return 'hang';
+  }
+  return 'provisional';
+}
+
 // ---------------------------------------------------------------------------------------
 // Subset baselines
 // ---------------------------------------------------------------------------------------
@@ -288,7 +384,7 @@ function median(xs: readonly number[]): number | null {
 // runQueue
 // ---------------------------------------------------------------------------------------
 
-type JobResult = { kind: 'outcome'; outcome: VerifyOutcome } | { kind: 'defer' };
+type JobResult = { kind: 'outcome'; outcome: VerifyOutcome } | { kind: 'defer' } | { kind: 'provisional'; pending: PendingRetry } | { kind: 'skip' };
 
 function emptySummary(command: string, actual: string): TestRunSummary {
   return { command, passed: 0, failed: 0, errors: 1, skipped: 0, total: 1, failing: [RUN_FAILURE_ID], passing: [], failures: [{ testId: RUN_FAILURE_ID, call: command, expected: 'the candidate applies and its tests run', actual }], exitCode: null, timedOut: false, durationMs: 0, outputTail: '' };
@@ -298,11 +394,14 @@ function emptySummary(command: string, actual: string): TestRunSummary {
  * Run the verification queue for one goal (§2.3 `runQueue`). Returns one VerifyOutcome per
  * candidate that completed; jobs whose run was aborted by `ctx.signal` or cut short by the
  * step's remaining wall, or deferred because the step already has five passers or no run left,
- * wait in `mem.deferred` under the goal. Charges the StepBudget (one per run, wall = batch
- * elapsed), records the diff of every completed candidate in `mem.tried` (the key D's queue
- * excludes), refines `mem.oracle.tRunMs` from the measured runs and emits one `synth` event per
- * batch. A lane failure (a reset that did not restore the lane) stops dispatch; the outcomes
- * already classified are still returned, and the error is thrown only when nothing completed.
+ * wait in `mem.deferred` under the goal; provisional timeouts wait in `mem.retryTimeouts` (see
+ * the module header) and are retried at the end of the batch, at most RETRY_TIMEOUTS_MAX_PER_BATCH
+ * of them. Charges the StepBudget (one per run, wall = batch elapsed), records the diff of every
+ * finally classified candidate in `mem.tried` (the key D's queue excludes), refines
+ * `mem.oracle.tRunMs` from the measured first runs (not the retries: they run at 2 s a case
+ * without the stop rule) and emits one `synth` event per batch. A lane failure (a reset that did
+ * not restore the lane) stops dispatch; the outcomes already classified are still returned, and
+ * the error is thrown only when nothing completed.
  */
 export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: JobQueue, goal: Goal, runsAllowed: number, opts: RunQueueOptions = {}): Promise<VerifyOutcome[]> {
   const baseline = mem.baseline;
@@ -329,6 +428,15 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   // goes back on `deferred` for the next call, never into this call's supply (it would be popped
   // again at once and charged a run per loop until runsAllowed ran out)
   const carried = deferred.splice(0, deferred.length);
+  const retryByGoal = mem.retryTimeouts ?? new Map<string, PendingRetry[]>();
+  mem.retryTimeouts = retryByGoal;
+  const pendingRetries = retryByGoal.get(goal.id) ?? [];
+  retryByGoal.set(goal.id, pendingRetries);
+  // provisional timeouts from earlier calls are retried first; those judged against a baseline the
+  // memory no longer holds (index.ts re-baselined after a commit) are dropped — not `tried`, so the
+  // candidate can be enumerated again on the new base
+  const carriedRetries = pendingRetries.splice(0, pendingRetries.length).filter((r) => r.baseline === baseline);
+  const pendingHashes = new Set(carriedRetries.map((r) => r.diffHash));
   const scope = subsetScope(oracle, goal);
 
   const batchStart = now();
@@ -339,16 +447,53 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const results: { order: number; outcome: VerifyOutcome }[] = [];
   const subsetDurations: number[] = [];
   const fullDurations: number[] = [];
+  const provisional: { order: number; pending: PendingRetry }[] = [];
+  const retried = new Map<VerifyStatus, number>();
 
   const wallLeft = (): number => wallAtStart - (now() - batchStart);
   // §4.1: the sandbox timeout of a lane run derives from the oracle (the workspace command's
   // timeout tightened to the lane settings), never from a constant
   const laneTimeoutMs = laneRunTimeout(oracle, baseline);
-  const env = laneRunEnv(oracle);
   // a run the remaining wall cannot fit (one measured goal-subset run, or the run timeout when smaller) is not started
   const minRunWallMs = Math.min(laneTimeoutMs, Math.max(1, oracle.tRunMs.goalSubset));
   const stopDispatch = (): boolean =>
     ctx.signal.aborted || laneFailure !== null || dispatched >= runsAllowed || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs || passers >= MAX_FULL_SUITE_RUNS_PER_STEP;
+
+  // Load awareness: the batch's measured run median against the oracle's estimate; once it
+  // exceeds LOAD_SCALE_MIN_RATIO the per-case cap of the rest of the batch follows it (bounded by 2 s)
+  const estimateMs = Math.max(1, oracle.tRunMs.goalSubset);
+  let loadNow = 1;
+  let caseTimeoutNow: number | null = oracle.perTestTimeoutMs;
+  const observeLoad = (): void => {
+    if (oracle.perTestTimeoutMs === null || subsetDurations.length < LOAD_SAMPLE_MIN_RUNS) return;
+    const ratio = loadRatio(median(subsetDurations), estimateMs);
+    if (ratio <= loadNow) return;
+    loadNow = ratio;
+    caseTimeoutNow = scaledCaseTimeout(oracle.perTestTimeoutMs, ratio);
+  };
+
+  /**
+   * The lane settings of one run: the per-case cap (the oracle's, load-scaled, or the retry's full
+   * cap) and the stop rule. The retry keeps the stop rule: it asks one question — does the case
+   * that alarmed finish at 2 s? — and a genuine hang that reaches it then costs one alarm, not
+   * (cases − passed) × 2 s (bitcount: 18 s a retry, sqrt: 12 s; a candidate that hangs on one
+   * case is `timeout` with or without the rule, never a base).
+   */
+  interface RunSettings {
+    caseTimeoutMs: number | null;
+    stopRule: boolean;
+  }
+  const firstRun = (): RunSettings => ({ caseTimeoutMs: caseTimeoutNow, stopRule: true });
+  const RETRY: RunSettings = { caseTimeoutMs: RETRY_CASE_TIMEOUT_MS, stopRule: true };
+  /**
+   * The measured goal-subset baseline is a reference, not a candidate: it runs at the module's
+   * own defaults (2 s a case, no stop rule), like the workspace baseline it stands in for. Under
+   * the lane cap it is truncated exactly when the candidates are — the first skew re-check
+   * measured LCS's clean lane at a 570 ms cap under 2.6× load, case 3 alarmed, the reference
+   * read 3/10 instead of 6/10, and every no-op candidate that finished case 3 was `partial`.
+   */
+  const REFERENCE: RunSettings = { caseTimeoutMs: DEFAULT_CASE_TIMEOUT_MS, stopRule: false };
+  const oracleFor = (s: RunSettings): OracleModel => (s.caseTimeoutMs === oracle.perTestTimeoutMs ? oracle : { ...oracle, perTestTimeoutMs: oracle.perTestTimeoutMs === null ? null : s.caseTimeoutMs });
 
   /**
    * One test run on a lane; a sandbox failure is a run failure, never a pass, and never aborts
@@ -356,18 +501,20 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
    * oracle's run timeout: that says nothing about the candidate (it is not a probable infinite
    * loop), so it is deferred and re-run with the full timeout rather than classified `timeout`.
    */
-  const runTests = async (command: string, lane: Lane): Promise<TestRunSummary & { aborted: boolean }> => {
-    const timeoutMs = Math.max(1, Math.min(laneTimeoutMs, Math.max(1, wallLeft())));
-    const truncated = timeoutMs < laneTimeoutMs;
+  const runTests = async (command: string, lane: Lane, s: RunSettings): Promise<TestRunSummary & { aborted: boolean }> => {
+    const o = oracleFor(s);
+    const runTimeoutMs = o === oracle ? laneTimeoutMs : laneRunTimeout(o, baseline);
+    const timeoutMs = Math.max(1, Math.min(runTimeoutMs, Math.max(1, wallLeft())));
+    const truncated = timeoutMs < runTimeoutMs;
     const started = now();
     try {
-      const res = await ctx.sandbox.run(command, { timeoutMs, maxOutputBytes: RUN_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir, env: { ...env } });
-      const s = summarize(command, res, res.durationMs > 0 ? res.durationMs : now() - started);
+      const res = await ctx.sandbox.run(command, { timeoutMs, maxOutputBytes: RUN_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir, env: laneRunEnv(o, { stopRule: s.stopRule }) });
+      const sum = summarize(command, res, res.durationMs > 0 ? res.durationMs : now() - started);
       const wallCut = truncated && res.killedBy === 'timeout';
-      return { ...s, aborted: res.killedBy === 'abort' || res.killedBy === 'wall_time' || wallCut || ctx.signal.aborted };
+      return { ...sum, aborted: res.killedBy === 'abort' || res.killedBy === 'wall_time' || wallCut || ctx.signal.aborted };
     } catch (e: unknown) {
-      const s = summarize(command, { stdout: '', stderr: e instanceof Error ? e.message : String(e), exitCode: null }, now() - started);
-      return { ...s, aborted: ctx.signal.aborted };
+      const sum = summarize(command, { stdout: '', stderr: e instanceof Error ? e.message : String(e), exitCode: null }, now() - started);
+      return { ...sum, aborted: ctx.signal.aborted };
     }
   };
 
@@ -386,19 +533,27 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     if (budget.testRunsLeft <= 0) return 'defer';
     budget.testRunsLeft -= 1;
     await pool.applyToLane(lane, { candidate: job.candidate, files: [], diff: '' }, job.base.files);
-    const s = await runTests(subsetCommand(oracle, goal, lane, spec), lane);
+    const s = await runTests(subsetCommand(oracleFor(REFERENCE), goal, lane, spec), lane, REFERENCE);
     if (s.aborted) return 'defer';
     subsetBaselines.set(key, s);
     return s;
   };
 
-  const verifyJob = async (job: VerifyJob, lane: Lane): Promise<JobResult> => {
+  /**
+   * One candidate on one lane: apply, goal-subset run, full-suite run for a passer, classify.
+   * `retry` re-runs a provisional timeout at the full cap without the stop rule; its verdict is
+   * final. A first run whose `timeout` is provisional returns 'provisional' and is not `tried`.
+   */
+  const verifyJob = async (job: VerifyJob, lane: Lane, mode: 'first' | 'retry'): Promise<JobResult> => {
     let applied: AppliedCandidate;
     try {
       applied = applyCandidate(job.candidate, job.base.files);
     } catch (e: unknown) {
       return applyFailed(job, { candidate: job.candidate, files: [], diff: '' }, e);
     }
+    const diffHash = sha12(applied.diff);
+    // a re-enumerated copy of a candidate whose retry is pending: the retry decides, not another first run
+    if (mode === 'first' && pendingHashes.has(diffHash)) return { kind: 'skip' };
     const subsetBase = await subsetBaselineFor(job, lane);
     if (subsetBase === 'defer') return { kind: 'defer' };
     try {
@@ -408,9 +563,13 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     }
     if (budget.testRunsLeft <= 0) return { kind: 'defer' };
     budget.testRunsLeft -= 1;
-    const subset = await runTests(subsetCommand(oracle, goal, lane, spec), lane);
+    const settings = mode === 'retry' ? RETRY : firstRun();
+    const subset = await runTests(subsetCommand(oracleFor(settings), goal, lane, spec), lane, settings);
     if (subset.aborted) return { kind: 'defer' };
-    subsetDurations.push(subset.durationMs);
+    if (mode === 'first') {
+      subsetDurations.push(subset.durationMs);
+      observeLoad();
+    }
     const subsetProgress = progress(subsetBase, subset);
     const passesGoal = goalPasses(goal, subset, subsetProgress);
 
@@ -426,18 +585,25 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
         if (passers >= MAX_FULL_SUITE_RUNS_PER_STEP || budget.testRunsLeft <= 0) return { kind: 'defer' };
         passers += 1;
         budget.testRunsLeft -= 1;
-        const f = await runTests(fullSuiteCommand(oracle, lane, spec), lane);
+        const f = await runTests(fullSuiteCommand(oracleFor(settings), lane, spec), lane, settings);
         if (f.aborted) {
           passers -= 1;
           return { kind: 'defer' };
         }
-        fullDurations.push(f.durationMs);
+        if (mode === 'first') fullDurations.push(f.durationMs);
         full = f;
       }
       fullProgress = progress(job.base.summary, full);
     }
     const status = classifyOutcome({ subset, subsetProgress, passesGoal, ...(full !== undefined ? { full } : {}), ...(fullProgress !== undefined ? { fullProgress } : {}) });
-    mem.tried.add(sha12(applied.diff)); // only a completed candidate is "tried"; a deferred one runs again
+    if (status === 'timeout' && mode === 'first' && settings.caseTimeoutMs !== null) {
+      // which run hung: the full suite of a subset passer, else the subset
+      const hung = full !== undefined && (full.timedOut || hangsOnEveryFailure(full)) ? { run: full, base: job.base.summary } : { run: subset, base: subsetBase };
+      const kind = timeoutKind({ run: hung.run, base: hung.base, runner: oracle.runner, caseTimeoutMs: settings.caseTimeoutMs, loadRatio: loadNow });
+      if (kind === 'provisional') return { kind: 'provisional', pending: { job, applied, diffHash, subset: hung.run, caseTimeoutMs: settings.caseTimeoutMs, baseline } };
+    }
+    mem.tried.add(diffHash); // only a finally classified candidate is "tried"; a deferred or provisional one runs again
+    if (mode === 'retry') retried.set(status, (retried.get(status) ?? 0) + 1);
     const outcome: VerifyOutcome = { job, applied, subset, progress: fullProgress ?? subsetProgress, status, ...(full !== undefined ? { full } : {}) };
     return { kind: 'outcome', outcome };
   };
@@ -457,7 +623,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       dispatched += 1;
       let r: JobResult;
       try {
-        r = await pool.withLane((lane) => verifyJob(job, lane));
+        r = await pool.withLane((lane) => verifyJob(job, lane, 'first'));
       } catch (e: unknown) {
         // the lane could not be prepared or restored (a failing git reset, an aborted sandbox):
         // the job is not lost, no more work is dispatched, and the batch's outcomes still count
@@ -465,13 +631,42 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
         r = { kind: 'defer' };
       }
       if (r.kind === 'defer') deferred.push(job);
-      else results.push({ order, outcome: r.outcome });
+      else if (r.kind === 'provisional') provisional.push({ order, pending: r.pending });
+      else if (r.kind === 'outcome') results.push({ order, outcome: r.outcome });
     }
   };
   const workers = Math.max(1, Math.min(pool.lanes.length, oracle.lanes));
   await Promise.all(Array.from({ length: workers }, () => worker()));
   // carried jobs that dispatch never reached stay first in line
   deferred.unshift(...carried);
+
+  // The retry phase: provisional timeouts of earlier calls first, then this batch's, at most
+  // RETRY_TIMEOUTS_MAX_PER_BATCH; the rest (and any retry the wall or the signal cut short) wait
+  // in mem.retryTimeouts for the next call. Retries are re-runs of dispatched candidates: they
+  // charge the budget, not `runsAllowed`.
+  const retryQueue: { order: number; pending: PendingRetry }[] = [...carriedRetries.map((pending, i) => ({ order: -carriedRetries.length + i, pending })), ...provisional];
+  const provisionalCount = retryQueue.length;
+  const toRetry = retryQueue.splice(0, RETRY_TIMEOUTS_MAX_PER_BATCH);
+  const stopRetry = (): boolean => ctx.signal.aborted || laneFailure !== null || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs;
+  const retryWorker = async (): Promise<void> => {
+    while (!stopRetry()) {
+      const next = toRetry.shift();
+      if (next === undefined) return;
+      let r: JobResult;
+      try {
+        r = await pool.withLane((lane) => verifyJob(next.pending.job, lane, 'retry'));
+      } catch (e: unknown) {
+        laneFailure = e;
+        r = { kind: 'defer' };
+      }
+      if (r.kind === 'outcome') results.push({ order: next.order, outcome: r.outcome });
+      else pendingRetries.push(next.pending);
+    }
+  };
+  if (toRetry.length > 0) await Promise.all(Array.from({ length: workers }, () => retryWorker()));
+  // whatever the retry phase did not reach waits for the next call, in order
+  pendingRetries.unshift(...toRetry.map((r) => r.pending));
+  pendingRetries.push(...retryQueue.map((r) => r.pending));
 
   budget.testWallLeftMs = Math.max(0, wallAtStart - (now() - batchStart));
   // the oracle learns the measured cost of this goal's subset and of the full suite (§4.1: t_run per
@@ -490,7 +685,13 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   for (const o of outcomes) counts.set(o.status, (counts.get(o.status) ?? 0) + 1);
   const failureNote = laneFailure === null ? '' : `; lane failure: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`;
   const timing = subsetMed === null ? '' : `; run median ${Math.round(subsetMed)} ms, t_run ${oracle.tRunMs.goalSubset} ms${oracle.lanes === lanesBefore ? '' : `, lanes ${lanesBefore} → ${oracle.lanes}`}`;
-  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
+  const retriedCount = [...retried.values()].reduce((a, b) => a + b, 0);
+  const retryNote =
+    provisionalCount === 0
+      ? ''
+      : `; ${provisionalCount} provisional timeout${provisionalCount === 1 ? '' : 's'}: ${retriedCount} retried at ${RETRY_CASE_TIMEOUT_MS} ms${retriedCount > 0 ? ` (${[...retried.entries()].map(([k, v]) => `${v} ${k}`).join(', ')})` : ''}, ${pendingRetries.length} pending`;
+  const loadNote = caseTimeoutNow === oracle.perTestTimeoutMs || oracle.perTestTimeoutMs === null ? '' : `; load ×${loadNow.toFixed(1)}, case timeout ${oracle.perTestTimeoutMs}→${caseTimeoutNow} ms`;
+  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${retryNote}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
   ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail, candidates: dispatched, tested: outcomes.length });
   // a broken lane with nothing to show for the batch is an error the step must see; on abort the caller is stopping anyway
   if (laneFailure !== null && outcomes.length === 0 && !ctx.signal.aborted) throw new RunnerError(`lane failure during ${goal.id}: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`, { cause: laneFailure });

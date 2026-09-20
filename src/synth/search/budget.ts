@@ -8,7 +8,7 @@
  */
 import type { RunLimits } from '../../core/types.js';
 import type { Candidate, Site, TestRunSummary } from '../types.js';
-import { countCaseTimeouts } from '../verify/quixbugs.js';
+import { countCaseTimeouts, isCaseNotRun, isCaseTimeout } from '../verify/quixbugs.js';
 import type { OracleModel, RunPlan, StepBudget } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -38,18 +38,53 @@ export const LARGE_WORKSPACE_BYTES = 50 * 1024 * 1024;
 
 /**
  * Adaptive per-test timeout for the per-case runners (run_tests.py `--timeout`, the bench's
- * generated pytest module through JEVCODE_CASE_TIMEOUT_MS): clamp(3 × p50 of the baseline's
- * cases that finished, 0.5 s, 2 s); 0.5 s when no case finished (every case hung). The 0.5 s
- * floor rejected no gold fix on 35/35 enumerated replacements while cutting the
- * timeout-dominated programs (`sqrt` 47.6 s → 31.9 s; `contrarian-exhaustive.all.jsonl`,
- * `judge2-reliability-cost.md` graft 2); 2 s is both runners' default. Timed-out cases are
- * excluded from the p50 because they say nothing about how long a case takes, only that the
- * buggy program hangs on it (bitcount 9/9, sqrt 6/7: the old `duration / total` read them as a
- * 2 s p50 and kept the 2 s timeout).
+ * generated pytest module through JEVCODE_CASE_TIMEOUT_MS): clamp(3 × the *tail* of the
+ * baseline's finished-case times, 0.5 s, 2 s); 0.5 s when no case finished (every case hung).
+ * The tail, not the mean: per-case times are skewed — `longest_common_subsequence`'s slowest
+ * case is ~40× its mean (184 ms against ≤ 14 ms for the other nine, idle; 330 ms under a load
+ * average of 45), so 3 × mean (≈ 60 ms) fell to the 0.5 s floor and the floor became the cap,
+ * and under the bench's 4–9× CPU contention the gold's slow case crossed it and was classified
+ * `timeout` (experiments/results/jev-only-quixbugs-3-inspection.md §2). With ≤ CASE_TAIL_MAX_CASES
+ * finished cases the tail is their maximum (every case must fit, and 20 samples give no
+ * percentile worth the name); above it the p95, so one pathological case of a large suite does
+ * not set the cap for all. Without per-case times (pytest without `--durations`, run_tests.py's
+ * JSON) the tail is bounded by the finished cases' total — every finished millisecond could be
+ * one case — which is honest about what is known and costs only hanging candidates (they pay
+ * the cap once, under the stop rule). The 0.5 s floor rejected no gold fix on 35/35 enumerated
+ * replacements while cutting the timeout-dominated programs (`sqrt` 47.6 s → 31.9 s;
+ * `contrarian-exhaustive.all.jsonl`, `judge2-reliability-cost.md` graft 2); 2 s is both
+ * runners' default. Timed-out cases never vote: they say nothing about how long a case takes,
+ * only that the buggy program hangs on it (bitcount 9/9, sqrt 6/7: the old `duration / total`
+ * read them as a 2 s p50 and kept the 2 s timeout).
  */
 export const PER_TEST_TIMEOUT_FACTOR = 3;
 export const PER_TEST_TIMEOUT_MIN_MS = 500;
 export const PER_TEST_TIMEOUT_MAX_MS = 2000;
+/** Up to this many finished cases the tail is the maximum; above it the CASE_TAIL_PERCENTILE quantile (nearest rank). */
+export const CASE_TAIL_MAX_CASES = 20;
+export const CASE_TAIL_PERCENTILE = 0.95;
+/**
+ * Load awareness on the lanes (sieve/runner.ts): once a batch has LOAD_SAMPLE_MIN_RUNS measured
+ * runs and their median exceeds LOAD_SCALE_MIN_RATIO × the oracle's t_run estimate, the per-case
+ * timeout of the rest of the batch is scaled by the observed ratio (bounded by
+ * PER_TEST_TIMEOUT_MAX_MS). The QuixBugs run-3 bench ran 14 tasks × up to 8 lanes on 15 cores:
+ * lane batch medians were 4–9× the idle run time, which is exactly the factor a per-case cap
+ * fitted idle lacks. Four runs is the smallest sample whose median is not one outlier.
+ */
+export const LOAD_SCALE_MIN_RATIO = 2;
+export const LOAD_SAMPLE_MIN_RUNS = 4;
+/**
+ * Provisional `timeout` verdicts (sieve/runner.ts `timeoutKind`): a candidate whose run stopped
+ * on the alarm while no case had failed with a value might be slow rather than hanging; it is
+ * re-run at the end of the batch with the runners' full 2 s cap (the stop rule kept: one alarm
+ * decides) before it is classified, at most RETRY_TIMEOUTS_MAX_PER_BATCH per batch (the rest
+ * wait for the next call for the goal). A genuine hang that reaches the retry costs one 2 s
+ * alarm plus start-up; the two immediate rules (the buggy program hangs on the same case and
+ * nothing passed, or the cap was already 2 s; the alarm fired on the first case and the
+ * baseline finished it quickly) classify the bulk of them without a retry.
+ */
+export const RETRY_TIMEOUTS_MAX_PER_BATCH = 16;
+export const RETRY_CASE_TIMEOUT_MS = PER_TEST_TIMEOUT_MAX_MS;
 /** The per-case limit both runners apply when nothing else is said (run_tests.py --timeout 2; CASE_TIMEOUT_S = 2). */
 export const DEFAULT_CASE_TIMEOUT_MS = 2000;
 /**
@@ -218,12 +253,12 @@ export interface FitOracleOptions {
     sizeBytes?: number;
   };
   /**
-   * measured per-test median (ms) of the cases that finished, when the caller has it (pytest
-   * `--durations`); otherwise `caseProfile` spreads the baseline's time outside its timed-out
-   * cases and process start over the finished cases (an upper bound on the p50; the clamp keeps
-   * it honest)
+   * measured times (ms) of the cases that finished, when the caller has them (pytest
+   * `--durations`, its own instrumentation); otherwise `caseProfile` reads pytest's durations
+   * table from the output tail when the run printed one, and without that bounds the tail by
+   * the finished cases' share of the baseline (the clamp keeps it honest)
    */
-  perTestP50Ms?: number;
+  caseDurationsMs?: readonly number[];
 }
 
 function clamp(v: number, lo: number, hi: number): number {
@@ -258,8 +293,60 @@ export interface CaseProfile {
   overheadMs: number;
   /** the span minus timeouts × limit minus the fixed cost, ≥ 0: the finished cases' work (and, under load, the reporting of the failures) */
   finishedTotalMs: number;
-  /** mean time of a finished case (an upper bound on the p50); null when no case finished */
-  finishedP50Ms: number | null;
+  /** mean time of a finished case (skew-blind: LCS's slowest case is ~40× it); null when no case finished */
+  finishedMeanMs: number | null;
+  /**
+   * per-case times of the finished cases when the output carries pytest's `--durations` table
+   * (the `call` phase; entries under 5 ms are hidden without -vv, which cannot move a maximum);
+   * timed-out and not-run cases excluded; null when the output has no table
+   */
+  caseDurations: CaseDuration[] | null;
+  /**
+   * the tail of the finished cases' times the per-test timeout is fitted to (`caseTail`): the
+   * maximum (≤ CASE_TAIL_MAX_CASES cases) or p95 of `caseDurations` when known, else the
+   * finished cases' total (the bound: it could all be one case); null when no case finished
+   */
+  tailMs: number | null;
+}
+
+/** One line of pytest's `--durations` table: `0.18s call  tests/test_x.py::test_x[3-...]`. */
+export interface CaseDuration {
+  testId: string;
+  ms: number;
+}
+
+const PYTEST_DURATION_LINE = /^\s*(\d+(?:\.\d+)?)s\s+(call|setup|teardown)\s+(\S.*?)\s*$/gm;
+
+/**
+ * pytest's `--durations=N` table read from an output tail (`-q` prints it too): the `call`
+ * phase of every listed test, in the table's (descending) order. Empty when the output has no
+ * table. Under `-q` entries below 5 ms are replaced by "(N durations < 0.005s hidden)", so the
+ * list may be shorter than the suite; a maximum is unaffected, a p95 over a large suite is not.
+ */
+export function pytestCaseDurations(outputTail: string): CaseDuration[] {
+  const out: CaseDuration[] = [];
+  for (const m of outputTail.matchAll(PYTEST_DURATION_LINE)) {
+    if (m[2] !== 'call') continue;
+    const sec = Number(m[1]);
+    const testId = (m[3] ?? '').trim();
+    if (!Number.isFinite(sec) || sec < 0 || testId === '') continue;
+    out.push({ testId, ms: Math.round(sec * 1000) });
+  }
+  return out;
+}
+
+/**
+ * The tail of a per-case time distribution the per-test timeout is fitted to: the maximum when
+ * there are at most CASE_TAIL_MAX_CASES samples, else the CASE_TAIL_PERCENTILE quantile by
+ * nearest rank (so 21+ samples let one pathological case go unprotected rather than set the cap
+ * for all). Non-finite and negative samples are ignored; null when nothing is left.
+ */
+export function caseTail(durationsMs: readonly number[]): number | null {
+  const xs = durationsMs.filter((d) => Number.isFinite(d) && d >= 0).sort((a, b) => a - b);
+  if (xs.length === 0) return null;
+  if (xs.length <= CASE_TAIL_MAX_CASES) return xs[xs.length - 1] ?? null;
+  const rank = Math.min(xs.length, Math.max(1, Math.ceil(CASE_TAIL_PERCENTILE * xs.length)));
+  return xs[rank - 1] ?? null;
 }
 
 /**
@@ -292,18 +379,47 @@ export function caseProfile(baseline: Pick<TestRunSummary, 'passed' | 'failed' |
   const restMs = Math.max(0, span - timeouts * caseLimitMs);
   const overheadMs = Math.min(restMs, sessionMs === null ? PROCESS_OVERHEAD_MS : SESSION_OVERHEAD_MS);
   const finishedTotalMs = Math.max(0, restMs - overheadMs);
-  return { ran, timeouts, notRun, finished, caseLimitMs, sessionMs, startupMs, overheadMs, finishedTotalMs, finishedP50Ms: finished > 0 ? finishedTotalMs / finished : null };
+  // per-case times when the output has pytest's durations table; the cases that hit the alarm or were not run do not vote
+  const unfinished = new Set<string>();
+  for (const f of baseline.failures) if (isCaseTimeout(f.actual) || isCaseNotRun(f.actual)) unfinished.add(f.testId);
+  const table = pytestCaseDurations(baseline.outputTail ?? '').filter((d) => !unfinished.has(d.testId));
+  const caseDurations = table.length > 0 ? table : null;
+  const tailMs = caseDurations !== null ? caseTail(caseDurations.map((d) => d.ms)) : finished > 0 ? finishedTotalMs : null;
+  return { ran, timeouts, notRun, finished, caseLimitMs, sessionMs, startupMs, overheadMs, finishedTotalMs, finishedMeanMs: finished > 0 ? finishedTotalMs / finished : null, caseDurations, tailMs };
 }
 
 /**
  * §4.1 per-test timeout for the runners with a per-case knob (run_tests.py, the generated pytest
- * module); null for `other` (nothing to pass it to). `finishedP50Ms` null or 0 (no case
- * finished: every case hung) gives the 0.5 s floor.
+ * module); null for `other` (nothing to pass it to). `tailMs` is the tail of the finished cases'
+ * times (`CaseProfile.tailMs`, `caseTail`); null or 0 (no case finished: every case hung) gives
+ * the 0.5 s floor.
  */
-export function perTestTimeout(runner: OracleModel['runner'], finishedP50Ms: number | null): number | null {
+export function perTestTimeout(runner: OracleModel['runner'], tailMs: number | null): number | null {
   if (runner === 'other') return null;
-  const p50 = finishedP50Ms !== null && Number.isFinite(finishedP50Ms) && finishedP50Ms > 0 ? finishedP50Ms : 0;
-  return Math.round(clamp(PER_TEST_TIMEOUT_FACTOR * p50, PER_TEST_TIMEOUT_MIN_MS, PER_TEST_TIMEOUT_MAX_MS));
+  const tail = tailMs !== null && Number.isFinite(tailMs) && tailMs > 0 ? tailMs : 0;
+  return Math.round(clamp(PER_TEST_TIMEOUT_FACTOR * tail, PER_TEST_TIMEOUT_MIN_MS, PER_TEST_TIMEOUT_MAX_MS));
+}
+
+/**
+ * The load a batch runs under, read from its measured run median against the oracle's t_run
+ * estimate (§2.4's "measured on the goal-subset command"): 1 when nothing was measured or the
+ * lanes are no slower than estimated. Never below 1: a batch faster than estimated is a better
+ * t_run (`refineTRun`), not a reason to tighten a per-case cap fitted to the baseline.
+ */
+export function loadRatio(medianMs: number | null, estimateMs: number): number {
+  if (medianMs === null || !Number.isFinite(medianMs) || medianMs <= 0) return 1;
+  const est = Math.max(1, Number.isFinite(estimateMs) ? estimateMs : 1);
+  return Math.max(1, medianMs / est);
+}
+
+/**
+ * The per-case timeout for the rest of a loaded batch: the oracle's cap scaled by the observed
+ * load once it exceeds LOAD_SCALE_MIN_RATIO, bounded by PER_TEST_TIMEOUT_MAX_MS (the runners'
+ * default, the cap the retry runs at); the oracle's cap unchanged below the threshold.
+ */
+export function scaledCaseTimeout(baseMs: number, ratio: number): number {
+  if (!Number.isFinite(ratio) || ratio < LOAD_SCALE_MIN_RATIO) return baseMs;
+  return Math.round(clamp(baseMs * ratio, baseMs, PER_TEST_TIMEOUT_MAX_MS));
 }
 
 /**
@@ -403,7 +519,7 @@ export function fitOracle(baseline: TestRunSummary, options: FitOracleOptions | 
   const runner = detectRunner(baseline.command);
   const baselineDurationMs = Math.max(0, Math.floor(baseline.durationMs));
   const profile = caseProfile(baseline);
-  const perTestTimeoutMs = perTestTimeout(runner, opts.perTestP50Ms ?? profile.finishedP50Ms);
+  const perTestTimeoutMs = perTestTimeout(runner, opts.caseDurationsMs !== undefined ? caseTail(opts.caseDurationsMs) : profile.tailMs);
   const tRun = estimateRunMs(runner, profile, perTestTimeoutMs, baselineDurationMs);
   return {
     runner,

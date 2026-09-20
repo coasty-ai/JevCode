@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ExecResult, SandboxRunOptions } from '../../../../src/core/types.js';
-import { fitOracle, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, shellWords } from '../../../../src/synth/search/budget.js';
+import { fitOracle, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, shellWords } from '../../../../src/synth/search/budget.js';
 import type { OracleModel, VerifyOutcome, VerifyStatus } from '../../../../src/synth/search/types.js';
 import { sha12 } from '../../../../src/core/hash.js';
-import { classifyOutcome, fullSuiteCommand, goalPasses, goalTestFiles, LANE_RUN_ENV, laneRunEnv, MAX_FULL_SUITE_RUNS_PER_STEP, restrictToFiles, type RunnerContext, type RunnerMemory, runQueue, subsetCommand, subsetScope } from '../../../../src/synth/sieve/runner.js';
+import { classifyOutcome, fullSuiteCommand, goalPasses, goalTestFiles, LANE_RUN_ENV, laneRunEnv, MAX_FULL_SUITE_RUNS_PER_STEP, restrictToFiles, type RunnerContext, type RunnerMemory, runQueue, subsetCommand, subsetScope, timeoutKind } from '../../../../src/synth/sieve/runner.js';
 import { progress } from '../../../../src/synth/verify/progress.js';
 import { summarize } from '../../../../src/synth/verify/index.js';
 import type { Candidate } from '../../../../src/synth/types.js';
@@ -425,6 +425,9 @@ describe('laneRunEnv (§4.1: the per-test timeout reaches the generated pytest m
     expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: 500 })).toEqual({ ...LANE_RUN_ENV, JEVCODE_CASE_TIMEOUT_MS: '500', JEVCODE_MAX_CASE_TIMEOUTS: String(LANE_MAX_CASE_TIMEOUTS) });
     expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: 686.6 })).toMatchObject({ JEVCODE_CASE_TIMEOUT_MS: '687' });
     expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: null })).toEqual({ ...LANE_RUN_ENV });
+    // without the stop rule (the module's own default: no limit)
+    expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: RETRY_CASE_TIMEOUT_MS }, { stopRule: false })).toEqual({ ...LANE_RUN_ENV, JEVCODE_CASE_TIMEOUT_MS: '2000' });
+    expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: 500 }, { stopRule: true })).toEqual(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: 500 }));
     expect(laneRunEnv({ runner: 'quixbugs', perTestTimeoutMs: 500 })).toEqual({ ...LANE_RUN_ENV });
     expect(laneRunEnv({ runner: 'other', perTestTimeoutMs: null })).toEqual({ PYTHONDONTWRITEBYTECODE: '1' });
   });
@@ -584,4 +587,290 @@ describe('a real QuixBugs run through child_process (gcd)', () => {
     await mem.lanes?.disposeLanes();
     expect(execResult().ok).toBe(true);
   }, 60_000);
+});
+
+describe('timeoutKind (pure): when a `timeout` verdict is final and when it awaits the retry at the full cap', () => {
+  const ids = ['t::a', 't::b', 't::c'];
+  const alarm = (s: string): string => `test_x.CaseTimeout: no result after ${s}`;
+  const notRun = 'test_x.CaseNotRun: not run: 1 earlier case(s) timed out';
+  const f = (id: string, actual: string) => ({ testId: id, call: id, expected: '1', actual });
+  /** a baseline that finished every case (one wrong value), 100 ms session: the tail bound of its finished cases is 50 ms */
+  const finishedBase = summary({ passing: ['t::a', 't::b'], failing: ['t::c'], failures: [f('t::c', '0')], durationMs: 700, outputTail: '1 failed, 2 passed in 0.10s\n' });
+  const firstCaseRun = summary({ passed: 0, failing: ids, failures: [f('t::a', alarm('0.5s')), f('t::b', notRun), f('t::c', notRun)] });
+  it('a sandbox-killed run, or alarms only on cases the baseline hangs on, are genuine hangs', () => {
+    const killed = summary({ timedOut: true, failing: ['<test run>'] });
+    expect(timeoutKind({ run: killed, base: finishedBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 1 })).toBe('hang');
+    // bitcount: the buggy program hangs on every case; a candidate that still hangs on the first gets no retry
+    const hangBase = summary({ failing: ids, failures: ids.map((id) => f(id, alarm('2s'))) });
+    expect(timeoutKind({ run: firstCaseRun, base: hangBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 9 })).toBe('hang');
+    // after passing a case, an alarm on a case the baseline hangs on, at a cap below 2 s: levenshtein's exponential
+    // reference (1.0 s idle where the buggy program alarms at 2 s) — provisional; at the full cap the retry could add nothing → hang
+    const midOnHung = summary({ passing: ['t::a'], failing: ['t::b', 't::c'], failures: [f('t::b', alarm('0.5s')), f('t::c', notRun)] });
+    const partHangBase = summary({ passing: ['t::a'], failing: ['t::b', 't::c'], failures: [f('t::b', alarm('2s')), f('t::c', '0')] });
+    expect(timeoutKind({ run: midOnHung, base: partHangBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 1 })).toBe('provisional');
+    const midOnHungFull = summary({ passing: ['t::a'], failing: ['t::b', 't::c'], failures: [f('t::b', alarm('2s')), f('t::c', notRun)] });
+    expect(timeoutKind({ run: midOnHungFull, base: partHangBase, runner: 'pytest', caseTimeoutMs: RETRY_CASE_TIMEOUT_MS, loadRatio: 1 })).toBe('hang');
+    // the QuixBugs runner's texts and ids (nothing passed: the baseline's hang)
+    const qbBase = summary({ failing: ['sqrt(2, 0.01)'], failures: [f('sqrt(2, 0.01)', 'TIMEOUT after 2s')] });
+    const qbRun = summary({ passed: 0, failing: ['sqrt(2, 0.01)'], failures: [f('sqrt(2, 0.01)', 'TIMEOUT after 0.5s')] });
+    expect(timeoutKind({ run: qbRun, base: qbBase, runner: 'quixbugs', caseTimeoutMs: 500, loadRatio: 1 })).toBe('hang');
+    expect(timeoutKind({ run: { ...qbRun, passed: 1 }, base: qbBase, runner: 'quixbugs', caseTimeoutMs: 500, loadRatio: 1 })).toBe('provisional');
+    // a run with no alarmed case at all is not the cap's doing
+    expect(timeoutKind({ run: summary({ failing: ['t::a'], failures: [f('t::a', '0')] }), base: finishedBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 1 })).toBe('hang');
+  });
+  it('the alarm on the first case: a hang when 3 × the baseline\'s time for it × the observed load fits the cap, else provisional', () => {
+    // no per-case times: the tail bound (50 ms) × 3 = 150 ≤ 500 → hang; under 4× load 600 > 500 → provisional
+    expect(timeoutKind({ run: firstCaseRun, base: finishedBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 1 })).toBe('hang');
+    expect(timeoutKind({ run: firstCaseRun, base: finishedBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 4 })).toBe('provisional');
+    // pytest's durations table names the case: 10 ms → 3 × 10 × 4 = 120 ≤ 500, hang even under load
+    const table = (aMs: number): TestRunSummaryLike => ({ ...finishedBase, outputTail: `=== slowest durations ===\n0.04s call     t::b\n${(aMs / 1000).toFixed(2)}s call     t::a\n\n1 failed, 2 passed in 0.10s\n` });
+    expect(timeoutKind({ run: firstCaseRun, base: table(10), runner: 'pytest', caseTimeoutMs: 500, loadRatio: 4 })).toBe('hang');
+    // a 180 ms first case (LCS's slow case first): 540 ≤ 552 idle → hang; under 4× load 2 160 > 552 → provisional
+    expect(timeoutKind({ run: firstCaseRun, base: table(180), runner: 'pytest', caseTimeoutMs: 552, loadRatio: 1 })).toBe('hang');
+    expect(timeoutKind({ run: firstCaseRun, base: table(180), runner: 'pytest', caseTimeoutMs: 552, loadRatio: 4 })).toBe('provisional');
+    // the QuixBugs runner runs its cases in parallel: no first case, so a hang on a case the baseline finished is provisional
+    const qbRun = summary({ passed: 0, failing: ['gcd(13, 13)'], failures: [f('gcd(13, 13)', 'TIMEOUT after 0.5s')] });
+    expect(timeoutKind({ run: qbRun, base: GCD_BASELINE, runner: 'quixbugs', caseTimeoutMs: 500, loadRatio: 1 })).toBe('provisional');
+  });
+  it('an alarm after passing cases, on a case the baseline finished, is provisional whatever the load', () => {
+    const mid = summary({ passing: ['t::a'], failing: ['t::b', 't::c'], failures: [f('t::b', alarm('0.5s')), f('t::c', notRun)] });
+    expect(timeoutKind({ run: mid, base: finishedBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 1 })).toBe('provisional');
+    expect(timeoutKind({ run: mid, base: finishedBase, runner: 'pytest', caseTimeoutMs: 2000, loadRatio: 1 })).toBe('provisional');
+    // a wrong value among the failures never reaches timeoutKind (classifyOutcome says regressed/unchanged); if it did, it is not a first-case hang
+    const mixed = summary({ passed: 0, failing: ids, failures: [f('t::a', alarm('0.5s')), f('t::b', '0'), f('t::c', notRun)] });
+    expect(timeoutKind({ run: mixed, base: finishedBase, runner: 'pytest', caseTimeoutMs: 500, loadRatio: 1 })).toBe('provisional');
+  });
+});
+type TestRunSummaryLike = ReturnType<typeof summary>;
+
+describe('provisional timeouts on the lanes: slow is not hanging (jev-only-quixbugs-3-inspection.md §2)', () => {
+  /** An LCS-like generated module: ten cases, the buggy program fails four on values, every case finishes; `pytest -q` baseline (no durations table). */
+  const IDS = Array.from({ length: 10 }, (_, i) => `tests/test_lcs.py::test_lcs[${i}-x]`);
+  const BUGGY_FAILS = [3, 5, 6, 7];
+  const LCS_BASE = summary({
+    command: 'python3 -m pytest -q',
+    passing: IDS.filter((_, i) => !BUGGY_FAILS.includes(i)),
+    failing: BUGGY_FAILS.map((i) => IDS[i] ?? ''),
+    failures: BUGGY_FAILS.map((i) => ({ testId: IDS[i] ?? '', call: IDS[i] ?? '', expected: "'BCBA'", actual: "'BBDAB'" })),
+    durationMs: 700,
+    outputTail: '4 failed, 6 passed in 0.45s\n',
+  });
+  const lcsGoal = goal(BUGGY_FAILS.map((i) => IDS[i] ?? ''), { suspectedFiles: ['lcs.py'] });
+  const lcs = sourceFile('lcs.py', 'X = 1\n');
+  const lcsBase = base([lcs], LCS_BASE);
+  /** Candidate markers the fake keys off: the gold whose case 3 takes 800 ms; a hang on the first case; a hang on case 3 after three passes; the buggy behaviour. */
+  const SLOW = 'X = 2';
+  const HANG_FIRST = 'X = 3';
+  const HANG_MID = 'X = 4';
+  const SAME = 'X = 5';
+  const SLOW_CASE_MS = 800;
+  type Verdict = 'pass' | 'fail' | 'hang';
+  /** `pytest -q`-shaped output of the generated module: verbose status lines, the short summary with the module's texts, the counts line. */
+  function moduleOutput(verdict: (i: number) => Verdict, capMs: number, stopRule: boolean): { stdout: string; exitCode: number } {
+    const lines: string[] = [];
+    const short: string[] = [];
+    let passed = 0;
+    let failed = 0;
+    let alarms = 0;
+    for (let i = 0; i < IDS.length; i++) {
+      const id = IDS[i] ?? '';
+      if (stopRule && alarms >= 1) {
+        lines.push(`${id} FAILED`);
+        short.push(`FAILED ${id} - test_lcs.CaseNotRun: not run: ${alarms} earlier case(s) timed out`);
+        failed += 1;
+        continue;
+      }
+      const v = verdict(i);
+      if (v === 'pass') {
+        lines.push(`${id} PASSED`);
+        passed += 1;
+      } else if (v === 'fail') {
+        lines.push(`${id} FAILED`);
+        short.push(`FAILED ${id} - AssertionError: lcs -> 'BBDAB', expected 'BCBA'`);
+        failed += 1;
+      } else {
+        alarms += 1;
+        lines.push(`${id} FAILED`);
+        short.push(`FAILED ${id} - test_lcs.CaseTimeout: no result after ${capMs / 1000}s`);
+        failed += 1;
+      }
+    }
+    const counts = `${failed > 0 ? `${failed} failed, ` : ''}${passed} passed in 0.45s`;
+    return { stdout: `${lines.join('\n')}\n=========================== short test summary info ============================\n${short.join('\n')}\n${counts}\n`, exitCode: failed > 0 ? 1 : 0 };
+  }
+  /** The lanes' sandbox: reads the lane's lcs.py and the two env knobs, answers as the module would; `durationMs` is the measured run time. */
+  function lcsFake(durationMs: () => number = () => 300, hook?: (cmd: string, opts: SandboxRunOptions) => void) {
+    return fakeSandbox((cmd, opts): Partial<ExecResult> => {
+      if (!cmd.startsWith('python3')) return {};
+      hook?.(cmd, opts);
+      const src = readFileSync(join(opts.cwd ?? '', 'lcs.py'), 'utf8');
+      const capMs = Number(opts.env?.['JEVCODE_CASE_TIMEOUT_MS'] ?? 2000);
+      const stopRule = opts.env?.['JEVCODE_MAX_CASE_TIMEOUTS'] !== undefined;
+      const verdict = (i: number): Verdict => {
+        if (src.includes(SLOW)) return i === 3 && capMs < SLOW_CASE_MS ? 'hang' : 'pass';
+        if (src.includes(HANG_FIRST)) return i === 0 ? 'hang' : 'pass';
+        if (src.includes(HANG_MID)) return i === 3 ? 'hang' : 'pass';
+        return BUGGY_FAILS.includes(i) ? 'fail' : 'pass';
+      };
+      return { ...moduleOutput(verdict, capMs, stopRule), durationMs: durationMs() };
+    });
+  }
+  const pyOracle = (over: Partial<OracleModel> = {}): OracleModel => oracle({ runner: 'pytest', lanes: 1, perTestTimeoutMs: 500, tRunMs: { goalSubset: 300, fullSuite: 300 }, runTimeoutMs: 12_100, ...over });
+  const pyRuns = (sb: { calls: { command: string }[] }): number => sb.calls.filter((c) => c.command.startsWith('python3')).length;
+
+  it('the gold slow on a case the baseline finished: provisional at 500 ms, retried at 2 s, plausible; tried only then', async () => {
+    writeFileSync(join(ws, 'lcs.py'), 'X = 1\n');
+    const mem = memFor(pyOracle({ lanes: 2 }), { baseline: LCS_BASE });
+    const seen: { cap: string | undefined; stop: string | undefined; triedBefore: number }[] = [];
+    const sb = lcsFake(() => 300, (_cmd, opts) => seen.push({ cap: opts.env?.['JEVCODE_CASE_TIMEOUT_MS'], stop: opts.env?.['JEVCODE_MAX_CASE_TIMEOUTS'], triedBefore: mem.tried.size }));
+    const ctx = ctxFor(sb);
+    const out = await runQueue(ctx, mem, fifoQueue([job(candidate(site(lcs, 1), SLOW), lcsBase), job(candidate(site(lcs, 1), SAME), lcsBase)]), lcsGoal, 10);
+    expect(out.map((r) => r.status)).toEqual(['plausible', 'unchanged']);
+    const gold = out[0] as VerifyOutcome;
+    expect(gold.subset.passed).toBe(10);
+    expect(gold.full?.passed).toBe(10);
+    expect(gold.progress.newlyPassing).toEqual(lcsGoal.tests);
+    // runs: the two first runs at 500 ms with the stop rule (the gold: 3 passed, the alarm on case 3, six not run);
+    // then the gold's retry — subset and full suite — at 2 000 ms, the stop rule kept
+    expect(seen.map((s) => `${s.cap}/${s.stop ?? '-'}`)).toEqual(['500/1', '500/1', '2000/1', '2000/1']);
+    expect(seen[2]?.triedBefore).toBe(1); // only the buggy-behaviour candidate was tried before the retry
+    expect(mem.tried.size).toBe(2);
+    expect(mem.tried.has(sha12(gold.applied.diff))).toBe(true);
+    expect(mem.retryTimeouts?.get(lcsGoal.id)).toHaveLength(0);
+    expect(mem.stepBudget.testRunsLeft).toBe(1500 - 4);
+    expect(ctx.events[0]?.detail).toMatch(/2 tested on 2 lanes \(1 plausible, 1 unchanged\)/);
+    expect(ctx.events[0]?.detail).toMatch(/1 provisional timeout: 1 retried at 2000 ms \(1 plausible\), 0 pending/);
+    // the retries do not refine t_run (2 s a case, no stop rule): the two first runs do
+    expect(mem.oracle.tRunMs.goalSubset).toBe(300);
+    // the lane timeout of the retry follows the full cap, bounded by the oracle's run timeout
+    const retryTimeout = sb.calls.filter((c) => c.command.startsWith('python3'))[2]?.timeoutMs;
+    expect(retryTimeout).toBe(laneRunTimeout({ ...mem.oracle, perTestTimeoutMs: RETRY_CASE_TIMEOUT_MS }, LCS_BASE));
+  });
+  it('genuine hangs are classified without a retry (first-case alarm, the baseline finished it quickly); a mid-run hang is retried once and stays timeout', async () => {
+    writeFileSync(join(ws, 'lcs.py'), 'X = 1\n');
+    // the cap fitOracle gives this baseline: 3 × the 400 ms finished-case bound (no durations table) = 1 200 ms
+    expect(fitOracle(LCS_BASE, { commandTimeoutMs: 120_000, wallRemainingMs: 600_000, workspace: { git: true } }).perTestTimeoutMs).toBe(1200);
+    const mem = memFor(pyOracle({ perTestTimeoutMs: 1200 }), { baseline: LCS_BASE });
+    const sb = lcsFake();
+    const ctx = ctxFor(sb);
+    const out = await runQueue(ctx, mem, fifoQueue([job(candidate(site(lcs, 1), HANG_FIRST), lcsBase)]), lcsGoal, 10);
+    expect(out.map((r) => r.status)).toEqual(['timeout']);
+    expect(pyRuns(sb)).toBe(1);
+    expect(mem.tried.size).toBe(1);
+    expect(mem.retryTimeouts?.get(lcsGoal.id)).toHaveLength(0);
+    expect(ctx.events[0]?.detail).not.toMatch(/provisional/);
+    // with a durations table naming the first case (10 ms) the same verdict comes at a 500 ms cap
+    const withTable = { ...LCS_BASE, outputTail: `=== slowest durations ===\n0.18s call     ${IDS[3]}\n0.01s call     ${IDS[0]}\n\n4 failed, 6 passed in 0.45s\n` };
+    const mem2 = memFor(pyOracle(), { baseline: withTable });
+    const sb2 = lcsFake();
+    const out2 = await runQueue(ctxFor(sb2), mem2, fifoQueue([job(candidate(site(lcs, 1), HANG_FIRST), base([lcs], withTable))]), lcsGoal, 10);
+    expect(out2.map((r) => r.status)).toEqual(['timeout']);
+    expect(pyRuns(sb2)).toBe(1);
+    // the mid-run hang (three passes, then case 3 never returns): provisional, retried at 2 s with the stop rule
+    // (one alarm, the six cases after it not run: a genuine hang costs the retry one alarm, not seven), timeout — final
+    const mem3 = memFor(pyOracle(), { baseline: LCS_BASE });
+    const sb3 = lcsFake();
+    const ctx3 = ctxFor(sb3);
+    const out3 = await runQueue(ctx3, mem3, fifoQueue([job(candidate(site(lcs, 1), HANG_MID), lcsBase)]), lcsGoal, 10);
+    expect(out3.map((r) => r.status)).toEqual(['timeout']);
+    expect(pyRuns(sb3)).toBe(2);
+    expect(out3[0]?.subset.failures.filter((f) => /CaseTimeout/.test(f.actual))).toHaveLength(1);
+    expect(out3[0]?.subset.failures.filter((f) => /CaseNotRun/.test(f.actual))).toHaveLength(6);
+    expect(out3[0]?.subset.passed).toBe(3);
+    expect(mem3.tried.size).toBe(1);
+    expect(ctx3.events[0]?.detail).toMatch(/1 provisional timeout: 1 retried at 2000 ms \(1 timeout\), 0 pending/);
+  });
+  it('load: once four runs measure above 2 × the estimate, the rest of the batch runs at the scaled cap and the event says so', async () => {
+    writeFileSync(join(ws, 'lcs.py'), 'X = 1\n');
+    const caps: string[] = [];
+    const mem = memFor(pyOracle({ tRunMs: { goalSubset: 500, fullSuite: 500 } }), { baseline: LCS_BASE });
+    const sb = lcsFake(() => 1150, (_cmd, opts) => caps.push(opts.env?.['JEVCODE_CASE_TIMEOUT_MS'] ?? '-'));
+    const ctx = ctxFor(sb);
+    const jobs = [...Array.from({ length: 5 }, () => job(candidate(site(lcs, 1), SAME), lcsBase)), job(candidate(site(lcs, 1), SLOW), lcsBase)];
+    const out = await runQueue(ctx, mem, fifoQueue(jobs), lcsGoal, 10);
+    expect(out.map((r) => r.status)).toEqual(['unchanged', 'unchanged', 'unchanged', 'unchanged', 'unchanged', 'plausible']);
+    // the first four runs at the oracle's cap; the median (1 150 ms) is 2.3 × the 500 ms estimate → 1 150 ms for the rest;
+    // the gold's slow case (800 ms) then fits its first run: no provisional verdict, no retry (the sixth and seventh calls are its subset and full suite)
+    expect(caps).toEqual(['500', '500', '500', '500', '1150', '1150', '1150']);
+    expect(ctx.events[0]?.detail).toMatch(/load ×2\.3, case timeout 500→1150 ms/);
+    expect(ctx.events[0]?.detail).not.toMatch(/provisional/);
+    expect(mem.oracle.perTestTimeoutMs).toBe(500); // the oracle's own cap is not rewritten: the next batch re-measures
+    expect(mem.oracle.tRunMs.goalSubset).toBe(1150);
+    // the scale is bounded by the 2 s cap
+    const caps2: string[] = [];
+    const mem2 = memFor(pyOracle({ tRunMs: { goalSubset: 200, fullSuite: 200 } }), { baseline: LCS_BASE });
+    await runQueue(ctxFor(lcsFake(() => 1800, (_cmd, opts) => caps2.push(opts.env?.['JEVCODE_CASE_TIMEOUT_MS'] ?? '-'))), mem2, fifoQueue(Array.from({ length: 5 }, () => job(candidate(site(lcs, 1), SAME), lcsBase))), lcsGoal, 10);
+    expect(caps2).toEqual(['500', '500', '500', '500', '2000']);
+    // below 2 × the estimate nothing changes
+    const caps3: string[] = [];
+    const mem3 = memFor(pyOracle({ tRunMs: { goalSubset: 500, fullSuite: 500 } }), { baseline: LCS_BASE });
+    const ctx3 = ctxFor(lcsFake(() => 900, (_cmd, opts) => caps3.push(opts.env?.['JEVCODE_CASE_TIMEOUT_MS'] ?? '-')));
+    await runQueue(ctx3, mem3, fifoQueue(Array.from({ length: 5 }, () => job(candidate(site(lcs, 1), SAME), lcsBase))), lcsGoal, 10);
+    expect(caps3).toEqual(['500', '500', '500', '500', '500']);
+    expect(ctx3.events[0]?.detail).not.toMatch(/load ×/);
+  });
+  it('at most 16 retries a batch; the rest wait in mem.retryTimeouts (not tried), a re-enumerated copy is skipped, they are retried first next call, and a re-baseline drops them', async () => {
+    writeFileSync(join(ws, 'lcs.py'), 'X = 1\n');
+    expect(RETRY_TIMEOUTS_MAX_PER_BATCH).toBe(16);
+    const mem = memFor(pyOracle({ lanes: 8 }), { baseline: LCS_BASE });
+    const sb = lcsFake();
+    const ctx = ctxFor(sb);
+    const hangs = Array.from({ length: 18 }, (_, k) => candidate(site(lcs, 1), `${HANG_MID}  # ${k}`));
+    const out = await runQueue(ctx, mem, fifoQueue(hangs.map((c) => job(c, lcsBase))), lcsGoal, 100);
+    expect(out).toHaveLength(RETRY_TIMEOUTS_MAX_PER_BATCH);
+    expect(out.every((r) => r.status === 'timeout')).toBe(true);
+    expect(mem.tried.size).toBe(16);
+    expect(mem.retryTimeouts?.get(lcsGoal.id)).toHaveLength(2);
+    expect(mem.stepBudget.testRunsLeft).toBe(1500 - 18 - 16);
+    expect(ctx.events[0]?.detail).toMatch(/18 provisional timeouts: 16 retried at 2000 ms \(16 timeout\), 2 pending/);
+    // the next call for the goal: a re-enumerated copy of a pending candidate is skipped (no run); the two pending are retried first
+    const pending = (mem.retryTimeouts?.get(lcsGoal.id) ?? []).map((p) => p.job.candidate);
+    const before = pyRuns(sb);
+    const again = await runQueue(ctxFor(sb), mem, fifoQueue([job(pending[0] as Candidate, lcsBase)]), lcsGoal, 100);
+    expect(again.map((r) => r.status)).toEqual(['timeout', 'timeout']);
+    expect(pyRuns(sb) - before).toBe(2);
+    expect(mem.tried.size).toBe(18);
+    expect(mem.retryTimeouts?.get(lcsGoal.id)).toHaveLength(0);
+    // another goal's call does not touch g1's pending retries
+    const mem2 = memFor(pyOracle(), { baseline: LCS_BASE, stepBudget: budget({ testRunsLeft: 1 }) });
+    const r2 = await runQueue(ctxFor(lcsFake()), mem2, fifoQueue([job(candidate(site(lcs, 1), HANG_MID), lcsBase)]), lcsGoal, 10);
+    expect(r2).toEqual([]); // one run left: the first run was charged, the retry found none
+    expect(mem2.retryTimeouts?.get(lcsGoal.id)).toHaveLength(1);
+    expect(mem2.tried.size).toBe(0);
+    mem2.stepBudget = budget();
+    expect(await runQueue(ctxFor(lcsFake()), mem2, fifoQueue([]), goal(lcsGoal.tests, { id: 'g2', suspectedFiles: ['lcs.py'] }), 10)).toEqual([]);
+    expect(mem2.retryTimeouts?.get(lcsGoal.id)).toHaveLength(1);
+    // a re-baseline (index.ts replaces mem.baseline after a commit): the pending retry was judged against the old baseline → dropped, not tried
+    mem2.baseline = { ...LCS_BASE };
+    expect(await runQueue(ctxFor(lcsFake()), mem2, fifoQueue([]), lcsGoal, 10)).toEqual([]);
+    expect(mem2.retryTimeouts?.get(lcsGoal.id)).toHaveLength(0);
+    expect(mem2.tried.size).toBe(0);
+  });
+  it('the measured goal-subset baseline (pytest -q, no passing ids) runs at the module defaults — 2 s a case, no stop rule — not the lane cap', async () => {
+    writeFileSync(join(ws, 'lcs.py'), 'X = 1\n');
+    // the same baseline without passing ids: the reference is measured once on the clean lane
+    const qBase = summary({ ...LCS_BASE, passing: [], passed: 6 });
+    const seen: string[] = [];
+    const mem = memFor(pyOracle({ lanes: 1 }), { baseline: qBase });
+    const sb = lcsFake(() => 300, (_cmd, opts) => seen.push(`${opts.env?.['JEVCODE_CASE_TIMEOUT_MS']}/${opts.env?.['JEVCODE_MAX_CASE_TIMEOUTS'] ?? '-'}`));
+    const out = await runQueue(ctxFor(sb), mem, fifoQueue([job(candidate(site(lcs, 1), SAME), base([lcs], qBase))]), lcsGoal, 10);
+    // reference at 2000 ms without the stop rule; the candidate at the oracle's 500 ms cap with it
+    expect(seen).toEqual(['2000/-', '500/1']);
+    expect(out.map((r) => r.status)).toEqual(['unchanged']);
+    expect(mem.subsetBaselines?.get('b0|tests/test_lcs.py')?.passed).toBe(6);
+  });
+  it('a retry the step wall cuts short stays pending (not tried); the retry phase charges runs but not runsAllowed', async () => {
+    writeFileSync(join(ws, 'lcs.py'), 'X = 1\n');
+    let t = 0;
+    // 5 s of wall: the first run (600 ms) fits, the retry would be cut below the lane timeout → deferred back to pending
+    const mem = memFor(pyOracle(), { baseline: LCS_BASE, stepBudget: budget({ testWallLeftMs: 5000 }) });
+    const sb = lcsFake(() => 600, () => (t += 600));
+    const ctx = ctxFor(sb);
+    const out = await runQueue(ctx, mem, fifoQueue([job(candidate(site(lcs, 1), SLOW), lcsBase)]), lcsGoal, 1, { now: () => t });
+    // runsAllowed = 1 was spent on the first run; the retry ran anyway (it is a re-run of a dispatched candidate)
+    expect(out.map((r) => r.status)).toEqual(['plausible']);
+    expect(pyRuns(sb)).toBe(3);
+    expect(mem.stepBudget.testRunsLeft).toBe(1500 - 3);
+    expect(mem.stepBudget.testWallLeftMs).toBe(5000 - 3 * 600);
+  });
 });

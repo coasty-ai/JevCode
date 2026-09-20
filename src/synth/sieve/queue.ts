@@ -29,8 +29,11 @@
  *   Measured: 100 % of QuixBugs and 72 % of SWE-bench Verified fixed lines pass the file + tests
  *   vocabulary (`coverage-study.md` criterion (c), design conclusion 6).
  * - `tried` exclusion: `sha12` of the applied unified diff, the same key the run memory keeps for
- *   every candidate ever run (§2.1 `tried`), so a candidate re-enumerated on a later step is never
- *   run twice. A candidate whose edit no longer applies to the base (stale site) is dropped too.
+ *   every candidate a completed run finally classified (§2.1 `tried`), so a candidate
+ *   re-enumerated on a later step is never run twice. A provisional `timeout` awaiting its retry
+ *   at the full cap (sieve/runner.ts `timeoutKind`) is not `tried` yet — its verdict is the
+ *   cap's, not the candidate's — and the runner itself skips a re-enumerated copy while the retry
+ *   is pending. A candidate whose edit no longer applies to the base (stale site) is dropped too.
  * - carry-over: jobs that were queued but not popped this step come back from `carryOver()` and
  *   are re-enqueued next step through the constructor, keyed by candidate id, so a RANK-mode p that
  *   cost a Jev request is not re-asked and a re-enumerated copy of the same candidate is a duplicate.
@@ -306,9 +309,9 @@ export interface AddSummary {
 
 export interface VerifyQueueOptions {
   /**
-   * `sha12(diff)` of every candidate already run in this run; the queue never enqueues them again.
-   * Pass the live `SearchMemory.tried` set: additions the runner makes while the queue exists are
-   * seen by later `add` calls.
+   * `sha12(diff)` of every candidate finally classified in this run (not a provisional timeout
+   * awaiting its retry); the queue never enqueues them again. Pass the live `SearchMemory.tried`
+   * set: additions the runner makes while the queue exists are seen by later `add` calls.
    */
   tried?: ReadonlySet<string>;
   /** Per-file vocabulary (`vocabularyOf`); when given, each edit into a file that has one is checked (`missingFromVocabByPath`). */
