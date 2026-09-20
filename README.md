@@ -118,8 +118,10 @@ report) on timeout, cancel, Ctrl-C or SIGTERM.
 On macOS the command additionally runs under `sandbox-exec` with a generated profile: writes
 are denied everywhere except the workspace, the run's temp and home dirs and `/dev`
 devices; `.git/config` and `.git/hooks` are write-denied; reads of the harness's own `.env`
-and config files, `~/.ssh`, `~/.aws`, `~/.config/gh`, `~/.netrc` and `~/.jevcode` are
-denied; `--no-network` denies all network. `sandbox-exec` is deprecated by Apple but is the
+and config files, `~/.ssh`, `~/.aws`, `~/.config/gh` and `~/.netrc` are denied; under
+`~/.jevcode` (every run's checkpoints and the bench work areas) file contents are unreadable
+except inside the run's own temp and home dirs, while directory metadata stays readable so
+tools can traverse into them; `--no-network` denies all network. `sandbox-exec` is deprecated by Apple but is the
 same mechanism Codex CLI, Gemini CLI and Claude Code use; its known limits are: reads
 elsewhere are allowed, `ssh`-based git remotes fail inside the profile (use https), a few
 Apple platform binaries refuse to exec under any profile (reported as

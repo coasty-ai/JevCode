@@ -167,3 +167,16 @@ against the real Messages API. From this point every live command is run with th
 unset (`env -u ANTHROPIC_API_KEY …`) and with `--provider openrouter`, so all paid work goes
 through the user's OpenRouter key and is capped as described above. The README documents
 that the default provider is `anthropic` and works when the user supplies a key.
+
+## 2026-09-19 Seatbelt: deny contents under `~/.jevcode`, not metadata
+
+The first profile denied `file-read*` on `~/.jevcode`. That blocked `mkdir -p`, `cd` and `git
+clone` into the bench work dirs and the run's own `TMPDIR` (which live under it), because
+even stat'ing a parent directory needs metadata reads: the mocked bench failed at setup with
+`Operation not permitted`. The profile now denies `file-read-data` under `~/.jevcode` (other
+runs' prompts, outputs and checkpoints stay unreadable, including the run's own `state.json`
+and `sandbox.sb`) and re-allows reads under every writable root. A finding worth keeping:
+an SBPL deny on the specific operation `file-read-data` outranks a later allow on the
+`file-read*` family, so the re-allow must name `file-read-data` explicitly (verified on
+macOS 26 with a write-then-read probe in the run's temp dir, a denied read of another run's
+`state.json`, and a denied listing of `~/.jevcode/runs`).
