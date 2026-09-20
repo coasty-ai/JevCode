@@ -180,3 +180,16 @@ an SBPL deny on the specific operation `file-read-data` outranks a later allow o
 `file-read*` family, so the re-allow must name `file-read-data` explicitly (verified on
 macOS 26 with a write-then-read probe in the run's temp dir, a denied read of another run's
 `state.json`, and a denied listing of `~/.jevcode/runs`).
+
+## 2026-09-19 Mocked bench outcome and what it does and does not prove
+
+`jevcode bench --suite all --tasks 3` (mocked) passes 3/3 SWE-bench instances in both
+conditions: the gold trajectory is replayed through the real engine, sandbox, checkpoint,
+patch extraction (`git diff --binary` captured from stdout) and the mock evaluator (gold
+patch reverses cleanly). Over the 10 checked-in Terminal-Bench tasks the mocked run passes
+2 (`react-lead-form`, `wal-recovery-ordering`); the other eight replay upstream `solve.sh`
+scripts that need `uv`, apt packages or pip wheels absent here, and `shadow-relay`'s
+environment setup script fails under Python 3.9. This is by design: the mocked bench proves
+the pipeline, not the tasks. Three sandbox-profile bugs surfaced only through the mocked
+bench (jevcode-home read deny, `--shared` clones needing the object cache readable, patch
+files written where the post-run sandbox cannot read them), each fixed before any live run.
