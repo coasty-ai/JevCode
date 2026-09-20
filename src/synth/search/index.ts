@@ -13,7 +13,7 @@
 import { toJson } from '../../core/json.js';
 import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
-import type { Decider, EngineEvent, OutcomeStatus, Proposal, SynthesisContext, Synthesizer, WindowEntry } from '../../core/types.js';
+import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { analyse } from '../py/structure.js';
 import { subsetCommand } from '../sieve/runner.js';
@@ -28,7 +28,7 @@ import { clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, 
 import type { GoalPick } from './goals.js';
 import { diffHash, getMemory, rebuildFromPlan, recordCommit, restoreMemory, toPersisted } from './memory.js';
 import type { SearchMemory } from './memory.js';
-import { READ_MAX_PATHS, proposeDone, proposePatch, proposeRead, proposeRun } from './proposal.js';
+import { READ_MAX_PATHS, commitEvidence, proposeDone, proposePatch, proposeRead, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
 import { isTestPath, newTrace } from './subgoal.js';
 import type { SubGoalMemory, SubGoalResult } from './subgoal.js';
 import type { Base, Goal, GoalSearchTrace, Lane } from './types.js';
@@ -300,8 +300,10 @@ export interface RunScratch {
   /** wall clock of the first synthesize() call of this process for the run (wall remaining is approximated from it) */
   startedMs: number;
   baselineStep: number | null;
-  /** the goal whose candidate the last `patch` carried, for the claim on the following `run` and for a failed-apply rollback */
-  lastCommit: { goalId: string; step: number } | null;
+  /** the goal whose candidate the last `patch` carried (for the claim on the following `run` and a failed-apply rollback) and the evidence it was proposed with */
+  lastCommit: { goalId: string; step: number; evidence: ProposalEvidence | null } | null;
+  /** the baseline the last re-baseline replaced: `before` of the post-patch run's evidence (the fresh baseline is `after`) */
+  previousBaseline: TestRunSummary | null;
   /** the checkpoint's synthState is consumed on the first baseline of the process */
   restored: boolean;
   /**
@@ -312,8 +314,8 @@ export interface RunScratch {
    */
   lastEngineRun: { step: number; passed: number; failed: number; errors: number } | null;
   lastChangeStep: number | null;
-  /** goal id → the test-passing candidate the engine rejected: how often (same diff), and whether a re-proposal is due (REPROPOSE_MAX) */
-  rejected: Map<string, { applied: AppliedCandidate; hash: string; times: number; pending: boolean }>;
+  /** goal id → the test-passing candidate the engine rejected: how often (same diff), whether a re-proposal is due (REPROPOSE_MAX), and its evidence */
+  rejected: Map<string, { applied: AppliedCandidate; hash: string; times: number; pending: boolean; evidence: ProposalEvidence | null }>;
 }
 
 export class LedgerSieveSynthesizer implements Synthesizer {
@@ -342,7 +344,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   private scratchFor(runId: string): RunScratch {
     let s = this.scratch.get(runId);
     if (s === undefined) {
-      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, restored: false, lastEngineRun: null, lastChangeStep: null, rejected: new Map() };
+      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, previousBaseline: null, restored: false, lastEngineRun: null, lastChangeStep: null, rejected: new Map() };
       this.scratch.set(runId, s);
     }
     return s;
@@ -406,10 +408,15 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       if (changed.length === 0) return run;
       // The goal text says why the same command runs again and what the synthesizer's own baseline
       // measured, so the risk stage can tell this from "repeats a step that already failed the same
-      // way" (the reading that had the re-run reviewed in the first live runs).
+      // way" (the reading that had the re-run reviewed in the first live runs). The evidence is
+      // the same measurement as data: the run before the patch (`previousBaseline`) against the
+      // fresh baseline on the patched workspace, which this `run` re-executes in the engine.
       const last = scratch.lastEngineRun;
       const expectation = `expect ${baseline.passed} of ${baseline.total} tests to pass${last === null ? '' : `, ${last.passed} passed in the last run`}`;
-      return { ...run, goal: clip(`${run.goal} (${changed.join(', ')} changed since the last test run; ${expectation})`, PLAN_ITEM_MAX_CHARS) };
+      const commit = scratch.lastCommit;
+      const sel = commit?.evidence ? selectionFrom(commit.evidence) : { selection: 'sieve' as const, candidatesTested: 0, arbitrated: false };
+      const evidence = scratch.previousBaseline === null || commit === null ? null : runEvidence(scratch.previousBaseline, baseline, goal, sel, command);
+      return withEvidence({ ...run, goal: clip(`${run.goal} (${changed.join(', ')} changed since the last test run; ${expectation})`, PLAN_ITEM_MAX_CHARS) }, evidence);
     }
 
     if (allPass(baseline)) {
@@ -434,14 +441,18 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     this.emit(ctx, 'goal', `${goal.id}: ${goal.planItem} (${goal.tests.length} test${goal.tests.length === 1 ? '' : 's'}, attempt ${goal.attempts}, picked by ${pick.method})`);
     const stash = scratch.rejected.get(goal.id);
     let r: SubGoalResult;
+    // the shadow-run evidence the `patch` is proposed with: the search's outcome, or the stashed passer's own
+    let evidence: ProposalEvidence | null = null;
     if (stash !== undefined && stash.pending) {
       // The engine rejected this passer for its plan or intent, not its content, and the workspace is
       // unchanged (a re-baseline clears the stash): propose it again instead of re-running the sieve.
       stash.pending = false;
       this.emit(ctx, 'repropose', `${goal.id}: proposing the rejected test-passing candidate again (${stash.times} of ${REPROPOSE_MAX} rejections)`);
       r = { kind: 'commit', applied: stash.applied, allGoalTestsPass: true, trace: { ...newTrace(goal, mem.oracle), outcome: 'fixed', winner: stash.applied } };
+      evidence = stash.evidence;
     } else {
       r = await this.deps.searchSubGoal(ctx, mem, goal);
+      if (r.kind === 'commit') evidence = commitEvidence(mem, r, goal);
     }
     this.emit(ctx, 'search', `${goal.id} ${r.kind}${r.kind === 'parked' ? `: ${r.reason}` : ''} (phase ${r.trace.phase}, ${r.trace.runMode}, sites ${r.trace.sitesConsidered}, requests ${r.trace.jevRequests}, runs ${r.trace.testRuns}, plausible ${r.trace.plausible})`, {
       candidates: r.trace.candidatesEnumerated,
@@ -453,11 +464,13 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         recordCommit(mem, r.applied);
         noteCommit(goal, r.allGoalTestsPass);
         forgetGoal(mem, goal);
-        scratch.lastCommit = { goalId: goal.id, step: ctx.step };
+        scratch.lastCommit = { goalId: goal.id, step: ctx.step, evidence };
         // A commit changes the goal's files: it re-localises next time, and parked goals that suspected those files re-open (§5.3).
         mem.localizeCache.delete(goal.id);
         reopenOnChange(mem, r.applied.files.map((f) => f.path));
-        return proposePatch(ctx, r.applied, goal, mem, r.note, r.trace);
+        // §5.1 row 1 with evidence: the shadow run the commit rests on goes with the patch, so the
+        // engine's risk and judge stages read a verified change (loop/state.ts proposal.evidence).
+        return proposePatch(ctx, r.applied, goal, mem, r.note, r.trace, evidence);
       }
       case 'parked': {
         park(goal, r.reason);
@@ -562,7 +575,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         if (!applyFailed) {
           const prev = scratch.rejected.get(last.goalId);
           const times = (prev !== undefined && prev.hash === h ? prev.times : 0) + 1;
-          scratch.rejected.set(last.goalId, { applied: undone, hash: h, times, pending: times <= REPROPOSE_MAX });
+          scratch.rejected.set(last.goalId, { applied: undone, hash: h, times, pending: times <= REPROPOSE_MAX, evidence: last.evidence });
         }
       }
       scratch.lastCommit = null;
@@ -591,6 +604,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     const sourcePaths = [...files.keys()];
     const clusterOpts = { output, sourcePaths, ...(layout === 'quixbugs' ? { defaultFiles: sourcePaths.filter((p) => p !== 'node.py') } : {}) };
 
+    // the run before this one is `before` of the post-patch run's evidence (see step())
+    scratch.previousBaseline = mem.baseline;
     mem.baseline = baseline;
     scratch.baselineStep = ctx.step;
     mem.oracle = fitOracle(baseline, { commandTimeoutMs: ctx.limits.commandTimeoutMs, wallRemainingMs: this.wallRemaining(ctx, scratch), workspace: { git: ctx.workspaceInfo.git } });

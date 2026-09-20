@@ -453,7 +453,8 @@ describe('decide: the §2.6 table', () => {
     expect(commitSuspect(mem, { id: 'g2' })).toBeNull();
     expect(guardState(mem).suspect).toBe(suspect);
     const end = commitSuspect(mem, DFS_GOAL);
-    expect(end).toEqual({ kind: 'commit', applied: suspect.outcome.applied, allGoalTestsPass: true, note: 'possible overfit' });
+    // the commit carries the shadow run it rests on (search/proposal.ts turns it into Proposal.evidence)
+    expect(end).toEqual({ kind: 'commit', applied: suspect.outcome.applied, allGoalTestsPass: true, note: 'possible overfit', outcome: suspect.outcome });
     expect(guardState(mem).suspect).toBeNull();
     expect(commitSuspect(mem, DFS_GOAL)).toBeNull();
     await decide(dfsPlausible(), mem, DFS_GOAL, ask);

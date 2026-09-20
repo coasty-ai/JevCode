@@ -15,12 +15,13 @@
  * parsed counts are the evidence the `done_<j>` Noul needs when the plan item is claimed.
  */
 import { clip } from '../../core/text.js';
-import type { Json, JsonObject, PlanDraft, Proposal, SynthesisContext, WindowEntry } from '../../core/types.js';
+import type { Json, JsonObject, PlanDraft, Proposal, ProposalEvidence, SynthesisContext, WindowEntry } from '../../core/types.js';
 import { PLAN_ITEM_MAX_CHARS, PLAN_MAX_OPEN_PROBLEMS, normaliseItem } from '../../loop/plan.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
 import { unifiedDiff } from '../py/index.js';
 import type { AppliedCandidate, TestRunSummary } from '../types.js';
-import type { Goal, GoalSearchTrace } from './types.js';
+import { progress } from '../verify/progress.js';
+import type { Base, Goal, GoalSearchTrace, VerifyOutcome } from './types.js';
 
 // ---------------------------------------------------------------------------------------
 // Constants
@@ -68,6 +69,9 @@ const CHANGE_ACTION_RE = /^(patch|edit|write)(\s|$)/;
  * resume.
  */
 export const VERIFY_ITEM = 'verify the full test suite passes';
+
+/** Test ids per list in `Proposal.evidence` (the contract's bound, src/core/types.ts ProposalEvidence). */
+export const EVIDENCE_TESTS_MAX = 20;
 
 export type CommitNote = 'possible overfit' | 'partial';
 export type RunScope = 'full' | 'subset';
@@ -123,10 +127,116 @@ export function describeEdit(applied: AppliedCandidate): string {
   return `${c.op} at ${c.site.file.path}:${c.site.line}`;
 }
 
-/** `fix <tests> in <path>:<line> (<source>/<op>)` (§5.1 patch row). */
-export function patchGoalText(applied: AppliedCandidate, goal: Goal): string {
+/**
+ * The goal text of a `patch` (§5.1 row 1). With the shadow-run evidence it states what was
+ * measured, so the risk stage's `plan_mismatch` and `out_of_scope` Scores read a verified change
+ * and not a claim: `apply verified fix: <tests> now pass (N→M of T), no regressions; <source>/<op>
+ * at <path>:<line>`. Without evidence (a revert, a re-proposal whose evidence is gone) it is the
+ * plain `fix <tests> in <path>:<line> (<source>/<op>)`.
+ */
+export function patchGoalText(applied: AppliedCandidate, goal: Goal, evidence?: ProposalEvidence): string {
   const c = applied.candidate;
-  return `fix ${testsLabel(goal)} in ${c.site.file.path}:${c.site.line} (${c.source}/${c.op})`;
+  const where = `${c.site.file.path}:${c.site.line}`;
+  if (evidence === undefined) return `fix ${testsLabel(goal)} in ${where} (${c.source}/${c.op})`;
+  const passing = new Set(evidence.newlyPassing);
+  const allGoalTestsPass = goal.tests.length > 0 && goal.tests.every((t) => passing.has(t));
+  const tests = allGoalTestsPass
+    ? `${testsLabel(goal)} now ${goal.tests.length === 1 ? 'passes' : 'pass'}`
+    : `${evidence.newlyPassing.length} of ${goal.tests.length} goal test${goal.tests.length === 1 ? '' : 's'} now pass (${testsLabel(goal)})`;
+  const n = evidence.newlyFailing.length;
+  const regressions = n === 0 ? 'no regressions' : `${n} regression${n === 1 ? '' : 's'}`;
+  return `apply ${allGoalTestsPass ? 'verified' : 'partial'} fix: ${tests} (${evidence.before.passed}→${evidence.after.passed} of ${evidence.after.total}), ${regressions}; ${c.source}/${c.op} at ${where}`;
+}
+
+// ---------------------------------------------------------------------------------------
+// Evidence (Proposal.evidence, src/core/types.ts): the shadow test run behind a proposal
+// ---------------------------------------------------------------------------------------
+
+/** How the candidate was chosen, read from the step's trace (RANK mode ran a Jev-ranked top-k; SIEVE ran every candidate). */
+export interface EvidenceSelection {
+  selection: ProposalEvidence['selection'];
+  candidatesTested: number;
+  arbitrated: boolean;
+}
+
+export function selectionOf(trace: Pick<GoalSearchTrace, 'runMode' | 'candidatesTested' | 'arbitrated'>): EvidenceSelection {
+  return { selection: trace.runMode === 'RANK' ? 'rank' : 'sieve', candidatesTested: trace.candidatesTested, arbitrated: trace.arbitrated };
+}
+
+/** The selection an existing evidence record carries (a re-proposal or the post-patch run reuse the commit's). */
+export function selectionFrom(e: Pick<ProposalEvidence, 'selection' | 'candidatesTested' | 'arbitrated'>): EvidenceSelection {
+  return { selection: e.selection, candidatesTested: e.candidatesTested, arbitrated: e.arbitrated };
+}
+
+function counts(s: TestRunSummary): ProposalEvidence['before'] {
+  return { passed: s.passed, failed: s.failed, errors: s.errors, total: s.total };
+}
+
+/**
+ * Code-computed evidence from two runs of the same command: `before` on the workspace as the
+ * engine has it, `after` with the change applied. `newlyPassing` / `newlyFailing` come from
+ * verify/progress.ts (the same arithmetic the sieve classifies with), bounded to the contract.
+ */
+export function shadowEvidence(before: TestRunSummary, after: TestRunSummary, goal: Pick<Goal, 'tests'>, sel: EvidenceSelection, command: string = before.command): ProposalEvidence {
+  const p = progress(before, after);
+  return {
+    kind: 'shadow_test_run',
+    command,
+    before: counts(before),
+    after: counts(after),
+    newlyPassing: p.newlyPassing.slice(0, EVIDENCE_TESTS_MAX),
+    newlyFailing: p.newlyFailing.slice(0, EVIDENCE_TESTS_MAX),
+    goalTests: goal.tests.slice(0, EVIDENCE_TESTS_MAX),
+    ...sel,
+  };
+}
+
+/** What `commitEvidence` reads from the run memory: the committed baseline and the held partial bases. */
+export interface EvidenceMemory {
+  baseline: TestRunSummary | null;
+  bases?: readonly Base[];
+}
+
+/**
+ * Evidence for a committed candidate (§5.1 row 1): the guard's outcome carries the full-suite run
+ * made in the shadow lane (`full`; `subset` when the goal subset was the whole suite), compared
+ * with the committed baseline the engine's workspace is at; a partial commit from bases.ts has no
+ * outcome but carries its held base's summary as `after` (the base left the beam when it was
+ * committed; a still-held base is found in `mem.bases` as a fallback). Null when nothing measured
+ * the change against the suite (no baseline, or a subset-only run whose baseline is not the suite).
+ */
+export function commitEvidence(
+  mem: EvidenceMemory,
+  r: { applied: AppliedCandidate; outcome?: VerifyOutcome; after?: TestRunSummary; trace: Pick<GoalSearchTrace, 'runMode' | 'candidatesTested' | 'arbitrated'> },
+  goal: Pick<Goal, 'tests'>,
+): ProposalEvidence | null {
+  const before = mem.baseline;
+  if (before === null) return null;
+  const sel = selectionOf(r.trace);
+  if (r.after !== undefined) return shadowEvidence(before, r.after, goal, sel, before.command);
+  if (r.outcome !== undefined) {
+    const o = r.outcome;
+    if (o.full !== undefined) return shadowEvidence(before, o.full, goal, sel, before.command);
+    // no full-suite run: the subset run is evidence only when its baseline was the suite itself
+    if (o.progress.before.total === before.total) return shadowEvidence(before, o.subset, goal, sel, o.subset.command);
+    return null;
+  }
+  const held = mem.bases?.find((b) => b.origin === 'improved' && b.candidate === r.applied);
+  return held === undefined ? null : shadowEvidence(before, held.summary, goal, sel, before.command);
+}
+
+/**
+ * Evidence for the standing post-patch `run` (§5.1 row 2): the synthesizer's own full-suite run
+ * on the patched workspace (`current`, the fresh baseline) against the run before the patch
+ * (`previous`); the proposed command re-executes exactly that measurement in the engine.
+ */
+export function runEvidence(previous: TestRunSummary, current: TestRunSummary, goal: Pick<Goal, 'tests'> | undefined, sel: EvidenceSelection, command: string): ProposalEvidence {
+  return shadowEvidence(previous, current, goal ?? { tests: [] }, sel, command);
+}
+
+/** The proposal with `evidence` attached (unchanged when there is none). */
+export function withEvidence(p: Proposal, evidence: ProposalEvidence | null | undefined): Proposal {
+  return evidence === null || evidence === undefined ? p : { ...p, evidence };
 }
 
 export function isGoalItem(text: string): boolean {
@@ -383,7 +493,7 @@ function draft(done: string[], remaining: string[], openProblems: string[]): Pla
  * claimed yet (the next step's `run` claims the item on parsed test output), one item per
  * unfinished goal, notes for parked goals and for the commit's own caveat.
  */
-export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, goal: Goal, mem: ProposalMemory, note?: CommitNote, trace?: GoalSearchTrace): Proposal {
+export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, goal: Goal, mem: ProposalMemory, note?: CommitNote, trace?: GoalSearchTrace, evidence?: ProposalEvidence | null): Proposal {
   if (applied.diff.trim().length === 0) throw new ProposalError(`empty diff for ${describeEdit(applied)}`);
   const paths = diffPaths(applied.diff);
   if (paths.length > MAX_PATCH_FILES) throw new ProposalError(`diff touches ${paths.length} files (${paths.join(', ')}); a candidate may touch at most ${MAX_PATCH_FILES}`);
@@ -392,12 +502,17 @@ export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, g
   if (note === 'partial') notes.push(`partial: ${describeEdit(applied)} fixes some of ${testsLabel(goal)} without regressions; the rest stay open`);
   const record: JsonObject = trace ? traceRecord(trace) : { kind: 'patch', goalId: goal.id, ledger: ledgerLine(mem.goals), edit: editRecord(applied) };
   if (note !== undefined) record['note'] = note;
-  return {
-    goal: patchGoalText(applied, goal),
-    action: { kind: 'patch', diff: applied.diff },
-    plan: draft([], remainingItems(ctx, mem), openProblemNotes(mem, notes)),
-    rawText: rawText(record),
-  };
+  const e = evidence ?? undefined;
+  if (e !== undefined) record['evidence'] = { before: e.before.passed, after: e.after.passed, total: e.after.total, newlyPassing: e.newlyPassing.length, newlyFailing: e.newlyFailing.length };
+  return withEvidence(
+    {
+      goal: patchGoalText(applied, goal, e),
+      action: { kind: 'patch', diff: applied.diff },
+      plan: draft([], remainingItems(ctx, mem), openProblemNotes(mem, notes)),
+      rawText: rawText(record),
+    },
+    e,
+  );
 }
 
 /**

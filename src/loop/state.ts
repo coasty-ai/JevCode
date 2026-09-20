@@ -8,6 +8,7 @@ import { toJson } from '../core/json.js';
 import type {
   ActionOutcome,
   CandidateView,
+  EngineMode,
   ExecResult,
   Intent,
   Json,
@@ -16,6 +17,7 @@ import type {
   Plan,
   PlanDraft,
   Proposal,
+  ProposalEvidence,
   SandboxLevel,
   TargetInfo,
   TestCounts,
@@ -31,7 +33,23 @@ export const STATE_LIMITS = {
   actionTextChars: 4_000,
   summaryChars: 1_000,
   candidates: 300,
+  /** test ids per list in `proposal.evidence` (the contract bounds them to 20 already) */
+  evidenceTests: 20,
 } as const;
+
+/**
+ * The jev-only synthesizer's plan-item grammar, `fix <first_test_id>[, +N more] in <path>`
+ * (docs/JEV-ONLY-DESIGN.md §5.2; src/synth/search/proposal.ts GOAL_ITEM_RE is the same
+ * expression). Items of this form in `plan.remaining` are the ledger the intent stage reads in
+ * jev-only mode; a generator's free-form plan never matches it by accident on jev-on runs, and
+ * the stages guard on the mode as well.
+ */
+export const LEDGER_ITEM_RE = /^fix .+ in (\S+|the workspace)$/;
+
+/** The fixed-form items of `plan.remaining`, in plan order (empty when the plan carries none). */
+export function ledgerItems(remaining: readonly string[]): string[] {
+  return remaining.filter((r) => LEDGER_ITEM_RE.test(r));
+}
 
 export type Redact = (s: string) => string;
 
@@ -143,7 +161,34 @@ function planDraftJson(draft: PlanDraft): JsonObject {
   return { done: draft.done.slice(0, 20).map(item), remaining: draft.remaining.slice(0, 20).map(item), openProblems: draft.openProblems.slice(0, 16).map(item) };
 }
 
-/** `proposal` object shared by the risk and judge states. */
+/**
+ * `verified` (code-computed, never by Jev): the shadow run shows strict progress and no
+ * regression. The risk criteria reference it by name (stages/risk.ts) so a Score judges a
+ * verified change rather than an unverified claim; Jev is not asked to compare the counts.
+ */
+export function evidenceVerified(e: Pick<ProposalEvidence, 'before' | 'after' | 'newlyFailing'>): boolean {
+  return e.newlyFailing.length === 0 && e.after.passed > e.before.passed;
+}
+
+/** `proposal.evidence` for the Jev state: the contract's fields, bounded, plus `verified`. */
+export function evidenceJson(e: ProposalEvidence): JsonObject {
+  const ids = (xs: readonly string[]): string[] => xs.slice(0, STATE_LIMITS.evidenceTests).map((x) => clip(x, STATE_LIMITS.planItemChars));
+  return {
+    kind: e.kind,
+    command: clip(e.command, STATE_LIMITS.planItemChars),
+    before: { passed: e.before.passed, failed: e.before.failed, errors: e.before.errors, total: e.before.total },
+    after: { passed: e.after.passed, failed: e.after.failed, errors: e.after.errors, total: e.after.total },
+    newlyPassing: ids(e.newlyPassing),
+    newlyFailing: ids(e.newlyFailing),
+    goalTests: ids(e.goalTests),
+    selection: e.selection,
+    candidatesTested: e.candidatesTested,
+    arbitrated: e.arbitrated,
+    verified: evidenceVerified(e),
+  };
+}
+
+/** `proposal` object shared by the risk and judge states; `evidence` only when the proposal carries it. */
 export function proposalJson(proposal: Proposal, redact: Redact): JsonObject {
   const o: JsonObject = {
     goal: clip(proposal.goal, 600),
@@ -151,6 +196,7 @@ export function proposalJson(proposal: Proposal, redact: Redact): JsonObject {
     planClaim: planDraftJson(proposal.plan),
     claimsDone: proposal.plan.remaining.length === 0,
   };
+  if (proposal.evidence !== undefined) o['evidence'] = evidenceJson(proposal.evidence);
   return redactJson(o, redact) as JsonObject;
 }
 
@@ -159,8 +205,42 @@ export interface IntentStateInfo {
   probability: number;
 }
 
-export function buildIntentState(common: JsonObject): JsonObject {
-  return { ...common };
+export interface IntentStateOptions {
+  mode?: EngineMode;
+  /** the fixed-form items of `plan.remaining` (ledgerItems); ignored outside jev-only */
+  ledger?: readonly string[];
+}
+
+/**
+ * The intent state: the common state, plus in jev-only mode (docs/JEV-ONLY-DESIGN.md §5.2) the
+ * `mode` and the `ledger` (the plan's fixed-form `fix <test> in <path>` items) so the Choice and
+ * its paired Nouls can read what the synthesizer will act on. jev-on and jev-off send the common
+ * state unchanged.
+ */
+export function buildIntentState(common: JsonObject, opts: IntentStateOptions = {}): JsonObject {
+  const items = opts.ledger ?? [];
+  if (opts.mode !== 'jev-only' || items.length === 0) return { ...common };
+  return { ...common, mode: opts.mode, ledger: { items: items.slice(0, STATE_LIMITS.planItems).map((x) => clip(x, STATE_LIMITS.planItemChars)) } };
+}
+
+/** The common state's plan.remaining (already clipped) as strings, for stages that only have the JSON. */
+export function commonRemaining(common: JsonObject): string[] {
+  const plan = common['plan'];
+  if (typeof plan !== 'object' || plan === null || Array.isArray(plan)) return [];
+  const remaining = (plan as JsonObject)['remaining'];
+  return Array.isArray(remaining) ? remaining.filter((x): x is string => typeof x === 'string') : [];
+}
+
+/**
+ * Code-computed from the common state (§5.5): a workspace change executed after the last parsed
+ * test run (or before any). This is `!workspace.testsCurrent` with a change on record, the fact
+ * the completion Noul reads; the jev-only intent rule uses it to pick `verify` over `edit`.
+ */
+export function commonChangeUnverified(common: JsonObject): boolean {
+  const ws = common['workspace'];
+  if (typeof ws !== 'object' || ws === null || Array.isArray(ws)) return false;
+  const w = ws as JsonObject;
+  return typeof w['lastChangeStep'] === 'number' && w['testsCurrent'] === false;
 }
 
 export const CONTEXT_CRITERIA: JsonObject = {

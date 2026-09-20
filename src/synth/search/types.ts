@@ -127,6 +127,8 @@ export type Decision =
       note?: 'possible overfit' | 'partial';
       /** the shadow test run the commit rests on (guard commits); search/proposal.ts turns it into `Proposal.evidence` */
       outcome?: VerifyOutcome;
+      /** the held base's full-suite summary (bases.ts commitPartial, which has no outcome); `after` of the evidence */
+      after?: TestRunSummary;
     }
   | { kind: 'continue' }
   | { kind: 'budget' }

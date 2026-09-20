@@ -1,12 +1,22 @@
 /**
  * Intent stage (DESIGN.md §5.5 intent, §6): one request with the `intent` Choice, its five
  * paired Nouls and `plan_still_valid`; Choice resolution gives the effective intent.
+ *
+ * jev-only mode (docs/JEV-ONLY-DESIGN.md §5.2): when the accepted plan carries the synthesizer's
+ * ledger (fixed-form `fix <test> in <path>` items in `plan.remaining`) the state shows it as
+ * `ledger`, the `edit` and `verify` options are described as what the synthesizer will do with
+ * them, and the ledger breaks the Choice-resolution tie: a fallback to `investigate` that would
+ * happen only because every paired Noul is under 0.5 is replaced by Jev's own `edit`/`verify`
+ * answer when that answer has p >= LEDGER_CHOICE_FLOOR, and an `edit` while a change is still
+ * unverified (code-computed `workspace.testsCurrent` false) becomes `verify`: the plan's next
+ * step is the suite run the synthesizer proposes after every patch. Nothing here runs outside
+ * jev-only or without ledger items, so jev-on and jev-off resolve exactly as §6 says.
  */
 import { choice, noul, pairedNouls, ref } from '../../jev/questions.js';
-import type { Intent, IntentAnswer, JsonObject, Question } from '../../core/types.js';
+import type { Answer, EngineMode, Intent, IntentAnswer, JsonObject, Question } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
-import { buildIntentState } from '../state.js';
-import { annotateChoiceRows, resolveChoice, type ChoiceVerdict } from './choose.js';
+import { buildIntentState, commonChangeUnverified, commonRemaining, ledgerItems } from '../state.js';
+import { annotateChoiceRows, pairedId, resolveChoice, type ChoiceResolution, type ChoiceVerdict } from './choose.js';
 
 export const INTENT_OPTIONS: Record<Intent, string> = {
   investigate: 'read or search code before changing it',
@@ -15,26 +25,39 @@ export const INTENT_OPTIONS: Record<Intent, string> = {
   fix_environment: 'install a dependency or repair tooling so work can continue',
   finish: 'nothing remains; the work is verified',
 };
+/** jev-only with a ledger: `edit` and `verify` are the two steps of the synthesizer's patch → run alternation. */
+export const INTENT_OPTIONS_LEDGER: Record<Intent, string> = {
+  ...INTENT_OPTIONS,
+  edit: 'apply a verified fix for an item in `plan.remaining`',
+  verify: 'run the suite after a fix',
+};
 export const INTENT_LIST: readonly Intent[] = ['investigate', 'edit', 'verify', 'fix_environment', 'finish'];
 export const INTENT_FALLBACK: Intent = 'investigate';
 export const PLAN_STALE_THRESHOLD = 0.3;
+/** Choice probability Jev's `edit`/`verify` answer needs for the ledger rule to take it over a fallback. */
+export const LEDGER_CHOICE_FLOOR = 0.3;
 
-export function buildIntentQuestions(): Record<string, Question> {
+export interface IntentQuestionOptions {
+  /** the state carries `ledger` (jev-only with fixed-form plan items) */
+  ledger?: boolean;
+}
+
+export function buildIntentQuestions(opts: IntentQuestionOptions = {}): Record<string, Question> {
+  const ledger = opts.ledger === true;
+  const options = ledger ? INTENT_OPTIONS_LEDGER : INTENT_OPTIONS;
+  const planRef = ledger ? `${ref('plan')} (especially ${ref('plan.remaining')}, whose \`fix … in …\` items are listed in ${ref('ledger.items')})` : `${ref('plan')} (especially ${ref('plan.remaining')})`;
   const qs: Record<string, Question> = {
-    intent: choice(
-      `What kind of step should the engineer take next, given ${ref('task')}, ${ref('plan')} (especially ${ref('plan.remaining')}) and ${ref('recent')}?`,
-      INTENT_OPTIONS,
-    ),
-    ...pairedNouls(INTENT_OPTIONS, (option, desc) => ({
+    intent: choice(`What kind of step should the engineer take next, given ${ref('task')}, ${planRef} and ${ref('recent')}?`, options),
+    ...pairedNouls(options, (option, desc) => ({
       instructions: `Is \`${option}\` (${desc}) the right kind of next step given ${ref('plan')} and ${ref('recent')}?`,
       criteria: {
         true: {
           definition: `the state of ${ref('plan.remaining')}, ${ref('recent')} and ${ref('workspace')} makes "${desc}" the step that moves the task forward now`,
-          examples: pairedTrueExamples(option),
+          examples: pairedTrueExamples(option, ledger),
         },
         false: {
           definition: `"${desc}" would repeat work already shown in ${ref('recent')}, skip a prerequisite, or is not what ${ref('plan.remaining')} calls for now`,
-          examples: pairedFalseExamples(option),
+          examples: pairedFalseExamples(option, ledger),
         },
       },
     })),
@@ -52,26 +75,32 @@ export function buildIntentQuestions(): Record<string, Question> {
   return qs;
 }
 
-function pairedTrueExamples(option: string): string[] {
+function pairedTrueExamples(option: string, ledger: boolean): string[] {
   switch (option) {
     case 'investigate':
       return ['the failing function has not been shown yet', 'the plan names a file no recent step has read'];
     case 'edit':
-      return ['the cause is known from a traceback and the file has been shown', 'a test in recent fails on one identifiable line'];
+      return ledger
+        ? ['`ledger.items` lists an open `fix … in …` item and `workspace.testsCurrent` is true (the last change, if any, has been verified)', 'a test in recent fails on one identifiable line and the plan lists its fix item']
+        : ['the cause is known from a traceback and the file has been shown', 'a test in recent fails on one identifiable line'];
     case 'verify':
-      return ['the last step edited a file and no test has run since', 'the plan\'s next item is to run the test suite'];
+      return ledger
+        ? ['the last step applied a patch and `workspace.testsCurrent` is false (no test run since)', 'the plan\'s remaining item is to verify the full test suite passes']
+        : ['the last step edited a file and no test has run since', 'the plan\'s next item is to run the test suite'];
     case 'fix_environment':
       return ['recent shows ModuleNotFoundError for a required package', 'the test command is not found in the sandbox'];
     default:
       return ['every remaining item is done and the last test run passed with no changes since', 'the task asked for one change, it is applied and verified in recent'];
   }
 }
-function pairedFalseExamples(option: string): string[] {
+function pairedFalseExamples(option: string, ledger: boolean): string[] {
   switch (option) {
     case 'investigate':
-      return ['the relevant file was shown two steps ago and nothing changed', 'the cause is already identified in the plan'];
+      return ledger
+        ? ['the relevant file was shown two steps ago and nothing changed', '`ledger.items` names the failing tests and their files, so the cause is already localised']
+        : ['the relevant file was shown two steps ago and nothing changed', 'the cause is already identified in the plan'];
     case 'edit':
-      return ['no recent step shows the file to change', 'tests have not been run after the previous edit'];
+      return ledger ? ['a patch was applied in the last step and the suite has not run since (verify first)', '`ledger.items` is empty: every fix item is done'] : ['no recent step shows the file to change', 'tests have not been run after the previous edit'];
     case 'verify':
       return ['tests already passed after the last change', 'nothing has changed since the last verification'];
     case 'fix_environment':
@@ -79,6 +108,47 @@ function pairedFalseExamples(option: string): string[] {
     default:
       return ['remaining is non-empty', 'files changed after the last test run'];
   }
+}
+
+export interface LedgerResolutionInput {
+  /** the plan carries fixed-form ledger items (jev-only) */
+  ledgerOpen: boolean;
+  /** code-computed: a change executed after the last parsed test run (state.ts commonChangeUnverified) */
+  changeUnverified: boolean;
+}
+
+function choiceProbability(answers: Record<string, Answer>, choiceId: string, option: string): number {
+  const a = answers[choiceId];
+  if (!a || a.type !== 'choice') return 0;
+  const p = a.probabilities[option];
+  return typeof p === 'number' && Number.isFinite(p) ? p : 0;
+}
+
+function pairedNoul(answers: Record<string, Answer>, option: string): number {
+  const a = answers[pairedId(option)];
+  return a && a.type === 'noul' ? a.noul : 0;
+}
+
+/**
+ * The jev-only ledger rule over a §6 Choice resolution. Returns the resolution unchanged unless
+ * `ledgerOpen`; then (1) a `fallback` whose raw answer is `edit` or `verify` with p >=
+ * LEDGER_CHOICE_FLOOR takes that answer, and (2) an effective `edit` while a change is
+ * unverified becomes `verify`. The verdict is `chosen` when the effective option is Jev's own
+ * answer and `overridden` otherwise (the paired Noul row of the option is then marked chosen by
+ * annotateChoiceRows, as for a §6 override).
+ */
+export function resolveIntentWithLedger(res: ChoiceResolution<Intent>, answers: Record<string, Answer>, input: LedgerResolutionInput): ChoiceResolution<Intent> {
+  if (!input.ledgerOpen) return res;
+  let option: Intent = res.option;
+  let rescued = false;
+  if (res.verdict === 'fallback' && (res.answer === 'edit' || res.answer === 'verify') && choiceProbability(answers, 'intent', res.answer) >= LEDGER_CHOICE_FLOOR) {
+    option = res.answer;
+    rescued = true;
+  }
+  if (option === 'edit' && input.changeUnverified) option = 'verify';
+  if (!rescued && option === res.option) return res;
+  const verdict: ChoiceVerdict = option === res.answer ? 'chosen' : 'overridden';
+  return { option, verdict, answer: res.answer, probability: choiceProbability(answers, 'intent', option), pairedNoul: pairedNoul(answers, option) };
 }
 
 export interface IntentStageResult {
@@ -91,14 +161,24 @@ export interface IntentStageResult {
   planStillValid: number;
 }
 
+/** The ledger the stage reads: the fixed-form items of the accepted plan, only in jev-only mode. */
+export function intentLedger(mode: EngineMode, common: JsonObject): string[] {
+  return mode === 'jev-only' ? ledgerItems(commonRemaining(common)) : [];
+}
+
 export async function runIntentStage(ctx: StageContext, common: JsonObject): Promise<IntentStageResult> {
-  const questions = buildIntentQuestions();
-  const state = buildIntentState(common);
-  let resolved = resolveChoice<Intent>({ choiceId: 'intent', answers: {}, options: INTENT_LIST, escape: 'none_of_these', fallback: INTENT_FALLBACK });
+  const ledger = intentLedger(ctx.mode, common);
+  const ledgerOpen = ledger.length > 0;
+  const questions = buildIntentQuestions({ ledger: ledgerOpen });
+  const state = buildIntentState(common, { mode: ctx.mode, ledger });
+  const ledgerInput: LedgerResolutionInput = { ledgerOpen, changeUnverified: commonChangeUnverified(common) };
+  const resolve = (answers: Record<string, Answer>): ChoiceResolution<Intent> =>
+    resolveIntentWithLedger(resolveChoice<Intent>({ choiceId: 'intent', answers, options: INTENT_LIST, escape: 'none_of_these', fallback: INTENT_FALLBACK }), answers, ledgerInput);
+  let resolved = resolve({});
   let planStillValid = 1;
   let confidence = 0;
   await ctx.ask('intent', state, questions, (answers, rows) => {
-    resolved = resolveChoice<Intent>({ choiceId: 'intent', answers, options: INTENT_LIST, escape: 'none_of_these', fallback: INTENT_FALLBACK });
+    resolved = resolve(answers);
     annotateChoiceRows(rows, 'intent', resolved);
     const psv = answers['plan_still_valid'];
     planStillValid = psv && psv.type === 'noul' ? psv.noul : 1;

@@ -23,6 +23,9 @@ export async function runSynthStage(ctx: StageContext, synthesizer: Synthesizer,
     plan: { done: [...out.plan.done], remaining: [...out.plan.remaining], openProblems: [...out.plan.openProblems] },
     rawText: ctx.redact(out.rawText),
   };
+  // The synthesizer's code-computed shadow-run evidence (docs/JEV-ONLY-DESIGN.md §5.1) travels with
+  // the proposal to the risk and judge states (loop/state.ts proposalJson); a generator never sets it.
+  if (out.evidence !== undefined) proposal.evidence = out.evidence;
   ctx.emit({ type: 'proposal', step: ctx.step, proposal });
   return { proposal, synthesizer: synthesizer.name };
 }

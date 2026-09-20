@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import type { JsonObject } from '../../../src/core/types.js';
+import type { JsonObject, ProposalEvidence } from '../../../src/core/types.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
-import { buildCommonState, buildContextState, buildJudgeState, buildRiskState, testsCurrent } from '../../../src/loop/state.js';
+import { buildCommonState, buildContextState, buildIntentState, buildJudgeState, buildRiskState, commonChangeUnverified, commonRemaining, evidenceVerified, ledgerItems, testsCurrent } from '../../../src/loop/state.js';
 import { buildContextQuestions, prefilterCandidates, selectCandidates } from '../../../src/loop/stages/context.js';
 import { buildIntentQuestions } from '../../../src/loop/stages/intent.js';
 import { buildJudgeQuestions } from '../../../src/loop/stages/judge.js';
@@ -85,5 +85,59 @@ describe('Jev state (§5.5)', () => {
     for (const q of Object.values(judge)) if (q.type === 'noul') expect((q.criteria!.false as { examples: string[] }).examples.length).toBeGreaterThanOrEqual(2);
     const replan = buildReplanQuestions();
     expect(Object.keys(replan)).toEqual(['next_move', 'can_change_approach', 'can_gather_context', 'can_fix_environment', 'can_revert_changes', 'can_stop_and_report', 'task_impossible']);
+  });
+});
+
+describe('proposal.evidence in the Jev state (jev-only, docs/JEV-ONLY-DESIGN.md §5.1)', () => {
+  const evidence: ProposalEvidence = {
+    kind: 'shadow_test_run',
+    command: 'python3 -m pytest -q',
+    before: { passed: 7, failed: 3, errors: 0, total: 10 },
+    after: { passed: 8, failed: 2, errors: 0, total: 10 },
+    newlyPassing: ['tests/test_g.py::test_weighted'],
+    newlyFailing: [],
+    goalTests: ['tests/test_g.py::test_weighted'],
+    selection: 'sieve',
+    candidatesTested: 360,
+    arbitrated: false,
+  };
+  const patch = { goal: 'apply verified fix', action: { kind: 'patch' as const, diff: 'd' }, plan: { done: [], remaining: ['fix tests/test_g.py::test_weighted in src/g.py'], openProblems: [] }, rawText: '' };
+
+  it('risk state: the contract fields, bounded, plus the code-computed `verified`; absent without evidence', () => {
+    const rs = buildRiskState(common(), { ...patch, evidence }, { choice: 'edit', probability: 0.8 }, [], redact);
+    expect((rs['proposal'] as JsonObject)['evidence']).toEqual({ ...evidence, verified: true });
+    const regressed = { ...evidence, newlyFailing: ['tests/test_g.py::test_other'] };
+    expect(((buildRiskState(common(), { ...patch, evidence: regressed }, { choice: 'edit', probability: 0.8 }, [], redact)['proposal'] as JsonObject)['evidence'] as JsonObject)['verified']).toBe(false);
+    const noProgress = { ...evidence, after: { ...evidence.after, passed: 7 } };
+    expect(evidenceVerified(noProgress)).toBe(false);
+    expect('evidence' in (buildRiskState(common(), patch, { choice: 'edit', probability: 0.8 }, [], redact)['proposal'] as JsonObject)).toBe(false);
+    // bounded and redacted like every other state string
+    const many = { ...evidence, newlyPassing: Array.from({ length: 30 }, (_, i) => `t${i} sk-or-v1-SECRETSECRETSECRETSECRET`) };
+    const bounded = (buildRiskState(common(), { ...patch, evidence: many }, { choice: 'edit', probability: 0.8 }, [], redact)['proposal'] as JsonObject)['evidence'] as { newlyPassing: string[] };
+    expect(bounded.newlyPassing).toHaveLength(20);
+    expect(JSON.stringify(bounded)).not.toContain('SECRETSECRET');
+  });
+
+  it('judge state carries the same evidence next to the executed run\'s counts', () => {
+    const run = { ...patch, action: { kind: 'run' as const, command: 'python3 -m pytest -q' }, evidence };
+    const js = buildJudgeState(common(), run, { outcome: { status: 'executed', exec: execResult({ stdout: '8 passed, 2 failed', exitCode: 1 }), summary: '', changedFiles: [] }, output: '8 passed, 2 failed', changedFiles: [], tests: { command: 'python3 -m pytest -q', parsed: { passed: 8, failed: 2, errors: 0, skipped: 0 }, allPassed: false } }, [], redact);
+    expect((js['proposal'] as JsonObject)['evidence']).toMatchObject({ verified: true, after: { passed: 8 } });
+    expect((js['executed'] as JsonObject)['tests']).toMatchObject({ parsed: { passed: 8, failed: 2 } });
+  });
+
+  it('intent state: `mode` and `ledger.items` only in jev-only with fixed-form plan items; ledgerItems and commonChangeUnverified are code-computed', () => {
+    const items = ledgerItems(['fix tests/test_a.py::test_x in src/a.py', 'verify the full test suite passes', 'fix gcd(13, 13), +2 more in gcd.py', 'install deps', 'fix it']);
+    expect(items).toEqual(['fix tests/test_a.py::test_x in src/a.py', 'fix gcd(13, 13), +2 more in gcd.py']);
+    const st = buildIntentState(common(), { mode: 'jev-only', ledger: items });
+    expect(st['mode']).toBe('jev-only');
+    expect(st['ledger']).toEqual({ items });
+    expect(buildIntentState(common(), { mode: 'jev-on', ledger: items })).toEqual(common());
+    expect(buildIntentState(common(), { mode: 'jev-only', ledger: [] })).toEqual(common());
+    expect(buildIntentState(common())).toEqual(common());
+    // common(): lastChangeStep 2 after a test run at step 1 → a change is unverified
+    expect(commonChangeUnverified(common())).toBe(true);
+    const current = { ...common(), workspace: { ...(common()['workspace'] as JsonObject), lastChangeStep: null, testsCurrent: true } };
+    expect(commonChangeUnverified(current)).toBe(false);
+    expect(commonRemaining(common())).toEqual([(common()['plan'] as { remaining: string[] }).remaining[0]]);
   });
 });

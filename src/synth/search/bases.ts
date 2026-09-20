@@ -370,7 +370,8 @@ export function commitPartial(mem: BasesMemory, goal: Goal): Decision | null {
   const b = improvedBaseFor(mem, goal);
   if (b === undefined || b.candidate === undefined) return null;
   mem.bases = mem.bases.filter((x) => x.id !== b.id);
-  return { kind: 'commit', applied: b.candidate, allGoalTestsPass: false, note: 'partial' };
+  // the base leaves the beam here, so its summary travels with the commit as the evidence's `after`
+  return { kind: 'commit', applied: b.candidate, allGoalTestsPass: false, note: 'partial', after: b.summary };
 }
 
 /** Forget the partials, suspect, fallbacks and tie-break cache of a goal (after its commit or park). */

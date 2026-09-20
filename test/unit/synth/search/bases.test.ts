@@ -231,8 +231,10 @@ describe('appliedOnCommitted: every commit is a patch of the committed workspace
     expect(composed.diff).toContain('-    a = xs[0]\n');
     expect(composed.diff).toContain('-    b = xs[1]\n');
     expect(appliedOnCommitted(mem, second)).toEqual(composed);
+    // the commit carries the base's summary as the evidence's `after` (search/proposal.ts commitEvidence): the base leaves the beam here
+    const held = improvedBaseFor(mem, GOAL)!;
     const d = commitPartial(mem, GOAL);
-    expect(d).toEqual({ kind: 'commit', applied: composed, allGoalTestsPass: false, note: 'partial' });
+    expect(d).toEqual({ kind: 'commit', applied: composed, allGoalTestsPass: false, note: 'partial', after: held.summary });
   });
   it('an outcome on the committed base is returned as is', async () => {
     const mem = createGuardMemory(BASE);
@@ -250,8 +252,9 @@ describe('commitPartial and forgetGoal', () => {
     expect(improvedBaseFor(mem, GOAL)?.candidate).toBe(p.applied);
     expect(improvedBaseFor(mem, goal([failure('other()')], { id: 'g2' }))).toBeUndefined();
     expect(commitPartial(mem, goal([failure('other()')], { id: 'g2' }))).toBeNull();
+    const held = improvedBaseFor(mem, GOAL)!;
     const d = commitPartial(mem, GOAL);
-    expect(d).toEqual({ kind: 'commit', applied: p.applied, allGoalTestsPass: false, note: 'partial' });
+    expect(d).toEqual({ kind: 'commit', applied: p.applied, allGoalTestsPass: false, note: 'partial', after: held.summary });
     expect(mem.bases.map((b) => b.origin)).toEqual(['committed']);
     expect(commitPartial(mem, GOAL)).toBeNull();
   });

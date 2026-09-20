@@ -603,7 +603,7 @@ export function mostPassing(plausible: readonly VerifyOutcome[]): VerifyOutcome[
 
 /** A commit is always a patch of the committed workspace, whichever base the candidate ran on. */
 function commit(mem: GuardMemory, o: VerifyOutcome, extra: Omit<GuardDecision, 'kind' | 'applied' | 'allGoalTestsPass'>): GuardDecision {
-  return { kind: 'commit', applied: appliedOnCommitted(mem, o), allGoalTestsPass: true, ...extra };
+  return { kind: 'commit', applied: appliedOnCommitted(mem, o), allGoalTestsPass: true, outcome: o, ...extra };
 }
 
 /**
@@ -670,7 +670,7 @@ export function commitSuspect(mem: GuardMemory, goal?: Pick<Goal, 'id'>): Decisi
   const s = st.suspect;
   if (s === null || (goal !== undefined && s.goalId !== goal.id)) return null;
   st.suspect = null;
-  return { kind: 'commit', applied: appliedOnCommitted(mem, s.outcome), allGoalTestsPass: true, note: 'possible overfit' };
+  return { kind: 'commit', applied: appliedOnCommitted(mem, s.outcome), allGoalTestsPass: true, note: 'possible overfit', outcome: s.outcome };
 }
 
 // ---------------------------------------------------------------------------------------
