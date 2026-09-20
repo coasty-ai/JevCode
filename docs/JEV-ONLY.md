@@ -241,3 +241,17 @@ the linter verify. The question this document answers by experiment is which dec
   36/40 repaired = 27 gold-identical + 5 equivalent on reference and perturbed inputs + 2 overfit
   (`detect_cycle`, `wrap`, both since addressed) + 2 unverified graph programs; **32/40 verified
   correct by code**, 34 only if the two unverified are counted on hand inspection.
+- 2026-09-20: **SWE-bench rung 3, second attempt (in flight): first instance solved with no generating
+  model.** Repository mode landed (issue oracle as the goal, one traceback-anchored localisation, a
+  regression suite scoped to ≤ 6 related test files, worktree lanes verifying the reproduction, a
+  best-guess regression-only commit at most once per run when no oracle exists). On the nine
+  instances with a valid oracle: `sympy__sympy-19954` **passes the local-venv evaluator** (FAIL_TO_PASS
+  and PASS_TO_PASS) after 8 steps and $0.024 of Jev, zero generator calls — a two-line guard inserted
+  before the faulty `del` in `perm_groups.py`, found in one Jev request for the oracle, fifteen for
+  localisation (gold file #1), one ranked batch of 25 candidates of which 3 passed the reproduction and
+  the scoped regression run, one arbitration; it is not the upstream fix's shape but the evaluator
+  accepts it. `sympy__sympy-15345` found its oracle and file in the same way but parked after two
+  budget-hit steps: the repository-class cap of 16 runs per step was designed for a full-suite oracle,
+  while the reproduction costs 2 s — so the cap is being re-derived from the measured oracle (runs =
+  test wall / t_run, bounded) with the park rule counting only steps that visited nothing new. The
+  full 30 re-run follows with that change.
