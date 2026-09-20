@@ -1152,5 +1152,1600 @@
   ],
   "allHunksReachable": false,
   "wallMs": 1439435
+ },
+ {
+  "id": "django__django-15128",
+  "oracle": "valid",
+  "criterion": "no_exception (strong)",
+  "tRunMs": 484,
+  "goldFileRank": 713,
+  "nonTestPyFiles": 857,
+  "goldFileInEngineCorpus": false,
+  "corpusMs": 1484,
+  "hunks": [
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 575,
+    "kind": "pure_insertion",
+    "removed": 0,
+    "added": 9,
+    "addedCode": 2,
+    "goldFirst": "initial_alias = self . get_initial_alias ( )",
+    "block": "combine",
+    "blockLines": 104,
+    "statementSpan": null,
+    "gapSlotLegal": true,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "insert@575",
+     "replace@573(before gap)"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "insert@575|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 3,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@575|engine",
+      "cap": 254,
+      "count": 175,
+      "ms": 9,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@575|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 1250,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "insert@575|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@573(before gap)|engine",
+      "cap": 254,
+      "count": 66,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@573(before gap)|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 21,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@573(before gap)|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 77,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@573(before gap)|engine",
+      "cap": 254,
+      "count": 100,
+      "ms": 168,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "insert@575|engine",
+      "cap": 1000000,
+      "count": 368,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@575|engine",
+      "cap": 1000000,
+      "count": 175,
+      "ms": 71,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@575|engine",
+      "cap": 1000000,
+      "count": 2199,
+      "ms": 75,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@573(before gap)|engine",
+      "cap": 1000000,
+      "count": 66,
+      "ms": 4,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@573(before gap)|engine",
+      "cap": 1000000,
+      "count": 593,
+      "ms": 109,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@573(before gap)|engine",
+      "cap": 1000000,
+      "count": 2857,
+      "ms": 288,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@575|full",
+      "cap": 254,
+      "count": 175,
+      "ms": 5,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@575|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 1353,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@573(before gap)|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 18,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@573(before gap)|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 645,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@575|full",
+      "cap": 1000000,
+      "count": 175,
+      "ms": 4,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@575|full",
+      "cap": 1000000,
+      "count": 2239,
+      "ms": 527,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@573(before gap)|full",
+      "cap": 1000000,
+      "count": 593,
+      "ms": 42,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@573(before gap)|full",
+      "cap": 1000000,
+      "count": 3831,
+      "ms": 614,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 39,
+     "uncappedSize": 61,
+     "matchIndex": -1,
+     "matchProduction": null,
+     "matchUncapped": false,
+     "holes": [],
+     "fillable": null
+    },
+    "beam": {
+     "tokens": 7,
+     "withinMaxTokens": true,
+     "missing": [
+      "initial_alias"
+     ],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [
+      "initial_alias",
+      "exclude"
+     ],
+     "where": {
+      "initial_alias": "nowhere (new name)",
+      "exclude": "repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 592,
+    "kind": "deletion",
+    "removed": 3,
+    "added": 0,
+    "addedCode": 0,
+    "goldFirst": "",
+    "block": "combine",
+    "blockLines": 104,
+    "statementSpan": null,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "replace@592"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "replace@592|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@592|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 7,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@592|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 51,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@592|engine",
+      "cap": 254,
+      "count": 15,
+      "ms": 380,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@592|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@592|engine",
+      "cap": 1000000,
+      "count": 776,
+      "ms": 8,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@592|engine",
+      "cap": 1000000,
+      "count": 3552,
+      "ms": 114,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@592|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 122,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@592|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 341,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@592|full",
+      "cap": 1000000,
+      "count": 776,
+      "ms": 6,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@592|full",
+      "cap": 1000000,
+      "count": 3598,
+      "ms": 346,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 0,
+     "uncappedSize": 0,
+     "matchIndex": -1,
+     "matchProduction": null,
+     "matchUncapped": false,
+     "holes": [],
+     "fillable": null
+    },
+    "beam": {
+     "tokens": 0,
+     "withinMaxTokens": true,
+     "missing": [],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [],
+     "where": {}
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 849,
+    "kind": "non_code_only",
+    "removed": 0,
+    "added": 3,
+    "addedCode": 0,
+    "goldFirst": "",
+    "block": null,
+    "blockLines": null,
+    "statementSpan": null,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [],
+    "runs": [],
+    "sketch": null,
+    "beam": null,
+    "vocab": null,
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 882,
+    "kind": "single_line_modification",
+    "removed": 1,
+    "added": 1,
+    "addedCode": 1,
+    "goldFirst": "def bump_prefix ( self , other_query , exclude = None ) :",
+    "block": "bump_prefix",
+    "blockLines": 48,
+    "statementSpan": 1,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "replace@882"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "replace@882|engine",
+      "cap": 254,
+      "count": 1,
+      "ms": 3,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@882|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 345,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@882|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 401,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@882|engine",
+      "cap": 254,
+      "count": 9,
+      "ms": 477,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@882|engine",
+      "cap": 1000000,
+      "count": 1,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@882|engine",
+      "cap": 1000000,
+      "count": 386,
+      "ms": 275,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@882|engine",
+      "cap": 1000000,
+      "count": 1340,
+      "ms": 179,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@882|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 146,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@882|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 860,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@882|full",
+      "cap": 1000000,
+      "count": 386,
+      "ms": 465,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@882|full",
+      "cap": 1000000,
+      "count": 1521,
+      "ms": 242,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 73,
+     "uncappedSize": 73,
+     "matchIndex": -1,
+     "matchProduction": null,
+     "matchUncapped": false,
+     "holes": [],
+     "fillable": null
+    },
+    "beam": {
+     "tokens": 12,
+     "withinMaxTokens": true,
+     "missing": [
+      "other_query",
+      "exclude"
+     ],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [
+      "other_query",
+      "exclude"
+     ],
+     "where": {
+      "other_query": "nowhere (new name)",
+      "exclude": "repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 885,
+    "kind": "single_line_modification",
+    "removed": 1,
+    "added": 1,
+    "addedCode": 1,
+    "goldFirst": "that the other query 's aliases and this query' s aliases will not",
+    "block": "bump_prefix",
+    "blockLines": 48,
+    "statementSpan": 6,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "replace@885"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "replace@885|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@885|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 4,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@885|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 70,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@885|engine",
+      "cap": 254,
+      "count": 23,
+      "ms": 429,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@885|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@885|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@885|engine",
+      "cap": 1000000,
+      "count": 1174,
+      "ms": 116,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@885|full",
+      "cap": 254,
+      "count": 0,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@885|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 98,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@885|full",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@885|full",
+      "cap": 1000000,
+      "count": 1283,
+      "ms": 131,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 91,
+     "uncappedSize": 91,
+     "matchIndex": 2,
+     "matchProduction": "P1",
+     "matchUncapped": true,
+     "holes": [
+      {
+       "i": 2,
+       "gold": "other",
+       "cls": "value",
+       "inSlotVocab": false
+      }
+     ],
+     "fillable": false
+    },
+    "beam": {
+     "tokens": 9,
+     "withinMaxTokens": true,
+     "missing": [
+      "that",
+      "the",
+      "other",
+      "query",
+      "'s aliases and this query'",
+      "s",
+      "aliases",
+      "will"
+     ],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [
+      "that",
+      "the",
+      "other"
+     ],
+     "where": {
+      "that": "tests: django/test/client.py, django/test/html.py",
+      "the": "tests: django/test/client.py, django/test/html.py",
+      "other": "repo: 48 files (django/contrib/auth/models.py, django/contrib/gis/db/backends/base/adapter.py); tests: django/test/html.py, django/test/runner.py"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 887,
+    "kind": "single_line_modification",
+    "removed": 1,
+    "added": 1,
+    "addedCode": 1,
+    "goldFirst": "after this call . To prevent changing aliases use the exclude parameter .",
+    "block": "bump_prefix",
+    "blockLines": 48,
+    "statementSpan": 6,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "replace@887"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "replace@887|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@887|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@887|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 109,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@887|engine",
+      "cap": 254,
+      "count": 3,
+      "ms": 316,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@887|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@887|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 3,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@887|engine",
+      "cap": 1000000,
+      "count": 1241,
+      "ms": 53,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@887|full",
+      "cap": 254,
+      "count": 0,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@887|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 290,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@887|full",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@887|full",
+      "cap": 1000000,
+      "count": 1544,
+      "ms": 154,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 49,
+     "uncappedSize": 49,
+     "matchIndex": -1,
+     "matchProduction": null,
+     "matchUncapped": false,
+     "holes": [],
+     "fillable": null
+    },
+    "beam": {
+     "tokens": 13,
+     "withinMaxTokens": true,
+     "missing": [
+      "after",
+      "this",
+      "call",
+      "To",
+      "prevent",
+      "changing",
+      "aliases",
+      "use",
+      "the",
+      "exclude",
+      "parameter"
+     ],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [
+      "after",
+      "this",
+      "call",
+      "To",
+      "prevent",
+      "changing",
+      "use",
+      "the",
+      "exclude",
+      "parameter"
+     ],
+     "where": {
+      "after": "repo: 1 file (django/template/base.py); tests: django/test/client.py, django/test/runner.py",
+      "this": "tests: django/test/client.py, django/test/html.py",
+      "call": "tests: django/test/signals.py, django/test/testcases.py",
+      "To": "tests: django/test/runner.py, django/test/testcases.py",
+      "prevent": "tests: django/test/client.py, django/test/runner.py",
+      "changing": "tests: django/test/client.py, tests/admin_views/admin.py",
+      "use": "tests: django/test/client.py, django/test/runner.py",
+      "the": "tests: django/test/client.py, django/test/html.py",
+      "exclude": "repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py",
+      "parameter": "repo: 1 file (django/urls/resolvers.py); tests: django/test/client.py, tests/admin_changelist/tests.py"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 907,
+    "kind": "single_line_modification",
+    "removed": 1,
+    "added": 1,
+    "addedCode": 1,
+    "goldFirst": "if self . alias_prefix != other_query . alias_prefix :",
+    "block": "bump_prefix",
+    "blockLines": 48,
+    "statementSpan": 1,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "replace@907"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "replace@907|engine",
+      "cap": 254,
+      "count": 126,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@907|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 11,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@907|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 66,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@907|engine",
+      "cap": 254,
+      "count": 100,
+      "ms": 309,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@907|engine",
+      "cap": 1000000,
+      "count": 126,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@907|engine",
+      "cap": 1000000,
+      "count": 623,
+      "ms": 9,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@907|engine",
+      "cap": 1000000,
+      "count": 2040,
+      "ms": 73,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@907|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 8,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@907|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 126,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@907|full",
+      "cap": 1000000,
+      "count": 623,
+      "ms": 8,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@907|full",
+      "cap": 1000000,
+      "count": 2244,
+      "ms": 196,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 85,
+     "uncappedSize": 85,
+     "matchIndex": 3,
+     "matchProduction": "P1",
+     "matchUncapped": true,
+     "holes": [
+      {
+       "i": 5,
+       "gold": "other_query",
+       "cls": "value",
+       "inSlotVocab": false
+      }
+     ],
+     "fillable": false
+    },
+    "beam": {
+     "tokens": 9,
+     "withinMaxTokens": true,
+     "missing": [
+      "other_query"
+     ],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [
+      "other_query"
+     ],
+     "where": {
+      "other_query": "nowhere (new name)"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 925,
+    "kind": "multi_line_modification",
+    "removed": 1,
+    "added": 3,
+    "addedCode": 3,
+    "goldFirst": "other_query . subq_aliases = other_query . subq_aliases . union ( self . subq_aliases )",
+    "block": "bump_prefix",
+    "blockLines": 48,
+    "statementSpan": 1,
+    "gapSlotLegal": null,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "replace@925"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "replace@925|engine",
+      "cap": 254,
+      "count": 127,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@925|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 12,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@925|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 63,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@925|engine",
+      "cap": 254,
+      "count": 100,
+      "ms": 194,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@925|engine",
+      "cap": 1000000,
+      "count": 127,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@925|engine",
+      "cap": 1000000,
+      "count": 879,
+      "ms": 18,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@925|engine",
+      "cap": 1000000,
+      "count": 3059,
+      "ms": 65,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@925|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 77,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@925|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 832,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@925|full",
+      "cap": 1000000,
+      "count": 879,
+      "ms": 180,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@925|full",
+      "cap": 1000000,
+      "count": 3118,
+      "ms": 959,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 96,
+     "uncappedSize": 97,
+     "matchIndex": 76,
+     "matchProduction": "P13",
+     "matchUncapped": true,
+     "holes": [
+      {
+       "i": 0,
+       "gold": "other_query",
+       "cls": "value",
+       "inSlotVocab": false
+      },
+      {
+       "i": 2,
+       "gold": "subq_aliases",
+       "cls": "attribute",
+       "inSlotVocab": true
+      },
+      {
+       "i": 4,
+       "gold": "other_query",
+       "cls": "value",
+       "inSlotVocab": false
+      },
+      {
+       "i": 6,
+       "gold": "subq_aliases",
+       "cls": "attribute",
+       "inSlotVocab": true
+      },
+      {
+       "i": 8,
+       "gold": "union",
+       "cls": "attribute",
+       "inSlotVocab": true
+      },
+      {
+       "i": 10,
+       "gold": "self",
+       "cls": "value",
+       "inSlotVocab": true
+      },
+      {
+       "i": 12,
+       "gold": "subq_aliases",
+       "cls": "attribute",
+       "inSlotVocab": true
+      }
+     ],
+     "fillable": false
+    },
+    "beam": {
+     "tokens": 14,
+     "withinMaxTokens": true,
+     "missing": [
+      "other_query",
+      "other_query",
+      "union"
+     ],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [
+      "other_query",
+      "exclude"
+     ],
+     "where": {
+      "other_query": "nowhere (new name)",
+      "exclude": "repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   },
+   {
+    "file": "django/db/models/sql/query.py",
+    "oldLine": 929,
+    "kind": "pure_insertion",
+    "removed": 0,
+    "added": 1,
+    "addedCode": 1,
+    "goldFirst": "if alias not in exclude",
+    "block": "bump_prefix",
+    "blockLines": 48,
+    "statementSpan": null,
+    "gapSlotLegal": false,
+    "fileInEngineCorpus": false,
+    "sites": [
+     "insert@929",
+     "replace@928(before gap)",
+     "replace@929(after gap)"
+    ],
+    "runs": [
+     {
+      "source": "mutation",
+      "site": "insert@929|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@929|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@929|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 232,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "insert@929|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@928(before gap)|engine",
+      "cap": 254,
+      "count": 58,
+      "ms": 1,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@928(before gap)|engine",
+      "cap": 254,
+      "count": 26,
+      "ms": 9,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@928(before gap)|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 439,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@928(before gap)|engine",
+      "cap": 254,
+      "count": 100,
+      "ms": 648,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@929(after gap)|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@929(after gap)|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 80,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@929(after gap)|engine",
+      "cap": 254,
+      "count": 254,
+      "ms": 276,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "composite",
+      "site": "replace@929(after gap)|engine",
+      "cap": 254,
+      "count": 0,
+      "ms": 567,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "insert@929|engine",
+      "cap": 1000000,
+      "count": 368,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@929|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@929|engine",
+      "cap": 1000000,
+      "count": 3009,
+      "ms": 229,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@928(before gap)|engine",
+      "cap": 1000000,
+      "count": 58,
+      "ms": 2,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@928(before gap)|engine",
+      "cap": 1000000,
+      "count": 26,
+      "ms": 10,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@928(before gap)|engine",
+      "cap": 1000000,
+      "count": 3024,
+      "ms": 207,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "mutation",
+      "site": "replace@929(after gap)|engine",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@929(after gap)|engine",
+      "cap": 1000000,
+      "count": 720,
+      "ms": 63,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@929(after gap)|engine",
+      "cap": 1000000,
+      "count": 3015,
+      "ms": 73,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@929|full",
+      "cap": 254,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@929|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 69,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@928(before gap)|full",
+      "cap": 254,
+      "count": 26,
+      "ms": 8,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@928(before gap)|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 193,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@929(after gap)|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 12,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@929(after gap)|full",
+      "cap": 254,
+      "count": 254,
+      "ms": 91,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "insert@929|full",
+      "cap": 1000000,
+      "count": 0,
+      "ms": 0,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "insert@929|full",
+      "cap": 1000000,
+      "count": 3011,
+      "ms": 96,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@928(before gap)|full",
+      "cap": 1000000,
+      "count": 26,
+      "ms": 3,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@928(before gap)|full",
+      "cap": 1000000,
+      "count": 3020,
+      "ms": 190,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "template",
+      "site": "replace@929(after gap)|full",
+      "cap": 1000000,
+      "count": 720,
+      "ms": 16,
+      "hunkHits": [],
+      "firstLineHits": []
+     },
+     {
+      "source": "donor",
+      "site": "replace@929(after gap)|full",
+      "cap": 1000000,
+      "count": 3023,
+      "ms": 145,
+      "hunkHits": [],
+      "firstLineHits": []
+     }
+    ],
+    "sketch": {
+     "poolSize": 44,
+     "uncappedSize": 48,
+     "matchIndex": -1,
+     "matchProduction": null,
+     "matchUncapped": false,
+     "holes": [],
+     "fillable": null
+    },
+    "beam": {
+     "tokens": 5,
+     "withinMaxTokens": true,
+     "missing": [
+      "alias",
+      "exclude"
+     ],
+     "vocabSize": 250
+    },
+    "vocab": {
+     "missing": [
+      "exclude"
+     ],
+     "where": {
+      "exclude": "repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"
+     }
+    },
+    "reachable": [],
+    "firstLineOnly": []
+   }
+  ],
+  "allHunksReachable": false,
+  "wallMs": 923362
  }
 ]

@@ -165,3 +165,252 @@
   django__django-15128 django/db/models/sql/query.py:887 replace@887 full cap=254 template: 0 cands 2 ms hunk=0 first=0
   django__django-15128 django/db/models/sql/query.py:887 replace@887 full cap=254 donor: 254 cands 290 ms hunk=0 first=0
   django__django-15128 django/db/models/sql/query.py:887 replace@887 full cap=1000000 template: 0 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:887 replace@887 full cap=1000000 donor: 1544 cands 154 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 engine cap=254 mutation: 126 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 engine cap=254 template: 254 cands 11 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 engine cap=254 donor: 254 cands 66 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 engine cap=254 composite: 100 cands 309 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 engine cap=1000000 mutation: 126 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 engine cap=1000000 template: 623 cands 9 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 engine cap=1000000 donor: 2040 cands 73 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 full cap=254 template: 254 cands 8 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 full cap=254 donor: 254 cands 126 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 full cap=1000000 template: 623 cands 8 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:907 replace@907 full cap=1000000 donor: 2244 cands 196 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 engine cap=254 mutation: 127 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 engine cap=254 template: 254 cands 12 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 engine cap=254 donor: 254 cands 63 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 engine cap=254 composite: 100 cands 194 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 engine cap=1000000 mutation: 127 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 engine cap=1000000 template: 879 cands 18 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 engine cap=1000000 donor: 3059 cands 65 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 full cap=254 template: 254 cands 77 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 full cap=254 donor: 254 cands 832 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 full cap=1000000 template: 879 cands 180 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:925 replace@925 full cap=1000000 donor: 3118 cands 959 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 engine cap=254 mutation: 254 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 engine cap=254 template: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 engine cap=254 donor: 254 cands 232 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 engine cap=254 composite: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) engine cap=254 mutation: 58 cands 1 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) engine cap=254 template: 26 cands 9 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) engine cap=254 donor: 254 cands 439 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) engine cap=254 composite: 100 cands 648 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) engine cap=254 mutation: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) engine cap=254 template: 254 cands 80 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) engine cap=254 donor: 254 cands 276 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) engine cap=254 composite: 0 cands 567 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 engine cap=1000000 mutation: 368 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 engine cap=1000000 template: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 engine cap=1000000 donor: 3009 cands 229 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) engine cap=1000000 mutation: 58 cands 2 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) engine cap=1000000 template: 26 cands 10 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) engine cap=1000000 donor: 3024 cands 207 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) engine cap=1000000 mutation: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) engine cap=1000000 template: 720 cands 63 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) engine cap=1000000 donor: 3015 cands 73 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 full cap=254 template: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 full cap=254 donor: 254 cands 69 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) full cap=254 template: 26 cands 8 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) full cap=254 donor: 254 cands 193 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) full cap=254 template: 254 cands 12 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) full cap=254 donor: 254 cands 91 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 full cap=1000000 template: 0 cands 0 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 insert@929 full cap=1000000 donor: 3011 cands 96 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) full cap=1000000 template: 26 cands 3 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@928(before gap) full cap=1000000 donor: 3020 cands 190 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) full cap=1000000 template: 720 cands 16 ms hunk=0 first=0
+  django__django-15128 django/db/models/sql/query.py:929 replace@929(after gap) full cap=1000000 donor: 3023 cands 145 ms hunk=0 first=0
+   done in 923.4 s; all hunks reachable: false
+
+### django__django-15563 — oracle valid_weak, differs_from_actual (weak), t_run 608 ms; gold file rank 712/859 (in engine corpus: false); all hunks reachable: false
+- django/db/models/sql/compiler.py:1839 multi_line_modification (-1/+17, code +12) in pre_sql_setup (43 lines)
+  gold first line: meta = query . get_meta ( )
+  mutation|replace@1839|engine: n=89 (uncapped 89) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1839|engine: n=155 (uncapped 155) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1839|engine: n=254 (uncapped 2422) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@1839|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1839|full: n=155 (uncapped 155) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1839|full: n=254 (uncapped 2486) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 90 (uncapped 90); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 7 tokens (≤25: true); missing ["meta"]; vocab 239
+  queue vocab missing: {"related_ids_index":"nowhere (new name)","related":"repo: 11 files (django/contrib/admin/helpers.py, django/contrib/contenttypes/fields.py); tests: django/test/signals.py, tests/admin_changelist/tests.py","join_field":"repo: 5 files (django/contrib/contenttypes/fields.py, django/db/models/fields/related.py); tests: tests/foreign_object/models/empty_join.py","get_path_to_parent":"repo: 3 files (django/db/models/fields/related.py, django/db/models/options.py)"}
+- django/db/models/sql/compiler.py:1854 pure_insertion (-0/+1, code +1) in pre_sql_setup (43 lines); gap slot legal: true
+  gold first line: related_ids = collections . defaultdict ( list )
+  mutation|insert@1854|engine: n=254 (uncapped 368) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@1854|engine: n=176 (uncapped 176) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@1854|engine: n=254 (uncapped 2946) hunk hit: 0/0 first-line hit: 0/0
+  composite|insert@1854|engine: n=0 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@1853(before gap)|engine: n=65 (uncapped 65) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1853(before gap)|engine: n=254 (uncapped 288) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1853(before gap)|engine: n=254 (uncapped 2983) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@1853(before gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@1854(after gap)|engine: n=149 (uncapped 149) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1854(after gap)|engine: n=254 (uncapped 441) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1854(after gap)|engine: n=254 (uncapped 3186) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@1854(after gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@1854|full: n=176 (uncapped 176) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@1854|full: n=254 (uncapped 2952) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1853(before gap)|full: n=254 (uncapped 288) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1853(before gap)|full: n=254 (uncapped 3007) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1854(after gap)|full: n=254 (uncapped 441) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1854(after gap)|full: n=254 (uncapped 3222) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 49 (uncapped 53); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 8 tokens (≤25: true); missing ["related_ids (attribute-only)","defaultdict"]; vocab 239
+  queue vocab missing: {"defaultdict":"repo: 17 files (django/apps/registry.py, django/contrib/admin/utils.py); tests: django/test/runner.py, django/test/utils.py; module: collections"}
+- django/db/models/sql/compiler.py:1856 pure_insertion (-0/+2, code +2) in pre_sql_setup (43 lines); gap slot legal: false
+  gold first line: for parent , index in related_ids_index :
+  mutation|insert@1856|engine: n=254 (uncapped 368) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@1856|engine: n=220 (uncapped 220) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@1856|engine: n=254 (uncapped 2962) hunk hit: 0/0 first-line hit: 0/0
+  composite|insert@1856|engine: n=0 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@1855(before gap)|engine: n=97 (uncapped 97) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1855(before gap)|engine: n=254 (uncapped 525) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1855(before gap)|engine: n=254 (uncapped 3015) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@1855(before gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@1856(after gap)|engine: n=100 (uncapped 100) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1856(after gap)|engine: n=254 (uncapped 393) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1856(after gap)|engine: n=254 (uncapped 3075) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@1856(after gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@1856|full: n=220 (uncapped 220) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@1856|full: n=254 (uncapped 2963) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1855(before gap)|full: n=254 (uncapped 525) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1855(before gap)|full: n=254 (uncapped 3006) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1856(after gap)|full: n=254 (uncapped 393) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1856(after gap)|full: n=254 (uncapped 3220) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 51 (uncapped 56); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 7 tokens (≤25: true); missing ["parent","index","related_ids_index"]; vocab 239
+  queue vocab missing: {"parent":"repo: 18 files (django/contrib/admin/checks.py, django/contrib/admin/helpers.py); tests: django/test/runner.py, django/test/utils.py","related_ids_index":"nowhere (new name)"}
+- django/db/models/sql/compiler.py:1857 single_line_modification (-1/+1, code +1) in pre_sql_setup (43 lines)
+  gold first line: self . query . related_ids = related_ids
+  mutation|replace@1857|engine: n=101 (uncapped 101) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1857|engine: n=254 (uncapped 525) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1857|engine: n=254 (uncapped 3448) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@1857|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@1857|full: n=254 (uncapped 525) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@1857|full: n=254 (uncapped 4112) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 65 (uncapped 66); gold shape at 4 (P1; uncapped true); holes [{"i":6,"gold":"related_ids","cls":"value","inSlotVocab":false}]; fillable false
+  beam vocab: 7 tokens (≤25: true); missing ["related_ids (attribute-only)"]; vocab 239
+  queue vocab missing: {}
+- django/db/models/sql/subqueries.py:137 single_line_modification (-1/+1, code +1) in get_related_updates (16 lines)
+  gold first line: query . add_filter ( "pk__in" , self . related_ids [ model ] )
+  mutation|replace@137|engine: n=63 (uncapped 63) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@137|engine: n=254 (uncapped 353) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@137|engine: n=254 (uncapped 1070) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@137|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@137|full: n=254 (uncapped 353) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@137|full: n=254 (uncapped 891) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 70 (uncapped 70); gold shape at 44 (P3; uncapped true); holes [{"i":10,"gold":"model","cls":"value","inSlotVocab":true}]; fillable true
+  beam vocab: 13 tokens (≤25: true); missing []; vocab 161
+  queue vocab missing: {}
+
+### django__django-15128 — oracle valid, no_exception (strong), t_run 484 ms; gold file rank 713/857 (in engine corpus: false); all hunks reachable: false
+- django/db/models/sql/query.py:575 pure_insertion (-0/+9, code +2) in combine (104 lines); gap slot legal: true
+  gold first line: initial_alias = self . get_initial_alias ( )
+  mutation|insert@575|engine: n=254 (uncapped 368) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@575|engine: n=175 (uncapped 175) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@575|engine: n=254 (uncapped 2199) hunk hit: 0/0 first-line hit: 0/0
+  composite|insert@575|engine: n=0 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@573(before gap)|engine: n=66 (uncapped 66) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@573(before gap)|engine: n=254 (uncapped 593) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@573(before gap)|engine: n=254 (uncapped 2857) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@573(before gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@575|full: n=175 (uncapped 175) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@575|full: n=254 (uncapped 2239) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@573(before gap)|full: n=254 (uncapped 593) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@573(before gap)|full: n=254 (uncapped 3831) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 39 (uncapped 61); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 7 tokens (≤25: true); missing ["initial_alias"]; vocab 250
+  queue vocab missing: {"initial_alias":"nowhere (new name)","exclude":"repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"}
+- django/db/models/sql/query.py:592 deletion (-3/+0, code +0) in combine (104 lines)
+  gold first line: 
+  mutation|replace@592|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@592|engine: n=254 (uncapped 776) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@592|engine: n=254 (uncapped 3552) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@592|engine: n=15 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@592|full: n=254 (uncapped 776) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@592|full: n=254 (uncapped 3598) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 0 (uncapped 0); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 0 tokens (≤25: true); missing []; vocab 250
+  queue vocab missing: {}
+- django/db/models/sql/query.py:849 non_code_only (-0/+3)
+- django/db/models/sql/query.py:882 single_line_modification (-1/+1, code +1) in bump_prefix (48 lines)
+  gold first line: def bump_prefix ( self , other_query , exclude = None ) :
+  mutation|replace@882|engine: n=1 (uncapped 1) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@882|engine: n=254 (uncapped 386) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@882|engine: n=254 (uncapped 1340) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@882|engine: n=9 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@882|full: n=254 (uncapped 386) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@882|full: n=254 (uncapped 1521) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 73 (uncapped 73); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 12 tokens (≤25: true); missing ["other_query","exclude"]; vocab 250
+  queue vocab missing: {"other_query":"nowhere (new name)","exclude":"repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"}
+- django/db/models/sql/query.py:885 single_line_modification (-1/+1, code +1) in bump_prefix (48 lines); statement spans 6 lines
+  gold first line: that the other query 's aliases and this query' s aliases will not
+  mutation|replace@885|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@885|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@885|engine: n=254 (uncapped 1174) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@885|engine: n=23 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@885|full: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@885|full: n=254 (uncapped 1283) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 91 (uncapped 91); gold shape at 2 (P1; uncapped true); holes [{"i":2,"gold":"other","cls":"value","inSlotVocab":false}]; fillable false
+  beam vocab: 9 tokens (≤25: true); missing ["that","the","other","query","'s aliases and this query'","s","aliases","will"]; vocab 250
+  queue vocab missing: {"that":"tests: django/test/client.py, django/test/html.py","the":"tests: django/test/client.py, django/test/html.py","other":"repo: 48 files (django/contrib/auth/models.py, django/contrib/gis/db/backends/base/adapter.py); tests: django/test/html.py, django/test/runner.py"}
+- django/db/models/sql/query.py:887 single_line_modification (-1/+1, code +1) in bump_prefix (48 lines); statement spans 6 lines
+  gold first line: after this call . To prevent changing aliases use the exclude parameter .
+  mutation|replace@887|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@887|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@887|engine: n=254 (uncapped 1241) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@887|engine: n=3 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@887|full: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@887|full: n=254 (uncapped 1544) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 49 (uncapped 49); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 13 tokens (≤25: true); missing ["after","this","call","To","prevent","changing","aliases","use","the","exclude","parameter"]; vocab 250
+  queue vocab missing: {"after":"repo: 1 file (django/template/base.py); tests: django/test/client.py, django/test/runner.py","this":"tests: django/test/client.py, django/test/html.py","call":"tests: django/test/signals.py, django/test/testcases.py","To":"tests: django/test/runner.py, django/test/testcases.py","prevent":"tests: django/test/client.py, django/test/runner.py","changing":"tests: django/test/client.py, tests/admin_views/admin.py","use":"tests: django/test/client.py, django/test/runner.py","the":"tests: django/test/client.py, django/test/html.py","exclude":"repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py","parameter":"repo: 1 file (django/urls/resolvers.py); tests: django/test/client.py, tests/admin_changelist/tests.py"}
+- django/db/models/sql/query.py:907 single_line_modification (-1/+1, code +1) in bump_prefix (48 lines)
+  gold first line: if self . alias_prefix != other_query . alias_prefix :
+  mutation|replace@907|engine: n=126 (uncapped 126) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@907|engine: n=254 (uncapped 623) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@907|engine: n=254 (uncapped 2040) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@907|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@907|full: n=254 (uncapped 623) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@907|full: n=254 (uncapped 2244) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 85 (uncapped 85); gold shape at 3 (P1; uncapped true); holes [{"i":5,"gold":"other_query","cls":"value","inSlotVocab":false}]; fillable false
+  beam vocab: 9 tokens (≤25: true); missing ["other_query"]; vocab 250
+  queue vocab missing: {"other_query":"nowhere (new name)"}
+- django/db/models/sql/query.py:925 multi_line_modification (-1/+3, code +3) in bump_prefix (48 lines)
+  gold first line: other_query . subq_aliases = other_query . subq_aliases . union ( self . subq_aliases )
+  mutation|replace@925|engine: n=127 (uncapped 127) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@925|engine: n=254 (uncapped 879) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@925|engine: n=254 (uncapped 3059) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@925|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@925|full: n=254 (uncapped 879) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@925|full: n=254 (uncapped 3118) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 96 (uncapped 97); gold shape at 76 (P13; uncapped true); holes [{"i":0,"gold":"other_query","cls":"value","inSlotVocab":false},{"i":2,"gold":"subq_aliases","cls":"attribute","inSlotVocab":true},{"i":4,"gold":"other_query","cls":"value","inSlotVocab":false},{"i":6,"gold":"subq_aliases","cls":"attribute","inSlotVocab":true},{"i":8,"gold":"union","cls":"attribute","inSlotVocab":true},{"i":10,"gold":"self","cls":"value","inSlotVocab":true},{"i":12,"gold":"subq_aliases","cls":"attribute","inSlotVocab":true}]; fillable false
+  beam vocab: 14 tokens (≤25: true); missing ["other_query","other_query","union"]; vocab 250
+  queue vocab missing: {"other_query":"nowhere (new name)","exclude":"repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"}
+- django/db/models/sql/query.py:929 pure_insertion (-0/+1, code +1) in bump_prefix (48 lines); gap slot legal: false
+  gold first line: if alias not in exclude
+  mutation|insert@929|engine: n=254 (uncapped 368) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@929|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@929|engine: n=254 (uncapped 3009) hunk hit: 0/0 first-line hit: 0/0
+  composite|insert@929|engine: n=0 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@928(before gap)|engine: n=58 (uncapped 58) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@928(before gap)|engine: n=26 (uncapped 26) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@928(before gap)|engine: n=254 (uncapped 3024) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@928(before gap)|engine: n=100 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  mutation|replace@929(after gap)|engine: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@929(after gap)|engine: n=254 (uncapped 720) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@929(after gap)|engine: n=254 (uncapped 3015) hunk hit: 0/0 first-line hit: 0/0
+  composite|replace@929(after gap)|engine: n=0 (uncapped -) hunk hit: 0/0 first-line hit: 0/0
+  template|insert@929|full: n=0 (uncapped 0) hunk hit: 0/0 first-line hit: 0/0
+  donor|insert@929|full: n=254 (uncapped 3011) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@928(before gap)|full: n=26 (uncapped 26) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@928(before gap)|full: n=254 (uncapped 3020) hunk hit: 0/0 first-line hit: 0/0
+  template|replace@929(after gap)|full: n=254 (uncapped 720) hunk hit: 0/0 first-line hit: 0/0
+  donor|replace@929(after gap)|full: n=254 (uncapped 3023) hunk hit: 0/0 first-line hit: 0/0
+  sketch: pool 44 (uncapped 48); gold shape at -1 (-; uncapped false); holes []; fillable null
+  beam vocab: 5 tokens (≤25: true); missing ["alias","exclude"]; vocab 250
+  queue vocab missing: {"exclude":"repo: 14 files (django/contrib/admin/checks.py, django/contrib/admin/filters.py); tests: django/test/runner.py, django/test/utils.py"}
+
+written /Users/prateekjannu/Documents/vscode/JevCode/experiments/reach/out/reach-oracle-9.django__django-15128_django__django-15563.json
