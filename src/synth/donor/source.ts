@@ -201,7 +201,14 @@ export function createDonorSource(options: DonorSourceOptions = {}): CandidateSo
         const bareHeader = body.length === 0 ? isHeaderText(text) : bodyDropped;
         if (bareHeader && !headerFits(site, false)) return;
         seen.add(key);
-        const extraEdits: LineEdit[] = body.map((b, k) => ({ path: site.file.path, line: site.line + 1 + k, kind: 'insert', text: b }));
+        // applyCandidate (verify/apply.ts) numbers every edit against the file BEFORE the candidate
+        // and keeps list order for inserts at one line, so the whole body goes to a single original
+        // line: the site line itself at an insert site (header first, then the body, all before it),
+        // the next line at a replace site (right after the replaced header). Numbering the k-th body
+        // line `site.line + 1 + k` interleaved the body with the original lines (the first live run
+        // proposed `if …:` / `return …` / `raise …`, an IndentationError).
+        const bodyLine = site.kind === 'insert' ? site.line : site.line + 1;
+        const extraEdits: LineEdit[] = body.map((b) => ({ path: site.file.path, line: bodyLine, kind: 'insert', text: b }));
         const finalIds = donor.identifiers.map((n) => adaptation.substitutions.find((s) => s.kind === 'identifier' && s.from === n)?.to ?? n);
         drafts.push({ op, tier: tierOf(donor, site), donor, adaptation, text, extraEdits, shapeFrequency: index.shapeFrequency(donor.shape), taskOverlap: finalIds.filter((n) => task.has(n)).length });
       };

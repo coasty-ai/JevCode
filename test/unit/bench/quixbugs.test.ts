@@ -155,7 +155,8 @@ describe('quixbugs workspace setup (real fs, git and python)', () => {
     await mkdir(ws, { recursive: true });
     const records = await loadIndex(QB);
     const program = await loadProgram(QB, records.find((r) => r.name === 'gcd')!, true);
-    const task = toBenchTask({ workspaceDir: ws, auxDir: join(t.dir, 'aux'), mocked: true, quixbugsDir: QB, program });
+    // python: null keeps the unit test offline (no shared pytest venv is built or linked)
+    const task = toBenchTask({ workspaceDir: ws, auxDir: join(t.dir, 'aux'), mocked: true, quixbugsDir: QB, program, python: null });
     await task.setup(ws, realTools(ws, join(t.dir, 'run')));
 
     const buggy = await readFile(join(QB, 'programs', 'gcd.py'), 'utf8');
@@ -203,7 +204,7 @@ describe('quixbugs workspace setup (real fs, git and python)', () => {
     await mkdir(ws, { recursive: true });
     const records = await loadIndex(QB);
     const bfs = await loadProgram(QB, records.find((r) => r.name === 'breadth_first_search')!, true);
-    await toBenchTask({ workspaceDir: ws, auxDir: join(t.dir, 'aux'), mocked: true, quixbugsDir: QB, program: bfs }).setup(ws, realTools(ws, join(t.dir, 'run')));
+    await toBenchTask({ workspaceDir: ws, auxDir: join(t.dir, 'aux'), mocked: true, quixbugsDir: QB, program: bfs, python: null }).setup(ws, realTools(ws, join(t.dir, 'run')));
     expect(await readFile(join(ws, 'node.py'), 'utf8')).toBe(await readFile(join(QB, 'programs', 'node.py'), 'utf8'));
     expect(await readFile(join(ws, 'tests', 'breadth_first_search_test.py'), 'utf8')).toBe(await readFile(join(QB, 'tests', 'breadth_first_search_test.py'), 'utf8'));
     await expect(stat(join(ws, 'tests', 'test_breadth_first_search.py'))).rejects.toThrow();
@@ -295,7 +296,7 @@ describe('quixbugs mocked end to end (real runner, fake engine, real git and pyt
     const names = ['gcd', 'breadth_first_search', 'wrap'];
     const programs = new Map<string, QuixbugsProgram>();
     for (const n of names) programs.set(n, await loadProgram(QB, records.find((r) => r.name === n)!, true));
-    const sources = names.map((n) => sourceFor(QB, programs.get(n)!));
+    const sources = names.map((n) => sourceFor(QB, programs.get(n)!, undefined, null));
     const sandbox = createFakeSandboxFactory(undefined, 'real');
     // jev-on applies the mocked trajectory's fix the way the engine's edit/patch action would; jev-off leaves the program alone
     const script: EngineScript = (task, mode) => ({

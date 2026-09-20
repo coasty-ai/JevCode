@@ -8,7 +8,7 @@ import type { Harness } from './fakes.js';
 import { answer, createFakeSandbox, intentIs, makeEngine, noulA, passingTests } from './fakes.js';
 import type { GenerateRequest, SynthesisContext, Synthesizer } from '../../../src/core/types.js';
 import { createNullProvider } from '../../../src/provider/null.js';
-import { createSynthesizer, NOT_IMPLEMENTED_SUMMARY } from '../../../src/synth/index.js';
+import { createSynthesizer } from '../../../src/synth/index.js';
 import { isCheckpointState } from '../../../src/checkpoint/store.js';
 import { formatTranscriptItem, itemsFromEvent } from '../../../src/tui/plain.js';
 
@@ -184,13 +184,18 @@ describe('jev-only failure policy and configuration', () => {
     await expect(makeEngine({ mode: 'jev-only' })).rejects.toMatchObject({ code: 'config', setting: 'mode', message: expect.stringContaining('synthesizer') });
   });
 
-  it('the placeholder synthesizer proposes done and emits one synth line per step', async () => {
-    const h = await build({ mode: 'jev-only', synthesizer: createSynthesizer({ decider: undefined as never, redact: (s) => s }), limits: { maxSteps: 1 } });
+  it('the real synthesizer on a green workspace proposes the full-suite run first (§5.5: done needs an engine-executed run) and emits a ledger line', async () => {
+    const synth = createSynthesizer({ decider: undefined as never, redact: (s) => s });
+    expect(synth.name).toBe('ledger-sieve');
+    const h = await build({ mode: 'jev-only', synthesizer: synth, sandbox: createFakeSandbox(() => passingTests), limits: { maxSteps: 1 } });
     const r = await h.engine.run();
     expect(r.stopReason).toBe('max_steps');
     expect(r.usage.generator.calls).toBe(0);
-    expect(h.store.steps[0]!.proposal?.action).toEqual({ kind: 'done', summary: NOT_IMPLEMENTED_SUMMARY });
-    expect(h.store.transcript).toContain(`[step 1] synth placeholder: ${NOT_IMPLEMENTED_SUMMARY} (candidates=0, tested=0)`);
+    // the baseline ran through the engine's sandbox; the proposal is the full test command, never edit/write
+    // the detector's `pytest -q` is proposed as `python3 -m pytest -q` (pytest is not guaranteed on PATH; same runner for isTestCommand)
+    expect(h.store.steps[0]!.proposal?.action).toMatchObject({ kind: 'run', command: 'python3 -m pytest -q' });
+    expect(h.store.transcript.some((l) => /\[step 1\] synth baseline: 2\/2 pass/.test(l))).toBe(true);
+    expect(h.store.transcript.some((l) => /\[step 1\] synth ledger: /.test(l))).toBe(true);
     expect(h.provider.requests).toEqual([]);
   });
 });

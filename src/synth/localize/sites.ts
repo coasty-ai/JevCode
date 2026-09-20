@@ -10,8 +10,23 @@ import { indentOf } from '../py/edits.js';
 import { scopeAt, statementAt } from '../py/structure.js';
 import type { RankedLine } from '../sbfl/types.js';
 import type { Site, SiteEvidence, SourceFile } from '../types.js';
-import { codeLines, moduleCodeLines } from './outline.js';
+import { codeLines, entryAt, functionEntries, moduleCodeLines } from './outline.js';
 import type { FunctionEntry, TracebackFrame } from './types.js';
+
+/**
+ * SBFL lines unioned with the Jev anchors as replace sites, never score-combined (Ochiai is
+ * top-1 on 7/38 QuixBugs programs with heavy ties but top-5 on 34/38; `lis` Einspect 3.0,
+ * `mergesort` 5.0: experiments/results/lit-search-based-repair.md §6). Single-file workspaces
+ * take five because the two localisation misses of the prototype sat at Ochiai rank 3–5;
+ * repositories take three because a repo-wide spectrum has far more tied lines per rank.
+ */
+export const SBFL_ANCHORS_SINGLE_FILE = 5;
+export const SBFL_ANCHORS_REPO = 3;
+
+/** How many SBFL lines to union for a workspace of `fileCount` Python files. */
+export function sbflAnchorsFor(fileCount: number): number {
+  return fileCount <= 1 ? SBFL_ANCHORS_SINGLE_FILE : SBFL_ANCHORS_REPO;
+}
 
 export interface Anchor {
   file: SourceFile;
@@ -31,6 +46,14 @@ export interface SiteBuildInput {
   sbfl: ReadonlyMap<string, RankedLine>;
   frames: readonly TracebackFrame[];
   window: number;
+  /**
+   * When set, the `sbflAnchors` best-ranked SBFL lines that are not already anchors become
+   * replace sites of their own (after every Jev-derived site, by Ochiai rank; `def` lines and
+   * lines outside the given files skipped). Resolved by `files` (path -> file); an SBFL row
+   * whose path is not in `files` is ignored.
+   */
+  sbflAnchors?: number;
+  files?: ReadonlyMap<string, SourceFile>;
 }
 
 export function sbflKey(path: string, line: number): string {
@@ -103,6 +126,44 @@ function windowLines(a: Anchor): number[] {
   return codeLines(mod, a.entry.startLine, a.entry.endLine).map((c) => c.line);
 }
 
+/** True for the physical lines of a `def`/`class` header (decorators included): never a replace site. */
+export function isDefLine(file: SourceFile, line: number): boolean {
+  return file.mod.blocks.some((b) => line >= b.startLine && line <= b.headerEndLine);
+}
+
+/**
+ * SBFL-only replace sites: of the spectrum rows that can be sites at all (`def` lines, blanks,
+ * comments and rows outside `files` dropped first, since they can never be edited), the top-`k`
+ * by rank; rows an anchor already covers count towards `k` (they are in the union already) but
+ * yield no new site. Union, not score combination.
+ */
+export function sbflOnlySites(input: SiteBuildInput, k: number, covered: ReadonlySet<string>): Site[] {
+  const files = input.files;
+  if (files === undefined || k <= 0) return [];
+  const rows = [...input.sbfl.values()]
+    .filter((r) => {
+      const file = files.get(r.file);
+      const text = file?.mod.lines[r.line - 1];
+      return file !== undefined && text !== undefined && text.trim() !== '' && !text.trim().startsWith('#') && !isDefLine(file, r.line);
+    })
+    .sort((a, b) => a.rank - b.rank || (a.file < b.file ? -1 : a.file > b.file ? 1 : 0) || a.line - b.line)
+    .slice(0, k);
+  const out: Site[] = [];
+  const entriesByPath = new Map<string, FunctionEntry[]>();
+  for (const r of rows) {
+    if (covered.has(`${r.file}:${r.line}:replace`)) continue;
+    const file = files.get(r.file)!;
+    let entries = entriesByPath.get(r.file);
+    if (entries === undefined) {
+      entries = functionEntries(file);
+      entriesByPath.set(r.file, entries);
+    }
+    const anchor: Anchor = { file, line: r.line, entry: entryAt(entries, r.line) ?? null, lineProbabilities: new Map(), notes: [`sbfl rank ${r.rank}`] };
+    out.push(replaceSite(input, anchor, r.line, anchor.notes));
+  }
+  return out;
+}
+
 export function buildSites(input: SiteBuildInput): Site[] {
   const out: Site[] = [];
   const seen = new Set<string>();
@@ -129,5 +190,7 @@ export function buildSites(input: SiteBuildInput): Site[] {
       }
     });
   }
+  // pass 4: SBFL-only lines, unioned after every Jev-derived site (design §2.5 item 1)
+  if (input.sbflAnchors !== undefined) for (const s of sbflOnlySites(input, input.sbflAnchors, seen)) push(s);
   return out;
 }

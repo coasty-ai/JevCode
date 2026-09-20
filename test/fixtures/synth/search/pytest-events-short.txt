@@ -1,0 +1,28 @@
+...FFF...                                                                [100%]
+=================================== FAILURES ===================================
+___________________________ test_agenda_line_minimal ___________________________
+tests/test_events.py:25: in test_agenda_line_minimal
+    assert agenda_line(REVIEW) == "09:10-10:00  Review"
+src/events.py:38: in agenda_line
+    span = f"{fmt_time(event.starts_at)}-{fmt_time(event.end_at)}"
+E   AttributeError: 'Event' object has no attribute 'end_at'
+_________________ test_agenda_line_with_location_and_attendees _________________
+tests/test_events.py:29: in test_agenda_line_with_location_and_attendees
+    assert agenda_line(STANDUP) == "09:00-09:15  Standup @ Room 1 (3)"
+src/events.py:38: in agenda_line
+    span = f"{fmt_time(event.starts_at)}-{fmt_time(event.end_at)}"
+E   AttributeError: 'Event' object has no attribute 'end_at'
+________________________ test_agenda_is_sorted_by_start ________________________
+tests/test_events.py:33: in test_agenda_is_sorted_by_start
+    assert agenda([LUNCH, REVIEW, STANDUP]) == [
+src/events.py:50: in agenda
+    return [agenda_line(e) for e in ordered]
+src/events.py:50: in <listcomp>
+    return [agenda_line(e) for e in ordered]
+src/events.py:38: in agenda_line
+    span = f"{fmt_time(event.starts_at)}-{fmt_time(event.end_at)}"
+E   AttributeError: 'Event' object has no attribute 'end_at'
+=========================== short test summary info ============================
+FAILED tests/test_events.py::test_agenda_line_minimal - AttributeError: 'Even...
+FAILED tests/test_events.py::test_agenda_line_with_location_and_attendees - A...
+FAILED tests/test_events.py::test_agenda_is_sorted_by_start - AttributeError:...

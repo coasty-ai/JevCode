@@ -6,6 +6,7 @@
 import { describe, expect, it } from 'vitest';
 import { createDonorSource } from '../../../../src/synth/donor/source.js';
 import type { Candidate } from '../../../../src/synth/types.js';
+import { applyCandidate } from '../../../../src/synth/verify/apply.js';
 import { enumerateOptions, ladderTasks, makeSite, quixbugsCorpus, quixbugsCorrect, quixbugsIndex, sourceFile } from './helpers.js';
 
 const source = createDonorSource();
@@ -88,7 +89,9 @@ describe('ladder `units`: parse_duration body from the sibling parse_size', () =
     const c = cands[rank - 1]!;
     expect(c.op).toBe('statement_donor');
     expect(c.extraEdits?.map((e) => e.text)).toEqual([goldBody[2], goldBody[3]]);
-    expect(c.extraEdits?.map((e) => [e.kind, e.line])).toEqual([['insert', buggyStart + 2], ['insert', buggyStart + 3]]);
+    // applyCandidate numbers edits against the original file and keeps list order at one line: the
+    // whole body goes right after the replaced header (original line buggyStart + 2), in order
+    expect(c.extraEdits?.map((e) => [e.kind, e.line])).toEqual([['insert', buggyStart + 2], ['insert', buggyStart + 2]]);
     // the identity copy (still SIZE_UNITS) is also offered, ranked ahead: the tests, not the enumeration, decide
     expect(rankOf(cands, '    for unit in sorted(SIZE_UNITS, key=len, reverse=True):')).toBeGreaterThan(0);
   });
@@ -160,7 +163,11 @@ describe('enumeration contract', () => {
     const heads = cands.filter((c) => c.text === '    n = min(');
     expect(heads.length).toBeGreaterThan(0);
     expect(heads.map((c) => c.extraEdits?.map((e) => e.text))).toContainEqual(['        len(ys),', '        LIMIT)']);
-    expect(heads[0]!.extraEdits?.map((e) => [e.kind, e.line, e.path])).toEqual([['insert', 13, 'm.py'], ['insert', 14, 'm.py']]);
+    // every continuation line is numbered against the ORIGINAL file at the insert line itself
+    // (applyCandidate keeps list order there), so the statement lands whole before original line 12
+    expect(heads[0]!.extraEdits?.map((e) => [e.kind, e.line, e.path])).toEqual([['insert', 12, 'm.py'], ['insert', 12, 'm.py']]);
+    const applied = applyCandidate(heads[0]!);
+    expect(applied.files[0]!.after.split('\n').slice(9, 14)).toEqual(['def g(ys):', '    n = 0', '    n = min(', '        len(ys),', '        LIMIT)']);
     // no candidate is ever the bare first line of a multi-line statement
     for (const c of cands) if (c.text.trimEnd().endsWith('(')) expect(c.extraEdits?.length ?? 0, c.text).toBeGreaterThan(0);
     const tight = createDonorSource({ maxBodyLines: 1 }).enumerate(site, enumerateOptions(own, { cap: 200 }));

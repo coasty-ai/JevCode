@@ -12,7 +12,7 @@ import { ConfigError } from '../../errors.js';
 import { mockTurn } from '../swebench/loader.js';
 import type { BenchEvaluateContext, BenchSetupTools, BenchTask, BenchTaskMeta, BenchTaskSource, BuildTaskOptions, Evaluation } from '../types.js';
 import { LADDER_EVAL_TIMEOUT_MS, evaluateLadder } from './evaluator.js';
-import { MOCK_RUN_TIMEOUT_MS, MOCK_TEST_COMMAND, extractPatchFromRootCommit, initGitRepo, writePytestLayout } from './pyworkspace.js';
+import { MOCK_RUN_TIMEOUT_MS, MOCK_TEST_COMMAND, extractPatchFromRootCommit, initGitRepo, linkVenv, writePytestLayout } from './pyworkspace.js';
 import { LADDER_DIR, goldPathFor, loadLadderRecords, type LadderRecord } from './tasks.js';
 import { unifiedDiffFiles } from './udiff.js';
 import { resolveLadderPython } from './venv.js';
@@ -51,15 +51,19 @@ export function toBenchTask(opts: LadderTaskOptions): BenchTask {
     // venv sandbox created later (e.g. inside evaluate) would clobber the workspace sandbox's
     // profile and pytest would run with the workspace unreadable. A failed build is only logged;
     // evaluate() falls back to the system python3 when it imports pytest.
+    let python: string | null = opts.python ?? null;
     if (opts.python === undefined) {
-      await resolveLadderPython(tools.runsDir, tools.makeRunner, tools.run, tools.log).catch((e: unknown) => {
+      python = await resolveLadderPython(tools.runsDir, tools.makeRunner, tools.run, tools.log).catch((e: unknown) => {
         tools.log(`[ladder ${name}] pytest venv not available at setup (${e instanceof Error ? e.message.slice(0, 200) : String(e)}); evaluation will retry`);
+        return null;
       });
     }
     await cp(join(record.taskDir, 'src'), join(workspaceDir, 'src'), { recursive: true, force: true, dereference: false });
     await cp(join(record.taskDir, 'tests'), join(workspaceDir, 'tests'), { recursive: true, force: true, dereference: false });
     await writePytestLayout(workspaceDir, record.pytestIni !== null ? { pytestIni: record.pytestIni } : {});
     await initGitRepo(tools.run, `ladder ${name}: buggy modules and tests`);
+    // after the root commit: the agent's `python3 -m pytest` must import pytest (see linkVenv)
+    if (python !== null) await linkVenv(workspaceDir, python);
   }
 
   async function evaluate(ctx: BenchEvaluateContext): Promise<Evaluation> {

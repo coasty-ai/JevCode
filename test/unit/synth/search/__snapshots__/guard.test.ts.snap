@@ -1,0 +1,103 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`arbitrate: Q15 + Q16 in one request, measured wording and state shape > request shape: genuine_fix Choice with escape + general_cand_xx Nouls, candidates keyed cand_xx 1`] = `
+{
+  "questions": {
+    "general_cand_01": {
+      "criteria": {
+        "false": {
+          "definition": "The replacement makes the listed tests pass by coincidence: it special-cases the tested inputs, changes an unrelated part of the line, removes functionality the tests do not exercise, or is a boundary the tests cannot distinguish.",
+          "examples": [
+            "a condition that happens to hold for the tested inputs only",
+            "deleting a branch no test reaches",
+            "returning a constant that matches the tested cases",
+          ],
+        },
+        "true": {
+          "definition": "The replacement repairs the actual defect; the algorithm is now correct in general and the change is the minimal one a maintainer would write.",
+          "examples": [
+            "an off-by-one bound corrected so every element is visited",
+            "swapped arguments restored to the order the algorithm requires",
+            "a missing guard added exactly where the failing input reaches",
+          ],
+        },
+      },
+      "instructions": "Is \`candidates.cand_01\` a correct general fix: with this replacement, does \`program\` compute the right result for every valid input, not just for the listed \`tests\`?",
+      "type": "noul",
+    },
+    "general_cand_02": {
+      "criteria": {
+        "false": {
+          "definition": "The replacement makes the listed tests pass by coincidence: it special-cases the tested inputs, changes an unrelated part of the line, removes functionality the tests do not exercise, or is a boundary the tests cannot distinguish.",
+          "examples": [
+            "a condition that happens to hold for the tested inputs only",
+            "deleting a branch no test reaches",
+            "returning a constant that matches the tested cases",
+          ],
+        },
+        "true": {
+          "definition": "The replacement repairs the actual defect; the algorithm is now correct in general and the change is the minimal one a maintainer would write.",
+          "examples": [
+            "an off-by-one bound corrected so every element is visited",
+            "swapped arguments restored to the order the algorithm requires",
+            "a missing guard added exactly where the failing input reaches",
+          ],
+        },
+      },
+      "instructions": "Is \`candidates.cand_02\` a correct general fix: with this replacement, does \`program\` compute the right result for every valid input, not just for the listed \`tests\`?",
+      "type": "noul",
+    },
+    "genuine_fix": {
+      "criteria": {
+        "cand_01": "L6: if perm[j] >= perm[i]:",
+        "cand_02": "L6: if perm[j] > perm[i]:",
+        "none_of_these": null,
+      },
+      "instructions": "Every option makes all tests pass. Which option is the genuine fix of the defect: the replacement that makes \`program\` correct for every valid input, not only for \`tests\`? Read each option literally. Answer carefully and literally.",
+      "type": "choice",
+    },
+  },
+  "stage": "propose",
+  "state": {
+    "buggy_program_failure": {
+      "actual": "[3, 4, 2, 1]",
+      "expected": "[3, 4, 1, 2]",
+      "input": "next_permutation([3, 2, 4, 1])",
+    },
+    "candidates": {
+      "cand_01": {
+        "line": "L6",
+        "replaces": "if perm[j] < perm[i]:",
+        "with": "if perm[j] >= perm[i]:",
+      },
+      "cand_02": {
+        "line": "L6",
+        "replaces": "if perm[j] < perm[i]:",
+        "with": "if perm[j] > perm[i]:",
+      },
+    },
+    "program": {
+      "L10": "                    return next_perm",
+      "L2": "def next_permutation(perm):",
+      "L3": "    for i in range(len(perm) - 2, -1, -1):",
+      "L4": "        if perm[i] < perm[i + 1]:",
+      "L5": "            for j in range(len(perm) - 1, i, -1):",
+      "L6": "                if perm[j] < perm[i]:",
+      "L7": "                    next_perm = list(perm)",
+      "L8": "                    next_perm[i], next_perm[j] = perm[j], perm[i]",
+      "L9": "                    next_perm[i + 1:] = reversed(next_perm[i + 1:])",
+    },
+    "task": "The Python function in \`program\` had a bug. Every entry of \`candidates\` is a replacement for the line named in its \`line\` field that makes ALL of the program's tests pass. At most one of them is the genuine fix that is correct for every valid input; the others only satisfy the tests. It is possible that none is a genuine fix (for example when the real fix needs a new statement rather than a changed line).",
+    "tests": [
+      {
+        "expected": "[3, 4, 1, 2]",
+        "input": "next_permutation([3, 2, 4, 1])",
+      },
+      {
+        "expected": "[3, 6, 1, 2, 5]",
+        "input": "next_permutation([3, 5, 6, 2, 1])",
+      },
+    ],
+  },
+}
+`;

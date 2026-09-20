@@ -134,6 +134,20 @@ describe('other pytest shapes', () => {
     expect(s).toMatchObject({ passed: 0, failed: 0, errors: 1, total: 1, failing: ['test_broken.py'] });
     expect(s.failures[0]).toMatchObject({ testId: 'test_broken.py', expected: '', actual: "ModuleNotFoundError: No module named 'nonexistent_module_xyz'" });
   });
+  it('pytest -qq (no counts line): the progress characters carry the counts, so a baseline reads its passes and a collection error reads as a loss', () => {
+    // `-q` on the command line on top of `addopts = -q` (the ladder tasks' pytest.ini): no "N passed in" line at all
+    const qq = ['....FF.FF.                                                               [100%]', '=================================== FAILURES ===================================', '_______________________________ test_total_value _______________________________', '', '    def test_total_value():', '>       assert inv.total_value() == 9.0', 'E       assert 8.5 == 9.0', '', 'tests/test_inventory.py:20: AssertionError', '=========================== short test summary info ============================', 'FAILED tests/test_inventory.py::test_total_value - assert 8.5 == 9.0', 'FAILED tests/test_inventory.py::test_total_value_single_item - assert 4.25 == 3.0', 'FAILED tests/test_inventory.py::test_page_first - AssertionError', 'FAILED tests/test_inventory.py::test_page_last_partial - AssertionError', ''].join('\n');
+    const s = summaryFromPytest(parsePytestOutput(qq), { ...ctx, command: 'python3 -m pytest -q' });
+    expect(s).toMatchObject({ passed: 6, failed: 4, errors: 0, total: 10 });
+    expect(s.failing).toHaveLength(4);
+    // several files, each with its own progress line; E, s, x and X are read as pytest prints them
+    const multi = 'tests/test_a.py ..F.s  [ 71%]\ntests/test_b.py E.xX  [100%]\n';
+    expect(parsePytestOutput(multi).counts).toMatchObject({ passed: 4, failed: 1, errors: 1, skipped: 1, xfailed: 1, xpassed: 1, found: true });
+    // a counts line, when present, still wins over the progress characters
+    expect(parsePytestOutput('..F  [100%]\n1 failed, 2 passed in 0.01s\n').counts).toMatchObject({ passed: 2, failed: 1, found: true });
+    // no progress line and no counts line: nothing is invented
+    expect(parsePytestOutput('Traceback (most recent call last):\n  boom\n').counts.found).toBe(false);
+  });
   it('no tests ran: total 0, counts found', () => {
     const parse = parsePytestOutput(fixture('pytest-no-tests.txt'));
     expect(parse.counts.found).toBe(true);

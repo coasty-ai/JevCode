@@ -69,7 +69,35 @@ function emptyCounts(): PytestCounts {
   return { passed: 0, failed: 0, errors: 0, skipped: 0, xfailed: 0, xpassed: 0, deselected: 0, found: false };
 }
 
-/** The last "... in 1.23s" line that carries counts (or "no tests ran"). */
+/**
+ * `pytest -qq` (a `-q` on the command line on top of `addopts = -q`, as the ladder tasks' own
+ * pytest.ini has) prints no counts line at all, only progress lines such as
+ * `tests/test_a.py ..F.s  [ 71%]` or `....F  [100%]`: `.` pass, `F` fail, `E` error, `s`/`x`
+ * skipped or xfail, `X` xpass (the engine's src/workspace/tests.ts reads them the same way).
+ * Without this the first live run summarised a 6-passed/4-failed baseline as 0 passed, and a
+ * candidate that broke collection (0 passed, 1 error) could not register as a regression.
+ */
+const PROGRESS_LINE = /^(?:\S+\s+)?([.FEsxX]+)\s+\[\s*\d+%\]\s*$/;
+
+function countsFromProgress(lines: readonly string[]): PytestCounts {
+  const counts = emptyCounts();
+  for (const line of lines) {
+    const m = PROGRESS_LINE.exec(line.trimEnd());
+    if (m === null) continue;
+    counts.found = true;
+    for (const ch of m[1] ?? '') {
+      if (ch === '.') counts.passed += 1;
+      else if (ch === 'X') counts.xpassed += 1;
+      else if (ch === 'F') counts.failed += 1;
+      else if (ch === 'E') counts.errors += 1;
+      else if (ch === 'x') counts.xfailed += 1;
+      else counts.skipped += 1;
+    }
+  }
+  return counts;
+}
+
+/** The last "... in 1.23s" line that carries counts (or "no tests ran"); the `-qq` progress fallback otherwise. */
 function parseCounts(lines: readonly string[]): PytestCounts {
   for (let k = lines.length - 1; k >= 0; k--) {
     const raw = lines[k] ?? '';
@@ -92,7 +120,7 @@ function parseCounts(lines: readonly string[]): PytestCounts {
     }
     if (any) return { ...counts, found: true };
   }
-  return emptyCounts();
+  return countsFromProgress(lines);
 }
 
 function isStatus(s: string): s is PytestStatus {

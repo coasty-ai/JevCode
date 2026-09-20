@@ -4,8 +4,8 @@
  * pytest < 7, which lacks the `pythonpath` ini option), a one-commit git repository so
  * `model_patch` extraction diffs against the initial tree, and that extraction.
  */
-import { writeFile } from 'node:fs/promises';
-import { join } from 'node:path';
+import { lstat, symlink, writeFile } from 'node:fs/promises';
+import { dirname, join } from 'node:path';
 import { SandboxError } from '../../errors.js';
 import { shellQuote, tail } from '../swebench/evaluator.js';
 import { extractModelPatch } from '../swebench/predictions.js';
@@ -31,8 +31,34 @@ export const MOCK_TEST_COMMAND = 'python3 -m pytest -q';
 /** the mocked test run must never dominate a mocked bench */
 export const MOCK_RUN_TIMEOUT_MS = 60_000;
 
-/** Never part of a model patch: bench markers, byte-code caches, pytest's cache, a local venv. */
-export const GIT_EXCLUDES: readonly string[] = ['.jevcode*', '__pycache__/', '*.pyc', '.pytest_cache/', '.venv/'];
+/**
+ * Never part of a model patch: bench markers, byte-code caches, pytest's cache, a local venv.
+ * `.venv` appears twice on purpose: `.venv/` matches only a real directory, and linkVenv() puts
+ * a symlink there, which `git add -A -N` (model_patch extraction) would otherwise intent-add.
+ */
+export const GIT_EXCLUDES: readonly string[] = ['.jevcode*', '__pycache__/', '*.pyc', '.pytest_cache/', '.venv/', '.venv'];
+
+/**
+ * Expose the bench's shared pytest venv to the agent as `<workspace>/.venv`, the one place the
+ * sandbox puts on PATH (src/sandbox/run.ts repoVenv: "same effect as `source .venv/bin/activate`").
+ * Without it the agent's `python3 -m pytest` runs the sandbox's `python3` with HOME redirected to
+ * the run dir, where pytest is not importable (the jev-only synthesizer then sees a baseline of one
+ * error and no failing tests, and no goal is ever formed). `python` is what resolveLadderPython()
+ * returned: a venv interpreter (`<venv>/bin/python`) is linked; the bare `python3` fallback means
+ * the system interpreter already imports pytest and nothing is linked. The link is created after
+ * the root commit and excluded from git (GIT_EXCLUDES), so it never enters a patch or a lane.
+ */
+export async function linkVenv(workspaceDir: string, python: string): Promise<void> {
+  if (python === 'python3') return;
+  const target = join(workspaceDir, '.venv');
+  try {
+    await lstat(target);
+    return; // already present (a re-used workspace)
+  } catch {
+    // absent: link it
+  }
+  await symlink(dirname(dirname(python)), target, 'dir');
+}
 
 export interface PytestLayoutOptions {
   /** the task's own pytest.ini text (kept verbatim when the task ships one) */

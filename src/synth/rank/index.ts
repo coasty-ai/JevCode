@@ -19,8 +19,9 @@
 import type { Answer, Json, Question, StageName } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { ESCAPE_KEY, assertQuestionBatch } from '../../jev/questions.js';
+import { CHARS_PER_TOKEN } from '../localize/budget.js';
 import type { Candidate, JevAsk, RankContext, RankResult, RankedCandidate, Ranker, Site } from '../types.js';
-import { CHOICE_QUESTION_ID, buildChoiceQuestion, buildCompactNouls, buildRankState, candidateKey, candidateSignature, isUnchanged, rankMode } from './questions.js';
+import { CHOICE_QUESTION_ID, buildChoiceQuestion, buildCompactNouls, buildRankState, candidateKey, candidateSignature, isUnchanged, programRange, rankMode } from './questions.js';
 
 export {
   CHOICE_INSTRUCTIONS,
@@ -75,6 +76,38 @@ export const NOUL_ABSENT_THRESHOLD = 0.5;
 export const DETECTOR_EPSILON = 1e-9;
 /** Jev allows 128-way concurrency (REPORT §5); this keeps one site from taking it all. */
 export const DEFAULT_MAX_CONCURRENT_REQUESTS = 8;
+/**
+ * Repository states: the probe's 254-candidate request was 18k tokens with a 10-line program
+ * listing and the wire cap is 32k for state + longest question; a 25–175-line SWE function
+ * listing (~4k+ tokens) leaves room for ~150 candidates per chunk, not 254
+ * (experiments/designs/repair-search.md §1.5, docs/JEV-ONLY-DESIGN.md §2.7 Q9).
+ */
+export const REPO_LISTING_TOKEN_THRESHOLD = 4_000;
+export const REPO_CHUNK_MAX_CANDIDATES = 150;
+/**
+ * Shuffle-and-average re-ask (design Q10r): reordering ~300 near-duplicate candidates moved
+ * `kth` 0.48 → 0.14 and `next_permutation` 0.19 → 0.52 (lit-search-based-repair.md verification),
+ * so when a test run is expensive (> 20 s) and the top-2 are within 0.10 the shortlist is
+ * re-asked once in a shuffled order and the two p's are averaged before a run is spent.
+ * Cheap oracles fall through to the tests instead (one extra request ≈ $0.0002 is not worth it).
+ */
+export const SHUFFLE_RERANK_MIN_T_RUN_MS = 20_000;
+export const SHUFFLE_RERANK_MARGIN = 0.1;
+/** The re-asked shortlist is at most this long (repair-search §1.5: "≤ 10 candidates"). */
+export const SHUFFLE_RERANK_MAX = 10;
+
+/** Estimated input tokens of the `program` listing the rank state shows for `site`. */
+export function listingTokens(site: Site): number {
+  const { start, end } = programRange(site);
+  let chars = 0;
+  for (let n = start; n <= end; n++) chars += (site.file.mod.lines[n - 1] ?? '').length + 8; // + the `"L<n>": ""` framing
+  return Math.ceil(chars / CHARS_PER_TOKEN);
+}
+
+/** Chunk size for stage-one Nouls at `site`: 150 when the listing is repository-sized, else `chunkMax`. */
+export function effectiveChunkMax(site: Site, chunkMax: number): number {
+  return listingTokens(site) > REPO_LISTING_TOKEN_THRESHOLD ? Math.min(chunkMax, REPO_CHUNK_MAX_CANDIDATES) : chunkMax;
+}
 
 export interface RankerOptions {
   choiceMax?: number;
@@ -375,7 +408,7 @@ export function createRanker(options: RankerOptions = {}): JevRanker {
     }
 
     // ---- N > hybridMax: chunked compact Nouls, then a Choice over the shortlist ----------
-    const sizes = chunkSizes(uniques.length, chunkMax);
+    const sizes = chunkSizes(uniques.length, effectiveChunkMax(site, chunkMax));
     const chunks: Unique[][] = [];
     let offset = 0;
     for (const size of sizes) {
@@ -425,4 +458,104 @@ export function createRanker(options: RankerOptions = {}): JevRanker {
   }
 
   return { rank };
+}
+
+// ---------------------------------------------------------------------------------------
+// Shuffle-and-average re-ask of a shortlist (design Q10r)
+// ---------------------------------------------------------------------------------------
+
+/** The probability a re-rank averages against: the Noul when one was asked, else the ranked probability. */
+function baseProbability(r: RankedCandidateDetail): number {
+  return r.noulProbability ?? r.probability;
+}
+
+/**
+ * True when the shortlist is worth one more request before a test run: the oracle is slow
+ * (`tRunMs` > 20 s) and the top-2 base probabilities are within the measured order-noise band.
+ */
+export function shouldShuffleRerank(ranked: readonly RankedCandidateDetail[], tRunMs: number): boolean {
+  if (tRunMs <= SHUFFLE_RERANK_MIN_T_RUN_MS) return false;
+  const [a, b] = ranked;
+  if (a === undefined || b === undefined) return false;
+  return baseProbability(a) - baseProbability(b) < SHUFFLE_RERANK_MARGIN;
+}
+
+/** FNV-1a over a string, for a deterministic shuffle seed. */
+function fnv1a(s: string): number {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < s.length; i++) {
+    h ^= s.charCodeAt(i);
+    h = Math.imul(h, 0x01000193) >>> 0;
+  }
+  return h >>> 0;
+}
+
+/** mulberry32: a small deterministic PRNG so a re-ask reproduces under `--resume` and in tests. */
+function prng(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) >>> 0;
+    let t = a;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+/** A permutation of 0..n-1 that differs from the identity whenever n ≥ 2 (a re-ask in the same order measures nothing). */
+export function shuffledOrder(n: number, seed: number): number[] {
+  const order = Array.from({ length: n }, (_, i) => i);
+  const rnd = prng(seed);
+  for (let i = n - 1; i > 0; i--) {
+    const j = Math.floor(rnd() * (i + 1));
+    [order[i], order[j]] = [order[j]!, order[i]!];
+  }
+  if (n >= 2 && order.every((v, i) => v === i)) order.push(order.shift()!);
+  return order;
+}
+
+export interface ShuffleRerankOptions {
+  stage?: StageName;
+  /** shuffle seed; defaults to a hash of the shortlist's candidate ids */
+  seed?: number;
+}
+
+export interface ShuffleRerankResult {
+  /** the shortlist re-ordered by the averaged probability (ties keep the incoming order) */
+  ranked: RankedCandidateDetail[];
+  /** p from the shuffled request, by candidate id */
+  reaskedProbability: Record<string, number>;
+  requests: number;
+}
+
+/**
+ * Re-ask the compact Nouls over `shortlist` (≤ 10, same site) with the candidates shuffled and
+ * re-keyed, and average each candidate's re-asked p with the p it already carries. Ordering
+ * only: the tests still decide. Returns the shortlist untouched (0 requests) when it has fewer
+ * than two entries.
+ */
+export async function shuffleRerank(shortlist: readonly RankedCandidateDetail[], ctx: RankContext, options: ShuffleRerankOptions = {}): Promise<ShuffleRerankResult> {
+  if (shortlist.length > SHUFFLE_RERANK_MAX) throw new RangeError(`shuffleRerank: shortlist of ${shortlist.length} exceeds ${SHUFFLE_RERANK_MAX}`);
+  if (shortlist.length < 2) return { ranked: [...shortlist], reaskedProbability: {}, requests: 0 };
+  const first = shortlist[0]!;
+  const site = first.candidate.site;
+  for (const r of shortlist) if (!sameSite(r.candidate.site, site)) throw new RangeError(`shuffleRerank: candidate "${r.candidate.id}" is not at the shortlist's site`);
+  const seed = options.seed ?? fnv1a(shortlist.map((r) => r.candidate.id).join('\u0000'));
+  const order = shuffledOrder(shortlist.length, seed);
+  const shuffled = order.map((i) => shortlist[i]!);
+  const keys = shuffled.map((_, i) => candidateKey(i));
+  const mode = rankMode(site);
+  const state = buildRankState(shuffled.map((r) => r.candidate), keys, site, ctx, { withCandidates: true });
+  const answers = await askAbortable(ctx.ask, options.stage ?? 'propose', state, buildCompactNouls(keys, mode), ctx.signal);
+  const reasked: Record<string, number> = {};
+  shuffled.forEach((r, i) => {
+    reasked[r.candidate.id] = noulAnswer(answers, keys[i]!);
+  });
+  const averaged = shortlist.map((r, index) => {
+    const p = (baseProbability(r) + (reasked[r.candidate.id] ?? 0)) / 2;
+    const row: RankedCandidateDetail = { ...r, probability: p, noulProbability: p };
+    return { index, row };
+  });
+  const ordered = orderBy(averaged, (x) => x.row.probability).map((x, k) => ({ ...x.row, rank: k + 1 }));
+  return { ranked: ordered, reaskedProbability: reasked, requests: 1 };
 }

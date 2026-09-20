@@ -104,7 +104,7 @@ export function summary(over: Partial<TestRunSummary> & { failing?: string[]; pa
   const errors = over.errors ?? 0;
   const skipped = over.skipped ?? 0;
   return {
-    command: 'pytest -q',
+    command: over.command ?? 'pytest -q',
     passed,
     failed,
     errors,

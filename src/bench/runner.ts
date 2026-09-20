@@ -521,6 +521,9 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
         ...(source.suite === 'terminal-bench' ? { extraWritableRoots: [auxDir] } : {}),
         // the agent workspace is a `git clone --shared` of the bare cache: its objects live there (read-only for the agent)
         ...(source.suite === 'swebench' ? { extraReadableRoots: [join(opts.runsDir, BENCH_CACHE_DIR)] } : {}),
+        // the agent's `python3 -m pytest` runs the shared venv linked at <workspace>/.venv (ladder/pyworkspace.ts linkVenv);
+        // the venv lives beside the runs under the read-denied jevcode home, so it must be re-allowed for the agent's sandbox
+        ...(source.suite === 'ladder' || source.suite === 'quixbugs' ? { extraReadableRoots: [join(opts.runsDir, LADDER_VENV_DIR)] } : {}),
       },
       opts,
     );

@@ -12,7 +12,8 @@ import { join } from 'node:path';
 import type { MockTurn } from '../../core/types.js';
 import { ConfigError } from '../../errors.js';
 import { countOccurrences } from '../../workspace/edit.js';
-import { MOCK_RUN_TIMEOUT_MS, MOCK_TEST_COMMAND, extractPatchFromRootCommit, initGitRepo, writePytestLayout } from '../ladder/pyworkspace.js';
+import { MOCK_RUN_TIMEOUT_MS, MOCK_TEST_COMMAND, extractPatchFromRootCommit, initGitRepo, linkVenv, writePytestLayout } from '../ladder/pyworkspace.js';
+import { resolveLadderPython } from '../ladder/venv.js';
 import { unifiedDiff } from '../ladder/udiff.js';
 import { mockTurn } from '../swebench/loader.js';
 import type { BenchEvaluateContext, BenchSetupTools, BenchTask, BenchTaskMeta, BenchTaskSource, BuildTaskOptions } from '../types.js';
@@ -93,6 +94,13 @@ export interface QuixbugsTaskOptions extends BuildTaskOptions {
   quixbugsDir: string;
   program: QuixbugsProgram;
   evalTimeoutMs?: number;
+  /**
+   * The interpreter the AGENT's `python3 -m pytest` should resolve to, exposed as <workspace>/.venv
+   * (ladder/pyworkspace.ts linkVenv): undefined = the shared <runsDir>/ladder-venv (built on first
+   * use), a path = that venv's interpreter, null = leave the sandbox's python3 alone (offline unit
+   * tests). The evaluator is unaffected: run_tests.py needs only the stdlib.
+   */
+  python?: string | null;
 }
 
 export function toBenchTask(opts: QuixbugsTaskOptions): BenchTask {
@@ -113,6 +121,17 @@ export function toBenchTask(opts: QuixbugsTaskOptions): BenchTask {
     }
     await writePytestLayout(workspaceDir);
     await initGitRepo(tools.run, `quixbugs ${name}: buggy program and tests`);
+    // The evaluator needs only the stdlib (run_tests.py), but the agent's detected test command is
+    // pytest: expose the bench's shared venv as <workspace>/.venv (linkVenv) so `python3 -m pytest`
+    // imports pytest inside the sandbox. A missing venv is logged, not fatal: the evaluator still runs.
+    const python =
+      opts.python !== undefined
+        ? opts.python
+        : await resolveLadderPython(tools.runsDir, tools.makeRunner, tools.run, tools.log).catch((e: unknown) => {
+            tools.log(`[quixbugs ${name}] pytest venv not available at setup (${e instanceof Error ? e.message.slice(0, 200) : String(e)}); the agent's pytest may not import`);
+            return null;
+          });
+    if (python !== null) await linkVenv(workspaceDir, python);
   }
 
   return {
@@ -134,6 +153,8 @@ export function toBenchTask(opts: QuixbugsTaskOptions): BenchTask {
 export interface LoadQuixbugsOptions {
   mocked: boolean;
   evalTimeoutMs?: number;
+  /** see QuixbugsTaskOptions.python */
+  python?: string | null;
 }
 
 export async function loadProgram(quixbugsDir: string, record: QuixbugsRecord, mocked: boolean): Promise<QuixbugsProgram> {
@@ -170,11 +191,11 @@ export async function loadQuixbugsSources(dataDir: string, opts: LoadQuixbugsOpt
   const records = await loadIndex(quixbugsDir);
   if (!(await fileExists(join(quixbugsDir, 'run_tests.py')))) throw new ConfigError(`quixbugs: ${join(quixbugsDir, 'run_tests.py')} not found`);
   const out: BenchTaskSource[] = [];
-  for (const record of records) out.push(sourceFor(quixbugsDir, await loadProgram(quixbugsDir, record, opts.mocked), opts.evalTimeoutMs));
+  for (const record of records) out.push(sourceFor(quixbugsDir, await loadProgram(quixbugsDir, record, opts.mocked), opts.evalTimeoutMs, opts.python));
   return out;
 }
 
-export function sourceFor(quixbugsDir: string, program: QuixbugsProgram, evalTimeoutMs?: number): BenchTaskSource {
+export function sourceFor(quixbugsDir: string, program: QuixbugsProgram, evalTimeoutMs?: number, python?: string | null): BenchTaskSource {
   return {
     suite: 'quixbugs',
     id: program.record.name,
@@ -182,6 +203,7 @@ export function sourceFor(quixbugsDir: string, program: QuixbugsProgram, evalTim
     build(b) {
       const o: QuixbugsTaskOptions = { ...b, quixbugsDir, program };
       if (evalTimeoutMs !== undefined) o.evalTimeoutMs = evalTimeoutMs;
+      if (python !== undefined) o.python = python;
       return toBenchTask(o);
     },
   };
