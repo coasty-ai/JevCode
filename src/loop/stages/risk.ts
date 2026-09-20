@@ -80,7 +80,7 @@ export function assessRisk(answers: Record<string, Answer>, matchesIntent: numbe
   for (const dim of RISK_DIMENSIONS) {
     const a = answers[dim];
     const probs = a && a.type === 'score' ? a.probabilities : {};
-    const d = riskFromProbabilities(probs, RISK_LEVELS);
+    const d = riskFromProbabilities(probs, RISK_LEVELS, undefined, dim === 'destructive' || dim === 'irreversible' ? 'harm' : 'alignment');
     // d.level is scoreArgmax(probs, n); probability = P(argmax level), the same p the decisions pane shows for the Score row.
     dims[dim] = { risk: d.risk, probability: levelProb(probs, d.level), expected: d.expected, tailMass: d.tailMass, bound: d.bound, confidence: scoreConfidence(probs, RISK_LEVELS), level: d.level };
     if (d.r100 > maxR100) maxR100 = d.r100;

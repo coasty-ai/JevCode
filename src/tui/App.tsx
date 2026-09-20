@@ -4,6 +4,7 @@
  * gated by Boolean(isRawModeSupported), Ctrl-C → onAbort('human_abort').
  */
 import { useEffect, useMemo, useState } from 'react';
+import { appendFileSync } from 'node:fs';
 import { Box, Text, render, useInput, useStdin, useStdout } from 'ink';
 import type { Engine, Renderer, RendererOptions } from '../core/types.js';
 import { Transcript } from './Transcript.js';
@@ -116,6 +117,9 @@ export function App({ task, resumeId, source, confirmer, onAbort }: AppProps): R
 
   useInput(
     (input, key) => {
+      if (process.env['JEVCODE_TRACE']) {
+        try { appendFileSync(process.env['JEVCODE_TRACE'], `${new Date().toISOString()} tui.useInput input=${JSON.stringify(input)} ctrl=${key.ctrl} pending=${pending !== null}\n`); } catch { /* trace only */ }
+      }
       if (key.ctrl && input === 'c') {
         onAbort('human_abort');
         return;

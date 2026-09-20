@@ -1001,6 +1001,11 @@ export interface SandboxCreateOptions {
   extraWritable?: readonly string[];
   /** additional read-only roots (e.g. a shared git object cache the workspace's --shared clone points at) */
   extraReadable?: readonly string[];
+  /**
+   * deny writes to <workspace>/.git/config and .git/hooks (default true: the agent must not plant
+   * git-executed code). Bench infrastructure sandboxes that themselves `git clone` into the root pass false.
+   */
+  protectGit?: boolean;
 }
 
 /** Everything the bench runner needs, injected so bench/* compiles and tests without the real modules. */

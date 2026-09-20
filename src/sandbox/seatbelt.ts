@@ -30,6 +30,8 @@ export interface ProfileOptions {
   extraWritable?: readonly string[];
   /** further read-only roots under a read-denied prefix (the bench's shared git object cache) */
   extraReadable?: readonly string[];
+  /** emit the .git/config + .git/hooks write denials (default true) */
+  protectGit?: boolean;
 }
 
 /** SBPL string literal: double-quoted with backslash and quote escaped. */
@@ -61,7 +63,13 @@ export function buildProfile(opts: ProfileOptions): string {
   );
   const gitDenies = [`(literal ${sbplString(join(ws, '.git', 'config'))})`, `(subpath ${sbplString(join(ws, '.git', 'hooks'))})`];
   if (opts.ttyPath && opts.ttyPath.startsWith('/dev/')) gitDenies.push(`(literal ${sbplString(canonicalPathSync(opts.ttyPath))})`);
-  lines.push(`(deny file-write* ${gitDenies.join(' ')})`);
+  if (opts.protectGit === false) {
+    // infrastructure sandbox (fresh clone into the root): only the harness tty stays denied
+    const ttyOnly = gitDenies.slice(2);
+    if (ttyOnly.length > 0) lines.push(`(deny file-write* ${ttyOnly.join(' ')})`);
+  } else {
+    lines.push(`(deny file-write* ${gitDenies.join(' ')})`);
+  }
 
   const reads: string[] = [];
   const seen = new Set<string>();

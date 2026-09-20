@@ -7,6 +7,7 @@
  * Concurrent modules (checkpoint/*, workspace/*, sandbox/*) are reached through `EngineDeps`
  * with dynamic imports as the default, so this module compiles and tests with fakes.
  */
+import { appendFileSync } from 'node:fs';
 import { mkdir, realpath } from 'node:fs/promises';
 import { join, sep } from 'node:path';
 import { createEmitter } from '../core/events.js';
@@ -453,6 +454,7 @@ class EngineImpl implements Engine {
   }
 
   abort(reason: 'human_abort' | 'signal'): void {
+    trace(`abort(${reason}) aborting=${this.aborting} stage=${this.currentStage} step=${this.step} lastResult=${this.lastResult !== null}`);
     // After run() resolved there is nothing to stop and the final checkpoint is already written;
     // installing the 'exit' writer here would leave a listener that rewrites state.json at exit.
     if (this.lastResult !== null) return;
@@ -524,6 +526,7 @@ class EngineImpl implements Engine {
       this.stopReason = null;
     }
     for (;;) {
+      trace(`loop top step=${this.step} aborted=${this.signal.aborted}`);
       if (this.signal.aborted) return this.finish(classifyAbort(this.signal.reason).stop);
       const budget = checkBudgets(this.budgetInput());
       if (budget !== null) {
@@ -531,6 +534,7 @@ class EngineImpl implements Engine {
         return this.finish(budget);
       }
       const result = await this.runStep();
+      trace(`runStep done step=${this.step} stop=${result.stop ?? 'null'}`);
       if (result.stop) return this.finish(result.stop, result.detail ? { detail: result.detail } : {});
     }
   }
@@ -1341,6 +1345,7 @@ class EngineImpl implements Engine {
   // -------------------------------------------------------------------------------------
 
   private async finish(reason: StopReason, opts: { detail?: string; skipWrite?: boolean } = {}): Promise<RunResult> {
+    trace(`finish(${reason}) pendingCheckpoint=${this.pendingCheckpoint !== null} persists=${this.pendingPersists.size}`);
     if (this.lastResult) return this.lastResult;
     this.deadline?.clear();
     this.currentStage = 'idle';
@@ -1362,7 +1367,9 @@ class EngineImpl implements Engine {
         // Stray background process groups from a successful run must not outlive it (§8); abort() already killed on its path.
         if (!this.aborting) await this.sandbox.killAll().catch(() => undefined);
         if (this.pendingCheckpoint) await this.pendingCheckpoint;
+        trace('finish: checkpoint awaited, writing final state');
         await this.store.writeState(snapshot);
+        trace('finish: final state written');
         // The stop line and the run:end line reach transcript.log through the same item model as every other line (§10).
         stopEmitted = true;
         this.emit(stopLine);
@@ -1376,6 +1383,7 @@ class EngineImpl implements Engine {
         timer.unref();
       });
       const outcome = await Promise.race([phase.then(() => 'ok' as const, () => 'failed' as const), bound]);
+      trace(`finish: phase outcome ${outcome}`);
       if (timer) clearTimeout(timer);
       // Renderer-only notices: the run:end line is already recorded, and a failing store cannot take another line anyway.
       if (outcome === 'timeout') {
@@ -1442,6 +1450,17 @@ async function validateResumeId(runsDir: string, runId: string): Promise<void> {
  * changed-files snapshot. Rejects with ConfigError/CheckpointError on a bad resume; run()
  * itself never rejects.
  */
+/** Opt-in trace for shutdown debugging: JEVCODE_TRACE=<file> appends one line per checkpoint. */
+function trace(msg: string): void {
+  const f = process.env['JEVCODE_TRACE'];
+  if (!f) return;
+  try {
+    appendFileSync(f, `${new Date().toISOString()} ${msg}\n`);
+  } catch {
+    // tracing must never affect the run
+  }
+}
+
 export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): Promise<Engine> {
   const d = await resolveDeps(deps);
   const redact = opts.redact;

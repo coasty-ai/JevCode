@@ -3,7 +3,7 @@
  * renderer's first frame is committed before any config, .env, runs-dir or workspace read.
  * Heavy modules (providers, Jev client, bench, perf) are dynamic imports.
  */
-import { readFileSync } from 'node:fs';
+import { appendFileSync, readFileSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { parseCliArgs, usageText } from './args.js';
 import type { ParsedFlags } from './args.js';
@@ -69,6 +69,9 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
   let engine: Engine | null = null;
   let abortRequested: 'human_abort' | 'signal' | null = null;
   const onAbort = (reason: 'human_abort' | 'signal'): void => {
+    if (process.env['JEVCODE_TRACE']) {
+      try { appendFileSync(process.env['JEVCODE_TRACE'], `${new Date().toISOString()} main.onAbort(${reason}) engine=${engine !== null}\n`); } catch { /* trace only */ }
+    }
     abortRequested = reason;
     if (engine) engine.abort(reason);
   };

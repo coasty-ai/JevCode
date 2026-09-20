@@ -186,6 +186,7 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
       noNetwork: opts.noNetwork,
       extraWritable: extraRoots,
       extraReadable: (opts.extraReadable ?? []).filter((p): p is string => typeof p === 'string' && p.length > 0).map((p) => resolve(p)),
+      ...(opts.protectGit === false ? { protectGit: false } : {}),
     });
     try {
       writeFileSync(profilePath, profile, { mode: 0o600 });

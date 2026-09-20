@@ -379,6 +379,8 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
             redact: opts.redact,
             // setup and evaluation clone from the bare cache and run the verifier venv; both live under the read-denied jevcode home
             extraReadable: [join(opts.runsDir, BENCH_CACHE_DIR), join(opts.runsDir, TB_VENV_DIR)],
+            // these sandboxes run only bench infrastructure (clone, venv, pip, verifier), which must create .git/hooks itself
+            protectGit: false,
           });
         })();
         sandboxes.set(root, p);
