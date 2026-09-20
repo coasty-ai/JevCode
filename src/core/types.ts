@@ -36,6 +36,33 @@ export interface Proposal {
   plan: PlanDraft;
   /** Full assistant text (streamed text plus, for tool calls, the raw JSON input). Redacted. */
   rawText: string;
+  /**
+   * Code-computed verification evidence attached by the jev-only synthesizer (never by a
+   * generator): the proposed patch was already run against the tests in a shadow copy. The
+   * risk and judge stages put it in the Jev state as `proposal.evidence` so the Scores judge
+   * a verified change rather than an unverified claim (docs/JEV-ONLY-DESIGN.md §5.1).
+   */
+  evidence?: ProposalEvidence;
+}
+
+export interface ProposalEvidence {
+  kind: 'shadow_test_run';
+  /** the command the synthesizer ran in the shadow copy */
+  command: string;
+  before: { passed: number; failed: number; errors: number; total: number };
+  after: { passed: number; failed: number; errors: number; total: number };
+  /** test ids that pass after the patch and failed before (bounded to 20) */
+  newlyPassing: string[];
+  /** test ids that fail after the patch and passed before (must be empty for a committed candidate) */
+  newlyFailing: string[];
+  /** which failing tests this sub-goal targets */
+  goalTests: string[];
+  /** 'sieve' = every candidate at the site was run; 'rank' = Jev-ranked top-k were run */
+  selection: 'sieve' | 'rank';
+  /** number of candidates run for this decision, code-computed */
+  candidatesTested: number;
+  /** true when several candidates passed and Jev's arbitration picked this one */
+  arbitrated: boolean;
 }
 
 // ---------------------------------------------------------------------------------------
