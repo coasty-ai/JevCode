@@ -515,7 +515,11 @@ export interface Workspace {
   applyPatch(diff: string): Promise<{ changedFiles: string[] }>;
   /** pure; pytest/jest/cargo summaries, parsed from the tail */
   parseTestOutput(runner: TestRunner, output: string): TestCounts | null;
-  /** relative to the snapshot taken by createWorkspace() (§8) */
+  /**
+   * relative to the snapshot taken by createWorkspace() (§8). File actions are tracked directly;
+   * changes made by commands are picked up by the `git status` refresh that invalidateCandidates()
+   * performs after every `run`, so one status spawn serves the whole step (§12 budget).
+   */
   changedFiles(): Promise<string[]>;
   target(path: string, createdThisRun: ReadonlySet<string>): Promise<TargetInfo>;
   /** files the run created (write/patch), tracked by the engine and passed back for target() */

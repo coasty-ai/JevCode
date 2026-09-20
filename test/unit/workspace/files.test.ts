@@ -98,6 +98,7 @@ describe('edit / write / changedFiles / target', () => {
     expect(readdirSync(join(t.ws, 'new/dir'))).toEqual(['n.txt']);
 
     await t.sandbox.run('echo cmd > by-cmd.txt', { timeoutMs: 5_000, maxOutputBytes: 10_000, signal: never() });
+    await w.invalidateCandidates(); // the engine refreshes status after every command (§8, §12)
     expect(await w.changedFiles()).toEqual(['a.txt', 'by-cmd.txt', 'new/dir/n.txt']);
 
     // editing a pre-existing dirty file attributes it (the run wrote it)
@@ -128,6 +129,7 @@ describe('edit / write / changedFiles / target', () => {
     expect(await w.changedFiles()).toEqual([]);
     await w.applyEdit({ kind: 'edit', path: 'dir/b.txt', old: 'b', new: 'B' });
     await sandbox.run('echo cmd > by-cmd.txt', { timeoutMs: 5_000, maxOutputBytes: 10_000, signal: never() });
+    await w.invalidateCandidates(); // the engine refreshes status after every command (§8, §12)
     expect(await w.changedFiles()).toEqual(['by-cmd.txt', 'dir/b.txt']);
     expect((await w.target('a.txt', new Set())).tracked).toBe(true);
   });

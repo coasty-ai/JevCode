@@ -14,6 +14,7 @@ import { assertNotSecret, canonicalPath, isSecretPath, resolveInside } from '../
 import { createCandidateCache } from './candidates.js';
 import { applyEditFile } from './edit.js';
 import { gitDir, isRepo, lsFiles, lsFilesTracked, showPrefix, statusPorcelain } from './git.js';
+import type { StatusEntry } from './git.js';
 import { applyPatch } from './patch.js';
 import type { ManifestReader } from './tests.js';
 import { detectTestCommand, parseTestOutput } from './tests.js';
@@ -125,9 +126,28 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
       }
     }
   }
-  const externalChanges = async (): Promise<string[]> => {
-    if (!git) return [];
+  // One `git status` spawn per command run, not per call (DESIGN.md §12 harness budget): the
+  // result is cached until invalidateCandidates() (a `run` outcome) marks it dirty; file
+  // actions report their own paths through `touched`, so they never need a spawn.
+  let statusDirty = true;
+  let statusCache: string[] = [];
+  let statusEntries: StatusEntry[] = [];
+  let statusInflight: Promise<void> | null = null;
+  const refreshStatus = (): Promise<void> => {
+    if (!git) {
+      statusDirty = false;
+      return Promise.resolve();
+    }
+    // Concurrent callers (candidate refresh + changedFiles right after a command) share one spawn.
+    if (statusInflight) return statusInflight;
+    statusInflight = refreshStatusNow().finally(() => {
+      statusInflight = null;
+    });
+    return statusInflight;
+  };
+  const refreshStatusNow = async (): Promise<void> => {
     const s = await statusPorcelain(deps.sandbox, realRoot);
+    statusEntries = s.entries;
     const out: string[] = [];
     for (const e of s.entries) {
       for (const raw of [e.path, e.from]) {
@@ -135,7 +155,13 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
         if (p !== null && p.length > 0 && !snapshotDirty.has(p) && !inGitDir(p)) out.push(p);
       }
     }
-    return out;
+    statusCache = out;
+    statusDirty = false;
+  };
+  const externalChanges = async (): Promise<string[]> => {
+    if (!git) return [];
+    if (statusDirty) await refreshStatus();
+    return statusCache;
   };
   /** paths written by file actions this run (the non-git source of truth) */
   const touched = new Set<string>();
@@ -197,8 +223,21 @@ export async function createWorkspace(root: string, runDir: string, deps: Worksp
       return candidates.list();
     },
 
-    invalidateCandidates(): Promise<void> {
-      return candidates.invalidate();
+    async invalidateCandidates(): Promise<void> {
+      // A command ran: refresh git status once and feed every reported path (new untracked
+      // files, deletions, modified sizes) into the candidate cache incrementally. Only a non-git
+      // workspace needs a full re-walk.
+      statusDirty = true;
+      if (!git) return candidates.invalidate();
+      await refreshStatus();
+      const paths: string[] = [];
+      for (const e of statusEntries) {
+        for (const raw of [e.path, e.from]) {
+          const p = raw === undefined ? null : fromRepoPath(raw);
+          if (p !== null && p.length > 0 && !inGitDir(p)) paths.push(p);
+        }
+      }
+      if (paths.length > 0) await candidates.noteChanged(paths);
     },
 
     async noteChanged(paths) {
