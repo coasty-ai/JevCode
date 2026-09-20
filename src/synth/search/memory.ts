@@ -16,6 +16,8 @@
  */
 import { sha12 } from '../../core/hash.js';
 import type { Plan, WindowEntry } from '../../core/types.js';
+import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
+import type { CriterionStrength } from '../oracle/types.js';
 import type { AppliedCandidate, LocalizeResult, TestRunSummary } from '../types.js';
 import { defaultOverrides } from './directive.js';
 import type { SearchOverrides } from './directive.js';
@@ -69,6 +71,45 @@ export interface SearchMemory {
    * gives it fresh evidence (proposal.ts claimSplit). Persisted with the goal statuses.
    */
   claims: Map<string, ClaimRecord>;
+  /**
+   * Repository mode (search/index.ts rebaselineRepository): the workspace is a whole-project
+   * suite (Django, sympy) or a large package, so the ledger's baseline is a scoped regression run
+   * plus the issue's reproduction, and goals come from the oracle (or one best guess), never from
+   * the scoped run's own failures. Absent on QuixBugs / ladder workspaces. Persisted (the
+   * reproduction spec, the scope, the flags) so a resumed run neither re-asks Jev nor re-localises.
+   */
+  repository?: RepositoryMode;
+}
+
+/** The regression scope chosen once per run (oracle/search.ts chooseRegressionScope + regressionCommandTemplate). */
+export interface RepositoryScope {
+  /** ≤ 6 test files, best first */
+  testFiles: string[];
+  /** the scoped command the baseline and the engine's `run` execute; null when the workspace has no test file */
+  command: string | null;
+  tier: 'related' | 'stem' | 'fallback' | 'none';
+  note: string;
+}
+
+export interface RepositoryMode {
+  /** the one goal of this mode: the reproduction goal, or the best-guess goal */
+  goalId: string;
+  /** the localised module files (top ≤ 3), the scope's input and the goal's suspected files */
+  moduleFiles: string[];
+  scope: RepositoryScope;
+  /** the reproduction to verify candidates with, or null (best guess) */
+  repro: { spec: ReproSpec; strength: CriterionStrength } | null;
+  /** the oracle search's outcome and its one-line note (transcript, openProblems) */
+  oracleOutcome: string;
+  oracleNote: string;
+  /** Python traceback text for the localizer: the anchors Jev judged in the fix and the base run's raising frames */
+  traceback: string | null;
+  /** the one best-guess commit of the run was made (or rejected): no second guess */
+  bestGuessCommitted: boolean;
+  /** scoped tests failing at the base commit: known failures, never goals */
+  knownFailures: number;
+  /** the last reproduction run on the committed workspace (not persisted; re-run on resume) */
+  lastRepro: VerifyReproResult | null;
 }
 
 /** One engine-executed `run` with parsed counts: its step and window label (`run <command>`) plus the counts. */
@@ -328,7 +369,67 @@ export interface PersistedClaims {
   claims?: Record<string, ClaimRecord>;
 }
 
-export type PersistedMemoryState = PersistedSearchState & PersistedClaims;
+/** Repository mode as persisted: the reproduction spec (chunks + criterion), the scope and the flags; `lastRepro` is re-measured. */
+export interface PersistedRepository {
+  goalId: string;
+  moduleFiles: string[];
+  scope: RepositoryScope;
+  repro: { spec: ReproSpec; strength: CriterionStrength } | null;
+  oracleOutcome: string;
+  oracleNote: string;
+  traceback: string | null;
+  bestGuessCommitted: boolean;
+  knownFailures: number;
+}
+
+export interface PersistedRepositoryState {
+  repository?: PersistedRepository;
+}
+
+export type PersistedMemoryState = PersistedSearchState & PersistedClaims & PersistedRepositoryState;
+
+export function repositoryToPersisted(repo: RepositoryMode): PersistedRepository {
+  return { goalId: repo.goalId, moduleFiles: [...repo.moduleFiles], scope: { ...repo.scope, testFiles: [...repo.scope.testFiles] }, repro: repo.repro === null ? null : { spec: repo.repro.spec, strength: repo.repro.strength }, oracleOutcome: repo.oracleOutcome, oracleNote: repo.oracleNote, traceback: repo.traceback, bestGuessCommitted: repo.bestGuessCommitted, knownFailures: repo.knownFailures };
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+/** The repository mode of a checkpoint, loosely validated (a checkpoint without one, or a malformed one, yields null: the mode is rebuilt). */
+export function repositoryFromPersisted(persisted: (PersistedSearchState & Partial<PersistedRepositoryState>) | null): RepositoryMode | null {
+  const raw: unknown = persisted?.repository;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return null;
+  const r = raw as Record<string, unknown>;
+  const scope = r['scope'];
+  if (typeof r['goalId'] !== 'string' || !isStringArray(r['moduleFiles']) || typeof scope !== 'object' || scope === null) return null;
+  const sc = scope as Record<string, unknown>;
+  if (!isStringArray(sc['testFiles']) || (sc['command'] !== null && typeof sc['command'] !== 'string')) return null;
+  const tier = sc['tier'];
+  const repro = r['repro'];
+  let reproOut: RepositoryMode['repro'] = null;
+  if (typeof repro === 'object' && repro !== null) {
+    const rp = repro as Record<string, unknown>;
+    const spec = rp['spec'];
+    const strength = rp['strength'];
+    if (typeof spec !== 'object' || spec === null || Array.isArray(spec) || (strength !== 'strong' && strength !== 'weak')) return null;
+    const sp = spec as Record<string, unknown>;
+    if (typeof sp['testId'] !== 'string' || !isStringArray(sp['chunks']) || typeof sp['criterion'] !== 'object' || sp['criterion'] === null || typeof sp['expectedText'] !== 'string' || typeof sp['options'] !== 'object' || sp['options'] === null) return null;
+    reproOut = { spec: spec as unknown as ReproSpec, strength };
+  }
+  return {
+    goalId: r['goalId'],
+    moduleFiles: r['moduleFiles'],
+    scope: { testFiles: sc['testFiles'], command: (sc['command'] as string | null) ?? null, tier: tier === 'related' || tier === 'stem' || tier === 'fallback' ? tier : 'none', note: typeof sc['note'] === 'string' ? sc['note'] : '' },
+    repro: reproOut,
+    oracleOutcome: typeof r['oracleOutcome'] === 'string' ? r['oracleOutcome'] : 'unknown',
+    oracleNote: typeof r['oracleNote'] === 'string' ? r['oracleNote'] : '',
+    traceback: typeof r['traceback'] === 'string' ? r['traceback'] : null,
+    bestGuessCommitted: r['bestGuessCommitted'] === true,
+    knownFailures: typeof r['knownFailures'] === 'number' && Number.isFinite(r['knownFailures']) ? r['knownFailures'] : 0,
+    lastRepro: null,
+  };
+}
 
 /** The claim records of a checkpoint (an older one, or one written by hand, carries none). */
 export function claimsFromPersisted(persisted: (PersistedSearchState & PersistedClaims) | null): Map<string, ClaimRecord> {
@@ -344,7 +445,7 @@ export function claimsFromPersisted(persisted: (PersistedSearchState & Persisted
   return out;
 }
 
-export function toPersisted(mem: Pick<SearchMemory, 'tried' | 'widenCursor' | 'goals' | 'committedDiffHashes' | 'claims'>): PersistedMemoryState {
+export function toPersisted(mem: Pick<SearchMemory, 'tried' | 'widenCursor' | 'goals' | 'committedDiffHashes' | 'claims' | 'repository'>): PersistedMemoryState {
   const all = [...mem.tried];
   const tried = all.length > TRIED_PERSIST_MAX ? all.slice(all.length - TRIED_PERSIST_MAX) : all;
   const widenCursor: Record<string, number> = {};
@@ -357,7 +458,9 @@ export function toPersisted(mem: Pick<SearchMemory, 'tried' | 'widenCursor' | 'g
   }
   const claims: Record<string, ClaimRecord> = {};
   for (const [item, rec] of mem.claims) claims[item] = { step: rec.step, judged: rec.judged };
-  return { version: 1, tried, widenCursor, goals, committedDiffHashes: [...mem.committedDiffHashes], claims };
+  const out: PersistedMemoryState = { version: 1, tried, widenCursor, goals, committedDiffHashes: [...mem.committedDiffHashes], claims };
+  if (mem.repository !== undefined) out.repository = repositoryToPersisted(mem.repository);
+  return out;
 }
 
 /** What `rebuildFromPlan` recovers; `restoreMemory` installs it. */

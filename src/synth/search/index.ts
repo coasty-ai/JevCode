@@ -15,23 +15,27 @@ import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
 import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
+import { SPEC_FILE } from '../../workspace/tests.js';
+import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
+import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, mergeSummaries, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
+import type { OracleSearch, OracleSearchInput } from '../oracle/index.js';
 import { analyse } from '../py/structure.js';
 import { subsetCommand } from '../sieve/runner.js';
 import type { RunnerMemory } from '../sieve/runner.js';
-import type { AppliedCandidate, SourceFile, TestRunSummary } from '../types.js';
-import { DEFAULT_TEST_OUTPUT_BYTES, summarize } from '../verify/index.js';
+import type { AppliedCandidate, LocalizeResult, SourceFile, TestRunSummary } from '../types.js';
+import { DEFAULT_TEST_OUTPUT_BYTES, isTestFile, sandboxRunFn, summarize } from '../verify/index.js';
 import { forgetGoal } from './bases.js';
-import { fitOracle, freshBudget } from './budget.js';
+import { fitOracle, freshBudget, laneCount } from './budget.js';
 import { defaultOverrides, handleDirective, invalidateStaleSites } from './directive.js';
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
 import { clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
 import type { GoalPick } from './goals.js';
-import { diffHash, getMemory, rebuildFromPlan, recordClaims, recordCommit, resolveClaims, restoreMemory, toPersisted } from './memory.js';
-import type { SearchMemory } from './memory.js';
-import { READ_MAX_PATHS, commitEvidence, proposeDone, proposePatch, proposeRead, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
+import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
+import type { PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
+import { BEST_GUESS_NOTE, READ_MAX_PATHS, bestGuessGoalText, commitEvidence, proposeDone, proposePatch, proposeRead, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
 import { isTestPath, newTrace } from './subgoal.js';
 import type { SubGoalMemory, SubGoalResult } from './subgoal.js';
-import type { Base, Goal, GoalSearchTrace, Lane } from './types.js';
+import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState } from './types.js';
 import { isPersistedSearchState } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -40,8 +44,13 @@ import { isPersistedSearchState } from './types.js';
 
 /** Full-suite command when the workspace detector found none (the QuixBugs and ladder layouts are pytest modules under tests/). */
 export const DEFAULT_TEST_COMMAND = 'python3 -m pytest -q';
-/** Workspace Python files loaded into the committed base (localisation and donor corpus); SWE repositories exceed this and are cut alphabetically. */
-export const MAX_WORKSPACE_PY_FILES = 400;
+/**
+ * Workspace Python files loaded into the committed base (localisation and donor corpus). Django
+ * has 858 non-test source files and sympy 746 (analysed in 0.3 s and 1.7 s); the repo-wide file
+ * Nouls that found the gold file #1 on 23/30 SWE instances saw every source file, so the cap
+ * sits above both. Files whose stem the task text names load first, so a cut keeps them.
+ */
+export const MAX_WORKSPACE_PY_FILES = 1200;
 /** Per-file read cap; the workspace listing already drops files over 1 MB. */
 export const MAX_PY_FILE_BYTES = 512 * 1024;
 /** §4.1: a timed-out baseline parks every goal with this reason and proposes the full command so the engine's judge sees it. */
@@ -73,6 +82,19 @@ const CHANGING_ACTIONS: readonly string[] = ['patch', 'edit', 'write'];
  * step" (the second ladder run declined 5 of 6 such patches under `investigate`, `units` ×4).
  */
 export const ESTABLISH_GOAL = 'establish the failing tests: run the full test suite before any change';
+/** The same obligation on a repository workspace, where the suite is the regression scope (never the whole Django/sympy suite). */
+export const ESTABLISH_GOAL_REPOSITORY = 'establish the baseline: run the regression scope before any change';
+/**
+ * Repository mode: the scoped baseline may take minutes (six sympy test files run 1–3 min), so it
+ * gets the run's maximum command timeout up to this bound, and a scoped run that still times out
+ * is retried once on its top REPO_SCOPE_RETRY_FILES files before the §4.1 park.
+ */
+export const REPO_BASELINE_TIMEOUT_MS = 300_000;
+export const REPO_SCOPE_RETRY_FILES = 2;
+/** Module files (top of the localiser's file beam) that bound the regression scope and name the goal's suspected files. */
+export const REPO_MODULE_FILES_MAX = 3;
+/** Test files whose contents are read for the regression scope's import check (Django has 1,185; reading them takes ≈ 130 ms). */
+export const REPO_TEST_CONTENTS_MAX = 2000;
 
 export type WorkspaceLayout = 'quixbugs' | 'pytest' | 'other';
 
@@ -92,6 +114,16 @@ export interface BaselineRun {
 export interface SearchDeps {
   /** search/subgoal.ts searchSubGoal with its own deps bound (§2.3) */
   searchSubGoal(ctx: SynthesisContext, mem: RunMemory, goal: Goal): Promise<SubGoalResult>;
+  /** search/subgoal.ts searchBestGuess: repository mode without a reproduction oracle (rank, regression scope only, one commit) */
+  searchBestGuess(ctx: SynthesisContext, mem: RunMemory, goal: Goal): Promise<SubGoalResult>;
+  /** the localiser's beam plus the goal sites for one goal (src/synth/index.ts locate); repository mode calls it at the establishing step so the module files bound the regression scope */
+  locate(ctx: SynthesisContext, mem: RunMemory, goal: Goal): Promise<LocalizeResult>;
+  /** oracle/search.ts findIssueOracle over the task text, run in the committed workspace; default below */
+  findOracle(ctx: SynthesisContext, input: { packageName: string | null; framework: 'django' | null }): Promise<OracleSearch>;
+  /** the regression scope for the localised module files (oracle/search.ts chooseRegressionScope + regressionCommandTemplate); default below */
+  regressionScope(ctx: SynthesisContext, moduleFiles: readonly string[], paths: readonly string[], max?: number): Promise<RepositoryScope>;
+  /** the reproduction re-run on the committed workspace with its venv (oracle/goal.ts verifyRepro); default below */
+  verifyRepro(ctx: SynthesisContext, spec: ReproSpec): Promise<VerifyReproResult>;
   /** the workspace's non-test Python files (path → analysed source); default reads through ctx.workspace */
   loadFiles(ctx: SynthesisContext): Promise<Map<string, SourceFile>>;
   /** one test command in the workspace root through ctx.sandbox, summarised; default below */
@@ -103,11 +135,14 @@ export interface SearchDeps {
   now(): number;
 }
 
-/** The real collaborators for everything but the sub-goal search (src/synth/index.ts adds that). */
-export function defaultSearchDeps(): Omit<SearchDeps, 'searchSubGoal'> {
+/** The real collaborators for everything but the sub-goal searches and the localiser (src/synth/index.ts adds those). */
+export function defaultSearchDeps(): Omit<SearchDeps, 'searchSubGoal' | 'searchBestGuess' | 'locate'> {
   return {
     loadFiles: loadPythonFiles,
     runTests: runTestsInSandbox,
+    findOracle: findOracleInWorkspace,
+    regressionScope: regressionScopeInWorkspace,
+    verifyRepro: verifyReproInWorkspace,
     pickGoal: (ctx, mem) => pickGoalDetailed(ctx, mem, ctx.ask, { stage: 'propose' }),
     handleDirective,
     now: () => Date.now(),
@@ -272,13 +307,21 @@ export function runMemory(runId: string): RunMemory {
 // Default collaborators that belong to the controller
 // ---------------------------------------------------------------------------------------
 
-/** Non-test Python files of the workspace, read and analysed; unparsable or truncated files are skipped. */
+/** 1 when the task text names the file's stem (`mathematica`, `decorators`; a package's directory name for `__init__.py`), else 0. */
+export function mentionedInTask(path: string, task: string): number {
+  const segs = path.replace(/\.py$/, '').split('/');
+  let stem = segs.pop() ?? '';
+  if (stem === '__init__') stem = segs.pop() ?? '';
+  return stem.length >= 3 && task.includes(stem) ? 1 : 0;
+}
+
+/** Non-test Python files of the workspace, read and analysed; unparsable or truncated files are skipped. Task-named files first, then alphabetical, cut at MAX_WORKSPACE_PY_FILES. */
 export async function loadPythonFiles(ctx: SynthesisContext): Promise<Map<string, SourceFile>> {
   const out = new Map<string, SourceFile>();
   const paths = (await ctx.workspace.listCandidates())
     .map((c) => c.path)
     .filter((p) => p.endsWith('.py') && !isTestPath(p) && !p.includes('.jevcode-synth/'))
-    .sort()
+    .sort((a, b) => mentionedInTask(b, ctx.task) - mentionedInTask(a, ctx.task) || (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, MAX_WORKSPACE_PY_FILES);
   for (const path of paths) {
     if (ctx.signal.aborted) throw new AbortError('signal');
@@ -302,6 +345,99 @@ export async function runTestsInSandbox(ctx: SynthesisContext, command: string, 
   return { summary, output: res.stderr === '' ? res.stdout : `${res.stdout}\n${res.stderr}` };
 }
 
+/** The oracle from the issue, run in the committed workspace with its venv (oracle/search.ts findIssueOracle). */
+export async function findOracleInWorkspace(ctx: SynthesisContext, input: { packageName: string | null; framework: 'django' | null }): Promise<OracleSearch> {
+  const root = ctx.workspaceInfo.root;
+  const python = await venvPython(root);
+  const o: OracleSearchInput = {
+    task: ctx.task,
+    repository: input.packageName ?? 'the repository',
+    packageName: input.packageName,
+    framework: input.framework,
+    workspace: root,
+    ask: (stage, state, questions) => ctx.ask(stage, state, questions),
+    run: sandboxRunFn(ctx.sandbox, ctx.signal),
+    stage: 'propose',
+  };
+  if (python !== undefined) o.python = python;
+  return findIssueOracle(o);
+}
+
+/** The harness's own test command from `.jevcode-spec.json` at the workspace root (bench loaders write it), or null. */
+export async function readSpecTestCommand(ctx: SynthesisContext): Promise<string | null> {
+  try {
+    const view = await ctx.workspace.read(SPEC_FILE, 8192);
+    const parsed: unknown = JSON.parse(view.content);
+    if (typeof parsed === 'object' && parsed !== null && 'test_cmd' in parsed) {
+      const cmd = (parsed as { test_cmd?: unknown }).test_cmd;
+      if (typeof cmd === 'string' && cmd.trim() !== '') return cmd;
+    }
+  } catch {
+    /* no spec, unreadable or malformed: the detector's command alone */
+  }
+  return null;
+}
+
+/** The regression scope for the localised module files: ≤ 6 test files (contents read for the import check) and the scoped command on the harness's template. */
+export async function regressionScopeInWorkspace(ctx: SynthesisContext, moduleFiles: readonly string[], paths: readonly string[], max?: number): Promise<RepositoryScope> {
+  const info = ctx.workspaceInfo.testCommand;
+  const template = info === null ? { command: DEFAULT_TEST_COMMAND, runner: 'pytest' as const } : regressionCommandTemplate({ command: normaliseTestCommand(info.command), runner: info.runner }, await readSpecTestCommand(ctx));
+  const contents = new Map<string, string>();
+  for (const p of paths.filter(isTestFile).slice(0, REPO_TEST_CONTENTS_MAX)) {
+    if (ctx.signal.aborted) throw new AbortError('signal');
+    try {
+      const v = await ctx.workspace.read(p, MAX_PY_FILE_BYTES);
+      if (v.truncatedBytes === 0) contents.set(p, v.content);
+    } catch (e) {
+      if (e instanceof AbortError) throw e;
+    }
+  }
+  const choice = chooseRegressionScope(paths, moduleFiles, { contents: (p) => contents.get(p) ?? null, ...(max === undefined ? {} : { max }) });
+  return { ...choice, command: scopeCommand(template, choice.testFiles) };
+}
+
+/** The reproduction on the committed workspace itself (the post-patch re-check), with the workspace venv. */
+export async function verifyReproInWorkspace(ctx: SynthesisContext, spec: ReproSpec): Promise<VerifyReproResult> {
+  const root = ctx.workspaceInfo.root;
+  return verifyRepro(sandboxRunFn(ctx.sandbox, ctx.signal), root, spec, await venvPython(root));
+}
+
+/** The goal of a repository workspace is the oracle's reproduction or the one best guess; both are told apart by their synthetic test id. */
+export function isBestGuessGoal(goal: Pick<Goal, 'tests'>): boolean {
+  const first = goal.tests[0];
+  return first !== undefined && isBestGuessTestId(first);
+}
+
+/** Notes the repository mode adds to a `done` (and to the transcript): the oracle's outcome, the scope, the known failures. */
+export function repositoryNotes(repo: RepositoryMode): string[] {
+  const notes = [`oracle from the issue: ${repo.oracleOutcome} (${repo.oracleNote})`, `regression scope: ${repo.scope.testFiles.length} test file${repo.scope.testFiles.length === 1 ? '' : 's'} (${repo.scope.tier}): ${repo.scope.note}`];
+  if (repo.knownFailures > 0) notes.push(`${repo.knownFailures} scoped test${repo.knownFailures === 1 ? '' : 's'} fail at the base commit too (pre-existing, not goals)`);
+  return notes;
+}
+
+/**
+ * The module files a localisation names, non-test, top REPO_MODULE_FILES_MAX: the file beam in
+ * order, else the files of the located sites, else the traceback anchors resolved to workspace paths.
+ */
+export function moduleFilesOf(loc: LocalizeResult | null, traceback: string | null, files: ReadonlyMap<string, SourceFile>): string[] {
+  const out: string[] = [];
+  const push = (p: string): void => {
+    if (!isTestPath(p) && files.has(p) && !out.includes(p) && out.length < REPO_MODULE_FILES_MAX) out.push(p);
+  };
+  if (loc !== null) {
+    for (const f of loc.files) push(f.path);
+    if (out.length === 0) for (const s of loc.sites) push(s.file.path);
+  }
+  if (out.length === 0 && traceback !== null) {
+    for (const m of traceback.matchAll(/File "([^"]+)"/g)) {
+      const raw = (m[1] ?? '').replace(/^\.\//, '');
+      if (files.has(raw)) push(raw);
+      else for (const p of files.keys()) if (raw.endsWith(`/${p}`)) push(p);
+    }
+  }
+  return out;
+}
+
 // ---------------------------------------------------------------------------------------
 // The synthesizer
 // ---------------------------------------------------------------------------------------
@@ -319,6 +455,8 @@ export interface RunScratch {
   restored: boolean;
   /** goal id → the test-passing candidate the engine rejected: how often (same diff), whether a re-proposal is due (REPROPOSE_MAX), and its evidence */
   rejected: Map<string, { applied: AppliedCandidate; hash: string; times: number; pending: boolean; evidence: ProposalEvidence | null }>;
+  /** repository mode: the reproduction the oracle search just ran on this workspace, reused by the baseline that follows it (one run, not two) */
+  freshRepro: VerifyReproResult | null;
 }
 
 export class LedgerSieveSynthesizer implements Synthesizer {
@@ -352,7 +490,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   private scratchFor(runId: string): RunScratch {
     let s = this.scratch.get(runId);
     if (s === undefined) {
-      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, previousBaseline: null, restored: false, rejected: new Map() };
+      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, previousBaseline: null, restored: false, rejected: new Map(), freshRepro: null };
       this.scratch.set(runId, s);
     }
     return s;
@@ -417,13 +555,21 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         if (read !== null) return read;
       }
       const goal = scratch.lastCommit === null ? undefined : mem.goals.find((g) => g.id === scratch.lastCommit?.goalId);
-      const command = baselineCommand(ctx);
+      // repository mode: the baseline's command is the regression scope, never the whole suite
+      const command = mem.baseline?.command ?? baselineCommand(ctx);
+      const repo = mem.repository;
       const changed = mem.lastChangeStep === null ? [] : (mem.committed.at(-1)?.files ?? []).map((f) => f.path);
       this.emit(ctx, 'verify', `${changed.length > 0 ? `${changed.join(', ')} changed since the engine's last test run` : 'the engine has not run the suite on this workspace'}: ${command}`);
       // §5.1 row 2: the run claims the fixed goals now, so the engine's done_<j> Noul judges them on this step's parsed output
       const run = proposeRun(ctx, command, 'full', goal, changed.length > 0, this.runTimeout(ctx, mem), undefined, mem);
+      const shown = repo === undefined ? baseline : scopedPartOf(baseline);
       if (changed.length === 0) {
         if (!never) return run;
+        if (repo !== undefined) {
+          const repro = repo.repro === null ? 'no reproduction oracle from the issue text' : `the issue's reproduction ${repo.repro.spec.testId} ${repo.lastRepro?.verdict.pass === true ? 'passes' : 'fails'}`;
+          const known = `${shown.failed + shown.errors} of ${shown.total} scoped tests fail at the base commit`;
+          return { ...run, goal: clip(`${ESTABLISH_GOAL_REPOSITORY} (${known}; ${repro})`, PLAN_ITEM_MAX_CHARS) };
+        }
         const failing = `${baseline.failed + baseline.errors} of ${baseline.total} fail${baseline.failed + baseline.errors === 1 ? 's' : ''} in the synthesizer's own run`;
         return { ...run, goal: clip(`${ESTABLISH_GOAL} (${failing})`, PLAN_ITEM_MAX_CHARS) };
       }
@@ -433,14 +579,17 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       // the same measurement as data: the run before the patch (`previousBaseline`) against the
       // fresh baseline on the patched workspace, which this `run` re-executes in the engine.
       const last = mem.lastEngineRun;
-      const expectation = `expect ${baseline.passed} of ${baseline.total} tests to pass${last === null ? '' : `, ${last.passed} passed in the last run`}`;
+      const reproNow = repo !== undefined && repo.repro !== null && repo.lastRepro !== null ? ` and the reproduction to ${repo.lastRepro.verdict.pass ? 'pass' : 'still fail'}` : '';
+      const expectation = `expect ${shown.passed} of ${shown.total} tests to pass${reproNow}${last === null ? '' : `, ${last.passed} passed in the last run`}`;
       const commit = scratch.lastCommit;
       const sel = commit?.evidence ? selectionFrom(commit.evidence) : { selection: 'sieve' as const, candidatesTested: 0, arbitrated: false };
       const evidence = scratch.previousBaseline === null || commit === null ? null : runEvidence(scratch.previousBaseline, baseline, goal, sel, command);
       return withEvidence({ ...run, goal: clip(`${run.goal} (${changed.join(', ')} changed since the last test run; ${expectation})`, PLAN_ITEM_MAX_CHARS) }, evidence);
     }
 
-    if (allPass(baseline)) {
+    // Repository mode: a green scoped run at the base commit is not a finished task (the goals come
+    // from the oracle, not from the scoped run), so green means every goal fixed as well.
+    if (allPass(baseline) && (mem.repository === undefined || (mem.goals.length > 0 && mem.goals.every((g) => g.status === 'fixed')))) {
       // proposeDone applies §5.5 itself: `done` as soon as the engine has executed the green run on this
       // workspace (read from the window, else from mem.lastEngineRun, which outlives it), never another run then.
       this.emit(ctx, 'done', `baseline green: ${baseline.passed} tests pass, ${mem.committed.length} fix${mem.committed.length === 1 ? '' : 'es'} committed`);
@@ -458,7 +607,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     if (goal === null) {
       const reasons = mem.goals.filter((g) => g.status === 'parked').map((g) => g.parkedReason ?? 'parked');
       this.emit(ctx, 'done', `every goal parked: ${reasons.join('; ') || 'no goal'}`);
-      return proposeDone(ctx, mem, 'partial', prior);
+      return proposeDone(ctx, mem, 'partial', prior, mem.repository === undefined ? [] : repositoryNotes(mem.repository));
     }
     this.emit(ctx, 'goal', `${goal.id}: ${goal.planItem} (${goal.tests.length} test${goal.tests.length === 1 ? '' : 's'}, attempt ${goal.attempts}, picked by ${pick.method})`);
     const stash = scratch.rejected.get(goal.id);
@@ -472,6 +621,15 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       this.emit(ctx, 'repropose', `${goal.id}: proposing the rejected test-passing candidate again (${stash.times} of ${REPROPOSE_MAX} rejections)`);
       r = { kind: 'commit', applied: stash.applied, allGoalTestsPass: true, trace: { ...newTrace(goal, mem.oracle), outcome: 'fixed', winner: stash.applied } };
       evidence = stash.evidence;
+    } else if (isBestGuessGoal(goal)) {
+      // one best guess per run (docs brief item 3): after its commit (or the engine's rejection of it) the goal parks
+      if (mem.repository?.bestGuessCommitted === true) r = { kind: 'parked', reason: BEST_GUESS_REJECTED_REASON, trace: { ...newTrace(goal, mem.oracle), outcome: 'exhausted' } };
+      else r = await this.deps.searchBestGuess(ctx, mem, goal);
+      if (r.kind === 'commit') {
+        const e = commitEvidence(mem, r, goal);
+        // nothing verified the fix: the evidence names no goal test and says the top-k were ranked, not sieved
+        evidence = e === null ? null : { ...e, goalTests: [], selection: 'rank' };
+      }
     } else {
       r = await this.deps.searchSubGoal(ctx, mem, goal);
       if (r.kind === 'commit') evidence = commitEvidence(mem, r, goal);
@@ -490,9 +648,17 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         // A commit changes the goal's files: it re-localises next time, and parked goals that suspected those files re-open (§5.3).
         mem.localizeCache.delete(goal.id);
         reopenOnChange(mem, r.applied.files.map((f) => f.path));
+        const repo = mem.repository;
+        if (repo !== undefined && isBestGuessGoal(goal)) {
+          // the one unverified commit of the run: the goal parks with the reason, the plan says what was not verified
+          repo.bestGuessCommitted = true;
+          park(goal, BEST_GUESS_PARK_REASON);
+          return proposePatch(ctx, r.applied, goal, mem, undefined, r.trace, evidence, { goalText: bestGuessGoalText(r.applied, evidence ?? undefined), notes: [BEST_GUESS_NOTE] });
+        }
+        const notes = repo?.repro?.strength === 'weak' ? [`weak reproduction oracle ${repo.repro.spec.testId}: the criterion only says the observed wrong value changed; the regression scope (${repo.scope.testFiles.length} files) is the other check`] : [];
         // §5.1 row 1 with evidence: the shadow run the commit rests on goes with the patch, so the
         // engine's risk and judge stages read a verified change (loop/state.ts proposal.evidence).
-        return proposePatch(ctx, r.applied, goal, mem, r.note, r.trace, evidence);
+        return proposePatch(ctx, r.applied, goal, mem, r.note, r.trace, evidence, { notes });
       }
       case 'parked': {
         park(goal, r.reason);
@@ -557,13 +723,14 @@ export class LedgerSieveSynthesizer implements Synthesizer {
 
   /** The cheap evidence step: a goal-subset `run` on the workspace; the search resumes from memory next step. The step's trace goes into `rawText` (§5.6: totals per record). */
   private subsetRun(ctx: SynthesisContext, mem: RunMemory, goal: Goal, trace: GoalSearchTrace): Proposal {
-    const command = mem.baseline === null ? baselineCommand(ctx) : subsetCommand(mem.oracle, goal, workspaceLane(ctx.workspaceInfo.root), { command: mem.baseline.command, workspaceRoot: ctx.workspaceInfo.root });
+    // repository mode: the goal's synthetic test names no file the runner could scope to; the scoped command is the cheap run
+    const command = mem.baseline === null ? baselineCommand(ctx) : mem.repository !== undefined ? mem.baseline.command : subsetCommand(mem.oracle, goal, workspaceLane(ctx.workspaceInfo.root), { command: mem.baseline.command, workspaceRoot: ctx.workspaceInfo.root });
     return proposeRun(ctx, command, 'subset', goal, false, this.runTimeout(ctx, mem), trace, mem);
   }
 
-  /** §4.1 runTimeoutMs once the oracle is fitted, the engine's command timeout before. */
+  /** §4.1 runTimeoutMs once the oracle is fitted, the engine's command timeout before; a repository's scoped run may use the run's maximum. */
   private runTimeout(ctx: SynthesisContext, mem: RunMemory): number {
-    const cap = Math.min(ctx.limits.commandTimeoutMs, ctx.limits.maxCommandTimeoutMs);
+    const cap = mem.repository === undefined ? Math.min(ctx.limits.commandTimeoutMs, ctx.limits.maxCommandTimeoutMs) : Math.min(ctx.limits.maxCommandTimeoutMs, REPO_BASELINE_TIMEOUT_MS);
     return mem.baseline === null ? cap : Math.min(cap, Math.max(1, mem.oracle.runTimeoutMs));
   }
 
@@ -585,8 +752,10 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     let undoneGoal = '';
     if (last !== null) {
       const goal = mem.goals.find((g) => g.id === last.goalId);
-      if (goal !== undefined && goal.status === 'fixed') {
+      if (goal !== undefined && (goal.status === 'fixed' || (goal.status === 'parked' && goal.parkedReason === BEST_GUESS_PARK_REASON))) {
+        // a best-guess goal parks at its commit; it re-opens for the one re-proposal and parks again after it (bestGuessCommitted stays)
         goal.status = 'open';
+        delete goal.parkedReason;
         undoneGoal = goal.id;
       }
       const undone = mem.committed.pop();
@@ -618,11 +787,12 @@ export class LedgerSieveSynthesizer implements Synthesizer {
    */
   private async rebaseline(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch): Promise<Proposal | null> {
     const files = await this.deps.loadFiles(ctx);
+    const paths = (await ctx.workspace.listCandidates()).map((c) => c.path);
+    const layout = detectLayout([...files.keys(), ...paths]);
+    if (layout !== 'quixbugs' && (mem.repository !== undefined || isRepositoryWorkspace(ctx.workspaceInfo.testCommand, paths))) return this.rebaselineRepository(ctx, mem, scratch, files, paths);
     const command = baselineCommand(ctx);
     const timeoutMs = Math.min(ctx.limits.commandTimeoutMs, ctx.limits.maxCommandTimeoutMs);
     const { summary: baseline, output } = await this.deps.runTests(ctx, command, timeoutMs);
-    const paths = (await ctx.workspace.listCandidates()).map((c) => c.path);
-    const layout = detectLayout([...files.keys(), ...paths]);
     const sourcePaths = [...files.keys()];
     const clusterOpts = { output, sourcePaths, ...(layout === 'quixbugs' ? { defaultFiles: sourcePaths.filter((p) => p !== 'node.py') } : {}) };
 
@@ -671,6 +841,165 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       mem.goals = reconcile(mem.goals, clusterFailures(baseline, clusterOpts), ctx.plan);
     }
     return null;
+  }
+
+  /**
+   * Repository mode (a Django/sympy suite or a large package: the whole suite is hours, and the
+   * task's failing tests are not in the workspace). The ledger's baseline is a scoped regression
+   * run (≤ 6 test files that import or are named after the localised modules) merged with the
+   * issue's reproduction as one failing test; goals come from the oracle (`initRepository`, once
+   * per run: one Jev request + one script run), or one best guess when there is none. Failures of
+   * the scoped run at the base commit are known failures, never goals. After a patch the scoped
+   * run and the reproduction are measured again on the workspace: the goal is fixed iff the
+   * reproduction passes; a regression is a newly failing scoped test.
+   */
+  private async rebaselineRepository(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, files: Map<string, SourceFile>, paths: string[]): Promise<Proposal | null> {
+    const persisted: (PersistedSearchState & Partial<PersistedRepositoryState>) | null = isPersistedSearchState(ctx.synthState) ? ctx.synthState : null;
+    if (!scratch.restored) {
+      // §2.1 durability: tried hashes, commit hashes, claims and the goal placeholders come from the checkpoint
+      rebuildFromPlan(mem, ctx.plan, persisted);
+      scratch.restored = true;
+    }
+    const first = mem.repository === undefined;
+    let repo = mem.repository;
+    if (repo === undefined) {
+      const restored = repositoryFromPersisted(persisted);
+      if (restored !== null) {
+        repo = restored;
+        mem.repository = repo;
+        if (!mem.goals.some((g) => g.id === repo?.goalId)) mem.goals.push(this.repositoryGoal(ctx, mem, repo.repro === null ? null : repo.repro.spec.testId, repo.moduleFiles));
+        this.emit(ctx, 'oracle', `restored from the checkpoint: ${repo.oracleOutcome} (${repo.oracleNote}); regression scope ${repo.scope.testFiles.length} file${repo.scope.testFiles.length === 1 ? '' : 's'}`);
+      } else {
+        repo = await this.initRepository(ctx, mem, scratch, files, paths);
+      }
+    }
+    const timeoutMs = Math.min(ctx.limits.maxCommandTimeoutMs, REPO_BASELINE_TIMEOUT_MS);
+    let scoped: TestRunSummary;
+    if (repo.scope.command === null) {
+      scoped = emptyScopedSummary(baselineCommand(ctx));
+    } else {
+      scoped = (await this.deps.runTests(ctx, repo.scope.command, timeoutMs)).summary;
+      if (scoped.timedOut && repo.scope.testFiles.length > REPO_SCOPE_RETRY_FILES) {
+        // §4.1 park is the last resort: first the scope shrinks to its best files and runs once more
+        const smaller = await this.deps.regressionScope(ctx, repo.moduleFiles, paths, REPO_SCOPE_RETRY_FILES);
+        if (smaller.command !== null) {
+          this.emit(ctx, 'scope', `the scoped baseline timed out after ${timeoutMs} ms on ${repo.scope.testFiles.length} files; retrying on ${smaller.testFiles.join(', ')}`);
+          repo.scope = smaller;
+          scoped = (await this.deps.runTests(ctx, smaller.command, timeoutMs)).summary;
+        }
+      }
+    }
+    // the reproduction on the committed workspace: the oracle search's own run the first time, a re-run after every change
+    let repro: VerifyReproResult | null = null;
+    if (repo.repro !== null) {
+      repro = scratch.freshRepro ?? (await this.deps.verifyRepro(ctx, repo.repro.spec));
+      scratch.freshRepro = null;
+    }
+    const baseline = mergeSummaries(scoped, repro?.summary ?? null);
+    scratch.previousBaseline = mem.baseline;
+    mem.baseline = baseline;
+    scratch.baselineStep = ctx.step;
+    const wall = this.wallRemaining(ctx, scratch);
+    // the oracle model: the scoped run is the full-suite scope, the reproduction the goal-subset one (§4.1 t_run per scope)
+    const fitted = fitOracle(scoped, { commandTimeoutMs: ctx.limits.maxCommandTimeoutMs, wallRemainingMs: wall, workspace: { git: ctx.workspaceInfo.git } });
+    const goalSubset = repro === null ? fitted.tRunMs.fullSuite : Math.max(1, Math.floor(repro.result.durationMs));
+    mem.oracle = { ...fitted, perTestTimeoutMs: null, tRunMs: { goalSubset, fullSuite: fitted.tRunMs.fullSuite }, lanes: laneCount(goalSubset, { git: ctx.workspaceInfo.git }) };
+    mem.stepBudget = freshBudget(ctx.limits, mem.oracle, wall, { now: this.deps.now });
+    mem.bases = [committedBase(files, baseline)];
+    // the establishing localisation was made on these very files; after a change the sites may have moved
+    if (!first) mem.localizeCache.clear();
+    mem.subsetBaselines = new Map();
+    mem.deferred = new Map();
+    scratch.rejected.clear();
+    repo.knownFailures = scoped.failed + scoped.errors;
+    repo.lastRepro = repro;
+    const goal = mem.goals.find((g) => g.id === repo?.goalId);
+    if (goal !== undefined && repro !== null) {
+      goal.failures = [repro.failure];
+      if (repro.verdict.pass) {
+        if (goal.status !== 'fixed') noteCommit(goal, true);
+      } else if (goal.status === 'fixed') goal.status = 'open';
+    }
+    attachPlanItems(mem.goals, ctx.plan.remaining);
+    const reproText = repro === null ? 'no reproduction oracle' : `reproduction ${repo.repro?.spec.testId ?? ''} ${repro.verdict.pass ? 'PASSES' : 'fails'} (${repro.verdict.actual.slice(0, 80)}) in ${repro.result.durationMs} ms`;
+    this.emit(ctx, 'baseline', `${scoped.passed}/${scoped.total} scoped tests pass, ${scoped.failed} failed, ${scoped.errors} errors in ${scoped.durationMs} ms; ${reproText} (repository, ${mem.oracle.runner}, ${repo.scope.command ?? 'no scoped command'})`);
+    if (scoped.timedOut) {
+      for (const g of mem.goals) if (g.status !== 'fixed') park(g, SUITE_TOO_SLOW);
+      this.emit(ctx, 'verify', `${SUITE_TOO_SLOW}: the scoped baseline timed out after ${timeoutMs} ms; ${mem.goals.length} goal${mem.goals.length === 1 ? '' : 's'} parked`);
+      return proposeRun(ctx, baseline.command, 'full', undefined, false, timeoutMs, undefined, mem);
+    }
+    return null;
+  }
+
+  /** The one goal of repository mode: the reproduction (its synthetic test id) or the best guess; a checkpoint placeholder with the same test keeps its id and state. */
+  private repositoryGoal(ctx: SynthesisContext, mem: RunMemory, reproTestId: string | null, suspectedFiles: readonly string[]): Goal {
+    const testId = reproTestId ?? bestGuessTestId(ctx.task);
+    const prior = mem.goals.find((g) => g.tests.includes(testId));
+    const next = Math.max(0, ...mem.goals.map((g) => Number(/^g(\d+)$/.exec(g.id)?.[1] ?? 0))) + 1;
+    const goal = newGoal(prior?.id ?? `g${next}`, [testId], reproTestId === null ? [bestGuessFailure(ctx.task)] : [], [...suspectedFiles]);
+    if (prior !== undefined) {
+      goal.status = prior.status === 'active' ? 'open' : prior.status;
+      goal.attempts = prior.attempts;
+      goal.budgetHits = prior.budgetHits;
+      goal.phase = prior.phase;
+      if (prior.parkedReason !== undefined) goal.parkedReason = prior.parkedReason;
+      if (prior.planItem !== '' && suspectedFiles.length === 0) goal.planItem = prior.planItem;
+      mem.goals = mem.goals.filter((g) => g !== prior);
+    }
+    return goal;
+  }
+
+  /**
+   * The establishing step of repository mode, once per run: the oracle from the issue (one Jev
+   * request, one script run in the workspace), the goal it yields (or the best guess), one
+   * localisation of that goal from the task text (its file beam names the module files; the
+   * result is cached for the search), and the regression scope over those modules.
+   */
+  private async initRepository(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, files: Map<string, SourceFile>, paths: string[]): Promise<RepositoryMode> {
+    const packageName = packageNameOf(paths);
+    const framework = frameworkOf(packageName);
+    const found = await this.deps.findOracle(ctx, { packageName, framework });
+    mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - found.requests);
+    this.emit(ctx, 'oracle', `${found.outcome}: ${found.note} (${found.requests} request${found.requests === 1 ? '' : 's'}, ${found.durationMs} ms, package ${packageName ?? '?'})`);
+    const goal = this.repositoryGoal(ctx, mem, found.goal?.spec.testId ?? null, []);
+    if (found.goal !== null) goal.failures = [found.goal.failure];
+    mem.goals = [...mem.goals.filter((g) => g.id !== goal.id), goal];
+    const repo: RepositoryMode = {
+      goalId: goal.id,
+      moduleFiles: [],
+      scope: { testFiles: [], command: null, tier: 'none', note: 'not chosen yet' },
+      repro: found.goal === null || found.strength === null ? null : { spec: found.goal.spec, strength: found.strength },
+      oracleOutcome: found.outcome,
+      oracleNote: found.note,
+      traceback: found.traceback,
+      bestGuessCommitted: false,
+      knownFailures: 0,
+      lastRepro: null,
+    };
+    mem.repository = repo;
+    scratch.freshRepro = found.goal === null ? null : { result: found.goal.result, verdict: found.goal.verdict, summary: found.goal.summary, failure: found.goal.failure };
+    // one localisation from the task text (and the oracle's anchors): the module files bound the scope, the sites serve the search
+    mem.bases = [committedBase(files, emptyScopedSummary(baselineCommand(ctx)))];
+    let loc: LocalizeResult | null = null;
+    try {
+      loc = await this.deps.locate(ctx, mem, goal);
+    } catch (e) {
+      if (e instanceof AbortError) throw e;
+      this.emit(ctx, 'localize', `localisation failed: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    if (loc !== null) {
+      mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - loc.requests);
+      mem.localizeCache.set(goal.id, loc);
+    }
+    const moduleFiles = moduleFilesOf(loc, repo.traceback, files);
+    goal.suspectedFiles = moduleFiles;
+    goal.planItem = planItemFor(goal);
+    attachPlanItems([goal], ctx.plan.remaining);
+    repo.moduleFiles = moduleFiles;
+    repo.scope = await this.deps.regressionScope(ctx, moduleFiles, paths);
+    this.emit(ctx, 'localize', `${goal.id}: ${moduleFiles.length > 0 ? moduleFiles.join(', ') : 'no module file localised'} (${loc?.requests ?? 0} requests, ${loc?.sites.length ?? 0} sites)`);
+    this.emit(ctx, 'scope', `${repo.scope.testFiles.length} test file${repo.scope.testFiles.length === 1 ? '' : 's'} (${repo.scope.tier}): ${repo.scope.testFiles.join(', ') || '-'}; ${repo.scope.note}; command: ${repo.scope.command ?? 'none'}`);
+    return repo;
   }
 }
 

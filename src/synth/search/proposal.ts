@@ -18,6 +18,7 @@ import { clip } from '../../core/text.js';
 import type { Json, JsonObject, PlanDraft, Proposal, ProposalEvidence, SynthesisContext, WindowEntry } from '../../core/types.js';
 import { PLAN_ITEM_MAX_CHARS, PLAN_MAX_OPEN_PROBLEMS, normaliseItem } from '../../loop/plan.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
+import { isReproTestId } from '../oracle/search.js';
 import { unifiedDiff } from '../py/index.js';
 import type { AppliedCandidate, TestRunSummary } from '../types.js';
 import { progress } from '../verify/progress.js';
@@ -75,6 +76,17 @@ export const VERIFY_ITEM = 'verify the full test suite passes';
 export const EVIDENCE_TESTS_MAX = 20;
 
 export type CommitNote = 'possible overfit' | 'partial';
+
+/** The note every best-guess patch carries in `openProblems` (no oracle verified it; the regression scope alone was checked). */
+export const BEST_GUESS_NOTE = 'no reproduction oracle: best-guess fix, unverified';
+
+/** Extra pieces of a `patch` proposal beyond the search's own note: a caller-supplied goal text and human-readable notes. */
+export interface PatchOptions {
+  /** replaces `patchGoalText` (the best-guess path states what it did not verify) */
+  goalText?: string;
+  /** appended to `openProblems` after the parked reasons and the commit note */
+  notes?: readonly string[];
+}
 export type RunScope = 'full' | 'subset';
 export type DoneMode = 'green' | 'partial';
 
@@ -157,6 +169,20 @@ export function patchGoalText(applied: AppliedCandidate, goal: Goal, evidence?: 
   const n = evidence.newlyFailing.length;
   const regressions = n === 0 ? 'no regressions' : `${n} regression${n === 1 ? '' : 's'}`;
   return `apply ${allGoalTestsPass ? 'verified' : 'partial'} fix: ${tests} (${evidence.before.passed}→${evidence.after.passed} of ${evidence.after.total}), ${regressions}; ${c.source}/${c.op} at ${where}`;
+}
+
+/**
+ * The goal text of a best-guess `patch` (no reproduction oracle, docs brief item 3): it states
+ * the one thing that was measured — the scoped regression run kept passing — and that the fix
+ * itself is unverified, so the risk stage reads an honest claim rather than a verified one.
+ */
+export function bestGuessGoalText(applied: AppliedCandidate, evidence?: ProposalEvidence): string {
+  const c = applied.candidate;
+  const where = `${c.site.file.path}:${c.site.line}`;
+  if (evidence === undefined) return `apply best-guess fix (no reproduction oracle; unverified): ${c.source}/${c.op} at ${where}`;
+  const n = evidence.newlyFailing.length;
+  const regressions = n === 0 ? `the ${evidence.after.total} scoped tests still pass as before (${evidence.before.passed}→${evidence.after.passed} of ${evidence.after.total}), no regressions` : `${n} regression${n === 1 ? '' : 's'} in the scoped run`;
+  return `apply best-guess fix (no reproduction oracle; unverified): ${c.source}/${c.op} at ${where}; ${regressions}`;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -520,7 +546,9 @@ export function engineTestCommand(ctx: SynthesisContext, mem: ProposalMemory): s
 export function isFullSuiteRun(ctx: SynthesisContext, mem: ProposalMemory, run: Pick<ExecutedTestRun, 'action' | 'passed'>): boolean {
   const command = engineTestCommand(ctx, mem);
   const labelled = command !== null && run.action === runActionLabel(command);
-  const sameCount = mem.baseline !== null && run.passed === mem.baseline.passed;
+  // a repository baseline merges the issue's reproduction into its counts (oracle/search.ts mergeSummaries); the engine's run has only the scoped tests
+  const reproPassing = mem.baseline?.passing.filter(isReproTestId).length ?? 0;
+  const sameCount = mem.baseline !== null && (run.passed === mem.baseline.passed || run.passed === mem.baseline.passed - reproPassing);
   return labelled || sameCount;
 }
 
@@ -598,20 +626,22 @@ function draft(done: string[], remaining: string[], openProblems: string[]): Pla
  * claimed yet (the next step's `run` claims the item on parsed test output), one item per
  * unfinished goal, notes for parked goals and for the commit's own caveat.
  */
-export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, goal: Goal, mem: ProposalMemory, note?: CommitNote, trace?: GoalSearchTrace, evidence?: ProposalEvidence | null): Proposal {
+export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, goal: Goal, mem: ProposalMemory, note?: CommitNote, trace?: GoalSearchTrace, evidence?: ProposalEvidence | null, opts: PatchOptions = {}): Proposal {
   if (applied.diff.trim().length === 0) throw new ProposalError(`empty diff for ${describeEdit(applied)}`);
   const paths = diffPaths(applied.diff);
   if (paths.length > MAX_PATCH_FILES) throw new ProposalError(`diff touches ${paths.length} files (${paths.join(', ')}); a candidate may touch at most ${MAX_PATCH_FILES}`);
   const notes: string[] = [];
   if (note === 'possible overfit') notes.push(`possible overfit: ${describeEdit(applied)} passes every test, but Jev rated no test-passing candidate a general fix; review the change`);
   if (note === 'partial') notes.push(`partial: ${describeEdit(applied)} fixes some of ${testsLabel(goal)} without regressions; the rest stay open`);
+  notes.push(...(opts.notes ?? []));
   const record: JsonObject = trace ? traceRecord(trace) : { kind: 'patch', goalId: goal.id, ledger: ledgerLine(mem.goals), edit: editRecord(applied) };
   if (note !== undefined) record['note'] = note;
+  if (opts.notes !== undefined && opts.notes.length > 0) record['notes'] = [...opts.notes];
   const e = evidence ?? undefined;
   if (e !== undefined) record['evidence'] = { before: e.before.passed, after: e.after.passed, total: e.after.total, newlyPassing: e.newlyPassing.length, newlyFailing: e.newlyFailing.length };
   return withEvidence(
     {
-      goal: patchGoalText(applied, goal, e),
+      goal: opts.goalText ?? patchGoalText(applied, goal, e),
       action: { kind: 'patch', diff: applied.diff },
       plan: draft([], remainingItems(ctx, mem), openProblemNotes(mem, notes)),
       rawText: rawText(record),
@@ -676,7 +706,7 @@ export function proposeRun(ctx: SynthesisContext, command: string, kind: RunScop
  * evaluators check `tests/` unchanged, §5.6). Fixed goals whose claims were not accepted are
  * claimed again on the `done` step. `trace` (the step's search, if any) goes into `rawText`.
  */
-export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: DoneMode, trace?: GoalSearchTrace): Proposal {
+export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: DoneMode, trace?: GoalSearchTrace, notes: readonly string[] = []): Proposal {
   const ready = doneReadiness(ctx, mem);
   const command = engineTestCommand(ctx, mem);
   // A partial `done` waits only for an executed run and for test files to be untouched; the
@@ -688,7 +718,7 @@ export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: Do
     // The run claims the fixed goals (§5.1 row 2): its parsed output is the evidence their claims need.
     const run = proposeRun(ctx, command, 'full', undefined, true, undefined, trace, mem);
     // The blockers are human-readable and belong in openProblems so the risk stage sees why the run repeats; a deferred claim keeps its note.
-    return { ...run, plan: draft(run.plan.done, run.plan.remaining, openProblemNotes(mem, [...blockers, ...deferredClaimNotes(ctx, mem)])) };
+    return { ...run, plan: draft(run.plan.done, run.plan.remaining, openProblemNotes(mem, [...blockers, ...deferredClaimNotes(ctx, mem), ...notes])) };
   }
   const claims = unclaimedFixedItems(ctx, mem);
   // the green run the readiness check found is the evidence for the standing verification item
@@ -698,19 +728,22 @@ export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: Do
   const commits = commitCount(mem);
   if (mode === 'green') {
     const n = ready.executedRun?.passed ?? mem.baseline?.passed ?? 0;
-    const summary = `all ${n} tests pass; ${commits} ${commits === 1 ? 'fix' : 'fixes'} committed`;
+    // a repository baseline carries the issue's reproduction as one more test; the engine's run shows the scoped tests only
+    const repros = mem.baseline?.passing.filter(isReproTestId) ?? [];
+    const summary = `all ${n} tests pass${repros.length > 0 ? `; the reproduction ${repros.join(', ')} passes` : ''}; ${commits} ${commits === 1 ? 'fix' : 'fixes'} committed`;
     const record: JsonObject = { kind: 'done', mode, ledger: ledgerLine(mem.goals), passed: n, committed: commits, claimed: claims };
     if (trace) record['trace'] = traceRecord(trace);
     return { goal: summary, action: { kind: 'done', summary }, plan: draft(claims, [], []), rawText: rawText(record) };
   }
   const reasons = mem.goals.filter((g) => g.status === 'parked').map((g) => `${testsLabel(g)}: ${g.parkedReason ?? 'parked'}`);
-  const summary = `partial: fixed ${fixed} of ${total} failing tests${reasons.length > 0 ? `; ${reasons.join('; ')}` : ''}`;
+  const summary = `partial: fixed ${fixed} of ${total} failing tests${reasons.length > 0 ? `; ${reasons.join('; ')}` : ''}${notes.length > 0 ? `; ${notes.join('; ')}` : ''}`;
   const record: JsonObject = { kind: 'done', mode, ledger: ledgerLine(mem.goals), fixedTests: fixed, totalTests: total, committed: commits, claimed: claims };
   if (trace) record['trace'] = traceRecord(trace);
+  if (notes.length > 0) record['notes'] = [...notes];
   return {
     goal: clip(summary, PLAN_ITEM_MAX_CHARS),
     action: { kind: 'done', summary: clip(summary, 600) },
-    plan: draft(claims, remainingItems(ctx, mem, new Set(claims)), openProblemNotes(mem)),
+    plan: draft(claims, remainingItems(ctx, mem, new Set(claims)), openProblemNotes(mem, notes)),
     rawText: rawText(record),
   };
 }

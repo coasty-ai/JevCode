@@ -77,6 +77,12 @@ export const WIDEN_CHUNK_SITES = 6;
 export const PERMUTATION_OPERATORS: readonly string[] = ['argument_swap', 'operand_swap', 'index_flip', 'keyword_flip'];
 /** Tiny decrement that encodes list position in the queue key so a source's own order survives the (p desc) sort. */
 const SIEVE_ORDER_EPSILON = 1e-4;
+/**
+ * Best-guess search (no reproduction oracle): sources 1–3 at the localiser's top sites, ranked by
+ * Jev, the top-k run against the scoped regression suite only (§2.4 RANK; the oracle model classes
+ * a repository step as expensive). Three sites is the SKETCH bound (Q5 top-3 covers 36/40).
+ */
+export const BEST_GUESS_TOP_SITES = 3;
 /** Test-derived literals handed to the sources (§3 "test-derived values"); bounded so a long expected list does not flood the pool. */
 const MAX_TEST_LITERALS = 40;
 const MAX_TASK_IDENTIFIERS = 60;
@@ -649,4 +655,103 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
   const partial = commitPartial(mem, goal);
   if (partial !== null) return finish(st, partial);
   return finish(st, { kind: 'parked', reason: describeExhaustion(goal, sites) });
+}
+
+// ---------------------------------------------------------------------------------------
+// Best guess (no reproduction oracle): rank, run the top-k against the regression scope, commit once
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The search for a goal that has no oracle (search/index.ts repository mode, best-guess path):
+ * the issue text localised the sites (`deps.locate`, cached per goal), sources 1–3 are enumerated
+ * at the top BEST_GUESS_TOP_SITES sites, Jev ranks each site's set (`deps.rank`: Choice ≤ 10,
+ * hybrid ≤ 60, compact Nouls above), and the `decideRunPlan` top-k over the merged ranking run
+ * against the scoped regression suite only (`deps.runQueue`, regression-only on a repository).
+ * The commit is the highest-RANKED candidate whose run shows nothing newly failing, once per run
+ * (the controller parks the goal afterwards); with none, the goal is parked with the reason.
+ * `allGoalTestsPass` is false: nothing verified the fix, and the controller says so in the plan.
+ */
+export async function searchBestGuess(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, deps: SubGoalDeps): Promise<SubGoalResult> {
+  goal.status = 'active';
+  const trace = newTrace(goal, mem.oracle);
+  trace.runMode = 'RANK';
+  checkAborted(ctx);
+  let loc = mem.localizeCache.get(goal.id);
+  if (loc === undefined) {
+    loc = await deps.locate(ctx, mem, goal);
+    spend(mem, loc.requests);
+    trace.jevRequests += loc.requests;
+    mem.localizeCache.set(goal.id, loc);
+  }
+  const committed = mem.bases.find((b) => b.origin === 'committed');
+  if (committed === undefined) return finish({ ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0 }, { kind: 'parked', reason: 'no committed base to search from' });
+  const sites = loc.sites.slice(0, BEST_GUESS_TOP_SITES);
+  trace.sitesConsidered = sites.length;
+  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0 };
+  if (sites.length === 0) return finish(st, { kind: 'parked', reason: `no site located for ${goal.tests[0] ?? goal.id} from the issue text` });
+
+  // sources 1–3 at each site, fresh (not tried, not the unchanged line)
+  const opts = enumerateOptions(committed, goal, ctx.task);
+  const perSite: { site: Site; cands: Candidate[] }[] = [];
+  for (const site of sites) {
+    checkAborted(ctx);
+    const seen = new Set<string>();
+    const cands: Candidate[] = [];
+    for (const source of SEED_SOURCES) {
+      const src = source === 'template' ? deps.seeds.template : source === 'donor' ? deps.seeds.donor : deps.seeds.mutation;
+      for (const c of src.enumerate(site, opts)) {
+        const key = `${c.site.line}|${c.site.kind}|${c.text}`;
+        if (seen.has(key) || (c.site.kind === 'replace' && c.text.trim() === c.site.currentLine.trim()) || alreadyTried(c, committed, mem)) continue;
+        seen.add(key);
+        cands.push(c);
+      }
+    }
+    trace.candidatesEnumerated += cands.length;
+    for (const c of cands) trace.bySource[c.source].enumerated += 1;
+    if (cands.length > 0) perSite.push({ site, cands });
+  }
+  const total = perSite.reduce((n, s) => n + s.cands.length, 0);
+  if (total === 0) return finish(st, { kind: 'parked', reason: `no candidate enumerated by ${SEED_SOURCES.join(', ')} at ${sites.length} site${sites.length === 1 ? '' : 's'} for ${goal.tests[0] ?? goal.id}` });
+
+  // Jev ranks each site's set; the sets merge by probability (§2.4: K is a budget, never a threshold)
+  const ranked: { candidate: Candidate; probability: number; site: Site }[] = [];
+  for (const { site, cands } of perSite) {
+    if (mem.stepBudget.jevRequestsLeft <= 0) break;
+    const r = await deps.rank(ctx, mem, cands, site, goal);
+    spend(mem, r.requests);
+    trace.jevRequests += r.requests;
+    trace.candidatesRanked += r.ranked.length;
+    for (const x of r.ranked) ranked.push({ candidate: x.candidate, probability: x.probability, site });
+  }
+  if (ranked.length === 0) return finish(st, { kind: 'budget' });
+  ranked.sort((a, b) => b.probability - a.probability);
+  const first = sites[0];
+  const plan = decideRunPlan(ranked.length, first ?? { kind: 'replace' }, mem.oracle, mem.stepBudget);
+  if (plan.runsAllowed <= 0) return finish(st, { kind: 'budget' });
+  const k = Math.min(plan.mode === 'RANK' ? plan.k : ranked.length, plan.runsAllowed, ranked.length);
+  const top = ranked.slice(0, k);
+  const jobs: VerifyJob[] = top.map((r) => ({ candidate: r.candidate, base: committed, p: r.probability, sourcePrior: 1, key: [committed.summary.passed, r.probability, 1] }));
+  const { queued } = st.queue.addAll(jobs);
+  if (queued.length === 0) return finish(st, { kind: 'parked', reason: `every ranked candidate was already tried at ${sites.length} site${sites.length === 1 ? '' : 's'}` });
+  const results = await deps.runQueue(ctx, mem, st.queue, goal, queued.length);
+  trace.candidatesTested += results.length;
+  trace.testRuns += results.reduce((n, r) => n + 1 + (r.full === undefined ? 0 : 1), 0);
+  for (const r of results) {
+    const row = trace.bySource[r.applied.candidate.source];
+    row.tested += 1;
+    if (r.status === 'plausible') row.passed += 1;
+  }
+  // the highest-ranked candidate whose scoped run shows nothing newly failing
+  const order = new Map(top.map((r, i) => [r.candidate.id, i]));
+  const ok = results
+    .filter((o) => o.status === 'plausible' && !o.progress.regressed && (o.full === undefined || !o.full.timedOut) && !o.subset.timedOut)
+    .sort((a, b) => (order.get(a.applied.candidate.id) ?? 1e9) - (order.get(b.applied.candidate.id) ?? 1e9));
+  trace.plausible = ok.length;
+  const pick = ok[0];
+  if (pick === undefined) {
+    if (results.length === 0) return finish(st, { kind: 'budget' });
+    const scoped = committed.summary.total;
+    return finish(st, { kind: 'parked', reason: `none of the ${results.length} ranked candidates keeps the ${scoped} scoped test${scoped === 1 ? '' : 's'} passing` });
+  }
+  return finish(st, { kind: 'commit', applied: pick.applied, allGoalTestsPass: false, outcome: pick });
 }

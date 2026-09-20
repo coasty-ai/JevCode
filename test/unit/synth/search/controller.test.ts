@@ -8,7 +8,14 @@ import { describe, expect, it } from 'vitest';
 
 import type { Proposal, SynthesisContext, WindowEntry } from '../../../../src/core/types.js';
 import { toJson } from '../../../../src/core/json.js';
-import { DEFAULT_TEST_COMMAND, ESTABLISH_GOAL, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, lastExecutedActionKind, lastWorkspaceChangeStep, normaliseTestCommand, patchNotExecutedLastStep, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
+import { DEFAULT_TEST_COMMAND, ESTABLISH_GOAL, ESTABLISH_GOAL_REPOSITORY, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, lastExecutedActionKind, lastWorkspaceChangeStep, mentionedInTask, moduleFilesOf, normaliseTestCommand, patchNotExecutedLastStep, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
+import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, bestGuessTestId, mergeSummaries } from '../../../../src/synth/oracle/index.js';
+import type { OracleSearch, ReproGoal, ReproSpec, VerifyReproResult } from '../../../../src/synth/oracle/index.js';
+import { dropMemory } from '../../../../src/synth/search/memory.js';
+import type { PersistedMemoryState as PersistedWithRepository } from '../../../../src/synth/search/memory.js';
+import { BEST_GUESS_NOTE, runActionLabel } from '../../../../src/synth/search/proposal.js';
+import type { VerifyOutcome } from '../../../../src/synth/search/types.js';
+import { applyCandidate as applyForOutcome, progress as progressOf } from '../../../../src/synth/verify/index.js';
 import type { BaselineRun, RunMemory, SearchDeps } from '../../../../src/synth/search/index.js';
 import { GOAL_ITEM_RE, VERIFY_ITEM } from '../../../../src/synth/search/proposal.js';
 import type { SubGoalResult } from '../../../../src/synth/search/subgoal.js';
@@ -17,7 +24,7 @@ import type { Goal, PersistedSearchState } from '../../../../src/synth/search/ty
 import { isPersistedSearchState } from '../../../../src/synth/search/types.js';
 import type { SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
-import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, siteAt, sourceFile, summary } from './controller-fakes.js';
+import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
 import { makeTrace, patchEntry, runEntry } from './proposal-helpers.js';
 
 // ---------------------------------------------------------------------------------------
@@ -48,6 +55,14 @@ interface HarnessOptions {
   results?: ((goal: Goal, mem: RunMemory) => SubGoalResult)[];
   handleDirective?: SearchDeps['handleDirective'];
   pickFirstOpen?: boolean;
+  /** repository mode: the oracle search, the localiser, the regression scope, the reproduction re-run and the best-guess search, scripted */
+  findOracle?: SearchDeps['findOracle'];
+  locate?: SearchDeps['locate'];
+  regressionScope?: SearchDeps['regressionScope'];
+  verifyRepro?: SearchDeps['verifyRepro'];
+  bestGuess?: ((goal: Goal, mem: RunMemory) => SubGoalResult)[];
+  /** workspace files handed to loadFiles (default: gcd.py) */
+  files?: SourceFile[];
 }
 
 interface Harness {
@@ -66,10 +81,35 @@ function harness(o: HarnessOptions = {}): Harness {
   const runTestCommands: string[] = [];
   const baselines = [...(o.baselines ?? [failingBaseline()])];
   const results = [...(o.results ?? [])];
+  const guesses = [...(o.bestGuess ?? [])];
+  const stubs = unusedRepositoryDeps();
   const deps: SearchDeps = {
     loadFiles: async () => {
       calls.push('loadFiles');
-      return new Map([[file.path, file]]);
+      return new Map((o.files ?? [file]).map((f) => [f.path, f]));
+    },
+    findOracle: async (ctx, input) => {
+      calls.push('findOracle');
+      return (o.findOracle ?? stubs.findOracle)(ctx, input);
+    },
+    locate: async (ctx, mem, goal) => {
+      calls.push(`locate:${goal.id}`);
+      return (o.locate ?? stubs.locate)(ctx, mem, goal);
+    },
+    regressionScope: async (ctx, moduleFiles, paths, max) => {
+      calls.push('regressionScope');
+      return (o.regressionScope ?? stubs.regressionScope)(ctx, moduleFiles, paths, max);
+    },
+    verifyRepro: async (ctx, spec) => {
+      calls.push('verifyRepro');
+      return (o.verifyRepro ?? stubs.verifyRepro)(ctx, spec);
+    },
+    searchBestGuess: async (_ctx, mem, goal) => {
+      calls.push(`searchBestGuess:${goal.id}`);
+      goalsSearched.push(goal.id);
+      const next = guesses.length > 1 ? guesses.shift() : guesses[0];
+      if (next === undefined) throw new Error('searchBestGuess is not scripted');
+      return next(goal, mem);
     },
     runTests: async (_ctx, command) => {
       calls.push('runTests');
@@ -697,5 +737,274 @@ describe('step policy: the establishing run, one claim per verdict, done after t
     expect(noNewRun).toEqual({ claims: [], deferred: [{ item, claim: { step: 3, judged: 0.1 } }] });
     mem.lastEngineRun = { step: 6, action: `run ${TEST_COMMAND}`, passed: 2, failed: 0, errors: 0 };
     expect(splitClaims(ctxFor({ runId, step: 7, engineRun: false, plan: { remaining: [item, VERIFY_ITEM] } }), { ...notGreen, lastEngineRun: mem.lastEngineRun })).toEqual({ claims: [item], deferred: [] });
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Repository mode: the oracle from the issue, the best guess, the scoped regression run
+// ---------------------------------------------------------------------------------------
+
+describe('repository mode (Django/sympy-shaped workspace): oracle goal, best guess, scoped baseline, persistence', () => {
+  const MODULE = 'django/db/models/fields/__init__.py';
+  const DETECTED = { command: 'python tests/runtests.py --parallel 1', runner: 'django' as const };
+  const SCOPED = 'python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite model_fields.tests';
+  const SCOPED2 = 'python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite model_fields.tests field_defaults.tests';
+  const REPRO_ID = 'repro::abcd1234';
+  const TASK = 'Model Field.__hash__() should be immutable.\n\n```python\nfrom django.db import models\nf = models.CharField(max_length=200)\nd = {f: 1}\nassert f in d\n```\n';
+  const SCOPED_PASSING = ['test_a (model_fields.tests.BasicFieldTests)', 'test_b (model_fields.tests.BasicFieldTests)'];
+  const spec: ReproSpec = { testId: REPRO_ID, chunks: ['from django.db import models', 'f = models.CharField(max_length=200)', 'd = {f: 1}', 'assert f in d'], criterion: { form: 'no_exception' }, expectedText: 'completes without raising AssertionError', blockIndex: 0, options: { packageName: 'django', framework: 'django', timeoutMs: 30_000 } };
+  const failure = { testId: REPRO_ID, call: 'assert f in d', expected: 'completes without raising AssertionError', actual: 'AssertionError: ' };
+  const runResult = (): ReproGoal['result'] => ({ status: 'ran', python: '3.9.6', statements: [], exitCode: 0, durationMs: 900, outputTail: '' });
+  const reproFailing = (): VerifyReproResult => ({ result: runResult(), verdict: { pass: false, actual: 'AssertionError: ', expected: 'completes without raising', reason: 'AssertionError raised at "assert f in d"', statement: null }, summary: summary({ command: `python <${REPRO_ID}>`, failing: [REPRO_ID], failures: [failure], durationMs: 900 }), failure });
+  const reproPassing = (): VerifyReproResult => ({ result: runResult(), verdict: { pass: true, actual: 'completed', expected: 'completes without raising', reason: 'no statement raised', statement: null }, summary: summary({ command: `python <${REPRO_ID}>`, passing: [REPRO_ID], durationMs: 900 }), failure: { ...failure, actual: 'completed' } });
+  const oracleFound = (): OracleSearch => {
+    const r = reproFailing();
+    const goal: ReproGoal = { spec, failure, summary: r.summary, verdict: r.verdict, result: r.result };
+    return { outcome: 'valid', strength: 'strong', goal, extraction: { blocks: [], tracebacks: [], expectations: [] }, judgement: null, choice: null, anchors: [], traceback: null, requests: 1, note: `strong oracle ${REPRO_ID} from block 0`, durationMs: 1200 };
+  };
+  const scopedGreen = (command = SCOPED): BaselineRun => ({ summary: summary({ command, passing: SCOPED_PASSING, failing: [], durationMs: 4000 }), output: '' });
+  const moduleFile = (): SourceFile => sourceFile(MODULE, 'class Field:\n    def __hash__(self):\n        return hash((self.creation_counter, self.model._meta.app_label))\n');
+  const locateModule = (file: SourceFile): SearchDeps['locate'] => async () => ({ files: [{ path: MODULE, probability: 0.9 }], functions: [], sites: [siteAt(file, 3)], requests: 4 });
+  const scopeFor = (): SearchDeps['regressionScope'] => async (_ctx, _files, _paths, max) => (max === 2 ? { testFiles: ['tests/model_fields/tests.py', 'tests/field_defaults/tests.py'], command: SCOPED2, tier: 'stem', note: 'named after the module' } : { testFiles: ['tests/model_fields/tests.py'], command: SCOPED, tier: 'stem', note: 'named after the module' });
+  const repoCtx = (o: Parameters<typeof ctxFor>[0] = {}): ReturnType<typeof fakeCtx> => ctxFor({ testCommand: DETECTED, files: [MODULE, 'django/__init__.py', 'tests/model_fields/tests.py', 'tests/field_defaults/tests.py', 'tests/runtests.py'], task: TASK, engineRun: false, ...o });
+  /** an engine-executed run of a scoped command as the window labels it (provider/actions.ts clips the command to 80 chars) */
+  const scopedRun = (step: number, command: string, counts: { passed: number; failed: number }): WindowEntry => ({ ...executedRun(step, command, counts), action: runActionLabel(command) });
+  /** a scripted commit whose outcome carries the merged scoped + reproduction run, as the repository queue produces it */
+  const reproCommit = (file: SourceFile, reproPasses: boolean, text = '        return hash(self.creation_counter)'): ((goal: Goal, mem: RunMemory) => SubGoalResult) => (goal, mem) => {
+    const base = mem.bases[0]!;
+    const applied = applyForOutcome(cand(siteAt(file, 3), text), base.files);
+    const scoped = summary({ command: SCOPED, passing: SCOPED_PASSING, failing: [], durationMs: 4000 });
+    const full = mergeSummaries(scoped, (reproPasses ? reproPassing() : reproFailing()).summary);
+    const outcome: VerifyOutcome = { job: { candidate: applied.candidate, base, p: 0.9, sourcePrior: 1, key: [base.summary.passed, 0.9, 1] }, applied, subset: full, full, progress: progressOf(base.summary, full), status: 'plausible' };
+    return { kind: 'commit', applied, allGoalTestsPass: reproPasses, outcome, trace: makeTrace({ goalId: goal.id, outcome: reproPasses ? 'fixed' : 'partial', runMode: 'RANK', candidatesTested: 3 }) };
+  };
+
+  it('oracle path: the establishing step finds the oracle, localises once, scopes the regression run and runs it; the ledger holds the reproduction goal; the state persists', async () => {
+    const file = moduleFile();
+    const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: scopeFor() });
+    const ctx = repoCtx({ runId: 'repo-oracle', step: 1 });
+    const p = await h.synth.synthesize(ctx);
+    // the order: oracle (1 request + the base run) → the goal → one localisation → the scope → the scoped baseline; the reproduction is not re-run (the oracle's own run is the baseline's)
+    expect(h.calls).toEqual(['loadFiles', 'findOracle', 'locate:g1', 'regressionScope', 'runTests']);
+    expect(h.runTestCommands).toEqual([SCOPED]);
+    // the establishing run is the scoped command, and its goal text says what the base commit shows
+    expect(p.action).toMatchObject({ kind: 'run', command: SCOPED });
+    expect(p.goal).toBe(`${ESTABLISH_GOAL_REPOSITORY} (0 of 2 scoped tests fail at the base commit; the issue's reproduction ${REPRO_ID} fails)`);
+    expect(p.plan.remaining).toEqual([`fix ${REPRO_ID} in ${MODULE}`, VERIFY_ITEM]);
+    const mem = runMemory(ctx.runId);
+    expect(mem.repository).toMatchObject({ goalId: 'g1', moduleFiles: [MODULE], scope: { testFiles: ['tests/model_fields/tests.py'], command: SCOPED, tier: 'stem' }, repro: { strength: 'strong' }, oracleOutcome: 'valid', bestGuessCommitted: false, knownFailures: 0 });
+    expect(mem.repository?.repro?.spec.testId).toBe(REPRO_ID);
+    // the ledger: one goal, the reproduction as its test; the baseline merges the scoped run and the reproduction
+    expect(mem.goals.map((g) => [g.id, g.tests, g.status, g.suspectedFiles])).toEqual([['g1', [REPRO_ID], 'open', [MODULE]]]);
+    expect(mem.goals[0]?.failures).toEqual([failure]);
+    expect(mem.baseline).toMatchObject({ command: SCOPED, passed: 2, failed: 1, total: 3, failing: [REPRO_ID], durationMs: 4000 });
+    // the oracle model: the reproduction is the goal-subset run, the scoped run the full one; no per-case timeout
+    expect(mem.oracle).toMatchObject({ runner: 'other', tRunMs: { goalSubset: 900, fullSuite: 4000 }, perTestTimeoutMs: null, baselineDurationMs: 4000, lanes: 8 });
+    expect(mem.localizeCache.get('g1')?.sites).toHaveLength(1);
+    // the persisted state carries the mode (the spec's chunks and criterion included)
+    const persisted = persistedOf(ctx) as PersistedWithRepository;
+    expect(persisted.repository).toMatchObject({ goalId: 'g1', moduleFiles: [MODULE], repro: { strength: 'strong', spec: { testId: REPRO_ID, chunks: spec.chunks, criterion: { form: 'no_exception' } } }, scope: { command: SCOPED } });
+    expect(persisted.goals['g1']).toMatchObject({ status: 'open', tests: [REPRO_ID], planItem: `fix ${REPRO_ID} in ${MODULE}` });
+    const phases = ctx.events.filter((e) => e.type === 'synth').map((e) => (e.type === 'synth' ? e.phase : ''));
+    expect(phases).toEqual(['oracle', 'localize', 'scope', 'baseline', 'verify', 'ledger']);
+    expect(ledgerOf(ctx)).toEqual(['fixed 0, open 1, parked 0']);
+  });
+
+  it('oracle path: the search verifies in lanes by the reproduction (evidence names it), the post-patch re-baseline re-runs it on the workspace, and green is the reproduction passing', async () => {
+    const file = moduleFile();
+    let reproNow: () => VerifyReproResult = reproPassing;
+    const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: scopeFor(), verifyRepro: async () => reproNow(), results: [reproCommit(file, true)] });
+    const runId = 'repo-oracle-fix';
+    await h.synth.synthesize(repoCtx({ runId, step: 1 }));
+    // step 2: the engine ran the scoped command; the search (scripted) commits a candidate whose lane run passed the reproduction and the scope
+    const p2 = await h.synth.synthesize(repoCtx({ runId, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] }));
+    expect(p2.action.kind).toBe('patch');
+    expect(h.calls.filter((c) => c.startsWith('searchSubGoal'))).toEqual(['searchSubGoal:g1']);
+    expect(h.calls.filter((c) => c === 'searchBestGuess:g1')).toEqual([]);
+    expect(h.calls.filter((c) => c === 'verifyRepro')).toEqual([]); // the oracle's own base run served the baseline
+    expect(p2.goal).toBe(`apply verified fix: ${REPRO_ID} now passes (2→3 of 3), no regressions; mutation/relational_swap at ${MODULE}:3`);
+    expect(p2.evidence).toMatchObject({ kind: 'shadow_test_run', command: SCOPED, before: { passed: 2, failed: 1, total: 3 }, after: { passed: 3, failed: 0, total: 3 }, newlyPassing: [REPRO_ID], newlyFailing: [], goalTests: [REPRO_ID], selection: 'rank' });
+    expect(p2.plan.openProblems).toEqual([]);
+    const mem = runMemory(runId);
+    expect(mem.goals[0]?.status).toBe('fixed');
+    // step 3: the patch executed → re-baseline: the scoped run again and the reproduction on the workspace (it passes) → the post-patch run claims the item
+    const p3 = await h.synth.synthesize(repoCtx({ runId, step: 3, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 }), executedPatch(2, [MODULE])], plan: { remaining: [`fix ${REPRO_ID} in ${MODULE}`, VERIFY_ITEM] } }));
+    expect(h.calls.filter((c) => c === 'runTests')).toHaveLength(2);
+    expect(h.calls.filter((c) => c === 'verifyRepro')).toHaveLength(1);
+    expect(h.calls.filter((c) => c === 'findOracle')).toHaveLength(1); // never re-asked
+    expect(h.calls.filter((c) => c.startsWith('locate'))).toHaveLength(1); // never re-localised
+    expect(p3.action).toMatchObject({ kind: 'run', command: SCOPED });
+    expect(p3.plan.done).toEqual([`fix ${REPRO_ID} in ${MODULE}`]);
+    expect(p3.goal).toContain('expect 2 of 2 tests to pass and the reproduction to pass');
+    expect(mem.baseline).toMatchObject({ passed: 3, failed: 0, total: 3, passing: [...SCOPED_PASSING, REPRO_ID] });
+    expect(mem.goals[0]?.status).toBe('fixed');
+    // step 4: the engine ran the scoped command green → done (all three "tests": the two scoped and the reproduction)
+    const p4 = await h.synth.synthesize(repoCtx({ runId, step: 4, window: [executedPatch(2, [MODULE]), scopedRun(3, SCOPED, { passed: 2, failed: 0 })], plan: { done: [{ text: `fix ${REPRO_ID} in ${MODULE}`, evidence: { step: 3, judged: 0.9 } }], remaining: [VERIFY_ITEM] } }));
+    expect(p4.action.kind).toBe('done');
+    if (p4.action.kind === 'done') expect(p4.action.summary).toBe(`all 2 tests pass; the reproduction ${REPRO_ID} passes; 1 fix committed`);
+    // had the reproduction still failed on the workspace after the patch, the goal would be open again and green withheld
+    dropMemory(runId);
+    reproNow = reproFailing;
+    const h2 = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: scopeFor(), verifyRepro: async () => reproNow(), results: [reproCommit(file, true)] });
+    const runId2 = 'repo-oracle-nofix';
+    await h2.synth.synthesize(repoCtx({ runId: runId2, step: 1 }));
+    await h2.synth.synthesize(repoCtx({ runId: runId2, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] }));
+    const q3 = await h2.synth.synthesize(repoCtx({ runId: runId2, step: 3, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 }), executedPatch(2, [MODULE])] }));
+    expect(q3.action).toMatchObject({ kind: 'run', command: SCOPED });
+    expect(q3.plan.done).toEqual([]);
+    expect(runMemory(runId2).goals[0]?.status).toBe('open');
+    expect(q3.goal).toContain('expect 2 of 2 tests to pass and the reproduction to still fail');
+  });
+
+  it('a green scoped run at the base commit is not a finished task: without an oracle the best-guess goal is searched, committed once with the unverified note, then parked and the run ends partial', async () => {
+    const file = moduleFile();
+    const bestGuessCommit = (goal: Goal, mem: RunMemory): SubGoalResult => {
+      const base = mem.bases[0]!;
+      const applied = applyForOutcome(cand(siteAt(file, 3), '        return hash(self.creation_counter)'), base.files);
+      const scoped = summary({ command: SCOPED, passing: SCOPED_PASSING, failing: [], durationMs: 4000 });
+      const outcome: VerifyOutcome = { job: { candidate: applied.candidate, base, p: 0.7, sourcePrior: 1, key: [2, 0.7, 1] }, applied, subset: scoped, full: scoped, progress: progressOf(base.summary, scoped), status: 'plausible' };
+      return { kind: 'commit', applied, allGoalTestsPass: false, outcome, trace: makeTrace({ goalId: goal.id, outcome: 'partial', runMode: 'RANK', candidatesTested: 3, plausible: 2 }) };
+    };
+    const h = harness({ files: [file], baselines: [scopedGreen()], locate: locateModule(file), regressionScope: scopeFor(), bestGuess: [bestGuessCommit] });
+    const runId = 'repo-best-guess';
+    const issueId = bestGuessTestId(TASK);
+    const item = `fix ${issueId} in ${MODULE}`;
+    const p1 = await h.synth.synthesize(repoCtx({ runId, step: 1 }));
+    // the scoped baseline is all green, yet the step is the establishing run, never `done`
+    expect(p1.action).toMatchObject({ kind: 'run', command: SCOPED });
+    expect(p1.goal).toBe(`${ESTABLISH_GOAL_REPOSITORY} (0 of 2 scoped tests fail at the base commit; no reproduction oracle from the issue text)`);
+    expect(p1.plan.remaining).toEqual([item, VERIFY_ITEM]);
+    const mem = runMemory(runId);
+    expect(mem.repository).toMatchObject({ repro: null, oracleOutcome: 'no_blocks', bestGuessCommitted: false });
+    expect(mem.goals.map((g) => [g.tests, g.status])).toEqual([[[issueId], 'open']]);
+    expect(mem.baseline).toMatchObject({ passed: 2, failed: 0, total: 2 });
+    // step 2: the best-guess search, not the sub-goal search; the patch says what it is
+    const p2 = await h.synth.synthesize(repoCtx({ runId, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] }));
+    expect(h.calls.filter((c) => c.startsWith('search'))).toEqual(['searchBestGuess:g1']);
+    expect(p2.action.kind).toBe('patch');
+    expect(p2.goal).toBe(`apply best-guess fix (no reproduction oracle; unverified): mutation/relational_swap at ${MODULE}:3; the 2 scoped tests still pass as before (2→2 of 2), no regressions`);
+    expect(p2.plan.openProblems).toEqual([`${item}: parked (${BEST_GUESS_PARK_REASON})`, BEST_GUESS_NOTE]);
+    expect(p2.plan.remaining).toEqual([item, VERIFY_ITEM]);
+    expect(p2.evidence).toMatchObject({ selection: 'rank', goalTests: [], newlyPassing: [], newlyFailing: [], candidatesTested: 3, before: { passed: 2 }, after: { passed: 2 } });
+    expect(mem.goals[0]).toMatchObject({ status: 'parked', parkedReason: BEST_GUESS_PARK_REASON });
+    expect(mem.repository?.bestGuessCommitted).toBe(true);
+    // step 3: the patch executed → the scoped run again (no reproduction to re-run), nothing claimed
+    const p3 = await h.synth.synthesize(repoCtx({ runId, step: 3, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 }), executedPatch(2, [MODULE])] }));
+    expect(p3.action).toMatchObject({ kind: 'run', command: SCOPED });
+    expect(p3.plan.done).toEqual([]);
+    expect(h.calls.filter((c) => c === 'verifyRepro')).toEqual([]);
+    // step 4: the engine ran it → every goal parked → an honest partial done with the oracle's outcome, the scope and the note
+    const p4 = await h.synth.synthesize(repoCtx({ runId, step: 4, window: [executedPatch(2, [MODULE]), scopedRun(3, SCOPED, { passed: 2, failed: 0 })] }));
+    expect(p4.action.kind).toBe('done');
+    if (p4.action.kind === 'done') expect(p4.action.summary).toMatch(new RegExp(`^partial: fixed 0 of 1 failing tests; ${issueId.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}: ${BEST_GUESS_PARK_REASON.replace(/[()]/g, '\\$&')}; oracle from the issue: no_blocks`));
+    expect(p4.plan.openProblems.some((n) => n.startsWith('regression scope: 1 test file (stem)'))).toBe(true);
+    expect(h.calls.filter((c) => c.startsWith('search'))).toEqual(['searchBestGuess:g1']); // one guess per run
+  });
+
+  it('a blocked best-guess patch is re-proposed once from the stash, then the goal parks as rejected: no second guess, partial done', async () => {
+    const file = moduleFile();
+    const commit = (goal: Goal, mem: RunMemory): SubGoalResult => {
+      const base = mem.bases[0]!;
+      const applied = applyForOutcome(cand(siteAt(file, 3), '        return hash(self.creation_counter)'), base.files);
+      return { kind: 'commit', applied, allGoalTestsPass: false, trace: makeTrace({ goalId: goal.id, outcome: 'partial', runMode: 'RANK' }) };
+    };
+    const h = harness({ files: [file], baselines: [scopedGreen()], locate: locateModule(file), regressionScope: scopeFor(), bestGuess: [commit] });
+    const runId = 'repo-best-guess-blocked';
+    await h.synth.synthesize(repoCtx({ runId, step: 1 }));
+    const engineRan = scopedRun(1, SCOPED, { passed: 2, failed: 0 });
+    const p2 = await h.synth.synthesize(repoCtx({ runId, step: 2, window: [engineRan] }));
+    expect(p2.action.kind).toBe('patch');
+    const blocked = { ...executedPatch(2, [MODULE]), outcome: 'blocked' as const, reason: 'risk 0.8' };
+    const p3 = await h.synth.synthesize(repoCtx({ runId, step: 3, window: [engineRan, blocked] }));
+    expect(p3.action).toEqual(p2.action); // the stash, no search
+    expect(h.calls.filter((c) => c.startsWith('search'))).toEqual(['searchBestGuess:g1']);
+    const p4 = await h.synth.synthesize(repoCtx({ runId, step: 4, window: [engineRan, blocked, { ...blocked, step: 3 }] }));
+    expect(h.calls.filter((c) => c.startsWith('search'))).toEqual(['searchBestGuess:g1']); // still one guess
+    expect(runMemory(runId).goals[0]).toMatchObject({ status: 'parked', parkedReason: BEST_GUESS_REJECTED_REASON });
+    expect(runMemory(runId).committed).toEqual([]);
+    expect(p4.action.kind).toBe('done');
+    if (p4.action.kind === 'done') expect(p4.action.summary).toContain(BEST_GUESS_REJECTED_REASON);
+  });
+
+  it('a resumed run restores the oracle goal and the scope from synthState: no second Jev request, no re-localisation, the reproduction re-measured on the workspace', async () => {
+    const file = moduleFile();
+    const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: scopeFor() });
+    const runId = 'repo-resume';
+    const ctx1 = repoCtx({ runId, step: 1 });
+    await h.synth.synthesize(ctx1);
+    const persisted = persistedOf(ctx1);
+    // a new process: fresh memory, the checkpoint's synthState and plan, an engine run in the window
+    dropMemory(runId);
+    const h2 = harness({
+      files: [file],
+      baselines: [scopedGreen()],
+      findOracle: async () => {
+        throw new Error('the oracle must not be searched again on resume');
+      },
+      locate: async () => {
+        throw new Error('no re-localisation on resume');
+      },
+      regressionScope: async () => {
+        throw new Error('the scope is restored, not chosen again');
+      },
+      verifyRepro: async () => reproFailing(),
+      results: [parked('nothing found')],
+    });
+    const ctx2 = repoCtx({ runId, step: 5, synthState: toJson(persisted), plan: { remaining: [`fix ${REPRO_ID} in ${MODULE}`, VERIFY_ITEM] }, window: [scopedRun(4, SCOPED, { passed: 2, failed: 0 })] });
+    const p = await h2.synth.synthesize(ctx2);
+    expect(h2.calls).toEqual(['loadFiles', 'runTests', 'verifyRepro', 'pickGoal', 'searchSubGoal:g1', 'pickGoal']);
+    expect(h2.runTestCommands).toEqual([SCOPED]);
+    const mem = runMemory(runId);
+    expect(mem.repository).toMatchObject({ goalId: 'g1', moduleFiles: [MODULE], scope: { command: SCOPED }, repro: { strength: 'strong' }, oracleOutcome: 'valid' });
+    expect(mem.repository?.repro?.spec).toEqual(spec);
+    expect(mem.goals.map((g) => [g.id, g.tests, g.planItem])).toEqual([['g1', [REPRO_ID], `fix ${REPRO_ID} in ${MODULE}`]]);
+    expect(mem.baseline).toMatchObject({ passed: 2, failed: 1, total: 3, failing: [REPRO_ID] });
+    // the scripted search parked the goal: partial done, with the mode's notes
+    expect(p.action.kind).toBe('done');
+    expect(p.plan.openProblems.some((n) => n.startsWith('oracle from the issue: valid'))).toBe(true);
+  });
+
+  it('a scoped baseline that times out is retried once on the scope\'s top two files before the §4.1 park', async () => {
+    const file = moduleFile();
+    const SCOPED3 = `${SCOPED2} model_fields.test_charfield`;
+    // three files at first, two on the retry
+    const wide: SearchDeps['regressionScope'] = async (_ctx, _files, _paths, max) => (max === 2 ? { testFiles: ['tests/model_fields/tests.py', 'tests/field_defaults/tests.py'], command: SCOPED2, tier: 'stem', note: 'named after the module' } : { testFiles: ['tests/model_fields/tests.py', 'tests/field_defaults/tests.py', 'tests/model_fields/test_charfield.py'], command: SCOPED3, tier: 'stem', note: 'named after the module' });
+    const slow: BaselineRun = { summary: summary({ command: SCOPED3, failing: ['<test run>'], passing: [], timedOut: true, exitCode: null, durationMs: 300_000 }), output: '' };
+    const h = harness({ files: [file], baselines: [slow, scopedGreen(SCOPED2)], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: wide });
+    const ctx = repoCtx({ runId: 'repo-slow', step: 1 });
+    const p = await h.synth.synthesize(ctx);
+    expect(h.runTestCommands).toEqual([SCOPED3, SCOPED2]);
+    expect(h.calls.filter((c) => c === 'regressionScope')).toHaveLength(2);
+    expect(runMemory(ctx.runId).repository?.scope.command).toBe(SCOPED2);
+    expect(p.action).toMatchObject({ kind: 'run', command: SCOPED2 });
+    expect(runMemory(ctx.runId).goals[0]?.status).toBe('open'); // the retry passed: nothing parked
+    // both runs timing out parks the goal with the reason and proposes the (smaller) command
+    const h2 = harness({ files: [file], baselines: [slow, { ...slow, summary: { ...slow.summary, command: SCOPED2 } }], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: wide });
+    const ctx2 = repoCtx({ runId: 'repo-slow-2', step: 1 });
+    const q = await h2.synth.synthesize(ctx2);
+    expect(q.action).toMatchObject({ kind: 'run', command: SCOPED2 });
+    expect(runMemory(ctx2.runId).goals[0]).toMatchObject({ status: 'parked', parkedReason: SUITE_TOO_SLOW });
+  });
+
+  it('the goal-subset `run` of a budget-hit step on a repository is the scoped command, with the run\'s maximum timeout', async () => {
+    const file = moduleFile();
+    const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: scopeFor(), results: [budget()] });
+    const runId = 'repo-budget';
+    await h.synth.synthesize(repoCtx({ runId, step: 1 }));
+    const p = await h.synth.synthesize(repoCtx({ runId, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] }));
+    expect(p.action).toMatchObject({ kind: 'run', command: SCOPED, timeoutMs: 22_000 }); // 3 × 4 s + 10 s, under the 300 s bound
+    expect(p.goal).toBe(`record the failing behaviour of ${REPRO_ID}`);
+  });
+
+  it('file loading orders task-named files first; moduleFilesOf falls back from the file beam to the sites, then the traceback', () => {
+    expect(mentionedInTask('sympy/printing/mathematica.py', 'mathematica_code(Max(x,2)) prints wrong')).toBe(1);
+    expect(mentionedInTask('django/db/models/fields/__init__.py', 'the fields hash changes')).toBe(1);
+    expect(mentionedInTask('sympy/core/add.py', 'nothing about it')).toBe(0);
+    const file = moduleFile();
+    const files = new Map([[MODULE, file], ['django/utils/html.py', sourceFile('django/utils/html.py', 'x = 1\n')]]);
+    expect(moduleFilesOf({ files: [{ path: 'django/utils/html.py', probability: 0.8 }, { path: MODULE, probability: 0.5 }, { path: 'tests/x/tests.py', probability: 0.4 }], functions: [], sites: [], requests: 0 }, null, files)).toEqual(['django/utils/html.py', MODULE]);
+    expect(moduleFilesOf({ files: [], functions: [], sites: [siteAt(file, 3)], requests: 0 }, null, files)).toEqual([MODULE]);
+    expect(moduleFilesOf(null, 'Traceback (most recent call last):\n  File "/ws/django/utils/html.py", line 3, in f', files)).toEqual(['django/utils/html.py']);
+    expect(moduleFilesOf(null, null, files)).toEqual([]);
   });
 });

@@ -16,15 +16,16 @@ import { createDonorSource } from './donor/index.js';
 import { fillSketches } from './fill/beam.js';
 import { createLocalizer } from './localize/index.js';
 import { createMutationSource } from './mutate/index.js';
+import { isBestGuessTestId, runRepositoryQueue, venvPython } from './oracle/index.js';
 import { SHUFFLE_RERANK_MAX, createRanker, shouldShuffleRerank, shuffleRerank } from './rank/index.js';
 import { programRange } from './rank/questions.js';
 import { pairsOfPartials } from './search/bases.js';
 import { createCompositeSource } from './search/composite.js';
 import { decideForSearch } from './search/guard.js';
-import { LedgerSieveSynthesizer, defaultSearchDeps } from './search/index.js';
+import { LedgerSieveSynthesizer, REPO_BASELINE_TIMEOUT_MS, defaultSearchDeps } from './search/index.js';
 import type { RunMemory, SearchDeps } from './search/index.js';
 import { buildGoalSites, captureLineChoiceEscape } from './search/sites.js';
-import { EDIT_CLASS_QUESTION_ID, priorFromAnswer, searchSubGoal } from './search/subgoal.js';
+import { EDIT_CLASS_QUESTION_ID, priorFromAnswer, searchBestGuess, searchSubGoal } from './search/subgoal.js';
 import type { JevSource, SearchQueue, SubGoalDeps, SubGoalMemory } from './search/subgoal.js';
 import type { Goal } from './search/types.js';
 import { VerifyQueue, vocabularyOf } from './sieve/queue.js';
@@ -77,7 +78,9 @@ async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): Pr
   const committed = mem.bases.find((b) => b.origin === 'committed');
   const files = committed?.files ?? new Map<string, SourceFile>();
   const captured = captureLineChoiceEscape(ctx.ask);
-  const localized = await createLocalizer({ stage: 'propose', fileBeam: mem.overrides.fileBeam }).localize({ ask: captured.ask, task: ctx.task, files, failures: goal.failures, signal: ctx.signal, budget: { maxRequests: Math.min(LOCALIZE_MAX_REQUESTS, Math.max(1, mem.stepBudget.jevRequestsLeft)) } });
+  // repository mode: the issue's traceback (the frames Jev judged inside the fix, and the reproduction's raising frames) anchors the goal
+  const traceback = mem.repository !== undefined && mem.repository.goalId === goal.id ? mem.repository.traceback : null;
+  const localized = await createLocalizer({ stage: 'propose', fileBeam: mem.overrides.fileBeam }).localize({ ask: captured.ask, task: ctx.task, files, failures: goal.failures, signal: ctx.signal, budget: { maxRequests: Math.min(LOCALIZE_MAX_REQUESTS, Math.max(1, mem.stepBudget.jevRequestsLeft)) }, ...(traceback === null ? {} : { traceback }) });
   const q5Escape = captured.escape();
   const goalSites = await buildGoalSites({ ask: ctx.ask, task: ctx.task, signal: ctx.signal, files }, goal, localized, undefined, {
     maxReplaceSites: mem.overrides.siteBeam,
@@ -134,7 +137,17 @@ function subGoalDeps(): SubGoalDeps {
       return { ...out, ranked: [...re.ranked, ...out.ranked.slice(SHUFFLE_RERANK_MAX)], requests: out.requests + re.requests };
     },
     createQueue,
-    runQueue: (ctx, mem, queue, goal, runsAllowed) => runQueue(ctx, mem, queue, goal, runsAllowed),
+    // Repository mode (search/index.ts rebaselineRepository): the goal-subset run is the issue's
+    // reproduction and the full-suite run the scoped regression command, on worktree lanes with the
+    // workspace venv (oracle/verify.ts); the best-guess goal runs the regression scope only.
+    runQueue: async (ctx, mem, queue, goal, runsAllowed) => {
+      const repo = mem.repository;
+      if (repo === undefined) return runQueue(ctx, mem, queue, goal, runsAllowed);
+      const bestGuess = goal.tests[0] !== undefined && isBestGuessTestId(goal.tests[0]);
+      const python = await venvPython(ctx.workspaceInfo.root);
+      const timeoutMs = Math.max(1000, Math.min(mem.oracle.runTimeoutMs, ctx.limits.maxCommandTimeoutMs, REPO_BASELINE_TIMEOUT_MS));
+      return runRepositoryQueue(ctx, mem, queue, goal, runsAllowed, { spec: bestGuess ? null : (repo.repro?.spec ?? null), regression: { command: repo.scope.command, timeoutMs }, ...(python === undefined ? {} : { python }) });
+    },
     decide: decideForSearch,
     pairsOfPartials,
   };
@@ -142,7 +155,7 @@ function subGoalDeps(): SubGoalDeps {
 
 export function searchDeps(): SearchDeps {
   const sub = subGoalDeps();
-  return { ...defaultSearchDeps(), searchSubGoal: (ctx, mem: RunMemory, goal) => searchSubGoal(ctx, mem, goal, sub) };
+  return { ...defaultSearchDeps(), searchSubGoal: (ctx, mem: RunMemory, goal) => searchSubGoal(ctx, mem, goal, sub), searchBestGuess: (ctx, mem: RunMemory, goal) => searchBestGuess(ctx, mem, goal, sub), locate: (ctx, mem: RunMemory, goal) => locate(ctx, mem, goal) };
 }
 
 /** The Ledger + Sieve synthesizer with the real modules wired in. */

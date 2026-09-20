@@ -13,3 +13,7 @@ export { OUTPUT_TAIL_CHARS, REPRO_MAX_OUTPUT_BYTES, REPRO_SENTINEL, REPRO_TIMEOU
 export type { BuiltCriterion, ChunksWithContext, CriterionInput, ReproRunOptions, ReproScriptOptions } from './runner.js';
 export { REGRESSION_FILES_MAX, REPRO_ID_PREFIX, callOf, regressionScope, reproTestId, reproductionGoal, summaryOf, verifyRepro } from './goal.js';
 export type { RegressionScope, RegressionScopeOptions, ReproGoal, ReproSpec, ReproductionGoalInput, VerifyReproResult } from './goal.js';
+export { BEST_GUESS_ID_PREFIX, BEST_GUESS_NOTE, BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, INSTALL_GENERATED_FILES, REGRESSION_SCOPE_MAX, RELATED_FILLS_FIRST, REPOSITORY_MIN_SOURCE_FILES, REPOSITORY_MIN_TEST_FILES, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, isReproTestId, isScopeTestModule, mergeSummaries, moduleStems, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, snippetIncomplete, stemRelatedTestFiles, tracebackTextFor, venvPython } from './search.js';
+export type { ChooseScopeOptions, OracleAsk, OracleOutcome, OracleSearch, OracleSearchInput, RegressionScopeChoice, ScopeTier } from './search.js';
+export { laneEnv, restoreGeneratedFiles, runRepositoryQueue } from './verify.js';
+export type { RepositoryQueueOptions } from './verify.js';

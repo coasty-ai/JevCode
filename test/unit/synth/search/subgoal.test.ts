@@ -76,7 +76,8 @@ describe('orderSources: the default order, the Q7 soft prior, the composite gate
     expect(q.type).toBe('choice');
     if (q.type === 'choice') {
       expect(Object.keys(q.criteria)).toEqual([...Object.keys(EDIT_CLASSES), 'none_of_these']);
-      expect(q.criteria['reorder_tokens']).toContain('`gcd(a % b, b)` -> `gcd(b, a % b)`');
+      // examples are invented snippets, never a benchmark's gold line (see no-benchmark-leakage.test.ts)
+      expect(q.criteria['reorder_tokens']).toContain('`divide(denominator, numerator)` -> `divide(numerator, denominator)`');
       expect(q.instructions).toContain('Which kind of edit turns `buggy_line` into the correct line');
     }
     expect(EDIT_CLASS_QUESTION_ID).toBe('edit_class');

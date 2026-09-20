@@ -7,7 +7,7 @@
 import { sha12 } from '../../../../src/core/hash.js';
 import type { Answer, Json, Question, SynthesisContext, WindowEntry } from '../../../../src/core/types.js';
 import { defaultOverrides } from '../../../../src/synth/search/directive.js';
-import type { RunMemory } from '../../../../src/synth/search/index.js';
+import type { RunMemory, SearchDeps } from '../../../../src/synth/search/index.js';
 import { committedBase } from '../../../../src/synth/search/index.js';
 import { createMemory } from '../../../../src/synth/search/memory.js';
 import type { GuardVerdict, JevEnumeration, JevSource, SearchQueue, SubGoalDeps } from '../../../../src/synth/search/subgoal.js';
@@ -71,6 +71,25 @@ export function choiceOn(q: Question, key: string, p = 0.8): Answer {
   for (const k of others) weights[k] = (1 - p) / Math.max(1, others.length);
   weights[key] = p;
   return choiceAnswer(q, weights);
+}
+
+// ---------------------------------------------------------------------------------------
+// Repository-mode collaborators a QuixBugs/ladder-shaped test never reaches
+// ---------------------------------------------------------------------------------------
+
+/** The repository-mode deps (oracle, localiser, scope, reproduction re-run, best guess) as no-ops: a small pytest workspace never enters that mode. */
+export function unusedRepositoryDeps(): Pick<SearchDeps, 'searchBestGuess' | 'locate' | 'findOracle' | 'regressionScope' | 'verifyRepro'> {
+  return {
+    searchBestGuess: async () => {
+      throw new Error('searchBestGuess is not scripted for this test');
+    },
+    locate: async () => ({ files: [], functions: [], sites: [], requests: 0 }),
+    findOracle: async (ctx) => ({ outcome: 'no_blocks', strength: null, goal: null, extraction: { blocks: [], tracebacks: [], expectations: [] }, judgement: null, choice: null, anchors: [], traceback: null, requests: 0, note: `no code block in ${ctx.task.slice(0, 20)}`, durationMs: 0 }),
+    regressionScope: async () => ({ testFiles: [], command: null, tier: 'none', note: 'no test file' }),
+    verifyRepro: async () => {
+      throw new Error('verifyRepro is not scripted for this test');
+    },
+  };
 }
 
 // ---------------------------------------------------------------------------------------

@@ -14,7 +14,7 @@ import type { SubGoalResult } from '../../../../src/synth/search/subgoal.js';
 import type { Base, Goal, VerifyOutcome } from '../../../../src/synth/search/types.js';
 import type { SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
-import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary } from './controller-fakes.js';
+import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
 import { gcdApplied, makeCtx, makeGoal, makeMemory, makeTrace, patchEntry } from './proposal-helpers.js';
 
 const TEST_COMMAND = 'python3 -m pytest -q';
@@ -145,6 +145,7 @@ function harness(baselines: BaselineRun[], commit: (goal: Goal, mem: RunMemory, 
     },
     handleDirective: async () => ({ kind: 'continue', move: 'change_approach', changes: [] }),
     searchSubGoal: async (_ctx, mem, goal) => commit(goal, mem, file),
+    ...unusedRepositoryDeps(),
     now: () => 1_000,
   };
   h.synth = new LedgerSieveSynthesizer(deps);
