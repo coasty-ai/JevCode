@@ -9,7 +9,6 @@ import { parseCliArgs, usageText } from './args.js';
 import type { ParsedFlags } from './args.js';
 import { EXIT_CODES, JevCodeError, UsageError, isJevCodeError } from '../errors.js';
 import type { Decider, Engine, EngineOptions, Provider, Renderer, ResolvedConfig, RunResult, StopReason } from '../core/types.js';
-import { fingerprint } from '../core/hash.js';
 
 const VERSION = '0.1.0';
 
@@ -45,7 +44,7 @@ async function buildProvider(config: ResolvedConfig, flags: ParsedFlags): Promis
   if (flags.mock) {
     const { createMockProvider } = await import('../provider/mock.js');
     const { mockTrajectory } = await import('./mock-trajectory.js');
-    return createMockProvider({ turns: mockTrajectory(flags.mockSteps ?? 8) });
+    return createMockProvider({ turns: mockTrajectory(Number(flags.mockSteps ?? 8)) });
   }
   const gen = config.generator();
   if (gen.provider === 'openrouter') {
@@ -88,23 +87,50 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
 
   try {
     const { resolveConfig } = await import('../config/resolve.js');
-    const config = await resolveConfig(flags, process.env, process.cwd());
-    const limits = config.limits();
+    let config = await resolveConfig(flags, process.env, process.cwd());
 
     let task: string;
     let resume: EngineOptions['resume'];
+    let mode: EngineOptions['mode'] = flags.condition === 'jev-off' ? 'jev-off' : 'jev-on';
+    let workspace = config.workspace;
+    let limits = config.limits();
+    let sandboxProfile = config.sandbox;
+    const extraWritableRoots: readonly string[] = []; // the bench passes its aux roots programmatically (EngineOptions.extraWritableRoots)
     if (flags.resume) {
+      // §9: identity (task, workspace, mode, provider, models, base URLs, thresholds, sandbox)
+      // comes from run.json and replaces the precedence chain; limits and secrets are
+      // re-resolved from this invocation. Identity values are injected as flags so the
+      // second resolveConfig() applies them at the highest precedence.
       const { loadForResume } = await import('../checkpoint/resume.js');
-      const { reconcileResumeConfig } = await import('../config/resolve.js');
-      const loaded = await loadForResume(config.runsDir, flags.resume);
-      const rec = reconcileResumeConfig(config, loaded.meta, flags);
+      const { reconcileResumeConfig, resumeInputsFrom, resumeIdentityFromRunMeta } = await import('../config/resolve.js');
+      const loaded = await loadForResume(config.runsDir, flags.resume, { redact: config.redact });
+      const identity = resumeIdentityFromRunMeta(loaded.meta);
+      const { realpath } = await import('node:fs/promises');
+      const wsReal = flags.workspace ? await realpath(resolvePath(flags.workspace)).catch(() => null) : null;
+      const augmented: ParsedFlags = {
+        ...flags,
+        ...(flags.provider === undefined && identity.provider ? { provider: identity.provider } : {}),
+        ...(flags.model === undefined && identity.model ? { model: identity.model } : {}),
+        ...(flags.baseUrl === undefined && identity.baseUrl ? { baseUrl: identity.baseUrl } : {}),
+        ...(flags.jevModel === undefined && identity.jevModel ? { jevModel: identity.jevModel } : {}),
+        ...(flags.jevBaseUrl === undefined && identity.jevBaseUrl ? { jevBaseUrl: identity.jevBaseUrl } : {}),
+        ...(flags.sandbox === undefined && identity.sandbox ? { sandbox: identity.sandbox } : {}),
+        workspace: identity.workspace,
+      };
+      config = await resolveConfig(augmented, process.env, process.cwd());
+      const rec = reconcileResumeConfig(resumeInputsFrom(config, { ...loaded.state, stopReason: loaded.previousStopReason }, wsReal), loaded.meta, flags);
       if (rec.errors.length > 0) throw rec.errors[0];
       if (rec.immediateStop) {
         await renderer.unmount();
         process.stderr.write(`${rec.immediateStop.message}\n`);
         return EXIT_CODES.budget;
       }
-      task = loaded.meta.task;
+      for (const w of loaded.warnings) process.stderr.write(`jevcode: ${w}\n`);
+      task = identity.task;
+      mode = identity.mode;
+      workspace = identity.workspace;
+      limits = rec.limits;
+      sandboxProfile = identity.sandbox ?? config.sandbox;
       resume = { runId: flags.resume, force: Boolean(flags.force) };
     } else {
       task = await readTask(flags);
@@ -120,8 +146,8 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
 
     const opts: EngineOptions = {
       task,
-      mode: flags.condition === 'jev-off' ? 'jev-off' : 'jev-on',
-      workspace: config.workspace,
+      mode,
+      workspace,
       runsDir: config.runsDir,
       ...(resume ? { resume } : {}),
       provider,
@@ -129,13 +155,14 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
       confirmer: renderer.confirmer,
       meter,
       limits,
-      sandboxProfile: config.sandbox,
+      sandboxProfile,
       noNetwork: config.noNetwork,
       configRecord: config.record(),
       redact: config.redact,
       secretPaths: config.secretPaths,
       generation: { temperature: gen.temperature, maxTokens: gen.maxTokens },
       deciderModel: { configured: dec.model, pinned: dec.pinned },
+      ...(extraWritableRoots.length ? { extraWritableRoots } : {}),
     };
     engine = opts.mode === 'jev-off'
       ? await (await import('../loop/generator-only.js')).createGeneratorOnlyEngine(opts)
@@ -251,4 +278,3 @@ main(process.argv.slice(2)).then(
   (e: unknown) => fatalExit(e),
 );
 
-export { fingerprint as _fingerprintForTests };

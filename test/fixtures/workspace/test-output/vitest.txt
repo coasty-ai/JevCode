@@ -1,0 +1,9 @@
+ RUN  v5.0.1 /tmp/proj
+
+ ✓ test/a.test.ts (3 tests) 12ms
+ ❯ test/b.test.ts (2 tests | 1 failed) 20ms
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  1 failed | 3 passed | 1 skipped (5)
+   Start at  12:00:00
+   Duration  400ms

@@ -15,6 +15,9 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
   const config = await resolveConfig(flags, process.env, process.cwd());
   const limits = config.limits();
   if (flags.live && flags.spendCap === undefined) throw new UsageError('--live requires --spend-cap <usd> (the bench-wide total)');
+  for (const [name, v] of [['--tasks', flags.tasks], ['--concurrency', flags.concurrency], ['--spend-cap', flags.spendCap], ['--task-spend-cap', flags.taskSpendCap]] as const) {
+    if (v !== undefined && !Number.isFinite(Number(v))) throw new UsageError(`${name} must be a number, got "${v}"`);
+  }
 
   const { createEngine } = await import('../loop/engine.js');
   const { createGeneratorOnlyEngine } = await import('../loop/generator-only.js');
@@ -60,16 +63,17 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
 
   const opts: BenchOptions = {
     suite,
-    tasks: flags.tasks ?? null,
+    tasks: flags.tasks !== undefined ? Number(flags.tasks) : null,
     taskIds: flags.taskId ? flags.taskId.split(',').map((s) => s.trim()).filter(Boolean) : null,
     conditions,
-    concurrency: flags.concurrency ?? 3,
+    concurrency: flags.concurrency !== undefined ? Number(flags.concurrency) : 3,
     live: Boolean(flags.live),
-    spendCapUsd: flags.spendCap ?? (flags.live ? 0 : 1_000_000),
-    taskSpendCapUsd: flags.taskSpendCap ?? limits.spendCapUsd,
+    spendCapUsd: flags.spendCap !== undefined ? Number(flags.spendCap) : flags.live ? 0 : 1_000_000,
+    taskSpendCapUsd: flags.taskSpendCap !== undefined ? Number(flags.taskSpendCap) : limits.spendCapUsd,
     allowModelAlias: Boolean(flags.allowModelAlias),
     resumeBenchId: flags.resume ?? null,
-    outDir: resolve(flags.out ?? `bench/results/${new Date().toISOString().replace(/[:.]/g, '-')}`),
+    // undefined lets the runner derive bench/results/<benchId>, which is what `--resume <bench-id>` re-reads
+    outDir: flags.out ? resolve(flags.out) : null,
     runsDir: config.runsDir,
     limits,
     sandboxProfile: config.sandbox,

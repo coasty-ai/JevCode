@@ -1,0 +1,378 @@
+import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
+import { describe, expect, it } from 'vitest';
+import { sha256Hex } from '../../../src/core/hash.js';
+import type { CheckpointEnvelope } from '../../../src/core/types.js';
+import { CheckpointError } from '../../../src/errors.js';
+import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
+import { FAKE_KEY, REDACTED, fakeRedact, makeDecision, makeMeta, makeState, makeStepRecord, withTempDir } from '../../fixtures/checkpoint/make.js';
+
+const identity = (s: string): string => s;
+
+async function readEnvelope(dir: string, file: string): Promise<CheckpointEnvelope> {
+  return JSON.parse(await readFile(join(dir, file), 'utf8')) as CheckpointEnvelope;
+}
+
+async function readLines(dir: string, file: string): Promise<string[]> {
+  const text = await readFile(join(dir, file), 'utf8');
+  expect(text.endsWith('\n')).toBe(true);
+  return text.slice(0, -1).split('\n');
+}
+
+describe('create / updateMeta', () => {
+  it('writes run.json once and refuses a second create', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      const meta = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as unknown;
+      expect(meta).toEqual(makeMeta());
+      await expect(store.create(makeMeta())).rejects.toBeInstanceOf(CheckpointError);
+    }));
+
+  it('appends overrides/resumes and replaces scalars without losing fields', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta({ overrides: [{ setting: 'maxSteps', from: '10', to: '20', atStep: 3 }] }));
+      await store.updateMeta({ resumes: [{ resumedAt: '2026-09-19T13:00:00.000Z', previousStopReason: 'signal' }] });
+      await store.updateMeta({ overrides: [{ setting: 'spendCapUsd', from: '1', to: '2', atStep: 5 }], resolvedJevModel: 'jev-1.13-20260901' });
+      const onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.task).toBe('fix the bug');
+      expect(onDisk.overrides).toHaveLength(2);
+      expect(onDisk.overrides[1]?.setting).toBe('spendCapUsd');
+      expect(onDisk.resumes).toEqual([{ resumedAt: '2026-09-19T13:00:00.000Z', previousStopReason: 'signal' }]);
+      expect(onDisk.resolvedJevModel).toBe('jev-1.13-20260901');
+      expect(onDisk.jevModelDrift).toBeNull();
+    }));
+
+  it('serialises concurrent updateMeta calls (no lost updates)', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await Promise.all(
+        Array.from({ length: 10 }, (_, i) => store.updateMeta({ overrides: [{ setting: `s${i}`, from: 'a', to: 'b', atStep: i }] })),
+      );
+      const onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.overrides.map((o) => o.setting).sort()).toEqual(Array.from({ length: 10 }, (_, i) => `s${i}`).sort());
+    }));
+});
+
+describe('writeState / load', () => {
+  it('rotates: prev holds the previous state, state.json the new one, checksum verified', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await store.writeState(makeState({ step: 2 }));
+      const cur = await readEnvelope(dir, CHECKPOINT_FILES.state);
+      const prev = await readEnvelope(dir, CHECKPOINT_FILES.prev);
+      expect(cur.version).toBe(1);
+      expect(cur.state.step).toBe(2);
+      expect(prev.state.step).toBe(1);
+      expect(cur.checksum).toBe(sha256Hex(JSON.stringify(makeState({ step: 2 }))));
+      // no temp files left behind
+      const files = await readdir(dir);
+      expect(files.filter((f) => f.includes('.tmp-'))).toEqual([]);
+      const loaded = await store.load();
+      expect(loaded.recoveredFrom).toBe('state');
+      expect(loaded.state).toEqual(makeState({ step: 2 }));
+      expect(loaded.meta).toEqual(makeMeta());
+      expect(store.lastWarnings()).toEqual([]);
+    }));
+
+  it('falls back to prev when state.json is tampered, with a warning', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await store.writeState(makeState({ step: 2 }));
+      const path = join(dir, CHECKPOINT_FILES.state);
+      const text = await readFile(path, 'utf8');
+      await writeFile(path, text.replace('"step":2', '"step":3'));
+      const loaded = await store.load();
+      expect(loaded.recoveredFrom).toBe('prev');
+      expect(loaded.state.step).toBe(1);
+      expect(store.lastWarnings().join(' ')).toMatch(/checksum mismatch/);
+    }));
+
+  it('falls back to prev on a version mismatch and on a truncated file', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await store.writeState(makeState({ step: 2 }));
+      const path = join(dir, CHECKPOINT_FILES.state);
+      const text = await readFile(path, 'utf8');
+      await writeFile(path, text.replace('"version":1', '"version":2'));
+      expect((await store.load()).recoveredFrom).toBe('prev');
+      expect(store.lastWarnings().join(' ')).toMatch(/unsupported version/);
+      await writeFile(path, text.slice(0, text.length >> 1));
+      expect((await store.load()).recoveredFrom).toBe('prev');
+      expect(store.lastWarnings().join(' ')).toMatch(/not JSON/);
+    }));
+
+  it('falls back to prev when state.json is missing', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await rename(join(dir, CHECKPOINT_FILES.state), join(dir, CHECKPOINT_FILES.prev));
+      const loaded = await store.load();
+      expect(loaded.recoveredFrom).toBe('prev');
+      expect(store.lastWarnings().join(' ')).toMatch(/missing/);
+    }));
+
+  it('rejects a state whose runId does not match run.json', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta({ runId: '20260919-120000-zzzzzzzz' }));
+      await store.writeState(makeState({ step: 1 }));
+      const err = await store.load().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CheckpointError);
+      expect((err as CheckpointError).message).toMatch(/does not match/);
+    }));
+
+  it('throws CheckpointError (exit 3) naming the dir when both files are bad, and when run.json is missing', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      let err = await store.load().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CheckpointError);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await store.writeState(makeState({ step: 2 }));
+      await writeFile(join(dir, CHECKPOINT_FILES.state), '{garbage');
+      await writeFile(join(dir, CHECKPOINT_FILES.prev), '{"version":1,"checksum":"00","state":{}}');
+      err = await store.load().catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CheckpointError);
+      expect((err as CheckpointError).exitCode).toBe(3);
+      expect((err as CheckpointError).runDir).toBe(dir);
+      expect((err as CheckpointError).message).toContain(dir);
+      expect((err as CheckpointError).message).toMatch(/state\.json not JSON/);
+      expect((err as CheckpointError).message).toMatch(/state\.prev\.json checksum mismatch/);
+    }));
+
+  it('writeStateSync produces a loadable checkpoint and rotates prev', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 4 }));
+      store.writeStateSync(makeState({ step: 5, stopReason: 'signal' }));
+      const loaded = await store.load();
+      expect(loaded.recoveredFrom).toBe('state');
+      expect(loaded.state.step).toBe(5);
+      expect(loaded.state.stopReason).toBe('signal');
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.prev)).state.step).toBe(4);
+      expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toEqual([]);
+    }));
+
+  it('serialises concurrent writeState calls in order', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await Promise.all([1, 2, 3, 4, 5].map((n) => store.writeState(makeState({ step: n }))));
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.state)).state.step).toBe(5);
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.prev)).state.step).toBe(4);
+    }));
+
+  it('parseEnvelope validates shape after the checksum', () => {
+    const env = serialiseEnvelope(makeState(), identity);
+    expect(parseEnvelope(env)).toMatchObject({ ok: true });
+    const bad = JSON.stringify({ version: 1, checksum: sha256Hex('{"runId":"x"}'), state: { runId: 'x' } });
+    expect(parseEnvelope(bad)).toEqual({ ok: false, reason: 'state shape invalid' });
+  });
+});
+
+describe('appends', () => {
+  it('100 concurrent appendDecisions produce 100 intact lines in call order', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      const payload = 'x'.repeat(4000); // large enough that interleaving would be visible
+      await Promise.all(Array.from({ length: 100 }, (_, i) => store.appendDecisions([makeDecision(1, `d${i}-${payload}`)])));
+      const lines = await readLines(dir, CHECKPOINT_FILES.decisions);
+      expect(lines).toHaveLength(100);
+      lines.forEach((line, i) => {
+        const d = JSON.parse(line) as { id: string };
+        expect(d.id.startsWith(`d${i}-`)).toBe(true);
+      });
+    }));
+
+  it('a batch of decisions is one contiguous group of lines; an empty batch writes nothing', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.appendDecisions([]);
+      await expect(readFile(join(dir, CHECKPOINT_FILES.decisions), 'utf8')).rejects.toBeTruthy();
+      await store.appendDecisions([makeDecision(1, 'a'), makeDecision(1, 'b'), makeDecision(1, 'c')]);
+      expect((await readLines(dir, CHECKPOINT_FILES.decisions)).map((l) => (JSON.parse(l) as { id: string }).id)).toEqual(['a', 'b', 'c']);
+    }));
+
+  it('appendStep / appendJevRequest / appendGenerator / appendTranscript write one line each', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.appendStep(makeStepRecord(1));
+      await store.appendJevRequest({ step: 1, stage: 'intent', requestHash: 'h', latencyMs: 5, questions: 3, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, calls: 1 }, model: 'jev', attempts: 1 });
+      await store.appendGenerator({ step: 1, attempt: 1, promptHash: 'p', model: 'm', temperature: null, maxTokens: 10, usage: { inputTokens: 1, outputTokens: 1, costUsd: 0, calls: 1 }, latencyMs: 1, stopReason: 'end_turn', malformed: false });
+      await store.appendTranscript('hello\n');
+      await store.appendTranscript('world');
+      expect(await readLines(dir, CHECKPOINT_FILES.steps)).toHaveLength(1);
+      expect(await readLines(dir, CHECKPOINT_FILES.jev)).toHaveLength(1);
+      expect(await readLines(dir, CHECKPOINT_FILES.generator)).toHaveLength(1);
+      expect(await readLines(dir, CHECKPOINT_FILES.transcript)).toEqual(['hello', 'world']);
+    }));
+
+  it('flush awaits fire-and-forget appends', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      for (let i = 0; i < 20; i++) void store.appendTranscript(`line ${i}`);
+      await store.flush();
+      expect(await readLines(dir, CHECKPOINT_FILES.transcript)).toHaveLength(20);
+    }));
+
+  it('a failed append rejects the caller with CheckpointError and does not stall the queue', () =>
+    withTempDir(async (dir) => {
+      const missing = join(dir, 'gone');
+      const store = createCheckpointStore(missing, identity);
+      const err = await store.appendTranscript('x').catch((e: unknown) => e);
+      expect(err).toBeInstanceOf(CheckpointError);
+      await mkdir(missing);
+      await store.appendTranscript('y');
+      await store.flush();
+      expect(await readLines(missing, CHECKPOINT_FILES.transcript)).toEqual(['y']);
+    }));
+});
+
+describe('readStepsAfter', () => {
+  it('returns [] when steps.jsonl does not exist', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      expect(await store.readStepsAfter(0)).toEqual([]);
+      expect(store.lastWarnings()).toEqual([]);
+    }));
+
+  it('skips a torn trailing line with a warning and keeps the last record per step', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.appendStep(makeStepRecord(1));
+      await store.appendStep(makeStepRecord(2, { intent: 'edit' }));
+      await store.appendStep(makeStepRecord(3));
+      await store.appendStep(makeStepRecord(2, { intent: 'verify' })); // re-run of a discarded step (§9.1 rule 1)
+      await appendFile(join(dir, CHECKPOINT_FILES.steps), '{"step":4,"startedAt":"2026-09-19T', 'utf8');
+      const after1 = await store.readStepsAfter(1);
+      expect(after1.map((r) => r.step)).toEqual([2, 3]);
+      expect(after1[0]?.intent).toBe('verify');
+      expect(store.lastWarnings()).toHaveLength(1);
+      expect(store.lastWarnings()[0]).toMatch(/trailing line/);
+      expect(await store.readStepsAfter(3)).toEqual([]);
+      expect((await store.readStepsAfter(0)).map((r) => r.step)).toEqual([1, 2, 3]);
+    }));
+
+  it('skips a corrupt middle line and a row without a valid step, warning per line', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.appendStep(makeStepRecord(1));
+      await appendFile(join(dir, CHECKPOINT_FILES.steps), 'not json\n{"step":"x"}\n\n', 'utf8');
+      await store.appendStep(makeStepRecord(2));
+      expect((await store.readStepsAfter(0)).map((r) => r.step)).toEqual([1, 2]);
+      expect(store.lastWarnings()).toHaveLength(2);
+      expect(store.lastWarnings()[0]).toMatch(/line 2/);
+    }));
+});
+
+describe('redaction', () => {
+  it('redactDeep maps string leaves only and drops undefined', () => {
+    const out = redactDeep({ a: FAKE_KEY, b: [FAKE_KEY, 1, null], c: { d: `x ${FAKE_KEY} y` }, e: undefined }, fakeRedact);
+    expect(out).toEqual({ a: REDACTED, b: [REDACTED, 1, null], c: { d: `x ${REDACTED} y` } });
+  });
+
+  it('a fake key never reaches disk through any artefact', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, fakeRedact);
+      await store.create(makeMeta({ task: `use ${FAKE_KEY}` }));
+      await store.updateMeta({ overrides: [{ setting: 'k', from: FAKE_KEY, to: FAKE_KEY, atStep: 1 }] });
+      await store.writeState(makeState({ plan: { done: [], remaining: [FAKE_KEY], unverified: [], openProblems: [], harnessProblems: [] } }));
+      await store.writeState(makeState({ step: 1, window: [{ step: 1, intent: null, action: FAKE_KEY, outcome: null, shownFiles: [], notes: [FAKE_KEY] }] }));
+      store.writeStateSync(makeState({ step: 2, createdThisRun: [FAKE_KEY] }));
+      await store.appendStep(makeStepRecord(1, { proposal: { goal: 'g', action: { kind: 'run', command: `curl -H 'x: ${FAKE_KEY}'` }, plan: { done: [], remaining: [], openProblems: [] }, rawText: FAKE_KEY } }));
+      await store.appendDecisions([makeDecision(1, FAKE_KEY)]);
+      await store.appendJevRequest({ step: 1, stage: 'intent', requestHash: FAKE_KEY, latencyMs: 1, questions: 1, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 }, model: 'm', attempts: 1 });
+      await store.appendGenerator({ step: 1, attempt: 1, promptHash: FAKE_KEY, model: 'm', temperature: null, maxTokens: 1, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 }, latencyMs: 1, stopReason: 's', malformed: false });
+      await store.appendTranscript(`$ export KEY=${FAKE_KEY}`);
+      await store.flush();
+      const files = await readdir(dir);
+      expect(files.sort()).toEqual(Object.values(CHECKPOINT_FILES).sort());
+      for (const f of files) {
+        const text = await readFile(join(dir, f), 'utf8');
+        expect(text, f).not.toContain(FAKE_KEY);
+        expect(text, f).toContain(REDACTED);
+      }
+      // the checksum is over the redacted state, so load() still verifies
+      const loaded = await store.load();
+      expect(loaded.state.createdThisRun).toEqual([REDACTED]);
+      await rm(dir, { recursive: true, force: true });
+    }));
+});
+
+describe('rotation after a failed load', () => {
+  it('does not rename a corrupt state.json over the prev copy load() returned (async path)', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await store.writeState(makeState({ step: 2 }));
+      await writeFile(join(dir, CHECKPOINT_FILES.state), '{garbage');
+      expect((await store.load()).recoveredFrom).toBe('prev');
+      await store.writeState(makeState({ step: 3 }));
+      // prev still holds the only envelope that was valid at load time; the garbage is parked aside
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.state)).state.step).toBe(3);
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.prev)).state.step).toBe(1);
+      expect(await readFile(join(dir, CORRUPT_STATE_FILE), 'utf8')).toBe('{garbage');
+      // the guard is one-shot: the next write rotates normally again
+      await store.writeState(makeState({ step: 4 }));
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.prev)).state.step).toBe(3);
+      const loaded = await store.load();
+      expect(loaded.recoveredFrom).toBe('state');
+      expect(loaded.state.step).toBe(4);
+    }));
+
+  it('applies the same guard on the sync path; a runId mismatch counts as unusable', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await store.writeState(makeState({ step: 2, runId: '20260919-120000-zzzzzzzz' }));
+      expect((await store.load()).recoveredFrom).toBe('prev');
+      store.writeStateSync(makeState({ step: 3 }));
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.prev)).state.step).toBe(1);
+      expect((await readEnvelope(dir, CORRUPT_STATE_FILE)).state.step).toBe(2);
+      expect((await store.load()).state.step).toBe(3);
+    }));
+
+  it('a state.json that was merely missing at load time rotates normally afterwards', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeState(makeState({ step: 1 }));
+      await rename(join(dir, CHECKPOINT_FILES.state), join(dir, CHECKPOINT_FILES.prev));
+      expect((await store.load()).recoveredFrom).toBe('prev');
+      await store.writeState(makeState({ step: 2 }));
+      expect((await readEnvelope(dir, CHECKPOINT_FILES.prev)).state.step).toBe(1);
+      expect((await readdir(dir)).includes(CORRUPT_STATE_FILE)).toBe(false);
+    }));
+});
+
+describe('serialisation failures', () => {
+  it('a throwing redactor rejects the append with CheckpointError instead of throwing synchronously', () =>
+    withTempDir(async (dir) => {
+      const boom = (): string => {
+        throw new Error('redactor bug');
+      };
+      const store = createCheckpointStore(dir, boom);
+      let pending: Promise<void> | undefined;
+      expect(() => {
+        pending = store.appendStep(makeStepRecord(1));
+      }).not.toThrow();
+      await expect(pending).rejects.toBeInstanceOf(CheckpointError);
+      await expect(store.appendTranscript('x')).rejects.toBeInstanceOf(CheckpointError);
+      await expect(store.appendDecisions([makeDecision(1, 'a')])).rejects.toBeInstanceOf(CheckpointError);
+      await store.flush();
+      expect((await readdir(dir)).length).toBe(0);
+    }));
+});

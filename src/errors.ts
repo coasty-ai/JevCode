@@ -18,6 +18,7 @@ export type ErrorCode =
   | 'secret_path'
   | 'edit'
   | 'patch'
+  | 'not_found'
   | 'budget'
   | 'checkpoint'
   | 'abort'
@@ -172,6 +173,15 @@ export class PatchError extends JevCodeError {
   constructor(message: string, hunk: string) {
     super('patch', `PatchError: ${message}`, { exitCode: 6 });
     this.hunk = hunk;
+  }
+}
+
+/** A `read` (or any harness file access) named a path that does not exist. Per-action outcome, never an exit. */
+export class FileNotFoundError extends JevCodeError {
+  readonly path: string;
+  constructor(path: string, opts: { cause?: unknown } = {}) {
+    super('not_found', `FileNotFoundError: no such file: ${path}`, { exitCode: 6, cause: opts.cause });
+    this.path = path;
   }
 }
 

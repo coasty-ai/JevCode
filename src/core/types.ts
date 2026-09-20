@@ -217,6 +217,8 @@ export const RISK_DIMENSIONS: readonly RiskDimension[] = ['destructive', 'out_of
 
 export interface RiskDimensionResult {
   risk: number;
+  /** P(argmax level) */
+  probability: number;
   expected: number;
   tailMass: number;
   bound: 'expected' | 'tail';
@@ -325,6 +327,8 @@ export interface RunResult {
   tokensPerStep: number[];
   /** raw, one entry per Jev HTTP request */
   jevLatencyMs: number[];
+  /** Σ decisions.length over committed steps */
+  jevQuestions: number;
   counters: RunCounters;
   finalPlan: Plan;
   error?: SerializedError;
@@ -613,6 +617,8 @@ export interface CheckpointState {
   /** §9.1 rule 1: a discarded (uncommitted) step */
   interrupted: { step: number; stage: StageName; proposal: Proposal | null } | null;
   consecutiveStageFailures: number;
+  /** Σ decisions.length over committed steps (RunResult.jevQuestions); absent in older checkpoints */
+  jevQuestions?: number;
   resumes: number;
   updatedAt: string;
 }
@@ -676,6 +682,8 @@ export interface CheckpointStore {
   readStepsAfter(step: number): Promise<StepRecord[]>;
   /** awaited by shutdown() before exit */
   flush(): Promise<void>;
+  /** non-fatal warnings (prev fallback, torn steps.jsonl lines) */
+  lastWarnings?(): readonly string[];
 }
 
 // ---------------------------------------------------------------------------------------
@@ -718,6 +726,8 @@ export interface EngineOptions {
   generation: { temperature: number | null; maxTokens: number };
   /** decider model pinning info (§5.4 rule 7) */
   deciderModel: { configured: string; pinned: boolean };
+  /** extra directories the sandbox may write to (bench stand-ins for /output etc.); realpath'ed into the profile */
+  extraWritableRoots?: readonly string[];
   /** injectable clock for perf/unit tests */
   now?: () => number;
   /** injected exit for tests of the forced second Ctrl-C path */
@@ -746,11 +756,12 @@ export type EngineEvent =
   | { type: 'context'; step: number; files: string[]; bytes: number; candidates: number }
   | { type: 'generator:start'; step: number; attempt: number }
   | { type: 'generator:delta'; step: number; text: string }
+  | { type: 'generator:tool-delta'; step: number; chars: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
   | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string }
   | { type: 'proposal'; step: number; proposal: Proposal }
   | { type: 'risk'; step: number; risk: RiskAssessment }
   | { type: 'confirm:request'; request: ConfirmRequest }
-  | { type: 'confirm:resolved'; id: string; approved: boolean; aborted: boolean }
+  | { type: 'confirm:resolved'; step: number; id: string; approved: boolean; aborted: boolean }
   | { type: 'exec:start'; step: number; action: Action }
   | { type: 'exec:output'; step: number; stream: 'stdout' | 'stderr'; chunk: string }
   | { type: 'outcome'; step: number; outcome: ActionOutcome }
@@ -980,6 +991,8 @@ export interface SandboxCreateOptions {
   /** absolute paths the seatbelt profile denies reading (dotenvs, config file, ~/.ssh, ...) */
   secretReadDenies: readonly string[];
   redact: (s: string) => string;
+  /** additional writable roots beyond the workspace and run dir */
+  extraWritable?: readonly string[];
 }
 
 /** Everything the bench runner needs, injected so bench/* compiles and tests without the real modules. */

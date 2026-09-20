@@ -1,0 +1,10 @@
+{
+  "provider": "openrouter",
+  "model": "anthropic/claude-sonnet-5",
+  "jevModel": "typesafe/jev-1.13",
+  "maxSteps": 12,
+  "spendCapUsd": 0.5,
+  "maxWall": "10m",
+  "plain": true,
+  "unknownThing": "ignored"
+}

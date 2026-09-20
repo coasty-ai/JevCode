@@ -36,6 +36,16 @@ export const JEV_RETRY = {
 /** Length cap on the error body kept on JevHttpError (already redacted). */
 export const JEV_ERROR_BODY_MAX = 2000;
 
+/**
+ * Cap on a response body read from the wire (any status). A 1,000-Noul answer is ~60 KB and a
+ * 255-option Choice with echoed legends stays far under 1 MiB, so anything larger is not a Jev
+ * answer; a 200 over the cap is a transient shape failure, an error body is clipped anyway.
+ */
+export const JEV_RESPONSE_BODY_MAX_BYTES = 4 * 1024 * 1024;
+
+/** Cap on wire identifier strings (`model`, `id`, `provider`) copied into records. */
+export const JEV_WIRE_ID_MAX_CHARS = 256;
+
 export interface JevClientDeps {
   fetch?: typeof fetch;
   /** redaction from resolveConfig (§8.4); applied to every error message and body */

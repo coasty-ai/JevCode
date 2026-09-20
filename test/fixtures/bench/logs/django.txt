@@ -1,0 +1,31 @@
+: '>>>>> Start Test Output'
+Testing against Django installed in /testbed/django
+Importing application decorators
+Found 23 test(s).
+System check identified no issues (0 silenced).
+test_attributes (decorators.tests.DecoratorsTest)
+@method_decorator preserves wrapper assignments. ... FAIL
+test_bad_iterable (decorators.tests.DecoratorsTest) ... ok
+test_cache_page (decorators.tests.DecoratorsTest) ... ok
+test_deny_login_required (decorators.tests.DecoratorsTest) ... skipped 'not now'
+test_class_decoration (decorators.tests.MethodDecoratorTests) ... ERROR
+test_descriptors (decorators.tests.MethodDecoratorTests) ... Testing against Django installed in /testbed/django with up to 8 processes (0 silenced).
+ok
+test_new_attribute (decorators.tests.MethodDecoratorTests) ... some print
+ok
+--version is equivalent to version
+
+======================================================================
+ERROR: test_class_decoration (decorators.tests.MethodDecoratorTests)
+----------------------------------------------------------------------
+Traceback (most recent call last):
+  boom
+======================================================================
+FAIL: test_attributes (decorators.tests.DecoratorsTest)
+@method_decorator preserves wrapper assignments.
+----------------------------------------------------------------------
+Ran 23 tests in 0.012s
+
+FAILED (failures=1, errors=1, skipped=1)
+: '>>>>> End Test Output'
+>>>>> Test Exit Code: 1

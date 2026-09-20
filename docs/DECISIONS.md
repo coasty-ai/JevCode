@@ -131,3 +131,39 @@ loop detection with a judge (Jev), confirm-before-finish as a decision node, and
 execution-based test evidence feeding the judge. Rejected: a Rust rewrite, Bun, Node
 `--build-snapshot`, forking Ink, Docker as default sandbox, alternate-screen by default,
 startup network probes, and a SEA binary.
+
+## 2026-09-19 Parallel build: eight module owners, eight independent reviewers
+
+The implementation was split by the file ownership in `docs/DESIGN.md` §19.8 against the
+frozen contract `src/core/types.ts`. Each owner typechecked and tested only their own files
+(per-module `tsconfig.<module>.json`, deleted at integration) and an independent reviewer
+re-read the design sections and fixed defects in place before hand-off. Outcome: 8/8 modules
+green in isolation, 713 offline unit tests across 55 files at the first whole-project run,
+and 7 whole-project typecheck errors, all in the integrator's own wiring drafts. Seams the
+reviewers raised were closed in a single integration pass and recorded in DESIGN.md §20:
+shared transcript-item formatter, `generator:tool-delta` event, per-dimension `probability`,
+`RunResult.jevQuestions`, `.venv/bin` on the sandbox PATH for live SWE-bench agents, extra
+writable roots for the Terminal-Bench stand-in dirs, `FileNotFoundError`, and the
+stage-failure counter resetting only on a step without a stage failure.
+
+## 2026-09-19 Live demo choreography
+
+The end-to-end live run (build-prompt item 2) uses `examples/demo-py` copied to
+`/tmp/jevcode-demo` with a git history, an untracked `notes.txt`, and a `.venv` holding
+pytest. Five tasks exercise every stage: a real fix (complete), a destructive request
+(blocked at risk ≥ 0.7), removing the untracked scratch file (human review, answered in the
+TUI), a `--no-network` task needing a missing package (identical install failure ×3 → loop
+detection → replan), and a Ctrl-C mid-step followed by `--resume`. The TUI is driven under a
+pseudo-TTY with `expect` so keystrokes (`y`/`n`, Ctrl-C) are real terminal input; the
+transcripts are saved under `docs/live/`.
+
+## 2026-09-19 The session's own ANTHROPIC_API_KEY is not used
+
+The shell this build runs in carries an `ANTHROPIC_API_KEY` that belongs to the Claude Code
+session, not to the project (`JevCode/.env` and `open-assist/.env` both have it empty). The
+first `test:live` run picked it up through normal env precedence and the Anthropic-direct
+generator test passed (one call, $0.0019), which incidentally verified `provider/anthropic.ts`
+against the real Messages API. From this point every live command is run with that variable
+unset (`env -u ANTHROPIC_API_KEY …`) and with `--provider openrouter`, so all paid work goes
+through the user's OpenRouter key and is capped as described above. The README documents
+that the default provider is `anthropic` and works when the user supplies a key.

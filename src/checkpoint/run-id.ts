@@ -81,6 +81,8 @@ function errnoCode(e: unknown): string | undefined {
 /**
  * Create a fresh run directory under `runsDir`. The runs dir is `mkdir -p`'d once; the run
  * dir itself uses a non-recursive mkdir so EEXIST is reliable and regenerates the suffix.
+ * Returns the realpath, like resolveRunDir, so a fresh run and a resumed run hand the sandbox
+ * and the store the same canonical directory (the seatbelt profile matches on real paths, §8).
  */
 export async function createRunDir(
   runsDir: string,
@@ -97,7 +99,7 @@ export async function createRunDir(
     const runDir = join(runsDir, runId);
     try {
       await mkdir(runDir);
-      return { runId, runDir };
+      return { runId, runDir: await realpath(runDir) };
     } catch (e) {
       if (errnoCode(e) === 'EEXIST') continue;
       throw new CheckpointError(`cannot create run directory ${runDir}: ${e instanceof Error ? e.message : String(e)}`, runDir, { cause: e });

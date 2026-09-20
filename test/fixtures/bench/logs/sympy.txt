@@ -1,0 +1,27 @@
+: '>>>>> Start Test Output'
+============================= test process starts ==============================
+executable:         /testbed/.venv/bin/python  (3.9.6-final-0) [CPython]
+architecture:       64-bit
+cache:              no
+ground types:       python
+random seed:        12345
+hash randomization: on (PYTHONHASHSEED=0)
+
+sympy/utilities/tests/test_lambdify.py[45]
+test_no_args ok
+test_single_arg ok
+test_issue_12092 F
+test_docs E
+test_math ok
+test_special_printers ok                                                  [FAIL]
+
+________________________________________________________________________________
+_______ sympy/utilities/tests/test_lambdify.py:test_issue_12092 ________
+Traceback (most recent call last):
+    assert x == y
+AssertionError
+
+============ tests finished: 4 passed, 1 failed, 1 exceptions, in 1.23 seconds =============
+DO *NOT* COMMIT!
+: '>>>>> End Test Output'
+>>>>> Test Exit Code: 1
