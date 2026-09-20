@@ -95,18 +95,25 @@ describe('handleDirective: the §5.4 mapping table', () => {
     expect(mem.overrides.siteBeam).toBe(WIDENED_SITE_BEAM);
   });
 
-  it('change_approach with every goal parked reopens the newest parked goal', async () => {
+  it('change_approach with every goal parked reopens EVERY parked goal in ledger order, each rotated and re-localised; fixed goals stay fixed', async () => {
     const p1 = makeGoal({ id: 'p1', status: 'parked', parkedReason: 'a', budgetHits: 2, attempts: 3 });
+    const f = makeGoal({ id: 'f', status: 'fixed' });
     const p2 = makeGoal({ id: 'p2', status: 'parked', parkedReason: 'b', budgetHits: 2, attempts: 1 });
-    const mem = makeMemory({ goals: [p1, p2] });
-    const r = await handleDirective(makeCtx({ directive: engineText('change_approach') }), mem);
+    const mem = makeMemory({ goals: [p1, f, p2], localizeCache: new Map([['p1', cachedLocalize(['src/p1.py'])]]) });
+    const ctx = makeCtx({ directive: engineText('change_approach') });
+    const r = await handleDirective(ctx, mem);
     expect(r.kind).toBe('continue');
-    expect(p2.status).toBe('open');
-    expect(p2.budgetHits).toBe(0);
-    expect(p2.attempts).toBe(1);
-    expect('parkedReason' in p2).toBe(false);
-    expect(p1.status).toBe('parked');
-    expect(mem.overrides.sourceRotation).toEqual({ p2: 1 });
+    expect([p1, p2].map((g) => g.status)).toEqual(['open', 'open']);
+    expect([p1, p2].map((g) => g.budgetHits)).toEqual([0, 0]);
+    // attempts stand (§5.3 counts searches without a commit); the park reason goes
+    expect([p1, p2].map((g) => g.attempts)).toEqual([3, 1]);
+    expect('parkedReason' in p1 || 'parkedReason' in p2).toBe(false);
+    expect(f.status).toBe('fixed');
+    expect(mem.overrides.sourceRotation).toEqual({ p1: 1, p2: 1 });
+    expect(mem.localizeCache.has('p1')).toBe(false);
+    expect(r.changes).toEqual(['reopened p1, p2', 'rotated source order of p1 (1)', 'sites of p1 rebuilt', 'rotated source order of p2 (1)', `site beam ${DEFAULT_SITE_BEAM} → ${WIDENED_SITE_BEAM}`]);
+    const synth = ctx.events.filter((e) => e.type === 'synth');
+    if (synth[0]?.type === 'synth') expect(synth[0].detail).toMatch(/^change_approach: reopened p1, p2; rotated source order of p1 \(1\); sites of p1 rebuilt; rotated source order of p2 \(1\)/);
   });
 
   it('gather_context on a repository reads the suspected files the context stage did not show', async () => {

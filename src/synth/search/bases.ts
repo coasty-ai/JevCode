@@ -14,15 +14,21 @@
  * Memory: these modules read and write `mem.bases` (the design's `SearchMemory.bases`) and keep
  * their own bookkeeping (remembered partials, the closeness cache, the suspect, the fallbacks) in a
  * WeakMap keyed by the memory object (`guardState`), so any `{ bases: Base[] }` works unchanged and
- * nothing here needs a field on SearchMemory. That state lives as long as the memory and is not
- * persisted (§5.2: lost state costs test time, never a wrong commit).
+ * nothing here needs a field on SearchMemory. That state lives as long as the memory; the
+ * remembered partials also survive a park (`forgetHeld`) and a checkpoint (`persistPartials` /
+ * `restorePartials`, ≤ MAX_PERSISTED_PARTIALS_PER_GOAL per goal), because they are the input of
+ * `pairsOfPartials` — the ladder `account` run of jev-only-ladder-4-analysis.md §1.2 found both
+ * gold half-fixes and dropped them with the goal's park. Everything else is rebuilt (§5.2: lost
+ * state costs test time, never a wrong commit).
  */
 import { createHash } from 'node:crypto';
 
-import type { StageName } from '../../core/types.js';
-import { analyse, unifiedDiff } from '../py/index.js';
-import type { AppliedCandidate, Candidate, JevAsk, LineEdit, SourceFile, TestRunSummary } from '../types.js';
-import { judgeProgress, progress } from '../verify/index.js';
+import type { Json, StageName } from '../../core/types.js';
+import { analyse, blockAt, scopeAt, unifiedDiff } from '../py/index.js';
+import type { AppliedCandidate, Candidate, CandidateSourceName, JevAsk, LineEdit, Site, SourceFile, TestRunSummary } from '../types.js';
+import { applyCandidate, judgeProgress, progress } from '../verify/index.js';
+import { wasTried } from './memory.js';
+import type { SearchMemory } from './memory.js';
 import type { Base, Decision, Goal, Phase, VerifyOutcome } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -45,6 +51,17 @@ export const MAX_PARTIALS_REMEMBERED = 40;
  * pathological batch from spending the step's Jev budget on tie-breaks.
  */
 export const MAX_CLOSENESS_REQUESTS = 4;
+/**
+ * Partials written into the checkpoint per goal (`persistPartials`), most tests covered first.
+ * `setSynthState` drops a state over SYNTH_STATE_MAX_BYTES (64 KB, loop/engine.ts) and the
+ * `tried` hashes alone may take 45 KB (memory.ts TRIED_PERSIST_MAX); one record is ≈ 250 B, so
+ * four per goal over a three-goal ladder task costs ≈ 3 KB. Four is also all `pairsOfPartials`
+ * needs on the measured shape (ladder `account`: two complementary partials, one per hunk).
+ */
+export const MAX_PERSISTED_PARTIALS_PER_GOAL = 4;
+/** A persisted partial's edit text (and each extra edit) is bounded here; a longer edit is not persisted. */
+export const PERSISTED_EDIT_MAX_CHARS = 400;
+const PERSISTED_EXTRA_EDITS_MAX = 4;
 
 // ---------------------------------------------------------------------------------------
 // Memory slice
@@ -398,16 +415,234 @@ export function commitPartial(mem: BasesMemory, goal: Goal): Decision | null {
   return { kind: 'commit', applied: b.candidate, allGoalTestsPass: false, note: 'partial', after: b.summary };
 }
 
-/** Forget the partials, held passers (suspect, pending), fallbacks and tie-break cache of a goal (after its commit or park). */
+/** Forget the partials, held passers (suspect, pending), fallbacks and tie-break cache of a goal (after its commit). */
 export function forgetGoal(mem: BasesMemory, goal: Goal): void {
+  forgetHeld(mem, goal);
   const st = guardState(mem);
   st.partials = st.partials.filter((p) => p.goalId !== goal.id);
+}
+
+/**
+ * The park-time form of `forgetGoal`: the step-scoped state goes (held passers, fallbacks, the
+ * improved base and its tie-break cache — a base another goal's search would otherwise run every
+ * candidate on), the remembered partials STAY. They are the input of `pairsOfPartials`, and the
+ * ladder `account` run lost both gold half-fixes to a `forgetGoal` on park two seconds after they
+ * were found (experiments/results/jev-only-ladder-4-analysis.md §1.2): the pairing hatch had no
+ * budget left in that step, and the next search of the goal started from nothing. A held passer
+ * is decided by the caller before this (index.ts and subgoal.ts commit it), never dropped here.
+ */
+export function forgetHeld(mem: BasesMemory, goal: Pick<Goal, 'id'>): void {
+  const st = guardState(mem);
   if (st.suspect !== null && st.suspect.goalId === goal.id) st.suspect = null;
   if (st.pending !== null && st.pending.goalId === goal.id) st.pending = null;
   if (st.fallbacks !== null && st.fallbacks.goalId === goal.id) st.fallbacks = null;
-  const b = improvedBaseFor(mem, goal);
+  const b = mem.bases.find((x) => x.origin === 'improved' && x.fromGoal === goal.id);
   if (b !== undefined) {
     mem.bases = mem.bases.filter((x) => x.id !== b.id);
     st.closeness.delete(b.id);
   }
+}
+
+/** The committed-base partials remembered for `goal` (what `pairsOfPartials` reads). */
+export function partialsOf(mem: BasesMemory, goal: Pick<Goal, 'id'>): VerifyOutcome[] {
+  return guardState(mem).partials.filter((p) => p.goalId === goal.id && p.outcome.job.base.origin === 'committed' && isPartial(p.outcome)).map((p) => p.outcome);
+}
+
+/**
+ * The pairs of `pairsOfPartials` whose diff on the committed workspace has not been run yet: two
+ * complementary partials (disjoint newly-passing sets at different sites — together they cover
+ * more of the goal's tests than either alone) the tests have not been asked about as one edit.
+ * Non-empty means the goal holds untested progress: the controller keeps such a goal open and
+ * the search runs these before any other batch once the step's budget is inside the pairs
+ * reserve (subgoal.ts). A pair that no longer applies (the workspace changed under a partial)
+ * counts as tried.
+ */
+export function freshPairsOfPartials(mem: BasesMemory & Pick<SearchMemory, 'tried'>, goal: Goal, max: number = MAX_PARTIAL_PAIRS): Candidate[] {
+  const committed = mem.bases.find((b) => b.origin === 'committed');
+  if (committed === undefined) return [];
+  const out: Candidate[] = [];
+  for (const c of pairsOfPartials(mem, goal)) {
+    if (out.length >= max) break;
+    try {
+      if (!wasTried(mem, applyCandidate(c, committed.files).diff)) out.push(c);
+    } catch {
+      // a stale site: nothing to run
+    }
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// Persisted partials (SynthesisContext.synthState, beside memory.ts's PersistedSearchState)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * A remembered partial as the checkpoint carries it: the edit (site position and text, extra
+ * edits), the tests it newly passed and the passed count of its run. Enough to rebuild a
+ * committed-base `VerifyOutcome` for `pairsOfPartials` on resume (`restorePartials`); the test
+ * summaries and the applied files are not kept (they are recomputed, and would not fit).
+ */
+export interface PersistedPartial {
+  goalId: string;
+  path: string;
+  line: number;
+  kind: 'replace' | 'insert';
+  text: string;
+  indent: string;
+  source: CandidateSourceName;
+  op: string;
+  extraEdits?: { path: string; line: number; kind: LineEdit['kind']; text?: string }[];
+  newlyPassing: string[];
+  passed: number;
+}
+
+/** The key the controller writes the records under, beside memory.ts's fields. */
+export const PERSISTED_PARTIALS_KEY = 'partials';
+
+/**
+ * The committed-base partials of every goal that is not fixed, ≤ `perGoal` per goal (most
+ * newly-passing tests first, then the smaller edit); edits over PERSISTED_EDIT_MAX_CHARS or with
+ * more than a few extra edits are left out. Deterministic; JSON-safe by construction.
+ */
+export function persistPartials(mem: BasesMemory, goals: readonly Pick<Goal, 'id' | 'status'>[], perGoal: number = MAX_PERSISTED_PARTIALS_PER_GOAL): PersistedPartial[] {
+  const out: PersistedPartial[] = [];
+  for (const goal of goals) {
+    if (goal.status === 'fixed') continue;
+    const ours = partialsOf(mem, goal);
+    ours.sort((a, b) => b.progress.newlyPassing.length - a.progress.newlyPassing.length || editSize(a.applied.candidate) - editSize(b.applied.candidate) || a.applied.candidate.id.localeCompare(b.applied.candidate.id));
+    let kept = 0;
+    for (const o of ours) {
+      if (kept >= perGoal) break;
+      const c = o.applied.candidate;
+      const extra = c.extraEdits ?? [];
+      if (c.text.length > PERSISTED_EDIT_MAX_CHARS || extra.length > PERSISTED_EXTRA_EDITS_MAX || extra.some((e) => (e.text ?? '').length > PERSISTED_EDIT_MAX_CHARS)) continue;
+      const rec: PersistedPartial = { goalId: goal.id, path: c.site.file.path, line: c.site.line, kind: c.site.kind, text: c.text, indent: c.site.indent, source: c.source, op: c.op, newlyPassing: [...o.progress.newlyPassing], passed: outcomeSummary(o).passed };
+      if (extra.length > 0) rec.extraEdits = extra.map((e) => (e.text === undefined ? { path: e.path, line: e.line, kind: e.kind } : { path: e.path, line: e.line, kind: e.kind, text: e.text }));
+      out.push(rec);
+      kept += 1;
+    }
+  }
+  return out;
+}
+
+function isRecord(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+function isStringArray(v: unknown): v is string[] {
+  return Array.isArray(v) && v.every((x) => typeof x === 'string');
+}
+
+const SOURCE_NAMES: readonly string[] = ['mutation', 'template', 'donor', 'token_beam', 'test_value', 'history', 'composite'];
+
+function isSourceName(v: unknown): v is CandidateSourceName {
+  return typeof v === 'string' && SOURCE_NAMES.includes(v);
+}
+
+function isEditKind(v: unknown): v is LineEdit['kind'] {
+  return v === 'replace' || v === 'insert' || v === 'delete';
+}
+
+/** The `partials` records of a checkpoint state (an older checkpoint has none; a malformed record is skipped). */
+export function partialsFromPersisted(state: Json | null): PersistedPartial[] {
+  if (!isRecord(state)) return [];
+  const raw = state[PERSISTED_PARTIALS_KEY];
+  if (!Array.isArray(raw)) return [];
+  const out: PersistedPartial[] = [];
+  for (const r of raw) {
+    if (!isRecord(r)) continue;
+    const { goalId, path, line, kind, text, indent, source, op, newlyPassing, passed, extraEdits } = r;
+    if (typeof goalId !== 'string' || typeof path !== 'string' || typeof line !== 'number' || !Number.isInteger(line) || line < 1) continue;
+    if ((kind !== 'replace' && kind !== 'insert') || typeof text !== 'string' || typeof op !== 'string' || !isStringArray(newlyPassing) || typeof passed !== 'number') continue;
+    if (!isSourceName(source)) continue;
+    const rec: PersistedPartial = { goalId, path, line, kind, text, indent: typeof indent === 'string' ? indent : '', source, op, newlyPassing, passed };
+    if (Array.isArray(extraEdits)) {
+      const edits: NonNullable<PersistedPartial['extraEdits']> = [];
+      for (const e of extraEdits) {
+        if (!isRecord(e)) continue;
+        const ePath = e['path'];
+        const eLine = e['line'];
+        const eKind = e['kind'];
+        const eText = e['text'];
+        if (typeof ePath !== 'string' || typeof eLine !== 'number' || !isEditKind(eKind)) continue;
+        edits.push(typeof eText === 'string' ? { path: ePath, line: eLine, kind: eKind, text: eText } : { path: ePath, line: eLine, kind: eKind });
+      }
+      if (edits.length > 0) rec.extraEdits = edits;
+    }
+    out.push(rec);
+  }
+  return out;
+}
+
+/** The site of a persisted partial on the committed workspace; null when the file is gone or the line is no longer code. */
+function siteOfPersisted(file: SourceFile, rec: PersistedPartial): Site | null {
+  const lines = file.mod.lines;
+  const blockOf = (line: number): Site['block'] => {
+    const b = blockAt(file.mod, line);
+    return b === undefined ? null : { name: b.name, startLine: b.startLine, endLine: b.endLine };
+  };
+  if (rec.kind === 'replace') {
+    const current = lines[rec.line - 1];
+    if (current === undefined || current.trim() === '' || current.trim().startsWith('#')) return null;
+    return { file, line: rec.line, kind: 'replace', currentLine: current, indent: /^\s*/.exec(current)?.[0] ?? '', block: blockOf(rec.line), scope: scopeAt(file.mod, rec.line), evidence: { notes: ['restored partial'] } };
+  }
+  if (rec.line > lines.length + 1) return null;
+  const above = Math.max(1, rec.line - 1);
+  return { file, line: rec.line, kind: 'insert', currentLine: '', indent: rec.indent, block: blockOf(above), scope: scopeAt(file.mod, above), evidence: { notes: ['restored partial'] } };
+}
+
+/**
+ * Re-install persisted partials on resume as committed-base outcomes: only for goals the ledger
+ * still holds unfixed, only where the edit still applies to the committed files and the tests it
+ * newly passed still fail on the baseline (else the record is stale). The progress is rebuilt from
+ * the baseline arithmetically (the tests it passed pass, nothing else moves); it is a partial by
+ * construction and its pair is verified by the tests like any candidate. Returns how many were
+ * restored.
+ */
+export function restorePartials(mem: BasesMemory, records: readonly PersistedPartial[], goals: readonly Pick<Goal, 'id' | 'status'>[]): number {
+  const committed = mem.bases.find((b) => b.origin === 'committed');
+  if (committed === undefined || records.length === 0) return 0;
+  const live = new Set(goals.filter((g) => g.status !== 'fixed').map((g) => g.id));
+  const st = guardState(mem);
+  const seen = new Set(st.partials.map((p) => sha12(p.outcome.applied.diff)));
+  const before = committed.summary;
+  const stillFailing = new Set(before.failing);
+  let restored = 0;
+  for (const rec of records) {
+    if (!live.has(rec.goalId)) continue;
+    const file = committed.files.get(rec.path);
+    if (file === undefined) continue;
+    const site = siteOfPersisted(file, rec);
+    if (site === null) continue;
+    const newlyPassing = rec.newlyPassing.filter((t) => stillFailing.has(t));
+    if (newlyPassing.length === 0 || newlyPassing.length >= before.failing.length) continue;
+    const candidate: Candidate = { id: `restored:${sha12(`${rec.path}:${rec.line}:${rec.kind}:${rec.text}`)}`, site, text: rec.text, source: rec.source, op: rec.op };
+    if (rec.extraEdits !== undefined) candidate.extraEdits = rec.extraEdits.map((e): LineEdit => (e.text === undefined ? { path: e.path, line: e.line, kind: e.kind } : { path: e.path, line: e.line, kind: e.kind, text: e.text }));
+    let applied: AppliedCandidate;
+    try {
+      applied = applyCandidate(candidate, committed.files);
+    } catch {
+      continue;
+    }
+    const h = sha12(applied.diff);
+    if (seen.has(h)) continue;
+    seen.add(h);
+    const passing = new Set(newlyPassing);
+    const after: TestRunSummary = {
+      ...before,
+      passed: before.passed + newlyPassing.length,
+      failed: Math.max(0, before.failed - newlyPassing.length),
+      failing: before.failing.filter((t) => !passing.has(t)),
+      passing: [...before.passing, ...newlyPassing],
+      failures: before.failures.filter((f) => !passing.has(f.testId)),
+      timedOut: false,
+    };
+    const p = progress(before, after);
+    if (!p.improved || p.regressed || p.allPass) continue;
+    const outcome: VerifyOutcome = { job: { candidate, base: committed, p: 0, sourcePrior: 0, key: [before.passed, 0, 0] }, applied, subset: after, progress: p, status: 'partial' };
+    st.partials.push({ goalId: rec.goalId, outcome });
+    restored += 1;
+  }
+  if (st.partials.length > MAX_PARTIALS_REMEMBERED) st.partials.splice(0, st.partials.length - MAX_PARTIALS_REMEMBERED);
+  return restored;
 }

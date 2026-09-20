@@ -1560,3 +1560,214 @@ Run ids: account `20260920-222854-xny65bfw`, calendar_utils `-222854-uww2v2n5`, 
 `-222955-jqcsrb3o`, inventory `-223055-sdhuelzm`, profiles `-223310-6gr73sbf`, shipping `-223335-e5uj3jj2`, stats
 `-223612-tdysam5n`, table `-223704-37ql37hj`, tagcloud `-223831-vdbo2rsu`, textstats `-223844-nuslwjoq`, units
 `-224311-qm3lnayj`.
+
+## 15. 2026-09-20 (later): controller bookkeeping — partials before park, whole-site batches, `wrap` gap sites; ladder `account` 0/3 → 3/3 hunks (2 runs), `wrap` gold-identical
+
+Follow-up to `jev-only-ladder-4-analysis.md` §1 (the `account` partial trap: both gold half-fixes found and dropped
+with the goal's park; the gold of the third hunk ranked p = 1.00 and killed by a loaded lane) and to §13.4 above
+(the two `subgoal.ts` items reported and not edited, the `wrap` gap absent from the site list). Six code rules,
+all bookkeeping the harness knows for certain — which partials it holds, whether a passer is held, which goals are
+parked, which sources of a site ran, whether every run of a batch was killed, which gaps a function has. Jev stays
+the decider of everything it decided before. Code = `src/synth/search/{index,subgoal,bases,directive,sites}.ts`,
+`src/synth/sieve/runner.ts`; tests under `test/unit/synth/search` and `test/unit/synth/sieve`.
+
+### 14.1 What changed, per item
+
+1. **Partials are combined before a goal is parked.** `bases.ts`: `forgetHeld` (:430) is the park-time form of
+   `forgetGoal` — the held passers, fallbacks and the improved base go, the remembered partials STAY; `forgetGoal`
+   (a commit) still drops everything. `freshPairsOfPartials` (:456) lists the `pairsOfPartials` whose diff on the
+   committed workspace is not in `tried`. `persistPartials` / `partialsFromPersisted` / `restorePartials`
+   (:503 / :543 / :598) carry ≤ `MAX_PERSISTED_PARTIALS_PER_GOAL` = 4 records per unfixed goal (site, text,
+   extra edits, newly-passing tests, passed count; ≈ 250 B each) in `synthState` beside memory.ts's record
+   (`index.ts` :348 writes, :692 restores on the first baseline of a process, only where the edit still applies
+   and its tests still fail). `subgoal.ts`: the pairs reserve `PAIRS_RESERVE_WALL_MS` 15 s / `PAIRS_RESERVE_RUNS`
+   16 (:65, the guard's HOLD_RESERVE_* mirrored); `runsBeforeReserve` (:504) = runs the step can spend before the
+   reserve; `pairsDue` (:513) — untested pairs exist and the next batch would spend the reserve — runs `visitPairs`
+   (:523) before that batch (checked in `visitSource` and `visitSeedBatch`); `visitPairs` also runs at the start
+   of a step that resumes with remembered partials (:815), on every `budget` exit (`exitOnBudget` :759) and before
+   a park (:873), on top of the design's post-SEEDS call. `index.ts` :523: a `budget` exit while untested pairs
+   exist keeps the goal `open` without counting a budget hit (the next step runs the pairs first); :512 / :535
+   park with `forgetHeld`.
+2. **A held or pending lone passer is committed before park.** `subgoal.ts exitOnBudget` (:759): pairs, then
+   `commitSuspect(mem, goal)`, then `budget`; every `budget` exit of the phase loop goes through it (`exitOn`
+   :770). `index.ts` :482: whatever the search returned short of a commit, a passer the guard still holds for the
+   goal is committed as the patch (`synth guard: … search ended budget with a held passer; committing it`).
+3. **`change_approach` reopens every parked goal**, in ledger order, each with its source order rotated and its
+   sites rebuilt (`directive.ts` :166; the `.at(-1)` is gone). Attempts stand (§5.3 counts searches without a
+   commit) — see 14.4.
+4. **Whole-site batch in SIEVE.** `subgoal.ts visitSeedBatch` (:657), called by `visitSite` (:707) for SEEDS and
+   WIDENED on a SIEVE oracle: the seed sources still open at the site are enumerated together; when the union fits
+   §2.4 SIEVE it is queued as one batch (per-source priors keep the source order inside it) and decided once. The
+   sources whose every queued candidate completed are marked exhausted BEFORE the decision, so the guard's rule (a)
+   (`sieveHoldApplies` reads `goal.exhausted`) sees the site batch as done and a clean lone passer is committed at
+   once instead of being held until another site's decision; a site with nothing fresh consumes no decision. A
+   union that needs RANK is visited source by source from the same enumeration (no double count). The transcript
+   gets one `synth site:` line per batch (site, indent, base, per-source counts, the site's evidence note) — the
+   run dissections of §13 reconstructed this order from `tried`.
+5. **In-flight timeout retry.** `runner.ts`: a run the sandbox killed at the lane timeout is a new `killed`
+   job result (:643), decided at the batch end (:694): when EVERY classified run of the batch was killed, at least
+   `IN_FLIGHT_RETRY_MIN_RUNS` = 2 of them, and the batch's run median read a load ≥ LOAD_SCALE_MIN_RATIO (2×), the
+   candidates go to `mem.retryTimeouts` (not `tried`) with `runTimeoutMs` = the lane timeout × min(load,
+   `IN_FLIGHT_RETRY_TIMEOUT_FACTOR` = 2) and are retried first at the next call for the goal (the existing
+   provisional-timeout machinery; the retry's verdict is final); otherwise every killed run is a hang, classified
+   and tried, as before. `subgoal.ts drainRetries` (:544) runs the pending retries once more before a park when
+   the step still has budget. The verify event says `N in-flight timeouts under load ×R: re-queued once, lane
+   timeout A→B ms`. The measured batch (`account` step 18, 4 killed at 11.5 s under ×23) would have been re-queued
+   with a 23 s lane timeout.
+6. **`wrap` site list.** (a) WIDENED as asked: `sites.ts orderWidenedSites` (:1010) orders the widened sites by the
+   localisation's line evidence (Q5 p, Q5n Noul — `lineEvidenceOf` :979 reads the map `buildGoalSites` records
+   beside its `ordered` array, :836; a gap scores the better of its two neighbouring lines, `widenedSiteScore`),
+   then by distance from the top-1 line, cut at `WIDENED_SITES_MAX` = 24 (:124); `subgoal.ts` :846 uses it and
+   notes the list and its cost (`synth widened: … N sites (G gaps, L lines) …; WIDENED cost E candidates
+   enumerated, T tested, R runs`). On the `wrap` fixture with the live Nouls (L7 0.61, L4 0.36, L6/L9 0.21) the
+   gold gap is 9th of 16 in the full list and 2nd of the 6 left after the live SEEDS list is excluded. (b) **Beyond
+   the asked list, the §13.4 lever:** the first live run of (a) (`wrap` a, table below) showed WIDENED cannot help
+   `wrap` in the step that matters — SEEDS on its 9–10 sites spends the step (run a: 1,143 runs, wall 3 s left at
+   the reserve release; run 3 and §13.3 b/c: the 1,500-run cap), the guard releases the held overfit at the
+   reserve, and item 2 would commit it on the budget exit anyway. So `loopExitGap` (`sites.ts` :403): for a Q5
+   anchor inside (or heading) a `for`/`while`, the block-end slot at the loop's indent between its body and the
+   statement that follows — the gap the loop exits into — is the anchor's third gap after its ±1 neighbours
+   (:770, note `exit gap of the loop enclosing L<n>`), anchored to it, so `orderGoalSites` visits it right after
+   the anchor's own gaps. Two of the four QuixBugs insertion golds sit exactly there (`wrap`, `shunting_yard`).
+   Cost: one site's candidates per loop-enclosed anchor (measured below).
+
+### 14.2 Tests
+
+`test/unit/synth/search/subgoal.test.ts`: "SIEVE: a site's seed sources run as ONE batch decided ONCE; the real
+guard commits a clean lone passer at once (no pending hold); an exhausted site consumes no decision" (item 4, with
+`createDecide()` as the guard and a throwing `ask`); "complementary partials: their untested pair runs before the
+batch that would spend the pairs reserve, and a passing pair is committed as one composite candidate" (item 1,
+real `pairsOfPartials`); "a step that ends on its budget commits the passer the guard holds (pending or suspect)
+instead of returning `budget` with the hold dropped" (item 2). `controller.test.ts`: "a budget exit with an untested
+pair of complementary partials keeps the goal open; once the pair ran the §5.3 park applies, the partials are kept
+and persisted (≤ 4 per goal), and a resumed run restores them" (item 1, through `synthesize` and a checkpoint round
+trip); "a `budget` result while the guard holds a passer: the controller commits it as the patch — a hold is decided,
+never parked away" (item 2). `bases.test.ts`: "forgetHeld keeps the remembered partials …; freshPairsOfPartials lists
+the untested pairs"; "persistPartials / restorePartials: ≤ 4 records per unfixed goal …; stale, fixed or malformed
+records are dropped". `directive.test.ts`: "change_approach with every goal parked reopens EVERY parked goal in ledger
+order, each rotated and re-localised; fixed goals stay fixed" (item 3, rewritten from "the newest"). `sites.test.ts`:
+"orderWidenedSites: line evidence first (a gap scores its better neighbour), then distance from the top-1 line, cut
+at WIDENED_SITES_MAX — wrap's gap before `return lines` is second once the SEEDS sites are excluded";
+"lineEvidenceOf: the Q5 p and Q5n Nouls behind a buildGoalSites list travel with its `ordered` array …";
+"loopExitGap: the block-end slot at the loop's indent for a line inside (or heading) the loop, none outside a loop;
+buildGoalSites makes it the anchor's third gap, inside the 6-cut" (wrap fixture, the shipped `wrap.py`,
+`shunting_yard`'s nested loops, and the live Q5 masses → the gap is site 4 of the ordered list). `test/unit/synth/sieve/
+runner.test.ts`: "in-flight timeouts: a batch whose every run the sandbox killed under load is re-queued once (not
+tried) with the lane timeout scaled by the load and classified by that retry; a killed run beside a finished one is a
+hang" (item 5, worktree lanes, the ladder oracle shape). Three expectations moved with the behaviour: the phase-walk
+test's WIDENED order (evidence, then distance from L5), the lone-passer test's enumerations (three sources, one
+decision), the directive reopen test. Gates: `tsc --noEmit` and `no-any` clean; `vitest --project unit
+test/unit/synth` 73 files, 1,215 tests; the whole unit project 140 files, 2,031 tests.
+
+### 14.3 Live (concurrency 1 per task; the machine carried another agent's runs, load average 8–43)
+
+"solved" = the bench's `pass`; the verdict applies `model_patch.diff` to the buggy program and compares with the
+reference: gold-identical = whitespace/comment-insensitive equality; equivalent = agrees with the reference on the
+JSON tests plus code perturbations (strings: first word, empty, trailing word; ints ±1; lists drop/dup) or, for
+`detect_cycle`, on 48 linked lists (lengths 1–12, acyclic / cycle to head, middle, self).
+
+| task | code | solved | steps | cost (Jev) | wall | stop | patch verdict |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `wrap` (a) | items 1–6a | yes | 12 | $0.0048 | 101 s | max_steps | **overfit** (the §13 duplicated loop; differs from gold on `wrap("The", 50)`: `[]` vs `['The']`) |
+| `wrap` (b) | + 6b loop-exit gap | yes | 5 | $0.0024 | 91 s | complete | **gold-identical** (`lines.append(text)` before `return lines`, indent 4) |
+| `account` (1) | all | yes | 10 | $0.0135 | 250 s | complete | **gold-identical**, 3/3 hunks |
+| `account` (2) | all | yes | 20 | $0.0167 | 126 s | max_steps | **gold-identical**, 3/3 hunks (both fixes by step 6; steps 9–20 are `done` proposals the engine declined or blocked, 14.3.3) |
+| `kth` | all | yes | 4 | $0.0019 | 31 s | complete | gold-identical |
+| `detect_cycle` | all | yes | 4 | $0.0019 | 39 s | complete | equivalent (48/48 linked lists; the L9 guard `guard_empty_return`, not the L5 condition — as §13.3) |
+| `depth_first_search` | all | yes | 4 | $0.0018 | 41 s | complete | gold-identical |
+| `lcs_length` | all | yes | 4 | $0.0018 | 26 s | complete | gold-identical |
+| `shunting_yard` | all | yes | 4 | $0.0021 | 65 s | complete | gold-identical |
+
+**14.3.1 `wrap` a → b.** Run a repeated §13.3 c exactly: SEEDS over 9 sites, the duplicated-loop passer from
+`donor/statement_donor` at wrap.py:7:insert held on `duplicates_block` (Q16 0.06), a second copy arbitrated to the
+all-overfit signature (escape 0.91, max general 0.06), release at the budget reserve (357 runs and 3 s of wall left
+after 1,143 runs) and committed as `possible overfit`; WIDENED was never entered — the step ends in SEEDS, and the
+commit ends the goal. Run b, with the loop-exit gap as L7's third gap (order `7r, 8i@8, 7i@8, 9i@4, …`): the same
+overfit was held at batch 4 (147 candidates at 7i@8); batch 5 was the exit gap's whole-site batch (140
+candidates), its one passer the gold; `arbitrated 2 passers (1 held) in 2 clusters (probe 16 inputs, 2/2
+signatures); escape 0.13, max general 0.66; pick mutation/statement_template at wrap.py:9:insert` — the probe put
+the two in different clusters (the copied loop drops the remainder on the first-word and empty inputs) and Q15 chose
+the gold at once; 920 runs, 4 Jev requests, commit at step 4, `done` at step 5. The exit gap cost 140 of the step's
+920 runs (15 %); WIDENED's cost (item 6a) could not be measured live in this round: no run of it entered WIDENED
+(every step either committed in SEEDS or spent its budget there), so its numbers are the unit fixture's (16
+widened sites for `wrap`, 6 after the SEEDS exclusion, cut 24 never binding on a QuixBugs-size function).
+
+**14.3.2 `account` run 1** (`20260920-231100-3yxt7mg7`). Step 3: g2 (Q1 tiebreak) RANK, 773 runs, the 30-request
+cap ends the step (`budget`). Step 4: g1 RANK, 1,500 runs (the run cap, 30 s of wall left), 2 partials in the LAST
+batch (4 tested) — both at one site, so no pair yet; `budget`, first hit, open. Step 5: g1 SIEVE — partials at
+L36 replace (1 + 9) and L53 replace (2) over three batches; before the next batch `pairsDue` held (runs left 669,
+`runsBeforeReserve` 5): `synth pairs: g1: testing 10 pairs of complementary partials`; 5 of the 10 pairs passed
+every test; `arbitrated 5 passers (0 held) in 1 cluster (no probe); escape 0.17, max general 0.57; pick
+composite/pair_of_partials at src/account.py:36:replace` → the patch of both hunks (`>` at L36, `dst.deposit` at
+L53), 841 runs, 8 requests. Step 6 the post-patch run (9/10). Steps 7–8 `read`s under `investigate` (loop-side).
+Step 9: `change_approach: rotated source order of g2 (1); site beam 6 → 10` — g2 SIEVE over 11 sites, 1,489 runs,
+the gold `enumerate(self.history, 1)` plausible in the last batch (48 tested, 3 runs left) → commit. Step 10 green,
+`done`. The loop-exit gap of g2's anchor L44 (`src/account.py:47:insert`, indent 8) was visited first among L44's
+gaps at 361 candidates (donor 124, mutation 237) and bought nothing there (the fix is a replacement): 24 % of the
+step's runs — the lever's cost on a program where it does not apply.
+
+**14.3.3 `account` run 2** (`20260920-231644-kpichkgc`). Both new rules fired, one per goal. Step 3: g1 (Q1)
+RANK, 10 sites, 24 requests; the two halves arrived as partials in two RANK batches of 5 with 19 and 14 runs left
+(2 partial, then 1 partial); the next batch would have spent the reserve, so `synth pairs: g1: testing 2 pairs of
+complementary partials (runs left 14, test wall left 43 s)` → both pairs plausible → `arbitrated 2 passers (0 held)
+in 1 cluster; escape 0.20, max general 0.38; pick composite/pair_of_partials at src/account.py:36:replace` → the
+two-hunk patch, 1,482 runs, at the goal's FIRST step (ladder-4 never got it in 20). Step 6: g2 RANK, 1,467 runs,
+`holds the lone passer mutation/argument_arity at src/account.py:44:replace until its site's seed sources ran`
+(rule (a): the site's union needed RANK, so the sources ran one by one) — the 30-request cap then ended the step,
+and item 2 committed it: `the step ends on its budget; committing the held passer` (before this round the hold
+would have travelled into the next step, or been dropped with a park). Step 8: the post-patch run executed, 10/10,
+judge completion 0.73 but the `fix …test_statement…` claim was left `unverified`; step 9 `done` was **declined**
+(risk 0.30 review, `out_of_scope`, no reviewer in bench runs), step 10 `done` **blocked** (plan_mismatch 0.89, level
+4 "claims completion with no verifying test run in `recent`"), and the run alternated `done` / `investigate` reads
+with `gather_context` replans ("nothing to change") to `max_steps` — the engine-side shape of
+`jev-only-ladder-4-analysis.md` §4 Fixes 1–2, not the synthesizer's (its ledger read `fixed 2, open 0, parked 0` from
+step 6 on). The bench scores the task passed (10/10); the workspace is gold-identical.
+
+**14.3.4 Regression check** (`detect_cycle`, `depth_first_search`, `kth`, `shunting_yard`, `lcs_length`;
+`tagcloud` is a ladder task and was replaced by `lcs_length`; concurrency 3, `bench/results/jev-only-quixbugs-5-regress`,
+Jev spend $0.0095). 5/5 solved, every one committed at step 3 and `complete` at step 4; 4 gold-identical,
+`detect_cycle` equivalent on the 48-list differential (the run-3 overfit held on three signals at Q16 0.37 < 0.7,
+then `arbitrated 6 passers (1 held) in 3 clusters (probe 16 inputs, 6/6 signatures); escape 0.03, max general
+0.70` → a correct L9 guard, as in §13.3 b/c). Whole-site batches changed no verdict: `kth` and `lcs_length` were
+lone-passer commits with no hold (SIEVE, 2 requests each — the site's three sources decided once);
+`depth_first_search` arbitrated 2 passers (its `nodesvisited.add(node)` gold-identical), `shunting_yard` 3 (max
+general 0.86, gold-identical; 1,196 runs — its `for`-enclosed anchors each add a loop-exit gap, the largest
+step of the set). No in-flight timeout and no pairs batch fired on the set (no partials pair, no all-killed batch).
+
+Round spend: `wrap` a + b $0.0072, `account` 1 + 2 $0.0302, regression $0.0095 — $0.047 live, generator $0.
+
+### 14.4 What remains
+
+- **WIDENED (6a) is unmeasured live.** Every step of this round ended in SEEDS. It is reached only on the step
+  after SEEDS exhausts every site without a commit — the design's intended shape (`lis`, `mergesort`) — and its
+  order now follows the evidence; a run that gets there will print its `synth widened:` cost line.
+- **The loop-exit gap costs 140–361 candidates per loop-enclosed anchor** (one whole-site batch: 15 % of `wrap`'s
+  winning step, 24 % of `account` g2's) and buys nothing on a replacement bug. It is anchored to Jev's line, so
+  it enters the 6-cut before the ranked slots; measuring it over the 40 (§11's insertion set and the replacement
+  programs) is the next check.
+- **A reopened goal's `attempts` stand**, so `parkReasonFor` re-parks it after one more budget-hit step ("3 searches
+  without a commit" — `account` ladder-4 step 19). Resetting attempts on reopen is a `goals.ts` / directive rule
+  not taken here; g2 in run 1 committed within its reopened step.
+- **The in-flight rule fires only on all-killed batches of ≥ 2**; a lone gold killed under load is still a final
+  `timeout` (the single-candidate batch of the runner tests is a genuine hang and must stay one).
+- The `investigate` reads (steps 7–8 of run 1) and the replans that say `gather_context` with every goal parked are
+  loop-side (`jev-only-ladder-4-analysis.md` §4 Fixes 1–3), unchanged here.
+
+### 14.5 Exact commands
+
+```
+# gates
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/synth
+
+# live (node_modules symlinked into the worktree; .env in the main checkout)
+env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs --task-id wrap \
+  --conditions jev-only --live --spend-cap 0.2 --concurrency 1 --max-steps 12 --max-wall 8m --out bench/results/jev-only-quixbugs-5-wrap      # then -b
+env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/cli/main.tsx bench --suite ladder --task-id account \
+  --conditions jev-only --live --spend-cap 0.4 --task-spend-cap 0.3 --concurrency 1 --max-steps 20 --max-wall 12m --out bench/results/jev-only-ladder-account-1   # then -2
+env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs \
+  --task-id detect_cycle,depth_first_search,kth,shunting_yard,lcs_length --conditions jev-only --live --spend-cap 0.3 --concurrency 3 \
+  --max-steps 12 --max-wall 8m --out bench/results/jev-only-quixbugs-5-regress
+
+# the table and the patch verdicts (stdlib python: git-applies model_patch.diff to the buggy program, compares with the reference, differential runs)
+python3 .scratch/verdict.py bench/results/jev-only-quixbugs-5-wrap-b bench/results/jev-only-ladder-account-1 bench/results/jev-only-quixbugs-5-regress
+```

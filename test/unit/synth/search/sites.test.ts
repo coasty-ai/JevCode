@@ -20,6 +20,7 @@ import {
   Q5_ESCAPE_INSERT_FIRST,
   Q6_FALLBACK_STATEMENTS,
   REPLACE_SITES_MAX,
+  WIDENED_SITES_MAX,
   buildGoalSites,
   captureLineChoiceEscape,
   functionGapSites,
@@ -28,10 +29,14 @@ import {
   importGapSite,
   insertSitesFirst,
   isImportGap,
+  lineEvidenceOf,
   lineNoulRequest,
+  loopExitGap,
+  LOOP_EXIT_GAP_NOTE,
   nextWidenChunk,
   orderGapSlots,
   orderGoalSites,
+  orderWidenedSites,
   q5Anchors,
   q6FallbackApplies,
   siteKey,
@@ -42,7 +47,7 @@ import {
 import { functionGapSlots } from '../../../../src/synth/localize/sites.js';
 import { createTemplateSource } from '../../../../src/synth/templates/index.js';
 import { quixbugsProgram } from './helpers.js';
-import type { GoalSiteContext, SbflEvidence } from '../../../../src/synth/search/sites.js';
+import type { GoalSiteContext, LineEvidence, SbflEvidence } from '../../../../src/synth/search/sites.js';
 import type { Goal } from '../../../../src/synth/search/types.js';
 import type { PerTestResult, RankedLine } from '../../../../src/synth/sbfl/types.js';
 import { ESCAPE_KEY, WRAP_FAILURE, answerAll, enumerateOptions, fixtureFile, goal, ladderTask, scriptedAsk, sf, signal, siteAt, stateObject } from './sites-composite.helpers.js';
@@ -407,6 +412,65 @@ describe('WIDENED: every code line of the beam functions, cursor-carried across 
     expect(widenedSites([fn]).every((s) => s.kind === 'replace')).toBe(true);
     const short = { ...fn, endLine: GAP_FUNCTION_MAX_LINES };
     expect(functionGapSites(short).length).toBeGreaterThan(0);
+  });
+
+  it("orderWidenedSites: line evidence first (a gap scores its better neighbour), then distance from the top-1 line, cut at WIDENED_SITES_MAX — wrap's gap before `return lines` is second once the SEEDS sites are excluded", () => {
+    // the Nouls of the live wrap runs (jev-only-rungs-1-2.md §13.4): L7 0.61–0.67, L4 0.36, L6 and `return lines` 0.16–0.21 (L9 of this fixture, which has no blank line before it)
+    const nouls: Record<number, number> = { 7: 0.61, 4: 0.36, 6: 0.21, 9: 0.21 };
+    const evidence: LineEvidence = (_f, line) => nouls[line] ?? 0;
+    const top = { file, line: 7 };
+    const all = widenedSites([WRAP]);
+    expect(orderWidenedSites(all, evidence, top).map(tag)).toEqual(['7i@8', '7r', '8i@8', '5i@8', '4i@8', '4r', '6i@12', '6r', '9i@4', '9r', '8r', '5r', '3i@4', '3r', '2i@4', '2r']);
+    expect(orderWidenedSites(all, evidence, top, 4).map(tag)).toEqual(['7i@8', '7r', '8i@8', '5i@8']);
+    expect(WIDENED_SITES_MAX).toBe(24);
+    // the live SEEDS list (replace L3–L8, the gaps around L7, L4 and L5 at indent 8) excluded: the gold gap is second, right after L6's inner gap
+    const seeds = new Set([...[3, 4, 5, 6, 7, 8].map((l) => siteKey({ file, line: l, kind: 'replace' })), ...[4, 5, 7, 8].map((l) => siteKey({ file, line: l, kind: 'insert' }))]);
+    expect(orderWidenedSites(widenedSites([WRAP], seeds), evidence, top).map(tag)).toEqual(['6i@12', '9i@4', '9r', '3i@4', '2i@4', '2r']);
+    // without evidence or a top line the line order stands
+    expect(orderWidenedSites(all, () => 0, null).map(tag)).toEqual(all.map(tag));
+  });
+
+  it("loopExitGap: the block-end slot at the loop's indent for a line inside (or heading) the loop, none outside a loop; buildGoalSites makes it the anchor's third gap, inside the 6-cut", async () => {
+    // wrap: L4–L8 are the while body, L3 its header: all exit into the slot before `return lines` (L9 here, indent 4); gcd has no loop
+    for (const line of [3, 4, 6, 7, 8]) expect(loopExitGap(file, line, WRAP)).toMatchObject({ line: 9, indent: '    ', position: 'block_end', dedent: 1, afterLine: 8 });
+    expect(loopExitGap(file, 2, WRAP)).toBeNull();
+    expect(loopExitGap(file, 9, WRAP)).toBeNull();
+    expect(loopExitGap(file, 14, GCD)).toBeNull();
+    // the shipped program: the blank line before `return lines` carries the dedented slot (L9, indent 4), the gold's position
+    const shipped = sf('wrap.py', quixbugsProgram('wrap'));
+    expect(loopExitGap(shipped, 7, { startLine: 1, endLine: 10 })).toMatchObject({ line: 9, indent: '    ', afterLine: 8 });
+    // nested loops exit into the innermost: shunting_yard's inner `while` body exits one level out of it, not out of the `for`
+    const sy = sf('shunting_yard.py', quixbugsProgram('shunting_yard'));
+    const inner = loopExitGap(sy, 17, { startLine: 1, endLine: sy.mod.lines.length });
+    expect(inner).not.toBeNull();
+    expect(inner?.indent.length).toBe(12);
+    // the live wrap localisation (Q5 mass on L7, then L4 and L3): the exit gap is L7's third gap and makes the cut
+    const { result } = await localizeWith({ line_7: 0.6, line_4: 0.2, line_3: 0.1, [ESCAPE_KEY]: 0.1 });
+    const { ctx } = ctxWith((call) => answerAll(call, () => 0.05, () => ({})));
+    const g = await buildGoalSites(ctx, goal(), result);
+    const exit = g.insert.find((s) => s.line === 9 && s.indent === '    ');
+    expect(exit).toBeDefined();
+    expect(exit?.evidence.notes[0]).toBe(`${LOOP_EXIT_GAP_NOTE} L7`);
+    expect(g.insertAnchors.get(siteKey(exit!))).toBe(siteKey({ file, line: 7, kind: 'replace' }));
+    expect(g.insert.length).toBeLessThanOrEqual(INSERT_SITES_MAX);
+    // visited right after L7's own two gaps: site 4 of the ordered list
+    expect(g.ordered.slice(0, 4).map((s) => `${s.line}${s.kind === 'insert' ? `i@${s.indent.length}` : 'r'}`)).toEqual(['7r', '8i@8', '7i@8', '9i@4']);
+  });
+
+  it("lineEvidenceOf: the Q5 p and Q5n Nouls behind a buildGoalSites list travel with its `ordered` array; a copy falls back to the replace sites' jevProbability", async () => {
+    const { result } = await localizeWith({ line_9: 0.4, line_8: 0.25, line_15: 0.1, line_3: 0.06, line_13: 0.04, [ESCAPE_KEY]: 0.15 });
+    const q5n: Record<string, number> = { line_9: 0.92, line_7: 0.55, line_15: 0.5 };
+    const { ctx } = ctxWith((call) => answerAll(call, (id) => q5n[id] ?? 0.05, () => ({})));
+    const g = await buildGoalSites(ctx, goal(), result);
+    const p = lineEvidenceOf(g.ordered);
+    expect(p(file, 9)).toBeCloseTo(0.92, 6); // max(Q5 0.40, Q5n 0.92)
+    expect(p(file, 7)).toBeCloseTo(0.55, 6); // Q5n only
+    expect(p(file, 15)).toBeCloseTo(0.5, 6); // max(Q5 0.10, Q5n 0.50)
+    expect(p(file, 2)).toBeCloseTo(0.05, 6); // every judged line carries its Noul
+    expect(p(file, 1)).toBe(0); // the def line is never judged
+    const copy = lineEvidenceOf([...g.ordered]);
+    expect(copy(file, 15)).toBeCloseTo(0.1, 6); // the Q5 p the site's evidence carries
+    expect(copy(file, 7)).toBe(0); // a Q5n-only site has no jevProbability
   });
 });
 

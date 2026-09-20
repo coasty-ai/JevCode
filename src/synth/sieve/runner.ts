@@ -23,6 +23,17 @@
  * (the stop rule kept, see `RunSettings`), and only that run classifies them (the rest wait for
  * the next call for the goal).
  *
+ * A run the SANDBOX killed at the lane timeout is a `timeout` too, and final on its own — except
+ * when EVERY classified run of the batch was killed that way and the batch measured a load of
+ * ≥ LOAD_SCALE_MIN_RATIO (its run median against the oracle's estimate): ladder `account`, step
+ * 18, "4 tested (4 timeout); run median 11550 ms" against 0.4–0.8 s in every other batch of the
+ * run, with Jev's p = 1.00 pick in the batch (jev-only-ladder-4-analysis.md §1.3). Such a batch
+ * says the lanes were starved, not that four candidates hang: its candidates are re-queued once
+ * (`mem.retryTimeouts`, retried first at the next call for the goal, so after the rest of the
+ * step's batches) with the lane timeout scaled by the observed load (IN_FLIGHT_RETRY_TIMEOUT_FACTOR
+ * bounds it); the retry's verdict is final. A batch with at least one run that finished keeps
+ * every killed run as a hang, and a lone killed run is a hang (IN_FLIGHT_RETRY_MIN_RUNS).
+ *
  * The step's StepBudget is honoured (runs and wall), `ctx.signal` stops dispatching (in-flight
  * runs are bounded by their own timeout and killed by the sandbox), and up to `oracle.lanes`
  * runs overlap. Every lane run carries the oracle's adaptive per-test timeout (§4.1): as
@@ -48,7 +59,7 @@ import { isAbsolute, relative, resolve } from 'node:path';
 
 import { sha12 } from '../../core/hash.js';
 import type { Sandbox } from '../../core/types.js';
-import { caseProfile, DEFAULT_CASE_TIMEOUT_MS, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, LOAD_SAMPLE_MIN_RUNS, loadRatio, parseQuixbugsCommand, PER_TEST_TIMEOUT_FACTOR, refineLanes, refineTRun, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, scaledCaseTimeout, shellWords } from '../search/budget.js';
+import { caseProfile, DEFAULT_CASE_TIMEOUT_MS, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, LOAD_SAMPLE_MIN_RUNS, LOAD_SCALE_MIN_RATIO, loadRatio, parseQuixbugsCommand, PER_TEST_TIMEOUT_FACTOR, refineLanes, refineTRun, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, scaledCaseTimeout, shellWords } from '../search/budget.js';
 import type { Goal, Lane, OracleModel, StepBudget, VerifyJob, VerifyOutcome, VerifyStatus } from '../search/types.js';
 import type { AppliedCandidate, Progress, TestRunSummary } from '../types.js';
 import { applyCandidate } from '../verify/apply.js';
@@ -60,6 +71,20 @@ import { createLanes, type LanePool } from './lanes.js';
 
 /** §4.3: full-suite regression runs per step, "stop after the fifth passer" (decide() arbitrates ≤ 5 plausible). */
 export const MAX_FULL_SUITE_RUNS_PER_STEP = 5;
+/**
+ * In-flight timeouts (module header): a batch is re-queued only when at least this many of its
+ * runs were killed and none finished. Two independent candidates killed at the same wall is
+ * already an unlikely shape for genuine hangs; one alone is a hang (the existing rule, kept).
+ * The measured batch had four.
+ */
+export const IN_FLIGHT_RETRY_MIN_RUNS = 2;
+/**
+ * The retry's lane timeout is the batch's lane timeout × min(observed load, this): at the 23×
+ * load of the measured batch a 0.5 s run needed ≈ 11.5 s, the lane timeout itself (3 × t_run
+ * + 10 s); twice that covers it, while a batch of genuine hangs costs at most two lane timeouts
+ * per lane once (the retry is final).
+ */
+export const IN_FLIGHT_RETRY_TIMEOUT_FACTOR = 2;
 /** Output kept per run: the parsers need the summary and the failure sections (same as the verifier's default). */
 export const RUN_OUTPUT_BYTES = 256 * 1024;
 /**
@@ -148,6 +173,8 @@ export interface PendingRetry {
   caseTimeoutMs: number;
   /** the memory's baseline when the provisional run was judged; a different object means the search re-baselined */
   baseline: TestRunSummary;
+  /** an in-flight timeout (the sandbox killed the run under load): the lane timeout the retry runs with */
+  runTimeoutMs?: number;
 }
 
 /** The slice of the VerifyQueue (sieve/queue.ts) the runner consumes: the best `n` jobs in key order. */
@@ -384,7 +411,13 @@ function median(xs: readonly number[]): number | null {
 // runQueue
 // ---------------------------------------------------------------------------------------
 
-type JobResult = { kind: 'outcome'; outcome: VerifyOutcome } | { kind: 'defer' } | { kind: 'provisional'; pending: PendingRetry } | { kind: 'skip' };
+type JobResult =
+  | { kind: 'outcome'; outcome: VerifyOutcome }
+  | { kind: 'defer' }
+  | { kind: 'provisional'; pending: PendingRetry }
+  /** the sandbox killed the run at the lane timeout: final unless the whole batch did so under load (decided at the batch end) */
+  | { kind: 'killed'; pending: PendingRetry; outcome: VerifyOutcome }
+  | { kind: 'skip' };
 
 function emptySummary(command: string, actual: string): TestRunSummary {
   return { command, passed: 0, failed: 0, errors: 1, skipped: 0, total: 1, failing: [RUN_FAILURE_ID], passing: [], failures: [{ testId: RUN_FAILURE_ID, call: command, expected: 'the candidate applies and its tests run', actual }], exitCode: null, timedOut: false, durationMs: 0, outputTail: '' };
@@ -448,6 +481,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const subsetDurations: number[] = [];
   const fullDurations: number[] = [];
   const provisional: { order: number; pending: PendingRetry }[] = [];
+  const killed: { order: number; pending: PendingRetry; outcome: VerifyOutcome }[] = [];
   const retried = new Map<VerifyStatus, number>();
 
   const wallLeft = (): number => wallAtStart - (now() - batchStart);
@@ -482,9 +516,13 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   interface RunSettings {
     caseTimeoutMs: number | null;
     stopRule: boolean;
+    /** the sandbox timeout of the run when it is not the lane's own (an in-flight timeout's retry) */
+    runTimeoutMs?: number;
   }
   const firstRun = (): RunSettings => ({ caseTimeoutMs: caseTimeoutNow, stopRule: true });
   const RETRY: RunSettings = { caseTimeoutMs: RETRY_CASE_TIMEOUT_MS, stopRule: true };
+  /** The retry of an in-flight timeout: the cap it ran under, the lane timeout scaled by the load it was killed under. */
+  const inFlightRetry = (p: PendingRetry): RunSettings => ({ caseTimeoutMs: caseTimeoutNow === null ? null : p.caseTimeoutMs, stopRule: true, ...(p.runTimeoutMs === undefined ? {} : { runTimeoutMs: p.runTimeoutMs }) });
   /**
    * The measured goal-subset baseline is a reference, not a candidate: it runs at the module's
    * own defaults (2 s a case, no stop rule), like the workspace baseline it stands in for. Under
@@ -503,7 +541,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
    */
   const runTests = async (command: string, lane: Lane, s: RunSettings): Promise<TestRunSummary & { aborted: boolean }> => {
     const o = oracleFor(s);
-    const runTimeoutMs = o === oracle ? laneTimeoutMs : laneRunTimeout(o, baseline);
+    const runTimeoutMs = s.runTimeoutMs ?? (o === oracle ? laneTimeoutMs : laneRunTimeout(o, baseline));
     const timeoutMs = Math.max(1, Math.min(runTimeoutMs, Math.max(1, wallLeft())));
     const truncated = timeoutMs < runTimeoutMs;
     const started = now();
@@ -544,7 +582,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
    * `retry` re-runs a provisional timeout at the full cap without the stop rule; its verdict is
    * final. A first run whose `timeout` is provisional returns 'provisional' and is not `tried`.
    */
-  const verifyJob = async (job: VerifyJob, lane: Lane, mode: 'first' | 'retry'): Promise<JobResult> => {
+  const verifyJob = async (job: VerifyJob, lane: Lane, mode: 'first' | 'retry', retryOf?: PendingRetry): Promise<JobResult> => {
     let applied: AppliedCandidate;
     try {
       applied = applyCandidate(job.candidate, job.base.files);
@@ -563,7 +601,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     }
     if (budget.testRunsLeft <= 0) return { kind: 'defer' };
     budget.testRunsLeft -= 1;
-    const settings = mode === 'retry' ? RETRY : firstRun();
+    const settings = mode === 'retry' ? (retryOf?.runTimeoutMs === undefined ? RETRY : inFlightRetry(retryOf)) : firstRun();
     const subset = await runTests(subsetCommand(oracleFor(settings), goal, lane, spec), lane, settings);
     if (subset.aborted) return { kind: 'defer' };
     if (mode === 'first') {
@@ -596,15 +634,21 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       fullProgress = progress(job.base.summary, full);
     }
     const status = classifyOutcome({ subset, subsetProgress, passesGoal, ...(full !== undefined ? { full } : {}), ...(fullProgress !== undefined ? { fullProgress } : {}) });
-    if (status === 'timeout' && mode === 'first' && settings.caseTimeoutMs !== null) {
+    const outcome: VerifyOutcome = { job, applied, subset, progress: fullProgress ?? subsetProgress, status, ...(full !== undefined ? { full } : {}) };
+    if (status === 'timeout' && mode === 'first') {
       // which run hung: the full suite of a subset passer, else the subset
       const hung = full !== undefined && (full.timedOut || hangsOnEveryFailure(full)) ? { run: full, base: job.base.summary } : { run: subset, base: subsetBase };
-      const kind = timeoutKind({ run: hung.run, base: hung.base, runner: oracle.runner, caseTimeoutMs: settings.caseTimeoutMs, loadRatio: loadNow });
-      if (kind === 'provisional') return { kind: 'provisional', pending: { job, applied, diffHash, subset: hung.run, caseTimeoutMs: settings.caseTimeoutMs, baseline } };
+      if (hung.run.timedOut) {
+        // the sandbox killed the run at the lane timeout: a hang, unless the whole batch was killed under load (the batch end decides; `tried` waits)
+        return { kind: 'killed', pending: { job, applied, diffHash, subset: hung.run, caseTimeoutMs: settings.caseTimeoutMs ?? DEFAULT_CASE_TIMEOUT_MS, baseline }, outcome };
+      }
+      if (settings.caseTimeoutMs !== null) {
+        const kind = timeoutKind({ run: hung.run, base: hung.base, runner: oracle.runner, caseTimeoutMs: settings.caseTimeoutMs, loadRatio: loadNow });
+        if (kind === 'provisional') return { kind: 'provisional', pending: { job, applied, diffHash, subset: hung.run, caseTimeoutMs: settings.caseTimeoutMs, baseline } };
+      }
     }
     mem.tried.add(diffHash); // only a finally classified candidate is "tried"; a deferred or provisional one runs again
     if (mode === 'retry') retried.set(status, (retried.get(status) ?? 0) + 1);
-    const outcome: VerifyOutcome = { job, applied, subset, progress: fullProgress ?? subsetProgress, status, ...(full !== undefined ? { full } : {}) };
     return { kind: 'outcome', outcome };
   };
 
@@ -632,6 +676,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       }
       if (r.kind === 'defer') deferred.push(job);
       else if (r.kind === 'provisional') provisional.push({ order, pending: r.pending });
+      else if (r.kind === 'killed') killed.push({ order, pending: r.pending, outcome: r.outcome });
       else if (r.kind === 'outcome') results.push({ order, outcome: r.outcome });
     }
   };
@@ -639,6 +684,23 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   await Promise.all(Array.from({ length: workers }, () => worker()));
   // carried jobs that dispatch never reached stay first in line
   deferred.unshift(...carried);
+
+  // In-flight timeouts (module header): every classified run of the batch killed at the lane
+  // timeout, at least IN_FLIGHT_RETRY_MIN_RUNS of them, under a measured load — the verdicts
+  // are provisional and the candidates wait in mem.retryTimeouts for the next call for the goal
+  // (not `tried`), to run once more with the lane timeout scaled by that load. Otherwise every
+  // killed run is the candidate's own hang: classified, tried.
+  const loadAtEnd = loadRatio(median(subsetDurations), estimateMs);
+  const inFlight = results.length === 0 && killed.length >= IN_FLIGHT_RETRY_MIN_RUNS && loadAtEnd >= LOAD_SCALE_MIN_RATIO;
+  const inFlightTimeoutMs = Math.round(laneTimeoutMs * Math.min(Math.max(1, loadAtEnd), IN_FLIGHT_RETRY_TIMEOUT_FACTOR));
+  // in dispatch order (the lanes complete in any order), so the retries keep the queue's ranking
+  for (const k of [...killed].sort((a, b) => a.order - b.order)) {
+    if (inFlight) pendingRetries.push({ ...k.pending, runTimeoutMs: inFlightTimeoutMs });
+    else {
+      mem.tried.add(k.pending.diffHash);
+      results.push({ order: k.order, outcome: k.outcome });
+    }
+  }
 
   // The retry phase: provisional timeouts of earlier calls first, then this batch's, at most
   // RETRY_TIMEOUTS_MAX_PER_BATCH; the rest (and any retry the wall or the signal cut short) wait
@@ -654,7 +716,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       if (next === undefined) return;
       let r: JobResult;
       try {
-        r = await pool.withLane((lane) => verifyJob(next.pending.job, lane, 'retry'));
+        r = await pool.withLane((lane) => verifyJob(next.pending.job, lane, 'retry', next.pending));
       } catch (e: unknown) {
         laneFailure = e;
         r = { kind: 'defer' };
@@ -691,7 +753,8 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       ? ''
       : `; ${provisionalCount} provisional timeout${provisionalCount === 1 ? '' : 's'}: ${retriedCount} retried at ${RETRY_CASE_TIMEOUT_MS} ms${retriedCount > 0 ? ` (${[...retried.entries()].map(([k, v]) => `${v} ${k}`).join(', ')})` : ''}, ${pendingRetries.length} pending`;
   const loadNote = caseTimeoutNow === oracle.perTestTimeoutMs || oracle.perTestTimeoutMs === null ? '' : `; load ×${loadNow.toFixed(1)}, case timeout ${oracle.perTestTimeoutMs}→${caseTimeoutNow} ms`;
-  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${retryNote}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
+  const inFlightNote = inFlight ? `; ${killed.length} in-flight timeout${killed.length === 1 ? '' : 's'} under load ×${loadAtEnd.toFixed(1)}: re-queued once, lane timeout ${laneTimeoutMs}→${inFlightTimeoutMs} ms` : '';
+  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${inFlightNote}${retryNote}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
   ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail, candidates: dispatched, tested: outcomes.length });
   // a broken lane with nothing to show for the batch is an error the step must see; on abort the caller is stopping anyway
   if (laneFailure !== null && outcomes.length === 0 && !ctx.signal.aborted) throw new RunnerError(`lane failure during ${goal.id}: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`, { cause: laneFailure });
