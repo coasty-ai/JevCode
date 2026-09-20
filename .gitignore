@@ -5,10 +5,13 @@ coverage/
 .env.*
 !.env.example
 *.log
+!docs/live/**/*.log
+!docs/live/*.log
 .DS_Store
 bench/results/*
 !bench/results/live-*/
 bench/work/
-perf/results/
+perf/results/*
+!perf/results/latest.json
 /tmp/
 .smoke/
