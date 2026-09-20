@@ -314,7 +314,7 @@ export interface SerializedError {
   exitCode: number;
 }
 
-export type EngineMode = 'jev-on' | 'jev-off';
+export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md)
 
 export interface RunResult {
   runId: string;
@@ -742,10 +742,47 @@ export interface EngineOptions {
   extraWritableRoots?: readonly string[];
   /** extra directories the sandbox may read but not write (bench object caches) */
   extraReadableRoots?: readonly string[];
+  /** jev-only mode: proposes actions with Jev + code search, no generating LLM (required when mode === 'jev-only') */
+  synthesizer?: Synthesizer;
   /** injectable clock for perf/unit tests */
   now?: () => number;
   /** injected exit for tests of the forced second Ctrl-C path */
   exit?: (code: number) => never;
+}
+
+// ---------------------------------------------------------------------------------------
+// Jev-only synthesis (docs/JEV-ONLY.md): code proposes, Jev decides, tests verify
+// ---------------------------------------------------------------------------------------
+
+export interface SynthesisContext {
+  runId: string;
+  step: number;
+  task: string;
+  plan: Plan;
+  window: readonly WindowEntry[];
+  intent: Intent;
+  /** files the context stage selected (path -> content view) */
+  contextFiles: readonly FileView[];
+  workspace: Workspace;
+  workspaceInfo: WorkspaceInfo;
+  sandbox: Sandbox;
+  decider: Decider;
+  signal: AbortSignal;
+  limits: RunLimits;
+  redact: (s: string) => string;
+  /** emit transcript/synth/decision events; the engine redacts and records them */
+  emit: (e: EngineEvent) => void;
+  /** ask Jev through the engine so usage, decisions.jsonl and the pane stay complete */
+  ask: (stage: StageName, state: Json, questions: Record<string, Question>) => Promise<{ answers: Record<string, Answer>; rows: Decision[]; latencyMs: number }>;
+  createdThisRun: ReadonlySet<string>;
+  /** replan directive text when the loop detector tripped */
+  directive: string | null;
+}
+
+export interface Synthesizer {
+  readonly name: string;
+  /** Produce exactly one proposal (usually a `patch` or `edit`, sometimes `run`/`read`/`done`) without any generating LLM. */
+  synthesize(ctx: SynthesisContext): Promise<Proposal>;
 }
 
 export interface EngineStatus {
@@ -759,6 +796,7 @@ export interface EngineStatus {
 }
 
 export type EngineEvent =
+  | { type: 'synth'; step: number; phase: string; detail: string; candidates?: number; tested?: number } // jev-only synthesizer progress
   | { type: 'run:start'; runId: string; task: string; mode: EngineMode; resumedFromStep: number | null }
   | { type: 'run:ready'; runId: string; step: number; maxSteps: number; task: string; resumed: boolean }
   | { type: 'step:start'; step: number; startedAt: string }
@@ -985,6 +1023,7 @@ export interface MockDeciderOptions {
 // provider/anthropic.ts  export function createAnthropicProvider(cfg: GeneratorConfig, deps: { fetch?: typeof fetch; redact }): Provider
 // provider/openrouter.ts export function createOpenRouterProvider(cfg: GeneratorConfig, deps: { fetch?: typeof fetch; redact }): Provider
 // provider/mock.ts       export function createMockProvider(opts: MockProviderOptions): Provider
+// provider/null.ts       export function createNullProvider(): Provider   // throws ProviderError if generate() is ever called (jev-only)
 // spend/meter.ts         export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMeter
 // workspace/files.ts     export function createWorkspace(root: string, runDir: string, deps: { sandbox: Sandbox; secretPaths: readonly string[]; redact }): Promise<Workspace>
 // sandbox/run.ts         export function createSandbox(opts: { workspaceRoot: string; runDir: string; profile: SandboxProfile; noNetwork: boolean; secretReadDenies: readonly string[]; redact }): Sandbox
