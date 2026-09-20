@@ -168,3 +168,14 @@ the linter verify. The question this document answers by experiment is which dec
   collection errors counted as plausible, …). Next round: give the risk/intent/judge stages the
   synthesizer's verification evidence, size the per-test timeout from tests that finish, and add
   module-level import sites.
+- 2026-09-20: **evidence round** (`experiments/results/jev-only-rungs-1-2.md` §8–§9). The
+  synthesizer now attaches code-computed shadow test-run evidence to every patch and post-patch
+  run (`Proposal.evidence`), the risk and judge stages put it in the Jev state with rubric
+  clauses that distinguish a verified fix from "skipping verification", and the intent stage is
+  ledger-aware in jev-only mode. Ladder **4/12 → 10/12** (1-hunk 6/6, 2-hunk 2/3, 3-hunk 2/3),
+  patches rejected by the risk stage 35 → 7, Jev $0.28 → $0.10, wall median 325 s → 122 s; the
+  two remaining misses are budget parks. Slow-oracle fix (per-test timeout from finished cases,
+  one-alarm stop rule): 4 of the 4 hanging QuixBugs misses repaired, gold-identical; the
+  vocabulary pre-check no longer drops import module paths (ladder `tagcloud` solved). Open:
+  `shunting_yard`/`reverse_linked_list` insertion coverage, step policy (suite-first, single
+  done-claims), SWE-bench rung 3.
