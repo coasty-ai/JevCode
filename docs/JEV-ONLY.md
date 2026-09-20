@@ -121,3 +121,35 @@ the linter verify. The question this document answers by experiment is which dec
   code-computed counts perfectly but add nothing over code when counts exist; question-design:
   drop the unchanged line from options, include expected AND actual, thresholds 0.7 Choice /
   0.5 Noul.
+- 2026-09-20 (evening): **design decision.** Four competing designs written from the measurements
+  (`experiments/designs/`: test-driven-decomposition, contrarian/Sieve, repair-search, grammar-synthesis),
+  three judges (reach, reliability-and-cost, integration) ranked test-driven decomposition first (8/10 each)
+  and named the ideas to graft. The single architecture to implement is `docs/JEV-ONLY-DESIGN.md`
+  ("Ledger + Sieve"): the test-driven goal ledger as the spine (one verified failing-test cluster per step,
+  park-not-retry, partials held as a second base, `patch → run` alternation, fixed-form plan items), with the
+  contrarian run-cost budget as the inner rule (run every candidate at a site when
+  `|cands| ≤ floor(testWall × lanes / t_run)` and `t_run ≤ 2 s`; Jev orders the queue otherwise), behaviour
+  clustering + `Q_arbitrate`/paired Nouls as the measured overfit guard (never withholding a lone passer),
+  insert gaps as first-class sites, SBFL top-5 unioned, the `widened` all-lines phase as a later step on
+  single files, the sketch Choice as a reach round before the token beam, and `hunk-subsets.py` ($0) plus
+  `rank-at-scale.mts` ($0.15) before any live SWE condition. Predictions: QuixBugs 37–39/40 test-passing
+  (35–37 correct), ladder 9–10/12, SWE 3–5/30. Measurements the decision rests on, one line per results file:
+  - `anchor-probe.md`: line localisation top-1 13/14, fix selection 14/14 among tiny sets, $0.0009.
+  - `prototype-baseline.md` (+ `prototype-baseline.jsonl`, `-run1.jsonl`): 32/40 repaired end to end (31 correct), $0.035, 62 s; failures 4 coverage / 2 localisation / 2 greedy-trap; all 8 hit the 40-test-run cap.
+  - `probe-localization.md`: variant D (actual output in state) top-1 28/40, top-3 36/40; D ∪ C top-3 covers 38/40; SWE file Choice top-1 24/30, Nouls 26/30.
+  - `probe-selection.md` (+ `.raw.jsonl`, `.noescape.jsonl`, `.verify.jsonl`): compact Nouls top-1 32/40 / top-3 36/40 at N = 254 ($0.00077, 331 ms); full-criteria top-3 39/40 at N = 150–254; two-stage 33/40 with the fix shortlisted 39/40; fix-absent detector `P(escape) − p_max ≥ 0.10` AUROC 0.916.
+  - `probe-question-design.md`: dropping the unchanged line → 20/20 test-passing top picks, 0 confident misses; actual output removes 7/80 confident localisation misses; thresholds 0.7 Choice / 0.5 Noul.
+  - `probe-progress-judgment.md`: progress Nouls 240/240 as pure functions of code-computed counts; code routing 240/240; `attack_first` simplest-first 16/34 vs 8/34 random, MRR 0.67.
+  - `probe-donor-and-templates.md`: donor line 35/36 own-program, 32/36 at 254 options; identifier holes 13/13; insertion point 4/4 given the statement, 2/4 without; fix-kind Choice 62–75 % (never a gate).
+  - `probe-token-synthesis.md`: teacher-forced 84 % / 96 %; W = 3 + grammar rebuilds 20/40 lines at $0.0037 and 3.3 s per line; portfolio 27–28/40.
+  - `probe-swebench-understanding.md`: gold file #1 on 23/30 with Nouls over every repo file (≤ 5 on 28/30), function top-5 35/37, line ±3 top-5 94 %, chained 21/30; change-kind Choice 53 %.
+  - `coverage-study.md` (+ `.json`): QuixBugs 40/40 reachable by the union of sources; SWE 6/30 strict, 9/30 with 2-sub donors, vocabulary ceiling 15/30; median 1,641 depth-1 mutants per SWE line (3 % ≤ 255) vs 225 on QuixBugs.
+  - `lit-search-based-repair.md`: Ochiai top-5 34/38 on QuixBugs (top-1 7/38); Noul ranking of the developer fix 26/34 top-1 over a mean of 295 candidates; a reshuffle moved `kth` 0.48 → 0.14.
+  - `lit-guided-synthesis.md`: slot Choices 90–93 % top-1; S2 diff-fill 23/25 (92 %) at B = 3, S1 full-fill 22/29 (76 %).
+  - `contrarian-exhaustive.truth.jsonl`: every first-order mutant at the true line run through the suite: 4,892 runs, 260 s at 8-way, median 3.8 s per program; gold passes 35/36, gold is the only passer 25/36.
+  - `contrarian-exhaustive.all.jsonl`: brute force over every code line: 37,243 runs, 1,181 s at 12-way, median 23.8 s / max 119 s per program; 0.5 s timeout rejected no gold; gold the only passer 21/40; passers on ≥ 2 lines 6/40.
+  - `contrarian-arbitrate.truth.jsonl`: Jev among ≥ 2 test-passing candidates at the true line: Choice = gold 8/10, gold-or-equivalent 10/10, $0.0008, 189 ms p50; gold Noul 0.15 on `quicksort`.
+  - `contrarian-arbitrate.all.jsonl`: cross-line plausible sets: 10/14 gold, 13/14 gold-or-equivalent; the all-overfit `depth_first_search` set rejected at escape 0.90 / max Noul 0.06.
+  - `judge-1-reach.md`: test-driven 8.0, contrarian 7.5, repair-search 7.0, grammar-synthesis 5.0; flagged `pytest-7205` mis-cited as reachable and the sieve's unmeasured insertions.
+  - `judge2-reliability-cost.md`: test-driven 8.0, repair-search 7.5, grammar-synthesis 6.0, contrarian 5.0; recomputed contrarian test CPU at 9.9× (true line) / 75.5× (widened) the prototype; the K = 3 justification cites full-criteria Nouls while the designs use compact.
+  - `experiments/grammar-synthesis/out/sketch-*.json` (Appendix A of the grammar design; not under results/): sketch pool covers 39/40 gold shapes, Choice top-1 23–26/40, top-3 29–31/40, edit-class top-2 35–36/40, $0.00019 per program.
