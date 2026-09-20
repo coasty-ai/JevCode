@@ -3771,3 +3771,20 @@ Semantics fixed during implementation, kept here so the design stays the referen
 - Terminal-Bench tasks materialise their workspace from `environment/` and expose `aux/`
   stand-ins for `/output`, `/results` and `/logs` as extra writable roots of the agent
   sandbox.
+
+## 21. Jev-only mode (2026-09-20)
+
+`EngineMode` gained `'jev-only'`: the propose stage calls a `Synthesizer`
+(`synthesize(ctx) → Proposal`, contract in `src/core/types.ts`) instead of the generator;
+the provider slot holds a `NullProvider` that throws if `generate()` is ever reached and the
+engine refuses to call it in that mode; no `generator:*` events or `generator.jsonl` rows are
+produced; progress is reported through `synth` events (transcript kind `synth`, live region,
+`propose [synth]` status marker). `SynthesisContext.ask` and `.decider` route through the
+engine's recorded ask, so every Jev question the synthesizer asks lands in `decisions.jsonl`,
+`jev.jsonl`, the pane and the meter. Config: `generator()` is never validated in jev-only.
+CLI: `--mode jev-on|jev-off|jev-only` on `run` (hidden `--condition` kept as alias); bench
+`--conditions` accepts `jev-only`, records `generatorCalls` per run and marks a jev-only record
+`invalid` ("generator called in jev-only") if the count is non-zero; `--live` needs a generator
+key only when a generator condition is selected. Bench suites `quixbugs` and `ladder` are the
+jev-only difficulty ladder. Architecture of the synthesizer itself: `docs/JEV-ONLY-DESIGN.md`
+(from the measurement-and-design programme logged in `docs/JEV-ONLY.md`).

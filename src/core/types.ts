@@ -935,7 +935,7 @@ export interface ResolvedConfig {
 // Bench records (bench/*)
 // ---------------------------------------------------------------------------------------
 
-export type BenchSuite = 'swebench' | 'terminal-bench';
+export type BenchSuite = 'swebench' | 'terminal-bench' | 'quixbugs' | 'ladder'; // quixbugs/ladder: the jev-only difficulty ladder (docs/JEV-ONLY.md)
 export type BenchEvaluator = 'local-venv' | 'invalid' | 'local' | 'mock' | 'none';
 export type BenchStopReason = StopReason | 'not_run';
 
