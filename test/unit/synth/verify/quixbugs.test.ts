@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 
 import { summarize } from '../../../../src/synth/verify/index.js';
-import { parseRunTestsJson, quixbugsTestCommand, quixbugsTestId, summaryFromRunTests } from '../../../../src/synth/verify/quixbugs.js';
+import { CASE_TIMEOUT_ENV, caseTimeoutLimitMs, countCaseTimeouts, hangsOnEveryFailure, isCaseNotRun, isCaseTimeout, MAX_CASE_TIMEOUTS_ENV, parseRunTestsJson, quixbugsTestCommand, quixbugsTestId, summaryFromRunTests } from '../../../../src/synth/verify/quixbugs.js';
 import { progress } from '../../../../src/synth/verify/progress.js';
 import { fixture, QUIXBUGS_DIR } from './helpers.js';
 
@@ -51,6 +51,39 @@ describe('run_tests.py JSON → summary (saved fixtures)', () => {
   it('quixbugsTestCommand lifts the failure cap and quotes paths', () => {
     const cmd = quixbugsTestCommand("/tmp/q's", 'gcd', '/w/gcd.py', { timeoutSec: 3 });
     expect(cmd).toBe("PYTHONDONTWRITEBYTECODE=1 python3 '/tmp/q'\\''s/run_tests.py' 'gcd' '/w/gcd.py' --max-failures 1000 --timeout 3");
+  });
+});
+
+describe('per-case timeout texts (§4.1)', () => {
+  const f = (actual: string) => ({ testId: actual, call: actual, expected: '', actual });
+  it('recognises both runners\' timeout texts and the design\'s, and reads the limit back', () => {
+    expect(isCaseTimeout('TIMEOUT after 2s')).toBe(true);
+    expect(caseTimeoutLimitMs('TIMEOUT after 0.5s')).toBe(500);
+    expect(isCaseTimeout('test_bitcount.CaseTimeout: no result after 2s')).toBe(true);
+    expect(caseTimeoutLimitMs('test_bitcount.CaseTimeout: no result after 0.1s')).toBe(100);
+    expect(caseTimeoutLimitMs('Timeout: the program did not finish within 2 seconds (probable infinite loop)')).toBe(2000);
+    expect(isCaseTimeout('RecursionError: maximum recursion depth exceeded')).toBe(false);
+    expect(isCaseTimeout('timeout after 3 s')).toBe(false); // the sandbox kill's `<test run>` text is not a case timeout
+    expect(caseTimeoutLimitMs('0')).toBeNull();
+    expect(isCaseNotRun('test_x.CaseNotRun: not run: 1 earlier case(s) timed out')).toBe(true);
+    expect(isCaseNotRun('not run: 3 earlier case(s) timed out')).toBe(true);
+    expect(isCaseNotRun('TIMEOUT after 2s')).toBe(false);
+    expect(CASE_TIMEOUT_ENV).toBe('JEVCODE_CASE_TIMEOUT_MS');
+    expect(MAX_CASE_TIMEOUTS_ENV).toBe('JEVCODE_MAX_CASE_TIMEOUTS');
+  });
+  it('countCaseTimeouts and hangsOnEveryFailure', () => {
+    const hang = { failures: [f('TIMEOUT after 2s'), f('TIMEOUT after 2s')] };
+    expect(countCaseTimeouts(hang)).toEqual({ timeouts: 2, notRun: 0, limitMs: 2000 });
+    expect(hangsOnEveryFailure(hang)).toBe(true);
+    const stopped = { failures: [f('test_x.CaseTimeout: no result after 0.5s'), f('test_x.CaseNotRun: not run: 1 earlier case(s) timed out')] };
+    expect(countCaseTimeouts(stopped)).toEqual({ timeouts: 1, notRun: 1, limitMs: 500 });
+    expect(hangsOnEveryFailure(stopped)).toBe(true);
+    // a wrong value beside the timeouts: the candidate does not only hang
+    expect(hangsOnEveryFailure({ failures: [f('TIMEOUT after 2s'), f('6')] })).toBe(false);
+    // stop-rule skips with no timeout at all (cannot happen, but is not a hang), and nothing failing
+    expect(hangsOnEveryFailure({ failures: [f('not run: 1 earlier case(s) timed out')] })).toBe(false);
+    expect(hangsOnEveryFailure({ failures: [] })).toBe(false);
+    expect(countCaseTimeouts({ failures: [f('TIMEOUT after 0.5s'), f('TIMEOUT after 2s')] }).limitMs).toBe(2000);
   });
 });
 

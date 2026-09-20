@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """QuixBugs (Python) test runner. Standard library only; Python 3.9+.
 
-    python3 run_tests.py <name> <path-to-candidate-program.py> [--timeout 2] [--slow] [--max-failures 5] [--jobs N]
+    python3 run_tests.py <name> <path-to-candidate-program.py> [--timeout 2|0.5|500ms] [--timeout-ms N] [--slow] [--max-failures 5] [--jobs N]
 
 Prints exactly one JSON line on stdout:
 
@@ -144,6 +144,20 @@ def _child_module(name, path, test_file, timeout):
 
 # --------------------------------------------------------------------------- parent side
 
+def parse_timeout(text):
+    """--timeout value: seconds as a number ("2", "0.5") or with a unit ("500ms", "2s", "0.5s")."""
+    t = str(text).strip().lower()
+    try:
+        if t.endswith("ms"):
+            return float(t[:-2]) / 1000.0
+        if t.endswith("s"):
+            return float(t[:-1])
+        return float(t)
+    except ValueError:
+        raise argparse.ArgumentTypeError(
+            f"invalid --timeout {text!r}: seconds (2, 0.5) or with a unit (500ms, 2s)") from None
+
+
 def _spawn(argv, stdin_text, timeout):
     """Run a child; return (stdout_text, timed_out)."""
     try:
@@ -223,7 +237,10 @@ def main(argv=None):
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("name")
     ap.add_argument("path")
-    ap.add_argument("--timeout", type=float, default=2.0, help="seconds per test (default 2)")
+    ap.add_argument("--timeout", type=parse_timeout, default=2.0,
+                    help="limit per test: seconds (2, 0.5) or with a unit (500ms, 2s); default 2")
+    ap.add_argument("--timeout-ms", type=float, default=None,
+                    help="limit per test in milliseconds (overrides --timeout)")
     ap.add_argument("--slow", action="store_true", help="also run cases flagged slow (knapsack, levenshtein)")
     ap.add_argument("--max-failures", type=int, default=5, help="failures to include in the JSON (default 5)")
     ap.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1),
@@ -231,6 +248,11 @@ def main(argv=None):
     ap.add_argument("--_child-json", action="store_true", help=argparse.SUPPRESS)
     ap.add_argument("--_child-module", action="store_true", help=argparse.SUPPRESS)
     args = ap.parse_args(argv)
+    if args.timeout_ms is not None:
+        args.timeout = args.timeout_ms / 1000.0
+    if not args.timeout > 0:
+        print(json.dumps({"name": args.name, "error": f"--timeout must be positive, got {args.timeout!r}"}))
+        return 2
 
     name, path = args.name, os.path.abspath(args.path)
     if args._child_json:

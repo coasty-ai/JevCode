@@ -5,10 +5,10 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { ExecResult, SandboxRunOptions } from '../../../../src/core/types.js';
-import { fitOracle, shellWords } from '../../../../src/synth/search/budget.js';
+import { fitOracle, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, shellWords } from '../../../../src/synth/search/budget.js';
 import type { OracleModel, VerifyOutcome, VerifyStatus } from '../../../../src/synth/search/types.js';
 import { sha12 } from '../../../../src/core/hash.js';
-import { classifyOutcome, fullSuiteCommand, goalPasses, goalTestFiles, MAX_FULL_SUITE_RUNS_PER_STEP, restrictToFiles, type RunnerContext, type RunnerMemory, runQueue, subsetCommand, subsetScope } from '../../../../src/synth/sieve/runner.js';
+import { classifyOutcome, fullSuiteCommand, goalPasses, goalTestFiles, LANE_RUN_ENV, laneRunEnv, MAX_FULL_SUITE_RUNS_PER_STEP, restrictToFiles, type RunnerContext, type RunnerMemory, runQueue, subsetCommand, subsetScope } from '../../../../src/synth/sieve/runner.js';
 import { progress } from '../../../../src/synth/verify/progress.js';
 import { summarize } from '../../../../src/synth/verify/index.js';
 import type { Candidate } from '../../../../src/synth/types.js';
@@ -130,6 +130,25 @@ describe('classification (pure)', () => {
     expect(classifyOutcome({ subset: killed, subsetProgress: progress(before, killed), passesGoal: false })).toBe('timeout');
     expect(classifyOutcome({ subset: pass, subsetProgress: pP, passesGoal: true, full: killed, fullProgress: progress(before, killed) })).toBe('timeout');
   });
+  it('a run whose every failing case hit the per-case alarm (or was not run after one) is `timeout`, even where the base hung on the same cases', () => {
+    const hangText = 'test_sqrt.CaseTimeout: no result after 0.5s';
+    const notRun = 'test_sqrt.CaseNotRun: not run: 1 earlier case(s) timed out';
+    const ids = ['t::a', 't::b', 't::c'];
+    const hangAll = summary({ failing: ids, failures: ids.map((id) => ({ testId: id, call: id, expected: '1', actual: hangText })) });
+    const hangBase = summary({ failing: ids, failures: ids.map((id) => ({ testId: id, call: id, expected: '1', actual: 'test_sqrt.CaseTimeout: no result after 2s' })) });
+    // same failing ids as the base: the old table said `unchanged`; the candidate hangs, so it is `timeout` (§4.1: never a base)
+    expect(progress(hangBase, hangAll).regressed).toBe(false);
+    expect(classifyOutcome({ subset: hangAll, subsetProgress: progress(hangBase, hangAll), passesGoal: false })).toBe('timeout');
+    // the lanes' stop rule: one alarm, the rest "not run" — still a hang; a passing case beside them changes nothing
+    const stopped = summary({ passing: ['t::z'], failing: ids, failures: [{ testId: 't::a', call: 't::a', expected: '1', actual: hangText }, ...ids.slice(1).map((id) => ({ testId: id, call: id, expected: '1', actual: notRun }))] });
+    expect(classifyOutcome({ subset: stopped, subsetProgress: progress(before, stopped), passesGoal: false })).toBe('timeout');
+    // a wrong value among the failures: the candidate does not merely hang; the ordinary table applies (here: regressed against `before`)
+    const mixed = summary({ failing: ids, failures: [{ testId: 't::a', call: 't::a', expected: '1', actual: hangText }, { testId: 't::b', call: 't::b', expected: '1', actual: '0' }, { testId: 't::c', call: 't::c', expected: '1', actual: notRun }] });
+    expect(classifyOutcome({ subset: mixed, subsetProgress: progress(before, mixed), passesGoal: false })).toBe('regressed');
+    // a subset passer whose full suite hangs elsewhere is `timeout` too
+    const pass = summary({ passing: ['t::a', 't::b', 't::c'] });
+    expect(classifyOutcome({ subset: pass, subsetProgress: progress(before, pass), passesGoal: true, full: hangAll, fullProgress: progress(before, hangAll) })).toBe('timeout');
+  });
   it('goalPasses: a collection error (nothing passed, one error the base did not have, the module as the failing id) is never a pass', () => {
     // the first live run: an IndentationError candidate → `ERROR tests/test_inventory.py`, 0 passed; the goal test is not in `failing`
     const collection = summary({ passed: 0, errors: 1, failing: ['t'], passing: [] });
@@ -193,13 +212,14 @@ describe('runQueue on the QuixBugs runner (scripted run_tests.py JSON)', () => {
     await mem.lanes?.disposeLanes();
   });
   it('runsAllowed, testRunsLeft and testWallLeftMs each stop dispatch; the rest stays queued', async () => {
-    const o = oracle({ runner: 'quixbugs', lanes: 2 });
+    // one oracle per scenario: the runner refines the oracle it is given in place (t_run, and lanes once a run measures under 1 s)
+    const o = () => oracle({ runner: 'quixbugs', lanes: 2 });
     const jobs = () => [cands.unchanged, cands.unchanged, cands.unchanged, cands.unchanged].map((c) => job(c, b0));
     const q1 = fifoQueue(jobs());
-    expect((await runQueue(ctxFor(quixbugsFake()), memFor(o), q1, GOAL, 2)).length).toBe(2);
+    expect((await runQueue(ctxFor(quixbugsFake()), memFor(o()), q1, GOAL, 2)).length).toBe(2);
     expect(q1.size).toBe(2);
     const q2 = fifoQueue(jobs());
-    const mem2 = memFor(o, { stepBudget: budget({ testRunsLeft: 1 }) });
+    const mem2 = memFor(o(), { stepBudget: budget({ testRunsLeft: 1 }) });
     expect((await runQueue(ctxFor(quixbugsFake()), mem2, q2, GOAL, 100)).length).toBe(1);
     // two lanes popped two jobs; the second found no run left and was deferred, not lost
     expect(q2.size).toBe(2);
@@ -207,11 +227,11 @@ describe('runQueue on the QuixBugs runner (scripted run_tests.py JSON)', () => {
     expect(mem2.stepBudget.testRunsLeft).toBe(0);
     expect(mem2.stepBudget.exhausted()).toBe(true);
     const q3 = fifoQueue(jobs());
-    expect((await runQueue(ctxFor(quixbugsFake()), memFor(o, { stepBudget: budget({ testWallLeftMs: 0 }) }), q3, GOAL, 100)).length).toBe(0);
+    expect((await runQueue(ctxFor(quixbugsFake()), memFor(o(), { stepBudget: budget({ testWallLeftMs: 0 }) }), q3, GOAL, 100)).length).toBe(0);
     expect(q3.size).toBe(4);
     // the wall is charged by elapsed time, measured with the injected clock
     let t = 1000;
-    const mem4 = memFor(o, { stepBudget: budget({ testWallLeftMs: 5000 }) });
+    const mem4 = memFor(o(), { stepBudget: budget({ testWallLeftMs: 5000 }) });
     await runQueue(ctxFor(quixbugsFake(() => (t += 700))), mem4, fifoQueue(jobs()), GOAL, 100, { now: () => t });
     expect(mem4.stepBudget.testWallLeftMs).toBe(5000 - 4 * 700);
   });
@@ -307,6 +327,107 @@ describe('runQueue on the QuixBugs runner (scripted run_tests.py JSON)', () => {
   it('throws without a baseline', async () => {
     await expect(runQueue(ctxFor(quixbugsFake()), memFor(oracle(), { baseline: null }), fifoQueue([]), GOAL, 1)).rejects.toThrow(/RunnerError: runQueue needs a baseline/);
   });
+  it('runs `oracle.lanes` candidates concurrently: the peak of overlapping test runs equals the lane count', async () => {
+    let inFlight = 0;
+    let peak = 0;
+    const sb = fakeSandbox(async (cmd): Promise<Partial<ExecResult>> => {
+      if (!cmd.includes('run_tests.py')) return {};
+      inFlight += 1;
+      peak = Math.max(peak, inFlight);
+      await new Promise((r) => setTimeout(r, 25));
+      inFlight -= 1;
+      return { stdout: `${runTestsJson(GCD_BUGGY_INPUTS)}\n`, exitCode: 1, durationMs: 25 };
+    });
+    const mem = memFor(oracle({ runner: 'quixbugs', lanes: 8 }));
+    const out = await runQueue(ctxFor(sb), mem, fifoQueue(Array.from({ length: 24 }, () => job(cands.unchanged, b0))), GOAL, 100);
+    expect(out).toHaveLength(24);
+    expect(peak).toBe(8);
+    expect(mem.lanes?.lanes).toHaveLength(8);
+    // a narrower oracle overlaps less
+    let peak2 = 0;
+    let inFlight2 = 0;
+    const sb2 = fakeSandbox(async (cmd): Promise<Partial<ExecResult>> => {
+      if (!cmd.includes('run_tests.py')) return {};
+      inFlight2 += 1;
+      peak2 = Math.max(peak2, inFlight2);
+      await new Promise((r) => setTimeout(r, 10));
+      inFlight2 -= 1;
+      return { stdout: `${runTestsJson(GCD_BUGGY_INPUTS)}\n`, exitCode: 1, durationMs: 10 };
+    });
+    await runQueue(ctxFor(sb2), memFor(oracle({ runner: 'quixbugs', lanes: 3 })), fifoQueue(Array.from({ length: 9 }, () => job(cands.unchanged, b0))), GOAL, 100);
+    expect(peak2).toBe(3);
+  });
+  it('a pool built for fewer lanes than the re-fitted oracle wants is rebuilt at the new width', async () => {
+    const sb = quixbugsFake();
+    const mem = memFor(oracle({ runner: 'quixbugs', lanes: 2 }));
+    await runQueue(ctxFor(sb), mem, fifoQueue([job(cands.unchanged, b0)]), GOAL, 10);
+    expect(mem.lanes?.lanes).toHaveLength(2);
+    const old = mem.lanes;
+    mem.oracle = oracle({ runner: 'quixbugs', lanes: 8 });
+    await runQueue(ctxFor(sb), mem, fifoQueue([job(cands.unchanged, b0)]), GOAL, 10);
+    expect(mem.lanes).not.toBe(old);
+    expect(mem.lanes?.lanes).toHaveLength(8);
+    expect(sb.calls.filter((c) => c.command.startsWith('rm -rf')).length).toBeGreaterThanOrEqual(2); // the old lanes were disposed
+    // a wider pool than the oracle wants is kept (workers are capped at oracle.lanes)
+    mem.oracle = oracle({ runner: 'quixbugs', lanes: 4 });
+    const keep = mem.lanes;
+    await runQueue(ctxFor(sb), mem, fifoQueue([job(cands.unchanged, b0)]), GOAL, 10);
+    expect(mem.lanes).toBe(keep);
+  });
+  it('a refined t_run under 1 s widens the oracle to 8 lanes and the pool follows at the next call', async () => {
+    const withDuration = (ms: number) =>
+      fakeSandbox((cmd): Partial<ExecResult> => (cmd.includes('run_tests.py') ? { stdout: `${runTestsJson(GCD_BUGGY_INPUTS)}\n`, exitCode: 1, durationMs: ms } : {}));
+    // a 1.5 s baseline burst fitted 4 lanes; the lanes measure 686 ms
+    const mem = memFor(oracle({ runner: 'quixbugs', lanes: 4, tRunMs: { goalSubset: 1500, fullSuite: 1500 } }));
+    const ctx = ctxFor(withDuration(686));
+    await runQueue(ctx, mem, fifoQueue([job(cands.unchanged, b0), job(cands.unchanged, b0)]), GOAL, 10);
+    expect(mem.oracle.tRunMs.goalSubset).toBe(686);
+    expect(mem.oracle.lanes).toBe(8);
+    expect(mem.lanes?.lanes).toHaveLength(4); // the running batch kept its pool
+    expect(ctx.events[0]?.detail).toMatch(/t_run 686 ms, lanes 4 → 8/);
+    await runQueue(ctx, mem, fifoQueue([job(cands.unchanged, b0)]), GOAL, 10);
+    expect(mem.lanes?.lanes).toHaveLength(8);
+    // a slow measurement never narrows
+    const slow = memFor(oracle({ runner: 'quixbugs', lanes: 8, tRunMs: { goalSubset: 300, fullSuite: 300 } }));
+    await runQueue(ctxFor(withDuration(3500)), slow, fifoQueue([job(cands.unchanged, b0)]), GOAL, 10);
+    expect(slow.oracle.lanes).toBe(8);
+  });
+  it('the sandbox timeout of a lane run is laneRunTimeout(oracle, baseline), tighter than the workspace timeout', async () => {
+    const timeouts: number[] = [];
+    const sb = quixbugsFake((cmd, opts) => {
+      if (cmd.includes('run_tests.py')) timeouts.push(opts.timeoutMs);
+    });
+    // a bitcount-like oracle: 66 s workspace timeout, 738 ms adjusted t_run, 500 ms per test over gcd's 6 cases
+    const o = oracle({ runner: 'quixbugs', lanes: 1, runTimeoutMs: 66_000, tRunMs: { goalSubset: 738, fullSuite: 738 }, perTestTimeoutMs: 500 });
+    await runQueue(ctxFor(sb), memFor(o), fifoQueue([job(cands.unchanged, b0)]), GOAL, 10);
+    expect(timeouts).toEqual([laneRunTimeout(o, GCD_BASELINE)]);
+    expect(timeouts[0]).toBe(Math.max(3 * 738 + 10_000, 200 + 6 * 500 + 10_000));
+    expect(timeouts[0]).toBeLessThan(66_000);
+  });
+  it('t_run refinement keeps a sieve-eligible estimate through a load spike (≤ 1.5 × 2 s) and takes a real slowdown', async () => {
+    const withDuration = (ms: number) =>
+      fakeSandbox((cmd): Partial<ExecResult> => (cmd.includes('run_tests.py') ? { stdout: `${runTestsJson(GCD_BUGGY_INPUTS)}\n`, exitCode: 1, durationMs: ms } : {}));
+    const jobs = () => [job(cands.unchanged, b0), job(cands.unchanged, b0), job(cands.unchanged, b0)];
+    const spike = memFor(oracle({ runner: 'quixbugs', lanes: 8, tRunMs: { goalSubset: 580, fullSuite: 580 } }));
+    await runQueue(ctxFor(withDuration(2500)), spike, fifoQueue(jobs()), GOAL, 10);
+    expect(spike.oracle.tRunMs.goalSubset).toBe(580);
+    const loaded = memFor(oracle({ runner: 'quixbugs', lanes: 8, tRunMs: { goalSubset: 580, fullSuite: 580 } }));
+    await runQueue(ctxFor(withDuration(650)), loaded, fifoQueue(jobs()), GOAL, 10);
+    expect(loaded.oracle.tRunMs.goalSubset).toBe(650);
+    const slow = memFor(oracle({ runner: 'quixbugs', lanes: 8, tRunMs: { goalSubset: 580, fullSuite: 580 } }));
+    await runQueue(ctxFor(withDuration(3500)), slow, fifoQueue(jobs()), GOAL, 10);
+    expect(slow.oracle.tRunMs.goalSubset).toBe(3500);
+  });
+});
+
+describe('laneRunEnv (§4.1: the per-test timeout reaches the generated pytest module)', () => {
+  it('pytest with a per-test timeout: the limit in ms and the stop rule; the QuixBugs runner and `other` get only the bytecode guard', () => {
+    expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: 500 })).toEqual({ ...LANE_RUN_ENV, JEVCODE_CASE_TIMEOUT_MS: '500', JEVCODE_MAX_CASE_TIMEOUTS: String(LANE_MAX_CASE_TIMEOUTS) });
+    expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: 686.6 })).toMatchObject({ JEVCODE_CASE_TIMEOUT_MS: '687' });
+    expect(laneRunEnv({ runner: 'pytest', perTestTimeoutMs: null })).toEqual({ ...LANE_RUN_ENV });
+    expect(laneRunEnv({ runner: 'quixbugs', perTestTimeoutMs: 500 })).toEqual({ ...LANE_RUN_ENV });
+    expect(laneRunEnv({ runner: 'other', perTestTimeoutMs: null })).toEqual({ PYTHONDONTWRITEBYTECODE: '1' });
+  });
 });
 
 describe('runQueue on pytest (worktree lanes, scripted output)', () => {
@@ -341,6 +462,8 @@ describe('runQueue on pytest (worktree lanes, scripted output)', () => {
     expect(runs.map((c) => c.cwd?.startsWith(join(runDir, 'tmp', 'synth', 'lane')))).toEqual([true, true, true]);
     // no bytecode is written on the lanes: a stale .pyc (same size, same mtime second) would run the previous candidate
     expect(runs.every((c) => c.env?.['PYTHONDONTWRITEBYTECODE'] === '1')).toBe(true);
+    // the oracle's per-test timeout and the stop rule reach the generated module through the environment (every lane run, subset and full)
+    expect(runs.every((c) => c.env?.['JEVCODE_CASE_TIMEOUT_MS'] === '2000' && c.env?.['JEVCODE_MAX_CASE_TIMEOUTS'] === '1')).toBe(true);
     expect(mem.stepBudget.testRunsLeft).toBe(16 - 3);
     expect(mem.oracle.tRunMs).toEqual({ goalSubset: 800, fullSuite: 2500 });
     expect(mem.lanes?.mode).toBe('worktree');

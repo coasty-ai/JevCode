@@ -4,13 +4,40 @@
  * `tests/test_<name>.py` for the JSON programs (one parametrised test with QuixBugs' leniency:
  * generators materialised, tuples compared as lists, `sqrt` with the epsilon argument as
  * absolute tolerance, slow cases skipped, a per-case alarm so a hanging candidate fails
- * instead of hanging the run). pytest.ini and conftest.py come from ../ladder/pyworkspace.ts.
- * Nothing here is the oracle: the evaluator runs bench/data/quixbugs/run_tests.py.
+ * instead of hanging the run, the alarm's limit and a stop-after-N-timeouts rule readable from
+ * the environment for the synthesizer's shadow lanes, RecursionError re-raised shallow so pytest
+ * does not spend 150 ms rendering each thousand-frame traceback). pytest.ini and conftest.py
+ * come from ../ladder/pyworkspace.ts. Nothing here is the oracle: the evaluator runs
+ * bench/data/quixbugs/run_tests.py at its defaults.
  */
+import { CASE_TIMEOUT_ENV, MAX_CASE_TIMEOUTS_ENV } from '../../synth/verify/quixbugs.js';
 import type { QuixbugsCase } from './tasks.js';
+
+export { CASE_TIMEOUT_ENV, MAX_CASE_TIMEOUTS_ENV };
 
 /** Default per-case wall-clock limit, the same as run_tests.py's --timeout. */
 export const CASE_TIMEOUT_S = 2;
+export const DEFAULT_CASE_TIMEOUT_MS = CASE_TIMEOUT_S * 1000;
+/*
+ * Two environment knobs, read by the generated module at import and set only by the
+ * synthesizer's shadow lanes (src/synth/sieve/runner.ts); unset, as under the agent's own
+ * `pytest -q` and the engine's `run` proposals, the module behaves as before. Grading never
+ * sees them: the evaluator runs bench/data/quixbugs/run_tests.py at its 2 s default.
+ *
+ * - CASE_TIMEOUT_ENV (JEVCODE_CASE_TIMEOUT_MS): the per-case limit in milliseconds, the oracle's
+ *   adaptive per-test timeout (docs/JEV-ONLY-DESIGN.md §4.1: clamp(3 × baseline per-test p50 of
+ *   the cases that finished, 0.5 s, 2 s)); default 2 s.
+ * - MAX_CASE_TIMEOUTS_ENV (JEVCODE_MAX_CASE_TIMEOUTS): after this many case timeouts in one run
+ *   the remaining cases are reported as failures ("CaseNotRun: not run: N earlier case(s) timed
+ *   out") without being called; default no limit. Why: a candidate that hangs on one input hangs
+ *   on the others too (bitcount 9/9, sqrt 6/7 cases in the buggy baselines) and pytest runs the
+ *   cases sequentially, so without the rule a hanging candidate costs cases × limit (bitcount:
+ *   9 × 2 s = 18 s, the 18.7 s baseline of the first live bench) and the run-cost rule of §2.4
+ *   falls to RANK mode; with it a hanging candidate costs one limit plus process start (≈ 0.7 s)
+ *   and the whole first-order set runs (the sieve). What is lost: whether a candidate that hangs
+ *   on an early case would pass a later one; such a candidate is never plausible, and a
+ *   timed-out run is never held as a base (§4.1).
+ */
 
 export function testFileName(name: string): string {
   return `test_${name}.py`;
@@ -52,7 +79,23 @@ if ROOT not in sys.path:
 from ${name} import ${name}  # noqa: E402
 
 NAME = ${py(name)}
-CASE_TIMEOUT_S = ${CASE_TIMEOUT_S}
+
+
+def _env_number(var, default):
+    raw = os.environ.get(var, "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+# Per-case limit: ${CASE_TIMEOUT_ENV} (ms) when set, else ${CASE_TIMEOUT_S} s (run_tests.py's default).
+CASE_TIMEOUT_S = max(0.001, _env_number(${py(CASE_TIMEOUT_ENV)}, ${DEFAULT_CASE_TIMEOUT_MS}) / 1000.0)
+# Stop rule: after ${MAX_CASE_TIMEOUTS_ENV} case timeouts the remaining cases fail as "not run" (unset: no limit).
+MAX_CASE_TIMEOUTS = _env_number(${py(MAX_CASE_TIMEOUTS_ENV)}, float("inf"))
+_TIMEOUTS_SEEN = [0]
 # sqrt: |actual - expected| <= epsilon, where epsilon is the last argument (QuixBugs' rule)
 ABS_TOLERANCE_FROM_LAST_ARG = ${approx ? 'True' : 'False'}
 
@@ -63,6 +106,10 @@ assert len(CASES) == ${cases.length}
 
 class CaseTimeout(BaseException):
     """BaseException so a candidate's \`except Exception\` cannot swallow it."""
+
+
+class CaseNotRun(BaseException):
+    """A case skipped by the stop rule (MAX_CASE_TIMEOUTS): reported as a failure, never called."""
 
 
 @contextmanager
@@ -92,11 +139,23 @@ def normalise(value):
 
 def run_case(case):
     """Call the program on a deep copy of the input and return (actual, expected)."""
+    if _TIMEOUTS_SEEN[0] >= MAX_CASE_TIMEOUTS:
+        raise CaseNotRun("not run: %d earlier case(s) timed out" % _TIMEOUTS_SEEN[0])
     limit = max(CASE_TIMEOUT_S, float(case.get("timeout", 0)))
-    with time_limit(limit):
-        actual = ${name}(*copy.deepcopy(case["input"]))
-        if isinstance(actual, types.GeneratorType):
-            actual = list(actual)
+    try:
+        with time_limit(limit):
+            try:
+                actual = ${name}(*copy.deepcopy(case["input"]))
+                if isinstance(actual, types.GeneratorType):
+                    actual = list(actual)
+            except RecursionError as exc:
+                # The message is the finding; the thousand-frame traceback is not. Re-raised
+                # shallow, pytest reports the case in ~10 ms instead of ~150 ms (mergesort:
+                # 13 such cases took the buggy baseline to 2 s idle, 5 s under bench load).
+                raise RecursionError(str(exc)) from None
+    except CaseTimeout:
+        _TIMEOUTS_SEEN[0] += 1
+        raise
     return actual, case["expected"]
 
 

@@ -31,6 +31,78 @@ export interface RunTestsReport {
 /** Large enough that no QuixBugs program (≤ 20 cases) ever hits the cap. */
 export const QUIXBUGS_MAX_FAILURES = 1000;
 
+/**
+ * Environment knobs of the bench's generated pytest module (src/bench/quixbugs/pytest.ts), set
+ * by the sieve runner on its shadow lanes only: the per-case limit in milliseconds (the module's
+ * default is 2 s, the same as run_tests.py's --timeout) and the number of case timeouts after
+ * which the remaining cases of a run are reported "not run" instead of being called.
+ */
+export const CASE_TIMEOUT_ENV = 'JEVCODE_CASE_TIMEOUT_MS';
+export const MAX_CASE_TIMEOUTS_ENV = 'JEVCODE_MAX_CASE_TIMEOUTS';
+
+/**
+ * What a per-case timeout leaves in a failure's `actual`: run_tests.py's "TIMEOUT after 2s", the
+ * generated module's "test_x.CaseTimeout: no result after 2s", the design's "Timeout: the
+ * program did not finish within N seconds" (docs/JEV-ONLY-DESIGN.md §4.1). The captured group
+ * is the limit the case ran under, in seconds.
+ */
+export const CASE_TIMEOUT_PATTERN = /\bTIMEOUT after (\d+(?:\.\d+)?)s\b|\bCaseTimeout\b[^\n]*?\bno result after (\d+(?:\.\d+)?)s|\bTimeout: the program did not finish within (\d+(?:\.\d+)?) seconds/;
+/** A case the generated module's stop rule did not call ("CaseNotRun: not run: 1 earlier case(s) timed out"). */
+export const CASE_NOT_RUN_PATTERN = /\bCaseNotRun\b|\bnot run: \d+ earlier case\(s\) timed out/;
+
+export function isCaseTimeout(actual: string): boolean {
+  return CASE_TIMEOUT_PATTERN.test(actual);
+}
+
+export function isCaseNotRun(actual: string): boolean {
+  return CASE_NOT_RUN_PATTERN.test(actual);
+}
+
+/** The per-case limit (ms) a timed-out case ran under, read from its failure text; null when the text is not a case timeout. */
+export function caseTimeoutLimitMs(actual: string): number | null {
+  const m = CASE_TIMEOUT_PATTERN.exec(actual);
+  if (m === null) return null;
+  const sec = Number(m[1] ?? m[2] ?? m[3]);
+  return Number.isFinite(sec) && sec > 0 ? Math.round(sec * 1000) : null;
+}
+
+export interface CaseTimeoutCounts {
+  /** failures that hit the per-case limit */
+  timeouts: number;
+  /** failures the stop rule did not run */
+  notRun: number;
+  /** the limit the timed-out cases ran under (ms; the largest seen), null when none is readable */
+  limitMs: number | null;
+}
+
+/** Count the per-case timeouts (and stop-rule skips) among a run's failures. */
+export function countCaseTimeouts(summary: Pick<TestRunSummary, 'failures'>): CaseTimeoutCounts {
+  let timeouts = 0;
+  let notRun = 0;
+  let limitMs: number | null = null;
+  for (const f of summary.failures) {
+    if (isCaseTimeout(f.actual)) {
+      timeouts += 1;
+      const l = caseTimeoutLimitMs(f.actual);
+      if (l !== null && (limitMs === null || l > limitMs)) limitMs = l;
+    } else if (isCaseNotRun(f.actual)) {
+      notRun += 1;
+    }
+  }
+  return { timeouts, notRun, limitMs };
+}
+
+/**
+ * The run hangs: at least one case hit the per-case limit and every failure is such a timeout
+ * (or a case the stop rule did not run after one). §4.1: a probable infinite loop, classified
+ * `timeout` by the sieve runner whatever the sandbox's own timeout did.
+ */
+export function hangsOnEveryFailure(summary: Pick<TestRunSummary, 'failures'>): boolean {
+  if (summary.failures.length === 0) return false;
+  const c = countCaseTimeouts(summary);
+  return c.timeouts > 0 && c.timeouts + c.notRun === summary.failures.length;
+}
+
 /** The runner command with the failure cap lifted; `candidatePath` is the file under repair. */
 export function quixbugsTestCommand(quixbugsDir: string, name: string, candidatePath: string, opts: { timeoutSec?: number; slow?: boolean } = {}): string {
   const parts = ['PYTHONDONTWRITEBYTECODE=1', 'python3', shellQuote(`${quixbugsDir}/run_tests.py`), shellQuote(name), shellQuote(candidatePath), '--max-failures', String(QUIXBUGS_MAX_FAILURES)];

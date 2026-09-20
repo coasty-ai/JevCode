@@ -315,3 +315,361 @@ module-level gap directly before a `def` (a module with no docstring and no impo
 family still fires from the def's parameters — pre-existing, harmless (the tests reject them), noted for the template
 owner. Unit gates: `tsc --noEmit` clean, `no-any` ok, `vitest --project unit` 1803/1806 — the 3 failures are in
 concurrent working-tree changes by others (`budget.test.ts` ×2 against the in-progress `budget.ts`, `engine-evidence.test.ts`).
+
+## 9. 2026-09-20: the risk stage reads the synthesizer's evidence — ladder 4/12 → 10/12, QuixBugs rejected set 1/3 → 2/3
+
+Owner scope: src/loop/state.ts, src/loop/stages/{risk,intent,judge,complete}.ts, src/synth/search/proposal.ts, the
+evidence attachment in src/synth/search/index.ts, test/unit/loop/**, test/unit/synth/search/proposal*.test.ts. Live
+re-check: `bench/results/jev-only-ladder-2` (12 tasks, same command as rung 2) and
+`bench/results/jev-only-quixbugs-2-rejected` (`reverse_linked_list`, `topological_ordering`, `detect_cycle`, rung 1a
+settings). Every number is read from `tasks.jsonl`, `steps.jsonl`, `decisions.jsonl` and `transcript.log` by
+`/tmp/jo-risk.py` (per task: patches proposed / applied / blocked-or-declined, rejected runs and dones, the dominant
+dimension and level of every rejection from `risk.reason`, `matches_intent` < 0.3 in the reason, `proposal.evidence`
+presence, the `evidence_consistent` answers and the intent Choice verdicts from `decisions.jsonl`) and `/tmp/jo-table.py`
+(§7). Code state at run time: this change plus the concurrent, uncommitted working-tree changes of the template /
+budget owner (§8: `templates/imports.ts` import gap, `goals.ts missingNames`, `sites.ts`, `budget.ts` per-test timeout,
+`sieve/runner.ts`, the QuixBugs runner); `tagcloud`'s solve below is theirs (§8), every other delta is in files this
+change touched.
+
+### 9.1 The problem, measured on rung 2 (`jev-only-ladder-1`)
+
+41 `patch` proposals, 6 applied, **35 blocked or declined** — every one of the 35 had passed the goal's tests and the
+full suite in the synthesizer's shadow lane; 49 `run` proposals rejected, 43 of them with `plan_mismatch` dominant
+level 4 "repeats a step `recent` shows already failed the same way" (the post-patch suite run reads as a re-run of the
+step-1 run that "failed"), 23 patches at level 4 (a declined patch in `recent` read as a failed step; the next patch as
+its repeat), 5 at level 2 "skips a planned verification step"; 42 rejections carried `matches_intent` < 0.3, i.e. the
+action was judged against an `investigate` intent that §6 Choice resolution had fallen back to (90 of 211 intent
+Choices resolved `fallback`). 29 of the rejected runs were proposed under a *chosen* `edit` intent right after a patch.
+
+### 9.2 What changed
+
+1. **Risk state** (`loop/state.ts proposalJson`, shared by the risk and judge states): when the proposal carries
+   `evidence` (`Proposal.evidence`, the contract added in `5c42925`) the state shows it as `proposal.evidence`: command,
+   `before`/`after` counts, `newlyPassing`, `newlyFailing`, `goalTests` (each list ≤ 20 ids), `selection`,
+   `candidatesTested`, `arbitrated`, plus the code-computed **`verified = newlyFailing.length === 0 && after.passed >
+   before.passed`**. Jev never compares counts (REPORT §10: compute in code).
+2. **Risk questions** (`stages/risk.ts`): with evidence present the same four one-quantity Scores are asked with three
+   clauses added — `out_of_scope` level 0 "…or fixes tests named in `plan.remaining` (`proposal.evidence.goalTests` …)",
+   `plan_mismatch` level 2 "…an action whose `proposal.evidence.verified` is true and whose `goalTests` are named in
+   `plan.remaining` does not skip verification (the tests already ran against this change in a shadow copy and the next
+   step re-runs the suite in the workspace)", level 4 "…(a `patch` whose `proposal.evidence` names a different change
+   or different newly passing tests than the earlier attempt is not a repeat, a blocked or declined proposal in `recent`
+   never ran so it did not fail, and a test `run` after a change re-runs the suite `proposal.evidence` measured …)" —
+   plus one sentence in the two instructions saying what `proposal.evidence` is. `destructive` and `irreversible` are
+   untouched (a shadow run says nothing about what is lost); the rubric stays one situation-scale per dimension; the
+   0.3 / 0.7 bands and `riskFromProbabilities` are untouched. A paired Noul **`evidence_consistent`** ("Do
+   `proposal.evidence` and `recent` agree, i.e. is the claimed test progress plausible given the previous runs?") is
+   asked, shown in the pane, and reaches only the reason text (< 0.3 on review/block), like `matches_intent`. The risk
+   reason now ends with `evidence verified: 7→9 of 10 pass, no regressions (sieve, 360 tested); proposal: <goal>` so a
+   rejected attempt's identity is in `recent[i].reason` for the next attempt's comparison (WindowEntry has no evidence
+   field; the reason is the one channel). Without evidence the questions and reasons are byte-identical to before, so
+   jev-on and jev-off are unchanged (tests).
+3. **Intent stage** (`stages/intent.ts`, `state.ts`): in `jev-only` mode, when `plan.remaining` carries items of the
+   fixed grammar `fix <test> in <path>` (`LEDGER_ITEM_RE`), the state carries `mode` and `ledger.items`, the Choice
+   describes `edit` as "apply a verified fix for an item in `plan.remaining`" and `verify` as "run the suite after a
+   fix" (paired examples reworded to match), and `resolveIntentWithLedger` applies two code rules over §6 resolution:
+   a `fallback` whose raw answer is `edit`/`verify` with p ≥ 0.3 takes that answer (verdict `chosen`), and an
+   effective `edit` while a change is unverified (`workspace.lastChangeStep` set and `testsCurrent` false — the same
+   code-computed facts the completion Noul reads) becomes `verify` (verdict `overridden`, the `can_verify` row
+   `chosen`). Guarded on mode **and** ledger presence; the `intent:unresolved` loop signature no longer fires for a
+   rescued fallback. jev-on with the same answers over a plan that happens to contain `fix … in …` items still falls
+   back (test).
+4. **Judge / complete**: `proposal.evidence` is in the judge state through the shared `proposalJson`, next to
+   `executed.tests.parsed`; the questions and the completion criteria are unchanged.
+5. **Synthesizer** (`search/proposal.ts`, `search/index.ts`): every `patch` carries evidence built from the guard's
+   `VerifyOutcome` (`full` — or the subset run when the subset was the whole suite — against the committed baseline;
+   `shadowEvidence` uses `verify/progress.ts` for the id sets), a re-proposed passer carries its stashed evidence, the
+   standing post-patch `run` carries the measurement it re-executes (the baseline before the patch → the fresh
+   baseline on the patched workspace, `scratch.previousBaseline`), and a partial commit carries the held base's summary
+   as `after`. The patch goal text is now `apply verified fix: <tests> now pass (N→M of T), no regressions;
+   <source>/<op> at <path>:<line>` (`apply partial fix: k of n goal tests now pass …` for a partial). `steps.jsonl`
+   keeps `proposal.evidence` whole (the StepRecord stores the Proposal).
+6. **Outside the listed scope, needed for the contract to work at all** (each a one-line, additive change, flagged
+   here): `loop/stages/synth.ts` rebuilt the Proposal field by field and dropped `evidence` (nothing downstream could
+   ever see it) — it now passes it through; `search/types.ts` commit `Decision` gained `outcome?: VerifyOutcome` and
+   `after?: TestRunSummary`; `search/guard.ts commit()`/`commitSuspect()` set `outcome`; `search/bases.ts
+   commitPartial` sets `after` (the base leaves the beam there, so a later lookup finds nothing — the live
+   `reverse_linked_list` partial below went out without evidence before this line); `test/unit/synth/search/guard.test.ts`
+   one `toEqual` gained the `outcome` field and `bases.test.ts` two `toEqual`s the `after` field.
+
+Gates: `tsc --noEmit` clean, `no-any` ok, `vitest --project unit` 1830/1831 (the one failure is
+`engine-perf.test.ts` "harnessMs < 50 ms" while the bench was still on the CPU; it passes alone), new tests:
+`test/unit/loop/{intent,engine-evidence}.test.ts`, additions to `state.test.ts` / `risk.test.ts`,
+`test/unit/synth/search/proposal-evidence.test.ts` (builders, controller attachment on patch / re-proposal / post-patch
+run, partial `after`).
+
+### 9.3 Ladder 12, before → after (same command; `jev-only-ladder-1` → `jev-only-ladder-2`)
+
+| item | rung 2 (`-1`) | this run (`-2`) |
+|---|---|---|
+| solved (evaluator) | 4/12 | **10/12** (1-hunk 6/6, 2-hunk 2/3, 3-hunk 2/3) |
+| patches proposed / applied / **rejected by the risk stage** | 41 / 6 / **35** | 26 / **19** / 7 |
+| `run` proposals rejected | 49 | 28 (see 9.5) |
+| rejections with `matches_intent` < 0.3 in the reason | 42 | 16 |
+| dominant level of rejections (`kind:dimension@level`) | run:pm@4 43, read:pm@0 24, read:pm@4 23, patch:pm@4 23, patch:pm@0 6, patch:pm@2 5, run:pm@3 4, run:pm@0 2, patch:oos@3 1 | run:pm@0 15, run:pm@4 10, patch:pm@2 6, read:pm@0 4, read:pm@4 3, run:pm@2 2, done:pm@4 1, patch:oos@0 1, run:pm@3 1 |
+| intent Choice verdicts chosen / overridden / fallback | 97 / 24 / 90 | 61 / 38 / 27 |
+| proposals with `evidence` | 0 | 61 (26/26 patches, 35 post-patch runs) |
+| `evidence_consistent` | – | n = 61, median 0.79, mean 0.75, 3 below 0.3 |
+| parked goals in the final ledgers | 8 (shipping 4, tagcloud 3, textstats 1; sources exhausted) | 2 (calendar_utils 1, inventory 1; two consecutive budget-hit steps) |
+| stop reasons | max_steps 10, complete 2 | complete 9, max_steps 2, replan_stop 1 |
+| steps median (mean); steps-to-solve median over solved | 20 (18.5); 7 | 7 (10.5); 5 |
+| test runs total | 36 211 | 23 254 |
+| Jev cost | $0.277 | **$0.104** |
+| wall median / max | 325 s / 537 s | 122 s / 360 s |
+
+| task | hunks | before: solved, steps, patches applied / rejected | after: solved, steps, stop, patches applied / rejected, runs rejected, Jev $, wall s | note |
+|---|---|---|---|---|
+| events | 1 | yes, 20, 1 / 0 | **yes, 4, complete**, 1 / 0, 0, 0.0018, 51 | the post-patch run executes (was declined 10×) |
+| calendar_utils | 3 | no, 20, 1 / 0 (2 of 3 hunks) | no, 19, replan_stop, 3 / 0, 5 (+1 done), 0.0204, 360 | 4 of 5 goals fixed and applied; the last (`test_day_of_year_last_day`) hit two consecutive budget-hit steps (RANK, 2 214 + 1 621 candidates), parked; the partial `done` blocked ×3 as §5.5 intends → `replan_stop`. Class: budget |
+| grades | 2 | no, 20, 0 / 6 | **yes, 20, max_steps**, 2 / 1, 8, 0.0104, 54 | both hunks applied by step 7; the second post-patch run was declined 8× at 0.32–0.40 (9.5a) so the run never saw `complete` |
+| profiles | 1 | yes, 4, 1 / 0 | yes, 3, complete, 1 / 0, 0, 0.0013, 31 | |
+| account | 3 | no, 20, 1 / 4 (1 of 3) | **yes, 14, complete**, 2 / 0, 4, 0.0107, 285 | |
+| stats | 1 | yes, 7, 1 / 2 | yes, 3, complete, 1 / 0, 0, 0.0013, 19 | |
+| inventory | 2 | no, 20, 0 / 6 | no, 20, max_steps, 2 / 1, 7, 0.0263, 296 | 3 of 4 goals fixed and applied (evaluator 9/10); the last (`test_total_value`) budget-parked after 978 + 1 484 runs. Class: budget |
+| shipping | 1 | no, 20, 0 / 4 (4 parked) | **yes, 6, complete**, 1 / 0, 2, 0.0040, 181 | |
+| table | 3 | yes, 20, 1 / 2 | yes, 5, complete, 1 / 0, 1, 0.0093, 129 | the two-file composite patch applied first time |
+| tagcloud | 1 | no, 20, 0 / 0 (3 parked) | yes, 4, complete, 1 / 0, 0, 0.0019, 7 | the §8 import-gap fix (other owner); the patch went through at 0.25 with evidence |
+| units | 1 | no, 20, 0 / 7 | **yes, 20, complete**, 2 / 5, 0, 0.0117, 205 | the verified patch was declined 5× at level 2 under `investigate` before the engine had ever run the suite (9.5b) |
+| textstats | 2 | no, 20, 0 / 4 | **yes, 8, complete**, 2 / 0, 1, 0.0044, 115 | |
+
+### 9.4 QuixBugs, the three rejection-prone programs (`jev-only-quixbugs-1` → `jev-only-quixbugs-2-rejected`)
+
+| program | before: repaired, steps, stop, patches applied / rejected, runs rejected, Jev $ | after | note |
+|---|---|---|---|
+| detect_cycle | yes, 12, max_steps, 1 / 0, 5, 0.0045 | **yes, 4, complete**, 1 / 0, 0, 0.0016 | same visible-test-only fix as before (correct-by-diff no) |
+| topological_ordering | no (overfit), 12, max_steps, 1 / 0, 4, 0.0049 | **yes, 10, complete**, 2 / 1, 1, 0.0051 | two goals fixed in turn (0→2, then 2→3 of 3); passes the hidden test now; the first patch was declined once at level 2 (9.5b) and re-proposed |
+| reverse_linked_list | no (engine_rejected), 12, max_steps, 0 / 3, 1, 0.0100 | no, 12, max_steps, 0 / 2, 0, 0.0098 | **a search miss this time, not an engine rejection**: 0 plausible in 1 051 + 115 WIDENED runs (the `prevnode = node` passer of rung 1a came after 1 300 runs); the two rejected patches were one unverified `partial` (`insert_return_after`, without evidence — §9.2 item 6 closes that gap) and its re-proposal; one `propose: jev_response` stage failure at step 5; 5 `read`s under `investigate` declined/blocked at level 4 |
+
+Totals: 1/3 → 2/3; Jev $0.019 → $0.017; `evidence_consistent` n = 8, min 0.70.
+
+### 9.5 What still gets rejected, and the one lever left
+
+(a) **Post-patch `run` under an overridden `verify`, reviewed at 0.30–0.43 with `plan_mismatch` level 0 dominant but
+spread mass (Jev confidence 0.00)** — 15 of the 28 rejected runs (grades ×8, account ×2, calendar_utils, inventory,
+shipping, table, textstats). In every case Jev answered `investigate` and §6 overrode it to `verify` on `can_verify`
+≥ 0.5; `evidence_consistent` was 0.6–0.87 (they agree); levels 2, 3 and 4 each took 0.15–0.3, so the tail term crossed
+0.3. The runs execute on the next step in every task but `grades`, where the same run was declined 8 times in a row
+(steps 10–20; the task was already solved by step 7). The common feature of those 8: the run claimed two done items,
+one of which the judge had rejected on the previous run (`done_1` < 0.3 at step 6), so the state showed the same
+claim twice. Worth a Jev-side look at the claim wording before any code change.
+
+(b) **A verified `patch` declined at level 2 "skips a planned verification step" (0.31–0.44)** — 6 patches: units ×4
+(+1 at 0.40 whose max was level 2 too), topological_ordering ×1, grades ×1, inventory ×1. Five of the six were
+proposed under an `investigate` intent **before the engine had executed the suite even once** in that run (the run
+opened with reads; the synthesizer proposes its first full-suite `run` only under `verify` or after a change,
+`engineNeedsRun && (intent === 'verify' || lastChangeStep !== null)` in `search/index.ts`), so from `recent` the plan's
+standing verification item had never run. The level-2 clause moved the mass (0.4–0.55 on level 2, vs 0.75–0.85 on
+level 4 before) but not below the band. The lever is a controller policy, one condition wide and outside this
+change's scope: propose the full-suite `run` first whenever the engine has no executed suite run at all
+(`scratch.lastEngineRun === null`), whatever the intent. It would have removed the 5 `units` and `topological_ordering`
+declines (units still finished `complete` at step 20; with the rule its 2 patches land by step 5).
+
+(c) Pre-existing and intended: budget-hit `record the failing behaviour` subset runs (no evidence: there is nothing to
+compare) and the partial `done` on `calendar_utils` / `inventory` blocked at level 3/4 until `replan_stop` (§5.5).
+`read` proposals declined/blocked at level 4 as "repeats" (7 on the ladder, 5 on QuixBugs) are the `investigate`
+compliance reads (`INVESTIGATE_READS_MAX`), not this change's concern.
+
+### 9.6 Spend
+
+Ladder-2 $0.1035 + QuixBugs-2 $0.0165 = **$0.12** of the $4 allowed for this re-check; cumulative live spend of this
+report ≈ $1.33 of the $3 cap (§3 + §8 + §9). Generator calls 0 on every record.
+
+### 9.7 Exact commands
+
+```
+# gates
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/loop test/unit/synth/search
+
+# ladder re-check (rung 2 command, new out dir)
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite ladder --tasks 12 \
+  --conditions jev-only --live --spend-cap 3 --task-spend-cap 0.25 --concurrency 3 --max-steps 20 --max-wall 10m \
+  --out bench/results/jev-only-ladder-2
+
+# the three QuixBugs programs (rung 1a settings)
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs \
+  --task-id reverse_linked_list,topological_ordering,detect_cycle --conditions jev-only --live --spend-cap 3 \
+  --task-spend-cap 0.1 --concurrency 3 --max-steps 12 --max-wall 6m --out bench/results/jev-only-quixbugs-2-rejected
+
+# analysis (stdlib python; joins tasks.jsonl with steps.jsonl, decisions.jsonl and transcript.log)
+python3 /tmp/jo-risk.py bench/results/jev-only-ladder-2
+python3 /tmp/jo-table.py bench/results/jev-only-ladder-2 ladder
+python3 /tmp/jo-table.py bench/results/jev-only-quixbugs-2-rejected quixbugs
+```
+
+## 8. 2026-09-20 (later): the timeout-dominated suites — adaptive per-test timeout on the lanes, adjusted t_run, SIEVE hysteresis
+
+Follow-up to §1's `budget` misses (`bitcount`, `sqrt`, `mergesort`, `shunting_yard`) and §6 item 1. The five
+programs were re-run twice live (`--task-id bitcount,sqrt,mergesort,shunting_yard,find_first_in_sorted`, same
+flags as §1 plus `--spend-cap 1`); the code changed once between the two runs (§8.1 items 7–8). Everything in
+this section was measured, first on the generated pytest modules of the five programs with `pytest
+--durations=0` on idle cores (reference machine, 15 cores), then in the two runs.
+
+| program | cases | cases at the 2 s alarm | baseline idle | baseline in the §1 bench (4 tasks × 8 lanes) | what the time is |
+|---|---|---|---|---|---|
+| bitcount | 9 | 9 | 18.2 s | 18.7 s | 9 × 2 s alarm |
+| sqrt | 7 | 6 | 12.2 s | 12.7 s | 6 × 2 s alarm |
+| find_first_in_sorted | 7 | 2 | 4.2 s | 4.7 s | 2 × 2 s alarm |
+| mergesort | 14 | 0 | 1.96 s | 5.0 s | pytest rendering 13 thousand-frame `RecursionError` tracebacks (`--tb=native`: 0.14 s); crossed 2 s under load only |
+| shunting_yard | 6 | 0 | 0.21 s | 0.58 s | nothing slow; the `RANK` in its §1 trace came from one batch of raising candidates measuring > 2 s under load |
+
+So the §1 diagnosis was right for `bitcount` and `sqrt` and half-right elsewhere: `mergesort` is a slow-traceback
+suite, not a timeout suite, and `shunting_yard` was never lost to the budget — its gold fix is an *insertion*
+(`opstack.append(token)` after line 17) that none of the sources produces (parked "exhausted composite, donor,
+mutation, template at 7 sites" with the `shunting_yard.py:17 (gap)` site among them, in §1 and in both runs
+here): a `fix_not_in_candidates` miss the sieve cannot repair.
+
+### 8.1 What changed (src/synth/search/budget.ts, src/synth/sieve/runner.ts, src/synth/verify/quixbugs.ts, src/bench/quixbugs/pytest.ts, bench/data/quixbugs/run_tests.py)
+
+1. **Per-test timeout from the cases that finished** (`caseProfile`, `perTestTimeout`). The timed-out cases are
+   read from the failure texts (`CaseTimeout: no result after 2s`, `TIMEOUT after 2s`), their 2 s each is taken
+   out of the baseline, the fixed cost is taken out of the rest and the remainder is spread over the finished
+   cases: `perTestTimeoutMs = clamp(3 × p50(finished), 500, 2000)`, 500 ms when nothing finished. `bitcount`
+   500 ms (was 2 s: `18 238 / 9` read the alarms as a 2 s p50), `sqrt` 500–840 ms depending on the load at
+   baseline time. The pytest runner now has a per-test timeout too (it was `null`): the generated module reads
+   it (item 2); other pytest suites ignore it.
+2. **The lanes get the timeout.** The generated pytest module reads `JEVCODE_CASE_TIMEOUT_MS` (default 2000)
+   and `JEVCODE_MAX_CASE_TIMEOUTS` (default none); the sieve runner sets them on every lane run of a pytest
+   oracle (`laneRunEnv`: the oracle's per-test timeout and `1`). After one case timeout the module reports the
+   remaining cases as `CaseNotRun: not run: 1 earlier case(s) timed out` without calling them. Measured lane
+   cost of a hanging candidate on idle cores: `bitcount` 661 ms (was 18 s), `sqrt` 630 ms; a correct `sqrt`
+   106 ms. The agent's own `pytest -q`, the engine's `run` proposals and the evaluator (`run_tests.py`, no
+   `--timeout`) are untouched. `run_tests.py --timeout` also accepts `500ms` / `0.5s` and there is `--timeout-ms N`
+   (additive; the default is still 2 s). What the stop rule gives up: whether a candidate that hangs on an early
+   case would pass a later one — never a plausible candidate, and a hanging run is never held as a base (§4.1).
+3. **Adjusted t_run, class and lanes** (`estimateRunMs`). `tRunMs` = process start + collection/reporting +
+   the finished cases' time + min(timeouts, 1) × min(observed case time, per-test timeout) on the pytest
+   module (rounds of 8 on run_tests.py, whose cases are parallel); `oracleClass`, `laneCount` and
+   `decideRunPlan` read it; `baselineDurationMs` keeps the raw duration (reporting, the repository-class wall,
+   the workspace command's `runTimeoutMs`, which still runs the module at 2 s per case). `bitcount`: t_run
+   738 ms from the idle baseline (1 140 ms from the loaded one, item 7) → QuixBugs-class, `runsLeft =
+   floor(90 s × 8 / 0.738 s) = 975 ≥ 421` → SIEVE (was 18.7 s → repository-class, 4 lanes, RANK at 16 runs a
+   step). The arithmetic the §1 report implied does not hold on its own: at 9 × 0.5 s = 4.5 s a hanging run,
+   421 candidates cost 237 s at 8 lanes, far over the 90 s wall; only the stop rule (one alarm per run) makes the
+   sieve fit.
+4. **SIEVE hysteresis under load** (`refineTRun`). A batch median under 2 s is taken as measured; one between
+   2 s and 3 s (1.5 × SIEVE_MAX_T_RUN_MS) does not move a sieve-eligible estimate; above 3 s the measurement
+   wins (RANK). `runsLeft` already used `oracle.lanes` (`floor(testWallLeft × lanes / t_run)`); the runner's
+   workers are `min(pool.lanes, oracle.lanes)` and a unit test now pins the peak overlap to the lane count
+   (8 of 8, 3 of 3). Found while checking: a lane pool built for a 4-lane oracle survived a re-fit to 8 lanes
+   and serialised at 4; the pool is now rebuilt whenever the oracle asks for more lanes.
+5. **Hanging candidates are `timeout`** (`hangsOnEveryFailure`). A run whose every failing case hit the alarm
+   (or was not run after one) is classified `timeout` — never a base — where the old table said `unchanged`
+   when the buggy program hung on the same cases (203 of bitcount's 455 candidates in run b). The sandbox
+   timeout of a lane run is `laneRunTimeout` = min(`runTimeoutMs`, max(3 × t_run + 10 s, cases × per-test
+   timeout + start + 10 s)) — `bitcount` 14.7 s instead of the 66 s workspace timeout, and never the 120 s
+   command default.
+6. **mergesort**: the generated module re-raises `RecursionError` shallow (`raise RecursionError(str(exc))
+   from None`); the message pytest reports is the same, the 1.96 s idle baseline becomes 0.21 s (measured), so
+   the suite no longer crosses 2 s under bench load (0.96–1.5 s wall in the two runs, of which 0.44 s is the
+   pytest session).
+7. **Found in run a, fixed for run b: the baseline's start-up is not the suite's.** Measured through the
+   engine, with four tasks starting together, every program's baseline carried 870–1 060 ms of interpreter
+   start-up (wall minus pytest's own "… in 12.33s" session clock) while the lanes then ran whole suites in
+   380–800 ms. Spread over `sqrt`'s one finished case that burst read as a 1.2 s p50 → 2 s per-test timeout →
+   t_run 3.4 s → repository-class (16 runs a step, RANK) — `sqrt` missed again in run a for exactly §1's reason.
+   `caseProfile` now reads pytest's session clock from the output tail (`pytestSessionMs`) and charges a lane
+   run PROCESS_OVERHEAD_MS (200 ms, measured idle) instead of the baseline's own start-up; without a session
+   clock (`-qq` output, run_tests.py) the old arithmetic stands. On run a's baselines: `sqrt` 840 ms timeout,
+   t_run 1 370 ms, QuixBugs-class; `bitcount` 1 140 ms; `mergesort` 640 ms (was 1 497), `shunting_yard`
+   420 ms (was 1 187).
+8. **Lanes follow the measured t_run upward** (`refineLanes`). Run a fitted 4 lanes to all five programs (their
+   1.2–19 s baselines) and never widened; after each batch the oracle now takes the fast suite's 8 lanes once a
+   run measures under 1 s (never narrower, never on `inplace` lanes), and the pool is rebuilt at the next call
+   (item 4). Visible in run b's `bitcount` trace: `run median 385 ms, t_run 385 ms, lanes 4 → 8`.
+
+Tests (test/unit/synth/search/budget.test.ts, test/unit/synth/sieve/runner.test.ts,
+test/unit/synth/verify/quixbugs.test.ts, test/unit/bench/quixbugs.test.ts): `fitOracle` on an all-alarm
+baseline → 500 ms, t_run 738, QuixBugs-class, 8 lanes; mixed baselines → clamp(3 × p50 finished) with the hung
+cases not voting; the same with run a's session clocks (`sqrt` 840 ms / 1 370 ms / QuixBugs-class against
+2 s / 3 370 ms / repository without the clock); `decideRunPlan` on bitcount's numbers → SIEVE inside the 90 s wall
+(RANK without the stop rule); `refineTRun` band; `refineLanes`; `laneRunTimeout`; runner peak overlap = lanes;
+lane env; `timeout` classification; pool rebuild and widening; the generated module under `python3` with a
+sleeping fixture at a 100 ms limit (a 0.4 s case fails at 0.1 s and passes unset; the stop rule leaves the rest
+"not run"; the same under pytest when it is importable); `run_tests.py --timeout 100ms|0.1|0.1s|--timeout-ms 100`
+on the buggy bitcount (9 timeouts in < 5 s), `--timeout 0|abc` → exit 2, the evaluator's command carries no
+`--timeout`. Gates: `tsc --noEmit` clean, `no-any` ok, unit 133 files / 1 831 tests green.
+
+### 8.2 Live re-checks (`bench/results/jev-only-quixbugs-2-slow`, then `-2-slow-b`)
+
+Same flags as §1 (`--conditions jev-only --live --spend-cap 1 --task-spend-cap 0.1 --concurrency 4 --max-steps 12
+--max-wall 6m`), generator calls 0 on every record. "class at step 1" is read from the first batch's run cap
+(1 500 = QuixBugs-class, 16 = repository); "run median" is the runner's per-batch median of the lane runs
+under the bench's load; "modes seen" is the mode of the last run plan of each search (a search that sieved
+three sites and then ranked a 2 000-candidate set prints RANK).
+
+**Run a** (items 1–6; `-2-slow`): **repaired 3/5**, Jev $0.042, wall total 713 s (§1: 0/4 of the misses, 952 s for the same five).
+
+| program | repaired | steps | baseline ms (raw) | class at step 1 | lanes at step 1 | run median ms (min–max over batches) | modes seen | candidates run | of them `timeout` | commit at step | wall s | Jev $ | stop |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| bitcount | yes | 6 | 19309 | QuixBugs | 4 | 658–1458 | RANK/SIEVE | 502 | 232 | 5 | 175 | 0.0041 | complete |
+| sqrt | no | 12 | 13370 | repository | 4 | 611–2920 | RANK | 167 | 77 | - | 131 | 0.0078 | max_steps |
+| mergesort | yes | 8 | 1497 | QuixBugs | 4 | 741–1097 | RANK | 557 | 0 | 6 | 163 | 0.0089 | complete |
+| shunting_yard | no | 12 | 1187 | QuixBugs | 4 | 259–811 | RANK | 1186 | 11 | - | 228 | 0.0197 | max_steps |
+| find_first_in_sorted | yes | 3 | 6210 | repository | 4 | 382 | RANK | 5 | 0 | 2 | 16 | 0.0018 | complete |
+
+`sqrt`'s miss here is item 7 (the start-up burst read as the one finished case's time); every program ran on
+4 lanes because the burst also put every estimate at or above 1 s (item 8). `bitcount` still needed two
+steps of sieve (RANK at step 3 while the baseline-time estimate was 1.8 s, SIEVE at step 5 once the lanes had
+measured 0.7 s).
+
+**Run b** (items 1–8; `-2-slow-b`): **repaired 4/5**, Jev $0.031, wall total 634 s; patches identical to
+`bench/data/quixbugs/correct/` (`n &= n - 1`, `while abs(x - approx ** 2) > epsilon:`, `if len(arr) <= 1:`,
+`while lo < hi:`).
+
+| program | repaired | steps | baseline ms (raw) | class at step 1 | lanes at step 1 (widened) | run median ms (min–max over batches) | modes seen | candidates run | of them `timeout` | commit at step | wall s | Jev $ | stop |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| bitcount | yes | 6 | 19289 | QuixBugs | 4 (4→8) | 385–1315 | SIEVE | 455 | 203 | 5 | 155 | 0.0040 | complete |
+| sqrt | yes | 4 | 13110 | QuixBugs | 8 | 1337 | SIEVE | 117 | 52 | 3 | 54 | 0.0016 | complete |
+| mergesort | yes | 6 | 955 | QuixBugs | 8 | 221–1567 | RANK | 1099 | 0 | 5 | 171 | 0.0128 | complete |
+| shunting_yard | no | 12 | 880 | QuixBugs | 8 | 141–1553 | SIEVE | 2448 | 22 | - | 223 | 0.0110 | max_steps |
+| find_first_in_sorted | yes | 3 | 6025 | QuixBugs | 8 | 1277 | SIEVE | 85 | 0 | 2 | 31 | 0.0015 | complete |
+
+Per program: `bitcount` — QuixBugs-class from the first baseline (t_run 1 140 ms), 4 lanes until the third
+batch measured 385 ms (`lanes 4 → 8`), SIEVE throughout, 455 candidates run (203 hung, each one alarm), the
+gold `n &= n - 1` plausible at step 5 (the step-3 sieve of 340 candidates ran out of test wall at 8 lanes
+under a 1.1–1.3 s run median: hanging runs cost 0.5 s alarm + ~0.6 s loaded start-up). `sqrt` — QuixBugs-class,
+8 lanes, one SIEVE of 117 candidates at step 3 (52 hung), gold plausible, committed, green baseline at step 4.
+`mergesort` — QuixBugs-class, 8 lanes, 1 099 candidates run over two steps (the last plan of each search was a
+RANK cut of a 2 000+ set; the sites before it sieved), gold plausible at step 5. `find_first_in_sorted` —
+QuixBugs-class now (was repository in §1 and run a), one 85-candidate SIEVE at 8 lanes, 4 plausible, gold
+committed at step 2 (§1: RANK of 5). `shunting_yard` — sieved 2 448 candidates at 8 lanes over three searches
+(SEEDS, then WIDENED), 0 plausible, parked twice as exhausted at 7 sites: the insertion is not in any source's
+set (see the top of §8); not a budget miss.
+
+Live spend for §8: $0.042 + $0.031 = **$0.073** (generator $0 / 0 calls), against the $1 cap.
+
+### 8.3 What remains
+
+- `shunting_yard`: `fix_not_in_candidates` — the `else:` branch needs `opstack.append(token)` inserted after
+  the `while` loop; the insert-site sources (template, donor, sketch) have no statement of that shape. Not a
+  runner or budget matter.
+- The repository-class detection still rests on one measurement taken at the run's busiest moment; item 7
+  removes the start-up from it where pytest prints a session clock, not the load on the cases themselves
+  (`sqrt`'s lane runs measured 1.3 s under load against 0.63 s idle). The 1.5 × hysteresis (item 4) covers the
+  next factor of two.
+- The `modes seen` column shows the trace records the mode of the *last* plan of a search; a per-batch mode in
+  the trace (or a count of sieved vs ranked candidates) would make the §2.4 decision auditable per site.
+- With the stop rule a partial that hangs on an early case and passes later ones is `timeout`, not `partial`;
+  none of the two-step repairs the design lists (`find_first_in_sorted`, `minimum_spanning_tree`, `sieve`)
+  hangs, and none was affected here, but the trade is worth remembering if a hanging two-step repair appears.
+
+### 8.4 Exact commands
+
+```
+# gates
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/synth/search test/unit/synth/sieve test/unit/bench
+
+# per-case timings of the five generated modules (workspaces built by a 20-line tsx script from src/bench/quixbugs/pytest.ts + writePytestLayout)
+PYTHONDONTWRITEBYTECODE=1 ~/.jevcode/runs/ladder-venv/bin/python -m pytest -q --durations=0     # in each /tmp/qb-<name>
+
+# run a (items 1–6) and run b (items 1–8)
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs \
+  --task-id bitcount,sqrt,mergesort,shunting_yard,find_first_in_sorted --conditions jev-only --live --spend-cap 1 \
+  --task-spend-cap 0.1 --concurrency 4 --max-steps 12 --max-wall 6m --out bench/results/jev-only-quixbugs-2-slow      # then -2-slow-b
+
+# the tables (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/transcript.log)
+python3 /tmp/qb-slow-table.py bench/results/jev-only-quixbugs-2-slow-b
+```
+Run ids: run a `20260920-203814-nbvb4som` (bitcount), `-jghe2xvl` (sqrt), `-zjai6dos` (mergesort), `-va7bm4bv`
+(shunting_yard), `20260920-204028-ywr3jsp6` (find_first_in_sorted); run b `20260920-205025-zycr6z4z`,
+`-2ozxircg`, `-mapkpitr`, `-4hbeexhd`, `20260920-205120-s4e4pfp4`.

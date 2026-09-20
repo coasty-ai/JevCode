@@ -12,8 +12,8 @@ import { unifiedDiff, diffLines } from '../../../src/bench/ladder/udiff.js';
 import { GIT_EXCLUDES } from '../../../src/bench/ladder/pyworkspace.js';
 import { describeReport, evaluateQuixbugs, parseRunTestsOutput, runTestsCommand, verdict } from '../../../src/bench/quixbugs/evaluator.js';
 import { fixActionFor, fixTrajectory, loadProgram, loadQuixbugsSources, sourceFor, taskText, toBenchTask, type QuixbugsProgram } from '../../../src/bench/quixbugs/loader.js';
-import { generatePytestModule } from '../../../src/bench/quixbugs/pytest.js';
-import { loadIndex, parseIndex, usesNode, validateCases, type QuixbugsRecord } from '../../../src/bench/quixbugs/tasks.js';
+import { CASE_TIMEOUT_ENV, DEFAULT_CASE_TIMEOUT_MS, generatePytestModule, MAX_CASE_TIMEOUTS_ENV } from '../../../src/bench/quixbugs/pytest.js';
+import { loadCases, loadIndex, parseIndex, usesNode, validateCases, type QuixbugsRecord } from '../../../src/bench/quixbugs/tasks.js';
 import { breakdownTable, renderComparison, suiteTitle } from '../../../src/bench/report.js';
 import { readTasksJsonl, runBenchWithSources } from '../../../src/bench/runner.js';
 import type { BenchRecord, BenchSetupTools, CommandRunner } from '../../../src/bench/types.js';
@@ -220,6 +220,100 @@ describe('quixbugs workspace setup (real fs, git and python)', () => {
     expect(generatePytestModule('knapsack', cases)).toContain('pytest.mark.skip(reason="slow case, skipped by QuixBugs too")');
     expect(generatePytestModule('sqrt', [])).toContain('ABS_TOLERANCE_FROM_LAST_ARG = True');
     expect(generatePytestModule('gcd', [])).toContain('ABS_TOLERANCE_FROM_LAST_ARG = False');
+  }, 60_000);
+});
+
+describe('generated module: per-case limit and stop rule from the environment (the synthesizer\'s lanes), RecursionError shallow', () => {
+  /** A workspace with a sleeping program and its generated module; the cases are the sleep lengths (seconds). */
+  async function sleeperWorkspace(sleeps: number[]): Promise<string> {
+    const t = await tempDir();
+    cleanups.push(t.cleanup);
+    await mkdir(join(t.dir, 'tests'), { recursive: true });
+    await writeFile(join(t.dir, 'sleeper.py'), 'import time\n\n\ndef sleeper(x):\n    time.sleep(x)\n    return x\n');
+    const cases = sleeps.map((x) => ({ input: [x], expected: x }));
+    await writeFile(join(t.dir, 'tests', 'sleeper.json'), JSON.stringify(cases));
+    await writeFile(join(t.dir, 'tests', 'test_sleeper.py'), generatePytestModule('sleeper', cases));
+    return t.dir;
+  }
+  it(`${CASE_TIMEOUT_ENV} sets the per-case alarm (default ${DEFAULT_CASE_TIMEOUT_MS} ms): a 0.4 s case fails at 100 ms and passes unset`, async () => {
+    const ws = await sleeperWorkspace([0.02, 0.4, 0.02]);
+    const started = Date.now();
+    const limited = py(ws, ['tests/test_sleeper.py'], { [CASE_TIMEOUT_ENV]: '100' });
+    const wall = Date.now() - started;
+    expect(limited.status).toBe(1);
+    expect(limited.out).toMatch(/PASS 0-\[0\.02\]/);
+    expect(limited.out).toMatch(/ERROR 1-\[0\.4\]: CaseTimeout: no result after 0\.1s/);
+    expect(limited.out).toMatch(/PASS 2-\[0\.02\]/);
+    expect(limited.out).toContain('3 case(s), 1 failing');
+    expect(wall).toBeLessThan(2000); // the 0.4 s sleep was interrupted at 0.1 s; the module did not wait 2 s either
+    // unset: the 2 s default, the 0.4 s case passes (the agent's own pytest and the evaluator see this behaviour)
+    const plain = py(ws, ['tests/test_sleeper.py']);
+    expect(plain.status).toBe(0);
+    expect(plain.out).toContain('3 case(s), 0 failing');
+    // an unreadable value falls back to the default
+    expect(py(ws, ['tests/test_sleeper.py'], { [CASE_TIMEOUT_ENV]: 'soon' }).status).toBe(0);
+  });
+  it(`${MAX_CASE_TIMEOUTS_ENV}=1 stops the run after the first alarm: the remaining cases are "not run" failures, never called`, async () => {
+    const ws = await sleeperWorkspace([0.4, 0.4, 0.02]);
+    const started = Date.now();
+    const r = py(ws, ['tests/test_sleeper.py'], { [CASE_TIMEOUT_ENV]: '100', [MAX_CASE_TIMEOUTS_ENV]: '1' });
+    const wall = Date.now() - started;
+    expect(r.status).toBe(1);
+    expect(r.out).toMatch(/ERROR 0-\[0\.4\]: CaseTimeout: no result after 0\.1s/);
+    expect(r.out).toMatch(/ERROR 1-\[0\.4\]: CaseNotRun: not run: 1 earlier case\(s\) timed out/);
+    expect(r.out).toMatch(/ERROR 2-\[0\.02\]: CaseNotRun: not run: 1 earlier case\(s\) timed out/);
+    expect(r.out).toContain('3 case(s), 3 failing');
+    expect(wall).toBeLessThan(1500); // one 100 ms alarm, not two, and no third call
+    // without the stop rule both sleeping cases time out and the third runs
+    const all = py(ws, ['tests/test_sleeper.py'], { [CASE_TIMEOUT_ENV]: '100' });
+    expect(all.out).toMatch(/ERROR 1-\[0\.4\]: CaseTimeout/);
+    expect(all.out).toMatch(/PASS 2-\[0\.02\]/);
+    if (SYSTEM_PYTEST) {
+      const p = py(ws, ['-m', 'pytest', '-q', '-p', 'no:cacheprovider', 'tests/test_sleeper.py'], { [CASE_TIMEOUT_ENV]: '100', [MAX_CASE_TIMEOUTS_ENV]: '1' });
+      expect(p.status).toBe(1);
+      expect(p.out).toMatch(/CaseTimeout: no result after 0\.1s/);
+      expect(p.out).toMatch(/CaseNotRun: not run: 1 earlier case\(s\) timed out/);
+      expect(p.out).toMatch(/3 failed/);
+    }
+  });
+  it('a RecursionError is reported by its message (re-raised shallow); the bitcount module is what the loader writes', async () => {
+    const t = await tempDir();
+    cleanups.push(t.cleanup);
+    await mkdir(join(t.dir, 'tests'), { recursive: true });
+    await writeFile(join(t.dir, 'deep.py'), 'def deep(n):\n    return deep(n)\n');
+    const cases = [{ input: [1], expected: 1 }];
+    await writeFile(join(t.dir, 'tests', 'deep.json'), JSON.stringify(cases));
+    await writeFile(join(t.dir, 'tests', 'test_deep.py'), generatePytestModule('deep', cases));
+    const r = py(t.dir, ['tests/test_deep.py']);
+    expect(r.status).toBe(1);
+    expect(r.out).toMatch(/ERROR 0-\[1\]: RecursionError: maximum recursion depth exceeded/);
+    const gen = generatePytestModule('bitcount', await loadCases(QB, 'bitcount'));
+    expect(gen).toContain(`_env_number("${CASE_TIMEOUT_ENV}", ${DEFAULT_CASE_TIMEOUT_MS})`);
+    expect(gen).toContain(`_env_number("${MAX_CASE_TIMEOUTS_ENV}", float("inf"))`);
+    expect(gen).toContain('raise RecursionError(str(exc)) from None');
+  });
+});
+
+describe('run_tests.py --timeout forms (additive; the evaluator passes none and grades at the 2 s default)', () => {
+  const runner = (args: string[]) => spawnSync('python3', [join(QB, 'run_tests.py'), 'bitcount', join(QB, 'programs', 'bitcount.py'), '--max-failures', '1', ...args], { cwd: QB, encoding: 'utf8', timeout: 60_000, env: { ...process.env, PYTHONDONTWRITEBYTECODE: '1' } });
+  it('accepts seconds, unit-suffixed values and --timeout-ms; the buggy bitcount hangs on every case at the given limit', () => {
+    for (const args of [['--timeout', '100ms'], ['--timeout', '0.1'], ['--timeout', '0.1s'], ['--timeout-ms', '100']]) {
+      const started = Date.now();
+      const r = runner(args);
+      const wall = Date.now() - started;
+      const rep = parseRunTestsOutput(r.stdout);
+      expect(r.status, args.join(' ')).toBe(1);
+      expect(rep && !('error' in rep) ? rep : null, args.join(' ')).toMatchObject({ passed: 0, errors: 9, timeouts: 9, total: 9 });
+      if (rep && !('error' in rep)) expect(rep.failures[0]?.actual).toBe('TIMEOUT after 0.1s');
+      expect(wall, args.join(' ')).toBeLessThan(5000); // nine 100 ms cases in parallel, not 18 s
+    }
+    // a bad or non-positive value is a usage error (exit 2), never a run
+    expect(runner(['--timeout', 'abc']).status).toBe(2);
+    const zero = runner(['--timeout', '0']);
+    expect(zero.status).toBe(2);
+    expect(parseRunTestsOutput(zero.stdout)).toEqual({ error: '--timeout must be positive, got 0.0' });
+    // grading: the evaluator's command carries no --timeout at all
+    expect(runTestsCommand(QB, 'bitcount', '/w/bitcount.py')).not.toContain('--timeout');
   }, 60_000);
 });
 
