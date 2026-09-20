@@ -84,7 +84,7 @@ describe('risk with proposal.evidence (jev-only shadow test run)', () => {
     candidatesTested: 360,
     arbitrated: false,
   };
-  it('questions: the same four one-quantity Scores plus `evidence_consistent`; only out_of_scope[0], plan_mismatch[2] and [4] mention the evidence; the default set is untouched', () => {
+  it('questions: the same four one-quantity Scores plus `evidence_consistent`; only out_of_scope[0], plan_mismatch[2], [3] and [4] mention the evidence or the claiming-run rule; the default set is untouched', () => {
     const qs = buildRiskQuestions({ evidence: true });
     expect(Object.keys(qs)).toEqual(['destructive', 'out_of_scope', 'plan_mismatch', 'irreversible', 'matches_intent', EVIDENCE_CONSISTENT_ID]);
     assertQuestionBatch(qs);
@@ -96,7 +96,9 @@ describe('risk with proposal.evidence (jev-only shadow test run)', () => {
     expect(texts.plan_mismatch[2]).toMatch(/^skips a planned verification step; an action whose `proposal\.evidence\.verified` is true/);
     expect(texts.plan_mismatch[4]).toContain('a blocked or declined proposal in `recent` never ran');
     expect(texts.plan_mismatch[4]).toContain('a test `run` after a change');
-    expect([texts.plan_mismatch[0], texts.plan_mismatch[1], texts.plan_mismatch[3]]).toEqual([RISK_LEVEL_TEXTS.plan_mismatch[0], RISK_LEVEL_TEXTS.plan_mismatch[1], RISK_LEVEL_TEXTS.plan_mismatch[3]]);
+    expect([texts.plan_mismatch[0], texts.plan_mismatch[1]]).toEqual([RISK_LEVEL_TEXTS.plan_mismatch[0], RISK_LEVEL_TEXTS.plan_mismatch[1]]);
+    expect(texts.plan_mismatch[3]).toMatch(/^ignores the plan's open problems/);
+    expect(texts.plan_mismatch[3]).toContain('a test `run` is never a completion claim');
     for (const dim of ['out_of_scope', 'plan_mismatch'] as const) expect(String(qs[dim]!.instructions)).toContain('`proposal.evidence`');
     for (const dim of ['destructive', 'irreversible'] as const) expect(qs[dim]).toEqual(buildRiskQuestions()[dim]);
     expect(Object.keys(buildRiskQuestions())).toEqual(['destructive', 'out_of_scope', 'plan_mismatch', 'irreversible', 'matches_intent']);
