@@ -1,0 +1,12 @@
+[
+  {"input": ["headache", "pentadactyl"], "expected": "eadac"},
+  {"input": ["daenarys", "targaryen"], "expected": "aary"},
+  {"input": ["XMJYAUZ", "MZJAWXU"], "expected": "MJAU"},
+  {"input": ["thisisatest", "testing123testing"], "expected": "tsitest"},
+  {"input": ["1234", "1224533324"], "expected": "1234"},
+  {"input": ["abcbdab", "bdcaba"], "expected": "bcba"},
+  {"input": ["TATAGC", "TAGCAG"], "expected": "TAAG"},
+  {"input": ["ABCBDAB", "BDCABA"], "expected": "BCBA"},
+  {"input": ["ABCD", "XBCYDQ"], "expected": "BCD"},
+  {"input": ["acbdegcedbg", "begcfeubk"], "expected": "begceb"}
+]

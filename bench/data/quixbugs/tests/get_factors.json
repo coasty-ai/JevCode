@@ -1,0 +1,13 @@
+[
+  {"input": [1], "expected": []},
+  {"input": [100], "expected": [2, 2, 5, 5]},
+  {"input": [101], "expected": [101]},
+  {"input": [104], "expected": [2, 2, 2, 13]},
+  {"input": [2], "expected": [2]},
+  {"input": [3], "expected": [3]},
+  {"input": [17], "expected": [17]},
+  {"input": [63], "expected": [3, 3, 7]},
+  {"input": [74], "expected": [2, 37]},
+  {"input": [73], "expected": [73]},
+  {"input": [9837], "expected": [3, 3, 1093]}
+]

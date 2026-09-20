@@ -1,0 +1,12 @@
+[
+  {"input": [8227, 18], "expected": "1771"},
+  {"input": [73, 8], "expected": "111"},
+  {"input": [16, 19], "expected": "G"},
+  {"input": [31, 16], "expected": "1F"},
+  {"input": [41, 2], "expected": "101001"},
+  {"input": [44, 5], "expected": "134"},
+  {"input": [27, 23], "expected": "14"},
+  {"input": [56, 23], "expected": "2A"},
+  {"input": [8237, 24], "expected": "E75"},
+  {"input": [8237, 34], "expected": "749"}
+]
