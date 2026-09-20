@@ -1,0 +1,131 @@
+#!/usr/bin/expect -f
+# Generic pseudo-TTY driver for JevCode TUI tests and demos (macOS expect 5.45).
+#
+#   drive.exp <steps-file> <capture-log> <timing-jsonl> <timeout-s> -- <command> [args...]
+#
+# Environment: PTY_ROWS / PTY_COLS set the initial geometry (default 24x80); PTY_TERM sets
+# TERM for the child (default xterm-256color).
+#
+# <steps-file>: one step per line (blank lines and lines starting with # are ignored):
+#   expect <tcl-regex>      wait until the child's output matches (timeout -> exit 124)
+#   send   <text>           write to the pty; backslash escapes are interpreted (\r \x03 \x1b)
+#   sleep  <seconds>        pause (fractions allowed)
+#   resize <rows> <cols>    change the pty size; the kernel delivers SIGWINCH to the child
+#   mark   <label>          record a timestamp only
+#   eof                     wait for the child to exit
+# Every completed step appends {"t":<ms since spawn>,"step":<n>,"op":"...","arg":"..."} to
+# <timing-jsonl>; "expect" steps record the time of the match. The child's exit code is the
+# driver's exit code (128+n when the child died from signal n); 124 = an expect step timed
+# out (Ctrl-C is sent twice first). Note: the TUI's header row also contains "step 0/", so a
+# step that must wait for the dynamic frame should expect the cursor-hide sequence \x1b\[\?25l
+# or the status row pattern "step 0/.*starting" preceded by a newline.
+set stepsFile [lindex $argv 0]
+set capture [lindex $argv 1]
+set timing [lindex $argv 2]
+set timeout_s [lindex $argv 3]
+set cmd [lrange $argv 5 end]
+
+set rows 24
+set cols 80
+if {[info exists env(PTY_ROWS)]} { set rows $env(PTY_ROWS) }
+if {[info exists env(PTY_COLS)]} { set cols $env(PTY_COLS) }
+if {![info exists env(PTY_TERM)]} { set env(TERM) "xterm-256color" } else { set env(TERM) $env(PTY_TERM) }
+
+log_user 0
+log_file -a $capture
+set timeout $timeout_s
+set stty_init "rows $rows cols $cols"
+match_max 1000000
+
+set fh [open $stepsFile r]
+set steps [split [read $fh] "\n"]
+close $fh
+
+set t0 [clock milliseconds]
+spawn -noecho {*}$cmd
+set slave $spawn_out(slave,name)
+set tf [open $timing a]
+
+proc jsonEscape {s} {
+  set s [string map {\\ \\\\ \" \\\" \n \\n \r \\r \t \\t} $s]
+  return $s
+}
+proc record {tf t0 n op arg} {
+  set t [expr {[clock milliseconds] - $t0}]
+  puts $tf "{\"t\":$t,\"step\":$n,\"op\":\"$op\",\"arg\":\"[jsonEscape $arg]\"}"
+  flush $tf
+}
+
+set n 0
+set code 0
+set timedOut 0
+foreach raw $steps {
+  set line [string trim $raw]
+  if {$line eq "" || [string index $line 0] eq "#"} { continue }
+  incr n
+  set op [lindex [split $line] 0]
+  set arg [string trim [string range $line [string length $op] end]]
+  switch -- $op {
+    expect {
+      expect {
+        -re $arg { record $tf $t0 $n expect $arg }
+        timeout {
+          record $tf $t0 $n timeout $arg
+          set timedOut 1
+          send -- "\003"
+          sleep 0.5
+          send -- "\003"
+          break
+        }
+        eof { record $tf $t0 $n eof-before-match $arg; break }
+      }
+    }
+    send {
+      set text [subst -nocommands -novariables $arg]
+      send -- $text
+      record $tf $t0 $n send $arg
+    }
+    sleep {
+      sleep $arg
+      record $tf $t0 $n sleep $arg
+    }
+    resize {
+      set r [lindex $arg 0]
+      set c [lindex $arg 1]
+      stty rows $r cols $c < $slave
+      record $tf $t0 $n resize $arg
+    }
+    mark {
+      record $tf $t0 $n mark $arg
+    }
+    eof {
+      expect {
+        eof { record $tf $t0 $n eof "" }
+        timeout { record $tf $t0 $n timeout "eof"; set timedOut 1; send -- "\003"; sleep 0.5; send -- "\003" }
+      }
+    }
+    default {
+      puts stderr "drive.exp: unknown step '$op' on line: $line"
+      exit 2
+    }
+  }
+}
+if {$timedOut} { expect -timeout 10 eof }
+catch wait result
+# wait returns {pid spawn_id 0 status} on a normal exit, {pid spawn_id -1 errno} on an OS error
+# and {pid spawn_id 0 0 CHILDKILLED SIGNAME description} when the child died from a signal; in
+# that last case the status element is 0, so the signal is mapped to the shell convention 128+n.
+set code [lindex $result 3]
+if {[lindex $result 2] == -1} {
+  set code 1
+  record $tf $t0 0 wait-error [lindex $result 3]
+} elseif {[llength $result] > 4 && [lindex $result 4] eq "CHILDKILLED"} {
+  set signame [lindex $result 5]
+  array set signum {SIGHUP 1 SIGINT 2 SIGQUIT 3 SIGABRT 6 SIGKILL 9 SIGSEGV 11 SIGPIPE 13 SIGALRM 14 SIGTERM 15}
+  set code [expr {[info exists signum($signame)] ? 128 + $signum($signame) : 128}]
+  record $tf $t0 0 signal $signame
+}
+record $tf $t0 0 exit $code
+close $tf
+if {$timedOut} { exit 124 }
+exit $code
