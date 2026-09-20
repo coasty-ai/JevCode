@@ -411,3 +411,44 @@ gold-identical 27, equivalent 5, overfit 2, unverified 2, miss 4, i.e. 32/40 ver
 The wording "hidden test/evaluator" in `experiments/results/jev-only-rungs-1-2.md` (three lines)
 now reads "the evaluator's reference cases (the same cases the workspace exposes; there is no
 hidden suite)".
+
+
+## 2026-09-20 Interactive TUI: minimal-robust spine with judge-required grafts
+
+Four candidate designs were written and judged on three lenses (UX, engineering feasibility, safety). `minimal-robust` won two lenses and the aggregate (23 points) and becomes the spine of `docs/TUI-DESIGN.md`: one modal slot above the composer, one `computeLayout` whose allocation order is the reverse of the fixed yield order, one pure key resolver over states S0–S7, and `lines()` twins for every visual. Grafts taken because a judge required them: jev-native's `DecisionRow` (`consumedBy`, `near`), its `/why` text, its review-deferral mechanics and `SpendMeter.setCap`; sessions-long-horizon's `run.lock`, seed-source rule, `v:1` envelopes, seed-carried `undoLog`, `post/<step>.json` with `cleanAtStart`, the ten-run walkthrough and the blocking-pane Ctrl-C rule; composer-first's additive contract shape (`confirmDetailed?`, optional event fields), its interrupt reducer and its rule that a slash typo never becomes a paid run. Affects: everything under `src/tui/**`, `src/cli/**`, `src/session/**`, and the additive contract of §15.
+
+## 2026-09-20 A submitted line is money: slash typos never start a run
+
+Three of four designs followed A34 literally and submitted an unknown `/foo` as a prompt. In Claude Code a submission is a chat message; in JevCode it is `startRun()` with a fresh $2.00 cap or a steer into a live run. Enter on a `/` token that is not an exact name or alias keeps the draft and appends `[ui] error: unknown command /foo; type / to list commands`; there is no prefix execution. Affects `src/tui/composer/submit.ts`, `src/tui/commands/dispatch.ts`, the palette, and §22's A34 row.
+
+## 2026-09-20 The review box owns its keys; the composer is inactive underneath
+
+jev-native kept the composer editable under a visible review box, so the `y` of a typed "yes, also update docs" would have approved the action (A41's typed-ahead accident moved from before the box to during it). The composer collapses to one inactive row while a review is visible; printable keys and pastes are ignored with a toast; the review key context is armed only on the frame after the box is drawn, after ≥ 1 s of composer idleness with Ink's input queue drained. Affects `src/tui/keys/resolve.ts`, `src/tui/useEngine.tsx`, `src/tui/Overlay.tsx`.
+
+## 2026-09-20 Contract 1.1 is additive by construction, with one named exception
+
+`Confirmer.confirm()` keeps `Promise<boolean>` and gains an optional `confirmDetailed?`; `run:ready`, `run:end`, `confirm:resolved`, `ConfirmRequest`, `SpendSnapshot`, `PromptInput`, `GeneratorConfig` (`priced?`) and `RunMeta`/`CheckpointState`/`StepRecord`/`StepTiming` gain only optional fields, so `run-events.json`, the bench fakes, the provider test helpers and `store.ts`'s shape guards compile and load unchanged and `CheckpointEnvelope.version` stays 1; every prescribed assignment is a conditional spread because the repo compiles with `exactOptionalPropertyTypes`. The exception is `Engine`, which gains five required methods (`steer`, `unsteer`, `pause`, `retryNow`, `annotate`) and a widened `abort(reason, opts?)` because the repo alone implements it; the two fake engines are updated in the same W0 PR. `retryNow` and `annotate` are the two methods beyond F13's named trio: F12 requires `[r] retry now` and the renderer needs a handle to the engine-owned waker; F13 requires the three-way line identity and only the engine writes `transcript.log`. Affects `src/core/types.ts`, `test/unit/bench/helpers.ts`, `test/fixtures/tui/fixtures.ts`.
+
+## 2026-09-20 Session-cap raises mutate the root meter; `/resume` folds exclude the resumed run
+
+sessions-long-horizon proposed recreating the root `SpendMeter` on `/budget session-spend-cap`, which orphans every live child (`meter.ts:88–89` binds the parent by reference). The cap becomes a `let` behind `SpendMeter.setCap?()`; children keep forwarding to the same object; `SpendSnapshot.parent?` lets the engine emit session-scope `budget:warn` mid-run without knowing the parent. All four designs double-counted the resumed run's spend when seeding the session meter on `/resume`; the fold now excludes the resumed `runId` before `state.json.spend` is added. Affects `src/spend/meter.ts`, `src/cli/session.ts`, `src/loop/engine.ts`.
+
+## 2026-09-20 Unsent drafts never reach disk with a secret in them
+
+Every design wrote a Ctrl-C-cleared draft to `~/.jevcode/history.jsonl` through `redact` alone, which knows only configured secrets and the six redacting families; a warn-only AWS key or PEM block in an abandoned draft would have landed on disk with no `y` pressed. The clear→history path, `ui.json` drafts and the `d` decline note now run `detectSecrets` and replace every hit span (warn-only families included) with `[REDACTED:draft]`; the sent path is symmetric — `y` at the gate `addSecret`s every hit span, warn-only families included, because the exact span the human typed has no false-positive cost. The external-editor draft moves from `<runDir>/tmp/` (the sandboxed command's `TMPDIR`, readable and writable by a generator-proposed `run`) to `<runDir>/drafts/`, and Ctrl+G is refused while the draft has a hit; the composer itself renders detected spans as `•` cells so no frame ever carries the bytes. Affects `src/tui/composer/history.ts`, `src/checkpoint/store.ts` (`writeUi`), `src/tui/Review.tsx`, `src/tui/composer/Composer.tsx`, `src/cli/session.ts`.
+
+## 2026-09-20 `/undo` rule 3 is gated on the recorded HEAD oid
+
+`git restore --source=HEAD --worktree` assumes HEAD is the commit the step ran under. `post/<step>.json` records `headOid` (from the run-start probe and the `HEAD` watcher); when the current HEAD differs, the file is skipped with `not recoverable — HEAD moved since step N` instead of silently restoring another commit's content or reporting a no-op as restored. The finished run's `state.json` is never rewritten by `/undo`; the `undoLog` travels in the next run's seed. Affects `src/checkpoint/images.ts`, `src/undo/plan.ts`, `src/session/seed.ts`.
+
+## 2026-09-20 Exit paths during a live run go through `engine.abort` first
+
+`/exit`, Ctrl-D ×2 and a wizard Ctrl-C during `/login` must not `process.exit` past a live engine: the `'exit'` writer that makes `state.json` final is installed only inside `abort()` (`engine.ts:487–510`), and a stderr write into a mounted Ink frame corrupts it. `/exit` and Ctrl-D ×2 open a one-row `a run is live: [y] abort and exit  [n] stay` confirm; the wizard's Ctrl-C exits 2 only when no run exists; a blocking pane's Ctrl-C is that pane's `[q]` so one failure has one exit code. Affects `src/tui/keys/interrupts.ts`, `src/cli/session.ts`, `src/tui/onboarding/reducer.ts`.
+
+## 2026-09-20 Renderer-originated lines ride the engine's transcript while a run is live
+
+`/why`, `/plan`, `/diff`, `/cost`, help, undo output, the 12,000-char notice and `/budget` changes are produced by the renderer, while `transcript.log` is written only by the engine's `recordTranscript`. F13 fixes the line-for-line identity of `transcript.log`, `--plain` and the TUI, so instead of excluding these lines they go through `SessionHost.note()` → `Engine.annotate(text, { detail, label })` → `notice { kind: 'ui', label }` → `emit()` → all three writers with the engine's `transcriptSeq`; `formatTranscriptItem` prints the item's `label` (`[ui]`, `[setup]`, `[config]`, `[sandbox]`) instead of `stepLabel()`. Only lines produced while no engine is live (session start, between runs, the session epilogue) are renderer-local, because no `transcript.log` exists to hold them; they appear in `--plain`, the TUI and the `--json` stream (`ui { text, label }`). No `user` event is added: the human turn is the `run:start` task line and the engine's `steer:queued` lines. Affects `src/core/types.ts` (`Engine.annotate`), `src/loop/engine.ts`, `src/tui/plain.ts`, `src/tui/Transcript.tsx`, `src/cli/session.ts`, `docs/DESIGN.md` §10.
+
+## 2026-09-20 `--no-input` means no interactive renderer
+
+C46 ("don't prompt or do anything interactive") is read strictly: `--no-input` on a TTY selects the plain renderer without a composer, in addition to suppressing the wizard, trust gate, follow-up confirm (silent clamp), secret gate (cancel) and review prompts (decline); `jevcode chat --no-input` is a usage error. Affects `src/cli/main.tsx`, `src/cli/args.ts`.
