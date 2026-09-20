@@ -631,6 +631,8 @@ export interface CheckpointState {
   consecutiveStageFailures: number;
   /** Σ decisions.length over committed steps (RunResult.jevQuestions); absent in older checkpoints */
   jevQuestions?: number;
+  /** opaque jev-only synthesizer state (docs/JEV-ONLY-DESIGN.md §5.2); absent for other modes */
+  synthState?: Json;
   resumes: number;
   updatedAt: string;
 }
@@ -756,6 +758,8 @@ export interface EngineOptions {
 
 export interface SynthesisContext {
   runId: string;
+  /** absolute path of the run directory (shadow lanes, traces live under <runDir>/synth/) */
+  runDir: string;
   step: number;
   task: string;
   plan: Plan;
@@ -777,6 +781,10 @@ export interface SynthesisContext {
   createdThisRun: ReadonlySet<string>;
   /** replan directive text when the loop detector tripped */
   directive: string | null;
+  /** opaque synthesizer state restored from the checkpoint (CheckpointState.synthState), null on a fresh run */
+  synthState: Json | null;
+  /** persist opaque synthesizer state with the next checkpoint (kept small: <= 64 KB after redaction) */
+  setSynthState: (state: Json | null) => void;
 }
 
 export interface Synthesizer {

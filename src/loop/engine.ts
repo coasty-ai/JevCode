@@ -171,7 +171,8 @@ const RUN_ID_RE = /^\d{8}-\d{6}-[a-z2-7]{8}$/;
 const RUN_DIR_ATTEMPTS = 5;
 /** Bound on the final checkpoint phase in stop()/shutdown (§11). */
 export const SHUTDOWN_CHECKPOINT_BOUND_MS = 5_000;
-export const CONSECUTIVE_STAGE_FAILURE_LIMIT = 3;
+export const SYNTH_STATE_MAX_BYTES = 64 * 1024;
+const CONSECUTIVE_STAGE_FAILURE_LIMIT = 3;
 
 // ---------------------------------------------------------------------------------------
 // Stage context (what stages/*.ts see)
@@ -337,6 +338,8 @@ class EngineImpl implements Engine {
   private stateError: { stage: StageName; code: string } | undefined;
   private interrupted: CheckpointState['interrupted'] = null;
   private consecutiveStageFailures = 0;
+  /** opaque jev-only synthesizer state, persisted with every checkpoint (§JEV-ONLY-DESIGN 5.2) */
+  private synthState: Json | null = null;
   /** Σ decisions.length over committed steps (RunResult.jevQuestions); persisted so it survives --resume */
   private jevQuestions = 0;
   private resumes = 0;
@@ -415,6 +418,7 @@ class EngineImpl implements Engine {
       this.jevModelDrift = s.jevModelDrift;
       this.consecutiveStageFailures = s.consecutiveStageFailures;
       this.jevQuestions = s.jevQuestions ?? 0;
+      this.synthState = s.synthState ?? null;
       this.resumes = s.resumes;
       this.jevCalls = s.jevLatencyMs.length;
       this.interrupted = s.interrupted;
@@ -656,6 +660,7 @@ class EngineImpl implements Engine {
       interrupted: this.interrupted,
       consecutiveStageFailures: this.consecutiveStageFailures,
       jevQuestions: this.jevQuestions,
+      ...(this.synthState !== null ? { synthState: this.synthState } : {}),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -854,6 +859,18 @@ class EngineImpl implements Engine {
       ask: (stage, state, questions) => self.ask(draft, stage, state, questions),
       createdThisRun: this.createdThisRun,
       directive: draft.directive?.text ?? null,
+      runDir: this.store.dir,
+      synthState: this.synthState,
+      setSynthState: (state) => {
+        // Bounded and redacted before it can reach a checkpoint (docs/JEV-ONLY-DESIGN.md §5.2).
+        if (state === null) {
+          self.synthState = null;
+          return;
+        }
+        const text = JSON.stringify(redactDeep(state, self.redact));
+        self.synthState = text.length <= SYNTH_STATE_MAX_BYTES ? (JSON.parse(text) as Json) : null;
+        if (text.length > SYNTH_STATE_MAX_BYTES) self.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `synth state dropped: ${text.length} bytes exceeds ${SYNTH_STATE_MAX_BYTES}` });
+      },
     };
   }
 
