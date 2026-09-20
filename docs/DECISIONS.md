@@ -31,9 +31,12 @@ Desktop needs an interactive installer). Python is the system 3.9.6 with pip 21 
 - SWE-bench Verified: the official harness (Docker images per instance) cannot run here.
   The bench records predictions in the official `predictions.jsonl` shape so they can be
   evaluated with `swebench` / `sb-cli` elsewhere, and additionally runs a local evaluator
-  that clones the repo at `base_commit`, builds a `venv` with the instance's install
-  command, applies `test_patch`, and runs `FAIL_TO_PASS` plus `PASS_TO_PASS`. Each task
-  record states which evaluator produced `pass` (`local-venv`, `docker`, or `none`).
+  that builds a `venv` at `environment_setup_commit`, checks out `base_commit`, runs the
+  instance's install command, applies `model_patch` and `test_patch`, runs `test_cmd` on
+  the test files named in `test_patch`, and grades with ported log parsers under the
+  official FULL rule (`FAIL_TO_PASS` in PASSED/XFAIL, `PASS_TO_PASS` also SKIPPED; see
+  `docs/DESIGN.md` §13). Each task record states which evaluator produced `pass`
+  (`local-venv`, `invalid`, `docker`, or `none`).
 - The 30-task subset is chosen from repos that install under Python 3.9 without native
   builds, with mixed `difficulty` labels and several repos. This is a selection
   constraint, not an agent heuristic; the agent loop has no benchmark-specific code.
@@ -59,9 +62,13 @@ Pinned from the npm registry on 2026-09-19 (see `docs/RESEARCH.md`): `ink 7.1.1`
 `engine-strict=true`; Node 24 is Active LTS but not installed here, and Ink 7 needs
 only `>=22`.
 
-The CLI is bundled by esbuild into one ESM file with Ink and React inside. Two fixes
-were needed: alias Ink's optional `react-devtools-core` import to an empty stub, and
-define `process.env.DEV` as `"false"` so the reconciler's devtools branch is dead code.
+The CLI is bundled by esbuild into one ESM file with Ink and React inside. Three fixes
+are needed: alias Ink's optional `react-devtools-core` import to an empty stub, define
+`process.env.DEV` as `"false"` so the reconciler's devtools branch is dead code, and a
+`createRequire` banner supplying `require` for CJS dependencies in Ink's tree (`signal-exit`
+calls `require("assert")` at module init; the two-fix bundle fails at load on it). The
+design review of 2026-09-19 found the third fix missing here; `docs/DESIGN.md` §12 has the
+exact build command.
 Smoke measurement of an Ink hello-world bundled this way, spawned under `script -q
 /dev/null` (a pseudo-TTY), 5 cold runs: first frame at 69, 72, 70, 70, 70 ms after
 process spawn; with `NODE_COMPILE_CACHE` 64–70 ms; bare `node -e` is 17 ms. Unbundled
@@ -116,8 +123,9 @@ Adopted (see `docs/research/05-cli-architectures.md` §5): `<Static>` transcript
 non-static live region; one esbuild ESM bundle with a dependency-free launcher that
 enables the compile cache and renders before any network call; a plain non-interactive
 renderer chosen by `stdout.isTTY`; telemetry-free startup with no hardware or network
-probes; `sandbox-exec` with a `(deny default)` SBPL profile on macOS behind explicit
-modes; a cold-start perf baseline in `npm run perf`. Also adopted from harness research
+probes; `sandbox-exec` with an SBPL profile on macOS behind explicit modes (the profile
+is `(allow default)` plus write denials and secret-read denials, not `(deny default)`, which
+breaks toolchains; `docs/DESIGN.md` §8); a cold-start perf baseline in `npm run perf`. Also adopted from harness research
 (`04` §3): bounded format-error re-queries, cost cap alongside step cap, hashed tool-call
 loop detection with a judge (Jev), confirm-before-finish as a decision node, and
 execution-based test evidence feeding the judge. Rejected: a Rust rewrite, Bun, Node
