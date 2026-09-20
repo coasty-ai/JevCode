@@ -1771,3 +1771,351 @@ env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/c
 # the table and the patch verdicts (stdlib python: git-applies model_patch.diff to the buggy program, compares with the reference, differential runs)
 python3 .scratch/verdict.py bench/results/jev-only-quixbugs-5-wrap-b bench/results/jev-only-ladder-account-1 bench/results/jev-only-quixbugs-5-regress
 ```
+
+## 16. 2026-09-20 (later): statement sites, depth-2 wraps, import-carrying substitutions, composite bound — capabilities 4, 5, 6 of `swebench-reach-oracle-9.md` and its performance hazard
+
+Follow-up to `experiments/results/swebench-reach-oracle-9.md` ("Missing capabilities" items 4–6 and the caveat on the
+composite units). **No Jev call: $0.00.** Every number is code + `python3` (the real sources enumerated at the gold
+sites of the base-commit worktrees under `/tmp/jevonly/repos`, never written to; the FAIL_TO_PASS tests run in private
+worktrees under `/tmp/jevonly/reach/<id>-cap456` with the bench venvs). Nothing is committed.
+
+### 16.1 What changed (Jev-only: code proposes, Jev chooses among ≤ 255, tests verify)
+
+1. **Statement-level replace sites** (capability 4, django-15315). `Site.endLine?` (`src/synth/types.ts:36`, additive)
+   marks a replace site whose text replaces the physical span `line..endLine`; `currentLine` is the statement joined onto
+   one line. `src/synth/localize/sites.ts:288 joinedStatementText` joins a multi-line statement from its code tokens (source
+   spacing kept inside a line, one space across a break, none after an open bracket or before a close bracket/comma, the
+   trailing comma before the closing bracket dropped; comments and backslash continuations vanish; a token spanning lines —
+   a triple-quoted string — yields no site); `:316 statementSiteAt` builds the site (never on a `def`/`class` header or a
+   docstring); `:339 isStatementSite`. `:424 buildSites` / `:436 pushReplace`: at the statement's **first** physical line the
+   statement site stands **in place of** the physical-line site (`search/sites.ts siteKey` is `path:line:kind`, so two sites
+   at one line would be one there and the physical one would win `addReplace`); at a later line of the statement the
+   physical site stays and the statement site is added once. `src/synth/verify/apply.ts:58 siteSpanEnd`, `:79 spanDeletes`,
+   `:117`: the first line is replaced, the continuation lines deleted (before-candidate numbering, one bottom-up pass with the
+   extra edits), the site is stale when the span's code tokens no longer read as the joined statement (`:66 codeTokenKey`,
+   trailing commas normalised), and an extra edit inside the span is refused (`VerifyError`). The sieve sees a normal
+   `Candidate` (`site.kind = 'replace'`, text + `extraEdits`); `canonicalText`/`siteKey` untouched. Templates see the joined
+   statement: `templates/index.ts:77/:97 wellFormed` balances a replacement against `site.currentLine` (not the physical
+   first line, which is unbalanced), `templates/common.ts:544 endsHere` / `:500 dedentLevels` / `:388 nearby` read the span,
+   so both `_before` and `_after` forms exist there. Composite: `search/composite.ts:196 derivedSite` replaces the span (the
+   derived site is a one-line site), pairs carry no extra edits at a span site (`:279`), signature and donor-body units
+   return `[]` there (`:555`, `:720`; their extra edits address physical lines and the physical site already offers them).
+   **Mutation operator `collapse_collection_to_element`** (`src/synth/mutate/operators.ts:874`, table `:33`, prior 0.5 `:71`):
+   a bracketed tuple/list/set literal of 2–6 elements (`:75 MAX_COLLAPSE_ELEMENTS`) or a bare tuple value collapses to each
+   single element (`hash((a, b))` → `hash(a)`, `hash(b)`; `[a, b]` → `[a]`, `[b]`; `return a, b` → `return a`); never a call
+   or subscript, a header, a comprehension, a dict literal or a literal holding a declared name. `mutate/index.ts:174
+   operatorsFor`: enumerated at statement-level sites and in WIDENED only, so the measured SEEDS sets at physical lines are
+   unchanged (40/40 QuixBugs below).
+2. **Stdlib-sibling callee substitution carrying its import** (capability 5, sympy-11618). New file
+   `src/synth/templates/stdlib.ts` (`:35 STDLIB_SIBLINGS`, `:71 stdlibSiblingDrafts`), registered on the `attribute` family
+   with one line (`templates/index.ts:48`; ops `callee_stdlib_subst`, `callee_stdlib_subst_kw`). Table, small and generic:
+   `zip` → `zip_longest` (+ `fillvalue=0` / `fillvalue=None` drafts), `product`; `map` → `starmap`; `sum` → `fsum`, `prod`;
+   `dict` → `OrderedDict`, `Counter`, `defaultdict(list|int|set)` (arity 0); `list` → `deque`; `round` → `floor`, `ceil`,
+   `trunc` (arity 1). `sorted` → `heapq.nsmallest` is left out on purpose (needs an `n`: not a drop-in). A candidate is one
+   site edit plus the import as an `extraEdits` insert at `importInsertLine` (`importLinesFor`'s first choice: the existing
+   representation of two-hunk candidates, `import_insert_top` and the composite units use it; no new `Candidate` field was
+   needed); a sibling already bound at the site carries no import; a rebound builtin is left alone.
+3. **Depth-2 wraps, WIDENED only** (capability 6, sympy-19954). `EnumerateOptions.phase?` (`src/synth/types.ts:117`,
+   additive hint; absent = SEEDS). New file `src/synth/templates/wrap2.ts` (`:21 DEPTH2_WRAPS` = list, reversed, sorted,
+   enumerate, set, tuple, str, int; `:23 DEPTH2_WRAP_LIMIT` 40; `:31 orderedPairs`; `:70 depthTwoWrapDrafts`), registered on
+   the `wrap` family with one line (`templates/index.ts:45`; ops `wrap2_<outer>_<inner>`, plus depth-1 `wrap_for_<w>` on a
+   `for` iterable, a shape wrap.ts never covered). Shapes: the iterable of a `for` header, an assignment's right-hand side,
+   a `return` expression; ≤ 40 ordered pairs per site, plausibility order (`reversed`/`enumerate` over a materialising
+   inner first), an inner already present is never repeated. Priors sit at the wrap family's top (0.55 → 0.52 … 0.20): a
+   WIDENED site has already run its SEEDS set, which the queue's `tried` check drops again, so the phase's new lines must
+   land under the 254 cap to be run at all (at `perm_groups.py:2198` the 254th SEEDS candidate has prior 0.42).
+4. **Composite performance hazard** (`search/composite.ts`). `:465 callIndexOf`: a per-file index callee name → one-line
+   statements calling it, built once per `SourceFile` object (`WeakMap`, so one corpus is indexed once for every site and
+   draft); `:507 scanCallSites` runs `scopeAt` only on lines that call the def and stops at a budget (`:498 scanBudget`:
+   `:88 UNIT_DEADLINE_MS` 3,000 ms wall + `:90 CALL_SITE_STATEMENT_CAP` 5,000 call-site statements per call); `:555
+   enumerateSignatureUnits` drops a draft whose scan was cut (`:578`, `:602`: a half-threaded unit breaks the callers it
+   missed) and stops enumerating at the deadline; `:720 enumerateDonorBodyUnits` stops at the same deadline (same-file
+   donors come first, so a cut keeps the likeliest windows). `callSiteEdits` (`:533`) is the unbounded form for tests.
+   `CompositeSourceOptions.unitDeadlineMs` overrides the default.
+
+### 16.2 Measured: the three gold sites (`experiments/reach/capabilities-4-5-6.mts`, engine corpus = first 400 non-test files + the gold file, ENUMERATE_CAP 254, sources mutation + templates + donors + composite)
+
+| instance | capability | before: site / SEEDS candidates (m + t + d + c) | target before | after: site / phase / candidates | target after (source, index, op) | F2P (private worktree, bench venv) |
+| --- | --- | --- | --- | --- | --- | --- |
+| django__django-15315 | 4 statement-level site + `collapse_collection_to_element` | `__init__.py:545` (physical line): 21 + 92 + 254 + 64 = 431 | absent | `__init__.py:545-549` (statement-level site, SEEDS): 254 + 254 + 254 + 100 = 862 | mutation **#41** of 254 (`collapse_collection_to_element`): `return hash(self.creation_counter)`, the gold line | **PASS** `test_hash_immutability` (2.4 s) |
+| sympy__sympy-11618 | 5 stdlib sibling + import (at the statement-level site) | `point.py:269` (physical line): 137 + 97 + 254 + 148 = 636 | absent | `point.py:269-270` (statement-level site, SEEDS): 254 + 202 + 254 + 100 = 810 | template **#58** of 202 (`callee_stdlib_subst_kw`): `… zip_longest(self.args, p.args if isinstance(p, Point) else p, fillvalue=0) …` + insert@26 `from itertools import zip_longest` | **PASS** `test_issue_11617` (8.2 s) |
+| sympy__sympy-19954 | 6 depth-2 wraps (WIDENED) | `perm_groups.py:2198`, SEEDS: 81 + 254 + 254 + 100 = 689 | absent | same line, WIDENED: 81 + 254 + 254 + 100 = 689 | template **#170** of 254 (`wrap2_reversed_list`): `for i, r in reversed(list(enumerate(rep_blocks))):` | **PASS** `test_sylow_subgroup` (12.2 s) |
+
+Reading: the study's "3 of 9 reached, one degenerate" becomes 5 of 9 non-degenerate at the gold site (requests-2931,
+sympy-12096, django-15315 by the gold line itself, sympy-11618 and sympy-19954 by their test-equivalent one-liners), all
+inside the 254-per-source cap; 15315 and 11618 in SEEDS at the new statement-level site, 19954 in WIDENED. Uncapped, the
+19954 candidate was index 560 of 844 with the first prior placement (0.275); at the wrap family's top it is 170 of 254.
+The physical-line sites are unchanged (15315: 21/92 as in the study; the composite count differs from the study's 16
+only because the signature and donor units were disabled there). Per-source wall at the statement sites: mutation 8–25 ms,
+templates 33–124 ms, donors 0.35–2.3 s, composite 1.3–2.8 s (log: `experiments/reach/out/log-capabilities-4-5-6.txt`;
+JSON: `out/capabilities-4-5-6.json`).
+
+### 16.3 Measured: the 40 QuixBugs gold sites (`experiments/reach/quixbugs-phase-counts.mts`, mutation + templates + composite, cap 254, single-file corpus)
+
+`out/quixbugs-phase-counts.compare.md` (before = this code before the change, after = now; per program, SEEDS vs WIDENED):
+
+- **SEEDS total 13,053 → 13,053, 0 of 40 sites changed** (the collapse operator is gated to statement sites/WIDENED, the
+  depth-2 wraps to WIDENED; the stdlib production runs in SEEDS but no QuixBugs gold line calls a callee of its table).
+- **WIDENED total 13,053 → 13,707 (+5.0 %), max per site +19.3 % (`bitcount`)**; the next largest `max_sublist_sum`
+  +14.5 %, `pascal` +13.9 %, `shortest_paths` +13.4 %; ≤ 25 % everywhere. Gold in SEEDS 40/40 → 40/40, in WIDENED 40/40.
+
+### 16.4 Measured: the composite units at `sympy/core/function.py:510` (`experiments/reach/composite-timing.mts`, sympy-12096 base checkout, 400-file corpus, under a 300 s external cap)
+
+| units | before | after |
+| --- | --- | --- |
+| signature units | **did not return within 300 s (killed)**; the study: > 10 min, then 27 min | **0 units in 1,223 ms** (corpus load 2.3 s aside) |
+| donor-body units | 28.7 s (study, 48 units) | **48 units in 3,045 ms** (the 3 s deadline; same-file windows first) |
+
+Logs: `out/log-composite-timing-before.txt`, `out/log-composite-timing-after.txt`. Unit test with a synthetic 300-file
+corpus (300 files × 40 statements, 3,000 call sites of the def): `enumerateSignatureUnits` returns the complete unit
+(header + 3,000 threaded call edits) in < 2 s, asserted.
+
+### 16.5 Tests (all green; gate: `npx vitest run --project unit test/unit/synth/localize test/unit/synth/verify test/unit/synth/search/composite.test.ts test/unit/synth/templates test/unit/synth/mutate` → 316 passed)
+
+- `test/unit/synth/localize/sites.test.ts` "statement-level replace sites": joins a multi-line statement onto one line …;
+  drops the trailing comma before the closing bracket … backslash continuations and comments; stands in for the physical
+  site at the statement's first line and is added once after a later line (the existing "[24, 25, 26]" window expectation
+  still holds).
+- `test/unit/synth/verify/apply.test.ts` "applyCandidate: statement-level sites (Site.endLine)": replaces the whole physical
+  span …; an extra edit outside the span (an import at the top) applies …; one inside the span is refused; the span is stale
+  when its code tokens changed, not when only comments or line breaks did; plus the `git apply --check` case "a
+  statement-level span replaced by one line plus an import insert".
+- `test/unit/synth/templates/stdlib-wrap2.test.ts` (new): stdlib-sibling substitution (`zip_longest` with and without
+  `fillvalue=0`, the itertools import after the last import, every applied candidate compiles under CPython; a bound sibling
+  needs no import; a rebound builtin is left alone; arity-restricted siblings); depth-2 wraps WIDENED only (SEEDS identical
+  with and without an explicit `phase: 'SEEDS'`; WIDENED adds `reversed(list(enumerate(rep_blocks)))` at the `for` header,
+  ≤ DEPTH2_WRAP_LIMIT pairs, nothing else new, all compile; assign/return shapes; bare literals excluded); templates at a
+  statement-level site (balanced against the joined statement, `_before` and `_after` forms, no extra edit into the span).
+- `test/unit/synth/mutate/operators.test.ts` "collapse_collection_to_element keeps one element of a tuple / list / set
+  literal or a bare tuple value, never of a call, a header or a dict"; `mutate/source.test.ts` "collapse_collection_to_element
+  is enumerated at statement-level sites and in WIDENED only" (`operatorsFor`; the joined statement yields
+  `return hash(self.creation_counter)`, the physical first line cannot).
+- `test/unit/synth/search/composite.test.ts` "statement-level sites (Site.endLine)" (`derivedSite` replaces the span; pairs
+  on the joined statement carry no extra edits; signature and donor-body units return `[]`) and "signature units are bounded
+  on a large corpus" (returns in under 2 s with the call-site index, complete threading across every file; a spent budget cuts
+  the scan and drops the half-threaded draft).
+- Gates: `npx tsc -p tsconfig.json --noEmit` clean for the owned files (`node scripts/no-any.mjs` ok). Failing at the time
+  of this run, all other agents' concurrent WIP, none in the files above: `test/unit/synth/mutate/ladder.test.ts` ×2 (49
+  ladder hunks vs the expected 17: new `bench/data/ladder/tasks/*`), `test/unit/synth/templates/introspect.test.ts` (its
+  leakage list scans `introspect.ts`/`introspect/*`/`history/*` only), tsc errors in `src/config/resolve.ts`,
+  `test/unit/tui/layout/layout.test.ts`, `test/unit/synth/search/proposal-helpers.ts`.
+
+### 16.6 What the engine still needs from files not owned here (one-line wiring)
+
+- `src/synth/search/subgoal.ts:327 enumerateOptions` does not set `phase`: add `phase: goal.phase` so the depth-2 wraps and
+  the collapse operator enumerate in the engine's WIDENED phase (today they enumerate only where a caller passes the hint;
+  the statement-level site's collapse candidates need no hint).
+- Statement-level sites reach the engine through `localize/index.ts:177 buildSites` → `LocalizeResult.sites` →
+  `search/sites.ts q5Anchors`/`addReplace` (a Jev-anchored multi-line statement); `search/sites.ts replaceSiteAt` and
+  `widenedSites` still build physical sites (no statement sites from SBFL-only rows built there or in WIDENED), and
+  `subgoal.ts:340 siteOnBase` compares the physical line, so a statement site is dropped on an 'improved' base (never on the
+  committed one). `rank/questions.ts:246` shows the physical first line as `buggy_line` for a statement site.
+- The sieve keys a job by `path:line:kind` + code tokens: a statement-site candidate and a physical-line candidate at the
+  same first line with identical tokens would be one job (rare: the bracket-signature filters keep a physical first-line
+  candidate's brackets open).
+
+### 16.7 Exact commands
+
+```
+node node_modules/.bin/tsx experiments/reach/capabilities-4-5-6.mts                         # enumeration + F2P, ≈ 3 min, $0
+node node_modules/.bin/tsx experiments/reach/quixbugs-phase-counts.mts before|after          # then --compare before after
+python3 -c "import subprocess; subprocess.run(['node','node_modules/.bin/tsx','experiments/reach/composite-timing.mts','sympy__sympy-12096','sympy/core/function.py','510','--donor-units'], timeout=300)"
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/synth/localize test/unit/synth/verify test/unit/synth/search/composite.test.ts test/unit/synth/templates test/unit/synth/mutate
+```
+
+## 17. 2026-09-20 (later): ladder round 6 — the no-op `done` carries the run; `fail:` signatures are failing sets
+
+Follow-up to §14.3's two recorded defects. Code changed only in `src/loop/{loopdetect.ts,state.ts,stages/complete.ts}`
+(the engine was not touched: a peer session is rebasing on it); both fixes are code rules over facts the harness already
+knows, and Jev stays the decider of completion — the `task_complete` threshold is still 0.85 and no plan item is edited
+by code.
+
+### 17.1 What changed
+
+1. **`fail:` = the failure's identity, not the summary text** (`src/loop/loopdetect.ts:89-97` the branch,
+   `:108-207` `failingTestIds` / `testFailureIdentity`, `:44-49` the optional `SignatureInput.testRunner`). §14.3 read the
+   defect as "the pytest count line normalises to `<n> failed, <n> passed`"; the records say something slightly different:
+   the ladder's `pytest -q` on top of `addopts = -q` prints **no** count line, so the text rule hashed the *last stdout
+   line*, which is the last `FAILED …` line of the short summary — the same test in units steps 1, 4, 6 (4 → 2 → 1
+   failing) and in calendar_utils 5, 6, 8 (4 → 4 → 2), account 1, 3, 5 (3 → 3 → 1). The signature of a non-zero `run`
+   whose command names a test runner (the engine's detected runner when passed, else `runnerFromCommand`) is now
+   `fail:<sha12("tests:" + sorted failing/erroring ids)>` — pytest `FAILED|ERROR <id>` summary lines and `-v` rows,
+   unittest/Django `FAIL|ERROR: test (Class)` (both the 3.10 and 3.11 forms) and `-v` rows, sympy `____ path.py:test ____`
+   headers, cargo `test x ... FAILED`, go `--- FAIL:`, vitest/jest `FAIL`/`✕`/`●` lines — with two fallbacks:
+   `counts:<passed>/<failed>/<errors>` (digits kept) when no id is printed (a `-qq` progress line), and the previous
+   `exit:<code>` + normalised-first-line hash only when nothing parses or the command is not a test runner (`make`). Two
+   runs are the same failure only when the failing sets are identical, whatever the message text, the order of the
+   `FAILED` lines or the scope of the command (`pytest` vs `pytest tests/test_x.py`). `docs/DESIGN.md` §6 gained one dated
+   paragraph (`docs/DESIGN.md:1003-1016`).
+2. **The judge state of a `done` after a run carries the run** (`src/loop/state.ts:305-395`: `ExecutedInfo.lastRunOutput`,
+   `commonLastRun`, `recentOutputAt`, `doneExecutedJson`; `:408` the call in `buildJudgeState`). A `done` is a no-op
+   (nothing executed: `exitCode: null`, `output: ''` stay), but its `executed` block now also has the `run` step's
+   `tests: { command, parsed: { passed, failed, errors }, allPassed }`, `testsCurrent`, and a `lastRun` block
+   `{ step, command, allPassed, total, passed, failed, errors, workspaceUnchangedSince, output }` — all read from the
+   code-computed `workspace.lastTestRun` / `workspace.testsCurrent` the common state already carries, the `output` tail
+   from the run's `recent` entry (head 400 + tail 200) while that step is in the 4-step window, null once it left, or the
+   engine-supplied `lastRunOutput` when given (bounded to the judge head/tail). No run yet → `tests: null, lastRun: null`.
+   The plan is **not** edited: §14.3's "the run claims only fix items, so `verify …` stays" is left to Jev, who now sees the
+   fact instead. The completion question (`src/loop/stages/complete.ts:18,22,25`) names `executed.lastRun` as the
+   harness's record on a `done` step and adds one true-side clause and example: a `done` whose `executed.lastRun.allPassed`
+   and `workspaceUnchangedSince` are true follows the engine's own verifying run, and a `plan.remaining` item that asks only
+   for that verification is satisfied by it.
+
+Tests (`test/unit/loop`): `loopdetect.test.ts:50-116` (units' 4 → 2 → 1 never trips and the old last-line equality is
+asserted; identical sets trip at 3 across message text, `FAILED` order and command scope; identity forms per runner,
+`FAILED (failures=1)` is not an id, `make` keeps the text hash), `state.test.ts:58-76,92-150` (the `done` state after a
+green current run, after a stale run, after a failing run, tail in/out of the window, `lastRunOutput`, no run),
+`engine-loop-fixes.test.ts:66-90` (end to end through the engine: the step-2 judge request of a green `done` carries
+`executed.lastRun` and the question names it). Gates: `tsc` clean outside `src/synth`/`src/bench`/`test/unit/synth`,
+`no-any` ok, `test/unit/loop` + `test/unit/core` 19 files / 147 tests green.
+
+**Engine diff not applied (peer session owns `engine.ts`), optional, 3 lines:** keep the last parsed run's output —
+`private lastTestRunOutput: string | null = null;` set next to `this.lastTestRun = …` at the commit point
+(`engine.ts:1383`: `this.lastTestRunOutput = draft.output;`), pass it in the judge call (`engine.ts:1079`:
+`{ outcome: ex.outcome, output: ex.output, changedFiles: ex.changedFiles, tests: ex.tests, lastRunOutput: this.lastTestRunOutput }`),
+and hand the detected runner to the signature (`engine.ts:1414` `computeSignatures({ …, testRunner: draft.tests ? this.wsInfo.testCommand?.runner ?? null : null })`).
+Without it the `done` state's `lastRun.output` is the window copy (present for 9 of round 5's 12 green `done`s; null for
+grades 14–16, where the step-10 run had left the window) and `fail:` reads the runner from the command (python runners
+only; jest/vitest/cargo/go keep the text hash until the runner is passed).
+
+### 17.2 Offline replay of round 5 (`node node_modules/.bin/tsx .scratch/ladder-6-replay.mts bench/results/jev-only-ladder-5`)
+
+The 12 green `done` judge states (grades 11–16, shipping 17–19, table 10–12), rebuilt from the step records with the new
+builder (window folded per committed step, `lastTestRun`/`lastChangeStep` as the engine commits them): every one now has
+`executed.tests = { command: 'python3 -m pytest -q', parsed: { passed: 10, failed: 0, errors: 0 }, allPassed: true }`,
+`testsCurrent: true` and `lastRun = { step 10|16|9, allPassed true, total 10, workspaceUnchangedSince true }`; the
+80-char tail (`.......... [100%]`) is present for 9 and null for grades 14–16 (run left the window). Round 5 sent these
+twelve as `{ action: 'done', summary, exitCode: null, output: '' }` and Jev read 0.42–0.80.
+
+`fail:` under the failing-set rule over all 12 round-5 runs (every signature fed to a fresh detector; the recorded replans
+are not simulated, so this is indicative): of the 6 recorded `fail:` trips, the **3 on progressing sets no longer share a
+signature** — calendar_utils 8 (steps 5, 6, 8: 4 → 4 → 2 failing), account 5 (1, 3, 5: 3 → 3 → 1), units 6 (1, 4, 6:
+4 → 2 → 1); the **3 on identical sets remain** — inventory 12 (10, 11, 12: `test_total_value` ×3), shipping 4 and 9
+(`test_describe` + 3 others, ×3 then ×3 more, no patch between). Two later identical-set loops that round 5's replan
+resets happened to break would trip under the replay (account 9: steps 5, 6, 9 all `test_statement_numbering_starts_at_one`;
+units 10: steps 6, 7, 10 all `test_parse_duration_case_and_spaces`) — those are the same failure three times and are what
+`fail:` is for.
+
+### 17.3 Live: the three tasks, round 5 → round 6 (`bench/results/jev-only-ladder-6-done`, items 1+2) → round 6b (`bench/results/jev-only-ladder-6-done-item3`, items 1+2+3)
+
+Same command shape as §14.2 restricted to `--task-id grades,shipping,table` (`--concurrency 3 --max-steps 20 --max-wall 10m`,
+decider `typesafe/jev-1.13-20260917`), two runs ≈ 15 minutes apart. **Confound, as in §14.2:** the other sessions'
+uncommitted synthesizer changes were live in the working tree for both runs (and for round 5), so the search phases are
+not held fixed; the loop-side columns are read per step record and are exact.
+
+| task | r5 steps / stop | r5 `task_complete` on the `done` steps (run before them) | r6 steps / stop | r6 `done` steps | r6b steps / stop | r6b `done` steps | `fail:` trips r5 → r6 → r6b | replans r5 → r6 → r6b | Jev $ r5 → r6 → r6b |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| grades | 16 / replan_stop (§5.5 exit) | 11–16: 0.67 0.62 0.68 0.51 0.42 0.48 (run at 10: 0.84) | **8 / complete** | none — the green run at 8 read 0.93 and stopped the run | **7 / complete** | none — the run at 7 read 0.89 | 0 → 0 → 0 | 2 → 0 → 0 | 0.0083 → 0.0043 → 0.0040 |
+| shipping | 19 / max_replans | 17–19: 0.80 0.75 0.73 (run at 16: 0.77) | **5 / complete** | none — the run at 5 read 0.90 | **5 / complete** | none — the run at 5 read 0.90 | 2 → 0 → 0 | 5 → 0 → 0 | 0.0547 → 0.0127 → 0.0038 |
+| table | 12 / replan_stop | 10–12: 0.79 0.77 0.70 (run at 9: 0.80) | **7 / complete** | 7: **0.86** (run at 6: 0.79) | **7 / complete** | 7: **0.85** (run at 6: 0.80) | 0 → 0 → 0 | 1 → 0 → 0 | 0.0254 → 0.0197 → 0.0124 |
+| total | 47 | 12 `done`s, all rejected | **20** | 0 `done`s | **19** | 1 `done`, accepted | 2 → 0 → 0 | 8 → 0 → 0 | 0.0884 → 0.0367 → 0.0202 |
+
+Read from the records: (1) `table` is the direct measurement of item 2 — the same shape as round 5 (green run at 6/9 read
+0.79/0.80 under 0.85, then a no-op `done`), but the `done` state now carries `executed.tests` (10/0/0, allPassed),
+`testsCurrent: true` and `lastRun { step 6, allPassed true, total 10, workspaceUnchangedSince true, output "..........
+[100%]" }`, and `task_complete` read **0.86 / 0.85** on the first `done` (round 5: 0.70–0.79 on three identical `done`s
+that then tripped `done:` and cost a replan). The offline replay of the same state builder on
+`bench/results/jev-only-ladder-6-done` (`.scratch/ladder-6-replay.mts`) shows the table step-7 state with the run block;
+(2) `grades` and `shipping` never reached a `done`: with the synth WIP the fix landed earlier (grades patch at 4 and 6 /
+run at 8; shipping patch at 4 / run at 5) and the all-green run itself read 0.89–0.93, so the `done` path was not
+exercised there; (3) no `fail:` trip in either run — grades' 3 → 1 and table's 4 → 2 → 2 → 2 (two scoped runs with the
+same failing pair at steps 3, 4, then a patch) carry distinct signatures per failing set (`fail:3fd74486cb08` →
+`fail:5347b23490e6` ×2), and shipping's two identical full/scoped runs (`fail:da72c183dc8b` ×2) did not reach 3; round
+5's 8 replans on these three tasks went to 0. Steps 47 → 20 → 19 and Jev spend $0.088 → $0.037 → $0.020 on the three
+tasks, with the synth-WIP caveat above.
+
+### 17.4 Item 3 — prior patches: a different verified patch is a new attempt, not a repeat (`src/loop/stages/risk.ts`, `state.ts`)
+
+**Evidence (live SWE-bench `django__django-15315`, run `20260920-230759-spkhi7p6`, 11 steps, no pass):** step 3 applied
+patch A (`django/db/models/fields/__init__.py:547`, evidence verified 328→329 of 357, `repro::e7fbbfa8` newly passing);
+step 4's workspace run kept the regression scope green (328 passed) but the next proposal's shadow baseline was still
+328/357 — A's gain did not hold on re-baseline. The synthesizer then proposed three *different* verified patches, each
+twice: B (`reverse_related.py:137`, 56 candidates sieved) blocked at 5 and 6 as `plan_mismatch` level 4 "repeats a step
+`recent` shows already failed the same way" (0.71/0.80 on level 4, Jev confidence 0.56/0.65); C (`__init__.py:547`, a
+different template) declined at review at 7 and 8 on `out_of_scope` tail 0.52/0.34 with **Jev confidence 0.00**
+(dominant level 0 both times); D (`reverse_related.py:137`, donor) blocked at 9 and 10 (0.81/0.82 on level 4). Six
+refusals through step 11, where E (`__init__.py:547`) executed. Every refused patch had `evidence.verified` true and
+`newlyFailing` empty, and none had the content of the applied A (diff hashes `14a23fd1b86a` A, `8b24b6833954` B,
+`fc0c7e35e87d` C, `059f96a8a889` D, `740b6d0f407d` E).
+
+**(a) `proposal.priorPatches`** (`src/loop/state.ts` `PriorPatch`/`priorPatchesJson`/`buildRiskState`'s optional
+argument; `src/loop/stages/risk.ts` `PatchHistory`). The risk stage keeps a per-run history of every workspace change it
+assessed (`patch`/`edit`/`write`): the content hash (`loopdetect.ts patchContentHash`, the same identity as the `patch:`
+loop signature), `path:line` per hunk, the shadow counts it claimed, the workspace run before it. At each later
+assessment it folds what `common.recent` shows about those steps (the outcome status) and what `workspace.lastTestRun`
+shows (the first run after the patch), and for a change proposal emits, per earlier patch: `step`, `kind`, `sites`,
+`status`, `applied`, `sameContent` (identical hash to the current proposal), `runAfter`, `goalHeld` (the earlier patch's
+shadow gain still held when the current proposal measured its baseline on the same suite) and a code-computed `result`:
+`refused` / `failed` / `regressed` (more failures in the run after) / `not_fixed` (`goalHeld` false — django A) /
+`fixed` / `progressed` / `no_change` / `unverified`. The block is attached for change proposals only; a `run`/`read`/`done`
+state is unchanged. The history is not the engine's yet (`engine.ts` untouched): the stage keeps one per `runId`
+(`patchHistoryFor`, bounded to the 16 most recent runs of the process, dropped when a run restarts at an earlier step),
+and `RiskStageOptions.patchHistory` is the injection point for the engine to own and checkpoint it (`toState()`); until
+then a `--resume` starts with an empty history (the prior patches before the resume are not listed) — noted, not fixed.
+
+**(b) rubric** (`risk.ts` `RISK_LEVEL_TEXTS_WITH_EVIDENCE.plan_mismatch[4]`): "… a different verified patch after an
+earlier patch that did not fix the goal is a new attempt, not a repeat — `proposal.priorPatches` lists every earlier patch
+of this run with its `result`, and only a patch identical to one already applied, `priorPatches[].sameContent` and
+`applied` both true, repeats". The plain §5.5 text (jev-on, no evidence) is unchanged.
+
+**(c) code rule `novelVerifiedPatch`** (`risk.ts`; `AssessOptions.novelPatch`): a change proposal whose
+`evidence.verified` is true with no `newlyFailing` and whose content differs from every *applied* earlier patch is gated
+by `destructive`/`irreversible` alone — the Fix 2 mechanism exactly (alignment dimensions recorded in `dims` and in the
+reason `…; verified novel patch (evidence verified, no regressions, content differs from every applied earlier patch;
+N earlier patches this run): out_of_scope 0.52 (dominant level 0), plan_mismatch 0.50 (dominant level 0) recorded, not
+gating`, harm dims at expected level ≤ 1 required). **One deliberate reading of the brief:** "differs from every prior
+patch" is measured against the *applied* earlier patches, not the refused ones — a blocked or declined proposal never ran,
+so re-proposing it is not repeating a failure (the rubric already says so), the rule's verdict is a function of the facts
+so an identical re-proposal cannot pass on facts that failed it before, and the loop detector's `patch:` signature still
+trips on the third identical proposal. An identical re-proposal of an *applied* patch (`sameContent` and `applied`) keeps
+the full gating and Jev's level-4 answer blocks it as before.
+
+Offline (`node node_modules/.bin/tsx .scratch/django-15315-reassess.mts`): re-assessing steps 5–10 from their recorded Jev
+answers reproduces the recorded verdicts exactly without the rule (block 0.83/0.85, review 0.52/0.34, block 0.86/0.84)
+and gives `ok 0.25` for all six with it (destructive expected 0.99–1.00, irreversible 0.00–0.01, both ≤ 1); step 11's
+executed E stays `ok 0.25`. Through `PatchHistory` on the same sequence (unit test `risk.test.ts` "the history"), B at
+step 5 sees `[{ step 3, applied true, result not_fixed, goalHeld false, sameContent false, runAfter { step 4, 328 passed,
+allPassed true } }]` and is novel; B re-proposed at 6 sees A plus `{ step 5, status blocked, result refused, sameContent
+true, applied false }` and is still novel; A re-proposed identical is not.
+
+Tests: `risk.test.ts` "item 3" (patchSites; the django history sequence; `classifyPatchResult` per result; the identical
+applied patch still blocked / the novel verified patch with plan_mismatch {0: 0.5, 4: 0.5} `ok` / harm still gates / the
+rubric clause present only in the evidence texts; the state block for patches only and the per-runId reset).
+
+**Live (`bench/results/jev-only-swebench-2-15315`, run `20260920-232313-4efaufma`, `--spend-cap 0.3 --max-steps 20
+--max-wall 20m`, jev-only):** **no pass**, 20 steps, `max_steps`, **0 blocked / 0 declined** (the oracle run: 6 refusals
+through step 11), Jev $0.0694, wall 864 s. Nine *different* verified patches executed (steps 3, 5, 7, 9, 11, 13, 15, 17, 19;
+content hashes all distinct; sites `reverse_related.py:136/137/139`, `__init__.py:547/548`), every one with `evidence
+verified: 328→329 of 357, no regressions` and the reason suffix `verified novel patch (…; N earlier patches this run):
+out_of_scope … plan_mismatch … recorded, not gating`, each followed by the workspace regression run (328 passed, `exit 0`,
+`task_complete` 0.12–0.35). The rule did what it says — the loop-side refusal class is gone — and the task still fails
+for the reason `priorPatches[].result = not_fixed` names at every step from 5 on: each patch's shadow gain
+(`repro::e7fbbfa8` newly passing) did not hold when the next proposal re-baselined the same suite (`before` stayed
+328/357), i.e. the synthesizer's shadow verification and the workspace disagree on the reproduction, nine times over
+different edits. That is search/oracle-side (the reproduction script's criterion, or the shadow copy's state), not a loop
+rule. Two side observations for the owners: the identical green regression run tripped `run:17bf4f63a217:868bfee22d9a`
+three times (steps 6, 12, 18 → 3 replans, `change_approach`) — a *green* verification run repeating the same result after
+different patches is the §6 `run:` rule working as specified, but on this task it only perturbed the search; and a
+contemporaneous control: another session's SWE-bench bench (process started before these edits, run
+`20260920-232449-zgre63ri`, same synth WIP, started 23:24) ran the same task with the old risk stage and blocked four
+verified patches at steps 3–6 (0.72/0.87/0.86/0.83) before reading files — the same refusal class this item removes.
+
+### 17.5 File:line index and gates
+
+- `src/loop/loopdetect.ts:44-49` (`SignatureInput.testRunner`), `:89-97` (the `fail:` branch), `:108-207`
+  (`failingTestIds`, `testFailureIdentity`), `:208-217` (`patchContentHash`, shared with item 3).
+- `src/loop/state.ts:305-395` (item 2: `ExecutedInfo.lastRunOutput`, `commonLastRun`, `recentOutputAt`,
+  `doneExecutedJson`; the `buildJudgeState` noop branch at `:408`), `:292-358` (item 3: `PriorPatch*`,
+  `priorPatchesJson`, `isChangeAction`, `buildRiskState`'s optional `priorPatches`).
+- `src/loop/stages/complete.ts:6-10,18,22,25` (the `executed.lastRun` wording and example).
+- `src/loop/stages/risk.ts:20-27` (header), `:101` (rubric clause), `:191-201` (`AssessOptions.novelPatch`),
+  `:257-295` (the harm-only gating for `verificationRun` / `novelPatch` and the reason suffix), `:297-463`
+  (`PatchHistory`, `patchSites`, `classifyPatchResult`, `createPatchHistory`, `novelVerifiedPatch`, `patchHistoryFor`),
+  `:486-507` (`RiskStageOptions.patchHistory`, the stage wiring).
+- `docs/DESIGN.md:1003-1016` (§6, dated paragraph on the `fail:` identity).
+- Tests: `test/unit/loop/loopdetect.test.ts:50-116`, `state.test.ts:58-76,92-150`, `engine-loop-fixes.test.ts:66-90`,
+  `risk.test.ts:202-330`. Gates after the last change: `tsc` clean outside `src/synth`/`src/bench`/`test/unit/synth`
+  (other sessions' WIP), `no-any` ok, `test/unit/loop` + `test/unit/core` 22 files / 180 tests green.
+- Not applied (engine owned by a peer session), 3-line diff described in §17.1; `git commit` not run.
+- Scratch: `.scratch/ladder-6-replay.mts` (offline replay), `.scratch/ladder-6-table.py` (the §17.3 columns),
+  `.scratch/django-15315-reassess.mts` (the recorded-answer re-assessment), `.scratch/django-steps.py` (per-step dump).

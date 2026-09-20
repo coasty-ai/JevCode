@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { Answer, ProposalEvidence } from '../../../src/core/types.js';
+import type { Answer, JsonObject, Proposal, ProposalEvidence } from '../../../src/core/types.js';
 import { assertQuestionBatch } from '../../../src/jev/questions.js';
-import { EVIDENCE_CONSISTENT_ID, RISK_BLOCK, RISK_REVIEW, RISK_LEVEL_TEXTS, VERIFICATION_HARM_MAX_LEVEL, assessRisk, buildRiskQuestions, completionVerifiedByRun, evidenceSummary, isVerificationRun, riskLevelTexts } from '../../../src/loop/stages/risk.js';
+import { EVIDENCE_CONSISTENT_ID, RISK_BLOCK, RISK_REVIEW, RISK_LEVEL_TEXTS, VERIFICATION_HARM_MAX_LEVEL, assessRisk, buildRiskQuestions, classifyPatchResult, completionVerifiedByRun, createPatchHistory, evidenceSummary, isVerificationRun, novelVerifiedPatch, patchHistoryFor, patchSites, riskLevelTexts } from '../../../src/loop/stages/risk.js';
+import { buildCommonState, buildRiskState, type PriorPatch } from '../../../src/loop/state.js';
+import { emptyPlan } from '../../../src/loop/plan.js';
 import { noulA, scoreA } from './fakes.js';
 
 function all(levels: Record<number, number>): Record<string, Answer> {
@@ -194,5 +196,132 @@ describe('ladder-4 analysis fixes: the verification run (Fix 2) and the verified
     expect(RISK_LEVEL_TEXTS.plan_mismatch[4]).toMatch(/^contradicts the plan, repeats a step `recent` shows already failed the same way/);
     expect(RISK_LEVEL_TEXTS.plan_mismatch[3]).toBe('ignores the plan\'s open problems, or claims completion (`done`) while `plan.remaining` is non-empty');
     expect(riskLevelTexts(true).plan_mismatch[4]).toContain('a blocked or declined proposal in `recent` never ran so it did not fail');
+  });
+});
+
+describe('item 3 (rungs report §17): prior patches — the django-15315 sequence', () => {
+  const ev = (before: number, after: number, total = 357, newlyFailing: string[] = []): ProposalEvidence => ({
+    kind: 'shadow_test_run',
+    command: 'python tests/runtests.py --parallel 1 --settings=test_sqlite',
+    before: { passed: before, failed: total - before, errors: 0, total },
+    after: { passed: after, failed: total - after, errors: 0, total },
+    newlyPassing: after > before ? ['repro::e7fbbfa8'] : [],
+    newlyFailing,
+    goalTests: ['repro::e7fbbfa8'],
+    selection: 'sieve',
+    candidatesTested: 13,
+    arbitrated: true,
+  });
+  const diffA = '--- a/django/db/models/fields/__init__.py\n+++ b/django/db/models/fields/__init__.py\n@@ -547,6 +547,7 @@ class Field:\n     def __hash__(self):\n-        return hash((self.creation_counter, self.model))\n+        return hash(self.creation_counter)\n';
+  const diffB = '--- a/django/db/models/fields/reverse_related.py\n+++ b/django/db/models/fields/reverse_related.py\n@@ -137,7 +137,8 @@ class ForeignObjectRel:\n-    x = 1\n+    x = 2\n+    y = 3\n';
+  const patch = (diff: string, evidence: ProposalEvidence): Proposal => ({ goal: 'apply verified fix', action: { kind: 'patch', diff }, plan: { done: [], remaining: ['verify'], openProblems: [] }, rawText: '', evidence });
+  const run = (step: number, passed: number, failed = 0): { step: number; command: string; passed: number; failed: number; errors: number; allPassed: boolean } => ({ step, command: 'python tests/runtests.py', passed, failed, errors: 0, allPassed: failed === 0 && passed > 0 });
+  /** the common state at `step`: recent = the outcomes of the given earlier steps, lastTestRun as recorded */
+  const common = (step: number, recent: [number, string, 'executed' | 'blocked' | 'declined' | 'failed' | 'noop'][], lastTestRun: ReturnType<typeof run> | null, lastChangeStep: number | null): JsonObject =>
+    buildCommonState({
+      task: 'django-15315',
+      plan: emptyPlan(),
+      recent: recent.map(([s, action, outcome]) => ({ step: s, intent: null, action, outcome, shownFiles: [], notes: [] })),
+      workspace: { root: '/ws', git: true, hasTests: true, testCommand: 'python tests/runtests.py', changedFiles: [], createdThisRun: [], lastChangeStep, lastTestRun, sandbox: 'none' },
+      budget: { stepsUsed: step, stepsMax: 20, spentUsd: 0, capUsd: 0.3 },
+      redact: (x) => x,
+    });
+
+  it('patchSites: path:line per hunk (new-file start), the path for edit/write, touched paths when a diff has no hunks', () => {
+    expect(patchSites({ kind: 'patch', diff: diffA })).toEqual(['django/db/models/fields/__init__.py:547']);
+    expect(patchSites({ kind: 'patch', diff: `${diffA}${diffB}` })).toEqual(['django/db/models/fields/__init__.py:547', 'django/db/models/fields/reverse_related.py:137']);
+    expect(patchSites({ kind: 'edit', path: 'src/a.py', old: 'x', new: 'y' })).toEqual(['src/a.py']);
+    expect(patchSites({ kind: 'patch', diff: '--- a/x.py\n+++ b/x.py\n' })).toEqual(['x.py']);
+    expect(patchSites({ kind: 'run', command: 'ls' })).toEqual([]);
+  });
+
+  it('the history: patch A applied at 3, the re-baseline at 4 kept the suite green but not A\'s gain; B at 5 sees A as applied / not_fixed / different content and is a novel verified patch; B re-proposed at 6 after a block sees B as refused and is still novel; an identical applied patch is not', () => {
+    const h = createPatchHistory();
+    const A = patch(diffA, ev(328, 329));
+    // step 3: A assessed; baseline run at step 1
+    expect(h.observe(3, A, common(3, [[1, 'run', 'executed'], [2, 'read', 'executed']], run(1, 328), null))).toEqual([]);
+    // step 4: the verification run is assessed; recent now shows A executed
+    expect(h.observe(4, { goal: 'verify', action: { kind: 'run', command: 'python tests/runtests.py' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' }, common(4, [[1, 'run', 'executed'], [2, 'read', 'executed'], [3, 'patch django/db/models/fields/__init__.py', 'executed']], run(1, 328), 3))).toEqual([]);
+    // step 5: B (different content, same shadow gain claim) — its baseline is still 328/357, so A's gain did not hold
+    const B = patch(diffB, ev(328, 329));
+    const priorsAt5 = h.observe(5, B, common(5, [[2, 'read', 'executed'], [3, 'patch django/db/models/fields/__init__.py', 'executed'], [4, 'run python tests/runtests.py', 'executed']], run(4, 328), 3));
+    expect(priorsAt5).toEqual<PriorPatch[]>([
+      { step: 3, kind: 'patch', sites: ['django/db/models/fields/__init__.py:547'], status: 'executed', applied: true, result: 'not_fixed', sameContent: false, runAfter: { step: 4, passed: 328, failed: 0, errors: 0, allPassed: true }, goalHeld: false },
+    ]);
+    expect(novelVerifiedPatch(B, priorsAt5)).toBe(true);
+    // step 6: B again after a block at 5 — B is refused (never ran), so the re-proposal is not a repeat of a failure
+    const priorsAt6 = h.observe(6, B, common(6, [[3, 'patch django/db/models/fields/__init__.py', 'executed'], [4, 'run python tests/runtests.py', 'executed'], [5, 'patch django/db/models/fields/reverse_related.py', 'blocked']], run(4, 328), 3));
+    expect(priorsAt6.map((p) => [p.step, p.result, p.sameContent, p.applied])).toEqual([[3, 'not_fixed', false, true], [5, 'refused', true, false]]);
+    expect(novelVerifiedPatch(B, priorsAt6)).toBe(true);
+    // an identical re-proposal of the *applied* A is not novel; an unverified or regressing patch is not either
+    const priorsA = h.observe(7, A, common(7, [[5, 'patch', 'blocked'], [6, 'patch', 'blocked']], run(4, 328), 3));
+    expect(priorsA.find((p) => p.step === 3)).toMatchObject({ sameContent: true, applied: true });
+    expect(novelVerifiedPatch(A, priorsA)).toBe(false);
+    expect(novelVerifiedPatch(patch(diffB, ev(328, 328)), priorsAt5)).toBe(false);
+    expect(novelVerifiedPatch(patch(diffB, ev(328, 329, 357, ['tests/x::y'])), priorsAt5)).toBe(false);
+    expect(novelVerifiedPatch({ goal: B.goal, action: B.action, plan: B.plan, rawText: '' }, priorsAt5)).toBe(false);
+    // a retried stage replaces the step's entry; the state round-trips
+    expect(createPatchHistory(h.toState()).toState()).toEqual(h.toState());
+    expect(h.toState().attempts.map((a) => a.step)).toEqual([3, 5, 6, 7]);
+  });
+
+  it('classifyPatchResult from facts: refused/failed by status; regressed, fixed, progressed, no_change, unverified from the runs; not_fixed from a re-baseline that lost the gain', () => {
+    const base = { step: 3, kind: 'patch' as const, hash: 'h', sites: [], evidence: null, status: 'executed' as const, runBefore: { step: 1, passed: 7, failed: 3, errors: 0, allPassed: false }, runAfter: null };
+    expect(classifyPatchResult({ ...base, status: 'blocked' }, undefined).result).toBe('refused');
+    expect(classifyPatchResult({ ...base, status: 'failed' }, undefined).result).toBe('failed');
+    expect(classifyPatchResult(base, undefined).result).toBe('unverified');
+    expect(classifyPatchResult({ ...base, runAfter: { step: 4, passed: 6, failed: 4, errors: 0, allPassed: false } }, undefined).result).toBe('regressed');
+    expect(classifyPatchResult({ ...base, runAfter: { step: 4, passed: 10, failed: 0, errors: 0, allPassed: true } }, undefined).result).toBe('fixed');
+    expect(classifyPatchResult({ ...base, runAfter: { step: 4, passed: 8, failed: 2, errors: 0, allPassed: false } }, undefined).result).toBe('progressed');
+    expect(classifyPatchResult({ ...base, runAfter: { step: 4, passed: 7, failed: 3, errors: 0, allPassed: false } }, undefined).result).toBe('no_change');
+    const withEv = { ...base, evidence: { beforePassed: 328, afterPassed: 329, total: 357 }, runBefore: { step: 1, passed: 328, failed: 0, errors: 0, allPassed: true }, runAfter: { step: 4, passed: 328, failed: 0, errors: 0, allPassed: true } };
+    expect(classifyPatchResult(withEv, ev(328, 329))).toEqual({ result: 'not_fixed', goalHeld: false });
+    expect(classifyPatchResult(withEv, ev(329, 330))).toEqual({ result: 'fixed', goalHeld: true });
+    // a different suite size: no comparison
+    expect(classifyPatchResult(withEv, ev(5, 6, 10)).goalHeld).toBeNull();
+  });
+
+  it('assessRisk: an identical applied patch is still blocked on plan_mismatch level 4; a novel verified patch with plan_mismatch {0: 0.5, 4: 0.5} is ok (alignment recorded, not gating); harm still gates', () => {
+    const texts = riskLevelTexts(true);
+    const repeat = { destructive: scoreA({ 1: 1 }), out_of_scope: scoreA({ 0: 1 }), plan_mismatch: scoreA({ 4: 0.9, 3: 0.1 }), irreversible: scoreA({ 0: 1 }), matches_intent: noulA(0.9), [EVIDENCE_CONSISTENT_ID]: noulA(0.8) };
+    // the stage passes no novelPatch option when the content matches an applied earlier patch
+    const blocked = assessRisk(repeat, 0.9, 'edit', { evidenceConsistent: 0.8, evidence: ev(328, 329), goal: 'g', texts });
+    expect(blocked.verdict).toBe('block');
+    expect(blocked.reason).not.toContain('verified novel patch');
+    const spread = { destructive: scoreA({ 1: 1 }), out_of_scope: scoreA({ 0: 0.36, 2: 0.11, 3: 0.35, 4: 0.17 }), plan_mismatch: scoreA({ 0: 0.5, 4: 0.5 }), irreversible: scoreA({ 0: 1 }), matches_intent: noulA(0.9), [EVIDENCE_CONSISTENT_ID]: noulA(0.2) };
+    const plain = assessRisk(spread, 0.9, 'edit', { evidenceConsistent: 0.2, evidence: ev(328, 329), goal: 'g', texts });
+    expect(plain.verdict).toBe('review');
+    const novel = assessRisk(spread, 0.9, 'edit', { evidenceConsistent: 0.2, evidence: ev(328, 329), goal: 'g', texts, novelPatch: { priorPatches: 1 } });
+    expect(novel.verdict).toBe('ok');
+    expect(novel.risk).toBeCloseTo(0.25, 6);
+    // {0: 0.5, 4: 0.5}: tail mass 0.5, argmax level 0 (the tie resolves to the lower level)
+    expect(novel.dims.plan_mismatch).toMatchObject({ risk: 0.5, level: 0, tailMass: 0.5 });
+    expect(novel.dims.out_of_scope.risk).toBeCloseTo(0.52, 6);
+    expect(novel.reason).toContain('; verified novel patch (evidence verified, no regressions, content differs from every applied earlier patch; 1 earlier patch this run): out_of_scope 0.52 (dominant level 0), plan_mismatch 0.50 (dominant level 0) recorded, not gating');
+    expect(novel.reason).not.toContain(EVIDENCE_CONSISTENT_ID);
+    const harmful = assessRisk({ ...spread, destructive: scoreA({ 3: 0.8, 1: 0.2 }) }, 0.9, 'edit', { evidenceConsistent: 0.2, evidence: ev(328, 329), goal: 'g', texts, novelPatch: { priorPatches: 2 } });
+    expect(harmful.verdict).toBe('block');
+    expect(harmful.reason).not.toContain('verified novel patch');
+    expect(texts.plan_mismatch[4]).toContain('a different verified patch after an earlier patch that did not fix the goal is a new attempt, not a repeat');
+    expect(texts.plan_mismatch[4]).toContain('`priorPatches[].sameContent` and `applied` both true');
+    expect(RISK_LEVEL_TEXTS.plan_mismatch[4]).not.toContain('priorPatches');
+  });
+
+  it('the state block appears for patches only; per-runId histories reset when a run restarts at an earlier step', () => {
+    const priors: PriorPatch[] = [{ step: 3, kind: 'patch', sites: ['a.py:1'], status: 'executed', applied: true, result: 'not_fixed', sameContent: false, runAfter: null, goalHeld: false }];
+    const c = common(5, [], run(4, 328), 3);
+    const intent = { choice: 'edit' as const, probability: 0.9 };
+    const ps = buildRiskState(c, patch(diffB, ev(328, 329)), intent, [], (x) => x, priors);
+    expect((ps['proposal'] as JsonObject)['priorPatches']).toEqual([{ step: 3, kind: 'patch', sites: ['a.py:1'], status: 'executed', applied: true, result: 'not_fixed', sameContent: false, runAfter: null, goalHeld: false }]);
+    const rs = buildRiskState(c, { goal: 'v', action: { kind: 'run', command: 'pytest -q' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' }, intent, [], (x) => x, priors);
+    expect((rs['proposal'] as JsonObject)['priorPatches']).toBeUndefined();
+    expect((buildRiskState(c, patch(diffB, ev(328, 329)), intent, [], (x) => x)['proposal'] as JsonObject)['priorPatches']).toBeUndefined();
+    const h1 = patchHistoryFor('run-x', 3);
+    h1.observe(3, patch(diffA, ev(1, 2, 3)), c);
+    expect(patchHistoryFor('run-x', 4)).toBe(h1);
+    // a new run under the same id starts at step 1: the stale history is dropped
+    const h2 = patchHistoryFor('run-x', 1);
+    expect(h2).not.toBe(h1);
+    expect(h2.toState().attempts).toEqual([]);
   });
 });

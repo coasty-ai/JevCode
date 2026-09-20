@@ -14,6 +14,7 @@ import type {
   Json,
   JsonObject,
   LastTestRun,
+  OutcomeStatus,
   Plan,
   PlanDraft,
   Proposal,
@@ -287,10 +288,77 @@ function targetJson(t: TargetInfo): JsonObject {
   return { path: t.path, existsBefore: t.existsBefore, tracked: t.tracked, createdThisRun: t.createdThisRun, recoverable: t.recoverable };
 }
 
-export function buildRiskState(common: JsonObject, proposal: Proposal, intent: IntentStateInfo, targets: readonly TargetInfo[], redact: Redact): JsonObject {
+/** The first parsed workspace test run after an earlier patch (code-computed facts; `workspace.lastTestRun` as observed later). */
+export interface PriorPatchRun {
+  step: number;
+  passed: number;
+  failed: number;
+  errors: number;
+  allPassed: boolean;
+}
+
+/**
+ * What became of an earlier patch this run, from facts only: `refused` (blocked/declined, never
+ * ran), `failed` (did not apply), `regressed` (the run after it had more failures/errors),
+ * `not_fixed` (the shadow gain it claimed did not hold when the current proposal re-baselined the
+ * same suite), `fixed` (the run after it passed everything and gained tests, or turned a red suite
+ * green), `progressed` (more tests pass, not all), `no_change` (same counts, nothing to compare
+ * the goal against), `unverified` (no run since, no later baseline).
+ */
+export type PriorPatchResult = 'refused' | 'failed' | 'unverified' | 'fixed' | 'progressed' | 'no_change' | 'not_fixed' | 'regressed';
+
+/**
+ * One earlier workspace change of this run, as `proposal.priorPatches[]` shows it to the risk
+ * Scores (experiments/results/jev-only-rungs-1-2.md §17, item 3): where it edited, whether it was
+ * applied, what the runs since showed, and whether it is the same content as the current proposal.
+ */
+export interface PriorPatch {
+  step: number;
+  kind: 'patch' | 'edit' | 'write';
+  /** `path:line` per hunk (patch) or the path (edit/write), bounded */
+  sites: string[];
+  /** the outcome the harness recorded; null while it has not been observed yet */
+  status: OutcomeStatus | null;
+  applied: boolean;
+  result: PriorPatchResult;
+  /** identical content hash to the current proposal (the same diff / edit / file content) */
+  sameContent: boolean;
+  runAfter: PriorPatchRun | null;
+  /** the earlier patch's shadow gain still held when the current proposal measured its baseline; null when either side has no evidence on the same suite */
+  goalHeld: boolean | null;
+}
+
+export const PRIOR_PATCHES_MAX = 20;
+const PRIOR_PATCH_SITES_MAX = 8;
+
+export function priorPatchesJson(list: readonly PriorPatch[]): Json[] {
+  return list.slice(-PRIOR_PATCHES_MAX).map((p) => ({
+    step: p.step,
+    kind: p.kind,
+    sites: p.sites.slice(0, PRIOR_PATCH_SITES_MAX).map((x) => clip(x, STATE_LIMITS.planItemChars)),
+    status: p.status,
+    applied: p.applied,
+    result: p.result,
+    sameContent: p.sameContent,
+    runAfter: p.runAfter ? { ...p.runAfter } : null,
+    goalHeld: p.goalHeld,
+  }));
+}
+
+export function isChangeAction(kind: Proposal['action']['kind']): kind is 'patch' | 'edit' | 'write' {
+  return kind === 'patch' || kind === 'edit' || kind === 'write';
+}
+
+/**
+ * Risk state (§5.5): common + intent + proposal (+ target(s)). `priorPatches` — every earlier
+ * workspace change of this run, code-computed by the risk stage's PatchHistory — is attached
+ * for `patch`/`edit`/`write` proposals only, so the Scores can tell a new attempt from a repeat.
+ */
+export function buildRiskState(common: JsonObject, proposal: Proposal, intent: IntentStateInfo, targets: readonly TargetInfo[], redact: Redact, priorPatches?: readonly PriorPatch[]): JsonObject {
   const p = proposalJson(proposal, redact);
   if (proposal.action.kind === 'patch') p['targets'] = targets.map(targetJson);
   else if (targets[0] && (proposal.action.kind === 'edit' || proposal.action.kind === 'write')) p['target'] = targetJson(targets[0]);
+  if (priorPatches !== undefined && isChangeAction(proposal.action.kind)) p['priorPatches'] = redactJson(priorPatchesJson(priorPatches), redact);
   return { ...common, intent: { choice: intent.choice, probability: intent.probability }, proposal: p };
 }
 
@@ -306,6 +374,86 @@ export interface ExecutedInfo {
   output: string;
   changedFiles: readonly string[];
   tests: ExecutedTests | null;
+  /**
+   * The output of the engine's last parsed test run (`workspace.lastTestRun`), for the `done`
+   * state's `lastRun.output`; when absent the bounded copy in `recent` is used, if that step is
+   * still in the window.
+   */
+  lastRunOutput?: string | null;
+}
+
+/** `workspace.lastTestRun` plus `workspace.testsCurrent` as the common state carries them (§5.5). */
+export interface CommonLastRun extends LastTestRun {
+  testsCurrent: boolean;
+}
+
+function commonWorkspace(common: JsonObject): JsonObject | null {
+  const ws = common['workspace'];
+  return typeof ws === 'object' && ws !== null && !Array.isArray(ws) ? (ws as JsonObject) : null;
+}
+
+/** The engine's last parsed test run as the common state carries it (code-computed, §5.5); null before any run. */
+export function commonLastRun(common: JsonObject): CommonLastRun | null {
+  const w = commonWorkspace(common);
+  if (w === null) return null;
+  const run = w['lastTestRun'];
+  if (typeof run !== 'object' || run === null || Array.isArray(run)) return null;
+  const r = run as JsonObject;
+  const n = (k: string): number => (typeof r[k] === 'number' ? (r[k] as number) : 0);
+  return {
+    step: n('step'),
+    command: typeof r['command'] === 'string' ? (r['command'] as string) : '',
+    passed: n('passed'),
+    failed: n('failed'),
+    errors: n('errors'),
+    allPassed: r['allPassed'] === true,
+    testsCurrent: w['testsCurrent'] === true,
+  };
+}
+
+/** The bounded output `recent` keeps for `step` (head 400 + tail 200, window.ts); null once the step left the window. */
+export function recentOutputAt(common: JsonObject, step: number): string | null {
+  const recent = common['recent'];
+  if (!Array.isArray(recent)) return null;
+  for (const e of recent) {
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) continue;
+    const o = e as JsonObject;
+    if (o['step'] === step) return typeof o['output'] === 'string' ? (o['output'] as string) : null;
+  }
+  return null;
+}
+
+/**
+ * The `executed` block of a `done` (noop) step (§5.5; experiments/results/jev-only-rungs-1-2.md
+ * §14.3, ladder round 6). Nothing ran, so `exitCode` is null and `output` empty, but the state
+ * carries the facts the harness knows about the engine's last test run — the same `tests` fields a
+ * `run` step gets, `testsCurrent`, and a `lastRun` block (`allPassed`, `total`, `command`, `step`,
+ * `workspaceUnchangedSince`, the bounded `output` tail) — so the completion Noul judges the `done`
+ * against the run it follows rather than a bare summary. The plan is not edited: Jev decides.
+ */
+export function doneExecutedJson(common: JsonObject, summary: string, lastRunOutput: string | null | undefined): JsonObject {
+  const out: JsonObject = { action: 'done', summary: clip(summary, STATE_LIMITS.summaryChars), exitCode: null, output: '' };
+  const run = commonLastRun(common);
+  if (run === null) {
+    out['tests'] = null;
+    out['lastRun'] = null;
+    return out;
+  }
+  out['tests'] = { command: run.command, parsed: { passed: run.passed, failed: run.failed, errors: run.errors }, allPassed: run.allPassed };
+  out['testsCurrent'] = run.testsCurrent;
+  const tail = lastRunOutput ?? recentOutputAt(common, run.step);
+  out['lastRun'] = {
+    step: run.step,
+    command: run.command,
+    allPassed: run.allPassed,
+    total: run.passed + run.failed + run.errors,
+    passed: run.passed,
+    failed: run.failed,
+    errors: run.errors,
+    workspaceUnchangedSince: run.testsCurrent,
+    output: tail === null ? null : headTail(tail, STATE_LIMITS.judgeOutputHead, STATE_LIMITS.judgeOutputTail),
+  };
+  return out;
 }
 
 export function execJson(exec: ExecResult | undefined): JsonObject {
@@ -325,7 +473,7 @@ export function buildJudgeState(common: JsonObject, proposal: Proposal, executed
   const a = proposal.action;
   let executedJson: JsonObject;
   if (executed.outcome.status === 'noop') {
-    executedJson = { action: 'done', summary: clip(a.kind === 'done' ? a.summary : '', STATE_LIMITS.summaryChars), exitCode: null, output: '' };
+    executedJson = doneExecutedJson(common, a.kind === 'done' ? a.summary : '', executed.lastRunOutput);
   } else {
     const exec = executed.outcome.status === 'executed' ? executed.outcome.exec : undefined;
     executedJson = {

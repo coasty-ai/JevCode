@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { JsonObject, ProposalEvidence } from '../../../src/core/types.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
-import { buildCommonState, buildContextState, buildIntentState, buildJudgeState, buildRiskState, commonChangeUnverified, commonRemaining, evidenceVerified, ledgerItems, testsCurrent } from '../../../src/loop/state.js';
+import { buildCommonState, buildContextState, buildIntentState, buildJudgeState, buildRiskState, commonChangeUnverified, commonLastRun, commonRemaining, evidenceVerified, ledgerItems, recentOutputAt, testsCurrent } from '../../../src/loop/state.js';
 import { buildContextQuestions, prefilterCandidates, selectCandidates } from '../../../src/loop/stages/context.js';
 import { buildIntentQuestions } from '../../../src/loop/stages/intent.js';
 import { buildJudgeQuestions } from '../../../src/loop/stages/judge.js';
@@ -70,8 +70,9 @@ describe('Jev state (§5.5)', () => {
     expect(ex.exitCode).toBe(1);
     expect(ex.tests).toMatchObject({ allPassed: false, parsed: { failed: 1 } });
     expect(js['claims']).toEqual(['claim one']);
+    // a `done` executes nothing (exitCode null, output ''), and since ladder round 6 carries the engine's last run: common() has a run at step 1 and a change at step 2, so it is stale
     const noop = buildJudgeState(common(), { ...proposal, action: { kind: 'done', summary: 'all done' } }, { outcome: { status: 'noop', summary: 'all done' }, output: '', changedFiles: [], tests: null }, [], redact);
-    expect(noop['executed']).toEqual({ action: 'done', summary: 'all done', exitCode: null, output: '' });
+    expect(noop['executed']).toMatchObject({ action: 'done', summary: 'all done', exitCode: null, output: '', testsCurrent: false, tests: { command: 'pytest -q', allPassed: true }, lastRun: { step: 1, workspaceUnchangedSince: false } });
   });
   it('question sets validate: intent (Choice + 5 paired Nouls + plan_still_valid), judge with done_<j>, replan', () => {
     const intent = buildIntentQuestions();
@@ -85,6 +86,66 @@ describe('Jev state (§5.5)', () => {
     for (const q of Object.values(judge)) if (q.type === 'noul') expect((q.criteria!.false as { examples: string[] }).examples.length).toBeGreaterThanOrEqual(2);
     const replan = buildReplanQuestions();
     expect(Object.keys(replan)).toEqual(['next_move', 'can_change_approach', 'can_gather_context', 'can_fix_environment', 'can_revert_changes', 'can_stop_and_report', 'task_impossible']);
+  });
+});
+
+describe('the judge state of a `done` after a test run (§5.5; rungs report §14.3, ladder round 6)', () => {
+  const doneProposal = { goal: 'all 10 tests pass; 2 fixes committed', action: { kind: 'done' as const, summary: 'all 10 tests pass; 2 fixes committed' }, plan: { done: ['verify the full test suite passes'], remaining: [], openProblems: [] }, rawText: '' };
+  const noop = { outcome: { status: 'noop' as const, summary: 'all 10 tests pass; 2 fixes committed' }, output: '', changedFiles: [], tests: null };
+  const runOutput = '..........                                                               [100%]\n';
+  /** grades step 11 of ladder round 5: patch at 7, green run at 10, done at 11; recent = steps 8–11 (the step-11 entry is the provisional done) */
+  function greenCommon(overrides: Partial<Parameters<typeof buildCommonState>[0]['workspace']> = {}, recentOffset = 0): JsonObject {
+    return buildCommonState({
+      task: 'Fix grades',
+      plan: { ...emptyPlan(), remaining: ['verify the full test suite passes'] },
+      recent: [
+        { step: 8 + recentOffset, intent: 'investigate', action: 'read src/grades.py', outcome: 'executed', shownFiles: [], notes: [], output: '### src/grades.py' },
+        { step: 9 + recentOffset, intent: 'investigate', action: 'read tests/test_grades.py', outcome: 'executed', shownFiles: [], notes: [], output: '### tests/test_grades.py' },
+        { step: 10 + recentOffset, intent: 'verify', action: 'run python3 -m pytest -q', outcome: 'executed', shownFiles: [], notes: [], output: runOutput, judge: { succeeded: 0.95, errorPresent: 0.02, newInfo: 0.05, tests: { source: 'parsed', allPassed: true, passed: 10, failed: 0, errors: 0 }, doneClaims: [] } },
+        { step: 11 + recentOffset, intent: 'finish', action: 'done', outcome: 'noop', shownFiles: [], notes: [] },
+      ],
+      workspace: { root: '/ws', git: true, hasTests: true, testCommand: 'python3 -m pytest -q', changedFiles: ['src/grades.py'], createdThisRun: [], lastChangeStep: 7, lastTestRun: { step: 10, command: 'python3 -m pytest -q', passed: 10, failed: 0, errors: 0, allPassed: true }, sandbox: 'none', ...overrides },
+      budget: { stepsUsed: 11, stepsMax: 20, spentUsd: 0.005, capUsd: 0.15 },
+      redact,
+    });
+  }
+  it('a `done` after a green, current run carries the run: the `run` step\'s `tests` fields, `testsCurrent: true`, and a `lastRun` block with allPassed/total/command/step/workspaceUnchangedSince and the bounded tail from `recent`', () => {
+    const c = greenCommon();
+    expect(commonLastRun(c)).toEqual({ step: 10, command: 'python3 -m pytest -q', passed: 10, failed: 0, errors: 0, allPassed: true, testsCurrent: true });
+    const js = buildJudgeState(c, doneProposal, noop, [], redact);
+    expect(js['executed']).toEqual({
+      action: 'done',
+      summary: 'all 10 tests pass; 2 fixes committed',
+      exitCode: null,
+      output: '',
+      tests: { command: 'python3 -m pytest -q', parsed: { passed: 10, failed: 0, errors: 0 }, allPassed: true },
+      testsCurrent: true,
+      lastRun: { step: 10, command: 'python3 -m pytest -q', allPassed: true, total: 10, passed: 10, failed: 0, errors: 0, workspaceUnchangedSince: true, output: runOutput },
+    });
+    // the same `tests` shape a `run` step's state gets
+    const runState = buildJudgeState(c, { ...doneProposal, action: { kind: 'run', command: 'python3 -m pytest -q' } }, { outcome: { status: 'executed', exec: execResult({ stdout: runOutput }), summary: 'exit 0', changedFiles: [] }, output: runOutput, changedFiles: [], tests: { command: 'python3 -m pytest -q', parsed: { passed: 10, failed: 0, errors: 0, skipped: 0 }, allPassed: true } }, [], redact);
+    expect((runState['executed'] as JsonObject)['tests']).toEqual((js['executed'] as JsonObject)['tests']);
+    expect(js['proposal']).toMatchObject({ claimsDone: true });
+  });
+  it('a `done` after a stale run (a change since) is marked `testsCurrent: false` / `workspaceUnchangedSince: false`; a failing run keeps its counts', () => {
+    const stale = buildJudgeState(greenCommon({ lastChangeStep: 11 }), doneProposal, noop, [], redact);
+    expect(stale['executed']).toMatchObject({ testsCurrent: false, tests: { allPassed: true }, lastRun: { allPassed: true, workspaceUnchangedSince: false } });
+    const red = buildJudgeState(greenCommon({ lastTestRun: { step: 10, command: 'python3 -m pytest -q', passed: 9, failed: 1, errors: 0, allPassed: false } }), doneProposal, noop, [], redact);
+    expect(red['executed']).toMatchObject({ testsCurrent: true, tests: { allPassed: false, parsed: { failed: 1 } }, lastRun: { allPassed: false, total: 10, workspaceUnchangedSince: true } });
+  });
+  it('the tail: from `recent` while the run is in the window, null once it left, the engine-supplied `lastRunOutput` (bounded) when given; no run at all → `tests`/`lastRun` null', () => {
+    // grades step 14: recent = 11–14, the step-10 run left the window
+    const late = greenCommon({}, 3);
+    expect(recentOutputAt(late, 10)).toBeNull();
+    expect((buildJudgeState(late, doneProposal, noop, [], redact)['executed'] as JsonObject)['lastRun']).toMatchObject({ step: 10, allPassed: true, workspaceUnchangedSince: true, output: null });
+    const long = 'H'.repeat(5000) + 'T'.repeat(5000);
+    const supplied = buildJudgeState(late, doneProposal, { ...noop, lastRunOutput: long }, [], redact);
+    const tail = ((supplied['executed'] as JsonObject)['lastRun'] as JsonObject)['output'] as string;
+    expect(tail.length).toBeLessThan(4_200);
+    expect(tail.endsWith('T'.repeat(1000))).toBe(true);
+    const none = buildJudgeState(greenCommon({ lastTestRun: null }), doneProposal, noop, [], redact);
+    expect(none['executed']).toEqual({ action: 'done', summary: 'all 10 tests pass; 2 fixes committed', exitCode: null, output: '', tests: null, lastRun: null });
+    expect(commonLastRun(greenCommon({ lastTestRun: null }))).toBeNull();
   });
 });
 

@@ -63,6 +63,31 @@ describe('Fix 1: a done after the engine\'s own green run is completion the harn
     expect(h.store.transcript.some((l) => /^\[step 2\] risk=0\.36 ok: completion verified by the engine's own passing run `pytest -q` at step 1;/.test(l))).toBe(true);
   });
 
+  it('ladder round 6: the judge state of the green `done` carries the run (`executed.tests`, `testsCurrent`, `executed.lastRun` with the tail), so the completion Noul sees the evidence rather than a bare `done`', async () => {
+    const h = await build({
+      turns: [turn({ kind: 'run', command: 'pytest -q' }, { remaining: ['verify the full test suite passes'] }), turn({ kind: 'done', summary: 'all 2 tests pass; 1 fix committed' }, { done: ['verify the full test suite passes'], remaining: [] })],
+      sandbox: createFakeSandbox(() => passingTests),
+      deciderOptions: { rules: [intentIs('verify', 1), intentIs('finish', 2), answer('judge', 'task_complete', noulA(0.9), 2)] },
+    });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('complete');
+    const judge = h.decider.calls.filter((c) => c.step === 2 && c.stage === 'judge');
+    expect(judge).toHaveLength(1);
+    const state = judge[0]!.state as { executed: JsonObject; workspace: JsonObject };
+    expect(state.workspace).toMatchObject({ testsCurrent: true, lastTestRun: { step: 1, allPassed: true } });
+    expect(state.executed).toEqual({
+      action: 'done',
+      summary: 'all 2 tests pass; 1 fix committed',
+      exitCode: null,
+      output: '',
+      tests: { command: 'pytest -q', parsed: { passed: 2, failed: 0, errors: 0 }, allPassed: true },
+      testsCurrent: true,
+      lastRun: { step: 1, command: 'pytest -q', allPassed: true, total: 2, passed: 2, failed: 0, errors: 0, workspaceUnchangedSince: true, output: passingTests.stdout },
+    });
+    // the completion question names the block
+    expect(String(judge[0]!.questions['task_complete']!.instructions)).toContain('executed.lastRun');
+  });
+
   it('the rule needs the facts: a change after the run (testsCurrent false), a failing run, or a partial done (planClaim.remaining non-empty) leave the review to the confirmer', async () => {
     // a file changed after the green run
     const h = await build({

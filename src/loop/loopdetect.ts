@@ -9,10 +9,18 @@
  * copies of one proposal count as one loop. A trip resets only the signature(s) that reached the
  * count and a replan only the signature it answers, so an interleaved `read` or intent trip cannot
  * shelter a slower `done` loop and DESIGN §5.5's third-identical-`done` exit stays reachable.
+ *
+ * Failing test runs (experiments/results/jev-only-rungs-1-2.md §14.3, ladder round 6): the `fail:`
+ * signature of a test-runner command that exits non-zero is the failure's identity, not its text —
+ * the sorted set of failing/erroring test ids parsed from the output (`testFailureIdentity`), the
+ * un-normalised pass/fail/error counts when no id is printed, and the old text hash only when nothing
+ * parses. Two failing runs are "the same failure" only when their failing sets are identical, so a
+ * suite going 6/10 → 8/10 → 9/10 is progress and never trips.
  */
 import { sha12 } from '../core/hash.js';
 import { firstLine, normaliseForSignature } from '../core/text.js';
-import type { ActionOutcome, LoopDetectorState, Proposal } from '../core/types.js';
+import type { ActionOutcome, ExecResult, LoopDetectorState, Proposal, TestRunner } from '../core/types.js';
+import { parseTestOutput, runnerFromCommand } from '../workspace/tests.js';
 
 export const LOOP_TRIP_COUNT = 3;
 export const INTENT_UNRESOLVED_SIGNATURE = 'intent:unresolved';
@@ -33,6 +41,12 @@ export interface SignatureInput {
   /** interrupted steps and Jev/provider stage failures are not observed (§6) */
   observed: boolean;
   workspaceRoot: string;
+  /**
+   * The detected runner when this step's `run` was the workspace test command (the engine's
+   * `draft.tests !== null`); absent or null → the runner is read from the command itself
+   * (`runnerFromCommand`, python runners only).
+   */
+  testRunner?: TestRunner | null;
 }
 
 function norm(s: string, root: string): string {
@@ -57,13 +71,9 @@ export function computeSignatures(input: SignatureInput): string[] {
         break;
       }
       case 'edit':
-        sigs.push(`patch:${sha12(a.path + a.old + a.new)}`);
-        break;
       case 'write':
-        sigs.push(`patch:${sha12(a.path + a.content)}`);
-        break;
       case 'patch':
-        sigs.push(`patch:${sha12(a.diff)}`);
+        sigs.push(`patch:${patchContentHash(a)}`);
         break;
       case 'read':
         sigs.push(`read:${sha12([...a.paths].sort().join('\n'))}`);
@@ -79,10 +89,131 @@ export function computeSignatures(input: SignatureInput): string[] {
     const cls = input.errorClass ?? outcome.error.split(':')[0] ?? 'Error';
     sigs.push(`fail:${sha12(cls + norm(firstLine(outcome.error), root))}`);
   } else if (outcome && outcome.status === 'executed' && outcome.exec && outcome.exec.exitCode !== null && outcome.exec.exitCode !== 0 && !outcome.exec.signal) {
-    const line = firstNonEmptyLine(outcome.exec.stderr) ?? lastNonEmptyLine(outcome.exec.stdout) ?? '';
-    sigs.push(`fail:${sha12(`exit:${outcome.exec.exitCode}` + norm(line, root))}`);
+    const identity = proposal?.action.kind === 'run' ? testFailureIdentity(proposal.action.command, outcome.exec, input.testRunner ?? null) : null;
+    if (identity !== null) {
+      sigs.push(`fail:${sha12(identity)}`);
+    } else {
+      const line = firstNonEmptyLine(outcome.exec.stderr) ?? lastNonEmptyLine(outcome.exec.stdout) ?? '';
+      sigs.push(`fail:${sha12(`exit:${outcome.exec.exitCode}` + norm(line, root))}`);
+    }
   }
   return sigs;
+}
+
+// ---------------------------------------------------------------------------------------
+// Failure identity of a test run (§6, ladder round 6)
+// ---------------------------------------------------------------------------------------
+
+/** pytest's short test summary (`FAILED tests/a.py::test_x - msg`, `ERROR tests/a.py`) and `-v` progress lines. */
+const PYTEST_SUMMARY_ID = /^(?:FAILED|ERROR) ([^\s(]\S*)(?: - .*)?$/gm;
+const PYTEST_VERBOSE_ID = /^(\S+::\S+) (?:FAILED|ERROR)\b/gm;
+/** unittest / Django: `FAIL: test_x (pkg.mod.Class)`, `ERROR: test_x (pkg.mod.Class.test_x)` (3.11+), and `-v` rows `test_x (pkg.Class) ... FAIL`. */
+const UNITTEST_HEADER_ID = /^(?:FAIL|ERROR): (\w+) \(([\w.]+)\)/gm;
+const UNITTEST_VERBOSE_ID = /^(\w+) \(([\w.]+)\)(?: [^\n]*?)? \.\.\. (?:FAIL|ERROR)\s*$/gm;
+/** sympy `bin/test` failure headers: `_____ sympy/core/tests/test_x.py:test_y _____`. */
+const SYMPY_HEADER_ID = /^_{3,} (\S+\.py:\S+) _{3,}$/gm;
+/** jest `● Suite › name` / `✕ name (3 ms)`, vitest ` FAIL  tests/x.test.ts > suite > name` / `× name`. */
+const JEST_BULLET_ID = /^\s*● (.+?)\s*$/gm;
+const JS_CROSS_ID = /^\s*[✕×] (.+?)(?: \(?\d+ ?ms\)?)?\s*$/gm;
+const JS_FAIL_ID = /^\s*FAIL\s+(\S[^\n]*?)\s*$/gm;
+/** cargo `test mod::name ... FAILED`, go `--- FAIL: TestName (0.00s)`. */
+const CARGO_ID = /^test (\S+) \.\.\. FAILED\s*$/gm;
+const GO_ID = /^\s*--- FAIL: (\S+)/gm;
+
+function collect(out: Set<string>, text: string, re: RegExp, pick: (m: RegExpMatchArray) => string | null): void {
+  for (const m of text.matchAll(re)) {
+    const id = pick(m);
+    if (id !== null && id.length > 0) out.add(id);
+  }
+}
+
+function unittestId(m: RegExpMatchArray): string {
+  const method = m[1] ?? '';
+  const owner = m[2] ?? '';
+  return owner.endsWith(`.${method}`) ? owner : `${owner}.${method}`;
+}
+
+/**
+ * The failing and erroring test ids a runner printed, sorted and de-duplicated; empty when the
+ * output names none (a killed run, `-qq`, a runner without per-test lines). `npm`/`unknown` try
+ * every format, as `parseTestOutput` does for the counts.
+ */
+export function failingTestIds(runner: TestRunner, output: string): string[] {
+  const ids = new Set<string>();
+  const first = (m: RegExpMatchArray): string | null => m[1] ?? null;
+  const pytest = (): void => {
+    collect(ids, output, PYTEST_SUMMARY_ID, first);
+    collect(ids, output, PYTEST_VERBOSE_ID, first);
+  };
+  const unittest = (): void => {
+    collect(ids, output, UNITTEST_HEADER_ID, unittestId);
+    collect(ids, output, UNITTEST_VERBOSE_ID, unittestId);
+  };
+  const js = (): void => {
+    collect(ids, output, JEST_BULLET_ID, (m) => (/^Test suite failed to run/.test(m[1] ?? '') ? null : first(m)));
+    collect(ids, output, JS_CROSS_ID, first);
+    collect(ids, output, JS_FAIL_ID, first);
+  };
+  switch (runner) {
+    case 'pytest':
+      pytest();
+      break;
+    case 'django':
+    case 'unittest':
+      unittest();
+      break;
+    case 'sympy_bintest':
+      collect(ids, output, SYMPY_HEADER_ID, first);
+      break;
+    case 'jest':
+    case 'vitest':
+      js();
+      break;
+    case 'cargo':
+      collect(ids, output, CARGO_ID, first);
+      break;
+    case 'go':
+      collect(ids, output, GO_ID, first);
+      break;
+    case 'npm':
+    case 'unknown':
+      pytest();
+      if (ids.size === 0) unittest();
+      if (ids.size === 0) js();
+      if (ids.size === 0) collect(ids, output, CARGO_ID, first);
+      if (ids.size === 0) collect(ids, output, GO_ID, first);
+      break;
+  }
+  return [...ids].sort();
+}
+
+/**
+ * The identity of a failing test run for the `fail:` signature (§6): `tests:` + the sorted failing
+ * set when the runner printed ids, `counts:<passed>/<failed>/<errors>` (digits kept) when only a
+ * summary parsed, null when the command is not a recognised test runner or nothing parsed — the
+ * caller then falls back to the exit-code + first-line text hash.
+ */
+export function testFailureIdentity(command: string, exec: Pick<ExecResult, 'stdout' | 'stderr'>, knownRunner: TestRunner | null = null): string | null {
+  const runner = knownRunner ?? runnerFromCommand(command);
+  if (runner === null) return null;
+  const output = exec.stderr.length > 0 ? `${exec.stdout}\n${exec.stderr}` : exec.stdout;
+  const ids = failingTestIds(runner, output);
+  if (ids.length > 0) return `tests:${ids.join('\n')}`;
+  const counts = parseTestOutput(runner, output);
+  if (counts !== null) return `counts:${counts.passed}/${counts.failed}/${counts.errors}`;
+  return null;
+}
+
+/** The content identity of a workspace change (§6 `patch:` signature; risk.ts `priorPatches[].sameContent`). */
+export function patchContentHash(a: Extract<Proposal['action'], { kind: 'edit' | 'write' | 'patch' }>): string {
+  switch (a.kind) {
+    case 'edit':
+      return sha12(a.path + a.old + a.new);
+    case 'write':
+      return sha12(a.path + a.content);
+    case 'patch':
+      return sha12(a.diff);
+  }
 }
 
 function outcomeReason(o: ActionOutcome): string {

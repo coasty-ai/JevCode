@@ -16,14 +16,24 @@
  * engine's own passing, current test run is completion the harness verified (`completionVerifiedByRun`,
  * Fix 1), and one plain invocation of the workspace test command is the verification step by
  * definition, gated by `destructive`/`irreversible` alone (`isVerificationRun`, Fix 2).
+ *
+ * Prior patches (experiments/results/jev-only-rungs-1-2.md §17 item 3, from the live django-15315
+ * run): the stage keeps a per-run `PatchHistory` of every workspace change it assessed — content
+ * hash, sites, the outcome `recent` later showed, the first workspace run after it and whether its
+ * shadow gain held when the next proposal re-baselined — and shows it as `proposal.priorPatches`
+ * for `patch`/`edit`/`write` proposals, so a *different* verified patch after one that did not fix
+ * the goal reads as a new attempt, not a repeat. A verified patch with no regressions whose content
+ * differs from every applied earlier patch is gated by the harm dimensions alone
+ * (`novelVerifiedPatch`, the Fix 2 mechanism): Jev's alignment answers stay in `dims` and the reason.
  */
 import { RISK_BLOCK, RISK_REVIEW, levelProb, riskFromProbabilities, scoreConfidence } from '../../jev/confidence.js';
 import { noul, ref, score } from '../../jev/questions.js';
 import { clip } from '../../core/text.js';
-import { RISK_DIMENSIONS, type Answer, type Intent, type JsonObject, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
+import { RISK_DIMENSIONS, type Answer, type Intent, type JsonObject, type OutcomeStatus, type Proposal, type ProposalEvidence, type Question, type RiskAssessment, type RiskDimension, type RiskDimensionResult, type TargetInfo, type TestCommand } from '../../core/types.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
 import type { StageContext } from '../engine.js';
-import { buildRiskState, evidenceVerified } from '../state.js';
+import { patchContentHash } from '../loopdetect.js';
+import { buildRiskState, commonLastRun, evidenceVerified, isChangeAction, type PriorPatch, type PriorPatchResult, type PriorPatchRun } from '../state.js';
 import { isTestCommand } from './execute.js';
 
 export { RISK_BLOCK, RISK_REVIEW };
@@ -88,7 +98,7 @@ export const RISK_LEVEL_TEXTS_WITH_EVIDENCE: RiskLevelTexts = {
     RISK_LEVEL_TEXTS.plan_mismatch[1],
     'skips a planned verification step; an action whose `proposal.evidence.verified` is true and whose `proposal.evidence.goalTests` are named in `plan.remaining` does not skip verification (the tests already ran against this change in a shadow copy and the next step re-runs the suite in the workspace)',
     'ignores the plan\'s open problems, or claims completion (`done`) while `plan.remaining` is non-empty; a test `run` is never a completion claim even when `proposal.plan.done` lists the items its own parsed output will verify (only a `done` action claims completion)',
-    'contradicts the plan, repeats a step `recent` shows already failed the same way (a `patch` whose `proposal.evidence` names a different change or different newly passing tests than the earlier attempt is not a repeat, a blocked or declined proposal in `recent` never ran so it did not fail, and a test `run` after a change re-runs the suite `proposal.evidence` measured rather than repeating a failed run), or claims completion with no verifying test run in `recent`',
+    'contradicts the plan, repeats a step `recent` shows already failed the same way (a `patch` whose `proposal.evidence` names a different change or different newly passing tests than the earlier attempt is not a repeat, a blocked or declined proposal in `recent` never ran so it did not fail, and a test `run` after a change re-runs the suite `proposal.evidence` measured rather than repeating a failed run; a different verified patch after an earlier patch that did not fix the goal is a new attempt, not a repeat — `proposal.priorPatches` lists every earlier patch of this run with its `result`, and only a patch identical to one already applied, `priorPatches[].sameContent` and `applied` both true, repeats), or claims completion with no verifying test run in `recent`',
   ],
   irreversible: RISK_LEVEL_TEXTS.irreversible,
 };
@@ -179,6 +189,15 @@ export interface AssessOptions {
    * `destructive`/`irreversible` still gate, so a harmful command wrapped around the runner is blocked.
    */
   verificationRun?: boolean;
+  /**
+   * code-computed (novelVerifiedPatch): a `patch`/`edit`/`write` whose `evidence.verified` is true
+   * with no `newlyFailing`, whose content differs from every earlier patch of this run that was
+   * applied. The same mechanism as `verificationRun`: with the harm dimensions at expected level
+   * <= VERIFICATION_HARM_MAX_LEVEL the alignment dimensions are recorded, not gating (§17 item 3:
+   * django-15315's three different verified patches were blocked as "repeats a failed step" or
+   * declined on spread-mass out_of_scope at Jev confidence 0.00, six refusals through step 11).
+   */
+  novelPatch?: { priorPatches: number };
 }
 
 /** Fix 2: the harm dimensions may sit at "notable but fine" (level 1) for the verification-run rule to apply. */
@@ -235,9 +254,12 @@ export function assessRisk(answers: Record<string, Answer>, matchesIntent: numbe
     r100s[dim] = d.r100;
   }
   const nm1 = RISK_LEVELS - 1;
-  // Fix 2: a plain test-command run with harm dims at expected level <= 1 is gated by the harm dims alone.
-  const verification = opts.verificationRun === true && HARM_DIMENSIONS.every((dim) => dims[dim].expected * nm1 <= VERIFICATION_HARM_MAX_LEVEL);
-  const gating: readonly RiskDimension[] = verification ? HARM_DIMENSIONS : RISK_DIMENSIONS;
+  // Fix 2: a plain test-command run with harm dims at expected level <= 1 is gated by the harm dims alone;
+  // item 3: so is a verified, regression-free patch whose content differs from every applied earlier patch.
+  const harmLow = HARM_DIMENSIONS.every((dim) => dims[dim].expected * nm1 <= VERIFICATION_HARM_MAX_LEVEL);
+  const verification = opts.verificationRun === true && harmLow;
+  const novelPatch = opts.novelPatch !== undefined && harmLow;
+  const gating: readonly RiskDimension[] = verification || novelPatch ? HARM_DIMENSIONS : RISK_DIMENSIONS;
   let maxR100 = -1;
   for (const dim of gating) if (r100s[dim] > maxR100) maxR100 = r100s[dim];
   const risk = maxR100 / (100 * nm1);
@@ -262,10 +284,182 @@ export function assessRisk(answers: Record<string, Answer>, matchesIntent: numbe
     reason += `; Jev judged the evidence inconsistent with recent (${EVIDENCE_CONSISTENT_ID}=${fmt(ec)})`;
   }
   if (opts.evidence !== undefined) reason += `; ${evidenceSummary(opts.evidence, opts.goal)}`;
-  if (verification) {
-    reason += `; verification run of the workspace test command: ${ALIGNMENT_DIMENSIONS.map((dim) => `${dim} ${fmt(dims[dim].risk)} (dominant level ${dims[dim].level})`).join(', ')} recorded, not gating`;
+  const alignmentNote = (): string => `${ALIGNMENT_DIMENSIONS.map((dim) => `${dim} ${fmt(dims[dim].risk)} (dominant level ${dims[dim].level})`).join(', ')} recorded, not gating`;
+  if (verification) reason += `; verification run of the workspace test command: ${alignmentNote()}`;
+  if (novelPatch) {
+    const n = opts.novelPatch?.priorPatches ?? 0;
+    reason += `; verified novel patch (evidence verified, no regressions, content differs from every applied earlier patch; ${n} earlier patch${n === 1 ? '' : 'es'} this run): ${alignmentNote()}`;
   }
   return { dims, risk, verdict, reason };
+}
+
+// ---------------------------------------------------------------------------------------
+// Prior patches (§17 item 3)
+// ---------------------------------------------------------------------------------------
+
+export interface PatchAttemptState {
+  step: number;
+  kind: 'patch' | 'edit' | 'write';
+  hash: string;
+  sites: string[];
+  /** the shadow run's counts when the proposal carried evidence */
+  evidence: { beforePassed: number; afterPassed: number; total: number } | null;
+  status: OutcomeStatus | null;
+  runBefore: PriorPatchRun | null;
+  runAfter: PriorPatchRun | null;
+}
+
+export interface PatchHistoryState {
+  attempts: PatchAttemptState[];
+}
+
+export interface PatchHistory {
+  /**
+   * Once per risk assessment: folds what `common.recent` and `workspace.lastTestRun` now show about
+   * the remembered attempts, returns the prior patches relative to `proposal` (empty for a proposal
+   * that is not a workspace change), then remembers a change proposal. Repeated calls for one step
+   * replace that step's entry (a retried stage).
+   */
+  observe(step: number, proposal: Proposal, common: JsonObject): PriorPatch[];
+  toState(): PatchHistoryState;
+}
+
+/** `path:line` per hunk of a unified diff (the new-file start line), the path for edit/write. */
+export function patchSites(action: Proposal['action']): string[] {
+  if (action.kind === 'edit' || action.kind === 'write') return [action.path];
+  if (action.kind !== 'patch') return [];
+  const out: string[] = [];
+  let path: string | null = null;
+  for (const line of action.diff.split('\n')) {
+    const f = /^\+\+\+ (?:"?)([^\t\n"]+)/.exec(line);
+    if (f && f[1]) {
+      let p = f[1].trim();
+      if (/^[ab]\//.test(p)) p = p.slice(2);
+      path = p === '/dev/null' ? null : p;
+      continue;
+    }
+    const h = /^@@ -\d+(?:,\d+)? \+(\d+)/.exec(line);
+    if (h && path !== null) out.push(`${path}:${h[1]}`);
+  }
+  if (out.length === 0) for (const p of patchTouchedPaths(action.diff)) out.push(p);
+  return out;
+}
+
+function runOf(common: JsonObject): PriorPatchRun | null {
+  const r = commonLastRun(common);
+  return r === null ? null : { step: r.step, passed: r.passed, failed: r.failed, errors: r.errors, allPassed: r.allPassed };
+}
+
+function recentStatuses(common: JsonObject): Map<number, OutcomeStatus> {
+  const out = new Map<number, OutcomeStatus>();
+  const recent = common['recent'];
+  if (!Array.isArray(recent)) return out;
+  for (const e of recent) {
+    if (typeof e !== 'object' || e === null || Array.isArray(e)) continue;
+    const o = e as JsonObject;
+    if (typeof o['step'] === 'number' && typeof o['outcome'] === 'string') out.set(o['step'], o['outcome'] as OutcomeStatus);
+  }
+  return out;
+}
+
+/**
+ * The result of an earlier attempt from facts only (see PriorPatchResult). `goalHeld` compares the
+ * gain the earlier patch's shadow run claimed with the baseline the current proposal's shadow run
+ * measured on the same suite (same `total`): false means the workspace re-baseline did not keep it.
+ */
+export function classifyPatchResult(a: PatchAttemptState, current: ProposalEvidence | undefined): { result: PriorPatchResult; goalHeld: boolean | null } {
+  let goalHeld: boolean | null = null;
+  if (a.evidence !== null && current !== undefined && current.before.total === a.evidence.total && current.before.total > 0) goalHeld = current.before.passed >= a.evidence.afterPassed;
+  if (a.status === 'blocked' || a.status === 'declined') return { result: 'refused', goalHeld };
+  if (a.status === 'failed') return { result: 'failed', goalHeld };
+  const after = a.runAfter;
+  const before = a.runBefore;
+  if (after !== null && before !== null && after.failed + after.errors > before.failed + before.errors) return { result: 'regressed', goalHeld };
+  if (goalHeld === false) return { result: 'not_fixed', goalHeld };
+  if (after === null) return { result: goalHeld === true ? 'fixed' : 'unverified', goalHeld };
+  const gained = before === null ? after.passed > 0 : after.passed > before.passed;
+  if (after.allPassed && (gained || (before !== null && !before.allPassed) || goalHeld === true)) return { result: 'fixed', goalHeld };
+  if (gained) return { result: 'progressed', goalHeld };
+  return { result: goalHeld === true ? 'fixed' : 'no_change', goalHeld };
+}
+
+export function createPatchHistory(initial?: PatchHistoryState): PatchHistory {
+  const attempts: PatchAttemptState[] = initial ? initial.attempts.map((a) => ({ ...a, sites: [...a.sites], evidence: a.evidence ? { ...a.evidence } : null, runBefore: a.runBefore ? { ...a.runBefore } : null, runAfter: a.runAfter ? { ...a.runAfter } : null })) : [];
+  return {
+    observe(step, proposal, common) {
+      const statuses = recentStatuses(common);
+      const run = runOf(common);
+      for (const a of attempts) {
+        if (a.status === null) {
+          const st = statuses.get(a.step);
+          if (st !== undefined) a.status = st;
+        }
+        if (a.runAfter === null && run !== null && run.step > a.step && a.status !== 'blocked' && a.status !== 'declined' && a.status !== 'failed') a.runAfter = run;
+      }
+      const action = proposal.action;
+      if (!isChangeAction(action.kind)) return [];
+      const a = action as Extract<Proposal['action'], { kind: 'edit' | 'write' | 'patch' }>;
+      const hash = patchContentHash(a);
+      const priors: PriorPatch[] = attempts
+        .filter((x) => x.step < step)
+        .map((x) => {
+          const { result, goalHeld } = classifyPatchResult(x, proposal.evidence);
+          return { step: x.step, kind: x.kind, sites: [...x.sites], status: x.status, applied: x.status === 'executed', result, sameContent: x.hash === hash, runAfter: x.runAfter ? { ...x.runAfter } : null, goalHeld };
+        });
+      const e = proposal.evidence;
+      const entry: PatchAttemptState = { step, kind: a.kind, hash, sites: patchSites(a), evidence: e ? { beforePassed: e.before.passed, afterPassed: e.after.passed, total: e.after.total } : null, status: null, runBefore: run, runAfter: null };
+      const at = attempts.findIndex((x) => x.step === step);
+      if (at === -1) attempts.push(entry);
+      else attempts[at] = entry;
+      return priors;
+    },
+    toState: () => ({ attempts: attempts.map((a) => ({ ...a, sites: [...a.sites], evidence: a.evidence ? { ...a.evidence } : null, runBefore: a.runBefore ? { ...a.runBefore } : null, runAfter: a.runAfter ? { ...a.runAfter } : null })) }),
+  };
+}
+
+/**
+ * Item 3(c) (§17): the proposal is a workspace change whose evidence is verified with no `newlyFailing`
+ * and whose content differs from every earlier patch of this run that was applied (a refused one
+ * never ran, so re-proposing it is not repeating a failure; the loop detector's `patch:` signature
+ * still counts identical re-proposals).
+ */
+export function novelVerifiedPatch(proposal: Proposal, priors: readonly PriorPatch[]): boolean {
+  const e = proposal.evidence;
+  if (!isChangeAction(proposal.action.kind) || e === undefined) return false;
+  if (!evidenceVerified(e) || e.newlyFailing.length > 0) return false;
+  return priors.every((p) => !(p.sameContent && p.applied));
+}
+
+/**
+ * Per-run histories for the stage's default path (the engine does not yet own one; it can pass
+ * `RiskStageOptions.patchHistory` and checkpoint `toState()`). Bounded to the most recent runs of
+ * the process; a history whose newest attempt is at or past the current step belongs to a previous
+ * run with the same id (tests) and is dropped.
+ */
+const HISTORIES = new Map<string, PatchHistory>();
+const HISTORIES_MAX = 16;
+
+export function patchHistoryFor(runId: string, step: number): PatchHistory {
+  let h = HISTORIES.get(runId);
+  if (h !== undefined && h.toState().attempts.some((a) => a.step >= step)) {
+    HISTORIES.delete(runId);
+    h = undefined;
+  }
+  if (h === undefined) {
+    h = createPatchHistory();
+    HISTORIES.set(runId, h);
+    while (HISTORIES.size > HISTORIES_MAX) {
+      const oldest = HISTORIES.keys().next().value;
+      if (oldest === undefined) break;
+      HISTORIES.delete(oldest);
+    }
+  }
+  return h;
+}
+
+/** tests: forget a run's history */
+export function resetPatchHistory(runId: string): void {
+  HISTORIES.delete(runId);
 }
 
 /** Code-computed target info for edit/write (one) or patch (per touched path). */
@@ -290,21 +484,28 @@ export interface RiskStageOptions {
   testCommand?: TestCommand | null;
   /** Fix 1: the engine's own passing, current run when the `done` proposal claims nothing remains (engine-computed); null otherwise */
   verifiedCompletion?: VerifiedCompletion | null;
+  /** item 3: the run's patch history (default: the stage's per-runId instance, `patchHistoryFor`) */
+  patchHistory?: PatchHistory;
 }
 
 export async function runRiskStage(ctx: StageContext, common: JsonObject, proposal: Proposal, intent: { intent: Intent; answer: Intent | 'none_of_these'; probability: number }, opts: RiskStageOptions = {}): Promise<RiskStageResult> {
   const targets = await computeTargets(ctx, proposal);
+  const history = opts.patchHistory ?? patchHistoryFor(ctx.runId, ctx.step);
+  const priorPatches = history.observe(ctx.step, proposal, common);
   // `matches_intent` asks about `intent.choice`; that must be the effective intent the generator
   // was given, never the raw escape answer (§6 per-outcome table).
-  const state = buildRiskState(common, proposal, { choice: intent.intent, probability: intent.probability }, targets, ctx.redact);
+  const state = buildRiskState(common, proposal, { choice: intent.intent, probability: intent.probability }, targets, ctx.redact, isChangeAction(proposal.action.kind) ? priorPatches : undefined);
   const evidence = proposal.evidence;
   const withEvidence = evidence !== undefined;
   const texts = riskLevelTexts(withEvidence);
   const testCommand = opts.testCommand === undefined ? ctx.workspaceInfo.testCommand : opts.testCommand;
   const verificationRun = proposal.action.kind === 'run' && isVerificationRun(proposal.action.command, testCommand);
+  const novelPatch = novelVerifiedPatch(proposal, priorPatches);
   const assessOpts = (ec: number | null): AssessOptions => {
     const base: AssessOptions = withEvidence ? { evidenceConsistent: ec, evidence, goal: proposal.goal, texts } : { texts };
-    return verificationRun ? { ...base, verificationRun: true } : base;
+    if (verificationRun) return { ...base, verificationRun: true };
+    if (novelPatch) return { ...base, novelPatch: { priorPatches: priorPatches.length } };
+    return base;
   };
   let assessment: RiskAssessment | null = null;
   let matchesIntent = 1;

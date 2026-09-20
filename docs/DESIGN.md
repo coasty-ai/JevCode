@@ -1000,6 +1000,21 @@ and the replan state carries `loop.trips` and `loop.priorDirectives`. `max_repla
 'max_replans'`. `observe(step)` runs at the commit point before the checkpoint, so a resumed
 run trips on the same occurrence a continuous run would.
 
+**`fail:` of a failing test run is the failure's identity, not its text (2026-09-20, ladder
+round 6; `loopdetect.ts testFailureIdentity`).** When the non-zero `run` is a recognised test
+runner (the engine's detected runner, else `runnerFromCommand` on the command), the signature is
+`fail:<sha12("tests:" + sorted failing/erroring test ids)>` parsed from stdout+stderr (pytest
+`FAILED|ERROR <id>` summary lines and `-v` rows, unittest/Django `FAIL|ERROR: test (Class)`,
+sympy `____ path.py:test ____` headers, cargo `test x ... FAILED`, go `--- FAIL:`, vitest/jest
+`FAIL`/`✕`/`●` lines); when no id is printed (a `-qq` progress line, a killed run) it is
+`fail:<sha12("counts:<passed>/<failed>/<errors>")>` with the digits kept; only when nothing
+parses, or the command is not a test runner, does the previous `exit:<code>` + normalised
+first-line hash apply. Two failing runs are the same failure only when their failing sets are
+identical, so a suite going 6/10 → 8/10 → 9/10 (ladder round 5 `units` steps 1, 4, 6: the last
+`FAILED` line was the same test each time and the text hash read it as one failure ×3) never
+trips, while three runs with the same set do, whatever the message text, the order of the
+`FAILED` lines or the scope of the command (`pytest` vs `pytest tests/test_x.py`).
+
 **Risk policy**: `risk ≥ 0.7` → `blocked`, reason built from the dimension(s) at the max with
 the dominant level's text, which term bound (`expected` or `tail`, e.g. "destructive: 0.90
 probability of level 3 or above"), and the Jev confidence; returned to the generator in the

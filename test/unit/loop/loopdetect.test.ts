@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Proposal } from '../../../src/core/types.js';
-import { LOOP_TRIP_COUNT, REFUSED_RESULT, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind } from '../../../src/loop/loopdetect.js';
+import { LOOP_TRIP_COUNT, REFUSED_RESULT, computeSignatures, createLoopDetector, directiveMove, failingTestIds, loopTripText, signatureKind, testFailureIdentity } from '../../../src/loop/loopdetect.js';
 import { execResult } from './fakes.js';
 
 function prop(action: Proposal['action']): Proposal {
@@ -44,6 +44,74 @@ describe('signatures (§6)', () => {
     expect(computeSignatures({ ...base, proposal: null, outcome: { status: 'failed', error: 'propose: generator_response' }, output: null, generatorFailReason: 'no tool call 1', errorClass: 'GeneratorResponseError' }).map(signatureKind)).toEqual(['fail:generator', 'fail']);
     expect(computeSignatures({ ...base, proposal: prop({ kind: 'run', command: 'x' }), outcome: { status: 'interrupted' }, output: null })).toEqual([]);
     expect(computeSignatures({ ...base, observed: false, proposal: prop({ kind: 'run', command: 'x' }), outcome: { status: 'executed', summary: '', changedFiles: [] }, output: '' })).toEqual([]);
+  });
+});
+
+describe('fail: signature of a failing test run is the failing set (§6, ladder round 6)', () => {
+  const run = (command: string, stdout: string, stderr = ''): string[] =>
+    computeSignatures({ ...base, proposal: prop({ kind: 'run', command }), outcome: { status: 'executed', exec: execResult({ exitCode: 1, stdout, stderr }), summary: 'exit 1', changedFiles: [] }, output: stdout + stderr });
+  const failOf = (sigs: string[]): string => sigs.find((x) => x.startsWith('fail:'))!;
+  /** the units run of ladder round 5 (steps 1, 4, 6): `-qq` output, no count line, the last FAILED line identical each time */
+  const unitsOut = (ids: readonly string[]): string =>
+    `${'F'.repeat(ids.length)}${'.'.repeat(10 - ids.length)}                                                               [100%]\n=================================== FAILURES ===================================\n${ids.map((id) => `__________________ ${id.split('::')[1]} __________________\n\n    def ${id.split('::')[1]}():\n>       assert parse_duration("1 S") == 1000\nE       AssertionError: assert 1 == 1000\n\ntests/test_units.py:12: AssertionError`).join('\n')}\n=========================== short test summary info ============================\n${ids.map((id) => `FAILED ${id} - AssertionEr...`).join('\n')}\n`;
+  const T = (n: string): string => `tests/test_units.py::${n}`;
+  const four = [T('test_parse_duration_millisecond_unit'), T('test_parse_duration_fractional'), T('test_parse_duration_bare_number_is_milliseconds'), T('test_parse_duration_case_and_spaces')];
+  const two = four.slice(2);
+  const one = four.slice(3);
+
+  it('6/10 → 8/10 → 9/10 progressing runs carry three different fail: signatures and never trip', () => {
+    const s1 = run('python3 -m pytest -q', unitsOut(four));
+    const s2 = run('python3 -m pytest -q', unitsOut(two));
+    const s3 = run('python3 -m pytest -q', unitsOut(one));
+    expect(new Set([failOf(s1), failOf(s2), failOf(s3)]).size).toBe(3);
+    const d = createLoopDetector();
+    expect(d.observe(1, s1)).toBeNull();
+    expect(d.observe(4, s2)).toBeNull();
+    expect(d.observe(6, s3)).toBeNull();
+    expect(Object.values(d.toState().counts).every((n) => n === 1)).toBe(true);
+    // the old text rule hashed the last stdout line, identical in all three runs
+    expect(unitsOut(four).trimEnd().split('\n').pop()).toBe(unitsOut(one).trimEnd().split('\n').pop());
+  });
+  it('three identical failing sets trip at 3, whatever the message text, the ordering of the FAILED lines or the scope of the command', () => {
+    const a = run('python3 -m pytest -q', unitsOut([four[0]!, four[3]!]));
+    const b = run("python3 -m pytest -q 'tests/test_units.py'", unitsOut([four[3]!, four[0]!]).replace('assert 1 == 1000', 'assert 7 == 1000').replace(/ - AssertionEr\.\.\./g, ' - assert 7 == ...'));
+    const c = run('python3 -m pytest -q', unitsOut([four[0]!, four[3]!]));
+    expect(failOf(a)).toBe(failOf(b));
+    expect(failOf(b)).toBe(failOf(c));
+    const d = createLoopDetector();
+    d.observe(1, a);
+    d.observe(2, b);
+    const trip = d.observe(3, c);
+    expect(trip).toEqual({ signature: failOf(c), occurrences: LOOP_TRIP_COUNT });
+  });
+  it('identity: sorted ids; counts when no id is printed (digits kept); null for a command that is not a test runner', () => {
+    expect(testFailureIdentity('pytest -q', { stdout: 'FAILED tests/b.py::test_b - x\nFAILED tests/a.py::test_a\nERROR tests/c.py - ImportError\n1 failed, 1 passed in 0.1s\n', stderr: '' })).toBe('tests:tests/a.py::test_a\ntests/b.py::test_b\ntests/c.py');
+    // `-qq` progress only: the un-normalised counts, so 6/10 and 8/10 differ while the same counts twice agree
+    expect(testFailureIdentity('python -m pytest -qq', { stdout: 'FFFF......                                                               [100%]\n', stderr: '' })).toBe('counts:6/4/0');
+    expect(testFailureIdentity('python -m pytest -qq', { stdout: '..FF......                                                               [100%]\n', stderr: '' })).toBe('counts:8/2/0');
+    expect(testFailureIdentity('make', { stdout: 'FAILED tests/a.py::test_a\n', stderr: 'make: *** [all] Error 2' })).toBeNull();
+    // a known runner from the engine's detected test command overrides the command's own shape
+    expect(testFailureIdentity('npm test', { stdout: ' FAIL  tests/x.test.ts > suite > name\n Tests  1 failed | 2 passed (3)\n', stderr: '' }, 'vitest')).toBe('tests:tests/x.test.ts > suite > name');
+    expect(testFailureIdentity('pytest -q', { stdout: 'Killed', stderr: '' })).toBeNull();
+    // stderr is part of the parsed output
+    expect(testFailureIdentity('pytest -q', { stdout: '', stderr: 'FAILED tests/a.py::test_a - boom\n' })).toBe('tests:tests/a.py::test_a');
+  });
+  it('failingTestIds per runner; unittest\'s `FAILED (failures=1)` is not an id; verbose and 3.11 unittest forms agree', () => {
+    expect(failingTestIds('pytest', 'tests/a.py::test_x FAILED                                                [ 50%]\ntests/a.py::test_y PASSED\nFAILED (failures=1)\n')).toEqual(['tests/a.py::test_x']);
+    expect(failingTestIds('unittest', 'FAIL: test_x (pkg.mod.Case)\nERROR: test_y (pkg.mod.Case.test_y)\ntest_z (pkg.mod.Case) ... FAIL\nRan 3 tests in 0.001s\n\nFAILED (failures=2, errors=1)\n')).toEqual(['pkg.mod.Case.test_x', 'pkg.mod.Case.test_y', 'pkg.mod.Case.test_z']);
+    expect(failingTestIds('django', 'FAIL: test_x (app.tests.Case)\n')).toEqual(['app.tests.Case.test_x']);
+    expect(failingTestIds('sympy_bintest', '________________ sympy/core/tests/test_x.py:test_y ________________\n')).toEqual(['sympy/core/tests/test_x.py:test_y']);
+    expect(failingTestIds('cargo', 'test a::b ... FAILED\ntest a::c ... ok\n')).toEqual(['a::b']);
+    expect(failingTestIds('go', '--- FAIL: TestX (0.00s)\n    --- FAIL: TestX/sub (0.00s)\n')).toEqual(['TestX', 'TestX/sub']);
+    expect(failingTestIds('jest', '  ● Suite › does a thing\n  ✕ does a thing (3 ms)\n  ● Test suite failed to run\nFAIL src/x.test.ts\n')).toEqual(['Suite › does a thing', 'does a thing', 'src/x.test.ts']);
+    expect(failingTestIds('unknown', 'FAILED tests/a.py::test_a\n')).toEqual(['tests/a.py::test_a']);
+    expect(failingTestIds('pytest', '')).toEqual([]);
+  });
+  it('a non-runner command that exits non-zero keeps the exit-code + first-line text hash; a failed outcome keeps the error-class hash', () => {
+    const a = run('make build', 'x', 'make: *** [all] Error 2');
+    const b = run('make build', 'y', 'make: *** [all] Error 3');
+    expect(failOf(a)).toBe(failOf(b));
+    expect(failOf(a)).not.toBe(failOf(run('make build', '', 'gcc: fatal error')));
   });
 });
 
