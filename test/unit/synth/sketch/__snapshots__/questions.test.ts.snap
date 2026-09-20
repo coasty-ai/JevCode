@@ -5,13 +5,13 @@ exports[`sketchQuestions (Q12 + Q7 in one request) > snapshot of the gcd request
   "questions": {
     "edit_class": {
       "criteria": {
-        "delete_fragment": "tokens are removed from \`buggy_line\` and nothing is added. Example: \`return 1 + f(x)\` -> \`return f(x)\`; \`yield flatten(x)\` -> \`yield x\`",
-        "insert_fragment": "every token of \`buggy_line\` stays and a fragment is added: an extra term, index, slice, argument or condition. Example: \`mid\` -> \`mid + 1\`; \`arr\` -> \`arr[k:]\`; \`if total < 0\` -> \`if total < 0 or not coins\`; \`x + y\` -> \`max(0, x + y)\`",
-        "insert_new_line": "\`buggy_line\` is not wrong; a statement is missing and a new line must be inserted at the marker",
+        "delete_fragment": "tokens are removed from \`buggy_line\` and nothing is added. Example: \`return marks[i] - 1\` -> \`return marks[i]\`; \`total += weights[j] * 2\` -> \`total += weights[j]\`",
+        "insert_fragment": "every token of \`buggy_line\` stays and a fragment is added: an extra term, index, slice, argument or condition. Example: \`for k in range(width)\` -> \`for k in range(width + 1)\`; \`return items\` -> \`return items[1:]\`; \`if label in lookup\` -> \`if label in lookup and lookup[label] is not None\`; \`width - pad\` -> \`abs(width - pad)\`",
+        "insert_new_line": "\`buggy_line\` is not wrong; a statement is missing and a new line must be inserted at the marker. Example: a loop whose counter is never advanced (\`index += 1\` was left out); a value computed but never appended to the result list (\`pieces.append(chunk)\` was left out)",
         "none_of_these": null,
-        "reorder_tokens": "the same tokens in a different order: swapped arguments, operands or indices. Example: \`gcd(a % b, b)\` -> \`gcd(b, a % b)\`; \`perm[j] < perm[i]\` -> \`perm[i] < perm[j]\`",
-        "reshape_line": "the line is restructured in a way not covered above (several coordinated changes). Example: \`xs[a].update(ys[b])\` -> \`xs[a] = ys[b]\`",
-        "substitute_one_token": "one token of \`buggy_line\` is wrong and must be replaced by another of the same kind (a name, a literal or an operator); the line keeps its length. Example: \`while lo <= hi\` -> \`while lo < hi\`; \`enumerate(arr)\` -> \`enumerate(counts)\`",
+        "reorder_tokens": "the same tokens in a different order: swapped arguments, operands or indices. Example: \`divide(denominator, numerator)\` -> \`divide(numerator, denominator)\`; \`grid[row][col]\` -> \`grid[col][row]\`",
+        "reshape_line": "the line is restructured in a way not covered above (several coordinated changes). Example: \`seen.add(node)\` -> \`seen[node] = depth\`; \`path.extend(step)\` -> \`path = path + [step]\`",
+        "substitute_one_token": "one token of \`buggy_line\` is wrong and must be replaced by another of the same kind (a name, a literal or an operator); the line keeps its length. Example: \`for i in range(1, n)\` -> \`for i in range(0, n)\`; \`if count > limit\` -> \`if count >= limit\`; \`return total / size\` -> \`return total / count\`",
       },
       "instructions": "Which kind of edit turns \`buggy_line\` into the correct line for the \`<<<FIX THIS LINE>>>\` marker in \`program\`, so that every entry of \`tests\` passes? Judge the edit that would be written. Answer carefully and literally.",
       "type": "choice",

@@ -43,7 +43,10 @@ describe('sketchQuestions (Q12 + Q7 in one request)', () => {
     for (const k of keys) expect(k).toMatch(KEY_SHAPE);
     expect(Object.keys(edit.criteria)).toEqual(['substitute_one_token', 'insert_fragment', 'delete_fragment', 'reorder_tokens', 'reshape_line', 'insert_new_line', ESCAPE_KEY]);
     expect(edit.criteria['reorder_tokens']).toBe(EDIT_CLASSES.reorder_tokens);
-    expect(EDIT_CLASSES.substitute_one_token).toContain('`while lo <= hi` -> `while lo < hi`');
+    // the option examples are invented generic Python, not the measured QuixBugs gold fixes (jev-only-audit.md §3.2)
+    expect(EDIT_CLASSES.substitute_one_token).toContain('`if count > limit` -> `if count >= limit`');
+    expect(EDIT_CLASSES.substitute_one_token).not.toContain('while lo');
+    expect(EDIT_CLASSES.reorder_tokens).not.toContain('gcd(');
     expect(req.byKey.size).toBe(76);
     expect(sketchText(req.byKey.get('sketch_aa')!)).toBe('return _(a % b, b)');
   });

@@ -196,6 +196,15 @@ export interface RecordInput {
  * the evaluation. `generatorCalls` is copied for every condition; a jev-only record with any
  * generator usage (calls, tokens or cost) is invalidated rather than scored (docs/JEV-ONLY.md).
  */
+/**
+ * JSON for one tasks.jsonl line with every string leaf redacted (jev-only-audit.md §5: the bench
+ * writer had no redaction pass of its own; `reason` carries `tail()` of evaluator subprocess output
+ * and raw error messages). Keys are left alone, like the checkpoint store's redactDeep.
+ */
+export function serialiseRedacted(record: BenchRecord, redact: (s: string) => string): string {
+  return JSON.stringify(record, (_key: string, value: unknown): unknown => (typeof value === 'string' ? redact(value) : value));
+}
+
 export function buildRecord(input: RecordInput): BenchRecord {
   const { result, evaluation } = input;
   const raw = [...result.jevLatencyMs];
@@ -389,11 +398,13 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     for (const e of active) e.abort('signal');
   });
 
-  // append per record as it completes (crash safety); consolidated and rewritten at the end
+  // append per record as it completes (crash safety); consolidated and rewritten at the end.
+  // Every string leaf passes opts.redact first (`reason` carries evaluator output tails and error messages).
+  const serialiseRecord = (r: BenchRecord): string => serialiseRedacted(r, opts.redact);
   let appendChain: Promise<void> = Promise.resolve();
   const newRecords: BenchRecord[] = [];
   const appendRecord = (r: BenchRecord): Promise<void> => {
-    appendChain = appendChain.then(() => appendFile(tasksPath, `${JSON.stringify(r)}\n`, 'utf8'));
+    appendChain = appendChain.then(() => appendFile(tasksPath, `${serialiseRecord(r)}\n`, 'utf8'));
     return appendChain;
   };
   const modelPatches = new Map<string, string>();
@@ -628,7 +639,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
 
   // consolidate: previous kept records + new ones, markers dropped, pairComplete filled in
   const records = withPairComplete([...kept, ...newRecords].filter((r) => r.reason !== IN_PROGRESS), conditions);
-  await writeFileAtomic(tasksPath, records.map((r) => JSON.stringify(r)).join('\n') + (records.length ? '\n' : ''));
+  await writeFileAtomic(tasksPath, records.map(serialiseRecord).join('\n') + (records.length ? '\n' : ''));
 
   // a bench of jev-only alone has no generator model at all
   const model = generatorModel ?? (requiresGenerator(conditions) ? 'mock' : NULL_GENERATOR_MODEL);

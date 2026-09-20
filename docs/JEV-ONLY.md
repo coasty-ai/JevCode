@@ -222,3 +222,22 @@ the linter verify. The question this document answers by experiment is which dec
   ignore the outcome text and only the tripped signature resets. Predicted: 137 → ≈113 steps.
   Synthesizer side (after the oracle integration lands): combine partials before parking, reopen
   every parked goal on `change_approach`.
+- 2026-09-20: **audit and remediation** (`experiments/results/jev-only-audit.md`). An adversarial audit
+  of the claim "Jev and no other model" PASSES on the core: in `jev-only` mode the only reachable
+  network call is the pinned Jev decisions endpoint, the generator is the null provider on every
+  path, every checked-in jev-only record carries zero generator calls, no fix table or benchmark
+  identity is keyed anywhere in the synthesizer, and no key prefix appears in any artefact. Four
+  defects found and fixed: (1) the Q7 edit-class and beam question wordings quoted ten QuixBugs
+  gold fixes verbatim as examples — replaced with invented generic snippets and guarded by a test
+  that builds the leakage corpus from every benchmark's gold at test time; re-measured, Q7 top-1
+  drops 28–29/40 → 24/40 (top-2 35–36 → 34–35), the whole drop on the ten quoted programs, so the
+  earlier Q7 number was contaminated and the clean one is now the one cited; (2) the bench task log
+  was written unredacted — every record now passes through the redactor, end-to-end tested; (3) the
+  Q17 progress questions are dead in practice (0 live requests; only a tie-break path) and are
+  documented as code-computed facts scheduled for deletion; (4) every threshold retuned after a live
+  run on a named QuixBugs program is disclosed in the design's §7, and the rung-1a claim is stated
+  as in-sample. The "34 correct" claim is corrected by a per-program verdict script
+  (`experiments/inspect/quixbugs-verdicts.mts`, `bench/results/jev-only-quixbugs-3/verdicts.md`):
+  36/40 repaired = 27 gold-identical + 5 equivalent on reference and perturbed inputs + 2 overfit
+  (`detect_cycle`, `wrap`, both since addressed) + 2 unverified graph programs; **32/40 verified
+  correct by code**, 34 only if the two unverified are counted on hand inspection.

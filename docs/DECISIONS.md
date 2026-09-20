@@ -327,3 +327,87 @@ When no oracle can be extracted, the agent localises from the issue text (measur
 #1 on 23/30), enumerates and Jev-ranks candidates, checks regressions only, and commits its
 best guess once, labelled as such in the evidence. The oracle's validity is measured first
 (fails on base, passes on gold) before the integration.
+
+## 2026-09-20 Q7 `edit_class` examples were QuixBugs gold fixes; replaced and re-measured
+
+The audit (`experiments/results/jev-only-audit.md` §3.2) found that the Q7 option descriptions in
+`src/synth/sketch/questions.ts` and one Q5 example in `src/synth/beam/state.ts` quoted ten QuixBugs
+gold fixes verbatim (`enumerate(counts)`, `while lo < hi`, `gcd(b, a % b)`, `perm[i] < perm[j]`, …),
+so the measured Q7 figure (top-1 28–29/40) had the answers to ten of the forty programs in the
+prompt. Decision: every example is now invented generic Python from no benchmark (definition plus
+at least two examples per option, REPORT.md form; `insert_new_line` gained two examples it never
+had), and `test/unit/synth/sketch/no-benchmark-leakage.test.ts` builds a corpus at test time from
+`bench/data` (QuixBugs `correct/` and `programs/` lines, `index.json` buggy/fixed lines and the
+fixed fragment, ladder gold-only lines, SWE-bench gold `+` lines, Terminal-Bench gold files;
+whitespace-normalised, ≥ 12 chars, trailing colon optional) and asserts none of it appears in the
+question texts those two files produce; it also asserts the old wording would have been flagged.
+Re-measured with the same probe (`experiments/inspect/q7-clean-probe.mts`, a copy of
+`experiments/grammar-synthesis/sketch-probe.mts` that imports the wording from `src`): top-1
+**24/40** in both repeats, top-2 **34–35/40** ($0.0078 each), against 28–29 / 35–36 before. The
+drop is on the quoted programs (8/10 → 5/10 top-1 in both repeats; the other thirty 20–21 → 19).
+Q7 stays what it was designed as, a soft source-order prior that cannot produce or drop a
+candidate; the header of `sketch/questions.ts` and `TOP_EDIT_CLASSES` carry the clean numbers.
+Also from the audit's §5 gap: `src/bench/runner.ts` now writes every `tasks.jsonl` line through
+`serialiseRedacted` (every string leaf passes the run's redact function; `reason` carries evaluator
+output tails and error messages), tested in `test/unit/bench/runner-redact.test.ts`.
+
+## 2026-09-20 Q17 progress questions are code-computed facts; scheduled for deletion
+
+`experiments/results/probe-progress-judgment.md` shows the three progress Nouls (240/240) and the
+`closeness` Score (230/240) are a pure function of the pass counts the harness already computes
+(`src/synth/verify/progress.ts`), so by the design rule "never ask Jev to count or compute" they
+should not be asked. The audit called `progressQuestions` dead code; that is not quite right: the
+consistency check it was documented as (a `synth` event on a confident disagreement, "≥ 3
+disagreements flags the runner parser") was never built and nothing reads
+`ProgressJudgment.disagreements`/`unsure`, but `src/synth/search/bases.ts:270-323 closenessOf`
+calls `verify.judgeProgress` when two partials tie on `passed` (or a challenger ties the incumbent)
+and uses the Score's E[level] as the tiebreak, with `ask` supplied from `guard.ts:739-741`. Greps
+of every `jev.jsonl` of `jev-only-quixbugs-1`, `jev-only-quixbugs-3` and `jev-only-ladder-4` show
+it was asked 0 times. A tie is between programs with identical counts, so the tiebreak is Jev
+noise on identical facts. Decision: delete Q17 and the `closeness` cache, and break `passed` ties
+in code (list order, as `pickNextFailingTest` does). Not done in this change because the callers
+live in files owned by other agents; the exact deletion, for their owners:
+`src/synth/verify/questions.ts:24` (`ProgressQuestionId`), `:60-97` (`progressQuestions`,
+`codeVerdicts`), `:99-135` (`expectedLevel`, `judgeProgress`) and the `noul`/`score` imports;
+`src/synth/verify/index.ts:13,24,30,34,40` (re-exports), `:58-60` (`Verifier.progressQuestions`,
+`progressState`, `judgeProgress`), `:153`; `src/synth/verify/types.ts` `ProgressJudgment` and
+`closenessExpected`; `src/synth/search/bases.ts:7,15` (header), `:25` (import), `:99-100,118`
+(`GuardState.closeness`), `:210-…` (`HoldOptions.ask/stage/subject`), `:266-282` (`closenessOf`),
+`:286,301-310,313-323,326-328` (tie handling in `holdBestPartial`), `:411`; `guard.ts:739-741`
+(`holdOpts`); tests `test/unit/synth/verify/{questions,index}.test.ts`,
+`test/unit/synth/search/bases.test.ts`, `test/live/synth-verify.live.test.ts`. The design table
+row (`docs/JEV-ONLY-DESIGN.md` §2.7 Q17) now states the implemented behaviour; §2.2's pseudo-code
+comment, §4.4, §4.5's cost row and §6's module table still mention the `closeness` tiebreak and
+should be updated with the deletion.
+
+## 2026-09-20 In-sample thresholds and 0.5 cuts disclosed; QuixBugs rung-1a is "36/40 with these programs in-sample"
+
+`docs/JEV-ONLY-DESIGN.md` §7 now carries a disclosure paragraph. Constants set or moved after a
+live run on a named program, so every score depending on them is in-sample for that program
+(audit §4.3): `src/synth/search/guard.ts:81 SUSPECT_ESCAPE_MIN` 0.9 → 0.8 (`wrap`);
+`src/synth/search/sites.ts:101 Q6_FALLBACK_MIN_P` 0.2 (`reverse_linked_list`); the lone-passer
+hold/vouch rules `guard.ts:94-105` (`detect_cycle`); `src/synth/search/perturb.ts` (`detect_cycle`,
+`wrap`); the skew-aware per-case timeout `src/synth/search/budget.ts:60-65` and load scaling
+`:74-75` (`longest_common_subsequence`, `sqrt`, `bitcount`, run-3 contention) and `SIEVE_KEEP_FACTOR`
+(`shunting_yard`); the insertion-site anchors `src/synth/search/sites.ts:12-32`,
+`src/synth/localize/sites.ts:64-140` (`shunting_yard`, `reverse_linked_list`, `depth_first_search`,
+`wrap`); the vocabulary pre-check's import-path exemption `src/synth/sieve/queue.ts:171-178`
+(ladder `tagcloud`). No constant was changed here (the files belong to other agents); the claim
+is reported as in-sample instead. The 0.5 cuts on Jev probabilities the audit found, with their
+nature: **decisions** (a borderline threshold; REPORT §6 measured ±0.02 noise at 0.5, so each will
+flip run to run and must be reported as such): `src/synth/rank/index.ts:70 NOUL_ABSENT_THRESHOLD`
+(`noulsFlagAbsent` switches the candidate source when max Noul < 0.5),
+`src/synth/oracle/questions.ts:30 PICK_THRESHOLD` (a block is taken as the reproduction /
+expected output only at p ≥ 0.5; mitigated by code checking the block fails on the base commit),
+`src/loop/stages/context.ts:16 CONTEXT_SELECT_THRESHOLD` (a file enters the context iff p ≥ 0.5),
+`src/loop/stages/choose.ts:10 PAIRED_NOUL_FLOOR` (the Choice argmax is accepted iff its paired
+Noul ≥ 0.5, else overridden or the fallback). **Ordering-only** (fine): `src/synth/search/subgoal.ts:56
+INSERT_FIRST_MIN_P` and `src/synth/search/sites.ts:87 Q7_INSERT_NEW_LINE_FIRST` (put templates,
+donors and insert sites first; nothing is dropped), `src/synth/sketch/questions.ts:47
+LOW_CONFIDENCE_P_TOP` (widens K from 3 to 5; never a gate). Per-program correctness for run 3 is now
+code-generated (`experiments/inspect/quixbugs-verdicts.mts` → `bench/results/jev-only-quixbugs-3/verdicts.md`):
+gold-identical 27, equivalent 5, overfit 2, unverified 2, miss 4, i.e. 32/40 verified correct;
+"34 correct by inspection" adds the two unverified graph programs on the inspector's reasoning.
+The wording "hidden test/evaluator" in `experiments/results/jev-only-rungs-1-2.md` (three lines)
+now reads "the evaluator's reference cases (the same cases the workspace exposes; there is no
+hidden suite)".

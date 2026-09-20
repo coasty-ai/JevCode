@@ -1,15 +1,21 @@
 /**
  * Q12 `sketch` and Q7 `edit_class` for one site, asked in one request (docs/JEV-ONLY-DESIGN.md
- * §2.7; wording verbatim from experiments/designs/grammar-synthesis.md Appendix A, script
- * experiments/grammar-synthesis/sketch-probe.mts). Code builds the option set from the pool
+ * §2.7; Q12 wording verbatim from experiments/designs/grammar-synthesis.md Appendix A, script
+ * experiments/grammar-synthesis/sketch-probe.mts; the Q7 option examples are NOT the measured
+ * ones: those were ten QuixBugs gold fixes quoted verbatim, experiments/results/jev-only-audit.md
+ * §3.2, and were replaced by invented generic Python taken from no benchmark, re-measured by
+ * experiments/inspect/q7-clean-probe.mts). Code builds the option set from the pool
  * (opaque keys `sketch_aa`…, description `{ shape, change }`: probe-question-design §3 found
  * opaque keys with descriptions fine and code-slug keys worse), Jev picks, and `keepK` turns the
  * answer into the K hypotheses the slot beam fills.
  *
  * Measured (Appendix A, three runs): sketch top-1 23–26/40, top-3 29–31/40, top-5 32–33/40 at
- * $0.00019 and 238 ms per request; edit_class top-1 28–29/40, top-2 35–36/40, hence a soft
- * order only, never a filter. Calibration: P(top) ≥ 0.5 on 27 programs → top-3 25/27; P(top)
- * < 0.5 on 13 → top-3 4/13, which is the K = 5 widening rule.
+ * $0.00019 and 238 ms per request; edit_class top-1 28–29/40, top-2 35–36/40 WITH the
+ * contaminated examples (ten of the forty answers were in the prompt); with the clean examples
+ * below, top-1 24/40 and top-2 34–35/40 over two live repeats (experiments/inspect/out/
+ * q7-clean-live-run{1,2}.json, $0.0078 each; the ten formerly quoted programs fell 8/10 → 5/10, the
+ * other thirty 20–21 → 19), hence a soft order only, never a filter. Calibration: P(top) ≥ 0.5 on
+ * 27 programs → top-3 25/27; P(top) < 0.5 on 13 → top-3 4/13, which is the K = 5 widening rule.
  */
 import type { Answer, Json, Question } from '../../core/types.js';
 import { ESCAPE_KEY, choice } from '../../jev/questions.js';
@@ -29,14 +35,18 @@ export const SKETCH_INSTRUCTIONS = `Each option is a sketch of the corrected lin
 /** Measured Q7 wording (Appendix A.1), verbatim. */
 export const EDIT_CLASS_INSTRUCTIONS = `Which kind of edit turns \`buggy_line\` into the correct line for the \`${MARK}\` marker in \`program\`, so that every entry of \`tests\` passes? Judge the edit that would be written. Answer carefully and literally.`;
 
-/** Measured Q7 options: definition + two examples each (Appendix A.1), verbatim. */
+/**
+ * Q7 options: definition + at least two examples each (REPORT.md form). Every example is invented
+ * generic Python from no benchmark (test/unit/synth/sketch/no-benchmark-leakage.test.ts checks the
+ * texts against bench/data); the measured wording quoted QuixBugs gold fixes (audit §3.2).
+ */
 export const EDIT_CLASSES: Readonly<Record<EditClass, string>> = {
-  substitute_one_token: 'one token of `buggy_line` is wrong and must be replaced by another of the same kind (a name, a literal or an operator); the line keeps its length. Example: `while lo <= hi` -> `while lo < hi`; `enumerate(arr)` -> `enumerate(counts)`',
-  insert_fragment: 'every token of `buggy_line` stays and a fragment is added: an extra term, index, slice, argument or condition. Example: `mid` -> `mid + 1`; `arr` -> `arr[k:]`; `if total < 0` -> `if total < 0 or not coins`; `x + y` -> `max(0, x + y)`',
-  delete_fragment: 'tokens are removed from `buggy_line` and nothing is added. Example: `return 1 + f(x)` -> `return f(x)`; `yield flatten(x)` -> `yield x`',
-  reorder_tokens: 'the same tokens in a different order: swapped arguments, operands or indices. Example: `gcd(a % b, b)` -> `gcd(b, a % b)`; `perm[j] < perm[i]` -> `perm[i] < perm[j]`',
-  reshape_line: 'the line is restructured in a way not covered above (several coordinated changes). Example: `xs[a].update(ys[b])` -> `xs[a] = ys[b]`',
-  insert_new_line: '`buggy_line` is not wrong; a statement is missing and a new line must be inserted at the marker',
+  substitute_one_token: 'one token of `buggy_line` is wrong and must be replaced by another of the same kind (a name, a literal or an operator); the line keeps its length. Example: `for i in range(1, n)` -> `for i in range(0, n)`; `if count > limit` -> `if count >= limit`; `return total / size` -> `return total / count`',
+  insert_fragment: 'every token of `buggy_line` stays and a fragment is added: an extra term, index, slice, argument or condition. Example: `for k in range(width)` -> `for k in range(width + 1)`; `return items` -> `return items[1:]`; `if label in lookup` -> `if label in lookup and lookup[label] is not None`; `width - pad` -> `abs(width - pad)`',
+  delete_fragment: 'tokens are removed from `buggy_line` and nothing is added. Example: `return marks[i] - 1` -> `return marks[i]`; `total += weights[j] * 2` -> `total += weights[j]`',
+  reorder_tokens: 'the same tokens in a different order: swapped arguments, operands or indices. Example: `divide(denominator, numerator)` -> `divide(numerator, denominator)`; `grid[row][col]` -> `grid[col][row]`',
+  reshape_line: 'the line is restructured in a way not covered above (several coordinated changes). Example: `seen.add(node)` -> `seen[node] = depth`; `path.extend(step)` -> `path = path + [step]`',
+  insert_new_line: '`buggy_line` is not wrong; a statement is missing and a new line must be inserted at the marker. Example: a loop whose counter is never advanced (`index += 1` was left out); a value computed but never appended to the result list (`pieces.append(chunk)` was left out)',
 };
 
 /** K when the sketch Choice is confident (Appendix A: P(top) ≥ 0.5 → top-3 holds 25/27). */
@@ -46,7 +56,7 @@ export const KEEP_WIDE = 5;
 /** Widening rule thresholds (grammar-synthesis §1.2 and §1.5: "P(top) < 0.5 or P(escape) ≥ 0.3 → K = 5"). */
 export const LOW_CONFIDENCE_P_TOP = 0.5;
 export const HIGH_ESCAPE_P = 0.3;
-/** Edit classes used as the soft order prior: top-2 covers 35–36/40 (Appendix A). */
+/** Edit classes used as the soft order prior: top-2 covers 34–35/40 with the clean wording (35–36/40 measured with the contaminated one). */
 export const TOP_EDIT_CLASSES = 2;
 /**
  * Choice probabilities arrive as two-decimal values whose sum is 1 up to rounding, so a measured

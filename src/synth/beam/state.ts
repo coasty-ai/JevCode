@@ -132,7 +132,7 @@ const CURRENT_LINE_CORRECT_CRITERIA: NoulCriteriaSpec = {
   },
   false: {
     definition: '`buggy_line` is the defect: at least one entry of `tests` fails because of what this line computes, compares or returns',
-    examples: ['`return gcd(a % b, b)` recurses forever where `tests` expect `gcd(b, a % b)`', 'a `<` where the expected output needs `<=`, an argument in the wrong order, a wrong constant'],
+    examples: ['`return total / len(items)` raises ZeroDivisionError on the empty input where `tests` expect `0`', 'a `<` where the expected output needs `<=`, an argument in the wrong order, a wrong constant'],
   },
 };
 export function currentLineCorrectNoul(): Question {
