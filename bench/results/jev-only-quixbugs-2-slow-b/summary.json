@@ -1,0 +1,791 @@
+{
+  "benchId": "20260920-205025-1112f7",
+  "createdAt": "2026-09-20T20:50:25.221Z",
+  "finishedAt": "2026-09-20T20:54:08.380Z",
+  "mocked": false,
+  "suites": [
+    "quixbugs"
+  ],
+  "conditions": {
+    "jev-only": {
+      "mode": "jev-only",
+      "generatorModel": "none (jev-only)",
+      "deciderModel": "typesafe/jev-1.13-20260917",
+      "temperature": null,
+      "maxTokens": 4096,
+      "maxSteps": 12,
+      "maxWallMs": 360000,
+      "maxReplans": 5,
+      "taskSpendCapUsd": 0.1,
+      "sandboxProfile": "auto",
+      "noNetwork": false,
+      "commandTimeoutMs": 120000,
+      "maxCommandTimeoutMs": 600000,
+      "maxOutputBytes": 204800,
+      "completeThreshold": 0.85,
+      "impossibleThreshold": 0.85
+    }
+  },
+  "conditionOrder": [
+    "jev-only"
+  ],
+  "generatorModel": "none (jev-only)",
+  "spendCapUsd": 1,
+  "taskSpendCapUsd": 0.1,
+  "spentUsd": {
+    "generator": 0,
+    "jev": 0.03083043600000001,
+    "total": 0.03083043600000001
+  },
+  "capFired": null,
+  "notRun": {
+    "count": 0,
+    "tasks": []
+  },
+  "pairedTasks": {
+    "quixbugs": 5
+  },
+  "records": 5,
+  "perSuite": {
+    "quixbugs": {
+      "suite": "quixbugs",
+      "perCondition": {
+        "jev-only": {
+          "condition": "jev-only",
+          "tasks": 5,
+          "evaluated": 5,
+          "passed": 4,
+          "passRate": 0.8,
+          "passRateText": "4/5 (n=5)",
+          "unevaluated": [],
+          "unsupported": [],
+          "notRun": [],
+          "stepsToSolve": {
+            "n": 4,
+            "mean": 4.75,
+            "median": 4,
+            "values": [
+              3,
+              4,
+              6,
+              6
+            ]
+          },
+          "solveCurve": [
+            {
+              "k": 1,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 2,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 3,
+              "solved": 1,
+              "fraction": 0.2
+            },
+            {
+              "k": 4,
+              "solved": 2,
+              "fraction": 0.4
+            },
+            {
+              "k": 5,
+              "solved": 2,
+              "fraction": 0.4
+            },
+            {
+              "k": 6,
+              "solved": 4,
+              "fraction": 0.8
+            },
+            {
+              "k": 7,
+              "solved": 4,
+              "fraction": 0.8
+            },
+            {
+              "k": 8,
+              "solved": 4,
+              "fraction": 0.8
+            },
+            {
+              "k": 9,
+              "solved": 4,
+              "fraction": 0.8
+            },
+            {
+              "k": 10,
+              "solved": 4,
+              "fraction": 0.8
+            },
+            {
+              "k": 11,
+              "solved": 4,
+              "fraction": 0.8
+            },
+            {
+              "k": 12,
+              "solved": 4,
+              "fraction": 0.8
+            }
+          ],
+          "stepsUsed": {
+            "n": 5,
+            "mean": 6.2,
+            "median": 6
+          },
+          "stopReasons": {
+            "complete": 4,
+            "max_steps": 1
+          },
+          "tokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 6896.8,
+              "n": 5
+            },
+            {
+              "step": 2,
+              "mean": 10236,
+              "n": 5
+            },
+            {
+              "step": 3,
+              "mean": 60649,
+              "n": 5
+            },
+            {
+              "step": 4,
+              "mean": 9046,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 70574,
+              "n": 3
+            },
+            {
+              "step": 6,
+              "mean": 12859.666666666666,
+              "n": 3
+            },
+            {
+              "step": 7,
+              "mean": 8880,
+              "n": 1
+            },
+            {
+              "step": 8,
+              "mean": 8133,
+              "n": 1
+            },
+            {
+              "step": 9,
+              "mean": 8208,
+              "n": 1
+            },
+            {
+              "step": 10,
+              "mean": 11628,
+              "n": 1
+            },
+            {
+              "step": 11,
+              "mean": 103462,
+              "n": 1
+            },
+            {
+              "step": 12,
+              "mean": 8076,
+              "n": 1
+            }
+          ],
+          "generatorTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 0,
+              "n": 5
+            },
+            {
+              "step": 2,
+              "mean": 0,
+              "n": 5
+            },
+            {
+              "step": 3,
+              "mean": 0,
+              "n": 5
+            },
+            {
+              "step": 4,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 0,
+              "n": 3
+            },
+            {
+              "step": 6,
+              "mean": 0,
+              "n": 3
+            },
+            {
+              "step": 7,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 8,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 9,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 10,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 11,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 12,
+              "mean": 0,
+              "n": 1
+            }
+          ],
+          "jevTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 6896.8,
+              "n": 5
+            },
+            {
+              "step": 2,
+              "mean": 10236,
+              "n": 5
+            },
+            {
+              "step": 3,
+              "mean": 60649,
+              "n": 5
+            },
+            {
+              "step": 4,
+              "mean": 9046,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 70574,
+              "n": 3
+            },
+            {
+              "step": 6,
+              "mean": 12859.666666666666,
+              "n": 3
+            },
+            {
+              "step": 7,
+              "mean": 8880,
+              "n": 1
+            },
+            {
+              "step": 8,
+              "mean": 8133,
+              "n": 1
+            },
+            {
+              "step": 9,
+              "mean": 8208,
+              "n": 1
+            },
+            {
+              "step": 10,
+              "mean": 11628,
+              "n": 1
+            },
+            {
+              "step": 11,
+              "mean": 103462,
+              "n": 1
+            },
+            {
+              "step": 12,
+              "mean": 8076,
+              "n": 1
+            }
+          ],
+          "meanTokensPerStep": {
+            "mean": 26573.58064516129,
+            "steps": 31
+          },
+          "meanGeneratorTokensPerStep": {
+            "mean": 0,
+            "steps": 31
+          },
+          "meanJevTokensPerStep": {
+            "mean": 26573.58064516129,
+            "steps": 31
+          },
+          "jevLatencyMs": {
+            "p50": 203.5870419999992,
+            "p95": 352.7952500000101,
+            "n": 217
+          },
+          "jevRequests": 217,
+          "jevQuestions": 3482,
+          "generatorCalls": 0,
+          "blocked": 11,
+          "reviews": 7,
+          "declined": 7,
+          "loops": 5,
+          "replans": 4,
+          "reads": {
+            "total": 9,
+            "meanPerRun": 1.8
+          },
+          "cost": {
+            "generator": 0,
+            "jev": 0.030830435999999992,
+            "total": 0.030830435999999992
+          },
+          "wallMs": {
+            "n": 5,
+            "mean": 126630.6802418,
+            "median": 154911.40691700001
+          },
+          "modelDrift": [],
+          "runsWithError": []
+        }
+      },
+      "comparison": {
+        "suite": "quixbugs",
+        "conditions": [
+          "jev-only"
+        ],
+        "pairedTasks": [
+          "bitcount",
+          "find_first_in_sorted",
+          "mergesort",
+          "shunting_yard",
+          "sqrt"
+        ],
+        "incompletePairs": [],
+        "excludedForDrift": [],
+        "perCondition": {
+          "jev-only": {
+            "condition": "jev-only",
+            "tasks": 5,
+            "evaluated": 5,
+            "passed": 4,
+            "passRate": 0.8,
+            "passRateText": "4/5 (n=5)",
+            "unevaluated": [],
+            "unsupported": [],
+            "notRun": [],
+            "stepsToSolve": {
+              "n": 4,
+              "mean": 4.75,
+              "median": 4,
+              "values": [
+                3,
+                4,
+                6,
+                6
+              ]
+            },
+            "solveCurve": [
+              {
+                "k": 1,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 2,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 3,
+                "solved": 1,
+                "fraction": 0.2
+              },
+              {
+                "k": 4,
+                "solved": 2,
+                "fraction": 0.4
+              },
+              {
+                "k": 5,
+                "solved": 2,
+                "fraction": 0.4
+              },
+              {
+                "k": 6,
+                "solved": 4,
+                "fraction": 0.8
+              },
+              {
+                "k": 7,
+                "solved": 4,
+                "fraction": 0.8
+              },
+              {
+                "k": 8,
+                "solved": 4,
+                "fraction": 0.8
+              },
+              {
+                "k": 9,
+                "solved": 4,
+                "fraction": 0.8
+              },
+              {
+                "k": 10,
+                "solved": 4,
+                "fraction": 0.8
+              },
+              {
+                "k": 11,
+                "solved": 4,
+                "fraction": 0.8
+              },
+              {
+                "k": 12,
+                "solved": 4,
+                "fraction": 0.8
+              }
+            ],
+            "stepsUsed": {
+              "n": 5,
+              "mean": 6.2,
+              "median": 6
+            },
+            "stopReasons": {
+              "complete": 4,
+              "max_steps": 1
+            },
+            "tokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 6896.8,
+                "n": 5
+              },
+              {
+                "step": 2,
+                "mean": 10236,
+                "n": 5
+              },
+              {
+                "step": 3,
+                "mean": 60649,
+                "n": 5
+              },
+              {
+                "step": 4,
+                "mean": 9046,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 70574,
+                "n": 3
+              },
+              {
+                "step": 6,
+                "mean": 12859.666666666666,
+                "n": 3
+              },
+              {
+                "step": 7,
+                "mean": 8880,
+                "n": 1
+              },
+              {
+                "step": 8,
+                "mean": 8133,
+                "n": 1
+              },
+              {
+                "step": 9,
+                "mean": 8208,
+                "n": 1
+              },
+              {
+                "step": 10,
+                "mean": 11628,
+                "n": 1
+              },
+              {
+                "step": 11,
+                "mean": 103462,
+                "n": 1
+              },
+              {
+                "step": 12,
+                "mean": 8076,
+                "n": 1
+              }
+            ],
+            "generatorTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 0,
+                "n": 5
+              },
+              {
+                "step": 2,
+                "mean": 0,
+                "n": 5
+              },
+              {
+                "step": 3,
+                "mean": 0,
+                "n": 5
+              },
+              {
+                "step": 4,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 0,
+                "n": 3
+              },
+              {
+                "step": 6,
+                "mean": 0,
+                "n": 3
+              },
+              {
+                "step": 7,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 8,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 9,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 10,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 11,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 12,
+                "mean": 0,
+                "n": 1
+              }
+            ],
+            "jevTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 6896.8,
+                "n": 5
+              },
+              {
+                "step": 2,
+                "mean": 10236,
+                "n": 5
+              },
+              {
+                "step": 3,
+                "mean": 60649,
+                "n": 5
+              },
+              {
+                "step": 4,
+                "mean": 9046,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 70574,
+                "n": 3
+              },
+              {
+                "step": 6,
+                "mean": 12859.666666666666,
+                "n": 3
+              },
+              {
+                "step": 7,
+                "mean": 8880,
+                "n": 1
+              },
+              {
+                "step": 8,
+                "mean": 8133,
+                "n": 1
+              },
+              {
+                "step": 9,
+                "mean": 8208,
+                "n": 1
+              },
+              {
+                "step": 10,
+                "mean": 11628,
+                "n": 1
+              },
+              {
+                "step": 11,
+                "mean": 103462,
+                "n": 1
+              },
+              {
+                "step": 12,
+                "mean": 8076,
+                "n": 1
+              }
+            ],
+            "meanTokensPerStep": {
+              "mean": 26573.58064516129,
+              "steps": 31
+            },
+            "meanGeneratorTokensPerStep": {
+              "mean": 0,
+              "steps": 31
+            },
+            "meanJevTokensPerStep": {
+              "mean": 26573.58064516129,
+              "steps": 31
+            },
+            "jevLatencyMs": {
+              "p50": 203.5870419999992,
+              "p95": 352.7952500000101,
+              "n": 217
+            },
+            "jevRequests": 217,
+            "jevQuestions": 3482,
+            "generatorCalls": 0,
+            "blocked": 11,
+            "reviews": 7,
+            "declined": 7,
+            "loops": 5,
+            "replans": 4,
+            "reads": {
+              "total": 9,
+              "meanPerRun": 1.8
+            },
+            "cost": {
+              "generator": 0,
+              "jev": 0.030830435999999992,
+              "total": 0.030830435999999992
+            },
+            "wallMs": {
+              "n": 5,
+              "mean": 126630.6802418,
+              "median": 154911.40691700001
+            },
+            "modelDrift": [],
+            "runsWithError": []
+          }
+        },
+        "rows": [
+          {
+            "task": "bitcount",
+            "pass": {
+              "jev-only": true
+            },
+            "steps": {
+              "jev-only": 6
+            },
+            "reads": {
+              "jev-only": 2
+            },
+            "cost": {
+              "jev-only": 0.0040126799999999985
+            }
+          },
+          {
+            "task": "find_first_in_sorted",
+            "pass": {
+              "jev-only": true
+            },
+            "steps": {
+              "jev-only": 3
+            },
+            "reads": {
+              "jev-only": 1
+            },
+            "cost": {
+              "jev-only": 0.0014589120000000001
+            }
+          },
+          {
+            "task": "mergesort",
+            "pass": {
+              "jev-only": true
+            },
+            "steps": {
+              "jev-only": 6
+            },
+            "reads": {
+              "jev-only": 2
+            },
+            "cost": {
+              "jev-only": 0.012822767999999997
+            }
+          },
+          {
+            "task": "shunting_yard",
+            "pass": {
+              "jev-only": false
+            },
+            "steps": {
+              "jev-only": 12
+            },
+            "reads": {
+              "jev-only": 2
+            },
+            "cost": {
+              "jev-only": 0.010985687999999997
+            }
+          },
+          {
+            "task": "sqrt",
+            "pass": {
+              "jev-only": true
+            },
+            "steps": {
+              "jev-only": 4
+            },
+            "reads": {
+              "jev-only": 2
+            },
+            "cost": {
+              "jev-only": 0.001550388
+            }
+          }
+        ]
+      }
+    }
+  },
+  "resumed": false
+}

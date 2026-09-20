@@ -10,6 +10,7 @@ coverage/
 .DS_Store
 bench/results/*
 !bench/results/live-*/
+!bench/results/jev-only-*/
 bench/work/
 perf/results/*
 !perf/results/latest.json
