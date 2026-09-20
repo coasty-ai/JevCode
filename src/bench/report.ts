@@ -48,11 +48,14 @@ function suiteTitle(suite: BenchSuite): string {
 }
 
 export const CONDITIONS_PARAGRAPH =
-  'Both conditions run the same generator, system prompt, user-message layout, limits and sandbox. ' +
-  'They differ structurally in context delivery: **jev-on** receives Jev-selected file contents each step ' +
+  'All conditions run the same limits and sandbox; jev-on and jev-off share the same generator, system prompt and ' +
+  'user-message layout. They differ structurally in context delivery: **jev-on** receives Jev-selected file contents each step ' +
   '(the context stage) plus intent, risk gating, judging and replanning; **jev-off** receives only the ' +
   'code-computed candidate list (paths and sizes) and must spend `read` steps to see file contents, has no ' +
-  'risk stage (nothing is blocked or reviewed), no judge, and stops on its own `done`. `read`-action counts ' +
+  'risk stage (nothing is blocked or reviewed), no judge, and stops on its own `done`; **jev-only** has no generating LLM ' +
+  'at all: the generator slot is a NullProvider that throws if called (a record with any generator usage is marked ' +
+  '`invalid` and excluded from the evaluated set), a code Synthesizer proposes from search over candidate edits, Jev ' +
+  'selects, tests verify, and intent, context, risk, judge and replan run as in jev-on. `read`-action counts ' +
   'are therefore reported beside steps-to-solve, and steps-to-solve is defined over passed tasks only.';
 
 function conditionRows(summary: Summary): string[][] {
@@ -87,6 +90,7 @@ function metricRows(conds: readonly EngineMode[], m: Record<string, ConditionMet
     row('blocked / reviews / declined', (x) => `${x.blocked} / ${x.reviews} / ${x.declined}`),
     row('loops / replans', (x) => `${x.loops} / ${x.replans}`),
     row('Jev requests / questions', (x) => `${x.jevRequests} / ${x.jevQuestions}`),
+    row('generator calls (jev-only asserts 0)', (x) => String(x.generatorCalls)),
     row('Jev latency p50 / p95 ms (n)', (x) => `${fmt(x.jevLatencyMs.p50)} / ${fmt(x.jevLatencyMs.p95)} (n=${x.jevLatencyMs.n})`),
     row('mean generator tokens/step (steps)', (x) => `${fmt(x.meanGeneratorTokensPerStep.mean, 0)} (n=${x.meanGeneratorTokensPerStep.steps})`),
     row('mean Jev tokens/step (steps)', (x) => `${fmt(x.meanJevTokensPerStep.mean, 0)} (n=${x.meanJevTokensPerStep.steps})`),

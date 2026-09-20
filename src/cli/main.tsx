@@ -8,7 +8,7 @@ import { resolve as resolvePath } from 'node:path';
 import { parseCliArgs, usageText } from './args.js';
 import type { ParsedFlags } from './args.js';
 import { EXIT_CODES, JevCodeError, UsageError, isJevCodeError } from '../errors.js';
-import type { Decider, Engine, EngineOptions, Provider, Renderer, ResolvedConfig, RunResult, StopReason } from '../core/types.js';
+import type { Decider, Engine, EngineMode, EngineOptions, Provider, Renderer, ResolvedConfig, RunResult, StopReason, Synthesizer } from '../core/types.js';
 
 const VERSION = '0.1.0';
 
@@ -40,7 +40,21 @@ async function readTask(flags: ParsedFlags): Promise<string> {
   throw new UsageError('missing task text: pass it as a positional argument, --task-file <path>, or on stdin');
 }
 
-async function buildProvider(config: ResolvedConfig, flags: ParsedFlags): Promise<Provider> {
+/** `--mode` (or its hidden alias `--condition`, already folded into `mode` by args.ts); default jev-on. */
+export function modeFromFlags(flags: ParsedFlags): EngineMode {
+  const m = flags.mode ?? flags.condition;
+  return m === 'jev-off' || m === 'jev-only' ? m : 'jev-on';
+}
+
+/**
+ * jev-only (docs/JEV-ONLY.md): the generator slot is the NullProvider, which throws if it is
+ * ever called, and the generator section of the config is never validated (no key needed).
+ */
+async function buildProvider(config: ResolvedConfig, flags: ParsedFlags, mode: EngineMode): Promise<Provider> {
+  if (mode === 'jev-only') {
+    const { createNullProvider } = await import('../provider/null.js');
+    return createNullProvider();
+  }
   if (flags.mock || flags.mockGenerator) {
     const { createMockProvider } = await import('../provider/mock.js');
     const { mockTrajectory } = await import('./mock-trajectory.js');
@@ -94,7 +108,7 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
 
     let task: string;
     let resume: EngineOptions['resume'];
-    let mode: EngineOptions['mode'] = flags.condition === 'jev-off' ? 'jev-off' : 'jev-on';
+    let mode: EngineOptions['mode'] = modeFromFlags(flags);
     let workspace = config.workspace;
     let limits = config.limits();
     let sandboxProfile = config.sandbox;
@@ -140,12 +154,18 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
       resume = undefined;
     }
 
-    const provider = await buildProvider(config, flags);
+    const provider = await buildProvider(config, flags, mode);
     const decider = await buildDecider(config, flags);
     const { createSpendMeter } = await import('../spend/meter.js');
     const meter = createSpendMeter(limits.spendCapUsd);
-    const gen = flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : config.generator();
+    // jev-only never validates the generator section (config.generator() is not called): only the decider needs a key.
+    const gen = mode === 'jev-only' || flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : config.generator();
     const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : config.decider();
+    let synthesizer: Synthesizer | null = null;
+    if (mode === 'jev-only') {
+      const { createSynthesizer } = await import('../synth/index.js');
+      synthesizer = createSynthesizer({ decider, redact: config.redact });
+    }
 
     const opts: EngineOptions = {
       task,
@@ -166,6 +186,7 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
       generation: { temperature: gen.temperature, maxTokens: gen.maxTokens },
       deciderModel: { configured: dec.model, pinned: dec.pinned },
       ...(extraWritableRoots.length ? { extraWritableRoots } : {}),
+      ...(synthesizer ? { synthesizer } : {}),
     };
     engine = opts.mode === 'jev-off'
       ? await (await import('../loop/generator-only.js')).createGeneratorOnlyEngine(opts)

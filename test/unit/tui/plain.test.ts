@@ -245,3 +245,37 @@ describe('itemsFromEvent exhaustiveness', () => {
     for (const e of events) expect(() => itemsFromEvent(e, 0)).not.toThrow();
   });
 });
+
+describe('synth transcript items (jev-only)', () => {
+  it('one line per synth event, counts only when present, control characters stripped', () => {
+    const full: EngineEvent = { type: 'synth', step: 2, phase: 'rank', detail: 'top candidate `return 2`', candidates: 12, tested: 3 };
+    const items = itemsFromEvent(full, 5);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ key: '2:synth:5', seq: 5, step: 2, kind: 'synth', level: 'info' });
+    expect(formatTranscriptItem(items[0]!)).toBe('[step 2] synth rank: top candidate `return 2` (candidates=12, tested=3)');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'localise', detail: 'src/a.py:2' }, 0)[0]!.text).toBe('synth localise: src/a.py:2');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', tested: 0 }, 0)[0]!.text).toBe('synth p: d (tested=0)');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'd', candidates: 4 }, 0)[0]!.text).toBe('synth p: d (candidates=4)');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'a\nb\u001b[2J' }, 0)[0]!.text).toBe('synth p: a ⏎ b[2J');
+    expect(itemsFromEvent({ type: 'synth', step: 1, phase: 'p', detail: 'x'.repeat(2000) }, 0)[0]!.text.length).toBeLessThanOrEqual(600);
+  });
+
+  it('the plain renderer prints the synth line and terminates an open stream first', async () => {
+    const out = new Sink();
+    const r = createPlainRenderer({ task: 't', resumeId: null, onAbort: () => undefined, stdout: out as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream });
+    await r.firstFrame();
+    const fe = fakeEngine();
+    r.attach(fe.engine);
+    fe.emit({ type: 'run:start', runId: 'r1', task: 't', mode: 'jev-only', resumedFromStep: null });
+    // an open generator stream (never in jev-only, but the rule is general) is terminated before the item line
+    fe.emit({ type: 'generator:delta', step: 1, text: 'partial' });
+    fe.emit({ type: 'synth', step: 1, phase: 'localise', detail: 'src/a.py:2', candidates: 3 });
+    fe.emit({ type: 'synth', step: 1, phase: 'select', detail: 'chose `return 2`', candidates: 3, tested: 1 });
+    await r.unmount();
+    const lines = out.text.split('\n');
+    expect(lines).toContain('partial');
+    expect(lines).toContain('[run] start r1 mode=jev-only task: t');
+    expect(lines).toContain('[step 1] synth localise: src/a.py:2 (candidates=3)');
+    expect(lines).toContain('[step 1] synth select: chose `return 2` (candidates=3, tested=1)');
+  });
+});

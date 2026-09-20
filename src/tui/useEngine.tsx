@@ -4,9 +4,9 @@
  * (DESIGN.md §10). Everything here except the hook is pure and unit-tested without Ink.
  */
 import { useEffect, useReducer } from 'react';
-import type { ConfirmRequest, Confirmer, Decision, EngineEvent, EngineStatus, RunResult } from '../core/types.js';
+import type { ConfirmRequest, Confirmer, Decision, EngineEvent, EngineMode, EngineStatus, RunResult } from '../core/types.js';
 import { AbortError } from '../errors.js';
-import { IDENTITY_REVIEWER, itemsFromEvent, sanitizeStream, type TranscriptItem } from './plain.js';
+import { IDENTITY_REVIEWER, itemsFromEvent, sanitizeStream, synthText, type TranscriptItem } from './plain.js';
 
 export const DECISIONS_KEPT = 12;
 /** 50 ms = 20 fps: the only coalescing the TUI does (generator deltas and exec output share the buffer). */
@@ -21,6 +21,10 @@ export interface UiState {
   readonly live: string;
   /** cumulative streamed tool-argument chars of the current generator call (0 when none / after the proposal) */
   readonly toolChars: number;
+  /** jev-only: the last `synth` line of the current step, shown in the live region while no generator stream is active */
+  readonly synth: string | null;
+  /** from run:start; the status line marks the propose stage `[synth]` in jev-only */
+  readonly mode: EngineMode | null;
   readonly decisions: readonly Decision[];
   readonly status: EngineStatus | null;
   /** from run:ready, fills the status line before the first status event */
@@ -39,7 +43,7 @@ export type UiAction =
   | { type: 'confirm:settled'; id: string };
 
 export function initialUiState(task: string, resumeId: string | null): UiState {
-  return { items: [], seq: 0, live: '', toolChars: 0, decisions: [], status: null, ready: null, pendingConfirm: null, task, resumeId, runId: null, done: null };
+  return { items: [], seq: 0, live: '', toolChars: 0, synth: null, mode: null, decisions: [], status: null, ready: null, pendingConfirm: null, task, resumeId, runId: null, done: null };
 }
 
 /** Pure; one dispatch per event (live flushes come from the coalescer as their own action). */
@@ -63,7 +67,11 @@ function applyEvent(state: UiState, e: EngineEvent): UiState {
   let next: UiState = newItems.length === 0 ? state : { ...state, items: [...state.items, ...newItems], seq: state.seq + newItems.length };
   switch (e.type) {
     case 'run:start':
-      next = { ...next, runId: e.runId };
+      next = { ...next, runId: e.runId, mode: e.mode };
+      break;
+    // jev-only progress: the committed line is in `items`; the live region repeats the latest until the proposal lands.
+    case 'synth':
+      next = { ...next, synth: synthText(e) };
       break;
     case 'run:ready':
       next = { ...next, runId: e.runId, ready: { step: e.step, maxSteps: e.maxSteps } };
@@ -80,7 +88,7 @@ function applyEvent(state: UiState, e: EngineEvent): UiState {
     case 'exec:start':
     case 'proposal':
     case 'outcome':
-      if (next.live !== '' || next.toolChars !== 0) next = { ...next, live: '', toolChars: 0 };
+      if (next.live !== '' || next.toolChars !== 0 || next.synth !== null) next = { ...next, live: '', toolChars: 0, synth: null };
       break;
     // Cumulative count from the engine; the live region shows `streaming action… N chars` while the text buffer is empty.
     case 'generator:tool-delta':
@@ -93,7 +101,7 @@ function applyEvent(state: UiState, e: EngineEvent): UiState {
       if (next.pendingConfirm?.id === e.id) next = { ...next, pendingConfirm: null };
       break;
     case 'run:end':
-      next = { ...next, done: e.result, pendingConfirm: null, live: '', toolChars: 0 };
+      next = { ...next, done: e.result, pendingConfirm: null, live: '', toolChars: 0, synth: null };
       break;
     default:
       break;

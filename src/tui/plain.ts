@@ -32,6 +32,7 @@ export type TranscriptKind =
   | 'run:ready'
   | 'intent'
   | 'context'
+  | 'synth'
   | 'proposal'
   | 'risk'
   | 'confirm:resolved'
@@ -189,6 +190,14 @@ function quoteList(xs: readonly string[]): string {
     .join('; ');
 }
 
+/** One line per `synth` event (jev-only): `synth <phase>: <detail> (candidates=…, tested=…)`, counts only when present. */
+export function synthText(e: Extract<EngineEvent, { type: 'synth' }>): string {
+  const counts: string[] = [];
+  if (e.candidates !== undefined) counts.push(`candidates=${e.candidates}`);
+  if (e.tested !== undefined) counts.push(`tested=${e.tested}`);
+  return `synth ${e.phase}: ${e.detail}${counts.length > 0 ? ` (${counts.join(', ')})` : ''}`;
+}
+
 /**
  * Transcript items for one engine event (0 or 1; kinds per §10). `seq` is the caller's
  * monotonic counter for the first item produced; keys are `${step}:${kind}:${seq}`.
@@ -217,6 +226,9 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
       return make(e.step, 'intent', `intent=${e.intent} p=${p2(e.probability)} c=${p2(e.confidence)}${e.answer !== e.intent ? ` (jev answered ${e.answer})` : ''}`);
     case 'context':
       return make(e.step, 'context', `context ${e.files.length} files ${kTokens(e.bytes)}B of ${e.candidates} candidates: ${e.files.slice(0, LIST_MAX).join(', ')}${e.files.length > LIST_MAX ? ` (+${e.files.length - LIST_MAX})` : ''}`);
+    case 'synth':
+      // jev-only synthesizer progress: one line per event, so it lands in transcript.log like every other item
+      return make(e.step, 'synth', synthText(e));
     case 'proposal': {
       const d = describeAction(e.proposal.action);
       const plan = e.proposal.plan;

@@ -194,3 +194,34 @@ describe('createEventBus', () => {
     expect(seen).toEqual([1, 2, 3]);
   });
 });
+
+describe('uiReducer: synth events (jev-only)', () => {
+  it('appends one item per event, keeps the last synth line for the live region until the proposal, and marks the status line', () => {
+    let s = uiReducer(initialUiState('t', null), ev({ type: 'run:start', runId: 'r', task: 't', mode: 'jev-only', resumedFromStep: null }));
+    expect(s.mode).toBe('jev-only');
+    s = uiReducer(s, ev({ type: 'synth', step: 1, phase: 'localise', detail: 'src/a.py:2', candidates: 3 }));
+    s = uiReducer(s, ev({ type: 'synth', step: 1, phase: 'select', detail: 'chose return 2', candidates: 3, tested: 1 }));
+    expect(s.items.map((i) => i.kind)).toEqual(['run:start', 'synth', 'synth']);
+    expect(s.items.map((i) => i.key)).toEqual(['run:run:start:0', '1:synth:1', '1:synth:2']);
+    expect(s.synth).toBe('synth select: chose return 2 (candidates=3, tested=1)');
+    // live region: the synth line while no generator stream is active; a stream or tool counter wins
+    expect(liveLines(s.live, 2, 80, s.toolChars, s.synth)).toEqual(['synth select: chose return 2 (candidates=3, tested=1)']);
+    expect(liveLines('abc', 2, 80, 0, s.synth)).toEqual(['streaming… 3 chars']);
+    expect(liveLines('', 2, 80, 7, s.synth)).toEqual(['streaming action… 7 chars']);
+    expect(liveLines('', 0, 80, 0, s.synth)).toEqual([]);
+    expect(liveLines('', 2, 80, 0, null)).toEqual([]);
+    // status line: propose carries the synth marker only in jev-only
+    const withStatus = uiReducer(s, ev({ type: 'status', status: mkStatus(1, 'propose') }));
+    expect(formatStatusLine({ status: withStatus.status, ready: null, done: null, spinnerFrame: 0, mode: withStatus.mode })).toContain('propose [synth]');
+    expect(formatStatusLine({ status: withStatus.status, ready: null, done: null, spinnerFrame: 0, mode: 'jev-on' })).not.toContain('[synth]');
+    expect(formatStatusLine({ status: withStatus.status, ready: null, done: null, spinnerFrame: 0 })).not.toContain('[synth]');
+    expect(formatStatusLine({ status: mkStatus(1, 'risk'), ready: null, done: null, spinnerFrame: 0, mode: 'jev-only' })).not.toContain('[synth]');
+    // proposal, outcome and run:end clear it; a repeated identical event is still a new item
+    const after = uiReducer(s, ev({ type: 'proposal', step: 1, proposal: mkProposal() }));
+    expect(after.synth).toBeNull();
+    expect(after.items.at(-1)?.kind).toBe('proposal');
+    expect(uiReducer(s, ev({ type: 'outcome', step: 1, outcome: { status: 'noop', summary: 'x' } })).synth).toBeNull();
+    expect(uiReducer(s, ev({ type: 'run:end', result: mkRunResult('max_steps') })).synth).toBeNull();
+    expect(uiReducer(s, ev({ type: 'synth', step: 1, phase: 'select', detail: 'chose return 2', candidates: 3, tested: 1 })).items).toHaveLength(4);
+  });
+});

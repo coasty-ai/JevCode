@@ -34,6 +34,7 @@ export const STRING_FLAGS = [
   'sandbox',
   'taskFile',
   'resume',
+  'mode',
   'condition',
   'suite',
   'tasks',
@@ -101,7 +102,8 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'resume', name: 'resume', type: 'string', commands: ['run', 'bench'], arg: '<id>', help: 'run: resume <run-id>; bench: resume <bench-id>' },
   { key: 'force', name: 'force', type: 'boolean', commands: RUN, help: 'with --resume: resume a run whose stopReason is complete' },
   { key: 'perfExitAfterFirstFrame', name: 'perf-exit-after-first-frame', type: 'boolean', commands: RUN, help: 'exit after the first frame (perf)', hidden: true },
-  { key: 'condition', name: 'condition', type: 'string', commands: RUN, arg: 'jev-on|jev-off', help: 'engine condition (Harbor adapter)', hidden: true },
+  { key: 'mode', name: 'mode', type: 'string', commands: RUN, arg: 'jev-on|jev-off|jev-only', help: 'engine mode: jev-on (default), jev-off (generator only), jev-only (no generating LLM)' },
+  { key: 'condition', name: 'condition', type: 'string', commands: RUN, arg: 'jev-on|jev-off|jev-only', help: 'alias of --mode (Harbor adapter)', hidden: true },
   // Hidden run flags used by the wiring code and perf/*: mocked provider+decider, no network.
   { key: 'mock', name: 'mock', type: 'boolean', commands: RUN, help: 'mocked generator and decider (perf, smoke)', hidden: true },
   { key: 'mockSteps', name: 'mock-steps', type: 'string', commands: RUN, arg: '<n>', help: 'steps in the mocked trajectory', hidden: true },
@@ -111,7 +113,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|all', help: 'benchmark suite' },
   { key: 'tasks', name: 'tasks', type: 'string', commands: BENCH, arg: '<n>', help: 'number of tasks' },
   { key: 'taskId', name: 'task-id', type: 'string', commands: BENCH, arg: '<id>[,<id>...]', help: 'specific task ids' },
-  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off', help: 'conditions to run' },
+  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only]', help: 'conditions to run (default jev-on,jev-off)' },
   { key: 'concurrency', name: 'concurrency', type: 'string', commands: BENCH, arg: '<n>', help: 'parallel runs' },
   { key: 'live', name: 'live', type: 'boolean', commands: ['bench', 'perf'], help: 'use the real generator and Jev (requires --spend-cap)' },
   { key: 'taskSpendCap', name: 'task-spend-cap', type: 'string', commands: BENCH, arg: '<usd>', help: 'per-run spend cap (default 2.00)' },
@@ -123,7 +125,7 @@ export const FLAGS: readonly FlagSpec[] = [
 
 export const RUN_ID_RE = /^\d{8}-\d{6}-[a-z2-7]{8}$/;
 export const SANDBOX_PROFILES = ['auto', 'seatbelt', 'none'] as const;
-export const CONDITIONS = ['jev-on', 'jev-off'] as const;
+export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only'] as const;
 export const SUITES = ['swebench', 'terminal-bench', 'all'] as const;
 
 function isCommand(s: string): s is Command {
@@ -234,7 +236,19 @@ export function parseCliArgs(argv: readonly string[]): ParsedFlags {
     } else if (flags.force) {
       throw new UsageError(`--force only applies together with --resume. ${usageHint(command)}`);
     }
-    if (flags.condition !== undefined) oneOf(command, 'condition', flags.condition, CONDITIONS);
+    if (flags.mode !== undefined) {
+      flags.mode = flags.mode.trim().toLowerCase();
+      oneOf(command, 'mode', flags.mode, CONDITIONS);
+    }
+    if (flags.condition !== undefined) {
+      flags.condition = flags.condition.trim().toLowerCase();
+      oneOf(command, 'condition', flags.condition, CONDITIONS);
+      // --condition is the hidden alias the Harbor adapter uses; both flags resolve to `mode`.
+      if (flags.mode !== undefined && flags.mode !== flags.condition) {
+        throw new UsageError(`--mode ${flags.mode} and --condition ${flags.condition} disagree (--condition is an alias of --mode). ${usageHint(command)}`);
+      }
+      flags.mode = flags.condition;
+    }
     if (flags.mockSteps !== undefined) positiveInteger(command, 'mock-steps', flags.mockSteps);
   }
 
@@ -245,7 +259,7 @@ export function parseCliArgs(argv: readonly string[]): ParsedFlags {
     if (flags.taskSpendCap !== undefined) positiveNumber(command, 'task-spend-cap', flags.taskSpendCap);
     if (flags.conditions !== undefined) {
       const parts = flags.conditions.split(',').map((s) => s.trim()).filter((s) => s.length > 0);
-      if (parts.length === 0) throw new UsageError(`--conditions: expected jev-on, jev-off or both. ${usageHint(command)}`);
+      if (parts.length === 0) throw new UsageError(`--conditions: expected a comma-separated subset of ${CONDITIONS.join(', ')}. ${usageHint(command)}`);
       for (const p of parts) oneOf(command, 'conditions', p, CONDITIONS);
     }
     if (flags.resume !== undefined && flags.resume.trim().length === 0) {
@@ -275,10 +289,10 @@ export function usageText(command?: Command): string {
       'JevCode: Jev decides, Claude writes.',
       '',
       'Usage:',
-      '  jevcode run  <task text> | --task-file <path> | (stdin when not a TTY)',
+      '  jevcode run  <task text> | --task-file <path> | (stdin when not a TTY)  [--mode jev-on|jev-off|jev-only]',
       '  jevcode run  --resume <run-id> [--force]',
       '  jevcode config [--json]',
-      '  jevcode bench --suite swebench|terminal-bench|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off]',
+      '  jevcode bench --suite swebench|terminal-bench|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only]',
       '                [--concurrency <n>] [--live --spend-cap <usd>] [--task-spend-cap <usd>] [--allow-model-alias]',
       '                [--resume <bench-id>] [--out <dir>]',
       '  jevcode perf [--live --spend-cap <usd>] [--out <file>]',

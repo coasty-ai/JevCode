@@ -29,9 +29,10 @@ import type {
   SpendMeter,
   SpendSnapshot,
   StopReason,
+  Synthesizer,
   TokenUsage,
 } from '../../../src/core/types.js';
-import type { BenchSetupTools, BenchTaskSource, BuildTaskOptions, BenchTask, Evaluation } from '../../../src/bench/types.js';
+import type { BenchDepsWithSynth, BenchSetupTools, BenchTaskSource, BuildTaskOptions, BenchTask, Evaluation } from '../../../src/bench/types.js';
 
 export const zeroUsage = (): TokenUsage => ({ inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 });
 
@@ -215,12 +216,16 @@ export interface Captured {
   generateRequests: GenerateRequest[];
   askStates: Json[];
   mockProviders: MockProviderOptions[];
+  /** deciders handed to createSynthesizer (jev-only pairs) */
+  synthesizerDeciders: Decider[];
 }
 
 let runCounter = 0;
 export function createFakeEngineFactory(script: EngineScript, captured: Captured) {
-  return (mode: EngineMode) =>
+  return (_label: EngineMode) =>
     async (opts: EngineOptions): Promise<Engine> => {
+      // the mode is the one in the options: jev-on and jev-only both arrive through deps.createEngine
+      const mode = opts.mode;
       const runId = opts.resume?.runId ?? `20260919-1200${String(++runCounter).padStart(2, '0')}-${(runCounter % 32).toString(32).padStart(8, 'a')}`;
       captured.engines.push({ mode, opts, runId, resumed: opts.resume !== undefined });
       await mkdir(join(opts.runsDir, runId), { recursive: true });
@@ -242,10 +247,11 @@ export function createFakeEngineFactory(script: EngineScript, captured: Captured
         async run() {
           // the engine's prompt and Jev state carry the task text and nothing else from the record
           const req: GenerateRequest = { system: 'system', messages: [{ role: 'user', content: `Task:\n${opts.task}` }], maxTokens: opts.generation.maxTokens, temperature: opts.generation.temperature };
-          await opts.provider.generate(req, { signal: controller.signal }).catch(() => undefined);
-          if (mode === 'jev-on') await opts.decider.ask({ task: opts.task, plan: [] }, { q: { type: 'noul', instructions: 'x', criteria: { true: 'a', false: 'b' } } }, { signal: controller.signal, stage: 'intent', step: 1 }).catch(() => undefined);
+          // jev-only never touches the generator slot (the runner puts the NullProvider there)
+          if (mode !== 'jev-only') await opts.provider.generate(req, { signal: controller.signal }).catch(() => undefined);
+          if (mode !== 'jev-off') await opts.decider.ask({ task: opts.task, plan: [] }, { q: { type: 'noul', instructions: 'x', criteria: { true: 'a', false: 'b' } } }, { signal: controller.signal, stage: 'intent', step: 1 }).catch(() => undefined);
           if (s.spendUsd !== undefined) {
-            opts.meter.add('generator', { inputTokens: 10, outputTokens: 10, costUsd: s.spendUsd, calls: 1 });
+            opts.meter.add(mode === 'jev-only' ? 'jev' : 'generator', { inputTokens: 10, outputTokens: 10, costUsd: s.spendUsd, calls: 1 });
             events.emit({ type: 'status', status: engine.status() });
           }
           for (let i = 0; i < (s.decisions ?? 0); i++) {
@@ -275,7 +281,18 @@ export function createFakeEngineFactory(script: EngineScript, captured: Captured
 }
 
 export function createCaptured(): Captured {
-  return { engines: [], generateRequests: [], askStates: [], mockProviders: [] };
+  return { engines: [], generateRequests: [], askStates: [], mockProviders: [], synthesizerDeciders: [] };
+}
+
+/** A synthesizer that proposes `done` at once; the scripted engine never calls it, real engines would. */
+export function createFakeSynthesizer(): Synthesizer {
+  return {
+    name: 'fake-synth',
+    synthesize: async (ctx) => {
+      ctx.emit({ type: 'synth', step: ctx.step, phase: 'fake', detail: 'fake synthesizer', candidates: 0, tested: 0 });
+      return { goal: 'fake', action: { kind: 'done', summary: 'fake synthesizer' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' };
+    },
+  };
 }
 
 export function createFakeProvider(captured: Captured, model = 'mock-model'): Provider {
@@ -305,13 +322,17 @@ export interface FakeDepsOptions {
   script: EngineScript;
   sandbox?: FakeSandboxFactory;
   live?: boolean;
+  /** with --live: omit the live provider (a jev-only-only bench needs none) */
+  liveProviderless?: boolean;
+  /** omit createSynthesizer (default false: present, as bench/cli.ts always passes it) */
+  noSynthesizer?: boolean;
 }
 
-export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDeps; captured: Captured; sandbox: FakeSandboxFactory } {
+export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDepsWithSynth; captured: Captured; sandbox: FakeSandboxFactory } {
   const captured = createCaptured();
   const sandbox = o.sandbox ?? createFakeSandboxFactory();
   const factory = createFakeEngineFactory(o.script, captured);
-  const deps: BenchDeps = {
+  const base: BenchDeps = {
     createEngine: factory('jev-on'),
     createGeneratorOnlyEngine: factory('jev-off'),
     createMockProvider(opts) {
@@ -321,8 +342,18 @@ export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDeps; captured:
     createMockDecider: () => createFakeDecider(captured),
     createSpendMeter: createFakeMeter,
     createSandbox: sandbox.create,
-    ...(o.live ? { liveProvider: createFakeProvider(captured, 'anthropic/claude-sonnet-5'), liveDecider: createFakeDecider(captured) } : {}),
+    ...(o.live && !o.liveProviderless ? { liveProvider: createFakeProvider(captured, 'anthropic/claude-sonnet-5') } : {}),
+    ...(o.live ? { liveDecider: createFakeDecider(captured) } : {}),
   };
+  const deps: BenchDepsWithSynth = o.noSynthesizer
+    ? base
+    : {
+        ...base,
+        createSynthesizer: ({ decider }) => {
+          captured.synthesizerDeciders.push(decider);
+          return createFakeSynthesizer();
+        },
+      };
   return { deps, captured, sandbox };
 }
 

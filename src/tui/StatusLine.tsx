@@ -4,7 +4,7 @@
  * perf/first-frame.ts waits for (§12), so it is present from the very first render.
  */
 import { Box, Text } from 'ink';
-import type { EngineStatus, RunResult } from '../core/types.js';
+import type { EngineMode, EngineStatus, RunResult } from '../core/types.js';
 import { formatDuration } from '../core/time.js';
 import { kTokens, usd } from './plain.js';
 
@@ -16,19 +16,24 @@ export interface StatusLineProps {
   ready: { step: number; maxSteps: number } | null;
   done: RunResult | null;
   spinnerFrame: number;
+  /** engine mode from run:start; jev-only marks the propose stage `[synth]` (docs/JEV-ONLY.md) */
+  mode?: EngineMode | null;
 }
+
+export const SYNTH_MARKER = '[synth]';
 
 export function statusSentinel(step: number, maxSteps: number | null): string {
   return `step ${step}/${maxSteps === null ? '–' : maxSteps}`;
 }
 
-export function formatStatusLine({ status, ready, done, spinnerFrame }: StatusLineProps): string {
+export function formatStatusLine({ status, ready, done, spinnerFrame, mode }: StatusLineProps): string {
   const spinner = done ? '' : `${SPINNER_FRAMES[spinnerFrame % SPINNER_FRAMES.length]!} `;
   if (status === null) {
     return `${statusSentinel(ready?.step ?? 0, ready?.maxSteps ?? null)}  ${spinner}${done ? `done ${done.stopReason}` : 'starting'}`;
   }
   const s = status.spend;
-  const stage = done ? `done ${done.stopReason}` : status.stopReason ? `stopping ${status.stopReason}` : status.stage;
+  const stageText = status.stage === 'propose' && mode === 'jev-only' ? `propose ${SYNTH_MARKER}` : status.stage;
+  const stage = done ? `done ${done.stopReason}` : status.stopReason ? `stopping ${status.stopReason}` : stageText;
   return [
     statusSentinel(status.step, status.maxSteps),
     `${spinner}${stage}`,

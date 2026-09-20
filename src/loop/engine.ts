@@ -1,8 +1,15 @@
 /**
- * The step loop (DESIGN.md §6), the step commit rule (§9.1), shutdown (§11) and the
- * generator-only condition (§13, selected by `opts.mode`). Stage results accumulate in a
- * per-step draft; `plan`, `window` and the loop detector are replaced only at the commit
- * point, so a final checkpoint taken from any entry point is never half-applied.
+ * The step loop (DESIGN.md §6), the step commit rule (§9.1), shutdown (§11), the
+ * generator-only condition (§13) and the jev-only mode (docs/JEV-ONLY.md), all selected by
+ * `opts.mode`. Stage results accumulate in a per-step draft; `plan`, `window` and the loop
+ * detector are replaced only at the commit point, so a final checkpoint taken from any entry
+ * point is never half-applied.
+ *
+ * jev-only runs the jev-on pipeline (replan, intent, context, risk, execute, judge) with the
+ * propose stage swapped for `opts.synthesizer.synthesize(ctx)`: no generator is called, so no
+ * `generator:*` events fire and no generator.jsonl row is written for the step; the
+ * synthesizer's progress arrives as `synth` events through the engine's redacting emit (one
+ * transcript.log line each) and its Jev questions go through the engine's recorded ask.
  *
  * Concurrent modules (checkpoint/*, workspace/*, sandbox/*) are reached through `EngineDeps`
  * with dynamic imports as the default, so this module compiles and tests with fakes.
@@ -20,6 +27,7 @@ import type { AskResult,
   CheckpointState,
   CheckpointStore,
   ConfirmRequest,
+  Decider,
   Decision,
   Engine,
   EngineEmitter,
@@ -27,11 +35,13 @@ import type { AskResult,
   EngineMode,
   EngineOptions,
   EngineStatus,
+  FileView,
   GenerateRequest,
   GenerateResult,
   GeneratorCallRecord,
   Intent,
   JevRequestRecord,
+  Json,
   JsonObject,
   JudgeResult,
   Plan,
@@ -51,6 +61,8 @@ import type { AskResult,
   StepTiming,
   StepUsage,
   StopReason,
+  SynthesisContext,
+  Synthesizer,
   TargetInfo,
   TestCounts,
   TokenUsage,
@@ -73,10 +85,11 @@ import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete } from './stages/complete.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
 import { runExecuteStage } from './stages/execute.js';
-import { runIntentStage, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
+import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
 import { runProposeStage } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
+import { runSynthStage } from './stages/synth.js';
 import { computeTargets, runRiskStage, MATCHES_INTENT_THRESHOLD } from './stages/risk.js';
 
 // ---------------------------------------------------------------------------------------
@@ -272,6 +285,11 @@ function normaliseModelId(id: string): string {
   return id.trim().toLowerCase().replace(/^typesafe\//, '');
 }
 
+/** jev-on and jev-only consume Jev answers (intent, context, risk, judge, replan); jev-off is the generator alone (§13). */
+export function usesJev(mode: EngineMode): boolean {
+  return mode !== 'jev-off';
+}
+
 function isPlainStopBudget(reason: StopReason): reason is 'spend_cap' | 'max_steps' | 'wall_time' | 'max_replans' {
   return reason === 'spend_cap' || reason === 'max_steps' || reason === 'wall_time' || reason === 'max_replans';
 }
@@ -290,6 +308,8 @@ class EngineImpl implements Engine {
   private readonly wsInfo: WorkspaceInfo;
   private readonly clock: () => number;
   private readonly systemPrompt: string;
+  /** jev-only propose stage; null in the other modes (createEngine rejects jev-only without one) */
+  private readonly synthesizer: Synthesizer | null;
   private readonly resumed: boolean;
   private readonly resumeStop: StopReason | null;
 
@@ -370,6 +390,7 @@ class EngineImpl implements Engine {
       if (event.type !== 'transcript') this.events.emit({ type: 'transcript', step: null, level: 'warn', text: `listener error on ${event.type}: ${err instanceof Error ? this.redact(err.message) : String(err)}` });
     });
     this.systemPrompt = buildSystemPrompt({ mode: this.mode, sandboxLevel: init.sandbox.level, toolName: 'propose_action' });
+    this.synthesizer = init.opts.synthesizer ?? null;
     this.resumed = init.resume !== null;
     this.resumeStop = null;
     if (init.resume) {
@@ -745,7 +766,12 @@ class EngineImpl implements Engine {
   // Jev and generator calls (metered here, §6 Budgets)
   // -------------------------------------------------------------------------------------
 
-  private async ask(draft: StepDraft, stage: StageName, state: JsonObject, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void): Promise<AskOutcome> {
+  private async ask(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void): Promise<AskOutcome> {
+    return (await this.askRecorded(draft, stage, state, questions, annotate)).outcome;
+  }
+
+  /** The one metered, recorded path to the decider; returns the raw AskResult too for the jev-only decider wrapper. */
+  private async askRecorded(draft: StepDraft, stage: StageName, state: Json, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void): Promise<{ outcome: AskOutcome; res: AskResult }> {
     assertQuestionBatch(questions);
     trace(`engine.ask ${stage} step=${draft.step} start`);
     let res: AskResult;
@@ -793,7 +819,42 @@ class EngineImpl implements Engine {
     for (const r of rows) this.emit({ type: 'decision', decision: r });
     this.persist(this.store.appendDecisions(rows), 'decisions.jsonl');
     draft.jevStagesCompleted += 1;
-    return { answers: res.answers, rows, latencyMs: res.latencyMs };
+    return { outcome: { answers: res.answers, rows, latencyMs: res.latencyMs }, res };
+  }
+
+  /**
+   * jev-only (docs/JEV-ONLY.md): what the Synthesizer sees for one step. `emit` is the engine's
+   * redacting emit (so `synth` lines reach transcript.log and the renderers); `ask` and
+   * `decider.ask` both go through askRecorded (metered, jev.jsonl, decisions.jsonl, the pane,
+   * the REPORT question rules), so a synthesizer cannot spend Jev budget or take a decision the
+   * run does not record. The signal is the engine's; a synthesizer's own signal is ignored.
+   */
+  private synthesisContext(draft: StepDraft, contextFiles: readonly FileView[]): SynthesisContext {
+    const self = this;
+    const decider: Decider = {
+      model: this.opts.decider.model,
+      ask: async (state, questions, o) => (await self.askRecorded(draft, o.stage, state, questions)).res,
+    };
+    return {
+      runId: this.runId,
+      step: draft.step,
+      task: this.opts.task,
+      plan: this.plan,
+      window: this.window,
+      intent: draft.intent?.intent ?? INTENT_FALLBACK,
+      contextFiles,
+      workspace: this.workspace,
+      workspaceInfo: this.wsInfo,
+      sandbox: this.sandbox,
+      decider,
+      signal: this.signal,
+      limits: this.opts.limits,
+      redact: this.redact,
+      emit: (e) => self.emit(e),
+      ask: (stage, state, questions) => self.ask(draft, stage, state, questions),
+      createdThisRun: this.createdThisRun,
+      directive: draft.directive?.text ?? null,
+    };
   }
 
   /** §5.4 rule 7. Returns the served id when it must be recorded on the rows, else null. */
@@ -833,6 +894,8 @@ class EngineImpl implements Engine {
   }
 
   private async generate(draft: StepDraft, req: GenerateRequest, attempt: number): Promise<GenerateResult> {
+    // Defence in depth for docs/JEV-ONLY.md: even with a real provider in the slot, jev-only never reaches it.
+    if (this.mode === 'jev-only') throw new ConfigError('jev-only mode: the generating LLM must not be called', { setting: 'mode' });
     this.emit({ type: 'generator:start', step: draft.step, attempt });
     // Tool-call argument fragments are reported as a cumulative character count per call; the
     // renderer coalesces ("streaming action… N chars", §7/§10). The text itself is parsed once at the end.
@@ -873,7 +936,7 @@ class EngineImpl implements Engine {
     const draft = this.newDraft(step);
     this.draft = draft;
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
-    let stage: StageName = this.mode === 'jev-on' ? (this.detector.tripped() ? 'replan' : 'intent') : 'propose';
+    let stage: StageName = usesJev(this.mode) ? (this.detector.tripped() ? 'replan' : 'intent') : 'propose';
     let changedFiles: string[] = [];
     let stopAfterCommit: StopReason | null = null;
     let commonState: JsonObject | null = null;
@@ -887,7 +950,7 @@ class EngineImpl implements Engine {
       const ctx = this.makeContext(draft, changedFiles);
       const common = (): JsonObject => (commonState ??= this.commonState(changedFiles, this.window));
 
-      if (this.mode === 'jev-on') {
+      if (usesJev(this.mode)) {
         if (this.detector.tripped()) {
           stage = 'replan';
           const lastOutcomes = this.window.map((w) => w.outcome);
@@ -907,9 +970,18 @@ class EngineImpl implements Engine {
         const cx = await this.stage('context', () => runContextStage(ctx, common(), intentInfo));
         draft.contextFiles = cx.files.map((f) => f.path);
         stage = 'propose';
-        const prompt = this.promptInput(draft, changedFiles, cx.files, null);
-        const p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
-        this.flushGeneratorRecords(draft);
+        let p: { proposal: Proposal };
+        if (this.mode === 'jev-only') {
+          // The Synthesizer proposes (docs/JEV-ONLY.md): no generator call, no generator:* events, no generator.jsonl row.
+          const synthesizer = this.synthesizer;
+          if (synthesizer === null) throw new ConfigError('jev-only mode requires a synthesizer', { setting: 'mode' });
+          const sctx = this.synthesisContext(draft, cx.files);
+          p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
+        } else {
+          const prompt = this.promptInput(draft, changedFiles, cx.files, null);
+          p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
+          this.flushGeneratorRecords(draft);
+        }
         draft.proposal = p.proposal;
         draft.proposeCompleted = true;
         claimsOf(p.proposal);
@@ -976,7 +1048,7 @@ class EngineImpl implements Engine {
           draft.interruptedAt = { stage: 'execute', reason: cls.interrupt };
           draft.observed = false;
           stopAfterCommit = cls.stop;
-        } else if (this.mode === 'jev-on') {
+        } else if (usesJev(this.mode)) {
           stage = 'judge';
           const recent = pushWindow(this.window, this.provisionalEntry(draft));
           const judgeCommon = this.commonState(await this.workspace.changedFiles().catch(() => changedFiles), recent, draft);
@@ -1005,7 +1077,7 @@ class EngineImpl implements Engine {
     const committed = this.commit(draft);
     if (committed.stop) return { stop: committed.stop };
     if (stopAfterCommit) return { stop: stopAfterCommit };
-    if (this.mode === 'jev-on' && isComplete(draft.completion, this.opts.limits.completeThreshold)) return { stop: 'complete' };
+    if (usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold)) return { stop: 'complete' };
     if (this.mode === 'jev-off' && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
     if (this.consecutiveStageFailures >= CONSECUTIVE_STAGE_FAILURE_LIMIT) {
       const err = draft.error ?? { stage, code: 'internal' };
@@ -1235,7 +1307,7 @@ class EngineImpl implements Engine {
     });
     let plan = update.plan;
     const notes = [...draft.notes, ...update.notes];
-    if (status === 'noop' && this.mode === 'jev-on' && draft.completion !== null && !isComplete(draft.completion, this.opts.limits.completeThreshold)) {
+    if (status === 'noop' && usesJev(this.mode) && draft.completion !== null && !isComplete(draft.completion, this.opts.limits.completeThreshold)) {
       notes.push(`done rejected: task_complete=${draft.completion.toFixed(2)}`);
     }
     if (draft.interruptedAt?.stage === 'execute') notes.push(draft.interruptedAt.reason === 'wall_time' ? 'stopped by wall-time budget' : `interrupted (${draft.interruptedAt.reason})`);
@@ -1346,7 +1418,7 @@ class EngineImpl implements Engine {
     };
     if (draft.interruptedAt) record.interruptedAt = draft.interruptedAt;
     if (draft.error) record.error = draft.error;
-    if (this.mode === 'jev-on' && isComplete(draft.completion, this.opts.limits.completeThreshold)) record.stoppedAt = 'complete';
+    if (usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold)) record.stoppedAt = 'complete';
     else if (checkBudgets(this.budgetInput()) !== null) record.stoppedAt = 'step_start';
 
     const snapshot = this.buildCheckpointState();
@@ -1489,6 +1561,7 @@ function trace(msg: string): void {
 }
 
 export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): Promise<Engine> {
+  if (opts.mode === 'jev-only' && !opts.synthesizer) throw new ConfigError('jev-only mode requires a synthesizer (EngineOptions.synthesizer)', { setting: 'mode' });
   const d = await resolveDeps(deps);
   const redact = opts.redact;
   let root: string;

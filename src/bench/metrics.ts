@@ -6,7 +6,7 @@
  */
 import { percentile } from '../core/time.js';
 import type { BenchSuite, BenchTaskRecord, EngineMode } from '../core/types.js';
-import type { ConditionMetrics, MeanTokensPerStep, PairedRow, SolvePoint, Stat, SuiteComparison, SuiteMetrics, TokenSeries, TokensPoint } from './types.js';
+import type { BenchRecord, ConditionMetrics, MeanTokensPerStep, PairedRow, SolvePoint, Stat, SuiteComparison, SuiteMetrics, TokenSeries, TokensPoint } from './types.js';
 
 export function mean(xs: readonly number[]): number | null {
   if (xs.length === 0) return null;
@@ -117,6 +117,8 @@ export function computeConditionMetrics(all: readonly BenchTaskRecord[], conditi
     jevLatencyMs: { p50: percentile(latencies, 50), p95: percentile(latencies, 95), n: latencies.length },
     jevRequests: sum(ran.map((r) => r.jevRequests)),
     jevQuestions: sum(ran.map((r) => r.jevQuestions)),
+    // records written before the field existed read as 0
+    generatorCalls: sum(ran.map((r: BenchRecord) => r.generatorCalls ?? 0)),
     blocked: sum(ran.map((r) => r.blocked)),
     reviews: sum(ran.map((r) => r.reviews)),
     declined: sum(ran.map((r) => r.declined)),
@@ -194,7 +196,7 @@ export function suitesIn(records: readonly BenchTaskRecord[]): BenchSuite[] {
 }
 
 /** pairComplete = every condition of the task has a record whose engine ran (not `not_run`). */
-export function withPairComplete(records: readonly BenchTaskRecord[], conditions: readonly EngineMode[]): BenchTaskRecord[] {
+export function withPairComplete<R extends BenchTaskRecord>(records: readonly R[], conditions: readonly EngineMode[]): R[] {
   const ranBy = new Map<string, Set<EngineMode>>();
   for (const r of records) {
     if (isNotRun(r)) continue;

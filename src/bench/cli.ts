@@ -1,14 +1,16 @@
 /**
  * `jevcode bench` wiring (DESIGN.md §13): maps CLI flags to BenchOptions, builds the real
- * BenchDeps (engines, mocks, meter, sandbox, and the live provider/decider when --live), and
- * prints where the outputs went. Everything under bench/* is dependency-injected so it can
- * be tested without these modules; this file is the only place the real ones meet.
+ * BenchDeps (engines, mocks, meter, sandbox, the jev-only synthesizer, and the live
+ * provider/decider when --live), and prints where the outputs went. Everything under bench/*
+ * is dependency-injected so it can be tested without these modules; this file is the only
+ * place the real ones meet.
  */
 import { resolve } from 'node:path';
 import type { ParsedFlags } from '../cli/args.js';
-import type { BenchDeps, Decider, Provider } from '../core/types.js';
+import type { Decider, Provider } from '../core/types.js';
 import { UsageError } from '../errors.js';
-import type { BenchOptions } from './types.js';
+import { parseConditions, requiresGenerator } from './conditions.js';
+import type { BenchDepsWithSynth, BenchOptions } from './types.js';
 
 export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
   const { resolveConfig } = await import('../config/resolve.js');
@@ -18,6 +20,8 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
   for (const [name, v] of [['--tasks', flags.tasks], ['--concurrency', flags.concurrency], ['--spend-cap', flags.spendCap], ['--task-spend-cap', flags.taskSpendCap]] as const) {
     if (v !== undefined && !Number.isFinite(Number(v))) throw new UsageError(`${name} must be a number, got "${v}"`);
   }
+  // args.ts already validated the names; parseConditions dedupes and keeps the order given
+  const conditions = parseConditions(flags.conditions ?? 'jev-on,jev-off');
 
   const { createEngine } = await import('../loop/engine.js');
   const { createGeneratorOnlyEngine } = await import('../loop/generator-only.js');
@@ -25,39 +29,42 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
   const { createMockDecider } = await import('../jev/mock.js');
   const { createSpendMeter } = await import('../spend/meter.js');
   const { createSandbox } = await import('../sandbox/run.js');
+  const { createSynthesizer } = await import('../synth/index.js');
 
   let liveProvider: Provider | undefined;
   let liveDecider: Decider | undefined;
   let generation: { temperature: number | null; maxTokens: number } = { temperature: null, maxTokens: 4096 };
   let deciderModel: { configured: string; pinned: boolean } = { configured: 'typesafe/jev-1.13-20260917', pinned: true };
   if (flags.live) {
-    const gen = config.generator();
     const dec = config.decider();
     if (!dec.pinned && !flags.allowModelAlias) {
       throw new UsageError(`--jev-model "${dec.model}" is an alias; the bench compares conditions on a fixed model. Pass the dated id or --allow-model-alias.`);
     }
-    generation = { temperature: gen.temperature, maxTokens: gen.maxTokens };
     deciderModel = { configured: dec.model, pinned: dec.pinned };
-    liveProvider = gen.provider === 'openrouter'
-      ? (await import('../provider/openrouter.js')).createOpenRouterProvider(gen, { redact: config.redact })
-      : (await import('../provider/anthropic.js')).createAnthropicProvider(gen, { redact: config.redact });
     const { createJevDecider } = await import('../jev/client.js');
     liveDecider = createJevDecider(dec, { redact: config.redact });
+    // jev-only alone needs no generator: the generator section is not validated and no provider is built (docs/JEV-ONLY.md)
+    if (requiresGenerator(conditions)) {
+      const gen = config.generator();
+      generation = { temperature: gen.temperature, maxTokens: gen.maxTokens };
+      liveProvider = gen.provider === 'openrouter'
+        ? (await import('../provider/openrouter.js')).createOpenRouterProvider(gen, { redact: config.redact })
+        : (await import('../provider/anthropic.js')).createAnthropicProvider(gen, { redact: config.redact });
+    }
   }
 
-  const deps: BenchDeps = {
+  const deps: BenchDepsWithSynth = {
     createEngine,
     createGeneratorOnlyEngine,
     createMockProvider,
     createMockDecider,
     createSpendMeter,
     createSandbox,
+    createSynthesizer,
     ...(liveProvider ? { liveProvider } : {}),
     ...(liveDecider ? { liveDecider } : {}),
   };
 
-  const conditions = (flags.conditions ?? 'jev-on,jev-off').split(',').map((s) => s.trim()).filter((s) => s === 'jev-on' || s === 'jev-off') as ('jev-on' | 'jev-off')[];
-  if (conditions.length === 0) throw new UsageError('--conditions must list jev-on and/or jev-off');
   const suite = flags.suite ?? 'all';
   if (suite !== 'swebench' && suite !== 'terminal-bench' && suite !== 'all') throw new UsageError('--suite must be swebench, terminal-bench or all');
 

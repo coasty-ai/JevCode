@@ -181,3 +181,30 @@ describe('usageText', () => {
     expect(keys.sort()).toEqual([...STRING_FLAGS, ...BOOLEAN_FLAGS].sort());
   });
 });
+
+describe('parseCliArgs: --mode and the jev-only condition', () => {
+  it('parses --mode, folds the hidden --condition alias into it, and rejects disagreement', () => {
+    expect(parseCliArgs(['run', 'x', '--mode', 'jev-only']).mode).toBe('jev-only');
+    expect(parseCliArgs(['run', 'x', '--mode', ' JEV-OFF ']).mode).toBe('jev-off');
+    expect(parseCliArgs(['run', 'x']).mode).toBeUndefined();
+    const alias = parseCliArgs(['run', 'x', '--condition', 'jev-only']);
+    expect(alias.condition).toBe('jev-only');
+    expect(alias.mode).toBe('jev-only');
+    expect(parseCliArgs(['run', 'x', '--mode', 'jev-on', '--condition', 'jev-on']).mode).toBe('jev-on');
+    expect(usage(['run', 'x', '--mode', 'jev-maybe']).message).toMatch(/--mode/);
+    expect(usage(['run', 'x', '--condition', 'jev-maybe']).message).toMatch(/--condition/);
+    expect(usage(['run', 'x', '--mode', 'jev-on', '--condition', 'jev-off']).message).toMatch(/disagree/);
+    // a run flag: bench and config do not take it
+    expect(usage(['bench', '--mode', 'jev-only']).message).toMatch(/mode/);
+    expect(usage(['config', '--mode', 'jev-only']).message).toMatch(/mode/);
+  });
+
+  it('bench --conditions accepts jev-only alone or with the others; usage mentions it', () => {
+    expect(parseCliArgs(['bench', '--conditions', 'jev-on,jev-only']).conditions).toBe('jev-on,jev-only');
+    expect(parseCliArgs(['bench', '--conditions', 'jev-only']).conditions).toBe('jev-only');
+    expect(parseCliArgs(['bench', '--conditions', 'jev-on,jev-off,jev-only']).conditions).toBe('jev-on,jev-off,jev-only');
+    expect(usage(['bench', '--conditions', 'jev-on,nope']).message).toMatch(/--conditions/);
+    expect(usageText()).toContain('jev-only');
+    expect(usageText('run')).toMatch(/--mode jev-on\|jev-off\|jev-only/);
+  });
+});

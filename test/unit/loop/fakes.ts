@@ -16,6 +16,7 @@ import type {
   Decision,
   Engine,
   EngineEvent,
+  EngineMode,
   EngineOptions,
   ExecResult,
   FileView,
@@ -33,6 +34,7 @@ import type {
   SpendSnapshot,
   StageName,
   StepRecord,
+  Synthesizer,
   TargetInfo,
   TestCounts,
   TokenUsage,
@@ -561,7 +563,9 @@ export interface HarnessOptions {
   meter?: SpendMeter;
   confirmer?: Confirmer;
   limits?: Partial<RunLimits>;
-  mode?: 'jev-on' | 'jev-off';
+  mode?: EngineMode;
+  /** jev-only: the propose stage */
+  synthesizer?: Synthesizer;
   task?: string;
   resume?: { runId: string; force: boolean };
   now?: () => number;
@@ -617,6 +621,7 @@ export async function makeEngine(h: HarnessOptions = {}): Promise<Harness> {
   if (h.resume) opts.resume = h.resume;
   if (h.now) opts.now = h.now;
   if (h.exit) opts.exit = h.exit;
+  if (h.synthesizer) opts.synthesizer = h.synthesizer;
   const deps: EngineDeps = {
     createCheckpointStore: () => store,
     createWorkspace: async () => workspace,

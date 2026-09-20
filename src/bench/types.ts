@@ -6,20 +6,38 @@
  */
 import type {
   ActionOutcome,
+  BenchDeps,
   BenchEvaluator,
   BenchStopReason,
   BenchSuite,
   BenchTaskRecord,
   ConfigRecordValue,
+  Decider,
   EngineMode,
   ExecResult,
   MockTurn,
   RunLimits,
   RunResult,
   SandboxProfile,
+  Synthesizer,
 } from '../core/types.js';
 
 export type BenchSuiteSelector = BenchSuite | 'all';
+
+/**
+ * BenchDeps plus the jev-only synthesizer factory (the shared BenchDeps in core/types.ts is
+ * frozen). Required when the conditions include `jev-only`; bench/cli.ts passes src/synth.
+ */
+export type BenchDepsWithSynth = BenchDeps & {
+  createSynthesizer?: (opts: { decider: Decider; redact: (s: string) => string }) => Synthesizer;
+};
+
+/**
+ * tasks.jsonl record plus the jev-only assertion field (BenchTaskRecord is frozen):
+ * `generatorCalls` = RunResult.usage.generator.calls. A jev-only record with any generator
+ * usage is written with `pass: null, evaluator: 'invalid', reason: 'generator called in jev-only'`.
+ */
+export type BenchRecord = BenchTaskRecord & { generatorCalls?: number };
 
 export interface BenchOptions {
   suite: BenchSuiteSelector;
@@ -220,6 +238,8 @@ export interface ConditionMetrics {
   jevLatencyMs: { p50: number | null; p95: number | null; n: number };
   jevRequests: number;
   jevQuestions: number;
+  /** Σ generatorCalls over runs that ran (0 by construction for jev-only; a non-zero value there marked records invalid) */
+  generatorCalls: number;
   blocked: number;
   reviews: number;
   declined: number;
@@ -280,7 +300,7 @@ export interface Summary {
 export interface BenchRunOutput {
   benchId: string;
   outDir: string;
-  records: BenchTaskRecord[];
+  records: BenchRecord[];
   summary: Summary;
   comparisonMarkdown: string;
 }

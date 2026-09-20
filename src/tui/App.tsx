@@ -63,10 +63,15 @@ export function computeLayout(rows: number, pendingConfirm: boolean, previewLine
  * `columns + 1` characters before Ink measures them (the +1 keeps Ink's truncation ellipsis), so a
  * 64 KB unbroken tail never costs a 64 KB width measurement per frame. With an empty text buffer
  * and tool-argument chars streaming, the region reads `streaming action… N chars` (§7, §10).
+ * In jev-only there is no generator stream: with an empty buffer the region shows the last
+ * `synth` line of the step (docs/JEV-ONLY.md).
  */
-export function liveLines(live: string, rows: number, columns: number = DEFAULT_COLUMNS, toolChars = 0): string[] {
+export function liveLines(live: string, rows: number, columns: number = DEFAULT_COLUMNS, toolChars = 0, synth: string | null = null): string[] {
   if (rows <= 0) return [];
-  if (live === '') return toolChars > 0 ? [`streaming action… ${toolChars} chars`] : [];
+  if (live === '') {
+    if (toolChars > 0) return [`streaming action… ${toolChars} chars`];
+    return synth !== null ? [synth] : [];
+  }
   if (!/[\r\n]/.test(live)) return [`streaming… ${live.length} chars`];
   const parts = live.split(/\r\n|\r|\n/);
   if (parts[parts.length - 1] === '') parts.pop();
@@ -135,7 +140,7 @@ export function App({ task, resumeId, source, confirmer, onAbort }: AppProps): R
   );
 
   const layout = computeLayout(rows, pending !== null, pending ? confirmPreviewLines(pending).length : 0);
-  const live = liveLines(state.live, layout.live, columns, state.toolChars);
+  const live = liveLines(state.live, layout.live, columns, state.toolChars, state.synth);
   const header = useMemo(() => headerItem(task, resumeId), [task, resumeId]);
 
   return (
@@ -159,7 +164,7 @@ export function App({ task, resumeId, source, confirmer, onAbort }: AppProps): R
       ) : null}
       <Decisions decisions={state.decisions} rows={layout.decisions} />
       {pending ? <Confirm request={pending} headerRows={layout.confirmHeader} previewRows={layout.preview} /> : null}
-      {layout.status > 0 ? <StatusLine status={state.status} ready={state.ready} done={state.done} spinnerFrame={spinner} /> : null}
+      {layout.status > 0 ? <StatusLine status={state.status} ready={state.ready} done={state.done} spinnerFrame={spinner} mode={state.mode} /> : null}
     </Box>
   );
 }

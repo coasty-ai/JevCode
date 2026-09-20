@@ -10,16 +10,17 @@ import { join, resolve } from 'node:path';
 import { writeFileAtomic } from '../core/atomic.js';
 import { isFiniteNumber, isJsonObject, isString, parseJson, toJson } from '../core/json.js';
 import { percentile } from '../core/time.js';
-import type { ActionOutcome, BenchDeps, BenchSuite, BenchTaskRecord, Decider, Engine, EngineMode, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter } from '../core/types.js';
+import type { ActionOutcome, BenchSuite, BenchTaskRecord, Decider, Engine, EngineMode, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter, Synthesizer } from '../core/types.js';
 import { ConfigError, toJevCodeError } from '../errors.js';
-import { CONDITION_ORDER, buildEngineOptions, conditionConfig, createEngineFor } from './conditions.js';
+import { createNullProvider } from '../provider/null.js';
+import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isEngineMode, requiresGenerator } from './conditions.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { renderComparison } from './report.js';
 import { BENCH_CACHE_DIR, loadSwebenchSources } from './swebench/loader.js';
 import { modelNameOrPath, readSavedModelPatch, writePredictions, type PredictionEntry } from './swebench/predictions.js';
 import { loadTerminalBenchSources } from './terminalbench/loader.js';
 import { TB_VENV_DIR } from './terminalbench/shim.js';
-import type { BenchOptions, BenchRunOutput, BenchSetupTools, BenchTask, BenchTaskSource, CommandRunner, Evaluation, PatchExtraction, Summary, SuiteMetrics } from './types.js';
+import type { BenchDepsWithSynth, BenchOptions, BenchRecord, BenchRunOutput, BenchSetupTools, BenchTask, BenchTaskSource, CommandRunner, Evaluation, PatchExtraction, Summary, SuiteMetrics } from './types.js';
 
 export const TASKS_FILE = 'tasks.jsonl';
 export const SUMMARY_FILE = 'summary.json';
@@ -29,6 +30,8 @@ export const BENCH_WORK_DIR = 'bench-work';
 export const IN_PROGRESS = 'in_progress';
 export const NOT_RUN_BENCH_CAP = 'bench_spend_cap';
 export const NOT_RUN_ABORTED = 'bench_aborted';
+/** reason of a jev-only record whose RunResult shows generator usage (docs/JEV-ONLY.md non-negotiable) */
+export const JEV_ONLY_GENERATOR_CALLED = 'generator called in jev-only';
 const DEFAULT_SETUP_TIMEOUT_MS = 20 * 60_000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60_000;
 
@@ -43,7 +46,7 @@ export function safeName(id: string): string {
   return id.replace(/[^A-Za-z0-9._-]/g, '_').slice(0, 120);
 }
 
-export function validateOptions(opts: BenchOptions, deps: BenchDeps): void {
+export function validateOptions(opts: BenchOptions, deps: BenchDepsWithSynth): void {
   if (!Number.isInteger(opts.concurrency) || opts.concurrency < 1) throw new ConfigError('--concurrency must be a positive integer', { setting: 'concurrency' });
   if (opts.conditions.length === 0) throw new ConfigError('--conditions: at least one condition is required', { setting: 'conditions' });
   if (new Set(opts.conditions).size !== opts.conditions.length) throw new ConfigError('--conditions: duplicate condition', { setting: 'conditions' });
@@ -51,8 +54,11 @@ export function validateOptions(opts: BenchOptions, deps: BenchDeps): void {
   if (!Number.isFinite(opts.taskSpendCapUsd) || opts.taskSpendCapUsd <= 0) throw new ConfigError('--task-spend-cap must be positive', { setting: 'task-spend-cap' });
   if (opts.live) {
     if (opts.spendCapUsd <= 0) throw new ConfigError('--live requires --spend-cap <usd> (bench total)', { setting: 'spend-cap' });
-    if (!deps.liveProvider || !deps.liveDecider) throw new ConfigError('--live requires a live provider and decider', { setting: 'live' });
+    // jev-only alone needs only the decider; jev-on/jev-off need the generator too
+    if (requiresGenerator(opts.conditions) && !deps.liveProvider) throw new ConfigError('--live requires a live provider for jev-on/jev-off and a live decider', { setting: 'live' });
+    if (!deps.liveDecider) throw new ConfigError('--live requires a live decider', { setting: 'live' });
   }
+  if (opts.conditions.includes('jev-only') && !deps.createSynthesizer) throw new ConfigError('condition jev-only requires a synthesizer (BenchDeps.createSynthesizer)', { setting: 'conditions' });
   if (opts.tasks !== undefined && opts.tasks !== null && (!Number.isInteger(opts.tasks) || opts.tasks < 1)) throw new ConfigError('--tasks must be a positive integer', { setting: 'tasks' });
   if (opts.resumeBenchId !== undefined && opts.resumeBenchId !== null && !BENCH_ID_RE.test(opts.resumeBenchId)) throw new ConfigError(`--resume: "${opts.resumeBenchId}" is not a bench id`, { setting: 'resume' });
 }
@@ -104,7 +110,8 @@ function isRecord(v: unknown): v is BenchTaskRecord {
   const pass = v['pass'];
   if (!(isString(v['suite']) && isString(v['task']) && isString(v['condition']) && (pass === null || typeof pass === 'boolean') && isString(v['stopReason']) && isString(v['evaluator']))) return false;
   if (v['suite'] !== 'swebench' && v['suite'] !== 'terminal-bench') return false;
-  if (v['condition'] !== 'jev-on' && v['condition'] !== 'jev-off') return false;
+  const condition = v['condition'];
+  if (!isString(condition) || !isEngineMode(condition)) return false;
   if (!NUMERIC_FIELDS.every((k) => isFiniteNumber(v[k]))) return false;
   const cost = v['cost'];
   if (!isJsonObject(cost) || !isFiniteNumber(cost['generator']) || !isFiniteNumber(cost['jev'])) return false;
@@ -177,11 +184,15 @@ export interface RecordInput {
   stopReasonOverride?: 'spend_cap';
 }
 
-/** Copy every RunResult field into the record shape of §13; pass/evaluator/patch fields come from the evaluation. */
-export function buildRecord(input: RecordInput): BenchTaskRecord {
+/**
+ * Copy every RunResult field into the record shape of §13; pass/evaluator/patch fields come from
+ * the evaluation. `generatorCalls` is copied for every condition; a jev-only record with any
+ * generator usage (calls, tokens or cost) is invalidated rather than scored (docs/JEV-ONLY.md).
+ */
+export function buildRecord(input: RecordInput): BenchRecord {
   const { result, evaluation } = input;
   const raw = [...result.jevLatencyMs];
-  const rec: BenchTaskRecord = {
+  const rec: BenchRecord = {
     suite: input.source.suite,
     task: input.source.id,
     condition: input.condition,
@@ -212,11 +223,18 @@ export function buildRecord(input: RecordInput): BenchTaskRecord {
     patchBytes: input.patch ? input.patch.patchBytes : null,
     runId: result.runId,
     capFired: input.capFired,
+    generatorCalls: result.usage.generator.calls,
   };
   if (evaluation.reason !== undefined) rec.reason = evaluation.reason;
   else if (result.error) rec.reason = `${result.error.code}: ${result.error.message}`;
   if (evaluation.testsStatus) rec.testsStatus = evaluation.testsStatus;
   if (evaluation.evalExitCode !== undefined) rec.evalExitCode = evaluation.evalExitCode;
+  const g = result.usage.generator;
+  if (input.condition === 'jev-only' && (g.calls > 0 || g.costUsd > 0 || g.inputTokens + g.outputTokens > 0)) {
+    rec.pass = null;
+    rec.evaluator = 'invalid';
+    rec.reason = JEV_ONLY_GENERATOR_CALLED;
+  }
   return rec;
 }
 
@@ -298,14 +316,14 @@ async function exists(p: string): Promise<boolean> {
   }
 }
 
-export async function runBench(opts: BenchOptions, deps: BenchDeps): Promise<BenchRunOutput> {
+export async function runBench(opts: BenchOptions, deps: BenchDepsWithSynth): Promise<BenchRunOutput> {
   validateOptions(opts, deps);
   const sources = selectSources(await loadSources(opts), opts);
   if (sources.length === 0) throw new ConfigError('no bench tasks selected');
   return runBenchWithSources(sources, opts, deps);
 }
 
-export async function runBenchWithSources(sources: readonly BenchTaskSource[], opts: BenchOptions, deps: BenchDeps): Promise<BenchRunOutput> {
+export async function runBenchWithSources(sources: readonly BenchTaskSource[], opts: BenchOptions, deps: BenchDepsWithSynth): Promise<BenchRunOutput> {
   validateOptions(opts, deps);
   const log = opts.log ?? ((): void => undefined);
   const now = opts.now ?? ((): Date => new Date());
@@ -364,8 +382,8 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
 
   // append per record as it completes (crash safety); consolidated and rewritten at the end
   let appendChain: Promise<void> = Promise.resolve();
-  const newRecords: BenchTaskRecord[] = [];
-  const appendRecord = (r: BenchTaskRecord): Promise<void> => {
+  const newRecords: BenchRecord[] = [];
+  const appendRecord = (r: BenchRecord): Promise<void> => {
     appendChain = appendChain.then(() => appendFile(tasksPath, `${JSON.stringify(r)}\n`, 'utf8'));
     return appendChain;
   };
@@ -462,11 +480,23 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
       }
     }
 
-    const trajectory = task.mockTrajectory();
-    // a function so an engine that asks again after the final `done` keeps receiving `done` instead of exhausting the script
-    const provider: Provider = mocked ? deps.createMockProvider({ turns: (_req, i) => trajectory[Math.min(i, trajectory.length - 1)]! }) : deps.liveProvider!;
+    const jevOnly = condition === 'jev-only';
+    const mockProvider = (): Provider => {
+      const trajectory = task.mockTrajectory();
+      // a function so an engine that asks again after the final `done` keeps receiving `done` instead of exhausting the script
+      return deps.createMockProvider({ turns: (_req, i) => trajectory[Math.min(i, trajectory.length - 1)]! });
+    };
+    // jev-only: the generator slot is the NullProvider (throws if called; buildRecord invalidates the record on any generator usage)
+    const provider: Provider = jevOnly ? createNullProvider() : mocked ? mockProvider() : deps.liveProvider!;
     const decider: Decider = mocked ? deps.createMockDecider() : deps.liveDecider!;
-    generatorModel ??= provider.model;
+    if (!jevOnly) generatorModel ??= provider.model;
+    const synthesizer: Synthesizer | undefined = jevOnly ? deps.createSynthesizer?.({ decider, redact: opts.redact }) : undefined;
+    if (jevOnly && synthesizer === undefined) {
+      const rec = errorRecord(source, condition, 'engine_create_failed: condition jev-only requires a synthesizer');
+      newRecords.push(rec);
+      await appendRecord(rec);
+      return;
+    }
     const meter: SpendMeter = root.child(opts.taskSpendCapUsd);
     const engineOpts = buildEngineOptions(
       {
@@ -476,6 +506,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
         provider,
         decider,
         meter,
+        ...(synthesizer ? { synthesizer } : {}),
         ...(resumeRunId !== null ? { resume: { runId: resumeRunId, force: false } } : {}),
         // §13: the shimmed instruction points at aux/output, aux/results, aux/logs; the sandbox must let the agent write there
         ...(source.suite === 'terminal-bench' ? { extraWritableRoots: [auxDir] } : {}),
@@ -550,7 +581,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
 
   // units: every condition of one task, in a fixed order, before the next task
   const units: PairPlan[][] = sources.map((source) => conditions.map((condition) => ({ source, condition, mode: planPair(latest.get(pairKey({ suite: source.suite, task: source.id, condition }))) })));
-  const kept: BenchTaskRecord[] = [];
+  const kept: BenchRecord[] = [];
   for (const unit of units) for (const p of unit) if (p.mode.kind === 'skip') kept.push(p.mode.record);
   // --resume with a narrower selection must not lose the other pairs' records (summary is regenerated from all of tasks.jsonl)
   const selected = new Set(units.flat().map((p) => pairKey({ suite: p.source.suite, task: p.source.id, condition: p.condition })));
@@ -587,7 +618,8 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
   const records = withPairComplete([...kept, ...newRecords].filter((r) => r.reason !== IN_PROGRESS), conditions);
   await writeFileAtomic(tasksPath, records.map((r) => JSON.stringify(r)).join('\n') + (records.length ? '\n' : ''));
 
-  const model = generatorModel ?? 'mock';
+  // a bench of jev-only alone has no generator model at all
+  const model = generatorModel ?? (requiresGenerator(conditions) ? 'mock' : NULL_GENERATOR_MODEL);
   const perSuite: Record<string, SuiteMetrics> = {};
   const suites = suitesIn(records);
   const pairedTasks: Record<string, number> = {};
@@ -628,7 +660,8 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
       for (const r of records.filter((x) => x.suite === 'swebench' && x.condition === condition && x.runId !== null).sort((a, b) => a.task.localeCompare(b.task))) {
         const inMemory = modelPatches.get(pairKey(r));
         const saved = inMemory ?? (await readSavedModelPatch(join(opts.runsDir, r.runId!)));
-        entries.push({ instance_id: r.task, model_name_or_path: modelNameOrPath(condition, model), model_patch: saved ?? '' });
+        // model_name_or_path is a log directory name in the official harness: filesystem-safe, distinct per condition, 'none' for jev-only
+        entries.push({ instance_id: r.task, model_name_or_path: modelNameOrPath(condition, condition === 'jev-only' ? 'none' : model), model_patch: saved ?? '' });
       }
       await writePredictions(outDir, condition, entries);
     }
