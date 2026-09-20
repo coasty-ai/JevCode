@@ -1,0 +1,8 @@
+{
+  "name": "greet",
+  "hunks": 1,
+  "kinds": ["guard"],
+  "files": ["src/greet.py"],
+  "difficulty": 1,
+  "description": "FIXTURE_SECRET greet needs a guard returning the world greeting for None/blank names."
+}

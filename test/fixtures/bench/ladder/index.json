@@ -1,0 +1,29 @@
+[
+  {
+    "name": "ratio",
+    "hunks": 2,
+    "kinds": [
+      "operator",
+      "constant"
+    ],
+    "files": [
+      "src/ratio.py"
+    ],
+    "difficulty": 2,
+    "description": "FIXTURE_SECRET ratio subtracts instead of dividing; percent rounds to 2 decimals instead of 1.",
+    "path": "tasks/ratio"
+  },
+  {
+    "name": "greet",
+    "hunks": 1,
+    "kinds": [
+      "guard"
+    ],
+    "files": [
+      "src/greet.py"
+    ],
+    "difficulty": 1,
+    "description": "FIXTURE_SECRET greet needs a guard returning the world greeting for None/blank names.",
+    "path": "tasks/greet"
+  }
+]

@@ -36,8 +36,10 @@ export type BenchDepsWithSynth = BenchDeps & {
  * tasks.jsonl record plus the jev-only assertion field (BenchTaskRecord is frozen):
  * `generatorCalls` = RunResult.usage.generator.calls. A jev-only record with any generator
  * usage is written with `pass: null, evaluator: 'invalid', reason: 'generator called in jev-only'`.
+ * `meta` is the source's BenchTaskMeta (kind / hunks / difficulty) so comparison.md can break
+ * pass rates down per suite without re-reading bench/data.
  */
-export type BenchRecord = BenchTaskRecord & { generatorCalls?: number };
+export type BenchRecord = BenchTaskRecord & { generatorCalls?: number; meta?: BenchTaskMeta };
 
 export interface BenchOptions {
   suite: BenchSuiteSelector;
@@ -139,6 +141,11 @@ export interface BenchTaskMeta {
   category?: string;
   instructionShim?: boolean;
   baseCommit?: string;
+  /** QuixBugs bug kind (index.json `kind`) */
+  kind?: string;
+  /** Ladder: kinds of the fix and number of `diff -U0` hunks src → gold */
+  kinds?: string[];
+  hunks?: number;
 }
 
 /** One benchmark task bound to a concrete workspace path. `task` is the ONLY text the engine sees. */

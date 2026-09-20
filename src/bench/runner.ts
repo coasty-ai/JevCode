@@ -16,6 +16,9 @@ import { createNullProvider } from '../provider/null.js';
 import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isEngineMode, requiresGenerator } from './conditions.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { renderComparison } from './report.js';
+import { loadLadderSources } from './ladder/loader.js';
+import { LADDER_VENV_DIR } from './ladder/venv.js';
+import { loadQuixbugsSources } from './quixbugs/loader.js';
 import { BENCH_CACHE_DIR, loadSwebenchSources } from './swebench/loader.js';
 import { modelNameOrPath, readSavedModelPatch, writePredictions, type PredictionEntry } from './swebench/predictions.js';
 import { loadTerminalBenchSources } from './terminalbench/loader.js';
@@ -95,6 +98,9 @@ export async function loadSources(opts: BenchOptions): Promise<BenchTaskSource[]
     out.push(...(await loadSwebenchSources(dataDir, o)));
   }
   if (opts.suite === 'terminal-bench' || opts.suite === 'all') out.push(...(await loadTerminalBenchSources(dataDir, { mocked })));
+  // the jev-only difficulty ladder (docs/JEV-ONLY.md): QuixBugs one-line bugs, then the hand-made multi-hunk tasks
+  if (opts.suite === 'quixbugs' || opts.suite === 'all') out.push(...(await loadQuixbugsSources(dataDir, { mocked })));
+  if (opts.suite === 'ladder' || opts.suite === 'all') out.push(...(await loadLadderSources(dataDir, { mocked })));
   return out;
 }
 
@@ -103,13 +109,14 @@ export async function loadSources(opts: BenchOptions): Promise<BenchTaskSource[]
 // ---------------------------------------------------------------------------------------
 
 const NUMERIC_FIELDS = ['steps', 'wallMs', 'jevRequests', 'jevQuestions', 'blocked', 'reviews', 'declined', 'loops', 'replans', 'reads'] as const;
+const BENCH_SUITES: readonly string[] = ['swebench', 'terminal-bench', 'quixbugs', 'ladder'] satisfies readonly BenchSuite[];
 
 /** Shape check for a tasks.jsonl line: everything --resume, the metrics and the report dereference. */
 function isRecord(v: unknown): v is BenchTaskRecord {
   if (!isJsonObject(v)) return false;
   const pass = v['pass'];
   if (!(isString(v['suite']) && isString(v['task']) && isString(v['condition']) && (pass === null || typeof pass === 'boolean') && isString(v['stopReason']) && isString(v['evaluator']))) return false;
-  if (v['suite'] !== 'swebench' && v['suite'] !== 'terminal-bench') return false;
+  if (!BENCH_SUITES.includes(v['suite'])) return false;
   const condition = v['condition'];
   if (!isString(condition) || !isEngineMode(condition)) return false;
   if (!NUMERIC_FIELDS.every((k) => isFiniteNumber(v[k]))) return false;
@@ -225,6 +232,7 @@ export function buildRecord(input: RecordInput): BenchRecord {
     capFired: input.capFired,
     generatorCalls: result.usage.generator.calls,
   };
+  if (Object.keys(input.source.meta).length > 0) rec.meta = { ...input.source.meta };
   if (evaluation.reason !== undefined) rec.reason = evaluation.reason;
   else if (result.error) rec.reason = `${result.error.code}: ${result.error.message}`;
   if (evaluation.testsStatus) rec.testsStatus = evaluation.testsStatus;
@@ -238,8 +246,9 @@ export function buildRecord(input: RecordInput): BenchRecord {
   return rec;
 }
 
-export function notRunRecord(source: BenchTaskSource, condition: EngineMode, reason: string, runId: string | null = null): BenchTaskRecord {
+export function notRunRecord(source: BenchTaskSource, condition: EngineMode, reason: string, runId: string | null = null): BenchRecord {
   return {
+    ...(Object.keys(source.meta).length > 0 ? { meta: { ...source.meta } } : {}),
     suite: source.suite,
     task: source.id,
     condition,
@@ -274,7 +283,7 @@ export function notRunRecord(source: BenchTaskSource, condition: EngineMode, rea
 }
 
 /** A run whose engine never produced a RunResult (setup or createEngine failure). */
-export function errorRecord(source: BenchTaskSource, condition: EngineMode, reason: string, runId: string | null = null): BenchTaskRecord {
+export function errorRecord(source: BenchTaskSource, condition: EngineMode, reason: string, runId: string | null = null): BenchRecord {
   return { ...notRunRecord(source, condition, reason, runId), stopReason: 'error', capFired: null };
 }
 
@@ -414,7 +423,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
             secretReadDenies: opts.secretPaths,
             redact: opts.redact,
             // setup and evaluation clone from the bare cache and run the verifier venv; both live under the read-denied jevcode home
-            extraReadable: [join(opts.runsDir, BENCH_CACHE_DIR), join(opts.runsDir, TB_VENV_DIR)],
+            extraReadable: [join(opts.runsDir, BENCH_CACHE_DIR), join(opts.runsDir, TB_VENV_DIR), join(opts.runsDir, LADDER_VENV_DIR)],
             // these sandboxes run only bench infrastructure (clone, venv, pip, verifier), which must create .git/hooks itself
             protectGit: false,
           });

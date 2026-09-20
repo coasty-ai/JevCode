@@ -66,7 +66,7 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
   };
 
   const suite = flags.suite ?? 'all';
-  if (suite !== 'swebench' && suite !== 'terminal-bench' && suite !== 'all') throw new UsageError('--suite must be swebench, terminal-bench or all');
+  if (suite !== 'swebench' && suite !== 'terminal-bench' && suite !== 'quixbugs' && suite !== 'ladder' && suite !== 'all') throw new UsageError('--suite must be swebench, terminal-bench, quixbugs, ladder or all');
 
   const opts: BenchOptions = {
     suite,

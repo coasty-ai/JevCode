@@ -110,7 +110,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'mockGenerator', name: 'mock-generator', type: 'boolean', commands: RUN, help: 'mocked generator with the live decider (debugging)', hidden: true },
   { key: 'perfLagProbe', name: 'perf-lag-probe', type: 'boolean', commands: RUN, help: 'record event-loop lag (perf)', hidden: true },
   { key: 'json', name: 'json', type: 'boolean', commands: ['config'], help: 'print the resolved table as JSON' },
-  { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|all', help: 'benchmark suite' },
+  { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|quixbugs|ladder|all', help: 'benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)' },
   { key: 'tasks', name: 'tasks', type: 'string', commands: BENCH, arg: '<n>', help: 'number of tasks' },
   { key: 'taskId', name: 'task-id', type: 'string', commands: BENCH, arg: '<id>[,<id>...]', help: 'specific task ids' },
   { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only]', help: 'conditions to run (default jev-on,jev-off)' },
@@ -126,7 +126,7 @@ export const FLAGS: readonly FlagSpec[] = [
 export const RUN_ID_RE = /^\d{8}-\d{6}-[a-z2-7]{8}$/;
 export const SANDBOX_PROFILES = ['auto', 'seatbelt', 'none'] as const;
 export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only'] as const;
-export const SUITES = ['swebench', 'terminal-bench', 'all'] as const;
+export const SUITES = ['swebench', 'terminal-bench', 'quixbugs', 'ladder', 'all'] as const;
 
 function isCommand(s: string): s is Command {
   return (COMMANDS as readonly string[]).includes(s);
@@ -292,7 +292,7 @@ export function usageText(command?: Command): string {
       '  jevcode run  <task text> | --task-file <path> | (stdin when not a TTY)  [--mode jev-on|jev-off|jev-only]',
       '  jevcode run  --resume <run-id> [--force]',
       '  jevcode config [--json]',
-      '  jevcode bench --suite swebench|terminal-bench|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only]',
+      '  jevcode bench --suite swebench|terminal-bench|quixbugs|ladder|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only]',
       '                [--concurrency <n>] [--live --spend-cap <usd>] [--task-spend-cap <usd>] [--allow-model-alias]',
       '                [--resume <bench-id>] [--out <dir>]',
       '  jevcode perf [--live --spend-cap <usd>] [--out <file>]',

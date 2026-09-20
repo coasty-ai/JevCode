@@ -1,11 +1,13 @@
 /**
  * comparison.md (DESIGN.md §13): a Conditions paragraph, per-suite pass rates, the paired
  * comparison, the solve and tokens-per-step curves as tables with inline bars and n columns,
- * stop-reason histograms, per-task rows. Terminal-Bench numbers carry the non-comparable label.
+ * stop-reason histograms, per-task rows. Terminal-Bench numbers carry the non-comparable label;
+ * QuixBugs adds a pass-rate breakdown by bug kind and Ladder by hunks and difficulty (from the
+ * records' `meta`, docs/JEV-ONLY.md).
  */
 import { formatDuration } from '../core/time.js';
-import type { BenchSuite, BenchTaskRecord, EngineMode } from '../core/types.js';
-import type { ConditionMetrics, Summary, TokensPoint } from './types.js';
+import type { BenchSuite, EngineMode } from '../core/types.js';
+import type { BenchRecord, ConditionMetrics, Summary, TokensPoint } from './types.js';
 
 export const TB_LABEL = 'local shim, non-comparable to the tbench.ai leaderboard';
 export const BAR_WIDTH = 20;
@@ -43,8 +45,71 @@ function table(header: string[], rows: string[][]): string {
   return [line(header), line(header.map(() => '---')), ...rows.map(line)].join('\n');
 }
 
-function suiteTitle(suite: BenchSuite): string {
-  return suite === 'swebench' ? 'SWE-bench Verified (local subset)' : `Terminal-Bench 4.0 (${TB_LABEL})`;
+export function suiteTitle(suite: BenchSuite): string {
+  switch (suite) {
+    case 'swebench':
+      return 'SWE-bench Verified (local subset)';
+    case 'terminal-bench':
+      return `Terminal-Bench 4.0 (${TB_LABEL})`;
+    case 'quixbugs':
+      return 'QuixBugs Python (40 one-line bugs)';
+    case 'ladder':
+      return 'Ladder (hand-made multi-hunk tasks)';
+  }
+}
+
+/** Sort keys numerically when every key is a number (hunks, difficulty), else alphabetically. */
+function sortKeys(keys: Iterable<string>): string[] {
+  const all = [...keys];
+  return all.every((k) => /^\d+$/.test(k)) ? all.sort((a, b) => Number(a) - Number(b)) : all.sort();
+}
+
+/**
+ * Pass rate per group and condition over every evaluated record of one suite (not just the
+ * paired set): `passed/evaluated pct` cells, `n` = tasks in the group. `keysOf` may return
+ * several keys (a Ladder task with two kinds counts in both); records without the field fall
+ * under `unknown`.
+ */
+export function breakdownTable(records: readonly BenchRecord[], conds: readonly EngineMode[], label: string, keysOf: (r: BenchRecord) => readonly string[]): string {
+  const groups = new Map<string, BenchRecord[]>();
+  for (const r of records) {
+    const keys = keysOf(r);
+    for (const k of keys.length > 0 ? keys : ['unknown']) {
+      const g = groups.get(k);
+      if (g) g.push(r);
+      else groups.set(k, [r]);
+    }
+  }
+  if (groups.size === 0) return '_no records_';
+  const rows: string[][] = [];
+  for (const key of sortKeys(groups.keys())) {
+    const g = groups.get(key)!;
+    const tasks = new Set(g.map((r) => r.task)).size;
+    const cells = [key, String(tasks)];
+    for (const c of conds) {
+      const evaluated = g.filter((r) => r.condition === c && r.pass !== null);
+      const passed = evaluated.filter((r) => r.pass === true).length;
+      cells.push(`${passed}/${evaluated.length} ${pct(evaluated.length === 0 ? null : passed / evaluated.length)}`);
+    }
+    rows.push(cells);
+  }
+  return table([label, 'tasks', ...conds], rows);
+}
+
+const str = (v: string | number | undefined): string[] => (v === undefined ? [] : [String(v)]);
+
+/** The per-suite breakdown sections: QuixBugs by bug kind; Ladder by hunks and by difficulty. */
+export function breakdownSections(suite: BenchSuite, records: readonly BenchRecord[], conds: readonly EngineMode[]): string[] {
+  const out: string[] = [];
+  const section = (title: string, label: string, keysOf: (r: BenchRecord) => readonly string[]): void => {
+    out.push(`### ${title} (all evaluated records)`, '', breakdownTable(records, conds, label, keysOf), '');
+  };
+  if (suite === 'quixbugs') section('Pass rate by bug kind', 'kind', (r) => str(r.meta?.kind));
+  if (suite === 'ladder') {
+    section('Pass rate by hunks', 'hunks', (r) => str(r.meta?.hunks));
+    section('Pass rate by difficulty', 'difficulty', (r) => str(r.meta?.difficulty));
+  }
+  return out;
 }
 
 export const CONDITIONS_PARAGRAPH =
@@ -179,7 +244,7 @@ function list(ids: readonly string[]): string {
   return ids.length === 0 ? '—' : ids.map((x) => `\`${x.replace(/`/g, "'")}\``).join(', ');
 }
 
-export function renderComparison(summary: Summary, records: readonly BenchTaskRecord[]): string {
+export function renderComparison(summary: Summary, records: readonly BenchRecord[]): string {
   const conds = summary.conditionOrder;
   const out: string[] = [];
   out.push(`# JevCode bench ${summary.benchId}`);
@@ -216,6 +281,7 @@ export function renderComparison(summary: Summary, records: readonly BenchTaskRe
       ),
     );
     out.push('');
+    out.push(...breakdownSections(suite, records.filter((r) => r.suite === suite), conds));
     const cmp = sm.comparison;
     out.push(`### Paired comparison (n = ${cmp.pairedTasks.length} tasks evaluated in every condition)`);
     out.push('');
