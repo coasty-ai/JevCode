@@ -209,9 +209,9 @@ export function oracle(over: Partial<OracleModel> = {}): OracleModel {
   return { runner: 'quixbugs', lanes: 8, tRunMs: { goalSubset: 300, fullSuite: 300 }, perTestTimeoutMs: 1000, runTimeoutMs: 30_000, baselineDurationMs: 300, ...over };
 }
 
-/** The committed base: `file` at the baseline `summary` (failing = the goal's tests). */
-export function committedBase(file: SourceFile, baseline: TestRunSummary): Base {
-  return { id: 'committed', origin: 'committed', fromGoal: null, files: new Map([[file.path, file]]), summary: baseline, depth: 0 };
+/** The committed base: `file` (plus `extra` workspace files) at the baseline `summary` (failing = the goal's tests). */
+export function committedBase(file: SourceFile, baseline: TestRunSummary, extra: readonly SourceFile[] = []): Base {
+  return { id: 'committed', origin: 'committed', fromGoal: null, files: new Map([file, ...extra].map((f) => [f.path, f] as const)), summary: baseline, depth: 0 };
 }
 
 export interface OutcomeSpec {
@@ -283,3 +283,71 @@ export const DEPTH_FIRST_SEARCH_OVERFITS = [
   'startnode for nextnode in node.successors',
 ].map((t) => `                ${t}`);
 export const DEPTH_FIRST_SEARCH_FAILURES: FailureView[] = [{ testId: 'test5: Case 5: Graph with cycles', call: 'test5: Case 5: Graph with cycles', expected: 'pass', actual: 'RecursionError: maximum recursion depth exceeded' }];
+
+// ---------------------------------------------------------------------------------------
+// The two run-3 overfits (experiments/results/jev-only-quixbugs-3-inspection.md §1)
+// ---------------------------------------------------------------------------------------
+
+/** A visible test file of the QuixBugs bench data (`tests/<file>`). */
+export function quixbugsTestFile(file: string): string {
+  return readFileSync(join(QUIXBUGS_DIR, 'tests', file), 'utf8');
+}
+
+export const DETECT_CYCLE = sourceFile('detect_cycle.py', quixbugsProgram('detect_cycle'));
+export const NODE = sourceFile('node.py', quixbugsProgram('node'));
+/** `        if hare.successor is None:` */
+export const DETECT_CYCLE_LINE = 5;
+export const DETECT_CYCLE_GOLD = '        if hare is None or hare.successor is None:';
+/** pytest-style failure view of test4 (2-node acyclic list): the E line, no expected value, the node id as the call. */
+export const DETECT_CYCLE_FAILURES: FailureView[] = [{ testId: 'tests/detect_cycle_test.py::test4', call: 'tests/detect_cycle_test.py::test4', expected: '', actual: "AttributeError: 'NoneType' object has no attribute 'successor'" }];
+/** The tail of the baseline pytest run (the frame lines the guard reads the traceback line from). */
+export const DETECT_CYCLE_TAIL = [
+  '>       detected = detect_cycle(node7)',
+  '',
+  'tests/detect_cycle_test.py:54: ',
+  '_ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ _ ',
+  '',
+  'node = <node.Node object at 0x1029702e0>',
+  '',
+  '    def detect_cycle(node):',
+  '        hare = tortoise = node',
+  '',
+  '        while True:',
+  '>           if hare.successor is None:',
+  "E           AttributeError: 'NoneType' object has no attribute 'successor'",
+  '',
+  'detect_cycle.py:5: AttributeError',
+  '=========================== short test summary info ============================',
+  "FAILED tests/detect_cycle_test.py::test4 - AttributeError: 'NoneType' object ...",
+  '1 failed, 5 passed in 0.15s',
+].join('\n');
+
+/** Run 3's committed `detect_cycle` patch: `donor/statement_donor` at the gap after `hare = hare.successor.successor`. */
+export function detectCycleOverfit(): Candidate {
+  return candidate(siteAt(DETECT_CYCLE, 10, 'insert'), '        if tortoise.successor is None:', {
+    id: 'dc_overfit',
+    source: 'donor',
+    op: 'statement_donor',
+    extraEdits: [{ path: DETECT_CYCLE.path, line: 10, kind: 'insert', text: '            return False' }],
+  });
+}
+
+export const WRAP = sourceFile('wrap.py', quixbugsProgram('wrap'));
+/** the gap before `    return lines` */
+export const WRAP_GOLD_LINE = 10;
+export const WRAP_GOLD = '    lines.append(text)';
+export const WRAP_FAILURES: FailureView[] = [0, 1, 2, 3, 4].map((k) => {
+  const id = `tests/test_wrap.py::test_wrap[${k}-["The leaves did not stir on the trees, grasshop]`;
+  return { testId: id, call: id, expected: '["The leaves did not stir on the trees, grasshoppers", …', actual: '[]' };
+});
+
+/** Run 3's committed `wrap` patch: the loop copied under its own `end = cols` (`donor/statement_donor` at the gap before line 7). */
+export function wrapOverfit(): Candidate {
+  const body = ["            end = text.rfind(' ', 0, cols + 1)", '            if end == -1:', '                end = cols', '            wrap, text = text[:end], text[end:]', '            lines.append(wrap)'];
+  return candidate(siteAt(WRAP, 7, 'insert'), '        while len(text) > cols:', {
+    id: 'wrap_overfit',
+    source: 'donor',
+    op: 'statement_donor',
+    extraEdits: body.map((text) => ({ path: WRAP.path, line: 7, kind: 'insert' as const, text })),
+  });
+}

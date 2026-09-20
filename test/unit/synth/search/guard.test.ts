@@ -4,43 +4,73 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
-import type { Json } from '../../../../src/core/types.js';
+import type { ExecResult, Json, SynthesisContext } from '../../../../src/core/types.js';
+import type { LanePool } from '../../../../src/synth/sieve/lanes.js';
 import { ESCAPE_KEY } from '../../../../src/jev/questions.js';
-import { appliedOnCommitted, createGuardMemory, forgetGoal, guardState, improvedBase } from '../../../../src/synth/search/bases.js';
+import { appliedOnCommitted, createGuardMemory, forgetGoal, guardState, improvedBase, siteKeyOf } from '../../../../src/synth/search/bases.js';
 import {
   ARBITRATE_TASK,
   GENUINE_FIX_INSTRUCTIONS,
+  HOLD_RESERVE_RUNS,
+  HOLD_RESERVE_WALL_MS,
+  LONE_PASSER_HOLD_MAX_NOUL,
+  LONE_PASSER_VOUCH_MIN_NOUL,
   MAX_PERTURBED_INPUTS,
   OVERRIDE_HIGH,
   OVERRIDE_LOW,
   SINGLE_CLUSTER_MAX_MEMBERS,
   SUSPECT_ESCAPE_MIN,
   SUSPECT_NOUL_MAX,
+  adviseLonePasser,
   arbitrate,
   behaviourProbeCommand,
+  budgetAllowsHold,
   clusterByBehaviour,
   commitSuspect,
+  createDecide,
   decide,
   editCost,
   generalInstructions,
+  guardSubjects,
   isPlausible,
+  linkedListInputs,
+  linkedListShape,
   minEdit,
+  noneDereference,
   p2pVector,
   parseBehaviourProbe,
   parseQuixbugsCall,
   perturbedInputs,
+  perturbedInputsFromCases,
   probeTimeoutMs,
   representativesOf,
   mostPassing,
+  sieveHoldApplies,
+  siteBatchDone,
+  STRONG_SIGNALS_MIN,
+  suspicionSignals,
 } from '../../../../src/synth/search/guard.js';
-import type { PerturbedInput } from '../../../../src/synth/search/guard.js';
-import type { Base, VerifyOutcome } from '../../../../src/synth/search/types.js';
+import type { HoldBudget, PerturbedInput } from '../../../../src/synth/search/guard.js';
+import type { Base, Goal, VerifyOutcome } from '../../../../src/synth/search/types.js';
 import type { Candidate } from '../../../../src/synth/types.js';
 import {
   DEPTH_FIRST_SEARCH,
   DEPTH_FIRST_SEARCH_FAILURES,
   DEPTH_FIRST_SEARCH_LINE,
   DEPTH_FIRST_SEARCH_OVERFITS,
+  DETECT_CYCLE,
+  DETECT_CYCLE_FAILURES,
+  DETECT_CYCLE_GOLD,
+  DETECT_CYCLE_LINE,
+  DETECT_CYCLE_TAIL,
+  NODE,
+  WRAP,
+  WRAP_FAILURES,
+  WRAP_GOLD,
+  WRAP_GOLD_LINE,
+  detectCycleOverfit,
+  quixbugsTestFile,
+  wrapOverfit,
   NEXT_PERMUTATION,
   NEXT_PERMUTATION_FAILURES,
   NEXT_PERMUTATION_LINE,
@@ -58,6 +88,7 @@ import {
   quixbugsProgram,
   scriptedAsk,
   siteAt,
+  sourceFile,
   summary,
   throwingAsk,
 } from './helpers.js';
@@ -301,7 +332,7 @@ describe('decide: the §2.6 table', () => {
     const unchanged = outcome(npCands[1]!, NP_BASE, { subset: NP_BASELINE });
     const timedOut = outcome(npCands[2]!, NP_BASE, { subset: summary({ passed: 0, failing: ['<test run>'], timedOut: true }), status: 'timeout' });
     const d = await decide([regressed, unchanged, timedOut], mem, NP_GOAL, throwingAsk);
-    expect(d).toEqual({ kind: 'continue', plausible: 0, clusters: 0, arbitrated: false, requests: 0, fallbacks: [], probeError: null });
+    expect(d).toEqual({ kind: 'continue', plausible: 0, clusters: 0, arbitrated: false, requests: 0, fallbacks: [], probeError: null, held: null, signals: [] });
     expect(improvedBase(mem)).toBeUndefined();
     expect(guardState(mem).suspect).toBeNull();
   });
@@ -440,12 +471,12 @@ describe('decide: the §2.6 table', () => {
     const mem = createGuardMemory(DFS_BASE);
     const ask = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.1 }, escape: 0.9, noul: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.03, 'node for nextnode in node.successors': 0.04, 'any for nextnode in node.successors': 0.04, 'goalnode for nextnode in node.successors': 0.04 } }));
     const d = await decide(dfsPlausible(), mem, DFS_GOAL, ask);
-    expect(d).toEqual({ kind: 'continue', plausible: 7, clusters: 1, arbitrated: true, requests: 1, fallbacks: [], probeError: null });
+    expect(d).toEqual({ kind: 'continue', plausible: 7, clusters: 1, arbitrated: true, requests: 1, fallbacks: [], probeError: null, held: 'suspect', signals: [] });
     expect(guardState(mem).suspect).not.toBeNull();
     expect(guardState(mem).suspect?.goalId).toBe('g1');
     expect(text(guardState(mem).suspect!.outcome)).toBe('search_from(goalnode) for nextnode in node.successors');
     expect(guardState(mem).fallbacks).toBeNull();
-    expect(SUSPECT_ESCAPE_MIN).toBe(0.9);
+    expect(SUSPECT_ESCAPE_MIN).toBe(0.8);
     expect(SUSPECT_NOUL_MAX).toBe(0.1);
 
     // the suspect belongs to its goal: another goal's step end does not commit it, forgetGoal drops it
@@ -462,12 +493,15 @@ describe('decide: the §2.6 table', () => {
     forgetGoal(mem, DFS_GOAL);
     expect(guardState(mem).suspect).toBeNull();
   });
-  it('escape high but a Noul ≥ 0.1 is not the signature: commit the argmax', async () => {
+  it('escape high but a Noul ≥ 0.1 is not the signature: commit the argmax; escape 0.89 with Nouls ≤ 0.06 (wrap, §13) is', async () => {
     const mem = createGuardMemory(DFS_BASE);
     const ask = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.1 }, escape: 0.9, noul: { 'nextnode for nextnode in node.successors': 0.12 } }));
     const d = await decide(dfsPlausible(), mem, DFS_GOAL, ask);
     expect(d.kind).toBe('commit');
     expect(guardState(mem).suspect).toBeNull();
+    const wrapLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.05 }, escape: 0.89, noul: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.05 } }));
+    const held = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, wrapLike);
+    expect(held).toMatchObject({ kind: 'continue', held: 'suspect', arbitrated: true });
   });
   it('override rule: Choice argmax with Noul < 0.3 loses to a representative with Noul ≥ 0.7', async () => {
     const mem = createGuardMemory(NP_BASE);
@@ -499,5 +533,407 @@ describe('decide: the §2.6 table', () => {
     const mem = createGuardMemory(NP_BASE);
     const ask = scriptedAsk((questions) => Object.fromEntries(Object.keys(questions).map((id) => [id, { type: 'noul' as const, noul: 0.5 }])));
     await expect(decide(npPlausible(), mem, NP_GOAL, ask)).rejects.toThrow(/genuine_fix answer missing or not a choice/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The two run-3 overfits (jev-only-quixbugs-3-inspection.md §1) and the within-step holds
+// ---------------------------------------------------------------------------------------
+
+const DC_BASELINE = { ...summary({ passed: 5, failing: DETECT_CYCLE_FAILURES.map((f) => f.testId), failures: DETECT_CYCLE_FAILURES, total: 6 }), outputTail: DETECT_CYCLE_TAIL };
+const DC_BASE: Base = committedBase(DETECT_CYCLE, DC_BASELINE, [NODE]);
+const DC_GOAL = goal(DETECT_CYCLE_FAILURES);
+const DC_TEST_MODULE = quixbugsTestFile('detect_cycle_test.py');
+const dcGoldCand = (): Candidate => candidate(siteAt(DETECT_CYCLE, DETECT_CYCLE_LINE), DETECT_CYCLE_GOLD, { id: 'dc_gold', op: 'condition_extension' });
+const dcGold = (): VerifyOutcome => plausibleOutcome(dcGoldCand(), DC_BASE);
+const dcOverfit = (): VerifyOutcome => plausibleOutcome(detectCycleOverfit(), DC_BASE);
+const dcUnchanged = (line: number, text: string, source: Candidate['source'] = 'mutation'): VerifyOutcome => outcome(candidate(siteAt(DETECT_CYCLE, line), text, { source }), DC_BASE, { subset: DC_BASELINE });
+const dcLinkedLists = (): PerturbedInput[] => linkedListInputs(linkedListShape(DC_TEST_MODULE, 'detect_cycle', [DETECT_CYCLE, NODE])!, 'tests/detect_cycle_test.py');
+
+const WRAP_BASELINE = summary({ passed: 0, failing: WRAP_FAILURES.map((f) => f.testId), failures: WRAP_FAILURES, total: 5 });
+const WRAP_BASE: Base = committedBase(WRAP, WRAP_BASELINE);
+const WRAP_GOAL = goal(WRAP_FAILURES);
+const wrapGold = (): VerifyOutcome => plausibleOutcome(candidate(siteAt(WRAP, WRAP_GOLD_LINE, 'insert'), WRAP_GOLD, { id: 'wrap_gold', source: 'template', op: 'insert_append' }), WRAP_BASE);
+const wrapOver = (): VerifyOutcome => plausibleOutcome(wrapOverfit(), WRAP_BASE);
+
+const OVERFIT_TEXT = 'if tortoise.successor is None:';
+const ample: HoldBudget = { exhausted: () => false, testWallLeftMs: 60_000, testRunsLeft: 500, jevRequestsLeft: 20 };
+const thin: HoldBudget = { exhausted: () => false, testWallLeftMs: HOLD_RESERVE_WALL_MS - 1, testRunsLeft: 500, jevRequestsLeft: 20 };
+
+describe('rule (b): code-computed structural signals on a lone passer', () => {
+  it('noneDereference: the attribute the tests crash on and the receivers on the traceback line of the site file', () => {
+    expect(noneDereference(DETECT_CYCLE_FAILURES, DETECT_CYCLE_TAIL, DETECT_CYCLE)).toEqual({ attr: 'successor', receivers: new Set(['hare']), line: 5 });
+    expect(noneDereference(DETECT_CYCLE_FAILURES, '', DETECT_CYCLE)).toBeNull();
+    expect(noneDereference([failure('t', '1', 'AssertionError: assert not True')], DETECT_CYCLE_TAIL, DETECT_CYCLE)).toBeNull();
+    expect(noneDereference([failure('t', '', "TypeError: 'NoneType' object is not subscriptable")], 'prog.py:3: TypeError', sourceFile('prog.py', 'def f(xs):\n    a = 1\n    return xs[0]\n'))).toEqual({ attr: null, receivers: new Set(['xs']), line: 3 });
+  });
+  it('guardSubjects: the None / falsy subjects a candidate adds (the current line\'s own are not additions)', () => {
+    expect(guardSubjects(detectCycleOverfit())).toEqual(['tortoise.successor']);
+    expect(guardSubjects(dcGoldCand())).toEqual(['hare']);
+    expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if not node or hare.successor is None:'))).toEqual(['node']);
+    expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if hare.successor is not None:'))).toEqual([]);
+    expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if not f(x) or hare.successor is None:'))).toEqual([]);
+  });
+  it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences and guards an expression nothing reads; the gold and a genuine inserted guard are clean', () => {
+    expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard']);
+    expect(suspicionSignals(dcGold(), DC_GOAL)).toEqual([]);
+    const genuine = plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 5, 'insert'), '        if hare is None:\n            return False', { id: 'guard_before' }), DC_BASE);
+    expect(suspicionSignals(genuine, DC_GOAL)).toEqual([]);
+    // without the traceback line only the dead-guard signal remains
+    const noTail = committedBase(DETECT_CYCLE, { ...DC_BASELINE, outputTail: '' }, [NODE]);
+    expect(suspicionSignals(plausibleOutcome(detectCycleOverfit(), noTail), DC_GOAL)).toEqual(['duplicates_block', 'dead_guard']);
+  });
+  it('wrap: the loop copied under itself duplicates a block; the one-line gold does not; two lines sharing one with the function do not', () => {
+    expect(suspicionSignals(wrapOver(), WRAP_GOAL)).toEqual(['duplicates_block']);
+    expect(suspicionSignals(wrapGold(), WRAP_GOAL)).toEqual([]);
+    const twoLines = plausibleOutcome(candidate(siteAt(WRAP, WRAP_GOLD_LINE, 'insert'), '    if text:\n        lines.append(text)', { id: 'two' }), WRAP_BASE);
+    expect(suspicionSignals(twoLines, WRAP_GOAL)).toEqual([]);
+  });
+  it('deletes_statement: a delete extra edit or an empty / `pass` replacement', () => {
+    const del = plausibleOutcome(candidate(siteAt(WRAP, 3), '    while len(text) >= cols:', { id: 'del', extraEdits: [{ path: WRAP.path, line: 8, kind: 'delete' }] }), WRAP_BASE);
+    expect(suspicionSignals(del, WRAP_GOAL)).toEqual(['deletes_statement']);
+    expect(suspicionSignals(plausibleOutcome(candidate(siteAt(WRAP, 8), '        pass', { id: 'pass' }), WRAP_BASE), WRAP_GOAL)).toEqual(['deletes_statement']);
+  });
+  it('adviseLonePasser: Q16 alone over the one-candidate arbitration state', async () => {
+    const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.12 } }));
+    const adv = await adviseLonePasser({ goal: DC_GOAL }, dcOverfit(), ask);
+    expect(adv).toMatchObject({ p: 0.12, requests: 1 });
+    expect(ask.calls).toHaveLength(1);
+    expect(Object.keys(ask.calls[0]!.questions)).toEqual(['general_cand_01']);
+    expect(ask.calls[0]!.questions['general_cand_01']?.instructions).toBe(generalInstructions('cand_01'));
+    const state = ask.calls[0]!.state as { candidates: Record<string, Json>; program: Record<string, string>; task: string };
+    expect(state.task).toBe(ARBITRATE_TASK);
+    expect(state.candidates).toEqual({ cand_01: { line: 'L10', replaces: null, with: OVERFIT_TEXT, position: 'inserted before L10', also_edits: [{ line: 'L10', kind: 'insert', text: 'return False' }] } });
+    expect(state.program['L5']).toBe('        if hare.successor is None:');
+  });
+});
+
+describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against the gold when it arrives', () => {
+  it('detect_cycle: held on Q16 0.12, kept through a passer-less batch, then two clusters and Q15 picks the gold', async () => {
+    const mem = createGuardMemory(DC_BASE);
+    const g = goal(DETECT_CYCLE_FAILURES);
+    const ask = scriptedAsk(arbitrationScript({ choice: { [DETECT_CYCLE_GOLD.trim()]: 0.8, [OVERFIT_TEXT]: 0.1 }, escape: 0.1, noul: { [DETECT_CYCLE_GOLD.trim()]: 0.85, [OVERFIT_TEXT]: 0.12 } }));
+    let probed: readonly PerturbedInput[] = [];
+    const probe = async (plausible: readonly VerifyOutcome[], inputs: readonly PerturbedInput[]): Promise<ReadonlyMap<string, string>> => {
+      probed = inputs;
+      return new Map(plausible.map((o) => [o.applied.candidate.id, o.applied.candidate.id === 'dc_gold' ? 'outputs:False' : 'outputs:ERROR AttributeError']));
+    };
+    const opts = { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample };
+    const over = dcOverfit();
+    const d1 = await decide([over], mem, g, ask, opts);
+    expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'], requests: 1, plausible: 1, clusters: 0, arbitrated: false });
+    expect(guardState(mem).suspect).toEqual({ goalId: 'g1', outcome: over, phase: 'SEEDS', signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'], noul: 0.12 });
+    expect(ask.calls).toHaveLength(1);
+
+    // the search runs on: another site's batch with nothing plausible keeps the hold and asks nothing
+    const d2 = await decide([dcUnchanged(9, '        hare = hare.successor')], mem, g, ask, opts);
+    expect(d2).toMatchObject({ kind: 'continue', held: 'suspect', requests: 0, plausible: 0, signals: [] });
+    expect(ask.calls).toHaveLength(1);
+
+    // the gold at line 5: the held passer joins, the probe separates them, one Q15/Q16 request decides
+    const gold = dcGold();
+    const d3 = await decide([gold], mem, g, ask, opts);
+    expect(d3.kind).toBe('commit');
+    if (d3.kind === 'commit') {
+      expect(d3.applied.candidate.id).toBe('dc_gold');
+      expect(d3.note).toBeUndefined();
+    }
+    expect(d3).toMatchObject({ plausible: 1, clusters: 2, arbitrated: true, requests: 1, held: null, probeError: null });
+    expect(d3.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['dc_overfit']);
+    expect(probed).toHaveLength(MAX_PERTURBED_INPUTS);
+    expect(probed.every((p) => p.exprs !== undefined)).toBe(true);
+    expect(guardState(mem).suspect).toBeNull();
+    expect(guardState(mem).fallbacks?.outcomes.map((o) => o.applied.candidate.id)).toEqual(['dc_overfit']);
+    expect(ask.calls).toHaveLength(2);
+    const arbState = ask.calls[1]!.state as { candidates: Record<string, { with: string }> };
+    expect(Object.values(arbState.candidates).map((c) => c.with).sort()).toEqual([DETECT_CYCLE_GOLD.trim(), OVERFIT_TEXT].sort());
+  });
+  it('wrap: the duplicated loop is held; the gold arriving from a later site wins the arbitration', async () => {
+    const mem = createGuardMemory(WRAP_BASE);
+    const g = goal(WRAP_FAILURES);
+    const overText = 'while len(text) > cols:';
+    const ask = scriptedAsk(arbitrationScript({ choice: { [WRAP_GOLD.trim()]: 0.9, [overText]: 0.05 }, escape: 0.05, noul: { [WRAP_GOLD.trim()]: 0.9, [overText]: 0.08 } }));
+    const cases = JSON.parse(quixbugsTestFile('wrap.json')) as Json;
+    const probe = async (plausible: readonly VerifyOutcome[], inputs: readonly PerturbedInput[]): Promise<ReadonlyMap<string, string>> => {
+      expect(inputs.some((i) => i.how === 'str_first_word')).toBe(true);
+      return new Map(plausible.map((o) => [o.applied.candidate.id, o.applied.candidate.id === 'wrap_gold' ? "outputs:['The']" : 'outputs:[]']));
+    };
+    const opts = { oracle: oracle(), probe, inputs: () => Promise.resolve(perturbedInputsFromCases(cases, 'wrap')), budget: ample };
+    const d1 = await decide([wrapOver()], mem, g, ask, opts);
+    expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['duplicates_block'], requests: 1 });
+    const d2 = await decide([wrapGold()], mem, g, ask, opts);
+    expect(d2.kind).toBe('commit');
+    if (d2.kind === 'commit') expect(d2.applied.candidate.id).toBe('wrap_gold');
+    expect(d2).toMatchObject({ clusters: 2, arbitrated: true, held: null });
+    expect(guardState(mem).suspect).toBeNull();
+  });
+  it('a passer with ≥ 2 signals is committed at once only when Jev vouches confidently (p ≥ LONE_PASSER_VOUCH_MIN_NOUL); the live 0.39 holds it', async () => {
+    const run = async (p: number): Promise<ReturnType<typeof decide>> => {
+      const mem = createGuardMemory(DC_BASE);
+      const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: p } }));
+      const g = goal(DETECT_CYCLE_FAILURES);
+      const over = dcOverfit();
+      g.exhausted.set(siteKeyOf(over.applied.candidate), new Set(['mutation', 'template']));
+      return decide([over], mem, g, ask, { oracle: oracle(), budget: ample });
+    };
+    expect(await run(0.39)).toMatchObject({ kind: 'continue', held: 'suspect', requests: 1, signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'] });
+    expect(await run(0.69)).toMatchObject({ kind: 'continue', held: 'suspect' });
+    expect(await run(0.75)).toMatchObject({ kind: 'commit', held: null, requests: 1, signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'], plausible: 1, clusters: 1 });
+    expect(LONE_PASSER_HOLD_MAX_NOUL).toBe(OVERRIDE_LOW);
+    expect(LONE_PASSER_VOUCH_MIN_NOUL).toBe(OVERRIDE_HIGH);
+    expect(STRONG_SIGNALS_MIN).toBe(2);
+  });
+  it('a passer with ONE signal is held only when Jev confidently doubts it (p < LONE_PASSER_HOLD_MAX_NOUL)', async () => {
+    const run = async (p: number): Promise<ReturnType<typeof decide>> => {
+      const mem = createGuardMemory(WRAP_BASE);
+      const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { 'while len(text) > cols:': p } }));
+      const g = goal(WRAP_FAILURES);
+      const over = wrapOver();
+      g.exhausted.set(siteKeyOf(over.applied.candidate), new Set(['mutation', 'template']));
+      return decide([over], mem, g, ask, { oracle: oracle(), budget: ample });
+    };
+    expect(await run(0.07)).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['duplicates_block'] });
+    expect(await run(0.39)).toMatchObject({ kind: 'commit', held: null, signals: ['duplicates_block'] });
+  });
+  it('a clean lone passer on a RANK oracle is committed without any Jev, exactly as before', async () => {
+    const mem = createGuardMemory(DC_BASE);
+    const d = await decide([dcGold()], mem, goal(DETECT_CYCLE_FAILURES), throwingAsk, { oracle: oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', held: null, requests: 0, signals: [] });
+  });
+  it('below the budget reserve nothing is held and no advisory is asked (the passer is committed)', async () => {
+    const mem = createGuardMemory(DC_BASE);
+    const d = await decide([dcOverfit()], mem, goal(DETECT_CYCLE_FAILURES), throwingAsk, { oracle: oracle(), budget: thin });
+    expect(d).toMatchObject({ kind: 'commit', held: null, requests: 0, signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'] });
+    expect(budgetAllowsHold(undefined)).toBe(true);
+    expect(budgetAllowsHold(ample)).toBe(true);
+    expect(budgetAllowsHold(thin)).toBe(false);
+    expect(budgetAllowsHold({ ...ample, testRunsLeft: HOLD_RESERVE_RUNS - 1 })).toBe(false);
+    expect(budgetAllowsHold({ ...ample, jevRequestsLeft: 0 })).toBe(false);
+    expect(budgetAllowsHold({ ...ample, exhausted: () => true })).toBe(false);
+  });
+  it('the held suspect survives every later phase of the step and is released as `possible overfit` only by the budget reserve or the step end', async () => {
+    const hold = async (): Promise<{ mem: ReturnType<typeof createGuardMemory>; g: Goal; over: VerifyOutcome }> => {
+      const mem = createGuardMemory(DC_BASE);
+      const g = goal(DETECT_CYCLE_FAILURES);
+      const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.1 } }));
+      const over = dcOverfit();
+      expect((await decide([over], mem, g, ask, { oracle: oracle(), budget: ample })).held).toBe('suspect');
+      return { mem, g, over };
+    };
+    const a = await hold();
+    for (const phase of ['SKETCH', 'BEAM', 'WIDENED'] as const) {
+      a.g.phase = phase;
+      expect((await decide([], a.mem, a.g, throwingAsk, { oracle: oracle(), budget: ample })).held).toBe('suspect');
+    }
+    expect(guardState(a.mem).suspect?.phase).toBe('SEEDS');
+
+    const b = await hold();
+    const cut = await decide([dcUnchanged(9, '        hare = hare.successor')], b.mem, b.g, throwingAsk, { oracle: oracle(), budget: thin });
+    expect(cut).toMatchObject({ kind: 'commit', note: 'possible overfit', held: null });
+
+    // step end: commitSuspect commits the held suspect, marked
+    const c = await hold();
+    const end = commitSuspect(c.mem, c.g);
+    expect(end).toEqual({ kind: 'commit', applied: c.over.applied, allGoalTestsPass: true, note: 'possible overfit', outcome: c.over });
+    expect(guardState(c.mem).suspect).toBeNull();
+  });
+  it('a later passer that passes MORE tests than the held suspect replaces it outright (tests before Jev)', async () => {
+    const mem = createGuardMemory(DC_BASE);
+    const g = goal(DETECT_CYCLE_FAILURES);
+    const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.1 } }));
+    // a base with a second failing test the overfit leaves failing: the overfit is plausible for g1, the gold also fixes the other
+    const other = 'tests/detect_cycle_test.py::test6';
+    const baseline = { ...summary({ passed: 4, failing: [...DETECT_CYCLE_FAILURES.map((f) => f.testId), other], failures: [...DETECT_CYCLE_FAILURES, failure(other)], total: 6 }), outputTail: DETECT_CYCLE_TAIL };
+    const base = committedBase(DETECT_CYCLE, baseline, [NODE]);
+    const memB = createGuardMemory(base);
+    const narrow = summary({ passed: 5, failing: [other], total: 6 });
+    const over = outcome(detectCycleOverfit(), base, { subset: narrow, full: narrow, status: 'plausible' });
+    const d1 = await decide([over], memB, g, ask, { oracle: oracle(), budget: ample });
+    expect(d1.held).toBe('suspect');
+    const gold = plausibleOutcome(dcGoldCand(), base);
+    const d2 = await decide([gold], memB, g, throwingAsk, { oracle: oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
+    expect(d2).toMatchObject({ kind: 'commit', arbitrated: false, requests: 0, held: null });
+    if (d2.kind === 'commit') expect(d2.applied.candidate.id).toBe('dc_gold');
+    expect(guardState(memB).suspect).toBeNull();
+    void mem;
+  });
+});
+
+describe('rule (a) in decide: a SIEVE lone passer waits for the rest of its site batch', () => {
+  const fast = oracle();
+  const slow = oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } });
+  const gold = (): VerifyOutcome => plausibleOutcome(candidate(NP_SITE, NEXT_PERMUTATION_PLAUSIBLE[3]!, { id: 'np_gold', source: 'mutation', op: 'operand_swap' }), NP_BASE);
+  const siteUnchanged = (source: Candidate['source'], line = NEXT_PERMUTATION_LINE): VerifyOutcome => outcome(candidate(siteAt(NEXT_PERMUTATION, line), `                # ${source} ${line}`, { source }), NP_BASE, { subset: NP_BASELINE });
+  const key = siteKeyOf(gold().applied.candidate);
+
+  it('sieveHoldApplies: SIEVE oracle, seed phase, a seed source still unexhausted at the site', () => {
+    const g = goal(NEXT_PERMUTATION_FAILURES);
+    expect(sieveHoldApplies(g, gold(), fast)).toBe(true);
+    expect(sieveHoldApplies(g, gold(), slow)).toBe(false);
+    expect(sieveHoldApplies(g, gold(), undefined)).toBe(false);
+    expect(sieveHoldApplies({ ...g, phase: 'SKETCH' }, gold(), fast)).toBe(false);
+    expect(sieveHoldApplies({ ...g, phase: 'WIDENED' }, gold(), fast)).toBe(true);
+    const done = goal(NEXT_PERMUTATION_FAILURES);
+    done.exhausted.set(key, new Set(['template', 'donor']));
+    expect(sieveHoldApplies(done, gold(), fast)).toBe(false);
+    const composite = plausibleOutcome(candidate(NP_SITE, NEXT_PERMUTATION_PLAUSIBLE[3]!, { id: 'pair', source: 'composite' }), NP_BASE);
+    expect(sieveHoldApplies(g, composite, fast)).toBe(false);
+  });
+  it('siteBatchDone: another site or composite ends it; the same site only once no other seed source is left; an empty batch says nothing', () => {
+    const g = goal(NEXT_PERMUTATION_FAILURES);
+    expect(siteBatchDone(g, [], key)).toBe(false);
+    expect(siteBatchDone(g, [siteUnchanged('mutation', 3)], key)).toBe(true);
+    expect(siteBatchDone(g, [siteUnchanged('composite')], key)).toBe(true);
+    expect(siteBatchDone(g, [siteUnchanged('template')], key)).toBe(false);
+    g.exhausted.set(key, new Set(['mutation']));
+    expect(siteBatchDone(g, [siteUnchanged('template')], key)).toBe(false);
+    g.exhausted.set(key, new Set(['mutation', 'template']));
+    expect(siteBatchDone(g, [siteUnchanged('donor')], key)).toBe(true);
+    expect(siteBatchDone(g, [siteUnchanged('template')], key)).toBe(false);
+  });
+  it('holds the clean lone passer, keeps it while the site has sources left, commits it when the site batch is done; no Jev anywhere', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const g = goal(NEXT_PERMUTATION_FAILURES);
+    const passer = gold();
+    const d1 = await decide([passer], mem, g, throwingAsk, { oracle: fast, budget: ample });
+    expect(d1).toMatchObject({ kind: 'continue', held: 'pending', plausible: 1, clusters: 0, requests: 0, signals: [] });
+    expect(guardState(mem).pending).toEqual({ goalId: 'g1', outcome: passer, siteKey: key, phase: 'SEEDS' });
+    g.exhausted.set(key, new Set(['mutation']));
+    const d2 = await decide([siteUnchanged('template')], mem, g, throwingAsk, { oracle: fast, budget: ample });
+    expect(d2).toMatchObject({ kind: 'continue', held: 'pending', plausible: 0 });
+    g.exhausted.set(key, new Set(['mutation', 'template']));
+    const d3 = await decide([siteUnchanged('donor')], mem, g, throwingAsk, { oracle: fast, budget: ample });
+    expect(d3).toMatchObject({ kind: 'commit', held: null, plausible: 0, clusters: 1, arbitrated: false, requests: 0 });
+    if (d3.kind === 'commit') {
+      expect(d3.applied).toBe(passer.applied);
+      expect(d3.note).toBeUndefined();
+    }
+    expect(guardState(mem).pending).toBeNull();
+  });
+  it('a batch from another site releases the pending passer; so does the budget reserve', async () => {
+    for (const [results, budget] of [
+      [[siteUnchanged('mutation', 3)], ample],
+      [[], thin],
+    ] as const) {
+      const mem = createGuardMemory(NP_BASE);
+      const g = goal(NEXT_PERMUTATION_FAILURES);
+      const passer = gold();
+      expect((await decide([passer], mem, g, throwingAsk, { oracle: fast, budget: ample })).held).toBe('pending');
+      const d = await decide(results, mem, g, throwingAsk, { oracle: fast, budget });
+      expect(d).toMatchObject({ kind: 'commit', held: null });
+      if (d.kind === 'commit') expect(d.applied).toBe(passer.applied);
+      expect(guardState(mem).pending).toBeNull();
+    }
+  });
+  it('a second passer at the site while one is pending → both are arbitrated (measured next_permutation numbers), the hold is cleared', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const g = goal(NEXT_PERMUTATION_FAILURES);
+    const strict = plausibleOutcome(candidate(NP_SITE, NEXT_PERMUTATION_PLAUSIBLE[0]!, { id: 'np_strict', source: 'mutation' }), NP_BASE);
+    expect((await decide([strict], mem, g, throwingAsk, { oracle: fast, budget: ample })).held).toBe('pending');
+    const nonStrict = plausibleOutcome(candidate(NP_SITE, NEXT_PERMUTATION_PLAUSIBLE[1]!, { id: 'np_ge', source: 'template' }), NP_BASE);
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, o.applied.candidate.id === 'np_strict' ? 'strict' : 'non_strict']));
+    const ask = scriptedAsk(arbitrationScript({ choice: { 'if perm[j] > perm[i]:': 0.79, 'if perm[j] >= perm[i]:': 0.02 }, escape: 0.06, noul: { 'if perm[j] > perm[i]:': 0.65, 'if perm[j] >= perm[i]:': 0.22 } }));
+    const d = await decide([nonStrict], mem, g, ask, { oracle: fast, probe, budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', plausible: 1, clusters: 2, arbitrated: true, requests: 1, held: null });
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('np_strict');
+    expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['np_ge']);
+    expect(guardState(mem).pending).toBeNull();
+    expect(ask.calls).toHaveLength(1);
+  });
+  it('step end: commitSuspect drains the pending passer as a plain commit; forgetGoal clears it; another goal\'s end leaves it', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const g = goal(NEXT_PERMUTATION_FAILURES);
+    const passer = gold();
+    await decide([passer], mem, g, throwingAsk, { oracle: fast, budget: ample });
+    expect(commitSuspect(mem, { id: 'g2' })).toBeNull();
+    expect(commitSuspect(mem, g)).toEqual({ kind: 'commit', applied: passer.applied, allGoalTestsPass: true, outcome: passer });
+    expect(guardState(mem).pending).toBeNull();
+    await decide([passer], mem, g, throwingAsk, { oracle: fast, budget: ample });
+    forgetGoal(mem, g);
+    expect(guardState(mem).pending).toBeNull();
+  });
+});
+
+describe('createDecide: the lane probe is wired by workspace layout, not by the oracle runner label', () => {
+  it('a pytest-labelled QuixBugs workspace (the bench layout) probes both passers on the lanes and clusters them apart', async () => {
+    const base = committedBase(DETECT_CYCLE, DC_BASELINE, [NODE]);
+    const mem = { ...createGuardMemory(base), oracle: oracle({ runner: 'pytest' }), stepBudget: { ...ample, startedMs: 0, recursed: false } } as Parameters<ReturnType<typeof createDecide>>[1];
+    const lane = { index: 0, dir: '/lanes/lane0', mode: 'candidate_file' as const, busy: false };
+    const applied: string[] = [];
+    const pool: LanePool = {
+      mode: 'candidate_file',
+      lanes: [lane],
+      workspaceRoot: '/ws',
+      pathInLane: (_l, rel) => `/lanes/lane0/${rel}`,
+      withLane: async (fn) => fn(lane),
+      applyToLane: async (_l, a) => {
+        applied.push(a.candidate.id);
+      },
+      resetLane: async () => undefined,
+      disposeLanes: async () => undefined,
+    };
+    mem.lanes = pool;
+    const commands: string[] = [];
+    const reads: string[] = [];
+    const events: string[] = [];
+    const ask = scriptedAsk(arbitrationScript({ choice: { [DETECT_CYCLE_GOLD.trim()]: 0.8, [OVERFIT_TEXT]: 0.1 }, escape: 0.1, noul: { [DETECT_CYCLE_GOLD.trim()]: 0.85, [OVERFIT_TEXT]: 0.12 } }));
+    const ctx = {
+      step: 3,
+      ask,
+      signal: new AbortController().signal,
+      emit: (e: { type: string; detail?: string }) => {
+        if (e.detail !== undefined) events.push(e.detail);
+      },
+      sandbox: {
+        run: async (command: string): Promise<ExecResult> => {
+          commands.push(command);
+          // the gold answers every list; the overfit crashes on some: two signatures
+          const outputs = command.includes('detect_cycle.py') && commands.length % 2 === 1 ? ['False'] : ['ERROR AttributeError'];
+          return { ok: true, exitCode: 0, signal: null, stdout: `${JSON.stringify({ probe: 'ok', outputs })}\n`, stderr: '', truncated: false, bytesSeen: 10, killedBy: null } as ExecResult;
+        },
+      },
+      workspace: {
+        read: async (path: string) => {
+          reads.push(path);
+          if (path === 'tests/detect_cycle_test.py') return { path, content: DC_TEST_MODULE, bytes: DC_TEST_MODULE.length, truncatedBytes: 0 };
+          throw new Error(`no such file: ${path}`);
+        },
+      },
+    } as unknown as SynthesisContext;
+    const decideLive = createDecide();
+    const d = await decideLive(ctx, mem, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
+    expect(d.kind).toBe('commit');
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_gold');
+    // one probe process per passer, importing the lane's detect_cycle.py with the lane on sys.path, 16 linked-list inputs
+    expect(applied.sort()).toEqual(['dc_gold', 'dc_overfit']);
+    expect(commands).toHaveLength(2);
+    expect(commands[0]).toContain("'detect_cycle' '/lanes/lane0/detect_cycle.py'");
+    expect(commands[0]).toContain('__jev_chain(__jev_class(\\"node\\", \\"Node\\"), \\"successor\\", 4, None)'.replace(/\\\\"/g, '\\"'));
+    expect(commands[0]?.endsWith("'/lanes/lane0' <<'JEVCODE_BEHAVIOUR_PROBE'\n" + commands[0]!.split("<<'JEVCODE_BEHAVIOUR_PROBE'\n")[1]!)).toBe(true);
+    expect(reads).toEqual(['tests/detect_cycle_test.py', 'tests/detect_cycle.json']);
+    expect(events.some((e) => e.includes('probe 16 inputs, 2/2 signatures') && e.includes('2 clusters'))).toBe(true);
+    // the test sources are read once per goal and memory
+    await decideLive(ctx, mem, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
+    expect(reads).toHaveLength(2);
+  });
+  it('without lanes, or on a repository layout (no <name>.py beside the test module), no probe: P2P clustering as before', async () => {
+    const events: string[] = [];
+    const ask = scriptedAsk(arbitrationScript({ choice: { [DETECT_CYCLE_GOLD.trim()]: 0.8 }, escape: 0.1, noul: { [DETECT_CYCLE_GOLD.trim()]: 0.85 } }));
+    const ctx = { step: 3, ask, signal: new AbortController().signal, emit: (e: { detail?: string }) => e.detail !== undefined && events.push(e.detail), sandbox: { run: async () => { throw new Error('no probe expected'); } }, workspace: { read: async () => { throw new Error('no read expected'); } } } as unknown as SynthesisContext;
+    const noLanes = { ...createGuardMemory(DC_BASE), oracle: oracle() } as Parameters<ReturnType<typeof createDecide>>[1];
+    const d = await createDecide()(ctx, noLanes, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
+    expect(d.kind).toBe('commit');
+    expect(events.some((e) => e.includes('(no probe)') && e.includes('1 cluster'))).toBe(true);
+    // a repository: the test module names `grades` but the source lives under src/
+    const repoFile = sourceFile('src/grades.py', 'def grades(x):\n    return x\n');
+    const repoBase = committedBase(repoFile, summary({ passed: 1, failing: ['tests/test_grades.py::test_a'], failures: [failure('tests/test_grades.py::test_a')] }));
+    const repoMem = { ...createGuardMemory(repoBase), oracle: oracle({ runner: 'pytest' }), lanes: {} as LanePool } as Parameters<ReturnType<typeof createDecide>>[1];
+    const g = goal([failure('tests/test_grades.py::test_a')]);
+    const a = plausibleOutcome(candidate(siteAt(repoFile, 2), '    return x + 0', { id: 'r1' }), repoBase);
+    const b = plausibleOutcome(candidate(siteAt(repoFile, 2), '    return x * 1', { id: 'r2' }), repoBase);
+    const askRepo = scriptedAsk(arbitrationScript({ choice: { 'return x + 0': 0.6 }, escape: 0.1, noul: { 'return x + 0': 0.8 } }));
+    const d2 = await createDecide()({ ...ctx, ask: askRepo } as unknown as SynthesisContext, repoMem, g, [a, b]);
+    expect(d2.kind).toBe('commit');
+    expect(events.filter((e) => e.includes('(no probe)'))).toHaveLength(2);
   });
 });

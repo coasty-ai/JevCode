@@ -23,7 +23,7 @@ import type { StageName } from '../../core/types.js';
 import { analyse, unifiedDiff } from '../py/index.js';
 import type { AppliedCandidate, Candidate, JevAsk, LineEdit, SourceFile, TestRunSummary } from '../types.js';
 import { judgeProgress, progress } from '../verify/index.js';
-import type { Base, Decision, Goal, VerifyOutcome } from './types.js';
+import type { Base, Decision, Goal, Phase, VerifyOutcome } from './types.js';
 
 // ---------------------------------------------------------------------------------------
 // Constants (each with the measurement or design rule behind it)
@@ -55,6 +55,28 @@ export interface RememberedPartial {
   outcome: VerifyOutcome;
 }
 
+/**
+ * A test-passing candidate the guard holds within the step (guard.ts §2.6 hold rules): the
+ * all-overfit signature's smallest edit, or a lone passer whose code-computed structural signals
+ * Q16 confirmed as doubtful (p < LONE_PASSER_HOLD_MAX_NOUL). Committed at step end, or replaced
+ * by the arbitration when a later batch adds a passer.
+ */
+export interface HeldPasser extends RememberedPartial {
+  /** the phase the passer was held in (for the transcript; the hold lasts to the step end or the budget reserve) */
+  phase?: Phase;
+  /** the structural signals behind the hold (empty for the all-overfit signature) */
+  signals?: string[];
+  /** the Q16 `general` p Jev gave the lone passer, when asked */
+  noul?: number;
+}
+
+/** A lone passer waiting for the rest of its site's seed sources in SIEVE mode (guard.ts rule (a)). */
+export interface PendingPasser extends RememberedPartial {
+  /** `siteKeyOf` of the passer's site: the batch is over when a decision arrives from elsewhere or from the site's last seed source */
+  siteKey: string;
+  phase: Phase;
+}
+
 /** Arbitration runner-ups of one goal (guard.ts), for later steps if the judge rejects the pick. */
 export interface RememberedFallbacks {
   goalId: string;
@@ -80,7 +102,9 @@ export interface GuardState {
    * A test-passing candidate flagged by the suspect rule, committed at step end if nothing better.
    * Scoped to its goal so a later goal's step end never commits another goal's flagged passer.
    */
-  suspect: RememberedPartial | null;
+  suspect: HeldPasser | null;
+  /** a lone passer of a SIEVE batch, held until its site's other seed sources ran (guard.ts rule (a)) */
+  pending: PendingPasser | null;
   /** arbitration runner-ups of the last arbitrated goal */
   fallbacks: RememberedFallbacks | null;
 }
@@ -91,7 +115,7 @@ const STATE = new WeakMap<BasesMemory, GuardState>();
 export function guardState(mem: BasesMemory): GuardState {
   let st = STATE.get(mem);
   if (st === undefined) {
-    st = { partials: [], closeness: new Map(), suspect: null, fallbacks: null };
+    st = { partials: [], closeness: new Map(), suspect: null, pending: null, fallbacks: null };
     STATE.set(mem, st);
   }
   return st;
@@ -374,11 +398,12 @@ export function commitPartial(mem: BasesMemory, goal: Goal): Decision | null {
   return { kind: 'commit', applied: b.candidate, allGoalTestsPass: false, note: 'partial', after: b.summary };
 }
 
-/** Forget the partials, suspect, fallbacks and tie-break cache of a goal (after its commit or park). */
+/** Forget the partials, held passers (suspect, pending), fallbacks and tie-break cache of a goal (after its commit or park). */
 export function forgetGoal(mem: BasesMemory, goal: Goal): void {
   const st = guardState(mem);
   st.partials = st.partials.filter((p) => p.goalId !== goal.id);
   if (st.suspect !== null && st.suspect.goalId === goal.id) st.suspect = null;
+  if (st.pending !== null && st.pending.goalId === goal.id) st.pending = null;
   if (st.fallbacks !== null && st.fallbacks.goalId === goal.id) st.fallbacks = null;
   const b = improvedBaseFor(mem, goal);
   if (b !== undefined) {

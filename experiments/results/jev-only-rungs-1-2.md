@@ -1229,3 +1229,188 @@ python3 /tmp/qb-skew-table.py bench/results/jev-only-quixbugs-4-skew
 ```
 Run ids: `20260920-215703-mstrth7d` (longest_common_subsequence), `-nxacjirf` (knapsack), `-qp3jninl` (levenshtein),
 `-e43gigil` (lcs_length), `20260920-215719-4wkivpep` (kth). Live spend for §12: **$0.0139** (generator $0 / 0 calls).
+
+## 13. 2026-09-20 (later): the two run-3 overfits — the first lone passer of a step committed while the gold's site was unvisited; within-step holds, structural signals, test-derived perturbations
+
+Follow-up to `jev-only-quixbugs-3-inspection.md` §1 (`detect_cycle` and `wrap` pass their visible tests with patches
+that are wrong on inputs the tests do not build). Facts from `bench/results/jev-only-quixbugs-3/tasks.jsonl` → run
+dirs `20260920-205926-gcmw4rn7` (detect_cycle) and `20260920-210830-qg4kfmo3` (wrap), their `steps.jsonl`,
+`decisions.jsonl` and `synthState.tried` (174 and 724 sha12 diff hashes, in completion order), matched against a
+re-enumeration of every seed source (mutation, template, donor) at every replace line and every gap slot of the BUGGY
+programs (`.scratch/reconstruct.mts`; 153/174 and 586/724 hashes matched — the rest are literal-dependent variants —
+enough to read the site order batch by batch). Code = `src/synth/search/{guard,bases,perturb}.ts` and their tests;
+`subgoal.ts` untouched (one recommendation in §13.4).
+
+### 13.1 What happened in run 3, per program
+
+**Both golds were enumerated, at the right site, by more than one source; neither site was ever visited, because the
+first lone passer of the step was committed (design §2.6 "1 plausible → commit") while the site list still had the
+gold's site ahead.** Neither is a `tried`, cap, vocabulary or ordering-within-a-batch miss.
+
+| | detect_cycle (`-gcmw4rn7`) | wrap (`-qg4kfmo3`) |
+|---|---|---|
+| gold | replace L5 `if hare is None or hare.successor is None:` | insert before L10 (indent 4) `lines.append(text)` |
+| gold enumerated at its site by | mutation `condition_extension` (index 25 of 58 under the 254 cap), template `cond_or_first` | mutation `statement_template` (8/140), template `insert_append` (18/59), donor `statement_donor` (42/87) |
+| gold's diff hash in `tried` | no (`09e612bad5b0`) | no (`46da28278c59`) |
+| sites | 11 (Q5: L9 0.81, L5 0.13; `where` put 0.55 on `Node.successor` in node.py, Q5 on the `Node` class answered none_of_these 0.96 → insert sites first) | 9 (Q5: L7 0.67, L4 0.08, L3 0.07; line Nouls L7 0.61, L4 0.36, L6/L10 0.21) |
+| batches run, in `tried` order | node.py:12:insert (mutation 20, template 2, donor 3), node.py:11:insert (20, 39, 2), detect_cycle.py:10:insert = the gap after `hare = hare.successor.successor` (mutation 48: 44 regressed; template 21; **donor 19: 1 plausible → commit at run 174**) | step 3: wrap.py:7 replace (mutation, template, donor…), 7:insert, 8:insert, 6:replace … 667 runs, RANK cut at the 90 s wall, 0 plausible → `budget`; step 5 (`change_approach`: sources rotated, donor first): **wrap.py:7:insert donor 58: 1 plausible → commit at run 59** |
+| the committed passer | `donor/statement_donor`: lines 5–6 copied with `hare`→`tortoise` under L9 | `donor/statement_donor`: the loop header + body copied under `end = cols` with `line`→`wrap` |
+| sites never reached | L9 replace, **L5 replace**, and 6 more | L3, L4 replaces, **the gap before L10**, and more |
+
+`decide` runs once per (site, source) batch (`subgoal.ts runBatch` → `visitSource`), and `runQueue` returns the whole
+batch, so within a batch the design's rule held; across sources and sites it did not: the sieve's ranking by tests
+is only as good as the set the step has run, and a lone passer from site 3 of 11 ends the step. Localisation put the
+gold's site late in both (Jev's L9 0.81 on `hare = hare.successor.successor`, the crash's neighbour; L7 0.67 on wrap's
+`line, text = …`), which is not wrong of it — it is why the guard must not trust a lone passer that arrives early.
+
+### 13.2 What changed (src/synth/search/guard.ts, bases.ts, new perturb.ts; tests in test/unit/synth/search/{guard,perturb,helpers}.ts)
+
+1. **Rule (b): code-computed structural signals on a lone passer, Q16 as an advisory, a within-step hold**
+   (`suspicionSignals`, `adviseLonePasser`, `decide`). Four signals, each a shape the two overfits had and the golds
+   did not: `deletes_statement` (a delete extra edit, or an empty / `pass` replacement); `duplicates_block` (≥ 2 added
+   lines of which at least half, ≥ 2, are lines the function already has with identifiers and literals abstracted —
+   wrap's copied loop, 6/6; detect_cycle's copied guard, 2/2); `guards_other_variable` (the tests crash dereferencing
+   None — `'NoneType' object has no attribute 'successor'` in the failure view — and the added `X is None` / `not X`
+   guard names no root variable dereferenced with that attribute on the traceback line, read from the baseline
+   output tail: `detect_cycle.py:5: AttributeError` → L5 → `hare`; the candidate guards `tortoise.successor`);
+   `dead_guard` (an added guard statement whose subject expression nothing in the function reads: `tortoise.successor`
+   is never dereferenced, indexed, iterated or passed). A flagged lone passer gets ONE Q16 `general_cand_01` Noul over
+   the one-candidate arbitration state. With one signal it is held when p < 0.3 (`LONE_PASSER_HOLD_MAX_NOUL` =
+   OVERRIDE_LOW, the design's "confidently false"); with two or more it is committed at once only when p ≥ 0.7
+   (`LONE_PASSER_VOUCH_MIN_NOUL` = OVERRIDE_HIGH, "confidently true") — the first live run had the triple-flagged
+   detect_cycle guard answer 0.39 and commit under the single 0.3 bound (§13.3). A held passer is the goal's
+   `suspect` (bases.ts `HeldPasser`: phase, signals, Noul); every later `decide` of the goal merges it into that
+   batch's passers, so a passer from a later site is arbitrated against it (probe + Q15/Q16 as §2.6); the hold is
+   released by the budget reserve (below) and by `commitSuspect` at step end (`possible overfit`), never past the step.
+2. **Rule (a): a clean SIEVE lone passer waits for its site batch** (`sieveHoldApplies`, `siteBatchDone`, bases.ts
+   `PendingPasser`). On a SIEVE oracle (t_run ≤ `SIEVE_MAX_T_RUN_MS`) in SEEDS/WIDENED, a lone passer whose site still
+   has a seed source to run (mutation/template/donor, read from `goal.exhausted`) is held as `pending`; the next
+   decision at the same site keeps or ends the hold by the same rule, a decision from another site or from composite
+   ends it, a second passer merges into an arbitration, `commitSuspect` drains it at step end as a plain commit. This
+   is the guard-side form of "decide sees the whole site batch"; §13.4 says what the controller-side form would be.
+3. **Budget reserve on every hold** (`budgetAllowsHold`, `HOLD_RESERVE_WALL_MS` 15 s, `HOLD_RESERVE_RUNS` 16, one
+   Jev request). A hold is started or kept only inside the reserve; the decision after the batch that spends the
+   reserve releases it (every runner batch ends in a decision, so a hold cannot outlive the step through `visitSource`'s
+   run-less exit). `createDecide` passes `mem.stepBudget`. The phase bound I first wrote (release two phases on) was
+   dropped: WIDENED, the phase that visits the remaining sites of a single-file workspace, is three phases after SEEDS.
+4. **Perturbed inputs derived from the visible tests** (new `perturb.ts`; the old `perturbedInputs`, probe script and
+   command moved there and re-exported). Strings: first word alone (a text that fits), a trailing word, the empty
+   string, the last word dropped. JSON cases read from `tests/<name>.json` through `ctx.workspace.read` (the failure
+   views cut the 945-character paragraph at VALUE_BOUND, so `wrap("…", 50)` never parsed back). Linked lists read
+   from the failing pytest module: `name = Node(v, prev)` chains, the link attribute from `x.successor = y` between
+   constructed names (else `Node.__init__`'s parameter at the link position), the class's module from the corpus,
+   the chain lengths of the names passed to the function (1, 2, 5) ±1..3 clipped to 1..12, each acyclic and with the
+   tail linked to the head (16 inputs). These travel as Python expressions (`__jev_chain(__jev_class("node", "Node"),
+   "successor", 4, None)`) the probe evaluates in the candidate module's namespace. A kind-diversity pass in the
+   round-robin keeps five cases sharing one paragraph from spending the 16 slots on five first-word variants.
+   `MAX_PERTURBED_INPUTS` stays 16.
+5. **The probe runs on the sieve's lanes** (`createLaneProbe`, wired in `createDecide` when the oracle is QuixBugs
+   and `mem.lanes` exists — until now `decideForSearch` had no probe, so ≥ 2 passers always clustered on the P2P
+   vector alone, one cluster on QuixBugs). Each plausible candidate is written into a free lane (base files first, as
+   the runner does), `<program>.py` imported from there with the lane on `sys.path`, per-input SIGALRM at
+   min(perTestTimeoutMs, 2 s); a process without a protocol line leaves the candidate on its P2P vector. The program
+   name comes from the test module (`tests/detect_cycle_test.py` → `detect_cycle`, `tests/test_wrap.py` → `wrap`),
+   verified against the workspace files. Test sources are read once per goal.
+6. **`SUSPECT_ESCAPE_MIN` 0.9 → 0.8.** The wrap arbitration of the first live run (two behaviourally identical
+   duplicated-loop passers) answered escape 0.89, Nouls 0.06/0.05 — the all-overfit signature by everything but one
+   wire tick of the bound set on the single measured set (0.90/0.06); every measured gold-containing set had escape
+   ≤ 0.38, so 0.8 keeps a margin on both sides.
+7. Transcript notes (`synth guard:` events) for every hold, release, advisory and arbitration (probe inputs and
+   signature counts, escape, max general).
+
+Unit tests: the exact run-3 patches rebuilt as candidates (`helpers.ts detectCycleOverfit / wrapOverfit`, verified
+byte-identical to the committed diffs), the signals on them and on the golds, the Q16 request shape, the two hold
+rules through `decide` with scripted Jev (hold → passer-less batch → gold arrives → 2 clusters → Q15 picks the gold;
+one-signal vs multi-signal bounds; RANK and thin-budget bypasses; site-batch completion; step-end drains), and the
+real-python probe: detect_cycle's gold answers all 16 linked lists (`False`/`True`) while the committed guard raises
+`AttributeError` on the acyclic lists of length 4, 6, 8; wrap's gold keeps the remainder (`['The']` on the first
+word) while the duplicated loop returns `[]`. `npx vitest run --project unit test/unit/synth/search
+test/unit/synth/mutate test/unit/synth/sieve`: 23 files, 467 tests; `tsc --noEmit` and `no-any` clean.
+
+### 13.3 Live: three runs of `detect_cycle`, `wrap`, `depth_first_search` (concurrency 2, `--max-steps 12`, `--max-wall 6m`)
+
+Same flags as §8.2 with `--task-id detect_cycle,wrap,depth_first_search --concurrency 2`, three code states in a row
+(each run diagnosed the next change): **a** `bench/results/jev-only-quixbugs-4-overfit` (items 1–5 and 7 with the
+single 0.3 bound and the 0.9 escape bound; the probe gated on `oracle.runner === 'quixbugs'`), **b** `-4-overfit-b`
+(the two-level bound, escape 0.8, the phase release dropped), **c** `-4-overfit-c` (the probe gated on the layout).
+Generator calls 0 on every record. "correct" = the patched program agrees with `correct/<name>.py` on a differential
+harness (detect_cycle: 48 linked lists, lengths 1–12, acyclic and cycles to head / middle / self; the run-3 patch
+raises `AttributeError` on 5 of them), "gold-identical" = whitespace/comment-insensitive equality with the reference.
+
+| program | run 3 (§1 of the inspection) | a | b | c |
+|---|---|---|---|---|
+| detect_cycle | overfit (`if tortoise.successor is None: return False` under L9), step 3, 174 runs, $0.0016 | guard: `duplicates_block, guards_other_variable, dead_guard`, Q16 **0.39 ≥ 0.3 → kept**, the same overfit committed at run 89, $0.0018 | Q16 0.39 < 0.7 → **held**; search on to L9 replace (48) and the gap before L9 (60: 4 passers); arbitrated 5 (1 held), **1 cluster (no probe)**, escape 0.02, max general 0.75, Choice 0.92 → `if hare.successor.successor is None: return False` before L9 — **correct 48/48, not gold-identical**; 201 runs, 5 steps, $0.0019 | held (Q16 0.41); arbitrated 5 (1 held) in **3 clusters (probe 16 linked lists, 5/5 signatures)**, escape 0.06, max general 0.70 → `if not hare.successor.successor: return False` before L9 — **correct 48/48, not gold-identical**; 201 runs, 4 steps, $0.0019, 34 s |
+| wrap | overfit (the loop copied under `end = cols`), step 5 after 667 + 58 runs, $0.0036 | `duplicates_block`, Q16 0.07 → **held**; a second, behaviourally identical copy (`L4: while len(text) > cols:`) arrived from another site → arbitrated 2 (1 held), 1 cluster (no probe), **escape 0.89, Nouls 0.06/0.05 → one wire tick under the 0.9 bound → committed** the argmax (overfit); 1043 runs, $0.0023 | held (0.06); two arbitrations of two identical copies each: escape 0.90 / 0.88, max general 0.05 / 0.07 → **all-overfit signature, held twice**; released at the budget reserve after 1485 runs, committed as `possible overfit`; **the gap before `return lines` was not among the 10 sites** (replace L3–L8 and the gaps at indents 8/12 around them, read from `tried`); 7 steps, `replan_stop`, $0.0031 | same course with the probe live (16 case perturbations, 2/2 signatures, correctly 1 cluster: the two copies behave alike); escape 0.91 / 0.88; committed at the reserve as `possible overfit` with `openProblems: "possible overfit: statement_donor at wrap.py:5 passes every test, but Jev rated no test-passing candidate a general fix; review the change"` (judge `succeeded` 0.18 on the patch step, 0.89 on the green run); **still the overfit**, now flagged; 1485 runs, 8 steps, `replan_stop`, $0.0037, 66 s |
+| depth_first_search | miss (`max_steps`, 12 steps, $0.0131, the all-overfit set of §2.6) | **gold-identical** `nodesvisited.add(node)`: 561 runs, 2 passers arbitrated (P2P, 1 cluster), 4 steps, $0.0018 | gold-identical, $0.0018 | gold-identical, $0.0018 (probe 0 inputs: the graph tests build `Node(..., successors=[...])`, no chains) |
+| Jev spend (run) | – | $0.0059 | $0.0069 | $0.0073 |
+
+Live spend for §13: **$0.0201** (generator $0 / 0 calls). Run ids: a `20260920-220904-4ygo5bjz` (detect_cycle),
+`-6w3m3flp` (wrap), `20260920-220923-bhrcc7xe` (dfs); b `20260920-221404-23se3qse`, `-yh3r2kwu`,
+`20260920-221439-kjpn4v6k`; c `20260920-221929-orujdof2`, `-olduhhax`, `20260920-222004-dzqva6ip`.
+
+**Per program.** `detect_cycle`: repaired (correct by behaviour on every linked list tried; the run-3 patch crashed on
+acyclic lengths 4, 6, 8, 10, 12), not gold-identical — the pick is a guard before L9 rather than the L5 condition
+because L5 was still never visited (site order 10:insert → 9:replace → 9:insert in all three runs; the L9 guards are
+equivalent fixes, so the search stopped rightly there). `wrap`: not repaired — the same duplicated loop, but the guard
+now recognises it (structural signal, Q16 0.05–0.07, the all-overfit signature on both arbitrations) and commits it
+only at the budget reserve, marked; the gold's site is absent from the localiser's list (§13.4). `depth_first_search`:
+repaired, gold-identical, 3/3 (run 3 had missed it).
+
+**What the probe did.** Run c's detect_cycle arbitration is the first live use of behaviour clustering with inputs:
+16 linked lists (lengths 1–8, acyclic and cyclic) put the held overfit (raises on acyclic 4, 6, 8), the `return None`
+/ `break` guards (return `None` on acyclic even lengths) and the two `return False` guards into three clusters, and
+Q15 chose between three representatives instead of five members of one cluster (run b: 1 cluster, Choice 0.92 on
+one of the two correct guards; run c: 3 clusters, 0.06 escape, pick correct). On wrap the probe confirmed what the P2P
+vector could not distinguish: the two copies are one behaviour (both drop the remainder on the first-word and empty
+inputs), so the one cluster was right and the signature, not the clustering, carried the hold.
+
+### 13.4 What remains
+
+- **`subgoal.ts` (not edited; reported).** (a) The controller-side form of "decide sees the whole site batch": in
+  SIEVE mode `visitPhase` could enumerate the three seed sources of a site together, queue them as one batch and call
+  `decide` once. The guard-side hold emulates it, but a `visitSource` that finds nothing fresh (all tried) returns
+  without a decision, so a pending passer waits for the next site's decision. (b) A `budget` exit returns from
+  `searchSubGoal` before the step-end `commitSuspect`; the guard's budget reserve (15 s / 16 runs / 1 request) closes
+  the gap in practice — every runner batch ends in a decision — but the honest place is `finish(st, { kind: 'budget' })`
+  draining `commitSuspect(mem, goal)` first, and index.ts committing a held passer before `park` → `forgetGoal`
+  (today a passer held across a park is dropped, which is why the guard never holds past the step).
+- **Localisation of wrap's gold site.** Three runs, three site lists (9–10 sites), never the gap before
+  `return lines` (L10, indent 4): Q5 puts 0.64–0.67 on L7 and Nouls 0.16–0.21 on L10, tied with L6, so the anchors are
+  L3, L4, L7 (+L6) and their neighbouring gaps at indents 8/12. WIDENED would reach the gap, but 1485 SIEVE runs on
+  those sites exhaust the 90 s wall first (the reserve release is where the run ends). The lever is in sites.ts: the
+  block-end gap of a function's last loop at the function's own indent (the "after the loop" statement: `wrap`,
+  `shunting_yard` §11) as a default insert site, or the Q6 fallback with `lines.append(text)` (the template puts it
+  18th of 59 at that gap).
+- **Q16 on a lone candidate is not decisive.** The run-3 detect_cycle guard drew 0.39, 0.39, 0.41 across three runs
+  (Jev does not read a copied guard as clearly wrong); the code signals carry the hold and the 0.7 vouch bound for
+  ≥ 2 signals rests on this one program. A genuine fix with two signals and a middling p is delayed to the step end,
+  never withheld: one Q16 request plus the step's remaining runs.
+- `SUSPECT_ESCAPE_MIN` 0.8: five all-overfit arbitrations now measured (0.90 dfs, 0.89, 0.90, 0.88, 0.91, 0.88 wrap),
+  every gold-containing one ≤ 0.38. The Noul side (max 0.05–0.07) never came near 0.1.
+- The probe has no shape for graphs (dfs: 0 inputs); dropping or adding an edge of the `successors` lists the tests
+  build is the next derivation. It also runs unbudgeted (§4.3 counts the clustering step as one run; the two runs here
+  took ≤ 1 s each on 16 inputs).
+- detect_cycle's L5 (the gold's own line) was never reached in four runs; the L9-gap guards are equivalent, so this
+  costs gold-identity, not correctness.
+
+### 13.5 Exact commands
+
+```
+# gates
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/synth/search test/unit/synth/mutate test/unit/synth/sieve
+
+# reconstruction of run 3 (which candidates ran, in `tried` order, and where the gold was enumerated)
+node node_modules/.bin/tsx .scratch/reconstruct.mts /tmp/ws_dc   /tmp/dc_tried.json   "detect_cycle.py:5:replace:        if hare is None or hare.successor is None:"
+node node_modules/.bin/tsx .scratch/reconstruct.mts /tmp/ws_wrap /tmp/wrap_tried.json "wrap.py:10:insert:    lines.append(text)" 50 20 80
+#   (/tmp/ws_* hold the BUGGY programs from bench/data/quixbugs/programs; the run workspaces are post-patch and shift the diff contexts)
+
+# runs a, b, c
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs \
+  --task-id detect_cycle,wrap,depth_first_search --conditions jev-only --live --spend-cap 0.5 --task-spend-cap 0.1 \
+  --concurrency 2 --max-steps 12 --max-wall 6m --out bench/results/jev-only-quixbugs-4-overfit      # then -b, -c
+
+# the table (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/transcript.log, applies model_patch.diff to programs/<name>.py)
+python3 /tmp/qb-overfit-table.py bench/results/jev-only-quixbugs-4-overfit-c
+# the differential check of the detect_cycle picks (48 linked lists vs correct/detect_cycle.py)
+python3 /tmp/diff_dc.py
+```
