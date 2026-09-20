@@ -30,7 +30,7 @@ repository-class and the search runs in RANK mode with 16 runs per step; the dep
 (`bitcount` 421 enumerated, 16 run). `shunting_yard`'s 1.9 s suite crossed the 2 s SIEVE threshold only under the
 bench's CPU load (4 runs × 8 lanes). `reverse_linked_list` — `engine_rejected`: the passer (an inserted
 `prevnode = node`, found in the WIDENED phase after 1,300 runs) was blocked/declined three times by the risk stage.
-`topological_ordering` — `overfit`: one plausible candidate on a one-test goal, applied, fails the hidden third test.
+`topological_ordering` — `overfit`: one plausible candidate on a one-test goal, applied, fails the third of the evaluator's reference cases (the same cases the workspace exposes; there is no hidden suite).
 
 ### 1.1 The three preceding runs of the same 40 (same command, code as of each run)
 
@@ -181,7 +181,7 @@ confirmer in the bench) accepts the synthesizer's proposals; none of it touches 
 - `fix_not_in_candidates`: the true line (QuixBugs `index.json bugLine`) was offered by localisation but no enumerated candidate passed;
 - `localisation_missed`: the true line never among Q5's top-3 (p ≥ 0.05) or a Q5n Noul ≥ 0.5 in any localisation answer;
 - `ranking_missed`: a passer existed in the candidate set but was cut by a RANK-mode K (not observed: the sieve ran everything at t_run ≤ 2 s);
-- `overfit`: a plausible candidate was applied and the hidden evaluator still fails;
+- `overfit`: a plausible candidate was applied and the evaluator's reference cases (the same cases the workspace exposes; there is no hidden suite) still fail;
 - `budget`: no plausible candidate within the step budgets (all such programs here are timeout-dominated suites that forced RANK mode);
 - `engine_rejected`: a test-passing candidate existed but every `patch` proposing it was blocked or declined by the engine's risk stage;
 - `infra`: sandbox, lane, runner or evaluator failure.
@@ -437,7 +437,7 @@ run, partial `after`).
 | program | before: repaired, steps, stop, patches applied / rejected, runs rejected, Jev $ | after | note |
 |---|---|---|---|
 | detect_cycle | yes, 12, max_steps, 1 / 0, 5, 0.0045 | **yes, 4, complete**, 1 / 0, 0, 0.0016 | same visible-test-only fix as before (correct-by-diff no) |
-| topological_ordering | no (overfit), 12, max_steps, 1 / 0, 4, 0.0049 | **yes, 10, complete**, 2 / 1, 1, 0.0051 | two goals fixed in turn (0→2, then 2→3 of 3); passes the hidden test now; the first patch was declined once at level 2 (9.5b) and re-proposed |
+| topological_ordering | no (overfit), 12, max_steps, 1 / 0, 4, 0.0049 | **yes, 10, complete**, 2 / 1, 1, 0.0051 | two goals fixed in turn (0→2, then 2→3 of 3); passes the evaluator's reference cases (the same cases the workspace exposes; there is no hidden suite) now; the first patch was declined once at level 2 (9.5b) and re-proposed |
 | reverse_linked_list | no (engine_rejected), 12, max_steps, 0 / 3, 1, 0.0100 | no, 12, max_steps, 0 / 2, 0, 0.0098 | **a search miss this time, not an engine rejection**: 0 plausible in 1 051 + 115 WIDENED runs (the `prevnode = node` passer of rung 1a came after 1 300 runs); the two rejected patches were one unverified `partial` (`insert_return_after`, without evidence — §9.2 item 6 closes that gap) and its re-proposal; one `propose: jev_response` stage failure at step 5; 5 `read`s under `investigate` declined/blocked at level 4 |
 
 Totals: 1/3 → 2/3; Jev $0.019 → $0.017; `evidence_consistent` n = 8, min 0.70.
@@ -1414,3 +1414,149 @@ python3 /tmp/qb-overfit-table.py bench/results/jev-only-quixbugs-4-overfit-c
 # the differential check of the detect_cycle picks (48 linked lists vs correct/detect_cycle.py)
 python3 /tmp/diff_dc.py
 ```
+
+## 14. 2026-09-20 (later): ladder round 5 — the loop-side fixes of `jev-only-ladder-4-analysis.md` §4 (verified `done`, verification `run`, refused-proposal signatures)
+
+Follow-up to `experiments/results/jev-only-ladder-4-analysis.md` (round 4: 11/12, 137 steps, 58 proposals refused, $0.137).
+Code changed only in `src/loop/{engine.ts,loopdetect.ts,state.ts,stages/risk.ts,stages/intent.ts}`; Jev stays the decider
+wherever a judgment is involved, the code rules act only on facts the harness knows (`workspace.testsCurrent`,
+`workspace.lastTestRun.allPassed`, the detected test command, the proposal's own `plan.remaining`, the outcome status).
+
+### 14.1 What changed
+
+1. **Fix 1 — a `done` after the engine's own green run** (`stages/risk.ts` `completionVerifiedByRun`, `engine.ts`
+   `verifiedCompletion`). When the proposal is `done`, its `plan.remaining` is empty, `testsCurrent` is true and
+   `lastTestRun.allPassed` is true, the risk stage does not refuse it: `risk.verdict` becomes `ok`, `risk.reason` reads
+   `completion verified by the engine's own passing run <command> at step N; Jev risk answers kept for audit: <Jev reason>`,
+   `risk.risk`, `dims` and the Score rows' verdicts keep Jev's answers. The completion Noul (`task_complete`) still decides
+   the stop. The *accepted* plan's `remaining` is deliberately not a condition: round 4 showed it non-empty at every green
+   `done` (`verify the full test suite passes` stays because the run claims only fix items and a refused `done`'s claim is
+   rejected), so it is Jev's bookkeeping, not a harness fact. (a) The plain `plan_mismatch[4]` rubric gained the evidence
+   variant's clause "a blocked or declined proposal in `recent` never ran, so it is not a step that failed" and "a `done`
+   while `workspace.testsCurrent` is true and `workspace.lastTestRun.allPassed` is true follows a verifying run and is not
+   such a claim". (b) `stages/intent.ts`: in jev-only, a `fallback` whose answer is `finish` with p ≥ 0.3 is rescued when
+   the engine's last run is green and current (`state.ts commonRunGreen`) — keyed on the green-run fact rather than on
+   `ledgerItems()` being empty, because round 4's plan text still listed a stale `fix …` item at units step 13.
+2. **Fix 2 — the standing verification `run` is never a review item** (`stages/risk.ts` `isVerificationRun`,
+   `AssessOptions.verificationRun`, `RiskStageOptions.testCommand`). For one plain invocation of the detected test command
+   or a scoped form of it (`isTestCommand` of the execute stage, minus any shell composition `; & | < > $() {}`) with Jev's
+   `destructive` and `irreversible` at expected level ≤ 1, the alignment dimensions are recorded in `dims` and the reason
+   (`…; verification run of the workspace test command: out_of_scope 0.09 (dominant level 0), plan_mismatch 0.43 (dominant
+   level 0) recorded, not gating`) and do not enter the risk number; `destructive`/`irreversible` still block. **Deviation
+   from the analysis' mechanism, measured before implementing:** bounding by the *expected* level instead of the tail would
+   not have made a single one of round 4's 22 refused runs `ok` — for every one the expected level was *higher* than the
+   tail (calendar_utils 13: tail 0.43, expected 0.50; inventory 17: 0.30 vs 0.38; the subset runs 0.83–0.95 either way),
+   because Jev's mass was bimodal (level 0 plus levels 2/4), not concentrated at 0. The stated goal (no review from a test
+   run's spread mass, block still possible from harm) is what was implemented.
+3. **Fix 3 — loop signatures for refused proposals** (`loopdetect.ts`, `engine.ts`). A blocked or declined `run` is signed
+   `run:<sha12(cmd)>:refused` (never the reason text; `done`/`read`/`patch` were already proposal-only); a trip resets only
+   the signature(s) that reached 3 in that step (a failing run's `run:` and `fail:` reset together) and a replan only the
+   signature it answers; `intent:unresolved` is emitted only when the fallback lands away from Jev's own argmax answer;
+   and the §5.5 exit is a code rule (`engine.ts repeatedGatherContextExit`): when Jev directs `gather_context` a second
+   time for the same refused `done:` signature, the directive is treated as `stop_and_report` → `replan_stop`.
+
+Tests (`test/unit/loop`): `risk.test.ts` (spread-mass run ok / harm still gates / `isVerificationRun` / the verified-done
+override / the rubric clauses), `loopdetect.test.ts` (declined-then-blocked = one signature, trips at 3; a `done` count of
+2 survives an interleaved `read` trip and its replan; co-tripped signatures reset together; `directiveMove`),
+`intent.test.ts` (the `finish` rescue and its negatives), `engine-loop-fixes.test.ts` (each fix end to end, plus the
+gather_context exit and its negatives), `engine-core.test.ts` (fallback == argmax emits no signature). Gates: `tsc` clean
+outside the other agent's `src/synth` / `test/unit/synth/search` WIP, `no-any` ok, `test/unit/loop` + `test/unit/bench` +
+`test/unit/core` 31 files / 261 tests green.
+
+### 14.2 Live: ladder 12, round 4 → round 5 (`bench/results/jev-only-ladder-4` → `bench/results/jev-only-ladder-5`, bench `20260920-222854-894c0f`)
+
+Same command shape as round 4 (12 tasks, `--concurrency 3`, `--max-steps 20`, decider `typesafe/jev-1.13-20260917`).
+**Confound, stated up front:** the other agent's uncommitted synthesizer changes (`src/synth/{index,oracle/index,
+search/index,search/memory,search/proposal,search/subgoal,beam/state,sketch/questions}.ts`, +652/−55 over the last commit
+`3d0d803`, §13's holds/suspicion/perturbation work) were live in the working tree during this run, so the search phases
+differ from round 4 for reasons unrelated to the loop fixes. The loop-side columns below are read per step record from
+`~/.jevcode/runs/<runId>/{steps.jsonl,decisions.jsonl,transcript.log}` and are exact; the aggregate step count is not a
+clean measure of the three fixes.
+
+| task | r4 pass | r4 steps | r4 stop | r4 Jev $ | r5 pass | r5 steps | r5 stop | r5 Jev $ | r5 refused (blocked+declined) | r5 loops/replans | verified `done`s (Fix 1) | verification runs executed (of which Jev tail ≥ 0.30) (Fix 2) | `finish` rescues (Fix 1b) | refused-signature / `done` trips (Fix 3) |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| account | **miss** | 20 | max_steps | 0.0213 | **pass** | 15 | complete | 0.0138 | 4 (3+1) | 3/3 | 0 | 6 (4) | 0 | 1 |
+| calendar_utils | pass | 20 | max_steps | 0.0211 | pass | 12 | complete | 0.0085 | 0 | 2/2 | 0 | 5 (4) | 0 | 0 |
+| inventory | pass | 20 | max_steps | 0.0259 | **miss** | 20 | max_steps | 0.0250 | 5 (3+2) | 3/3 | 0 | 6 (3) | 0 | 0 |
+| units | pass | 20 | max_steps | 0.0109 | pass | 20 | max_steps | 0.0226 | 5 (4+1) | 4/4 | 0 | 5 (3) | 0 | 1 |
+| shipping | pass | 10 | replan_stop | 0.0156 | pass | 19 | max_replans | 0.0547 | 2 (0+2) | 6/5 | 3 | 9 (8) | 2 | 1 |
+| table | pass | 9 | replan_stop | 0.0178 | pass | 12 | replan_stop | 0.0254 | 0 | 2/1 | 3 | 6 (3) | 1 | 1 |
+| textstats | pass | 13 | complete | 0.0122 | pass | 8 | complete | 0.0098 | 0 | 0/0 | 0 | 4 (2) | 0 | 0 |
+| grades | pass | 9 | complete | 0.0048 | pass | 16 | replan_stop (§5.5 exit) | 0.0083 | 1 (0+1) | 2/1 | 6 | 3 (1) | 3 | 2 |
+| events, profiles, tagcloud | pass | 4 each | complete | 0.0019/0.0018/0.0020 | pass | 4 each | complete | 0.0019/0.0018/0.0021 | 0 | 0/0 | 0 | 2 each (0) | 0 | 0 |
+| stats | pass | 4 | complete | 0.0018 | pass | 5 | complete | 0.0035 | 0 | 0/0 | 0 | 3 (1) | 0 | 0 |
+| **total** | 11/12 | **137** | 6 complete, 4 max_steps, 2 replan_stop | 0.1370 | 11/12 | **139** | 7 complete, 2 max_steps, 2 replan_stop, 1 max_replans | 0.1773 | **17** (r4: 58) | 22/19 (r4: 16/13) | 12 | 53 (29) | 6 | 6 |
+
+steps-to-solve mean (passed) 10.64 → 10.82, median 9 → 12; Jev requests 964 → 1144; wall mean 3m16s → 4m21s.
+
+### 14.3 What each fix did, read from the records
+
+- **Fix 2 is the fix that paid.** 53 test-command runs executed; 29 carried a Jev alignment tail ≥ 0.30 that round 4's
+  policy would have sent to the bench's always-declining reviewer. calendar_utils 20 → 12 `complete` (post-patch suite
+  runs at 5, 8, 12 executed; the step-12 run's `task_complete` 0.89 stopped the run), textstats 13 → 8 `complete`, and
+  account's goal-subset runs (`record the failing behaviour of …`, blocked ×3 in round 4) all executed. Refusals fell
+  58 → 17; the 17 left are partial `done`s (rightly blocked: `plan.remaining` non-empty), review-band `patch`es
+  re-proposed and executed the next step (the `scratch.rejected` path, as in round 4) and review-band `read`s.
+- **Fix 1 fired 12 times (grades 6, shipping 3, table 3) and saved no steps: the green `done` now reaches the completion
+  Noul, which rejects it.** `task_complete` on those noop `done`s read 0.42–0.68 (grades), 0.73–0.80 (shipping),
+  0.70–0.79 (table), all under 0.85, while the same Noul on the preceding all-green `run` read 0.84 (grades), 0.77
+  (shipping), 0.80 (table) — and 0.85–0.89 where the run did stop the task (account, calendar_utils, textstats). Two
+  reasons visible in the state: the accepted `plan.remaining` still lists `verify the full test suite passes` (the run
+  claims only fix items; a noop step's claims are never judged, so the item can never be accepted — the completion
+  criteria's false side names exactly "`proposal.planClaim.remaining` is empty but `plan.remaining` … shows unfinished or
+  unverified work"), and the `done` state's `executed` carries no test output (`{ action: 'done', summary, exitCode:
+  null, output: '' }`), so the `done` step scores *lower* than the run it follows. The `done` is then re-proposed
+  unchanged (`done rejected: task_complete=0.79`), three identical noop `done`s trip `done:<sha12>`, and the replan asks
+  Jev for `gather_context` on a solved task. So the refusal moved from the risk stage to the stop rule; the next lever is
+  synthesizer/plan-side (the all-green `run` claiming the `verify …` item so the plan empties, per §10's "the all-green
+  run claims everything", and/or the judge state carrying the last parsed run for a noop `done`), not loop-side.
+  The `finish` rescue fired 6 times (grades 11–13, shipping 17–18, table 10): the effective intent stayed `finish` and the
+  risk stage judged the `done` against the right intent (`matches_intent` no longer 0.06–0.19 as in round 4).
+- **Fix 3 did what it said, and its per-signature resets have a side effect.** Refused `done`s now trip: account's partial
+  `done` ×3 tripped at 13 (never in round 4) → `change_approach` → "reopened g2; rotated source order; sites rebuilt" →
+  patch at 14 → green run at 15 → `complete` at 15 (round 4: max_steps miss) — the analysis' "pass-rate item" (`account`
+  needs `pairsOfPartials`/reopen-all) was overtaken here, though with the synth WIP live the pass cannot be attributed to
+  the trip alone. units' partial `done` ×3 tripped at 13 (→ `gather_context`, "nothing to change"; the fix landed at 20,
+  one step short of its verifying run). The §5.5 exit fired once (grades step 17: second `gather_context` for
+  `done:2d12032b479e` → `replan_stop` at 16, 4 steps under `max_steps`). `intent:unresolved` fell from 4 trips / 9
+  signatures in account alone to 1 signature in the whole round (table 12, a real fallback: answer `verify`, effective
+  `investigate`) and 0 trips. **Side effect:** with counts no longer wiped by every trip and replan, the `fail:` signature
+  tripped 6 times (round 4: 1) and `read:` 7 (5): the `fail:` of a failing test run is `sha12("exit:1" + normalised last
+  stdout line)`, and pytest's summary `1 failed, 9 passed in 0.40s` normalises to `<n> failed, <n> passed in <dur>` — so
+  three failing full-suite runs that each show progress (units 6/10 → 8/10 → 9/10 at steps 1, 4, 6) read as "the same
+  failure ×3" and cost a replan whose directive perturbs the synthesizer (units step 7 `gather_context`: "file beam 5 →
+  10; re-localise g3"; step 10: "sites of g3 dropped" → g3 parked). Replans rose 13 → 19 and Jev cost $0.137 → $0.177.
+  This is a pre-existing normalisation gap in the `fail:` signature (round 4 units already had the same
+  `fail:d348820efab1` at steps 1, 4, 7) that the global reset used to mask; the fix belongs in `loopdetect.ts` (sign a
+  test-command run's failure with its parsed counts, or omit `fail:` when the step already carries a `run:` signature
+  whose result includes the failing test ids) and is a DESIGN §6 semantics change, so it is recorded here rather than
+  slipped in after the measured run.
+- **inventory's miss and shipping's 19 steps are search-side.** inventory: 2 patches executed, ledger `fixed 3 of 4`,
+  `test_total_value` never found (round 4 found it at step 16); no patch was refused beyond one review-band `patch` at 6
+  re-proposed and executed at 9, as in round 4. shipping: the fix landed at step 15 (round 4: 5) after five replans
+  during the search (`fail:` ×2, `run:` ×2, `read:` ×1, all `change_approach`, rotating g1's sources four times), then the
+  green `done` ×3 → trip → the sixth replan hit `max_replans`. Both ran with the synth WIP and under 3-way concurrency
+  (inventory 454 s, shipping 642 s wall).
+
+Net: the fixes removed the failure class the analysis measured (41 fewer refusals, 4 of 5 `max_steps`/`replan_stop`
+tails converted or shortened where the completion Noul agreed) but the predicted 137 → ≈113 did not materialise
+(139): 12 steps went to noop `done`s the completion Noul rejects, and ≈15 to the extra `fail:`/`read:` replans and the
+two search-side regressions. 12/12 was not expected from these fixes and did not happen (account in, inventory out).
+
+### 14.4 Exact commands
+
+```
+# gates
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/loop test/unit/bench test/unit/core
+
+# the live re-run (keys only via .env)
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite ladder --conditions jev-only --live \
+  --spend-cap 1.5 --task-spend-cap 0.15 --concurrency 3 --max-steps 20 --max-wall 12m --out bench/results/jev-only-ladder-5
+
+# the table and the per-fix attribution (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/{steps,decisions}.jsonl and transcript.log)
+python3 .scratch/ladder-5-table.py bench/results/jev-only-ladder-4 bench/results/jev-only-ladder-5
+```
+Run ids: account `20260920-222854-xny65bfw`, calendar_utils `-222854-uww2v2n5`, events `-222854-xm7a7jux`, grades
+`-222955-jqcsrb3o`, inventory `-223055-sdhuelzm`, profiles `-223310-6gr73sbf`, shipping `-223335-e5uj3jj2`, stats
+`-223612-tdysam5n`, table `-223704-37ql37hj`, tagcloud `-223831-vdbo2rsu`, textstats `-223844-nuslwjoq`, units
+`-224311-qm3lnayj`.

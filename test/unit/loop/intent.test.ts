@@ -42,6 +42,25 @@ describe('resolveIntentWithLedger (jev-only, docs/JEV-ONLY-DESIGN.md §5.2)', ()
     expect(resolve(answers('none_of_these', 0.9), true, true)).toMatchObject({ option: 'investigate', verdict: 'fallback' });
     expect(resolve(answers('finish', 0.9), true, true)).toMatchObject({ option: 'investigate', verdict: 'fallback' });
   });
+  it('Fix 1(b): in jev-only a fallback whose answer is `finish` (p >= floor) is rescued when the engine\'s last run is green and current, whatever the plan text still lists', () => {
+    // units step 13 of the ladder-4 run: finish 0.63, can_finish 0.31, every other Noul lower; the plan still listed a stale `fix …` item
+    const a = answers('finish', 0.63, { finish: 0.31, investigate: 0.2 });
+    const base = resolveChoice<Intent>({ choiceId: 'intent', answers: a, options: INTENT_LIST, escape: 'none_of_these', fallback: INTENT_FALLBACK });
+    expect(base).toMatchObject({ option: 'investigate', verdict: 'fallback', answer: 'finish' });
+    expect(resolveIntentWithLedger(base, a, { ledgerOpen: true, changeUnverified: false, jevOnly: true, runGreen: true })).toEqual({ option: 'finish', verdict: 'chosen', answer: 'finish', probability: 0.63, pairedNoul: 0.31 });
+    expect(resolveIntentWithLedger(base, a, { ledgerOpen: false, changeUnverified: false, jevOnly: true, runGreen: true })).toMatchObject({ option: 'finish', verdict: 'chosen' });
+    // not green (a failing run, or a change since the run), not jev-only, or below the floor: the §6 fallback stands
+    expect(resolveIntentWithLedger(base, a, { ledgerOpen: false, changeUnverified: false, jevOnly: true, runGreen: false })).toBe(base);
+    expect(resolveIntentWithLedger(base, a, { ledgerOpen: true, changeUnverified: true, jevOnly: true, runGreen: false })).toBe(base);
+    expect(resolveIntentWithLedger(base, a, { ledgerOpen: false, changeUnverified: false, jevOnly: false, runGreen: true })).toBe(base);
+    const low = answers('finish', LEDGER_CHOICE_FLOOR - 0.01, { finish: 0.31 });
+    const lowBase = resolveChoice<Intent>({ choiceId: 'intent', answers: low, options: INTENT_LIST, escape: 'none_of_these', fallback: INTENT_FALLBACK });
+    expect(resolveIntentWithLedger(lowBase, low, { ledgerOpen: false, changeUnverified: false, jevOnly: true, runGreen: true })).toBe(lowBase);
+    // a chosen finish (paired Noul >= 0.5) needs no rescue and is untouched
+    const chosen = answers('finish', 0.8, { finish: 0.9 });
+    const chosenBase = resolveChoice<Intent>({ choiceId: 'intent', answers: chosen, options: INTENT_LIST, escape: 'none_of_these', fallback: INTENT_FALLBACK });
+    expect(resolveIntentWithLedger(chosenBase, chosen, { ledgerOpen: false, changeUnverified: false, jevOnly: true, runGreen: true })).toBe(chosenBase);
+  });
   it('right after an unverified change an effective edit becomes verify (verdict overridden: the paired verify row is the chosen one)', () => {
     // rescued fallback
     expect(resolve(answers('edit', 0.6), true, true)).toEqual({ option: 'verify', verdict: 'overridden', answer: 'edit', probability: expect.any(Number), pairedNoul: 0.2 });

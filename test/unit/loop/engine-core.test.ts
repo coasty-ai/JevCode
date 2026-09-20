@@ -305,7 +305,7 @@ describe('risk policy', () => {
     expect(h.store.syncStates).toHaveLength(0);
   });
 
-  it('intent finish adds the finish wording; fallback intent adds the no-fitting-intent wording and signature', async () => {
+  it('intent finish adds the finish wording; a fallback that lands on Jev\'s own answer adds the no-fitting-intent wording but no intent:unresolved signature (Fix 3)', async () => {
     const h = await build({
       turns: [turn({ kind: 'done', summary: 's' }), turn({ kind: 'read', paths: ['src/a.py'] })],
       deciderOptions: {
@@ -323,7 +323,8 @@ describe('risk policy', () => {
     const s2 = h.store.steps[1]!;
     expect(s2.intent).toBe('investigate');
     expect(s2.intentAnswer).toBe('investigate'); // Jev chose investigate, its paired Noul was low
-    expect(s2.loopSignatures).toContain('intent:unresolved');
+    // the effective intent equals Jev's argmax: the verdict is a fallback for the pane, not an unresolved intent for the loop detector
+    expect(s2.loopSignatures).toEqual(['read:5ffbe7b0e832']);
     expect(s2.decisions.find((d) => d.id === 'intent')?.verdict).toBe('fallback');
     // the context and risk states carry the effective intent, which is what their questions name
     const ctx2 = h.decider.callsAt('context').find((c) => c.step === 2)!.state as { intent: { choice: string } };

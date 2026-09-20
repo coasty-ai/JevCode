@@ -9,13 +9,18 @@
  * happen only because every paired Noul is under 0.5 is replaced by Jev's own `edit`/`verify`
  * answer when that answer has p >= LEDGER_CHOICE_FLOOR, and an `edit` while a change is still
  * unverified (code-computed `workspace.testsCurrent` false) becomes `verify`: the plan's next
- * step is the suite run the synthesizer proposes after every patch. Nothing here runs outside
- * jev-only or without ledger items, so jev-on and jev-off resolve exactly as §6 says.
+ * step is the suite run the synthesizer proposes after every patch. Likewise a fallback whose
+ * answer is `finish` (p >= LEDGER_CHOICE_FLOOR) is rescued when the engine's own last test run is
+ * green and current (code-computed `commonRunGreen`; with every test passing no ledger item is open
+ * in fact, whatever the plan text still lists — experiments/results/jev-only-ladder-4-analysis.md
+ * §4 Fix 1: units step 13, `finish` 0.63 / `can_finish` 0.31 fell back to `investigate` and the
+ * risk stage then judged every later `done` against the wrong intent). Nothing here runs outside
+ * jev-only, so jev-on and jev-off resolve exactly as §6 says.
  */
 import { choice, noul, pairedNouls, ref } from '../../jev/questions.js';
 import type { Answer, EngineMode, Intent, IntentAnswer, JsonObject, Question } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
-import { buildIntentState, commonChangeUnverified, commonRemaining, ledgerItems } from '../state.js';
+import { buildIntentState, commonChangeUnverified, commonRemaining, commonRunGreen, ledgerItems } from '../state.js';
 import { annotateChoiceRows, pairedId, resolveChoice, type ChoiceResolution, type ChoiceVerdict } from './choose.js';
 
 export const INTENT_OPTIONS: Record<Intent, string> = {
@@ -115,6 +120,10 @@ export interface LedgerResolutionInput {
   ledgerOpen: boolean;
   /** code-computed: a change executed after the last parsed test run (state.ts commonChangeUnverified) */
   changeUnverified: boolean;
+  /** jev-only mode: the plan is the synthesizer's ledger even once every item is fixed (default false) */
+  jevOnly?: boolean;
+  /** code-computed: the engine's last parsed test run passed everything and no file changed since (state.ts commonRunGreen) */
+  runGreen?: boolean;
 }
 
 function choiceProbability(answers: Record<string, Answer>, choiceId: string, option: string): number {
@@ -130,22 +139,28 @@ function pairedNoul(answers: Record<string, Answer>, option: string): number {
 }
 
 /**
- * The jev-only ledger rule over a §6 Choice resolution. Returns the resolution unchanged unless
- * `ledgerOpen`; then (1) a `fallback` whose raw answer is `edit` or `verify` with p >=
- * LEDGER_CHOICE_FLOOR takes that answer, and (2) an effective `edit` while a change is
- * unverified becomes `verify`. The verdict is `chosen` when the effective option is Jev's own
- * answer and `overridden` otherwise (the paired Noul row of the option is then marked chosen by
- * annotateChoiceRows, as for a §6 override).
+ * The jev-only ledger rule over a §6 Choice resolution. (0) In jev-only, a `fallback` whose raw
+ * answer is `finish` with p >= LEDGER_CHOICE_FLOOR takes that answer when the engine's last test
+ * run is green and current (`runGreen`): Jev's own argmax, tie broken by a harness fact. Otherwise
+ * the resolution is returned unchanged unless `ledgerOpen`; then (1) a `fallback` whose raw answer
+ * is `edit` or `verify` with p >= LEDGER_CHOICE_FLOOR takes that answer, and (2) an effective
+ * `edit` while a change is unverified becomes `verify`. The verdict is `chosen` when the effective
+ * option is Jev's own answer and `overridden` otherwise (the paired Noul row of the option is then
+ * marked chosen by annotateChoiceRows, as for a §6 override).
  */
 export function resolveIntentWithLedger(res: ChoiceResolution<Intent>, answers: Record<string, Answer>, input: LedgerResolutionInput): ChoiceResolution<Intent> {
-  if (!input.ledgerOpen) return res;
   let option: Intent = res.option;
   let rescued = false;
-  if (res.verdict === 'fallback' && (res.answer === 'edit' || res.answer === 'verify') && choiceProbability(answers, 'intent', res.answer) >= LEDGER_CHOICE_FLOOR) {
+  if (res.verdict === 'fallback' && res.answer === 'finish' && input.jevOnly === true && input.runGreen === true && choiceProbability(answers, 'intent', 'finish') >= LEDGER_CHOICE_FLOOR) {
+    option = 'finish';
+    rescued = true;
+  } else if (!input.ledgerOpen) {
+    return res;
+  } else if (res.verdict === 'fallback' && (res.answer === 'edit' || res.answer === 'verify') && choiceProbability(answers, 'intent', res.answer) >= LEDGER_CHOICE_FLOOR) {
     option = res.answer;
     rescued = true;
   }
-  if (option === 'edit' && input.changeUnverified) option = 'verify';
+  if (input.ledgerOpen && option === 'edit' && input.changeUnverified) option = 'verify';
   if (!rescued && option === res.option) return res;
   const verdict: ChoiceVerdict = option === res.answer ? 'chosen' : 'overridden';
   return { option, verdict, answer: res.answer, probability: choiceProbability(answers, 'intent', option), pairedNoul: pairedNoul(answers, option) };
@@ -171,7 +186,7 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
   const ledgerOpen = ledger.length > 0;
   const questions = buildIntentQuestions({ ledger: ledgerOpen });
   const state = buildIntentState(common, { mode: ctx.mode, ledger });
-  const ledgerInput: LedgerResolutionInput = { ledgerOpen, changeUnverified: commonChangeUnverified(common) };
+  const ledgerInput: LedgerResolutionInput = { ledgerOpen, changeUnverified: commonChangeUnverified(common), jevOnly: ctx.mode === 'jev-only', runGreen: commonRunGreen(common) };
   const resolve = (answers: Record<string, Answer>): ChoiceResolution<Intent> =>
     resolveIntentWithLedger(resolveChoice<Intent>({ choiceId: 'intent', answers, options: INTENT_LIST, escape: 'none_of_these', fallback: INTENT_FALLBACK }), answers, ledgerInput);
   let resolved = resolve({});

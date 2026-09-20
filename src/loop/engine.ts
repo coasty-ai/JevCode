@@ -77,9 +77,9 @@ import { summariseAction } from '../provider/actions.js';
 import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provider/prompts.js';
 import { formatTranscriptItem, itemsFromEvent } from '../tui/plain.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
-import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, loopTripText, type LoopDetector } from './loopdetect.js';
+import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { applyPlanDraft, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
-import { buildCommonState, type Redact } from './state.js';
+import { buildCommonState, testsCurrent, type Redact } from './state.js';
 import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete } from './stages/complete.js';
@@ -90,7 +90,7 @@ import { runJudgeStage } from './stages/judge.js';
 import { runProposeStage } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
 import { runSynthStage } from './stages/synth.js';
-import { computeTargets, runRiskStage, MATCHES_INTENT_THRESHOLD } from './stages/risk.js';
+import { computeTargets, runRiskStage, MATCHES_INTENT_THRESHOLD, type VerifiedCompletion } from './stages/risk.js';
 
 // ---------------------------------------------------------------------------------------
 // Dependency injection (concurrently written modules)
@@ -977,6 +977,12 @@ class EngineImpl implements Engine {
             this.absorbDiscardedTiming(draft);
             return { stop: r.reason, detail: `task_impossible=${r.directive.taskImpossible.toFixed(2)}` };
           }
+          const exit = this.repeatedGatherContextExit(r.directive);
+          if (exit !== null) {
+            this.emit({ type: 'transcript', step, level: 'info', text: `replan: ${exit}; treated as stop_and_report (DESIGN §5.5: a third identical refused completion claim after gathering context is the exit)` });
+            this.absorbDiscardedTiming(draft);
+            return { stop: 'replan_stop', detail: exit };
+          }
           draft.directive = r.directive;
         }
         stage = 'intent';
@@ -1003,7 +1009,7 @@ class EngineImpl implements Engine {
         draft.proposeCompleted = true;
         claimsOf(p.proposal);
         stage = 'risk';
-        const rk = await this.stage('risk', () => runRiskStage(ctx, common(), p.proposal, intentInfo));
+        const rk = await this.stage('risk', () => runRiskStage(ctx, common(), p.proposal, intentInfo, { verifiedCompletion: this.verifiedCompletion(p.proposal) }));
         draft.risk = rk.risk;
         draft.matchesIntent = rk.matchesIntent;
         draft.patchTargets = rk.targets;
@@ -1136,6 +1142,33 @@ class EngineImpl implements Engine {
       if (isAbortError(e) && !this.signal.aborted) this.abort(e.reason === 'signal' ? 'signal' : 'human_abort');
       throw e;
     }
+  }
+
+  /**
+   * Fix 1 (experiments/results/jev-only-ladder-4-analysis.md §4): a `done` whose plan claims nothing
+   * remains while the engine's own last test run passed everything and no file changed since is
+   * completion the harness verified, so the risk stage does not refuse it; the completion Noul still
+   * decides the stop. The accepted plan's `remaining` is Jev's bookkeeping (a refused `done`'s claims
+   * are rejected, so its `verify …` item lags the green run) and is deliberately not a condition.
+   */
+  private verifiedCompletion(proposal: Proposal): VerifiedCompletion | null {
+    if (proposal.action.kind !== 'done' || proposal.plan.remaining.length > 0) return null;
+    const run = this.lastTestRun;
+    if (run === null || !run.allPassed || !testsCurrent(run, this.lastChangeStep)) return null;
+    return { command: run.command, step: run.step };
+  }
+
+  /**
+   * DESIGN §5.5 / JEV-ONLY-DESIGN §5.5 exit as a code rule (Fix 3): three refused `done`s with one
+   * signature reach replan; when Jev answers `gather_context` a second time for that same signature
+   * (the synthesizer already had nothing to gather), the directive is treated as `stop_and_report`.
+   */
+  private repeatedGatherContextExit(directive: ReplanDirective): string | null {
+    const sig = this.detector.trippedSignature();
+    if (sig === null || signatureKind(sig) !== 'done' || directive.move !== 'gather_context') return null;
+    const prior = this.detector.priorDirectives(sig).filter((d) => directiveMove(d.directive) === 'gather_context');
+    if (prior.length === 0) return null;
+    return `gather_context directed again for ${sig} (already directed at step ${prior.map((d) => d.step).join(', ')})`;
   }
 
   private commonState(changedFiles: readonly string[], recent: readonly WindowEntry[], draft?: StepDraft): JsonObject {
@@ -1382,7 +1415,9 @@ class EngineImpl implements Engine {
       proposal,
       outcome,
       output: draft.output.length > 0 ? draft.output : null,
-      intentFallback: draft.intent?.verdict === 'fallback',
+      // A fallback that lands on Jev's own argmax answer is not an unresolved intent (Fix 3): only a
+      // fallback away from the answer (escape, or an answer whose paired Noul was too low) is signed.
+      intentFallback: draft.intent !== null && draft.intent.verdict === 'fallback' && draft.intent.answer !== draft.intent.intent,
       generatorFailReason: draft.generatorFailReason,
       errorClass: draft.errorClass,
       observed: draft.observed,

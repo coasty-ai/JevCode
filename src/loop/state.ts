@@ -243,6 +243,21 @@ export function commonChangeUnverified(common: JsonObject): boolean {
   return typeof w['lastChangeStep'] === 'number' && w['testsCurrent'] === false;
 }
 
+/**
+ * Code-computed from the common state (§5.5): the engine's own last parsed test run passed
+ * everything and no file changed since (`workspace.lastTestRun.allPassed && workspace.testsCurrent`).
+ * The fact behind the jev-only `finish` rescue (stages/intent.ts) — with every test passing no
+ * `fix … in …` item is open whatever the plan text still lists.
+ */
+export function commonRunGreen(common: JsonObject): boolean {
+  const ws = common['workspace'];
+  if (typeof ws !== 'object' || ws === null || Array.isArray(ws)) return false;
+  const w = ws as JsonObject;
+  const run = w['lastTestRun'];
+  if (typeof run !== 'object' || run === null || Array.isArray(run)) return false;
+  return w['testsCurrent'] === true && (run as JsonObject)['allPassed'] === true;
+}
+
 export const CONTEXT_CRITERIA: JsonObject = {
   definition:
     'Show the file when reading it is likely to change what the engineer does on this step: it is named by the task or by `plan.remaining`, it is the file being changed or tested, it defines something the change depends on, or it was touched this run and its current content matters.',

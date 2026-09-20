@@ -1,7 +1,14 @@
 /**
  * Loop detection (DESIGN.md §6 "Loop detection"): per-step signatures computed from the
- * StepRecord, counts cumulative since run start or the last replan, trip at LOOP_TRIP_COUNT.
+ * StepRecord, counts cumulative since run start, trip at LOOP_TRIP_COUNT.
  * The detector is mutated only at the commit point (`observe`) and at replan (`onReplan`).
+ *
+ * Refused proposals (experiments/results/jev-only-ladder-4-analysis.md §3, Fix 3): a blocked or
+ * declined proposal is signed on the proposal alone (`run:<cmd>:refused`, `done:<summary>`,
+ * `read:<paths>`, `patch:<diff>`), never on the outcome's reason text, so declined-then-blocked
+ * copies of one proposal count as one loop. A trip resets only the signature(s) that reached the
+ * count and a replan only the signature it answers, so an interleaved `read` or intent trip cannot
+ * shelter a slower `done` loop and DESIGN §5.5's third-identical-`done` exit stays reachable.
  */
 import { sha12 } from '../core/hash.js';
 import { firstLine, normaliseForSignature } from '../core/text.js';
@@ -9,6 +16,8 @@ import type { ActionOutcome, LoopDetectorState, Proposal } from '../core/types.j
 
 export const LOOP_TRIP_COUNT = 3;
 export const INTENT_UNRESOLVED_SIGNATURE = 'intent:unresolved';
+/** the result part of a `run` signature whose proposal was blocked or declined (it never ran, so it has no result) */
+export const REFUSED_RESULT = 'refused';
 
 export interface SignatureInput {
   proposal: Proposal | null;
@@ -41,9 +50,10 @@ export function computeSignatures(input: SignatureInput): string[] {
     switch (a.kind) {
       case 'run': {
         let result: string;
-        if (outcome.status === 'executed') result = `${outcome.exec?.exitCode ?? 'null'}:${norm(input.output ?? '', root)}`;
-        else result = `${outcome.status}:${norm(outcomeReason(outcome), root)}`;
-        sigs.push(`run:${sha12(norm(a.command, root))}:${sha12(result)}`);
+        if (outcome.status === 'executed') result = sha12(`${outcome.exec?.exitCode ?? 'null'}:${norm(input.output ?? '', root)}`);
+        else if (outcome.status === 'blocked' || outcome.status === 'declined') result = REFUSED_RESULT;
+        else result = sha12(`${outcome.status}:${norm(outcomeReason(outcome), root)}`);
+        sigs.push(`run:${sha12(norm(a.command, root))}:${result}`);
         break;
       }
       case 'edit':
@@ -136,6 +146,15 @@ export function loopTripText(sig: string): string {
   return `You have repeated the same ${describeSignatureKind(signatureKind(sig))} ${LOOP_TRIP_COUNT} times. Change approach, or reply with a done action explaining why the task cannot be completed.`;
 }
 
+/**
+ * The move a stored replan directive names (stages/replan.ts directiveText writes "Jev directs
+ * `<move>`"); null for the fallback wording. The checkpointed directive history keeps text only.
+ */
+export function directiveMove(text: string): string | null {
+  const m = /Jev directs `([a-z_]+)`/.exec(text);
+  return m?.[1] ?? null;
+}
+
 export interface TripInfo {
   signature: string;
   occurrences: number;
@@ -149,7 +168,7 @@ export interface LoopDetector {
   trippedSignature(): string | null;
   trips(signature: string): number;
   priorDirectives(signature: string): { step: number; directive: string }[];
-  /** replan (jev-on) or fixed text (jev-off) issued: counts reset, trip cleared, history kept */
+  /** replan (jev-on) or fixed text (jev-off) issued: the answered signature's count reset, trip cleared, history kept */
   onReplan(step: number, directive: string): void;
   replanCount(): number;
   toState(): LoopDetectorState;
@@ -172,15 +191,22 @@ export function createLoopDetector(initial?: LoopDetectorState): LoopDetector {
   return {
     observe(_step, signatures) {
       let trip: TripInfo | null = null;
+      const reached: string[] = [];
       for (const sig of signatures) {
         const n = (st.counts[sig] ?? 0) + 1;
         st.counts[sig] = n;
-        if (trip === null && n >= LOOP_TRIP_COUNT) trip = { signature: sig, occurrences: n };
+        if (n >= LOOP_TRIP_COUNT) {
+          reached.push(sig);
+          if (trip === null) trip = { signature: sig, occurrences: n };
+        }
       }
       if (signatures.length > 0) st.lastSignature = signatures[signatures.length - 1] ?? null;
       if (trip) {
-        // All counts reset on a trip; history of trips per signature is kept for the replan state.
-        st.counts = {};
+        // Only the signatures that reached the count reset: the reported one and any that co-tripped
+        // with it in this step (the `fail:` of a failing `run:`), so the replan answers them together
+        // and no second trip follows on the next step. Every other count survives (Fix 3); the trip
+        // history per signature is kept for the replan state.
+        for (const sig of reached) delete st.counts[sig];
         st.tripped = true;
         st.lastSignature = trip.signature;
         const h = st.tripsBySignature[trip.signature] ?? { trips: 0, directives: [] };
@@ -199,8 +225,9 @@ export function createLoopDetector(initial?: LoopDetectorState): LoopDetector {
         const h = st.tripsBySignature[sig] ?? { trips: 0, directives: [] };
         h.directives.push({ step, directive });
         st.tripsBySignature[sig] = h;
+        // Only the signature the replan answers restarts; other loops keep their counts (Fix 3).
+        delete st.counts[sig];
       }
-      st.counts = {};
       st.tripped = false;
       st.replanCount += 1;
     },
