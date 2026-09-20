@@ -14,7 +14,7 @@ import type { SubGoalResult } from '../../../../src/synth/search/subgoal.js';
 import type { Base, Goal, VerifyOutcome } from '../../../../src/synth/search/types.js';
 import type { SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
-import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary } from './controller-fakes.js';
+import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary } from './controller-fakes.js';
 import { gcdApplied, makeCtx, makeGoal, makeMemory, makeTrace, patchEntry } from './proposal-helpers.js';
 
 const TEST_COMMAND = 'python3 -m pytest -q';
@@ -159,8 +159,11 @@ function fullOutcomeCommit(goal: Goal, mem: RunMemory, file: SourceFile): SubGoa
 }
 
 let runCounter = 0;
-function ctxFor(o: Parameters<typeof fakeCtx>[0] = {}): ReturnType<typeof fakeCtx> {
-  return fakeCtx({ runId: o.runId ?? `evid-${runCounter++}`, testCommand: { command: 'pytest -q', runner: 'pytest' }, files: ['gcd.py', 'tests/test_gcd.py'], ...o });
+/** Unless `engineRun: false`, the window opens with an engine-executed suite run at step 0 (the controller's establishing `run` comes first otherwise; controller.test.ts covers it). */
+function ctxFor(o: Parameters<typeof fakeCtx>[0] & { engineRun?: boolean } = {}): ReturnType<typeof fakeCtx> {
+  const { engineRun, ...rest } = o;
+  const window = engineRun === false ? rest.window : [executedRun(0, TEST_COMMAND, { passed: 1, failed: 1 }), ...(rest.window ?? [])];
+  return fakeCtx({ runId: rest.runId ?? `evid-${runCounter++}`, testCommand: { command: 'pytest -q', runner: 'pytest' }, files: ['gcd.py', 'tests/test_gcd.py'], ...rest, ...(window === undefined ? {} : { window }) });
 }
 
 describe('LedgerSieveSynthesizer attaches evidence', () => {
@@ -203,9 +206,9 @@ describe('LedgerSieveSynthesizer attaches evidence', () => {
       arbitrated: false,
     });
     expect(p.goal).toContain('expect 2 of 2 tests to pass');
-    // the very first run of a workspace (no change before it) has nothing to compare: no evidence
+    // the very first run of a workspace (the establishing run, no change before it) has nothing to compare: no evidence
     const first = harness([{ summary: failing(), output: '' }], fullOutcomeCommit);
-    const r = await first.synth.synthesize(ctxFor({ step: 1, intent: 'verify' }));
+    const r = await first.synth.synthesize(ctxFor({ step: 1, intent: 'verify', engineRun: false }));
     expect(r.action.kind).toBe('run');
     expect(r.evidence).toBeUndefined();
   });

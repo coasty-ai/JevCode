@@ -21,6 +21,7 @@ import { patchTouchedPaths } from '../../provider/actions.js';
 import { unifiedDiff } from '../py/index.js';
 import type { AppliedCandidate, TestRunSummary } from '../types.js';
 import { progress } from '../verify/progress.js';
+import type { ClaimRecord, EngineRun } from './memory.js';
 import type { Base, Goal, GoalSearchTrace, VerifyOutcome } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -107,6 +108,16 @@ export interface ProposalMemory {
    * Absent means the guard path ran wherever it applied.
    */
   guardPending?: boolean;
+  /**
+   * The engine's last executed test run with parsed counts and the step of its last executed
+   * workspace change, as the controller observed them across every window so far (memory.ts).
+   * They outlive the 4-entry window: `doneReadiness` falls back to them when the window has
+   * scrolled past the green run, and the claim rule reads the last passing suite run from them.
+   */
+  lastEngineRun?: EngineRun | null;
+  lastChangeStep?: number | null;
+  /** plan item → the run that claimed it and the judge's verdict (memory.ts); absent means nothing was claimed yet */
+  claims?: ReadonlyMap<string, ClaimRecord>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -328,6 +339,75 @@ export function openProblemNotes(mem: ProposalMemory, extra: readonly string[] =
 }
 
 // ---------------------------------------------------------------------------------------
+// Claims (§5.1 row 2): each fixed item is claimed once per verdict
+// ---------------------------------------------------------------------------------------
+
+export interface ClaimSplit {
+  /** items a `run` may claim now */
+  claims: string[];
+  /** items whose earlier claim the judge did not accept and no passing suite run has re-measured since */
+  deferred: { item: string; claim: ClaimRecord }[];
+}
+
+/**
+ * The items of `fixed` goals the engine has not accepted as done, split into those a `run` may
+ * claim now and those it must not claim yet. A claim is judged on the claiming run's parsed
+ * output (`done_<j>`); repeating it on the next run presents no new evidence and the risk stage
+ * reads the twice-claimed item as a plan mismatch (the second ladder run declined `grades`'s
+ * post-patch run eight times in a row at 0.32–0.40 with one such item, after the task was solved
+ * at step 7). So an item the judge did not accept is claimed again only with fresh evidence:
+ * a NEW passing full-suite run executed by the engine (`mem.lastEngineRun`, later than the
+ * claim), or a run the synthesizer's own fresh baseline already measured all-green (the run about
+ * to be proposed will show every test passing, so every claim on it is verifiable — the judge's
+ * unsure verdicts, 0.33–0.67 live, all came on runs with other tests still failing, where parsed
+ * counts cannot attribute a specific item). Without either, the item stays in `remaining` with a
+ * note (`deferredClaimNotes`). The all-green case matters because a `done` claims nothing the
+ * judge grades (no executed output): had the final run deferred the items, nothing after it could
+ * ever get them accepted — the first live run of this rule solved `grades` at step 8 and then had
+ * its `done` blocked eleven times over the two unaccepted items still in `plan.remaining`. An item
+ * never claimed, or whose pending claim was never judged (memory.ts resolveClaims drops those), is
+ * claimable.
+ */
+export function splitClaims(ctx: SynthesisContext, mem: ProposalMemory): ClaimSplit {
+  const accepted = new Set(ctx.plan.done.map((d) => d.text));
+  const green = passingFullSuiteRun(ctx, mem);
+  const expectedGreen = mem.baseline !== null && mem.baseline.passed > 0 && mem.baseline.failed === 0 && mem.baseline.errors === 0 && !mem.baseline.timedOut;
+  const out: ClaimSplit = { claims: [], deferred: [] };
+  const seen = new Set<string>();
+  for (const g of mem.goals) {
+    if (g.status !== 'fixed') continue;
+    const item = normaliseItem(g.planItem);
+    if (accepted.has(item) || seen.has(item)) continue;
+    seen.add(item);
+    const claim = mem.claims?.get(item);
+    if (claim === undefined || claim.judged === null || expectedGreen || (green !== null && green.step > claim.step)) out.claims.push(item);
+    else out.deferred.push({ item, claim });
+  }
+  return out;
+}
+
+/**
+ * The `openProblems` note of a deferred claim: `'<item>' claimed at step N, judge said p=0.68;
+ * this test run re-verifies it before it is claimed again`. It says what the current action does
+ * about the problem: the first live run of this rule had the bare `…; re-verify` read by the risk
+ * stage as an open problem the run ignores (`plan_mismatch` level 3 rose from ≈0.10 to ≈0.27 of
+ * the mass on ladder `grades`).
+ */
+export function claimNote(item: string, claim: ClaimRecord): string {
+  return `'${item}' claimed at step ${claim.step}, judge said p=${(claim.judged ?? 0).toFixed(2)}; this test run re-verifies it before it is claimed again`;
+}
+
+/** One `claimNote` per deferred item of `splitClaims`. */
+export function deferredClaimNotes(ctx: SynthesisContext, mem: ProposalMemory): string[] {
+  return splitClaims(ctx, mem).deferred.map(({ item, claim }) => claimNote(item, claim));
+}
+
+/** Whether an `openProblems` note is one `deferredClaimNotes` wrote (it is recomputed every step, never carried over). */
+export function isClaimNote(note: string): boolean {
+  return /^'.*' claimed at step \d+, judge said p=\d(?:\.\d+)?; (?:re-verify|this test run re-verifies it before it is claimed again)$/.test(note);
+}
+
+// ---------------------------------------------------------------------------------------
 // rawText records (always JSON, always bounded)
 // ---------------------------------------------------------------------------------------
 
@@ -432,6 +512,33 @@ export function engineTestCommand(ctx: SynthesisContext, mem: ProposalMemory): s
   return mem.baseline?.command ?? ctx.workspaceInfo.testCommand?.command ?? null;
 }
 
+/**
+ * A `run` entry counts as the full suite when its window label is the engine's test command
+ * (provider/actions.ts summariseAction), or when its passed count equals the baseline's (a
+ * goal-subset run of the same runner has fewer tests).
+ */
+export function isFullSuiteRun(ctx: SynthesisContext, mem: ProposalMemory, run: Pick<ExecutedTestRun, 'action' | 'passed'>): boolean {
+  const command = engineTestCommand(ctx, mem);
+  const labelled = command !== null && run.action === runActionLabel(command);
+  const sameCount = mem.baseline !== null && run.passed === mem.baseline.passed;
+  return labelled || sameCount;
+}
+
+/** The controller's record of the engine's last run as an `ExecutedTestRun`, provided no change was executed after it; else null. */
+export function engineRunOnCurrentWorkspace(mem: ProposalMemory): ExecutedTestRun | null {
+  const run = mem.lastEngineRun ?? null;
+  if (run === null) return null;
+  const change = mem.lastChangeStep ?? null;
+  if (change !== null && run.step < change) return null;
+  return { ...run, allPassed: run.failed === 0 && run.errors === 0 && run.passed > 0 };
+}
+
+/** The engine's last executed run when it is the full suite on the current workspace and everything passed; else null. */
+export function passingFullSuiteRun(ctx: SynthesisContext, mem: ProposalMemory): ExecutedTestRun | null {
+  const run = engineRunOnCurrentWorkspace(mem);
+  return run !== null && run.allPassed && isFullSuiteRun(ctx, mem, run) ? run : null;
+}
+
 /** The two §5.5 blockers that also withhold a partial `done`. */
 const NOT_RUN_BLOCKER = 'the engine has not run the test suite on the current workspace';
 function testsChangedBlocker(paths: readonly string[]): string {
@@ -454,22 +561,20 @@ export interface DoneReadiness {
  * The §5.5 conditions, evaluated in code: (1) the last full-suite run on the committed
  * workspace has failed == errors == 0, passed > 0 and was executed by the engine (a `run` entry
  * in the window with parsed counts, no change executed after it); (2) no committed candidate
- * touched a test file; (3) the guard path ran where it applied. A `run` entry counts as the full
- * suite when its window label is the engine's test command, or when its passed count equals the
- * baseline's (a goal-subset run of the same runner has fewer tests).
+ * touched a test file; (3) the guard path ran where it applied. The run is read from the window
+ * first, then from the controller's record (`mem.lastEngineRun`), which outlives the window:
+ * once the engine has executed the green run, `done` is proposed, never another run
+ * (`isFullSuiteRun` says what counts as the suite).
  */
 export function doneReadiness(ctx: SynthesisContext, mem: ProposalMemory): DoneReadiness {
-  const executedRun = lastExecutedTestRun(ctx.window);
+  const executedRun = lastExecutedTestRun(ctx.window) ?? engineRunOnCurrentWorkspace(mem);
   const testsChanged = testFilesChanged(mem.committed);
   const guardPending = mem.guardPending === true;
   const blockers: string[] = [];
-  const command = engineTestCommand(ctx, mem);
   let fullSuite = false;
   if (executedRun === null) blockers.push(NOT_RUN_BLOCKER);
   else {
-    const labelled = command !== null && executedRun.action === runActionLabel(command);
-    const sameCount = mem.baseline !== null && executedRun.passed === mem.baseline.passed;
-    fullSuite = labelled || sameCount;
+    fullSuite = isFullSuiteRun(ctx, mem, executedRun);
     if (!fullSuite) blockers.push(`the last executed run (${executedRun.action}) is not the full suite`);
     else if (!(executedRun.allPassed && executedRun.failed === 0 && executedRun.errors === 0 && executedRun.passed > 0)) {
       blockers.push(`the last executed run shows ${executedRun.passed} passed, ${executedRun.failed} failed, ${executedRun.errors} errors`);
@@ -523,8 +628,11 @@ export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, g
  *
  * Only a `fixed` goal is ever claimed (§2.1: `plan.done` is one item per fixed goal). A
  * `partial` commit leaves its goal `open`, and claiming it would be a false claim the engine
- * rejects with a `rejected_claim` note; so `claimDone` on an unfixed goal claims nothing.
- * `trace` (the search that led to this run, e.g. the budget-hit step) goes into `rawText`.
+ * rejects with a `rejected_claim` note; so `claimDone` on an unfixed goal claims nothing. With
+ * the ledger at hand each item is claimed once per verdict (`splitClaims`): an item the judge
+ * did not accept on an earlier run stays in `remaining` with a `deferredClaimNotes` note until a
+ * new passing suite run re-measures it. `trace` (the search that led to this run, e.g. the
+ * budget-hit step) goes into `rawText`.
  */
 export function proposeRun(ctx: SynthesisContext, command: string, kind: RunScope, goal?: Goal, claimDone = false, timeoutMs?: number, trace?: GoalSearchTrace, mem?: ProposalMemory): Proposal {
   if (command.trim().length === 0) throw new ProposalError('empty test command');
@@ -537,8 +645,8 @@ export function proposeRun(ctx: SynthesisContext, command: string, kind: RunScop
   // `plan.remaining` would keep the item and the completion Noul would read "planClaim says
   // nothing remains, but plan.remaining still lists …" (0.77–0.83 against the 0.85 threshold in
   // the first QuixBugs bench: 8 of 14 repaired programs ran to max_steps).
-  const accepted = new Set(ctx.plan.done.map((d) => d.text));
-  const done = !claimDone ? [] : mem !== undefined ? mem.goals.filter((g) => g.status === 'fixed' && !accepted.has(normaliseItem(g.planItem))).map((g) => normaliseItem(g.planItem)) : goal && goal.status === 'fixed' ? [normaliseItem(goal.planItem)] : [];
+  const split = claimDone && mem !== undefined ? splitClaims(ctx, mem) : null;
+  const done = !claimDone ? [] : split !== null ? split.claims : goal && goal.status === 'fixed' ? [normaliseItem(goal.planItem)] : [];
   // With the ledger at hand, `remaining` is one item per open or parked goal (§2.1), as a `patch`
   // proposes it; copying the engine's plan alone leaves it empty on the first step, and the risk
   // state then reads `claimsDone: proposal.plan.remaining.length === 0` (loop/state.ts) on a `run`
@@ -549,7 +657,13 @@ export function proposeRun(ctx: SynthesisContext, command: string, kind: RunScop
   if (goal) record['goalId'] = goal.id;
   if (claimDone && goal && goal.status !== 'fixed' && mem === undefined) record['unclaimed'] = `${goal.id} is ${goal.status}, not fixed`;
   if (trace) record['trace'] = traceRecord(trace);
-  return { goal: goalText, action, plan: draft(done, remaining, [...ctx.plan.openProblems]), rawText: rawText(record) };
+  // The plan's notes are otherwise unchanged; a deferred claim adds its note (last step's claim notes are recomputed, not carried)
+  let openProblems = [...ctx.plan.openProblems];
+  if (split !== null && mem !== undefined && split.deferred.length > 0) {
+    openProblems = openProblemNotes(mem, [...ctx.plan.openProblems.filter((n) => !isClaimNote(n)), ...split.deferred.map(({ item, claim }) => claimNote(item, claim))]);
+    record['deferred'] = split.deferred.map((d) => d.item);
+  }
+  return { goal: goalText, action, plan: draft(done, remaining, openProblems), rawText: rawText(record) };
 }
 
 /**
@@ -573,8 +687,8 @@ export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: Do
     if (command === null) throw new ProposalError(`cannot verify the workspace: no test command is known (${blockers.join('; ')})`);
     // The run claims the fixed goals (§5.1 row 2): its parsed output is the evidence their claims need.
     const run = proposeRun(ctx, command, 'full', undefined, true, undefined, trace, mem);
-    // The blockers are human-readable and belong in openProblems so the risk stage sees why the run repeats.
-    return { ...run, plan: draft(run.plan.done, run.plan.remaining, openProblemNotes(mem, blockers)) };
+    // The blockers are human-readable and belong in openProblems so the risk stage sees why the run repeats; a deferred claim keeps its note.
+    return { ...run, plan: draft(run.plan.done, run.plan.remaining, openProblemNotes(mem, [...blockers, ...deferredClaimNotes(ctx, mem)])) };
   }
   const claims = unclaimedFixedItems(ctx, mem);
   // the green run the readiness check found is the evidence for the standing verification item

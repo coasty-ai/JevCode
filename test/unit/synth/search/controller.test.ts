@@ -6,12 +6,13 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import type { Proposal, SynthesisContext } from '../../../../src/core/types.js';
+import type { Proposal, SynthesisContext, WindowEntry } from '../../../../src/core/types.js';
 import { toJson } from '../../../../src/core/json.js';
-import { DEFAULT_TEST_COMMAND, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, lastExecutedActionKind, lastWorkspaceChangeStep, normaliseTestCommand, patchNotExecutedLastStep, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
+import { DEFAULT_TEST_COMMAND, ESTABLISH_GOAL, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, lastExecutedActionKind, lastWorkspaceChangeStep, normaliseTestCommand, patchNotExecutedLastStep, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
 import type { BaselineRun, RunMemory, SearchDeps } from '../../../../src/synth/search/index.js';
 import { GOAL_ITEM_RE, VERIFY_ITEM } from '../../../../src/synth/search/proposal.js';
 import type { SubGoalResult } from '../../../../src/synth/search/subgoal.js';
+import type { PersistedMemoryState } from '../../../../src/synth/search/memory.js';
 import type { Goal, PersistedSearchState } from '../../../../src/synth/search/types.js';
 import { isPersistedSearchState } from '../../../../src/synth/search/types.js';
 import type { SourceFile } from '../../../../src/synth/types.js';
@@ -109,9 +110,24 @@ function harness(o: HarnessOptions = {}): Harness {
 }
 
 let runCounter = 0;
-function ctxFor(o: Parameters<typeof fakeCtx>[0] = {}): ReturnType<typeof fakeCtx> {
-  return fakeCtx({ runId: o.runId ?? `ctl-${runCounter++}`, testCommand: { command: DETECTED_COMMAND, runner: 'pytest' }, files: ['gcd.py', 'tests/test_gcd.py'], ...o });
+/**
+ * A step context. Unless `engineRun: false`, the window opens with an engine-executed full-suite
+ * run at step 0: the controller proposes the establishing `run` before anything else when the
+ * engine has never executed the suite, and these tests are about what follows it.
+ */
+function ctxFor(o: Parameters<typeof fakeCtx>[0] & { engineRun?: boolean } = {}): ReturnType<typeof fakeCtx> {
+  const { engineRun, ...rest } = o;
+  const window = engineRun === false ? rest.window : [executedRun(0, TEST_COMMAND, { passed: 1, failed: 1 }), ...(rest.window ?? [])];
+  return fakeCtx({ runId: rest.runId ?? `ctl-${runCounter++}`, testCommand: { command: DETECTED_COMMAND, runner: 'pytest' }, files: ['gcd.py', 'tests/test_gcd.py'], ...rest, ...(window === undefined ? {} : { window }) });
 }
+
+/** An engine-executed run whose judge carried `done_<j>` verdicts for the items the run claimed (loop/engine.ts commit). */
+function judgedRun(step: number, counts: { passed: number; failed: number }, doneClaims: { text: string; judged: number; accepted: boolean }[]): WindowEntry {
+  const e = executedRun(step, TEST_COMMAND, counts);
+  return { ...e, judge: { ...e.judge!, doneClaims } };
+}
+
+const readEntryAt = (step: number): WindowEntry => ({ step, intent: 'investigate', action: 'read gcd.py', outcome: 'executed', shownFiles: ['gcd.py'], notes: [] });
 
 function parked(reason = 'exhausted mutation, template, donor at 1 site'): (goal: Goal) => SubGoalResult {
   return (goal) => ({ kind: 'parked', reason, trace: makeTrace({ goalId: goal.id, outcome: 'exhausted' }) });
@@ -121,10 +137,10 @@ function budget(): (goal: Goal) => SubGoalResult {
   return (goal) => ({ kind: 'budget', trace: makeTrace({ goalId: goal.id, outcome: 'budget' }) });
 }
 
-function persistedOf(ctx: ReturnType<typeof fakeCtx>): PersistedSearchState {
+function persistedOf(ctx: ReturnType<typeof fakeCtx>): PersistedMemoryState {
   const last = ctx.synthStates.at(-1);
   if (last === undefined || !isPersistedSearchState(last)) throw new Error('no persisted state');
-  return last;
+  return last as PersistedMemoryState;
 }
 
 function ledgerOf(ctx: ReturnType<typeof fakeCtx>): string[] {
@@ -494,7 +510,9 @@ describe('the ledger follows the workspace: patches the engine did not execute',
     expect(mem.committed).toEqual([]);
     expect(mem.committedDiffHashes).toEqual([]);
     expect(mem.goals[0]?.status).toBe('parked');
-    expect(p3.action.kind).toBe('run');
+    // every goal parked and the engine has executed a run (step 0): the honest partial `done`
+    expect(p3.action.kind).toBe('done');
+    if (p3.action.kind === 'done') expect(p3.action.summary).toMatch(/^partial: fixed 0 of 1 failing tests/);
     expect(c2.events.some((e) => e.type === 'synth' && e.phase === 'rollback' && e.detail.includes('patch declined') && e.detail.includes('g1 open again'))).toBe(true);
     // failed to apply: the files the synthesizer holds are stale → the baseline runs again, the hash stays tried
     const runId2 = 'ctl-failed';
@@ -548,20 +566,136 @@ describe('the ledger follows the workspace: patches the engine did not execute',
     expect(h.goalsSearched).toHaveLength(1); // no second search
     expect(h.calls.filter((c) => c === 'runTests')).toHaveLength(2); // one re-baseline for the changed workspace, none for the declined run
   });
-  it('intent verify with no engine-executed test run: the full-suite `run` is proposed and nothing is searched; with a run in the window, or another intent, the search proceeds', async () => {
-    const runId = 'ctl-verify';
-    const h = harness();
-    const p1 = await h.synth.synthesize(ctxFor({ runId, step: 1, intent: 'verify' }));
-    expect(p1.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
-    expect(h.goalsSearched).toEqual([]);
-    expect(h.calls).toContain('runTests'); // the synthesizer's baseline runs first so the run's plan carries the ledger
-    expect(runMemory(runId).goals).toHaveLength(1);
-    expect(p1.plan.remaining).toHaveLength(2); // the goal item and the standing verification item
-    const p2 = await h.synth.synthesize(ctxFor({ runId, step: 2, intent: 'verify', window: [executedRun(1, TEST_COMMAND, { passed: 1, failed: 1 })] }));
-    expect(p2.action.kind).toBe('patch');
-    expect(h.goalsSearched).toHaveLength(1);
-    const h3 = harness();
-    const p3 = await h3.synth.synthesize(ctxFor({ runId: 'ctl-edit', step: 1, intent: 'edit' }));
+});
+
+describe('step policy: the establishing run, one claim per verdict, done after the green run', () => {
+  it('the engine has never executed the suite: the first proposal is the establishing full-suite `run`, whatever the intent; once a run executed, the search proceeds', async () => {
+    for (const intent of ['investigate', 'edit', 'verify'] as const) {
+      const runId = `ctl-establish-${intent}`;
+      const h = harness();
+      const p1 = await h.synth.synthesize(ctxFor({ runId, step: 1, intent, engineRun: false }));
+      expect(p1.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+      expect(p1.goal).toBe(`${ESTABLISH_GOAL} (1 of 2 fails in the synthesizer's own run)`);
+      // nothing claimed, the ledger as `remaining`, nothing searched: the synthesizer's own baseline ran first so the plan carries the ledger
+      expect(p1.plan.done).toEqual([]);
+      expect(p1.plan.remaining).toEqual([`fix ${GCD_TEST} in gcd.py`, VERIFY_ITEM]);
+      expect(h.calls).toEqual(['loadFiles', 'runTests']);
+      expect(h.goalsSearched).toEqual([]);
+      expect(runMemory(runId).claims.size).toBe(0);
+      // a declined establishing run is proposed again: the engine still has no run
+      const again = await h.synth.synthesize(ctxFor({ runId, step: 2, intent, engineRun: false, window: [runEntry({ step: 1, command: TEST_COMMAND, outcome: 'declined', parsed: false })] }));
+      expect(again.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+      expect(h.goalsSearched).toEqual([]);
+      // the engine executed it: the search proceeds (under `investigate` through its one compliance read)
+      const p2 = await h.synth.synthesize(ctxFor({ runId, step: 3, intent, engineRun: false, window: [executedRun(2, TEST_COMMAND, { passed: 1, failed: 1 })] }));
+      expect(p2.action.kind).toBe(intent === 'investigate' ? 'read' : 'patch');
+      expect(h.calls.filter((c) => c === 'runTests')).toHaveLength(1); // one synthesizer baseline for the unchanged workspace
+    }
+  });
+
+  it('a fixed item is claimed on the post-patch run once per verdict: an unaccepted claim is deferred with a note on a run that will still show failures, claimed again on the run the fresh baseline measured all-green, and `done` follows the green run at once', async () => {
+    const TWO = 'tests/test_gcd.py::test_two';
+    const THREE = 'tests/test_gcd.py::test_three';
+    const g1Item = `fix ${GCD_TEST} in gcd.py`;
+    const g2Item = `fix ${TWO} in gcd.py`;
+    const g3Item = `fix ${THREE} in gcd.py`;
+    const b1 = failingBaseline([GCD_TEST, TWO, THREE], [GCD_OTHER_TEST]);
+    const b2 = failingBaseline([TWO, THREE], [GCD_TEST, GCD_OTHER_TEST]);
+    const b3 = failingBaseline([THREE], [GCD_TEST, TWO, GCD_OTHER_TEST]);
+    const b4: BaselineRun = { summary: summary({ command: TEST_COMMAND, failing: [], passing: [GCD_TEST, TWO, THREE, GCD_OTHER_TEST] }), output: '' };
+    const h = harness({ baselines: [b1, b2, b3, b4], pickFirstOpen: true });
+    const runId = 'ctl-claims';
+    const p1 = await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    expect(p1.action.kind).toBe('patch');
+    const mem = runMemory(runId);
+    expect(new Set(mem.goals.map((g) => g.planItem))).toEqual(new Set([g1Item, g2Item, g3Item]));
+    // the ledger's order is the clustering's; plan drafts list items in that order
+    const ledger = (items: string[]): string[] => [...mem.goals.map((g) => g.planItem).filter((i) => items.includes(i)), VERIFY_ITEM];
+    // step 2: the post-patch run claims the item the fresh baseline shows fixed
+    const p2 = await h.synth.synthesize(ctxFor({ runId, step: 2, window: [executedPatch(1)], plan: { remaining: [g1Item, g2Item, g3Item, VERIFY_ITEM] } }));
+    expect(p2.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+    expect(p2.plan.done).toEqual([g1Item]);
+    expect(p2.plan.remaining).toEqual(ledger([g2Item, g3Item]));
+    expect(mem.claims.get(g1Item)).toEqual({ step: 2, judged: null });
+    // step 3: the engine ran it (2 of 4 pass) and the judge said 0.50 → the item stays in the plan; the search moves to the second goal
+    const unsure = judgedRun(2, { passed: 2, failed: 2 }, [{ text: g1Item, judged: 0.5, accepted: false }]);
+    const plan3 = { remaining: [g1Item, g2Item, g3Item, VERIFY_ITEM], unverified: [{ text: g1Item, step: 2, judged: 0.5 }] };
+    const p3 = await h.synth.synthesize(ctxFor({ runId, step: 3, window: [executedPatch(1), unsure], plan: plan3 }));
+    expect(mem.claims.get(g1Item)).toEqual({ step: 2, judged: 0.5 });
     expect(p3.action.kind).toBe('patch');
+    expect(h.goalsSearched).toHaveLength(2);
+    // step 4: the second post-patch run will still show a failure (3 of 4): it claims the second item alone; the first is deferred with its note, in `remaining`
+    const ctx4 = ctxFor({ runId, step: 4, window: [executedPatch(1), unsure, executedPatch(3)], plan: plan3 });
+    const p4 = await h.synth.synthesize(ctx4);
+    expect(p4.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+    expect(p4.plan.done).toEqual([g2Item]);
+    expect(p4.plan.remaining).toEqual(ledger([g1Item, g3Item]));
+    expect(p4.plan.openProblems).toEqual([`'${g1Item}' claimed at step 2, judge said p=0.50; this test run re-verifies it before it is claimed again`]);
+    expect(JSON.parse(p4.rawText)).toMatchObject({ kind: 'run', claimed: [g2Item], deferred: [g1Item] });
+    expect(mem.claims.get(g2Item)).toEqual({ step: 4, judged: null });
+    // the claim records survive a checkpoint (§5.2)
+    expect(persistedOf(ctx4).claims).toEqual({ [g1Item]: { step: 2, judged: 0.5 }, [g2Item]: { step: 4, judged: null } });
+    // step 5: the engine ran it (3 of 4) and accepted the second claim; the third goal is searched
+    const accepted2 = judgedRun(4, { passed: 3, failed: 1 }, [{ text: g2Item, judged: 0.9, accepted: true }]);
+    const plan5 = { done: [{ text: g2Item, evidence: { step: 4, judged: 0.9 } }], remaining: [g1Item, g3Item, VERIFY_ITEM], unverified: [{ text: g1Item, step: 2, judged: 0.5 }] };
+    const p5 = await h.synth.synthesize(ctxFor({ runId, step: 5, window: [unsure, executedPatch(3), accepted2], plan: plan5 }));
+    expect(p5.action.kind).toBe('patch');
+    expect(mem.claims.has(g2Item)).toBe(false); // accepted
+    // step 6: the fresh baseline is all-green, so the run claims the third item AND the deferred first one (every claim is verifiable on an all-green run); no note
+    const p6 = await h.synth.synthesize(ctxFor({ runId, step: 6, window: [executedPatch(3), accepted2, executedPatch(5)], plan: plan5 }));
+    expect(p6.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+    expect(p6.plan.done).toEqual(ledger([g1Item, g3Item]).slice(0, -1));
+    expect(p6.plan.remaining).toEqual([VERIFY_ITEM]);
+    expect(p6.plan.openProblems).toEqual([]);
+    expect(JSON.parse(p6.rawText)).not.toHaveProperty('deferred');
+    expect(mem.claims.get(g1Item)).toEqual({ step: 6, judged: null }); // a new claim replaces the old record
+    // step 7: the engine ran the green suite and accepted both → `done` at once (no further run), claiming only the standing verification item
+    const greenRun = judgedRun(6, { passed: 4, failed: 0 }, [{ text: g1Item, judged: 0.8, accepted: true }, { text: g3Item, judged: 0.9, accepted: true }]);
+    const plan7 = { done: [{ text: g2Item, evidence: { step: 4, judged: 0.9 } }, { text: g1Item, evidence: { step: 6, judged: 0.8 } }, { text: g3Item, evidence: { step: 6, judged: 0.9 } }], remaining: [VERIFY_ITEM] };
+    const p7 = await h.synth.synthesize(ctxFor({ runId, step: 7, window: [accepted2, executedPatch(5), greenRun], plan: plan7 }));
+    expect(p7.action.kind).toBe('done');
+    if (p7.action.kind === 'done') expect(p7.action.summary).toBe('all 4 tests pass; 3 fixes committed');
+    expect(p7.plan).toEqual({ done: [VERIFY_ITEM], remaining: [], openProblems: [] });
+    expect(mem.claims.size).toBe(0);
+    expect(h.calls.filter((c) => c === 'runTests')).toHaveLength(4);
+    // the green run scrolled out of the window (reads since): the controller's record still says the engine saw it green → `done`, not another run
+    const late = await h.synth.synthesize(ctxFor({ runId, step: 11, engineRun: false, window: [readEntryAt(7), readEntryAt(8), readEntryAt(9), readEntryAt(10)], plan: plan7 }));
+    expect(late.action.kind).toBe('done');
+    expect(h.calls.filter((c) => c === 'runTests')).toHaveLength(4);
+    // had the judge stayed unsure on the green run, the `done` still claims the item (its claims are not graded; the completion Noul reads the green run)
+    const stillUnsure = judgedRun(6, { passed: 4, failed: 0 }, [{ text: g1Item, judged: 0.6, accepted: false }, { text: g3Item, judged: 0.9, accepted: true }]);
+    mem.claims.set(g1Item, { step: 6, judged: 0.6 });
+    const d2 = await h.synth.synthesize(ctxFor({ runId, step: 7, window: [accepted2, executedPatch(5), stillUnsure], plan: { ...plan7, done: plan7.done.filter((d) => d.text !== g1Item), remaining: [g1Item, VERIFY_ITEM] } }));
+    expect(d2.action.kind).toBe('done');
+    expect(d2.plan.done).toEqual([g1Item, VERIFY_ITEM]);
+  });
+
+  it('a claim on a run the engine declined was never judged: the next run claims the item again; a re-fixed item claimed after a passing suite run is claimable once more', async () => {
+    const runId = 'ctl-claims-declined';
+    const h = harness({ baselines: [failingBaseline(), greenBaseline()] });
+    const item = `fix ${GCD_TEST} in gcd.py`;
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    const p2 = await h.synth.synthesize(ctxFor({ runId, step: 2, window: [executedPatch(1)] }));
+    expect(p2.plan.done).toEqual([item]);
+    const mem = runMemory(runId);
+    expect(mem.claims.get(item)).toEqual({ step: 2, judged: null });
+    const declined = runEntry({ step: 2, command: TEST_COMMAND, outcome: 'declined', parsed: false });
+    const p3 = await h.synth.synthesize(ctxFor({ runId, step: 3, window: [executedPatch(1), declined] }));
+    expect(p3.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+    expect(p3.plan.done).toEqual([item]); // claimed again: nothing judged the first claim
+    expect(p3.plan.openProblems).toEqual([]);
+    expect(mem.claims.get(item)).toEqual({ step: 3, judged: null });
+    // the judge rejected it on the executed run (p = 0.10), but a later passing suite run executed by the engine re-measured it: the next run may claim it again
+    const rejected = judgedRun(3, { passed: 2, failed: 0 }, [{ text: item, judged: 0.1, accepted: false }]);
+    mem.goals[0]!.status = 'fixed';
+    await h.synth.synthesize(ctxFor({ runId, step: 4, engineRun: false, window: [executedPatch(1), declined, rejected], plan: { remaining: [item, VERIFY_ITEM], harnessProblems: [{ kind: 'rejected_claim', text: `'${item}' was not accepted as done: done_0 = 0.10`, step: 3 }] } }));
+    expect(mem.claims.get(item)).toEqual({ step: 3, judged: 0.1 });
+    const { splitClaims } = await import('../../../../src/synth/search/proposal.js');
+    // (with a baseline that still fails another test: on an all-green baseline the run claims everything, see the test above)
+    const notGreen = { ...mem, baseline: failingBaseline([GCD_OTHER_TEST], [GCD_TEST]).summary };
+    const noNewRun = splitClaims(ctxFor({ runId, step: 5, engineRun: false, window: [rejected], plan: { remaining: [item, VERIFY_ITEM] } }), notGreen);
+    expect(noNewRun).toEqual({ claims: [], deferred: [{ item, claim: { step: 3, judged: 0.1 } }] });
+    mem.lastEngineRun = { step: 6, action: `run ${TEST_COMMAND}`, passed: 2, failed: 0, errors: 0 };
+    expect(splitClaims(ctxFor({ runId, step: 7, engineRun: false, plan: { remaining: [item, VERIFY_ITEM] } }), { ...notGreen, lastEngineRun: mem.lastEngineRun })).toEqual({ claims: [item], deferred: [] });
   });
 });

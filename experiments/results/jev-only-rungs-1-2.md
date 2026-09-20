@@ -673,3 +673,227 @@ python3 /tmp/qb-slow-table.py bench/results/jev-only-quixbugs-2-slow-b
 Run ids: run a `20260920-203814-nbvb4som` (bitcount), `-jghe2xvl` (sqrt), `-zjai6dos` (mergesort), `-va7bm4bv`
 (shunting_yard), `20260920-204028-ywr3jsp6` (find_first_in_sorted); run b `20260920-205025-zycr6z4z`,
 `-2ozxircg`, `-mapkpitr`, `-4hbeexhd`, `20260920-205120-s4e4pfp4`.
+
+## 10. 2026-09-20 (later): step policy — the establishing run, one claim per verdict, `done` after the green run; ladder `grades`/`calendar_utils`/`inventory` 1/3 → 3/3 (all at `max_steps`), then `grades` `complete` at step 10 once the all-green run claims everything
+
+Owner scope: `src/synth/search/{index,proposal,memory}.ts` and their tests. Live re-check: `bench/results/jev-only-ladder-3-policy`
+(the three tasks of §9.5, same command as rung 2 with `--task-id grades,calendar_utils,inventory --spend-cap 1`), then
+`bench/results/jev-only-ladder-3-policy-b` (`grades` alone, §10.6). Every number is read from `tasks.jsonl`, `steps.jsonl`
+and `decisions.jsonl` by `/tmp/jo-risk.py` (§9), `/tmp/jo-table.py` (§7) and `/tmp/jo-steps.py` (per step: intent, kind,
+outcome, parsed counts, risk `dimension@level`, `judge.doneClaims`, the run's `claimed`/`deferred` from `rawText`, the
+claim notes in `openProblems`). Code state at run time: this change plus the concurrent, uncommitted working-tree changes
+of the sites / templates owner (`src/synth/search/sites.ts`, `src/synth/localize/{index,sites}.ts`,
+`src/synth/templates/{common,statements}.ts`); the vanished budget parks below (§10.3) are theirs as much as mine and are
+not attributed.
+
+### 10.1 The two defects, restated as the controller saw them
+
+§9.5(a): 15 post-patch `run`s declined at 0.30–0.43 (`plan_mismatch` level 0 dominant, mass spread, Jev confidence 0.00),
+several re-claiming an item the judge had not accepted on the previous run (`grades` ×8, solved at step 7, `max_steps`).
+§9.5(b): 6 verified `patch`es declined at level 2 "skips a planned verification step", 5 under `investigate` before the
+engine had executed the suite at all (`units` ×4, `topological_ordering`) — the synthesizer proposed its first full-suite
+`run` only under `verify` or after a change (`engineNeedsRun && (intent === 'verify' || lastChangeStep !== null)`).
+
+### 10.2 What changed
+
+1. **The establishing run** (`search/index.ts`, `ESTABLISH_GOAL`). The gate is now `engineNeedsRun(mem)` alone: when
+   the engine has never executed a `run` with parsed counts in this run (`mem.lastEngineRun === null`, the controller's
+   record across every window so far), the first proposal is the full-suite `run` — goal `establish the failing tests:
+   run the full test suite before any change (N of T fail in the synthesizer's own run)` — whatever the intent, and
+   without the `investigate` compliance read first (that read stays for the post-change run). The synthesizer's own
+   baseline still runs before it, so the run's plan carries the ledger (`remaining` non-empty; §5.1). The engine then
+   has an executed baseline for `testsCurrent` and for the plan_mismatch rubric's "planned verification step".
+2. **One claim per verdict** (`search/memory.ts` `claims`, `recordClaims`, `resolveClaims`; `search/proposal.ts`
+   `splitClaims`, `claimNote`, `deferredClaimNotes`). A `run` that claims items records them (plan item → step, pending);
+   the next `synthesize()` settles the record from the engine: an item in `plan.done` leaves the record (accepted), a
+   `run` the window shows executed gives the judge's `done_<j>` from `judge.doneClaims`, a blocked / declined / failed
+   run never judged the claim so the record is dropped (the item is free to be claimed again — a declined run is not a
+   claim), and a claim whose step left the 4-entry window is read from the accepted plan (`unverified[].judged`, or the
+   `rejected_claim` harness note's `done_<j> = p`). `splitClaims` then claims only items with no record, and defers an
+   item whose claim was judged and not accepted **until it has fresh evidence**: a new passing full-suite run executed
+   by the engine (`mem.lastEngineRun` all-pass, the suite by label or count, later than the claim, no change after it),
+   or — added after the first live run, §10.6 — a run the synthesizer's own fresh baseline already measured all-green
+   (every claim on that run is verifiable from its output; a `done` grades no claims, so a final run that deferred
+   would leave the items in `plan.remaining` for good). Until then it stays in `remaining` with an `openProblems` note
+   `'<item>' claimed at step N, judge said p=0.67; this test run re-verifies it before it is claimed again` (the first
+   live run used the bare `…; re-verify`, §10.6). The records persist in `synthState` as `claims` next to the goal records (`PersistedClaims`, an
+   optional extension of `PersistedSearchState` written by `toPersisted` and restored by both `rebuildFromPlan` shapes and
+   `restoreMemory`; `types.ts` untouched, and keyed by plan item so `goals.ts reconcile` cannot lose them). A `done`
+   records nothing (its claims are never judged: `noop` has no executed output) and still claims every unaccepted fixed
+   item with the green run in `recent`, as before.
+3. **`done` after the green run** (`search/proposal.ts doneReadiness`, `engineRunOnCurrentWorkspace`,
+   `isFullSuiteRun`). The engine's last executed run is read from the window first and then from the controller's record
+   (`mem.lastEngineRun` / `mem.lastChangeStep`, moved from the controller-private `RunScratch` into `SearchMemory` so the
+   builders can read them; they outlive the window and are re-observed on resume). Once the engine has executed the
+   green suite on the current workspace, the synthesizer proposes `done`, never another run — a green run that scrolled
+   out behind reads or declined `done`s no longer re-proposes the run (`proposeDone`'s fallback run also keeps the
+   deferred-claim notes next to its blocker).
+4. Bookkeeping: `observeWindow` records the run's window label (`EngineRun.action`) so the suite check can compare it
+   with `runActionLabel(command)`; `synthesize()` calls `resolveClaims` before the step and `recordClaims` after it for a
+   `run` with claims; `RunScratch` keeps only `startedMs`, `baselineStep`, `lastCommit`, `previousBaseline`, `restored`,
+   `rejected`.
+
+Gates: `tsc --noEmit` clean for this change (the three remaining errors are unused declarations in the other owner's
+uncommitted `src/synth/localize/sites.ts` / `src/synth/search/sites.ts`); `no-any` ok; `vitest --project unit` on
+`test/unit/synth/search/{controller,proposal,proposal-evidence,memory}.test.ts` + `test/unit/loop` 206/206 (the whole
+`test/unit/synth/search` directory has 6 failures, all in `sites.test.ts` against the other owner's in-progress
+`sites.ts`; the whole unit project 1840/1841, the one failure `localize/sites.test.ts`, theirs). New tests: the gate
+(first proposal is the establishing run under `investigate` / `edit` / `verify`; a declined one is proposed again; after
+an executed run the search proceeds), single claim + deferral with the note + re-claim on the `done` after the green
+run + `done` with the green run scrolled out of the window, a declined run's claim is free again, `splitClaims` over
+passing / subset / failing / stale runs, `proposeRun` notes and `rawText.deferred`, `doneReadiness` fallback,
+`recordClaims` / `resolveClaims` (window verdict, declined, plan `unverified`, `rejected_claim` note, unknown), and the
+persisted round trip with junk tolerance. The controller tests' `ctxFor` now opens every window with an engine-executed
+run at step 0 unless a test says `engineRun: false`, because the establishing run comes first otherwise.
+
+### 10.3 Live: the three tasks, before → after (`jev-only-ladder-2` → `jev-only-ladder-3-policy`)
+
+| item | rung 2 (`-2`), these three | this run (`-3-policy`) |
+|---|---|---|
+| solved (evaluator) | 1/3 (grades; calendar_utils 4 of 5 goals, inventory 3 of 4) | **3/3** (every goal fixed and applied: ledgers fixed 3 / 4 / 5, open 0, parked 0) |
+| steps; stop | 20 max_steps / 19 replan_stop / 20 max_steps | 20 / 20 / 20, all `max_steps` |
+| step at which the last fix was applied | 7 / – / – | **7 / 13 / 13** (grades / inventory / calendar_utils); the final post-patch run then never executed |
+| patches proposed / applied / rejected | 9 / 7 / 2 | 13 / 8 / 5 (grades 3/2/1, inventory 6/2/4, calendar_utils 4/4/0) |
+| `run` proposals rejected | 20 | 18 (grades 7, inventory 5, calendar_utils 6) |
+| claiming runs proposed / executed | – | 22 / **5** (17 declined at 0.30–0.66); the 3 establishing runs executed at once (risk `ok`) |
+| dominant level of rejections | run:pm@0 15, run:pm@4 5 (§9.5) | run:pm@0 12, patch:pm@2 4, read:pm@0 3, run:pm@3 3, run:pm@4 2, run:pm@2 1, patch:oos@0 1 |
+| rejections with `matches_intent` < 0.3 | – | 7 (all under `investigate`) |
+| intent Choice verdicts chosen / overridden / fallback | – | 29 / 20 / 11 |
+| `evidence_consistent` | – | n = 35, min 0.60, median 0.82, mean 0.81, 0 below 0.3 |
+| budget parks | 2 (calendar_utils `test_day_of_year_last_day`, inventory `test_total_value`) | 0 |
+| test runs (synthesizer) | – | 579 / 2 439 / 5 706 |
+| Jev cost | $0.057 | **$0.039** ($0.0100 / $0.0105 / $0.0182) |
+| wall | 54 / 360 / 296 s | 56 / 142 / 247 s |
+
+Per task (`/tmp/jo-steps.py`):
+
+- **grades** (2 hunks): 1 establishing run 7/10 → 2–3 reads → 4 patch declined (pm@2, 0.35, under `edit`) → 5 the
+  re-proposed passer applied → 6 run 9/10, claims `unequal_weights` (0.74, accepted) and `fractional_weights` (0.67,
+  unsure) → 7 second patch applied (10/10 in the synthesizer's baseline) → 8–9 reads → **10–14, 17, 20: the post-patch
+  run declined 7× at 0.41–0.66**, claiming `boundaries` alone, `fractional_weights` deferred with the note. Solved by
+  step 7, as in rung 2; the run's `plan_mismatch` mass moved rather than shrank (§10.5).
+- **inventory** (2 hunks): 1 run 6/10 → 4 patch applied (6→8) → 5 run declined (pm@2, 0.33) → 6 run 8/10, claims
+  `page_first` 0.55 / `page_last_partial` 0.33, both unsure → 7, 9, 12 verified patches for `test_total_value` declined
+  at pm@2 0.33–0.43 (8 at oos@0 0.34), after the engine had run the suite twice → 13 applied (10/10) → **14–16, 19 run
+  declined 4×** (0.30–0.59), claiming the two `total_value` items, the two `page` items deferred. Rung 2 had this goal
+  budget-parked after 978 + 1 484 runs; here it was fixed at step 13 (2 439 runs in total).
+- **calendar_utils** (3 hunks): 1 run 5/10 → 4 patch → 5 run declined (pm@3, 0.42) → 6 run 6/10 (`test_parse_iso`
+  0.59, unsure) → 7 patch → 8 run 8/10 (two claims accepted 0.75 / 0.78) → 9 patch → 10 run declined (0.31) → 11 run
+  9/10 (accepted 0.83; `parse_iso` deferred) → 12 budget subset run declined (0.46) → 13 patch (10/10) → **14, 16, 19 run
+  declined** (0.33–0.45). Rung 2 parked the last goal after two budget-hit steps and stopped on `replan_stop`.
+
+### 10.4 What each rule did
+
+1. **Establishing run.** All three runs opened with it, executed at once (risk `ok`, parsed 7/10, 6/10, 5/10), one step
+   each. None of these three tasks was a §9.5(b) case in rung 2 (`units` and `topological_ordering` were; not in this
+   live set), so the rule's effect on those declines is untested live; what the run does show is that level-2 declines
+   of verified patches are **not only** a no-engine-run effect: 4 of the 13 patches were declined at level 2 after the
+   engine had executed the suite (grades 4; inventory 7, 9, 12; 0.33–0.43), each with `plan.unverified` items ("Jev
+   was unsure … verify it before marking it done") standing in the accepted plan.
+2. **One claim per verdict.** Held everywhere: no item was claimed twice (grades step 10+ claimed 1 item where rung 2
+   claimed 2; inventory 14+ claimed the two new items and deferred the two unsure ones; calendar_utils 10+ deferred
+   `parse_iso`), `rawText.deferred` and the notes are in `steps.jsonl`, the records in `synthState`. The judge's
+   `done_<j>` on the 5 executed claiming runs: 4 accepted (0.74–0.83), 5 unsure (0.33–0.67), 0 rejected below 0.3.
+   **The unsure ones are the items whose path is the test file**: `fix … in tests/test_grades.py` /
+   `tests/test_inventory.py` (4 of 5 unsure; `memory.ts planItemPath` falls back to the test file when a pytest
+   traceback shows only test frames), while the `in src/calendar_utils.py` items were accepted 3 of 4. The item text
+   is fixed at goal creation, before localisation knows the source file; naming the localised source file would need
+   the engine to accept an item rename (plan rule (b) retains the old text) — a lever for a later change, not taken here.
+3. **`done` after the green run.** Not reached live: no claiming run executed green in any of the three (the runs that
+   would have shown 10/10 were the declined ones), so no `done` was proposed. Unit-tested, including the scrolled window.
+
+### 10.5 What still gets rejected: the claiming `run`
+
+The one residual is unchanged in kind from §9.5(a) and now carries all three `max_steps`: **a post-patch `run` that
+claims plan items is declined at `plan_mismatch` 0.30–0.66 with the Score's mass spread over levels 0–4 (Jev confidence
+0.00 on every one)**. 22 claiming runs were proposed, 5 executed; the 17 declines cost 17 of the 60 steps, and every
+task was solved 7–13 steps before its `max_steps`. The 3 establishing runs (no claim) and the 5 runs that got through
+differ from the declined ones in nothing the controller controls: same command, same evidence, `evidence_consistent`
+0.60–0.91, `matches_intent` 0.97–0.98 under the overridden `verify` (the 7 `matches_intent` < 0.3 are the runs under
+`investigate` at steps 17–20). Level distribution on `grades`' declined runs, rung 2 → this run (mean over the
+declines): level 0 0.40 → 0.31, level 2 0.21 → 0.16, **level 3 0.10 → 0.27**, level 4 0.25 → 0.20. The level-3 text is
+"ignores the plan's open problems, or claims completion (`done`) while `plan.remaining` is non-empty"; a `run` whose
+`planClaim.done` is non-empty while `remaining` still lists the deferred item and the standing verification item reads
+partly as that clause. The deferred-claim note (`…; re-verify`) was the obvious suspect for the level-3 rise; §10.6 tests
+it. Whatever the wording, the controller has no further lever on this shape: the run must claim (a claim is judged only
+on executed output, §5.1 row 2), the claim must sit next to a non-empty `remaining` on any multi-hunk task, and the
+mass is a Jev-side calibration of the `plan_mismatch` Score on a claiming `run` (the paired clause in
+`loop/stages/risk.ts` — "a test `run` that claims plan items on its own parsed output is not a completion claim" — is the
+lever left, outside this change's scope).
+
+### 10.6 Two `grades`-only follow-ups: the note's wording, and the dead-end the deferral opened
+
+`grades` is the §9.5(a) task, so it was re-run alone twice, each time after one code change (both runs are inside the
+three-task live set; ≈ $0.01 each).
+
+**`-3-policy-b` (`bench/results/jev-only-ladder-3-policy-b`, run `20260920-212507-b2yszjyr`): the reworded note.** Code
+as in §10.2 with the deferred-claim note changed from `…; re-verify` to `…; this test run re-verifies it before it is
+claimed again`. Steps: 1 establishing run 7/10 → 4 patch applied → 5 run declined (pm@3, 0.56, claiming two items, **no
+note in the plan yet**) → 6 run 9/10 (both claims unsure, 0.48 / 0.47) → 7 patch → **8 run executed, 10/10, claiming
+`boundaries` (accepted 0.95) with the two unsure items deferred under the reworded note** → `task_complete` 0.60 on that
+green run (the two deferred items still in the accepted `plan.remaining`) → 9 `done` declined at 0.66 (pm@4) → **10–20
+`done` blocked eleven times at 0.96–1.00** (pm@4 "repeats a step `recent` shows already failed": a `done` carries no
+`evidence`, so the plain rubric applies and the declined `done` in `recent` reads as a failed step) → `max_steps`,
+solved by the evaluator, $0.0096, 39 s. Two readings: (i) the level-3 mass of §10.5 is on the claiming run's shape, not
+on the note — step 5 drew 0.44 at level 3 with no note anywhere, and the noted run at step 8 went through (n = 1 each,
+Jev confidence 0.00–0.18: no claim about the wording is made beyond "it did not hurt"); (ii) **the deferral had opened a
+dead-end**: after the final green run the only proposal left is `done`, whose claims are never graded (`noop`, no
+executed output → `applyPlanDraft` rejects them with "no judge evidence"), so a deferred item can never leave
+`plan.remaining`, the completion Noul reads it (0.60 here against 0.90 on `textstats` and 0.91 on `units` in rung 2,
+whose green runs claimed every fixed item and left `remaining = [verify …]`), and the `done` loops until `max_steps`.
+The rule as specified in §9.5 ("re-claim only after a NEW passing run executed by the engine shows it green") has no
+vehicle for that re-claim once the green run has happened.
+
+**Fix (`search/proposal.ts splitClaims`, `expectedGreen`)**: a run the synthesizer's own fresh baseline has measured
+all-green defers nothing — every claim on it is verifiable from that run's output, which is the evidence the rule was
+waiting for. Deferral now applies to intermediate runs only (those that will still show failures, where parsed counts
+cannot attribute an item; every unsure verdict live, 0.33–0.69, came on such a run). Tests: the controller story is a
+three-goal run (deferral with the note on the 3-of-4 run, both items claimed on the all-green run, `done` after it
+claims only the verification item; `test/unit/synth/search/controller.test.ts`), `splitClaims` / `proposeDone` fallback
+with a green vs a failing baseline (`proposal.test.ts`).
+
+**`-3-policy-c` (`bench/results/jev-only-ladder-3-policy-c`, run `20260920-213254-odd2sjdz`): the final code.** 1 run
+7/10 → 4 patch declined (pm@2, 0.43) → 5 applied → 6 run 9/10 (`unequal_weights` accepted 0.77, `fractional_weights`
+unsure 0.69) → 7 patch → 8 read → 9 run declined (pm@0, 0.38) → **10 run executed 10/10 claiming `boundaries` (0.82,
+accepted) and `fractional_weights` again (0.47, unsure) → `task_complete` 0.85 → `complete`**. 10 steps, 3 patches
+proposed / 2 applied / 1 declined, 1 run declined, 0 `done`s, Jev $0.0052, 30 s. Same task: rung 2 20 steps
+`max_steps` (8 runs declined), `-3-policy` 20 `max_steps` (7 declined), `-b` 20 `max_steps` (12 `done`s blocked).
+
+| `grades` | solved | steps | stop | patches proposed / applied / rejected | runs rejected | `done` rejected | Jev $ | wall s |
+|---|---|---|---|---|---|---|---|---|
+| rung 2 (`-2`) | yes | 20 | max_steps | 3 / 2 / 1 | 8 | 0 | 0.0104 | 54 |
+| `-3-policy` (gate + deferral, note `re-verify`) | yes | 20 | max_steps | 3 / 2 / 1 | 7 | 0 | 0.0100 | 56 |
+| `-3-policy-b` (reworded note) | yes | 20 | max_steps | 2 / 2 / 0 | 1 | 12 | 0.0096 | 39 |
+| `-3-policy-c` (all-green run claims everything) | **yes** | **10** | **complete** | 3 / 2 / 1 | 1 | 0 | **0.0052** | 30 |
+
+What the three-task run of §10.3 would look like under the final code is not measured (the `-c` change came after
+it): `inventory` and `calendar_utils` each had their final all-green run declined 4× under the deferral (steps 14–19),
+so the change cannot have cost them anything, and each would have claimed its deferred items on that run. `-c` is one
+run of one task; the residual of §10.5 (a claiming run declined at 0.30–0.66 with the mass spread) showed up once in it
+too (step 9) and remains the lever.
+
+### 10.7 Spend and exact commands
+
+Ladder `-3-policy` $0.0387 + `-b` $0.0096 + `-c` $0.0052 = **$0.054** of the $1 allowed for this re-check; generator
+calls 0 on every record. Run ids: `-3-policy` `20260920-211942-ft52wvdz` (grades), `-y7uoxrtt` (inventory),
+`-llhgss2k` (calendar_utils); `-b` `20260920-212507-b2yszjyr`; `-c` `20260920-213254-odd2sjdz`.
+
+```
+# gates (this change's files; the other owners' in-progress sites.ts / oracle/questions.ts carry their own tsc errors)
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && \
+  npx vitest run --project unit test/unit/synth/search/controller.test.ts test/unit/synth/search/proposal.test.ts \
+    test/unit/synth/search/proposal-evidence.test.ts test/unit/synth/search/memory.test.ts test/unit/loop
+
+# the three tasks (rung 2 command with --task-id), then grades alone twice
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite ladder \
+  --task-id grades,calendar_utils,inventory --conditions jev-only --live --spend-cap 1 --task-spend-cap 0.25 \
+  --concurrency 3 --max-steps 20 --max-wall 10m --out bench/results/jev-only-ladder-3-policy
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite ladder \
+  --task-id grades --conditions jev-only --live --spend-cap 0.1 --task-spend-cap 0.1 --concurrency 1 --max-steps 20 \
+  --max-wall 10m --out bench/results/jev-only-ladder-3-policy-b      # then -c
+
+# analysis (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/{steps,decisions}.jsonl)
+python3 /tmp/jo-risk.py bench/results/jev-only-ladder-3-policy
+python3 /tmp/jo-table.py bench/results/jev-only-ladder-3-policy ladder
+python3 /tmp/jo-steps.py bench/results/jev-only-ladder-3-policy
+```

@@ -6,7 +6,7 @@
  * (`tried`), the localisation cache and the WIDENED cursor. Its durable copy is deliberately
  * small: `plan.remaining` carries one item per open or parked goal in the fixed grammar
  * `fix <first_test_id>[, +N more] in <path>`, and `SynthesisContext.synthState` carries the
- * `PersistedSearchState` (tried hashes, goal statuses, cursors). On `--resume` the memory is
+ * `PersistedSearchState` (tried hashes, goal statuses, cursors, claim records). On `--resume` the memory is
  * rebuilt from the baseline run, the plan items and that persisted state; anything lost costs
  * test time (a candidate is re-run), never a wrong commit.
  *
@@ -15,7 +15,7 @@
  * other module inside function bodies, so the ESM cycle is safe.
  */
 import { sha12 } from '../../core/hash.js';
-import type { Plan } from '../../core/types.js';
+import type { Plan, WindowEntry } from '../../core/types.js';
 import type { AppliedCandidate, LocalizeResult, TestRunSummary } from '../types.js';
 import { defaultOverrides } from './directive.js';
 import type { SearchOverrides } from './directive.js';
@@ -53,6 +53,37 @@ export interface SearchMemory {
   overrides: SearchOverrides;
   /** set by the controller while a batch with ≥ 2 plausible candidates awaits the §2.6 arbitration (proposal.ts reads it) */
   guardPending?: boolean;
+  /**
+   * The engine's last executed test run with parsed counts, and the step of the last executed
+   * workspace-changing action, as seen in the windows of every step so far (index.ts
+   * observeWindow). The window keeps only WINDOW_SIZE (4) entries, so a patch followed by a few
+   * declined runs and reads scrolls out of it while the engine still has no run of the current
+   * workspace; these outlive the window. Not persisted: a resumed run re-observes its window.
+   */
+  lastEngineRun: EngineRun | null;
+  lastChangeStep: number | null;
+  /**
+   * Plan item → the executed `run` that claimed it in `plan.done` and the judge's verdict on that
+   * claim (§5.1 row 2). A claim is judged once, on that run's parsed output; the record keeps the
+   * next run from repeating a claim the judge did not accept until a new passing full-suite run
+   * gives it fresh evidence (proposal.ts claimSplit). Persisted with the goal statuses.
+   */
+  claims: Map<string, ClaimRecord>;
+}
+
+/** One engine-executed `run` with parsed counts: its step and window label (`run <command>`) plus the counts. */
+export interface EngineRun {
+  step: number;
+  action: string;
+  passed: number;
+  failed: number;
+  errors: number;
+}
+
+/** A plan item claimed on an executed `run`: the step, and the judge's `done_<j>` probability (null until the next window shows the verdict). */
+export interface ClaimRecord {
+  step: number;
+  judged: number | null;
 }
 
 /**
@@ -89,6 +120,9 @@ export function createMemory(runId: string): SearchMemory {
     committedDiffHashes: [],
     stepBudget: emptyStepBudget(),
     overrides: defaultOverrides(),
+    lastEngineRun: null,
+    lastChangeStep: null,
+    claims: new Map(),
   };
 }
 
@@ -142,6 +176,60 @@ export function recordCommit(mem: Pick<SearchMemory, 'committed' | 'committedDif
   const h = diffHash(applied.diff);
   mem.tried.add(h);
   if (!mem.committedDiffHashes.includes(h)) mem.committedDiffHashes.push(h);
+}
+
+// ---------------------------------------------------------------------------------------
+// Claim bookkeeping (§5.1 row 2: a plan item is claimed on an executed run, once per verdict)
+// ---------------------------------------------------------------------------------------
+
+/** The judged probability quoted by loop/plan.ts in a `rejected_claim` note: `'<item>' was not accepted as done: done_<j> = 0.12`. */
+const REJECTED_CLAIM_P_RE = /done_\d+ = (\d(?:\.\d+)?)/;
+
+/**
+ * Record the items a `run` proposal claims this step (pending until the next window shows the
+ * judge's verdict). A claim already resolved for the same item is replaced: the run re-claims it
+ * only because a newer passing suite run allows it (proposal.ts), so this is a new claim.
+ */
+export function recordClaims(mem: Pick<SearchMemory, 'claims'>, items: readonly string[], step: number): void {
+  for (const item of items) mem.claims.set(item, { step, judged: null });
+}
+
+/**
+ * Settle the claim records against what the engine did with them, every step before proposing:
+ *
+ * - an item the accepted plan lists as done leaves the record (the claim landed);
+ * - a pending claim whose run the window shows executed takes the judge's `done_<j>` from that
+ *   entry's `judge.doneClaims`; a run the engine blocked, declined or failed never judged the
+ *   claim, so the record is dropped and the item is free to be claimed again;
+ * - a pending claim whose step is no longer in the window (resume) is read from the plan: the
+ *   `unverified` list carries `judged` for a claim in [0.3, 0.7), a `rejected_claim` harness note
+ *   quotes `done_<j> = p` for one below; neither means the claim was never judged → dropped.
+ */
+export function resolveClaims(mem: Pick<SearchMemory, 'claims'>, window: readonly WindowEntry[], plan: Pick<Plan, 'done' | 'unverified' | 'harnessProblems'>): void {
+  const accepted = new Set(plan.done.map((d) => d.text));
+  for (const [item, rec] of [...mem.claims]) {
+    if (accepted.has(item)) {
+      mem.claims.delete(item);
+      continue;
+    }
+    if (rec.judged !== null) continue;
+    const entry = window.find((e) => e.step === rec.step);
+    if (entry !== undefined) {
+      const verdict = entry.outcome === 'executed' ? entry.judge?.doneClaims.find((c) => c.text === item) : undefined;
+      if (verdict === undefined) mem.claims.delete(item);
+      else rec.judged = verdict.judged;
+      continue;
+    }
+    const unverified = plan.unverified.find((u) => u.text === item);
+    if (unverified !== undefined) {
+      rec.judged = unverified.judged;
+      continue;
+    }
+    const rejected = plan.harnessProblems.find((h) => h.kind === 'rejected_claim' && h.text.includes(`'${item}'`));
+    const p = rejected === undefined ? null : REJECTED_CLAIM_P_RE.exec(rejected.text)?.[1];
+    if (p === null || p === undefined) mem.claims.delete(item);
+    else rec.judged = Number(p);
+  }
 }
 
 // ---------------------------------------------------------------------------------------
@@ -230,7 +318,33 @@ export function parseGoalItem(item: string): ParsedGoalItem | null {
  */
 export const TRIED_PERSIST_MAX = 3000;
 
-export function toPersisted(mem: Pick<SearchMemory, 'tried' | 'widenCursor' | 'goals' | 'committedDiffHashes'>): PersistedSearchState {
+/**
+ * This module's addition to the checkpoint record: the claim records (`SearchMemory.claims`),
+ * keyed by plan item. `PersistedSearchState` (types.ts) is the contract the other modules read;
+ * the field is optional there by construction (an older checkpoint has none) and `toPersisted`
+ * always writes it.
+ */
+export interface PersistedClaims {
+  claims?: Record<string, ClaimRecord>;
+}
+
+export type PersistedMemoryState = PersistedSearchState & PersistedClaims;
+
+/** The claim records of a checkpoint (an older one, or one written by hand, carries none). */
+export function claimsFromPersisted(persisted: (PersistedSearchState & PersistedClaims) | null): Map<string, ClaimRecord> {
+  const out = new Map<string, ClaimRecord>();
+  const raw: unknown = persisted?.claims;
+  if (typeof raw !== 'object' || raw === null || Array.isArray(raw)) return out;
+  for (const [item, rec] of Object.entries(raw as Record<string, unknown>)) {
+    if (typeof rec !== 'object' || rec === null) continue;
+    const { step, judged } = rec as { step?: unknown; judged?: unknown };
+    if (typeof step !== 'number' || !Number.isFinite(step)) continue;
+    out.set(item, { step, judged: typeof judged === 'number' && Number.isFinite(judged) ? judged : null });
+  }
+  return out;
+}
+
+export function toPersisted(mem: Pick<SearchMemory, 'tried' | 'widenCursor' | 'goals' | 'committedDiffHashes' | 'claims'>): PersistedMemoryState {
   const all = [...mem.tried];
   const tried = all.length > TRIED_PERSIST_MAX ? all.slice(all.length - TRIED_PERSIST_MAX) : all;
   const widenCursor: Record<string, number> = {};
@@ -241,7 +355,9 @@ export function toPersisted(mem: Pick<SearchMemory, 'tried' | 'widenCursor' | 'g
     if (g.parkedReason !== undefined) rec.parkedReason = g.parkedReason;
     goals[g.id] = rec;
   }
-  return { version: 1, tried, widenCursor, goals, committedDiffHashes: [...mem.committedDiffHashes] };
+  const claims: Record<string, ClaimRecord> = {};
+  for (const [item, rec] of mem.claims) claims[item] = { step: rec.step, judged: rec.judged };
+  return { version: 1, tried, widenCursor, goals, committedDiffHashes: [...mem.committedDiffHashes], claims };
 }
 
 /** What `rebuildFromPlan` recovers; `restoreMemory` installs it. */
@@ -251,6 +367,7 @@ export interface RebuiltMemory {
   tried: Set<string>;
   widenCursor: Map<string, number>;
   committedDiffHashes: string[];
+  claims: Map<string, ClaimRecord>;
 }
 
 function priorFromPersisted(persisted: PersistedSearchState): PriorGoalState[] {
@@ -313,6 +430,7 @@ function rebuildPlaceholders(mem: SearchMemory, plan: Pick<Plan, 'remaining'>, p
   mem.widenCursor = new Map();
   for (const [goalId, cursor] of Object.entries(persisted?.widenCursor ?? {})) if (Number.isFinite(cursor)) mem.widenCursor.set(goalId, cursor);
   mem.committedDiffHashes = [...(persisted?.committedDiffHashes ?? [])];
+  mem.claims = claimsFromPersisted(persisted);
 }
 
 function rebuildGoals(plan: Pick<Plan, 'remaining'>, baseline: TestRunSummary, persisted: PersistedSearchState | null, opts: ClusterOptions): RebuiltMemory {
@@ -330,6 +448,7 @@ function rebuildGoals(plan: Pick<Plan, 'remaining'>, baseline: TestRunSummary, p
     tried: new Set(persisted?.tried ?? []),
     widenCursor,
     committedDiffHashes: [...(persisted?.committedDiffHashes ?? [])],
+    claims: claimsFromPersisted(persisted),
   };
 }
 
@@ -350,6 +469,7 @@ export function restoreMemory(mem: SearchMemory, rebuilt: RebuiltMemory): void {
   mem.tried = rebuilt.tried;
   mem.widenCursor = rebuilt.widenCursor;
   mem.committedDiffHashes = rebuilt.committedDiffHashes;
+  mem.claims = rebuilt.claims;
   mem.localizeCache.clear();
   mem.bases = [];
   mem.committed = [];

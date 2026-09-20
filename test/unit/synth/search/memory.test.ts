@@ -1,9 +1,11 @@
 import { describe, expect, it } from 'vitest';
 
 import { toJson } from '../../../../src/core/json.js';
+import type { Plan, WindowEntry } from '../../../../src/core/types.js';
 import { clusterFailures, park, reconcile } from '../../../../src/synth/search/goals.js';
 import {
   attachPlanItems,
+  claimsFromPersisted,
   createMemory,
   diffHash,
   dropMemory,
@@ -13,7 +15,9 @@ import {
   parseGoalItem,
   planItemFor,
   rebuildFromPlan,
+  recordClaims,
   recordCommit,
+  resolveClaims,
   restoreMemory,
   toPersisted,
   TRIED_PERSIST_MAX,
@@ -232,5 +236,86 @@ describe('persisted state round trip', () => {
     expect(p.tried[0]).toBe(diffHash('diff-250'));
     expect(p.tried[p.tried.length - 1]).toBe(diffHash(`diff-${TRIED_PERSIST_MAX + 249}`));
     expect(JSON.stringify(p).length).toBeLessThan(60 * 1024);
+  });
+});
+
+describe('claim records (§5.1 row 2: a plan item is claimed once per verdict)', () => {
+  const item = 'fix tests/test_a.py::t_a in src/a.py';
+  const other = 'fix tests/test_b.py::t_b in src/b.py';
+  const planWith = (over: Partial<Pick<Plan, 'done' | 'unverified' | 'harnessProblems'>> = {}): Pick<Plan, 'done' | 'unverified' | 'harnessProblems'> => ({ done: [], unverified: [], harnessProblems: [], ...over });
+  const runAt = (step: number, doneClaims: { text: string; judged: number; accepted: boolean }[], outcome: WindowEntry['outcome'] = 'executed'): WindowEntry => ({
+    step,
+    intent: 'verify',
+    action: 'run pytest -q',
+    outcome,
+    judge: { succeeded: 0.9, errorPresent: 0.1, newInfo: 0.1, tests: { source: 'parsed', allPassed: false, passed: 1, failed: 1, errors: 0 }, doneClaims },
+    shownFiles: [],
+    notes: [],
+  });
+
+  it('a recorded claim is pending until the claiming run\'s window entry carries the judge\'s verdict; an accepted item leaves the record', () => {
+    const mem = createMemory('run-claims');
+    recordClaims(mem, [item, other], 4);
+    expect(mem.claims.get(item)).toEqual({ step: 4, judged: null });
+    resolveClaims(mem, [runAt(4, [{ text: item, judged: 0.42, accepted: false }, { text: other, judged: 0.9, accepted: true }])], planWith({ done: [{ text: other, evidence: { step: 4, judged: 0.9 } }] }));
+    expect(mem.claims.get(item)).toEqual({ step: 4, judged: 0.42 });
+    expect(mem.claims.has(other)).toBe(false);
+    // a resolved record stays until the item is accepted, whatever later windows show
+    resolveClaims(mem, [runAt(7, [])], planWith());
+    expect(mem.claims.get(item)).toEqual({ step: 4, judged: 0.42 });
+    resolveClaims(mem, [], planWith({ done: [{ text: item, evidence: { step: 9, judged: 0.8 } }] }));
+    expect(mem.claims.size).toBe(0);
+    // re-claiming replaces the record: it is a new claim
+    mem.claims.set(item, { step: 4, judged: 0.42 });
+    recordClaims(mem, [item], 10);
+    expect(mem.claims.get(item)).toEqual({ step: 10, judged: null });
+  });
+
+  it('a claim on a run the engine did not execute, or whose judge carried no verdict for it, was never judged: the record is dropped', () => {
+    for (const entry of [runAt(4, [], 'declined'), runAt(4, [], 'blocked'), runAt(4, [{ text: other, judged: 0.5, accepted: false }])]) {
+      const mem = createMemory('run-claims-void');
+      recordClaims(mem, [item], 4);
+      resolveClaims(mem, [entry], planWith());
+      expect(mem.claims.has(item)).toBe(false);
+    }
+  });
+
+  it('a pending claim whose step left the window is read from the plan: `unverified` gives the probability, a `rejected_claim` note quotes it, neither drops the record', () => {
+    const unsure = createMemory('run-claims-unverified');
+    recordClaims(unsure, [item], 4);
+    resolveClaims(unsure, [runAt(6, [])], planWith({ unverified: [{ text: item, step: 4, judged: 0.55 }] }));
+    expect(unsure.claims.get(item)).toEqual({ step: 4, judged: 0.55 });
+    const rejected = createMemory('run-claims-rejected');
+    recordClaims(rejected, [item], 4);
+    resolveClaims(rejected, [], planWith({ harnessProblems: [{ kind: 'rejected_claim', text: `'${item}' was not accepted as done: done_1 = 0.12`, step: 4 }] }));
+    expect(rejected.claims.get(item)).toEqual({ step: 4, judged: 0.12 });
+    const unknown = createMemory('run-claims-unknown');
+    recordClaims(unknown, [item], 4);
+    resolveClaims(unknown, [], planWith({ harnessProblems: [{ kind: 'rejected_claim', text: `'${item}' was not accepted as done: no judge evidence (outcome noop)`, step: 4 }] }));
+    expect(unknown.claims.has(item)).toBe(false);
+  });
+
+  it('claims persist with the goal statuses and come back through both rebuildFromPlan shapes and restoreMemory; junk records are ignored', () => {
+    const mem = createMemory('run-claims-persist');
+    mem.claims.set(item, { step: 4, judged: 0.42 });
+    mem.claims.set(other, { step: 6, judged: null });
+    const p = toPersisted(mem);
+    expect(p.claims).toEqual({ [item]: { step: 4, judged: 0.42 }, [other]: { step: 6, judged: null } });
+    expect(isPersistedSearchState(toJson(p))).toBe(true);
+    const baseline = baselineOf([failure('t_a', 't_a')]);
+    expect(rebuildFromPlan({ remaining: [] }, baseline, p).claims).toEqual(mem.claims);
+    const placeholders = createMemory('run-claims-placeholders');
+    rebuildFromPlan(placeholders, { remaining: [] }, p);
+    expect(placeholders.claims).toEqual(mem.claims);
+    const restored = createMemory('run-claims-restored');
+    restoreMemory(restored, rebuildFromPlan({ remaining: [] }, baseline, p));
+    expect(restored.claims).toEqual(mem.claims);
+    // an older checkpoint has no claims; a hand-written one may hold junk
+    expect(claimsFromPersisted(null).size).toBe(0);
+    const { claims: _dropped, ...withoutClaims } = p;
+    expect(claimsFromPersisted(withoutClaims).size).toBe(0);
+    const junk = toJson({ ...p, claims: { good: { step: 1, judged: 0.5 }, pending: { step: 2 }, text: 'x', noStep: { judged: 0.1 }, badStep: { step: 'a', judged: 0.2 } } });
+    if (!isPersistedSearchState(junk)) throw new Error('junk should still pass the guard');
+    expect(claimsFromPersisted(junk)).toEqual(new Map([['good', { step: 1, judged: 0.5 }], ['pending', { step: 2, judged: null }]]));
   });
 });

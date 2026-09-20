@@ -26,7 +26,7 @@ import { defaultOverrides, handleDirective, invalidateStaleSites } from './direc
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
 import { clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
 import type { GoalPick } from './goals.js';
-import { diffHash, getMemory, rebuildFromPlan, recordCommit, restoreMemory, toPersisted } from './memory.js';
+import { diffHash, getMemory, rebuildFromPlan, recordClaims, recordCommit, resolveClaims, restoreMemory, toPersisted } from './memory.js';
 import type { SearchMemory } from './memory.js';
 import { READ_MAX_PATHS, commitEvidence, proposeDone, proposePatch, proposeRead, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
 import { isTestPath, newTrace } from './subgoal.js';
@@ -65,6 +65,14 @@ const REPROPOSE_MAX = 1;
 const INVESTIGATE_READS_MAX = 2;
 /** Proposal kinds whose execution changes the workspace (window action labels start with the kind, provider/actions.ts summariseAction). */
 const CHANGING_ACTIONS: readonly string[] = ['patch', 'edit', 'write'];
+/**
+ * Goal text of the run's first proposal when the engine has never executed the test suite
+ * (`engineNeedsRun` with no engine run at all): the full-suite `run`, whatever the intent. Until
+ * the engine has an executed baseline, the plan's standing verification item has never run from
+ * `recent`'s point of view and every verified `patch` scores as "skips a planned verification
+ * step" (the second ladder run declined 5 of 6 such patches under `investigate`, `units` ×4).
+ */
+export const ESTABLISH_GOAL = 'establish the failing tests: run the full test suite before any change';
 
 export type WorkspaceLayout = 'quixbugs' | 'pytest' | 'other';
 
@@ -162,26 +170,29 @@ export function relevantSourceFiles(mem: Pick<RunMemory, 'goals' | 'localizeCach
   return out;
 }
 
-/** Record the engine's executed test runs (parsed counts) and executed workspace changes seen in this window (see RunScratch). */
-export function observeWindow(scratch: Pick<RunScratch, 'lastEngineRun' | 'lastChangeStep'>, window: readonly WindowEntry[]): void {
+/** The memory fields that record what the engine executed (memory.ts SearchMemory: they outlive the 4-entry window). */
+export type EngineObservations = Pick<SearchMemory, 'lastEngineRun' | 'lastChangeStep'>;
+
+/** Record the engine's executed test runs (parsed counts, window label) and executed workspace changes seen in this window. */
+export function observeWindow(mem: EngineObservations, window: readonly WindowEntry[]): void {
   for (const e of window) {
     if (e.outcome !== 'executed') continue;
     const kind = e.action.split(' ')[0] ?? '';
     if (CHANGING_ACTIONS.includes(kind)) {
-      if (scratch.lastChangeStep === null || e.step > scratch.lastChangeStep) scratch.lastChangeStep = e.step;
+      if (mem.lastChangeStep === null || e.step > mem.lastChangeStep) mem.lastChangeStep = e.step;
     } else if (kind === 'run') {
       const tests = e.judge?.tests ?? null;
-      if (tests !== null && tests.source === 'parsed' && (scratch.lastEngineRun === null || e.step > scratch.lastEngineRun.step)) {
-        scratch.lastEngineRun = { step: e.step, passed: tests.passed, failed: tests.failed, errors: tests.errors };
+      if (tests !== null && tests.source === 'parsed' && (mem.lastEngineRun === null || e.step > mem.lastEngineRun.step)) {
+        mem.lastEngineRun = { step: e.step, action: e.action, passed: tests.passed, failed: tests.failed, errors: tests.errors };
       }
     }
   }
 }
 
 /** The engine has no test run of the current workspace: a change was executed after its last parsed run (or it never ran one). */
-export function engineNeedsRun(scratch: Pick<RunScratch, 'lastEngineRun' | 'lastChangeStep'>): boolean {
-  if (scratch.lastChangeStep === null) return scratch.lastEngineRun === null;
-  return scratch.lastEngineRun === null || scratch.lastEngineRun.step < scratch.lastChangeStep;
+export function engineNeedsRun(mem: EngineObservations): boolean {
+  if (mem.lastChangeStep === null) return mem.lastEngineRun === null;
+  return mem.lastEngineRun === null || mem.lastEngineRun.step < mem.lastChangeStep;
 }
 
 /** Step of the latest executed workspace-changing action in the window, or null. */
@@ -306,14 +317,6 @@ export interface RunScratch {
   previousBaseline: TestRunSummary | null;
   /** the checkpoint's synthState is consumed on the first baseline of the process */
   restored: boolean;
-  /**
-   * The engine's last executed test run with parsed counts, and the last executed
-   * workspace-changing action, as seen in the windows of every step so far. The window keeps only
-   * WINDOW_SIZE (4) entries, so a patch followed by a few declined runs and reads scrolls out of
-   * it while the engine still has no run of the current workspace; these outlive the window.
-   */
-  lastEngineRun: { step: number; passed: number; failed: number; errors: number } | null;
-  lastChangeStep: number | null;
   /** goal id → the test-passing candidate the engine rejected: how often (same diff), whether a re-proposal is due (REPROPOSE_MAX), and its evidence */
   rejected: Map<string, { applied: AppliedCandidate; hash: string; times: number; pending: boolean; evidence: ProposalEvidence | null }>;
 }
@@ -330,10 +333,15 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   async synthesize(ctx: SynthesisContext): Promise<Proposal> {
     const mem = runMemory(ctx.runId);
     const scratch = this.scratchFor(ctx.runId);
-    observeWindow(scratch, ctx.window);
+    observeWindow(mem, ctx.window);
+    // §5.1 row 2: last step's claims meet the judge's verdict before this step decides what to claim
+    resolveClaims(mem, ctx.window, ctx.plan);
     mem.stepBudget = freshBudget(ctx.limits, mem.oracle, this.wallRemaining(ctx, scratch), { now: this.deps.now });
     try {
-      return await this.step(ctx, mem, scratch, false);
+      const proposal = await this.step(ctx, mem, scratch, false);
+      // only a `run` has its claims judged (on its parsed output); a `done` claims into the completion state and executes nothing
+      if (proposal.action.kind === 'run' && proposal.plan.done.length > 0) recordClaims(mem, proposal.plan.done, ctx.step);
+      return proposal;
     } finally {
       // §5.2: what survives a checkpoint, every step; the ledger line every step.
       ctx.setSynthState(toJson(toPersisted(mem)));
@@ -344,7 +352,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   private scratchFor(runId: string): RunScratch {
     let s = this.scratch.get(runId);
     if (s === undefined) {
-      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, previousBaseline: null, restored: false, lastEngineRun: null, lastChangeStep: null, rejected: new Map() };
+      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, previousBaseline: null, restored: false, rejected: new Map() };
       this.scratch.set(runId, s);
     }
     return s;
@@ -382,36 +390,49 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     const baseline = mem.baseline;
     if (baseline === null) throw new Error('ledger-sieve: baseline missing after rebaseline');
 
-    // §5.1: after a patch, the full suite runs as an engine step so testsCurrent and lastTestRun
-    // see the oracle. This is a standing obligation, not a one-step reflex: the engine has no
-    // test run of the current workspace whenever a change was executed after its last run (or a
-    // `verify` intent asks for one before any), and until it does every later `patch` is scored
-    // as "claims completion with no verifying test run in `recent`" (level 4, blocked — the
-    // first live run lost a whole task to one declined run). After a change the run claims the
-    // goals the synthesizer's fresh baseline shows fixed (§5.1 row 2): its parsed output is the
-    // evidence the `done_<j>` Noul verifies, and only accepted claims shrink the engine's
-    // `plan.remaining`, which the completion Noul reads. It is proposed only once the ledger
-    // exists (after the baseline above): a `run` whose plan draft has no `remaining` reads as a
-    // completion claim (loop/state.ts `claimsDone`; reviewed at 0.5–0.6 in the first live runs). It
-    // also precedes the green check below: proposeDone's own fallback run carries the plain goal
-    // text, and the third QuixBugs bench had that run reviewed at 0.33–0.58 as a repeat of the
-    // step-1 run that "failed", while this path states the measured expectation.
-    if (engineNeedsRun(scratch) && (ctx.intent === 'verify' || scratch.lastChangeStep !== null)) {
-      const read = this.investigateRead(ctx, mem);
-      if (read !== null) return read;
+    // §5.1: the full suite runs as an engine step so testsCurrent and lastTestRun see the oracle.
+    // This is a standing obligation, not a one-step reflex: the engine has no test run of the
+    // current workspace whenever a change was executed after its last run, or when it has never
+    // executed the suite at all, and until it does every `patch` is scored against a plan whose
+    // verification item never ran — "claims completion with no verifying test run in `recent`"
+    // (level 4, blocked; the first live run lost a whole task to one declined run) or "skips a
+    // planned verification step" (level 2; the second ladder run declined 5 verified patches
+    // under `investigate` before any engine run). So the very first proposal of a run is that
+    // `run`, whatever the intent (ESTABLISH_GOAL): the engine then has an executed baseline for
+    // its `testsCurrent` and the plan_mismatch rubric. After a change the run claims the goals the
+    // synthesizer's fresh baseline shows fixed (§5.1 row 2): its parsed output is the evidence
+    // the `done_<j>` Noul verifies, and only accepted claims shrink the engine's `plan.remaining`,
+    // which the completion Noul reads; each item is claimed once per verdict (proposal.ts
+    // splitClaims). It is proposed only once the ledger exists (after the baseline above): a
+    // `run` whose plan draft has no `remaining` reads as a completion claim (loop/state.ts
+    // `claimsDone`; reviewed at 0.5–0.6 in the first live runs). It also precedes the green check
+    // below: proposeDone's own fallback run carries the plain goal text, and the third QuixBugs
+    // bench had that run reviewed at 0.33–0.58 as a repeat of the step-1 run that "failed", while
+    // this path states the measured expectation.
+    if (engineNeedsRun(mem)) {
+      const never = mem.lastEngineRun === null;
+      // the establishing run is not investigation the engine can decline in favour of a read: it is what makes the plan's first item real
+      if (!never) {
+        const read = this.investigateRead(ctx, mem);
+        if (read !== null) return read;
+      }
       const goal = scratch.lastCommit === null ? undefined : mem.goals.find((g) => g.id === scratch.lastCommit?.goalId);
       const command = baselineCommand(ctx);
-      const changed = scratch.lastChangeStep === null ? [] : (mem.committed.at(-1)?.files ?? []).map((f) => f.path);
+      const changed = mem.lastChangeStep === null ? [] : (mem.committed.at(-1)?.files ?? []).map((f) => f.path);
       this.emit(ctx, 'verify', `${changed.length > 0 ? `${changed.join(', ')} changed since the engine's last test run` : 'the engine has not run the suite on this workspace'}: ${command}`);
       // §5.1 row 2: the run claims the fixed goals now, so the engine's done_<j> Noul judges them on this step's parsed output
       const run = proposeRun(ctx, command, 'full', goal, changed.length > 0, this.runTimeout(ctx, mem), undefined, mem);
-      if (changed.length === 0) return run;
+      if (changed.length === 0) {
+        if (!never) return run;
+        const failing = `${baseline.failed + baseline.errors} of ${baseline.total} fail${baseline.failed + baseline.errors === 1 ? 's' : ''} in the synthesizer's own run`;
+        return { ...run, goal: clip(`${ESTABLISH_GOAL} (${failing})`, PLAN_ITEM_MAX_CHARS) };
+      }
       // The goal text says why the same command runs again and what the synthesizer's own baseline
       // measured, so the risk stage can tell this from "repeats a step that already failed the same
       // way" (the reading that had the re-run reviewed in the first live runs). The evidence is
       // the same measurement as data: the run before the patch (`previousBaseline`) against the
       // fresh baseline on the patched workspace, which this `run` re-executes in the engine.
-      const last = scratch.lastEngineRun;
+      const last = mem.lastEngineRun;
       const expectation = `expect ${baseline.passed} of ${baseline.total} tests to pass${last === null ? '' : `, ${last.passed} passed in the last run`}`;
       const commit = scratch.lastCommit;
       const sel = commit?.evidence ? selectionFrom(commit.evidence) : { selection: 'sieve' as const, candidatesTested: 0, arbitrated: false };
@@ -420,7 +441,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     }
 
     if (allPass(baseline)) {
-      // proposeDone applies §5.5 itself: a full-suite `run` until the engine has executed one on this workspace, then `done`.
+      // proposeDone applies §5.5 itself: `done` as soon as the engine has executed the green run on this
+      // workspace (read from the window, else from mem.lastEngineRun, which outlives it), never another run then.
       this.emit(ctx, 'done', `baseline green: ${baseline.passed} tests pass, ${mem.committed.length} fix${mem.committed.length === 1 ? '' : 'es'} committed`);
       return proposeDone(ctx, mem, 'green');
     }

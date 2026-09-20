@@ -7,7 +7,9 @@ import {
   ProposalError,
   READ_MAX_PATHS,
   TEST_PATH_RE,
+  deferredClaimNotes,
   doneReadiness,
+  isClaimNote,
   isGoalItem,
   lastExecutedTestRun,
   ledgerLine,
@@ -20,6 +22,7 @@ import {
   remainingItems,
   reverseDiff,
   runActionLabel,
+  splitClaims,
   testFilesChanged,
   testsLabel,
   traceRecord, VERIFY_ITEM } from '../../../../src/synth/search/proposal.js';
@@ -381,5 +384,91 @@ describe('plan pieces and text helpers', () => {
     const rec = traceRecord(makeTrace({ goalId: 'g9', outcome: 'budget' }));
     expect(rec).toMatchObject({ goalId: 'g9', outcome: 'budget', candidatesTested: 120, bySource: { mutation: { enumerated: 120, tested: 120, passed: 1 } } });
     expect('winner' in rec).toBe(false);
+  });
+});
+
+describe('claims once per verdict (splitClaims) and `done` on the controller\'s record of the green run', () => {
+  const gA = makeGoal({ id: 'g1', tests: ['tests/test_gcd.py::test_gcd'], suspectedFiles: ['src/gcd.py'], status: 'fixed' });
+  const gB = makeGoal({ id: 'g2', tests: ['tests/test_lcm.py::test_lcm'], suspectedFiles: ['src/lcm.py'], status: 'fixed' });
+  const gOpen = makeGoal({ id: 'g3', tests: ['tests/test_x.py::test_x'], suspectedFiles: ['src/x.py'], status: 'open' });
+  const notGreen = summary({ command: TEST_COMMAND, passing: ['a', 'b', 'c'], failing: ['d'] });
+  const green = summary({ command: TEST_COMMAND, passing: ['a', 'b', 'c', 'd', 'e'], failing: [] });
+  const label = runActionLabel(TEST_COMMAND);
+  const noteA = `'${gA.planItem}' claimed at step 3, judge said p=0.42; this test run re-verifies it before it is claimed again`;
+
+  it('an item never claimed is claimable, one the judge did not accept is deferred with its note, an accepted one is neither; a pending record does not defer', () => {
+    const ctx = makeCtx({ plan: { done: [{ text: gB.planItem, evidence: { step: 3, judged: 0.9 } }], remaining: [gA.planItem, gOpen.planItem] } });
+    const mem = { ...makeMemory({ baseline: notGreen, goals: [gA, gB, gOpen] }), claims: new Map([[gA.planItem, { step: 3, judged: 0.42 }]]) };
+    expect(splitClaims(ctx, mem)).toEqual({ claims: [], deferred: [{ item: gA.planItem, claim: { step: 3, judged: 0.42 } }] });
+    expect(deferredClaimNotes(ctx, mem)).toEqual([noteA]);
+    expect(isClaimNote(noteA)).toBe(true);
+    expect(isClaimNote(`${gOpen.planItem}: parked (nothing left)`)).toBe(false);
+    expect(splitClaims(ctx, { ...mem, claims: new Map() })).toEqual({ claims: [gA.planItem], deferred: [] });
+    expect(splitClaims(ctx, { ...mem, claims: new Map([[gA.planItem, { step: 3, judged: null }]]) }).claims).toEqual([gA.planItem]);
+    expect(splitClaims(ctx, makeMemory({ baseline: notGreen, goals: [gA, gB, gOpen] })).claims).toEqual([gA.planItem]); // no claim record at all
+  });
+
+  it('a later passing full-suite run executed by the engine, or a fresh baseline measured all-green, makes the item claimable again; a subset run, a failing run, the claiming run itself or a run before a change does not', () => {
+    const ctx = makeCtx({ plan: { remaining: [gA.planItem] } });
+    const claims = new Map([[gA.planItem, { step: 3, judged: 0.42 }]]);
+    const notGreen6 = summary({ command: TEST_COMMAND, passing: ['a', 'b', 'c', 'd', 'e'], failing: ['f'] });
+    const base = { ...makeMemory({ baseline: notGreen6, goals: [gA] }), claims };
+    const passing = { step: 5, action: label, passed: 6, failed: 0, errors: 0 };
+    expect(splitClaims(ctx, { ...base, lastEngineRun: passing }).claims).toEqual([gA.planItem]);
+    // the run about to be proposed was measured all-green by the synthesizer: every claim on it is verifiable, nothing is deferred
+    expect(splitClaims(ctx, { ...base, baseline: green })).toEqual({ claims: [gA.planItem], deferred: [] });
+    expect(deferredClaimNotes(ctx, { ...base, baseline: green })).toEqual([]);
+    for (const run of [
+      { ...passing, step: 3 }, // the claiming run itself
+      { ...passing, action: 'run pytest -q tests/test_gcd.py::test_gcd', passed: 1 }, // a goal subset
+      { ...passing, passed: 5, failed: 1 }, // not passing
+    ]) {
+      expect(splitClaims(ctx, { ...base, lastEngineRun: run }).deferred).toHaveLength(1);
+    }
+    expect(splitClaims(ctx, { ...base, lastEngineRun: passing, lastChangeStep: 6 }).deferred).toHaveLength(1); // a change after the run
+    expect(splitClaims(ctx, { ...base, lastEngineRun: passing, lastChangeStep: 4 }).claims).toEqual([gA.planItem]);
+  });
+
+  it('proposeRun with the ledger claims the claimable items only and notes the deferred ones; last step\'s claim notes are recomputed, other notes kept', () => {
+    const stale = `'${gB.planItem}' claimed at step 1, judge said p=0.20; this test run re-verifies it before it is claimed again`;
+    const ctx = makeCtx({ plan: { remaining: [gA.planItem, gB.planItem], openProblems: ['keep me', stale] } });
+    const mem = { ...makeMemory({ baseline: notGreen, goals: [gA, gB, gOpen] }), claims: new Map([[gA.planItem, { step: 3, judged: 0.42 }]]) };
+    const p = proposeRun(ctx, TEST_COMMAND, 'full', undefined, true, undefined, undefined, mem);
+    expect(p.plan.done).toEqual([gB.planItem]);
+    expect(p.plan.remaining).toEqual([gA.planItem, gOpen.planItem, VERIFY_ITEM]);
+    expect(p.plan.openProblems).toEqual(['keep me', noteA]);
+    expect(parsesAsJson(p)).toMatchObject({ claimed: [gB.planItem], deferred: [gA.planItem] });
+    // nothing deferred: the plan's notes pass through untouched
+    const q = proposeRun(ctx, TEST_COMMAND, 'full', undefined, true, undefined, undefined, { ...mem, claims: new Map() });
+    expect(q.plan.done).toEqual([gA.planItem, gB.planItem]);
+    expect(q.plan.openProblems).toEqual(['keep me', stale]);
+    expect(parsesAsJson(q)).not.toHaveProperty('deferred');
+  });
+
+  it('doneReadiness reads the engine\'s green run from the controller\'s record when the window scrolled past it: `done`, never another run; a change after it voids the record', () => {
+    const reads = [1, 2, 3, 4].map((step) => ({ step: step + 5, intent: 'investigate' as const, action: 'read src/gcd.py', outcome: 'executed' as const, shownFiles: ['src/gcd.py'], notes: [] }));
+    const ctx = makeCtx({ window: reads, plan: { remaining: [gA.planItem] } });
+    const mem = { ...makeMemory({ baseline: green, goals: [gA], committed: [gcdApplied()] }), lastEngineRun: { step: 5, action: label, passed: 5, failed: 0, errors: 0 }, lastChangeStep: 4 };
+    expect(lastExecutedTestRun(ctx.window)).toBeNull();
+    expect(doneReadiness(ctx, mem)).toMatchObject({ green: true, testsCurrent: true, executedRun: { step: 5, allPassed: true } });
+    const done = proposeDone(ctx, mem, 'green');
+    expect(done.action).toEqual({ kind: 'done', summary: 'all 5 tests pass; 1 fix committed' });
+    expect(done.plan).toEqual({ done: [gA.planItem, VERIFY_ITEM], remaining: [], openProblems: [] });
+    // a change executed after that run: the engine has no run of this workspace → the full-suite run; the baseline is green so the earlier unsure claim is made again on it
+    const changed = { ...mem, lastChangeStep: 6, claims: new Map([[gA.planItem, { step: 3, judged: 0.42 }]]) };
+    const run = proposeDone(ctx, changed, 'green');
+    expect(run.action).toEqual({ kind: 'run', command: TEST_COMMAND });
+    expect(run.plan.done).toEqual([gA.planItem]);
+    expect(run.plan.remaining).toEqual([VERIFY_ITEM]);
+    expect(run.plan.openProblems).toEqual(['the engine has not run the test suite on the current workspace']);
+    // with a baseline that still fails a test the fallback run defers the claim, its note next to the blocker
+    const partial = proposeDone(ctx, { ...changed, baseline: notGreen }, 'green');
+    expect(partial.action).toEqual({ kind: 'run', command: TEST_COMMAND });
+    expect(partial.plan.done).toEqual([]);
+    expect(partial.plan.remaining).toEqual([gA.planItem, VERIFY_ITEM]);
+    expect(partial.plan.openProblems).toEqual(['the engine has not run the test suite on the current workspace', noteA]);
+    // the record never overrides a window that shows a change after the run
+    const withPatch = makeCtx({ window: [runEntry({ step: 5, command: TEST_COMMAND, passed: 5 }), patchEntry({ step: 6 })], plan: { remaining: [gA.planItem] } });
+    expect(proposeDone(withPatch, { ...mem, lastChangeStep: 6 }, 'green').action.kind).toBe('run');
   });
 });
