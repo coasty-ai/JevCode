@@ -1,0 +1,1 @@
+{"name": "breadth_first_search", "passed": 4, "failed": 0, "errors": 1, "timeouts": 0, "skipped": 0, "total": 5, "failures": [{"input": "test3: Case 3: Two unconnected nodes in graph", "expected": "pass", "actual": "IndexError: pop from an empty deque (at breadth_first_search_test.py:47: path_found = breadth_first_search(nodef, nodee))"}]}
