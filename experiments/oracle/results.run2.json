@@ -1,0 +1,2324 @@
+{
+  "model": "typesafe/jev-1.13-20260917",
+  "ran_at": "2026-09-20T21:56:00.502Z",
+  "mode": "jev",
+  "spend_usd": 0.003212202,
+  "jev_requests": 23,
+  "latency_p50_ms": 191.85416700000133,
+  "wall_ms": 27088,
+  "rows": [
+    {
+      "instance_id": "sympy__sympy-12096",
+      "repo": "sympy/sympy",
+      "n_blocks": 1,
+      "block_kinds": [
+        "repl/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1778,
+        "cost_usd": 0.000074676,
+        "latency_ms": 270.816625,
+        "is_reproduction": {
+          "0": 0.93
+        },
+        "shows_expected": {
+          "0": 0.07
+        },
+        "shows_actual": {
+          "0": 0.96
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 0.88,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 0,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "differs_from_actual",
+        "strength": "weak",
+        "expected_text": "not f(g(2))",
+        "derivation": "no expected value stated; the last value must differ from the observed f(g(2)) and nothing may raise"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 197,
+        "statements": 6,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "f(g(2))",
+          "reason": "the observed wrong value is unchanged"
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 156,
+        "verdict": {
+          "pass": true,
+          "actual": "16.0000000000000",
+          "reason": "the value changed and nothing raised"
+        }
+      },
+      "outcome": "valid_weak",
+      "goal": {
+        "test_id": "repro::fcbb4c5a",
+        "call": "print(f(g(2)).evalf())",
+        "expected": "not f(g(2))",
+        "actual": "f(g(2))"
+      },
+      "notes": [],
+      "wall_ms": 890
+    },
+    {
+      "instance_id": "sympy__sympy-15345",
+      "repo": "sympy/sympy",
+      "n_blocks": 1,
+      "block_kinds": [
+        "code/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 2,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1338,
+        "cost_usd": 0.000056196,
+        "latency_ms": 161.34308299999998,
+        "is_reproduction": {
+          "0": 0.75
+        },
+        "shows_expected": {
+          "0": 0.04
+        },
+        "shows_actual": {
+          "0": 0.08
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": null,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "values",
+        "strength": "strong",
+        "expected_text": "'Max[x,2]'",
+        "derivation": "expected value from the sentence \"then I would expect the output `'Max[x,2]'` which is valid Mathematica code but instead I get `'Max(\""
+      },
+      "base": {
+        "status": "ran",
+        "ms": 663,
+        "statements": 2,
+        "environment_statements": 0,
+        "fixups": [
+          "from sympy import symbols",
+          "from sympy import mathematica_code; from sympy import Max"
+        ],
+        "verdict": {
+          "pass": false,
+          "actual": "'Max(2, x)'",
+          "reason": "\"'Max(2, x)'\" != \"'Max[x,2]'\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 587,
+        "verdict": {
+          "pass": true,
+          "actual": "'Max[2, x]'",
+          "reason": "loose match: \"'Max[2, x]'\" ~ \"'Max[x,2]'\" (same tokens, other order)"
+        }
+      },
+      "outcome": "valid",
+      "goal": {
+        "test_id": "repro::9364c244",
+        "call": "mathematica_code(Max(x,2))",
+        "expected": "'Max[x,2]'",
+        "actual": "'Max(2, x)'"
+      },
+      "notes": [],
+      "wall_ms": 1686
+    },
+    {
+      "instance_id": "sympy__sympy-17139",
+      "repo": "sympy/sympy",
+      "n_blocks": 1,
+      "block_kinds": [
+        "repl/fence"
+      ],
+      "n_tracebacks": 1,
+      "n_frames_offered": 13,
+      "n_expectations": 0,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 6857,
+        "cost_usd": 0.000287994,
+        "latency_ms": 178.45612500000016,
+        "is_reproduction": {
+          "0": 0.9
+        },
+        "shows_expected": {
+          "0": 0.02
+        },
+        "shows_actual": {
+          "0": 0.98
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": [
+          {
+            "file": "/home/e/se/sympy/simplify/simplify.py",
+            "fn": "simplify",
+            "p": 0.4
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/trigsimp.py",
+            "fn": "trigsimp",
+            "p": 0.37
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/trigsimp.py",
+            "fn": "<lambda>",
+            "p": 0.4
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/trigsimp.py",
+            "fn": "futrig",
+            "p": 0.39
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/simplify.py",
+            "fn": "bottom_up",
+            "p": 0.29
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/trigsimp.py",
+            "fn": "_futrig",
+            "p": 0.51
+          },
+          {
+            "file": "/home/e/se/sympy/strategies/core.py",
+            "fn": "minrule",
+            "p": 0.32
+          },
+          {
+            "file": "/home/e/se/sympy/strategies/core.py",
+            "fn": "<listcomp>",
+            "p": 0.33
+          },
+          {
+            "file": "/home/e/se/sympy/strategies/core.py",
+            "fn": "chain_rl",
+            "p": 0.33
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/fu.py",
+            "fn": "TR6",
+            "p": 0.66
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/fu.py",
+            "fn": "_TR56",
+            "p": 0.61
+          },
+          {
+            "file": "/home/e/se/sympy/simplify/fu.py",
+            "fn": "_f",
+            "p": 0.96
+          },
+          {
+            "file": "/home/e/se/sympy/core/expr.py",
+            "fn": "__lt__",
+            "p": 0.49
+          }
+        ]
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 0,
+        "context_blocks": [],
+        "anchors": 4
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising TypeError",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 676,
+        "statements": 3,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "TypeError: Invalid comparison of complex I",
+          "reason": "TypeError raised at \"print(simplify(cos(x)**I))\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 682,
+        "verdict": {
+          "pass": true,
+          "actual": "cos(x)**I",
+          "reason": "no statement raised"
+        }
+      },
+      "outcome": "valid",
+      "goal": {
+        "test_id": "repro::ac95b0c9",
+        "call": "print(simplify(cos(x)**I))",
+        "expected": "completes without raising TypeError",
+        "actual": "TypeError: Invalid comparison of complex I"
+      },
+      "notes": [],
+      "wall_ms": 1837
+    },
+    {
+      "instance_id": "sympy__sympy-19954",
+      "repo": "sympy/sympy",
+      "n_blocks": 3,
+      "block_kinds": [
+        "code/bare",
+        "traceback/bare",
+        "code/bare"
+      ],
+      "n_tracebacks": 1,
+      "n_frames_offered": 2,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 3599,
+        "cost_usd": 0.000151158,
+        "latency_ms": 177.1047920000001,
+        "is_reproduction": {
+          "0": 0.92,
+          "1": 0.09,
+          "2": 0.61
+        },
+        "shows_expected": {
+          "0": 0.02,
+          "1": 0.02,
+          "2": 0.02
+        },
+        "shows_actual": {
+          "0": 0.13,
+          "1": 0.95,
+          "2": 0.18
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": [
+          {
+            "file": "D:\\anaconda38\\envs\\default\\lib\\site-packages\\sympy\\combinatorics\\perm_groups.py",
+            "fn": "sylow_subgroup",
+            "p": 0.64
+          },
+          {
+            "file": "D:\\anaconda38\\envs\\default\\lib\\site-packages\\sympy\\combinatorics\\perm_groups.py",
+            "fn": "minimal_blocks",
+            "p": 0.93
+          }
+        ]
+      },
+      "labels": {
+        "repro": [
+          0,
+          2
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 1,
+        "context_blocks": [],
+        "anchors": 2
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising IndexError",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 683,
+        "statements": 3,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "IndexError: list assignment index out of range",
+          "reason": "IndexError raised at \"S2 = G.sylow_subgroup(p=2)\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 615,
+        "verdict": {
+          "pass": true,
+          "actual": "",
+          "reason": "no statement raised"
+        }
+      },
+      "outcome": "valid",
+      "goal": {
+        "test_id": "repro::db420b5d",
+        "call": "S2 = G.sylow_subgroup(p=2)",
+        "expected": "completes without raising IndexError",
+        "actual": "IndexError: list assignment index out of range"
+      },
+      "notes": [],
+      "wall_ms": 1741
+    },
+    {
+      "instance_id": "sympy__sympy-11618",
+      "repo": "sympy/sympy",
+      "n_blocks": 1,
+      "block_kinds": [
+        "repl/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1388,
+        "cost_usd": 0.000058296,
+        "latency_ms": 204.2429170000005,
+        "is_reproduction": {
+          "0": 0.73
+        },
+        "shows_expected": {
+          "0": 0.03
+        },
+        "shows_actual": {
+          "0": 0.98
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 0,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "values",
+        "strength": "strong",
+        "expected_text": "sqrt(5)",
+        "derivation": "expected value from the sentence \"The 3rd dimension is being ignored when the Points are zipped together to calculate the distance so \""
+      },
+      "base": {
+        "status": "ran",
+        "ms": 525,
+        "statements": 1,
+        "environment_statements": 0,
+        "fixups": [
+          "from sympy import Point"
+        ],
+        "verdict": {
+          "pass": false,
+          "actual": "1",
+          "reason": "\"1\" != \"sqrt(5)\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 474,
+        "verdict": {
+          "pass": true,
+          "actual": "sqrt(5)",
+          "reason": "every expected value matches"
+        }
+      },
+      "outcome": "valid",
+      "goal": {
+        "test_id": "repro::7f52cda6",
+        "call": "Point(2,0).distance(Point(1,0,2))",
+        "expected": "sqrt(5)",
+        "actual": "1"
+      },
+      "notes": [],
+      "wall_ms": 1430
+    },
+    {
+      "instance_id": "sympy__sympy-13798",
+      "repo": "sympy/sympy",
+      "n_blocks": 2,
+      "block_kinds": [
+        "repl/fence",
+        "repl/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 2253,
+        "cost_usd": 0.000094626,
+        "latency_ms": 154.15954200000033,
+        "is_reproduction": {
+          "0": 0.14,
+          "1": 0.1
+        },
+        "shows_expected": {
+          "0": 0.81,
+          "1": 0.7
+        },
+        "shows_actual": {
+          "0": 0.2,
+          "1": 0.07
+        },
+        "failure_kind": "none_of_these",
+        "p_failure_kind": 0.86,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [],
+        "expected": [
+          0
+        ],
+        "kind": "none_of_these",
+        "also_ok": [
+          "wrong_value"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": null,
+        "expected": 0,
+        "actual": null,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_pick",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 154
+    },
+    {
+      "instance_id": "sympy__sympy-16792",
+      "repo": "sympy/sympy",
+      "n_blocks": 4,
+      "block_kinds": [
+        "code/fence",
+        "code/fence",
+        "output/fence",
+        "code/fence"
+      ],
+      "n_tracebacks": 1,
+      "n_frames_offered": 0,
+      "n_expectations": 3,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 3801,
+        "cost_usd": 0.000159642,
+        "latency_ms": 163.39095799999905,
+        "is_reproduction": {
+          "0": 0.94,
+          "1": 0.08,
+          "2": 0.05,
+          "3": 0.05
+        },
+        "shows_expected": {
+          "0": 0.07,
+          "1": 0.03,
+          "2": 0.04,
+          "3": 0.49
+        },
+        "shows_actual": {
+          "0": 0.16,
+          "1": 0.96,
+          "2": 0.74,
+          "3": 0.03
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 0.94,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": [
+          "wrong_type"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 1,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising TypeError",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 792,
+        "statements": 7,
+        "environment_statements": 1,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "CodeWrapError: Error while executing command: /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. C",
+          "reason": "CodeWrapError raised at \"f = autowrap(expr, args=(x,), backend='cython')\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 697,
+        "verdict": {
+          "pass": false,
+          "actual": "CodeWrapError: Error while executing command: /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. C",
+          "reason": "CodeWrapError raised at \"f = autowrap(expr, args=(x,), backend='cython')\""
+        }
+      },
+      "outcome": "fails_on_gold",
+      "goal": {
+        "test_id": "repro::3492baa3",
+        "call": "f = autowrap(expr, args=(x,), backend='cython')",
+        "expected": "completes without raising TypeError",
+        "actual": "CodeWrapError: Error while executing command: /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. Command output is:\nTraceback (most rec..."
+      },
+      "notes": [
+        "snippet incomplete: NameError: name 'f' is not defined"
+      ],
+      "wall_ms": 1930
+    },
+    {
+      "instance_id": "sympy__sympy-20428",
+      "repo": "sympy/sympy",
+      "n_blocks": 7,
+      "block_kinds": [
+        "repl/fence",
+        "repl/fence",
+        "repl/fence",
+        "repl/fence",
+        "repl/fence",
+        "repl/fence",
+        "repl/fence"
+      ],
+      "n_tracebacks": 2,
+      "n_frames_offered": 9,
+      "n_expectations": 3,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 11755,
+        "cost_usd": 0.00049371,
+        "latency_ms": 278.7608330000003,
+        "is_reproduction": {
+          "0": 0.86,
+          "1": 0.57,
+          "2": 0.49,
+          "3": 0.18,
+          "4": 0.27,
+          "5": 0.26,
+          "6": 0.07
+        },
+        "shows_expected": {
+          "0": 0.09,
+          "1": 0.1,
+          "2": 0.14,
+          "3": 0.49,
+          "4": 0.04,
+          "5": 0.07,
+          "6": 0.97
+        },
+        "shows_actual": {
+          "0": 0.65,
+          "1": 0.93,
+          "2": 0.96,
+          "3": 0.35,
+          "4": 0.93,
+          "5": 0.92,
+          "6": 0.05
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 0.52,
+        "frame_in_fix": [
+          {
+            "file": "/Users/ehren/Documents/esym26/sympy/polys/polytools.py",
+            "fn": "terms_gcd",
+            "p": 0.48
+          },
+          {
+            "file": "/Users/ehren/Documents/esym26/sympy/polys/polyclasses.py",
+            "fn": "terms_gcd",
+            "p": 0.56
+          },
+          {
+            "file": "/Users/ehren/Documents/esym26/sympy/polys/densebasic.py",
+            "fn": "dmp_terms_gcd",
+            "p": 0.61
+          },
+          {
+            "file": "/Users/ehren/Documents/esym26/sympy/polys/monomials.py",
+            "fn": "monomial_min",
+            "p": 0.6
+          },
+          {
+            "file": "/Users/ehren/Documents/esym7/sympy/polys/polytools.py",
+            "fn": "primitive",
+            "p": 0.56
+          },
+          {
+            "file": "/Users/ehren/Documents/esym7/sympy/polys/polyclasses.py",
+            "fn": "primitive",
+            "p": 0.56
+          },
+          {
+            "file": "/Users/ehren/Documents/esym7/sympy/polys/densetools.py",
+            "fn": "dmp_ground_primitive",
+            "p": 0.56
+          },
+          {
+            "file": "/Users/ehren/Documents/esym7/sympy/polys/densetools.py",
+            "fn": "dup_primitive",
+            "p": 0.62
+          },
+          {
+            "file": "/Users/ehren/Documents/esym7/sympy/polys/densearith.py",
+            "fn": "dup_quo_ground",
+            "p": 0.63
+          }
+        ]
+      },
+      "labels": {
+        "repro": [
+          1,
+          2,
+          5
+        ],
+        "expected": [
+          6
+        ],
+        "kind": "wrong_value",
+        "also_ok": [
+          "exception_raised"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": false,
+        "repro_set_exact": false,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": 6,
+        "actual": 2,
+        "context_blocks": [],
+        "anchors": 8
+      },
+      "criterion": {
+        "form": "values",
+        "strength": "strong",
+        "expected_text": "DMP([], EX, None)",
+        "derivation": "block 6 shows the expected output; the reproduction's last value must equal it"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 3065,
+        "statements": 6,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "Poly(0, x, domain='EX')",
+          "reason": "\"Poly(0, x, domain='EX')\" != \"DMP([], EX, None)\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 5349,
+        "verdict": {
+          "pass": false,
+          "actual": "Poly(0, x, domain='EX')",
+          "reason": "\"Poly(0, x, domain='EX')\" != \"DMP([], EX, None)\""
+        }
+      },
+      "outcome": "fails_on_gold",
+      "goal": {
+        "test_id": "repro::ddf82674",
+        "call": "bad_poly",
+        "expected": "DMP([], EX, None)",
+        "actual": "Poly(0, x, domain='EX')"
+      },
+      "notes": [],
+      "wall_ms": 8964
+    },
+    {
+      "instance_id": "sympy__sympy-22080",
+      "repo": "sympy/sympy",
+      "n_blocks": 1,
+      "block_kinds": [
+        "repl/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 0,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1866,
+        "cost_usd": 0.000078372,
+        "latency_ms": 242.87229200000002,
+        "is_reproduction": {
+          "0": 0.86
+        },
+        "shows_expected": {
+          "0": 0.15
+        },
+        "shows_actual": {
+          "0": 0.92
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [
+          0
+        ],
+        "kind": "wrong_value",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": false,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 0,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "differs_from_actual",
+        "strength": "weak",
+        "expected_text": "not def _lambdifygenerated(x, y):\n    return (-x % y)",
+        "derivation": "no expected value stated; the last value must differ from the observed def _lambdifygenerated(x, y):\n    return (-x % y) and nothing may raise"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 700,
+        "statements": 9,
+        "environment_statements": 0,
+        "fixups": [
+          "import inspect"
+        ],
+        "verdict": {
+          "pass": true,
+          "actual": "'def _lambdifygenerated(x, y):\\n    return -x % y\\n'",
+          "reason": "the value changed and nothing raised"
+        }
+      },
+      "gold": null,
+      "outcome": "passes_on_base",
+      "goal": {
+        "test_id": "repro::1480a779",
+        "call": "inspect.getsource(g)",
+        "expected": "not def _lambdifygenerated(x, y):\n    return (-x % y)",
+        "actual": "'def _lambdifygenerated(x, y):\\n    return -x % y\\n'"
+      },
+      "notes": [],
+      "wall_ms": 1148
+    },
+    {
+      "instance_id": "sympy__sympy-12489",
+      "repo": "sympy/sympy",
+      "n_blocks": 0,
+      "block_kinds": [],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 3,
+      "jev": null,
+      "labels": {
+        "repro": [],
+        "expected": [],
+        "kind": "none_of_these",
+        "also_ok": []
+      },
+      "agreement": null,
+      "picked": null,
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_blocks",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 0
+    },
+    {
+      "instance_id": "django__django-14787",
+      "repo": "django/django",
+      "n_blocks": 1,
+      "block_kinds": [
+        "code/bare"
+      ],
+      "n_tracebacks": 1,
+      "n_frames_offered": 0,
+      "n_expectations": 3,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1532,
+        "cost_usd": 0.000064344,
+        "latency_ms": 220.94358300000022,
+        "is_reproduction": {
+          "0": 0.39
+        },
+        "shows_expected": {
+          "0": 0.03
+        },
+        "shows_actual": {
+          "0": 0.22
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": false,
+        "repro_set_exact": false,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": null,
+        "expected": null,
+        "actual": null,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_pick",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 221
+    },
+    {
+      "instance_id": "django__django-15315",
+      "repo": "django/django",
+      "n_blocks": 1,
+      "block_kinds": [
+        "code/bare"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 2,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1491,
+        "cost_usd": 0.000062622,
+        "latency_ms": 232.85099999999875,
+        "is_reproduction": {
+          "0": 0.86
+        },
+        "shows_expected": {
+          "0": 0.09
+        },
+        "shows_actual": {
+          "0": 0.19
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": null,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising AssertionError",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 345,
+        "statements": 5,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "AssertionError: ",
+          "reason": "AssertionError raised at \"assert f in d\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 282,
+        "verdict": {
+          "pass": true,
+          "actual": "",
+          "reason": "no statement raised"
+        }
+      },
+      "outcome": "valid",
+      "goal": {
+        "test_id": "repro::e7fbbfa8",
+        "call": "assert f in d",
+        "expected": "completes without raising AssertionError",
+        "actual": "AssertionError: "
+      },
+      "notes": [],
+      "wall_ms": 925
+    },
+    {
+      "instance_id": "django__django-15572",
+      "repo": "django/django",
+      "n_blocks": 0,
+      "block_kinds": [],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 2,
+      "jev": null,
+      "labels": {
+        "repro": [],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": [
+          "none_of_these"
+        ]
+      },
+      "agreement": null,
+      "picked": null,
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_blocks",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 1
+    },
+    {
+      "instance_id": "django__django-16100",
+      "repo": "django/django",
+      "n_blocks": 0,
+      "block_kinds": [],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": null,
+      "labels": {
+        "repro": [],
+        "expected": [],
+        "kind": "none_of_these",
+        "also_ok": []
+      },
+      "agreement": null,
+      "picked": null,
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_blocks",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 0
+    },
+    {
+      "instance_id": "django__django-14725",
+      "repo": "django/django",
+      "n_blocks": 0,
+      "block_kinds": [],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": null,
+      "labels": {
+        "repro": [],
+        "expected": [],
+        "kind": "none_of_these",
+        "also_ok": []
+      },
+      "agreement": null,
+      "picked": null,
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_blocks",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 0
+    },
+    {
+      "instance_id": "django__django-15103",
+      "repo": "django/django",
+      "n_blocks": 0,
+      "block_kinds": [],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 0,
+      "jev": null,
+      "labels": {
+        "repro": [],
+        "expected": [],
+        "kind": "none_of_these",
+        "also_ok": []
+      },
+      "agreement": null,
+      "picked": null,
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_blocks",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 0
+    },
+    {
+      "instance_id": "django__django-15375",
+      "repo": "django/django",
+      "n_blocks": 2,
+      "block_kinds": [
+        "repl/bare",
+        "repl/bare"
+      ],
+      "n_tracebacks": 1,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 3177,
+        "cost_usd": 0.000133434,
+        "latency_ms": 191.85416700000133,
+        "is_reproduction": {
+          "0": 0.04,
+          "1": 0.79
+        },
+        "shows_expected": {
+          "0": 0.95,
+          "1": 0.13
+        },
+        "shows_actual": {
+          "0": 0.04,
+          "1": 0.97
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          1
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": false,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 1,
+        "expected": 0,
+        "actual": 1,
+        "context_blocks": [
+          0
+        ],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising OperationalError",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 335,
+        "statements": 8,
+        "environment_statements": 1,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "NameError: name 'Book' is not defined",
+          "reason": "NameError raised at \"Book.objects.count()\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 283,
+        "verdict": {
+          "pass": false,
+          "actual": "NameError: name 'Book' is not defined",
+          "reason": "NameError raised at \"Book.objects.count()\""
+        }
+      },
+      "outcome": "fails_on_gold",
+      "goal": {
+        "test_id": "repro::befc7253",
+        "call": "Book.objects.count()",
+        "expected": "completes without raising OperationalError",
+        "actual": "NameError: name 'Book' is not defined"
+      },
+      "notes": [
+        "snippet incomplete: NameError: name 'Book' is not defined"
+      ],
+      "wall_ms": 870
+    },
+    {
+      "instance_id": "django__django-15563",
+      "repo": "django/django",
+      "n_blocks": 2,
+      "block_kinds": [
+        "code/bare",
+        "repl/bare"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 0,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 3174,
+        "cost_usd": 0.000133308,
+        "latency_ms": 176.2588340000002,
+        "is_reproduction": {
+          "0": 0.2,
+          "1": 0.76
+        },
+        "shows_expected": {
+          "0": 0.03,
+          "1": 0.04
+        },
+        "shows_actual": {
+          "0": 0.05,
+          "1": 0.97
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 0.97,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          1
+        ],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 1,
+        "expected": null,
+        "actual": 1,
+        "context_blocks": [
+          0
+        ],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "differs_from_actual",
+        "strength": "weak",
+        "expected_text": "not <QuerySet [{'field_otherbase': 55}, {'field_otherbase': 55}]>",
+        "derivation": "no expected value stated; the last value must differ from the observed <QuerySet [{'field_otherbase': 55}, {'field_otherbase': 55}]> and nothing may raise"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 336,
+        "statements": 10,
+        "environment_statements": 0,
+        "fixups": [
+          "from django.db import models"
+        ],
+        "verdict": {
+          "pass": false,
+          "actual": "<QuerySet [{'field_otherbase': 55}, {'field_otherbase': 55}]>",
+          "reason": "the observed wrong value is unchanged"
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 285,
+        "verdict": {
+          "pass": true,
+          "actual": "<QuerySet [{'field_otherbase': 100}, {'field_otherbase': 101}]>",
+          "reason": "the value changed and nothing raised"
+        }
+      },
+      "outcome": "valid_weak",
+      "goal": {
+        "test_id": "repro::3ec747c8",
+        "call": "OtherBase.objects.filter(otherbase_id__in=[1,2]).values('field_otherbase')",
+        "expected": "not <QuerySet [{'field_otherbase': 55}, {'field_otherbase': 55}]>",
+        "actual": "<QuerySet [{'field_otherbase': 55}, {'field_otherbase': 55}]>"
+      },
+      "notes": [],
+      "wall_ms": 856
+    },
+    {
+      "instance_id": "django__django-15916",
+      "repo": "django/django",
+      "n_blocks": 1,
+      "block_kinds": [
+        "code/bare"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 4,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1777,
+        "cost_usd": 0.000074634,
+        "latency_ms": 197.72541700000147,
+        "is_reproduction": {
+          "0": 0.52
+        },
+        "shows_expected": {
+          "0": 0.05
+        },
+        "shows_actual": {
+          "0": 0.05
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 0.88,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": [
+          "none_of_these"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": null,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_criterion",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 198
+    },
+    {
+      "instance_id": "django__django-15128",
+      "repo": "django/django",
+      "n_blocks": 1,
+      "block_kinds": [
+        "code/bare"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 2,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 2231,
+        "cost_usd": 0.000093702,
+        "latency_ms": 175.0826670000024,
+        "is_reproduction": {
+          "0": 0.73
+        },
+        "shows_expected": {
+          "0": 0.14
+        },
+        "shows_actual": {
+          "0": 0.67
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 0,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising AssertionError",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 347,
+        "statements": 12,
+        "environment_statements": 1,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "AssertionError: ",
+          "reason": "AssertionError raised at \"qs1 | qs2\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 380,
+        "verdict": {
+          "pass": true,
+          "actual": "<QuerySet []>",
+          "reason": "no statement raised"
+        }
+      },
+      "outcome": "valid",
+      "goal": {
+        "test_id": "repro::6da66011",
+        "call": "qs1 | qs2",
+        "expected": "completes without raising AssertionError",
+        "actual": "AssertionError: "
+      },
+      "notes": [],
+      "wall_ms": 961
+    },
+    {
+      "instance_id": "pytest-dev__pytest-10081",
+      "repo": "pytest-dev/pytest",
+      "n_blocks": 5,
+      "block_kinds": [
+        "code/fence",
+        "output/fence",
+        "output/fence",
+        "traceback/fence",
+        "output/fence"
+      ],
+      "n_tracebacks": 1,
+      "n_frames_offered": 1,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 5254,
+        "cost_usd": 0.000220668,
+        "latency_ms": 230.68762499999866,
+        "is_reproduction": {
+          "0": 0.69,
+          "1": 0.03,
+          "2": 0.03,
+          "3": 0.36,
+          "4": 0.02
+        },
+        "shows_expected": {
+          "0": 0.04,
+          "1": 0.08,
+          "2": 0.96,
+          "3": 0.03,
+          "4": 0.05
+        },
+        "shows_actual": {
+          "0": 0.06,
+          "1": 0.04,
+          "2": 0.03,
+          "3": 0.96,
+          "4": 0.04
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": [
+          {
+            "file": "test_repro_skip_class.py",
+            "fn": null,
+            "p": 0.05
+          }
+        ]
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [
+          2
+        ],
+        "kind": "none_of_these",
+        "also_ok": [
+          "exception_raised"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": false,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": false,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": null,
+        "expected": 2,
+        "actual": 3,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "not_runnable",
+      "goal": null,
+      "notes": [
+        "top block 0 (code) needs a command oracle (pytest/pylint/shell), not a statement runner"
+      ],
+      "wall_ms": 232
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7205",
+      "repo": "pytest-dev/pytest",
+      "n_blocks": 2,
+      "block_kinds": [
+        "code/fence",
+        "traceback/fence"
+      ],
+      "n_tracebacks": 1,
+      "n_frames_offered": 15,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 8438,
+        "cost_usd": 0.000354396,
+        "latency_ms": 194.73483300000225,
+        "is_reproduction": {
+          "0": 0.75,
+          "1": 0.13
+        },
+        "shows_expected": {
+          "0": 0.03,
+          "1": 0.02
+        },
+        "shows_actual": {
+          "0": 0.06,
+          "1": 0.96
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": [
+          {
+            "file": "src/_pytest/runner.py",
+            "fn": "<lambda>",
+            "p": 0.07
+          },
+          {
+            "file": ".venv/lib/python3.8/site-packages/pluggy/hooks.py",
+            "fn": "__call__",
+            "p": 0.05
+          },
+          {
+            "file": ".venv/lib/python3.8/site-packages/pluggy/manager.py",
+            "fn": "_hookexec",
+            "p": 0.06
+          },
+          {
+            "file": ".venv/lib/python3.8/site-packages/pluggy/manager.py",
+            "fn": "<lambda>",
+            "p": 0.06
+          },
+          {
+            "file": "src/_pytest/runner.py",
+            "fn": "pytest_runtest_setup",
+            "p": 0.1
+          },
+          {
+            "file": "src/_pytest/runner.py",
+            "fn": "prepare",
+            "p": 0.09
+          },
+          {
+            "file": "src/_pytest/python.py",
+            "fn": "setup",
+            "p": 0.12
+          },
+          {
+            "file": "src/_pytest/fixtures.py",
+            "fn": "fillfixtures",
+            "p": 0.14
+          },
+          {
+            "file": "src/_pytest/fixtures.py",
+            "fn": "_fillfixtures",
+            "p": 0.13
+          },
+          {
+            "file": "src/_pytest/fixtures.py",
+            "fn": "getfixturevalue",
+            "p": 0.16
+          },
+          {
+            "file": "src/_pytest/fixtures.py",
+            "fn": "_get_active_fixturedef",
+            "p": 0.19
+          },
+          {
+            "file": "src/_pytest/fixtures.py",
+            "fn": "_compute_fixture_value",
+            "p": 0.17
+          },
+          {
+            "file": "src/_pytest/fixtures.py",
+            "fn": "execute",
+            "p": 0.21
+          },
+          {
+            "file": "src/_pytest/setuponly.py",
+            "fn": "pytest_fixture_setup",
+            "p": 0.54
+          },
+          {
+            "file": "src/_pytest/setuponly.py",
+            "fn": null,
+            "p": 0.95
+          }
+        ]
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": false,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": null,
+        "expected": null,
+        "actual": 1,
+        "context_blocks": [],
+        "anchors": 2
+      },
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "not_runnable",
+      "goal": null,
+      "notes": [
+        "top block 0 (code) needs a command oracle (pytest/pylint/shell), not a statement runner"
+      ],
+      "wall_ms": 195
+    },
+    {
+      "instance_id": "pytest-dev__pytest-10051",
+      "repo": "pytest-dev/pytest",
+      "n_blocks": 2,
+      "block_kinds": [
+        "code/fence",
+        "output/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 2535,
+        "cost_usd": 0.00010647,
+        "latency_ms": 268.0131249999977,
+        "is_reproduction": {
+          "0": 0.93,
+          "1": 0.03
+        },
+        "shows_expected": {
+          "0": 0.04,
+          "1": 0.03
+        },
+        "shows_actual": {
+          "0": 0.59,
+          "1": 0.03
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 0.92,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": [
+          "wrong_value"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 0,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 26,
+        "statements": 2,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": true,
+          "actual": "",
+          "reason": "no statement raised"
+        }
+      },
+      "gold": null,
+      "outcome": "passes_on_base",
+      "goal": {
+        "test_id": "repro::519d3778",
+        "call": "    verify_consistency()",
+        "expected": "completes without raising",
+        "actual": ""
+      },
+      "notes": [],
+      "wall_ms": 387
+    },
+    {
+      "instance_id": "pytest-dev__pytest-7324",
+      "repo": "pytest-dev/pytest",
+      "n_blocks": 1,
+      "block_kinds": [
+        "repl/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1645,
+        "cost_usd": 0.00006909,
+        "latency_ms": 161.25645799999984,
+        "is_reproduction": {
+          "0": 0.59
+        },
+        "shows_expected": {
+          "0": 0.02
+        },
+        "shows_actual": {
+          "0": 0.85
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 0.91,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": [
+          "none_of_these"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 0,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 24,
+        "statements": 1,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "NameError: name 'Expression' is not defined",
+          "reason": "NameError raised at \"Expression.compile(\"False\")\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 23,
+        "verdict": {
+          "pass": false,
+          "actual": "NameError: name 'Expression' is not defined",
+          "reason": "NameError raised at \"Expression.compile(\"False\")\""
+        }
+      },
+      "outcome": "fails_on_gold",
+      "goal": {
+        "test_id": "repro::08c56ded",
+        "call": "Expression.compile(\"False\")",
+        "expected": "completes without raising",
+        "actual": "NameError: name 'Expression' is not defined"
+      },
+      "notes": [
+        "snippet incomplete: NameError: name 'Expression' is not defined"
+      ],
+      "wall_ms": 300
+    },
+    {
+      "instance_id": "pytest-dev__pytest-10356",
+      "repo": "pytest-dev/pytest",
+      "n_blocks": 2,
+      "block_kinds": [
+        "code/fence",
+        "code/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 6,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 3599,
+        "cost_usd": 0.000151158,
+        "latency_ms": 176.97066699999777,
+        "is_reproduction": {
+          "0": 0.46,
+          "1": 0.42
+        },
+        "shows_expected": {
+          "0": 0.11,
+          "1": 0.11
+        },
+        "shows_actual": {
+          "0": 0.09,
+          "1": 0.08
+        },
+        "failure_kind": "wrong_value",
+        "p_failure_kind": 0.9,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0,
+          1
+        ],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": [
+          "none_of_these"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": false,
+        "repro_set_exact": false,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": null,
+        "expected": null,
+        "actual": null,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_pick",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 177
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4970",
+      "repo": "pylint-dev/pylint",
+      "n_blocks": 0,
+      "block_kinds": [],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 4,
+      "jev": null,
+      "labels": {
+        "repro": [],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": [
+          "none_of_these"
+        ]
+      },
+      "agreement": null,
+      "picked": null,
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_blocks",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 0
+    },
+    {
+      "instance_id": "pylint-dev__pylint-4604",
+      "repo": "pylint-dev/pylint",
+      "n_blocks": 3,
+      "block_kinds": [
+        "code/fence",
+        "output/fence",
+        "output/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 4,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 2810,
+        "cost_usd": 0.00011802,
+        "latency_ms": 177.46058300000004,
+        "is_reproduction": {
+          "0": 0.9,
+          "1": 0.09,
+          "2": 0.02
+        },
+        "shows_expected": {
+          "0": 0.04,
+          "1": 0.03,
+          "2": 0.03
+        },
+        "shows_actual": {
+          "0": 0.07,
+          "1": 0.95,
+          "2": 0.04
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 0.54,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": [
+          "none_of_these"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": false,
+        "kind_lenient": false
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": 1,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 23,
+        "statements": 5,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": true,
+          "actual": "'Docstring.'",
+          "reason": "no statement raised"
+        }
+      },
+      "gold": null,
+      "outcome": "passes_on_base",
+      "goal": {
+        "test_id": "repro::206b52c6",
+        "call": "\"\"\"Docstring.\"\"\"",
+        "expected": "completes without raising",
+        "actual": "'Docstring.'"
+      },
+      "notes": [],
+      "wall_ms": 224
+    },
+    {
+      "instance_id": "pylint-dev__pylint-6386",
+      "repo": "pylint-dev/pylint",
+      "n_blocks": 3,
+      "block_kinds": [
+        "output/fence",
+        "output/fence",
+        "output/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 6,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 2826,
+        "cost_usd": 0.000118692,
+        "latency_ms": 164.8388330000016,
+        "is_reproduction": {
+          "0": 0.37,
+          "1": 0.14,
+          "2": 0.02
+        },
+        "shows_expected": {
+          "0": 0.03,
+          "1": 0.03,
+          "2": 0.03
+        },
+        "shows_actual": {
+          "0": 0.13,
+          "1": 0.97,
+          "2": 0.04
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 0.82,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": [
+          "wrong_value"
+        ]
+      },
+      "agreement": {
+        "repro_pick_in_labels": false,
+        "repro_set_exact": false,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": null,
+        "expected": null,
+        "actual": 1,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_pick",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 165
+    },
+    {
+      "instance_id": "psf__requests-1142",
+      "repo": "psf/requests",
+      "n_blocks": 0,
+      "block_kinds": [],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 1,
+      "jev": null,
+      "labels": {
+        "repro": [],
+        "expected": [],
+        "kind": "wrong_value",
+        "also_ok": [
+          "none_of_these"
+        ]
+      },
+      "agreement": null,
+      "picked": null,
+      "criterion": null,
+      "base": null,
+      "gold": null,
+      "outcome": "no_blocks",
+      "goal": null,
+      "notes": [],
+      "wall_ms": 0
+    },
+    {
+      "instance_id": "psf__requests-2931",
+      "repo": "psf/requests",
+      "n_blocks": 1,
+      "block_kinds": [
+        "code/fence"
+      ],
+      "n_tracebacks": 0,
+      "n_frames_offered": 0,
+      "n_expectations": 0,
+      "jev": {
+        "requests": 1,
+        "input_tokens": 1357,
+        "cost_usd": 0.000056994,
+        "latency_ms": 216.14320799999768,
+        "is_reproduction": {
+          "0": 0.85
+        },
+        "shows_expected": {
+          "0": 0.07
+        },
+        "shows_actual": {
+          "0": 0.08
+        },
+        "failure_kind": "exception_raised",
+        "p_failure_kind": 1,
+        "frame_in_fix": []
+      },
+      "labels": {
+        "repro": [
+          0
+        ],
+        "expected": [],
+        "kind": "exception_raised",
+        "also_ok": []
+      },
+      "agreement": {
+        "repro_pick_in_labels": true,
+        "repro_set_exact": true,
+        "expected_pick_in_labels": true,
+        "kind_strict": true,
+        "kind_lenient": true
+      },
+      "picked": {
+        "reproduction": 0,
+        "expected": null,
+        "actual": null,
+        "context_blocks": [],
+        "anchors": 0
+      },
+      "criterion": {
+        "form": "no_exception",
+        "strength": "strong",
+        "expected_text": "completes without raising",
+        "derivation": "failure_kind = exception_raised → the script must complete without an uncaught exception"
+      },
+      "base": {
+        "status": "ran",
+        "ms": 79,
+        "statements": 2,
+        "environment_statements": 0,
+        "fixups": [],
+        "verdict": {
+          "pass": false,
+          "actual": "UnicodeDecodeError: 'ascii' codec can't decode byte 0xc3 in position 0: ordinal not in range(128)",
+          "reason": "UnicodeDecodeError raised at \"requests.put(\"http://httpbin.org/put\", data=u\"ööö\".encode(\"utf-8\"))\""
+        }
+      },
+      "gold": {
+        "status": "ran",
+        "ms": 266,
+        "verdict": {
+          "pass": true,
+          "actual": "<Response [200]>",
+          "reason": "no statement raised"
+        }
+      },
+      "outcome": "valid",
+      "goal": {
+        "test_id": "repro::b5e65acf",
+        "call": "requests.put(\"http://httpbin.org/put\", data=u\"ööö\".encode(\"utf-8\"))",
+        "expected": "completes without raising",
+        "actual": "UnicodeDecodeError: 'ascii' codec can't decode byte 0xc3 in position 0: ordinal not in range(128)"
+      },
+      "notes": [],
+      "wall_ms": 649
+    }
+  ]
+}
