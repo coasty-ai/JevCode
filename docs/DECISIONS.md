@@ -268,3 +268,18 @@ generator tokens per step 5,519 vs 6,767, `read` actions 83 vs 124, cost $24.21 
 208 blocks and 170 declined reviews on the jev-on side, Jev p50 237 ms. The full table and
 reading are in `docs/STATUS.md`; the per-task records, summary, comparison and prediction
 files are committed under `bench/results/live-swebench-30`.
+
+## 2026-09-20 Pivot: a Jev-only mode with no generating LLM
+
+The user asked for a coding agent that uses only Jev. Jev does not generate text, so the
+mode is built as search: code proposes candidate edits (mutation operators, fix templates,
+donor lines from the repository, test-derived values, grammar-guided synthesis by Choice),
+Jev decides (localisation, ranking, progress, every existing loop decision), tests verify.
+An anchor probe on 14 QuixBugs programs gave localisation top-1 13/14 and selection 14/14 for
+$0.0009, so the plan is to measure each decision Jev must make (eight live probes), survey
+search-based repair and guided synthesis, run a design competition on the measurements, and
+only then implement `src/synth/`. The contract gained `EngineMode 'jev-only'`, a
+`Synthesizer` interface (`synthesize(ctx) → Proposal`) that replaces the propose stage, a
+`synth` event, and a `NullProvider` that throws if a generator is ever called; the bench's
+`jev-only` condition asserts zero generator usage. Evaluation ladder: QuixBugs 40 →
+hand-made multi-hunk tasks → the 30 SWE-bench instances. Brief: `docs/JEV-ONLY.md`.
