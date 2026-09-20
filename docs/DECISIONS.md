@@ -283,3 +283,12 @@ only then implement `src/synth/`. The contract gained `EngineMode 'jev-only'`, a
 `synth` event, and a `NullProvider` that throws if a generator is ever called; the bench's
 `jev-only` condition asserts zero generator usage. Evaluation ladder: QuixBugs 40 →
 hand-made multi-hunk tasks → the 30 SWE-bench instances. Brief: `docs/JEV-ONLY.md`.
+
+## 2026-09-20 Environment side effect: pytest installed into the user-site Python
+
+Two agents installed `pytest` 8.4.2 (and its dependencies) into
+`~/Library/Python/3.9/lib/python/site-packages` with `python3 -m pip install --user pytest`
+so that the SBFL tracer's real-pytest path and the QuixBugs/ladder runners could be verified
+on the system interpreter. This is outside the repository. It is reversible with
+`python3 -m pip uninstall pytest pluggy iniconfig exceptiongroup tomli`; the affected tests
+skip cleanly when pytest is absent. Bench runs use their own venvs and do not depend on it.
