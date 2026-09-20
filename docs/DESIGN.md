@@ -3537,6 +3537,23 @@ README.
 
 ## 17. Open questions
 
+Observed in the live demo runs (2026-09-19, `docs/live/`):
+
+- **Plan retention bloat.** Rule (b) retains `remaining` items the generator drops without a
+  done claim, and a rewording counts as remove + add; in the 9-step fix run `plan.remaining`
+  grew to 10 entries while the generator's own draft listed 1–3. Candidates: normalise text
+  before diffing, or expire retained items after N steps. Left as designed for the bench.
+- **Doubly quiet pytest.** `pytest -q` on top of `addopts = -q` prints no summary line; the
+  judge fell back to `tests_pass_unparsed` and completion waited for a verbose run. The
+  parser now counts progress characters (`.F E s x X`) when no summary exists.
+- **Generator self-refusal.** For an overtly destructive task the generator refused before Jev
+  could block; the block path was demonstrated with a subtler task (`rm -rf tests`, risk
+  0.92). Jev's risk stage is the second line of defence, not the first.
+- **Intent overrides.** Jev often answered `finish` or `edit` while the paired Noul for that
+  option stayed below 0.5, so Choice resolution fell back to `investigate`; three such
+  fallbacks trip the detector (`intent:unresolved`). Whether the 0.5 floor is too strict for
+  the intent stage is a tuning question for the bench data.
+
 - Whether the checked-in SWE-bench subset can be evaluated locally for every chosen repo
   under Python 3.9 (to be measured in the 3-task slice).
 - How many Terminal-Bench 4.0 tasks pass the local-feasibility rule (target 10); measured

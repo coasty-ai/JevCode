@@ -24,7 +24,7 @@ describe('predictions', () => {
     expect(predictionsFileName('jev-off')).toBe('predictions.jev-off.jsonl');
     const text = formatPredictions([{ instance_id: 'a__b-1', model_name_or_path: 'm', model_patch: '' }]);
     expect(JSON.parse(text.trim())).toEqual({ instance_id: 'a__b-1', model_name_or_path: 'm', model_patch: '' });
-    expect(modelPatchCommand('abc', '/tmp/x y.diff')).toBe(`git add -A -N && git diff --binary abc -- . ':(exclude).jevcode*' > '/tmp/x y.diff'`);
+    expect(modelPatchCommand('abc')).toBe(`git add -A -N && git diff --binary abc -- . ':(exclude).jevcode*'`);
   });
 
   it('writes one file per condition with three keys per line', async () => {

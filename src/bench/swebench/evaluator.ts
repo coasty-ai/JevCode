@@ -194,8 +194,10 @@ export async function evaluateSwebenchLocal(input: SwebenchEvalInput): Promise<E
     return { pass: null, evaluator: 'none', reason: `environment build failed: ${e instanceof Error ? e.message : String(e)}` };
   }
 
-  // Patch files live beside the clone, never inside it, so they cannot leak into a diff.
-  const sidecar = dirname(input.evalDir);
+  // Patch files live outside the clone (so they cannot leak into a diff) and inside the run's
+  // tmp dir, the one place under the jevcode home every post-run sandbox may read (§8).
+  const sidecar = join(dirname(dirname(input.evalDir)), 'tmp', 'eval-sidecar');
+  await mkdir(sidecar, { recursive: true });
   const modelPatchFile = join(sidecar, `${record.instance_id}.model.patch`);
   const testPatchFile = join(sidecar, `${record.instance_id}.test.patch`);
   await writeFile(modelPatchFile, input.modelPatch, 'utf8');

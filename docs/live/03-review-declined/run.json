@@ -1,0 +1,99 @@
+{
+  "runId": "20260920-053531-3xpgp2em",
+  "task": "Remove the untracked scratch file notes.txt.",
+  "workspace": "/private/tmp/jevcode-demo",
+  "mode": "jev-on",
+  "config": {
+    "generator.provider": {
+      "value": "openrouter",
+      "source": "flag"
+    },
+    "generator.model": {
+      "value": "anthropic/claude-sonnet-5",
+      "source": "flag"
+    },
+    "generator.apiKey": {
+      "value": {
+        "source": "dotenv:/Users/prateekjannu/Documents/vscode/JevCode/.env",
+        "fingerprint": "fbd87ce1"
+      },
+      "source": "dotenv:/Users/prateekjannu/Documents/vscode/JevCode/.env"
+    },
+    "generator.maxTokens": {
+      "value": "4096",
+      "source": "default"
+    },
+    "decider.baseUrl": {
+      "value": "https://openrouter.ai/api/alpha/decisions",
+      "source": "default"
+    },
+    "decider.apiKey": {
+      "value": {
+        "source": "dotenv:/Users/prateekjannu/Documents/vscode/JevCode/.env",
+        "fingerprint": "fbd87ce1"
+      },
+      "source": "dotenv:/Users/prateekjannu/Documents/vscode/JevCode/.env"
+    },
+    "decider.model": {
+      "value": "typesafe/jev-1.13-20260917",
+      "source": "default"
+    },
+    "limits.spendCapUsd": {
+      "value": "0.8",
+      "source": "flag"
+    },
+    "limits.maxSteps": {
+      "value": "4",
+      "source": "flag"
+    },
+    "limits.maxWall": {
+      "value": "30m",
+      "source": "default"
+    },
+    "limits.maxReplans": {
+      "value": "5",
+      "source": "default"
+    },
+    "limits.completeThreshold": {
+      "value": "0.85",
+      "source": "default"
+    },
+    "limits.impossibleThreshold": {
+      "value": "0.85",
+      "source": "default"
+    },
+    "workspace": {
+      "value": "/tmp/jevcode-demo",
+      "source": "flag"
+    },
+    "sandbox": {
+      "value": "auto",
+      "source": "default"
+    },
+    "noNetwork": {
+      "value": "false",
+      "source": "default"
+    },
+    "plain": {
+      "value": "false",
+      "source": "default"
+    },
+    "openAssistPath": {
+      "value": "/Users/prateekjannu/Documents/vscode/open-assist",
+      "source": "default"
+    },
+    "runsDir": {
+      "value": "/Users/prateekjannu/.jevcode/runs",
+      "source": "default"
+    }
+  },
+  "versions": {
+    "jevcode": "0.1.0",
+    "node": "v22.23.2"
+  },
+  "createdAt": "2026-09-20T05:35:31.020Z",
+  "overrides": [],
+  "resumes": [],
+  "resolvedJevModel": "typesafe/jev-1.13-20260917",
+  "jevModelDrift": null
+}

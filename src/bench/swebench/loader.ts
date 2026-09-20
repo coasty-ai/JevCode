@@ -69,10 +69,11 @@ export function toBenchTask(record: SwebenchRecord, opts: SwebenchTaskOptions): 
   async function evaluateMock(ctx: BenchEvaluateContext): Promise<Evaluation> {
     if (gold === undefined) return { pass: null, evaluator: 'mock', reason: 'no gold patch for mocked evaluation' };
     if (ctx.patch === null || ctx.patch.patchEmpty) return { pass: false, evaluator: 'mock', patchApplied: false, reason: 'empty model_patch' };
-    // The gold diff is present iff it reverses cleanly; the file lives in the run dir, never the workspace.
-    const evalDir = join(ctx.runDir, 'eval', record.instance_id);
+    // The gold diff is present iff it reverses cleanly; the file lives in the run's tmp dir (readable
+    // by the post-run sandbox, §8), never in the workspace.
+    const evalDir = join(ctx.runDir, 'tmp', 'eval-sidecar');
     await mkdir(evalDir, { recursive: true });
-    const goldFile = join(evalDir, 'gold.patch');
+    const goldFile = join(evalDir, `${record.instance_id}.gold.patch`);
     await writeFile(goldFile, gold, 'utf8');
     const res = await ctx.run(`git apply --check -R ${shellQuote(goldFile)}`, { timeoutMs: 60_000, maxOutputBytes: 32 * 1024 });
     if (res.killedBy !== null) return { pass: null, evaluator: 'mock', reason: `gold check killed: ${res.killedBy}` };

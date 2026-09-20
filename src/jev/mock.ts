@@ -148,12 +148,18 @@ function defaultNoul(id: string, question: Question, state: Json, chosen: Readon
   if (id === 'task_complete') {
     const testsCurrent = at(state, 'workspace', 'testsCurrent') === true;
     const allPassed = at(state, 'workspace', 'lastTestRun', 'allPassed') === true;
-    const remaining = at(state, 'plan', 'remaining');
+    // The accepted `plan` is empty on step 1; the generator's own claim (`proposal.planClaim`) is
+    // what says whether anything remains after this step.
+    const claim = at(state, 'proposal', 'planClaim', 'remaining');
+    const remaining = claim !== undefined ? claim : at(state, 'plan', 'remaining');
     const nothingLeft = at(state, 'proposal', 'claimsDone') === true || (Array.isArray(remaining) && remaining.length === 0);
     // A workspace without a test suite (many Terminal-Bench tasks) cannot show a passing run;
     // the heuristic then accepts completion when the plan claims nothing remains.
     const hasTests = at(state, 'workspace', 'hasTests');
     if (hasTests === false) return noulAnswer(nothingLeft ? 0.95 : 0.05);
+    // The mock exercises the pipeline, not judgment: a scripted `done` that claims nothing
+    // remains is accepted even when the workspace has a test suite the mocked environment cannot run.
+    if (at(state, 'proposal', 'action', 'kind') === 'done' && nothingLeft) return noulAnswer(0.95);
     return noulAnswer(testsCurrent && allPassed && nothingLeft ? 0.95 : 0.05);
   }
   if (id.startsWith('done_')) return noulAnswer(execOk(state) ? 0.9 : 0.1);

@@ -14,40 +14,36 @@ export const MODEL_PATCH_FILE = 'model_patch.diff';
 /** Bench-internal files that never belong in a prediction (mock solve scripts, run markers). */
 export const PATCH_EXCLUDES = ["':(exclude).jevcode*'"];
 
-function shellQuote(s: string): string {
-  return `'${s.replace(/'/g, `'\\''`)}'`;
-}
-
 /** `git add -A -N && git diff --binary <base> -- . ':(exclude).jevcode*'`, redirected to <runDir>/model_patch.diff. */
-export function modelPatchCommand(baseCommit: string, outFile: string): string {
-  return `git add -A -N && git diff --binary ${baseCommit} -- . ${PATCH_EXCLUDES.join(' ')} > ${shellQuote(outFile)}`;
+export function modelPatchCommand(baseCommit: string): string {
+  return `git add -A -N && git diff --binary ${baseCommit} -- . ${PATCH_EXCLUDES.join(' ')}`;
 }
 
 /**
  * Intent-to-add makes new files visible, diffing against base_commit includes anything the
- * agent committed, --binary keeps the output applicable. The diff goes to a file rather than
- * stdout so the sandbox output cap can never truncate a large patch.
+ * agent committed, --binary keeps the output applicable. The diff is read from stdout (the run
+ * dir is not writable from inside the agent sandbox) with an 8 MiB cap that fails loudly
+ * instead of truncating.
  */
+/** 8 MiB is far above any plausible SWE-bench patch; larger means something went wrong. */
+export const MODEL_PATCH_MAX_BYTES = 8 * 1024 * 1024;
+
 export async function extractModelPatch(run: CommandRunner, baseCommit: string, runDir: string): Promise<PatchExtraction> {
   await mkdir(runDir, { recursive: true });
   const outFile = join(runDir, MODEL_PATCH_FILE);
-  const res = await run(modelPatchCommand(baseCommit, outFile), { timeoutMs: 120_000, maxOutputBytes: 64 * 1024 });
+  // The diff is captured from stdout and written by the harness: the run dir is not a writable
+  // root of the agent sandbox, so a shell redirect there would be denied.
+  const res = await run(modelPatchCommand(baseCommit), { timeoutMs: 120_000, maxOutputBytes: MODEL_PATCH_MAX_BYTES });
   if (!res.ok) {
     throw new SandboxError(`model_patch extraction failed (exit ${res.exitCode ?? 'null'}, killedBy ${res.killedBy ?? 'none'}): ${res.stderr.slice(0, 500)}`);
   }
-  let modelPatch: string;
-  try {
-    modelPatch = await readFile(outFile, 'utf8');
-  } catch {
-    // the sandbox may confine redirects; an absent file with a clean exit means an empty diff
-    modelPatch = '';
-    await writeFile(outFile, '', 'utf8');
+  if (res.truncated) {
+    throw new SandboxError(`model_patch extraction failed: diff exceeds ${MODEL_PATCH_MAX_BYTES} bytes (${res.bytesSeen} seen)`);
   }
+  let modelPatch = res.stdout;
   const patchEmpty = modelPatch.trim() === '';
-  if (patchEmpty && modelPatch !== '') {
-    modelPatch = '';
-    await writeFile(outFile, '', 'utf8');
-  }
+  if (patchEmpty) modelPatch = '';
+  await writeFile(outFile, modelPatch, 'utf8');
   return { modelPatch, patchBytes: byteLength(modelPatch), patchEmpty };
 }
 
