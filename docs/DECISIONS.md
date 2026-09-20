@@ -256,3 +256,15 @@ now races every read against the attempt signal and cancels the reader on abort.
 reproduces the shape (headers, then a body that never delivers) and asserts a prompt
 `AbortError`; the live TUI reproduction (`--mock-generator`, live Jev, Ctrl-C mid-request)
 now shuts down cleanly: step discarded per §9.1 rule 1, final checkpoint written, exit 130.
+
+## 2026-09-20 Full 30-task live run, completed
+
+`bench --resume` did not re-run the 15 setup failures because a zero-step `error` record
+counted as final; `planPair` now re-queues records with `pass: null`, `evaluator: 'none'`,
+`steps: 0`, `stopReason: 'error'` (infrastructure, not a verdict). With the pip upgrade in
+place every django and pytest environment built and all 30 pairs completed: 60 runs, $46.25
+total, 29 paired (one jev-off `invalid`). Paired result: jev-on 9/29 vs jev-off 10/29,
+generator tokens per step 5,519 vs 6,767, `read` actions 83 vs 124, cost $24.21 vs $20.44,
+208 blocks and 170 declined reviews on the jev-on side, Jev p50 237 ms. The full table and
+reading are in `docs/STATUS.md`; the per-task records, summary, comparison and prediction
+files are committed under `bench/results/live-swebench-30`.

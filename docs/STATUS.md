@@ -1,4 +1,4 @@
-# JevCode status report (2026-09-19)
+# JevCode status report (2026-09-19/20)
 
 ## What was built
 
@@ -63,12 +63,42 @@ One package at `vscode/JevCode` (its own git repository, nothing imported from O
 | `npm run perf` | first frame cold p95 89.9 ms (< 300), harness overhead p95 31.2 ms (< 50), event-loop lag p95 3.2 ms, zero terminal clears |
 | Live TUI demos (`docs/live/`) | complete fix with two approved reviews and a loop trip → replan (`01-fix`, 9 steps, $0.115); blocked `rm -rf tests` at risk 0.92 (`02b-blocked`); declined review on an untracked-file removal then a repeat blocked (`03`); `--no-network` denial, `fix_environment` intent and a live command timeout (`04`); Ctrl-C mid Jev request → rule-1 discard → checkpoint → `--resume` continues from the next step (`05c`) |
 | Mocked bench | SWE-bench 3/3 both conditions; Terminal-Bench 2/10 pass locally (the rest need tools absent here) |
-| Live SWE-bench | 3-task slice: jev-on 3/3, jev-off 2/3 (`live-slice-3b`); full 30: see below |
+| Live SWE-bench | 3-task slice: jev-on 3/3, jev-off 2/3 (`live-slice-3b`); full 30: jev-on 9/29, jev-off 10/29 paired (table below) |
 
 ## Live 30-task SWE-bench Verified run (`bench/results/live-swebench-30`)
 
-_Filled in from `summary.json` / `comparison.md` after the resumed pairs finish; see the
-section below._
+Paired over the 29 tasks evaluated in both conditions (`pytest-dev__pytest-10051` jev-off was
+`invalid`: the test command produced no parsable results); 60 runs, $46.25 total across the
+first pass and the resume, cap not hit, no `not_run` pairs. Evaluator: local venv replicating
+`eval.sh` (unofficial). Both conditions: Claude Sonnet 5 via OpenRouter, 25 steps max, 20 min
+wall, $1.50 per run, seatbelt sandbox, reviews declined in bench by design.
+
+| metric | jev-on | jev-off |
+| --- | --- | --- |
+| pass rate (passed / evaluated) | 9/29 (31.0 %) | 10/29 (34.5 %) |
+| steps-to-solve, mean (median) over passed | 23 (25) | 22 (25) |
+| steps used, mean over runs | 24.2 | 23.9 |
+| runs stopped by the step budget | 24 | 24 |
+| `read` actions, total / per run | 83 / 2.9 | 124 / 4.3 |
+| blocked / reviews (all declined) | 208 / 170 | 0 / 0 |
+| loop trips / replans | 46 / 40 | 28 / 0 |
+| Jev requests / questions | 2,631 / 212,508 | 0 |
+| Jev latency p50 / p95 | 237 ms / 547 ms | – |
+| generator tokens per step, mean | 5,519 | 6,767 |
+| Jev tokens per step, mean | 28,351 | 0 |
+| wall time per run, mean | 3 m 05 s | 2 m 21 s |
+| cost, generator / Jev / total | $22.71 / $1.49 / $24.21 | $20.44 / $0 / $20.44 |
+
+Reading: on this subset Jev did not raise the pass rate (9 vs 10, within noise at n = 29) but
+changed how the runs behaved: 18 % fewer generator tokens per step (Jev-selected context
+replaced `read` steps: 83 vs 124), 10 of 30 jev-on runs ended with an empty patch after
+repeated blocks and declined reviews (~13 non-executing actions per run), and jev-on almost
+never declared completion (its solved tasks ran to the 25-step budget with a correct patch
+on disk while jev-off stopped on `done` at 15–20 steps in several tasks). Jev itself cost
+$1.49 for 212k questions at p50 237 ms. The per-step generator tokens stay flat across the
+run in both conditions (4.7k at step 1, ~5–6k at step 25), which was the long-horizon goal.
+Raw data: `tasks.jsonl`, `summary.json`, `comparison.md` (solve curve and three tokens-per-step
+curves), `predictions.jev-on.jsonl` / `predictions.jev-off.jsonl` (official shape).
 
 ## What could not be verified here
 

@@ -189,7 +189,22 @@ leaderboard). The prediction files can be graded officially with `sb-cli` or `sw
 eval --modal`, and `bench/harbor/jevcode_agent.py` runs JevCode under Harbor where
 containers exist.
 
-Results: _filled in after the live runs_.
+Results of the live 30-task run (2026-09-20, `bench/results/live-swebench-30`, 29 tasks paired,
+$46.25 total, unofficial local evaluator):
+
+| metric | jev-on | jev-off |
+| --- | --- | --- |
+| pass rate | 9/29 (31.0 %) | 10/29 (34.5 %) |
+| steps-to-solve mean / median | 23 / 25 | 22 / 25 |
+| generator tokens per step | 5,519 | 6,767 |
+| Jev tokens per step (at $0.042/M) | 28,351 | 0 |
+| `read` actions per run | 2.9 | 4.3 |
+| blocked / declined reviews (total) | 208 / 170 | 0 / 0 |
+| Jev latency p50 / p95 | 237 ms / 547 ms | – |
+| cost per condition | $24.21 | $20.44 |
+
+Interpretation and caveats are in [docs/STATUS.md](docs/STATUS.md); the mocked pipeline and the
+3-task slices are in `bench/results/live-slice-3b` and DECISIONS.md.
 
 ## Dependencies and why
 

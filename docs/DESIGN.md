@@ -3560,6 +3560,11 @@ Observed in the live demo runs (2026-09-19, `docs/live/`):
 - **Generator self-refusal.** For an overtly destructive task the generator refused before Jev
   could block; the block path was demonstrated with a subtler task (`rm -rf tests`, risk
   0.92). Jev's risk stage is the second line of defence, not the first.
+- **Completion calibration (live bench).** jev-on's solved tasks ran to the 25-step budget
+  with a correct patch on disk because `task_complete` rarely reached 0.85: the criteria ask for
+  a current passing run of the detected test command, while agents mostly ran targeted tests.
+  Accepting a targeted run as evidence, or lowering the threshold, is a calibration decision to
+  take from the 212k recorded decisions rather than a design change.
 - **Intent overrides.** Jev often answered `finish` or `edit` while the paired Noul for that
   option stayed below 0.5, so Choice resolution fell back to `investigate`; three such
   fallbacks trip the detector (`intent:unresolved`). Whether the 0.5 floor is too strict for
