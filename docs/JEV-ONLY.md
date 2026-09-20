@@ -179,3 +179,16 @@ the linter verify. The question this document answers by experiment is which dec
   vocabulary pre-check no longer drops import module paths (ladder `tagcloud` solved). Open:
   `shunting_yard`/`reverse_linked_list` insertion coverage, step policy (suite-first, single
   done-claims), SWE-bench rung 3.
+- 2026-09-20: **SWE-bench rung 3, first attempt: 0/30** (`bench/results/jev-only-swebench-1`,
+  $0.83 Jev, 11–52 s per instance, every patch empty). Diagnosis from the transcripts: the
+  detected test command (`python3 -m pytest -q`) is wrong for Django (`tests/runtests.py`) and
+  sympy (`bin/test`) so the baseline errors immediately, and, more fundamentally, SWE-bench
+  gives an issue text with no failing test in the workspace (FAIL_TO_PASS is applied only by
+  the evaluator), so a search whose goals are failing tests has no goals; the controller then
+  re-proposed the same run until the loop blocked it. Direction (in flight): an oracle
+  extracted from the issue itself (17/30 statements carry a reproduction snippet, 12 state
+  expected vs actual, 8 a traceback): code extracts blocks, Jev decides which block reproduces
+  the bug and which lines show the expected and observed behaviour, code builds a runnable
+  script with a code-computed pass criterion and verifies it fails on the base commit; plus
+  native test-runner detection and test scoping for large repositories; and a regression-only
+  best-guess commit when no oracle can be extracted.

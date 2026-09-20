@@ -310,3 +310,20 @@ localisation. Grafted from grammar-synthesis: the sketch Choice as a cheap reach
 the token beam. Jev's irreplaceable jobs are where to look, which failing behaviour to attack
 next, and which of several test-passing patches is genuine; everything else is code and
 `python3`. The doc is `docs/JEV-ONLY-DESIGN.md`; the rejected alternatives and why are its §10.
+
+## 2026-09-20 Jev-only on SWE-bench: no oracle, no search
+
+The first `jev-only` SWE-bench run (30 instances, $0.83) produced empty patches everywhere in
+under a minute each. Two causes, both structural: the workspace's test command was detected
+as `pytest -q` although Django and sympy ship their own runners, and, decisive, an issue-driven
+task has no failing test in the workspace, so the Ledger + Sieve design (goals = clusters of
+failing tests) starts with an empty ledger. Decision: add an issue-derived oracle module
+(`src/synth/oracle/`): extract reproduction snippets, REPL transcripts, tracebacks and
+expected-vs-actual statements from the task text; Jev judges which block reproduces the bug and
+which lines show expected and observed behaviour; code turns the snippet into a script with a
+code-computed pass criterion and confirms it fails on the base commit; the search then treats
+it as the failing behaviour, with the module's related test files as the regression oracle.
+When no oracle can be extracted, the agent localises from the issue text (measured: gold file
+#1 on 23/30), enumerates and Jev-ranks candidates, checks regressions only, and commits its
+best guess once, labelled as such in the evidence. The oracle's validity is measured first
+(fails on base, passes on gold) before the integration.
