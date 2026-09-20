@@ -197,3 +197,28 @@ the linter verify. The question this document answers by experiment is which dec
   3-hunk `account` misses; four solved tasks still ran to the step budget with 6–14 blocked proposals,
   so the outer loop still spends steps it does not need. The QuixBugs insertion round repaired all four
   insertion bugs live (3 gold-identical); the skew-timeout and overfit rounds are in flight.
+- 2026-09-20: **issue oracle, measured** (`src/synth/oracle/`, `experiments/results/oracle-from-issue.md`,
+  69 unit tests). Code extracts fenced/REPL/traceback/expectation blocks from the issue text; one Jev
+  batch per instance judges which block reproduces the bug and which lines show the expected and
+  observed behaviour (Nouls `is_reproduction_i`, `shows_expected_i`, `shows_actual_i`, Choice
+  `failure_kind`); code builds a runnable script with a code-computed pass criterion. On the 30
+  SWE-bench Verified instances: 23 have an extractable snippet, Jev's picks agree with hand labels
+  18/23, 13 reach the runner, and **9/30 give a valid oracle** (fails at the base commit, passes with
+  the gold patch: 7 strong, 2 weak), for $0.0096 of Jev in total. Only two of the nine overlap the
+  set whose gold line is reachable by the candidate sources, so the integration (in flight) pairs the
+  oracle path with a regression-only best-guess commit for the other 21 and scopes the regression
+  suite to the localised modules (a Django full suite is hours).
+- 2026-09-20: **ladder round 4 dissected** (`experiments/results/jev-only-ladder-4-analysis.md`).
+  The one miss (`account`, 3 hunks) is a bookkeeping loss, not a reach loss: Jev localised all three
+  gold lines and ranked the gold fix first at each (p 0.97–1.00), but two of the bugs share a
+  traceback frame and were merged into one goal whose tests need both fixes, so each fix alone was a
+  `partial`; the pair-of-partials combination never ran before the budget parked the goal, and
+  parking forgot the partials. The 38 refused proposals across the five solved-at-`max_steps` tasks
+  come from two mechanisms: the engine's own green verification `run`s and the `done` after them
+  land in the review band on spread probability mass (bench has no reviewer, so review = decline),
+  and a declined proposal is then read back from `recent` as "a step that already failed". Ranked
+  fixes (loop side, in flight): completion after the engine's own passing run is a fact and skips
+  block/review; the standing test run is never a review item; loop signatures for refused proposals
+  ignore the outcome text and only the tripped signature resets. Predicted: 137 → ≈113 steps.
+  Synthesizer side (after the oracle integration lands): combine partials before parking, reopen
+  every parked goal on `change_approach`.
