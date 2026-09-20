@@ -273,7 +273,8 @@ export interface StepTiming { generatorMs: number; jevMs: number; execMs: number
 export interface RunResult {
   runId: string; mode: EngineMode; stopReason: StopReason; steps: number; wallMs: number;
   usage: StepUsage; timing: StepTiming;                            // run totals
-  tokensPerStep: number[]; jevLatencyMs: number[];                 // raw, one entry per Jev HTTP request (jev:request), not per question
+  tokensPerStep: number[]; generatorTokensPerStep: number[]; jevTokensPerStep: number[];   // per committed step; tokensPerStep is the pointwise sum
+  jevLatencyMs: number[];                 // raw, one entry per Jev HTTP request (jev:request), not per question
   counters: { blocked: number; reviews: number; declined: number; failed: number; loops: number; replans: number; reads: number };
   finalPlan: Plan; error?: SerializedError; resolvedJevModel: string | null; jevModelDrift: { step: number; served: string } | null;
 }
@@ -3247,9 +3248,12 @@ nothing else from a task record.
     counted as solves. The all-runs statistic is kept but named **steps used** (mean/median
     over all runs, with the stop-reason histogram beside it) so it is never read as
     steps-to-solve.
-  - **Tokens-per-step curve**: for each step index i, mean generator+Jev tokens and the
-    count of runs that executed step i, printed as `mean (n)`; a run contributes only to
-    indices it reached. `summary.json`'s "mean tokens/step" is the mean over all executed
+  - **Tokens-per-step curve**: three series, generator tokens, Jev tokens and their sum, each
+    as mean over runs that reached step i, printed as `mean (n)`; a run contributes only to
+    indices it reached. The paired table reports the three means separately: Jev tokens are
+    priced at $0.042 per million (output free), so the combined number alone misrepresents
+    cost (the first live pass showed 61k Jev tokens per step from the context Nouls against
+    12k generator tokens). `summary.json`'s "mean tokens/step" is the mean over all executed
     steps of all runs (steps, not runs, as the unit), with the step count stated.
   - **Percentiles** (`jevLatencyMs.p50/p95`, timing) over an empty sample are `null`;
     `jev-off` records `jevLatencyMs: { raw: [], p50: null, p95: null }` and `cost.jev = 0`.

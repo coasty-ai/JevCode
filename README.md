@@ -210,6 +210,7 @@ npm run typecheck      # tsc --noEmit + no-any check
 npm test               # offline unit tests
 npm run test:live      # hits Jev and the generator; skips suites whose key is missing
 npm run perf           # builds, then measures first frame, step overhead, render lag
+JEVCODE_TRACE=/tmp/t.log jevcode run …   # opt-in shutdown trace: keystrokes, abort, loop boundaries, finish
 ```
 
 ## Status
