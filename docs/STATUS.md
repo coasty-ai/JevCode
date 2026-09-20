@@ -100,6 +100,18 @@ run in both conditions (4.7k at step 1, ~5–6k at step 25), which was the long-
 Raw data: `tasks.jsonl`, `summary.json`, `comparison.md` (solve curve and three tokens-per-step
 curves), `predictions.jev-on.jsonl` / `predictions.jev-off.jsonl` (official shape).
 
+## Jev-only mode (2026-09-20, in progress)
+
+A second mode with **no generating LLM**: code proposes candidate edits, Jev decides, tests
+verify (`docs/JEV-ONLY-DESIGN.md`). Measured pieces: Jev localises the buggy line top-3 on
+36/40 QuixBugs programs, ranks the correct fix top-3 on 37/40 among 254 candidates, and
+running a whole first-order mutation set through the tests takes a median 3.8 s. Live, through
+the full engine with `--conditions jev-only`: QuixBugs 34/40 repaired (31 correct by
+inspection) for $0.19 total Jev; the 12-task multi-hunk ladder 4/12 in the first run, limited
+by the outer loop's risk stage rejecting verified patches (being fixed by attaching the
+synthesizer's test evidence to the risk state). Details and per-program tables:
+`experiments/results/jev-only-rungs-1-2.md`.
+
 ## What could not be verified here
 
 - **Official SWE-bench / Terminal-Bench grading.** No Docker (or Apple `container`) on this

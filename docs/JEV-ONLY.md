@@ -153,3 +153,18 @@ the linter verify. The question this document answers by experiment is which dec
   - `judge-1-reach.md`: test-driven 8.0, contrarian 7.5, repair-search 7.0, grammar-synthesis 5.0; flagged `pytest-7205` mis-cited as reachable and the sieve's unmeasured insertions.
   - `judge2-reliability-cost.md`: test-driven 8.0, repair-search 7.5, grammar-synthesis 6.0, contrarian 5.0; recomputed contrarian test CPU at 9.9× (true line) / 75.5× (widened) the prototype; the K = 3 justification cites full-criteria Nouls while the designs use compact.
   - `experiments/grammar-synthesis/out/sketch-*.json` (Appendix A of the grammar design; not under results/): sketch pool covers 39/40 gold shapes, Choice top-1 23–26/40, top-3 29–31/40, edit-class top-2 35–36/40, $0.00019 per program.
+- 2026-09-20: **Ledger + Sieve engine, first live rungs** (`experiments/results/jev-only-rungs-1-2.md`,
+  `bench/results/jev-only-quixbugs-1`, `jev-only-ladder-1`; `--conditions jev-only`, zero
+  generator calls asserted per record). QuixBugs **34/40 repaired, 31 correct by inspection**
+  (25 identical to the reference fix, 6 equivalent; 3 passers overfit the visible tests), median
+  4 steps and 16 s, $0.19 total Jev for all 40, ranking misses 0, regressions kept 0. Misses: 4
+  budget (hanging programs make every test case a 2 s timeout, so the oracle looked expensive
+  and the search fell into RANK mode with 16 runs per step), 1 engine-rejected, 1 overfit.
+  Ladder **4/12**: the synthesizer found test-passing patches for most tasks but the outer
+  loop's risk stage put 35 of them in the review band (`plan_mismatch`, `matches_intent` under a
+  fallback `investigate` intent), which the bench declines; the two-file `table` task was solved
+  by the composite source as one unit. Eleven integration defects were fixed on the way (stale
+  `.pyc` in shadow lanes, `-qq` pytest output, pytest not on PATH, lanes outside writable roots,
+  collection errors counted as plausible, …). Next round: give the risk/intent/judge stages the
+  synthesizer's verification evidence, size the per-test timeout from tests that finish, and add
+  module-level import sites.
