@@ -31,7 +31,7 @@ import { REPRO_ID_PREFIX, reproductionGoal } from './goal.js';
 import type { ReproGoal } from './goal.js';
 import { chooseBlocks, isRunnable, oracleQuestions, PICK_THRESHOLD, readOracleAnswers } from './questions.js';
 import type { BlockChoice } from './questions.js';
-import { buildCriterion, chunksWithContext, evidenceStatements, REPRO_TIMEOUT_MS, runRepro } from './runner.js';
+import { buildCriterion, chunksWithContext, evaluateCriterion, evidenceStatements, REPRO_TIMEOUT_MS, runRepro } from './runner.js';
 import type { ReproRunOptions } from './runner.js';
 import type { CriterionStrength, Extraction, FrameJudgement, OracleJudgement, ReproRunResult, TracebackFrame } from './types.js';
 
@@ -197,7 +197,7 @@ export function bestGuessFailure(task: string): FailureView {
 // The oracle from the issue
 // ---------------------------------------------------------------------------------------
 
-export type OracleOutcome = 'valid' | 'valid_weak' | 'no_blocks' | 'no_pick' | 'not_runnable' | 'no_criterion' | 'env_error' | 'passes_on_base' | 'incomplete_snippet';
+export type OracleOutcome = 'valid' | 'valid_weak' | 'no_blocks' | 'no_pick' | 'not_runnable' | 'no_criterion' | 'env_error' | 'passes_on_base' | 'incomplete_snippet' | 'unstable';
 
 export type OracleAsk = (stage: StageName, state: Json, questions: Record<string, Question>) => Promise<{ answers: Record<string, Answer> }>;
 
@@ -317,7 +317,21 @@ export async function findIssueOracle(input: OracleSearchInput): Promise<OracleS
   if (goal.verdict.pass) return none('passes_on_base', `the criterion (${built.expectedText.slice(0, 80)}) already passes at the base commit: the snippet does not show the bug as run`, { ...common, traceback });
   const incomplete = snippetIncomplete(goal);
   if (incomplete !== null) return none('incomplete_snippet', `the snippet stops on ${incomplete}: a name or module the repository does not provide`, { ...common, traceback });
+  // The verdict must be a fact of the workspace, not of the process: the same script runs once
+  // more on the same commit (≈ 0.4–6.5 s) and must fail the same way. A snippet that fails and
+  // then passes with nothing changed (randomness, time, order of an unordered collection —
+  // django-15315's `assert f in d` before the hash seed was pinned) would make every lane verdict
+  // a coin toss and the "passers" dead code; such an oracle is refused and the run falls back to
+  // the best guess. A confirmation run that did not report (timeout, runner error) keeps the
+  // first verdict and says so in the note.
+  const again = await runRepro(input.run, cwc.chunks, runOpts);
+  const againVerdict = evaluateCriterion(built.criterion, again);
+  const confirmed = again.status === 'ran' && evidenceStatements(again).length > 0;
+  if (confirmed && againVerdict.pass) {
+    return none('unstable', `the reproduction failed once (${goal.failure.actual.slice(0, 60)}) and passed when run again on the same commit (${againVerdict.actual.slice(0, 60)}): its verdict is not a stable fact of the code`, { ...common, traceback });
+  }
   const outcome: OracleOutcome = built.strength === 'weak' ? 'valid_weak' : 'valid';
+  const confirmation = confirmed ? `confirmed by a second run in ${again.durationMs} ms` : `confirmation run did not report (${again.status}); first verdict kept`;
   return {
     outcome,
     strength: built.strength,
@@ -328,7 +342,7 @@ export async function findIssueOracle(input: OracleSearchInput): Promise<OracleS
     anchors,
     traceback,
     requests: 1,
-    note: `${built.strength} oracle ${goal.spec.testId} from block ${block.index}: ${goal.failure.call.slice(0, 60)} -> ${goal.failure.actual.slice(0, 60)} (expected ${built.expectedText.slice(0, 60)}; ${built.criterion.form})`,
+    note: `${built.strength} oracle ${goal.spec.testId} from block ${block.index}: ${goal.failure.call.slice(0, 60)} -> ${goal.failure.actual.slice(0, 60)} (expected ${built.expectedText.slice(0, 60)}; ${built.criterion.form}; ${confirmation})`,
     durationMs: Date.now() - started,
   };
 }

@@ -137,13 +137,29 @@ export const QUIXBUGS_TEST_RUNS_MAX = 1500;
 export const QUIXBUGS_JEV_REQUESTS_MAX = 30;
 
 /**
- * §4.3 repository-class caps: testWall ≤ min(8 × baselineDuration, 600 s), testRuns ≤ 16
- * (12 subset + 3 full + 1 baseline), jevRequests ≤ 60 (SWE chunked ranking ≈ 11 chunks × ≤ 5 anchors).
+ * §4.3 repository-class caps: testWall ≤ min(8 × baselineDuration, 600 s), jevRequests ≤ 60 (SWE
+ * chunked ranking ≈ 11 chunks × ≤ 5 anchors). The run count is derived from the measured oracle
+ * (`repositoryRunsPerStep`): `REPO_TEST_RUNS_MAX` (16 = 12 subset + 3 full + 1 baseline) is what
+ * the design sized for the case where every candidate costs a full suite, and stays the floor;
+ * with the issue oracle the goal-subset run is the reproduction script (sympy-15345: 2.06 s
+ * against an 18.6 s scoped suite; Django 0.9–2.8 s against 5–100 s), so the wall, not this count,
+ * is the binding resource, and the 16-run cap let 16 of 727 enumerated candidates run per step
+ * (jev-only-swebench-2-oracle, all `unchanged`, the goal parked after two such steps).
+ * `REPO_TEST_RUNS_CAP` bounds the derived count: 160 runs is ~40 rounds of 4 lanes, above which
+ * the Jev ranking requests (≤ 60 per step) rather than the runs bound the step.
  */
 export const REPO_TEST_WALL_BASELINE_FACTOR = 8;
 export const REPO_TEST_WALL_MAX_MS = 600_000;
 export const REPO_TEST_RUNS_MAX = 16;
+export const REPO_TEST_RUNS_CAP = 160;
 export const REPO_JEV_REQUESTS_MAX = 60;
+/**
+ * Full-suite (scoped regression) runs reserved on the test wall for the step's goal-subset
+ * passers: the runner stops dispatching after this many passers (sieve/runner.ts
+ * MAX_FULL_SUITE_RUNS_PER_STEP; budget.test.ts asserts the two agree), each costing
+ * `tRunMs.fullSuite` on one lane.
+ */
+export const REPO_PASSERS_RESERVED = 5;
 
 /** §2.4: K = 3 at replace sites (Noul top-3 36–40/40, `probe-selection.md`). */
 export const RANK_K_REPLACE = 3;
@@ -152,6 +168,14 @@ export const RANK_K_INSERT = 5;
 /** §2.4: above 60 candidates the ranker uses compact Nouls (top-3 36/40 at N = 254); top-5 recovers ≈ 2 more. */
 export const COMPACT_NOUL_MIN_CANDIDATES = 61;
 export const RANK_K_COMPACT = 5;
+/**
+ * §2.4 with a cheap goal-subset oracle (repository class, reproduction cheaper than the scoped
+ * suite): the ranked take per site follows the run budget — floor(runsLeft / sites still to
+ * visit), never below the 3/5 of the fixed rule and never above this — so the step's runs spread
+ * over the top sites in Noul order instead of re-ranking the leftovers of the first site every
+ * step (sympy-15345 steps 3–4: 15 of 16 runs at site 1 both times, sites 3–12 never reached).
+ */
+export const RANK_K_SITE_MAX = 16;
 
 // ---------------------------------------------------------------------------------------
 // Runner detection
@@ -552,6 +576,34 @@ export function oracleClass(oracle: OracleModel): OracleClass {
   return oracle.tRunMs.goalSubset < QUIXBUGS_CLASS_MAX_T_RUN_MS ? 'quixbugs_class' : 'repository_class';
 }
 
+/**
+ * A repository-class oracle whose goal-subset run is cheaper than its full-suite run: the
+ * reproduction script against the scoped regression suite (repository mode). Only then are the
+ * runs per step and the ranked take per site derived from the measured times; when the two
+ * scopes cost the same (the best-guess goal runs the scoped suite for every candidate; a plain
+ * pytest module) every candidate is a full suite and the §4.3 fixed caps stand.
+ */
+export function hasCheapGoalSubset(oracle: Pick<OracleModel, 'tRunMs'>): boolean {
+  return oracle.tRunMs.goalSubset > 0 && oracle.tRunMs.goalSubset < oracle.tRunMs.fullSuite;
+}
+
+/**
+ * §4.3 runs per step for the repository class, from the measured oracle: the test wall minus the
+ * reserve for the passers' full-suite runs (REPO_PASSERS_RESERVED × tRun(fullSuite)), spread over
+ * the lanes at tRun(goalSubset) per run, bounded to [REPO_TEST_RUNS_MAX, REPO_TEST_RUNS_CAP].
+ * When both scopes cost the same the arithmetic gives ≤ 12 (8b − 5b over b, × 4 lanes) and the
+ * floor is the design's 16; when the reserve exceeds the wall (a scoped suite over 120 s at the
+ * 600 s cap) the floor applies too. sympy-15345: floor((149 s − 5 × 18.6 s) / 2.06 s) × 4 = 108;
+ * Django with a 100 s scope and a 2.8 s reproduction: floor((600 − 500) / 2.8) × 4 = 140.
+ */
+export function repositoryRunsPerStep(oracle: Pick<OracleModel, 'tRunMs' | 'lanes'>, testWallMs: number): number {
+  const tRun = Math.max(1, oracle.tRunMs.goalSubset);
+  const reserve = REPO_PASSERS_RESERVED * Math.max(0, oracle.tRunMs.fullSuite);
+  const wall = Math.max(0, Math.floor(testWallMs) - reserve);
+  const runs = Math.floor(wall / tRun) * Math.max(1, oracle.lanes);
+  return clamp(runs, REPO_TEST_RUNS_MAX, REPO_TEST_RUNS_CAP);
+}
+
 // ---------------------------------------------------------------------------------------
 // Step budget
 // ---------------------------------------------------------------------------------------
@@ -576,7 +628,7 @@ export function freshBudget(limits: Pick<RunLimits, 'maxWallMs'>, oracle: Oracle
       : Math.floor(Math.min(REPO_TEST_WALL_BASELINE_FACTOR * oracle.baselineDurationMs, REPO_TEST_WALL_MAX_MS, wallRemaining));
   const budget: StepBudget = {
     jevRequestsLeft: cls === 'quixbugs_class' ? QUIXBUGS_JEV_REQUESTS_MAX : REPO_JEV_REQUESTS_MAX,
-    testRunsLeft: cls === 'quixbugs_class' ? QUIXBUGS_TEST_RUNS_MAX : REPO_TEST_RUNS_MAX,
+    testRunsLeft: cls === 'quixbugs_class' ? QUIXBUGS_TEST_RUNS_MAX : repositoryRunsPerStep(oracle, testWallLeftMs),
     testWallLeftMs,
     startedMs: (opts.now ?? Date.now)(),
     recursed: false,
@@ -592,18 +644,34 @@ export function runsLeft(oracle: OracleModel, budget: StepBudget): number {
   return Math.max(0, Math.min(budget.testRunsLeft, byWall));
 }
 
+export interface RunPlanOptions {
+  /**
+   * sites still to visit in this phase, this one included (search/subgoal.ts visitPhase): with a
+   * cheap goal-subset oracle the RANK take at the site is its share of the runs left, so the
+   * step's runs spread over the top sites (RANK_K_SITE_MAX). Absent (the best-guess path, callers
+   * outside the loop): the fixed K.
+   */
+  sitesLeft?: number;
+}
+
 /**
  * §2.4, the central decision: SIEVE when the whole candidate set fits the run budget and a run
  * is cheap (tests rank, no Jev request); otherwise RANK with K = 3 at replace sites, 5 at insert
  * sites, and 5 whenever the set is large enough for compact Nouls. The cut is a budget, never a
- * probability threshold: a confident wrong rank costs a step, not the fix.
+ * probability threshold: a confident wrong rank costs a step, not the fix. On a repository-class
+ * oracle whose goal-subset run is the cheap reproduction (`hasCheapGoalSubset`) and with
+ * `sitesLeft` given, K rises to the site's share of the runs left, at most RANK_K_SITE_MAX.
  */
-export function decideRunPlan(cands: readonly Candidate[] | number, site: Pick<Site, 'kind'>, oracle: OracleModel, budget: StepBudget): RunPlan {
+export function decideRunPlan(cands: readonly Candidate[] | number, site: Pick<Site, 'kind'>, oracle: OracleModel, budget: StepBudget, opts: RunPlanOptions = {}): RunPlan {
   const n = typeof cands === 'number' ? cands : cands.length;
   const left = runsLeft(oracle, budget);
   if (n <= left && oracle.tRunMs.goalSubset <= SIEVE_MAX_T_RUN_MS) return { mode: 'SIEVE', k: n, runsAllowed: n };
   let k = site.kind === 'insert' ? RANK_K_INSERT : RANK_K_REPLACE;
   if (n >= COMPACT_NOUL_MIN_CANDIDATES) k = Math.max(k, RANK_K_COMPACT);
+  if (opts.sitesLeft !== undefined && oracleClass(oracle) === 'repository_class' && hasCheapGoalSubset(oracle)) {
+    const share = Math.floor(left / Math.max(1, Math.floor(opts.sitesLeft)));
+    k = Math.max(k, Math.min(RANK_K_SITE_MAX, share));
+  }
   k = Math.min(k, left);
   return { mode: 'RANK', k, runsAllowed: k };
 }

@@ -233,11 +233,38 @@ describe('findIssueOracle', () => {
     expect(r.goal?.failure).toMatchObject({ call: 'mathematica_code(Max(x,2))', expected: "'Max[x,2]'", actual: "'Max(2, x)'" });
     expect(r.goal?.summary).toMatchObject({ failed: 1, passed: 0, total: 1 });
     expect(r.goal?.spec.options).toMatchObject({ packageName: 'sympy', framework: null });
-    expect(seen).toHaveLength(1);
+    // the base run, then the confirmation run of the same script on the same commit
+    expect(seen).toHaveLength(2);
     expect(seen[0]?.cwd).toBe('/work');
     expect(seen[0]?.command).toContain("'/work/.venv/bin/python' -c");
+    expect(seen[1]?.command).toBe(seen[0]?.command);
     expect(r.note).toContain('strong oracle');
+    expect(r.note).toContain('confirmed by a second run');
     expect(r.traceback).toBeNull();
+  });
+  it('unstable: a snippet that fails once and passes on the confirmation run is no oracle (its verdict is not a fact of the code)', async () => {
+    let calls = 0;
+    const flaky: VerifyRunFn = async (command, opts) => {
+      calls += 1;
+      const value = calls === 1 ? "'Max(2, x)'" : "'Max[x, 2]'";
+      return sentinelRun([stmtOk(0, 'from sympy import symbols, Max'), stmtValue(0, 'mathematica_code(Max(x,2))', value)])(command, opts);
+    };
+    const r = await findIssueOracle(input({ run: flaky }));
+    expect(r.outcome).toBe('unstable');
+    expect(r.goal).toBeNull();
+    expect(r.requests).toBe(1);
+    expect(calls).toBe(2);
+    expect(r.note).toContain('passed when run again');
+    // a confirmation run that did not report keeps the first verdict and says so
+    let n = 0;
+    const thenBroken: VerifyRunFn = async (command, opts) => {
+      n += 1;
+      if (n === 1) return sentinelRun([stmtOk(0, 'from sympy import symbols, Max'), stmtValue(0, 'mathematica_code(Max(x,2))', "'Max(2, x)'")])(command, opts);
+      return { stdout: '', stderr: 'killed', exitCode: 137, durationMs: 5 };
+    };
+    const kept = await findIssueOracle(input({ run: thenBroken }));
+    expect(kept.outcome).toBe('valid');
+    expect(kept.note).toContain('confirmation run did not report');
   });
   it('passes_on_base when the criterion already holds; no_blocks without code; no_pick below the threshold', async () => {
     const passes = await findIssueOracle(input({ run: sentinelRun([stmtOk(0, 'from sympy import symbols, Max'), stmtValue(0, 'mathematica_code(Max(x,2))', "'Max[x, 2]'")]) }));

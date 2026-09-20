@@ -2119,3 +2119,169 @@ verified patches at steps 3–6 (0.72/0.87/0.86/0.83) before reading files — t
 - Not applied (engine owned by a peer session), 3-line diff described in §17.1; `git commit` not run.
 - Scratch: `.scratch/ladder-6-replay.mts` (offline replay), `.scratch/ladder-6-table.py` (the §17.3 columns),
   `.scratch/django-15315-reassess.mts` (the recorded-answer re-assessment), `.scratch/django-steps.py` (per-step dump).
+
+## 18. 2026-09-20 (later): introspected names and the history source — capabilities 2 and 3 of `swebench-reach-oracle-9.md` built; the test-passing candidate enters the set at the gold site on sympy-15345, sympy-17139 and django-15315 (F2P verified), +0 candidates on the 44 QuixBugs sites
+
+Follow-up to `experiments/results/swebench-reach-oracle-9.md` ("Missing capabilities" items 2 and 3). Code proposes from facts
+harvested in the workspace, Jev chooses among ≤ 255, tests verify. **Offline enumeration and F2P runs: $0.00.** One ranking
+check with the real ranker: **$0.00145, 4 requests** (§18.4). Nothing under `src/synth/search/**`, `sieve/**`, `oracle/**`,
+`core/**` or `loop/**` was edited; the controller wiring is the patch `.scratch/wiring-introspect-history.patch` (§18.5).
+
+### 18.1 What was built
+
+- **`src/synth/introspect/`** — the introspected-names pass. `script.ts` appends one pass to the oracle runner's own
+  reproduction script (same namespace, NameError fix-ups and framework preamble as `oracle/runner.ts buildReproScript`):
+  the target statement is the last one that raised (else the last with a value); a raising statement is run once more under
+  `try` so the traceback's frames are live, and the innermost workspace frame, the frames Jev anchored (`OracleSearch.anchors`,
+  matched by file suffix + function name, innermost first) and the next innermost (`FRAMES_MAX` 3) each have the dotted
+  names of their source line evaluated in their own locals/globals (`OPERANDS_MAX` 8); a value statement has its
+  sub-expressions evaluated in the script namespace. Per object: `type(obj).__mro__` class names, the public `dir(obj)`
+  split into `is_*` predicates (properties that read as a bool / None, **with their truth value at the failing call**) and
+  other attributes, `raisingReceiver` = an argument of the innermost raising frame; plus the public names of the raising
+  (or callee's) module. `index.ts introspectRepro(run, spec, {workspace, python, anchors})` runs it through the same
+  `VerifyRunFn` the oracle uses (the engine's sandbox), `namesFromRaw` caps the lists (classes ≤ 60, predicates ≤ 120,
+  attributes ≤ 160, module names ≤ 60, **total ≤ 400**), `vocabularyAdditions(names, file)` = the flat names ∪ the
+  `<prefix><Class>` names the file's own dispatch convention composes (`prefixes.ts classMethodPrefixes`: the prefix ending
+  in `_` shared by ≥ 2 methods of a class with a CapWord suffix — `_print_`, `visit_`, `_eval_`; accessor pairs `get_a`/`get_b`
+  do not count). `facts.ts` is the per-run registry (`setRunFacts` / `runFacts`, like `memory.ts getMemory`).
+- **`src/synth/templates/introspect.ts`** — two productions in a new family `introspect` (prior 0.85, `common.ts
+  FAMILY_PRIOR` / `TEMPLATE_FAMILIES`, `index.ts FAMILY_FN` / `familyOf`), inert without `EnumerateOptions.introspected`:
+  `attribute_predicate_guard` = `if not <subject>.<is_attr>:` / `<sibling return>` before the guarded statement, subject = an
+  operand of the raising line whose root name is in scope at the site, predicates the introspection read on that very object
+  (falsy ones first — `if not x.<p>:` fires on the failing input for exactly those; truthy ones in the positive form), bodies
+  the function's first `returnDefaults` (≤ 3) and `continue` in a loop, ≤ 150 drafts; `mro_method_alias` = `<prefix><MroClass>
+  = <existing method>` at a class-body gap, or appended after the last line of a method at the class indent, for every MRO
+  class the class does not handle yet × every prefixed method (the one ending just before the site first), ≤ 254.
+- **`src/synth/history/`** — the `history` source. `harvest.ts harvestHistory(run, {workspace, files, task, identifiers,
+  sources})`: ticket / PR numbers the issue names (`#31750`) → `git log --fixed-strings --grep`, commit hashes → `git log -1`,
+  the localiser's `taskIdentifiers` (those the localised files contain first, longest first) → `git log -S<ident> -n 5`, then one
+  `git show -U3` over the ≤ 5 most recent commits; **≤ 8 read-only git commands, 10 s each**, all through the sandbox `run`;
+  the diff is split into contiguous change runs with 3 context lines each side (`parseShowDiff`). `source.ts
+  createHistorySource()`: the reverse of each run whose added lines are still in the site's file (located by exact, then
+  whitespace-insensitive sequence match, nearest the commit's own line) becomes one replace candidate (removed lines back,
+  `delete` extraEdits for the rest; a pure addition becomes a deletion), a run whose lines were only removed comes back as an
+  insert after its leading context; runs farther than 80 lines from the site and outside its block are not offered; ranked by
+  distance then commit recency; ordinary `Candidate`s with `source: 'history'` and a `provenance` line
+  (`reverse of <sha> "<subject>" (ticket:#31750)`).
+- **`src/synth/types.ts`** (additive, optional): `EnumerateOptions.extraNames`, `.introspected`, `.history`;
+  `Candidate.provenance`.
+- **Tests** (`npx vitest run --project unit test/unit/synth/introspect test/unit/synth/history test/unit/synth/templates`: 10
+  files, 95 tests green with the leakage test): `test/unit/synth/introspect/introspect.test.ts` (script + parser, caps, prefixes,
+  registry, one real `python3` run on a fixture with `is_*` properties and a class hierarchy), `test/unit/synth/history/
+  history.test.ts` (refs, identifier ranking, diff runs, harvest against a real temporary git repository through a
+  sandbox-shaped `run`, the three reversal shapes applied with `verify/apply.ts`), `test/unit/synth/templates/introspect.test.ts`
+  (inert on QuixBugs sites, the guard and alias shapes, caps, `familyOf`, and the **leakage guard**: `INTROSPECT_EXAMPLES`
+  against the whole `benchmarkCorpus()` and the module texts of the new sources against the gold-fix lines of bench/data).
+- **Scripts**: `experiments/reach/introspect-history.mts` (the measurement below; `--quixbugs` for §18.3),
+  `experiments/reach/introspect-rank.mts` (§18.4); outputs under `experiments/reach/out/introspect-*.json`, logs
+  `log-introspect-*.txt`.
+
+### 18.2 Measured at the gold sites ($0, `introspect-history.mts`, sites built as `reach-oracle-9.mts` builds them, ENUMERATE_CAP 254)
+
+The reproduction is rebuilt from the issue text as the oracle does (block 0, `chunksWithContext`; Jev's judged failure kind
+and anchors read back from `experiments/oracle/results.json`, no request); introspection and history run in the base worktree
+with the bench venv; the corpus is the engine's 400-file cut plus the gold file; "gold hit" = the candidate's applied file
+equals the gold-patched file, code tokens per line (for sympy-15345 the alias hunk alone, which `hunk-subsets` showed
+test-equivalent). F2P = the found candidate applied to a private worktree with the test patch, run with the bench venv.
+
+| instance | capability | candidate found | index (source list / SEEDS list) | site count before → after | vocab missing before → after | F2P pass |
+| --- | --- | --- | --- | --- | --- | --- |
+| sympy__sympy-15345 | introspected names (`mro_method_alias`) | **yes** `_print_MinMaxBase = _print_Function` at the class-body gap `mathematica.py:104` | template **14** of 130 / SEEDS #268 (mutation 254 first) | 413 → 543 (mutation 254, templates **0 → 130**, donor 159) | `["_print_MinMaxBase"]` → `[]` | **pass** `test_Function`, 5.9 s |
+| sympy__sympy-17139 | introspected names (`attribute_predicate_guard`) | **yes** `if not rv.exp.is_real:` / `return rv` at the gap `fu.py:503` | template **50** of 254 / SEEDS #304 | 612 → 772 (mutation 254, templates **104 → 254** (+150), donor 254, history 10) | `["is_real"]` → `[]` | **pass** `test__TR56` and `test_issue_17137` (run individually, 0.2 s + 2.1 s) |
+| django__django-15315 | history (`history_revert_change`) | **yes** `return hash(self.creation_counter)` replacing `__init__.py:545–549` | history **0** of 4 / SEEDS #113 | 367 → 371 (mutation 21, templates 92 → 92, donor 254, history **4**) | `[]` → `[]` | **pass** `test_hash_immutability`, 1.0 s |
+
+Per instance:
+
+- **sympy-15345**: introspection ran in 916 ms on `mathematica_code(Max(x,2))` (a value statement): operands `Max` (the class),
+  `x` (Symbol: 56 predicates, 52 falsy), `Max(x, 2)` (Max → `[Max, MinMaxBase, Expr, LatticeOp, AssocOp, Application, Basic,
+  EvalfMixin]`, 56 predicates), the `str` result; module `sympy.printing.mathematica` (8 names); 185 names in total. At the
+  class-body gap the templates went from **0** to 130, all `mro_method_alias` (13 classes × 10 `_print_*` methods), and the
+  gold alias is #14 (the method order puts `_print_Integral`, which starts right after the gap, before `_print_Function`, which
+  ends two lines above it; `_print_Max = _print_Function` is #0). At `replace@102` (the method's last line) the `after_dedent`
+  form lands at #15 of 254. The queue's vocabulary rejected `_print_MinMaxBase` before ("nowhere (new name)" in the reach
+  study) and accepts it with `extraNames` (the composed `_print_` + MRO names). F2P: the alias alone passes `test_Function`.
+- **sympy-17139**: introspection ran in 1,403 ms; the traceback has 15 workspace frames; the chosen three are `__lt__`
+  (`expr.py:406`, the raise), `_f` (`fu.py:504`, Jev's 0.96 anchor) and `_TR56` (`fu.py:524`). Operands: `me` and **`rv.exp`**
+  (both `ImaginaryUnit` → `[ImaginaryUnit, AtomicExpr, Atom, Expr, Basic, EvalfMixin]`, **63 predicates, 54 falsy, receiver** —
+  the same object as `self` in the raising `__lt__`), `rv` (Pow, 63 predicates) twice, `TypeError`, `complex`; module
+  `sympy.simplify.fu` (60 names); 199 names. At the gap the guard production adds exactly its 150-draft cap (all
+  `if not rv.exp.is_*: return rv` first — the receiver's falsy predicates in alphabetical order — then `rv`'s); the gold guard is
+  #50 (`is_real` is the 50th falsy `is_*` name of `I`), and at `replace@504` (the raising line) the `_before` form is #63. The
+  vocabulary check dropped `is_real` before (in 45 repo files, none of the 400 loaded, never in `fu.py`) and accepts it now.
+  History found 5 commits / 117 change runs via `-Sbottom_up` / `-S_TR56` (20 s of git) and offered 10 reversals at the site,
+  none the fix (noise, ranked after the templates). F2P: both tests pass with the guard.
+- **django-15315**: the issue names `#31750`; `git log --grep='#31750' -- django/db/models/fields/__init__.py` returns
+  `502e75f9ed` ("Fixed #31750 -- Made models.Field equality compare models for inherited fields.") in 1.7 s of git (7
+  commands: 1 ticket + 3 `-S` (`max_length`, `CharField`, `__hash__`; `__hash__` found 2) + 1 `show` — the `-S` queries that
+  took 64 s on this partial clone in the reach study were cut by the 10 s timeout, the ticket query is what finds the commit).
+  Its diff splits into 4 change runs (`__eq__`, `__lt__` ×2, `__hash__`); the `__hash__` run's added lines are still verbatim at
+  545–549, so its reverse is a replace at 545 (`return hash(self.creation_counter)`) with 4 `delete` extraEdits: history
+  candidate **#0** (distance 0 to the site), the only one of the 4 that equals the gold file. The statement-level site of item 4
+  is not needed for this case: the reversal carries its own deletes. The introspection pass ran (664 ms) but the target is an
+  `assert` that raised in the snippet itself — no workspace frame, no operand (an `assert` has no `.value`), 0 names: correctly
+  inert. F2P: `test_hash_immutability` passes.
+
+### 18.3 QuixBugs: +0 candidates on 44 sites (`introspect-history.mts --quixbugs`, $0)
+
+The 40 `bugLine` replace sites plus the four insertion gaps of `test/unit/synth/templates/quixbugs.test.ts`, templates
+enumerated without introspection and with a **real** introspection of the first JSON test call (`import json; from <p> import
+<p>; <p>(*json.loads(…))` in `bench/data/quixbugs/programs`, `python3`, 8 s): **5,573 → 5,573 candidates (+0, 0.0 %)**. The pass
+ran on 31 sites (2 timeouts — `bitcount`, `sqrt` loop forever on the buggy program; 11 pytest-style graph programs have no JSON
+repro and stay inert); the operands are `list` / `int` / `str` / `bool` / `generator` objects (0 `is_*` predicates: `str.isdigit`
+and friends are methods, not properties) and no QuixBugs program defines a dispatch-prefixed class, so both productions emit
+nothing — the inertness is by construction of the facts, not a switch.
+
+### 18.4 Ranking check with the real ranker (`introspect-rank.mts`, `typesafe/jev-1.13-20260917`, $0.00145, 4 requests)
+
+The template set at each gap with the introspection facts, `createRanker({stage:'propose'}).rank(cands, {task, failures,
+functionListing})` (two-stage: compact Nouls + shortlist Choice; the SIEVE would run these sets on the 15345 oracle, t_run
+1,161 ms, and RANK on 17139's 2,169 ms):
+
+| instance | candidates (introspect) | gold at enumeration index | Jev rank of the gold | top-5 |
+| --- | --- | --- | --- | --- |
+| sympy-15345 | 130 (130) | 14 | **#4**, p 0.10 (escape 0.15) | `_print_Max = _print_Function` 0.41, `_print_LatticeOp = _print_Function` 0.13, `_print_Max = _print_list` 0.12, `_print_MinMaxBase = _print_Function` 0.10, `_print_LatticeOp = _print_list` 0.09 |
+| sympy-17139 | 254 (150) | 50 | **#1**, p 0.48 (escape 0.02) | `if not rv.exp.is_real` 0.48, `if not rv.exp.is_comparable` 0.30, `if not rv.exp.is_extended_real` 0.12, `if not rv.is_comparable` 0.07, `if not rv.exp.is_integer` 0.01 |
+
+On 17139 Jev puts the gold guard first among 254 with the two semantically nearest predicates (`is_comparable`,
+`is_extended_real`) behind it. On 15345 the top pick `_print_Max = _print_Function` aliases the concrete class rather than the
+base; it dispatches identically for `Max` (the printer looks up `_print_` + each MRO name) and is the natural k = 3 companion
+of the gold at #4 — not F2P-verified here.
+
+### 18.5 Wiring (patch, not applied) and caveats
+
+`.scratch/wiring-introspect-history.patch` (192 lines; regenerated by `.scratch/wiring/make-patch.py --check`, which also
+typechecks patched twins of both files and deletes them) against the current `src/synth/search/index.ts` and
+`src/synth/index.ts`:
+
+- `search/index.ts`: a private `harvestFacts(ctx, repo, anchors, moduleFiles, files)` called at the end of `initRepository`
+  (with `found.anchors`) and on the checkpoint-restore branch of `rebaselineRepository` (anchors re-read from
+  `repo.traceback` by the exported `framesOfTraceback`); it runs `introspectRepro` when a reproduction exists (workspace venv,
+  ≤ 60 s) and `harvestHistory` over `repo.moduleFiles` with `taskIdentifiers(ctx.task)`, emits `introspect` / `history` synth
+  events, and stores both in `setRunFacts(ctx.runId, …)`. Never fatal.
+- `synth/index.ts`: a module-level `runFactsRef` refreshed from `runFacts(ctx.runId)` in `createQueue` (start of every sub-goal
+  search) and `locate`; `enrich(site, opts)` adds `introspected` / `history` / `extraNames = vocabularyAdditions(…, site.file)`;
+  the template seed is wrapped to enumerate with the enriched options; the history source **rides with the donor seed** (its
+  reversals first, then donors, capped at `opts.cap`) because `subgoal.ts orderSources` has no slot for §3's last row and
+  `SubGoalDeps.seeds` is a fixed record — both keep their own `source` name for the trace (`emptyBySource` already has a
+  `history` row) and the queue's prior; composite pairs over the wrapped seeds; `createQueue` builds each file's vocabulary as
+  `vocabularyOf(...) ∪ vocabularyAdditions(introspected, file)` so `missingNames` accepts what the productions write.
+
+Caveats: (1) localisation builds no class-body or module-level gap sites (`search/sites.ts` has slot builders for function
+gaps only), so in a live run the alias reaches the fix through the `after_dedent` form at the aliased method's last line
+(#15 at `replace@102` here) unless a class-body gap becomes a site; (2) the history `-S` queries can hit the 10 s bound on
+partial clones (measured 64 s once); the ticket / hash query is the cheap one and found the commit; (3) the SEEDS index in the
+table counts the mutation list first — the queue orders by source prior and p, not by this index; (4) the sympy `bin/test -k
+A -k B` form of `experiments/reach/lib.mts f2pCommand` honours only the last `-k`, so 17139's F2P was confirmed with one run
+per test; (5) `Site.endLine` (another agent's statement-level sites) is honoured by the alias placement but not otherwise
+exercised here.
+
+### 18.6 Exact commands
+
+```
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs
+npx vitest run --project unit test/unit/synth/introspect test/unit/synth/history test/unit/synth/templates
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/reach/introspect-history.mts              # 3 instances, ≈ 4 min, $0
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/reach/introspect-history.mts --quixbugs   # 44 sites, ≈ 2 min, $0
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/reach/introspect-rank.mts                 # 4 requests, $0.00145
+python3 .scratch/wiring/make-patch.py --check                                                                              # regenerate + typecheck the wiring patch
+```

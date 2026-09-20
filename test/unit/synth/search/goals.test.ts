@@ -14,6 +14,7 @@ import {
   framesIn,
   keyFrame,
   ledgerLine,
+  MAX_BUDGET_HIT_STEPS,
   MAX_CONSECUTIVE_BUDGET_HITS,
   MAX_SEARCHES_WITHOUT_COMMIT,
   missingNamesIn,
@@ -332,7 +333,7 @@ describe('status transitions and parking', () => {
     const g = goal('g1', ['t']);
     expect(noteBudgetHit(g)).toBeNull();
     expect(g.status).toBe('open');
-    expect(noteBudgetHit(g)).toBe(`${MAX_CONSECUTIVE_BUDGET_HITS} consecutive budget-hit steps`);
+    expect(noteBudgetHit(g)).toBe(`${MAX_CONSECUTIVE_BUDGET_HITS} consecutive budget-hit steps that tested nothing new`);
     expect(g.status).toBe('parked');
     noteCommit(g, false);
     expect(g.status).toBe('open');
@@ -345,7 +346,9 @@ describe('status transitions and parking', () => {
   it('parkReasonFor names the §5.3 rule that fires', () => {
     expect(parkReasonFor({ attempts: 0, budgetHits: 0 })).toBeNull();
     expect(parkReasonFor({ attempts: MAX_SEARCHES_WITHOUT_COMMIT, budgetHits: 0 })).toBe('3 searches without a commit');
-    expect(parkReasonFor({ attempts: 1, budgetHits: MAX_CONSECUTIVE_BUDGET_HITS })).toBe('2 consecutive budget-hit steps');
+    expect(parkReasonFor({ attempts: 1, budgetHits: MAX_CONSECUTIVE_BUDGET_HITS })).toBe('2 consecutive budget-hit steps that tested nothing new');
+    expect(parkReasonFor({ attempts: 1, budgetHits: 0, budgetSteps: MAX_BUDGET_HIT_STEPS })).toBe('4 consecutive budget-hit steps (hard cap)');
+    expect(parkReasonFor({ attempts: 1, budgetHits: 1, budgetSteps: 3 })).toBeNull();
   });
 
   it('reopenOnChange re-opens a parked goal whose suspected file changed, keeps attempts, drops its caches', () => {
@@ -356,6 +359,8 @@ describe('status transitions and parking', () => {
     park(other, 'exhausted');
     const touched = goal('g3', ['t_c'], { suspectedFiles: ['src/a.py'] });
     touched.exhausted.set('k', new Set(['mutation']));
+    touched.testedSites = new Set(['src/a.py:3:replace']);
+    parked.budgetSteps = 3;
     mem.goals = [parked, other, touched];
     const cache = { files: [], functions: [], sites: [], requests: 0 } as LocalizeResult;
     mem.localizeCache.set('g1', cache);
@@ -370,9 +375,11 @@ describe('status transitions and parking', () => {
     expect(mem.localizeCache.has('g1')).toBe(false);
     expect(mem.localizeCache.has('g2')).toBe(true);
     expect(mem.widenCursor.has('g1')).toBe(false);
-    // an open goal on the changed file keeps its status but loses the exhausted sets (lines moved)
+    // an open goal on the changed file keeps its status but loses the exhausted sets and the tested sites (lines moved)
     expect(touched.status).toBe('open');
     expect(touched.exhausted.size).toBe(0);
+    expect(touched.testedSites).toBeUndefined();
+    expect(parked.budgetSteps).toBe(0);
   });
 
   it('reopenOnChange also accepts the bare goal list', () => {
@@ -533,5 +540,34 @@ describe('pickGoal (Q1 attack_first)', () => {
     const goals = [goal('g1', ['t_a']), goal('g2', ['t_b'])];
     const ask = scriptedAsk(() => ({ [ATTACK_FIRST_ID]: { type: 'noul', noul: 0.5 } }));
     await expect(pickGoalDetailed(ctx, { goals }, ask)).rejects.toThrow(/attack_first/);
+  });
+});
+
+describe('§5.3 budget-hit steps with progress (2026-09-20)', () => {
+  it('a progressing budget-hit step counts toward the hard cap only; the goal parks at MAX_BUDGET_HIT_STEPS', () => {
+    const g = goal('g1', ['t']);
+    for (let i = 1; i < MAX_BUDGET_HIT_STEPS; i++) {
+      expect(noteBudgetHit(g, true)).toBeNull();
+      expect(g).toMatchObject({ status: 'open', budgetHits: 0, budgetSteps: i });
+    }
+    expect(noteBudgetHit(g, true)).toBe(`${MAX_BUDGET_HIT_STEPS} consecutive budget-hit steps (hard cap)`);
+    expect(g.status).toBe('parked');
+    // park resets both counters
+    expect(g).toMatchObject({ budgetHits: 0, budgetSteps: 0 });
+  });
+  it('stagnant steps count toward both; progress in between does not reset the stagnation count', () => {
+    const g = goal('g1', ['t']);
+    expect(noteBudgetHit(g, false)).toBeNull();
+    expect(noteBudgetHit(g, true)).toBeNull();
+    expect(g).toMatchObject({ budgetHits: 1, budgetSteps: 2 });
+    expect(noteBudgetHit(g, false)).toBe(`${MAX_CONSECUTIVE_BUDGET_HITS} consecutive budget-hit steps that tested nothing new`);
+    expect(g.status).toBe('parked');
+  });
+  it('noteCommit resets the hard-cap counter too', () => {
+    const g = goal('g1', ['t']);
+    noteBudgetHit(g, true);
+    noteBudgetHit(g, true);
+    noteCommit(g, false);
+    expect(g).toMatchObject({ status: 'open', budgetHits: 0, budgetSteps: 0 });
   });
 });

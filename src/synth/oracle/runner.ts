@@ -243,6 +243,18 @@ function shellQuote(s: string): string {
   return `'${s.replace(/'/g, `'\\''`)}'`;
 }
 
+/**
+ * Every reproduction runs under this hash seed. CPython randomises `str` hashes per process, and
+ * a snippet whose verdict rests on a hash is then a coin toss between runs: django-15315's
+ * `d = {f: 1}; class Book(models.Model): title = f; assert f in d` passes ~1/8 of the time with
+ * the bug present, because the dict lookup finds `f` by identity whenever the changed hash lands
+ * on the same slot (jev-only-swebench-2-oracle: 24 of 162 lane runs "passed", every one a
+ * dead-code insert after `return` in `__hash__`; the workspace re-run then failed again). One
+ * seed for the base run, the lanes and the workspace re-run makes a verdict a fact of the code,
+ * not of the process.
+ */
+export const REPRO_HASH_SEED = '0';
+
 /** The shell command that runs `script` from the workspace with its venv python when present. */
 export function reproCommand(script: string, opts: { workspace: string; python?: string; env?: Record<string, string> }): string {
   const b64 = Buffer.from(script, 'utf8').toString('base64');
@@ -252,7 +264,7 @@ export function reproCommand(script: string, opts: { workspace: string; python?:
   const py = opts.python !== undefined ? shellQuote(opts.python) : `"$JEV_PY"`;
   const pick = opts.python !== undefined ? '' : `if [ -x ${shellQuote(opts.workspace)}/.venv/bin/python ]; then JEV_PY=${shellQuote(opts.workspace)}/.venv/bin/python; else JEV_PY=python3; fi; `;
   const run = `${envPrefix === '' ? '' : `env ${envPrefix} `}${py} -c ${shellQuote(`import base64;exec(compile(base64.b64decode('${b64}'),'<jevcode-repro>','exec'))`)}`;
-  return `${pick}PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=ignore ${run}`;
+  return `${pick}PYTHONDONTWRITEBYTECODE=1 PYTHONWARNINGS=ignore PYTHONHASHSEED=${REPRO_HASH_SEED} ${run}`;
 }
 
 interface RawResult {

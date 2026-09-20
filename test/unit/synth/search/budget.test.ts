@@ -10,6 +10,7 @@ import {
   estimateRunMs,
   fitOracle,
   freshBudget,
+  hasCheapGoalSubset,
   LANE_MAX_CASE_TIMEOUTS,
   laneRunTimeout,
   LOAD_SCALE_MIN_RATIO,
@@ -28,8 +29,12 @@ import {
   QUIXBUGS_TEST_RUNS_MAX,
   refineLanes,
   refineTRun,
+  RANK_K_SITE_MAX,
   REPO_JEV_REQUESTS_MAX,
+  REPO_PASSERS_RESERVED,
+  REPO_TEST_RUNS_CAP,
   REPO_TEST_RUNS_MAX,
+  repositoryRunsPerStep,
   RETRY_CASE_TIMEOUT_MS,
   runsLeft,
   runTimeout,
@@ -39,6 +44,7 @@ import {
   SIEVE_KEEP_FACTOR,
   SIEVE_MAX_T_RUN_MS,
 } from '../../../../src/synth/search/budget.js';
+import { MAX_FULL_SUITE_RUNS_PER_STEP } from '../../../../src/synth/sieve/runner.js';
 import type { TestRunSummary } from '../../../../src/synth/types.js';
 import { budget, GCD_BASELINE, oracle, QUIXBUGS_DIR, summary } from '../sieve/helpers.js';
 
@@ -254,11 +260,13 @@ describe('fitOracle on timeout-dominated baselines (§4.1 adaptive per-test time
     expect(runsLeft(o, b)).toBe(975);
     expect(decideRunPlan(421, { kind: 'replace' }, o, b)).toEqual({ mode: 'SIEVE', k: 421, runsAllowed: 421 });
     expect((421 * o.tRunMs.goalSubset) / o.lanes).toBeLessThan(90_000);
-    // without the stop rule the same 500 ms timeout costs 9 × 500 + 238 = 4.7 s a run: repository class, RANK at 16 runs a step
+    // without the stop rule the same 500 ms timeout costs 9 × 500 + 238 = 4.7 s a run: repository class, RANK; the runs per
+    // step follow the wall: floor((min(8 × 18 238, 360 000) − 5 × 4738) / 4738) × 4 lanes = 25 × 4 = 100 (repositoryRunsPerStep)
     const noStop = { ...o, tRunMs: { goalSubset: 4738, fullSuite: 4738 }, lanes: 4 };
     expect(oracleClass(noStop)).toBe('repository_class');
     const rb = freshBudget({ maxWallMs: 360_000 }, noStop, 360_000, { now: () => 0 });
-    expect(rb.testRunsLeft).toBe(REPO_TEST_RUNS_MAX);
+    expect(rb.testWallLeftMs).toBe(8 * 18_238);
+    expect(rb.testRunsLeft).toBe(100);
     expect(decideRunPlan(421, { kind: 'replace' }, noStop, rb)).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
   });
   it('refineTRun keeps a sieve-eligible estimate through a load spike within 1.5 × SIEVE_MAX_T_RUN_MS, takes anything else as measured', () => {
@@ -393,8 +401,9 @@ describe('freshBudget (§4.3)', () => {
     expect(freshBudget({ maxWallMs: 3_600_000 }, fast, 200_000).testWallLeftMs).toBe(50_000);
     expect(b.exhausted()).toBe(false);
   });
-  it('repository-class: testWall ≤ min(8 × baseline, 600 s, wallRemaining), 16 runs, 60 requests', () => {
+  it('repository-class: testWall ≤ min(8 × baseline, 600 s, wallRemaining), 16 runs when every candidate costs a full suite, 60 requests', () => {
     const b = freshBudget({ maxWallMs: 3_600_000 }, slow, 1_000_000);
+    // goal subset = full suite (5 s each): floor((40 s − 5 × 5 s) / 5 s) × 4 = 12, so the design's 16 is the floor
     expect(b).toMatchObject({ testWallLeftMs: 40_000, testRunsLeft: REPO_TEST_RUNS_MAX, jevRequestsLeft: REPO_JEV_REQUESTS_MAX });
     const django = oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 120_000, fullSuite: 120_000 }, baselineDurationMs: 120_000 });
     expect(freshBudget({ maxWallMs: 3_600_000 }, django, 1_000_000).testWallLeftMs).toBe(600_000);
@@ -451,5 +460,74 @@ describe('decideRunPlan (§2.4)', () => {
     expect(decideRunPlan(200, insert, swe, budget({ testRunsLeft: 2 }))).toEqual({ mode: 'RANK', k: 2, runsAllowed: 2 });
     expect(decideRunPlan(200, insert, swe, budget({ testRunsLeft: 0 }))).toEqual({ mode: 'RANK', k: 0, runsAllowed: 0 });
     expect(decideRunPlan([], replace, quix, budget())).toEqual({ mode: 'SIEVE', k: 0, runsAllowed: 0 });
+  });
+});
+
+describe('repository-class runs per step from the measured oracle, and the budget-sized RANK take (§4.3 / §2.4, 2026-09-20)', () => {
+  // sympy-15345 as measured (jev-only-swebench-2-oracle): scoped `bin/test` on 6 files 18 642 ms, the reproduction 2 058 ms, 4 lanes
+  const sympy = oracle({ runner: 'other', lanes: 4, tRunMs: { goalSubset: 2058, fullSuite: 18_642 }, perTestTimeoutMs: null, baselineDurationMs: 18_642 });
+  // Django-15315-like: 100 s scoped runtests.py, a 2.8 s reproduction
+  const django = oracle({ runner: 'other', lanes: 4, tRunMs: { goalSubset: 2800, fullSuite: 100_000 }, perTestTimeoutMs: null, baselineDurationMs: 100_000 });
+  const replace = { kind: 'replace' as const };
+  const insert = { kind: 'insert' as const };
+
+  it('the reserve for the passers is the runner\'s passer cap', () => {
+    expect(REPO_PASSERS_RESERVED).toBe(MAX_FULL_SUITE_RUNS_PER_STEP);
+  });
+  it('runs = floor((testWall − 5 × t_full) / t_repro) × lanes, bounded to [16, 160]', () => {
+    // sympy-15345: wall 8 × 18.6 s = 149 s; reserve 93 s; floor(55.9 s / 2.06 s) = 27 → × 4 = 108 (the design's 16 let 16 of 727 run)
+    expect(repositoryRunsPerStep(sympy, 8 * 18_642)).toBe(108);
+    // Django: the 600 s cap; (600 − 500) / 2.8 = 35 → 140
+    expect(repositoryRunsPerStep(django, 600_000)).toBe(140);
+    // a scoped suite over 120 s: the reserve exceeds the capped wall → the floor
+    expect(repositoryRunsPerStep(oracle({ lanes: 4, tRunMs: { goalSubset: 3000, fullSuite: 150_000 } }), 600_000)).toBe(REPO_TEST_RUNS_MAX);
+    // the cap: a fast reproduction against a 60 s scope: (480 − 300) / 2 = 90 → 360 → 160
+    expect(repositoryRunsPerStep(oracle({ lanes: 4, tRunMs: { goalSubset: 2000, fullSuite: 60_000 } }), 480_000)).toBe(REPO_TEST_RUNS_CAP);
+    // every candidate a full suite (best guess; a plain pytest module): (8b − 5b) / b × 4 = 12 → the design's 16, whatever b
+    for (const b of [5000, 30_000, 75_000]) expect(repositoryRunsPerStep(oracle({ lanes: 4, tRunMs: { goalSubset: b, fullSuite: b } }), Math.min(8 * b, 600_000))).toBe(REPO_TEST_RUNS_MAX);
+    expect(repositoryRunsPerStep(oracle({ lanes: 4, tRunMs: { goalSubset: 3000, fullSuite: 20_000 } }), 0)).toBe(REPO_TEST_RUNS_MAX);
+  });
+  it('freshBudget reads it for the repository class; the QuixBugs class keeps 1,500', () => {
+    const b = freshBudget({ maxWallMs: 1_500_000 }, sympy, 1_400_000, { now: () => 0 });
+    expect(b.testWallLeftMs).toBe(8 * 18_642);
+    expect(b.testRunsLeft).toBe(108);
+    expect(b.jevRequestsLeft).toBe(REPO_JEV_REQUESTS_MAX);
+    // the wall remaining bounds the count too: 60 s of run left → wall 60 s → floor((60 − 93) …) < 0 → the floor
+    expect(freshBudget({ maxWallMs: 1_500_000 }, sympy, 60_000).testRunsLeft).toBe(REPO_TEST_RUNS_MAX);
+    expect(freshBudget({ maxWallMs: 1_500_000 }, django, 1_400_000).testRunsLeft).toBe(140);
+    const quix = oracle({ lanes: 8, tRunMs: { goalSubset: 300, fullSuite: 4000 } });
+    expect(hasCheapGoalSubset(quix)).toBe(true);
+    expect(freshBudget({ maxWallMs: 3_600_000 }, quix, 600_000).testRunsLeft).toBe(QUIXBUGS_TEST_RUNS_MAX);
+  });
+  it('hasCheapGoalSubset: the reproduction cheaper than the scoped suite; never when the two cost the same', () => {
+    expect(hasCheapGoalSubset(sympy)).toBe(true);
+    expect(hasCheapGoalSubset(oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }))).toBe(false);
+    expect(hasCheapGoalSubset(oracle({ tRunMs: { goalSubset: 0, fullSuite: 5000 } }))).toBe(false);
+  });
+  it('RANK with sitesLeft on a cheap repository oracle: K is the site\'s share of the runs left, at most 16, never below 3/5 or above the runs left', () => {
+    const b = freshBudget({ maxWallMs: 1_500_000 }, sympy, 1_400_000, { now: () => 0 }); // 108 runs
+    expect(decideRunPlan(727, replace, sympy, b, { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 9, runsAllowed: 9 });
+    expect(decideRunPlan(727, replace, sympy, b, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: RANK_K_SITE_MAX, runsAllowed: RANK_K_SITE_MAX });
+    expect(decideRunPlan(727, replace, sympy, b, { sitesLeft: 4 })).toEqual({ mode: 'RANK', k: 16, runsAllowed: 16 });
+    // a small share never undercuts the fixed rule (3 at replace sites, 5 at gaps and on compact sets)
+    expect(decideRunPlan(10, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
+    expect(decideRunPlan(10, insert, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
+    expect(decideRunPlan(100, replace, sympy, budget({ testRunsLeft: 20, testWallLeftMs: 600_000 }), { sitesLeft: 12 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
+    // never above the runs left
+    expect(decideRunPlan(727, replace, sympy, budget({ testRunsLeft: 2, testWallLeftMs: 600_000 }), { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 2, runsAllowed: 2 });
+    // without sitesLeft (the best-guess path, callers outside the loop): the fixed K
+    expect(decideRunPlan(727, replace, sympy, b)).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
+    expect(decideRunPlan(10, replace, sympy, b)).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
+  });
+  it('the sized take is confined to the cheap repository oracle: equal-cost and QuixBugs-class plans are unchanged', () => {
+    const equal = oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 5000, fullSuite: 5000 } });
+    const b = budget({ testRunsLeft: 100, testWallLeftMs: 600_000 });
+    expect(decideRunPlan(10, replace, equal, b, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 3, runsAllowed: 3 });
+    expect(decideRunPlan(200, insert, equal, b, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
+    // QuixBugs class (t_run < 2 s) with a cheaper subset: RANK only when the set outgrows the runs left, and then the fixed K
+    const quix = oracle({ lanes: 8, tRunMs: { goalSubset: 300, fullSuite: 4000 } });
+    const qb = budget({ testWallLeftMs: 3000 }); // 80 runs
+    expect(decideRunPlan(80, replace, quix, qb, { sitesLeft: 1 }).mode).toBe('SIEVE');
+    expect(decideRunPlan(81, replace, quix, qb, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
   });
 });

@@ -54,6 +54,8 @@ describe('script generation', () => {
     const cmd = reproCommand('print(1)', { workspace: '/w s' });
     expect(cmd).toContain("if [ -x '/w s'/.venv/bin/python ]; then JEV_PY='/w s'/.venv/bin/python; else JEV_PY=python3; fi;");
     expect(cmd).toContain('PYTHONDONTWRITEBYTECODE=1');
+    // one hash seed for the base run, the lanes and the workspace re-run: a hash-dependent verdict is otherwise a coin toss per process
+    expect(cmd).toContain('PYTHONHASHSEED=0');
     expect(cmd).toContain(Buffer.from('print(1)').toString('base64'));
     const explicit = reproCommand('print(1)', { workspace: '/w', python: "/v/bin/py'thon", env: { A: 'b c' } });
     expect(explicit).toContain(`'/v/bin/py'\\''thon' -c`);

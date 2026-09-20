@@ -46,8 +46,23 @@ export const FRAME_LINE_WINDOW = 3;
 export const SBFL_CLUSTER_TOP = 5;
 /** §5.3: a goal is parked after this many searches without a commit. */
 export const MAX_SEARCHES_WITHOUT_COMMIT = 3;
-/** §5.3: a goal is parked after this many consecutive budget-hit steps (three identical subset runs would trip the loop detector). */
+/**
+ * §5.3: a goal is parked after this many consecutive budget-hit steps that tested nothing new
+ * (`noteBudgetHit` with `progress` false). A budget-hit step that classified fresh candidates at
+ * ≥ 1 site no earlier step had tested is progress and does not count: with the run cap derived
+ * from the measured oracle (budget.ts repositoryRunsPerStep) a repository goal with 12 sites
+ * and ~700 candidates needs 3–4 steps to reach every site, and the old rule (any 2 budget-hit
+ * steps) parked sympy-15345 with sites 3–12 never visited (jev-only-swebench-2-oracle).
+ */
 export const MAX_CONSECUTIVE_BUDGET_HITS = 2;
+/**
+ * §5.3 hard cap: a goal is parked after this many consecutive budget-hit steps whatever they
+ * tested. Every such step is one more goal-subset `run` of the same command with the same
+ * result, and the engine's loop detector trips at 3 identical signatures (loop/loopdetect.ts
+ * LOOP_TRIP_COUNT): the bound keeps a run to at most one such trip (one replan of the run's 5)
+ * per goal, so the detector's guarantee — no unbounded repetition — still holds.
+ */
+export const MAX_BUDGET_HIT_STEPS = 4;
 /** Failures kept per goal for Jev states; the measured programs had ≤ 14 (verify STATE_FAILURES_BOUND). */
 export const GOAL_FAILURES_BOUND = STATE_FAILURES_BOUND;
 /**
@@ -535,6 +550,7 @@ export function park(goal: Goal, reason: string): void {
   goal.status = 'parked';
   goal.parkedReason = reason;
   goal.budgetHits = 0;
+  goal.budgetSteps = 0;
 }
 
 /** A commit for this goal: attempts restart; `fixed` when every goal test passed, else back to `open`. */
@@ -542,24 +558,29 @@ export function noteCommit(goal: Goal, allGoalTestsPass: boolean): void {
   goal.status = allGoalTestsPass ? 'fixed' : 'open';
   goal.attempts = 0;
   goal.budgetHits = 0;
+  goal.budgetSteps = 0;
   delete goal.parkedReason;
 }
 
-/** A step ended on the budget cap for this goal; parks at MAX_CONSECUTIVE_BUDGET_HITS. Returns the park reason when parked. */
-export function noteBudgetHit(goal: Goal): string | null {
-  goal.budgetHits += 1;
-  if (goal.budgetHits >= MAX_CONSECUTIVE_BUDGET_HITS) {
-    const reason = `${goal.budgetHits} consecutive budget-hit steps`;
-    park(goal, reason);
-    return reason;
-  }
-  return null;
+/**
+ * A step ended on the budget cap for this goal. `progress` (§5.3): the step classified fresh
+ * candidates at ≥ 1 site no earlier step had tested and the top sites are not all exhausted —
+ * such a step is counted toward the hard cap (MAX_BUDGET_HIT_STEPS) but not toward the
+ * stagnation park (MAX_CONSECUTIVE_BUDGET_HITS). Returns the park reason when parked.
+ */
+export function noteBudgetHit(goal: Goal, progress = false): string | null {
+  goal.budgetSteps = (goal.budgetSteps ?? 0) + 1;
+  if (!progress) goal.budgetHits += 1;
+  const reason = parkReasonFor({ attempts: 0, budgetHits: goal.budgetHits, budgetSteps: goal.budgetSteps });
+  if (reason !== null) park(goal, reason);
+  return reason;
 }
 
 /** The §5.3 park rule the counters alone can decide; null when the goal may be searched. */
-export function parkReasonFor(goal: Pick<Goal, 'attempts' | 'budgetHits'>): string | null {
+export function parkReasonFor(goal: Pick<Goal, 'attempts' | 'budgetHits' | 'budgetSteps'>): string | null {
   if (goal.attempts >= MAX_SEARCHES_WITHOUT_COMMIT) return `${goal.attempts} searches without a commit`;
-  if (goal.budgetHits >= MAX_CONSECUTIVE_BUDGET_HITS) return `${goal.budgetHits} consecutive budget-hit steps`;
+  if (goal.budgetHits >= MAX_CONSECUTIVE_BUDGET_HITS) return `${goal.budgetHits} consecutive budget-hit steps that tested nothing new`;
+  if ((goal.budgetSteps ?? 0) >= MAX_BUDGET_HIT_STEPS) return `${goal.budgetSteps} consecutive budget-hit steps (hard cap)`;
   return null;
 }
 
@@ -581,9 +602,12 @@ export function reopenOnChange(memOrGoals: Pick<SearchMemory, 'goals' | 'localiz
     mem.localizeCache.delete(goal.id);
     mem.widenCursor.delete(goal.id);
     goal.exhausted = new Map();
+    // the sites move with the file: what was tested there is no longer a fact about the new sites
+    delete goal.testedSites;
     if (goal.status === 'parked') {
       goal.status = 'open';
       goal.budgetHits = 0;
+      goal.budgetSteps = 0;
       delete goal.parkedReason;
       reopened.push(goal);
     }

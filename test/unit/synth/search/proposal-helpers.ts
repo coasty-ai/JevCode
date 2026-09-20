@@ -78,6 +78,8 @@ export function makeTrace(over: Partial<GoalSearchTrace> & { goalId: string }): 
     clusters: 1,
     arbitrated: false,
     tRunMs: 240,
+    sitesTested: 3,
+    newSitesTested: 0,
     ...over,
   };
 }

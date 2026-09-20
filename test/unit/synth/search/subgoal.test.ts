@@ -7,10 +7,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
+import type { Answer, Question } from '../../../../src/core/types.js';
 import { sha12 } from '../../../../src/core/hash.js';
 import { guardState, pairsOfPartials, siteKeyOf } from '../../../../src/synth/search/bases.js';
 import { createDecide } from '../../../../src/synth/search/guard.js';
-import { EDIT_CLASSES, EDIT_CLASS_QUESTION_ID, INSERT_FIRST_MIN_P, PAIRS_RESERVE_RUNS, PAIRS_RESERVE_WALL_MS, PERMUTATION_OPERATORS, alreadyTried, describeExhaustion, editClassQuestion, exhaustedKey, isSingleFileWorkspace, orderCandidates, orderSites, orderSources, priorFromAnswer, runsBeforeReserve, searchSubGoal, seedsExhaustedAt, siteOnBase, taskIdentifiers, testLiterals } from '../../../../src/synth/search/subgoal.js';
+import { EDIT_CLASSES, EDIT_CLASS_QUESTION_ID, INSERT_FIRST_MIN_P, PAIRS_RESERVE_RUNS, PAIRS_RESERVE_WALL_MS, PERMUTATION_OPERATORS, alreadyTried, describeExhaustion, editClassQuestion, everySiteSeedsExhausted, exhaustedKey, isSingleFileWorkspace, orderCandidates, orderSites, orderSources, priorFromAnswer, runsBeforeReserve, searchSubGoal, seedsExhaustedAt, siteOnBase, taskIdentifiers, testLiterals } from '../../../../src/synth/search/subgoal.js';
 import type { EditClassPrior } from '../../../../src/synth/search/subgoal.js';
 import { siteKey } from '../../../../src/synth/search/sites.js';
 import type { Base, VerifyJob } from '../../../../src/synth/search/types.js';
@@ -600,5 +601,49 @@ describe('whole-site batches, the pairs reserve and the held passer on a budget 
       expect(guardState(mem).pending).toBeNull();
       expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'guard' && /ends on its budget; committing the held passer/.test(e.detail))).toBe(true);
     }
+  });
+});
+
+describe('searchSubGoal: the RANK take follows the run budget on a cheap repository oracle, and tested sites are remembered across steps (§2.4 / §5.3, 2026-09-20)', () => {
+  // a repository-mode oracle: the reproduction 2.5 s (repository class), the scoped suite 20 s
+  const repoOracle = (): ReturnType<typeof slowOracle> => ({ runner: 'other', lanes: 4, tRunMs: { goalSubset: 2500, fullSuite: 20_000 }, perTestTimeoutMs: null, runTimeoutMs: 100_000, baselineDurationMs: 20_000 });
+  const askQ7 = (questions: Record<string, Question>): Record<string, Answer> => ({ [EDIT_CLASS_QUESTION_ID]: choiceOn(questions[EDIT_CLASS_QUESTION_ID]!, 'substitute_one_token', 0.6) });
+  const many = (site: Site, n: number, source: CandidateSourceName): Candidate[] => Array.from({ length: n }, (_, i) => cand(site, `return ${source}_${site.line}_${i}`, { source }));
+
+  it('K per site is its share of the runs left (≤ 16): two sites, 60 runs → 16, 16, 14 at the first, 14 at the second; both sites count as newly tested', async () => {
+    const { file, replace, insert } = gcdFixture();
+    const ctx = fakeCtx({ ask: askQ7 });
+    const mem = fakeMemory([file], baseline(), { oracle: repoOracle(), stepBudget: fakeBudget({ jev: 60, runs: 60, wallMs: 600_000 }) });
+    const goal = fakeGoal();
+    const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 30, source)) });
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('budget');
+    expect(r.trace.runMode).toBe('RANK');
+    // site 1 (2 sites left): floor(60/2) = 30 → 16; floor(44/2) = 22 → 16; floor(28/2) = 14; site 2 (last): 14 of the 30
+    expect(deps.rec.runBatches.map((b) => b.length)).toEqual([16, 16, 14, 14]);
+    expect(deps.rec.runBatches.map((b) => b[0]?.candidate.site.line)).toEqual([5, 5, 5, 6]);
+    expect(r.trace.sitesTested).toBe(2);
+    expect(r.trace.newSitesTested).toBe(2);
+    expect([...(goal.testedSites ?? [])].sort()).toEqual([siteKey(replace), siteKey(insert)].sort());
+    // the RANK cut leaves every source open for the next step
+    expect(goal.exhausted.get(siteKey(replace))?.has('mutation')).toBe(false);
+
+    // the next step, same goal and memory: the leftovers run, no site is new
+    mem.stepBudget = fakeBudget({ jev: 60, runs: 60, wallMs: 600_000 });
+    const r2 = await searchSubGoal(fakeCtx({ ask: askQ7 }), mem, goal, deps);
+    expect(r2.kind).toBe('budget');
+    expect(deps.rec.runBatches.slice(4).map((b) => b.length)).toEqual([14, 14, 16, 16]);
+    expect(r2.trace.sitesTested).toBe(2);
+    expect(r2.trace.newSitesTested).toBe(0);
+    expect(everySiteSeedsExhausted(goal, [replace, insert])).toBe(false);
+  });
+
+  it('with the two scopes at the same cost (a best-guess-like oracle) the take stays at the fixed 3/5', async () => {
+    const { file, replace, insert } = gcdFixture();
+    const ctx = fakeCtx({ ask: askQ7 });
+    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: fakeBudget({ jev: 60, runs: 60, wallMs: 600_000 }) });
+    const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 30, source)) });
+    await searchSubGoal(ctx, mem, fakeGoal(), deps);
+    expect(deps.rec.runBatches.map((b) => b.length)).toEqual([3, 3, 3, 5, 5, 5]);
   });
 });

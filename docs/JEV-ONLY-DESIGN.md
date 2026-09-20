@@ -347,6 +347,23 @@ the cap binds at ~2 anchors per step and the rest carry over). A step that hits 
 while using ≤ 14 of 30 requests; the sieve makes the QuixBugs run cap irrelevant (median 3.8 s per true-line
 set) while the SWE caps keep a step at 3–20 min of pytest.
 
+**2026-09-20, the run cap follows the measured oracle (repository mode).** The 16-run cap above was sized for
+the case where every candidate costs a full suite. With the issue oracle (§2.1 repository mode) the goal-subset
+run is the reproduction script — sympy-15345: 2.06 s against an 18.6 s scoped `bin/test`; Django 0.9–2.8 s
+against 5–100 s of `runtests.py` — and only the ≤ 5 passers pay the scoped suite. Under the fixed cap
+`jev-only-swebench-2-oracle` ran 16 of 727 enumerated candidates a step on sympy-15345 (all `unchanged`,
+15 of the 16 at the first site both steps) and parked the goal after two such steps. The repository-class
+run count is now derived (`budget.ts repositoryRunsPerStep`): `runs = floor((testWall − 5 × t_run(fullSuite))
+/ t_run(goalSubset)) × lanes`, bounded to **[16, 160]**, with `testWall = min(8 × scopedBaselineDuration,
+600 s, wallRemaining)` as before; the 5 × t_run(fullSuite) is the reserve for the passers' scoped runs, which
+are charged against the same wall by the runner. When the two scopes cost the same (the best-guess goal, a
+plain pytest module) the arithmetic gives ≤ 12 and the floor is the design's 16, so nothing changes there;
+sympy-15345 gets 108, a Django instance with a 100 s scope 140. The QuixBugs class keeps 1,500. In RANK
+mode on such an oracle (`hasCheapGoalSubset`: repository class, goal subset cheaper than the full suite) the
+take per site is its share of the runs left, `clamp(floor(runsLeft / sitesLeft), K, 16)` with K the 3/5
+above, so a step's runs spread over the top sites in Noul order instead of re-ranking the leftovers of the
+first site; the best-guess path and every equal-cost oracle keep the fixed K.
+
 ### 4.4 Progress arithmetic and acceptance (code)
 
 `progress()` and `route()` in `src/synth/verify/progress.ts`: `allPass`, `improved = after.passed > before.passed`,
@@ -437,6 +454,21 @@ when a later commit changes one of its suspected files (attempts kept). `mem.tri
 via three identical budget-hit subset runs, which the 2-budget-hit park rule prevents; `done:<sha12>` reaches 3
 only on three blocked partial `done`s, which is the intended exit (§5.5). A `patch` whose outcome was `failed`
 (did not apply) invalidates the goal's `localizeCache` and re-localises from the re-read file.
+
+**2026-09-20, stagnation is what parks a budget-hit goal, not the hit itself.** With the run cap of §4.3
+derived from the oracle a repository goal with 12 sites and ~700 candidates needs 3–4 budget-hit steps to
+reach every site, and the rule "2 consecutive budget-hit steps" parked sympy-15345 with sites 3–12 never
+visited. A budget-hit step now counts toward that park only when it tested nothing new — no fresh candidate
+classified at a site no earlier step of the goal had tested (`GoalSearchTrace.newSitesTested`,
+`Goal.testedSites`), or every located site with its seed sources exhausted; a step that reached a new site is
+progress, the same search continued, and counts neither toward the 2 nor toward "3 searches without a
+commit" (`goals.ts noteBudgetHit(goal, progress)`, `search/index.ts` budget branch, one `budget` transcript
+line per such step). The hard cap stands: **4 consecutive budget-hit steps park the goal whatever they
+tested** (`MAX_BUDGET_HIT_STEPS`), because each such step is one more goal-subset `run` of the same command
+with the same result and the loop detector trips at 3 identical signatures — the bound keeps a goal to at most
+one trip (one replan of the run's 5), so the detector's guarantee holds. The tested-site record lives in
+memory only (a resumed run starts it empty) and is dropped with `exhausted` when a commit moves the goal's
+file.
 
 External: `max_steps` (40), `max_replans` (5), spend cap and wall time apply unchanged.
 

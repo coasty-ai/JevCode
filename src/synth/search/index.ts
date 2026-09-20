@@ -28,13 +28,13 @@ import { PERSISTED_PARTIALS_KEY, forgetGoal, forgetHeld, freshPairsOfPartials, p
 import { fitOracle, freshBudget, laneCount } from './budget.js';
 import { defaultOverrides, handleDirective, invalidateStaleSites } from './directive.js';
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
-import { clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
+import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
 import { commitSuspect } from './guard.js';
 import type { GoalPick } from './goals.js';
 import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
 import type { PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
 import { BEST_GUESS_NOTE, READ_MAX_PATHS, bestGuessGoalText, commitEvidence, proposeDone, proposePatch, proposeRead, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
-import { isTestPath, newTrace } from './subgoal.js';
+import { everySiteSeedsExhausted, isTestPath, newTrace } from './subgoal.js';
 import type { SubGoalMemory, SubGoalResult } from './subgoal.js';
 import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState } from './types.js';
 import { isPersistedSearchState } from './types.js';
@@ -692,11 +692,20 @@ export class LedgerSieveSynthesizer implements Synthesizer {
           this.emit(ctx, 'pairs', `${goal.id}: ${pairs.length} untested pair${pairs.length === 1 ? '' : 's'} of complementary partials; the goal stays open and resumes from them`);
           return this.subsetRun(ctx, mem, goal, r.trace);
         }
-        // §5.3: two consecutive budget-hit steps or three searches without a commit park the goal; else it stays open and resumes next step.
-        const hit = noteBudgetHit(goal);
-        const reason = hit ?? parkReasonFor(goal);
-        if (reason === null) goal.status = 'open';
-        else {
+        // §5.3: a budget-hit step that classified fresh candidates at ≥ 1 site no earlier step had
+        // tested (and whose top sites are not all exhausted) is progress: it counts toward the hard
+        // cap (4 budget-hit steps) but not toward the stagnation park (2) nor toward "3 searches
+        // without a commit" — the search is the same one, continued. A step that tested nothing
+        // new counts toward all three; the goal parks on the first rule that fires, else it stays
+        // open and resumes next step.
+        const loc = mem.localizeCache.get(goal.id);
+        const progress = r.trace.candidatesTested > 0 && r.trace.newSitesTested > 0 && !(loc !== undefined && everySiteSeedsExhausted(goal, loc.sites));
+        const hit = noteBudgetHit(goal, progress);
+        const reason = hit ?? (progress ? null : parkReasonFor(goal));
+        if (reason === null) {
+          goal.status = 'open';
+          this.emit(ctx, 'budget', `${goal.id}: budget-hit step ${goal.budgetSteps ?? 0} of ${MAX_BUDGET_HIT_STEPS} (${progress ? `progress: ${r.trace.newSitesTested} new site${r.trace.newSitesTested === 1 ? '' : 's'} of ${r.trace.sitesTested} tested` : `nothing new: ${goal.budgetHits} of ${MAX_CONSECUTIVE_BUDGET_HITS} stagnant`}); the goal stays open`);
+        } else {
           if (hit === null) park(goal, reason);
           forgetHeld(mem, goal);
         }

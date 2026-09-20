@@ -392,7 +392,14 @@ export function newTrace(goal: Goal, oracle: OracleModel): GoalSearchTrace {
     clusters: 0,
     arbitrated: false,
     tRunMs: oracle.tRunMs.goalSubset,
+    sitesTested: 0,
+    newSitesTested: 0,
   };
+}
+
+/** §5.3: every located site of the goal has its seed sources exhausted, so a budget-hit step could test nothing new at the top sites. */
+export function everySiteSeedsExhausted(goal: Goal, sites: readonly Site[]): boolean {
+  return sites.length > 0 && sites.every((s) => seedsExhaustedAt(goal, s));
 }
 
 /** Human-readable park reason (§2.3 `describe(goal.exhausted, sites)`), Jev-visible in openProblems, so no machine state. */
@@ -428,6 +435,8 @@ interface LoopState {
   rotation: number;
   /** a pairs batch is running (its own decision must not trigger another pairs batch) */
   pairing: boolean;
+  /** siteKeys with ≥ 1 classified candidate in this step (trace.sitesTested / newSitesTested are counted once per site) */
+  sitesThisStep: Set<string>;
 }
 
 /**
@@ -444,24 +453,39 @@ function note(st: LoopState, phase: string, detail: string): void {
   st.ctx.emit({ type: 'synth', step: st.ctx.step, phase, detail });
 }
 
-/** Record classified outcomes on the trace (tests, runs, per-source rows). */
-function recordResults(trace: GoalSearchTrace, results: readonly VerifyOutcome[]): void {
+/**
+ * Record classified outcomes on the trace (tests, runs, per-source rows) and the sites they ran
+ * at on the goal (`goal.testedSites`, across steps): a budget-hit step whose runs reached a site
+ * no earlier step had tested is progress under §5.3, not stagnation. A candidate that did not
+ * apply tested nothing.
+ */
+function recordResults(st: LoopState, results: readonly VerifyOutcome[]): void {
+  const { trace, goal } = st;
   trace.candidatesTested += results.length;
   trace.testRuns += results.reduce((n, r) => n + 1 + (r.full === undefined ? 0 : 1), 0);
+  const tested = (goal.testedSites ??= new Set<string>());
   for (const r of results) {
     const row = trace.bySource[r.applied.candidate.source];
     row.tested += 1;
     if (r.status === 'plausible') row.passed += 1;
+    if (r.status === 'apply_failed') continue;
+    const key = siteKey(r.job.candidate.site);
+    if (!st.sitesThisStep.has(key)) {
+      st.sitesThisStep.add(key);
+      trace.sitesTested += 1;
+      if (!tested.has(key)) trace.newSitesTested += 1;
+    }
+    tested.add(key);
   }
 }
 
 /** Queue `jobs` and run them (the runner charges the budget and `tried`); nothing is decided here. */
 async function runJobs(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: number): Promise<{ queued: readonly VerifyJob[]; results: VerifyOutcome[] }> {
-  const { ctx, mem, goal, deps, trace } = st;
+  const { ctx, mem, goal, deps } = st;
   const { queued } = st.queue.addAll(jobs);
   if (queued.length === 0) return { queued, results: [] };
   const results = await deps.runQueue(ctx, mem, st.queue, goal, runsAllowed);
-  recordResults(trace, results);
+  recordResults(st, results);
   return { queued, results };
 }
 
@@ -548,13 +572,13 @@ async function visitPairs(st: LoopState): Promise<BatchOutcome> {
  * dispatch (`runsAllowed` 0) is the runner's retry phase alone.
  */
 async function drainRetries(st: LoopState): Promise<BatchOutcome> {
-  const { ctx, mem, goal, deps, trace } = st;
+  const { ctx, mem, goal, deps } = st;
   const pending = mem.retryTimeouts?.get(goal.id) ?? [];
   if (pending.length === 0 || mem.stepBudget.exhausted()) return CONTINUE;
   note(st, 'retry', `${goal.id}: ${pending.length} re-queued timeout${pending.length === 1 ? '' : 's'} retried before the step ends`);
   const results = await deps.runQueue(ctx, mem, st.queue, goal, 0);
   if (results.length === 0) return CONTINUE;
-  recordResults(trace, results);
+  recordResults(st, results);
   return decideBatch(st, results, results.length);
 }
 
@@ -580,12 +604,14 @@ function enumerateSeed(st: LoopState, base: Base, site: Site, source: CandidateS
 }
 
 /**
- * Enumerate one source at one site on one base and run what the plan allows. `preEnumerated`
- * hands over candidates `visitSeedBatch` already enumerated (and counted) when the site's union
- * needs Jev's ranking source by source.
+ * Enumerate one source at one site on one base and run what the plan allows. `sitesLeft` counts
+ * the phase's sites still to visit, this one included (1 = the last site; §2.4 spreads a cheap
+ * oracle's run budget over them). `preEnumerated` hands over candidates `visitSeedBatch` already
+ * enumerated (and counted) when the site's union needs Jev's ranking source by source.
  */
-async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, source: CandidateSourceName, position: number, isLastSite: boolean, preEnumerated?: readonly Candidate[]): Promise<BatchOutcome> {
+async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, source: CandidateSourceName, position: number, sitesLeft: number, preEnumerated?: readonly Candidate[]): Promise<BatchOutcome> {
   const { ctx, mem, goal, deps, trace } = st;
+  const isLastSite = sitesLeft <= 1;
   checkAborted(ctx);
   if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
   const exhausted = exhaustedAt(goal, site, phase);
@@ -604,7 +630,7 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
     exhausted.add(source);
     return { kind: 'continue', queued: 0, completed: 0 };
   }
-  const plan = decideRunPlan(fresh, site, mem.oracle, mem.stepBudget);
+  const plan = decideRunPlan(fresh, site, mem.oracle, mem.stepBudget, { sitesLeft });
   trace.runMode = plan.mode;
   // §2.4 `runsLeft` is 0 (the wall left cannot fit one measured run, or no run is left): nothing
   // could be verified this step, so no ranking request is spent on it; the step ends here.
@@ -660,7 +686,7 @@ const CONTINUE: BatchOutcome = { kind: 'continue', queued: 0, completed: 0 };
  * fresh and made no decision). A site with nothing fresh consumes no decision. When the union
  * needs RANK (Jev orders each set), the sources are visited one by one from the same enumeration.
  */
-async function visitSeedBatch(st: LoopState, phase: Phase, base: Base, site: Site, isLastSite: boolean, exhausted: Set<CandidateSourceName>, visited: Set<CandidateSourceName>): Promise<BatchOutcome> {
+async function visitSeedBatch(st: LoopState, phase: Phase, base: Base, site: Site, sitesLeft: number, exhausted: Set<CandidateSourceName>, visited: Set<CandidateSourceName>): Promise<BatchOutcome> {
   const { ctx, mem, trace } = st;
   checkAborted(ctx);
   if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
@@ -683,7 +709,7 @@ async function visitSeedBatch(st: LoopState, phase: Phase, base: Base, site: Sit
         exhausted.add(s.source);
         continue;
       }
-      const r = await visitSource(st, phase, base, site, s.source, s.position, isLastSite, s.fresh);
+      const r = await visitSource(st, phase, base, site, s.source, s.position, sitesLeft, s.fresh);
       if (r.kind === 'exit') return r;
       if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
     }
@@ -709,13 +735,13 @@ async function visitSeedBatch(st: LoopState, phase: Phase, base: Base, site: Sit
   return decideBatch(st, results, queued.length);
 }
 
-/** Every source at one site on one base: the seed sources as one batch where SIEVE allows, then the rest (composite, or every source under RANK) one by one. */
-async function visitSite(st: LoopState, phase: Phase, base: Base, site: Site, isLastSite: boolean): Promise<BatchOutcome> {
+/** Every source at one site on one base: the seed sources as one batch where SIEVE allows, then the rest (composite, or every source under RANK) one by one. `sitesLeft` as in `visitSource`. */
+async function visitSite(st: LoopState, phase: Phase, base: Base, site: Site, sitesLeft: number): Promise<BatchOutcome> {
   const { mem, goal } = st;
   const exhausted = exhaustedAt(goal, site, phase);
   const visited = new Set<CandidateSourceName>();
   if ((phase === 'SEEDS' || phase === 'WIDENED') && mem.oracle.tRunMs.goalSubset <= SIEVE_MAX_T_RUN_MS) {
-    const r = await visitSeedBatch(st, phase, base, site, isLastSite, exhausted, visited);
+    const r = await visitSeedBatch(st, phase, base, site, sitesLeft, exhausted, visited);
     if (r.kind === 'exit') return r;
     if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
   }
@@ -725,7 +751,7 @@ async function visitSite(st: LoopState, phase: Phase, base: Base, site: Site, is
     if (source === undefined) break;
     visited.add(source);
     const position = orderSources(phase, st.prior, new Set(), st.rotation).indexOf(source);
-    const r = await visitSource(st, phase, base, site, source, Math.max(0, position), isLastSite);
+    const r = await visitSource(st, phase, base, site, source, Math.max(0, position), sitesLeft);
     if (r.kind === 'exit') return r;
     if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
   }
@@ -741,7 +767,7 @@ async function visitPhase(st: LoopState, phase: Phase, sites: readonly Site[]): 
     for (const [i, raw] of sites.entries()) {
       const site = siteOnBase(raw, base);
       if (site === null) continue;
-      const r = await visitSite(st, phase, base, site, i === sites.length - 1);
+      const r = await visitSite(st, phase, base, site, sites.length - i);
       if (r.kind === 'exit') return r;
     }
   }
@@ -810,7 +836,7 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
     trace.jevRequests += 1;
   }
 
-  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior, rotation: mem.overrides.sourceRotation[goal.id] ?? 0, pairing: false };
+  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior, rotation: mem.overrides.sourceRotation[goal.id] ?? 0, pairing: false, sitesThisStep: new Set<string>() };
   const sites = orderSites(loc.sites, prior);
   trace.sitesConsidered = sites.length;
   const committed = mem.bases.find((b) => b.origin === 'committed');
@@ -914,10 +940,10 @@ export async function searchBestGuess(ctx: SynthesisContext, mem: SubGoalMemory,
     mem.localizeCache.set(goal.id, loc);
   }
   const committed = mem.bases.find((b) => b.origin === 'committed');
-  if (committed === undefined) return finish({ ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false }, { kind: 'parked', reason: 'no committed base to search from' });
+  if (committed === undefined) return finish({ ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false, sitesThisStep: new Set<string>() }, { kind: 'parked', reason: 'no committed base to search from' });
   const sites = loc.sites.slice(0, BEST_GUESS_TOP_SITES);
   trace.sitesConsidered = sites.length;
-  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false };
+  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false, sitesThisStep: new Set<string>() };
   if (sites.length === 0) return finish(st, { kind: 'parked', reason: `no site located for ${goal.tests[0] ?? goal.id} from the issue text` });
 
   // sources 1–3 at each site, fresh (not tried, not the unchanged line)

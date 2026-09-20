@@ -26,6 +26,7 @@ import type { SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
 import { sha12 } from '../../../../src/core/hash.js';
 import { freshPairsOfPartials, guardState, improvedBase, pairsOfPartials, partialsFromPersisted, partialsOf, siteKeyOf } from '../../../../src/synth/search/bases.js';
+import { siteKey } from '../../../../src/synth/search/sites.js';
 import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
 import { makeTrace, patchEntry, runEntry } from './proposal-helpers.js';
 
@@ -1104,5 +1105,72 @@ describe('controller bookkeeping: partials survive a park, untested pairs keep t
     expect(guardState(mem).pending).toBeNull();
     expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'guard' && /search ended budget with a held passer; committing it/.test(e.detail))).toBe(true);
     expect(ledgerOf(ctx)).toEqual(['fixed 1, open 0, parked 0']);
+  });
+});
+
+describe('§5.3 budget-hit steps: progress at a new site is not stagnation (2026-09-20)', () => {
+  const progressStep = (newSites: number) => (goal: Goal): SubGoalResult => ({ kind: 'budget', trace: makeTrace({ goalId: goal.id, outcome: 'budget', candidatesTested: 40, sitesTested: 4, newSitesTested: newSites }) });
+  const windowAfterRun = [executedRun(1, `${TEST_COMMAND} tests/test_gcd.py`, { passed: 1, failed: 1 })];
+
+  it('budget-hit steps that reach new sites keep the goal open past two hits and past three attempts; the hard cap parks at the fourth', async () => {
+    const h = harness({ results: [progressStep(2)] });
+    const runId = 'ctl-budget-progress';
+    const first = ctxFor({ runId, step: 1 });
+    await h.synth.synthesize(first);
+    const mem = runMemory(runId);
+    const g = mem.goals[0];
+    if (g === undefined) throw new Error('no goal');
+    expect(g).toMatchObject({ status: 'open', budgetHits: 0, budgetSteps: 1, attempts: 1 });
+    expect(first.events.some((e) => e.type === 'synth' && e.phase === 'budget' && /budget-hit step 1 of 4 \(progress: 2 new sites of 4 tested\); the goal stays open/.test(e.detail))).toBe(true);
+    await h.synth.synthesize(ctxFor({ runId, step: 2, window: windowAfterRun }));
+    expect(g).toMatchObject({ status: 'open', budgetHits: 0, budgetSteps: 2 });
+    // the third search would have parked under "3 searches without a commit": a progressing budget step is the same search, continued
+    await h.synth.synthesize(ctxFor({ runId, step: 3, window: windowAfterRun }));
+    expect(g).toMatchObject({ status: 'open', budgetHits: 0, budgetSteps: 3, attempts: 3 });
+    const fourth = ctxFor({ runId, step: 4, window: windowAfterRun });
+    const p4 = await h.synth.synthesize(fourth);
+    expect(p4.action.kind).toBe('run');
+    expect(g.status).toBe('parked');
+    expect(g.parkedReason).toBe('4 consecutive budget-hit steps (hard cap)');
+    expect(h.calls.filter((c) => c.startsWith('searchSubGoal'))).toHaveLength(4);
+  });
+
+  it('a stagnant step after progress counts: with three searches behind it the goal parks on the attempts rule', async () => {
+    const results = [progressStep(1), progressStep(1), progressStep(0)];
+    const h = harness({ results: [(goal) => (results.shift() ?? progressStep(0))(goal)] });
+    const runId = 'ctl-budget-then-stagnant';
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    await h.synth.synthesize(ctxFor({ runId, step: 2, window: windowAfterRun }));
+    const g = runMemory(runId).goals[0];
+    if (g === undefined) throw new Error('no goal');
+    expect(g).toMatchObject({ status: 'open', budgetHits: 0, budgetSteps: 2 });
+    await h.synth.synthesize(ctxFor({ runId, step: 3, window: windowAfterRun }));
+    expect(g.status).toBe('parked');
+    expect(g.parkedReason).toBe('3 searches without a commit');
+  });
+
+  it('two stagnant steps park as before; a "progress" step whose top sites are all seeds-exhausted is stagnation', async () => {
+    const h = harness({
+      results: [
+        (goal, mem) => {
+          const file = mem.bases[0]?.files.get('gcd.py');
+          if (file === undefined) throw new Error('no gcd.py');
+          const sites = [siteAt(file, 5), siteAt(file, 6, 'insert')];
+          mem.localizeCache.set(goal.id, { files: [], functions: [], sites, requests: 0 });
+          for (const s of sites) goal.exhausted.set(siteKey(s), new Set(['mutation', 'template', 'donor']));
+          return progressStep(2)(goal);
+        },
+      ],
+    });
+    const runId = 'ctl-budget-exhausted-top';
+    const first = ctxFor({ runId, step: 1 });
+    await h.synth.synthesize(first);
+    const g = runMemory(runId).goals[0];
+    if (g === undefined) throw new Error('no goal');
+    expect(g).toMatchObject({ status: 'open', budgetHits: 1, budgetSteps: 1 });
+    expect(first.events.some((e) => e.type === 'synth' && e.phase === 'budget' && /nothing new: 1 of 2 stagnant/.test(e.detail))).toBe(true);
+    await h.synth.synthesize(ctxFor({ runId, step: 2, window: windowAfterRun }));
+    expect(g.status).toBe('parked');
+    expect(g.parkedReason).toBe('2 consecutive budget-hit steps that tested nothing new');
   });
 });

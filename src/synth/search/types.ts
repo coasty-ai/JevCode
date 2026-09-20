@@ -30,10 +30,14 @@ export interface Goal {
   status: GoalStatus;
   /** searches run for this goal */
   attempts: number;
-  /** consecutive budget-hit steps (2 → park) */
+  /** consecutive budget-hit steps that tested nothing new (§5.3: 2 → park); a step that tested fresh candidates at a new site does not count */
   budgetHits: number;
+  /** every consecutive budget-hit step, progress or not (§5.3 hard cap: 4 → park); in-memory only, a resumed run starts at 0 */
+  budgetSteps?: number;
   /** siteKey → sources fully enumerated + run at that site */
   exhausted: Map<string, Set<CandidateSourceName>>;
+  /** siteKeys where ≥ 1 candidate of this goal was classified by a run, across steps (§5.3 progress); reset with `exhausted` */
+  testedSites?: Set<string>;
   phase: Phase;
   parkedReason?: string;
   /** `fix <first_test_id>[, +N more] in <path>` */
@@ -163,6 +167,10 @@ export interface GoalSearchTrace extends SearchTrace {
   clusters: number;
   arbitrated: boolean;
   tRunMs: number;
+  /** distinct sites where ≥ 1 candidate was classified this step */
+  sitesTested: number;
+  /** of those, sites no earlier step of this goal had tested (§5.3: a budget-hit step with ≥ 1 is progress) */
+  newSitesTested: number;
 }
 
 /** What survives a checkpoint (SynthesisContext.synthState); everything else is rebuilt from the plan and the workspace. */
