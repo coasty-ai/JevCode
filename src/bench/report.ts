@@ -5,7 +5,7 @@
  */
 import { formatDuration } from '../core/time.js';
 import type { BenchSuite, BenchTaskRecord, EngineMode } from '../core/types.js';
-import type { ConditionMetrics, Summary } from './types.js';
+import type { ConditionMetrics, Summary, TokensPoint } from './types.js';
 
 export const TB_LABEL = 'local shim, non-comparable to the tbench.ai leaderboard';
 export const BAR_WIDTH = 20;
@@ -88,7 +88,9 @@ function metricRows(conds: readonly EngineMode[], m: Record<string, ConditionMet
     row('loops / replans', (x) => `${x.loops} / ${x.replans}`),
     row('Jev requests / questions', (x) => `${x.jevRequests} / ${x.jevQuestions}`),
     row('Jev latency p50 / p95 ms (n)', (x) => `${fmt(x.jevLatencyMs.p50)} / ${fmt(x.jevLatencyMs.p95)} (n=${x.jevLatencyMs.n})`),
-    row('mean tokens/step (steps)', (x) => `${fmt(x.meanTokensPerStep.mean, 0)} (n=${x.meanTokensPerStep.steps})`),
+    row('mean generator tokens/step (steps)', (x) => `${fmt(x.meanGeneratorTokensPerStep.mean, 0)} (n=${x.meanGeneratorTokensPerStep.steps})`),
+    row('mean Jev tokens/step (steps)', (x) => `${fmt(x.meanJevTokensPerStep.mean, 0)} (n=${x.meanJevTokensPerStep.steps})`),
+    row('mean tokens/step, generator+Jev (steps)', (x) => `${fmt(x.meanTokensPerStep.mean, 0)} (n=${x.meanTokensPerStep.steps})`),
     row('wall time mean', (x) => (x.wallMs.mean === null ? 'null' : formatDuration(x.wallMs.mean))),
     row('cost generator / Jev / total', (x) => `${fmtUsd(x.cost.generator)} / ${fmtUsd(x.cost.jev)} / ${fmtUsd(x.cost.total)}`),
   ];
@@ -114,16 +116,26 @@ function solveCurveTable(conds: readonly EngineMode[], m: Record<string, Conditi
   return table(header, rows);
 }
 
-function tokensCurveTable(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>): string {
-  const longest = Math.max(0, ...conds.map((c) => m[c]!.tokensPerStepCurve.length));
+/** The three tokens-per-step sub-series, in report order. */
+export const TOKEN_SUB_SERIES: readonly { label: string; curve: (x: ConditionMetrics) => TokensPoint[] }[] = [
+  { label: 'generator', curve: (x) => x.generatorTokensPerStepCurve },
+  { label: 'Jev', curve: (x) => x.jevTokensPerStepCurve },
+  { label: 'generator+Jev', curve: (x) => x.tokensPerStepCurve },
+];
+
+export const TOKEN_PRICING_NOTE = "Jev tokens are priced at $0.042 per million input tokens (output free); generator tokens at the generator's rates; see the cost row.";
+
+/** One sub-series as a table: `mean (n)` per step and condition with a bar scaled to the table's own maximum. */
+function tokensCurveTable(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>, curve: (x: ConditionMetrics) => TokensPoint[]): string {
+  const longest = Math.max(0, ...conds.map((c) => curve(m[c]!).length));
   if (longest === 0) return '_no executed steps_';
-  const max = Math.max(1, ...conds.flatMap((c) => m[c]!.tokensPerStepCurve.map((p) => p.mean)));
+  const max = Math.max(1, ...conds.flatMap((c) => curve(m[c]!).map((p) => p.mean)));
   const header = ['step', ...conds.flatMap((c) => [`${c} mean tokens (n)`, `${c}`])];
   const rows: string[][] = [];
   for (let i = 0; i < longest; i++) {
     const cells = [String(i + 1)];
     for (const c of conds) {
-      const p = m[c]!.tokensPerStepCurve[i];
+      const p = curve(m[c]!)[i];
       if (!p) {
         cells.push('', '');
         continue;
@@ -133,6 +145,19 @@ function tokensCurveTable(conds: readonly EngineMode[], m: Record<string, Condit
     rows.push(cells);
   }
   return table(header, rows);
+}
+
+/** Generator, Jev and combined tokens per step as three adjacent tables (each bar column scaled to its own table). */
+function tokensCurveSection(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>): string[] {
+  const out: string[] = [];
+  for (const s of TOKEN_SUB_SERIES) {
+    out.push(`#### ${s.label} tokens per step`);
+    out.push('');
+    out.push(tokensCurveTable(conds, m, s.curve));
+    out.push('');
+  }
+  out.push(TOKEN_PRICING_NOTE);
+  return out;
 }
 
 function stopReasonTable(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>): string {
@@ -198,9 +223,9 @@ export function renderComparison(summary: Summary, records: readonly BenchTaskRe
     out.push('');
     out.push(solveCurveTable(conds, cmp.perCondition));
     out.push('');
-    out.push('### Tokens per step (paired; mean generator+Jev tokens over runs that reached the step)');
+    out.push('### Tokens per step (paired; mean input+output tokens over runs that reached the step, per source and combined)');
     out.push('');
-    out.push(tokensCurveTable(conds, cmp.perCondition));
+    out.push(...tokensCurveSection(conds, cmp.perCondition));
     out.push('');
     out.push('### Stop reasons (all records)');
     out.push('');

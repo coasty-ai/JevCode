@@ -324,7 +324,12 @@ export interface RunResult {
   wallMs: number;
   usage: StepUsage;
   timing: StepTiming;
+  /** per committed step: generator + Jev input+output tokens (= generatorTokensPerStep[i] + jevTokensPerStep[i]) */
   tokensPerStep: number[];
+  /** per committed step: generator input+output tokens (what the "flat tokens per step" goal is about) */
+  generatorTokensPerStep: number[];
+  /** per committed step: Jev input+output tokens (the context stage asks one Noul per candidate file) */
+  jevTokensPerStep: number[];
   /** raw, one entry per Jev HTTP request */
   jevLatencyMs: number[];
   /** Σ decisions.length over committed steps */
@@ -608,6 +613,9 @@ export interface CheckpointState {
   timing: StepTiming;
   jevLatencyMs: number[];
   tokensPerStep: number[];
+  /** per-source split of tokensPerStep; absent in older checkpoints = zeros of tokensPerStep's length */
+  generatorTokensPerStep?: number[];
+  jevTokensPerStep?: number[];
   counters: RunCounters;
   /** replan directive pending for the next step */
   directive: ReplanDirective | null;
@@ -902,7 +910,10 @@ export interface BenchTaskRecord {
   reason?: string;
   steps: number;
   wallMs: number;
+  /** combined generator + Jev tokens per committed step */
   tokensPerStep: number[];
+  generatorTokensPerStep: number[];
+  jevTokensPerStep: number[];
   cost: { generator: number; jev: number };
   jevLatencyMs: { raw: number[]; p50: number | null; p95: number | null };
   jevRequests: number;

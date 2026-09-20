@@ -1,0 +1,1088 @@
+{
+  "benchId": "20260920-054223-c28b36",
+  "createdAt": "2026-09-20T05:42:23.417Z",
+  "finishedAt": "2026-09-20T05:48:35.049Z",
+  "mocked": false,
+  "suites": [
+    "swebench"
+  ],
+  "conditions": {
+    "jev-on": {
+      "mode": "jev-on",
+      "generatorModel": "anthropic/claude-sonnet-5",
+      "deciderModel": "typesafe/jev-1.13-20260917",
+      "temperature": null,
+      "maxTokens": 4096,
+      "maxSteps": 25,
+      "maxWallMs": 1200000,
+      "maxReplans": 5,
+      "taskSpendCapUsd": 1.5,
+      "sandboxProfile": "auto",
+      "noNetwork": false,
+      "commandTimeoutMs": 120000,
+      "maxCommandTimeoutMs": 600000,
+      "maxOutputBytes": 204800,
+      "completeThreshold": 0.85,
+      "impossibleThreshold": 0.85
+    },
+    "jev-off": {
+      "mode": "jev-off",
+      "generatorModel": "anthropic/claude-sonnet-5",
+      "deciderModel": null,
+      "temperature": null,
+      "maxTokens": 4096,
+      "maxSteps": 25,
+      "maxWallMs": 1200000,
+      "maxReplans": 5,
+      "taskSpendCapUsd": 1.5,
+      "sandboxProfile": "auto",
+      "noNetwork": false,
+      "commandTimeoutMs": 120000,
+      "maxCommandTimeoutMs": 600000,
+      "maxOutputBytes": 204800,
+      "completeThreshold": 0.85,
+      "impossibleThreshold": 0.85
+    }
+  },
+  "conditionOrder": [
+    "jev-on",
+    "jev-off"
+  ],
+  "generatorModel": "anthropic/claude-sonnet-5",
+  "spendCapUsd": 8,
+  "taskSpendCapUsd": 1.5,
+  "spentUsd": {
+    "generator": 3.792356,
+    "jev": 0.15691892999999998,
+    "total": 3.9492749299999996
+  },
+  "capFired": null,
+  "notRun": {
+    "count": 0,
+    "tasks": []
+  },
+  "pairedTasks": {
+    "swebench": 0
+  },
+  "records": 6,
+  "perSuite": {
+    "swebench": {
+      "suite": "swebench",
+      "perCondition": {
+        "jev-on": {
+          "condition": "jev-on",
+          "tasks": 3,
+          "evaluated": 2,
+          "passed": 0,
+          "passRate": 0,
+          "passRateText": "0/2 (n=2)",
+          "unevaluated": [
+            "sympy__sympy-12096"
+          ],
+          "unsupported": [],
+          "notRun": [],
+          "stepsToSolve": {
+            "n": 0,
+            "mean": null,
+            "median": null,
+            "values": []
+          },
+          "solveCurve": [
+            {
+              "k": 1,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 2,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 3,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 4,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 5,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 6,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 7,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 8,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 9,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 10,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 11,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 12,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 13,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 14,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 15,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 16,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 17,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 18,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 19,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 20,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 21,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 22,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 23,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 24,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 25,
+              "solved": 0,
+              "fraction": 0
+            }
+          ],
+          "stepsUsed": {
+            "n": 3,
+            "mean": 25,
+            "median": 25
+          },
+          "stopReasons": {
+            "max_steps": 3
+          },
+          "tokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 64987.333333333336,
+              "n": 3
+            },
+            {
+              "step": 2,
+              "mean": 59240.666666666664,
+              "n": 3
+            },
+            {
+              "step": 3,
+              "mean": 61383.666666666664,
+              "n": 3
+            },
+            {
+              "step": 4,
+              "mean": 62833.333333333336,
+              "n": 3
+            },
+            {
+              "step": 5,
+              "mean": 61991,
+              "n": 3
+            },
+            {
+              "step": 6,
+              "mean": 63608.333333333336,
+              "n": 3
+            },
+            {
+              "step": 7,
+              "mean": 65618,
+              "n": 3
+            },
+            {
+              "step": 8,
+              "mean": 68462.33333333333,
+              "n": 3
+            },
+            {
+              "step": 9,
+              "mean": 71461.33333333333,
+              "n": 3
+            },
+            {
+              "step": 10,
+              "mean": 69701,
+              "n": 3
+            },
+            {
+              "step": 11,
+              "mean": 71388.66666666667,
+              "n": 3
+            },
+            {
+              "step": 12,
+              "mean": 72223,
+              "n": 3
+            },
+            {
+              "step": 13,
+              "mean": 74985,
+              "n": 3
+            },
+            {
+              "step": 14,
+              "mean": 73866,
+              "n": 3
+            },
+            {
+              "step": 15,
+              "mean": 71819,
+              "n": 3
+            },
+            {
+              "step": 16,
+              "mean": 67467.66666666667,
+              "n": 3
+            },
+            {
+              "step": 17,
+              "mean": 68704.33333333333,
+              "n": 3
+            },
+            {
+              "step": 18,
+              "mean": 68755,
+              "n": 3
+            },
+            {
+              "step": 19,
+              "mean": 71106,
+              "n": 3
+            },
+            {
+              "step": 20,
+              "mean": 72557.66666666667,
+              "n": 3
+            },
+            {
+              "step": 21,
+              "mean": 73283,
+              "n": 3
+            },
+            {
+              "step": 22,
+              "mean": 75547.66666666667,
+              "n": 3
+            },
+            {
+              "step": 23,
+              "mean": 71931.66666666667,
+              "n": 3
+            },
+            {
+              "step": 24,
+              "mean": 70689,
+              "n": 3
+            },
+            {
+              "step": 25,
+              "mean": 69978,
+              "n": 3
+            }
+          ],
+          "meanTokensPerStep": {
+            "mean": 68943.54666666666,
+            "steps": 75
+          },
+          "jevLatencyMs": {
+            "p50": 223.4389999999985,
+            "p95": 570.2072499999995,
+            "n": 278
+          },
+          "jevRequests": 278,
+          "jevQuestions": 23676,
+          "blocked": 30,
+          "reviews": 21,
+          "declined": 21,
+          "loops": 8,
+          "replans": 8,
+          "reads": {
+            "total": 10,
+            "meanPerRun": 3.3333333333333335
+          },
+          "cost": {
+            "generator": 1.8694119999999996,
+            "jev": 0.15691893000000007,
+            "total": 2.02633093
+          },
+          "wallMs": {
+            "n": 3,
+            "mean": 171292.15715299998,
+            "median": 182271.70549999998
+          },
+          "modelDrift": [],
+          "runsWithError": []
+        },
+        "jev-off": {
+          "condition": "jev-off",
+          "tasks": 3,
+          "evaluated": 0,
+          "passed": 0,
+          "passRate": null,
+          "passRateText": "0/0 (n=0)",
+          "unevaluated": [
+            "sympy__sympy-15345",
+            "sympy__sympy-12096",
+            "sympy__sympy-17139"
+          ],
+          "unsupported": [],
+          "notRun": [],
+          "stepsToSolve": {
+            "n": 0,
+            "mean": null,
+            "median": null,
+            "values": []
+          },
+          "solveCurve": [
+            {
+              "k": 1,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 2,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 3,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 4,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 5,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 6,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 7,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 8,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 9,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 10,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 11,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 12,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 13,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 14,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 15,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 16,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 17,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 18,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 19,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 20,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 21,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 22,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 23,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 24,
+              "solved": 0,
+              "fraction": null
+            },
+            {
+              "k": 25,
+              "solved": 0,
+              "fraction": null
+            }
+          ],
+          "stepsUsed": {
+            "n": 3,
+            "mean": 23,
+            "median": 23
+          },
+          "stopReasons": {
+            "max_steps": 1,
+            "generator_done": 2
+          },
+          "tokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 9577.666666666666,
+              "n": 3
+            },
+            {
+              "step": 2,
+              "mean": 9834,
+              "n": 3
+            },
+            {
+              "step": 3,
+              "mean": 10213,
+              "n": 3
+            },
+            {
+              "step": 4,
+              "mean": 10668.333333333334,
+              "n": 3
+            },
+            {
+              "step": 5,
+              "mean": 11107.666666666666,
+              "n": 3
+            },
+            {
+              "step": 6,
+              "mean": 11279.333333333334,
+              "n": 3
+            },
+            {
+              "step": 7,
+              "mean": 11276.333333333334,
+              "n": 3
+            },
+            {
+              "step": 8,
+              "mean": 11342.333333333334,
+              "n": 3
+            },
+            {
+              "step": 9,
+              "mean": 11522.333333333334,
+              "n": 3
+            },
+            {
+              "step": 10,
+              "mean": 11716.333333333334,
+              "n": 3
+            },
+            {
+              "step": 11,
+              "mean": 11800,
+              "n": 3
+            },
+            {
+              "step": 12,
+              "mean": 11968.666666666666,
+              "n": 3
+            },
+            {
+              "step": 13,
+              "mean": 12338.333333333334,
+              "n": 3
+            },
+            {
+              "step": 14,
+              "mean": 12670.666666666666,
+              "n": 3
+            },
+            {
+              "step": 15,
+              "mean": 12681,
+              "n": 3
+            },
+            {
+              "step": 16,
+              "mean": 12948.333333333334,
+              "n": 3
+            },
+            {
+              "step": 17,
+              "mean": 17952.666666666668,
+              "n": 3
+            },
+            {
+              "step": 18,
+              "mean": 13119,
+              "n": 3
+            },
+            {
+              "step": 19,
+              "mean": 13459.666666666666,
+              "n": 3
+            },
+            {
+              "step": 20,
+              "mean": 13617,
+              "n": 3
+            },
+            {
+              "step": 21,
+              "mean": 13664.333333333334,
+              "n": 3
+            },
+            {
+              "step": 22,
+              "mean": 14005,
+              "n": 2
+            },
+            {
+              "step": 23,
+              "mean": 14100,
+              "n": 2
+            },
+            {
+              "step": 24,
+              "mean": 12934,
+              "n": 1
+            },
+            {
+              "step": 25,
+              "mean": 13289,
+              "n": 1
+            }
+          ],
+          "meanTokensPerStep": {
+            "mean": 12271.072463768116,
+            "steps": 69
+          },
+          "jevLatencyMs": {
+            "p50": null,
+            "p95": null,
+            "n": 0
+          },
+          "jevRequests": 0,
+          "jevQuestions": 0,
+          "blocked": 0,
+          "reviews": 0,
+          "declined": 0,
+          "loops": 3,
+          "replans": 0,
+          "reads": {
+            "total": 13,
+            "meanPerRun": 4.333333333333333
+          },
+          "cost": {
+            "generator": 1.9229439999999998,
+            "jev": 0,
+            "total": 1.9229439999999998
+          },
+          "wallMs": {
+            "n": 3,
+            "mean": 131492.71325,
+            "median": 114539.341541
+          },
+          "modelDrift": [],
+          "runsWithError": []
+        }
+      },
+      "comparison": {
+        "suite": "swebench",
+        "conditions": [
+          "jev-on",
+          "jev-off"
+        ],
+        "pairedTasks": [],
+        "incompletePairs": [
+          "sympy__sympy-12096",
+          "sympy__sympy-15345",
+          "sympy__sympy-17139"
+        ],
+        "excludedForDrift": [],
+        "perCondition": {
+          "jev-on": {
+            "condition": "jev-on",
+            "tasks": 0,
+            "evaluated": 0,
+            "passed": 0,
+            "passRate": null,
+            "passRateText": "0/0 (n=0)",
+            "unevaluated": [],
+            "unsupported": [],
+            "notRun": [],
+            "stepsToSolve": {
+              "n": 0,
+              "mean": null,
+              "median": null,
+              "values": []
+            },
+            "solveCurve": [
+              {
+                "k": 1,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 2,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 3,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 4,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 5,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 6,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 7,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 8,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 9,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 10,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 11,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 12,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 13,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 14,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 15,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 16,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 17,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 18,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 19,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 20,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 21,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 22,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 23,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 24,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 25,
+                "solved": 0,
+                "fraction": null
+              }
+            ],
+            "stepsUsed": {
+              "n": 0,
+              "mean": null,
+              "median": null
+            },
+            "stopReasons": {},
+            "tokensPerStepCurve": [],
+            "meanTokensPerStep": {
+              "mean": null,
+              "steps": 0
+            },
+            "jevLatencyMs": {
+              "p50": null,
+              "p95": null,
+              "n": 0
+            },
+            "jevRequests": 0,
+            "jevQuestions": 0,
+            "blocked": 0,
+            "reviews": 0,
+            "declined": 0,
+            "loops": 0,
+            "replans": 0,
+            "reads": {
+              "total": 0,
+              "meanPerRun": null
+            },
+            "cost": {
+              "generator": 0,
+              "jev": 0,
+              "total": 0
+            },
+            "wallMs": {
+              "n": 0,
+              "mean": null,
+              "median": null
+            },
+            "modelDrift": [],
+            "runsWithError": []
+          },
+          "jev-off": {
+            "condition": "jev-off",
+            "tasks": 0,
+            "evaluated": 0,
+            "passed": 0,
+            "passRate": null,
+            "passRateText": "0/0 (n=0)",
+            "unevaluated": [],
+            "unsupported": [],
+            "notRun": [],
+            "stepsToSolve": {
+              "n": 0,
+              "mean": null,
+              "median": null,
+              "values": []
+            },
+            "solveCurve": [
+              {
+                "k": 1,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 2,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 3,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 4,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 5,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 6,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 7,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 8,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 9,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 10,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 11,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 12,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 13,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 14,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 15,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 16,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 17,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 18,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 19,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 20,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 21,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 22,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 23,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 24,
+                "solved": 0,
+                "fraction": null
+              },
+              {
+                "k": 25,
+                "solved": 0,
+                "fraction": null
+              }
+            ],
+            "stepsUsed": {
+              "n": 0,
+              "mean": null,
+              "median": null
+            },
+            "stopReasons": {},
+            "tokensPerStepCurve": [],
+            "meanTokensPerStep": {
+              "mean": null,
+              "steps": 0
+            },
+            "jevLatencyMs": {
+              "p50": null,
+              "p95": null,
+              "n": 0
+            },
+            "jevRequests": 0,
+            "jevQuestions": 0,
+            "blocked": 0,
+            "reviews": 0,
+            "declined": 0,
+            "loops": 0,
+            "replans": 0,
+            "reads": {
+              "total": 0,
+              "meanPerRun": null
+            },
+            "cost": {
+              "generator": 0,
+              "jev": 0,
+              "total": 0
+            },
+            "wallMs": {
+              "n": 0,
+              "mean": null,
+              "median": null
+            },
+            "modelDrift": [],
+            "runsWithError": []
+          }
+        },
+        "rows": []
+      }
+    }
+  },
+  "resumed": false
+}

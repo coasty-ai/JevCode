@@ -186,6 +186,13 @@ export interface TokensPoint {
   mean: number;
   n: number;
 }
+/** Which per-step token series of a record a curve or mean is computed over. */
+export type TokenSeries = 'tokensPerStep' | 'generatorTokensPerStep' | 'jevTokensPerStep';
+/** mean over all executed steps of all runs (steps, not runs, as the unit), with the step count */
+export interface MeanTokensPerStep {
+  mean: number | null;
+  steps: number;
+}
 
 export interface ConditionMetrics {
   condition: EngineMode;
@@ -202,8 +209,14 @@ export interface ConditionMetrics {
   solveCurve: SolvePoint[];
   stepsUsed: Stat;
   stopReasons: Record<string, number>;
+  /** combined generator + Jev */
   tokensPerStepCurve: TokensPoint[];
-  meanTokensPerStep: { mean: number | null; steps: number };
+  generatorTokensPerStepCurve: TokensPoint[];
+  jevTokensPerStepCurve: TokensPoint[];
+  /** combined generator + Jev */
+  meanTokensPerStep: MeanTokensPerStep;
+  meanGeneratorTokensPerStep: MeanTokensPerStep;
+  meanJevTokensPerStep: MeanTokensPerStep;
   jevLatencyMs: { p50: number | null; p95: number | null; n: number };
   jevRequests: number;
   jevQuestions: number;

@@ -33,5 +33,7 @@ describe('per-step cost is flat', () => {
     for (const ms of harness) expect(ms).toBeLessThan(50);
     expect(r.timing.harnessMs).toBeLessThan(50 * 12);
     expect(r.tokensPerStep.every((t) => t === r.tokensPerStep[0])).toBe(true);
+    expect(r.generatorTokensPerStep.every((t) => t === r.generatorTokensPerStep[0])).toBe(true);
+    expect(r.tokensPerStep).toEqual(r.generatorTokensPerStep.map((g, i) => g + r.jevTokensPerStep[i]!));
   });
 });

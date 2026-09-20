@@ -163,6 +163,62 @@ describe('transcript.log (§10 shared item model)', () => {
   });
 });
 
+describe('tokens per step by source (§13)', () => {
+  it('a 3-step run records generator and Jev series whose pointwise sum is tokensPerStep; the checkpoint carries both', async () => {
+    const h = await build({
+      turns: [turn({ kind: 'read', paths: ['src/a.py'] }), turn({ kind: 'run', command: 'pytest -q' }), turn({ kind: 'done', summary: 'ok' })],
+      sandbox: createFakeSandbox(() => passingTests),
+      deciderOptions: { rules: [answer('judge', 'task_complete', noulA(0.95), 3)] },
+    });
+    const r = await h.engine.run();
+    expect(r.stopReason).toBe('complete');
+    expect(r.steps).toBe(3);
+    // fake provider: 1000 in + 200 out per generate call; fake decider: 300 in + 20 out per request
+    expect(r.generatorTokensPerStep).toEqual([1200, 1200, 1200]);
+    expect(r.jevTokensPerStep).toHaveLength(3);
+    for (const [i, jev] of r.jevTokensPerStep.entries()) {
+      expect(jev).toBeGreaterThan(0);
+      expect(r.tokensPerStep[i]).toBe(r.generatorTokensPerStep[i]! + jev);
+    }
+    // per step, Jev tokens = 320 x the Jev requests recorded for that step
+    for (const rec of h.store.steps) expect(r.jevTokensPerStep[rec.step - 1]).toBe(320 * rec.jevRequests.length);
+    const last = h.store.last()!;
+    expect(last.tokensPerStep).toEqual(r.tokensPerStep);
+    expect(last.generatorTokensPerStep).toEqual(r.generatorTokensPerStep);
+    expect(last.jevTokensPerStep).toEqual(r.jevTokensPerStep);
+  });
+
+  it('resume restores both series; a checkpoint written before the split reads as zeros of the combined length', async () => {
+    const h = await build({ turns: [turn({ kind: 'read', paths: ['src/a.py'] })], limits: { maxSteps: 1 } });
+    const r1 = await h.engine.run();
+    expect(r1.steps).toBe(1);
+    const h2 = await build({ store: h.store, runsDir: h.runsDir, resume: { runId: h.engine.runId, force: false }, turns: [turn({ kind: 'read', paths: ['src/a.py'] })], limits: { maxSteps: 2 } });
+    const r2 = await h2.engine.run();
+    expect(r2.steps).toBe(2);
+    expect(r2.generatorTokensPerStep).toEqual([r1.generatorTokensPerStep[0], 1200]);
+    expect(r2.jevTokensPerStep[0]).toBe(r1.jevTokensPerStep[0]);
+    expect(r2.jevTokensPerStep[1]).toBeGreaterThan(0);
+    expect(r2.tokensPerStep).toEqual(r2.generatorTokensPerStep.map((g, i) => g + r2.jevTokensPerStep[i]!));
+
+    // older checkpoint: only the combined series was persisted
+    const h3 = await build({ turns: [turn({ kind: 'read', paths: ['src/a.py'] })], limits: { maxSteps: 1 } });
+    const r3 = await h3.engine.run();
+    const stored = h3.store.last()!;
+    delete stored.generatorTokensPerStep;
+    delete stored.jevTokensPerStep;
+    const h4 = await build({ store: h3.store, runsDir: h3.runsDir, resume: { runId: h3.engine.runId, force: false }, turns: [turn({ kind: 'read', paths: ['src/a.py'] })], limits: { maxSteps: 2 } });
+    const r4 = await h4.engine.run();
+    expect(r4.steps).toBe(2);
+    expect(r4.tokensPerStep[0]).toBe(r3.tokensPerStep[0]);
+    expect(r4.generatorTokensPerStep).toEqual([0, 1200]);
+    expect(r4.jevTokensPerStep[0]).toBe(0);
+    expect(r4.jevTokensPerStep[1]).toBeGreaterThan(0);
+    expect(r4.tokensPerStep[1]).toBe(1200 + r4.jevTokensPerStep[1]!);
+    // and the resumed checkpoint now carries the split for every step
+    expect(h3.store.last()!.generatorTokensPerStep).toEqual([0, 1200]);
+  });
+});
+
 describe('risk policy', () => {
   it('blocked action (risk >= 0.7): no execute, no judge request, reason reaches the next prompt', async () => {
     const h = await build({

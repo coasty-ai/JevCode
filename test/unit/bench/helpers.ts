@@ -45,6 +45,8 @@ export function fakeRunResult(over: Partial<RunResult> & { runId: string; mode: 
     steps: 3,
     wallMs: 1000,
     tokensPerStep: [100, 200, 300],
+    generatorTokensPerStep: [60, 120, 180],
+    jevTokensPerStep: [40, 80, 120],
     jevLatencyMs: [],
     jevQuestions: 0,
     counters: { blocked: 0, reviews: 0, declined: 0, failed: 0, loops: 0, replans: 0, reads: 0 },

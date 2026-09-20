@@ -14,7 +14,7 @@ import { createEmitter } from '../core/events.js';
 import { sha12 } from '../core/hash.js';
 import { toJson } from '../core/json.js';
 import { monotonicNow, nowIso } from '../core/time.js';
-import type {
+import type { AskResult,
   ActionOutcome,
   Answer,
   CheckpointState,
@@ -68,7 +68,7 @@ import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, loopTripText, type LoopDetector } from './loopdetect.js';
 import { applyPlanDraft, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
 import { buildCommonState, type Redact } from './state.js';
-import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine } from './stop.js';
+import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete } from './stages/complete.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
@@ -302,7 +302,10 @@ class EngineImpl implements Engine {
   private runStartMono: number | null = null;
   private timing: StepTiming = zeroTiming();
   private jevLatencyMs: number[] = [];
+  /** combined per committed step; always generatorTokensPerStep[i] + jevTokensPerStep[i] */
   private tokensPerStep: number[] = [];
+  private generatorTokensPerStep: number[] = [];
+  private jevTokensPerStep: number[] = [];
   private counters: RunCounters = zeroCounters();
   private directive: ReplanDirective | null = null;
   private lastTestRun: CheckpointState['lastTestRun'] = null;
@@ -379,6 +382,9 @@ class EngineImpl implements Engine {
       this.timing = { ...s.timing };
       this.jevLatencyMs = [...s.jevLatencyMs];
       this.tokensPerStep = [...s.tokensPerStep];
+      // older checkpoints carry only the combined series: the split reads as zeros
+      this.generatorTokensPerStep = tokenSeriesOrZeros(s.generatorTokensPerStep, s.tokensPerStep.length);
+      this.jevTokensPerStep = tokenSeriesOrZeros(s.jevTokensPerStep, s.tokensPerStep.length);
       this.counters = { ...s.counters };
       this.directive = s.directive;
       this.lastTestRun = s.lastTestRun;
@@ -616,6 +622,8 @@ class EngineImpl implements Engine {
       timing: { ...this.timing },
       jevLatencyMs: [...this.jevLatencyMs],
       tokensPerStep: [...this.tokensPerStep],
+      generatorTokensPerStep: [...this.generatorTokensPerStep],
+      jevTokensPerStep: [...this.jevTokensPerStep],
       counters: { ...this.counters },
       directive: this.directive,
       lastTestRun: this.lastTestRun,
@@ -683,9 +691,14 @@ class EngineImpl implements Engine {
     this.emit({ type: 'stage:start', step, stage: name });
     try {
       return await fn();
+    } catch (e) {
+      trace(`stage ${name} threw ${e instanceof Error ? e.name : typeof e}`);
+      throw e;
     } finally {
+      trace(`stage ${name} finally`);
       this.emit({ type: 'stage:end', step, stage: name, ms: Math.max(0, this.clock() - t0) });
       this.emitStatus();
+      trace(`stage ${name} end emitted`);
     }
   }
 
@@ -734,7 +747,15 @@ class EngineImpl implements Engine {
 
   private async ask(draft: StepDraft, stage: StageName, state: JsonObject, questions: Record<string, Question>, annotate?: (answers: Record<string, Answer>, rows: Decision[]) => void): Promise<AskOutcome> {
     assertQuestionBatch(questions);
-    const res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step });
+    trace(`engine.ask ${stage} step=${draft.step} start`);
+    let res: AskResult;
+    try {
+      res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step });
+    } catch (e) {
+      trace(`engine.ask ${stage} rejected ${e instanceof Error ? e.name : typeof e}`);
+      throw e;
+    }
+    trace(`engine.ask ${stage} resolved attempts=${res.attempts}`);
     this.opts.meter.add('jev', res.usage);
     addUsage(draft.usage.jev, res.usage);
     draft.timing.jevMs += res.latencyMs;
@@ -968,7 +989,9 @@ class EngineImpl implements Engine {
         }
       }
     } catch (e) {
+      trace(`runStep catch stage=${stage} ${e instanceof Error ? e.name : typeof e}`);
       const handled = await this.handleStepError(e, stage, draft);
+      trace(`handleStepError -> discard=${handled.discard} stop=${handled.stop ?? 'null'}`);
       if (handled.discard) {
         this.absorbDiscardedTiming(draft);
         return { stop: handled.stop };
@@ -1254,7 +1277,11 @@ class EngineImpl implements Engine {
     this.timing.execMs += timing.execMs;
     this.timing.harnessMs += timing.harnessMs;
     this.timing.totalMs += timing.totalMs;
-    this.tokensPerStep.push(draft.usage.generator.inputTokens + draft.usage.generator.outputTokens + draft.usage.jev.inputTokens + draft.usage.jev.outputTokens);
+    const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
+    const jevTokens = draft.usage.jev.inputTokens + draft.usage.jev.outputTokens;
+    this.generatorTokensPerStep.push(generatorTokens);
+    this.jevTokensPerStep.push(jevTokens);
+    this.tokensPerStep.push(generatorTokens + jevTokens);
 
     // Loop detector: replan issued this step resets first, then this step is observed.
     if (draft.directive) {

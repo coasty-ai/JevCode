@@ -1,11 +1,11 @@
 import { readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { BENCH_WORK_DIR, IN_PROGRESS, NOT_RUN_BENCH_CAP, newBenchId, notRunRecord, readTasksJsonl, runBenchWithSources, safeName, selectSources } from '../../../src/bench/runner.js';
+import { BENCH_WORK_DIR, IN_PROGRESS, NOT_RUN_BENCH_CAP, buildRecord, newBenchId, notRunRecord, readTasksJsonl, runBenchWithSources, safeName, selectSources } from '../../../src/bench/runner.js';
 import { alwaysDecline, parseConditions } from '../../../src/bench/conditions.js';
 import type { BenchTaskRecord } from '../../../src/core/types.js';
 import type { BenchTaskSource } from '../../../src/bench/types.js';
-import { baseOptions, createFakeDeps, syntheticSource, tempDir, type EngineScript } from './helpers.js';
+import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource, tempDir, type EngineScript } from './helpers.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -13,7 +13,7 @@ afterEach(async () => {
 });
 
 const completeScript: EngineScript = (_task, mode) => ({
-  result: { steps: mode === 'jev-on' ? 3 : 5, tokensPerStep: mode === 'jev-on' ? [100, 100, 100] : [50, 50, 50, 50, 50], jevLatencyMs: mode === 'jev-on' ? [150, 170, 190] : [], counters: { blocked: 1, reviews: 1, declined: 1, failed: 0, loops: 0, replans: 0, reads: mode === 'jev-on' ? 0 : 2 } },
+  result: { steps: mode === 'jev-on' ? 3 : 5, tokensPerStep: mode === 'jev-on' ? [100, 100, 100] : [50, 50, 50, 50, 50], generatorTokensPerStep: mode === 'jev-on' ? [30, 30, 30] : [50, 50, 50, 50, 50], jevTokensPerStep: mode === 'jev-on' ? [70, 70, 70] : [0, 0, 0, 0, 0], jevLatencyMs: mode === 'jev-on' ? [150, 170, 190] : [], counters: { blocked: 1, reviews: 1, declined: 1, failed: 0, loops: 0, replans: 0, reads: mode === 'jev-on' ? 0 : 2 } },
   decisions: mode === 'jev-on' ? 12 : 0,
   spendUsd: 0.5,
 });
@@ -63,6 +63,9 @@ describe('runBench (mocked, fake deps)', () => {
     const off = out.records.filter((r) => r.condition === 'jev-off');
     expect(off.map((r) => r.pass).sort()).toEqual([false, true, true]);
     expect(off.every((r) => r.jevLatencyMs.p50 === null && r.steps === 5 && r.reads === 2)).toBe(true);
+    // both per-source series are copied from the RunResult and summed in tokensPerStep
+    expect(on.every((r) => r.generatorTokensPerStep.length === 3 && r.jevTokensPerStep.every((t) => t === 70) && r.tokensPerStep.every((t, i) => t === r.generatorTokensPerStep[i]! + r.jevTokensPerStep[i]!))).toBe(true);
+    expect(off.every((r) => r.jevTokensPerStep.every((t) => t === 0) && r.generatorTokensPerStep.every((t) => t === 50))).toBe(true);
     expect(out.records.every((r) => r.runId !== null && r.stopReason === 'complete' && r.cost.generator === 0.5)).toBe(true);
 
     const s = out.summary;
@@ -88,6 +91,13 @@ describe('runBench (mocked, fake deps)', () => {
     expect(md).toContain('Mocked bench');
     expect(md).toContain('### Solve curve');
     expect(md).toContain('### Tokens per step');
+    expect(md).toContain('#### generator tokens per step');
+    expect(md).toContain('#### Jev tokens per step');
+    expect(md).toContain('#### generator+Jev tokens per step');
+    expect(md).toContain('| mean generator tokens/step (steps) | 30 (n=9) | 50 (n=15) |');
+    expect(md).toContain('| mean Jev tokens/step (steps) | 70 (n=9) | 0 (n=15) |');
+    expect(md).toContain('| mean tokens/step, generator+Jev (steps) | 100 (n=9) | 50 (n=15) |');
+    expect(md).toContain('Jev tokens are priced at $0.042 per million input tokens');
     expect(md).toContain('### Stop reasons');
     expect(md).toContain('█');
     expect(md).toContain('(n=3)');
@@ -348,5 +358,35 @@ describe('runner hardening', () => {
     const out = await runBenchWithSources([source], baseOptions(join(t.dir, 'runs'), join(t.dir, 'out')), deps);
     expect(out.comparisonMarkdown).toContain('a \\| b second line');
     expect(out.comparisonMarkdown).not.toContain('a | b');
+  });
+});
+
+describe('tasks.jsonl compatibility', () => {
+  it('records written before the per-source split read back with zero series of the combined length', async () => {
+    const t = await tempDir();
+    cleanups.push(t.cleanup);
+    const full = buildRecord({
+      source: syntheticSource({ id: 'old' }),
+      condition: 'jev-on',
+      result: fakeRunResult({ runId: 'r-old', mode: 'jev-on', steps: 2, tokensPerStep: [7, 8], generatorTokensPerStep: [5, 6], jevTokensPerStep: [2, 2] }),
+      evaluation: { pass: true, evaluator: 'mock' },
+      patch: null,
+      capFired: null,
+    });
+    const old: Record<string, unknown> = { ...full };
+    delete old['generatorTokensPerStep'];
+    delete old['jevTokensPerStep'];
+    const path = join(t.dir, 'tasks.jsonl');
+    await writeFile(path, `${JSON.stringify(old)}\n${JSON.stringify(full)}\n${JSON.stringify({ ...full, jevTokensPerStep: ['x'] })}\n`);
+    const logged: string[] = [];
+    const [a, b, ...rest] = await readTasksJsonl(path, (l) => logged.push(l));
+    expect(a!.tokensPerStep).toEqual([7, 8]);
+    expect(a!.generatorTokensPerStep).toEqual([0, 0]);
+    expect(a!.jevTokensPerStep).toEqual([0, 0]);
+    expect(b!.generatorTokensPerStep).toEqual([5, 6]);
+    expect(b!.jevTokensPerStep).toEqual([2, 2]);
+    // a malformed split is a malformed record, skipped like any other
+    expect(rest).toEqual([]);
+    expect(logged).toHaveLength(1);
   });
 });

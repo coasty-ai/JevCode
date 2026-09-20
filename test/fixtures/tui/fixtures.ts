@@ -77,6 +77,8 @@ export function mkRunResult(stopReason: RunResult['stopReason'] = 'complete'): R
     usage: { generator: mkUsage(10_000, 2_300, 0.12, 4), jev: mkUsage(4_100, 0, 0.01, 12) },
     timing: { generatorMs: 1, jevMs: 2, execMs: 3, harnessMs: 4, totalMs: 10 },
     tokensPerStep: [1, 2, 3, 4],
+    generatorTokensPerStep: [1, 1, 2, 3],
+    jevTokensPerStep: [0, 1, 1, 1],
     jevLatencyMs: [170, 160],
     jevQuestions: 12,
     counters: { blocked: 0, reviews: 1, declined: 0, failed: 0, loops: 0, replans: 0, reads: 1 },

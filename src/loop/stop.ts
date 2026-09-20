@@ -48,6 +48,13 @@ export function stopTranscriptLine(reason: StopReason, step: number, detail?: st
   return `stop: ${reason} at step ${step}${detail ? ` (${detail})` : ''}`;
 }
 
+/** A per-source token series from a checkpoint: older checkpoints lack it, which reads as zeros of the combined series' length. */
+export function tokenSeriesOrZeros(series: readonly number[] | undefined, length: number): number[] {
+  const out: number[] = [];
+  for (let i = 0; i < length; i++) out.push(series?.[i] ?? 0);
+  return out;
+}
+
 export function assembleRunResult(input: {
   runId: string;
   mode: EngineMode;
@@ -65,6 +72,8 @@ export function assembleRunResult(input: {
     usage: { generator: { ...s.spend.generator }, jev: { ...s.spend.jev } },
     timing: { ...s.timing },
     tokensPerStep: [...s.tokensPerStep],
+    generatorTokensPerStep: tokenSeriesOrZeros(s.generatorTokensPerStep, s.tokensPerStep.length),
+    jevTokensPerStep: tokenSeriesOrZeros(s.jevTokensPerStep, s.tokensPerStep.length),
     jevLatencyMs: [...s.jevLatencyMs],
     // older checkpoints (before the contract extension) have no counter: absent reads as 0
     jevQuestions: s.jevQuestions ?? 0,

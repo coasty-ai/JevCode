@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { computeConditionMetrics, computeSuiteComparison, pairedTaskIds, solveCurve, tokensPerStepCurve, withPairComplete } from '../../../src/bench/metrics.js';
+import { computeConditionMetrics, computeSuiteComparison, meanTokensPerStep, pairedTaskIds, solveCurve, tokensPerStepCurve, withPairComplete } from '../../../src/bench/metrics.js';
 import { buildRecord, notRunRecord } from '../../../src/bench/runner.js';
 import type { BenchTaskRecord, EngineMode } from '../../../src/core/types.js';
 import { fakeRunResult, syntheticSource } from './helpers.js';
@@ -8,7 +8,7 @@ function rec(task: string, condition: EngineMode, over: Partial<BenchTaskRecord>
   const base = buildRecord({
     source: syntheticSource({ id: task }),
     condition,
-    result: fakeRunResult({ runId: `r-${task}-${condition}`, mode: condition, steps: 4, tokensPerStep: [10, 20, 30, 40], jevLatencyMs: condition === 'jev-on' ? [100, 200, 300, 400] : [], counters: { blocked: 1, reviews: 2, declined: 2, failed: 0, loops: 1, replans: 0, reads: 3 }, jevQuestions: 7 }),
+    result: fakeRunResult({ runId: `r-${task}-${condition}`, mode: condition, steps: 4, tokensPerStep: [10, 20, 30, 40], generatorTokensPerStep: [6, 12, 18, 24], jevTokensPerStep: [4, 8, 12, 16], jevLatencyMs: condition === 'jev-on' ? [100, 200, 300, 400] : [], counters: { blocked: 1, reviews: 2, declined: 2, failed: 0, loops: 1, replans: 0, reads: 3 }, jevQuestions: 7 }),
     evaluation: { pass: true, evaluator: 'mock' },
     patch: { modelPatch: 'd', patchBytes: 1, patchEmpty: false },
     capFired: null,
@@ -26,6 +26,8 @@ describe('per-record formulas', () => {
     expect(on.jevRequests).toBe(0);
     expect(on.jevQuestions).toBe(7);
     expect(on.tokensPerStep).toEqual([10, 20, 30, 40]);
+    expect(on.generatorTokensPerStep).toEqual([6, 12, 18, 24]);
+    expect(on.jevTokensPerStep).toEqual([4, 8, 12, 16]);
     const off = rec('a', 'jev-off');
     expect(off.jevLatencyMs).toEqual({ raw: [], p50: null, p95: null });
     expect(off.cost.jev).toBe(0);
@@ -112,5 +114,66 @@ describe('aggregation', () => {
     expect(by('a', 'jev-on')).toBe(true);
     expect(by('d', 'jev-on')).toBe(false);
     expect(by('f', 'jev-on')).toBe(false);
+  });
+});
+
+describe('tokens per step by source (§13)', () => {
+  /** a record whose combined series is the pointwise sum of the two sources */
+  const split = (gen: number[], jev: number[]): Partial<BenchTaskRecord> => ({ steps: gen.length, generatorTokensPerStep: gen, jevTokensPerStep: jev, tokensPerStep: gen.map((g, i) => g + jev[i]!) });
+  const records: BenchTaskRecord[] = [
+    rec('a', 'jev-on', split([1000, 1000], [5000, 7000])),
+    rec('b', 'jev-on', split([1200, 800, 1000], [6000, 6000, 6000])),
+    rec('a', 'jev-off', split([900, 1100], [0, 0])),
+    rec('b', 'jev-off', split([1000], [0])),
+    notRunRecord(syntheticSource({ id: 'c' }), 'jev-on', 'bench_spend_cap'),
+  ];
+  const on = records.filter((r) => r.condition === 'jev-on' && r.stopReason !== 'not_run');
+
+  it('curves per source report mean (n) per index; the combined curve is the pointwise sum', () => {
+    expect(tokensPerStepCurve(on, 'generatorTokensPerStep')).toEqual([
+      { step: 1, mean: 1100, n: 2 },
+      { step: 2, mean: 900, n: 2 },
+      { step: 3, mean: 1000, n: 1 },
+    ]);
+    expect(tokensPerStepCurve(on, 'jevTokensPerStep')).toEqual([
+      { step: 1, mean: 5500, n: 2 },
+      { step: 2, mean: 6500, n: 2 },
+      { step: 3, mean: 6000, n: 1 },
+    ]);
+    expect(tokensPerStepCurve(on)).toEqual([
+      { step: 1, mean: 6600, n: 2 },
+      { step: 2, mean: 7400, n: 2 },
+      { step: 3, mean: 7000, n: 1 },
+    ]);
+  });
+
+  it('means are over executed steps of all runs, per source; jev-off has a zero Jev series', () => {
+    expect(meanTokensPerStep(on, 'generatorTokensPerStep')).toEqual({ mean: 1000, steps: 5 });
+    expect(meanTokensPerStep(on, 'jevTokensPerStep')).toEqual({ mean: 6000, steps: 5 });
+    expect(meanTokensPerStep(on)).toEqual({ mean: 7000, steps: 5 });
+    expect(meanTokensPerStep([])).toEqual({ mean: null, steps: 0 });
+    const m = computeConditionMetrics(records, 'jev-on', 3);
+    expect(m.meanGeneratorTokensPerStep).toEqual({ mean: 1000, steps: 5 });
+    expect(m.meanJevTokensPerStep).toEqual({ mean: 6000, steps: 5 });
+    expect(m.meanTokensPerStep).toEqual({ mean: 7000, steps: 5 });
+    expect(m.generatorTokensPerStepCurve.map((p) => p.mean)).toEqual([1100, 900, 1000]);
+    expect(m.jevTokensPerStepCurve.map((p) => p.mean)).toEqual([5500, 6500, 6000]);
+    expect(m.tokensPerStepCurve.map((p) => p.mean)).toEqual([6600, 7400, 7000]);
+    const off = computeConditionMetrics(records, 'jev-off', 3);
+    expect(off.meanGeneratorTokensPerStep).toEqual({ mean: 1000, steps: 3 });
+    expect(off.meanJevTokensPerStep).toEqual({ mean: 0, steps: 3 });
+    expect(off.meanTokensPerStep).toEqual({ mean: 1000, steps: 3 });
+    expect(off.jevTokensPerStepCurve).toEqual([
+      { step: 1, mean: 0, n: 2 },
+      { step: 2, mean: 0, n: 1 },
+    ]);
+  });
+
+  it('the paired comparison carries the per-source metrics for every condition', () => {
+    const cmp = computeSuiteComparison(records, 'swebench', ['jev-on', 'jev-off'], 3);
+    expect(cmp.pairedTasks).toEqual(['a', 'b']);
+    expect(cmp.perCondition['jev-on']!.meanJevTokensPerStep.mean).toBe(6000);
+    expect(cmp.perCondition['jev-off']!.meanJevTokensPerStep.mean).toBe(0);
+    expect(cmp.perCondition['jev-on']!.meanGeneratorTokensPerStep.mean).toBe(1000);
   });
 });

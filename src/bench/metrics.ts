@@ -6,7 +6,7 @@
  */
 import { percentile } from '../core/time.js';
 import type { BenchSuite, BenchTaskRecord, EngineMode } from '../core/types.js';
-import type { ConditionMetrics, PairedRow, SolvePoint, Stat, SuiteComparison, SuiteMetrics, TokensPoint } from './types.js';
+import type { ConditionMetrics, MeanTokensPerStep, PairedRow, SolvePoint, Stat, SuiteComparison, SuiteMetrics, TokenSeries, TokensPoint } from './types.js';
 
 export function mean(xs: readonly number[]): number | null {
   if (xs.length === 0) return null;
@@ -54,19 +54,28 @@ export function solveCurve(records: readonly BenchTaskRecord[], maxSteps: number
   return out;
 }
 
-/** Per step index: mean generator+Jev tokens and the number of runs that executed that step. */
-export function tokensPerStepCurve(records: readonly BenchTaskRecord[]): TokensPoint[] {
-  const longest = Math.max(0, ...records.map((r) => r.tokensPerStep.length));
+/**
+ * Per step index: mean tokens of `series` (combined generator+Jev by default, or one source) and
+ * the number of runs that executed that step; a run contributes only to indices it reached.
+ */
+export function tokensPerStepCurve(records: readonly BenchTaskRecord[], series: TokenSeries = 'tokensPerStep'): TokensPoint[] {
+  const longest = Math.max(0, ...records.map((r) => r[series].length));
   const out: TokensPoint[] = [];
   for (let i = 0; i < longest; i++) {
     const xs: number[] = [];
     for (const r of records) {
-      const v = r.tokensPerStep[i];
+      const v = r[series][i];
       if (v !== undefined && Number.isFinite(v)) xs.push(v);
     }
     if (xs.length > 0) out.push({ step: i + 1, mean: mean(xs)!, n: xs.length });
   }
   return out;
+}
+
+/** Mean of `series` over all executed steps of all runs (steps, not runs, as the unit). */
+export function meanTokensPerStep(records: readonly BenchTaskRecord[], series: TokenSeries = 'tokensPerStep'): MeanTokensPerStep {
+  const all = records.flatMap((r) => r[series].filter((x) => Number.isFinite(x)));
+  return { mean: mean(all), steps: all.length };
 }
 
 function sum(xs: readonly number[]): number {
@@ -81,7 +90,6 @@ export function computeConditionMetrics(all: readonly BenchTaskRecord[], conditi
   const stepsToSolve = passed.map((r) => r.steps);
   const stopReasons: Record<string, number> = {};
   for (const r of records) stopReasons[r.stopReason] = (stopReasons[r.stopReason] ?? 0) + 1;
-  const allTokens = ran.flatMap((r) => r.tokensPerStep.filter((x) => Number.isFinite(x)));
   const latencies = ran.flatMap((r) => r.jevLatencyMs.raw);
   const reads = sum(ran.map((r) => r.reads));
   const generator = sum(records.map((r) => r.cost.generator));
@@ -101,7 +109,11 @@ export function computeConditionMetrics(all: readonly BenchTaskRecord[], conditi
     stepsUsed: stat(ran.map((r) => r.steps)),
     stopReasons,
     tokensPerStepCurve: tokensPerStepCurve(ran),
-    meanTokensPerStep: { mean: mean(allTokens), steps: allTokens.length },
+    generatorTokensPerStepCurve: tokensPerStepCurve(ran, 'generatorTokensPerStep'),
+    jevTokensPerStepCurve: tokensPerStepCurve(ran, 'jevTokensPerStep'),
+    meanTokensPerStep: meanTokensPerStep(ran),
+    meanGeneratorTokensPerStep: meanTokensPerStep(ran, 'generatorTokensPerStep'),
+    meanJevTokensPerStep: meanTokensPerStep(ran, 'jevTokensPerStep'),
     jevLatencyMs: { p50: percentile(latencies, 50), p95: percentile(latencies, 95), n: latencies.length },
     jevRequests: sum(ran.map((r) => r.jevRequests)),
     jevQuestions: sum(ran.map((r) => r.jevQuestions)),

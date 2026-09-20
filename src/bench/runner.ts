@@ -114,6 +114,11 @@ function isRecord(v: unknown): v is BenchTaskRecord {
   if (!isJsonObject(timing) || !['generatorMs', 'jevMs', 'execMs', 'harnessMs'].every((k) => isFiniteNumber(timing[k]))) return false;
   const tps = v['tokensPerStep'];
   if (!Array.isArray(tps) || !tps.every(isFiniteNumber)) return false;
+  // the per-source split is absent in tasks.jsonl written before it existed (filled with zeros on read)
+  for (const k of ['generatorTokensPerStep', 'jevTokensPerStep'] as const) {
+    const s = v[k];
+    if (s !== undefined && (!Array.isArray(s) || !s.every(isFiniteNumber))) return false;
+  }
   if (typeof v['modelDrift'] !== 'boolean') return false;
   const runId = v['runId'];
   return runId === null || isString(runId);
@@ -135,9 +140,15 @@ export async function readTasksJsonl(path: string, log: (l: string) => void = ()
       log(`[bench] ${path}:${i + 1}: skipping malformed record`);
       continue;
     }
-    out.push(parsed.value);
+    out.push(withTokenSeries(parsed.value));
   }
   return out;
+}
+
+/** Older records carry only the combined series: the split reads as zeros of the same length. */
+function withTokenSeries(r: BenchTaskRecord): BenchTaskRecord {
+  const zeros = (s: number[] | undefined): number[] => (Array.isArray(s) ? s : r.tokensPerStep.map(() => 0));
+  return { ...r, generatorTokensPerStep: zeros(r.generatorTokensPerStep), jevTokensPerStep: zeros(r.jevTokensPerStep) };
 }
 
 function pairKey(r: { suite: string; task: string; condition: string }): string {
@@ -179,6 +190,8 @@ export function buildRecord(input: RecordInput): BenchTaskRecord {
     steps: result.steps,
     wallMs: result.wallMs,
     tokensPerStep: [...result.tokensPerStep],
+    generatorTokensPerStep: [...result.generatorTokensPerStep],
+    jevTokensPerStep: [...result.jevTokensPerStep],
     cost: { generator: result.usage.generator.costUsd, jev: result.usage.jev.costUsd },
     jevLatencyMs: { raw, p50: percentile(raw, 50), p95: percentile(raw, 95) },
     jevRequests: result.usage.jev.calls,
@@ -218,6 +231,8 @@ export function notRunRecord(source: BenchTaskSource, condition: EngineMode, rea
     steps: 0,
     wallMs: 0,
     tokensPerStep: [],
+    generatorTokensPerStep: [],
+    jevTokensPerStep: [],
     cost: { generator: 0, jev: 0 },
     jevLatencyMs: { raw: [], p50: null, p95: null },
     jevRequests: 0,
