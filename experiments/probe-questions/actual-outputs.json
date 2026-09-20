@@ -1,0 +1,951 @@
+{
+ "bitcount": [
+  {
+   "input": [
+    127
+   ],
+   "expected": 7,
+   "actual": "TIMEOUT (no result after 4 s; likely an infinite loop or unbounded recursion)"
+  },
+  {
+   "input": [
+    128
+   ],
+   "expected": 1,
+   "actual": "TIMEOUT (no result after 4 s; likely an infinite loop or unbounded recursion)"
+  },
+  {
+   "input": [
+    3005
+   ],
+   "expected": 9,
+   "actual": "TIMEOUT (no result after 4 s; likely an infinite loop or unbounded recursion)"
+  }
+ ],
+ "bucketsort": [
+  {
+   "input": [
+    [],
+    14
+   ],
+   "expected": [],
+   "actual": "[]"
+  },
+  {
+   "input": [
+    [
+     3,
+     11,
+     2,
+     9,
+     1,
+     5
+    ],
+    12
+   ],
+   "expected": [
+    1,
+    2,
+    3,
+    5,
+    9,
+    11
+   ],
+   "actual": "[0, 0, 0, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 3, 3, 3, 3, 3, 3, 3, 3, 3, 4, 5, 5, 5, 5, 5]"
+  },
+  {
+   "input": [
+    [
+     3,
+     2,
+     4,
+     2,
+     3,
+     5
+    ],
+    6
+   ],
+   "expected": [
+    2,
+    2,
+    3,
+    3,
+    4,
+    5
+   ],
+   "actual": "[0, 0, 0, 1, 1, 2, 2, 2, 2, 3, 3, 4, 4, 4, 5, 5, 5, 5, 5]"
+  }
+ ],
+ "find_first_in_sorted": [
+  {
+   "input": [
+    [
+     3,
+     4,
+     5,
+     5,
+     5,
+     5,
+     6
+    ],
+    5
+   ],
+   "expected": 2,
+   "actual": "2"
+  },
+  {
+   "input": [
+    [
+     3,
+     4,
+     5,
+     5,
+     5,
+     5,
+     6
+    ],
+    7
+   ],
+   "expected": -1,
+   "actual": "raises IndexError: list index out of range"
+  },
+  {
+   "input": [
+    [
+     3,
+     4,
+     5,
+     5,
+     5,
+     5,
+     6
+    ],
+    2
+   ],
+   "expected": -1,
+   "actual": "TIMEOUT (no result after 4 s; likely an infinite loop or unbounded recursion)"
+  }
+ ],
+ "find_in_sorted": [
+  {
+   "input": [
+    [
+     3,
+     4,
+     5,
+     5,
+     5,
+     5,
+     6
+    ],
+    5
+   ],
+   "expected": 3,
+   "actual": "3"
+  },
+  {
+   "input": [
+    [
+     1,
+     2,
+     3,
+     4,
+     6,
+     7,
+     8
+    ],
+    5
+   ],
+   "expected": -1,
+   "actual": "raises RecursionError: maximum recursion depth exceeded in comparison"
+  },
+  {
+   "input": [
+    [
+     1,
+     2,
+     3,
+     4,
+     6,
+     7,
+     8
+    ],
+    4
+   ],
+   "expected": 3,
+   "actual": "3"
+  }
+ ],
+ "flatten": [
+  {
+   "input": [
+    [
+     [
+      1,
+      [],
+      [
+       2,
+       3
+      ]
+     ],
+     [
+      [
+       4
+      ]
+     ],
+     5
+    ]
+   ],
+   "expected": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "actual": "[<generator object flatten>, <generator object flatten>, <generator object flatten>, <generator object flatten>, <generator object flatten>]"
+  },
+  {
+   "input": [
+    [
+     [],
+     [],
+     [],
+     [],
+     []
+    ]
+   ],
+   "expected": [],
+   "actual": "[]"
+  },
+  {
+   "input": [
+    [
+     [],
+     [],
+     1,
+     [],
+     1,
+     [],
+     []
+    ]
+   ],
+   "expected": [
+    1,
+    1
+   ],
+   "actual": "[<generator object flatten>, <generator object flatten>]"
+  }
+ ],
+ "gcd": [
+  {
+   "input": [
+    17,
+    0
+   ],
+   "expected": 17,
+   "actual": "17"
+  },
+  {
+   "input": [
+    13,
+    13
+   ],
+   "expected": 13,
+   "actual": "raises RecursionError: maximum recursion depth exceeded in comparison"
+  },
+  {
+   "input": [
+    37,
+    600
+   ],
+   "expected": 1,
+   "actual": "raises RecursionError: maximum recursion depth exceeded in comparison"
+  }
+ ],
+ "get_factors": [
+  {
+   "input": [
+    1
+   ],
+   "expected": [],
+   "actual": "[]"
+  },
+  {
+   "input": [
+    100
+   ],
+   "expected": [
+    2,
+    2,
+    5,
+    5
+   ],
+   "actual": "[2, 2, 5]"
+  },
+  {
+   "input": [
+    101
+   ],
+   "expected": [
+    101
+   ],
+   "actual": "[]"
+  }
+ ],
+ "hanoi": [
+  {
+   "input": [
+    0,
+    1,
+    3
+   ],
+   "expected": [],
+   "actual": "[]"
+  },
+  {
+   "input": [
+    1,
+    1,
+    3
+   ],
+   "expected": [
+    [
+     1,
+     3
+    ]
+   ],
+   "actual": "[(1, 2)]"
+  },
+  {
+   "input": [
+    2,
+    1,
+    3
+   ],
+   "expected": [
+    [
+     1,
+     2
+    ],
+    [
+     1,
+     3
+    ],
+    [
+     2,
+     3
+    ]
+   ],
+   "actual": "[(1, 3), (1, 2), (2, 1)]"
+  }
+ ],
+ "is_valid_parenthesization": [
+  {
+   "input": [
+    "((()()))()"
+   ],
+   "expected": true,
+   "actual": "True"
+  },
+  {
+   "input": [
+    ")()("
+   ],
+   "expected": false,
+   "actual": "False"
+  },
+  {
+   "input": [
+    "(("
+   ],
+   "expected": false,
+   "actual": "True"
+  }
+ ],
+ "kheapsort": [
+  {
+   "input": [
+    [
+     1,
+     2,
+     3,
+     4,
+     5
+    ],
+    0
+   ],
+   "expected": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "actual": "[1, 2, 3, 4, 5]"
+  },
+  {
+   "input": [
+    [
+     3,
+     2,
+     1,
+     5,
+     4
+    ],
+    2
+   ],
+   "expected": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "actual": "[2, 2, 1, 3, 3, 4, 5]"
+  },
+  {
+   "input": [
+    [
+     5,
+     4,
+     3,
+     2,
+     1
+    ],
+    4
+   ],
+   "expected": [
+    1,
+    2,
+    3,
+    4,
+    5
+   ],
+   "actual": "[2, 3, 3, 2, 1, 4, 4, 5, 5]"
+  }
+ ],
+ "knapsack": [
+  {
+   "input": [
+    100,
+    [
+     [
+      60,
+      10
+     ],
+     [
+      50,
+      8
+     ],
+     [
+      20,
+      4
+     ],
+     [
+      20,
+      4
+     ],
+     [
+      8,
+      3
+     ],
+     [
+      3,
+      2
+     ]
+    ]
+   ],
+   "expected": 19,
+   "actual": "19"
+  },
+  {
+   "input": [
+    40,
+    [
+     [
+      30,
+      10
+     ],
+     [
+      50,
+      5
+     ],
+     [
+      10,
+      20
+     ],
+     [
+      40,
+      25
+     ]
+    ]
+   ],
+   "expected": 30,
+   "actual": "20"
+  },
+  {
+   "input": [
+    750,
+    [
+     [
+      70,
+      135
+     ],
+     [
+      73,
+      139
+     ],
+     [
+      77,
+      149
+     ],
+     [
+      80,
+      150
+     ],
+     [
+      82,
+      156
+     ],
+     [
+      87,
+      163
+     ],
+     [
+      90,
+      173
+     ],
+     [
+      94,
+      184
+     ],
+     [
+      98,
+      192
+     ],
+     [
+      106,
+      201
+     ],
+     [
+      110,
+      210
+     ],
+     [
+      113,
+      214
+     ],
+     [
+      115,
+      221
+     ],
+     [
+      118,
+      229
+     ],
+     [
+      120,
+      240
+     ]
+    ]
+   ],
+   "expected": 1458,
+   "actual": "1458"
+  }
+ ],
+ "kth": [
+  {
+   "input": [
+    [
+     1,
+     2,
+     3,
+     4,
+     5,
+     6,
+     7
+    ],
+    4
+   ],
+   "expected": 5,
+   "actual": "raises IndexError: list index out of range"
+  },
+  {
+   "input": [
+    [
+     3,
+     6,
+     7,
+     1,
+     6,
+     3,
+     8,
+     9
+    ],
+    5
+   ],
+   "expected": 7,
+   "actual": "raises IndexError: list index out of range"
+  },
+  {
+   "input": [
+    [
+     3,
+     6,
+     7,
+     1,
+     6,
+     3,
+     8,
+     9
+    ],
+    2
+   ],
+   "expected": 3,
+   "actual": "3"
+  }
+ ],
+ "lcs_length": [
+  {
+   "input": [
+    "witch",
+    "sandwich"
+   ],
+   "expected": 2,
+   "actual": "1"
+  },
+  {
+   "input": [
+    "meow",
+    "homeowner"
+   ],
+   "expected": 4,
+   "actual": "1"
+  },
+  {
+   "input": [
+    "fun",
+    ""
+   ],
+   "expected": 0,
+   "actual": "0"
+  }
+ ],
+ "levenshtein": [
+  {
+   "input": [
+    "electron",
+    "neutron"
+   ],
+   "expected": 3,
+   "actual": "8"
+  },
+  {
+   "input": [
+    "kitten",
+    "sitting"
+   ],
+   "expected": 3,
+   "actual": "7"
+  },
+  {
+   "input": [
+    "rosettacode",
+    "raisethysword"
+   ],
+   "expected": 8,
+   "actual": "13"
+  }
+ ],
+ "lis": [
+  {
+   "input": [
+    []
+   ],
+   "expected": 0,
+   "actual": "0"
+  },
+  {
+   "input": [
+    [
+     3
+    ]
+   ],
+   "expected": 1,
+   "actual": "1"
+  },
+  {
+   "input": [
+    [
+     10,
+     20,
+     11,
+     32,
+     22,
+     48,
+     43
+    ]
+   ],
+   "expected": 4,
+   "actual": "4"
+  }
+ ],
+ "longest_common_subsequence": [
+  {
+   "input": [
+    "headache",
+    "pentadactyl"
+   ],
+   "expected": "eadac",
+   "actual": "'eadac'"
+  },
+  {
+   "input": [
+    "daenarys",
+    "targaryen"
+   ],
+   "expected": "aary",
+   "actual": "'aary'"
+  },
+  {
+   "input": [
+    "XMJYAUZ",
+    "MZJAWXU"
+   ],
+   "expected": "MJAU",
+   "actual": "'MJAU'"
+  }
+ ],
+ "max_sublist_sum": [
+  {
+   "input": [
+    [
+     4,
+     -5,
+     2,
+     1,
+     -1,
+     3
+    ]
+   ],
+   "expected": 5,
+   "actual": "4"
+  },
+  {
+   "input": [
+    [
+     0,
+     -1,
+     2,
+     -1,
+     3,
+     -1,
+     0
+    ]
+   ],
+   "expected": 4,
+   "actual": "3"
+  },
+  {
+   "input": [
+    [
+     3,
+     4,
+     5
+    ]
+   ],
+   "expected": 12,
+   "actual": "12"
+  }
+ ],
+ "mergesort": [
+  {
+   "input": [
+    []
+   ],
+   "expected": [],
+   "actual": "[]"
+  },
+  {
+   "input": [
+    [
+     1,
+     2,
+     6,
+     72,
+     7,
+     33,
+     4
+    ]
+   ],
+   "expected": [
+    1,
+    2,
+    4,
+    6,
+    7,
+    33,
+    72
+   ],
+   "actual": "raises RecursionError: maximum recursion depth exceeded while calling a Python object"
+  },
+  {
+   "input": [
+    [
+     3,
+     1,
+     4,
+     1,
+     5,
+     9,
+     2,
+     6,
+     5,
+     3,
+     5,
+     8,
+     9,
+     7,
+     9,
+     3
+    ]
+   ],
+   "expected": [
+    1,
+    1,
+    2,
+    3,
+    3,
+    3,
+    4,
+    5,
+    5,
+    5,
+    6,
+    7,
+    8,
+    9,
+    9,
+    9
+   ],
+   "actual": "raises RecursionError: maximum recursion depth exceeded while calling a Python object"
+  }
+ ],
+ "next_palindrome": [
+  {
+   "input": [
+    [
+     1,
+     4,
+     9,
+     4,
+     1
+    ]
+   ],
+   "expected": [
+    1,
+    5,
+    0,
+    5,
+    1
+   ],
+   "actual": "[1, 5, 0, 5, 1]"
+  },
+  {
+   "input": [
+    [
+     1,
+     3,
+     1
+    ]
+   ],
+   "expected": [
+    1,
+    4,
+    1
+   ],
+   "actual": "[1, 4, 1]"
+  },
+  {
+   "input": [
+    [
+     4,
+     7,
+     2,
+     5,
+     5,
+     2,
+     7,
+     4
+    ]
+   ],
+   "expected": [
+    4,
+    7,
+    2,
+    6,
+    6,
+    2,
+    7,
+    4
+   ],
+   "actual": "[4, 7, 2, 6, 6, 2, 7, 4]"
+  }
+ ],
+ "next_permutation": [
+  {
+   "input": [
+    [
+     3,
+     2,
+     4,
+     1
+    ]
+   ],
+   "expected": [
+    3,
+    4,
+    1,
+    2
+   ],
+   "actual": "[3, 1, 2, 4]"
+  },
+  {
+   "input": [
+    [
+     3,
+     5,
+     6,
+     2,
+     1
+    ]
+   ],
+   "expected": [
+    3,
+    6,
+    1,
+    2,
+    5
+   ],
+   "actual": "[3, 1, 5, 2, 6]"
+  },
+  {
+   "input": [
+    [
+     3,
+     5,
+     6,
+     2
+    ]
+   ],
+   "expected": [
+    3,
+    6,
+    2,
+    5
+   ],
+   "actual": "[3, 2, 5, 6]"
+  }
+ ]
+}

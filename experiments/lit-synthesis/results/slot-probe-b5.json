@@ -1,0 +1,4664 @@
+{
+  "summary": {
+    "n": 29,
+    "requests": 227,
+    "retries": 0,
+    "costUsd": 0.034183169999999964,
+    "latencyP50": 248.28966600000058,
+    "latencyP90": 577.1977499999994,
+    "beam": 5
+  },
+  "results": [
+    {
+      "program": "bitcount",
+      "lines": 6,
+      "oracleTests": 9,
+      "totalTests": 9,
+      "goldPassesAll": true,
+      "buggy": "n ^= n - 1",
+      "fixed": "n &= n - 1",
+      "kind": {
+        "truth": "augmented_assignment",
+        "pick": "augmented_assignment",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok2_x"
+        ],
+        "pick": "tok2_x",
+        "p": 0.97,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "n",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "n",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 3,
+          "cls": "oper",
+          "truth": "-",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 3,
+            "p": 0.16,
+            "escape": 0.12
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.3,
+            "escape": 0.18000000000000002
+          }
+        },
+        {
+          "i": 4,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 11,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.14
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.12
+          }
+        }
+      ],
+      "s2": null,
+      "s1": {
+        "holes": 4,
+        "requests": 4,
+        "beam": [
+          "n &= n - 1",
+          "n &= n & 1",
+          "n &= n ~ 1",
+          "n &= n and 1",
+          "n &= n ^ 1"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -1.7598637879659975,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.002989098000000001,
+      "requests": 22
+    },
+    {
+      "program": "bucketsort",
+      "lines": 8,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "for i, count in enumerate(arr):",
+      "fixed": "for i, count in enumerate(counts):",
+      "kind": {
+        "truth": "for_loop",
+        "pick": "for_loop",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok8_arr"
+        ],
+        "pick": "tok8_arr",
+        "p": 0.99,
+        "ok": true,
+        "nTokens": 10
+      },
+      "shapeSame": true,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "i",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.63,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.45,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "count",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.34,
+            "escape": 0.060000000000000005
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.6,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "in",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.08
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "enumerate",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.49,
+            "escape": 0.18000000000000002
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.74,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "counts",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "for i , count in enumerate ( counts ) :",
+          "for i , count in enumerate ( range ) :",
+          "for i , count in enumerate ( k ) :",
+          "for i , count in enumerate ( bucketsort ) :",
+          "for i , count in enumerate ( arr ) :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.12783337150988489,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "for i , counts in enumerate ( counts ) :",
+          "for i , count in enumerate ( counts ) :",
+          "for range , range in range ( k ) :",
+          "for i , range in range ( k ) :",
+          "for i , count in range ( range ) :"
+        ],
+        "truthRank": 2,
+        "passRank": 2,
+        "logpTruth": -3.2156940919529844,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.004907364,
+      "requests": 37
+    },
+    {
+      "program": "find_first_in_sorted",
+      "lines": 12,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "while lo <= hi:",
+      "fixed": "while lo < hi:",
+      "kind": {
+        "truth": "while_loop",
+        "pick": "while_loop",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok3_x"
+        ],
+        "pick": "tok3_x",
+        "p": 0.96,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "lo",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.61,
+            "escape": 0.34
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "<",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "hi",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.94,
+            "escape": 0.05
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "while lo < hi :",
+          "while lo <= hi :",
+          "while lo + hi :",
+          "while lo - hi :",
+          "while lo * hi :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.020202707317519466,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 3,
+        "requests": 3,
+        "beam": [
+          "while lo < hi :",
+          "while hi < lo :",
+          "while lo <= hi :",
+          "while lo - hi :",
+          "while hi > lo :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.8067415011448752,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.003169950000000001,
+      "requests": 23
+    },
+    {
+      "program": "find_in_sorted",
+      "lines": 12,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "return binsearch(mid, end)",
+      "fixed": "return binsearch(mid + 1, end)",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok4_mid",
+        "p": 0.31,
+        "ok": false,
+        "nTokens": 7
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "binsearch",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "mid",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.56,
+            "escape": 0.12
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 5,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.83,
+            "escape": 0.16
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "end",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.06
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.04
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "return binsearch ( mid + 1 , end )",
+          "return binsearch ( mid > 1 , end )",
+          "return binsearch ( mid - 1 , end )",
+          "return binsearch ( mid < 1 , end )",
+          "return binsearch ( mid + -1 , end )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.6887568322586524,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "return binsearch ( mid + 1 , end )",
+          "return binsearch ( binsearch + 1 , end )",
+          "return binsearch ( binsearch > 1 , end )",
+          "return binsearch ( binsearch < 1 , end )",
+          "return binsearch ( mid > 1 , end )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -1.8973051860345553,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.006405125999999999,
+      "requests": 47
+    },
+    {
+      "program": "flatten",
+      "lines": 7,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "yield flatten(x)",
+      "fixed": "yield x",
+      "kind": {
+        "truth": "yield_statement",
+        "pick": "yield_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok2_flatten",
+          "tok3_x",
+          "tok5_x"
+        ],
+        "pick": "tok2_flatten",
+        "p": 0.97,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": true,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.05
+          }
+        }
+      ],
+      "s2": null,
+      "s1": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "yield x",
+          "yield flatten",
+          "yield arr",
+          "yield isinstance",
+          "yield list"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.05129329438755058,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0019766460000000003,
+      "requests": 13
+    },
+    {
+      "program": "gcd",
+      "lines": 5,
+      "oracleTests": 6,
+      "totalTests": 6,
+      "goldPassesAll": true,
+      "buggy": "return gcd(a % b, b)",
+      "fixed": "return gcd(b, a % b)",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok4_a",
+          "tok5_x"
+        ],
+        "pick": "tok4_a",
+        "p": 0.74,
+        "ok": true,
+        "nTokens": 9
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "gcd",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.08
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "b",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.67,
+            "escape": 0.08
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.09,
+            "escape": 0.09999999999999999
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "a",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 6,
+          "cls": "oper",
+          "truth": "%",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.09
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.87,
+            "escape": 0.13
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "b",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.58,
+            "escape": 0.16
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.14
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "return gcd ( b , a % b )",
+          "return gcd ( b , gcd % b )",
+          "return gcd ( b , a < b )",
+          "return gcd ( b , min % b )",
+          "return gcd ( b , b % b )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.9263410677276565,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "return gcd ( b , a % a )",
+          "return gcd ( b , a % b )",
+          "return gcd ( a , b % a )",
+          "return gcd ( a , b % b )",
+          "return gcd ( gcd , a % b )"
+        ],
+        "truthRank": 2,
+        "passRank": 2,
+        "logpTruth": -3.1954547520493097,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0068617919999999985,
+      "requests": 51
+    },
+    {
+      "program": "get_factors",
+      "lines": 7,
+      "oracleTests": 11,
+      "totalTests": 11,
+      "goldPassesAll": true,
+      "buggy": "return []",
+      "fixed": "return [n]",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.81,
+        "ok": true,
+        "nTokens": 3
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "n",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "return [ n ]",
+          "return [ get_factors ]",
+          "return [ i ]",
+          "return [ range ]",
+          "return [ int ]"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.030459207484708574,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "return [ n ]",
+          "return [ get_factors ]",
+          "return [ i ]",
+          "return [ range ]",
+          "return [ int ]"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.030459207484708574,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0024983279999999993,
+      "requests": 20
+    },
+    {
+      "program": "hanoi",
+      "lines": 8,
+      "oracleTests": 8,
+      "totalTests": 8,
+      "goldPassesAll": true,
+      "buggy": "steps.append((start, helper))",
+      "fixed": "steps.append((start, end))",
+      "kind": {
+        "truth": "call_statement",
+        "pick": "call_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok8_helper"
+        ],
+        "pick": "tok8_helper",
+        "p": 1,
+        "ok": true,
+        "nTokens": 10
+      },
+      "shapeSame": true,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "steps",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 2,
+          "cls": "attr",
+          "truth": "append",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "start",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.1,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 3,
+            "p": 0.18000000000000002,
+            "escape": 0.16
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "end",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.05
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "steps . append ( ( start , end ) )",
+          "steps . append ( ( start , helper ) )",
+          "steps . append ( ( start , list ) )",
+          "steps . append ( ( start , hanoi ) )",
+          "steps . append ( ( start , height ) )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.21072103131565253,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 4,
+        "requests": 4,
+        "beam": [
+          "tuple . append ( ( start , end ) )",
+          "steps . append ( ( start , end ) )",
+          "steps . append ( ( helper , end ) )",
+          "tuple . append ( ( start , helper ) )",
+          "tuple . append ( ( helper , end ) )"
+        ],
+        "truthRank": 2,
+        "passRank": 2,
+        "logpTruth": -3.4998603758722604,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.004290719999999997,
+      "requests": 33
+    },
+    {
+      "program": "is_valid_parenthesization",
+      "lines": 10,
+      "oracleTests": 3,
+      "totalTests": 3,
+      "goldPassesAll": true,
+      "buggy": "return True",
+      "fixed": "return depth == 0",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok2_true"
+        ],
+        "pick": "tok2_true",
+        "p": 0.66,
+        "ok": true,
+        "nTokens": 2
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "depth",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.83,
+            "escape": 0.12
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "==",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.81,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 3,
+          "cls": "num",
+          "truth": "0",
+          "nOptions": 5,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.07
+          }
+        }
+      ],
+      "s2": {
+        "holes": 3,
+        "requests": 3,
+        "beam": [
+          "return depth == 0",
+          "return True and 0",
+          "return abs == 0",
+          "return True == 0",
+          "return False == 0"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.5393794311840518,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 3,
+        "requests": 3,
+        "beam": [
+          "return depth == 0",
+          "return True and 0",
+          "return depth >= 0",
+          "return False == 0",
+          "return abs == 0"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.5986573371395228,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.006279587999999997,
+      "requests": 43
+    },
+    {
+      "program": "kheapsort",
+      "lines": 8,
+      "oracleTests": 4,
+      "totalTests": 4,
+      "goldPassesAll": true,
+      "buggy": "for x in arr:",
+      "fixed": "for x in arr[k:]:",
+      "kind": {
+        "truth": "for_loop",
+        "pick": "for_loop",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.5,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.81,
+            "escape": 0.08
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "in",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.06
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "arr",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.7,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.77,
+            "escape": 0.09
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "k",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.02
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "for x in arr [ k : ] :",
+          "for x in arr [ arr : ] :",
+          "for x in arr [ range : ] :",
+          "for x in arr [ heap : ] :",
+          "for x in arr [ len : ] :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.342490308946776,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 4,
+        "requests": 4,
+        "beam": [
+          "for x in arr [ k : ] :",
+          "for range in range [ k : ] :",
+          "for range in arr [ k : ] :",
+          "for arr in arr [ k : ] :",
+          "for x in range [ k : ] :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.2240045306572904,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.005449583999999999,
+      "requests": 36
+    },
+    {
+      "program": "knapsack",
+      "lines": 13,
+      "oracleTests": 9,
+      "totalTests": 10,
+      "goldPassesAll": false,
+      "buggy": "if weight < j:",
+      "fixed": "if weight <= j:",
+      "kind": {
+        "truth": "if_statement",
+        "pick": "if_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok3_x"
+        ],
+        "pick": "tok3_x",
+        "p": 0.95,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "weight",
+          "nOptions": 33,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.17,
+            "escape": 0.15
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.3,
+            "escape": 0.32
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "<=",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "j",
+          "nOptions": 33,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "if weight <= j :",
+          "if weight < j :",
+          "if weight >= j :",
+          "if weight + j :",
+          "if weight - j :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.1743533871447778,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 3,
+        "requests": 3,
+        "beam": [
+          "if weight <= j :",
+          "if j >= weight :",
+          "if j <= weight :",
+          "if weight <= weight :",
+          "if True <= j :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -1.4702065455718472,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.004756961999999999,
+      "requests": 30
+    },
+    {
+      "program": "kth",
+      "lines": 12,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "return kth(above, k)",
+      "fixed": "return kth(above, k - num_lessoreq)",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok6_k",
+        "p": 0.45,
+        "ok": false,
+        "nTokens": 7
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "kth",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.1
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "above",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 4,
+            "p": 0.05,
+            "escape": 0.06
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.31,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "k",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.55,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 6,
+          "cls": "oper",
+          "truth": "-",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "num_lessoreq",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.01
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "return kth ( above , k - num_lessoreq )",
+          "return kth ( above , k - num_less )",
+          "return kth ( above , k + num_lessoreq )",
+          "return kth ( above , k >= num_lessoreq )",
+          "return kth ( above , k + num_less )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.5010403230311937,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "return kth ( above , k - num_lessoreq )",
+          "return kth ( above , num_lessoreq - num_lessoreq )",
+          "return kth ( above , num_less - num_lessoreq )",
+          "return kth ( above , num_lessoreq - num_less )",
+          "return kth ( above , num_less - num_less )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.1403648064856493,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0072014879999999955,
+      "requests": 45
+    },
+    {
+      "program": "lcs_length",
+      "lines": 8,
+      "oracleTests": 9,
+      "totalTests": 9,
+      "goldPassesAll": true,
+      "buggy": "dp[i, j] = dp[i - 1, j] + 1",
+      "fixed": "dp[i, j] = dp[i - 1, j - 1] + 1",
+      "kind": {
+        "truth": "assignment",
+        "pick": "assignment",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok14_j",
+        "p": 0.18,
+        "ok": false,
+        "nTokens": 17
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "dp",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "i",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.63,
+            "escape": 0.15000000000000002
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.47000000000000003,
+            "escape": 0.14
+          }
+        },
+        {
+          "i": 4,
+          "cls": "ident",
+          "truth": "j",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.62,
+            "escape": 0.19
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.66,
+            "escape": 0.13
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "dp",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 9,
+          "cls": "ident",
+          "truth": "i",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.7,
+            "escape": 0.15000000000000002
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.61,
+            "escape": 0.2
+          }
+        },
+        {
+          "i": 10,
+          "cls": "oper",
+          "truth": "-",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 11,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 8,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.71,
+            "escape": 0.28
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.77,
+            "escape": 0.22
+          }
+        },
+        {
+          "i": 13,
+          "cls": "ident",
+          "truth": "j",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.09999999999999999
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.72,
+            "escape": 0.15000000000000002
+          }
+        },
+        {
+          "i": 14,
+          "cls": "oper",
+          "truth": "-",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.07
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.06
+          }
+        },
+        {
+          "i": 15,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 8,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.09
+          }
+        },
+        {
+          "i": 17,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.37,
+            "escape": 0.34
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.48,
+            "escape": 0.32
+          }
+        },
+        {
+          "i": 18,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 8,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.74,
+            "escape": 0.24
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.11
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "dp [ i , j ] = dp [ i - 1 , j or 0 ] + 1",
+          "dp [ i , j ] = dp [ i - 1 , j - 1 ] + 1",
+          "dp [ i , j ] = dp [ i - 1 , j or 1 ] + 1",
+          "dp [ i , j ] = dp [ i - 1 , j + 1 ] + 1",
+          "dp [ i , j ] = dp [ i - 1 , j + 0 ] + 1"
+        ],
+        "truthRank": 2,
+        "passRank": 2,
+        "logpTruth": -4.779523573132869,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 12,
+        "requests": 12,
+        "beam": [
+          "dp [ i , j ] = dp [ max - 1 , j or 0 ] or 0",
+          "dp [ i , j ] = dp [ max - 1 , j or 0 ] or 1",
+          "dp [ i , j ] = dp [ max - 1 , j + 1 ] or 1",
+          "dp [ i , j ] = dp [ max - 1 , j >= 0 ] or 1",
+          "dp [ i , j ] = dp [ max - 1 , j + 1 ] or 0"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.014708315999999989,
+      "requests": 91
+    },
+    {
+      "program": "levenshtein",
+      "lines": 11,
+      "oracleTests": 6,
+      "totalTests": 7,
+      "goldPassesAll": false,
+      "buggy": "return 1 + levenshtein(source[1:], target[1:])",
+      "fixed": "return levenshtein(source[1:], target[1:])",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok2_1",
+          "tok3_x"
+        ],
+        "pick": "tok2_1",
+        "p": 0.74,
+        "ok": true,
+        "nTokens": 17
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "levenshtein",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "source",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.63,
+            "escape": 0.13
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.46,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 5,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 8,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.47000000000000003,
+            "escape": 0.37
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.46,
+            "escape": 0.28
+          }
+        },
+        {
+          "i": 9,
+          "cls": "ident",
+          "truth": "target",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.27,
+            "escape": 0.2
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.54,
+            "escape": 0.16
+          }
+        },
+        {
+          "i": 11,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 8,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.69,
+            "escape": 0.26
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.71,
+            "escape": 0.24
+          }
+        }
+      ],
+      "s2": null,
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "return levenshtein ( source [ 1 : ] , target [ 1 : ] )",
+          "return levenshtein ( source [ 1 : ] , target [ 0 : ] )",
+          "return levenshtein ( levenshtein [ 1 : ] , target [ 1 : ] )",
+          "return levenshtein ( source [ 0 : ] , target [ 1 : ] )",
+          "return levenshtein ( levenshtein [ 0 : ] , target [ 1 : ] )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -3.4991298735233145,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.006128135999999997,
+      "requests": 36
+    },
+    {
+      "program": "lis",
+      "lines": 10,
+      "oracleTests": 12,
+      "totalTests": 12,
+      "goldPassesAll": true,
+      "buggy": "longest = length + 1",
+      "fixed": "longest = max(longest, length + 1)",
+      "kind": {
+        "truth": "assignment",
+        "pick": "assignment",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.6,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "longest",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.02,
+            "escape": 0.06999999999999999
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.08,
+            "escape": 0.12
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "max",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 4,
+          "cls": "ident",
+          "truth": "longest",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.66,
+            "escape": 0.14
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.14,
+            "escape": 0.14
+          }
+        },
+        {
+          "i": 6,
+          "cls": "ident",
+          "truth": "length",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.8,
+            "escape": 0.16
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.82,
+            "escape": 0.13
+          }
+        },
+        {
+          "i": 7,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.7,
+            "escape": 0.18000000000000002
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.73,
+            "escape": 0.19
+          }
+        },
+        {
+          "i": 8,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.09999999999999999
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.79,
+            "escape": 0.08
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "longest = max ( longest , length + 1 )",
+          "longest = longest ( longest , length + 1 )",
+          "longest = max ( max , length + 1 )",
+          "longest = longest ( max , length + 1 )",
+          "longest = max ( length , length + 1 )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.16676321787810203,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 6,
+        "requests": 6,
+        "beam": [
+          "longest = max ( longest , length + 1 )",
+          "longest = max ( longest , length or 1 )",
+          "longest = max ( longest , length > 1 )",
+          "longest = max ( length , length + 1 )",
+          "longest = max ( length , longest + 1 )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.5556813244295085,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.008128007999999994,
+      "requests": 53
+    },
+    {
+      "program": "longest_common_subsequence",
+      "lines": 11,
+      "oracleTests": 10,
+      "totalTests": 10,
+      "goldPassesAll": true,
+      "buggy": "return a[0] + longest_common_subsequence(a[1:], b)",
+      "fixed": "return a[0] + longest_common_subsequence(a[1:], b[1:])",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok15_b",
+        "p": 0.22,
+        "ok": false,
+        "nTokens": 16
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "a",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.6900000000000001,
+            "escape": 0.26
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.31,
+            "escape": 0.36
+          }
+        },
+        {
+          "i": 3,
+          "cls": "num",
+          "truth": "0",
+          "nOptions": 5,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.49,
+            "escape": 0.43
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.13
+          }
+        },
+        {
+          "i": 5,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.1
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.06
+          }
+        },
+        {
+          "i": 6,
+          "cls": "ident",
+          "truth": "longest_common_subsequence",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.73,
+            "escape": 0.2
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.08
+          }
+        },
+        {
+          "i": 8,
+          "cls": "ident",
+          "truth": "a",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.36,
+            "escape": 0.2
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.72,
+            "escape": 0.13
+          }
+        },
+        {
+          "i": 10,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 5,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.48,
+            "escape": 0.47
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.73,
+            "escape": 0.24
+          }
+        },
+        {
+          "i": 14,
+          "cls": "ident",
+          "truth": "b",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.87,
+            "escape": 0.07
+          }
+        },
+        {
+          "i": 16,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 5,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.44,
+            "escape": 0.38
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.79,
+            "escape": 0.18
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "return a [ 0 ] + longest_common_subsequence ( a [ 1 : ] , b [ 1 : ] )",
+          "return a [ 0 ] + longest_common_subsequence ( a [ 1 : ] , b [ 0 : ] )",
+          "return a [ 0 ] + longest_common_subsequence ( a [ 1 : ] , b [ 2 : ] )",
+          "return a [ 0 ] + longest_common_subsequence ( a [ 1 : ] , b [ 3 : ] )",
+          "return a [ 0 ] + longest_common_subsequence ( a [ 1 : ] , b [ 10 : ] )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.18632957819149348,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 8,
+        "requests": 8,
+        "beam": [
+          "return a [ 0 ] + longest_common_subsequence ( a [ 1 : ] , b [ 1 : ] )",
+          "return longest_common_subsequence [ 1 ] > longest_common_subsequence ( a [ 1 : ] , b [ 1 : ] )",
+          "return longest_common_subsequence [ 0 ] + longest_common_subsequence ( a [ 1 : ] , b [ 1 : ] )",
+          "return a [ 0 ] > longest_common_subsequence ( a [ 1 : ] , b [ 1 : ] )",
+          "return longest_common_subsequence [ 1 ] + longest_common_subsequence ( a [ 1 : ] , b [ 1 : ] )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -8.164345774321792,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.009814181999999989,
+      "requests": 64
+    },
+    {
+      "program": "max_sublist_sum",
+      "lines": 7,
+      "oracleTests": 6,
+      "totalTests": 6,
+      "goldPassesAll": true,
+      "buggy": "max_ending_here = max_ending_here + x",
+      "fixed": "max_ending_here = max(0, max_ending_here + x)",
+      "kind": {
+        "truth": "assignment",
+        "pick": "assignment",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.85,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "max_ending_here",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.65,
+            "escape": 0.06
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.59,
+            "escape": 0.08
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "max",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 4,
+          "cls": "num",
+          "truth": "0",
+          "nOptions": 18,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.14
+          }
+        },
+        {
+          "i": 6,
+          "cls": "ident",
+          "truth": "max_ending_here",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.07
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.42,
+            "escape": 0.07
+          }
+        },
+        {
+          "i": 7,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.83,
+            "escape": 0.16
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.81,
+            "escape": 0.17
+          }
+        },
+        {
+          "i": 8,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.04
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "max_ending_here = max ( 0 , max_ending_here + x )",
+          "max_ending_here = x ( 0 , max_ending_here + x )",
+          "max_ending_here = min ( 0 , max_ending_here + x )",
+          "max_ending_here = max_ending_here ( 0 , max_ending_here + x )",
+          "max_ending_here = x ( -1 , max_ending_here + x )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.1561860831893287,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 6,
+        "requests": 6,
+        "beam": [
+          "max_ending_here = max ( 0 , x + max_ending_here )",
+          "max_ending_here = max ( 0 , max_ending_here + x )",
+          "max = max ( 0 , x + max_ending_here )",
+          "max = max ( 0 , max_ending_here + x )",
+          "max_ending_here = max ( 0 , max + x )"
+        ],
+        "truthRank": 2,
+        "passRank": 1,
+        "logpTruth": -2.5404317511692396,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.00929665799999999,
+      "requests": 60
+    },
+    {
+      "program": "mergesort",
+      "lines": 21,
+      "oracleTests": 14,
+      "totalTests": 14,
+      "goldPassesAll": true,
+      "buggy": "if len(arr) == 0:",
+      "fixed": "if len(arr) <= 1:",
+      "kind": {
+        "truth": "if_statement",
+        "pick": "if_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok6_x",
+          "tok7_0"
+        ],
+        "pick": "tok7_0",
+        "p": 0.71,
+        "ok": true,
+        "nTokens": 8
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "len",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "arr",
+          "nOptions": 32,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.74,
+            "escape": 0.17
+          }
+        },
+        {
+          "i": 5,
+          "cls": "oper",
+          "truth": "<=",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 6,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "if len ( arr ) == 1 :",
+          "if len ( arr ) == 0 :",
+          "if len ( arr ) <= 1 :",
+          "if len ( arr ) < 1 :",
+          "if len ( arr ) != 1 :"
+        ],
+        "truthRank": 3,
+        "passRank": 3,
+        "logpTruth": -1.9582864201233687,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 4,
+        "requests": 4,
+        "beam": [
+          "if len ( arr ) <= 1 :",
+          "if len ( arr ) == 1 :",
+          "if len ( arr ) < 1 :",
+          "if len ( arr ) == 0 :",
+          "if len ( arr ) > 1 :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.3867870383169993,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0062923979999999925,
+      "requests": 42
+    },
+    {
+      "program": "next_palindrome",
+      "lines": 15,
+      "oracleTests": 5,
+      "totalTests": 5,
+      "goldPassesAll": true,
+      "buggy": "return [1] + (len(digit_list)) * [0] + [1]",
+      "fixed": "return [1] + (len(digit_list) - 1) * [0] + [1]",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok10_x",
+        "p": 0.19,
+        "ok": false,
+        "nTokens": 19
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 2,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 10,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.2
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.34,
+            "escape": 0.58
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.5,
+            "escape": 0.19
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.59,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 6,
+          "cls": "ident",
+          "truth": "len",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.060000000000000005
+          }
+        },
+        {
+          "i": 8,
+          "cls": "ident",
+          "truth": "digit_list",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.5700000000000001,
+            "escape": 0.34
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.34,
+            "escape": 0.41000000000000003
+          }
+        },
+        {
+          "i": 10,
+          "cls": "oper",
+          "truth": "-",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.06
+          }
+        },
+        {
+          "i": 11,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 10,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.12
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.38,
+            "escape": 0.55
+          }
+        },
+        {
+          "i": 13,
+          "cls": "oper",
+          "truth": "*",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.8,
+            "escape": 0.14
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.08
+          }
+        },
+        {
+          "i": 15,
+          "cls": "num",
+          "truth": "0",
+          "nOptions": 10,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.66,
+            "escape": 0.28
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.62,
+            "escape": 0.33
+          }
+        },
+        {
+          "i": 17,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.77,
+            "escape": 0.19
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.09
+          }
+        },
+        {
+          "i": 19,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 10,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.59,
+            "escape": 0.28
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.74,
+            "escape": 0.2
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "return [ 1 ] + ( len ( digit_list ) + 1 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) * 1 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) + 0 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) - 1 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) > 0 ) * [ 0 ] + [ 1 ]"
+        ],
+        "truthRank": 4,
+        "passRank": 4,
+        "logpTruth": -3.5473798918402366,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 10,
+        "requests": 10,
+        "beam": [
+          "return [ 1 ] + ( len ( digit_list ) + 1 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) + 0 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) * 1 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) > 0 ) * [ 0 ] + [ 1 ]",
+          "return [ 1 ] + ( len ( digit_list ) * 0 ) * [ 0 ] + [ 1 ]"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.011006267999999987,
+      "requests": 73
+    },
+    {
+      "program": "next_permutation",
+      "lines": 9,
+      "oracleTests": 8,
+      "totalTests": 8,
+      "goldPassesAll": true,
+      "buggy": "if perm[j] < perm[i]:",
+      "fixed": "if perm[i] < perm[j]:",
+      "kind": {
+        "truth": "if_statement",
+        "pick": "if_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok4_j",
+          "tok9_i"
+        ],
+        "pick": "tok6_x",
+        "p": 0.01,
+        "ok": false,
+        "nTokens": 11
+      },
+      "shapeSame": true,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "perm",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.6900000000000001,
+            "escape": 0.25
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.66,
+            "escape": 0.27
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "i",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.2,
+            "escape": 0.24000000000000002
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 3,
+            "p": 0.02,
+            "escape": 0.23
+          }
+        },
+        {
+          "i": 5,
+          "cls": "oper",
+          "truth": "<",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.33,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.39,
+            "escape": 0.08
+          }
+        },
+        {
+          "i": 6,
+          "cls": "ident",
+          "truth": "perm",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.84,
+            "escape": 0.13
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.16
+          }
+        },
+        {
+          "i": 8,
+          "cls": "ident",
+          "truth": "j",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.44,
+            "escape": 0.13
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.8,
+            "escape": 0.07
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "if perm [ perm ] < perm [ i ] :",
+          "if perm [ j ] < perm [ i ] :",
+          "if perm [ perm ] < perm [ j ] :",
+          "if perm [ j ] < perm [ j ] :",
+          "if perm [ i ] < perm [ j ] :"
+        ],
+        "truthRank": 5,
+        "passRank": 5,
+        "logpTruth": -5.318520073865556,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "if perm [ perm ] > perm [ i ] :",
+          "if perm [ j ] > perm [ i ] :",
+          "if j [ j ] > perm [ i ] :",
+          "if perm [ perm ] < perm [ i ] :",
+          "if j [ perm ] > perm [ i ] :"
+        ],
+        "truthRank": 0,
+        "passRank": 2,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.007274777999999989,
+      "requests": 48
+    },
+    {
+      "program": "pascal",
+      "lines": 10,
+      "oracleTests": 5,
+      "totalTests": 5,
+      "goldPassesAll": true,
+      "buggy": "for c in range(0, r):",
+      "fixed": "for c in range(0, r + 1):",
+      "kind": {
+        "truth": "for_loop",
+        "pick": "for_loop",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok8_r",
+        "p": 0.23,
+        "ok": false,
+        "nTokens": 10
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "c",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.77,
+            "escape": 0.12
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "in",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.060000000000000005
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "range",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.81,
+            "escape": 0.14
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 5,
+          "cls": "num",
+          "truth": "0",
+          "nOptions": 8,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.48,
+            "escape": 0.26
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.63,
+            "escape": 0.26
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "r",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.94,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.09
+          }
+        },
+        {
+          "i": 8,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.06999999999999999
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.060000000000000005
+          }
+        },
+        {
+          "i": 9,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 8,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.07
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.94,
+            "escape": 0.05
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "for c in range ( 0 , r + 1 ) :",
+          "for c in range ( 0 , r <= 1 ) :",
+          "for c in range ( 0 , r < 1 ) :",
+          "for c in range ( 0 , r - 1 ) :",
+          "for c in range ( 0 , r <= 0 ) :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.9929018342459954,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 7,
+        "requests": 7,
+        "beam": [
+          "for c in range ( 0 , r + 1 ) :",
+          "for c in range ( 0 , r <= 1 ) :",
+          "for c in range ( 1 , r <= 1 ) :",
+          "for c in range ( 1 , r + 1 ) :",
+          "for c in range ( 1 , r < 1 ) :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -4.147081068258762,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.00822124799999999,
+      "requests": 53
+    },
+    {
+      "program": "possible_change",
+      "lines": 7,
+      "oracleTests": 10,
+      "totalTests": 10,
+      "goldPassesAll": true,
+      "buggy": "if total < 0:",
+      "fixed": "if total < 0 or not coins:",
+      "kind": {
+        "truth": "if_statement",
+        "pick": "if_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.85,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "total",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.87,
+            "escape": 0.060000000000000005
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.3,
+            "escape": 0.4
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "<",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 4,
+            "p": 0.06,
+            "escape": 0.09
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.11,
+            "escape": 0.13
+          }
+        },
+        {
+          "i": 3,
+          "cls": "num",
+          "truth": "0",
+          "nOptions": 20,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.41000000000000003,
+            "escape": 0.58
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.59,
+            "escape": 0.4
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "or",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.67,
+            "escape": 0.08
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.67,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 5,
+          "cls": "oper",
+          "truth": "not",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.8,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.79,
+            "escape": 0.09
+          }
+        },
+        {
+          "i": 6,
+          "cls": "ident",
+          "truth": "coins",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.03
+          }
+        }
+      ],
+      "s2": {
+        "holes": 3,
+        "requests": 3,
+        "beam": [
+          "if total < 0 <= or total :",
+          "if total < 0 <= <= None :",
+          "if total < 0 <= <= total :",
+          "if total < 0 <= or None :",
+          "if total < 0 <= == None :"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 6,
+        "requests": 6,
+        "beam": [
+          "if total <= 0 or not coins :",
+          "if total <= 0 and not coins :",
+          "if total < 0 and not coins :",
+          "if total <= 0 or not rest :",
+          "if total <= 0 <= < coins :"
+        ],
+        "truthRank": 0,
+        "passRank": 1,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.009709307999999986,
+      "requests": 62
+    },
+    {
+      "program": "powerset",
+      "lines": 7,
+      "oracleTests": 5,
+      "totalTests": 5,
+      "goldPassesAll": true,
+      "buggy": "return [[first] + subset for subset in rest_subsets]",
+      "fixed": "return rest_subsets + [[first] + subset for subset in rest_subsets]",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.8,
+        "ok": true,
+        "nTokens": 12
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "rest_subsets",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.81,
+            "escape": 0.17
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.65,
+            "escape": 0.29000000000000004
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "first",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.09999999999999999
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.29000000000000004,
+            "escape": 0.17
+          }
+        },
+        {
+          "i": 7,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.09999999999999999
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 8,
+          "cls": "ident",
+          "truth": "subset",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.56,
+            "escape": 0.19
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.07
+          }
+        },
+        {
+          "i": 10,
+          "cls": "ident",
+          "truth": "subset",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.26,
+            "escape": 0.35000000000000003
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.41000000000000003,
+            "escape": 0.28
+          }
+        },
+        {
+          "i": 11,
+          "cls": "oper",
+          "truth": "in",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          }
+        },
+        {
+          "i": 12,
+          "cls": "ident",
+          "truth": "rest_subsets",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.83,
+            "escape": 0.15000000000000002
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.08
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "return rest_subsets + [ [ first ] + subset for subset in rest_subsets ]",
+          "return rest_subsets or [ [ first ] + subset for subset in rest_subsets ]",
+          "return sorted + [ [ first ] + subset for subset in rest_subsets ]",
+          "return rest_subsets | [ [ first ] + subset for subset in rest_subsets ]",
+          "return sum + [ [ first ] + subset for subset in rest_subsets ]"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -1.336742582290643,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 8,
+        "requests": 8,
+        "beam": [
+          "return rest_subsets + [ [ first ] + subset for subset in rest_subsets ]",
+          "return rest_subsets + [ [ subset ] + subset for subset in rest_subsets ]",
+          "return rest_subsets + [ [ first ] + subset for rest_subsets in rest_subsets ]",
+          "return rest_subsets + [ [ rest_subsets ] + subset for subset in rest_subsets ]",
+          "return list + [ [ first ] + subset for subset in rest_subsets ]"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.5855245643109366,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.010422005999999987,
+      "requests": 67
+    },
+    {
+      "program": "quicksort",
+      "lines": 7,
+      "oracleTests": 13,
+      "totalTests": 13,
+      "goldPassesAll": true,
+      "buggy": "greater = quicksort([x for x in arr[1:] if x > pivot])",
+      "fixed": "greater = quicksort([x for x in arr[1:] if x >= pivot])",
+      "kind": {
+        "truth": "assignment",
+        "pick": "assignment",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok17_x"
+        ],
+        "pick": "tok17_x",
+        "p": 0.9400000000000001,
+        "ok": true,
+        "nTokens": 20
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "greater",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.73,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.43,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "quicksort",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.08
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.79,
+            "escape": 0.16
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.060000000000000005
+          }
+        },
+        {
+          "i": 8,
+          "cls": "oper",
+          "truth": "in",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 9,
+          "cls": "ident",
+          "truth": "arr",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.08
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 11,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 28,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.58,
+            "escape": 0.28
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.75,
+            "escape": 0.16
+          }
+        },
+        {
+          "i": 15,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 16,
+          "cls": "oper",
+          "truth": ">=",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          }
+        },
+        {
+          "i": 17,
+          "cls": "ident",
+          "truth": "pivot",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x >= pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x <= pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x > pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x != pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x == pivot ] )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.579818495252942,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 10,
+        "requests": 10,
+        "beam": [
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x >= pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x > pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 0 : ] if x >= pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x <= pivot ] )",
+          "greater = quicksort ( [ x for x in arr [ 1 : ] if x < pivot ] )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.2835832853694007,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.01118728799999998,
+      "requests": 76
+    },
+    {
+      "program": "rpn_eval",
+      "lines": 19,
+      "oracleTests": 6,
+      "totalTests": 6,
+      "goldPassesAll": true,
+      "buggy": "op(token, a, b)",
+      "fixed": "op(token, b, a)",
+      "kind": {
+        "truth": "call_statement",
+        "pick": "call_statement",
+        "p": 0.86,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok5_a",
+          "tok6_x"
+        ],
+        "pick": "tok5_a",
+        "p": 0.91,
+        "ok": true,
+        "nTokens": 8
+      },
+      "shapeSame": true,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "op",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.09
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "token",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.83,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.8,
+            "escape": 0.06
+          }
+        },
+        {
+          "i": 4,
+          "cls": "ident",
+          "truth": "b",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.87,
+            "escape": 0.08
+          }
+        },
+        {
+          "i": 6,
+          "cls": "ident",
+          "truth": "a",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.8200000000000001,
+            "escape": 0.14
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.75,
+            "escape": 0.16
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "op ( token , b , a )",
+          "op ( token , b , b )",
+          "op ( token , b , rpn_eval )",
+          "op ( token , b , tokens )",
+          "op ( token , b , op )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.40047756659712525,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 4,
+        "requests": 4,
+        "beam": [
+          "op ( token , b , a )",
+          "op ( token , a , b )",
+          "op ( b , b , a )",
+          "op ( token , b , b )",
+          "op ( b , a , a )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -1.8277118396370153,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.00575269799999999,
+      "requests": 37
+    },
+    {
+      "program": "sieve",
+      "lines": 6,
+      "oracleTests": 6,
+      "totalTests": 6,
+      "goldPassesAll": true,
+      "buggy": "if any(n % p > 0 for p in primes):",
+      "fixed": "if all(n % p > 0 for p in primes):",
+      "kind": {
+        "truth": "if_statement",
+        "pick": "if_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok2_any"
+        ],
+        "pick": "tok2_any",
+        "p": 0.99,
+        "ok": true,
+        "nTokens": 14
+      },
+      "shapeSame": true,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "all",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.87,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "n",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.83,
+            "escape": 0.04
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "%",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.39,
+            "escape": 0.53
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.73,
+            "escape": 0.19
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "p",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.74,
+            "escape": 0.19
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.84,
+            "escape": 0.1
+          }
+        },
+        {
+          "i": 6,
+          "cls": "oper",
+          "truth": ">",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.21000000000000002,
+            "escape": 0.16
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 5,
+            "p": 0.13,
+            "escape": 0.12
+          }
+        },
+        {
+          "i": 7,
+          "cls": "num",
+          "truth": "0",
+          "nOptions": 21,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.87,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.79,
+            "escape": 0.2
+          }
+        },
+        {
+          "i": 9,
+          "cls": "ident",
+          "truth": "p",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.060000000000000005
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 10,
+          "cls": "oper",
+          "truth": "in",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.95,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 11,
+          "cls": "ident",
+          "truth": "primes",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.12
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.83,
+            "escape": 0.13
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "if all ( n % p > 0 for p in primes ) :",
+          "if any ( n % p > 0 for p in primes ) :",
+          "if sieve ( n % p > 0 for p in primes ) :",
+          "if max ( n % p > 0 for p in primes ) :",
+          "if primes ( n % p > 0 for p in primes ) :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.13926206733350766,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 9,
+        "requests": 9,
+        "beam": [
+          "if all ( all % p == 0 for p in primes ) :",
+          "if all ( n % p == 0 for p in primes ) :",
+          "if all ( all % p == 0 for primes in primes ) :",
+          "if all ( all % p < 0 for p in primes ) :",
+          "if all ( n % p == 0 for primes in primes ) :"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.009149657999999984,
+      "requests": 59
+    },
+    {
+      "program": "sqrt",
+      "lines": 5,
+      "oracleTests": 5,
+      "totalTests": 7,
+      "goldPassesAll": false,
+      "buggy": "while abs(x - approx) > epsilon:",
+      "fixed": "while abs(x - approx ** 2) > epsilon:",
+      "kind": {
+        "truth": "while_loop",
+        "pick": "while_loop",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok6_approx",
+        "p": 0.22,
+        "ok": false,
+        "nTokens": 10
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "abs",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.6900000000000001,
+            "escape": 0.27
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.72,
+            "escape": 0.25
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.71,
+            "escape": 0.16
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.71,
+            "escape": 0.18000000000000002
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "-",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.060000000000000005
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.62,
+            "escape": 0.18000000000000002
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "approx",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.1
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.18
+          }
+        },
+        {
+          "i": 6,
+          "cls": "oper",
+          "truth": "**",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.79,
+            "escape": 0.15
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.6900000000000001,
+            "escape": 0.19
+          }
+        },
+        {
+          "i": 7,
+          "cls": "num",
+          "truth": "2",
+          "nOptions": 9,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.1
+          }
+        },
+        {
+          "i": 9,
+          "cls": "oper",
+          "truth": ">",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.31,
+            "escape": 0.44
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.52,
+            "escape": 0.31
+          }
+        },
+        {
+          "i": 10,
+          "cls": "ident",
+          "truth": "epsilon",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.73,
+            "escape": 0.21000000000000002
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.84,
+            "escape": 0.14
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "while abs ( x - approx - 0 ) > epsilon :",
+          "while abs ( x - approx - 0.5 ) > epsilon :",
+          "while abs ( x - approx < 0.5 ) > epsilon :",
+          "while abs ( x - approx > 0 ) > epsilon :",
+          "while abs ( x - approx / 2 ) > epsilon :"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 8,
+        "requests": 8,
+        "beam": [
+          "while abs ( abs - approx > 0.5 ) > epsilon :",
+          "while abs ( x - approx > 0 ) > epsilon :",
+          "while abs ( abs - approx > 0 ) > epsilon :",
+          "while abs ( x - approx > 0.5 ) > epsilon :",
+          "while abs ( abs - approx > 1 ) > epsilon :"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.005955977999999987,
+      "requests": 40
+    },
+    {
+      "program": "subsequences",
+      "lines": 9,
+      "oracleTests": 12,
+      "totalTests": 12,
+      "goldPassesAll": true,
+      "buggy": "return []",
+      "fixed": "return [[]]",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 0.88,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.37,
+        "ok": true,
+        "nTokens": 3
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [],
+      "s2": null,
+      "s1": {
+        "holes": 0,
+        "requests": 0,
+        "beam": [
+          "return [ [ ] ]"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": 0,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0009838079999999992,
+      "requests": 8
+    },
+    {
+      "program": "to_base",
+      "lines": 9,
+      "oracleTests": 10,
+      "totalTests": 10,
+      "goldPassesAll": true,
+      "buggy": "result = result + alphabet[i]",
+      "fixed": "result = alphabet[i] + result",
+      "kind": {
+        "truth": "assignment",
+        "pick": "assignment",
+        "p": 0.99,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok3_result",
+          "tok4_x"
+        ],
+        "pick": "tok3_result",
+        "p": 0.64,
+        "ok": true,
+        "nTokens": 8
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "result",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.6,
+            "escape": 0.14
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.31,
+            "escape": 0.17
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "alphabet",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.91,
+            "escape": 0.060000000000000005
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.06
+          }
+        },
+        {
+          "i": 4,
+          "cls": "ident",
+          "truth": "i",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.27,
+            "escape": 0.26
+          }
+        },
+        {
+          "i": 6,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.72,
+            "escape": 0.28
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.75,
+            "escape": 0.25
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "result",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.08
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "result = alphabet [ i ] + result",
+          "result = alphabet [ i ] ~ result",
+          "result = alphabet [ i ] - result",
+          "result = alphabet [ i ] == result",
+          "result = alphabet [ i ] + reversed"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -1.0618947057329469,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "result = reversed [ result ] + alphabet",
+          "result = reversed [ result ] + i",
+          "result = reversed [ result ] + str",
+          "result = result [ reversed ] + i",
+          "reversed = reversed [ result ] + i"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.00406081199999999,
+      "requests": 27
+    }
+  ]
+}

@@ -1,0 +1,3512 @@
+[
+ {
+  "program": "breadth_first_search",
+  "nLines": 14,
+  "truth": [
+   11
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 3,
+  "top1": "line_18",
+  "pTop": 0.39,
+  "pTruth": 0.15,
+  "costUsd": 0.000057666,
+  "latencyMs": 218.030292,
+  "inputTokens": 1373,
+  "requests": 1
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.75,
+  "pTruth": 0.16,
+  "costUsd": 0.000026922,
+  "latencyMs": 227.081542,
+  "inputTokens": 641,
+  "requests": 1
+ },
+ {
+  "program": "depth_first_search",
+  "nLines": 12,
+  "truth": [
+   9,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "A_choice_3tests",
+  "rank": 7,
+  "top1": "line_7",
+  "pTop": 0.48,
+  "pTruth": 0.02,
+  "costUsd": 0.000053634,
+  "latencyMs": 227.737417,
+  "inputTokens": 1277,
+  "requests": 1
+ },
+ {
+  "program": "bucketsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0.00003339,
+  "latencyMs": 251.567042,
+  "inputTokens": 795,
+  "requests": 1
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.6,
+  "pTruth": 0.18,
+  "costUsd": 0.000041622,
+  "latencyMs": 256.97362499999997,
+  "inputTokens": 991,
+  "requests": 1
+ },
+ {
+  "program": "find_first_in_sorted",
+  "nLines": 12,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.8,
+  "pTruth": 0.8,
+  "costUsd": 0.00003927,
+  "latencyMs": 294.9905,
+  "inputTokens": 935,
+  "requests": 1
+ },
+ {
+  "program": "breadth_first_search",
+  "nLines": 14,
+  "truth": [
+   11
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 4,
+  "top1": "line_18",
+  "pTop": 0.44,
+  "pTruth": 0.1,
+  "costUsd": 0.000036918,
+  "latencyMs": 181.621625,
+  "inputTokens": 879,
+  "requests": 1
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.82,
+  "pTruth": 0.08,
+  "costUsd": 0.000023058,
+  "latencyMs": 198.948083,
+  "inputTokens": 549,
+  "requests": 1
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.56,
+  "pTruth": 0.26,
+  "costUsd": 0.000028434,
+  "latencyMs": 165.377459,
+  "inputTokens": 677,
+  "requests": 1
+ },
+ {
+  "program": "bucketsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0.0000273,
+  "latencyMs": 181.34887500000002,
+  "inputTokens": 650,
+  "requests": 1
+ },
+ {
+  "program": "find_first_in_sorted",
+  "nLines": 12,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.78,
+  "pTruth": 0.78,
+  "costUsd": 0.0000336,
+  "latencyMs": 194.37662500000005,
+  "inputTokens": 800,
+  "requests": 1
+ },
+ {
+  "program": "breadth_first_search",
+  "nLines": 14,
+  "truth": [
+   11
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_11",
+  "pTop": 0.76,
+  "pTruth": 0.76,
+  "costUsd": 0.000064092,
+  "latencyMs": 186.020042,
+  "inputTokens": 1526,
+  "requests": 1
+ },
+ {
+  "program": "bucketsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.96,
+  "pTruth": 0.96,
+  "costUsd": 0.000039564,
+  "latencyMs": 161.09616699999998,
+  "inputTokens": 942,
+  "requests": 1
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.84,
+  "pTruth": 0.13,
+  "costUsd": 0.000048384,
+  "latencyMs": 232.91266699999994,
+  "inputTokens": 1152,
+  "requests": 1
+ },
+ {
+  "program": "find_first_in_sorted",
+  "nLines": 12,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.87,
+  "pTruth": 0.87,
+  "costUsd": 0.000042504,
+  "latencyMs": 189.54924999999992,
+  "inputTokens": 1012,
+  "requests": 1
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.51,
+  "pTruth": 0.51,
+  "costUsd": 0.00002982,
+  "latencyMs": 290.101292,
+  "inputTokens": 710,
+  "requests": 1
+ },
+ {
+  "program": "bucketsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.9,
+  "pTruth": 0.9,
+  "costUsd": 0.000110208,
+  "latencyMs": 154.700958,
+  "inputTokens": 2624,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "bucketsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0,
+  "latencyMs": 251.567042,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "breadth_first_search",
+  "nLines": 14,
+  "truth": [
+   11
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 2,
+  "top1": "line_18",
+  "pTop": 0.71,
+  "pTruth": 0.62,
+  "costUsd": 0.000194712,
+  "latencyMs": 210.28970800000002,
+  "inputTokens": 4636,
+  "requests": 1,
+  "note": "lines_p>=0.5=2"
+ },
+ {
+  "program": "breadth_first_search",
+  "nLines": 14,
+  "truth": [
+   11
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 3,
+  "top1": "line_18",
+  "pTop": 0.39,
+  "pTruth": 0.15,
+  "costUsd": 0,
+  "latencyMs": 218.030292,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "depth_first_search",
+  "nLines": 12,
+  "truth": [
+   9,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "B_choice_0tests",
+  "rank": 5,
+  "top1": "line_7",
+  "pTop": 0.59,
+  "pTruth": 0.04,
+  "costUsd": 0.000032886,
+  "latencyMs": 692.424459,
+  "inputTokens": 783,
+  "requests": 1
+ },
+ {
+  "program": "find_first_in_sorted",
+  "nLines": 12,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.83,
+  "pTruth": 0.83,
+  "costUsd": 0.000155862,
+  "latencyMs": 250.04483299999993,
+  "inputTokens": 3711,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "find_first_in_sorted",
+  "nLines": 12,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.8,
+  "pTruth": 0.8,
+  "costUsd": 0,
+  "latencyMs": 294.9905,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.33,
+  "pTruth": 0.33,
+  "costUsd": 0.000084168,
+  "latencyMs": 248.53533299999992,
+  "inputTokens": 2004,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "bitcount",
+  "nLines": 6,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.75,
+  "pTruth": 0.16,
+  "costUsd": 0,
+  "latencyMs": 227.081542,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 3,
+  "top1": "line_9",
+  "pTop": 0.59,
+  "pTruth": 0.15,
+  "costUsd": 0.000127806,
+  "latencyMs": 306.0768340000001,
+  "inputTokens": 3043,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "detect_cycle",
+  "nLines": 9,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.6,
+  "pTruth": 0.18,
+  "costUsd": 0,
+  "latencyMs": 256.97362499999997,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "flatten",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 1,
+  "pTruth": 1,
+  "costUsd": 0.000030786,
+  "latencyMs": 177.96220800000003,
+  "inputTokens": 733,
+  "requests": 1
+ },
+ {
+  "program": "find_in_sorted",
+  "nLines": 12,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.49,
+  "pTruth": 0.49,
+  "costUsd": 0.000039186,
+  "latencyMs": 250.517875,
+  "inputTokens": 933,
+  "requests": 1
+ },
+ {
+  "program": "hanoi",
+  "nLines": 8,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.78,
+  "pTruth": 0.78,
+  "costUsd": 0.000034524,
+  "latencyMs": 151.40441599999997,
+  "inputTokens": 822,
+  "requests": 1
+ },
+ {
+  "program": "flatten",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 1,
+  "pTruth": 1,
+  "costUsd": 0.000024276,
+  "latencyMs": 147.07025,
+  "inputTokens": 578,
+  "requests": 1
+ },
+ {
+  "program": "find_in_sorted",
+  "nLines": 12,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.58,
+  "pTruth": 0.58,
+  "costUsd": 0.000033558,
+  "latencyMs": 149.64141599999994,
+  "inputTokens": 799,
+  "requests": 1
+ },
+ {
+  "program": "depth_first_search",
+  "nLines": 12,
+  "truth": [
+   9,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "D_choice_actual_output",
+  "rank": 3,
+  "top1": "none_of_these",
+  "pTop": 0.35,
+  "pTruth": 0.14,
+  "costUsd": 0.000062538,
+  "latencyMs": 241.97566699999993,
+  "inputTokens": 1489,
+  "requests": 1
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.6900000000000001,
+  "pTruth": 0.6900000000000001,
+  "costUsd": 0.000026124,
+  "latencyMs": 235.157875,
+  "inputTokens": 622,
+  "requests": 1
+ },
+ {
+  "program": "get_factors",
+  "nLines": 7,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.77,
+  "pTruth": 0.77,
+  "costUsd": 0.000030912,
+  "latencyMs": 228.23325,
+  "inputTokens": 736,
+  "requests": 1
+ },
+ {
+  "program": "flatten",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 1,
+  "pTruth": 1,
+  "costUsd": 0.00003465,
+  "latencyMs": 163.41637500000002,
+  "inputTokens": 825,
+  "requests": 1
+ },
+ {
+  "program": "get_factors",
+  "nLines": 7,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.52,
+  "pTruth": 0.23,
+  "costUsd": 0.000026628,
+  "latencyMs": 113.74475000000007,
+  "inputTokens": 634,
+  "requests": 1
+ },
+ {
+  "program": "find_in_sorted",
+  "nLines": 12,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.64,
+  "pTruth": 0.64,
+  "costUsd": 0.00004242,
+  "latencyMs": 163.76145900000006,
+  "inputTokens": 1010,
+  "requests": 1
+ },
+ {
+  "program": "depth_first_search",
+  "nLines": 12,
+  "truth": [
+   9,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "C_noul_per_line",
+  "rank": 6,
+  "top1": "line_7",
+  "pTop": 0.44,
+  "pTruth": 0.1,
+  "costUsd": 0.000170016,
+  "latencyMs": 154.04041700000016,
+  "inputTokens": 4048,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "depth_first_search",
+  "nLines": 12,
+  "truth": [
+   9,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "E_hierarchical",
+  "rank": 7,
+  "top1": "line_7",
+  "pTop": 0.48,
+  "pTruth": 0.02,
+  "costUsd": 0,
+  "latencyMs": 227.737417,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "hanoi",
+  "nLines": 8,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.59,
+  "pTruth": 0.59,
+  "costUsd": 0.0000294,
+  "latencyMs": 205.3559170000001,
+  "inputTokens": 700,
+  "requests": 1
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.72,
+  "pTruth": 0.72,
+  "costUsd": 0.000021966,
+  "latencyMs": 156.62033399999996,
+  "inputTokens": 523,
+  "requests": 1
+ },
+ {
+  "program": "flatten",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0.00009744,
+  "latencyMs": 150.40025000000014,
+  "inputTokens": 2320,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "flatten",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 1,
+  "pTruth": 1,
+  "costUsd": 0,
+  "latencyMs": 177.96220800000003,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "find_in_sorted",
+  "nLines": 12,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.73,
+  "pTruth": 0.73,
+  "costUsd": 0.00015519,
+  "latencyMs": 157.79787499999998,
+  "inputTokens": 3695,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "find_in_sorted",
+  "nLines": 12,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.49,
+  "pTruth": 0.49,
+  "costUsd": 0,
+  "latencyMs": 250.517875,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.86,
+  "pTruth": 0.86,
+  "costUsd": 0.000028854,
+  "latencyMs": 152.7175420000001,
+  "inputTokens": 687,
+  "requests": 1
+ },
+ {
+  "program": "get_factors",
+  "nLines": 7,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.58,
+  "pTruth": 0.58,
+  "costUsd": 0.000033936,
+  "latencyMs": 183.94387499999993,
+  "inputTokens": 808,
+  "requests": 1
+ },
+ {
+  "program": "is_valid_parenthesization",
+  "nLines": 10,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.87,
+  "pTruth": 0.87,
+  "costUsd": 0.00003318,
+  "latencyMs": 169.54987499999993,
+  "inputTokens": 790,
+  "requests": 1
+ },
+ {
+  "program": "hanoi",
+  "nLines": 8,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.9,
+  "pTruth": 0.9,
+  "costUsd": 0.000037548,
+  "latencyMs": 263.4202500000001,
+  "inputTokens": 894,
+  "requests": 1
+ },
+ {
+  "program": "knapsack",
+  "nLines": 13,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.83,
+  "pTruth": 0.83,
+  "costUsd": 0.000050484,
+  "latencyMs": 113.82941600000004,
+  "inputTokens": 1202,
+  "requests": 1
+ },
+ {
+  "program": "kheapsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "line_4",
+  "pTop": 0.33,
+  "pTruth": 0.29,
+  "costUsd": 0.000034062,
+  "latencyMs": 165.82254199999988,
+  "inputTokens": 811,
+  "requests": 1
+ },
+ {
+  "program": "get_factors",
+  "nLines": 7,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.9,
+  "pTruth": 0.9,
+  "costUsd": 0.000097062,
+  "latencyMs": 142.47316699999988,
+  "inputTokens": 2311,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "get_factors",
+  "nLines": 7,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.77,
+  "pTruth": 0.77,
+  "costUsd": 0,
+  "latencyMs": 228.23325,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.84,
+  "pTruth": 0.84,
+  "costUsd": 0.000073038,
+  "latencyMs": 178.81795899999997,
+  "inputTokens": 1739,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "gcd",
+  "nLines": 5,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_5",
+  "pTop": 0.6900000000000001,
+  "pTruth": 0.6900000000000001,
+  "costUsd": 0,
+  "latencyMs": 235.157875,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "is_valid_parenthesization",
+  "nLines": 10,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.44,
+  "pTruth": 0.44,
+  "costUsd": 0.00002919,
+  "latencyMs": 227.45524999999998,
+  "inputTokens": 695,
+  "requests": 1
+ },
+ {
+  "program": "hanoi",
+  "nLines": 8,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.77,
+  "pTruth": 0.77,
+  "costUsd": 0.000109536,
+  "latencyMs": 160.67658400000005,
+  "inputTokens": 2608,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "hanoi",
+  "nLines": 8,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.78,
+  "pTruth": 0.78,
+  "costUsd": 0,
+  "latencyMs": 151.40441599999997,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "kth",
+  "nLines": 12,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.56,
+  "pTruth": 0.56,
+  "costUsd": 0.000040614,
+  "latencyMs": 121.60241700000006,
+  "inputTokens": 967,
+  "requests": 1
+ },
+ {
+  "program": "lcs_length",
+  "nLines": 8,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.71,
+  "pTruth": 0.71,
+  "costUsd": 0.000032886,
+  "latencyMs": 106.51600000000008,
+  "inputTokens": 783,
+  "requests": 1
+ },
+ {
+  "program": "knapsack",
+  "nLines": 13,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.83,
+  "pTruth": 0.83,
+  "costUsd": 0.000037296,
+  "latencyMs": 203.00245799999993,
+  "inputTokens": 888,
+  "requests": 1
+ },
+ {
+  "program": "is_valid_parenthesization",
+  "nLines": 10,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.96,
+  "pTruth": 0.96,
+  "costUsd": 0.000035616,
+  "latencyMs": 208.67329100000006,
+  "inputTokens": 848,
+  "requests": 1
+ },
+ {
+  "program": "knapsack",
+  "nLines": 13,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.92,
+  "pTruth": 0.92,
+  "costUsd": 0.000054348,
+  "latencyMs": 149.95170899999994,
+  "inputTokens": 1294,
+  "requests": 1
+ },
+ {
+  "program": "levenshtein",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.6900000000000001,
+  "pTruth": 0.6900000000000001,
+  "costUsd": 0.000038682,
+  "latencyMs": 205.67700000000013,
+  "inputTokens": 921,
+  "requests": 1
+ },
+ {
+  "program": "lcs_length",
+  "nLines": 8,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.64,
+  "pTruth": 0.64,
+  "costUsd": 0.000028434,
+  "latencyMs": 219.845417,
+  "inputTokens": 677,
+  "requests": 1
+ },
+ {
+  "program": "kth",
+  "nLines": 12,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.47,
+  "pTruth": 0.47,
+  "costUsd": 0.00003486,
+  "latencyMs": 393.89533400000005,
+  "inputTokens": 830,
+  "requests": 1
+ },
+ {
+  "program": "is_valid_parenthesization",
+  "nLines": 10,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.88,
+  "pTruth": 0.88,
+  "costUsd": 0.000131796,
+  "latencyMs": 217.59995800000002,
+  "inputTokens": 3138,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "is_valid_parenthesization",
+  "nLines": 10,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.87,
+  "pTruth": 0.87,
+  "costUsd": 0,
+  "latencyMs": 169.54987499999993,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "lcs_length",
+  "nLines": 8,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.73,
+  "pTruth": 0.73,
+  "costUsd": 0.000035532,
+  "latencyMs": 160.3343749999999,
+  "inputTokens": 846,
+  "requests": 1
+ },
+ {
+  "program": "levenshtein",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.55,
+  "pTruth": 0.55,
+  "costUsd": 0.000033894,
+  "latencyMs": 191.67808400000013,
+  "inputTokens": 807,
+  "requests": 1
+ },
+ {
+  "program": "knapsack",
+  "nLines": 13,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.87,
+  "pTruth": 0.87,
+  "costUsd": 0.000175434,
+  "latencyMs": 203.09429199999977,
+  "inputTokens": 4177,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "knapsack",
+  "nLines": 13,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.83,
+  "pTruth": 0.83,
+  "costUsd": 0,
+  "latencyMs": 113.82941600000004,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "kheapsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.35,
+  "pTruth": 0.35,
+  "costUsd": 0.00002772,
+  "latencyMs": 654.3964579999999,
+  "inputTokens": 660,
+  "requests": 1
+ },
+ {
+  "program": "levenshtein",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.67,
+  "pTruth": 0.67,
+  "costUsd": 0.00004137,
+  "latencyMs": 150.3643750000001,
+  "inputTokens": 985,
+  "requests": 1
+ },
+ {
+  "program": "kth",
+  "nLines": 12,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.72,
+  "pTruth": 0.72,
+  "costUsd": 0.000043806,
+  "latencyMs": 208.52558399999998,
+  "inputTokens": 1043,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.32,
+  "pTruth": 0.26,
+  "costUsd": 0.00003822,
+  "latencyMs": 264.1946670000002,
+  "inputTokens": 910,
+  "requests": 1
+ },
+ {
+  "program": "lis",
+  "nLines": 10,
+  "truth": [
+   14
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 4,
+  "top1": "line_12",
+  "pTop": 0.73,
+  "pTruth": 0.06,
+  "costUsd": 0.000037212,
+  "latencyMs": 274.6322089999999,
+  "inputTokens": 886,
+  "requests": 1
+ },
+ {
+  "program": "kheapsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.5,
+  "pTruth": 0.5,
+  "costUsd": 0.000037926,
+  "latencyMs": 171.03575,
+  "inputTokens": 903,
+  "requests": 1
+ },
+ {
+  "program": "levenshtein",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.9,
+  "pTruth": 0.9,
+  "costUsd": 0.000144396,
+  "latencyMs": 159.17866700000013,
+  "inputTokens": 3438,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "levenshtein",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.6900000000000001,
+  "pTruth": 0.6900000000000001,
+  "costUsd": 0,
+  "latencyMs": 205.67700000000013,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "lcs_length",
+  "nLines": 8,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.67,
+  "pTruth": 0.67,
+  "costUsd": 0.00010878,
+  "latencyMs": 323.9009579999997,
+  "inputTokens": 2590,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "lcs_length",
+  "nLines": 8,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.71,
+  "pTruth": 0.71,
+  "costUsd": 0,
+  "latencyMs": 106.51600000000008,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "kth",
+  "nLines": 12,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.75,
+  "pTruth": 0.75,
+  "costUsd": 0.000155526,
+  "latencyMs": 121.94725000000017,
+  "inputTokens": 3703,
+  "requests": 1,
+  "note": "lines_p>=0.5=2"
+ },
+ {
+  "program": "kth",
+  "nLines": 12,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.56,
+  "pTruth": 0.56,
+  "costUsd": 0,
+  "latencyMs": 121.60241700000006,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "lis",
+  "nLines": 10,
+  "truth": [
+   14
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 4,
+  "top1": "line_12",
+  "pTop": 0.73,
+  "pTruth": 0.04,
+  "costUsd": 0.000032634,
+  "latencyMs": 138.94129199999998,
+  "inputTokens": 777,
+  "requests": 1
+ },
+ {
+  "program": "kheapsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.63,
+  "pTruth": 0.51,
+  "costUsd": 0.000110712,
+  "latencyMs": 212.17316699999992,
+  "inputTokens": 2636,
+  "requests": 1,
+  "note": "lines_p>=0.5=2"
+ },
+ {
+  "program": "kheapsort",
+  "nLines": 8,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "line_4",
+  "pTop": 0.33,
+  "pTruth": 0.29,
+  "costUsd": 0,
+  "latencyMs": 165.82254199999988,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "max_sublist_sum",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.5,
+  "pTruth": 0.5,
+  "costUsd": 0.000031752,
+  "latencyMs": 196.33508299999994,
+  "inputTokens": 756,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 3,
+  "top1": "none_of_these",
+  "pTop": 0.39,
+  "pTruth": 0.18,
+  "costUsd": 0.000032718,
+  "latencyMs": 274.3895829999997,
+  "inputTokens": 779,
+  "requests": 1
+ },
+ {
+  "program": "mergesort",
+  "nLines": 21,
+  "truth": [
+   17
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 16,
+  "top1": "line_14",
+  "pTop": 0.9,
+  "pTruth": 0,
+  "costUsd": 0.00005439,
+  "latencyMs": 224.86674999999968,
+  "inputTokens": 1295,
+  "requests": 1
+ },
+ {
+  "program": "lis",
+  "nLines": 10,
+  "truth": [
+   14
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 3,
+  "top1": "line_12",
+  "pTop": 0.72,
+  "pTruth": 0.06,
+  "costUsd": 0.000040152,
+  "latencyMs": 149.29766599999994,
+  "inputTokens": 956,
+  "requests": 1
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 3,
+  "top1": "line_4",
+  "pTop": 0.17,
+  "pTruth": 0.14,
+  "costUsd": 0.000048216,
+  "latencyMs": 123.0609999999997,
+  "inputTokens": 1148,
+  "requests": 1
+ },
+ {
+  "program": "minimum_spanning_tree",
+  "nLines": 11,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.49,
+  "pTruth": 0.49,
+  "costUsd": 0.00006174,
+  "latencyMs": 304.1868330000002,
+  "inputTokens": 1470,
+  "requests": 1
+ },
+ {
+  "program": "max_sublist_sum",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "line_4",
+  "pTop": 0.65,
+  "pTruth": 0.24,
+  "costUsd": 0.000026586,
+  "latencyMs": 132.06187499999987,
+  "inputTokens": 633,
+  "requests": 1
+ },
+ {
+  "program": "mergesort",
+  "nLines": 21,
+  "truth": [
+   17
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 16,
+  "top1": "line_14",
+  "pTop": 0.93,
+  "pTruth": 0,
+  "costUsd": 0.000046704,
+  "latencyMs": 121.23983300000009,
+  "inputTokens": 1112,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 3,
+  "top1": "none_of_these",
+  "pTop": 0.37,
+  "pTruth": 0.13,
+  "costUsd": 0.000041328,
+  "latencyMs": 171.0624170000001,
+  "inputTokens": 984,
+  "requests": 1
+ },
+ {
+  "program": "lis",
+  "nLines": 10,
+  "truth": [
+   14
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 3,
+  "top1": "line_12",
+  "pTop": 0.72,
+  "pTruth": 0.21,
+  "costUsd": 0.000131586,
+  "latencyMs": 207.69266599999992,
+  "inputTokens": 3133,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "lis",
+  "nLines": 10,
+  "truth": [
+   14
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 4,
+  "top1": "line_12",
+  "pTop": 0.73,
+  "pTruth": 0.06,
+  "costUsd": 0,
+  "latencyMs": 274.6322089999999,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "minimum_spanning_tree",
+  "nLines": 11,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.5700000000000001,
+  "pTruth": 0.5700000000000001,
+  "costUsd": 0.000034776,
+  "latencyMs": 138.44012500000008,
+  "inputTokens": 828,
+  "requests": 1
+ },
+ {
+  "program": "max_sublist_sum",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.77,
+  "pTruth": 0.77,
+  "costUsd": 0.000034692,
+  "latencyMs": 150.536791,
+  "inputTokens": 826,
+  "requests": 1
+ },
+ {
+  "program": "mergesort",
+  "nLines": 21,
+  "truth": [
+   17
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 4,
+  "top1": "line_14",
+  "pTop": 0.51,
+  "pTruth": 0.08,
+  "costUsd": 0.000058254,
+  "latencyMs": 137.4698330000001,
+  "inputTokens": 1387,
+  "requests": 1
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 2,
+  "top1": "line_9",
+  "pTop": 0.21,
+  "pTruth": 0.17,
+  "costUsd": 0.000145488,
+  "latencyMs": 212.25612499999988,
+  "inputTokens": 3464,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "longest_common_subsequence",
+  "nLines": 11,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "none_of_these",
+  "pTop": 0.32,
+  "pTruth": 0.26,
+  "costUsd": 0,
+  "latencyMs": 264.1946670000002,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "next_permutation",
+  "nLines": 9,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.99,
+  "pTruth": 0.99,
+  "costUsd": 0.000038472,
+  "latencyMs": 160.76199999999972,
+  "inputTokens": 916,
+  "requests": 1
+ },
+ {
+  "program": "max_sublist_sum",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.47,
+  "pTruth": 0.47,
+  "costUsd": 0.000098238,
+  "latencyMs": 172.32233399999996,
+  "inputTokens": 2339,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "max_sublist_sum",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.5,
+  "pTruth": 0.5,
+  "costUsd": 0,
+  "latencyMs": 196.33508299999994,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "minimum_spanning_tree",
+  "nLines": 11,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 2,
+  "top1": "line_11",
+  "pTop": 0.5700000000000001,
+  "pTruth": 0.36,
+  "costUsd": 0.000070938,
+  "latencyMs": 228.50824999999986,
+  "inputTokens": 1689,
+  "requests": 1
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 3,
+  "top1": "line_4",
+  "pTop": 0.24,
+  "pTruth": 0.15,
+  "costUsd": 0.000041958,
+  "latencyMs": 386.1274169999997,
+  "inputTokens": 999,
+  "requests": 1
+ },
+ {
+  "program": "mergesort",
+  "nLines": 21,
+  "truth": [
+   17
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 4,
+  "top1": "line_14",
+  "pTop": 0.61,
+  "pTruth": 0.06,
+  "costUsd": 0.000260064,
+  "latencyMs": 201.59900000000016,
+  "inputTokens": 6192,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "pascal",
+  "nLines": 10,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.39999999999999997,
+  "pTruth": 0.39999999999999997,
+  "costUsd": 0.000037002,
+  "latencyMs": 114.29216700000006,
+  "inputTokens": 881,
+  "requests": 1
+ },
+ {
+  "program": "next_permutation",
+  "nLines": 9,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.96,
+  "pTruth": 0.96,
+  "costUsd": 0.000032718,
+  "latencyMs": 149.27604199999996,
+  "inputTokens": 779,
+  "requests": 1
+ },
+ {
+  "program": "minimum_spanning_tree",
+  "nLines": 11,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.7,
+  "pTruth": 0.7,
+  "costUsd": 0.000167496,
+  "latencyMs": 130.7227499999999,
+  "inputTokens": 3988,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "minimum_spanning_tree",
+  "nLines": 11,
+  "truth": [
+   12
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_12",
+  "pTop": 0.49,
+  "pTruth": 0.49,
+  "costUsd": 0,
+  "latencyMs": 304.1868330000002,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "pascal",
+  "nLines": 10,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.39,
+  "pTruth": 0.38,
+  "costUsd": 0.000032088,
+  "latencyMs": 130.61458399999992,
+  "inputTokens": 764,
+  "requests": 1
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 5,
+  "top1": "line_9",
+  "pTop": 0.77,
+  "pTruth": 0.01,
+  "costUsd": 0.000031122,
+  "latencyMs": 234.94725000000017,
+  "inputTokens": 741,
+  "requests": 1
+ },
+ {
+  "program": "next_permutation",
+  "nLines": 9,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.99,
+  "pTruth": 0.99,
+  "costUsd": 0.000041832,
+  "latencyMs": 217.84229199999982,
+  "inputTokens": 996,
+  "requests": 1
+ },
+ {
+  "program": "powerset",
+  "nLines": 7,
+  "truth": [
+   4,
+   5,
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.87,
+  "pTruth": 0.87,
+  "costUsd": 0.000035448,
+  "latencyMs": 179.31520799999998,
+  "inputTokens": 844,
+  "requests": 1
+ },
+ {
+  "program": "pascal",
+  "nLines": 10,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.59,
+  "pTruth": 0.59,
+  "costUsd": 0.00004011,
+  "latencyMs": 240.62587500000018,
+  "inputTokens": 955,
+  "requests": 1
+ },
+ {
+  "program": "next_permutation",
+  "nLines": 9,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.93,
+  "pTruth": 0.93,
+  "costUsd": 0.00012327,
+  "latencyMs": 135.78529200000003,
+  "inputTokens": 2935,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "next_permutation",
+  "nLines": 9,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.99,
+  "pTruth": 0.99,
+  "costUsd": 0,
+  "latencyMs": 160.76199999999972,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "mergesort",
+  "nLines": 21,
+  "truth": [
+   17
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 16,
+  "top1": "line_14",
+  "pTop": 0.9400000000000001,
+  "pTruth": 0,
+  "costUsd": 0.000095634,
+  "latencyMs": 294.26858300000004,
+  "inputTokens": 2277,
+  "requests": 2,
+  "note": "units=2 unit_pick=function_merge p=0.83 unit_hit=false"
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_15",
+  "pTop": 0.61,
+  "pTruth": 0.61,
+  "costUsd": 0.000051576,
+  "latencyMs": 461.9350830000003,
+  "inputTokens": 1228,
+  "requests": 1
+ },
+ {
+  "program": "powerset",
+  "nLines": 7,
+  "truth": [
+   4,
+   5,
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.83,
+  "pTruth": 0.83,
+  "costUsd": 0.000026712,
+  "latencyMs": 173.0698339999999,
+  "inputTokens": 636,
+  "requests": 1
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 5,
+  "top1": "line_9",
+  "pTop": 0.81,
+  "pTruth": 0.01,
+  "costUsd": 0.000025998,
+  "latencyMs": 303.6907500000002,
+  "inputTokens": 619,
+  "requests": 1
+ },
+ {
+  "program": "quicksort",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.42,
+  "pTruth": 0.42,
+  "costUsd": 0.000035742,
+  "latencyMs": 116.53204200000027,
+  "inputTokens": 851,
+  "requests": 1
+ },
+ {
+  "program": "pascal",
+  "nLines": 10,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.67,
+  "pTruth": 0.67,
+  "costUsd": 0.000131964,
+  "latencyMs": 147.27662499999997,
+  "inputTokens": 3142,
+  "requests": 1,
+  "note": "lines_p>=0.5=3"
+ },
+ {
+  "program": "pascal",
+  "nLines": 10,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.39999999999999997,
+  "pTruth": 0.39999999999999997,
+  "costUsd": 0,
+  "latencyMs": 114.29216700000006,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "reverse_linked_list",
+  "nLines": 7,
+  "truth": [
+   5,
+   6
+  ],
+  "truthKind": "insert",
+  "variant": "A_choice_3tests",
+  "rank": 4,
+  "top1": "line_7",
+  "pTop": 0.64,
+  "pTruth": 0.02,
+  "costUsd": 0.000043974,
+  "latencyMs": 162.8784999999998,
+  "inputTokens": 1047,
+  "requests": 1
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 6,
+  "top1": "line_8",
+  "pTop": 0.79,
+  "pTruth": 0.01,
+  "costUsd": 0.00003465,
+  "latencyMs": 124.6387080000004,
+  "inputTokens": 825,
+  "requests": 1
+ },
+ {
+  "program": "powerset",
+  "nLines": 7,
+  "truth": [
+   4,
+   5,
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.91,
+  "pTruth": 0.91,
+  "costUsd": 0.000041622,
+  "latencyMs": 184.59229099999993,
+  "inputTokens": 991,
+  "requests": 1
+ },
+ {
+  "program": "quicksort",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.45,
+  "pTruth": 0.45,
+  "costUsd": 0.0000273,
+  "latencyMs": 138.37162500000022,
+  "inputTokens": 650,
+  "requests": 1
+ },
+ {
+  "program": "rpn_eval",
+  "nLines": 19,
+  "truth": [
+   20
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 4,
+  "top1": "line_14",
+  "pTop": 0.28,
+  "pTruth": 0.15,
+  "costUsd": 0.00004893,
+  "latencyMs": 149.476584,
+  "inputTokens": 1165,
+  "requests": 1
+ },
+ {
+  "program": "reverse_linked_list",
+  "nLines": 7,
+  "truth": [
+   5,
+   6
+  ],
+  "truthKind": "insert",
+  "variant": "B_choice_0tests",
+  "rank": 4,
+  "top1": "line_7",
+  "pTop": 0.65,
+  "pTruth": 0.02,
+  "costUsd": 0.000025074,
+  "latencyMs": 134.14604199999985,
+  "inputTokens": 597,
+  "requests": 1
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 3,
+  "top1": "line_9",
+  "pTop": 0.77,
+  "pTruth": 0.11,
+  "costUsd": 0.00009723,
+  "latencyMs": 132.47362499999963,
+  "inputTokens": 2315,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "possible_change",
+  "nLines": 7,
+  "truth": [
+   5
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 5,
+  "top1": "line_9",
+  "pTop": 0.77,
+  "pTruth": 0.01,
+  "costUsd": 0,
+  "latencyMs": 234.94725000000017,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "powerset",
+  "nLines": 7,
+  "truth": [
+   4,
+   5,
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.77,
+  "pTruth": 0.77,
+  "costUsd": 0.000101514,
+  "latencyMs": 170.5018329999998,
+  "inputTokens": 2417,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "powerset",
+  "nLines": 7,
+  "truth": [
+   4,
+   5,
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.87,
+  "pTruth": 0.87,
+  "costUsd": 0,
+  "latencyMs": 179.31520799999998,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "quicksort",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.49,
+  "pTruth": 0.49,
+  "costUsd": 0.000041538,
+  "latencyMs": 180.07004099999995,
+  "inputTokens": 989,
+  "requests": 1
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.41,
+  "pTruth": 0.36,
+  "costUsd": 0.000192738,
+  "latencyMs": 414.4149590000002,
+  "inputTokens": 4589,
+  "requests": 1,
+  "note": "lines_p>=0.5=0"
+ },
+ {
+  "program": "next_palindrome",
+  "nLines": 15,
+  "truth": [
+   15
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 3,
+  "top1": "line_4",
+  "pTop": 0.17,
+  "pTruth": 0.14,
+  "costUsd": 0,
+  "latencyMs": 123.0609999999997,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "reverse_linked_list",
+  "nLines": 7,
+  "truth": [
+   5,
+   6
+  ],
+  "truthKind": "insert",
+  "variant": "D_choice_actual_output",
+  "rank": 4,
+  "top1": "line_7",
+  "pTop": 0.64,
+  "pTruth": 0.03,
+  "costUsd": 0.000054096,
+  "latencyMs": 161.02662499999997,
+  "inputTokens": 1288,
+  "requests": 1
+ },
+ {
+  "program": "shortest_path_length",
+  "nLines": 35,
+  "truth": [
+   22
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 3,
+  "top1": "line_34",
+  "pTop": 0.45,
+  "pTruth": 0.07,
+  "costUsd": 0.000084588,
+  "latencyMs": 163.68837500000018,
+  "inputTokens": 2014,
+  "requests": 1
+ },
+ {
+  "program": "shortest_path_lengths",
+  "nLines": 13,
+  "truth": [
+   13
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_13",
+  "pTop": 0.98,
+  "pTruth": 0.98,
+  "costUsd": 0.00008841,
+  "latencyMs": 140.96845800000028,
+  "inputTokens": 2105,
+  "requests": 1
+ },
+ {
+  "program": "rpn_eval",
+  "nLines": 19,
+  "truth": [
+   20
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 4,
+  "top1": "line_14",
+  "pTop": 0.28,
+  "pTruth": 0.17,
+  "costUsd": 0.000043848,
+  "latencyMs": 298.418541,
+  "inputTokens": 1044,
+  "requests": 1
+ },
+ {
+  "program": "quicksort",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.63,
+  "pTruth": 0.57,
+  "costUsd": 0.000101514,
+  "latencyMs": 156.3248749999998,
+  "inputTokens": 2417,
+  "requests": 1,
+  "note": "lines_p>=0.5=3"
+ },
+ {
+  "program": "quicksort",
+  "nLines": 7,
+  "truth": [
+   7
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_7",
+  "pTop": 0.42,
+  "pTruth": 0.42,
+  "costUsd": 0,
+  "latencyMs": 116.53204200000027,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "reverse_linked_list",
+  "nLines": 7,
+  "truth": [
+   5,
+   6
+  ],
+  "truthKind": "insert",
+  "variant": "C_noul_per_line",
+  "rank": 3,
+  "top1": "line_7",
+  "pTop": 0.84,
+  "pTruth": 0.08,
+  "costUsd": 0.000111174,
+  "latencyMs": 177.63691600000038,
+  "inputTokens": 2647,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "reverse_linked_list",
+  "nLines": 7,
+  "truth": [
+   5,
+   6
+  ],
+  "truthKind": "insert",
+  "variant": "E_hierarchical",
+  "rank": 4,
+  "top1": "line_7",
+  "pTop": 0.64,
+  "pTruth": 0.02,
+  "costUsd": 0,
+  "latencyMs": 162.8784999999998,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "shortest_path_lengths",
+  "nLines": 13,
+  "truth": [
+   13
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_13",
+  "pTop": 0.98,
+  "pTruth": 0.98,
+  "costUsd": 0.000037212,
+  "latencyMs": 137.48904200000015,
+  "inputTokens": 886,
+  "requests": 1
+ },
+ {
+  "program": "rpn_eval",
+  "nLines": 19,
+  "truth": [
+   20
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_20",
+  "pTop": 0.29,
+  "pTruth": 0.29,
+  "costUsd": 0.000051996,
+  "latencyMs": 126.89674999999988,
+  "inputTokens": 1238,
+  "requests": 1
+ },
+ {
+  "program": "shortest_paths",
+  "nLines": 12,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.72,
+  "pTruth": 0.72,
+  "costUsd": 0.00006867,
+  "latencyMs": 279.4777079999999,
+  "inputTokens": 1635,
+  "requests": 1
+ },
+ {
+  "program": "shunting_yard",
+  "nLines": 18,
+  "truth": [
+   17,
+   19
+  ],
+  "truthKind": "insert",
+  "variant": "A_choice_3tests",
+  "rank": 16,
+  "top1": "line_16",
+  "pTop": 0.71,
+  "pTruth": 0,
+  "costUsd": 0.000047292,
+  "latencyMs": 156.29204200000004,
+  "inputTokens": 1126,
+  "requests": 1
+ },
+ {
+  "program": "shortest_path_length",
+  "nLines": 35,
+  "truth": [
+   22
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 4,
+  "top1": "line_10",
+  "pTop": 0.31,
+  "pTruth": 0.16,
+  "costUsd": 0.000072408,
+  "latencyMs": 304.7802920000004,
+  "inputTokens": 1724,
+  "requests": 1
+ },
+ {
+  "program": "sieve",
+  "nLines": 6,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0.000027972,
+  "latencyMs": 177.37233300000025,
+  "inputTokens": 666,
+  "requests": 1
+ },
+ {
+  "program": "rpn_eval",
+  "nLines": 19,
+  "truth": [
+   20
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_20",
+  "pTop": 0.64,
+  "pTruth": 0.64,
+  "costUsd": 0.000234654,
+  "latencyMs": 172.44066699999985,
+  "inputTokens": 5587,
+  "requests": 1,
+  "note": "lines_p>=0.5=2"
+ },
+ {
+  "program": "shortest_path_lengths",
+  "nLines": 13,
+  "truth": [
+   13
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_13",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0.00011256,
+  "latencyMs": 198.1064580000002,
+  "inputTokens": 2680,
+  "requests": 1
+ },
+ {
+  "program": "shortest_paths",
+  "nLines": 12,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.85,
+  "pTruth": 0.85,
+  "costUsd": 0.00003486,
+  "latencyMs": 206.88066699999945,
+  "inputTokens": 830,
+  "requests": 1
+ },
+ {
+  "program": "shortest_path_length",
+  "nLines": 35,
+  "truth": [
+   22
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 3,
+  "top1": "line_10",
+  "pTop": 0.43,
+  "pTruth": 0.14,
+  "costUsd": 0.000089964,
+  "latencyMs": 144.83854100000008,
+  "inputTokens": 2142,
+  "requests": 1
+ },
+ {
+  "program": "sieve",
+  "nLines": 6,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0.000024108,
+  "latencyMs": 185.64791700000023,
+  "inputTokens": 574,
+  "requests": 1
+ },
+ {
+  "program": "shunting_yard",
+  "nLines": 18,
+  "truth": [
+   17,
+   19
+  ],
+  "truthKind": "insert",
+  "variant": "B_choice_0tests",
+  "rank": 16,
+  "top1": "line_16",
+  "pTop": 0.7,
+  "pTruth": 0,
+  "costUsd": 0.000042126,
+  "latencyMs": 262.2768750000005,
+  "inputTokens": 1003,
+  "requests": 1
+ },
+ {
+  "program": "shortest_path_lengths",
+  "nLines": 13,
+  "truth": [
+   13
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_13",
+  "pTop": 0.93,
+  "pTruth": 0.93,
+  "costUsd": 0.000214494,
+  "latencyMs": 149.75154100000054,
+  "inputTokens": 5107,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "shortest_path_lengths",
+  "nLines": 13,
+  "truth": [
+   13
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_13",
+  "pTop": 0.98,
+  "pTruth": 0.98,
+  "costUsd": 0,
+  "latencyMs": 140.96845800000028,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "shortest_paths",
+  "nLines": 12,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.74,
+  "pTruth": 0.74,
+  "costUsd": 0.000082152,
+  "latencyMs": 162.52250000000004,
+  "inputTokens": 1956,
+  "requests": 1
+ },
+ {
+  "program": "shortest_path_length",
+  "nLines": 35,
+  "truth": [
+   22
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 4,
+  "top1": "line_34",
+  "pTop": 0.79,
+  "pTruth": 0.34,
+  "costUsd": 0.00043008,
+  "latencyMs": 167.86049999999977,
+  "inputTokens": 10240,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "sieve",
+  "nLines": 6,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.95,
+  "pTruth": 0.95,
+  "costUsd": 0.00003045,
+  "latencyMs": 135.95554100000027,
+  "inputTokens": 725,
+  "requests": 1
+ },
+ {
+  "program": "rpn_eval",
+  "nLines": 19,
+  "truth": [
+   20
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "line_18",
+  "pTop": 0.35,
+  "pTruth": 0.22,
+  "costUsd": 0.00008526000000000001,
+  "latencyMs": 173.89929099999972,
+  "inputTokens": 2030,
+  "requests": 2,
+  "note": "units=2 unit_pick=function_rpn_eval p=0.82 unit_hit=true"
+ },
+ {
+  "program": "shunting_yard",
+  "nLines": 18,
+  "truth": [
+   17,
+   19
+  ],
+  "truthKind": "insert",
+  "variant": "D_choice_actual_output",
+  "rank": 5,
+  "top1": "none_of_these",
+  "pTop": 0.48,
+  "pTruth": 0.03,
+  "costUsd": 0.000051198,
+  "latencyMs": 185.42391700000007,
+  "inputTokens": 1219,
+  "requests": 1
+ },
+ {
+  "program": "sieve",
+  "nLines": 6,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.92,
+  "pTruth": 0.92,
+  "costUsd": 0.00008442,
+  "latencyMs": 121.75004100000024,
+  "inputTokens": 2010,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "sieve",
+  "nLines": 6,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.97,
+  "pTruth": 0.97,
+  "costUsd": 0,
+  "latencyMs": 177.37233300000025,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "shortest_paths",
+  "nLines": 12,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.81,
+  "pTruth": 0.81,
+  "costUsd": 0.000184632,
+  "latencyMs": 175.55525000000034,
+  "inputTokens": 4396,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "shortest_paths",
+  "nLines": 12,
+  "truth": [
+   10
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_10",
+  "pTop": 0.72,
+  "pTruth": 0.72,
+  "costUsd": 0,
+  "latencyMs": 279.4777079999999,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "subsequences",
+  "nLines": 9,
+  "truth": [
+   3
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 3,
+  "top1": "line_6",
+  "pTop": 0.37,
+  "pTruth": 0.14,
+  "costUsd": 0.00003486,
+  "latencyMs": 182.35891699999956,
+  "inputTokens": 830,
+  "requests": 1
+ },
+ {
+  "program": "shortest_path_length",
+  "nLines": 35,
+  "truth": [
+   22
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 7,
+  "top1": "line_34",
+  "pTop": 0.97,
+  "pTruth": 0,
+  "costUsd": 0.00012604199999999998,
+  "latencyMs": 178.47983300000033,
+  "inputTokens": 3001,
+  "requests": 2,
+  "note": "units=4 unit_pick=function_get p=0.45 unit_hit=false"
+ },
+ {
+  "program": "shunting_yard",
+  "nLines": 18,
+  "truth": [
+   17,
+   19
+  ],
+  "truthKind": "insert",
+  "variant": "C_noul_per_line",
+  "rank": 6,
+  "top1": "line_16",
+  "pTop": 0.64,
+  "pTruth": 0.1,
+  "costUsd": 0.000224784,
+  "latencyMs": 224.81925000000047,
+  "inputTokens": 5352,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "sqrt",
+  "nLines": 5,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.56,
+  "pTruth": 0.56,
+  "costUsd": 0.000028014,
+  "latencyMs": 401.00295800000004,
+  "inputTokens": 667,
+  "requests": 1
+ },
+ {
+  "program": "topological_ordering",
+  "nLines": 7,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.8,
+  "pTruth": 0.8,
+  "costUsd": 0.000074004,
+  "latencyMs": 177.25204199999916,
+  "inputTokens": 1762,
+  "requests": 1
+ },
+ {
+  "program": "to_base",
+  "nLines": 9,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "A_choice_3tests",
+  "rank": 2,
+  "top1": "line_10",
+  "pTop": 0.58,
+  "pTruth": 0.35,
+  "costUsd": 0.000032508,
+  "latencyMs": 223.3546669999996,
+  "inputTokens": 774,
+  "requests": 1
+ },
+ {
+  "program": "subsequences",
+  "nLines": 9,
+  "truth": [
+   3
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.72,
+  "pTruth": 0.1,
+  "costUsd": 0.000029232,
+  "latencyMs": 202.84841700000015,
+  "inputTokens": 696,
+  "requests": 1
+ },
+ {
+  "program": "topological_ordering",
+  "nLines": 7,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.86,
+  "pTruth": 0.86,
+  "costUsd": 0.000028644,
+  "latencyMs": 127.05195800000001,
+  "inputTokens": 682,
+  "requests": 1
+ },
+ {
+  "program": "sqrt",
+  "nLines": 5,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.73,
+  "pTruth": 0.73,
+  "costUsd": 0.000023016,
+  "latencyMs": 181.97154200000023,
+  "inputTokens": 548,
+  "requests": 1
+ },
+ {
+  "program": "wrap",
+  "nLines": 9,
+  "truth": [
+   8,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "A_choice_3tests",
+  "rank": 3,
+  "top1": "line_7",
+  "pTop": 0.74,
+  "pTruth": 0.05,
+  "costUsd": 0.000098616,
+  "latencyMs": 251.56737499999963,
+  "inputTokens": 2348,
+  "requests": 1
+ },
+ {
+  "program": "to_base",
+  "nLines": 9,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "B_choice_0tests",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.43,
+  "pTruth": 0.43,
+  "costUsd": 0.00002793,
+  "latencyMs": 217.96829199999956,
+  "inputTokens": 665,
+  "requests": 1
+ },
+ {
+  "program": "subsequences",
+  "nLines": 9,
+  "truth": [
+   3
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 2,
+  "top1": "line_8",
+  "pTop": 0.59,
+  "pTruth": 0.11,
+  "costUsd": 0.000038766,
+  "latencyMs": 169.65070800000012,
+  "inputTokens": 923,
+  "requests": 1
+ },
+ {
+  "program": "sqrt",
+  "nLines": 5,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.83,
+  "pTruth": 0.83,
+  "costUsd": 0.000031752,
+  "latencyMs": 137.10279199999968,
+  "inputTokens": 756,
+  "requests": 1
+ },
+ {
+  "program": "shunting_yard",
+  "nLines": 18,
+  "truth": [
+   17,
+   19
+  ],
+  "truthKind": "insert",
+  "variant": "E_hierarchical",
+  "rank": 4,
+  "top1": "line_16",
+  "pTop": 0.86,
+  "pTruth": 0.01,
+  "costUsd": 0.00008337000000000001,
+  "latencyMs": 275.8702919999996,
+  "inputTokens": 1985,
+  "requests": 2,
+  "note": "units=8 unit_pick=block_5_line_12 p=0.67 unit_hit=true"
+ },
+ {
+  "program": "wrap",
+  "nLines": 9,
+  "truth": [
+   8,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "B_choice_0tests",
+  "rank": 5,
+  "top1": "line_7",
+  "pTop": 0.75,
+  "pTruth": 0.03,
+  "costUsd": 0.000028644,
+  "latencyMs": 267.0112079999999,
+  "inputTokens": 682,
+  "requests": 1
+ },
+ {
+  "program": "to_base",
+  "nLines": 9,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_9",
+  "pTop": 0.77,
+  "pTruth": 0.77,
+  "costUsd": 0.00003528,
+  "latencyMs": 233.78008299999965,
+  "inputTokens": 840,
+  "requests": 1
+ },
+ {
+  "program": "sqrt",
+  "nLines": 5,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.58,
+  "pTruth": 0.58,
+  "costUsd": 0.000074172,
+  "latencyMs": 226.0368329999992,
+  "inputTokens": 1766,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "sqrt",
+  "nLines": 5,
+  "truth": [
+   4
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_4",
+  "pTop": 0.56,
+  "pTruth": 0.56,
+  "costUsd": 0,
+  "latencyMs": 401.00295800000004,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "topological_ordering",
+  "nLines": 7,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "D_choice_actual_output",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.79,
+  "pTruth": 0.79,
+  "costUsd": 0.000090552,
+  "latencyMs": 462.6169579999996,
+  "inputTokens": 2156,
+  "requests": 1
+ },
+ {
+  "program": "subsequences",
+  "nLines": 9,
+  "truth": [
+   3
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 3,
+  "top1": "line_8",
+  "pTop": 0.63,
+  "pTruth": 0.45,
+  "costUsd": 0.000121002,
+  "latencyMs": 315.7781670000004,
+  "inputTokens": 2881,
+  "requests": 1,
+  "note": "lines_p>=0.5=2"
+ },
+ {
+  "program": "subsequences",
+  "nLines": 9,
+  "truth": [
+   3
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 3,
+  "top1": "line_6",
+  "pTop": 0.37,
+  "pTruth": 0.14,
+  "costUsd": 0,
+  "latencyMs": 182.35891699999956,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "to_base",
+  "nLines": 9,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 2,
+  "top1": "line_10",
+  "pTop": 0.65,
+  "pTruth": 0.41,
+  "costUsd": 0.000118902,
+  "latencyMs": 157.0262499999999,
+  "inputTokens": 2831,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "to_base",
+  "nLines": 9,
+  "truth": [
+   9
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 2,
+  "top1": "line_10",
+  "pTop": 0.58,
+  "pTruth": 0.35,
+  "costUsd": 0,
+  "latencyMs": 223.3546669999996,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "wrap",
+  "nLines": 9,
+  "truth": [
+   8,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "D_choice_actual_output",
+  "rank": 2,
+  "top1": "line_7",
+  "pTop": 0.52,
+  "pTruth": 0.19,
+  "costUsd": 0.000133014,
+  "latencyMs": 184.17904199999975,
+  "inputTokens": 3167,
+  "requests": 1
+ },
+ {
+  "program": "wrap",
+  "nLines": 9,
+  "truth": [
+   8,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "C_noul_per_line",
+  "rank": 4,
+  "top1": "line_7",
+  "pTop": 0.76,
+  "pTruth": 0.18,
+  "costUsd": 0.000184254,
+  "latencyMs": 164.92795899999965,
+  "inputTokens": 4387,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "wrap",
+  "nLines": 9,
+  "truth": [
+   8,
+   10
+  ],
+  "truthKind": "insert",
+  "variant": "E_hierarchical",
+  "rank": 3,
+  "top1": "line_7",
+  "pTop": 0.74,
+  "pTruth": 0.05,
+  "costUsd": 0,
+  "latencyMs": 251.56737499999963,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ },
+ {
+  "program": "topological_ordering",
+  "nLines": 7,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "C_noul_per_line",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.77,
+  "pTruth": 0.77,
+  "costUsd": 0.000139734,
+  "latencyMs": 269.71891700000015,
+  "inputTokens": 3327,
+  "requests": 1,
+  "note": "lines_p>=0.5=1"
+ },
+ {
+  "program": "topological_ordering",
+  "nLines": 7,
+  "truth": [
+   6
+  ],
+  "truthKind": "replace",
+  "variant": "E_hierarchical",
+  "rank": 1,
+  "top1": "line_6",
+  "pTop": 0.8,
+  "pTruth": 0.8,
+  "costUsd": 0,
+  "latencyMs": 177.25204199999916,
+  "inputTokens": 0,
+  "requests": 0,
+  "note": "program <= 15 lines: reused A (no extra request)"
+ }
+]

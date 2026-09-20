@@ -1,0 +1,607 @@
+[
+ {
+  "instance_id": "sympy__sympy-12096",
+  "repo": "sympy/sympy",
+  "difficulty": "<15 min fix",
+  "n_added": 1,
+  "py_files": 1046,
+  "agg": {
+   "exact": 0,
+   "exact_other_file": 0,
+   "normalised": 0,
+   "normalised_other_file": 0,
+   "jaccard_hit": 1,
+   "jaccard_other_hit": 1
+  },
+  "rows": [
+   {
+    "file": "sympy/core/function.py",
+    "line": "return Float(self._imp_(*[i.evalf(prec) for i in self.args]), prec)",
+    "n_tokens": 17,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.7,
+    "jaccard_best_file": "sympy/functions/elementary/piecewise.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.7,
+    "jaccard_other_hit": true,
+    "normalised_form": "return ID ( self . ID ( * [ ID . ID ( ID ) for ID in self . ID ] ) , ID )"
+   }
+  ]
+ },
+ {
+  "instance_id": "sympy__sympy-15345",
+  "repo": "sympy/sympy",
+  "difficulty": "<15 min fix",
+  "n_added": 3,
+  "py_files": 1221,
+  "agg": {
+   "exact": 0,
+   "exact_other_file": 0,
+   "normalised": 1,
+   "normalised_other_file": 1,
+   "jaccard_hit": 0,
+   "jaccard_other_hit": 0
+  },
+  "rows": [
+   {
+    "file": "sympy/printing/mathematica.py",
+    "line": "\"Max\": [(lambda *x: True, \"Max\")],",
+    "n_tokens": 11,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.692,
+    "jaccard_best_file": "sympy/printing/mathematica.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.571,
+    "jaccard_other_hit": false,
+    "normalised_form": "STR : [ ( lambda * ID : True , STR ) ] ,"
+   },
+   {
+    "file": "sympy/printing/mathematica.py",
+    "line": "\"Min\": [(lambda *x: True, \"Min\")],",
+    "n_tokens": 11,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.692,
+    "jaccard_best_file": "sympy/printing/mathematica.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.571,
+    "jaccard_other_hit": false,
+    "normalised_form": "STR : [ ( lambda * ID : True , STR ) ] ,"
+   },
+   {
+    "file": "sympy/printing/mathematica.py",
+    "line": "_print_MinMaxBase = _print_Function",
+    "n_tokens": 3,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 0.5,
+    "jaccard_best_file": "sympy/printing/codeprinter.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.5,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = ID"
+   }
+  ]
+ },
+ {
+  "instance_id": "sympy__sympy-19954",
+  "repo": "sympy/sympy",
+  "difficulty": "<15 min fix",
+  "n_added": 5,
+  "py_files": 1349,
+  "agg": {
+   "exact": 0,
+   "exact_other_file": 0,
+   "normalised": 2,
+   "normalised_other_file": 2,
+   "jaccard_hit": 1,
+   "jaccard_other_hit": 1
+  },
+  "rows": [
+   {
+    "file": "sympy/combinatorics/perm_groups.py",
+    "line": "blocks_remove_mask = [False] * len(blocks)",
+    "n_tokens": 10,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 0.667,
+    "jaccard_best_file": "sympy/simplify/simplify.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.667,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = [ False ] * ID ( ID )"
+   },
+   {
+    "file": "sympy/combinatorics/perm_groups.py",
+    "line": "blocks_remove_mask[i] = True",
+    "n_tokens": 6,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 0.714,
+    "jaccard_best_file": "sympy/matrices/determinant.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.714,
+    "jaccard_other_hit": true,
+    "normalised_form": "ID [ ID ] = True"
+   },
+   {
+    "file": "sympy/combinatorics/perm_groups.py",
+    "line": "blocks = [b for i, b in enumerate(blocks) if not blocks_remove_mask[i]]",
+    "n_tokens": 15,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.667,
+    "jaccard_best_file": "sympy/solvers/ode/systems.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.667,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = [ ID for ID , ID in ID ( ID ) if not ID [ ID ] ]"
+   },
+   {
+    "file": "sympy/combinatorics/perm_groups.py",
+    "line": "num_blocks = [n for i, n in enumerate(num_blocks) if not blocks_remove_mask[i]]",
+    "n_tokens": 15,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.667,
+    "jaccard_best_file": "sympy/solvers/ode/systems.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.667,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = [ ID for ID , ID in ID ( ID ) if not ID [ ID ] ]"
+   },
+   {
+    "file": "sympy/combinatorics/perm_groups.py",
+    "line": "rep_blocks = [r for i, r in enumerate(rep_blocks) if not blocks_remove_mask[i]]",
+    "n_tokens": 15,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.667,
+    "jaccard_best_file": "sympy/solvers/ode/systems.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.667,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = [ ID for ID , ID in ID ( ID ) if not ID [ ID ] ]"
+   }
+  ]
+ },
+ {
+  "instance_id": "django__django-14787",
+  "repo": "django/django",
+  "difficulty": "<15 min fix",
+  "n_added": 1,
+  "py_files": 2124,
+  "agg": {
+   "exact": 0,
+   "exact_other_file": 0,
+   "normalised": 0,
+   "normalised_other_file": 0,
+   "jaccard_hit": 1,
+   "jaccard_other_hit": 0
+  },
+  "rows": [
+   {
+    "file": "django/utils/decorators.py",
+    "line": "bound_method = wraps(method)(partial(method.__get__(self, type(self))))",
+    "n_tokens": 12,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.917,
+    "jaccard_best_file": "django/utils/decorators.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.467,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = ID ( ID ) ( ID ( ID . ID ( self , ID ( self ) ) ) )"
+   }
+  ]
+ },
+ {
+  "instance_id": "django__django-15315",
+  "repo": "django/django",
+  "difficulty": "<15 min fix",
+  "n_added": 1,
+  "py_files": 2137,
+  "agg": {
+   "exact": 0,
+   "exact_other_file": 0,
+   "normalised": 1,
+   "normalised_other_file": 1,
+   "jaccard_hit": 1,
+   "jaccard_other_hit": 1
+  },
+  "rows": [
+   {
+    "file": "django/db/models/fields/__init__.py",
+    "line": "return hash(self.creation_counter)",
+    "n_tokens": 7,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 0.75,
+    "jaccard_best_file": "django/forms/models.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.75,
+    "jaccard_other_hit": true,
+    "normalised_form": "return ID ( self . ID )"
+   }
+  ]
+ },
+ {
+  "instance_id": "django__django-16100",
+  "repo": "django/django",
+  "difficulty": "<15 min fix",
+  "n_added": 10,
+  "py_files": 2153,
+  "agg": {
+   "exact": 8,
+   "exact_other_file": 2,
+   "normalised": 10,
+   "normalised_other_file": 8,
+   "jaccard_hit": 9,
+   "jaccard_other_hit": 4
+  },
+  "rows": [
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "with transaction.atomic(using=router.db_for_write(self.model)):",
+    "n_tokens": 13,
+    "exact": true,
+    "exact_other_file": true,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "django/contrib/auth/admin.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 1.0,
+    "jaccard_other_hit": true,
+    "normalised_form": "with ID . ID ( ID = ID . ID ( self . ID ) ) :"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "for form in formset.forms:",
+    "n_tokens": 7,
+    "exact": true,
+    "exact_other_file": true,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "tests/model_formsets_regress/tests.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 1.0,
+    "jaccard_other_hit": true,
+    "normalised_form": "for ID in ID . ID :"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "if form.has_changed():",
+    "n_tokens": 7,
+    "exact": true,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "django/contrib/admin/options.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.875,
+    "jaccard_other_hit": true,
+    "normalised_form": "if ID . ID ( ) :"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "obj = self.save_form(request, form, change=True)",
+    "n_tokens": 12,
+    "exact": true,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "django/contrib/admin/options.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.667,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = self . ID ( ID , ID , ID = True )"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "self.save_model(request, obj, form, change=True)",
+    "n_tokens": 12,
+    "exact": true,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": false,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "django/contrib/admin/options.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.786,
+    "jaccard_other_hit": true,
+    "normalised_form": "self . ID ( ID , ID , ID , ID = True )"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "self.save_related(request, form, formsets=[], change=True)",
+    "n_tokens": 14,
+    "exact": true,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": false,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "django/contrib/admin/options.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.6,
+    "jaccard_other_hit": false,
+    "normalised_form": "self . ID ( ID , ID , ID = [ ] , ID = True )"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "change_msg = self.construct_change_message(",
+    "n_tokens": 6,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 0.714,
+    "jaccard_best_file": "django/contrib/admin/options.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.571,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = self . ID ( ID = self . ID ("
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "request, form, None",
+    "n_tokens": 4,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 0.6,
+    "jaccard_best_file": "django/utils/log.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.6,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID , ID , None"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "self.log_change(request, obj, change_msg)",
+    "n_tokens": 9,
+    "exact": true,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "django/contrib/admin/options.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.636,
+    "jaccard_other_hit": false,
+    "normalised_form": "self . ID ( ID , ID , ID )"
+   },
+   {
+    "file": "django/contrib/admin/options.py",
+    "line": "changecount += 1",
+    "n_tokens": 3,
+    "exact": true,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "django/contrib/admin/options.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.5,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID += NUM"
+   }
+  ]
+ },
+ {
+  "instance_id": "pytest-dev__pytest-10081",
+  "repo": "pytest-dev/pytest",
+  "difficulty": "<15 min fix",
+  "n_added": 3,
+  "py_files": 236,
+  "agg": {
+   "exact": 0,
+   "exact_other_file": 0,
+   "normalised": 0,
+   "normalised_other_file": 0,
+   "jaccard_hit": 1,
+   "jaccard_other_hit": 0
+  },
+  "rows": [
+   {
+    "file": "src/_pytest/unittest.py",
+    "line": "assert isinstance(self.parent, UnitTestCase)",
+    "n_tokens": 9,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.6,
+    "jaccard_best_file": "testing/python/fixtures.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.6,
+    "jaccard_other_hit": false,
+    "normalised_form": "assert ID ( self . ID , ID )"
+   },
+   {
+    "file": "src/_pytest/unittest.py",
+    "line": "skipped = _is_skipped(self.obj) or _is_skipped(self.parent.obj)",
+    "n_tokens": 10,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.583,
+    "jaccard_best_file": "src/_pytest/unittest.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.5,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID = ID ( self . ID ) or ID ( self . ID . ID )"
+   },
+   {
+    "file": "src/_pytest/unittest.py",
+    "line": "if self.config.getoption(\"usepdb\") and not skipped:",
+    "n_tokens": 12,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.786,
+    "jaccard_best_file": "src/_pytest/unittest.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.615,
+    "jaccard_other_hit": false,
+    "normalised_form": "if self . ID . ID ( STR ) and not ID :"
+   }
+  ]
+ },
+ {
+  "instance_id": "pytest-dev__pytest-7205",
+  "repo": "pytest-dev/pytest",
+  "difficulty": "<15 min fix",
+  "n_added": 2,
+  "py_files": 202,
+  "agg": {
+   "exact": 1,
+   "exact_other_file": 1,
+   "normalised": 1,
+   "normalised_other_file": 1,
+   "jaccard_hit": 1,
+   "jaccard_other_hit": 1
+  },
+  "rows": [
+   {
+    "file": "src/_pytest/setuponly.py",
+    "line": "from _pytest._io.saferepr import saferepr",
+    "n_tokens": 6,
+    "exact": true,
+    "exact_other_file": true,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "testing/io/test_saferepr.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 1.0,
+    "jaccard_other_hit": true,
+    "normalised_form": "from ID . ID . ID import ID"
+   },
+   {
+    "file": "src/_pytest/setuponly.py",
+    "line": "tw.write(\"[{}]\".format(saferepr(fixturedef.cached_param, maxsize=42)))",
+    "n_tokens": 14,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.643,
+    "jaccard_best_file": "src/_pytest/setuponly.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.421,
+    "jaccard_other_hit": false,
+    "normalised_form": "ID . ID ( STR . ID ( ID ( ID . ID , ID = NUM ) ) )"
+   }
+  ]
+ },
+ {
+  "instance_id": "pylint-dev__pylint-4970",
+  "repo": "pylint-dev/pylint",
+  "difficulty": "<15 min fix",
+  "n_added": 1,
+  "py_files": 837,
+  "agg": {
+   "exact": 0,
+   "exact_other_file": 0,
+   "normalised": 1,
+   "normalised_other_file": 1,
+   "jaccard_hit": 0,
+   "jaccard_other_hit": 0
+  },
+  "rows": [
+   {
+    "file": "pylint/checkers/similar.py",
+    "line": "if self.min_lines == 0:",
+    "n_tokens": 7,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": true,
+    "jaccard_best": 0.556,
+    "jaccard_best_file": "pylint/checkers/logging.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.556,
+    "jaccard_other_hit": false,
+    "normalised_form": "if self . ID == NUM :"
+   }
+  ]
+ },
+ {
+  "instance_id": "psf__requests-1142",
+  "repo": "psf/requests",
+  "difficulty": "<15 min fix",
+  "n_added": 2,
+  "py_files": 69,
+  "agg": {
+   "exact": 1,
+   "exact_other_file": 0,
+   "normalised": 1,
+   "normalised_other_file": 0,
+   "jaccard_hit": 1,
+   "jaccard_other_hit": 0
+  },
+  "rows": [
+   {
+    "file": "requests/models.py",
+    "line": "elif self.method not in ('GET', 'HEAD'):",
+    "n_tokens": 12,
+    "exact": false,
+    "exact_other_file": false,
+    "normalised": false,
+    "normalised_other_file": false,
+    "jaccard_best": 0.429,
+    "jaccard_best_file": "requests/models.py",
+    "jaccard_hit": false,
+    "jaccard_other_best": 0.429,
+    "jaccard_other_hit": false,
+    "normalised_form": "elif self . ID not in ( STR , STR ) :"
+   },
+   {
+    "file": "requests/models.py",
+    "line": "self.headers['Content-Length'] = '0'",
+    "n_tokens": 8,
+    "exact": true,
+    "exact_other_file": false,
+    "normalised": true,
+    "normalised_other_file": false,
+    "jaccard_best": 1.0,
+    "jaccard_best_file": "requests/models.py",
+    "jaccard_hit": true,
+    "jaccard_other_best": 0.6,
+    "jaccard_other_hit": false,
+    "normalised_form": "self . ID [ STR ] = STR"
+   }
+  ]
+ }
+]

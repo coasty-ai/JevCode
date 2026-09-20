@@ -1,0 +1,972 @@
+{
+  "summary": {
+    "n": 8,
+    "requests": 44,
+    "retries": 0,
+    "costUsd": 0.004878677999999999,
+    "latencyP50": 209.73454200000015,
+    "latencyP90": 457.974833,
+    "beam": 3
+  },
+  "results": [
+    {
+      "program": "bitcount",
+      "lines": 6,
+      "oracleTests": 9,
+      "totalTests": 9,
+      "goldPassesAll": true,
+      "buggy": "n ^= n - 1",
+      "fixed": "n &= n - 1",
+      "kind": {
+        "truth": "augmented_assignment",
+        "pick": "augmented_assignment",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok2_x"
+        ],
+        "pick": "tok2_x",
+        "p": 0.97,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "n",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.06
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.07
+          }
+        },
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "n",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 3,
+          "cls": "oper",
+          "truth": "-",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.17,
+            "escape": 0.15
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.31,
+            "escape": 0.15
+          }
+        },
+        {
+          "i": 4,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 11,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.77,
+            "escape": 0.22
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.85,
+            "escape": 0.14
+          }
+        }
+      ],
+      "s2": null,
+      "s1": {
+        "holes": 4,
+        "requests": 4,
+        "beam": [
+          "n &= n - 1",
+          "n &= n & 1",
+          "n &= n ~ 1"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.1103441464196524,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0037145639999999996,
+      "requests": 32
+    },
+    {
+      "program": "bucketsort",
+      "lines": 8,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "for i, count in enumerate(arr):",
+      "fixed": "for i, count in enumerate(counts):",
+      "kind": {
+        "truth": "for_loop",
+        "pick": "for_loop",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok8_arr"
+        ],
+        "pick": "tok8_arr",
+        "p": 1,
+        "ok": true,
+        "nTokens": 10
+      },
+      "shapeSame": true,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "i",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.66,
+            "escape": 0.1
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.33,
+            "escape": 0.15000000000000002
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "count",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.35000000000000003,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.6,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "in",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.08
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "enumerate",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.61,
+            "escape": 0.13
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.79,
+            "escape": 0.06
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "counts",
+          "nOptions": 31,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 1,
+            "escape": 0
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.99,
+            "escape": 0.01
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "for i , count in enumerate ( counts ) :",
+          "for i , count in enumerate ( range ) :",
+          "for i , count in enumerate ( k ) :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.10536051565782628,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "for i , count in enumerate ( counts ) :",
+          "for i , count in range ( k ) :",
+          "for counts , count in enumerate ( counts ) :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.5941992272116376,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0038398079999999997,
+      "requests": 33
+    },
+    {
+      "program": "find_first_in_sorted",
+      "lines": 12,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "while lo <= hi:",
+      "fixed": "while lo < hi:",
+      "kind": {
+        "truth": "while_loop",
+        "pick": "while_loop",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok3_x"
+        ],
+        "pick": "tok3_x",
+        "p": 0.96,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "lo",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.9400000000000001,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.66,
+            "escape": 0.3
+          }
+        },
+        {
+          "i": 2,
+          "cls": "oper",
+          "truth": "<",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.01
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "hi",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.94,
+            "escape": 0.05
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.06
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "while lo < hi :",
+          "while lo <= hi :",
+          "while lo + hi :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.020202707317519466,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 3,
+        "requests": 3,
+        "beam": [
+          "while lo < hi :",
+          "while lo <= hi :",
+          "while hi < hi :"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.8691018490716969,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.00264894,
+      "requests": 21
+    },
+    {
+      "program": "find_in_sorted",
+      "lines": 12,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "return binsearch(mid, end)",
+      "fixed": "return binsearch(mid + 1, end)",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "tok4_mid",
+        "p": 0.3,
+        "ok": false,
+        "nTokens": 7
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "binsearch",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.01
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "mid",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.52,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 4,
+          "cls": "oper",
+          "truth": "+",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.87,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.07
+          }
+        },
+        {
+          "i": 5,
+          "cls": "num",
+          "truth": "1",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.14
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "end",
+          "nOptions": 30,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.06
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "return binsearch ( mid + 1 , end )",
+          "return binsearch ( mid > 1 , end )",
+          "return binsearch ( mid + 0 , end )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.7402387880937957,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "return binsearch ( mid + 1 , end )",
+          "return binsearch ( binsearch + 1 , end )",
+          "return binsearch ( mid > 1 , end )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.122645153333387,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.004541964,
+      "requests": 41
+    },
+    {
+      "program": "flatten",
+      "lines": 7,
+      "oracleTests": 7,
+      "totalTests": 7,
+      "goldPassesAll": true,
+      "buggy": "yield flatten(x)",
+      "fixed": "yield x",
+      "kind": {
+        "truth": "yield_statement",
+        "pick": "yield_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok2_flatten",
+          "tok3_x",
+          "tok5_x"
+        ],
+        "pick": "tok2_flatten",
+        "p": 0.98,
+        "ok": true,
+        "nTokens": 5
+      },
+      "shapeSame": false,
+      "shapeInDonors": true,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "x",
+          "nOptions": 27,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.96,
+            "escape": 0.04
+          }
+        }
+      ],
+      "s2": null,
+      "s1": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "yield x",
+          "yield flatten",
+          "yield arr"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.030459207484708574,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0017235960000000002,
+      "requests": 10
+    },
+    {
+      "program": "gcd",
+      "lines": 5,
+      "oracleTests": 6,
+      "totalTests": 6,
+      "goldPassesAll": true,
+      "buggy": "return gcd(a % b, b)",
+      "fixed": "return gcd(b, a % b)",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok4_a",
+          "tok5_x"
+        ],
+        "pick": "tok4_a",
+        "p": 0.7,
+        "ok": true,
+        "nTokens": 9
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 1,
+          "cls": "ident",
+          "truth": "gcd",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.05
+          }
+        },
+        {
+          "i": 3,
+          "cls": "ident",
+          "truth": "b",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.45,
+            "escape": 0.16
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 3,
+            "p": 0.08,
+            "escape": 0.09
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "a",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.92,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.86,
+            "escape": 0.06999999999999999
+          }
+        },
+        {
+          "i": 6,
+          "cls": "oper",
+          "truth": "%",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.89,
+            "escape": 0.11
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.88,
+            "escape": 0.12
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "b",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.56,
+            "escape": 0.2
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.78,
+            "escape": 0.14
+          }
+        }
+      ],
+      "s2": {
+        "holes": 2,
+        "requests": 2,
+        "beam": [
+          "return gcd ( b , a % b )",
+          "return gcd ( b , gcd % b )",
+          "return gcd ( b , min % b )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.707246104939447,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 5,
+        "requests": 5,
+        "beam": [
+          "return gcd ( b , a % b )",
+          "return gcd ( b , a % a )",
+          "return gcd ( a , a % b )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -2.4235111251934836,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.004643982,
+      "requests": 42
+    },
+    {
+      "program": "get_factors",
+      "lines": 7,
+      "oracleTests": 11,
+      "totalTests": 11,
+      "goldPassesAll": true,
+      "buggy": "return []",
+      "fixed": "return [n]",
+      "kind": {
+        "truth": "return_statement",
+        "pick": "return_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "a_token_is_missing"
+        ],
+        "pick": "a_token_is_missing",
+        "p": 0.81,
+        "ok": true,
+        "nTokens": 3
+      },
+      "shapeSame": false,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 2,
+          "cls": "ident",
+          "truth": "n",
+          "nOptions": 26,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "return [ n ]",
+          "return [ get_factors ]",
+          "return [ i ]"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.030459207484708574,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "return [ n ]",
+          "return [ get_factors ]",
+          "return [ i ]"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.020202707317519466,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0015532439999999994,
+      "requests": 19
+    },
+    {
+      "program": "hanoi",
+      "lines": 8,
+      "oracleTests": 8,
+      "totalTests": 8,
+      "goldPassesAll": true,
+      "buggy": "steps.append((start, helper))",
+      "fixed": "steps.append((start, end))",
+      "kind": {
+        "truth": "call_statement",
+        "pick": "call_statement",
+        "p": 1,
+        "ok": true
+      },
+      "wrongToken": {
+        "truth": [
+          "tok8_helper"
+        ],
+        "pick": "tok8_helper",
+        "p": 1,
+        "ok": true,
+        "nTokens": 10
+      },
+      "shapeSame": true,
+      "shapeInDonors": false,
+      "slots": [
+        {
+          "i": 0,
+          "cls": "ident",
+          "truth": "steps",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.03
+          }
+        },
+        {
+          "i": 2,
+          "cls": "attr",
+          "truth": "append",
+          "nOptions": 24,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.07
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.98,
+            "escape": 0.02
+          }
+        },
+        {
+          "i": 5,
+          "cls": "ident",
+          "truth": "start",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": false,
+            "rank": 2,
+            "p": 0.07,
+            "escape": 0.06
+          },
+          "prefix": {
+            "top1": false,
+            "rank": 3,
+            "p": 0.07,
+            "escape": 0.11
+          }
+        },
+        {
+          "i": 7,
+          "cls": "ident",
+          "truth": "end",
+          "nOptions": 29,
+          "covered": true,
+          "cloze": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.97,
+            "escape": 0.02
+          },
+          "prefix": {
+            "top1": true,
+            "rank": 1,
+            "p": 0.93,
+            "escape": 0.04
+          }
+        }
+      ],
+      "s2": {
+        "holes": 1,
+        "requests": 1,
+        "beam": [
+          "steps . append ( ( start , end ) )",
+          "steps . append ( ( start , helper ) )",
+          "steps . append ( ( start , hanoi ) )"
+        ],
+        "truthRank": 1,
+        "passRank": 1,
+        "logpTruth": -0.08338160893905101,
+        "testsGoldOk": true
+      },
+      "s1": {
+        "holes": 4,
+        "requests": 4,
+        "beam": [
+          "list . append ( ( start , end ) )",
+          "list . append ( ( helper , end ) )",
+          "tuple . append ( ( start , end ) )"
+        ],
+        "truthRank": 0,
+        "passRank": 0,
+        "logpTruth": null,
+        "testsGoldOk": true
+      },
+      "costUsd": 0.0022297379999999993,
+      "requests": 23
+    }
+  ]
+}

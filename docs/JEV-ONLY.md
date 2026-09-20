@@ -102,3 +102,22 @@ the linter verify. The question this document answers by experiment is which dec
 
 - 2026-09-20: anchor probe on QuixBugs (localisation Choice over lines; selection Choice over
   mutation candidates) — see `experiments/results/anchor-probe.md`.
+- 2026-09-20: **prototype baseline** (`experiments/results/prototype-baseline.md`, scripts in
+  `experiments/prototype/`): localise (Choice over lines with tests and actual output) →
+  first-order mutation candidates (15 operator families, cap 200) → one Choice per line → verify
+  top-5 with the QuixBugs runner → adopt strict pass-count improvements, 3 rounds. **32/40
+  repaired** (31 correct by inspection; 1 overfits), $0.035 total Jev, 62 s wall for all 40,
+  mean 5.3 Jev requests and 10 test runs per program. Coverage ceiling 35/40 (4 insertion bugs
+  and one two-edit bug are unreachable by single-line replacement). Failures: 4 coverage, 2
+  localisation (true line rank 6 at p 0.02–0.03), 2 greedy-progress traps. Two runs of the same
+  code agree on 30 repairs and 34 in at least one, so the flips sit in Jev's 0.03–0.30 band.
+- 2026-09-20: measurement files landed (`experiments/results/*.md`, each with a verification
+  section): localisation 28/40 top-1 with actual output, SWE-bench file localisation 24/30 top-1
+  over ~219 paths and gold #1 on 23/30 over every repo file with plain Nouls; selection top-3
+  37/40 even at 254 candidates, two-stage Nouls→Choice 33/40 top-1, fix-absent detector
+  P(escape)−p_max ≥ 0.10 (AUROC 0.92); first-order mutations reach 38/40 gold fixes; donor line
+  selection 35/36, identifier hole filling 13/13; token beam W=3 with a grammar filter rebuilds
+  20/40 fix lines at $0.0037 per line, portfolio of routes 27–28/40; progress Nouls read
+  code-computed counts perfectly but add nothing over code when counts exist; question-design:
+  drop the unchanged line from options, include expected AND actual, thresholds 0.7 Choice /
+  0.5 Noul.

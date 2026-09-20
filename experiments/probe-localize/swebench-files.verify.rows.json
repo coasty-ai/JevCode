@@ -1,0 +1,1229 @@
+{
+ "rows": [
+  {
+   "instance": "django__django-14725",
+   "variant": "choice_files",
+   "nCandidates": 209,
+   "gold": [
+    "django/forms/models.py"
+   ],
+   "dirPool": 8,
+   "top1": "django/forms/formsets.py",
+   "rank": 2,
+   "pTop": 0.95,
+   "pGold": 0.04,
+   "costUsd": 0.000369264,
+   "latencyMs": 319.5845,
+   "inputTokens": 8792,
+   "top5": [
+    "django/forms/formsets.py",
+    "django/forms/models.py",
+    "none_of_these",
+    "tests/middleware_exceptions/__init__.py",
+    "tests/admin_docs/test_views.py"
+   ]
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "variant": "choice_files",
+   "nCandidates": 204,
+   "gold": [
+    "src/_pytest/mark/expression.py"
+   ],
+   "dirPool": 3,
+   "top1": "src/_pytest/mark/expression.py",
+   "rank": 1,
+   "pTop": 0.39,
+   "pGold": 0.39,
+   "costUsd": 0.000369978,
+   "latencyMs": 325.744459,
+   "inputTokens": 8809,
+   "top5": [
+    "src/_pytest/mark/expression.py",
+    "src/_pytest/assertion/rewrite.py",
+    "none_of_these",
+    "src/_pytest/mark/evaluate.py",
+    "src/_pytest/debugging.py"
+   ]
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "variant": "choice_files",
+   "nCandidates": 254,
+   "gold": [
+    "sympy/printing/codeprinter.py",
+    "sympy/printing/precedence.py"
+   ],
+   "dirPool": 52,
+   "top1": "sympy/printing/python.py",
+   "rank": 3,
+   "pTop": 0.41000000000000003,
+   "pGold": 0.15000000000000002,
+   "costUsd": 0.000475944,
+   "latencyMs": 495.04904199999993,
+   "inputTokens": 11332,
+   "top5": [
+    "sympy/printing/python.py",
+    "sympy/printing/pycode.py",
+    "sympy/printing/codeprinter.py",
+    "sympy/functions/elementary/integers.py",
+    "none_of_these"
+   ]
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "variant": "noul_per_file_60",
+   "nCandidates": 60,
+   "gold": [
+    "sympy/printing/codeprinter.py",
+    "sympy/printing/precedence.py"
+   ],
+   "dirPool": 19,
+   "top1": "sympy/printing/codeprinter.py",
+   "rank": 1,
+   "pTop": 0.56,
+   "pGold": 0.56,
+   "costUsd": 0.000698166,
+   "latencyMs": 428.82670800000005,
+   "inputTokens": 16623,
+   "nAbove05": 1,
+   "top5": [
+    "sympy/printing/codeprinter.py",
+    "sympy/printing/printer.py",
+    "sympy/printing/cxxcode.py",
+    "sympy/printing/cxx.py",
+    "sympy/printing/jscode.py"
+   ]
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "variant": "noul_per_file_60",
+   "nCandidates": 60,
+   "gold": [
+    "src/_pytest/mark/expression.py"
+   ],
+   "dirPool": 3,
+   "top1": "src/_pytest/mark/expression.py",
+   "rank": 1,
+   "pTop": 0.83,
+   "pGold": 0.83,
+   "costUsd": 0.000688716,
+   "latencyMs": 387.44799999999987,
+   "inputTokens": 16398,
+   "nAbove05": 1,
+   "top5": [
+    "src/_pytest/mark/expression.py",
+    "src/_pytest/assertion/rewrite.py",
+    "src/_pytest/mark/evaluate.py",
+    "src/_pytest/mark/structures.py",
+    "src/_pytest/mark/__init__.py"
+   ]
+  },
+  {
+   "instance": "django__django-14725",
+   "variant": "noul_per_file_60",
+   "nCandidates": 60,
+   "gold": [
+    "django/forms/models.py"
+   ],
+   "dirPool": 8,
+   "top1": "django/forms/formsets.py",
+   "rank": 2,
+   "pTop": 0.92,
+   "pGold": 0.45,
+   "costUsd": 0.000686448,
+   "latencyMs": 463.25879099999986,
+   "inputTokens": 16344,
+   "nAbove05": 1,
+   "top5": [
+    "django/forms/formsets.py",
+    "django/forms/models.py",
+    "django/views/generic/edit.py",
+    "django/forms/forms.py",
+    "django/forms/__init__.py"
+   ]
+  }
+ ],
+ "calib": [
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/codeprinter.py",
+   "p": 0.56,
+   "isGold": true
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/printer.py",
+   "p": 0.35,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/cxxcode.py",
+   "p": 0.15,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/cxx.py",
+   "p": 0.14,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/jscode.py",
+   "p": 0.14,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/octave.py",
+   "p": 0.13,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/aesaracode.py",
+   "p": 0.13,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/llvmjitcode.py",
+   "p": 0.13,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/fortran.py",
+   "p": 0.13,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/mathematica.py",
+   "p": 0.11,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/str.py",
+   "p": 0.11,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/julia.py",
+   "p": 0.1,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/precedence.py",
+   "p": 0.09,
+   "isGold": true
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/polys/domains/field.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/ntheory/multinomial.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/physics/optics/medium.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/strategies/util.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/matrices/common.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/tests/test_cupy.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/polys/domains/polynomialring.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/tests/__init__.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/polys/monomials.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/tests/test_preview.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/discrete/__init__.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/pretty/stringpict.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/preview.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/parsing/autolev/test-examples/ruletest11.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/physics/vector/tests/test_frame.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/physics/optics/polarization.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/series/tests/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/solvers/pde.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/physics/mechanics/system.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/tensor/array/expressions/conv_array_to_matrix.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/holonomic/tests/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/testing/matrices.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/combinatorics/generators.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/stats/error_prop.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/solvers/ode/hypergeometric.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/tests/test_gtk.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/plotting/pygletplot/color_scheme.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/tests/test_latex.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/matrices/densetools.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/diffgeom/rn.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "examples/intermediate/infinite_1d_box.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/integrals/tests/test_deltafunctions.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/simplify/tests/test_cse.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/polys/tests/test_factortools.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/logic/tests/test_inference.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/parsing/autolev/test-examples/ruletest7.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/matrices/tests/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/matrices/tests/test_densesolve.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/liealgebras/tests/test_type_B.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/interactive/tests/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/integrals/rubi/rubi_tests/tests/test_miscellaneous_algebra.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/physics/quantum/tests/test_tensorproduct.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/printing/pretty/tests/test_pretty.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/integrals/rubi/rules/exponential.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/core/tests/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/combinatorics/tests/test_coset_table.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "sympy__sympy-22080",
+   "path": "sympy/physics/tests/test_physics_matrices.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/mark/expression.py",
+   "p": 0.83,
+   "isGold": true
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/assertion/rewrite.py",
+   "p": 0.39,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/mark/evaluate.py",
+   "p": 0.3,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/mark/structures.py",
+   "p": 0.16,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/mark/__init__.py",
+   "p": 0.15,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/debugging.py",
+   "p": 0.12,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/assertion/util.py",
+   "p": 0.11,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/skipping.py",
+   "p": 0.1,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/doctest.py",
+   "p": 0.09,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/compat.py",
+   "p": 0.08,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/_code/source.py",
+   "p": 0.08,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_mark_expression.py",
+   "p": 0.07,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/python_api.py",
+   "p": 0.07,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/assertion/truncate.py",
+   "p": 0.07,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/outcomes.py",
+   "p": 0.07,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/monkeypatch.py",
+   "p": 0.06,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/nose.py",
+   "p": 0.06,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/faulthandler.py",
+   "p": 0.05,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/hookspec.py",
+   "p": 0.05,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/setuponly.py",
+   "p": 0.05,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/cacheprovider.py",
+   "p": 0.05,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/warnings.py",
+   "p": 0.05,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_nose.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/config/findpaths.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_setuponly.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_warnings.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_doctest.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_debugging.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/fixtures/custom_item/conftest.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/_argcomplete.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_config.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/issue_519.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/python/metafunc.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/fixtures/custom_item/foo/__init__.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_argcomplete.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/perf_examples/collect_stats/generate_folders.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/collect/package_infinite_recursion/conftest.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "extra/setup-py.test/setup.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_store.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/collect/package_init_given_as_arg/pkg/__init__.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/acceptance/fixture_mock_integration.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_warning_types.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "doc/en/example/assertion/failure_demo.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/logging/test_reporting.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/python/show_fixtures_per_test.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/tmpdir/tmpdir_fixture.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/freeze/create_executable.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_reports.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/unittest/test_unittest_asyncio.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/_io/wcwidth.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "doc/en/example/assertion/test_setup_flow_example.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/warnings/test_group_warnings_by_message_summary/test_2.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_terminal.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "src/_pytest/tmpdir.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/test_tmpdir.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/python/fixtures.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/fixtures/fill_fixtures/test_funcarg_basic.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/fixtures/fill_fixtures/test_extend_fixture_conftest_conftest/pkg/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/example_scripts/fixtures/fill_fixtures/test_conftest_funcargs_only_available_in_subdir/sub1/conftest.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "pytest-dev__pytest-7324",
+   "path": "testing/io/test_wcwidth.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/formsets.py",
+   "p": 0.92,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/models.py",
+   "p": 0.45,
+   "isGold": true
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/views/generic/edit.py",
+   "p": 0.12,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/forms.py",
+   "p": 0.09,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/__init__.py",
+   "p": 0.08,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/utils.py",
+   "p": 0.06,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/update_only_fields/tests.py",
+   "p": 0.05,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/validation/tests.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/contrib/flatpages/forms.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/fields.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/widgets.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/boundfield.py",
+   "p": 0.04,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/contrib/auth/mixins.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/forms/renderers.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/contrib/redirects/admin.py",
+   "p": 0.03,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/view_tests/app5/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/i18n/sampleproject/sampleproject/settings.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/migrations/test_migrations_manual_porting/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/migrations/test_migrations_namespace_package/0001_initial.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/select_related_onetoone/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/core/files/utils.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/gis_tests/geos_tests/test_geos.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/core/management/commands/sqlflush.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/admin_utils/urls.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/check_framework/test_model_field_deprecation.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/apps/two_configs_app/apps.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/schema/test_logging.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/postgres_tests/models.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/admin_utils/test_logentry.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/urlpatterns/tests.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/migrations/test_migrations/0002_second.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/migrations/test_migrations_non_atomic/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/gis_tests/gdal_tests/test_envelope.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/contrib/gis/db/backends/oracle/base.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/proxy_model_inheritance/app2/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/template_tests/syntax_tests/test_named_endblock.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/templatetags/static.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/admin_scripts/custom_templates/project_template/.hidden/render.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/contrib/postgres/indexes.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/contrib/gis/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/contrib/postgres/apps.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/postgres_tests/test_integration.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/csrf_tests/test_context_processor.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/utils/timezone.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/backends/base/app_unmigrated/models.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/template_tests/filter_tests/test_default_if_none.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/custom_pk/fields.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/forms_tests/widget_tests/test_splithiddendatetimewidget.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/migrations/migrations_test_apps/unspecified_app_with_conflict/models.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/user_commands/management/commands/specific_system_checks.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/reverse_lookup/__init__.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/db_functions/migrations/0002_create_test_models.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/db_functions/math/test_cos.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/backends/test_ddl_references.py",
+   "p": 0.02,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/admin_scripts/app_waiting_migration/migrations/__init__.py",
+   "p": 0.01,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/conf/locale/pt_BR/formats.py",
+   "p": 0.01,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/conf/locale/bn/formats.py",
+   "p": 0.01,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/conf/locale/pt/formats.py",
+   "p": 0.01,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "django/conf/locale/he/__init__.py",
+   "p": 0.01,
+   "isGold": false
+  },
+  {
+   "instance": "django__django-14725",
+   "path": "tests/wsgi/__init__.py",
+   "p": 0.01,
+   "isGold": false
+  }
+ ]
+}

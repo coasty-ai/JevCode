@@ -1,0 +1,4164 @@
+[
+ {
+  "name": "bitcount",
+  "buggy": [
+   "def bitcount(n):",
+   "    count = 0",
+   "    while n:",
+   "        n ^= n - 1",
+   "        count += 1",
+   "    return count"
+  ],
+  "fixed": [
+   "def bitcount(n):",
+   "    count = 0",
+   "    while n:",
+   "        n &= n - 1",
+   "        count += 1",
+   "    return count"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 3,
+   "buggy_line": "        n ^= n - 1",
+   "fix_line": "        n &= n - 1"
+  },
+  "identifiers": [
+   "bitcount",
+   "count",
+   "n"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      127
+     ],
+     "expected": 7
+    },
+    {
+     "input": [
+      128
+     ],
+     "expected": 1
+    },
+    {
+     "input": [
+      3005
+     ],
+     "expected": 9
+    },
+    {
+     "input": [
+      13
+     ],
+     "expected": 3
+    }
+   ]
+  },
+  "kind_primary": "operator_swap",
+  "kind_acceptable": [
+   "operator_swap"
+  ]
+ },
+ {
+  "name": "breadth_first_search",
+  "buggy": [
+   "from collections import deque as Queue",
+   "def breadth_first_search(startnode, goalnode):",
+   "    queue = Queue()",
+   "    queue.append(startnode)",
+   "    nodesseen = set()",
+   "    nodesseen.add(startnode)",
+   "    while True:",
+   "        node = queue.popleft()",
+   "        if node is goalnode:",
+   "            return True",
+   "        else:",
+   "            queue.extend(node for node in node.successors if node not in nodesseen)",
+   "            nodesseen.update(node.successors)",
+   "    return False"
+  ],
+  "fixed": [
+   "from collections import deque as Queue",
+   "def breadth_first_search(startnode, goalnode):",
+   "    queue = Queue()",
+   "    queue.append(startnode)",
+   "    nodesseen = set()",
+   "    nodesseen.add(startnode)",
+   "    while queue:",
+   "        node = queue.popleft()",
+   "        if node is goalnode:",
+   "            return True",
+   "        else:",
+   "            queue.extend(node for node in node.successors if node not in nodesseen)",
+   "            nodesseen.update(node.successors)",
+   "    return False"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 6,
+   "buggy_line": "    while True:",
+   "fix_line": "    while queue:"
+  },
+  "identifiers": [
+   "Queue",
+   "breadth_first_search",
+   "goalnode",
+   "node",
+   "nodesseen",
+   "queue",
+   "set",
+   "startnode"
+  ],
+  "attributes": [
+   "add",
+   "append",
+   "extend",
+   "popleft",
+   "successors",
+   "update"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: Strongly connected graph\n    Output: Path found!\n    \"\"\"\n\n    station1 = Node(\"Westminster\")\n    station2 = Node(\"Waterloo\", None, [station1])\n    station3 = Node(\"Trafalgar Square\", None, [station1, station2])\n    station4 = Node(\"Canary Wharf\", None, [station2, station3])\n    station5 = Node(\"London Bridge\", None, [station4, station3])\n    station6 = Node(\"Tottenham Court Road\", None, [station5, station4])\n\n    path_found = breadth_first_search(station6, station1)\n\n    assert path_found\n\n\ndef test2():\n    \"\"\"Case 2: Branching graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    path_found = breadth_first_search(nodea, nodee)\n\n    assert path_found\n\n\ndef test3():\n    \"\"\"Case 3: Two unconnected nodes in graph\n    Output: Path not found\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n\n    path_found = breadth_first_search(nodef, nodee)\n\n    assert not path_found\n\n\ndef test4():\n    \"\"\"Case 4: One node graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n\n    path_found = breadth_first_search(nodef, nodef)\n\n    assert path_found\n\n\ndef test5():\n    \"\"\"Case 5: Graph with cycles\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    nodee.successors = [nodea]\n\n    path_found = breadth_first_search(nodea, nodef)\n\n    assert path_found"
+  },
+  "kind_primary": "missing_condition_or_guard",
+  "kind_acceptable": [
+   "missing_condition_or_guard",
+   "control_flow_change"
+  ]
+ },
+ {
+  "name": "bucketsort",
+  "buggy": [
+   "def bucketsort(arr, k):",
+   "    counts = [0] * k",
+   "    for x in arr:",
+   "        counts[x] += 1",
+   "    sorted_arr = []",
+   "    for i, count in enumerate(arr):",
+   "        sorted_arr.extend([i] * count)",
+   "    return sorted_arr"
+  ],
+  "fixed": [
+   "def bucketsort(arr, k):",
+   "    counts = [0] * k",
+   "    for x in arr:",
+   "        counts[x] += 1",
+   "    sorted_arr = []",
+   "    for i, count in enumerate(counts):",
+   "        sorted_arr.extend([i] * count)",
+   "    return sorted_arr"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 5,
+   "buggy_line": "    for i, count in enumerate(arr):",
+   "fix_line": "    for i, count in enumerate(counts):"
+  },
+  "identifiers": [
+   "arr",
+   "bucketsort",
+   "count",
+   "counts",
+   "enumerate",
+   "i",
+   "k",
+   "sorted_arr",
+   "x"
+  ],
+  "attributes": [
+   "extend"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [],
+      14
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      [
+       3,
+       11,
+       2,
+       9,
+       1,
+       5
+      ],
+      12
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      5,
+      9,
+      11
+     ]
+    },
+    {
+     "input": [
+      [
+       3,
+       2,
+       4,
+       2,
+       3,
+       5
+      ],
+      6
+     ],
+     "expected": [
+      2,
+      2,
+      3,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       1,
+       3,
+       4,
+       6,
+       4,
+       2,
+       9,
+       1,
+       2,
+       9
+      ],
+      10
+     ],
+     "expected": [
+      1,
+      1,
+      2,
+      2,
+      3,
+      4,
+      4,
+      6,
+      9,
+      9
+     ]
+    }
+   ]
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable"
+  ]
+ },
+ {
+  "name": "depth_first_search",
+  "buggy": [
+   "def depth_first_search(startnode, goalnode):",
+   "    nodesvisited = set()",
+   "    def search_from(node):",
+   "        if node in nodesvisited:",
+   "            return False",
+   "        elif node is goalnode:",
+   "            return True",
+   "        else:",
+   "            return any(",
+   "                search_from(nextnode) for nextnode in node.successors",
+   "            )",
+   "    return search_from(startnode)"
+  ],
+  "fixed": [
+   "def depth_first_search(startnode, goalnode):",
+   "    nodesvisited = set()",
+   "    def search_from(node):",
+   "        if node in nodesvisited:",
+   "            return False",
+   "        elif node is goalnode:",
+   "            return True",
+   "        else:",
+   "            nodesvisited.add(node)",
+   "            return any(",
+   "                search_from(nextnode) for nextnode in node.successors",
+   "            )",
+   "    return search_from(startnode)"
+  ],
+  "diff": {
+   "kind": "insert",
+   "insert_after_index": 7,
+   "fix_line": "            nodesvisited.add(node)"
+  },
+  "identifiers": [
+   "any",
+   "depth_first_search",
+   "goalnode",
+   "nextnode",
+   "node",
+   "nodesvisited",
+   "search_from",
+   "set",
+   "startnode"
+  ],
+  "attributes": [
+   "successors"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: Strongly connected graph\n    Output: Path found!\n    \"\"\"\n\n    station1 = Node(\"Westminster\")\n    station2 = Node(\"Waterloo\", None, [station1])\n    station3 = Node(\"Trafalgar Square\", None, [station1, station2])\n    station4 = Node(\"Canary Wharf\", None, [station2, station3])\n    station5 = Node(\"London Bridge\", None, [station4, station3])\n    station6 = Node(\"Tottenham Court Road\", None, [station5, station4])\n\n    path_found = depth_first_search(station6, station1)\n\n    assert path_found\n\n\ndef test2():\n    \"\"\"Case 2: Branching graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    path_found = depth_first_search(nodea, nodee)\n\n    assert path_found\n\n\ndef test3():\n    \"\"\"Case 3: Two unconnected nodes in graph\n    Output: Path not found\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n\n    path_found = depth_first_search(nodef, nodee)\n\n    assert not path_found\n\n\ndef test4():\n    \"\"\"Case 4: One node graph\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n\n    path_found = depth_first_search(nodef, nodef)\n\n    assert path_found\n\n\ndef test5():\n    \"\"\"Case 5: Graph with cycles\n    Output: Path found!\n    \"\"\"\n\n    nodef = Node(\"F\")\n    nodee = Node(\"E\")\n    noded = Node(\"D\")\n    nodec = Node(\"C\", None, [nodef])\n    nodeb = Node(\"B\", None, [nodee])\n    nodea = Node(\"A\", None, [nodeb, nodec, noded])\n\n    nodee.successors = [nodea]\n\n    path_found = depth_first_search(nodea, nodef)\n\n    assert path_found"
+  },
+  "kind_primary": "none_of_these",
+  "kind_acceptable": [
+   "none_of_these",
+   "missing_statement"
+  ]
+ },
+ {
+  "name": "detect_cycle",
+  "buggy": [
+   "def detect_cycle(node):",
+   "    hare = tortoise = node",
+   "    while True:",
+   "        if hare.successor is None:",
+   "            return False",
+   "        tortoise = tortoise.successor",
+   "        hare = hare.successor.successor",
+   "        if hare is tortoise:",
+   "            return True"
+  ],
+  "fixed": [
+   "def detect_cycle(node):",
+   "    hare = tortoise = node",
+   "    while True:",
+   "        if hare is None or hare.successor is None:",
+   "            return False",
+   "        tortoise = tortoise.successor",
+   "        hare = hare.successor.successor",
+   "        if hare is tortoise:",
+   "            return True"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 3,
+   "buggy_line": "        if hare.successor is None:",
+   "fix_line": "        if hare is None or hare.successor is None:"
+  },
+  "identifiers": [
+   "detect_cycle",
+   "hare",
+   "node",
+   "tortoise"
+  ],
+  "attributes": [
+   "successor"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: 5-node list input with no cycle\n    Expected Output: Cycle not detected!\n    \"\"\"\n\n    detected = detect_cycle(node5)\n\n    assert not detected\n\n\ndef test2():\n    \"\"\"Case 2: 5-node list input with cycle\n    Expected Output: Cycle detected!\n    \"\"\"\n\n    node1.successor = node5\n\n    detected = detect_cycle(node5)\n\n    assert detected\n\n\ndef test3():\n    \"\"\"Case 3: 2-node list with cycle\n    Expected Output: Cycle detected!\n    \"\"\"\n\n    node1.successor = node2\n\n    detected = detect_cycle(node2)\n\n    assert detected\n\n\ndef test4():\n    \"\"\"Case 4: 2-node list with no cycle\n    Expected Output: Cycle not detected!\n    \"\"\"\n\n    node6 = Node(6)\n    node7 = Node(7, node6)\n\n    detected = detect_cycle(node7)\n\n    assert not detected\n\n\ndef test5():\n    \"\"\"Case 5: 1-node list\n    Expected Output: Cycle not detected\n    \"\"\"\n\n    node = Node(0)\n    detected = detect_cycle(node)\n\n    assert not detected\n\n\ndef test6():\n    \"\"\"Case 6: 5 nodes in total. the last 2 nodes form a cycle. input the first node\n    Expected Output: Cycle detected!\n    \"\"\"\n\n    node1.successor = node2\n\n    detected = detect_cycle(node5)\n\n    assert detected"
+  },
+  "kind_primary": "missing_condition_or_guard",
+  "kind_acceptable": [
+   "missing_condition_or_guard"
+  ]
+ },
+ {
+  "name": "find_first_in_sorted",
+  "buggy": [
+   "def find_first_in_sorted(arr, x):",
+   "    lo = 0",
+   "    hi = len(arr)",
+   "    while lo <= hi:",
+   "        mid = (lo + hi) // 2",
+   "        if x == arr[mid] and (mid == 0 or x != arr[mid - 1]):",
+   "            return mid",
+   "        elif x <= arr[mid]:",
+   "            hi = mid",
+   "        else:",
+   "            lo = mid + 1",
+   "    return -1"
+  ],
+  "fixed": [
+   "def find_first_in_sorted(arr, x):",
+   "    lo = 0",
+   "    hi = len(arr)",
+   "    while lo < hi:",
+   "        mid = (lo + hi) // 2",
+   "        if x == arr[mid] and (mid == 0 or x != arr[mid - 1]):",
+   "            return mid",
+   "        elif x <= arr[mid]:",
+   "            hi = mid",
+   "        else:",
+   "            lo = mid + 1",
+   "    return -1"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 3,
+   "buggy_line": "    while lo <= hi:",
+   "fix_line": "    while lo < hi:"
+  },
+  "identifiers": [
+   "arr",
+   "find_first_in_sorted",
+   "hi",
+   "len",
+   "lo",
+   "mid",
+   "x"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       3,
+       4,
+       5,
+       5,
+       5,
+       5,
+       6
+      ],
+      5
+     ],
+     "expected": 2
+    },
+    {
+     "input": [
+      [
+       3,
+       4,
+       5,
+       5,
+       5,
+       5,
+       6
+      ],
+      7
+     ],
+     "expected": -1
+    },
+    {
+     "input": [
+      [
+       3,
+       4,
+       5,
+       5,
+       5,
+       5,
+       6
+      ],
+      2
+     ],
+     "expected": -1
+    },
+    {
+     "input": [
+      [
+       3,
+       6,
+       7,
+       9,
+       9,
+       10,
+       14,
+       27
+      ],
+      14
+     ],
+     "expected": 6
+    }
+   ]
+  },
+  "kind_primary": "operator_swap",
+  "kind_acceptable": [
+   "operator_swap",
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "find_in_sorted",
+  "buggy": [
+   "def find_in_sorted(arr, x):",
+   "    def binsearch(start, end):",
+   "        if start == end:",
+   "            return -1",
+   "        mid = start + (end - start) // 2",
+   "        if x < arr[mid]:",
+   "            return binsearch(start, mid)",
+   "        elif x > arr[mid]:",
+   "            return binsearch(mid, end)",
+   "        else:",
+   "            return mid",
+   "    return binsearch(0, len(arr))"
+  ],
+  "fixed": [
+   "def find_in_sorted(arr, x):",
+   "    def binsearch(start, end):",
+   "        if start == end:",
+   "            return -1",
+   "        mid = start + (end - start) // 2",
+   "        if x < arr[mid]:",
+   "            return binsearch(start, mid)",
+   "        elif x > arr[mid]:",
+   "            return binsearch(mid + 1, end)",
+   "        else:",
+   "            return mid",
+   "    return binsearch(0, len(arr))"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 8,
+   "buggy_line": "            return binsearch(mid, end)",
+   "fix_line": "            return binsearch(mid + 1, end)"
+  },
+  "identifiers": [
+   "arr",
+   "binsearch",
+   "end",
+   "find_in_sorted",
+   "len",
+   "mid",
+   "start",
+   "x"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       3,
+       4,
+       5,
+       5,
+       5,
+       5,
+       6
+      ],
+      5
+     ],
+     "expected": 3
+    },
+    {
+     "input": [
+      [
+       1,
+       2,
+       3,
+       4,
+       6,
+       7,
+       8
+      ],
+      5
+     ],
+     "expected": -1
+    },
+    {
+     "input": [
+      [
+       1,
+       2,
+       3,
+       4,
+       6,
+       7,
+       8
+      ],
+      4
+     ],
+     "expected": 3
+    },
+    {
+     "input": [
+      [
+       2,
+       4,
+       6,
+       8,
+       10,
+       12,
+       14,
+       16,
+       18,
+       20
+      ],
+      18
+     ],
+     "expected": 8
+    }
+   ]
+  },
+  "kind_primary": "off_by_one",
+  "kind_acceptable": [
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "flatten",
+  "buggy": [
+   "def flatten(arr):",
+   "    for x in arr:",
+   "        if isinstance(x, list):",
+   "            for y in flatten(x):",
+   "                yield y",
+   "        else:",
+   "            yield flatten(x)"
+  ],
+  "fixed": [
+   "def flatten(arr):",
+   "    for x in arr:",
+   "        if isinstance(x, list):",
+   "            for y in flatten(x):",
+   "                yield y",
+   "        else:",
+   "            yield x"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 6,
+   "buggy_line": "            yield flatten(x)",
+   "fix_line": "            yield x"
+  },
+  "identifiers": [
+   "arr",
+   "flatten",
+   "isinstance",
+   "list",
+   "x",
+   "y"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       [
+        1,
+        [],
+        [
+         2,
+         3
+        ]
+       ],
+       [
+        [
+         4
+        ]
+       ],
+       5
+      ]
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       [],
+       [],
+       [],
+       [],
+       []
+      ]
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      [
+       [],
+       [],
+       1,
+       [],
+       1,
+       [],
+       []
+      ]
+     ],
+     "expected": [
+      1,
+      1
+     ]
+    },
+    {
+     "input": [
+      [
+       1,
+       2,
+       3,
+       [
+        [
+         4
+        ]
+       ]
+      ]
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4
+     ]
+    }
+   ]
+  },
+  "kind_primary": "wrong_function_call",
+  "kind_acceptable": [
+   "wrong_function_call"
+  ]
+ },
+ {
+  "name": "gcd",
+  "buggy": [
+   "def gcd(a, b):",
+   "    if b == 0:",
+   "        return a",
+   "    else:",
+   "        return gcd(a % b, b)"
+  ],
+  "fixed": [
+   "def gcd(a, b):",
+   "    if b == 0:",
+   "        return a",
+   "    else:",
+   "        return gcd(b, a % b)"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "        return gcd(a % b, b)",
+   "fix_line": "        return gcd(b, a % b)"
+  },
+  "identifiers": [
+   "a",
+   "b",
+   "gcd"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      17,
+      0
+     ],
+     "expected": 17
+    },
+    {
+     "input": [
+      13,
+      13
+     ],
+     "expected": 13
+    },
+    {
+     "input": [
+      37,
+      600
+     ],
+     "expected": 1
+    },
+    {
+     "input": [
+      20,
+      100
+     ],
+     "expected": 20
+    }
+   ]
+  },
+  "kind_primary": "argument_order",
+  "kind_acceptable": [
+   "argument_order"
+  ]
+ },
+ {
+  "name": "get_factors",
+  "buggy": [
+   "def get_factors(n):",
+   "    if n == 1:",
+   "        return []",
+   "    for i in range(2, int(n ** 0.5) + 1):",
+   "        if n % i == 0:",
+   "            return [i] + get_factors(n // i)",
+   "    return []"
+  ],
+  "fixed": [
+   "def get_factors(n):",
+   "    if n == 1:",
+   "        return []",
+   "    for i in range(2, int(n ** 0.5) + 1):",
+   "        if n % i == 0:",
+   "            return [i] + get_factors(n // i)",
+   "    return [n]"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 6,
+   "buggy_line": "    return []",
+   "fix_line": "    return [n]"
+  },
+  "identifiers": [
+   "get_factors",
+   "i",
+   "int",
+   "n",
+   "range"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      1
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      100
+     ],
+     "expected": [
+      2,
+      2,
+      5,
+      5
+     ]
+    },
+    {
+     "input": [
+      101
+     ],
+     "expected": [
+      101
+     ]
+    },
+    {
+     "input": [
+      104
+     ],
+     "expected": [
+      2,
+      2,
+      2,
+      13
+     ]
+    }
+   ]
+  },
+  "kind_primary": "wrong_constant",
+  "kind_acceptable": [
+   "wrong_constant"
+  ]
+ },
+ {
+  "name": "hanoi",
+  "buggy": [
+   "def hanoi(height, start=1, end=3):",
+   "    steps = []",
+   "    if height > 0:",
+   "        helper = ({1, 2, 3} - {start} - {end}).pop()",
+   "        steps.extend(hanoi(height - 1, start, helper))",
+   "        steps.append((start, helper))",
+   "        steps.extend(hanoi(height - 1, helper, end))",
+   "    return steps"
+  ],
+  "fixed": [
+   "def hanoi(height, start=1, end=3):",
+   "    steps = []",
+   "    if height > 0:",
+   "        helper = ({1, 2, 3} - {start} - {end}).pop()",
+   "        steps.extend(hanoi(height - 1, start, helper))",
+   "        steps.append((start, end))",
+   "        steps.extend(hanoi(height - 1, helper, end))",
+   "    return steps"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 5,
+   "buggy_line": "        steps.append((start, helper))",
+   "fix_line": "        steps.append((start, end))"
+  },
+  "identifiers": [
+   "end",
+   "hanoi",
+   "height",
+   "helper",
+   "start",
+   "steps"
+  ],
+  "attributes": [
+   "append",
+   "extend",
+   "pop"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      0,
+      1,
+      3
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      1,
+      1,
+      3
+     ],
+     "expected": [
+      [
+       1,
+       3
+      ]
+     ]
+    },
+    {
+     "input": [
+      2,
+      1,
+      3
+     ],
+     "expected": [
+      [
+       1,
+       2
+      ],
+      [
+       1,
+       3
+      ],
+      [
+       2,
+       3
+      ]
+     ]
+    },
+    {
+     "input": [
+      3,
+      1,
+      3
+     ],
+     "expected": [
+      [
+       1,
+       3
+      ],
+      [
+       1,
+       2
+      ],
+      [
+       3,
+       2
+      ],
+      [
+       1,
+       3
+      ],
+      [
+       2,
+       1
+      ],
+      [
+       2,
+       3
+      ],
+      [
+       1,
+       3
+      ]
+     ]
+    }
+   ]
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable"
+  ]
+ },
+ {
+  "name": "is_valid_parenthesization",
+  "buggy": [
+   "def is_valid_parenthesization(parens):",
+   "    depth = 0",
+   "    for paren in parens:",
+   "        if paren == '(':",
+   "            depth += 1",
+   "        else:",
+   "            depth -= 1",
+   "            if depth < 0:",
+   "                return False",
+   "    return True"
+  ],
+  "fixed": [
+   "def is_valid_parenthesization(parens):",
+   "    depth = 0",
+   "    for paren in parens:",
+   "        if paren == '(':",
+   "            depth += 1",
+   "        else:",
+   "            depth -= 1",
+   "            if depth < 0:",
+   "                return False",
+   "    return depth == 0"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 9,
+   "buggy_line": "    return True",
+   "fix_line": "    return depth == 0"
+  },
+  "identifiers": [
+   "depth",
+   "is_valid_parenthesization",
+   "paren",
+   "parens"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      "((()()))()"
+     ],
+     "expected": true
+    },
+    {
+     "input": [
+      ")()("
+     ],
+     "expected": false
+    },
+    {
+     "input": [
+      "(("
+     ],
+     "expected": false
+    }
+   ]
+  },
+  "kind_primary": "missing_condition_or_guard",
+  "kind_acceptable": [
+   "missing_condition_or_guard",
+   "wrong_constant"
+  ]
+ },
+ {
+  "name": "kheapsort",
+  "buggy": [
+   "def kheapsort(arr, k):",
+   "    import heapq",
+   "    heap = arr[:k]",
+   "    heapq.heapify(heap)",
+   "    for x in arr:",
+   "        yield heapq.heappushpop(heap, x)",
+   "    while heap:",
+   "        yield heapq.heappop(heap)"
+  ],
+  "fixed": [
+   "def kheapsort(arr, k):",
+   "    import heapq",
+   "    heap = arr[:k]",
+   "    heapq.heapify(heap)",
+   "    for x in arr[k:]:",
+   "        yield heapq.heappushpop(heap, x)",
+   "    while heap:",
+   "        yield heapq.heappop(heap)"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "    for x in arr:",
+   "fix_line": "    for x in arr[k:]:"
+  },
+  "identifiers": [
+   "arr",
+   "heap",
+   "heapq",
+   "k",
+   "kheapsort",
+   "x"
+  ],
+  "attributes": [
+   "heapify",
+   "heappop",
+   "heappushpop"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       1,
+       2,
+       3,
+       4,
+       5
+      ],
+      0
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       3,
+       2,
+       1,
+       5,
+       4
+      ],
+      2
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       5,
+       4,
+       3,
+       2,
+       1
+      ],
+      4
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       3,
+       12,
+       5,
+       1,
+       6
+      ],
+      3
+     ],
+     "expected": [
+      1,
+      3,
+      5,
+      6,
+      12
+     ]
+    }
+   ]
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable",
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "knapsack",
+  "buggy": [
+   "def knapsack(capacity, items):",
+   "    from collections import defaultdict",
+   "    memo = defaultdict(int)",
+   "    for i in range(1, len(items) + 1):",
+   "        weight, value = items[i - 1]",
+   "        for j in range(1, capacity + 1):",
+   "            memo[i, j] = memo[i - 1, j]",
+   "            if weight < j:",
+   "                memo[i, j] = max(",
+   "                    memo[i, j],",
+   "                    value + memo[i - 1, j - weight]",
+   "                )",
+   "    return memo[len(items), capacity]"
+  ],
+  "fixed": [
+   "def knapsack(capacity, items):",
+   "    from collections import defaultdict",
+   "    memo = defaultdict(int)",
+   "    for i in range(1, len(items) + 1):",
+   "        weight, value = items[i - 1]",
+   "        for j in range(1, capacity + 1):",
+   "            memo[i, j] = memo[i - 1, j]",
+   "            if weight <= j:",
+   "                memo[i, j] = max(",
+   "                    memo[i, j],",
+   "                    value + memo[i - 1, j - weight]",
+   "                )",
+   "    return memo[len(items), capacity]"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 7,
+   "buggy_line": "            if weight < j:",
+   "fix_line": "            if weight <= j:"
+  },
+  "identifiers": [
+   "capacity",
+   "defaultdict",
+   "i",
+   "int",
+   "items",
+   "j",
+   "knapsack",
+   "len",
+   "max",
+   "memo",
+   "range",
+   "value",
+   "weight"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      100,
+      [
+       [
+        60,
+        10
+       ],
+       [
+        50,
+        8
+       ],
+       [
+        20,
+        4
+       ],
+       [
+        20,
+        4
+       ],
+       [
+        8,
+        3
+       ],
+       [
+        3,
+        2
+       ]
+      ]
+     ],
+     "expected": 19
+    },
+    {
+     "input": [
+      40,
+      [
+       [
+        30,
+        10
+       ],
+       [
+        50,
+        5
+       ],
+       [
+        10,
+        20
+       ],
+       [
+        40,
+        25
+       ]
+      ]
+     ],
+     "expected": 30
+    },
+    {
+     "input": [
+      750,
+      [
+       [
+        70,
+        135
+       ],
+       [
+        73,
+        139
+       ],
+       [
+        77,
+        149
+       ],
+       [
+        80,
+        150
+       ],
+       [
+        82,
+        156
+       ],
+       [
+        87,
+        163
+       ],
+       [
+        90,
+        173
+       ],
+       [
+        94,
+        184
+       ],
+       [
+        98,
+        192
+       ],
+       [
+        106,
+        201
+       ],
+       [
+        110,
+        210
+       ],
+       [
+        113,
+        214
+       ],
+       [
+        115,
+        221
+       ],
+       [
+        118,
+        229
+       ],
+       [
+        120,
+        240
+       ]
+      ]
+     ],
+     "expected": 1458
+    },
+    {
+     "input": [
+      26,
+      [
+       [
+        12,
+        24
+       ],
+       [
+        7,
+        13
+       ],
+       [
+        11,
+        23
+       ],
+       [
+        8,
+        15
+       ],
+       [
+        9,
+        16
+       ]
+      ]
+     ],
+     "expected": 51
+    }
+   ]
+  },
+  "kind_primary": "operator_swap",
+  "kind_acceptable": [
+   "operator_swap",
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "kth",
+  "buggy": [
+   "def kth(arr, k):",
+   "    pivot = arr[0]",
+   "    below = [x for x in arr if x < pivot]",
+   "    above = [x for x in arr if x > pivot]",
+   "    num_less = len(below)",
+   "    num_lessoreq = len(arr) - len(above)",
+   "    if k < num_less:",
+   "        return kth(below, k)",
+   "    elif k >= num_lessoreq:",
+   "        return kth(above, k)",
+   "    else:",
+   "        return pivot"
+  ],
+  "fixed": [
+   "def kth(arr, k):",
+   "    pivot = arr[0]",
+   "    below = [x for x in arr if x < pivot]",
+   "    above = [x for x in arr if x > pivot]",
+   "    num_less = len(below)",
+   "    num_lessoreq = len(arr) - len(above)",
+   "    if k < num_less:",
+   "        return kth(below, k)",
+   "    elif k >= num_lessoreq:",
+   "        return kth(above, k - num_lessoreq)",
+   "    else:",
+   "        return pivot"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 9,
+   "buggy_line": "        return kth(above, k)",
+   "fix_line": "        return kth(above, k - num_lessoreq)"
+  },
+  "identifiers": [
+   "above",
+   "arr",
+   "below",
+   "k",
+   "kth",
+   "len",
+   "num_less",
+   "num_lessoreq",
+   "pivot",
+   "x"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       1,
+       2,
+       3,
+       4,
+       5,
+       6,
+       7
+      ],
+      4
+     ],
+     "expected": 5
+    },
+    {
+     "input": [
+      [
+       3,
+       6,
+       7,
+       1,
+       6,
+       3,
+       8,
+       9
+      ],
+      5
+     ],
+     "expected": 7
+    },
+    {
+     "input": [
+      [
+       3,
+       6,
+       7,
+       1,
+       6,
+       3,
+       8,
+       9
+      ],
+      2
+     ],
+     "expected": 3
+    },
+    {
+     "input": [
+      [
+       2,
+       6,
+       8,
+       3,
+       5,
+       7
+      ],
+      0
+     ],
+     "expected": 2
+    }
+   ]
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable",
+   "none_of_these",
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "lcs_length",
+  "buggy": [
+   "def lcs_length(s, t):",
+   "    from collections import Counter",
+   "    dp = Counter()",
+   "    for i in range(len(s)):",
+   "        for j in range(len(t)):",
+   "            if s[i] == t[j]:",
+   "                dp[i, j] = dp[i - 1, j] + 1",
+   "    return max(dp.values()) if dp else 0"
+  ],
+  "fixed": [
+   "def lcs_length(s, t):",
+   "    from collections import Counter",
+   "    dp = Counter()",
+   "    for i in range(len(s)):",
+   "        for j in range(len(t)):",
+   "            if s[i] == t[j]:",
+   "                dp[i, j] = dp[i - 1, j - 1] + 1",
+   "    return max(dp.values()) if dp else 0"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 6,
+   "buggy_line": "                dp[i, j] = dp[i - 1, j] + 1",
+   "fix_line": "                dp[i, j] = dp[i - 1, j - 1] + 1"
+  },
+  "identifiers": [
+   "Counter",
+   "dp",
+   "i",
+   "j",
+   "lcs_length",
+   "len",
+   "max",
+   "range",
+   "s",
+   "t"
+  ],
+  "attributes": [
+   "values"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      "witch",
+      "sandwich"
+     ],
+     "expected": 2
+    },
+    {
+     "input": [
+      "meow",
+      "homeowner"
+     ],
+     "expected": 4
+    },
+    {
+     "input": [
+      "fun",
+      ""
+     ],
+     "expected": 0
+    },
+    {
+     "input": [
+      "fun",
+      "function"
+     ],
+     "expected": 3
+    }
+   ]
+  },
+  "kind_primary": "off_by_one",
+  "kind_acceptable": [
+   "off_by_one",
+   "wrong_variable"
+  ]
+ },
+ {
+  "name": "levenshtein",
+  "buggy": [
+   "def levenshtein(source, target):",
+   "    if source == '' or target == '':",
+   "        return len(source) or len(target)",
+   "    elif source[0] == target[0]:",
+   "        return 1 + levenshtein(source[1:], target[1:])",
+   "    else:",
+   "        return 1 + min(",
+   "            levenshtein(source,     target[1:]),",
+   "            levenshtein(source[1:], target[1:]),",
+   "            levenshtein(source[1:], target)",
+   "        )"
+  ],
+  "fixed": [
+   "def levenshtein(source, target):",
+   "    if source == '' or target == '':",
+   "        return len(source) or len(target)",
+   "    elif source[0] == target[0]:",
+   "        return levenshtein(source[1:], target[1:])",
+   "    else:",
+   "        return 1 + min(",
+   "            levenshtein(source,     target[1:]),",
+   "            levenshtein(source[1:], target[1:]),",
+   "            levenshtein(source[1:], target)",
+   "        )"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "        return 1 + levenshtein(source[1:], target[1:])",
+   "fix_line": "        return levenshtein(source[1:], target[1:])"
+  },
+  "identifiers": [
+   "len",
+   "levenshtein",
+   "min",
+   "source",
+   "target"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      "electron",
+      "neutron"
+     ],
+     "expected": 3
+    },
+    {
+     "input": [
+      "kitten",
+      "sitting"
+     ],
+     "expected": 3
+    },
+    {
+     "input": [
+      "rosettacode",
+      "raisethysword"
+     ],
+     "expected": 8
+    },
+    {
+     "input": [
+      "amanaplanacanalpanama",
+      "docnoteidissentafastneverpreventsafatnessidietoncod"
+     ],
+     "expected": 42
+    }
+   ]
+  },
+  "kind_primary": "off_by_one",
+  "kind_acceptable": [
+   "off_by_one",
+   "wrong_constant"
+  ]
+ },
+ {
+  "name": "lis",
+  "buggy": [
+   "def lis(arr):",
+   "    ends = {}",
+   "    longest = 0",
+   "    for i, val in enumerate(arr):",
+   "        prefix_lengths = [j for j in range(1, longest + 1) if arr[ends[j]] < val]",
+   "        length = max(prefix_lengths) if prefix_lengths else 0",
+   "        if length == longest or val < arr[ends[length + 1]]:",
+   "            ends[length + 1] = i",
+   "            longest = length + 1",
+   "    return longest"
+  ],
+  "fixed": [
+   "def lis(arr):",
+   "    ends = {}",
+   "    longest = 0",
+   "    for i, val in enumerate(arr):",
+   "        prefix_lengths = [j for j in range(1, longest + 1) if arr[ends[j]] < val]",
+   "        length = max(prefix_lengths) if prefix_lengths else 0",
+   "        if length == longest or val < arr[ends[length + 1]]:",
+   "            ends[length + 1] = i",
+   "            longest = max(longest, length + 1)",
+   "    return longest"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 8,
+   "buggy_line": "            longest = length + 1",
+   "fix_line": "            longest = max(longest, length + 1)"
+  },
+  "identifiers": [
+   "arr",
+   "ends",
+   "enumerate",
+   "i",
+   "j",
+   "length",
+   "lis",
+   "longest",
+   "max",
+   "prefix_lengths",
+   "range",
+   "val"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      []
+     ],
+     "expected": 0
+    },
+    {
+     "input": [
+      [
+       3
+      ]
+     ],
+     "expected": 1
+    },
+    {
+     "input": [
+      [
+       10,
+       20,
+       11,
+       32,
+       22,
+       48,
+       43
+      ]
+     ],
+     "expected": 4
+    },
+    {
+     "input": [
+      [
+       4,
+       2,
+       1
+      ]
+     ],
+     "expected": 1
+    }
+   ]
+  },
+  "kind_primary": "wrong_function_call",
+  "kind_acceptable": [
+   "wrong_function_call",
+   "missing_condition_or_guard"
+  ]
+ },
+ {
+  "name": "longest_common_subsequence",
+  "buggy": [
+   "def longest_common_subsequence(a, b):",
+   "    if not a or not b:",
+   "        return ''",
+   "    elif a[0] == b[0]:",
+   "        return a[0] + longest_common_subsequence(a[1:], b)",
+   "    else:",
+   "        return max(",
+   "            longest_common_subsequence(a, b[1:]),",
+   "            longest_common_subsequence(a[1:], b),",
+   "            key=len",
+   "        )"
+  ],
+  "fixed": [
+   "def longest_common_subsequence(a, b):",
+   "    if not a or not b:",
+   "        return ''",
+   "    elif a[0] == b[0]:",
+   "        return a[0] + longest_common_subsequence(a[1:], b[1:])",
+   "    else:",
+   "        return max(",
+   "            longest_common_subsequence(a, b[1:]),",
+   "            longest_common_subsequence(a[1:], b),",
+   "            key=len",
+   "        )"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "        return a[0] + longest_common_subsequence(a[1:], b)",
+   "fix_line": "        return a[0] + longest_common_subsequence(a[1:], b[1:])"
+  },
+  "identifiers": [
+   "a",
+   "b",
+   "len",
+   "longest_common_subsequence",
+   "max"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      "headache",
+      "pentadactyl"
+     ],
+     "expected": "eadac"
+    },
+    {
+     "input": [
+      "daenarys",
+      "targaryen"
+     ],
+     "expected": "aary"
+    },
+    {
+     "input": [
+      "XMJYAUZ",
+      "MZJAWXU"
+     ],
+     "expected": "MJAU"
+    },
+    {
+     "input": [
+      "thisisatest",
+      "testing123testing"
+     ],
+     "expected": "tsitest"
+    }
+   ]
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable",
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "max_sublist_sum",
+  "buggy": [
+   "def max_sublist_sum(arr):",
+   "    max_ending_here = 0",
+   "    max_so_far = 0",
+   "    for x in arr:",
+   "        max_ending_here = max_ending_here + x",
+   "        max_so_far = max(max_so_far, max_ending_here)",
+   "    return max_so_far"
+  ],
+  "fixed": [
+   "def max_sublist_sum(arr):",
+   "    max_ending_here = 0",
+   "    max_so_far = 0",
+   "    for x in arr:",
+   "        max_ending_here = max(0, max_ending_here + x)",
+   "        max_so_far = max(max_so_far, max_ending_here)",
+   "    return max_so_far"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "        max_ending_here = max_ending_here + x",
+   "fix_line": "        max_ending_here = max(0, max_ending_here + x)"
+  },
+  "identifiers": [
+   "arr",
+   "max",
+   "max_ending_here",
+   "max_so_far",
+   "max_sublist_sum",
+   "x"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       4,
+       -5,
+       2,
+       1,
+       -1,
+       3
+      ]
+     ],
+     "expected": 5
+    },
+    {
+     "input": [
+      [
+       0,
+       -1,
+       2,
+       -1,
+       3,
+       -1,
+       0
+      ]
+     ],
+     "expected": 4
+    },
+    {
+     "input": [
+      [
+       3,
+       4,
+       5
+      ]
+     ],
+     "expected": 12
+    },
+    {
+     "input": [
+      [
+       4,
+       -2,
+       -8,
+       5,
+       -2,
+       7,
+       7,
+       2,
+       -6,
+       5
+      ]
+     ],
+     "expected": 19
+    }
+   ]
+  },
+  "kind_primary": "wrong_function_call",
+  "kind_acceptable": [
+   "wrong_function_call",
+   "missing_condition_or_guard"
+  ]
+ },
+ {
+  "name": "mergesort",
+  "buggy": [
+   "def mergesort(arr):",
+   "    def merge(left, right):",
+   "        result = []",
+   "        i = 0",
+   "        j = 0",
+   "        while i < len(left) and j < len(right):",
+   "            if left[i] <= right[j]:",
+   "                result.append(left[i])",
+   "                i += 1",
+   "            else:",
+   "                result.append(right[j])",
+   "                j += 1",
+   "        result.extend(left[i:] or right[j:])",
+   "        return result",
+   "    if len(arr) == 0:",
+   "        return arr",
+   "    else:",
+   "        middle = len(arr) // 2",
+   "        left = mergesort(arr[:middle])",
+   "        right = mergesort(arr[middle:])",
+   "        return merge(left, right)"
+  ],
+  "fixed": [
+   "def mergesort(arr):",
+   "    def merge(left, right):",
+   "        result = []",
+   "        i = 0",
+   "        j = 0",
+   "        while i < len(left) and j < len(right):",
+   "            if left[i] <= right[j]:",
+   "                result.append(left[i])",
+   "                i += 1",
+   "            else:",
+   "                result.append(right[j])",
+   "                j += 1",
+   "        result.extend(left[i:] or right[j:])",
+   "        return result",
+   "    if len(arr) <= 1:",
+   "        return arr",
+   "    else:",
+   "        middle = len(arr) // 2",
+   "        left = mergesort(arr[:middle])",
+   "        right = mergesort(arr[middle:])",
+   "        return merge(left, right)"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 14,
+   "buggy_line": "    if len(arr) == 0:",
+   "fix_line": "    if len(arr) <= 1:"
+  },
+  "identifiers": [
+   "arr",
+   "i",
+   "j",
+   "left",
+   "len",
+   "merge",
+   "mergesort",
+   "middle",
+   "result",
+   "right"
+  ],
+  "attributes": [
+   "append",
+   "extend"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      []
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      [
+       1,
+       2,
+       6,
+       72,
+       7,
+       33,
+       4
+      ]
+     ],
+     "expected": [
+      1,
+      2,
+      4,
+      6,
+      7,
+      33,
+      72
+     ]
+    },
+    {
+     "input": [
+      [
+       3,
+       1,
+       4,
+       1,
+       5,
+       9,
+       2,
+       6,
+       5,
+       3,
+       5,
+       8,
+       9,
+       7,
+       9,
+       3
+      ]
+     ],
+     "expected": [
+      1,
+      1,
+      2,
+      3,
+      3,
+      3,
+      4,
+      5,
+      5,
+      5,
+      6,
+      7,
+      8,
+      9,
+      9,
+      9
+     ]
+    },
+    {
+     "input": [
+      [
+       5,
+       4,
+       3,
+       2,
+       1
+      ]
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    }
+   ]
+  },
+  "kind_primary": "operator_swap",
+  "kind_acceptable": [
+   "operator_swap",
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "minimum_spanning_tree",
+  "buggy": [
+   "def minimum_spanning_tree(weight_by_edge):",
+   "    group_by_node = {}",
+   "    mst_edges = set()",
+   "    for edge in sorted(weight_by_edge, key=weight_by_edge.__getitem__):",
+   "        u, v = edge",
+   "        if group_by_node.setdefault(u, {u}) != group_by_node.setdefault(v, {v}):",
+   "            mst_edges.add(edge)",
+   "            group_by_node[u].update(group_by_node[v])",
+   "            for node in group_by_node[v]:",
+   "                group_by_node[node].update(group_by_node[u])",
+   "    return mst_edges"
+  ],
+  "fixed": [
+   "def minimum_spanning_tree(weight_by_edge):",
+   "    group_by_node = {}",
+   "    mst_edges = set()",
+   "    for edge in sorted(weight_by_edge, key=weight_by_edge.__getitem__):",
+   "        u, v = edge",
+   "        if group_by_node.setdefault(u, {u}) != group_by_node.setdefault(v, {v}):",
+   "            mst_edges.add(edge)",
+   "            group_by_node[u].update(group_by_node[v])",
+   "            for node in group_by_node[v]:",
+   "                group_by_node[node] = group_by_node[u]",
+   "    return mst_edges"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 9,
+   "buggy_line": "                group_by_node[node].update(group_by_node[u])",
+   "fix_line": "                group_by_node[node] = group_by_node[u]"
+  },
+  "identifiers": [
+   "edge",
+   "group_by_node",
+   "minimum_spanning_tree",
+   "mst_edges",
+   "node",
+   "set",
+   "sorted",
+   "u",
+   "v",
+   "weight_by_edge"
+  ],
+  "attributes": [
+   "__getitem__",
+   "add",
+   "setdefault",
+   "update"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: Simple tree input.\n    Output: (1, 2) (3, 4) (1, 4)\n    \"\"\"\n\n    result = minimum_spanning_tree(\n        {\n            (1, 2): 10,\n            (2, 3): 15,\n            (3, 4): 10,\n            (1, 4): 10,\n        }\n    )\n\n    assert result == {(1, 2), (3, 4), (1, 4)}\n\n\ndef test2():\n    \"\"\"Case 2: Strongly connected tree input.\n    Output: (2, 5) (1, 3) (2, 3) (4, 6) (3, 6)\n    \"\"\"\n\n    result = minimum_spanning_tree(\n        {\n            (1, 2): 6,\n            (1, 3): 1,\n            (1, 4): 5,\n            (2, 3): 5,\n            (2, 5): 3,\n            (3, 4): 5,\n            (3, 5): 6,\n            (3, 6): 4,\n            (4, 6): 2,\n            (5, 6): 6,\n        }\n    )\n\n    assert result == {(2, 5), (1, 3), (2, 3), (4, 6), (3, 6)}\n\n\ndef test3():\n    \"\"\"Case 3: Minimum spanning tree input.\n    Output: (1, 2) (1, 3) (2, 4)\n    \"\"\"\n\n    result = minimum_spanning_tree(\n        {\n            (1, 2): 6,\n            (1, 3): 1,\n            (2, 4): 2,\n        }\n    )\n\n    assert result == {(1, 2), (1, 3), (2, 4)}"
+  },
+  "kind_primary": "wrong_function_call",
+  "kind_acceptable": [
+   "wrong_function_call",
+   "operator_swap"
+  ]
+ },
+ {
+  "name": "next_palindrome",
+  "buggy": [
+   "def next_palindrome(digit_list):",
+   "    high_mid = len(digit_list) // 2",
+   "    low_mid = (len(digit_list) - 1) // 2",
+   "    while high_mid < len(digit_list) and low_mid >= 0:",
+   "        if digit_list[high_mid] == 9:",
+   "            digit_list[high_mid] = 0",
+   "            digit_list[low_mid] = 0",
+   "            high_mid += 1",
+   "            low_mid -= 1",
+   "        else:",
+   "            digit_list[high_mid] += 1",
+   "            if low_mid != high_mid:",
+   "                digit_list[low_mid] += 1",
+   "            return digit_list",
+   "    return [1] + (len(digit_list)) * [0] + [1]"
+  ],
+  "fixed": [
+   "def next_palindrome(digit_list):",
+   "    high_mid = len(digit_list) // 2",
+   "    low_mid = (len(digit_list) - 1) // 2",
+   "    while high_mid < len(digit_list) and low_mid >= 0:",
+   "        if digit_list[high_mid] == 9:",
+   "            digit_list[high_mid] = 0",
+   "            digit_list[low_mid] = 0",
+   "            high_mid += 1",
+   "            low_mid -= 1",
+   "        else:",
+   "            digit_list[high_mid] += 1",
+   "            if low_mid != high_mid:",
+   "                digit_list[low_mid] += 1",
+   "            return digit_list",
+   "    return [1] + (len(digit_list) - 1) * [0] + [1]"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 14,
+   "buggy_line": "    return [1] + (len(digit_list)) * [0] + [1]",
+   "fix_line": "    return [1] + (len(digit_list) - 1) * [0] + [1]"
+  },
+  "identifiers": [
+   "digit_list",
+   "high_mid",
+   "len",
+   "low_mid",
+   "next_palindrome"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       1,
+       4,
+       9,
+       4,
+       1
+      ]
+     ],
+     "expected": [
+      1,
+      5,
+      0,
+      5,
+      1
+     ]
+    },
+    {
+     "input": [
+      [
+       1,
+       3,
+       1
+      ]
+     ],
+     "expected": [
+      1,
+      4,
+      1
+     ]
+    },
+    {
+     "input": [
+      [
+       4,
+       7,
+       2,
+       5,
+       5,
+       2,
+       7,
+       4
+      ]
+     ],
+     "expected": [
+      4,
+      7,
+      2,
+      6,
+      6,
+      2,
+      7,
+      4
+     ]
+    },
+    {
+     "input": [
+      [
+       4,
+       7,
+       2,
+       5,
+       2,
+       7,
+       4
+      ]
+     ],
+     "expected": [
+      4,
+      7,
+      2,
+      6,
+      2,
+      7,
+      4
+     ]
+    }
+   ]
+  },
+  "kind_primary": "off_by_one",
+  "kind_acceptable": [
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "next_permutation",
+  "buggy": [
+   "def next_permutation(perm):",
+   "    for i in range(len(perm) - 2, -1, -1):",
+   "        if perm[i] < perm[i + 1]:",
+   "            for j in range(len(perm) - 1, i, -1):",
+   "                if perm[j] < perm[i]:",
+   "                    next_perm = list(perm)",
+   "                    next_perm[i], next_perm[j] = perm[j], perm[i]",
+   "                    next_perm[i + 1:] = reversed(next_perm[i + 1:])",
+   "                    return next_perm"
+  ],
+  "fixed": [
+   "def next_permutation(perm):",
+   "    for i in range(len(perm) - 2, -1, -1):",
+   "        if perm[i] < perm[i + 1]:",
+   "            for j in range(len(perm) - 1, i, -1):",
+   "                if perm[i] < perm[j]:",
+   "                    next_perm = list(perm)",
+   "                    next_perm[i], next_perm[j] = perm[j], perm[i]",
+   "                    next_perm[i + 1:] = reversed(next_perm[i + 1:])",
+   "                    return next_perm"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "                if perm[j] < perm[i]:",
+   "fix_line": "                if perm[i] < perm[j]:"
+  },
+  "identifiers": [
+   "i",
+   "j",
+   "len",
+   "list",
+   "next_perm",
+   "next_permutation",
+   "perm",
+   "range",
+   "reversed"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       3,
+       2,
+       4,
+       1
+      ]
+     ],
+     "expected": [
+      3,
+      4,
+      1,
+      2
+     ]
+    },
+    {
+     "input": [
+      [
+       3,
+       5,
+       6,
+       2,
+       1
+      ]
+     ],
+     "expected": [
+      3,
+      6,
+      1,
+      2,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       3,
+       5,
+       6,
+       2
+      ]
+     ],
+     "expected": [
+      3,
+      6,
+      2,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       4,
+       5,
+       1,
+       7,
+       9
+      ]
+     ],
+     "expected": [
+      4,
+      5,
+      1,
+      9,
+      7
+     ]
+    }
+   ]
+  },
+  "kind_primary": "argument_order",
+  "kind_acceptable": [
+   "argument_order",
+   "operator_swap"
+  ]
+ },
+ {
+  "name": "pascal",
+  "buggy": [
+   "def pascal(n):",
+   "    rows = [[1]]",
+   "    for r in range(1, n):",
+   "        row = []",
+   "        for c in range(0, r):",
+   "            upleft = rows[r - 1][c - 1] if c > 0 else 0",
+   "            upright = rows[r - 1][c] if c < r else 0",
+   "            row.append(upleft + upright)",
+   "        rows.append(row)",
+   "    return rows"
+  ],
+  "fixed": [
+   "def pascal(n):",
+   "    rows = [[1]]",
+   "    for r in range(1, n):",
+   "        row = []",
+   "        for c in range(0, r + 1):",
+   "            upleft = rows[r - 1][c - 1] if c > 0 else 0",
+   "            upright = rows[r - 1][c] if c < r else 0",
+   "            row.append(upleft + upright)",
+   "        rows.append(row)",
+   "    return rows"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "        for c in range(0, r):",
+   "fix_line": "        for c in range(0, r + 1):"
+  },
+  "identifiers": [
+   "c",
+   "n",
+   "pascal",
+   "r",
+   "range",
+   "row",
+   "rows",
+   "upleft",
+   "upright"
+  ],
+  "attributes": [
+   "append"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      1
+     ],
+     "expected": [
+      [
+       1
+      ]
+     ]
+    },
+    {
+     "input": [
+      2
+     ],
+     "expected": [
+      [
+       1
+      ],
+      [
+       1,
+       1
+      ]
+     ]
+    },
+    {
+     "input": [
+      3
+     ],
+     "expected": [
+      [
+       1
+      ],
+      [
+       1,
+       1
+      ],
+      [
+       1,
+       2,
+       1
+      ]
+     ]
+    },
+    {
+     "input": [
+      4
+     ],
+     "expected": [
+      [
+       1
+      ],
+      [
+       1,
+       1
+      ],
+      [
+       1,
+       2,
+       1
+      ],
+      [
+       1,
+       3,
+       3,
+       1
+      ]
+     ]
+    }
+   ]
+  },
+  "kind_primary": "off_by_one",
+  "kind_acceptable": [
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "possible_change",
+  "buggy": [
+   "def possible_change(coins, total):",
+   "    if total == 0:",
+   "        return 1",
+   "    if total < 0:",
+   "        return 0",
+   "    first, *rest = coins",
+   "    return possible_change(coins, total - first) + possible_change(rest, total)"
+  ],
+  "fixed": [
+   "def possible_change(coins, total):",
+   "    if total == 0:",
+   "        return 1",
+   "    if total < 0 or not coins:",
+   "        return 0",
+   "    first, *rest = coins",
+   "    return possible_change(coins, total - first) + possible_change(rest, total)"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 3,
+   "buggy_line": "    if total < 0:",
+   "fix_line": "    if total < 0 or not coins:"
+  },
+  "identifiers": [
+   "coins",
+   "first",
+   "possible_change",
+   "rest",
+   "total"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       1,
+       4,
+       2
+      ],
+      -7
+     ],
+     "expected": 0
+    },
+    {
+     "input": [
+      [
+       1,
+       5,
+       10,
+       25
+      ],
+      11
+     ],
+     "expected": 4
+    },
+    {
+     "input": [
+      [
+       1,
+       5,
+       10,
+       25
+      ],
+      75
+     ],
+     "expected": 121
+    },
+    {
+     "input": [
+      [
+       1,
+       5,
+       10,
+       25
+      ],
+      34
+     ],
+     "expected": 18
+    }
+   ]
+  },
+  "kind_primary": "missing_condition_or_guard",
+  "kind_acceptable": [
+   "missing_condition_or_guard"
+  ]
+ },
+ {
+  "name": "powerset",
+  "buggy": [
+   "def powerset(arr):",
+   "    if arr:",
+   "        first, *rest = arr",
+   "        rest_subsets = powerset(rest)",
+   "        return [[first] + subset for subset in rest_subsets]",
+   "    else:",
+   "        return [[]]"
+  ],
+  "fixed": [
+   "def powerset(arr):",
+   "    if arr:",
+   "        first, *rest = arr",
+   "        rest_subsets = powerset(rest)",
+   "        return rest_subsets + [[first] + subset for subset in rest_subsets]",
+   "    else:",
+   "        return [[]]"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "        return [[first] + subset for subset in rest_subsets]",
+   "fix_line": "        return rest_subsets + [[first] + subset for subset in rest_subsets]"
+  },
+  "identifiers": [
+   "arr",
+   "first",
+   "powerset",
+   "rest",
+   "rest_subsets",
+   "subset"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       "a",
+       "b",
+       "c"
+      ]
+     ],
+     "expected": [
+      [],
+      [
+       "c"
+      ],
+      [
+       "b"
+      ],
+      [
+       "b",
+       "c"
+      ],
+      [
+       "a"
+      ],
+      [
+       "a",
+       "c"
+      ],
+      [
+       "a",
+       "b"
+      ],
+      [
+       "a",
+       "b",
+       "c"
+      ]
+     ]
+    },
+    {
+     "input": [
+      [
+       "a",
+       "b"
+      ]
+     ],
+     "expected": [
+      [],
+      [
+       "b"
+      ],
+      [
+       "a"
+      ],
+      [
+       "a",
+       "b"
+      ]
+     ]
+    },
+    {
+     "input": [
+      [
+       "a"
+      ]
+     ],
+     "expected": [
+      [],
+      [
+       "a"
+      ]
+     ]
+    },
+    {
+     "input": [
+      []
+     ],
+     "expected": [
+      []
+     ]
+    }
+   ]
+  },
+  "kind_primary": "none_of_these",
+  "kind_acceptable": [
+   "none_of_these",
+   "wrong_variable"
+  ]
+ },
+ {
+  "name": "quicksort",
+  "buggy": [
+   "def quicksort(arr):",
+   "    if not arr:",
+   "        return []",
+   "    pivot = arr[0]",
+   "    lesser = quicksort([x for x in arr[1:] if x < pivot])",
+   "    greater = quicksort([x for x in arr[1:] if x > pivot])",
+   "    return lesser + [pivot] + greater"
+  ],
+  "fixed": [
+   "def quicksort(arr):",
+   "    if not arr:",
+   "        return []",
+   "    pivot = arr[0]",
+   "    lesser = quicksort([x for x in arr[1:] if x < pivot])",
+   "    greater = quicksort([x for x in arr[1:] if x >= pivot])",
+   "    return lesser + [pivot] + greater"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 5,
+   "buggy_line": "    greater = quicksort([x for x in arr[1:] if x > pivot])",
+   "fix_line": "    greater = quicksort([x for x in arr[1:] if x >= pivot])"
+  },
+  "identifiers": [
+   "arr",
+   "greater",
+   "lesser",
+   "pivot",
+   "quicksort",
+   "x"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       1,
+       2,
+       6,
+       72,
+       7,
+       33,
+       4
+      ]
+     ],
+     "expected": [
+      1,
+      2,
+      4,
+      6,
+      7,
+      33,
+      72
+     ]
+    },
+    {
+     "input": [
+      [
+       3,
+       1,
+       4,
+       1,
+       5,
+       9,
+       2,
+       6,
+       5,
+       3,
+       5,
+       8,
+       9,
+       7,
+       9,
+       3
+      ]
+     ],
+     "expected": [
+      1,
+      1,
+      2,
+      3,
+      3,
+      3,
+      4,
+      5,
+      5,
+      5,
+      6,
+      7,
+      8,
+      9,
+      9,
+      9
+     ]
+    },
+    {
+     "input": [
+      [
+       5,
+       4,
+       3,
+       2,
+       1
+      ]
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    },
+    {
+     "input": [
+      [
+       5,
+       4,
+       3,
+       1,
+       2
+      ]
+     ],
+     "expected": [
+      1,
+      2,
+      3,
+      4,
+      5
+     ]
+    }
+   ]
+  },
+  "kind_primary": "operator_swap",
+  "kind_acceptable": [
+   "operator_swap",
+   "off_by_one"
+  ]
+ },
+ {
+  "name": "reverse_linked_list",
+  "buggy": [
+   "def reverse_linked_list(node):",
+   "    prevnode = None",
+   "    while node:",
+   "        nextnode = node.successor",
+   "        node.successor = prevnode",
+   "        node = nextnode",
+   "    return prevnode"
+  ],
+  "fixed": [
+   "def reverse_linked_list(node):",
+   "    prevnode = None",
+   "    while node:",
+   "        nextnode = node.successor",
+   "        node.successor = prevnode",
+   "        prevnode = node",
+   "        node = nextnode",
+   "    return prevnode"
+  ],
+  "diff": {
+   "kind": "insert",
+   "insert_after_index": 4,
+   "fix_line": "        prevnode = node"
+  },
+  "identifiers": [
+   "nextnode",
+   "node",
+   "prevnode",
+   "reverse_linked_list"
+  ],
+  "attributes": [
+   "successor"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: 5-node list input\n    Expected Output: 1 2 3 4 5\n    \"\"\"\n\n    node1 = Node(1)\n    node2 = Node(2, node1)\n    node3 = Node(3, node2)\n    node4 = Node(4, node3)\n    node5 = Node(5, node4)\n\n    result = reverse_linked_list(node5)\n    assert result == node1\n\n    output = []\n    while result:\n        output.append(result.value)\n        result = result.successor\n    assert output == [1, 2, 3, 4, 5]\n\n\ndef test2():\n    \"\"\"Case 2: 1-node list input\n    Expected Output: 0\n    \"\"\"\n\n    node = Node(0)\n\n    result = reverse_linked_list(node)\n    assert result == node\n\n    output = []\n    while result:\n        output.append(result.value)\n        result = result.successor\n    assert output == [0]\n\n\ndef test3():\n    \"\"\"Case 3: None input\n    Expected Output: None\n    \"\"\"\n\n    result = reverse_linked_list(None)\n    assert not result\n\n    output = []\n    while result:\n        output.append(result.value)\n        result = result.successor\n    assert not output"
+  },
+  "kind_primary": "none_of_these",
+  "kind_acceptable": [
+   "none_of_these",
+   "missing_statement"
+  ]
+ },
+ {
+  "name": "rpn_eval",
+  "buggy": [
+   "def rpn_eval(tokens):",
+   "    def op(symbol, a, b):",
+   "        return {",
+   "            '+': lambda a, b: a + b,",
+   "            '-': lambda a, b: a - b,",
+   "            '*': lambda a, b: a * b,",
+   "            '/': lambda a, b: a / b",
+   "        }[symbol](a, b)",
+   "    stack = []",
+   "    for token in tokens:",
+   "        if isinstance(token, float):",
+   "            stack.append(token)",
+   "        else:",
+   "            a = stack.pop()",
+   "            b = stack.pop()",
+   "            stack.append(",
+   "                op(token, a, b)",
+   "            )",
+   "    return stack.pop()"
+  ],
+  "fixed": [
+   "def rpn_eval(tokens):",
+   "    def op(symbol, a, b):",
+   "        return {",
+   "            '+': lambda a, b: a + b,",
+   "            '-': lambda a, b: a - b,",
+   "            '*': lambda a, b: a * b,",
+   "            '/': lambda a, b: a / b",
+   "        }[symbol](a, b)",
+   "    stack = []",
+   "    for token in tokens:",
+   "        if isinstance(token, float):",
+   "            stack.append(token)",
+   "        else:",
+   "            a = stack.pop()",
+   "            b = stack.pop()",
+   "            stack.append(",
+   "                op(token, b, a)",
+   "            )",
+   "    return stack.pop()"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 16,
+   "buggy_line": "                op(token, a, b)",
+   "fix_line": "                op(token, b, a)"
+  },
+  "identifiers": [
+   "a",
+   "b",
+   "float",
+   "isinstance",
+   "op",
+   "rpn_eval",
+   "stack",
+   "symbol",
+   "token",
+   "tokens"
+  ],
+  "attributes": [
+   "append",
+   "pop"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      [
+       3.0,
+       5.0,
+       "+",
+       2.0,
+       "/"
+      ]
+     ],
+     "expected": 4.0
+    },
+    {
+     "input": [
+      [
+       2.0,
+       2.0,
+       "+"
+      ]
+     ],
+     "expected": 4.0
+    },
+    {
+     "input": [
+      [
+       7.0,
+       4.0,
+       "+",
+       3.0,
+       "-"
+      ]
+     ],
+     "expected": 8.0
+    },
+    {
+     "input": [
+      [
+       1.0,
+       2.0,
+       "*",
+       3.0,
+       4.0,
+       "*",
+       "+"
+      ]
+     ],
+     "expected": 14.0
+    }
+   ]
+  },
+  "kind_primary": "argument_order",
+  "kind_acceptable": [
+   "argument_order"
+  ]
+ },
+ {
+  "name": "shortest_path_length",
+  "buggy": [
+   "from heapq import *",
+   "def shortest_path_length(length_by_edge, startnode, goalnode):",
+   "    unvisited_nodes = []",
+   "    heappush(unvisited_nodes, (0, startnode))",
+   "    visited_nodes = set()",
+   "    while len(unvisited_nodes) > 0:",
+   "        distance, node = heappop(unvisited_nodes)",
+   "        if node is goalnode:",
+   "            return distance",
+   "        visited_nodes.add(node)",
+   "        for nextnode in node.successors:",
+   "            if nextnode in visited_nodes:",
+   "                continue",
+   "            insert_or_update(unvisited_nodes,",
+   "                (min(",
+   "                    get(unvisited_nodes, nextnode) or float('inf'),",
+   "                    get(unvisited_nodes, nextnode) + length_by_edge[node, nextnode]",
+   "                ),",
+   "                nextnode)",
+   "            )",
+   "    return float('inf')",
+   "def get(node_heap, wanted_node):",
+   "    for dist, node in node_heap:",
+   "        if node == wanted_node:",
+   "            return dist",
+   "    return 0",
+   "def insert_or_update(node_heap, dist_node):",
+   "    dist, node = dist_node",
+   "    for i, tpl in enumerate(node_heap):",
+   "        a, b = tpl",
+   "        if b == node:",
+   "            node_heap[i] = dist_node",
+   "            return None",
+   "    heappush(node_heap, dist_node)",
+   "    return None"
+  ],
+  "fixed": [
+   "from heapq import *",
+   "def shortest_path_length(length_by_edge, startnode, goalnode):",
+   "    unvisited_nodes = []",
+   "    heappush(unvisited_nodes, (0, startnode))",
+   "    visited_nodes = set()",
+   "    while len(unvisited_nodes) > 0:",
+   "        distance, node = heappop(unvisited_nodes)",
+   "        if node is goalnode:",
+   "            return distance",
+   "        visited_nodes.add(node)",
+   "        for nextnode in node.successors:",
+   "            if nextnode in visited_nodes:",
+   "                continue",
+   "            insert_or_update(unvisited_nodes,",
+   "                (min(",
+   "                    get(unvisited_nodes, nextnode) or float('inf'),",
+   "                    distance + length_by_edge[node, nextnode]",
+   "                ),",
+   "                nextnode)",
+   "            )",
+   "    return float('inf')",
+   "def get(node_heap, wanted_node):",
+   "    for dist, node in node_heap:",
+   "        if node == wanted_node:",
+   "            return dist",
+   "    return 0",
+   "def insert_or_update(node_heap, dist_node):",
+   "    dist, node = dist_node",
+   "    for i, tpl in enumerate(node_heap):",
+   "        a, b = tpl",
+   "        if b == node:",
+   "            node_heap[i] = dist_node",
+   "            return None",
+   "    heappush(node_heap, dist_node)",
+   "    return None"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 16,
+   "buggy_line": "                    get(unvisited_nodes, nextnode) + length_by_edge[node, nextnode]",
+   "fix_line": "                    distance + length_by_edge[node, nextnode]"
+  },
+  "identifiers": [
+   "*",
+   "a",
+   "b",
+   "dist",
+   "dist_node",
+   "distance",
+   "enumerate",
+   "float",
+   "get",
+   "goalnode",
+   "heappop",
+   "heappush",
+   "i",
+   "insert_or_update",
+   "len",
+   "length_by_edge",
+   "min",
+   "nextnode",
+   "node",
+   "node_heap",
+   "set",
+   "shortest_path_length",
+   "startnode",
+   "tpl",
+   "unvisited_nodes",
+   "visited_nodes",
+   "wanted_node"
+  ],
+  "attributes": [
+   "add",
+   "successors"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: One path\n    Output: 4\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node0, node1)\n    assert result == 4\n\n\ndef test2():\n    \"\"\"Case 2: Multiple path\n    Output: 7\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node0, node5)\n    assert result == 7\n\n\ndef test3():\n    \"\"\"Case 3: Start point is same as end point\n    Output: 0\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node2, node2)\n    assert result == 0\n\n\ndef test4():\n    \"\"\"Case 4: Unreachable path\n    Output: INT_MAX\n    \"\"\"\n\n    result = shortest_path_length(length_by_edge, node1, node5)\n    assert result == float(\"inf\")"
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable",
+   "wrong_function_call"
+  ]
+ },
+ {
+  "name": "shortest_path_lengths",
+  "buggy": [
+   "from collections import defaultdict",
+   "def shortest_path_lengths(n, length_by_edge):",
+   "    length_by_path = defaultdict(lambda: float('inf'))",
+   "    length_by_path.update({(i, i): 0 for i in range(n)})",
+   "    length_by_path.update(length_by_edge)",
+   "    for k in range(n):",
+   "        for i in range(n):",
+   "            for j in range(n):",
+   "                length_by_path[i, j] = min(",
+   "                    length_by_path[i, j],",
+   "                    length_by_path[i, k] + length_by_path[j, k]",
+   "                )",
+   "    return length_by_path"
+  ],
+  "fixed": [
+   "from collections import defaultdict",
+   "def shortest_path_lengths(n, length_by_edge):",
+   "    length_by_path = defaultdict(lambda: float('inf'))",
+   "    length_by_path.update({(i, i): 0 for i in range(n)})",
+   "    length_by_path.update(length_by_edge)",
+   "    for k in range(n):",
+   "        for i in range(n):",
+   "            for j in range(n):",
+   "                length_by_path[i, j] = min(",
+   "                    length_by_path[i, j],",
+   "                    length_by_path[i, k] + length_by_path[k, j]",
+   "                )",
+   "    return length_by_path"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 10,
+   "buggy_line": "                    length_by_path[i, k] + length_by_path[j, k]",
+   "fix_line": "                    length_by_path[i, k] + length_by_path[k, j]"
+  },
+  "identifiers": [
+   "defaultdict",
+   "float",
+   "i",
+   "j",
+   "k",
+   "length_by_edge",
+   "length_by_path",
+   "min",
+   "n",
+   "range",
+   "shortest_path_lengths"
+  ],
+  "attributes": [
+   "update"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: Basic graph input.\"\"\"\n\n    graph = {\n        (0, 2): 3,\n        (0, 5): 5,\n        (2, 1): -2,\n        (2, 3): 7,\n        (2, 4): 4,\n        (3, 4): -5,\n        (4, 5): -1,\n    }\n    result = shortest_path_lengths(6, graph)\n\n    expected = {\n        (0, 0): 0,\n        (1, 1): 0,\n        (2, 2): 0,\n        (3, 3): 0,\n        (4, 4): 0,\n        (5, 5): 0,\n        (0, 2): 3,\n        (0, 5): 4,\n        (2, 1): -2,\n        (2, 3): 7,\n        (2, 4): 2,\n        (3, 4): -5,\n        (4, 5): -1,\n        (0, 1): 1,\n        (0, 3): 10,\n        (0, 4): 5,\n        (1, 0): float(\"inf\"),\n        (1, 2): float(\"inf\"),\n        (1, 3): float(\"inf\"),\n        (1, 4): float(\"inf\"),\n        (1, 5): float(\"inf\"),\n        (2, 0): float(\"inf\"),\n        (2, 5): 1,\n        (3, 0): float(\"inf\"),\n        (3, 1): float(\"inf\"),\n        (3, 2): float(\"inf\"),\n        (3, 5): -6,\n        (4, 0): float(\"inf\"),\n        (4, 1): float(\"inf\"),\n        (4, 2): float(\"inf\"),\n        (4, 3): float(\"inf\"),\n        (5, 0): float(\"inf\"),\n        (5, 1): float(\"inf\"),\n        (5, 2): float(\"inf\"),\n        (5, 3): float(\"inf\"),\n        (5, 4): float(\"inf\"),\n    }\n\n    assert result == expected\n\n\ndef test2():\n    \"\"\"Case 2: Linear graph input.\"\"\"\n\n    graph = {\n        (0, 1): 3,\n        (1, 2): 5,\n        (2, 3): -2,\n        (3, 4): 7,\n    }\n    result = shortest_path_lengths(5, graph)\n\n    expected = {\n        (0, 0): 0,\n        (1, 1): 0,\n        (2, 2): 0,\n        (3, 3): 0,\n        (4, 4): 0,\n        (0, 1): 3,\n        (1, 2): 5,\n        (2, 3): -2,\n        (3, 4): 7,\n        (0, 2): 8,\n        (0, 3): 6,\n        (0, 4): 13,\n        (1, 0): float(\"inf\"),\n        (1, 3): 3,\n        (1, 4): 10,\n        (2, 0): float(\"inf\"),\n        (2, 1): float(\"inf\"),\n        (2, 4): 5,\n        (3, 0): float(\"inf\"),\n        (3, 1): float(\"inf\"),\n        (3, 2): float(\"inf\"),\n        (4, 0): float(\"inf\"),\n        (4, 1): float(\"inf\"),\n        (4, 2): float(\"inf\"),\n        (4, 3): float(\"inf\"),\n    }\n\n    assert result == expected\n\n\ndef test3():\n    \"\"\"Case 3: Disconnected graphs input.\"\"\"\n\n    graph = {\n        (0, 1): 3,\n        (2, 3): 5,\n    }\n    result = shortest_path_lengths(4, graph)\n\n    expected = {\n        (0, 0): 0,\n        (1, 1): 0,\n        (2, 2): 0,\n        (3, 3): 0,\n        (0, 1): 3,\n        (2, 3): 5,\n        (0, 2): float(\"inf\"),\n        (0, 3): float(\"inf\"),\n        (1, 0): float(\"inf\"),\n        (1, 2): float(\"inf\"),\n        (1, 3): float(\"inf\"),\n        (2, 0): float"
+  },
+  "kind_primary": "argument_order",
+  "kind_acceptable": [
+   "argument_order",
+   "wrong_variable"
+  ]
+ },
+ {
+  "name": "shortest_paths",
+  "buggy": [
+   "def shortest_paths(source, weight_by_edge):",
+   "    weight_by_node = {",
+   "        v: float('inf') for u, v in weight_by_edge",
+   "    }",
+   "    weight_by_node[source] = 0",
+   "    for i in range(len(weight_by_node) - 1):",
+   "        for (u, v), weight in weight_by_edge.items():",
+   "            weight_by_edge[u, v] = min(",
+   "                weight_by_node[u] + weight,",
+   "                weight_by_node[v]",
+   "            )",
+   "    return weight_by_node"
+  ],
+  "fixed": [
+   "def shortest_paths(source, weight_by_edge):",
+   "    weight_by_node = {",
+   "        v: float('inf') for u, v in weight_by_edge",
+   "    }",
+   "    weight_by_node[source] = 0",
+   "    for i in range(len(weight_by_node) - 1):",
+   "        for (u, v), weight in weight_by_edge.items():",
+   "            weight_by_node[v] = min(",
+   "                weight_by_node[u] + weight,",
+   "                weight_by_node[v]",
+   "            )",
+   "    return weight_by_node"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 7,
+   "buggy_line": "            weight_by_edge[u, v] = min(",
+   "fix_line": "            weight_by_node[v] = min("
+  },
+  "identifiers": [
+   "float",
+   "i",
+   "len",
+   "min",
+   "range",
+   "shortest_paths",
+   "source",
+   "u",
+   "v",
+   "weight",
+   "weight_by_edge",
+   "weight_by_node"
+  ],
+  "attributes": [
+   "items"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: Graph with multiple paths\n    Output: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 10, 'F': 4}\n    \"\"\"\n\n    graph = {\n        (\"A\", \"B\"): 3,\n        (\"A\", \"C\"): 3,\n        (\"A\", \"F\"): 5,\n        (\"C\", \"B\"): -2,\n        (\"C\", \"D\"): 7,\n        (\"C\", \"E\"): 4,\n        (\"D\", \"E\"): -5,\n        (\"E\", \"F\"): -1,\n    }\n    result = shortest_paths(\"A\", graph)\n\n    expected = {\"A\": 0, \"C\": 3, \"B\": 1, \"E\": 5, \"D\": 10, \"F\": 4}\n    assert result == expected\n\n\ndef test2():\n    \"\"\"Case 2: Graph with one path\n    Output: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 6, 'F': 9}\n    \"\"\"\n\n    graph2 = {\n        (\"A\", \"B\"): 1,\n        (\"B\", \"C\"): 2,\n        (\"C\", \"D\"): 3,\n        (\"D\", \"E\"): -1,\n        (\"E\", \"F\"): 4,\n    }\n    result = shortest_paths(\"A\", graph2)\n\n    expected = {\"A\": 0, \"C\": 3, \"B\": 1, \"E\": 5, \"D\": 6, \"F\": 9}\n    assert result == expected\n\n\ndef test3():\n    \"\"\"Case 3: Graph with cycle\n    Output: {'A': 0, 'C': 3, 'B': 1, 'E': 5, 'D': 6, 'F': 9}\n    \"\"\"\n\n    graph3 = {\n        (\"A\", \"B\"): 1,\n        (\"B\", \"C\"): 2,\n        (\"C\", \"D\"): 3,\n        (\"D\", \"E\"): -1,\n        (\"E\", \"D\"): 1,\n        (\"E\", \"F\"): 4,\n    }\n    result = shortest_paths(\"A\", graph3)\n\n    expected = {\"A\": 0, \"C\": 3, \"B\": 1, \"E\": 5, \"D\": 6, \"F\": 9}\n    assert result == expected"
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable"
+  ]
+ },
+ {
+  "name": "shunting_yard",
+  "buggy": [
+   "def shunting_yard(tokens):",
+   "    precedence = {",
+   "        '+': 1,",
+   "        '-': 1,",
+   "        '*': 2,",
+   "        '/': 2",
+   "    }",
+   "    rpntokens = []",
+   "    opstack = []",
+   "    for token in tokens:",
+   "        if isinstance(token, int):",
+   "            rpntokens.append(token)",
+   "        else:",
+   "            while opstack and precedence[token] <= precedence[opstack[-1]]:",
+   "                rpntokens.append(opstack.pop())",
+   "    while opstack:",
+   "        rpntokens.append(opstack.pop())",
+   "    return rpntokens"
+  ],
+  "fixed": [
+   "def shunting_yard(tokens):",
+   "    precedence = {",
+   "        '+': 1,",
+   "        '-': 1,",
+   "        '*': 2,",
+   "        '/': 2",
+   "    }",
+   "    rpntokens = []",
+   "    opstack = []",
+   "    for token in tokens:",
+   "        if isinstance(token, int):",
+   "            rpntokens.append(token)",
+   "        else:",
+   "            while opstack and precedence[token] <= precedence[opstack[-1]]:",
+   "                rpntokens.append(opstack.pop())",
+   "            opstack.append(token)",
+   "    while opstack:",
+   "        rpntokens.append(opstack.pop())",
+   "    return rpntokens"
+  ],
+  "diff": {
+   "kind": "insert",
+   "insert_after_index": 14,
+   "fix_line": "            opstack.append(token)"
+  },
+  "identifiers": [
+   "int",
+   "isinstance",
+   "opstack",
+   "precedence",
+   "rpntokens",
+   "shunting_yard",
+   "token",
+   "tokens"
+  ],
+  "attributes": [
+   "append",
+   "pop"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      []
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      [
+       30
+      ]
+     ],
+     "expected": [
+      30
+     ]
+    },
+    {
+     "input": [
+      [
+       10,
+       "-",
+       5,
+       "-",
+       2
+      ]
+     ],
+     "expected": [
+      10,
+      5,
+      "-",
+      2,
+      "-"
+     ]
+    },
+    {
+     "input": [
+      [
+       34,
+       "-",
+       12,
+       "/",
+       5
+      ]
+     ],
+     "expected": [
+      34,
+      12,
+      5,
+      "/",
+      "-"
+     ]
+    }
+   ]
+  },
+  "kind_primary": "none_of_these",
+  "kind_acceptable": [
+   "none_of_these",
+   "missing_statement"
+  ]
+ },
+ {
+  "name": "sieve",
+  "buggy": [
+   "def sieve(max):",
+   "    primes = []",
+   "    for n in range(2, max + 1):",
+   "        if any(n % p > 0 for p in primes):",
+   "            primes.append(n)",
+   "    return primes"
+  ],
+  "fixed": [
+   "def sieve(max):",
+   "    primes = []",
+   "    for n in range(2, max + 1):",
+   "        if all(n % p > 0 for p in primes):",
+   "            primes.append(n)",
+   "    return primes"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 3,
+   "buggy_line": "        if any(n % p > 0 for p in primes):",
+   "fix_line": "        if all(n % p > 0 for p in primes):"
+  },
+  "identifiers": [
+   "any",
+   "max",
+   "n",
+   "p",
+   "primes",
+   "range",
+   "sieve"
+  ],
+  "attributes": [
+   "append"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      1
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      2
+     ],
+     "expected": [
+      2
+     ]
+    },
+    {
+     "input": [
+      4
+     ],
+     "expected": [
+      2,
+      3
+     ]
+    },
+    {
+     "input": [
+      7
+     ],
+     "expected": [
+      2,
+      3,
+      5,
+      7
+     ]
+    }
+   ]
+  },
+  "kind_primary": "wrong_function_call",
+  "kind_acceptable": [
+   "wrong_function_call"
+  ]
+ },
+ {
+  "name": "sqrt",
+  "buggy": [
+   "def sqrt(x, epsilon):",
+   "    approx = x / 2",
+   "    while abs(x - approx) > epsilon:",
+   "        approx = 0.5 * (approx + x / approx)",
+   "    return approx"
+  ],
+  "fixed": [
+   "def sqrt(x, epsilon):",
+   "    approx = x / 2",
+   "    while abs(x - approx ** 2) > epsilon:",
+   "        approx = 0.5 * (approx + x / approx)",
+   "    return approx"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 2,
+   "buggy_line": "    while abs(x - approx) > epsilon:",
+   "fix_line": "    while abs(x - approx ** 2) > epsilon:"
+  },
+  "identifiers": [
+   "abs",
+   "approx",
+   "epsilon",
+   "sqrt",
+   "x"
+  ],
+  "attributes": [],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      2,
+      0.01
+     ],
+     "expected": 1.4166666666666665
+    },
+    {
+     "input": [
+      2,
+      0.5
+     ],
+     "expected": 1.5
+    },
+    {
+     "input": [
+      2,
+      0.3
+     ],
+     "expected": 1.5
+    },
+    {
+     "input": [
+      4,
+      0.2
+     ],
+     "expected": 2
+    }
+   ]
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable",
+   "none_of_these"
+  ]
+ },
+ {
+  "name": "subsequences",
+  "buggy": [
+   "def subsequences(a, b, k):",
+   "    if k == 0:",
+   "        return []",
+   "    ret = []",
+   "    for i in range(a, b + 1 - k):",
+   "        ret.extend(",
+   "            [i] + rest for rest in subsequences(i + 1, b, k - 1)",
+   "        )",
+   "    return ret"
+  ],
+  "fixed": [
+   "def subsequences(a, b, k):",
+   "    if k == 0:",
+   "        return [[]]",
+   "    ret = []",
+   "    for i in range(a, b + 1 - k):",
+   "        ret.extend(",
+   "            [i] + rest for rest in subsequences(i + 1, b, k - 1)",
+   "        )",
+   "    return ret"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 2,
+   "buggy_line": "        return []",
+   "fix_line": "        return [[]]"
+  },
+  "identifiers": [
+   "a",
+   "b",
+   "i",
+   "k",
+   "range",
+   "rest",
+   "ret",
+   "subsequences"
+  ],
+  "attributes": [
+   "extend"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      1,
+      5,
+      3
+     ],
+     "expected": [
+      [
+       1,
+       2,
+       3
+      ],
+      [
+       1,
+       2,
+       4
+      ],
+      [
+       1,
+       3,
+       4
+      ],
+      [
+       2,
+       3,
+       4
+      ]
+     ]
+    },
+    {
+     "input": [
+      30,
+      -2,
+      3
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      30,
+      2,
+      3
+     ],
+     "expected": []
+    },
+    {
+     "input": [
+      4,
+      10,
+      4
+     ],
+     "expected": [
+      [
+       4,
+       5,
+       6,
+       7
+      ],
+      [
+       4,
+       5,
+       6,
+       8
+      ],
+      [
+       4,
+       5,
+       6,
+       9
+      ],
+      [
+       4,
+       5,
+       7,
+       8
+      ],
+      [
+       4,
+       5,
+       7,
+       9
+      ],
+      [
+       4,
+       5,
+       8,
+       9
+      ],
+      [
+       4,
+       6,
+       7,
+       8
+      ],
+      [
+       4,
+       6,
+       7,
+       9
+      ],
+      [
+       4,
+       6,
+       8,
+       9
+      ],
+      [
+       4,
+       7,
+       8,
+       9
+      ],
+      [
+       5,
+       6,
+       7,
+       8
+      ],
+      [
+       5,
+       6,
+       7,
+       9
+      ],
+      [
+       5,
+       6,
+       8,
+       9
+      ],
+      [
+       5,
+       7,
+       8,
+       9
+      ],
+      [
+       6,
+       7,
+       8,
+       9
+      ]
+     ]
+    }
+   ]
+  },
+  "kind_primary": "wrong_constant",
+  "kind_acceptable": [
+   "wrong_constant"
+  ]
+ },
+ {
+  "name": "to_base",
+  "buggy": [
+   "import string",
+   "def to_base(num, b):",
+   "    result = ''",
+   "    alphabet = string.digits + string.ascii_uppercase",
+   "    while num > 0:",
+   "        i = num % b",
+   "        num = num // b",
+   "        result = result + alphabet[i]",
+   "    return result"
+  ],
+  "fixed": [
+   "import string",
+   "def to_base(num, b):",
+   "    result = ''",
+   "    alphabet = string.digits + string.ascii_uppercase",
+   "    while num > 0:",
+   "        i = num % b",
+   "        num = num // b",
+   "        result = alphabet[i] + result",
+   "    return result"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 7,
+   "buggy_line": "        result = result + alphabet[i]",
+   "fix_line": "        result = alphabet[i] + result"
+  },
+  "identifiers": [
+   "alphabet",
+   "b",
+   "i",
+   "num",
+   "result",
+   "string",
+   "to_base"
+  ],
+  "attributes": [
+   "ascii_uppercase",
+   "digits"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      8227,
+      18
+     ],
+     "expected": "1771"
+    },
+    {
+     "input": [
+      73,
+      8
+     ],
+     "expected": "111"
+    },
+    {
+     "input": [
+      16,
+      19
+     ],
+     "expected": "G"
+    },
+    {
+     "input": [
+      31,
+      16
+     ],
+     "expected": "1F"
+    }
+   ]
+  },
+  "kind_primary": "argument_order",
+  "kind_acceptable": [
+   "argument_order"
+  ]
+ },
+ {
+  "name": "topological_ordering",
+  "buggy": [
+   "def topological_ordering(nodes):",
+   "    ordered_nodes = [node for node in nodes if not node.incoming_nodes]",
+   "    for node in ordered_nodes:",
+   "        for nextnode in node.outgoing_nodes:",
+   "            if set(ordered_nodes).issuperset(nextnode.outgoing_nodes) and nextnode not in ordered_nodes:",
+   "                ordered_nodes.append(nextnode)",
+   "    return ordered_nodes"
+  ],
+  "fixed": [
+   "def topological_ordering(nodes):",
+   "    ordered_nodes = [node for node in nodes if not node.incoming_nodes]",
+   "    for node in ordered_nodes:",
+   "        for nextnode in node.outgoing_nodes:",
+   "            if set(ordered_nodes).issuperset(nextnode.incoming_nodes) and nextnode not in ordered_nodes:",
+   "                ordered_nodes.append(nextnode)",
+   "    return ordered_nodes"
+  ],
+  "diff": {
+   "kind": "replace",
+   "line_index": 4,
+   "buggy_line": "            if set(ordered_nodes).issuperset(nextnode.outgoing_nodes) and nextnode not in ordered_nodes:",
+   "fix_line": "            if set(ordered_nodes).issuperset(nextnode.incoming_nodes) and nextnode not in ordered_nodes:"
+  },
+  "identifiers": [
+   "nextnode",
+   "node",
+   "nodes",
+   "ordered_nodes",
+   "set",
+   "topological_ordering"
+  ],
+  "attributes": [
+   "append",
+   "incoming_nodes",
+   "issuperset",
+   "outgoing_nodes"
+  ],
+  "tests": {
+   "kind": "pytest_source",
+   "source": "def test1():\n    \"\"\"Case 1: Wikipedia graph\n    Output: 5 7 3 11 8 10 2 9\n    \"\"\"\n\n    five = Node(5)\n    seven = Node(7)\n    three = Node(3)\n    eleven = Node(11)\n    eight = Node(8)\n    two = Node(2)\n    nine = Node(9)\n    ten = Node(10)\n\n    five.outgoing_nodes = [eleven]\n    seven.outgoing_nodes = [eleven, eight]\n    three.outgoing_nodes = [eight, ten]\n    eleven.incoming_nodes = [five, seven]\n    eleven.outgoing_nodes = [two, nine, ten]\n    eight.incoming_nodes = [seven, three]\n    eight.outgoing_nodes = [nine]\n    two.incoming_nodes = [eleven]\n    nine.incoming_nodes = [eleven, eight]\n    ten.incoming_nodes = [eleven, three]\n\n    result = [\n        x.value\n        for x in topological_ordering(\n            [five, seven, three, eleven, eight, two, nine, ten]\n        )\n    ]\n\n    assert result == [5, 7, 3, 11, 8, 10, 2, 9]\n\n\ndef test2():\n    \"\"\"Case 2: GeekforGeeks example\n    Output: 4 5 0 2 3 1\n    \"\"\"\n\n    five = Node(5)\n    zero = Node(0)\n    four = Node(4)\n    one = Node(1)\n    two = Node(2)\n    three = Node(3)\n\n    five.outgoing_nodes = [two, zero]\n    four.outgoing_nodes = [zero, one]\n    two.incoming_nodes = [five]\n    two.outgoing_nodes = [three]\n    zero.incoming_nodes = [five, four]\n    one.incoming_nodes = [four, three]\n    three.incoming_nodes = [two]\n    three.outgoing_nodes = [one]\n\n    result = [\n        x.value for x in topological_ordering([zero, one, two, three, four, five])\n    ]\n\n    assert result == [4, 5, 0, 2, 3, 1]\n\n\ndef test3():\n    \"\"\"Case 3: Cooking with InteractivePython\"\"\"\n\n    milk = Node(\"3/4 cup milk\")\n    egg = Node(\"1 egg\")\n    oil = Node(\"1 Tbl oil\")\n    mix = Node(\"1 cup mix\")\n    syrup = Node(\"heat syrup\")\n    griddle = Node(\"heat griddle\")\n    pour = Node(\"pour 1/4 cup\")\n    turn = Node(\"turn when bubbly\")\n    eat = Node(\"eat\")\n\n    milk.outgoing_nodes = [mix]\n    egg.outgoing_nodes = [mix]\n    oil.outgoing_nodes = [mix]\n    mix.incoming_nodes = [milk, egg, oil]\n    mix.outgoing_nodes = [syrup, pour]\n    griddle.outgoing_nodes = [pour]\n    pour.incoming_nodes = [mix, griddle]\n    pour.outgoing_nodes = [turn]\n    turn.incoming_nodes = [pour]\n    turn.outgoing_nodes = [eat]\n    syrup.incoming_nodes = [mix]\n    syrup.outgoing_nodes = [eat]\n    eat.incoming_nodes = [syrup, turn]\n\n    result = [\n        x.value\n        for x in topological_ordering(\n            [milk, egg, oil, mix, syrup, griddle, pour, turn, eat]\n        )\n    ]\n\n    expected = [\n        \"3/4 cup milk\",\n        \"1 egg\",\n        \"1 Tbl oil\",\n        \""
+  },
+  "kind_primary": "wrong_variable",
+  "kind_acceptable": [
+   "wrong_variable"
+  ]
+ },
+ {
+  "name": "wrap",
+  "buggy": [
+   "def wrap(text, cols):",
+   "    lines = []",
+   "    while len(text) > cols:",
+   "        end = text.rfind(' ', 0, cols + 1)",
+   "        if end == -1:",
+   "            end = cols",
+   "        line, text = text[:end], text[end:]",
+   "        lines.append(line)",
+   "    return lines"
+  ],
+  "fixed": [
+   "def wrap(text, cols):",
+   "    lines = []",
+   "    while len(text) > cols:",
+   "        end = text.rfind(' ', 0, cols + 1)",
+   "        if end == -1:",
+   "            end = cols",
+   "        line, text = text[:end], text[end:]",
+   "        lines.append(line)",
+   "    lines.append(text)",
+   "    return lines"
+  ],
+  "diff": {
+   "kind": "insert",
+   "insert_after_index": 7,
+   "fix_line": "    lines.append(text)"
+  },
+  "identifiers": [
+   "cols",
+   "end",
+   "len",
+   "line",
+   "lines",
+   "text",
+   "wrap"
+  ],
+  "attributes": [
+   "append",
+   "rfind"
+  ],
+  "tests": {
+   "kind": "json",
+   "cases": [
+    {
+     "input": [
+      "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+      50
+     ],
+     "expected": [
+      "The leaves did not stir on the trees, grasshoppers",
+      " chirruped, and the monotonous hollow sound of the",
+      " sea rising up from below, spoke of the peace, of",
+      " the eternal sleep awaiting us. So it must have",
+      " sounded when there was no Yalta, no Oreanda here;",
+      " so it sounds now, and it will sound as",
+      " indifferently and monotonously when we are all no",
+      " more. And in this constancy, in this complete",
+      " indifference to the life and death of each of us,",
+      " there lies hid, perhaps, a pledge of our eternal",
+      " salvation, of the unceasing movement of life upon",
+      " earth, of unceasing progress towards perfection.",
+      " Sitting beside a young woman who in the dawn",
+      " seemed so lovely, soothed and spellbound in these",
+      " magical surroundings - the sea, mountains,",
+      " clouds, the open sky - Gurov thought how in",
+      " reality everything is beautiful in this world",
+      " when one reflects: everything except what we",
+      " think or do ourselves when we forget our human",
+      " dignity and the higher aims of our existence."
+     ]
+    },
+    {
+     "input": [
+      "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+      20
+     ],
+     "expected": [
+      "The leaves did not",
+      " stir on the trees,",
+      " grasshoppers",
+      " chirruped, and the",
+      " monotonous hollow",
+      " sound of the sea",
+      " rising up from",
+      " below, spoke of the",
+      " peace, of the",
+      " eternal sleep",
+      " awaiting us. So it",
+      " must have sounded",
+      " when there was no",
+      " Yalta, no Oreanda",
+      " here; so it sounds",
+      " now, and it will",
+      " sound as",
+      " indifferently and",
+      " monotonously when",
+      " we are all no more.",
+      " And in this",
+      " constancy, in this",
+      " complete",
+      " indifference to the",
+      " life and death of",
+      " each of us, there",
+      " lies hid, perhaps,",
+      " a pledge of our",
+      " eternal salvation,",
+      " of the unceasing",
+      " movement of life",
+      " upon earth, of",
+      " unceasing progress",
+      " towards perfection.",
+      " Sitting beside a",
+      " young woman who in",
+      " the dawn seemed so",
+      " lovely, soothed and",
+      " spellbound in these",
+      " magical",
+      " surroundings - the",
+      " sea, mountains,",
+      " clouds, the open",
+      " sky - Gurov thought",
+      " how in reality",
+      " everything is",
+      " beautiful in this",
+      " world when one",
+      " reflects:",
+      " everything except",
+      " what we think or do",
+      " ourselves when we",
+      " forget our human",
+      " dignity and the",
+      " higher aims of our",
+      " existence."
+     ]
+    },
+    {
+     "input": [
+      "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+      80
+     ],
+     "expected": [
+      "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous",
+      " hollow sound of the sea rising up from below, spoke of the peace, of the",
+      " eternal sleep awaiting us. So it must have sounded when there was no Yalta, no",
+      " Oreanda here; so it sounds now, and it will sound as indifferently and",
+      " monotonously when we are all no more. And in this constancy, in this complete",
+      " indifference to the life and death of each of us, there lies hid, perhaps, a",
+      " pledge of our eternal salvation, of the unceasing movement of life upon earth,",
+      " of unceasing progress towards perfection. Sitting beside a young woman who in",
+      " the dawn seemed so lovely, soothed and spellbound in these magical surroundings",
+      " - the sea, mountains, clouds, the open sky - Gurov thought how in reality",
+      " everything is beautiful in this world when one reflects: everything except what",
+      " we think or do ourselves when we forget our human dignity and the higher aims",
+      " of our existence."
+     ]
+    },
+    {
+     "input": [
+      "The leaves did not stir on the trees, grasshoppers chirruped, and the monotonous hollow sound of the sea rising up from below, spoke of the peace, of the eternal sleep awaiting us. So it must have sounded when there was no Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently and monotonously when we are all no more. And in this constancy, in this complete indifference to the life and death of each of us, there lies hid, perhaps, a pledge of our eternal salvation, of the unceasing movement of life upon earth, of unceasing progress towards perfection. Sitting beside a young woman who in the dawn seemed so lovely, soothed and spellbound in these magical surroundings - the sea, mountains, clouds, the open sky - Gurov thought how in reality everything is beautiful in this world when one reflects: everything except what we think or do ourselves when we forget our human dignity and the higher aims of our existence.",
+      77
+     ],
+     "expected": [
+      "The leaves did not stir on the trees, grasshoppers chirruped, and the",
+      " monotonous hollow sound of the sea rising up from below, spoke of the peace,",
+      " of the eternal sleep awaiting us. So it must have sounded when there was no",
+      " Yalta, no Oreanda here; so it sounds now, and it will sound as indifferently",
+      " and monotonously when we are all no more. And in this constancy, in this",
+      " complete indifference to the life and death of each of us, there lies hid,",
+      " perhaps, a pledge of our eternal salvation, of the unceasing movement of",
+      " life upon earth, of unceasing progress towards perfection. Sitting beside a",
+      " young woman who in the dawn seemed so lovely, soothed and spellbound in",
+      " these magical surroundings - the sea, mountains, clouds, the open sky -",
+      " Gurov thought how in reality everything is beautiful in this world when one",
+      " reflects: everything except what we think or do ourselves when we forget our",
+      " human dignity and the higher aims of our existence."
+     ]
+    }
+   ]
+  },
+  "kind_primary": "none_of_these",
+  "kind_acceptable": [
+   "none_of_these",
+   "missing_statement"
+  ]
+ }
+]

@@ -1,0 +1,3246 @@
+{
+ "summary": {
+  "mode": "kind",
+  "requests": 120,
+  "costUsd": 0.0076466880000000004,
+  "latency_p50_ms": 174.55549999999857,
+  "latency_p90_ms": 276.70070900000064,
+  "totals": {
+   "catalogue_n": 40,
+   "catalogue_strict": 25,
+   "catalogue_lenient": 30,
+   "catalogue_plus_missing_statement_n": 40,
+   "catalogue_plus_missing_statement_strict": 24,
+   "catalogue_plus_missing_statement_lenient": 29,
+   "catalogue_with_faulty_line_n": 40,
+   "catalogue_with_faulty_line_strict": 30,
+   "catalogue_with_faulty_line_lenient": 34
+  }
+ },
+ "rows": [
+  {
+   "program": "bitcount",
+   "variant": "catalogue",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.53,
+   "p_truth": 0.53,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.53,
+    "off_by_one": 0.01,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.16,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0.27
+   },
+   "latency_ms": 250.555125
+  },
+  {
+   "program": "bitcount",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.48,
+   "p_truth": 0.48,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.48,
+    "off_by_one": 0.01,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.15,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0.3,
+    "missing_statement": 0.03
+   },
+   "latency_ms": 152.88037499999996
+  },
+  {
+   "program": "bitcount",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.98,
+   "p_truth": 0.98,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.98,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 271.0729170000001
+  },
+  {
+   "program": "breadth_first_search",
+   "variant": "catalogue",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard",
+    "control_flow_change"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.97,
+   "p_truth": 0.97,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.97,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 218.88995799999998
+  },
+  {
+   "program": "breadth_first_search",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard",
+    "control_flow_change"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.98,
+   "p_truth": 0.98,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.98,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 164.78616699999998
+  },
+  {
+   "program": "breadth_first_search",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard",
+    "control_flow_change"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 1,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 151.99641599999995
+  },
+  {
+   "program": "bucketsort",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 1,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 143.99079199999983
+  },
+  {
+   "program": "bucketsort",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 1,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 154.9274579999999
+  },
+  {
+   "program": "bucketsort",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 1,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 163.04712500000005
+  },
+  {
+   "program": "depth_first_search",
+   "variant": "catalogue",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.36,
+   "p_truth": 0.36,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.04,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.25,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.04,
+    "control_flow_change": 0.3,
+    "wrong_constant": 0,
+    "none_of_these": 0.36
+   },
+   "latency_ms": 144.6187500000001
+  },
+  {
+   "program": "depth_first_search",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_statement",
+   "acceptable": [
+    "none_of_these",
+    "missing_statement"
+   ],
+   "top": "missing_statement",
+   "p_top": 0.95,
+   "p_truth": 0.95,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.03,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0.95
+   },
+   "latency_ms": 237.21633300000008
+  },
+  {
+   "program": "depth_first_search",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.37,
+   "p_truth": 0.37,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.05,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.26,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.04,
+    "control_flow_change": 0.27,
+    "wrong_constant": 0,
+    "none_of_these": 0.37
+   },
+   "latency_ms": 294.2449590000001
+  },
+  {
+   "program": "detect_cycle",
+   "variant": "catalogue",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 1,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 195.80262500000026
+  },
+  {
+   "program": "detect_cycle",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 1,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 203.574791
+  },
+  {
+   "program": "detect_cycle",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.98,
+   "p_truth": 0.98,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.98,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 149.64662499999986
+  },
+  {
+   "program": "find_first_in_sorted",
+   "variant": "catalogue",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.79,
+   "p_truth": 0.79,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.79,
+    "off_by_one": 0.11,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.09,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 130.46074999999973
+  },
+  {
+   "program": "find_first_in_sorted",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.8,
+   "p_truth": 0.8,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.8,
+    "off_by_one": 0.11,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.08,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 164.73275000000012
+  },
+  {
+   "program": "find_first_in_sorted",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.99,
+   "p_truth": 0.99,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.99,
+    "off_by_one": 0.01,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 164.53220799999963
+  },
+  {
+   "program": "find_in_sorted",
+   "variant": "catalogue",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.47000000000000003,
+   "p_truth": 0.47000000000000003,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.18,
+    "off_by_one": 0.47000000000000003,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.15,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.1,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.02
+   },
+   "latency_ms": 165.707625
+  },
+  {
+   "program": "find_in_sorted",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.5,
+   "p_truth": 0.5,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.16,
+    "off_by_one": 0.5,
+    "argument_order": 0.04,
+    "missing_condition_or_guard": 0.1,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.1,
+    "wrong_constant": 0.03,
+    "none_of_these": 0.01,
+    "missing_statement": 0.03
+   },
+   "latency_ms": 153.8190410000002
+  },
+  {
+   "program": "find_in_sorted",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.88,
+   "p_truth": 0.88,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.88,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.12,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 158.47870899999998
+  },
+  {
+   "program": "flatten",
+   "variant": "catalogue",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0,
+    "wrong_function_call": 1,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 258.30670899999996
+  },
+  {
+   "program": "flatten",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.99,
+   "p_truth": 0.99,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.99,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 190.8075000000008
+  },
+  {
+   "program": "flatten",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.99,
+   "p_truth": 0.99,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.99,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 164.1566670000002
+  },
+  {
+   "program": "gcd",
+   "variant": "catalogue",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "argument_order",
+   "p_top": 0.93,
+   "p_truth": 0.93,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0,
+    "argument_order": 0.93,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 270.28820799999994
+  },
+  {
+   "program": "gcd",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "argument_order",
+   "p_top": 0.96,
+   "p_truth": 0.96,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.96,
+    "missing_condition_or_guard": 0.02,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01,
+    "missing_statement": 0
+   },
+   "latency_ms": 275.0981249999995
+  },
+  {
+   "program": "gcd",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "argument_order",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 1,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 212.9955
+  },
+  {
+   "program": "get_factors",
+   "variant": "catalogue",
+   "truth": "wrong_constant",
+   "acceptable": [
+    "wrong_constant"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.73,
+   "p_truth": 0.73,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.01,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.05,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.18,
+    "wrong_constant": 0.73,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 163.1537500000004
+  },
+  {
+   "program": "get_factors",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_constant",
+   "acceptable": [
+    "wrong_constant"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.66,
+   "p_truth": 0.66,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0.01,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.06,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.11,
+    "wrong_constant": 0.66,
+    "none_of_these": 0,
+    "missing_statement": 0.13
+   },
+   "latency_ms": 189.27999999999975
+  },
+  {
+   "program": "get_factors",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_constant",
+   "acceptable": [
+    "wrong_constant"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.98,
+   "p_truth": 0.98,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0.98,
+    "none_of_these": 0
+   },
+   "latency_ms": 224.50174999999945
+  },
+  {
+   "program": "hanoi",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.44,
+   "p_truth": 0.44,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0.01,
+    "argument_order": 0.22,
+    "missing_condition_or_guard": 0.02,
+    "wrong_variable": 0.44,
+    "wrong_function_call": 0.11,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0.12,
+    "none_of_these": 0.06
+   },
+   "latency_ms": 133.20675000000028
+  },
+  {
+   "program": "hanoi",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "missing_statement",
+   "p_top": 0.41,
+   "p_truth": 0.25,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0.01,
+    "argument_order": 0.15,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0.25,
+    "wrong_function_call": 0.07,
+    "control_flow_change": 0,
+    "wrong_constant": 0.07,
+    "none_of_these": 0.02,
+    "missing_statement": 0.41
+   },
+   "latency_ms": 204.57666599999993
+  },
+  {
+   "program": "hanoi",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.96,
+   "p_truth": 0.96,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.04,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.96,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 161.75891599999977
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "variant": "catalogue",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard",
+    "wrong_constant"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.92,
+   "p_truth": 0.92,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.92,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.05,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 288.47679100000005
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard",
+    "wrong_constant"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.84,
+   "p_truth": 0.84,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.84,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.06,
+    "wrong_constant": 0,
+    "none_of_these": 0.01,
+    "missing_statement": 0.08
+   },
+   "latency_ms": 200.64437500000076
+  },
+  {
+   "program": "is_valid_parenthesization",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard",
+    "wrong_constant"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.95,
+   "p_truth": 0.95,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.95,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 130.1364590000003
+  },
+  {
+   "program": "kheapsort",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "off_by_one"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.27999999999999997,
+   "p_truth": 0.06,
+   "truth_rank": 5,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0.19,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.24,
+    "wrong_variable": 0.06,
+    "wrong_function_call": 0.27999999999999997,
+    "control_flow_change": 0.13,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.05
+   },
+   "latency_ms": 230.0081250000003
+  },
+  {
+   "program": "kheapsort",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "off_by_one"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.33,
+   "p_truth": 0.04,
+   "truth_rank": 6,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0.18,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.22,
+    "wrong_variable": 0.04,
+    "wrong_function_call": 0.33,
+    "control_flow_change": 0.11,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.03,
+    "missing_statement": 0.05
+   },
+   "latency_ms": 191.32045800000014
+  },
+  {
+   "program": "kheapsort",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "off_by_one"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.61,
+   "p_truth": 0.61,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.09,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.07,
+    "wrong_variable": 0.61,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.13,
+    "wrong_constant": 0,
+    "none_of_these": 0.08
+   },
+   "latency_ms": 210.92562500000076
+  },
+  {
+   "program": "knapsack",
+   "variant": "catalogue",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.87,
+   "p_truth": 0.87,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.87,
+    "off_by_one": 0.04,
+    "argument_order": 0.05,
+    "missing_condition_or_guard": 0.03,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 138.78012499999932
+  },
+  {
+   "program": "knapsack",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.87,
+   "p_truth": 0.87,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.87,
+    "off_by_one": 0.05,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0.01
+   },
+   "latency_ms": 160.60254199999963
+  },
+  {
+   "program": "knapsack",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 1,
+   "p_truth": 1,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 1,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 163.00445799999943
+  },
+  {
+   "program": "kth",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "none_of_these",
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.38,
+   "p_truth": 0.11,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.21,
+    "off_by_one": 0.38,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.1,
+    "wrong_variable": 0.11,
+    "wrong_function_call": 0.08,
+    "control_flow_change": 0.04,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.05
+   },
+   "latency_ms": 275.3058750000009
+  },
+  {
+   "program": "kth",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "none_of_these",
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.45,
+   "p_truth": 0.13,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.17,
+    "off_by_one": 0.45,
+    "argument_order": 0.04,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0.13,
+    "wrong_function_call": 0.07,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.03,
+    "missing_statement": 0.03
+   },
+   "latency_ms": 166.84266699999898
+  },
+  {
+   "program": "kth",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "none_of_these",
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.67,
+   "p_truth": 0.19,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.04,
+    "off_by_one": 0.67,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0.19,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.04
+   },
+   "latency_ms": 186.0917499999996
+  },
+  {
+   "program": "lcs_length",
+   "variant": "catalogue",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one",
+    "wrong_variable"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.74,
+   "p_truth": 0.74,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.74,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.08,
+    "wrong_variable": 0.09999999999999999,
+    "wrong_function_call": 0.05,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.03
+   },
+   "latency_ms": 207.46170800000073
+  },
+  {
+   "program": "lcs_length",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one",
+    "wrong_variable"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.74,
+   "p_truth": 0.74,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.74,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.06,
+    "wrong_variable": 0.08,
+    "wrong_function_call": 0.07,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.02,
+    "missing_statement": 0.03
+   },
+   "latency_ms": 303.38229200000023
+  },
+  {
+   "program": "lcs_length",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one",
+    "wrong_variable"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.66,
+   "p_truth": 0.66,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.66,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.14,
+    "wrong_variable": 0.1,
+    "wrong_function_call": 0.06,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.04
+   },
+   "latency_ms": 225.49470800000017
+  },
+  {
+   "program": "levenshtein",
+   "variant": "catalogue",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one",
+    "wrong_constant"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.45,
+   "p_truth": 0.14,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.23,
+    "off_by_one": 0.14,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.05,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.07,
+    "wrong_constant": 0.45,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 160.0514579999999
+  },
+  {
+   "program": "levenshtein",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one",
+    "wrong_constant"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.54,
+   "p_truth": 0.14,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.15,
+    "off_by_one": 0.14,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.06,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.04,
+    "wrong_constant": 0.54,
+    "none_of_these": 0.01,
+    "missing_statement": 0.01
+   },
+   "latency_ms": 170.07437500000015
+  },
+  {
+   "program": "levenshtein",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one",
+    "wrong_constant"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.83,
+   "p_truth": 0.03,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.07,
+    "off_by_one": 0.03,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0.83,
+    "none_of_these": 0.02
+   },
+   "latency_ms": 208.9925000000003
+  },
+  {
+   "program": "lis",
+   "variant": "catalogue",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.48,
+   "p_truth": 0.15,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.25,
+    "off_by_one": 0.05,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.48,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.15,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.02
+   },
+   "latency_ms": 139.7085420000003
+  },
+  {
+   "program": "lis",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.52,
+   "p_truth": 0.12,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.19,
+    "off_by_one": 0.05,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.52,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.12,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.01,
+    "missing_statement": 0.07
+   },
+   "latency_ms": 231.50575000000026
+  },
+  {
+   "program": "lis",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "missing_condition_or_guard"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.92,
+   "p_truth": 0.92,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.01,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.92,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 341.1526250000006
+  },
+  {
+   "program": "longest_common_subsequence",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "off_by_one"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.31,
+   "p_truth": 0.09,
+   "truth_rank": 4,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.03,
+    "off_by_one": 0.03,
+    "argument_order": 0.12,
+    "missing_condition_or_guard": 0.08,
+    "wrong_variable": 0.09,
+    "wrong_function_call": 0.24,
+    "control_flow_change": 0.09,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.31
+   },
+   "latency_ms": 149.76133400000072
+  },
+  {
+   "program": "longest_common_subsequence",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "off_by_one"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.22,
+   "p_truth": 0.12,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0.05,
+    "argument_order": 0.11,
+    "missing_condition_or_guard": 0.08,
+    "wrong_variable": 0.12,
+    "wrong_function_call": 0.19,
+    "control_flow_change": 0.08,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.22,
+    "missing_statement": 0.12
+   },
+   "latency_ms": 207.0257500000007
+  },
+  {
+   "program": "longest_common_subsequence",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "off_by_one"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.45,
+   "p_truth": 0.45,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.16,
+    "argument_order": 0.05,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0.45,
+    "wrong_function_call": 0.21,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0,
+    "none_of_these": 0.1
+   },
+   "latency_ms": 180.41637499999888
+  },
+  {
+   "program": "max_sublist_sum",
+   "variant": "catalogue",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "missing_condition_or_guard"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.42,
+   "p_truth": 0.09,
+   "truth_rank": 4,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.04,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.21,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.09,
+    "control_flow_change": 0.06,
+    "wrong_constant": 0.17,
+    "none_of_these": 0.42
+   },
+   "latency_ms": 135.78804200000013
+  },
+  {
+   "program": "max_sublist_sum",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_statement",
+   "p_top": 0.33999999999999997,
+   "p_truth": 0.08,
+   "truth_rank": 4,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.05,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.2,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.08,
+    "control_flow_change": 0.08,
+    "wrong_constant": 0.07,
+    "none_of_these": 0.17,
+    "missing_statement": 0.33999999999999997
+   },
+   "latency_ms": 251.87587499999972
+  },
+  {
+   "program": "max_sublist_sum",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "missing_condition_or_guard"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.52,
+   "p_truth": 0.52,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.03,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.12,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.52,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.29
+   },
+   "latency_ms": 166.3878339999992
+  },
+  {
+   "program": "mergesort",
+   "variant": "catalogue",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.33,
+   "p_truth": 0.33,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.33,
+    "off_by_one": 0.03,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.2,
+    "wrong_variable": 0.11,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.04,
+    "wrong_constant": 0,
+    "none_of_these": 0.25
+   },
+   "latency_ms": 239.4233750000003
+  },
+  {
+   "program": "mergesort",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.31,
+   "p_truth": 0.31,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.31,
+    "off_by_one": 0.03,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.15,
+    "wrong_variable": 0.1,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.27,
+    "missing_statement": 0.07
+   },
+   "latency_ms": 354.0604579999999
+  },
+  {
+   "program": "mergesort",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.25,
+   "p_truth": 0.24,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.24,
+    "off_by_one": 0.12,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.25,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.04,
+    "wrong_constant": 0.12,
+    "none_of_these": 0.21
+   },
+   "latency_ms": 234.64591699999983
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "variant": "catalogue",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "operator_swap"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.42,
+   "p_truth": 0.14,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.03,
+    "off_by_one": 0,
+    "argument_order": 0.08,
+    "missing_condition_or_guard": 0.1,
+    "wrong_variable": 0.42,
+    "wrong_function_call": 0.14,
+    "control_flow_change": 0.06,
+    "wrong_constant": 0,
+    "none_of_these": 0.17
+   },
+   "latency_ms": 142.47775000000001
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "operator_swap"
+   ],
+   "top": "missing_statement",
+   "p_top": 0.41,
+   "p_truth": 0.08,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.04,
+    "off_by_one": 0,
+    "argument_order": 0.06,
+    "missing_condition_or_guard": 0.05,
+    "wrong_variable": 0.28,
+    "wrong_function_call": 0.08,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0,
+    "none_of_these": 0.05,
+    "missing_statement": 0.41
+   },
+   "latency_ms": 169.87975000000006
+  },
+  {
+   "program": "minimum_spanning_tree",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call",
+    "operator_swap"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.72,
+   "p_truth": 0.03,
+   "truth_rank": 5,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0,
+    "argument_order": 0.14,
+    "missing_condition_or_guard": 0.03,
+    "wrong_variable": 0.72,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0.06
+   },
+   "latency_ms": 183.90729199999987
+  },
+  {
+   "program": "next_palindrome",
+   "variant": "catalogue",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.32,
+   "p_truth": 0.17,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.32,
+    "off_by_one": 0.17,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.12,
+    "wrong_variable": 0.06,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.23,
+    "wrong_constant": 0.04,
+    "none_of_these": 0.03
+   },
+   "latency_ms": 226.27074999999968
+  },
+  {
+   "program": "next_palindrome",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.29,
+   "p_truth": 0.16,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.29,
+    "off_by_one": 0.16,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.11,
+    "wrong_variable": 0.05,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.24,
+    "wrong_constant": 0.02,
+    "none_of_these": 0.02,
+    "missing_statement": 0.09
+   },
+   "latency_ms": 174.21591600000102
+  },
+  {
+   "program": "next_palindrome",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.37,
+   "p_truth": 0.37,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0.37,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.03,
+    "wrong_variable": 0.2,
+    "wrong_function_call": 0.21,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0.07,
+    "none_of_these": 0.08
+   },
+   "latency_ms": 276.70070900000064
+  },
+  {
+   "program": "next_permutation",
+   "variant": "catalogue",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order",
+    "operator_swap"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.97,
+   "p_truth": 0,
+   "truth_rank": 5,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.97,
+    "off_by_one": 0.01,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 159.1617499999993
+  },
+  {
+   "program": "next_permutation",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order",
+    "operator_swap"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.95,
+   "p_truth": 0.01,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.95,
+    "off_by_one": 0.01,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 158.28662500000064
+  },
+  {
+   "program": "next_permutation",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order",
+    "operator_swap"
+   ],
+   "top": "operator_swap",
+   "p_top": 1,
+   "p_truth": 0,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 1,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 194.57379199999923
+  },
+  {
+   "program": "pascal",
+   "variant": "catalogue",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.84,
+   "p_truth": 0.84,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.11,
+    "off_by_one": 0.84,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.02,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 137.41312499999913
+  },
+  {
+   "program": "pascal",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.87,
+   "p_truth": 0.87,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.07,
+    "off_by_one": 0.87,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0.04
+   },
+   "latency_ms": 165.6334999999999
+  },
+  {
+   "program": "pascal",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "off_by_one",
+   "acceptable": [
+    "off_by_one"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.99,
+   "p_truth": 0.99,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0.99,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 171.87904200000048
+  },
+  {
+   "program": "possible_change",
+   "variant": "catalogue",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.83,
+   "p_truth": 0.83,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.83,
+    "wrong_variable": 0.08,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 205.50625000000036
+  },
+  {
+   "program": "possible_change",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.82,
+   "p_truth": 0.82,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.82,
+    "wrong_variable": 0.08,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0.01,
+    "missing_statement": 0.01
+   },
+   "latency_ms": 120.55624999999964
+  },
+  {
+   "program": "possible_change",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "missing_condition_or_guard",
+   "acceptable": [
+    "missing_condition_or_guard"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.54,
+   "p_truth": 0.31,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.54,
+    "off_by_one": 0.02,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.31,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.05,
+    "wrong_constant": 0,
+    "none_of_these": 0.05
+   },
+   "latency_ms": 216.05370800000128
+  },
+  {
+   "program": "powerset",
+   "variant": "catalogue",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these",
+    "wrong_variable"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.44,
+   "p_truth": 0.44,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.08,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.08,
+    "control_flow_change": 0.36,
+    "wrong_constant": 0.02,
+    "none_of_these": 0.44
+   },
+   "latency_ms": 174.55549999999857
+  },
+  {
+   "program": "powerset",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these",
+    "wrong_variable"
+   ],
+   "top": "missing_statement",
+   "p_top": 0.69,
+   "p_truth": 0.12,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.02,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.11,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.12,
+    "missing_statement": 0.69
+   },
+   "latency_ms": 167.78537499999948
+  },
+  {
+   "program": "powerset",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these",
+    "wrong_variable"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.72,
+   "p_truth": 0.72,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.05,
+    "control_flow_change": 0.15,
+    "wrong_constant": 0.02,
+    "none_of_these": 0.72
+   },
+   "latency_ms": 181.97529199999917
+  },
+  {
+   "program": "quicksort",
+   "variant": "catalogue",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.47000000000000003,
+   "p_truth": 0.47000000000000003,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.47000000000000003,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.39,
+    "wrong_variable": 0,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.13
+   },
+   "latency_ms": 178.2988749999986
+  },
+  {
+   "program": "quicksort",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.42,
+   "p_truth": 0.42,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.42,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.39,
+    "wrong_variable": 0,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.04,
+    "missing_statement": 0.14
+   },
+   "latency_ms": 198.18829200000073
+  },
+  {
+   "program": "quicksort",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "operator_swap",
+   "acceptable": [
+    "operator_swap",
+    "off_by_one"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.59,
+   "p_truth": 0.59,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.59,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.37,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.04
+   },
+   "latency_ms": 169.1931250000016
+  },
+  {
+   "program": "reverse_linked_list",
+   "variant": "catalogue",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.53,
+   "p_truth": 0.53,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.06,
+    "missing_condition_or_guard": 0.06,
+    "wrong_variable": 0.24,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.08,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.53
+   },
+   "latency_ms": 160.41333299999678
+  },
+  {
+   "program": "reverse_linked_list",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_statement",
+   "acceptable": [
+    "none_of_these",
+    "missing_statement"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.45,
+   "p_truth": 0.26,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.05,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0.13,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.04,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.45,
+    "missing_statement": 0.26
+   },
+   "latency_ms": 171.2765419999996
+  },
+  {
+   "program": "reverse_linked_list",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.58,
+   "p_truth": 0.58,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0.07,
+    "missing_condition_or_guard": 0.06,
+    "wrong_variable": 0.2,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.06,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.58
+   },
+   "latency_ms": 637.887708000002
+  },
+  {
+   "program": "rpn_eval",
+   "variant": "catalogue",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "argument_order",
+   "p_top": 0.88,
+   "p_truth": 0.88,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0,
+    "argument_order": 0.88,
+    "missing_condition_or_guard": 0.06,
+    "wrong_variable": 0.03,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 215.22799999999916
+  },
+  {
+   "program": "rpn_eval",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "argument_order",
+   "p_top": 0.85,
+   "p_truth": 0.85,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0,
+    "argument_order": 0.85,
+    "missing_condition_or_guard": 0.07,
+    "wrong_variable": 0.03,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01,
+    "missing_statement": 0.01
+   },
+   "latency_ms": 137.8914999999979
+  },
+  {
+   "program": "rpn_eval",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "argument_order",
+   "p_top": 0.95,
+   "p_truth": 0.95,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0,
+    "argument_order": 0.95,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.04,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 221.5769999999975
+  },
+  {
+   "program": "shortest_path_length",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "wrong_function_call"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.37,
+   "p_truth": 0.14,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.11,
+    "off_by_one": 0,
+    "argument_order": 0.06,
+    "missing_condition_or_guard": 0.09,
+    "wrong_variable": 0.14,
+    "wrong_function_call": 0.15,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0.37,
+    "none_of_these": 0.05
+   },
+   "latency_ms": 327.69754199999807
+  },
+  {
+   "program": "shortest_path_length",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "wrong_function_call"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.37,
+   "p_truth": 0.18,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.1,
+    "off_by_one": 0,
+    "argument_order": 0.05,
+    "missing_condition_or_guard": 0.08,
+    "wrong_variable": 0.18,
+    "wrong_function_call": 0.12,
+    "control_flow_change": 0.04,
+    "wrong_constant": 0.37,
+    "none_of_these": 0.05,
+    "missing_statement": 0.01
+   },
+   "latency_ms": 179.63495899999907
+  },
+  {
+   "program": "shortest_path_length",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "wrong_function_call"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.31,
+   "p_truth": 0.31,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.14,
+    "off_by_one": 0.01,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.1,
+    "wrong_variable": 0.31,
+    "wrong_function_call": 0.21,
+    "control_flow_change": 0,
+    "wrong_constant": 0.15,
+    "none_of_these": 0.06
+   },
+   "latency_ms": 201.30562499999724
+  },
+  {
+   "program": "shortest_path_lengths",
+   "variant": "catalogue",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order",
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.52,
+   "p_truth": 0.45,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0,
+    "argument_order": 0.45,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.52,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 293.2430409999979
+  },
+  {
+   "program": "shortest_path_lengths",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order",
+    "wrong_variable"
+   ],
+   "top": "argument_order",
+   "p_top": 0.49,
+   "p_truth": 0.49,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0,
+    "argument_order": 0.49,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.49,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 129.4622079999972
+  },
+  {
+   "program": "shortest_path_lengths",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order",
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.68,
+   "p_truth": 0.31,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0,
+    "argument_order": 0.31,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.68,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 172.30187500000102
+  },
+  {
+   "program": "shortest_paths",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.89,
+   "p_truth": 0.89,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.03,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.89,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0.04
+   },
+   "latency_ms": 258.28962500000125
+  },
+  {
+   "program": "shortest_paths",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.87,
+   "p_truth": 0.87,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0.02,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.87,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01,
+    "missing_statement": 0.08
+   },
+   "latency_ms": 168.1427909999984
+  },
+  {
+   "program": "shortest_paths",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.97,
+   "p_truth": 0.97,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0,
+    "wrong_variable": 0.97,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 166.50158400000146
+  },
+  {
+   "program": "shunting_yard",
+   "variant": "catalogue",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.74,
+   "p_truth": 0.02,
+   "truth_rank": 4,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.74,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.19,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.02
+   },
+   "latency_ms": 283.8281670000033
+  },
+  {
+   "program": "shunting_yard",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_statement",
+   "acceptable": [
+    "none_of_these",
+    "missing_statement"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.66,
+   "p_truth": 0.13,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.66,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.16,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.01,
+    "missing_statement": 0.13
+   },
+   "latency_ms": 311.01474999999846
+  },
+  {
+   "program": "shunting_yard",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "operator_swap",
+   "p_top": 0.71,
+   "p_truth": 0.02,
+   "truth_rank": 4,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.71,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.22,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.02
+   },
+   "latency_ms": 159.73516700000255
+  },
+  {
+   "program": "sieve",
+   "variant": "catalogue",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.62,
+   "p_truth": 0.62,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.34,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0,
+    "wrong_function_call": 0.62,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 157.71900000000096
+  },
+  {
+   "program": "sieve",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.76,
+   "p_truth": 0.76,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.2,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.04,
+    "wrong_variable": 0,
+    "wrong_function_call": 0.76,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0,
+    "missing_statement": 0
+   },
+   "latency_ms": 239.6700830000009
+  },
+  {
+   "program": "sieve",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_function_call",
+   "acceptable": [
+    "wrong_function_call"
+   ],
+   "top": "wrong_function_call",
+   "p_top": 0.75,
+   "p_truth": 0.75,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.23,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.02,
+    "wrong_variable": 0,
+    "wrong_function_call": 0.75,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0
+   },
+   "latency_ms": 178.36454200000298
+  },
+  {
+   "program": "sqrt",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "none_of_these"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.63,
+   "p_truth": 0.63,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.05,
+    "off_by_one": 0,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.21,
+    "wrong_variable": 0.63,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0.02,
+    "none_of_these": 0.03
+   },
+   "latency_ms": 164.68545799999993
+  },
+  {
+   "program": "sqrt",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "none_of_these"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.66,
+   "p_truth": 0.66,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.06,
+    "off_by_one": 0,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.16,
+    "wrong_variable": 0.66,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0.02,
+    "none_of_these": 0.02,
+    "missing_statement": 0.03
+   },
+   "latency_ms": 140.46383399999831
+  },
+  {
+   "program": "sqrt",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable",
+    "none_of_these"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.9,
+   "p_truth": 0.9,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.03,
+    "off_by_one": 0,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.02,
+    "wrong_variable": 0.9,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.02
+   },
+   "latency_ms": 155.12804099999994
+  },
+  {
+   "program": "subsequences",
+   "variant": "catalogue",
+   "truth": "wrong_constant",
+   "acceptable": [
+    "wrong_constant"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.43,
+   "p_truth": 0.13,
+   "truth_rank": 4,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.15,
+    "off_by_one": 0.15,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.43,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0.13,
+    "none_of_these": 0.05
+   },
+   "latency_ms": 140.1830409999966
+  },
+  {
+   "program": "subsequences",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_constant",
+   "acceptable": [
+    "wrong_constant"
+   ],
+   "top": "missing_condition_or_guard",
+   "p_top": 0.41000000000000003,
+   "p_truth": 0.15,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.12,
+    "off_by_one": 0.13,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.41000000000000003,
+    "wrong_variable": 0.02,
+    "wrong_function_call": 0.04,
+    "control_flow_change": 0.03,
+    "wrong_constant": 0.15,
+    "none_of_these": 0.05,
+    "missing_statement": 0.02
+   },
+   "latency_ms": 166.04275000000052
+  },
+  {
+   "program": "subsequences",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_constant",
+   "acceptable": [
+    "wrong_constant"
+   ],
+   "top": "wrong_constant",
+   "p_top": 0.93,
+   "p_truth": 0.93,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0,
+    "off_by_one": 0,
+    "argument_order": 0,
+    "missing_condition_or_guard": 0.03,
+    "wrong_variable": 0,
+    "wrong_function_call": 0.01,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0.93,
+    "none_of_these": 0.01
+   },
+   "latency_ms": 152.04025000000183
+  },
+  {
+   "program": "to_base",
+   "variant": "catalogue",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.5,
+   "p_truth": 0.04,
+   "truth_rank": 7,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.06,
+    "off_by_one": 0.04,
+    "argument_order": 0.04,
+    "missing_condition_or_guard": 0.12,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.13,
+    "control_flow_change": 0.09,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.5
+   },
+   "latency_ms": 363.64979200000016
+  },
+  {
+   "program": "to_base",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "missing_statement",
+   "p_top": 0.6,
+   "p_truth": 0.02,
+   "truth_rank": 8,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0.02,
+    "argument_order": 0.02,
+    "missing_condition_or_guard": 0.03,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.04,
+    "control_flow_change": 0.05,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.2,
+    "missing_statement": 0.6
+   },
+   "latency_ms": 125.96783399999913
+  },
+  {
+   "program": "to_base",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "argument_order",
+   "acceptable": [
+    "argument_order"
+   ],
+   "top": "none_of_these",
+   "p_top": 0.52,
+   "p_truth": 0.28,
+   "truth_rank": 2,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.06,
+    "off_by_one": 0.06,
+    "argument_order": 0.28,
+    "missing_condition_or_guard": 0.02,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.02,
+    "wrong_constant": 0,
+    "none_of_these": 0.52
+   },
+   "latency_ms": 134.54704199999833
+  },
+  {
+   "program": "topological_ordering",
+   "variant": "catalogue",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.59,
+   "p_truth": 0.59,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.04,
+    "off_by_one": 0,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.05,
+    "wrong_variable": 0.59,
+    "wrong_function_call": 0.05,
+    "control_flow_change": 0.21,
+    "wrong_constant": 0,
+    "none_of_these": 0.05
+   },
+   "latency_ms": 116.01745900000242
+  },
+  {
+   "program": "topological_ordering",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.53,
+   "p_truth": 0.53,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.04,
+    "off_by_one": 0,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.03,
+    "wrong_variable": 0.53,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.2,
+    "wrong_constant": 0,
+    "none_of_these": 0.03,
+    "missing_statement": 0.13
+   },
+   "latency_ms": 171.75599999999758
+  },
+  {
+   "program": "topological_ordering",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "wrong_variable",
+   "acceptable": [
+    "wrong_variable"
+   ],
+   "top": "wrong_variable",
+   "p_top": 0.37,
+   "p_truth": 0.37,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.17,
+    "off_by_one": 0,
+    "argument_order": 0.1,
+    "missing_condition_or_guard": 0.07,
+    "wrong_variable": 0.37,
+    "wrong_function_call": 0.24,
+    "control_flow_change": 0.01,
+    "wrong_constant": 0,
+    "none_of_these": 0.04
+   },
+   "latency_ms": 172.88087499999892
+  },
+  {
+   "program": "wrap",
+   "variant": "catalogue",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.43,
+   "p_truth": 0.15,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0.43,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.23,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.02,
+    "control_flow_change": 0.1,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.15
+   },
+   "latency_ms": 187.29675000000134
+  },
+  {
+   "program": "wrap",
+   "variant": "catalogue_plus_missing_statement",
+   "truth": "missing_statement",
+   "acceptable": [
+    "none_of_these",
+    "missing_statement"
+   ],
+   "top": "missing_statement",
+   "p_top": 0.85,
+   "p_truth": 0.85,
+   "truth_rank": 1,
+   "strict": true,
+   "lenient": true,
+   "probabilities": {
+    "operator_swap": 0.01,
+    "off_by_one": 0.11,
+    "argument_order": 0.01,
+    "missing_condition_or_guard": 0.01,
+    "wrong_variable": 0,
+    "wrong_function_call": 0,
+    "control_flow_change": 0,
+    "wrong_constant": 0,
+    "none_of_these": 0.01,
+    "missing_statement": 0.85
+   },
+   "latency_ms": 232.99208299999736
+  },
+  {
+   "program": "wrap",
+   "variant": "catalogue_with_faulty_line",
+   "truth": "none_of_these",
+   "acceptable": [
+    "none_of_these"
+   ],
+   "top": "off_by_one",
+   "p_top": 0.41,
+   "p_truth": 0.15,
+   "truth_rank": 3,
+   "strict": false,
+   "lenient": false,
+   "probabilities": {
+    "operator_swap": 0.02,
+    "off_by_one": 0.41,
+    "argument_order": 0.03,
+    "missing_condition_or_guard": 0.23,
+    "wrong_variable": 0.01,
+    "wrong_function_call": 0.03,
+    "control_flow_change": 0.11,
+    "wrong_constant": 0.01,
+    "none_of_these": 0.15
+   },
+   "latency_ms": 196.2064169999976
+  }
+ ]
+}
