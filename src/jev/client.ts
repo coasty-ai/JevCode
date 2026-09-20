@@ -198,23 +198,39 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
   }
 
   async function attempt(body: string, questions: Record<string, Question>, signal: AbortSignal): Promise<AttemptOutcome> {
-    const attemptSignal = AbortSignal.any([signal, AbortSignal.timeout(JEV_RETRY.attemptTimeoutMs)]);
+    // A per-attempt controller linked to the engine signal, plus an explicit timer. Not
+    // `AbortSignal.any([signal, AbortSignal.timeout(...)])`: composite signals are only weakly
+    // held by their sources, and under the TUI's GC pressure the request stalled for good once
+    // the composite was collected (observed live 2026-09-19, DECISIONS.md). The controller and
+    // the timer are strongly referenced by this frame for the whole attempt.
+    if (signal.aborted) throw signal.reason;
+    const attemptCtl = new AbortController();
+    const onParentAbort = (): void => attemptCtl.abort(signal.reason);
+    signal.addEventListener('abort', onParentAbort, { once: true });
+    let timedOutByTimer = false;
+    const timer = setTimeout(() => {
+      timedOutByTimer = true;
+      attemptCtl.abort(new DOMException(`Jev attempt exceeded ${JEV_RETRY.attemptTimeoutMs} ms`, 'TimeoutError'));
+    }, JEV_RETRY.attemptTimeoutMs);
     const t0 = now();
     let status: number;
     let text: string;
     let truncated: boolean;
     let captured: JevResponseHeaders;
     try {
-      const res = await doFetch(cfg.baseUrl, { method: 'POST', headers, body, signal: attemptSignal });
+      const res = await doFetch(cfg.baseUrl, { method: 'POST', headers, body, signal: attemptCtl.signal });
       status = res.status;
       captured = captureHeaders(res.headers);
       ({ text, truncated } = await readBodyBounded(res, JEV_RESPONSE_BODY_MAX_BYTES));
     } catch (e) {
       // The engine's abort wins over everything: rethrow its reason untouched (§5.1).
       if (signal.aborted) throw signal.reason;
-      const timedOut = attemptSignal.aborted || isTimeoutError(e);
+      const timedOut = timedOutByTimer || isTimeoutError(e);
       const message = timedOut ? `Jev request timed out after ${JEV_RETRY.attemptTimeoutMs} ms` : `Jev request failed: ${errorMessage(e)}`;
       return { kind: 'http', error: new JevHttpError(redact(message), { status: 0, retryable: true, cause: e }) };
+    } finally {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', onParentAbort);
     }
     const latencyMs = Math.max(0, now() - t0);
     if (status !== 200) return { kind: 'http', error: httpError(status, text, captured.retryAfter) };

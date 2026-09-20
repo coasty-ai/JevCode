@@ -193,3 +193,52 @@ environment setup script fails under Python 3.9. This is by design: the mocked b
 the pipeline, not the tasks. Three sandbox-profile bugs surfaced only through the mocked
 bench (jevcode-home read deny, `--shared` clones needing the object cache readable, patch
 files written where the post-run sandbox cannot read them), each fixed before any live run.
+
+## 2026-09-19 Live 3-task slice: what changed before the full 30
+
+First live slice (`bench/results/live-slice-3`): all six runs completed but none evaluated.
+Two causes, both fixed: the evaluator's fresh clone hit the seatbelt `.git/hooks` write
+deny (that rule protects the agent's workspace; bench infrastructure sandboxes now pass
+`protectGit: false`), and jev-on made almost no progress because 14 of 25 steps in one run
+were reviews on `plan_mismatch` with Jev confidence 0.00 (flat distributions), which the
+bench counts as blocked. The risk mapping now uses the expected-level term only for the
+harm dimensions (`destructive`, `irreversible`) and tail mass `P(level >= 3)` for the
+alignment dimensions (`out_of_scope`, `plan_mismatch`), so an uncertain low-level
+alignment answer is not a risk while a confident "contradicts the plan / repeats a failed
+step" still blocks (DESIGN.md §5.3). Second slice (`live-slice-3b`): all six runs evaluated
+by the local-venv evaluator; jev-on 3/3 passed (18–25 steps, $0.48–0.64 per run, Jev p50
+225–233 ms, 2–5 blocked and 2–4 reviews each), jev-off 2/3 passed (25 steps each,
+$0.69–0.78, never declared done). Sane, so the full 30 runs with `--spend-cap 45`,
+`--task-spend-cap 1.5`, `--max-steps 25`, `--max-wall 20m`, concurrency 3.
+
+## 2026-09-19 Full 30-task live run, first pass
+
+`bench/results/live-swebench-30`: 60 runs, $24.20 total (jev-on $14.45, jev-off $9.75). The
+15 sympy, pylint and requests tasks evaluated in both conditions: jev-on 5/15, jev-off 5/15.
+Every django and pytest task failed environment setup in `pip install -e .`: the venv's pip
+21 hands editable installs of pyproject-based projects to a nested `setup.py develop` that
+fails with "No module named pip". The evaluator now upgrades pip, setuptools and wheel in
+each venv before the spec install (the official images get a recent pip from conda), and
+the 15 pairs are re-run with `bench --resume`.
+
+Observations kept for the report: jev-on's five solved tasks all ran to the 25-step budget
+with a correct patch on disk (the completion Noul never reached 0.85, because verification
+rarely re-ran the whole detected test command after the last edit), while jev-off's five
+stopped when the generator said done (15–20 steps); jev-on spent 97 blocked and 76 declined
+reviews over 15 runs (reviews are declined in bench by design) and produced an empty patch in
+6 runs; the combined tokens-per-step figure (74k vs 12k) is dominated by Jev's context Nouls
+over up to 300 candidate files, which cost $0.78 in total, so the report now shows generator
+and Jev token series separately.
+
+## 2026-09-19 The "Ctrl-C stall" was two things
+
+The interactive stall seen in demo 5 came from a step-2→3 boundary where a live Jev request
+was in flight; the offline reproduction that seemed to confirm it was in fact a review box
+waiting for an answer the driver never gave (14,285 renders of the box; wall time stopped it
+cleanly). The genuine difference between the stalled process and every working
+reproduction was `AbortSignal.any([engineSignal, AbortSignal.timeout(10 s)])` in the Jev
+client: composite signals are held only weakly by their sources, and Node's garbage
+collector under the TUI's render pressure can collect the dependent signal, after which an
+abort never reaches the fetch. The client now uses a per-attempt `AbortController` linked
+to the engine signal by an explicit listener and an explicit timer, both strongly held for
+the attempt (the providers already used this pattern through `linkedAbort`).

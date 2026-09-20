@@ -86,7 +86,11 @@ export async function cloneAt(run: CommandRunner, opts: CheckoutOptions): Promis
 /** Step (b)/(c) package installs: venv, spec.packages, pip_packages, pre_install, install. */
 export function installCommands(record: SwebenchRecord, dir: string): string[] {
   const pre = venvPrefix(dir);
-  const cmds: string[] = [`python3 -m venv .venv`];
+  // The system venv ships pip 21 / setuptools 58; projects with a pyproject.toml (django, pytest)
+  // then fail in the nested `setup.py develop` -> `pip install -e . --use-pep517` call with
+  // "No module named pip". A current pip does PEP 660 editable installs directly. The official
+  // images get a recent pip from conda, so this matches them rather than diverging.
+  const cmds: string[] = [`python3 -m venv .venv`, `${pre}python -m pip install -q --upgrade pip setuptools wheel`];
   const pkgs = record.spec.packages;
   if (pkgs === 'requirements.txt') {
     const paths = REQS_PATHS[record.repo] ?? ['requirements.txt'];

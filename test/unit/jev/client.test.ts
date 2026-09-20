@@ -312,14 +312,23 @@ describe('createJevDecider: retry schedule', () => {
     expect(calls).toHaveLength(0);
   });
 
-  it('the per-attempt signal is a composite that aborts with the engine signal', async () => {
+  it('the per-attempt signal is a linked controller: an engine abort mid-request aborts the fetch and rejects the ask', async () => {
     const controller = new AbortController();
-    const { decider, calls } = build([{ status: 200, body: validBody(sampleQuestions) }]);
-    await decider.ask(state, sampleQuestions, askOpts(controller.signal));
-    const sig = calls[0]!.signal!;
-    expect(sig.aborted).toBe(false);
+    let fetchSignal: AbortSignal | null = null;
+    // a fetch that only settles when its signal aborts, so the abort has to propagate through the link
+    const pendingFetch: typeof fetch = (_url, init) =>
+      new Promise<Response>((_resolve, reject) => {
+        fetchSignal = init?.signal ?? null;
+        fetchSignal?.addEventListener('abort', () => reject(fetchSignal?.reason), { once: true });
+      });
+    const decider = createJevDecider(cfg, { fetch: pendingFetch, redact: (s) => s });
+    const p = decider.ask(state, sampleQuestions, askOpts(controller.signal));
+    await new Promise((r) => setTimeout(r, 5));
+    expect(fetchSignal).not.toBeNull();
+    expect(fetchSignal!.aborted).toBe(false);
     controller.abort(new AbortError('human_abort'));
-    expect(sig.aborted).toBe(true);
+    expect(fetchSignal!.aborted).toBe(true);
+    await expect(p).rejects.toBeInstanceOf(AbortError);
   });
 });
 

@@ -41,7 +41,7 @@ async function readTask(flags: ParsedFlags): Promise<string> {
 }
 
 async function buildProvider(config: ResolvedConfig, flags: ParsedFlags): Promise<Provider> {
-  if (flags.mock) {
+  if (flags.mock || flags.mockGenerator) {
     const { createMockProvider } = await import('../provider/mock.js');
     const { mockTrajectory } = await import('./mock-trajectory.js');
     return createMockProvider({ turns: mockTrajectory(Number(flags.mockSteps ?? 8)) });
@@ -144,7 +144,7 @@ async function commandRun(flags: ParsedFlags): Promise<number> {
     const decider = await buildDecider(config, flags);
     const { createSpendMeter } = await import('../spend/meter.js');
     const meter = createSpendMeter(limits.spendCapUsd);
-    const gen = flags.mock ? { temperature: null, maxTokens: 4096 } : config.generator();
+    const gen = flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : config.generator();
     const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : config.decider();
 
     const opts: EngineOptions = {

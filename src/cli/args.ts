@@ -45,7 +45,7 @@ export const STRING_FLAGS = [
   'mockSteps',
 ] as const;
 
-export const BOOLEAN_FLAGS = ['noNetwork', 'plain', 'force', 'perfExitAfterFirstFrame', 'json', 'live', 'allowModelAlias', 'help', 'version', 'mock', 'perfLagProbe'] as const;
+export const BOOLEAN_FLAGS = ['noNetwork', 'plain', 'force', 'perfExitAfterFirstFrame', 'json', 'live', 'allowModelAlias', 'help', 'version', 'mock', 'mockGenerator', 'perfLagProbe'] as const;
 
 export type StringFlagKey = (typeof STRING_FLAGS)[number];
 export type BooleanFlagKey = (typeof BOOLEAN_FLAGS)[number];
@@ -105,6 +105,7 @@ export const FLAGS: readonly FlagSpec[] = [
   // Hidden run flags used by the wiring code and perf/*: mocked provider+decider, no network.
   { key: 'mock', name: 'mock', type: 'boolean', commands: RUN, help: 'mocked generator and decider (perf, smoke)', hidden: true },
   { key: 'mockSteps', name: 'mock-steps', type: 'string', commands: RUN, arg: '<n>', help: 'steps in the mocked trajectory', hidden: true },
+  { key: 'mockGenerator', name: 'mock-generator', type: 'boolean', commands: RUN, help: 'mocked generator with the live decider (debugging)', hidden: true },
   { key: 'perfLagProbe', name: 'perf-lag-probe', type: 'boolean', commands: RUN, help: 'record event-loop lag (perf)', hidden: true },
   { key: 'json', name: 'json', type: 'boolean', commands: ['config'], help: 'print the resolved table as JSON' },
   { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|all', help: 'benchmark suite' },

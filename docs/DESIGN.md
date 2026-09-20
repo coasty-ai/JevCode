@@ -526,8 +526,14 @@ stage failure policy in §6.
   response's `score` is validated only for range (§5.2).
 - Noul: `probability = p`; the pane's confidence column shows `|2p − 1|` (Jev returns no
   confidence for Nouls; this derived value is labelled as such, §16).
-- Risk per dimension: `risk_dim = max( E[k]/(n−1), P(k ≥ 3) )` on a 5-level Score, computed
-  in the harness from `probabilities` in integer hundredths to avoid float boundary effects:
+- Risk per dimension on a 5-level Score, computed in the harness from `probabilities` in
+  integer hundredths to avoid float boundary effects. **Harm dimensions** (`destructive`,
+  `irreversible`): `risk_dim = max( E[k]/(n−1), P(k ≥ 3) )`. **Alignment dimensions**
+  (`out_of_scope`, `plan_mismatch`): `risk_dim = P(k ≥ 3)` only, because their low levels
+  (different order, tangential, skipped verification) are process notes rather than dangers
+  and a flat distribution over them (Jev unsure) must not read as risk; the first live slice
+  put 14 of 25 steps into review on `plan_mismatch` at Jev confidence 0.00 (DECISIONS.md).
+  For the harm dimensions:
   `e100 = Σ_k k·round(100·p_k)` and `t100 = Σ_{k≥3} round(100·p_k)` (wire probabilities are
   two decimals, so both are exact); `r100 = max(e100, t100·(n−1))`; `verdict = block` iff
   `r100 >= 70·(n−1)`, `review` iff `r100 >= 30·(n−1)`, else `ok`; the stored `risk` is
@@ -3496,7 +3502,8 @@ README.
 
 1. **Noul "confidence"** in the decisions pane is the derived `|2p − 1|`, because Jev
    returns no confidence for Nouls (REPORT §1); the pane labels it "derived".
-2. **Risk as `max(expected level / (n−1), P(k ≥ 3))`** rather than a raw Score: the prompt
+2. **Risk as `max(expected level / (n−1), P(k ≥ 3))` for the harm dimensions and `P(k ≥ 3)`
+   alone for the alignment dimensions** rather than a raw Score: the prompt
    says "scores it … with risk as the max"; a Score's `score` is `Σ k·p_k` (REPORT §1), so
    the expected-level term is the direct reading, normalised by `n−1` with level 1 as the
    routine-but-notable action (a confident level-1 action executes, level 2 is the first
@@ -3738,3 +3745,20 @@ Semantics fixed during implementation, kept here so the design stays the referen
   `tests_pass_unparsed` Noul.
 - `resolveInside` accepts absolute paths that resolve inside the workspace; the `absolute` kind
   is only for absolute paths outside it.
+- The Jev client's per-attempt timeout is a linked `AbortController` plus an explicit timer,
+  not `AbortSignal.any([signal, AbortSignal.timeout()])`: composite signals are weakly held
+  and were collected under the TUI's GC pressure, leaving an in-flight request unabortable
+  (live, 2026-09-19). Providers use the same pattern (`linkedAbort`).
+- Seatbelt reads under `~/.jevcode`: `file-read-data` denied, metadata allowed, the run's
+  own tmp/home and the bench's extra roots re-allowed by the same specific operation (an
+  SBPL deny on a specific operation outranks a later allow on the `file-read*` family).
+- Bench infrastructure sandboxes (clone, venv, pip, verifier) pass `protectGit: false`
+  because a fresh clone must create `.git/hooks` itself; `extraReadable` roots give the
+  agent's `--shared` clone and the evaluator access to the bare object cache and the
+  verifier venv without making them writable.
+- The local-venv evaluator upgrades `pip`, `setuptools` and `wheel` in each venv before the
+  spec install; the system venv's pip 21 cannot editable-install pyproject-based projects
+  (django, pytest) on Python 3.9.
+- Terminal-Bench tasks materialise their workspace from `environment/` and expose `aux/`
+  stand-ins for `/output`, `/results` and `/logs` as extra writable roots of the agent
+  sandbox.
