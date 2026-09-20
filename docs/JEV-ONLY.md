@@ -270,3 +270,18 @@ the linter verify. The question this document answers by experiment is which dec
   (1/9). Also found: the composite signature-unit enumerator did not return in 27 min at one sympy site
   (unbounded scan of every statement of every file) — being bounded. Two agents are implementing
   capabilities 2–6 now; wiring into the controller follows once the search files are free.
+- 2026-09-20: **controller bookkeeping + loop round 6; QuixBugs rung 1a repeat 1: 38/40.** Search side
+  (`experiments/results/jev-only-rungs-1-2.md` §15): partials are paired before a goal is parked and
+  survive the park in `synthState`; a held passer is committed on a budget exit; `change_approach`
+  reopens every parked goal; a site's seed sources run as one SIEVE batch decided once; all-killed
+  batches under load are re-queued once; WIDENED sites are evidence-ordered and a loop's exit gap is
+  an anchor's third gap. Ladder `account` 3/3 hunks gold-identical in 2/2 runs; `wrap` gold-identical;
+  five regression programs gold-identical or equivalent. Loop side (§14, §17): completion after the
+  engine's own passing run is a fact; the standing verification run and a novel verified patch never
+  land in the review band on spread mass; `fail:` loop signatures are failing-test sets, not the last
+  output line; a no-op `done` carries the engine's last run — ladder grades/shipping/table 47 → 19
+  steps, loop replans 8 → 0. **Rung 1a repeat 1** on the merged tree (`bench/results/jev-only-quixbugs-6-repeat1`,
+  clean worktree at d610d75): **38/40 repaired**, $0.134, 0 generator calls; by the verdict script 28
+  gold-identical + 7 equivalent = **35 verified correct**, 2 unverified (graph fixtures the probe does
+  not perturb), 1 overfit (`wrap` again: the exit-gap batch was not the winner this time), 2 misses
+  (`longest_common_subsequence`, `shortest_path_length`, both `max_steps`). Repeat 2 is running.
