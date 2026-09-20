@@ -897,3 +897,184 @@ python3 /tmp/jo-risk.py bench/results/jev-only-ladder-3-policy
 python3 /tmp/jo-table.py bench/results/jev-only-ladder-3-policy ladder
 python3 /tmp/jo-steps.py bench/results/jev-only-ladder-3-policy
 ```
+
+## 11. 2026-09-20 (later): insertion sites — gaps at every statement boundary, legal indents, the Q6 fallback, function-weighted anchors; `shunting_yard` and `reverse_linked_list` gold-identical, `depth_first_search` gold-identical after the anchor fix
+
+Follow-up to §1's `reverse_linked_list` (engine_rejected / later a search miss: 0 plausible in 1,166 WIDENED runs) and
+§8's `shunting_yard` ("exhausted at 7 sites" after sieving 2,448 candidates). Both gold fixes are insertions
+(`prevnode = node` inside the loop body; `opstack.append(token)` after the inner `while`, one level out of its body).
+Diagnosed on the checked-in programs and the run directories `20260920-205025-4hbeexhd` (shunting_yard, §8 run b) and
+`20260920-204758-oemdlhis` (reverse_linked_list); changes in `src/synth/localize/sites.ts`, `src/synth/search/sites.ts`,
+`src/synth/templates/{common,statements}.ts`; live re-check `bench/results/jev-only-quixbugs-3-insert` (4 programs) and
+`-3-insert-dfs` (depth_first_search again after the anchor fix).
+
+### 11.1 Diagnosis (what the run directories show)
+
+- **The template pools were never the problem.** At the four gold gaps built by hand (line, indent) the statement family
+  holds the gold in every case, in pools of 47–80 candidates (`nodesvisited.add(node)` rank 15 of 50, `prevnode = node`
+  23 of 47, `opstack.append(token)` 3 of 80, `lines.append(text)` 18 of 56; measured with the template source on the
+  buggy programs). `test/unit/synth/templates/quixbugs.test.ts` already asserted this. The misses were sites.
+- **shunting_yard: the gap existed at the wrong indent.** The SEEDS list of run b (`shunting_yard.py:17 (gap)`,
+  `:16 (gap)`, `:15 (gap)`, `:16`, +3) built the anchor gaps with `indentAfter` = "one level deeper after a header, else
+  the same": the gap after L17 (`rpntokens.append(opstack.pop())`, indent 16, the only statement of the inner `while`)
+  was built at indent 16 — inside the loop body — where `opstack.append(token)` is wrong; the fix sits at indent 12, the
+  `else:` body, one level out. The gap before `else:` (L15) was built at the clause's own indent 8, where every
+  statement is a SyntaxError (an `if` body cannot be followed by a statement at the clause indent). The replace site at
+  L17 does emit `current\n<stmt at the dedent level>` (`insert_append_after_dedent`), but (a) at the enumeration cap of
+  254 it is cut (the unit test needed cap 400), and (b) the sieve queue keys a job by `(path, line, kind, code tokens)`
+  with a whitespace-insensitive canonical text (`src/synth/sieve/queue.ts` `canonicalText`), so the `_after` form
+  (indent 16) and the `_after_dedent` form (indent 12) of the same statement at the same replace site are ONE job there
+  and the first enqueued (the higher-prior `_after`) is the one that runs. The RANK phase of step 5 did list
+  `        opstack.append(token)` (indent 8, inside the `for` body after the `if`/`else`) and Jev put 0.46 on it — the
+  right statement at yet another wrong level.
+- **reverse_linked_list: the gap did not exist.** The gold gap (before L6, indent 8, between two statements of the loop
+  body) is adjacent to no anchor of that run; WIDENED enumerates replace sites only, so 1,051 runs over 19 sites never
+  held an insertion at that position; `prevnode = node` appears nowhere in the run's decisions or steps.
+- **depth_first_search (found in the live re-check, §11.4): the anchors went to `node.py`.** The workspace ships `node.py`;
+  the localizer's function beam includes `Node.__init__` and the `Node.successor` property, and Q5 on those functions
+  answers with confidence (`return self.successor` at p 0.99, `def __init__` 0.87) although Q2 gave `node.py` 0.1 and
+  `depth_first_search` 0.93. §2.5 orders anchors by p alone, so the top-3 anchors and all six anchor gaps of the 6-cut were
+  `node.py`'s; the gap after `else:` (before L10 at indent 12) never entered SEEDS, and the guard committed the §1 overfit
+  (`unwrap_call` at L11, 6 plausibles, `genuine_fix` none_of_these 0.94).
+
+### 11.2 What changed
+
+1. **Legal gap indents from the structure** (`localize/sites.ts` `gapIndentsAfter`, `indentAfter`, `indentBefore`).
+   After a compound header: the body indent only. Otherwise every block open at that point — the statement's own indent
+   and each enclosing compound statement's indent down to the function body — minus what the NEXT statement forbids:
+   nothing shallower than it, nothing at or above a clause header (`else`/`elif`/`except`/`finally`), and never the same
+   indent after `return`/`raise`/`break`/`continue` (dead code). Order: the enclosing block first where a block ends (both
+   measured block-end insertions, `shunting_yard` and `wrap`, sit one level out), then the statement's own block, then the
+   further levels. `indentAfter` (the anchors' after-gap) now returns the first legal indent — `shunting_yard` L17 → 12,
+   `wrap` L8 → 4 — and `indentBefore` fixes the before-gap of a clause header (before `else:` → the `if` body's indent).
+2. **Gap slots at every statement boundary** (`functionGapSlots`; `search/sites.ts` `functionGapSites`, `orderGapSlots`,
+   `GAP_FUNCTION_MAX_LINES = 40`). One slot per physical line: the k-th legal indent of the gap after a statement goes to
+   the k-th physical line between it and the next statement (a blank line gives a block-end gap a second slot for a second
+   level); indents with no line of their own are dropped — with the queue's `(line, kind, tokens)` key two indentations of
+   one statement at one line would be one job anyway (the replace-site `_after` / `_before` forms cover the same-indent
+   and the next statement's own level). Slots are ranked by the Jev probability of the lines around the gap (Q5 / Q5n),
+   then by control-flow position (after a header, block end, mid-block), then by line. In `buildGoalSites` the top beam
+   function's slots follow the anchors' own gaps into the insert list (the 6-cut keeps the anchors' first, design §2.5
+   item 2 as written); in WIDENED (`widenedSites`) every slot of each beam function of ≤ 40 lines is interleaved in line
+   order with the replace sites (the gap before a line ahead of the line) — the controller's chunking and Q7 insert-first
+   rule apply unchanged. Measured slots: depth_first_search 7, reverse_linked_list 6, shunting_yard 14, wrap 9; the
+   template pools over all slots total 345 / 213 / 945 / 529 candidates. The gold slot is present for all four
+   (`10@12`, `6@8`, `18@12`, `9@4` — wrap's gold sits after the blank L9; before it is the same program).
+3. **Statement templates** (`templates/common.ts`, `statements.ts`): a `.pop()` receiver is a list unless the code treats
+   it as a set or dict; list / set / dict literals of any length type their name (`precedence = {` … `}` is a dict, so
+   `opstack.append(precedence)` ranks below `opstack.append(token)`: collection-typed elements take prior × 0.8, they stay
+   in the pool). The catalogue (`x.append(y)`, `x.add(y)`, `x.extend(y)`, `x = y`, `x = None`, `x, y = y, x`, `return x`,
+   `x += 1` / `-= 1`, `r.attr = …`, `else: return …`) was already complete for the four golds.
+4. **Q6 fallback** (`buildGoalSites`, `q6FallbackApplies`, `topStatementTemplates`; design §9 R1 "otherwise"). When the
+   goal's sites are rebuilt after a search that reached WIDENED without a plausible candidate (`goal.phase === 'WIDENED'`
+   on an unfixed goal — the `change_approach` directive clears the localisation cache), the top-5 statement templates of
+   the top function (by prior, the `statement` family enumerated over its slots) each get one Q6 `insert_after` Choice
+   (the measured wording, top-1 4/4 given the statement); the top-1 gap of each (plus others at p ≥ 0.2, ≤ 3) becomes an
+   insert site carrying the statement and Jev's p in its evidence, spliced in front of every other site, ordered by p
+   across statements, and `insertFirst` is set. Five requests, ≈ $0.0005.
+5. **Function-weighted anchors on repositories** (`functionWeight`, `q5Anchors`): on a workspace with more than one
+   Python file each beam function had its own line Choice, so a line's Q5 p is conditional on its function; anchors and
+   the replace order now use p × `FunctionCandidate.probability` (the localizer's file × function path score). The
+   single-file flat path asks one Choice over the whole file (p already joint): weight 1. `jevProbability` in the evidence
+   stays the raw Q5 value. Effect on depth_first_search: anchors `L11` 0.36, `L9` 0.10, `L7` 0.08 ahead of `node.py`
+   L4 0.014 / L8 0.002; the six anchor gaps are the target function's, the gold gap `10@12` among them.
+
+Tests (`test/unit/synth/localize/sites.test.ts`, `test/unit/synth/search/sites.test.ts`,
+`test/unit/synth/templates/{families,quixbugs}.test.ts`): `gapIndentsAfter` on a header / block end (`[12, 16, 8, 4]`
+after `shunting_yard`'s L17 shape, dedents `[1, 0, 2, 3]`) / before a clause / after a terminal statement; `indentAfter`
+after `return lo` one level out, after a trailing `return` the statement's own indent; `functionGapSlots` one slot per
+line, no dead slot, the docstring rule; for each of the four programs the gold gap is a slot with the gold indent and the
+template pool at that site holds the gold statement (`opstack.append(token)` at the gap after L17 inside the `else:`
+branch at indent 12, `prevnode = node` at the loop-body gap L6 at indent 8, `nodesvisited.add(node)` at L10 at 12,
+`lines.append(text)` at L9 at 4), pools < 120; `orderGapSlots` order; `topStatementTemplates` top-5 contains the gold
+for all four; WIDENED interleaving and the ≤ 40-line rule; the Q6 fallback (5 requests, the 0.83 placement first,
+`insertFirst`, the placements recorded, none on a fresh goal); `.pop` → list unless set/dict; weighted anchors on a
+depth_first_search + node.py fixture (unweighted `node.py:8` leads, weighted `depth_first_search.py:11`; the gap
+`10@12` in the cut, visiting order `11r 13i 11i 9r 10i 9i`). `test/unit/synth/search/subgoal.test.ts` (the controller's
+test of the WIDENED walk over the gcd fixture) pins `widenedSites`' output and was updated for the three gcd gap slots
+(`[5, 6, 2, 2, 3, 3, 4, 5]`, cursor 6, 12 batches, 13 tested, template 6). Gates: `tsc --noEmit` clean for the
+synthesizer (concurrent, unrelated edits in `src/synth/oracle/` fail typing at the time of writing), `no-any` ok, unit
+1,879/1,880 (the one failure is `test/unit/loop/risk.test.ts`, the loop module's concurrent change).
+
+### 11.3 What the queue's key costs, and what would unlock it
+
+`src/synth/sieve/queue.ts` dedupes on `(base, path:line:kind, canonical text)` and the canonical text is the code tokens
+joined by spaces — indentation is not part of it. Two candidates that differ only in indentation at one insert line (or
+the `_after` and `_after_dedent` forms at one replace line) are therefore one job, and the first enqueued runs. Item 2
+above works around this with one indent per physical line, so a block end whose dedent levels outnumber the lines up to
+the next statement loses the deeper levels at insert sites (`shunting_yard` after L17: levels 12 and 16 get L18 and L19;
+8 is reachable only as the replace-site `_after_dedent` form at L17, which the queue folds into `_after`; 4 as the
+`_before` form at L19). Keying the canonical text per physical line with its indent width (one line in `canonicalText`)
+would let every legal level run; outside this change's scope (`queue.ts` is not the synthesizer's site modules).
+
+### 11.4 Live re-checks
+
+Same flags as §1 with `--spend-cap 1`, `--concurrency 2`, generator calls 0 on every record. "sites" is the SEEDS site
+count of the committing search (`sitesConsidered`); gold-identical = the patch applied to the buggy program equals
+`bench/data/quixbugs/correct/` with blank lines ignored (§1's criterion; `/tmp/qb-insert-table.py`).
+
+**Run A** (items 1–4; `bench/results/jev-only-quixbugs-3-insert`): **repaired 4/4, gold-identical 2/4**, Jev $0.0135,
+wall total 324 s, 3,612 candidates run.
+
+| program | repaired | gold-identical | steps | sites | candidates enumerated / run | commit | winning site (source/op) | Q6 fallback | wall s | Jev $ | stop |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| shunting_yard | yes | **yes** | 4 | 10 | 997 / 967 | step 3 (SEEDS, SIEVE, 3 plausible) | `shunting_yard.py:18` gap at indent 12 (`mutation/statement_template`; the template source's `insert_append` is the same job) | – | 75 | 0.0021 | complete |
+| reverse_linked_list | yes | **yes** | 9 | 34 → 11 | 961 / 884 | step 7 (SEEDS, SIEVE, 1 plausible) | `reverse_linked_list.py:6` gap at indent 8 (`template/insert_assign`) | 5 requests at step 7 | 121 | 0.0069 | complete |
+| depth_first_search | yes | no | 4 | 12 | 1039 / 983 | step 3 (SEEDS, SIEVE, 6 plausible) | `depth_first_search.py:11` (`mutation/unwrap_call`, the §1 overfit) | – | 73 | 0.0019 | complete |
+| wrap | yes | no | 6 | 10 | 783 / 778 | step 4 (SEEDS, SIEVE, 1 plausible) | `wrap.py:7` gap (`donor/statement_donor`: a second wrapping loop, the §1 overfit) | – | 55 | 0.0026 | complete |
+
+Per program. `shunting_yard` — the anchor gap after L17 is now built at indent 12; SEEDS sieved 967 candidates over 10
+sites and found 3 plausibles at that gap, the gold among them and committed at step 3 (§8: parked after 2,448 runs).
+`reverse_linked_list` — step 4 SEEDS → WIDENED over 34 sites (the beam's `node.py` functions included, each with its
+lines and slots) ran out of the 90 s test wall at 841 runs before the `reverse_linked_list` slots were reached (run median
+230–870 ms under two concurrent tasks); step 6's `change_approach` rebuilt the sites with `goal.phase = WIDENED`, the Q6
+fallback asked five statements (Jev's top gap `after_l6` 0.48 / `after_l6` 0.38 / … with the escape at 0.24–0.59),
+insert sites went first, and SEEDS at step 7 sieved the loop-body gap L6 at indent 8 (a slot, in the widened beam of 10):
+`prevnode = node` plausible in 44 runs, committed, green baseline at step 8 (§1: rejected three times; §8 note: 0
+plausible in 1,166 WIDENED runs). `depth_first_search` — §11.1's `node.py` anchors; fixed by item 5, run B. `wrap` — Q5
+L7 0.67, L4 0.12, L3 0.07, Q5n L7 0.64, L4 0.34; the anchors' five gaps and the best slot (`6@12`, after the `if end ==
+-1:` header) fill the 6-cut, the gold slot `9@4` ranks seventh; the donor source at the gap before L7 (indent 8) inserts
+the whole `while` loop again, which passes all five tests, and a lone plausible is committed without arbitration — the
+design's measured `wrap` overfit (§1), for which §2.6's behaviour probe (`perturbedInputs`) is the remedy, not the sites.
+
+**Run B** (items 1–5, `depth_first_search` alone; `bench/results/jev-only-quixbugs-3-insert-dfs`): **repaired 1/1,
+gold-identical 1/1**, Jev $0.0018, wall 25 s. SEEDS over 12 sites (the target function's anchors L11, L9, L7 and their
+six gaps), 559 candidates run, the sixth batch (the gap before L10 at indent 12) gave 2 plausibles —
+`nodesvisited.add(node)` and `nodesvisited.add(startnode)` — Jev's `genuine_fix` 0.90 on the gold (`general_cand` Nouls
+0.40 / 0.07), committed at step 3, green baseline at step 4.
+
+**With the final code: repaired 4/4, gold-identical 3/4** (`shunting_yard`, `reverse_linked_list`, `depth_first_search`;
+`wrap` repaired by the overfit). Live spend for §11: $0.0135 + $0.0018 = **$0.0153** (generator $0 / 0 calls).
+
+### 11.5 What remains
+
+- `wrap`: a lone plausible commits at once; the overfit is a donor block at a gap the anchors rank above the gold slot.
+  The behaviour probe of §2.6 before a single-passer commit, or per-test coverage clustering (§6 item 3), is the lever.
+- WIDENED under load spends its step on the beam's other functions' lines and slots before the target function's slots
+  when the target's replace lines come first in the chunk order (reverse_linked_list step 4: 34 sites, 841 runs, wall
+  out). Weighting the beam order by function probability already puts the target first; capping the non-top functions'
+  slots, or the per-step wall, would let one step finish the top function.
+- The queue key (§11.3) — one line in `queue.ts` would let every legal dedent level run at insert sites.
+- `sitesConsidered` counts SEEDS plus every widened site; a per-kind count (replace / gap) in the trace would make the
+  gap coverage auditable per step.
+
+### 11.6 Exact commands
+
+```
+# gates
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/synth/templates test/unit/synth/search/sites.test.ts test/unit/synth/localize
+
+# run A (items 1–4) and run B (items 1–5, depth_first_search alone)
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs \
+  --task-id shunting_yard,reverse_linked_list,depth_first_search,wrap --conditions jev-only --live --spend-cap 1 \
+  --task-spend-cap 0.1 --concurrency 2 --max-steps 12 --max-wall 6m --out bench/results/jev-only-quixbugs-3-insert
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite quixbugs \
+  --task-id depth_first_search --conditions jev-only --live --spend-cap 1 --task-spend-cap 0.1 --concurrency 1 \
+  --max-steps 12 --max-wall 6m --out bench/results/jev-only-quixbugs-3-insert-dfs
+
+# the tables (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/{transcript.log,steps.jsonl,decisions.jsonl,model_patch.diff}; git apply for the gold check)
+python3 /tmp/qb-insert-table.py bench/results/jev-only-quixbugs-3-insert shunting_yard,reverse_linked_list,depth_first_search,wrap
+python3 /tmp/qb-insert-table.py bench/results/jev-only-quixbugs-3-insert-dfs depth_first_search
+```
+Run ids: run A `20260920-212633-dqk74stb` (shunting_yard), `20260920-212633-5yahrgk6` (reverse_linked_list),
+`20260920-212748-f23lksyv` (depth_first_search), `20260920-212834-qbmrammd` (wrap); run B `20260920-213544-v7jdp7tl`.

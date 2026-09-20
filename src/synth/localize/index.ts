@@ -39,8 +39,8 @@ export { OUTLINE_MAX, codeLines, entryAt, functionEntries, moduleCodeLines, modu
 export type { CodeLine } from './outline.js';
 export { FAILING_RUN_SUFFIX, FILE_CRITERIA, FUNCTION_QUESTION_ID, LINE_QUESTION, LINE_QUESTION_ID, MODULE_LEVEL_DESCRIPTION, confirmStage, failureViews, fileStage, functionStage, lineStage } from './questions.js';
 export type { FileStageRequest, FunctionOption, LineStageInput } from './questions.js';
-export { buildSites, indentAfter, sbflKey } from './sites.js';
-export type { Anchor, SiteBuildInput } from './sites.js';
+export { buildSites, functionGapSlots, gapIndentsAfter, indentAfter, indentBefore, sbflKey } from './sites.js';
+export type { Anchor, GapIndents, GapPosition, GapSlot, SiteBuildInput } from './sites.js';
 
 export interface Localizer {
   localize(ctx: LocalizeContext): Promise<LocalizeResult>;

@@ -146,3 +146,26 @@ describe('enumeration invariants', () => {
     expect(failures).toEqual([]);
   });
 });
+
+describe('statement insertion: receiver roles from usage', () => {
+  it('a name used with `.pop()` is a list unless the code treats it as a set or dict; `.append` on it is enumerated, `.add` is not', () => {
+    const file = sourceFromText('drain.py', 'def drain(q, x):\n    top = q.pop()\n    return top\n');
+    const texts = source.enumerate(insertSite(file, 3, 4), options()).map((c) => c.text.trim());
+    expect(texts).toContain('q.append(x)');
+    expect(texts).toContain('q.append(top)');
+    expect(texts.some((t) => t.startsWith('q.add('))).toBe(false);
+    const asSet = sourceFromText('drain_set.py', 'def drain(q, x):\n    q.add(x)\n    top = q.pop()\n    return top\n');
+    const setTexts = source.enumerate(insertSite(asSet, 4, 4), options()).map((c) => c.text.trim());
+    expect(setTexts).toContain('q.add(top)');
+    expect(setTexts.some((t) => t.startsWith('q.append('))).toBe(false);
+  });
+
+  it('shunting_yard: `opstack` is a list by `opstack = []` and `.pop()`; the loop variable outranks collection-typed elements', () => {
+    const file = sourceFile('shunting_yard.py', join(QUIXBUGS, 'shunting_yard.py'));
+    const stmts = source.enumerate(insertSite(file, 18, 12), options()).filter((c) => c.op === 'insert_append');
+    const texts = stmts.map((c) => c.text.trim());
+    expect(texts.slice(0, 2).sort()).toEqual(['opstack.append(token)', 'rpntokens.append(token)']);
+    expect(texts).toContain('opstack.append(precedence)');
+    expect(stmts.find((c) => c.text.trim() === 'opstack.append(token)')!.prior!).toBeGreaterThan(stmts.find((c) => c.text.trim() === 'opstack.append(precedence)')!.prior!);
+  });
+});

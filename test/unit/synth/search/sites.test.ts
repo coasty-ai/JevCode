@@ -10,6 +10,7 @@ import type { Question } from '../../../../src/core/types.js';
 import { LINE_QUESTION_ID, createLocalizer } from '../../../../src/synth/localize/index.js';
 import type { LocalizeResult } from '../../../../src/synth/types.js';
 import {
+  GAP_FUNCTION_MAX_LINES,
   GAP_QUESTION,
   GAP_QUESTION_ID,
   IMPORT_GAP_NOTE,
@@ -17,25 +18,34 @@ import {
   LINE_NOUL_CRITERIA,
   Q5N_SHORT_CIRCUIT_P,
   Q5_ESCAPE_INSERT_FIRST,
+  Q6_FALLBACK_STATEMENTS,
   REPLACE_SITES_MAX,
   buildGoalSites,
   captureLineChoiceEscape,
+  functionGapSites,
+  functionWeight,
   gapRequest,
   importGapSite,
   insertSitesFirst,
   isImportGap,
   lineNoulRequest,
   nextWidenChunk,
+  orderGapSlots,
   orderGoalSites,
   q5Anchors,
+  q6FallbackApplies,
   siteKey,
+  topStatementTemplates,
   traceTailGap,
   widenedSites,
 } from '../../../../src/synth/search/sites.js';
+import { functionGapSlots } from '../../../../src/synth/localize/sites.js';
+import { createTemplateSource } from '../../../../src/synth/templates/index.js';
+import { quixbugsProgram } from './helpers.js';
 import type { GoalSiteContext, SbflEvidence } from '../../../../src/synth/search/sites.js';
 import type { Goal } from '../../../../src/synth/search/types.js';
 import type { PerTestResult, RankedLine } from '../../../../src/synth/sbfl/types.js';
-import { ESCAPE_KEY, WRAP_FAILURE, answerAll, fixtureFile, goal, ladderTask, scriptedAsk, sf, signal, siteAt, stateObject } from './sites-composite.helpers.js';
+import { ESCAPE_KEY, WRAP_FAILURE, answerAll, enumerateOptions, fixtureFile, goal, ladderTask, scriptedAsk, sf, signal, siteAt, stateObject } from './sites-composite.helpers.js';
 import type { AskCall } from './sites-composite.helpers.js';
 
 const file = fixtureFile('twofn.py');
@@ -120,14 +130,20 @@ describe('replace sites: Q5 ∪ Q5n ∪ SBFL, unioned and ordered', () => {
     const { result } = await localizeWith(Q5);
     const { ctx } = ctxWith((call) => answerAll(call, (id) => Q5N[id] ?? 0.05, () => ({})));
     const g = await buildGoalSites(ctx, goal(), result, sbfl);
-    // anchors by Q5 p: L9, L8, L15 → after L9 = gap at 10, before L9 = gap at 9, after L8 = 9, before L8 = 8, after L15 = 16, before L15 = 15
+    // anchors by Q5 p: L9, L8, L15 → after L9 = gap at 10, before L9 = gap at 9, after L8 = 9, before L8 = 8, after L15 = 16, before L15 = 15;
+    // then wrap's remaining gap slots by neighbour probability and control flow: the gap after L6 (before L7, Q5n 0.55 on L7,
+    // the block end of `if end == -1:`) is the one the 6-cut keeps; the gaps before L9 / L8 are the anchors' already
     expect(g.insert.map((s) => [s.line, s.kind])).toEqual([
       [10, 'insert'],
       [9, 'insert'],
       [8, 'insert'],
       [16, 'insert'],
       [15, 'insert'],
+      [7, 'insert'],
     ]);
+    expect(g.insert[5]!.indent).toBe('        ');
+    expect(g.insert[5]!.evidence.notes).toEqual(['gap after L6 (block_end, dedent 1)', 'in wrap']);
+    expect(g.notes).toContain('8 gap slots of wrap');
     expect(g.insert.length).toBeLessThanOrEqual(INSERT_SITES_MAX);
     const after9 = g.insert[0]!;
     expect(after9.indent).toBe('    ');
@@ -138,7 +154,7 @@ describe('replace sites: Q5 ∪ Q5n ∪ SBFL, unioned and ordered', () => {
     expect(g.insertAnchors.get(siteKey(after9))).toBe(siteKey(g.replace[0]!));
     // visiting order: replace site, then its gaps; Jev-only lines without gaps; remaining gaps last
     expect(g.insertFirst).toBe(false);
-    expect(g.ordered.map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['9r', '10i', '9i', '7r', '15r', '16i', '15i', '8r', '8i', '2r', '4r']);
+    expect(g.ordered.map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['9r', '10i', '9i', '7r', '15r', '16i', '15i', '8r', '8i', '2r', '4r', '7i']);
   });
 
   it('insert sites come first when Q5 put ≥ 0.3 on none_of_these or Q7 puts ≥ 0.5 on insert_new_line', async () => {
@@ -211,8 +227,8 @@ describe('module-level import gap from goal.missingNames (ladder tagcloud: NameE
     expect(g.insert[0]).toBe(gaps[0]);
     expect(g.ordered[0]).toBe(gaps[0]);
     expect(g.notes).toContain('import gap src/tagcloud.py:8 for Counter');
-    // the anchor's own gaps still follow it
-    expect(g.ordered.map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['8i', '28r', '29i', '28i']);
+    // the anchor's own gaps still follow it; tag_counts' other two gap slots (after the def line, after the `for` header) come last
+    expect(g.ordered.map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['8i', '28r', '29i', '28i', '30i', '31i']);
     expect(g.insertAnchors.has(siteKey(gaps[0]!))).toBe(false);
     // the gap stays first whichever way Q7 later re-orders, and survives the insert cut
     expect(orderGoalSites(g, true)[0]).toBe(gaps[0]);
@@ -266,8 +282,9 @@ describe('Q6 gaps and the trace-tail gap', () => {
     expect(keys).toEqual(['before_l1', 'after_l1', 'after_l2', 'after_l3', 'after_l4', 'after_l5', 'after_l6', 'after_l7', 'after_l8', 'after_l9', ESCAPE_KEY]);
     expect((q as Extract<Question, { type: 'choice' }>).criteria['after_l8']).toBe('insert directly after L8: lines.append(line)');
 
-    // anchors' gaps: 9, 8, 4, 3, 16, 15; Q6: after L2 → 3 (dup), after L7 → 8 (dup), before L1 → 1 (new); trace tail: after L9 → 10 (new)
-    expect(lines(g.insert)).toEqual([9, 8, 4, 3, 16, 15, 1, 10]);
+    // anchors' gaps: 9, 8, 4, 3, 16, 15; Q6: after L2 → 3 (dup), after L7 → 8 (dup), before L1 → 1 (new); trace tail: after L9 → 10 (new);
+    // then wrap's gap slots not yet present, by neighbour probability (all 0.05 here) and control flow: after the def line (2) and after `if end == -1:` (6) fit the 10-cut
+    expect(lines(g.insert)).toEqual([9, 8, 4, 3, 16, 15, 1, 10, 2, 6]);
     const q6Site = g.insert.find((s) => s.line === 1)!;
     expect(q6Site.evidence.jevProbability).toBeCloseTo(0.1, 6);
     expect(q6Site.evidence.notes[0]).toMatch(/^q6 before_l1 p=0\.10 for `lines\.append\(text\)`/);
@@ -277,8 +294,8 @@ describe('Q6 gaps and the trace-tail gap', () => {
     const tail = g.insert.find((s) => s.line === 10)!;
     expect(tail.evidence.notes).toEqual(['after last executed line L9 of failing test wrap[1]', '1 statements of wrap never reached']);
     expect(tail.indent).toBe('    ');
-    // Q6 gaps and the tail gap have no anchor: they are visited after every anchored site
-    expect(g.ordered.slice(-2).map((s) => s.line)).toEqual([1, 10]);
+    // Q6 gaps, the tail gap and the slot gaps have no anchor: they are visited after every anchored site
+    expect(g.ordered.slice(-4).map((s) => s.line)).toEqual([1, 10, 2, 6]);
   });
 
   it('skips Q6 when the function has ≤ 6 gaps and reports why', async () => {
@@ -348,29 +365,255 @@ describe('question builders', () => {
 });
 
 describe('WIDENED: every code line of the beam functions, cursor-carried across steps', () => {
-  it('enumerates all code lines except def lines, in beam order, and hands out chunks', () => {
+  const tag = (s: { line: number; kind: string; indent: string }): string => `${s.line}${s.kind === 'insert' ? `i@${s.indent.length}` : 'r'}`;
+
+  it('enumerates all code lines except def lines plus every gap slot, in beam order and line order (the gap before a line ahead of the line), and hands out chunks', () => {
     const all = widenedSites([WRAP, GCD]);
-    expect(lines(all)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15]);
-    expect(all.every((s) => s.kind === 'replace' && s.evidence.notes[0]?.startsWith('widened over'))).toBe(true);
-    expect(all[8]!.evidence.notes).toEqual(['widened over gcd (beam #2)']);
+    // wrap: 8 code lines and 8 gap slots (none after the trailing `return lines`); gcd: 3 code lines and 3 slots
+    expect(all.map(tag)).toEqual(['2i@4', '2r', '3i@4', '3r', '4i@8', '4r', '5i@8', '5r', '6i@12', '6r', '7i@8', '7r', '8i@8', '8r', '9i@4', '9r', '13i@4', '13r', '14i@8', '14r', '15i@4', '15r']);
+    expect(all.every((s) => s.evidence.notes.some((n) => n.startsWith('widened over')))).toBe(true);
+    expect(all.filter((s) => s.kind === 'replace').map((s) => s.line)).toEqual([2, 3, 4, 5, 6, 7, 8, 9, 13, 14, 15]);
+    expect(all[17]!.evidence.notes).toEqual(['widened over gcd (beam #2)']);
+    expect(all[16]!.evidence.notes).toEqual(['gap after L12 (after_header)', 'in gcd', 'widened over gcd (beam #2)']);
     expect(all[0]!.block).toEqual({ name: 'wrap', startLine: 1, endLine: 9 });
-    // step 1 takes four, step 2 the next four, step 3 the last three and reports done
+    // the block-end slot after `lines.append(line)` (L8) sits one level out, where `lines.append(text)` belongs; after `return a` (L14, terminal) only the enclosing level is legal
+    expect(all.find((s) => s.line === 9 && s.kind === 'insert')!.indent).toBe('    ');
+    expect(all.find((s) => s.line === 15 && s.kind === 'insert')!.indent).toBe('    ');
+    // step 1 takes four, step 2 the next four, ... the last chunk reports done
     const c1 = nextWidenChunk(all, 0, 4);
-    expect(lines(c1.sites)).toEqual([2, 3, 4, 5]);
+    expect(c1.sites.map(tag)).toEqual(['2i@4', '2r', '3i@4', '3r']);
     expect(c1).toMatchObject({ cursor: 4, done: false });
     const c2 = nextWidenChunk(all, c1.cursor, 4);
-    expect(lines(c2.sites)).toEqual([6, 7, 8, 9]);
-    const c3 = nextWidenChunk(all, c2.cursor, 4);
-    expect(lines(c3.sites)).toEqual([13, 14, 15]);
-    expect(c3).toMatchObject({ cursor: 11, done: true });
-    expect(nextWidenChunk(all, c3.cursor, 4)).toEqual({ sites: [], cursor: 11, done: true });
+    expect(c2.sites.map(tag)).toEqual(['4i@8', '4r', '5i@8', '5r']);
+    const last = nextWidenChunk(all, 20, 4);
+    expect(last.sites.map(tag)).toEqual(['15i@4', '15r']);
+    expect(last).toMatchObject({ cursor: 22, done: true });
+    expect(nextWidenChunk(all, last.cursor, 4)).toEqual({ sites: [], cursor: 22, done: true });
     // a non-positive size takes everything that is left; an overshooting cursor is clamped
-    expect(nextWidenChunk(all, 8, 0).sites).toHaveLength(3);
-    expect(nextWidenChunk(all, 99, 4)).toEqual({ sites: [], cursor: 11, done: true });
+    expect(nextWidenChunk(all, 19, 0).sites).toHaveLength(3);
+    expect(nextWidenChunk(all, 99, 4)).toEqual({ sites: [], cursor: 22, done: true });
   });
 
-  it('excludes the lines the SEEDS phase already searched', () => {
-    const seeds = new Set([siteKey({ file, line: 9, kind: 'replace' }), siteKey({ file, line: 8, kind: 'replace' })]);
-    expect(lines(widenedSites([WRAP], seeds))).toEqual([2, 3, 4, 5, 6, 7]);
+  it('excludes the sites the SEEDS phase already searched, gaps included', () => {
+    const seeds = new Set([siteKey({ file, line: 9, kind: 'replace' }), siteKey({ file, line: 8, kind: 'replace' }), siteKey({ file, line: 9, kind: 'insert' })]);
+    expect(widenedSites([WRAP], seeds).map(tag)).toEqual(['2i@4', '2r', '3i@4', '3r', '4i@8', '4r', '5i@8', '5r', '6i@12', '6r', '7i@8', '7r', '8i@8']);
+  });
+
+  it('a function longer than GAP_FUNCTION_MAX_LINES gets its code lines only', () => {
+    const body = Array.from({ length: GAP_FUNCTION_MAX_LINES }, (_, i) => `    x = ${i}`).join('\n');
+    const long = sf('long.py', `def long(x):\n${body}\n    return x\n`);
+    const fn = { file: long, name: 'long', startLine: 1, endLine: GAP_FUNCTION_MAX_LINES + 2 };
+    expect(functionGapSites(fn)).toEqual([]);
+    expect(widenedSites([fn]).every((s) => s.kind === 'replace')).toBe(true);
+    const short = { ...fn, endLine: GAP_FUNCTION_MAX_LINES };
+    expect(functionGapSites(short).length).toBeGreaterThan(0);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Gap slots at every statement boundary: the four QuixBugs insertion bugs
+// ---------------------------------------------------------------------------------------
+
+describe('gap slots at every statement boundary (the four QuixBugs insertions)', () => {
+  const template = createTemplateSource();
+  const opts = enumerateOptions(new Map(), { cap: 254 });
+  const program = (name: string): { file: ReturnType<typeof sf>; fn: { file: ReturnType<typeof sf>; name: string; startLine: number; endLine: number } } => {
+    const file = sf(`${name}.py`, quixbugsProgram(name));
+    const b = file.mod.blocks.find((x) => x.kind === 'def')!;
+    return { file, fn: { file, name, startLine: b.startLine, endLine: b.endLine } };
+  };
+  /** the gold insertion of each program: the line the statement goes before and its indent (bench/data/quixbugs/correct) */
+  const GOLD: { name: string; line: number; indent: number; fix: string; position: string }[] = [
+    { name: 'depth_first_search', line: 10, indent: 12, fix: 'nodesvisited.add(node)', position: 'gap after L9 (after_header)' },
+    { name: 'reverse_linked_list', line: 6, indent: 8, fix: 'prevnode = node', position: 'gap after L5 (mid_block)' },
+    { name: 'shunting_yard', line: 18, indent: 12, fix: 'opstack.append(token)', position: 'gap after L17 (block_end, dedent 1)' },
+    // the gold puts `lines.append(text)` after the blank L9; before it (L9) is the same program
+    { name: 'wrap', line: 9, indent: 4, fix: 'lines.append(text)', position: 'gap after L8 (block_end, dedent 1)' },
+  ];
+
+  it.each(GOLD)('$name: the gold gap is a slot with the gold indent and its template pool holds the gold statement', ({ name, line, indent, fix, position }) => {
+    const { fn } = program(name);
+    const sites = functionGapSites(fn);
+    const gap = sites.find((s) => s.line === line)!;
+    expect(gap, `no gap before L${line} among ${sites.map((s) => `${s.line}@${s.indent.length}`).join(' ')}`).toBeDefined();
+    expect(gap.indent).toBe(' '.repeat(indent));
+    expect(gap.evidence.notes[0]).toBe(position);
+    const pool = template.enumerate(gap, opts);
+    const hit = pool.find((c) => c.text.trim() === fix);
+    expect(hit, `pool at L${line}@${indent}: ${pool.slice(0, 8).map((c) => c.text.trim()).join(' | ')}`).toBeDefined();
+    expect(hit!.text).toBe(' '.repeat(indent) + fix);
+    // one slot per physical line: the sieve queue keys a job by (line, kind, code tokens), so a second indent at the same line would be a duplicate there
+    expect(new Set(sites.map((s) => s.line)).size).toBe(sites.length);
+    expect(pool.length).toBeLessThan(120);
+  });
+
+  it('shunting_yard: `opstack.append(token)` is enumerated inside the `else:` branch after the inner `while` (one level out of the loop body), and the gap keeps the pool small', () => {
+    const { file, fn } = program('shunting_yard');
+    const slots = functionGapSlots(file, fn.startLine, fn.endLine);
+    // after L17 (the `while` body's only statement, indent 16): the `else:` body level 12 takes the line right after; the blank L18 gives the loop's own level a slot before L19
+    expect(slots.filter((g) => g.afterLine === 17).map((g) => [g.line, g.indent.length, g.dedent])).toEqual([[18, 12, 1], [19, 16, 0]]);
+    const gap = functionGapSites(fn).find((s) => s.line === 18)!;
+    const pool = template.enumerate(gap, opts).filter((c) => c.op.startsWith('insert_'));
+    const texts = pool.map((c) => c.text.trim());
+    expect(texts).toContain('opstack.append(token)');
+    // the loop variable outranks collection-typed elements (`opstack.append(precedence)`), which stay in the pool
+    expect(texts.indexOf('opstack.append(token)')).toBeLessThan(texts.indexOf('opstack.append(precedence)'));
+    expect(texts).toContain('opstack.append(precedence)');
+    // before `else:` (L15) only the `if` body's indent is legal: a statement at the clause's indent is a SyntaxError
+    expect(slots.find((g) => g.line === 15)!.indent).toBe('            ');
+  });
+
+  it('reverse_linked_list: `prevnode = node` is enumerated at the loop-body gap after `node.successor = prevnode`', () => {
+    const { fn } = program('reverse_linked_list');
+    const gap = functionGapSites(fn).find((s) => s.line === 6)!;
+    expect(gap.indent).toBe('        ');
+    expect(gap.scope.locals).toEqual(expect.arrayContaining(['prevnode', 'nextnode']));
+    const texts = template.enumerate(gap, opts).map((c) => c.text.trim());
+    expect(texts).toContain('prevnode = node');
+    // the gap after the loop (before `return prevnode`) is one level out
+    expect(functionGapSites(fn).find((s) => s.line === 7)!.indent).toBe('    ');
+  });
+
+  it('orderGapSlots: neighbour Jev probability first, then after-header > block-end > mid-block, then line', () => {
+    const { file, fn } = program('wrap');
+    const slots = functionGapSlots(file, fn.startLine, fn.endLine);
+    const p = new Map<number, number>([[8, 0.4], [10, 0.3], [3, 0.1]]);
+    const ordered = orderGapSlots(slots, (line) => p.get(line) ?? 0);
+    // the three slots touching L8 (0.4): the two block-end slots after L8 (before L9 at 4, before L10 at 8) ahead of the mid-block slot before L8;
+    // then the slots touching L3 (0.1): after L3 (header) ahead of after L2 (mid); then the zero group by tier, then line
+    expect(ordered.slice(0, 5).map((g) => `${g.line}@${g.indent.length}`)).toEqual(['9@4', '10@8', '8@8', '4@8', '3@4']);
+    const zero = ordered.slice(5);
+    expect(zero.map((g) => `${g.line}:${g.position}`)).toEqual(['2:after_header', '6:after_header', '7:block_end', '5:mid_block']);
+  });
+
+  it('topStatementTemplates: the top-5 statements of a function by prior include the gold insertions', () => {
+    for (const { name, fix } of GOLD) {
+      const { file, fn } = program(name);
+      const slots = functionGapSlots(file, fn.startLine, fn.endLine);
+      const top = topStatementTemplates(file, fn, slots, new Map(), 12);
+      expect(top.length).toBeLessThanOrEqual(12);
+      expect(top.map((t) => t.text), name).toContain(fix);
+      for (let k = 1; k < top.length; k++) expect(top[k - 1]!.prior).toBeGreaterThanOrEqual(top[k]!.prior);
+    }
+    const sy = program('shunting_yard');
+    expect(topStatementTemplates(sy.file, sy.fn, functionGapSlots(sy.file, sy.fn.startLine, sy.fn.endLine), new Map()).map((t) => t.text)).toContain('opstack.append(token)');
+  });
+});
+
+describe('Q6 fallback once a search reached WIDENED with nothing plausible', () => {
+  const file = sf('shunting_yard.py', quixbugsProgram('shunting_yard'));
+  const files = new Map([[file.path, file]]);
+  const TEST = 'tests/test_shunting_yard.py::test_shunting_yard[2]';
+  const failure = { testId: TEST, call: 'shunting_yard([10, "-", 5, "-", 2])', expected: '[10, 5, "-", 2, "-"]', actual: '[10, 5, 2]' };
+  const anchor = { ...siteAt(file, 16), evidence: { jevProbability: 0.5, notes: ['q5 top-1'] } };
+  const localized: LocalizeResult = { files: [{ path: file.path, probability: 1 }], functions: [{ file, name: 'shunting_yard', startLine: 2, endLine: 22, probability: 0.9 }], sites: [anchor], requests: 0 };
+  const syGoal = (over: Partial<Goal> = {}): Goal => goal({ tests: [TEST], failures: [failure], suspectedFiles: [file.path], ...over });
+
+  it('applies to an open goal whose last phase was WIDENED, never to a fresh or fixed one', () => {
+    expect(q6FallbackApplies(syGoal({ phase: 'WIDENED' }))).toBe(true);
+    expect(q6FallbackApplies(syGoal({ phase: 'WIDENED', status: 'parked' }))).toBe(true);
+    expect(q6FallbackApplies(syGoal({ phase: 'SEEDS' }))).toBe(false);
+    expect(q6FallbackApplies(syGoal({ phase: 'WIDENED', status: 'fixed' }))).toBe(false);
+  });
+
+  it('asks one Q6 per top statement template, puts the chosen gaps first (insert sites first) and records the placements', async () => {
+    const asked: string[] = [];
+    const { ask, calls } = scriptedAsk((call) => {
+      const st = stateObject(call);
+      if (GAP_QUESTION_ID in call.questions) asked.push(String(st['missing_statement']));
+      return answerAll(
+        call,
+        () => 0.05,
+        (id) => (id === GAP_QUESTION_ID ? (st['missing_statement'] === 'opstack.append(token)' ? { after_l17: 0.83, after_l16: 0.1 } : { after_l11: 0.6, after_l2: 0.25 }) : {}),
+      );
+    });
+    const ctx: GoalSiteContext = { ask, task: 'Fix shunting_yard so the tests pass', signal: signal(), files };
+    const g = await buildGoalSites(ctx, syGoal({ phase: 'WIDENED' }), localized);
+    // one Q5n request (single file) + one Q6 per statement
+    expect(calls.filter((c) => GAP_QUESTION_ID in c.questions)).toHaveLength(Q6_FALLBACK_STATEMENTS);
+    expect(g.requests).toBe(1 + Q6_FALLBACK_STATEMENTS);
+    expect(asked).toContain('opstack.append(token)');
+    // the measured Q6 wording over every code line of the function
+    const q6 = calls.find((c) => GAP_QUESTION_ID in c.questions)!;
+    expect(q6.questions[GAP_QUESTION_ID]!.instructions).toBe(GAP_QUESTION);
+    expect(Object.keys((q6.questions[GAP_QUESTION_ID] as Extract<Question, { type: 'choice' }>).criteria)).toContain('after_l17');
+    // Jev's placement for the gold statement: after L17 → the slot before L18 at the `else:` body level, first of every site
+    const first = g.insert[0]!;
+    expect(first).toMatchObject({ line: 18, kind: 'insert', indent: '            ' });
+    expect(first.evidence.jevProbability).toBeCloseTo(0.83, 6);
+    expect(first.evidence.notes[0]).toBe('q6 fallback after_l17 p=0.83 for `opstack.append(token)`');
+    expect(g.insertFirst).toBe(true);
+    expect(g.ordered[0]).toBe(first);
+    expect(g.ordered.slice(0, g.insert.length).every((s) => s.kind === 'insert')).toBe(true);
+    expect(g.q6Fallback.get('opstack.append(token)')).toEqual(['after_l17']); // 0.1 on after_l16 is below the 0.2 keep threshold
+    // the other statements' placements (after L11 0.6, after L2 0.25) are kept in Jev order after the gold's; their sites carry the statements
+    const l12 = g.insert.find((s) => s.line === 12)!;
+    expect(l12.evidence.jevProbability).toBeCloseTo(0.6, 6);
+    expect(l12.evidence.notes.filter((n) => n.startsWith('q6 fallback after_l11')).length).toBeGreaterThanOrEqual(1);
+    expect(g.notes.some((n) => n.startsWith('q6 fallback `opstack.append(token)` → after_l17 p=0.83'))).toBe(true);
+    // the template pool at the chosen gap holds the statement Jev placed
+    expect(createTemplateSource().enumerate(first, enumerateOptions(new Map())).some((c) => c.text === '            opstack.append(token)')).toBe(true);
+  });
+
+  it('does not run on a fresh goal: no Q6 request, the anchors and slots stand as usual', async () => {
+    const { ask, calls } = scriptedAsk((call) => answerAll(call, () => 0.05, () => ({})));
+    const g = await buildGoalSites({ ask, task: 'fix', signal: signal(), files }, syGoal(), localized);
+    expect(calls.filter((c) => GAP_QUESTION_ID in c.questions)).toHaveLength(0);
+    expect(g.q6Fallback.size).toBe(0);
+    expect(g.insertFirst).toBe(false);
+    expect(g.notes).toContain('14 gap slots of shunting_yard');
+  });
+});
+
+describe('repository path: anchors ordered by p × the beam function probability (depth_first_search + node.py)', () => {
+  const dfs = sf('depth_first_search.py', quixbugsProgram('depth_first_search'));
+  const node = sf(
+    'node.py',
+    ['class Node:', '    def __init__(self, value=None, successor=None, successors=[]):', '        self.value = value', '        self.successor = successor', '        self.successors = successors', '', '    def successor(self):', '        return self.successor', ''].join('\n'),
+  );
+  const files = new Map([[dfs.path, dfs], [node.path, node]]);
+  const TEST = 'tests/depth_first_search_test.py::test5';
+  const failure = { testId: TEST, call: 'depth_first_search(station1, station6)', expected: 'False', actual: 'RecursionError: maximum recursion depth exceeded' };
+  // the live run of 2026-09-20: Q2 depth_first_search.py 0.93 × 1.0, node.py 0.1 × {__init__ 0.16, successor 0.02}; Q5 per function
+  const withP = (file: ReturnType<typeof sf>, line: number, p: number): ReturnType<typeof siteAt> => ({ ...siteAt(file, line), evidence: { jevProbability: p, notes: [] } });
+  const localized: LocalizeResult = {
+    files: [{ path: dfs.path, probability: 0.93 }, { path: node.path, probability: 0.1 }],
+    functions: [
+      { file: dfs, name: 'depth_first_search', startLine: 1, endLine: 14, probability: 0.93 },
+      { file: node, name: 'Node.__init__', startLine: 2, endLine: 5, probability: 0.016 },
+      { file: node, name: 'Node.successor', startLine: 7, endLine: 8, probability: 0.002 },
+    ],
+    // (the live run put 0.87 on `def __init__`, a def line q5Anchors never keeps; L4 stands in for it)
+    sites: [withP(dfs, 11, 0.39), withP(dfs, 9, 0.11), withP(dfs, 7, 0.09), withP(node, 4, 0.87), withP(node, 8, 0.99)],
+    requests: 0,
+  };
+
+  it('functionWeight reads the function holding the line; 1 outside every beam function and on the single-file path', () => {
+    const w = functionWeight(localized, false);
+    expect(w({ file: dfs, line: 11 })).toBeCloseTo(0.93, 6);
+    expect(w({ file: node, line: 8 })).toBeCloseTo(0.002, 6);
+    expect(w({ file: node, line: 1 })).toBe(1);
+    expect(functionWeight(localized, true)({ file: node, line: 8 })).toBe(1);
+  });
+
+  it('q5Anchors: unweighted, node.py’s confident lines lead; weighted, the target function’s anchors do', () => {
+    expect(q5Anchors(localized).map((a) => `${a.file.path}:${a.line}`)).toEqual(['node.py:8', 'node.py:4', 'depth_first_search.py:11', 'depth_first_search.py:9', 'depth_first_search.py:7']);
+    const weighted = q5Anchors(localized, 3, 0.05, functionWeight(localized, false));
+    expect(weighted.map((a) => `${a.file.path}:${a.line}`)).toEqual(['depth_first_search.py:11', 'depth_first_search.py:9', 'depth_first_search.py:7', 'node.py:4', 'node.py:8']);
+    // the evidence keeps the raw Q5 probability
+    expect(weighted[0]!.evidence.jevProbability).toBeCloseTo(0.39, 6);
+  });
+
+  it('buildGoalSites: the top-3 anchor gaps are the target function’s, so the gap after `else:` (L10 at the body indent) is in the SEEDS cut', async () => {
+    const { ask, calls } = scriptedAsk((call) => answerAll(call, () => 0.05, () => ({})));
+    const g = await buildGoalSites({ ask, task: 'fix depth_first_search', signal: signal(), files }, goal({ tests: [TEST], failures: [failure], suspectedFiles: [dfs.path] }), localized);
+    expect(calls).toHaveLength(0); // two files: no Q5n, no Q6
+    expect(g.replace.map((s) => `${s.file.path}:${s.line}`)).toEqual(['depth_first_search.py:11', 'depth_first_search.py:9', 'depth_first_search.py:7', 'node.py:4', 'node.py:8']);
+    // gaps after and before L11 (the `return any(` statement spans 10–12: after → 13, before → 11), L9 (`else:` → 10 at 12; before → 9), L7 (`elif` → 8; before → 7)
+    expect(g.insert.map((s) => `${s.file.path}:${s.line}@${s.indent.length}`)).toEqual(['depth_first_search.py:13@8', 'depth_first_search.py:11@16', 'depth_first_search.py:10@12', 'depth_first_search.py:9@12', 'depth_first_search.py:8@12', 'depth_first_search.py:7@12']);
+    const gold = g.insert.find((s) => s.line === 10)!;
+    expect(createTemplateSource().enumerate(gold, enumerateOptions(files)).some((c) => c.text === '            nodesvisited.add(node)')).toBe(true);
+    // visiting order: each anchor's replace site, then its gaps; node.py's anchors last
+    expect(g.ordered.slice(0, 6).map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['11r', '13i', '11i', '9r', '10i', '9i']);
   });
 });

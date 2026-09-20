@@ -34,8 +34,11 @@ export function statementInsertDrafts(ctx: TemplateContext): Draft[] {
     out.push(...statementDrafts(ctx, stmt, op, base * p * localityFactor(ctx, ...slots)));
   };
 
-  for (const s of n.sets) for (const x of values) if (x !== s && (near(x) || n.params.includes(x))) emit(`${s}.add(${x})`, 'insert_add', 1, s, x);
-  for (const l of n.lists) for (const x of values) if (x !== l && (near(x) || n.params.includes(x))) emit(`${l}.append(${x})`, 'insert_append', 1, l, x);
+  // the element added to a set or list is usually a scalar (the loop variable, a parameter, a node): a
+  // collection-typed value (`opstack.append(precedence)`) stays in the pool at a lower prior
+  const elementFactor = (x: string): number => (n.lists.includes(x) || n.sets.includes(x) || n.dicts.includes(x) ? 0.8 : 1);
+  for (const s of n.sets) for (const x of values) if (x !== s && (near(x) || n.params.includes(x))) emit(`${s}.add(${x})`, 'insert_add', elementFactor(x), s, x);
+  for (const l of n.lists) for (const x of values) if (x !== l && (near(x) || n.params.includes(x))) emit(`${l}.append(${x})`, 'insert_append', elementFactor(x), l, x);
   for (const l of n.lists) for (const x of values) if (x !== l && near(l, x) && n.collections.includes(x)) emit(`${l}.extend(${x})`, 'insert_extend', 0.6, l, x);
 
   const locals = ctx.site.scope.locals.filter((x) => values.includes(x));

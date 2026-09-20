@@ -176,19 +176,21 @@ describe('searchSubGoal: SIEVE dispatch and the phase order on a fast oracle', (
     // SKETCH at both (top-3) sites, then BEAM at both (top-2) sites once SKETCH ran there and ≥ 35 requests remain
     expect(deps.rec.sketchCalls).toEqual([5, 6]);
     expect(deps.rec.beamCalls).toEqual([5, 6]);
-    // WIDENED: the other code lines of gcd (2, 3, 4), never the def line, never the SEEDS site
+    // WIDENED: the other code lines of gcd (2, 3, 4) and its gap slots (before L2 after the def, before L3 after `if b == 0:`,
+    // before L5 after `else:`; nothing after the two `return`s), gap before line ahead of the line; never the def line, never the SEEDS sites
     const widened = deps.rec.enumerations.filter((e) => e.source === 'mutation').map((e) => e.line);
-    expect(widened).toEqual([5, 6, 2, 3, 4]);
+    expect(widened).toEqual([5, 6, 2, 2, 3, 3, 4, 5]);
+    expect(deps.rec.enumerations.filter((e) => e.source === 'mutation').slice(2).map((e) => e.kind)).toEqual(['insert', 'replace', 'insert', 'replace', 'replace', 'insert']);
     expect(goal.phase).toBe('WIDENED');
-    expect(mem.widenCursor.get(goal.id)).toBe(3);
-    // every batch ran everything queued: 2 mutants, 1 template, 2 sketch lines, 2 beam lines, one widened mutant per new line (the `//` variant of a line without `%` is the unchanged line and is dropped)
-    expect(deps.rec.runBatches.map((b) => b.length)).toEqual([2, 1, 1, 1, 1, 1, 1, 1, 1]);
-    expect(r.trace.candidatesTested).toBe(10);
-    expect(r.trace.candidatesEnumerated).toBe(10);
+    expect(mem.widenCursor.get(goal.id)).toBe(6);
+    // every batch ran everything queued: 2 mutants, 1 template, 2 sketch lines, 2 beam lines, then per widened site one template statement at a gap or one mutant on a line (the `//` variant of a line without `%` is the unchanged line and is dropped)
+    expect(deps.rec.runBatches.map((b) => b.length)).toEqual([2, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1]);
+    expect(r.trace.candidatesTested).toBe(13);
+    expect(r.trace.candidatesEnumerated).toBe(13);
     expect(r.trace.jevRequests).toBe(2 + 3 + 3 + 10 + 10);
     expect(r.trace.bySource.mutation).toEqual({ enumerated: 5, tested: 5, passed: 0 });
-    expect(r.trace.bySource.template).toEqual({ enumerated: 3, tested: 3, passed: 0 });
-    expect(r.trace.sitesConsidered).toBe(2 + 3);
+    expect(r.trace.bySource.template).toEqual({ enumerated: 6, tested: 6, passed: 0 });
+    expect(r.trace.sitesConsidered).toBe(2 + 6);
     // exhausted bookkeeping: the seed sources and composite at both sites, token_beam under the SKETCH key and the BEAM key
     expect([...(goal.exhausted.get(siteKey(replace)) ?? [])].sort()).toEqual(['composite', 'donor', 'mutation', 'template', 'token_beam']);
     expect(goal.exhausted.get(exhaustedKey(replace, 'SKETCH'))?.has('token_beam')).toBe(true);

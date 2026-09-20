@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { LINE_QUESTION_ID, buildSites, createLocalizer, functionEntries, indentAfter, sbflKey } from '../../../../src/synth/localize/index.js';
+import { LINE_QUESTION_ID, buildSites, createLocalizer, functionEntries, functionGapSlots, gapIndentsAfter, indentAfter, indentBefore, sbflKey } from '../../../../src/synth/localize/index.js';
 import type { Anchor } from '../../../../src/synth/localize/index.js';
 import type { RankedLine } from '../../../../src/synth/sbfl/types.js';
 import { GEOMETRY_FAILURE, GEOMETRY_TRACEBACK, answerAll, fixture, scriptedAsk, sf, signal, twoFileWorkspace } from './helpers.js';
@@ -44,11 +44,59 @@ describe('site windows', () => {
     expect(sites[5]!.indent).toBe('    ');
   });
 
-  it('indents an insert after a compound header one level deeper', () => {
+  it('indents an insert after a compound header one level deeper, and after a block-closing `return` one level out', () => {
     const utils = sf('pkg/utils.py', fixture('pkg/utils.py'));
     expect(indentAfter(utils, 5)).toBe('        '); // after `    if v < lo:`
-    expect(indentAfter(utils, 6)).toBe('        '); // after `        return lo`
+    // after `        return lo` the same indent is dead code; the next statement (`if v > hi:`) sits at the enclosing level
+    expect(indentAfter(utils, 6)).toBe('    ');
     expect(indentAfter(utils, 4)).toBe('    '); // after `def clamp(v, lo, hi):`
+    expect(indentAfter(utils, 9)).toBe('    '); // after the trailing `return v`: nothing legal, the statement's own indent stands
+  });
+
+  describe('legal gap indents (gapIndentsAfter) and the function slots', () => {
+    const utils = sf('pkg/utils.py', fixture('pkg/utils.py'));
+    const sy = sf(
+      'sy.py',
+      ['def f(tokens):', '    rpn = []', '    ops = []', '    for token in tokens:', '        if isinstance(token, int):', '            rpn.append(token)', '        else:', '            while ops:', '                rpn.append(ops.pop())', '', '    while ops:', '        rpn.append(ops.pop())', '', '    return rpn', ''].join('\n'),
+    );
+
+    it('after a header: the body indent only', () => {
+      expect(gapIndentsAfter(utils, 5)).toMatchObject({ indents: ['        '], position: 'after_header', dedents: [0], endLine: 5, nextLine: 6 });
+      expect(gapIndentsAfter(sy, 7)).toMatchObject({ indents: ['            '], position: 'after_header' }); // after `else:`
+      // a header with no body inside the span still gets one unit deeper
+      const stub = sf('s.py', 'def f(x):\n    if x:\n        pass\n');
+      expect(gapIndentsAfter(stub, 2, 2).indents).toEqual(['        ']);
+    });
+
+    it("at a block end: the enclosing level first, then the statement's own block, then the further levels the next statement allows", () => {
+      // `rpn.append(ops.pop())` (L9, indent 16) closes the inner while (12), the else (8) and the for (4); the next statement `while ops:` is at 4
+      expect(gapIndentsAfter(sy, 9)).toMatchObject({ indents: ['            ', '                ', '        ', '    '], dedents: [1, 0, 2, 3], position: 'block_end', endLine: 9, nextLine: 11 });
+      // the last statement of the function: only its own indent and the function body level, no dedent below the body
+      expect(gapIndentsAfter(sy, 12)).toMatchObject({ indents: ['    ', '        '], dedents: [1, 0], nextLine: 14 });
+    });
+
+    it('before a clause header nothing at or above the clause indent is legal; after a terminal statement the same indent is dead', () => {
+      // after `rpn.append(token)` (L6) comes `else:` (L7, indent 8): only the if body's 12 is legal
+      expect(gapIndentsAfter(sy, 6)).toMatchObject({ indents: ['            '], dedents: [0] });
+      expect(indentBefore(sy, 7)).toBe('            ');
+      expect(indentBefore(sy, 11)).toBe('    '); // before a plain statement: its own indent
+      // `return lo` (utils L6): dead at 8, legal at the enclosing 4 (the next `if` is not a clause)
+      expect(gapIndentsAfter(utils, 6)).toMatchObject({ indents: ['    '], dedents: [1], position: 'block_end' });
+      // the trailing `return v`: nothing legal
+      expect(gapIndentsAfter(utils, 9).indents).toEqual([]);
+    });
+
+    it('functionGapSlots: one slot per physical line, the k-th legal indent on the k-th line between two statements, no dead slots', () => {
+      expect(functionGapSlots(utils, 4, 9).map((g) => `${g.line}@${g.indent.length}:${g.afterLine}:${g.position}${g.dedent ? `-${g.dedent}` : ''}`)).toEqual(['5@4:4:after_header', '6@8:5:after_header', '7@4:6:block_end-1', '8@8:7:after_header', '9@4:8:block_end-1']);
+      const slots = functionGapSlots(sy, 1, 14);
+      // after L9: the blank L10 lets the loop's own level keep a slot before L11 (the 8 and 4 levels have no line of their own: replace-site forms cover them)
+      expect(slots.filter((g) => g.afterLine === 9).map((g) => [g.line, g.indent.length, g.dedent])).toEqual([[10, 12, 1], [11, 16, 0]]);
+      expect(slots.map((g) => g.line)).toEqual([...new Set(slots.map((g) => g.line))]);
+      // the def line's slot is the first body line; a docstring right after the header takes it over
+      const doc = sf('d.py', 'def f(x):\n    """doc."""\n    return x\n');
+      expect(functionGapSlots(doc, 1, 3).map((g) => [g.line, g.afterLine])).toEqual([[3, 2]]);
+      expect(functionGapSlots(utils, 12, 13).map((g) => [g.line, g.indent.length])).toEqual([[13, 4]]);
+    });
   });
 
   it('places the insert-after gap after the whole multi-line statement', () => {

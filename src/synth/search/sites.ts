@@ -4,10 +4,11 @@
  *   replace sites = Q5 top-3 lines per beam function (p ≥ 0.05)
  *                 ∪ Q5n Noul top-3 (single-file workspaces, one request asked here)
  *                 ∪ SBFL top-5 (single file) / top-3 (repository)
- *     unioned, never score-combined; `def` lines never; ordered Jev evidence by p first, then
- *     SBFL-only lines by Ochiai rank (Ochiai is top-1 on 7/38 but top-5 on 34/38,
- *     experiments/results/lit-search-based-repair.md §6; the union of two top-3 lists covered
- *     38/40, probe-localization.md §8.2).
+ *     unioned, never score-combined with SBFL; `def` lines never; ordered Jev evidence by p
+ *     first — on repositories p × the beam function's probability, since each function had its
+ *     own line Choice (`functionWeight`) — then SBFL-only lines by Ochiai rank (Ochiai is top-1
+ *     on 7/38 but top-5 on 34/38, experiments/results/lit-search-based-repair.md §6; the union of
+ *     two top-3 lists covered 38/40, probe-localization.md §8.2).
  *   insert sites  = the gap after AND before each of the top-3 Jev anchors (both neighbours of
  *     the four QuixBugs insertion points sit at D ranks 2–5, probe-localization.md §3.4)
  *                 + Q6 `insert_after` top-3 gaps when a template statement is known (4/4 given
@@ -19,12 +20,26 @@
  *     missing (`goal.missingNames`, a NameError / ImportError read by goals.ts): the traceback
  *     points inside the function that used the name, the fix goes at the top of the module
  *     (ladder `tagcloud`). Visited first: it holds a handful of import candidates at most.
+ *                 + every remaining statement boundary of the top beam function when it is
+ *     ≤ 40 lines (`functionGapSlots`: one legal (line, indent) slot per physical line, the
+ *     enclosing block's level first where a block ends), ordered by the Jev probability of the
+ *     neighbouring lines and by control-flow position (after a header, block end, mid-block).
+ *     The measured misses were gaps that existed at the wrong indent (`shunting_yard`'s gap after
+ *     L17 was built inside the `while` body; the fix sits one level out) or not at all
+ *     (`reverse_linked_list`'s loop-body gap, not adjacent to any anchor).
  *   cut at 6 + 6; insert sites are visited after the replace site of the same anchor, or first
  *   when Q5 put ≥ 0.3 on `none_of_these` or Q7 puts ≥ 0.5 on `insert_new_line`.
  *
+ * Q6 fallback (design §9 R1 "otherwise"): when the goal's sites are rebuilt after its search
+ * reached WIDENED without a plausible candidate (`goal.phase === 'WIDENED'`), the top-5 statement
+ * templates of the function (by prior, over its gaps) each get one Q6 `insert_after` Choice —
+ * measured top-1 4/4 given the statement (probe-donor-and-templates.md §4) — and the chosen gaps
+ * go first, insert sites first.
+ *
  * WIDENED (§2.3 phase W): every code line of the beam functions as replace sites, `def` lines
- * excluded, handed out in chunks with a cursor the caller carries across steps in
- * `mem.widenCursor` (median 23.8 s, max 119 s per QuixBugs program at 12-way,
+ * excluded, plus every gap slot of the functions of ≤ 40 lines, interleaved in line order (the
+ * gap before a line precedes the line), handed out in chunks with a cursor the caller carries
+ * across steps in `mem.widenCursor` (median 23.8 s, max 119 s per QuixBugs program at 12-way,
  * contrarian-exhaustive.all.jsonl, so one step rarely runs it all).
  *
  * Every Jev question here goes through the caller's `ask` (the engine's `ctx.ask`) with the
@@ -39,15 +54,16 @@ import { lineKey } from '../localize/keys.js';
 import { codeLines, entryAt, functionEntries } from '../localize/outline.js';
 import type { CodeLine } from '../localize/outline.js';
 import { FAILING_RUN_SUFFIX, LINE_QUESTION_ID } from '../localize/questions.js';
-import { buildSites, indentAfter, isDefLine, sbflAnchorsFor, sbflKey } from '../localize/sites.js';
-import type { Anchor } from '../localize/sites.js';
+import { buildSites, functionGapSlots, indentAfter, indentBefore, isDefLine, sbflAnchorsFor, sbflKey } from '../localize/sites.js';
+import type { Anchor, GapSlot } from '../localize/sites.js';
 import type { FunctionEntry } from '../localize/types.js';
 import { indentOf } from '../py/edits.js';
 import { scopeAt, statementAt } from '../py/structure.js';
 import type { PerTestResult, RankedLine } from '../sbfl/types.js';
 import { isFailing } from '../sbfl/ochiai.js';
 import { importInsertLine, unboundNames } from '../templates/imports.js';
-import type { FailureView, FunctionCandidate, JevAsk, LocalizeResult, Site, SiteEvidence, SourceFile } from '../types.js';
+import { enumerateTemplates } from '../templates/index.js';
+import type { EnumerateOptions, FailureView, FunctionCandidate, JevAsk, LocalizeResult, Site, SiteEvidence, SourceFile } from '../types.js';
 import type { Goal } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -77,6 +93,16 @@ export const Q6_MIN_GAPS = 6;
 export const Q6_MAX_STATEMENTS = 2;
 /** Tests shown in the Q5n / Q6 state (variant D used three). */
 export const TESTS_IN_STATE = 3;
+/** Every statement boundary of a function becomes a gap site while the function is this long or shorter (QuixBugs programs are ≤ 30 lines; a 40-line function has ≤ ~40 slots of ≤ ~80 statements each). */
+export const GAP_FUNCTION_MAX_LINES = 40;
+/** Q6 fallback: statement templates asked about (one request each) once a search reached WIDENED with nothing plausible. */
+export const Q6_FALLBACK_STATEMENTS = 5;
+/** Q6 fallback: a gap other than the top-1 is kept when Jev put at least this much on it (the two defensible neighbours of `reverse_linked_list` sat at 0.43 / ~0.3). */
+export const Q6_FALLBACK_MIN_P = 0.2;
+/** Q6 fallback needs a function with at least this many gap slots to be worth a Choice. */
+export const Q6_FALLBACK_MIN_GAPS = 3;
+/** Q6 fallback is asked over functions of at most this many code lines (options = one per line + the escape). */
+export const Q6_FALLBACK_MAX_LINES = 60;
 
 // ---------------------------------------------------------------------------------------
 // Inputs and outputs
@@ -126,8 +152,20 @@ export interface GoalSites {
   insertAnchors: ReadonlyMap<string, string>;
   /** `path:line` -> Q5n probability */
   lineNouls: ReadonlyMap<string, number>;
+  /** the Q6 fallback's placements when it ran: statement → gap keys Jev chose (see `q6FallbackApplies`) */
+  q6Fallback: ReadonlyMap<string, string[]>;
   requests: number;
   notes: string[];
+}
+
+/**
+ * The Q6 fallback runs when the goal's sites are rebuilt after a search that reached WIDENED and
+ * found nothing plausible: `goal.phase` is the last phase visited, and a goal whose search
+ * committed is fixed (or held) rather than re-localised. A `change_approach` directive rebuilds
+ * the sites (`mem.localizeCache.delete`), which is when this is read.
+ */
+export function q6FallbackApplies(goal: Pick<Goal, 'phase' | 'status'>): boolean {
+  return goal.phase === 'WIDENED' && goal.status !== 'fixed';
 }
 
 export function siteKey(s: Pick<Site, 'file' | 'line' | 'kind'>): string {
@@ -293,9 +331,40 @@ export function insertAfterSite(file: SourceFile, line: number, evidence: SiteEv
  * enclosing the position, i.e. the line above: a gap before a `def` line lies outside that def.
  */
 export function insertBeforeSite(file: SourceFile, line: number, evidence: SiteEvidence): Site {
-  const text = file.mod.lines[line - 1] ?? '';
   const above = line - 1;
-  return { file, line, kind: 'insert', currentLine: '', indent: indentOf(text), block: above >= 1 ? blockFor(file, above) : null, scope: scopeAt(file.mod, Math.max(1, above)), evidence };
+  return { file, line, kind: 'insert', currentLine: '', indent: indentBefore(file, line), block: above >= 1 ? blockFor(file, above) : null, scope: scopeAt(file.mod, Math.max(1, above)), evidence };
+}
+
+/** An insert site at a gap slot of `functionGapSlots`: scope as of the statement it follows (names bound there are visible). */
+export function gapSlotSite(file: SourceFile, slot: GapSlot, evidence: SiteEvidence): Site {
+  return { file, line: slot.line, kind: 'insert', currentLine: '', indent: slot.indent, block: blockFor(file, slot.afterLine), scope: scopeAt(file.mod, slot.afterLine), evidence };
+}
+
+/** Control-flow tier of a gap, best first: the first line of a block, a block end, then mid-block. */
+const POSITION_TIER: Readonly<Record<GapSlot['position'], number>> = { after_header: 0, block_end: 1, mid_block: 2 };
+
+/**
+ * Gap slots ranked for the SEEDS cut: by the Jev probability of the lines around the gap (the
+ * statement it follows and the next one, from Q5 / Q5n: `lineP`), then by control-flow position
+ * (after a header, block end, mid-block), then by line. Deterministic.
+ */
+export function orderGapSlots(slots: readonly GapSlot[], lineP: (line: number) => number): GapSlot[] {
+  const score = (g: GapSlot): number => Math.max(lineP(g.afterLine), g.nextLine === null ? 0 : lineP(g.nextLine));
+  return [...slots].sort((a, b) => score(b) - score(a) || POSITION_TIER[a.position] - POSITION_TIER[b.position] || a.line - b.line || a.indent.length - b.indent.length);
+}
+
+/** Note text of a gap-slot site (`gap after L17 (block_end, dedent 1)`). */
+function gapNote(slot: GapSlot): string {
+  return `gap after L${slot.afterLine} (${slot.position}${slot.dedent > 0 ? `, dedent ${slot.dedent}` : ''})`;
+}
+
+/**
+ * Every gap slot of a function of ≤ GAP_FUNCTION_MAX_LINES lines as insert sites, in line order
+ * (`orderGapSlots` ranks them for the cut); [] for a longer function, whose anchors' gaps stand alone.
+ */
+export function functionGapSites(fn: Pick<FunctionCandidate, 'file' | 'name' | 'startLine' | 'endLine'>, maxLines: number = GAP_FUNCTION_MAX_LINES): Site[] {
+  if (fn.endLine - fn.startLine + 1 > maxLines) return [];
+  return functionGapSlots(fn.file, fn.startLine, fn.endLine).map((slot) => gapSlotSite(fn.file, slot, { notes: [gapNote(slot), `in ${fn.name}`] }));
 }
 
 /** Prefix of the evidence note that marks a module-level import gap (`isImportGap`). */
@@ -372,7 +441,7 @@ function beamFunctions(localized: LocalizeResult, anchors: readonly Site[]): Bea
  * replace site carrying a `jevProbability` was an option of that function's line Choice, and
  * the localizer's anchors are exactly the top-3 of each Choice.
  */
-export function q5Anchors(localized: LocalizeResult, perFunction = ANCHORS_PER_FUNCTION, minP = Q5_ANCHOR_MIN_P): Site[] {
+export function q5Anchors(localized: LocalizeResult, perFunction = ANCHORS_PER_FUNCTION, minP = Q5_ANCHOR_MIN_P, weight: (site: Site) => number = () => 1): Site[] {
   const groups = new Map<string, Site[]>();
   for (const s of localized.sites) {
     if (s.kind !== 'replace' || s.evidence.jevProbability === undefined || s.evidence.jevProbability < minP) continue;
@@ -384,7 +453,32 @@ export function q5Anchors(localized: LocalizeResult, perFunction = ANCHORS_PER_F
   }
   const out: Site[] = [];
   for (const g of groups.values()) out.push(...byDesc(g, (s) => s.evidence.jevProbability ?? 0).slice(0, perFunction));
-  return byDesc(out, (s) => s.evidence.jevProbability ?? 0);
+  return byDesc(out, (s) => (s.evidence.jevProbability ?? 0) * weight(s));
+}
+
+/**
+ * Weight of a line's Jev evidence on a repository workspace: the localizer's probability of the
+ * beam function holding the line (its file × function path score, `FunctionCandidate.probability`).
+ * The repository path asks one line Choice PER beam function, so a line's p is conditional on its
+ * function; the joint is what orders lines across functions. Measured need: QuixBugs
+ * `depth_first_search` ships a `node.py` whose `Node.successor` property Jev flags at p 0.99 (its
+ * body is `return self.successor`) although Q2 gave `node.py` 0.1 and `depth_first_search` 0.93
+ * — unweighted, the three top anchors and every anchor gap of the 6-cut went to `node.py`, and
+ * the gap after `else:` where `nodesvisited.add(node)` belongs never entered SEEDS. The
+ * single-file flat path asks one Choice over the whole file, so its p is already the joint:
+ * weight 1 there (`singleFile`). Lines outside every beam function keep weight 1.
+ */
+export function functionWeight(localized: LocalizeResult, singleFile: boolean): (site: Pick<Site, 'file' | 'line'>) => number {
+  if (singleFile) return () => 1;
+  const fns = localized.functions as readonly FunctionCandidate[];
+  return (site) => {
+    let best: number | null = null;
+    for (const f of fns) {
+      if (f.file.path !== site.file.path || site.line < f.startLine || site.line > f.endLine) continue;
+      if (best === null || f.probability > best) best = f.probability;
+    }
+    return best ?? 1;
+  };
 }
 
 /**
@@ -507,8 +601,10 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
   const sbflMap = new Map<string, RankedLine>();
   for (const r of sbfl?.ranked ?? []) if (ctx.files.has(r.file)) sbflMap.set(sbflKey(r.file, r.line), r);
 
-  // 1. Q5 anchors (top-3 per beam function, p ≥ 0.05) and the beam functions they live in.
-  const anchors = q5Anchors(localized);
+  // 1. Q5 anchors (top-3 per beam function, p ≥ 0.05), ordered across functions by p × the
+  //    function's probability on repositories (`functionWeight`), and the beam functions they live in.
+  const weight = functionWeight(localized, singleFile);
+  const anchors = q5Anchors(localized, ANCHORS_PER_FUNCTION, Q5_ANCHOR_MIN_P, weight);
   const fns = beamFunctions(localized, anchors);
   const replace = new Map<string, ScoredReplace>();
   const addReplace = (site: Site, jev: number): void => {
@@ -521,7 +617,7 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
       for (const n of site.evidence.notes) if (!cur.site.evidence.notes.includes(n)) cur.site.evidence.notes.push(n);
     }
   };
-  for (const a of anchors) addReplace({ ...a, evidence: { ...a.evidence, notes: [...a.evidence.notes] } }, a.evidence.jevProbability ?? 0);
+  for (const a of anchors) addReplace({ ...a, evidence: { ...a.evidence, notes: [...a.evidence.notes] } }, (a.evidence.jevProbability ?? 0) * weight(a));
 
   // 2. Q5n Nouls (single file): top-3 by p, unioned; exactly one ≥ 0.9 short-circuits.
   const lineNouls = new Map<string, number>();
@@ -637,12 +733,124 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
     const tail = traceTailGap(top, goal, sbfl.perTest);
     if (tail !== null) pushInsert(tail, null);
   }
+
+  // 6. Every remaining statement boundary of the top beam function (≤ 40 lines), ranked by the
+  //    Jev probability of the lines around each gap and by control-flow position, after the
+  //    anchors' own gaps so the cut keeps those first (design §2.5 item 2 lists them first).
+  //    The Q6 fallback (design §9 R1) runs before them when the search already reached WIDENED
+  //    with nothing plausible: its placements are spliced in FRONT of every other insert site.
+  const q6Fallback = new Map<string, string[]>();
+  if (top !== undefined) {
+    const slots = functionGapSlots(top.file, top.startLine, top.endLine);
+    const lineP = (line: number): number => Math.max(lineNouls.get(sbflKey(top.file.path, line)) ?? 0, anchorLineP(localized, top.file, line));
+    if (top.endLine - top.startLine + 1 <= GAP_FUNCTION_MAX_LINES) {
+      for (const slot of orderGapSlots(slots, lineP)) pushInsert(gapSlotSite(top.file, slot, { notes: [gapNote(slot), `in ${top.name}`] }), null);
+      if (slots.length > 0) notes.push(`${slots.length} gap slots of ${top.name}`);
+    }
+    if (q6FallbackApplies(goal)) {
+      const fb = await q6FallbackSites(ctx, goal, top, slots, stage);
+      requests += fb.requests;
+      for (const [stmt, keys] of fb.placements) q6Fallback.set(stmt, keys);
+      notes.push(...fb.notes);
+      if (fb.sites.length > 0) {
+        // in front of everything else, dedup against what was pushed: the same key keeps the fallback's evidence
+        const frontKeys = new Set(fb.sites.map(siteKey));
+        const rest = inserts.filter((i) => !frontKeys.has(siteKey(i)));
+        inserts.splice(0, inserts.length, ...fb.sites, ...rest);
+        for (const k of frontKeys) insertAnchors.delete(k);
+      }
+    }
+  }
   const insertSites = inserts.slice(0, maxInsert);
 
-  const insertFirst = insertSitesFirst(options.q5EscapeProbability, options.insertNewLineProbability);
-  const g: GoalSites = { replace: replaceSites, insert: insertSites, ordered: [], insertFirst, shortCircuit, insertAnchors, lineNouls, requests, notes };
+  const insertFirst = insertSitesFirst(options.q5EscapeProbability, options.insertNewLineProbability) || q6Fallback.size > 0;
+  const g: GoalSites = { replace: replaceSites, insert: insertSites, ordered: [], insertFirst, shortCircuit, insertAnchors, lineNouls, q6Fallback, requests, notes };
   g.ordered = orderGoalSites(g, insertFirst);
   return g;
+}
+
+/** P(line) from the localizer's line Choice, read off any site of that line (every option line carries it). */
+function anchorLineP(localized: LocalizeResult, file: SourceFile, line: number): number {
+  let best = 0;
+  for (const s of localized.sites) if (s.file.path === file.path && s.line === line && s.kind === 'replace') best = Math.max(best, s.evidence.jevProbability ?? 0);
+  return best;
+}
+
+/** Enumeration options for the statement templates the Q6 fallback asks about (no test literals: the statement family does not read them). */
+function fallbackEnumerateOptions(files: ReadonlyMap<string, SourceFile>): EnumerateOptions {
+  return { cap: 254, testLiterals: [], taskIdentifiers: [], corpus: files };
+}
+
+/**
+ * The top statement templates of a function by prior: the `statement` family enumerated at every
+ * gap slot, one entry per distinct statement text (max prior), `Q6_FALLBACK_STATEMENTS` kept.
+ */
+export function topStatementTemplates(file: SourceFile, fn: Pick<FunctionCandidate, 'name' | 'startLine' | 'endLine'>, slots: readonly GapSlot[], files: ReadonlyMap<string, SourceFile>, limit: number = Q6_FALLBACK_STATEMENTS): { text: string; prior: number }[] {
+  const best = new Map<string, number>();
+  const opts = fallbackEnumerateOptions(files);
+  for (const slot of slots) {
+    const site = gapSlotSite(file, slot, { notes: [gapNote(slot), `in ${fn.name}`] });
+    for (const c of enumerateTemplates(site, opts, ['statement'])) {
+      if (c.text.includes('\n')) continue; // one-line statements only: Q6 names one `missing_statement`
+      const text = c.text.trim();
+      const prior = c.prior ?? 0;
+      if ((best.get(text) ?? -1) < prior) best.set(text, prior);
+    }
+  }
+  return [...best.entries()]
+    .map(([text, prior]) => ({ text, prior }))
+    .sort((a, b) => b.prior - a.prior || (a.text < b.text ? -1 : a.text > b.text ? 1 : 0))
+    .slice(0, limit);
+}
+
+/**
+ * Q6 fallback: one `insert_after` Choice per top statement template; the chosen gaps (top-1, plus
+ * any other at p ≥ Q6_FALLBACK_MIN_P, ≤ Q6_TOP_GAPS) become insert sites carrying the statement
+ * and Jev's probability in their evidence. `after_l<i>` maps to the slots after the statement at
+ * line i (several when a blank line gave a second level); `before_l<def>` lies outside the function.
+ */
+async function q6FallbackSites(ctx: GoalSiteContext, goal: Goal, fn: BeamFunction, slots: readonly GapSlot[], stage: StageName): Promise<{ sites: Site[]; placements: Map<string, string[]>; requests: number; notes: string[] }> {
+  const out = { sites: [] as Site[], placements: new Map<string, string[]>(), requests: 0, notes: [] as string[] };
+  const lines = codeLines(fn.file.mod, fn.startLine, fn.endLine);
+  if (slots.length < Q6_FALLBACK_MIN_GAPS || lines.length > Q6_FALLBACK_MAX_LINES) {
+    out.notes.push(`q6 fallback skipped: ${slots.length} gap slots, ${lines.length} lines`);
+    return out;
+  }
+  const statements = topStatementTemplates(fn.file, fn, slots, ctx.files);
+  if (statements.length === 0) {
+    out.notes.push('q6 fallback skipped: no statement template');
+    return out;
+  }
+  const seen = new Set<string>();
+  for (const { text } of statements) {
+    const ranked = await askGaps(ctx, goal, fn, lines, text, stage);
+    out.requests += 1;
+    const kept = ranked.filter((r, i) => i === 0 || r.p >= Q6_FALLBACK_MIN_P).slice(0, Q6_TOP_GAPS);
+    out.placements.set(text, kept.map((r) => r.key));
+    for (const { key, p } of kept) {
+      const after = /^after_l(\d+)$/.exec(key);
+      if (after === null) continue;
+      const line = Number(after[1]);
+      const st = statementAt(fn.file.mod, line);
+      const matching = slots.filter((g) => g.afterLine === (st?.startLine ?? line));
+      for (const slot of matching) {
+        const k = `${slot.line}:${slot.indent.length}`;
+        const ev: SiteEvidence = { jevProbability: p, notes: [`q6 fallback ${key} p=${p.toFixed(2)} for \`${text}\``, gapNote(slot), `in ${fn.name}`] };
+        if (seen.has(k)) {
+          const prev = out.sites.find((x) => x.line === slot.line)!;
+          prev.evidence.notes.push(ev.notes[0]!);
+          if ((prev.evidence.jevProbability ?? 0) < p) prev.evidence.jevProbability = p;
+          continue;
+        }
+        seen.add(k);
+        out.sites.push(gapSlotSite(fn.file, slot, ev));
+      }
+    }
+    out.notes.push(`q6 fallback \`${text}\` → ${kept.map((r) => `${r.key} p=${r.p.toFixed(2)}`).join(', ') || 'no gap'}`);
+  }
+  // the placement Jev is surest about is sieved first, whichever statement it belongs to (stable across statements)
+  out.sites = out.sites.map((site, i) => ({ site, i })).sort((a, b) => (b.site.evidence.jevProbability ?? 0) - (a.site.evidence.jevProbability ?? 0) || a.i - b.i).map((x) => x.site);
+  return out;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -659,16 +867,28 @@ export interface WidenChunk {
 
 /**
  * Every code line of the beam functions as replace sites (`def` lines, decorators, docstrings,
- * blanks and comments excluded), functions in beam order and lines ascending, deduplicated.
- * `exclude` drops lines already searched (the SEEDS sites) so WIDENED spends on new lines only.
+ * blanks and comments excluded) plus every gap slot of the functions of ≤ GAP_FUNCTION_MAX_LINES
+ * lines as insert sites, functions in beam order, sites in line order (a gap before a line ahead
+ * of the line), deduplicated. `exclude` drops sites already searched (the SEEDS sites) so WIDENED
+ * spends on new positions only.
  */
 export function widenedSites(functions: readonly Pick<FunctionCandidate, 'file' | 'name' | 'startLine' | 'endLine'>[], exclude: ReadonlySet<string> = new Set()): Site[] {
   const out: Site[] = [];
   const seen = new Set<string>(exclude);
   functions.forEach((f, rank) => {
+    const note = `widened over ${f.name} (beam #${rank + 1})`;
+    const sites: Site[] = [];
     for (const c of functionCodeLines(f.file, f.startLine, f.endLine)) {
-      const site = replaceSiteAt(f.file, c.line, { notes: [`widened over ${f.name} (beam #${rank + 1})`] });
-      if (site === null) continue;
+      const site = replaceSiteAt(f.file, c.line, { notes: [note] });
+      if (site !== null) sites.push(site);
+    }
+    // every statement boundary of a short function, the gap before a line ahead of the line itself
+    for (const g of functionGapSites(f)) {
+      g.evidence.notes.push(note);
+      sites.push(g);
+    }
+    sites.sort((a, b) => a.line - b.line || (a.kind === b.kind ? 0 : a.kind === 'insert' ? -1 : 1));
+    for (const site of sites) {
       const k = siteKey(site);
       if (seen.has(k)) continue;
       seen.add(k);

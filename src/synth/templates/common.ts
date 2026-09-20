@@ -50,7 +50,7 @@ export interface NamePools {
   params: string[];
   /** params + locals of the enclosing functions, without builtins/module names */
   visible: string[];
-  /** receivers of `.append` / `.extend` / `.insert` or bound to `[]` / `list(...)` */
+  /** receivers of `.append` / `.extend` / `.insert` / `.pop` (when not a set or dict) or bound to `[]` / `list(...)` */
   lists: string[];
   /** receivers of `.add` / `.discard` or bound to `set()` */
   sets: string[];
@@ -214,6 +214,20 @@ function valueIs(tokens: readonly Token[], eq: number, ...shapes: string[]): boo
   return shapes.some((s) => rest === s || rest.startsWith(`${s}(`));
 }
 
+/** True when the brace literal opening at `open` holds a `:` at depth 1 (a dict), false for a set literal. */
+function braceLiteralIsDict(tokens: readonly Token[], open: number): boolean {
+  let depth = 0;
+  for (let k = open; k < tokens.length; k++) {
+    const t = tokens[k]!;
+    if (isOpen(t)) depth++;
+    else if (isClose(t)) {
+      depth--;
+      if (depth === 0) return false;
+    } else if (depth === 1 && isOp(t, ':')) return true;
+  }
+  return false;
+}
+
 function buildPools(mod: PyModule, site: Site, block: Block | undefined): NamePools {
   const scope = site.scope;
   const params = [...scope.params];
@@ -230,6 +244,8 @@ function buildPools(mod: PyModule, site: Site, block: Block | undefined): NamePo
   const counters: string[] = [];
   const indices: string[] = [];
   const receivers: string[] = [];
+  /** `x.pop(...)` receivers: lists unless the code also treats them as sets or dicts (shunting_yard's `opstack`) */
+  const popReceivers: string[] = [];
   const attrsByReceiver = new Map<string, string[]>();
   const push = (m: Map<string, string[]>, key: string, value: string): void => {
     const cur = m.get(key);
@@ -244,9 +260,11 @@ function buildPools(mod: PyModule, site: Site, block: Block | undefined): NamePo
       if (eq === 1 || (eq === 3 && isOp(t[1], ':'))) {
         const name = t[0]!.text;
         if (s.kind === 'augassign') counters.push(name);
-        else if (valueIs(t, eq, '[]', 'list')) lists.push(name);
+        else if (valueIs(t, eq, '[]', 'list') || isOp(t[eq + 1], '[')) lists.push(name);
         else if (valueIs(t, eq, 'set')) sets.push(name);
         else if (valueIs(t, eq, '{}', 'dict')) dicts.push(name);
+        // a brace literal is a dict when a `:` sits at depth 1 (`{'+': 1, ...}`, shunting_yard's `precedence`), a set otherwise
+        else if (isOp(t[eq + 1], '{')) (braceLiteralIsDict(t, eq + 1) ? dicts : sets).push(name);
         else if (t[eq + 1]?.type === 'NUMBER' && t.length === eq + 2) {
           counters.push(name);
           if (t[eq + 1]!.text === '0') indices.push(name);
@@ -273,6 +291,7 @@ function buildPools(mod: PyModule, site: Site, block: Block | undefined): NamePo
       if (attr === 'add' || attr === 'discard') sets.push(recv.text);
       if (attr === 'items' || attr === 'keys' || attr === 'values' || attr === 'get') dicts.push(recv.text);
       if (attr === 'pop' || attr === 'update' || attr === 'remove') collections.push(recv.text);
+      if (attr === 'pop') popReceivers.push(recv.text);
     }
     if (isOp(t, '[') && isName(tokens[k - 1]) && !isOp(tokens[k - 2], '.')) {
       collections.push(tokens[k - 1]!.text);
@@ -308,6 +327,7 @@ function buildPools(mod: PyModule, site: Site, block: Block | undefined): NamePo
   const annotations = new Map<string, string>();
   if (block !== undefined) for (const p of block.params) if (p.annotation !== null) annotations.set(p.name, p.annotation);
   const inScope = (n: string): boolean => visible.includes(n) || scope.module.includes(n);
+  for (const r of popReceivers) if (!sets.includes(r) && !dicts.includes(r)) lists.push(r);
   return {
     params,
     visible,

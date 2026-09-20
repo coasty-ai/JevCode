@@ -7,7 +7,8 @@
  * neighbours by distance, so a consumer that stops after k sites gets the best k.
  */
 import { indentOf } from '../py/edits.js';
-import { scopeAt, statementAt } from '../py/structure.js';
+import { blockAt, scopeAt, statementAt } from '../py/structure.js';
+import type { Statement } from '../py/structure.js';
 import type { RankedLine } from '../sbfl/types.js';
 import type { Site, SiteEvidence, SourceFile } from '../types.js';
 import { codeLines, entryAt, functionEntries, moduleCodeLines } from './outline.js';
@@ -60,13 +61,187 @@ export function sbflKey(path: string, line: number): string {
   return `${path}:${line}`;
 }
 
-/** Body indent for a gap after `line`: one level deeper after a compound header, else the same. */
+// ---------------------------------------------------------------------------------------
+// Gaps: where a statement may legally go, and at which indentation
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Control-flow position of a gap, for ordering: the first line of a block after its header
+ * (`else:` → `nodesvisited.add(node)`, depth_first_search), the end of a block where the next
+ * statement dedents (`shunting_yard`'s `opstack.append(token)` after the inner `while`,
+ * `wrap`'s `lines.append(text)` after the loop), or between two statements of one block
+ * (`reverse_linked_list`'s `prevnode = node`).
+ */
+export type GapPosition = 'after_header' | 'block_end' | 'mid_block';
+
+/** One legal insertion slot: the gap before physical `line`, at `indent`. */
+export interface GapSlot {
+  /** the line the new statement goes before (`Site.line` of an insert site) */
+  line: number;
+  indent: string;
+  /** first line of the statement the gap follows (the `def` line for the gap before the first body statement) */
+  afterLine: number;
+  /** first line of the next statement of the function, or null at the function's end */
+  nextLine: number | null;
+  position: GapPosition;
+  /** blocks the slot closes relative to the statement it follows (0 = same block, 1 = the enclosing block, ...) */
+  dedent: number;
+}
+
+const TERMINAL_KINDS: ReadonlySet<Statement['kind']> = new Set(['return', 'raise', 'break', 'continue']);
+const CLAUSE_KINDS: ReadonlySet<Statement['kind']> = new Set(['else', 'elif', 'except', 'finally']);
+
+function isHeaderStatement(st: Statement): boolean {
+  return st.header && st.colonIndex !== null && st.colonIndex === st.tokens.length - 1;
+}
+
+/** Indent unit of the file (smallest header → body step; 4 spaces when the file has no block). */
+function indentUnitOf(file: SourceFile): string {
+  let best = Number.POSITIVE_INFINITY;
+  for (const b of file.mod.blocks) {
+    const d = b.bodyIndent - b.indent;
+    if (d > 0 && d < best) best = d;
+  }
+  if (!Number.isFinite(best)) best = 4;
+  return file.mod.lines.some((l) => l.startsWith('\t')) && best === 8 ? '\t' : ' '.repeat(best);
+}
+
+/** Body indent (columns) of the innermost def/class containing `line`; 0 at module level. */
+function bodyIndentAt(file: SourceFile, line: number): number {
+  const b = blockAt(file.mod, line);
+  return b === undefined ? 0 : b.bodyIndent;
+}
+
+export interface GapIndents {
+  /** legal indents for a statement inserted right after the statement at `afterLine`, most likely first; [] when nothing legal (dead code after a `return` that closes no block) */
+  indents: string[];
+  position: GapPosition;
+  /** `indents[k]` closes this many blocks */
+  dedents: number[];
+  /** end line of the statement the gap follows */
+  endLine: number;
+  /** first line of the next statement inside the span, or null */
+  nextLine: number | null;
+}
+
+/**
+ * The indents a new statement may take directly after the statement at `line`, most likely
+ * first, from the structure alone:
+ *   - after a compound header (`if c:`, `else:`, `for ...:`): the body indent only;
+ *   - otherwise every block open there — the statement's own indent and the indent of each
+ *     enclosing compound statement down to the function body (`spanEnd` bounds the function) —
+ *     minus the levels the NEXT statement forbids: nothing shallower than the next statement,
+ *     nothing at or above a clause header (`else:` / `elif` / `except` / `finally`, which must
+ *     follow its block directly), and never the same indent after `return` / `raise` / `break` /
+ *     `continue` (dead code).
+ * Order: the enclosing block first when the next statement dedents (both measured QuixBugs
+ * block-end insertions, `shunting_yard` and `wrap`, sit one level out of the block that ends),
+ * then the statement's own block, then the further enclosing levels.
+ */
+export function gapIndentsAfter(file: SourceFile, line: number, spanEnd: number = file.mod.lines.length): GapIndents {
+  const mod = file.mod;
+  const st = statementAt(mod, line);
+  const text = mod.lines[line - 1] ?? '';
+  if (st === undefined) return { indents: [indentOf(text)], position: 'mid_block', dedents: [0], endLine: line, nextLine: null };
+  const lead = indentOf(mod.lines[st.startLine - 1] ?? '');
+  const next = mod.statements.find((s) => s.startLine > st.endLine && s.startLine <= spanEnd && s.kind !== 'decorator');
+  const nextLine = next?.startLine ?? null;
+  if (isHeaderStatement(st)) {
+    const body = next !== undefined && next.indent > st.indent ? indentOf(mod.lines[next.startLine - 1] ?? '') : `${lead}${indentUnitOf(file)}`;
+    return { indents: [body], position: 'after_header', dedents: [0], endLine: st.endLine, nextLine };
+  }
+  const floor = bodyIndentAt(file, st.startLine);
+  // enclosing compound statements, innermost first: a statement after their block sits at their indent
+  const levels: string[] = [];
+  let cur = st.indent;
+  for (let k = st.index - 1; k >= 0; k--) {
+    const t = mod.statements[k]!;
+    if (t.indent >= cur || t.kind === 'decorator') continue;
+    if (t.indent < floor) break;
+    if (t.header) levels.push(indentOf(mod.lines[t.startLine - 1] ?? ''));
+    cur = t.indent;
+  }
+  let minIndent = floor;
+  if (next !== undefined) minIndent = CLAUSE_KINDS.has(next.kind) ? next.indent + 1 : next.indent;
+  const legal = levels.filter((l) => l.length >= minIndent);
+  const terminal = TERMINAL_KINDS.has(st.kind);
+  const indents: string[] = [];
+  const dedents: number[] = [];
+  if (legal.length > 0) {
+    indents.push(legal[0]!);
+    dedents.push(1);
+  }
+  if (!terminal && lead.length >= minIndent) {
+    indents.push(lead);
+    dedents.push(0);
+  }
+  legal.slice(1).forEach((l, i) => {
+    indents.push(l);
+    dedents.push(i + 2);
+  });
+  const dedentsHere = next !== undefined && next.indent < st.indent;
+  return { indents, position: dedentsHere ? 'block_end' : 'mid_block', dedents, endLine: st.endLine, nextLine };
+}
+
+/**
+ * Indent for the anchor gap after `line`: the most likely legal indent (`gapIndentsAfter`),
+ * falling back to the statement's own indent when nothing is legal (a trailing `return`).
+ */
 export function indentAfter(file: SourceFile, line: number): string {
-  const text = file.mod.lines[line - 1] ?? '';
+  const g = gapIndentsAfter(file, line);
+  const first = g.indents[0];
+  if (first !== undefined) return first;
   const st = statementAt(file.mod, line);
-  const base = indentOf(text);
-  if (st !== undefined && st.header && st.colonIndex !== null && st.colonIndex === st.tokens.length - 1) return `${base}    `;
-  return base;
+  return indentOf(file.mod.lines[(st?.startLine ?? line) - 1] ?? '');
+}
+
+/**
+ * Indent for the gap before `line`: the line's own indent, except before a clause header
+ * (`else:`, `elif`, `except`, `finally`), where only the preceding block's indent is legal (a
+ * statement at the clause's indent between an `if` body and its `else:` is a SyntaxError).
+ */
+export function indentBefore(file: SourceFile, line: number): string {
+  const mod = file.mod;
+  const text = mod.lines[line - 1] ?? '';
+  const st = statementAt(mod, line);
+  if (st === undefined || !CLAUSE_KINDS.has(st.kind)) return indentOf(text);
+  const prev = [...mod.statements].reverse().find((s) => s.endLine < st.startLine && s.kind !== 'decorator');
+  if (prev === undefined) return indentOf(text);
+  const g = gapIndentsAfter(file, prev.startLine);
+  return g.indents[0] ?? indentOf(mod.lines[prev.startLine - 1] ?? '');
+}
+
+/**
+ * Every legal insertion slot of the function spanning [startLine, endLine] (the `def` line
+ * included: the gap after it is the first body line; nested defs' bodies included), one slot
+ * per physical line. The k-th legal indent of the gap after a statement goes to the k-th
+ * physical line between that statement and the next (a blank line gives a block-end gap a second
+ * slot for a second level); indents without a line of their own are dropped — the sieve's queue
+ * keys a candidate by (line, kind, code tokens), so two indentations of one statement at one
+ * line would be one job there. Dead slots (the same indent after `return`) are never built.
+ * Slots are in line order; `orderGapSlots` in search/sites.ts ranks them.
+ */
+export function functionGapSlots(file: SourceFile, startLine: number, endLine: number): GapSlot[] {
+  const mod = file.mod;
+  const out: GapSlot[] = [];
+  const taken = new Set<number>();
+  const statements = mod.statements.filter((s) => s.startLine >= startLine && s.startLine <= endLine && s.kind !== 'decorator');
+  for (const st of statements) {
+    const g = gapIndentsAfter(file, st.startLine, endLine);
+    // a docstring right after the header: the gap after the header duplicates the gap after the docstring
+    if (st.kind === 'def') {
+      const first = mod.statements.find((s) => s.startLine > st.endLine && s.startLine <= endLine);
+      if (first !== undefined && first.kind === 'expr' && first.tokens.length > 0 && first.tokens.every((t) => t.type === 'STRING')) continue;
+    }
+    const lastLine = g.nextLine ?? Math.min(endLine, mod.lines.length) + 1;
+    g.indents.forEach((indent, k) => {
+      const line = g.endLine + 1 + k;
+      if (line > lastLine || taken.has(line)) return;
+      taken.add(line);
+      out.push({ line, indent, afterLine: st.startLine, nextLine: g.nextLine, position: g.position, dedent: g.dedents[k] ?? 0 });
+    });
+  }
+  return out.sort((a, b) => a.line - b.line);
 }
 
 function evidenceFor(input: SiteBuildInput, file: SourceFile, line: number, jevProbability: number | undefined, notes: string[]): SiteEvidence {
@@ -101,7 +276,6 @@ function replaceSite(input: SiteBuildInput, a: Anchor, line: number, notes: stri
 }
 
 function insertSite(input: SiteBuildInput, a: Anchor, where: 'before' | 'after'): Site {
-  const anchorText = a.file.mod.lines[a.line - 1] ?? '';
   // A multi-line statement ends after its first physical line; the gap "after" it follows the statement.
   const st = statementAt(a.file.mod, a.line);
   const line = where === 'before' ? a.line : (st?.endLine ?? a.line) + 1;
@@ -112,7 +286,7 @@ function insertSite(input: SiteBuildInput, a: Anchor, where: 'before' | 'after')
     line,
     kind: 'insert',
     currentLine: '',
-    indent: where === 'before' ? indentOf(anchorText) : indentAfter(a.file, a.line),
+    indent: where === 'before' ? indentBefore(a.file, a.line) : indentAfter(a.file, a.line),
     block: blockOf(a.entry),
     scope: scopeAt(a.file.mod, scopeLine),
     evidence: evidenceFor(input, a.file, a.line, a.jevProbability, [...a.notes, `insert ${where} anchor L${a.line}`]),
