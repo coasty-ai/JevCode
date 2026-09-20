@@ -7,6 +7,7 @@
  * at most `maxOutputBytes` plus a rolling 16 KB tail per stream, so the final lines (test
  * summaries) survive a flood. Kills always go through the three-pass tree kill.
  */
+import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
 import { mkdirSync, realpathSync, statSync, writeFileSync } from 'node:fs';
@@ -176,7 +177,10 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
   const level = detectSandboxLevel(opts.profile, internals.platform ?? process.platform);
   let profilePath: string | null = null;
   if (level === 'seatbelt') {
-    profilePath = join(runDir, 'sandbox.sb');
+    // One profile file per sandbox instance: several sandboxes can share a run dir (the bench
+    // creates one per root: workspace, venv, bare-clone cache), and a fixed name let a later
+    // sandbox overwrite an earlier one's profile mid-run, leaving its workspace unreadable.
+    profilePath = join(runDir, `sandbox-${createHash('sha256').update(`${workspaceRoot}\n${extraRoots.join('\n')}\n${opts.noNetwork ? 1 : 0}`).digest('hex').slice(0, 12)}.sb`);
     const profile = buildProfile({
       ws: workspaceRoot,
       runTmp,
