@@ -143,11 +143,20 @@ latency with `--live`) and writes `perf/results/latest.json`.
 
 | Measurement | Result | Gate |
 | --- | --- | --- |
-| First frame, cold, p95 over 10 runs (pseudo-TTY via `script`) | _to be measured_ | < 300 ms |
-| First frame, warm compile cache, median | _to be measured_ | |
-| Harness overhead per step, p95 (mocked zero-latency, 50 steps) | _to be measured_ | < 50 ms |
-| Event-loop lag under the TUI, p95 / max | _to be measured_ | < 5 ms / < 50 ms |
-| Jev latency, p50 / p95 (live) | _to be measured_ | report only |
+| First frame, cold compile cache, p95 over 10 runs (pseudo-TTY via `script`, zero network asserted) | 89.9 ms | < 300 ms |
+| First frame, cold, median | 89.0 ms | |
+| First frame, warm compile cache, median | 80.1 ms | |
+| Harness overhead per step, p95 (mocked zero-latency run, 50 steps, 5,000-file git fixture plus 5,000 ignored files) | 31.2 ms | < 50 ms |
+| Harness overhead per step, p50 | 21.7 ms | |
+| Event-loop lag under the TUI, p95 (rows 40 / rows 12) | 3.2 ms / 2.1 ms | < 5 ms |
+| Event-loop lag under the TUI, max (rows 40 / rows 12) | 3.3 ms / 2.3 ms | < 50 ms |
+| Terminal clears after the first frame (rows 40 / rows 12) | 0 / 0 | 0 |
+
+Measured 2026-09-19 on an Apple Silicon Mac (15 cores, 24 GB), Node 22.23.2, macOS 26;
+raw values in `perf/results/latest.json`. Bare `node -e` starts in about 17 ms on this
+machine, so the TUI's first frame costs roughly 70 ms of module loading and layout. The
+harness budget was met after folding the per-step `git status` spawns into one cached call per
+command run (see `docs/DECISIONS.md`).
 
 ## Bench
 

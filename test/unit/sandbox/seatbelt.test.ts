@@ -46,7 +46,10 @@ describe('buildProfile', () => {
       expect(profile).toContain(`(allow file-write* (subpath "${ws}") (subpath "${join(t.dir, 'run', 'tmp')}") (subpath "${join(t.dir, 'run', 'home')}") (subpath "${aux}")`);
       expect(profile).not.toContain(link);
       expect(profile).not.toContain(auxLink);
-      expect(profile.split(`(subpath "${aux}")`).length - 1).toBe(1);
+      // the extra root appears in the write allow and in the two read re-allows (file-read-data, file-read*)
+      expect(profile.split(`(subpath "${aux}")`).length - 1).toBe(3);
+      expect(profile).toContain(`(deny file-read-data (subpath "${join(home, '.jevcode')}"))`);
+      expect(profile.indexOf('(deny file-read-data')).toBeLessThan(profile.indexOf('(allow file-read-data'));
       expect(profile).toContain(`(deny file-write* (literal "${join(ws, '.git', 'config')}") (subpath "${join(ws, '.git', 'hooks')}") (literal "/dev/ttys004"))`);
       expect(profile).toContain(`(literal "${dotenv}")`);
       expect(profile).toContain(`(subpath "${join(home, '.ssh')}")`);

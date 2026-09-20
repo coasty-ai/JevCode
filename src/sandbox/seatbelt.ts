@@ -35,7 +35,7 @@ export function sbplString(s: string): string {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
-const HOME_SECRET_SUBPATHS = ['.jevcode', join('.config', 'jevcode'), '.ssh', '.aws', join('.config', 'gh')];
+const HOME_SECRET_SUBPATHS = [join('.config', 'jevcode'), '.ssh', '.aws', join('.config', 'gh')];
 const HOME_SECRET_LITERALS = ['.netrc'];
 
 export function buildProfile(opts: ProfileOptions): string {
@@ -80,6 +80,18 @@ export function buildProfile(opts: ProfileOptions): string {
   for (const rel of HOME_SECRET_SUBPATHS) addRead(`(subpath ${sbplString(canonicalPathSync(join(home, rel)))})`);
   for (const rel of HOME_SECRET_LITERALS) addRead(`(literal ${sbplString(canonicalPathSync(join(home, rel)))})`);
   lines.push(`(deny file-read* ${reads.join(' ')})`);
+  // The jevcode home holds every run's checkpoints and the bench work areas. Deny reading file
+  // CONTENTS there (other runs' prompts and outputs stay private) but keep metadata readable, so
+  // `mkdir -p`, `cd` and `git clone` can traverse into the roots this run may use; then re-allow
+  // full reads under every writable root (later rules win in SBPL). The run's own checkpoints
+  // (state.json, *.jsonl) sit outside runTmp/runHome and therefore stay unreadable.
+  const jevHome = canonicalPathSync(join(home, '.jevcode'));
+  lines.push(`(deny file-read-data (subpath ${sbplString(jevHome)}))`);
+  // A deny on the specific operation outranks a later allow on the `file-read*` family, so the
+  // re-allow names file-read-data explicitly (verified on macOS 26).
+  const roots = `(subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${extra.map((p) => ` (subpath ${sbplString(p)})`).join('')}`;
+  lines.push(`(allow file-read-data ${roots})`);
+  lines.push(`(allow file-read* ${roots})`);
 
   if (opts.noNetwork) lines.push('(deny network*)');
   return `${lines.join('\n')}\n`;
