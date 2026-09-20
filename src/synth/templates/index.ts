@@ -24,7 +24,7 @@ import { branchDrafts } from './branch.js';
 
 export { FAMILY_PRIOR, TEMPLATE_FAMILIES, balancedAs, buildContext, continuesStatement, isBalanced } from './common.js';
 export type { TemplateFamily, TemplateContext, NamePools } from './common.js';
-export { unboundNames, importInsertLine, importLinesFor, STDLIB_NAMES, STDLIB_MODULES } from './imports.js';
+export { unboundNames, importInsertLine, importLinesFor, atImportGap, STDLIB_NAMES, STDLIB_NAMES_ALT, STDLIB_MODULES } from './imports.js';
 export { substituteIdentifier } from './branch.js';
 export { raiseStatements } from './guards.js';
 

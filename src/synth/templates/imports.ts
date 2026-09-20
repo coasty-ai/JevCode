@@ -1,12 +1,15 @@
 /**
  * Import insertion for a name that is used but bound nowhere (ladder `tagcloud`: `Counter`
  * used in three functions, never imported). The name is resolved through a table of common
- * standard-library names, through corpus files that define it (relative import) or import it
- * (the donor import line copied), or as a module (`import x` when the name is used as
- * `x.attr`). The import goes after the last module-level import (which keeps a
- * `from __future__` line first), so the primary edit is an `extraEdits` insert and the
- * candidate's `text` is the site's line unchanged; at a site inside a function body the
- * import is offered as a local import as well.
+ * standard-library names (with a second-choice module where two export the name), through
+ * corpus files that define it (relative import) or import it (the donor import line copied),
+ * or as a module (`import x` when the name is used as `x.attr`). The import goes after the
+ * last module-level import (which keeps a `from __future__` line first), so at a replace site
+ * the primary edit is an `extraEdits` insert and the candidate's `text` is the site's line
+ * unchanged; at the module-level import gap itself (search/sites.ts `importGapSite`) the
+ * import is the inserted line, every resolved name at full locality (the use site is elsewhere
+ * by construction) and the most-used unbound name first; at a site inside a function body the
+ * import is offered as a local import as well, at a lower prior (Python allows it).
  */
 import type { LineEdit } from '../types.js';
 import type { PyModule } from '../py/structure.js';
@@ -26,7 +29,7 @@ export const STDLIB_NAMES: Readonly<Record<string, string>> = {
   Any: 'typing', Dict: 'typing', List: 'typing', Optional: 'typing', Tuple: 'typing', Set: 'typing', FrozenSet: 'typing', Union: 'typing', Callable: 'typing',
   Iterable: 'typing', Iterator: 'typing', Sequence: 'typing', Mapping: 'typing', MutableMapping: 'typing', TypeVar: 'typing', Generic: 'typing', Protocol: 'typing',
   cast: 'typing', overload: 'typing', NamedTuple: 'typing', TypedDict: 'typing', Literal: 'typing', Final: 'typing', ClassVar: 'typing', Type: 'typing', Deque: 'typing', DefaultDict: 'typing',
-  deepcopy: 'copy',
+  deepcopy: 'copy', copy: 'copy',
   partial: 'functools', reduce: 'functools', lru_cache: 'functools', wraps: 'functools', cache: 'functools', cached_property: 'functools', total_ordering: 'functools',
   chain: 'itertools', combinations: 'itertools', permutations: 'itertools', product: 'itertools', groupby: 'itertools', islice: 'itertools', accumulate: 'itertools', zip_longest: 'itertools', cycle: 'itertools', repeat: 'itertools', starmap: 'itertools', takewhile: 'itertools', dropwhile: 'itertools',
   contextmanager: 'contextlib', suppress: 'contextlib', closing: 'contextlib', ExitStack: 'contextlib',
@@ -48,7 +51,60 @@ export const STDLIB_NAMES: Readonly<Record<string, string>> = {
   dedent: 'textwrap', indent: 'textwrap', wrap: 'textwrap',
   SequenceMatcher: 'difflib', unified_diff: 'difflib',
   pformat: 'pprint', pprint: 'pprint',
-  uuid4: 'uuid', UUID: 'uuid',
+  uuid4: 'uuid', UUID: 'uuid', uuid1: 'uuid', uuid5: 'uuid',
+  // more of the same modules, the names that appear bare in code
+  UserDict: 'collections', UserList: 'collections',
+  Hashable: 'typing', Sized: 'typing', Collection: 'typing', Container: 'typing', Reversible: 'typing', Generator: 'typing', MutableSequence: 'typing', MutableSet: 'typing',
+  Awaitable: 'typing', Coroutine: 'typing', AsyncIterator: 'typing', AsyncIterable: 'typing', AsyncGenerator: 'typing', ContextManager: 'typing',
+  IO: 'typing', TextIO: 'typing', BinaryIO: 'typing', AnyStr: 'typing', NoReturn: 'typing', Self: 'typing', TypeAlias: 'typing', ParamSpec: 'typing', TypeGuard: 'typing', Annotated: 'typing',
+  get_type_hints: 'typing', get_args: 'typing', get_origin: 'typing', runtime_checkable: 'typing', TYPE_CHECKING: 'typing',
+  fields: 'dataclasses', is_dataclass: 'dataclasses', make_dataclass: 'dataclasses', InitVar: 'dataclasses', KW_ONLY: 'dataclasses', MISSING: 'dataclasses', FrozenInstanceError: 'dataclasses',
+  PurePosixPath: 'pathlib', PosixPath: 'pathlib', PureWindowsPath: 'pathlib',
+  time: 'time', IntFlag: 'enum', StrEnum: 'enum', unique: 'enum',
+  ABCMeta: 'abc',
+  singledispatch: 'functools', cmp_to_key: 'functools',
+  pairwise: 'itertools', tee: 'itertools', compress: 'itertools', filterfalse: 'itertools', combinations_with_replacement: 'itertools',
+  nullcontext: 'contextlib', redirect_stdout: 'contextlib', redirect_stderr: 'contextlib', asynccontextmanager: 'contextlib', AsyncExitStack: 'contextlib', AbstractContextManager: 'contextlib',
+  heapreplace: 'heapq', heappushpop: 'heapq', merge: 'heapq',
+  insort_left: 'bisect', insort_right: 'bisect',
+  fsum: 'math', prod: 'math', comb: 'math', perm: 'math', isqrt: 'math', copysign: 'math', trunc: 'math', tau: 'math', nan: 'math', radians: 'math', degrees: 'math', sin: 'math', cos: 'math', tan: 'math', atan2: 'math', lcm: 'math', dist: 'math', log10: 'math',
+  seed: 'random', choices: 'random', gauss: 'random', Random: 'random', random: 'random',
+  median_low: 'statistics', median_high: 'statistics', mode: 'statistics', pstdev: 'statistics', pvariance: 'statistics', fmean: 'statistics', quantiles: 'statistics', StatisticsError: 'statistics',
+  ascii_letters: 'string', ascii_lowercase: 'string', ascii_uppercase: 'string', digits: 'string', punctuation: 'string', whitespace: 'string', Template: 'string',
+  argv: 'sys', stdin: 'sys', stdout: 'sys', stderr: 'sys', maxsize: 'sys',
+  getenv: 'os', PathLike: 'os',
+  dump: 'json', load: 'json', JSONDecodeError: 'json',
+  TextWrapper: 'textwrap',
+  normalize: 'unicodedata', category: 'unicodedata', east_asian_width: 'unicodedata',
+  getcontext: 'decimal', localcontext: 'decimal', InvalidOperation: 'decimal', ROUND_HALF_UP: 'decimal', ROUND_HALF_EVEN: 'decimal', ROUND_DOWN: 'decimal', ROUND_UP: 'decimal',
+  TextIOWrapper: 'io', TextIOBase: 'io', BufferedReader: 'io', UnsupportedOperation: 'io', SEEK_SET: 'io', SEEK_END: 'io',
+  copyfile: 'shutil', copytree: 'shutil', rmtree: 'shutil', which: 'shutil', move: 'shutil', disk_usage: 'shutil', make_archive: 'shutil', get_terminal_size: 'shutil',
+  Popen: 'subprocess', PIPE: 'subprocess', DEVNULL: 'subprocess', STDOUT: 'subprocess', CalledProcessError: 'subprocess', CompletedProcess: 'subprocess', TimeoutExpired: 'subprocess', check_output: 'subprocess', check_call: 'subprocess',
+  md5: 'hashlib', sha1: 'hashlib', sha256: 'hashlib', sha512: 'hashlib', blake2b: 'hashlib', pbkdf2_hmac: 'hashlib',
+  b64encode: 'base64', b64decode: 'base64', urlsafe_b64encode: 'base64', urlsafe_b64decode: 'base64', b16encode: 'base64', b32encode: 'base64',
+  pack: 'struct', unpack: 'struct', calcsize: 'struct', pack_into: 'struct', unpack_from: 'struct', iter_unpack: 'struct', Struct: 'struct',
+  array: 'array',
+  Queue: 'queue', LifoQueue: 'queue', PriorityQueue: 'queue', SimpleQueue: 'queue', Empty: 'queue', Full: 'queue',
+  Thread: 'threading', Lock: 'threading', RLock: 'threading', Event: 'threading', Condition: 'threading', Semaphore: 'threading', BoundedSemaphore: 'threading', Timer: 'threading', Barrier: 'threading', current_thread: 'threading',
+  gather: 'asyncio', create_task: 'asyncio', wait_for: 'asyncio', get_event_loop: 'asyncio', new_event_loop: 'asyncio', iscoroutinefunction: 'asyncio', CancelledError: 'asyncio', to_thread: 'asyncio', AbstractEventLoop: 'asyncio',
+  ensure_future: 'asyncio', run_coroutine_threadsafe: 'asyncio',
+};
+
+/**
+ * Second-choice modules for names two standard-library modules export (`sleep`: time first,
+ * asyncio second; `Sequence`: typing first, collections.abc second): offered after the first
+ * choice at a lower prior, never instead of it.
+ */
+export const STDLIB_NAMES_ALT: Readonly<Record<string, readonly string[]>> = {
+  sleep: ['asyncio'],
+  Lock: ['asyncio'], Event: ['asyncio'], Semaphore: ['asyncio'], Condition: ['asyncio'], Queue: ['asyncio'], PriorityQueue: ['asyncio'], LifoQueue: ['asyncio'],
+  BoundedSemaphore: ['asyncio'], Barrier: ['asyncio'],
+  Iterable: ['collections.abc'], Iterator: ['collections.abc'], Sequence: ['collections.abc'], Mapping: ['collections.abc'], MutableMapping: ['collections.abc'], Callable: ['collections.abc'],
+  Hashable: ['collections.abc'], Sized: ['collections.abc'], Collection: ['collections.abc'], Container: ['collections.abc'], Reversible: ['collections.abc'], Generator: ['collections.abc'],
+  MutableSequence: ['collections.abc'], MutableSet: ['collections.abc'], Awaitable: ['collections.abc'], Coroutine: ['collections.abc'], AsyncIterator: ['collections.abc'], AsyncIterable: ['collections.abc'], AsyncGenerator: ['collections.abc'],
+  Set: ['collections.abc'],
+  Counter: ['typing'], OrderedDict: ['typing'], ChainMap: ['typing'],
+  time: ['datetime'],
 };
 
 /** Standard-library module names, for `import <name>` when the unbound name is used as a receiver. */
@@ -120,7 +176,12 @@ function dottedModule(fromPath: string, toPath: string): string {
   return [...parts, stem].join('.');
 }
 
-/** Import statements that would bind `name`, best first. */
+/**
+ * Import statements that would bind `name`, best first: the standard-library table (first choice
+ * p = 1, second-choice module 0.8), a corpus file's own import of the name copied verbatim
+ * (0.95), a corpus file that defines it (0.9), and `import name` when `name` is itself a
+ * standard-library module (0.9). Deduplicated by text.
+ */
 export function importLinesFor(ctx: TemplateContext, name: string): { text: string; p: number }[] {
   const out: { text: string; p: number }[] = [];
   const std = STDLIB_NAMES[name];
@@ -133,30 +194,57 @@ export function importLinesFor(ctx: TemplateContext, name: string): { text: stri
     if (defines) out.push({ text: `from ${dottedModule(ctx.site.file.path, path)} import ${name}`, p: 0.9 });
   }
   if (STDLIB_MODULES.has(name)) out.push({ text: `import ${name}`, p: 0.9 });
-  const seen = new Set<string>();
-  return out.filter((o) => (seen.has(o.text) ? false : (seen.add(o.text), true)));
+  for (const alt of STDLIB_NAMES_ALT[name] ?? []) out.push({ text: `from ${alt} import ${name}`, p: 0.8 });
+  // one entry per text at its best p (a corpus file's verbatim import and the path derived from
+  // the defining file are often the same line), best first, first-seen order among equals
+  const best = new Map<string, { text: string; p: number }>();
+  for (const o of out) {
+    const cur = best.get(o.text);
+    if (cur === undefined || cur.p < o.p) best.set(o.text, o);
+  }
+  return [...best.values()].sort((a, b) => b.p - a.p);
+}
+
+/** How often `name` occurs as a plain identifier in the module (the most-used unbound name is the likeliest missing import). */
+function useCount(mod: PyModule, name: string): number {
+  let n = 0;
+  for (let k = 0; k < mod.tokens.length; k++) {
+    const t = mod.tokens[k]!;
+    if (t.type === 'NAME' && t.text === name && !isOp(mod.tokens[k - 1], '.')) n += 1;
+  }
+  return n;
+}
+
+/** True at the module-level import gap: an insert site at module indentation exactly where `importInsertLine` puts a new import. */
+export function atImportGap(ctx: Pick<TemplateContext, 'site' | 'mod'>): boolean {
+  return ctx.site.kind === 'insert' && ctx.site.indent === '' && ctx.site.line === importInsertLine(ctx.mod);
 }
 
 export function importDrafts(ctx: TemplateContext): Draft[] {
   const out: Draft[] = [];
   const base = FAMILY_PRIOR.import;
   const { site, mod } = ctx;
+  const gap = atImportGap(ctx);
   // Resolve every unbound name first and keep the ones with an import to offer, nearest the site
-  // first; truncating before resolving would let unresolvable names (a typo, a test-only helper)
-  // crowd out the one name an import fixes.
+  // first (at the import gap: most used first, the use sites are elsewhere by construction);
+  // truncating before resolving would let unresolvable names (a typo, a test-only helper) crowd
+  // out the one name an import fixes.
   const resolved = unboundNames(mod)
     .filter((n) => !isKeyword(n))
-    .map((name) => ({ name, imports: importLinesFor(ctx, name) }))
+    .map((name) => ({ name, imports: importLinesFor(ctx, name), uses: useCount(mod, name) }))
     .filter((r) => r.imports.length > 0)
-    .sort((a, b) => Number(ctx.nearby.has(b.name)) - Number(ctx.nearby.has(a.name)))
+    .sort((a, b) => (gap ? 0 : Number(ctx.nearby.has(b.name)) - Number(ctx.nearby.has(a.name))) || b.uses - a.uses)
     .slice(0, 8);
   if (resolved.length === 0) return out;
   const at = importInsertLine(mod);
   // a local import can only go before the first line of the current statement
   const startsHere = ctx.stmt === undefined || ctx.stmt.startLine === site.line;
   const current = currentLineText(ctx);
-  for (const { name, imports } of resolved) {
-    const loc = ctx.nearby.has(name) ? 1 : 0.7;
+  const maxUses = Math.max(1, ...resolved.map((r) => r.uses));
+  for (const { name, imports, uses } of resolved) {
+    // locality: the name on or near the site (replace sites and function gaps); at the import gap
+    // every name is equally "near" and the use count orders them (a soft factor, never a cut)
+    const loc = gap ? 0.85 + 0.15 * (uses / maxUses) : ctx.nearby.has(name) ? 1 : 0.7;
     for (const imp of imports) {
       const prior = base * imp.p * loc;
       const edit: LineEdit = { path: site.file.path, line: at, kind: 'insert', text: imp.text };

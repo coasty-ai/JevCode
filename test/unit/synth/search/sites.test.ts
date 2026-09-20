@@ -12,6 +12,7 @@ import type { LocalizeResult } from '../../../../src/synth/types.js';
 import {
   GAP_QUESTION,
   GAP_QUESTION_ID,
+  IMPORT_GAP_NOTE,
   INSERT_SITES_MAX,
   LINE_NOUL_CRITERIA,
   Q5N_SHORT_CIRCUIT_P,
@@ -20,7 +21,9 @@ import {
   buildGoalSites,
   captureLineChoiceEscape,
   gapRequest,
+  importGapSite,
   insertSitesFirst,
+  isImportGap,
   lineNoulRequest,
   nextWidenChunk,
   orderGoalSites,
@@ -30,8 +33,9 @@ import {
   widenedSites,
 } from '../../../../src/synth/search/sites.js';
 import type { GoalSiteContext, SbflEvidence } from '../../../../src/synth/search/sites.js';
+import type { Goal } from '../../../../src/synth/search/types.js';
 import type { PerTestResult, RankedLine } from '../../../../src/synth/sbfl/types.js';
-import { ESCAPE_KEY, WRAP_FAILURE, answerAll, fixtureFile, goal, scriptedAsk, signal, stateObject } from './sites-composite.helpers.js';
+import { ESCAPE_KEY, WRAP_FAILURE, answerAll, fixtureFile, goal, ladderTask, scriptedAsk, sf, signal, siteAt, stateObject } from './sites-composite.helpers.js';
 import type { AskCall } from './sites-composite.helpers.js';
 
 const file = fixtureFile('twofn.py');
@@ -161,6 +165,71 @@ describe('replace sites: Q5 ∪ Q5n ∪ SBFL, unioned and ordered', () => {
     expect(g.requests).toBe(0);
     // SBFL top-3 rows: L9 (already an anchor), L2, L4; L5 and L6 are beyond the repo cut
     expect(lines(g.replace)).toEqual([9, 8, 15, 2, 4]);
+  });
+});
+
+describe('module-level import gap from goal.missingNames (ladder tagcloud: NameError on `Counter`)', () => {
+  const tagcloud = ladderTask('tagcloud', ['src/tagcloud.py']).files.get('src/tagcloud.py')!;
+  const init = sf('src/__init__.py', '');
+  const twoFiles = new Map([[tagcloud.path, tagcloud], [init.path, init]]);
+  const TOP_TAGS = 'tests/test_tagcloud.py::test_top_tags';
+  const nameError = { testId: TOP_TAGS, call: TOP_TAGS, expected: '', actual: "NameError: name 'Counter' is not defined" };
+  // the traceback's innermost frame: L28 `counts: Counter = Counter()` in tag_counts (def 26, body 28–31)
+  const anchor = { ...siteAt(tagcloud, 28), evidence: { jevProbability: 0.6, notes: ['q5 top-1'] } };
+  const localized: LocalizeResult = { files: [{ path: tagcloud.path, probability: 1 }], functions: [{ file: tagcloud, name: 'tag_counts', startLine: 26, endLine: 31, probability: 0.8 }], sites: [anchor], requests: 0 };
+  const tagcloudGoal = (over: Partial<Goal> = {}): Goal => goal({ tests: [TOP_TAGS], failures: [nameError], suspectedFiles: ['src/tagcloud.py', 'src/__init__.py'], missingNames: ['Counter'], ...over });
+  const ctxOf = (): { ctx: GoalSiteContext; calls: AskCall[] } => {
+    const { ask, calls } = scriptedAsk((call) => answerAll(call, () => 0.05, () => ({})));
+    return { ctx: { ask, task: 'Some tests fail with a NameError coming from src/tagcloud.py.', signal: signal(), files: twoFiles }, calls };
+  };
+
+  it('importGapSite: the gap before the first non-import line after the last top-level import, module indentation, no block; null when the file binds the name', () => {
+    const site = importGapSite(tagcloud, ['Counter'])!;
+    expect(site).toMatchObject({ line: 8, kind: 'insert', currentLine: '', indent: '', block: null });
+    expect(tagcloud.mod.lines[6]).toBe('from typing import Dict, Iterable, List, Tuple');
+    expect(site.scope.line).toBe(8);
+    expect(site.evidence.notes).toEqual([`${IMPORT_GAP_NOTE} for Counter`]);
+    expect(isImportGap(site)).toBe(true);
+    // `Post` is defined in the file, `combinations` imported: neither is missing here; unknown names are not mentioned
+    expect(importGapSite(tagcloud, ['Post'])).toBeNull();
+    expect(importGapSite(tagcloud, ['combinations'])).toBeNull();
+    expect(importGapSite(tagcloud, ['nothing', 'Counter'])?.evidence.notes).toEqual([`${IMPORT_GAP_NOTE} for Counter`]);
+    // an empty module uses nothing
+    expect(importGapSite(init, ['Counter'])).toBeNull();
+    // a module without imports or docstring: line 1
+    expect(importGapSite(sf('m.py', 'def f():\n    return slugify("a")\n'), ['slugify'])?.line).toBe(1);
+    expect(isImportGap(anchor)).toBe(false);
+  });
+
+  it('buildGoalSites adds the gap once per suspected file that uses the name unbound, visited before every other site, no Jev request', async () => {
+    const { ctx, calls } = ctxOf();
+    const g = await buildGoalSites(ctx, tagcloudGoal(), localized);
+    expect(calls).toHaveLength(0); // two files: no Q5n; the gap costs nothing
+    const gaps = g.insert.filter(isImportGap);
+    expect(gaps).toHaveLength(1); // src/__init__.py does not use Counter
+    expect(gaps[0]).toMatchObject({ file: tagcloud, line: 8, kind: 'insert', indent: '', block: null });
+    expect(g.insert[0]).toBe(gaps[0]);
+    expect(g.ordered[0]).toBe(gaps[0]);
+    expect(g.notes).toContain('import gap src/tagcloud.py:8 for Counter');
+    // the anchor's own gaps still follow it
+    expect(g.ordered.map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['8i', '28r', '29i', '28i']);
+    expect(g.insertAnchors.has(siteKey(gaps[0]!))).toBe(false);
+    // the gap stays first whichever way Q7 later re-orders, and survives the insert cut
+    expect(orderGoalSites(g, true)[0]).toBe(gaps[0]);
+    expect(orderGoalSites(g, false)[0]).toBe(gaps[0]);
+    const cut = await buildGoalSites(ctxOf().ctx, tagcloudGoal(), localized, undefined, { maxInsertSites: 1 });
+    expect(cut.insert).toEqual([gaps[0]]);
+  });
+
+  it('no missingNames, no import gap; a name the file already binds adds none either', async () => {
+    const plain = await buildGoalSites(ctxOf().ctx, tagcloudGoal({ missingNames: [] }), localized);
+    expect(plain.insert.some(isImportGap)).toBe(false);
+    expect(plain.ordered[0]?.kind).toBe('replace');
+    const bound = await buildGoalSites(ctxOf().ctx, tagcloudGoal({ missingNames: ['Post'] }), localized);
+    expect(bound.insert.some(isImportGap)).toBe(false);
+    // a beam function's file counts even when the goal suspects no file
+    const viaBeam = await buildGoalSites(ctxOf().ctx, tagcloudGoal({ suspectedFiles: [] }), localized);
+    expect(viaBeam.ordered[0]).toMatchObject({ line: 8, kind: 'insert', block: null });
   });
 });
 

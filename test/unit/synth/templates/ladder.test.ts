@@ -9,7 +9,7 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { unifiedDiff } from '../../../../src/synth/py/index.js';
-import { createTemplateSource } from '../../../../src/synth/templates/index.js';
+import { FAMILY_PRIOR, createTemplateSource } from '../../../../src/synth/templates/index.js';
 import { LADDER, applyCandidate, compileFailures, gitApplyCheck, insertSite, norm, options, replaceSite, sourceFile, sourceFromText } from './helpers.js';
 
 const source = createTemplateSource();
@@ -63,9 +63,25 @@ describe('template source on the ladder tasks', () => {
     const local = cands.find((c) => c.op === 'import_insert_local');
     expect(local?.text).toBe('    from collections import Counter\n    counts: Counter = Counter()');
     expect(local!.prior!).toBeLessThan(hit!.prior!);
-    // at the import position itself the import is the inserted line
+    // at the import position itself (search/sites.ts `importGapSite`) the import is the inserted
+    // line, first, at the full family prior: locality means nothing at the top of the module
     const top = source.enumerate(insertSite(file, 8, 0), options());
-    expect(top.some((c) => c.text === 'from collections import Counter' && c.extraEdits === undefined)).toBe(true);
+    expect(top[0]).toMatchObject({ text: 'from collections import Counter', op: 'import_insert', prior: FAMILY_PRIOR.import });
+    expect(top[0]!.extraEdits).toBeUndefined();
+    expect(top[0]!.site.kind).toBe('insert');
+    // the gold file sorts the import alphabetically among the others; the template appends it after the last one: same lines
+    const applied = applyCandidate(top[0]!);
+    expect(applied.split('\n')[7]).toBe('from collections import Counter');
+    expect([...applied.split('\n')].sort()).toEqual([...task('tagcloud', 'tagcloud.py', 'gold').src.split('\n')].sort());
+    // the second-choice module (typing re-exports Counter) follows at a lower prior; nothing else fires at the gap
+    expect(top.map((c) => c.text)).toEqual(['from collections import Counter', 'from typing import Counter']);
+    expect(top[1]!.prior!).toBeLessThan(top[0]!.prior!);
+    expect(compileFailures(top.map((c) => ({ id: c.id, src: applyCandidate(c) })))).toEqual([]);
+    // at a gap inside a function the same import is indented, at a lower prior than at the module gap
+    const inFn = source.enumerate(insertSite(file, 29, 4), options()).find((c) => c.text === '    from collections import Counter')!;
+    expect(inFn.op).toBe('import_insert_local');
+    expect(inFn.prior!).toBeLessThan(top[0]!.prior!);
+    expect(compileFailures([{ id: 'local', src: applyCandidate(inFn) }])).toEqual([]);
   });
 
   it('table: adds the sibling parameter with its default to `pad` and rewrites the body literal', () => {

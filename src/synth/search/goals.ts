@@ -12,6 +12,10 @@
  *
  * Jev's job here is the one tests cannot do: which failing behaviour to attack first
  * (neutral wording 16/34 simplest-first vs 8/34 chance). Everything else is arithmetic.
+ *
+ * One traceback-derived hint rides on the goal: `missingNames`, the identifiers a NameError /
+ * ImportError / ModuleNotFoundError line names (`missingNamesIn`). It is evidence for the site
+ * list (search/sites.ts adds the module-level import gap), never a rule about a fix.
  */
 import type { Json, Question, StageName, SynthesisContext } from '../../core/types.js';
 import { choice } from '../../jev/questions.js';
@@ -54,6 +58,33 @@ export const Q1_TASK_CHARS_MAX = 2000;
 export const ATTACK_FIRST_ID = 'attack_first';
 /** Measured neutral wording (probe-progress-judgment.md Part 3), verbatim. */
 export const ATTACK_FIRST_INSTRUCTIONS = 'Which entry of `failing_tests` should the repair attack first?';
+
+// ---------------------------------------------------------------------------------------
+// Traceback-derived hints: the name a NameError / ImportError says is missing
+// ---------------------------------------------------------------------------------------
+
+/**
+ * CPython's own wording for an unbound or unimportable name, as pytest prints it on an `E` line
+ * and as the verifier keeps it in `FailureView.actual`. Only the interpreter's messages are read
+ * (never an assertion's text): each one names exactly the identifier a missing import binds.
+ */
+const MISSING_NAME_PATTERNS: readonly RegExp[] = [
+  /\bNameError: (?:global )?name '([A-Za-z_]\w*)' is not defined/g,
+  /\bImportError: cannot import name '([A-Za-z_]\w*)'/g,
+  /\bModuleNotFoundError: No module named '([A-Za-z_][\w.]*)'/g,
+];
+
+/** Identifiers the interpreter reported missing in `text` (traceback, `E` lines or a failure's `actual`), first seen first. */
+export function missingNamesIn(text: string): string[] {
+  const out: string[] = [];
+  for (const re of MISSING_NAME_PATTERNS) {
+    for (const m of text.matchAll(re)) {
+      const name = m[1] ?? '';
+      if (name !== '' && !out.includes(name)) out.push(name);
+    }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------------------
 // Clustering
@@ -199,9 +230,20 @@ function testFileOfId(testId: string): string {
   return at === -1 ? '' : testId.slice(0, at);
 }
 
-/** Per failing test, the frames of its traceback section (same-named tests in two files are told apart by the file the section prints). */
-function framesPerTest(baseline: TestRunSummary, opts: ClusterOptions): Map<string, Frame[]> {
-  const out = new Map<string, Frame[]>();
+/** What one failing test's output says: its traceback frames and the names the interpreter reported missing. */
+interface TestEvidence {
+  frames: Frame[];
+  missingNames: string[];
+}
+
+/**
+ * Per failing test, the frames of its traceback section (same-named tests in two files are told
+ * apart by the file the section prints) and the missing names read from that section and from
+ * the failure's `actual` (the verifier keeps the exception line there even when the output tail
+ * cut the section).
+ */
+function evidencePerTest(baseline: TestRunSummary, opts: ClusterOptions): Map<string, TestEvidence> {
+  const out = new Map<string, TestEvidence>();
   const sections = opts.output === undefined ? [] : pytestSections(opts.output);
   for (const id of baseline.failing) {
     const name = sectionNameOf(id);
@@ -212,17 +254,18 @@ function framesPerTest(baseline: TestRunSummary, opts: ClusterOptions): Map<stri
       const own = same.find((s) => s.lines.some((l) => l.includes(file)));
       if (own !== undefined) section = own;
     }
-    const frames = section === undefined ? [] : framesIn(section.lines.join('\n'), opts.sourcePaths);
+    const sectionText = section === undefined ? '' : section.lines.join('\n');
+    const frames = section === undefined ? [] : framesIn(sectionText, opts.sourcePaths);
+    const failure = baseline.failures.find((f) => f.testId === id);
     if (frames.length === 0) {
       // The QuixBugs runner's "(at file.py:47: ...)" tail is the only frame it prints.
-      const failure = baseline.failures.find((f) => f.testId === id);
       const m = failure === undefined ? null : ACTUAL_FRAME.exec(failure.actual);
       if (m !== null) {
         const f = frameOf(m[1] ?? '', Number(m[2]), null, opts.sourcePaths);
         if (f !== null) frames.push(f);
       }
     }
-    out.set(id, frames);
+    out.set(id, { frames, missingNames: missingNamesIn(`${sectionText}\n${failure?.actual ?? ''}`) });
   }
   return out;
 }
@@ -239,14 +282,23 @@ interface Cluster {
   /** indices into baseline.failing, ascending */
   members: number[];
   suspectedFiles: string[];
+  /** union of the members' missing names, in member order */
+  missingNames: string[];
 }
 
 function dedupe(items: readonly string[]): string[] {
   return [...new Set(items)];
 }
 
+interface FramedTest {
+  index: number;
+  frame: Frame;
+  frames: Frame[];
+  missingNames: string[];
+}
+
 /** Group tests with the same (file, function) key whose lines fall within FRAME_LINE_WINDOW of the group's first line. */
-function clusterByFrames(entries: { index: number; frame: Frame; frames: Frame[] }[]): Cluster[] {
+function clusterByFrames(entries: FramedTest[]): Cluster[] {
   const byFn = new Map<string, typeof entries>();
   for (const e of entries) {
     const key = `${e.frame.kind}|${e.frame.path}|${e.frame.fn ?? ''}`;
@@ -263,7 +315,9 @@ function clusterByFrames(entries: { index: number; frame: Frame; frames: Frame[]
       const first = current[0]!;
       const files = dedupe(current.flatMap((e) => e.frames.filter((f) => f.kind === 'source').map((f) => f.path).reverse()));
       const where = `${first.frame.path}:${first.frame.fn ?? first.frame.line}`;
-      clusters.push({ reason: `frame ${where}`, members: current.map((e) => e.index).sort((a, b) => a - b), suspectedFiles: files });
+      const members = current.map((e) => e.index).sort((a, b) => a - b);
+      const missingNames = dedupe([...current].sort((a, b) => a.index - b.index).flatMap((e) => e.missingNames));
+      clusters.push({ reason: `frame ${where}`, members, suspectedFiles: files, missingNames });
       current = [];
     };
     for (const e of list) {
@@ -293,8 +347,9 @@ function failureFor(baseline: TestRunSummary, testId: string): FailureView {
   return baseline.failures.find((f) => f.testId === testId) ?? { testId, call: testId, expected: '', actual: 'failed: no details in the output' };
 }
 
-export function newGoal(id: string, tests: string[], failures: FailureView[], suspectedFiles: string[]): Goal {
+export function newGoal(id: string, tests: string[], failures: FailureView[], suspectedFiles: string[], missingNames: readonly string[] = []): Goal {
   const goal: Goal = { id, tests, failures, suspectedFiles, status: 'open', attempts: 0, budgetHits: 0, exhausted: new Map(), phase: 'SEEDS', planItem: '' };
+  if (missingNames.length > 0) goal.missingNames = [...missingNames];
   goal.planItem = planItemFor(goal);
   return goal;
 }
@@ -309,18 +364,19 @@ export function clusterFailures(baseline: TestRunSummary, options: ClusterOption
   const given = options instanceof Map ? optionsFromFiles(options) : (options as ClusterOptions);
   const opts: ClusterOptions = { ...given, output: given.output ?? baseline.outputTail };
   const failing = baseline.failing.filter((id) => id !== RUN_FAILURE_ID);
-  const frames = framesPerTest({ ...baseline, failing }, opts);
-  const framed: { index: number; frame: Frame; frames: Frame[] }[] = [];
+  const evidence = evidencePerTest({ ...baseline, failing }, opts);
+  const framed: FramedTest[] = [];
   const unframed: number[] = [];
+  const missingOf = (id: string): string[] => evidence.get(id)?.missingNames ?? [];
   failing.forEach((id, index) => {
-    const fs = frames.get(id) ?? [];
+    const fs = evidence.get(id)?.frames ?? [];
     let key = keyFrame(fs);
     // A test-module location without a function name ("test_x.py:12: AssertionError") is the
     // test's own body: key it by the test function, so parametrised cases of one test share a
     // goal while neighbouring tests at adjacent lines do not.
     if (key !== null && key.kind === 'test' && key.fn === null) key = { ...key, fn: testFunctionOf(id) };
     if (key === null) unframed.push(index);
-    else framed.push({ index, frame: key, frames: fs });
+    else framed.push({ index, frame: key, frames: fs, missingNames: missingOf(id) });
   });
   const clusters = clusterByFrames(framed);
   const bySbfl = new Map<string, Cluster>();
@@ -328,23 +384,26 @@ export function clusterFailures(baseline: TestRunSummary, options: ClusterOption
     const id = failing[index]!;
     const line = opts.sbfl === undefined ? null : sbflKeyLine(id, opts.sbfl);
     if (line === null) {
-      clusters.push({ reason: 'test', members: [index], suspectedFiles: [] });
+      clusters.push({ reason: 'test', members: [index], suspectedFiles: [], missingNames: missingOf(id) });
       continue;
     }
     const key = `${line.file}:${line.line}`;
     const existing = bySbfl.get(key);
     if (existing === undefined) {
-      const c: Cluster = { reason: `sbfl ${key}`, members: [index], suspectedFiles: [line.file] };
+      const c: Cluster = { reason: `sbfl ${key}`, members: [index], suspectedFiles: [line.file], missingNames: missingOf(id) };
       bySbfl.set(key, c);
       clusters.push(c);
-    } else existing.members.push(index);
+    } else {
+      existing.members.push(index);
+      existing.missingNames = dedupe([...existing.missingNames, ...missingOf(id)]);
+    }
   }
   const defaults = [...(opts.defaultFiles ?? [])];
   const withTests = clusters.map((c) => ({ c, tests: c.members.sort((a, b) => a - b).map((i) => failing[i]!) }));
   withTests.sort((a, b) => b.tests.length - a.tests.length || cmp(a.tests[0] ?? '', b.tests[0] ?? ''));
   return withTests.map(({ c, tests }, i) => {
     const files = c.suspectedFiles.length > 0 ? c.suspectedFiles : defaults;
-    return newGoal(`g${i + 1}`, tests, tests.slice(0, GOAL_FAILURES_BOUND).map((t) => failureFor(baseline, t)), files);
+    return newGoal(`g${i + 1}`, tests, tests.slice(0, GOAL_FAILURES_BOUND).map((t) => failureFor(baseline, t)), files, c.missingNames);
   });
 }
 

@@ -257,3 +257,61 @@ python3 /tmp/jo-table.py bench/results/jev-only-ladder-1 ladder
 The bench uses the default runs dir (`~/.jevcode/runs`): the shared pytest venv it builds there
 (`ladder-venv`) is what the agent's `python3 -m pytest` resolves to through `<workspace>/.venv`.
 
+
+## 8. Note, 2026-09-20: `tagcloud` (rung 2 reach miss) diagnosed and re-run — solved in 4 steps
+
+Owner scope: src/synth/templates/**, search/sites.ts (module-level insert sites), search/goals.ts (traceback-derived
+hints). Evidence: `~/.jevcode/runs/20260920-195128-bampnvxz` (the rung-2 miss), an offline reproduction through the real
+template source and queue vocabulary, and the re-run `bench/results/jev-only-ladder-2-tagcloud` (`20260920-203524-wce4jq5w`).
+
+**Diagnosis.** None of the three suspected causes was the blocker.
+(a) No module-level insert site existed (true: sites are the ±3 gaps around function anchors and the frames point at
+L28/L36/L54 inside the functions), but the import template already carried the fix from a replace site as an
+`extraEdits` insert at L8 (`import_insert_top`, prior 0.7, **first** in the template order at L28); (b) the ranker keeps
+extra-edit candidates (`rank/questions.ts isUnchanged` returns false when `extraEdits` is non-empty) and the rung-2
+decisions show `"    from collections import Counter\n    return dict(counts)"`-style `import_insert_local` options in
+Jev's Choice batches at every site; (c) `verify/apply.ts` applies the L8 insert correctly (the unit test compiles and
+`git apply --check`s it). The actual cause is the free vocabulary pre-check of `sieve/queue.ts` (design §3): a candidate
+whose NAME tokens are not in file ∪ tests ∪ task vocabulary is dropped, and **`collections` is nowhere in `tagcloud.py`, the
+tests or the task text** — `missingFromVocabByPath` returns `['collections']` for both `import_insert_top` and
+`import_insert_local`, so every `from collections import Counter` candidate was dropped as `vocab` after enumeration
+(and after Jev had ranked it): 1,607 candidates enumerated in step 2, 1,394 tested, the fix never among them. The
+transcript has no `collections` at all; `decisions.jsonl` has 18 mentions, all as unranked-then-dropped options.
+
+**Fix (general, no task rule).**
+- `goals.ts`: `missingNamesIn` reads CPython's own wording — `NameError: name 'X' is not defined`, `ImportError: cannot
+  import name 'X'`, `ModuleNotFoundError: No module named 'X'` — from each test's traceback section and its
+  `FailureView.actual`; the goal records `missingNames` (new optional field on `Goal`, search/types.ts).
+- `sites.ts`: `importGapSite(file, names)` = the gap before `importInsertLine` (after the last top-level import, else after
+  the docstring, else L1), module indentation, no block, for every suspected / beam file that uses one of the names
+  unbound (`templates/imports.ts unboundNames`); pushed first among inserts, `orderGoalSites` visits it first, note
+  `module-level import gap for X`.
+- `templates/imports.ts`: at the import gap every resolved name gets full locality (the use site is elsewhere by
+  construction) and the most-used unbound name comes first (`from collections import Counter` at prior 0.70, the family
+  prior, index 0); the stdlib table grew to the modules named in the task (~180 names) plus `STDLIB_NAMES_ALT`, a
+  second-choice module where two export the name (`sleep`: time then asyncio; `Counter`/`OrderedDict`/`ChainMap`:
+  collections then typing; the `collections.abc` twins of the typing ABCs) at p 0.8; `importLinesFor` keeps the best
+  prior per text (a corpus file's verbatim import no longer loses to the derived dotted path). Function-level gaps keep
+  the indented import at ×0.6.
+
+**Re-run** (`--max-steps 12 --max-wall 8m --task-spend-cap 0.25`): **solved**, 4 steps (`run`, `read`, `patch`, `run`),
+stop `complete`, Jev $0.0019 (23 requests), wall 6.4 s, test runs 2. Transcript:
+`[step 3] synth verify: g3: 1 tested on 8 lanes (1 plausible) … (candidates=1, tested=1)` /
+`[step 3] synth search: g3 commit (phase SEEDS, SIEVE, sites 10, requests 6, runs 2, plausible 1) (candidates=2, tested=1)` /
+`[step 3] proposal patch 12 line unified diff: apply verified fix: tests/test_tagcloud.py::test_top_tags now passes (5→9 of 9),
+no regressions; template/import_insert at src/tagcloud.py:8`. The localiser agreed with the site: Q3 `where` =
+`module_level_code_outside_any_function` 0.73, Q5 `buggy_line` = `none_of_these` 0.97. The committed line is
+**`from typing import Counter`** — the second-choice module, because `typing` is in the file's vocabulary and
+`collections` still is not: the gap enumerated 2 candidates, the queue dropped the gold one (`vocab`), the other ran and
+passed 9/9. Semantically valid (`typing.Counter` is the typing alias of `collections.Counter`; calling it returns a
+`collections.Counter`, checked on the venv's 3.9.6), test-passing, not gold-identical.
+
+**Still open, outside this scope (`sieve/queue.ts`, one rule):** the module path of an import statement is resolved by the
+interpreter, not by the file's names, so `missingNames` in `queue.ts` should skip the dotted path between `from` and
+`import` (and after a bare `import`) while still requiring the bound name (`Counter`) to be in the vocabulary. With that,
+`from collections import Counter` (prior 0.70) runs first and the patch is gold-identical; without it every stdlib import
+of a module the file does not already name is unreachable, whatever the template proposes. A second, smaller point: at a
+module-level gap directly before a `def` (a module with no docstring and no imports, e.g. QuixBugs programs) the guard
+family still fires from the def's parameters — pre-existing, harmless (the tests reject them), noted for the template
+owner. Unit gates: `tsc --noEmit` clean, `no-any` ok, `vitest --project unit` 1803/1806 — the 3 failures are in
+concurrent working-tree changes by others (`budget.test.ts` ×2 against the in-progress `budget.ts`, `engine-evidence.test.ts`).

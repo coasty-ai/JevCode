@@ -19,6 +19,14 @@ export interface Goal {
   failures: FailureView[];
   /** traceback frames + SBFL, refined by localisation */
   suspectedFiles: string[];
+  /**
+   * Names the failure text says are missing (`NameError: name 'X' is not defined`,
+   * `ImportError: cannot import name 'X'`, `ModuleNotFoundError: No module named 'X'`), first
+   * seen first; absent when no failing test raised one. Traceback-derived, code-computed
+   * (goals.ts `missingNamesIn`); sites.ts turns it into the module-level import gap of every
+   * suspected file that uses the name unbound.
+   */
+  missingNames?: string[];
   status: GoalStatus;
   /** searches run for this goal */
   attempts: number;
@@ -112,7 +120,14 @@ export interface Arbitration {
 }
 
 export type Decision =
-  | { kind: 'commit'; applied: AppliedCandidate; allGoalTestsPass: boolean; note?: 'possible overfit' | 'partial' }
+  | {
+      kind: 'commit';
+      applied: AppliedCandidate;
+      allGoalTestsPass: boolean;
+      note?: 'possible overfit' | 'partial';
+      /** the shadow test run the commit rests on (guard commits); search/proposal.ts turns it into `Proposal.evidence` */
+      outcome?: VerifyOutcome;
+    }
   | { kind: 'continue' }
   | { kind: 'budget' }
   | { kind: 'parked'; reason: string };

@@ -165,8 +165,37 @@ function candidateEdits(candidate: Pick<Candidate, 'text' | 'extraEdits'> & Part
   return out;
 }
 
+/**
+ * NAME tokens of one line that the vocabulary does not contain. Module paths inside an import
+ * statement (`from a.b import X`, `import a.b as c`) are skipped: the interpreter resolves them,
+ * the file's own names never mention them, and requiring them made every stdlib import of a
+ * module the file did not already name unreachable (ladder `tagcloud`, rung 2). The bound names
+ * (`X`, `c`) are still checked.
+ */
 function missingNames(text: string, vocab: Vocabulary, into: Set<string>): void {
-  for (const t of tokenizeFragment(text)) if (t.type === 'NAME' && !isKeyword(t.text) && !vocab.has(t.text)) into.add(t.text);
+  const toks = tokenizeFragment(text).filter((t) => t.type !== 'COMMENT');
+  const first = toks.find((t) => t.type === 'NAME' || t.type === 'OP');
+  let skipModulePath = false;
+  if (first?.type === 'NAME' && (first.text === 'from' || first.text === 'import')) skipModulePath = true;
+  let afterImportKeyword = first?.text === 'import';
+  let sawFrom = first?.text === 'from';
+  for (const t of toks) {
+    if (t.type !== 'NAME' || isKeyword(t.text)) {
+      if (t.type === 'NAME' && t.text === 'import' && sawFrom) afterImportKeyword = true;
+      continue;
+    }
+    if (skipModulePath) {
+      // `from <path> import ...`: names before `import` are the module path; after it, bound names.
+      // `import <path> [as <name>]`: dotted path segments are the module path; `as` targets are bound.
+      if (sawFrom && !afterImportKeyword) continue;
+      if (!sawFrom && afterImportKeyword) {
+        const prev = toks[toks.indexOf(t) - 1];
+        const isAsTarget = prev?.type === 'NAME' && prev.text === 'as';
+        if (!isAsTarget) continue;
+      }
+    }
+    if (!vocab.has(t.text)) into.add(t.text);
+  }
 }
 
 /** NAME tokens of `candidate` (line and extra edits) that are not in `vocab`, in first-seen order. */

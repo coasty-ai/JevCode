@@ -14,6 +14,11 @@
  *     the statement, 2/4 without: a site list, never a pick, probe-donor-and-templates.md §4)
  *                 + the gap after the last executed line of the failing test when the spectrum
  *     shows a line of the function the failing test never reaches (`shunting_yard`).
+ *                 + the module-level import gap (after the last top-level import, else after the
+ *     docstring, else line 1) of every suspected file that uses a name the failure text says is
+ *     missing (`goal.missingNames`, a NameError / ImportError read by goals.ts): the traceback
+ *     points inside the function that used the name, the fix goes at the top of the module
+ *     (ladder `tagcloud`). Visited first: it holds a handful of import candidates at most.
  *   cut at 6 + 6; insert sites are visited after the replace site of the same anchor, or first
  *   when Q5 put ≥ 0.3 on `none_of_these` or Q7 puts ≥ 0.5 on `insert_new_line`.
  *
@@ -41,6 +46,7 @@ import { indentOf } from '../py/edits.js';
 import { scopeAt, statementAt } from '../py/structure.js';
 import type { PerTestResult, RankedLine } from '../sbfl/types.js';
 import { isFailing } from '../sbfl/ochiai.js';
+import { importInsertLine, unboundNames } from '../templates/imports.js';
 import type { FailureView, FunctionCandidate, JevAsk, LocalizeResult, Site, SiteEvidence, SourceFile } from '../types.js';
 import type { Goal } from './types.js';
 
@@ -292,6 +298,29 @@ export function insertBeforeSite(file: SourceFile, line: number, evidence: SiteE
   return { file, line, kind: 'insert', currentLine: '', indent: indentOf(text), block: above >= 1 ? blockFor(file, above) : null, scope: scopeAt(file.mod, Math.max(1, above)), evidence };
 }
 
+/** Prefix of the evidence note that marks a module-level import gap (`isImportGap`). */
+export const IMPORT_GAP_NOTE = 'module-level import gap';
+
+/**
+ * The module-level gap a missing import goes into: before `importInsertLine` (after the last
+ * top-level import, else after the module docstring, else line 1), at module indentation, in no
+ * block. Null unless the file uses one of `names` without binding it anywhere (a name the file
+ * already imports or defines is not missing here; a `ModuleNotFoundError` names an installed
+ * package, not a line of this file). The names actually missing are recorded in the evidence.
+ */
+export function importGapSite(file: SourceFile, names: readonly string[]): Site | null {
+  const unbound = new Set(unboundNames(file.mod));
+  const missing = names.filter((n) => unbound.has(n));
+  if (missing.length === 0) return null;
+  const line = importInsertLine(file.mod);
+  return { file, line, kind: 'insert', currentLine: '', indent: '', block: null, scope: scopeAt(file.mod, line), evidence: { notes: [`${IMPORT_GAP_NOTE} for ${missing.join(', ')}`] } };
+}
+
+/** True for a site `importGapSite` built: a module-level insert gap carrying the import-gap note. */
+export function isImportGap(site: Pick<Site, 'kind' | 'block' | 'evidence'>): boolean {
+  return site.kind === 'insert' && site.block === null && site.evidence.notes.some((n) => n.startsWith(IMPORT_GAP_NOTE));
+}
+
 /** Code lines of one function span, `def` header (and decorators) excluded. */
 function functionCodeLines(file: SourceFile, startLine: number, endLine: number): CodeLine[] {
   return codeLines(file.mod, startLine, endLine).filter((c) => !isDefLine(file, c.line));
@@ -430,25 +459,29 @@ export function traceTailGap(fn: BeamFunction, goal: Goal, perTest: readonly Per
 }
 
 /**
- * Visiting order: insert sites right after the replace site of their anchor (design §2.5 item 2),
- * remaining inserts (Q6, trace tail, anchors cut from the replace list) last; or every insert
- * site first when `insertFirst`. Call again after Q7 when `insert_new_line` ≥ 0.5 changes the answer.
+ * Visiting order: module-level import gaps first (the failure text named the missing name; the
+ * gap holds a handful of candidates), then insert sites right after the replace site of their
+ * anchor (design §2.5 item 2), remaining inserts (Q6, trace tail, anchors cut from the replace
+ * list) last; or every insert site first when `insertFirst`. Call again after Q7 when
+ * `insert_new_line` ≥ 0.5 changes the answer.
  */
 export function orderGoalSites(g: Pick<GoalSites, 'replace' | 'insert' | 'insertAnchors'>, insertFirst: boolean): Site[] {
-  if (insertFirst) return [...g.insert, ...g.replace];
-  const out: Site[] = [];
+  const importGaps = g.insert.filter(isImportGap);
+  const inserts = g.insert.filter((s) => !isImportGap(s));
+  if (insertFirst) return [...importGaps, ...inserts, ...g.replace];
+  const out: Site[] = [...importGaps];
   const placed = new Set<string>();
   for (const r of g.replace) {
     out.push(r);
     const rk = siteKey(r);
-    for (const i of g.insert) {
+    for (const i of inserts) {
       const ik = siteKey(i);
       if (placed.has(ik) || g.insertAnchors.get(ik) !== rk) continue;
       placed.add(ik);
       out.push(i);
     }
   }
-  for (const i of g.insert) if (!placed.has(siteKey(i))) out.push(i);
+  for (const i of inserts) if (!placed.has(siteKey(i))) out.push(i);
   return out;
 }
 
@@ -545,7 +578,9 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
   ];
   const replaceSites = ordered.slice(0, maxReplace);
 
-  // 5. Insert sites: gaps after and before the top-3 anchors, then Q6 gaps, then the trace tail.
+  // 5. Insert sites: the import gap of every file that uses a reported-missing name unbound
+  //    (pushed first so the cut keeps it), then gaps after and before the top-3 anchors, then
+  //    Q6 gaps, then the trace tail.
   const insertAnchors = new Map<string, string>();
   const inserts: Site[] = [];
   const insertKeys = new Set<string>();
@@ -556,6 +591,20 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
     inserts.push(s);
     if (anchor !== null) insertAnchors.set(k, siteKey(anchor));
   };
+  const missingNames = goal.missingNames ?? [];
+  if (missingNames.length > 0) {
+    // suspected files first (the traceback's own), then the files of the beam functions
+    const paths = [...new Set([...goal.suspectedFiles, ...fns.map((f) => f.file.path)])];
+    for (const p of paths) {
+      const file = ctx.files.get(p);
+      if (file === undefined) continue;
+      const gap = importGapSite(file, missingNames);
+      if (gap !== null) {
+        pushInsert(gap, null);
+        notes.push(`import gap ${p}:${gap.line} for ${missingNames.join(', ')}`);
+      }
+    }
+  }
   for (const a of anchors.slice(0, ANCHORS_PER_FUNCTION)) {
     const entry = entryAt(entriesOf(a.file), a.line) ?? null;
     const anchor: Anchor = { file: a.file, line: a.line, entry, lineProbabilities: new Map(), notes: [] };

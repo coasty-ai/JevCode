@@ -16,6 +16,7 @@ import {
   ledgerLine,
   MAX_CONSECUTIVE_BUDGET_HITS,
   MAX_SEARCHES_WITHOUT_COMMIT,
+  missingNamesIn,
   noteBudgetHit,
   noteCommit,
   optionsFromFiles,
@@ -116,6 +117,68 @@ describe('clusterFailures: pytest tracebacks', () => {
     ]);
     expect(keyFrame(frames)?.path).toBe('/ws/pkg/mod.py');
     expect(keyFrame([])).toBeNull();
+  });
+});
+
+describe('clusterFailures: missing names, the traceback-derived hint (ladder tagcloud: NameError on `Counter`)', () => {
+  const TAG_COUNTS = 'tests/test_tagcloud.py::test_tag_counts';
+  const TAG_COUNTS_EMPTY = 'tests/test_tagcloud.py::test_tag_counts_empty';
+  const TOP_TAGS = 'tests/test_tagcloud.py::test_top_tags';
+  const CO_OCCURRENCE = 'tests/test_tagcloud.py::test_co_occurrence';
+
+  it('every goal of the tagcloud run carries missingNames [Counter], read from its traceback section', () => {
+    const text = searchFixture('pytest-tagcloud-short.txt');
+    const baseline = pytestBaseline(text);
+    expect(baseline.failing).toEqual([TAG_COUNTS, TAG_COUNTS_EMPTY, TOP_TAGS, CO_OCCURRENCE]);
+    const goals = clusterFailures(baseline, { output: text });
+    // three functions raise: tag_counts (two tests), top_tags, co_occurrence
+    expect(goals.map((g) => g.tests)).toEqual([[TAG_COUNTS, TAG_COUNTS_EMPTY], [CO_OCCURRENCE], [TOP_TAGS]]);
+    for (const g of goals) {
+      expect(g.missingNames).toEqual(['Counter']);
+      expect(g.suspectedFiles).toEqual(['src/tagcloud.py']);
+    }
+    // the same through the file-map form the controller uses
+    const files = new Map<string, SourceFile>([['src/tagcloud.py', { path: 'src/tagcloud.py', src: 'x = 1\n', mod: analyse('x = 1\n') }]]);
+    const viaFiles = clusterFailures({ ...baseline, outputTail: text }, files);
+    expect(viaFiles.map((g) => g.missingNames)).toEqual([['Counter'], ['Counter'], ['Counter']]);
+  });
+
+  it('the hint is read from the failure view alone when the output carries no sections (a cut tail); the names of one cluster are unioned', () => {
+    const b = baselineOf([
+      failure('tests/test_m.py::test_a', 'test_a', '', "NameError: name 'slugify' is not defined"),
+      failure('tests/test_m.py::test_b', 'test_b', '', "NameError: name 'Counter' is not defined"),
+    ]);
+    const goals = clusterFailures(b, { defaultFiles: ['src/m.py'] });
+    expect(goals.map((g) => g.missingNames)).toEqual([['slugify'], ['Counter']]);
+    // the same two tests in one function are one goal with both names, member order
+    const mk = (line: number, test: string, name: string): string => `_____ ${test} _____\ntests/test_m.py:5: in ${test}\n    f()\nsrc/m.py:${line}: in f\n    raise\nE   NameError: name '${name}' is not defined\n`;
+    const out = `=== FAILURES ===\n${mk(10, 'test_a', 'slugify')}${mk(11, 'test_b', 'Counter')}=== short test summary info ===\n`;
+    const one = clusterFailures(b, { output: out });
+    expect(one).toHaveLength(1);
+    expect(one[0]?.missingNames).toEqual(['slugify', 'Counter']);
+  });
+
+  it('a goal whose failures name nothing missing has no missingNames field, and reconcile keeps the hint', () => {
+    const output = searchFixture('pytest-account-short.txt');
+    const goals = clusterFailures(pytestBaseline(output), { output, defaultFiles: ['src/account.py'] });
+    for (const g of goals) expect(g.missingNames).toBeUndefined();
+    const text = searchFixture('pytest-tagcloud-short.txt');
+    const fresh = clusterFailures(pytestBaseline(text), { output: text });
+    const kept = reconcile(fresh.map((g) => ({ ...g, attempts: 2 })), fresh, { remaining: [] });
+    expect(kept.every((g) => g.missingNames?.[0] === 'Counter')).toBe(true);
+  });
+
+  it('missingNamesIn reads the interpreter wording only, deduplicated, first seen first', () => {
+    expect(missingNamesIn("E       NameError: name 'Counter' is not defined\n\nsrc/tagcloud.py:28: NameError")).toEqual(['Counter']);
+    expect(missingNamesIn("NameError: global name 'x' is not defined")).toEqual(['x']);
+    expect(missingNamesIn("ImportError: cannot import name 'pad' from 'src.fmt' (/ws/src/fmt.py)")).toEqual(['pad']);
+    expect(missingNamesIn("ModuleNotFoundError: No module named 'yaml'")).toEqual(['yaml']);
+    expect(missingNamesIn("ModuleNotFoundError: No module named 'src.util'")).toEqual(['src.util']);
+    expect(missingNamesIn("E   NameError: name 'a' is not defined\nE   NameError: name 'a' is not defined\nE   NameError: name 'b' is not defined")).toEqual(['a', 'b']);
+    // an assertion that quotes the wording is not the interpreter's message
+    expect(missingNamesIn("AssertionError: name 'x' is not defined")).toEqual([]);
+    expect(missingNamesIn("AttributeError: 'Post' object has no attribute 'Counter'")).toEqual([]);
+    expect(missingNamesIn('')).toEqual([]);
   });
 });
 
