@@ -80,7 +80,7 @@ export const RISK_LEVEL_TEXTS_WITH_EVIDENCE: RiskLevelTexts = {
     RISK_LEVEL_TEXTS.plan_mismatch[0],
     RISK_LEVEL_TEXTS.plan_mismatch[1],
     'skips a planned verification step; an action whose `proposal.evidence.verified` is true and whose `proposal.evidence.goalTests` are named in `plan.remaining` does not skip verification (the tests already ran against this change in a shadow copy and the next step re-runs the suite in the workspace)',
-    RISK_LEVEL_TEXTS.plan_mismatch[3],
+    'ignores the plan\'s open problems, or claims completion (`done`) while `plan.remaining` is non-empty; a test `run` is never a completion claim even when `proposal.plan.done` lists the items its own parsed output will verify (only a `done` action claims completion)',
     'contradicts the plan, repeats a step `recent` shows already failed the same way (a `patch` whose `proposal.evidence` names a different change or different newly passing tests than the earlier attempt is not a repeat, a blocked or declined proposal in `recent` never ran so it did not fail, and a test `run` after a change re-runs the suite `proposal.evidence` measured rather than repeating a failed run), or claims completion with no verifying test run in `recent`',
   ],
   irreversible: RISK_LEVEL_TEXTS.irreversible,
