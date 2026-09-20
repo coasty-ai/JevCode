@@ -10,3 +10,4 @@ bench/results/
 bench/work/
 perf/results/
 /tmp/
+.smoke/
