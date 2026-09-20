@@ -162,8 +162,8 @@ function candidateTexts(candidate: Pick<Candidate, 'text' | 'extraEdits'>): stri
 }
 
 /** Every (file, text) a candidate writes: the site line in the site's file, then each extra edit with a text. */
-function candidateEdits(candidate: Pick<Candidate, 'text' | 'extraEdits'> & Partial<Pick<Candidate, 'site'>>): { path: string; text: string }[] {
-  const out = [{ path: candidate.site?.file.path ?? '', text: candidate.text }];
+function candidateEdits(candidate: Pick<Candidate, 'text' | 'extraEdits'> & { site?: Partial<Pick<Site, 'kind' | 'file'>> }): { path: string; text: string }[] {
+  const out = [{ path: candidate.site?.file?.path ?? '', text: candidate.text }];
   for (const e of candidate.extraEdits ?? []) if (e.text !== undefined) out.push({ path: e.path, text: e.text });
   return out;
 }
