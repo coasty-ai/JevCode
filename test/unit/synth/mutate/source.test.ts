@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { SECOND_ORDER_THRESHOLD, createMutationSource, enumerateMutations, lineToks, looksSyntactic, orderMutants, tokenKey } from '../../../../src/synth/mutate/index.js';
+import { OPERATOR_NAMES, SECOND_ORDER_THRESHOLD, createMutationSource, enumerateMutations, lineToks, looksSyntactic, operatorsFor, orderMutants, tokenKey } from '../../../../src/synth/mutate/index.js';
 import type { Mutant } from '../../../../src/synth/mutate/index.js';
 import { options, quixbugsIndex, quixbugsSite, quixbugsTestLiterals, siteFor } from './helpers.js';
 
@@ -153,5 +153,36 @@ describe('orderMutants', () => {
   it('is stable for equal priors', () => {
     const out = orderMutants([m('b_op', 0.5, 'b'), m('a_op', 0.5, 'a')]);
     expect(out.map((x) => x.op)).toEqual(['a_op', 'b_op']);
+  });
+});
+
+describe('collapse_collection_to_element is enumerated at statement-level sites and in WIDENED only', () => {
+  const src = 'class F:\n    def __hash__(self):\n        return hash((\n            self.creation_counter,\n            self.model if x else None,\n        ))\n';
+  const physical = siteFor(src, 3);
+  const statement = { ...physical, currentLine: '        return hash((self.creation_counter, self.model if x else None))', endLine: 6 };
+
+  it('operatorsFor drops the operator at a physical line in SEEDS and keeps the full table otherwise', () => {
+    expect(operatorsFor(physical, {})).toEqual(OPERATOR_NAMES.filter((o) => o !== 'collapse_collection_to_element'));
+    expect(operatorsFor(physical, { phase: 'SEEDS' })).not.toContain('collapse_collection_to_element');
+    expect(operatorsFor(physical, { phase: 'WIDENED' })).toEqual(OPERATOR_NAMES);
+    expect(operatorsFor(statement, {})).toEqual(OPERATOR_NAMES);
+  });
+
+  it('the joined statement yields `return hash(self.creation_counter)`; the physical first line cannot (its brackets stay open)', () => {
+    const seeds = enumerateMutations(physical, options());
+    expect(seeds.some((c) => c.op === 'collapse_collection_to_element')).toBe(false);
+    const cands = enumerateMutations(statement, options());
+    const hit = cands.find((c) => c.text.trim() === 'return hash(self.creation_counter)');
+    expect(hit).toBeDefined();
+    expect(hit!.op).toBe('collapse_collection_to_element');
+    expect(hit!.site.endLine).toBe(6);
+    // every candidate at the statement site is one balanced line replacing the whole span
+    for (const c of cands) expect((c.text.match(/\(/g) ?? []).length).toBe((c.text.match(/\)/g) ?? []).length);
+    // the WIDENED hint alone also enumerates the operator at a physical line
+    const line = siteFor('def f(a, b):\n    return hash((a, b))\n', 2);
+    const w = enumerateMutations(line, { ...options(), phase: 'WIDENED' });
+    expect(w.some((c) => c.op === 'collapse_collection_to_element' && c.text.trim() === 'return hash(a)')).toBe(true);
+    const s = enumerateMutations(line, options());
+    expect(s.some((c) => c.op === 'collapse_collection_to_element' || c.text.trim() === 'return hash(a)')).toBe(false);
   });
 });

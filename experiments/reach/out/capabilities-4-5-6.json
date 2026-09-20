@@ -1,0 +1,275 @@
+{
+ "ran_at": "2026-09-20T23:28:27.077Z",
+ "spend_usd": 0,
+ "results": [
+  {
+   "id": "django__django-15315",
+   "capability": "4 statement-level site + collapse_collection_to_element",
+   "before": {
+    "label": "before: physical line, SEEDS",
+    "site": "django/db/models/fields/__init__.py:545",
+    "currentLine": "return hash((",
+    "counts": [
+     {
+      "source": "mutation",
+      "count": 21,
+      "ms": 6,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "template",
+      "count": 92,
+      "ms": 18,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "donor",
+      "count": 254,
+      "ms": 935,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "composite",
+      "count": 64,
+      "ms": 2899,
+      "targetIndex": null,
+      "op": null
+     }
+    ],
+    "total": 431,
+    "found": null
+   },
+   "after": {
+    "label": "after: statement-level site, SEEDS",
+    "site": "django/db/models/fields/__init__.py:545-549",
+    "currentLine": "return hash((self.creation_counter, self.model._meta.app_label if hasattr(self, 'model') else None, self.model._meta.model_name if hasattr(self, 'model') else N",
+    "counts": [
+     {
+      "source": "mutation",
+      "count": 254,
+      "ms": 8,
+      "targetIndex": 41,
+      "op": "collapse_collection_to_element"
+     },
+     {
+      "source": "template",
+      "count": 254,
+      "ms": 124,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "donor",
+      "count": 254,
+      "ms": 351,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "composite",
+      "count": 100,
+      "ms": 1274,
+      "targetIndex": null,
+      "op": null
+     }
+    ],
+    "total": 862,
+    "found": {
+     "source": "mutation",
+     "index": 41,
+     "op": "collapse_collection_to_element",
+     "extraEdits": []
+    }
+   },
+   "f2p": {
+    "pass": true,
+    "ms": 2392,
+    "tail": ".\n----------------------------------------------------------------------\nRan 1 test in 0.000s\n\nOK\nTesting against Django installed in '/tmp/jevonly/reach/django__django-15315-cap456/django'\nFound 1 test(s).\nSystem check identified no issues (0 silenced).\n",
+    "diff": "diff --git a/django/db/models/fields/__init__.py b/django/db/models/fields/__init__.py\n--- a/django/db/models/fields/__init__.py\n+++ b/django/db/models/fields/__init__.py\n@@ -542,11 +542,7 @@\n         return NotImplemented\n \n     def __hash__(self):\n-        return hash((\n-            self.creation_counter,\n-            self.model._meta.app_label if hasattr(self, 'model') else None,\n-            self.model._meta.model_name if hasattr(self, 'model') else None,\n-        ))\n+        return hash(self.creation_counter)\n \n     def __deepcopy__(self, memodict):\n         # We don't have to deepcopy very much here, since most things are not\n"
+   }
+  },
+  {
+   "id": "sympy__sympy-11618",
+   "capability": "5 stdlib-sibling callee substitution carrying its import (at the statement-level site)",
+   "before": {
+    "label": "before: physical line, SEEDS",
+    "site": "sympy/geometry/point.py:269",
+    "currentLine": "return sqrt(sum([(a - b)**2 for a, b in zip(",
+    "counts": [
+     {
+      "source": "mutation",
+      "count": 137,
+      "ms": 6,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "template",
+      "count": 97,
+      "ms": 6,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "donor",
+      "count": 254,
+      "ms": 3502,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "composite",
+      "count": 148,
+      "ms": 5297,
+      "targetIndex": null,
+      "op": null
+     }
+    ],
+    "total": 636,
+    "found": null
+   },
+   "after": {
+    "label": "after: statement-level site, SEEDS",
+    "site": "sympy/geometry/point.py:269-270",
+    "currentLine": "return sqrt(sum([(a - b)**2 for a, b in zip(self.args, p.args if isinstance(p, Point) else p)]))",
+    "counts": [
+     {
+      "source": "mutation",
+      "count": 254,
+      "ms": 25,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "template",
+      "count": 202,
+      "ms": 33,
+      "targetIndex": 58,
+      "op": "callee_stdlib_subst_kw"
+     },
+     {
+      "source": "donor",
+      "count": 254,
+      "ms": 2301,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "composite",
+      "count": 100,
+      "ms": 2804,
+      "targetIndex": null,
+      "op": null
+     }
+    ],
+    "total": 810,
+    "found": {
+     "source": "template",
+     "index": 58,
+     "op": "callee_stdlib_subst_kw",
+     "extraEdits": [
+      "insert@26: from itertools import zip_longest"
+     ]
+    }
+   },
+   "f2p": {
+    "pass": true,
+    "ms": 8195,
+    "tail": "y__sympy-11618/jev-only/workspace/.venv/bin/python  (3.9.6-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nrandom seed:        91179518\nhash randomization: on (PYTHONHASHSEED=3550272191)\n\nsympy/geometry/tests/test_point.py[1] .                                     [OK]\n\n================== tests finished: 1 passed, in 0.01 seconds ===================\n",
+    "diff": "diff --git a/sympy/geometry/point.py b/sympy/geometry/point.py\n--- a/sympy/geometry/point.py\n+++ b/sympy/geometry/point.py\n@@ -23,6 +23,7 @@\n from sympy.core.add import Add\n \n from .entity import GeometryEntity\n+from itertools import zip_longest\n \n \n class Point(GeometryEntity):\n@@ -266,8 +267,7 @@\n         sqrt(x**2 + y**2)\n \n         \"\"\"\n-        return sqrt(sum([(a - b)**2 for a, b in zip(\n-            self.args, p.args if isinstance(p, Point) else p)]))\n+        return sqrt(sum([(a - b)**2 for a, b in zip_longest(self.args, p.args if isinstance(p, Point) else p, fillvalue=0)]))\n \n     def taxicab_distance(self, p):\n         \"\"\"The Taxicab Distance from self to point p.\n"
+   }
+  },
+  {
+   "id": "sympy__sympy-19954",
+   "capability": "6 depth-2 wraps (WIDENED)",
+   "before": {
+    "label": "before: physical line, SEEDS",
+    "site": "sympy/combinatorics/perm_groups.py:2198",
+    "currentLine": "for i, r in enumerate(rep_blocks):",
+    "counts": [
+     {
+      "source": "mutation",
+      "count": 81,
+      "ms": 1,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "template",
+      "count": 254,
+      "ms": 26,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "donor",
+      "count": 254,
+      "ms": 15215,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "composite",
+      "count": 100,
+      "ms": 7284,
+      "targetIndex": null,
+      "op": null
+     }
+    ],
+    "total": 689,
+    "found": null
+   },
+   "after": {
+    "label": "after: physical line, WIDENED",
+    "site": "sympy/combinatorics/perm_groups.py:2198",
+    "currentLine": "for i, r in enumerate(rep_blocks):",
+    "counts": [
+     {
+      "source": "mutation",
+      "count": 81,
+      "ms": 2,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "template",
+      "count": 254,
+      "ms": 124,
+      "targetIndex": 170,
+      "op": "wrap2_reversed_list"
+     },
+     {
+      "source": "donor",
+      "count": 254,
+      "ms": 2696,
+      "targetIndex": null,
+      "op": null
+     },
+     {
+      "source": "composite",
+      "count": 100,
+      "ms": 4425,
+      "targetIndex": null,
+      "op": null
+     }
+    ],
+    "total": 689,
+    "found": {
+     "source": "template",
+     "index": 170,
+     "op": "wrap2_reversed_list",
+     "extraEdits": []
+    }
+   },
+   "f2p": {
+    "pass": true,
+    "ms": 12209,
+    "tail": "orkspace/.venv/bin/python  (3.9.6-final-0) [CPython]\narchitecture:       64-bit\ncache:              no\nground types:       python \nnumpy:              None\nrandom seed:        48140503\nhash randomization: on (PYTHONHASHSEED=4103222082)\n\nsympy/combinatorics/tests/test_perm_groups.py[1] .                          [OK]\n\n================== tests finished: 1 passed, in 3.23 seconds ===================\n",
+    "diff": "diff --git a/sympy/combinatorics/perm_groups.py b/sympy/combinatorics/perm_groups.py\n--- a/sympy/combinatorics/perm_groups.py\n+++ b/sympy/combinatorics/perm_groups.py\n@@ -2195,7 +2195,7 @@\n                 # respect to the already discovere ones\n                 minimal = True\n                 to_remove = []\n-                for i, r in enumerate(rep_blocks):\n+                for i, r in reversed(list(enumerate(rep_blocks))):\n                     if len(r) > len(rep) and rep.issubset(r):\n                         # i-th block system is not minimal\n                         del num_blocks[i], blocks[i]\n"
+   }
+  }
+ ]
+}

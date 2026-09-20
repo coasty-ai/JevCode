@@ -6,6 +6,8 @@
  */
 import type { Answer, Decision, Json, Question, StageName } from '../core/types.js';
 import type { PyModule, LineScope } from './py/structure.js';
+import type { IntrospectedNames } from './introspect/types.js';
+import type { HistoryFacts } from './history/types.js';
 
 // ---------------------------------------------------------------------------------------
 // Where we are editing
@@ -26,6 +28,12 @@ export interface Site {
   kind: 'replace' | 'insert';
   /** current text of `line` (trimmed of the trailing newline); '' for insert sites */
   currentLine: string;
+  /**
+   * Statement-level replace site (localize/sites.ts `statementSiteAt`): the candidate text replaces
+   * the physical lines `line..endLine` (a multi-line logical statement) and `currentLine` is the
+   * statement joined onto one line. Absent for a one-line site. verify/apply.ts applies the span.
+   */
+  endLine?: number;
   indent: string;
   /** enclosing function/class block line range (1-based inclusive), or null at module level */
   block: { name: string; startLine: number; endLine: number } | null;
@@ -62,6 +70,8 @@ export interface Candidate {
   extraEdits?: readonly LineEdit[];
   /** prior from the source (0..1), used only to order enumeration, never as a Jev substitute */
   prior?: number;
+  /** where the text comes from when it is not derived from the site (history: `reverse of <sha> "<subject>" (<reason>)`), for the transcript */
+  provenance?: string;
 }
 
 export interface LineEdit {
@@ -88,6 +98,23 @@ export interface EnumerateOptions {
   taskIdentifiers: readonly string[];
   /** other files of the workspace available as donor corpus (path -> SourceFile) */
   corpus: ReadonlyMap<string, SourceFile>;
+  /**
+   * Names harvested from the workspace at run time (src/synth/introspect: classes, attributes,
+   * predicates and module names of the failing call's objects, plus the alias names a file's own
+   * dispatch prefix composes from them). The caller adds them to the queue's vocabulary
+   * (sieve/queue.ts `vocabularyOf` ∪ extraNames) so the pre-check accepts what the productions
+   * below write; absent = nothing harvested.
+   */
+  extraNames?: readonly string[];
+  /** the introspection pass's result, read by templates/introspect.ts (`attribute_predicate_guard`, `mro_method_alias`) */
+  introspected?: IntrospectedNames;
+  /** the harvested git history, read by history/source.ts */
+  history?: HistoryFacts;
+  /**
+   * Search phase hint (design §2.3): the sources that widen the space beyond the measured SEEDS
+   * set (depth-2 wraps, templates/wrap2.ts) enumerate only when it says 'WIDENED'. Absent = SEEDS.
+   */
+  phase?: 'SEEDS' | 'SKETCH' | 'BEAM' | 'WIDENED';
 }
 
 export interface CandidateSource {

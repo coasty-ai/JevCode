@@ -5,10 +5,19 @@
  * candidates. Evidence is code-computed: the line's own Choice probability, its SBFL rank and
  * score, and notes such as "in traceback". Order: anchors first, then their insert gaps, then
  * neighbours by distance, so a consumer that stops after k sites gets the best k.
+ *
+ * Statement-level sites (experiments/results/swebench-reach-oracle-9.md capability 4): when a
+ * replace line belongs to a multi-line logical statement, the statement joined onto one line is a
+ * site of its own (`Site.endLine` marks the span, verify/apply.ts replaces it whole), so the
+ * sources see `return hash((a, b, c))` instead of `return hash((` and a candidate cannot leave the
+ * continuation lines dangling (django-15315: 1,143 of 2,171 physical-line candidates broke the
+ * module import). At the statement's first line the statement site stands IN PLACE of the
+ * physical-line site (search/sites.ts keys sites by path:line:kind, so two sites at one line would
+ * be one there and the physical one would win); at a later line of the statement it is added once.
  */
 import { indentOf } from '../py/edits.js';
 import { blockAt, scopeAt, statementAt } from '../py/structure.js';
-import type { Statement } from '../py/structure.js';
+import type { PyModule, Statement } from '../py/structure.js';
 import type { RankedLine } from '../sbfl/types.js';
 import type { Site, SiteEvidence, SourceFile } from '../types.js';
 import { codeLines, entryAt, functionEntries, moduleCodeLines } from './outline.js';
@@ -261,6 +270,80 @@ function blockOf(entry: FunctionEntry | null): Site['block'] {
   return { name: entry.qualname, startLine: entry.startLine, endLine: entry.endLine };
 }
 
+// ---------------------------------------------------------------------------------------
+// Statement-level replace sites
+// ---------------------------------------------------------------------------------------
+
+const OPEN_BRACKETS: ReadonlySet<string> = new Set(['(', '[', '{']);
+const CLOSE_BRACKETS: ReadonlySet<string> = new Set([')', ']', '}']);
+
+/**
+ * A multi-line statement's code tokens joined onto one line: the source spacing is kept between
+ * tokens of one physical line; across a line break one space goes in, none after an open bracket
+ * or before a close bracket or comma, and a trailing comma right before the closing bracket is
+ * dropped (`hash((\n a,\n b,\n))` -> `hash((a, b))`). Comments and backslash continuations vanish
+ * with the line breaks. Null when the statement fits one line already, or when a token itself
+ * spans lines (a triple-quoted string), which no one-line site can hold.
+ */
+export function joinedStatementText(mod: PyModule, st: Statement): string | null {
+  if (st.startLine === st.endLine) return null;
+  const toks = st.tokens;
+  if (toks.length === 0 || toks.some((t) => t.text.includes('\n'))) return null;
+  let out = '';
+  toks.forEach((t, k) => {
+    const prev = toks[k - 1];
+    if (prev === undefined) {
+      out = t.text;
+      return;
+    }
+    if (t.line === prev.endLine) {
+      out += mod.src.slice(prev.end, t.start) + t.text;
+      return;
+    }
+    if (prev.type === 'OP' && prev.text === ',' && t.type === 'OP' && CLOSE_BRACKETS.has(t.text)) out = out.slice(0, -1);
+    const tight = (prev.type === 'OP' && OPEN_BRACKETS.has(prev.text)) || (t.type === 'OP' && (CLOSE_BRACKETS.has(t.text) || t.text === ','));
+    out += (tight ? '' : ' ') + t.text;
+  });
+  return out;
+}
+
+/**
+ * The statement-level site for the statement containing `line`, or null when that statement is
+ * one physical line, a `def`/`class` header (never a replace site), a string-only statement (a
+ * docstring) or cannot be joined. `line` is the statement's first line, `endLine` its last,
+ * `indent` the first line's, `currentLine` the joined statement.
+ */
+export function statementSiteAt(file: SourceFile, line: number, evidence: SiteEvidence, block: Site['block'] = blockOf(entryOfLine(file, line))): Site | null {
+  const mod = file.mod;
+  const st = statementAt(mod, line);
+  if (st === undefined || st.kind === 'decorator' || isDefLine(file, st.startLine)) return null;
+  if (st.tokens.length > 0 && st.tokens.every((t) => t.type === 'STRING')) return null;
+  const joined = joinedStatementText(mod, st);
+  if (joined === null) return null;
+  const first = mod.lines[st.startLine - 1] ?? '';
+  const indent = indentOf(first);
+  return {
+    file,
+    line: st.startLine,
+    kind: 'replace',
+    currentLine: indent + joined,
+    endLine: st.endLine,
+    indent,
+    block,
+    scope: scopeAt(mod, st.startLine),
+    evidence: { ...evidence, notes: [...evidence.notes, `statement L${st.startLine}-${st.endLine} joined`] },
+  };
+}
+
+/** True when `site` is a statement-level replace site (a span of physical lines). */
+export function isStatementSite(site: Pick<Site, 'line' | 'kind' | 'endLine'>): boolean {
+  return site.kind === 'replace' && site.endLine !== undefined && site.endLine > site.line;
+}
+
+function entryOfLine(file: SourceFile, line: number): FunctionEntry | null {
+  return entryAt(functionEntries(file), line) ?? null;
+}
+
 function replaceSite(input: SiteBuildInput, a: Anchor, line: number, notes: string[]): Site {
   const text = a.file.mod.lines[line - 1] ?? '';
   return {
@@ -347,8 +430,32 @@ export function buildSites(input: SiteBuildInput): Site[] {
     seen.add(k);
     out.push(s);
   };
+  // A replace site on a multi-line statement: the statement-level site stands in for the first
+  // physical line and is added once after any later line of the statement (header comment).
+  const statementSpans = new Set<string>();
+  const pushReplace = (s: Site): void => {
+    const st = statementAt(s.file.mod, s.line);
+    const spanSite = st !== undefined && st.startLine !== st.endLine ? statementSiteAt(s.file, s.line, s.evidence, s.block) : null;
+    if (spanSite === null) {
+      push(s);
+      return;
+    }
+    const spanKey = `${s.file.path}:${spanSite.line}-${spanSite.endLine}`;
+    if (spanSite.line === s.line) {
+      if (!statementSpans.has(spanKey)) {
+        statementSpans.add(spanKey);
+        push(spanSite);
+      }
+      return;
+    }
+    push(s);
+    if (!statementSpans.has(spanKey) && !seen.has(`${s.file.path}:${spanSite.line}:replace`)) {
+      statementSpans.add(spanKey);
+      push(spanSite);
+    }
+  };
   // pass 1: the anchors themselves
-  for (const a of input.anchors) push(replaceSite(input, a, a.line, a.notes));
+  for (const a of input.anchors) pushReplace(replaceSite(input, a, a.line, a.notes));
   // pass 2: insert gaps around each anchor
   for (const a of input.anchors) {
     push(insertSite(input, a, 'before'));
@@ -360,11 +467,11 @@ export function buildSites(input: SiteBuildInput): Site[] {
     input.anchors.forEach((a, i) => {
       for (const line of [a.line - d, a.line + d]) {
         if (!eligible[i]!.has(line)) continue;
-        push(replaceSite(input, a, line, [`within ${d} of anchor L${a.line}`]));
+        pushReplace(replaceSite(input, a, line, [`within ${d} of anchor L${a.line}`]));
       }
     });
   }
   // pass 4: SBFL-only lines, unioned after every Jev-derived site (design §2.5 item 1)
-  if (input.sbflAnchors !== undefined) for (const s of sbflOnlySites(input, input.sbflAnchors, seen)) push(s);
+  if (input.sbflAnchors !== undefined) for (const s of sbflOnlySites(input, input.sbflAnchors, seen)) pushReplace(s);
   return out;
 }

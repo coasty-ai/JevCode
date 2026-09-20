@@ -1,0 +1,109 @@
+sympy__sympy-15345: 130 template candidates at insert@104 (130 introspect); gold-equivalent at enumeration index 14
+  ranked by two_stage: gold rank 4 (p 0.1), escape 0.15, absent true; 2 requests, $0.00056, 470 ms
+  top: #1 p0.41     _print_Max = _print_Function | #2 p0.13     _print_LatticeOp = _print_Function | #3 p0.12     _print_Max = _print_list | #4 p0.1     _print_MinMaxBase = _print_Function | #5 p0.09     _print_LatticeOp = _print_list
+sympy__sympy-17139: 254 template candidates at insert@503 (150 introspect); gold-equivalent at enumeration index 50
+  ranked by two_stage: gold rank 1 (p 0.48), escape 0.02, absent false; 2 requests, $0.00089, 1223 ms
+  top: #1 p0.48         if not rv.exp.is_real: ⏎             return rv | #2 p0.3         if not rv.exp.is_comparable: ⏎             return rv | #3 p0.12         if not rv.exp.is_extended_real: ⏎             return rv | #4 p0.07         if not rv.is_comparable: ⏎             return rv | #5 p0.01         if not rv.exp.is_integer: ⏎             return rv
+{
+ "model": "typesafe/jev-1.13-20260917",
+ "ran_at": "2026-09-20T23:44:41.434Z",
+ "spend_usd": 0.00145,
+ "jev_requests": 4,
+ "rows": [
+  {
+   "instance_id": "sympy__sympy-15345",
+   "site": "insert@104",
+   "candidates": 130,
+   "introspect_candidates": 130,
+   "gold_enumeration_index": 14,
+   "gold_rank": 4,
+   "gold_p": 0.1,
+   "method": "two_stage",
+   "escape_p": 0.15,
+   "fix_probably_absent": true,
+   "requests": 2,
+   "cost_usd": 0.00056,
+   "ms": 470,
+   "top": [
+    {
+     "rank": 1,
+     "p": 0.41,
+     "text": "    _print_Max = _print_Function",
+     "op": "mro_method_alias"
+    },
+    {
+     "rank": 2,
+     "p": 0.13,
+     "text": "    _print_LatticeOp = _print_Function",
+     "op": "mro_method_alias"
+    },
+    {
+     "rank": 3,
+     "p": 0.12,
+     "text": "    _print_Max = _print_list",
+     "op": "mro_method_alias"
+    },
+    {
+     "rank": 4,
+     "p": 0.1,
+     "text": "    _print_MinMaxBase = _print_Function",
+     "op": "mro_method_alias"
+    },
+    {
+     "rank": 5,
+     "p": 0.09,
+     "text": "    _print_LatticeOp = _print_list",
+     "op": "mro_method_alias"
+    }
+   ]
+  },
+  {
+   "instance_id": "sympy__sympy-17139",
+   "site": "insert@503",
+   "candidates": 254,
+   "introspect_candidates": 150,
+   "gold_enumeration_index": 50,
+   "gold_rank": 1,
+   "gold_p": 0.48,
+   "method": "two_stage",
+   "escape_p": 0.02,
+   "fix_probably_absent": false,
+   "requests": 2,
+   "cost_usd": 0.00089,
+   "ms": 1223,
+   "top": [
+    {
+     "rank": 1,
+     "p": 0.48,
+     "text": "        if not rv.exp.is_real: ⏎             return rv",
+     "op": "attribute_predicate_guard"
+    },
+    {
+     "rank": 2,
+     "p": 0.3,
+     "text": "        if not rv.exp.is_comparable: ⏎             return rv",
+     "op": "attribute_predicate_guard"
+    },
+    {
+     "rank": 3,
+     "p": 0.12,
+     "text": "        if not rv.exp.is_extended_real: ⏎             return rv",
+     "op": "attribute_predicate_guard"
+    },
+    {
+     "rank": 4,
+     "p": 0.07,
+     "text": "        if not rv.is_comparable: ⏎             return rv",
+     "op": "attribute_predicate_guard"
+    },
+    {
+     "rank": 5,
+     "p": 0.01,
+     "text": "        if not rv.exp.is_integer: ⏎             return rv",
+     "op": "attribute_predicate_guard"
+    }
+   ]
+  }
+ ]
+}
+exit 0

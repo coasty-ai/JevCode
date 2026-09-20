@@ -6,13 +6,18 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  CALL_SITE_STATEMENT_CAP,
   DONOR_UNIT_LIMIT,
   SECOND_ORDER_LIMIT,
   SECOND_ORDER_SEEDS,
+  UNIT_DEADLINE_MS,
   addedParameter,
+  callIndexOf,
   createCompositeSource,
   derivedSite,
   donorWindows,
+  enumerateSignatureUnits,
+  scanBudget,
   statementRuns,
 } from '../../../../src/synth/search/composite.js';
 import { createMutationSource } from '../../../../src/synth/mutate/index.js';
@@ -199,5 +204,74 @@ describe('depth-2 pairs', () => {
     expect(noPairs.name).toBe('composite');
     // `opts.cap` cuts the combined enumeration
     expect(source.enumerate(site, { ...opts, cap: 3 })).toHaveLength(3);
+  });
+});
+
+describe('statement-level sites (Site.endLine)', () => {
+  const f = sf('h.py', ['class F:', '    def __hash__(self):', '        return hash((', '            self.a,', '            self.b if x else None,', '        ))', '', '    def other(self):', '        return 1', ''].join('\n'));
+  const site = { ...siteAt(f, 3), currentLine: '        return hash((self.a, self.b if x else None))', endLine: 6 };
+  const opts = enumerateOptions(new Map([[f.path, f]]));
+
+  it('derivedSite replaces the whole span and yields a one-line site', () => {
+    const d = derivedSite(site, '        return hash(self.a)')!;
+    expect(d.endLine).toBeUndefined();
+    expect(d.file.mod.lines.slice(2, 5)).toEqual(['        return hash(self.a)', '', '    def other(self):']);
+    expect(d.currentLine).toBe('        return hash(self.a)');
+  });
+
+  it('pairs are enumerated on the joined statement and carry no extra edits; signature and donor-body units are not', () => {
+    const pairs = source.enumeratePairs(site, opts);
+    expect(pairs.length).toBeGreaterThan(0);
+    expect(pairs.every((c) => c.site === site && c.extraEdits === undefined && !c.text.includes('\n'))).toBe(true);
+    // every pair applies through the span: one line in place of four
+    for (const c of pairs.slice(0, 20)) expect(applyCandidate(c).files[0]!.after.split('\n')).toHaveLength(7);
+    expect(source.enumerateSignatureUnits(site, opts)).toEqual([]);
+    expect(source.enumerateDonorBodyUnits(site, opts)).toEqual([]);
+    expect(source.enumerate(site, opts).every((c) => c.op.startsWith('pair:'))).toBe(true);
+  });
+});
+
+describe('signature units are bounded on a large corpus (swebench-reach-oracle-9.md hazard)', () => {
+  /** 300 files, each with 40 one-line statements of which 10 call `helper(...)` with names in scope, plus the def's own file. */
+  function corpus(): { files: Map<string, SourceFile>; core: SourceFile } {
+    const core = sf('pkg/core.py', ['def helper(text, width):', '    pad = " "', '    return text + pad * (width - len(text))', '', 'def helper_left(text, width, fill=" "):', '    return fill * (width - len(text)) + text', ''].join('\n'));
+    const files = new Map<string, SourceFile>([[core.path, core]]);
+    for (let i = 0; i < 300; i++) {
+      const lines = ['from pkg.core import helper', '', `def use_${i}(text, width, fill):`];
+      for (let k = 0; k < 40; k++) lines.push(k % 4 === 0 ? `    v${k} = helper(text, width)` : `    v${k} = other_${k}(text, ${k})`);
+      lines.push('    return fill', '');
+      const path = `pkg/mod_${String(i).padStart(3, '0')}.py`;
+      files.set(path, sf(path, lines.join('\n')));
+    }
+    return { files, core };
+  }
+
+  it('returns in under 2 s with the call-site index, complete threading across every file', () => {
+    const { files, core } = corpus();
+    const opts = enumerateOptions(files, { taskIdentifiers: ['helper', 'fill'] });
+    const site = siteAt(core, 3);
+    const t0 = Date.now();
+    const units = enumerateSignatureUnits(site, opts);
+    const ms = Date.now() - t0;
+    expect(ms).toBeLessThan(2000);
+    expect(units.length).toBeGreaterThan(0);
+    // the sibling's `fill` parameter is threaded through all 300 files x 10 call sites (+ the header)
+    const fill = units.find((c) => c.op === 'signature_unit:add_param_sibling_with_edits:from_body' || c.op.includes('add_param_sibling'));
+    expect(fill).toBeDefined();
+    const callEdits = (fill!.extraEdits ?? []).filter((e) => e.path !== core.path);
+    expect(callEdits).toHaveLength(3000);
+    expect(callEdits[0]!.text).toContain('helper(text, width, fill)');
+    // the index is built once per file object and lists the callee's lines
+    const idx = callIndexOf(files.get('pkg/mod_000.py')!);
+    expect(idx.get('helper')).toHaveLength(10);
+    expect(callIndexOf(files.get('pkg/mod_000.py')!)).toBe(idx);
+  });
+
+  it('a spent budget cuts the scan and drops the half-threaded draft instead of offering it', () => {
+    const { files, core } = corpus();
+    const opts = enumerateOptions(files, { taskIdentifiers: ['helper'] });
+    expect(enumerateSignatureUnits(siteAt(core, 3), opts, 20, scanBudget(UNIT_DEADLINE_MS, 5))).toEqual([]);
+    expect(enumerateSignatureUnits(siteAt(core, 3), opts, 20, scanBudget(-1, CALL_SITE_STATEMENT_CAP))).toEqual([]);
+    expect(createCompositeSource({ unitDeadlineMs: -1, pairs: false, donorUnits: false }).enumerate(siteAt(core, 3), opts)).toEqual([]);
   });
 });

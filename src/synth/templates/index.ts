@@ -7,6 +7,10 @@
  * imports and branch clones. Everything is deterministic and pure; priors order enumeration
  * by family yield in the literature and by locality (names on or near the site first) so the
  * cap truncates the long tail, never the idiomatic fix. Jev ranks, tests decide.
+ *
+ * Two productions ride on existing families (swebench-reach-oracle-9.md capabilities 5 and 6):
+ * stdlib.ts substitutes a builtin callee by a standard-library sibling and carries the import as
+ * an extra edit (attribute family); wrap2.ts composes two whitelisted wraps, WIDENED phase only.
  */
 import type { Candidate, CandidateSource, EnumerateOptions, Site } from '../types.js';
 import type { PyModule } from '../py/structure.js';
@@ -21,22 +25,30 @@ import { signatureDrafts } from './signature.js';
 import { attributeDrafts } from './attribute.js';
 import { importDrafts } from './imports.js';
 import { branchDrafts } from './branch.js';
+import { stdlibSiblingDrafts } from './stdlib.js';
+import { depthTwoWrapDrafts } from './wrap2.js';
+import { introspectDrafts } from './introspect.js';
 
 export { FAMILY_PRIOR, TEMPLATE_FAMILIES, balancedAs, buildContext, continuesStatement, isBalanced } from './common.js';
 export type { TemplateFamily, TemplateContext, NamePools } from './common.js';
 export { unboundNames, importInsertLine, importLinesFor, atImportGap, STDLIB_NAMES, STDLIB_NAMES_ALT, STDLIB_MODULES } from './imports.js';
 export { substituteIdentifier } from './branch.js';
 export { raiseStatements } from './guards.js';
+export { STDLIB_SIBLINGS, stdlibSiblingDrafts } from './stdlib.js';
+export type { StdlibSibling } from './stdlib.js';
+export { DEPTH2_WRAPS, DEPTH2_WRAP_LIMIT, depthTwoWrapDrafts } from './wrap2.js';
+export { INTROSPECT_ALIAS_DRAFTS_MAX, INTROSPECT_EXAMPLES, INTROSPECT_GUARD_DRAFTS_MAX, attributePredicateGuardDrafts, introspectDrafts, mroMethodAliasDrafts } from './introspect.js';
 
 const FAMILY_FN: Readonly<Record<TemplateFamily, (ctx: TemplateContext) => Draft[]>> = {
   guard: guardDrafts,
   statement: statementInsertDrafts,
-  wrap: wrapDrafts,
+  wrap: (ctx) => [...wrapDrafts(ctx), ...depthTwoWrapDrafts(ctx)],
   condition: conditionDrafts,
   signature: signatureDrafts,
-  attribute: attributeDrafts,
+  attribute: (ctx) => [...attributeDrafts(ctx), ...stdlibSiblingDrafts(ctx)],
   import: importDrafts,
   branch: branchDrafts,
+  introspect: introspectDrafts,
 };
 
 /** Family of an op name (`guard_none_return_before` -> `guard`), for tests and the trace. */
@@ -48,6 +60,7 @@ export function familyOf(op: string): TemplateFamily {
   if (op.startsWith('add_param') || op.startsWith('call_')) return 'signature';
   if (op.endsWith('_subst')) return 'attribute';
   if (op.startsWith('import_')) return 'import';
+  if (op.startsWith('attribute_predicate_guard') || op.startsWith('mro_method_alias')) return 'introspect';
   return 'branch';
 }
 
@@ -61,10 +74,10 @@ function editKey(d: Draft): string {
  * must close brackets exactly as the line it replaces did (so a line of a multi-line call stays
  * editable and an edit that opens a bracket it never closes is dropped).
  */
-function wellFormed(mod: PyModule, e: { kind: 'replace' | 'insert' | 'delete'; line: number; text: string }): boolean {
+function wellFormed(mod: PyModule, e: { kind: 'replace' | 'insert' | 'delete'; line: number; text: string }, original?: string): boolean {
   if (e.kind === 'delete') return true;
   if (e.kind === 'insert') return isBalanced(e.text);
-  return balancedAs(mod.lines[e.line - 1] ?? '', e.text);
+  return balancedAs(original ?? mod.lines[e.line - 1] ?? '', e.text);
 }
 
 /** Enumerate template candidates at a site: all families, syntactic filter, dedupe, prior order, cap. */
@@ -80,7 +93,8 @@ export function enumerateTemplates(site: Site, opts: EnumerateOptions, families:
       if (draft.text.trim() === '' && (draft.extraEdits === undefined || draft.extraEdits.length === 0)) continue;
       // a candidate that changes nothing is not a candidate (the ranker excludes the unchanged line anyway)
       if (site.kind === 'replace' && draft.text === site.currentLine && (draft.extraEdits === undefined || draft.extraEdits.length === 0)) continue;
-      if (!wellFormed(mod, { kind: site.kind, line: site.line, text: draft.text })) continue;
+      // a statement-level site replaces the joined statement, which is what the text must balance like
+      if (!wellFormed(mod, { kind: site.kind, line: site.line, text: draft.text }, site.endLine !== undefined ? site.currentLine : undefined)) continue;
       if ((draft.extraEdits ?? []).some((e) => !wellFormed(mod, { kind: e.kind, line: e.line, text: e.text ?? '' }))) continue;
       const key = editKey(draft);
       const cur = best.get(key);

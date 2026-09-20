@@ -212,6 +212,18 @@ describe('operators', () => {
     expect(run('argument_arity', 'def f(a):')).toEqual([]);
     expect(run('argument_arity', 'x = (a, b)')).toEqual([]);
   });
+  it('collapse_collection_to_element keeps one element of a tuple / list / set literal or a bare tuple value, never of a call, a header or a dict', () => {
+    expect(run('collapse_collection_to_element', 'return hash((a, b))')).toEqual(['return hash(a)', 'return hash(b)']);
+    // attribute names inside an element are fine (django-15315's `self.creation_counter`)
+    expect(run('collapse_collection_to_element', 'return hash((self.x, self.y if f(a, b) else None))')).toEqual(['return hash(self.x)', 'return hash(self.y if f(a, b) else None)']);
+    expect(run('collapse_collection_to_element', 'x = [a, b, c]')).toEqual(['x = [a]', 'x = [b]', 'x = [c]']);
+    expect(run('collapse_collection_to_element', 'x = {a, b}')).toEqual(['x = {a}', 'x = {b}']);
+    expect(run('collapse_collection_to_element', 'return a, b')).toEqual(['return a', 'return b']);
+    expect(run('collapse_collection_to_element', 'x = a, b')).toEqual(['x = a', 'x = b']);
+    for (const l of ['f(a, b)', 'x = d[a, b]', 'def f(a, b):', 'for a, b in xs:', 'd = {a: 1, b: 2}', 'g(key=1, other=2)', 'x = (a for a in xs)', 'x = (a,)', 'x = [a]']) expect(run('collapse_collection_to_element', l), l).toEqual([]);
+    // bounded: more than six elements is not a collection worth collapsing element by element
+    expect(run('collapse_collection_to_element', 'x = (a, b, c, d, e, f, g)')).toEqual([]);
+  });
   it('every operator has a prior in (0, 1] and never proposes the input line', () => {
     const lines = ['while lo <= hi:', 'return gcd(a % b, b)', 'dp[i, j] = dp[i - 1, j] + 1', 'x.y.append((a, b))', 'if not a and b is None or c not in d:'];
     for (const op of OPERATOR_NAMES) {

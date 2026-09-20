@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { LINE_QUESTION_ID, buildSites, createLocalizer, functionEntries, functionGapSlots, gapIndentsAfter, indentAfter, indentBefore, sbflKey } from '../../../../src/synth/localize/index.js';
+import { isStatementSite, joinedStatementText, statementSiteAt } from '../../../../src/synth/localize/sites.js';
+import { statementAt } from '../../../../src/synth/py/structure.js';
 import type { Anchor } from '../../../../src/synth/localize/index.js';
 import type { RankedLine } from '../../../../src/synth/sbfl/types.js';
 import { GEOMETRY_FAILURE, GEOMETRY_TRACEBACK, answerAll, fixture, scriptedAsk, sf, signal, twoFileWorkspace } from './helpers.js';
@@ -136,6 +138,46 @@ describe('site windows', () => {
     expect(sites[0]!.evidence).toEqual({ jevProbability: 0.6, sbflRank: 1, sbflScore: 1, notes: ['jev anchor #1 in Point.distance', 'in traceback'] });
     const l16 = sites.find((s) => s.line === 16 && s.kind === 'replace')!;
     expect(l16.evidence).toEqual({ jevProbability: 0.1, sbflRank: 2, sbflScore: 0.7, notes: ['within 1 of anchor L17'] });
+  });
+});
+
+describe('statement-level replace sites', () => {
+  const mid = entries.find((e) => e.qualname === 'midpoint')!;
+  const anchorAt = (line: number): Anchor => ({ file: geometry, line, entry: mid, jevProbability: 0.5, lineProbabilities: new Map([[line, 0.5]]), notes: ['anchor'] });
+
+  it('joins a multi-line statement onto one line, keeping the source spacing inside a line and one space across a break', () => {
+    const st = statementAt(geometry.mod, 26)!;
+    expect([st.startLine, st.endLine]).toEqual([25, 26]);
+    expect(joinedStatementText(geometry.mod, st)).toBe('return Point((a.x + b.x) / 2, (a.y + b.y) / 2)');
+    // a one-line statement has nothing to join
+    expect(joinedStatementText(geometry.mod, statementAt(geometry.mod, 17)!)).toBeNull();
+  });
+
+  it('drops the trailing comma before the closing bracket, spaces nothing after an open bracket, and survives backslash continuations and comments', () => {
+    const f = sf('t.py', ['def f(self):', '    return hash((', '        self.a,  # first', '        self.b if x else None,', '    ))', '', 'y = 1 + \\', '    2', 'z = """a', 'b"""', ''].join('\n'));
+    expect(statementSiteAt(f, 3, { notes: [] })).toMatchObject({ line: 2, endLine: 5, kind: 'replace', indent: '    ', currentLine: '    return hash((self.a, self.b if x else None))', block: { name: 'f' } });
+    expect(statementSiteAt(f, 7, { notes: [] })?.currentLine).toBe('y = 1 + 2');
+    // a token spanning lines (a triple-quoted string) cannot be joined; a def header is never a replace site
+    expect(statementSiteAt(f, 9, { notes: [] })).toBeNull();
+    expect(statementSiteAt(f, 1, { notes: [] })).toBeNull();
+    const site = statementSiteAt(f, 2, { notes: ['n'] })!;
+    expect(site.evidence.notes).toEqual(['n', 'statement L2-5 joined']);
+    expect(isStatementSite(site)).toBe(true);
+    expect(isStatementSite({ line: 2, kind: 'replace' })).toBe(false);
+  });
+
+  it("stands in for the physical site at the statement's first line and is added once after a later line", () => {
+    // anchor on the first line: the statement site takes the line (search/sites.ts keys sites by path:line:kind)
+    const first = buildSites({ anchors: [anchorAt(25)], sbfl: new Map(), frames: [], window: 3 });
+    const replaces = first.filter((s) => s.kind === 'replace');
+    expect(replaces.map((s) => [s.line, s.endLine ?? null])).toEqual([[25, 26], [24, null], [26, null]]);
+    expect(replaces[0]!.currentLine).toBe('    return Point((a.x + b.x) / 2, (a.y + b.y) / 2)');
+    expect(replaces[0]!.evidence).toMatchObject({ jevProbability: 0.5, notes: ['anchor', 'statement L25-26 joined'] });
+    // anchor on the continuation line: the physical site stays, the statement site follows it once
+    const later = buildSites({ anchors: [anchorAt(26)], sbfl: new Map(), frames: [], window: 3 });
+    expect(later.filter((s) => s.kind === 'replace').map((s) => [s.line, s.endLine ?? null])).toEqual([[26, null], [25, 26], [24, null]]);
+    // insert gaps are untouched: before the statement and after its last line
+    expect(later.filter((s) => s.kind === 'insert').map((s) => s.line)).toEqual([26, 27]);
   });
 });
 

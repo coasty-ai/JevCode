@@ -1,0 +1,44 @@
+django__django-15315: 4 statement-level site + collapse_collection_to_element
+  corpus 401 files in 613 ms
+  [before: physical line, SEEDS] mutation: 21 in 6 ms
+  [before: physical line, SEEDS] template: 92 in 18 ms
+  [before: physical line, SEEDS] donor: 254 in 935 ms
+  [before: physical line, SEEDS] composite: 64 in 2899 ms
+  [after: statement-level site, SEEDS] mutation: 254 in 8 ms — target at 41 (collapse_collection_to_element)
+  [after: statement-level site, SEEDS] template: 254 in 124 ms
+  [after: statement-level site, SEEDS] donor: 254 in 351 ms
+  [after: statement-level site, SEEDS] composite: 100 in 1274 ms
+Preparing worktree (detached HEAD 652c68ffee)
+Updating files:  19% (1276/6594)Updating files:  20% (1319/6594)Updating files:  21% (1385/6594)Updating files:  22% (1451/6594)Updating files:  23% (1517/6594)Updating files:  24% (1583/6594)Updating files:  25% (1649/6594)Updating files:  26% (1715/6594)Updating files:  27% (1781/6594)Updating files:  28% (1847/6594)Updating files:  29% (1913/6594)Updating files:  30% (1979/6594)Updating files:  31% (2045/6594)Updating files:  32% (2111/6594)Updating files:  33% (2177/6594)Updating files:  34% (2242/6594)Updating files:  35% (2308/6594)Updating files:  36% (2374/6594)Updating files:  37% (2440/6594)Updating files:  38% (2506/6594)Updating files:  39% (2572/6594)Updating files:  40% (2638/6594)Updating files:  41% (2704/6594)Updating files:  42% (2770/6594)Updating files:  43% (2836/6594)Updating files:  44% (2902/6594)Updating files:  45% (2968/6594)Updating files:  46% (3034/6594)Updating files:  47% (3100/6594)Updating files:  48% (3166/6594)Updating files:  49% (3232/6594)Updating files:  49% (3293/6594)Updating files:  50% (3297/6594)Updating files:  51% (3363/6594)Updating files:  52% (3429/6594)Updating files:  53% (3495/6594)Updating files:  54% (3561/6594)Updating files:  55% (3627/6594)Updating files:  56% (3693/6594)Updating files:  57% (3759/6594)Updating files:  58% (3825/6594)Updating files:  59% (3891/6594)Updating files:  60% (3957/6594)Updating files:  61% (4023/6594)Updating files:  62% (4089/6594)Updating files:  63% (4155/6594)Updating files:  64% (4221/6594)Updating files:  65% (4287/6594)Updating files:  66% (4353/6594)Updating files:  67% (4418/6594)Updating files:  68% (4484/6594)Updating files:  69% (4550/6594)Updating files:  70% (4616/6594)Updating files:  71% (4682/6594)Updating files:  72% (4748/6594)Updating files:  73% (4814/6594)Updating files:  74% (4880/6594)Updating files:  75% (4946/6594)Updating files:  76% (5012/6594)Updating files:  77% (5078/6594)Updating files:  78% (5144/6594)Updating files:  79% (5210/6594)Updating files:  80% (5276/6594)Updating files:  81% (5342/6594)Updating files:  82% (5408/6594)Updating files:  83% (5474/6594)Updating files:  84% (5539/6594)Updating files:  85% (5605/6594)Updating files:  86% (5671/6594)Updating files:  87% (5737/6594)Updating files:  88% (5803/6594)Updating files:  89% (5869/6594)Updating files:  90% (5935/6594)Updating files:  91% (6001/6594)Updating files:  92% (6067/6594)Updating files:  93% (6133/6594)Updating files:  94% (6199/6594)Updating files:  95% (6265/6594)Updating files:  96% (6331/6594)Updating files:  97% (6397/6594)Updating files:  98% (6463/6594)Updating files:  99% (6529/6594)Updating files: 100% (6594/6594)Updating files: 100% (6594/6594), done.
+  F2P PASS in 2392 ms
+sympy__sympy-11618: 5 stdlib-sibling callee substitution carrying its import (at the statement-level site)
+  corpus 400 files in 1473 ms
+  [before: physical line, SEEDS] mutation: 137 in 6 ms
+  [before: physical line, SEEDS] template: 97 in 6 ms
+  [before: physical line, SEEDS] donor: 254 in 3502 ms
+  [before: physical line, SEEDS] composite: 148 in 5297 ms
+  [after: statement-level site, SEEDS] mutation: 254 in 25 ms
+  [after: statement-level site, SEEDS] template: 202 in 33 ms — target at 58 (callee_stdlib_subst_kw)
+  [after: statement-level site, SEEDS] donor: 254 in 2301 ms
+  [after: statement-level site, SEEDS] composite: 100 in 2804 ms
+Preparing worktree (detached HEAD 360290c4c4)
+  F2P PASS in 8195 ms
+sympy__sympy-19954: 6 depth-2 wraps (WIDENED)
+  corpus 400 files in 10824 ms
+  [before: physical line, SEEDS] mutation: 81 in 1 ms
+  [before: physical line, SEEDS] template: 254 in 26 ms
+  [before: physical line, SEEDS] donor: 254 in 15215 ms
+  [before: physical line, SEEDS] composite: 100 in 7284 ms
+  [after: physical line, WIDENED] mutation: 81 in 2 ms
+  [after: physical line, WIDENED] template: 254 in 124 ms — target at 170 (wrap2_reversed_list)
+  [after: physical line, WIDENED] donor: 254 in 2696 ms
+  [after: physical line, WIDENED] composite: 100 in 4425 ms
+Preparing worktree (detached HEAD 6f54459aa0)
+  F2P PASS in 12209 ms
+| instance | capability | before: site / SEEDS candidates (m + t + d + c) | target before | after: site / phase / candidates | target after (source, index, op) | F2P |
+| --- | --- | --- | --- | --- | --- | --- |
+| django__django-15315 | 4 statement-level site + collapse_collection_to_element | django/db/models/fields/__init__.py:545: 21 + 92 + 254 + 64 = 431 | absent | django/db/models/fields/__init__.py:545-549 (statement-level site, SEEDS): 254 + 254 + 254 + 100 = 862 | mutation #41 (collapse_collection_to_element) | PASS (2.4 s) |
+| sympy__sympy-11618 | 5 stdlib-sibling callee substitution carrying its import (at the statement-level site) | sympy/geometry/point.py:269: 137 + 97 + 254 + 148 = 636 | absent | sympy/geometry/point.py:269-270 (statement-level site, SEEDS): 254 + 202 + 254 + 100 = 810 | template #58 (callee_stdlib_subst_kw) + insert@26: from itertools import zip_longest | PASS (8.2 s) |
+| sympy__sympy-19954 | 6 depth-2 wraps (WIDENED) | sympy/combinatorics/perm_groups.py:2198: 81 + 254 + 254 + 100 = 689 | absent | sympy/combinatorics/perm_groups.py:2198 (physical line, WIDENED): 81 + 254 + 254 + 100 = 689 | template #170 (wrap2_reversed_list) | PASS (12.2 s) |
+
+written /Users/prateekjannu/Documents/vscode/JevCode/experiments/reach/out/capabilities-4-5-6.json

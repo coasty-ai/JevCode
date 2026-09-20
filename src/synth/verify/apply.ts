@@ -6,9 +6,16 @@
  * file BEFORE the candidate is applied. Edits are applied bottom-up per file so no edit shifts
  * another's line; two edits on the same line keep list order (the site edit first). This lets a
  * candidate source compute all its numbers from the one analysis it already has.
+ *
+ * Statement-level sites (`Site.endLine`, localize/sites.ts `statementSiteAt`): the site text
+ * replaces the whole physical span `line..endLine` (the first line is replaced, the continuation
+ * lines deleted), and the site is stale when the span's code tokens no longer read as the joined
+ * `currentLine` (comments and line breaks are not part of the identity). An extra edit that lands
+ * inside the span would race the deletion, so it is refused.
  */
 import { deleteLine, indentOf, insertLine, lineCount, reindent, replaceLine, splitPhysicalLines } from '../py/index.js';
 import { unifiedDiff } from '../py/edits.js';
+import { codeTokens, tokenizeFragment } from '../py/tokenize.js';
 import type { AppliedCandidate, Candidate, LineEdit, SourceFile } from '../types.js';
 import { VerifyError } from './types.js';
 
@@ -47,6 +54,35 @@ function siteEdit(c: Candidate): LineEdit {
   return { path: c.site.file.path, line: c.site.line, kind: c.site.kind, text: c.text };
 }
 
+/** Last physical line the site edit covers: `endLine` of a statement-level site, else the site line. */
+export function siteSpanEnd(site: Pick<Candidate['site'], 'line' | 'kind' | 'endLine'>): number {
+  return site.kind === 'replace' && site.endLine !== undefined && site.endLine > site.line ? site.endLine : site.line;
+}
+
+/**
+ * Code tokens of a (possibly multi-line) text joined by one space, a trailing comma before a
+ * closing bracket dropped (the joined statement of a site drops it too); '' when it does not tokenize.
+ */
+function codeTokenKey(text: string): string {
+  try {
+    const toks = codeTokens(tokenizeFragment(text));
+    return toks
+      .filter((t, k) => !(t.type === 'OP' && t.text === ',' && toks[k + 1]?.type === 'OP' && /^[)\]}]$/.test(toks[k + 1]!.text)))
+      .map((t) => t.text)
+      .join(' ');
+  } catch {
+    return '';
+  }
+}
+
+/** The continuation lines of a statement-level site as delete edits (before-candidate numbering). */
+function spanDeletes(c: Candidate): LineEdit[] {
+  const end = siteSpanEnd(c.site);
+  const out: LineEdit[] = [];
+  for (let l = c.site.line + 1; l <= end; l++) out.push({ path: c.site.file.path, line: l, kind: 'delete' });
+  return out;
+}
+
 /**
  * Apply `candidate` to the current sources. `files` (path → current SourceFile) overrides the
  * snapshot held by the site when the search has already accepted earlier candidates; files not
@@ -62,7 +98,11 @@ export function applyCandidate(candidate: Candidate, files?: ReadonlyMap<string,
     throw new VerifyError(`extra edit targets ${path}, which is not in the provided files`);
   };
 
-  const edits: LineEdit[] = [siteEdit(candidate), ...(candidate.extraEdits ?? [])];
+  const spanEnd = siteSpanEnd(candidate.site);
+  for (const e of candidate.extraEdits ?? []) {
+    if (e.path === sitePath && e.line > candidate.site.line && e.line <= spanEnd) throw new VerifyError(`extra edit at ${e.path}:${e.line} lies inside the statement span ${candidate.site.line}-${spanEnd} the site replaces`);
+  }
+  const edits: LineEdit[] = [siteEdit(candidate), ...spanDeletes(candidate), ...(candidate.extraEdits ?? [])];
   const byPath = new Map<string, LineEdit[]>();
   for (const e of edits) {
     const list = byPath.get(e.path) ?? [];
@@ -73,9 +113,18 @@ export function applyCandidate(candidate: Candidate, files?: ReadonlyMap<string,
   const before = current(sitePath);
   if (candidate.site.kind === 'replace') {
     const lines = splitPhysicalLines(before);
-    const have = lines[candidate.site.line - 1];
-    if (have === undefined || have.replace(/\r$/, '') !== candidate.site.currentLine) {
-      throw new VerifyError(`stale site: ${sitePath}:${candidate.site.line} reads ${JSON.stringify(have ?? null)}, expected ${JSON.stringify(candidate.site.currentLine)}`);
+    if (spanEnd > candidate.site.line) {
+      // a statement-level site: the span's code tokens must still read as the joined statement
+      const span = lines.slice(candidate.site.line - 1, spanEnd).map((l) => l.replace(/\r$/, ''));
+      const have = span.length === spanEnd - candidate.site.line + 1 ? codeTokenKey(span.join('\n')) : '';
+      if (have === '' || have !== codeTokenKey(candidate.site.currentLine)) {
+        throw new VerifyError(`stale site: ${sitePath}:${candidate.site.line}-${spanEnd} no longer reads as ${JSON.stringify(candidate.site.currentLine)}`);
+      }
+    } else {
+      const have = lines[candidate.site.line - 1];
+      if (have === undefined || have.replace(/\r$/, '') !== candidate.site.currentLine) {
+        throw new VerifyError(`stale site: ${sitePath}:${candidate.site.line} reads ${JSON.stringify(have ?? null)}, expected ${JSON.stringify(candidate.site.currentLine)}`);
+      }
     }
   }
 

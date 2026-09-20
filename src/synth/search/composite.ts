@@ -16,13 +16,25 @@
  *
  * Everything is code, deterministic and pure; priors order enumeration only. This source is
  * unmeasured at this size (design §9 R3): the ladder experiment retires it.
+ *
+ * Bounds (experiments/results/swebench-reach-oracle-9.md, caveats): on a 400-file sympy corpus
+ * one signature-unit call did not return in 27 minutes because `callSiteEdits` ran `scopeAt`
+ * on every statement of every file per header draft. Call sites now come from a per-file index
+ * of callee names built once per SourceFile (a WeakMap, so one corpus is indexed once for every
+ * site and draft), `scopeAt` runs only on lines that call the def, and every unit kind stops at
+ * a wall-clock deadline (UNIT_DEADLINE_MS) and a cap on call-site statements examined per call
+ * (CALL_SITE_STATEMENT_CAP); a draft whose scan is cut is dropped rather than half-threaded.
+ *
+ * Statement-level sites (`Site.endLine`, localize/sites.ts): pairs are enumerated on the joined
+ * statement (the derived file has the span replaced); signature and donor-body units are not,
+ * since their extra edits address physical lines and the physical-line site already offers them.
  */
 import { createHash } from 'node:crypto';
 import { adaptIdentifiers } from '../donor/adapt.js';
 import { NON_DONOR_KINDS } from '../donor/corpus.js';
 import { createDonorSource } from '../donor/source.js';
 import { createMutationSource } from '../mutate/index.js';
-import { indentOf, reindent, replaceLine } from '../py/edits.js';
+import { deleteLine, indentOf, reindent, replaceLine } from '../py/edits.js';
 import { jaccard, normaliseLine } from '../py/similarity.js';
 import { codeTokens, tokenizeFragment } from '../py/tokenize.js';
 import { analyse, blockAt, functionAt, scopeAt } from '../py/structure.js';
@@ -72,6 +84,10 @@ export const DONOR_UNIT_MAPPINGS = 48;
 /** ≤ 2 substitutions per unit: the measured donor coverage bound (SWE ≤ 2 subs 109/199 lines). */
 export const DONOR_UNIT_MAX_CHANGES = 2;
 export const DONOR_UNIT_PRIOR = 0.5;
+/** Wall-clock bound per unit kind per call (signature units, donor-body units): what remains is returned. */
+export const UNIT_DEADLINE_MS = 3_000;
+/** Call-site statements examined per `enumerateSignatureUnits` call before the scan is cut. */
+export const CALL_SITE_STATEMENT_CAP = 5_000;
 /** Ordering bonuses for donor windows (structural priors, ordering only). */
 const SAME_STATEMENT_COUNT_BONUS = 0.5;
 const BOTH_TAILS_BONUS = 0.5;
@@ -87,6 +103,8 @@ export interface CompositeSourceOptions {
   pairs?: boolean;
   signatureUnits?: boolean;
   donorUnits?: boolean;
+  /** wall-clock bound per unit kind per call (default UNIT_DEADLINE_MS) */
+  unitDeadlineMs?: number;
 }
 
 export interface CompositeSource extends CandidateSource {
@@ -165,14 +183,25 @@ function byCodePoint(a: string, b: string): number {
 // 1. Depth-2 pairs
 // ---------------------------------------------------------------------------------------
 
-/** The site with `text` in place of its line: the file is re-analysed so scope-driven sources see the new line. */
+/** Last physical line a replace site covers (`endLine` of a statement-level site). */
+function spanEnd(site: Site): number {
+  return site.kind === 'replace' && site.endLine !== undefined && site.endLine > site.line ? site.endLine : site.line;
+}
+
+/**
+ * The site with `text` in place of its line: the file is re-analysed so scope-driven sources see
+ * the new line. A statement-level site's span is replaced whole, and the derived site is a plain
+ * one-line site (no `endLine`): the second edit's extra edits then address the derived file.
+ */
 export function derivedSite(site: Site, text: string): Site | null {
   if (site.kind !== 'replace' || text.includes('\n')) return null;
   try {
-    const src = replaceLine(site.file.src, site.line, text);
+    let src = replaceLine(site.file.src, site.line, text);
+    for (let l = spanEnd(site); l > site.line; l--) src = deleteLine(src, l);
     const mod = analyse(src);
     const file: SourceFile = { path: site.file.path, src, mod };
-    return { ...site, file, currentLine: text, indent: indentOf(text), scope: scopeAt(mod, site.line) };
+    const { endLine: _dropped, ...rest } = site;
+    return { ...rest, file, currentLine: text, indent: indentOf(text), scope: scopeAt(mod, site.line) };
   } catch {
     return null;
   }
@@ -244,9 +273,10 @@ export function enumeratePairs(site: Site, opts: EnumerateOptions, singles: read
     if (derived === null) continue;
     const seedToks = lineToks(seed.text);
     const seedSpan = changedSpan(baseToks, seedToks);
+    const spanSite = spanEnd(site) > site.line;
     const candidates = second
       .flatMap((s) => s.enumerate(derived, seedOpts))
-      .filter((c) => !c.text.includes('\n'))
+      .filter((c) => !c.text.includes('\n') && !(spanSite && (c.extraEdits ?? []).length > 0))
       .filter((c) => {
         const span = changedSpan(seedToks, lineToks(c.text));
         return span !== null && (seedSpan === null || span.to < seedSpan.from || span.from > seedSpan.to);
@@ -266,7 +296,9 @@ export function enumeratePairs(site: Site, opts: EnumerateOptions, singles: read
         const key = candidateKeyOf(c.text, c.extraEdits);
         if (known.has(key) || lineSig(c.text) === baseSig) continue;
         known.add(key);
-        // extra edits of the second edit refer to the derived file, whose numbering equals the site file's
+        // extra edits of the second edit refer to the derived file, whose numbering equals the site
+        // file's for a one-line site; a statement-level site's derived file lost the continuation
+        // lines, so its second edits carry no extra edits (filtered above the cursor loop)
         out.push(makeCandidate(site, c.text, `pair:${seed.op}>${c.op}`, PAIR_PRIOR * Math.max(0.1, (seed.prior ?? 0.5) * (c.prior ?? 0.5)) * 2, c.extraEdits ?? []));
         break;
       }
@@ -423,24 +455,83 @@ function threadedArgument(draft: HeaderDraft, call: CallOnLine, mod: PyModule, l
   return positional ? draft.paramName : `${draft.paramName}=${draft.paramName}`;
 }
 
-/** Edits threading `draft.paramName` through every call of the def across `files`, except lines in `skip` (`path:line`). */
-export function callSiteEdits(draft: HeaderDraft, files: readonly SourceFile[], skip: ReadonlySet<string>): LineEdit[] {
-  const edits: LineEdit[] = [];
-  for (const f of files) {
-    for (const st of f.mod.statements) {
-      if (st.startLine !== st.endLine || skip.has(`${f.path}:${st.startLine}`)) continue;
-      if (f.path === draft.file.path && st.startLine === draft.block.headerLine) continue;
-      const text = f.mod.lines[st.startLine - 1] ?? '';
-      let changed = text;
-      // right to left so earlier offsets stay valid
-      for (const call of callsOf(f.mod, st.startLine, text, draft.block.name).reverse()) {
-        const arg = threadedArgument(draft, call, f.mod, st.startLine);
-        if (arg !== null) changed = withArgument(changed, call, arg);
-      }
-      if (changed !== text) edits.push({ path: f.path, line: st.startLine, kind: 'replace', text: changed });
+/** Callee name -> first lines of the one-line statements that call it (`name(` anywhere on the line), per file. */
+type CallIndex = ReadonlyMap<string, readonly number[]>;
+
+/** Built once per SourceFile object (the corpus map hands the same objects to every site and draft). */
+const CALL_INDEX = new WeakMap<SourceFile, CallIndex>();
+
+/** The file's call index: one pass over the statement tokens, no scope work. */
+export function callIndexOf(file: SourceFile): CallIndex {
+  const cached = CALL_INDEX.get(file);
+  if (cached !== undefined) return cached;
+  const index = new Map<string, number[]>();
+  for (const st of file.mod.statements) {
+    if (st.startLine !== st.endLine) continue;
+    const t = st.tokens;
+    for (let k = 0; k + 1 < t.length; k++) {
+      if (t[k]!.type !== 'NAME' || !isOp(t[k + 1], '(')) continue;
+      const name = t[k]!.text;
+      const lines = index.get(name);
+      if (lines === undefined) index.set(name, [st.startLine]);
+      else if (lines[lines.length - 1] !== st.startLine) lines.push(st.startLine);
     }
   }
-  return edits;
+  CALL_INDEX.set(file, index);
+  return index;
+}
+
+export interface CallSiteScan {
+  edits: LineEdit[];
+  /** the scan stopped at the deadline or the statement cap: `edits` is incomplete */
+  cut: boolean;
+  /** call-site statements examined */
+  examined: number;
+}
+
+/** A wall-clock deadline plus a statement budget shared by the scans of one `enumerateSignatureUnits` call. */
+export interface ScanBudget {
+  deadline: number;
+  statementsLeft: number;
+}
+
+export function scanBudget(deadlineMs = UNIT_DEADLINE_MS, statements = CALL_SITE_STATEMENT_CAP): ScanBudget {
+  return { deadline: Date.now() + deadlineMs, statementsLeft: statements };
+}
+
+/**
+ * Edits threading `draft.paramName` through every call of the def across `files`, except lines in
+ * `skip` (`path:line`). Candidate lines come from each file's call index; `scopeAt` runs only for
+ * them. Stops (and says so) when `budget` runs out.
+ */
+export function scanCallSites(draft: HeaderDraft, files: readonly SourceFile[], skip: ReadonlySet<string>, budget: ScanBudget): CallSiteScan {
+  const edits: LineEdit[] = [];
+  let examined = 0;
+  for (const f of files) {
+    const lines = callIndexOf(f).get(draft.block.name);
+    if (lines === undefined) continue;
+    for (const line of lines) {
+      if (Date.now() > budget.deadline || budget.statementsLeft <= 0) return { edits, cut: true, examined };
+      budget.statementsLeft -= 1;
+      examined += 1;
+      if (skip.has(`${f.path}:${line}`)) continue;
+      if (f.path === draft.file.path && line === draft.block.headerLine) continue;
+      const text = f.mod.lines[line - 1] ?? '';
+      let changed = text;
+      // right to left so earlier offsets stay valid
+      for (const call of callsOf(f.mod, line, text, draft.block.name).reverse()) {
+        const arg = threadedArgument(draft, call, f.mod, line);
+        if (arg !== null) changed = withArgument(changed, call, arg);
+      }
+      if (changed !== text) edits.push({ path: f.path, line, kind: 'replace', text: changed });
+    }
+  }
+  return { edits, cut: false, examined };
+}
+
+/** `scanCallSites` without a budget (tests and small workspaces): every call site, complete. */
+export function callSiteEdits(draft: HeaderDraft, files: readonly SourceFile[], skip: ReadonlySet<string>): LineEdit[] {
+  return scanCallSites(draft, files, skip, { deadline: Number.POSITIVE_INFINITY, statementsLeft: Number.POSITIVE_INFINITY }).edits;
 }
 
 /** The def a call on the site line targets: in the site's file first (not the enclosing def itself), then the corpus. */
@@ -461,11 +552,12 @@ function calleeBlocks(site: Site, opts: EnumerateOptions): { file: SourceFile; b
   return out;
 }
 
-export function enumerateSignatureUnits(site: Site, opts: EnumerateOptions, limit = SIGNATURE_UNIT_LIMIT): Candidate[] {
-  if (site.kind !== 'replace' || limit <= 0) return [];
+export function enumerateSignatureUnits(site: Site, opts: EnumerateOptions, limit = SIGNATURE_UNIT_LIMIT, budget: ScanBudget = scanBudget()): Candidate[] {
+  if (site.kind !== 'replace' || limit <= 0 || spanEnd(site) > site.line) return [];
   const files = workspaceFiles(site, opts);
   const out: Candidate[] = [];
   const seen = new Set<string>();
+  const expired = (): boolean => Date.now() > budget.deadline || budget.statementsLeft <= 0;
   const emit = (text: string, extra: LineEdit[], draft: HeaderDraft, where: string): void => {
     if (out.length >= limit) return;
     const key = candidateKeyOf(text, extra);
@@ -480,12 +572,14 @@ export function enumerateSignatureUnits(site: Site, opts: EnumerateOptions, limi
   const own = enclosingDef(site.file.mod, site.line);
   if (own !== undefined) {
     for (const d of headerDrafts(site.file, own, opts)) {
+      if (expired()) break;
       const skip = new Set<string>([`${site.file.path}:${site.line}`, ...d.bodyEdits.map((e) => `${e.path}:${e.line}`)]);
-      const calls = callSiteEdits(d, files, skip);
-      if (calls.length === 0) continue; // the templates alone already offer header + body; the unit exists for the threading
+      const scan = scanCallSites(d, files, skip, budget);
+      if (scan.cut) break; // a half-threaded unit breaks the callers it missed: nothing to offer
+      if (scan.edits.length === 0) continue; // the templates alone already offer header + body; the unit exists for the threading
       const atSite = d.bodyEdits.find((e) => e.line === site.line);
       const text = atSite?.text ?? site.currentLine;
-      const extra: LineEdit[] = [headerEdit(d), ...d.bodyEdits.filter((e) => e.line !== site.line), ...calls];
+      const extra: LineEdit[] = [headerEdit(d), ...d.bodyEdits.filter((e) => e.line !== site.line), ...scan.edits];
       emit(text, extra, d, 'from_body');
     }
   }
@@ -493,7 +587,9 @@ export function enumerateSignatureUnits(site: Site, opts: EnumerateOptions, limi
   // (B) the site line calls a def defined elsewhere: the site passes the new argument; the
   //     header, body rewrites and the other call sites travel as extra edits.
   for (const { file, block } of calleeBlocks(site, opts)) {
+    if (expired()) break;
     for (const d of headerDrafts(file, block, opts)) {
+      if (expired()) break;
       const calls = callsOf(site.file.mod, site.line, site.currentLine, block.name);
       let text = site.currentLine;
       for (const call of [...calls].reverse()) {
@@ -502,7 +598,9 @@ export function enumerateSignatureUnits(site: Site, opts: EnumerateOptions, limi
       }
       if (text === site.currentLine) continue;
       const skip = new Set<string>([`${site.file.path}:${site.line}`, ...d.bodyEdits.map((e) => `${e.path}:${e.line}`)]);
-      const extra: LineEdit[] = [headerEdit(d), ...d.bodyEdits, ...callSiteEdits(d, files, skip)];
+      const scan = scanCallSites(d, files, skip, budget);
+      if (scan.cut) break;
+      const extra: LineEdit[] = [headerEdit(d), ...d.bodyEdits, ...scan.edits];
       emit(text, extra, d, 'from_call');
     }
   }
@@ -619,8 +717,9 @@ function unitScope(site: Site, run: StatementRun, donor: DonorWindow): LineScope
   return { ...site.scope, locals, all: [...new Set([...site.scope.params, ...locals, ...site.scope.module, ...site.scope.imports, ...site.scope.builtins])] };
 }
 
-export function enumerateDonorBodyUnits(site: Site, opts: EnumerateOptions, limit = DONOR_UNIT_LIMIT): Candidate[] {
-  if (site.kind !== 'replace' || limit <= 0) return [];
+export function enumerateDonorBodyUnits(site: Site, opts: EnumerateOptions, limit = DONOR_UNIT_LIMIT, deadlineMs = UNIT_DEADLINE_MS): Candidate[] {
+  if (site.kind !== 'replace' || limit <= 0 || spanEnd(site) > site.line) return [];
+  const deadline = Date.now() + deadlineMs;
   const mod = site.file.mod;
   const own = enclosingDef(mod, site.line);
   if (own === undefined) return [];
@@ -640,7 +739,9 @@ export function enumerateDonorBodyUnits(site: Site, opts: EnumerateOptions, limi
   }
   const drafts: Draft[] = [];
   const seen = new Set<string>();
+  // same-file donors come first in `donorBlocks`, so a deadline cut keeps the likeliest windows
   for (const { file, block, tier } of donorBlocks(site, opts, own)) {
+    if (Date.now() > deadline) break;
     for (const donor of donorWindows(file, block, site.indent)) {
       const donorScope = scopeAt(file.mod, donor.endLine);
       for (const run of runs) {
@@ -682,11 +783,12 @@ export function createCompositeSource(options: CompositeSourceOptions = {}): Com
   const pairs = options.pairs ?? true;
   const signature = options.signatureUnits ?? true;
   const donors = options.donorUnits ?? true;
+  const deadlineMs = options.unitDeadlineMs ?? UNIT_DEADLINE_MS;
   const src: CompositeSource = {
     name: 'composite',
     enumeratePairs: (site, opts) => enumeratePairs(site, opts, singles, second, limit, seeds),
-    enumerateSignatureUnits: (site, opts) => enumerateSignatureUnits(site, opts),
-    enumerateDonorBodyUnits: (site, opts) => enumerateDonorBodyUnits(site, opts),
+    enumerateSignatureUnits: (site, opts) => enumerateSignatureUnits(site, opts, SIGNATURE_UNIT_LIMIT, scanBudget(deadlineMs)),
+    enumerateDonorBodyUnits: (site, opts) => enumerateDonorBodyUnits(site, opts, DONOR_UNIT_LIMIT, deadlineMs),
     enumerate(site: Site, opts: EnumerateOptions): Candidate[] {
       // units first: a handful of high-value coupled edits, then the many pairs; `opts.cap` cuts the tail
       const out: Candidate[] = [];

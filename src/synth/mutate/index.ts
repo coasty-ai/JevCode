@@ -166,12 +166,23 @@ export function orderMutants(mutants: readonly Mutant[]): Mutant[] {
   return out;
 }
 
+/**
+ * Operators enumerated at a site: the measured table, plus `collapse_collection_to_element` at a
+ * statement-level site (a multi-line collection literal is what makes a statement span lines) and
+ * in the WIDENED phase; the SEEDS set at a physical line is the measured 40/40 QuixBugs library.
+ */
+export function operatorsFor(site: Pick<Site, 'kind' | 'line' | 'endLine'>, opts: Pick<EnumerateOptions, 'phase'>): readonly OperatorName[] {
+  const statementSite = site.kind === 'replace' && site.endLine !== undefined && site.endLine > site.line;
+  if (statementSite || opts.phase === 'WIDENED') return OPERATOR_NAMES;
+  return OPERATOR_NAMES.filter((op) => op !== 'collapse_collection_to_element');
+}
+
 /** Enumerate candidates at a site: pure, deterministic, capped at `opts.cap`. */
 export function enumerateMutations(site: Site, opts: EnumerateOptions): Candidate[] {
   const ctx = buildContext(site, opts);
   const base = site.kind === 'insert' ? [] : lineToks(site.currentLine);
   if (site.kind === 'replace' && base.length === 0) return [];
-  let mutants = firstOrderMutants(base, ctx);
+  let mutants = firstOrderMutants(base, ctx, operatorsFor(site, opts));
   if (site.kind === 'replace' && mutants.length < SECOND_ORDER_THRESHOLD) {
     mutants = [...mutants, ...secondOrderMutants(base, mutants, ctx, Math.max(0, Math.min(SECOND_ORDER_LIMIT, opts.cap - mutants.length)))];
   }

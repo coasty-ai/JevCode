@@ -8,7 +8,12 @@
  * `== 0` -> `<= 1` first-order), `statement_template` for insert sites, and `argument_arity`
  * (drop or append one call argument: `split("-", 1)` -> `split("-")`, `enumerate(xs)` ->
  * `enumerate(xs, 1)`), added in review after the ladder tasks (bench/data/ladder) showed arity bugs
- * that no swap can reach. Declarations are never values: `def` names, parameters and annotations,
+ * that no swap can reach, and `collapse_collection_to_element` (a bracketed tuple/list/set literal
+ * or a bare tuple value of N elements collapses to each single element: `hash((a, b))` ->
+ * `hash(a)`, `hash(b)`; django-15315's `return hash((...))` -> `return hash(self.creation_counter)`
+ * at the statement-level site, experiments/results/swebench-reach-oracle-9.md capability 4; the
+ * source enumerates it at statement-level sites and in WIDENED only, so the measured SEEDS sets
+ * stay as they are). Declarations are never values: `def` names, parameters and annotations,
  * `lambda` parameters, `for`/`as` targets and keyword-argument names are protected so every
  * candidate still parses (checked with CPython `compile()` over all QuixBugs and ladder pools).
  */
@@ -25,7 +30,7 @@ export const OPERATOR_NAMES = [
   'arithmetic_swap', 'augassign_swap', 'boolean_swap', 'keyword_flip', 'negation',
   'identifier_substitution', 'call_substitution', 'attribute_substitution', 'constant_substitution', 'string_substitution',
   'slice_tweak', 'wrap_call', 'unwrap_call', 'drop_term', 'return_tweak', 'condition_extension',
-  'drop_index', 'method_to_assign', 'binop_with_identifier', 'statement_template',
+  'drop_index', 'method_to_assign', 'binop_with_identifier', 'statement_template', 'collapse_collection_to_element',
 ] as const;
 export type OperatorName = (typeof OPERATOR_NAMES)[number];
 
@@ -63,7 +68,11 @@ export const OPERATOR_PRIORS: Readonly<Record<OperatorName, number>> = {
   method_to_assign: 0.45,
   binop_with_identifier: 0.45,
   statement_template: 0.5,
+  collapse_collection_to_element: 0.5,
 };
+
+/** Elements a collection literal may hold for `collapse_collection_to_element` (bounded: N variants per literal). */
+const MAX_COLLAPSE_ELEMENTS = 6;
 
 /** Cheap operators worth composing pairwise when the first-order set is small. */
 export const SECOND_ORDER_OPERATORS: readonly OperatorName[] = ['relational_swap', 'arithmetic_swap', 'boolean_swap', 'off_by_one_literal', 'off_by_one_atom', 'index_flip', 'argument_swap', 'negation', 'keyword_flip'];
@@ -854,6 +863,59 @@ export function statementTemplates(ctx: MutationContext): Tok[][] {
 
 const statementTemplate: Operator = (info, ctx) => (info.toks.length === 0 ? statementTemplates(ctx) : []);
 
+/**
+ * A tuple / list / set literal of 2..MAX_COLLAPSE_ELEMENTS elements collapses to each single
+ * element: a parenthesised tuple to the bare element (`hash((a, b))` -> `hash(a)`, `hash(b)`), a
+ * list or set literal to the one-element literal (`[a, b]` -> `[a]`, `[b]`), and the bare tuple
+ * value of an assignment or `return` to each element (`return a, b` -> `return a`). Never a call
+ * or subscript (a trailer), a `def`/`class` header, a comprehension, a dict literal or a
+ * literal holding a protected name (a `for` target, a keyword-argument name).
+ */
+const collapseCollectionToElement: Operator = (info) => {
+  const out: Tok[][] = [];
+  const { toks, head } = info;
+  if (head === 'def' || head === 'class' || head === 'import' || head === 'from' || head === 'for' || head === 'with' || head === 'lambda') return out;
+  const elementsOf = (from: number, to: number): [number, number][] | null => {
+    const parts = splitTopLevel(toks, from, to, ',').filter(([a, b]) => b > a);
+    if (parts.length < 2 || parts.length > MAX_COLLAPSE_ELEMENTS) return null;
+    for (const p of parts) {
+      if (isGenexp(toks, p)) return null;
+      // declarations inside the literal (a `for` target, a lambda parameter) make it no value; an
+      // attribute name after `.` is protected only against substitution and may stay in an element
+      for (let k = p[0]; k < p[1]; k++) if (info.protectedIdx.has(k) && !isOp(toks[k - 1], '.')) return null;
+      // a keyword argument or a dict entry is not an element
+      if (isOp(toks[p[0] + 1], '=') || isOp(toks[p[0]], '**')) return null;
+      for (let k = p[0]; k < p[1]; k++) if (isOp(toks[k], ':') && depthBefore(toks, k) === depthBefore(toks, p[0])) return null;
+    }
+    return parts;
+  };
+  for (const kind of ['(', '['] as const) {
+    for (const g of groups(toks, kind).filter((g) => !g.trailer)) {
+      const parts = elementsOf(g.open + 1, g.close);
+      if (parts === null) continue;
+      for (const [a, b] of parts) {
+        const element = toks.slice(a, b);
+        out.push(kind === '(' ? splice(toks, g.open, g.close + 1, element) : splice(toks, g.open + 1, g.close, element));
+      }
+    }
+  }
+  toks.forEach((t, k) => {
+    if (!isOp(t, '{') || endsOperand(toks[k - 1])) return;
+    const close = matchClose(toks, k);
+    if (close < 0) return;
+    const parts = elementsOf(k + 1, close);
+    if (parts === null) return;
+    for (const [a, b] of parts) out.push(splice(toks, k + 1, close, toks.slice(a, b)));
+  });
+  // the bare tuple value: `x = a, b`, `return a, b`
+  const expr = valueExpr(info);
+  if (expr !== null) {
+    const parts = elementsOf(expr[0], expr[1]);
+    if (parts !== null) for (const [a, b] of parts) out.push(splice(toks, expr[0], expr[1], toks.slice(a, b)));
+  }
+  return out;
+};
+
 export const OPERATORS: Readonly<Record<OperatorName, Operator>> = {
   relational_swap: relationalSwap,
   boundary_shift: boundaryShift,
@@ -883,6 +945,7 @@ export const OPERATORS: Readonly<Record<OperatorName, Operator>> = {
   method_to_assign: methodToAssign,
   binop_with_identifier: binopWithIdentifier,
   statement_template: statementTemplate,
+  collapse_collection_to_element: collapseCollectionToElement,
 };
 
 /** Apply one operator to a line's tokens. */

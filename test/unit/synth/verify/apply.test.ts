@@ -4,8 +4,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 
-import type { AppliedCandidate } from '../../../../src/synth/types.js';
-import { applyCandidate, indentedText } from '../../../../src/synth/verify/apply.js';
+import type { AppliedCandidate, Site, SourceFile } from '../../../../src/synth/types.js';
+import { applyCandidate, indentedText, siteSpanEnd } from '../../../../src/synth/verify/apply.js';
 import { VerifyError } from '../../../../src/synth/verify/types.js';
 import { candidate, GCD_BUGGY, site, sourceFile } from './helpers.js';
 
@@ -79,6 +79,44 @@ describe('applyCandidate: pure line edits', () => {
   });
 });
 
+const HASH = 'import os\n\nclass F:\n    def __hash__(self):\n        return hash((\n            self.a,\n            self.b if x else None,\n        ))\n\n    def other(self):\n        return 1\n';
+
+/** A statement-level site over lines 5-8 of HASH, the way localize/sites.ts statementSiteAt builds one. */
+function spanSite(file: SourceFile): Site {
+  return { ...site(file, 5), currentLine: '        return hash((self.a, self.b if x else None))', endLine: 8 };
+}
+
+describe('applyCandidate: statement-level sites (Site.endLine)', () => {
+  const f = sourceFile('f.py', HASH);
+
+  it('replaces the whole physical span with the text and re-indents bare text to the site indent', () => {
+    const a = applyCandidate(candidate(spanSite(f), 'return hash(self.a)'));
+    expect(a.files[0]?.after).toBe('import os\n\nclass F:\n    def __hash__(self):\n        return hash(self.a)\n\n    def other(self):\n        return 1\n');
+    expect(a.diff).toContain('-        return hash((\n-            self.a,\n-            self.b if x else None,\n-        ))\n+        return hash(self.a)\n');
+    expect(siteSpanEnd(spanSite(f))).toBe(8);
+    expect(siteSpanEnd(site(f, 5))).toBe(5);
+  });
+
+  it('an extra edit outside the span (an import at the top) applies with before-candidate numbering; one inside the span is refused', () => {
+    const a = applyCandidate(candidate(spanSite(f), 'return hash(self.a)', [{ path: 'f.py', line: 2, kind: 'insert', text: 'from itertools import zip_longest' }]));
+    expect(a.files[0]?.after.split('\n').slice(0, 5)).toEqual(['import os', 'from itertools import zip_longest', '', 'class F:', '    def __hash__(self):']);
+    expect(a.files[0]?.after).toContain('        return hash(self.a)\n\n    def other');
+    expect(() => applyCandidate(candidate(spanSite(f), 'x', [{ path: 'f.py', line: 6, kind: 'replace', text: 'y' }]))).toThrow(/inside the statement span 5-8/);
+    // right after the span is outside it
+    expect(applyCandidate(candidate(spanSite(f), 'return hash(self.a)', [{ path: 'f.py', line: 9, kind: 'insert', text: '# tail' }])).files[0]?.after).toContain('return hash(self.a)\n# tail\n');
+  });
+
+  it('the span is stale when its code tokens changed, not when only comments or line breaks did', () => {
+    const changed = sourceFile('f.py', HASH.replace('self.a,', 'self.c,'));
+    expect(() => applyCandidate(candidate(spanSite(f), 'x'), new Map([[f.path, changed]]))).toThrow(/stale site: f.py:5-8/);
+    const reflowed = sourceFile('f.py', HASH.replace('            self.a,\n            self.b if x else None,\n', '            self.a,  # first\n            self.b if x else None\n'));
+    expect(applyCandidate(candidate(spanSite(f), 'return hash(self.a)'), new Map([[f.path, reflowed]])).files[0]?.after).toContain('        return hash(self.a)\n');
+    // a span that runs past the end of the file is stale too
+    const short = { ...spanSite(f), endLine: 40 };
+    expect(() => applyCandidate(candidate(short, 'x'))).toThrow(/stale site/);
+  });
+});
+
 function hasGit(): boolean {
   try {
     execFileSync('git', ['--version'], { stdio: 'ignore' });
@@ -111,6 +149,10 @@ describe.skipIf(!hasGit())('the diff applies with git apply --check and reproduc
 
   it('single replace', () => {
     check(applyCandidate(candidate(site(gcd, 5), 'return gcd(b, a % b)')));
+  });
+  it('a statement-level span replaced by one line plus an import insert', () => {
+    const f = sourceFile('f.py', HASH);
+    check(applyCandidate(candidate(spanSite(f), 'return hash(self.a)', [{ path: 'f.py', line: 2, kind: 'insert', text: 'from itertools import zip_longest' }])));
   });
   it('replace + inserts + trailing insert + a second file, no trailing newline in one', () => {
     const other = sourceFile('pkg/util.py', 'A = 1\nB = 2\nC = 3');

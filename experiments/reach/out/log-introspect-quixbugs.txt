@@ -1,0 +1,99 @@
+== QuixBugs 40 sites
+  quixbugs bitcount replace@5: 55 → 55 (timeout, 0 operands, 0 predicates, classes )
+  quixbugs breadth_first_search replace@11: 174 → 174 (no repro)
+  quixbugs bucketsort replace@7: 158 → 158 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs depth_first_search replace@10: 74 → 74 (no repro)
+  quixbugs depth_first_search insert@10: 50 → 50 (no repro)
+  quixbugs detect_cycle replace@5: 149 → 149 (no repro)
+  quixbugs find_first_in_sorted replace@5: 235 → 235 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs find_in_sorted replace@9: 218 → 218 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs flatten replace@7: 54 → 54 (ran, 2 operands, 0 predicates, classes generator,list)
+  quixbugs gcd replace@5: 79 → 79 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs get_factors replace@10: 52 → 52 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs hanoi replace@6: 132 → 132 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs is_valid_parenthesization replace@12: 46 → 46 (ran, 2 operands, 0 predicates, classes bool,int,list)
+  quixbugs kheapsort replace@7: 82 → 82 (ran, 2 operands, 0 predicates, classes generator,list)
+  quixbugs knapsack replace@12: 254 → 254 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs kth replace@12: 252 → 252 (ran, 5 operands, 0 predicates, classes list,int)
+  quixbugs lcs_length replace@9: 235 → 235 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs levenshtein replace@6: 78 → 78 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs lis replace@14: 254 → 254 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs longest_common_subsequence replace@6: 80 → 80 (ran, 2 operands, 0 predicates, classes str,list)
+  quixbugs max_sublist_sum replace@7: 107 → 107 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs mergesort replace@17: 74 → 74 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs minimum_spanning_tree replace@12: 254 → 254 (no repro)
+  quixbugs next_palindrome replace@15: 74 → 74 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs next_permutation replace@6: 201 → 201 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs pascal replace@6: 176 → 176 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs possible_change replace@5: 106 → 106 (ran, 2 operands, 0 predicates, classes int,list)
+  quixbugs powerset replace@6: 131 → 131 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs quicksort replace@7: 93 → 93 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs reverse_linked_list replace@6: 86 → 86 (no repro)
+  quixbugs reverse_linked_list insert@6: 42 → 42 (no repro)
+  quixbugs rpn_eval replace@20: 6 → 6 (ran, 1 operands, 0 predicates, classes list)
+  quixbugs shortest_path_length replace@22: 10 → 10 (no repro)
+  quixbugs shortest_path_lengths replace@13: 0 → 0 (no repro)
+  quixbugs shortest_paths replace@10: 159 → 159 (no repro)
+  quixbugs shunting_yard replace@19: 241 → 241 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs shunting_yard insert@18: 80 → 80 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs sieve replace@4: 157 → 157 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs sqrt replace@4: 171 → 171 (timeout, 0 operands, 0 predicates, classes )
+  quixbugs subsequences replace@3: 90 → 90 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs to_base replace@9: 204 → 204 (ran, 2 operands, 0 predicates, classes str,list)
+  quixbugs topological_ordering replace@6: 254 → 254 (no repro)
+  quixbugs wrap replace@10: 90 → 90 (ran, 2 operands, 0 predicates, classes list)
+  quixbugs wrap insert@10: 56 → 56 (ran, 2 operands, 0 predicates, classes list)
+
+| instance | capability | candidate found | index (source / SEEDS) | site count before → after | vocab missing before → after | F2P pass |
+| --- | --- | --- | --- | --- | --- | --- |
+
+### QuixBugs: 44 sites, templates 5573 → 5573 candidates (+0, 0.0 %); introspection ran on 31 sites
+| program | site | introspection | operands | predicates | classes | templates before → after |
+| --- | --- | --- | --- | --- | --- | --- |
+| bitcount | replace@5 | timeout 8027 ms | 0 | 0 |  | 55 → 55 |
+| breadth_first_search | replace@11 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 174 → 174 |
+| bucketsort | replace@7 | ran 125 ms | 2 | 0 | list | 158 → 158 |
+| depth_first_search | replace@10 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 74 → 74 |
+| depth_first_search | insert@10 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 50 → 50 |
+| detect_cycle | replace@5 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 149 → 149 |
+| find_first_in_sorted | replace@5 | ran 89 ms | 2 | 0 | int, list | 235 → 235 |
+| find_in_sorted | replace@9 | ran 103 ms | 2 | 0 | int, list | 218 → 218 |
+| flatten | replace@7 | ran 94 ms | 2 | 0 | generator, list | 54 → 54 |
+| gcd | replace@5 | ran 114 ms | 2 | 0 | int, list | 79 → 79 |
+| get_factors | replace@10 | ran 131 ms | 2 | 0 | list | 52 → 52 |
+| hanoi | replace@6 | ran 130 ms | 2 | 0 | list | 132 → 132 |
+| is_valid_parenthesization | replace@12 | ran 84 ms | 2 | 0 | bool, int, list | 46 → 46 |
+| kheapsort | replace@7 | ran 91 ms | 2 | 0 | generator, list | 82 → 82 |
+| knapsack | replace@12 | ran 80 ms | 2 | 0 | int, list | 254 → 254 |
+| kth | replace@12 | ran 78 ms | 5 | 0 | list, int | 252 → 252 |
+| lcs_length | replace@9 | ran 82 ms | 2 | 0 | int, list | 235 → 235 |
+| levenshtein | replace@6 | ran 102 ms | 2 | 0 | int, list | 78 → 78 |
+| lis | replace@14 | ran 97 ms | 2 | 0 | int, list | 254 → 254 |
+| longest_common_subsequence | replace@6 | ran 107 ms | 2 | 0 | str, list | 80 → 80 |
+| max_sublist_sum | replace@7 | ran 90 ms | 2 | 0 | int, list | 107 → 107 |
+| mergesort | replace@17 | ran 70 ms | 2 | 0 | list | 74 → 74 |
+| minimum_spanning_tree | replace@12 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 254 → 254 |
+| next_palindrome | replace@15 | ran 67 ms | 2 | 0 | list | 74 → 74 |
+| next_permutation | replace@6 | ran 65 ms | 2 | 0 | list | 201 → 201 |
+| pascal | replace@6 | ran 103 ms | 2 | 0 | list | 176 → 176 |
+| possible_change | replace@5 | ran 85 ms | 2 | 0 | int, list | 106 → 106 |
+| powerset | replace@6 | ran 83 ms | 2 | 0 | list | 131 → 131 |
+| quicksort | replace@7 | ran 66 ms | 2 | 0 | list | 93 → 93 |
+| reverse_linked_list | replace@6 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 86 → 86 |
+| reverse_linked_list | insert@6 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 42 → 42 |
+| rpn_eval | replace@20 | ran 82 ms | 1 | 0 | list | 6 → 6 |
+| shortest_path_length | replace@22 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 10 → 10 |
+| shortest_path_lengths | replace@13 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 0 → 0 |
+| shortest_paths | replace@10 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 159 → 159 |
+| shunting_yard | replace@19 | ran 102 ms | 2 | 0 | list | 241 → 241 |
+| shunting_yard | insert@18 | ran 102 ms | 2 | 0 | list | 80 → 80 |
+| sieve | replace@4 | ran 74 ms | 2 | 0 | list | 157 → 157 |
+| sqrt | replace@4 | timeout 8004 ms | 0 | 0 |  | 171 → 171 |
+| subsequences | replace@3 | ran 113 ms | 2 | 0 | list | 90 → 90 |
+| to_base | replace@9 | ran 74 ms | 2 | 0 | str, list | 204 → 204 |
+| topological_ordering | replace@6 | no JSON tests (pytest module): no repro built | 0 | 0 |  | 254 → 254 |
+| wrap | replace@10 | ran 80 ms | 2 | 0 | list | 90 → 90 |
+| wrap | insert@10 | ran 80 ms | 2 | 0 | list | 56 → 56 |
+
+written /Users/prateekjannu/Documents/vscode/JevCode/experiments/reach/out/introspect-history.quixbugs.json
+exit 0

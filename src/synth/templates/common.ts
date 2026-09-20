@@ -28,6 +28,8 @@ import type { Token } from '../py/tokenize.js';
 export const FAMILY_PRIOR = {
   condition: 0.9,
   guard: 0.85,
+  /** runtime-fact productions (introspect.ts): a guard on a predicate the failing object has, a dispatch alias for a class of its MRO; guard-level prior, ordered inside by the observed truth value */
+  introspect: 0.85,
   attribute: 0.8,
   statement: 0.75,
   signature: 0.7,
@@ -38,7 +40,7 @@ export const FAMILY_PRIOR = {
 
 export type TemplateFamily = keyof typeof FAMILY_PRIOR;
 
-export const TEMPLATE_FAMILIES: readonly TemplateFamily[] = ['guard', 'statement', 'wrap', 'condition', 'signature', 'attribute', 'import', 'branch'];
+export const TEMPLATE_FAMILIES: readonly TemplateFamily[] = ['guard', 'statement', 'wrap', 'condition', 'signature', 'attribute', 'import', 'branch', 'introspect'];
 
 // ---------------------------------------------------------------------------------------
 // Site context
@@ -383,7 +385,7 @@ export function buildContext(site: Site, opts: EnumerateOptions): TemplateContex
   const body = site.kind === 'replace' ? site.currentLine.slice(indentOf(site.currentLine).length) : '';
   const lineTokens = body === '' ? [] : fragmentTokens(body);
   const nearby = new Set<string>();
-  for (let l = site.line - 2; l <= site.line + 2; l++) {
+  for (let l = site.line - 2; l <= (site.endLine ?? site.line) + 2; l++) {
     const text = mod.lines[l - 1];
     if (text !== undefined) for (const n of identifiersIn(fragmentTokens(text))) nearby.add(n);
   }
@@ -498,7 +500,7 @@ export function toCandidate(site: Site, draft: Draft): Candidate {
 function dedentLevels(ctx: TemplateContext, lead: string): string[] {
   const { mod, site } = ctx;
   let next: string | undefined;
-  for (let l = site.line + 1; l <= mod.lines.length; l++) {
+  for (let l = (site.endLine ?? site.line) + 1; l <= mod.lines.length; l++) {
     const text = mod.lines[l - 1]!;
     if (text.trim() !== '' && !text.trim().startsWith('#')) {
       next = indentOf(text);
@@ -538,7 +540,8 @@ export function statementDrafts(ctx: TemplateContext, stmt: string, op: string, 
   // A statement can only go before the first physical line of the current statement and after
   // its last one; anything else lands inside a bracketed expression (a multi-line call).
   const startsHere = ctx.stmt === undefined || ctx.stmt.startLine === site.line;
-  const endsHere = ctx.stmt === undefined || ctx.stmt.endLine === site.line;
+  // a statement-level site (`site.endLine`) covers the whole statement, so both forms apply
+  const endsHere = ctx.stmt === undefined || ctx.stmt.endLine <= (site.endLine ?? site.line);
   const current = currentLineText(ctx);
   const out: Draft[] = [];
   if (startsHere) out.push({ text: `${reindent(stmt, lead)}\n${current}`, op: `${op}_before`, prior });
