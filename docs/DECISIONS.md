@@ -242,3 +242,17 @@ collector under the TUI's render pressure can collect the dependent signal, afte
 abort never reaches the fetch. The client now uses a per-attempt `AbortController` linked
 to the engine signal by an explicit listener and an explicit timer, both strongly held for
 the attempt (the providers already used this pattern through `linkedAbort`).
+
+## 2026-09-19 Root cause of the interactive stall, confirmed by trace
+
+The previous entry's composite-signal theory was not the cause: the per-attempt controller
+rewrite alone did not fix the stall (it is kept as hardening). Fine-grained tracing of every
+await boundary showed the exact shape: the Jev response headers arrived, Ctrl-C landed in the
+same millisecond, and the following body `reader.read()` never settled; undici had destroyed
+the socket but left the reader-locked body stream's pending read unresolved. The providers'
+SSE reader already raced each read against the abort signal (`readWithTimeout`), which is
+why generator streams never stalled; the Jev client's body reader did not. `readBodyBounded`
+now races every read against the attempt signal and cancels the reader on abort. A unit test
+reproduces the shape (headers, then a body that never delivers) and asserts a prompt
+`AbortError`; the live TUI reproduction (`--mock-generator`, live Jev, Ctrl-C mid-request)
+now shuts down cleanly: step discarded per §9.1 rule 1, final checkpoint written, exit 130.

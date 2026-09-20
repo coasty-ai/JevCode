@@ -6,7 +6,8 @@ coverage/
 !.env.example
 *.log
 .DS_Store
-bench/results/
+bench/results/*
+!bench/results/live-*/
 bench/work/
 perf/results/
 /tmp/
