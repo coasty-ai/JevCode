@@ -106,6 +106,28 @@ bounded window of the last four steps, never the full transcript, so tokens per 
 flat. Every step is checkpointed atomically; `--resume <run-id>` continues. The same
 command, patch hash, or failure three times routes to a replan Choice.
 
+## Jev-only mode: no generating LLM at all
+
+`jevcode run "…" --mode jev-only` runs the same loop with **no generator model**. The generator
+slot holds a null provider that throws if it is ever called (the bench asserts zero generator
+calls per run). In place of "ask Claude for a patch", a synthesizer searches: **code proposes**
+candidate edits (mutation operators over the suspicious line, fix templates, donor lines from
+the repository with identifiers re-bound, sketch productions with slot filling, a
+grammar-guided token beam), **Jev decides** (which files, functions and lines to look at, which
+failing behaviour to attack first, which candidates to try when tests are expensive, which of
+several test-passing patches is the genuine fix), and **tests verify** (a candidate is committed
+only when the goal's failing tests pass and the full suite shows no regression). The design,
+"Ledger + Sieve", keeps a ledger of sub-goals (one per cluster of failing tests), fixes one per
+step, holds partial progress as a second base instead of committing it, and runs *every*
+candidate through the tests when a test run is cheap, using Jev to rank only when it is not.
+Architecture: [docs/JEV-ONLY-DESIGN.md](docs/JEV-ONLY-DESIGN.md); the measurements it rests on:
+[docs/JEV-ONLY.md](docs/JEV-ONLY.md) and `experiments/results/`.
+
+Difficulty ladder for this mode: `bench --suite quixbugs` (40 one-line bugs),
+`bench --suite ladder` (12 hand-made multi-hunk tasks), then the SWE-bench subset, all with
+`--conditions jev-only`. A naive prototype of the search already repaired 32/40 QuixBugs
+programs for $0.035 total; the results of the full engine are in `docs/STATUS.md`.
+
 ## Sandbox guarantees
 
 Commands run through `/bin/sh -c` in a detached process group with `cwd` fixed to the

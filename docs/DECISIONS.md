@@ -292,3 +292,21 @@ so that the SBFL tracer's real-pytest path and the QuixBugs/ladder runners could
 on the system interpreter. This is outside the repository. It is reversible with
 `python3 -m pip uninstall pytest pluggy iniconfig exceptiongroup tomli`; the affected tests
 skip cleanly when pytest is absent. Bench runs use their own venvs and do not depend on it.
+
+## 2026-09-20 Jev-only architecture chosen: "Ledger + Sieve"
+
+Eleven measurement files (eight live probes, two literature surveys, one coverage study, each
+adversarially verified) and a naive prototype (QuixBugs 32/40, $0.035) fed a design competition:
+four architects (repair-search, grammar-synthesis, test-driven decomposition, contrarian
+"sieve") and three judges (reach, reliability/cost, long-horizon integration). All three judges
+ranked test-driven decomposition first: a persistent ledger of sub-goals, one verified sub-goal
+per outer step, partials held as a second base, regressions never kept, `patch → run`
+alternation so the engine's completion Noul sees the oracle. Grafted from the contrarian: when
+the whole candidate set at a site fits a measured run budget (median 3.8 s for a QuixBugs
+first-order set; the gold is the only passer in 25/36), run it all and let the tests rank; Jev
+ranks only when tests are expensive (SWE-bench modules 5–60 s). Grafted from repair-search:
+insert gaps as first-class sites, a global verification queue, SBFL top-5 unioned into
+localisation. Grafted from grammar-synthesis: the sketch Choice as a cheap reach round before
+the token beam. Jev's irreplaceable jobs are where to look, which failing behaviour to attack
+next, and which of several test-passing patches is genuine; everything else is code and
+`python3`. The doc is `docs/JEV-ONLY-DESIGN.md`; the rejected alternatives and why are its §10.
