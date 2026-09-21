@@ -17,3 +17,7 @@ perf/results/*
 /tmp/
 .smoke/
 .vitest/
+
+# local scratch and agent worktrees (never committed)
+.scratch/
+.claude/worktrees/
