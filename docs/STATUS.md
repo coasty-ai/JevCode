@@ -100,17 +100,89 @@ run in both conditions (4.7k at step 1, ~5–6k at step 25), which was the long-
 Raw data: `tasks.jsonl`, `summary.json`, `comparison.md` (solve curve and three tokens-per-step
 curves), `predictions.jev-on.jsonl` / `predictions.jev-off.jsonl` (official shape).
 
-## Jev-only mode (2026-09-20, in progress)
+## Jev-only mode (2026-09-20)
 
 A second mode with **no generating LLM**: code proposes candidate edits, Jev decides, tests
-verify (`docs/JEV-ONLY-DESIGN.md`). Measured pieces: Jev localises the buggy line top-3 on
-36/40 QuixBugs programs, ranks the correct fix top-3 on 37/40 among 254 candidates, and
-running a whole first-order mutation set through the tests takes a median 3.8 s. Live, through
-the full engine with `--conditions jev-only`: QuixBugs 34/40 repaired (31 correct by
-inspection) for $0.19 total Jev; the 12-task multi-hunk ladder 4/12 in the first run, limited
-by the outer loop's risk stage rejecting verified patches (being fixed by attaching the
-synthesizer's test evidence to the risk state). Details and per-program tables:
-`experiments/results/jev-only-rungs-1-2.md`.
+verify. Design: `docs/JEV-ONLY-DESIGN.md`. Dated log of every round: `docs/JEV-ONLY.md`.
+Per-round tables: `experiments/results/jev-only-rungs-1-2.md`. Audit of the claim "Jev and no
+other model": `experiments/results/jev-only-audit.md` (the only reachable LLM endpoint in this
+mode is the pinned Jev decisions endpoint; every checked-in jev-only record carries
+`generatorCalls: 0`).
+
+### What was built
+
+- **Contract and engine plumbing.** `EngineMode 'jev-only'`; a `Synthesizer`
+  (`synthesize(ctx) → Proposal`) replaces the propose stage; `Proposal.evidence` carries
+  code-computed shadow test-run evidence; `SynthesisContext.runDir` and a persisted, bounded,
+  redacted `synthState` (`src/core/types.ts`). `src/provider/null.ts` throws if `generate()` is
+  reached and `src/loop/engine.ts` refuses to call it in this mode. Bench: `--conditions jev-only`,
+  `generatorCalls` per record, `invalid` on a non-zero count (`src/bench/runner.ts`,
+  `src/bench/conditions.ts`); every `tasks.jsonl` line passes through the redactor.
+- **Search controller ("Ledger + Sieve"), `src/synth/search/`.** `goals.ts` (one goal per
+  failing-test cluster, the attack-first Choice, park rules), `index.ts` (the outer step,
+  repository-mode initialisation and re-baseline, the introspection and history harvests),
+  `subgoal.ts` (phases SEEDS → SKETCH → BEAM → WIDENED, whole-site SIEVE batches, pairs of
+  partials), `budget.ts` (oracle model, per-step caps, `repositoryRunsPerStep`), `bases.ts`
+  (held passers; partials that survive a park, persisted ≤ 4 per goal), `guard.ts` and
+  `perturb.ts` (behaviour clustering on perturbed inputs, suspicion signals, Q15/Q16
+  arbitration), `sites.ts` (Jev line anchors, gap slots, the loop-exit gap, statement-level
+  sites, introspection-derived class-body and import gaps), `directive.ts` (replan directives;
+  `change_approach` reopens every parked goal), `composite.ts` (pairs, signature and donor-body
+  units, bounded), `memory.ts` (run memories, re-baseline file cache, LRU of four),
+  `proposal.ts` (patch / run / read / done proposals with evidence).
+- **Verification.** `src/synth/sieve/` (queue with a vocabulary pre-check, worktree or `cp -R`
+  lanes, a runner with tail-based per-case timeouts, load scaling and a one-time in-flight
+  retry), `src/synth/verify/` (candidate application including statement spans; pytest,
+  QuixBugs, unittest, Django and sympy output parsers; progress arithmetic),
+  `src/workspace/tests.ts` (native runner detection: `tests/runtests.py`, `bin/test`,
+  `unittest discover`, scoped commands).
+- **Issue oracle and repository mode, `src/synth/oracle/`.** `extract.ts` (fenced, REPL,
+  traceback and expectation blocks from the issue text), `questions.ts` (one Jev batch per
+  instance: `is_reproduction_i`, `shows_expected_i`, `shows_actual_i`, Choice `failure_kind`),
+  `runner.ts` (a runnable script with a code-computed pass criterion under
+  `PYTHONHASHSEED=0`), `verify.ts` (lanes verify the reproduction, then the scoped regression
+  suite), `search.ts` (regression scope ≤ 6 related test files, the confirmation run, the
+  best-guess goal that commits once per run labelled unverified), `goal.ts`.
+- **Candidate sources.** `src/synth/mutate/` (operator families, including
+  `collapse_collection_to_element` at statement sites), `src/synth/templates/` (guards,
+  conditions, branches, imports, statements, signatures, attribute and callee substitution,
+  `stdlib.ts` stdlib-sibling substitution carrying its import, `wrap.ts`, `wrap2.ts` depth-2
+  wraps, `introspect.ts` attribute-predicate guard and MRO method alias), `src/synth/donor/`
+  (donor lines with identifiers re-bound), `src/synth/sketch/` + `fill/` + `beam/` (sketch
+  productions, slot filling, grammar-guided token beam), `src/synth/introspect/` (names
+  harvested from the failing call: MRO class names, `is_*` predicates, module names),
+  `src/synth/history/` (git-history reversals as candidates), `src/synth/localize/` with
+  `src/synth/sbfl/` (file, function and line stages; Ochiai top-5 unioned), `src/synth/rank/`.
+- **Loop-side rules for jev-only.** `src/loop/stages/risk.ts` (`completionVerifiedByRun`,
+  `isVerificationRun`, `novelVerifiedPatch`, `PatchHistory`), `src/loop/loopdetect.ts`
+  (refused-proposal signatures; `fail:` is the failing-test set), `src/loop/state.ts`
+  (`doneExecutedJson`, `commonRunGreen`), `src/loop/stages/intent.ts` (ledger-aware intent, the
+  `finish` rescue on a green run), `src/loop/stages/complete.ts` (`executed.lastRun` in the
+  completion criteria), `src/loop/engine.ts` (`verifiedCompletion`, `repeatedGatherContextExit`).
+- **Bench data and tooling.** `bench/data/quixbugs` (40 programs), `bench/data/ladder` (12
+  short-tier and 8 long-tier tasks, `check.py`), the SWE-bench 30 with their native runners
+  (`src/bench/swebench/loader.ts`); `experiments/inspect/quixbugs-verdicts.mts` (per-program
+  correctness); `experiments/reach/*` (reach at the gold site, $0).
+- Unit tests at the last recorded gates: `test/unit/synth` 79 files / 1,315 tests (rungs file
+  §20.3); `test/unit/loop` + `test/unit/core` 22 files / 180 tests (§17.5).
+
+### Verified live (real Jev calls, 0 generator calls on every record)
+
+| check | result | result dir |
+| --- | --- | --- |
+| QuixBugs 40, run 3 | 36/40 repaired; 32/40 correct by the verdict script (27 gold-identical + 5 equivalent), 2 overfit, 2 unverified; $0.165 | `bench/results/jev-only-quixbugs-3` (+ `verdicts.md`) |
+| QuixBugs 40, repeat 1 (clean worktree at `d610d75`) | 38/40; 35/40 correct (28 + 7), 1 overfit, 2 unverified; $0.134 | `bench/results/jev-only-quixbugs-6-repeat1` |
+| QuixBugs 40, repeat 2 (same tree) | 38/40; 36/40 correct (28 + 8), 0 overfit, 2 unverified; $0.126 | `bench/results/jev-only-quixbugs-6-repeat2` |
+| ladder short tier, rounds 1 → 2 → 4 → 5 | 4/12 → 10/12 → 11/12 → 11/12; round 4: 137 steps, 58 proposals refused, $0.137; round 5: 139 steps, 17 refused, $0.177 | `bench/results/jev-only-ladder-{1,2,4,5}` |
+| ladder round 6 (`grades`, `shipping`, `table`) | 3/3 and 3/3; steps on the three 47 (round 5) → 20 → 19; loop replans 8 → 0 → 0; $0.037, $0.020 | `bench/results/jev-only-ladder-6-done`, `-6-done-item3` |
+| ladder long tier (8 tasks) | run 1 2/8 ($0.246); run 1b 1/4 of the four re-authored tasks ($0.176; 3/8 distinct across runs 1 and 1b); run 2 on `d610d75` 2/8 ($0.266) | `bench/results/jev-only-ladder-long-{1,1b,2}` |
+| SWE-bench Verified 30, first attempt | 0 solved: 20 records evaluated with empty patches, 2 unfinished; $0.60 | `bench/results/jev-only-swebench-1` |
+| issue oracle over the 30 | valid on 9/30 (7 strong, 2 weak); $0.0096 | `experiments/results/oracle-from-issue.md` |
+| SWE-bench, the nine oracle instances | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (FAIL_TO_PASS and PASS_TO_PASS) after 8 steps and $0.024 — the first instance solved with no generating model; the first process died at a 4 GB heap on the Django instances | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b` |
+| SWE-bench 30, budget round | 1 pass (`sympy__sympy-19954`, 6 steps) of 8 records; the process died at an 8 GB heap | `bench/results/jev-only-swebench-2` |
+| SWE-bench 30, wired tree (rung 3) | in progress from the frozen worktree `.claude/worktrees/swe-clean` at `5486f7a` | `bench/results/jev-only-swebench-3` |
+| reach at the gold site, 9 oracle instances ($0) | a test-passing patch in some source's set on 3/9, gold text 1/9; after the six added capabilities every target enters the set and passes FAIL_TO_PASS | `experiments/results/swebench-reach-oracle-9.md`; rungs file §16, §18 |
+| heap after the re-baseline cache | one analysed Django corpus ≈ 149 MB; a re-baseline costs +3 MB with the cache instead of +148 MB without | rungs file §20.2 |
 
 ## What could not be verified here
 
@@ -127,6 +199,25 @@ synthesizer's test evidence to the risk state). Details and per-program tables:
 - **Linux sandboxing.** Only cwd confinement, env scrubbing, timeout, output cap and tree kill
   outside macOS (level `none`), as designed and printed by `jevcode config`.
 
+- **Jev-only, repeats.** Only QuixBugs has three full repeats (36, 38, 38 of 40). The ladder
+  short tier reached ≥ 8/12 in rounds 2, 4 and 5, but each round ran a different code state (the
+  loop-side and search-side fixes landed between them), so they are not three repeats of one
+  tree. The long tier stands at 2–3/8 over three runs. SWE-bench numbers beyond the single
+  `sympy__sympy-19954` pass are pending the rung-3 run (`bench/results/jev-only-swebench-3`).
+- **Jev-only, no hidden suite.** The QuixBugs and ladder evaluators run exactly the cases the
+  workspace exposes (`bench/data/quixbugs/tests`, the ladder's `tests/`), so "repaired" means
+  "passes the reference cases". Correctness is the separate verdict script
+  (`experiments/inspect/quixbugs-verdicts.mts`: gold-identical, or equivalent on the reference
+  cases and on perturbed inputs). Two QuixBugs programs that pass every run
+  (`breadth_first_search`, `topological_ordering`) differ from the reference and cannot be
+  verified by it: their pytest graph fixtures are not perturbed by `src/synth/search/perturb.ts`.
+- **Jev-only, in-sample constants.** Several thresholds were set after a live run on a named
+  QuixBugs program (`docs/JEV-ONLY-DESIGN.md` §7); no run without them has been repeated, so the
+  QuixBugs numbers are in-sample for those programs.
+- **Jev-only, SWE-bench grading.** The `sympy__sympy-19954` pass is the unofficial local-venv
+  evaluator; the patch (a two-line guard before the faulty `del`) is not the upstream fix's
+  shape.
+
 ## Open questions
 
 - Completion calibration: jev-on solved tasks in the live bench but rarely reached
@@ -141,3 +232,25 @@ synthesizer's test evidence to the risk state). Details and per-program tables:
   and the pytest `-qq` case are recorded with evidence for tuning.
 - Jev context Nouls over up to 300 files cost ~60k Jev tokens per step ($0.0025); cheap, but
   the candidate pre-filter could be tightened without changing the design.
+- **Jev-only: the lone partial.** A goal whose first correct fix passes only some of its tests
+  is found, ranked first, run, classified `partial` and dropped at the park (`masked`,
+  `long_chain`, `shared_frame`, two `six_hunks` goals in the long tier). Pairs of partials and
+  held passers commit; a lone partial does not. Fix in flight: commit the best regression-free
+  partial with partial-fix evidence and let the next baseline re-cluster the remaining tests.
+- **Jev-only: within-file site ordering on repositories.** A repository goal has ~700
+  candidates over ~12 sites; under the fixed 16-run cap `sympy__sympy-15345` ran 16 of 727
+  candidates per step, 15 of them at the first site, and parked with sites 3–12 unvisited. The
+  oracle-derived run cap and the progress-aware park rule address this; rung 3 has not yet
+  measured them.
+- **Jev-only: overfit on one-test goals.** Assertion failures make one goal per test, and a
+  passer of a one-test goal can regress nothing while moving the true fix out of reach
+  (`crossfile` 1b: `key not in CODES`; `ledger5` run 1: `return hits`). Acceptance for a one-test
+  goal could prefer, among passers, the one that newly passes the most other failing tests.
+- **Jev-only: load-dependent timeouts.** Every long-tier run shared the machine with other
+  benches (load average 45–70); per-batch run medians were 0.4–1.9 s against 0.15 s idle and
+  every SIEVE step spent its 90 s test wall, so budgets were the binding constraint on every
+  miss. The tail-based per-case timeout, load scaling and the in-flight retry removed the
+  `timeout` misclassifications; the wall itself remains the limit under contention.
+- **Jev-only: declined reads.** In bench runs a review is a decline, so 7–12 `read` proposals
+  per long-tier miss cost a step each and fed the loop detector; a review-level read could be
+  executed or turned into the goal-subset `run`.

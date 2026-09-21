@@ -673,6 +673,26 @@ runs, 34 in either).
 | 3b ($0.15) | 33 SWE depth-1 lines + 21 ladder hunks | `rank-at-scale.mts` | gold rank among the real candidate set (function-scope names first), chunk 150 vs 254, 3 shuffles, `fixProbablyAbsent` false alarms | gold ≤ 5 on ≥ 6/9 instances with median max-Noul ≥ 0.5; ≤ 1 false positive at p ≥ 0.5 per wrong site | SimFix-style similarity pre-filter to top-300, or donors + templates only on SWE sites |
 | 3c | SWE-bench Verified 30 | live, `--spend-cap 0.50` per instance, mocked first | F2P pass under the local evaluator (unofficial), P2P regressions, steps, cost, wall, `generatorCalls = 0`, failure class (localisation / coverage / ranking / multi-hunk / budget) | any instance resolved is the result; report the taxonomy; 0 of the 15 vocabulary-fail instances by construction | – |
 
+**Evaluation results (2026-09-20).** Every row traces to the run directory or results file named; "correct" is
+the code verdict of `experiments/inspect/quixbugs-verdicts.mts` (gold-identical, or equivalent on the reference cases
+and on perturbed inputs; `unverified` = graph fixtures the probe does not perturb). Every record carries
+`generatorCalls: 0`. The in-sample disclosure below applies to every QuixBugs and ladder row. Rung 3b
+(`rank-at-scale.mts`) has no results file and is not listed.
+
+| rung | target (plan above) | measured | run dirs | date |
+| --- | --- | --- | --- | --- |
+| 1a QuixBugs 40 | ≥ 36/40 repaired in every repeat; ≥ 34 correct in the last two; ≤ $0.01 and ≤ 150 s per program; `ranking_missed` = 0 | run 3: 36/40, 32 correct (27 gold-identical + 5 equivalent), 2 overfit, 2 unverified, $0.165; repeat 1: 38/40, 35 correct (28 + 7), 1 overfit (`wrap`), 2 unverified, $0.134; repeat 2: 38/40, 36 correct (28 + 8), 0 overfit, 2 unverified, $0.126. Repaired and correct bars met; $0.003–0.004 per program; solved programs 7–269 s wall, misses ran 168–369 s to `max_steps`; median 4 steps | `bench/results/jev-only-quixbugs-3` (+ `verdicts.md`); `jev-only-quixbugs-6-repeat1`, `-repeat2` (a clean worktree at `d610d75`) | 2026-09-20 |
+| 1b insertion programs | ≥ 3/4 repaired in ≥ 2 of 3 repeats | insertion round 4/4 (3 gold-identical); repeat 1 4/4 (3 gold-identical, `wrap` overfit); repeat 2 4/4 (4 gold-identical) | `jev-only-quixbugs-3-insert`, `-3-insert-dfs`, `-6-repeat1`, `-6-repeat2` | 2026-09-20 |
+| 2 ladder short tier (12) | ≥ 8/12 in ≥ 2 of 3 repeats; 0 regressions kept | round 1 4/12 ($0.277); round 2 10/12 ($0.104); round 4 11/12 (137 steps, 58 proposals refused, $0.137; miss `account`); round 5 11/12 (139 steps, 17 refused, $0.177; `account` solved, `inventory` missed); round 6 on `grades`/`shipping`/`table`: 3/3 in 20 then 19 steps (round 5: 47), loop replans 8 → 0 → 0. Each round ran a different code state, so these are not three repeats of one tree | `bench/results/jev-only-ladder-1`, `-2`, `-4`, `-5`, `-6-done`, `-6-done-item3` | 2026-09-20 |
+| 2 ladder long tier (8, added 2026-09-20) | none set: a horizon diagnostic, every planted line enumerable by a code source (34/34) | run 1 2/8 ($0.246); run 1b 1/4 of the four re-authored tasks ($0.176; 3/8 distinct across runs 1 and 1b); run 2 on `d610d75` 2/8 ($0.266). Dominant defect: a lone partial is never committed (`masked`, `long_chain`, `shared_frame`, two `six_hunks` goals) | `bench/results/jev-only-ladder-long-1`, `-1b`, `-2` | 2026-09-20 |
+| 3a hunk subsets and reach ($0) | informs; no gate | at the gold site a test-passing patch in some source's set on 3/9 oracle instances, the gold text on 1/9; 5/9 gold files outside the 400-file corpus cut; after capabilities 2–6 all six targets enter the set and pass FAIL_TO_PASS | `experiments/results/swebench-reach-oracle-9.md`; `jev-only-rungs-1-2.md` §16.2, §18.2 | 2026-09-20 |
+| 3c SWE-bench Verified 30, first attempt | any instance resolved is the result | 0: 20 records evaluated with empty patches, 2 unfinished; $0.60 (no failing test in the workspace, wrong runner for Django and sympy) | `bench/results/jev-only-swebench-1` | 2026-09-20 |
+| 3c issue oracle over the 30 | – | valid on 9/30 (7 strong, 2 weak); $0.0096 | `experiments/results/oracle-from-issue.md` | 2026-09-20 |
+| 3c the nine oracle instances | any instance resolved | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (FAIL_TO_PASS and PASS_TO_PASS) after 8 steps and $0.024 — the first instance solved with no generating model; the first process died at a 4 GB heap on the Django instances. The full-30 budget round (`jev-only-swebench-2`) passed the same instance in 6 steps among 8 records before dying at 8 GB | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b`, `jev-only-swebench-2` | 2026-09-20 |
+| 3c full 30 on the wired tree (rung 3) | any instance resolved | in progress, from the frozen worktree `.claude/worktrees/swe-clean` at `5486f7a` | `bench/results/jev-only-swebench-3` | – |
+
+<!-- RUNG3: fill from experiments/results/jev-only-rungs-1-2.md §21 -->
+
 **In-sample disclosure (2026-09-20, experiments/results/jev-only-audit.md §4.3, §6).** Every QuixBugs and ladder figure above
 is measured on the *visible* suite: the evaluator runs exactly the cases the workspace exposes (`bench/data/quixbugs/tests`,
 the ladder's `tests/`), there is no hidden suite, so "repaired" means "passes the reference cases" and correctness is a

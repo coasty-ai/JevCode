@@ -456,3 +456,167 @@ C46 ("don't prompt or do anything interactive") is read strictly: `--no-input` o
 ## 2026-09-20 Q17 deleted
 
 Executes "Q17 progress questions are code-computed facts; scheduled for deletion" (above). Removed: `src/synth/verify/questions.ts` `ProgressQuestionId`, `UNSURE_LOW`, `UNSURE_HIGH`, `ProgressStateOptions`, `progressState`, `progressQuestions` (the three Noul texts and the five-level `closeness` Score text are gone from the code), `codeVerdicts`, `expectedLevel`, `judgeProgress` and the `noul`/`score` imports (`STATE_FAILURES_BOUND` stays: `src/synth/search/goals.ts` derives `GOAL_FAILURES_BOUND` from it); `src/synth/verify/index.ts` their re-exports and `Verifier.progressQuestions`/`progressState`/`judgeProgress`; `src/synth/verify/types.ts` `ProgressJudgment`; `src/synth/search/bases.ts` `GuardState.closeness`, `MAX_CLOSENESS_REQUESTS`, `HoldOptions`, `closenessOf` and `HoldResult.requests` — `holdBestPartial(mem, partials, goal)` is now synchronous and takes no Jev; `src/synth/search/guard.ts` `decide` no longer builds `holdOpts` (`DecideOptions` declares `stage`/`subject` itself). A tie on `passed` between partials (several in one batch, or a challenger against the incumbent) is the code rule `compareTieKeys` over `TieKey { newlyFailing, diffChars }`: fewer newly-failing tests first (0 for every partial by construction, since `isPartial` rejects a regression; kept so the rule stays complete if that definition moves), then the smaller diff on the COMMITTED workspace (`diffSize`: fewer changed `+`/`-` lines, then fewer characters in them — context lines are excluded because they depend on where the edit sits; `appliedOnCommitted`, so a partial on the improved base is measured by the cumulative edit it would commit), then the earlier one — list order within a batch, the incumbent (held first) against a later challenger. Every input is a fact the harness computes before the decision; no Jev request is spent on a tie. Tests: `test/unit/synth/search/bases.test.ts` ("a tie on passed against the incumbent is broken in code…", "several tied challengers in one batch…", "the tie key…"); `test/unit/synth/verify/{questions,index}.test.ts` and `test/live/synth-verify.live.test.ts` lost their Q17 cases (the live check is now one request, the attack-first Choice). Docs: `docs/JEV-ONLY-DESIGN.md` §2.2 pseudo-code, the §2.7 Q17 row, §4.4 and the §6 `bases.ts` row state the code rule. Left for their owners: the "Q17 consistency" row of §4.5's cost table and `docs/JEV-ONLY.md` §"open" line 236, which still describe Q17 as scheduled.
+
+## 2026-09-20 Repository run cap follows the measured oracle; a budget-hit step that reached a new site is progress
+
+The design's repository-class cap of 16 runs per step (`docs/JEV-ONLY-DESIGN.md` §4.3: 12 subset + 3
+full + 1 baseline) was sized for the case where every candidate costs a full suite. With the issue
+oracle the goal-subset run is the reproduction script (sympy-15345: 2.06 s against an 18.6 s scoped
+`bin/test`; Django 0.9–2.8 s against 5–100 s of `runtests.py`) and only the ≤ 5 passers pay the scoped
+suite, so on `bench/results/jev-only-swebench-2-oracle` the cap let 16 of 727 enumerated candidates run
+per step on `sympy__sympy-15345`, 15 of them at the first site, and the rule "2 consecutive budget-hit
+steps" parked the goal with sites 3–12 never visited. Decision (commit `4d5eec2`): the run count is
+derived from the measured oracle, `runs = floor((testWall − 5 × t_run(fullSuite)) / t_run(goalSubset))
+× lanes`, bounded to [16, 160] (`src/synth/search/budget.ts repositoryRunsPerStep`; sympy-15345 gets 108,
+a Django instance with a 100 s scope 140; the QuixBugs class keeps 1,500), and in RANK mode the take per
+site is its share of the runs left. A budget-hit step counts toward the stagnation park only when it
+tested nothing new — no fresh candidate at a site no earlier step of the goal had tested
+(`src/synth/search/goals.ts noteBudgetHit(goal, progress)`); a step that reached a new site is the same
+search continued and counts neither toward the 2 nor toward "3 searches without a commit". A hard cap of
+4 consecutive budget-hit steps parks whatever they tested (`MAX_BUDGET_HIT_STEPS`), because each such
+step is one more goal-subset `run` with the same signature and the loop detector trips at 3. Both rules
+are dated paragraphs in `docs/JEV-ONLY-DESIGN.md` §4.3 and §5.3. Not yet measured on the full 30 (rung 3
+in progress).
+
+## 2026-09-20 Reproductions run under a fixed hash seed and are confirmed by a second run
+
+`django__django-15315`'s reproduction (`assert f in d`, whose outcome depends on `Field.__hash__`) flipped verdict
+between processes because CPython randomises `str` hashes per process, so a lane verdict was not a fact
+of the code. Decision (commit `4d5eec2`): every reproduction — the base run, the lanes and the workspace
+re-run — executes under `PYTHONHASHSEED=0` (`src/synth/oracle/runner.ts REPRO_HASH_SEED`), and a
+passing verdict is confirmed by a second run before it counts (`src/synth/oracle/search.ts`; the note
+reads `confirmed by a second run in N ms`, or `confirmation run did not report (...); first verdict kept`
+when the second run timed out or errored). The behaviour probe of the guard already ran under the same
+seed (`src/synth/search/perturb.ts`).
+
+## 2026-09-20 A lone passer may be held within a step: suspicion signals and a Q16 advisory
+
+Design §2.6 said "1 plausible → commit" and that a lone passer is never withheld on a Noul threshold.
+In QuixBugs run 3 both overfits (`detect_cycle`, `wrap`) were the first lone passer of a step, committed
+while the site list still had the gold's site ahead; both golds were enumerated by more than one source
+(`experiments/results/jev-only-rungs-1-2.md` §13). Decision (commit `3d0d803`, `src/synth/search/guard.ts`,
+`bases.ts`, new `perturb.ts`): (a) on a SIEVE oracle a clean lone passer waits until its site's seed
+sources have run; (b) a lone passer carrying a code-computed structural signal (`deletes_statement`,
+`duplicates_block`, `guards_other_variable`, `dead_guard`) gets one Q16 Noul as an advisory — held when
+p < 0.3 with one signal, committed at once only when p ≥ 0.7 with two or more; (c) every hold lives
+inside a budget reserve (15 s / 16 runs / 1 request) and is released at the step end or on a budget
+exit, never past the step, so a genuine fix is delayed, never withheld. The behaviour probe derives
+inputs from the visible tests (JSON cases, pytest `Node` chains) and runs on the sieve's lanes, so
+≥ 2 passers cluster by behaviour rather than by the pass vector alone; `SUSPECT_ESCAPE_MIN` moved
+0.9 → 0.8 after `wrap`'s all-overfit arbitration answered 0.89. Live: `detect_cycle` repaired
+(correct on 48 linked lists, not gold-identical), `depth_first_search` gold-identical 3/3; `wrap` needed
+the loop-exit gap of the next entry. The constants are in-sample for those programs (design §7).
+
+## 2026-09-20 Partials survive a park; pairs run before it; a held passer commits on a budget exit; `change_approach` reopens every parked goal
+
+The ladder-4 dissection (`experiments/results/jev-only-ladder-4-analysis.md` §1) showed `account`'s two
+gold half-fixes found, ranked first (p 0.97 / 0.98), classified `partial` because frame clustering
+merged two bugs into one goal, and dropped when the goal parked (`forgetGoal` on park; `pairsOfPartials`
+starved by the budget; `change_approach` reopening only the newest parked goal). Decision (commit
+`1f7611e`, `src/synth/search/{bases,subgoal,index,directive,sites}.ts`, `sieve/runner.ts`): `forgetHeld`
+is the park-time form that keeps the remembered partials, persisted ≤ 4 per goal in `synthState`; the
+pairs run inside a 15 s / 16-run reserve before the batch that would spend it, at step start, on every
+budget exit and before a park; a passer the guard still holds is committed before any park; a site's
+seed sources run as one SIEVE batch decided once; an all-killed batch under load is re-queued once with a
+load-scaled lane timeout; WIDENED sites are evidence-ordered and the gap a loop exits into is an
+anchor's third gap. Live: `account` 3/3 hunks gold-identical in 2/2 runs, `wrap` gold-identical, the
+five regression programs unchanged. Still open after this change: a *lone* partial — a goal whose first
+correct fix passes only some of its tests — is never committed, which is the dominant defect of the
+long tier (`masked`, `long_chain`, `shared_frame`, two `six_hunks` goals); the fix in flight commits the
+best regression-free partial as a progress commit and lets the next baseline re-cluster the rest.
+
+## 2026-09-20 Loop-side rules for jev-only: verified completion, verification run, novel verified patch, failing-set signatures, no-op `done` carries the run
+
+Round 4 of the ladder solved 11/12 but spent 58 of 137 steps on refused proposals, 30 of them two
+mechanisms: the engine's own green verification `run` and the `done` after it landed in the review band
+on spread probability mass (bench has no reviewer, so review = decline), and a declined proposal was then
+read back from `recent` as "a step that already failed" (`jev-only-ladder-4-analysis.md` §2–§4).
+Decisions, all code rules over facts the harness knows (`workspace.testsCurrent`,
+`lastTestRun.allPassed`, the detected test command, the outcome status, the parsed failing set), with
+Jev's answers kept in the record: (1) a `done` with an empty `plan.remaining` after the engine's own
+green, current run is not refused by the risk stage (`src/loop/stages/risk.ts completionVerifiedByRun`;
+the completion Noul still decides the stop); (2) one plain invocation of the test command with harm
+dimensions at expected level ≤ 1 never lands in the review band on alignment mass
+(`isVerificationRun`); (3) refused proposals are signed by the proposal alone, a trip resets only the
+tripped signature, `intent:unresolved` is emitted only when the fallback differs from Jev's argmax, and
+a second `gather_context` for the same refused `done:` is `stop_and_report`
+(`src/loop/loopdetect.ts`, `engine.ts repeatedGatherContextExit`); (4) `fail:` is the sorted set of
+failing test ids, not the last output line, so progressing runs (4 → 2 → 1 failing) no longer read as
+the same failure three times (`testFailureIdentity`; `docs/DESIGN.md` §6 dated paragraph); (5) the judge
+state of a no-op `done` carries the last run's parsed counts and a `lastRun` block
+(`src/loop/state.ts doneExecutedJson`, `stages/complete.ts`); (6) a change proposal whose evidence is
+verified with no newly-failing tests and whose content differs from every applied earlier patch is
+gated by harm alone (`novelVerifiedPatch`, `PatchHistory`, `proposal.priorPatches` in the risk state).
+Commits `a030381` (1–3) and `42d9f09` (4–6). Measured: refusals 58 → 17 in round 5; on
+`grades`/`shipping`/`table` 47 → 20 → 19 steps with loop replans 8 → 0 → 0
+(`bench/results/jev-only-ladder-5`, `-6-done`, `-6-done-item3`); on `django__django-15315` six refusals
+of four distinct verified patches → 0 (the task still fails for an oracle-side reason).
+
+## 2026-09-20 Leakage test and task-log redaction are recorded above; the leakage guard now covers every new source
+
+The leakage test on question wordings (`test/unit/synth/sketch/no-benchmark-leakage.test.ts`, a corpus
+built at test time from every benchmark's gold under `bench/data`) and the redaction of every
+`tasks.jsonl` line (`src/bench/runner.ts serialiseRedacted`) are recorded in the entry "Q7 `edit_class`
+examples were QuixBugs gold fixes" above and are not repeated here. Added with the introspection and
+history sources (`experiments/results/jev-only-rungs-1-2.md` §18.1): the same corpus is asserted against
+the `introspect` template family's example wordings and against the module texts of the new sources
+(`test/unit/synth/templates/introspect.test.ts`), so a source added for a named SWE-bench instance
+cannot carry that instance's gold text. Q7 re-measured with clean wordings is top-1 24/40, top-2
+34–35/40, and that is the figure cited.
+
+## 2026-09-20 Repository mode: the best-guess commit is labelled unverified and happens once per run
+
+The SWE-bench decision above planned a regression-only best guess when no oracle can be extracted
+(21 of 30 instances). What landed (commit `df0855c`): the best-guess goal has its own synthetic test id
+(`issue::…`, `src/synth/oracle/search.ts`), its search ranks candidates and checks the scoped regression
+suite only, its `patch` proposal's goal text reads `apply best-guess fix (no reproduction oracle;
+unverified): <source>/<op> at <site>; <regression counts>` and its `openProblems` carries
+`no reproduction oracle: best-guess fix, unverified` (`src/synth/search/proposal.ts BEST_GUESS_NOTE`), so
+the risk stage and the completion Noul read an honest claim; after its one commit (or the engine's
+rejection of it) the goal parks with the reason `best-guess fix committed, unverified (no reproduction
+oracle)` and re-opens only for one re-proposal (`search/index.ts`). No best-guess pass has been recorded.
+
+## 2026-09-20 The long tier measures the horizon, not the reach
+
+Eight tasks (`bench/data/ladder`, tier `long`, ids 13–20; commit `7ea40b2`) test whether the ledger can
+chain many verified sub-goals: five independent bugs, masked failures that re-cluster, two bugs raising at
+the same helper line, a coordinated two-file pair, an import plus a None-guard, a regression trap, six
+bugs with complementary partials, a six-stage pipeline. Every planted line is a one-line replace or the
+guard template's insert, and a probe confirms 34/34 are enumerated by a code source, so a miss measures
+the horizon and never the vocabulary (six lines of the first authoring were out of reach and were
+re-authored before run 1b; those run-1 misses are marked as authoring). `meta.json` gains `tier` and
+`expected_failing` (verified against a real pytest run by `check.py` and
+`test/unit/bench/ladder-long.test.ts`); the loader orders short tier then long so `--tasks 12` still
+selects the original twelve; the long-tier `pytest.ini` carries no `-q` because the engine's own `-q`
+would make it `-qq` and drop the counts line (the `long_chain` first run never registered its baseline
+for exactly this reason). Results: 2/8, 1/4 of the re-authored four, 2/8 on `d610d75`
+(`bench/results/jev-only-ladder-long-{1,1b,2}`, ≈ $0.18–0.27 each); the dominant defect is the lone
+partial (previous entry).
+
+## 2026-09-20 Re-baseline file cache and an LRU of run memories
+
+The nine-instance SWE-bench run (`bench/results/jev-only-swebench-2-oracle`) died with
+`FATAL ERROR: Reached heap limit` at 4 GB on two Django tasks; the full-30 budget round died at 8 GB
+after eight records (commit `43ce244`). Measured (`experiments/results/jev-only-rungs-1-2.md` §20.2):
+one analysed Django corpus is ≈ 149 MB, and every re-baseline of every Django step analysed 858 files
+again while older copies were still reachable, and every finished run's memory stayed in the registry
+for the life of the bench process. Decision (commit `5486f7a`, `src/synth/search/memory.ts`,
+`search/index.ts loadPythonFiles`): a per-run file cache hands back the same `SourceFile` object for
+every unchanged file (so the identity-keyed caches in `sites.ts` / `composite.ts` survive) and analyses
+only changed text — a re-baseline costs +3 MB in 31 ms instead of +148 MB in 380 ms — and the run
+registry is an LRU of four memories (`MEMORIES_MAX`), dropping the least recently used with its run
+facts. Repository benches are launched with `NODE_OPTIONS=--max-old-space-size=8192` and
+`--concurrency 2` regardless.
+
+## 2026-09-20 Rung 3 is measured on a frozen worktree
+
+Every earlier live number was taken on a working tree that other sessions were editing (the round-5 and
+round-6 ladder tables state this confound). Decision: the rung-1a repeats and long-tier run 2 ran from
+`.claude/worktrees/bench-clean` at `d610d75` (`node_modules` symlinked, `.env` from the main checkout),
+and the SWE-bench full-30 run of rung 3 runs from `.claude/worktrees/swe-clean` at `5486f7a` (the
+wiring commit; process cwd confirmed with `lsof`), writing its records to the main checkout's
+`bench/results/jev-only-swebench-3` with `NODE_OPTIONS=--max-old-space-size=8192 --concurrency 2
+--max-steps 25 --max-wall 25m --spend-cap 4 --task-spend-cap 0.4`. Nothing in that worktree changes
+while the run lasts, so the number, when it lands, is attributable to one commit. Its result goes to
+`experiments/results/jev-only-rungs-1-2.md` §21 and to the `RUNG3` placeholders in `README.md` and
+`docs/JEV-ONLY-DESIGN.md` §7.

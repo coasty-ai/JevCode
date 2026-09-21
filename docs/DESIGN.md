@@ -3803,3 +3803,168 @@ CLI: `--mode jev-on|jev-off|jev-only` on `run` (hidden `--condition` kept as ali
 key only when a generator condition is selected. Bench suites `quixbugs` and `ladder` are the
 jev-only difficulty ladder. Architecture of the synthesizer itself: `docs/JEV-ONLY-DESIGN.md`
 (from the measurement-and-design programme logged in `docs/JEV-ONLY.md`).
+
+### 21.1 Components that exist in the tree (as of 2026-09-20, evening)
+
+The synthesizer's design is `docs/JEV-ONLY-DESIGN.md`; this list names what is built and
+where, so a reader can go from the design's section to the file. Every component follows the
+mode's rule: code proposes from facts in the workspace, Jev chooses among ≤ 255 concrete
+options, tests verify. Measurements are in `experiments/results/jev-only-rungs-1-2.md` (cited
+below as "rungs §n").
+
+- **Ledger.** `src/synth/search/goals.ts`: one goal per cluster of failing tests
+  (exception-raising tests cluster by innermost frame, assertion failures one goal per test),
+  the attack-first Choice, the park rules of design §5.3. `src/synth/search/index.ts` is the
+  outer step (`synthesize(ctx)`): establishing full-suite run, one goal per step, commit or
+  park, plan items with evidence, `synthState` persistence. `src/synth/search/proposal.ts`
+  builds the `patch` / `run` / `read` / `done` proposals and attaches the code-computed
+  `Proposal.evidence` (before/after counts, newly passing and newly failing tests).
+- **Sieve and budgets.** `src/synth/search/budget.ts` is the oracle model (per-run time from
+  the baseline, lanes, SIEVE when one goal-subset run is ≤ 2 s, RANK otherwise; per-step caps
+  on test wall, runs and Jev requests). `src/synth/sieve/queue.ts` (global verification queue,
+  vocabulary pre-check, dedupe), `lanes.ts` (git worktree or `cp -R` shadow lanes, never the
+  workspace), `runner.ts` (tail-based per-case timeouts, provisional timeouts retried at 2 s,
+  load-scaled caps, all-killed batches re-queued once; rungs §8, §12, §15).
+  `src/synth/search/subgoal.ts` walks the phases SEEDS → SKETCH → BEAM → WIDENED, runs a
+  site's seed sources as one SIEVE batch decided once, and tests pairs of complementary
+  partials inside a 15 s / 16-run reserve before a batch would spend it (rungs §15).
+- **Issue oracle.** `src/synth/oracle/extract.ts` extracts fenced, REPL, traceback and
+  expected-vs-actual blocks from the task text; `questions.ts` asks one Jev batch per instance
+  (`is_reproduction_i`, `shows_expected_i`, `shows_actual_i`, Choice `failure_kind`);
+  `runner.ts` builds a runnable script with a code-computed pass criterion and runs it under
+  `PYTHONHASHSEED=0`; `verify.ts` runs candidates on lanes against the reproduction first and
+  the scoped regression suite second; `search.ts` picks the regression scope (≤ 6 related test
+  files, native runner command), confirms a reproduction verdict with a second run, and holds
+  the best-guess goal. Measured: a valid oracle (fails at the base commit, passes with the
+  gold patch) on 9/30 SWE-bench Verified instances for $0.0096
+  (`experiments/results/oracle-from-issue.md`).
+- **Repository mode.** `src/synth/search/index.ts` (`initRepository`, `rebaselineRepository`):
+  when the workspace is a repository with no failing test, the oracle's reproduction becomes the
+  goal (`repro::<sha8>`); one localisation anchored on the traceback frames; a regression
+  baseline scoped to the related test files; the corpus read is the first 1,200 files with the
+  task-named files first (the 400-file alphabetical cut left 5 of 9 gold files unloadable,
+  `experiments/results/swebench-reach-oracle-9.md`); when no oracle exists, one best-guess
+  regression-only commit per run, its goal text and `openProblems` note reading "no reproduction
+  oracle: best-guess fix, unverified" (`proposal.ts BEST_GUESS_NOTE`). The introspection and
+  history harvests run once at the establishing step and again on a checkpoint restore;
+  `src/synth/search/memory.ts` keeps a per-run file cache so a re-baseline re-analyses only
+  changed files and an LRU of four run memories (rungs §20). Native runner detection is in
+  `src/workspace/tests.ts` (`tests/runtests.py`, `bin/test`, `unittest discover`) with the
+  parsers in `src/synth/verify/runners.ts`.
+- **Candidate sources** (design §3). `src/synth/mutate/` (operator families over the site's
+  line; `collapse_collection_to_element` at statement-level sites and in WIDENED),
+  `src/synth/templates/` (guards, conditions, branches, imports, statements, signatures,
+  attribute and callee substitution; added 2026-09-20: `stdlib.ts` stdlib-sibling callee
+  substitution that carries its import as an extra edit, `wrap2.ts` depth-2 wraps in WIDENED,
+  `introspect.ts` attribute-predicate guard and MRO method alias, inert without introspection
+  facts), `src/synth/donor/` (lines elsewhere in the corpus with identifiers re-bound by a Jev
+  Choice per hole), `src/synth/search/composite.ts` (pairs of seeds, signature units that thread
+  a parameter to every call site, donor-body units; bounded by a 3 s per-unit deadline and a
+  5,000-statement call-site cap after one enumeration did not return in 27 min, rungs §16),
+  `src/synth/sketch/` + `fill/` + `beam/` (sketch productions ranked by Jev, slot filling, a
+  grammar-guided token beam), `src/synth/introspect/` (a pass appended to the reproduction
+  script: MRO class names, `is_*` predicates with their truth value at the failing call, module
+  names; ≤ 400 names, fed to the vocabulary and the templates), `src/synth/history/` (the
+  reverse of each change run in the ≤ 5 most recent commits that touched the located
+  identifiers or the ticket the issue names, offered as candidates; ≤ 8 read-only git commands).
+  At the gold sites of the nine oracle instances all six reach-study targets are now enumerated
+  and pass FAIL_TO_PASS (rungs §16.2, §18.2); the QuixBugs SEEDS sets are unchanged (40/40 gold
+  in SEEDS, rungs §16.3).
+- **Sites.** `src/synth/localize/` (file, function and line stages; `sites.ts` builds replace
+  sites, insert gaps at every statement boundary with legal indents, and statement-level sites
+  whose `currentLine` is a multi-line statement joined onto one line, `Site.endLine` the span).
+  `src/synth/search/sites.ts` orders a goal's sites from the Jev line anchors (Q5/Q5n), SBFL
+  top-5 (`src/synth/sbfl/`), the gap slots around each anchor including the loop-exit gap,
+  evidence-ordered WIDENED sites cut at 24, and up to two introspection-derived sites (the
+  class-body gap of the class the failing call points at and its module import gap).
+- **Guard.** `src/synth/search/guard.ts` decides on a run batch (design §2.6): passers are
+  clustered by behaviour on inputs `perturb.ts` derives from the visible tests (JSON cases,
+  linked lists from pytest `Node` chains; run on the sieve's lanes); one Q15/Q16 request
+  arbitrates between cluster representatives with an escape; a set whose escape ≥ 0.8 and every
+  Noul < 0.1 is all-overfit and held. A lone passer is committed at once unless it carries a
+  code-computed suspicion signal (`deletes_statement`, `duplicates_block`,
+  `guards_other_variable`, `dead_guard`) or its site still has a seed source to run; a held
+  passer is arbitrated against later passers and released at the step end or the budget
+  reserve, never past the step (rungs §13). `bases.ts` keeps the held and pending passers, the
+  improved base and the remembered partials.
+- **Progress-aware park rule and oracle-derived run cap** (design §4.3 and §5.3, dated
+  paragraphs). `budget.ts repositoryRunsPerStep`: `runs = floor((testWall − 5 × t_run(fullSuite))
+  / t_run(goalSubset)) × lanes`, bounded to [16, 160]; in RANK mode the take per site is its
+  share of the runs left. `goals.ts noteBudgetHit(goal, progress)`: a budget-hit step that
+  tested a site no earlier step had tested is progress and does not count toward the
+  two-stagnant-steps park nor toward "3 searches without a commit"; a hard cap of four
+  consecutive budget-hit steps parks whatever they tested (`MAX_BUDGET_HIT_STEPS`), so the
+  loop detector's `run:` signature trips at most once per goal.
+
+### 21.2 Loop-side rules added for jev-only (all code rules over facts the harness knows; Jev stays the decider)
+
+Each was measured on the ladder before it landed (`experiments/results/jev-only-ladder-4-analysis.md`,
+rungs §9, §14, §17). The synthesizer's `Proposal.evidence` reaches the risk and judge states with
+rubric clauses that tell a verified fix from "skipping verification" (rungs §9); the intent stage
+is ledger-aware in this mode (`src/loop/stages/intent.ts`: an `edit` intent becomes `verify`
+while a change is unverified; a `finish` fallback is rescued when the engine's last run is green
+and current).
+
+- **Verified completion** (`src/loop/stages/risk.ts completionVerifiedByRun`, `engine.ts
+  verifiedCompletion`): a `done` whose `plan.remaining` is empty while `workspace.testsCurrent`
+  and `lastTestRun.allPassed` hold is not refused by the risk stage; Jev's answers stay in the
+  record and the completion Noul still decides the stop.
+- **Verification run** (`risk.ts isVerificationRun`): one plain invocation of the detected test
+  command (or a scoped form) with `destructive` and `irreversible` at expected level ≤ 1 never
+  lands in the review band on spread alignment mass; the alignment dimensions are recorded, not
+  gating. In bench runs a review is a decline, and 9 of round 4's 16 refused runs were this
+  standing run with verified evidence.
+- **Novel verified patch** (`risk.ts novelVerifiedPatch`, `PatchHistory`,
+  `proposal.priorPatches` in the risk state): a change proposal whose evidence is verified with
+  no newly-failing tests and whose content differs from every *applied* earlier patch of the run
+  is gated by harm alone; the rubric says a different verified patch after one that did not fix
+  the goal is a new attempt, not a repeat. Measured on `django__django-15315`: six refusals of
+  four distinct verified patches → zero (rungs §17.4).
+- **Failing-set signatures** (`src/loop/loopdetect.ts testFailureIdentity`, `failingTestIds`):
+  the `fail:` signature of a non-zero test-runner run is the sorted set of failing test ids
+  (pytest, unittest/Django, sympy, cargo, go, vitest/jest forms), with `counts:` and the old
+  text hash as fallbacks; three runs are the same failure only when the sets are identical.
+  Refused proposals are signed by the proposal alone (`run:<sha12(cmd)>:refused`), a trip resets
+  only the tripped signature, and a second `gather_context` for the same refused `done:`
+  signature is treated as `stop_and_report` (§6 of this document carries the dated paragraph).
+- **No-op `done` carries the engine's last run** (`src/loop/state.ts doneExecutedJson`,
+  `src/loop/stages/complete.ts`): the judge state of a `done` after a run includes the run's
+  parsed counts, `testsCurrent` and a `lastRun` block, and the completion criteria name it;
+  ladder `grades`/`shipping`/`table` went from 47 steps (round 5) to 20 and 19 with 0 loop
+  replans (rungs §17.3).
+
+### 21.3 Deviations from the original jev-only design, and why
+
+- **Q17 deleted** (design §2.7 row, DECISIONS "Q17 deleted"). The progress Nouls and the
+  `closeness` Score were a pure function of the pass counts the harness already computes
+  (240/240) and were asked 0 times live; progress is `src/synth/verify/progress.ts` and a tie
+  between partials is the code rule `compareTieKeys` (fewer newly-failing tests, smaller diff,
+  earlier candidate).
+- **Run cap derived from the oracle, not the class** (design §4.3 dated paragraph). The
+  repository class's fixed 16 runs per step was sized for a full-suite oracle; with the issue
+  oracle the goal-subset run is a 1–3 s reproduction and only the ≤ 5 passers pay the scoped
+  suite, so the cap let 16 of 727 candidates run per step on `sympy__sympy-15345` and parked the
+  goal with sites 3–12 unvisited. The count is now `repositoryRunsPerStep` (above); the QuixBugs
+  class keeps 1,500.
+- **Partials survive parks** (rungs §15; design §2.3 said "partials held as a second base" but
+  `forgetGoal` on park dropped them). `bases.ts forgetHeld` keeps the remembered partials across
+  a park and persists ≤ 4 per goal in `synthState`; pairs are tested before a park and on every
+  budget exit; a held passer is committed on a budget exit; `change_approach` reopens every
+  parked goal, not the newest. Still open: a *lone* partial is never committed (long tier, rungs
+  §19.7); the fix in flight is a progress commit of the best regression-free partial.
+- **Statement-level sites** (rungs §16, §20). The design's replace site was one physical line;
+  a five-line `return hash((…))` could not be rewritten and 1,143 of 2,171 candidates broke the
+  module import. A statement site stands in place of the physical site at the statement's first
+  line and applies as one replacement plus deletions of the continuation lines.
+- **A lone passer may be held within a step.** Design §2.6 said a lone passer is never withheld
+  on a Noul threshold; two run-3 overfits were committed as the first lone passer of a step while
+  the gold's site was still ahead. The hold is bounded to the step (rungs §13); the constants
+  behind it are disclosed as in-sample in `docs/JEV-ONLY-DESIGN.md` §7.
+- **History source built** (design §3 listed it as "not in v1"); **introspection source added**
+  (not in the design); **best-guess commit** when no oracle exists (from the SWE-bench decision,
+  DECISIONS 2026-09-20); **corpus read raised** from 400 alphabetical files to 1,200 with the
+  task-named files first.
+- **Repository-mode results so far.** First attempt 0/30 (20 evaluated, every patch empty,
+  `bench/results/jev-only-swebench-1`); `sympy__sympy-19954` is the first SWE-bench instance
+  solved with no generating model (8 steps, $0.024, `bench/results/jev-only-swebench-2-oracle`);
+  the full-30 run on the wired tree is in progress (`bench/results/jev-only-swebench-3`).

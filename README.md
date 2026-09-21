@@ -109,24 +109,100 @@ command, patch hash, or failure three times routes to a replan Choice.
 ## Jev-only mode: no generating LLM at all
 
 `jevcode run "…" --mode jev-only` runs the same loop with **no generator model**. The generator
-slot holds a null provider that throws if it is ever called (the bench asserts zero generator
-calls per run). In place of "ask Claude for a patch", a synthesizer searches: **code proposes**
-candidate edits (mutation operators over the suspicious line, fix templates, donor lines from
-the repository with identifiers re-bound, sketch productions with slot filling, a
-grammar-guided token beam), **Jev decides** (which files, functions and lines to look at, which
-failing behaviour to attack first, which candidates to try when tests are expensive, which of
-several test-passing patches is the genuine fix), and **tests verify** (a candidate is committed
-only when the goal's failing tests pass and the full suite shows no regression). The design,
-"Ledger + Sieve", keeps a ledger of sub-goals (one per cluster of failing tests), fixes one per
-step, holds partial progress as a second base instead of committing it, and runs *every*
-candidate through the tests when a test run is cheap, using Jev to rank only when it is not.
-Architecture: [docs/JEV-ONLY-DESIGN.md](docs/JEV-ONLY-DESIGN.md); the measurements it rests on:
-[docs/JEV-ONLY.md](docs/JEV-ONLY.md) and `experiments/results/`.
+slot holds a null provider that throws if it is ever called; the bench asserts zero generator
+calls per record and marks a record `invalid` otherwise. In place of "ask a model for a patch"
+a synthesizer searches: **code proposes** candidate edits, **Jev decides** (where to look, which
+failing behaviour to attack first, which candidates to run when tests are expensive, which of
+several test-passing patches is the genuine fix, and every existing loop decision), and
+**tests verify** (a candidate is committed only when the goal's failing tests pass and the
+regression suite shows nothing newly failing). Jev never marks a fix correct on its own.
 
-Difficulty ladder for this mode: `bench --suite quixbugs` (40 one-line bugs),
-`bench --suite ladder` (12 hand-made multi-hunk tasks), then the SWE-bench subset, all with
-`--conditions jev-only`. A naive prototype of the search already repaired 32/40 QuixBugs
-programs for $0.035 total; the results of the full engine are in `docs/STATUS.md`.
+### Running it
+
+```sh
+# keys come from .env only; the session's own Anthropic key is never used
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx \
+  bench --suite quixbugs --conditions jev-only --live \
+  --spend-cap 0.6 --task-spend-cap 0.05 --max-steps 12 --max-wall 8m --out bench/results/<dir>
+
+# ladder: the 12-task short tier, then the 8-task long tier (positions 13–20, or --task-id <name>,…)
+… bench --suite ladder --tasks 12 --conditions jev-only --live --max-steps 20 --max-wall 12m --out …
+… bench --suite ladder --task-id ledger5,masked,shared_frame,crossfile,import_and_guard,regress_trap,six_hunks,long_chain \
+  --conditions jev-only --live --max-steps 30 --max-wall 15m --out …
+
+# repository suites (SWE-bench) need a larger heap and low concurrency
+NODE_OPTIONS=--max-old-space-size=8192 env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx \
+  bench --suite swebench --conditions jev-only --live --concurrency 2 --max-steps 25 --max-wall 25m --out …
+
+# per-program correctness of a QuixBugs result directory (code only, no Jev; writes <dir>/verdicts.md)
+node_modules/.bin/tsx experiments/inspect/quixbugs-verdicts.mts bench/results/<dir>
+```
+
+The `NODE_OPTIONS` line matters on repository suites: one analysed Django corpus is about 150 MB
+of heap, a nine-instance run died at a 4 GB heap limit and a full-30 run at 8 GB after eight
+records before the re-baseline file cache and the four-entry LRU of run memories landed
+(`experiments/results/jev-only-rungs-1-2.md` §20.2). The `--live` flag needs no generator key
+when only `jev-only` is selected.
+
+### Architecture in one paragraph
+
+The design is "Ledger + Sieve" (`docs/JEV-ONLY-DESIGN.md`). A **ledger** of goals, one per
+cluster of failing tests (`src/synth/search/goals.ts`), is attacked one goal per outer step
+(`src/synth/search/index.ts`, `subgoal.ts`); partials are held as a second base and survive a
+park (`bases.ts`); regressions are never kept. The **sieve** runs every candidate at a site
+through the goal's tests when one run is cheap (≤ 2 s) and asks Jev to rank only when it is not
+(`budget.ts`, `src/synth/sieve/`). On a repository task with no failing test in the workspace,
+the **issue oracle** (`src/synth/oracle/`) extracts reproduction blocks from the issue text, Jev
+judges which block reproduces the bug and which lines show the expected and observed behaviour,
+and code builds a runnable script with a code-computed pass criterion that must fail on the base
+commit; **repository mode** (`search/index.ts`) makes that script the goal, localises once from
+the traceback, scopes the regression suite to at most six related test files, detects the native
+runner (`src/workspace/tests.ts`, `src/synth/verify/runners.ts`) and, when no oracle exists,
+commits at most one best guess per run labelled unverified. The **candidate sources**
+(`docs/JEV-ONLY-DESIGN.md` §3) are first-order mutations (`src/synth/mutate/`), fix templates
+including stdlib-sibling callee substitution carrying its import and depth-2 wraps
+(`src/synth/templates/`), donor lines with identifiers re-bound (`src/synth/donor/`), composite
+pairs and units (`search/composite.ts`), sketch productions with slot filling and a token beam
+(`sketch/`, `fill/`, `beam/`), and the two added for repositories on 2026-09-20: names
+introspected from the failing call (`src/synth/introspect/`, `templates/introspect.ts`) and
+reversals from git history (`src/synth/history/`). Sites are physical lines, insert gaps and
+whole multi-line statements (`localize/sites.ts`, `search/sites.ts`). The **guard**
+(`search/guard.ts`, `perturb.ts`) clusters test-passing candidates by behaviour on inputs
+perturbed from the visible tests, holds a lone passer that carries a structural suspicion signal
+until its site's sources have run, and asks Jev to arbitrate between clusters. On the loop side
+the risk, judge, intent and loop-detector stages read the synthesizer's code-computed test
+evidence (`src/loop/stages/risk.ts`, `src/loop/loopdetect.ts`, `src/loop/state.ts`).
+
+### Results (2026-09-20)
+
+Every number traces to the run directory named; "correct" is the code verdict of
+`experiments/inspect/quixbugs-verdicts.mts` (gold-identical, or equivalent on the reference cases
+and on perturbed inputs). There is no hidden test suite: the QuixBugs and ladder evaluators run
+the cases the workspace exposes, so "repaired" means "passes the reference cases" and
+correctness is the separate check. The thresholds tuned on named QuixBugs programs are
+disclosed in `docs/JEV-ONLY-DESIGN.md` §7; the QuixBugs numbers are in-sample for them.
+
+| suite | run | repaired | correct (verdict script) | Jev cost | notes |
+| --- | --- | --- | --- | --- | --- |
+| QuixBugs 40, run 3 | `bench/results/jev-only-quixbugs-3` | 36/40 | 32/40 (27 gold-identical + 5 equivalent); 2 overfit, 2 unverified | $0.165 | misses `depth_first_search`, `longest_common_subsequence`, `reverse_linked_list`, `shunting_yard` |
+| QuixBugs 40, repeat 1 | `bench/results/jev-only-quixbugs-6-repeat1` (clean worktree at `d610d75`) | 38/40 | 35/40 (28 + 7); 1 overfit (`wrap`), 2 unverified | $0.134 | misses `longest_common_subsequence`, `shortest_path_length` |
+| QuixBugs 40, repeat 2 | `bench/results/jev-only-quixbugs-6-repeat2` (same tree) | 38/40 | 36/40 (28 + 8); 0 overfit, 2 unverified | $0.126 | misses `shortest_path_length`, `sqrt` |
+| ladder short tier (12), round 4 | `bench/results/jev-only-ladder-4` | 11/12 | – | $0.137 | 137 steps, 58 proposals refused; miss `account` (3 hunks) |
+| ladder short tier, round 5 (loop-side fixes) | `bench/results/jev-only-ladder-5` | 11/12 | – | $0.177 | 139 steps, 17 refused; `account` solved, `inventory` missed |
+| ladder round 6, `grades`/`shipping`/`table` | `bench/results/jev-only-ladder-6-done`, `-6-done-item3` | 3/3, 3/3 | – | $0.037, $0.020 | steps on these three tasks 47 (round 5) → 20 → 19; loop replans 8 → 0 → 0 |
+| ladder long tier (8) | `bench/results/jev-only-ladder-long-1`, `-1b`, `-2` | 2/8; then 1/4 of the four re-authored tasks (3/8 distinct across runs 1 and 1b); 2/8 on `d610d75` | – | $0.246, $0.176, $0.266 | dominant defect: a lone partial is never committed (fix in flight) |
+| SWE-bench Verified 30, first attempt | `bench/results/jev-only-swebench-1` | 0 (20 records evaluated, every patch empty; 2 unfinished) | – | $0.60 | no failing test in the workspace; wrong runner for Django and sympy |
+| issue oracle over the 30 | `experiments/results/oracle-from-issue.md` | valid on 9/30 (7 strong, 2 weak) | – | $0.0096 | fails on the base commit, passes with the gold patch |
+| SWE-bench, the nine oracle instances | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b` | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (8 steps, $0.024, 0 generator calls) | – | $0.106, $0.198 | the first instance solved with no generating model; not the upstream fix's shape; the first process died at a 4 GB heap on the Django instances |
+| SWE-bench 30, budget round | `bench/results/jev-only-swebench-2` | 1 pass (`sympy__sympy-19954`, 6 steps) of 8 records | – | $0.462 | process died at an 8 GB heap after eight records |
+| SWE-bench 30, wired tree (rung 3) | `bench/results/jev-only-swebench-3` | in progress | – | – | see the placeholder below |
+
+<!-- RUNG3: fill from experiments/results/jev-only-rungs-1-2.md §21 -->
+
+A full QuixBugs run costs about $0.13 of Jev and 12–16 minutes of wall for the 40 programs
+(median 4 steps per program); every record carries `generatorCalls: 0`. The dated log of every
+round is `docs/JEV-ONLY.md`; the per-round tables are `experiments/results/jev-only-rungs-1-2.md`;
+the audit of the "Jev and no other model" claim is `experiments/results/jev-only-audit.md`.
 
 ## Sandbox guarantees
 
