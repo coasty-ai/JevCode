@@ -1,0 +1,292 @@
+{
+ "subsystem": "jev-only synthesizer (Ledger + Sieve: src/synth/index.ts, src/synth/search/*, src/synth/sieve/*, src/synth/rank, src/synth/oracle) read as a reusable engine for LLM+Jev",
+ "summary": "The engine is a strict layering: code enumerates Candidates at localised Sites, code decides SIEVE-vs-RANK by measured run cost (budget.ts:795), the sieve verifies every queued candidate on shadow lanes and classifies it arithmetically (runner.ts:349), the guard commits a lone passer and asks Jev only when tests cannot separate several passers (guard.ts:738), and the controller emits exactly one Proposal per synthesize() with the shadow run attached as ProposalEvidence (search/index.ts:511, proposal.ts:261). Every seam an LLM source needs already exists: the Candidate record (site + text + op + extraEdits[] with paths + provenance; types.ts:62-82) supports multi-line text, statement spans (Site.endLine) and up to 2 files; the async `JevSource` interface (subgoal.ts:245-247) with `JevSourceInput {ctx, mem, goal, site, opts, prior}` is the natural plug (SKETCH and BEAM already use it at subgoal.ts:752-759); the queue, runner, guard, bases and proposal builders are source-agnostic. Minimum changes: a new CandidateSourceName wired into four exhaustive records, a new Phase or a `llm?: JevSource` slot in SubGoalDeps with its gate in searchSubGoal, a budget counter for LLM spend (StepBudget only counts Jev requests), a sanctioned generating-model channel on SynthesisContext (jev-only throws on any generator call, engine.ts:1698), and either extraNames or a vocab bypass so LLM-introduced identifiers survive the pre-check. Single-line assumptions are concentrated in the identity/display layer (siteKey, isUnchanged, editCost, candidateJson, patchGoalText, PersistedPartial) rather than in apply/verify, and composite.ts explicitly excludes multi-line text.",
+ "decision_points": [
+  {
+   "where": "src/synth/search/index.ts:553-623 (step: directive \u2192 rollback \u2192 rebaseline \u2192 engineNeedsRun)",
+   "who_decides": "code",
+   "what": "Order of the outer step: handleDirective if ctx.directive; undo an unexecuted patch (patchNotExecutedLastStep:180); re-run the baseline when the workspace changed since baselineStep (workspaceChangedSince:226); if the engine has no parsed run of the current workspace (engineNeedsRun:206) propose the full-suite `run` first (claims fixed items via splitClaims, evidence = previousBaseline vs fresh baseline at :621-622).",
+   "question_shape": "none (window/plan arithmetic)",
+   "weakness": "wallRemaining is approximated from the first synthesize() of this process (index.ts:540-542); a resumed run under-estimates elapsed wall.",
+   "cost_latency": "one full-suite run per rebaseline (QuixBugs ~0.2-1 s; repo scoped run up to REPO_BASELINE_TIMEOUT_MS 300 s at index.ts:90)"
+  },
+  {
+   "where": "src/synth/search/index.ts:627-633 proposeDone; proposal.ts:614-631 doneReadiness",
+   "who_decides": "code",
+   "what": "`done` only when baseline allPass AND (repo mode) every goal fixed; doneReadiness requires an engine-executed full-suite run with parsed counts on the current workspace, no test file touched by a commit, no pending arbitration; otherwise a claiming full-suite `run` is proposed instead (proposal.ts:737-743).",
+   "question_shape": "none; the engine's task_complete Noul remains the stop rule (design \u00a75.5)",
+   "cost_latency": "0 Jev; one engine run"
+  },
+  {
+   "where": "src/synth/search/goals.ts:784-810 pickGoalDetailed (Q1 attack_first)",
+   "who_decides": "jev",
+   "what": "Which open goal to attack this step when \u2265 2 are open: Choice over \u2264 DEFAULT_PICK_MAX goals keyed by first test id, argmax if it beats the runner-up by > DEFAULT_TIE_MARGIN (0.02), else code order (fewest tests, shortest input, fewest attempts; codeOrder:694). One active goal resumes with no request; one open goal is taken without a request.",
+   "question_shape": "Choice with none_of_these; state {task (\u22642000 chars), failing_tests: {key: {input, expected, actual, status}}}",
+   "weakness": "measured 16/34 simplest-first vs 8/34 chance, MRR 0.67, escape mass 0.10 (design \u00a72.7 Q1); escape > top \u2192 code decides",
+   "cost_latency": "0-1 request, ~$0.00006-0.0005, ~0.2 s"
+  },
+  {
+   "where": "src/synth/index.ts:117-156 locate \u2192 localize/index.ts (Q2-Q5) + search/sites.ts buildGoalSites (Q5n, Q6, gaps, cut 6+6)",
+   "who_decides": "jev",
+   "what": "Site list per goal: file beam (Q2/Q3 by rank, top-5), function Choice (Q4), line Choice (Q5) \u222a per-line Nouls (Q5n) \u222a SBFL (not wired: index.ts:114-115), insert gaps around top-3 anchors, Q6 gap Choice when a statement template exists; cut at REPLACE_SITES_MAX 6 + INSERT_SITES_MAX 6 (sites.ts:98-99); introspection sites \u2264 3 and history sites \u2264 2 appended (index.ts:135-154). Cached per goal in mem.localizeCache until a suspected file changes (goals.ts:657).",
+   "question_shape": "Choice over lines/functions/files + Nouls; escape P(none_of_these) \u2265 0.3 puts insert sites first (sites.ts:101)",
+   "weakness": "Q5 top-1 28/40, top-3 36/40 (design \u00a72.7); two QuixBugs programs only reached by WIDENED; capped at LOCALIZE_MAX_REQUESTS 20 (index.ts:56)",
+   "cost_latency": "1-5 requests QuixBugs ($0.00016-0.0005), up to ~15 on repos; 0.2-0.3 s each"
+  },
+  {
+   "where": "src/synth/search/subgoal.ts:966-973 askEditClassPrior (Q7) and :182-201 orderSources, :204-213 orderSites/orderCandidates",
+   "who_decides": "jev",
+   "what": "Soft source-order prior only: Q7 asked up front only when t_run > Q7_UPFRONT_MIN_T_RUN_MS 2000 (SIEVE runs everything anyway); insert_new_line \u2265 0.5 \u2192 templates/donors and insert sites first; reorder_tokens/reshape_line \u2192 permutation operators first. Never removes a source or site.",
+   "question_shape": "Choice over 6 edit classes + escape (sketch/questions.ts EDIT_CLASSES)",
+   "weakness": "top-1 28-29/40, top-2 35-36/40 (grammar-synthesis.md App. A) hence never a gate",
+   "cost_latency": "0-1 request; shared with Q12 in SKETCH phase at no extra cost (index.ts:159-171)"
+  },
+  {
+   "where": "src/synth/search/budget.ts:795-807 decideRunPlan; :771-775 runsLeft; :750-764 freshBudget; :604-606 oracleClass",
+   "who_decides": "code",
+   "what": "The central decision: SIEVE (run the whole candidate set, tests rank) when |cands| \u2264 runsLeft AND t_run(goalSubset) \u2264 SIEVE_MAX_T_RUN_MS 2000; else RANK with K = 3 (replace) / 5 (insert) / \u22655 when N \u2265 61 (compact Nouls) / up to RANK_K_SITE_MAX 16 as the site's share of runs on a cheap-repro repository oracle. runsLeft = min(testRunsLeft, floor(testWallLeft \u00d7 lanes / t_run)). Class is QuixBugs (1500 runs, 90 s, 30 Jev) only when goalSubset < 2 s and fullSuite < 10 s; else repository (16-160 runs derived, \u2264600 s, 60 Jev).",
+   "question_shape": "none; arithmetic on the fitted OracleModel (fitOracle:565) refined by lane medians (refineTRun:590, applyLiveTRun:665)",
+   "weakness": "a load spike within 1.5\u00d7 of the sieve line keeps SIEVE (SIEVE_KEEP_FACTOR:125); above it flips to RANK for the step",
+   "cost_latency": "0"
+  },
+  {
+   "where": "src/synth/search/subgoal.ts:744-805 visitSource (RANK branch :781-795) \u2192 deps.rank (src/synth/index.ts:239-247) \u2192 rank/index.ts:342-458",
+   "who_decides": "jev",
+   "what": "In RANK mode Jev orders the site's fresh candidates: N \u2264 10 one Choice; 11-60 Choice + compact Nouls in one request (ranked by Noul); > 60 chunked Nouls (254, or 150 when the listing > 4k tokens) then a Choice over the Noul top-5; Q10r shuffle re-ask when t_run > 20 s and top-2 margin < 0.10. Code detector fixProbablyAbsent (P(escape) \u2212 p_max \u2265 0.10 or max Noul < 0.5) makes the controller skip the source at the site unless it is the last site or an insert site (subgoal.ts:788-791). Only top-k go to the queue; the rest stay enumerable next step.",
+   "question_shape": "Choice `fix` over cand_xx (+ none_of_these) and/or Nouls `is_fix_xx`; unchanged line excluded; duplicates folded (rank/index.ts:300-324)",
+   "weakness": "top-1 36/40 at N=10, 33/40 two-stage at N=254; ranker throws RangeError if any candidate is not at the ranked site (rank/index.ts:307)",
+   "cost_latency": "1 request ($0.00005-0.0014) to ~11 chunks (~$0.005/anchor on SWE); 0.2-0.8 s"
+  },
+  {
+   "where": "src/synth/sieve/queue.ts:455-482 VerifyQueue.enqueue",
+   "who_decides": "code",
+   "what": "Free pre-checks at enqueue, in order: duplicate by (base,id) or (base,site,canonicalText); unchanged (canonical text equals current line, or empty diff); vocabulary (every NAME token of every edited file must be in file \u222a failing tests \u222a task-text code names \u222a keywords/builtins/type methods; :137-150, :216-223); apply_failed (stale site); tried (sha12 of applied diff). Order key = (base.passed desc, p desc, sourcePrior desc, insertion seq).",
+   "question_shape": "none",
+   "weakness": "72% of SWE gold lines pass the vocab check (coverage-study.md); a fix needing a new identifier is dropped as 'vocab' unless EnumerateOptions.extraNames is supplied (types.ts:108; index.ts:99-109)",
+   "cost_latency": "in-process; applyCandidate per job"
+  },
+  {
+   "where": "src/synth/sieve/runner.ts:473-797 runQueue (verifyJob :619-688, classifyOutcome :349-359, timeoutKind :400-417); src/synth/oracle/verify.ts:171+ runRepositoryQueue",
+   "who_decides": "code",
+   "what": "Per popped job on a lane: applyCandidate \u2192 applyToLane \u2192 goal-subset run (charged) \u2192 if goalPasses (:317-332) and passers < MAX_FULL_SUITE_RUNS_PER_STEP 5: full-suite run (charged) \u2192 classify plausible/partial/regressed/unchanged/timeout/apply_failed; only finally classified diffs enter mem.tried (:684); provisional timeouts retried \u2264 16/batch at 2 s cap; wall-cut or aborted jobs go to mem.deferred; oracle t_run and lanes refined from batch medians (:771-777). Repository mode: reproduction \u2192 confirmation re-run in the same lane (pass/fail = unstable, never regression-tested) \u2192 scoped regression; passer slots admitted in rank order (verify.ts:230-237).",
+   "question_shape": "none; progress() arithmetic on test ids (verify/progress.ts:28-49)",
+   "weakness": "stopDispatch also stops at 5 passers, so a source that yields many passers has the rest deferred to the next call (:528); a `plausible` needs the full run present (guard isPlausible:609-626)",
+   "cost_latency": "1 run per candidate (QuixBugs 87-395 ms p50; ladder 0.11 s; SWE repro 0.9-2.8 s) + 1 full run per passer (SWE scoped 5-100 s) [+1 confirmation repro in repo mode]; up to oracle.lanes (8/4/2) concurrent"
+  },
+  {
+   "where": "src/synth/search/guard.ts:738-835 decide (adapter createDecide :989-1005, decideForSearch :1008)",
+   "who_decides": "code",
+   "what": "Per batch: fresh = mostPassing(isPlausible(results)) joined with held passers; 0 plausible \u2192 holdBestPartial and continue; 1 plausible \u2192 commit, except two within-step holds: (a) SIEVE seed phase and another seed source still to run at the site (sieveHoldApplies :700-707) \u2192 pending until siteBatchDone (:688-694); (b) structural suspicion signals (:327-349: deletes_statement, duplicates_block, guards_other_variable, dead_guard) \u2192 Q16 advisory; hold as suspect if p < 0.3 (one signal) or < 0.7 (\u2265 2). Both holds only while budgetAllowsHold (:676-679: \u2265 15 s wall, \u2265 16 runs, \u2265 1 request). Held passers are committed at step end by commitSuspect (:845-857); the guard never withholds a passer past the step.",
+   "question_shape": "code, plus Q16 Noul `general_cand_01` (adviseLonePasser :547-554) as advisory",
+   "weakness": "quicksort gold had Noul 0.15 (design \u00a72.6) so no threshold rejects a lone passer; hold rule (a) reads SITE_BATCH_SOURCES = mutation/template/donor only (:125)",
+   "cost_latency": "0-1 request; ~0.2 s"
+  },
+  {
+   "where": "src/synth/search/guard.ts:801-835 (\u2265 2 passers) \u2192 probeInputs :710-726, clusterByBehaviour :193-209, representativesOf :402-411, arbitrate :502-538",
+   "who_decides": "jev",
+   "what": "Several passers: cluster by P2P outcome vector joined with a behaviour probe signature on code-generated perturbed inputs (QuixBugs layout only, perturb.ts via createLaneProbe); representatives = one smallest-edit member per cluster (\u2264 20) or \u2264 5 members of a single cluster; ONE request: Q15 `genuine_fix` Choice + Q16 `general_<xx>` Nouls. suspect = pEscape \u2265 SUSPECT_ESCAPE_MIN 0.5 \u2227 maxNoul < SUSPECT_NOUL_MAX 0.1 \u2192 hold min-edit as suspect and keep searching; else pick = Choice argmax, overridden only when its Noul < OVERRIDE_LOW 0.3 and another's \u2265 OVERRIDE_HIGH 0.7; runner-ups kept as fallbacks (:833). Commit is always re-expressed against the committed workspace (bases.ts appliedOnCommitted :225-242).",
+   "question_shape": "state {task, program (\u2264 254 code lines of the primary file; other_files), tests (\u2264 4), buggy_program_failure, candidates: {cand_xx: {line, replaces, with, also_edits?, file?}}}; Choice + Nouls with GENERAL_CRITERIA (:365-374)",
+   "weakness": "measured 8/10 gold, 10/10 gold-or-equivalent at the true line; 10/14 / 13/14 cross-line; program listing capped at PROGRAM_LINES_MAX 254; min-edit ordering biases representatives toward smaller edits (editCost :167-172)",
+   "cost_latency": "1 request (~$0.0001-0.0006, 0.19-0.22 s) + probe runs (\u2264 MAX_PERTURBED_INPUTS per passer on lanes)"
+  },
+  {
+   "where": "src/synth/search/bases.ts:356-387 holdBestPartial; :456-479 pairsOfPartials; :492-502 commitPartial",
+   "who_decides": "code",
+   "what": "\u2264 1 'improved' base held (never committed mid-step): strictly more passed wins; ties by compareTieKeys (fewer newly failing, smaller diff lines, then chars; :305-307); depth \u2264 MAX_BASE_DEPTH 3. Complementary partials at different sites with disjoint newlyPassing become one composite candidate via extraEdits (\u2264 MAX_PARTIAL_PAIRS 10, \u2264 MAX_PATCH_FILES 2 files). Q17 closeness Score deleted 2026-09-20; no Jev here.",
+   "question_shape": "none",
+   "cost_latency": "0 Jev; pairs cost \u2264 10 goal-subset runs"
+  },
+  {
+   "where": "src/synth/search/subgoal.ts:658-702 commitProgress; guard.ts:899-930 gateHeldPartial",
+   "who_decides": "code",
+   "what": "At a budget exit or exhaustion, the held partial becomes a progress commit: untested pairs first; drop if it would touch > 2 files (:672-677); one full-suite regression run (runRegressionCheck runner.ts:818-851) unless the subset was the suite; drop if timed out, regressed, or passes none of the goal's tests on the full suite; then the guard's rule-(b) advisory (Q16, cached per candidate id in guardState.partialAdvice). Committed with note 'partial', allGoalTestsPass false.",
+   "question_shape": "Q16 Noul only when a structural signal fires",
+   "weakness": "a flagged partial with no Jev request left stays held to the next step (:911-914)",
+   "cost_latency": "\u2264 1 run + \u2264 1 request"
+  },
+  {
+   "where": "src/synth/search/subgoal.ts:948-1051 searchSubGoal (phases loop :986-1037; step end :1042-1050); visitPhase :893-907; visitSite :871-891; visitSeedBatch :821-868",
+   "who_decides": "code",
+   "what": "The inner loop: for each PHASE (SEEDS, SKETCH, BEAM, WIDENED) \u00d7 bases (committed first) \u00d7 sites (localiser order, insert-first under Q7) \u00d7 sources (orderSources minus goal.exhausted[siteKey#phase]). In SEEDS/WIDENED on a SIEVE oracle the three seed sources are enumerated together and queued as ONE batch decided ONCE (visitSeedBatch); composite unlocks once seeds are exhausted at the site. SKETCH only at top-3 sites with seeds exhausted; BEAM only at top-2 sites where SKETCH ran and \u2265 35 Jev requests remain; WIDENED only on \u2264 2 non-test .py files (or under change_approach) after every site's seeds are exhausted, cursor-carried in mem.widenCursor, \u2264 WIDENED_SITES_MAX 24 sites in chunks of 6. A source is exhausted at a site only when everything queued ran to a verdict (:802-803, :862-865). Exits: commit / budget (exitOnBudget :925-936 runs pairs, commits held passer, then progress commit) / parked (describeExhaustion :434-441).",
+   "question_shape": "none here beyond Q7",
+   "weakness": "enumerate \u2192 rank \u2192 runBatch is strictly sequential per source (:783,:796); no overlap of Jev/LLM latency with test runs despite design \u00a74.2's claim",
+   "cost_latency": "bounded by StepBudget: jevRequestsLeft, testRunsLeft, testWallLeftMs (search/types.ts:75-82)"
+  },
+  {
+   "where": "src/synth/search/index.ts:698-770 (switch on r.kind) with goals.ts:585-619 noteCommit / noteBudgetHit / parkReasonFor",
+   "who_decides": "code",
+   "what": "commit \u2192 recordCommit (tried + committedDiffHashes), noteCommit (fixed, or open with progressCommits++ and exhausted/testedSites/phase reset), forgetGoal, localizeCache invalidation, reopenOnChange on the touched files, proposePatch with evidence (:724); parked \u2192 park, forgetHeld, one bounded recursion into step() for another goal (:731-734), else a goal-subset `run`; budget \u2192 untested pairs keep the goal open; else noteBudgetHit(progress) where progress = fresh candidates classified at \u2265 1 never-tested site and not every site seed-exhausted; park on 3 searches without commit / 2 stagnant budget hits / 4 budget-hit steps hard cap.",
+   "question_shape": "none",
+   "weakness": "a 'continue' from the search is treated as budget (:766-769)",
+   "cost_latency": "0"
+  },
+  {
+   "where": "src/synth/search/goals.ts:387-432 clusterFailures; :489-534 inheritGoalState; :547-551 reconcile; :647-671 reopenOnChange",
+   "who_decides": "code",
+   "what": "Ledger construction and chaining: failing tests clustered by innermost source frame (file, fn, lines within FRAME_LINE_WINDOW 3), else SBFL top-5 line, else one goal per test; ids g1..gn by size desc then first test id. After every commit the fresh clustering inherits the prior goal's id/status/attempts/budgetHits/phase/exhausted by largest test-id overlap; a prior with no failing test left \u2192 fixed; a goal at MAX_PROGRESS_COMMITS_PER_GOAL 3 hands its remaining tests to a new id (chain rule :520). A commit touching a goal's suspected file drops its localisation/exhausted/widen cursor and re-opens it if parked.",
+   "question_shape": "none",
+   "weakness": "QuixBugs runner prints no frames \u2192 one goal per test; missingNames hint (:102-111) only from interpreter messages",
+   "cost_latency": "0"
+  },
+  {
+   "where": "src/synth/search/index.ts:845-877 rollbackUnexecutedPatch; :649-659 re-proposal",
+   "who_decides": "code",
+   "what": "If the previous patch was not executed (blocked/declined/failed apply), the recorded commit is undone (goal back to open, committed.pop, hash removed) and the passer stashed for one re-proposal (REPROSE_MAX 1, :72); a failed apply also invalidates the goal's sites and forces a re-read + re-baseline.",
+   "question_shape": "none; the engine's risk/judge/reviewer decided (human or jev outside this subsystem)",
+   "cost_latency": "1 baseline run on apply failure"
+  },
+  {
+   "where": "src/synth/search/index.ts:789-804 arbitrateNetworkPasser",
+   "who_decides": "jev",
+   "what": "On a weak_network oracle (requests-2931 style), a lone passer not already arbitrated is put to Q16 before evidence is written: p \u2265 LONE_PASSER_HOLD_MAX_NOUL 0.3 \u2192 plain commit; else 'possible overfit'; no request left \u2192 commit with the open problem.",
+   "question_shape": "Q16 Noul over the one-candidate arbitration state",
+   "cost_latency": "1 request"
+  },
+  {
+   "where": "src/synth/search/subgoal.ts:1067-1150 searchBestGuess",
+   "who_decides": "jev",
+   "what": "Repository mode without a reproduction oracle: seeds 1-3 at the top BEST_GUESS_TOP_SITES 3, Jev ranks each site's set, sets merged by probability, decideRunPlan top-k run against the scoped regression suite only, the highest-RANKED passer with nothing newly failing is committed once per run (allGoalTestsPass false, evidence.selection 'rank', goalTests []).",
+   "question_shape": "Q8/Q9/Q10 ranking; no test verifies the fix",
+   "weakness": "unverified by construction; one commit per run then the goal parks (index.ts:715-720)",
+   "cost_latency": "1-3 requests per site + k scoped runs"
+  }
+ ],
+ "llm_calls": [
+  {
+   "where": "NONE in this subsystem: src/loop/engine.ts:1698 throws `jev-only mode: the generating LLM must not be called`; SynthesisContext (src/core/types.ts:1036-1065) exposes only `decider` and `ask` (Jev), no Provider; design \u00a75.6 (docs/JEV-ONLY-DESIGN.md:550-563) has the bench invalidate any jev-only record with generatorCalls > 0",
+   "purpose": "Statement of the seam: every request below is a Jev decision request through ctx.ask('propose', state, questions) (JevAsk, src/synth/types.ts:130-132), recorded in decisions.jsonl/jev.jsonl and metered by the engine (engine.ts:1614-1653). A generating-model call would need a new EngineMode ('jev-on'|'jev-off'|'jev-only' at core/types.ts:371) or a synthesizer-side Provider (core/types.ts:463-467 Provider.generate) routed through engine metering.",
+   "prompt_size": "n/a",
+   "sampling": "n/a",
+   "tools": "none",
+   "weakness": "an LLM source has no sanctioned channel today; a Provider passed into createSubGoalDeps (src/synth/index.ts:217) would bypass the engine's spend meter and the 0-generator-calls assertion"
+  },
+  {
+   "where": "src/synth/search/goals.ts:796-797 (Q1 attack_first)",
+   "purpose": "pick the goal to attack when \u2265 2 goals are open",
+   "prompt_size": "\u2248 1k tokens (design \u00a72.7: task \u2264 2000 chars + \u2264 10 failing tests)",
+   "sampling": "Jev decision API: Choice probabilities, no sampling",
+   "tools": "none",
+   "weakness": "MRR 0.67; escape mass 0.10; code tiebreak within 0.02"
+  },
+  {
+   "where": "src/synth/index.ts:124 createLocalizer().localize (Q2 fix_file Nouls \u00d7\u2264250, Q3 confirm \u00d7\u226410, Q4 fix_function Choice per file, Q5 buggy_line Choice) and search/sites.ts buildGoalSites (Q5n line Nouls, Q6 insert_after Choice)",
+   "purpose": "localise a goal to \u2264 6 replace + \u2264 6 insert sites",
+   "prompt_size": "Q5 \u2248 1,200 tokens ($0.00005, p50 176 ms); max measured localisation request 16.2k tokens; 32k cap enforced by localize/budget.ts (design \u00a72.5)",
+   "sampling": "Choice/Noul probabilities",
+   "tools": "none",
+   "weakness": "budget LOCALIZE_MAX_REQUESTS 20 (index.ts:56) bounded by stepBudget.jevRequestsLeft; SBFL not wired (index.ts:114-115)"
+  },
+  {
+   "where": "src/synth/search/subgoal.ts:147 askEditClassPrior (Q7 edit_class), also inside sketch/questions.ts sketchQuestions with Q12",
+   "purpose": "soft source-order prior",
+   "prompt_size": "beam/state.ts baseState: marked listing + buggy line + tests, \u2248 $0.00019 with Q12",
+   "sampling": "Choice",
+   "tools": "none",
+   "weakness": "never a gate; top-1 28-29/40"
+  },
+  {
+   "where": "src/synth/rank/index.ts:365, :387, :424, :437 (Q8 fix Choice, Q9 is_fix Nouls, Q10 shortlist Choice) and :549 shuffleRerank (Q10r)",
+   "purpose": "order a site's candidate set in RANK mode; fixProbablyAbsent detector",
+   "prompt_size": "N=10: ~1.5k tokens; compact 254-chunk 18k tokens $0.00077 331 ms; full-criteria 57k $0.0024 (design \u00a72.7 Q9); repo chunks cut to 150 when the listing > REPO_LISTING_TOKEN_THRESHOLD 4k tokens (rank/index.ts:85-86); candidate text clipped to MAX_CANDIDATE_CHARS 400 (rank/questions.ts:101)",
+   "sampling": "Choice + Nouls, up to DEFAULT_MAX_CONCURRENT_REQUESTS 8 chunks in parallel (rank/index.ts:78)",
+   "tools": "none",
+   "weakness": "throws if a candidate is off-site (rank/index.ts:307); 20-35 % top-1 miss motivates SIEVE where affordable"
+  },
+  {
+   "where": "src/synth/index.ts:159-171 sketchSource (Q12 sketch Choice + Q7; then fill/beam.ts Q13 slot Choices, \u2264 12 requests)",
+   "purpose": "SKETCH phase: holed shapes \u2192 slot fill \u2192 concrete candidates",
+   "prompt_size": "Q12 \u2264 254 sketches \u2248 $0.00019 238 ms; Q13 $0.0002-0.0007 per site (design \u00a74.5)",
+   "sampling": "Choice per hole, B=3 beam items per request",
+   "tools": "none",
+   "weakness": "top-3 29-31/40 sketches; S2 fill 92 %, S1 76 %"
+  },
+  {
+   "where": "src/synth/index.ts:174-180 beamSource \u2192 beam/source.ts:97-130 synthesizeLine (Q14 next_token, \u2264 DEFAULT_MAX_REQUESTS 48 per site)",
+   "purpose": "BEAM phase: grammar-guided token beam W=3 \u2264 25 tokens",
+   "prompt_size": "\u2264 31 requests per line \u2248 $0.0037, 3.3 s (design \u00a74.5)",
+   "sampling": "Choice over ~60 grammar-legal tokens + end_of_line",
+   "tools": "none",
+   "weakness": "20/40 any-of-top-3; fails on additive fixes and lines \u2265 14 tokens; gated on \u2265 35 requests left (subgoal.ts:61)"
+  },
+  {
+   "where": "src/synth/donor/holes.ts (Q11 hole_<k>), reached from the donor seed via createDonorSource (src/synth/index.ts:220)",
+   "purpose": "fill identifier holes beyond what code binds (top-2 fillings)",
+   "prompt_size": "\u2264 45 identifiers + escape, $0.00006",
+   "sampling": "Choice per hole",
+   "tools": "none",
+   "weakness": "changed-identifier holes 13/13 measured; same-family pairs permuted in code"
+  },
+  {
+   "where": "src/synth/search/guard.ts:512 arbitrate (Q15 genuine_fix + Q16 general_xx, one request); :551 adviseLonePasser (Q16 alone); :917 gateHeldPartial; search/index.ts:798 arbitrateNetworkPasser",
+   "purpose": "choose among several test-passing candidates; advisory on structurally suspicious lone passers/partials",
+   "prompt_size": "program \u2264 254 code lines + \u2264 4 tests + \u2264 20 candidates; $0.0001 QuixBugs, $0.0006 SWE, 189-219 ms",
+   "sampling": "Choice + one Noul per representative",
+   "tools": "none",
+   "weakness": "gold Nouls 0.15-0.96 so Q16 is advisory; all-overfit signature 0.5/0.1"
+  }
+ ],
+ "reusable_for_llm_jev": [
+  "Candidate contract (src/synth/types.ts:62-75): {id, site: Site, text, source: CandidateSourceName, op, extraEdits?: LineEdit[], prior?, provenance?}. `text` may be multi-line (verify/apply.ts:27-30 indentedText keeps relative indentation; py/edits.ts:78-87 replaceLine splits on '\\n'); extraEdits are {path, line, kind: replace|insert|delete, text?} in BEFORE-edit line numbers, applied bottom-up per file (apply.ts:139-146), any path present in the base's `files` map (apply.ts:94-99). An LLM hunk set = one Site edit + N extraEdits.",
+  "Multi-file support exists but is capped: MAX_PATCH_FILES 2 (search/proposal.ts:40) enforced at proposePatch (:648-649), pairsOfPartials (bases.ts:468) and commitProgress (subgoal.ts:672-677); the composite signature + call-site unit (search/composite.ts:9-11, :311-566) is the existing two-file example; per-file vocabulary check (sieve/queue.ts:216-223); the Q15 state shows other files (guard.ts:486-490) and `also_edits`/`file` per candidate (:452-458).",
+  "Statement-level spans exist: Site.endLine (types.ts:36) built by localize/sites.ts:316-336 statementSiteAt (joined tokens as currentLine), applied by deleting continuation lines (apply.ts:78-84, :116-122); an extra edit inside the span is refused (:102-104); siteOnBase compares the span on an improved base (subgoal.ts:375-379). Composite refuses extraEdits at span sites (composite.ts:279).",
+  "Async source plug: `JevSource { enumerate(input: JevSourceInput): Promise<JevEnumeration> }` (subgoal.ts:228-247) with input {ctx (ask, sandbox, task, signal, emit), mem (stepBudget, oracle, bases, localizeCache), goal (tests, failures: FailureView[testId, call, expected, actual]), site, opts: EnumerateOptions, prior}; output {candidates, requests, editClass?}. Consumed at subgoal.ts:752-759 for SKETCH/BEAM: requests are charged via spend() to jevRequestsLeft, candidates pass freshOf (unchanged + tried filter) then decideRunPlan \u2192 SIEVE or RANK like any set. This is the seam for an LLM source; the sync `CandidateSource.enumerate` (types.ts:120-124, documented 'deterministic, pure') is not.",
+  "Alternative sync pattern: beam/source.ts:67-140 \u2014 an async `synthesizeLine` caches per siteKey (path + sha12(file.src) + line + kind + currentLine, :59-61) and the sync `enumerate` surfaces the cache with a relative prior. An LLM source could pre-fetch in a pre-phase and surface through this shape to fit `SubGoalDeps.seeds`.",
+  "Dependency injection points: SubGoalDeps (subgoal.ts:263-280: seeds {mutation, template, donor, composite} fixed record, sketch, beam, rank, createQueue, runQueue, decide, pairsOfPartials, regressionRun?) built by createSubGoalDeps (src/synth/index.ts:217-263) and SearchDeps (search/index.ts:112-144) built by searchDeps (index.ts:265-268); unit fakes in test/unit/synth/search/controller-fakes.ts and subgoal.test.ts:154-160 show how a fake sketch/beam JevSource is injected.",
+  "Phase machinery: PHASES/Phase (search/types.ts:10-11), orderSources (subgoal.ts:182-201) returns ['token_beam'] for SKETCH and BEAM, exhaustedKey adds '#SKETCH' (:292-294) so two phases sharing a source name do not collide; phase gates in searchSubGoal (:994-1005). A new 'LLM' phase = one PHASES entry, one orderSources case, one exhaustedKey suffix, one switch case with its entry rule, and the `phase === 'SKETCH' || phase === 'BEAM'` test at :752 extended.",
+  "Verification queue reusable as is: VerifyQueue (sieve/queue.ts:355-495) with jobFor (:295-299) and key (base.passed, p, sourcePrior); dedupe by id per base and by canonical token text (:458-459); SOURCE_ORDER_PRIOR default priors (:58-66); carryOver (:439-443) for RANK-mode p that cost a request.",
+  "Runner reusable as is: runQueue (sieve/runner.ts:473-797) and runRepositoryQueue (oracle/verify.ts:171+) take any VerifyJob; classification, tried, deferred, retries, load-aware timeouts and lane pools (sieve/lanes.ts:188-324: candidate_file/worktree/copy/inplace) are source-agnostic; runRegressionCheck (runner.ts:818-851) for a held partial.",
+  "Guard reusable as is for arbitration: decide (guard.ts:738-835) and arbitrate (:502-538) read VerifyOutcome only; Q15 state builder arbitrateState (:465-495) already renders multi-file/extra-edit candidates; commitSuspect (:845-857) and gateHeldPartial (:899-930). Only hold rule (a) is source-name-bound (SITE_BATCH_SOURCES :125, sieveHoldApplies :700-707).",
+  "Bases/partials reusable: holdBestPartial, pairsOfPartials, commitPartial, appliedOnCommitted (bases.ts:225-242 re-expresses any base's candidate as a patch of the committed workspace), persistPartials/restorePartials (:592-733) for --resume.",
+  "Ledger reusable: clusterFailures (goals.ts:387-432), reconcile/inheritGoalState (:489-551), noteCommit (:585-597), reopenOnChange (:647-671), park rules (:605-619), plan grammar `fix <first_test_id>[, +N more] in <path>` (proposal.ts:56 GOAL_ITEM_RE; memory.ts planItemFor/parseGoalItem), toPersisted/rebuildFromPlan (memory.ts:484, :528-609) under synthState \u2264 64 KB (core/types.ts:1063).",
+  "Controller step contract reusable: LedgerSieveSynthesizer.synthesize (search/index.ts:511-528) = one Proposal per call; \u00a75.1 table implemented at :591-623 (post-patch claiming run with runEvidence), :627-633 (done), :640-647 (all parked \u2192 partial done), :698-770 (commit \u2192 proposePatch with commitEvidence; parked \u2192 one recursion then subset run; budget \u2192 subset run). Evidence shape ProposalEvidence (core/types.ts:51-69): command, before/after counts, newlyPassing/newlyFailing (\u2264 EVIDENCE_TESTS_MAX 20), goalTests, selection 'sieve'|'rank', candidatesTested, arbitrated \u2014 built by commitEvidence (proposal.ts:261-279) from outcome.full (or subset when it was the suite) against the committed baseline.",
+  "Budget/oracle reusable: StepBudget (search/types.ts:75-82) and freshBudget (budget.ts:750-764) per step; runsLeft (:771-775); decideRunPlan (:795-807); OracleModel fit and live refinement (:565-580, :590-596, :654-670). An LLM source can read mem.oracle.tRunMs to decide whether to ask for few or many candidates (few when t_run is high: the same rule that switches RANK).",
+  "Inputs an LLM prompt can be built from without new plumbing: ctx.task, goal.failures (FailureView), goal.tests, site.file.src / site.file.mod (full analysed file), site.block (enclosing def range), programRange (rank/questions.ts:160) / functionListing (src/synth/index.ts:83-89), mem.localizeCache.get(goal.id) (sites + functions + file beam), mem.baseline.outputTail (traceback tail, \u2264 4 KB), committed.files (whole corpus, loadPythonFiles index.ts:305-339), runFacts(ctx.runId) introspection + history (index.ts:64, search/index.ts:1127-1163).",
+  "Registration points for a new CandidateSourceName (compile-time exhaustive Records + runtime lists): src/synth/types.ts:59 union; subgoal.ts:401-404 emptyBySource; sieve/queue.ts:58-66 SOURCE_ORDER_PRIOR; bases.ts:621 SOURCE_NAMES (persisted-partial validation); types.ts:268 SearchTrace.bySource Record; tests asserting names at test/unit/synth/search/subgoal.test.ts:163 and :200.",
+  "What Jev is measured to be good at inside this engine (the split to keep in LLM+Jev): arbitration among test-passing candidates (Q15/Q16: 10/10 and 13/14 gold-or-equivalent, design \u00a72.6), ranking \u2264 10 options (36/40) and shortlisting from hundreds (fix in Noul top-5 39/40), fix-absent detection (AUROC 0.916, rank/index.ts:67), line localisation top-3 (36/40), attack-first ordering; measured poor at counting/comparing numbers and free policy choices (design \u00a72.7 'Not asked anywhere'; verify/progress.ts header) \u2014 so an LLM+Jev variant should have the LLM generate candidates and Jev rank/arbitrate them, with tests as oracle.",
+  "Tests as the oracle at every layer means an LLM candidate is treated identically once it is a Candidate: no code path trusts `source`; only display strings (`${c.source}/${c.op}` in proposal.ts:180-187, guard notes) and the source-name lists above read it."
+ ],
+ "measured_facts": [
+  "SIEVE_MAX_T_RUN_MS = 2000; QUIXBUGS_CLASS_MAX_FULL_SUITE_MS = 10_000 (src/synth/search/budget.ts:24, :173)",
+  "Step caps: QuixBugs class testWall \u2264 min(90 s, wallRemaining/4) + passers reserve, testRuns \u2264 1500, jevRequests \u2264 30; repository class testWall \u2264 min(8 \u00d7 scoped t_run, 600 s), testRuns derived floor((wall \u2212 5\u00b7t_full)\u00b7lanes / t_repro) clamped [16, 160], jevRequests \u2264 60 (budget.ts:134-155, :707-734, :750-764)",
+  "RANK K: 3 replace / 5 insert / \u2265 5 when N \u2265 61 / up to 16 per site on a cheap-repro repository oracle (budget.ts:189-202, :795-807)",
+  "Lanes: 8 when t_run < 1 s, 4 on pytest modules, 2 on > 50 MB non-git; cp -R only \u2264 50 MB (budget.ts:30-37, :534-539)",
+  "Per-test timeout = clamp(3 \u00d7 case tail, 500 ms, 2000 ms); retry cap 2000 ms; \u2264 16 retries per batch; stop rule after 1 case timeout (budget.ts:60-62, :86-87, :117)",
+  "MAX_FULL_SUITE_RUNS_PER_STEP = 5 (src/synth/sieve/runner.ts:73); passer slots admitted in rank order (src/synth/oracle/verify.ts:230-237)",
+  "ENUMERATE_CAP 254 per site per source; SKETCH_TOP_SITES 3; BEAM_TOP_SITES 2; BEAM_MIN_JEV_REQUESTS_LEFT 35; PAIRS_OF_PARTIALS_MAX 10; PAIRS_RESERVE 15 s / 16 runs; SINGLE_FILE_MAX_PY_FILES 2; WIDEN_CHUNK_SITES 6 (src/synth/search/subgoal.ts:55-95)",
+  "Site list cut: REPLACE_SITES_MAX 6, INSERT_SITES_MAX 6, WIDENED_SITES_MAX 24, ANCHORS_PER_FUNCTION 3, Q5_ANCHOR_MIN_P 0.05 (src/synth/search/sites.ts:90-129)",
+  "Guard thresholds: SUSPECT_ESCAPE_MIN 0.5, SUSPECT_NOUL_MAX 0.1, OVERRIDE_LOW 0.3, OVERRIDE_HIGH 0.7, STRONG_SIGNALS_MIN 2, HOLD_RESERVE 15 s / 16 runs, MAX_REPRESENTATIVES 20, SINGLE_CLUSTER_MAX_MEMBERS 5, TESTS_IN_STATE 4, PROGRAM_LINES_MAX 254 (src/synth/search/guard.ts:86-133)",
+  "Ranker regimes: CHOICE_MAX 10, HYBRID_MAX 60, CHUNK_MAX 254 (150 when listing > 4k tokens), SHORTLIST 5, ESCAPE_MARGIN 0.10, NOUL_ABSENT 0.5, concurrency 8, shuffle re-ask when t_run > 20 s and margin < 0.10, shortlist \u2264 10 (src/synth/rank/index.ts:60-97); MAX_CANDIDATE_CHARS 400, MAX_PROGRAM_LINES 120 (src/synth/rank/questions.ts:95-101)",
+  "MAX_PATCH_FILES 2; EVIDENCE_TESTS_MAX 20; TEST_ID_MAX_CHARS 80 (src/synth/search/proposal.ts:40-76)",
+  "Bases: MAX_BASE_DEPTH 3, MAX_PARTIAL_PAIRS 10, MAX_PARTIALS_REMEMBERED 40, MAX_PERSISTED_PARTIALS_PER_GOAL 4, PERSISTED_EDIT_MAX_CHARS 400, \u2264 4 persisted extraEdits (src/synth/search/bases.ts:49-68)",
+  "Ledger rules: FRAME_LINE_WINDOW 3, SBFL_CLUSTER_TOP 5, MAX_SEARCHES_WITHOUT_COMMIT 3, MAX_CONSECUTIVE_BUDGET_HITS 2, MAX_BUDGET_HIT_STEPS 4, MAX_PROGRESS_COMMITS_PER_GOAL 3, Q1_TASK_CHARS_MAX 2000, DEFAULT_TIE_MARGIN 0.02 (src/synth/search/goals.ts:40-84)",
+  "Controller: REPROPOSE_MAX 1, MAX_WORKSPACE_PY_FILES 1200, MAX_PY_FILE_BYTES 512 KiB, REPO_BASELINE_TIMEOUT_MS 300 s, REPO_MODULE_FILES_MAX 3, LOCALIZE_MAX_REQUESTS 20, synthState \u2264 64 KB (src/synth/search/index.ts:58-95, :72; src/synth/index.ts:56; src/core/types.ts:1063)",
+  "Jev price/latency: $0.042 per million input tokens, p50 176-331 ms by state size, 128-way concurrency (docs/JEV-ONLY-DESIGN.md \u00a74.5:437)",
+  "Ranking vs running at QuixBugs scale: one 137-candidate Noul request 253-331 ms / $0.0003-0.0008 vs running all 137 at 8-way \u2248 3.3 s; median 3.8 s per program at the true line; gold passes 35/36; gold is the only passer 25/36 (docs/JEV-ONLY-DESIGN.md \u00a72.4:183-185, header:17-20)",
+  "Arbitration measured: 2-5 plausible on 10/36 programs \u2192 Choice = gold 8/10, gold-or-equivalent 10/10; cross-line 10/14 / 13/14 (docs/JEV-ONLY-DESIGN.md \u00a72.6:230-234)",
+  "Typical step cost: QuixBugs 1-3 requests \u2248 $0.0002-0.0005, Jev < 1 s, tests \u2248 4-15 s; WIDENED median 24 s max 119 s; SWE 15-40 requests $0.01-0.04, Jev 3-6 s, tests 3-20 min; whole task QuixBugs \u2264 $0.003 / \u2264 30 s typical, SWE \u2264 $0.5 Jev (docs/JEV-ONLY-DESIGN.md \u00a74.5:440-462)",
+  "Vocabulary pre-check passes 100 % of QuixBugs and 72 % (144/199) of SWE-bench Verified fixed lines (src/synth/sieve/queue.ts:29-30, :134-135)",
+  "Final measured result: 4/30 SWE-bench Verified pass the local evaluator (sympy-15345, -17139, -19954, django-15128), $1.30 Jev, 0 generator calls, 68 min, 348 steps, 228 blocked proposals, 88 loop trips, RSS peak 4.5 GiB (docs/JEV-ONLY-DESIGN.md:756); jev-on generator condition solved 9/29 (docs/JEV-ONLY-DESIGN.md:837)",
+  "Predictions: QuixBugs 37-39/40 test-passing; ladder 9-10/12; SWE 3-5/30 (docs/JEV-ONLY-DESIGN.md \u00a78.1-8.3:809-836)",
+  "Repository mode confirmation rule: 1/8 false-pass coin \u2192 1/64; cost one \u2248 0.4-1.4 s reproduction per passer (src/synth/oracle/verify.ts:18-28)"
+ ],
+ "hazards": [
+  "No generating-model channel: src/loop/engine.ts:1698 throws in jev-only on any generate(); SynthesisContext (src/core/types.ts:1036-1065) carries only `decider`/`ask`; the bench invalidates any jev-only record with generatorCalls > 0 (docs/JEV-ONLY-DESIGN.md:552-557). An LLM source needs a new EngineMode (core/types.ts:371) or a metered `generate` on the context; passing a Provider into createSubGoalDeps (src/synth/index.ts:217) would bypass spend metering and the assertion.",
+  "StepBudget has no LLM counter (src/synth/search/types.ts:75-82; budget.ts:750-764); subgoal.ts:443 spend() decrements jevRequestsLeft, so LLM requests are either uncounted or charged against the 30/60 Jev caps; `exhausted()` at budget.ts:761 would then end steps early or never.",
+  "The inner loop is sequential (subgoal.ts:783 await rank, :796 await runBatch): a multi-second LLM call stalls the lanes; design \u00a74.2's 'requests issued while the batch runs' is not implemented. checkAborted runs only at visitSource start (:747); an LLM call must honour ctx.signal itself (see rank/index.ts:200-217 askAbortable for the pattern).",
+  "Candidate identity assumes a localised Site: applyCandidate throws when the site line (or span tokens) no longer equals currentLine (verify/apply.ts:113-129); an LLM candidate must be anchored to an existing Site (or one constructed from file.mod.lines with exact currentLine/indent/block/scope) and express other hunks as extraEdits in before-edit numbering; > 2 files is refused only at proposePatch (proposal.ts:649) after the ledger recorded the commit unless filtered earlier (commitProgress :672-677 does, the main commit path does not).",
+  "rank/index.ts:307 throws RangeError when any candidate is not at the ranked site: an LLM source that returns candidates at several sites in one JevEnumeration crashes RANK mode; split per site or route to SIEVE.",
+  "Vocabulary pre-check (sieve/queue.ts:461) drops any candidate whose NAME tokens are outside file \u222a tests \u222a task \u222a builtins ('vocab' drop counted, not surfaced); LLM fixes that introduce a new helper name are unreachable unless EnumerateOptions.extraNames feeds createQueue (src/synth/index.ts:99-109) or the check is bypassed per source.",
+  "Source-name lists are hard-coded: SEED_SOURCES (subgoal.ts:156) drives seedsExhaustedAt (:306-309) which gates SKETCH/BEAM/WIDENED (:996, :1002, :1008) and the \u00a75.3 stagnation rule (:429-431); SITE_BATCH_SOURCES (guard.ts:125) drives hold rule (a). A new source is invisible to both unless added; exhaustedKey collision: SKETCH and BEAM both key 'token_beam' and rely on the '#SKETCH' suffix (subgoal.ts:292-294).",
+  "Four exhaustive records must grow with the union or TypeScript fails / runtime drops data: emptyBySource (subgoal.ts:403), SOURCE_ORDER_PRIOR (queue.ts:58), SOURCE_NAMES (bases.ts:621: persisted partials of an unknown source are silently skipped on resume), SearchTrace.bySource (types.ts:268); tests subgoal.test.ts:163,:200 enumerate names.",
+  "ProposalEvidence.selection is 'sieve'|'rank' only (core/types.ts:63; proposal.ts:215 selectionOf maps runMode): an LLM-generated winner would be labelled by the run mode, misleading the risk/judge stages that read evidence.",
+  "Determinism assumptions: CandidateSource.enumerate is documented pure/deterministic (types.ts:122); `tried` (sha12 of diff, memory.ts:234-247) and the queue's id/text dedupe (queue.ts:458-459) assume re-enumeration reproduces candidates across steps and --resume (design \u00a72.1 'lost candidates are re-run at most'). A non-deterministic LLM source re-spends tokens on every step unless its outputs are cached in memory/synthState (synthState \u2264 64 KB, core/types.ts:1063; tried alone may take 45 KB, bases.ts:60-61).",
+  "Guard bias toward small edits: editCost token-Levenshtein (guard.ts:167-172) chooses cluster representatives and the all-overfit suspect (minEdit :179-184) and breaks Choice ties (:527); an LLM's larger but correct refactor loses ties and, if alone, trips duplicates_block/deletes_statement signals (:327-349) \u2192 Q16 hold.",
+  "Q15/Q16 state compresses a candidate to {line, replaces, with, also_edits} (guard.ts:452-458) and the program to \u2264 254 code lines; a multi-hunk LLM candidate is judged from that summary, not a diff.",
+  "Passer cap: runner stops dispatching at 5 passers per step (runner.ts:528) and defers the rest; an LLM source yielding many passers has most of them wait for the next call, and isPlausible requires the full run (guard.ts:609-611), so deferred passers are never committed this step.",
+  "Persisted partials drop edits > 400 chars or > 4 extraEdits (bases.ts:67-68, :603): large LLM partials do not survive --resume for pairing.",
+  "Single-line assumptions in identity/display (not in apply): siteKey file:line:kind (queue.ts:260, bases.ts:200) so two multi-line candidates at one line are 'alternatives' never a pair; isUnchanged compares only the site text tokens (queue.ts:265-269) and freshOf trims one line (subgoal.ts:727); candidateSignature/lineSignature and the 400-char clip in rank/questions.ts:207-233; patchGoalText/describeEdit name `${path}:${line}` (proposal.ts:148-188); editRecord clips text to PLAN_ITEM_MAX_CHARS (:457-468); composite excludes any text containing '\\n' (composite.ts:250, :279); WIDENED enumerates per physical code line (subgoal.ts:1014); Q5/Q8 states are per-line Choices.",
+  "Improved-base remap: siteOnBase (subgoal.ts:371-383) returns null when a partial shifted the line, so LLM candidates anchored by line silently skip the improved base.",
+  "Lane pool rebuild: runner.ts:482-485 disposes and recreates lanes when oracle.lanes grows; worktree lanes replay dirty entries (\u2264 200 untracked, lanes.ts:45) \u2014 an LLM source that writes scratch files into the workspace would be replayed into every lane.",
+  "Wall accounting: LedgerSieveSynthesizer.wallRemaining (search/index.ts:540-542) starts at the first call of this process; LLM latency inside synthesize() is charged to the step wall only through testWallLeftMs if the runner runs afterwards, not as its own budget."
+ ]
+}

@@ -1,0 +1,208 @@
+{
+ "subsystem": "Bench: how jev-on is measured and what it scored (src/bench/*, bench/results/*, docs/DESIGN.md \u00a713, docs/STATUS.md live sections, ~/.jevcode/runs transcripts)",
+ "summary": "The bench (src/bench/runner.ts) runs every condition of a task as a unit through the in-process engine, copies RunResult fields verbatim into tasks.jsonl, and aggregates with src/bench/metrics.ts (pass = passed/evaluated; paired tables over the intersection of evaluated tasks). Conditions are a closed union: EngineMode 'jev-on'|'jev-off'|'jev-only' (src/core/types.ts:371), mirrored in CONDITION_ORDER (src/bench/conditions.ts:12), CONDITIONS (src/cli/args.ts:277, validated :644-647), createEngineFor (conditions.ts:114-116: jev-off -> createGeneratorOnlyEngine, everything else -> createEngine, jev-only adds opts.synthesizer), runPair provider/decider wiring (runner.ts:504-521), the isRecord shape check (runner.ts:120 via isEngineMode) and the hard-coded prose CONDITIONS_PARAGRAPH (src/bench/report.ts:115-124). The one live jev-on vs jev-off comparison (bench/results/live-swebench-30, Claude Sonnet 5 via OpenRouter, Jev typesafe/jev-1.13-20260917, 25 steps, 20 min, $1.50/run) scored jev-on 9/29 vs jev-off 10/29 paired (9/30 vs 10/29 all records; pytest-10051 jev-off 'invalid'). Cost: jev-on $23.51 generator + $1.55 Jev = $25.06 (Jev is 6.2% of jev-on spend); jev-off $21.19; bench $46.25. Wall: jev-on 5,568 s (mean 3m06s; generator 4,584 s = 82%, Jev 812 s = 14.6%, exec 116 s, harness 52 s) vs jev-off 4,265 s (mean 2m22s). Stop reasons: jev-on max_steps 25 / replan_stop 4 / spend_cap 1 (task cap on sympy-20428); jev-off max_steps 25 / generator_done 5. The run logs show where jev-on wasted budget: 223 of 726 steps (30.7%) never executed (39 blocked + 184 reviews all declined by the bench's alwaysDecline confirmer), every refusal came from the plan_mismatch dimension (0 destructive/out_of_scope refusals), 74 of 104 edit proposals (71%) and 96 of 478 run proposals were refused, 45 refused runs were test invocations (14 plain `pytest -q <file>` forms), the generator never proposed `done` in 726 steps, task_complete peaked at 0.55 against the 0.85 threshold (0 fires in 497 judge calls), intent resolved to `investigate` on 529/726 steps with 90 fallbacks and 41 paired-Noul overrides, 49 loop trips (24 read, 16 intent:unresolved, 8 patch, 1 run) drove 47 replan calls of which 14 had Jev's move overridden by the paired-Noul floor 0.5 (src/loop/stages/choose.ts:10,42-70) and all 4 replan_stop exits were such overrides to stop_and_report at Choice mass 0.02-0.16 (one ended a passing run, django-15572, at step 16), and 13/30 jev-on runs ended with an empty patch (STATUS says 10). Jev's own budget is dominated by the context stage: 726 requests asking 300 Nouls each (208,900 of 220,411 questions, 26.1M of 37.0M input tokens, $1.10 of $1.55, 504 ms mean vs 210-240 ms for other stages, 42 retried requests) to select a mean 1.33 files per step (153 steps selected none). Two measurement defects: (1) 15 of 30 records per condition (the first pass, before commit 271610e landed at 2026-09-19 23:53 -0700 between the first pass 23:03 and the resume 23:55) have zero-filled generatorTokensPerStep/jevTokensPerStep, so comparison.md's split rows (jev-on 5,519 vs jev-off 6,767 generator tokens/step; 28,351 Jev tokens/step) and STATUS's \"18% fewer generator tokens per step\" are artefacts; true means from steps.jsonl are jev-on 13,991 vs jev-off 12,814 generator tokens/step (+9% for jev-on) and 59,209 Jev tokens/step; (2) every \u00a721.2 risk/loop rule (isVerificationRun, completionVerifiedByRun, novelVerifiedPatch, refused-proposal and fail-set signatures; commits c39e047/382e69f/a030381/42d9f09, 2026-09-20 13:58-16:43 -0700) landed ~17 h after the jev-on bench and applies to jev-on too (src/loop/stages/risk.ts:502-524 is not mode-gated), so the 9/29 number measures an engine that no longer exists and no jev-on bench has been re-run since. No bench result on disk used the new default generator z-ai/glm-5.3-flash (src/config/defaults.ts:7, DECISIONS 2026-09-21); its only live verification is one forced tool call. jev-only finals on the frozen tree: QuixBugs 39/40 ($0.185, 3.54 steps-to-solve, 39 `complete`), ladder 14/20 ($0.32), SWE-bench 4/30 ($1.30, 348 steps, 228 blocked, 88 loops, 61 replans, 20 replan_stop + 7 max_replans, harness time 4,850 of 7,102 s because the synthesizer search is inside harnessMs, 106k Jev tokens/step). The mocked bench (default, no --live) replays goldTrajectory (read touched files -> gold patch -> run tests -> done; src/bench/swebench/loader.ts:65-72) through createMockProvider and answers Jev with createMockDecider's deterministic rules; the mock evaluator is `git apply --check -R gold`; unit tests fake all of BenchDeps including the engines (test/unit/bench/helpers.ts:337-370) so the runner is tested with zero engine code.",
+ "decision_points": [
+  {
+   "where": "src/bench/conditions.ts:34-44 parseConditions; src/cli/args.ts:277,644-647; src/bench/runner.ts:319-321 orderConditions",
+   "who_decides": "code",
+   "what": "Which conditions run and in what fixed order (CONDITION_ORDER jev-on, jev-off, jev-only); default 'jev-on,jev-off' (src/bench/cli.ts:24). Unknown names are a ConfigError/UsageError.",
+   "question_shape": "n/a (closed string union EngineMode at src/core/types.ts:371)",
+   "cost_latency": "none",
+   "weakness": "Adding a condition requires edits in >=7 places: EngineMode union, CONDITION_ORDER, args.ts CONDITIONS, createEngineFor, runPair provider/decider/synth wiring (runner.ts:504-521), isRecord (runner.ts:120 via isEngineMode, else old tasks.jsonl lines are skipped as malformed), CONDITIONS_PARAGRAPH prose (report.ts:115-124), and every engine.ts mode branch (usesJev :364, 'jev-only' :1698/1796/2599, 'jev-off' :1926/2246/2347)."
+  },
+  {
+   "where": "src/bench/conditions.ts:17-23 alwaysDecline; src/loop/engine.ts:1815-1830",
+   "who_decides": "code",
+   "what": "Every risk verdict 'review' is refused in bench runs (confirm() resolves false; identity 'no reviewer in bench runs'). Counted as declined and folded into `blocked` (runner.ts:224).",
+   "question_shape": "n/a",
+   "cost_latency": "184 of 726 jev-on steps (25%) spent a full generator call (~13k tokens, ~6 s) and 3-4 Jev requests to produce nothing.",
+   "weakness": "The bench measures 'Jev + a reviewer who always says no', not Jev; 71% of edit proposals never executed. DESIGN \u00a717/STATUS open question says whether a repeat-of-failed-edit should block or warn is unresolved."
+  },
+  {
+   "where": "src/loop/stages/risk.ts:502-524 assessRisk; src/jev/confidence.ts:7-8 RISK_REVIEW=0.3, RISK_BLOCK=0.7",
+   "who_decides": "jev",
+   "what": "Per-proposal risk: Jev Scores 4 dimensions (destructive, out_of_scope, plan_mismatch, irreversible, 5 levels) + matches_intent Noul; code turns alignment dims into tail mass P(level>=3) and harm dims into expected level, verdict = ok/review/block by 0.3/0.7.",
+   "question_shape": "5 questions per request (4 Score + 1 Noul); mean 5,155 input tokens; 723 requests in the live bench",
+   "cost_latency": "238 ms mean, $0.157 total (10% of Jev cost)",
+   "weakness": "In the live bench 100% of the 223 refusals were plan_mismatch (level 4 'repeats a step recent shows already failed' or level 3 'claims completion while remaining non-empty'), 0 from harm dimensions; 45 refused `run`s were test invocations. Post-bench rule isVerificationRun (risk.ts:215-218) exempts one plain test command (rejects any `;&|<>` composition, so `pytest ... | tail -60` is still refused); 14 of 161 refused runs would now pass it."
+  },
+  {
+   "where": "src/loop/stages/intent.ts:39-41 INTENT_LIST/INTENT_FALLBACK='investigate'; src/loop/stages/choose.ts:10,42-70 resolveChoice PAIRED_NOUL_FLOOR=0.5",
+   "who_decides": "jev",
+   "what": "Intent Choice (investigate/edit/verify/fix_environment/finish + none_of_these) with paired can_<option> Nouls; code overrides Jev's argmax when its paired Noul < 0.5 (picks highest paired Noul) and falls back to 'investigate' when none reaches 0.5; a fallback away from the answer feeds the loop detector as 'intent:unresolved' (engine.ts:2333-2335).",
+   "question_shape": "7 questions (1 Choice + 5 paired Nouls + plan_still_valid); mean 5,312 input tokens",
+   "cost_latency": "210 ms mean, $0.162, 726 requests",
+   "weakness": "Live: 595 chosen, 90 fallback, 41 overridden; intent was 'investigate' on 529/726 steps (73%), and the risk stage then penalised actions that 'do not carry out intent investigate' (27 refusals cite it). 16 loop trips were intent:unresolved x3."
+  },
+  {
+   "where": "src/loop/stages/replan.ts:92-116; src/loop/stages/choose.ts:42-70",
+   "who_decides": "jev",
+   "what": "After a loop trip, Jev chooses next_move (change_approach/gather_context/fix_environment/revert_changes/stop_and_report) + task_impossible Noul; stop_and_report -> replan_stop, task_impossible >= 0.85 -> impossible; same paired-Noul override applies.",
+   "question_shape": "7 questions; mean 6,395 input tokens",
+   "cost_latency": "220 ms, $0.013, 47 requests",
+   "weakness": "14 of 47 replan Choices were overridden. All 4 replan_stop exits were overrides: e.g. run 20260920-065605-27bb5pej step 17 Jev chose change_approach at 0.82 (can_change_approach 0.44 < floor) and the code took can_stop_and_report 0.63 -> stopped a run whose patch already passed (django-15572, pass at 16 steps); task_impossible was only 0.10-0.13 in all four."
+  },
+  {
+   "where": "src/loop/engine.ts:1925,2392 isComplete(draft.completion, completeThreshold=0.85); src/loop/stages/complete.ts",
+   "who_decides": "jev",
+   "what": "Run stops 'complete' when the task_complete Noul >= limits.completeThreshold (0.85 default, recorded in summary.json.conditions).",
+   "question_shape": "judge request: 5 Nouls (succeeded, error_present, new_information, task_complete, task_impossible); mean 5,935 input tokens",
+   "cost_latency": "224 ms, $0.124, 497 requests (only executed steps are judged)",
+   "weakness": "Never fired in 60 live runs: max task_complete 0.55, per-run max median 0.02. 9 jev-on passes ran to 25 steps with a correct patch on disk; jev-off stopped on its own `done` 5 times. Criteria require a current passing run of the detected test command, which the risk stage was refusing."
+  },
+  {
+   "where": "src/loop/stages/context.ts:12-16,37-42 (CONTEXT_MAX_CANDIDATES=300, CONTEXT_SELECT_THRESHOLD=0.5, <=12 files/60 KB/16 KB)",
+   "who_decides": "jev",
+   "what": "One Noul per candidate file (up to 300, pre-filtered by task mentions/recency/path) asking whether the generator needs it this step; files with p >= 0.5 are inlined into the generator prompt.",
+   "question_shape": "~288 Nouls per request (300 on repos), mean 35,979 input tokens per request",
+   "cost_latency": "504 ms mean (3.8 s max), 42 retried requests, $1.097 = 71% of Jev cost, 26.1M of 37.0M Jev input tokens",
+   "weakness": "Yield is 1.33 files per step (max 5; 153 of 726 steps selected 0), and jev-on generator prompts were larger (13,187 vs 12,060 input tokens/call, max 30,473 vs 17,686) while reads dropped only 127 -> 86. The biggest Jev line item buys the least."
+  },
+  {
+   "where": "src/loop/loopdetect.ts:25 LOOP_TRIP_COUNT=3, :243-251 signature kinds; engine.ts:2329-2356",
+   "who_decides": "code",
+   "what": "Signatures per step (run:<sha12 cmd>, patch:, read:, done:, intent:unresolved, fail:...; post-bench also `:refused`); 3 identical -> trip -> replan (jev-on) or fixed text (jev-off).",
+   "question_shape": "n/a",
+   "cost_latency": "jev-on 49 trips -> 47 replan requests; jev-off 29 trips (fixed text)",
+   "weakness": "Refused proposals were counted like executed ones at bench time, so a generator re-proposing a refused read/patch tripped 'read' x3 24 times and 'patch' x3 8 times, feeding replans that then got overridden."
+  },
+  {
+   "where": "src/bench/swebench/evaluator.ts (local-venv, steps a-i of DESIGN \u00a713); src/bench/quixbugs/evaluator.ts (run_tests.py); src/bench/ladder/evaluator.ts (pytest tests, tests/ untouched); src/bench/terminalbench/evaluator.ts (reward.json)",
+   "who_decides": "code",
+   "what": "pass/fail per task: SWE-bench FAIL_TO_PASS all in {PASSED,XFAIL} and PASS_TO_PASS in {PASSED,XFAIL,SKIPPED} from the official log parsers; empty model_patch -> pass:false without running; timeout/no results -> pass:null 'invalid'.",
+   "question_shape": "n/a",
+   "cost_latency": "venv build + test run under 1800 s; not in wallMs",
+   "weakness": "Unofficial (no Docker). live-slice-3 lost 4 of 6 verdicts to 'environment build failed: clone/checkout ... failed'; live-swebench-30 lost pytest-10051 jev-off to 'no test results and no sign the suite ran'. Evaluated set differs per condition, so paired n (29) < records (30)."
+  },
+  {
+   "where": "src/bench/runner.ts:333-348 root SpendMeter + :514 root.child(taskSpendCapUsd); :579-585 capFired",
+   "who_decides": "code",
+   "what": "Bench-wide cap ($60) and per-run cap ($1.50) enforced by one shared meter; a tripped run records stopReason spend_cap and capFired task|bench.",
+   "question_shape": "n/a",
+   "cost_latency": "none",
+   "weakness": "One jev-on run (sympy-20428) hit the $1.50 task cap at step 23 with an empty patch; jev-on per-run cost is 8-15% higher than jev-off so a shared cap censors jev-on first."
+  },
+  {
+   "where": "src/bench/metrics.ts:136-162 pairedTaskIds; :85-133 computeConditionMetrics; runner.ts:157-160 withTokenSeries",
+   "who_decides": "code",
+   "what": "Aggregation: paired = tasks evaluated in every condition minus modelDrift; steps-to-solve over passed only; tokens-per-step curves over runs that reached the step; older records get zero-filled split token series.",
+   "question_shape": "n/a",
+   "cost_latency": "none",
+   "weakness": "Zero-filling is silent: 15/30 records per condition in live-swebench-30 carry zeros in generatorTokensPerStep/jevTokensPerStep while tokensPerStep is intact, so the per-source means and the STATUS 'reading' are wrong (true jev-on 13,991 gen / 59,209 Jev tokens per step; jev-off 12,814)."
+  },
+  {
+   "where": "src/jev/mock.ts:112-191 defaultChoice/defaultScore/defaultNoul; :239-319 createMockDecider",
+   "who_decides": "code",
+   "what": "Offline decider: first non-escape Choice option gets 0.8, Scores 0.95 at level 0 unless DANGEROUS_COMMAND (rm -rf, sudo, git push --force, curl|sh, mkfs), task_complete 0.95 only when testsCurrent && allPassed && nothing remains (or a `done` claiming nothing remains), context Nouls 0.9 when the file is mentioned in the task or touched this run; every answer passes validateJevResponse; cost = tokens x JEV_INPUT_USD_PER_TOKEN so mocked Jev cost is non-zero ($0.0572 in mock-3).",
+   "question_shape": "same batches as live",
+   "cost_latency": "latencyMs option, default 0",
+   "weakness": "Mocked jev-on still looped (mock-3: 12 loops / 10 replans over 46 steps, 15.33 steps-to-solve vs 4 for jev-off) because the heuristics do not model completion after the gold patch's test run; mocked pass/fail exercises the pipeline only (comparison.md prints a 'Mocked bench' banner)."
+  }
+ ],
+ "llm_calls": [
+  {
+   "where": "src/loop/engine.ts:1804-1806 runProposeStage via provider.generate (OpenRouter anthropic/claude-sonnet-5 in every live bench; default now z-ai/glm-5.3-flash per src/config/defaults.ts:7)",
+   "purpose": "jev-on/jev-off propose stage: one forced `propose_action` tool call per step returning {goal, action, plan}",
+   "prompt_size": "jev-on 13,187 input tokens/call mean (min 2,820, max 30,473), 539 output; jev-off 12,060 mean (max 17,686), 475 output (generator.jsonl over 740/734 calls). tasks.jsonl split series under-report this (zero-filled first pass).",
+   "sampling": "temperature null (not sent), maxTokens 4096, tool_choice forced, parallel_tool_calls false, strict schema",
+   "tools": "propose_action (kinds read/run/edit/patch/write/done)",
+   "weakness": "6.2 s mean latency (20 s max) = 82% of jev-on wall; 17 malformed responses + 14 retries (jev-on), 19 + 16 (jev-off); jev-on never emitted a `done` in 726 steps; 6 refused commands began `cd /repo &&` (hallucinated Docker path). Cost $23.51 vs $21.19: jev-on spent 11% more on the generator despite 'saving' reads."
+  },
+  {
+   "where": "src/loop/stages/intent.ts via engine.ts:1788 runIntentStage (Jev decisions endpoint typesafe/jev-1.13-20260917)",
+   "purpose": "Jev intent Choice + paired Nouls + plan_still_valid",
+   "prompt_size": "5,312 input tokens/request mean, 7 questions",
+   "sampling": "n/a (decisions API)",
+   "tools": "n/a",
+   "weakness": "90 fallbacks + 41 overrides of 726; 73% investigate."
+  },
+  {
+   "where": "src/loop/stages/context.ts via engine.ts:1792 runContextStage",
+   "purpose": "Jev context Nouls, one per candidate file (<=300)",
+   "prompt_size": "35,979 input tokens/request mean, ~288 questions",
+   "sampling": "n/a",
+   "tools": "n/a",
+   "weakness": "71% of Jev tokens and cost, 504 ms mean (2.4x other stages), 42 retries, yields 1.33 files/step."
+  },
+  {
+   "where": "src/loop/stages/risk.ts via engine.ts:1811 runRiskStage",
+   "purpose": "Jev risk Scores (4 dims) + matches_intent",
+   "prompt_size": "5,155 input tokens, 5 questions",
+   "sampling": "n/a",
+   "tools": "n/a",
+   "weakness": "Produced 223 non-executing steps, all via plan_mismatch."
+  },
+  {
+   "where": "src/loop/stages/complete.ts / judge via engine.ts (judge stage)",
+   "purpose": "Jev judge Nouls incl. task_complete and task_impossible",
+   "prompt_size": "5,935 input tokens, 5 questions",
+   "sampling": "n/a",
+   "tools": "n/a",
+   "weakness": "task_complete max 0.55 across 497 calls; threshold 0.85 never met."
+  },
+  {
+   "where": "src/loop/stages/replan.ts via engine.ts:1773 runReplanStage",
+   "purpose": "Jev next_move Choice + task_impossible after a loop trip",
+   "prompt_size": "6,395 input tokens, 7 questions",
+   "sampling": "n/a",
+   "tools": "n/a",
+   "weakness": "14/47 overridden by the paired-Noul floor; 4 runs stopped on stop_and_report at Choice mass <= 0.16."
+  },
+  {
+   "where": "src/provider/mock.ts:33-73 createMockProvider (mocked bench, --mock, perf)",
+   "purpose": "Replay a scripted MockTurn[] (goldTrajectory from src/bench/swebench/loader.ts:65-72 or a function); runner wraps it so calls past the end repeat the final `done` (runner.ts:508-512)",
+   "prompt_size": "ignores the prompt; usage default 1000 in / 200 out / $0 (MOCK_DEFAULT_USAGE)",
+   "sampling": "deterministic; latencyMs optional per turn",
+   "tools": "turn.toolCall replayed as one tool call",
+   "weakness": "Cannot express prompt-dependent behaviour beyond the (req, index) function; MockTurn.error injects HTTP failures only."
+  }
+ ],
+ "reusable_for_llm_jev": [
+  "Condition plumbing is already generic over EngineMode: to add 'llm-jev' (or a synthesizer-backed 'jev-on') extend the union at src/core/types.ts:371, CONDITION_ORDER src/bench/conditions.ts:12, CONDITIONS src/cli/args.ts:277, conditionConfig (conditions.ts:46-65, decides generatorModel/deciderModel columns), createEngineFor (conditions.ts:114-116), the provider/decider/synthesizer selection in runPair (src/bench/runner.ts:504-521), CONDITIONS_PARAGRAPH (src/bench/report.ts:115-124) and the engine.ts mode branches (usesJev :364; propose dispatch :1796-1808). isRecord (runner.ts:120) and pairedTaskIds (metrics.ts:136) then accept it with no change; summary.json.conditions records the per-condition config verbatim.",
+  "BenchDepsWithSynth.createSynthesizer ({decider, redact}) => Synthesizer (src/bench/types.ts:31-33) is the injection point for any propose-stage replacement; EngineOptions.synthesizer is honoured only when mode === 'jev-only' today (engine.ts:1796), so a hybrid condition needs a mode-independent 'propose with synthesizer then/or generator' branch.",
+  "Synthesizer contract: synthesize(ctx: SynthesisContext) => Proposal (src/core/types.ts:1067-1071); ctx.ask routes Jev questions through the engine's metered/recorded ask (src/synth/index.ts header), so an LLM-backed synthesizer gets jev.jsonl/decisions.jsonl/meter accounting for free. Generator usage in a jev-only record invalidates it (runner.ts:249-253, JEV_ONLY_GENERATOR_CALLED); a new condition must decide whether that assertion applies.",
+  "Offline testing needs no engine: test/unit/bench/helpers.ts createFakeDeps(script: EngineScript) fakes createEngine/createGeneratorOnlyEngine/createMockProvider/createMockDecider/createSpendMeter/createSandbox/createSynthesizer and captures what the runner passed (captured.mockProviders, synthesizerDeciders); the fake live provider already reports model 'z-ai/glm-5.3-flash'. runBenchWithSources(sources, opts, deps) (runner.ts:329) accepts synthetic BenchTaskSource objects (helpers.ts syntheticSource).",
+  "MockDecider rules: createMockDecider({rules: [(ctx: {stage, step, state, questions}) => Partial<Record<id, Answer>>], failAt, malformedAt, latencyMs}) (src/jev/mock.ts:239-319; types src/core/types.ts:1461-1477) lets a test script Jev answers per stage/step while unanswered ids fall to the heuristics; answers are validated by validateJevResponse so malformed scripts fail loudly. choiceAnswer/scoreAnswer/noulAnswer builders (mock.ts:54-93) produce wire-valid answers.",
+  "MockProvider: createMockProvider({turns: MockTurn[] | (req, i) => MockTurn, model, deltaChunkSize}) (src/provider/mock.ts:33); goldTrajectory(gold, testCmd) (swebench/loader.ts:65-72) and mockTurn(goal, action, plan) (loader.ts:59) build trajectories; quixbugs/ladder loaders build FixAction-based trajectories the same way. The mocked evaluator for SWE-bench is `git apply --check -R <gold>` (loader.ts:101-105); quixbugs/ladder evaluate mocked runs with the real tests.",
+  "Per-run transcripts are complete and machine-readable under ~/.jevcode/runs/<runId>/: steps.jsonl (intent, contextFiles, proposal, risk.dims with tailMass/level, outcome.status, judge, completion, decisions[], timing, usage), jev.jsonl (per request: stage, questions, usage, latencyMs, attempts), generator.jsonl (per call: inputTokens, outputTokens, latencyMs, malformed, attempt), decisions.jsonl (every question/answer with verdict chosen/overridden/fallback), transcript.log, model_patch.diff, run.json (config record with sources). tasks.jsonl.runId links a bench record to them.",
+  "resolveChoice (src/loop/stages/choose.ts:42-70) and its PAIRED_NOUL_FLOOR=0.5 are the single place where Jev's Choices get overridden; annotateChoiceRows writes 'overridden'/'chosen' verdicts into decisions.jsonl, so override rates per stage are measurable from existing logs (live: intent 41/726, replan 14/47).",
+  "Metrics/report are condition-agnostic: computeSuiteMetrics/computeSuiteComparison (metrics.ts:164-190) and renderComparison (report.ts:247) iterate summary.conditionOrder; adding a per-condition row is one entry in metricRows (report.ts:140-159). breakdownSections (report.ts:102-113) already breaks quixbugs by kind and ladder by hunks/difficulty.",
+  "Bench --resume (runner.ts:308-318 planPair, :333-348 meter seeding) re-runs setup failures and IN_PROGRESS markers and keeps finished records, so a new condition can be added to an existing bench id and only its pairs run (records for other conditions are kept via `kept`, runner.ts:600-606).",
+  "Post-bench loop rules that a fresh jev-on bench would exercise for the first time: isVerificationRun/VERIFICATION_HARM_MAX_LEVEL (risk.ts:204-218), completionVerifiedByRun (risk.ts:232), novelVerifiedPatch (risk.ts:426), verifiedCompletion (engine.ts:2044-2049), repeatedGatherContextExit (engine.ts:2056-2062), refused-proposal signatures and failing-set fail: signatures (loopdetect.ts). None is gated on mode."
+ ],
+ "measured_facts": [
+  "bench/results/live-swebench-30/comparison.md + tasks.jsonl: jev-on 9/30 evaluated (30.0%), 9/29 paired (31.0%); jev-off 10/29 (34.5%), 1 unevaluated (pytest-dev__pytest-10051 'no test results and no sign the suite ran'); 60 records; generator anthropic/claude-sonnet-5 via OpenRouter; decider typesafe/jev-1.13-20260917; maxSteps 25, maxWall 20m, maxReplans 5, task cap $1.50, bench cap $60, completeThreshold 0.85, impossibleThreshold 0.85, temperature not sent, maxTokens 4096 (summary.json.conditions).",
+  "tasks.jsonl aggregates: jev-on steps 726 (mean 24.2), wall 5,568 s (mean 185.6 s), timing generator 4,583,996 ms / Jev 812,491 ms / exec 115,700 ms / harness 52,319 ms; cost generator $23.507 / Jev $1.552; jevRequests 2,719; jevQuestions 220,383; blocked 223 (39 block + 184 declined), reviews 184, loops 49, replans 43, reads 86, patchEmpty 13/30; stop max_steps 25 / replan_stop 4 / spend_cap 1. jev-off steps 718 (mean 23.9), wall 4,265 s (mean 142.2 s), generator 4,140,366 ms / exec 111,512 ms / harness 13,167 ms; cost $21.189; loops 29; reads 127; patchEmpty 6/30; stop max_steps 25 / generator_done 5.",
+  "Paired (n=29, comparison.md): steps-to-solve mean 23 (n=9) vs 22 (n=10), median 25/25; reads 83 vs 124; blocked/reviews/declined 208/170/170 vs 0; loops/replans 46/40 vs 28/0; Jev requests/questions 2,631/212,508; Jev latency p50 236.7 ms / p95 547.3 ms (n=2,631); wall mean 3m05s vs 2m21s; cost $24.21 vs $20.44; bench total $46.25.",
+  "~/.jevcode/runs/*/jev.jsonl over the 30 jev-on runs: context 726 req / 208,900 q / 26,120,906 in-tokens / $1.0971 / 504 ms mean / 3,825 ms max / 42 retried; intent 726 / 5,082 / 3,856,316 / $0.1620 / 210 ms; risk 723 / 3,615 / 3,727,095 / $0.1565 / 238 ms; judge 497 / 2,485 / 2,949,781 / $0.1239 / 224 ms; replan 47 / 329 / 300,570 / $0.0126 / 220 ms; totals 2,719 req, 220,411 q, 36,954,668 in / 6,060,099 out tokens, $1.5521, 812.5 s, 3.75 requests/step.",
+  "~/.jevcode/runs/*/steps.jsonl (jev-on, 726 steps): verdict ok 500 / review 184 / block 39 / null 3; outcome executed 497 / declined 184 / blocked 39 / failed 6; action kinds run 478, read 136, edit 104, write 3, patch 2, done 0; verdict x kind: edit ok 30 / review 52 / block 22; read ok 86 / review 48 / block 2; run ok 382 / review 83 / block 13; intent investigate 529 / verify 96 / edit 84 / fix_environment 17; completion max 0.55, steps >= 0.85: 0; contextFiles mean 1.33 (max 5, 153 zero); per-step timing gen 6,314 ms / Jev 1,118 ms / exec 159 ms / harness 72 ms. jev-off (718 steps): run 517, read 127, edit 59, write 5, done 5, patch 2; executed 697 / failed 16 / noop 5; gen 5,767 ms / exec 155 ms / harness 18 ms per step.",
+  "generator.jsonl: jev-on 740 calls, inputTokens mean 13,187 (min 2,820, max 30,473), output 539, latency 6,195 ms mean / 20,044 max, 17 malformed, 14 attempt>1, $23.507; jev-off 734 calls, 12,060 mean (max 17,686), 475 out, 5,641 ms mean / 17,103 max, 19 malformed, 16 attempt>1, $21.189.",
+  "Token-series defect: tasks.jsonl records with generatorTokensPerStep summing to 0 while tokensPerStep > 0: 15/30 jev-on and 15/30 jev-off (first pass predates commit 271610e 'bench: generator and Jev tokens per step recorded... separately' at 2026-09-19 23:53:22 -0700; bench first pass 23:03 -0700 = 06:03Z, resume createdAt 06:55:38Z, resumed: true). True means from steps.jsonl: jev-on generator 13,991 tokens/step (input 13,442), Jev 59,209 (input 50,863); jev-off generator 12,814 (input 12,329). comparison.md prints 5,519 / 6,767 / 28,351.",
+  "decisions.jsonl verdicts over 30 jev-on runs: intent chosen 595 / fallback 90 / overridden 41; replan next_move chosen 28 / overridden 14 / fallback 5; can_stop_and_report chosen 4. Run 20260920-065605-27bb5pej step 17: next_move change_approach 0.82 (paired 0.44) overridden to stop_and_report (paired 0.63, Choice mass 0.04), task_impossible 0.13 -> replan_stop; run 20260920-062654-i7hcewsh step 24: gather_context 0.79 (paired 0.45) overridden to stop_and_report (paired 0.78, mass 0.07).",
+  "Loop trips in 30 jev-on transcripts: read 24, intent 16, patch 8, run 1 (=49); replan moves: change_approach 27, gather_context 15, replan_stop 4, fix_environment 1 (=47).",
+  "Refused `run` proposals across 30 jev-on runs: 161 total; 45 contain pytest/runtests/bin/test; 14 are plain (no shell composition) pytest/runtests invocations that isVerificationRun (risk.ts:215-218) would accept; 6 contain `cd /repo`; 77 executed runs were test invocations. pytest-dev__pytest-7324 jev-on (20260920-072055-un7o2ljt): 17 of 25 steps refused, 11 of them attempts to run testing/test_mark_expression.py; jev-off passed the same task.",
+  "Commit timeline (git log): live jev-on bench 2026-09-19 23:03-23:55 -0700; c39e047 (evidence in risk/judge, ledger intent) 2026-09-20 13:58 -0700; 382e69f 14:36; a030381 (completionVerifiedByRun, isVerificationRun, refused signatures, finish rescue) 15:56; 42d9f09 (fail sets, novelVerifiedPatch, noop done carries last run) 16:43. No jev-on/jev-off bench result in bench/results postdates them.",
+  "bench/results/live-slice-3: 6 records, 4 unevaluated ('environment build failed: clone/checkout <sha> failed'), 0 paired; live-slice-3b: jev-on 3/3, jev-off 2/3, steps-to-solve 21.33 vs 25, Jev 243 req / 19,633 q, $1.76 vs $2.17, bench $3.94 (cap $8).",
+  "bench/results/mock-3 (mocked: true): SWE-bench 3/3 both conditions; jev-on 15.33 steps (12 loops / 10 replans, 194 Jev req / 14,498 q, Jev cost $0.0572, latency 0) vs jev-off 4 steps; mock-tb10: Terminal-Bench 2/9 both, shadow-relay unevaluated, 'local shim, non-comparable' label.",
+  "bench/results/jev-only-quixbugs-7-final: 39/40 (97.5%), steps-to-solve 3.54 (median 3), 1,225 Jev req / 28,228 q, p50 178 ms / p95 340 ms, 33,655 Jev tokens/step, $0.185, stop complete 39 / spend_cap 1, maxSteps 12, wall 8m, task cap $0.05; by kind wrong_variable 6/7, all others 100%. STATUS: 37/40 correct by verdict script, 2 overfit.",
+  "bench/results/jev-only-ladder-7-final: 14/20 (70%), steps-to-solve 5.36, steps used 8.35, 2,151 req / 27,342 q, 54,334 Jev tokens/step, blocked 36, loops 22, replans 16, $0.32, stop complete 14 / replan_stop 5 / max_replans 1; hunks 1: 6/6, 6: 0/2; difficulty 5: 0/3. STATUS: 9/20 correct.",
+  "bench/results/jev-only-swebench-4-final: 4/30 (13.3%; sympy-15345 4 steps, sympy-17139 4, sympy-19954 6, django-15128 4), steps 348 (mean 11.6), blocked 228, reviews 10, loops 88, replans 61, 3,222 req / 266,356 q, 106,416 Jev tokens/step, p50 227 ms / p95 541 ms, $1.2956, wall 7,102 s (harness 4,850 s, exec 1,303 s, Jev 947 s), stop complete 3 / replan_stop 20 / max_replans 7, patchEmpty 17, maxSteps 25, wall 25m, task cap $0.40, generator 'none (jev-only)', generatorCalls 0.",
+  "src/config/defaults.ts:7 DEFAULT_MODEL = 'z-ai/glm-5.3-flash' (DECISIONS.md:670-695, 2026-09-21): $0.09/M in, $0.30/M out, cache read $0.018/M, context 1,310,720, max completion 131,072; served provider billed 5/3x ($0.15/$0.50) in the one live check (234 prompt + 19 completion tokens, 664 ms, forced tool call OK). grep 'glm' bench/results/*/summary.json: none. .env.example still lists JEVCODE_PROVIDER=anthropic / JEVCODE_MODEL=claude-sonnet-5.",
+  "Thresholds: RISK_REVIEW 0.3, RISK_BLOCK 0.7 (src/jev/confidence.ts:7-8); PAIRED_NOUL_FLOOR 0.5 (choose.ts:10); MATCHES_INTENT_THRESHOLD 0.3 (risk.ts:40); LOOP_TRIP_COUNT 3 (loopdetect.ts:25); CONTEXT_MAX_CANDIDATES 300, CONTEXT_MAX_FILES 12, CONTEXT_MAX_TOTAL_BYTES 61,440, CONTEXT_MAX_FILE_BYTES 16,384, CONTEXT_SELECT_THRESHOLD 0.5 (context.ts:12-16); MOCK_DEFAULT_USAGE 1000 in / 200 out (provider/mock.ts:9); DEFAULT_SETUP_TIMEOUT_MS 20 min, DEFAULT_COMMAND_TIMEOUT_MS 10 min (runner.ts:39-40); SWE-bench TEST_TIMEOUT_MS 1800 s (swebench/evaluator.ts:16).",
+  "docs/STATUS.md:68-101 restates comparison.md numbers (9/29 vs 10/29, 83/124 reads, 208/170, 46/40, 2,631/212,508, 237/547 ms, 5,519/6,767 tokens, 3m05s/2m21s, $22.71/$1.49 vs $20.44) and claims '10 of 30 jev-on runs ended with an empty patch' (tasks.jsonl: 13) and '18% fewer generator tokens per step' (artefact of zero-filled series)."
+ ],
+ "hazards": [
+  "The headline jev-on 9/29 vs jev-off 10/29 measures an engine that predates every \u00a721.2 risk/loop rule (a030381, 42d9f09, 382e69f, c39e047 landed 2026-09-20 13:58-16:43 -0700; bench ran 2026-09-19 23:03-23:55 -0700). Those rules are not mode-gated (risk.ts:502-524), so current jev-on behaviour is unmeasured; any 'optimise jev-on' work should re-baseline first.",
+  "comparison.md and STATUS.md per-source token rows are wrong: 15/30 records per condition have zero-filled generatorTokensPerStep/jevTokensPerStep (runner.ts:157-160 withTokenSeries silently zero-fills pre-271610e records). True: jev-on 13,991 vs jev-off 12,814 generator tokens/step (+9%, not -18%) and 59,209 Jev tokens/step (not 28,351). The combined tokensPerStep series is correct.",
+  "Bench reviews are refusals by design (alwaysDecline, conditions.ts:17-23): 184 of 726 jev-on steps were declined and every one of the 223 refusals came from plan_mismatch, none from harm dimensions. Jev-on's pass rate is therefore 'Jev + always-no reviewer', and 71% of edits and 45 test-run attempts never executed; jev-off has no equivalent penalty, so the comparison is structurally biased against jev-on.",
+  "Paired-Noul override in resolveChoice (choose.ts:42-70, floor 0.5) discards Jev's argmax move: 14/47 replan Choices and 41/726 intent Choices were overridden; all 4 replan_stop exits were overrides to stop_and_report at Choice mass 0.02-0.16 with task_impossible 0.10-0.13, one of which stopped a run whose patch already passed (django-15572). Runs ended on a code rule the transcript attributes to Jev ('Jev directs').",
+  "Completion never fires under jev-on (max task_complete 0.55 vs threshold 0.85 across 497 judge calls) while the risk stage refuses the verification runs the completion criteria require; 9 passing jev-on runs burned the full 25-step budget with a correct patch on disk, inflating steps-to-solve, cost and wall for the condition.",
+  "Context stage is 71% of Jev cost and tokens and 2.4x the latency of any other stage (726 requests x 300 Nouls) for 1.33 selected files/step; it also makes jev-on generator prompts larger (max 30,473 vs 17,686 input tokens). Tightening CONTEXT_MAX_CANDIDATES/pre-filter is a pure win the design already lists as open (STATUS 'Open questions').",
+  "No bench, live or mocked, has run with the new default generator z-ai/glm-5.3-flash; every result on disk is Claude Sonnet 5 via OpenRouter. The only glm verification is a single forced tool call (234+19 tokens). Its pricing-table fallback is ~1.7x optimistic vs the served provider, so spend caps could be under-enforced when usage.cost is absent. .env.example still documents the Anthropic/Sonnet defaults.",
+  "Loop detector counted refused proposals like executed ones at bench time: 24 'read' trips and 8 'patch' trips were the generator re-proposing something Jev had just refused, each trip costing a replan request and often a directive that the risk stage then refused again (pylint-4604: 13 refusals, 2 trips, replan_stop, empty patch). Post-bench `:refused` signatures address this but are unmeasured under jev-on.",
+  "Evaluated-set drift: local-venv evaluator infrastructure failures (live-slice-3 lost 4/6 verdicts to clone/checkout failures; live-swebench-30 lost 1) change the paired n per run, and SWE-bench numbers are unofficial (no Docker). jev-only SWE-bench 'passes' are load-sensitive (sympy-19954 flipped across runs) and none has the upstream fix's shape.",
+  "jev-only SWE-bench wall is dominated by harnessMs (4,850 of 7,102 s) because the synthesizer's search and shadow-lane test runs are accounted inside 'harness', so the bench's timing split misattributes the synthesizer's cost; a hybrid llm-jev condition would inherit the same accounting unless a 'synth' timing bucket is added.",
+  "Adding a condition is a multi-file change with a silent failure mode: a tasks.jsonl line whose condition is not in CONDITION_ORDER is dropped by isRecord (runner.ts:120) with only a log line, and report.ts CONDITIONS_PARAGRAPH is prose that must be edited by hand.",
+  "STATUS.md 'reading' paragraph (lines 88-98) carries two wrong numbers ('10 of 30' empty patches is 13; '18% fewer generator tokens per step' is an artefact) and is the text a reader would cite when deciding what Jev is 'really good for'."
+ ]
+}
