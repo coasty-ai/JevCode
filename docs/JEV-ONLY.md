@@ -357,3 +357,22 @@ the linter verify. The question this document answers by experiment is which dec
   CPython 3.9), and the per-step run count must come from the running measurements, not the idle
   baseline (under two-way concurrency the runs collapsed to 6–10 per step and the #1-ranked candidate
   was deferred and never run).
+- 2026-09-21: **final tree measured — QuixBugs 39/40, ladder 14/20** (55404ba, run from a frozen worktree while SWE-bench
+  ran alongside; `experiments/results/jev-only-rungs-1-2.md` §25; `bench/results/jev-only-{quixbugs,ladder}-7-final`,
+  $0.505). QuixBugs: 39/40 solved — gold-identical 30, equivalent 7, overfit 0, unverified 2 (the two graph programs the
+  probe cannot perturb), miss 1; 36 programs in 3 steps, 0 `read`s, 13 loop trips all in the four 10–11-step runs; the
+  miss (`shortest_path_length`, both 6-repeat runs missed it too) is the budget-end release of a held "possible overfit"
+  passer — `return 4` inserted above the gold line — which makes the remaining test unfixable (`spend_cap` at step 11).
+  Ladder: the short tier **12/12** for the first time (all `complete`, 3–7 steps, 0 blocked / declined / loops, $0.051;
+  rounds 4–5 were 11/12), the long tier 2/8 (`import_and_guard` 9 steps, `ledger5` 13 — both their fastest) with 6
+  progress commits and 0 reads; `long_chain` reached three gold links (3/6) before its remaining frame, a `<lambda>` in
+  `totals.py`, never became a site. The seven misses by class: localisation miss ×3 (`long_chain`; `regress_trap`,
+  where `agenda.py:19` never became a site although that hunk alone fixes all three remaining tests; `shared_frame`, a
+  strict pair with no replace site at either call), overfit release ×2 (`shortest_path_length`; `masked`, where the
+  guard's own all-overfit signature held `return 0` twice before the budget reserve committed it), partial trap ×1
+  (`six_hunks`: the gold `model.py:28` partial was displaced in the single held slot by a regressing pair and, being
+  `tried`, never returned), and one code defect the transcripts pin: **`unchanged` verdicts are goal-relative but
+  `tried` is run-global** — `crossfile`'s `tax.py:12:replace` had 165 candidates under a fmt goal (165 `unchanged`) and
+  `mutation 0` under the tax goal it fixes outright, likewise `discount.py:21` (`memory.ts:44`, `runner.ts:174`;
+  `index.ts:712` forgets them only on that goal's own progress commit). Open, from this measurement: exclude an
+  `unchanged` hash for its own goal only; do not release an all-overfit-signature passer at the budget reserve.

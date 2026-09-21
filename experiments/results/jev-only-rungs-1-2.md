@@ -3585,3 +3585,271 @@ nothing inside the raising `if` or elsewhere in the file, `_before` only at the 
 alias at a marked gap). Gates: `npx vitest run --project unit test/unit/synth` (ladder/corpus excluded) 79 files, 1,362 tests pass;
 `npx tsc --noEmit` clean for every file touched (remaining errors: `src/cli/main.tsx:260` and peers' WIP directories); `node
 scripts/no-any.mjs` ok. Budget: $0 live.
+
+## 25. 2026-09-21: final tree (55404ba) — QuixBugs 40 and ladder 20
+
+Live measurement of the tree as it stands after §24 (HEAD 55404ba, run from the frozen worktree
+`.claude/worktrees/final-clean` so that concurrent edits in the main checkout could not leak in; `node_modules` symlinked;
+results written to the main checkout's `bench/results/`). No source was changed for this section. Both suites ran
+jev-only, live, with the same caps as their predecessors — QuixBugs at concurrency 4 (12 steps, 8 min, $0.05 a task),
+the ladder at concurrency 2 (30 steps, 15 min, $0.15 a task) — while another agent ran SWE-bench at concurrency 2 on the
+same machine, so the load-aware run sizing of §23 was exercised (`load ×2.1–2.8, case timeout 500→1040–1419 ms` in the
+QuixBugs transcripts). Headline: **QuixBugs 39/40** (the best of the four full runs; 6-repeat1/2 were 38/40, run 3 36/40)
+and **ladder 14/20** — the short tier **12/12** for the first time (rounds 4 and 5 were 11/12, each missing a different
+task), the long tier **2/8** as in runs 1 and 2 but with more gold hunks in hand on the misses. Spend: $0.185 + $0.320 =
+**$0.505**.
+
+### 25.1 QuixBugs, all 40 (`bench/results/jev-only-quixbugs-7-final`, bench 20260921-022420-3b3af3)
+
+Verdicts by `experiments/inspect/quixbugs-verdicts.mts`: **solved 39/40; gold-identical 30, equivalent 7, overfit 0,
+unverified 2, miss 1**; correct by the script's stricter count (gold-identical + equivalent) **37/40** — 6-repeat2 was 36,
+6-repeat1 35, run 3 32. Both `unverified` are the graph programs whose fixtures `perturb.ts` does not perturb
+(`breadth_first_search`, `topological_ordering`); both pass their reference cases. The four full runs side by side:
+
+| run | bench | solved | verdicts | Jev $ | wall | steps median all / solved / max | stops | misses |
+|---|---|---|---|---|---|---|---|---|
+| `jev-only-quixbugs-3` | 20260920-205918-3f1604 | 36/40 | gold-identical 27, equivalent 5, overfit 2, unverified 2, miss 4 | $0.165 | 12 min | 4 / 4 / 12 | complete 35, max_steps 5 | `depth_first_search`, `longest_common_subsequence`, `reverse_linked_list`, `shunting_yard` (all 12 steps, `max_steps`) |
+| `jev-only-quixbugs-6-repeat1` | 20260920-232705-faa8ea | 38/40 | gold-identical 28, equivalent 7, overfit 1, unverified 2, miss 2 | $0.134 | 15 min | 4 / 4 / 12 | complete 38, max_steps 2 | `longest_common_subsequence`, `shortest_path_length` (12 steps, `max_steps`) |
+| `jev-only-quixbugs-6-repeat2` | 20260920-234431-abfc52 | 38/40 | gold-identical 28, equivalent 8, overfit 0, unverified 2, miss 2 | $0.126 | 16 min | 4 / 4 / 12 | complete 38, max_steps 2 | `shortest_path_length`, `sqrt` (12 steps, `max_steps`) |
+| **`jev-only-quixbugs-7-final`** | 20260921-022420-3b3af3 | **39/40** | **gold-identical 30, equivalent 7, overfit 0, unverified 2, miss 1** | $0.185 | 16 min | 3 / 3 / 11 | complete 39, spend_cap 1 | `shortest_path_length` (11 steps, `spend_cap`) |
+
+Verdict moves against the 6-repeat pair: `longest_common_subsequence` miss (repeat1) → gold-identical; `sqrt` miss
+(repeat2) → gold-identical; `wrap` overfit (repeat1) → gold-identical (the §14 wrap family holds); `mergesort` equivalent
+(repeat2) → gold-identical. The higher spend ($0.185 against $0.13) is the four long runs below — every other program
+finished in exactly 3 steps (36 of 40; 0 loop trips, 0 blocked). Per program (`reads` = `read` proposals in the
+transcript, 0 everywhere as §22 intends):
+
+
+| program | solved | verdict | steps | stop | Jev req | blocked/declined | loops/replans | reads | Jev $ | wall s | run id |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| `bitcount` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0013 | 135 | `20260921-022420-wxs4vocl` |
+| `breadth_first_search` | **yes** | unverified | 3 | `complete` | 21 | 0/0 | 0/0 | 0 | $0.0015 | 25 | `20260921-022420-5dl7fvb7` |
+| `bucketsort` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0016 | 38 | `20260921-022420-ndkd7gzz` |
+| `depth_first_search` | **yes** | gold-identical | 3 | `complete` | 21 | 0/0 | 0/0 | 0 | $0.0014 | 44 | `20260921-022420-3fu6mmge` |
+| `detect_cycle` | **yes** | equivalent | 3 | `complete` | 21 | 0/0 | 0/0 | 0 | $0.0014 | 40 | `20260921-022446-gocbly2c` |
+| `find_first_in_sorted` | **yes** | gold-identical | 3 | `complete` | 16 | 0/0 | 0/0 | 0 | $0.0016 | 61 | `20260921-022458-ylzwdjur` |
+| `find_in_sorted` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0015 | 43 | `20260921-022504-xrabqihb` |
+| `flatten` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0014 | 24 | `20260921-022527-ob33la4q` |
+| `gcd` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0013 | 23 | `20260921-022547-yiu3yjxf` |
+| `get_factors` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0013 | 24 | `20260921-022551-o4svy6cu` |
+| `hanoi` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0013 | 30 | `20260921-022600-ayxcowmw` |
+| `is_valid_parenthesization` | **yes** | equivalent | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0014 | 16 | `20260921-022611-ju2hkzur` |
+| `kheapsort` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0014 | 22 | `20260921-022615-fa5tasci` |
+| `knapsack` | **yes** | gold-identical | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0016 | 42 | `20260921-022628-d26zcfvn` |
+| `kth` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0014 | 39 | `20260921-022631-me6q2sp7` |
+| `lcs_length` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0013 | 36 | `20260921-022635-pipyakhp` |
+| `levenshtein` | **yes** | gold-identical | 3 | `complete` | 18 | 0/0 | 0/0 | 0 | $0.0020 | 51 | `20260921-022638-7qpyj7fd` |
+| `lis` | **yes** | equivalent | 10 | `complete` | 94 | 0/0 | 3/3 | 0 | $0.0178 | 421 | `20260921-022710-rvxauu6m` |
+| `longest_common_subsequence` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0014 | 89 | `20260921-022710-nhzdqmvs` |
+| `max_sublist_sum` | **yes** | equivalent | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0015 | 21 | `20260921-022712-i2xdpn5e` |
+| `mergesort` | **yes** | gold-identical | 10 | `complete` | 164 | 0/0 | 4/4 | 0 | $0.0400 | 455 | `20260921-022733-ktajnylm` |
+| `minimum_spanning_tree` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0014 | 41 | `20260921-022733-efjj7vvq` |
+| `next_palindrome` | **yes** | gold-identical | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0015 | 27 | `20260921-022815-wxob5i6f` |
+| `next_permutation` | **yes** | equivalent | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0016 | 30 | `20260921-022840-dwywiolu` |
+| `pascal` | **yes** | gold-identical | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0014 | 43 | `20260921-022842-t4n4culy` |
+| `possible_change` | **yes** | equivalent | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0015 | 36 | `20260921-022911-zcvbczgs` |
+| `powerset` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0014 | 24 | `20260921-022925-bt5qujf2` |
+| `quicksort` | **yes** | equivalent | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0015 | 28 | `20260921-022948-5qfzhh5o` |
+| `reverse_linked_list` | **yes** | gold-identical | 3 | `complete` | 35 | 0/0 | 0/0 | 0 | $0.0037 | 92 | `20260921-022950-mdyjucsw` |
+| `rpn_eval` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0016 | 21 | `20260921-023016-lm64gzie` |
+| `shortest_path_length` | no | miss | 11 | `spend_cap` | 269 | 1/0 | 4/4 | 0 | $0.0538 | 444 | `20260921-023038-q2t3e744` |
+| `shortest_path_lengths` | **yes** | gold-identical | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0015 | 31 | `20260921-023123-vox34tox` |
+| `shortest_paths` | **yes** | gold-identical | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0015 | 40 | `20260921-023154-2h7qc55z` |
+| `shunting_yard` | **yes** | gold-identical | 3 | `complete` | 15 | 0/0 | 0/0 | 0 | $0.0017 | 85 | `20260921-023235-mvwnakjf` |
+| `sieve` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0013 | 23 | `20260921-023401-bu7kx7ur` |
+| `sqrt` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0013 | 76 | `20260921-023412-bgknxaho` |
+| `subsequences` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0015 | 23 | `20260921-023425-jqwov6qc` |
+| `to_base` | **yes** | gold-identical | 3 | `complete` | 14 | 0/0 | 0/0 | 0 | $0.0014 | 35 | `20260921-023449-na6zxyx7` |
+| `topological_ordering` | **yes** | unverified | 10 | `complete` | 134 | 3/0 | 2/2 | 0 | $0.0183 | 300 | `20260921-023509-t3pnzjqk` |
+| `wrap` | **yes** | gold-identical | 3 | `complete` | 16 | 0/0 | 0/0 | 0 | $0.0016 | 69 | `20260921-023524-lqprphfk` |
+
+Totals: 1,225 Jev requests, 4 blocked / 0 declined, 13 loop trips / 13 replans (all in the four 10–11-step runs), 0 `read`
+proposals, 3,150 s of run wall over 16 min of bench wall. **The three 10-step passers are budget recoveries, not
+localisation:** `lis` committed a progress commit at step 2 (`mutation/off_by_one`, 3 of 4 goal tests, 8→11 of 12) and
+then needed six budget-hit steps and two `gather_context` replans before a `donor/statement_donor at lis.py:12` passed
+the last test at step 9 (11→12); `mergesort` budget-hit at steps 2–8 (725/896/609/408/260/295/153 runs, 0 plausible, three
+`fail:` and two `run:` loop trips) and committed `mutation/boundary_shift at mergesort.py:17` at step 9 (1→14 of 14, 35
+runs); `topological_ordering` committed an arbitrated `mutation/drop_term at :6` at step 2 (0→2 of 3, 6 passers, escape
+0.18), parked `test2` at step 5 "exhausted … at 11 sites", had its partial `done` blocked three times (0.98–1.00), widened
+to 34 sites at step 8 (1,482 runs, 0 plausible) and passed with `template/sketch_P11 at :9` at step 9.
+
+**The miss, `shortest_path_length` (run `20260921-023038-q2t3e744`, 11 steps, `spend_cap` $0.054): an overfit commit that
+makes the remaining test unfixable.** Baseline 2/4. Step 2 searched `:26:insert` (415 tested: 279 regressed, 135 unchanged)
+and `:22:insert` (364 regressed) and ended on its budget with 3 plausible; the guard line is `the step ends on its budget;
+committing the held passer as possible overfit`, and the committed patch is `+            return 4` at `:19:insert` —
+`test1` passes (2→3 of 4) because its answer is 4. The gold fix (`get(unvisited_nodes, nextnode) + …` → `distance + …` at
+L22) sits inside the `insert_or_update(...)` call *below* that `return`, now dead code, so no candidate at any later site
+can pass `test2`: steps 4–8 ran 1,201 / 1,291 / 895 / 769 / 525 candidates at `:20`, `:19`, `:27` (`budget-hit step 1 of 4`
+each time, 0 plausible), step 9 tripped `run:… x3`, step 10's `gather_context` re-localised and found "nothing new: 1 of 2
+stagnant", step 11 parked "exhausted composite, donor, mutation, template at 12 sites", the partial `done` was blocked at
+0.91 (`plan_mismatch`) and the run stopped on the task cap. Class: **overfit → dead-code partial trap → budget**. The same
+program missed in both 6-repeat runs (`max_steps`, no commit); this tree commits the overfit passer instead of ending with
+nothing, which is the §22 "possible overfit" release working as written and the wrong call here. The verdicts file marks
+it `miss` with `a 466-byte patch was committed and still fails`.
+
+### 25.2 Ladder, all 20 (`bench/results/jev-only-ladder-7-final`, bench 20260921-024028-7c76d9)
+
+`--tasks 20` selects both tiers in index order (short 1–12, long 13–20; `src/bench/ladder/tasks.ts orderByTier`). 34 min
+of bench wall, $0.320. **Short tier 12/12, every run `complete`, 53 steps in all (median 4), 431 Jev requests, 0 blocked,
+0 declined, 0 loop trips, 0 replans, 0 progress commits, 0 `read` proposals, $0.051.** Rounds 4 and 5 were 11/12 (round 4
+missed `account` at 20 steps `max_steps`, round 5 `inventory` at 20 steps `max_steps`; both solved here in 5 steps), with
+`calendar_utils`, `inventory`, `units` at 20 steps and `shipping` at 19 steps `max_replans` in those rounds; the slowest
+run here is 7 steps. Round 6's three-task re-runs (`grades`, `shipping`, `table`: 3/3 twice, 5–8 steps) match. `hunks`
+counts gold-identical lines (`h*` = the buggy line is gone but the text is not gold's), computed by
+`/tmp/jevonly/short_rows.py` from the run's `model_patch.diff` against `bench/data/ladder/tasks/<t>/gold/`; a solved task
+at 0/n passed by inserts that shadow the buggy line:
+
+| task | hunks (gold) | solved | steps | stop | cost | wall | Jev req | blocked/declined | loops/replans | progress commits | reads | run id |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `account` | 3/3 (h1, h2, h3) | **yes** | 5 | `complete` | $0.0080 | 166 s | 61 | 0/0 | 0/0 | 0 | 0 | `20260921-024028-behszget` |
+| `calendar_utils` | 2/3 (h1, h3*) | **yes** | 7 | `complete` | $0.0071 | 183 s | 58 | 0/0 | 0/0 | 0 | 0 | `20260921-024028-mkgzheaw` |
+| `events` | 1/1 (h1) | **yes** | 3 | `complete` | $0.0014 | 39 s | 18 | 0/0 | 0/0 | 0 | 0 | `20260921-024315-evwik3qh` |
+| `grades` | 0/2 (-) | **yes** | 5 | `complete` | $0.0029 | 39 s | 34 | 0/0 | 0/0 | 0 | 0 | `20260921-024331-472i7uhj` |
+| `inventory` | 1/2 (h1) | **yes** | 5 | `complete` | $0.0039 | 124 s | 39 | 0/0 | 0/0 | 0 | 0 | `20260921-024354-rzwpkvp4` |
+| `profiles` | 1/1 (h1) | **yes** | 3 | `complete` | $0.0013 | 18 s | 18 | 0/0 | 0/0 | 0 | 0 | `20260921-024411-se4cumbo` |
+| `shipping` | 1/1 (h1) | **yes** | 3 | `complete` | $0.0068 | 84 s | 32 | 0/0 | 0/0 | 0 | 0 | `20260921-024429-bd6h5t4o` |
+| `stats` | 1/1 (h1) | **yes** | 3 | `complete` | $0.0015 | 19 s | 19 | 0/0 | 0/0 | 0 | 0 | `20260921-024554-ya7qlcvq` |
+| `table` | 3/3 (h1, h2, h3) | **yes** | 4 | `complete` | $0.0091 | 152 s | 48 | 0/0 | 0/0 | 0 | 0 | `20260921-024559-uerj25cf` |
+| `tagcloud` | 1/1 (h1) | **yes** | 3 | `complete` | $0.0015 | 7 s | 20 | 0/0 | 0/0 | 0 | 0 | `20260921-024613-dnd7yuv7` |
+| `textstats` | 1/2 (h1*) | **yes** | 5 | `complete` | $0.0030 | 101 s | 35 | 0/0 | 0/0 | 0 | 0 | `20260921-024621-2kvkz3v6` |
+| `units` | 0/1 (-) | **yes** | 7 | `complete` | $0.0043 | 158 s | 49 | 0/0 | 0/0 | 0 | 0 | `20260921-024803-ggofonh3` |
+
+The five non-gold short-tier fixes, read from the patches: `grades` h2, `inventory` h2 (`number -= 1` before `start =
+number * size`), `calendar_utils` h2 (`day += 1` before `+ day - 1`) and h3 (`split("-", 3)` for `split("-")`) and `units`
+(the gold's own five lines inserted above the now-dead buggy three) are behaviourally equivalent inserts; two are
+test-equivalent but not equivalent: `grades` h1 `minimum -= 1` before `if score > minimum` gives 89.5 an A where the gold
+`>=` gives a B (the signature takes `float`), and `textstats` h2 `tokens.append(n)` before `range(len(tokens) - n)` mutates
+the caller's `Sequence[str]` (and would raise on a tuple). Both would read `overfit` under a QuixBugs-style perturbation
+probe; the ladder has none.
+
+**Long tier 2/8** — `import_and_guard` (9 steps, its fastest: 13 and 19 in runs 1 and 2) and `ledger5` (13 steps
+`complete`; 27 and 28 in runs 1b and 2) — with 114 steps, 1,720 Jev requests, 36 blocked (all partial `done`s) / 0
+declined, 22 loop trips / 16 replans, **6 progress commits, 0 `read` proposals**, $0.269. Columns from
+`/tmp/ladder-long/mdrows.py`: `progress commits (regression runs: dropped)` and `re-clusterings`:
+
+| task | hunks fixed (patch vs gold) | solved | steps | stop | cost | wall | Jev req | blocked/declined | loops/replans | reads | progress commits (regression runs: dropped) | re-clusterings | run id |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| `ledger5` | 3/5 (h1, h3, h4) | **yes** | 13 | `complete` | $0.0189 | 336 s | 145 | 0/0 | 0/0 | 0 (0) | 0 (0: 0) | 0 moved, 0 split | `20260921-025245-ggdsnzm6` |
+| `import_and_guard` | 3/4 (h1, h2, h4) | **yes** | 9 | `complete` | $0.0072 | 123 s | 78 | 0/0 | 0/0 | 0 (0) | 0 (0: 0) | 0 moved, 0 split | `20260921-025041-fecsobw4` |
+| `masked` | 0/3 | no | 12 | `replan_stop` | $0.0245 | 312 s | 145 | 6/0 | 2/1 | 0 (0) | 1 (1: 0); reopened 1, suspect 2 | 1 moved, 1 split | `20260921-025821-bw3bbpqj` |
+| `shared_frame` | 0/2 | no | 8 | `replan_stop` | $0.0193 | 216 s | 92 | 6/0 | 2/1 | 0 (0) | 0 (0: 0); reopened 1 | 0 moved, 0 split | `20260921-030405-dvih65vo` |
+| `crossfile` | 0/4 | no | 21 | `max_replans` | $0.0831 | 472 s | 456 | 6/0 | 6/5 | 0 (0) | 0 (0: 0); reopened 1 | 0 moved, 0 split | `20260921-024831-45jrtvh5` |
+| `regress_trap` | 3/4 (h2, h3, h4) | no | 18 | `replan_stop` | $0.0406 | 440 s | 299 | 6/0 | 5/4 | 0 (0) | 0 (0: 0); reopened 1 | 0 moved, 0 split | `20260921-030333-jwhjamig` |
+| `six_hunks` | 1/6 (h6) + h3* | no | 19 | `replan_stop` | $0.0453 | 390 s | 322 | 6/0 | 5/4 | 0 (0) | 2 (4: 2); reopened 3 | 0 moved, 0 split | `20260921-030742-2bvscmnn` |
+| `long_chain` | 3/6 (h1, h2, h3) | no | 14 | `replan_stop` | $0.0301 | 460 s | 183 | 6/0 | 2/1 | 0 (0) | 3 (3: 0); chain 1, reopened 1 | 1 moved, 0 split | `20260921-025624-m7ykcbkv` |
+
+Against the earlier long-tier runs (solved / gold hunks; `–` = not in that run):
+
+| task | run 1 | run 1b | run 2 | run 3 | run 3b | run 3c | **final** |
+|---|---|---|---|---|---|---|---|
+| `ledger5` | no, 0/5 (patch did not apply), 30 `max_steps` | **yes** 3/5, 27 | **yes** 3/5, 28 `replan_stop` | – | – | – | **yes** 3/5, 13 `complete` |
+| `import_and_guard` | **yes** 3/4, 13 | – | **yes** 3/4, 19 | – | – | – | **yes** 3/4, 9 |
+| `masked` | no 0/3, 20 | no 0/3, 17 | no 0/3, 25 | no 0/3, 12 | no 0/3, 12 | **yes** 1/3 + h3*, 7 | no 0/3, 12 |
+| `shared_frame` | no 0/2, 17 | – | no 0/2, 16 | no 0/2, 10 | no 0/2, 10 | no 0/2, 8 | no 0/2, 8 |
+| `crossfile` | no 1/4, 20 | no 2/4 (h3*, h4*), 30 | no, 23 | – | – | – | no 0/4, 21 `max_replans` |
+| `regress_trap` | **yes** 4/4, 26 | – | no, 25 | – | – | – | no 3/4, 18 |
+| `six_hunks` | no 2/6 (h3*, h4), 24 | – | no 1/6 (h3*), 27 | no 1/6 (h6), 15 | no 2/6 (h3*, h6), 16 | no 0/6 + h3*, h6*, 16 | no 2/6 (h3*, h6), 19 |
+| `long_chain` | no 0/6, 18 | no 0/6, 19 | no 0/6, 20 | no 3/6 (h1, h2*, h3), 16 | no 2/6, 13 | no 2/6, 12 | no **3/6 (h1, h2, h3)**, 14 |
+
+Runs 1, 1b and 2 stopped on `max_replans` / `max_steps` after declined `read`s (6–10 a task in run 2, §22); every run here stops on
+`replan_stop` (or `max_replans` for `crossfile`) after blocked partial `done`s, with 0 reads — the §22 shape. `long_chain`
+is the best it has been (three gold links, all `progress commit … no regressions`, then the chain rule handed the rest to
+`g2`); `masked` is a coin (solved once in seven runs, 3c); `regress_trap` lost the `agenda.py` hunk that run 1 found.
+
+### 25.3 The seven misses, by cause, with the transcript
+
+Classes: **localisation miss** (the gold line never becomes a site) ×3 — `long_chain`, `regress_trap`, `shared_frame`
+(also a strict pair); **overfit commit that kills the remaining goal** ×2 — `shortest_path_length` (§25.1) and `masked`;
+**partial trap** ×1 — `six_hunks` (a clean lone partial displaced by a regressing pair); **cross-goal `tried` exclusion**
+×1 — `crossfile` (contributing in `regress_trap`). Budget is the terminal cause only for `shortest_path_length`
+(`spend_cap`); loops are the symptom in every long-tier miss (22 trips / 16 replans / 36 blocked `done`s), never the cause.
+Single-hunk facts below come from applying each gold hunk alone to a copy of the task and running pytest ($0).
+
+1. **`crossfile`** (`20260921-024831-45jrtvh5`, 21 steps `max_replans`, $0.083, empty patch, 0/4) — **`unchanged` is
+   goal-relative, `tried` is run-global.** Applied alone, `tax.py` h3 (`<=` → `<`) passes both tax tests and `discount.py`
+   h4 (`not in` → `in`) passes all three discount tests; only the fmt pair (h1+h2) needs both halves. Both single sites
+   were in the beam with candidates: `src/tax.py:12:replace … mutation 67, template 59, donor 53 — jev anchor #1 in
+   tax_for` at step 4 — **under `g4`, a fmt test** (`test_money_custom_symbol`), where its batch read `165 tested (165
+   unchanged)`; from step 5 on the same site shows `mutation 0` under every goal, including `g7`/`g8` (the tax tests, steps
+   7–9) and `g1`–`g3` (discount, steps 9–12). Likewise `src/discount.py:21:replace … mutation 204` under `g5` (fmt) at
+   step 5, `mutation 0` under `g6`–`g8`, `g1`–`g3` afterwards. Code: `src/synth/search/memory.ts:44` / `sieve/runner.ts:146`
+   keep one `tried: Set<string>` of diff hashes for the run; `runner.ts:174 unchangedTried: Map<goalId, Set>` records the
+   goal an `unchanged` verdict belonged to, but `index.ts:712 forgetUnchangedTried(mem, goal.id)` runs only on **that
+   goal's** progress commit — a candidate judged `unchanged` for a test it does not touch is excluded for the goal whose
+   test it fixes. Every one of the eight one-test goals then parked "exhausted … at 10–12 sites"; steps 15–16 reopened all
+   eight and found `runs 4` / `runs 0`; `run:` ×3 loop trips at steps 4, 11, 15, `done:` ×3 at 14; five `gather_context`
+   replans; 6 blocked `done`s. The fix is a rule: an `unchanged` verdict excludes the hash for its own goal only (or is
+   forgotten when the goal changes, as it already is on a progress commit).
+2. **`masked`** (`20260921-025821-bw3bbpqj`, 12 steps `replan_stop`, $0.024, 0/3) — **the budget-reserve release commits
+   an all-overfit `return 0`.** Step 2: progress commit `template/sketch_P11 at src/report.py:14` (`+    txt = text`, an
+   alias insert equivalent to h1; 2 of 6, 16→18 of 22, full-suite regression run 18/22). Step 4, goal `g1` (2 tests in
+   `aggregate.py`): `arbitrated 5 passers (0 held) … escape 0.75, max general 0.08; all-overfit signature, holding
+   template/insert_return at src/aggregate.py:19:insert`, again at escape 0.83 — then `releases the held suspect
+   template/insert_return at src/aggregate.py:19:insert (budget reserve); committing as possible overfit` and the patch
+   is `+    return 0` above the gold line (`e.took` → `e.ms`), 18→20 of 22. `total_ms` now returns 0 unconditionally, so
+   `test_summary_total_and_slowest` cannot pass by any `parse.py` change; `g2` (h3, `parse.py:21` `[:-1]` → `[:-2]`) got
+   only insert gaps at `parse.py:18–22` and replace anchors in `aggregate.py:19` / `report.py:15,19`, parked "exhausted" at
+   step 7, six partial `done`s blocked (0.95–1.00), `done:` ×3 twice, `replan_stop`. Same release rule as
+   `shortest_path_length`; the guard's own `all-overfit signature` was right both times.
+3. **`long_chain`** (`20260921-025624-m7ykcbkv`, 14 steps `replan_stop`, $0.030, 3/6 gold) — **localisation miss after the
+   chain.** Three gold progress commits: `mutation/identifier_substitution at src/load.py:20` (step 2, 3 of 16, 10→13 of
+   26, 1,138 `unchanged` forgotten), `mutation/attribute_substitution at src/clean.py:12` (step 4, 13→16, 1,420 forgotten),
+   `mutation/attribute_substitution at src/enrich.py:22` (step 6, 16→20, 1,229 forgotten); `g1 took 3 progress commits;
+   the remaining tests continue as g2` (step 7). `g2` = `test_layout.py::test_rows +5 in src/totals.py` (the goal names
+   the file from the traceback), but its sites were `load.py:19/20`, `layout.py:20/21`, `enrich.py:22/23` gaps and
+   `layout.py:20:replace` / `:18:replace` (`jev anchor #1/#2 in rows`) — **no `totals.py` site in 239 lines** although
+   `src/totals.py` was in the context files from step 6. h4 is `-kv[2]` → `-kv[1]` inside `sorted(..., key=lambda kv: …)`
+   — the raising frame is a `<lambda>`, the §22 shape (Jev's `where` cannot name it). Step 8 budget-hit (1,465 runs, 0
+   plausible), step 9 parked, five blocked `done`s, `done:` ×3 twice.
+4. **`regress_trap`** (`20260921-030333-jwhjamig`, 18 steps `replan_stop`, $0.041, 3/4 gold) — **localisation miss, with
+   the cross-goal exclusion on top.** Gold commits at steps 2/4/6: `mutation/relational_swap at src/intervals.py:29`
+   (3 passers arbitrated, escape 0.04), `off_by_one_literal at src/names.py:19`, `off_by_one_literal at src/roster.py:24`
+   (21→25 of 28); no trap flip was kept. h1 `agenda.py:19` (`self.last_day` → `self.last_day + 1`) alone fixes all three
+   remaining agenda tests, but **L19 never became a site**: `agenda.py` sites were `:24/:25` gaps (first under `g6`, a
+   roster test, at step 6 with `mutation 48`; `mutation 0` under `g2` at step 8), `:24:replace` (anchor `mutation 136`,
+   `g2` step 8), `:32/:33` gaps (`g1` step 11). `g3` at step 9: `sites 3 … candidates=0, tested=0`, `nothing new: 1 of 2
+   stagnant`; `fail:` ×3, `run:` ×3, `done:` ×3, `fail:` ×3; three blocked `done`s ("fixed 4 of 7"). Run 1 solved this
+   task 4/4 in 26 steps.
+5. **`shared_frame`** (`20260921-030405-dvih65vo`, 8 steps `replan_stop`, $0.019, empty patch, 0/2) — **strict pair, no
+   site at either call.** Each gold hunk alone leaves all six tests failing (so there is no partial to pair, §15 has
+   nothing to work with); the goal is `… in src/checks.py` (the raising `ensure_at_least` frame); sites were gaps at
+   `booking.py:29/30`, `pricing.py:19/20/27/28` and replace anchors `pricing.py:27` (`per_person`), `booking.py:20`
+   (`Event.available`), `pricing.py:21` (`total`) — never `booking.py:29:replace` or `pricing.py:19:replace`, the two
+   call lines. Step 2 budget-hit (1,489 runs, 0 plausible), step 3 parked, six blocked `done`s, `done:` ×3 twice. Same
+   result in all seven runs.
+6. **`six_hunks`** (`20260921-030742-2bvscmnn`, 19 steps `replan_stop`, $0.045, 2/6: h6 gold, h3 as `t.due == None`) —
+   **partial trap.** Step 3, goal `g1` (three `test_attention` tests): the gold site `src/model.py:28:replace … jev anchor
+   #1 in Task.is_overdue` ran and its batch read `298 tested (292 unchanged, 1 partial, 5 regressed)` — h1 alone passes
+   `test_attention[a_only]` — but the held-partial slot kept `composite/pair_of_partials at src/render.py:20` (equal on
+   "most newly passing", won the tie-break), whose full-suite regression run came back `1 newly failing`, so it was
+   `dropped` and the step ended on its budget with **no progress commit**; `partial` verdicts stay `tried` (§22 6a), so
+   step 4's `gather_context` re-localisation parked `g1` "exhausted … at 11 sites" without a run and it never held the
+   clean partial again. h2's line `filters.py:30` and h5's `stats.py:15` never became sites (`filters.py:37/38`,
+   `stats.py:22/23/34` did). `g2` committed a caller-side `mutation/off_by_one_atom at src/render.py:20` (`line(t, width -
+   1)` for gold's `width - 3` inside `line`; 1 of 3, 19→20) and then the composite `t.due == None` at `sorting.py:18`
+   (20→22, test-equivalent to h3); `g3` committed h6 gold `stats.py:22` (22→23) and parked on h5. 36 blocked `done`s
+   across the tier, 6 here. Two of the four full-suite regression runs of held partials dropped their partial (`2 (4: 2)` in the table).
+7. **`shortest_path_length`** — §25.1.
+
+### 25.4 Commands, ids, spend
+
+From `/Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/final-clean` (HEAD 55404ba), logs under
+`/tmp/jevonly/{quixbugs,ladder}-7-final.log`:
+
+```
+env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env node_modules/.bin/tsx src/cli/main.tsx \
+  bench --suite quixbugs --conditions jev-only --live --spend-cap 0.6 --task-spend-cap 0.05 --concurrency 4 --max-steps 12 --max-wall 8m \
+  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-quixbugs-7-final
+env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env node_modules/.bin/tsx src/cli/main.tsx \
+  bench --suite ladder --tasks 20 --conditions jev-only --live --spend-cap 0.6 --task-spend-cap 0.15 --concurrency 2 --max-steps 30 --max-wall 15m \
+  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-ladder-7-final
+env -u ANTHROPIC_API_KEY node node_modules/.bin/tsx experiments/inspect/quixbugs-verdicts.mts bench/results/jev-only-quixbugs-7-final   # main checkout
+```
+
+QuixBugs: bench `20260921-022420-3b3af3`, 02:24:20–02:40:09 UTC, $0.185, no cap fired (one task cap). Ladder: bench
+`20260921-024028-7c76d9`, 02:40:28–03:14:12 UTC, $0.320, no cap fired. Total **$0.505**. Run ids per task are in the
+tables; workspaces under `~/.jevcode/runs/<run id>/` (`transcript.log`, `model_patch.diff`) and
+`~/.jevcode/runs/bench-work/<bench id>/`. Helpers used, not committed: `/tmp/jevonly/short_rows.py` (short-tier hunks),
+`/tmp/ladder-long/{rows,mdrows}.py` (long-tier hunks, progress commits, reads), the single-hunk checks in
+`/tmp/jevonly/{xf,sf,regress_trap,six_hunks}`.
+
