@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AbortError, JevCodeError, ProviderHttpError } from '../../../src/errors.js';
 import { MAX_MESSAGE_CHARS } from '../../../src/provider/sse.js';
 import { OPENROUTER_REFERER, OPENROUTER_TITLE, buildOpenRouterBody, createOpenRouterProvider } from '../../../src/provider/openrouter.js';
-import type { OpenRouterRequestBody } from '../../../src/provider/types.js';
+import type { CancelledGeneration, GenerateRequestExt, OpenRouterRequestBody } from '../../../src/provider/types.js';
 import { GLM_PRICING, PROPOSE_TOOL, fixture, genOpts, openrouterCfg, request, scriptedFetch, splitEvery, testDeps } from './helpers.js';
 
 const sse = (name: string) => ({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: fixture(name) });
@@ -25,7 +25,8 @@ describe('createOpenRouterProvider', () => {
     expect(res.model).toBe('anthropic/claude-sonnet-5');
     expect(res.stopReason).toBe('stop');
     // usage.cost (0.001288) wins over the pricing table (which would give 0.001288 too here, so perturb the table)
-    expect(res.usage).toEqual({ inputTokens: 444, outputTokens: 40, costUsd: 0.001288, calls: 1 });
+    // the frame's `completion_tokens_details.reasoning_tokens: 0` is read as a value (LLM-JEV-DESIGN §4.12), not dropped
+    expect(res.usage).toEqual({ inputTokens: 444, outputTokens: 40, costUsd: 0.001288, calls: 1, reasoningTokens: 0 });
     const call = f.calls[0]!;
     expect(call.url).toBe('https://openrouter.ai/api/v1/chat/completions');
     expect(call.headers['authorization']).toBe(`Bearer ${openrouterCfg().apiKey}`);
@@ -274,5 +275,164 @@ describe('createOpenRouterProvider', () => {
     if (out.ok) expect(out.r.text).toBe('I am ready.');
     expect(f.calls.length).toBe(2);
     expect(sleeps).toEqual([500]);
+  });
+});
+
+/** LLM-JEV-DESIGN §4.12 / §4.8: the GLM request fields, the accounting fields and the facts a cancelled sample reports. */
+describe('openrouter GLM details (LLM-JEV-DESIGN §4.12)', () => {
+  const glmCfg = openrouterCfg({ model: 'z-ai/glm-5.3-flash', pricing: GLM_PRICING, priced: true });
+  const ext = (over: Partial<GenerateRequestExt>): GenerateRequestExt => ({ ...request(), ...over });
+
+  it('maps seed, reasoning and providerPrefs onto the wire body (§4.12 shapes verbatim) and omits them when absent', () => {
+    const full = buildOpenRouterBody(glmCfg, ext({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' }, seed: 41, reasoning: { effort: 'low' }, providerPrefs: { requireParameters: true } }));
+    expect(full.seed).toBe(41);
+    expect(full.reasoning).toEqual({ effort: 'low' });
+    expect(full.provider).toEqual({ require_parameters: true });
+    expect(Object.keys(JSON.parse(JSON.stringify(full)) as object).sort()).toEqual(['max_tokens', 'messages', 'model', 'parallel_tool_calls', 'provider', 'reasoning', 'seed', 'stream', 'tool_choice', 'tools', 'usage']);
+    // the union is discriminated on the member present: `{effort}` never degrades to `reasoning: {}` (= the model's default effort, GLM's max)
+    expect(buildOpenRouterBody(glmCfg, ext({ reasoning: { effort: 'medium' } })).reasoning).toEqual({ effort: 'medium' });
+    expect(buildOpenRouterBody(glmCfg, ext({ reasoning: { enabled: false } })).reasoning).toEqual({ enabled: false });
+    expect(buildOpenRouterBody(glmCfg, ext({ providerPrefs: { requireParameters: false } })).provider).toEqual({ require_parameters: false });
+    // the jev-on propose path sends none of them (byte-identical body to before)
+    const plain = buildOpenRouterBody(glmCfg, request());
+    expect('seed' in plain || 'reasoning' in plain || 'provider' in plain).toBe(false);
+  });
+
+  it('rejects a non-integer seed before any request is made', async () => {
+    const f = scriptedFetch([]);
+    const { deps } = testDeps(f.fetch);
+    await expect(createOpenRouterProvider(glmCfg, deps).generate(ext({ seed: 1.5 }), genOpts())).rejects.toMatchObject({ status: 0, retryable: false, message: expect.stringContaining('seed') });
+    expect(f.calls.length).toBe(0);
+  });
+
+  it('GLM length stop: surfaces finish_reason verbatim, reasoning_tokens, the served provider and the generation id; truncated arguments keep the raw text', async () => {
+    const f = scriptedFetch([{ status: 200, body: splitEvery(fixture('openrouter-glm-length.sse'), 17) }]);
+    const { deps } = testDeps(f.fetch);
+    const deltas: string[] = [];
+    const res = await createOpenRouterProvider(glmCfg, deps).generate(ext({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_fix' }, maxTokens: 1500, reasoning: { effort: 'low' } }), genOpts({ onDelta: (t) => deltas.push(t) }));
+    expect(res.stopReason).toBe('length');
+    expect(res.model).toBe('z-ai/glm-5.3-flash');
+    expect(res.generationId).toBe('gen-1790000000-glmlen');
+    expect(res.servedProvider).toBe('Z.AI');
+    // usage.cost wins; reasoning_tokens ≈ completion_tokens is the "budget went to thinking" signature (research 07 §5)
+    expect(res.usage).toEqual({ inputTokens: 1350, outputTokens: 1500, costUsd: 0.0009525, calls: 1, reasoningTokens: 1447 });
+    // `delta.reasoning` is never shown as text
+    expect(deltas).toEqual([]);
+    expect(res.text).toBe('');
+    expect(res.toolCalls.length).toBe(1);
+    expect(res.toolCalls[0]!.name).toBe('propose_fix');
+    expect(res.toolCalls[0]!.input).toBeNull();
+    expect(res.toolCalls[0]!.rawJson.startsWith('{"rationale": "off by one')).toBe(true);
+  });
+
+  it('a frame without reasoning_tokens leaves usage.reasoningTokens absent, and a non-GLM stream has the ids too', async () => {
+    const f = scriptedFetch([{ status: 200, body: fixture('openrouter-text.sse').replace(',"completion_tokens_details":{"reasoning_tokens":0,"image_tokens":0,"audio_tokens":0}', '') }]);
+    const { deps } = testDeps(f.fetch);
+    const res = await createOpenRouterProvider(openrouterCfg(), deps).generate(request(), genOpts());
+    expect('reasoningTokens' in res.usage).toBe(false);
+    expect(res.generationId).toBe('gen-1789872345-abc');
+    expect(res.servedProvider).toBe('Claude Platform on AWS');
+  });
+
+  it('cancellation mid-arguments: onCancelled gets the streamed facts once (ids, text, toolChars, reasoningChars; no usage, no estimate), then signal.reason is rethrown and the connection dropped', async () => {
+    const reasoning = 'The failing test says the loop is off by one, so';
+    const args = '{"rationale": "off by one in the range bound", "edits": [{"path": "quicksort.py", "line": 12, "new": "    for i in range(lo, hi + 1';
+    const head = fixture('openrouter-glm-length.sse').split('data: {"id":"gen-1790000000-glmlen","object":"chat.completion.chunk","created":1790000000,"model":"z-ai/glm-5.3-flash","provider":"Z.AI","choices":[{"index":0,"delta":{"content":null},"finish_reason":"length"')[0]!;
+    // the fixture carries the arguments JSON-escaped inside the chunk; the head must end after them and before the finish chunk
+    expect(head).toContain(JSON.stringify(args).slice(1, -1));
+    const f = scriptedFetch([{ status: 200, body: [head], hang: true }]);
+    const { deps } = testDeps(f.fetch);
+    const ac = new AbortController();
+    const reason = new AbortError('signal');
+    const cancelled: CancelledGeneration[] = [];
+    const req = ext({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_fix' }, maxTokens: 1500, seed: 3, reasoning: { effort: 'low' } });
+    const p = createOpenRouterProvider(glmCfg, deps).generate(
+      req,
+      genOpts({
+        signal: ac.signal,
+        sample: 2,
+        onToolDelta: (frag) => {
+          if (frag.length > 0) ac.abort(reason);
+        },
+        onCancelled: (c) => cancelled.push(c),
+      }),
+    );
+    await expect(p).rejects.toBe(reason);
+    expect(f.streams[0]!.cancelled()).toBe(true);
+    expect(f.calls.length).toBe(1);
+    // §4.8: the estimate (sibling prompt_tokens, toolChars / 4, served rate) is the engine's; the provider reports what it knows
+    expect(cancelled).toEqual([{ generationId: 'gen-1790000000-glmlen', servedProvider: 'Z.AI', model: 'z-ai/glm-5.3-flash', text: '', toolChars: args.length, reasoningChars: reasoning.length }]);
+  });
+
+  it('an abort on an open stream that had produced nothing fires onCancelled once with zero streamed sizes', async () => {
+    const f = scriptedFetch([{ status: 200, body: [': OPENROUTER PROCESSING\n\n'], hang: true }]);
+    const { deps } = testDeps(f.fetch);
+    const ac = new AbortController();
+    const reason = new AbortError('human_abort');
+    const cancelled: CancelledGeneration[] = [];
+    const p = createOpenRouterProvider(glmCfg, deps).generate(ext({ seed: 1 }), genOpts({ signal: ac.signal, onCancelled: (c) => cancelled.push(c) }));
+    // the comment line is not a record; the stream is open and idle when the abort lands
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort(reason);
+    await expect(p).rejects.toBe(reason);
+    expect(cancelled).toEqual([{ text: '', toolChars: 0, reasoningChars: 0 }]);
+  });
+
+  it('an abort during fetch (no response headers yet) rethrows the reason and never calls onCancelled: the engine estimates alone (§4.8)', async () => {
+    const pending: typeof fetch = (_input, init) =>
+      new Promise<Response>((_, reject) => {
+        init?.signal?.addEventListener('abort', () => reject(init.signal?.reason), { once: true });
+      });
+    const { deps } = testDeps(pending);
+    const ac = new AbortController();
+    const reason = new AbortError('human_abort');
+    let calls = 0;
+    const p = createOpenRouterProvider(glmCfg, deps).generate(ext({ seed: 1 }), genOpts({ signal: ac.signal, onCancelled: () => void calls++ }));
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort(reason);
+    await expect(p).rejects.toBe(reason);
+    expect(calls).toBe(0);
+  });
+
+  it("an abort after the accounting frame but before [DONE] still yields no result; onCancelled carries the frame's usage, read and priced like a completed call", async () => {
+    const head = fixture('openrouter-glm-length.sse').split('data: [DONE]')[0]!;
+    const f = scriptedFetch([{ status: 200, body: [head], hang: true }]);
+    const { deps } = testDeps(f.fetch);
+    const ac = new AbortController();
+    const reason = new AbortError('signal');
+    const cancelled: CancelledGeneration[] = [];
+    const p = createOpenRouterProvider(glmCfg, deps).generate(
+      ext({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_fix' }, maxTokens: 1500, reasoning: { effort: 'low' } }),
+      genOpts({ signal: ac.signal, onCancelled: (c) => cancelled.push(c) }),
+    );
+    // every record before [DONE] has been consumed; the stream is idle when the abort lands
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort(reason);
+    await expect(p).rejects.toBe(reason);
+    expect(cancelled.length).toBe(1);
+    expect(cancelled[0]!.usage).toEqual({ inputTokens: 1350, outputTokens: 1500, costUsd: 0.0009525, calls: 1, reasoningTokens: 1447 });
+    expect(cancelled[0]!.generationId).toBe('gen-1790000000-glmlen');
+  });
+
+  it('a throwing onCancelled is a harness bug: it surfaces as a typed internal error in place of the abort reason instead of being swallowed by the abort path', async () => {
+    const f = scriptedFetch([{ status: 200, body: [': OPENROUTER PROCESSING\n\n'], hang: true }]);
+    const { deps } = testDeps(f.fetch);
+    const ac = new AbortController();
+    const p = createOpenRouterProvider(glmCfg, deps).generate(
+      ext({ seed: 1 }),
+      genOpts({
+        signal: ac.signal,
+        onCancelled: () => {
+          throw new Error('renderer bug');
+        },
+      }),
+    );
+    await new Promise((r) => setTimeout(r, 5));
+    ac.abort(new AbortError('signal'));
+    const err = (await p.catch((e: unknown) => e)) as JevCodeError;
+    expect(err).toBeInstanceOf(JevCodeError);
+    expect(err.code).toBe('internal');
+    expect(err.message).toBe('renderer bug');
+    expect(f.calls.length).toBe(1);
   });
 });

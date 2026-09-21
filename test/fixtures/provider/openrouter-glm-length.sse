@@ -1,0 +1,13 @@
+: OPENROUTER PROCESSING
+
+data: {"id":"gen-1790000000-glmlen","object":"chat.completion.chunk","created":1790000000,"model":"z-ai/glm-5.3-flash","provider":"Z.AI","choices":[{"index":0,"delta":{"role":"assistant","content":"","reasoning":"The failing test says the loop is off by one, so"},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1790000000-glmlen","object":"chat.completion.chunk","created":1790000000,"model":"z-ai/glm-5.3-flash","provider":"Z.AI","choices":[{"index":0,"delta":{"content":null,"tool_calls":[{"index":0,"id":"call_8f2a1c","type":"function","function":{"name":"propose_fix","arguments":""}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1790000000-glmlen","object":"chat.completion.chunk","created":1790000000,"model":"z-ai/glm-5.3-flash","provider":"Z.AI","choices":[{"index":0,"delta":{"content":null,"tool_calls":[{"index":0,"function":{"arguments":"{\"rationale\": \"off by one in the range bound\", \"edits\": [{\"path\": \"quicksort.py\", \"line\": 12, \"new\": \"    for i in range(lo, hi + 1"}}]},"finish_reason":null,"native_finish_reason":null}]}
+
+data: {"id":"gen-1790000000-glmlen","object":"chat.completion.chunk","created":1790000000,"model":"z-ai/glm-5.3-flash","provider":"Z.AI","choices":[{"index":0,"delta":{"content":null},"finish_reason":"length","native_finish_reason":"length"}]}
+
+data: {"id":"gen-1790000000-glmlen","object":"chat.completion.chunk","created":1790000000,"model":"z-ai/glm-5.3-flash","provider":"Z.AI","choices":[{"index":0,"delta":{"content":null},"finish_reason":"length","native_finish_reason":"length"}],"usage":{"prompt_tokens":1350,"completion_tokens":1500,"total_tokens":2850,"cost":0.0009525,"is_byok":false,"prompt_tokens_details":{"cached_tokens":0,"cache_write_tokens":0,"audio_tokens":0,"video_tokens":0},"completion_tokens_details":{"reasoning_tokens":1447,"image_tokens":0,"audio_tokens":0}}}
+
+data: [DONE]
