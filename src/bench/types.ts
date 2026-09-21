@@ -22,23 +22,30 @@ import type {
   RunResult,
   SandboxProfile,
   Synthesizer,
+  SynthesizerArmMode,
+  SynthesizerGeneration,
 } from '../core/types.js';
 
 export type BenchSuiteSelector = BenchSuite | 'all';
 
-/**
- * docs/LLM-JEV-DESIGN.md §10.1 / §9.2 stage 4: the synthesizer's mode per arm. `llm-sieve` is `llm-jev` with every Jev
- * question replaced by its code default (traceback-frame listings, arrival-order runs, min-edit tie-break with the
- * LLM-preferred rule, no L2). The bench passes it; `SynthesizerOptions.mode` is stage 4's to consume.
- */
-export type SynthesizerArmMode = 'jev-only' | 'llm-jev' | 'llm-sieve';
+export type { SynthesizerArmMode } from '../core/types.js';
+
+/** What the runner hands the synthesizer factory (src/synth/index.ts `SynthesizerOptions`, the arm's `mode` and pinned `generation` required). */
+export interface CreateSynthesizerOptions {
+  decider: Decider;
+  redact: (s: string) => string;
+  /** docs/LLM-JEV-DESIGN.md §10.1: the arm; the synthesizer must echo it (`Synthesizer.mode`) or the runner refuses the arm */
+  mode: SynthesizerArmMode;
+  /** the llm-jev / llm-sieve arms' pinned generation (`PinnedGeneration.synthesizer`); the synthesizer must echo it too */
+  generation?: SynthesizerGeneration;
+}
 
 /**
  * BenchDeps plus the synthesizer factory (the shared BenchDeps in core/types.ts is frozen). Required when the
  * conditions include a synthesizer arm (jev-only, llm-jev, llm-sieve); bench/cli.ts passes src/synth.
  */
 export type BenchDepsWithSynth = BenchDeps & {
-  createSynthesizer?: (opts: { decider: Decider; redact: (s: string) => string; mode: SynthesizerArmMode }) => Synthesizer;
+  createSynthesizer?: (opts: CreateSynthesizerOptions) => Synthesizer;
 };
 
 /** docs/LLM-JEV-DESIGN.md §8: USD per million tokens the generator's served provider bills (GLM flash: 5/3× the models-API table). */
@@ -64,6 +71,7 @@ export interface GeneratorCallsSummary {
   /** rows with a sample index (the synthesizer's rounds) */
   samples: number;
   valid: number;
+  /** rows marked malformed that were NOT dropped calls (a drop is booked once, under `cancelled` / `timeouts`) */
   malformed: number;
   lengthStops: number;
   /** rows written from an estimate: `cancelled: true` (stopReason timeout | cancelled | error) or a tuned-provider `timeout` stand-in */
@@ -295,6 +303,12 @@ export interface PinnedGeneration {
   repositoryDeadlineMs?: number;
   lengthHandling: LengthHandling;
   servedRate: ServedRate;
+  /**
+   * the synthesizer arms: the ONE object handed to `createSynthesizer({generation})` and echoed back as `Synthesizer.generation`
+   * (the runner refuses the arm otherwise), so what summary.json states is what the samples sent; the flat fields above are
+   * derived from it (`maxTokens` = its base, `reasoning`, `deadlineMs` = its `sampleDeadline.maxMs`, `sampleTemperatures`)
+   */
+  synthesizer?: SynthesizerGeneration;
 }
 
 export interface ConditionConfig {

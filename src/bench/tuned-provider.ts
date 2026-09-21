@@ -6,10 +6,12 @@
  *   - `max_tokens` 1,500 and `reasoning: {effort: 'low'}` on every call (§4.12 / §10.2 finding (a): `{enabled: false}`
  *     is a 400 on the GLM endpoint), whatever the request asked for;
  *   - a per-call deadline (20 s) that DROPS the call, never retries it: the stream is aborted, the sample is metered from
- *     an estimate (§4.8: prompt chars / 4 in, streamed chars / 4 out, at the served rate, `estimated: true`) and returned
- *     as a `GenerateResult` with `stopReason: 'timeout'` and no tool call — the propose stage reads it as malformed, so
- *     the row lands in generator.jsonl and the step proceeds under the loop's own rules. The CALLER's abort is not a
- *     deadline: it is rethrown untouched, exactly as the wrapped provider would;
+ *     an estimate (§4.8: prompt chars / 4 in, streamed chars / 4 out, at the served rate, `estimated: true` — or the
+ *     usage frame itself when it had arrived, priced like a completed call) and returned as a `GenerateResult` with
+ *     `stopReason` `DROPPED_CALL_STOP_REASON` and no tool call — the propose stage records the row and ends the step
+ *     without its malformed retry (src/loop/stages/propose.ts), so a dropped call costs the deadline once. The CALLER's
+ *     abort is not a deadline: it is rethrown untouched, exactly as the wrapped provider would, even when it lands while
+ *     the deadline is firing;
  *   - `finish_reason: length` → the same request once more at double `max_tokens`; both calls' usage is summed into the
  *     one result the engine meters (§2 principle 8: every accounting is complete), the latency is the wall of both;
  *   - the plan section capped at 200 chars through one added system sentence (the §7.2 "plan re-emission" lever).
@@ -18,6 +20,7 @@
  */
 import type { CancelledGeneration, GenerateOptions, GenerateReasoning, GenerateRequest, GenerateResult, Provider, TokenUsage } from '../core/types.js';
 import { monotonicNow } from '../core/time.js';
+import { DROPPED_CALL_STOP_REASON } from '../loop/stages/propose.js';
 import { isLengthStop } from '../synth/llm/schema.js';
 import type { LengthHandling, ServedRate } from './types.js';
 
@@ -67,9 +70,12 @@ export function withPlanCap(system: string, chars: number): string {
   return system.includes(sentence) ? system : `${system}\n\n${sentence}`;
 }
 
-/** §4.8 estimate of a dropped call: prompt chars / 4 in, streamed chars / 4 out (or the usage frame when it had arrived), at the served rate. */
+/**
+ * §4.8 usage of a dropped call: the usage frame when it had arrived (core/types.ts CancelledGeneration: "read and priced like a
+ * completed call, not estimated"), else prompt chars / 4 in, streamed chars / 4 out at the served rate, `estimated: true`.
+ */
 export function estimateDroppedUsage(req: GenerateRequest, partial: CancelledGeneration | null, rate: ServedRate): TokenUsage {
-  if (partial?.usage !== undefined) return { ...partial.usage, calls: 1, estimated: true };
+  if (partial?.usage !== undefined) return { ...partial.usage, calls: 1 };
   const promptChars = req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0) + (req.tools ?? []).reduce((n, t) => n + JSON.stringify(t.inputSchema).length + t.description.length, 0);
   const streamedChars = partial === null ? 0 : partial.toolChars + partial.reasoningChars + partial.text.length;
   const inputTokens = Math.ceil(promptChars / CHARS_PER_TOKEN);
@@ -115,8 +121,11 @@ export function createTunedProvider(inner: Provider, params: TunedProviderParams
       });
       return { kind: 'result', res };
     } catch (e) {
-      // the caller's abort wins over the deadline: it is their reason that propagates
-      if (timedOut && !opts.signal.aborted) return { kind: 'timeout', partial };
+      // the caller's abort wins over the deadline, whichever rejection lands first: it is THEIR reason that propagates
+      if (timedOut) {
+        if (opts.signal.aborted) throw opts.signal.reason;
+        return { kind: 'timeout', partial };
+      }
       throw e;
     } finally {
       clearTimeout(timer);
@@ -147,7 +156,7 @@ export function createTunedProvider(inner: Provider, params: TunedProviderParams
             toolCalls: [],
             usage: total,
             model: p?.model ?? inner.model,
-            stopReason: 'timeout',
+            stopReason: DROPPED_CALL_STOP_REASON,
             latencyMs: Math.max(0, Math.round(now() - t0)),
             ...(p?.generationId !== undefined ? { generationId: p.generationId } : {}),
             ...(p?.servedProvider !== undefined ? { servedProvider: p.servedProvider } : {}),

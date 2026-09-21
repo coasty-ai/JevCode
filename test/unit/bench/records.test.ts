@@ -34,6 +34,9 @@ describe('generator.jsonl summary', () => {
     expect(merged.calls).toBe(10);
     expect(merged.latencyMs.p50).toBe(3000);
     expect(merged.validLatencyRawMs).toEqual([1000, 2000, 1000, 2000]);
+    // a dropped call is booked once, as dropped: a `malformed` mark on a timeout row (written before the propose stage stopped retrying drops) is not a malformed reply
+    const dropped = parseGeneratorRecords([row({ stopReason: 'timeout', malformed: true, usage: { inputTokens: 1000, outputTokens: 50, costUsd: 0.0001, calls: 1, estimated: true } }), row({ malformed: true })].join('\n'));
+    expect(summariseGeneratorRecords(dropped)).toMatchObject({ calls: 2, valid: 0, malformed: 1, cancelled: 1, timeouts: 1 });
   });
 
   it('fits latency = a + b × output tokens over valid calls (reasoning tokens included in the length)', () => {

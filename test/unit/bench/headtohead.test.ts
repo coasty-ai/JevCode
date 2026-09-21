@@ -146,9 +146,19 @@ describe('paired arms and criteria', () => {
     expect(h.arms).toEqual(['jev-off', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
     expect(h.pairs.map((p) => p.candidate)).toEqual(['llm-jev', 'llm-sieve', 'jev-off-tuned']);
     const attribution = evaluateAttribution([h.attribution]);
-    expect(attribution.find((a) => a.id === '5a')).toMatchObject({ status: 'fail' });
+    // "strictly better on ≥ 2 suites" cannot be decided from one suite: open, with the parts reported
+    expect(attribution.find((a) => a.id === '5a')).toMatchObject({ status: 'not_evaluable' });
+    expect(attribution.find((a) => a.id === '5a')!.detail).toContain('quixbugs: pass 11 vs 11 of 12; better on {}');
+    expect(attribution.find((a) => a.id === '5a')!.detail).toContain('needs ≥ 2 suites, 1 paired so far');
+    expect(verdictParagraph([h], attribution)).not.toContain('Attribution vs llm-sieve');
     expect(attribution.find((a) => a.id === '5b')!.detail.startsWith('jev-off-tuned MATCHES')).toBe(true);
     expect(verdictParagraph([h], attribution)).toContain('hygiene, not Jev');
+    // a second suite at the same parity decides the bar: strictly better on 0 of 2 suites fails
+    const ladder = suiteHeadToHead('ladder', withArms.map((r) => ({ ...r, suite: 'ladder' as const })), ['jev-off', 'llm-jev', 'llm-sieve', 'jev-off-tuned'], { verdicts: v });
+    const two = evaluateAttribution([h.attribution, ladder.attribution]);
+    expect(two.find((a) => a.id === '5a')).toMatchObject({ status: 'fail' });
+    expect(two.find((a) => a.id === '5a')!.detail).toContain('0 suites qualify so far');
+    expect(verdictParagraph([h, ladder], two)).toContain('Attribution vs llm-sieve: does not hold');
   });
 
   it('parses the verdict tables of both inspect scripts', () => {

@@ -9,12 +9,13 @@ import { appendFile, mkdir, readFile, rm, stat } from 'node:fs/promises';
 import { loadavg } from 'node:os';
 import { join, resolve } from 'node:path';
 import { writeFileAtomic } from '../core/atomic.js';
+import { stableStringify } from '../core/hash.js';
 import { isFiniteNumber, isJsonObject, isString, parseJson, toJson } from '../core/json.js';
 import { percentile } from '../core/time.js';
-import type { ActionOutcome, BenchCondition, BenchSuite, BenchTaskRecord, Decider, Engine, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter, Synthesizer } from '../core/types.js';
+import type { ActionOutcome, BenchCondition, BenchSuite, BenchTaskRecord, Decider, Engine, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { ConfigError, toJevCodeError } from '../errors.js';
 import { createNullProvider } from '../provider/null.js';
-import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, requiresGenerator, servedRateFor, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
+import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, requiresGenerator, servedRateFor, synthesizerGenerationOf, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
 import { readGeneratorRecords, summariseGeneratorRecords } from './generator-records.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { readStepsSummary } from './step-records.js';
@@ -317,6 +318,18 @@ export function errorRecord(source: BenchTaskSource, condition: BenchCondition, 
   return { ...notRunRecord(source, condition, reason, runId), stopReason: 'error', capFired: null };
 }
 
+/**
+ * docs/LLM-JEV-DESIGN.md §10.1: why a synthesizer cannot stand in for the arm — it does not echo the arm's mode, or (llm-jev /
+ * llm-sieve) the pinned generation it echoes is not the object summary.json records. Null when it acknowledges both.
+ */
+export function synthesizerMismatch(synthesizer: Synthesizer, mode: SynthesizerArmMode, generation: SynthesizerGeneration | null): string | null {
+  if (synthesizer.mode !== mode) return `synthesizer "${synthesizer.name}" acknowledges mode ${synthesizer.mode === undefined ? 'none' : `"${synthesizer.mode}"`}; the arm needs "${mode}"`;
+  if (generation !== null && (synthesizer.generation === undefined || stableStringify(toJson(synthesizer.generation)) !== stableStringify(toJson(generation)))) {
+    return `synthesizer "${synthesizer.name}" ${synthesizer.generation === undefined ? 'echoes no generation parameters' : 'runs other generation parameters than the pinned ones'}; the record would not state what the samples sent`;
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------------------
 // runner
 // ---------------------------------------------------------------------------------------
@@ -539,9 +552,27 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     const decider: Decider = stub ?? (mocked ? deps.createMockDecider() : deps.liveDecider!);
     if (!jevOnly) generatorModel ??= baseProvider.model;
     const synthMode = synthesizerModeOf(condition);
-    const synthesizer: Synthesizer | undefined = synthMode !== null ? deps.createSynthesizer?.({ decider, redact: opts.redact, mode: synthMode }) : undefined;
+    const synthGeneration = synthesizerGenerationOf(condition, baseProvider.model);
+    let synthesizer: Synthesizer | undefined;
+    try {
+      synthesizer = synthMode !== null ? deps.createSynthesizer?.({ decider, redact: opts.redact, mode: synthMode, ...(synthGeneration !== null ? { generation: synthGeneration } : {}) }) : undefined;
+    } catch (e) {
+      const rec = errorRecord(source, condition, `engine_create_failed: ${toJevCodeError(e).message}`);
+      newRecords.push(rec);
+      await appendRecord(rec);
+      return;
+    }
     if (withSynthesizer && synthesizer === undefined) {
       const rec = errorRecord(source, condition, `engine_create_failed: condition ${condition} requires a synthesizer`);
+      newRecords.push(rec);
+      await appendRecord(rec);
+      return;
+    }
+    // §10.1: an arm is measured only when the synthesizer says it implements it — the mode echo and, for the LLM arms, the
+    // very generation object summary.json records; anything else would be a different arm under this arm's name
+    const unacknowledged = synthesizer === undefined || synthMode === null ? null : synthesizerMismatch(synthesizer, synthMode, synthGeneration);
+    if (unacknowledged !== null) {
+      const rec = errorRecord(source, condition, `engine_create_failed: ${unacknowledged}`);
       newRecords.push(rec);
       await appendRecord(rec);
       return;

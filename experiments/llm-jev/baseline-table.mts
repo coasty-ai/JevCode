@@ -106,7 +106,7 @@ for (const suite of suitesPresent(loaded.records)) {
   }
 }
 out.push(...tableLines(['condition', 'suite', 'calls', 'all p50 / p90 / max ms', 'valid p50 / p90 ms', 'length stops', 'malformed', 'latency fit a + b × output tokens', 'input p50', 'output mean', 'served $'], callRows), '');
-out.push('Valid = not malformed ∧ not dropped (cancelled / timeout) ∧ stopReason ≠ length (§1.2). The fit is least squares over valid calls; `a` is the intercept the ladder run says may dominate.', '');
+out.push('Valid = not malformed ∧ not dropped (cancelled / timeout) ∧ stopReason ≠ length (§1.2). The fit is least squares over valid calls; `a` is the intercept the ladder run says may dominate. Its x is output + reasoning tokens (both generated and billed as output; §1.2 says `output_tokens`, the same number on these runs, which sent no `reasoning`).', '');
 
 const text = `${out.join('\n')}\n`;
 const outFile = flag(flags, 'out');

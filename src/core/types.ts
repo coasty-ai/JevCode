@@ -1252,10 +1252,38 @@ export interface SynthesisContext {
   generate?: (req: GenerateRequest, o: SampleOptions) => Promise<GenerateResult>;
 }
 
+/**
+ * docs/LLM-JEV-DESIGN.md §10.1 / §9.2 stage 4: the arm a synthesizer is built for. `jev-only` is the code search with Jev
+ * arbitration and no generating LLM; `llm-jev` adds the LLM candidate source through `SynthesisContext.generate`;
+ * `llm-sieve` is `llm-jev` with every Jev question replaced by its code default (traceback-frame listings, arrival-order
+ * runs, the LLM-preferred min-edit tie-break, no L2). The bench passes it to the synthesizer factory and refuses an arm whose
+ * synthesizer does not echo it back (`Synthesizer.mode`), so an arm never silently runs as a different one.
+ */
+export type SynthesizerArmMode = 'jev-only' | 'llm-jev' | 'llm-sieve';
+/**
+ * docs/LLM-JEV-DESIGN.md §4.6, §4.8, §4.12 / §10.1: the generation parameters the synthesizer's LLM source sends on every
+ * sample, pinned by the caller (the bench arms) so the record and the requests share one object; absent = the source's own
+ * defaults (`src/synth/llm/source.ts LLM_DEFAULT_GENERATION`). The synthesizer echoes what it runs with (`Synthesizer.generation`).
+ */
+export interface SynthesizerGeneration {
+  /** sent verbatim on every sample; null = the parameter is not sent (the model's default) */
+  reasoning: GenerateReasoning | null;
+  /** base max_tokens of a sample; a goal's next round doubles it once after a `length` stop (§4.5) */
+  maxTokens: number;
+  /** §4.8: clamp(2 × running p50 of valid samples, minMs, maxMs) on the QuixBugs / ladder class; repositoryMs on repositories */
+  sampleDeadline: { minMs: number; maxMs: number; repositoryMs: number };
+  /** §4.6: sample 0 / samples 1..N−1 of the first round, and of the feedback round L1′ */
+  sampleTemperature: { first: number; rest: number; feedbackFirst: number; feedbackRest: number };
+}
+
 export interface Synthesizer {
   readonly name: string;
   /** Produce exactly one proposal (usually a `patch` or `edit`, sometimes `run`/`read`/`done`) without any generating LLM. */
   synthesize(ctx: SynthesisContext): Promise<Proposal>;
+  /** the arm this synthesizer implements (echo of the factory's `mode`); the bench refuses an arm it does not match */
+  readonly mode?: SynthesizerArmMode;
+  /** the generation parameters its LLM source sends (echo of the factory's `generation`); absent without an LLM source */
+  readonly generation?: SynthesizerGeneration;
 }
 
 export interface EngineStatus {

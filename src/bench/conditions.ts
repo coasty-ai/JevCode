@@ -6,18 +6,20 @@
  * generator calls are recorded, never asserted zero). The two attribution arms of §10.1 map onto those engines:
  * llm-sieve = the llm-jev engine with the stub Decider (zero Jev requests) and the synthesizer in `mode: 'llm-sieve'`
  * (every Jev question replaced by its code default); jev-off-tuned = the jev-off engine behind the tuned provider
- * (§4 generator hygiene: max_tokens 1,500, reasoning effort low, a 20 s per-call deadline that drops the call, `length`
- * → doubled once, plan capped at 200 chars). Everything that must be identical across conditions — and everything that
- * is PINNED per condition, the generation parameters first of all — is built here so it is recorded verbatim in
- * summary.json.conditions.
+ * (§4 generator hygiene: max_tokens 1,500, reasoning effort low, a 20 s per-call deadline that drops the call — the
+ * propose stage ends the step without a retry — `length` → doubled once, plan capped at 200 chars). Everything that must
+ * be identical across conditions — and everything that is PINNED per condition, the generation parameters first of all —
+ * is built here so it is recorded verbatim in summary.json.conditions: the synthesizer arms' parameters are the ONE
+ * `SynthesizerGeneration` object handed to the synthesizer factory and echoed back (the runner refuses an arm whose
+ * synthesizer does not echo its mode and generation), the tuned arm's are the tuned provider's own parameters.
  */
 import { lookupPricing } from '../config/defaults.js';
-import type { BenchCondition, BenchDeps, BenchSuite, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer } from '../core/types.js';
+import type { BenchCondition, BenchDeps, BenchSuite, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
-import { LLM_MAX_TOKENS_REASONING, LLM_SAMPLE_DEADLINE, sampleTemperature } from '../synth/llm/source.js';
+import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/source.js';
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
-import type { BenchOptions, ConditionConfig, PinnedGeneration, ServedRate, SynthesizerArmMode } from './types.js';
+import type { BenchOptions, ConditionConfig, PinnedGeneration, ServedRate } from './types.js';
 
 export const CONDITION_ORDER: readonly BenchCondition[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'];
 
@@ -117,9 +119,12 @@ export const TUNED_DEADLINE_MS = 20_000;
 export const TUNED_REPOSITORY_DEADLINE_MS = 30_000;
 /**
  * §4.12 / §10.2 finding (a): OpenRouter answers `reasoning: {enabled: false}` with HTTP 400 on z-ai/glm-5.3* ("Reasoning is
- * mandatory for this endpoint"), so every hygiene arm asks for `{effort: 'low'}` and the max_tokens base is the reasoning-on one.
+ * mandatory for this endpoint"), so every hygiene arm asks for `{effort: 'low'}` — the LLM source's own default — and the
+ * synthesizer arms' max_tokens base is the reasoning-on one.
  */
-export const HYGIENE_REASONING: GenerateReasoning = { effort: 'low' };
+export const HYGIENE_REASONING: GenerateReasoning = LLM_DEFAULT_REASONING;
+/** §10.1 `llm-jev` / `llm-sieve`: what the LLM source sends by default (§4.6 / §4.8), handed to the synthesizer verbatim. */
+export const SYNTHESIZER_GENERATION: SynthesizerGeneration = LLM_DEFAULT_GENERATION;
 
 export function pinnedGeneration(condition: BenchCondition, generatorModel: string): PinnedGeneration {
   const servedRate = servedRateFor(generatorModel);
@@ -133,21 +138,30 @@ export function pinnedGeneration(condition: BenchCondition, generatorModel: stri
       // no generating LLM: the NullProvider throws if called; the values are the engine's inert defaults
       return { proposer: 'synthesizer', temperature: null, maxTokens: BASELINE_MAX_TOKENS, reasoning: null, deadlineMs: null, lengthHandling: 'none', servedRate: { inputPerM: 0, outputPerM: 0 } };
     case 'llm-jev':
-    case 'llm-sieve':
+    case 'llm-sieve': {
       // §4.6 / §4.8: temperature per sample (0, then 0.8), max_tokens 3,000 with reasoning on and doubled once after a `length` drop,
-      // deadline clamp(2 × running p50, 10 s, 20 s) on the QuixBugs/ladder class and 30 s on repositories
+      // deadline clamp(2 × running p50, 10 s, 20 s) on the QuixBugs/ladder class and 30 s on repositories — every flat field
+      // is read off the one object the synthesizer receives and echoes
+      const g = SYNTHESIZER_GENERATION;
       return {
         proposer: 'synthesizer',
         temperature: null,
-        sampleTemperatures: [sampleTemperature(0, 1), sampleTemperature(1, 1)],
-        maxTokens: LLM_MAX_TOKENS_REASONING,
-        reasoning: HYGIENE_REASONING,
-        deadlineMs: LLM_SAMPLE_DEADLINE.maxMs,
-        repositoryDeadlineMs: LLM_SAMPLE_DEADLINE.repositoryMs,
+        sampleTemperatures: [g.sampleTemperature.first, g.sampleTemperature.rest],
+        maxTokens: g.maxTokens,
+        reasoning: g.reasoning,
+        deadlineMs: g.sampleDeadline.maxMs,
+        repositoryDeadlineMs: g.sampleDeadline.repositoryMs,
         lengthHandling: 'double-once',
         servedRate,
+        synthesizer: g,
       };
+    }
   }
+}
+
+/** The pinned generation the runner hands `createSynthesizer` for an arm (null for jev-only, which has no LLM source, and the generator arms). */
+export function synthesizerGenerationOf(condition: BenchCondition, generatorModel: string): SynthesizerGeneration | null {
+  return pinnedGeneration(condition, generatorModel).synthesizer ?? null;
 }
 
 /** SWE-bench and Terminal-Bench workspaces are repositories (§4.8 class); QuixBugs and the ladder are the cheap-test class. */

@@ -419,6 +419,7 @@ for (const v of variants) {
   ]);
 }
 md.push(...tableLines(['reasoning', 'calls', 'valid (parsed, not length)', 'finish_reason', 'all p50 / p90 / max', 'valid p50 / p90', 'latency fit', 'reasoning tokens mean', 'input p50 / output mean', 'usage.cost', 'served provider'], variantRows), '');
+md.push('The latency fit is least squares over valid calls with x = output + reasoning tokens (both generated and billed as output; §1.2 says `output_tokens`, identical when no reasoning is sent).', '');
 const perPrompt: string[][] = prompts.map((p) => {
   const pr = rows.filter((r) => r.prompt === p.id && r.variant === 'low' && !r.doubled);
   const valid = pr.filter((r) => r.valid);

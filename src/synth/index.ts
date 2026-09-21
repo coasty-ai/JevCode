@@ -10,7 +10,8 @@
  * them to the Ledger + Sieve controller (search/index.ts) and the sub-goal search
  * (search/subgoal.ts), whose collaborators are injected so they are unit-tested with fakes.
  */
-import type { Decider, SynthesisContext, Synthesizer } from '../core/types.js';
+import type { Decider, SynthesisContext, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
+import { ConfigError } from '../errors.js';
 import { createTokenBeamSource } from './beam/index.js';
 import { createDonorSource } from './donor/index.js';
 import { fillSketches } from './fill/beam.js';
@@ -46,6 +47,13 @@ export interface SynthesizerOptions {
   /** the run's decider; prefer `ctx.ask` inside synthesize() so usage and decisions are recorded */
   decider: Decider;
   redact: (s: string) => string;
+  /**
+   * docs/LLM-JEV-DESIGN.md §10.1: the arm the synthesizer is built for (default `jev-only`, the CLI's call). The returned
+   * synthesizer echoes the mode it implements (`Synthesizer.mode`); the bench refuses an arm whose echo differs.
+   */
+  mode?: SynthesizerArmMode;
+  /** the generation parameters the LLM source sends on every sample (§10.1: pinned per bench arm); echoed as `Synthesizer.generation` */
+  generation?: SynthesizerGeneration;
 }
 
 /** Token beam (§3 row 6): W = 3, ≤ 25 tokens, expand 1 at p ≥ 0.9 (probe-token-synthesis.md). */
@@ -267,7 +275,14 @@ export function searchDeps(): SearchDeps {
   return { ...defaultSearchDeps(), searchSubGoal: (ctx, mem: RunMemory, goal) => searchSubGoal(ctx, mem, goal, sub), searchBestGuess: (ctx, mem: RunMemory, goal) => searchBestGuess(ctx, mem, goal, sub), locate: (ctx, mem: RunMemory, goal) => locate(ctx, mem, goal) };
 }
 
-/** The Ledger + Sieve synthesizer with the real modules wired in. */
-export function createSynthesizer(_opts: SynthesizerOptions): Synthesizer {
-  return new LedgerSieveSynthesizer(searchDeps());
+/**
+ * The Ledger + Sieve synthesizer with the real modules wired in, echoing the arm it implements. Stage 4 (docs/LLM-JEV-DESIGN.md
+ * §9.2) wires the LLM source (`ctx.generate`, `opts.generation`) and the llm-sieve code defaults into the search; until then
+ * the search implements the jev-only behaviour only, and asked for another arm it says so instead of running a different one
+ * (the bench turns the throw into an `engine_create_failed` record).
+ */
+export function createSynthesizer(opts: SynthesizerOptions): Synthesizer {
+  const mode: SynthesizerArmMode = opts.mode ?? 'jev-only';
+  if (mode !== 'jev-only') throw new ConfigError(`synthesizer: mode "${mode}" is not wired in this build (the search implements jev-only only; docs/LLM-JEV-DESIGN.md §9.2 stage 4)`, { setting: 'mode' });
+  return Object.assign(new LedgerSieveSynthesizer(searchDeps()), { mode });
 }

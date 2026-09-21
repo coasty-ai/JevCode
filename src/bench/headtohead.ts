@@ -344,7 +344,10 @@ export function evaluateAttribution(suites: readonly AttributionInput[]): Criter
       if (better.length >= 2) suitesBetter += 1;
       parts.push(`${s.suite}: pass ${p.passes.candidate} vs ${p.passes.baseline} of ${p.rows.length}${passOk ? '' : ' (FAIL)'}; better on {${better.join(', ')}}`);
     }
-    out.push({ id: '5a', title: 'attribution vs llm-sieve', gating: false, status: status(passesEverywhere && suitesBetter >= 2), detail: `${parts.join('; ')} — bar: ≥ passes on every suite ∧ strictly better on ≥ 2 of {correct, $ per solved, median wall} on ≥ 2 suites (${suitesBetter} suites qualify)` });
+    const bar = `bar: ≥ passes on every suite ∧ strictly better on ≥ 2 of {correct, $ per solved, median wall} on ≥ 2 suites (${suitesBetter} suite${suitesBetter === 1 ? '' : 's'} qualify so far)`;
+    // "on ≥ 2 suites" cannot be decided from one: a single-suite bench reports the parts and leaves the criterion open
+    const verdict: CriterionStatus = sieve.length < 2 ? 'not_evaluable' : status(passesEverywhere && suitesBetter >= 2);
+    out.push({ id: '5a', title: 'attribution vs llm-sieve', gating: false, status: verdict, detail: `${parts.join('; ')} — ${bar}${sieve.length < 2 ? `; needs ≥ 2 suites, ${sieve.length} paired so far` : ''}` });
   }
   const tuned = suites.filter((s) => s.vsTuned !== null);
   if (tuned.length === 0) {

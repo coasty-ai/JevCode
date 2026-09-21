@@ -2,14 +2,18 @@
  * `<runDir>/generator.jsonl` → the per-call summary of docs/LLM-JEV-DESIGN.md §10.4 (calls, samples, valid, malformed,
  * length stops, cancelled / timed-out, tokens, $, estimated $, latency quantiles). One definition of "valid" for every
  * arm and for the §1.2 baseline table (`experiments/llm-jev/baseline-table.mts` reuses this module): not malformed ∧ not
- * cancelled ∧ `stopReason` neither a length stop nor `timeout`. Raw latencies travel with the summary so a per-condition
- * aggregate takes exact quantiles over the concatenation instead of averaging per-run medians.
+ * cancelled ∧ `stopReason` neither a length stop nor `timeout`. Every row is counted under one of malformed / length /
+ * dropped at most (a dropped call is never also "malformed"), so the columns compare across arms. Raw latencies travel
+ * with the summary so a per-condition aggregate takes exact quantiles over the concatenation instead of averaging
+ * per-run medians. `latencyFit` regresses on output + reasoning tokens (both are generated and billed as output; §1.2 says
+ * `output_tokens`, which on the baseline runs — no reasoning — is the same number).
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isFiniteNumber, isJsonObject, isString, parseJson } from '../core/json.js';
 import { percentile } from '../core/time.js';
 import type { GeneratorCallRecord } from '../core/types.js';
+import { DROPPED_CALL_STOP_REASON } from '../loop/stages/propose.js';
 import { isLengthStop } from '../synth/llm/schema.js';
 import type { GeneratorCallsSummary, LatencySummary } from './types.js';
 
@@ -51,7 +55,7 @@ export function latencySummary(xs: readonly number[]): LatencySummary {
 
 /** A dropped call: the engine's cancelled estimate (§4.8) or the tuned provider's `timeout` stand-in. */
 export function isDroppedCall(r: GeneratorCallRecord): boolean {
-  return r.cancelled === true || r.stopReason === 'timeout';
+  return r.cancelled === true || r.stopReason === DROPPED_CALL_STOP_REASON;
 }
 
 /** §1.2: valid = not malformed ∧ not dropped ∧ not a length stop. */
@@ -85,7 +89,8 @@ export function summariseGeneratorRecords(rows: readonly GeneratorCallRecord[]):
   for (const r of rows) {
     s.calls += 1;
     if (r.sample !== undefined) s.samples += 1;
-    if (r.malformed) s.malformed += 1;
+    // a dropped call is booked once, as dropped: a `malformed` mark on it (a row written before the propose stage stopped retrying drops) is not a malformed reply
+    if (r.malformed && !isDroppedCall(r)) s.malformed += 1;
     if (isLengthStop(r.stopReason)) s.lengthStops += 1;
     if (isDroppedCall(r)) s.cancelled += 1;
     if (r.stopReason === 'timeout') s.timeouts += 1;

@@ -130,11 +130,13 @@ export const CONDITIONS_PARAGRAPH =
   'and arbitrates, shadow lanes verify, risk on verified proposals and the judge are code facts; generator calls are recorded ' +
   'per sample and never asserted zero. Two attribution arms share its tasks and limits: **llm-sieve** is llm-jev with zero ' +
   'Jev requests — the decider slot holds a stub that answers every question deterministically (Noul 0.5, first option, ' +
-  'harm level 0) and counts them (`stubbed`), while the synthesizer replaces every question by its code default; ' +
+  'harm level 0) and counts them (`stubbed`), while the synthesizer replaces every question by its code default (the runner ' +
+  'refuses a synthesizer arm whose synthesizer does not acknowledge the mode and the pinned generation, so an arm never runs ' +
+  'as another one); ' +
   '**jev-off-tuned** is jev-off behind a provider that applies the §4 generator hygiene (max_tokens 1,500 with one doubling ' +
-  'after a `length` stop, reasoning effort low, a 20 s per-call deadline that drops the call and meters it from an estimate, ' +
-  'plan capped at 200 chars). Generation parameters are PINNED per arm (the table below); jev-off runs exactly the checked-in ' +
-  'baseline parameters, never the user config.';
+  'after a `length` stop, reasoning effort low, a 20 s per-call deadline that drops the call — no retry, the step ends — and ' +
+  'meters it from an estimate, plan capped at 200 chars). Generation parameters are PINNED per arm (the table below); jev-off ' +
+  'runs exactly the checked-in baseline parameters, never the user config.';
 
 function fmtReasoning(g: Summary['conditions'][string]['generation']): string {
   const r = g.reasoning;

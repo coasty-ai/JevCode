@@ -2,12 +2,20 @@
  * The llm-sieve stub decider (docs/LLM-JEV-DESIGN.md §10.1): deterministic inert answers, zero usage, counted requests,
  * a model id the drift check reads as its own.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it } from 'vitest';
+import { buildRecord } from '../../../src/bench/runner.js';
 import { STUB_DECIDER_MODEL, STUB_NOUL, createStubDecider, stubAnswer } from '../../../src/bench/stub-decider.js';
-import type { Question } from '../../../src/core/types.js';
+import type { Answer, Question, Synthesizer } from '../../../src/core/types.js';
 import { normaliseModelId } from '../../../src/jev/client.js';
 import { NOUL_ABSENT_THRESHOLD, noulsFlagAbsent } from '../../../src/synth/rank/index.js';
 import { OVERRIDE_HIGH, OVERRIDE_LOW, SUSPECT_NOUL_MAX } from '../../../src/synth/search/guard.js';
+import { makeEngine, type FakeDecider, type Harness } from '../loop/fakes.js';
+import { syntheticSource } from './helpers.js';
+
+const harnesses: Harness[] = [];
+afterEach(() => {
+  for (const h of harnesses.splice(0)) h.cleanup();
+});
 
 const questions: Record<string, Question> = {
   fix: { type: 'choice', instructions: 'which candidate', criteria: { none_of_these: null, cand_01: 'a', cand_02: 'b' } },
@@ -47,5 +55,35 @@ describe('stub decider (llm-sieve)', () => {
     expect(STUB_NOUL).toBeGreaterThan(OVERRIDE_LOW);
     expect(STUB_NOUL).toBeLessThan(OVERRIDE_HIGH);
     expect(STUB_NOUL).toBeGreaterThan(SUSPECT_NOUL_MAX);
+  });
+
+  it('in the decider slot of a real llm-jev engine: the synthesizer\'s and the shell\'s questions are answered and counted, the run and its record book zero Jev requests', async () => {
+    const stub = createStubDecider();
+    // the harness types its decider as the fake; the stub's own methods travel with the spread
+    const decider: FakeDecider = { ...stub, calls: [], callsAt: () => [] };
+    const picks: Answer[] = [];
+    const synth: Synthesizer = {
+      name: 'asks-once',
+      mode: 'llm-sieve',
+      async synthesize(ctx) {
+        const { answers } = await ctx.ask('propose', { candidates: 2 }, { pick: { type: 'choice', instructions: 'which', criteria: { cand_01: 'a', cand_02: 'b', none_of_these: null } } });
+        if (answers['pick'] !== undefined) picks.push(answers['pick']);
+        return { goal: 'partial', action: { kind: 'done', summary: 'nothing verified yet' }, plan: { done: [], remaining: ['fix f'], openProblems: [] }, rawText: '' };
+      },
+    };
+    const h = await makeEngine({ mode: 'llm-jev', synthesizer: synth, decider, deciderModel: { configured: STUB_DECIDER_MODEL, pinned: true }, limits: { maxSteps: 1 } });
+    harnesses.push(h);
+    const r = await h.engine.run();
+    expect(r.jevModelDrift).toBeNull();
+    expect(picks).toHaveLength(1);
+    expect(picks[0]).toMatchObject({ type: 'choice', choice: 'cand_01', probabilities: { cand_01: 1, cand_02: 0, none_of_these: 0 } });
+    // the synthesizer's request plus whatever the shell still asked (harm Scores, the recorded judge Noul): all stubbed, none made
+    const stubbed = stub.stubbed();
+    expect(stubbed.byStage['propose']).toBe(1);
+    expect(stubbed.requests).toBeGreaterThan(1);
+    expect(r.usage.jev).toEqual({ inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 });
+    const rec = buildRecord({ source: syntheticSource({ id: 't1' }), condition: 'llm-sieve', result: r, evaluation: { pass: null, evaluator: 'none' }, patch: null, capFired: null, extras: { stubbedJevRequests: stubbed.requests } });
+    expect(rec).toMatchObject({ condition: 'llm-sieve', jevRequests: 0, cost: { jev: 0 }, stubbedJevRequests: stubbed.requests });
+    expect(rec.jevQuestions).toBeGreaterThan(0);
   });
 });
