@@ -33,8 +33,13 @@ in all four rows. `decisions.jsonl` (2.3 MB per run) is not kept.
 | `auto-40x120` | `auto` → typesafe (`jev-1.13.0`) | 40x120 | 0 · 0 | 0 · 1 | 105 ms | 706 ms (15 wordmark frames, 0 after the brand row) | **247 ms** | 156 ms | 216 ms | 9.9 s: 7 steps · `replan_stop` · $0.020 · 0 generator calls | 12 · 0 | none |
 | `typesafe-24x80` | `typesafe` → typesafe (`jev-1.13.0`) | 24x80 | 0 · 0 | 0 · 1 | 99 ms | 706 ms (15 wordmark frames, 0 after the brand row) | **252 ms** | 139 ms | 198 ms | 10.5 s: 7 steps · `replan_stop` · $0.020 · 0 generator calls | 12 · 0 | none |
 | `openrouter-24x80` | `openrouter` → openrouter (`typesafe/jev-1.13-20260917`) | 24x80 | 0 · 0 | 0 · 1 | 172 ms | 703 ms (15 wordmark frames, 0 after the brand row) | **255 ms** | 187 ms | 218 ms | 12.0 s: 7 steps · `replan_stop` · $0.020 · 0 generator calls | 12 · 0 | none |
+| `final-typesafe-24x80` | `typesafe` → typesafe (`jev-1.13.0`) | 24x80 | 0 · 0 | 0 · 1 | 112 ms | 704 ms (15 wordmark frames, 0 after the brand row) | **240 ms** | 144 ms | 177 ms | 14.2 s: 9 steps · `replan_stop` · $0.025 · 0 generator calls | 14 · 0 | none |
 
-Intake wall times (Enter → the first `[jevcode]` / `[run] start` frame): `hi` [247, 252, 255, 265], facts [127, 139, 156, 187], task [180, 198, 216, 218] ms — max 265 ms, p95 265 ms over 12 intakes; gate p95 < 1500 ms (TUI-DESIGN-2 §9).
+Intake wall times (Enter → the first `[jevcode]` / `[run] start` frame): `hi` [240, 247, 252, 255, 265], facts [127, 139, 144, 156, 187], task [177, 180, 198, 216, 218] ms — max 265 ms, p95 265 ms over 15 intakes; gate p95 < 1500 ms (TUI-DESIGN-2 §9).
+
+`final-typesafe-24x80` is the owner's drive of the **committed** bundle (1e264d5: after the D-F key-frame fix, the llm-jev surface
+and the synthesizer-factory `mode` argument), run the same way from the same steps file; its run directory is 44 KB (redacted
+`transcript.log`, `state.json`, `run.json`, `jevcode.log`).
 
 Per-provider `/jev` (§2.6), before the run and after it:
 

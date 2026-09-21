@@ -576,7 +576,11 @@ Also in this pass: the `llm-jev` engine-mode surface for the harness session's d
 contract (`EngineMode` member; optional `sample` / `samples` on the `generator:*` events), `--mode llm-jev` / `/mode llm-jev`,
 the badge, both keys required, the jev-on cap default, the controller wiring the real generator and the synthesizer together,
 a `sample k/N` live counter; the engine behaviour lands in the peer's tree. `package.json` bumped to **0.3.0** (unpublished);
-the man page and completions regenerated.
+the man page and completions regenerated. After the commit (1e264d5) one more live drive of the committed bundle against TypeSafe
+(`docs/live/tui/round-2/final-typesafe-24x80.*`): first frame 112 ms, splash settled 704 ms, `hi` → `[jevcode]` **240 ms**, facts
+144 ms, task → `[run] start` 177 ms, a 9-step jev-only run (`jev-1.13.0`, 4,606 questions, $0.025, **0 generator calls**,
+`replan_stop` — the synthesizer still does not repair demo-py, recorded above), 0 clears, 0 rows wider than 80 columns, 0 key
+bytes in any artefact; the live Jev suites re-run first-hand: 4/4 on both providers (TypeSafe 117–235 ms, OpenRouter 351 ms).
 
 ### Not verified here
 
