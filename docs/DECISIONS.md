@@ -746,3 +746,131 @@ a strip; a ≤ 700 ms splash ticks through Ink's own timer and dies on the first
 of `transcript.log` — a recorded deviation from TD §15.1/F13 (TUI-DESIGN-2 §10.1). Affects `src/tui/**`. (TUI-DESIGN-2 §11;
 for the harness the pty identity test asserts the subsequence rule and the `--plain` = `transcript.log` equality, and the
 render-lag probe gains a splash frame bucket gated at `maxFps + 1`.)
+
+## 2026-09-21 The LLM is a candidate source inside Ledger + Sieve, not the step-proposer
+
+`llm-jev` (`EngineMode`, docs/LLM-JEV-DESIGN.md, DESIGN.md §22) keeps the jev-only synthesizer as the propose stage and
+wires `z-ai/glm-5.3-flash` in as one more `CandidateSource` (`src/synth/llm/`, adapter `src/synth/search/llm.ts`,
+`SubGoalDeps.llm`): GLM is asked for ≤ 3 site-local `{path, old, new}` patches per sample through one forced tool
+(`propose_fix`), the hunks are anchored, compile-checked and run in shadow lanes beside the code seeds, and the guard commits
+what passes. GLM never plans, reads, runs commands, judges or declares `done`; the engine reaches it only through the sanctioned
+`SynthesisContext.generate(req, {sample, purpose, signal})`, one metered `generator.jsonl` row per sample. Reason (the map,
+`experiments/designs/llm-jev-map.md`, restated in the design's §13): in the jev-on loop the LLM was the planner — every
+`propose_action` re-emitted the plan (≈ 15 s per GLM call at the measured 14.7 ms per output token), 13–35 % of single
+samples were malformed and retried blind, unverified edits reached the workspace, and the Jev questions that judged the
+LLM's plan and intent were 100 % of the 223 bench refusals and 46 % intent fallbacks. In the sieve the LLM's output is never
+trusted (anchored, compiled, executed), N parallel samples with a deadline replace one sample retried once, and the LLM adds
+the two things the code seeds measurably cannot: new code text (multi-line, new identifiers, multi-hunk, multi-file; seeds
+were 0 % on new-logic hunks) and correctness among test-equivalent passers (GLM jev-off wrote 16/16 gold-or-equivalent
+patches where it passed; the seeds produced 7 overfits in 53 solves), hence `preferLlmInCluster` in the guard.
+Consequences: the intent and context stages are not run (the intent is a code fact of the proposal kind, the synthesizer
+holds every file), `Proposal.evidence.selection` gains `'llm'`, an `llm` winner may touch 4 files (`VERIFIED_PATCH_MAX_FILES`),
+the step budget gains `llmRoundsLeft / llmSamplesLeft / llmUsdLeft`, and the phase ladder gains `LLM` between SEEDS and
+SKETCH/BEAM (which now run only once the step's rounds are spent). Rejected: a Salvo-style LLM step-proposer with Jev as
+reviewer (the refusals and the plan judgments come back), and a jev-off loop with better prompts (the `jev-off-tuned` arm
+measures exactly that as the attribution control instead of shipping it).
+
+## 2026-09-21 Harm-only risk and completion by fact in `llm-jev`
+
+In `llm-jev` the risk stage decides by code before any Jev request (`src/loop/stages/risk.ts runHarmOnlyRiskStage`,
+`codeRiskReason`): a `patch`/`edit`/`write` whose evidence is verified (`newlyFailing = []`, 1–4 non-test workspace targets),
+a `run` that is one plain invocation of the detected test command, a `done` the engine's own passing, current run verifies,
+a revert of recoverable targets and a `read` are `ok` with a reason naming the evidence and synthetic level-0 dims
+(`codeOkAssessment`); everything else — a non-test `run`, an unverified best-guess patch, a partial `done` — is gated by the
+two harm Scores `destructive` and `irreversible` alone (`HARM_DIMENSIONS`), at the unchanged 0.3 / 0.7 cuts;
+`out_of_scope`, `plan_mismatch`, `matches_intent` and `evidence_consistent` are never asked. Completion is a code fact
+(`src/loop/stages/complete.ts isCompleteByFact`): the claiming `run` executed the workspace test command, the parser read
+`failed = errors = 0` and `passed > 0` (or the recorded `tests_pass_unparsed ≥ 0.85` when it read nothing), no change
+executed at or after it, and the synthesizer's `ProposalEvidence.completion` holds in full — `ledgerFixed`, `testsChanged = []`,
+`!guardPending`, the expected `command`, and on the repository class `repro = 'pass'` under a code oracle
+(`COMPLETING_ORACLE_OUTCOMES`; an LLM-written reproduction never completes) — so the run stops `complete` on that step;
+`task_complete` and `done_<j>` are asked in one request and recorded only, and the judge is `codeJudge` on every `run`.
+Reason: the map measured the alignment Scores as the source of every bench refusal (≈ 12.6 non-executing steps per 24-step
+run; 14/20 live reviews were `plan_mismatch`, 8 of them at dominant level 0 on routine `pytest -q`), `done_<j>` in the [0.3, 0.7) band on 21/55 live claims
+judging a fact the harness already holds (counts read back 240/240), and `task_complete ≥ 0.85` firing on 2/42 live answers;
+a verified shadow-lane patch and a green claiming run are facts, not judgments. Consequences: refused steps on verified
+proposals are zero by construction (a secondary gate of the head-to-head); the jev-only establishing run is not proposed
+(no `plan_mismatch` rubric needs it); a QuixBugs solve is `patch → run(complete)`; the `RiskAssessment` still carries full
+dims so the TUI and `confirm()` read a complete record; jev-on and jev-only are untouched (`runRiskStage` branches on
+`ctx.mode`). Deviation recorded: a verified `done` also completes by fact (stage 1), so a synthesizer that proposes
+`run → done` can still stop.
+
+## 2026-09-21 Reasoning effort `low` on GLM, because disabling reasoning is a 400
+
+Every `llm-jev` sample (L1 rounds, the L2 reproduction writer) sends `reasoning: {effort: 'low'}` with a `max_tokens` base of
+3,000 (`src/synth/llm/source.ts LLM_DEFAULT_REASONING / LLM_DEFAULT_GENERATION`), doubled once for a goal after a `length`
+stop; the `jev-off-tuned` arm sends the same `reasoning` at its own base of 1,500. The design (§4.5, §4.12) had `reasoning: {enabled: false}` at 1,500 tokens. Measured live
+2026-09-21 (stage-2 probe, then `experiments/results/llm-jev-probes-off.md`): OpenRouter answers HTTP 400 "Reasoning is
+mandatory for this endpoint and cannot be disabled" to `{enabled: false}` on every `z-ai/glm-5.3*` id; the models API lists
+`reasoning.mandatory: true` with efforts `max | high | low` and default `max`; `{effort: 'low'}` is accepted (a forced tool
+call in 486 ms with `reasoning_tokens: 0`). The §10.2 probe with effort low (`experiments/results/llm-jev-probes.md`):
+24/25 valid samples, valid p50 3.2 s / p90 48.2 s, ≈ 332 reasoning tokens per call, 1/24 first-round `length` stops at
+3,000, 0/76 hunks misanchored; the no-`reasoning` variant runs at effort `max` and was 20/31 valid with p50 15.5 s and 9
+`length` stops. Consequences: the provider sends the field verbatim and never rewrites it (`reasoningOf` discriminates on
+the member present so `{effort}` cannot degrade to `reasoning: {}` = `max`); the reasoning tokens count against the cap,
+hence the 3,000 base; the per-sample deadline clamp stays `clamp(2 × p50, 10 s, 20 s)` with the 20 s cap as the first-round
+deadline (the p90 exceeds it, so ≈ 10 % of valid first-round samples are cut — revisit if timeouts exceed 15 % of samples);
+the §7 wall projections that assumed reasoning off are conditional on this setting. Kept as designed: `ReasoningEffort =
+'low' | 'medium'` (so `high`, a GLM effort, is not requestable and `medium` is not one — open). Rejected: omitting
+`reasoning` (effort `max`: the budget goes to thinking) and a client-side rewrite of `{enabled: false}` into `{effort:
+'low'}` (the record must state what was sent).
+
+## 2026-09-21 Two attribution arms, and generation parameters pinned per bench condition
+
+The head-to-head (docs/LLM-JEV-DESIGN.md §10.1) runs four arms on the same tasks, model, Jev id and limits: `jev-off`
+(the baseline of criteria 1–4), `llm-jev` (the candidate), and two attribution controls — `jev-off-tuned` (the generator-only
+loop behind a provider wrapper that applies the §4 hygiene: `max_tokens` 1,500 at effort low, a 20/30 s per-call deadline
+that drops the call without a retry, `length` doubled once, the plan capped at 200 chars) and `llm-sieve` (`llm-jev` with
+a stub decider that answers every question inertly and counts it, and the synthesizer in `mode: 'llm-sieve'`). `src/bench/
+conditions.ts pinnedGeneration(condition, model)` is the one place the arms' generation parameters are defined: `jev-off`
+is exactly the checked-in baseline runs (`temperature null, maxTokens 4096, no reasoning, no deadline`); the synthesizer arms
+hand the ONE `SynthesizerGeneration` object to `createSynthesizer({generation})` and the runner refuses the arm unless the
+synthesizer echoes back the same mode and the same object (`synthesizerMismatch` → `engine_create_failed`), so what
+`summary.json.conditions` states is what the samples sent; the user's generation config never reaches an arm. Reason: a win
+of `llm-jev` over `jev-off` must be attributable — to Jev's questions (`llm-sieve` shows the no-Jev floor), or to generator
+hygiene alone (`jev-off-tuned`), or to the shadow-lane sieve — and the baseline must not move (`src/loop/generator-only.ts`
+is untouched since `2a92d0b`; the hygiene lives in `src/bench/tuned-provider.ts`, the one engine-side line being
+`DROPPED_CALL_STOP_REASON` in `src/loop/stages/propose.ts` so a dropped call ends the step once). Consequences: `BenchCondition
+= EngineMode | 'llm-sieve' | 'jev-off-tuned'`; `stubbedJevRequests`, the tuned ledger (`timeouts`, `doubled`), `servedRate`,
+the generator-call summary and `os.loadavg()` at engine start go on the record; criterion 5 (attribution) gates which
+questions survive the per-question ablation, not the dominance claim itself. Open: `llm-sieve` is not yet wired in
+`src/synth/index.ts` (the factory throws; the bench records the refusal rather than measuring the wrong arm), and
+`src/cli/args.ts CONDITIONS` does not list the two arms.
+
+## 2026-09-21 Merge plan with the TUI session: `src/core/types.ts` has a single writer
+
+The llm-jev build ran as five staged worktrees in parallel with the TUI round-2 session on `main`. The rule: `src/core/types.ts`
+— the shared contract — has exactly one writer per wave; every other module declares no contract shape of its own.
+Stage 1 owned `core/types.ts` and `src/loop/**`; stage 2 (`src/provider/**`) and stage 3 (`src/synth/llm/**`) declared
+structurally identical local copies (`*Ext` in `provider/types.ts`, `synth/llm/types.ts`) marked `TODO(llm-jev merge)`;
+stages 4 (`src/synth/**`) and 5 (`src/bench/**`, `experiments/llm-jev/**`) added only the members their brief listed
+(`ORACLE_OUTCOMES`, `Synthesizer.handles?`, `BenchCondition`, `SynthesizerGeneration`); `src/config`, `src/cli`, `src/tui`,
+`src/session` and `src/chat` were the TUI session's and were not edited by any stage (its items — `--mode llm-jev`, the
+`/mode` badge, the onboarding keys, `useEngine`'s `sample k/N`, the session's synthesizer wiring — were handed over as
+`left_for_others`). Sequence (git): the stage 1–3 worktrees merged into `llm-jev-integration` (`428605c`), the integration
+commit `652e5bf` replaced every local copy with an import from `core/types.ts` and deleted them, stages 4 and 5 branched
+from there and merged back (`19a3927`, `deb415e`), the TUI round-2 commits landed on `main` (`1e264d5`, `ac3392b`), the
+integration branch merged into `main` (`d09e24c`), and the session owner wired `buildSynthesizer` against
+`SynthesizerOptions` with the pinned generation and the pricing table (`626fc40`). Reason: two sessions editing one
+contract file concurrently produce shapes that compile in each worktree and not at the merge — the stage-2 review found
+exactly that (`reasoning {enabled: boolean; effort?}` against the spec's union) and it was fixed by declaring the spec
+shapes verbatim before the merge. Consequences: `SynthesizerOptions.mode` is optional (the session's call site could not be
+edited by stage 5), so the arm check is a runtime echo rather than a compile-time obligation; the two edits outside the plan's
+file lists were `checkpoint/store.ts`'s mode list (stage 1, needed for `--resume`) and the 13-line `DROPPED_CALL_STOP_REASON`
+rule in `src/loop/stages/propose.ts` (stage 5, drop-not-retry). Contract 1.2 records the fields as
+"reconciled from stages 1–3; this file is the single source".
+
+## 2026-09-21 The default-mode flip is gated on the head-to-head
+
+`jev-only` stays the default mode (DECISIONS 2026-09-21 "Jev-only is the default"); `llm-jev` is opt-in through `--mode
+llm-jev`, `JEVCODE_MODE`, the `mode` setting and `/mode llm-jev` (which opens the generator key step when none exists). The
+question of docs/LLM-JEV-DESIGN.md §12 item 9 — whether `llm-jev` becomes the default for Python workspaces with tests — is
+decided by the pre-registered head-to-head of §1.3 / §10, not by the design: the flip happens only if criteria 1–4 hold
+against `jev-off` on the paired runs (QuixBugs twice, ladder both tiers, SWE-bench Verified 30), and the report
+(`experiments/results/llm-jev-headtohead.md`, numbers in docs/LLM-JEV.md) names any criterion that failed. Reason: every
+projection in the design is conditional on probe figures (the round p50, the valid rate, the anchoring rate), the mode is
+Python-only with a generic fallback outside the claim, and the jev-only default was chosen one day earlier for a measured
+reason (one key, no generator spend); a default should follow the behaviour on disk and the measurement, not the design
+document. Consequences: the wizard, the badge and the help text list the mode without preferring it; `defaultRunSpendCapUsd`
+treats `llm-jev` like the other generator modes ($2.00 — the design's §8.4 named $0.50, open); `handles()` false
+(non-Python, test-less, feature work) falls back to the generic per-step proposer and is outside the dominance claim.
