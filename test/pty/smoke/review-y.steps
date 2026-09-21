@@ -1,0 +1,17 @@
+# the review at step 2 (JEVCODE_MOCK_REVIEW_AT=2) is approved with y (§6)
+expect \x1b\[\?25l
+expect Describe the task
+sleep 0.3
+send make the tests pass
+sleep 0.2
+send \r
+expect \[y\] approve
+sleep 0.4
+send y
+expect confirm \S+ approved
+expect end (complete|max_steps|generator_done)
+expect Follow-up or /command
+send /exit
+sleep 0.2
+send \r
+eof

@@ -80,6 +80,13 @@ export interface ReadlineComposerOptions {
   dispatch?: () => Omit<DispatchContext, 'run'>;
   /** TUI-DESIGN §13.4: resolves at `run:end`; the EOF-while-live (or -aborting) path awaits it before exiting 0 */
   awaitRunEnd?: () => Promise<void>;
+  /**
+   * TUI-DESIGN §1 session loop: a submitted line resolves when the run starts (its prompt then reads as the steer
+   * prompt); with this set the prompt is shown again once that run ends, after the controller's post-run items
+   * (`awaitRunEnd` resolves before they are written, the prompt lands in the following microtask). Off in one-shot
+   * mode, where the process exits at `run:end` and the epilogue follows on stderr.
+   */
+  repromptAtRunEnd?: boolean;
   now?: () => number;
   prompt?: string;
   /** the SIGINT source (default `process`); the composer is its only SIGINT listener on a plain TTY (§14.2) */
@@ -140,6 +147,13 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
   const showPrompt = (): void => {
     if (!closed && borrower === null) rl.prompt();
   };
+  /** §1: the composer's prompt comes back when the run a submission started ends (session mode only) */
+  const repromptWhenRunEnds = (): void => {
+    if (opts.repromptAtRunEnd !== true || opts.awaitRunEnd === undefined) return;
+    void opts.awaitRunEnd().then(() => {
+      if (gate === null && !live()) showPrompt();
+    });
+  };
 
   const lines: LineSource = {
     onLine(fn) {
@@ -179,6 +193,7 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
           // the run ended between the phase read and the steer: the text becomes a submission (§4.9 idle path)
           await host.submit(d.full, { kind: ranBefore() ? 'follow-up' : 'prompt', secretSpans: d.secretSpans, pinnedFiles: [] });
           host.history()?.append('prompt', d.full);
+          repromptWhenRunEnds();
         }
         return;
       }
@@ -188,6 +203,7 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
     // TUI-DESIGN §10.2: `submit` registers the acknowledged spans (`addSecret`) — only then may the store see the text
     await host.submit(d.full, { kind: d.promptKind, secretSpans: d.secretSpans, pinnedFiles: d.pinnedFiles });
     host.history()?.append('prompt', d.full);
+    repromptWhenRunEnds();
   }
 
   /** TUI-DESIGN §5.1 / §10.2: a gate-cleared command line — the acknowledged spans are registered here (no `secretSpans` on `command()`). */

@@ -1,0 +1,8 @@
+# S0 idle·empty: Ctrl-C hints, a second within 1.5 s exits 0; the scrollback records `[ui] exited on Ctrl-C ×2` (§3.3, F6)
+expect \x1b\[\?25l
+expect Describe the task
+sleep 0.4
+send \x03
+expect press Ctrl-C again to exit
+send \x03
+eof

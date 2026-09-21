@@ -134,7 +134,7 @@ class Signals implements SignalSource {
   }
 }
 
-function setup(o: { phase?: KeyRunPhase; ranBefore?: boolean; isDeniedPath?: (rel: string) => boolean; runEnd?: () => Promise<void> } = {}) {
+function setup(o: { phase?: KeyRunPhase; ranBefore?: boolean; isDeniedPath?: (rel: string) => boolean; runEnd?: () => Promise<void>; reprompt?: boolean } = {}) {
   const input = new PassThrough() as PassThrough & { isTTY?: boolean };
   input.isTTY = true;
   const output = new Sink();
@@ -152,6 +152,7 @@ function setup(o: { phase?: KeyRunPhase; ranBefore?: boolean; isDeniedPath?: (re
     ranBefore: () => state.ranBefore,
     dispatch: () => ({ step: 3, changedSteps: [2], sessions: [{ id: '20260919-142301-k7q2m3xa', title: 'tz fixes' }], ...(o.isDeniedPath ? { isDeniedPath: o.isDeniedPath } : {}) }),
     ...(o.runEnd ? { awaitRunEnd: o.runEnd } : {}),
+    ...(o.reprompt !== undefined ? { repromptAtRunEnd: o.reprompt } : {}),
     now: () => nowMs,
     signals,
   });
@@ -365,6 +366,53 @@ describe('createReadlineComposer: SIGINT (§14.2) and EOF (§13.4)', () => {
     await live.composer.idle();
     expect(live.fake.exits).toEqual([0]);
     expect(live.composer.closed).toBe(true);
+  });
+});
+
+describe('createReadlineComposer: the prompt returns at run:end (§1 session loop)', () => {
+  it('repromptAtRunEnd: a submitted line shows one prompt when the run starts and one more when awaitRunEnd resolves; without the option the run end is silent', async () => {
+    let release: () => void = () => undefined;
+    const runEnd = new Promise<void>((r) => {
+      release = r;
+    });
+    const s = setup({ runEnd: () => runEnd, reprompt: true });
+    const before = s.output.text.split(PLAIN_PROMPT).length;
+    await s.type('fix the failing test');
+    expect(s.fake.calls).toEqual([{ kind: 'submit', args: ['fix the failing test', { kind: 'prompt', secretSpans: [], pinnedFiles: [] }] }]);
+    // submit resolved at run start: the chain re-showed the prompt once (the steer prompt while live)
+    expect(s.output.text.split(PLAIN_PROMPT).length).toBe(before + 1);
+    release();
+    await tick();
+    expect(s.output.text.split(PLAIN_PROMPT).length).toBe(before + 2);
+    s.composer.close();
+
+    let release2: () => void = () => undefined;
+    const runEnd2 = new Promise<void>((r) => {
+      release2 = r;
+    });
+    const plain = setup({ runEnd: () => runEnd2 });
+    const before2 = plain.output.text.split(PLAIN_PROMPT).length;
+    await plain.type('fix the failing test');
+    release2();
+    await tick();
+    expect(plain.output.text.split(PLAIN_PROMPT).length).toBe(before2 + 1);
+    plain.composer.close();
+  });
+
+  it('repromptAtRunEnd never prompts while the lines are lent (a review) or while a gate is pending', async () => {
+    let release: () => void = () => undefined;
+    const runEnd = new Promise<void>((r) => {
+      release = r;
+    });
+    const s = setup({ runEnd: () => runEnd, reprompt: true });
+    await s.type('fix the failing test');
+    const off = s.composer.lines.onLine(() => undefined);
+    const before = s.output.text.split(PLAIN_PROMPT).length;
+    release();
+    await tick();
+    expect(s.output.text.split(PLAIN_PROMPT).length).toBe(before);
+    off();
+    s.composer.close();
   });
 });
 

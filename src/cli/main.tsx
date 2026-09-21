@@ -1,44 +1,36 @@
 /**
- * CLI entry (DESIGN.md §3.1, §6 first line, §11, §12). Ordering contract: for `run`, the
- * renderer's first frame is committed before any config, .env, runs-dir or workspace read.
- * Heavy modules (providers, Jev client, bench, perf) are dynamic imports.
+ * CLI entry (DESIGN.md §3.1, §6 first line, §11, §12; TUI-DESIGN §1, §13.4, §15.2 `cli/main.tsx` row, §17).
+ *
+ * Ordering contract (§1, §12): for `chat` and `run` the renderer's first frame is committed from argv, env, `isTTY`
+ * and `cwd` alone — `resolveConfig`, the task file, stdin, the runs dir and git are touched only after
+ * `renderer.firstFrame()` resolves, inside the session controller (`cli/session.ts`). `render()`'s mount-time options
+ * come from `resolveLaunchSettings(flags, process.env)` (flag > env > default, no file). SIGINT/SIGTERM handlers are
+ * installed before the first frame (research 20 item 2): with a controller they become `abort('signal', { signal })`
+ * or an idle exit 130/143; before one exists the process restores the terminal, prints the one-line epilogue and exits.
+ * The fatal path is `cli/fatal.ts`'s `fatalExit` (redacted epilogue, terminal restored first). Heavy modules
+ * (providers, Jev client, Ink, bench, perf, the new commands) are dynamic imports; `--help`, `--version [--json]` and
+ * `completion` answer before any Ink import (§17 item 3).
  */
-import { appendFileSync, readFileSync } from 'node:fs';
-import { resolve as resolvePath } from 'node:path';
-import { parseCliArgs, usageText } from './args.js';
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { basename, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { NO_INPUT_NEEDS_TASK, parseCliArgs, usageText } from './args.js';
 import type { ParsedFlags } from './args.js';
-import { EXIT_CODES, JevCodeError, UsageError, isJevCodeError } from '../errors.js';
-import type { Decider, Engine, EngineMode, EngineOptions, Provider, Renderer, ResolvedConfig, RunResult, StopReason, Synthesizer } from '../core/types.js';
-
-const VERSION = '0.1.0';
-
-function exitCodeFor(stop: StopReason, result: RunResult): number {
-  switch (stop) {
-    case 'complete':
-      return EXIT_CODES.ok;
-    case 'human_abort':
-    case 'signal':
-      return EXIT_CODES.sigint;
-    case 'error':
-      return result.error?.exitCode ?? EXIT_CODES.api;
-    case 'generator_done':
-      return EXIT_CODES.ok;
-    default:
-      return EXIT_CODES.budget;
-  }
-}
-
-async function readTask(flags: ParsedFlags): Promise<string> {
-  if (flags.task) return flags.task;
-  if (flags.taskFile) return readFileSync(resolvePath(flags.taskFile), 'utf8').trim();
-  if (!process.stdin.isTTY) {
-    const chunks: Buffer[] = [];
-    for await (const c of process.stdin) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c)));
-    const text = Buffer.concat(chunks).toString('utf8').trim();
-    if (text) return text;
-  }
-  throw new UsageError('missing task text: pass it as a positional argument, --task-file <path>, or on stdin');
-}
+import { EXIT_CODES, UsageError } from '../errors.js';
+import type { Engine, EngineMode, Renderer, RendererOptions, SignalName } from '../core/types.js';
+import { patternRedact } from '../core/redact.js';
+import { exitCodeFor } from '../loop/stop.js';
+import { resolveLaunchSettings } from '../config/launch.js';
+import { VERSION } from '../version.js';
+import { epilogueLines, type EpilogueContext } from './epilogue.js';
+import { wireFatalHandlers, type FatalWiring } from './fatal.js';
+import { INK_VERSION } from './report.js';
+import { createSessionController, isInCi, isInteractive, jevcodeDir, sessionsIndexPath, type Prompter, type PromptingRenderer, type RendererKind, type SessionController } from './session.js';
+import type { JsonStream } from './json-stream.js';
+import type { ReadlineComposer } from '../tui/plain-composer.js';
+import type { TuiRenderer } from '../tui/index.js';
+import { createTuiPrompter, type TuiPrompterBundle } from './tui-prompter.js';
 
 /** `--mode` (or its hidden alias `--condition`, already folded into `mode` by args.ts); default jev-on. */
 export function modeFromFlags(flags: ParsedFlags): EngineMode {
@@ -46,167 +38,115 @@ export function modeFromFlags(flags: ParsedFlags): EngineMode {
   return m === 'jev-off' || m === 'jev-only' ? m : 'jev-on';
 }
 
+/** the process facts the §1 rule reads; probed once in `main`, injected in tests */
+export interface LaunchFacts {
+  stdinIsTTY: boolean;
+  stdoutIsTTY: boolean;
+  env: NodeJS.ProcessEnv;
+}
+
+export interface RendererSelection {
+  kind: RendererKind;
+  /** TUI-DESIGN §1: `session` needs a composer (Ink or readline); everything else is one-shot */
+  mode: 'session' | 'one-shot';
+  /** a `--plain` TTY readline composer (it owns SIGINT, §14.2) */
+  readline: boolean;
+  /** the §1 `interactive` rule (an Ink composer) */
+  interactive: boolean;
+}
+
 /**
- * jev-only (docs/JEV-ONLY.md): the generator slot is the NullProvider, which throws if it is
- * ever called, and the generator section of the config is never validated (no key needed).
+ * TUI-DESIGN §1 table: `--json` → the NDJSON renderer (non-interactive); the §1 `interactive` rule → Ink; else the
+ * plain renderer, with a readline composer on a TTY that is neither `--no-input`, `CI` nor `TERM=dumb`. `chat` is a
+ * session only when a composer exists; `chat` on a pipe reads its task like `run` and exits at `run:end`. Pure.
  */
-async function buildProvider(config: ResolvedConfig, flags: ParsedFlags, mode: EngineMode): Promise<Provider> {
-  if (mode === 'jev-only') {
-    const { createNullProvider } = await import('../provider/null.js');
-    return createNullProvider();
-  }
-  if (flags.mock || flags.mockGenerator) {
-    const { createMockProvider } = await import('../provider/mock.js');
-    const { mockTrajectory } = await import('./mock-trajectory.js');
-    return createMockProvider({ turns: mockTrajectory(Number(flags.mockSteps ?? 8)) });
-  }
-  const gen = config.generator();
-  if (gen.provider === 'openrouter') {
-    const { createOpenRouterProvider } = await import('../provider/openrouter.js');
-    return createOpenRouterProvider(gen, { redact: config.redact });
-  }
-  const { createAnthropicProvider } = await import('../provider/anthropic.js');
-  return createAnthropicProvider(gen, { redact: config.redact });
+export function selectRenderer(flags: ParsedFlags, command: 'chat' | 'run', facts: LaunchFacts): RendererSelection {
+  const interactive = isInteractive({ stdinIsTTY: facts.stdinIsTTY, stdoutIsTTY: facts.stdoutIsTTY, env: facts.env, flags });
+  const kind: RendererKind = flags.json === true ? 'json' : interactive ? 'tui' : 'plain';
+  const readline = kind === 'plain' && facts.stdinIsTTY && facts.stdoutIsTTY && flags.noInput !== true && !isInCi(facts.env) && facts.env['TERM'] !== 'dumb';
+  const mode: RendererSelection['mode'] = command === 'chat' && (interactive || readline) ? 'session' : 'one-shot';
+  return { kind, mode, readline, interactive };
 }
 
-async function buildDecider(config: ResolvedConfig, flags: ParsedFlags): Promise<Decider> {
-  if (flags.mock) {
-    const { createMockDecider } = await import('../jev/mock.js');
-    return createMockDecider({});
-  }
-  const { createJevDecider } = await import('../jev/client.js');
-  return createJevDecider(config.decider(), { redact: config.redact });
+/** TUI-DESIGN §17 item 3: `--version --json`. */
+export function versionJson(bundle: string = fileURLToPath(import.meta.url)): { name: string; version: string; node: string; ink: string; bundle: string } {
+  return { name: 'jevcode', version: VERSION, node: process.version, ink: INK_VERSION, bundle };
 }
 
-async function commandRun(flags: ParsedFlags): Promise<number> {
-  const interactive = Boolean(process.stdout.isTTY) && Boolean(process.stdin.isTTY) && !flags.plain;
-  let engine: Engine | null = null;
-  let abortRequested: 'human_abort' | 'signal' | null = null;
-  const onAbort = (reason: 'human_abort' | 'signal'): void => {
-    if (process.env['JEVCODE_TRACE']) {
-      try { appendFileSync(process.env['JEVCODE_TRACE'], `${new Date().toISOString()} main.onAbort(${reason}) engine=${engine !== null}\n`); } catch { /* trace only */ }
+/**
+ * The task of a one-shot run: argv, `--task-file`, or piped stdin (read after the first frame); null on a TTY with
+ * nothing to read (the controller reports the usage error). An unreadable `--task-file` is a usage error (exit 2) with
+ * the path and the `ENOENT`/`EACCES`/`EISDIR` code, never a raw exception.
+ */
+export async function readTask(flags: ParsedFlags, facts: Pick<LaunchFacts, 'stdinIsTTY'>, stdin: NodeJS.ReadableStream = process.stdin): Promise<string | null> {
+  if (flags.task) return flags.task;
+  if (flags.taskFile) {
+    const path = resolvePath(flags.taskFile);
+    try {
+      return readFileSync(path, 'utf8').trim();
+    } catch (e) {
+      const code = (e as NodeJS.ErrnoException).code ?? (e instanceof Error ? e.message : String(e));
+      throw new UsageError(`--task-file: cannot read ${path}: ${code}`);
     }
-    abortRequested = reason;
-    if (engine) engine.abort(reason);
-  };
-  const rendererOpts = { task: flags.task ?? (flags.resume ? `resuming ${flags.resume}` : ''), resumeId: flags.resume ?? null, onAbort };
-  const renderer: Renderer = interactive
-    ? (await import('../tui/App.js')).createTuiRenderer(rendererOpts)
-    : (await import('../tui/plain.js')).createPlainRenderer(rendererOpts);
-
-  if (flags.perfExitAfterFirstFrame) {
-    await renderer.firstFrame();
-    process.stderr.write(`FIRST_FRAME_MS=${performance.now().toFixed(1)}\n`);
-    process.exit(0);
   }
+  if (!facts.stdinIsTTY) {
+    const chunks: Buffer[] = [];
+    for await (const c of stdin) chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(String(c)));
+    const text = Buffer.concat(chunks).toString('utf8').trim();
+    if (text) return text;
+  }
+  return null;
+}
 
-  const lagProbe = flags.perfLagProbe ? startLagProbe() : null;
+/**
+ * TUI-DESIGN §24 header of the argv-only first frame: `jevcode task: <task>` from argv, `task from <file>` for
+ * `--task-file` (the file is read only after `firstFrame()`, so its name stands in), `resuming <id>` for `--resume`,
+ * and the session header (empty task) otherwise.
+ */
+export function firstFrameTask(flags: Pick<ParsedFlags, 'task' | 'taskFile' | 'resume'>): string {
+  if (flags.task !== undefined && flags.task !== '') return flags.task;
+  if (flags.taskFile !== undefined && flags.taskFile !== '') return `task from ${basename(flags.taskFile)}`;
+  if (flags.resume !== undefined && flags.resume !== '') return `resuming ${flags.resume}`;
+  return '';
+}
 
+/** `JEVCODE_TRACE=<file>`: launch checkpoints (never a key or a draft; §10.6) */
+function trace(msg: string): void {
+  const file = process.env['JEVCODE_TRACE'];
+  if (file === undefined || file === '') return;
   try {
-    const { resolveConfig } = await import('../config/resolve.js');
-    let config = await resolveConfig(flags, process.env, process.cwd());
-
-    let task: string;
-    let resume: EngineOptions['resume'];
-    let mode: EngineOptions['mode'] = modeFromFlags(flags);
-    let workspace = config.workspace;
-    let limits = config.limits();
-    let sandboxProfile = config.sandbox;
-    const extraWritableRoots: readonly string[] = []; // the bench passes its aux roots programmatically (EngineOptions.extraWritableRoots)
-    if (flags.resume) {
-      // §9: identity (task, workspace, mode, provider, models, base URLs, thresholds, sandbox)
-      // comes from run.json and replaces the precedence chain; limits and secrets are
-      // re-resolved from this invocation. Identity values are injected as flags so the
-      // second resolveConfig() applies them at the highest precedence.
-      const { loadForResume } = await import('../checkpoint/resume.js');
-      const { reconcileResumeConfig, resumeInputsFrom, resumeIdentityFromRunMeta } = await import('../config/resolve.js');
-      const loaded = await loadForResume(config.runsDir, flags.resume, { redact: config.redact });
-      const identity = resumeIdentityFromRunMeta(loaded.meta);
-      const { realpath } = await import('node:fs/promises');
-      const wsReal = flags.workspace ? await realpath(resolvePath(flags.workspace)).catch(() => null) : null;
-      const augmented: ParsedFlags = {
-        ...flags,
-        ...(flags.provider === undefined && identity.provider ? { provider: identity.provider } : {}),
-        ...(flags.model === undefined && identity.model ? { model: identity.model } : {}),
-        ...(flags.baseUrl === undefined && identity.baseUrl ? { baseUrl: identity.baseUrl } : {}),
-        ...(flags.jevModel === undefined && identity.jevModel ? { jevModel: identity.jevModel } : {}),
-        ...(flags.jevBaseUrl === undefined && identity.jevBaseUrl ? { jevBaseUrl: identity.jevBaseUrl } : {}),
-        ...(flags.sandbox === undefined && identity.sandbox ? { sandbox: identity.sandbox } : {}),
-        workspace: identity.workspace,
-      };
-      config = await resolveConfig(augmented, process.env, process.cwd());
-      const rec = reconcileResumeConfig(resumeInputsFrom(config, { ...loaded.state, stopReason: loaded.previousStopReason }, wsReal), loaded.meta, flags);
-      if (rec.errors.length > 0) throw rec.errors[0];
-      if (rec.immediateStop) {
-        await renderer.unmount();
-        process.stderr.write(`${rec.immediateStop.message}\n`);
-        return EXIT_CODES.budget;
-      }
-      for (const w of loaded.warnings) process.stderr.write(`jevcode: ${w}\n`);
-      task = identity.task;
-      mode = identity.mode;
-      workspace = identity.workspace;
-      limits = rec.limits;
-      sandboxProfile = identity.sandbox ?? config.sandbox;
-      resume = { runId: flags.resume, force: Boolean(flags.force) };
-    } else {
-      task = await readTask(flags);
-      resume = undefined;
-    }
-
-    const provider = await buildProvider(config, flags, mode);
-    const decider = await buildDecider(config, flags);
-    const { createSpendMeter } = await import('../spend/meter.js');
-    const meter = createSpendMeter(limits.spendCapUsd);
-    // jev-only never validates the generator section (config.generator() is not called): only the decider needs a key.
-    const gen = mode === 'jev-only' || flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : config.generator();
-    const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : config.decider();
-    let synthesizer: Synthesizer | null = null;
-    if (mode === 'jev-only') {
-      const { createSynthesizer } = await import('../synth/index.js');
-      synthesizer = createSynthesizer({ decider, redact: config.redact });
-    }
-
-    const opts: EngineOptions = {
-      task,
-      mode,
-      workspace,
-      runsDir: config.runsDir,
-      ...(resume ? { resume } : {}),
-      provider,
-      decider,
-      confirmer: renderer.confirmer,
-      meter,
-      limits,
-      sandboxProfile,
-      noNetwork: config.noNetwork,
-      configRecord: config.record(),
-      redact: config.redact,
-      secretPaths: config.secretPaths,
-      generation: { temperature: gen.temperature, maxTokens: gen.maxTokens },
-      deciderModel: { configured: dec.model, pinned: dec.pinned },
-      ...(extraWritableRoots.length ? { extraWritableRoots } : {}),
-      ...(synthesizer ? { synthesizer } : {}),
-    };
-    engine = opts.mode === 'jev-off'
-      ? await (await import('../loop/generator-only.js')).createGeneratorOnlyEngine(opts)
-      : await (await import('../loop/engine.js')).createEngine(opts);
-    if (abortRequested) engine.abort(abortRequested);
-    renderer.attach(engine);
-    const sig = (): void => onAbort('signal');
-    process.on('SIGINT', sig);
-    process.on('SIGTERM', sig);
-    const result = await engine.run();
-    process.off('SIGINT', sig);
-    process.off('SIGTERM', sig);
-    await renderer.unmount();
-    if (lagProbe) process.stderr.write(`LAG_JSON=${JSON.stringify(lagProbe.stop())}\n`);
-    if (!interactive) process.stderr.write(`stop: ${result.stopReason} after ${result.steps} steps, $${result.usage.generator.costUsd.toFixed(4)} generator + $${result.usage.jev.costUsd.toFixed(4)} jev; run ${result.runId}\n`);
-    return exitCodeFor(result.stopReason, result);
-  } catch (e) {
-    await renderer.unmount().catch(() => undefined);
-    throw e;
+    appendFileSync(file, `${new Date().toISOString()} main.${msg} t=${performance.now().toFixed(1)}\n`);
+  } catch {
+    /* trace only */
   }
+}
+
+/** mutable references the fatal wiring reads at fault time (the controller and renderer exist only later) */
+interface FatalRefs {
+  engine: () => Engine | null;
+  unmount: (() => Promise<void>) | null;
+  context: () => EpilogueContext;
+  redact: (s: string) => string;
+}
+
+const fatalRefs: FatalRefs = {
+  engine: () => null,
+  unmount: null,
+  context: () => ({ runId: null, runDir: null, resumable: false }),
+  redact: patternRedact,
+};
+
+let wiring: FatalWiring | null = null;
+
+/** install the fatal handlers once (idempotent) */
+function ensureWiring(): FatalWiring {
+  wiring ??= wireFatalHandlers({
+    redact: (s) => fatalRefs.redact(s),
+    context: () => fatalRefs.context(),
+    engine: () => fatalRefs.engine(),
+    unmount: () => fatalRefs.unmount?.() ?? Promise.resolve(),
+  });
+  return wiring;
 }
 
 function startLagProbe(): { stop: () => { p50: number | null; p95: number | null; max: number; samples: number } } {
@@ -228,6 +168,144 @@ function startLagProbe(): { stop: () => { p50: number | null; p95: number | null
   };
 }
 
+/**
+ * TUI-DESIGN §1: `chat` and `run` share one controller (`createSessionController`, `mode` `session` | `one-shot`).
+ * The renderer mounts first (argv-only frame); the signal handlers precede it; everything else happens inside
+ * `controller.run()` after `firstFrame()` resolves.
+ */
+async function startSession(flags: ParsedFlags, command: 'chat' | 'run'): Promise<number> {
+  const env = process.env;
+  const cwd = process.cwd();
+  const facts: LaunchFacts = { stdinIsTTY: Boolean(process.stdin.isTTY), stdoutIsTTY: Boolean(process.stdout.isTTY), env };
+  if (command === 'chat' && flags.noInput) throw new UsageError(NO_INPUT_NEEDS_TASK);
+  const sel = selectRenderer(flags, command, facts);
+  const launch = resolveLaunchSettings(flags, env);
+  const fatal = ensureWiring();
+
+  // TUI-DESIGN §14.2 / research 20 item 2: SIGINT and SIGTERM are handled before the first frame
+  let controller: SessionController | null = null;
+  const earlyExit = (name: SignalName): void => {
+    const code = exitCodeFor('signal', undefined, false, name);
+    fatal.restore();
+    process.stderr.write(`${epilogueLines(null, { runId: null, runDir: null, resumable: false, stopReason: 'signal', signal: name, exitCode: code }, patternRedact).join('\n')}\n`);
+    process.exit(code);
+  };
+  const onSignal = (name: SignalName): void => {
+    trace(`signal ${name} controller=${controller !== null}`);
+    if (controller) controller.signal(name);
+    else earlyExit(name);
+  };
+  const sigint = (): void => onSignal('SIGINT');
+  const sigterm = (): void => onSignal('SIGTERM');
+  // §14.2: on a --plain TTY the readline composer owns SIGINT (cooked mode delivers Ctrl-C as the signal)
+  if (!sel.readline) process.on('SIGINT', sigint);
+  process.on('SIGTERM', sigterm);
+
+  // the first frame comes from argv, env, isTTY and cwd only (§1)
+  const rendererOpts: RendererOptions = {
+    task: firstFrameTask(flags),
+    resumeId: flags.resume ?? null,
+    onAbort: (reason) => controller?.onAbort(reason),
+    mode: sel.mode,
+    launch,
+  };
+  let renderer: Renderer;
+  let prompter: Prompter | null = null;
+  let jsonStream: JsonStream | null = null;
+  let tuiBundle: TuiPrompterBundle | null = null;
+  if (sel.kind === 'json') {
+    const { writeJsonStream, createJsonRenderer } = await import('./json-stream.js');
+    jsonStream = writeJsonStream({ out: process.stdout, version: VERSION, verbose: flags.jsonVerbose === true, redact: (s) => controller?.redact(s) ?? patternRedact(s) });
+    renderer = createJsonRenderer({ ...rendererOpts, stream: jsonStream });
+  } else if (sel.kind === 'tui') {
+    // the Ink renderer's modal prompts (wizard, trust, follow-up, undo, exit confirm, blocking pane, picker) as the controller's Prompter
+    tuiBundle = createTuiPrompter();
+    const dir = jevcodeDir(env, homedir(), cwd);
+    const tui: TuiRenderer = (await import('../tui/App.js')).createTuiRenderer({ ...rendererOpts, cwd, env, home: homedir(), runsDir: flags.runsDir !== undefined ? resolvePath(cwd, flags.runsDir) : resolvePath(dir, 'runs'), wizardHost: tuiBundle.wizardHost });
+    tuiBundle.attach(tui);
+    renderer = tui;
+    prompter = (tui as PromptingRenderer).prompts ?? tuiBundle.prompter;
+  } else {
+    const { createPlainRenderer } = await import('../tui/plain.js');
+    renderer = createPlainRenderer({ ...rendererOpts, cwd, interactive: sel.readline });
+  }
+  fatalRefs.unmount = () => renderer.unmount();
+  trace(`renderer ${sel.kind} mounted (mode ${sel.mode})`);
+
+  if (flags.perfExitAfterFirstFrame) {
+    await renderer.firstFrame();
+    process.stderr.write(`FIRST_FRAME_MS=${performance.now().toFixed(1)}\n`);
+    process.exit(0);
+  }
+  const lagProbe = flags.perfLagProbe ? startLagProbe() : null;
+
+  controller = createSessionController({
+    flags,
+    env,
+    cwd,
+    mode: sel.mode,
+    renderer,
+    rendererKind: sel.kind,
+    interactive: sel.interactive,
+    launch,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    stdin: process.stdin,
+    prompter,
+    jsonStream,
+    task: () => readTask(flags, facts),
+    exit: (code) => process.exit(code),
+    restoreTerminal: fatal.restore,
+  });
+  const c = controller;
+  fatalRefs.engine = () => c.engine;
+  fatalRefs.context = () => c.context();
+  fatalRefs.redact = (s) => c.redact(s);
+  tuiBundle?.control({
+    persistCredentials: (patch, source) => c.persistCredentials(patch, source),
+    mode: () => c.mode(),
+    trustInputs: () => c.trustInputs(),
+    sandboxLine: () => c.sandboxLine(),
+    runsDir: () => c.runsDir(),
+    trashDir: () => resolvePath(jevcodeDir(env, homedir(), cwd), 'trash'),
+    runLive: () => c.host.phase() !== 'none',
+  });
+
+  // TUI-DESIGN §1: the --plain TTY readline composer over the same dispatchCommand(); its lines feed the confirmer and the prompts
+  let composer: ReadlineComposer | null = null;
+  if (sel.readline) {
+    const { createReadlineComposer } = await import('../tui/plain-composer.js');
+    const { createPlainPrompter } = await import('./session.js');
+    composer = createReadlineComposer({
+      input: process.stdin,
+      output: process.stdout,
+      stderr: process.stderr,
+      host: c.host,
+      phase: () => c.host.phase(),
+      ranBefore: () => c.host.ranBefore(),
+      dispatch: () => c.host.dispatchContext(),
+      awaitRunEnd: () => c.host.awaitRunEnd(),
+      // §1 session loop: the prompt returns after a run's post-run items; one-shot exits at run:end instead
+      repromptAtRunEnd: sel.mode === 'session',
+    });
+    const plain = renderer as Renderer & { setLineSource?: (lines: ReadlineComposer['lines']) => void };
+    plain.setLineSource?.(composer.lines);
+    c.setPrompter(createPlainPrompter({ lines: composer.lines, stdout: process.stdout, stdin: process.stdin, ascii: launch.ascii }));
+  }
+
+  try {
+    trace('controller.run');
+    const code = await c.run();
+    trace(`controller.run resolved ${code}`);
+    if (lagProbe) process.stderr.write(`LAG_JSON=${JSON.stringify(lagProbe.stop())}\n`);
+    return code;
+  } finally {
+    process.off('SIGINT', sigint);
+    process.off('SIGTERM', sigterm);
+    composer?.close();
+  }
+}
+
 async function commandConfig(flags: ParsedFlags): Promise<number> {
   const { resolveConfig } = await import('../config/resolve.js');
   const config = await resolveConfig(flags, process.env, process.cwd());
@@ -238,12 +316,8 @@ async function commandConfig(flags: ParsedFlags): Promise<number> {
     process.stdout.write(`${JSON.stringify({ ...record, sandboxLevel: level }, null, 2)}\n`);
     return 0;
   }
-  const rows = Object.entries(record).map(([k, v]) => [k, typeof v.value === 'string' ? v.value : `<${v.value.source}> (sha256:${v.value.fingerprint})`, v.source]);
-  const w0 = Math.max(...rows.map((r) => r[0]!.length), 7);
-  const w1 = Math.max(...rows.map((r) => r[1]!.length), 5);
-  process.stdout.write(`${'setting'.padEnd(w0)}  ${'value'.padEnd(w1)}  source\n`);
-  for (const r of rows) process.stdout.write(`${r[0]!.padEnd(w0)}  ${r[1]!.padEnd(w1)}  ${r[2]}\n`);
-  process.stdout.write(`\nsandbox level: ${level}${level === 'none' ? ' (no sandbox-exec: cwd confinement, env scrubbing, timeout, output cap and tree kill only; .git/config and .git/hooks are writable by commands)' : ' (writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network)'}\n`);
+  const { configTableLines } = await import('./config-table.js');
+  process.stdout.write(`${configTableLines(record, { sandboxLevel: level }).join('\n')}\n`);
   return 0;
 }
 
@@ -257,61 +331,171 @@ async function commandPerf(flags: ParsedFlags): Promise<number> {
   return runPerf(flags);
 }
 
+/** the resolved-config facts the maintenance commands need (runs dir, redactor, workspace); a broken config is exit 2 */
+async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: (s: string) => string; workspace: string; record: () => unknown; sandbox: string; secrets: () => Promise<ReadonlyMap<string, import('../core/types.js').Resolved<string>>> }> {
+  const { resolveConfig } = await import('../config/resolve.js');
+  const config = await resolveConfig(flags, process.env, process.cwd());
+  let workspace = config.workspace;
+  try {
+    workspace = realpathSync(config.workspace);
+  } catch {
+    /* lexical */
+  }
+  return {
+    runsDir: config.runsDir,
+    redact: config.redact,
+    workspace,
+    record: () => config.record(),
+    sandbox: config.sandbox,
+    secrets: async () => {
+      const m = new Map<string, import('../core/types.js').Resolved<string>>();
+      for (const name of ['generator.apiKey', 'decider.apiKey'] as const) {
+        const r = config.entries.get(name);
+        if (r) m.set(name, r);
+      }
+      return m;
+    },
+  };
+}
+
+/** the `login` / `logout` / `config set` I/O seam over the real process */
+async function loginIo(flags: ParsedFlags): Promise<import('./login.js').CommandIo> {
+  return {
+    stdin: process.stdin,
+    stdout: process.stdout,
+    stderr: process.stderr,
+    env: process.env,
+    home: homedir(),
+    cwd: process.cwd(),
+    platform: process.platform,
+    resolveSecrets: async () => {
+      try {
+        return await (await pathsFor(flags)).secrets();
+      } catch {
+        return new Map();
+      }
+    },
+  };
+}
+
 export async function main(argv: string[]): Promise<number> {
   let flags: ParsedFlags;
   try {
-    flags = parseCliArgs(argv);
+    flags = parseCliArgs(argv, { stdinIsTTY: Boolean(process.stdin.isTTY) });
   } catch (e) {
     process.stderr.write(`${e instanceof Error ? e.message : String(e)}\n\n${usageText()}\n`);
     return EXIT_CODES.config;
   }
   if (flags.help) {
-    process.stdout.write(`${usageText()}\n`);
+    const first = argv[0];
+    process.stdout.write(`${usageText(first !== undefined && !first.startsWith('-') ? flags.command : undefined)}\n`);
     return 0;
   }
   if (flags.version) {
-    process.stdout.write(`jevcode ${VERSION}\n`);
+    process.stdout.write(flags.json ? `${JSON.stringify(versionJson())}\n` : `jevcode ${VERSION}\n`);
     return 0;
   }
   switch (flags.command) {
+    case 'chat':
+      return startSession(flags, 'chat');
     case 'run':
-      return commandRun(flags);
-    case 'config':
+      return startSession(flags, 'run');
+    case 'config': {
+      if (flags.configSet) {
+        const { commandConfigSet } = await import('./login.js');
+        return commandConfigSet(flags.configSet.setting, flags.configSet.value, await loginIo(flags), flags.config !== undefined ? { config: flags.config } : {});
+      }
       return commandConfig(flags);
+    }
     case 'bench':
       return commandBench(flags);
     case 'perf':
       return commandPerf(flags);
-    case 'chat':
-    case 'login':
-    case 'logout':
-    case 'sessions':
-    case 'report':
-    case 'why':
-    case 'calibration':
-    case 'completion':
-    case 'upgrade':
-      // TUI-DESIGN §1: wired by the session controller (cli/session.ts) in wave 3; until then the command is
-      // parsed (args.ts) but has no handler in this build.
-      process.stderr.write(`jevcode ${flags.command}: not available in this build yet\n`);
-      return EXIT_CODES.config;
+    case 'login': {
+      const { commandLogin } = await import('./login.js');
+      return commandLogin(
+        {
+          ...(flags.provider !== undefined ? { provider: flags.provider } : {}),
+          ...(flags.generatorKeyStdin ? { generatorKeyStdin: true } : {}),
+          ...(flags.jevKeyStdin ? { jevKeyStdin: true } : {}),
+          ...(flags.status ? { status: true } : {}),
+          ...(flags.verify ? { verify: true } : {}),
+          ...(flags.config !== undefined ? { config: flags.config } : {}),
+        },
+        await loginIo(flags),
+      );
+    }
+    case 'logout': {
+      const { commandLogout } = await import('./login.js');
+      return commandLogout({ ...(flags.generator ? { generator: true } : {}), ...(flags.jev ? { jev: true } : {}), ...(flags.config !== undefined ? { config: flags.config } : {}) }, await loginIo(flags));
+    }
+    case 'sessions': {
+      const { commandSessions } = await import('./sessions.js');
+      const p = await pathsFor(flags);
+      return commandSessions(flags, { stdout: process.stdout, stderr: process.stderr, runsDir: p.runsDir, indexPath: sessionsIndexPath(jevcodeDir(process.env, homedir(), process.cwd())), workspace: p.workspace, redact: p.redact, ascii: resolveLaunchSettings(flags, process.env).ascii });
+    }
+    case 'report': {
+      const { commandReport, newestSessionLog } = await import('./report.js');
+      const dir = jevcodeDir(process.env, homedir(), process.cwd());
+      return commandReport(flags, {
+        stdout: process.stdout,
+        stderr: process.stderr,
+        env: process.env,
+        cwd: process.cwd(),
+        resolveConfig: async (f) => {
+          const p = await pathsFor(f);
+          return { runsDir: p.runsDir, redact: p.redact, record: p.record, sandbox: p.sandbox };
+        },
+        reportsDir: resolvePath(dir, 'reports'),
+        // §13.6: the session log stands in when the run directory has no jevcode.log
+        sessionLog: () => newestSessionLog(resolvePath(dir, 'logs')),
+      });
+    }
+    case 'why': {
+      const { commandWhy } = await import('./inspect.js');
+      const p = await pathsFor(flags);
+      return commandWhy(flags, { stdout: process.stdout, stderr: process.stderr, runsDir: p.runsDir, ascii: resolveLaunchSettings(flags, process.env).ascii });
+    }
+    case 'calibration': {
+      const { commandCalibration } = await import('./inspect.js');
+      const p = await pathsFor(flags);
+      return commandCalibration(flags, { stdout: process.stdout, stderr: process.stderr, runsDir: p.runsDir, ascii: resolveLaunchSettings(flags, process.env).ascii });
+    }
+    case 'completion': {
+      const { commandCompletion } = await import('./completion.js');
+      return commandCompletion(flags.shell ?? 'bash', process.stdout);
+    }
+    case 'upgrade': {
+      const { commandUpgrade } = await import('./upgrade.js');
+      let argv1 = process.argv[1] ?? '';
+      try {
+        argv1 = realpathSync(argv1);
+      } catch {
+        /* keep the raw path */
+      }
+      return commandUpgrade(flags, { stdout: process.stdout, stderr: process.stderr, env: process.env, home: homedir(), argv1 });
+    }
   }
 }
 
-function fatalExit(e: unknown): never {
-  const err = isJevCodeError(e) ? e : new JevCodeError('internal', e instanceof Error ? e.message : String(e), { cause: e });
-  process.stderr.write(`jevcode: ${err.message}\n`);
-  if (process.env['JEVCODE_DEBUG'] === '1' && e instanceof Error && e.stack) process.stderr.write(`${e.stack}\n`);
-  process.exit(err.exitCode);
+const isEntry = ((): boolean => {
+  const arg1 = process.argv[1];
+  if (arg1 === undefined) return false;
+  try {
+    return realpathSync(arg1) === fileURLToPath(import.meta.url) || /\/dist\/jevcode\.mjs$/.test(fileURLToPath(import.meta.url)) || /bin\/jevcode\.js$/.test(arg1);
+  } catch {
+    return /bin\/jevcode\.js$/.test(arg1) || /\/dist\/jevcode\.mjs$/.test(fileURLToPath(import.meta.url));
+  }
+})();
+
+if (isEntry) {
+  const fatal = ensureWiring();
+  main(process.argv.slice(2)).then(
+    (code) => {
+      process.exitCode = code;
+    },
+    (e: unknown) => {
+      void fatal.fatalExit(e);
+    },
+  );
 }
-
-process.on('unhandledRejection', fatalExit);
-process.on('uncaughtException', fatalExit);
-
-main(process.argv.slice(2)).then(
-  (code) => {
-    process.exitCode = code;
-  },
-  (e: unknown) => fatalExit(e),
-);
-

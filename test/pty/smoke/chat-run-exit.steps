@@ -1,0 +1,14 @@
+# chat: first frame with the composer visible; a typed task + Enter starts a --mock run; /exit leaves 0 (§1)
+expect \x1b\[\?25l
+expect Describe the task
+sleep 0.3
+send fix the failing test
+sleep 0.2
+send \r
+expect ready
+expect end (complete|max_steps|generator_done)
+expect Follow-up or /command
+send /exit
+sleep 0.2
+send \r
+eof

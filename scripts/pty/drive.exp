@@ -1,24 +1,35 @@
 #!/usr/bin/expect -f
 # Generic pseudo-TTY driver for JevCode TUI tests and demos (macOS expect 5.45).
 #
-#   drive.exp <steps-file> <capture-log> <timing-jsonl> <timeout-s> -- <command> [args...]
+#   drive.exp [--kill-on-timeout] <steps-file> <capture-log> <timing-jsonl> <timeout-s> -- <command> [args...]
 #
 # Environment: PTY_ROWS / PTY_COLS set the initial geometry (default 24x80); PTY_TERM sets
-# TERM for the child (default xterm-256color).
+# TERM for the child (default xterm-256color); PTY_KILL_ON_TIMEOUT=1 is the flag's twin.
 #
 # <steps-file>: one step per line (blank lines and lines starting with # are ignored):
 #   expect <tcl-regex>      wait until the child's output matches (timeout -> exit 124)
 #   send   <text>           write to the pty; backslash escapes are interpreted (\r \x03 \x1b)
-#   sleep  <seconds>        pause (fractions allowed)
+#   sleep  <seconds>        pause (fractions allowed) while draining the pty in the background,
+#                           so a chatty child never blocks in a synchronous tty write (research 20
+#                           request (b)); the drained bytes still reach <capture-log>
 #   resize <rows> <cols>    change the pty size; the kernel delivers SIGWINCH to the child
+#   signal <NAME>           kill -<NAME> the child (INT, TERM, HUP, ...): an external signal, not a key
 #   mark   <label>          record a timestamp only
 #   eof                     wait for the child to exit
 # Every completed step appends {"t":<ms since spawn>,"step":<n>,"op":"...","arg":"..."} to
 # <timing-jsonl>; "expect" steps record the time of the match. The child's exit code is the
 # driver's exit code (128+n when the child died from signal n); 124 = an expect step timed
-# out (Ctrl-C is sent twice first). Note: the TUI's header row also contains "step 0/", so a
-# step that must wait for the dynamic frame should expect the cursor-hide sequence \x1b\[\?25l
-# or the status row pattern "step 0/.*starting" preceded by a newline.
+# out (Ctrl-C is sent twice first, then a 10 s eof grace; with --kill-on-timeout a child still
+# alive after the grace gets SIGKILL so the driver never wedges in `wait`). Note: the TUI's
+# header row also contains "step 0/", so a step that must wait for the dynamic frame should
+# expect the cursor-hide sequence \x1b\[\?25l or the status row pattern "step 0/.*starting"
+# preceded by a newline.
+set killOnTimeout 0
+if {[info exists env(PTY_KILL_ON_TIMEOUT)] && $env(PTY_KILL_ON_TIMEOUT) ne "" && $env(PTY_KILL_ON_TIMEOUT) ne "0"} { set killOnTimeout 1 }
+if {[lindex $argv 0] eq "--kill-on-timeout"} {
+  set killOnTimeout 1
+  set argv [lrange $argv 1 end]
+}
 set stepsFile [lindex $argv 0]
 set capture [lindex $argv 1]
 set timing [lindex $argv 2]
@@ -55,6 +66,19 @@ proc record {tf t0 n op arg} {
   puts $tf "{\"t\":$t,\"step\":$n,\"op\":\"$op\",\"arg\":\"[jsonEscape $arg]\"}"
   flush $tf
 }
+# a timed pause that keeps reading the pty (25 ms granularity); returns "eof" when the child exited meanwhile
+proc drainSleep {secs} {
+  set deadline [expr {[clock milliseconds] + int($secs * 1000)}]
+  while {1} {
+    set left [expr {$deadline - [clock milliseconds]}]
+    if {$left <= 0} { return ok }
+    expect -timeout 0 -re {.+} {} eof { return eof }
+    after [expr {$left < 25 ? $left : 25}]
+  }
+}
+proc childAlive {} {
+  return [expr {[catch {exec kill -0 [exp_pid]}] == 0}]
+}
 
 set n 0
 set code 0
@@ -86,8 +110,13 @@ foreach raw $steps {
       record $tf $t0 $n send $arg
     }
     sleep {
-      sleep $arg
+      set r [drainSleep $arg]
       record $tf $t0 $n sleep $arg
+      if {$r eq "eof"} { record $tf $t0 $n eof-during-sleep $arg; break }
+    }
+    signal {
+      catch {exec kill -$arg [exp_pid]}
+      record $tf $t0 $n signal $arg
     }
     resize {
       set r [lindex $arg 0]
@@ -110,7 +139,17 @@ foreach raw $steps {
     }
   }
 }
-if {$timedOut} { expect -timeout 10 eof }
+if {$timedOut} {
+  # the two Ctrl-Cs may not end the child (a non-empty draft is cleared instead); after the grace, --kill-on-timeout
+  # sends SIGKILL to a child that is still running (kill -0 also succeeds on a zombie, so the eof seen above decides)
+  set sawEof 0
+  expect -timeout 10 eof { set sawEof 1 }
+  if {$killOnTimeout && !$sawEof && [childAlive]} {
+    catch {exec kill -9 [exp_pid]}
+    record $tf $t0 0 kill-on-timeout SIGKILL
+    catch {expect -timeout 5 eof}
+  }
+}
 catch wait result
 # wait returns {pid spawn_id 0 status} on a normal exit, {pid spawn_id -1 errno} on an OS error
 # and {pid spawn_id 0 0 CHILDKILLED SIGNAME description} when the child died from a signal; in

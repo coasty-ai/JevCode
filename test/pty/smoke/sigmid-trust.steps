@@ -1,0 +1,6 @@
+# SIGINT while startup awaits the trust prompt (AGENTS.md in the workspace): exit 130 with the epilogue, no hang (§14.2, F3)
+expect \x1b\[\?25l
+expect Do you trust the files in
+sleep 0.2
+signal INT
+eof

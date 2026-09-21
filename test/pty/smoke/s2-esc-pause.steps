@@ -1,0 +1,18 @@
+# S2 live·empty: Esc pauses at the step boundary (human_pause, the §24 paused item); /exit (§3.3, §8.7)
+expect \x1b\[\?25l
+expect Describe the task
+sleep 0.3
+send make the tests pass
+sleep 0.2
+send \r
+expect ready
+sleep 0.4
+send \x1b
+expect Esc again aborts the run
+expect end human_pause
+expect paused after step
+expect Follow-up or /command
+send /exit
+sleep 0.2
+send \r
+eof
