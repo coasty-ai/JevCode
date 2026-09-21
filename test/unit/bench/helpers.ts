@@ -348,7 +348,7 @@ export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDepsWithSynth; 
     createMockDecider: () => createFakeDecider(captured),
     createSpendMeter: createFakeMeter,
     createSandbox: sandbox.create,
-    ...(o.live && !o.liveProviderless ? { liveProvider: createFakeProvider(captured, 'anthropic/claude-sonnet-5') } : {}),
+    ...(o.live && !o.liveProviderless ? { liveProvider: createFakeProvider(captured, 'z-ai/glm-5.3-flash') } : {}),
     ...(o.live ? { liveDecider: createFakeDecider(captured) } : {}),
   };
   const deps: BenchDepsWithSynth = o.noSynthesizer

@@ -44,7 +44,19 @@ function validateRequest(req: GenerateRequest): void {
   }
 }
 
-/** Exported so tests can assert the exact wire body. */
+/**
+ * Exported so tests can assert the exact wire body.
+ *
+ * Model compatibility (no branch on the id — one body shape for every OpenRouter model):
+ * - `z-ai/glm-5.3-flash` (the default generator, DECISIONS 2026-09-21): tools, tool_choice, parallel_tool_calls,
+ *   structured_outputs, temperature and max_tokens are all in its supported-parameters list; `strict: true` on a
+ *   function tool passes through (verified live 2026-09-21: a forced tool call came back with valid arguments).
+ *   Max completion 131,072 tokens and context 1,310,720 — `--max-tokens` above 131,072 is a 400 from the API, not a
+ *   silent clamp here (the default is 4,096).
+ * - `anthropic/*`: OpenRouter maps `parallel_tool_calls: false` to `disable_parallel_tool_use` and `strict` to the
+ *   Messages API's strict tool schema; `temperature` is omitted when the request says null (Sonnet 5 400s on it).
+ * `parallel_tool_calls: false` is sent whenever tools are present: the loop consumes exactly one action per step.
+ */
 export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequest): OpenRouterRequestBody {
   const messages: OpenRouterRequestBody['messages'] = [];
   if (req.system.length > 0) messages.push({ role: 'system', content: req.system });
@@ -59,6 +71,7 @@ export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequest):
   if (req.tools && req.tools.length > 0) {
     body.tools = req.tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: t.inputSchema, strict: true } }));
     if (req.toolChoice !== undefined) body.tool_choice = toolChoice(req.toolChoice);
+    body.parallel_tool_calls = false;
   }
   // null means "do not send the parameter" (core/types.ts GenerateRequest); cfg.temperature is not a fallback.
   if (req.temperature !== null) body.temperature = req.temperature;

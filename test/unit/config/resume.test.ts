@@ -123,6 +123,17 @@ describe('reconcileResumeConfig', () => {
     expect(r.errors[0]?.message).toMatch(/--provider "openrouter" differs/);
   });
 
+  it('a run started on the default generator (openrouter z-ai/glm-5.3-flash) keeps it: --provider anthropic / --model glm-5.3-flashx are errors, the same ids are fine', () => {
+    const stored = meta({ 'generator.provider': 'openrouter', 'generator.model': 'z-ai/glm-5.3-flash', 'generator.baseUrl': 'https://openrouter.ai/api/v1' });
+    expect(resumeIdentityFromRunMeta(stored)).toMatchObject({ provider: 'openrouter', model: 'z-ai/glm-5.3-flash', baseUrl: 'https://openrouter.ai/api/v1' });
+    expect(reconcileResumeConfig(current(), stored, resume()).errors).toEqual([]);
+    expect(reconcileResumeConfig(current(), stored, resume('--provider', 'OpenRouter', '--model', 'z-ai/glm-5.3-flash')).errors).toEqual([]);
+    const other = reconcileResumeConfig(current(), stored, resume('--provider', 'anthropic', '--model', 'z-ai/glm-5.3-flashx'));
+    expect(other.errors.map((e) => e.setting)).toEqual(['generator.provider', 'generator.model']);
+    expect(other.errors[0]?.message).toBe('--provider "anthropic" differs from the run\'s provider "openrouter"; a resumed run keeps its provider');
+    expect(other.errors[1]?.message).toBe('--model "z-ai/glm-5.3-flashx" differs from the run\'s model "z-ai/glm-5.3-flash"; a resumed run keeps its model');
+  });
+
   it('stored complete: refuse without --force, resume with it', () => {
     const refused = reconcileResumeConfig(current({}, { stopReason: 'complete' }), meta(), resume());
     expect(refused.errors).toHaveLength(1);

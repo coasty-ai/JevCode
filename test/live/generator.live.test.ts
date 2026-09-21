@@ -13,6 +13,9 @@ const OPENROUTER_KEY = process.env['OPENROUTER_API_KEY'] ?? '';
 const ANTHROPIC_KEY = process.env['ANTHROPIC_API_KEY'] ?? '';
 
 const PRICING: GeneratorConfig['pricing'] = { inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 };
+/** The default generator (config/defaults.ts DEFAULT_MODEL); overridable for a one-off check of a sibling id. */
+const OPENROUTER_MODEL = process.env['JEVCODE_LIVE_OPENROUTER_MODEL'] ?? 'z-ai/glm-5.3-flash';
+const GLM_PRICING: GeneratorConfig['pricing'] = { inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: 0.1125 };
 
 function redactor(...keys: string[]): (s: string) => string {
   return (s) => {
@@ -47,10 +50,10 @@ const REQUEST = {
 };
 
 describe('live generator', () => {
-  it('openrouter anthropic/claude-sonnet-5 returns a valid tool call with usage.cost', async ({ skip }) => {
+  it(`openrouter ${OPENROUTER_MODEL} (the default generator) returns a valid tool call with usage.cost`, async ({ skip }) => {
     if (!LIVE) skip('JEVCODE_LIVE is not "1"');
     if (!OPENROUTER_KEY) skip('OPENROUTER_API_KEY is empty');
-    const cfg: GeneratorConfig = { provider: 'openrouter', model: 'anthropic/claude-sonnet-5', apiKey: OPENROUTER_KEY, baseUrl: 'https://openrouter.ai/api/v1', temperature: null, maxTokens: 64, pricing: PRICING };
+    const cfg: GeneratorConfig = { provider: 'openrouter', model: OPENROUTER_MODEL, apiKey: OPENROUTER_KEY, baseUrl: 'https://openrouter.ai/api/v1', temperature: null, maxTokens: 64, pricing: GLM_PRICING, priced: true };
     const redact = redactor(OPENROUTER_KEY);
     const p = createOpenRouterProvider(cfg, { redact });
     const toolDeltas: string[] = [];
@@ -58,7 +61,7 @@ describe('live generator', () => {
     process.stdout.write(
       redact(`openrouter: model=${res.model} stop=${res.stopReason} in=${res.usage.inputTokens} out=${res.usage.outputTokens} cost=$${res.usage.costUsd.toFixed(6)} latency=${res.latencyMs}ms tools=${res.toolCalls.length}\n`),
     );
-    expect(res.model).toContain('claude-sonnet-5');
+    expect(res.model).toBe(OPENROUTER_MODEL);
     expect(res.usage.costUsd).toBeGreaterThan(0);
     expect(res.usage.costUsd).toBeLessThan(0.02);
     expect(res.usage.inputTokens).toBeGreaterThan(0);

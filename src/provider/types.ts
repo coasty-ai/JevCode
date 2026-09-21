@@ -187,6 +187,8 @@ export interface OpenRouterRequestBody {
   max_tokens: number;
   tools?: OpenRouterToolDef[];
   tool_choice?: OpenRouterToolChoice;
+  /** sent as `false` whenever `tools` is present: the loop consumes exactly one action per step (Anthropic: `disable_parallel_tool_use`) */
+  parallel_tool_calls?: false;
   usage: { include: true };
   temperature?: number;
 }

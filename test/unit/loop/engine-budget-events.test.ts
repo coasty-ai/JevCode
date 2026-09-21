@@ -183,7 +183,7 @@ describe('budget:unpriced (§9.5 A135–A137)', () => {
   it('a provider reporting no finite cost: the event, the step commits, then the run stops with error (exit 2, the flag is named)', async () => {
     const h = await build({ turns: [turn({ kind: 'read', paths: ['src/a.py'] }, {}, { usage: usage(Number.NaN) })], limits: { maxSteps: 3 } });
     const r = await h.engine.run();
-    expect(h.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'claude-sonnet-5', step: 1, tokens: { input: 1000, output: 200 } }]);
+    expect(h.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'z-ai/glm-5.3-flash', step: 1, tokens: { input: 1000, output: 200 } }]);
     expect(r.stopReason).toBe('error');
     expect(r.steps).toBe(1); // the step committed first
     expect(r.error).toMatchObject({ code: 'config', exitCode: 2, message: expect.stringContaining('--allow-unpriced') });
@@ -195,7 +195,7 @@ describe('budget:unpriced (§9.5 A135–A137)', () => {
     const h = await build({ turns: [turn({ kind: 'read', paths: ['src/a.py'] }, {}, { usage: usage(Number.NaN) })], limits: { maxSteps: 3 }, engine: { allowUnpriced: true } });
     const r = await h.engine.run();
     // three unpriced generator calls (one per step): one item, at the first
-    expect(h.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'claude-sonnet-5', step: 1, tokens: { input: 1000, output: 200 } }]);
+    expect(h.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'z-ai/glm-5.3-flash', step: 1, tokens: { input: 1000, output: 200 } }]);
     expect(h.store.transcript.filter((l) => /usage\.cost missing/.test(l))).toHaveLength(1);
     expect(r.stopReason).toBe('max_steps');
     expect(r.steps).toBe(3);
@@ -203,7 +203,7 @@ describe('budget:unpriced (§9.5 A135–A137)', () => {
     const h2 = await build({ turns: [turn({ kind: 'read', paths: ['src/a.py'] }, {}, { usage: usage(Number.NaN) })], deciderOptions: { usage: { costUsd: Number.NaN } }, limits: { maxSteps: 2 }, engine: { allowUnpriced: true } });
     await h2.engine.run();
     expect(h2.decider.calls.length).toBeGreaterThan(2);
-    expect(h2.of('budget:unpriced').map((e) => [e.side, e.model])).toEqual([['jev', 'typesafe/jev-1.13-20260917'], ['generator', 'claude-sonnet-5']]);
+    expect(h2.of('budget:unpriced').map((e) => [e.side, e.model])).toEqual([['jev', 'typesafe/jev-1.13-20260917'], ['generator', 'z-ai/glm-5.3-flash']]);
   });
 
   it('a Jev usage without a finite cost is reported on the jev side', async () => {

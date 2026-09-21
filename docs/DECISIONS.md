@@ -666,3 +666,33 @@ copy and 404 tokens of later additions only in the kept one (`docs/STATUS.md`, "
 pass of the same day corrected three places where the first pass had described the design rather than the tree
 (`--title` is inert, the `[screen reader mode: on …]` item is not emitted, a live-pane shrink resize clears 1–2 times)
 and replaced every measured figure with the run that produced it. Affects `docs/**`, `README.md`, `CHANGELOG.md`.
+
+## 2026-09-21 Default generator is OpenRouter `z-ai/glm-5.3-flash`
+
+`DEFAULT_PROVIDER` is `openrouter` and `DEFAULT_MODEL` is `z-ai/glm-5.3-flash` (`src/config/defaults.ts`); Sonnet 5
+stays available as `--provider anthropic --model claude-sonnet-5` (or `anthropic/claude-sonnet-5` on OpenRouter) and
+keeps its pricing rows. Rates from the OpenRouter models API, fetched 2026-09-21: `z-ai/glm-5.3-flash` prompt $0.09/M,
+completion $0.30/M, cache read $0.018/M (no cache-write rate listed: derived 1.25 × input = $0.1125/M); the siblings
+`z-ai/glm-5.3-flashx` ($0.37/M / $1.25/M, cache read $0.075/M; the 200 tok/s variant) and `z-ai/glm-5.3` ($0.91/M /
+$2.86/M, cache rates derived) are in the table so `--model` can switch to them without the unpriced gate. Context
+1,310,720 tokens (1,048,576 at the top provider), max completion 131,072; tools, `tool_choice`, `parallel_tool_calls`,
+`structured_outputs`, `temperature` and `max_tokens` are supported parameters.
+
+Reason: the user asked for it; it is roughly 20× cheaper than Sonnet 5 ($2 / $10 per M — 22× on input, 33× on output:
+the $2.00 default run cap buys 22.2M uncached input tokens instead of 1.0M), the 1M context removes most context-window
+pressure in the loop, and it supports the two things the loop needs from a generator (a forced function call with a
+strict schema, and structured outputs). Consequences: the default now needs `OPENROUTER_API_KEY`, the same key Jev
+uses, so one key runs everything (the missing-key error names `OPENROUTER_API_KEY / JEVCODE_API_KEY`); the OpenRouter
+body sends `parallel_tool_calls: false` whenever tools are present (the loop consumes exactly one action per step; the
+Anthropic client already sent `disable_parallel_tool_use`); `--resume` keeps a run's stored provider and model as
+before, so runs started on Sonnet continue on Sonnet. Verified live 2026-09-21 with one forced tool call through
+`createOpenRouterProvider` (`strict: true` and `parallel_tool_calls: false` accepted; `finish_reason` `tool_calls`;
+234 prompt + 19 completion tokens in 664 ms; valid `{goal, command}` arguments, the streamed deltas equal to the raw
+JSON). The usage frame carried `cost` $0.0000446 where the table gives $0.0000268 — exactly 5/3×, so the provider that
+served the request bills $0.15/M / $0.50/M, not the lowest-provider $0.09/M / $0.30/M the models API lists. The table is
+a fallback only (`usage.cost` wins whenever OpenRouter sends it), so metering stays correct, but the fallback can be up
+to ~1.7× optimistic for this model; pinning a provider through OpenRouter routing, or pricing the table at the served
+rate, is left open. Rejected: keeping Anthropic as the default
+with GLM opt-in — the price gap is the point of the change, and every jev-only bench already ran through OpenRouter.
+Not changed here: `jevcode login` and the first-run wizard still default their provider prompt to `anthropic`
+(`src/cli/login.ts`, `src/tui/onboarding/lines.ts`); aligning them is a follow-up for their owner.

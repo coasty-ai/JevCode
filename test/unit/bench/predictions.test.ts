@@ -20,6 +20,7 @@ function git(cwd: string, ...args: string[]): string {
 
 describe('predictions', () => {
   it('names files and models per condition, filesystem-safe', () => {
+    expect(modelNameOrPath('jev-on', 'z-ai/glm-5.3-flash')).toBe('jevcode-jev-on-z-ai__glm-5.3-flash');
     expect(modelNameOrPath('jev-on', 'anthropic/claude-sonnet-5')).toBe('jevcode-jev-on-anthropic__claude-sonnet-5');
     expect(predictionsFileName('jev-off')).toBe('predictions.jev-off.jsonl');
     const text = formatPredictions([{ instance_id: 'a__b-1', model_name_or_path: 'm', model_patch: '' }]);

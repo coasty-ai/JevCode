@@ -2,7 +2,8 @@
 
 A coding-agent harness where **Jev makes every decision** and **Claude writes the code**.
 
-JevCode runs a generator model (Claude Sonnet 5, through Anthropic or OpenRouter) behind one
+JevCode runs a generator model (GLM 5.3 Flash through OpenRouter by default; Claude Sonnet 5
+through Anthropic or OpenRouter with `--provider` / `--model`) behind one
 `Provider` interface and hands every control-flow decision to Jev
 (`typesafe/jev-1.13`, a calibrated decision model reached through OpenRouter's decisions
 endpoint): what a step is for, which files the generator sees, whether a proposed action is
@@ -55,8 +56,8 @@ in `./.env` (see `.env.example`), or in the environment. Keys are never accepted
 arguments in the interactive flow and `jevcode config set` refuses secret settings.
 
 ```sh
-OPENROUTER_API_KEY=sk-or-v1-...     # generator via --provider openrouter, and Jev
-ANTHROPIC_API_KEY=sk-ant-...        # generator via the default provider anthropic
+OPENROUTER_API_KEY=sk-or-v1-...     # generator via the default provider openrouter, and Jev
+ANTHROPIC_API_KEY=sk-ant-...        # generator via --provider anthropic
 JEV_API_KEY=...                     # Jev, when it is not the OpenRouter key
 ```
 
@@ -202,8 +203,8 @@ reported as `ignored:launch`.
 
 | Setting | Flag | Env | Default |
 | --- | --- | --- | --- |
-| Generator provider | `--provider` | `JEVCODE_PROVIDER` | `anthropic` (`anthropic` or `openrouter`) |
-| Generator model | `--model` | `JEVCODE_MODEL` | `claude-sonnet-5` (`anthropic/claude-sonnet-5` on OpenRouter) |
+| Generator provider | `--provider` | `JEVCODE_PROVIDER` | `openrouter` (`anthropic` or `openrouter`) |
+| Generator model | `--model` | `JEVCODE_MODEL` | `z-ai/glm-5.3-flash` (priced siblings: `z-ai/glm-5.3-flashx`, `z-ai/glm-5.3`; `claude-sonnet-5` with `--provider anthropic`, `anthropic/claude-sonnet-5` on OpenRouter) |
 | Generator key | `--api-key` | `ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY` by provider, or `JEVCODE_API_KEY` | none (wizard / `jevcode login`) |
 | Generator base URL | `--base-url` | `JEVCODE_BASE_URL` | `https://api.anthropic.com` / `https://openrouter.ai/api/v1` |
 | Generator temperature | `--temperature` | `JEVCODE_TEMPERATURE` | unset: not sent (Sonnet 5 rejects non-default sampling parameters) |
@@ -248,7 +249,7 @@ reported as `ignored:launch`.
 | Log file | `--log <file>` | `JEVCODE_LOG`; `JEVCODE_TRACE=<file>` = the same at level `trace` | `<runDir>/jevcode.log` (fallback `~/.jevcode/logs/`) |
 | Log level | `--log-level error\|warn\|info\|debug\|trace`, `--verbose` (= `debug`) | `JEVCODE_LOG_LEVEL` | `info` (file only) |
 | Update check | `--update-notify` | `JEVCODE_UPDATE_NOTIFY` | `false` (post-run `jevcode upgrade --check`, detached) |
-| Generator prices, USD per MTok | | `JEVCODE_PRICE_IN_PER_M`, `JEVCODE_PRICE_OUT_PER_M` (cache: `JEVCODE_PRICE_CACHE_READ_PER_M`, `_WRITE_PER_M`, derived 0.1 × / 1.25 × input) | Sonnet 5: 2 / 10 (used when the API returns no cost) |
+| Generator prices, USD per MTok | | `JEVCODE_PRICE_IN_PER_M`, `JEVCODE_PRICE_OUT_PER_M` (cache: `JEVCODE_PRICE_CACHE_READ_PER_M`, `_WRITE_PER_M`, derived 0.1 × / 1.25 × input) | table: GLM 5.3 Flash 0.09 / 0.30 (cache read 0.018), GLM 5.3 FlashX 0.37 / 1.25, GLM 5.3 0.91 / 2.86, Sonnet 5 2 / 10 (OpenRouter models API 2026-09-21; used when the API returns no cost) |
 
 Risk thresholds are fixed by design: risk ≥ 0.7 blocks the action and tells the generator
 why; 0.3–0.7 pauses for human confirmation in the TUI with no auto-approve (in bench runs

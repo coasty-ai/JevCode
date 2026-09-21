@@ -100,7 +100,7 @@ describe('the ten-run session, pure assertions (TUI-DESIGN §19.7)', () => {
 
   it('row 4b: `/budget spend-cap 3` then `/resume` → overrides gain { limits.spendCapUsd 2 → 3, atStep 23 } and no immediate stop', () => {
     const config: Record<string, ConfigRecordValue> = {};
-    for (const [k, v] of Object.entries({ 'generator.provider': 'anthropic', 'generator.model': 'claude-sonnet-5', 'limits.spendCapUsd': '2', 'limits.maxSteps': '40', 'limits.maxWall': '30m', 'limits.maxReplans': '5', 'limits.completeThreshold': '0.85', 'limits.impossibleThreshold': '0.85' })) {
+    for (const [k, v] of Object.entries({ 'generator.provider': 'openrouter', 'generator.model': 'z-ai/glm-5.3-flash', 'limits.spendCapUsd': '2', 'limits.maxSteps': '40', 'limits.maxWall': '30m', 'limits.maxReplans': '5', 'limits.completeThreshold': '0.85', 'limits.impossibleThreshold': '0.85' })) {
       config[k] = { value: v, source: 'default' };
     }
     const meta = makeMeta({ runId: R(4), sessionId: S, parentRunId: R(3), source: 'cli', task: 'refactor date helpers', config });

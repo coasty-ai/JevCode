@@ -296,7 +296,7 @@ describe('spend-cap epilogue and /cost (§9.4, §9.6)', () => {
       session: { spentUsd: 4.11, capUsd: 10, runs: 5 },
       gen: { usd: 0.281, tablePriced: true },
       jev: { usd: 0.029, questions: 1204, p50Ms: 237 },
-      basis: { generator: 'table (claude-sonnet-5)', jev: 'provider usage.cost' },
+      basis: { generator: 'table (z-ai/glm-5.3-flash)', jev: 'provider usage.cost' },
       pending: [{ setting: 'spend-cap', value: '3.00' }],
     });
     expect(block).toEqual([
@@ -304,7 +304,7 @@ describe('spend-cap epilogue and /cost (§9.4, §9.6)', () => {
       'session $4.11 of $10.00 (41 %, 5 runs)',
       'per step p50 $0.023 · last $0.040 · about 42 steps left',
       'gen $0.281 (~ table-priced) · jev $0.029 for 1,204 questions (~$2.4e-5 each, p50 237 ms)',
-      'basis: generator table (claude-sonnet-5), jev provider usage.cost',
+      'basis: generator table (z-ai/glm-5.3-flash), jev provider usage.cost',
       'pending: spend-cap 3.00 (next /resume or run)',
       'raise: /budget spend-cap <usd> · /budget session-spend-cap <usd|none>',
     ]);

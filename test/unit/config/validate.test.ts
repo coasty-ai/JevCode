@@ -3,7 +3,8 @@ import type { Resolved } from '../../../src/core/types.js';
 import { ConfigError } from '../../../src/errors.js';
 import { deriveMaxGeneratorTokens, jevModelMatches, normaliseJevModelId, parseNumberSetting, parseUrlSetting, readAllowUnpriced, unpricedModelMessage, validateGenerator, validateLimits, type SettingReader } from '../../../src/config/validate.js';
 import { fingerprint, formatRecordValue, maskEntries, renderConfigTable } from '../../../src/config/mask.js';
-import { lookupPricing, SETTINGS } from '../../../src/config/defaults.js';
+import { CACHE_WRITE_FACTOR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_SPEND_CAP_USD, lookupPricing, SETTINGS } from '../../../src/config/defaults.js';
+import { costFromPricing } from '../../../src/provider/sse.js';
 import { sha256Hex } from '../../../src/core/hash.js';
 
 const reader: SettingReader = { get: () => undefined, sources: () => ['--x (flag)', 'X (env)'] };
@@ -66,11 +67,48 @@ describe('defaults and pricing', () => {
     expect(lookupPricing('claude-sonnet-5').pricing.inputPerM).toBe(2);
   });
 
+  it('the default generator is OpenRouter z-ai/glm-5.3-flash, priced from the OpenRouter models API (2026-09-21)', () => {
+    expect(DEFAULT_PROVIDER).toBe('openrouter');
+    expect(DEFAULT_MODEL).toBe('z-ai/glm-5.3-flash');
+    // $0.09/M prompt, $0.30/M completion, $0.018/M cache read; no cache-write rate listed, so 1.25 × input
+    expect(lookupPricing('z-ai/glm-5.3-flash')).toEqual({ pricing: { inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: 0.09 * CACHE_WRITE_FACTOR }, known: true });
+    expect(lookupPricing('Z-AI/GLM-5.3-Flash').known).toBe(true);
+    expect(lookupPricing('z-ai/glm-5.3-flash').pricing.cacheWritePerM).toBeCloseTo(0.1125, 12);
+    // the two siblings `--model` can switch to without the unpriced gate
+    expect(lookupPricing('z-ai/glm-5.3-flashx')).toEqual({ pricing: { inputPerM: 0.37, outputPerM: 1.25, cacheReadPerM: 0.075, cacheWritePerM: 0.37 * CACHE_WRITE_FACTOR }, known: true });
+    expect(lookupPricing('z-ai/glm-5.3')).toMatchObject({ pricing: { inputPerM: 0.91, outputPerM: 2.86 }, known: true });
+    expect(lookupPricing('z-ai/glm-5.3').pricing.cacheReadPerM).toBeCloseTo(0.091, 12);
+    expect(lookupPricing('z-ai/glm-5.3').pricing.cacheWritePerM).toBeCloseTo(1.1375, 12);
+  });
+
+  it('the $2.00 default spend cap buys 22,222,222 uncached input tokens or 6,666,666 output tokens of the default generator (Sonnet 5: 1,000,000 / 200,000)', () => {
+    const glm = lookupPricing(DEFAULT_MODEL).pricing;
+    const cap = DEFAULT_SPEND_CAP_USD;
+    expect(cap).toBe(2);
+    const inputTokens = Math.floor((cap / glm.inputPerM) * 1e6);
+    const outputTokens = Math.floor((cap / glm.outputPerM) * 1e6);
+    expect(inputTokens).toBe(22_222_222);
+    expect(outputTokens).toBe(6_666_666);
+    // the cost formula the providers fall back to agrees with the conversion (within one token's price)
+    expect(costFromPricing(glm, { input: inputTokens, cacheRead: 0, cacheWrite: 0, output: 0 })).toBeCloseTo(cap, 6);
+    expect(costFromPricing(glm, { input: 0, cacheRead: 0, cacheWrite: 0, output: outputTokens })).toBeCloseTo(cap, 6);
+    // a typical step (10k prompt of which 8k cached, 1k completion) costs well under a cent
+    expect(costFromPricing(glm, { input: 2000, cacheRead: 8000, cacheWrite: 0, output: 1000 })).toBeCloseTo((2000 * 0.09 + 8000 * 0.018 + 1000 * 0.3) / 1e6, 12);
+    const sonnet = lookupPricing('claude-sonnet-5').pricing;
+    expect(Math.floor((cap / sonnet.inputPerM) * 1e6)).toBe(1_000_000);
+    expect(Math.floor((cap / sonnet.outputPerM) * 1e6)).toBe(200_000);
+    // ~22× cheaper on input, ~33× on output
+    expect(sonnet.inputPerM / glm.inputPerM).toBeCloseTo(22.2, 1);
+    expect(sonnet.outputPerM / glm.outputPerM).toBeCloseTo(33.3, 1);
+  });
+
   it('the §3 table is complete: one spec per setting name, unique env names, secrets flagged', () => {
     const names = SETTINGS.map((s) => s.name);
     expect(new Set(names).size).toBe(names.length);
     expect(SETTINGS.filter((s) => s.secret).map((s) => s.name)).toEqual(['generator.apiKey', 'decider.apiKey']);
     const byName = new Map(SETTINGS.map((s) => [s.name, s]));
+    expect(byName.get('generator.provider')?.defaultValue).toBe('openrouter');
+    expect(byName.get('generator.model')?.defaultValue).toBe('z-ai/glm-5.3-flash');
     expect(byName.get('limits.spendCapUsd')?.defaultValue).toBe('2');
     expect(byName.get('limits.maxSteps')?.defaultValue).toBe('40');
     expect(byName.get('limits.maxWall')?.defaultValue).toBe('30m');

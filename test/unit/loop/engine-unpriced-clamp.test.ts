@@ -34,7 +34,7 @@ describe('unpriced usage is clamped after budget:unpriced (TUI-DESIGN §9.5)', (
     // three generator calls, one per step; the crossing step (3) is stopped by the cap, so only the NaN step and the 0.55 step commit
     expect(h.of('generator:end').map((e) => [e.step, e.usage.costUsd])).toEqual([[1, 0], [2, 0.55], [3, 0.5]]);
     expect(h.store.steps.map((s) => s.step)).toEqual([1, 2]);
-    expect(h.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'claude-sonnet-5', step: 1, tokens: { input: 1000, output: 200 } }]);
+    expect(h.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'z-ai/glm-5.3-flash', step: 1, tokens: { input: 1000, output: 200 } }]);
 
     // steps.jsonl: the committed record holds a finite number, and its JSON never says null
     const step1 = h.store.steps[0]!;

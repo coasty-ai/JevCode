@@ -34,8 +34,8 @@ const resolve = (flags: ParsedFlags, env: NodeJS.ProcessEnv = {}, opts: ResolveO
 describe('resolveConfig precedence', () => {
   it('uses defaults with their source when nothing is set, and never throws for a missing key', async () => {
     const c = await resolve(run());
-    expect(c.entries.get('generator.provider')).toEqual({ value: 'anthropic', source: 'default' });
-    expect(c.entries.get('generator.model')).toEqual({ value: 'claude-sonnet-5', source: 'default' });
+    expect(c.entries.get('generator.provider')).toEqual({ value: 'openrouter', source: 'default' });
+    expect(c.entries.get('generator.model')).toEqual({ value: 'z-ai/glm-5.3-flash', source: 'default' });
     expect(c.entries.get('decider.model')).toEqual({ value: 'typesafe/jev-1.13-20260917', source: 'default' });
     expect(c.entries.get('limits.maxWall')).toEqual({ value: '30m', source: 'default' });
     expect(c.entries.has('generator.apiKey')).toBe(false);
@@ -89,7 +89,7 @@ describe('resolveConfig precedence', () => {
     expect(c4.entries.get('generator.model')).toEqual({ value: 'from-file', source: `file:${join(cwd, 'jevcode.json')}` });
     await rm(join(cwd, 'jevcode.json'));
     const c5 = await resolve(run());
-    expect(c5.entries.get('generator.model')).toEqual({ value: 'claude-sonnet-5', source: 'default' });
+    expect(c5.entries.get('generator.model')).toEqual({ value: 'z-ai/glm-5.3-flash', source: 'default' });
   });
 
   it('record() keeps every source and masks secrets as { source, fingerprint }, flag keys included', async () => {
@@ -106,19 +106,23 @@ describe('resolveConfig precedence', () => {
 });
 
 describe('resolveConfig keys and lazy validation', () => {
-  it('generator key by provider, with JEVCODE_API_KEY as the fallback; decider key falls back to OPENROUTER_API_KEY', async () => {
+  it('generator key by provider (the default openrouter reads OPENROUTER_API_KEY), with JEVCODE_API_KEY as the fallback; decider key falls back to OPENROUTER_API_KEY', async () => {
+    // the default provider is openrouter: one OPENROUTER_API_KEY serves the generator and Jev; an Anthropic key alone is not the generator key
     const a = await resolve(run(), { ANTHROPIC_API_KEY: 'anthropic-key-1234', OPENROUTER_API_KEY: OR_KEY });
-    expect(a.generator().apiKey).toBe('anthropic-key-1234');
-    expect(a.generator().baseUrl).toBe('https://api.anthropic.com');
+    expect(a.generator()).toMatchObject({ provider: 'openrouter', model: 'z-ai/glm-5.3-flash', apiKey: OR_KEY, baseUrl: 'https://openrouter.ai/api/v1', priced: true });
     expect(a.decider().apiKey).toBe(OR_KEY);
-    const b = await resolve(run('--provider', 'openrouter'), { ANTHROPIC_API_KEY: 'anthropic-key-1234', OPENROUTER_API_KEY: OR_KEY });
-    expect(b.generator().apiKey).toBe(OR_KEY);
-    expect(b.generator().baseUrl).toBe('https://openrouter.ai/api/v1');
-    const c = await resolve(run(), { JEVCODE_API_KEY: 'generic-key-1234', JEV_API_KEY: 'jev-key-12345678', OPENROUTER_API_KEY: OR_KEY });
+    // --provider anthropic --model claude-sonnet-5 still works and switches the key variable
+    const b = await resolve(run('--provider', 'anthropic', '--model', 'claude-sonnet-5'), { ANTHROPIC_API_KEY: 'anthropic-key-1234', OPENROUTER_API_KEY: OR_KEY });
+    expect(b.generator()).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-5', apiKey: 'anthropic-key-1234', baseUrl: 'https://api.anthropic.com', priced: true });
+    expect(b.decider().apiKey).toBe(OR_KEY);
+    const c = await resolve(run(), { JEVCODE_API_KEY: 'generic-key-1234', JEV_API_KEY: 'jev-key-12345678' });
     expect(c.generator().apiKey).toBe('generic-key-1234');
     expect(c.decider().apiKey).toBe('jev-key-12345678');
+    // the provider-specific name wins over the generic one within the same layer
+    const c2 = await resolve(run(), { JEVCODE_API_KEY: 'generic-key-1234', OPENROUTER_API_KEY: OR_KEY });
+    expect(c2.generator().apiKey).toBe(OR_KEY);
     // env layer beats the dotenv layer even when the dotenv holds the provider-specific name
-    await writeFile(join(cwd, '.env'), 'ANTHROPIC_API_KEY=dotenv-anthropic-key\n');
+    await writeFile(join(cwd, '.env'), `OPENROUTER_API_KEY=${OR_KEY}\n`);
     const d = await resolve(run(), { JEVCODE_API_KEY: 'generic-key-1234' });
     expect(d.entries.get('generator.apiKey')).toEqual({ value: 'generic-key-1234', source: 'env' });
   });
@@ -137,24 +141,30 @@ describe('resolveConfig keys and lazy validation', () => {
     expect(ce.setting).toBe('generator.apiKey');
     expect(ce.exitCode).toBe(2);
     expect(ce.message).toContain('--api-key (flag)');
-    expect(ce.message).toContain('ANTHROPIC_API_KEY / JEVCODE_API_KEY (env)');
+    // the default provider is openrouter, so the missing-key error names OPENROUTER_API_KEY
+    expect(ce.message).toContain('generator.apiKey: the openrouter API key is not set');
+    expect(ce.message).toContain('OPENROUTER_API_KEY / JEVCODE_API_KEY (env)');
+    expect(ce.message).not.toContain('ANTHROPIC_API_KEY');
     expect(ce.message).toContain(`dotenv:${join(cwd, '.env')}`);
     expect(ce.message).toContain('no default');
     expect(() => c.decider()).toThrow(/decider\.apiKey/);
     expect(() => c.decider()).toThrow(/JEV_API_KEY \/ OPENROUTER_API_KEY/);
     expect(c.limits().maxSteps).toBe(40);
+    // --provider anthropic names its own variable
+    const anthropic = await resolve(run('--provider', 'anthropic'));
+    expect(() => anthropic.generator()).toThrow(/generator\.apiKey: the anthropic API key is not set.*ANTHROPIC_API_KEY \/ JEVCODE_API_KEY \(env\)/);
   });
 
   it('validates numbers, URLs and thresholds lazily and memoises the result', async () => {
-    const bad = await resolve(run('--max-steps', 'ten'), { ANTHROPIC_API_KEY: 'anthropic-key-1234' });
+    const bad = await resolve(run('--max-steps', 'ten'), { OPENROUTER_API_KEY: OR_KEY });
     expect(() => bad.limits()).toThrow(/limits\.maxSteps: "ten" \(from flag\) is not an integer >= 1/);
     const bad2 = await resolve(run('--complete-threshold', '1.5'));
     expect(() => bad2.limits()).toThrow(/limits\.completeThreshold/);
-    const bad3 = await resolve(run('--base-url', 'nope'), { ANTHROPIC_API_KEY: 'anthropic-key-1234' });
+    const bad3 = await resolve(run('--base-url', 'nope'), { OPENROUTER_API_KEY: OR_KEY });
     expect(() => bad3.generator()).toThrow(/generator\.baseUrl: "nope" \(from flag\) is not a URL/);
     const bad4 = await resolve(run(), { JEVCODE_MAX_WALL: 'forever' });
     expect(() => bad4.limits()).toThrow(/limits\.maxWall: "forever" \(from env\) is not a duration/);
-    const ok = await resolve(run('--temperature', '0.7', '--max-tokens', '1000', '--max-wall', '90s', '--spend-cap', '0.1'), { ANTHROPIC_API_KEY: 'anthropic-key-1234' });
+    const ok = await resolve(run('--temperature', '0.7', '--max-tokens', '1000', '--max-wall', '90s', '--spend-cap', '0.1'), { OPENROUTER_API_KEY: OR_KEY });
     const g = ok.generator();
     expect(g.temperature).toBe(0.7);
     expect(g.maxTokens).toBe(1000);
@@ -162,7 +172,7 @@ describe('resolveConfig keys and lazy validation', () => {
     expect(ok.limits().maxWallMs).toBe(90_000);
     expect(ok.limits().spendCapUsd).toBe(0.1);
     expect(ok.limits()).toBe(ok.limits());
-    const noTemp = await resolve(run(), { ANTHROPIC_API_KEY: 'anthropic-key-1234' });
+    const noTemp = await resolve(run(), { OPENROUTER_API_KEY: OR_KEY });
     expect(noTemp.generator().temperature).toBeNull();
   });
 
@@ -175,8 +185,14 @@ describe('resolveConfig keys and lazy validation', () => {
     expect(() => badModel.decider()).toThrow(/decider\.model/);
   });
 
-  it('pricing: table for Sonnet 5, env overrides, zeros plus a warning for unknown models', async () => {
+  it('pricing: table for the default GLM 5.3 Flash and for Sonnet 5, env overrides, zeros plus a warning for unknown models', async () => {
     const env = { OPENROUTER_API_KEY: OR_KEY };
+    const dflt = await resolve(run(), env);
+    expect(dflt.generator().pricing).toEqual({ inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: expect.closeTo(0.1125, 12) });
+    expect(dflt.generator().priced).toBe(true);
+    expect(dflt.warnings).toEqual([]);
+    expect(dflt.record()['generator.priceCacheReadPerM']).toBeUndefined(); // a table hit: no derived cache rows
+    for (const id of ['z-ai/glm-5.3-flashx', 'z-ai/glm-5.3']) expect((await resolve(run('--model', id), env)).generator().priced).toBe(true);
     const a = await resolve(run('--provider', 'openrouter', '--model', 'anthropic/claude-sonnet-5'), env);
     expect(a.generator().pricing).toEqual({ inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 });
     expect(a.warnings).toEqual([]);
@@ -445,10 +461,13 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect(none.missingSecrets('jev-only')).toEqual(['decider.apiKey']);
     expect((await resolve(run('--mock'))).missingSecrets('jev-on')).toEqual([]);
     expect((await resolve(run('--mock-generator'))).missingSecrets('jev-on')).toEqual(['decider.apiKey']);
-    expect((await resolve(run(), { ANTHROPIC_API_KEY: 'anthropic-key-1234' })).missingSecrets('jev-on')).toEqual(['decider.apiKey']);
-    expect((await resolve(run(), { OPENROUTER_API_KEY: OR_KEY })).missingSecrets('jev-on')).toEqual(['generator.apiKey']);
+    // default provider openrouter: one OPENROUTER_API_KEY covers both sides; an Anthropic key alone covers neither
+    expect((await resolve(run(), { OPENROUTER_API_KEY: OR_KEY })).missingSecrets('jev-on')).toEqual([]);
+    expect((await resolve(run(), { ANTHROPIC_API_KEY: 'anthropic-key-1234' })).missingSecrets('jev-on')).toEqual(['generator.apiKey', 'decider.apiKey']);
+    expect((await resolve(run('--provider', 'anthropic'), { ANTHROPIC_API_KEY: 'anthropic-key-1234' })).missingSecrets('jev-on')).toEqual(['decider.apiKey']);
+    expect((await resolve(run('--provider', 'anthropic'), { OPENROUTER_API_KEY: OR_KEY })).missingSecrets('jev-on')).toEqual(['generator.apiKey']);
     expect((await resolve(run('--provider', 'openrouter'), { OPENROUTER_API_KEY: OR_KEY })).missingSecrets('jev-on')).toEqual([]);
-    expect((await resolve(run(), { ANTHROPIC_API_KEY: '   ', JEV_API_KEY: '' })).missingSecrets('jev-on')).toEqual(['generator.apiKey', 'decider.apiKey']);
+    expect((await resolve(run(), { OPENROUTER_API_KEY: '   ', JEV_API_KEY: '' })).missingSecrets('jev-on')).toEqual(['generator.apiKey', 'decider.apiKey']);
   });
 
   it('addSecret / dropSecret delegate to the redactor', async () => {
@@ -462,20 +481,24 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
 
   it('priced fail-closed through generator(): an unpriced Anthropic model is a ConfigError unless --allow-unpriced, which sets the token cap', async () => {
     const env = { ANTHROPIC_API_KEY: 'anthropic-key-1234' };
-    const bad = await resolve(run('--model', 'claude-next'), env);
+    const bad = await resolve(run('--provider', 'anthropic', '--model', 'claude-next'), env);
     expect(() => bad.generator()).toThrow('generator.model "claude-next" has no pricing entry, so the $2.000 spend cap could not be enforced. Set JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M (USD per million tokens), or pass --allow-unpriced to run under a token cap instead.');
     expect('maxGeneratorTokens' in bad.limits()).toBe(false);
-    const ok = await resolve(withFlags({ allowUnpriced: true }, '--model', 'claude-next', '--spend-cap', '1.5'), env);
+    const ok = await resolve(withFlags({ allowUnpriced: true }, '--provider', 'anthropic', '--model', 'claude-next', '--spend-cap', '1.5'), env);
     expect(ok.generator().priced).toBe(false);
     expect(ok.limits().maxGeneratorTokens).toBe(100_000);
     expect(ok.warnings.some((w) => w.includes('no pricing entry') && w.includes('100000'))).toBe(true);
     expect(ok.record()['limits.maxGeneratorTokens']).toEqual({ value: '100000', source: 'derived' });
     expect(ok.record()['limits.allowUnpriced']).toEqual({ value: 'true', source: 'flag' });
-    const viaEnv = await resolve(run('--model', 'claude-next'), { ...env, JEVCODE_ALLOW_UNPRICED: '1', JEVCODE_MAX_GENERATOR_TOKENS: '50000' });
+    const viaEnv = await resolve(run('--provider', 'anthropic', '--model', 'claude-next'), { ...env, JEVCODE_ALLOW_UNPRICED: '1', JEVCODE_MAX_GENERATOR_TOKENS: '50000' });
     expect(viaEnv.limits().maxGeneratorTokens).toBe(50_000);
     expect(viaEnv.record()['limits.maxGeneratorTokens']).toEqual({ value: '50000', source: 'env' });
-    expect((await resolve(run(), env)).generator().priced).toBe(true);
-    expect((await resolve(run(), env)).record()['limits.maxGeneratorTokens']).toBeUndefined();
+    expect((await resolve(run('--provider', 'anthropic', '--model', 'claude-sonnet-5'), env)).generator().priced).toBe(true);
+    expect((await resolve(run('--provider', 'anthropic', '--model', 'claude-sonnet-5'), env)).record()['limits.maxGeneratorTokens']).toBeUndefined();
+    // the default (OpenRouter GLM 5.3 Flash) is table-priced: no gate, no token cap row
+    const dflt = await resolve(run(), { OPENROUTER_API_KEY: OR_KEY });
+    expect(dflt.generator().priced).toBe(true);
+    expect(dflt.record()['limits.maxGeneratorTokens']).toBeUndefined();
   });
 
   it('cache price rows: table for known models, derived 0.1× / 1.25× input for unknown ones, explicit overrides win', async () => {
@@ -495,7 +518,8 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
   it('record() never throws, even with malformed booleans, and keeps every existing row', async () => {
     const c = await resolve(run(), { JEVCODE_ALLOW_UNPRICED: 'maybe' });
     const rec = c.record();
-    expect(rec['generator.provider']).toEqual({ value: 'anthropic', source: 'default' });
+    expect(rec['generator.provider']).toEqual({ value: 'openrouter', source: 'default' });
+    expect(rec['generator.model']).toEqual({ value: 'z-ai/glm-5.3-flash', source: 'default' });
     expect(rec['ui.theme']).toEqual({ value: 'dark', source: 'default' });
     expect(rec['limits.maxGeneratorTokens']).toBeUndefined();
     expect(() => c.limits()).toThrow(/limits\.allowUnpriced: "maybe" \(from env\) is not a boolean/);
@@ -606,7 +630,7 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
       jevModelDrift: null,
     };
     const identity = resumeIdentityFromRunMeta(meta);
-    expect(identity).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-5', sandbox: 'auto' });
+    expect(identity).toMatchObject({ provider: 'openrouter', model: 'z-ai/glm-5.3-flash', sandbox: 'auto' });
     expect(JSON.stringify(identity)).not.toContain('ignored');
     const again = await resolve(run(), { JEVCODE_FPS: '25' });
     const rc = reconcileResumeConfig({ limits: again.limits(), workspaceRealpath: null, state: { step: 3, spendTotalUsd: 0.1, wallMsUsed: 1, replanCount: 0, stopReason: null, generatorTokens: 0 } }, meta, parseCliArgs(['run', '--resume', meta.runId]));

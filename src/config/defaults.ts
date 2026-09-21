@@ -2,8 +2,9 @@
 import { join } from 'node:path';
 import type { Pricing, SettingSpec } from './types.js';
 
-export const DEFAULT_PROVIDER = 'anthropic';
-export const DEFAULT_MODEL = 'claude-sonnet-5';
+/** DECISIONS 2026-09-21: the default generator is OpenRouter `z-ai/glm-5.3-flash` (~20× cheaper than Sonnet 5, 1M context, tools + structured outputs). */
+export const DEFAULT_PROVIDER = 'openrouter';
+export const DEFAULT_MODEL = 'z-ai/glm-5.3-flash';
 export const DEFAULT_MAX_TOKENS = 4096;
 export const DEFAULT_JEV_BASE_URL = 'https://openrouter.ai/api/alpha/decisions';
 /** Dated id (REPORT §16): reproducible thresholds. Aliases are accepted and resolved on the first call (§5.4 rule 7). */
@@ -46,13 +47,28 @@ export const BASE_URLS: Readonly<Record<'anthropic' | 'openrouter', string>> = {
 };
 
 /**
- * USD per million tokens (research 07 §1.2, §2.5, 2026-09-19). Used only when the API does
- * not return a cost. Cache write is the 5-minute rate.
+ * USD per million tokens. Used only when the API does not return a cost (OpenRouter's `usage.cost` wins when present).
+ *
+ * - Sonnet 5: research 07 §1.2, §2.5 (2026-09-19). Cache write is the 5-minute rate.
+ * - GLM 5.3 (z-ai/*): the OpenRouter models API, fetched 2026-09-21. `glm-5.3-flash` lists prompt 0.00000009/tok
+ *   ($0.09/M), completion 0.0000003 ($0.30/M), input_cache_read 0.000000018 ($0.018/M); `glm-5.3-flashx` (the 200 tok/s
+ *   variant) prompt $0.37/M, completion $1.25/M, cache read $0.075/M; `glm-5.3` prompt $0.91/M, completion $2.86/M with
+ *   no cache-read rate listed (derived: CACHE_READ_FACTOR × input). None of the three lists a cache-write rate, so it is
+ *   derived as CACHE_WRITE_FACTOR × input (TUI-DESIGN §9.5). Context 1,310,720 (top provider 1,048,576), max completion
+ *   131,072 tokens; tools, tool_choice, parallel_tool_calls, structured_outputs, response_format, temperature, seed, stop,
+ *   max_tokens and reasoning are supported parameters. These are the lowest-provider rates: the 2026-09-21 live check was
+ *   billed at exactly 5/3× (a provider at $0.15/M / $0.50/M), so the fallback is optimistic when `usage.cost` is absent.
  */
 const SONNET_5: Pricing = { inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 };
+const GLM_5_3_FLASH: Pricing = { inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: 0.09 * CACHE_WRITE_FACTOR };
+const GLM_5_3_FLASHX: Pricing = { inputPerM: 0.37, outputPerM: 1.25, cacheReadPerM: 0.075, cacheWritePerM: 0.37 * CACHE_WRITE_FACTOR };
+const GLM_5_3: Pricing = { inputPerM: 0.91, outputPerM: 2.86, cacheReadPerM: 0.91 * CACHE_READ_FACTOR, cacheWritePerM: 0.91 * CACHE_WRITE_FACTOR };
 export const ZERO_PRICING: Pricing = { inputPerM: 0, outputPerM: 0, cacheReadPerM: 0, cacheWritePerM: 0 };
 
 export const PRICING_TABLE: ReadonlyMap<string, Pricing> = new Map<string, Pricing>([
+  ['z-ai/glm-5.3-flash', GLM_5_3_FLASH],
+  ['z-ai/glm-5.3-flashx', GLM_5_3_FLASHX],
+  ['z-ai/glm-5.3', GLM_5_3],
   ['claude-sonnet-5', SONNET_5],
   ['anthropic/claude-sonnet-5', SONNET_5],
   ['anthropic/claude-sonnet-5-20260630', SONNET_5],

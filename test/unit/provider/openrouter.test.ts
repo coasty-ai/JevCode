@@ -3,7 +3,7 @@ import { AbortError, JevCodeError, ProviderHttpError } from '../../../src/errors
 import { MAX_MESSAGE_CHARS } from '../../../src/provider/sse.js';
 import { OPENROUTER_REFERER, OPENROUTER_TITLE, buildOpenRouterBody, createOpenRouterProvider } from '../../../src/provider/openrouter.js';
 import type { OpenRouterRequestBody } from '../../../src/provider/types.js';
-import { PROPOSE_TOOL, fixture, genOpts, openrouterCfg, request, scriptedFetch, splitEvery, testDeps } from './helpers.js';
+import { GLM_PRICING, PROPOSE_TOOL, fixture, genOpts, openrouterCfg, request, scriptedFetch, splitEvery, testDeps } from './helpers.js';
 
 const sse = (name: string) => ({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: fixture(name) });
 
@@ -76,6 +76,31 @@ describe('createOpenRouterProvider', () => {
     const body = f.calls[0]!.body as unknown as OpenRouterRequestBody;
     expect(body.tools).toEqual([{ type: 'function', function: { name: 'propose_action', description: PROPOSE_TOOL.description, parameters: PROPOSE_TOOL.inputSchema, strict: true } }]);
     expect(body.tool_choice).toEqual({ type: 'function', function: { name: 'propose_action' } });
+    expect(body.parallel_tool_calls).toBe(false);
+  });
+
+  it('the default generator z-ai/glm-5.3-flash gets the same body: strict tools, a forced tool_choice, parallel_tool_calls false, max_tokens under its 131,072 cap, no temperature', () => {
+    const cfg = openrouterCfg({ model: 'z-ai/glm-5.3-flash', pricing: GLM_PRICING, priced: true });
+    const body = buildOpenRouterBody(cfg, request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' }, maxTokens: 4096 }));
+    expect(body).toEqual({
+      model: 'z-ai/glm-5.3-flash',
+      messages: [
+        { role: 'system', content: 'You are the generator.' },
+        { role: 'user', content: 'Fix the bug.' },
+      ],
+      stream: true,
+      max_tokens: 4096,
+      usage: { include: true },
+      tools: [{ type: 'function', function: { name: 'propose_action', description: PROPOSE_TOOL.description, parameters: PROPOSE_TOOL.inputSchema, strict: true } }],
+      tool_choice: { type: 'function', function: { name: 'propose_action' } },
+      parallel_tool_calls: false,
+    });
+    expect(body.max_tokens).toBeLessThanOrEqual(131_072);
+    // the wire body is plain JSON with no undefined members (JSON.stringify would drop them, so the key set is what the API sees)
+    expect(Object.keys(JSON.parse(JSON.stringify(body)) as object).sort()).toEqual(['max_tokens', 'messages', 'model', 'parallel_tool_calls', 'stream', 'tool_choice', 'tools', 'usage']);
+    // without tools there is no tool_choice and no parallel_tool_calls
+    const plain = buildOpenRouterBody(cfg, request());
+    expect('tools' in plain || 'tool_choice' in plain || 'parallel_tool_calls' in plain).toBe(false);
   });
 
   it('maps toolChoice strings and temperature', () => {
@@ -83,6 +108,7 @@ describe('createOpenRouterProvider', () => {
     expect(buildOpenRouterBody(cfg, request({ tools: [PROPOSE_TOOL], toolChoice: 'auto' })).tool_choice).toBe('auto');
     expect(buildOpenRouterBody(cfg, request({ tools: [PROPOSE_TOOL], toolChoice: 'required' })).tool_choice).toBe('required');
     expect(buildOpenRouterBody(cfg, request({ toolChoice: 'required' })).tool_choice).toBeUndefined();
+    expect(buildOpenRouterBody(cfg, request({ toolChoice: 'required' })).parallel_tool_calls).toBeUndefined();
     expect('temperature' in buildOpenRouterBody(cfg, request({ temperature: null }))).toBe(false);
     expect(buildOpenRouterBody(cfg, request({ temperature: 0.2 })).temperature).toBe(0.2);
     // the request's null is authoritative: config is not a fallback (Sonnet 5 400s on any sampling param)

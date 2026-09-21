@@ -240,7 +240,8 @@ export function turn(action: Action, plan: Partial<PlanDraft> = {}, extra: Parti
 
 export function createFakeProvider(turns: Turn[] | ((req: GenerateRequest, index: number) => Turn), opts: { model?: string } = {}): FakeProvider {
   const requests: GenerateRequest[] = [];
-  const model = opts.model ?? 'claude-sonnet-5';
+  // the default generator (config/defaults.ts DEFAULT_MODEL); tests that mean Sonnet pass `model` explicitly
+  const model = opts.model ?? 'z-ai/glm-5.3-flash';
   return {
     name: 'mock',
     model,

@@ -119,6 +119,8 @@ export function scriptedFetch(script: ScriptedResponse[]): ScriptedFetch {
 }
 
 export const PRICING: GeneratorConfig['pricing'] = { inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 };
+/** The default generator's rates (config/defaults.ts, OpenRouter models API 2026-09-21). */
+export const GLM_PRICING: GeneratorConfig['pricing'] = { inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: 0.1125 };
 
 export function anthropicCfg(over: Partial<GeneratorConfig> = {}): GeneratorConfig {
   return { provider: 'anthropic', model: 'claude-sonnet-5', apiKey: 'sk-ant-test-key-000000000000000000000000', baseUrl: 'https://api.anthropic.com', temperature: null, maxTokens: 4096, pricing: PRICING, ...over };
