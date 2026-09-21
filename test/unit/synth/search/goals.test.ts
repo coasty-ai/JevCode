@@ -16,6 +16,7 @@ import {
   ledgerLine,
   MAX_BUDGET_HIT_STEPS,
   MAX_CONSECUTIVE_BUDGET_HITS,
+  MAX_PROGRESS_COMMITS_PER_GOAL,
   MAX_SEARCHES_WITHOUT_COMMIT,
   missingNamesIn,
   noteBudgetHit,
@@ -569,5 +570,50 @@ describe('§5.3 budget-hit steps with progress (2026-09-20)', () => {
     noteBudgetHit(g, true);
     noteCommit(g, false);
     expect(g).toMatchObject({ status: 'open', budgetHits: 0, budgetSteps: 0 });
+  });
+});
+
+describe('progress commits and the chain rule (jev-only-rungs-1-2.md §19.7)', () => {
+  it('noteCommit on a partial fix keeps the goal open, counts one progress commit and drops the sites, tested sites and phase (the remaining tests fail at a new frame)', () => {
+    const g = goal('g1', ['t_a', 't_b', 't_c'], { status: 'active', attempts: 2, budgetHits: 1, phase: 'WIDENED' });
+    g.exhausted.set('src/m.py:3:replace', new Set(['mutation']));
+    g.testedSites = new Set(['src/m.py:3:replace']);
+    noteCommit(g, false);
+    expect(g).toMatchObject({ status: 'open', attempts: 0, budgetHits: 0, budgetSteps: 0, progressCommits: 1, phase: 'SEEDS' });
+    expect(g.exhausted.size).toBe(0);
+    expect(g.testedSites).toBeUndefined();
+    noteCommit(g, false);
+    expect(g.progressCommits).toBe(2);
+    // a full fix: fixed, and the chain count is untouched (it stops mattering)
+    noteCommit(g, true);
+    expect(g.status).toBe('fixed');
+    expect(g.progressCommits).toBe(2);
+  });
+
+  it('reconcile after a partial fix: the remaining tests stay OPEN under the goal id (fresh frame, inherited counters, never fixed); at MAX_PROGRESS_COMMITS_PER_GOAL the remaining tests continue as a NEW goal with fresh counters', () => {
+    // two links so far: the goal keeps its id and its count for the remaining tests it overlaps most (frame-less clustering makes one goal per test here, so the other test starts a new goal)
+    const g1 = goal('g1', ['t_a', 't_b', 't_c'], { status: 'open', attempts: 0, phase: 'SEEDS', progressCommits: MAX_PROGRESS_COMMITS_PER_GOAL - 1 });
+    const fresh = clusterFailures(baselineOf([failure('t_b', 't_b'), failure('t_c', 't_c')]));
+    const out = reconcile([g1], fresh, { remaining: ['fix t_a, +2 more in src/m.py'] });
+    expect(out.map((g) => [g.id, g.status, g.tests, g.progressCommits ?? 0])).toEqual([
+      ['g1', 'open', ['t_b'], MAX_PROGRESS_COMMITS_PER_GOAL - 1],
+      ['g2', 'open', ['t_c'], 0],
+    ]);
+    // the old plan item names t_a, which passes now: the fresh item stands (the engine's accepted item attaches only by a still-failing first test)
+    expect(out[0]?.planItem).toBe('fix t_b in the workspace');
+
+    // at the cap: a new id, fresh counters, the prior consumed (not fixed: its tests still fail)
+    const capped = goal('g1', ['t_a', 't_b', 't_c'], { status: 'open', attempts: 2, budgetHits: 1, phase: 'BEAM', progressCommits: MAX_PROGRESS_COMMITS_PER_GOAL });
+    capped.exhausted.set('k', new Set(['donor']));
+    const other = goal('g2', ['t_z'], { status: 'parked', parkedReason: 'r', attempts: 3 });
+    const fresh2 = clusterFailures(baselineOf([failure('t_c', 't_c'), failure('t_z', 't_z')]));
+    const out2 = reconcile([capped, other], fresh2, { remaining: [] });
+    const byId = new Map(out2.map((g) => [g.id, g]));
+    expect([...byId.keys()].sort()).toEqual(['g2', 'g3']);
+    const successor = byId.get('g3');
+    expect(successor).toMatchObject({ tests: ['t_c'], status: 'open', attempts: 0, budgetHits: 0, phase: 'SEEDS', progressCommits: 0 });
+    expect(successor?.exhausted.size).toBe(0);
+    expect(byId.get('g2')).toMatchObject({ status: 'parked', parkedReason: 'r', attempts: 3, tests: ['t_z'] });
+    expect(out2.some((g) => g.status === 'fixed')).toBe(false);
   });
 });

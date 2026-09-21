@@ -7,7 +7,7 @@ import { afterAll, describe, expect, it } from 'vitest';
 import type { ExecResult, Json, SynthesisContext } from '../../../../src/core/types.js';
 import type { LanePool } from '../../../../src/synth/sieve/lanes.js';
 import { ESCAPE_KEY } from '../../../../src/jev/questions.js';
-import { appliedOnCommitted, createGuardMemory, forgetGoal, guardState, improvedBase, siteKeyOf } from '../../../../src/synth/search/bases.js';
+import { appliedOnCommitted, createGuardMemory, forgetGoal, guardState, heldPartialOutcome, holdBestPartial, improvedBase, improvedBaseFor, siteKeyOf } from '../../../../src/synth/search/bases.js';
 import {
   ARBITRATE_TASK,
   GENUINE_FIX_INSTRUCTIONS,
@@ -30,6 +30,7 @@ import {
   createDecide,
   decide,
   editCost,
+  gateHeldPartial,
   generalInstructions,
   guardSubjects,
   isPlausible,
@@ -81,6 +82,7 @@ import {
   committedBase,
   failure,
   goal,
+  noulAnswer,
   oracle,
   outcome,
   partialOutcome,
@@ -476,7 +478,8 @@ describe('decide: the §2.6 table', () => {
     expect(guardState(mem).suspect?.goalId).toBe('g1');
     expect(text(guardState(mem).suspect!.outcome)).toBe('search_from(goalnode) for nextnode in node.successors');
     expect(guardState(mem).fallbacks).toBeNull();
-    expect(SUSPECT_ESCAPE_MIN).toBe(0.8);
+    // 0.5: between the highest gold-containing escape measured (0.38, with a Noul ≥ 0.45) and the lowest all-overfit one (0.67, max Noul 0.08: ladder `masked` run 3b, §20)
+    expect(SUSPECT_ESCAPE_MIN).toBe(0.5);
     expect(SUSPECT_NOUL_MAX).toBe(0.1);
 
     // the suspect belongs to its goal: another goal's step end does not commit it, forgetGoal drops it
@@ -502,6 +505,14 @@ describe('decide: the §2.6 table', () => {
     const wrapLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.05 }, escape: 0.89, noul: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.05 } }));
     const held = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, wrapLike);
     expect(held).toMatchObject({ kind: 'continue', held: 'suspect', arbitrated: true });
+    // ladder `masked` runs 3 / 3b (§20): five `return 0` inserts, escape 0.75 / 0.67 with max Noul 0.08 — the signature
+    const maskedLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.2, 'search_from(goalnode) for nextnode in node.successors': 0.13 }, escape: 0.67, noul: { 'nextnode for nextnode in node.successors': 0.08, 'search_from(goalnode) for nextnode in node.successors': 0.05 } }));
+    const heldToo = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, maskedLike);
+    expect(heldToo).toMatchObject({ kind: 'continue', held: 'suspect', arbitrated: true });
+    // the highest gold-containing escape measured (0.38) came with a Noul ≥ 0.45: committed
+    const goldLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.5 }, escape: 0.38, noul: { 'nextnode for nextnode in node.successors': 0.45 } }));
+    const committed = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, goldLike);
+    expect(committed.kind).toBe('commit');
   });
   it('override rule: Choice argmax with Noul < 0.3 loses to a representative with Noul ≥ 0.7', async () => {
     const mem = createGuardMemory(NP_BASE);
@@ -935,5 +946,65 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     const d2 = await createDecide()({ ...ctx, ask: askRepo } as unknown as SynthesisContext, repoMem, g, [a, b]);
     expect(d2.kind).toBe('commit');
     expect(events.filter((e) => e.includes('(no probe)'))).toHaveLength(2);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// gateHeldPartial: the guard on a progress commit (jev-only-rungs-1-2.md §19.7)
+// ---------------------------------------------------------------------------------------
+
+describe('gateHeldPartial: the held partial passes the lone-passer rule (b) before it is committed as a partial fix', () => {
+  const first = NEXT_PERMUTATION_FAILURES[0]!.testId;
+  const notes: string[] = [];
+  const note = (d: string): void => {
+    notes.push(d);
+  };
+
+  it('no signal → committed at once as `partial` with the verified run as `after`, no request; the base leaves the beam', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const o = partialOutcome(npCands[0]!, NP_BASE, [first]);
+    expect(holdBestPartial(mem, [o], NP_GOAL).replaced).toBe(true);
+    expect(heldPartialOutcome(mem, NP_GOAL)).toBe(o);
+    const g = await gateHeldPartial(mem, NP_GOAL, o, throwingAsk, { note });
+    expect(g).toMatchObject({ verdict: 'clean', requests: 0, signals: [], noul: null });
+    expect(g.decision).toMatchObject({ kind: 'commit', note: 'partial', allGoalTestsPass: false, after: o.subset, outcome: o });
+    expect(improvedBase(mem)).toBeUndefined();
+    expect(heldPartialOutcome(mem, NP_GOAL)).toBeNull();
+  });
+
+  it('a signal (an emptied statement) → ONE Q16 advisory; below the bound the partial is held (base kept), the advice is cached and a later call asks nothing', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const o = partialOutcome(candidate(NP_SITE, '                pass', { id: 'np-pass' }), NP_BASE, [first]);
+    holdBestPartial(mem, [o], NP_GOAL);
+    expect(suspicionSignals(o, NP_GOAL)).toEqual(['deletes_statement']);
+    const ask = scriptedAsk((qs) => Object.fromEntries(Object.keys(qs).map((id) => [id, noulAnswer(0.12)])));
+    const g = await gateHeldPartial(mem, NP_GOAL, o, ask, { note });
+    expect(g).toMatchObject({ verdict: 'held', requests: 1, signals: ['deletes_statement'], noul: 0.12, decision: null });
+    expect(ask.calls).toHaveLength(1);
+    expect(Object.keys(ask.calls[0]!.questions)).toEqual(['general_cand_01']);
+    expect(improvedBaseFor(mem, NP_GOAL)).toBeDefined();
+    expect(guardState(mem).partialAdvice.get('np-pass')).toEqual({ goalId: NP_GOAL.id, signals: ['deletes_statement'], noul: 0.12 });
+    // the next step: the cached advice decides, no request (a throwing ask proves it)
+    const again = await gateHeldPartial(mem, NP_GOAL, o, throwingAsk, { note });
+    expect(again).toMatchObject({ verdict: 'held', requests: 0, noul: 0.12, decision: null });
+    expect(notes.filter((n) => /holds the partial .*deletes_statement; general 0\.12 < 0\.3.*not committed/.test(n))).toHaveLength(2);
+    expect(guardState(mem).partialAdvice.size).toBe(1);
+  });
+
+  it('a signal but Jev vouches (p ≥ the bound) → committed; and with no Jev request left the flagged partial is held without asking', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const o = partialOutcome(candidate(NP_SITE, '                pass', { id: 'np-pass-2' }), NP_BASE, [first]);
+    holdBestPartial(mem, [o], NP_GOAL);
+    // nothing to ask with: held, not committed, no advice remembered (it is asked next step)
+    const noRequest = await gateHeldPartial(mem, NP_GOAL, o, throwingAsk, { budget: { jevRequestsLeft: 0 }, note });
+    expect(noRequest).toMatchObject({ verdict: 'no_request', requests: 0, decision: null, noul: null });
+    expect(guardState(mem).partialAdvice.size).toBe(0);
+    expect(improvedBaseFor(mem, NP_GOAL)).toBeDefined();
+    // a request available and Jev at 0.8 ≥ 0.3: the partial is committed
+    const ask = scriptedAsk((qs) => Object.fromEntries(Object.keys(qs).map((id) => [id, noulAnswer(0.8)])));
+    const vouched = await gateHeldPartial(mem, NP_GOAL, o, ask, { budget: { jevRequestsLeft: 3 }, note });
+    expect(vouched).toMatchObject({ verdict: 'vouched', requests: 1, noul: 0.8 });
+    expect(vouched.decision).toMatchObject({ kind: 'commit', note: 'partial', allGoalTestsPass: false });
+    expect(improvedBase(mem)).toBeUndefined();
   });
 });

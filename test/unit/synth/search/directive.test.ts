@@ -116,15 +116,26 @@ describe('handleDirective: the §5.4 mapping table', () => {
     if (synth[0]?.type === 'synth') expect(synth[0].detail).toMatch(/^change_approach: reopened p1, p2; rotated source order of p1 \(1\); sites of p1 rebuilt; rotated source order of p2 \(1\)/);
   });
 
-  it('gather_context on a repository reads the suspected files the context stage did not show', async () => {
+  it('gather_context never proposes a `read` (§19.7): on a repository with unseen suspected files every open goal is re-localised (sites dropped, source order rotated, file beam widened) and the step continues to the search', async () => {
     const g = makeGoal({ id: 'g1', status: 'active', suspectedFiles: ['src/gcd.py', 'src/a.py', 'src/b.py'] });
+    const other = makeGoal({ id: 'g2', suspectedFiles: ['src/a.py'] });
+    const parked = makeGoal({ id: 'g3', status: 'parked', parkedReason: 'r' });
+    const mem = makeMemory({ goals: [g, other, parked], localizeCache: new Map([['g1', cachedLocalize(['src/gcd.py'])], ['g2', cachedLocalize(['src/a.py'])], ['g3', cachedLocalize(['src/b.py'])]]) });
     const ctx = makeCtx({ directive: engineText('gather_context'), files: REPO_FILES, contextFiles: [fileView('src/a.py')], plan: { remaining: [g.planItem], openProblems: ['keep'] } });
-    const r = await handleDirective(ctx, makeMemory({ goals: [g] }));
-    expect(r.kind).toBe('proposal');
-    if (r.kind === 'proposal') {
-      expect(r.proposal.action).toEqual({ kind: 'read', paths: ['src/gcd.py', 'src/b.py'] });
-      expect(r.proposal.plan).toEqual({ done: [], remaining: [g.planItem], openProblems: ['keep'] });
-    }
+    const r = await handleDirective(ctx, mem);
+    expect(r.kind).toBe('continue');
+    expect(r.move).toBe('gather_context');
+    // the open goals (active and open, not the parked one) are re-localised with a rotated source order and the wider file beam
+    expect(mem.localizeCache.has('g1')).toBe(false);
+    expect(mem.localizeCache.has('g2')).toBe(false);
+    expect(mem.localizeCache.has('g3')).toBe(true);
+    expect(mem.overrides.sourceRotation).toEqual({ g1: 1, g2: 1 });
+    expect(mem.overrides.fileBeam).toBe(WIDENED_FILE_BEAM);
+    expect(r.changes).toContain('re-localise g1, g2 with the latest failure text');
+    expect(parked.status).toBe('parked');
+    // and the directive event says what changed, never "read"
+    const detail = ctx.events.find((e) => e.type === 'synth' && e.phase === 'directive');
+    expect(detail !== undefined && detail.type === 'synth' ? detail.detail : '').not.toMatch(/\bread\b/);
   });
 
   it('gather_context with everything shown (or on a single file) re-localises with a top-10 file beam', async () => {
@@ -144,11 +155,41 @@ describe('handleDirective: the §5.4 mapping table', () => {
     expect(single.overrides.fileBeam).toBe(WIDENED_FILE_BEAM);
   });
 
-  it('gather_context with no goal to gather for continues unchanged', async () => {
+  it('gather_context with no goal to gather for continues unchanged (fixed goals; a goal parked for a timed-out suite or after the best-guess commit stays parked: the honest partial `done` follows)', async () => {
     const mem = makeMemory({ goals: [makeGoal({ id: 'f', status: 'fixed' })] });
     const r = await handleDirective(makeCtx({ directive: engineText('gather_context'), files: REPO_FILES }), mem);
     expect(r).toMatchObject({ kind: 'continue', changes: [] });
     expect(mem.overrides.fileBeam).toBe(DEFAULT_FILE_BEAM);
+    const slow = makeGoal({ id: 's', status: 'parked', parkedReason: 'suite too slow' });
+    const guessed = makeGoal({ id: 'b', status: 'parked', parkedReason: 'best guess committed once; no reproduction oracle to verify a second' });
+    const mem2 = makeMemory({ goals: [slow, guessed] });
+    const r2 = await handleDirective(makeCtx({ directive: engineText('gather_context'), files: REPO_FILES }), mem2);
+    expect(r2).toMatchObject({ kind: 'continue', changes: [] });
+    expect(mem2.goals.map((g) => g.status)).toEqual(['parked', 'parked']);
+  });
+
+  it('gather_context with every goal parked reopens the goals the search parked — by the §5.3 counters, for want of a site, or at exhaustion of the localised sites — with attempts reset, re-localised and rotated (ladder `shared_frame` / `long_chain` runs 3 and 3b)', async () => {
+    const counted = makeGoal({ id: 'g1', status: 'parked', parkedReason: '3 searches without a commit', attempts: 3, budgetHits: 1 });
+    const noSite = makeGoal({ id: 'g2', status: 'parked', parkedReason: 'no site located for tests/test_b.py::t', attempts: 1 });
+    const exhausted = makeGoal({ id: 'g3', status: 'parked', parkedReason: 'exhausted mutation, template, donor at 4 sites (src/c.py:2, +3 more) for tests/test_c.py::t', attempts: 2 });
+    const slow = makeGoal({ id: 'g4', status: 'parked', parkedReason: 'suite too slow', attempts: 1 });
+    const mem = makeMemory({ goals: [counted, noSite, exhausted, slow], localizeCache: new Map([['g1', cachedLocalize(['src/gcd.py'])], ['g3', cachedLocalize(['src/c.py'])], ['g4', cachedLocalize(['src/d.py'])]]) });
+    const ctx = makeCtx({ directive: engineText('gather_context'), files: REPO_FILES });
+    const r = await handleDirective(ctx, mem);
+    expect(r.kind).toBe('continue');
+    expect(counted).toMatchObject({ status: 'open', attempts: 0, budgetHits: 0, budgetSteps: 0 });
+    expect(counted.parkedReason).toBeUndefined();
+    expect(noSite).toMatchObject({ status: 'open', attempts: 0 });
+    expect(exhausted).toMatchObject({ status: 'open', attempts: 0 });
+    expect(exhausted.parkedReason).toBeUndefined();
+    expect(slow).toMatchObject({ status: 'parked', attempts: 1, parkedReason: 'suite too slow' });
+    expect(mem.localizeCache.has('g1')).toBe(false);
+    expect(mem.localizeCache.has('g3')).toBe(false);
+    expect(mem.localizeCache.has('g4')).toBe(true);
+    expect(mem.overrides.sourceRotation).toEqual({ g1: 1, g2: 1, g3: 1 });
+    expect(r.changes[0]).toBe('reopened g1, g2, g3 (parked by the search; attempts reset for the re-localisation)');
+    expect(r.changes).toContain('re-localise g1, g2, g3 with the latest failure text');
+    expect(r.changes.join(' ')).not.toMatch(/\bread\b/);
   });
 
   it('fix_environment runs the test command alone (workspace detection first, baseline command otherwise, nothing → continue)', async () => {

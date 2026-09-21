@@ -10,8 +10,10 @@ import {
   compareTieKeys,
   createGuardMemory,
   diffSize,
+  dropHeldPartial,
   forgetGoal,
   forgetHeld,
+  heldPartialOutcome,
   freshPairsOfPartials,
   guardState,
   holdBestPartial,
@@ -347,5 +349,65 @@ describe('partials across a park and a checkpoint (jev-only-ladder-4-analysis.md
     expect(partialsFromPersisted(null)).toEqual([]);
     expect(partialsFromPersisted({ version: 1, tried: [] })).toEqual([]);
     expect(partialsFromPersisted({ version: 1, tried: [], partials: [{ goalId: 'g1' }, 'junk', { ...recs[0], source: 'nope' }] })).toEqual([]);
+  });
+});
+
+describe('pairsOfPartials never pairs beyond MAX_PATCH_FILES files (ladder `six_hunks` run 3: a pair of a pair was refused by proposePatch after the ledger recorded it)', () => {
+  it('a pair whose halves together edit three files is skipped; two-file pairs are built', () => {
+    const other = sourceFile('other.py', 'y = 1\n');
+    const third = sourceFile('third.py', 'z = 1\n');
+    const base = committedBase(FILE, BASELINE, [other, third]);
+    const mem = createGuardMemory(base);
+    const a = partialOutcome(candidate(siteAt(FILE, 2), '    a = xs[0] + 1', { id: 'a' }), base, [TESTS[0]!]);
+    const b = partialOutcome(candidate(siteAt(FILE, 4), '    c = xs[2] + 1', { id: 'b', extraEdits: [{ path: 'other.py', line: 1, kind: 'replace', text: 'y = 2' }] }), base, [TESTS[1]!]);
+    const c = partialOutcome(candidate(siteAt(FILE, 3), '    b = xs[1] + 1', { id: 'c', extraEdits: [{ path: 'third.py', line: 1, kind: 'replace', text: 'z = 2' }] }), base, [TESTS[2]!]);
+    guardState(mem).partials.push({ goalId: GOAL.id, outcome: a }, { goalId: GOAL.id, outcome: b }, { goalId: GOAL.id, outcome: c });
+    const pairs = pairsOfPartials(mem, GOAL);
+    // a+b (prog.py, other.py) and a+c (prog.py, third.py) fit two files; b+c would touch three
+    expect(pairs.map((p) => p.id).sort()).toEqual(['pair:a+b', 'pair:a+c']);
+    for (const p of pairs) expect(new Set([p.site.file.path, ...(p.extraEdits ?? []).map((e) => e.path)]).size).toBeLessThanOrEqual(2);
+  });
+});
+
+describe('the outcome behind the improved base (progress commits, jev-only-rungs-1-2.md §19.7)', () => {
+  it('holdBestPartial records the outcome; heldPartialOutcome returns it for the goal (and falls back to the remembered partial of a base installed by hand); commitPartial with a verified run carries it as `after` and `outcome`', () => {
+    const mem = createGuardMemory(BASE);
+    const o = partialOutcome(at(2, '    a = xs[0] + 1', 'p1'), BASE, [TESTS[0]!, TESTS[1]!]);
+    expect(heldPartialOutcome(mem, GOAL)).toBeNull();
+    holdBestPartial(mem, [o], GOAL);
+    expect(heldPartialOutcome(mem, GOAL)).toBe(o);
+    expect(heldPartialOutcome(mem, { id: 'other' })).toBeNull();
+    const full = summary({ passed: 4, failing: [TESTS[2]!, TESTS[3]!], total: 6 });
+    const d = commitPartial(mem, GOAL, { outcome: o, after: full });
+    expect(d).toMatchObject({ kind: 'commit', note: 'partial', allGoalTestsPass: false, after: full, outcome: o });
+    expect(improvedBase(mem)).toBeUndefined();
+    expect(heldPartialOutcome(mem, GOAL)).toBeNull();
+    // a base pushed by hand (no holdBestPartial): the remembered partial carrying its candidate is the outcome
+    const mem2 = createGuardMemory(BASE);
+    const o2 = partialOutcome(at(3, '    b = xs[1] + 1', 'p2'), BASE, [TESTS[2]!]);
+    guardState(mem2).partials.push({ goalId: GOAL.id, outcome: o2 });
+    mem2.bases.push({ id: 'improved-by-hand', origin: 'improved', fromGoal: GOAL.id, files: BASE.files, summary: o2.subset, candidate: o2.applied, depth: 1 });
+    expect(heldPartialOutcome(mem2, GOAL)).toBe(o2);
+  });
+
+  it('dropHeldPartial (a regression on the full suite): the base leaves the beam and the remembered partial goes with it, so no pair is built on it; forgetHeld clears the recorded outcome too', () => {
+    const mem = createGuardMemory(BASE);
+    const bad = partialOutcome(at(2, '    a = xs[0] + 1', 'bad'), BASE, [TESTS[0]!]);
+    const good = partialOutcome(at(4, '    c = xs[2] + 1', 'good'), BASE, [TESTS[2]!]);
+    holdBestPartial(mem, [bad, good], GOAL); // equal passed: the earlier one (bad) is the base, both remembered
+    expect(heldPartialOutcome(mem, GOAL)).toBe(bad);
+    expect(pairsOfPartials(mem, GOAL)).toHaveLength(1);
+    dropHeldPartial(mem, GOAL);
+    expect(improvedBase(mem)).toBeUndefined();
+    expect(heldPartialOutcome(mem, GOAL)).toBeNull();
+    expect(partialsOf(mem, GOAL).map((p) => p.applied.candidate.id)).toEqual(['good']);
+    expect(pairsOfPartials(mem, GOAL)).toHaveLength(0);
+    // forgetHeld (a park) drops the base and its recorded outcome, keeps the remembered partials
+    holdBestPartial(mem, [good], GOAL);
+    expect(heldPartialOutcome(mem, GOAL)).toBe(good);
+    forgetHeld(mem, GOAL);
+    expect(heldPartialOutcome(mem, GOAL)).toBeNull();
+    expect(guardState(mem).improvedOutcome).toBeNull();
+    expect(partialsOf(mem, GOAL)).toHaveLength(1);
   });
 });

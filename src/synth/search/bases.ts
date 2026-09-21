@@ -11,8 +11,14 @@
  *     (DECISIONS.md "Q17 deleted"; asked 0 times live, and a tie is between identical counts).
  *   - `pairsOfPartials`: contrarian source 5: two partials at different sites that fix disjoint
  *     test subsets become one composite candidate (≤ 10 pairs, tests decide).
- *   - `commitPartial`: at exhaustion the held partial is committed (its regression run was clean by
- *     construction) and the goal is re-clustered from the new baseline next step.
+ *   - `commitPartial`: the held partial is committed as a progress commit — at a budget exit or at
+ *     exhaustion (subgoal.ts commitProgress) — once its full-suite regression run is clean (the
+ *     runner classifies a partial from the goal-subset run alone, so that run is made at the
+ *     commit: sieve/runner.ts runRegressionCheck) and the guard's suspicion signals let it pass
+ *     (guard.ts gateHeldPartial); the goal is re-clustered from the new baseline next step.
+ *     Before 2026-09-20 the held partial was committed only at exhaustion, which every step of a
+ *     chain goal (ladder `masked`, `long_chain`, `shared_frame`, `six_hunks`) never reached: the
+ *     step ended on its budget and the park dropped the base (jev-only-rungs-1-2.md §19.7).
  *
  * Memory: these modules read and write `mem.bases` (the design's `SearchMemory.bases`) and keep
  * their own bookkeeping (remembered partials, the suspect, the pending passer, the fallbacks) in a
@@ -32,6 +38,7 @@ import type { AppliedCandidate, Candidate, CandidateSourceName, LineEdit, Site, 
 import { applyCandidate, progress } from '../verify/index.js';
 import { wasTried } from './memory.js';
 import type { SearchMemory } from './memory.js';
+import { MAX_PATCH_FILES } from './proposal.js';
 import type { Base, Decision, Goal, Phase, VerifyOutcome } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -119,6 +126,25 @@ export interface GuardState {
   pending: PendingPasser | null;
   /** arbitration runner-ups of the last arbitrated goal */
   fallbacks: RememberedFallbacks | null;
+  /**
+   * The run result behind the current improved base (`holdBestPartial` installs both): a Base
+   * carries only the cumulative edit and a summary, and the guard's suspicion signals and the
+   * regression run of a progress commit need the outcome (its candidate, its base's output tail).
+   */
+  improvedOutcome: { baseId: string; goalId: string; outcome: VerifyOutcome } | null;
+  /**
+   * Q16 advisories already asked about a partial (`gateHeldPartial`), by candidate id: a partial
+   * that stays the incumbent across steps is asked about once, and one Jev rated doubtful stays
+   * held without another request. Bounded like the remembered partials.
+   */
+  partialAdvice: Map<string, PartialAdvice>;
+}
+
+/** The guard's verdict on one partial: the code signals that fired and Jev's Q16 `general` p (null when no request could be made). */
+export interface PartialAdvice {
+  goalId: string;
+  signals: string[];
+  noul: number | null;
 }
 
 const STATE = new WeakMap<BasesMemory, GuardState>();
@@ -127,7 +153,7 @@ const STATE = new WeakMap<BasesMemory, GuardState>();
 export function guardState(mem: BasesMemory): GuardState {
   let st = STATE.get(mem);
   if (st === undefined) {
-    st = { partials: [], suspect: null, pending: null, fallbacks: null };
+    st = { partials: [], suspect: null, pending: null, fallbacks: null, improvedOutcome: null, partialAdvice: new Map() };
     STATE.set(mem, st);
   }
   return st;
@@ -356,7 +382,37 @@ export function holdBestPartial(mem: BasesMemory, partials: readonly VerifyOutco
   const next = baseFromPartial(mem, challenger, goal);
   if (next === null) return { held: incumbent ?? null, replaced: false };
   mem.bases = [...mem.bases.filter((b) => b.origin !== 'improved'), next];
+  guardState(mem).improvedOutcome = { baseId: next.id, goalId: goal.id, outcome: challenger };
   return { held: next, replaced: true };
+}
+
+/**
+ * The run result of the improved base held for `goal` (the partial a progress commit would
+ * propose), or null when nothing is held for it. Falls back to the remembered partial whose
+ * candidate the base carries, for a base installed without `holdBestPartial`.
+ */
+export function heldPartialOutcome(mem: BasesMemory, goal: Pick<Goal, 'id'>): VerifyOutcome | null {
+  const b = mem.bases.find((x) => x.origin === 'improved' && x.fromGoal === goal.id);
+  if (b === undefined) return null;
+  const st = guardState(mem);
+  if (st.improvedOutcome !== null && st.improvedOutcome.baseId === b.id) return st.improvedOutcome.outcome;
+  const candidate = b.candidate?.candidate;
+  return st.partials.find((p) => p.goalId === goal.id && p.outcome.applied.candidate === candidate)?.outcome ?? null;
+}
+
+/**
+ * The held partial of `goal` failed its full-suite regression run (subgoal.ts commitProgress):
+ * it is no partial anywhere but the goal's own test files, so it leaves the beam and the
+ * remembered partials (a pair built on it would carry the regression). Its diff is already in
+ * `tried`; the search moves on.
+ */
+export function dropHeldPartial(mem: BasesMemory, goal: Pick<Goal, 'id'>): void {
+  const st = guardState(mem);
+  const b = mem.bases.find((x) => x.origin === 'improved' && x.fromGoal === goal.id);
+  if (b !== undefined) mem.bases = mem.bases.filter((x) => x.id !== b.id);
+  const dropped = st.improvedOutcome !== null && (b === undefined || st.improvedOutcome.baseId === b.id) && st.improvedOutcome.goalId === goal.id ? st.improvedOutcome.outcome : null;
+  if (dropped !== null) st.partials = st.partials.filter((p) => p.outcome !== dropped && p.outcome.applied.candidate !== dropped.applied.candidate);
+  if (st.improvedOutcome !== null && st.improvedOutcome.goalId === goal.id) st.improvedOutcome = null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -366,6 +422,13 @@ export function holdBestPartial(mem: BasesMemory, partials: readonly VerifyOutco
 function touchedLines(c: Candidate): Set<string> {
   const out = new Set<string>([`${c.site.file.path}:${c.site.line}`]);
   for (const e of c.extraEdits ?? []) out.add(`${e.path}:${e.line}`);
+  return out;
+}
+
+/** The files a candidate edits (its site's and its extra edits'). */
+export function touchedFiles(c: Candidate): Set<string> {
+  const out = new Set<string>([c.site.file.path]);
+  for (const e of c.extraEdits ?? []) out.add(e.path);
   return out;
 }
 
@@ -384,7 +447,11 @@ function editSize(c: Candidate): number {
  * disjoint (each fixes a behaviour the other does not). Both must have been run on the committed
  * base so their line numbers refer to the same source (applyCandidate applies bottom-up in
  * original coordinates, so no shifting is needed). Ordered by tests covered, then edit size;
- * ≤ MAX_PARTIAL_PAIRS. The pair is a candidate like any other: tests decide.
+ * ≤ MAX_PARTIAL_PAIRS. The pair is a candidate like any other: tests decide. A pair whose two
+ * halves together edit more than MAX_PATCH_FILES files is never built: a commit is one `patch`
+ * of at most that many files (proposal.ts), and a pair of a pair (ladder `six_hunks` run 3:
+ * render.py + sorting.py + model.py) was held as the progress commit and then refused by
+ * `proposePatch` after the ledger had recorded it.
  */
 export function pairsOfPartials(mem: BasesMemory, goal: Goal): Candidate[] {
   const ours = guardState(mem).partials.filter((p) => p.goalId === goal.id && p.outcome.job.base.origin === 'committed' && isPartial(p.outcome)).map((p) => p.outcome);
@@ -398,6 +465,7 @@ export function pairsOfPartials(mem: BasesMemory, goal: Goal): Candidate[] {
       const cb = b.applied.candidate;
       if (siteKeyOf(ca) === siteKeyOf(cb)) continue;
       if (!disjoint(touchedLines(ca), touchedLines(cb))) continue;
+      if (new Set([...touchedFiles(ca), ...touchedFiles(cb)]).size > MAX_PATCH_FILES) continue;
       const pa = new Set(a.progress.newlyPassing);
       const pb = new Set(b.progress.newlyPassing);
       if (pa.size === 0 || pb.size === 0 || !disjoint(pa, pb)) continue;
@@ -415,23 +483,30 @@ export function pairsOfPartials(mem: BasesMemory, goal: Goal): Candidate[] {
 // ---------------------------------------------------------------------------------------
 
 /**
- * At exhaustion: commit the held partial for `goal` (§2.3 last lines). The base leaves the beam;
- * the caller re-baselines and re-clusters the goal from the new workspace next step. Null when
- * nothing is held for this goal.
+ * Commit the held partial for `goal` as a progress commit (§2.3 last lines; subgoal.ts
+ * commitProgress decides when). The base leaves the beam; the caller re-baselines and
+ * re-clusters the goal from the new workspace next step. `verified` is the partial's full-suite
+ * regression run (`after` of the evidence) with the outcome it belongs to; without it the base's
+ * own summary travels with the commit. Null when nothing is held for this goal.
  */
-export function commitPartial(mem: BasesMemory, goal: Goal): Decision | null {
+export function commitPartial(mem: BasesMemory, goal: Goal, verified?: { outcome: VerifyOutcome; after: TestRunSummary }): Decision | null {
   const b = improvedBaseFor(mem, goal);
   if (b === undefined || b.candidate === undefined) return null;
   mem.bases = mem.bases.filter((x) => x.id !== b.id);
-  // the base leaves the beam here, so its summary travels with the commit as the evidence's `after`
-  return { kind: 'commit', applied: b.candidate, allGoalTestsPass: false, note: 'partial', after: b.summary };
+  const st = guardState(mem);
+  if (st.improvedOutcome !== null && st.improvedOutcome.baseId === b.id) st.improvedOutcome = null;
+  // the base leaves the beam here, so its (verified) summary travels with the commit as the evidence's `after`
+  const decision: Decision = { kind: 'commit', applied: b.candidate, allGoalTestsPass: false, note: 'partial', after: verified?.after ?? b.summary };
+  if (verified !== undefined) decision.outcome = verified.outcome;
+  return decision;
 }
 
-/** Forget the partials, held passers (suspect, pending), fallbacks and improved base of a goal (after its commit). */
+/** Forget the partials, held passers (suspect, pending), fallbacks, Q16 advisories and improved base of a goal (after its commit). */
 export function forgetGoal(mem: BasesMemory, goal: Goal): void {
   forgetHeld(mem, goal);
   const st = guardState(mem);
   st.partials = st.partials.filter((p) => p.goalId !== goal.id);
+  for (const [id, a] of st.partialAdvice) if (a.goalId === goal.id) st.partialAdvice.delete(id);
 }
 
 /**
@@ -450,6 +525,7 @@ export function forgetHeld(mem: BasesMemory, goal: Pick<Goal, 'id'>): void {
   if (st.fallbacks !== null && st.fallbacks.goalId === goal.id) st.fallbacks = null;
   const b = mem.bases.find((x) => x.origin === 'improved' && x.fromGoal === goal.id);
   if (b !== undefined) mem.bases = mem.bases.filter((x) => x.id !== b.id);
+  if (st.improvedOutcome !== null && st.improvedOutcome.goalId === goal.id) st.improvedOutcome = null;
 }
 
 /** The committed-base partials remembered for `goal` (what `pairsOfPartials` reads). */

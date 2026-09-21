@@ -8,7 +8,8 @@ import type { ExecResult, SandboxRunOptions } from '../../../../src/core/types.j
 import { fitOracle, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, shellWords } from '../../../../src/synth/search/budget.js';
 import type { OracleModel, VerifyOutcome, VerifyStatus } from '../../../../src/synth/search/types.js';
 import { sha12 } from '../../../../src/core/hash.js';
-import { classifyOutcome, fullSuiteCommand, goalPasses, goalTestFiles, LANE_RUN_ENV, laneRunEnv, MAX_FULL_SUITE_RUNS_PER_STEP, restrictToFiles, type RunnerContext, type RunnerMemory, runQueue, subsetCommand, subsetScope, timeoutKind } from '../../../../src/synth/sieve/runner.js';
+import { classifyOutcome, forgetUnchangedTried, fullSuiteCommand, goalPasses, goalTestFiles, LANE_RUN_ENV, laneRunEnv, MAX_FULL_SUITE_RUNS_PER_STEP, restrictToFiles, type RunnerContext, type RunnerMemory, runQueue, runRegressionCheck, subsetCommand, subsetScope, timeoutKind } from '../../../../src/synth/sieve/runner.js';
+import { applyCandidate } from '../../../../src/synth/verify/apply.js';
 import { progress } from '../../../../src/synth/verify/progress.js';
 import { summarize } from '../../../../src/synth/verify/index.js';
 import type { Candidate } from '../../../../src/synth/types.js';
@@ -471,6 +472,16 @@ describe('runQueue on pytest (worktree lanes, scripted output)', () => {
     expect(mem.oracle.tRunMs).toEqual({ goalSubset: 800, fullSuite: 2500 });
     expect(mem.lanes?.mode).toBe('worktree');
     expect(sb.calls.some((c) => c.command === 'git checkout -- . && git clean -fdq')).toBe(true);
+    // the `unchanged` verdict is remembered under the goal — a progress commit forgets it (the failure it was judged
+    // against is gone); the passer's verdict stays tried
+    const unchangedHash = sha12(applyCandidate(candidate(site(mod, 1), 'X = 3'), pyBase.files).diff);
+    expect([...(mem.unchangedTried?.get(pyGoal.id) ?? [])]).toEqual([unchangedHash]);
+    expect(mem.tried.size).toBe(2);
+    expect(forgetUnchangedTried(mem, pyGoal.id)).toBe(1);
+    expect(mem.tried.has(unchangedHash)).toBe(false);
+    expect(mem.tried.size).toBe(1);
+    expect(forgetUnchangedTried(mem, pyGoal.id)).toBe(0);
+    expect(forgetUnchangedTried(mem, 'other-goal')).toBe(0);
   });
   it('a subset passer whose full suite breaks another test is regressed', async () => {
     const sb = pytestFake('tests/test_a.py::test_x PASSED\ntests/test_a.py::test_y PASSED\ntests/test_b.py::test_z FAILED\nFAILED tests/test_b.py::test_z - boom\n1 failed, 2 passed in 0.02s\n', 1);
@@ -479,6 +490,36 @@ describe('runQueue on pytest (worktree lanes, scripted output)', () => {
     const out = await runQueue(ctxFor(sb), mem, fifoQueue([job(candidate(site(mod, 1), 'X = 2'), pyBase)]), pyGoal, 10);
     expect(out[0]?.status).toBe('regressed');
     expect(out[0]?.progress.newlyFailing).toEqual(['tests/test_b.py::test_z']);
+  });
+  it('runRegressionCheck: one full-suite run of a partial on a lane at the reference settings (no stop rule), applied over its base files, charged as one run and reported; null before any pool exists', async () => {
+    // the batch classifies a partial from the goal subset alone (X = 3 leaves test_x failing: unchanged here, a partial in shape); the check runs the whole suite
+    const sb = pytestFake('tests/test_a.py::test_x FAILED\ntests/test_a.py::test_y PASSED\ntests/test_b.py::test_z PASSED\nFAILED tests/test_a.py::test_x - assert 1 == 2\n1 failed, 2 passed in 0.02s\n', 1);
+    writeFileSync(join(ws, 'mod.py'), 'X = 1\n');
+    const mem = memFor(oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 3000, fullSuite: 3000 } }), { baseline: PY_BASE, stepBudget: budget({ testRunsLeft: 16, testWallLeftMs: 40_000 }) });
+    const c = candidate(site(mod, 1), 'X = 3');
+    const applied = applyCandidate(c, pyBase.files);
+    const subset = summary({ command: `python3 -m pytest -q 'tests/test_a.py'`, passing: ['tests/test_a.py::test_y'], failing: ['tests/test_a.py::test_x'] });
+    const partial: VerifyOutcome = { job: job(c, pyBase), applied, subset, progress: progress(PY_BASE, subset), status: 'partial' };
+    // no pool yet: nothing ran this step, nothing can be verified
+    expect(await runRegressionCheck(ctxFor(sb), mem, pyGoal, partial)).toBeNull();
+    // a batch builds the pool (one subset run, no passer so no full-suite run of its own)
+    await runQueue(ctxFor(sb), mem, fifoQueue([job(c, pyBase)]), pyGoal, 10);
+    expect(sb.calls.filter((x) => x.command === 'python3 -m pytest -q')).toHaveLength(0);
+    const runsBefore = mem.stepBudget.testRunsLeft;
+    const ctx = ctxFor(sb);
+    const full = await runRegressionCheck(ctx, mem, pyGoal, partial);
+    expect(full?.passed).toBe(2);
+    expect(full?.failing).toEqual(['tests/test_a.py::test_x']);
+    expect(mem.stepBudget.testRunsLeft).toBe(runsBefore - 1);
+    const fullRuns = sb.calls.filter((x) => x.command === 'python3 -m pytest -q');
+    expect(fullRuns).toHaveLength(1);
+    // on a lane, with the candidate applied there; reference settings: the per-case cap without the stop rule
+    expect(fullRuns[0]?.cwd?.startsWith(join(runDir, 'tmp', 'synth', 'lane'))).toBe(true);
+    expect(readFileSync(join(fullRuns[0]?.cwd ?? '', 'mod.py'), 'utf8')).toBe('X = 3\n');
+    expect(fullRuns[0]?.env?.['JEVCODE_CASE_TIMEOUT_MS']).toBeDefined();
+    expect(fullRuns[0]?.env?.['JEVCODE_MAX_CASE_TIMEOUTS']).toBeUndefined();
+    expect(fullRuns[0]?.env?.['PYTHONDONTWRITEBYTECODE']).toBe('1');
+    expect(ctx.events.some((e) => e.phase === 'verify' && /full-suite regression run of the held partial mutation\/\S+ at mod\.py:1: 2\/3 pass, 1 failed, 0 errors in \d+ ms/.test(e.detail))).toBe(true);
   });
   it('pytest -q baseline without passing ids: the goal subset is measured once on the clean lane and cached per base', async () => {
     const qBase = summary({ command: 'python3 -m pytest -q', passed: 2, failing: ['tests/test_a.py::test_x'], durationMs: 3000 });

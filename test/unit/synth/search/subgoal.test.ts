@@ -9,7 +9,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Answer, Question } from '../../../../src/core/types.js';
 import { sha12 } from '../../../../src/core/hash.js';
-import { guardState, pairsOfPartials, siteKeyOf } from '../../../../src/synth/search/bases.js';
+import { guardState, heldPartialOutcome, holdBestPartial, improvedBaseFor, pairsOfPartials, partialsOf, siteKeyOf } from '../../../../src/synth/search/bases.js';
 import { createDecide } from '../../../../src/synth/search/guard.js';
 import { EDIT_CLASSES, EDIT_CLASS_QUESTION_ID, INSERT_FIRST_MIN_P, PAIRS_RESERVE_RUNS, PAIRS_RESERVE_WALL_MS, PERMUTATION_OPERATORS, alreadyTried, describeExhaustion, editClassQuestion, everySiteSeedsExhausted, exhaustedKey, isSingleFileWorkspace, orderCandidates, orderSites, orderSources, priorFromAnswer, runsBeforeReserve, searchSubGoal, seedsExhaustedAt, siteOnBase, taskIdentifiers, testLiterals } from '../../../../src/synth/search/subgoal.js';
 import type { EditClassPrior } from '../../../../src/synth/search/subgoal.js';
@@ -18,7 +18,7 @@ import type { Base, VerifyJob } from '../../../../src/synth/search/types.js';
 import type { Candidate, CandidateSourceName, Site } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
 import { GCD_OTHER_TEST, GCD_TEST, cand, choiceOn, fakeBudget, fakeCtx, fakeGoal, fakeMemory, fakeSubGoalDeps, fastOracle, gcdFixture, jobOf, outcomeOf, siteAt, slowOracle, sourceFile, summary } from './controller-fakes.js';
-import { choiceAnswer } from './helpers.js';
+import { choiceAnswer, noulAnswer } from './helpers.js';
 
 const NONE = new Set<CandidateSourceName>();
 const FIX = 'return gcd(b, a % b)';
@@ -422,27 +422,32 @@ describe('searchSubGoal: pairs of partials, the flagged suspect and the held par
     expect(guardState(mem).suspect).toBeNull();
   });
 
-  it('the held partial is committed with `partial` once every source is exhausted', async () => {
+  it('the held partial is committed with `partial` once every source is exhausted, after its full-suite regression run (the evidence\'s `after`)', async () => {
     const { file, replace } = gcdFixture();
     const ctx = fakeCtx();
     const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: fakeBudget() });
-    const goal = fakeGoal();
+    const goal = fakeGoal({ tests: [GCD_TEST, 'tests/test_gcd.py::test_more'] });
     const committed = mem.bases[0]!;
     const partialCand = cand(replace, 'return gcd(a % b, a)', { op: 'identifier_substitution' });
     const job: VerifyJob = jobOf(partialCand, committed);
     const outcome = outcomeOf(job, 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, GCD_TEST], failing: ['tests/test_gcd.py::test_more'] }) });
-    mem.bases.push({ id: 'improved-g1', origin: 'improved', fromGoal: goal.id, files: committed.files, summary: outcome.subset, candidate: outcome.applied, depth: 1 });
-    const deps = fakeSubGoalDeps({ sites: [replace] });
+    expect(holdBestPartial(mem, [outcome], goal).replaced).toBe(true);
+    const full = summary({ command: baseline().command, passing: [GCD_OTHER_TEST, GCD_TEST, 'tests/test_gcd.py::test_far'], failing: ['tests/test_gcd.py::test_more'] });
+    const deps = fakeSubGoalDeps({ sites: [replace], regressionRun: () => full });
     const r = await searchSubGoal(ctx, mem, goal, deps);
     expect(r.kind).toBe('commit');
     if (r.kind === 'commit') {
       expect(r.note).toBe('partial');
       expect(r.allGoalTestsPass).toBe(false);
       expect(r.applied.candidate.text).toBe('return gcd(a % b, a)');
+      // the regression run, not the subset, is what the commit rests on
+      expect(r.after).toBe(full);
+      expect(r.outcome?.full).toBe(full);
     }
     expect(r.trace.outcome).toBe('partial');
     // the improved base left the beam
     expect(mem.bases.map((b) => b.id)).toEqual(['committed']);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /progress commit — partial fix .* 1 of 2 goal tests pass .* the remaining 1 stay open/.test(e.detail))).toBe(true);
   });
 
   it('no located site parks the goal without spending anything', async () => {
@@ -645,5 +650,218 @@ describe('searchSubGoal: the RANK take follows the run budget on a cheap reposit
     const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 30, source)) });
     await searchSubGoal(ctx, mem, fakeGoal(), deps);
     expect(deps.rec.runBatches.map((b) => b.length)).toEqual([3, 3, 3, 5, 5, 5]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Progress commits (jev-only-rungs-1-2.md §19.7): the held partial at a budget exit
+// ---------------------------------------------------------------------------------------
+
+describe('progress commits: a step that ends with a partial in hand commits it as a partial fix', () => {
+  const MORE = 'tests/test_gcd.py::test_more';
+  function twoTestBaseline(): ReturnType<typeof summary> {
+    return summary({ command: 'pytest -q', failing: [GCD_TEST, MORE], passing: [GCD_OTHER_TEST] });
+  }
+  /** the goal-subset run of a partial: GCD_TEST now passes, MORE still fails */
+  const partialSubset = (): ReturnType<typeof summary> => summary({ passing: [GCD_OTHER_TEST, GCD_TEST], failing: [MORE] });
+  const HALF = 'return gcd(a % b, a)';
+
+  it('a lone partial is committed at the budget exit as a partial fix: no untested pair, its full-suite regression run clean, no signal → `partial`, allGoalTestsPass false, `after` the regression run', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], twoTestBaseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1 }) });
+    const goal = fakeGoal({ tests: [GCD_TEST, MORE] });
+    const full = summary({ command: 'pytest -q', passing: [GCD_OTHER_TEST, GCD_TEST], failing: [MORE] });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, HALF, { op: 'identifier_substitution' })] : []),
+      statusOf: () => 'partial',
+      subsetOf: () => partialSubset(),
+      // the guard's own rule with 0 plausible (bases.ts): the partial becomes the improved base
+      decide: (results, _batch, m) => {
+        holdBestPartial(m, results, goal);
+        return { kind: 'continue' };
+      },
+      regressionRun: () => full,
+    });
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    // the one run was spent (budget), and the step left with the partial as its commit instead of `budget`
+    expect(deps.rec.runBatches).toHaveLength(1);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') {
+      expect(r.note).toBe('partial');
+      expect(r.allGoalTestsPass).toBe(false);
+      expect(r.applied.candidate.text).toBe(HALF);
+      expect(r.after).toBe(full);
+      expect(r.outcome?.progress.newlyPassing).toEqual([GCD_TEST]);
+    }
+    expect(r.trace.outcome).toBe('partial');
+    expect(r.trace.testRuns).toBe(2); // the subset run and the regression run
+    expect(r.trace.jevRequests).toBe(2); // localisation only: no signal, no Q16
+    // the base left the beam with the commit
+    expect(mem.bases.map((b) => b.id)).toEqual(['committed']);
+    expect(heldPartialOutcome(mem, goal)).toBeNull();
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /progress commit — partial fix mutation\/identifier_substitution at gcd\.py:5: 1 of 2 goal tests pass \(1→2 of 3\), no regressions; the remaining 1 stay open/.test(e.detail))).toBe(true);
+  });
+
+  it('a suspicious lone partial is held, not committed: the signals fire (an emptied statement), Q16 rates it doubtful, the step returns `budget` with the base still in the beam; the next step asks nothing again and parks', async () => {
+    const { file, replace } = gcdFixture();
+    let asked = 0;
+    const ctx = fakeCtx({
+      ask: (questions) => {
+        asked += 1;
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulAnswer(0.1);
+        return out;
+      },
+    });
+    const mem = fakeMemory([file], twoTestBaseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1 }) });
+    const goal = fakeGoal({ tests: [GCD_TEST, MORE] });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, 'pass', { op: 'statement_deletion' })] : []),
+      statusOf: () => 'partial',
+      subsetOf: () => partialSubset(),
+      decide: (results, _batch, m) => {
+        holdBestPartial(m, results, goal);
+        return { kind: 'continue' };
+      },
+    });
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('budget');
+    expect(asked).toBe(1);
+    expect(r.trace.jevRequests).toBe(2 + 1); // localisation + the one Q16 advisory
+    // held: the base stays (a better partial may replace it), the advice is remembered
+    expect(improvedBaseFor(mem, goal)?.candidate?.candidate.text).toBe('pass');
+    expect(guardState(mem).partialAdvice.size).toBe(1);
+    expect([...guardState(mem).partialAdvice.values()][0]).toMatchObject({ goalId: 'g1', signals: ['deletes_statement'], noul: 0.1 });
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'guard' && /holds the partial mutation\/statement_deletion at gcd\.py:5:replace \(deletes_statement; general 0\.10 < 0\.3\); not committed/.test(e.detail))).toBe(true);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /progress commit/.test(e.detail))).toBe(false);
+    // the next step: every source exhausted, the same incumbent, no second request — the goal parks with nothing committed
+    mem.stepBudget = fakeBudget({ runs: 1 });
+    const again = await searchSubGoal(ctx, mem, goal, deps);
+    expect(again.kind).toBe('parked');
+    expect(asked).toBe(1);
+  });
+
+  it('a passing pair beats a lone partial: at the budget exit the untested pair of complementary partials runs first and is committed as one composite; the lone partial is not', async () => {
+    const { file, replace, insert } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], twoTestBaseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1 }) });
+    const goal = fakeGoal({ tests: [GCD_TEST, MORE] });
+    const committed = mem.bases[0]!;
+    // half 2 is remembered from an earlier step (it passes MORE at the gap); half 1 arrives in this step's one batch
+    const h2 = outcomeOf(jobOf(cand(insert, 'return a  # half 2', { source: 'template', op: 'insert_return' }), committed), 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, MORE], failing: [GCD_TEST] }) });
+    guardState(mem).partials.push({ goalId: goal.id, outcome: h2 });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, 'return gcd(b, a % b)  # half 1', { op: 'argument_swap' })] : []),
+      statusOf: (job) => (job.candidate.op === 'pair_of_partials' ? 'plausible' : 'partial'),
+      subsetOf: (job) => (job.candidate.op === 'pair_of_partials' ? undefined : partialSubset()),
+      decide: (results, _batch, m) => {
+        const w = results.find((o) => o.status === 'plausible');
+        if (w !== undefined) return { kind: 'commit', applied: w.applied, allGoalTestsPass: true };
+        holdBestPartial(m, results, goal);
+        return { kind: 'continue' };
+      },
+      pairs: pairsOfPartials,
+    });
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') {
+      expect(r.allGoalTestsPass).toBe(true);
+      expect(r.applied.candidate.op).toBe('pair_of_partials');
+      expect(r.applied.files[0]?.after).toContain('half 1');
+      expect(r.applied.files[0]?.after).toContain('half 2');
+    }
+    expect(r.trace.outcome).toBe('fixed');
+    // batches: half 1 (held as the partial), then the pair at the budget exit; no progress commit was made
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.op))).toEqual([['argument_swap'], ['pair_of_partials']]);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress')).toBe(false);
+  });
+
+  it('a held partial whose full-suite regression run breaks another test is dropped, not committed: the step returns `budget`, the base leaves the beam and the remembered partial goes with it', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], twoTestBaseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1 }) });
+    const goal = fakeGoal({ tests: [GCD_TEST, MORE] });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, HALF, { op: 'identifier_substitution' })] : []),
+      statusOf: () => 'partial',
+      subsetOf: () => partialSubset(),
+      decide: (results, _batch, m) => {
+        holdBestPartial(m, results, goal);
+        return { kind: 'continue' };
+      },
+      // on the whole suite the "partial" breaks the other test file's test
+      regressionRun: () => summary({ command: 'pytest -q', passing: [GCD_TEST], failing: [MORE, GCD_OTHER_TEST] }),
+    });
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('budget');
+    expect(improvedBaseFor(mem, goal)).toBeUndefined();
+    expect(partialsOf(mem, goal)).toHaveLength(0);
+    expect(r.trace.testRuns).toBe(2);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /is no partial on the full suite \(1 newly failing, 1 of 2 goal tests newly passing\); dropped/.test(e.detail))).toBe(true);
+  });
+
+  it('a held partial whose cumulative patch edits more than MAX_PATCH_FILES files cannot be proposed as one patch: dropped before any run or record, the step returns `budget`', async () => {
+    const { file, replace } = gcdFixture();
+    const other = sourceFile('other.py', 'y = 1\n');
+    const third = sourceFile('third.py', 'z = 1\n');
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file, other, third], twoTestBaseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1 }) });
+    const goal = fakeGoal({ tests: [GCD_TEST, MORE] });
+    let regressionRuns = 0;
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => {
+        if (source !== 'mutation') return [];
+        const c = cand(site, HALF, { source: 'composite', op: 'pair_of_partials' });
+        c.extraEdits = [
+          { path: 'other.py', line: 1, kind: 'replace', text: 'y = 2' },
+          { path: 'third.py', line: 1, kind: 'replace', text: 'z = 2' },
+        ];
+        return [c];
+      },
+      statusOf: () => 'partial',
+      subsetOf: () => partialSubset(),
+      decide: (results, _batch, m) => {
+        holdBestPartial(m, results, goal);
+        return { kind: 'continue' };
+      },
+      regressionRun: () => {
+        regressionRuns += 1;
+        return null;
+      },
+    });
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('budget');
+    expect(regressionRuns).toBe(0);
+    expect(improvedBaseFor(mem, goal)).toBeUndefined();
+    expect(partialsOf(mem, goal)).toHaveLength(0);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /edits 3 files and cannot be proposed as one patch \(at most 2\); dropped/.test(e.detail))).toBe(true);
+  });
+
+  it('a held partial that cannot be verified this step (no regression run possible) stays held and the step returns `budget`', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], twoTestBaseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ runs: 1 }) });
+    const goal = fakeGoal({ tests: [GCD_TEST, MORE] });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, HALF, { op: 'identifier_substitution' })] : []),
+      statusOf: () => 'partial',
+      subsetOf: () => partialSubset(),
+      decide: (results, _batch, m) => {
+        holdBestPartial(m, results, goal);
+        return { kind: 'continue' };
+      },
+      regressionRun: () => null,
+    });
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('budget');
+    expect(improvedBaseFor(mem, goal)).toBeDefined();
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /could not be verified on the full suite this step/.test(e.detail))).toBe(true);
   });
 });

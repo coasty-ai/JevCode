@@ -5,7 +5,6 @@ import { unifiedDiff } from '../../../../src/synth/py/index.js';
 import {
   MAX_PATCH_FILES,
   ProposalError,
-  READ_MAX_PATHS,
   TEST_PATH_RE,
   deferredClaimNotes,
   doneReadiness,
@@ -16,7 +15,6 @@ import {
   openProblemNotes,
   proposeDone,
   proposePatch,
-  proposeRead,
   proposeRevert,
   proposeRun,
   remainingItems,
@@ -30,7 +28,8 @@ import type { AppliedCandidate } from '../../../../src/synth/types.js';
 import { summary } from '../verify/helpers.js';
 import { GCD_SRC, TEST_COMMAND, gcdApplied, makeCtx, makeGoal, makeMemory, makeTrace, patchEntry, runEntry, twoFileApplied } from './proposal-helpers.js';
 
-const ALLOWED_KINDS = new Set(['patch', 'run', 'done', 'read']);
+// never `read`: the synthesizer holds every source file (jev-only-rungs-1-2.md §19.7)
+const ALLOWED_KINDS = new Set(['patch', 'run', 'done']);
 
 function parsesAsJson(p: Proposal): Record<string, unknown> {
   const v: unknown = JSON.parse(p.rawText);
@@ -88,7 +87,13 @@ describe('proposePatch (§5.1 row 1)', () => {
     expect(overfit.plan.openProblems[0]).toMatch(/^possible overfit: arg_swap at src\/gcd\.py:5/);
     expect(parsesAsJson(overfit)['note']).toBe('possible overfit');
     const partial = proposePatch(makeCtx(), applied, g1, makeMemory({ goals: [g1] }), 'partial');
-    expect(partial.plan.openProblems[0]).toMatch(/^partial: arg_swap at src\/gcd\.py:5 fixes some of tests\/test_gcd\.py::test_gcd, \+1 more/);
+    expect(partial.plan.openProblems[0]).toMatch(/^partial fix: arg_swap at src\/gcd\.py:5 fixes some of tests\/test_gcd\.py::test_gcd, \+1 more/);
+    // with the evidence the note says exactly what was measured (the progress-commit summary)
+    const e = { kind: 'shadow_test_run' as const, command: TEST_COMMAND, before: { passed: 1, failed: 2, errors: 0, total: 3 }, after: { passed: 2, failed: 1, errors: 0, total: 3 }, newlyPassing: [g1.tests[0]!], newlyFailing: [], goalTests: g1.tests, selection: 'sieve' as const, candidatesTested: 5, arbitrated: false };
+    const measured = proposePatch(makeCtx(), applied, g1, makeMemory({ goals: [g1] }), 'partial', undefined, e);
+    expect(measured.plan.openProblems[0]).toBe('partial fix: 1 of 2 goal tests pass, no regressions; the remaining 1 stay open (arg_swap at src/gcd.py:5)');
+    expect(measured.goal).toMatch(/^apply partial fix: 1 of 2 goal tests pass \(.*\) \(1→2 of 3\), no regressions; the remaining 1 stay open; mutation\/arg_swap at src\/gcd\.py:5$/);
+    expect(measured.evidence).toEqual(e);
   });
 
   it('a two-file diff (composite unit) is allowed; three files or an empty diff are contract violations', () => {
@@ -283,20 +288,7 @@ describe('proposeDone (§5.5): the conditions table', () => {
   });
 });
 
-describe('proposeRead and proposeRevert', () => {
-  it('read: deduplicated, bounded to the engine limit, plan unchanged', () => {
-    const ctx = makeCtx({ plan: { remaining: ['fix t in src/a.py'], openProblems: ['p'] } });
-    const many = Array.from({ length: READ_MAX_PATHS + 3 }, (_, i) => `src/f${i}.py`);
-    const p = proposeRead(ctx, ['src/a.py', 'src/a.py', ...many]);
-    expect(p.action.kind).toBe('read');
-    if (p.action.kind === 'read') {
-      expect(p.action.paths).toHaveLength(READ_MAX_PATHS);
-      expect(p.action.paths[0]).toBe('src/a.py');
-    }
-    expect(p.plan).toEqual({ done: [], remaining: ['fix t in src/a.py'], openProblems: ['p'] });
-    expect(parsesAsJson(p)['kind']).toBe('read');
-    expect(() => proposeRead(ctx, [])).toThrow(ProposalError);
-  });
+describe('proposeRevert', () => {
 
   it('revert: the reverse diff puts the old line back; the reopened goal is in remaining; the reason is a note', () => {
     const applied = gcdApplied();
@@ -330,7 +322,6 @@ describe('invariants over every builder', () => {
       proposeDone(greenCtx, mem, 'green'),
       proposeDone(greenCtx, mem, 'partial'),
       proposeDone(makeCtx(), mem, 'green'),
-      proposeRead(makeCtx(), ['src/gcd.py']),
       proposeRevert(makeCtx(), applied, mem, { goal, reason: 'r' }),
     ];
     for (const p of all) {

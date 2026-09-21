@@ -2566,3 +2566,252 @@ python3 /tmp/ladder-long/rows.py bench/results/jev-only-ladder-long-1
 # reach probe of every planted line (mutation / templates / donors / composite at the buggy site)
 env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx /tmp/ladder-long/probe.mts ledger5 masked shared_frame crossfile import_and_guard regress_trap six_hunks long_chain
 ```
+
+## 20. 2026-09-21: progress commits and no `read` churn — the long tier's `masked`, `shared_frame`, `long_chain`, `six_hunks`
+
+Follow-up to §19.7 items 1 and 4: the lone partial that was found, ranked first, run, classified `partial` and dropped at
+every park (`masked`, `long_chain`, the merged goals of `shared_frame` and `six_hunks`), and the 7–12 declined `read`
+proposals per miss that tripped the loop detector into `max_replans`. Two rules, both bookkeeping the harness knows for
+certain — which partial it holds and what the tests said about it; which files it already holds — plus the one
+measurement a partial commit was missing (the runner never ran the full suite for a partial), and three rules the first
+live run of the tier on them added (20.1 item 6). Jev decides what it decided before (Q16 on a suspicious candidate,
+Q15/Q16 on an arbitration, Q1/Q2/Q5 at a re-localisation); the tests verify. Code =
+`src/synth/search/{bases,guard,subgoal,goals,index,directive,proposal,types}.ts`, `src/synth/sieve/runner.ts`; tests under
+`test/unit/synth/search` and `test/unit/synth/sieve`.
+
+### 20.1 What changed, per item
+
+1. **Progress commits.** `subgoal.ts commitProgress` (:637) runs at every step end of a goal: the `budget` exit
+   (`exitOnBudget` :896, after the pairs reserve and the held passer of §15) and the exhaustion tail (:1019, where §2.3's
+   `commitPartial` line always was and was never reached live). When the goal holds a partial — the improved base
+   `holdBestPartial` keeps: most newly passing, then the code tie-break — it is committed as a **partial fix** instead of
+   the goal parking with nothing. Order: (a) untested pairs of complementary partials first (§15): a passing pair beats a
+   lone partial, and when the pairs could not run this step the goal stays open and runs them next step (index.ts
+   `case 'budget'`, unchanged); (b) the one full-suite regression run the commit rests on (`sieve/runner.ts
+   runRegressionCheck` :783 — see item 2); (c) the guard's suspicion signals with the Q16 advisory, exactly as for a
+   lone passer (`guard.ts gateHeldPartial` :894: no signal → commit; signals → one Q16 `general_cand_01`, held below
+   LONE_PASSER_HOLD_MAX_NOUL 0.3 (one signal) or LONE_PASSER_VOUCH_MIN_NOUL 0.7 (two or more), committed at or above; the
+   advisory is cached per candidate in the guard state (`bases.ts partialAdvice` :139) so an incumbent that survives a
+   step is asked about once and a doubtful one stays held without another request; with no Jev request left the flagged
+   partial is held and asked next step). The controller has the same check as its own guarantee after a search that
+   returned without a commit (`index.ts progressCommit` :697, mirroring §13.4 (b)'s held-passer rule at :609). The
+   commit is `{ kind: 'commit', allGoalTestsPass: false, note: 'partial', after: <the regression run>, outcome }`
+   (`bases.ts commitPartial` :479); `goals.ts noteCommit` (:585) keeps the goal `open`, counts one `progressCommits`,
+   and drops its exhausted sets, tested sites and phase (the remaining tests fail for a new reason at a new frame).
+2. **The regression run a partial never had.** `sieve/runner.ts verifyJob` runs the full suite only for subset passers, so
+   a `partial` was classified from the goal-subset run alone (the goal's test files): "nothing newly failing anywhere"
+   was not a measured fact — a variant of `shared_frame`'s helper relaxation that passes 3 of the goal's 6 booking tests
+   and breaks `tests/test_checks.py` is a `partial` to the batch. `runRegressionCheck` (:783) makes that one run on a
+   free lane before the commit: the candidate applied over its own base's files, the baseline's full-suite command at
+   the reference settings of `runQueue` (every case's verdict, no stop rule), the lane timeout, charged as one run — the
+   commit's verification, not search cost, so it runs at a budget exit too. A partial that regresses, times out or
+   passes none of the goal's tests on the whole suite is dropped (`bases.ts dropHeldPartial` :408: the base leaves the
+   beam and the remembered partial goes with it, so no pair is built on it); one the lanes cannot run (no pool yet,
+   aborted) stays held. On the QuixBugs runner the subset is the suite and no extra run is made. Live (20.3): 3 of the
+   8 partials `six_hunks` held at a step end regressed on the full suite and were dropped — each a `partial` to its
+   batch.
+3. **The remaining tests stay open and re-cluster.** `goals.ts reconcile / inheritGoalState` already carried a fresh
+   cluster onto the prior goal by test overlap and never marked a fresh cluster fixed; checked and left as is, with the
+   chain rule added (:520): a goal that took `MAX_PROGRESS_COMMITS_PER_GOAL` = 3 progress commits hands its remaining
+   tests to a **new goal id** with fresh counters (the prior is consumed, never `fixed`), so the ledger shows the chain;
+   `index.ts rebaseline` (:828) notes it. `progressCommits` rides on `Goal` (`types.ts` :50, in-memory like
+   `budgetSteps`; a resumed run starts the count at 0).
+4. **The proposal says partial.** `proposal.ts patchGoalText` (:177): `apply partial fix: k of n goal tests pass (<tests>)
+   (N→M of T), no regressions; the remaining m stay open; <source>/<op> at <path>:<line>`, k counting the GOAL's tests
+   among `newlyPassing` (`goalTestsPassing` :154); the `openProblems` note is `partialFixSummary` (:160) — `partial fix: k
+   of n goal tests pass, no regressions; the remaining m stay open (<edit>)`; the evidence is the regression run against
+   the committed baseline (`newlyPassing` = its tests, `goalTests` = the goal's; `commitEvidence` reads `after`). The
+   post-patch `run` claims nothing (only `fixed` goals are claimed, §10) and its goal text states the expected counts.
+   The risk stage read every live partial patch as `ok` (0.25–0.27, "evidence verified: N→M of T pass, no regressions").
+5. **No `read`, ever.** The transcripts of runs 1b–2 put every declined read at `index.ts investigateRead` ("intent is
+   investigate: reading …", steps 2–3 of every run, before any replan) and the `gather_context` branch of `directive.ts`
+   said "nothing to change" (every goal parked) — so both went: `investigateRead`, `INVESTIGATE_READS_MAX`,
+   `unseenSourceFiles` and `relevantSourceFiles` are deleted from index.ts (the search proceeds under every intent, :558),
+   `proposeRead` and `READ_MAX_PATHS` from proposal.ts (the builders are `patch`, `run`, `done`), and `gather_context`
+   (`directive.ts` :206) re-localises every open goal with Jev on its latest failure (sites dropped: Q2/Q5 again; Q1
+   among several open goals as usual) with the top-10 file beam and its source order rotated, then continues to the
+   search — the next `run` or `patch`. With no open goal, the goals parked by the §5.3 counters or for want of a site
+   (`goals.ts parkedWithMoreToTry`; never a park at exhaustion or a timed-out suite) are reopened the same way with
+   their attempts reset — the directive says the repeated step rested on a wrong assumption, and a search's assumption
+   is its localisation, which the directive redoes (run 3's `shared_frame` parked its one goal after three budget-hit
+   searches and spent steps 5–11 on a blocked partial `done`). With nothing left to try nothing changes and the
+   controller proposes the honest partial `done`.
+6. **Three rules run 3 added** (20.3 is the evidence). (a) **Stale `unchanged` verdicts.** `tried` is keyed by the diff
+   hash, which does not change when another file changes, so a candidate judged `unchanged` under a masking failure
+   stayed excluded after the progress commit lifted the mask: `long_chain` step 2 ran candidates at `clean.py:12` in
+   RANK mode under the `load.py` crash, and step 4's whole-site batch there had 40 of the 165 mutation and 150 of the 156
+   template candidates already tried — the gold `row.name` among them (the reach probe puts it at mutation index 40,
+   template index 69) — while a wrong partial at the same line (`Row(row, …)`, 2 of 13 tests) was committed and the run
+   could not recover. `sieve/runner.ts` records the `unchanged` hashes per goal (`RunnerMemory.unchangedTried`, set in
+   `verifyJob`) and a progress commit forgets them (`forgetUnchangedTried`; index.ts `case 'commit'`): an `unchanged`
+   verdict is a fact about the failure the goal had when it ran, and the commit removes that failure for the remaining
+   tests; `regressed`, `plausible`, `partial` and hang verdicts stay tried. Run 3b: step 2 forgot 1,302 of them and step
+   4 committed the gold `clean.py` line (3 of 13, 13→16). (b) **One patch, two files.** `six_hunks` step 3 held a pair
+   built on a pair (render.py + sorting.py + model.py) as the progress commit; `proposePatch` refused the 3-file diff
+   after the ledger had recorded it (`outcome failed: propose: internal`). `bases.ts pairsOfPartials` never builds a pair
+   beyond MAX_PATCH_FILES files, and `commitProgress` drops a held partial whose cumulative patch exceeds it before
+   anything is recorded (`unproposable`). (c) **The all-overfit bound.** `masked` step 4 arbitrated five `return 0`
+   inserts into `aggregate.total_ms` (each passes the two goal tests whose logs carry no durations): escape 0.75 (run 3)
+   / 0.67 (run 3b), max general 0.08 — the all-overfit shape of §13 under its 0.8 escape bound by a wider margin than
+   `wrap`'s one tick, committed as a verified fix at the fourth of the step's twelve sites (the gold `e.ms` replace site
+   was next), after which the goal's other two tests (`total_and_slowest`, `render_full`) could never pass. Every
+   measured all-overfit set now sits at escape 0.67–0.91 with max Noul ≤ 0.08; every gold-containing set at escape
+   ≤ 0.38 with a Noul ≥ 0.45; `SUSPECT_ESCAPE_MIN` is 0.5 (`guard.ts` :81), the Noul half of the signature unchanged,
+   and a flagged set is still held only within the step (the search runs on to the remaining sites; committed as
+   `possible overfit` at the step end if nothing better appears). Measured on run 3c (20.3).
+
+### 20.2 Tests
+
+`subgoal.test.ts` "progress commits: a step that ends with a partial in hand commits it as a partial fix" (6): the lone
+partial committed at the budget exit (`partial`, `allGoalTestsPass` false, `after` = the regression run, 2 test runs, the
+base gone, the `synth progress:` line); a suspicious lone partial (`pass` for the statement → `deletes_statement`, Q16
+0.10 < 0.3) held — `budget`, base kept, advice cached, the next step asks nothing and parks; a passing pair beats a lone
+partial at the budget exit (batches `[argument_swap], [pair_of_partials]`, no progress commit); a held partial whose
+regression run breaks another test is dropped (base and remembered partial gone); a held partial whose cumulative patch
+edits 3 files is dropped as unproposable before any run; a held partial that cannot be verified stays held.
+`controller.test.ts` "progress commits: a lone partial at the budget exit …" (4): the controller commits a held partial
+on a `budget` result with the partial-fix goal text, evidence (`newlyPassing` = its test, `goalTests` = both), note,
+`rawText` outcome/note `partial`, the goal open with `progressCommits` 1, the goal's `unchanged` hashes gone from `tried`
+(a regression's stays); with an untested pair the pair comes first (goal open, no regression run); after a partial
+commit the next baseline re-clusters the remaining tests by their new frames into g1 (kept id, `gcd.py:helper`) and g2
+(`other.py:f`), none fixed, ledger `fixed 0, open 2`; a `gather_context` directive through the controller re-localises
+and rotates and the step is a `patch`, no `read` event. The three tests that asserted reads now assert the run/patch
+instead. `goals.test.ts` "progress commits and the chain rule" (2): `noteCommit(false)` counts and resets; `reconcile`
+keeps the id below the cap and hands the remaining tests to `g3` with fresh counters at it, the parked neighbour
+untouched, nothing fixed. `guard.test.ts`: "gateHeldPartial" (3) — clean → commit with `after`/`outcome`; one signal →
+one Q16 request, held below the bound, cached (a throwing ask on the second call); vouched at 0.8 → commit, `no_request`
+with 0 requests left — and the signature test now holds the `masked` shape (escape 0.67, Nouls 0.08/0.05) and commits
+the highest gold-containing shape (escape 0.38, Noul 0.45). `bases.test.ts` (3): `heldPartialOutcome` (recorded by
+`holdBestPartial`, the by-hand fallback), `commitPartial` with the verified run, `dropHeldPartial` (the pair built on the
+dropped partial is gone), `forgetHeld` clears the recorded outcome; `pairsOfPartials` skips the 3-file pair and builds
+the 2-file ones. `directive.test.ts`: "gather_context never proposes a read …" replaces the repository-read test;
+every-goal-parked reopens the counter-parked and no-site goals with attempts reset and leaves the exhausted and
+`suite too slow` ones parked. `runner.test.ts`: "runRegressionCheck …" (null before any pool; after a batch one `python3
+-m pytest -q` on a lane with the candidate written there, reference env — case cap set, no `JEVCODE_MAX_CASE_TIMEOUTS` —
+one run charged, the `synth verify:` line); the `unchanged` verdict recorded under the goal and `forgetUnchangedTried`
+(1 forgotten, the passer's hash stays). `proposal.test.ts` / `proposal-evidence.test.ts`: the partial texts;
+`proposeRead` tests removed; `ALLOWED_KINDS` is `patch`, `run`, `done`. Gates: `tsc --noEmit` clean outside the peer WIP
+paths (`src/tui`, `src/config`, `test/unit/tui`, `test/unit/cli`), `no-any` ok, `vitest --project unit test/unit/synth`
+80 files, 1,329 tests.
+
+### 20.3 Live: `masked`, `shared_frame`, `long_chain`, `six_hunks`, three runs, concurrency 1, load average 30–70
+
+Same flags as §19 (`--max-steps 30 --max-wall 15m --task-spend-cap 0.15`), one task at a time, from this worktree.
+Run 3 = items 1–5 (00:45Z, `bench/results/jev-only-ladder-long-3`, $0.1369); run 3b = + 6a (stale `unchanged`
+verdicts), 6b (the pair bound), `gather_context` reopening counter-parked goals only (01:11Z, `…-3b`, $0.1200); run 3c =
+the committed code: + 6c (`SUSPECT_ESCAPE_MIN` 0.5) and the reopening of exhaustion parks (01:28Z, `…-3c`, $0.1021).
+Columns as §19.3; "hunks fixed" = patched src line == gold line per planted edit (`/tmp/ladder-long/<task>.json`), `*` =
+a test-equivalent edit at the planted line that is not the gold text; "progress commits" = partial fixes committed
+(regression runs of held partials: how many of those regressed and were dropped); "re-clusterings" = goals whose
+`synth goal:` file moved after a partial patch / goal sets that grew after one; `reads` = `read` proposals in the record
+(in the transcript).
+
+| run | task | hunks fixed | solved | steps | stop | cost | wall | Jev req | blocked/declined | loops/replans | reads | progress commits (regr. runs: dropped) | re-clusterings | run id |
+|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|
+| 3 | `masked` | 0/3 (h1 as an insert `txt = text`) | no | 12 | `replan_stop` | $0.0249 | 229 s | 136 | 6/0 | 2/1 | 0 (0) | 1 (1: 0) | 1 moved, 1 split | `20260921-004519-fegygevr` |
+| 3 | `shared_frame` | 0/2 | no | 10 | `replan_stop` | $0.0292 | 191 s | 127 | 6/0 | 4/3 | 0 (0) | 0 (0: 0) | 0, 0 | `20260921-004909-mfilcexp` |
+| 3 | `long_chain` | 2/6 (h1, h3) + a wrong line at h2 | no | 16 | `replan_stop` | $0.0410 | 393 s | 234 | 6/0 | 2/1 | 0 (0) | 3 (3: 0); chain → g3 | 1 moved, 1 split | `20260921-005221-ppjlgth7` |
+| 3 | `six_hunks` | 1/6 (h6) | no | 15 | `replan_stop` | $0.0417 | 346 s | 249 | 6/0 | 3/2 | 0 (0) | 2 (5: 3) | 0, 0 | `20260921-005854-xgalunq5` |
+| 3b | `masked` | 0/3 (h1 as an insert) | no | 12 | `replan_stop` | $0.0238 | 193 s | 134 | 6/0 | 2/1 | 0 (0) | 1 (1: 0) | 1 moved, 1 split | `20260921-011138-3nsr2bg3` |
+| 3b | `shared_frame` | 0/2 | no | 10 | `replan_stop` | $0.0268 | 212 s | 121 | 6/0 | 3/2 | 0 (0) | 0 (0: 0) | 0, 0 | `20260921-011451-aouculk3` |
+| 3b | `long_chain` | 2/6 (h1, h2) | no | 13 | `replan_stop` | $0.0282 | 244 s | 159 | 6/0 | 2/1 | 0 (0) | 2 (3: 1) | 1 moved, 0 split | `20260921-011824-m2gnwvsk` |
+| 3b | `six_hunks` | 1/6 (h6) + h3* | no | 16 | `replan_stop` | $0.0412 | 313 s | 250 | 6/0 | 3/2 | 0 (0) | 2 (4: 2) | 0, 0 | `20260921-012229-vepcyv6x` |
+| 3c | `masked` | 1/3 (h2) + h3*, h1 as an insert | **yes** | 7 | `complete` | $0.0135 | 187 s | 88 | 0/0 | 0/0 | 0 (0) | 1 (1: 0); 2 all-overfit holds | 1 moved, 1 split | `20260921-012803-ukg2vksa` |
+| 3c | `shared_frame` | 0/2 | no | 8 | `replan_stop` | $0.0195 | 96 s | 92 | 6/0 | 2/1 | 0 (0) | 0 (0: 0); reopened 1 | 0, 0 | `20260921-013110-ap6quqpt` |
+| 3c | `long_chain` | 2/6 (h1, h2) | no | 12 | `replan_stop` | $0.0250 | 220 s | 155 | 6/0 | 2/1 | 0 (0) | 2 (3: 1); reopened 1 | 1 moved, 0 split | `20260921-013246-p2gwdw3r` |
+| 3c | `six_hunks` | 0/6 + h3*, h6* | no | 16 | `replan_stop` | $0.0441 | 312 s | 282 | 6/0 | 4/3 | 0 (0) | 1 (3: 2); reopened 2 | 0, 0 | `20260921-013627-abdmerii` |
+
+Against run 2 (§19.5, the merged controller `d610d75`) on the same four: `masked` 0/3 25 steps `max_replans` $0.0380
+10 reads; `shared_frame` 0/2 16 steps $0.0326 7 reads; `long_chain` 0/6 20 steps $0.0278 6 reads; `six_hunks` 0/6 + h3*
+27 steps $0.0424 6 reads (29 declined reads in the four transcripts). Runs 3–3c: **0 `read` proposals in 12 runs**, 0
+declined steps, every miss `replan_stop` at 8–16 steps (the repeated blocked partial `done`, 20.5), 5–8 gold hunks per
+run of four where run 2 had 0, and `masked` solved in run 3c (7 steps, $0.0135) — the first solve of a chain goal in the
+tier's five runs.
+
+### 20.4 Per task
+
+- **`masked`** — the designed shape happened in every run: step 2 committed the progress commit at `report.py:14` (a
+  `sketch_P11` insert `txt = text`, 2 of 6, 16→18 of 22; the gold replace `parse_lines(text)` was enumerated but the
+  insert reached the base first), the risk stage read it as `ok` (0.25, "evidence verified: 16→18 of 22 pass, no
+  regressions"), and step 3's baseline re-clustered the remaining four tests into g1 (2 at `aggregate.total_ms`) and g2
+  (2 at `parse.parse_line`) — `synth ledger: fixed 0, open 2`. Runs 3 and 3b then lost the task at step 4: the site
+  batch before the gold's (`aggregate.py:19:insert`) held five `return 0`-shaped inserts, each passing g1's two tests
+  (their logs carry no durations); the arbitration answered escape 0.75 / 0.67 with max general 0.08 — under the 0.8
+  escape bound — and committed one as a verified fix, after which `total_ms` returned 0 and g2's tests could never pass;
+  g2 exhausted 11 sites at step 7 and the blocked partial `done` ran to `replan_stop`. Run 3c, escape bound 0.5: the same
+  five were held as the suspect (escape 0.69), a second set at `report.py:22` too (0.83), the search reached
+  `aggregate.py:19:replace`, and the arbitration of 3 passers (1 held) — the gold `e.ms` among them — answered escape 0.01,
+  max general 0.87 and picked it; step 6 fixed `parse.py:21` (`int(took[:-1 - 1])`, a `slice_tweak` equal to the gold
+  `[:-2]`), 22/22, `complete` at step 7. 88 Jev requests, 0 blocked, $0.0135.
+- **`shared_frame`** — 0/2 in every run, the §19.5 class: Q5 anchors `booking.py:29` (0.88) and `reserve` (0.82)
+  correctly, `pricing.py` answers `none_of_these` (0.72; the true line 19 at 0.21); both steps run in RANK mode (t_run
+  ≈ 0.45 s × 3,000 candidates), and of the twelve Q8 `fix` questions nine answered escape ≥ 0.6 — neither gold line was
+  ever run (their diff hashes are absent from the complete 2,297-hash `tried` set of run 3c). Steps 16 → 10 → 10 → 8,
+  cost $0.033 → $0.029 → $0.027 → $0.020, reads 7 → 0. Run 3c's `gather_context` reopened the exhausted goal (step 6) and
+  the re-localisation named the same ten sites, all tried. The remaining lever is Jev's ranking at a confidently
+  anchored site (20.5).
+- **`long_chain`** — run 3: three progress commits and the chain rule (`g1 took 3 progress commits; the remaining tests
+  continue as g3`, step 9): the gold `float(price)` (step 2, 10→13), a WRONG partial at `clean.py:12` (`Row(row, …)`,
+  step 5, 13→15: 2 tests that never read the name) because the gold `row.name` had been tried under the `load.py` crash
+  and was excluded (item 6a: the step-4 whole-site batch enumerated 125/6/0 mutation/template/donor candidates fresh,
+  runs 3b/3c 165/72/45), then the gold `LABELS[row.kind]` (step 8, 15→19). The wrong line left one test (`test_clean_
+  names_title_cased`) failing for good and g3 (6 tests at `totals.py:20`) parked "exhausted" at 12 sites none of which
+  was in `totals.py`: Q2 `where` on `totals.py` answered `none_of_these` 0.86 (the bug is in a `lambda` inside `ranked`,
+  the options are the named functions). Runs 3b/3c: gold `load`, gold `clean` (13→16), then the enrich goal (10 tests at
+  `enrich.py:22 to_record`) parked at exhaustion of 9–10 sites — Q2 `where` on `enrich.py` module-level 0.36 / `to_record`
+  0.14 and Q5 `line_10` (the `LABELS` dict) at every attempt, run 3's step 8 having anchored `to_record` and found the
+  gold; the reopening (3c, step 10) re-localised to the same answers. One held partial per run was dropped on its
+  full-suite regression run (`argument_swap` at `clean.py:12`: 4 of 10 goal tests newly passing, 2 newly failing). 2/6.
+- **`six_hunks`** — the pairs machinery ran every step (1–5 pairs per step, the reserve of §15); the regression run
+  dropped 3 of run 3's 5 held partials and 2 of 4 in 3b/3c (each a `partial` to its batch, a regression on the suite: the
+  measurement of item 2 doing exactly its job); run 3's step 3 held a pair of a pair over three files, which
+  `proposePatch` refused (item 6b). Committed: `stats.py:22` (`round(…, 1)` — gold, run 3/3b; `round(…, 3)` in 3c, test-
+  equivalent) as a progress commit, and for `test_board` a pair (`t.due == None` + `line(t, width - 1)`, run 3c escape 0.47
+  → committed; 3b `pair:relational_swap>negation`) that passes the three `test_board` cases but is not the gold
+  (`is not None`; `width - 3`); `test_attention` and `test_summary` parked at exhaustion of 10–12 sites each (the golds
+  `<= today`, `< last`, `//` are relational/arithmetic swaps at sites the lists held only as gaps). 1/6 gold + 1–2 test-
+  equivalent per run; run 3c's reopening (steps 12–13) re-localised to the same sites.
+
+### 20.5 What remains
+
+1. **The innermost traceback frame is not a site by code.** `long_chain`'s `enrich.py:22 to_record` (KeyError) and
+   `totals.py:20 <lambda>` (IndexError) are the innermost source frames of their goals' tracebacks, `goals.ts` clusters
+   on them and names the file, and the site list never held the line: Q2 `where` answered module-level / `none_of_these`
+   and Q5 followed. A replace site at the goal's frame line, before Q5's anchors, is a code fact (sites.ts, not edited
+   here) and would have given both goals their gold within the step's budget.
+2. **RANK mode at a confidently anchored site.** `shared_frame`'s `booking.py:29` (Q5 0.88) never ran its gold in three
+   runs because Q8 ranked it out of the top-k or answered escape (`fixProbablyAbsent` marks the source exhausted). At a
+   Q5 anchor ≥ 0.8 the site could run in SIEVE regardless of the run plan, or the escape rule could be suspended there.
+3. **Progress commits are greedy by construction.** The wrong `Row(row, …)` was committed because the better partial was
+   excluded (fixed); a wrong partial with no better one in the step is still committed, and the goal's remaining tests
+   then fail for a reason the search cannot repair (a second edit at the same line is out of depth-1 reach). The cheap
+   guard is one Q16 advisory on every partial commit, not only on a signal (one request per commit; the brief asked for
+   signals only); the honest one is the `revert_changes` directive when a goal's remaining tests exhaust after a partial.
+4. **`SUSPECT_ESCAPE_MIN` 0.5** rests on 8 all-overfit sets (0.67–0.91, Noul ≤ 0.08) and the gold sets measured so far
+   (≤ 0.38, Noul ≥ 0.45). A QuixBugs 40 re-run is the check that no gold set falls in [0.5, 0.8) with max Noul < 0.1; the
+   Noul half of the signature is what protects it.
+5. **The blocked partial `done`.** Every miss ends the same way: every goal parked, `done` (partial) blocked at
+   `plan_mismatch` 0.86–1.00 ("claims completion while `plan.remaining` is non-empty") three times, `gather_context`,
+   three more, `replan_stop` — 6 blocked steps per miss, 40–55 % of the steps of a 12–16-step run. Loop-side: a partial
+   `done` whose `remaining` lists the parked items is the honest report the design asks for (§5.5), and the engine
+   refuses it by construction.
+6. Three of twelve runs lost a step to a Jev transport or schema error (`jev_http: fetch failed`, `jev_response: … is
+   not an argmax`); the search resumed on the active goal next step (§5.2).
+
+### 20.6 Exact commands
+
+```
+# gates (worktree at 7ea40b2 + this section's files; the peer WIP under src/tui, src/config, test/unit/{tui,cli} is not here)
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs && npx vitest run --project unit test/unit/synth   # 80 files, 1,329 tests
+
+# live (concurrency 1; .env in the main checkout; node_modules symlinked into the worktree); run 3, then 3b, then 3c on the code of each stage
+NODE_OPTIONS=--max-old-space-size=8192 env -u ANTHROPIC_API_KEY node --env-file=<main>/.env node_modules/.bin/tsx src/cli/main.tsx bench --suite ladder \
+  --task-id masked,shared_frame,long_chain,six_hunks --conditions jev-only --live --spend-cap 0.6 --task-spend-cap 0.15 --concurrency 1 \
+  --max-steps 30 --max-wall 15m --out bench/results/jev-only-ladder-long-3      # then -3b, -3c; logs /tmp/ladder-long-3{,b,c}.log
+
+# the tables (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/{transcript.log,model_patch.diff}; hunks per /tmp/ladder-long/<task>.json)
+python3 /tmp/ladder-long/mdrows.py bench/results/jev-only-ladder-long-3c            # one markdown row per task
+python3 /tmp/ladder-long/rows3.py bench/results/jev-only-ladder-long-3c long_chain  # counts + the compact timeline
+# was a gold line ever run (its diff hash in the checkpoint's tried set, ≤ 3,000 newest hashes)
+node node_modules/.bin/tsx .scratch/tried-check2.mts 20260921-013110-ap6quqpt shared_frame 1
+```
