@@ -290,3 +290,20 @@ the linter verify. The question this document answers by experiment is which dec
   both `max_steps`). With run 3 (36/40, 32 verified) and repeat 1 (38/40, 35 verified) this meets the
   design's rung-1a bar of ≥ 36/40 in every repeat and ≥ 34 correct in the last two; the in-sample
   disclosure in the design's §7 applies to all three.
+- 2026-09-20: **long-horizon ladder tier (tasks 13–20)** (`bench/data/ladder`, tier `long`; `experiments/results/jev-only-rungs-1-2.md`
+  §19). Eight tasks that measure the horizon rather than the reach — every planted line is a one-line
+  replace or the guard template's insert, and a probe confirms 34/34 lines are enumerated by a code
+  source: five independent bugs (`ledger5`), masked failures that re-cluster to a callee (`masked`),
+  two bugs raising at the same helper line (`shared_frame`), a coordinated two-file rename plus two
+  bugs (`crossfile`), a missing import and a missing None-guard (`import_and_guard`), an obvious flip
+  that passes the failing tests but breaks pinned ones (`regress_trap`), six bugs with complementary
+  partials (`six_hunks`), and a six-stage pipeline whose later stages only fail meaningfully once the
+  earlier ones are fixed (`long_chain`). Three live runs: 2/8, then 3/8 after re-authoring six
+  out-of-reach lines, then 2/8 on the merged tree (`jev-only-ladder-long-{1,1b,2}`, ≈ $0.27 each).
+  One defect dominates: **a lone partial is never committed** — in `masked`, `long_chain`,
+  `shared_frame` and `six_hunks` the gold line was enumerated, ranked first by Jev (p 0.80–0.99), run,
+  classified partial because the merged goal's tests need two fixes, and dropped at the park. Fix in
+  flight: progress commits (the best regression-free partial is committed with partial-fix evidence,
+  the remaining tests stay open and re-cluster), plus no `read` proposals after a `gather_context`
+  replan (7–12 declined reads per miss fed the loop detector). `regress_trap` confirmed that
+  regressions are never kept. Also this round: Q17 deleted (0 live requests; a code tie-break).
