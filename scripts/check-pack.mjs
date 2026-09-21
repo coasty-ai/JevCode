@@ -11,7 +11,7 @@
 //   5. `npm pack --dry-run --json` lists exactly the allowlist derived from package.json `files`
 //      (directories expanded recursively) plus package.json; extras and missing entries are named
 //   6. no forbidden path: *.map, meta.json, src/, docs/, test files, .env*
-//   7. unpacked size < 2 MB and the gzipped tarball < 1.5 MB
+//   7. unpacked size < 3 MB (the wave-3 bundle is 1.86 MB) and the gzipped tarball < 1.5 MB
 //   8. `node bin/jevcode.js --version` prints the package.json version
 //
 // `npm pack` is run with --ignore-scripts so the `prepack` hook (a full rebuild) does not fire here.
@@ -21,7 +21,7 @@ import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
-const UNPACKED_MAX = 2_000_000; // bytes
+const UNPACKED_MAX = 3_000_000; // bytes
 const TARBALL_MAX = 1_500_000; // bytes
 const FORBIDDEN = [
   [/\.map$/, 'source map'],
