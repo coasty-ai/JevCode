@@ -1,0 +1,116 @@
+# Release: publish the npm package with trusted publishing on a tag push (TUI-DESIGN §17.8, D14, F15).
+#
+# Trigger: `git push origin v<x.y.z>` (or `v<x.y.z>-<pre>`). The tag must equal package.json's version.
+# Dist-tag: tags containing '-' (pre-releases, e.g. v0.2.0-rc.1) publish under `next`; all others under
+# `latest`. The GitHub Release carries the exact tarball that was published plus SHA256SUMS.
+#
+# Trusted publishing (OIDC, `id-token: write`) needs npm >= 11.5.1 and Node >= 22.14; the job runs on
+# Node 24 (>= 24.5.0 ships npm 11.5.1+) and asserts both. Provenance attestations are generated
+# automatically under trusted publishing; `--provenance` is kept explicit as the spec's shape.
+# One-time setup on npmjs.com: package jevcode -> Settings -> Trusted publisher -> GitHub Actions,
+# repository <owner>/JevCode, workflow file release.yml. Tests keep running on .nvmrc's Node (22.23.2)
+# elsewhere; this job is the one place Node 24 is used.
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: publish ${{ github.ref_name }} to npm
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write # GitHub Release with the tarball + SHA256SUMS
+      id-token: write # npm trusted publishing (OIDC) and provenance
+    env:
+      CI: 'true' # also satisfies the prepublishOnly guard in package.json
+      JEVCODE_ASSERT_NO_NETWORK: '1' # the build smoke must not touch the network
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # scripts/gen-docs.mjs --check dates the man page from package.json's commit
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          registry-url: 'https://registry.npmjs.org'
+          cache: npm
+
+      - name: Assert toolchain (Node >= 24.5.0, npm >= 11.5.1 for trusted publishing)
+        run: |
+          node -e '
+            const [maj, min] = process.versions.node.split(".").map(Number);
+            if (maj < 24 || (maj === 24 && min < 5)) { console.error(`Node ${process.versions.node} < 24.5.0`); process.exit(1); }
+            console.log(`node ${process.versions.node}`);
+          '
+          NPM_V="$(npm --version)"
+          node -e '
+            const [a, b, c] = process.argv[1].split(".").map(Number);
+            const ok = a > 11 || (a === 11 && (b > 5 || (b === 5 && c >= 1)));
+            if (!ok) { console.error(`npm ${process.argv[1]} < 11.5.1 (trusted publishing needs 11.5.1+)`); process.exit(1); }
+            console.log(`npm ${process.argv[1]}`);
+          ' "$NPM_V"
+
+      - name: Assert the tag matches package.json
+        run: |
+          V="$(node -p "require('./package.json').version")"
+          if [ "v$V" != "$GITHUB_REF_NAME" ]; then
+            echo "tag $GITHUB_REF_NAME does not match package.json version v$V" >&2
+            exit 1
+          fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          case "$GITHUB_REF_NAME" in
+            *-*) echo "DIST_TAG=next" >> "$GITHUB_ENV"; echo "PRERELEASE=--prerelease" >> "$GITHUB_ENV" ;;
+            *)   echo "DIST_TAG=latest" >> "$GITHUB_ENV"; echo "PRERELEASE=" >> "$GITHUB_ENV" ;;
+          esac
+
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build # bundle (minify + keepNames, version define, smoke) then THIRD_PARTY_LICENSES.txt
+      - run: npm run pack:check # private removed, LICENSE, allowlist == tarball, size, no .map/docs/src
+      - name: Generated docs are current (man page, completions, KEYS.md, COMMANDS.md)
+        run: node scripts/gen-docs.mjs --check
+
+      - name: Pack the release tarball
+        run: |
+          npm pack --ignore-scripts # the build above is the artefact; skip the prepack rebuild
+          sha256sum "jevcode-$VERSION.tgz" | tee SHA256SUMS
+
+      - name: Publish to npm (dist-tag ${{ env.DIST_TAG }})
+        run: npm publish "./jevcode-$VERSION.tgz" --provenance --access public --tag "$DIST_TAG"
+
+      - name: GitHub Release with tarball and SHA256SUMS
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" "jevcode-$VERSION.tgz" SHA256SUMS \
+            --title "jevcode $VERSION" \
+            --generate-notes \
+            --verify-tag \
+            $PRERELEASE
+
+      - name: Homebrew tap bump text (copy into <owner>/homebrew-jevcode Formula/jevcode.rb)
+        run: |
+          SHA="$(cut -d' ' -f1 SHA256SUMS)"
+          {
+            echo "## Homebrew tap bump for jevcode $VERSION"
+            echo
+            echo 'Replace the `url`/`sha256` lines in Formula/jevcode.rb with:'
+            echo
+            echo '```ruby'
+            echo "  url \"https://registry.npmjs.org/jevcode/-/jevcode-$VERSION.tgz\""
+            echo "  sha256 \"$SHA\""
+            echo '```'
+            echo
+            echo 'Then: `brew install --build-from-source <owner>/jevcode/jevcode && brew test jevcode` (docs/RELEASE.md step 8).'
+          } >> "$GITHUB_STEP_SUMMARY"

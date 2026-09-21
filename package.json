@@ -4,12 +4,41 @@
   "description": "Coding-agent harness where Jev (typesafe/jev-1.13) makes every decision and Claude writes the code. One Ink TUI, sandboxed subprocesses, checkpoints, bench.",
   "type": "module",
   "license": "MIT",
-  "private": true,
-  "bin": { "jevcode": "bin/jevcode.js" },
-  "files": ["bin", "dist", "README.md", "docs"],
-  "engines": { "node": ">=22.12.0 <27" },
+  "bin": {
+    "jevcode": "bin/jevcode.js"
+  },
+  "files": [
+    "bin",
+    "dist/jevcode.mjs",
+    "THIRD_PARTY_LICENSES.txt",
+    "man",
+    "completions",
+    "README.md",
+    "LICENSE"
+  ],
+  "man": [
+    "./man/jevcode.1"
+  ],
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "keywords": [
+    "cli",
+    "tui",
+    "ink",
+    "coding-agent",
+    "jev"
+  ],
   "scripts": {
-    "build": "node scripts/build.mjs",
+    "build": "node scripts/build.mjs && node scripts/licenses.mjs",
+    "licenses": "node scripts/licenses.mjs",
+    "pack:check": "node scripts/check-pack.mjs",
+    "prepack": "npm run build",
+    "prepublishOnly": "node -e \"if (process.env.CI !== 'true' && process.env.CI !== '1') { console.error('jevcode: publish only from .github/workflows/release.yml (trusted publishing); set CI=true to override locally'); process.exit(1); }\"",
     "typecheck": "tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs",
     "test": "vitest run --project unit",
     "test:watch": "vitest --project unit",
@@ -19,16 +48,14 @@
     "dev": "tsx src/cli/main.ts",
     "check": "npm run typecheck && npm test"
   },
-  "dependencies": {
-    "ink": "7.1.1",
-    "react": "19.3.0"
-  },
   "devDependencies": {
     "@types/node": "22.20.4",
     "@types/react": "19.3.0",
     "@vitest/coverage-v8": "5.0.1",
     "esbuild": "0.28.2",
+    "ink": "7.1.1",
     "ink-testing-library": "4.0.0",
+    "react": "19.3.0",
     "tsx": "4.23.13",
     "typescript": "7.0.2",
     "vite": "8.3.0",
