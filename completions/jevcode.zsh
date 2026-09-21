@@ -231,7 +231,7 @@ _jevcode() {
             '--suite[benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)]:suite:(swebench terminal-bench quixbugs ladder all)' \
             '--tasks[number of tasks]:n:' \
             '--task-id[specific task ids]:id[,id...]:' \
-            '--conditions[conditions to run (default jev-on,jev-off)]:jev-on,jev-off[,jev-only,llm-jev]:' \
+            '--conditions[conditions to run (default jev-on,jev-off)]:jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]:' \
             '--concurrency[parallel runs]:n:' \
             '--live[use the real generator and Jev (requires --spend-cap)]' \
             '--task-spend-cap[per-run spend cap (default 2.00)]:usd:' \

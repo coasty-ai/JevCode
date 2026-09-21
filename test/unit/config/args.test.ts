@@ -5,6 +5,7 @@
  * TTY → `chat` (A101), the `--no-input` usage error, and the usage text; every pre-existing flag keeps working.
  * TUI-DESIGN-2 §1.2 / §2.3: `--mode` help names jev-only as the default; `--jev-provider auto|typesafe|openrouter`.
  */
+import { CONDITION_ORDER } from '../../../src/bench/conditions.js';
 import { describe, expect, it } from 'vitest';
 import {
   BOOLEAN_FLAGS,
@@ -481,13 +482,15 @@ describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)',
     expect(parseCliArgs(['chat', '--mode', ' LLM-JEV ']).mode).toBe('llm-jev');
     expect(parseCliArgs(['run', 'x', '--condition', 'llm-jev']).condition).toBe('llm-jev');
     expect(parseCliArgs(['bench', '--conditions', 'jev-on,llm-jev']).conditions).toBe('jev-on,llm-jev');
-    expect(CONDITIONS).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev']);
-    expect(FLAGS.find((f) => f.key === 'conditions')?.arg).toBe('jev-on,jev-off[,jev-only,llm-jev]');
+    expect(CONDITIONS).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
+    // every bench arm the runner defines is accepted by --conditions (args.ts lists them literally: bench/conditions.ts is too heavy for the argv path)
+    expect([...CONDITIONS]).toEqual([...CONDITION_ORDER]);
+    expect(FLAGS.find((f) => f.key === 'conditions')?.arg).toBe('jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]');
     expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (default jev-on,jev-off)');
     expect(usageText('run')).toContain('--mode jev-only|jev-on|jev-off|llm-jev ');
-    expect(usageText('bench')).toContain('--conditions jev-on,jev-off[,jev-only,llm-jev] ');
+    expect(usageText('bench')).toContain('--conditions jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned] ');
     expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
-    expect(usageText()).toContain('[--conditions jev-on,jev-off,jev-only,llm-jev]');
+    expect(usageText()).toContain('[--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned]');
   });
 
   it('parses --mode, folds the hidden --condition alias into it, and rejects disagreement', () => {

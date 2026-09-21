@@ -255,7 +255,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|quixbugs|ladder|all', help: 'benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)' },
   { key: 'tasks', name: 'tasks', type: 'string', commands: BENCH, arg: '<n>', help: 'number of tasks' },
   { key: 'taskId', name: 'task-id', type: 'string', commands: BENCH, arg: '<id>[,<id>...]', help: 'specific task ids' },
-  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only,llm-jev]', help: 'conditions to run (default jev-on,jev-off)' },
+  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]', help: 'conditions to run (default jev-on,jev-off)' },
   { key: 'concurrency', name: 'concurrency', type: 'string', commands: BENCH, arg: '<n>', help: 'parallel runs' },
   { key: 'live', name: 'live', type: 'boolean', commands: ['bench', 'perf'], help: 'use the real generator and Jev (requires --spend-cap)' },
   { key: 'taskSpendCap', name: 'task-spend-cap', type: 'string', commands: BENCH, arg: '<usd>', help: 'per-run spend cap (default 2.00)' },
@@ -281,7 +281,12 @@ export const FLAGS: readonly FlagSpec[] = [
 export { RUN_ID_RE };
 export const SANDBOX_PROFILES = ['auto', 'seatbelt', 'none'] as const;
 /** bench `--conditions` order (the bench default is `jev-on,jev-off`; TUI-DESIGN-2 §1.1 leaves bench unchanged) */
-export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'] as const;
+/**
+ * Bench arms accepted by `--conditions`: every member of `CONDITION_ORDER` in src/bench/conditions.ts, listed literally
+ * because that module imports the synthesizer's LLM source and args.ts runs before the first frame (test/unit/config/args.test.ts
+ * asserts the two lists are identical). The four engine modes are `MODES` below; `llm-sieve` and `jev-off-tuned` are bench-only arms.
+ */
+export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'] as const;
 /** TUI-DESIGN-2 §1.2: `--mode` / `--condition` values in the round-2 order — jev-only first, the default; llm-jev last (docs/LLM-JEV-DESIGN.md) */
 export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
 /** TUI-DESIGN-2 §2.3: `--jev-provider` values (`auto` = rules 2a–2e in config/resolve.ts; login infers instead) */
@@ -701,7 +706,7 @@ const USAGE_LINES: Readonly<Record<Command, readonly string[]>> = {
   ],
   config: ['  jevcode config [--json]', '  jevcode config set <setting> <value>'],
   bench: [
-    '  jevcode bench --suite swebench|terminal-bench|quixbugs|ladder|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only,llm-jev]',
+    '  jevcode bench --suite swebench|terminal-bench|quixbugs|ladder|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned]',
     '                [--concurrency <n>] [--live --spend-cap <usd>] [--task-spend-cap <usd>] [--allow-model-alias]',
     '                [--resume <bench-id>] [--out <dir>]',
   ],
