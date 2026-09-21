@@ -361,12 +361,12 @@ the linter verify. The question this document answers by experiment is which dec
   ran alongside; `experiments/results/jev-only-rungs-1-2.md` §25; `bench/results/jev-only-{quixbugs,ladder}-7-final`,
   $0.505). QuixBugs: 39/40 solved — gold-identical 30, equivalent 7, overfit 0 *by the script*, unverified 2 (the two graph
   programs the probe cannot perturb; the next entry's differential test shows `topological_ordering` **wrong** and
-  `breadth_first_search` equivalent, so 37 verified correct and at most 38/40 correct), miss 1; 36 programs in 3 steps, 0 `read`s, 13 loop trips all in the four 10–11-step runs; the
+  `breadth_first_search` equivalent; the regenerated verdicts (last entry) settle it at **37/40 correct, 2 overfit** — `topological_ordering` and `detect_cycle` on the empty list — 0 unverified), miss 1; 36 programs in 3 steps, 0 `read`s, 13 loop trips all in the four 10–11-step runs; the
   miss (`shortest_path_length`, both 6-repeat runs missed it too) is the budget-end release of a held "possible overfit"
   passer — `return 4` inserted above the gold line — which makes the remaining test unfixable (`spend_cap` at step 11).
   Ladder: the short tier **12/12 solved** for the first time (all `complete`, 3–7 steps, 0 blocked / declined / loops, $0.051;
-  rounds 4–5 were 11/12; `grades` and `textstats` are test-equivalent but behaviourally wrong fixes, so at most 10/12
-  correct — next entry), the long tier 2/8 (`import_and_guard` 9 steps, `ledger5` 13 — both their fastest) with 6
+  rounds 4–5 were 11/12; `grades` and `textstats` are test-equivalent but behaviourally wrong fixes; `ladder-verdicts.mts` measures **8/12
+  correct**, 4 overfit — those two strong, `stats` and `units` weak-only — last entry), the long tier 2/8 (`import_and_guard` 9 steps, `ledger5` 13 — both their fastest) with 6
   progress commits and 0 reads; `long_chain` reached three gold links (3/6) before its remaining frame, a `<lambda>` in
   `totals.py`, never became a site. The seven misses by class: localisation miss ×3 (`long_chain`; `regress_trap`,
   where `agenda.py:19` never became a site although that hunk alone fixes all three remaining tests; `shared_frame`, a
@@ -395,13 +395,14 @@ the linter verify. The question this document answers by experiment is which dec
   6,598 Jev requests carry the pinned model and no generator was called; three restatements follow. (1) QuixBugs: 39/40
   pass the reference cases, 37 verified correct, but the unverified `topological_ordering` is **wrong** (the committed
   patch drops the `issuperset(incoming_nodes)` check and adds a `break`; `[A, C]` for `A->B, A->C, B->C`; 462/1000
-  random DAGs invalid) while `breadth_first_search` is equivalent on 500 random graphs — so at most 38/40 correct, and
-  the script's "0 overfit" is a blind spot for the nine pytest-fixture programs, not a finding; `shortest_path_length`
+  random DAGs invalid) while `breadth_first_search` is equivalent on 500 random graphs — the regenerated verdicts (last
+  entry) make it **37/40 correct, 2 overfit** (`topological_ordering`; `detect_cycle` on the empty list) — and
+  the script's "0 overfit" was a blind spot for the nine pytest-fixture programs, not a finding; `shortest_path_length`
   (a literal `return 4` committed) was gold-identical in run 3 and missed in all three later runs, a persistent
   regression. (2) Ladder: 14/20 solved on the exposed suite, but the short tier's `grades` (`letter_grade(89.5)` →
   `'A'`, gold `'B'`) and `textstats` (`ngrams` raises on a tuple and mutates the caller's list) are behaviourally wrong
-  fixes — at most 10/12 correct — and there was no ladder correctness check at all (`experiments/inspect/ladder-verdicts.mts`
-  is being written); hunk counts by strict `diff -U0` are `ledger5` 2/5, `import_and_guard` 2/4, `long_chain` 3/6,
+  fixes — **8/12 correct** by `experiments/inspect/ladder-verdicts.mts`, which landed after this entry (last entry), 4 overfit
+  of which 2 weak-only — and until then there was no ladder correctness check at all; hunk counts by strict `diff -U0` are `ledger5` 2/5, `import_and_guard` 2/4, `long_chain` 3/6,
   `regress_trap` 3/4, `six_hunks` 1/6 (2/6 with the equivalent `t.due == None`), `masked` 0/3 (1/3 with the equivalent
   `txt = text`; plus an overfit `return 0` insert), `crossfile` 0/4, `shared_frame` 0/2. (3) Provenance: no run record
   stores a git sha; `55404ba` is inferred from `run.json`'s workspace path (the frozen worktree, clean) and timing (the
@@ -411,3 +412,21 @@ the linter verify. The question this document answers by experiment is which dec
   at rows 40 / 12 of < 5; 0 / 0 terminal clears). Decision recorded in `docs/DECISIONS.md` (2026-09-21): every headline
   carries "solved" (the exposed / evaluator suite) and "correct" (verdict script or differential test against gold) as
   separate numbers; README, STATUS and design §7 carry the final-tree rows in that form.
+- 2026-09-21: **verdict scripts replace the hand estimates — QuixBugs final 37/40 correct, 2 overfit, 0 unverified;
+  ladder final 8/12 and 1/8 correct** (code only, $0; rungs report §27;
+  `bench/results/jev-only-quixbugs-{3,6-repeat1,6-repeat2,7-final}/verdicts.md`, `bench/results/jev-only-ladder-{7-final,5}/verdicts.md`).
+  `experiments/inspect/quixbugs-verdicts.mts` now runs 500-instance random graph / list / DAG differentials (seed 20260921) for
+  the nine pytest-fixture programs, so `unverified` is 0 on every run. Final tree `55404ba`: 39/40 pass, **37/40 correct**
+  (30 gold-identical + 7 equivalent; `breadth_first_search` equivalent on 500 random graphs), **2 overfit** —
+  `topological_ordering` (252/500 random DAGs wrong, e.g. edges E->B, E->C → C dropped) and `detect_cycle` (a single edge
+  input: the empty list, `AttributeError` vs `False`, 1/500) — 1 miss (`shortest_path_length`). Four-run series correct 34,
+  35, 36, 37 (pass 36, 38, 38, 39; run 3 rises from 32 because its two graph programs are now shown equivalent).
+  `experiments/inspect/ladder-verdicts.mts` (new) is the ladder correctness check: per solved task, gold vs patched on the
+  inputs the task's tests pass and their perturbations, overfit annotated strong / weak-only. Final tree short tier 12/12
+  solved, **8/12 correct** (5 gold-identical + 3 equivalent), 4 overfit — strong `grades` (letter one step too high at .5
+  scores) and `textstats` (`ngrams` raises on tuples; mutates the caller's list), weak-only `stats` and `units` (only the
+  exception class on `None` / empty input differs) → 10/12 counting weak-only as correct; long tier 2/8 solved, **1/8
+  correct** (`import_and_guard`), `ledger5` weak-only (`is_overdue` returns an int with the right truthiness). Round 5 for
+  the series: 11/12 solved, 7/12 correct (`units` there was a literal `return 90`). The solved/correct rule
+  (`docs/DECISIONS.md`, 2026-09-21) now uses these two scripts as the definition of "correct"; README, STATUS and design §7
+  carry the measured counts in place of the "at most" estimates.

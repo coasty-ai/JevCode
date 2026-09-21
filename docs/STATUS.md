@@ -161,8 +161,9 @@ mode is the pinned Jev decisions endpoint; every checked-in jev-only record carr
   completion criteria), `src/loop/engine.ts` (`verifiedCompletion`, `repeatedGatherContextExit`).
 - **Bench data and tooling.** `bench/data/quixbugs` (40 programs), `bench/data/ladder` (12
   short-tier and 8 long-tier tasks, `check.py`), the SWE-bench 30 with their native runners
-  (`src/bench/swebench/loader.ts`); `experiments/inspect/quixbugs-verdicts.mts` (per-program
-  correctness); `experiments/reach/*` (reach at the gold site, $0).
+  (`src/bench/swebench/loader.ts`); `experiments/inspect/quixbugs-verdicts.mts` and
+  `experiments/inspect/ladder-verdicts.mts` (per-program / per-task correctness against gold);
+  `experiments/reach/*` (reach at the gold site, $0).
 - Unit tests at the last recorded gates: `test/unit/synth` 79 files / 1,315 tests (rungs file
   §20.3); `test/unit/loop` + `test/unit/core` 22 files / 180 tests (§17.5).
 
@@ -170,10 +171,10 @@ mode is the pinned Jev decisions endpoint; every checked-in jev-only record carr
 
 | check | result | result dir |
 | --- | --- | --- |
-| QuixBugs 40, run 3 | 36/40 repaired; 32/40 correct by the verdict script (27 gold-identical + 5 equivalent), 2 overfit, 2 unverified; $0.165 | `bench/results/jev-only-quixbugs-3` (+ `verdicts.md`) |
-| QuixBugs 40, repeat 1 (clean worktree at `d610d75`) | 38/40; 35/40 correct (28 + 7), 1 overfit, 2 unverified; $0.134 | `bench/results/jev-only-quixbugs-6-repeat1` |
-| QuixBugs 40, repeat 2 (same tree) | 38/40; 36/40 correct (28 + 8), 0 overfit, 2 unverified; $0.126 | `bench/results/jev-only-quixbugs-6-repeat2` |
-| ladder short tier, rounds 1 → 2 → 4 → 5 | 4/12 → 10/12 → 11/12 → 11/12; round 4: 137 steps, 58 proposals refused, $0.137; round 5: 139 steps, 17 refused, $0.177 | `bench/results/jev-only-ladder-{1,2,4,5}` |
+| QuixBugs 40, run 3 | 36/40 repaired; 34/40 correct by the verdict script (27 gold-identical + 7 equivalent), 2 overfit (`detect_cycle`, `wrap`), 0 unverified; $0.165 | `bench/results/jev-only-quixbugs-3` (+ `verdicts.md`) |
+| QuixBugs 40, repeat 1 (clean worktree at `d610d75`) | 38/40; 35/40 correct (28 + 7), 3 overfit (`wrap`, `topological_ordering`, `detect_cycle`), 0 unverified; $0.134 | `bench/results/jev-only-quixbugs-6-repeat1` |
+| QuixBugs 40, repeat 2 (same tree) | 38/40; 36/40 correct (28 + 8), 2 overfit (`topological_ordering`, `detect_cycle`), 0 unverified; $0.126 | `bench/results/jev-only-quixbugs-6-repeat2` |
+| ladder short tier, rounds 1 → 2 → 4 → 5 | 4/12 → 10/12 → 11/12 → 11/12; round 4: 137 steps, 58 proposals refused, $0.137; round 5: 139 steps, 17 refused, $0.177; round 5 correct 7/12 by `ladder-verdicts.mts` (5 gold-identical + 2 equivalent; overfit strong `grades`, `textstats`, `units` — a literal `return 90` — and weak-only `stats`) | `bench/results/jev-only-ladder-{1,2,4,5}` (round 5 + `verdicts.md`) |
 | ladder round 6 (`grades`, `shipping`, `table`) | 3/3 and 3/3; steps on the three 47 (round 5) → 20 → 19; loop replans 8 → 0 → 0; $0.037, $0.020 | `bench/results/jev-only-ladder-6-done`, `-6-done-item3` |
 | ladder long tier (8 tasks) | run 1 2/8 ($0.246); run 1b 1/4 of the four re-authored tasks ($0.176; 3/8 distinct across runs 1 and 1b); run 2 on `d610d75` 2/8 ($0.266) | `bench/results/jev-only-ladder-long-{1,1b,2}` |
 | SWE-bench Verified 30, first attempt | 0 solved: 20 records evaluated with empty patches, 2 unfinished; $0.60 | `bench/results/jev-only-swebench-1` |
@@ -181,8 +182,8 @@ mode is the pinned Jev decisions endpoint; every checked-in jev-only record carr
 | SWE-bench, the nine oracle instances | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (FAIL_TO_PASS and PASS_TO_PASS) after 8 steps and $0.024 — the first instance solved with no generating model; the first process died at a 4 GB heap on the Django instances | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b` |
 | SWE-bench 30, budget round | 1 pass (`sympy__sympy-19954`, 6 steps) of 8 records; the process died at an 8 GB heap | `bench/results/jev-only-swebench-2` |
 | SWE-bench 30, wired tree (rung 3) | **1/30**: `django__django-15128` passes the local-venv evaluator (4 steps, $0.011); `sympy__sympy-19954` (solved in both earlier runs) missed under load; 9 no-oracle instances stopped on a wiring defect (history candidates at a foreign site), fixed before the final run; $1.16, 55 min, RSS peak 3.0 GB; run from the frozen worktree `.claude/worktrees/swe-clean` at `5486f7a` | `bench/results/jev-only-swebench-3` |
-| QuixBugs 40, **final tree** `55404ba` (frozen worktree `.claude/worktrees/final-clean`; a single run on this tree) | **39/40** pass the evaluator's reference cases (the same cases the workspace exposes; no hidden suite); **37/40 verified correct** by the verdict script (30 gold-identical + 7 equivalent); of the 2 `unverified`, `breadth_first_search` is equivalent to gold on 500 random graphs and `topological_ordering` is **wrong** (drops the `issuperset(incoming_nodes)` check; 462/1000 random DAGs invalid; the script's `unverified` label hid it) — at most 38/40 correct; miss `shortest_path_length` (a literal `return 4` committed; gold-identical in run 3, missed in the three later runs — a persistent regression); $0.185. Four-run series 36, 38, 38, 39 pass / 32, 35, 36, 37 verified correct; thresholds in-sample | `bench/results/jev-only-quixbugs-7-final` (+ `verdicts.md`); rungs file §25.1, §26.5 |
-| ladder 20, final tree | **14/20** solved on the exposed suite. Short tier **12/12** (3–7 steps, 0 blocked / declined / loop / `read` events, $0.051), but `grades` (`letter_grade(89.5)` → `'A'`, gold `'B'`) and `textstats` (`ngrams` raises on a tuple and mutates the caller's list) are behaviourally wrong fixes, so at most **10/12 correct**; there was no ladder correctness check until now (`experiments/inspect/ladder-verdicts.mts` is being written). Long tier **2/8** (`import_and_guard` 9 steps, `ledger5` 13); gold-identical hunks by strict `diff -U0`: `ledger5` 2/5, `import_and_guard` 2/4, `long_chain` 3/6, `regress_trap` 3/4, `six_hunks` 1/6 (2/6 counting the equivalent `t.due == None`), `masked` 0/3 (1/3 counting the equivalent `txt = text`; plus an overfit `return 0` insert), `crossfile` 0/4, `shared_frame` 0/2; $0.320 | `bench/results/jev-only-ladder-7-final`; rungs file §25.2–25.3, §26.5 |
+| QuixBugs 40, **final tree** `55404ba` (frozen worktree `.claude/worktrees/final-clean`; a single run on this tree) | **39/40** pass the evaluator's reference cases (the same cases the workspace exposes; no hidden suite); **37/40 correct** by the verdict script (30 gold-identical + 7 equivalent; `breadth_first_search` equivalent on 500 random graphs); **2 overfit**: `topological_ordering` (drops the `issuperset(incoming_nodes)` check and adds a `break`; wrong on 252/500 random DAGs, e.g. edges E->B, E->C → C dropped) and `detect_cycle` (a single edge input — the empty list: `AttributeError` vs `False`, 1/500); 0 unverified; miss `shortest_path_length` (a literal `return 4` committed; gold-identical in run 3, missed in the three later runs — a persistent regression); $0.185. Four-run series 36, 38, 38, 39 pass / 34, 35, 36, 37 correct; thresholds in-sample | `bench/results/jev-only-quixbugs-7-final` (+ `verdicts.md`); rungs file §25.1, §26.5, §27 |
+| ladder 20, final tree | **14/20** solved on the exposed suite, **9/20 correct** by `experiments/inspect/ladder-verdicts.mts`. Short tier **12/12** solved (3–7 steps, 0 blocked / declined / loop / `read` events, $0.051), **8/12 correct** (5 gold-identical + 3 equivalent); 4 overfit — strong `grades` (`letter_grade` one letter too high at .5 scores: 89.5 → `'A'`, gold `'B'`) and `textstats` (`ngrams` raises on a tuple and mutates the caller's list), weak-only `stats` and `units` (only the exception class on `None` / empty input differs) — 10/12 counting weak-only as correct. Long tier **2/8** solved (`import_and_guard` 9 steps, `ledger5` 13), **1/8 correct** (`import_and_guard`); `ledger5` weak-only (`is_overdue` returns an int with the right truthiness where gold returns a bool); gold-identical hunks by strict `diff -U0`: `ledger5` 2/5, `import_and_guard` 2/4, `long_chain` 3/6, `regress_trap` 3/4, `six_hunks` 1/6 (2/6 counting the equivalent `t.due == None`), `masked` 0/3 (1/3 counting the equivalent `txt = text`; plus an overfit `return 0` insert), `crossfile` 0/4, `shared_frame` 0/2; $0.320 | `bench/results/jev-only-ladder-7-final` (+ `verdicts.md`); rungs file §25.2–25.3, §26.5, §27 |
 | SWE-bench Verified 30, **final tree** `55404ba` (a single run) | **4/30** pass the local-venv evaluator (unofficial: replicates `eval.sh` without Docker): `sympy__sympy-15345` (4 steps), `sympy__sympy-17139` (4), `sympy__sympy-19954` (6), `django__django-15128` (4); FAIL_TO_PASS all success and the listed PASS_TO_PASS all success on each; none has the upstream fix's shape (15345 `_print_Expr = _print_Function` class-wide alias; 19954 an index guard before `del`; 17139 a `not rv.exp.is_comparable` guard; 15128 `alias += table_name`); $1.30 of Jev, 0 generator calls, 68 min, 348 steps, 228 blocked proposals, 88 loop trips; 0 history/foreign-site errors (the rung-3 defect is gone); `unstable` verdicts 3× on `django-15315`, `weak_network` 7× on `requests-2931`; `sympy-19954` has flipped across runs (load-sensitive); series 0/30 → 1/30 → 1/30 → 4/30; RSS peak 4.5 GiB (5-min samples) | `bench/results/jev-only-swebench-4-final`; rungs file §26 |
 | reach at the gold site, 9 oracle instances ($0) | a test-passing patch in some source's set on 3/9, gold text 1/9; after the six added capabilities every target enters the set and passes FAIL_TO_PASS | `experiments/results/swebench-reach-oracle-9.md`; rungs file §16, §18 |
 | heap after the re-baseline cache | one analysed Django corpus ≈ 149 MB; a re-baseline costs +3 MB with the cache instead of +148 MB without | rungs file §20.2 |
@@ -212,8 +213,8 @@ warm median 85.4), harness overhead per step p95 33.5 ms (< 50 ms; p50 22.1), ev
 - **Linux sandboxing.** Only cwd confinement, env scrubbing, timeout, output cap and tree kill
   outside macOS (level `none`), as designed and printed by `jevcode config`.
 
-- **Jev-only, repeats.** QuixBugs has four full runs (36, 38, 38, 39 of 40; verified correct
-  32, 35, 36, 37), but only one on the final tree `55404ba`; the only same-tree pair (the two
+- **Jev-only, repeats.** QuixBugs has four full runs (36, 38, 38, 39 of 40; correct
+  34, 35, 36, 37), but only one on the final tree `55404ba`; the only same-tree pair (the two
   6-repeat runs at `d610d75`) flipped 2/40 programs between them, and in the final run `mergesort`
   passed at 455 s of the 480 s wall. The ladder short tier reached ≥ 8/12 in rounds 2, 4, 5 and
   the final run, but each ran a different code state (the loop-side and search-side fixes landed
@@ -223,18 +224,21 @@ warm median 85.4), harness overhead per step p95 33.5 ms (< 50 ms; p50 22.1), ev
   byte-identical patch each time it passed, so the count is load-sensitive.
 - **Jev-only, no hidden suite.** The QuixBugs and ladder evaluators run exactly the cases the
   workspace exposes (`bench/data/quixbugs/tests`, the ladder's `tests/`), so "repaired" means
-  "passes the reference cases". Correctness is the separate verdict script
+  "passes the reference cases". Correctness is the separate verdict scripts
   (`experiments/inspect/quixbugs-verdicts.mts`: gold-identical, or equivalent on the reference
-  cases and on perturbed inputs). Two QuixBugs programs that pass every run
-  (`breadth_first_search`, `topological_ordering`) differ from the reference and the script labels
-  them `unverified` because their pytest graph fixtures are not perturbed by
-  `src/synth/search/perturb.ts`. An independent differential test against `correct/` (2026-09-21)
-  settles them: `breadth_first_search` is equivalent on 500 random graphs; `topological_ordering`
-  is **wrong** in every run's committed patch except run 3's — the final run's drops the
-  `issuperset(incoming_nodes)` check and adds a `break`, returns `[A, C]` for `A->B, A->C, B->C`
-  (gold `[A, B, C]`) and is invalid on 462/1000 random DAGs. "Passes every run" therefore does not
-  mean correct, and the script's "0 overfit" is scoped to the programs the probe can perturb. The
-  ladder has no such check at all; `experiments/inspect/ladder-verdicts.mts` is being written.
+  cases, on perturbed inputs and — for the nine programs with pytest graph fixtures — on 500 random
+  graph / list / DAG structures per program; `experiments/inspect/ladder-verdicts.mts`: gold-identical,
+  or equivalent to gold on the inputs the task's tests pass and their perturbations, overfit
+  annotated strong / weak-only). Two QuixBugs programs that pass every run (`breadth_first_search`,
+  `topological_ordering`) differ from the reference: `breadth_first_search` is equivalent on 500
+  random graphs in all four runs; `topological_ordering` is **wrong** in every run's committed patch
+  except run 3's — the final run's drops the `issuperset(incoming_nodes)` check and adds a `break`
+  and is wrong on 252/500 random DAGs (e.g. edges E->B, E->C → C dropped) — and `detect_cycle`
+  fails only the empty list (1/500). "Passes every run" therefore does not mean correct; since the
+  random-structure differentials landed (rungs file §27) `unverified` is 0 on every run, so the
+  overfit counts cover all 40 programs. The ladder check finds 4 overfit of 12 solved in the
+  short tier (`grades`, `textstats` strong; `stats`, `units` weak-only) and `ledger5` weak-only in
+  the long tier.
 - **Jev-only, in-sample constants.** Several thresholds were set after a live run on a named
   QuixBugs program (`docs/JEV-ONLY-DESIGN.md` §7); no run without them has been repeated, so the
   QuixBugs numbers are in-sample for those programs.
