@@ -3091,6 +3091,60 @@ stops at steps 4–6 against 25-step runs there), and the sympy-11618 row is not
 Budget for this section: live Jev **$1.163** (rung-3 run); the BEFORE re-run of §21.3 A was the budget agent's $0.198; offline checks
 $0. Total live spend of this task under the $5 cap.
 
+### 21.7 Amendment (coordinator's notes after the hand-off): the nine `error` stops are one wiring defect, and what actually lost sympy-19954
+
+**Reclassification.** The nine `error` stops of §21.5 (django-15375, -15572, pylint-4604, -4970, -6386, pytest-10081, -10356,
+sympy-20428, sympy-11618) are one defect, not a search or oracle outcome, and are classified **`wiring_defect_history_site`**: the
+ranker invariant `error internal: ranker: candidate "hist_…" is at <file>:1679 (replace), not at the site being ranked (<file>:1686,
+replace)` (`~/.jevcode/runs/20260921-011312-ij7bpwi3/transcript.log` line 31, django-15375) — §20's wiring lets git-history reversals
+ride with the donor seed while `history/source.ts` sites each reversal at its own line, so a foreign-site candidate reaches
+`rank/index.ts:307` and every propose fails with `propose: internal` until the engine stops after three. A fix agent is on it.
+`experiments/inspect/swe-report.mts` now emits the class (an `error` stop whose transcript carries the ranker line). Corrected
+breakdown for `bench/results/jev-only-swebench-3`: **`wiring_defect_history_site` 9, `no_oracle_best_guess_rejected` 7,
+`no_oracle_no_guess` 4 (django-15103, -15916, sympy-12489, -13798), `evaluator_fail_on_committed_patch` 3, `ranked_run_but_regressions`
+3, `reachable_not_ranked_in_budget` 2, `solved` 1, `best_guess_wrong` 1**; the `no_search` row (sympy-11618) is in the defect class.
+Totals otherwise unchanged (solved 1/30, oracle 10/30, Jev $1.1633).
+
+**sympy-19954: passed in 6 steps on d610d75 (`bench/results/jev-only-swebench-2`, run `20260921-000331-sxnrfz76`), `max_replans` at
+21 here (`20260921-004052-jx3hxdij`).** Read from both transcripts, `state.json` `tried` and `steps.jsonl`:
+
+1. **History reversals did not displace the winning candidate.** The winner is a *template* (`template/guard_index_break`, the
+   two-line `if i >= len(num_blocks): break`); the history reversals ride only in the donor seed (`src/synth/index.ts:184-185`:
+   `[...reversals, ...plainDonor.enumerate(site, o)].slice(0, cap)`), and at rung 3's first site the seeds read `mutation 254, template
+   254, donor 254` (step 4; `template 117, donor 245` at 7, `111/245` at 10, `109/245` at 17 after the source rotations) — the donor
+   seed was cut at the cap with the 48 harvested change runs at its head, the template seed was not. The guard variants **were
+   enumerated and run**: `sha12(diff)` of `if i >= len(num_blocks): break`, `if i >= len(blocks): break`, `… return False` (×2) are in
+   `tried` — correcting §21.5/§21.6, which said the guard was never run — but every one **at the gap after the raising `del`**
+   (`perm_groups.py:2202:insert (gap, indent 24) — insert after anchor L2201`), where a guard cannot prevent `del num_blocks[i]` from
+   raising. At the gap **before** the `del` (`2201:insert`, where both BEFORE runs found the fix: `pick template/guard_index_break at
+   sympy/combinatorics/perm_groups.py:2201:insert`) no placement of any variant is in `tried`: that site was never visited in rung 3.
+   Every `synth site:` line of the run names `2202:insert` (steps 4, 7, 10, 17); step 4's budget line reads `progress: 1 new site of 1
+   tested`, step 7's `nothing new: 1 of 2 stagnant`.
+
+2. **What changed is the oracle class, and it changed because the reproduction got fast.** `budget.ts:575 oracleClass`: a goal subset
+   under `QUIXBUGS_CLASS_MAX_T_RUN_MS` = 2,000 ms is `quixbugs_class` → `freshBudget` gives **1,500 runs** and a test wall of
+   `min(90 s, wallRemaining / 4)`; otherwise `repository_class` → the §21.2 item-1 derived count (16–160) and a wall of 8 × the scoped
+   baseline. `decideRunPlan` then takes SIEVE iff `n ≤ runsLeft && tRun ≤ 2,000 ms`. On d610d75 (Table B) sympy-19954's reproduction
+   measured **3,500 ms** (the process was at 4–8 GB with 1.3–1.6-s mark-compact pauses): repository class, `runs 27` of a derived 77,
+   RANK with K = 5–6 per site, four batches (`6 … 5 … 5 … 5 tested`, `test wall left 153 s` after the first) that reached `2201:insert`
+   in the fourth (`3 plausible`), commit at step 4. In rung 3 the same reproduction measured **916 ms** (the §20 memory fix; every rung-3
+   oracle instance but sympy-16792 measured 0.27–1.5 s against 3.3–4.7 s in Table B): quixbugs class, 1,500 runs, **SIEVE** over the
+   first site's 762 candidates, and the 90-s wall was gone after 379 of them (`runs left 1114, test wall left 0 s; regression run median
+   47987 ms` — four reproduction passers each paid a 48-s scoped run). Steps 7, 10 and 17 re-entered the same first site with a fresh
+   90-s wall that one or two 72–82-s regression runs consumed (`6 tested … 6 deferred`, `5 tested (5 regressed) … regression run median
+   81542 ms; 3 deferred`, `0 tested (nothing ran) … 5 deferred`), so the second site never came up. The class rule is d610d75's, not §20's
+   (d610d75 is an ancestor of 5486f7a; sympy-16792 hit the same 1,500/quixbugs branch in Table B with a 1.3-s reproduction): §20 changed
+   its input by making the establishing step 3–4× faster.
+
+3. **The other §20 mechanisms are visible and inert here.** Introspection sites were appended *after* the located ones
+   (`perm_groups.py:2215` class-body gap, `:20` import gap) and never reached; the raising `del` is a one-line statement, so no
+   statement-level site; the phase stayed SEEDS (the step-6 directive enabled WIDENED, which the budget never reached). The site
+   *order* — the anchor's after-gap first — is the same `orderGoalSites` as before; RANK's small K walked past it, SIEVE did not.
+
+Consequence for §21.6 item 2: the load story stands, but its mechanism is sharper than "the derived count collapsed" — a sub-2-s
+reproduction puts a repository run in the QuixBugs class, whose 90-s wall and unbounded SIEVE were sized for 0.1-s tests, and one
+48–82-s regression run then ends the step. The lever is `oracleClass` reading the *full-suite* cost as well (a repository whose scoped
+run takes 10–100 s is never QuixBugs-class), or the wall of the quixbugs branch bounded by the measured regression run.
 
 ## 22. 2026-09-21: progress commits and no `read` churn — the long tier's `masked`, `shared_frame`, `long_chain`, `six_hunks`
 
@@ -3341,57 +3395,3 @@ python3 /tmp/ladder-long/rows3.py bench/results/jev-only-ladder-long-3c long_cha
 node node_modules/.bin/tsx .scratch/tried-check2.mts 20260921-013110-ap6quqpt shared_frame 1
 ```
 
-### 21.7 Amendment (coordinator's notes after the hand-off): the nine `error` stops are one wiring defect, and what actually lost sympy-19954
-
-**Reclassification.** The nine `error` stops of §21.5 (django-15375, -15572, pylint-4604, -4970, -6386, pytest-10081, -10356,
-sympy-20428, sympy-11618) are one defect, not a search or oracle outcome, and are classified **`wiring_defect_history_site`**: the
-ranker invariant `error internal: ranker: candidate "hist_…" is at <file>:1679 (replace), not at the site being ranked (<file>:1686,
-replace)` (`~/.jevcode/runs/20260921-011312-ij7bpwi3/transcript.log` line 31, django-15375) — §20's wiring lets git-history reversals
-ride with the donor seed while `history/source.ts` sites each reversal at its own line, so a foreign-site candidate reaches
-`rank/index.ts:307` and every propose fails with `propose: internal` until the engine stops after three. A fix agent is on it.
-`experiments/inspect/swe-report.mts` now emits the class (an `error` stop whose transcript carries the ranker line). Corrected
-breakdown for `bench/results/jev-only-swebench-3`: **`wiring_defect_history_site` 9, `no_oracle_best_guess_rejected` 7,
-`no_oracle_no_guess` 4 (django-15103, -15916, sympy-12489, -13798), `evaluator_fail_on_committed_patch` 3, `ranked_run_but_regressions`
-3, `reachable_not_ranked_in_budget` 2, `solved` 1, `best_guess_wrong` 1**; the `no_search` row (sympy-11618) is in the defect class.
-Totals otherwise unchanged (solved 1/30, oracle 10/30, Jev $1.1633).
-
-**sympy-19954: passed in 6 steps on d610d75 (`bench/results/jev-only-swebench-2`, run `20260921-000331-sxnrfz76`), `max_replans` at
-21 here (`20260921-004052-jx3hxdij`).** Read from both transcripts, `state.json` `tried` and `steps.jsonl`:
-
-1. **History reversals did not displace the winning candidate.** The winner is a *template* (`template/guard_index_break`, the
-   two-line `if i >= len(num_blocks): break`); the history reversals ride only in the donor seed (`src/synth/index.ts:184-185`:
-   `[...reversals, ...plainDonor.enumerate(site, o)].slice(0, cap)`), and at rung 3's first site the seeds read `mutation 254, template
-   254, donor 254` (step 4; `template 117, donor 245` at 7, `111/245` at 10, `109/245` at 17 after the source rotations) — the donor
-   seed was cut at the cap with the 48 harvested change runs at its head, the template seed was not. The guard variants **were
-   enumerated and run**: `sha12(diff)` of `if i >= len(num_blocks): break`, `if i >= len(blocks): break`, `… return False` (×2) are in
-   `tried` — correcting §21.5/§21.6, which said the guard was never run — but every one **at the gap after the raising `del`**
-   (`perm_groups.py:2202:insert (gap, indent 24) — insert after anchor L2201`), where a guard cannot prevent `del num_blocks[i]` from
-   raising. At the gap **before** the `del` (`2201:insert`, where both BEFORE runs found the fix: `pick template/guard_index_break at
-   sympy/combinatorics/perm_groups.py:2201:insert`) no placement of any variant is in `tried`: that site was never visited in rung 3.
-   Every `synth site:` line of the run names `2202:insert` (steps 4, 7, 10, 17); step 4's budget line reads `progress: 1 new site of 1
-   tested`, step 7's `nothing new: 1 of 2 stagnant`.
-
-2. **What changed is the oracle class, and it changed because the reproduction got fast.** `budget.ts:575 oracleClass`: a goal subset
-   under `QUIXBUGS_CLASS_MAX_T_RUN_MS` = 2,000 ms is `quixbugs_class` → `freshBudget` gives **1,500 runs** and a test wall of
-   `min(90 s, wallRemaining / 4)`; otherwise `repository_class` → the §21.2 item-1 derived count (16–160) and a wall of 8 × the scoped
-   baseline. `decideRunPlan` then takes SIEVE iff `n ≤ runsLeft && tRun ≤ 2,000 ms`. On d610d75 (Table B) sympy-19954's reproduction
-   measured **3,500 ms** (the process was at 4–8 GB with 1.3–1.6-s mark-compact pauses): repository class, `runs 27` of a derived 77,
-   RANK with K = 5–6 per site, four batches (`6 … 5 … 5 … 5 tested`, `test wall left 153 s` after the first) that reached `2201:insert`
-   in the fourth (`3 plausible`), commit at step 4. In rung 3 the same reproduction measured **916 ms** (the §20 memory fix; every rung-3
-   oracle instance but sympy-16792 measured 0.27–1.5 s against 3.3–4.7 s in Table B): quixbugs class, 1,500 runs, **SIEVE** over the
-   first site's 762 candidates, and the 90-s wall was gone after 379 of them (`runs left 1114, test wall left 0 s; regression run median
-   47987 ms` — four reproduction passers each paid a 48-s scoped run). Steps 7, 10 and 17 re-entered the same first site with a fresh
-   90-s wall that one or two 72–82-s regression runs consumed (`6 tested … 6 deferred`, `5 tested (5 regressed) … regression run median
-   81542 ms; 3 deferred`, `0 tested (nothing ran) … 5 deferred`), so the second site never came up. The class rule is d610d75's, not §20's
-   (d610d75 is an ancestor of 5486f7a; sympy-16792 hit the same 1,500/quixbugs branch in Table B with a 1.3-s reproduction): §20 changed
-   its input by making the establishing step 3–4× faster.
-
-3. **The other §20 mechanisms are visible and inert here.** Introspection sites were appended *after* the located ones
-   (`perm_groups.py:2215` class-body gap, `:20` import gap) and never reached; the raising `del` is a one-line statement, so no
-   statement-level site; the phase stayed SEEDS (the step-6 directive enabled WIDENED, which the budget never reached). The site
-   *order* — the anchor's after-gap first — is the same `orderGoalSites` as before; RANK's small K walked past it, SIEVE did not.
-
-Consequence for §21.6 item 2: the load story stands, but its mechanism is sharper than "the derived count collapsed" — a sub-2-s
-reproduction puts a repository run in the QuixBugs class, whose 90-s wall and unbounded SIEVE were sized for 0.1-s tests, and one
-48–82-s regression run then ends the step. The lever is `oracleClass` reading the *full-suite* cost as well (a repository whose scoped
-run takes 10–100 s is never QuixBugs-class), or the wall of the quixbugs branch bounded by the measured regression run.

@@ -97,10 +97,12 @@ const TARGETS: Record<string, Target> = {
       const ind = indentOf(ls[L - 1] ?? '');
       const del = findLine(ls, 'del num_blocks[i], blocks[i]', L);
       const ind2 = indentOf(ls[del - 1] ?? '');
-      return [
-        { label: `replace L${L} with reversed(list(enumerate(rep_blocks)))`, after: replaceSpan(ls, L, L, `${ind}for i, r in reversed(list(enumerate(rep_blocks))):`) },
-        { label: `guard 'if i >= len(num_blocks): break' before L${del}`, after: insertBefore(ls, del, [`${ind2}if i >= len(num_blocks):`, `${ind2}    break`]) },
-      ];
+      const out: Placement[] = [{ label: `replace L${L} with reversed(list(enumerate(rep_blocks)))`, after: replaceSpan(ls, L, L, `${ind}for i, r in reversed(list(enumerate(rep_blocks))):`) }];
+      // the guard before the raising `del` (the gold-equivalent that solved the instance twice) and the same guards at the gap AFTER it (rung 3's first site)
+      for (const at of [del, del + 1]) for (const body of ['break', 'continue', 'return False']) for (const cond of ['i >= len(num_blocks)', 'i >= len(blocks)']) {
+        out.push({ label: `guard 'if ${cond}: ${body}' before L${at}${at === del ? ' (before the del)' : ' (after the del)'}`, after: insertBefore(ls, at, [`${ind2}if ${cond}:`, `${ind2}    ${body}`]) });
+      }
+      return out;
     },
   },
   'sympy__sympy-11618': {

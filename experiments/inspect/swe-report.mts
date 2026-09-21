@@ -1,6 +1,7 @@
 /**
  * Per-instance table for jev-only SWE-bench benches (jev-only-rungs-1-2.md §21; run from the repo root): tasks.jsonl (one or more result dirs, comma-separated)
- * joined with each run's transcript.log and steps.jsonl. `--mark=a,b,c` marks those instances (e.g. the 9 of
+ * joined with each run's transcript.log and steps.jsonl. `wiring_defect_history_site` = an `error` stop after the ranker's
+ * site invariant threw on a git-history reversal (`error internal: ranker: candidate "hist_…"`, §21.5/§21.7). `--mark=a,b,c` marks those instances (e.g. the 9 of
  * the BEFORE run) with a `*` in the 30-run table. Solved = the local-venv evaluator's verdict, nothing else.
  */
 import { existsSync, readFileSync } from 'node:fs';
@@ -62,8 +63,10 @@ for (const r of [...final.values()].sort((a, b) => (a.task < b.task ? -1 : 1))) 
   const parkedNoSite = searches.some((s) => /parked: no (site|candidate)/.test(s));
   const parkedExhausted = searches.some((s) => /parked: exhausted/.test(s));
   const budgetOnly = searches.length > 0 && searches.every((s) => / budget/.test(s));
+  const rankerSiteErrors = (transcript.match(/error internal: ranker: candidate "hist_/g) ?? []).length;
   let cls: string;
   if (r.reason === 'crashed') cls = 'crashed_oom';
+  else if (r.stopReason === 'error' && rankerSiteErrors > 0) cls = 'wiring_defect_history_site';
   else if (r.reason === 'in_progress') cls = 'in_progress';
   else if (r.pass === true) cls = 'solved';
   else if (r.evaluator !== 'local-venv' && r.patchEmpty !== true && r.patchEmpty !== null && r.pass === null) cls = 'setup';
