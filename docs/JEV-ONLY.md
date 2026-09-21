@@ -307,3 +307,28 @@ the linter verify. The question this document answers by experiment is which dec
   the remaining tests stay open and re-cluster), plus no `read` proposals after a `gather_context`
   replan (7–12 declined reads per miss fed the loop detector). `regress_trap` confirmed that
   regressions are never kept. Also this round: Q17 deleted (0 live requests; a code tie-break).
+- 2026-09-20 (later): **SWE-bench rung 3 on the wired tree (5486f7a): 1/30** (`bench/results/jev-only-swebench-3`,
+  `experiments/results/jev-only-rungs-1-2.md` §21; the full 30, `--concurrency 2 --max-steps 25 --max-wall 25m`,
+  exit 0 in 54 min, Jev $1.163, no cap fired). The §20 memory fix held: worker RSS peaked at 2.99 GB and fell
+  to tens of MB between tasks where the previous full run died at 8 GB after 8 records. BEFORE tables
+  (§21.3): the integration code on the 9 oracle instances 1/9 (sympy-19954), the budget-round code on the
+  crashed full run 1/8. AFTER: **django-15128 solved** (SIEVE lone passer `alias += table_name` at step 2,
+  `complete` at step 4, $0.011; not the gold's shape, F2P and local P2P accept it), sympy-19954 lost to load
+  (scoped baseline 41 s instead of 11 s under two 8-lane sympy runs; runs-per-step collapsed to 6–10; the guard
+  that solved it twice was ranked #1 at step 17 and never run). Oracle found 10/30 (8 strong, 2 weak, every one
+  confirmed by a second run); introspection ran on 9/9 oracle instances, the history harvest on 9/9 and found
+  django-15315's ticket #31750 commit. Reach check from the records (`experiments/inspect/reach-check-3.mts`):
+  the test-passing line is now in the set on 4/7 reach targets (15345 alias, 17139 `is_real` guard, 2931
+  `return data`, 12096 `nfloat`) and none was run at the right place under a verdict that could accept it —
+  ranked p 0.03 / `none_of_these` 0.69 (never run), run at the wrong gap (inside the `< 0` body), run and
+  rejected by the httpbin oracle. Three commits on oracle instances all failed the evaluator (15315 dead code
+  ×4, 15563 weak-oracle overfit, 2931 wrong passer). **Defect:** the history source's reversals carry their own
+  site and the ranker throws `ranker: candidate "hist_…" is at <file>:<line>, not at the site being ranked`
+  (`src/synth/rank/index.ts:307`) — 43 occurrences in 12 runs, 9 no-oracle runs and sympy-11618 stopped with
+  `error` at steps 4–6. **django-15315's oracle is a 1/8 coin that `PYTHONHASHSEED=0` does not fix**: 16 runs
+  of the runner's own command give AssertionError ×13 / PASS ×3 in both workspace and lane, because
+  `hash(None)` is address-based on CPython 3.9 (fixed in 3.12) — a lane `plausible` needs a confirming
+  second run (§21.4 addendum, `experiments/inspect/repro-15315-repeat.mts`). Binding constraint (§21.6): the
+  verdict a produced candidate receives — flaky/networked/weak oracles feeding a 5-passer cap, the run budget
+  derived from idle timings collapsing under load, and RANK mode dropping the right line at p 0.03 — not the
+  candidate set. Report script kept as `experiments/inspect/swe-report.mts`.

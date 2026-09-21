@@ -195,9 +195,8 @@ disclosed in `docs/JEV-ONLY-DESIGN.md` §7; the QuixBugs numbers are in-sample f
 | issue oracle over the 30 | `experiments/results/oracle-from-issue.md` | valid on 9/30 (7 strong, 2 weak) | – | $0.0096 | fails on the base commit, passes with the gold patch |
 | SWE-bench, the nine oracle instances | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b` | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (8 steps, $0.024, 0 generator calls) | – | $0.106, $0.198 | the first instance solved with no generating model; not the upstream fix's shape; the first process died at a 4 GB heap on the Django instances |
 | SWE-bench 30, budget round | `bench/results/jev-only-swebench-2` | 1 pass (`sympy__sympy-19954`, 6 steps) of 8 records | – | $0.462 | process died at an 8 GB heap after eight records |
-| SWE-bench 30, wired tree (rung 3) | `bench/results/jev-only-swebench-3` | in progress | – | – | see the placeholder below |
+| SWE-bench 30, wired tree (rung 3) | `bench/results/jev-only-swebench-3` | **1/30**: `django__django-15128` passes the local-venv evaluator (4 steps, $0.011); `sympy__sympy-19954` (solved in both earlier runs) missed under load | – | $1.16, 55 min, RSS peak 3.0 GB | oracle found 10/30; 9 no-oracle instances died on a wiring defect (history candidates at a foreign site) and are being re-run after the fix; all three oracle commits failed the evaluator (flaky or network oracles); §21 of the rungs report |
 
-<!-- RUNG3: fill from experiments/results/jev-only-rungs-1-2.md §21 -->
 
 A full QuixBugs run costs about $0.13 of Jev and 12–16 minutes of wall for the 40 programs
 (median 4 steps per program); every record carries `generatorCalls: 0`. The dated log of every

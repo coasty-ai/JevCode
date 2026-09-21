@@ -2675,3 +2675,418 @@ are closed: a re-baseline now costs the changed files (≈ 3 MB, 31 ms instead o
 - django-15315 (`fields/__init__.py`): the located line 545 is now the statement site **545–549** (`return hash((self.creation_counter,
   self.model._meta.app_label if hasattr(self, 'model') else None, …))`); with no facts (an `assert` in the snippet) the class around it,
   `Field`, still gets its class-body gap after `__hash__` (L559) and the import gap (L30): 10 plain templates there, bounded noise.
+
+## 21. 2026-09-20 (later): SWE-bench rung 3 — the repository-mode integration, the budget round and the §20 wiring measured on the 30 (BEFORE: 1/9 oracle instances, 1/8 of the crashed full run; AFTER: 1/30 — django-15128 solved, sympy-19954 lost); the history/ranker site defect; django-15315's oracle is a 1/8 coin the seed does not fix
+
+The budget agent's static parts (21.1, 21.2, 21.4) were drafted as §17.x before §17 was taken by the ladder round; renumbered here unchanged except for the cross-references and the 21.4 addendum. Live spend of this section: $1.163 (rung 3) + $0.198 (the §21.3 before-rerun); offline checks $0.
+
+### 21.1 The repository-mode integration this section measures (commit df0855c, the previous hand-off)
+
+Owner scope of that commit: `src/synth/search/{index,goals,memory,proposal,subgoal}.ts`, `src/synth/oracle/**` (additive: `search.ts`,
+`verify.ts`), the wiring in `src/synth/index.ts`, and their tests (`test/unit/synth/search/controller.test.ts` repository
+block, `test/unit/synth/oracle/{search,verify}.test.ts`). Nothing in `search/{guard,bases}.ts`, `mutate/**`, `core/**`,
+`loop/**` or `sieve/runner.ts` changed there. Measurement inputs: `experiments/results/oracle-from-issue.md` (a valid
+reproduction on 9/30 instances at one Jev request each), `bench/results/jev-only-swebench-1` (0/30: no goal, the pytest
+default runner on Django/sympy checkouts, `synth baseline: 0/1 pass, 0 failed, 1 errors` → `every goal parked: no goal`).
+
+1. **Repository mode in the controller** (`search/index.ts rebaselineRepository`, entered when the detected runner is
+   Django's `runtests.py` or sympy's `bin/test`, or the workspace has ≥ 40 non-test / ≥ 25 test Python files —
+   `oracle/search.ts isRepositoryWorkspace`; QuixBugs and the ladder never enter it). The establishing step, once per run:
+   the **oracle from the issue** (`findIssueOracle`: code extracts the blocks, ONE Jev request judges them, code builds
+   the criterion and runs the snippet in the workspace with `.venv/bin/python`) → the goal (`repro::<sha8>`, its
+   `FailureView` from `reproductionGoal`) or, without a valid oracle, the **best-guess goal** (`issue::<sha8(task)>`,
+   plan item `fix issue::… in <path>`) → **one localisation** of that goal from the task text (the reporter's traceback
+   frames Jev put ≥ 0.5 on being in the fix and the base run's raising frames are passed as the localiser's `traceback`;
+   the result is cached for the search) → the **regression scope** over the top ≤ 3 module files of the file beam
+   (`chooseRegressionScope`: `relatedTestFiles` with test-file contents, then test apps named after the module's stem
+   when slots are left, then a two-file smoke check; only runnable test modules, never `gis_tests`/`postgres_tests`-style
+   backends; ≤ 6 files) → the **scoped baseline** = `scopedTestCommand` on the detector's program plus the harness's
+   flags read from `.jevcode-spec.json` (`python tests/runtests.py --parallel 1 --verbosity 2 --settings=test_sqlite
+   <labels>`, `python bin/test -C --verbose <files>`, `python -m pytest -q -rA <files>`; the program stays the detector's so
+   the engine's `isTestCommand` parses the run). The ledger's baseline is `mergeSummaries(scoped, repro)`: the scoped run
+   plus the reproduction as one more (failing) test; its `command` and `durationMs` are the scoped run's. Failures of the
+   scoped run at the base commit are **known failures** (counted, never goals). A Django or sympy full suite is never run.
+2. **Verification in lanes** (`oracle/verify.ts runRepositoryQueue`, swapped in for `sieve/runner.ts runQueue` by the
+   wiring whenever `mem.repository` is set): git worktree lanes as before (§4.2), `PYTHONPATH` pointed at the lane (an
+   editable install of the workspace package otherwise resolves to the workspace, not the lane; pytest's install-generated
+   `src/_pytest/_version.py` is copied in), the goal-subset run is `verifyRepro` with the workspace venv (≈ 0.4–6.5 s), the
+   full-suite run is the scoped command and only passers pay it (≤ 5 per step); `plausible` = the reproduction passes and
+   nothing is newly failing, `unchanged` = the reproduction still fails, `regressed` = a scoped test newly fails. The guard
+   (`search/guard.ts`, untouched) sees ordinary `VerifyOutcome`s whose `full.passing` carries the reproduction id. The
+   oracle model reads the reproduction's duration as `tRunMs.goalSubset` and the scoped run's as `fullSuite`, so §2.4
+   decides SIEVE/RANK per instance (requests ≈ 0.4 s → SIEVE, sympy ≈ 6 s → RANK).
+3. **Post-patch re-baseline**: the scoped run again plus the reproduction re-run on the workspace
+   (`verifyReproInWorkspace`); the goal is `fixed` iff the reproduction passes; the post-patch `run` claims the item and
+   says `expect N of T tests to pass and the reproduction to pass`; `done` (green) reads
+   `all N tests pass; the reproduction repro::… passes; 1 fix committed`. A green scoped run at the base commit is never
+   `done` (green also requires every goal fixed).
+4. **Best-guess path** (`search/subgoal.ts searchBestGuess`): sources 1–3 at the localiser's top 3 sites, Jev ranks each
+   site's set (`rank/`), the `decideRunPlan` top-k over the merged ranking run against the regression scope only; the commit
+   is the highest-ranked candidate with nothing newly failing, **at most once per run** (the goal parks with
+   `best-guess fix committed, unverified (no reproduction oracle)`; a blocked/declined patch is re-proposed once from the
+   stash and then the goal parks as rejected). The patch's goal text is `apply best-guess fix (no reproduction oracle;
+   unverified): …`, `openProblems` carries `no reproduction oracle: best-guess fix, unverified`, the evidence has
+   `selection: 'rank'`, `goalTests: []`. Then the scoped `run` and a partial `done` naming the oracle's outcome, the scope
+   and the known failures.
+5. **Persistence** (`memory.ts RepositoryMode`, `PersistedRepository`): the reproduction spec (chunks + criterion), the
+   module files, the scope and the flags ride in `synthState`; a resumed run neither re-asks Jev nor re-localises, it
+   re-runs the scoped command and the reproduction.
+6. **File loading**: `MAX_WORKSPACE_PY_FILES` 400 → 1200 (Django 858 / sympy 746 non-test source files, analysed in
+   0.3 s / 1.7 s; the repo-wide file Nouls that ranked the gold file #1 on 23/30 saw every file), task-named files first.
+7. **Scoped-baseline timeout**: the run's maximum command timeout up to 300 s; a scope that still times out is retried
+   once on its top 2 files before the §4.1 park.
+
+Measured before the live run (no Jev): `chooseRegressionScope` over the 30 gold modules puts the F2P test file in the
+scope on **21/30** (3 partially; misses: `sympy/core/function.py` → `test_lambdify`, `polys/domains/expressiondomain.py`,
+`django/db/models/sql/compiler.py`, `forms/models.py` ×2, `contrib/admin/options.py` after the runnable-module filter,
+`pylint/config/*` → `test_config`); a 4 + 2 blend of the related and stem tiers lost 4 and gained 1 and was dropped.
+Pre-flight on the built bench workspaces: Django lanes 2 × worktree in 12.4 s (sympy 3.3 s, requests 0.5 s), the lane's
+`runtests.py` reports `Testing against Django installed in …/lane0/django`, the venv python runs the django-15315
+reproduction in the lane (`AssertionError` at base, 2.8 s), sympy's scoped `bin/test -C --verbose` on 6 files: 129 passed
+in 12.9 s (workspace) / 18.9 s (lane), requests' `test_requests.py`: 85 passed, 81 network errors (known failures) in 4.3 s.
+
+### 21.2 What this round changed (working tree on d610d75; file:line) — and what §20 wired on top of it
+
+The budget-round changes below (items 1–3) were live in the 30-run of Table B (§21.3) and are what commit d610d75 carries. The
+rung-3 run of §21.5 adds the wiring of **§20** (commit 5486f7a: introspected names and sites, the history source, statement-level
+sites, the phase hint, the re-baseline file cache and the LRU of run memories) on top; §20.1–20.4 document that diff and its offline
+checks, and are not repeated here.
+
+
+The 9-instance live run of the integration above (`bench/results/jev-only-swebench-2-oracle`, §21.3) showed the oracle
+found in one request on 9/9, the gold file localised #1, hundreds of candidates enumerated — and the step budget letting
+16 of them run. Three things changed, all in this agent's files:
+
+1. **Runs per step from the measured oracle, not the class** — `src/synth/search/budget.ts:143-162` (constants
+   `REPO_TEST_RUNS_MAX` 16 becomes the floor, `REPO_TEST_RUNS_CAP` 160, `REPO_PASSERS_RESERVED` 5 = the runner's passer
+   cap), `budget.ts:586` `hasCheapGoalSubset` (repository class with the reproduction cheaper than the scoped suite),
+   `budget.ts:599` `repositoryRunsPerStep`: `runs = floor((testWall − 5 × t_run(fullSuite)) / t_run(goalSubset)) × lanes`
+   bounded to [16, 160], with `testWall = min(8 × scopedBaseline, 600 s, wallRemaining)` as before; `budget.ts:631`
+   `freshBudget` reads it for the repository class (QuixBugs class unchanged at 1,500). sympy-15345 as measured idle:
+   floor((149 s − 93 s) / 2.06 s) × 4 = **108** a step instead of 16; a Django instance with a 100 s scope and a 2.8 s
+   reproduction: 140; every equal-cost oracle (best guess, plain pytest) still 16. **RANK take per site from the budget**
+   — `budget.ts:647-676` `decideRunPlan(…, { sitesLeft })`: on a cheap repository oracle `K = clamp(floor(runsLeft /
+   sitesLeft), 3|5, 16)`, so a step's runs spread over the top sites in Noul order (before: 15 of 16 runs at site 1 both
+   steps, sites 3–12 never reached); `subgoal.ts:612,633,770` thread `sitesLeft` from `visitPhase` through `visitSite`
+   and `visitSeedBatch` to `visitSource`; the best-guess path (`searchBestGuess`, no `sitesLeft`) and every equal-cost
+   oracle keep the fixed 3/5. docs/JEV-ONLY-DESIGN.md §4.3 (line 350) carries the dated paragraph.
+2. **Stagnation, not the hit, parks a budget-hit goal (§5.3)** — `src/synth/search/types.ts:36,40,171-173`
+   (`Goal.budgetSteps`, `Goal.testedSites`, `GoalSearchTrace.sitesTested/newSitesTested`), `subgoal.ts:401`
+   `everySiteSeedsExhausted`, `subgoal.ts:462` `recordResults` records the sites each classified candidate ran at on the
+   goal (across steps; `apply_failed` tests nothing), `goals.ts:65` `MAX_BUDGET_HIT_STEPS = 4`, `goals.ts:571`
+   `noteBudgetHit(goal, progress)` counts a progressing step toward the hard cap only, `goals.ts:580` `parkReasonFor`
+   names the rule (`… that tested nothing new` / `… (hard cap)`), `goals.ts:606` `reopenOnChange` drops `testedSites`
+   with `exhausted`; `search/index.ts:702-707` the budget branch: `progress = tested > 0 && newSitesTested > 0 && not
+   every located site seeds-exhausted`, a progressing step skips the stagnation count and the "3 searches without a
+   commit" rule, and one `synth budget:` transcript line per such step says which rule the step counted toward. The
+   hard cap keeps the loop detector's guarantee (each budget step is one more identical scoped `run`; three trip it;
+   4 steps bound a goal to one trip). docs §5.3 (line 458).
+3. **The lane verdict must predict the workspace verdict** (the coordinator's item 1, diagnosed on django-15315, §21.4) —
+   `src/synth/oracle/runner.ts:256,267` every reproduction runs under `PYTHONHASHSEED=0` (`REPRO_HASH_SEED`), and
+   `oracle/search.ts:200,327-334` `findIssueOracle` runs the snippet a second time on the base commit before accepting
+   the oracle: a fail-then-pass is the new outcome `unstable` (no oracle → best guess); the note of a valid oracle reads
+   `confirmed by a second run in N ms` (a confirmation run that did not report keeps the first verdict and says so).
+
+Tests (fake runner/decider, no Jev): `test/unit/synth/search/budget.test.ts` (new describe: the derived count on the
+sympy/Django numbers, the floor and the cap, equal-cost = 16, `freshBudget`, the sized take with `sitesLeft`, the
+QuixBugs-class and equal-cost plans unchanged, `REPO_PASSERS_RESERVED === MAX_FULL_SUITE_RUNS_PER_STEP`; the bitcount
+`noStop` assertion updated to the derived 100), `goals.test.ts` (progress steps count toward the hard cap only, mixed
+sequences, resets on commit/park/reopen), `controller.test.ts` (4 progressing budget steps → parked by the hard cap at the
+4th with attempts at 3; progress, progress, stagnant → `3 searches without a commit`; every top site seeds-exhausted →
+stagnation; the transcript line), `subgoal.test.ts` (two sites, 60 runs on a 2.5 s / 20 s oracle → batches 16, 16, 14 at
+the first site and 14 at the second; the next step 14, 14, 16, 16 with `newSitesTested` 0; equal cost → 3, 3, 3, 5, 5,
+5), `oracle/runner.test.ts` (`PYTHONHASHSEED=0` in the command), `oracle/search.test.ts` (two runs per valid oracle, the
+same command; `unstable` on fail-then-pass; a non-reporting confirmation keeps the verdict). Gates: `tsc` clean on these
+files (the remaining errors are other agents' WIP under `src/config`, `src/tui`, `src/workspace`, `src/synth/history`,
+`test/unit/synth/templates`), `no-any: ok`, `vitest --project unit test/unit/synth/search test/unit/synth/oracle`:
+21 files, 456 tests pass.
+
+### 21.3 BEFORE: the two runs that precede the wiring (report script `experiments/inspect/swe-report.mts`; solved = the local-venv evaluator's verdict only)
+
+**Table A — the nine oracle instances on the integration code** (`bench/results/jev-only-swebench-2-oracle`, bench
+`20260920-225645-…`, commit df0855c + the §21.2 working tree, `--concurrency 2 --max-steps 25 --max-wall 25m`; the process
+died with `FATAL ERROR: Reached heap limit` at 4 GB after 5 records; the remaining four — django-15128, django-15563,
+psf__requests-2931, sympy-12096 — are the **before-rerun** `bench/results/jev-only-swebench-2-oracle-b`, bench
+`20260920-232341-e24366`, old code df0855c in the worktree `/tmp/jevonly/before-df0855c`, $0.198). Command:
+`node node_modules/.bin/tsx experiments/inspect/swe-report.mts bench/results/jev-only-swebench-2-oracle,bench/results/jev-only-swebench-2-oracle-b --crashed=bench/results/jev-only-swebench-2-oracle`.
+
+| instance | oracle | ledger | first baseline | enumerated / tested / plausible | commits / applied (rejections) | progress budget steps | best guess | evaluator | steps | Jev $ | wall s | stop | class |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| django__django-15128 | strong | fixed 0, open 0, parked 1 | 625/633 scoped tests pass, 0 failed, 0 errors in 10831 ms; reproduction repro::6da66011 fails (AssertionError: ) in 1927 | 743 / 272 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 9 | $0.0211 | 266 | replan_stop | ranked_run_but_regressions |
+| django__django-15315 | strong | fixed 0, open 1, parked 0 | 328/356 scoped tests pass, 0 failed, 0 errors in 11032 ms; reproduction repro::e7fbbfa8 fails (AssertionError: ) in 1964 | 2490 / 351 / 39 | 14 / 5 (8 blocked pm, 1 declined) | 0 | no | fail (local-venv) | 25 | $0.0808 | 832 | max_steps | evaluator_fail_on_committed_patch |
+| django__django-15563 | weak | fixed 0, open 1, parked 0 | 350/353 scoped tests pass, 0 failed, 0 errors in 10092 ms; reproduction repro::3ec747c8 fails (<QuerySet [{'field_otherb | 751 / 80 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 3 | $0.0282 | 1895 | wall_time | ranked_run_but_regressions |
+| psf__requests-2931 | strong | fixed 0, open 0, parked 1 | 85/167 scoped tests pass, 0 failed, 81 errors in 3800 ms; reproduction repro::b5e65acf fails (UnicodeDecodeError: 'ascii | 10145 / 3718 / 2 | 4 / 0 (2 blocked pm, 2 declined) | 0 | no | fail (local-venv: empty model_patch) | 24 | $0.0507 | 504 | max_replans | engine_blocked_plan_mismatch |
+| sympy__sympy-11618 | strong | fixed 0, open 0, parked 1 | 641/770 scoped tests pass, 0 failed, 46 errors in 29174 ms; reproduction repro::7f52cda6 fails (1) in 3280 ms | 1876 / 280 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 10 | $0.0276 | 302 | replan_stop | reachable_not_ranked_in_budget |
+| sympy__sympy-12096 | weak | fixed 0, open 0, parked 1 | 809/978 scoped tests pass, 0 failed, 84 errors in 65277 ms; reproduction repro::fcbb4c5a fails (f(g(2))) in 4065 ms | 2475 / 187 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 4 | $0.0176 | 2042 | wall_time | reachable_not_ranked_in_budget |
+| sympy__sympy-15345 | strong | fixed 0, open 0, parked 1 | 142/175 scoped tests pass, 0 failed, 0 errors in 18642 ms; reproduction repro::9364c244 fails ('Max(2, x)') in 2058 ms | 1438 / 32 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 10 | $0.0259 | 147 | replan_stop | reachable_not_ranked_in_budget |
+| sympy__sympy-17139 | strong | fixed 0, open 0, parked 1 | 929/1013 scoped tests pass, 0 failed, 0 errors in 101055 ms; reproduction repro::ac95b0c9 fails (TypeError: Invalid comp | 1571 / 39 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 9 | $0.0282 | 638 | replan_stop | ranked_run_but_regressions |
+| sympy__sympy-19954 | strong | fixed 1, open 0, parked 0 | 96/99 scoped tests pass, 0 failed, 0 errors in 11139 ms; reproduction repro::db420b5d fails (IndexError: list assignment | 1265 / 25 / 3 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | PASS (local-venv) | 8 | $0.0241 | 190 | replan_stop | solved |
+
+Totals: 9 instances; oracle strong 7, weak 2, unstable 0, none 0; patches applied 6; best guess used 0; evaluator pass 1/9; engine rejections: 10 blocked (plan_mismatch) + 3 declined (review, no reviewer) on 2 instances; Jev $0.3043; wall 6818 s (sum)
+Failure classes: ranked_run_but_regressions 3, reachable_not_ranked_in_budget 3, evaluator_fail_on_committed_patch 1, engine_blocked_plan_mismatch 1, solved 1
+
+Reading (per-instance digests in the script's stderr): the oracle is found on **9/9** (7 strong, 2 weak) in one request each
+and the gold file is localised on every instance, yet only sympy-19954 is solved (the same `if len(rep_blocks) > i`-style
+guard as §14's note, step 4, 25 tested, 3 plausible, arbitration, `complete`). Three instances hit the 16-runs-per-step class
+cap and parked after two budget steps (`reachable_not_ranked_in_budget`: 15345 tested 16 + 16 of 727/711 enumerated, 11618
+16 + 264, 12096 16 + 171); three ran hundreds of candidates and saw only regressions (`ranked_run_but_regressions`: 15128
+272 tested, 17139 39, 15563 80 under `wall_time`); django-15315 committed 5 patches that each passed in the lane and failed on
+the workspace (`evaluator_fail_on_committed_patch`, §21.4); requests-2931 found two lane passers and had both refused by the
+engine (`engine_blocked_plan_mismatch`: 2 blocked + 2 declined). Jev $0.304 for the nine; wall 6,818 s summed.
+
+**Table B — the full 30 on the budget-round code** (`bench/results/jev-only-swebench-2`, working tree d610d75 with §21.2 items
+1–3, same flags plus `--spend-cap 4 --task-spend-cap 0.4`, `NODE_OPTIONS=--max-old-space-size=8192`; **crashed OOM at 8 GB
+after 8 evaluated records**, `exit 134` in `/tmp/jevonly/swebench-2.log` at 45 min; the two `in_progress` rows are the runs the
+process died in). `*` marks the nine oracle instances. Command: `… swe-report.mts bench/results/jev-only-swebench-2 --mark=<the 9 ids>`.
+
+| instance | oracle | ledger | first baseline | enumerated / tested / plausible | commits / applied (rejections) | progress budget steps | best guess | evaluator | steps | Jev $ | wall s | stop | class |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| *sympy__sympy-11618 | strong | fixed 0, open 1, parked 0 | 642/770 scoped tests pass, 0 failed, 45 errors in 76683 ms; reproduction repro::7f52cda6 fails (1) in 3265 ms | 9417 / 1116 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 1 | no | fail (local-venv: empty model_patch) | 19 | $0.0775 | 626 | max_replans | reachable_not_ranked_in_budget |
+| *sympy__sympy-12096 | weak | fixed 0, open 1, parked 0 | 812/978 scoped tests pass, 0 failed, 81 errors in 63144 ms; reproduction repro::fcbb4c5a fails (f(g(2))) in 4182 ms | 9227 / 443 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 3 | no | fail (local-venv: empty model_patch) | 21 | $0.0807 | 1280 | max_replans | ranked_run_but_regressions |
+| sympy__sympy-12489 | none (no_blocks) | fixed 0, open 1, parked 0 | 808/980 scoped tests pass, 0 failed, 89 errors in 6391 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | n/a (none: in_progress) | 0 | $0.0000 | 0 | in_progress | in_progress |
+| sympy__sympy-13798 | none (no_pick) | fixed 0, open 1, parked 0 | 0/1 scoped tests pass, 0 failed, 1 errors in 1939 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 10 | $0.0209 | 29 | replan_stop | no_oracle_no_guess |
+| *sympy__sympy-15345 | strong | fixed 0, open 0, parked 1 | 142/175 scoped tests pass, 0 failed, 0 errors in 45513 ms; reproduction repro::9364c244 fails ('Max(2, x)') in 4702 ms | 17690 / 552 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 3 | no | fail (local-venv: empty model_patch) | 23 | $0.1166 | 1415 | max_replans | reachable_not_ranked_in_budget |
+| sympy__sympy-16792 | strong | fixed 0, open 1, parked 0 | 190/198 scoped tests pass, 0 failed, 0 errors in 8161 ms; reproduction repro::3492baa3 fails (CodeWrapError: Error while | 4410 / 1145 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 2 | no | n/a (none: in_progress) | 0 | $0.0000 | 0 | in_progress | in_progress |
+| *sympy__sympy-17139 | strong | fixed 0, open 0, parked 1 | 929/1013 scoped tests pass, 0 failed, 0 errors in 146532 ms; reproduction repro::ac95b0c9 fails (TypeError: Invalid comp | 2523 / 172 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 2 | no | fail (local-venv: empty model_patch) | 10 | $0.0301 | 872 | replan_stop | reachable_not_ranked_in_budget |
+| *sympy__sympy-19954 | strong | fixed 1, open 0, parked 0 | 96/99 scoped tests pass, 0 failed, 0 errors in 23693 ms; reproduction repro::db420b5d fails (IndexError: list assignment | 1016 / 21 / 3 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | PASS (local-venv) | 6 | $0.0196 | 243 | complete | solved |
+| sympy__sympy-20428 | none (passes_on_base) | fixed 0, open 0, parked 1 | 341/342 scoped tests pass, 0 failed, 0 errors in 9980 ms; no reproduction oracle | 1486 / 5 / 4 | 1 / 1 (0 blocked pm, 0 declined) | 0 | yes | fail (local-venv) | 25 | $0.0636 | 111 | max_steps | best_guess_wrong |
+| sympy__sympy-22080 | none (passes_on_base) | fixed 0, open 1, parked 0 | 251/306 scoped tests pass, 0 failed, 0 errors in 13045 ms; no reproduction oracle | 1513 / 5 / 5 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 23 | $0.0527 | 110 | max_replans | no_oracle_best_guess_rejected |
+
+Totals: 10 instances; oracle strong 5, weak 1, unstable 0, none 4; patches applied 2; best guess used 2; evaluator pass 1/8; engine rejections: 2 blocked (plan_mismatch) + 0 declined (review, no reviewer) on 1 instances; Jev $0.4618; wall 4686 s (sum)
+Failure classes: reachable_not_ranked_in_budget 3, in_progress 2, ranked_run_but_regressions 1, no_oracle_no_guess 1, solved 1, best_guess_wrong 1, no_oracle_best_guess_rejected 1
+
+Reading: the derived per-step run count (§21.2 item 1) did what it was built for — 15345 tested 552 candidates over seven
+budget steps instead of 32, 11618 1,116 instead of 280, 12096 443 instead of 187 — and **found nothing**: every one of those
+runs came back `unchanged`. So on the three "budget" instances of Table A the constraint moved from the cap to the
+candidate set, which is the reach study's verdict (`swebench-reach-oracle-9.md`: the test-passing line is in no source's set
+at the gold site on 15345, 17139, 19954 (one-liner), 11618) and the reason the §18/§20 capabilities were built. Every
+`valid` oracle line now reads `confirmed by a second run` (item 3); sympy-19954 is solved again (`complete` at step 6, 21
+tested, 3 plausible). The two best-guess instances behaved as designed and wrongly: sympy-20428's guess was committed and
+fails the evaluator, sympy-22080's was blocked twice (plan_mismatch) and parked. Jev $0.462 for the ten records.
+
+### 21.4 django-15315: why a lane `plausible` did not predict the workspace verdict (coordinator's item 1)
+
+Run `20260920-230759-spkhi7p6` (old code, the 9-run): step 3 tested 13 candidates on 8 lanes, **5 plausible in one
+cluster**, all inserts at `django/db/models/fields/__init__.py:550` — one line *after* `return hash((…))` in
+`Field.__hash__`, i.e. dead code (`self.append(__all__)`, `if self is None: return False`, …). The patch was applied; the
+step-4 re-baseline on the workspace read `reproduction repro::e7fbbfa8 fails (AssertionError: )`. Steps 5, 7, 9, 11 repeated
+the pattern (56 → 5, 19 → 5, 45 → 4, 29 → 5 passers, every one dead code after a `return` in a `__hash__`; **24 passers
+of 162 lane runs, 15 %**), with 8 blocks (plan_mismatch level 4) and 1 decline of the patches.
+
+Ruled out by measurement: (a) import resolution — a lane python printed `django.db.models.fields.__file__` under the lane
+and `sys.meta_path` with the editable finder appended after `PathFinder`, so `PYTHONPATH=<lane>` wins; (b) stale bytecode —
+no `__pycache__` in any lane (`PYTHONDONTWRITEBYTECODE=1` on both the reproduction and the scoped command); (c) the
+criterion — the same `no_exception` evaluation on both sides. The cause is the **reproduction itself**: run in a private
+worktree at the base commit with the workspace venv, `hash(f)` changed after `class Book(models.Model): title = f` in both
+worktree and lane (`-2809…→9010…`, `-7134…→4525…`), yet `f in d` was **True in one and False in the other**. CPython's
+dict lookup compares the stored key by identity before it compares hashes, so a key whose hash changed is still found
+whenever the new hash probes the slot the old one occupied — for an 8-slot dict 1 time in 8 — and the tuple hash includes
+`'app'` and `'book'`, whose `str` hashes are **randomised per process** (`PYTHONHASHSEED`). The issue's own assertion is a
+7/8 coin: the base run failed (7/8), 24/162 lane runs passed by luck (expected 1/8 = 20), and exactly 5 passers per step is
+the runner's passer cap stopping dispatch. The engine's "repeats a failed step" blocks in that run were therefore right
+about the patches and wrong about the reason.
+
+Fix (§21.2 item 3): every reproduction — the oracle's base run, the lanes, the workspace re-run — now runs under
+`PYTHONHASHSEED=0`, so the verdict is a fact of the code, not of the process (a lucky-hash *candidate* can still pass under
+the fixed seed, but then the lane and the workspace agree and the F2P evaluator — random seeds — decides); and the oracle
+search confirms the base verdict with a second run, refusing a fail-then-pass snippet as `unstable`. In the 30-run below
+every `valid` oracle line reads `confirmed by a second run`.
+
+**Post-run addendum (measured after the rung-3 run, $0; `experiments/inspect/repro-15315-repeat.mts`).** The seed did not make the
+verdict a fact of the code. In the finished rung-3 run (`20260921-010903-ovz3tdxe`) the lanes again reported 5 `plausible` per step
+(20 of 167 lane runs, every one an insert after a `return` in a `__hash__`: `__init__.py:550`, `reverse_related.py:140`), four were
+committed, the workspace re-baseline read `reproduction repro::e7fbbfa8 fails` after the first three (steps 3, 5, 7) and `PASSES` after
+the fourth (step 9); the evaluator fails the patch. Re-running the runner's own command (`buildReproScript` + `reproCommand`, i.e.
+`PYTHONHASHSEED=0`) 16× in that workspace and 16× in its lane0 gives **AssertionError ×13, PASS ×3 in both** — still ≈ 1/8. The
+reason is not the `str` hashes: the key's hash before the model assignment is `hash((creation_counter, None, None))`, and on the venv's
+CPython 3.9.6 `hash(None)` is address-based, so it changes with ASLR per process regardless of the seed (`PYTHONHASHSEED=0 python -c
+'print(hash(None), hash((7, None, None)) & 7)'` → `271367077 4`, `271794085 5`, `269915045 1`; `hash((7, 'a', 'b')) & 7` → 4 each
+time). CPython fixed `hash(None)` to a constant only in 3.12. So on this instance the issue's own assertion is a coin that the runner
+cannot load; the lane verdict must be **repeated** (a `plausible` confirmed by a second lane run, as `findIssueOracle` already does for
+the base verdict) or the reproduction rewritten (`hash(f)` before/after compared, which is what the F2P test does) — see §21.6.
+
+### 21.5 AFTER: rung 3 — the full 30 on the wired tree (commit 5486f7a; `bench/results/jev-only-swebench-3`, bench `20260921-002827-57b7e1`)
+
+Run from the clean detached worktree `.claude/worktrees/swe-clean` (HEAD 5486f7a, `node_modules` symlinked; the main checkout's
+uncommitted TUI/config work could not touch it), keys only via `--env-file`:
+
+```
+cd .claude/worktrees/swe-clean
+NODE_OPTIONS=--max-old-space-size=8192 env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env \
+  node_modules/.bin/tsx src/cli/main.tsx bench --suite swebench --conditions jev-only --live --spend-cap 4 --task-spend-cap 0.4 \
+  --concurrency 2 --max-steps 25 --max-wall 25m --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-swebench-3
+# log /tmp/jevonly/swebench-3.log (starts `start 2026-09-21T00:28:26Z head 5486f7a`, ends `exit 0` / `end 2026-09-21T01:23:05Z`)
+# RSS of the worker node process every 5 min: /tmp/jevonly/swebench-3.rss
+# the table: node node_modules/.bin/tsx experiments/inspect/swe-report.mts bench/results/jev-only-swebench-3 --mark=<the 9 oracle ids>
+# the reach-target check: node node_modules/.bin/tsx experiments/inspect/reach-check-3.mts bench/results/jev-only-swebench-3
+```
+
+**Exit 0, 30 records, 54 min 37 s wall (00:28:27 → 01:23:04 UTC), Jev $1.1633 (generator $0), no cap fired** (`summary.json`
+`capFired: null`; `--spend-cap 4`, `--task-spend-cap 0.4`; the costliest task was sympy-15345 at $0.094). The BEFORE full-30 attempt on
+d610d75 had died at 8 GB after 45 min and 8 records.
+
+**Memory fix (§20.2) verified.** Worker RSS (`ps -o rss=`, pid 25328, 12 samples): 1.20 GB at start, 2.12, 1.61, 2.52, 0.06 (between
+tasks), 1.06, 0.36, **2.99 GB peak at 01:03:47** (two sympy runs with 8 lanes each), 2.57, 1.26, 1.34, 0.18 GB at the end; mean 1.44 GB.
+No `heap limit` line in the log; the process finished all 30 with `--max-old-space-size=8192` never approached (the 9-run died at 4 GB
+after 5 records, the 30-run at 8 GB after 8). The RSS falls to tens of MB between tasks, i.e. finished runs' corpora are released (the
+LRU) and re-baselines no longer re-analyse the corpus (the file cache).
+
+`*` marks the nine oracle instances of §21.3 Table A.
+
+| instance | oracle | ledger | first baseline | enumerated / tested / plausible | commits / applied (rejections) | progress budget steps | best guess | evaluator | steps | Jev $ | wall s | stop | class |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| django__django-14725 | none (no_blocks) | fixed 0, open 1, parked 0 | 366/376 scoped tests pass, 0 failed, 0 errors in 3958 ms; no reproduction oracle | 1960 / 5 / 4 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 21 | $0.0483 | 54 | max_replans | no_oracle_best_guess_rejected |
+| django__django-14787 | none (no_pick) | fixed 0, open 1, parked 0 | 233/235 scoped tests pass, 0 failed, 0 errors in 1689 ms; no reproduction oracle | 1419 / 5 / 5 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 24 | $0.0485 | 61 | max_replans | no_oracle_best_guess_rejected |
+| django__django-15103 | none (no_blocks) | fixed 0, open 0, parked 1 | 62/64 scoped tests pass, 0 failed, 0 errors in 1525 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 5 | $0.0116 | 15 | replan_stop | no_oracle_no_guess |
+| *django__django-15128 | strong | fixed 1, open 0, parked 0 | 579/586 scoped tests pass, 0 failed, 0 errors in 2522 ms; reproduction repro::6da66011 fails (AssertionError: ) in 985 m | 762 / 410 / 1 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | **PASS** (local-venv) | 4 | $0.0113 | 124 | complete | **solved** |
+| *django__django-15315 | strong | fixed 1, open 0, parked 0 | 328/356 scoped tests pass, 0 failed, 0 errors in 3389 ms; reproduction repro::e7fbbfa8 fails (AssertionError: ) in 599 m | 1785 / 167 / 20 | 4 / 4 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv) | 21 | $0.0515 | 120 | max_replans | evaluator_fail_on_committed_patch |
+| django__django-15375 | none (incomplete_snippet) | fixed 0, open 1, parked 0 | 344/347 scoped tests pass, 0 failed, 0 errors in 4891 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 5 | $0.0123 | 27 | error | no_oracle_no_guess |
+| *django__django-15563 | weak | fixed 1, open 0, parked 0 | 350/353 scoped tests pass, 0 failed, 0 errors in 5186 ms; reproduction repro::3ec747c8 fails (<QuerySet [{'field_otherba | 2669 / 20 / 8 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv) | 10 | $0.0246 | 68 | replan_stop | evaluator_fail_on_committed_patch |
+| django__django-15572 | none (no_blocks) | fixed 0, open 1, parked 0 | 69/75 scoped tests pass, 0 failed, 0 errors in 1430 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 4 | $0.0091 | 13 | error | no_oracle_no_guess |
+| django__django-15916 | none (no_criterion) | fixed 0, open 1, parked 0 | 302/302 scoped tests pass, 0 failed, 0 errors in 3361 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 25 | $0.0661 | 57 | max_steps | no_oracle_no_guess |
+| django__django-16100 | none (no_blocks) | fixed 0, open 0, parked 1 | 460/483 scoped tests pass, 0 failed, 0 errors in 17573 ms; no reproduction oracle | 1641 / 4 / 4 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 25 | $0.0534 | 99 | max_steps | no_oracle_best_guess_rejected |
+| psf__requests-1142 | none (no_blocks) | fixed 0, open 0, parked 1 | 5/26 scoped tests pass, 21 failed, 0 errors in 912 ms; no reproduction oracle | 1664 / 5 / 5 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: model_patch did not apply) | 25 | $0.0367 | 41 | max_steps | best_guess_wrong |
+| *psf__requests-2931 | strong | fixed 1, open 0, parked 0 | 85/167 scoped tests pass, 0 failed, 81 errors in 1441 ms; reproduction repro::b5e65acf fails (UnicodeDecodeError: 'ascii | 1606 / 1219 / 1 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv) | 24 | $0.0272 | 76 | max_replans | evaluator_fail_on_committed_patch |
+| pylint-dev__pylint-4604 | none (passes_on_base) | fixed 0, open 1, parked 0 | 115/115 scoped tests pass, 0 failed, 0 errors in 4732 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 4 | $0.0193 | 25 | error | no_oracle_no_guess |
+| pylint-dev__pylint-4970 | none (no_blocks) | fixed 0, open 1, parked 0 | 89/91 scoped tests pass, 0 failed, 0 errors in 5612 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 4 | $0.0073 | 18 | error | no_oracle_no_guess |
+| pylint-dev__pylint-6386 | none (no_pick) | fixed 0, open 1, parked 0 | 74/74 scoped tests pass, 0 failed, 0 errors in 10180 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 6 | $0.0105 | 30 | error | no_oracle_no_guess |
+| pytest-dev__pytest-10051 | none (not_runnable) | fixed 0, open 1, parked 0 | 62/62 scoped tests pass, 0 failed, 0 errors in 1113 ms; no reproduction oracle | 1577 / 5 / 2 | 2 / 0 (0 blocked pm, 2 declined) | 0 | yes | fail (local-venv: empty model_patch) | 21 | $0.0467 | 33 | max_replans | no_oracle_best_guess_rejected |
+| pytest-dev__pytest-10081 | none (not_runnable) | fixed 0, open 1, parked 0 | 138/191 scoped tests pass, 4 failed, 0 errors in 9675 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 6 | $0.0220 | 38 | error | no_oracle_no_guess |
+| pytest-dev__pytest-10356 | none (no_pick) | fixed 0, open 1, parked 0 | 220/223 scoped tests pass, 0 failed, 0 errors in 6654 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 5 | $0.0229 | 28 | error | no_oracle_no_guess |
+| pytest-dev__pytest-7205 | none (not_runnable) | fixed 0, open 0, parked 1 | 354/361 scoped tests pass, 3 failed, 0 errors in 22565 ms; no reproduction oracle | 1433 / 5 / 3 | 2 / 0 (0 blocked pm, 2 declined) | 0 | yes | fail (local-venv: empty model_patch) | 22 | $0.0507 | 111 | max_replans | no_oracle_best_guess_rejected |
+| pytest-dev__pytest-7324 | none (incomplete_snippet) | fixed 0, open 1, parked 0 | 377/398 scoped tests pass, 14 failed, 2 errors in 10735 ms; no reproduction oracle | 1594 / 5 / 4 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 22 | $0.0488 | 79 | max_replans | no_oracle_best_guess_rejected |
+| *sympy__sympy-11618 | strong | fixed 0, open 1, parked 0 | 645/770 scoped tests pass, 0 failed, 42 errors in 18881 ms; reproduction repro::7f52cda6 fails (1) in 1501 ms | 0 / 467 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 5 | $0.0096 | 215 | error | no_search (ranker crash, below) |
+| *sympy__sympy-12096 | weak | fixed 0, open 1, parked 0 | 793/960 scoped tests pass, 0 failed, 81 errors in 10523 ms; reproduction repro::fcbb4c5a fails (f(g(2))) in 770 ms | 10501 / 3406 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 4 | no | fail (local-venv: empty model_patch) | 23 | $0.0852 | 708 | max_replans | ranked_run_but_regressions |
+| sympy__sympy-12489 | none (no_blocks) | fixed 0, open 1, parked 0 | 804/980 scoped tests pass, 0 failed, 93 errors in 6058 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 25 | $0.0567 | 70 | max_steps | no_oracle_no_guess |
+| sympy__sympy-13798 | none (no_pick) | fixed 0, open 1, parked 0 | 0/1 scoped tests pass, 0 failed, 1 errors in 1831 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 9 | $0.0209 | 30 | replan_stop | no_oracle_no_guess |
+| *sympy__sympy-15345 | strong | fixed 0, open 1, parked 0 | 142/175 scoped tests pass, 0 failed, 0 errors in 7655 ms; reproduction repro::9364c244 fails ('Max(2, x)') in 853 ms | 13145 / 3420 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 4 | no | fail (local-venv: empty model_patch) | 20 | $0.0941 | 727 | max_replans | reachable_not_ranked_in_budget |
+| sympy__sympy-16792 | strong | fixed 0, open 0, parked 1 | 190/198 scoped tests pass, 0 failed, 0 errors in 9734 ms; reproduction repro::3492baa3 fails (CodeWrapError: Error while | 8788 / 1390 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 3 | no | fail (local-venv: empty model_patch) | 15 | $0.0799 | 645 | replan_stop | reachable_not_ranked_in_budget |
+| *sympy__sympy-17139 | strong | fixed 0, open 1, parked 0 | 1026/1114 scoped tests pass, 1 failed, 0 errors in 107019 ms; reproduction repro::ac95b0c9 fails (TypeError: Invalid com | 3339 / 771 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 2 | no | fail (local-venv: empty model_patch) | 21 | $0.0585 | 1307 | max_replans | ranked_run_but_regressions |
+| *sympy__sympy-19954 | strong | fixed 0, open 1, parked 0 | 104/107 scoped tests pass, 0 failed, 0 errors in 41353 ms; reproduction repro::db420b5d fails (IndexError: list assignme | 3358 / 395 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 2 | no | fail (local-venv: empty model_patch) | 21 | $0.0547 | 761 | max_replans | ranked_run_but_regressions |
+| sympy__sympy-20428 | none (passes_on_base) | fixed 0, open 1, parked 0 | 319/319 scoped tests pass, 0 failed, 0 errors in 9751 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 4 | $0.0224 | 55 | error | no_oracle_no_guess |
+| sympy__sympy-22080 | none (passes_on_base) | fixed 0, open 1, parked 0 | 251/306 scoped tests pass, 0 failed, 0 errors in 19808 ms; no reproduction oracle | 1513 / 5 / 3 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 23 | $0.0527 | 116 | max_replans | no_oracle_best_guess_rejected |
+
+**Totals: 30 instances; solved 1/30 (evaluator verdict only); oracle strong 8, weak 2, none 20 (the nine of §21.3 plus sympy-16792, all
+`confirmed by a second run`); patches applied 7 on 4 instances; best guess used 8; engine rejections 12 blocked (plan_mismatch) + 4
+declined on 8 instances, all best-guess patches; Jev $1.1633; per-task wall 5,751 s summed, bench wall 3,277 s at concurrency 2.**
+
+Failure classes: `no_oracle_no_guess` 12, `no_oracle_best_guess_rejected` 7, `evaluator_fail_on_committed_patch` 3 (django-15315,
+django-15563, requests-2931), `ranked_run_but_regressions` 3 (sympy-12096, -17139, -19954), `reachable_not_ranked_in_budget` 2
+(sympy-15345, -16792), `solved` 1 (django-15128), `best_guess_wrong` 1 (requests-1142: the committed guess did not apply), `no_search` 1
+(sympy-11618). Nine of the twelve `no_oracle_no_guess` rows and the `no_search` row stopped with `error` at steps 4–6 — the defect below,
+not a search outcome.
+
+**Defect found by this run (blocks the next one): the history source's candidates carry their own site and the ranker throws.**
+`src/synth/history/source.ts:96,110` build each reversal with `site: at` — the statement in the current file the hunk reverts — and
+`src/synth/index.ts:184` merges those reversals into the donor seed of whatever site is being enumerated; `src/synth/rank/index.ts:307`
+then asserts every ranked candidate is at the ranked site and throws
+`RangeError: ranker: candidate "hist_c4ec6263_24_942fb54a58" is at sympy/geometry/point.py:204 (replace), not at the site being ranked
+(sympy/geometry/point.py:212, replace)` (sympy-11618, step 5). The engine records `outcome failed: propose: internal`, and three
+consecutive propose failures stop the run (`error`). 43 occurrences in 12 runs: nine runs died of it (django-15375, -15572,
+pylint-4604, -4970, -6386, pytest-10081, -10356, sympy-20428 at steps 4–6, all without an oracle, and **sympy-11618 at step 5** after 467
+candidates tested and none plausible), three survived because a SIEVE step intervened (sympy-12096 ×1, sympy-12489 ×8, django-15916 ×8).
+The offline tests did not catch it because the wiring test enumerates the history seed at the reversal's own site; the fix is either to
+enumerate history only at sites whose span contains the reverted statement (the statement site the design assumed, §16/§18) or to route
+a foreign-site reversal to its own site instead of the donor seed. Ten runs also saw one or two transient `error jev_http: Jev request
+failed: TypeError: fetch failed (other side closed)`; the engine retried and none of those stopped a run.
+
+**The nine oracle instances, BEFORE (Table A) → AFTER:**
+
+| instance | BEFORE (§21.3 A) | AFTER | what changed in the record |
+| --- | --- | --- | --- |
+| django-15128 | `ranked_run_but_regressions` (272 tested) | **solved**, step 4, $0.011 | SIEVE at step 2: 410 tested, one lone passer `alias += table_name` at `sql/query.py:765` (a `statement_template` insert), held until its site's seeds ran, committed when the batch was cut by the budget reserve; re-baseline `repro::6da66011 PASSES`; `complete`. Not the gold's shape (the gold threads `exclude` through `bump_prefix`); the F2P and the local P2P accept it. |
+| django-15315 | `evaluator_fail` (5 commits) | `evaluator_fail` (4 commits) | same dead-code passers (§21.4 addendum: the seed does not fix `hash(None)`); the history harvest **found the ticket's commit** (`ticket #31750: 1 commit`) but the reversal was never dispatched — see the reach table. |
+| django-15563 | `ranked_run_but_regressions` | `evaluator_fail` | the weak oracle (`differs_from_actual`) accepted `self.append(query)` at `compiler.py:1840` (8 plausible of 20 tested; the guard even logged `all-overfit signature, holding` once, then picked another passer); the evaluator fails it. |
+| requests-2931 | `engine_blocked_plan_mismatch` | `evaluator_fail` | SIEVE 1,219 tested at step 4, 1 plausible: `if isinstance(data, bytes): data = data.decode('utf8')` before `return to_native_string(data)` — committed, F2P fails (the body must stay bytes). The gold line `return data` **was tested in the same batch and classified `unchanged`**: the oracle is `requests.put("http://httpbin.org/put", …)`, a network call, so its verdict is the network's. |
+| sympy-11618 | `reachable_not_ranked_in_budget` | `no_search` (ranker crash) | killed at step 5 by the defect above. |
+| sympy-12096 | `reachable_not_ranked_in_budget` (187 tested) | `ranked_run_but_regressions` (3,406 tested, 0 plausible) | the test-passing `return nfloat(self._imp_(*self.args), prec)` reached Jev at step 10 as a Choice option and Jev answered `none_of_these` p 0.69 (BEFORE run: the same at step 11, p 0.69 and 0.59); it was never run. SKETCH phase reached (steps 12, 15). |
+| sympy-15345 | `reachable_not_ranked_in_budget` (32 tested) | same (3,420 tested, 0 plausible) | introspection harvested `MinMaxBase` (13 classes); the alias `_print_MinMaxBase = _print_Function` entered the set as the templates' `_after` form on `_print_list`'s return (the file's own `_print_tuple = _print_list` pattern) and reached Jev at step 5 with **p 0.03** against 0.38 for the wrong target `_print_MinMaxBase = _print_list` and `none_of_these` 0.49; never run. The `MCodePrinter` class-body gap of §20.4 was never a site: `where` chose `mcodeprinter_print_function` (p 0.81) every step and the gap after that method (L103) is the line-and-kind the function's own block-end gap slot already occupies among the located sites, so `introspectionSites`' deduplication (`siteKey` = path:line:kind, §20.1 item 5) is the likely reason the class gap was dropped — the transcript shows only the import gap `mathematica.py:9` added at every re-localisation (steps 1, 6, 9, 15, 18). |
+| sympy-17139 | `ranked_run_but_regressions` (39 tested) | same (771 tested, 0 plausible) | introspection harvested `rv.exp: ImaginaryUnit (63 predicates, receiver)` and the guard template produced `if not rv.exp.is_real:` / `return rv` — **tested live** (sha12 in `tried`) but only at the gap **before L505**, inside the body of `if (rv.exp < 0) == True:` (dead code: the comparison raises first); at the gap before L504 (the gold's) neither form is in `tried`. The introspection sites went to `sympy/core/expr.py:420` (the class-body gap of `Expr` after `__lt__`, where the frames end), not to `fu.py`. Scoped baseline 107 s under load; regression runs 83 s median at step 10. |
+| sympy-19954 | **solved** (step 4, RANK, 25 tested, 3 plausible) | `ranked_run_but_regressions` | the scoped baseline took 41 s (11 s in every earlier run; two sympy tasks with 8 lanes each were running), the derived runs-per-step (§21.2 item 1) collapsed to 6–10 (`runs left 1483, test wall left 0 s`, `5 tested (5 regressed); regression run median 81542 ms; 3 deferred`), step 4's SIEVE ran 379 of 762 and the winning guard was not among them; at step 17 Jev ranked `if i >= len(num_blocks): break` **first (p 0.46)** — the line that solved the instance twice before — and the step's five runs went to candidates whose regression runs timed out; it was never run (not in `tried`). |
+
+**Reach-target check** (`experiments/inspect/reach-check-3.mts`, all from the run records: `synth introspect`/`history`/`localize` lines,
+the `fix` Choice options in `decisions.jsonl` (compact Nouls carry the text in the unrecorded state, so "shown" is a lower bound), the
+`sha12(unifiedDiff)` of the target at every plausible placement against `synthState.tried` (the newest ≤ 3,000 hashes), `model_patch.diff`):
+
+| instance | target (`swebench-reach-oracle-9.md`) | introspection harvested | history harvested | introspection sites added | target shown to Jev | target tested live | plausible in run | committed |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| sympy-15345 | `_print_MinMaxBase = _print_Function` (class-body alias) | yes: 4 operands, 13 classes (`Max`, `MinMaxBase`, …), 56 predicates, 834 ms | 5 commits, 9 change runs (`-Smathematica_code`, `-SMax`) | import gap `mathematica.py:9` only (class gap deduplicated) | **yes**, step 5, as `<return of _print_list>\n    _print_MinMaxBase = _print_Function`, p 0.03 | no (0 of 82 placements; `tried` truncated at 3,000 of 3,420 but step 5 is inside the window) | 0 | – |
+| sympy-17139 | `if not rv.exp.is_real:` / `return rv` before `fu.py:504` | yes: `rv.exp: ImaginaryUnit (63 predicates, receiver)`, 869 ms | 5 commits (`-STypeError`, `-Sbottom_up`, `-S__lt__`) | `expr.py:420` (class gap of `Expr` after `__lt__`), `expr.py:3859` (import gap) | no (6 options in 1 Choice; SIEVE otherwise) | **yes — at the wrong gap** (2-line guard before L505, inside the `< 0` body); not at L503/L504 | 0 | – |
+| sympy-19954 | `reversed(list(enumerate(rep_blocks)))` / the L2201 guard | yes: `self: PermutationGroup (72 predicates, receiver)`, 925 ms | 5 commits, 48 change runs | `perm_groups.py:2215` (class gap after `minimal_blocks`), `:20` (import gap) | guard **yes**, step 17, ranked #1 p 0.46; `reversed(list(…))` no | neither (389 hashes, complete) | 0 | – |
+| sympy-11618 | `zip_longest(…, fillvalue=0)` + import | yes: `Point(2, 0): Point2D`, `Point(1, 0, 2): Point3D`, 54 predicates | 5 commits (`-Ssqrt`) | import gap `point.py:26` | no | no (33 placements) | 0 | – (run died at step 5) |
+| django-15315 | `return hash(self.creation_counter)` (statement site 545–549) | `the target statement has no expression to evaluate` (an `assert`), 448 ms | **`ticket #31750: 1 commit`**, `-S__hash__: 2` (7 git commands, 1,457 ms) | import gap `__init__.py:30`; later `reverse_related.py:143` (class gap of `ForeignObjectRel` after `__hash__`) | no (0 Choices: every step SIEVE) | **no** (167 hashes, complete): four SIEVE steps dispatched 39/518, 43/573, 33/350, 52/344 candidates and stopped at the passer cap (5 dead-code "passers" each) before the reversal's turn | 20 (all false) | 4 dead-code inserts; evaluator fail |
+| requests-2931 | `return data` at `models.py:84` | yes: `data: bytes (receiver)`, 271 ms | 4 commits (`-Sto_native_string`) | `models.py:100` (class gap of `RequestEncodingMixin` after `_encode_params`), `:36` (import gap) | no (SIEVE) | **yes** (sha12 in `tried`), classified `unchanged` by the network oracle | 1 (the wrong `decode` line) | the wrong line; evaluator fail |
+| sympy-12096 | `nfloat(self._imp_(*self.args), prec)` | yes: `f(g(2)).evalf(): f (54 predicates)`, 762 ms | 5 commits, 131 change runs (`-S_eval_evalf`, `-SFunction`, `-S_imp_`) | `printing/str.py:16` (import gap), later `str.py:152` (class gap of `StrPrinter` after `_print_Function`), `core/evalf.py:29` | **yes**, step 10, `none_of_these` p 0.69 (and `return not nfloat(…)` 0.56) | no (2 placements; `tried` 3,000 of 3,406, step 10 inside the window) | 0 | – |
+
+Reading: the §20 wiring did what §18/§20 built it to do at the harvest and enumeration layers — introspection ran on 9/9 oracle
+instances (271–1,395 ms) and the history harvest on 9/9 (105–1,457 ms), the test-passing line is now in the set on **4 of 7** targets
+(15345 alias, 17139 guard, 2931 gold line, 12096 `nfloat`; plus 19954's known guard) where the BEFORE runs had it on 2 (2931, 12096) —
+and **none of the four was run at the right place under a verdict that could accept it**: one ranked at p 0.03 and one at
+`none_of_these` 0.69 (never run), one run at the wrong gap, one run and rejected by a network oracle. The two introspection-derived
+class-body gaps that mattered (15345's `MCodePrinter`, 15315's `Field`) were not created (deduplication; an `assert` target), while the
+ones that were created pointed at the frame's class in another file (`Expr` in `expr.py`, `StrPrinter` in `str.py`).
+
+Run ids (`~/.jevcode/runs/<id>`; bench `20260921-002827-57b7e1`, workspaces `~/.jevcode/runs/bench-work/20260921-002827-57b7e1/<instance>/jev-only/workspace`): django__django-14725 `20260921-011154-uef7ophs`, django__django-14787 `20260921-010737-lzn7uxjd`, django__django-15103 `20260921-011225-top3a3em`, django__django-15128 `20260921-011531-f6snsbqf`, django__django-15315 `20260921-010903-ovz3tdxe`, django__django-15375 `20260921-011312-ij7bpwi3`, django__django-15563 `20260921-011325-apeg44vo`, django__django-15572 `20260921-010937-oenjksh4`, django__django-15916 `20260921-011413-2eehkcmv`, django__django-16100 `20260921-011016-spgzc3yg`, psf__requests-1142 `20260921-012047-k75sv2ec`, psf__requests-2931 `20260921-012137-n2qruss4`, pylint-dev__pylint-4604 `20260921-012012-tfofybu2`, pylint-dev__pylint-4970 `20260921-012009-naww44fi`, pylint-dev__pylint-6386 `20260921-012055-xafmmcq6`, pytest-dev__pytest-10051 `20260921-011821-aoszxnim`, pytest-dev__pytest-10081 `20260921-011524-iojhkg62`, pytest-dev__pytest-10356 `20260921-011908-lizsgbpu`, pytest-dev__pytest-7205 `20260921-011621-pbpwnyxb`, pytest-dev__pytest-7324 `20260921-011822-biu4janm`, sympy__sympy-11618 `20260921-005347-6mtvzpr3`, sympy__sympy-12096 `20260921-002836-aoveivn2`, sympy__sympy-12489 `20260921-010602-es6o7c5q`, sympy__sympy-13798 `20260921-005732-5j5s66gq`, sympy__sympy-15345 `20260921-002836-qkza6rb3`, sympy__sympy-16792 `20260921-005827-v245k6j2`, sympy__sympy-17139 `20260921-004037-cvx24qye`, sympy__sympy-19954 `20260921-004052-jx3hxdij`, sympy__sympy-20428 `20260921-010247-sfdph44i`, sympy__sympy-22080 `20260921-010355-wb5ziixy`.
+
+### 21.6 The most binding remaining constraint: the verdict a candidate receives, not the candidate set
+
+Rung 2's verdict (§16, §18: "the test-passing line is in no source's set") no longer describes the oracle instances: after §20 the
+line is in the set on 4 of the 7 reach targets and the two known winners (19954's guard, 15128's) were enumerated too. What decides the
+run now is what happens to a produced candidate between enumeration and commit, and the records show three ways the verdict fails it,
+in order of how many instances they cost this run:
+
+1. **The oracle's verdict is not trustworthy, and the sieve commits the first five things it accepts.** All three commits on oracle
+   instances failed the evaluator, each for a verdict defect that the records name: django-15315's reproduction is a 1/8 coin
+   (§21.4 addendum: `AssertionError ×13, PASS ×3` in 16 runs of the runner's own command in the workspace *and* in the lane,
+   `hash(None)` address-based on 3.9), so the 8-lane SIEVE reaches the passer cap with dead code every step (`[step 2] synth verify:
+   g1: 39 tested on 8 lanes (34 unchanged, 5 plausible)`, `[step 2] synth guard: … arbitrated 5 passers (0 held) in 1 cluster (no
+   probe); escape 0.41 … pick mutation/statement_template at django/db/models/fields/__init__.py:550:insert`, ×4) and the reversal the
+   history source produced from the ticket's own commit (`[step 1] synth history: 5 commits, 21 change runs in 3 files (7 git
+   commands; ticket #31750: 1 commit; …)`) was never dispatched (167 hashes in `tried`, none of them the statement site's reversal);
+   requests-2931's oracle is a network round trip, so `return data` was run and read `unchanged` while a wrong line read `plausible`
+   (`[step 4] synth verify: g1: 411 tested on 8 lanes (406 unchanged, 4 regressed, 1 plausible)` → `[step 4] proposal patch … apply
+   verified fix: repro::b5e65acf now passes (85→86 of 168), no regressions; donor/statement_donor at requests/models.py:84`, then
+   `[step 6] outcome executed: exit 1` on the engine's own suite run and six blocked re-proposals); django-15563's weak oracle
+   (`differs_from_actual`) accepted `self.append(query)` (`[step 3] synth guard: … all-overfit signature, holding …` then `pick
+   mutation/statement_template at django/db/models/sql/compiler.py:1840:insert`). The design already has the instruments — the second
+   run that confirms the *base* verdict (§21.2 item 3), the guard's behaviour clusters and overfit signature, the passer cap — but a
+   `plausible` is still one lane run, and one lane run of a flaky, networked or weak oracle is not a verdict. The lever is a code rule:
+   a passer is `plausible` only after a second lane run agrees (halves the throughput of passers only, which are ≤ 5 per step anyway),
+   a `values`/`no_exception` criterion whose base run needs the network is `unstable` (the runner sees the `ConnectionError`), and a
+   weak oracle's passers must clear the F2P-style check the guard's `clusterByBehaviour` was built for before a commit.
+2. **The verification budget collapses under load, and the ranked winner is not run.** sympy-19954 solved twice on the same code
+   path (§21.3: step 4, 25 tested, 3 plausible) and lost here because two sympy tasks shared the machine with 8 lanes each: the
+   establishing baseline read `104/107 scoped tests pass … in 41353 ms` (11,139 ms in Table A), the §21.2 item-1 formula then reserved
+   five 41-s regression runs out of a 330-s test wall and handed out `runs 6`, `runs 10` per step (`[step 7] synth verify: g1: 6 tested
+   on 8 lanes (6 unchanged); … runs left 1483, test wall left 0 s; … 6 deferred`, `[step 10] … 5 tested on 8 lanes (5 regressed); …
+   regression run median 81542 ms; 3 deferred`), and at step 17 Jev ranked the known fix first — `candidate_aa "if i >=
+   len(num_blocks):\n break" p 0.46` — while the step's five runs went to candidates whose 72–82-s regression runs read as
+   regressions; the guard is not in `tried`. sympy-17139 shows the same shape (`[step 1] synth baseline: … in 107019 ms`, `[step 10]
+   … regression run median 82955 ms`). The formula was derived from idle timings (§21.2: "sympy-15345 as measured idle … 108 a
+   step"); measured under `--concurrency 2` the same instance's t_run(fullSuite) is 4–10× longer and the passers' regression runs
+   time out. The lever is to measure `t_run` per step from the lanes rather than once at the baseline, to run the goal subset for the
+   whole ranked top-k before any regression run (so a ranked winner is at least classified on the reproduction), and to keep the
+   regression run's timeout above the observed lane median.
+3. **Jev's rank does not carry the right line to the lanes.** 152 of 160 `fix` Choices on the oracle instances answered
+   `none_of_these` (sympy-12096 31/31, sympy-15345 66/68, sympy-16792 53/57); the two test-passing lines that reached a Choice were
+   read literally and lost — `return nfloat(self._imp_(*self.args), prec)` (`none_of_these` p 0.69 at step 10; the BEFORE run's step 11
+   read 0.69 and 0.59) and `_print_MinMaxBase = _print_Function` (p 0.03, behind `_print_MinMaxBase = _print_list` at 0.38). In RANK
+   mode only the top-k of a site's ranking run, so a line at 0.03 is never tested although SIEVE would have run it for 1–2 s of
+   python. The reach study predicted this ("the guard's clustering and arbitration, not the enumeration, decides"); the record adds
+   that on a cheap oracle (0.8–2 s reproductions here) RANK is the wrong mode for the seeds that introspection and history contribute
+   — they are few (4 aliases, ≤ 5 reversals, one guard predicate per receiver) and should bypass the rank to the lanes as a
+   code-prioritised batch, the way §15 runs a site's seed sources as one SIEVE batch.
+
+Behind all three sits the site question the wiring left open: the introspection-derived text landed at a *legal* place only by
+accident (the alias via `_print_list`'s `_after` form; the `is_real` guard inside the `< 0` body, dead), because the class-body gap
+that §20.4 verified offline was deduplicated against the function's gap slot at the same line (15345) or never existed (15315's
+`assert` target), and because the guard template writes into every gap of the located function without asking whether the guarded
+statement is reachable there. Those are §20.1 item 5 and templates/guards.ts placements, code-side and measurable offline; they are not
+the binding constraint because even a correctly placed alias would have met (3) and a correctly placed guard (2).
+
+**Defect first.** Before any of the above is measured again, the history/ranker site mismatch of §21.5 has to be fixed: it killed nine
+runs and sympy-11618 in this round, so the AFTER numbers for the 20 no-oracle instances are not comparable with Table B (10 `error`
+stops at steps 4–6 against 25-step runs there), and the sympy-11618 row is not a search outcome.
+
+Budget for this section: live Jev **$1.163** (rung-3 run); the BEFORE re-run of §21.3 A was the budget agent's $0.198; offline checks
+$0. Total live spend of this task under the $5 cap.

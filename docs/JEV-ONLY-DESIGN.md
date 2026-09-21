@@ -689,9 +689,8 @@ and on perturbed inputs; `unverified` = graph fixtures the probe does not pertur
 | 3c SWE-bench Verified 30, first attempt | any instance resolved is the result | 0: 20 records evaluated with empty patches, 2 unfinished; $0.60 (no failing test in the workspace, wrong runner for Django and sympy) | `bench/results/jev-only-swebench-1` | 2026-09-20 |
 | 3c issue oracle over the 30 | – | valid on 9/30 (7 strong, 2 weak); $0.0096 | `experiments/results/oracle-from-issue.md` | 2026-09-20 |
 | 3c the nine oracle instances | any instance resolved | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (FAIL_TO_PASS and PASS_TO_PASS) after 8 steps and $0.024 — the first instance solved with no generating model; the first process died at a 4 GB heap on the Django instances. The full-30 budget round (`jev-only-swebench-2`) passed the same instance in 6 steps among 8 records before dying at 8 GB | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b`, `jev-only-swebench-2` | 2026-09-20 |
-| 3c full 30 on the wired tree (rung 3) | any instance resolved | in progress, from the frozen worktree `.claude/worktrees/swe-clean` at `5486f7a` | `bench/results/jev-only-swebench-3` | – |
+| 3c full 30 on the wired tree (rung 3) | any instance resolved | 1/30: `django__django-15128` (4 steps, $0.011); `sympy__sympy-19954` lost under load; oracle 10/30; 9 no-oracle instances stopped on a wiring defect (history candidates ranked at a foreign site; fixed after the run) — repeat pending; $1.16, 55 min, RSS peak 3.0 GB (memory fix held); run from the frozen worktree at `5486f7a` | `bench/results/jev-only-swebench-3`, rungs §21 | 2026-09-21 |
 
-<!-- RUNG3: fill from experiments/results/jev-only-rungs-1-2.md §21 -->
 
 **In-sample disclosure (2026-09-20, experiments/results/jev-only-audit.md §4.3, §6).** Every QuixBugs and ladder figure above
 is measured on the *visible* suite: the evaluator runs exactly the cases the workspace exposes (`bench/data/quixbugs/tests`,
