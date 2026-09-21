@@ -102,7 +102,10 @@ foreach raw $steps {
         expect {
           -re {\[y\] approve +\[n\] decline} {
             record $tf $t0 $n auto-review-seen ""
-            sleep 1
+            # drain while looking: a plain `sleep` stops reading the pty, and Node's synchronous TTY writes then block
+            # the child's whole event loop on the next frame until we read again — its React passive effects (the
+            # review arming) are starved, and a `y` sent afterwards is processed first (docs/live/tui attempts 1–3)
+            drainSleep 1
             send -- $autoReview
             expect -timeout 20 -re {confirm [^ ]+ (approved|declined)} { record $tf $t0 $n auto-review-resolved $expect_out(1,string) } timeout { record $tf $t0 $n auto-review-unresolved "" }
             exp_continue

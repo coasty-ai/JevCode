@@ -55,3 +55,23 @@ header and the status row are flushed in one write, so its timing is the same.
   return explicitly (`send x\r`), as a terminal would.
 - Signal deaths: `sh -c 'kill -TERM $$'` → driver exit 143; `exit 7` → 7; an `expect` step that
   never matches → Ctrl-C twice, then exit 124 with `{"op":"timeout"}` in the timing file.
+
+## 5. A non-draining pause in the driver starves the child's React effects (found 2026-09-21, live attempts 1–3)
+
+Symptom: with `PTY_AUTO_REVIEW=y` the first `y` sent one second after the review box appeared never approved
+(attempt 2: it ended up as composer text; attempt 3, after the resolver guard: it drew the `review pending` toast);
+a second `y` twenty seconds later approved at once. `JEVCODE_TRACE` on a live probe showed the order inside the
+TUI: the key was resolved against `overlay=review overlayArmed=false`, and only *then* did React run the passive
+effect that arms the box — 0.7 s after the frame that drew it.
+
+Cause: the auto-review action paused with Tcl `sleep 1`, which stops reading the pty master. Node writes to a TTY
+**synchronously**, so Ink's next frame (the 1 Hz tick) blocked the child's whole event loop on the full pty buffer
+(macOS ptys hold about 1 KB) until the driver read again; React's scheduled passive effects could not run, the `y`
+byte queued in stdin, and when the loop resumed the input callback ran before the starved effect. A real terminal
+always reads, so this cannot happen there; it can happen with any stopped reader (a frozen tmux pane, a paused
+`script(1)`), which is inherent to Node's TTY writes and not something the TUI can avoid.
+
+Fix in the driver: the pause is `drainSleep` (25 ms reads), the same helper the `sleep` step uses. Two TUI changes
+were kept anyway: the box arms on a 150 ms timer after its commit (the stdout-flush promise is only an accelerator),
+and once the box is drawn, printable keys and pastes are ignored with the pending toast instead of reaching the
+composer.
