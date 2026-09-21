@@ -1,9 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { AbortError, ProviderHttpError } from '../../../src/errors.js';
 import { MOCK_DEFAULT_USAGE, createMockProvider } from '../../../src/provider/mock.js';
-import type { MockTurnExt } from '../../../src/provider/mock.js';
-import type { MockTurn } from '../../../src/core/types.js';
-import type { CancelledGeneration } from '../../../src/provider/types.js';
+import type { CancelledGeneration, MockTurn } from '../../../src/core/types.js';
 import { genOpts, request } from './helpers.js';
 
 describe('createMockProvider', () => {
@@ -85,7 +83,7 @@ describe('createMockProvider', () => {
 
   it('function turns key on opts.sample and may script a length stop, reasoning tokens and a generation id (LLM-JEV-DESIGN stage 3 tests)', async () => {
     const p = createMockProvider({
-      turns: (_req, _index, o): MockTurnExt => {
+      turns: (_req, _index, o): MockTurn => {
         const sample = o.sample ?? -1;
         return sample === 1
           ? { text: `s${sample}`, stopReason: 'length', usage: { outputTokens: 1500, reasoningTokens: 1447 }, generationId: `gen-${sample}` }
@@ -118,7 +116,7 @@ describe('createMockProvider', () => {
   it('streams tool-argument JSON in deltaChunkSize pieces after the text; a signal landing mid-arguments reports the streamed toolChars (the forced propose_fix sample of §4.8)', async () => {
     const input = { rationale: 'off by one in the range bound', edits: [{ path: 'quicksort.py', line: 12, new: '    for i in range(lo, hi + 1):' }] };
     const rawJson = JSON.stringify(input);
-    const turn: MockTurnExt = { text: 'ok', toolCall: { name: 'propose_fix', input, rawJson: '' }, generationId: 'gen-s2' };
+    const turn: MockTurn = { text: 'ok', toolCall: { name: 'propose_fix', input, rawJson: '' }, generationId: 'gen-s2' };
     const frags: string[] = [];
     const res = await createMockProvider({ turns: [turn], deltaChunkSize: 10 }).generate(request(), genOpts({ onToolDelta: (f) => frags.push(f) }));
     expect(frags.length).toBe(Math.ceil(rawJson.length / 10));

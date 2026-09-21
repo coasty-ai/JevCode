@@ -2,8 +2,7 @@
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import type { GenerateRequest, GeneratorConfig, ToolSpec } from '../../../src/core/types.js';
-import type { GenerateOptionsExt } from '../../../src/provider/types.js';
+import type { GenerateOptions, GenerateRequest, GeneratorConfig, ToolSpec } from '../../../src/core/types.js';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const FIXTURES = join(here, '..', '..', 'fixtures', 'provider');
@@ -169,7 +168,7 @@ export function testDeps(fetchImpl: typeof fetch, random = 0): { deps: { fetch: 
   };
 }
 
-/** Options with a fresh signal; accepts the LLM-JEV-DESIGN stage-2 members (`sample`, `onCancelled`) too. */
-export function genOpts(over: Partial<GenerateOptionsExt> = {}): GenerateOptionsExt {
+/** Options with a fresh signal; accepts the LLM-JEV-DESIGN §4.8 members (`sample`, `onCancelled`) too. */
+export function genOpts(over: Partial<GenerateOptions> = {}): GenerateOptions {
   return { signal: new AbortController().signal, ...over };
 }

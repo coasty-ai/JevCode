@@ -11,8 +11,8 @@ import { isFiniteNumber, isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
 import type { SleepFn } from '../core/time.js';
-import type { Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
-import type { CancelledGeneration, Pricing, ProviderDeps, SseOptions, SseRecord, StreamPartial, TokenBreakdown, TokenUsageExt } from './types.js';
+import type { CancelledGeneration, Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
+import type { Pricing, ProviderDeps, SseOptions, SseRecord, StreamPartial, TokenBreakdown } from './types.js';
 
 export const FIRST_BYTE_TIMEOUT_MS = 30_000;
 export const IDLE_TIMEOUT_MS = 60_000;
@@ -423,25 +423,23 @@ export function costFromPricing(p: Pricing, t: TokenBreakdown): number {
   return (t.input * p.inputPerM + t.cacheRead * p.cacheReadPerM + t.cacheWrite * p.cacheWritePerM + t.output * p.outputPerM) / 1e6;
 }
 
-/** TokenUsage for one call; `inputTokens` is the full context (uncached + cached), what tokens/step should measure. */
-export function toTokenUsage(t: TokenBreakdown, costUsd: number): TokenUsage {
-  return {
+/**
+ * TokenUsage for one call; `inputTokens` is the full context (uncached + cached), what tokens/step should measure.
+ * `reasoningTokens` (LLM-JEV-DESIGN §4.12) is set when the frame carried it — a read 0 is kept; null (the default) = absent.
+ */
+export function toTokenUsage(t: TokenBreakdown, costUsd: number, reasoningTokens: number | null = null): TokenUsage {
+  const usage: TokenUsage = {
     inputTokens: t.input + t.cacheRead + t.cacheWrite,
     outputTokens: t.output,
     costUsd,
     calls: 1,
   };
-}
-
-/** `toTokenUsage` plus LLM-JEV-DESIGN §4.12's `reasoningTokens` when the frame carried it (a read 0 is kept; null = absent). */
-export function toTokenUsageExt(t: TokenBreakdown, costUsd: number, reasoningTokens: number | null): TokenUsageExt {
-  const usage: TokenUsageExt = toTokenUsage(t, costUsd);
   if (reasoningTokens !== null) usage.reasoningTokens = reasoningTokens;
   return usage;
 }
 
 /**
- * LLM-JEV-DESIGN §4.8: the facts a provider hands to `onCancelled` (types.ts `CancelledGeneration`). `usage` is present only
+ * LLM-JEV-DESIGN §4.8: the facts a provider hands to `onCancelled` (core/types.ts `CancelledGeneration`). `usage` is present only
  * when the accounting frame had already arrived, priced exactly as a completed call would be (`cost` from the frame, else
  * `price`); every other cancelled stream is estimated by the engine, never here.
  */
@@ -450,7 +448,7 @@ export function toCancelledGeneration(p: StreamPartial, price: (t: TokenBreakdow
   if (p.generationId !== null) out.generationId = p.generationId;
   if (p.servedProvider !== null) out.servedProvider = p.servedProvider;
   if (p.model !== null) out.model = p.model;
-  if (p.tokens !== null) out.usage = toTokenUsageExt(p.tokens, p.cost ?? price(p.tokens), p.reasoningTokens);
+  if (p.tokens !== null) out.usage = toTokenUsage(p.tokens, p.cost ?? price(p.tokens), p.reasoningTokens);
   return out;
 }
 

@@ -8,9 +8,8 @@
  * facts exactly as the HTTP providers do (§4.8; the estimate itself is the engine's).
  */
 import { ProviderHttpError } from '../errors.js';
-import type { GenerateRequest, MockProviderOptions, MockTurn, TokenUsage } from '../core/types.js';
+import type { CancelledGeneration, GenerateOptions, GenerateRequest, GenerateResult, MockProviderOptions, MockTurn, Provider, TokenUsage } from '../core/types.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
-import type { CancelledGeneration, GenerateOptionsExt, GenerateResultExt, ProviderExt, TokenUsageExt } from './types.js';
 
 export const MOCK_DEFAULT_USAGE: TokenUsage = { inputTokens: 1000, outputTokens: 200, costUsd: 0, calls: 1 };
 
@@ -19,24 +18,7 @@ export interface MockProviderDeps {
   now?: () => number;
 }
 
-/**
- * `MockTurn` plus the stage-2 result fields (provider/types.ts contract section). Optional, so every existing
- * `MockTurn` script is one. TODO(llm-jev merge): fold into core/types.ts `MockTurn` with the contract fields.
- */
-export interface MockTurnExt extends MockTurn {
-  usage?: Partial<TokenUsageExt>;
-  /** overrides the derived `tool_use` / `end_turn` — e.g. `length` for a truncated sample (§4.7 drops it) */
-  stopReason?: string;
-  /** surfaced as `GenerateResult.generationId`, like OpenRouter's chunk id */
-  generationId?: string;
-}
-/** Function-form script: `index` is the call counter, `opts` the caller's options (`opts.sample` keys N samples of one round). */
-export type MockTurnFn = (req: GenerateRequest, index: number, opts: GenerateOptionsExt) => MockTurnExt;
-export interface MockProviderOptionsExt extends Omit<MockProviderOptions, 'turns'> {
-  turns: MockTurnExt[] | MockTurnFn;
-}
-
-function nextTurn(opts: MockProviderOptionsExt, req: GenerateRequest, index: number, genOpts: GenerateOptionsExt): MockTurnExt {
+function nextTurn(opts: MockProviderOptions, req: GenerateRequest, index: number, genOpts: GenerateOptions): MockTurn {
   if (typeof opts.turns === 'function') return opts.turns(req, index, genOpts);
   const turn = opts.turns[index];
   if (turn === undefined) {
@@ -53,7 +35,7 @@ function chunks(text: string, size: number | undefined): string[] {
   return out;
 }
 
-export function createMockProvider(opts: MockProviderOptionsExt, deps: MockProviderDeps = {}): ProviderExt {
+export function createMockProvider(opts: MockProviderOptions, deps: MockProviderDeps = {}): Provider {
   const sleep = deps.sleep ?? defaultSleep;
   const now = deps.now ?? monotonicNow;
   const model = opts.model ?? 'mock';
@@ -62,7 +44,7 @@ export function createMockProvider(opts: MockProviderOptionsExt, deps: MockProvi
   return {
     name: 'mock',
     model,
-    async generate(req: GenerateRequest, genOpts: GenerateOptionsExt): Promise<GenerateResultExt> {
+    async generate(req: GenerateRequest, genOpts: GenerateOptions): Promise<GenerateResult> {
       if (genOpts.signal.aborted) throw genOpts.signal.reason;
       const index = calls++;
       const turn = nextTurn(opts, req, index, genOpts);
@@ -104,7 +86,7 @@ export function createMockProvider(opts: MockProviderOptionsExt, deps: MockProvi
         throw e;
       }
       const toolCalls = turn.toolCall ? [{ name: turn.toolCall.name, input: turn.toolCall.input, rawJson }] : [];
-      const usage: TokenUsageExt = { ...MOCK_DEFAULT_USAGE, ...turn.usage };
+      const usage: TokenUsage = { ...MOCK_DEFAULT_USAGE, ...turn.usage };
       return {
         text,
         toolCalls,

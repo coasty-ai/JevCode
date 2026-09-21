@@ -21,14 +21,14 @@
  * priced; repro.ts reuses both for L2.
  */
 import { sha12 } from '../../core/hash.js';
-import type { Json, TokenUsage } from '../../core/types.js';
+import type { GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, TokenUsage } from '../../core/types.js';
 import { monotonicNow, percentile } from '../../core/time.js';
 import { linkedAbort } from '../../provider/sse.js';
 import type { SourceFile } from '../types.js';
 import { convertSample, type CompileCheck, type DroppedPatch, type LlmApplied } from './candidates.js';
 import { listingHash, type Listing } from './prompt.js';
 import { PROPOSE_FIX_TOOL, PROPOSE_FIX_TOOL_NAME, isLengthStop, parseProposeFix, type PatchSpec } from './schema.js';
-import { reasoningEnabled, type GenerateFn, type GeneratePurpose, type LlmCandidate, type LlmGenerateRequest, type LlmGenerateResult, type LlmReasoning, type LlmTokenUsage, type OracleClass } from './types.js';
+import { reasoningEnabled, type GenerateFn, type LlmCandidate, type OracleClass } from './types.js';
 
 // ---------------------------------------------------------------------------------------
 // Schedule constants (§4.6, §4.8)
@@ -102,7 +102,7 @@ export class LlmSampleCancelled extends Error {
   }
 }
 
-export type SampleEnd = { kind: 'result'; result: LlmGenerateResult; ms: number } | { kind: 'timeout' | 'cancelled' | 'error'; ms: number; error: unknown };
+export type SampleEnd = { kind: 'result'; result: GenerateResult; ms: number } | { kind: 'timeout' | 'cancelled' | 'error'; ms: number; error: unknown };
 
 export interface SampleRun {
   promise: Promise<SampleEnd>;
@@ -119,14 +119,14 @@ export interface SampleRunOptions {
 }
 
 /** Start one sample: a linked AbortController, a deadline timer, and an outcome that never rejects. */
-export function generateWithDeadline(generate: GenerateFn, req: LlmGenerateRequest, o: SampleRunOptions): SampleRun {
+export function generateWithDeadline(generate: GenerateFn, req: GenerateRequest, o: SampleRunOptions): SampleRun {
   const now = o.now ?? monotonicNow;
   const { controller, unlink } = linkedAbort(o.signal);
   const timeout = new LlmSampleTimeout(o.deadlineMs);
   const timer = setTimeout(() => controller.abort(timeout), Math.max(0, o.deadlineMs));
   const t0 = now();
   // the call starts synchronously so a caller can observe it right after `fire()` (and so the accounting sees one call per fired sample)
-  let started: Promise<LlmGenerateResult>;
+  let started: Promise<GenerateResult>;
   try {
     started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal });
   } catch (e) {
@@ -197,7 +197,7 @@ export interface SampleArrival {
   dropped: DroppedPatch[];
   need: { paths: string[]; symbols: string[] } | null;
   analysis: string | null;
-  usage: LlmTokenUsage | null;
+  usage: TokenUsage | null;
   /** what this sample cost the step's LLM budget (an estimate when `estimated`) */
   usd: number;
   estimated: boolean;
@@ -240,7 +240,7 @@ export interface LlmFireInput {
   /** default `sampleDeadlineMs(klass, running p50)` */
   deadlineMs?: number;
   /** default `{enabled: false}`; the §10.2 fallback `{effort: 'low'}` raises the `max_tokens` base */
-  reasoning?: LlmReasoning;
+  reasoning?: GenerateReasoning;
   signal: AbortSignal;
   budget: LlmBudget;
   /** identity of the attempt ledger shown (candidates.ts attemptsHash); '' when none */
@@ -370,9 +370,9 @@ export interface SampleEstimateInput {
 }
 
 /** The estimated full cost of a sample the provider never priced — cancelled, timed out or failed (§4.8, §8.1): sibling prompt tokens + `max_tokens` output at the served rate. */
-export function estimatedSampleUsage(e: SampleEstimateInput): LlmTokenUsage {
+export function estimatedSampleUsage(e: SampleEstimateInput): TokenUsage {
   const inputTokens = e.siblingInputTokens ?? Math.ceil(e.promptChars / 4);
-  const usage: LlmTokenUsage = { inputTokens, outputTokens: e.maxTokens, costUsd: 0, calls: 1, estimated: true };
+  const usage: TokenUsage = { inputTokens, outputTokens: e.maxTokens, costUsd: 0, calls: 1, estimated: true };
   usage.costUsd = costOf(usage, e.pricing);
   return usage;
 }
@@ -408,7 +408,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const p50ValidMs = (): number | null => percentile(validMs, 50);
   const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-  function estimateUsage(st: RoundState, k: number): LlmTokenUsage {
+  function estimateUsage(st: RoundState, k: number): TokenUsage {
     return estimatedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: st.input.system.length + st.input.userFor(k).length, maxTokens: st.maxTokens, pricing });
   }
 
@@ -537,7 +537,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     st.input.budget.samplesLeft -= 1;
     st.fired.add(k);
     st.pending += 1;
-    const req: LlmGenerateRequest = {
+    const req: GenerateRequest = {
       system: st.input.system,
       messages: [{ role: 'user', content: st.input.userFor(k) }],
       maxTokens: st.maxTokens,

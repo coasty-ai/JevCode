@@ -17,7 +17,7 @@
  * the pick with `oracleOutcome`. Until then the members are declared here (`LlmOracleOutcome`).
  */
 import { clip } from '../../core/text.js';
-import type { Answer, Json, Question, StageName } from '../../core/types.js';
+import type { Answer, GenerateRequest, Json, Question, StageName, TokenUsage } from '../../core/types.js';
 import { monotonicNow } from '../../core/time.js';
 import { ESCAPE_KEY, assertQuestionBatch, choice, noul } from '../../jev/questions.js';
 import { reproductionGoal, type ReproGoal } from '../oracle/goal.js';
@@ -28,7 +28,7 @@ import type { CodeBlock, Extraction, FailureKind, ReproRunResult, Verdict } from
 import type { VerifyRunFn } from '../verify/types.js';
 import { REPRO_LIMITS, WRITE_REPRODUCTION_TOOL, WRITE_REPRODUCTION_TOOL_NAME, isLengthStop, parseWriteReproduction, type ReproductionOutput } from './schema.js';
 import { costOf, estimatedSampleUsage, generateWithDeadline, sampleSeed, type LlmBudget, type LlmPricing, type SampleEnd } from './source.js';
-import type { GenerateFn, LlmGenerateRequest, LlmTokenUsage } from './types.js';
+import type { GenerateFn } from './types.js';
 
 export type LlmOracleOutcome = 'llm_valid' | 'llm_weak';
 
@@ -232,7 +232,7 @@ export interface ReproScriptTrial {
   verdict: Verdict | null;
   goal: ReproGoal | null;
   ms: number;
-  usage: LlmTokenUsage;
+  usage: TokenUsage;
   /** what this sample cost the step's LLM budget (an estimate when `estimated`) */
   usd: number;
   estimated: boolean;
@@ -278,12 +278,12 @@ export interface ReproWriterResult {
   estimatedUsd: number;
 }
 
-function trialOf(sample: number, status: ReproTrialStatus, reason: string, ms: number, usage: LlmTokenUsage, usd: number, estimated: boolean, output: ReproductionOutput | null = null): ReproScriptTrial {
+function trialOf(sample: number, status: ReproTrialStatus, reason: string, ms: number, usage: TokenUsage, usd: number, estimated: boolean, output: ReproductionOutput | null = null): ReproScriptTrial {
   return { sample, status, reason, output, result: null, verdict: null, goal: null, ms, usage, usd, estimated };
 }
 
 /** One sample's trial row with its cost: the provider's for a result, the estimated full cost for a timeout, a cancellation or an error (§4.8). */
-function readSample(k: number, end: SampleEnd, estimate: () => LlmTokenUsage, pricing: LlmPricing | null): ReproScriptTrial {
+function readSample(k: number, end: SampleEnd, estimate: () => TokenUsage, pricing: LlmPricing | null): ReproScriptTrial {
   if (end.kind !== 'result') {
     const usage = estimate();
     return trialOf(k, end.kind, end.error instanceof Error ? end.error.message : String(end.error), end.ms, usage, usage.costUsd, true);
@@ -304,14 +304,14 @@ export async function writeReproduction(input: ReproWriterInput): Promise<ReproW
   const system = buildReproSystemPrompt();
   const user = buildReproUserMessage({ task: input.task, repository: input.repository, packageName: input.packageName, framework: input.framework, extraction: input.extraction });
   const runs = Array.from({ length: n }, (_, k) => {
-    const req: LlmGenerateRequest = { system, messages: [{ role: 'user', content: user }], maxTokens: REPRO_MAX_TOKENS, temperature: REPRO_TEMPERATURES[k] ?? REPRO_TEMPERATURES.at(-1) ?? 0.7, tools: [WRITE_REPRODUCTION_TOOL], toolChoice: { name: WRITE_REPRODUCTION_TOOL_NAME }, reasoning: { enabled: false }, providerPrefs: { requireParameters: true } };
+    const req: GenerateRequest = { system, messages: [{ role: 'user', content: user }], maxTokens: REPRO_MAX_TOKENS, temperature: REPRO_TEMPERATURES[k] ?? REPRO_TEMPERATURES.at(-1) ?? 0.7, tools: [WRITE_REPRODUCTION_TOOL], toolChoice: { name: WRITE_REPRODUCTION_TOOL_NAME }, reasoning: { enabled: false }, providerPrefs: { requireParameters: true } };
     if (k > 0) req.seed = sampleSeed(input.step ?? 0, k);
     return generateWithDeadline(input.generate, req, { sample: k, purpose: 'write_reproduction', signal: input.signal, deadlineMs: input.deadlineMs ?? REPRO_DEADLINE_MS, now });
   });
   const ends = await Promise.all(runs.map((r) => r.promise));
   const pricing = input.pricing ?? null;
   const sibling = ends.find((e): e is Extract<SampleEnd, { kind: 'result' }> => e.kind === 'result' && e.result.usage.inputTokens > 0);
-  const estimate = (): LlmTokenUsage => estimatedSampleUsage({ siblingInputTokens: sibling?.result.usage.inputTokens ?? null, promptChars: system.length + user.length, maxTokens: REPRO_MAX_TOKENS, pricing });
+  const estimate = (): TokenUsage => estimatedSampleUsage({ siblingInputTokens: sibling?.result.usage.inputTokens ?? null, promptChars: system.length + user.length, maxTokens: REPRO_MAX_TOKENS, pricing });
   const trials = ends.map((end, k) => readSample(k, end, estimate, pricing));
   const usd = trials.reduce((s, t) => s + t.usd, 0);
   const estimatedUsd = trials.filter((t) => t.estimated).reduce((s, t) => s + t.usd, 0);

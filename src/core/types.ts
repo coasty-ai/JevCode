@@ -7,6 +7,7 @@
  * bench can be written against this file alone.
  */
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
+// contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
 
 import type { Log } from './log.js';
 
@@ -515,6 +516,18 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
+/** docs/LLM-JEV-DESIGN.md §4.12 verbatim. */
+export type ReasoningEffort = 'low' | 'medium';
+/**
+ * docs/LLM-JEV-DESIGN.md §4.12 verbatim: `{enabled: false}` turns thinking off where the model allows it; `{effort}` asks
+ * for it at a level (on OpenRouter `effort` alone implies enabled). Providers send it as given, never rewritten; absent =
+ * the model's default. Discriminate on the member present (`'effort' in r`), never on a truthy read.
+ */
+export type GenerateReasoning = { enabled: false } | { effort: ReasoningEffort };
+/** docs/LLM-JEV-DESIGN.md §4.12 verbatim: OpenRouter routes only to endpoints that support every parameter sent (tools, seed, …). */
+export interface GenerateProviderPrefs {
+  requireParameters: boolean;
+}
 export interface GenerateRequest {
   system: string;
   messages: ChatMessage[];
@@ -526,9 +539,9 @@ export interface GenerateRequest {
   /** docs/LLM-JEV-DESIGN.md §4.6: per-sample seed (OpenRouter `seed`); providers without it ignore it */
   seed?: number;
   /** docs/LLM-JEV-DESIGN.md §4.12: reasoning control (OpenRouter `reasoning`); providers without it ignore it */
-  reasoning?: { enabled: boolean; effort?: 'low' | 'medium' | 'high' };
-  /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter routing preferences (`provider.require_parameters`, `provider.order`) */
-  providerPrefs?: { requireParameters?: boolean; order?: string[] };
+  reasoning?: GenerateReasoning;
+  /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter routing preferences (`provider.require_parameters`); providers without it ignore it */
+  providerPrefs?: GenerateProviderPrefs;
 }
 export interface GenerateResult {
   /** concatenated text blocks (streamed via onDelta) */
@@ -538,8 +551,10 @@ export interface GenerateResult {
   model: string;
   stopReason: string;
   latencyMs: number;
-  /** docs/LLM-JEV-DESIGN.md §4.8: the provider's generation id (OpenRouter chunk `id`), for post-hoc cost reconciliation */
+  /** docs/LLM-JEV-DESIGN.md §4.8: the provider's generation id (OpenRouter chunk `id` `gen-…`, Anthropic `message.id`), for post-hoc cost reconciliation */
   generationId?: string;
+  /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter's response `provider` field — the upstream that served the request (bills at its own rate, §8); absent on Anthropic */
+  servedProvider?: string;
 }
 /** TUI-DESIGN §15 item 5: why a client is about to sleep before a retry; message = redacted <= 200-char hint, never a body */
 export interface RetryCause {
@@ -556,6 +571,29 @@ export interface RetryInfo {
   retryAfter: boolean;
   cause: RetryCause;
 }
+/**
+ * docs/LLM-JEV-DESIGN.md §4.8: what the provider knows about a stream when its signal fired, handed to
+ * `GenerateOptions.onCancelled` right before `signal.reason` is rethrown (an aborted sample still yields no `GenerateResult`).
+ *
+ * Facts only — the estimate is the ENGINE'S (`Engine.recordCancelledSample()`: input = a sibling sample's `prompt_tokens`,
+ * output = `toolChars` / 4, priced at the served rate, `estimated: true`). This record carries what the engine cannot recover
+ * on its own: the ids for the post-hoc lookup and the streamed sizes. It is NOT delivered when the abort lands before the
+ * response headers (the prompt may still be billed) — the engine estimates alone then. Precedence: the engine takes
+ * `generationId` / `servedProvider` / `toolChars` / `usage` from here when the callback fired, else uses its own estimate.
+ */
+export interface CancelledGeneration {
+  generationId?: string;
+  servedProvider?: string;
+  model?: string;
+  /** text streamed so far */
+  text: string;
+  /** tool-argument characters streamed so far (§4.8: the estimate's output side is `toolChars / 4`) */
+  toolChars: number;
+  /** thinking characters streamed so far (`delta.reasoning`; billed as output too); 0 on Anthropic (thinking is never requested) */
+  reasoningChars: number;
+  /** present only when the accounting frame had already arrived (the abort landed between it and the end of the stream): read and priced like a completed call, not estimated */
+  usage?: TokenUsage;
+}
 export interface GenerateOptions {
   signal: AbortSignal;
   onDelta?: (text: string) => void;
@@ -567,6 +605,12 @@ export interface GenerateOptions {
   wake?: () => AbortSignal | undefined;
   /** docs/LLM-JEV-DESIGN.md §4.8: the sample index of a parallel round (llm-jev); absent for the one-sample propose stage */
   sample?: number;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8: called at most once, after the stream's abort and before `signal.reason` is rethrown, when the
+   * signal aborted a stream whose response headers had arrived. Runs outside the retry loop: a throwing callback is a harness
+   * bug and propagates as a typed 'internal' error in place of the abort reason, exactly like a throwing `onDelta`.
+   */
+  onCancelled?: (partial: CancelledGeneration) => void;
 }
 export type ProviderName = 'anthropic' | 'openrouter' | 'mock';
 export interface Provider {
@@ -1600,9 +1644,14 @@ export interface MockTurn {
   latencyMs?: number;
   /** throw a ProviderHttpError with this status instead of answering */
   error?: { status: number; retryable: boolean };
+  /** docs/LLM-JEV-DESIGN.md stage-3 tests: overrides the derived `tool_use` / `end_turn` — e.g. `length` for a truncated sample (§4.7 drops it) */
+  stopReason?: string;
+  /** surfaced as `GenerateResult.generationId`, like OpenRouter's chunk id */
+  generationId?: string;
 }
 export interface MockProviderOptions {
-  turns: MockTurn[] | ((req: GenerateRequest, index: number) => MockTurn);
+  /** function form: `index` is the call counter, `opts` the caller's options (`opts.sample` keys the N samples of one llm-jev round) */
+  turns: MockTurn[] | ((req: GenerateRequest, index: number, opts: GenerateOptions) => MockTurn);
   /** deltas per second when latencyMs > 0 (default 0 = single delta) */
   deltaChunkSize?: number;
   model?: string;
