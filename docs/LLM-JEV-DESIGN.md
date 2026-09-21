@@ -1,0 +1,534 @@
+# LLM+Jev harness design — `llm-jev` mode
+
+**Date:** 2026-09-21, **revision 2** (applies the two critiques; every change is marked *(rev 2)* where it lands, and the "Rejected critiques" subsection at the end says what was not taken and why). **Status:** design for implementation; supersedes the jev-on step loop for Python repair tasks. **Spine:** the Foundry design (GLM-5.3-flash as a `CandidateSource` inside the Ledger+Sieve engine). **Grafts** (each marked where applied): from **Salvo** — the seeds-vs-LLM race with cancellation, the plan-free site-local `{path, old, new}` hunk contract with three-tier anchoring, the strong/weak fix-absent rule (now routing-only, §5), full-criteria Noul chunks ≤ 50, the `handles()` fallback predicate; from **FactGate** — harm-only risk Scores, completion as a code fact with `task_complete` advisory, the `revert_last_change` route, the tried-set instant verdict, the `synthMs` timing bucket, the statistics of the measurement plan; from the **measured GLM runs** (`bench/results/glm-jev-off-{quixbugs,ladder}`, run logs under `~/.jevcode/runs/`) — every latency, validity and cost assumption in this document, re-derived by script for rev 2 (§1.2).
+
+Sources read: `experiments/designs/llm-jev-map.md` §1–§7 and the six subsystem maps under `experiments/designs/llm-jev-maps/`; `docs/JEV-ONLY-DESIGN.md` §2, §5 (§5.1 one-Proposal contract, §5.5 `done`); `docs/DESIGN.md` §5.4 (rules 1–7), §6, §9.1; `src/core/types.ts` (`Action :21`, `Proposal :37`, `ProposalEvidence :52-69`, `RiskAssessment :272`, `JudgeResult :290`, `StepTiming :308`, `StepRecord :321`, `EngineMode :373`, `GenerateRequest :421`, `GenerateOptions :454`, `Sandbox :706-712`, `GeneratorCallRecord :871`, `SynthesisContext :1044`, `Synthesizer :1075`, generator events `:1125-1128`); `experiments/results/jev-only-audit.md` §4; the checked-in finals `jev-only-{quixbugs-7,ladder-7,swebench-4}-final` (summary, tasks, verdicts), `live-swebench-30`, and the two GLM jev-off runs. **Anchors (rev 2) are the working tree on 2026-09-21**, not HEAD `2a92d0b`: `engine.ts` drifts +24 lines from the earlier anchors (`usesJev :360`, `synthesisContext :1627`, `generate :1717-1765`, `generator_done :1947`, `flushGeneratorRecords :2011`, claim evidence `:2267-2268`, `harnessMs :2325`).
+
+Notation: **code** = deterministic harness rule; **jev** = one Jev decisions request; **llm** = one GLM sampling call; **lane** = a shadow copy where tests run (`src/synth/sieve/lanes.ts`). Jev price $0.042/M input tokens; GLM served rate $0.15/$0.50 per M in/out (5/3× the table, `docs/DECISIONS.md:670-700`).
+
+---
+
+## 1. Goal and the dominance requirement
+
+### 1.1 What the mode must do
+
+Solve Python repair tasks (a failing test, an issue with a reproducible failure, a QuixBugs-class one-line bug, a ladder-class multi-hunk bug) with `z-ai/glm-5.3-flash` as the only generating model and `typesafe/jev-1.13-20260917` as the only decider, and be **heavily better and faster than the same GLM run generator-only (`jev-off`, the shipped `src/loop/generator-only.ts`)** on three measured quantities at once: pass rate (evaluator verdict, plus correct-by-verdict), wall time per task, and dollars per task. Nothing in this document is a claim; §10 is the experiment that produces the numbers, and *(rev 2)* it also carries two attribution arms (§10.1) so that a win can be credited to Jev's questions rather than to generator hygiene alone.
+
+### 1.2 What the baseline is *(rev 2: every cell re-derived from `tasks.jsonl` + `generator.jsonl` by `experiments/llm-jev/baseline-table.mts`, the script §10.4 reuses; "valid" = not malformed ∧ `stopReason ≠ length`)*
+
+| Condition | Suite | Pass | Correct-by-verdict | Steps-to-solve | Wall (median over all tasks / mean) | $ / task, $ / solved | Source |
+|---|---|---|---|---|---|---|---|
+| jev-off, GLM-5.3-flash | QuixBugs (10 of 40) | 7/10 | 7/7 gold-identical | median 4 | **124 s** / 239 s (`summary.json` prints 93.9 s from a different median helper; §10.4 uses one estimator for both conditions); 4/10 stopped at the 480 s wall, one *passing* task (`detect_cycle`) at 480 s with `generatorMs` 478 s | **$0.0093**, $0.0133 | `bench/results/glm-jev-off-quixbugs/{summary.json,tasks.jsonl,verdicts.md}`; limits 12 steps / 8 min / **cap $0.06** |
+| jev-off, GLM-5.3-flash | ladder (**12 of 20 evaluated — the short tier only**; long tier unmeasured) | 9/12 | 9/9 (6 gold-identical, 3 equivalent) | median 9, mean 11.2 | **304 s** / 342 s (median over *solved* tasks 112 s) | **$0.0116**, $0.0155 | `bench/results/glm-jev-off-ladder/{summary.json,tasks.jsonl,verdicts.md}`; 25 steps / 12 min / cap $0.10 |
+| jev-off, GLM-5.3-flash | SWE-bench Verified 30 | **no data** (`glm-jev-off-swebench/tasks.jsonl` holds `not_run`/`error` rows only) | — | — | — | — | measured in §10, not assumed |
+| jev-off, Sonnet 5 | SWE-bench Verified 30 | 10/29 | = pass | mean 22, median 25 | mean 142 s | $0.74 | `bench/results/live-swebench-30` |
+| jev-on, Sonnet 5 (today's LLM+Jev) | SWE-bench Verified 30 | 9/30 | = pass | 23 mean, every solved run at 25 | — | $0.73 | same; 208 blocks + 170 declined reviews = 12.6 non-executing steps per run |
+| jev-only (no LLM) | QuixBugs 40 | 39/40 | **37/40** (30 gold-identical, 7 equivalent, **2 overfit**) | 3 | 37.7 s / 78.7 s | $0.0046, $0.0047 | `jev-only-quixbugs-7-final` |
+| jev-only | ladder 20 (12 short + 8 long) | 14/20 (12/12 short, 2/8 long) | **9/20** (short 8/12 with **4 overfit**; long 1/8 with 1 overfit) | 5 | 152 s / 192 s | $0.016, $0.023 | `jev-only-ladder-7-final` |
+| jev-only | SWE 30 | 4/30 | = pass | 4 | 52 s / 237 s | $0.043, $0.32 | `jev-only-swebench-4-final` |
+
+Two facts the critiques surfaced and rev 2 builds on: **GLM jev-off wrote 16/16 gold-identical-or-equivalent patches where it passed** (7/7 QuixBugs, 9/9 ladder), while **the code seeds produced 7 overfits in 53 solves** (2/39 QuixBugs, 5/14 ladder). Correctness, not just pass rate, is what the LLM brings to a seed-dominated sieve (§6.2).
+
+GLM per-call behaviour (`generator.jsonl` of the two runs; `propose_action`, `max_tokens 4096`, no `reasoning` control, plan re-emitted every call):
+
+| Run | Calls | All calls p50 / p90 / max | Valid calls p50 / p90 | `length` stops | Malformed | Fit | Input p50 | Output mean |
+|---|---|---|---|---|---|---|---|---|
+| QuixBugs | 74 | 15.6 / 55.8 / 367 s | **≈ 6 s** (6.2 s under the definition above; 5.5–6.9 s under the two looser ones) / 24 s | 18/74 (24 %), all at 4,096 tokens | 26/74 (35 %) | 1.6 s + **14.7 ms per output token** | 2,278 tok | 1,893 tok |
+| ladder | **176** | 11.6 / 41.0 / 169 s | **9.7 s / 37 s** | **16/176** (9 %) | **22/176** (13 %) | ≈ 15 s intercept, a few ms per token — output length explains little of the wall (queueing or hidden reasoning) | 3,098 tok | 898 tok |
+
+Three facts follow and shape §4 and §7: (a) on QuixBugs output length is the latency lever (≈ 68 tokens/s; the 4,096-token truncations took 27 s p50 and up to 321 s), so the LLM must be asked for a small, plan-free output; (b) validity is not assured (13–35 % malformed at one sample per step), so every step needs several samples and a code fallback; (c) the tail is minutes and **on ladder the intercept, not the length, dominates** — so *(rev 2)* the round's p50 is a **probe-measured** figure (§10.2 item 1) and every wall projection in §7 is stated conditional on it, not on the QuixBugs fit.
+
+### 1.3 The dominance requirement, stated as the pre-registered criterion *(rev 2: statistics and cost restated; attribution criterion added)*
+
+All of 1–4 must hold on the paired head-to-head of §10 (same tasks, same GLM model, same Jev id, same limits per suite), otherwise the report says which failed. Statistics at n = 20–40 are exact and one-sided where a p-value is quoted; where a p-value cannot be reached even by a strict superset, the criterion is a pre-registered discordant count plus Wilson intervals and the repeat run, and no p-value is quoted.
+
+1. **Pass (discordant pairs b = llm-jev wins, c = jev-off wins):**
+   - QuixBugs (40): b − c ≥ 8 and c ≤ 2; one-sided exact sign test p < 0.05 (met by (8, 0) p = 0.004 and (10, 2) p = 0.019).
+   - ladder (20): b − c ≥ 3 and c ≤ 1; **no p-value** (jev-off's expected 15/20 leaves at most (5, 0) → p = 0.031 as a strict superset; anything realistic is under-powered); Wilson intervals on both pass rates and agreement of the two QuixBugs-style repeat runs (§10.3) are reported instead.
+   - SWE (30): b − c ≥ 4 and c ≤ 2; one-sided sign test reported, not gating (jev-off GLM is unmeasured; the criterion cannot presuppose its rate).
+2. **Correctness (`experiments/inspect/{quixbugs,ladder}-verdicts.mts`; SWE = evaluator pass):** QuixBugs correct-by-verdict ≥ jev-off's + 8; ladder correct-by-verdict ≥ jev-off's + 2 **and overfits ≤ 1** (jev-only had 5; the seed-vs-LLM rule of §6.2 exists for this).
+3. **Wall:** median agent wall per task ≤ 0.5× jev-off on QuixBugs and ladder (one-sided Wilcoxon signed-rank p < 0.05, n = 40 / 20); on SWE, mean wall over tasks solved by both ≤ 1.0× and steps-to-solve ≤ 0.5×.
+4. **Cost:** $ per solved task ≤ **0.75×** jev-off on QuixBugs and SWE and ≤ **0.9×** on ladder; raw $ per task ≤ 1.0× on every suite. Both are reported. (The earlier ≤ 0.5× per solved failed by the design's own §8.3 arithmetic — critiques A3/B11; the ladder bar is looser because both conditions cost about a cent there and §8.3 shows parity-to-modest-win, not dominance. Cost dominance is claimed where dollars are material: SWE.)
+5. **Attribution (new; secondary, does not gate 1–4 but gates which Jev questions survive):** against the no-Jev arm **`llm-sieve`** (§10.1), `llm-jev` passes at least as many tasks on every suite and is strictly better on ≥ 2 of {correct-by-verdict, $ per solved, median wall} on ≥ 2 suites; the per-question ablation (§10.4) drops any question whose marginal contribution to steps-to-solve or correctness is ≤ 0. Against the hygiene-matched **`jev-off-tuned`** arm the comparison is reported in full; if `jev-off-tuned` matches `llm-jev` on pass and correctness, the report says so in its first paragraph.
+
+Secondary gates: refused steps on verified proposals = 0; `patchEmpty` ≤ jev-off's; zero `modelDrift`; Jev share of `synthMs` + shell Jev time ≤ 15 % of total wall (§7.5 defines the buckets).
+
+---
+
+## 2. Principles
+
+1. **Jev decides only what it is measured to decide well** (map §3): yes/no on literal facts present in the state (acc 0.98, 240/240 on code-computed counts); choosing among ≤ 255 concrete options when the right one is present (36/40 top-1 at N = 10); ranking near-duplicate candidates with one full-criteria Noul each (top-3 40/40 at N ≤ 50); localisation from failure evidence (gold file #1 23/30, top-5 28/30; function top-5 35/37; line top-3 36/40); arbitration among test-passing candidates from *distinct behaviour clusters* (gold-or-equivalent 10/10); reproduction judgment on code-extracted snippets (18/23); fix-absent detection as a **routing** signal (AUROC 0.916 on near-duplicate single lines). Jev is **never** asked to judge an LLM's plan or intent (the source of 100 % of jev-on's 223 refusals), to count or compute, to build text, *(rev 2)* to predict whether a multi-hunk patch passes tests when the tests can be run (Q17 orders, never withholds), or to decide whether a test-passing patch may be withheld.
+2. **The LLM writes code and explains.** GLM is a candidate source: it writes multi-line, multi-hunk, multi-file replacements from the failure evidence and the listings, and a ≤ 200-char rationale that reaches the transcript and the `Proposal.goal`. It does not plan, read, run commands, judge, or declare completion. Its output is never trusted; it is anchored, compiled, and executed.
+3. **Tests are the arbiter, and the LLM is the correctness witness among test-equivalent passers** *(rev 2)*. Every candidate runs against the goal tests and the regression scope in a shadow lane before anything touches the workspace. A lone test-passing candidate is committed; when a code seed and an LLM candidate pass the same tests and fall in the same behaviour cluster, the **LLM candidate is committed by code rule** (measured: GLM 16/16 gold-or-equivalent vs seeds 7 overfits in 53 solves); Jev arbitrates only across *distinct* clusters; zero passers are held as partials with code-computed verdicts.
+4. **Code computes counts and completion.** Pass/fail/newly-passing/newly-failing, progress, `testsCurrent`, `testsDirUntouched`, the ledger, budgets, plan-claim acceptance *(rev 2, was Q21)* and the completion fact are arithmetic over harness data. Risk is a code fact for verified proposals; Jev's harm Scores gate only unverified `run` commands and best-guess patches.
+5. **Nothing waits for the slowest thing.** Samples are consumed as they arrive, seeds race the LLM, the LLM round hides behind the seed sieve or the scoped baseline, the loser is cancelled, every LLM sample has a deadline, and *(rev 2)* on cheap-test classes the round is **staggered** (one witness sample races the seeds; the rest fire only when the seeds miss) so the race costs one sample when the seeds win.
+6. **Every threshold is a rank cut, a code fact, or a measured calibration point** (DESIGN §5.4 rule 6): no consumed decision sits at 0.5 on a borderline question; 0.7/0.9 cut-offs are the ones that held in the probes; escape margins are 0.10.
+7. **State honestly what is not covered.** The sieve is Python-only; a non-Python or test-less workspace falls back to the generic loop (§9.4) and is outside the dominance claim. *(rev 2)* An LLM-written reproduction is an unverified reading of the issue and **never** satisfies the completion fact (§6.6).
+8. **Every accounting is complete** *(rev 2)*: a cancelled or timed-out sample is metered (estimated, then reconciled), lane and LLM time have their own buckets, and the baseline table is generated by the same script as the head-to-head.
+
+---
+
+## 3. The step pipeline
+
+One `Engine` step in `llm-jev` mode. Stages 0, 5–8 are the engine's (`src/loop/engine.ts`); stage 4 is one `Synthesizer.synthesize()` call (`src/synth/search/index.ts`) that internally spends Jev requests, GLM samples and lane runs and returns exactly one `Proposal` (JEV-ONLY §5.1). Intent and context stages are not run in this mode (§13).
+
+| # | Stage | Who decides | Question / prompt | Inputs | Runs in parallel with | Expected latency |
+|---|---|---|---|---|---|---|
+| 0 | Budgets, pause pane, steers, `git status` (`engine.ts:1011-1067`) | code | none; spend_cap → token_cap → wall_time → max_steps → max_replans | meter, clock, counters | previous step's checkpoint write | < 1 ms + one `git status` (14 ms on sympy) |
+| 1 | Replan — only when `detector.tripped()` (`stages/replan.ts:92-118`) | jev Q19 | `next_move` Choice + 5 paired `can_*` Nouls + `task_impossible` | common state + loop signature | — | ≈ 0.2 s; rare (`mem.tried` makes every `patch:` signature unique) |
+| 2 | Intent | **not run**; `draft.intent` is code-derived after stage 4 (`patch` → `edit`, `run` → `verify`, `done` → `finish`, `read` → `investigate`) | — | — | — | 0 (was 197 ms and 46 % fallbacks) |
+| 3 | Context | **not run**; the synthesizer loads every non-test `.py` (`search/index.ts loadPythonFiles`, ≤ 1,200 files) | — | — | — | 0 (was 486 ms p50 and 71 % of jev-on's Jev cost) |
+| 4a | Ledger / rebaseline (`search/index.ts:553-623`, `goals.ts clusterFailures`, `reconcile`) | code | none | committed workspace, plan | *(rev 2)* **repository class, step 1:** the scoped baseline needs `moduleFiles` ← `locate` ← the oracle's anchors (`initRepository`, `index.ts:1104-1109`), so the order is oracle → locate → scope → **[scoped baseline ‖ L1 ‖ repro runs of arriving candidates]** → regression runs (which need the baseline). After a commit the lane's regression result becomes the baseline when the sha256 of every touched file in the lane equals the workspace (graft, FactGate) — no re-run | QuixBugs 0.2–1 s at step 1 and after each commit; repository 11–100 s once at step 1. **The establishing engine `run` of jev-only is not proposed** (verified patches are code-`ok`) |
+| 4b | Pick goal (`goals.ts:784-810`) | code; jev Q1 only with ≥ 2 open goals | `attack_first` | ≤ 10 goals keyed by first test id | — | 0 or ≈ 0.2 s |
+| 4c | Oracle (repository only, once per run; `oracle/search.ts findIssueOracle`) | code extracts and runs at base ×2; jev existing reproduction Nouls; **llm L2 only when no valid code oracle** (§4.10) | `is_reproduction`, `shows_expected`, `failure_kind`; Q18 over LLM scripts | issue text, package name, framework | — (precedes locate) | code oracle 1–6 s; L2 ≈ one GLM round (≤ 20 s deadline) + 2 base runs |
+| 4d | Localise (`synth/index.ts locate` → `localize/index.ts` Q2–Q5; `search/sites.ts` Q5n/Q6; cached per goal) | jev Q2–Q6; *(rev 2)* **plus code: the traceback frames' enclosing functions are always listing members** regardless of Jev's rank | file Nouls ≤ 250/request (chunks concurrent), confirm, function Choice, line Choice + line Nouls, gaps | task, `FailureView`s with actual output, traceback, file list/outlines | chunks concurrent (≤ 8-way) | QuixBugs one flat request ≈ 0.18 s; repository ≤ 8 requests ≈ 1–1.5 s |
+| 4e | SEEDS → lanes (`subgoal.ts visitSeedBatch :821`; mutation/template/donor/history/introspection) | code SIEVE; jev Q8–Q10 in RANK mode | none in SIEVE | sites, base files | *(rev 2)* the L1 round is **fired in `searchSubGoal` (`subgoal.ts:948`) right after `locate`, before the phase loop** — not inside `visitSeedBatch`, which only runs for SIEVE oracles (`visitSite :875`); `searchBestGuess (:1067)` gains the same fire. At repository sites the chunked ranking of mutation sets is skipped and `mutation` is **marked exhausted at the site** so `sieveHoldApplies (guard.ts:700)` does not hold every lone template/donor passer to step end | QuixBugs 3.8 s median per true-line set at 8 lanes, ≤ 3 sites ≈ 4–12 s; repository ≤ 20 seeds × 1–3 s / 4 lanes ≈ 5–15 s |
+| 4f | LLM round L1 (`src/synth/llm/source.ts`, §4) | llm: N parallel `propose_fix` calls, *(rev 2)* **staggered on QuixBugs/ladder class** (sample 0 with the seeds; samples 1..N−1 when the top-site seed batch returns no passer), all N at once on repository class | system ≈ 600 tok + user 3–6k tok | listings + failure evidence + attempt ledger | with 4e (and with the scoped baseline on repositories); samples parsed/anchored/compiled **on arrival** | **p50 = probe figure** (§10.2 item 1; the QuixBugs fit gives ≈ 6 s with reasoning off, the ladder intercept says it may be 10–15 s); **deadline** 20 s QuixBugs class / 30 s repository; off the critical path when seeds win |
+| 4g | Sample gate (`src/synth/llm/rank.ts`) | *(rev 2)* **code always runs LLM candidates**; jev Q17 is asked only to **order** them when `|distinct| > runsLeft` or `t_run > 2,000 ms`; it never withholds a run | Q17 `fix` Choice + `is_fix_<key>` full-criteria Nouls over ≤ 8 distinct samples | listings, ≤ 3 tests with actual, candidates as hunk lists | — | 0 or ≈ 0.25 s |
+| 4h | Verify (`sieve/runner.ts runQueue :473`; `oracle/verify.ts runRepositoryQueue :171+`) | code lanes; classification `verify/progress.ts:28` | none | queue in key order (§6.1) | up to `oracle.lanes` (8/4/2); passer confirmation re-run on repositories; *(rev 2)* the queue is **awaitable** (`JobQueue.next()`/`close()`) so lanes start before the last sample lands | QuixBugs ≤ 12 LLM candidates × 0.1–0.4 s / 8 lanes ≈ 0.5–1 s; repository ceil(N/4) × (1–3 s × 2) ≈ 4–8 s, then ≤ 5 passers' scoped regression on 4 lanes ≈ 1–2 × t_scoped |
+| 4i | Guard (`guard.ts decide :738`, `arbitrate :502`) | code: 0 plausible → hold partial; *(rev 2)* the controller **buffers** the seed batch's outcomes and calls `decide` **once over seeds ∪ arrived LLM candidates** after `min(LLM_GRACE_MS, sample-0 arrival)` (§6.2); same-cluster seed+LLM → LLM by code; distinct clusters → Q15/Q16 | `genuine_fix` Choice + `general_<xx>` Nouls | ≤ 20 representatives, program ≤ 254 lines, ≤ 4 tests | perturbation probes on lanes | 0–0.25 s (+ grace ≤ 6 s only when a seed passer lands while sample 0 is still running) |
+| 4j | Proposal (`proposal.ts proposePatch :646`, `commitEvidence`) | code | none | committed candidate → unified diff ≤ 4 files (`maxFiles` 4 for `llm` winners) + `ProposalEvidence{selection:'llm'|'sieve'|'rank', completion?}` *(rev 2: `completion` block, §6.6)* | — | ≈ 0 |
+| 5 | Risk (`stages/risk.ts runRiskStage :491`) | *(rev 2)* **code `ok` decided before `ctx.ask`** for: `patch` with verified evidence, `newlyFailing = []`, every target a non-test workspace path, ≤ 4 files; `run` passing `isVerificationRun (:215)`; `done` with `completionVerifiedByRun (:232)`; `revert` with recoverable targets. The returned `RiskAssessment` carries **synthetic level-0 dims** (`assessRisk({}, 1, intent, opts)` with `confidence 1, bound 'expected'`, `:244`) so the TUI and `confirm()` read a full record. **jev Q20 harm-only** (`destructive`, `irreversible`; `gating = HARM_DIMENSIONS :205`) for non-test `run` commands, unverified best-guess patches, partial `done`s | 2 Scores | proposal, target facts, evidence | — | 0 or ≈ 0.2 s; no `plan_mismatch`/`out_of_scope`/`matches_intent` |
+| 6 | Before-execute + execute (`stages/execute.ts:56-133`) | code | `git apply` / test command | proposal | awaits the previous checkpoint | apply ≈ 50 ms; `run` = suite time (QuixBugs 0.2–1 s; repository scoped 11–100 s) |
+| 7 | Judge (`stages/judge.ts`) | *(rev 2)* **code on every step.** `patch`/`read`/`revert`: `judge = null`, claim evidence `{kind:'none'}` (patches claim nothing). `run`: `JudgeResult` **computed** from the parsed run — `succeeded = allPassed ? 1 : 0`, `errorPresent = errors > 0 ? 1 : 0`, `newInfo = 0`, `tests = parsed`, `doneClaims` accepted iff `newlyPassing ⊇ goal.tests` of the claimed ledger item (`judged: 1`/`0`), plus a new optional `source: 'code'`; `draft.claimProbabilities` is set from it so `commit()` takes the `{kind:'judged'}` path (`engine.ts:2268`). **Q21/Q22 are asked in one request and recorded only** (disagreement with the code verdict is logged); `tests_pass_unparsed ≥ 0.85` stands in only when the parser reads nothing | parsed counts, `newlyPassing/newlyFailing` computed in code, plan claims | candidate refresh (existing) | 0 or ≈ 0.2 s |
+| 8 | Commit + completion fact + checkpoint (`engine.ts:2233-2427`) | code | none; `isCompleteByFact()` (§6.6) → `stop('complete')` on the claiming `run` step itself | draft + `proposal.evidence.completion` | checkpoint write overlaps the next step | 25 ms p50 |
+
+Per-step wall, arithmetic in §7. Every stage emits `stage:start/end`; new `synth` event phases: `llm:fire`, `llm:sample` (k, ms, valid/malformed/timeout/misanchored/cancelled, patches), `llm:cancel`, `llm:round`, `grace`, `revert`. *(rev 2)* `generator:start/delta/tool-delta/end` gain `sample?: number` (§9.3).
+
+---
+
+## 4. The LLM candidate source
+
+New module `src/synth/llm/` (prompt, schema, source, candidates, rank, repro). It is an async source with `fire(input)`/`collect()`/`cancel()` injected through `SubGoalDeps.llm?` (`subgoal.ts:263-280`) and built per run in `src/synth/index.ts createSubGoalDeps` when `ctx.generate` exists.
+
+### 4.1 What only the LLM does here
+
+Write new code text: multi-line statements, new identifiers absent from file ∪ tests ∪ issue (15/30 SWE gold fixes need one; the code seeds reach 72 % of single lines and 0 % of new-logic hunks), guards, imports, multi-hunk and multi-file repairs, and (repository class) a reproduction script from issue prose (§4.10). It never plans (the ledger's fixed grammar is the plan), reads (the synthesizer holds every file), runs commands, or decides `done`. *(rev 2)* Among test-equivalent passers it is also the **correctness witness** (§6.2).
+
+### 4.2 When it fires, how many samples, and when it is skipped *(rev 2: fire point, stagger)*
+
+- **Fires in `searchSubGoal` immediately after `locate` and before the phase loop** (`subgoal.ts:948`), on every goal attempt, for the top-ranked listing set; `searchBestGuess (:1067)` fires it the same way (repository goals with `t_repro > 2 s` never enter `visitSeedBatch`, `visitSite :875`). On QuixBugs class the 8-lane seed sieve (3.8 s median per true-line set) and **sample 0** start together; on repository class the whole round overlaps the scoped baseline (11–100 s).
+- **Staggered N on QuixBugs/ladder class:** sample 0 (temperature 0, h0) races the seeds; samples 1..N−1 fire the moment the top site's seed batch returns without a passer (≈ 3.8 s), or at once when the site set has no seeds. When the seeds win, the round has cost one sample (§8). **Repository class fires all N at once** (seeds are measured at 0 % on new-logic hunks).
+- **Cancelled** (`linkedAbort`, `src/provider/sse.ts:442`, one `AbortController` per sample) the moment the guard commits a candidate for the goal — after the grace of §6.2 — or the step budget ends. *(rev 2)* A cancelled sample is **metered** (§4.8): OpenRouter's "bills consumed input only" is unverified for the z-ai endpoint, so the accounting books a cancelled sample at its **estimated full cost** until the probe (§10.2 item 5) or the generation ledger says otherwise.
+- **Consumed** when the seed batch at the top-3 sites returns no plausible candidate (QuixBugs class) or immediately on repository class; then the LLM phase runs (§4.9 for the feedback round).
+- **Skipped** when `llmRoundsLeft = 0` or `llmUsdLeft ≤ 0` for the step; when the goal is parked; when the site cache already holds ≥ N distinct untried LLM candidates from an earlier step (re-queued first); in `jev-on`/`jev-off`/`jev-only` (`engine.ts:1719` keeps throwing in `jev-only`); when `handles()` is false (§9.4).
+- **Phase ladder:** `PHASES = ['SEEDS', 'LLM', 'SKETCH', 'BEAM', 'WIDENED']` (`EnumerateOptions.phase` literal union extended, `synth/types.ts:117`). SKETCH/BEAM (Q11–Q14) run only when `llmRoundsLeft = 0`; WIDENED as today.
+
+### 4.3 Listings: what the LLM sees *(rev 2: traceback frames always in; h1 gated)*
+
+The listing set is the union of (i) **code**: the enclosing function of every traceback frame inside the workspace (≤ 3 deepest, always present — Jev's ranking never removes them), and (ii) **jev**: the anchors of Q5/Q5n (top-3 lines with p ≥ 0.05 ∪ Noul top-3; QuixBugs) or the global top-5 sites by P(file) × P(fn) (Q2–Q4; repository). Each member is its enclosing function (≤ 120 lines, `L<n>: text`, ≤ 4 functions in total) or a ±40-line module-level window. The top-5 beam files' outlines (`localize/outline.ts`, ≤ 40 symbols each) are shown on repositories so the model can name a `need`. The failing tests come as `FailureView`s (call/input, expected, **actual**, status) with the traceback tail (≤ 1.5 KB), and on repositories the oracle script's source and base output. **Hint h1 ("Jev put p=0.xx on `L<n>`") is given only when Q5's P(top) ≥ 0.9** (the 92 % bin, 58/63); below it the localisation section lists the candidate lines without a pointer (Q5 top-1 is 28/40, so an unconditional pointer misleads a flash-class model on ≈ 30 % of programs). The trace records `localisation_missed` when the committed or gold hunk lies outside the listing set (§10.4 metric).
+
+### 4.4 Prompt (`src/synth/llm/prompt.ts`)
+
+System (≈ 600 tokens, fixed per run):
+
+> You write patches for a Python repository. The harness has localised the fault, will run every patch you return against the failing tests and a regression scope in an isolated copy, and commits only what passes; a patch that fails is shown back to you with its test outcome. You never run commands, read other files, or decide when the task is done. Return 1–3 genuinely different patches as `propose_fix`. Each edit replaces one contiguous block: `old` is copied verbatim from the listing (including indentation; ≥ 1 line; unique in the file — add a neighbouring line if needed), `new` is its replacement (empty `new` deletes the block). Never edit files under `tests/`. At most 4 files and 12 edits per patch. If the fix needs code you cannot see, fill `need` and return no patches.
+
+User message (3–6k tokens; every section bounded, `PROMPT_LIMITS_FIX`):
+
+```
+# Goal            fix <test ids ≤ 3, +N more> in <path>
+## Task           issue / task text ≤ 4,000 chars (head 3,000 + tail 1,000)
+## Failing behaviour
+  - <test id>: called <call ≤ 200> ; expected <≤ 300> ; actual <≤ 300> ; status failed|error
+  traceback tail ≤ 1,500 chars
+  [repository] reproduction script (≤ 60 lines) and its output at base (≤ 600 chars)
+## Localisation   <path>:L<n> (fn <name>) — traceback frames first, then up to 5 Jev-ranked lines;
+                  "Jev put p=0.xx on `L<n>`" only when P(top) ≥ 0.9 (h1)
+## Code           listing per function: `L<n>: <text>` (≤ 120 lines × ≤ 4)
+## Other files    [repository] top-5 beam outlines (≤ 40 symbols each)
+## Earlier attempts this run   ≤ 6 × ≤ 600 chars: diff head + code verdict
+     regressed: 2 newly failing (test_x: E assert a == b …) | unchanged: test_y still fails, actual … |
+     partial: fixed test_a; test_b still fails | syntax error: <msg> | misanchored: `old` not found in <path> |
+     identical to your step k patch (graft, FactGate: tried-set instant verdict)
+## Best partial so far   held base's diff ≤ 1,200 chars ("you may include it")
+## Hint           h0 none | h1 Jev anchor (gated) | h2 "prefer the smallest change" | h3 "a statement may be missing — insert" | h4 edit class from Q7 (soft)
+## Reply          call propose_fix
+```
+
+No plan, no intent, no window of prior steps, no `stale_plan`/`rejected_claim` text: the attempt ledger is code-computed from `VerifyOutcome`s.
+
+### 4.5 Structured output (`src/synth/llm/schema.ts`)
+
+Forced tool `propose_fix`, `strict: true`, **flat** (no `oneOf`, empty arrays instead of optional keys; the one live GLM call verified `strict` on a flat schema):
+
+```json
+{ "analysis": "string ≤ 300",
+  "patches": [ { "rationale": "string ≤ 200",
+                 "edits": [ { "path": "string", "old": "string", "new": "string", "near_line": "integer (0 = unknown)" } ]  /* 1..12 */
+               } ],                                                                                                       /* 0..3 */
+  "need": { "paths": ["string"], "symbols": ["string"] } }                                                                  /* ≤ 3, ≤ 6 */
+```
+
+Contract (graft, Salvo): `{path, old, new}` search/replace instead of before-edit line numbers with an echoed first line. `near_line` is an optional disambiguation hint taken from the listing's `L<n>`; Jev never sees position keys (REPORT §10: order-only keys collapse). Wire: `tool_choice: {name: 'propose_fix'}`, `parallel_tool_calls: false`, `provider: {require_parameters: true}`, `reasoning: {enabled: false}` (fallback `{effort: 'low'}` if the served endpoint 400s or the probe shows > 5 % malformed; §10.2), `seed`, `temperature`, `max_tokens 1,500` with reasoning off (3,000 with `effort: 'low'`), `usage: {include: true}`. Fenced-JSON fallback via `actions.ts extractLastFencedJson`. A malformed sample is **dropped, not retried**; a `finish_reason: length` sample is dropped and the goal's next round doubles `max_tokens` once (graft, FactGate).
+
+### 4.6 N, diversity, temperature, seeds *(rev 2: stagger column)*
+
+| Class | N per round | Fired with the seeds | Fired when the top-site seeds miss | Sample 0 | Samples 1..N−1 | Hints |
+|---|---|---|---|---|---|---|
+| QuixBugs class (`t_run ≤ 2 s`, full suite ≤ 10 s) | 4 | 1 | 3 | temperature 0, h0 | temperature 0.8, `seed = step × 100 + k` | h1 (gated), h2, h3 (h4 when Q7 was asked) |
+| ladder class (same oracle class, several goals) | 3 | 1 | 2 | as above | as above | h1 (gated), h2, h3 |
+| repository class, `t_repro ≤ 2 s` | 6 | 6 | — | temperature 0, h0 | temperature 0.8 | h1 (gated), h2, h3, h1+h2, h4 |
+| repository class, slower | 4 | 4 | — | as above | as above | h1 (gated), h2, h3 |
+| feedback round L1′ (§4.9) | same N | all | — | temperature 0.6, h0 + attempts | temperature 1.0 | as the class; widened `## Code` |
+
+Each sample may return ≤ 3 patches → ≤ 18 candidates per round; duplicates fold by `sha12(diff)` (agreement count → `Candidate.prior` for ordering only). `Candidate.source = 'llm'`, `op = 'sample_<k>_<j>'`. Sample diversity is measured as `verify.distinct / samples` per step and reported (§10); if < 50 % on the probe, the extra samples get per-site hints (each sample a different listing member) instead of temperature.
+
+### 4.7 Sample → Candidate (`src/synth/llm/candidates.ts`) *(rev 2: block-anchored site, deletion, compile path)*
+
+1. Validate: `path` under the workspace, not a test path (`TEST_PATH_RE`), in `base.files`; ≤ 4 files, ≤ 12 edits, `old` non-empty.
+2. **Anchor** each `old` to a unique physical span of the file (graft, Salvo, three tiers): exact match → whitespace-normalised match → token-signature match (`py/tokenize` `lineSignature`); `near_line` breaks ties within ±20 lines; no unique match → drop with `misanchored` (fed back in the ledger; counted `unanchored` in the trace).
+3. **Block-anchored site.** The primary hunk is the one at the highest-ranked listing member (else the first) → `Site{file, line, kind: replace|insert, currentLine, endLine, indent, block, scope, span: {endLine, textSha}}` with `text = new` (multi-line, `verify/apply.ts indentedText`). For `source === 'llm'` the span is validated **by text hash, not by the one-statement tokenizer check** (`applyCandidate`'s `codeTokenKey(span) === codeTokenKey(currentLine)` at `apply.ts:119-121` tokenises a dedenting block to `''` → "stale site"), and `siteOnBase (subgoal.ts:371)` re-anchors an `llm` site on an improved base **by text** (`statementSiteAt` derives one logical statement and would return `null`). **Deletion:** `new = ''` emits `LineEdit.kind: 'delete'` for **every** span line, primary included (`indentedText('')` returns `''` and `replaceLine` would leave a blank line, `apply.ts:27-30`). Every other hunk → `extraEdits` in before-edit numbering (`replace` first line + `delete` the rest, or `insert`), any path in `base.files`; `verify/apply.ts` applies bottom-up.
+4. `applyCandidate` dry run → diff; **compile check through a temp file**: each touched file's post-image is written to `<runDir>/tmp/synth/compile/<sha12>.py` and `python3 -c "import ast,sys; ast.parse(open(sys.argv[1]).read(), sys.argv[1])" <path>` runs through `ctx.sandbox.run` (no stdin option on `Sandbox.run`, `core/types.ts:706-712`; ≈ 40 ms) → drop `syntax_error` with the message; temp files are removed at step end.
+5. Dedupe by `sha12(diff)` against the round, `mem.tried`, and the tried-set → an identical diff returns its earlier verdict at once (graft, FactGate) and is not re-run.
+6. Vocabulary check **bypassed** for `source === 'llm'` (`queue.ts:455-482`; it exists to prune mutants; SWE gold lines pass it only 72 %).
+
+### 4.8 Deadline, streaming, cancellation, accounting *(rev 2: per-sample signal, metered cancellations, awaitable queue)*
+
+- **Per-sample signal.** `SynthesisContext.generate(req, {sample, purpose, signal})`: the engine `linkedAbort`s the sample's signal to `this.signal`, so a deadline or a loser cancellation aborts one sample without failing the propose stage. `withRetry` rethrows `signal.reason` on abort (`sse.ts:393-397`) and `consumeStream` throws `TransportError('stream')` when the usage frame never arrives (`openrouter.ts:199-205`) — so **an aborted sample yields no `GenerateResult`**. The engine catches the per-sample abort and writes a `GeneratorCallRecord{sample, purpose, cancelled: true, stopReason: 'cancelled'|'timeout', usage: {estimated: true, …}}` through `Engine.recordCancelledSample()`: input tokens = a sibling sample's `prompt_tokens` (same prefix), output tokens = streamed tool-argument chars / 4, cost at the served rate; `meter.add('generator', …)` is called with the estimate so the spend cap sees it. The OpenRouter chunk `id` (typed at `provider/types.ts:174`, dropped today) is surfaced on `GenerateResult.generationId` and on the cancelled record, so `GET /api/v1/generation?id=` can replace the estimate post hoc (§10.2 item 5 measures the gap once).
+- **Per-sample deadline** `LLM_SAMPLE_DEADLINE_MS = clamp(2 × running p50 of valid samples this run, 10 s, 20 s)` on QuixBugs class, 30 s on repository class; the first round of a run uses the probe's p90 (§10.2). A sample past its deadline is aborted, counted `timeout`, metered as above, and the round proceeds with what arrived (p90 24–37 s, max 367 s measured).
+- **Streaming consumption.** `JobQueue` gains an awaitable `next(): Promise<VerifyJob | null>` and `close()`; `runQueue`'s worker (`runner.ts:697-699`, exits when `queue.pop(1)` is empty today) awaits `next()` until the source closes the queue at round end, so lanes start on the first parsed sample. The passer counter `passers` (a per-call local at `runner.ts:512`) moves into `RunnerMemory.passersThisStep` so `MAX_FULL_SUITE_RUNS_PER_STEP (:73)` is a per-step bound however many times the runner is entered. In RANK mode the Q17 request is built when N−1 samples have arrived or the deadline fires, whichever first.
+- **Cancellation** on commit (after grace) or on `ctx.signal`. `draft.timing.generatorMs` takes the **wall of the batch** (max), not the sum; `GeneratorCallRecord.temperature` records the per-sample request's temperature, not `opts.generation.temperature` (`engine.ts:1755`); `retryHooks` are keyed per sample (`Map<number, …>`; the TUI shows sample 0's); `flushGeneratorRecords (:2011)` is called after `runSynthStage` exactly as after `runProposeStage` (`:1826, :1863`).
+
+### 4.9 Feedback round L1′ *(rev 2: trigger)*
+
+Taken at most once per goal per step and twice per goal per run, **when round 1's candidates all ran and produced no plausible candidate and no partial the guard commits** (never on a Jev prediction). The prompt is L1 plus the updated `## Earlier attempts` (every sample of round 1 with its code verdict) and a **widened** `## Code`: the next 3 listing members, or the paths/symbols the samples put in `need` (≤ 3 paths, resolved to their listings). Never re-samples the same context with the same hints. Verdicts come from `VerifyOutcome` only: newly failing ids with the first `E` line, the still-failing test's actual, syntax/misanchor messages.
+
+### 4.10 Reproduction writer L2 (`src/synth/llm/repro.ts`, repository class only, once per run) *(rev 2: runner-compatible contract; never completes a run)*
+
+When the workspace has no failing test and `findIssueOracle` is not `valid`/`valid_weak`/`weak_network` (21/30 SWE instances): N = 3 parallel `write_reproduction {script ≤ 60 lines, expected_behaviour ≤ 300, issue_quote ≤ 200, failure_kind}` calls (temperature 0 / 0.7 / 0.7). System (≈ 300 tok): "a standalone script of top-level statements; **raise (or fail an `assert`) while the bug exists and complete silently once it is fixed; never call `sys.exit`, never print a verdict**; no network, no files; `issue_quote` copies verbatim the issue sentence your assertion encodes". User = issue ≤ 8k chars + package name + framework hint (Django settings snippet from `oracle/runner.ts`) + extracted blocks/tracebacks + `Expectation[]`. Code then: splits each script into top-level statement chunks (`chunksWithContext`, `oracle/runner.ts:474`) and runs it under the sentinel harness (`runRepro :336`, whose `evaluateCriterion (:708)` treats `SystemExit` as an exception — hence the no-`sys.exit` rule) **twice at base** (`unstable` rule) with criterion `{form: 'no_exception'}` and `expectedText = expected_behaviour`; rejects `INCOMPLETE_SNIPPET_EXCEPTIONS` (NameError/ImportError/ModuleNotFoundError/SyntaxError) and `detectNetworkUse (:405)`; **rejects a script whose `issue_quote` is not a verbatim substring (≥ 6 consecutive tokens) of the issue** (code check: the assertion must be anchored in the issue text, not in the model's reading of it); only the survivors reach Jev Q18. `OracleOutcome` (`oracle/search.ts:207`) gains `'llm_valid' | 'llm_weak'`; `oracleYieldsGoal (:213)` includes both; `oracleNeedsArbitration (:222)` returns true for both (a lone passer always gets the Q16 advisory and the `openProblems` note `llm-written reproduction`). Persisted in `RepositoryMode.repro` with `oracleOutcome`. **An `llm_*` oracle never satisfies the completion fact** (§6.6): the run ends as an honest partial `done` with the patch on disk; the evaluator's F2P is the only judge. The L2 false-positive rate (fails at base, passes on a patch the evaluator rejects) is a first-class metric (§10.4). Never on QuixBugs/ladder.
+
+### 4.11 Budget and cache
+
+`StepBudget += llmRoundsLeft (2), llmSamplesLeft (N × 2), llmUsdLeft = min($0.02, (spendCap − spent) / stepsLeft)`; LLM counters never end a step (`exhausted()` unchanged). `mem.llm: Map<cacheKey(goalId, listingHash, baseHash, round), {sha12[], hunks}>`; persisted in `synthState` as `{goalId: {round, sha12[]}}` ≤ 4 KB (sample bodies are not persisted; a resumed step re-asks, ≈ $0.003).
+
+### 4.12 Provider details for GLM (`src/provider/openrouter.ts`, `types.ts:183-194`)
+
+`GenerateRequest += seed?, reasoning?: {enabled: false} | {effort: 'low'|'medium'}, providerPrefs?: {requireParameters: boolean}`; body maps them to `seed`, `reasoning`, `provider: {require_parameters: true}`; `consumeStream` reads `completion_tokens_details.reasoning_tokens` into `TokenUsage.reasoningTokens`, records the response `provider` field and the chunk `id` (`GenerateResult.generationId`); `anthropic.ts` ignores `seed`/`providerPrefs` and maps `reasoning` to nothing. `GenerateOptions.sample?: number`.
+
+---
+
+## 5. Jev questions
+
+All built with `choice()`/`noul()`/`contextNoul()`/`score()` from `src/jev/questions.ts` (escape appended, snake_case descriptive keys, both-sided criteria enforced at build time), asked through `ctx.ask` so they land in `decisions.jsonl`, `jev.jsonl`, the meter and the pane. Model pinned `typesafe/jev-1.13-20260917`; the bench refuses aliases. Wordings marked *existing* are unchanged code. Compliance: **B** batched per stage/state, **E** escape present, **P** paired Nouls or sanctioned escape-only form, **C** definition + ≥ 2 examples per side (or the sanctioned `criteria` object for ≤ 250 file Nouls), **N** never counts/computes, **T** no consumed 0.5 threshold.
+
+| Id | Type | Options / levels | State shown | Consumer and threshold (code) | Compliance | Measured basis (map §3) |
+|---|---|---|---|---|---|---|
+| Q1 `attack_first` (*existing*, `goals.ts:784-810`) | Choice | ≤ 10 open goals keyed by first test id; `none_of_these` | `{task ≤ 2000, failing_tests: {id: {input, expected, actual, status}}}` | argmax iff it beats the runner-up by > 0.02, else code order; skipped with one open goal | B E P(escape) N T | item 2; simplest-first 16/34 vs 8/34, MRR 0.67 |
+| Q2 `fix_file_<path>` (*existing*) | `contextNoul` × ≤ 250 per request, chunks concurrent | — | `{issue, criteria, files[]}` | **rank only** → top-5 beam; skipped when the workspace is one file or every file fits the beam (ladder/QuixBugs never ask it) | B C(sanctioned) N T | item 5: gold #1 23/30, ≤ 5 28/30, MRR 0.85, $0.0011/instance |
+| Q3 `fix_file_confirm_<path>` (*existing*) | Noul × ≤ 10, full criteria | — | beam files with `top_level_symbols` ≤ 40 | re-rank the beam by p, keep top-5 | B C N T | item 5: gold-first 31/33 with outlines |
+| Q4 `fix_function` (*existing*) | Choice per beam file | function keys, `module_level_code_outside_any_function`, escape | listing + failure head | global top-5 by P(file) × P(fn); escape ≥ 0.5 **adds** the module-level site (additive) | B E P(escape) N T | item 5: top-1 19/37, top-5 35/37 |
+| Q5 `buggy_line` + Q5n `line_<k>` (*existing*, `sites.ts`) | Choice over code lines + one Noul per line, one request | `line_<n>` = text + escape | `{task, program, tests ≤ 3, failing_test_run}` | anchors = top-3 with p ≥ 0.05 ∪ Noul top-3; P(top) ≥ 0.9 → tried alone first **and the LLM hint h1 is given**; below 0.9 no h1; P(escape) ≥ 0.3 → insert sites first; exactly one Noul ≥ 0.9 → short-circuit | B E P C N T | item 5: top-1 28/40, top-3 36/40; P(top) ≥ 0.9 → 92 % (58/63); Noul ≥ 0.9 → 17/17 |
+| Q6 `insert_after` (*existing*) | Choice over gaps | `before_l1`, `after_l<i>`, escape | program + `missing_statement` | top-3 gaps become insert sites; *(rev 2, in the stage list)* the fallback asks **one request per state** over ≤ `Q6_FALLBACK_STATEMENTS` (5) templates as separate Choices (fixes the audit's batching violation) | B E P(escape) N T | item 2: 4/4 given the statement |
+| Q7 `edit_class` (*existing*) | Choice | 6 edit classes + escape | marked listing, buggy line, tests | soft source/site order and LLM hint h4 only; asked only when `t_run > 2,000 ms` | B E P(escape) N T | item 9: 24/40 top-1 → never a gate |
+| Q8 `fix` / Q9 `is_fix_<xx>` / Q10 shortlist (*existing*, `rank/index.ts`) — code-seed sets in RANK mode | Choice ≤ 10; **full-criteria Nouls in chunks ≤ 50** (graft, Salvo; replaces the compact form for 11–150, `rank/index.ts:60-66`); shortlist Choice | `cand_xx` = candidate line | `{task, program, buggy_line, tests with actual, candidates}` | queue order by p, K = `decideRunPlan`. **Fix-absent (routing only):** strong = P(escape) − p_max ≥ 0.10 ∧ max Noul < 0.3 → route to the next site / LLM round *after* the top-K ran; weak = exactly one of the two → run top-3 then route; replaces `NOUL_ABSENT 0.5`. Not asked for mutation sets at repository sites | B E P C N T | item 3: full-criteria top-1 39/40 at N ≤ 50; item 11: AUROC 0.916 (single lines) |
+| Q11–Q14 (*existing*) | as designed | as designed | as designed | unchanged consumers; **run only when `llmRoundsLeft = 0`** | as today | item 10 |
+| Q15 `genuine_fix` + Q16 `general_<xx>` (*existing*, `guard.ts:502-537`) | Choice over ≤ 20 behaviour-cluster representatives + one Noul each, one request | `cand_xx` = `{line, replaces, with, also_edits, file}` + escape | `{task, program ≤ 254 lines, other_files, tests ≤ 4, buggy_program_failure, candidates}` | pick = Choice argmax (ties → *(rev 2)* `llm` before smaller edit); overridden only if its Noul < 0.3 and another ≥ 0.7; suspect iff P(escape) ≥ 0.5 ∧ max Noul < 0.1 → held as `possible overfit`, committed at step end (advisory). *(rev 2)* **Asked only across ≥ 2 distinct behaviour clusters**; a seed and an LLM passer in the *same* cluster are decided by code (LLM wins, §6.2) | B E P C N T(advisory signature) | item 4: gold 8/10, gold-or-equivalent 10/10 on same-line sets; **(seed line, LLM hunk) pairs unmeasured → §10.2 item 3 measures them** |
+| **Q17 `fix` + `is_fix_<patch_xxxx>` over LLM samples** (new, `src/synth/llm/rank.ts`) | Choice ≤ 8 distinct samples + escape; one full-criteria Noul per sample | keys `patch_<sha4>`, description = hunks as `{file, L<a>-L<b>, replaces, with}` (≤ 400 chars/hunk, ≤ 3 shown) | `{task, program: listings of touched functions, tests ≤ 3 with actual_with_bug, candidates}` | *(rev 2)* **order only, never a gate**: asked only when `|distinct| > runsLeft` or `t_run > 2,000 ms`; Choice order, Noul breaks ties; the top job is never cut by the step wall (runner rule); every distinct sample runs when `|distinct| ≤ runsLeft`; fix-absent signals are **recorded** and route L1′'s widening only after the runs returned 0 passers | B E P C N T | item 2/3 on single lines; multi-hunk accuracy from the §10.2 probe decides K = 3 vs 5 and whether Q17 is worth its $0.0003 at all (ablation §10.4) |
+| **Q18 `reproduction` Choice + `reproduces_issue_<script_k>` Nouls + `failure_kind`** (new) | Choice over ≤ 3 scripts + escape; one Noul per script (existing `REPRODUCTION_CRITERIA`); 6-way `failure_kind` | `script_<k>` = `{source, issue_quote, base_run: {exception_type, message ≤ 300, last_statement}}` — only scripts code proved fail at base twice with a verbatim issue quote | `{issue: {repository, problem_statement ≤ 8k}, criteria, scripts}` | pick = argmax iff it beats the runner-up by > 0.05, else fewest lines; pick's Noul ≥ 0.7 → `llm_valid`; 0.3 ≤ p < 0.7 → `llm_weak`; p < 0.3 or escape > top → no oracle → best-guess path. Lone passers under either always get the Q16 advisory; **neither outcome completes a run** (§6.6) | B E P C N T | item 6: 18/23 on code-extracted snippets; accuracy on LLM prose is unmeasured → reported as the L2 false-positive rate |
+| Q19 replan (*existing*, on trip only) | Choice + paired Nouls + Noul | as today | as today | paired floor 0.5 tolerated (non-executing directive); `task_impossible ≥ 0.85` → stop | B E P C N T(tolerated) | rare in this mode |
+| **Q20 harm Scores `destructive`, `irreversible`** (graft, FactGate) | 2 Scores × 5 levels (`RISK_LEVEL_TEXTS`, `risk.ts:50`) | levels 0–4 | `proposal.action`, `targets[]`, `workspace{…}`, `recent` | r = max(E[k]/4, P(k ≥ 3)); block ≥ 0.7, review 0.3–0.7; **asked only** for non-test `run`s, unverified best-guess patches, partial `done`s; **verified patches, `isVerificationRun`, verified `done`, `read`, `revert` never reach `ctx.ask`** (§3 row 5) | B N T (0.3/0.7) | item 1; 0/223 bench refusals came from harm dims |
+| Q21 `done_<j>` + `tests_pass_unparsed` (*existing*) — `run` steps only | Nouls | fixed grammar `fix <test> in <path>` | executed run with parsed counts, `newlyPassing/newlyFailing` in code | *(rev 2)* **recorded only**; the claim is accepted in code (`newlyPassing ⊇ goal.tests`, §3 row 7) — live data had 21/55 claims in the [0.3, 0.7) band, which would leave `plan.remaining` disagreeing with a code stop; `tests_pass_unparsed ≥ 0.85` is consumed only when the parser reads nothing | B C N T | item 1: counts read back 240/240 — a fact code already holds |
+| Q22 `task_complete` (*existing*) | Noul, same request as Q21 | — | judge state | **recorded only**; the stop is the code fact of §6.6 | B C N T | item 7 |
+
+Removed questions and why: intent Choice + 5 `can_*` + `plan_still_valid` (46 % fallbacks); context `show:<path>` × ≤ 300 (71 % of Jev cost, 0.5 cut); risk `out_of_scope`, `plan_mismatch`, `matches_intent`, `evidence_consistent` (no measured accuracy; 100 % of refusals); judge `succeeded`, `error_present`, `new_information` (reported-only); Q17-closeness (already deleted). Not asked anywhere: counts or list differences, "did this sample help", a free next-move policy, any Noul that withholds a test-passing patch, *(rev 2)* any question whose answer decides whether an LLM candidate is tested.
+
+---
+
+## 6. Verification, commit, partials, regressions, loops, completion
+
+### 6.1 Verification (source-agnostic machinery; ordering specified) *(rev 2)*
+
+Every candidate is a `VerifyJob` in the `VerifyQueue` (`sieve/queue.ts:355-495`): dedupe by id/canonical text, unchanged, `apply_failed`, `tried`; vocabulary check skipped for `llm`. **Ordering.** SIEVE jobs are keyed by `sourcePriorAt(position)` (`subgoal.ts:216`, via `jobsFor :394`), not by `SOURCE_ORDER_PRIOR` (`queue.ts:58-66`, the `jobFor` default only), so the LLM's place is set per class: **QuixBugs/ladder class** — LLM jobs `p = sourcePriorAt(SEED_SOURCES.length) − i·ε` (after the three seed sources, before composite/history; seeds win 25/36 true-line sets there); **repository class** — LLM jobs `p = 1.0 − i·ε` (before every seed; seeds are 0 % on new-logic hunks, and five weak-oracle seed "passers" must not fill `MAX_FULL_SUITE_RUNS_PER_STEP` ahead of the samples). RANK jobs take Q17's order as `p`. `SOURCE_ORDER_PRIOR.llm = 0.35` is added for the default path only. Lanes (`lanes.ts:188-324`): `candidate_file` on QuixBugs layouts, `git worktree` on repositories, `cp -R` ≤ 50 MB non-git, `inplace` otherwise; 8/4/2 lanes by measured `t_run`, load-aware. QuixBugs class (`runQueue :473`): goal-subset run per candidate, full-suite run per passer (≤ 5/step via `RunnerMemory.passersThisStep`), adaptive timeouts. Repository class (`runRepositoryQueue :171`): reproduction run → same-lane confirmation re-run for a pass (1/64 false pass) → scoped regression (≤ 6 test files) for ≤ 5 passers in rank order (the top job is never cut by the step wall). Classification is arithmetic (`verify/progress.ts:28`); every classified diff enters `mem.tried`.
+
+### 6.2 Commit rule (guard, with the seed-vs-LLM grace and the correctness rule) *(rev 2)*
+
+`decide (guard.ts:738)` commits a lone plausible at once and `heldPassers (:649)` carries only `pending`/`suspect`, so the grace **cannot be a caller-side wait around `decide`**. It is implemented in the controller: the seed batch's `VerifyOutcome[]` are buffered; the controller awaits `min(LLM_GRACE_MS, arrival of sample 0)` (repository class: `min(LLM_GRACE_MS, first LLM outcome)`), runs the arrived LLM candidates, and calls `decide` **once over the union**. Then:
+
+- **0 plausible** → `holdBestPartial` (≤ 1 improved base); verdicts go into the attempt ledger for L1′.
+- **≥ 1 plausible, mixed sources, same behaviour cluster** (P2P outcome vector ∪ perturbation-probe signature; `clusterByBehaviour :193` picks the min-edit representative today) → **code rule `preferLlmInCluster`**: the cluster's representative is its `llm` member with the most agreement (`Candidate.prior`), else the min-edit member. Rationale (measured): GLM jev-off 16/16 gold-or-equivalent; seeds 7 overfits in 53 solves; jev-only committed 2/40 QuixBugs and 5/14 ladder overfits that a larger LLM fix would have avoided. No Jev request.
+- **1 cluster** → commit its representative at once (tests are the oracle; a lone passer is never withheld on a Noul — `quicksort` gold Noul 0.15), except the existing within-step holds (site batch pending; structural-signal advisory; held passers commit at step end via `commitSuspect`).
+- **≥ 2 clusters** → one Q15+Q16 request over ≤ 20 representatives → pick per the override rule; Choice ties → `llm` before `byEditCost (:174)`; all-overfit signature holds the pick as suspect while the remaining sites run.
+- **Seed passer alone and sample 0 still in flight** → the grace waits up to `LLM_GRACE_MS = min(6 s, sample-0 deadline remaining)`; when it expires the seed is committed and the round cancelled. A seed passer with a structural signal (`guard.ts` rule b) waits the full window. The grace is priced by the `LLM_GRACE_MS = 0` repeat run (§10.3).
+- Repository `weak`/`weak_network`/`llm_valid`/`llm_weak` oracles: a lone passer goes through the Q16 advisory and the patch carries the `openProblems` note.
+- The winner is re-expressed against the committed workspace (`bases.ts appliedOnCommitted`) as one unified diff ≤ 4 files (`proposePatch(..., {maxFiles: 4})` for `llm` winners; `MAX_PATCH_FILES 2` stays for code sources) with `ProposalEvidence{…, selection: 'llm'|'sieve'|'rank', candidatesTested, arbitrated}`.
+
+The §10.2 probe adds (seed line, LLM hunk) pairs to the arbitration set so Q15's accuracy on the pairs it will actually see across clusters is known before the run.
+
+### 6.3 Engine side *(rev 2: risk before ask, code judge, judged evidence)*
+
+Risk: `verifiedPatchOk()` / `isVerificationRun` / `completionVerifiedByRun` / recoverable `revert` branch **before** `ctx.ask` in `runRiskStage (:491-527)` and return `assessRisk({}, 1, intent, {texts})` with `verdict: 'ok'` and a reason naming the evidence; Q20 harm-only otherwise (`gating = HARM_DIMENSIONS`). Execute: `git apply --check` + apply through `Workspace`, pre/post images as today. Judge: code on every step (§3 row 7); `JudgeResult` gains optional `source: 'code' | 'jev'`; on `run` steps `draft.claimProbabilities` holds the code verdicts so `commit()`'s `{kind:'judged'}` path (`engine.ts:2268`) applies the plan draft, and `usesJev()` (`:360`, `mode !== 'jev-off'`) is left true for `llm-jev` while **every** intent/context/judge branch it guards is edited to skip in this mode. **Step commit rule (§9.1) unchanged:** everything in stage 4 is "before execute" — an abort or budget stop there discards the step (rule 1; LLM spend already metered — including cancelled estimates — stays in `generator.jsonl`/`state.json`; lanes are side-effect free); an abort during `git apply`/the claiming run commits `interrupted` (rule 2); after execute the real outcome is committed with `judge: null` (rule 3). The synthesizer's `StepBudget` bounds the overrun to one in-flight lane run plus one sample deadline.
+
+### 6.4 The patch → run alternation and the claiming run *(rev 2: repository claiming run defined)*
+
+One `Proposal` per `synthesize()`. The step after an executed `patch` proposes the claiming `run` with `plan.done = ['fix <tests> in <path>']`. **QuixBugs/ladder:** the full suite. **Repository:** the **scoped regression command alone** (`mem.baseline.command`, `search/index.ts:824`; `run` is one command, `isVerificationRun` rejects shell composition (`risk.ts:208`), and `parseTestOutput` cannot read a reproduction's exit). The reproduction's verdict on the committed workspace comes from the synthesizer's own workspace re-run (`verifyReproInWorkspace :401`, already performed inside `rebaselineRepository :1002`) and travels on the claiming proposal as `evidence.completion.repro: 'pass' | 'fail' | 'none'`. The synthesizer's rebaseline is skipped when the lane's post-regression tree equals the workspace by sha256 (graft, FactGate); the engine's completion fact (§6.6) ANDs its own parsed run with `evidence.completion`. Open question 4 is thereby **decided**: the engine executes the scoped run; the reproduction verdict is synthesizer-executed in the workspace (not a lane) and declared on the evidence.
+
+### 6.5 Partials, regressions, reverts, loops *(rev 2: revert synthesizer-only)*
+
+- **Partials:** held as the improved base (depth ≤ 3), shown to the LLM as "best partial so far", paired with complementary partials (`pairsOfPartials`, ≤ 10 composites). At budget/exhaustion the held partial becomes a **progress commit** after `runRegressionCheck` and the rule-(b) advisory; `MAX_PROGRESS_COMMITS_PER_GOAL = 3`. Persisted partials keep ≤ 400 chars per edit and ≤ 4 extra edits; larger LLM partials are re-derived after `--resume`. `llm` sites re-anchor by text (§4.7 step 3) after a partial shifts lines.
+- **Regressions:** any `newlyFailing` → `regressed`, `tried`, never proposed; its verdict feeds L1′.
+- **Revert route (synthesizer-only; `src/loop/stages/revert.ts` is dropped):** trigger = the fresh baseline after the engine's claiming run has `passed` < the previous baseline's `passed`, or a goal test in the last commit's `evidence.newlyPassing` fails in the engine's parsed run. The synthesizer already holds `mem.committed.at(-1).files[].before/after` (`AppliedCandidate`) and emits the reverse `unifiedDiff` as `revert_last_change` — no LLM, no Jev, risk code `ok` (targets recoverable), judge code. The candidate stays `tried`; the goal re-opens; the guard receives a `workspace_disagreed` note so the site is re-localised from the workspace's failure text. A blocked/declined revert is rolled back through `rollbackUnexecutedPatch (:845-877)`, extended to the revert kind; re-proposed once.
+- **Loops:** `mem.tried` makes every `patch:` signature unique; `run:<cmd>:<result>` repeats only on budget-hit subset runs, bounded by the stagnation park; `done:<sha>` repeats ≤ 2 partial dones before the replan exit; `revert:` at most once per committed patch. Identical diffs are answered from the tried-set instantly.
+
+### 6.6 Completion is a code fact, declared on the evidence *(rev 2)*
+
+`ProposalEvidence.completion?: { ledgerFixed: boolean; testsChanged: string[]; guardPending: boolean; repro: 'pass' | 'fail' | 'none'; oracle: OracleOutcome | null }` is set by the synthesizer on the claiming `run` proposal (from `doneReadiness`, `proposal.ts:614`). `isCompleteByFact()` in the engine = the executed `run` on the current workspace has `failed = errors = 0`, `passed > 0`, no timeout (`tests_pass_unparsed ≥ 0.85` stands in only for unparseable runners) ∧ `workspace.testsCurrent` ∧ `completion.ledgerFixed` ∧ `completion.testsChanged = []` ∧ `¬completion.guardPending` ∧ (repository class: `completion.repro = 'pass'` **and `completion.oracle ∈ {valid, valid_weak, weak_network}`** — an `llm_valid`/`llm_weak` oracle never completes). When it holds at the commit of the claiming `run` step, the engine stops `complete` **on that step**; `task_complete` is recorded, not consulted. A `done` is proposed only for the honest partial exit (every goal parked, budget, or an LLM-oracle run whose patch passed its own reproduction and regression scope) and goes through Q20; three blocked partial dones trip `done:<sha>` and the replan exit ends the run. A QuixBugs solve is `patch → run(complete)` = 2 steps; a code-oracle repository solve `patch → run(complete)` = 2 (+ 1 repro step when L2 ran); an LLM-oracle repository run ends `patch → run → done(partial)`.
+
+---
+
+## 7. Speed plan *(rev 2: overlaps corrected; figures conditional on the probe)*
+
+### 7.1 What overlaps (new work; the inner loop is strictly sequential today)
+
+(1) L1 sample 0 starts with the top-site SEEDS batch (QuixBugs/ladder class) and the full round starts right after `locate` (repository class); it is awaited only when the batch returns without a passer. (2) **Repository step 1 order:** oracle (1–6 s, or L2 ≤ 20 s + 2 base runs) → locate (1–1.5 s, chunks concurrent) → scope → **[scoped baseline 11–100 s ‖ L1 round ‖ reproduction runs of arriving candidates on 4 lanes]** → confirmation re-runs → scoped regressions for ≤ 5 passers (need the baseline). The scoped baseline cannot overlap the oracle or locate (`moduleFiles` depend on them, `index.ts:1104-1109`). (3) Localisation chunks are concurrent (≤ 8-way). (4) Lanes run `oracle.lanes` candidates at once; worktree lanes are created with `Promise.all` (measured first, open question 8). (5) N samples are N concurrent requests with their own `AbortController`s; samples are enqueued on arrival through the awaitable queue. (6) The previous step's checkpoint write overlaps the next step. (7) The race with cancellation means the step never pays seeds + LLM serially; the grace adds ≤ 6 s only when a seed passer lands while sample 0 is still running.
+
+### 7.2 What is skipped (per step, vs jev-on)
+
+Intent and context requests (−0.68 s, −$0.0012); risk request on verified proposals (−0.23 s and the 30–50 % of steps jev-on lost to refusals); judge request as a gate (Q21/Q22 recorded, −0 s but no plan disagreement); the establishing engine run (−1 step, −11–100 s on repositories); chunked Q9 ranking of mutation sets at repository sites; SKETCH/BEAM whenever an LLM round is available (−3.3 s and −$0.0037 per beam line); every `read` step; the `done` step on a green claiming run; plan re-emission in the tool output (−≈ 1,000 output tokens ≈ −15 s per GLM call at the QuixBugs 14.7 ms/token — the single largest lever the QuixBugs run exposes; **on ladder the intercept dominates and this lever buys less, §1.2**).
+
+### 7.3 Per-step wall, QuixBugs class (8 `candidate_file` lanes, `t_run` 0.1–0.4 s) — conditional on the probe's round p50 (`R`)
+
+| Step | Arithmetic | p50 (R ≈ 6 s) | p50 (R ≈ 12 s) | p90 |
+|---|---|---|---|---|
+| patch, seeds win at site 1 (Q5 top-1 28/40 → ≈ 70 % of the ≈ 25/36 seed-solvable sets) | git status 0.015 + baseline 0.3 (step 1) + Q5 0.18 + seeds 3.8 + grace (until sample 0 or 6 s) + LLM cands ≤ 3 × 0.25 / 8 + arbitration 0–0.25 + apply 0.05 + commit 0.025 | **≈ 6–7 s** (≈ 4.5 s with `LLM_GRACE_MS = 0`) | ≈ 10 s (grace expires) | ≈ 11 s |
+| patch, seeds win at site 2–3 (≈ 30 %) | as above with seeds 4–12 s; sample 0 has landed by then, no grace | **≈ 8–13 s** | ≈ 8–13 s | ≈ 15 s |
+| patch, LLM needed (≈ 11/36) | 0.18 + seeds site 1 ≈ 3.8 → samples 1..3 fire → max(seeds sites 2–3, R) + 0.4 + guard + apply | **≈ 10–14 s** | ≈ 16–20 s | ≈ 21–24 s (deadline-bound) |
+| claiming run (completion fires here) | exec 0.2–1 + Q21/Q22 (recorded, one request) 0.2 + commit 0.03 | **≈ 0.7–1.5 s** | same | 2 s |
+
+Task: 2 steps ≈ **7–10 s median** at R ≈ 6 s, ≈ **9–14 s** at R ≈ 12 s (jev-only 37.7 s median paid the establishing run and WIDENED; **jev-off GLM measured 124 s median** on 10 programs). Ratio ≈ 9–17× at R ≈ 6 s, ≈ 9–13× at R ≈ 12 s — criterion 3 holds either way. **Ladder:** 1 patch + 1 run per goal, 3–5 goals ≈ 6–10 steps ≈ **50–120 s** conditional on the probe (the ladder run's ≈ 15 s intercept, if it is queueing at the endpoint rather than plan length, puts every LLM-needed step at ≈ 20 s); vs jev-off GLM measured **304 s median over the 12 short-tier tasks** (112 s over solved). Ratio ≈ 2.5–6×; criterion 3 (≤ 0.5×) holds at the pessimistic end only if fewer than ≈ 40 % of goals need the LLM — the seed win rate on ladder (12/12 short-tier solved by seeds alone) says they will not.
+
+### 7.4 Per-step wall, repository class (4 worktree lanes, repro 1–3 s, scoped suite 11–100 s)
+
+| Step | Arithmetic | Range |
+|---|---|---|
+| step 1 (patch) | oracle 1–6 s (L2 ≤ 20 s + 2 base runs when needed) → locate 1.5 s → max(scoped baseline 11–100 s, R 6–30 s + repro sieve ceil(6/4) × (1–3 s × 2) ≈ 4–12 s) + confirmation ≈ 2 s + ≤ 5 passers' scoped regression / 4 lanes ≈ 1–2 × (11–100 s) + guard 0.2 s | **0.5–5 min** (median ≈ 1.5 min; test-bound) |
+| claiming run (scoped command) | 11–100 s + 0.2 s | 0.2–1.7 min |
+| feedback step (when needed) | L1′ ≤ 30 s + sieve 4–12 s + regressions | 0.5–3 min |
+
+Task ≈ 2–4 steps, **1–7 min**, vs jev-off Sonnet 142 s mean at 22 steps and jev-off GLM (**unmeasured**; the §10 run measures it). Faster on pytest/requests/pylint-class scopes (3–20 s), parity or slower on Django 100 s scopes — stated (§11 c).
+
+### 7.5 Timing buckets and the Jev share *(rev 2)*
+
+`harnessMs = total − generatorMs − jevMs − execMs − confirmMs` (`engine.ts:2325`) double-counts under concurrency (L1 ‖ lanes ‖ Jev chunks). In `llm-jev`: `StepTiming.synthMs` = wall of `synthesize()`; `harnessMs = total − synthMs − execMs − confirmMs − shellJevMs`; inside `synthMs` the trace reports **sub-buckets that are not subtracted from `total`**: `synth.generatorMs` (batch wall), `synth.jevMs` (sum of request latencies), `synth.laneMs` (sum of lane run walls), `synth.graceMs`. "Jev share" = (`shellJevMs` + `synth.jevMs`) / `total`, an upper bound (requests overlap). Bench p50 237 ms / p95 547 ms per request; shell 0–1 request per step, synthesizer 1–3 (QuixBugs) / 5–12 (repository step 1) → ≈ 0.2–0.6 s per step, ≈ 5–10 % of wall.
+
+---
+
+## 8. Budgets and costs *(rev 2: recomputed from the checked-in artifacts; cancelled samples at full price; stagger)*
+
+GLM served $0.15/M in, $0.50/M out; Jev $0.042/M in; measured jev-off GLM per call $0.00126 (QuixBugs) and $0.00079 (ladder, $0.139 / 176).
+
+### 8.1 Per LLM sample and per round
+
+| Item | Tokens | $ |
+|---|---|---|
+| L1 sample, QuixBugs/ladder class | ≈ 3.5k in + 300 out | $0.00053 + $0.00015 ≈ **$0.0007** |
+| L1 sample, repository class | ≈ 5.5k in + 400 out | ≈ **$0.001** |
+| cancelled sample | **booked at the full sample price** until §10.2 item 5 shows what the endpoint bills | $0.0007 / $0.001 |
+| L1 round, QuixBugs class, seeds win (sample 0 only) | 1 sample | **$0.0007** |
+| L1 round, QuixBugs class, seeds miss (1 + 3 samples) | 4 samples | $0.0028 |
+| L1 round, ladder class (1 + 2) | 1 / 3 samples | $0.0007 / $0.0021 |
+| L1 round, repository class | N = 6 / 4 | $0.006 / $0.004 |
+| L2 reproduction round | 3 × (3.5k in + 500 out) | ≈ $0.0024 |
+| per-step cap | `llmUsdLeft = min($0.02, spend left / steps left)` | ≤ $0.02 |
+
+### 8.2 Per step, Jev
+
+QuixBugs/ladder class ≈ $0.0003 per patch step (Q5/Q5n one request ≈ 1.2k tokens; Q15/Q16 ≈ $0.001 only across distinct clusters; Q1 ≈ $0.0001 with ≥ 2 goals) + ≈ $0.0001 on the claiming run (Q21/Q22 recorded). Repository step 1 ≈ $0.004–0.006 (Q2 chunks $0.0011, Q3/Q4 ≈ $0.001, Q17 ≈ $0.0003 when asked, Q18 ≈ $0.0005, Q15/Q16 ≈ $0.001). The jev-only ladder bill ($0.016/task) was driven by 8.35 steps/task with SKETCH/BEAM/WIDENED, not by Q5n; both are gated or absent here.
+
+### 8.3 Per task, expected vs baseline (baseline cells from `summary.json`/`tasks.jsonl`)
+
+| Suite | `llm-jev` expected | jev-off GLM measured | Ratio raw $ | Ratio $ / solved | Criterion 4 bar |
+|---|---|---|---|---|---|
+| QuixBugs (40) | Jev ≈ $0.001 (2 steps) + LLM: sample 0 on every program $0.0007; +3 samples on ≈ 11/36 ($0.0021) and L1′ on ≈ 4/36 ($0.0028) → mean ≈ $0.0016 → **≈ $0.0025–0.003** per task; at 38–39/40 ≈ **$0.0027–0.0032 per solved** | **$0.0093** per task, **$0.0133** per solved (7/10) | ≈ 0.3× | ≈ 0.2–0.25× | ≤ 1.0× raw, ≤ 0.75× per solved |
+| ladder (20) | 3–5 goals × (Jev $0.0004 + LLM 0.7 × $0.0007 + 0.3 × $0.0021 ≈ $0.0011) + Q15 ≈ $0.001 + claiming runs → **≈ $0.006–0.009** per task (short tier); long tier ≈ 2× (more goals, L1′) → **≈ $0.008–0.014** over 20; at 16–17/20 ≈ **$0.010–0.017 per solved** | **$0.0116** per task, **$0.0155** per solved (9/12, short tier only; long tier unmeasured) | ≈ 0.7–1.2× | ≈ 0.65–1.1× | ≤ 1.0× raw, ≤ 0.9× per solved — **parity-to-modest-win; stated as such** |
+| SWE-bench (30) | Jev ≈ $0.02–0.03 + L2 $0.0024 on ≈ 21/30 + 2–3 rounds × $0.006 → **≈ $0.04–0.05** per task; at a 10/30 target ≈ $0.14 per solved | **unmeasured**; est. 24 steps × (13k in + 1k out) ≈ $0.06–0.07 at the cap, ≈ $0.4 per solved at 5/30 | ≈ 0.7× (est.) | ≈ 0.35× (est.) | ≤ 1.0× raw, ≤ 0.75× per solved |
+
+Cent-scale suites cannot show cost dominance in raw dollars whatever the design does; the pre-registered bars reflect that, and the report prints both ratios with the per-task table.
+
+### 8.4 Run-level limits
+
+**Identical per suite in every arm** (`--task-cap` was $0.06 in the checked-in QuixBugs run, $0.10 in ladder): QuixBugs `--max-steps 12 --max-wall 8m --task-cap $0.10`; ladder 25 steps / 12 min / $0.10 (the checked-in run's limits); SWE 25 steps / 20 min / $0.50. `defaultRunSpendCapUsd(mode)` (`config/ui.ts:82`) gains an `llm-jev` value ($0.50). Unpriced usage stops the run (`budget:unpriced`) as today; `UNPRICED_TOKENS_PER_USD` is re-derived from the GLM blended rate (open item, map §5.2).
+
+---
+
+## 9. Integration
+
+### 9.1 Reused unchanged
+
+`src/synth/sieve/lanes.ts`, `oracle/verify.ts` (queue contract extended additively), `search/guard.ts` `arbitrate`/`clusterByBehaviour` (one representative rule added), `search/bases.ts` (except `SOURCE_NAMES`), `search/goals.ts`, `search/memory.ts` (plus the `llm` key), `localize/*`, `mutate/*`, `templates/*`, `donor/*`, `history/*`, `introspect/*`, `sketch/*`, `fill/*`, `beam/*`, `verify/*` (except the `llm` span rule), `py/*`, `jev/*`, `loop/plan.ts`, `loop/loopdetect.ts`, `loop/window.ts`, `checkpoint/*`, `workspace/*`, `sandbox/*`, `src/loop/generator-only.ts` (**the jev-off baseline must not move; its generation parameters are pinned per condition, §10.1**), the `jev-on`/`jev-off`/`jev-only` code paths.
+
+### 9.2 Changes, in implementation order (each stage leaves the tree green; LOC = added/changed excluding tests) *(rev 2: omissions filled)*
+
+**Stage 1 — Sanctioned generator channel, mode plumbing, code-fact stages (~420 LOC).**
+- `src/core/types.ts`: `EngineMode += 'llm-jev'` (`:373`); `SynthesisContext.generate?: (req, o: {sample: number; purpose: 'propose_fix'|'write_reproduction'; signal: AbortSignal}) => Promise<GenerateResult>` (`:1044`); `GenerateRequest += seed?, reasoning?, providerPrefs?` (`:421`); `GenerateResult.generationId?`; `GenerateOptions.sample?` (`:454`); `TokenUsage.reasoningTokens?, estimated?`; `GeneratorCallRecord += sample?, purpose?, reasoningTokens?, cancelled?, generationId?` (`:871`); `generator:start/delta/tool-delta/end` gain `sample?` (`:1125-1128`); `ProposalEvidence.selection: 'sieve'|'rank'|'llm'`, `ProposalEvidence.completion?` (`:52-69`); `JudgeResult.source?: 'code'|'jev'` (`:290`); `StepTiming.synthMs?` (`:308`); `StepRecord.verify?: {samples, distinct, malformed, timeouts, cancelled, misanchored, candidatesTested, passers, partials, graceMs, localisationMissed}` (`:321`); `StageName` unchanged.
+- `src/loop/engine.ts`: `synthesisContext()` (`:1627`) exposes `generate` bound to `this.generate(draft, req, attempt, {sample, purpose, signal})`; `generate()` (`:1717`) keeps the `jev-only` throw, links the per-sample signal, catches per-sample aborts into `recordCancelledSample()` (estimated usage → `meter.add`, record, event), records per-sample rows with the request's temperature (`:1755`), keys `retryHooks` per sample, `draft.timing.generatorMs` = batch wall; propose dispatch (`:1817-1826`) → `runSynthStage` for `mode === 'jev-only' || mode === 'llm-jev'`, followed by `flushGeneratorRecords`; every `usesJev()`-guarded intent/context/judge branch skips in `llm-jev` (`draft.intent` code-derived, `contextFiles = []`); judge branch = code (§3 row 7) with `draft.claimProbabilities` set; commit adds `isCompleteByFact` from `evidence.completion`; `generator_done` (`:1947`) also applies when `draft.proposer === 'generic'` (§9.4); timing per §7.5.
+- `src/loop/stages/risk.ts`: `verifiedPatchOk(proposal, targets)`, `recoverableRevertOk`, and the `isVerificationRun`/`completionVerifiedByRun` branches **before** `ctx.ask` in `runRiskStage (:491)`, returning `assessRisk({}, 1, intent, {texts})` with `verdict: 'ok'` and an evidence reason; `harmOnlyQuestions()` = the two Scores for the unverified cases with `gating = HARM_DIMENSIONS` (~90 LOC).
+- `src/loop/stages/judge.ts`: `codeJudge(run, claims, ledgerGoals)` (~40 LOC); Q21/Q22 asked as `recordOnly`.
+- `src/provider/prompts.ts:101-104, :275`: an `llm-jev` reviewer sentence for the generic fallback ("verified in shadow lanes; unverified actions are gated on harm only"); `src/config/{types,defaults,resolve,validate}.ts`: `--mode llm-jev`; **`resolve.ts:362`** (`m === 'jev-off' || m === 'jev-only' ? m : 'jev-on'`) gains the member; `config/ui.ts:82` spend-cap default; `src/cli/args.ts:282-284` (`CONDITIONS`, `MODES`); `src/tui/commands/registry.ts:68 ENGINE_MODES` and `LLM_STATE_MODE (:71)`, the `/mode` badge in `dispatch.ts`; `src/tui/onboarding/reducer.ts:195, 209` (needs both keys in `llm-jev`); `src/cli/session.ts:1694-1697, 2019-2022` (real provider **and** synthesizer in `llm-jev`); defaults `LLM_SAMPLES_QUIXBUGS 4`, `LLM_SAMPLES_LADDER 3`, `LLM_SAMPLES_REPO 6`, `LLM_STAGGER true`, `LLM_ROUNDS_PER_STEP 2`, `LLM_GRACE_MS 6000`, `LLM_SAMPLE_DEADLINE_MS {min 10000, max 20000, repo 30000}`, `LLM_STEP_USD_MAX 0.02`, `LLM_MAX_TOKENS 1500`.
+- `src/tui/useEngine.tsx:886-932`: the live buffer keys on `sample` — sample 0 streams, a `k/N` counter shows the rest.
+- Tests: `test/unit/loop/engine-session.test.ts` (mode dispatch; no intent/context requests; per-sample records incl. a cancelled estimate; batch-wall timing), `test/unit/loop/risk.test.ts` (`verifiedPatchOk` before ask, synthetic dims, harm-only), `test/unit/loop/judge.test.ts` (code judge, claim acceptance), `test/unit/config/resolve.test.ts` (mode parsing, spend default).
+
+**Stage 2 — Provider details for GLM (~90 LOC).** `src/provider/openrouter.ts buildOpenRouterBody` maps `seed`, `reasoning`, `provider.require_parameters`; `consumeStream` records `reasoning_tokens`, the response `provider` and the chunk `id`; `anthropic.ts` ignores the new fields. Tests: body assertions; one GLM SSE fixture with `finish_reason: length`, `reasoning_tokens` and an `id`.
+
+**Stage 3 — The LLM source (~1,000 LOC, all new under `src/synth/llm/`).**
+- `schema.ts` (~80): `PROPOSE_FIX_TOOL`, `WRITE_REPRODUCTION_TOOL`.
+- `prompt.ts` (~230): `buildFixSystemPrompt()`, `buildFixUserMessage({goal, task, failures, traceback, listings, outlines, attempts, partial, hint})` with `PROMPT_LIMITS_FIX`; listing set = traceback-frame functions ∪ Jev anchors; h1 gating.
+- `candidates.ts` (~300): validation, three-tier anchoring, block-anchored `Site.span`, deletion as `delete` edits, `extraEdits`, dry-run `applyCandidate`, temp-file `ast.parse` through `ctx.sandbox.run`, dedupe, `AttemptRecord` ledger from `VerifyOutcome`, `reanchorLlmSite(site, base)` by text.
+- `source.ts` (~260): `createLlmSource(): {fire(input), collect(), cancel()}`; stagger schedule; per-sample `AbortController` linked to `ctx.signal`; deadlines; on-arrival parsing into the awaitable queue; cache in `mem.llm`; budget charging incl. cancelled estimates.
+- `rank.ts` (~90): Q17 builders (order only), fix-absent signals recorded.
+- `repro.ts` (~200): L2 → chunking → base ×2 → issue-quote check → Q18 → `ReproGoal` via `oracle/goal.ts reproductionGoal`; `OracleOutcome += llm_valid|llm_weak`; persisted in `RepositoryMode.repro`.
+- Tests: `test/unit/synth/llm/{candidates,source,rank,repro}.test.ts` with `MockProvider` function-form turns for per-sample scripting; anchoring on duplicate lines, dedenting blocks, deletion hunks, misanchored, `length` drop, deadline timeout, cancellation with estimate, stagger.
+
+**Stage 4 — Wiring into the search (~420 LOC changed).**
+- `src/synth/types.ts:59`: `CandidateSourceName += 'llm'`; **`EnumerateOptions.phase (:117)` literal union += `'LLM'`**; the four exhaustive records: `subgoal.ts emptyBySource`, `queue.ts SOURCE_ORDER_PRIOR :58` (`llm: 0.35`), `bases.ts SOURCE_NAMES`, `SearchTrace.bySource`; `subgoal.test.ts`.
+- `src/synth/search/types.ts`: `Phase += 'LLM'`, `PHASES`; `StepBudget += llmRoundsLeft, llmSamplesLeft, llmUsdLeft`; `exhaustedKey` suffix `#LLM`.
+- `src/synth/sieve/queue.ts`: awaitable `JobQueue.next()/close()`; vocabulary bypass for `llm`. `src/synth/sieve/runner.ts`: worker awaits `next()`; `RunnerMemory.passersThisStep` replaces the local `passers (:512)`. `src/synth/oracle/verify.ts runRepositoryQueue`: same two changes.
+- `src/synth/verify/apply.ts:113-126`: span validation by `Site.span.textSha` when present; `subgoal.ts siteOnBase (:371)`: text re-anchor for `llm` sites.
+- `src/synth/search/budget.ts`: `freshBudget` fills the LLM counters; `decideLlmN(oracle, budget, class)`.
+- `src/synth/search/subgoal.ts`: `SubGoalDeps.llm?`; **fire in `searchSubGoal (:948)` after `locate` and in `searchBestGuess (:1067)`**; `visitSeedBatch (:821)` signals "top-site batch returned without a passer" to release samples 1..N−1; the controller buffers seed outcomes and calls `decide` once over the union (§6.2); `visitSource` gains an `'llm'` branch (SIEVE → awaitable queue; RANK → Q17 order instead of `deps.rank`, which throws on off-site candidates); class-dependent job `p` (§6.1); `orderSources('LLM') = ['llm']`; SKETCH/BEAM gated on `llmRoundsLeft === 0`; strong/weak fix-absent as routing after runs; **`mutation` added to `goal.exhausted` at repository sites when skipped** (so `sieveHoldApplies (guard.ts:700)` does not hold template/donor passers to step end).
+- `src/synth/search/guard.ts`: `preferLlmInCluster` representative rule in `clusterByBehaviour (:193)`/`representativesOf (:402)`; `llm` before `byEditCost` on Choice ties (`:527`).
+- `src/synth/search/proposal.ts`: `proposePatch(..., {maxFiles})` (`MAX_PATCH_FILES :40` stays 2 for code sources); `selectionOf :215` → `'llm'`; `completionEvidence(mem)` from `doneReadiness (:614)` on the claiming run; `proposeRevert(mem)` from `mem.committed.at(-1)`.
+- `src/synth/search/index.ts`: `llm-jev` flag via `SynthesizerOptions`: skip the establishing run (`engineNeedsRun :206` branch at `:591`); repository step-1 order of §7.1 with `Promise.all` over [baseline, L1, repro runs]; L2 before best-guess when `ctx.generate` exists; skip mutation-set ranking at repository sites; revert trigger (§6.5) and `rollbackUnexecutedPatch (:845-877)` for a blocked revert; sha256 baseline adoption; `evidence.completion` on the claiming run; `revert_last_change` proposal.
+- `src/synth/index.ts createSubGoalDeps`, `createSynthesizer`: wire `llm` when `ctx.generate` exists; `handles(workspaceInfo, files)` (§9.4).
+- `src/synth/rank/index.ts:60-66`: **full-criteria Nouls in chunks ≤ 50 for 11–150 candidates** (only compact `contextNoul` exists above `CHOICE_MAX_CANDIDATES` today); `src/synth/search/sites.ts:115` Q6 fallback batched into one request per state.
+- Tests: `test/unit/synth/search/{subgoal,controller,proposal-evidence,guard-llm}.test.ts` with a fake `llm` source in `controller-fakes.ts` (race: seeds win/LLM wins/both pass same cluster → LLM; distinct clusters → Q15; grace 0 vs 6 s; deadline; stagger release; repository fire point), `rank-additions.test.ts` (order only), `budget.test.ts`, `queue-await.test.ts`, `runner-passers.test.ts`.
+
+**Stage 5 — Bench, arms and measurement (~260 LOC).** `src/bench/conditions.ts:12,30,49` (`CONDITION_ORDER += 'llm-jev', 'llm-sieve', 'jev-off-tuned'`; `requiresGenerator` true for all three; `conditionConfig` records `proposer`, the pinned **per-condition generation parameters** — `jev-off`: `{temperature: null, maxTokens: 4096, reasoning: none}` as the checked-in runs; `jev-off-tuned`: `{maxTokens: 1500, reasoning: {enabled:false}, sampleDeadlineMs: 20000, lengthHandling: 'double-once'}` — and the served rate); `src/bench/cli.ts:36` reads generation **per condition**, never from the user config for `jev-off`; `src/bench/runner.ts:61,250,503-521` (provider + decider + synthesizer wiring; `llm-sieve` = the synthesizer with a `Decider` that answers nothing and every Jev question replaced by its code default — traceback-frame listings, arrival-order runs, min-edit tie-break with the LLM-preferred rule; the `JEV_ONLY_GENERATOR_CALLED` invalidation stays `jev-only`-only); `src/bench/metrics.ts` (rows `llmCalls`, `samples`, `distinct`, `malformed`, `timeouts`, `cancelled`, `estimatedUsd`, `candidatesTested`, `plausible`, `refusedSteps`, `synthMs` + sub-buckets, `costPerSolved`, `graceMs`, `localisationMissed`, `l2FalsePositive`); `src/bench/report.ts` prose; `os.loadavg()` into `run.json`; `experiments/llm-jev/{baseline-table,glm-probe,ql1-probe,cancel-probe}.mts` (§10.2).
+
+**Stage 6 — Docs and stale defaults (~40 LOC).** `.env.example:1-4`, `docs/DESIGN.md:90`, `README.md:69`, `src/cli/login.ts:162`, `src/tui/onboarding/lines.ts:105,212`, `src/cli/session.ts:1290`, `src/cli/args.ts:722` (map §5.2 stale list).
+
+**Total ≈ 2,300 LOC new/changed + ≈ 550 LOC tests (deliberately few, per the brief).** Order: 1 → 2 → probes (§10.2) → 3 → 4 → QuixBugs head-to-head (4 arms) → 5 → ladder → SWE → 6. Realistic first sitting: stages 1–4 on QuixBugs/ladder class; SWE after the probes and the QuixBugs numbers.
+
+### 9.3 Contract changes summarised *(rev 2)*
+
+All additive: optional fields on `SynthesisContext`, `GenerateRequest`, `GenerateResult`, `GenerateOptions`, `GeneratorCallRecord`, `TokenUsage`, `StepTiming`, `StepRecord`, `JudgeResult`, `ProposalEvidence` (`selection: 'llm'`, `completion`); one new `EngineMode` member (with every enumeration site of §9.2 stage 1); one new `CandidateSourceName`; `EnumerateOptions.phase` union member; `OracleOutcome` two members; `JobQueue.next/close`. **TUI contract changes (small, additive):** `generator:*` events carry `sample?`; `/mode llm-jev` joins `ENGINE_MODES` and the badge; the onboarding wizard requires both keys in this mode; the intent line shows `verdict: 'code'`. Checkpoint format unchanged except `synthState` content (`tried` + `llm` cache ≤ 4 KB, under the 64 KB cap).
+
+### 9.4 `handles()` and the generic fallback (graft, Salvo) *(rev 2: specified)*
+
+`Synthesizer.handles(workspaceInfo, files)` is true when the workspace has Python files and either a detected pytest/QuixBugs runner or a repository with an issue oracle candidate. When false (non-Python, no tests, feature work), the engine falls back per step to `runProposeStage` (one `propose_action` sample) with `draft.proposer = 'generic'`: the system prompt is the `llm-jev` variant (§9.2 stage 1), plan claims take **verbatim** evidence (`commit()`'s `jev-off` branch at `engine.ts:2267` keyed on the flag, not the mode), risk is Q20 harm-only on `run`/`write`/`edit` and code `ok` on `read`, judge is code, and a `done` stops the run as `generator_done` (`:1947`, keyed on the flag). Recorded as `proposer: 'generic'` in the StepRecord and the bench column. Outside the dominance claim; not benchmarked here.
+
+---
+
+## 10. Head-to-head measurement plan *(rev 2: four arms; statistics; probes)*
+
+### 10.1 Conditions
+
+Same tasks, same generator `openrouter z-ai/glm-5.3-flash` (routing pinned to the served provider the probe records), same Jev `typesafe/jev-1.13-20260917` (aliases refused), same limits per suite (§8.4), sandbox `auto`, bench confirmer declines, concurrency 2, `os.loadavg()` recorded, machine otherwise idle. Arms:
+
+| Arm | What it is | Role |
+|---|---|---|
+| **`jev-off`** | today's `generator-only.ts`, generation pinned `{temperature: null, maxTokens: 4096}`, no `reasoning`, no deadline — exactly the checked-in runs | **the baseline of criteria 1–4** (the user's stated comparison) |
+| **`jev-off-tuned`** | the same loop with the generator hygiene of §4 applied where the action grammar allows: `max_tokens 1,500` + `reasoning: {enabled:false}`, per-call 20/30 s deadline with drop-not-retry, `length` → double once, plan section capped at 200 chars | attribution control: how much of the wall gain is hygiene alone |
+| **`llm-sieve`** | `llm-jev` with **zero Jev requests**: listings from traceback frames + the failing tests' imports (code), samples run in arrival order, lone passer commits, same-cluster → LLM, distinct clusters → the LLM candidate with most agreement else min-edit, no L2 (code oracle only), completion fact unchanged | attribution control: **criterion 5** |
+| **`llm-jev`** | this design | the candidate |
+
+The checked-in `jev-only` finals are the no-generator reference (not re-run). `jev-on` runs on QuixBugs only (≈ $0.40) as the A/B control for the old loop.
+
+### 10.2 Pre-bench gates (≈ $0.35, 45 min) — everything above is conditional on these
+
+1. **GLM loop probe** (`glm-probe.mts`): 30 `propose_fix` calls on 10 real prompts (5 QuixBugs, 5 SWE) × {`reasoning: {enabled:false}`, `{effort:'low'}`, none}: valid-sample rate (target ≥ 90 %), `finish_reason` distribution at `max_tokens 1,500`, latency fit `a + b × output_tokens` **and the intercept `a`** (the ladder run says it may be ≈ 15 s — if so, §7.3's second column applies), `reasoning_tokens`, `cached_tokens` across 4 parallel samples of one prompt, response `provider`, `usage.cost`. Decides the `reasoning` flag, `max_tokens`, the first-round deadline (p90), and the planning `R` for §7.
+2. **Anchoring probe:** the same 30 samples anchored by `candidates.ts`; misanchored rate (target ≤ 10 %; > 30 % → `near_line` required and re-probe); dedenting-block and deletion cases included.
+3. **Arbitration probe** (`ql1-probe.mts`, ≈ $0.08): (a) Q17 Choice + Nouls over 6 GLM samples + gold for 20 labelled items (10 QuixBugs, 10 ladder/SWE multi-hunk): top-1/top-3 → K = 3 vs 5 and whether Q17 earns its keep; (b) **Q15/Q16 over (seed line, LLM hunk) pairs** from the jev-only overfit programs (`grades`, `stats`, `textstats`, `units`, `ledger5`, the 2 QuixBugs overfits) plus 8 gold-equivalent pairs: does Jev prefer the correct member across distinct clusters?
+4. **Diversity:** distinct diffs per round on the probe prompts (target ≥ 50 %).
+5. **Cancellation billing probe** (`cancel-probe.mts`, ≈ $0.02): 6 samples aborted at 2 s; `GET /api/v1/generation?id=` read back after 60 s; the ratio billed/estimated fixes the cancelled-sample accounting (§8.1 books full price until this says otherwise).
+
+### 10.3 Suites and tasks (90 paired tasks, 4 arms)
+
+QuixBugs 40 (`bench/data/quixbugs`; every arm on all 40); ladder 20 (`bench/data/ladder`, **12 short + 8 long — the long tier is run for every arm; jev-off's long-tier rate is measured, not extrapolated**); SWE-bench Verified 30 (`bench/data/swebench-verified-30.json`, local-venv evaluator). **QuixBugs runs twice per arm** (±2 programs is run-to-run noise); the second `llm-jev` run uses `LLM_GRACE_MS = 0` so the grace is priced in correct-by-verdict and wall.
+
+### 10.4 Metrics (all from `tasks.jsonl` + run directories, paired over tasks evaluated in every arm; the baseline table of §1.2 is regenerated by the same script)
+
+Pass (evaluator); **correct-by-verdict** (`quixbugs-verdicts.mts` gold-identical/equivalent/overfit on 500-instance differentials, `ladder-verdicts.mts`; SWE = pass) on every arm's patches; steps used and steps-to-solve; agent wall per task (median over all tasks and mean, evaluator excluded) with the `synthMs`/`shellJevMs`/`execMs`/`harnessMs` split and the `synth.*` sub-buckets; $ per task and **$ per solved task**, generator (served `usage.cost`, with `estimatedUsd` shown separately) and Jev; refused steps; generator calls, samples, distinct, malformed, `length`, timeouts, cancelled; Jev requests/questions/p50; sieve `candidatesTested`/`plausible`/`unstable`; **`localisationMissed`** (committed or gold hunk outside the listing set); **`l2FalsePositive`** (LLM reproduction fails at base, passes on a patch the evaluator rejects); `patchEmpty`; stop reasons; solve curve. **Per-question ablation** on the QuixBugs repeat and one SWE pass: `llm-jev` with Q17 disabled, with h1 disabled, with Q15/Q16 replaced by the code rule — each question's marginal steps-to-solve and correctness delta; questions at ≤ 0 are dropped from the shipped mode. Statistics: one-sided exact sign test on discordant pairs where §1.3 quotes one; one-sided Wilcoxon signed-rank on paired wall; **Wilson intervals** on every pass rate; per-task table.
+
+### 10.5 Flakiness
+
+Repository passers need a same-lane confirmation re-run (1/64 false pass); `unstable` candidates are never committed; the evaluator's F2P/P2P is the final arbiter and `passes-on-evaluator` is reported beside `correct-by-verdict`. Concurrency ≤ 2 and load recorded; a task whose lane `t_run` inflated > 4× its baseline is flagged `loaded`. Tasks excluded for `modelDrift` are listed. A QuixBugs program whose verdict flips between the two runs is `flaky` and counted as a miss in the criterion.
+
+### 10.6 Criterion
+
+§1.3, criteria 1–4 gate; criterion 5 gates the question set; the report names any that failed and prints the per-task table with all four arms.
+
+### 10.7 Spend and time
+
+Probes $0.35. `jev-off`: QuixBugs 2 × 40 × 5.4 × $0.00126 ≈ $0.55, ladder 20 × 12 × $0.0008 ≈ $0.20, SWE 30 × 24 × $0.0035 ≈ $2.50. `jev-off-tuned`: ≈ 60 % of that ≈ $2.0. `llm-sieve`: QuixBugs 2 × $0.12, ladder $0.2, SWE $0.6 ≈ $1.05. `llm-jev`: QuixBugs 2 × (Jev $0.04 + GLM $0.07) ≈ $0.22, ladder $0.08 + $0.14, SWE Jev $0.75 + GLM $0.6. **Total ≈ $8.5; bench cap $20.** Wall: probes 45 min; QuixBugs 4 arms × 2 runs × 40 tasks ≈ (2 × 124 + 2 × 60 + 4 × 15 s) × 40 / 2 ≈ 2.2 h; ladder 4 arms × 20 ≈ 1 h; SWE 4 arms × 30 × (360 + 240 + 300 + 300 s) / 2 ≈ 5 h plus local evaluation (overlapped) → **≈ 9 h, one machine, two sittings**, resumable per pair. Deliverables: `bench/results/llm-jev-{quixbugs,quixbugs-repeat,ladder,swebench}-1/{summary.json, comparison.md, tasks.jsonl, verdicts.md}` with all arms, and one DECISIONS entry with the five criterion values, the probe results and the ablation table.
+
+---
+
+## 11. Risks and the failure modes where `llm-jev` would not beat jev-off *(rev 2: rows o–r added)*
+
+| # | Failure mode | What happens instead | Mitigation / how it is measured |
+|---|---|---|---|
+| a | **GLM tail and validity at loop size** (valid p50 6–10 s, p90 24–37 s, max 367 s; 13–35 % malformed; 9–24 % `length` at 4,096) | a round without a deadline would sit on the critical path for minutes | plan-free tool + `max_tokens 1,500`; `reasoning` control; per-sample deadline; on-arrival consumption; N ≥ 3 on the LLM-needed path; malformed dropped not retried; the probe gates all of it |
+| b | **No oracle and no LLM-reproducible failure** | best-guess path: one LLM patch checked against the regression scope only, committed once, parked | quality ≈ one jev-off guess; fewer steps and dollars, no pass gain; ceiling = code oracle 9/30 + L2 |
+| c | **Slow suites** (Django 100 s scopes) | wall parity or worse than jev-off's quick unverified steps | `MAX_FULL_SUITE_RUNS_PER_STEP 5`, rank-ordered admission, 4 lanes; criterion 3 asks ≤ 1.0× mean wall on SWE |
+| d | **Fixes outside the shown code** | `need` and the widened round cover part; the rest parks | traceback frames always shown; `localisationMissed` is a first-class metric so the ceiling is visible; jev-off's free exploration may win these |
+| e | **Anchoring failures** on a flash-class model | misanchored samples drop, effective N shrinks | three-tier matcher + `near_line` + block-anchored spans; misanchored rate in the probe and the trace |
+| f | **Overfitting to weak oracles** (an LLM-written reproduction failing at base for the wrong reason) | a wrong patch can pass its own reproduction | issue-quote check, Q16 advisory, confirmation run, regression scope; **never completes a run**; `l2FalsePositive` reported; F2P is the ground truth |
+| g | **Guard min-edit bias**: a degenerate seed fix ties with a correct larger LLM fix | tests cannot separate them | `preferLlmInCluster` code rule; `llm` before `byEditCost` on ties; the (seed, LLM) pair probe; verdict scripts measure it |
+| h | **Sample collapse** (identical diffs at temperature 0.8) | N buys nothing | `distinct/samples` recorded; < 50 % → per-site hints |
+| i | **Load**: lane `t_run` inflates under two concurrent SWE tasks | verdicts flip, wall inflates | concurrency ≤ 2, load recorded, `loaded` flag |
+| j | **Provider failure**: schema not honoured, `reasoning` rejected, 429s on N parallel streams | round yields nothing → degrades to jev-only (39/40 QuixBugs, 4/30 SWE) | `require_parameters`, fenced-JSON fallback, `effort:'low'` fallback, probe; 429 → two waves |
+| k | **Non-Python / test-less / feature tasks** | generic fallback (§9.4) ≈ jev-off + harm gate | stated; outside the claim |
+| l | **Trivial tasks** jev-off solves in 2–3 steps | baseline + lane setup is overhead | small in absolute terms; SWE criterion is over tasks solved by both |
+| m | **Multi-hunk identity assumptions** in single-line machinery | an LLM partial may fail to re-anchor after a commit | block-anchored `Site.span` with text re-anchor; large partials re-derived after resume; unit tests on shifted bases |
+| n | **Bench accounting**: lane and LLM time in `harnessMs`; cancelled samples unmetered | wall split and $ misreported | `synthMs` + sub-buckets (§7.5); cancelled estimates + generation-id reconciliation (§4.8) |
+| o | **Attribution**: the wall and pass gains come from hygiene and shadow-lane verification, not from Jev | `llm-jev` beats `jev-off` but not `llm-sieve` | the two control arms and criterion 5; the ablation drops questions that do not earn their keep |
+| p | **Ladder cost parity**: both conditions cost about a cent | criterion 4's ladder bar (≤ 0.9× per solved) may fail by noise | N = 3 with stagger; Q21 recorded; SKETCH/BEAM gated; reported honestly as parity if it lands there |
+| q | **The ladder intercept is queueing at the endpoint** | every LLM-needed step costs ≈ 20 s, the grace always expires, the QuixBugs-derived margins halve | §7.3's second column; the probe's `a`; the stagger limits the waste to one sample |
+| r | **Q15 on (seed, LLM) pairs is worse than on same-line sets** | Jev prefers the seed across distinct clusters | probe 3(b); if < 8/10, distinct-cluster ties fall back to the code rule (LLM with agreement) and Q15 becomes advisory |
+
+---
+
+## 12. Open questions *(rev 2: 4 decided; 5, 12 folded into §10; new 14–16)*
+
+1. GLM at loop size with the plan-free tool: TTFT, tokens/s, the latency **intercept**, malformed rate under `reasoning: {enabled:false}` vs `effort:'low'`, and whether the served endpoint accepts `reasoning`/`seed`/`provider.require_parameters` at all. The probe fixes `R`; §7.3 gives both columns.
+2. Does OpenRouter apply implicit prompt caching to GLM across N parallel samples of one prefix? Costs assume none.
+3. Q17 accuracy on multi-hunk diffs — the 20-item probe decides K and whether Q17 survives the ablation.
+4. **Decided (rev 2):** repository completion = engine-executed scoped run ∧ synthesizer-executed workspace reproduction declared on `evidence.completion`; LLM-written oracles never complete a run.
+5. `LLM_GRACE_MS` 6 s: priced by the QuixBugs repeat (§10.3).
+6. The guard's `editCost` tie-break among test-equivalent passers of *different* sources is now settled by code (LLM first); among two code passers it stands; whether a repository-class behaviour probe is worth building remains open.
+7. `MAX_PATCH_FILES` 4 for LLM winners: `pairsOfPartials`, `commitProgress`, persisted partial bounds assume small edits.
+8. Parallel `git worktree add` for 4 lanes: `.git` lock contention on django/sympy.
+9. Should `llm-jev` become the CLI default for Python workspaces with tests? This design adds `--mode llm-jev` and keeps `jev-on` the default until the bench passes.
+10. Sample diversity at temperature 0.8 with seeds; whether per-site hints beat temperature.
+11. LLM-written reproductions have no gold check at run time; `l2FalsePositive` (§10.4) is the first measurement.
+12. Folded into §10.4 (per-question ablation).
+13. `UNPRICED_TOKENS_PER_USD` and the cache-rate derivation for GLM rows are Anthropic-shaped; harmless while `usage.cost` is present.
+14. What the z-ai endpoint bills for an aborted stream (§10.2 item 5) — decides whether the stagger is a cost lever or only a wall lever.
+15. Whether `llm-sieve` (no Jev) is within noise of `llm-jev` on QuixBugs/ladder — if it is, the shipped mode drops every question the ablation cannot defend and Jev's role narrows to repository localisation and L2 judgment.
+16. Whether the awaitable `JobQueue` changes `runQueue`'s measured 3.3 s / 137 candidates at 8 lanes (it should not; verified by the QuixBugs pair).
+
+---
+
+## 13. What is deliberately dropped from today's jev-on loop, and why
+
+| Dropped | Why (measured) | Replaced by |
+|---|---|---|
+| Intent stage (Choice + 5 paired Nouls + `plan_still_valid`) | paired-Noul medians 0.02–0.32 → 46 % fallbacks, 10 `finish→investigate` overrides, `intent:unresolved` trips burning `max_replans` | `draft.intent` code-derived from the proposal kind |
+| Context stage (`show:<path>` Nouls at a 0.5 cut, ≤ 300 candidates) | 71 % of jev-on's Jev cost, 486 ms p50, 1.33 files/step | the synthesizer holds every non-test `.py`; traceback frames + Jev Q2–Q6 define the listings |
+| Risk alignment Scores `out_of_scope`, `plan_mismatch` and the `matches_intent`/`evidence_consistent` Nouls | 100 % of jev-on's 223 refusals; no labelled set exists for plan judgment | code `ok` on verified evidence (before any Jev request); harm-only Q20 otherwise |
+| Judge Nouls `succeeded`, `error_present`, `new_information`; **`done_<j>` as a gate** *(rev 2)* | reported-only; `new_information ≥ 0.7` fired 2/40; `done_<j>` in the [0.3, 0.7) band on 21/55 live claims judges a fact code already holds | code judge on every step; Q21/Q22 recorded |
+| `task_complete ≥ 0.85` as the stop rule | 2/42 live answers ≥ 0.85, 0/497 in the bench | `isCompleteByFact()` on the engine-executed green claiming run + `evidence.completion` |
+| The LLM as planner: `propose_action` with `{goal, action, plan}` re-emitted every step | at 14.7 ms/output token the plan costs ≈ 15 s per QuixBugs call | the ledger's fixed grammar is the plan; the LLM emits ≤ 3 patches and a ≤ 200-char rationale |
+| `read`, `edit`, `write` actions from the LLM; `run` chosen by the LLM | jev-off spent 4.3 reads per SWE run and 517/718 steps on runs; unverified edits reached the workspace | the synthesizer reads everything; `patch` only after lanes pass; `run` is only the claiming/scoped command |
+| One sample per step, retried once on malformed with the same `max_tokens` | 13–35 % malformed on GLM, truncations retried blind | N parallel (staggered) samples, drop-not-retry, deadline, `length` → double once |
+| The establishing engine `run` at step 1 (jev-only) | existed for the `plan_mismatch` rubric, which is gone | lane baseline; verified patches are code-`ok` |
+| Chunked Q9 ranking of mutation sets at repository sites | 152/160 `none_of_these`; the right line never ran | LLM round at repository sites (marked exhausted so the guard does not hold) |
+| SKETCH/BEAM as the default second phase | 20/40 lines at $0.0037 and 3.3 s per line vs one GLM sample at ≈ $0.0007–0.001 | behind `llmRoundsLeft = 0` |
+| The `0.5` cuts the audit flagged as consumed decisions (`NOUL_ABSENT`, context select, oracle `PICK_THRESHOLD` where it gated) | REPORT §6 measured ±0.02 noise at 0.5 | routing margins (0.10 ∧ 0.3) after runs, rank cuts, 0.7 oracle strength |
+| **Any Jev prediction that withholds a test from a candidate** *(rev 2)* | Jev's escape on repository states is pathological (152/160) and "does this multi-hunk patch pass" is a derived fact | Q17 orders; every distinct sample runs when runs are available |
+| `PatchHistory` as a process-global map | empty after `--resume` | `tried` in `synthState`; `priorPatches` rebuilt from it |
+
+What is **not** dropped: the §9.1 step commit rule, the loop detector and its signatures, the replan stage on a trip, the budget order, the checkpoint/resume contract, the bench's model pinning and drift handling, every existing Jev question wording (Q1–Q16, Q19, Q21, Q22 reused verbatim; only Q17, Q18 and the harm-only form of Q20 are new texts), and the jev-off engine, which is the baseline and must not move.
+
+---
+
+## Rejected critiques (rev 2)
+
+1. **"Pre-register that `llm-jev` must beat `llm-sieve`, otherwise the Jev questions are cost" — taken as the gate on the question set, not as the primary criterion.** The user's stated requirement is dominance over the shipped generator-only mode; criteria 1–4 stay against `jev-off`. The two control arms and criterion 5 are added so the report can say *why* the mode won, and the ablation removes any question that does not pay — but a design that beats `jev-off` and only ties `llm-sieve` still meets the requirement and is reported as such.
+2. **"Drop the Q5n line Nouls (3.3× tokens) to cut ladder Jev cost" — rejected.** Q5/Q5n is one request of ≈ 1.2k tokens ≈ $0.00005; it supplies the 17/17 short-circuit and the anchor union that decides which functions the LLM sees. The jev-only ladder bill ($0.016/task) came from 8.35 steps/task with SKETCH/BEAM/WIDENED and the establishing run, all gone or gated here; §8.2/§8.3 recompute the ladder bill at ≈ $0.006–0.014 without touching Q5n.
+3. **"Require an issue-quoted *expected value* in the LLM reproduction" — taken in a weaker, checkable form.** Many issues state the expected behaviour in prose with no literal value. The check adopted is a verbatim `issue_quote` (≥ 6 consecutive tokens of the issue) that the script's assertion encodes, enforced in code before Q18 — plus the stronger rule that an LLM oracle never completes a run.
+4. **"Fill `succeeded/errorPresent/newInfo` with −1 when Q21/Q22 are not asked" — rejected in favour of computed values.** `JudgeResult` fields are probabilities the TUI renders; on `run` steps they are set from the parsed run (0/1) with `source: 'code'`, and on `patch`/`read`/`revert` steps `judge` is `null` (rule 3's existing shape). A −1 sentinel would leak into the pane and the plain renderer.
+5. **"Put the grace into `GuardMemory` as a new hold kind" — not taken; the controller-side buffer was chosen.** Both fix defect B4; the buffer keeps `decide()`'s contract (one call over a result set, `VerifyOutcome` only) intact and avoids a third `HeldPasser` state that `commitSuspect`/`gateHeldPartial` would have to learn.
+6. **"State the SWE cost ratio from a jev-off GLM estimate" — kept as an estimate, flagged.** No jev-off GLM SWE data exists (`glm-jev-off-swebench/tasks.jsonl` has `not_run`/`error` rows only); §8.3 marks the SWE baseline column *unmeasured* and §10 measures it rather than pretending to a number.
+7. **"Class-dependent `SOURCE_ORDER_PRIOR.llm`" — superseded.** SIEVE jobs are keyed by `sourcePriorAt(position)`, not by that table (`subgoal.ts:216, :394`), so the fix is the per-class job `p` of §6.1; the table entry `llm: 0.35` is kept only for the `jobFor` default path.

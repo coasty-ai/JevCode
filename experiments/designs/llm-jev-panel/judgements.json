@@ -1,0 +1,157 @@
+[
+ {
+  "scores": [
+   {
+    "design": "Foundry \u2014 llm-sieve mode: GLM as a CandidateSource inside the Ledger+Sieve engine",
+    "pass_rate_gain": 9,
+    "speed": 8,
+    "cost": 7,
+    "jev_rule_adherence": 8,
+    "implementation_risk": 5,
+    "measurability": 8,
+    "total": 45,
+    "strongest_idea": "Make the LLM one more CandidateSource in the existing Ledger+Sieve: Jev localises (Q2\u2013Q5, measured 23/30 gold-first, 36/40 line top-3), code seeds run first on lanes, an overlapped L1 round of N=3\u20136 plan-free `propose_patches` samples is prefetched behind the seed sieve (QuixBugs) or the scoped baseline (repos), every candidate of either source is test-classified before it touches the workspace, and the L1' feedback round receives the code-computed attempt ledger (newly failing ids with E lines, still-failing actuals, syntax/misanchor verdicts) instead of the LLM's recollection. Removing intent/context and making risk/judge code facts on verified proposals deletes the 3.75 requests/step and the 30\u201350 % refused steps that were the whole cost of jev-on, while `doneReadiness` keeps completion an engine-executed green run.",
+    "fatal_flaw": "Under the correctness lens the QuixBugs/ladder gains are jev-only's, not LLM+Jev's: SOURCE_ORDER_PRIOR puts code seeds (0.6/0.5/0.4) ahead of llm (0.35), a lone seed passer is committed at once and the in-flight LLM round is skipped, so Foundry inherits jev-only's overfits (2/40 QuixBugs, ladder 14/20 solved but only 9/20 correct) and the guard's min-edit tie-break can still pick a degenerate code fix over the LLM's correct larger one (the design's own django-15315 `return 0` example) \u2014 while the measured GLM jev-off wrote 7/7 gold-identical fixes. Two arithmetic/assumption defects compound it: pre-registered criterion 1 (pass \u2265 1.5\u00d7 jev-off on each suite) is unattainable on QuixBugs where jev-off GLM already scores 70 % (7/10 measured), and all wall/cost figures assume 3.5\u20136 s and ~400 output tokens per sample with no per-sample deadline, against a measured p50 of 7.9 s (p75 22 s) for completed GLM calls and 24 % `length` truncations; RANK-mode QL1 waits for the slowest of N. Scope (~2,000 LOC across a new EngineMode, bench/CLI/config, subgoal phases, budget, queue, proposal, engine dispatch) is the largest of the three."
+   },
+   {
+    "design": "FactGate \u2014 agentic GLM loop; Jev routes and gates on literal facts only; every change lane-verified; completion is a code fact",
+    "pass_rate_gain": 6,
+    "speed": 4,
+    "cost": 5,
+    "jev_rule_adherence": 9,
+    "implementation_risk": 6,
+    "measurability": 8,
+    "total": 38,
+    "strongest_idea": "Delete every Jev question that judges the LLM's plan or intent (intent, plan_still_valid, matches_intent, out_of_scope/plan_mismatch Scores, judge, task_complete, replan next_move \u2014 the source of 100 % of the 223 refusals and 46 % intent fallbacks) and keep exactly two request kinds: one merged step-start request (context Nouls consumed by rank, a route Choice over fact-named files with paired Nouls and a 0.10 margin \u2227 0.7 floor, env/unparsed fact Nouls) asked only when the facts changed (76.9 % reuse), and a harm-only 2-Score request on non-test `run` commands. Completion becomes `allPassed \u2227 testsCurrent \u2227 goalTests \u2286 passing \u2227 testsDirUntouched`, reverts of regressing commits are a code route from pre-images, identical diffs are answered from the tried-set for free, and the prompt carries tracebacks, before\u2192after counts and newlyFailing ids instead of stale-plan/rejected-claim noise. It is also the only design that stays workspace-general (any runner, non-Python, `inplace`/`copy` lanes) and keeps the LLM's freedom to install, inspect and write ad-hoc scripts on tasks the sieve cannot verify.",
+    "fatal_flaw": "The speed and cost case is built on an assumed GLM p50 of 1.5 s with the unchanged `propose_action` schema (full plan re-emitted every call, 71 % of output chars): the measured loop-scale GLM run today shows p50 7.9 s for completed calls, p75 22 s, p90 56 s and 24 % of calls truncated at 4,096 tokens, so a change step that awaits max-of-3 parallel samples lands at ~25\u201340 s, not 2.8 s, and the wall criterion (median \u2264 0.5\u00d7 jev-off) is at risk even against jev-off's measured 124 s median because FactGate still needs 1\u20132 LLM-bearing steps per solve. With no code seed sources, no line-level localisation and no pre-run Jev ranking, N=3 caps pass@N far below the sieve designs (jev-only reaches 39/40 QuixBugs; jev-off GLM is already 70 %), and the design concedes raw $ parity with jev-off (criterion c: raw $ \u2264 1.0\u00d7), failing the user's cost requirement. It also re-implements lane verification outside the sieve (~700 LOC duplicating queue/runner/guard/bases logic) and adopts lane evidence as the repository completion fact by sha256 equality rather than an engine-executed run, which JEV-ONLY \u00a75.5(1) and the \u00a79.1 spirit require (flagged as its own open question 4)."
+   },
+   {
+    "design": "Salvo \u2014 Best-of-N GLM candidates per Jev-localised site, Jev-ranked, lane-verified; jev-on rebuilt on the Ledger+Sieve controller",
+    "pass_rate_gain": 8,
+    "speed": 7,
+    "cost": 6,
+    "jev_rule_adherence": 8,
+    "implementation_risk": 5,
+    "measurability": 6,
+    "total": 40,
+    "strongest_idea": "Race the code seeds against the LLM salvo: on QuixBugs-class sites the mutation/template/donor SIEVE batch (137 candidates / 8 lanes \u2248 3.4 s) and N=8 plan-free, site-local 3\u20134k-token `propose_fix` calls start together, samples are parsed/anchored/compile-checked on arrival, and whichever produces a lone passer first wins while the loser is cancelled through linked AbortControllers (OpenRouter bills only consumed input) \u2014 so the LLM costs ~nothing when code finds the fix and adds no wall when it does not. On repositories one full-criteria Noul-per-candidate request per site (\u2264 50, the 39/40 top-1 form the audit found missing from the code) orders the queue before expensive test runs, and a strong/weak fix-absent signal (P(escape) \u2212 p_max \u2265 0.10 \u2227 max Noul < 0.3) routes to the next site or a hinted resample instead of spending runs; risk and completion are code facts, so the refusal and 25-step-cap losses of jev-on vanish.",
+    "fatal_flaw": "Repository steps fire 12 samples \u00d7 3 sites = 36 parallel GLM calls and the rank request is built only when the last sample lands: under the measured GLM tail (completed calls p90 56 s, `length` stops p50 26 s / p90 321 s, 24 % truncation) a step waits minutes, the '~3 s in-flight sample' overrun bound is off by an order of magnitude, and only K=3\u20135 of the 12 samples per site are ever tested, so ~60 % of the $0.024\u20130.045/step spend is discarded on Jev's unmeasured ranking of multi-hunk diffs. The design itself concedes repository cost at 0.6\u20131.0\u00d7 jev-off per task, which fails the user's cost requirement. Its measurement plan arrived truncated (criterion, spend, time and open questions unverifiable), it cites a wrong jev-only QuixBugs median (16 s; the checked-in final is 38.5 s) and credits 'seeds alone' with jev-only's 39/40 that included WIDENED/SKETCH/BEAM, and by staying inside `jev-on` with a `--proposer` flag it changes jev-on's default behaviour for every workspace (generic N=3 + Q14 path for non-Python, a question with no labelled accuracy) instead of adding a clean bench condition."
+   }
+  ],
+  "winner": "Foundry \u2014 llm-sieve mode: GLM-5.3-flash as a CandidateSource inside the Ledger+Sieve engine",
+  "grafts": [
+   "From Salvo: always fire the LLM round concurrently with the top-site SEEDS batch (not only when estimatedSeedsWallMs > 4 s), cancel the loser via linked AbortControllers, and when a code seed and an LLM sample both pass within a short deadline run the Q15/Q16 arbitration with the LLM candidate as a cluster representative instead of committing the lone seed passer immediately \u2014 this is the fix for the correctness inheritance (jev-only's 2/40 QuixBugs and 5/14 ladder overfits) and costs only the consumed input of cancelled samples.",
+   "From Salvo: the plan-free, site-local `propose_fix {path, old, new}` prompt shape (3\u20134k tokens, `max_tokens` ~1,500) and per-sample parse/anchor/compile on arrival; keep Foundry's `original_first_line` + \u00b120 anchoring but adopt Salvo's three-tier `old` matcher as the fallback the misanchored rate decides between.",
+   "From the measured GLM run (bench/results/glm-jev-off-quixbugs): make the pre-bench probe the gate for everything \u2014 send `reasoning: {enabled:false}` (fall back to `effort:'low'`), record `reasoning_tokens`, fit latency on plan-free prompts \u2014 and add a per-sample deadline (e.g. min(2 \u00d7 running p50, 20 s)) so SIEVE and QL1 use the samples that arrived rather than waiting for the slowest of N; treat `length` as drop-not-retry as designed and never send `max_tokens 4096` for a patch tool.",
+   "From FactGate: replace the four-Score risk request with harm-only `destructive` + `irreversible` Scores on non-test `run` commands (the only refusals that were ever justified: 0/223 bench refusals came from harm dims) and skip risk entirely on file actions, reads and dones in llm-sieve, so Jev's alignment Scores never gate an executing action again; keep Foundry's Jev review band only for 3\u20134-file unverified best-guess patches.",
+   "From FactGate: the `revert_last_change` code route (restore from post/<step>.json pre-images, no LLM, no Jev) when the engine's claiming run shows a committed patch regressed; the tried-set instant verdict for identical diffs surfaced as a FACTS/attempt-ledger line; and the `verifyMs` (Foundry's `synthMs`) StepTiming bucket so lane time stops landing in harnessMs.",
+   "From FactGate's measurement plan: run QuixBugs twice per condition (\u00b12 programs is run-to-run noise), report Wilson intervals on every pass rate, Wilcoxon signed-rank on paired wall, and $ per solved task beside raw $; and repair Foundry's criterion 1 \u2014 drop 'pass \u2265 1.5\u00d7 on each suite' (impossible on QuixBugs at a 70 % baseline) in favour of the paired net gain + McNemar test plus criterion 2's correct-by-verdict margin.",
+   "From Salvo: a `handles(workspaceInfo, files)` predicate on the synthesizer so llm-sieve falls back to the existing jev-off/jev-on loop for non-Python or test-less workspaces inside one run rather than refusing at the CLI, and the recorded `proposer`/mode column in conditionConfig so the bench prose names what actually ran."
+  ]
+ },
+ {
+  "scores": [
+   {
+    "design": "Foundry \u2014 `llm-sieve` mode: GLM-5.3-flash as a CandidateSource inside the Ledger+Sieve engine",
+    "pass_rate_gain": 8,
+    "speed": 8,
+    "cost": 6,
+    "jev_rule_adherence": 8,
+    "implementation_risk": 5,
+    "measurability": 8,
+    "total": 43,
+    "strongest_idea": "Goals defined by failing tests/oracle, Jev localises to ranked sites (Q2\u2013Q6, measured 23/30 file #1, 36/40 line top-3), free code seeds run first, and the GLM round is a prefetched Promise that is awaited only when the seed batch returns without a passer, with samples queued as they arrive (stragglers never block); verified patches, verification runs and verified dones are code-`ok` at risk and code-judged, the establishing run is dropped, and chunked Q9 mutation ranking is removed at repository sites (the mode that lost 152/160). Cited bases check out against the map and bench files: jev-only QuixBugs median 38.5 s, ladder mean 192 s, jev-off Sonnet 142 s / 24 of 29 at the cap / 6/30 empty, 3.75 Jev req/step, 223/726 and 228/348 refusals, 25/36 lone passers, $0.0046 Jev per QuixBugs program, 1\u22120.7^6 = 0.88.",
+    "fatal_flaw": "Every wall figure assumes a GLM round of 3.5\u20136 s (0.6 s TTFT + 400 tok at 100\u2013150 tok/s). The glm-jev-off-quixbugs run on disk measures p50 13.1 s, mean 24 s, p90 44 s, max 367 s per call (5.9 s + 12.5 ms/token; 22/127 `length` stops, 31/127 malformed), so wherever seeds fail (11/36 QuixBugs sets, most ladder hunks, every L1\u2032 feedback round and every SWE round not hidden behind the scoped baseline) the round adds 20\u201345 s to the critical path, not 0. The pre-registered criteria are also mis-set: 'pass \u2265 1.5\u00d7 jev-off on each suite' is unreachable on QuixBugs (jev-off GLM 7/10 \u2192 1.5\u00d7 exceeds 40/40), and 'cost \u2264 0.5\u00d7' fails Foundry's own spend table against the measured baseline (QuixBugs llm-sieve \u2248 $0.34/40 = $0.0085 vs measured jev-off $0.0093 \u2192 0.9\u00d7; the $0.65 jev-off estimate used 8 steps \u00d7 $0.002, measured is 5.4 \u00d7 $0.00126). Line-number anchoring (`original_first_line` echo \u00b1 20) is a fragile position contract for a flash-class model (its own open question 5)."
+   },
+   {
+    "design": "FactGate: an agentic GLM loop in which Jev routes and gates on literal facts only, every LLM change is test-verified in a shadow lane, completion is a code fact",
+    "pass_rate_gain": 6,
+    "speed": 5,
+    "cost": 7,
+    "jev_rule_adherence": 9,
+    "implementation_risk": 6,
+    "measurability": 9,
+    "total": 42,
+    "strongest_idea": "The FACTS block (failing ids with traceback tails, before\u2192after counts, `newlyFailing` ids from the last attempt, Jev-ranked files) replacing intent/stale-plan/rejected-claim noise; completion as `hasTests \u2227 allPassed \u2227 testsCurrent \u2227 goalTests \u2286 passing \u2227 testsDirUntouched`, lane evidence adopted by sha256 equality (saves the 40\u201380 s duplicate workspace run), `revert_last_change` from pre-images with no LLM; and the most honest measurement plan of the three: $ per solved task AND raw $ \u2264 1.0\u00d7 (it states that raw dollars are cents on both sides at GLM prices), McNemar + Wilcoxon, Wilson intervals, QuixBugs run twice, refused \u2264 1 % and Jev share \u2264 10 % as secondary gates. Arithmetic checks: 174 + 9.2\u00d78 = 248 ms and 174 + 9.2\u00d718 = 340 ms \u2713; 76.9 % reused selections \u2713; 517/718 runs \u2713; jev-off Sonnet solves at 15/17/18/20 + six at 25 \u2713 against the solve curve.",
+    "fatal_flaw": "No LLM-free path: every change step is max-of-3 GLM calls through the unchanged `propose_action` schema (plan re-emitted, 71 % of output), and the measured GLM behaviour of exactly that schema is 24 % malformed / 17 % `length` at 4096 / p50 13 s \u2014 so the 'all-malformed \u2248 1e-5' claim (built on Sonnet's 2.3 %) becomes \u2248 1.4 % per step with effective N \u2248 2.3, and the 2.8 s QuixBugs change step is \u2248 25\u201330 s (still ~3\u00d7 faster than jev-off's 94 s median, but the absolute plan is 8\u00d7 off and the heavy tail \u2014 one call took 367 s \u2014 has no fallback because the seed sources that solve 39/40 QuixBugs for $0 GLM are not used). File-level rank + Q9 function only; the LLM must find the line itself. 'Pass ratio \u2265 1.5 on the 90-task union' needs \u2248 66/90 if jev-off GLM lands near 28+8+8."
+   },
+   {
+    "design": "Salvo \u2014 Best-of-N GLM candidates, Jev-ranked, lane-verified: jev-on rebuilt on the Ledger+Sieve controller",
+    "pass_rate_gain": 8,
+    "speed": 7,
+    "cost": 6,
+    "jev_rule_adherence": 7,
+    "implementation_risk": 5,
+    "measurability": 6,
+    "total": 39,
+    "strongest_idea": "The seeds-vs-salvo race at QuixBugs class: the 137-candidate SIEVE batch (3.4 s at 8 lanes) and the N=8 GLM salvo start together and whichever commits a lone passer cancels the other through linked AbortControllers, so the step never pays seeds + LLM serially and 39/40 QuixBugs never wait on GLM; plus `old`-verbatim three-tier anchoring (exact \u2192 whitespace \u2192 token signature) instead of line numbers, a plan-free 2.5\u20134.5k-token site prompt with a hint \u00d7 temperature \u00d7 seed variant grid, completion by `doneReadiness.green` with Q13 recorded advisory, and `--proposer salvo|single` inside jev-on so the old loop stays for A/B. Arithmetic checks: 36 \u00d7 $0.000675 = $0.024 \u2713; 1\u22120.75^12 = 0.97 \u2713; 174 + 9.2 \u00d7 5.5 = 225 ms \u2713; 22 \u00d7 (13k\u00d70.15/M + 500\u00d70.5/M) = $0.048 \u2713.",
+    "fatal_flaw": "Repository class fires N=12 \u00d7 3 sites = 36 parallel GLM calls and builds the rank request only when the last sample lands, so the step wall is the max of 36 draws from a distribution measured today at p90 44 s / max 367 s \u2014 the '\u2248 3.1 s for all N' figure comes from Sonnet's 8.8 ms/token slope (the perf map explicitly warns it must be re-fitted; GLM measures 5.9 s + 12.5 ms/token) and is off ~10\u00d7; OpenRouter concurrency at 36\u201348 streams is an admitted unknown. At QuixBugs class the salvo fires on every program and bills 8 prompts of input even when seeds win (\u2248 $0.003, still < jev-off's $0.0093 but not free). It cites the stale rung-1a '16 s median' for jev-only instead of the final 38.5 s. The delivered design is truncated mid measurement plan (after 'SWE FAIL_TO_PASS \u2227 PASS_TO_PASS from the official l'), so the pass criterion, spend and open questions cannot be checked. Q14 `next_action` asks Jev to judge LLM actions on the generic path (map \u00a73 item 8: no labelled set), and it inherits the audit-flagged 0.5 routing cuts of Q6/Q9 verbatim."
+   }
+  ],
+  "winner": "Foundry \u2014 `llm-sieve` mode: GLM-5.3-flash as a CandidateSource inside the Ledger+Sieve engine",
+  "grafts": [
+   "From Salvo: cancel the fired GLM round through linked AbortControllers the moment the seed batch commits a lone passer (Foundry gates the prefetch but never cancels), so a round never blocks or bills output once seeds win.",
+   "From Salvo: replace `original_first_line` + line-number anchoring with `old`-verbatim three-tier matching (exact \u2192 whitespace-normalised \u2192 token signature) and drop unanchored samples with a counted reason; settles Foundry's open question 5 before the probe.",
+   "From Salvo + FactGate: plan-free flat tool schema (no `analysis` prose beyond ~100 chars), `reasoning: {enabled:false}` with `effort:'low'` fallback, and double `max_tokens` once on a `length` stop instead of dropping \u2014 the measured GLM run shows 22/127 `length` stops and mean 1,454 output tokens at 12.5 ms/token, i.e. output length is the latency lever.",
+   "New, forced by the measured tail (p50 13 s, max 367 s): a per-sample deadline of ~2\u00d7 the running p50 (or 30 s) after which the sample is abandoned and counted like a malformed one; never await the slowest sample in SIEVE mode (Foundry already queues on arrival) and apply the same rule before the QL1 rank request.",
+   "From FactGate/Salvo: completion as a code fact (`isCompleteByFact` / `doneReadiness.green`) on the engine-executed claiming run, with `task_complete` recorded advisory instead of the 0.85 stop; and FactGate's sha256-equality adoption of the lane regression run as `lastTestRun{source:'shadow'}` on repositories to skip the 11\u2013100 s duplicate workspace run where the trees are identical.",
+   "From FactGate: fix the pre-registered criteria \u2014 replace 'pass \u2265 1.5\u00d7 per suite' (unreachable on QuixBugs at jev-off GLM \u2248 70 %) with 'no suite worse + paired net gain with exact McNemar', report $ per solved task alongside raw $ \u2264 1.0\u00d7, Wilson intervals, QuixBugs repeated twice, Wilcoxon on paired wall; re-baseline jev-off with GLM on all 40 QuixBugs (the 10-task run on disk: 7/10, 94 s median, 4/10 wall_time, 24 % malformed) before claiming ratios.",
+   "From FactGate: a `verifyMs`/`synthMs` StepTiming bucket so lane time stops landing in `harnessMs` (jev-only misattributed 4,850 of 7,102 s) \u2014 required for any honest wall split.",
+   "From FactGate: harm-only 2-Score risk (`destructive`, `irreversible`, single-quantity rubrics) on the unverified best-guess path and non-test `run` commands instead of the 4-Score J4 with `plan_mismatch` (0 of 223 bench refusals were harm-dimension).",
+   "From FactGate: the forced `revert_last_change` route from `post/<step>.json` pre-images when a committed patch/partial regresses in a later engine run \u2014 one step, no LLM, no Jev \u2014 alongside Foundry's `rollbackUnexecutedPatch`.",
+   "From Salvo: `handles(workspaceInfo, files)` on the synthesizer with a generic-path fallback (N=3 `propose_action` samples deduped by `summariseAction`, existing risk stage) for non-Python workspaces, and a `--proposer` flag so the old jev-on loop remains runnable as the A/B control on QuixBugs."
+  ]
+ },
+ {
+  "scores": [
+   {
+    "design": "Foundry \u2014 `llm-sieve` mode: GLM-5.3-flash as a CandidateSource inside the Ledger+Sieve engine",
+    "pass_rate_gain": 8,
+    "speed": 8,
+    "cost": 7,
+    "jev_rule_adherence": 8,
+    "implementation_risk": 6,
+    "measurability": 9,
+    "total": 46,
+    "strongest_idea": "The LLM becomes one more CandidateSource behind the existing seeds: free mutation/template/donor seeds run first (25/36 true-line sets have a lone passer in ~3.8 s, so most QuixBugs programs never pay a GLM call), the L1 round is prefetched only when the seed batch will be slow (|seeds|\u00d7t_run/lanes > 4 s or repository class) and overlapped with the sieve or the 11\u2013100 s scoped baseline, and every sample inherits the tested verifier, guard arbitration, ledger, partial-pairing and `tried` memory unchanged. Its seam list matches the map \u00a74.2 minimum-change list item for item (metered `SynthesisContext.generate`, `CandidateSourceName` + the four exhaustive records, `Phase 'LLM'`, `StepBudget` LLM counters, vocab bypass, Site+extraEdits anchoring, `selection:'llm'`, no persisted sample bodies, per-sample AbortController). Every cited base reconciles with the map and bench (3.75 req/step, 486 ms/71 % context, 24/29 at cap, 6/30 empty, 152/160 none_of_these, 38.5 s and 192 s jev-only medians).",
+    "fatal_flaw": "All wall arithmetic rests on a GLM round of 3.5\u20136 s that the measured jev-off GLM run contradicts: p50 15.6 s, p90 55 s, max 367 s, 24 % `length` truncations at 4096 and 35 % malformed, driven by ~1,000 reasoning tokens per reply (fit 1.6 s + 14.7 ms/token). N=3\u20136 parallel samples take the max of that tail and Foundry sets no per-round deadline, so on the ~11/36 programs where seeds miss and on every repository step the LLM round is a 15\u201360 s critical path; the `reasoning:{effort:'low'}` lever is untested and only the pre-bench probe gate protects the claim. Secondary: MAX_PATCH_FILES 2\u21924 and multi-hunk candidates ride machinery with single-line identity assumptions (siteKey/isUnchanged/freshOf, `siteOnBase` null after a partial shifts lines) that the design only partly addresses, and unverified best-guess patches and partial `done`s still pass through the 4-Score J4 whose `plan_mismatch` band produced every bench refusal (a review is a declined step in bench)."
+   },
+   {
+    "design": "FactGate: an agentic GLM loop in which Jev routes and gates on literal facts only, every LLM change is test-verified in a shadow lane, and completion is a code fact",
+    "pass_rate_gain": 6,
+    "speed": 5,
+    "cost": 5,
+    "jev_rule_adherence": 9,
+    "implementation_risk": 5,
+    "measurability": 8,
+    "strongest_idea": "The cleanest excision of every Jev misuse the map documented: intent floor, context 0.5 cut, plan_mismatch/out_of_scope Scores, judge, task_complete plateau and Jev-driven replan are all removed; Q1 context Nouls are consumed by rank (top-3 + p \u2265 0.7, re-asked only when facts change), risk is two harm-only Scores skipped for verification runs and file actions, arbitration is advisory, and the run stops the instant the harness's own run is green (`allPassed \u2227 testsCurrent \u2227 goalTests \u2286 passing \u2227 testsDirUntouched`). The FACTS block (failing ids with traceback tails, before\u2192after counts, `newlyFailing` ids, tried-set note) replaces stale-plan/rejected-claim noise, and the source-agnostic `ShadowChange` verifier handles arbitrary multi-file `edit`/`patch`/`write` samples without the single-line Site machinery. Cited bases reconcile (30.7 % refused, 517/718 runs, 77 test runs, 6/10 solved jev-off at cap, 0/223 harm refusals).",
+    "fatal_flaw": "Three parallel GLM samples sit on the critical path of every change step under an assumed p50 of 1.5 s and a 1e-5 all-malformed probability derived from Sonnet's 2.3 %; on this model the measured p50 is 15.6 s with a 367 s tail and 35 % malformed (all-malformed \u2248 4 %), so the '2.8 s QuixBugs step' is off by 10\u201320\u00d7 and, with no free code seeds and no line/function localisation, raw dollars land at parity with jev-off GLM ($0.0038/change step vs $0.0093/task measured) \u2014 the design itself retreats to a \u2264 1.0\u00d7 raw-cost criterion. It also re-implements verification outside the tested sieve runner (~450 LOC, forfeiting adaptive timeouts, provisional retries, load-aware caps and deferred jobs; `applyToLane` takes an `AppliedCandidate {candidate, files, diff}` so it must fabricate one or bypass the pool), adopts lane sha256 equality as the completion fact on repositories (JEV-ONLY \u00a75.5 requires an engine-executed run), adds an in-run revert path and a second ~350 LOC step branch in the engine core, and edits shared stage files (context/prompts/plan/loopdetect/propose) while claiming jev-on/jev-off untouched.",
+    "total": 38
+   },
+   {
+    "design": "Salvo \u2014 Best-of-N GLM candidates, Jev-ranked, lane-verified: jev-on rebuilt on the Ledger+Sieve controller",
+    "pass_rate_gain": 7,
+    "speed": 6,
+    "cost": 4,
+    "jev_rule_adherence": 7,
+    "implementation_risk": 4,
+    "measurability": 6,
+    "strongest_idea": "Racing the seed SIEVE batch against the GLM salvo with cancellation via linked AbortControllers \u2014 whichever yields a lone passer first commits and the loser is cancelled, so the LLM never adds serial wall on QuixBugs \u2014 plus full-criteria Q5 `is_fix` Nouls in chunks \u2264 50 per request (the 39/40 top-1 regime), which repairs the compact-only Q9 implementation gap the audit flagged; completion as the code fact `doneReadiness.green` with Q13 recorded only; and a strong/weak fix-absent split (escape \u2212 p_max \u2265 0.10 \u2227 max Noul < 0.3 routes, weak still runs top-3) that softens the inherited 0.5 cut.",
+    "fatal_flaw": "36 parallel GLM calls per repository step (12 \u00d7 3 sites) at a measured $0.00126 and p50 15.6 s per call, with the rank stage waiting for the slowest sample and no salvo deadline: \u2248 $0.045/step in generator spend (the design concedes 0.6\u20131.0\u00d7 jev-off per task on repositories, failing the user's cost requirement) and a step wall bounded by a 367 s tail; `max_tokens 1500` with reasoning-by-default would truncate most samples unless `reasoning:{enabled:false}` is honoured. It also rewires the default `jev-on` mode (proposer 'salvo' default, completion fact, risk code verdict, generic-path Q14 Choice over LLM actions \u2014 the one thing the map says Jev has no measured accuracy for), changing the checked-in condition's semantics and regression surface; two cited bases are wrong ('seeds give 39/40 for zero LLM calls' is the full pipeline with WIDENED, seeds-only rung 1a was 34/40; 'jev-only 16 s median' is rung 1a, the final is 38.5 s) and the measurement plan arrived truncated, so its pass criterion cannot be checked.",
+    "total": 34
+   }
+  ],
+  "winner": "Foundry \u2014 `llm-sieve` mode: GLM-5.3-flash as a CandidateSource inside the Ledger+Sieve engine",
+  "grafts": [
+   "Replace every GLM assumption with the measured jev-off GLM baseline before writing arithmetic: bench/results/glm-jev-off-quixbugs (7/10, wall median 124 s, $0.0093/task) and its generator.jsonl (74 calls: p50 15.6 s, p90 55 s, max 367 s, fit 1.6 s + 14.7 ms/output token, 35 % malformed, 18/74 `length` at 4096, output p50 1,070 tokens). The pre-bench probe must first test `reasoning: {enabled: false}` (FactGate/Salvo) and fall back to `effort: 'low'`; size `max_tokens` from the measured output distribution, and double it only on `length` (FactGate).",
+   "Add a per-round LLM deadline (e.g. p90 of the probe fit, ~2\u00d7 the seed-batch estimate) and queue samples as they arrive so one straggler never holds the step; cancel in-flight samples via the linked AbortController the moment the seed batch or an earlier sample commits a lone passer (Salvo's race-and-cancel), billing only what OpenRouter consumed.",
+   "Make completion a code fact on the engine-executed green claiming run (`doneReadiness.green`) with `task_complete` recorded as advisory (Salvo, FactGate) instead of keeping the 0.85 Noul as the stop rule \u2014 jev-on never exceeded 0.55 on SWE and every solved run burned the 25-step cap.",
+   "For the proposals that stay unverified (best-guess patches, partial `done`s, non-test `run` commands) ask only the two harm Scores (`destructive`, `irreversible`, skipped for `isVerificationRun`) and record the alignment dimensions without gating (FactGate Q3): in the bench a review is a declined step, and 223/223 jev-on refusals came from `plan_mismatch`.",
+   "Adopt Salvo's strong/weak fix-absent rule (strong = escape \u2212 p_max \u2265 0.10 \u2227 max Noul < 0.3 \u2192 route; weak \u2192 still run top-3) in place of the inherited `NOUL_ABSENT 0.5` cut, and run the existing mutation-set ranker with full-criteria Nouls in chunks \u2264 50 (the 39/40 regime) rather than the compact form.",
+   "Add FactGate's code `revert_last_change` route: when the engine's claiming run shows a committed patch regressed (parsed counts below its evidence), restore from `post/<step>.json` pre-images in one step with no LLM and no Jev, then re-open the goal.",
+   "Keep Salvo's `{path, old, new}` search/replace hunk contract as the pre-planned fallback when the `original_first_line` \u00b120-line anchoring probe shows > 30 % misanchored samples; the engine's `edit` action already uses exact-once matching, so the parser exists.",
+   "Carry FactGate's statistics into the measurement plan: Wilson intervals on every pass rate, a QuixBugs repeat run (\u00b12 programs is run-to-run noise), and a `verify`/`synth` timing bucket in StepTiming so lane time stops landing in `harnessMs` (4,850 of 7,102 s misattributed in jev-only SWE); keep bench concurrency \u2264 2 with load recorded.",
+   "Before the head-to-head, add a 20-item labelled check of QL1 on multi-hunk GLM samples (Foundry open question 4) and reuse FactGate's proposal to run the SWE pair once with the route/rank hint disabled to measure the marginal value of each Jev question in steps-to-solve, dropping any whose contribution is \u2264 0."
+  ]
+ }
+]
