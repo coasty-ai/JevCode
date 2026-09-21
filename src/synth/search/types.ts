@@ -98,7 +98,13 @@ export interface VerifyJob {
   key: [number, number, number];
 }
 
-export type VerifyStatus = 'plausible' | 'partial' | 'regressed' | 'unchanged' | 'timeout' | 'apply_failed';
+/**
+ * `unstable`: the candidate passed the goal's reproduction once and failed the confirmation run in
+ * the same lane (oracle/verify.ts runRepositoryQueue): never a fix, never regression-tested. Until
+ * the runner emits it, such an outcome is `unchanged` with its subset failure text prefixed
+ * `UNSTABLE_ACTUAL_PREFIX` (`isUnstableOutcome` tells it apart).
+ */
+export type VerifyStatus = 'plausible' | 'partial' | 'regressed' | 'unchanged' | 'unstable' | 'timeout' | 'apply_failed';
 
 export interface VerifyOutcome {
   job: VerifyJob;
@@ -177,6 +183,8 @@ export interface GoalSearchTrace extends SearchTrace {
   sitesTested: number;
   /** of those, sites no earlier step of this goal had tested (§5.3: a budget-hit step with ≥ 1 is progress) */
   newSitesTested: number;
+  /** candidates that passed the reproduction once and failed the confirmation run (`VerifyStatus` `unstable` / `isUnstableOutcome`); absent when none was counted */
+  unstable?: number;
 }
 
 /** What survives a checkpoint (SynthesisContext.synthState); everything else is rebuilt from the plan and the workspace. */

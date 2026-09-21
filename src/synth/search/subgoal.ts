@@ -41,6 +41,7 @@ import { MAX_PATCH_FILES } from './proposal.js';
 import { WIDENED_SITES_MAX, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, widenedSites } from './sites.js';
 import type { Base, Decision, Goal, GoalSearchTrace, OracleModel, Phase, VerifyJob, VerifyOutcome } from './types.js';
 import { PHASES } from './types.js';
+import { isUnstableOutcome } from '../oracle/index.js';
 
 export { decideRunPlan } from './budget.js';
 export { EDIT_CLASSES, EDIT_CLASS_INSTRUCTIONS, EDIT_CLASS_QUESTION_ID } from '../sketch/questions.js';
@@ -529,6 +530,9 @@ async function decideBatch(st: LoopState, results: readonly VerifyOutcome[], que
   const decision = await deps.decide(ctx, mem, goal, results);
   const plausible = decision.plausible ?? results.filter((r) => r.status === 'plausible').length;
   trace.plausible += plausible;
+  // a lane pass that did not repeat on its confirmation run (oracle/verify.ts): counted, never dispatched
+  const unstable = results.filter(isUnstableOutcome).length;
+  if (unstable > 0) trace.unstable = (trace.unstable ?? 0) + unstable;
   trace.clusters += decision.clusters ?? 0;
   if (decision.arbitrated === true || plausible >= 2) trace.arbitrated = true;
   if (decision.requests !== undefined && decision.requests > 0) {

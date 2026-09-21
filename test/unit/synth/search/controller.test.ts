@@ -8,12 +8,12 @@ import { describe, expect, it } from 'vitest';
 
 import type { Proposal, SynthesisContext, WindowEntry } from '../../../../src/core/types.js';
 import { toJson } from '../../../../src/core/json.js';
-import { DEFAULT_TEST_COMMAND, ESTABLISH_GOAL, ESTABLISH_GOAL_REPOSITORY, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, framesOfTraceback, lastExecutedActionKind, lastWorkspaceChangeStep, loadPythonFiles, mentionedInTask, moduleFilesOf, normaliseTestCommand, patchNotExecutedLastStep, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
+import { DEFAULT_TEST_COMMAND, ESTABLISH_GOAL, ESTABLISH_GOAL_REPOSITORY, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, framesOfTraceback, lastExecutedActionKind, lastWorkspaceChangeStep, loadPythonFiles, mentionedInTask, moduleFilesOf, networkOracleNote, normaliseTestCommand, patchNotExecutedLastStep, repositoryNotes, repositoryPatchNotes, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
 import { emptyIntrospection, runFacts } from '../../../../src/synth/introspect/index.js';
 import type { IntrospectedNames } from '../../../../src/synth/introspect/index.js';
 import type { HistoryFacts } from '../../../../src/synth/history/index.js';
 import { fakeWorkspace } from './proposal-helpers.js';
-import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, bestGuessTestId, mergeSummaries } from '../../../../src/synth/oracle/index.js';
+import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, NETWORK_ORACLE_OPEN_PROBLEM, bestGuessTestId, mergeSummaries } from '../../../../src/synth/oracle/index.js';
 import type { OracleSearch, ReproGoal, ReproSpec, VerifyReproResult } from '../../../../src/synth/oracle/index.js';
 import { dropMemory } from '../../../../src/synth/search/memory.js';
 import type { PersistedMemoryState as PersistedWithRepository } from '../../../../src/synth/search/memory.js';
@@ -31,9 +31,12 @@ import { applyCandidate } from '../../../../src/synth/verify/index.js';
 import { sha12 } from '../../../../src/core/hash.js';
 import { freshPairsOfPartials, guardState, holdBestPartial, improvedBase, pairsOfPartials, partialsFromPersisted, partialsOf, siteKeyOf } from '../../../../src/synth/search/bases.js';
 import { handleDirective } from '../../../../src/synth/search/directive.js';
+import { LONE_PASSER_HOLD_MAX_NOUL } from '../../../../src/synth/search/guard.js';
+import { noulAnswer } from './helpers.js';
 import { directiveText } from '../../../../src/loop/stages/replan.js';
 import { siteKey } from '../../../../src/synth/search/sites.js';
 import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
+import type { AskScript } from './controller-fakes.js';
 import { makeTrace, patchEntry, runEntry } from './proposal-helpers.js';
 
 // ---------------------------------------------------------------------------------------
@@ -1118,6 +1121,125 @@ describe('repository mode (Django/sympy-shaped workspace): oracle goal, best gue
     expect(moduleFilesOf(null, 'Traceback (most recent call last):\n  File "/ws/django/utils/html.py", line 3, in f', files)).toEqual(['django/utils/html.py']);
     expect(moduleFilesOf(null, null, files)).toEqual([]);
   });
+
+  describe('a network-dependent oracle (`weak_network`, jev-only-rungs-1-2.md §23.3): the goal exists with strength weak, every patch and done carries the open problem, a lone passer is arbitrated', () => {
+    const EVIDENCE = 'requests against httpbin.org';
+    const networkOracle = (): OracleSearch => ({ ...oracleFound(), outcome: 'weak_network', strength: 'weak', network: { kind: 'static', evidence: EVIDENCE }, note: `network-weak oracle ${REPRO_ID} from block 0: requests.put(...) -> ConnectionError (expected completes; no_exception; confirmed by a second run in 900 ms; ${NETWORK_ORACLE_OPEN_PROBLEM} (${EVIDENCE}): passers need the regression run and Jev's arbitration)` });
+    const vouch: AskScript = (qs) => Object.fromEntries(Object.keys(qs).map((id) => [id, noulAnswer(0.8)]));
+    const doubt: AskScript = (qs) => Object.fromEntries(Object.keys(qs).map((id) => [id, noulAnswer(0.12)]));
+    const guardEvents = (ctx: ReturnType<typeof fakeCtx>): string[] => ctx.events.filter((e) => e.type === 'synth' && e.phase === 'guard').map((e) => (e.type === 'synth' ? e.detail : ''));
+    const PASSER = `mutation/relational_swap at ${MODULE}:3`;
+
+    it('the note helpers: the open problem starts with NETWORK_ORACLE_OPEN_PROBLEM verbatim and names the reproduction; a weak_network oracle gets it instead of the weak-criterion note; other outcomes get none', () => {
+      const scope = { testFiles: ['tests/model_fields/tests.py'], command: SCOPED, tier: 'stem' as const, note: 'named after the module' };
+      const repro = { spec, strength: 'weak' as const };
+      const network = networkOracleNote({ oracleOutcome: 'weak_network', repro, scope });
+      expect(network).toBe(`${NETWORK_ORACLE_OPEN_PROBLEM} ${REPRO_ID}: its verdict is the network's as much as the code's; a passer is committed only after the regression scope (1 file) and Jev's arbitration`);
+      expect(networkOracleNote({ oracleOutcome: 'valid_weak', repro, scope })).toBeNull();
+      expect(networkOracleNote({ oracleOutcome: 'valid', repro: { spec, strength: 'strong' }, scope })).toBeNull();
+      expect(repositoryPatchNotes({ oracleOutcome: 'weak_network', repro, scope })).toEqual([network]);
+      expect(repositoryPatchNotes({ oracleOutcome: 'valid_weak', repro, scope })).toEqual([`weak reproduction oracle ${REPRO_ID}: the criterion only says the observed wrong value changed; the regression scope (1 files) is the other check`]);
+      expect(repositoryPatchNotes({ oracleOutcome: 'valid', repro: { spec, strength: 'strong' }, scope })).toEqual([]);
+      const repo = { goalId: 'g1', moduleFiles: [MODULE], scope, repro, oracleOutcome: 'weak_network', oracleNote: 'n', traceback: null, bestGuessCommitted: false, knownFailures: 0, lastRepro: null };
+      expect(repositoryNotes(repo).at(-1)).toBe(network);
+      expect(repositoryNotes({ ...repo, oracleOutcome: 'valid_weak' }).some((n) => n.startsWith(NETWORK_ORACLE_OPEN_PROBLEM))).toBe(false);
+    });
+
+    it('establishing step: the goal exists (strength weak, outcome weak_network); a lone passer is put to Q16 alone and, vouched, committed as a plain verified fix with the open problem; the green done carries it too', async () => {
+      const file = moduleFile();
+      const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => networkOracle(), locate: locateModule(file), regressionScope: scopeFor(), verifyRepro: async () => reproPassing(), results: [reproCommit(file, true)] });
+      const runId = 'repo-network-vouched';
+      const p1 = await h.synth.synthesize(repoCtx({ runId, step: 1, ask: vouch }));
+      expect(p1.action).toMatchObject({ kind: 'run', command: SCOPED });
+      expect(p1.goal).toBe(`${ESTABLISH_GOAL_REPOSITORY} (0 of 2 scoped tests fail at the base commit; the issue's reproduction ${REPRO_ID} fails)`);
+      const mem = runMemory(runId);
+      expect(mem.repository).toMatchObject({ goalId: 'g1', oracleOutcome: 'weak_network', repro: { strength: 'weak', spec: { testId: REPRO_ID } } });
+      expect(mem.goals.map((g) => [g.id, g.tests, g.status])).toEqual([['g1', [REPRO_ID], 'open']]);
+      const note = networkOracleNote(mem.repository!);
+      expect(note).toMatch(new RegExp(`^${NETWORK_ORACLE_OPEN_PROBLEM} repro::`));
+      // step 2: the scripted search commits a lone passer (trace not arbitrated) → ONE Q16 `general_cand_01` over it, nothing else asked
+      const ctx2 = repoCtx({ runId, step: 2, ask: vouch, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] });
+      const p2 = await h.synth.synthesize(ctx2);
+      expect(p2.action.kind).toBe('patch');
+      expect(ctx2.askCalls.map((c) => Object.keys(c.questions))).toEqual([['general_cand_01']]);
+      expect(ctx2.askCalls[0]?.state).toMatchObject({ candidates: { cand_01: { line: 'L3' } }, tests: [{ input: 'assert f in d' }] });
+      expect(p2.goal).toBe(`apply verified fix: ${REPRO_ID} now passes (2→3 of 3), no regressions; ${PASSER}`);
+      expect(p2.plan.openProblems).toEqual([note]);
+      // the evidence says Jev judged the pick, and the request is charged to the step's trace (makeTrace's 2 + 1)
+      expect(p2.evidence).toMatchObject({ arbitrated: true, goalTests: [REPRO_ID], newlyPassing: [REPRO_ID], newlyFailing: [] });
+      expect(JSON.parse(p2.rawText) as { arbitrated: boolean; jevRequests: number }).toMatchObject({ arbitrated: true, jevRequests: 3 });
+      expect(guardEvents(ctx2)).toEqual([`g1: ${NETWORK_ORACLE_OPEN_PROBLEM}; Q16 on the lone passer ${PASSER}: general 0.80 ≥ ${LONE_PASSER_HOLD_MAX_NOUL}, committing it`]);
+      // steps 3–4: the post-patch run, then the green done: the open problem stays on the plan
+      const plan = { remaining: [`fix ${REPRO_ID} in ${MODULE}`, VERIFY_ITEM], openProblems: [note!] };
+      const p3 = await h.synth.synthesize(repoCtx({ runId, step: 3, ask: vouch, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 }), executedPatch(2, [MODULE])], plan }));
+      expect(p3.action).toMatchObject({ kind: 'run', command: SCOPED });
+      expect(p3.plan.openProblems).toEqual([note]);
+      const p4 = await h.synth.synthesize(repoCtx({ runId, step: 4, ask: vouch, window: [executedPatch(2, [MODULE]), scopedRun(3, SCOPED, { passed: 2, failed: 0 })], plan: { done: [{ text: `fix ${REPRO_ID} in ${MODULE}`, evidence: { step: 3, judged: 0.9 } }], remaining: [VERIFY_ITEM], openProblems: [note!] } }));
+      expect(p4.action.kind).toBe('done');
+      if (p4.action.kind === 'done') expect(p4.action.summary).toBe(`all 2 tests pass; the reproduction ${REPRO_ID} passes; 1 fix committed`);
+      expect(p4.plan.openProblems).toEqual([note]);
+      expect(JSON.parse(p4.rawText) as { notes?: string[] }).toMatchObject({ kind: 'done', mode: 'green', notes: [note] });
+    });
+
+    it('a doubted lone passer (general < LONE_PASSER_HOLD_MAX_NOUL) is committed as possible overfit beside the open problem; a Q15/Q16-arbitrated pick and a step with no request left are not asked again', async () => {
+      const file = moduleFile();
+      const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => networkOracle(), locate: locateModule(file), regressionScope: scopeFor(), results: [reproCommit(file, true)] });
+      const runId = 'repo-network-doubted';
+      await h.synth.synthesize(repoCtx({ runId, step: 1, ask: doubt }));
+      const note = networkOracleNote(runMemory(runId).repository!)!;
+      const ctx2 = repoCtx({ runId, step: 2, ask: doubt, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] });
+      const p2 = await h.synth.synthesize(ctx2);
+      expect(p2.action.kind).toBe('patch');
+      expect(ctx2.askCalls.map((c) => Object.keys(c.questions))).toEqual([['general_cand_01']]);
+      expect(p2.plan.openProblems).toEqual([`possible overfit: relational_swap at ${MODULE}:3 passes every test, but Jev rated no test-passing candidate a general fix; review the change`, note]);
+      expect(JSON.parse(p2.rawText) as { note?: string }).toMatchObject({ note: 'possible overfit', arbitrated: true });
+      expect(guardEvents(ctx2)).toEqual([`g1: ${NETWORK_ORACLE_OPEN_PROBLEM}; Q16 on the lone passer ${PASSER}: general 0.12 < ${LONE_PASSER_HOLD_MAX_NOUL}, committing it as possible overfit`]);
+      dropMemory(runId);
+      // the guard already arbitrated ≥ 2 passers (Q15/Q16): the pick stands, no second request
+      const arbitrated = (goal: Goal, mem: RunMemory): SubGoalResult => {
+        const r = reproCommit(file, true)(goal, mem);
+        return { ...r, trace: { ...r.trace, arbitrated: true, plausible: 2, clusters: 2 } };
+      };
+      const h2 = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => networkOracle(), locate: locateModule(file), regressionScope: scopeFor(), results: [arbitrated] });
+      const runId2 = 'repo-network-arbitrated';
+      await h2.synth.synthesize(repoCtx({ runId: runId2, step: 1 }));
+      const ctx2b = repoCtx({ runId: runId2, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] });
+      const q2 = await h2.synth.synthesize(ctx2b);
+      expect(q2.action.kind).toBe('patch');
+      expect(ctx2b.askCalls).toEqual([]);
+      expect(q2.plan.openProblems).toEqual([note]);
+      expect(guardEvents(ctx2b)).toEqual([]);
+      dropMemory(runId2);
+      // no Jev request left this step: the commit stands with the open problem and the transcript says it was not arbitrated
+      const spent = (goal: Goal, mem: RunMemory): SubGoalResult => {
+        mem.stepBudget.jevRequestsLeft = 0;
+        return reproCommit(file, true)(goal, mem);
+      };
+      const h3 = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => networkOracle(), locate: locateModule(file), regressionScope: scopeFor(), results: [spent] });
+      const runId3 = 'repo-network-spent';
+      await h3.synth.synthesize(repoCtx({ runId: runId3, step: 1 }));
+      const ctx2c = repoCtx({ runId: runId3, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] });
+      const r2 = await h3.synth.synthesize(ctx2c);
+      expect(r2.action.kind).toBe('patch');
+      expect(ctx2c.askCalls).toEqual([]);
+      expect(r2.plan.openProblems).toEqual([note]);
+      expect(JSON.parse(r2.rawText) as { arbitrated: boolean }).toMatchObject({ arbitrated: false });
+      expect(guardEvents(ctx2c)).toEqual([`g1: ${NETWORK_ORACLE_OPEN_PROBLEM}; the lone passer ${PASSER} was not arbitrated (no Jev request left this step); committing it with the open problem`]);
+    });
+
+    it('every goal parked: the partial done carries the oracle outcome and the open problem', async () => {
+      const file = moduleFile();
+      const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => networkOracle(), locate: locateModule(file), regressionScope: scopeFor(), results: [parked('nothing found')] });
+      const runId = 'repo-network-parked';
+      await h.synth.synthesize(repoCtx({ runId, step: 1 }));
+      const note = networkOracleNote(runMemory(runId).repository!)!;
+      const p2 = await h.synth.synthesize(repoCtx({ runId, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] }));
+      expect(p2.action.kind).toBe('done');
+      if (p2.action.kind === 'done') expect(p2.action.summary).toContain('oracle from the issue: weak_network');
+      expect(p2.plan.openProblems.some((n) => n.startsWith('oracle from the issue: weak_network'))).toBe(true);
+      expect(p2.plan.openProblems).toContain(note);
+    });
+  });
 });
 
 describe('controller bookkeeping: partials survive a park, untested pairs keep the goal open, a held passer is committed before any park', () => {
@@ -1476,5 +1598,24 @@ describe('progress commits: a lone partial at the budget exit is committed as a 
     expect(mem.localizeCache.has('g1')).toBe(false);
     expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'directive' && /^gather_context: rotated source order of g1 \(1\); sites of g1 dropped; file beam 5 → 10; re-localise g1 with the latest failure text$/.test(e.detail))).toBe(true);
     expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'read')).toBe(false);
+  });
+});
+
+describe('unstable outcomes (jev-only-rungs-1-2.md §23.1): the trace count reaches the `search` transcript line and the step record', () => {
+  it('a budget-hit step whose trace counted unstable passers says `unstable N` in the search event and in the run\'s rawText trace; without the count nothing is printed', async () => {
+    const h = harness({ results: [(goal) => ({ kind: 'budget', trace: makeTrace({ goalId: goal.id, outcome: 'budget', plausible: 0, unstable: 2 }) })] });
+    const ctx = ctxFor({ step: 1 });
+    const p = await h.synth.synthesize(ctx);
+    expect(p.action.kind).toBe('run');
+    const search = ctx.events.filter((e) => e.type === 'synth' && e.phase === 'search').map((e) => (e.type === 'synth' ? e.detail : ''));
+    expect(search).toEqual([expect.stringContaining('plausible 0, unstable 2)')]);
+    expect(JSON.parse(p.rawText) as { trace?: { unstable?: number } }).toMatchObject({ kind: 'run', trace: { unstable: 2 } });
+    const h2 = harness({ results: [budget()] });
+    const ctx2 = ctxFor({ step: 1 });
+    const q = await h2.synth.synthesize(ctx2);
+    const search2 = ctx2.events.filter((e) => e.type === 'synth' && e.phase === 'search').map((e) => (e.type === 'synth' ? e.detail : ''));
+    expect(search2[0]).toMatch(/plausible 1\)$/); // makeTrace's default count, no unstable tail
+    expect(search2[0]).not.toContain('unstable');
+    expect('unstable' in ((JSON.parse(q.rawText) as { trace: Record<string, unknown> }).trace)).toBe(false);
   });
 });

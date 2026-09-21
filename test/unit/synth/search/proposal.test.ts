@@ -371,10 +371,12 @@ describe('plan pieces and text helpers', () => {
     expect(testFilesChanged([applied])).toEqual([]);
     expect(testFilesChanged([applied, touched])).toEqual(['tests/test_gcd.py']);
   });
-  it('traceRecord keeps every counter and the bySource table', () => {
+  it('traceRecord keeps every counter and the bySource table; the unstable count only when the trace carries one', () => {
     const rec = traceRecord(makeTrace({ goalId: 'g9', outcome: 'budget' }));
     expect(rec).toMatchObject({ goalId: 'g9', outcome: 'budget', candidatesTested: 120, bySource: { mutation: { enumerated: 120, tested: 120, passed: 1 } } });
     expect('winner' in rec).toBe(false);
+    expect('unstable' in rec).toBe(false);
+    expect(traceRecord(makeTrace({ goalId: 'g9', outcome: 'budget', unstable: 3 }))['unstable']).toBe(3);
   });
 });
 

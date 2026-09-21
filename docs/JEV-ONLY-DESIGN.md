@@ -329,6 +329,34 @@ Lanes live under `<workspace>/.jevcode-synth/<runId>/lane<k>/` (inside the sandb
 All runs go through `ctx.sandbox.run(command, { cwd: lane, timeoutMs, signal })`. Jev requests for the next
 site/source are issued while the current batch runs (the loop is test-bound; Jev is ~240 ms).
 
+**2026-09-21, a lane pass is confirmed in the same lane; the passer cap is rank-ordered; a network-dependent
+reproduction is a `weak_network` oracle.** On a repository oracle (`src/synth/oracle/verify.ts runRepositoryQueue`)
+a candidate whose reproduction passes is run once more on its lane before anything else: pass/pass → the scoped
+regression run → `plausible`; pass/fail → **unstable** — in `tried`, never dispatched to the regression run, its
+subset failure text prefixed `UNSTABLE_ACTUAL_PREFIX` (`isUnstableOutcome`; `search/types.ts VerifyStatus` has the
+`unstable` member and `GoalSearchTrace.unstable` the count, which `search/index.ts` prints as `unstable N` on the
+`search` line and `search/proposal.ts traceRecord` writes into the step record). django-15315's 1/8 coin
+(`hash(None)` is address-based on CPython 3.9, so the seed does not pin `assert f in d`) becomes a 1/64 coin per
+dead-code candidate while the real fix passes twice; the cost is one ≈ 0.4–1.4 s reproduction per passer (≤ 5 a
+step). The base verdict is confirmed the same way (`oracle/search.ts findIssueOracle` runs the snippet twice at the
+base commit; fail/pass and pass/fail are both `unstable` → no goal → the best-guess path). The ≤ 5 regression slots
+of the table below go to passers in **rank order** (`compareRank` on `VerifyJob.key`; `admitPasser`: a passer takes
+a slot only when the slots left exceed the higher-ranked jobs still awaiting their reproduction verdict; `nextJob`
+merges the carried and the fresh jobs by rank with a one-job lookahead), so the cap defers the lowest-ranked passers
+whatever order the lanes finish in, and the top-ranked job's runs (reproduction, confirmation, regression) are the
+one in-flight overrun the step's wall allows. A reproduction that talks to the network (`oracle/runner.ts
+detectNetworkUse`: an import or call form of a network module together with a URL literal naming a non-local host,
+or a statement that raised one of `NETWORK_ERROR_TYPES`; requests-2931's `requests.put("http://httpbin.org/put",
+…)`) keeps its goal as the `OracleOutcome` `weak_network` with strength `weak` (`oracleYieldsGoal`), and
+`oracleNeedsArbitration` is what the controller reads: every `patch` and `done` of such a run carries the
+`NETWORK_ORACLE_OPEN_PROBLEM` note (`search/index.ts networkOracleNote`, `repositoryPatchNotes`,
+`repositoryNotes`; `proposeDone` keeps the notes on the green `done` too), and a lone passer is put to the guard's
+rule-(b) advisory before its evidence is written (`search/index.ts arbitrateNetworkPasser` → `guard.ts
+adviseLonePasser`, Q16 `general_cand_01`: vouched at ≥ `LONE_PASSER_HOLD_MAX_NOUL` → a plain commit whose evidence
+says `arbitrated`; doubted, or no Noul → `possible overfit`; ≥ 2 passers were already arbitrated by Q15/Q16 and are
+not asked again; with no request left the commit stands and the transcript says so). A base run whose network call
+failed while the statements around it "passed" is `env_error`, never `passes_on_base`.
+
 ### 4.3 Runs and requests per step (all code, counted in `StepBudget`)
 
 | Run | When | Scope | Count per step |
@@ -363,6 +391,32 @@ mode on such an oracle (`hasCheapGoalSubset`: repository class, goal subset chea
 take per site is its share of the runs left, `clamp(floor(runsLeft / sitesLeft), K, 16)` with K the 3/5
 above, so a step's runs spread over the top sites in Noul order instead of re-ranking the leftovers of the
 first site; the best-guess path and every equal-cost oracle keep the fixed K.
+
+**2026-09-21, the class reads both oracle costs, the wall reserves the scoped run, t_run is the lanes' running
+median, and the run count is in lane-seconds.** The rung-3 records (jev-only-rungs-1-2.md §23) showed
+sympy-19954 sized as QuixBugs-class on its 0.9 s reproduction alone — 1,500 runs and a 90 s wall in front of a
+41 s scoped suite, so from step 7 on each wall went to one or two regression runs of *carried* passers and the
+known guard ranked #1 was deferred behind them. `budget.ts oracleClass` is now QuixBugs-class only when the
+goal-subset run is under `SIEVE_MAX_T_RUN_MS` (2 s) **and** the scoped run under `QUIXBUGS_CLASS_MAX_FULL_SUITE_MS`
+(10 s); a cheap reproduction in front of a costly scoped suite is repository-class with the derived count (QuixBugs,
+the ladder and django-15128 at 0.985 s / 2.5 s are unchanged). `passersReserveMs` is 5 × t_run(fullSuite) when the
+goal subset is the cheaper reproduction (0 for equal costs) and `stepTestWallMs` adds it in either class: QuixBugs
+= min(90 s, wallRemaining / 4) **plus the reserve** (15128: 90 + 12.6 s), never past the run's remaining wall;
+repository = min(8 × the scoped run's **running** cost `tRunMs.fullSuite`, 600 s, wallRemaining) for a
+cheap-subset oracle (19954: 8 × 41 s = 330 s at the baseline, 600 s once the lanes read 80 s), the raw baseline
+duration for equal-cost oracles as before. `repositoryRunsPerStep` takes the reserve out in lane-seconds —
+floor((wall − 5 × t_scoped) × lanes / t_repro), bounded to [16, 160] — so the same sympy-15345 wall gives 108 runs
+idle and **27** with the reproduction measured at 8 s under load (Django 100 s / 2.8 s: 142). Both t_run values
+come from the lanes: `RunSamples` / `recordRunSamples` keep the last `LIVE_REPRO_WINDOW` (16) reproduction and
+`LIVE_SCOPED_WINDOW` (4) scoped durations per runner memory (`oracle/verify.ts runSamplesOf`, a WeakMap that
+outlives the per-step budget and the re-baselined oracle model), `liveMedian` / `liveTRun` / `applyLiveTRun` write
+their medians into `oracle.tRunMs` once `LIVE_MIN_SAMPLES` (3) of a kind exist — the reproduction through the §2.4
+`refineTRun` hysteresis, so a 1.9 s reproduction measured at 2.5 s under load keeps the sieve while 8 s is the
+truth — and `freshBudget`, `runsLeft` and every `decideRunPlan` read `oracle.tRunMs` from then on, so the wall, the
+count and the take are re-derived from what the runs actually cost; the `verify` event says `t_run reproduction
+1338 ms (live), scoped 80000 ms (live)`. The regression run's own timeout (`synth/index.ts runQueue`) should stay
+above the lanes' scoped median; a 3 × baseline bound fitted to an 11 s idle baseline would cut the 72–82 s runs
+of §21.6.
 
 ### 4.4 Progress arithmetic and acceptance (code)
 

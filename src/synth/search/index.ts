@@ -21,7 +21,7 @@ import type { HistoryFacts } from '../history/index.js';
 import { introspectRepro, setRunFacts } from '../introspect/index.js';
 import type { IntrospectedNames } from '../introspect/index.js';
 import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
-import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, mergeSummaries, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
+import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, NETWORK_ORACLE_OPEN_PROBLEM, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, mergeSummaries, oracleNeedsArbitration, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
 import type { OracleSearch, OracleSearchInput, TracebackFrame } from '../oracle/index.js';
 import { analyse } from '../py/structure.js';
 import { forgetUnchangedTried, subsetCommand } from '../sieve/runner.js';
@@ -33,7 +33,7 @@ import { fitOracle, freshBudget, laneCount } from './budget.js';
 import { defaultOverrides, handleDirective, invalidateStaleSites } from './directive.js';
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
 import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, MAX_PROGRESS_COMMITS_PER_GOAL, clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
-import { commitSuspect } from './guard.js';
+import { LONE_PASSER_HOLD_MAX_NOUL, adviseLonePasser, commitSuspect } from './guard.js';
 import type { GoalPick } from './goals.js';
 import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
 import type { PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
@@ -422,11 +422,37 @@ export function isBestGuessGoal(goal: Pick<Goal, 'tests'>): boolean {
   return first !== undefined && isBestGuessTestId(first);
 }
 
-/** Notes the repository mode adds to a `done` (and to the transcript): the oracle's outcome, the scope, the known failures. */
+/** Notes the repository mode adds to a `done` (and to the transcript): the oracle's outcome, the scope, the known failures, the network open problem. */
 export function repositoryNotes(repo: RepositoryMode): string[] {
   const notes = [`oracle from the issue: ${repo.oracleOutcome} (${repo.oracleNote})`, `regression scope: ${repo.scope.testFiles.length} test file${repo.scope.testFiles.length === 1 ? '' : 's'} (${repo.scope.tier}): ${repo.scope.note}`];
   if (repo.knownFailures > 0) notes.push(`${repo.knownFailures} scoped test${repo.knownFailures === 1 ? '' : 's'} fail at the base commit too (pre-existing, not goals)`);
+  const network = networkOracleNote(repo);
+  if (network !== null) notes.push(network);
   return notes;
+}
+
+/**
+ * The `openProblems` note every patch and `done` carries while the run's oracle is network-dependent
+ * (oracle/search.ts `weak_network`, `oracleNeedsArbitration`): it starts with
+ * NETWORK_ORACLE_OPEN_PROBLEM verbatim, so the risk stage and the bench report read the same
+ * words the oracle's own note used. Null for every other oracle outcome.
+ */
+export function networkOracleNote(repo: Pick<RepositoryMode, 'oracleOutcome' | 'repro' | 'scope'>): string | null {
+  if (!oracleNeedsArbitration(repo.oracleOutcome)) return null;
+  const id = repo.repro === null ? 'the reproduction' : repo.repro.spec.testId;
+  return `${NETWORK_ORACLE_OPEN_PROBLEM} ${id}: its verdict is the network's as much as the code's; a passer is committed only after the regression scope (${repo.scope.testFiles.length} file${repo.scope.testFiles.length === 1 ? '' : 's'}) and Jev's arbitration`;
+}
+
+/**
+ * The caveats a repository-mode `patch` carries beside the commit's own note: the network open
+ * problem (a `weak_network` oracle), else the weak-criterion note (a `valid_weak` oracle: the
+ * criterion only says the observed wrong value changed).
+ */
+export function repositoryPatchNotes(repo: Pick<RepositoryMode, 'oracleOutcome' | 'repro' | 'scope'>): string[] {
+  const network = networkOracleNote(repo);
+  if (network !== null) return [network];
+  if (repo.repro?.strength === 'weak') return [`weak reproduction oracle ${repo.repro.spec.testId}: the criterion only says the observed wrong value changed; the regression scope (${repo.scope.testFiles.length} files) is the other check`];
+  return [];
 }
 
 /**
@@ -541,6 +567,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     }
     const baseline = mem.baseline;
     if (baseline === null) throw new Error('ledger-sieve: baseline missing after rebaseline');
+    const repo = mem.repository;
 
     // §5.1: the full suite runs as an engine step so testsCurrent and lastTestRun see the oracle.
     // This is a standing obligation, not a one-step reflex: the engine has no test run of the
@@ -566,7 +593,6 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       const goal = scratch.lastCommit === null ? undefined : mem.goals.find((g) => g.id === scratch.lastCommit?.goalId);
       // repository mode: the baseline's command is the regression scope, never the whole suite
       const command = mem.baseline?.command ?? baselineCommand(ctx);
-      const repo = mem.repository;
       const changed = mem.lastChangeStep === null ? [] : (mem.committed.at(-1)?.files ?? []).map((f) => f.path);
       this.emit(ctx, 'verify', `${changed.length > 0 ? `${changed.join(', ')} changed since the engine's last test run` : 'the engine has not run the suite on this workspace'}: ${command}`);
       // §5.1 row 2: the run claims the fixed goals now, so the engine's done_<j> Noul judges them on this step's parsed output
@@ -602,7 +628,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       // proposeDone applies §5.5 itself: `done` as soon as the engine has executed the green run on this
       // workspace (read from the window, else from mem.lastEngineRun, which outlives it), never another run then.
       this.emit(ctx, 'done', `baseline green: ${baseline.passed} tests pass, ${mem.committed.length} fix${mem.committed.length === 1 ? '' : 'es'} committed`);
-      return proposeDone(ctx, mem, 'green');
+      const network = repo === undefined ? null : networkOracleNote(repo);
+      return proposeDone(ctx, mem, 'green', undefined, network === null ? [] : [network]);
     }
 
     // No `read` under any intent: the synthesizer holds every source file (loadPythonFiles), and
@@ -659,9 +686,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         const partial = await this.progressCommit(ctx, mem, goal);
         if (partial !== null) r = { ...partial, trace: { ...r.trace, outcome: 'partial', winner: partial.applied, testRuns: r.trace.testRuns } };
       }
+      // a network-dependent oracle's lone passer is arbitrated before its evidence is written (§23.3)
+      if (r.kind === 'commit' && repo !== undefined && oracleNeedsArbitration(repo.oracleOutcome)) r = await this.arbitrateNetworkPasser(ctx, mem, goal, r);
       if (r.kind === 'commit') evidence = commitEvidence(mem, r, goal);
     }
-    this.emit(ctx, 'search', `${goal.id} ${r.kind}${r.kind === 'parked' ? `: ${r.reason}` : ''} (phase ${r.trace.phase}, ${r.trace.runMode}, sites ${r.trace.sitesConsidered}, requests ${r.trace.jevRequests}, runs ${r.trace.testRuns}, plausible ${r.trace.plausible})`, {
+    this.emit(ctx, 'search', `${goal.id} ${r.kind}${r.kind === 'parked' ? `: ${r.reason}` : ''} (phase ${r.trace.phase}, ${r.trace.runMode}, sites ${r.trace.sitesConsidered}, requests ${r.trace.jevRequests}, runs ${r.trace.testRuns}, plausible ${r.trace.plausible}${r.trace.unstable === undefined || r.trace.unstable === 0 ? '' : `, unstable ${r.trace.unstable}`})`, {
       candidates: r.trace.candidatesEnumerated,
       tested: r.trace.candidatesTested,
     });
@@ -683,14 +712,13 @@ export class LedgerSieveSynthesizer implements Synthesizer {
           const forgotten = forgetUnchangedTried(mem, goal.id);
           this.emit(ctx, 'progress', `${goal.id}: partial fix committed (progress commit ${goal.progressCommits ?? 1} of ${MAX_PROGRESS_COMMITS_PER_GOAL}${k === null ? '' : `; ${k} of ${goal.tests.length} goal tests pass, the remaining ${goal.tests.length - k} stay open`}); the goal stays open and is re-clustered from the next baseline${forgotten > 0 ? `; ${forgotten} unchanged verdict${forgotten === 1 ? '' : 's'} taken under the old failure forgotten (re-enumerable)` : ''}`);
         } else mem.unchangedTried?.delete(goal.id);
-        const repo = mem.repository;
         if (repo !== undefined && isBestGuessGoal(goal)) {
           // the one unverified commit of the run: the goal parks with the reason, the plan says what was not verified
           repo.bestGuessCommitted = true;
           park(goal, BEST_GUESS_PARK_REASON);
           return proposePatch(ctx, r.applied, goal, mem, undefined, r.trace, evidence, { goalText: bestGuessGoalText(r.applied, evidence ?? undefined), notes: [BEST_GUESS_NOTE] });
         }
-        const notes = repo?.repro?.strength === 'weak' ? [`weak reproduction oracle ${repo.repro.spec.testId}: the criterion only says the observed wrong value changed; the regression scope (${repo.scope.testFiles.length} files) is the other check`] : [];
+        const notes = repo === undefined ? [] : repositoryPatchNotes(repo);
         // §5.1 row 1 with evidence: the shadow run the commit rests on goes with the patch, so the
         // engine's risk and judge stages read a verified change (loop/state.ts proposal.evidence).
         return proposePatch(ctx, r.applied, goal, mem, r.note, r.trace, evidence, { notes });
@@ -740,6 +768,39 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         goal.status = 'open';
         return this.subsetRun(ctx, mem, goal, r.trace);
     }
+  }
+
+  /**
+   * The gate on a network-dependent oracle's passer (oracle/search.ts `weak_network`: requests-2931's
+   * `requests.put("http://httpbin.org/put", …)` found the failure at base, but its verdict is the
+   * network's as much as the code's). A lone passer of such an oracle is never committed on its
+   * lane runs alone (jev-only-rungs-1-2.md §23.3): when the guard arbitrated ≥ 2 passers (Q15/Q16,
+   * `trace.arbitrated`) the pick stands; otherwise the guard's rule-(b) advisory (guard.ts
+   * adviseLonePasser: Q16 `general_cand_01` over the one-candidate arbitration state) is asked
+   * about the passer here — the controller's own gate, since the guard's `decide` has no option
+   * that forces it and its adapter is wired by src/synth/index.ts — and a doubted passer
+   * (p < LONE_PASSER_HOLD_MAX_NOUL, or no Noul) is committed as `possible overfit` while a vouched
+   * one is a plain commit: the tests are the oracle, the guard never overrides them, and the open
+   * problem rides on every proposal either way (repositoryPatchNotes). The request is charged to
+   * the step and to the trace, whose `arbitrated` then says Jev judged the pick; with no request
+   * left the commit stands and the transcript says it was not arbitrated. A partial commit (the
+   * goal's tests do not all pass) and a commit without its shadow outcome are not passers here.
+   */
+  private async arbitrateNetworkPasser(ctx: SynthesisContext, mem: RunMemory, goal: Goal, r: Extract<SubGoalResult, { kind: 'commit' }>): Promise<Extract<SubGoalResult, { kind: 'commit' }>> {
+    if (r.trace.arbitrated) return r;
+    if (!r.allGoalTestsPass || r.outcome === undefined) return r;
+    const c = r.applied.candidate;
+    const what = `${c.source}/${c.op} at ${c.site.file.path}:${c.site.line}`;
+    if (mem.stepBudget.jevRequestsLeft < 1) {
+      this.emit(ctx, 'guard', `${goal.id}: ${NETWORK_ORACLE_OPEN_PROBLEM}; the lone passer ${what} was not arbitrated (no Jev request left this step); committing it with the open problem`);
+      return r;
+    }
+    const adv = await adviseLonePasser({ goal, stage: 'propose' }, r.outcome, ctx.ask);
+    mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - adv.requests);
+    const trace: GoalSearchTrace = { ...r.trace, arbitrated: true, jevRequests: r.trace.jevRequests + adv.requests };
+    const vouched = adv.p !== null && adv.p >= LONE_PASSER_HOLD_MAX_NOUL;
+    this.emit(ctx, 'guard', `${goal.id}: ${NETWORK_ORACLE_OPEN_PROBLEM}; Q16 on the lone passer ${what}: general ${adv.p === null ? 'n/a' : adv.p.toFixed(2)} ${vouched ? `≥ ${LONE_PASSER_HOLD_MAX_NOUL}, committing it` : `< ${LONE_PASSER_HOLD_MAX_NOUL}, committing it as possible overfit`}`);
+    return vouched ? { ...r, trace } : { ...r, trace, note: 'possible overfit' };
   }
 
   /**

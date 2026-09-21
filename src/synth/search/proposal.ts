@@ -493,6 +493,7 @@ export function traceRecord(trace: GoalSearchTrace): JsonObject {
     tRunMs: trace.tRunMs,
     bySource,
   };
+  if (trace.unstable !== undefined) rec['unstable'] = trace.unstable;
   if (trace.winner) rec['winner'] = editRecord(trace.winner);
   return rec;
 }
@@ -722,6 +723,9 @@ export function proposeRun(ctx: SynthesisContext, command: string, kind: RunScop
  * while a committed edit touches a test file (§5.5 condition 2 applies to every `done`: the
  * evaluators check `tests/` unchanged, §5.6). Fixed goals whose claims were not accepted are
  * claimed again on the `done` step. `trace` (the step's search, if any) goes into `rawText`.
+ * `notes` are carried in `openProblems` by every form of the `done` (the blocked run, the green
+ * and the partial claim alike): a green repository run under a network-dependent oracle still
+ * has the open problem its patches carried (search/index.ts networkOracleNote).
  */
 export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: DoneMode, trace?: GoalSearchTrace, notes: readonly string[] = []): Proposal {
   const ready = doneReadiness(ctx, mem);
@@ -750,7 +754,8 @@ export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: Do
     const summary = `all ${n} tests pass${repros.length > 0 ? `; the reproduction ${repros.join(', ')} passes` : ''}; ${commits} ${commits === 1 ? 'fix' : 'fixes'} committed`;
     const record: JsonObject = { kind: 'done', mode, ledger: ledgerLine(mem.goals), passed: n, committed: commits, claimed: claims };
     if (trace) record['trace'] = traceRecord(trace);
-    return { goal: summary, action: { kind: 'done', summary }, plan: draft(claims, [], []), rawText: rawText(record) };
+    if (notes.length > 0) record['notes'] = [...notes];
+    return { goal: summary, action: { kind: 'done', summary }, plan: draft(claims, [], notes.length === 0 ? [] : openProblemNotes(mem, notes)), rawText: rawText(record) };
   }
   const reasons = mem.goals.filter((g) => g.status === 'parked').map((g) => `${testsLabel(g)}: ${g.parkedReason ?? 'parked'}`);
   const summary = `partial: fixed ${fixed} of ${total} failing tests${reasons.length > 0 ? `; ${reasons.join('; ')}` : ''}${notes.length > 0 ? `; ${notes.join('; ')}` : ''}`;
