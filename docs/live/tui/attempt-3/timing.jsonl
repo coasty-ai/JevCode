@@ -24,3 +24,5 @@
 {"t":70938,"step":19,"op":"auto-review-unresolved","arg":""}
 {"t":70938,"step":19,"op":"auto-review-seen","arg":""}
 {"t":71961,"step":19,"op":"auto-review-resolved","arg":"approved"}
+{"t":672653,"step":19,"op":"timeout","arg":"end human_pause"}
+{"t":673220,"step":0,"op":"exit","arg":"0"}

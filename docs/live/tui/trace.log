@@ -1,0 +1,317 @@
+2026-09-21T10:35:25.473Z main.renderer tui mounted (mode session) t=88.5
+2026-09-21T10:35:25.474Z main.controller.run t=89.2
+2026-09-21T10:35:25.475Z session.startup: awaiting firstFrame
+2026-09-21T10:35:25.475Z session.startup: firstFrame at 90.1 ms
+2026-09-21T10:35:25.476Z session.startup: keybindings + history read
+2026-09-21T10:35:25.477Z session.startup: config resolved
+2026-09-21T10:35:25.496Z session.startup: secrets + git probed
+2026-09-21T10:35:25.500Z session.startup: trust gate done
+2026-09-21T10:35:25.977Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:25.979Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:25.985Z session.startRun: seeding
+2026-09-21T10:35:25.987Z session.startRun: createEngine
+2026-09-21T10:35:26.024Z session.startRun: engine 20260921-103525-arhva4xt
+2026-09-21T10:35:26.026Z loop top step=0 aborted=false
+2026-09-21T10:35:26.027Z engine.ask intent step=1 start
+2026-09-21T10:35:26.027Z jev.client attempt: fetch start
+2026-09-21T10:35:25.976Z trace key kind=text len=71 masked=false
+2026-09-21T10:35:25.979Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:26.317Z jev.client attempt: headers status=200
+2026-09-21T10:35:26.320Z jev.client attempt: body read bytes=622
+2026-09-21T10:35:26.320Z engine.ask intent resolved attempts=1
+2026-09-21T10:35:26.322Z stage intent finally
+2026-09-21T10:35:26.323Z stage intent end emitted
+2026-09-21T10:35:26.429Z engine.ask context step=1 start
+2026-09-21T10:35:26.431Z jev.client attempt: fetch start
+2026-09-21T10:35:26.944Z jev.client attempt: headers status=200
+2026-09-21T10:35:26.946Z jev.client attempt: body read bytes=29551
+2026-09-21T10:35:26.947Z engine.ask context resolved attempts=1
+2026-09-21T10:35:27.208Z stage context finally
+2026-09-21T10:35:27.208Z stage context end emitted
+2026-09-21T10:35:28.042Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:28.043Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:28.042Z trace key kind=text len=62 masked=false
+2026-09-21T10:35:28.043Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:30.257Z stage propose finally
+2026-09-21T10:35:30.257Z stage propose end emitted
+2026-09-21T10:35:30.258Z engine.ask risk step=1 start
+2026-09-21T10:35:30.258Z jev.client attempt: fetch start
+2026-09-21T10:35:30.544Z jev.client attempt: headers status=200
+2026-09-21T10:35:30.550Z jev.client attempt: body read bytes=2733
+2026-09-21T10:35:30.550Z engine.ask risk resolved attempts=1
+2026-09-21T10:35:30.552Z stage risk finally
+2026-09-21T10:35:30.552Z stage risk end emitted
+2026-09-21T10:35:31.019Z stage execute finally
+2026-09-21T10:35:31.020Z stage execute end emitted
+2026-09-21T10:35:31.023Z engine.ask judge step=1 start
+2026-09-21T10:35:31.023Z jev.client attempt: fetch start
+2026-09-21T10:35:31.234Z jev.client attempt: headers status=200
+2026-09-21T10:35:31.236Z jev.client attempt: body read bytes=360
+2026-09-21T10:35:31.236Z engine.ask judge resolved attempts=1
+2026-09-21T10:35:31.237Z stage judge finally
+2026-09-21T10:35:31.237Z stage judge end emitted
+2026-09-21T10:35:31.242Z runStep done step=1 stop=null
+2026-09-21T10:35:31.242Z loop top step=1 aborted=false
+2026-09-21T10:35:31.242Z engine.ask intent step=2 start
+2026-09-21T10:35:31.242Z jev.client attempt: fetch start
+2026-09-21T10:35:31.363Z jev.client attempt: headers status=200
+2026-09-21T10:35:31.364Z jev.client attempt: body read bytes=627
+2026-09-21T10:35:31.364Z engine.ask intent resolved attempts=1
+2026-09-21T10:35:31.364Z stage intent finally
+2026-09-21T10:35:31.364Z stage intent end emitted
+2026-09-21T10:35:31.366Z engine.ask context step=2 start
+2026-09-21T10:35:31.369Z jev.client attempt: fetch start
+2026-09-21T10:35:31.930Z jev.client attempt: headers status=200
+2026-09-21T10:35:31.932Z jev.client attempt: body read bytes=29551
+2026-09-21T10:35:31.933Z engine.ask context resolved attempts=1
+2026-09-21T10:35:31.946Z stage context finally
+2026-09-21T10:35:31.946Z stage context end emitted
+2026-09-21T10:35:35.295Z stage propose finally
+2026-09-21T10:35:35.295Z stage propose end emitted
+2026-09-21T10:35:35.296Z engine.ask risk step=2 start
+2026-09-21T10:35:35.296Z jev.client attempt: fetch start
+2026-09-21T10:35:35.478Z jev.client attempt: headers status=200
+2026-09-21T10:35:35.479Z jev.client attempt: body read bytes=2730
+2026-09-21T10:35:35.480Z engine.ask risk resolved attempts=1
+2026-09-21T10:35:35.481Z stage risk finally
+2026-09-21T10:35:35.481Z stage risk end emitted
+2026-09-21T10:35:35.698Z stage execute finally
+2026-09-21T10:35:35.699Z stage execute end emitted
+2026-09-21T10:35:35.701Z engine.ask judge step=2 start
+2026-09-21T10:35:35.702Z jev.client attempt: fetch start
+2026-09-21T10:35:35.865Z jev.client attempt: headers status=200
+2026-09-21T10:35:35.865Z jev.client attempt: body read bytes=398
+2026-09-21T10:35:35.865Z engine.ask judge resolved attempts=1
+2026-09-21T10:35:35.865Z stage judge finally
+2026-09-21T10:35:35.865Z stage judge end emitted
+2026-09-21T10:35:35.868Z runStep done step=2 stop=null
+2026-09-21T10:35:35.868Z loop top step=2 aborted=false
+2026-09-21T10:35:35.868Z engine.ask intent step=3 start
+2026-09-21T10:35:35.868Z jev.client attempt: fetch start
+2026-09-21T10:35:36.081Z jev.client attempt: headers status=200
+2026-09-21T10:35:36.081Z jev.client attempt: body read bytes=625
+2026-09-21T10:35:36.081Z engine.ask intent resolved attempts=1
+2026-09-21T10:35:36.082Z stage intent finally
+2026-09-21T10:35:36.082Z stage intent end emitted
+2026-09-21T10:35:36.083Z engine.ask context step=3 start
+2026-09-21T10:35:36.085Z jev.client attempt: fetch start
+2026-09-21T10:35:36.670Z jev.client attempt: headers status=200
+2026-09-21T10:35:36.673Z jev.client attempt: body read bytes=29551
+2026-09-21T10:35:36.673Z engine.ask context resolved attempts=1
+2026-09-21T10:35:36.681Z stage context finally
+2026-09-21T10:35:36.681Z stage context end emitted
+2026-09-21T10:35:40.501Z stage propose finally
+2026-09-21T10:35:40.502Z stage propose end emitted
+2026-09-21T10:35:40.502Z engine.ask risk step=3 start
+2026-09-21T10:35:40.502Z jev.client attempt: fetch start
+2026-09-21T10:35:40.722Z jev.client attempt: headers status=200
+2026-09-21T10:35:40.723Z jev.client attempt: body read bytes=2727
+2026-09-21T10:35:40.723Z engine.ask risk resolved attempts=1
+2026-09-21T10:35:40.724Z stage risk finally
+2026-09-21T10:35:40.724Z stage risk end emitted
+2026-09-21T10:35:40.943Z stage execute finally
+2026-09-21T10:35:40.943Z stage execute end emitted
+2026-09-21T10:35:40.947Z engine.ask judge step=3 start
+2026-09-21T10:35:40.947Z jev.client attempt: fetch start
+2026-09-21T10:35:41.198Z jev.client attempt: headers status=200
+2026-09-21T10:35:41.198Z jev.client attempt: body read bytes=436
+2026-09-21T10:35:41.199Z engine.ask judge resolved attempts=1
+2026-09-21T10:35:41.199Z stage judge finally
+2026-09-21T10:35:41.199Z stage judge end emitted
+2026-09-21T10:35:41.203Z runStep done step=3 stop=null
+2026-09-21T10:35:41.203Z loop top step=3 aborted=false
+2026-09-21T10:35:41.203Z engine.ask intent step=4 start
+2026-09-21T10:35:41.203Z jev.client attempt: fetch start
+2026-09-21T10:35:41.403Z jev.client attempt: headers status=200
+2026-09-21T10:35:41.404Z jev.client attempt: body read bytes=626
+2026-09-21T10:35:41.404Z engine.ask intent resolved attempts=1
+2026-09-21T10:35:41.404Z stage intent finally
+2026-09-21T10:35:41.404Z stage intent end emitted
+2026-09-21T10:35:41.406Z engine.ask context step=4 start
+2026-09-21T10:35:41.408Z jev.client attempt: fetch start
+2026-09-21T10:35:41.934Z jev.client attempt: headers status=200
+2026-09-21T10:35:41.936Z jev.client attempt: body read bytes=29551
+2026-09-21T10:35:41.937Z engine.ask context resolved attempts=1
+2026-09-21T10:35:41.943Z stage context finally
+2026-09-21T10:35:41.943Z stage context end emitted
+2026-09-21T10:35:45.265Z stage propose finally
+2026-09-21T10:35:45.266Z stage propose end emitted
+2026-09-21T10:35:45.266Z engine.ask risk step=4 start
+2026-09-21T10:35:45.267Z jev.client attempt: fetch start
+2026-09-21T10:35:45.468Z jev.client attempt: headers status=200
+2026-09-21T10:35:45.469Z jev.client attempt: body read bytes=2728
+2026-09-21T10:35:45.469Z engine.ask risk resolved attempts=1
+2026-09-21T10:35:45.470Z stage risk finally
+2026-09-21T10:35:45.470Z stage risk end emitted
+2026-09-21T10:35:45.692Z stage execute finally
+2026-09-21T10:35:45.692Z stage execute end emitted
+2026-09-21T10:35:45.695Z engine.ask judge step=4 start
+2026-09-21T10:35:45.695Z jev.client attempt: fetch start
+2026-09-21T10:35:45.933Z jev.client attempt: headers status=200
+2026-09-21T10:35:45.934Z jev.client attempt: body read bytes=398
+2026-09-21T10:35:45.934Z engine.ask judge resolved attempts=1
+2026-09-21T10:35:45.934Z stage judge finally
+2026-09-21T10:35:45.934Z stage judge end emitted
+2026-09-21T10:35:45.938Z runStep done step=4 stop=null
+2026-09-21T10:35:45.939Z loop top step=4 aborted=false
+2026-09-21T10:35:45.939Z engine.ask replan step=5 start
+2026-09-21T10:35:45.939Z jev.client attempt: fetch start
+2026-09-21T10:35:46.261Z jev.client attempt: headers status=200
+2026-09-21T10:35:46.262Z jev.client attempt: body read bytes=703
+2026-09-21T10:35:46.263Z engine.ask replan resolved attempts=1
+2026-09-21T10:35:46.264Z stage replan finally
+2026-09-21T10:35:46.264Z stage replan end emitted
+2026-09-21T10:35:46.265Z runStep done step=4 stop=replan_stop
+2026-09-21T10:35:46.265Z finish(replan_stop) pendingCheckpoint=true persists=3
+2026-09-21T10:35:46.266Z finish: checkpoint awaited, writing final state
+2026-09-21T10:35:46.286Z finish: final state written
+2026-09-21T10:35:46.297Z finish: phase outcome ok
+2026-09-21T10:35:47.305Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:47.306Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:47.310Z session.startRun: seeding
+2026-09-21T10:35:47.311Z session.startRun: createEngine
+2026-09-21T10:35:47.338Z session.startRun: engine 20260921-103547-ntj6esxg
+2026-09-21T10:35:47.338Z loop top step=0 aborted=false
+2026-09-21T10:35:47.339Z engine.ask intent step=1 start
+2026-09-21T10:35:47.339Z jev.client attempt: fetch start
+2026-09-21T10:35:47.305Z trace key kind=text len=79 masked=false
+2026-09-21T10:35:47.306Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:48.478Z jev.client attempt: headers status=200
+2026-09-21T10:35:48.479Z jev.client attempt: body read bytes=630
+2026-09-21T10:35:48.479Z engine.ask intent resolved attempts=1
+2026-09-21T10:35:48.480Z stage intent finally
+2026-09-21T10:35:48.480Z stage intent end emitted
+2026-09-21T10:35:48.593Z engine.ask context step=1 start
+2026-09-21T10:35:48.594Z jev.client attempt: fetch start
+2026-09-21T10:35:49.180Z jev.client attempt: headers status=200
+2026-09-21T10:35:49.182Z jev.client attempt: body read bytes=29515
+2026-09-21T10:35:49.183Z engine.ask context resolved attempts=1
+2026-09-21T10:35:49.227Z stage context finally
+2026-09-21T10:35:49.227Z stage context end emitted
+2026-09-21T10:35:53.140Z stage propose finally
+2026-09-21T10:35:53.140Z stage propose end emitted
+2026-09-21T10:35:53.141Z engine.ask risk step=1 start
+2026-09-21T10:35:53.142Z jev.client attempt: fetch start
+2026-09-21T10:35:53.364Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:53.396Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:53.590Z jev.client attempt: headers status=200
+2026-09-21T10:35:53.591Z jev.client attempt: body read bytes=2729
+2026-09-21T10:35:53.591Z engine.ask risk resolved attempts=1
+2026-09-21T10:35:53.592Z stage risk finally
+2026-09-21T10:35:53.592Z stage risk end emitted
+2026-09-21T10:35:53.363Z trace key kind=escape len=0 masked=false
+2026-09-21T10:35:54.440Z tui.arm effect run overlay=review
+2026-09-21T10:35:54.440Z tui.arm dispatch overlay:armed via flush
+2026-09-21T10:35:54.450Z tui.arm effect cleanup armed=true
+2026-09-21T10:35:55.416Z tui.keystate overlay=review overlayArmed=true pending=true
+2026-09-21T10:35:55.432Z stage execute finally
+2026-09-21T10:35:55.433Z stage execute end emitted
+2026-09-21T10:35:55.433Z engine.ask judge step=1 start
+2026-09-21T10:35:55.434Z jev.client attempt: fetch start
+2026-09-21T10:35:55.588Z jev.client attempt: headers status=200
+2026-09-21T10:35:55.588Z jev.client attempt: body read bytes=390
+2026-09-21T10:35:55.589Z engine.ask judge resolved attempts=1
+2026-09-21T10:35:55.590Z stage judge finally
+2026-09-21T10:35:55.590Z stage judge end emitted
+2026-09-21T10:35:55.596Z runStep done step=1 stop=null
+2026-09-21T10:35:55.596Z loop top step=1 aborted=false
+2026-09-21T10:35:55.596Z finish(human_pause) pendingCheckpoint=true persists=4
+2026-09-21T10:35:55.618Z finish: checkpoint awaited, writing final state
+2026-09-21T10:35:55.624Z finish: final state written
+2026-09-21T10:35:55.632Z finish: phase outcome ok
+2026-09-21T10:35:55.416Z trace key kind=text len=1 masked=false
+2026-09-21T10:35:56.641Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.641Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.661Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.661Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.669Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.670Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.680Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.680Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.688Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.688Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:35:56.712Z loop top step=1 aborted=false
+2026-09-21T10:35:56.712Z engine.ask intent step=2 start
+2026-09-21T10:35:56.712Z jev.client attempt: fetch start
+2026-09-21T10:35:56.641Z trace key kind=text len=5 masked=false
+2026-09-21T10:35:56.641Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:56.661Z trace key kind=text len=5 masked=false
+2026-09-21T10:35:56.661Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:56.669Z trace key kind=text len=5 masked=false
+2026-09-21T10:35:56.670Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:56.680Z trace key kind=text len=10 masked=false
+2026-09-21T10:35:56.680Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:56.688Z trace key kind=text len=9 masked=false
+2026-09-21T10:35:56.688Z trace key kind=return len=0 masked=false
+2026-09-21T10:35:56.902Z jev.client attempt: headers status=200
+2026-09-21T10:35:56.903Z jev.client attempt: body read bytes=625
+2026-09-21T10:35:56.903Z engine.ask intent resolved attempts=1
+2026-09-21T10:35:56.904Z stage intent finally
+2026-09-21T10:35:56.904Z stage intent end emitted
+2026-09-21T10:35:56.998Z engine.ask context step=2 start
+2026-09-21T10:35:56.999Z jev.client attempt: fetch start
+2026-09-21T10:35:57.586Z jev.client attempt: headers status=200
+2026-09-21T10:35:57.588Z jev.client attempt: body read bytes=29515
+2026-09-21T10:35:57.590Z engine.ask context resolved attempts=1
+2026-09-21T10:35:57.604Z stage context finally
+2026-09-21T10:35:57.604Z stage context end emitted
+2026-09-21T10:36:00.554Z stage propose finally
+2026-09-21T10:36:00.554Z stage propose end emitted
+2026-09-21T10:36:00.555Z engine.ask risk step=2 start
+2026-09-21T10:36:00.556Z jev.client attempt: fetch start
+2026-09-21T10:36:00.869Z jev.client attempt: headers status=200
+2026-09-21T10:36:00.870Z jev.client attempt: body read bytes=2726
+2026-09-21T10:36:00.871Z engine.ask risk resolved attempts=1
+2026-09-21T10:36:00.872Z stage risk finally
+2026-09-21T10:36:00.872Z stage risk end emitted
+2026-09-21T10:36:01.325Z stage execute finally
+2026-09-21T10:36:01.325Z stage execute end emitted
+2026-09-21T10:36:01.328Z engine.ask judge step=2 start
+2026-09-21T10:36:01.328Z jev.client attempt: fetch start
+2026-09-21T10:36:01.537Z jev.client attempt: headers status=200
+2026-09-21T10:36:01.537Z jev.client attempt: body read bytes=359
+2026-09-21T10:36:01.538Z engine.ask judge resolved attempts=1
+2026-09-21T10:36:01.538Z stage judge finally
+2026-09-21T10:36:01.538Z stage judge end emitted
+2026-09-21T10:36:01.542Z runStep done step=2 stop=null
+2026-09-21T10:36:01.542Z loop top step=2 aborted=false
+2026-09-21T10:36:01.542Z engine.ask intent step=3 start
+2026-09-21T10:36:01.543Z jev.client attempt: fetch start
+2026-09-21T10:36:01.667Z jev.client attempt: headers status=200
+2026-09-21T10:36:01.669Z jev.client attempt: body read bytes=628
+2026-09-21T10:36:01.669Z engine.ask intent resolved attempts=1
+2026-09-21T10:36:01.669Z stage intent finally
+2026-09-21T10:36:01.669Z stage intent end emitted
+2026-09-21T10:36:01.671Z engine.ask context step=3 start
+2026-09-21T10:36:01.674Z jev.client attempt: fetch start
+2026-09-21T10:36:02.202Z jev.client attempt: headers status=200
+2026-09-21T10:36:02.203Z jev.client attempt: body read bytes=29515
+2026-09-21T10:36:02.204Z engine.ask context resolved attempts=1
+2026-09-21T10:36:02.218Z stage context finally
+2026-09-21T10:36:02.219Z stage context end emitted
+2026-09-21T10:36:05.214Z stage propose finally
+2026-09-21T10:36:05.214Z stage propose end emitted
+2026-09-21T10:36:05.215Z engine.ask risk step=3 start
+2026-09-21T10:36:05.216Z jev.client attempt: fetch start
+2026-09-21T10:36:05.408Z jev.client attempt: headers status=200
+2026-09-21T10:36:05.410Z jev.client attempt: body read bytes=2728
+2026-09-21T10:36:05.410Z engine.ask risk resolved attempts=1
+2026-09-21T10:36:05.410Z stage risk finally
+2026-09-21T10:36:05.410Z stage risk end emitted
+2026-09-21T10:36:05.615Z stage execute finally
+2026-09-21T10:36:05.615Z stage execute end emitted
+2026-09-21T10:36:05.618Z engine.ask judge step=3 start
+2026-09-21T10:36:05.618Z jev.client attempt: fetch start
+2026-09-21T10:36:05.738Z jev.client attempt: headers status=200
+2026-09-21T10:36:05.738Z jev.client attempt: body read bytes=398
+2026-09-21T10:36:05.738Z engine.ask judge resolved attempts=1
+2026-09-21T10:36:05.738Z stage judge finally
+2026-09-21T10:36:05.738Z stage judge end emitted
+2026-09-21T10:36:05.741Z runStep done step=3 stop=complete
+2026-09-21T10:36:05.741Z finish(complete) pendingCheckpoint=true persists=5
+2026-09-21T10:36:05.754Z finish: checkpoint awaited, writing final state
+2026-09-21T10:36:05.758Z finish: final state written
+2026-09-21T10:36:05.763Z finish: phase outcome ok
+2026-09-21T10:36:06.770Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:36:06.771Z tui.keystate overlay=none overlayArmed=false pending=false
+2026-09-21T10:36:06.780Z main.controller.run resolved 0 t=41395.2

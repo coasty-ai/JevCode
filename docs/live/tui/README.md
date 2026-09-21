@@ -6,3 +6,11 @@ OpenRouter, workspace `/tmp/jevcode-demo` = `examples/demo-py` with a git histor
 engine's `confirm <id> approved` line). Artefacts: `tui-pty.log` (raw pty capture),
 `timing.jsonl`, and the run directories' `transcript.log` / `state.json` / `jevcode.log` copied
 beside them. Nothing here contains a key (checked with the redactor's patterns after the run).
+
+## Result (attempt 4, 2026-09-21 10:35 UTC)
+
+Driver exit 0, 41.5 s, $0.099 across three engine runs: run 1 `replan_stop` at step 4 after a queued steer was
+applied at step 2; a follow-up seeded from it; Esc paused it after step 1 (its step-1 review approved on the first
+`y`); `/cost`, `/plan`, `/diff`, `/decisions`; `/continue` resumed it to `complete` at step 3; `/exit`. The run
+directories' redacted `transcript.log`, `state.json` and `run.json` are under `runs/`. Attempts 1–3 (subdirectories)
+document the driver defects found on the way (see `docs/STATUS.md`, "Live session").

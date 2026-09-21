@@ -497,6 +497,36 @@ rows is reproducible on the current tree:
     fires. `docs/TUI.md` and README now say "bound but inert". Request to the polish slot (owner of the registry): add a
     `note` to the `composer:newline` row so the generated `docs/KEYS.md` carries the caveat.
 
+### Live session (real Jev `typesafe/jev-1.13-20260917` and Claude Sonnet 5 through OpenRouter, 2026-09-21 10:35 UTC)
+
+`docs/live/tui/` holds the fourth and complete recording of the scripted interactive session
+(`live-session.steps`, driven by `scripts/pty/drive.exp` in a 40×120 pty with `PTY_AUTO_REVIEW=y`; workspace
+`/tmp/jevcode-demo` = `examples/demo-py` with a git history and a `.venv`). Every stage of the design ran end to end
+in 41.5 s for $0.099, driver exit 0, and the artefacts (`tui-pty.log`, `timing.jsonl`, `runs/<id>/{transcript.log,
+state.json,run.json}`) contain no key material (0 hits for the `sk-or-v1-`/`sk-ant-` formats):
+
+| what | evidence |
+| --- | --- |
+| first frame (chat, argv only) | cursor-hide sentinel at 105 ms after spawn |
+| task typed into the composer, Enter | `[run] ready` 67 ms later |
+| steer typed while the run was live | 1 `steer queued` line(s) at step 1, 1 `steer applied` line(s) (`[step 2] steer applied to step 2 (1 directive)`) |
+| loop detection → replan by Jev | run 1 ended `replan_stop` at step 4 (`task_impossible=0.42`), 20 s, $0.045, exit 4; 1 loop/replan line(s) |
+| follow-up seeded from the previous run | `[run] seeded from run 20260921-103525-arhva4xt: plan done=4 remaining=4 unverified=0 · window 4 entries · 0 created` |
+| Esc → pause at the step boundary | `end human_pause steps=1`, exit 4; epilogue `paused after step 1 — /resume continues, or type a follow-up` |
+| Jev review answered through the pty | 4 review/confirm line(s) in run 2: `[step 3] proposal run $ python -m pytest -q: Run the test suite once more to confirm stabi` — approved on the first `y`, 1.0 s after the box was drawn |
+| `/cost`, `/plan`, `/diff`, `/decisions` while paused | `[ui] run $0.013 of $1.000 (1 %)`, `[ui] plan`, `[ui] diff (run … · 0 files · +0 −0 …)`, `[ui] decisions (last 12)` |
+| `/continue` resumes the paused run | `[run] ready … step 1/12 (resumed)` → `resumed at step 2` → `end complete steps=3`, 17 s, $0.041, exit 0 |
+| `/exit` | process exit 0; `sessions/index.jsonl` carries `run:start`, `run:end`, `pause`, `run:start`, `run:end` for the session |
+
+The three earlier recordings (`attempt-1` … `attempt-3`) are kept as the evidence trail of what changed between them:
+attempt 1 stalled on the driver's 80-column review regex at 120 columns; attempt 2 leaked a review `y` into the
+composer (fixed by the resolver guard) and stalled on a bare `/resume` (which opens the picker; the steps now use
+`/continue`); attempt 3 still needed a second `y` per review, traced to the driver's non-draining pause starving the
+TUI's React effects (Node's synchronous TTY writes; `docs/research/tui/20-pty-driver-findings.md` §5) — a real
+terminal always reads, so this cannot occur outside a stopped pty reader. Not covered by the recording: the wizard
+(keys were configured), the trust gate (no `AGENTS.md`), `/undo` and `d`-notes on a real run (both covered by the
+pty suite against mocks).
+
 ### Not verified here
 
 - Any real terminal application beyond the `expect(1)` pseudo-terminal (`TERM=xterm-256color`): the per-terminal
