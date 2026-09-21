@@ -35,9 +35,10 @@ describe('createVerifier().runTests through a scripted run function', () => {
     expect(typeof v.progress).toBe('function');
     expect(typeof v.route).toBe('function');
     expect(typeof v.applyCandidate).toBe('function');
-    expect(typeof v.progressQuestions).toBe('function');
     expect(typeof v.pickNextFailingTest).toBe('function');
-    expect(typeof v.judgeProgress).toBe('function');
+    // Q17 (`progressQuestions` / `judgeProgress`) was deleted: progress is code-computed only.
+    expect('judgeProgress' in v).toBe(false);
+    expect('progressQuestions' in v).toBe(false);
   });
 });
 

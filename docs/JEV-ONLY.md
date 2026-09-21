@@ -234,7 +234,7 @@ the linter verify. The question this document answers by experiment is which dec
   earlier Q7 number was contaminated and the clean one is now the one cited; (2) the bench task log
   was written unredacted — every record now passes through the redactor, end-to-end tested; (3) the
   Q17 progress questions are dead in practice (0 live requests; only a tie-break path) and are
-  documented as code-computed facts scheduled for deletion; (4) every threshold retuned after a live
+  deleted on 2026-09-20 in favour of a code tie-break (fewer regressions, then the smaller diff, then the earlier candidate); (4) every threshold retuned after a live
   run on a named QuixBugs program is disclosed in the design's §7, and the rung-1a claim is stated
   as in-sample. The "34 correct" claim is corrected by a per-program verdict script
   (`experiments/inspect/quixbugs-verdicts.mts`, `bench/results/jev-only-quixbugs-3/verdicts.md`):

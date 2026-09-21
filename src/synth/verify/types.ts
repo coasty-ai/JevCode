@@ -83,20 +83,6 @@ export interface PickOptions {
   tieMargin?: number;
 }
 
-/** The per-question probabilities of one progress judgment plus the code comparison. */
-export interface ProgressJudgment {
-  /** P(true) per Noul id; only ids that were asked */
-  nouls: Record<string, number>;
-  /** expected level of `closeness` (0..4) when asked, else null */
-  closenessExpected: number | null;
-  /** Noul ids where Jev is confident (≤ 0.3 or ≥ 0.7) and disagrees with the code verdict */
-  disagreements: string[];
-  /** Noul ids in the 0.3..0.7 band, neither agreeing nor disagreeing */
-  unsure: string[];
-  requests: number;
-  latencyMs: number;
-}
-
 export class VerifyError extends Error {
   constructor(message: string, options?: { cause?: unknown }) {
     super(`VerifyError: ${message}`, options);

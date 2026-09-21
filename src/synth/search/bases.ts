@@ -4,15 +4,18 @@
  * prototype fell into three times (`kth`, `sqrt`, `topological_ordering`; prototype-baseline.md).
  *
  *   - `holdBestPartial`: ≤ 1 improved base, replaced only by a partial that passes STRICTLY more
- *     tests; ties are broken by the Q17 `closeness` Score's expected level (the one Jev question
- *     here, a consistency check that never gates anything: probe-progress-judgment.md 230/240).
+ *     tests; a tie on `passed` is broken in code (`compareTieKeys`: fewer newly-failing tests, then
+ *     the smaller diff on the committed workspace — changed lines, then their characters — then
+ *     the earlier one). No Jev request is made
+ *     here: the Q17 `closeness` Score that used to break ties was deleted on 2026-09-20
+ *     (DECISIONS.md "Q17 deleted"; asked 0 times live, and a tie is between identical counts).
  *   - `pairsOfPartials`: contrarian source 5: two partials at different sites that fix disjoint
  *     test subsets become one composite candidate (≤ 10 pairs, tests decide).
  *   - `commitPartial`: at exhaustion the held partial is committed (its regression run was clean by
  *     construction) and the goal is re-clustered from the new baseline next step.
  *
  * Memory: these modules read and write `mem.bases` (the design's `SearchMemory.bases`) and keep
- * their own bookkeeping (remembered partials, the closeness cache, the suspect, the fallbacks) in a
+ * their own bookkeeping (remembered partials, the suspect, the pending passer, the fallbacks) in a
  * WeakMap keyed by the memory object (`guardState`), so any `{ bases: Base[] }` works unchanged and
  * nothing here needs a field on SearchMemory. That state lives as long as the memory; the
  * remembered partials also survive a park (`forgetHeld`) and a checkpoint (`persistPartials` /
@@ -23,10 +26,10 @@
  */
 import { createHash } from 'node:crypto';
 
-import type { Json, StageName } from '../../core/types.js';
+import type { Json } from '../../core/types.js';
 import { analyse, blockAt, scopeAt, unifiedDiff } from '../py/index.js';
-import type { AppliedCandidate, Candidate, CandidateSourceName, JevAsk, LineEdit, Site, SourceFile, TestRunSummary } from '../types.js';
-import { applyCandidate, judgeProgress, progress } from '../verify/index.js';
+import type { AppliedCandidate, Candidate, CandidateSourceName, LineEdit, Site, SourceFile, TestRunSummary } from '../types.js';
+import { applyCandidate, progress } from '../verify/index.js';
 import { wasTried } from './memory.js';
 import type { SearchMemory } from './memory.js';
 import type { Base, Decision, Goal, Phase, VerifyOutcome } from './types.js';
@@ -45,12 +48,6 @@ export const MAX_PARTIAL_PAIRS = 10;
  * sites with room and bounds the O(n²) pairing.
  */
 export const MAX_PARTIALS_REMEMBERED = 40;
-/**
- * Q17 requests spent on one `holdBestPartial` call when pass counts tie: the incumbent (once,
- * cached) plus the tied challengers. Ties are rare (the count is arithmetic); this keeps a
- * pathological batch from spending the step's Jev budget on tie-breaks.
- */
-export const MAX_CLOSENESS_REQUESTS = 4;
 /**
  * Partials written into the checkpoint per goal (`persistPartials`), most tests covered first.
  * `setSynthState` drops a state over SYNTH_STATE_MAX_BYTES (64 KB, loop/engine.ts) and the
@@ -113,8 +110,6 @@ export type GuardMemory = BasesMemory;
 export interface GuardState {
   /** partials seen this run per goal (source of `pairsOfPartials`), bounded */
   partials: RememberedPartial[];
-  /** base id → Q17 closeness E[level], so an incumbent is judged once */
-  closeness: Map<string, number>;
   /**
    * A test-passing candidate flagged by the suspect rule, committed at step end if nothing better.
    * Scoped to its goal so a later goal's step end never commits another goal's flagged passer.
@@ -132,7 +127,7 @@ const STATE = new WeakMap<BasesMemory, GuardState>();
 export function guardState(mem: BasesMemory): GuardState {
   let st = STATE.get(mem);
   if (st === undefined) {
-    st = { partials: [], closeness: new Map(), suspect: null, pending: null, fallbacks: null };
+    st = { partials: [], suspect: null, pending: null, fallbacks: null };
     STATE.set(mem, st);
   }
   return st;
@@ -224,20 +219,65 @@ export function appliedOnCommitted(mem: BasesMemory, o: VerifyOutcome): AppliedC
 // holdBestPartial
 // ---------------------------------------------------------------------------------------
 
-export interface HoldOptions {
-  /** Jev, for the Q17 tie-break only; without it ties keep the incumbent */
-  ask?: JevAsk;
-  stage?: StageName;
-  /** e.g. "the Python function `gcd`" for the Q17 state */
-  subject?: string;
-}
-
 export interface HoldResult {
   /** the improved base after the call (unchanged incumbent, the new one, or null when nothing is held) */
   held: Base | null;
   /** true when a new base was installed (first hold or replacement) */
   replaced: boolean;
-  requests: number;
+}
+
+/**
+ * The code facts a tie on `passed` is broken by (§4.4), all known before any decision:
+ * `newlyFailing` is the count `progress()` computed (0 for every partial by construction, since
+ * `isPartial` rejects a regression, so the rule is complete even if that definition moves);
+ * `diffLines` and `diffChars` measure the partial's unified diff on the COMMITTED workspace — the
+ * edit it would commit, so a partial on the improved base carries that base's edits too — by its
+ * changed lines only (context lines depend on where the edit sits, not on what it changes).
+ */
+export interface TieKey {
+  newlyFailing: number;
+  /** `+` and `-` lines of the unified diff (headers excluded) */
+  diffLines: number;
+  /** characters of those lines, without the marker */
+  diffChars: number;
+}
+
+const DIFF_HEADER = /^(\+\+\+ b\/|--- a\/)/;
+
+/** The changed lines of a unified diff (`unifiedDiff` format: `--- a/` / `+++ b/` headers, `\ No newline` markers): how many and how long. */
+export function diffSize(diff: string): Pick<TieKey, 'diffLines' | 'diffChars'> {
+  let diffLines = 0;
+  let diffChars = 0;
+  for (const line of diff.split('\n')) {
+    if ((line.startsWith('+') || line.startsWith('-')) && !DIFF_HEADER.test(line)) {
+      diffLines += 1;
+      diffChars += line.length - 1;
+    }
+  }
+  return { diffLines, diffChars };
+}
+
+/** The tie key of a partial: its own progress, its diff re-expressed against the committed files. */
+export function tieKeyOf(mem: BasesMemory, o: VerifyOutcome): TieKey {
+  return { newlyFailing: o.progress.newlyFailing.length, ...diffSize(appliedOnCommitted(mem, o).diff) };
+}
+
+/**
+ * The tie key of a held base: its summary against the committed baseline, its cumulative edit. A
+ * base without a candidate (never produced by `holdBestPartial`) counts as the smallest edit, so an
+ * unknown diff keeps the incumbent.
+ */
+function tieKeyOfBase(mem: BasesMemory, b: Base): TieKey {
+  return { newlyFailing: progress(committedBase(mem).summary, b.summary).newlyFailing.length, ...diffSize(b.candidate?.diff ?? '') };
+}
+
+/**
+ * Negative when `a` is preferred: fewer newly-failing tests, then the smaller diff (fewer changed
+ * lines, then fewer changed characters). Zero is a full tie, which the callers resolve by order:
+ * list order within a batch, the incumbent (held earlier) against a later challenger.
+ */
+export function compareTieKeys(a: TieKey, b: TieKey): number {
+  return a.newlyFailing - b.newlyFailing || a.diffLines - b.diffLines || a.diffChars - b.diffChars;
 }
 
 /** Rebuild the file map of a base after `o` was applied on top of `o.job.base`. */
@@ -281,70 +321,42 @@ function remember(mem: BasesMemory, goal: Goal, partials: readonly VerifyOutcome
 }
 
 /**
- * Q17 `closeness` E[level] of `after` relative to the committed workspace; cached per base id.
- * Returns null when no Jev is available or the Score was not answered.
+ * Hold at most one improved base. Replacement rule (§4.4), all code: strictly more passed tests
+ * wins; a tie on `passed` goes to the better `TieKey` (fewer newly-failing tests, then the smaller
+ * diff on the committed workspace), and a full tie to the earlier one — the first in the batch,
+ * or the incumbent against a challenger. A partial built on a base already at MAX_BASE_DEPTH is
+ * not held. Every partial is remembered for `pairsOfPartials` whether or not it becomes the base.
  */
-async function closenessOf(mem: BasesMemory, id: string, after: TestRunSummary, opts: HoldOptions, counter: { requests: number }): Promise<number | null> {
-  const cached = guardState(mem).closeness.get(id);
-  if (cached !== undefined) return cached;
-  if (opts.ask === undefined || counter.requests >= MAX_CLOSENESS_REQUESTS) return null;
-  const before = committedBase(mem).summary;
-  const judgeOpts: { stage: StageName; subject?: string } = { stage: opts.stage ?? 'propose' };
-  if (opts.subject !== undefined) judgeOpts.subject = opts.subject;
-  const j = await judgeProgress(progress(before, after), opts.ask, judgeOpts);
-  counter.requests += j.requests;
-  if (j.closenessExpected === null) return null;
-  guardState(mem).closeness.set(id, j.closenessExpected);
-  return j.closenessExpected;
-}
-
-/**
- * Hold at most one improved base. Replacement rule (§4.4): strictly more passed tests wins; on a
- * tie the higher Q17 closeness E[level] wins (strictly), otherwise the incumbent stays. A partial
- * built on a base already at MAX_BASE_DEPTH is not held. Every partial is remembered for
- * `pairsOfPartials` whether or not it becomes the base.
- */
-export async function holdBestPartial(mem: BasesMemory, partials: readonly VerifyOutcome[], goal: Goal, opts: HoldOptions = {}): Promise<HoldResult> {
+export function holdBestPartial(mem: BasesMemory, partials: readonly VerifyOutcome[], goal: Goal): HoldResult {
   const eligible = partials.filter((o) => isPartial(o) && o.job.base.depth < MAX_BASE_DEPTH);
   remember(mem, goal, eligible);
-  const counter = { requests: 0 };
   const incumbent = improvedBase(mem);
-  if (eligible.length === 0) return { held: incumbent ?? null, replaced: false, requests: 0 };
+  if (eligible.length === 0) return { held: incumbent ?? null, replaced: false };
 
-  // Best challengers by passed count (arithmetic, code); Q17 only among exact ties.
+  // Best challenger: most passed (arithmetic), then the tie key, then list order (strict `<` keeps the earlier one).
   const topPassed = Math.max(...eligible.map((o) => outcomeSummary(o).passed));
-  const tied = eligible.filter((o) => outcomeSummary(o).passed === topPassed);
-  let challenger = tied[0];
-  if (challenger === undefined) return { held: incumbent ?? null, replaced: false, requests: 0 };
-  if (tied.length > 1 && opts.ask !== undefined) {
-    let bestE = -Infinity;
-    for (const o of tied) {
-      const e = await closenessOf(mem, `partial-${sha12(o.applied.diff)}`, outcomeSummary(o), opts, counter);
-      if (e !== null && e > bestE) {
-        bestE = e;
-        challenger = o;
-      }
+  let challenger: VerifyOutcome | undefined;
+  let challengerKey: TieKey | undefined;
+  for (const o of eligible) {
+    if (outcomeSummary(o).passed !== topPassed) continue;
+    const key = tieKeyOf(mem, o);
+    if (challenger === undefined || challengerKey === undefined || compareTieKeys(key, challengerKey) < 0) {
+      challenger = o;
+      challengerKey = key;
     }
   }
+  if (challenger === undefined || challengerKey === undefined) return { held: incumbent ?? null, replaced: false };
 
-  const passed = outcomeSummary(challenger).passed;
   if (incumbent !== undefined) {
     const incumbentPassed = incumbent.summary.passed;
-    if (passed < incumbentPassed) return { held: incumbent, replaced: false, requests: counter.requests };
-    if (passed === incumbentPassed) {
-      const eNew = await closenessOf(mem, `partial-${sha12(challenger.applied.diff)}`, outcomeSummary(challenger), opts, counter);
-      const eOld = await closenessOf(mem, incumbent.id, incumbent.summary, opts, counter);
-      // Only a strictly closer challenger displaces the incumbent; unknown closeness keeps it.
-      if (eNew === null || eOld === null || eNew <= eOld) return { held: incumbent, replaced: false, requests: counter.requests };
-    }
+    if (topPassed < incumbentPassed) return { held: incumbent, replaced: false };
+    // The incumbent is the earlier one: only a strictly better tie key displaces it.
+    if (topPassed === incumbentPassed && compareTieKeys(challengerKey, tieKeyOfBase(mem, incumbent)) >= 0) return { held: incumbent, replaced: false };
   }
   const next = baseFromPartial(mem, challenger, goal);
-  if (next === null) return { held: incumbent ?? null, replaced: false, requests: counter.requests };
-  // Carry the challenger's closeness (judged under its partial id) over to its base id.
-  const e = guardState(mem).closeness.get(`partial-${sha12(challenger.applied.diff)}`);
-  if (e !== undefined) guardState(mem).closeness.set(next.id, e);
+  if (next === null) return { held: incumbent ?? null, replaced: false };
   mem.bases = [...mem.bases.filter((b) => b.origin !== 'improved'), next];
-  return { held: next, replaced: true, requests: counter.requests };
+  return { held: next, replaced: true };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -415,7 +427,7 @@ export function commitPartial(mem: BasesMemory, goal: Goal): Decision | null {
   return { kind: 'commit', applied: b.candidate, allGoalTestsPass: false, note: 'partial', after: b.summary };
 }
 
-/** Forget the partials, held passers (suspect, pending), fallbacks and tie-break cache of a goal (after its commit). */
+/** Forget the partials, held passers (suspect, pending), fallbacks and improved base of a goal (after its commit). */
 export function forgetGoal(mem: BasesMemory, goal: Goal): void {
   forgetHeld(mem, goal);
   const st = guardState(mem);
@@ -424,8 +436,8 @@ export function forgetGoal(mem: BasesMemory, goal: Goal): void {
 
 /**
  * The park-time form of `forgetGoal`: the step-scoped state goes (held passers, fallbacks, the
- * improved base and its tie-break cache — a base another goal's search would otherwise run every
- * candidate on), the remembered partials STAY. They are the input of `pairsOfPartials`, and the
+ * improved base — a base another goal's search would otherwise run every candidate on), the
+ * remembered partials STAY. They are the input of `pairsOfPartials`, and the
  * ladder `account` run lost both gold half-fixes to a `forgetGoal` on park two seconds after they
  * were found (experiments/results/jev-only-ladder-4-analysis.md §1.2): the pairing hatch had no
  * budget left in that step, and the next search of the goal started from nothing. A held passer
@@ -437,10 +449,7 @@ export function forgetHeld(mem: BasesMemory, goal: Pick<Goal, 'id'>): void {
   if (st.pending !== null && st.pending.goalId === goal.id) st.pending = null;
   if (st.fallbacks !== null && st.fallbacks.goalId === goal.id) st.fallbacks = null;
   const b = mem.bases.find((x) => x.origin === 'improved' && x.fromGoal === goal.id);
-  if (b !== undefined) {
-    mem.bases = mem.bases.filter((x) => x.id !== b.id);
-    st.closeness.delete(b.id);
-  }
+  if (b !== undefined) mem.bases = mem.bases.filter((x) => x.id !== b.id);
 }
 
 /** The committed-base partials remembered for `goal` (what `pairsOfPartials` reads). */

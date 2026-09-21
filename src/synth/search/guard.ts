@@ -40,7 +40,7 @@ import type { LanePool } from '../sieve/lanes.js';
 import type { Candidate, CandidateSourceName, FailureView, JevAsk, SourceFile } from '../types.js';
 import { RUN_FAILURE_ID } from '../verify/text.js';
 import { appliedOnCommitted, committedBase, guardState, holdBestPartial, isPartial, outcomeSummary, siteKeyOf } from './bases.js';
-import type { GuardMemory, HeldPasser, HoldOptions } from './bases.js';
+import type { GuardMemory, HeldPasser } from './bases.js';
 import { SIEVE_MAX_T_RUN_MS } from './budget.js';
 import { DEFAULT_PROBE_TIMEOUT_MS, MAX_PERTURBED_INPUTS, TEST_SOURCE_MAX_BYTES, createLaneProbe, inputKey, perturbedInputs, perturbedInputsFor, programNameOf, readTestSources } from './perturb.js';
 import type { BehaviourProbe, PerturbedInput } from './perturb.js';
@@ -576,7 +576,11 @@ export type GuardDecision = Decision & GuardFields;
 /** What a hold reads from the step budget (search/types.ts StepBudget). */
 export type HoldBudget = Pick<StepBudget, 'exhausted' | 'testWallLeftMs' | 'testRunsLeft' | 'jevRequestsLeft'>;
 
-export interface DecideOptions extends HoldOptions {
+export interface DecideOptions {
+  /** stage of the Q15/Q16 requests (default 'propose') */
+  stage?: StageName;
+  /** e.g. "the Python function `gcd`" for the arbitration state */
+  subject?: string;
   /** for `perturbedInputs` and the SIEVE hold; absent → P2P vectors only, no hold */
   oracle?: OracleModel;
   /** runs the behaviour probe on the lanes; absent → P2P vectors only */
@@ -736,10 +740,9 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   const base = { plausible: fresh.length, clusters: 0, arbitrated: false, requests: 0, fallbacks: [] as VerifyOutcome[], probeError: null as string | null, held: null as HoldKind | null, signals: [] as SuspicionSignal[] };
 
   if (plausible.length === 0) {
-    const holdOpts: HoldOptions = { ask, stage: opts.stage ?? 'propose' };
-    if (opts.subject !== undefined) holdOpts.subject = opts.subject;
-    const held = await holdBestPartial(mem, partial, goal, holdOpts);
-    return { kind: 'continue', ...base, requests: held.requests };
+    // Code only: strictly more passed wins, ties by the bases.ts tie-break rule (no Jev request).
+    holdBestPartial(mem, partial, goal);
+    return { kind: 'continue', ...base };
   }
 
   const only = plausible[0];
