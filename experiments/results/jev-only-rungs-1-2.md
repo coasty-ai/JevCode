@@ -3604,7 +3604,10 @@ task), the long tier **2/8** as in runs 1 and 2 but with more gold hunks in hand
 Verdicts by `experiments/inspect/quixbugs-verdicts.mts`: **solved 39/40; gold-identical 30, equivalent 7, overfit 0,
 unverified 2, miss 1**; correct by the script's stricter count (gold-identical + equivalent) **37/40** — 6-repeat2 was 36,
 6-repeat1 35, run 3 32. Both `unverified` are the graph programs whose fixtures `perturb.ts` does not perturb
-(`breadth_first_search`, `topological_ordering`); both pass their reference cases. The four full runs side by side:
+(`breadth_first_search`, `topological_ordering`); both pass their reference cases, which is not the same as both being
+correct: the independent differential test of §26.5 shows `breadth_first_search` equivalent to gold on 500 random graphs and
+`topological_ordering` **wrong** (its committed patch drops the `issuperset(incoming_nodes)` check; 462/1000 random DAGs
+invalid), so 37 verified correct and at most 38/40 correct. The four full runs side by side:
 
 | run | bench | solved | verdicts | Jev $ | wall | steps median all / solved / max | stops | misses |
 |---|---|---|---|---|---|---|---|---|
@@ -3853,3 +3856,215 @@ tables; workspaces under `~/.jevcode/runs/<run id>/` (`transcript.log`, `model_p
 `/tmp/ladder-long/{rows,mdrows}.py` (long-tier hunks, progress commits, reads), the single-hunk checks in
 `/tmp/jevonly/{xf,sf,regress_trap,six_hunks}`.
 
+
+## 26. 2026-09-21: final tree (55404ba) — SWE-bench Verified 30, and the independent verification of §25
+
+The third final-tree measurement, run alongside §25's two: SWE-bench Verified 30 from the frozen worktree
+`.claude/worktrees/final-clean` (HEAD 55404ba; launcher log `/tmp/jevonly/swebench-4.log` line 1 `start
+2026-09-21T02:24:50Z head 55404ba`), `bench/results/jev-only-swebench-4-final`, bench `20260921-022451-aa869f`,
+02:24:51–03:33:07 UTC (68 min), `--concurrency 2 --max-steps 25 --max-wall 25m --task-spend-cap 0.4`,
+`NODE_OPTIONS=--max-old-space-size=8192`. No source was changed for this section. The second half (§26.5) records what an
+independent verification of §25 and of this run found, and restates the §25 headlines where it had to.
+
+### 26.1 Headline and provenance
+
+**4/30 pass the local-venv evaluator** — `sympy__sympy-15345` (4 steps, $0.0168, `complete`), `sympy__sympy-17139` (4,
+$0.0158, `complete`), `sympy__sympy-19954` (6, $0.0194, `replan_stop`), `django__django-15128` (4, $0.0111, `complete`).
+On each, `testsStatus` shows FAIL_TO_PASS all success and the listed PASS_TO_PASS all success (F2P/P2P: 1/8, 2/67, 1/56,
+1/282), the eval checkout is at the record's `base_commit`, the applied source diff equals `model_patch.diff`, and
+`test_output.txt` ends `Test Exit Code: 0`. The evaluator is unofficial: a fresh checkout at `base_commit`, the model
+patch, the dataset `test_patch`, the `eval.sh` test command and the upstream log parsers, without Docker
+(`src/bench/swebench/evaluator.ts`); `predictions.jev-only.jsonl` (30 entries, `model_name_or_path`
+`jevcode-jev-only-none`) can be graded with the official harness elsewhere. Only 3 of the 4 stopped `complete`;
+`sympy-19954` passed and then stopped on `replan_stop` after three no-op `done`s.
+
+Totals from `tasks.jsonl` / `summary.json`: 30 records, evaluator `local-venv` ×30, `generatorCalls` 0 ×30, **$1.2956 of
+Jev** ($1.30), 348 steps, 228 blocked proposals (218 risk blocks + 10 declined steps, the bench's `blocked` definition),
+88 loop trips, 61 replans, 3,222 Jev requests, stops `complete` 3 / `max_replans` 7 / `replan_stop` 20, 17 empty patches,
+`capFired` null, `notRun` 0. The §21 wiring defect is gone: 0 `propose: internal` / `ranker:` lines and 0 history-site
+errors across all 30 transcripts (rung 3 had 9 `error` stops). The §23 rules were exercised: `unstable` verdicts appeared
+3× on `django-15315` (190 tested: 165 unchanged, 22 unstable, 3 plausible) and `weak_network` 7× on `requests-2931`
+(a lone passer committed as possible overfit, general 0.20 < 0.3). RSS (`/tmp/jevonly/swebench-4.rss`, 5-minute samples
+of the `tsx` bench process, 14 samples 02:25–03:30 UTC): peak **4,729,200 kB ≈ 4.5 GiB** at 02:50:24 UTC, trajectory
+1.19 → 1.21 → 0.84 → 3.94 → 3.99 → 4.73 → 4.09 → 4.40 → 4.43 → 4.04 → 4.51 → 4.45 → 3.15 → 2.75 GB; a lower bound
+(the sampler matches the launcher process only, not the python test runners).
+
+Provenance caveat, which applies to every final-tree row: **no run record stores a git sha** (`run.json` carries
+`versions.jevcode` `0.1.0` and `node`, which are the same at `55404ba` and `HEAD`). That this run executed `55404ba` rests
+on `run.json`'s `config.workspace` (`.claude/worktrees/final-clean`, detached at `55404ba`, `git status` clean apart from
+the `node_modules` symlink), the launcher log line above, and timing. Consistent, but inferred.
+
+Series over the four full-30 attempts, same 30 instances, different trees: `jev-only-swebench-1` 0 (20 records
+evaluated, every patch empty, the process died), `jev-only-swebench-2` 1 (`sympy-19954`, 8 records, died at 8 GB),
+`jev-only-swebench-3` 1/30 (`django-15128`; `5486f7a`), final **4/30** — i.e. 0/30 → 1/30 → 1/30 → 4/30. This is a
+single run on `55404ba`; `sympy-19954` has flipped pass (run 2), pass (2-oracle), miss (run 3, under load), pass (final)
+with a byte-identical patch each time it passed, so the count is load-sensitive (§21.7). All four solved instances are
+among the nine oracle instances whose gold sites and single missing capability were dissected in
+`experiments/results/swebench-reach-oracle-9.md`, and the sources that produced their patches (`mro_method_alias`,
+`attribute_predicate_guard`, `guard_index_break`, the introspection-site merge of §24) were added against them between
+run 3 and this run; 4/30 is a development-set number, not an out-of-sample rate.
+
+### 26.2 Per instance (`experiments/inspect/swe-report.mts`)
+
+Command (main checkout): `env -u ANTHROPIC_API_KEY node node_modules/.bin/tsx experiments/inspect/swe-report.mts
+bench/results/jev-only-swebench-4-final --mark=sympy__sympy-15345,sympy__sympy-17139,sympy__sympy-19954,sympy__sympy-11618,django__django-15315,django__django-15128,psf__requests-2931,sympy__sympy-12096,django__django-15563,sympy__sympy-16792`.
+`*` marks the ten reach/oracle instances of §16–§21; `pm` = `plan_mismatch`; `progress budget steps` = steps that ended
+on their budget but reached a new site (§23).
+
+| instance | oracle | ledger | first baseline | enumerated / tested / plausible | commits / applied (rejections) | progress budget steps | best guess | evaluator | steps | Jev $ | wall s | stop | class |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| django__django-14725 | none (no_blocks) | fixed 0, open 0, parked 1 | 366/376 scoped tests pass, 0 failed, 0 errors in 2262 ms; no reproduction oracle | 2118 / 5 / 5 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 9 | $0.0258 | 29 | replan_stop | no_oracle_best_guess_rejected |
+| django__django-14787 | none (no_pick) | fixed 0, open 0, parked 1 | 233/235 scoped tests pass, 0 failed, 0 errors in 1464 ms; no reproduction oracle | 1419 / 5 / 5 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 9 | $0.0230 | 26 | replan_stop | no_oracle_best_guess_rejected |
+| django__django-15103 | none (no_blocks) | fixed 0, open 0, parked 1 | 62/64 scoped tests pass, 0 failed, 0 errors in 1400 ms; no reproduction oracle | 1478 / 5 / 3 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 12 | $0.0320 | 26 | replan_stop | no_oracle_best_guess_rejected |
+| *django__django-15128 | strong | fixed 1, open 0, parked 0 | 625/633 scoped tests pass, 0 failed, 0 errors in 3870 ms; reproduction repro::6da66011 fails (AssertionError: ) in 650 m | 1524 / 755 / 1 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | PASS (local-venv) | 4 | $0.0111 | 138 | complete | solved |
+| *django__django-15315 | strong | fixed 1, open 0, parked 0 | 328/356 scoped tests pass, 0 failed, 0 errors in 3586 ms; reproduction repro::e7fbbfa8 fails (AssertionError: ) in 645 m | 350 / 190 / 3 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv) | 9 | $0.0196 | 62 | replan_stop | evaluator_fail_on_committed_patch |
+| django__django-15375 | none (incomplete_snippet) | fixed 0, open 0, parked 1 | 344/347 scoped tests pass, 0 failed, 0 errors in 3683 ms; no reproduction oracle | 1916 / 5 / 5 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 21 | $0.0485 | 47 | max_replans | no_oracle_best_guess_rejected |
+| *django__django-15563 | weak | fixed 1, open 0, parked 0 | 350/353 scoped tests pass, 0 failed, 0 errors in 3646 ms; reproduction repro::3ec747c8 fails (<QuerySet [{'field_otherba | 2085 / 15 / 5 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv) | 9 | $0.0224 | 40 | replan_stop | evaluator_fail_on_committed_patch |
+| django__django-15572 | none (no_blocks) | fixed 0, open 0, parked 1 | 69/75 scoped tests pass, 0 failed, 0 errors in 1677 ms; no reproduction oracle | 819 / 5 / 5 | 1 / 1 (0 blocked pm, 0 declined) | 0 | yes | fail (local-venv) | 9 | $0.0223 | 32 | replan_stop | best_guess_wrong |
+| django__django-15916 | none (no_criterion) | fixed 0, open 0, parked 1 | 302/302 scoped tests pass, 0 failed, 0 errors in 3254 ms; no reproduction oracle | 1347 / 5 / 5 | 2 / 0 (0 blocked pm, 2 declined) | 0 | yes | fail (local-venv: empty model_patch) | 9 | $0.0255 | 30 | replan_stop | no_oracle_best_guess_rejected |
+| django__django-16100 | none (no_blocks) | fixed 0, open 0, parked 1 | 460/483 scoped tests pass, 0 failed, 0 errors in 16286 ms; no reproduction oracle | 1641 / 4 / 4 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 9 | $0.0251 | 71 | replan_stop | no_oracle_best_guess_rejected |
+| psf__requests-1142 | none (no_blocks) | fixed 0, open 0, parked 1 | 5/26 scoped tests pass, 21 failed, 0 errors in 731 ms; no reproduction oracle | 1664 / 5 / 5 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: model_patch did not apply) | 10 | $0.0169 | 17 | replan_stop | best_guess_wrong |
+| *psf__requests-2931 | none (weak_network) | fixed 1, open 0, parked 0 | 85/167 scoped tests pass, 0 failed, 81 errors in 937 ms; reproduction repro::b5e65acf fails (UnicodeDecodeError: 'ascii' | 3984 / 2031 / 1 | 1 / 1 (0 blocked pm, 0 declined) | 1 | no | fail (local-venv) | 11 | $0.0183 | 132 | replan_stop | evaluator_fail_on_committed_patch |
+| pylint-dev__pylint-4604 | none (passes_on_base) | fixed 0, open 0, parked 1 | 115/115 scoped tests pass, 0 failed, 0 errors in 3275 ms; no reproduction oracle | 1563 / 5 / 5 | 1 / 1 (0 blocked pm, 0 declined) | 0 | yes | fail (local-venv) | 9 | $0.0234 | 28 | replan_stop | best_guess_wrong |
+| pylint-dev__pylint-4970 | none (no_blocks) | fixed 0, open 0, parked 1 | 89/91 scoped tests pass, 0 failed, 0 errors in 4116 ms; no reproduction oracle | 1844 / 5 / 5 | 1 / 1 (0 blocked pm, 0 declined) | 0 | yes | fail (local-venv) | 6 | $0.0178 | 31 | replan_stop | best_guess_wrong |
+| pylint-dev__pylint-6386 | none (no_pick) | fixed 0, open 0, parked 1 | 30/31 scoped tests pass, 0 failed, 0 errors in 3721 ms; no reproduction oracle | 211 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 7 | $0.0171 | 18 | replan_stop | no_oracle_no_guess |
+| pytest-dev__pytest-10051 | none (not_runnable) | fixed 0, open 0, parked 1 | 62/62 scoped tests pass, 0 failed, 0 errors in 1177 ms; no reproduction oracle | 1577 / 5 / 2 | 1 / 1 (0 blocked pm, 0 declined) | 0 | yes | fail (local-venv) | 21 | $0.0471 | 31 | max_replans | best_guess_wrong |
+| pytest-dev__pytest-10081 | none (not_runnable) | fixed 0, open 0, parked 1 | 210/226 scoped tests pass, 4 failed, 0 errors in 4900 ms; no reproduction oracle | 1347 / 5 / 1 | 2 / 0 (0 blocked pm, 2 declined) | 0 | yes | fail (local-venv: empty model_patch) | 21 | $0.0470 | 53 | max_replans | no_oracle_best_guess_rejected |
+| pytest-dev__pytest-10356 | none (no_pick) | fixed 0, open 0, parked 1 | 199/205 scoped tests pass, 5 failed, 0 errors in 2003 ms; no reproduction oracle | 1589 / 5 / 1 | 2 / 0 (0 blocked pm, 2 declined) | 0 | yes | fail (local-venv: empty model_patch) | 9 | $0.0257 | 21 | replan_stop | no_oracle_best_guess_rejected |
+| pytest-dev__pytest-7205 | none (not_runnable) | fixed 0, open 0, parked 1 | 354/361 scoped tests pass, 3 failed, 0 errors in 11348 ms; no reproduction oracle | 1433 / 5 / 3 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 21 | $0.0484 | 69 | max_replans | no_oracle_best_guess_rejected |
+| pytest-dev__pytest-7324 | none (incomplete_snippet) | fixed 0, open 0, parked 1 | 377/398 scoped tests pass, 14 failed, 2 errors in 8621 ms; no reproduction oracle | 1478 / 5 / 1 | 2 / 0 (0 blocked pm, 2 declined) | 0 | yes | fail (local-venv: empty model_patch) | 21 | $0.0442 | 59 | max_replans | no_oracle_best_guess_rejected |
+| *sympy__sympy-11618 | strong | fixed 0, open 0, parked 1 | 645/770 scoped tests pass, 0 failed, 42 errors in 27419 ms; reproduction repro::7f52cda6 fails (1) in 1300 ms | 22492 / 1272 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 5 | no | fail (local-venv: empty model_patch) | 17 | $0.1345 | 1165 | replan_stop | ranked_run_but_regressions |
+| *sympy__sympy-12096 | weak | fixed 0, open 0, parked 1 | 794/960 scoped tests pass, 0 failed, 80 errors in 55135 ms; reproduction repro::fcbb4c5a fails (f(g(2))) in 3468 ms | 27321 / 1357 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 6 | no | fail (local-venv: empty model_patch) | 21 | $0.1629 | 1454 | max_replans | ranked_run_but_regressions |
+| sympy__sympy-12489 | none (no_blocks) | fixed 0, open 0, parked 1 | 806/980 scoped tests pass, 0 failed, 91 errors in 5738 ms; no reproduction oracle | 1433 / 5 / 1 | 1 / 1 (0 blocked pm, 0 declined) | 0 | yes | fail (local-venv) | 10 | $0.0243 | 52 | replan_stop | best_guess_wrong |
+| sympy__sympy-13798 | none (no_pick) | fixed 0, open 1, parked 0 | 0/1 scoped tests pass, 0 failed, 1 errors in 4457 ms; no reproduction oracle | 0 / 0 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 0 | no | fail (local-venv: empty model_patch) | 9 | $0.0209 | 37 | replan_stop | no_oracle_no_guess |
+| *sympy__sympy-15345 | strong | fixed 1, open 0, parked 0 | 142/175 scoped tests pass, 0 failed, 0 errors in 38379 ms; reproduction repro::9364c244 fails ('Max(2, x)') in 4220 ms | 1888 / 74 / 1 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | PASS (local-venv) | 4 | $0.0168 | 319 | complete | solved |
+| *sympy__sympy-16792 | strong | fixed 0, open 1, parked 0 | 190/198 scoped tests pass, 0 failed, 0 errors in 13774 ms; reproduction repro::3492baa3 fails (CodeWrapError: Error whil | 41424 / 1489 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 8 | no | fail (local-venv: empty model_patch) | 18 | $0.2247 | 1263 | max_replans | reachable_not_ranked_in_budget |
+| *sympy__sympy-17139 | strong | fixed 1, open 0, parked 0 | 929/1013 scoped tests pass, 0 failed, 0 errors in 155635 ms; reproduction repro::ac95b0c9 fails (TypeError: Invalid comp | 1365 / 16 / 1 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | PASS (local-venv) | 4 | $0.0158 | 498 | complete | solved |
+| *sympy__sympy-19954 | strong | fixed 1, open 0, parked 0 | 109/112 scoped tests pass, 0 failed, 0 errors in 103000 ms; reproduction repro::db420b5d fails (IndexError: list assignm | 1524 / 23 / 3 | 1 / 1 (0 blocked pm, 0 declined) | 0 | no | PASS (local-venv) | 6 | $0.0194 | 723 | replan_stop | solved |
+| sympy__sympy-20428 | strong | fixed 0, open 0, parked 1 | 341/342 scoped tests pass, 0 failed, 0 errors in 12585 ms; reproduction repro::ddf82674 fails (Poly(0, x, domain='EX'))  | 9093 / 246 / 0 | 0 / 0 (0 blocked pm, 0 declined) | 4 | no | fail (local-venv: empty model_patch) | 14 | $0.0910 | 544 | replan_stop | reachable_not_ranked_in_budget |
+| sympy__sympy-22080 | none (passes_on_base) | fixed 0, open 0, parked 1 | 251/306 scoped tests pass, 0 failed, 0 errors in 13481 ms; no reproduction oracle | 1332 / 5 / 4 | 2 / 0 (2 blocked pm, 0 declined) | 0 | yes | fail (local-venv: empty model_patch) | 9 | $0.0240 | 86 | replan_stop | no_oracle_best_guess_rejected |
+
+Script totals: `30 instances; oracle strong 8, weak 2, unstable 0, none 20; patches applied 12; best guess used 17;
+evaluator pass 4/30; engine rejections: 16 blocked (plan_mismatch) + 8 declined (review, no reviewer) on 12 instances;
+Jev $1.2956; wall 7102 s (sum)`. The script's `16 blocked + 8 declined` counts patch-proposal rejections; the record
+counters (`blocked` 228 = 218 risk blocks + 10 declined steps) count every step, including the `done` claims.
+
+### 26.3 Failure classes
+
+Script tally: **`no_oracle_best_guess_rejected` 11, `best_guess_wrong` 6, `solved` 4, `evaluator_fail_on_committed_patch`
+3, `no_oracle_no_guess` 2, `ranked_run_but_regressions` 2, `reachable_not_ranked_in_budget` 2.** One correction from the
+verification: `psf__requests-1142`'s 871,679-byte "patch" is 65 new files under `build/lib/requests/**` left by the
+environment build and swept up by the `git add -A -N && git diff` extraction; the engine's only proposal was blocked and
+rolled back, so the source change is empty and the class is really `no_oracle_best_guess_rejected` (corrected tally 12 /
+5; the 4/30 is unchanged). Reading the tally: the script finds an oracle on 10 instances (the §17 nine minus
+`requests-2931`, whose `weak_network` oracle it files under `none`, plus `sympy-20428`, `strong` here) and none on 20.
+Of the 20: on 11 (12 corrected) the best-guess commit was rejected by the risk stage or the absent reviewer and on 2
+there was no guess, so 13 ended with an empty patch; on 6 (5 corrected) the best guess applied and failed the tests;
+`requests-2931`'s lone passer was committed as possible overfit and failed the hidden tests. Of the 10: 4 solved, 2
+committed a passer that failed the hidden tests (`django-15315`, `django-15563`), 2 ranked and ran candidates that
+regressed (`sympy-11618`, `sympy-12096`; 1,272 and 1,357 tested, 0 plausible), and 2 never reached the gold site in
+budget (`sympy-16792`, 41,424 enumerated, 1,489 tested; `sympy-20428`, 9,093 / 246).
+
+### 26.4 The four passes against the upstream fixes
+
+None is gold-identical and none is shown equivalent-in-effect; each is a different shape the tests accept.
+`sympy-15345` adds one line, `_print_Expr = _print_Function`, in `MCodePrinter` (gold adds `Max`/`Min` to
+`known_functions` and `_print_MinMaxBase = _print_Function`): the alias re-routes every `Expr` subclass without its own
+printer through `_print_Function` (`Indexed`, `Product`, `Piecewise` now print as `Indexed[...]`, `Product[...]`,
+`Piecewise[...]`), which gold does not. `sympy-17139` guards `if not rv.exp.is_comparable: return rv` where gold uses
+`is_real`: identical on `I`, `x`, `1 + I` and every numeric exponent tried, different on symbolic real exponents
+(`n` positive, `k` integer, `r` real), where the model returns early and gold proceeds. `sympy-19954` inserts
+`if i >= len(num_blocks): break` before `del num_blocks[i], blocks[i]` (gold rewrites the loop with a remove mask):
+identical `minimal_blocks()` on 60 groups tried, general equivalence not shown. `django-15128` appends `alias +=
+table_name` in `Query.table_alias` (gold is a three-hunk `bump_prefix(..., exclude=...)` change): every generated join
+alias becomes `T2queries_tag`-style instead of `T2`, in every multi-join query. Each passes FAIL_TO_PASS and the listed
+PASS_TO_PASS subset only; "solved" here means exactly that.
+
+### 26.5 Independent verification of §25 and §26, and the restatements it forces
+
+Sixteen read-only checks (claim verifiers and refuters, 2026-09-21) re-derived every number in §25 and §26 from the raw
+records and then tried to break each headline. What reproduced: all counts, costs, step vectors and stop reasons of the
+three final runs; the QuixBugs evaluator re-run on all 40 workspace programs (39/40, 0 disagreements) and the verdict
+script re-run (byte-identical `verdicts.md`); the ladder evaluator re-run in all 20 workspaces (14/20, `tests/`
+byte-identical to the reference in every workspace, only `src/*.py` modified); the four SWE-bench passes down to the eval
+checkouts; 6,598 Jev requests all on the pinned model, `generatorCalls` 0 on 90/90 records, no foreign LLM host in any
+run directory. What did not survive, and how §25 must now be read:
+
+1. **QuixBugs `topological_ordering` is wrong, so §25.1's "39 solved, 0 overfit" is a visible-suite count with one
+   overfit the script cannot see.** The committed patch (`~/.jevcode/runs/20260921-023509-t3pnzjqk/model_patch.diff`)
+   replaces `if set(ordered_nodes).issuperset(nextnode.incoming_nodes) and nextnode not in ordered_nodes:` with `if
+   nextnode not in ordered_nodes:` and adds a `break` after the append. Against `bench/data/quixbugs/correct/`:
+   `A->B, A->C` gives `[A, B]` (gold `[A, B, C]`); `A->C, A->B, B->C` gives `[A, C]`; the diamond gives `[A, B, D]`;
+   invalid on 462/1000 random 2–8-node DAGs. It passes the three visible fixtures, which are the evaluator's whole
+   oracle. The script labels it `unverified` because `perturb.ts` has no graph perturbation — the transcript shows the
+   same blindness in the search (`probe 0 inputs` at both arbitrations), the mechanism that also committed
+   `shortest_path_length`'s `return 4`. The earlier runs' patches were also wrong except run 3's (6-repeat1/2: `[A, C, B]`
+   on `A->C, A->B, B->C`); three distinct committed patches over four runs, two incorrect, all labelled `unverified`.
+   `breadth_first_search`, the other `unverified`, is equivalent to gold on 500 random graphs. **Restated: 39/40 pass
+   the reference cases; 37/40 verified correct; at most 38/40 correct; 1 shown overfit; the "0 overfit" is scoped to the
+   31 JSON-case programs and the two chain programs the probe perturbs.** `shortest_path_length` is a persistent
+   regression (gold-identical in run 3, missed in 6-repeat1, 6-repeat2 and here), not a first-time miss. The §25.1 line
+   "both pass their reference cases" now says so.
+2. **Ladder `grades` and `textstats` are behaviourally wrong, so §25.2's "12/12" is solved, not correct.** Confirmed by
+   differential execution against `gold/`: `grades.letter_grade(89.5)` → `'A'` (gold `'B'`; 79.9, 69.01, 59.5 also one
+   letter high; `report({'x': [89, 90]})` → `'A'` vs `'B'`); `textstats.ngrams(('a', 'b', 'c'), 2)` raises
+   `AttributeError` (gold returns the bigrams) and `ngrams(list, n)` appends `n` to the caller's list. Both fixes were
+   arbitrated "in 1 cluster (no probe)" and recur in earlier rounds (`grades` in ladder-4/5/6/7, `textstats` in 5/7).
+   Also found: `ledger5.is_overdue` returns an int where gold returns a bool (passes by truthiness), `units.parse_duration('')`
+   raises `IndexError` where gold raises `ValueError`. **Restated: short tier 12/12 solved, at most 10/12 correct; total
+   14/20 solved, at most 12/20 correct (11/20 if `is_overdue`'s type counts).** There was no ladder correctness check until
+   now; `experiments/inspect/ladder-verdicts.mts` is being written (gold vs patched on hand-written inputs per task).
+3. **Hunk counts in §25.2 mix two rules.** By strict `diff -U0` of the patched tree against `gold/` (gold-identical lines
+   only): `ledger5` 2/5 (the §25.2 table's "3/5" counts an insert that leaves the buggy line dead below it),
+   `import_and_guard` 2/4 (its "3/4" counts `import re` one line below gold's), `long_chain` 3/6, `regress_trap` 3/4,
+   `six_hunks` 1/6 (the table's "1/6 (h6) + h3*" is right; the cross-run row's and §25.3 item 6's "2/6" count the
+   test-equivalent `t.due == None`), `masked` 0/3 — but 1/3 under the same equivalence rule (`txt = text` is an alias for
+   h1), and its final tree also carries an overfit `return 0` above `aggregate.py:19`; `crossfile` 0/4, `shared_frame`
+   0/2. `six_hunks`' third edit, `render.py:20 width - 1`, is a caller-side change at a different line from gold's
+   `render.py:14` and is not a matching hunk. The §25 tables are left as written; this list is the reconciled one, strict
+   first with equivalents in parentheses. Two smaller slips in §25.2: the short-tier step median is 4.5, not 4
+   (`[3,3,3,3,3,4,5,5,5,5,7,7]`); `ledger5`'s "13 steps" includes step 11, which carried no proposal (an invalid Jev
+   response, `"edit" (0.49) is not an argmax`, recorded in no counter).
+4. **Single draws.** Every final-tree number is one run on `55404ba`. The only same-tree QuixBugs pair (6-repeat1/2 at
+   `d610d75`) flipped 2/40 programs; in the final run `mergesort` passed at 455 s of the 480 s wall and $0.040 of the
+   $0.05 cap, `lis` at 421 s, and all 13 loop trips sit in the four 10–11-step runs. Ladder long-tier tasks have flipped
+   across runs (`regress_trap` pass → fail → fail on byte-identical data; `masked` fail ×5 → pass in 3c → fail here on a
+   wall-budget release under load), and the decider returned different probabilities on 14/20 byte-identical requests
+   between two `account` runs five minutes apart. SWE-bench: §26.1. The design's own rung-2 bar (≥ 8/12 in ≥ 2 of 3
+   repeats *of one tree*) has not been met on any single tree.
+5. **In-sample, and no hidden suite.** QuixBugs and ladder evaluators run exactly the cases the workspace exposes;
+   guard/site thresholds were derived from named programs (`guard.ts:74-86` from `depth_first_search`/`wrap`,
+   `sites.ts:116-117` from `reverse_linked_list`, `perturb.ts` from `detect_cycle`/`wrap`; ladder task names appear in
+   code comments and commit messages throughout); the design's R2 hidden-test experiment
+   (`experiments/contrarian/hidden-tests.mts`, trigger "overfit > 1" fired at run 3) was never written. The SWE-bench
+   final's four solved instances were the reach-study targets (§26.1).
+6. **Provenance and gates.** No run record stores a git sha (§26.1). On the frozen tree `55404ba`: `tsc --noEmit` exit 0,
+   `node scripts/no-any.mjs` ok, `vitest run --project unit` 221 files / 4,045 tests exit 0; `npm run perf` passes every
+   budget — first frame cold p95 104.2 ms (< 300 ms; cold median 101.2, warm median 85.4), harness overhead per step p95
+   33.5 ms (< 50 ms; p50 22.1), event-loop lag p95 2.4 ms / 1.8 ms at rows 40 / 12 (< 5 ms), 0 / 0 terminal clears after
+   the first frame.
+
+What would settle each: graph-fixture perturbations or a hand-written DAG set for the nine pytest-module programs in
+`quixbugs-verdicts.mts`, re-run on all four result dirs; the ladder verdict pass; two more full runs of each suite on the
+frozen worktree with the machine otherwise idle; official-harness grading of `predictions.jev-only.jsonl`; a git sha in
+`run.json`. The reporting rule that follows — solved and correct as separate numbers on every row — is
+`docs/DECISIONS.md` (2026-09-21).
+
+### 26.6 Commands
+
+```
+# from .claude/worktrees/final-clean (HEAD 55404ba); log /tmp/jevonly/swebench-4.log, RSS sampler /tmp/jevonly/swebench-4-rss.sh
+env -u ANTHROPIC_API_KEY NODE_OPTIONS=--max-old-space-size=8192 node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env \
+  node_modules/.bin/tsx src/cli/main.tsx bench --suite swebench --conditions jev-only --live \
+  --concurrency 2 --max-steps 25 --max-wall 25m --task-spend-cap 0.4 \
+  --out /Users/prateekjannu/Documents/vscode/JevCode/bench/results/jev-only-swebench-4-final
+# main checkout: the per-instance table of §26.2
+env -u ANTHROPIC_API_KEY node node_modules/.bin/tsx experiments/inspect/swe-report.mts bench/results/jev-only-swebench-4-final \
+  --mark=sympy__sympy-15345,sympy__sympy-17139,sympy__sympy-19954,sympy__sympy-11618,django__django-15315,django__django-15128,psf__requests-2931,sympy__sympy-12096,django__django-15563,sympy__sympy-16792
+```
+
+The launcher script for this run was not preserved (only `run-swebench-3.sh` survives under `/tmp/jevonly`); the flags
+above are the run's `summary.json` limits (`maxSteps` 25, `maxWallMs` 1,500,000, `taskSpendCapUsd` 0.4, `maxReplans` 5,
+`completeThreshold` 0.85) and the rung-3 launcher shape, with the process cwd from `run.json`. Run ids for the four
+passes: `20260921-022509-ebhus7rl` (15345), `20260921-023131-aqsxtrur` (17139), `20260921-024201-7dmqjwln` (19954),
+`20260921-032451-72clti7n` (15128); eval checkouts under `~/.jevcode/runs/<run id>/eval/<instance>/`.

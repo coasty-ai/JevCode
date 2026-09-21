@@ -180,9 +180,22 @@ mode is the pinned Jev decisions endpoint; every checked-in jev-only record carr
 | issue oracle over the 30 | valid on 9/30 (7 strong, 2 weak); $0.0096 | `experiments/results/oracle-from-issue.md` |
 | SWE-bench, the nine oracle instances | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (FAIL_TO_PASS and PASS_TO_PASS) after 8 steps and $0.024 — the first instance solved with no generating model; the first process died at a 4 GB heap on the Django instances | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b` |
 | SWE-bench 30, budget round | 1 pass (`sympy__sympy-19954`, 6 steps) of 8 records; the process died at an 8 GB heap | `bench/results/jev-only-swebench-2` |
-| SWE-bench 30, wired tree (rung 3) | in progress from the frozen worktree `.claude/worktrees/swe-clean` at `5486f7a` | `bench/results/jev-only-swebench-3` |
+| SWE-bench 30, wired tree (rung 3) | **1/30**: `django__django-15128` passes the local-venv evaluator (4 steps, $0.011); `sympy__sympy-19954` (solved in both earlier runs) missed under load; 9 no-oracle instances stopped on a wiring defect (history candidates at a foreign site), fixed before the final run; $1.16, 55 min, RSS peak 3.0 GB; run from the frozen worktree `.claude/worktrees/swe-clean` at `5486f7a` | `bench/results/jev-only-swebench-3` |
+| QuixBugs 40, **final tree** `55404ba` (frozen worktree `.claude/worktrees/final-clean`; a single run on this tree) | **39/40** pass the evaluator's reference cases (the same cases the workspace exposes; no hidden suite); **37/40 verified correct** by the verdict script (30 gold-identical + 7 equivalent); of the 2 `unverified`, `breadth_first_search` is equivalent to gold on 500 random graphs and `topological_ordering` is **wrong** (drops the `issuperset(incoming_nodes)` check; 462/1000 random DAGs invalid; the script's `unverified` label hid it) — at most 38/40 correct; miss `shortest_path_length` (a literal `return 4` committed; gold-identical in run 3, missed in the three later runs — a persistent regression); $0.185. Four-run series 36, 38, 38, 39 pass / 32, 35, 36, 37 verified correct; thresholds in-sample | `bench/results/jev-only-quixbugs-7-final` (+ `verdicts.md`); rungs file §25.1, §26.5 |
+| ladder 20, final tree | **14/20** solved on the exposed suite. Short tier **12/12** (3–7 steps, 0 blocked / declined / loop / `read` events, $0.051), but `grades` (`letter_grade(89.5)` → `'A'`, gold `'B'`) and `textstats` (`ngrams` raises on a tuple and mutates the caller's list) are behaviourally wrong fixes, so at most **10/12 correct**; there was no ladder correctness check until now (`experiments/inspect/ladder-verdicts.mts` is being written). Long tier **2/8** (`import_and_guard` 9 steps, `ledger5` 13); gold-identical hunks by strict `diff -U0`: `ledger5` 2/5, `import_and_guard` 2/4, `long_chain` 3/6, `regress_trap` 3/4, `six_hunks` 1/6 (2/6 counting the equivalent `t.due == None`), `masked` 0/3 (1/3 counting the equivalent `txt = text`; plus an overfit `return 0` insert), `crossfile` 0/4, `shared_frame` 0/2; $0.320 | `bench/results/jev-only-ladder-7-final`; rungs file §25.2–25.3, §26.5 |
+| SWE-bench Verified 30, **final tree** `55404ba` (a single run) | **4/30** pass the local-venv evaluator (unofficial: replicates `eval.sh` without Docker): `sympy__sympy-15345` (4 steps), `sympy__sympy-17139` (4), `sympy__sympy-19954` (6), `django__django-15128` (4); FAIL_TO_PASS all success and the listed PASS_TO_PASS all success on each; none has the upstream fix's shape (15345 `_print_Expr = _print_Function` class-wide alias; 19954 an index guard before `del`; 17139 a `not rv.exp.is_comparable` guard; 15128 `alias += table_name`); $1.30 of Jev, 0 generator calls, 68 min, 348 steps, 228 blocked proposals, 88 loop trips; 0 history/foreign-site errors (the rung-3 defect is gone); `unstable` verdicts 3× on `django-15315`, `weak_network` 7× on `requests-2931`; `sympy-19954` has flipped across runs (load-sensitive); series 0/30 → 1/30 → 1/30 → 4/30; RSS peak 4.5 GiB (5-min samples) | `bench/results/jev-only-swebench-4-final`; rungs file §26 |
 | reach at the gold site, 9 oracle instances ($0) | a test-passing patch in some source's set on 3/9, gold text 1/9; after the six added capabilities every target enters the set and passes FAIL_TO_PASS | `experiments/results/swebench-reach-oracle-9.md`; rungs file §16, §18 |
 | heap after the re-baseline cache | one analysed Django corpus ≈ 149 MB; a re-baseline costs +3 MB with the cache instead of +148 MB without | rungs file §20.2 |
+
+Provenance and gates for the final-tree rows (independent verification, 2026-09-21). Run records
+carry no git sha, so the tree identity `55404ba` is inferred from `run.json`'s workspace path (the
+frozen worktree `.claude/worktrees/final-clean`, clean at that commit) and timing (the QuixBugs bench
+started 94 s after the commit); the SWE-bench launcher log also records `head 55404ba`. On that frozen
+tree `tsc --noEmit`, `node scripts/no-any.mjs` and the full unit suite (221 files / 4,045 tests) pass,
+and `npm run perf` meets every budget: first frame cold p95 104.2 ms (< 300 ms; cold median 101.2,
+warm median 85.4), harness overhead per step p95 33.5 ms (< 50 ms; p50 22.1), event-loop lag p95
+2.4 ms / 1.8 ms at rows 40 / 12 (< 5 ms), 0 / 0 terminal clears after the first frame. "Solved" and
+"correct" are reported as separate numbers from here on (`docs/DECISIONS.md`, 2026-09-21).
 
 ## What could not be verified here
 
@@ -199,24 +212,40 @@ mode is the pinned Jev decisions endpoint; every checked-in jev-only record carr
 - **Linux sandboxing.** Only cwd confinement, env scrubbing, timeout, output cap and tree kill
   outside macOS (level `none`), as designed and printed by `jevcode config`.
 
-- **Jev-only, repeats.** Only QuixBugs has three full repeats (36, 38, 38 of 40). The ladder
-  short tier reached ≥ 8/12 in rounds 2, 4 and 5, but each round ran a different code state (the
-  loop-side and search-side fixes landed between them), so they are not three repeats of one
-  tree. The long tier stands at 2–3/8 over three runs. SWE-bench numbers beyond the single
-  `sympy__sympy-19954` pass are pending the rung-3 run (`bench/results/jev-only-swebench-3`).
+- **Jev-only, repeats.** QuixBugs has four full runs (36, 38, 38, 39 of 40; verified correct
+  32, 35, 36, 37), but only one on the final tree `55404ba`; the only same-tree pair (the two
+  6-repeat runs at `d610d75`) flipped 2/40 programs between them, and in the final run `mergesort`
+  passed at 455 s of the 480 s wall. The ladder short tier reached ≥ 8/12 in rounds 2, 4, 5 and
+  the final run, but each ran a different code state (the loop-side and search-side fixes landed
+  between them), so they are not repeats of one tree. The long tier has not exceeded 2/8 over
+  seven runs (2/8, 1/4, 2/8, 0/4, 0/4, 1/4, 2/8). SWE-bench: rung 3 1/30, final tree 4/30, each a
+  single run; `sympy__sympy-19954` has flipped across runs (pass, pass, miss, pass) with a
+  byte-identical patch each time it passed, so the count is load-sensitive.
 - **Jev-only, no hidden suite.** The QuixBugs and ladder evaluators run exactly the cases the
   workspace exposes (`bench/data/quixbugs/tests`, the ladder's `tests/`), so "repaired" means
   "passes the reference cases". Correctness is the separate verdict script
   (`experiments/inspect/quixbugs-verdicts.mts`: gold-identical, or equivalent on the reference
   cases and on perturbed inputs). Two QuixBugs programs that pass every run
-  (`breadth_first_search`, `topological_ordering`) differ from the reference and cannot be
-  verified by it: their pytest graph fixtures are not perturbed by `src/synth/search/perturb.ts`.
+  (`breadth_first_search`, `topological_ordering`) differ from the reference and the script labels
+  them `unverified` because their pytest graph fixtures are not perturbed by
+  `src/synth/search/perturb.ts`. An independent differential test against `correct/` (2026-09-21)
+  settles them: `breadth_first_search` is equivalent on 500 random graphs; `topological_ordering`
+  is **wrong** in every run's committed patch except run 3's — the final run's drops the
+  `issuperset(incoming_nodes)` check and adds a `break`, returns `[A, C]` for `A->B, A->C, B->C`
+  (gold `[A, B, C]`) and is invalid on 462/1000 random DAGs. "Passes every run" therefore does not
+  mean correct, and the script's "0 overfit" is scoped to the programs the probe can perturb. The
+  ladder has no such check at all; `experiments/inspect/ladder-verdicts.mts` is being written.
 - **Jev-only, in-sample constants.** Several thresholds were set after a live run on a named
   QuixBugs program (`docs/JEV-ONLY-DESIGN.md` §7); no run without them has been repeated, so the
   QuixBugs numbers are in-sample for those programs.
-- **Jev-only, SWE-bench grading.** The `sympy__sympy-19954` pass is the unofficial local-venv
-  evaluator; the patch (a two-line guard before the faulty `del`) is not the upstream fix's
-  shape.
+- **Jev-only, SWE-bench grading.** Every SWE-bench pass is the unofficial local-venv evaluator
+  (a fresh checkout at `base_commit`, the model patch, the dataset `test_patch`, the `eval.sh`
+  test command, the upstream log parsers; no Docker). None of the four final-tree passes has the
+  upstream fix's shape: `sympy__sympy-15345` aliases `_print_Expr = _print_Function` class-wide,
+  `sympy__sympy-19954` inserts an index guard before the faulty `del`, `sympy__sympy-17139` adds a
+  `not rv.exp.is_comparable` guard, `django__django-15128` appends `alias += table_name`; each
+  passes FAIL_TO_PASS and the listed PASS_TO_PASS only. `predictions.jev-only.jsonl` can be graded
+  with the official harness elsewhere.
 
 ## Open questions
 
@@ -235,13 +264,16 @@ mode is the pinned Jev decisions endpoint; every checked-in jev-only record carr
 - **Jev-only: the lone partial.** A goal whose first correct fix passes only some of its tests
   is found, ranked first, run, classified `partial` and dropped at the park (`masked`,
   `long_chain`, `shared_frame`, two `six_hunks` goals in the long tier). Pairs of partials and
-  held passers commit; a lone partial does not. Fix in flight: commit the best regression-free
-  partial with partial-fix evidence and let the next baseline re-cluster the remaining tests.
+  held passers commit; a lone partial does not. Fixed as progress commits (`docs/JEV-ONLY.md`,
+  2026-09-21 entry) and measured in `jev-only-ladder-long-3{,b,c}` and the final tree: `long_chain`
+  reached 3/6 through three progress commits; `masked` now fails on the budget-reserve release of
+  an all-overfit `return 0` instead (rungs file §25.3).
 - **Jev-only: within-file site ordering on repositories.** A repository goal has ~700
   candidates over ~12 sites; under the fixed 16-run cap `sympy__sympy-15345` ran 16 of 727
   candidates per step, 15 of them at the first site, and parked with sites 3–12 unvisited. The
-  oracle-derived run cap and the progress-aware park rule address this; rung 3 has not yet
-  measured them.
+  oracle-derived run cap and the progress-aware park rule address this; rung 3 (1/30) still
+  missed `sympy__sympy-15345`, and the final tree solved it in 4 steps (`jev-only-swebench-4-final`,
+  a single run).
 - **Jev-only: overfit on one-test goals.** Assertion failures make one goal per test, and a
   passer of a one-test goal can regress nothing while moving the true fix out of reach
   (`crossfile` 1b: `key not in CODES`; `ledger5` run 1: `return hits`). Acceptance for a one-test

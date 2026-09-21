@@ -620,3 +620,33 @@ wiring commit; process cwd confirmed with `lsof`), writing its records to the ma
 while the run lasts, so the number, when it lands, is attributable to one commit. Its result goes to
 `experiments/results/jev-only-rungs-1-2.md` §21 and to the `RUNG3` placeholders in `README.md` and
 `docs/JEV-ONLY-DESIGN.md` §7.
+
+## 2026-09-21 Report solved and correct separately
+
+The independent verification of the final-tree numbers (rungs report §26.5) found two cases where a
+task counted as repaired is wrong: QuixBugs `topological_ordering` passes its three visible graph
+fixtures but drops the `issuperset(incoming_nodes)` check and is invalid on 462/1000 random DAGs (the
+verdict script labelled it `unverified`, and "0 overfit" therefore hid it), and the ladder's `grades`
+(`letter_grade(89.5)` → `'A'`) and `textstats` (`ngrams` raises on a tuple, mutates the caller's
+list) pass their whole suites while behaving differently from gold, with no ladder correctness check
+at all. Both suites have no hidden tests — the evaluator runs the cases the workspace exposes, which
+are also the sieve's fitness function — so the evaluator count measures what the search optimised,
+not whether the program is right.
+
+Decision: every headline carries two numbers, never one standing for the other. **Solved** is the
+exposed / evaluator suite: QuixBugs reference cases, the ladder's `tests/`, the SWE-bench local-venv
+FAIL_TO_PASS + PASS_TO_PASS (labelled unofficial). **Correct** is a check the search did not see:
+the verdict script's gold-identical or perturbation-equivalent classes, or a differential test
+against gold on inputs outside the suite. `unverified` is reported as unverified, never folded into
+correct; a "0 overfit" is scoped to the programs the probe can perturb; hunk counts use one rule
+(gold-identical by strict `diff -U0`, with equivalents in parentheses where they differ); SWE-bench
+passes carry no correctness claim beyond the tests they pass until graded officially and compared
+with the upstream fix. Rows are also marked with how many runs on that tree they rest on.
+
+Consequences: the ladder gets a verdict pass (`experiments/inspect/ladder-verdicts.mts`, in progress:
+gold vs patched on hand-written inputs per task); the nine pytest-fixture QuixBugs programs need
+graph perturbations or a held-out DAG set in `quixbugs-verdicts.mts` so `topological_ordering`
+classifies as overfit rather than unverified; run records should store the engine's git sha (open —
+today the tree identity is inferred from `run.json`'s workspace path and timing). Rejected: keep
+reporting the evaluator count alone because it is what the benchmarks call "resolved" — true for
+SWE-bench, where the tests are withheld, and false for the two suites whose tests the search reads.

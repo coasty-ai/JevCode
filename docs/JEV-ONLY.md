@@ -359,12 +359,14 @@ the linter verify. The question this document answers by experiment is which dec
   was deferred and never run).
 - 2026-09-21: **final tree measured — QuixBugs 39/40, ladder 14/20** (55404ba, run from a frozen worktree while SWE-bench
   ran alongside; `experiments/results/jev-only-rungs-1-2.md` §25; `bench/results/jev-only-{quixbugs,ladder}-7-final`,
-  $0.505). QuixBugs: 39/40 solved — gold-identical 30, equivalent 7, overfit 0, unverified 2 (the two graph programs the
-  probe cannot perturb), miss 1; 36 programs in 3 steps, 0 `read`s, 13 loop trips all in the four 10–11-step runs; the
+  $0.505). QuixBugs: 39/40 solved — gold-identical 30, equivalent 7, overfit 0 *by the script*, unverified 2 (the two graph
+  programs the probe cannot perturb; the next entry's differential test shows `topological_ordering` **wrong** and
+  `breadth_first_search` equivalent, so 37 verified correct and at most 38/40 correct), miss 1; 36 programs in 3 steps, 0 `read`s, 13 loop trips all in the four 10–11-step runs; the
   miss (`shortest_path_length`, both 6-repeat runs missed it too) is the budget-end release of a held "possible overfit"
   passer — `return 4` inserted above the gold line — which makes the remaining test unfixable (`spend_cap` at step 11).
-  Ladder: the short tier **12/12** for the first time (all `complete`, 3–7 steps, 0 blocked / declined / loops, $0.051;
-  rounds 4–5 were 11/12), the long tier 2/8 (`import_and_guard` 9 steps, `ledger5` 13 — both their fastest) with 6
+  Ladder: the short tier **12/12 solved** for the first time (all `complete`, 3–7 steps, 0 blocked / declined / loops, $0.051;
+  rounds 4–5 were 11/12; `grades` and `textstats` are test-equivalent but behaviourally wrong fixes, so at most 10/12
+  correct — next entry), the long tier 2/8 (`import_and_guard` 9 steps, `ledger5` 13 — both their fastest) with 6
   progress commits and 0 reads; `long_chain` reached three gold links (3/6) before its remaining frame, a `<lambda>` in
   `totals.py`, never became a site. The seven misses by class: localisation miss ×3 (`long_chain`; `regress_trap`,
   where `agenda.py:19` never became a site although that hunk alone fixes all three remaining tests; `shared_frame`, a
@@ -376,3 +378,36 @@ the linter verify. The question this document answers by experiment is which dec
   `mutation 0` under the tax goal it fixes outright, likewise `discount.py:21` (`memory.ts:44`, `runner.ts:174`;
   `index.ts:712` forgets them only on that goal's own progress commit). Open, from this measurement: exclude an
   `unchanged` hash for its own goal only; do not release an all-overfit-signature passer at the budget reserve.
+- 2026-09-21: **SWE-bench final tree 4/30; independent verification of the final-tree numbers; solved and correct now
+  reported separately.** SWE-bench Verified 30 on `55404ba` (`bench/results/jev-only-swebench-4-final`, launched from the
+  frozen worktree while the QuixBugs and ladder finals ran alongside; rungs report §26): **4/30** pass the local-venv
+  evaluator (unofficial: it replicates `eval.sh` without Docker) — `sympy__sympy-15345` (4 steps), `sympy__sympy-17139`
+  (4), `sympy__sympy-19954` (6), `django__django-15128` (4) — with FAIL_TO_PASS all success and the listed PASS_TO_PASS
+  all success on each; none has the upstream fix's shape (15345 `_print_Expr = _print_Function`, a class-wide alias;
+  19954 an index guard before `del`; 17139 a `not rv.exp.is_comparable` guard; 15128 `alias += table_name`). $1.30 of
+  Jev, 0 generator calls, 68 min, 348 steps, 228 blocked proposals, 88 loop trips; 0 history/foreign-site errors (the
+  rung-3 defect is gone); `unstable` verdicts appeared 3× on `django-15315` and `weak_network` 7× on `requests-2931`;
+  RSS peak 4.5 GiB on 5-minute samples. A single run; `sympy-19954` has flipped across runs (pass, pass, miss, pass;
+  load-sensitive); the series over the four full-30 attempts is 0/30 → 1/30 → 1/30 → 4/30, and the four solved
+  instances were among the nine reach-study targets whose missing capabilities were added before this run.
+  **Verification** (sixteen independent read-only checks of the raw records, 2026-09-21): every headline count
+  re-derives from `tasks.jsonl` / `summary.json` / `verdicts.md`, the evaluator re-runs agree 40/40 and 20/20, all
+  6,598 Jev requests carry the pinned model and no generator was called; three restatements follow. (1) QuixBugs: 39/40
+  pass the reference cases, 37 verified correct, but the unverified `topological_ordering` is **wrong** (the committed
+  patch drops the `issuperset(incoming_nodes)` check and adds a `break`; `[A, C]` for `A->B, A->C, B->C`; 462/1000
+  random DAGs invalid) while `breadth_first_search` is equivalent on 500 random graphs — so at most 38/40 correct, and
+  the script's "0 overfit" is a blind spot for the nine pytest-fixture programs, not a finding; `shortest_path_length`
+  (a literal `return 4` committed) was gold-identical in run 3 and missed in all three later runs, a persistent
+  regression. (2) Ladder: 14/20 solved on the exposed suite, but the short tier's `grades` (`letter_grade(89.5)` →
+  `'A'`, gold `'B'`) and `textstats` (`ngrams` raises on a tuple and mutates the caller's list) are behaviourally wrong
+  fixes — at most 10/12 correct — and there was no ladder correctness check at all (`experiments/inspect/ladder-verdicts.mts`
+  is being written); hunk counts by strict `diff -U0` are `ledger5` 2/5, `import_and_guard` 2/4, `long_chain` 3/6,
+  `regress_trap` 3/4, `six_hunks` 1/6 (2/6 with the equivalent `t.due == None`), `masked` 0/3 (1/3 with the equivalent
+  `txt = text`; plus an overfit `return 0` insert), `crossfile` 0/4, `shared_frame` 0/2. (3) Provenance: no run record
+  stores a git sha; `55404ba` is inferred from `run.json`'s workspace path (the frozen worktree, clean) and timing (the
+  first bench started 94 s after the commit), and the SWE-bench launcher log's `head 55404ba` line. Gates on the frozen
+  tree: typecheck, `no-any` and the full unit suite (221 files / 4,045 tests) pass; `npm run perf` meets every budget
+  (first frame cold p95 104.2 ms of < 300; harness overhead per step p95 33.5 ms of < 50; event-loop lag p95 2.4 / 1.8 ms
+  at rows 40 / 12 of < 5; 0 / 0 terminal clears). Decision recorded in `docs/DECISIONS.md` (2026-09-21): every headline
+  carries "solved" (the exposed / evaluator suite) and "correct" (verdict script or differential test against gold) as
+  separate numbers; README, STATUS and design §7 carry the final-tree rows in that form.

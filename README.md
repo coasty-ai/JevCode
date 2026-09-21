@@ -173,14 +173,16 @@ until its site's sources have run, and asks Jev to arbitrate between clusters. O
 the risk, judge, intent and loop-detector stages read the synthesizer's code-computed test
 evidence (`src/loop/stages/risk.ts`, `src/loop/loopdetect.ts`, `src/loop/state.ts`).
 
-### Results (2026-09-20)
+### Results (2026-09-20/21)
 
 Every number traces to the run directory named; "correct" is the code verdict of
 `experiments/inspect/quixbugs-verdicts.mts` (gold-identical, or equivalent on the reference cases
 and on perturbed inputs). There is no hidden test suite: the QuixBugs and ladder evaluators run
 the cases the workspace exposes, so "repaired" means "passes the reference cases" and
 correctness is the separate check. The thresholds tuned on named QuixBugs programs are
-disclosed in `docs/JEV-ONLY-DESIGN.md` §7; the QuixBugs numbers are in-sample for them.
+disclosed in `docs/JEV-ONLY-DESIGN.md` §7; the QuixBugs numbers are in-sample for them. "Repaired"
+(solved) and "correct" are reported separately on every row (`docs/DECISIONS.md`, 2026-09-21): a program
+can pass its whole visible suite and still be wrong, and the final-tree rows show two such cases.
 
 | suite | run | repaired | correct (verdict script) | Jev cost | notes |
 | --- | --- | --- | --- | --- | --- |
@@ -190,16 +192,29 @@ disclosed in `docs/JEV-ONLY-DESIGN.md` §7; the QuixBugs numbers are in-sample f
 | ladder short tier (12), round 4 | `bench/results/jev-only-ladder-4` | 11/12 | – | $0.137 | 137 steps, 58 proposals refused; miss `account` (3 hunks) |
 | ladder short tier, round 5 (loop-side fixes) | `bench/results/jev-only-ladder-5` | 11/12 | – | $0.177 | 139 steps, 17 refused; `account` solved, `inventory` missed |
 | ladder round 6, `grades`/`shipping`/`table` | `bench/results/jev-only-ladder-6-done`, `-6-done-item3` | 3/3, 3/3 | – | $0.037, $0.020 | steps on these three tasks 47 (round 5) → 20 → 19; loop replans 8 → 0 → 0 |
-| ladder long tier (8) | `bench/results/jev-only-ladder-long-1`, `-1b`, `-2` | 2/8; then 1/4 of the four re-authored tasks (3/8 distinct across runs 1 and 1b); 2/8 on `d610d75` | – | $0.246, $0.176, $0.266 | dominant defect: a lone partial is never committed (fix in flight) |
+| ladder long tier (8) | `bench/results/jev-only-ladder-long-1`, `-1b`, `-2` | 2/8; then 1/4 of the four re-authored tasks (3/8 distinct across runs 1 and 1b); 2/8 on `d610d75` | – | $0.246, $0.176, $0.266 | dominant defect: a lone partial is never committed (fixed by progress commits before the final-tree rows below; runs 3, 3b, 3c on the four affected tasks: 0/4, 0/4, 1/4 — `masked` solved once in 7 steps — $0.137, $0.120, $0.102, `bench/results/jev-only-ladder-long-3{,b,c}`) |
 | SWE-bench Verified 30, first attempt | `bench/results/jev-only-swebench-1` | 0 (20 records evaluated, every patch empty; 2 unfinished) | – | $0.60 | no failing test in the workspace; wrong runner for Django and sympy |
 | issue oracle over the 30 | `experiments/results/oracle-from-issue.md` | valid on 9/30 (7 strong, 2 weak) | – | $0.0096 | fails on the base commit, passes with the gold patch |
 | SWE-bench, the nine oracle instances | `bench/results/jev-only-swebench-2-oracle`, `-oracle-b` | 1/9: `sympy__sympy-19954` passes the local-venv evaluator (8 steps, $0.024, 0 generator calls) | – | $0.106, $0.198 | the first instance solved with no generating model; not the upstream fix's shape; the first process died at a 4 GB heap on the Django instances |
 | SWE-bench 30, budget round | `bench/results/jev-only-swebench-2` | 1 pass (`sympy__sympy-19954`, 6 steps) of 8 records | – | $0.462 | process died at an 8 GB heap after eight records |
-| SWE-bench 30, wired tree (rung 3) | `bench/results/jev-only-swebench-3` | **1/30**: `django__django-15128` passes the local-venv evaluator (4 steps, $0.011); `sympy__sympy-19954` (solved in both earlier runs) missed under load | – | $1.16, 55 min, RSS peak 3.0 GB | oracle found 10/30; 9 no-oracle instances died on a wiring defect (history candidates at a foreign site) and are being re-run after the fix; all three oracle commits failed the evaluator (flaky or network oracles); §21 of the rungs report |
+| SWE-bench 30, wired tree (rung 3) | `bench/results/jev-only-swebench-3` | **1/30**: `django__django-15128` passes the local-venv evaluator (4 steps, $0.011); `sympy__sympy-19954` (solved in both earlier runs) missed under load | – | $1.16, 55 min, RSS peak 3.0 GB | oracle found 10/30; 9 no-oracle instances died on a wiring defect (history candidates at a foreign site) and were re-run after the fix as `jev-only-swebench-4-final` (final-tree row below); all three oracle commits failed the evaluator (flaky or network oracles); §21 of the rungs report |
+| QuixBugs 40, **final tree** `55404ba` | `bench/results/jev-only-quixbugs-7-final` (frozen worktree `.claude/worktrees/final-clean`; a single run on this tree) | **39/40** pass the evaluator's reference cases (the same cases the workspace exposes; no hidden suite) | **37/40 verified** (30 gold-identical + 7 equivalent); of the 2 `unverified`, `breadth_first_search` is equivalent to gold on 500 random graphs and `topological_ordering` is **wrong** (its patch drops the `issuperset(incoming_nodes)` check; 462/1000 random DAGs invalid) — so **at most 38/40 correct**, 1 overfit the script's `unverified` label hid | $0.185 | miss `shortest_path_length`: a literal `return 4` was committed as a "possible overfit" release (`spend_cap`, $0.0538 > $0.05); gold-identical in run 3, missed in the three later runs — a persistent regression. Four-run series 36, 38, 38, 39 pass; 32, 35, 36, 37 verified correct. Thresholds in-sample (design §7) |
+| ladder short tier (12), final tree | `bench/results/jev-only-ladder-7-final` | **12/12** solved on the exposed suite; every run `complete` in 3–7 steps; 0 blocked / declined / loop / `read` events | at most **10/12**: `grades` (`letter_grade(89.5)` → `'A'`, gold `'B'`) and `textstats` (`ngrams` raises on a tuple and mutates the caller's list) are behaviourally wrong fixes; the ladder had no correctness check until now (`experiments/inspect/ladder-verdicts.mts` is being written) | $0.051 | rounds 4 and 5 were 11/12; one run on this tree |
+| ladder long tier (8), final tree | same run | **2/8**: `import_and_guard` (9 steps), `ledger5` (13) | – (`ledger5`'s `is_overdue` returns an int where gold returns a bool; passes by truthiness) | $0.269 (run total $0.320) | gold-identical hunks by strict `diff -U0` against `gold/`: `ledger5` 2/5, `import_and_guard` 2/4, `long_chain` 3/6 (three progress commits), `regress_trap` 3/4, `six_hunks` 1/6 (2/6 counting the test-equivalent `t.due == None`), `masked` 0/3 (1/3 counting the equivalent `txt = text` alias; its tree also carries an overfit `return 0` insert), `crossfile` 0/4, `shared_frame` 0/2; §25.3 of the rungs report has the misses by cause |
+| SWE-bench Verified 30, **final tree** `55404ba` | `bench/results/jev-only-swebench-4-final` (a single run) | **4/30** pass the local-venv evaluator (unofficial: replicates `eval.sh` without Docker): `sympy__sympy-15345` (4 steps), `sympy__sympy-17139` (4), `sympy__sympy-19954` (6), `django__django-15128` (4); FAIL_TO_PASS all success and the listed PASS_TO_PASS all success on each | none has the upstream fix's shape (15345 `_print_Expr = _print_Function`, a class-wide alias; 19954 an index guard before `del`; 17139 a `not rv.exp.is_comparable` guard; 15128 `alias += table_name`) — accepted by the tests, not shown equivalent | $1.30, 0 generator calls, 68 min, RSS peak 4.5 GiB (5-min samples) | 348 steps, 228 blocked proposals, 88 loop trips; 0 history/foreign-site errors (the rung-3 defect is gone); `unstable` verdicts 3× on `django-15315`, `weak_network` 7× on `requests-2931`; `sympy-19954` has flipped across runs (load-sensitive); series 0/30 → 1/30 → 1/30 → 4/30 (runs 1 and 2 died early: 20 and 8 records evaluated); the four solved instances were among the nine reach-study targets the final sources were written against; §26 of the rungs report |
 
 
-A full QuixBugs run costs about $0.13 of Jev and 12–16 minutes of wall for the 40 programs
-(median 4 steps per program); every record carries `generatorCalls: 0`. The dated log of every
+A full QuixBugs run costs $0.13–0.19 of Jev and 12–16 minutes of wall for the 40 programs
+(median 3–4 steps per program; the final run's $0.185 is four 10–11-step recoveries); every record
+carries `generatorCalls: 0`. Tree identity for the final-tree rows is inferred, not recorded: run
+records carry no git sha, so `55404ba` rests on `run.json`'s workspace path (the frozen worktree,
+clean at that commit) and timing (the QuixBugs bench started 94 s after the commit). Gates on that
+frozen tree: typecheck, `no-any` and the full unit suite (221 files / 4,045 tests) pass, and
+`npm run perf` meets every budget — first frame cold p95 104.2 ms (< 300 ms; cold median 101.2,
+warm median 85.4), harness overhead per step p95 33.5 ms (< 50 ms; p50 22.1), event-loop lag p95
+2.4 ms / 1.8 ms at rows 40 / 12 (< 5 ms), 0 / 0 terminal clears after the first frame. The
+independent verification these rows follow is summarised in `docs/JEV-ONLY.md` (2026-09-21) and
+§26 of the rungs report. The dated log of every
 round is `docs/JEV-ONLY.md`; the per-round tables are `experiments/results/jev-only-rungs-1-2.md`;
 the audit of the "Jev and no other model" claim is `experiments/results/jev-only-audit.md`.
 
