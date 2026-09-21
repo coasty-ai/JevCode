@@ -6,17 +6,21 @@ run's bench workspace file (`~/.jevcode/runs/bench-work/<benchId>/<task>/jev-onl
 reference cases (`bench/data/quixbugs/tests`, the same cases the workspace exposes; there is no hidden suite).
 
 Verdicts: `gold-identical` = token-identical to `bench/data/quixbugs/correct/<task>.py` (comments, blank lines and whitespace
-width ignored); otherwise both programs ran on the reference cases and on the perturbed inputs `src/synth/search/perturb.ts`
-derives from the visible tests (the guard's behaviour probe): `equivalent` = every output matches, `overfit` = at least one
-differs, `unverified` = no perturbation applies (pytest graph fixtures) or the probe gave no result; `miss` = not solved.
+width ignored); otherwise both programs ran on the reference cases, on the perturbed inputs `src/synth/search/perturb.ts`
+derives from the visible tests (the guard's behaviour probe) and — for the nine programs whose tests are pytest modules
+building Node/graph fixtures — on 500 random structures per program from seed 20260921 (DAGs judged by a validity
+oracle so any correct topological order counts, digraphs with a start and goal, linked lists with random cycles, weighted
+graphs judged as minimum spanning forests, digraphs with distinct power-of-two lengths, digraphs with negative weights and no
+negative cycle): `equivalent` = every compared output matches, `overfit` = at least one differs, `unverified` = nothing
+could be compared or a probe gave no result; `miss` = not solved.
 
 | program | solved | verdict | evidence |
 | --- | --- | --- | --- |
 | bitcount | yes | gold-identical | token-identical to correct/bitcount.py (from workspace) |
-| breadth_first_search | yes | unverified | differs (differs at token 44: 'True' vs 'queue'); reference cases: patched 5/5, reference 5/5; tests/breadth_first_search_test.py builds graph fixtures perturb.ts does not perturb |
+| breadth_first_search | yes | equivalent | differs (differs at token 44: 'True' vs 'queue'); reference cases: patched 5/5, reference 5/5; identical outputs on 500 random digraphs of 1–8 nodes with a start and a goal node, seed 20260921 |
 | bucketsort | yes | gold-identical | token-identical to correct/bucketsort.py (from workspace) |
 | depth_first_search | yes | gold-identical | token-identical to correct/depth_first_search.py (from workspace) |
-| detect_cycle | yes | equivalent | differs (differs at token 21: '.' vs 'is'); reference cases: patched 6/6, reference 6/6; identical outputs on 16 perturbed inputs (linked_list_acyclic, linked_list_cycle) from tests/detect_cycle_test.py (Node chains of lengths 1/2/5, class from node.py) |
+| detect_cycle | yes | overfit | differs (differs at token 21: '.' vs 'is'); reference cases: patched 6/6, reference 6/6; 1/500 of 500 random linked lists of 0–12 nodes, acyclic or tail linked to a random node, seed 20260921 differ, e.g. list len=0 acyclic → patched ERROR AttributeError vs reference False; identical on 16 perturbed inputs (linked_list_acyclic, linked_list_cycle) from tests/detect_cycle_test.py (Node chains of lengths 1/2/5, class from node.py) |
 | find_first_in_sorted | yes | gold-identical | token-identical to correct/find_first_in_sorted.py (from workspace) |
 | find_in_sorted | yes | gold-identical | token-identical to correct/find_in_sorted.py (from workspace) |
 | flatten | yes | gold-identical | token-identical to correct/flatten.py (from workspace) |
@@ -50,8 +54,8 @@ differs, `unverified` = no perturbation applies (pytest graph fixtures) or the p
 | sqrt | no | miss | no patch committed; max_steps after 12 steps; run_tests: passed 1/7, failed 0, errors 6 (timeouts 6), skipped 0; first failure: input [… |
 | subsequences | yes | gold-identical | token-identical to correct/subsequences.py (from workspace) |
 | to_base | yes | gold-identical | token-identical to correct/to_base.py (from workspace) |
-| topological_ordering | yes | unverified | differs (differs at token 67: 'for' vs ''); reference cases: patched 3/3, reference 3/3; tests/topological_ordering_test.py builds graph fixtures perturb.ts does not perturb |
+| topological_ordering | yes | overfit | differs (differs at token 67: 'for' vs ''); reference cases: patched 3/3, reference 3/3; 92/500 of 500 random DAGs of 0–8 nodes (any valid topological order accepted), seed 20260921 differ, e.g. DAG n=7 nodes ECGFABD edges E->G,C->G,E->F,F->G,A->G → patched INVALID order ['E', 'C', 'A', 'B', 'D', 'G', 'F'] vs reference VALID n=7; also DAG n=5 nodes BDCEA edges C->D,C->E,B->E,B->D,A->B → patched INVALID order ['C', 'A', 'D', 'B', 'E'] vs reference VALID n=5 |
 | wrap | yes | gold-identical | token-identical to correct/wrap.py (from workspace) |
 
-Totals: solved 38/40; gold-identical 28, equivalent 8, overfit 0, unverified 2, miss 2.
-Correct by this script: 36/40 (gold-identical + equivalent); 2 more pass the reference cases but differ from the reference where no perturbation applies; 0 overfit the reference cases.
+Totals: solved 38/40; gold-identical 28, equivalent 8, overfit 2, unverified 0, miss 2.
+Correct by this script: 36/40 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 2 overfit the reference cases.

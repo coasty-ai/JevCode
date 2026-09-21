@@ -4068,3 +4068,77 @@ above are the run's `summary.json` limits (`maxSteps` 25, `maxWallMs` 1,500,000,
 `completeThreshold` 0.85) and the rung-3 launcher shape, with the process cwd from `run.json`. Run ids for the four
 passes: `20260921-022509-ebhus7rl` (15345), `20260921-023131-aqsxtrur` (17139), `20260921-024201-7dmqjwln` (19954),
 `20260921-032451-72clti7n` (15128); eval checkouts under `~/.jevcode/runs/<run id>/eval/<instance>/`.
+
+## 27. 2026-09-21: verdict scripts — graph perturbations and a ladder correctness check
+
+Follow-up to the §26 verification, code only (no Jev, no live run; `python3` differential runs). Two gaps in the verdict
+tooling were closed and every affected `verdicts.md` regenerated.
+
+**QuixBugs — `experiments/inspect/quixbugs-verdicts.mts`.** The script labelled the pytest-module programs `unverified`
+because its perturbations come from `src/synth/search/perturb.ts`, which handles JSON cases, strings and Node chains only. It
+now runs, for the nine programs whose tests build Node/graph fixtures, a random-structure differential in the probe's own
+process shape (candidate imported under the program name, `programs/` on `sys.path`, `PYTHONHASHSEED=0`, SIGALRM per
+input, one protocol line): 500 instances per program from seed 20260921, built identically in the patched and the reference
+process — DAGs of 0–8 nodes judged by a validity oracle (any correct topological order counts), digraphs with a start and a
+goal, linked lists of 0–12 nodes acyclic or with the tail linked to a random node, weighted graphs judged as minimum spanning
+forests of equal weight, digraphs with distinct power-of-two lengths (so the reference's heap never compares two Nodes — the
+QuixBugs reference raises `TypeError` on ties, 56/500 instances with small random weights), digraphs with negative weights
+and no negative cycle (potential reweighting). Any mismatch is `overfit`; the existing labels are unchanged.
+
+| run | before (gold-identical / equivalent / overfit / unverified / miss) | after | correct before → after |
+|---|---|---|---|
+| `jev-only-quixbugs-3` | 27 / 5 / 2 / 2 / 4 | 27 / 7 / 2 / 0 / 4 | 32 → 34 |
+| `jev-only-quixbugs-6-repeat1` | 28 / 7 / 1 / 2 / 2 | 28 / 7 / 3 / 0 / 2 | 35 → 35 |
+| `jev-only-quixbugs-6-repeat2` | 28 / 8 / 0 / 2 / 2 | 28 / 8 / 2 / 0 / 2 | 36 → 36 |
+| `jev-only-quixbugs-7-final` | 30 / 7 / 0 / 2 / 1 | 30 / 7 / 2 / 0 / 1 | 37 → 37 |
+
+Every overfit, with a failing input (all pass their reference cases):
+- `topological_ordering` — 7-final (drops the `issuperset(incoming_nodes)` check and adds `break`): 252/500 DAGs, e.g. nodes
+  DECBA, edges E->B, E->C → `['D','E','A','B']` (C dropped) where the reference order is valid; 6-repeat1 and 6-repeat2
+  (drops the check only): 92/500, e.g. edges E->G, C->G, E->F, F->G, A->G → `['E','C','A','B','D','G','F']` (G before F). In
+  run 3 the same program is `equivalent` (500/500 valid orders), as is `breadth_first_search` in all four runs (500/500).
+- `detect_cycle` — run 3 (the §6.3 overfit): 3/16 chains and 99/500 random lists, e.g. an acyclic list of 6 → `AttributeError`
+  vs `False`; 6-repeat1, 6-repeat2 and 7-final (`if hare.successor is None` first): 1/500 — the empty list (`None`), which
+  the reference answers `False` and the patch answers `AttributeError`; identical on the other 499 and on the 16 chains.
+  These three were `equivalent` before; the empty list is the only input that separates them.
+- `wrap` — run 3 and 6-repeat1: 8/24, e.g. `wrap("The", 50)` → `[]` vs `['The']` (unchanged from before).
+
+**Ladder — `experiments/inspect/ladder-verdicts.mts` (new).** The ladder had no correctness check: "complete" meant the
+task's own tests pass. For every solved task the script applies the run's `model_patch.diff` to a private copy of
+`bench/data/ladder/tasks/<task>` (else the bench workspace `src/`) and compares it with `gold/`: (a) per-module token
+comparison (`gold-identical`); (b) a differential — every public function and method of the gold modules is wrapped by a
+recorder, the task's `tests/test_*.py` are imported and their test functions run so the recorder sees the arguments the
+tests pass and every nested call; each distinct call is perturbed one argument at a time (ints ±1 and x±0.5, floats ±0.5
+and ⌊x⌋+0.5, strings emptied / one character, sequences emptied / one element / last dropped, tuple for list and list for
+tuple, dates ±1 day, None; ≤ 80 perturbed inputs per function, seed 20260921), and every input is replayed on the gold and
+the patched tree comparing the canonical result, the exception class and the arguments after the call. `overfit` is
+*strong* (a different value, one side raises where the other returns, or the arguments are mutated differently) or *weak
+only* (both raise but a different class; a bool-returning function returning an int of the same truthiness).
+
+`bench/results/jev-only-ladder-7-final/verdicts.md`: short tier solved 12/12, **correct 8/12** (gold-identical 5,
+equivalent 3), overfit 4 — strong `grades`, `textstats`; weak only `stats`, `units`; long tier solved 2/8, **correct
+1/8** (`import_and_guard` equivalent over 295 inputs), overfit 1 weak only (`ledger5`). Counting the weak-only rows as
+correct: 10/12 and 2/8. The failing inputs:
+- `grades` (`minimum -= 1`): `letter_grade(59.5)` → 'D' vs 'F', 69.5 → 'C' vs 'D', 79.5 → 'B' vs 'C', 89.5 → 'A' vs 'B'
+  (4/132 inputs).
+- `textstats` (`tokens.append(n)`): `ngrams(('a','b','c'), 2)` → `AttributeError` vs `[('a','b'),('b','c')]`; on a list the
+  result is right but the caller's list is left as `['a','b','c',2]` (20/94 inputs: 3 value, 16 argument-mutation, 1 exception class).
+- `stats` (guard placed after the odd-length branch): only `median(None)` / `summary(None)` → `TypeError` vs `ValueError`
+  (2/111; the empty list is handled).
+- `units` (dead `number, unit = text[:-1], text[-1]` left above the donor body): only `parse_duration('')` → `IndexError`
+  vs `ValueError` (1/54).
+- `ledger5`: `is_overdue` returns `min(0, (due - today).days)` — an int, -1 for the day after the due date (gold `True`), 0 on
+  or before it (gold `False`); truthiness agrees on all 24 inputs that differ, the annotated `-> bool` does not (24/449).
+
+`bench/results/jev-only-ladder-5/verdicts.md` (short tier only): solved 11/12, **correct 7/12**, overfit 4 — strong `grades`,
+`textstats` (the same two patches) and `units`, whose fallback is a literal `return 90`: `parse_duration('1')` → 90 vs 1
+(4/54); weak only `stats`.
+
+Commands (from the repository root; nothing asks Jev):
+
+```
+for d in jev-only-quixbugs-3 jev-only-quixbugs-6-repeat1 jev-only-quixbugs-6-repeat2 jev-only-quixbugs-7-final; do
+  node_modules/.bin/tsx experiments/inspect/quixbugs-verdicts.mts bench/results/$d; done      # --graph-n 500 --seed 20260921
+node_modules/.bin/tsx experiments/inspect/ladder-verdicts.mts bench/results/jev-only-ladder-7-final   # --per-fn-cap 80 --seed 20260921
+node_modules/.bin/tsx experiments/inspect/ladder-verdicts.mts bench/results/jev-only-ladder-5
+```
