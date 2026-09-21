@@ -1,15 +1,27 @@
 /**
- * The bench conditions (DESIGN.md §13, docs/JEV-ONLY.md): jev-on is the full engine, jev-off
- * the generator-only engine, jev-only the full engine with a Synthesizer in the propose stage
- * and the NullProvider in the generator slot (no generating LLM; any generator usage
- * invalidates the record). Everything that must be identical across conditions is built here
- * so it can be recorded verbatim in summary.json.conditions.
+ * The bench conditions (DESIGN.md §13, docs/JEV-ONLY.md, docs/LLM-JEV-DESIGN.md §10.1): jev-on is the
+ * full engine, jev-off the generator-only engine, jev-only the full engine with a Synthesizer in the
+ * propose stage and the NullProvider in the generator slot (no generating LLM; any generator usage
+ * invalidates the record), llm-jev the full engine with the Synthesizer AND the real provider (the
+ * generating LLM is a candidate source inside the synthesizer; generator calls are recorded, never
+ * asserted zero). Everything that must be identical across conditions is built here so it can be
+ * recorded verbatim in summary.json.conditions.
  */
 import type { BenchDeps, Confirmer, Decider, Engine, EngineMode, EngineOptions, Provider, SpendMeter, Synthesizer } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
 import type { BenchOptions, ConditionConfig } from './types.js';
 
-export const CONDITION_ORDER: readonly EngineMode[] = ['jev-on', 'jev-off', 'jev-only'];
+export const CONDITION_ORDER: readonly EngineMode[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'];
+
+/** jev-only and llm-jev put a Synthesizer in the propose stage (docs/JEV-ONLY.md, docs/LLM-JEV-DESIGN.md §3). */
+export function usesSynthesizer(mode: EngineMode): boolean {
+  return mode === 'jev-only' || mode === 'llm-jev';
+}
+
+/** a bench with a synthesizer condition needs BenchDeps.createSynthesizer */
+export function requiresSynthesizer(conditions: readonly EngineMode[]): boolean {
+  return conditions.some(usesSynthesizer);
+}
 /** what summary.json records as the generator model of the jev-only condition (NullProvider.model) */
 export const NULL_GENERATOR_MODEL = 'none (jev-only)';
 
@@ -26,7 +38,7 @@ export function isEngineMode(s: string): s is EngineMode {
   return (CONDITION_ORDER as readonly string[]).includes(s);
 }
 
-/** jev-on and jev-off call a generating LLM; a bench of jev-only alone needs no generator provider or key. */
+/** jev-on, jev-off and llm-jev call a generating LLM; a bench of jev-only alone needs no generator provider or key. */
 export function requiresGenerator(conditions: readonly EngineMode[]): boolean {
   return conditions.some((c) => c !== 'jev-only');
 }

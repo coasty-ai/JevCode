@@ -9,7 +9,7 @@
  * only for that verification is satisfied by the run. Jev still decides; the threshold is unchanged.
  */
 import { noul, ref } from '../../jev/questions.js';
-import type { Question } from '../../core/types.js';
+import type { ActionKind, OutcomeStatus, ProposalEvidence, Question, TestCounts } from '../../core/types.js';
 
 export const TASK_COMPLETE_ID = 'task_complete';
 
@@ -44,4 +44,35 @@ export function buildCompleteQuestion(): Question {
 /** `task_complete >= completeThreshold` (§5.5 stop rule). */
 export function isComplete(completion: number | null, threshold: number): boolean {
   return completion !== null && completion >= threshold;
+}
+
+/** docs/LLM-JEV-DESIGN.md §6.6: `tests_pass_unparsed` stands in for the parsed counts only when the runner's output could not be parsed. */
+export const TESTS_PASS_UNPARSED_THRESHOLD = 0.85;
+
+export interface CompletionFactInput {
+  /** the executed proposal's action kind (null: no proposal) */
+  action: ActionKind | null;
+  outcome: OutcomeStatus | null;
+  /** the engine's parse of the executed run when it was the workspace test command; null for any other action or command */
+  tests: { parsed: TestCounts | null; allPassed: boolean | null } | null;
+  /** the synthesizer's declaration that this `run` is the claiming run (`ProposalEvidence.completion`) */
+  completion: ProposalEvidence['completion'] | undefined;
+  /** the recorded `tests_pass_unparsed` answer; null when not asked (parsed run) */
+  testsPassUnparsed: number | null;
+  /** engine-computed (risk.ts VerifiedCompletion): a `done` claiming nothing remains after the engine's own passing, current run */
+  verifiedDone: boolean;
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.6 (llm-jev): completion is a code fact declared on the evidence. On the claiming `run` step: the
+ * run executed, the parser read `failed = errors = 0` and `passed > 0` (or, when it read nothing, `tests_pass_unparsed`
+ * stands in) and the synthesizer's `evidence.completion` records a passing verified run. A `done` completes only when the
+ * engine's own passing, current run verifies it (a partial `done` never does). `task_complete` is recorded, never consulted.
+ */
+export function isCompleteByFact(i: CompletionFactInput): boolean {
+  if (i.action === 'done') return i.outcome === 'noop' && i.verifiedDone;
+  if (i.action !== 'run' || i.outcome !== 'executed' || i.completion === undefined || !i.completion.allPassed || i.tests === null) return false;
+  const parsed = i.tests.parsed;
+  if (parsed === null) return i.testsPassUnparsed !== null && i.testsPassUnparsed >= TESTS_PASS_UNPARSED_THRESHOLD;
+  return i.tests.allPassed === true && parsed.failed === 0 && parsed.errors === 0 && parsed.passed > 0;
 }

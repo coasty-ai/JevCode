@@ -198,11 +198,17 @@ export interface AssessOptions {
    * declined on spread-mass out_of_scope at Jev confidence 0.00, six refusals through step 11).
    */
   novelPatch?: { priorPatches: number };
+  /**
+   * llm-jev (docs/LLM-JEV-DESIGN.md §5 Q20): only the two harm Scores were asked; they gate alone whatever their level, and
+   * the alignment dimensions are recorded at level 0, never gating.
+   */
+  harmOnly?: boolean;
 }
 
 /** Fix 2: the harm dimensions may sit at "notable but fine" (level 1) for the verification-run rule to apply. */
 export const VERIFICATION_HARM_MAX_LEVEL = 1;
-const HARM_DIMENSIONS: readonly RiskDimension[] = ['destructive', 'irreversible'];
+/** docs/LLM-JEV-DESIGN.md §5 Q20: the dimensions that gate an unverified action in llm-jev */
+export const HARM_DIMENSIONS: readonly RiskDimension[] = ['destructive', 'irreversible'];
 const ALIGNMENT_DIMENSIONS: readonly RiskDimension[] = ['out_of_scope', 'plan_mismatch'];
 /** shell composition would make "the test command" run something else as well; one plain invocation only */
 const SHELL_COMPOSITION = /[;&|<>`$(){}\\\n]/;
@@ -259,7 +265,8 @@ export function assessRisk(answers: Record<string, Answer>, matchesIntent: numbe
   const harmLow = HARM_DIMENSIONS.every((dim) => dims[dim].expected * nm1 <= VERIFICATION_HARM_MAX_LEVEL);
   const verification = opts.verificationRun === true && harmLow;
   const novelPatch = opts.novelPatch !== undefined && harmLow;
-  const gating: readonly RiskDimension[] = verification || novelPatch ? HARM_DIMENSIONS : RISK_DIMENSIONS;
+  const harmOnly = opts.harmOnly === true;
+  const gating: readonly RiskDimension[] = harmOnly || verification || novelPatch ? HARM_DIMENSIONS : RISK_DIMENSIONS;
   let maxR100 = -1;
   for (const dim of gating) if (r100s[dim] > maxR100) maxR100 = r100s[dim];
   const risk = maxR100 / (100 * nm1);
@@ -290,7 +297,71 @@ export function assessRisk(answers: Record<string, Answer>, matchesIntent: numbe
     const n = opts.novelPatch?.priorPatches ?? 0;
     reason += `; verified novel patch (evidence verified, no regressions, content differs from every applied earlier patch; ${n} earlier patch${n === 1 ? '' : 'es'} this run): ${alignmentNote()}`;
   }
+  if (harmOnly) reason += '; harm-only (llm-jev): out_of_scope and plan_mismatch not asked, recorded at level 0, not gating';
   return { dims, risk, verdict, reason };
+}
+
+// ---------------------------------------------------------------------------------------
+// llm-jev code facts (docs/LLM-JEV-DESIGN.md §3 row 5, §6.3): `ok` before any Jev request
+// ---------------------------------------------------------------------------------------
+
+/** a verified change may touch at most this many files (`llm` winners are re-expressed as ≤ 4 files, §6.2) */
+export const VERIFIED_PATCH_MAX_FILES = 4;
+// the same shape as synth/search/subgoal.ts isTestPath (kept local: the loop does not import the search)
+const TEST_PATH = /(^|\/)(tests?|testing)\/|(^|\/)test_[^/]*\.py$|_tests?\.py$|(^|\/)conftest\.py$/;
+export function isTestPath(path: string): boolean {
+  return TEST_PATH.test(path);
+}
+
+/**
+ * A `patch`/`edit`/`write` whose evidence is verified (more tests pass, `newlyFailing = []`) and whose targets are
+ * ≤ VERIFIED_PATCH_MAX_FILES non-test workspace paths (targets come from `workspace.target`, so a path escape never
+ * reaches here). Returns the reason naming the evidence, or null.
+ */
+export function verifiedPatchOk(proposal: Proposal, targets: readonly TargetInfo[]): string | null {
+  const e = proposal.evidence;
+  if (!isChangeAction(proposal.action.kind) || e === undefined) return null;
+  if (!evidenceVerified(e) || e.newlyFailing.length > 0) return null;
+  if (targets.length === 0 || targets.length > VERIFIED_PATCH_MAX_FILES || targets.some((t) => isTestPath(t.path))) return null;
+  return `verified ${proposal.action.kind} — ${evidenceSummary(e, proposal.goal)}; ${targets.length} non-test workspace ${targets.length === 1 ? 'file' : 'files'} (${targets.map((t) => t.path).join(', ')})`;
+}
+
+/**
+ * The synthesizer's revert of its last change (§6.5 `revert_last_change`, a `patch` whose goal starts with "revert") with
+ * every target recoverable (git-tracked, or first written this run): restorable with one git command.
+ * TODO(stage 4, src/synth/search/proposal.ts proposeRevert): a typed marker on the proposal would replace the goal prefix.
+ */
+export function recoverableRevertOk(proposal: Proposal, targets: readonly TargetInfo[]): string | null {
+  if (proposal.action.kind !== 'patch' || !/^revert\b/i.test(proposal.goal.trim())) return null;
+  if (targets.length === 0 || !targets.every((t) => t.recoverable)) return null;
+  return `revert of recoverable targets (${targets.map((t) => t.path).join(', ')}): restorable with one git command`;
+}
+
+/** The code fact that makes a proposal `ok` before any Jev request in llm-jev, as a reason; null when Q20 must be asked. */
+export function codeRiskReason(proposal: Proposal, targets: readonly TargetInfo[], testCommand: TestCommand | null, verifiedCompletion: VerifiedCompletion | null | undefined): string | null {
+  const a = proposal.action;
+  switch (a.kind) {
+    case 'read':
+      return 'read: changes nothing';
+    case 'run':
+      return isVerificationRun(a.command, testCommand) ? `verification run of the workspace test command \`${a.command}\`` : null;
+    case 'done':
+      return verifiedCompletion ? `completion verified by the engine's own passing run \`${verifiedCompletion.command}\` at step ${verifiedCompletion.step}` : null;
+    default:
+      return verifiedPatchOk(proposal, targets) ?? recoverableRevertOk(proposal, targets);
+  }
+}
+
+/** docs/LLM-JEV-DESIGN.md §5 Q20: the two harm Scores (`destructive`, `irreversible`) with the §5.5 level texts; nothing else. */
+export function harmOnlyQuestions(): Record<string, Question> {
+  const qs: Record<string, Question> = {};
+  for (const dim of HARM_DIMENSIONS) qs[dim] = score(RISK_INSTRUCTIONS[dim], [...RISK_LEVEL_TEXTS[dim]]);
+  return qs;
+}
+
+/** The synthetic level-0 assessment of a code-`ok` proposal: full `dims` (confidence 1) so the TUI and `confirm()` read a complete record. */
+export function codeOkAssessment(intent: Intent | null, reason: string): RiskAssessment {
+  return { ...assessRisk({}, 1, intent, { texts: RISK_LEVEL_TEXTS }), verdict: 'ok', reason: `risk 0.00 (ok) by code: ${reason}` };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -488,17 +559,20 @@ export interface RiskStageOptions {
   patchHistory?: PatchHistory;
 }
 
-export async function runRiskStage(ctx: StageContext, common: JsonObject, proposal: Proposal, intent: { intent: Intent; answer: Intent | 'none_of_these'; probability: number }, opts: RiskStageOptions = {}): Promise<RiskStageResult> {
+type IntentInfo = { intent: Intent; answer: Intent | 'none_of_these'; probability: number };
+
+export async function runRiskStage(ctx: StageContext, common: JsonObject, proposal: Proposal, intent: IntentInfo, opts: RiskStageOptions = {}): Promise<RiskStageResult> {
   const targets = await computeTargets(ctx, proposal);
   const history = opts.patchHistory ?? patchHistoryFor(ctx.runId, ctx.step);
   const priorPatches = history.observe(ctx.step, proposal, common);
+  const testCommand = opts.testCommand === undefined ? ctx.workspaceInfo.testCommand : opts.testCommand;
+  if (ctx.mode === 'llm-jev') return runHarmOnlyRiskStage(ctx, common, proposal, intent, { targets, priorPatches, testCommand, verifiedCompletion: opts.verifiedCompletion ?? null });
   // `matches_intent` asks about `intent.choice`; that must be the effective intent the generator
   // was given, never the raw escape answer (§6 per-outcome table).
   const state = buildRiskState(common, proposal, { choice: intent.intent, probability: intent.probability }, targets, ctx.redact, isChangeAction(proposal.action.kind) ? priorPatches : undefined);
   const evidence = proposal.evidence;
   const withEvidence = evidence !== undefined;
   const texts = riskLevelTexts(withEvidence);
-  const testCommand = opts.testCommand === undefined ? ctx.workspaceInfo.testCommand : opts.testCommand;
   const verificationRun = proposal.action.kind === 'run' && isVerificationRun(proposal.action.command, testCommand);
   const novelPatch = novelVerifiedPatch(proposal, priorPatches);
   const assessOpts = (ec: number | null): AssessOptions => {
@@ -524,4 +598,38 @@ export async function runRiskStage(ctx: StageContext, common: JsonObject, propos
   if (verified !== undefined && verified !== null && proposal.action.kind === 'done' && risk.verdict !== 'ok') risk = completionVerifiedByRun(risk, verified);
   ctx.emit({ type: 'risk', step: ctx.step, risk });
   return { risk, matchesIntent, evidenceConsistent, targets };
+}
+
+interface HarmOnlyInput {
+  targets: TargetInfo[];
+  priorPatches: PriorPatch[];
+  testCommand: TestCommand | null;
+  verifiedCompletion: VerifiedCompletion | null;
+}
+
+/**
+ * llm-jev (docs/LLM-JEV-DESIGN.md §3 row 5, §6.3): the code facts decide BEFORE any Jev request — a verified patch, a
+ * recoverable revert, a verification run, a verified `done` and a `read` are `ok` with a reason naming the evidence
+ * and synthetic level-0 dims. Everything else (a non-test `run`, an unverified best-guess patch, a partial `done`)
+ * is gated by Q20's two harm Scores alone; `matches_intent`, `evidence_consistent` and the alignment Scores are never asked.
+ */
+async function runHarmOnlyRiskStage(ctx: StageContext, common: JsonObject, proposal: Proposal, intent: IntentInfo, input: HarmOnlyInput): Promise<RiskStageResult> {
+  const { targets } = input;
+  const code = codeRiskReason(proposal, targets, input.testCommand, input.verifiedCompletion);
+  if (code !== null) {
+    const risk = codeOkAssessment(intent.intent, code);
+    ctx.emit({ type: 'risk', step: ctx.step, risk });
+    return { risk, matchesIntent: 1, evidenceConsistent: null, targets };
+  }
+  const state = buildRiskState(common, proposal, { choice: intent.intent, probability: intent.probability }, targets, ctx.redact, isChangeAction(proposal.action.kind) ? input.priorPatches : undefined);
+  const evidence = proposal.evidence;
+  const assessOpts: AssessOptions = { texts: RISK_LEVEL_TEXTS, harmOnly: true, ...(evidence !== undefined ? { evidence, goal: proposal.goal } : {}) };
+  let assessment: RiskAssessment | null = null;
+  await ctx.ask('risk', state, harmOnlyQuestions(), (answers, rows) => {
+    assessment = assessRisk(answers, 1, intent.intent, assessOpts);
+    for (const r of rows) if ((HARM_DIMENSIONS as readonly string[]).includes(r.id)) r.verdict = assessment.verdict;
+  });
+  const risk: RiskAssessment = assessment ?? assessRisk({}, 1, intent.intent, assessOpts);
+  ctx.emit({ type: 'risk', step: ctx.step, risk });
+  return { risk, matchesIntent: 1, evidenceConsistent: null, targets };
 }

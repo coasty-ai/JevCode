@@ -101,7 +101,10 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
   const reviewer =
     opts.mode === 'jev-on'
       ? 'A separate decision model (Jev) scores every proposed action for risk before it runs, judges the result, and decides whether the task is complete; blocked or declined actions come back to you with the reason. Jev also sets the intent of each step and picks which files you see.'
-      : 'Every well-formed action is executed; there is no reviewer. You obtain file contents only through `read` actions.';
+      : opts.mode === 'llm-jev'
+        ? // docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.4: the generic fallback's reviewer sentence
+          'Patches are verified in shadow lanes before they reach the workspace; unverified actions (a `run` that is not the test command, an unverified patch, a `done` while tests fail) are gated on harm only by a separate decision model (Jev): what existing data would be lost and what could not be undone. Blocked actions come back to you with the reason; the harness computes test results and completion, you do not.'
+        : 'Every well-formed action is executed; there is no reviewer. You obtain file contents only through `read` actions.';
   const base = [
     'You are the engineer in a coding-agent harness. You write code; you do not decide when the task is finished, the harness does.',
     'Each turn you receive the task, the accepted plan, recent steps with their results, and workspace information. You reply by calling the tool ' +
