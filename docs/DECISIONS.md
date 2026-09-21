@@ -650,3 +650,19 @@ classifies as overfit rather than unverified; run records should store the engin
 today the tree identity is inferred from `run.json`'s workspace path and timing). Rejected: keep
 reporting the evaluator count alone because it is what the benchmarks call "resolved" — true for
 SWE-bench, where the tests are withheld, and false for the two suites whose tests the search reads.
+
+## 2026-09-21 Documentation follows the behaviour on disk; `docs/DESIGN.md`'s duplicated prefix removed
+
+The wave-4 documentation pass (`README.md`, `docs/TUI.md`, `docs/DESIGN.md` §4/§9.2/§10/§11/§12, `docs/STATUS.md`
+"Interactive TUI", `docs/research/tui/terminal-matrix.md`, `CHANGELOG.md`) describes what the code does, checked
+against `src/cli/args.ts`, `src/tui/commands/registry.ts`, `src/tui/keys/bindings.ts`, the `lines()` modules and
+TUI-DESIGN §24; where the implementation deviates from the design the behaviour is documented and the deviation
+listed in `docs/STATUS.md` (`/calibration` 50 runs / 32 MB, `/copy diff` = last item, `--title` inert, the plain
+`/resume <id|title>`). `docs/DESIGN.md` had carried a stale duplicate of §1–§9 since `84a9612` (a `$\`` in the run-id
+regex expanded inside a `String.replace`); every later edit had landed in the first copy, so the second copy was
+removed (3,970 → 2,751 lines) and the regex sentence restored — a repair, not a rewrite: a token-level diff of the
+inserted copy against the kept prefix shows 25 tokens (fragments of three later-reworded sentences) only in the removed
+copy and 404 tokens of later additions only in the kept one (`docs/STATUS.md`, "Interactive TUI" deviation 9). The fix
+pass of the same day corrected three places where the first pass had described the design rather than the tree
+(`--title` is inert, the `[screen reader mode: on …]` item is not emitted, a live-pane shrink resize clears 1–2 times)
+and replaced every measured figure with the run that produced it. Affects `docs/**`, `README.md`, `CHANGELOG.md`.

@@ -7,12 +7,12 @@
  * every prompt is a promise the App resolves; nothing here touches the process.
  *
  * Every prompt is cancellable (§13.5 / F3): `cancelAll()` — called by the controller's `finishSession` — settles the
- * pending ones with their safe defaults so no controller await outlives the renderer. The wizard has two close paths:
- * the host's `cancel()` (the App may call it from its `wizard.cancel()` / `onDone`) and, until it does, a 200 ms watch
- * of `renderer.state().overlay` that resolves `cancelled` / `null` once the wizard overlay has been seen and then stays
- * closed for two polls (§11.1: Ctrl-C with a run live closes the wizard, the run continues).
+ * pending ones with their safe defaults so no controller await outlives the renderer. The wizard's close channel is the
+ * host's `cancel()` (`WizardHost.cancel?`): the App calls it from `wizard.cancel()` (Ctrl-C — §11.1: with a run live the
+ * wizard closes and the run continues, otherwise exit 2) and when the wizard reaches `done` without a save / trust answer,
+ * so a pending `wizard()` resolves `cancelled` and a pending `trust()` resolves `null` at once (no overlay polling).
  */
-import type { BlockingAnswer, EngineMode, SecretHit, SecretSettingName, SessionRow } from '../core/types.js';
+import type { BlockingAnswer, EngineMode, SecretSettingName, SessionRow } from '../core/types.js';
 import type { CredentialsPatch } from '../config/credentials.js';
 import type { TrustInputs, TrustOption } from '../config/trust.js';
 import type { PickerOpen, TuiRenderer, WizardHost, WizardSaveInput } from '../tui/index.js';
@@ -38,25 +38,18 @@ export interface TuiPrompterControls {
   runLive(): boolean;
 }
 
-/** the wizard host the App receives, plus the close channel the controller side needs (O9 may call `cancel()` from `wizard.cancel()` / `onDone`) */
+/** the wizard host the App receives; `cancel()` is required here (the App calls it from `wizard.cancel()` / a `done` without an answer) */
 export interface TuiWizardHost extends WizardHost {
   /** the wizard closed without a save / trust answer: the pending prompt resolves `cancelled` / `null` */
   cancel(): void;
 }
 
-/** polling interval of the wizard-overlay watch (a ref read, no I/O) */
-export const WIZARD_WATCH_MS = 200;
-/** consecutive polls without the wizard overlay (after it was seen) that count as a close */
-export const WIZARD_WATCH_MISSES = 2;
-
 /**
- * §10.2 (F-V gate for an argv task on a TTY one-shot): the renderer method the prompter looks for. O9's `TuiRenderer`
- * does not expose it yet, so the controller falls back to the pipe rule (refuse, exit 2) until it does — duck-typed
- * so the wiring lands here the moment the App offers the row (`Looks like this contains a secret (<label>). Send anyway? y/N`).
+ * §10.2 (F-V gate for an argv task on a TTY one-shot): the renderer method the prompter forwards to — `TuiRenderer.promptSecretGate`
+ * (the row `Looks like this contains a secret (<label>). Send anyway? y/N`, §4.10). Kept as a named shape for the duck-typed check a
+ * renderer built outside `createTuiRenderer` (tests, a future twin) goes through.
  */
-export interface SecretGateRenderer {
-  promptSecretGate(hits: readonly SecretHit[]): Promise<boolean>;
-}
+export type SecretGateRenderer = Pick<TuiRenderer, 'promptSecretGate'>;
 
 export function hasSecretGate(r: TuiRenderer | null): r is TuiRenderer & SecretGateRenderer {
   return r !== null && typeof (r as Partial<SecretGateRenderer>).promptSecretGate === 'function';
@@ -112,7 +105,6 @@ export function createTuiPrompter(): TuiPrompterBundle {
   let pendingTrust: ((o: TrustOption | null) => void) | null = null;
   /** the cancel of every pending renderer prompt (follow-up, exit confirm, blocking, undo, picker, rewind) */
   const cancels = new Set<() => void>();
-  let wizardWatch: ReturnType<typeof setInterval> | null = null;
 
   /** a renderer promise that `cancelAll()` settles with `fallback` (the App never resolves it after the unmount) */
   function cancellable<T>(p: Promise<T>, fallback: T): Promise<T> {
@@ -130,49 +122,14 @@ export function createTuiPrompter(): TuiPrompterBundle {
     });
   }
 
-  function stopWizardWatch(): void {
-    if (wizardWatch !== null) clearInterval(wizardWatch);
-    wizardWatch = null;
-  }
-
-  /** the wizard closed without a save / trust answer (Ctrl-C with a run live, Esc out of the first field, `onDone`) */
+  /** the wizard closed without a save / trust answer (Ctrl-C with a run live, exit 2 with none, `done` with nothing answered) */
   function cancelWizard(): void {
-    stopWizardWatch();
     const w = pendingWizard;
     const t = pendingTrust;
     pendingWizard = null;
     pendingTrust = null;
     w?.({ kind: 'cancelled' });
     t?.(null);
-  }
-
-  /**
-   * §11.1 close detection without a host hook: once the wizard overlay has been seen, its absence for
-   * `WIZARD_WATCH_MISSES` consecutive polls is a close. A wizard that never opens is left pending (the
-   * controller's other exits cover it); the interval never keeps the process alive.
-   */
-  function watchWizardOverlay(): void {
-    stopWizardWatch();
-    const r = renderer;
-    if (!r) return;
-    let seen = false;
-    let misses = 0;
-    wizardWatch = setInterval(() => {
-      if (pendingWizard === null && pendingTrust === null) {
-        stopWizardWatch();
-        return;
-      }
-      const overlay = r.state()?.overlay ?? null;
-      if (overlay === 'wizard') {
-        seen = true;
-        misses = 0;
-        return;
-      }
-      if (!seen) return;
-      misses += 1;
-      if (misses >= WIZARD_WATCH_MISSES) cancelWizard();
-    }, WIZARD_WATCH_MS);
-    wizardWatch.unref();
   }
 
   const wizardHost: TuiWizardHost = {
@@ -209,7 +166,6 @@ export function createTuiPrompter(): TuiPrompterBundle {
         if (o.reason === 'missing') r.openWizard({ missing, mode: controls?.mode() ?? 'jev-on', provider: o.provider, trustNeeded: false });
         // §11.1: Ctrl-C in a reopened wizard closes it when a run is live (`/login` mid-run, the 401 pane's `[l]`) and exits 2 otherwise
         else r.reopenWizard(missing.includes('generator.apiKey') ? 'generator.apiKey' : 'decider.apiKey', controls?.runLive() ?? false);
-        watchWizardOverlay();
       });
     },
     trust(inputs: TrustInputs) {
@@ -223,7 +179,6 @@ export function createTuiPrompter(): TuiPrompterBundle {
         pendingTrust = resolve;
         void inputs;
         r.openWizard({ missing: [], mode: controls?.mode() ?? 'jev-on', provider: null, trustNeeded: true });
-        watchWizardOverlay();
       });
     },
     async followUp(box) {

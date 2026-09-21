@@ -264,9 +264,10 @@ export function pausedWord(kind: BlockingKind): string {
   }
 }
 
+/** TUI-DESIGN §7.4 / §14.2: a braille frame (or `|/-\`) while animating; the glyph table's static spinner cell (`•` → `*`) under reduced motion. */
 function spinnerGlyph(o: StatusLineOptions): string {
   const g = glyphs(o.ascii === true);
-  if (o.reducedMotion === true) return g.bullet;
+  if (o.reducedMotion === true) return g.spinnerStatic;
   const frames = g.spinner;
   const i = o.spinnerFrame !== undefined && Number.isFinite(o.spinnerFrame) ? Math.abs(Math.floor(o.spinnerFrame)) % frames.length : 0;
   return frames[i] ?? g.spinnerStatic;

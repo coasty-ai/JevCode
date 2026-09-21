@@ -11,11 +11,12 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { ResolvedConfigWithDiagnostics } from '../../../src/config/types.js';
-import { firstFrameTask, modeFromFlags, readTask, selectRenderer, versionJson } from '../../../src/cli/main.js';
+import { ensureWiring, firstFrameTask, modeFromFlags, readTask, selectRenderer, versionJson } from '../../../src/cli/main.js';
+import { RESTORE, createRestoreTerminal, processRestoreTerminal, restoreTerminal, setProcessRestore } from '../../../src/tui/terminal.js';
 import { UsageError } from '../../../src/errors.js';
 import { buildProvider, defaultEngineFactory } from '../../../src/cli/session.js';
 import { VERSION } from '../../../src/version.js';
-import { INK_VERSION } from '../../../src/cli/report.js';
+import { INK_VERSION, REACT_VERSION } from '../../../src/cli/report.js';
 
 const tty = { stdinIsTTY: true, stdoutIsTTY: true, env: { TERM: 'xterm-256color' } };
 const pipe = { stdinIsTTY: false, stdoutIsTTY: false, env: { TERM: 'xterm-256color' } };
@@ -77,12 +78,48 @@ describe('readTask and versions', () => {
     expect(firstFrameTask({ task: 'fix it', taskFile: '/x' })).toBe('fix it');
     expect(firstFrameTask({})).toBe('');
   });
-  it('--version --json names the package, the versions and the bundle; the ink version is the pinned dependency', () => {
+  it('--version --json names the package, the versions (node, ink, react) and the bundle; ink and react are the pinned dependencies (§17 item 3)', () => {
     const v = versionJson('/x/dist/jevcode.mjs');
-    expect(v).toEqual({ name: 'jevcode', version: VERSION, node: process.version, ink: INK_VERSION, bundle: '/x/dist/jevcode.mjs' });
-    // §17 item 1: ink moves to devDependencies once the package inlines it; either section pins the version the report names
+    expect(v).toEqual({ name: 'jevcode', version: VERSION, node: process.version, ink: INK_VERSION, react: REACT_VERSION, bundle: '/x/dist/jevcode.mjs' });
+    expect(Object.keys(v)).toEqual(['name', 'version', 'node', 'ink', 'react', 'bundle']);
+    // §17 item 1: ink and react live in devDependencies (inlined by esbuild); either section pins the version the report names
     const pkg = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
     expect(pkg.devDependencies?.['ink'] ?? pkg.dependencies?.['ink']).toBe(INK_VERSION);
+    expect(pkg.devDependencies?.['react'] ?? pkg.dependencies?.['react']).toBe(REACT_VERSION);
+  });
+  it('the fatal wiring shares the one process-wide restoreTerminal() of src/tui/terminal.ts: the wiring\'s restore *is* that function, and the fatal path plus the Ink-side paths write RESTORE once between them (§14.2; the pty smoke asserts the count end to end)', () => {
+    const w = ensureWiring();
+    try {
+      expect(w.restore).toBe(restoreTerminal);
+      expect(ensureWiring()).toBe(w); // idempotent: one wiring per process
+      // behaviour through the process-wide seam: a fake TTY behind restoreTerminal(); every path that may run at exit
+      const writes: string[] = [];
+      let raw = true;
+      const fake = createRestoreTerminal({
+        stdout: { isTTY: true, write: () => true },
+        stdin: {
+          get isRaw() {
+            return raw;
+          },
+          setRawMode: () => {
+            raw = false;
+          },
+        },
+        writeSync: (_fd, text) => {
+          writes.push(text);
+        },
+      });
+      setProcessRestore(fake);
+      w.restore(); // fatalExit / the engine's exit hook / earlyExit
+      restoreTerminal(); // the Ink mount's hygiene ('exit' hook), unmount(), finishSession
+      processRestoreTerminal()(); // SIGTSTP
+      expect(writes).toEqual([RESTORE]);
+      expect(raw).toBe(false);
+      expect(fake.written).toBe(true);
+    } finally {
+      setProcessRestore(null);
+      w.uninstall();
+    }
   });
   it('modeFromFlags: --mode, the hidden --condition alias, default jev-on', () => {
     expect(modeFromFlags({ command: 'run' })).toBe('jev-on');

@@ -268,7 +268,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'method', name: 'method', type: 'string', commands: ['upgrade'], arg: 'npm|brew|bun|pnpm|yarn', help: 'package manager to upgrade with (default: detected from the install path)' },
   { key: 'writeCache', name: 'write-cache', type: 'boolean', commands: ['upgrade'], help: 'with --check: write the update-check cache (the post-run notifier)', hidden: true },
   { key: 'help', name: 'help', type: 'boolean', commands: ALL, short: 'h', help: 'show usage' },
-  { key: 'version', name: 'version', type: 'boolean', commands: ALL, short: 'v', help: 'print the version (--json: name, version, node, ink, bundle)' },
+  { key: 'version', name: 'version', type: 'boolean', commands: ALL, short: 'v', help: 'print the version (--json: name, version, node, ink, react, bundle)' },
 ];
 
 /** Re-exported for callers that only need the id shape; the check itself lives in the controller (TUI-DESIGN §15.2). */

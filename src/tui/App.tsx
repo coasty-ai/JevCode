@@ -17,11 +17,12 @@
  * the gate; history entries follow `addSecret`; Ctrl+O appends the recent warnings/errors (§7.7); the screen-reader
  * review answers by typed line (§6.5); `unmount()` flushes the run:end frame; a shrink costs Ink's one clear only.
  */
+import { appendFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { basename, join } from 'node:path';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useCursor, useInput, usePaste, useStdin, useStdout, useWindowSize } from 'ink';
-import type { Key } from 'ink';
+import type { Instance, Key } from 'ink';
 import type { BlockingAnswer, BlockingRequest, Engine, LaunchSettings, Renderer, RendererOptions, SecretHit, SessionHost, SessionRow, UiConfig, UiLabel } from '../core/types.js';
 import { detectSecrets, patternRedact } from '../core/redact.js';
 import { createLog, nullLog, type KeyClass, type Log } from '../core/log.js';
@@ -79,6 +80,8 @@ export const RULE_CHAR = '─';
 export const UNMOUNT_TIMEOUT_MS = 2000;
 /** §6.3: a `y` within this many ms of the Enter that opened a y-gated overlay is text. */
 export const GATE_ARM_MS = 150;
+/** §6.3: the review box arms this long after the commit that drew it unless Ink reports the frame flushed earlier */
+export const REVIEW_ARM_MS = 150;
 /** §3.3: the Esc re-buffer. */
 export const ESC_REBUFFER_MS = 30;
 /** §24: the two exit items. */
@@ -191,6 +194,8 @@ type BridgeCommand =
   | { type: 'exitConfirm'; resolve: (a: boolean) => void }
   | { type: 'blocking'; request: BlockingRequest; resolve: (a: BlockingAnswer) => void }
   | { type: 'suspend' }
+  /** §4.10 / §10.2: the gate row for a task gated outside the composer (argv, --task-file); `resolve(true)` only on an armed `y` */
+  | { type: 'secretGate'; hits: readonly SecretHit[]; resolve: (send: boolean) => void }
   | { type: 'dispatch'; action: UiAction };
 
 /** The renderer ↔ App channel (exported for tests: `createBridge(host, wizardHost)`). */
@@ -205,9 +210,10 @@ export interface Bridge {
   handler: ((c: BridgeCommand) => void) | null;
   stateReader: (() => UiState) | null;
   /**
-   * §14.1 / §18 (finding 11): the geometry written by the renderer's own `resize` listener, registered before Ink's so
-   * React's re-render is scheduled ahead of Ink's (deferred) repaint and reads the new numbers; `useWindowSize()` is
-   * the source until the first resize and in tests that mount <App> directly.
+   * §14.1 / §18: the geometry written by the renderer's own `resize` listener, registered before Ink's; on a shrink in
+   * rows the listener also commits the tree synchronously (`instance.rerender`), so Ink's `resized` repaint never paints
+   * the stale, taller tree at the new viewport (one clear per shrink, never two). `useWindowSize()` is the source until
+   * the first resize and in tests that mount <App> directly.
    */
   geometry: { rows: number; columns: number } | null;
   notify(): void;
@@ -277,6 +283,12 @@ export interface TuiRenderer extends Renderer {
   setSessionSpend(session: { totalUsd: number; capUsd: number } | null): void;
   setGitDirs(dirs: { gitDir: string | null; commonDir: string | null }): void;
   setTitle(title: string | null): void;
+  /**
+   * §4.10 / §10.2 / §19.5: the gate row for a task gated before `run:ready` (argv, `--task-file`; the controller's
+   * `Prompter.secretGate`). Resolves true only on a `y` that arrives on a committed frame ≥ 150 ms after the row was
+   * drawn (§6.3); Enter / Esc / `n` / any other key, Ctrl-C and the unmount refuse.
+   */
+  promptSecretGate(hits: readonly SecretHit[]): Promise<boolean>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -318,6 +330,8 @@ interface PendingGate {
   openedAt: number;
   /** the history entry the send appends (a `/steer <text>` line is remembered as a command) */
   history?: { kind: 'prompt' | 'steer' | 'command'; text: string };
+  /** a controller prompt (`promptSecretGate`): the answer goes here instead of the composer's send path; every close path settles it */
+  resolve?: (send: boolean) => void;
 }
 
 interface NoteUi {
@@ -457,8 +471,8 @@ export function App(p: AppProps): React.JSX.Element {
   const { stdout, write } = useStdout();
   const color = colorEnabled({ noColor: launch.noColor || ui?.noColor === true, env, stream: stdout });
   const reducedMotion = ui?.reducedMotion ?? launch.screenReader;
-  // §14.1: `useWindowSize()` is the geometry; after a SIGWINCH the renderer's early listener has already stored the same
-  // numbers on the bridge, so the React task it scheduled (ahead of Ink's deferred repaint) renders the new budget
+  // §14.1: `useWindowSize()` is the geometry; after a SIGWINCH the renderer's early listener has already stored the new
+  // numbers on the bridge (and, on a shrink, re-rendered synchronously), so this render already uses the new budget
   const windowSize = useWindowSize();
   const rows = bridge.geometry?.rows ?? windowSize.rows;
   const columns = bridge.geometry?.columns ?? windowSize.columns;
@@ -587,29 +601,39 @@ export function App(p: AppProps): React.JSX.Element {
   const overlayArmed = state.overlayArmed;
   useEffect(() => {
     if (overlay === 'none' || overlayArmed) return undefined;
+    // This effect runs after the commit that drew the overlay; Ink writes that frame inside its throttle window
+    // (≤ 34 ms), so a timer measured from the commit is the arming floor. `waitUntilRenderFlush()` only accelerates
+    // the review (it resolves after stdout's write callback) and is never waited on alone: in the first live session
+    // (docs/live/tui attempt 2) the pty reader lagged and that promise took ~21 s, during which a typed `y` fell
+    // through to the composer.
     if (overlay === 'review') {
+      traceLine('tui.arm effect run overlay=review');
       notifyTimers.reviewShown();
       let alive = true;
-      void waitUntilRenderFlush().then(() => {
-        if (alive) dispatch({ type: 'overlay:armed' });
-      });
+      let armed = false;
+      const arm = (why: string): void => {
+        if (!alive || armed) return;
+        armed = true;
+        traceLine(`tui.arm dispatch overlay:armed via ${why}`);
+        dispatch({ type: 'overlay:armed' });
+      };
+      const t = setTimeout(() => arm('timer'), REVIEW_ARM_MS);
+      void waitUntilRenderFlush().then(() => arm('flush'), () => undefined);
       return () => {
         alive = false;
+        clearTimeout(t);
+        traceLine(`tui.arm effect cleanup armed=${armed}`);
       };
     }
     if (overlay === 'secret' || overlay === 'followup' || overlay === 'undo' || overlay === 'exitConfirm') {
-      const openedAt = now();
+      // never within GATE_ARM_MS of the Enter that opened the row (§4.10, §6.3), measured from the commit
       let alive = true;
-      let t: NodeJS.Timeout | null = null;
-      void waitUntilRenderFlush().then(() => {
-        if (!alive) return;
-        t = setTimeout(() => {
-          if (alive) dispatch({ type: 'overlay:armed' });
-        }, Math.max(0, GATE_ARM_MS - (now() - openedAt)));
-      });
+      const t = setTimeout(() => {
+        if (alive) dispatch({ type: 'overlay:armed' });
+      }, GATE_ARM_MS);
       return () => {
         alive = false;
-        if (t) clearTimeout(t);
+        clearTimeout(t);
       };
     }
     dispatch({ type: 'overlay:armed' });
@@ -700,7 +724,11 @@ export function App(p: AppProps): React.JSX.Element {
       rememberedToken.current = composer.buffer.text.trim();
       setPalette(null);
     }
-    if (kind === 'secret') gateRef.current = null;
+    if (kind === 'secret') {
+      const g = gateRef.current;
+      gateRef.current = null;
+      g?.resolve?.(false); // a dismissed / cancelled controller prompt refuses (§4.10: only an armed y sends)
+    }
     if (stateRef.current.overlay === kind) dispatch({ type: 'overlay', overlay: 'none' });
   };
   const openPalette = (paletteMode: PaletteUi['mode']): void => {
@@ -1159,6 +1187,10 @@ export function App(p: AppProps): React.JSX.Element {
       case 'editor':
         void startEditor();
         return;
+      case 'retryNow':
+        // §13.2 `[r] retry now`: resolved by resolveKey (a bare `r` on an empty draft while the retry row is up)
+        retryNow();
+        return;
       case 'paneTab':
         tabTouched.current = true;
         dispatch({ type: 'tab', tab: cycleTab(s.tab, action.dir) });
@@ -1362,6 +1394,14 @@ export function App(p: AppProps): React.JSX.Element {
         }
         if (!g) return;
         if (now() - g.openedAt < GATE_ARM_MS) return; // never within 150 ms of the Enter (§4.10)
+        if (g.resolve) {
+          // a controller prompt (argv task): the answer is the promise, not the composer's send path
+          const answer = g.resolve;
+          gateRef.current = null;
+          closeOverlay('secret');
+          answer(true);
+          return;
+        }
         closeOverlay('secret');
         send(routeSend(g.full, g.hits, { run: s.run, ranBefore: s.runsEnded > 0 }), g.history);
         return;
@@ -1449,11 +1489,12 @@ export function App(p: AppProps): React.JSX.Element {
   };
 
   const layoutRef = useRef<Layout | null>(null);
-  const keyState = (ev?: KeyEvent): KeyState => {
+  const keyState = (): KeyState => {
     const s = stateRef.current;
     const b = composer.buffer;
     const m = composer.mirror(wrapColumns);
     const n = noteRef.current;
+    traceLine(`tui.keystate overlay=${s.overlay} overlayArmed=${s.overlayArmed} pending=${s.pendingReview !== null}`);
     return {
       overlay: s.overlay,
       reviewArmed: s.overlay === 'review' && s.overlayArmed,
@@ -1462,9 +1503,8 @@ export function App(p: AppProps): React.JSX.Element {
       run: s.run === 'starting' ? 'none' : s.run,
       // while the `d` note field owns the composer row, F5's text rule reads the stashed human draft, not the note
       draftEmpty: s.noteMode && n !== null ? n.stash.text.length === 0 : b.text.length === 0,
-      // §4.6: a one-row draft is both the first and the last visual row — Up recalls older, Down recalls newer — but
-      // the mirror can name only one; Down on a single row is told `last` so the resolver's history rule applies
-      cursorRow: m.rows <= 1 && ev?.key.downArrow === true ? 'last' : m.cursorRow,
+      // §4.6: a one-row draft is both the first and the last visual row (`'only'`): the resolver applies the history rule to Up and Down
+      cursorRow: m.rows <= 1 ? 'only' : m.cursorRow,
       historySearch: composer.search !== null,
       queue: s.queue.length,
       mode,
@@ -1473,6 +1513,7 @@ export function App(p: AppProps): React.JSX.Element {
       picker: pickerOpenRef.current !== null,
       overlayArmed: s.overlayArmed,
       minsize: layoutRef.current?.degraded === 'minsize',
+      retrying: s.retrying !== null,
     };
   };
 
@@ -1485,13 +1526,7 @@ export function App(p: AppProps): React.JSX.Element {
     notifyTimers.keystroke();
     if (ev.escExpired !== true) log.key(keyClassOf(ev.input, ev.key as Key, ev.paste === true), ev.input.length, stateRef.current.overlay === 'wizard');
     if (ev.paste === true) log.paste(ev.input.length);
-    const ks = keyState(ev);
-    // §13.2: a bare `r` on an empty draft while the retry row is up = `[r] retry now` (mirrors the `[`/`]` empty-draft
-    // rule; the resolver has no row for it yet, so the App owns this one key)
-    if (stateRef.current.retrying !== null && ks.overlay === 'none' && !ks.picker && !ks.historySearch && !ks.noteMode && !ks.minsize && ks.draftEmpty && ev.paste !== true && ev.escExpired !== true && ev.input === 'r' && !ev.key.ctrl && !ev.key.meta && !ev.key.shift) {
-      retryNow();
-      return;
-    }
+    const ks = keyState();
     // the note's own secret gate (§6.4): only `y` sends, anything else cancels the gate
     const n = noteRef.current;
     if (n && n.gate !== null && ks.overlay === 'review') {
@@ -1594,6 +1629,15 @@ export function App(p: AppProps): React.JSX.Element {
         case 'suspend':
           void doSuspend();
           return;
+        case 'secretGate': {
+          // §4.10 / §10.2: one gate at a time — a composer gate already open is dismissed (its draft is kept), a previous prompt refuses
+          const prev = gateRef.current;
+          gateRef.current = null;
+          prev?.resolve?.(false);
+          gateRef.current = { full: '', hits: c.hits, openedAt: now(), resolve: c.resolve };
+          dispatch({ type: 'overlay', overlay: 'secret' });
+          return;
+        }
         case 'dispatch':
           dispatch(c.action);
           return;
@@ -1811,6 +1855,27 @@ export function App(p: AppProps): React.JSX.Element {
 // ---------------------------------------------------------------------------------------
 
 /** Ink renderer: renders the first frame synchronously from argv-only props; `attach(engine)` / `setHost` later. */
+/**
+ * OSC 2 window title (TUI-DESIGN §14.1, C14: opt-in through `ui.title`, cleared on exit). Control characters and the
+ * BEL/ST terminators are stripped and the text is clipped so a task cannot smuggle a sequence into the title.
+ */
+/** opt-in shutdown/keystroke trace (JEVCODE_TRACE): key classes and the review arming lifecycle, never key text */
+function traceLine(text: string): void {
+  const file = process.env['JEVCODE_TRACE'];
+  if (!file) return;
+  try {
+    appendFileSync(file, `${new Date().toISOString()} ${text}\n`);
+  } catch {
+    // trace only
+  }
+}
+
+export function terminalTitle(text: string | null): string {
+  if (text === null) return '\u001b]2;\u0007';
+  const clean = text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 80);
+  return `\u001b]2;${clean}\u0007`;
+}
+
 export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
   const stdout = opts.stdout ?? process.stdout;
   const stdin = opts.stdin ?? process.stdin;
@@ -1825,46 +1890,53 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
   const log = opts.log ?? (trace !== undefined && trace !== '' ? createLog({ file: trace, level: 'trace', exitHook: false }) : nullLog());
   let detach: (() => void) | null = null;
   let hygiene: TerminalHygiene | null = null;
+  // TUI-DESIGN §14.1 / §16 `ui.title` (opt-in): one OSC 2 write at setUi, reset at unmount; never written unless enabled
+  let titleSet = false;
   let offResize: (() => void) | null = null;
   if (stdout.isTTY === true && stdout === process.stdout) {
     // §14.2: the mount shares the one process-wide restore, so unmount / SIGTSTP / the 'exit' hook write RESTORE once
     hygiene = installTerminalHygiene({ io: { stdout, stdin }, onSuspend: () => bridge.command({ type: 'suspend' }), restore: processRestoreTerminal() });
     writeCursorShape(stdout);
   }
-  // §14.1 / §18 (finding 11), half one: a `resize` listener registered before Ink's. It stores the new geometry on the
-  // bridge and schedules React's re-render first (a state update from a listener is batched onto React's scheduler,
-  // not flushed synchronously — measured on the legacy root Ink mounts), so the App's next render already uses the
-  // new budget. Half two is `deferInkResize` below.
-  const onEarlyResize = (): void => {
+  // §14.1 / §18: a `resize` listener registered before Ink's. It stores the new geometry on the bridge and schedules
+  // React's re-render (a state update from a Node listener lands on React's scheduler *after* the next `setImmediate`
+  // — measured on the root Ink mounts, so a one-macrotask deferral of Ink's handler cannot win the race). When the rows
+  // shrank, the tree is committed synchronously right here (`instance.rerender()` is `updateContainerSync` +
+  // `flushSyncWork`), before Ink's own `resized` handler repaints: the stale, taller tree is never painted at the new
+  // viewport, and the only clear left is the one Ink needs for a previous frame taller than the new terminal
+  // (research 20 §1 — one per shrink segment, §18). Grows and width-only changes never clear and take the async path.
+  let instance: Instance | null = null;
+  const tree = (): React.JSX.Element => (
+    <App task={opts.task} resumeId={opts.resumeId} source={bus} confirmer={confirmer} onAbort={opts.onAbort} mode={mode} {...(opts.cwd !== undefined ? { cwd: opts.cwd } : {})} launch={launch} bridge={bridge} log={log} fault={opts.fault ?? env['JEVCODE_FAULT']} env={env} {...(opts.now ? { now: opts.now } : {})} {...(opts.home !== undefined ? { home: opts.home } : {})} {...(opts.runsDir !== undefined ? { runsDir: opts.runsDir } : {})} {...(opts.onExit ? { onExit: opts.onExit } : {})} {...(opts.bindings ? { bindings: opts.bindings } : {})} />
+  );
+  const geometryOf = (): { rows: number; columns: number } => {
     const s = stdout as { rows?: number; columns?: number };
-    bridge.geometry = { rows: s.rows || DEFAULT_ROWS, columns: s.columns || DEFAULT_COLUMNS };
+    return { rows: s.rows || DEFAULT_ROWS, columns: s.columns || DEFAULT_COLUMNS };
+  };
+  let lastRows = geometryOf().rows;
+  const onEarlyResize = (): void => {
+    const g = geometryOf();
+    bridge.geometry = g;
     bridge.notify();
+    const shrank = g.rows < lastRows;
+    lastRows = g.rows;
+    if (shrank && instance !== null) instance.rerender(tree());
   };
   if (typeof stdout.on === 'function') stdout.on('resize', onEarlyResize);
 
-  const instance = render(
-    <App task={opts.task} resumeId={opts.resumeId} source={bus} confirmer={confirmer} onAbort={opts.onAbort} mode={mode} {...(opts.cwd !== undefined ? { cwd: opts.cwd } : {})} launch={launch} bridge={bridge} log={log} fault={opts.fault ?? env['JEVCODE_FAULT']} env={env} {...(opts.now ? { now: opts.now } : {})} {...(opts.home !== undefined ? { home: opts.home } : {})} {...(opts.runsDir !== undefined ? { runsDir: opts.runsDir } : {})} {...(opts.onExit ? { onExit: opts.onExit } : {})} {...(opts.bindings ? { bindings: opts.bindings } : {})} />,
-    {
-      stdout,
-      stdin,
-      exitOnCtrlC: false,
-      patchConsole: false,
-      maxFps: launch.fps,
-      incrementalRendering: launch.renderMode === 'incremental',
-      kittyKeyboard: { mode: 'disabled' },
-      isScreenReaderEnabled: launch.screenReader,
-      ...(opts.interactive !== undefined ? { interactive: opts.interactive } : {}),
-    },
-  );
-
-  // §14.1 / §18 (finding 11), half two: Ink's `resized()` repaints the *current* tree synchronously on SIGWINCH, before
-  // React has committed, so a shrink with a live pane repainted the stale, taller frame (one clear) and every frame
-  // until the commit paid another (`lastOutputHeight` stayed above the viewport). Deferring Ink's handler by one
-  // macrotask — queued after the React task the early listener scheduled — makes the committed tree the first thing
-  // repainted; the only clear left is the one Ink needs for a previous frame taller than the new terminal (research 20 §1).
-  const offInk = deferInkResize(stdout, [onEarlyResize]);
+  const mounted = render(tree(), {
+    stdout,
+    stdin,
+    exitOnCtrlC: false,
+    patchConsole: false,
+    maxFps: launch.fps,
+    incrementalRendering: launch.renderMode === 'incremental',
+    kittyKeyboard: { mode: 'disabled' },
+    isScreenReaderEnabled: launch.screenReader,
+    ...(opts.interactive !== undefined ? { interactive: opts.interactive } : {}),
+  });
+  instance = mounted;
   offResize = () => {
-    offInk();
     if (typeof stdout.off === 'function') stdout.off('resize', onEarlyResize);
   };
 
@@ -1876,7 +1948,7 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
       detach = engine.events.onAny((e) => bus.emit(e));
       bridge.notify();
     },
-    firstFrame: () => instance.waitUntilRenderFlush(),
+    firstFrame: () => mounted.waitUntilRenderFlush(),
     async unmount() {
       detach?.();
       detach = null;
@@ -1890,17 +1962,19 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
         flushTimer = setTimeout(resolve, UNMOUNT_TIMEOUT_MS / 4);
         flushTimer.unref();
       });
-      await Promise.race([instance.waitUntilRenderFlush().catch(() => undefined), flushBound]);
+      await Promise.race([mounted.waitUntilRenderFlush().catch(() => undefined), flushBound]);
       if (flushTimer) clearTimeout(flushTimer);
-      instance.unmount();
+      mounted.unmount();
       let timer: NodeJS.Timeout | null = null;
       const bounded = new Promise<void>((resolve) => {
         timer = setTimeout(resolve, UNMOUNT_TIMEOUT_MS);
         timer.unref();
       });
-      await Promise.race([instance.waitUntilExit().catch(() => undefined), bounded]);
+      await Promise.race([mounted.waitUntilExit().catch(() => undefined), bounded]);
       if (timer) clearTimeout(timer);
+      instance = null;
       if (hygiene) hygiene.restore();
+      if (titleSet) stdout.write(terminalTitle(null));
     },
     setHost(host) {
       bridge.host = host;
@@ -1909,6 +1983,10 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
     setUi(ui) {
       bridge.ui = ui;
       bridge.notify();
+      if (ui.title && !titleSet && stdout.isTTY) {
+        titleSet = true;
+        stdout.write(terminalTitle(opts.task ? `jevcode · ${opts.task}` : 'jevcode session'));
+      }
     },
     notify(text, o = {}) {
       bridge.command({ type: 'dispatch', action: { type: 'local', text, ...(o.label ? { label: o.label } : {}), ...(o.level ? { level: o.level } : {}), ...(o.detail ? { detail: o.detail } : {}) } });
@@ -1940,33 +2018,9 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
     setTitle(title) {
       bridge.command({ type: 'dispatch', action: { type: 'title', title } });
     },
+    promptSecretGate: (hits) => new Promise((resolve) => bridge.command({ type: 'secretGate', hits, resolve })),
   };
   return renderer;
-}
-
-/**
- * §14.1 / §18 (finding 11): re-register every `resize` listener Ink installed at mount behind a one-macrotask deferral
- * (`setImmediate`, queued after the React scheduler task the same SIGWINCH produced through the early listener), so
- * Ink repaints the committed tree. Only the listeners present right after `render()` other than `except` (Ink's
- * `resized`; `useWindowSize` subscribes in an effect later and is left alone) are wrapped. Returns the uninstaller; a
- * no-op on streams without listeners (a pipe).
- */
-export function deferInkResize(stdout: NodeJS.WriteStream, except: readonly ((...args: unknown[]) => void)[] = []): () => void {
-  if (typeof stdout.listeners !== 'function') return () => undefined;
-  const inks = (stdout.listeners('resize') as Array<(...args: unknown[]) => void>).filter((l) => !except.includes(l));
-  if (inks.length === 0) return () => undefined;
-  for (const fn of inks) stdout.off('resize', fn);
-  const deferred = (): void => {
-    setImmediate(() => {
-      for (const fn of inks) fn();
-    });
-  };
-  stdout.on('resize', deferred);
-  return () => {
-    stdout.off('resize', deferred);
-    // hand Ink its listeners back so its own `unsubscribeResize` finds nothing surprising
-    for (const fn of inks) stdout.on('resize', fn);
-  };
 }
 
 /** `basename(cwd)` for the session header (`jevcode session · <dir> | step 0/– starting`). */

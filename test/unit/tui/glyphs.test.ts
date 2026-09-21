@@ -29,7 +29,7 @@ describe('GLYPHS (TUI-DESIGN §14.1)', () => {
     expect([u.up, a.up, u.down, a.down]).toEqual(['↑', '^', '↓', 'v']);
     expect([u.branch, a.branch]).toEqual(['⎇', 'br']);
     expect([u.dagger, a.dagger, u.bullet, a.bullet, u.dot, a.dot, u.band, a.band]).toEqual(['†', '+', '•', '*', '·', '-', '┆', ':']);
-    expect([u.full, a.full, u.spinnerStatic, a.spinnerStatic]).toEqual(['█', '#', '⠹', '-']);
+    expect([u.full, a.full, u.spinnerStatic, a.spinnerStatic]).toEqual(['█', '#', '•', '*']);
     expect(a.spinner).toEqual(['|', '/', '-', '\\']);
     expect([u.arrow, a.arrow, u.ge, a.ge, u.le, a.le, u.approx, a.approx]).toEqual(['→', '->', '≥', '>=', '≤', '<=', '≈', '~=']);
     expect([u.range, a.range, u.minus, a.minus, u.dash, a.dash, u.sigma, a.sigma]).toEqual(['–', '-', '−', '-', '—', '-', 'Σ', 'sum']);

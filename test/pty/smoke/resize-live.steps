@@ -1,0 +1,37 @@
+# live pane at 40x100 (the dynamic region is 15 rows), shrunk to 12x60 twice — once after a quiet 0.3 s, once right
+# after a keystroke (a paint pending in Ink's throttle, the race the pty storm scenario hits) — and grown back in
+# between: each shrink segment costs exactly one clearTerminal (§18, research 20 §1), the grow none; Ctrl-C aborts the
+# run and the session exits 0 through /exit
+expect \x1b\[\?25l
+expect Describe the task
+sleep 0.3
+send make the tests pass
+sleep 0.2
+send \r
+expect ready
+expect decisions s\d+
+send steer draft
+expect > (?:\x1b\[[0-9;]*m)*steer draft
+sleep 0.3
+resize 12 60
+sleep 0.8
+mark shrunk-quiet
+resize 40 100
+sleep 0.8
+mark grown
+send Z
+resize 12 60
+sleep 0.8
+mark shrunk-after-key
+resize 40 100
+sleep 0.8
+mark grown-again
+send \x03
+expect Type to steer
+send \x03
+expect end human_abort
+expect Follow-up or /command
+send /exit
+sleep 0.2
+send \r
+eof

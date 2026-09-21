@@ -8,7 +8,7 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | --- | --- | --- | --- | --- |
 | `/help`, alias `/h` | [keys\|commands\|reload] | any | yes | append the help block (keys by context, commands with one-liners, per-terminal notes); `reload` re-reads `keybindings.json` |
 | `/new` | — | idle | yes | end the session; the next prompt starts a new session in this workspace (new `sessionId`, fresh root meter); item shows the old session's total |
-| `/resume`, alias `/sessions`, alias `/continue` | [id\|title] | idle | `/resume <id>` only | picker (§8.4); with an argument continue that run (a stopped run resumes; a `complete` run seeds a follow-up unless `--force`); after `/undo`/`/rewind` of that run the human note rides in `EngineOptions.humanDirective` and `undoLog` (§12.4); `/continue` = most recently used run here. Flags: `--force` resume a `complete` run instead of seeding a follow-up; `--sort=updated\|created` `--sort=created` orders the picker by creation time |
+| `/resume`, alias `/sessions`, alias `/continue` | [id\|title] | idle | `/resume <id\|title>` only | picker (§8.4); with an argument continue that run (a stopped run resumes; a `complete` run seeds a follow-up unless `--force`); after `/undo`/`/rewind` of that run the human note rides in `EngineOptions.humanDirective` and `undoLog` (§12.4); `/continue` = most recently used run here. Flags: `--force` resume a `complete` run instead of seeding a follow-up; `--sort=updated\|created` `--sort=created` orders the picker by creation time |
 | `/rename` | <title> | any | yes | session title ≤ 60 (through the secret gate and `redact`); index `rename` line; status centre |
 | `/steer` | <text> | live | yes | = Enter with text while live (needed by `--plain`) |
 | `/unsteer` | — | live | yes | = Up on the first row: `engine.unsteer()` |
@@ -20,7 +20,7 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/plan` | — | any | yes | append the plan ledger block |
 | `/decisions` | [n] [stage] | any | yes | append the last n `DecisionRow`s (default 12) |
 | `/why` | <ref\|digit> | any | yes | append the `/why` block (§7.6) for `s7.risk.plan_mismatch`, `risk.plan_mismatch` (current step) or a visible pane digit |
-| `/calibration` | — | idle | yes | append the reliability block from `decisions.jsonl` + `steps.jsonl` of this workspace's runs (≤ 200 runs, streamed) |
+| `/calibration` | — | idle | yes | append the reliability block from `decisions.jsonl` + `steps.jsonl` of this workspace's runs (the 50 most recent runs or 32 MB of records, streamed) |
 | `/jev` | — | any | yes | decider model, resolved/drift@step, questions, latency p50/p95, Jev cost |
 | `/cost` | — | any | yes | 12-row block (§9.6) |
 | `/budget` | [spend-cap\|session-spend-cap\|max-steps\|max-wall\|max-replans <v>] | any | yes | show or set (§9.4); `session-spend-cap none` lifts the session cap; `max-generator-tokens <n>` is the --allow-unpriced token cap (§9.5) |

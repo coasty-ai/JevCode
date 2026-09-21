@@ -16,6 +16,8 @@ import { VERSION } from '../version.js';
 export const REPORT_STEPS_TAIL = 20;
 /** the pinned Ink version (package.json `dependencies.ink`; the bundle inlines it, so no runtime lookup exists) */
 export const INK_VERSION = '7.1.1';
+/** the pinned React version esbuild inlines beside Ink (`--version --json`, §17 item 3; `versions.txt`) */
+export const REACT_VERSION = '19.3.0';
 export const ISSUES_URL = 'https://github.com/prateekjannu/jevcode/issues';
 /** files copied whole (after `redact`) */
 export const REPORT_COPIED_FILES: readonly string[] = ['run.json', 'transcript.log', 'jevcode.log'];
@@ -77,6 +79,7 @@ export function versionsText(o: Pick<ReportBundleOptions, 'term' | 'termProgram'
     `jevcode ${o.version ?? VERSION}`,
     `node ${o.nodeVersion ?? process.version}`,
     `ink ${o.inkVersion ?? INK_VERSION}`,
+    `react ${REACT_VERSION}`,
     `platform ${o.platform ?? process.platform}`,
     `TERM ${o.term ?? '(unset)'}`,
     `TERM_PROGRAM ${o.termProgram ?? '(unset)'}`,

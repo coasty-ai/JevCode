@@ -290,3 +290,246 @@ warm median 85.4), harness overhead per step p95 33.5 ms (< 50 ms; p50 22.1), ev
 - **Jev-only: declined reads.** In bench runs a review is a decline, so 7–12 `read` proposals
   per long-tier miss cost a step each and fed the loop detector; a review-level read could be
   executed or turned into the goal-subset `run`.
+
+## Interactive TUI (2026-09-21)
+
+The interactive session of `docs/TUI-DESIGN.md` (waves 0–4: commits `45efae5` wave 1 pure modules, `a124445` wave 2
+engine wiring and I/O, `814f9fb` wave 3 Ink App and session controller, `cb33cca`/`9002d37` packaging, `9f96f70` pty
+driver auto-review; the wave-4 pty, perf, polish and documentation slots ran concurrently on 2026-09-21 and their
+files may still be landing when this is read). This section records what the docs slot checked against the tree on
+disk; where the implementation deviates from the design the docs describe the behaviour and the deviation is listed
+below.
+
+### What was built
+
+- **Entry points and renderers** (`src/cli/main.tsx`, `src/cli/args.ts`, `src/cli/session.ts`): a bare `jevcode` /
+  `jevcode chat` / `jevcode run` with no task on a TTY is a session; `jevcode run "<task>"`, `--task-file`,
+  `--resume <id|title>`, `-c` are one-shot; `--plain` on a TTY gets a `node:readline` composer over the same
+  `dispatchCommand()`; a pipe, `CI`, `TERM=dumb`, `--no-input` get the plain renderer with safe defaults; `--json[=verbose]`
+  the NDJSON stream (`cli/json-stream.ts`, `jevcode.events/1`). The first frame is argv-only; SIGINT/SIGTERM are
+  handled before it. New commands: `login`, `logout`, `config set`, `sessions list|reindex|prune|unlock`, `report`,
+  `why`, `calibration`, `completion`, `upgrade`; `--version --json`.
+- **Composer** (`src/tui/composer/*`): `TextBuffer` reducer, `string-width`-identical `cellWidth` (generated EAW table),
+  `layoutRows`, input filter, paste store with chips, file-backed history (1,000 entries), kill ring, undo/redo,
+  external editor, submit routing (`routeSubmit`: a `/` line runs only on an exact name/alias match).
+- **Keys** (`src/tui/keys/*`): `KEY_ACTIONS` registry (63 actions in 5 contexts), `resolveKey` over `KeyState`,
+  `reduceInterrupts` (S0–S7 matrix, windows 1.5 s / 2 s / 800 ms, 30 ms Esc re-buffer), keybindings file with chords
+  and reserved keys.
+- **Commands** (`src/tui/commands/*`): 34 slash commands + 4 aliases in one typed table, grammar, dispatcher,
+  palette, fuzzy scorer; `scripts/gen-docs.mjs` renders `docs/KEYS.md`, `docs/COMMANDS.md`, `man/jevcode.1` and the
+  completions from the registries with a `--check` sync test.
+- **Layout and panes** (`src/tui/layout.ts`, `Pane.tsx`, `Overlay.tsx`, `Review.tsx`, `Picker.tsx`, `StatusLine.tsx`,
+  `PaneBoundary.tsx`, `src/tui/{review,pane,status,blocking,budget,onboarding}/lines.ts`): one `computeLayout`,
+  one modal slot, the A109 caps, review header with the truncation ladder, `DecisionRow`s with `consumedBy` and
+  `near`, plan/timeline/synth tabs, three-zone status line with meters, git zone and sparkline, toasts, `/why` and
+  `/calibration` blocks, blocking panes, follow-up box, wizard rows.
+- **Sessions and money** (`src/session/*`, `src/spend/meter.ts`, `src/tui/budget/lines.ts`): `index.jsonl`, `run.lock`,
+  `buildSeed`, `/export`, picker rows; parent session meter with `setCap` and `SpendSnapshot.parent`, thresholds,
+  clamp/refusal, `/budget`, `/cost`, unpriced-fails-closed with `token_cap`.
+- **Secrets and onboarding** (`src/core/redact.ts` `detectSecrets`, `src/tui/secrets/*`, `src/tui/onboarding/*`,
+  `src/config/{credentials,trust,instructions}.ts`, `src/cli/login.ts`): the gate at every entry point, `addSecret`
+  of every hit span, masked composer spans, `[REDACTED:draft]`, the wizard, `jevcode login/logout/config set`,
+  `trust.json`, `AGENTS.md` loading.
+- **Git, undo, diff** (`src/workspace/gitstate.ts`, `src/tui/useGitHead.ts`, `src/checkpoint/images.ts`,
+  `src/undo/*`): two unsandboxed probes, banner and HEAD-following zone, pre/post images with streamed hashing,
+  `/undo` decision table and apply, `/rewind`, `/diff` (numstat, step, `--full` pager).
+- **Errors and exit** (`src/tui/retry.ts`, `src/tui/blocking/lines.ts`, `src/cli/{epilogue,fatal}.ts`,
+  `src/core/log.ts`, `src/cli/report.ts`): retry row with `[r]`, blocking panes through `EngineOptions.blocker`,
+  `PaneBoundary`, `fatalExit`, the exit-code table, per-run `jevcode.log`, `jevcode report`.
+- **Engine contract** (`src/core/types.ts`, `src/loop/engine.ts`): additive contract 1.1 — `steer`/`unsteer`/`pause`/
+  `retryNow`/`annotate`, widened `abort`, `confirmDetailed?`, the new events, `human_pause`/`token_cap`, seeds,
+  pending directives, images, `run.lock`.
+- **Packaging** (`package.json`, `bin/jevcode.js`, `scripts/{build,licenses,check-pack,gen-docs}.mjs`,
+  `Formula/jevcode.rb`, `.github/workflows/release.yml`, `docs/RELEASE.md`): zero runtime dependencies, minified
+  bundle (1,873,675 bytes on the 07:36Z build; 1,898,200 bytes on the 08:36Z rebuild in the fix pass — other slots
+  landed code in between), `THIRD_PARTY_LICENSES.txt` (35 packages), man page, completions, tap formula, trusted
+  publishing workflow. Not published.
+- **Docs** (this wave): `README.md` (Install, Run, Interactive session, Money, Secrets, Configuration, Exit codes,
+  Windows, Dependencies, Development rewritten; Performance, Bench, Jev-only, How a step works and Status kept byte
+  for byte), `docs/TUI.md` (user guide), `docs/KEYS.md` / `docs/COMMANDS.md` (regenerated; unchanged, already in
+  sync), `docs/DESIGN.md` §4 / §9.2 / §10 / §11 / §12 amendments, `docs/research/tui/terminal-matrix.md`,
+  `CHANGELOG.md`, this section.
+
+### Verified (commands run on 2026-09-21 on this machine — Apple Silicon Mac, macOS 26, Node 22.23.2; load average ≈ 1 in the first pass, 1.6–2.6 in the fix pass, with five `drive.exp` processes of other slots alive throughout the fix pass)
+
+| Check | Command | Result |
+| --- | --- | --- |
+| Types and `any` | `npm run typecheck` | clean at 07:55Z (`tsc` strict + `no-any: ok (src, test, perf, scripts)`). Re-runs while the other wave-4 slots were landing: 08:00Z failed with 3 errors in `test/unit/cli/tui-prompter.test.ts` (polish slot mid-edit; gone by 08:05Z); 08:05Z failed with 4 errors in `src/perf/main.ts` (`root` missing, `cold`/`warm` gone from `FirstFrameResult` — the perf slot's new `first-frame.ts` shape, `main.ts` not yet updated). Fix pass 08:36Z: clean again |
+| Unit suite | `npx vitest run --project unit` | 07:43Z: 263 files, 4,702 passed, 1 skipped, 36.9 s. Fix pass 08:36Z: **264 files, 4,712 passed, 1 skipped**, 38.3 s — the skip is `fish -n accepts the fish completion` (`fish` is not installed here) |
+| Generated docs in sync | `node scripts/gen-docs.mjs --check` | exit 0 (nothing stale); `node scripts/gen-docs.mjs` wrote nothing |
+| Registry ↔ docs sync tests | `npx vitest run --project unit test/unit/tui/commands/registry.test.ts test/unit/tui/keys/bindings.test.ts --reporter verbose` | 2 files, 31 passed, 1 skipped (07:4xZ and 08:36Z); the skip is `fish -n accepts the fish completion` (no `fish` binary); `KEY_ACTIONS ↔ docs/KEYS.md`, `registry ↔ docs/COMMANDS.md`, `gen-docs.mjs --check exits 0`, `mandoc -T lint`, `bash -n` and `zsh -n` all pass |
+| Build | `npm run build` | 07:36Z: `dist/jevcode.mjs` 3,352,941 → 1,873,675 bytes minified (keepNames) in 123 ms; build smoke first frame ok (42 ms), `--version` ok; `THIRD_PARTY_LICENSES.txt` 35 packages. Fix pass 08:36Z: 3,390,189 → **1,898,200 bytes** in 125 ms; build smoke first frame ok (22 ms); `THIRD_PARTY_LICENSES.txt` 35 packages, 49,141 bytes |
+| Release tarball gates | `npm run pack:check` (08:36Z) | all gates pass: `private` absent, `LICENSE` (MIT, 1,070 bytes), `THIRD_PARTY_LICENSES.txt`, `dependencies` empty, tarball = the 10-file allowlist, unpacked 2,065,424 bytes (< 3,000,000), tarball 696,349 bytes (< 1,500,000), `--version` smoke |
+| Real-pty smoke, run 1 (07:5xZ, bundle built 07:36Z) | `sh test/pty/run-smoke.sh` (copied to `.scratch/docs-slot/` with its own output dir so as not to collide with the pty slot) | **19/19 PASS**, 0 expect timeouts, 0 clears after the first frame in every scenario (1 allowed and ≤ 1 seen in the shrink segment of `resize`); `FIRST_FRAME_MS=87.2`; the exit string `CSI 0 SP q` appeared **twice** per exit in 17 scenarios (once in `firstframe`, `plainwarn`) |
+| Real-pty smoke, run 2 (bundle rebuilt 08:00Z after the polish slot's restore change) | same | **19/19 PASS**, 0 timeouts, clears as above; `FIRST_FRAME_MS=83.0`; the exit string appeared **exactly once** in all 19 captures; `--version --json` → `{"name","version":"0.1.0","node":"v22.23.2","ink":"7.1.1","react":"19.3.0","bundle":…}` |
+| `jevcode perf` (fix pass) | `node bin/jevcode.js perf --out /tmp/jevcode-docs-fix/perf.json` (08:38Z–08:43Z, load 2.56 → 2.47, five other `drive.exp` alive) | **GATE FAILURE** — the table under "Measured numbers": first frame, harness, composer, fps/region/cursor and 13 of 14 state scenarios pass; render lag (rows 40 p95 99.6 ms; rows 12 max 503 ms, driver exit 124) and the live-pane shrink clears (2, allowed 1) fail; `imagesMs` p95 19.3 ms is above its 15 ms report bound |
+| Real-pty smoke, run 3 (fix pass, 08:38Z, bundle built 08:36Z, load 2.2) | `sh .scratch/docs-slot/run-smoke-fix.sh` (the working-tree `test/pty/run-smoke.sh` with its output dir moved so it cannot collide with the pty slot; `diff` shows only those two lines) | **19/19 PASS** in 21 s, 0 timeouts, `clears_after_first_frame=0` in all 19 (`resize`: ≤ 1 in the shrink segment, 0 seen), `restores=1` in all 19 (`plainwarn` and `taskfile-missing` included); `FIRST_FRAME_MS=82.0` |
+| pty vitest project (fix pass) | `env -u CI -u CONTINUOUS_INTEGRATION npx vitest run --project pty` at 08:43:26Z and 08:43:42Z; `… --reporter verbose` at 08:47:40Z | **4 files, 26 tests, 26 passed** in 15.2 s / 15.3 s / 14.8 s (loads 2.5 / 2.5 / 1.2); the verbose run's console lines: `resize storm: 30 resizes in 136 ms, 33 frames, 0 ESC[2J total (15 shrinks)`; `live resize storm: 30 resizes in 137 ms, 53 frames, 5 ESC[2J in the storm (15 shrinks); slow cycles shrink/grow clears 1/0/1/0/1/0` |
+| Real-pty smoke, run 4 (fix pass, 08:44Z, bundle rebuilt 08:43Z by another slot, load 2.9) | same | **19/19 PASS** in 22 s, 0 timeouts, 0 clears in all 19 (shrink segment 0 of 1 allowed), `restores=1` in all 19; `FIRST_FRAME_MS=83.0` |
+| Scenarios covered by the smoke | `test/pty/smoke/*.steps` | `firstframe`, `chat-run-exit`, `s0-ctrlc` (`[ui] exited on Ctrl-C ×2`), `ctrld2`, `s1-clear`, `s2-ctrlc-abort` (`end human_abort`, composer reopens), `s2-esc-pause` (`end human_pause`, `paused after step`), `review-y` (`confirm … approved`), `review-d` (`declined (note: skip the tests)`), `resize` 24×80→12×60→24×80, `resize-grow`, `exitlast` (`--exit-code last-run` → 4), `budgetfirst` (`/budget session-spend-cap 15` before the first run → index `budget` line, `sess $0.00/15.00`), `sigmid-trust`/`sigmid-early` (SIGINT during startup → epilogue, 130), `plainwarn` (`jevcode: <warning>` on stderr under `--plain`), `taskfile-missing` (usage line, 2), `taskfile-header` (`task from todo.md`), `oneshot-ctrlc` (130 + epilogue) |
+| CLI probes | `node bin/jevcode.js --help`, `chat --help`, `config` in an empty `JEVCODE_HOME`, `--version [--json]` | the flag list in README Configuration and the `jevcode config` rows (`ui.*`, `log.level`, `update.notify`, `session.spendCapUsd  $10.000 (default: 5 × limits.spendCapUsd)  derived`) were copied from this output |
+| Doc ↔ source literals | first pass: ad-hoc sweep of 40 §24 strings; fix pass: `/tmp/jevcode-docs-fix/sweep.py` — every backtick span ≥ 14 chars containing a space in `docs/TUI.md` and README's TUI sections (122 spans), split at placeholders, each fragment grepped over `src/**/*.ts*` | the first pass's "all 40 exist" claim was wrong for one string; the re-sweep found **two** documented strings the tree does not emit and both were corrected: `[screen reader mode: on via …]` (deviation 10) and the `✓ jev back` / `✓ network back` heal toasts (the code has no heal toast — `retrySettledText` emits `warning: <side> retry chain: N attempts over <t> — recovered` / `— gave up` only when the chain failed or lasted > `RETRY_SLOW_MS` = 10 s, and a failed chain is added to `/errors`). Every other flagged span was prose between two literals or a template whose fixed fragments exist (`remove [Pasted #`, `exited on Ctrl-D`, `is below the 40`, `key rejected (`, `Set the ${which} key and retry. Consulted:`, `retry the write   [c] continue without checkpoints   [q] stop now`, `unknown command`, `to the generator on request`, …); every `/command` named in README and TUI.md is in `COMMANDS` (34 + 4 aliases) |
+
+### Measured numbers
+
+**`jevcode perf` on the 2026-09-21 tree (fix pass): GATE FAILURE.** Command: `node bin/jevcode.js perf --out
+/tmp/jevcode-docs-fix/perf.json`, 08:38:33Z–08:43:26Z, against the bundle built 08:36Z (Apple M5 Pro, 15 cores, 24 GiB,
+darwin 25.6.0, Node v22.23.2; load 2.56 at start / 2.47 at end, limit 8, no wait; five `drive.exp` processes of other
+slots were alive throughout, so the render-lag figures may include contention — the reviewer's run under load 1.6–2.0
+with other perf probes alive failed the render-lag and shrink-clears gates as well, plus the harness gate at 50.1 ms,
+which passed here at 45.7 ms). `perf/results/latest.json` was **not** regenerated by this
+run: it is still the 2026-09-20 file, and the probes that produced it have changed shape since (the render-lag probe
+now types at 10 keys/s during a live run and gates fps, region and cursor hygiene; the `chat` first-frame series, the
+`<Static>` append, composer-latency and per-state probes are new — `git diff --stat HEAD -- src/perf/render-lag.ts` →
+171 insertions / 37 deletions). Re-measure on a quiet machine before merge; the perf slot owns `latest.json` and the
+README Performance table.
+
+| Gate (TUI-DESIGN §18 / DESIGN §12) | Measured 2026-09-21 08:38Z | Gate | Result |
+| --- | --- | --- | --- |
+| First frame cold p95 / median / warm median — `run` 40×120 · 24×80 · 8×40 (10 cold + 10 warm each, zero network asserted) | 111.5 / 108.5 / 89.8 · 115.7 / 108.9 / 92.8 · 110.7 / 107.8 / 88.8 ms | < 300 ms | pass |
+| First frame cold p95 / median / warm median — `chat` 40×120 · 24×80 · 8×40 | 115.1 / 107.3 / 89.1 · 110.4 / 107.4 / 89.0 · 109.5 / 107.3 / 89.4 ms | < 300 ms | pass |
+| First frame breakdown at 24×80 (child clock): bare node → mounted → flushed · harness clock | `run` 22.7 → 96.0 → 99.8 · 106.9 ms; `chat` 22.5 → 97.6 → 101.4 · 108.5 ms | report | — |
+| Harness overhead per step p95 / p50 (50 mocked steps, 5,000-file fixture, 50 dirty files / 15 MiB, one 60 MiB artefact) | 45.7 / 24.5 ms | p95 < 50 ms | pass here; **50.1 ms FAIL** in the reviewer's run (01:19 local) — the margin is thin |
+| `imagesMs` p95 / p50 (steps with images) · run-step p95 | 19.3 / 1.2 ms · 21.4 ms | report (< 15 ms) | above |
+| 60 MiB artefact post image `hashSkipped` | true (step 11) | true | pass |
+| `<Static>` append bytes per committed line, append-frame median (live22 · review22 · idle15) | 2,015 · 1,606 · 1,475 B | report | in budget |
+| Event-loop lag p95 while typing at 10 keys/s during a live mocked run, rows 40 / rows 12 (120 columns) | **99.6 ms** / 2.10 ms | < 5 ms | **FAIL** at rows 40 (p50 57.2 ms over 284 samples; composer typing p95 stayed 10 ms, 150/150 keys while live) |
+| Event-loop lag max, rows 40 / rows 12 | 123.6 ms / **503.5 ms** | < 50 ms | **FAIL** (rows 12: 10,693 samples, then the driver exited 124 — expect timeout) |
+| Terminal clears after the first frame, rows 40 / 12 | 0 / 0 | 0 | pass |
+| Frames per second, max one-second bucket, rows 40 / 12 | 26.3 / 32.2 | ≤ 30 (+1) | pass |
+| Dynamic region max rows, rows 40 / 12 | 18 / 10 | ≤ rows − 2 | pass |
+| Cursor hides per frame max / cursor shown at exit | 1 / true at both geometries | ≤ 1 / true | pass |
+| Composer keystroke → frame p95 / max — idle · live (A109 region) · palette (200 keys, ≥ 100 ms apart, 24×80) | 4 / 10 · 11 / 15 · 4 / 5 ms | < 16 / < 50 ms | pass |
+| Composer keystroke → frame p95 / max — paced30 (34 ms spacing) | 3 / 8 ms | report | — |
+| Zero clears across 14 state scenarios (review, palette, wizard, secret row, picker, two render faults, Ctrl+L at 24×80 and 12×60; `resize-idle` 24×80) | 0 clears in every non-shrink segment; `resize-idle` shrink 0 (allowed 1); `ESC c` / alt-screen 0 | 0 outside shrink, ≤ 1 per shrink | pass for 13 of 14 |
+| `resize 40x120` with a live pane open: clear events per segment (allowed) | 0 (0) · **2 (1)** · 0 (0) · 0 (0) | ≤ 1 per shrink | **FAIL** (deviation 11) |
+
+**2026-09-20 probes (retired shapes).** `perf/results/latest.json` as on disk (`measuredAt` 2026-09-20T05:24:52.153Z,
+Node v22.23.2) — the file the README Performance table still quotes. Its render-lag probe measured the idle TUI under a
+mocked run at 40 and 12 rows **without typing**, so 3.2 ms is not the interactive TUI's lag while typing; none of these
+rows is reproducible on the current tree:
+
+| Measurement (2026-09-20 shapes) | Value | Gate |
+| --- | --- | --- |
+| First frame (`run`, `script` pty 40×120), cold compile cache, p95 / median over 10 | 89.9 ms / 89.0 ms | < 300 ms (pass) |
+| First frame, warm cache, median / p95 | 80.1 ms / 88.2 ms | — |
+| Harness overhead per step, p50 / p95 (50 mocked steps, no images) | 21.7 ms / 31.2 ms | p95 < 50 ms (pass) |
+| Event-loop lag under the idle TUI, rows 40: p50 / p95 / max | 1.18 / 3.24 / 3.26 ms | p95 < 5, max < 50 |
+| Event-loop lag, rows 12: p50 / p95 / max | 0.89 / 2.14 / 2.32 ms | p95 < 5, max < 50 |
+| Terminal clears after the first frame, rows 40 / rows 12 | 0 / 0 | 0 |
+
+**Other numbers measured in this pass:**
+
+| Measurement | Value | Gate / bound |
+| --- | --- | --- |
+| First frame of the interactive `chat` mode in the pty smoke (`FIRST_FRAME_MS`, child clock, 24×80) | 87.2, 83.0 ms (first pass, 07:5xZ and 08:00Z bundles); 85.5, 82.1 ms (reviewer, 01:2x local); 82.0, 83.0 ms (fix pass, 08:38Z and 08:44Z) | the smoke only reports; the `perf` gate is cold p95 < 300 ms |
+| Bundled vs unbundled first frame — `chat --mock --perf-exit-after-first-frame` at 24×80 through `scripts/pty/drive.exp`, three runs each (08:44Z, load 2.5) | `node bin/jevcode.js` (the esbuild bundle): 84.8 / 80.8 / 81.7 ms; `node node_modules/.bin/tsx src/cli/main.tsx` (the TypeScript sources through `tsx`): 307.5 / 252.8 / 253.5 ms | report (README "Dependencies"; the earlier "64–72 vs 643 ms" figure is retired) |
+| Unit micro-gates (`[measured]` lines of the 08:36Z unit run) | `computeLayout` median 0.078 µs per call (bound 5), mean 0.077 µs (bound 15); fuzzy `rank()` over 5,000 candidates p50 0.57 ms (bound 16), p95 1.00 ms (bound 48); `layoutRows` of a 12,000-char realistic draft cold best 2.065 ms, fuzz-pool draft 2.138 ms; `detectSecrets` 256 KB patterns 1.03 ms / with exact 1.12 ms; history construct over a 3.90 MiB tail best of 5 0.34 ms; `statusPorcelainV2` 20,000 entries 8.1 ms | as asserted by the tests |
+
+### Deviations from `docs/TUI-DESIGN.md` found while checking the docs (the docs describe the behaviour)
+
+1. **`/calibration` scope.** The registry's semantics text (`src/tui/commands/registry.ts`, rendered into
+   `docs/COMMANDS.md`) says "≤ 200 runs, streamed"; the implementation (`src/tui/calibration.ts`) and §7.6 scan the
+   newest **50 runs or 32 MB**. The user guide states 50 / 32 MB. Request to the polish slot (owner of
+   `src/tui/commands/registry.ts`): change the string and regenerate.
+2. **`/copy diff`.** §10.5 lists `diff` as a payload; the App copies the most recent transcript item for anything but
+   `proposal`/`draft` (`src/tui/App.tsx` `case 'copy'`), so `/copy diff` copies the last item — the diff block only
+   when `/diff` ran last. Documented as such.
+3. **`--title` (OSC 2).** Wired on 2026-09-21 after the documentation pass: `createTuiRenderer.setUi()` writes one `ESC ] 2 ; jevcode · <task> BEL` when `ui.title` is true (stdout a TTY), `unmount()` resets the title, `terminalTitle()` strips control characters and clips to 80 cells (`test/unit/tui/title.test.ts`). The earlier sentence that the flag was inert no longer applies.
+4. **`/resume` in `--plain`.** The registry's `plain` column says `` `/resume <id>` only ``; the readline composer
+   also accepts a session title — it refuses only the picker form (`plainSupports`). Documented as `/resume <id|title>`.
+5. **Exit string written twice** (`CSI 0 SP q` twice per exit in 17 of 19 pty scenarios on the 07:36Z bundle) against
+   §14.2's "once". Fixed by the polish slot during this wave: once in all 19 scenarios after the 08:00Z rebuild.
+6. **`--version --json`** printed `{ name, version, node, ink, bundle }` (the §17.3 shape) on the 07:36Z bundle; the
+   polish slot added `react`; the `--version` help text in `src/cli/args.ts` still says `name, version, node, ink,
+   bundle` (request to the polish slot).
+7. **Perf gates of §18: the current tree fails three of them.** The perf slot's `src/perf/composer-latency.ts`,
+   `src/perf/states.ts`, `src/perf/static-append.ts` and `src/perf/pty.ts` appeared at ~08:00Z while the first pass ran
+   (`src/perf/main.ts` did not compile then); by the fix pass (08:36Z) `jevcode perf` ran all six probes and ended in
+   `GATE FAILURE` (table above): render lag rows 40 p95 99.6 ms (< 5) and rows 12 max 503 ms with a driver timeout
+   (< 50), the live-pane shrink resize clearing twice (allowed 1), `imagesMs` p95 19.3 ms above its 15 ms report bound;
+   harness p95 45.7 ms passed here and measured 50.1 ms (FAIL) in the reviewer's run. `perf/results/latest.json` is
+   still the 2026-09-20 file and the README Performance table still quotes it. Whether the rows-40 lag is contention
+   (load 2.5, other slots' pty drivers alive) or the tree is for the perf slot to settle on a quiet machine.
+8. **pty vitest project** (§19.5), landed during the first pass: `test/pty/{chat,interrupts,review,twins}.pty.test.ts`,
+   `test/pty/helpers.ts`, `test/pty/global-setup.ts` (rebuilds a stale bundle, warms the compile cache), the `pty`
+   project in `vitest.config.ts` (`fileParallelism: false`, 180 s timeouts) and `"test:pty": "vitest run --project
+   pty"` in `package.json`; `test/pty/run-smoke.sh` gained a `restores=` column asserting the exit string exactly once
+   per exit in every scenario (1 in all 19, the `--plain` TTY `plainwarn` and the usage-error `taskfile-missing` included).
+   **Current state (fix pass): 26 tests, 26 pass** — `env -u CI -u CONTINUOUS_INTEGRATION npx vitest run --project pty`
+   at 08:43:26Z (15.2 s, load 2.5) and 08:43:42Z (15.3 s), and once more with `--reporter verbose` at 08:47:40Z (14.8 s,
+   load 1.2): every test green, 0 skipped. History, for the record: the first pass ran the suite twice while it was
+   still being written and the machine was contended (08:04:56Z: 25 tests, 12 passed / 13 failed, 269 s, load 8.5;
+   08:09:44Z: 10 passed / 15 failed, 229 s — `expect`-step timeouts and two helper mismatches, `registerScratch is not a
+   function` / `CHAT_OPEN_NARROW is not iterable`, since resolved: both exist in `test/pty/helpers.ts`); the reviewer's
+   two runs at 01:24/01:25 local saw 27 tests with 25 passing and the `resize storm during a live run` block failing
+   on an `expect` timeout (driver exit 124) both times. That block passes in all three fix-pass runs; its measured
+   clears are `slow cycles shrink/grow clears 1/0/1/0/1/0` and `5 ESC[2J in the storm (15 shrinks)` in the verbose run
+   (the reviewer's run logged `2/0/2/0/1/0`), against the test's gate of ≤ 2 per shrink and ≤ 30 in the storm (deviation
+   11); the idle storm logged `0 ESC[2J total (15 shrinks)`.
+9. **`docs/DESIGN.md` carried a duplicated, stale copy of §1–§9** (HEAD lines 1414–2799, 1,386 lines) since commit
+   `84a9612` (2026-09-19, a `$\`` inside the run-id regex expanded as a `String.replace` pattern, which inserts the
+   text preceding the match — the whole file up to that sentence). Every later edit to §1–§9 had landed in the
+   first copy, so the inserted copy was removed and the regex sentence restored. Verified in the fix pass by a
+   token-level `difflib` comparison of the inserted copy (HEAD lines 1414–2799, split at the two junctions inside
+   the regex sentence) against the kept prefix (HEAD lines 1–1414): 7 token runs / 25 tokens exist only in the
+   removed copy, all fragments of sentences reworded later (the `risk_dim` formula sentence, the jittered-retry
+   sentence, the SSE `delta arrives` sentence); 11 runs / 404 tokens exist only in the kept copy (the split token
+   series, the harm/alignment risk rule, the `fail:` identity paragraph, the provider retry constants); `### 9.1`
+   and the §9 resume paragraphs occur once in the working tree. 3,970 → 2,751 lines before the amendments.
+10. **§24 `[screen reader mode: on via flag|env|config]` is not emitted by the tree.** `grep -rni 'reader mode: on\|via flag\|via env' src/`
+    → 0 hits (2026-09-21); the first-pass `docs/TUI.md` had copied the §24 line as behaviour and the fix pass removed
+    it. What `--screen-reader` does do is wired: numbered prompts (`Enter selection (1-N):`, `src/tui/review/lines.ts`,
+    `src/tui/onboarding/lines.ts`), bar-less review rows, `ui.notify` and `ui.reducedMotion` defaulting to on
+    (`src/config/ui.ts`), `--plain` implied on a pipe (`src/cli/args.ts` help text and `src/cli/main.tsx`).
+11. **Shrink-resize clears with a live pane open: 1–2, not ≤ 1.** The design bound (§18; research 20 §1) is one
+    `ESC[2J` per shrink segment. Measured 2026-09-21 by the pty slot's `test/pty/chat.pty.test.ts` (`slow cycles
+    shrink/grow clears 2/0/2/0/1/0` in the reviewer's run, `1/0/1/0/1/0` in the fix pass's 08:47Z run; the test's comment: Ink 7.1.1's `resized` handler renders
+    the stale tree at the new viewport before the App's rows state updates — clear 1 — and the App's re-render clears
+    again because the previous frame overflowed — clear 2; the test therefore gates at 2) and by the perf `states`
+    probe (`resize 40x120 … 2 (1) FAIL`, `allowed: 1` in `src/perf/states.ts`). The idle `resize` smoke scenario (no
+    pane open) shows ≤ 1 in all four smoke runs. The docs (README, TUI.md, terminal matrix row 16, DESIGN.md §12)
+    now state the measured behaviour; the bound of 1 is an open item below.
+12. **`Shift+Enter` in `docs/KEYS.md`.** `composer:newline` is bound to `ctrl+j`, `meta+return`, `shift+return`
+    (`src/tui/keys/bindings.ts`), so the generated table lists `Shift+Enter` as a newline key, while the user guide and
+    the terminal matrix say Shift+Enter is not a newline — both are literally true: without the kitty keyboard protocol
+    or `modifyOtherKeys` (never requested, §14) a terminal sends plain `\r` for Shift+Enter, so the binding never
+    fires. `docs/TUI.md` and README now say "bound but inert". Request to the polish slot (owner of the registry): add a
+    `note` to the `composer:newline` row so the generated `docs/KEYS.md` carries the caveat.
+
+### Not verified here
+
+- Any real terminal application beyond the `expect(1)` pseudo-terminal (`TERM=xterm-256color`): the per-terminal
+  rows of `docs/TUI.md` and `docs/research/tui/terminal-matrix.md` (iTerm2, Terminal.app, VS Code, Ghostty, kitty,
+  WezTerm, Alacritty, foot, tmux, mosh) come from the 2026-09-20 research and carry its `?` marks; the manual
+  checklist at the end of the matrix has not been run.
+- Windows / ConPTY / WSL 2 (the design's posture only), screen readers (NVDA / VoiceOver), IME input, Ctrl+Z through a
+  real job-control shell, `--notify` and `--osc52` on a real terminal, `--title` (now wired, see deviation 3; not exercised on a real terminal).
+- Publishing: `npm publish`, the `next`/`latest` dist-tags, provenance and the Homebrew tap install (`Formula/jevcode.rb`
+  still has placeholder `url`/`sha256`; `package.json` is 0.1.0). `jevcode upgrade` was unit-tested only.
+- A live (real Jev + generator) interactive session: another slot recorded `docs/live/tui/live-session.steps`
+  while this was written (`tui-pty.log` 1,831,024 bytes; `timing.jsonl` reaches step 31 `/resume`, then step 32's
+  `expect` for a run end times out after 600 s and the driver's `kill-on-timeout` sends SIGKILL → `exit 137`;
+  `attempt-1/` holds an earlier 2.5 MB capture); not evaluated here beyond a pattern grep of the captures for
+  `sk-or-v1-` / `sk-ant-` (0 hits).
+- A `jevcode perf` run on a quiet machine: the 08:38Z run ("Measured numbers") had load 2.5 and five `drive.exp`
+  processes of other slots alive, so its rows-40 lag p95 of 99.6 ms is not separated from contention; the
+  live-pane shrink double clear (2 vs 1) and the `imagesMs` p95 (19.3 vs 15 ms) are less load-sensitive but were
+  taken under the same conditions. `perf/results/latest.json` is still the 2026-09-20 file (perf slot).
+- Windows, screen readers and real terminals aside, the remaining unverified TUI claims are the ones only a
+  human at a terminal can check (the manual checklist at the end of `docs/research/tui/terminal-matrix.md`).
+
+### Open questions
+
+- `--title` is now wired (one `OSC 2` write at `setUi`, reset at unmount); whether the title should also carry the run's
+  step count live (design §14.1 leaves it as one write) is open.
+- Shrink resize with a live pane open clears twice (deviation 11). Either the App must render the new geometry in
+  the same frame Ink's `resized` handler uses (so the stale tree is never drawn at the new viewport), or the design
+  bound moves to 2 and the perf `states` probe's `allowed` follows the pty test; today the two gates disagree.
+- The `[screen reader mode: on via …]` first item of §24 (deviation 10): wire it, or drop it from the design.
+- `/copy diff`: keep the "last item" semantics and drop `diff` from the enum, or store the last diff block separately?
+- The `--plain` `y/N` gate and the review prompt share one readline: the design's §6.5 stash-the-draft rule is
+  implemented for screen-reader mode; whether the cooked-mode readline composer needs the same guard against a line
+  begun before the prompt appeared has not been examined.
+- Whether the 50-run / 32 MB `/calibration` cap should be a setting (the design fixed it after measuring a 166 MB
+  `steps.jsonl` corpus).

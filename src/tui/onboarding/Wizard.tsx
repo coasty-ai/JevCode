@@ -39,6 +39,8 @@ export interface WizardHost {
   /** the sandbox line to append when the wizard reaches its sandbox step */
   sandboxLine?(): string | null;
   trustInputs?(): TrustInputs | null;
+  /** the wizard closed without a save / trust answer (Ctrl-C, or `done` reached with nothing answered): the pending controller prompt resolves cancelled */
+  cancel?(): void;
 }
 
 export interface WizardDetect {
@@ -78,6 +80,8 @@ export function useWizard(deps: WizardDeps): WizardController {
   const [state, dispatch] = useReducer(onboardingReducer, INITIAL_ONBOARDING);
   const bytes = useMaskedBytes();
   const stateRef = useRef(state);
+  /** a save or trust answer reached the host during this wizard (reset by start / reopen): `done` without one is a cancel (§11.1) */
+  const answered = useRef(false);
   stateRef.current = state;
   const depsRef = useRef(deps);
   depsRef.current = deps;
@@ -100,6 +104,7 @@ export function useWizard(deps: WizardDeps): WizardController {
         try {
           const r = await host.save({ ...req, values });
           if (r.ok) {
+            answered.current = true;
             for (const item of r.items) depsRef.current.onItem(item, '[setup]');
             dispatch({ type: 'saved' });
           } else dispatch({ type: 'save-failed', reason: r.reason });
@@ -141,6 +146,8 @@ export function useWizard(deps: WizardDeps): WizardController {
     }
     if (s.step === 'done') {
       bytes.wipe();
+      // §11.1: `done` reached with no save / trust answer (Ctrl-C with a run live, nothing to ask) closes the controller's prompt
+      if (!answered.current) depsRef.current.host()?.cancel?.();
       depsRef.current.onDone();
       return;
     }
@@ -169,6 +176,7 @@ export function useWizard(deps: WizardDeps): WizardController {
           else if (s.step === 'verify' && (ch === 'n' || ch === 'N')) dispatch({ type: 'verify-answer', yes: false });
           else if (s.step === 'trust' && (ch === '1' || ch === '2' || ch === '3')) {
             const option = Number(ch) as TrustOption;
+            answered.current = true;
             depsRef.current.host()?.trust?.(option);
             dispatch({ type: 'trust', option });
           }
@@ -213,11 +221,20 @@ export function useWizard(deps: WizardDeps): WizardController {
         return wizardActive(stateRef.current) || stateRef.current.step === 'verify' || stateRef.current.step === 'trust' || stateRef.current.step === 'sandbox';
       },
       rows: (terminalRows) => wizardRows(stateRef.current, terminalRows),
-      start: (d) => dispatch({ type: 'detect', missing: d.missing, mode: d.mode, provider: d.provider, trustNeeded: d.trustNeeded, ...(d.runLive !== undefined ? { runLive: d.runLive } : {}) }),
-      reopen: (at, runLive) => dispatch({ type: 'reopen', at, runLive }),
+      start: (d) => {
+        answered.current = false;
+        dispatch({ type: 'detect', missing: d.missing, mode: d.mode, provider: d.provider, trustNeeded: d.trustNeeded, ...(d.runLive !== undefined ? { runLive: d.runLive } : {}) });
+      },
+      reopen: (at, runLive) => {
+        answered.current = false;
+        dispatch({ type: 'reopen', at, runLive });
+      },
       apply,
       cancel: () => {
         bytes.wipe();
+        // §11.1: the controller's pending prompt resolves cancelled at once (no overlay watch needed); the reducer then exits 2 or closes
+        if (!answered.current) depsRef.current.host()?.cancel?.();
+        answered.current = true;
         dispatch({ type: 'cancel' });
       },
       dispatch,

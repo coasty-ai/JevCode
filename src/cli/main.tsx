@@ -9,7 +9,8 @@
  * or an idle exit 130/143; before one exists the process restores the terminal, prints the one-line epilogue and exits.
  * The fatal path is `cli/fatal.ts`'s `fatalExit` (redacted epilogue, terminal restored first). Heavy modules
  * (providers, Jev client, Ink, bench, perf, the new commands) are dynamic imports; `--help`, `--version [--json]` and
- * `completion` answer before any Ink import (§17 item 3).
+ * `completion` answer before any Ink import (§17 item 3; `src/tui/terminal.ts` is imported statically for the one
+ * process-wide `restoreTerminal()` — it imports no Ink at runtime, only `node:fs` and a type).
  */
 import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -25,7 +26,8 @@ import { resolveLaunchSettings } from '../config/launch.js';
 import { VERSION } from '../version.js';
 import { epilogueLines, type EpilogueContext } from './epilogue.js';
 import { wireFatalHandlers, type FatalWiring } from './fatal.js';
-import { INK_VERSION } from './report.js';
+import { INK_VERSION, REACT_VERSION } from './report.js';
+import { restoreTerminal } from '../tui/terminal.js';
 import { createSessionController, isInCi, isInteractive, jevcodeDir, sessionsIndexPath, type Prompter, type PromptingRenderer, type RendererKind, type SessionController } from './session.js';
 import type { JsonStream } from './json-stream.js';
 import type { ReadlineComposer } from '../tui/plain-composer.js';
@@ -68,9 +70,9 @@ export function selectRenderer(flags: ParsedFlags, command: 'chat' | 'run', fact
   return { kind, mode, readline, interactive };
 }
 
-/** TUI-DESIGN §17 item 3: `--version --json`. */
-export function versionJson(bundle: string = fileURLToPath(import.meta.url)): { name: string; version: string; node: string; ink: string; bundle: string } {
-  return { name: 'jevcode', version: VERSION, node: process.version, ink: INK_VERSION, bundle };
+/** TUI-DESIGN §17 item 3: `--version --json` — `{ name, version, node, ink, react, bundle }` (the two inlined runtime deps are named, §17 item 1). */
+export function versionJson(bundle: string = fileURLToPath(import.meta.url)): { name: string; version: string; node: string; ink: string; react: string; bundle: string } {
+  return { name: 'jevcode', version: VERSION, node: process.version, ink: INK_VERSION, react: REACT_VERSION, bundle };
 }
 
 /**
@@ -138,13 +140,20 @@ const fatalRefs: FatalRefs = {
 
 let wiring: FatalWiring | null = null;
 
-/** install the fatal handlers once (idempotent) */
-function ensureWiring(): FatalWiring {
+/**
+ * install the fatal handlers once (idempotent). TUI-DESIGN §14.2: `restore` is the one process-wide `restoreTerminal()`
+ * of `src/tui/terminal.ts` — the same instance the Ink mount's hygiene, `unmount()` and the `'exit'` hook use — so the exit
+ * string (`RESTORE`, `CSI 0 SP q`) is written exactly once per exit whichever path runs first (fatalExit, the controller's
+ * `finishSession`, the engine's forced exit, SIGTSTP). A second `createRestoreTerminal` here wrote it twice. Exported for
+ * the wiring test (`main.test.ts` asserts the identity and the once-only write through `setProcessRestore`).
+ */
+export function ensureWiring(): FatalWiring {
   wiring ??= wireFatalHandlers({
     redact: (s) => fatalRefs.redact(s),
     context: () => fatalRefs.context(),
     engine: () => fatalRefs.engine(),
     unmount: () => fatalRefs.unmount?.() ?? Promise.resolve(),
+    restore: restoreTerminal,
   });
   return wiring;
 }

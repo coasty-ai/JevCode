@@ -1211,7 +1211,43 @@ class EngineImpl implements Engine {
   private emit(e: EngineEvent): void {
     const redacted = redactDeep(e, this.redact) as EngineEvent;
     this.recordTranscript(redacted);
+    this.logEvent(redacted);
     this.events.emit(redacted);
+  }
+
+  /**
+   * TUI-DESIGN §13.6: the engine's notice / warning / error lines reach `EngineOptions.log` (`<runDir>/jevcode.log` through
+   * the controller) — every `notice` at its level, `transcript` lines at warn+, `error` events and a failed retry chain. The
+   * event is already redacted; a throwing log never reaches the loop.
+   */
+  private logEvent(e: EngineEvent): void {
+    const log = this.opts.log;
+    if (log === undefined) return;
+    try {
+      switch (e.type) {
+        case 'notice': {
+          const line = `notice ${e.kind}${e.step !== null ? ` step=${e.step}` : ''}: ${e.text}`;
+          if (e.level === 'error') log.error(line);
+          else if (e.level === 'warn') log.warn(line);
+          else log.info(line);
+          return;
+        }
+        case 'transcript':
+          if (e.level === 'error') log.error(`${e.step !== null ? `step=${e.step} ` : ''}${e.text}`);
+          else if (e.level === 'warn') log.warn(`${e.step !== null ? `step=${e.step} ` : ''}${e.text}`);
+          return;
+        case 'error':
+          log.error(`${e.fatal ? 'fatal ' : ''}error ${e.error.code}${e.step !== null ? ` step=${e.step}` : ''}: ${e.error.message}`);
+          return;
+        case 'retry:settled':
+          if (!e.ok) log.warn(`${e.side} retry chain failed after ${e.attempts} attempts (${e.totalWaitMs} ms waited)${e.step !== null ? ` step=${e.step}` : ''}`);
+          return;
+        default:
+          return;
+      }
+    } catch {
+      /* a log failure is never the loop's problem (§13.6: log-write failures are swallowed) */
+    }
   }
 
   /**

@@ -87,7 +87,8 @@ export interface KeyState {
   reviewArmed: boolean;
   run: KeyRunPhase;
   draftEmpty: boolean;
-  cursorRow: 'first' | 'mid' | 'last';
+  /** the cursor's visual row; `'only'` = a one-row draft, which is both the first and the last row (§4.6: Up recalls older, Down newer) */
+  cursorRow: 'first' | 'mid' | 'last' | 'only';
   historySearch: boolean;
   /** queued steers */
   queue: number;
@@ -101,6 +102,8 @@ export interface KeyState {
   overlayArmed: boolean;
   /** rows < 8: Ctrl-C/D, Enter and text only (§3.1), plus Ctrl+Z / Ctrl+L (§14.2 terminal hygiene) */
   minsize: boolean;
+  /** the retry row is up (`UiState.retrying !== null`, §13.2): a bare `r` on an empty draft is `[r] retry now` */
+  retrying: boolean;
 }
 
 /** TUI-DESIGN §3.1: a fresh state for a mounted session or one-shot renderer. */
@@ -119,6 +122,7 @@ export function initialKeyState(mode: 'session' | 'one-shot' = 'session'): KeySt
     picker: false,
     overlayArmed: false,
     minsize: false,
+    retrying: false,
   };
 }
 
@@ -145,6 +149,7 @@ export type KeyAction =
   | { type: 'redo' }
   | { type: 'history'; dir: -1 | 1 }
   | { type: 'unsteer' }
+  | { type: 'retryNow' }
   | { type: 'historySearch'; op: 'open' | 'older' | 'newer' | 'accept' | 'acceptSubmit' | 'cancel' | 'widen' | 'backspace' | 'query'; text?: string }
   | { type: 'complete'; dir: 1 | -1 }
   | { type: 'openPalette' }
@@ -362,10 +367,11 @@ function composerAction(id: string, s: KeyState, k: KeyEvent): KeyAction[] | nul
     case 'composer:delete':
       return [{ type: 'delete' }];
     case 'composer:up':
-      if (s.cursorRow === 'first' || s.draftEmpty) return s.queue > 0 && s.draftEmpty ? [{ type: 'unsteer' }] : [{ type: 'history', dir: -1 }];
+      // §3.2 / §4.6: history on the first visual row; a one-row draft (`'only'`) is its first and last row at once
+      if (s.cursorRow === 'first' || s.cursorRow === 'only' || s.draftEmpty) return s.queue > 0 && s.draftEmpty ? [{ type: 'unsteer' }] : [{ type: 'history', dir: -1 }];
       return [{ type: 'move', to: 'up' }];
     case 'composer:down':
-      if (s.cursorRow === 'last' || s.draftEmpty) return [{ type: 'history', dir: 1 }];
+      if (s.cursorRow === 'last' || s.cursorRow === 'only' || s.draftEmpty) return [{ type: 'history', dir: 1 }];
       return [{ type: 'move', to: 'down' }];
     case 'composer:historyPrev':
       return [{ type: 'history', dir: -1 }];
@@ -448,6 +454,9 @@ function resolveComposer(s: KeyState, k: KeyEvent, now: number, b: Bindings, con
   if (k.paste) return { state: cleared, actions: [{ type: 'paste', text: k.input }] };
   if (isNewlineKey(k)) return { state: cleared, actions: [{ type: 'newline' }] };
   if (isEnter(k)) return { state: cleared, actions: s.draftEmpty ? [] : [{ type: 'submit' }] };
+  // §13.2 `[r] retry now`: a bare `r` on an empty draft while the retry row is up (the `[`/`]` empty-draft rule's shape;
+  // with a draft, or once `retry:settled` cleared the row, `r` is text again)
+  if (s.retrying && s.draftEmpty && k.input === 'r' && !k.key.shift && isPrintable(k)) return { state: cleared, actions: [{ type: 'retryNow' }] };
   const ks = keyString(k);
   if (ks !== null) {
     const found = lookup(cleared, ks, contexts, now, b);
@@ -548,7 +557,9 @@ function resolveYGated(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
       if (isCtrl(k, 'c')) return interrupt(s, 'ctrl-c', now); // cancel the send and clear the draft (§10.7)
       if (k.paste) return none;
       if (k.key.escape || isEnter(k) || isCtrl(k, 'd')) return one({ type: 'gate', op: 'dismiss' });
-      if (y && s.overlayArmed) return one({ type: 'gate', op: 'send' });
+      // §4.10 / §6.3: only an armed `y` sends; an early one (before the committed frame + 150 ms) is ignored — never a
+      // dismissal and never text, for the composer gate and the controller's argv-task prompt alike
+      if (y) return s.overlayArmed ? one({ type: 'gate', op: 'send' }) : none;
       // anything else dismisses and is then handled by the composer
       const rest = resolveComposer({ ...s, overlay: 'none' }, k, now, b, ['composer', 'global']);
       return { state: { ...rest.state, overlay: s.overlay }, actions: [{ type: 'gate', op: 'dismiss' }, ...rest.actions] };
@@ -727,7 +738,12 @@ function resolveOne(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step {
   switch (s.overlay) {
     case 'review':
       if (s.reviewArmed) return resolveReview(s, k, now, b);
-      break; // deferral: keys go to the composer as text, Ctrl-C keeps its live-run meaning (§6.3)
+      // §6.3: the box is drawn but not yet armed. Nothing typed may reach the composer any more (a `y` here became
+      // draft text in the first live session, docs/live/tui attempt 2) and nothing may approve: printable keys and
+      // pastes get the pending toast, everything else is ignored. The deferral BEFORE the box (overlay still 'none')
+      // is the phase in which keys go to the composer as text. Ctrl-C kept its live-run meaning in globalStructural.
+      if (k.key.ctrl && (k.input === 'c' || k.input === 'd')) break; // Ctrl-C / Ctrl-D keep their live-run meaning (F5) through the composer path
+      return { state: s, actions: isPrintable(k) || k.paste === true ? [{ type: 'toast', text: REVIEW_PENDING_TOAST }] : [] };
     case 'wizard':
       return resolveWizard(s, k, now);
     case 'blocking':
@@ -764,7 +780,7 @@ function sameArmed(a: Armed, b: Armed): boolean {
  * a 30 ms timer and re-dispatches with `escExpired: true`); a printable / Enter / Backspace inside the
  * window is re-dispatched as the Meta chord; a later key first fires the pending Esc. `eventType`
  * release/repeat are dropped (A5). `d p t s` are never keys: on an empty composer only `[`, `]`, `/`, `@`
- * and `?` are bound. A bracketed paste never completes a Meta chord (the pending Esc fires first). Ctrl+Z
+ * and `?` are bound (plus `r` while the retry row is up, §13.2). A bracketed paste never completes a Meta chord (the pending Esc fires first). Ctrl+Z
  * and Ctrl+L (§14.2) resolve in every context; a §3.4 chord arms in every context that binds one.
  */
 export function resolveKey(ui: KeyState, k: KeyEvent, nowMs: number, bindings: Bindings = DEFAULT_BINDINGS): KeyAction[] {

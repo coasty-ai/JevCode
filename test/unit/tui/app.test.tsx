@@ -11,7 +11,7 @@ import { EventEmitter } from 'node:events';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest, HistoryStore, LaunchSettings, RetryInfo, SecretHit, SessionHost, SteerResult } from '../../../src/core/types.js';
-import { App, COALESCED_ENTER_TOAST, EXITED_CTRL_C, EXITED_CTRL_D, SR_REVIEW_MENU, SR_REVIEW_PROMPT, builderFaultFor, createBridge, createTuiRenderer, deferInkResize, draftsDirFor, liveLines, queueRows, splitInputChunk, srReviewAnswer, type Bridge } from '../../../src/tui/App.js';
+import { App, COALESCED_ENTER_TOAST, EXITED_CTRL_C, EXITED_CTRL_D, SR_REVIEW_MENU, SR_REVIEW_PROMPT, builderFaultFor, createBridge, createTuiRenderer, draftsDirFor, liveLines, queueRows, splitInputChunk, srReviewAnswer, type Bridge } from '../../../src/tui/App.js';
 import { REVIEW_KEYS_80 } from '../../../src/tui/review/lines.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer, type UiAction, type UiState } from '../../../src/tui/useEngine.js';
 import { IDENTITY_NO_TTY, formatTranscriptItem, itemsFromEvent, plainFirstLine } from '../../../src/tui/plain.js';
@@ -623,7 +623,7 @@ describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', 
     expect(host.submitted[0]?.text).toContain('pasted secret-free line 3');
   });
 
-  it('the secret gate: Enter on a draft with an sk-ant- canary opens the row; y within 150 ms is text; an armed y sends with addSecret before submit; Esc dismisses', async () => {
+  it('the secret gate: Enter on a draft with an sk-ant- canary opens the row; y within 150 ms is ignored (§6.3: the row stays, nothing typed); an armed y sends with addSecret before submit; Esc dismisses', async () => {
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
     const canary = `sk-ant-api03-${'A'.repeat(40)}`;
@@ -636,17 +636,14 @@ describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', 
     m.stdin.write('\r');
     await tick(10);
     expect(m.lastFrame()).toContain('Looks like this contains a secret (sk-ant-…). Send anyway? y/N');
-    m.stdin.write('y'); // within 150 ms of the Enter: not a confirmation — the row is dismissed and the y is text
+    m.stdin.write('y'); // within 150 ms of the Enter: neither a confirmation nor a dismissal — the row stays and the y is dropped (§4.10, §6.3)
     await tick(10);
     expect(host.submitted).toEqual([]);
-    expect(m.lastFrame()).not.toContain('Send anyway?');
-    expect(m.lastFrame()).toMatch(/smoke testy/);
-    m.stdin.write('\x7f'); // Backspace removes the stray y
-    await tick(10);
-    m.stdin.write('\r');
+    expect(m.lastFrame()).toContain('Send anyway? y/N');
+    expect(m.lastFrame()).not.toMatch(/smoke testy/);
     await tick(200);
     expect(m.lastFrame()).toContain('Send anyway? y/N');
-    m.stdin.write('y');
+    m.stdin.write('y'); // armed: sends
     await tick(20);
     expect(host.submitted).toHaveLength(1);
     expect(host.submitted[0]?.secretSpans).toEqual([canary]); // the host addSecret()s every span before createEngine (§10.2)
@@ -1514,10 +1511,14 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
 
   it('the wizard through the App: masked key bytes never appear in a frame; Ctrl-C with no run exits 2; mid-run Ctrl-C closes it and the run continues', async () => {
     const saved: string[] = [];
+    let cancels = 0;
     const wizardHost = {
       save: async (input: { values: Readonly<Partial<Record<string, string>>> }) => {
         saved.push(...Object.values(input.values).filter((v): v is string => typeof v === 'string'));
         return { ok: true as const, items: ['[setup] saved /tmp/cred.json (mode 0600, dir 0700)'] };
+      },
+      cancel: () => {
+        cancels += 1;
       },
     };
     const host = fakeHost();
@@ -1537,6 +1538,7 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
     m.stdin.write(CTRL_C);
     await tick(20);
     expect(host.exits).toEqual([2]);
+    expect(cancels).toBe(1); // §11.1: the controller's pending wizard prompt settles through the host, not an overlay watch
     cleanup();
     const host2 = fakeHost();
     const m2 = mountApp({ mode: 'session', host: host2, bridge: createBridge(host2, wizardHost) });
@@ -1551,6 +1553,53 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
     expect(host2.aborts).toEqual([]);
     expect(m2.state()?.overlay).toBe('none');
     expect(m2.state()?.run).toBe('live');
+    expect(cancels).toBe(2); // the mid-run close cancels once too (the `done` it produces does not cancel again)
+  });
+
+  it('promptSecretGate (argv task, §4.10 / §10.2): the row renders over the idle one-shot composer; a y within 150 ms is ignored (the row stays, nothing typed); an armed y resolves true; Esc / n / Enter refuse; a new prompt refuses the previous one', async () => {
+    const host = fakeHost();
+    const m = mountApp({ mode: 'one-shot', host });
+    const hits = detectSecrets(`deploy with AKIAIOSFODNN7EXAMPLE now`);
+    expect(hits.length).toBeGreaterThan(0);
+    const answers: boolean[] = [];
+    const ask = (): void => m.bridge.command({ type: 'secretGate', hits, resolve: (send) => answers.push(send) });
+    ask();
+    await tick(10);
+    expect(m.state()?.overlay).toBe('secret');
+    expect(m.lastFrame()).toContain('Looks like this contains a secret (AKIA…). Send anyway? y/N');
+    m.stdin.write('y'); // within 150 ms of the row: not a confirmation and not a dismissal (§6.3) — the row stays, the prompt is still open
+    await tick(10);
+    expect(answers).toEqual([]);
+    expect(m.state()?.overlay).toBe('secret');
+    expect(m.lastFrame()).toContain('Send anyway? y/N');
+    expect(m.lastFrame()).not.toContain('> y'); // the early y never reached the composer either
+    expect(host.submitted).toEqual([]);
+    await tick(200);
+    m.stdin.write('y'); // armed now: the same prompt resolves true
+    await tick(20);
+    expect(answers).toEqual([true]);
+    expect(m.state()?.overlay).toBe('none');
+    for (const key of ['\x1b', 'n', '\r']) {
+      ask();
+      await tick(200);
+      m.stdin.write(key);
+      await tick(80); // the Esc re-buffer (30 ms) plus a commit
+      expect(answers.at(-1)).toBe(false);
+      expect(m.state()?.overlay).toBe('none');
+    }
+    // a second prompt while one is open refuses the first and owns the row
+    ask();
+    await tick(10);
+    ask();
+    await tick(200);
+    expect(answers.at(-1)).toBe(false);
+    m.stdin.write('y');
+    await tick(20);
+    expect(answers.at(-1)).toBe(true);
+    expect(answers).toHaveLength(6);
+    // nothing reached the composer's send path and no frame carried the token bytes
+    expect(host.submitted).toEqual([]);
+    for (const f of m.frames) expect(f).not.toContain('AKIAIOSFODNN7EXAMPLE');
   });
 });
 
@@ -1660,33 +1709,7 @@ describe('createTuiRenderer: unmount flushes the final frame (finding 10); resiz
     expect(lastDynamic).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] judge/);
   });
 
-  it('deferInkResize re-registers Ink\'s resize listener behind one macrotask (so React commits first) and hands it back on uninstall', () => {
-    const stdout = new StubStdout(24, 80, true);
-    const calls: string[] = [];
-    const ink = (): void => {
-      calls.push('ink');
-    };
-    stdout.on('resize', ink);
-    const off = deferInkResize(stdout as unknown as NodeJS.WriteStream);
-    expect(stdout.listeners('resize')).not.toContain(ink);
-    stdout.emit('resize');
-    expect(calls).toEqual([]); // deferred: not on the SIGWINCH tick itself
-    return new Promise<void>((resolve) =>
-      setImmediate(() => {
-        setImmediate(() => {
-          expect(calls).toEqual(['ink']);
-          off();
-          expect(stdout.listeners('resize')).toContain(ink);
-          stdout.emit('resize');
-          expect(calls).toEqual(['ink', 'ink']);
-          expect(deferInkResize(new StubStdout(1, 1) as unknown as NodeJS.WriteStream)).toBeTypeOf('function');
-          resolve();
-        });
-      }),
-    );
-  });
-
-  it('a resize on the renderer\'s stdout re-renders under the new budget (React commits before Ink\'s deferred repaint); 0×0 streams fall back to 80×24', async () => {
+  it('a shrink on the renderer\'s stdout commits the new budget synchronously in the resize listener (before Ink\'s own repaint), so no stale taller frame is painted at the new viewport; a grow takes the async path; 0×0 streams fall back to 80×24', async () => {
     const stdout = new StubStdout(40, 80, true);
     const stdin = new StubStdin();
     const r = createTuiRenderer({ task: '', resumeId: null, onAbort: () => undefined, stdout: stdout as unknown as NodeJS.WriteStream, stdin: stdin as unknown as NodeJS.ReadStream, mode: 'session', cwd: '/tmp/proj', interactive: true });
@@ -1698,18 +1721,28 @@ describe('createTuiRenderer: unmount flushes the final frame (finding 10); resiz
     for (let i = 0; i < 12; i++) fe.emit({ type: 'decision', decision: mkDecision({ id: `d${i}`, step: 1 }) });
     fe.emit({ type: 'status', status: mkStatus(1, 'risk') });
     await tick(60);
+    const tall = stdout.frames.map(stripAnsi).filter((f) => f.includes('step 1/40')).at(-1) ?? '';
+    expect(dynamicRegion(tall.replace(/\n+$/, ''), 80).length).toBeGreaterThan(10); // the pane is open: taller than the 12-row terminal to come
     const before = stdout.frames.length;
     stdout.resize(12, 60);
-    // nothing is repainted on the SIGWINCH tick itself: Ink's handler is deferred behind React's commit
-    expect(stdout.frames.length).toBe(before);
+    // the shrink is committed on the SIGWINCH tick itself (instance.rerender), so the frame Ink's own `resized` handler
+    // paints synchronously is already the 12x60 tree — never the stale 40x80 one
+    expect(stdout.frames.length).toBeGreaterThan(before);
+    const sync = stdout.frames.slice(before).map(stripAnsi);
+    for (const f of sync) for (const line of f.split('\n')) expect(line.length).toBeLessThanOrEqual(60);
     await tick(120);
     const after = stdout.frames.slice(before).map(stripAnsi);
-    expect(after.length).toBeGreaterThan(0);
-    // every frame written after the resize is already under the new geometry (no stale 80-column repaint)
+    // every frame written from the resize on is under the new geometry (no stale 80-column / 15-row repaint)
     for (const f of after) for (const line of f.split('\n')) expect(line.length).toBeLessThanOrEqual(60);
-    const last = after.filter((f) => f.includes('step 1/40')).at(-1) ?? '';
-    expect(dynamicRegion(last.replace(/\n+$/, ''), 60).length).toBeLessThanOrEqual(10);
+    for (const f of after) if (f.includes('step 1/40')) expect(dynamicRegion(f.replace(/\n+$/, ''), 60).length).toBeLessThanOrEqual(10);
     expect(r.state()?.runId).toBe('r1');
+    // a grow takes the async path (no synchronous commit is needed: a stale narrower frame never costs a clear) and the next frames use the wide budget
+    const beforeGrow = stdout.frames.length;
+    stdout.resize(40, 80);
+    await tick(120);
+    const grown = stdout.frames.slice(beforeGrow).map(stripAnsi);
+    expect(grown.length).toBeGreaterThan(0);
+    expect(grown.some((f) => f.split('\n').some((line) => line.length > 60))).toBe(true); // laid out at 80 columns again (the rule row carries the pane title, so no bare 80-cell rule)
     await r.unmount();
     cleanup();
     const zero = new StubStdout(0, 0, true);

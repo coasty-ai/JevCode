@@ -165,6 +165,28 @@ describe('composer context: text and the five bound printables (TUI-DESIGN §3.1
     expect(acts(st({ run: 'live', queue: 2 }), k('up'))).toEqual([{ type: 'unsteer' }]);
     expect(acts(st({ run: 'live', queue: 2, draftEmpty: false, cursorRow: 'first' }), k('up'))).toEqual([{ type: 'history', dir: -1 }]);
   });
+  it('a one-row draft (`cursorRow: only`) satisfies both history rules: Up recalls older, Down recalls newer; on a mid row both move (§4.6)', () => {
+    const one = st({ draftEmpty: false, cursorRow: 'only' });
+    expect(acts(one, k('up'))).toEqual([{ type: 'history', dir: -1 }]);
+    expect(acts(one, k('down'))).toEqual([{ type: 'history', dir: 1 }]);
+    expect(acts(st({ run: 'live', queue: 1, draftEmpty: false, cursorRow: 'only' }), k('up'))).toEqual([{ type: 'history', dir: -1 }]); // unsteer needs an empty draft
+    expect(acts(st({ draftEmpty: false, cursorRow: 'mid' }), k('up'))).toEqual([{ type: 'move', to: 'up' }]);
+  });
+  it('`r` on an empty draft while the retry row is up is retryNow (§13.2); with a draft, without the row, shifted, pasted, or in another context it is text / its own key', () => {
+    const retrying = st({ run: 'live', retrying: true });
+    expect(acts(retrying, text('r'))).toEqual([{ type: 'retryNow' }]);
+    expect(acts(retrying, text('r'), 10_000, buildBindings(new Map([['composer:killLine', ['none']]])))).toEqual([{ type: 'retryNow' }]);
+    expect(acts(st({ run: 'live', retrying: true, draftEmpty: false, cursorRow: 'only' }), text('r'))).toEqual([{ type: 'insert', text: 'r' }]);
+    expect(acts(st({ run: 'live' }), text('r'))).toEqual([{ type: 'insert', text: 'r' }]);
+    expect(acts(retrying, text('R'))).toEqual([{ type: 'insert', text: 'R' }]);
+    expect(acts(retrying, paste('r'))).toEqual([{ type: 'paste', text: 'r' }]);
+    expect(acts(st({ run: 'live', retrying: true, picker: true }), text('r'))).toEqual([{ type: 'insert', text: 'r' }]); // the picker's filter (Ctrl-R is rename)
+    expect(acts(st({ run: 'live', retrying: true, overlay: 'blocking' }), text('r'))).toEqual([{ type: 'blocking', key: 'r' }]);
+    expect(acts(st({ run: 'live', retrying: true, historySearch: true }), text('r'))).toEqual([{ type: 'historySearch', op: 'query', text: 'r' }]);
+    // the arms are cleared like any other key (it is "other" for §3.3)
+    expect(acts({ ...retrying, armed: { ...retrying.armed, ctrlCAt: 9_000 } }, text('r'))).toEqual([{ type: 'retryNow' }]);
+    expect(armOf({ ...retrying, armed: { ...retrying.armed, ctrlCAt: 9_000 } }, text('r')).ctrlCAt).toBeNull();
+  });
   it('S6 aborting: printable, Enter and paste are ignored; Ctrl-C exits 130 at once', () => {
     const s = st({ run: 'aborting' });
     expect(acts(s, text('a'))).toEqual([]);
@@ -307,11 +329,18 @@ describe('S4 review context (TUI-DESIGN §3.3, §6.2)', () => {
     expect(acts({ ...review, draftEmpty: false }, k('ctrl+c'))).toEqual([{ type: 'interrupt', action: 'CLEAR_DRAFT' }]);
     expect(acts(review, k('ctrl+d'))).toEqual([]);
   });
-  it('before the box is armed (deferral) keys are composer text and Ctrl-C keeps its live meaning', () => {
-    const deferred = st({ run: 'live', overlay: 'review', reviewArmed: false });
-    expect(acts(deferred, text('y'))).toEqual([{ type: 'insert', text: 'y' }]);
-    expect(acts(deferred, k('ctrl+c'))).toEqual([{ type: 'interrupt', action: 'ABORT_STAY' }]);
-    expect(acts(deferred, k('return'))).toEqual([]);
+  it('box drawn but not yet armed: printable keys and pastes get the pending toast and never reach the composer, Enter/Esc are ignored, Ctrl-C keeps its live meaning (§6.3)', () => {
+    // the deferral BEFORE the box (overlay 'none') routes keys to the composer; once the box is on screen a `y`
+    // must neither approve nor become draft text (docs/live/tui attempt 2 turned the next task into "yAdd …")
+    const drawn = st({ run: 'live', overlay: 'review', reviewArmed: false });
+    expect(acts(drawn, text('y'))).toEqual([{ type: 'toast', text: REVIEW_PENDING_TOAST }]);
+    expect(acts(drawn, paste('yes please'))).toEqual([{ type: 'toast', text: REVIEW_PENDING_TOAST }]);
+    expect(acts(drawn, k('return'))).toEqual([]);
+    expect(acts(drawn, k('escape'))).toEqual([{ type: 'escBuffer' }]); // the 30 ms Esc re-buffer; the expired Esc is then ignored
+    expect(acts(drawn, ESC_EXPIRED)).toEqual([]);
+    expect(acts(drawn, k('ctrl+c'))).toEqual([{ type: 'interrupt', action: 'ABORT_STAY' }]);
+    const beforeBox = st({ run: 'live', overlay: 'none', reviewArmed: false });
+    expect(acts(beforeBox, text('y'))).toEqual([{ type: 'insert', text: 'y' }]);
   });
   it('note mode: printable inserts, Enter sends, Esc cancels, Ctrl-C with text clears, chips/newlines disabled', () => {
     const note = { ...review, noteMode: true };
@@ -328,11 +357,13 @@ describe('S4 review context (TUI-DESIGN §3.3, §6.2)', () => {
 });
 
 describe('S5 overlays (TUI-DESIGN §3.3 sub-rows)', () => {
-  it('secret gate: y sends only when armed; unarmed y dismisses and is text; Esc/Enter/Ctrl-D dismiss; Ctrl-C clears the draft; other keys dismiss then reach the composer', () => {
+  it('secret gate: y sends only when armed; an unarmed y is ignored (§6.3: neither a dismissal nor text); Esc/Enter/Ctrl-D dismiss; Ctrl-C clears the draft; other keys dismiss then reach the composer', () => {
     const gate = st({ overlay: 'secret', draftEmpty: false, cursorRow: 'last', overlayArmed: true });
     expect(acts(gate, text('y'))).toEqual([{ type: 'gate', op: 'send' }]);
     expect(acts(gate, text('Y'))).toEqual([{ type: 'gate', op: 'send' }]);
-    expect(acts({ ...gate, overlayArmed: false }, text('y'))).toEqual([{ type: 'gate', op: 'dismiss' }, { type: 'insert', text: 'y' }]);
+    expect(acts({ ...gate, overlayArmed: false }, text('y'))).toEqual([]);
+    expect(acts({ ...gate, overlayArmed: false }, text('Y'))).toEqual([]);
+    expect(acts({ ...gate, overlayArmed: false }, text('n'))).toEqual([{ type: 'gate', op: 'dismiss' }, { type: 'insert', text: 'n' }]);
     expect(acts(after(gate, k('escape'), 0), ESC_EXPIRED, 31)).toEqual([{ type: 'gate', op: 'dismiss' }]);
     expect(acts(gate, k('return'))).toEqual([{ type: 'gate', op: 'dismiss' }]);
     expect(acts(gate, k('ctrl+d'))).toEqual([{ type: 'gate', op: 'dismiss' }]);

@@ -155,6 +155,55 @@ describe('useWizard + <Wizard> (§11.1)', () => {
     expect(live.done).toBe(1);
   });
 
+  it('host.cancel() is called once on Ctrl-C (no run: exit 2; live: close) and on a `done` with no save / trust answer, never after a save (§11.1)', async () => {
+    let cancels = 0;
+    const h = harness({ cancel: () => (cancels += 1) });
+    h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false });
+    await tick();
+    h.ctl().cancel();
+    await tick(60);
+    expect(cancels).toBe(1);
+    expect(h.exits).toEqual([2]);
+    cleanup();
+    let liveCancels = 0;
+    const live = harness({ cancel: () => (liveCancels += 1) });
+    live.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false, runLive: true });
+    await tick();
+    live.ctl().cancel();
+    await tick(60);
+    expect(liveCancels).toBe(1); // once: the `done` the cancel produced does not cancel again
+    expect(live.done).toBe(1);
+    cleanup();
+    let savedCancels = 0;
+    const saved = harness({ cancel: () => (savedCancels += 1) });
+    saved.ctl().start({ missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-on', provider: 'openrouter', trustNeeded: false });
+    await tick();
+    saved.ctl().apply({ type: 'wizard', op: 'submit' }); // Enter accepts the preselected provider
+    await tick();
+    saved.ctl().apply({ type: 'wizard', op: 'input', text: `sk-or-v1-${KEY}` });
+    await tick();
+    saved.ctl().apply({ type: 'wizard', op: 'submit' });
+    await tick();
+    saved.ctl().apply({ type: 'wizard', op: 'submit' }); // Enter = reuse the OpenRouter key for Jev → save
+    await tick(60);
+    expect(saved.host.saves).toHaveLength(1);
+    expect(saved.ctl().state.step).toBe('verify');
+    saved.ctl().apply({ type: 'wizard', op: 'submit' }); // Enter = no priced verification → sandbox line → done
+    await tick(60);
+    expect(saved.done).toBe(1);
+    expect(savedCancels).toBe(0);
+    cleanup();
+    let trustCancels = 0;
+    const trusted = harness({ cancel: () => (trustCancels += 1), trust: () => undefined });
+    trusted.ctl().start({ missing: [], mode: 'jev-on', provider: null, trustNeeded: true });
+    await tick();
+    expect(trusted.ctl().state.step).toBe('trust');
+    trusted.ctl().apply({ type: 'wizard', op: 'input', text: '1' });
+    await tick(60);
+    expect(trustCancels).toBe(0);
+    expect(trusted.done).toBe(1);
+  });
+
   it('every wizard row is ≤ columns cells at 40 columns (F-N)', async () => {
     const h = harness();
     h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false });

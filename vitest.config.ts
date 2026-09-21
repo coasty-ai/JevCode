@@ -22,6 +22,18 @@ export default defineConfig({
           fileParallelism: false,
         },
       },
+      {
+        test: {
+          // TUI-DESIGN §19.5 / §19.8: real-pty scenarios through scripts/pty/drive.exp (expect(1)); macOS only, sequential
+          name: 'pty',
+          include: ['test/pty/**/*.pty.test.ts'],
+          environment: 'node',
+          testTimeout: 180_000,
+          hookTimeout: 180_000,
+          fileParallelism: false,
+          globalSetup: ['test/pty/global-setup.ts'],
+        },
+      },
     ],
     coverage: { provider: 'v8', include: ['src/**'], reporter: ['text', 'json-summary'] },
   },

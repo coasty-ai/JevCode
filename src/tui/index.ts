@@ -2,7 +2,7 @@
  * Public surface of `src/tui` (TUI-DESIGN §20 O9 exports): the Ink renderer and its App, the reducer / bus /
  * confirmer, the plain renderer and the shared line builders, plus the terminal hygiene the CLI wires.
  */
-export { App, createTuiRenderer, liveLines, queueRows, splitInputChunk, builderFaultFor, deferInkResize, RULE_CHAR, UNMOUNT_TIMEOUT_MS, GATE_ARM_MS, EXITED_CTRL_C, EXITED_CTRL_D, COALESCED_ENTER_TOAST, RECENT_WARNINGS_KEPT } from './App.js';
+export { App, createTuiRenderer, liveLines, queueRows, splitInputChunk, builderFaultFor, RULE_CHAR, UNMOUNT_TIMEOUT_MS, GATE_ARM_MS, EXITED_CTRL_C, EXITED_CTRL_D, COALESCED_ENTER_TOAST, RECENT_WARNINGS_KEPT } from './App.js';
 export type { AppProps, TuiRenderer, TuiRendererOptions, PickerOpen, Bridge, SplitChunk } from './App.js';
 export { createBridge } from './App.js';
 export { computeLayout, composerTop, CAP, MIN_ROWS, MIN_COLUMNS, isCollapsingOverlay } from './layout.js';

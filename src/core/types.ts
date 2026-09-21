@@ -8,6 +8,8 @@
  */
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
 
+import type { Log } from './log.js';
+
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
 
@@ -1018,6 +1020,12 @@ export interface EngineOptions {
    * is announced (the engine never re-derives them from run.json, where two resumes at one step are indistinguishable).
    */
   resumeOverrides?: RunMeta['overrides'];
+  /**
+   * TUI-DESIGN §13.6 (additive): the engine writes its notice / warning / error lines (every `notice`, `transcript` at
+   * warn+, `error`, a failed retry chain) to this log so they reach `<runDir>/jevcode.log`; cli/session.ts passes a handle
+   * that follows the run log. Absent -> nothing is logged (bench, perf, tests). Logging never throws into the loop.
+   */
+  log?: Log;
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 

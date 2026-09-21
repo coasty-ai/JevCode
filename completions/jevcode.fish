@@ -92,4 +92,4 @@ complete -c jevcode -n '__fish_seen_subcommand_from report' -l include-requests 
 complete -c jevcode -n '__fish_seen_subcommand_from upgrade' -l check -d 'only report whether a newer version exists (2 s registry timeout)'
 complete -c jevcode -n '__fish_seen_subcommand_from upgrade' -l method -x -a 'npm brew bun pnpm yarn' -d 'package manager to upgrade with (default: detected from the install path)'
 complete -c jevcode -n '__fish_seen_subcommand_from chat run config bench perf login logout sessions report why calibration completion upgrade' -l help -d 'show usage'
-complete -c jevcode -n '__fish_seen_subcommand_from chat run config bench perf login logout sessions report why calibration completion upgrade' -l version -d 'print the version (--json: name, version, node, ink, bundle)'
+complete -c jevcode -n '__fish_seen_subcommand_from chat run config bench perf login logout sessions report why calibration completion upgrade' -l version -d 'print the version (--json: name, version, node, ink, react, bundle)'

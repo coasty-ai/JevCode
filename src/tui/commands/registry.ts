@@ -93,7 +93,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     aliases: ['sessions', 'continue'],
     args: [{ name: 'run', kind: 'run', optional: true, hint: '[id|title]' }],
     availableDuringTask: 'idle',
-    plain: '`/resume <id>` only',
+    plain: '`/resume <id|title>` only',
     title: 'pick a session to continue, or continue <id|title>',
     usage: '[id|title]',
     semantics: 'picker (§8.4); with an argument continue that run (a stopped run resumes; a `complete` run seeds a follow-up unless `--force`); after `/undo`/`/rewind` of that run the human note rides in `EngineOptions.humanDirective` and `undoLog` (§12.4); `/continue` = most recently used run here',
@@ -236,7 +236,7 @@ export const COMMANDS: readonly CommandSpec[] = [
     plain: 'yes',
     title: 'reliability bins, ECE and near-threshold counts',
     usage: '—',
-    semantics: 'append the reliability block from `decisions.jsonl` + `steps.jsonl` of this workspace\'s runs (≤ 200 runs, streamed)',
+    semantics: 'append the reliability block from `decisions.jsonl` + `steps.jsonl` of this workspace\'s runs (the 50 most recent runs or 32 MB of records, streamed)',
     category: 'inspect',
   },
   {

@@ -86,7 +86,7 @@ _jevcode() {
             '--mode[engine mode: jev-on (default), jev-off (generator only), jev-only (no generating LLM)]:mode:(jev-on jev-off jev-only)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         run)
           _arguments \
@@ -144,7 +144,7 @@ _jevcode() {
             '--mode[engine mode: jev-on (default), jev-off (generator only), jev-only (no generating LLM)]:mode:(jev-on jev-off jev-only)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]' \
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]' \
             '*:task text:'
           ;;
         config)
@@ -197,7 +197,7 @@ _jevcode() {
             '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         bench)
           _arguments \
@@ -234,7 +234,7 @@ _jevcode() {
             '--allow-model-alias[allow an undated --jev-model]' \
             '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         perf)
           _arguments \
@@ -263,7 +263,7 @@ _jevcode() {
             '--live[use the real generator and Jev (requires --spend-cap)]' \
             '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         login)
           _arguments \
@@ -276,7 +276,7 @@ _jevcode() {
             '--status[print which keys are set and where they come from (fingerprints only)]' \
             '--verify[verify the saved keys with one priced Jev call (~$0.0001)]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         logout)
           _arguments \
@@ -286,7 +286,7 @@ _jevcode() {
             '--generator[remove the saved generator key]' \
             '--jev[remove the saved Jev key]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         sessions)
           _arguments \
@@ -295,7 +295,7 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         report)
           _arguments \
@@ -305,7 +305,7 @@ _jevcode() {
             '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
             '--include-requests[include the redacted jev.jsonl request bodies in the bundle]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         why)
           _arguments \
@@ -314,7 +314,7 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         calibration)
           _arguments \
@@ -323,19 +323,19 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         completion)
           _arguments \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         upgrade)
           _arguments \
             '--check[only report whether a newer version exists (2 s registry timeout)]' \
             '--method[package manager to upgrade with (default: detected from the install path)]:method:(npm brew bun pnpm yarn)' \
             '--help[show usage]' \
-            '--version[print the version (--json: name, version, node, ink, bundle)]'
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
       esac ;;
   esac

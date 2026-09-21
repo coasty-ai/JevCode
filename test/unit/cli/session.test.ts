@@ -11,13 +11,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest, Engine, EngineOptions } from '../../../src/core/types.js';
-import { EXIT_CONFIRM_ROW, STARTING_STEER_CAP, applyRawEdits, exportFilePath, helpLines, isInCi, isInteractive, jevcodeDir, mockReviewStep, mostRecentSession, pausedItemText, sessionEndedText } from '../../../src/cli/session.js';
+import { EXIT_CONFIRM_ROW, STARTING_STEER_CAP, applyRawEdits, exportFilePath, helpLines, isInCi, isInteractive, jevcodeDir, mockReviewStep, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps } from '../../../src/cli/session.js';
 import { sessionCapChangedLine, sessionCapReachedItem } from '../../../src/tui/budget/lines.js';
 import { sandboxText } from '../../../src/tui/onboarding/lines.js';
 import { detectSandboxLevel } from '../../../src/sandbox/seatbelt.js';
 import { gateRefusalLine } from '../../../src/tui/secrets/gate-lines.js';
 import { detectSecrets } from '../../../src/core/redact.js';
 import { NOT_RESUMABLE } from '../../../src/cli/epilogue.js';
+import type { Log } from '../../../src/core/log.js';
+import { DEFAULT_THRESHOLDS } from '../../../src/tui/useEngine.js';
 import { finishedRunLines, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness } from './helpers.js';
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234';
@@ -914,5 +916,88 @@ describe('the engine exit hook (§13.4)', () => {
     expect(ctx.changedSteps).toEqual([2]);
     await tick(20);
     expect(h.controller.view.runs[0]?.changedFiles).toEqual(['a.py']);
+  });
+});
+
+/** a capturing `Log` for the §13.6 forwarding tests (level/file/fellBack are the interface's readonly facts) */
+function capturingLog(lines: string[]): Log {
+  const line = (level: string) => (m: string): void => {
+    lines.push(`${level} ${m}`);
+  };
+  return { level: 'info', file: '/dev/null', fellBack: false, error: line('error'), warn: line('warn'), info: line('info'), debug: line('debug'), trace: line('trace'), enabled: () => true, key: () => undefined, paste: () => undefined, flush: () => undefined, close: () => undefined };
+}
+
+describe('wave-4 polish: thresholds, the engine log handle, the live session cap (§7.1, §13.6, §9.6)', () => {
+  it('dispatches { thresholds } right after resolveConfig with the resolved --complete-threshold / --impossible-threshold, and again before each run', async () => {
+    const h = await build({ flags: { completeThreshold: '0.91', impossibleThreshold: '0.23' } });
+    void h.controller.run();
+    await h.ready();
+    const thresholds = () => h.renderer.dispatched.filter((a) => a.type === 'thresholds');
+    expect(thresholds()).toEqual([{ type: 'thresholds', complete: 0.91, impossible: 0.23 }]);
+    await h.submit('one');
+    expect(thresholds()).toHaveLength(2);
+    expect(thresholds().at(-1)).toEqual({ type: 'thresholds', complete: 0.91, impossible: 0.23 });
+    // the defaults are what the reducer starts from — a controller that never dispatched would leave the rows on them
+    expect(DEFAULT_THRESHOLDS.complete).not.toBe(0.91);
+  });
+
+  it('passes EngineOptions.log to createEngine: a handle that follows the controller log (the run log while live, §13.6)', async () => {
+    const lines: string[] = [];
+    const h = await build({ deps: { log: capturingLog(lines) } });
+    void h.controller.run();
+    await h.ready();
+    await h.submit('one');
+    const log = h.factory.calls[0]!.log;
+    expect(log).toBeDefined();
+    log!.warn('probe from the engine');
+    log!.error('second probe');
+    expect(lines).toContain('warn probe from the engine');
+    expect(lines).toContain('error second probe');
+    expect(log!.enabled('info')).toBe(true);
+    // the same handle rides the second run's options (the controller never re-creates it)
+    await h.submit('two');
+    expect(h.factory.calls[1]!.log).toBe(log);
+  });
+
+  it('warnLine() while a run is live: the warning rides engine.annotate() (a warn `notice ui`, which the engine writes to the run log) and the controller does not log it a second time; idle, the controller logs it once (§13.6)', async () => {
+    const lines: string[] = [];
+    // a /logout whose command layer reports a warning on its stderr (the wrapper routes it through warnLine)
+    const logout: NonNullable<SessionDeps['commandLogout']> = async (_flags, io) => {
+      io.stderr.write('jevcode: nothing to log out: no credentials file\n');
+      return 0;
+    };
+    const h = await build({ script: () => ({ hold: true }), deps: { log: capturingLog(lines), commandLogout: logout } });
+    void h.controller.run();
+    await h.ready();
+    const p = h.submit('go');
+    const eng = await h.factory.nextLive();
+    await h.command('/logout');
+    expect(eng.annotated).toContain('warning: nothing to log out: no credentials file');
+    expect(eng.emitted.some((e) => e.type === 'notice' && e.kind === 'ui' && e.level === 'warn' && e.text === 'warning: nothing to log out: no credentials file')).toBe(true);
+    // the controller wrote no line of its own: the engine's `EngineOptions.log` carries the one run-log line (engine-log.test.ts)
+    expect(lines.filter((l) => l.includes('nothing to log out'))).toEqual([]);
+    eng.release();
+    await p;
+    await h.command('/logout');
+    expect(lines.filter((l) => l.includes('nothing to log out'))).toEqual(['warn nothing to log out: no credentials file']);
+    expect(h.renderer.notes.filter((n) => n.text === 'warning: nothing to log out: no credentials file')).toHaveLength(1);
+  });
+
+  it('after run:end the status gets the live root cap: /budget session-spend-cap 0.01 before the first run stays 0.01 in every setSessionSpend push', async () => {
+    const h = await build({ flags: { sessionSpendCap: '10' } });
+    const pushes: { totalUsd: number; capUsd: number }[] = [];
+    (h.renderer as unknown as { setSessionSpend: (s: { totalUsd: number; capUsd: number } | null) => void }).setSessionSpend = (s) => {
+      if (s) pushes.push(s);
+    };
+    void h.controller.run();
+    await h.ready();
+    await h.command('/budget session-spend-cap 0.01');
+    expect(pushes.at(-1)?.capUsd).toBe(0.01);
+    await h.submit('one');
+    // the post-run push (and every earlier one after the change) names the live cap, never the configured 10
+    const afterChange = pushes.slice(pushes.findIndex((p) => p.capUsd === 0.01));
+    expect(afterChange.length).toBeGreaterThanOrEqual(2);
+    expect(afterChange.every((p) => p.capUsd === 0.01)).toBe(true);
+    expect(h.controller.view.sessionMeter.snapshot().capUsd).toBe(0.01);
   });
 });

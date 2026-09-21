@@ -4,13 +4,13 @@
  * undo (`yes`/`no`/`all`/`skipRest`/`abort` → y/n/a/s/esc), picker (Enter on a row → its newest run; Esc → null),
  * rewind, and the wizard round trip (`openWizard` → the App calls `wizardHost.save` → `persistCredentials` →
  * `{ kind: 'persisted' }`), plus the trust step through `wizardHost.trust`; `reopenWizard`'s `runLive` flag comes from
- * the controller (§11.1), the wizard settles `cancelled` through `wizardHost.cancel()` or the overlay watch, and
+ * the controller (§11.1), the wizard settles `cancelled` through `wizardHost.cancel()` (the App's close channel), and
  * `cancelAll()` settles every pending prompt with its safe default (§13.5 / F3).
  */
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BlockingRequest, SessionRow } from '../../../src/core/types.js';
 import type { OverlayKind, PickerOpen, TuiRenderer, UiState, WizardDetect } from '../../../src/tui/index.js';
-import { WIZARD_WATCH_MISSES, WIZARD_WATCH_MS, createTuiPrompter, hasSecretGate, patchFromWizard, undoKeyOf, type SecretGateRenderer, type TuiPrompterControls } from '../../../src/cli/tui-prompter.js';
+import { createTuiPrompter, hasSecretGate, patchFromWizard, undoKeyOf, type SecretGateRenderer, type TuiPrompterControls } from '../../../src/cli/tui-prompter.js';
 import { detectSecrets } from '../../../src/core/redact.js';
 import { mkConfirmRequest } from '../../fixtures/tui/fixtures.js';
 
@@ -25,6 +25,7 @@ interface Fake {
   overlay: OverlayKind | null;
   /** renderer promises that never settle (the App unmounted) */
   hang: boolean;
+  gateAnswer: boolean;
 }
 
 const controls = (o: Partial<TuiPrompterControls> = {}): TuiPrompterControls => ({ persistCredentials: async () => ({ ok: true, items: [] }), mode: () => 'jev-on', trustInputs: () => null, sandboxLine: () => null, runsDir: () => null, trashDir: () => null, runLive: () => false, ...o });
@@ -39,6 +40,7 @@ function fakeTui(): Fake {
     undoAnswer: 'yes',
     overlay: null,
     hang: false,
+    gateAnswer: true,
     renderer: {
       confirmer: { identity: 'x', confirm: () => Promise.resolve(false) },
       attach: () => undefined,
@@ -73,6 +75,10 @@ function fakeTui(): Fake {
       setSessionSpend: () => undefined,
       setGitDirs: () => undefined,
       setTitle: () => undefined,
+      promptSecretGate: () => {
+        f.calls.push('promptSecretGate');
+        return f.hang ? never() : Promise.resolve(f.gateAnswer);
+      },
     },
   };
   return f;
@@ -194,7 +200,7 @@ describe('createTuiPrompter', () => {
     b.wizardHost.cancel();
   });
 
-  it('the overlay watch resolves the wizard cancelled once the wizard overlay was seen and then stayed closed for two polls; a save in between wins', async () => {
+  it('the wizard host\'s cancel() is the close channel (no overlay polling): a cancel settles the pending wizard and trust prompts at once; a save first wins and a later cancel changes nothing', async () => {
     vi.useFakeTimers();
     const f = fakeTui();
     const b = createTuiPrompter();
@@ -204,45 +210,39 @@ describe('createTuiPrompter', () => {
     void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'login' }).then((o) => {
       settled = o;
     });
-    // not open yet: nothing happens however long it takes
-    f.overlay = 'none';
-    await vi.advanceTimersByTimeAsync(WIZARD_WATCH_MS * 5);
-    expect(settled).toBeNull();
+    // however long the overlay stays open or closed, nothing polls it
     f.overlay = 'wizard';
-    await vi.advanceTimersByTimeAsync(WIZARD_WATCH_MS * 2);
-    expect(settled).toBeNull();
-    // one miss is a frame in flight, not a close
+    await vi.advanceTimersByTimeAsync(5000);
     f.overlay = 'none';
-    await vi.advanceTimersByTimeAsync(WIZARD_WATCH_MS);
+    await vi.advanceTimersByTimeAsync(5000);
     expect(settled).toBeNull();
-    f.overlay = 'wizard';
-    await vi.advanceTimersByTimeAsync(WIZARD_WATCH_MS);
-    f.overlay = 'none';
-    await vi.advanceTimersByTimeAsync(WIZARD_WATCH_MS * WIZARD_WATCH_MISSES);
+    b.wizardHost.cancel();
+    await vi.advanceTimersByTimeAsync(0);
     expect(settled).toEqual({ kind: 'cancelled' });
 
-    // a save while the overlay is open resolves persisted; the watch stops
     let saved: unknown = null;
     void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'login' }).then((o) => {
       saved = o;
     });
-    f.overlay = 'wizard';
-    await vi.advanceTimersByTimeAsync(WIZARD_WATCH_MS);
     await b.wizardHost.save({ provider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } });
     expect(saved).toEqual({ kind: 'persisted' });
-    f.overlay = 'none';
-    await vi.advanceTimersByTimeAsync(WIZARD_WATCH_MS * 4);
+    b.wizardHost.cancel(); // the App's `done` without a further answer, or a later Ctrl-C: nothing pending
+    await vi.advanceTimersByTimeAsync(0);
     expect(saved).toEqual({ kind: 'persisted' });
   });
 
-  it('secretGate: refuses without a renderer row (the controller falls back to the pipe rule) and forwards the App\'s answer once the renderer offers promptSecretGate (§10.2)', async () => {
+  it('secretGate: refuses without a renderer (the controller falls back to the pipe rule) and forwards the App\'s promptSecretGate answer (§10.2, §4.10)', async () => {
     const hits = detectSecrets('use sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234 now');
     expect(hits.length).toBeGreaterThan(0);
+    const b0 = createTuiPrompter();
+    expect(await b0.prompter.secretGate!(hits)).toBe(false); // no renderer attached
     const f = fakeTui();
+    expect(hasSecretGate(f.renderer)).toBe(true);
+    f.gateAnswer = false;
     const b = createTuiPrompter();
     b.attach(f.renderer);
-    expect(hasSecretGate(f.renderer)).toBe(false);
     expect(await b.prompter.secretGate!(hits)).toBe(false);
+    expect(f.calls).toEqual(['promptSecretGate']);
     let asked: readonly unknown[] | null = null;
     const gated: TuiRenderer & SecretGateRenderer = {
       ...f.renderer,
@@ -253,7 +253,6 @@ describe('createTuiPrompter', () => {
     };
     const b2 = createTuiPrompter();
     b2.attach(gated);
-    expect(hasSecretGate(gated)).toBe(true);
     expect(await b2.prompter.secretGate!(hits)).toBe(true);
     expect(asked).toEqual(hits);
     // the unmount settles a pending gate as a refusal

@@ -103,6 +103,7 @@ import { createSandbox as realCreateSandbox } from '../sandbox/run.js';
 import { keybindingsPath, loadKeybindings as realLoadKeybindings, type KeybindingsLoad } from '../tui/keys/keybindings-file.js';
 import { KEY_ACTIONS, KEY_CONTEXTS, displayKey } from '../tui/keys/bindings.js';
 import type { KeyRunPhase } from '../tui/keys/resolve.js';
+import type { UiAction } from '../tui/useEngine.js';
 import { createHistoryStore as realCreateHistoryStore, type FileHistoryStore } from '../tui/composer/history.js';
 import { COMMANDS } from '../tui/commands/registry.js';
 import { dispatchCommand, type CommandAction, type DispatchContext } from '../tui/commands/dispatch.js';
@@ -851,6 +852,33 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let themeOverride: UiConfig['theme'] | null = null;
   /** §13.6: the per-run log while a run is live, and the session log it replaced */
   let runLog: Log | null = null;
+  /**
+   * §13.6 `EngineOptions.log`: the engine is created before its run dir exists, so it gets a handle that follows the
+   * controller's current log — the session log until `retargetLogToRun` swaps in `<runDir>/jevcode.log`, that file for the
+   * run, the session log again after `run:end`. Every method reads `log` at call time.
+   */
+  const engineLog: Log = {
+    get level() {
+      return log.level;
+    },
+    get file() {
+      return log.file;
+    },
+    get fellBack() {
+      return log.fellBack;
+    },
+    error: (m) => log.error(m),
+    warn: (m) => log.warn(m),
+    info: (m) => log.info(m),
+    debug: (m) => log.debug(m),
+    trace: (m) => log.trace(m),
+    enabled: (l) => log.enabled(l),
+    key: (kind, len, masked) => log.key(kind, len, masked),
+    paste: (len) => log.paste(len),
+    flush: () => log.flush(),
+    // the engine never owns the file: close is the controller's (`restoreSessionLog`)
+    close: () => log.flush(),
+  };
   let sessionLog: Log | null = null;
   /** §13.6: lines for the process streams that wait for the unmount (never stdout/stderr while Ink is mounted) */
   const deferredOutput: { stream: 'stdout' | 'stderr'; text: string }[] = [];
@@ -894,12 +922,23 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     setSessionSpend?(session: { totalUsd: number; capUsd: number } | null): void;
     setGitDirs?(dirs: { gitDir: string | null; commonDir: string | null }): void;
     setTitle?(title: string | null): void;
+    /** O9's reducer channel (`UiAction`): the controller uses it for the `thresholds` row only */
+    dispatch?(action: UiAction): void;
   };
   const extras = renderer as RendererExtras;
+  /** §9.6 / §7.4: the live root meter — `setCap` mutates it, so the cap read here is always the current one (`/budget session-spend-cap`) */
   function pushSessionSpend(): void {
     try {
       const snap = sessionMeter.snapshot();
       extras.setSessionSpend?.({ totalUsd: snap.totalUsd, capUsd: snap.capUsd });
+    } catch {
+      /* the renderer is gone */
+    }
+  }
+  /** §7.1 / §15 item 20 `thresholds`: the decision rows' `!` near-threshold marker and `consumedBy` follow the resolved `--complete-threshold` / `--impossible-threshold` (after resolveConfig, and per run from the limits it starts with) */
+  function pushThresholds(limits: Pick<RunLimits, 'completeThreshold' | 'impossibleThreshold'>): void {
+    try {
+      extras.dispatch?.({ type: 'thresholds', complete: limits.completeThreshold, impossible: limits.impossibleThreshold });
     } catch {
       /* the renderer is gone */
     }
@@ -914,17 +953,22 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     } else log.info(`[idle item] ${opts.label ?? '[ui]'} ${text}`);
   }
 
-  /** §15.1: `engine.annotate()` while a run is live, else a local item (+ the `--json` `ui` line, written by the json renderer's notify) */
-  function note(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): void {
+  /**
+   * §15.1: `engine.annotate()` while a run is live, else a local item (+ the `--json` `ui` line, written by the json
+   * renderer's notify). Returns true when the engine took the line: it then rides the engine's transcript **and** its
+   * `EngineOptions.log` (§13.6, `notice ui`), so a caller that also logs must not write the line a second time.
+   */
+  function note(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): boolean {
     const e = engine;
     if (e !== null && live()) {
       try {
-        if (e.annotate(text, opts)) return;
+        if (e.annotate(text, opts)) return true;
       } catch (err) {
         log.warn(`annotate failed: ${describe(err)}`);
       }
     }
     notifyLocal(text, opts);
+    return false;
   }
 
   /** a multi-line block: one labelled item with the body as its TUI detail; the line renderers print the body as lines (their items carry no body) */
@@ -944,7 +988,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function warnLine(text: string): void {
     // §9.5 (A136): `jevcode: <warning>` on stderr for the line renderers (a --plain TTY, a pipe, --json), one `warning: …` item in the TUI
     if (o.rendererKind !== 'tui') stderr.write(`jevcode: ${text}\n`);
-    else note(`warning: ${text}`, { level: 'warn' });
+    // §13.6: while a run is live the engine's annotate() already writes the line to the run log (`notice ui`) — one line, not two
+    else if (note(`warning: ${text}`, { level: 'warn' })) return;
     log.warn(text);
   }
 
@@ -1209,6 +1254,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     uiConfig = { ...config.ui(o.launch), ...(themeOverride !== null ? { theme: themeOverride } : {}) };
     renderer.setUi?.(uiConfig);
     runCapUsd = config.limits().spendCapUsd;
+    pushThresholds(config.limits());
   }
 
   /** the wizard (start or `/login`); true when a key was saved */
@@ -1401,6 +1447,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     const limits = limitsWithPending(cfg.limits());
     runCapUsd = limits.spendCapUsd;
+    pushThresholds(limits);
     // §9.4: the first run rebuilds the root meter from the config (the mode may have changed) unless `/budget session-spend-cap` set it
     if (runs.length === 0 && sessionId === null && !sessionCapExplicit) newSessionMeter();
     const gate = await followUpGate(limits.spendCapUsd);
@@ -1442,6 +1489,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         deciderModel: { configured: dec.model, pinned: dec.pinned },
         ...(synthesizer ? { synthesizer } : {}),
         exit: engineExit,
+        log: engineLog,
         configDirs: cfg.configDirs,
         session: {
           sessionId,
@@ -1734,6 +1782,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const resumedSpend = loaded.state.spend.totalUsd;
       const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal() - (known ? resumedSpend : 0));
       const childCap = Math.max(0, Math.min(rec.limits.spendCapUsd, remaining));
+      pushThresholds(rec.limits);
       const meter = sessionMeter.child(childCap);
       if (!known) sessionMeter.add('generator', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.generator.costUsd, calls: 0 });
       if (!known) sessionMeter.add('jev', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.jev.costUsd, calls: 0 });
@@ -1765,6 +1814,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         deciderModel: { configured: dec.model, pinned: dec.pinned },
         ...(synthesizer ? { synthesizer } : {}),
         exit: engineExit,
+        log: engineLog,
         configDirs: rcfg.configDirs,
         session: { sessionId: fields.sessionId, parentRunId: fields.parentRunId, source, ...(title !== null ? { title } : {}), ...(childCap < rec.limits.spendCapUsd ? { clamp: { runCapUsd: rec.limits.spendCapUsd, clampedToUsd: childCap, sessionSpentUsd: sessionTotal(), sessionCapUsd: sessionCapOf() } } : {}) },
         ...(instructions ? { instructions } : {}),

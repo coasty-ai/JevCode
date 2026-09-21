@@ -33,6 +33,7 @@ import { notRepoState } from '../../../src/workspace/gitstate.js';
 import { appendIndexLine, type IndexLine } from '../../../src/session/index.js';
 import { createSessionController, sessionsIndexPath, type ControllerHost, type LoadedRun, type Prompter, type SessionController, type SessionControllerOptions, type SessionDeps } from '../../../src/cli/session.js';
 import { mkRunResult } from '../../fixtures/tui/fixtures.js';
+import type { UiAction } from '../../../src/tui/useEngine.js';
 import { makeMeta, makeState, spend } from '../session/helpers.js';
 
 export const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
@@ -64,10 +65,13 @@ export interface FakeRenderer extends Renderer {
   calls: string[];
   /** every engine event forwarded through attach() */
   events: EngineEvent[];
+  /** every reducer action the controller dispatched (`thresholds`, §15 item 20) */
+  dispatched: UiAction[];
   prompts?: Prompter;
   setHost(host: SessionHost): void;
   setUi(ui: UiConfig): void;
   notify(text: string, opts?: { level?: 'info' | 'warn' | 'error'; detail?: string; label?: UiLabel }): void;
+  dispatch(action: UiAction): void;
 }
 
 const decline: Confirmer = { identity: 'test decliner', confirm: () => Promise.resolve(false) };
@@ -81,6 +85,7 @@ export function fakeRenderer(o: { prompts?: Prompter; firstFrameDelayMs?: number
     uis: [],
     attached: [],
     events: [],
+    dispatched: [],
     unmounted: 0,
     firstFrameResolved: false,
     calls: [],
@@ -110,6 +115,9 @@ export function fakeRenderer(o: { prompts?: Prompter; firstFrameDelayMs?: number
     },
     notify(text, opts = {}) {
       r.notes.push({ text, label: opts.label, level: opts.level, detail: opts.detail });
+    },
+    dispatch(action) {
+      r.dispatched.push(action);
     },
   };
   return r;
