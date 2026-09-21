@@ -104,7 +104,7 @@ describe('createMockProvider', () => {
     expect((await p.generate(request(), genOpts())).text).toBe('s-1');
   });
 
-  it('a signal that fires mid-stream hands the chars/4 estimate to onCancelled and rethrows its reason', async () => {
+  it('a signal that fires mid-text hands the streamed facts (no estimate) to onCancelled once and rethrows its reason', async () => {
     const ac = new AbortController();
     const reason = new AbortError('signal');
     const cancelled: CancelledGeneration[] = [];
@@ -112,6 +112,35 @@ describe('createMockProvider', () => {
     await expect(
       p.generate(request(), genOpts({ signal: ac.signal, onDelta: () => ac.abort(reason), onCancelled: (c) => cancelled.push(c) })),
     ).rejects.toBe(reason);
-    expect(cancelled).toEqual([{ usage: { inputTokens: 1000, outputTokens: 1, costUsd: 0, calls: 1, estimated: true }, text: 'ab', toolChars: 0, model: 'mock', generationId: 'gen-x' }]);
+    expect(cancelled).toEqual([{ text: 'ab', toolChars: 0, reasoningChars: 0, model: 'mock', generationId: 'gen-x' }]);
+  });
+
+  it('streams tool-argument JSON in deltaChunkSize pieces after the text; a signal landing mid-arguments reports the streamed toolChars (the forced propose_fix sample of §4.8)', async () => {
+    const input = { rationale: 'off by one in the range bound', edits: [{ path: 'quicksort.py', line: 12, new: '    for i in range(lo, hi + 1):' }] };
+    const rawJson = JSON.stringify(input);
+    const turn: MockTurnExt = { text: 'ok', toolCall: { name: 'propose_fix', input, rawJson: '' }, generationId: 'gen-s2' };
+    const frags: string[] = [];
+    const res = await createMockProvider({ turns: [turn], deltaChunkSize: 10 }).generate(request(), genOpts({ onToolDelta: (f) => frags.push(f) }));
+    expect(frags.length).toBe(Math.ceil(rawJson.length / 10));
+    expect(frags.join('')).toBe(rawJson);
+    expect(res.toolCalls).toEqual([{ name: 'propose_fix', input, rawJson }]);
+
+    const ac = new AbortController();
+    const reason = new AbortError('signal');
+    const cancelled: CancelledGeneration[] = [];
+    let seen = 0;
+    const p = createMockProvider({ turns: [turn], deltaChunkSize: 10 }).generate(
+      request(),
+      genOpts({
+        signal: ac.signal,
+        onToolDelta: (f) => {
+          seen += f.length;
+          if (seen >= 30) ac.abort(reason);
+        },
+        onCancelled: (c) => cancelled.push(c),
+      }),
+    );
+    await expect(p).rejects.toBe(reason);
+    expect(cancelled).toEqual([{ text: 'ok', toolChars: 30, reasoningChars: 0, model: 'mock', generationId: 'gen-s2' }]);
   });
 });

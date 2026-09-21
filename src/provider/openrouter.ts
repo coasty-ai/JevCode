@@ -3,7 +3,7 @@
  * Streams `choices[0].delta.content` to `onDelta`, accumulates `delta.tool_calls[i].function.arguments`
  * by index for `onToolDelta`, and takes `usage.cost` from the accounting frame that precedes `[DONE]`.
  * LLM-JEV-DESIGN §4.12: maps `seed` / `reasoning` / `providerPrefs`, records `reasoning_tokens`, the served
- * `provider` and the generation `id`, and hands a cancelled stream's partial accounting to `onCancelled` (§4.8).
+ * `provider` and the generation `id`; §4.8: a cancelled stream's facts (ids, streamed sizes) go to `onCancelled`.
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { GeneratorConfig, JsonObject, ToolCall } from '../core/types.js';
@@ -29,11 +29,11 @@ import {
   requestIdOf,
   resolveDeps,
   sanitiseRequestId,
-  toTokenUsage,
+  toCancelledGeneration,
+  toTokenUsageExt,
   withRetry,
 } from './sse.js';
 import type {
-  CancelledGeneration,
   GenerateOptionsExt,
   GenerateRequestExt,
   GenerateResultExt,
@@ -43,8 +43,8 @@ import type {
   OpenRouterToolChoice,
   ProviderDeps,
   ProviderExt,
+  StreamPartial,
   TokenBreakdown,
-  TokenUsageExt,
 } from './types.js';
 
 export const OPENROUTER_REFERER = 'https://github.com/prateekjannu/jevcode';
@@ -77,16 +77,16 @@ function validateRequest(req: GenerateRequestExt): void {
  * `parallel_tool_calls: false` is sent whenever tools are present: the loop consumes exactly one action per step.
  *
  * LLM-JEV-DESIGN §4.12 (all optional, absent from the wire when the request omits them): `seed` (GLM lists it; the N
- * samples of a round differ by seed, §4.6); `reasoning` → OpenRouter's `reasoning` object; `providerPrefs` →
- * `provider: {require_parameters, order}` (routes only to endpoints that support every parameter sent, e.g. tools + seed;
- * `order` pins the upstream so the served rate is the priced one).
+ * samples of a round differ by seed, §4.6); `reasoning` → OpenRouter's `reasoning` object, verbatim (`{enabled: false}` or
+ * `{effort}` — effort alone implies enabled on OpenRouter); `providerPrefs` → `provider: {require_parameters}` (routes only
+ * to endpoints that support every parameter sent, e.g. tools + seed).
  *
  * Live 2026-09-21 (stage-2 probe, `seed: 7`, forced tool, GLM 5.3 flash): `reasoning: {enabled: false}` is HTTP 400
  * "Reasoning is mandatory for this endpoint and cannot be disabled" — the models API lists `reasoning.mandatory: true`,
- * efforts `max | high | low`, default `max`, for every `z-ai/glm-5.3*`. `{enabled: true, effort: 'low'}` was accepted:
- * 486 ms, served by CoreWeave (32 endpoints; 3 at $0.075/$0.25, most at $0.15/$0.50), `id` and `provider` returned,
- * `reasoning_tokens: 0`, valid arguments, `usage.cost` = CoreWeave's rate exactly. This client sends what it is asked
- * and never rewrites the field: the caller picks `effort: 'low'` for GLM (`GenerateReasoning` in types.ts).
+ * efforts `max | high | low`, default `max`, for every `z-ai/glm-5.3*`. `effort: 'low'` was accepted: 486 ms, served by
+ * CoreWeave (32 endpoints; 3 at $0.075/$0.25, most at $0.15/$0.50), `id` and `provider` returned, `reasoning_tokens: 0`,
+ * valid arguments, `usage.cost` = CoreWeave's rate exactly. This client sends what it is asked and never rewrites the
+ * field: the caller picks `{effort: 'low'}` for GLM (`GenerateReasoning` in types.ts).
  */
 export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequestExt): OpenRouterRequestBody {
   const messages: OpenRouterRequestBody['messages'] = [];
@@ -113,17 +113,13 @@ export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequestEx
   return body;
 }
 
+/** Discriminates on the member present (§4.12's union), never on a truthy read: `{effort}` must not degrade to `reasoning: {}` (= the model's default effort, `max` on GLM). */
 function reasoningOf(r: NonNullable<GenerateRequestExt['reasoning']>): OpenRouterReasoning {
-  // `effort` alone implies enabled on OpenRouter; `enabled` is sent explicitly so the intent survives a model whose default differs.
-  return r.enabled && r.effort !== undefined ? { enabled: true, effort: r.effort } : { enabled: r.enabled };
+  return 'effort' in r ? { effort: r.effort } : { enabled: false };
 }
 
 function providerPrefsOf(p: GenerateRequestExt['providerPrefs']): OpenRouterProviderPrefs | null {
-  if (p === undefined) return null;
-  const out: OpenRouterProviderPrefs = {};
-  if (p.requireParameters !== undefined) out.require_parameters = p.requireParameters;
-  if (p.order !== undefined && p.order.length > 0) out.order = [...p.order];
-  return Object.keys(out).length > 0 ? out : null;
+  return p === undefined ? null : { require_parameters: p.requireParameters };
 }
 
 function toolChoice(tc: NonNullable<GenerateRequestExt['toolChoice']>): OpenRouterToolChoice {
@@ -154,22 +150,14 @@ interface StreamOutcome {
   finishReason: string;
 }
 
-/** What `consumeStream` needs besides the body: the caller's options plus what a cancelled stream's estimate is priced from. */
+/** What `consumeStream` needs besides the body. */
 interface StreamContext {
   opts: GenerateOptionsExt;
   redact: (s: string) => string;
   firstByteTimeoutMs: number;
   requestId: string | null;
-  /** characters of the request body sent — the prompt side of a cancelled stream's estimate (chars / 4) */
-  promptChars: number;
-  /** the table price for a breakdown, or NaN for an unpriced model (the engine emits budget:unpriced) */
-  tablePrice: (t: TokenBreakdown) => number;
-}
-
-/** chars / 4: the estimate used for a stream that ended before its accounting frame (§4.8; the id can replace it post hoc) */
-const CHARS_PER_TOKEN = 4;
-function tokensFromChars(chars: number): number {
-  return Math.ceil(chars / CHARS_PER_TOKEN);
+  /** §4.8: filled in the abort branch with what the stream had produced; `generate` reads it after the retry loop rethrows the abort reason */
+  held: { partial: StreamPartial | null };
 }
 
 /** A `data:` chunk with a top-level `error` after HTTP 200 (research 07 §2.3): map to its status. */
@@ -202,29 +190,6 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
   const tokens: TokenBreakdown = { input: 0, cacheRead: 0, cacheWrite: 0, output: 0 };
   const tools = new Map<number, ToolAcc>();
   const order: number[] = [];
-
-  /**
-   * §4.8: the signal fired while the stream was open. The accounting frame will never arrive, so the caller gets a
-   * chars / 4 estimate (marked) plus the ids that let it be replaced post hoc; the abort reason is then rethrown,
-   * so the sample still yields no GenerateResult.
-   */
-  const cancelled = (): CancelledGeneration => {
-    const estimated = !sawUsage;
-    const t: TokenBreakdown = estimated
-      ? { input: tokensFromChars(ctx.promptChars), cacheRead: 0, cacheWrite: 0, output: tokensFromChars(text.length + toolChars + reasoningChars) }
-      : tokens;
-    const usage: TokenUsageExt = { ...toTokenUsage(t, estimated || cost === null ? ctx.tablePrice(t) : cost), estimated };
-    const rt = estimated ? (reasoningChars > 0 ? tokensFromChars(reasoningChars) : null) : reasoningTokens;
-    if (rt !== null) usage.reasoningTokens = rt;
-    return {
-      usage,
-      text,
-      toolChars,
-      ...(generationId !== null ? { generationId } : {}),
-      ...(servedProvider !== null ? { servedProvider } : {}),
-      ...(model !== null ? { model } : {}),
-    };
-  };
 
   try {
     for await (const rec of parseSse(body, { signal: opts.signal, firstByteTimeoutMs: ctx.firstByteTimeoutMs })) {
@@ -259,7 +224,7 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
           text += content;
           notify(opts.onDelta, content);
         }
-        // `delta.reasoning` (thinking text, present unless `reasoning.exclude`) is not shown; its length only feeds a cancelled stream's estimate
+        // `delta.reasoning` (thinking text, present unless `reasoning.exclude`) is not shown; its length is reported for a cancelled stream (§4.8)
         reasoningChars += getStr(delta, 'reasoning')?.length ?? 0;
         const calls = getArr(delta, 'tool_calls');
         if (calls) {
@@ -312,7 +277,10 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
     }
   } catch (e) {
     if (opts.signal.aborted) {
-      notify(opts.onCancelled, cancelled());
+      // §4.8: the signal fired while the stream was open. Record what it had produced — the ids that let the bill be looked up
+      // post hoc, the streamed sizes, and the accounting frame's reading when it had arrived — then rethrow the reason, so the
+      // sample still yields no GenerateResult. `generate` hands the record to onCancelled once the retry loop has let the abort through.
+      ctx.held.partial = { text, toolChars, reasoningChars, model, generationId, servedProvider, tokens: sawUsage ? tokens : null, cost, reasoningTokens };
       throw opts.signal.reason;
     }
     throw e;
@@ -345,7 +313,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
   // NaN for an unpriced model: the engine emits budget:unpriced instead of billing $0 (TUI-DESIGN §9.5)
   const tablePrice = (t: TokenBreakdown): number => (cfg.priced === true ? costFromPricing(cfg.pricing, t) : Number.NaN);
 
-  async function attempt(body: string, opts: GenerateOptionsExt): Promise<StreamOutcome> {
+  async function attempt(body: string, opts: GenerateOptionsExt, held: StreamContext['held']): Promise<StreamOutcome> {
     const { controller, unlink } = linkedAbort(opts.signal);
     const t0 = d.now();
     let headersTimer: ReturnType<typeof setTimeout> | undefined;
@@ -405,7 +373,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       if (!res.body) throw new TransportError('stream', 'openrouter: 200 without a body');
       const remaining = Math.max(1, FIRST_BYTE_TIMEOUT_MS - (d.now() - t0));
       try {
-        return await consumeStream(res.body, { opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, promptChars: body.length, tablePrice });
+        return await consumeStream(res.body, { opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, held });
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         // Typed errors (HTTP/stream errors, renderer-callback bugs via notify) keep their class; anything
@@ -427,19 +395,26 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       validateRequest(req);
       const body = JSON.stringify(buildOpenRouterBody(cfg, req));
       const t0 = d.now();
-      // TUI-DESIGN §15.2 `provider/openrouter.ts`: GenerateOptions.onRetry / wake thread into withRetry (§13.2)
-      const out = await withRetry(d, opts.signal, () => attempt(body, opts), opts);
+      const held: StreamContext['held'] = { partial: null };
+      let out: StreamOutcome;
+      try {
+        // TUI-DESIGN §15.2 `provider/openrouter.ts`: GenerateOptions.onRetry / wake thread into withRetry (§13.2)
+        out = await withRetry(d, opts.signal, () => attempt(body, opts, held), opts);
+      } catch (e) {
+        // §4.8: `held.partial` is set only by an abort that landed on an open stream (never before the headers), and only the
+        // abort reason reaches here then. onCancelled runs outside withRetry and attempt, whose catches rethrow signal.reason
+        // whenever the signal is aborted: a throwing callback is a harness bug and must surface (as 'internal', like onDelta), not vanish.
+        if (held.partial !== null) notify(opts.onCancelled, toCancelledGeneration(held.partial, tablePrice));
+        throw e;
+      }
       // usage.cost is what OpenRouter bills. Without it (BYOK, a missing frame field) a table-priced model
       // (cfg.priced, set by validateGenerator; absent = false) falls back to the table; an unpriced one
       // surfaces NaN so the engine can emit budget:unpriced (TUI-DESIGN §9.5 — the meter clamps NaN to 0
       // and figures render `$?`) instead of silently billing $0.
-      const costUsd = out.cost ?? tablePrice(out.tokens);
-      const usage: TokenUsageExt = toTokenUsage(out.tokens, costUsd);
-      if (out.reasoningTokens !== null) usage.reasoningTokens = out.reasoningTokens;
       return {
         text: out.text,
         toolCalls: out.toolCalls,
-        usage,
+        usage: toTokenUsageExt(out.tokens, out.cost ?? tablePrice(out.tokens), out.reasoningTokens),
         model: out.model ?? cfg.model,
         stopReason: out.finishReason,
         latencyMs: Math.round(d.now() - t0),

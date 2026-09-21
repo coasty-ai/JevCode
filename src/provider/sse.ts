@@ -12,7 +12,7 @@ import { clip } from '../core/text.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
 import type { SleepFn } from '../core/time.js';
 import type { Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
-import type { Pricing, ProviderDeps, SseOptions, SseRecord, TokenBreakdown } from './types.js';
+import type { CancelledGeneration, Pricing, ProviderDeps, SseOptions, SseRecord, StreamPartial, TokenBreakdown, TokenUsageExt } from './types.js';
 
 export const FIRST_BYTE_TIMEOUT_MS = 30_000;
 export const IDLE_TIMEOUT_MS = 60_000;
@@ -431,6 +431,27 @@ export function toTokenUsage(t: TokenBreakdown, costUsd: number): TokenUsage {
     costUsd,
     calls: 1,
   };
+}
+
+/** `toTokenUsage` plus LLM-JEV-DESIGN §4.12's `reasoningTokens` when the frame carried it (a read 0 is kept; null = absent). */
+export function toTokenUsageExt(t: TokenBreakdown, costUsd: number, reasoningTokens: number | null): TokenUsageExt {
+  const usage: TokenUsageExt = toTokenUsage(t, costUsd);
+  if (reasoningTokens !== null) usage.reasoningTokens = reasoningTokens;
+  return usage;
+}
+
+/**
+ * LLM-JEV-DESIGN §4.8: the facts a provider hands to `onCancelled` (types.ts `CancelledGeneration`). `usage` is present only
+ * when the accounting frame had already arrived, priced exactly as a completed call would be (`cost` from the frame, else
+ * `price`); every other cancelled stream is estimated by the engine, never here.
+ */
+export function toCancelledGeneration(p: StreamPartial, price: (t: TokenBreakdown) => number): CancelledGeneration {
+  const out: CancelledGeneration = { text: p.text, toolChars: p.toolChars, reasoningChars: p.reasoningChars };
+  if (p.generationId !== null) out.generationId = p.generationId;
+  if (p.servedProvider !== null) out.servedProvider = p.servedProvider;
+  if (p.model !== null) out.model = p.model;
+  if (p.tokens !== null) out.usage = toTokenUsageExt(p.tokens, p.cost ?? price(p.tokens), p.reasoningTokens);
+  return out;
 }
 
 /** Non-negative finite integer from an untrusted field; anything else counts as 0. */

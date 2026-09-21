@@ -3,7 +3,9 @@
  * Deterministic: no network, no retry, no randomness; latency only when a turn asks for it.
  * LLM-JEV-DESIGN stage 3 tests script N samples of one round: a function-form `turns` receives the
  * per-call options as a third argument and keys on `opts.sample`; a turn may set the stop reason
- * (`length`), reasoning tokens and a generation id.
+ * (`length`), reasoning tokens and a generation id. Text and then the tool-argument JSON stream in
+ * `deltaChunkSize` pieces, so a signal can land mid-arguments and `onCancelled` reports the streamed
+ * facts exactly as the HTTP providers do (§4.8; the estimate itself is the engine's).
  */
 import { ProviderHttpError } from '../errors.js';
 import type { GenerateRequest, MockProviderOptions, MockTurn, TokenUsage } from '../core/types.js';
@@ -69,38 +71,39 @@ export function createMockProvider(opts: MockProviderOptionsExt, deps: MockProvi
         throw new ProviderHttpError(`mock provider: scripted HTTP ${turn.error.status}`, { status: turn.error.status, retryable: turn.error.retryable });
       }
       const text = turn.text ?? '';
-      const pieces = chunks(text, opts.deltaChunkSize);
+      const rawJson = turn.toolCall ? turn.toolCall.rawJson || JSON.stringify(turn.toolCall.input) : '';
+      const textPieces = chunks(text, opts.deltaChunkSize);
       const latency = turn.latencyMs ?? 0;
-      // Spread the scripted latency evenly so the TUI sees a stream, not a burst after a pause.
-      const perPiece = pieces.length > 0 ? latency / pieces.length : latency;
-      let streamed = '';
-      // §4.8 like openrouter.ts: a signal that fires mid-stream hands the chars / 4 estimate to onCancelled, then rethrows its reason.
-      const cancel = (): never => {
-        const partial: CancelledGeneration = {
-          usage: { inputTokens: MOCK_DEFAULT_USAGE.inputTokens, outputTokens: Math.ceil(streamed.length / 4), costUsd: 0, calls: 1, estimated: true },
-          text: streamed,
-          toolChars: 0,
-          model,
-          ...(turn.generationId !== undefined ? { generationId: turn.generationId } : {}),
-        };
-        genOpts.onCancelled?.(partial);
-        throw genOpts.signal.reason;
-      };
+      // Spread the scripted latency evenly over the text deltas so the TUI sees a stream, not a burst after a pause; the
+      // tool-argument pieces follow the text without delay (the wire order), chunked so a signal can land inside them.
+      const perPiece = textPieces.length > 0 ? latency / textPieces.length : latency;
+      let streamedText = '';
+      let toolChars = 0;
       try {
-        if (pieces.length === 0 && latency > 0) await sleep(latency, genOpts.signal);
-        for (const piece of pieces) {
+        if (textPieces.length === 0 && latency > 0) await sleep(latency, genOpts.signal);
+        for (const piece of textPieces) {
           if (perPiece > 0) await sleep(perPiece, genOpts.signal);
           if (genOpts.signal.aborted) throw genOpts.signal.reason;
-          streamed += piece;
+          streamedText += piece;
           genOpts.onDelta?.(piece);
         }
+        for (const piece of chunks(rawJson, opts.deltaChunkSize)) {
+          if (genOpts.signal.aborted) throw genOpts.signal.reason;
+          toolChars += piece.length;
+          genOpts.onToolDelta?.(piece);
+        }
       } catch (e) {
-        // one exit for every abort path (the check above, a rejected sleep): onCancelled fires exactly once
-        if (genOpts.signal.aborted) cancel();
+        if (genOpts.signal.aborted) {
+          // §4.8 like the HTTP providers: the facts streamed so far (no estimate — that is the engine's), then the reason. One
+          // exit for every abort path (the check above, a rejected sleep), so onCancelled fires exactly once; a throwing
+          // callback propagates in place of the reason.
+          const partial: CancelledGeneration = { text: streamedText, toolChars, reasoningChars: 0, model, ...(turn.generationId !== undefined ? { generationId: turn.generationId } : {}) };
+          genOpts.onCancelled?.(partial);
+          throw genOpts.signal.reason;
+        }
         throw e;
       }
-      const toolCalls = turn.toolCall ? [{ name: turn.toolCall.name, input: turn.toolCall.input, rawJson: turn.toolCall.rawJson || JSON.stringify(turn.toolCall.input) }] : [];
-      if (turn.toolCall) genOpts.onToolDelta?.(toolCalls[0]!.rawJson);
+      const toolCalls = turn.toolCall ? [{ name: turn.toolCall.name, input: turn.toolCall.input, rawJson }] : [];
       const usage: TokenUsageExt = { ...MOCK_DEFAULT_USAGE, ...turn.usage };
       return {
         text,

@@ -53,32 +53,30 @@ export interface TokenBreakdown {
 // ---------------------------------------------------------------------------------------
 // LLM-JEV-DESIGN §4.12 / §9.3 contract, stage-2 local declarations
 //
-// Structurally identical to the optional members stage 1 adds to core/types.ts (`GenerateRequest.seed /
-// reasoning / providerPrefs`, `GenerateResult.generationId`, `TokenUsage.reasoningTokens / estimated`,
-// `GenerateOptions.sample`). Every member is optional, so a plain `GenerateRequest` is assignable to
-// `GenerateRequestExt` and a `GenerateResultExt` to `GenerateResult`: the providers implement the core
-// `Provider` interface unchanged. TODO(llm-jev merge): once core/types.ts carries the fields, alias these
-// to the core names and delete the duplicates.
+// The exact shapes §4.12 / §9.2 stage 1 add to core/types.ts (`GenerateRequest.seed / reasoning / providerPrefs`,
+// `GenerateResult.generationId`, `TokenUsage.reasoningTokens / estimated`, `GenerateOptions.sample`), declared here
+// until src/core/types.ts carries them. Every member is optional, so a plain `GenerateRequest` is assignable to
+// `GenerateRequestExt` and a `GenerateResultExt` to `GenerateResult`: the providers implement the core `Provider`
+// interface unchanged. TODO(llm-jev merge, src/core/types.ts): once stage 1 lands the fields, alias these to the core
+// names (`export type GenerateRequestExt = GenerateRequest` etc.) and delete the duplicates — the shapes are identical.
 // ---------------------------------------------------------------------------------------
 
-export type ReasoningEffort = 'low' | 'medium' | 'high';
+/** §4.12 verbatim. */
+export type ReasoningEffort = 'low' | 'medium';
 /**
- * `{enabled: false}` turns thinking off where the model allows it; `{enabled: true, effort}` asks for it at a level.
+ * §4.12 verbatim: `{enabled: false}` turns thinking off where the model allows it; `{effort}` asks for it at a level
+ * (on OpenRouter `effort` alone implies enabled). Sent as given, never rewritten.
  *
- * Live 2026-09-21 (stage-2 probe + `GET /api/v1/models`): every `z-ai/glm-5.3*` variant carries `reasoning:
- * {mandatory: true, default_enabled: true, supported_efforts: [max, high, low], default_effort: max}`, and
- * `{enabled: false}` came back HTTP 400 "Reasoning is mandatory for this endpoint and cannot be disabled" (unbilled).
- * For GLM send `{enabled: true, effort: 'low'}` — a forced tool call at `low` streamed in 486 ms with
- * `reasoning_tokens: 0`; `medium` is not in GLM's list. Omitting `reasoning` runs at the default effort, `max`.
+ * Finding for the spec owner (live 2026-09-21, stage-2 probe + `GET /api/v1/models`): every `z-ai/glm-5.3*` variant
+ * carries `reasoning: {mandatory: true, supported_efforts: [max, high, low], default_effort: max}`, and `{enabled: false}`
+ * came back HTTP 400 "Reasoning is mandatory for this endpoint and cannot be disabled" (unbilled). The working GLM call
+ * is `{effort: 'low'}` (a forced tool call streamed in 486 ms with `reasoning_tokens: 0`); `medium` is not in GLM's
+ * list, and omitting `reasoning` runs at the default effort, `max` (research 07 §5: the budget goes to thinking).
  */
-export interface GenerateReasoning {
-  enabled: boolean;
-  effort?: ReasoningEffort;
-}
-/** OpenRouter provider routing (research 07 §2.2): `requireParameters` filters endpoints to those supporting every parameter sent (tools, seed, …); `order` pins upstreams for reproducible billing. */
+export type GenerateReasoning = { enabled: false } | { effort: ReasoningEffort };
+/** §4.12 verbatim: OpenRouter routes only to endpoints that support every parameter sent (tools, seed, …; research 07 §2.2). */
 export interface GenerateProviderPrefs {
-  requireParameters?: boolean;
-  order?: string[];
+  requireParameters: boolean;
 }
 export interface GenerateRequestExt extends GenerateRequest {
   /** integer; sample diversity across N parallel requests (§4.6) */
@@ -89,41 +87,71 @@ export interface GenerateRequestExt extends GenerateRequest {
 export interface TokenUsageExt extends TokenUsage {
   /** `completion_tokens_details.reasoning_tokens`; absent when the frame did not carry it */
   reasoningTokens?: number;
-  /** true when the numbers were derived (chars / 4 on a cancelled stream), not read from an accounting frame */
+  /** §4.8: set by the engine's `recordCancelledSample()` estimate, never by a provider — a provider's `usage` is always read from an accounting frame */
   estimated?: boolean;
 }
 export interface GenerateResultExt extends GenerateResult {
   usage: TokenUsageExt;
-  /** OpenRouter's chunk `id` (`gen-…`): `GET /api/v1/generation?id=` names the exact bill (§4.8) */
+  /** the API's id for this generation: OpenRouter's chunk `id` (`gen-…`, the handle for `GET /api/v1/generation?id=`, §4.8) or Anthropic's `message.id` (`msg_…`) */
   generationId?: string;
-  /** OpenRouter's response `provider` field: the upstream that served the request (bills at its own rate, §8) */
+  /** OpenRouter's response `provider` field: the upstream that served the request (bills at its own rate, §8); absent on Anthropic */
   servedProvider?: string;
 }
 /**
- * §4.8: what a stream had produced when its signal fired. Handed to `GenerateOptionsExt.onCancelled` right before
- * the provider rethrows `signal.reason` (an aborted sample still yields no `GenerateResult`), so the engine can meter
- * the cancelled sample and keep the `generationId` for a post-hoc lookup.
+ * §4.8: what the provider knows about a stream when its signal fired, handed to `GenerateOptionsExt.onCancelled` right
+ * before `signal.reason` is rethrown (an aborted sample still yields no `GenerateResult`).
+ *
+ * The estimate is the ENGINE'S (§4.8 `Engine.recordCancelledSample()`: input = a sibling sample's `prompt_tokens`, output
+ * = `toolChars` / 4, priced at the served rate, `estimated: true`). This record carries only the facts the engine cannot
+ * recover on its own: the ids for the post-hoc lookup and the streamed sizes. It is NOT delivered when the abort lands
+ * before the response headers (the prompt may still be billed) — the engine estimates alone then. Proposed precedence
+ * (addition to §9.3, for the spec owner): the engine takes `generationId` / `servedProvider` / `toolChars` / `usage` from
+ * here when the callback fired, else uses its own estimate.
  */
 export interface CancelledGeneration {
-  /** `estimated: true` unless the accounting frame had already arrived */
-  usage: TokenUsageExt;
   generationId?: string;
   servedProvider?: string;
   model?: string;
-  /** streamed so far */
+  /** text streamed so far */
   text: string;
-  /** streamed tool-argument characters so far */
+  /** tool-argument characters streamed so far (§4.8: the estimate's output side is `toolChars / 4`) */
   toolChars: number;
+  /** thinking characters streamed so far (`delta.reasoning`; billed as output too, research 07 §5); 0 on Anthropic (thinking is never requested) */
+  reasoningChars: number;
+  /** present only when the accounting frame had already arrived (the abort landed between it and the end of the stream): read and priced like a completed call, not estimated */
+  usage?: TokenUsageExt;
 }
 export interface GenerateOptionsExt extends GenerateOptions {
   /** §4.6: 0-based index of this sample within a round (N parallel requests); absent for the single-sample propose path */
   sample?: number;
-  /** §4.8: called once, before `signal.reason` is rethrown, when the signal aborted a stream in flight */
+  /**
+   * §4.8 (addition, not in §9.3 — see `CancelledGeneration`): called at most once, after the stream's abort and before
+   * `signal.reason` is rethrown, when the signal aborted a stream whose response headers had arrived. Runs outside the retry
+   * loop: a throwing callback is a harness bug and propagates as a typed 'internal' error in place of the abort reason,
+   * exactly like a throwing `onDelta` (never swallowed by the abort path).
+   */
   onCancelled?: (partial: CancelledGeneration) => void;
 }
-/** A `Provider` whose results carry the stage-2 fields; assignable to `Provider`, so every existing slot takes it. */
+/** A `Provider` whose results carry the stage-2 fields; assignable to `Provider`, so every existing slot takes it. All three providers implement it. */
 export interface ProviderExt extends Provider {
   generate(req: GenerateRequestExt, opts: GenerateOptionsExt): Promise<GenerateResultExt>;
+}
+/**
+ * What a stream had produced when its signal fired (the providers' `consumeStream` fills one in its abort branch; `generate`
+ * turns it into a `CancelledGeneration` with `sse.ts toCancelledGeneration`). `tokens` is the accounting frame's reading
+ * when it had arrived, else null — nothing here is estimated.
+ */
+export interface StreamPartial {
+  text: string;
+  toolChars: number;
+  reasoningChars: number;
+  model: string | null;
+  generationId: string | null;
+  servedProvider: string | null;
+  tokens: TokenBreakdown | null;
+  /** `usage.cost` when the frame carried one */
+  cost: number | null;
+  reasoningTokens: number | null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -271,18 +299,14 @@ export interface OpenRouterRequestBody {
   temperature?: number;
   /** integer; a supported parameter of z-ai/glm-5.3-flash (config/defaults.ts) */
   seed?: number;
-  /** https://openrouter.ai/docs/use-cases/reasoning-tokens: `enabled: false` disables thinking; `effort` asks for it at a level */
+  /** https://openrouter.ai/docs/use-cases/reasoning-tokens: `{enabled: false}` disables thinking; `{effort}` asks for it at a level (effort implies enabled) */
   reasoning?: OpenRouterReasoning;
   /** ProviderPreferences (research 07 §2.2) */
   provider?: OpenRouterProviderPrefs;
 }
-export interface OpenRouterReasoning {
-  enabled?: boolean;
-  effort?: ReasoningEffort;
-}
+export type OpenRouterReasoning = { enabled: false } | { effort: ReasoningEffort };
 export interface OpenRouterProviderPrefs {
-  require_parameters?: boolean;
-  order?: string[];
+  require_parameters: boolean;
 }
 export interface OpenRouterToolDef {
   type: 'function';

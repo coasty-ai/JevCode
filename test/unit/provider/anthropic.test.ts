@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AbortError, JevCodeError, ProviderHttpError } from '../../../src/errors.js';
 import { IdleTimeoutError, MAX_MESSAGE_CHARS } from '../../../src/provider/sse.js';
 import { ANTHROPIC_VERSION, buildAnthropicBody, createAnthropicProvider } from '../../../src/provider/anthropic.js';
-import type { AnthropicRequestBody, GenerateRequestExt } from '../../../src/provider/types.js';
+import type { AnthropicRequestBody, CancelledGeneration, GenerateRequestExt } from '../../../src/provider/types.js';
 import { PROPOSE_TOOL, anthropicCfg, fixture, genOpts, request, scriptedFetch, splitEvery, testDeps } from './helpers.js';
 
 const sse = (name: string, headers: Record<string, string> = {}) => ({ status: 200, headers: { 'content-type': 'text/event-stream', ...headers }, body: fixture(name) });
@@ -94,7 +94,7 @@ describe('createAnthropicProvider', () => {
   it('ignores the OpenRouter-side request fields seed / reasoning / providerPrefs (LLM-JEV-DESIGN §4.12)', () => {
     const cfg = anthropicCfg();
     const base = request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' } });
-    const withExt: GenerateRequestExt = { ...base, seed: 7, reasoning: { enabled: true, effort: 'low' }, providerPrefs: { requireParameters: true, order: ['anthropic'] } };
+    const withExt: GenerateRequestExt = { ...base, seed: 7, reasoning: { effort: 'low' }, providerPrefs: { requireParameters: true } };
     const body = buildAnthropicBody(cfg, withExt);
     expect(body).toEqual(buildAnthropicBody(cfg, base));
     const keys = Object.keys(JSON.parse(JSON.stringify(body)) as object);
@@ -102,6 +102,38 @@ describe('createAnthropicProvider', () => {
     expect(keys).not.toContain('reasoning');
     expect(keys).not.toContain('provider');
     expect(keys).not.toContain('thinking');
+  });
+
+  it('surfaces message.id as generationId; an abort mid-arguments hands the streamed facts to onCancelled once and rethrows the reason (LLM-JEV-DESIGN §4.8)', async () => {
+    const whole = scriptedFetch([sse('anthropic-tool.sse')]);
+    const full = await createAnthropicProvider(anthropicCfg(), testDeps(whole.fetch).deps).generate(request({ tools: [PROPOSE_TOOL] }), genOpts());
+    expect(full.generationId).toBe('msg_01Tool');
+    expect('servedProvider' in full).toBe(false);
+
+    // the stream stops after the first two argument fragments (no message_delta yet, so no usage to report)
+    const head = fixture('anthropic-tool.sse').split('event: content_block_delta\ndata: {"type":"content_block_delta","index":1,"delta":{"type":"input_json_delta","partial_json":"\\"plan\\"')[0]!;
+    expect(head).toContain('fix the off-by-one');
+    const f = scriptedFetch([{ status: 200, body: [head], hang: true }]);
+    const { deps } = testDeps(f.fetch);
+    const ac = new AbortController();
+    const reason = new AbortError('signal');
+    const cancelled: CancelledGeneration[] = [];
+    let toolChars = 0;
+    const p = createAnthropicProvider(anthropicCfg(), deps).generate(
+      request({ tools: [PROPOSE_TOOL] }),
+      genOpts({
+        signal: ac.signal,
+        onToolDelta: (frag) => {
+          toolChars += frag.length;
+          if (toolChars > 40) ac.abort(reason);
+        },
+        onCancelled: (c) => cancelled.push(c),
+      }),
+    );
+    await expect(p).rejects.toBe(reason);
+    expect(f.streams[0]!.cancelled()).toBe(true);
+    expect(toolChars).toBe('{"goal": "fix the off-by-one", "action": {"kind": "edit", '.length);
+    expect(cancelled).toEqual([{ text: 'I will edit the file.', toolChars, reasoningChars: 0, model: 'claude-sonnet-5', generationId: 'msg_01Tool' }]);
   });
 
   it('retries a 529 once (backoff, redacted body) and succeeds on the second attempt', async () => {
