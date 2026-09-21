@@ -154,8 +154,9 @@ export function ledgerGoalsOf(claims: readonly string[], goalTests: readonly str
 /**
  * docs/LLM-JEV-DESIGN.md §3 row 7: the JudgeResult of a `run` from harness data alone. `succeeded` = every test passed
  * (`failed = errors = 0`, `passed > 0`; `tests_pass_unparsed >= 0.85` stands in when the parser read nothing), `errorPresent`
- * = the parser counted errors, `newInfo` = 0 (nothing is inferred), a claim is accepted iff the suite passed or its goal tests
- * are all in the `newlyPassing` the executed counts confirm; a non-test command is judged on its exit code.
+ * = the parser counted errors, `newInfo` = 0 (nothing is inferred), a claim is accepted iff the test suite passed or its
+ * goal tests are all in the `newlyPassing` the executed counts confirm; a non-test command's `succeeded` is its exit code,
+ * which accepts no claim (exit 0 of `echo ok` says nothing about the ledger).
  */
 export function codeJudge(run: CodeJudgeRun, claims: readonly string[], ledgerGoals: ReadonlyMap<string, readonly string[]>): JudgeResult {
   const parsed = run.tests?.parsed ?? null;
@@ -166,9 +167,11 @@ export function codeJudge(run: CodeJudgeRun, claims: readonly string[], ledgerGo
   const e = run.evidence;
   const countsAgree = parsed !== null && e !== null && e.after.passed === parsed.passed && e.after.failed === parsed.failed && e.after.errors === parsed.errors;
   const newlyPassing: readonly string[] = countsAgree && e !== null ? e.newlyPassing : [];
+  // §3 row 7: only the passing test suite accepts every claim; a non-test command's exit 0 says nothing about the ledger
+  const suitePassed = run.tests !== null && allPassed;
   const doneClaims: DoneClaimResult[] = claims.map((text) => {
     const goals = ledgerGoals.get(text) ?? [];
-    const judged = allPassed || (goals.length > 0 && goals.every((t) => newlyPassing.includes(t))) ? 1 : 0;
+    const judged = suitePassed || (goals.length > 0 && goals.every((t) => newlyPassing.includes(t))) ? 1 : 0;
     return { text, judged, accepted: judged >= PLAN_ACCEPT_THRESHOLD };
   });
   let tests: JudgeResult['tests'] = null;

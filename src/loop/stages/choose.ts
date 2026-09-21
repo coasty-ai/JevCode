@@ -5,11 +5,12 @@
  * Decision rows so the pane shows chosen / overridden / fallback.
  */
 import { PAIRED_PREFIX } from '../../jev/questions.js';
-import type { Answer, Decision } from '../../core/types.js';
+import type { Answer, ChoiceVerdict, Decision } from '../../core/types.js';
 
 export const PAIRED_NOUL_FLOOR = 0.5;
 
-export type ChoiceVerdict = 'chosen' | 'overridden' | 'fallback';
+/** core/types.ts ChoiceVerdict: `resolveChoice` writes chosen / overridden / fallback; `code` is the engine's (llm-jev intent, no Choice asked). */
+export type { ChoiceVerdict };
 
 export interface ChoiceResolution<O extends string> {
   option: O;

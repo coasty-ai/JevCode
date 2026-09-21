@@ -6,7 +6,7 @@
 import { clip, headTail } from '../core/text.js';
 // TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective
 import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
-import type { Candidate, EngineMode, FileView, Intent, IntentAnswer, Plan, ReplanDirective, SandboxLevel, WindowEntry } from '../core/types.js';
+import type { Candidate, ChoiceVerdict, EngineMode, FileView, Intent, IntentAnswer, Plan, ReplanDirective, SandboxLevel, WindowEntry } from '../core/types.js';
 
 export const PROMPT_LIMITS = {
   /** hard ceiling on one user message; sections are bounded individually well below it */
@@ -30,7 +30,8 @@ export interface PromptIntentInfo {
   probability: number;
   /** paired Noul of the resolved option */
   pairedNoul: number;
-  verdict: 'chosen' | 'overridden' | 'fallback';
+  /** core/types.ts ChoiceVerdict; `code` (llm-jev) reads as a plain chosen intent — no Choice was asked */
+  verdict: ChoiceVerdict;
 }
 
 export interface PromptHints {

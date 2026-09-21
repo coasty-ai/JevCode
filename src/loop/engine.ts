@@ -58,6 +58,7 @@ import type { AskResult,
   PendingDirective,
   Plan,
   PlanSnapshot,
+  StepProposer,
   Proposal,
   Question,
   ReplanDirective,
@@ -105,7 +106,8 @@ import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
 import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provider/prompts.js';
-import { linkedAbort } from '../provider/sse.js';
+import { linkedAbort } from '../core/abort.js';
+import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
@@ -310,6 +312,8 @@ interface StepDraft {
   synthJevMs: number;
   /** docs/LLM-JEV-DESIGN.md §4.8: the in-flight samples of the llm-jev round, for the batch wall in `timing.generatorMs` */
   generatorBatch: { inFlight: number; startedAt: number };
+  /** docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed — the synthesizer, or the generic per-step fallback (stage 4); null in the other modes */
+  proposer: StepProposer | null;
   generatorFailReason: string | null;
   errorClass: string | null;
   error: { stage: StageName; code: string; message: string } | null;
@@ -377,10 +381,19 @@ export function usesJev(mode: EngineMode): boolean {
   return mode !== 'jev-off';
 }
 
-/** docs/LLM-JEV-DESIGN.md §3 row 2 (llm-jev): the step intent is a code fact of the proposal kind — no Jev Choice is asked. */
+/**
+ * docs/LLM-JEV-DESIGN.md §3 row 2 / §9.3 (llm-jev): the step intent is a code fact of the proposal kind — no Jev Choice is
+ * asked, and the verdict `'code'` tells the TUI intent line so (a Jev-resolved intent is chosen / overridden / fallback).
+ */
 export function codeIntent(kind: Action['kind']): IntentStageResult {
   const intent: Intent = kind === 'run' ? 'verify' : kind === 'done' ? 'finish' : kind === 'read' ? 'investigate' : 'edit';
-  return { intent, answer: intent, verdict: 'chosen', probability: 1, confidence: 1, pairedNoul: 1, planStillValid: 1 };
+  return { intent, answer: intent, verdict: 'code', probability: 1, confidence: 1, pairedNoul: 1, planStillValid: 1 };
+}
+
+/** §4.8: the generator.jsonl `stopReason` of an aborted sample — its deadline ('timeout') or a cancellation (loser, engine stop). */
+function abortStopReason(reason: unknown): 'timeout' | 'cancelled' {
+  const timeout = reason instanceof Error && (reason.name === 'TimeoutError' || /\b(timeout|timed out|deadline)\b/i.test(reason.message));
+  return timeout ? 'timeout' : 'cancelled';
 }
 
 /** TUI-DESIGN §8.7 / §15 item 1: `token_cap` joins the plain budget set; `human_pause` never does (a /resume proceeds without --force). */
@@ -1402,6 +1415,7 @@ class EngineImpl implements Engine {
       synthMs: null,
       synthJevMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
+      proposer: null,
       generatorFailReason: null,
       errorClass: null,
       error: null,
@@ -1736,12 +1750,17 @@ class EngineImpl implements Engine {
    * The one metered, recorded path to the generating LLM. Without `sample` it is the propose stage's call (jev-on, jev-off:
    * one attempt, the engine's signal). With `sample` (llm-jev, docs/LLM-JEV-DESIGN.md §4.8) it is one sample of the
    * synthesizer's round: the sample's signal is linked to the engine's, every event and the generator.jsonl row carry the
-   * sample index, a sample aborted before its result is metered from an estimate (`recordCancelledSample`) and rejects with
-   * the signal's reason, and `timing.generatorMs` takes the wall of the round, not the sum of the samples.
+   * sample index, a sample aborted (or failed after streaming) before its result is metered from an estimate
+   * (`recordUnfinishedSample`) and rejects with the signal's reason, a sample already cancelled when it arrives is never
+   * dispatched (no event, no row, no metering), and `timing.generatorMs` takes the wall of the round, not the sum of the samples.
    */
   private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions): Promise<GenerateResult> {
     // Defence in depth for docs/JEV-ONLY.md: even with a real provider in the slot, jev-only never reaches it.
     if (this.mode === 'jev-only') throw new ConfigError('jev-only mode: the generating LLM must not be called', { setting: 'mode' });
+    // §4.8: a sample cancelled before it reached the channel (a loser cancellation racing a stagger fire, or the engine
+    // stopping) was never served — reject with the reason before any event, row or metered token
+    if (sample !== undefined && sample.signal.aborted) throw sample.signal.reason;
+    if (sample !== undefined && this.signal.aborted) throw this.signal.reason;
     const at = sample === undefined ? {} : { sample: sample.sample };
     this.emit({ type: 'generator:start', step: draft.step, attempt, ...at });
     // Tool-call argument fragments are reported as a cumulative character count per call; the
@@ -1771,8 +1790,14 @@ class EngineImpl implements Engine {
       retry.settled(true);
     } catch (e) {
       retry.settled(false);
-      // §4.8: an aborted sample (deadline, loser cancellation, or the engine's own abort) yields no result but was served — meter the estimate
-      if (sample !== undefined && link !== null && link.signal.aborted) this.recordCancelledSample(draft, req, attempt, sample, { latencyMs: Math.max(0, this.clock() - t0), streamedChars: toolChars + textChars });
+      if (sample !== undefined && link !== null) {
+        const streamedChars = toolChars + textChars;
+        const latencyMs = Math.max(0, this.clock() - t0);
+        // §4.8: an aborted sample (deadline, loser cancellation, or the engine's own abort) yields no result but was served — meter the estimate
+        if (link.signal.aborted) this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason: abortStopReason(sample.signal.aborted ? sample.signal.reason : this.signal.reason) });
+        // §2 principle 8: a sample the provider failed after it had streamed (stream cut, 5xx once the retries ran out) was served too
+        else if (streamedChars > 0) this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason: 'error' });
+      }
       throw e;
     } finally {
       link?.unlink();
@@ -1836,27 +1861,26 @@ class EngineImpl implements Engine {
   }
 
   /**
-   * docs/LLM-JEV-DESIGN.md §4.8: a sample aborted by its deadline or a loser cancellation yields no GenerateResult, but it
-   * was served. Input tokens = a finished sibling's prompt tokens (same prompt hash; the round shares one prefix), output
-   * tokens = streamed chars / 4, cost at the sibling's served rate (else the run's mean generator rate, else unpriced 0);
-   * the usage is marked `estimated`, metered so the spend cap and the token cap see it, and written as a generator.jsonl
-   * row with `cancelled: true` and `stopReason` 'timeout' | 'cancelled'. `GET /api/v1/generation?id=` can replace the
-   * estimate post hoc once stage 2 surfaces the generation id on the abort (TODO src/provider/openrouter.ts).
+   * docs/LLM-JEV-DESIGN.md §4.8 / §2 principle 8: a sample aborted by its deadline or a loser cancellation — or failed by the
+   * provider after it had streamed — yields no GenerateResult, but it was served. Input tokens = a finished sibling's prompt
+   * tokens (same prompt hash: the round shares one prefix; any other finished row — an L2 reproduction request, an earlier
+   * round — is a different prompt and says nothing), else the prompt's chars / 4; output tokens = streamed chars / 4; cost per
+   * `estimateCostUsd`. The usage is marked `estimated`, metered so the spend cap and the token cap see it, and written as a
+   * generator.jsonl row with `cancelled: true` and `stopReason` 'timeout' | 'cancelled' | 'error'. `GET /api/v1/generation?id=`
+   * can replace the estimate post hoc once stage 2 surfaces the generation id on the abort (TODO src/provider/openrouter.ts).
    */
-  private recordCancelledSample(draft: StepDraft, req: GenerateRequest, attempt: number, sample: SampleOptions, o: { latencyMs: number; streamedChars: number }): void {
+  private recordUnfinishedSample(draft: StepDraft, req: GenerateRequest, attempt: number, sample: SampleOptions, o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' }): void {
     const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
-    const finished = draft.generatorRecords.filter((r) => r.cancelled !== true);
-    const sibling = finished.find((r) => r.promptHash === promptHash) ?? finished.at(-1);
+    const sibling = draft.generatorRecords.find((r) => r.cancelled !== true && r.promptHash === promptHash);
     const promptChars = req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0);
     const inputTokens = sibling !== undefined ? sibling.usage.inputTokens : Math.ceil(promptChars / 4);
     const outputTokens = Math.ceil(o.streamedChars / 4);
-    const usage: TokenUsage = { inputTokens, outputTokens, costUsd: this.generatorRate(sibling) * (inputTokens + outputTokens), calls: 1, estimated: true };
-    const reason: unknown = sample.signal.aborted ? sample.signal.reason : this.signal.reason;
-    const timeout = reason instanceof Error && (reason.name === 'TimeoutError' || /\b(timeout|timed out|deadline)\b/i.test(reason.message));
-    const stopReason = timeout ? 'timeout' : 'cancelled';
-    this.opts.meter.add('generator', usage);
+    const raw: TokenUsage = { inputTokens, outputTokens, costUsd: this.estimateCostUsd(sibling, inputTokens, outputTokens), calls: 1, estimated: true };
+    this.opts.meter.add('generator', raw);
     this.generatorTokens += inputTokens + outputTokens;
-    this.noteUsage('generator', this.opts.provider.model, draft.step, 'propose', usage);
+    this.noteUsage('generator', this.opts.provider.model, draft.step, 'propose', raw);
+    // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN = unpriced) cost; the record, the event and the step sum take the clamped copy
+    const usage = pricedUsage(raw);
     addUsage(draft.usage.generator, usage);
     draft.generatorRecords.push({
       step: draft.step,
@@ -1867,23 +1891,37 @@ class EngineImpl implements Engine {
       maxTokens: req.maxTokens,
       usage,
       latencyMs: o.latencyMs,
-      stopReason,
+      stopReason: o.stopReason,
       malformed: false,
       sample: sample.sample,
       purpose: sample.purpose,
       cancelled: true,
     });
-    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: stopReason, sample: sample.sample });
+    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: o.stopReason, sample: sample.sample });
   }
 
-  /** $/token for a cancelled sample's estimate: a finished sibling's served rate, else the run's mean generator rate so far, else 0 (unpriced). */
-  private generatorRate(sibling: GeneratorCallRecord | undefined): number {
+  /**
+   * §4.8 / §8 (cancelled samples at full price): the estimate's cost. A finished same-prompt sibling's served rate ($/token
+   * over its own call) first, else the run's mean generator rate so far, else the pricing table — `opts.generatorPricing`
+   * (the resolved config, overrides included) or the built-in row for `provider.model` — at its separate input / output
+   * rates. A model the table does not know, with nothing served yet, is unpriced: NaN, which `noteUsage` turns into
+   * `budget:unpriced` exactly as a real call without `usage.cost` — never a silent $0 the spend cap cannot see.
+   */
+  private estimateCostUsd(sibling: GeneratorCallRecord | undefined, inputTokens: number, outputTokens: number): number {
+    const tokens = inputTokens + outputTokens;
     if (sibling !== undefined) {
-      const tokens = sibling.usage.inputTokens + sibling.usage.outputTokens;
-      if (tokens > 0 && Number.isFinite(sibling.usage.costUsd)) return sibling.usage.costUsd / tokens;
+      const served = sibling.usage.inputTokens + sibling.usage.outputTokens;
+      if (served > 0 && Number.isFinite(sibling.usage.costUsd)) return (sibling.usage.costUsd / served) * tokens;
     }
     const snap = this.opts.meter.snapshot();
-    return this.generatorTokens > 0 && Number.isFinite(snap.generator.costUsd) ? snap.generator.costUsd / this.generatorTokens : 0;
+    if (this.generatorTokens > 0 && Number.isFinite(snap.generator.costUsd)) return (snap.generator.costUsd / this.generatorTokens) * tokens;
+    let table = this.opts.generatorPricing ?? null;
+    if (table === null) {
+      const row = lookupPricing(this.opts.provider.model);
+      if (row.known) table = row.pricing;
+    }
+    if (table === null) return Number.NaN;
+    return (inputTokens * table.inputPerM + outputTokens * table.outputPerM) / 1e6;
   }
 
   // -------------------------------------------------------------------------------------
@@ -1953,6 +1991,9 @@ class EngineImpl implements Engine {
           // row; in llm-jev the synthesizer spends generator samples through SynthesisContext.generate (docs/LLM-JEV-DESIGN.md §4.8).
           const synthesizer = this.synthesizer;
           if (synthesizer === null) throw new ConfigError(`${this.mode} mode requires a synthesizer`, { setting: 'mode' });
+          // TODO(stage 4, docs/LLM-JEV-DESIGN.md §9.4): when `synthesizer.handles(wsInfo, files)` is false, run runProposeStage
+          // here with draft.proposer = 'generic' — the flag (not the mode) keys `generator_done` and the verbatim claim evidence
+          if (llmJev) draft.proposer = 'synth';
           const sctx = this.synthesisContext(draft, contextFiles);
           const s0 = this.clock();
           const jev0 = draft.timing.jevMs;
@@ -1974,10 +2015,12 @@ class EngineImpl implements Engine {
         draft.proposeCompleted = true;
         claimsOf(p.proposal);
         if (llmJev) {
-          // §3 row 2: the intent is a code fact of the proposal kind (patch → edit, run → verify, done → finish, read → investigate)
+          // §3 row 2: the intent is a code fact of the proposal kind (patch → edit, run → verify, done → finish, read → investigate).
+          // It cannot exist before the proposal, so in this mode the `intent` event follows `proposal` (core/types.ts documents
+          // the order; `verdict: 'code'` marks it) — no provisional intent is emitted, because none would be a fact.
           draft.intent = codeIntent(p.proposal.action.kind);
           intentInfo = { intent: draft.intent.intent, answer: draft.intent.answer, probability: 1 };
-          this.emit({ type: 'intent', step, intent: draft.intent.intent, answer: draft.intent.answer, probability: 1, confidence: 1 });
+          this.emit({ type: 'intent', step, intent: draft.intent.intent, answer: draft.intent.answer, probability: 1, confidence: 1, verdict: 'code' });
         }
         stage = 'risk';
         const rk = await this.stage('risk', () => runRiskStage(ctx, common(), p.proposal, intentInfo, { verifiedCompletion: this.verifiedCompletion(p.proposal) }));
@@ -2096,7 +2139,8 @@ class EngineImpl implements Engine {
       return { stop: 'error', detail: 'unpriced_usage' };
     }
     if (this.completeAfter(draft)) return { stop: 'complete' };
-    if (this.mode === 'jev-off' && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
+    // docs/LLM-JEV-DESIGN.md §9.4: the generic fallback's `done` (draft.proposer 'generic', stage 4) stops as the generator's, like jev-off
+    if ((this.mode === 'jev-off' || draft.proposer === 'generic') && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
     if (this.consecutiveStageFailures >= CONSECUTIVE_STAGE_FAILURE_LIMIT) {
       const err = draft.error ?? { stage, code: 'internal' };
       this.stateError = { stage: err.stage, code: err.code };
@@ -2214,6 +2258,9 @@ class EngineImpl implements Engine {
       action: proposal?.action.kind ?? null,
       outcome: draft.outcome?.status ?? null,
       tests: draft.tests,
+      // §6.6 `workspace.testsCurrent` on the claiming run itself: no change was executed at or after it (commit() has already
+      // folded this step into lastChangeStep, which a `run` never sets)
+      testsCurrent: this.lastChangeStep === null || this.lastChangeStep < draft.step,
       completion: proposal?.evidence?.completion,
       // the recorded `tests_pass_unparsed` stands in only when the parser read nothing (judge.ts codeJudge)
       testsPassUnparsed: judged && judged.source === 'judged' ? judged.allPassed : null,
@@ -2461,7 +2508,8 @@ class EngineImpl implements Engine {
     const status = outcome?.status ?? null;
     const evidence: ClaimEvidence = (() => {
       if (proposal === null) return { kind: 'none', because: 'no proposal' };
-      if (this.mode === 'jev-off') return status === 'executed' || status === 'noop' ? { kind: 'verbatim' } : { kind: 'none', because: `outcome ${status ?? 'none'}` };
+      // jev-off, and the llm-jev generic fallback (docs/LLM-JEV-DESIGN.md §9.4: keyed on draft.proposer, not the mode): claims verbatim
+      if (this.mode === 'jev-off' || draft.proposer === 'generic') return status === 'executed' || status === 'noop' ? { kind: 'verbatim' } : { kind: 'none', because: `outcome ${status ?? 'none'}` };
       if (draft.claimProbabilities !== null && draft.judge !== null) return { kind: 'judged', probabilities: draft.claimProbabilities };
       // llm-jev (docs/LLM-JEV-DESIGN.md §3 row 7): the code verdicts are the claim evidence even without a JudgeResult (a verified `done`); a step without them claims nothing
       if (this.mode === 'llm-jev' && draft.claimProbabilities !== null && !draft.interruptedAt) return { kind: 'judged', probabilities: draft.claimProbabilities };
@@ -2614,6 +2662,7 @@ class EngineImpl implements Engine {
       timing,
       loopSignatures: signatures,
     };
+    if (draft.proposer !== null) record.proposer = draft.proposer;
     if (draft.interruptedAt) record.interruptedAt = draft.interruptedAt;
     if (draft.error) record.error = draft.error;
     if (this.completeAfter(draft)) record.stoppedAt = 'complete';

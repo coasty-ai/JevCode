@@ -439,13 +439,8 @@ export function countOf(v: Json | undefined): number {
 }
 
 /** Link a per-attempt controller to the caller's signal so both paths abort the same fetch. */
-export function linkedAbort(signal: AbortSignal): { controller: AbortController; unlink: () => void } {
-  const controller = new AbortController();
-  const onAbort = (): void => controller.abort(signal.reason);
-  if (signal.aborted) onAbort();
-  else signal.addEventListener('abort', onAbort, { once: true });
-  return { controller, unlink: () => signal.removeEventListener('abort', onAbort) };
-}
+// the implementation lives in core/abort.ts (the engine links per-sample signals with it too); re-exported for the clients
+export { linkedAbort } from '../core/abort.js';
 
 // ---------------------------------------------------------------------------------------
 // Untrusted-JSON accessors (wire payloads are validated field by field, never trusted by cast)

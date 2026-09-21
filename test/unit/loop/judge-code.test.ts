@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import { assertQuestionBatch } from '../../../src/jev/questions.js';
-import { isCompleteByFact } from '../../../src/loop/stages/complete.js';
+import type { CompletionEvidence } from '../../../src/core/types.js';
+import { completionEvidenceHolds, isCompleteByFact } from '../../../src/loop/stages/complete.js';
 import { buildRecordOnlyQuestions, codeJudge, ledgerGoalsOf, type CodeJudgeRun } from '../../../src/loop/stages/judge.js';
 
 const T1 = 'tests/test_a.py::test_f';
@@ -57,7 +58,13 @@ describe('codeJudge (llm-jev)', () => {
     expect(unsure.doneClaims[0]?.accepted).toBe(false);
     // parsed counts win over the recorded Noul
     expect(codeJudge(run({ testsPassUnparsed: 0.1 }), [], new Map()).succeeded).toBe(1);
-    expect(codeJudge(run({ tests: null, exitCode: 0 }), [ITEM], goals([ITEM]))).toMatchObject({ succeeded: 1, errorPresent: 0, tests: null });
+    // §3 row 7: `echo ok` exiting 0 succeeds as a command but accepts no ledger claim — only the test suite does
+    const echoOk = codeJudge(run({ tests: null, exitCode: 0 }), [ITEM, VERIFY], goals([ITEM, VERIFY]));
+    expect(echoOk).toMatchObject({ succeeded: 1, errorPresent: 0, tests: null });
+    expect(echoOk.doneClaims).toEqual([
+      { text: ITEM, judged: 0, accepted: false },
+      { text: VERIFY, judged: 0, accepted: false },
+    ]);
     expect(codeJudge(run({ tests: null, exitCode: 1 }), [ITEM], goals([ITEM]))).toMatchObject({ succeeded: 0, errorPresent: 1, tests: null });
   });
 
@@ -78,20 +85,46 @@ describe('codeJudge (llm-jev)', () => {
 });
 
 describe('isCompleteByFact (§6.6)', () => {
-  const parsed = { parsed: { passed: 2, failed: 0, errors: 0, skipped: 0 }, allPassed: true };
-  const completion = { command: 'pytest -q', allPassed: true, total: 2, step: 1 };
-  const base = { action: 'run' as const, outcome: 'executed' as const, tests: parsed, completion, testsPassUnparsed: null, verifiedDone: false };
-  it('the claiming run: executed, parsed green, declared on the evidence', () => {
+  const CMD = 'pytest -q';
+  const parsed = { command: CMD, parsed: { passed: 2, failed: 0, errors: 0, skipped: 0 }, allPassed: true };
+  const completion: CompletionEvidence = { ledgerFixed: true, testsChanged: [], guardPending: false, repro: 'none', oracle: null, command: CMD };
+  const base = { action: 'run' as const, outcome: 'executed' as const, tests: parsed, testsCurrent: true, completion, testsPassUnparsed: null, verifiedDone: false };
+  it('the claiming run: executed test command, parsed green, current, declared on the evidence', () => {
     expect(isCompleteByFact(base)).toBe(true);
     expect(isCompleteByFact({ ...base, completion: undefined })).toBe(false);
-    expect(isCompleteByFact({ ...base, completion: { ...completion, allPassed: false } })).toBe(false);
-    expect(isCompleteByFact({ ...base, tests: { parsed: { passed: 2, failed: 1, errors: 0, skipped: 0 }, allPassed: false } })).toBe(false);
-    expect(isCompleteByFact({ ...base, tests: { parsed: { passed: 0, failed: 0, errors: 0, skipped: 0 }, allPassed: true } })).toBe(false);
+    expect(isCompleteByFact({ ...base, tests: { ...parsed, parsed: { passed: 2, failed: 1, errors: 0, skipped: 0 }, allPassed: false } })).toBe(false);
+    expect(isCompleteByFact({ ...base, tests: { ...parsed, parsed: { passed: 0, failed: 0, errors: 0, skipped: 0 }, allPassed: true } })).toBe(false);
     expect(isCompleteByFact({ ...base, tests: null })).toBe(false);
     expect(isCompleteByFact({ ...base, outcome: 'failed' })).toBe(false);
+    expect(isCompleteByFact({ ...base, testsCurrent: false })).toBe(false);
     // unparseable runner: the recorded tests_pass_unparsed stands in at 0.85
-    expect(isCompleteByFact({ ...base, tests: { parsed: null, allPassed: null }, testsPassUnparsed: 0.9 })).toBe(true);
-    expect(isCompleteByFact({ ...base, tests: { parsed: null, allPassed: null }, testsPassUnparsed: 0.8 })).toBe(false);
+    expect(isCompleteByFact({ ...base, tests: { command: CMD, parsed: null, allPassed: null }, testsPassUnparsed: 0.9 })).toBe(true);
+    expect(isCompleteByFact({ ...base, tests: { command: CMD, parsed: null, allPassed: null }, testsPassUnparsed: 0.8 })).toBe(false);
+  });
+  it('every synthesizer fact is required: ledger fixed, no test file touched, guard settled, the declared command', () => {
+    expect(isCompleteByFact({ ...base, completion: { ...completion, ledgerFixed: false } })).toBe(false);
+    expect(isCompleteByFact({ ...base, completion: { ...completion, testsChanged: ['tests/test_a.py'] } })).toBe(false);
+    expect(isCompleteByFact({ ...base, completion: { ...completion, guardPending: true } })).toBe(false);
+    expect(isCompleteByFact({ ...base, completion: { ...completion, command: 'pytest tests/test_a.py' } })).toBe(false);
+    // no declared command: the executed test command is taken as the suite
+    const undeclared: CompletionEvidence = { ...completion };
+    delete undeclared.command;
+    expect(isCompleteByFact({ ...base, completion: undeclared })).toBe(true);
+  });
+  it('repository class: the reproduction passes under a code oracle; an LLM-written or absent oracle never completes', () => {
+    const repo = (repro: CompletionEvidence['repro'], oracle: CompletionEvidence['oracle']): boolean => completionEvidenceHolds({ ...completion, repro, oracle }, CMD);
+    expect(repo('pass', 'valid')).toBe(true);
+    expect(repo('pass', 'valid_weak')).toBe(true);
+    expect(repo('pass', 'weak_network')).toBe(true);
+    expect(repo('fail', 'valid')).toBe(false);
+    expect(repo('none', 'valid')).toBe(false);
+    expect(repo('pass', 'llm_valid')).toBe(false);
+    expect(repo('pass', 'llm_weak')).toBe(false);
+    expect(repo('pass', 'no_blocks')).toBe(false);
+    // a reproduction verdict with no oracle at all is a repository run that found no oracle
+    expect(repo('pass', null)).toBe(false);
+    expect(isCompleteByFact({ ...base, completion: { ...completion, repro: 'pass', oracle: 'llm_valid' } })).toBe(false);
+    expect(isCompleteByFact({ ...base, completion: { ...completion, repro: 'pass', oracle: 'valid' } })).toBe(true);
   });
   it('a done completes only when the engine verified it; patches never complete', () => {
     expect(isCompleteByFact({ ...base, action: 'done', outcome: 'noop', tests: null, completion: undefined, verifiedDone: true })).toBe(true);
