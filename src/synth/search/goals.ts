@@ -63,6 +63,15 @@ export const MAX_CONSECUTIVE_BUDGET_HITS = 2;
  * per goal, so the detector's guarantee — no unbounded repetition — still holds.
  */
 export const MAX_BUDGET_HIT_STEPS = 4;
+/**
+ * Progress commits (partial fixes, subgoal.ts commitProgress) a goal takes before its remaining
+ * tests continue under a NEW goal id (`inheritGoalState`), so the ledger shows the chain instead
+ * of one id absorbing every stage. Three is the longest chain a merged goal needs on the long
+ * tier's designed shapes (ladder `masked`: report → parse/aggregate, two links; `long_chain`: six
+ * stages under one goal, which the rule splits into g1 (three links) and a successor); a resumed
+ * run starts the count at 0 (in-memory, like `budgetSteps`).
+ */
+export const MAX_PROGRESS_COMMITS_PER_GOAL = 3;
 /** Failures kept per goal for Jev states; the measured programs had ≤ 14 (verify STATE_FAILURES_BOUND). */
 export const GOAL_FAILURES_BOUND = STATE_FAILURES_BOUND;
 /**
@@ -454,6 +463,7 @@ export interface PriorGoalState {
   exhausted?: Map<string, Set<CandidateSourceName>>;
   failures?: FailureView[];
   suspectedFiles?: string[];
+  progressCommits?: number;
 }
 
 function goalNumber(id: string): number {
@@ -468,6 +478,13 @@ function goalNumber(id: string): number {
  * exhausted sources; `active` becomes `open` (the search that was running ended with the
  * workspace change that triggered the re-clustering). A prior goal none of whose tests fail any
  * more comes back as `fixed`. Unmatched fresh goals get ids above every id seen so far.
+ *
+ * Progress commits (goals.ts noteCommit, subgoal.ts commitProgress) keep the goal's remaining
+ * tests OPEN under its id — the fresh cluster carries the new failure (frame, failures,
+ * suspected files) and inherits the counters — and a goal that took MAX_PROGRESS_COMMITS_PER_GOAL
+ * of them hands its remaining tests to a NEW id with fresh counters (the chain rule), so the
+ * ledger shows the chain. A fresh cluster is never marked fixed here: only a prior goal whose
+ * every test passes is.
  */
 export function inheritGoalState(fresh: readonly Goal[], prior: readonly PriorGoalState[]): Goal[] {
   const pairs: { i: number; j: number; overlap: number }[] = [];
@@ -498,8 +515,12 @@ export function inheritGoalState(fresh: readonly Goal[], prior: readonly PriorGo
       return { ...g, id };
     }
     const p = prior[j]!;
+    // The chain rule: after MAX_PROGRESS_COMMITS_PER_GOAL partial fixes the remaining tests
+    // continue as a new goal (fresh id and counters); the prior is consumed, never marked fixed.
+    if ((p.progressCommits ?? 0) >= MAX_PROGRESS_COMMITS_PER_GOAL) return { ...g, id: `g${next++}`, status: 'open', attempts: 0, budgetHits: 0, phase: 'SEEDS', exhausted: new Map(), progressCommits: 0 };
     const goal: Goal = { ...g, id: p.id, status: p.status === 'parked' ? 'parked' : 'open', attempts: p.attempts, budgetHits: p.budgetHits, phase: p.phase, exhausted: p.exhausted ?? new Map() };
     if (p.status === 'parked' && p.parkedReason !== undefined) goal.parkedReason = p.parkedReason;
+    if (p.progressCommits !== undefined) goal.progressCommits = p.progressCommits;
     return goal;
   });
   const stillFailing = new Set(fresh.flatMap((g) => g.tests));
@@ -515,6 +536,7 @@ export function inheritGoalState(fresh: readonly Goal[], prior: readonly PriorGo
 function priorOf(g: Goal): PriorGoalState {
   const p: PriorGoalState = { id: g.id, tests: g.tests, status: g.status, attempts: g.attempts, budgetHits: g.budgetHits, phase: g.phase, planItem: g.planItem, exhausted: g.exhausted, failures: g.failures, suspectedFiles: g.suspectedFiles };
   if (g.parkedReason !== undefined) p.parkedReason = g.parkedReason;
+  if (g.progressCommits !== undefined) p.progressCommits = g.progressCommits;
   return p;
 }
 
@@ -553,13 +575,25 @@ export function park(goal: Goal, reason: string): void {
   goal.budgetSteps = 0;
 }
 
-/** A commit for this goal: attempts restart; `fixed` when every goal test passed, else back to `open`. */
+/**
+ * A commit for this goal: attempts restart; `fixed` when every goal test passed, else back to
+ * `open` as a progress commit — one more link of the chain (`progressCommits`), and the goal's
+ * sites, tested sites and phase go: its remaining tests now fail for a new reason at a new frame
+ * (ladder `masked`: report → parse/aggregate; `long_chain`: load → clean), which the next
+ * baseline re-clusters (`reconcile`), so what was exhausted at the old sites is no fact about the new.
+ */
 export function noteCommit(goal: Goal, allGoalTestsPass: boolean): void {
   goal.status = allGoalTestsPass ? 'fixed' : 'open';
   goal.attempts = 0;
   goal.budgetHits = 0;
   goal.budgetSteps = 0;
   delete goal.parkedReason;
+  if (!allGoalTestsPass) {
+    goal.progressCommits = (goal.progressCommits ?? 0) + 1;
+    goal.exhausted = new Map();
+    delete goal.testedSites;
+    goal.phase = 'SEEDS';
+  }
 }
 
 /**
@@ -582,6 +616,27 @@ export function parkReasonFor(goal: Pick<Goal, 'attempts' | 'budgetHits' | 'budg
   if (goal.budgetHits >= MAX_CONSECUTIVE_BUDGET_HITS) return `${goal.budgetHits} consecutive budget-hit steps that tested nothing new`;
   if ((goal.budgetSteps ?? 0) >= MAX_BUDGET_HIT_STEPS) return `${goal.budgetSteps} consecutive budget-hit steps (hard cap)`;
   return null;
+}
+
+const COUNTER_PARK = /^\d+ (?:searches without a commit|consecutive budget-hit steps)/;
+const NO_SITE_PARK = /^no site located for /;
+const EXHAUSTED_PARK = /^exhausted .* at \d+ sites? /;
+
+/**
+ * A park the search itself made: by the §5.3 counters (`parkReasonFor`), for want of a site, or
+ * at exhaustion of the LOCALISED sites (subgoal.ts describeExhaustion: "exhausted … at N sites").
+ * Each is relative to one localisation — the sites Q2/Q5 named, the sources ranked there — so a
+ * re-localisation leaves the goal something to try; a park for a timed-out suite (index.ts
+ * SUITE_TOO_SLOW) or after the one best-guess commit (oracle BEST_GUESS_PARK_REASON) is not. The
+ * `gather_context` directive reopens exactly these (directive.ts): the engine says the repeated
+ * step rested on a wrong assumption, and a search's assumption is its localisation, which the
+ * directive redoes; the engine grants one such directive per repeated `done` signature before it
+ * stops the run (loop/engine.ts), so an exhausted goal gets one re-localised search, not a loop.
+ */
+export function parkedWithMoreToTry(goal: Pick<Goal, 'status' | 'parkedReason'>): boolean {
+  if (goal.status !== 'parked') return false;
+  const reason = goal.parkedReason ?? '';
+  return COUNTER_PARK.test(reason) || NO_SITE_PARK.test(reason) || EXHAUSTED_PARK.test(reason);
 }
 
 /**

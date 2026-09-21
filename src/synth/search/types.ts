@@ -42,6 +42,12 @@ export interface Goal {
   parkedReason?: string;
   /** `fix <first_test_id>[, +N more] in <path>` */
   planItem: string;
+  /**
+   * Partial fixes committed for this goal so far (goals.ts noteCommit): after
+   * MAX_PROGRESS_COMMITS_PER_GOAL the remaining tests continue under a new goal id, so the
+   * ledger shows the chain. In-memory only, like `budgetSteps`.
+   */
+  progressCommits?: number;
 }
 
 export interface Base {

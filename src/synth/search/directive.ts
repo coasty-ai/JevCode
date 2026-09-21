@@ -9,9 +9,26 @@
  *                        phase over the beam functions; the step then searches as usual. With
  *                        every goal parked, every parked goal is reopened (ledger order), each
  *                        with its source order rotated and its sites rebuilt.
- * - `gather_context`   → on a repository, `read` the goal's suspected files the context stage
- *                        has not shown; otherwise re-localise with the latest failure text and a
- *                        top-10 file beam.
+ * - `gather_context`   → never a `read` (the synthesizer holds every source file already —
+ *                        search/index.ts loadPythonFiles — and the reads it used to propose were
+ *                        declined at review-band risk 7–12 times per miss in bench runs with no
+ *                        reviewer, tripping the loop detector into `max_replans`:
+ *                        jev-only-rungs-1-2.md §19.7). Instead every open goal is re-localised
+ *                        with Jev on its latest failure (its sites dropped: the next search asks
+ *                        Q2/Q5 again; Q1 picks among several open goals as usual) with a top-10
+ *                        file beam and its source order rotated; the step then proposes the next
+ *                        `run` or `patch`. With no open goal, the goals the search itself parked —
+ *                        by the §5.3 counters, for want of a site, or at exhaustion of the
+ *                        localised sites (goals.ts parkedWithMoreToTry) — are reopened the same
+ *                        way with their attempts reset: the directive discards the search's
+ *                        premise, its localisation, and every one of those parks is relative to
+ *                        it (ladder `shared_frame` and `long_chain` run 3/3b parked their goal
+ *                        after searches at sites that never held the gold line and spent the
+ *                        remaining steps on a blocked partial `done`). The engine grants one such
+ *                        directive per repeated `done` signature (loop/engine.ts), so this is one
+ *                        re-localised search, not a loop. A park for a timed-out suite or after
+ *                        the best-guess commit stays: nothing is left to try there, and the
+ *                        controller proposes the honest partial `done`.
  * - `fix_environment`  → a `run` of the test command alone. The synthesizer installs nothing;
  *                        the outcome tells the judge whether the environment works.
  * - `revert_changes`   → reverse `patch` of the last committed candidate; the goal it fixed
@@ -25,7 +42,8 @@
  */
 import type { Proposal, SynthesisContext } from '../../core/types.js';
 import type { AppliedCandidate, LocalizeResult, TestRunSummary } from '../types.js';
-import { TEST_PATH_RE, diffPaths, engineTestCommand, proposeRead, proposeRevert, proposeRun, type ProposalMemory } from './proposal.js';
+import { parkedWithMoreToTry } from './goals.js';
+import { TEST_PATH_RE, diffPaths, engineTestCommand, proposeRevert, proposeRun, type ProposalMemory } from './proposal.js';
 import type { Goal } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -197,22 +215,35 @@ export async function handleDirective(ctx: SynthesisContext, mem: DirectiveMemor
       return done({ kind: 'continue', move, changes });
     }
     case 'gather_context': {
-      const goal = activeGoal(mem);
-      if (goal === null) return done({ kind: 'continue', move, changes });
-      if (await isRepositoryWorkspace(ctx)) {
-        const shown = new Set(ctx.contextFiles.map((f) => f.path));
-        const unseen = goal.suspectedFiles.filter((p) => !shown.has(p));
-        if (unseen.length > 0) {
-          changes.push(`read ${unseen.length} suspected file${unseen.length > 1 ? 's' : ''} of ${goal.id}`);
-          return done({ kind: 'proposal', move, proposal: proposeRead(ctx, unseen), changes });
+      // Never a `read` (module header): the open goals are re-localised with Jev on their latest
+      // failure and their source order is rotated; the step then searches. With no open goal the
+      // goals the search parked (counters, no site, exhaustion of the localised sites) are reopened
+      // with their attempts reset; a park for a timed-out suite or the best-guess commit stays, and
+      // with none to reopen the controller proposes the honest partial `done`.
+      let open = mem.goals.filter((g) => g.status === 'open' || g.status === 'active');
+      if (open.length === 0) {
+        const retry = mem.goals.filter(parkedWithMoreToTry);
+        for (const g of retry) {
+          g.status = 'open';
+          g.attempts = 0;
+          g.budgetHits = 0;
+          g.budgetSteps = 0;
+          delete g.parkedReason;
         }
+        if (retry.length > 0) changes.push(`reopened ${retry.map((g) => g.id).join(', ')} (parked by the search; attempts reset for the re-localisation)`);
+        open = retry;
       }
-      if (mem.localizeCache.delete(goal.id)) changes.push(`sites of ${goal.id} dropped`);
+      if (open.length === 0) return done({ kind: 'continue', move, changes });
+      for (const goal of open) {
+        mem.overrides.sourceRotation[goal.id] = (mem.overrides.sourceRotation[goal.id] ?? 0) + 1;
+        changes.push(`rotated source order of ${goal.id} (${mem.overrides.sourceRotation[goal.id]})`);
+        if (mem.localizeCache.delete(goal.id)) changes.push(`sites of ${goal.id} dropped`);
+      }
       if (mem.overrides.fileBeam < WIDENED_FILE_BEAM) {
         mem.overrides.fileBeam = WIDENED_FILE_BEAM;
         changes.push(`file beam ${DEFAULT_FILE_BEAM} → ${WIDENED_FILE_BEAM}`);
       }
-      changes.push(`re-localise ${goal.id} with the latest failure text`);
+      changes.push(`re-localise ${open.map((g) => g.id).join(', ')} with the latest failure text`);
       return done({ kind: 'continue', move, changes });
     }
     case 'fix_environment': {

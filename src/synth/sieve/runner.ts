@@ -160,6 +160,40 @@ export interface RunnerMemory {
    * against a baseline the search no longer holds, like `deferred`, which index.ts resets).
    */
   retryTimeouts?: Map<string, PendingRetry[]>;
+  /**
+   * goal id → `tried` hashes of the candidates classified `unchanged` for that goal. An
+   * `unchanged` verdict says "the goal's tests still fail the same way with this edit" — a fact
+   * about the failure the goal had when it ran. A progress commit (a partial fix, search/index.ts)
+   * removes that failure for the goal's remaining tests, which then fail for a new reason at a
+   * new frame, so every `unchanged` verdict of the goal is stale and `forgetUnchangedTried`
+   * takes those hashes out of `tried`: ladder `long_chain` run 3 tested the gold `clean.py` line
+   * under the `load.py` crash (unchanged: every test still died in `parse_row`), and after the
+   * `load.py` fix the line was excluded as tried while a wrong partial at the same site was
+   * committed. `regressed`, `plausible`, `partial` and hang verdicts stay tried.
+   */
+  unchangedTried?: Map<string, Set<string>>;
+}
+
+function recordUnchanged(mem: Pick<RunnerMemory, 'unchangedTried'>, goalId: string, diffHash: string): void {
+  const map = mem.unchangedTried ?? new Map<string, Set<string>>();
+  mem.unchangedTried = map;
+  const set = map.get(goalId) ?? new Set<string>();
+  set.add(diffHash);
+  map.set(goalId, set);
+}
+
+/**
+ * Forget the `unchanged` verdicts recorded for `goalId` (see `RunnerMemory.unchangedTried`): the
+ * hashes leave `tried`, so the candidates are enumerated and run again on the new workspace.
+ * Returns how many were forgotten.
+ */
+export function forgetUnchangedTried(mem: Pick<RunnerMemory, 'tried' | 'unchangedTried'>, goalId: string): number {
+  const set = mem.unchangedTried?.get(goalId);
+  if (set === undefined) return 0;
+  let n = 0;
+  for (const h of set) if (mem.tried.delete(h)) n += 1;
+  mem.unchangedTried?.delete(goalId);
+  return n;
 }
 
 /** A candidate whose first run was a provisional `timeout`, waiting for its retry at RETRY_CASE_TIMEOUT_MS without the stop rule. */
@@ -648,6 +682,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       }
     }
     mem.tried.add(diffHash); // only a finally classified candidate is "tried"; a deferred or provisional one runs again
+    if (status === 'unchanged') recordUnchanged(mem, goal.id, diffHash); // stale once a progress commit changes what the goal's tests fail on
     if (mode === 'retry') retried.set(status, (retried.get(status) ?? 0) + 1);
     return { kind: 'outcome', outcome };
   };
@@ -759,4 +794,58 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   // a broken lane with nothing to show for the batch is an error the step must see; on abort the caller is stopping anyway
   if (laneFailure !== null && outcomes.length === 0 && !ctx.signal.aborted) throw new RunnerError(`lane failure during ${goal.id}: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`, { cause: laneFailure });
   return outcomes;
+}
+
+// ---------------------------------------------------------------------------------------
+// The regression run of a progress commit (search/subgoal.ts commitProgress)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * One full-suite run of a `partial` on a free lane. `verifyJob` classifies a partial from its
+ * goal-subset run alone — the full suite runs only for subset passers — so "newly passing goal
+ * tests and nothing newly failing anywhere" is not yet a measured fact about a partial (a
+ * variant of ladder `shared_frame`'s helper relaxation that passes 3 of the goal's 6 booking
+ * tests and breaks `tests/test_checks.py` is a `partial` to the batch); this run makes it one
+ * before the partial is committed. The candidate is applied over its own base's files (an
+ * improved-base partial carries that base's edits), the command is the baseline's full-suite
+ * command at the reference settings of `runQueue` (every case's verdict, the module's default
+ * per-case cap, no stop rule) under the lane timeout, and the run is charged to the step budget
+ * as one run — the commit's verification, not search cost, so it runs at a budget exit too.
+ * Returns null when no lane pool exists (nothing ran this step, so nothing was held either),
+ * when the run was aborted, or when the lane could not be prepared; a run the sandbox killed at
+ * the lane timeout comes back `timedOut` for the caller to read. Never throws.
+ */
+export async function runRegressionCheck(ctx: RunnerContext, mem: RunnerMemory, goal: Pick<Goal, 'id'>, o: VerifyOutcome, opts: RunQueueOptions = {}): Promise<TestRunSummary | null> {
+  const baseline = mem.baseline;
+  const pool = mem.lanes;
+  if (baseline === null || pool === undefined || ctx.signal.aborted) return null;
+  const now = opts.now ?? Date.now;
+  const oracle = mem.oracle;
+  const budget = mem.stepBudget;
+  const spec: SuiteSpec = { command: baseline.command, workspaceRoot: ctx.workspaceInfo.root };
+  // the reference settings: the module's own per-case cap, every case's verdict (no stop rule)
+  const reference: OracleModel = oracle.perTestTimeoutMs === null ? oracle : { ...oracle, perTestTimeoutMs: DEFAULT_CASE_TIMEOUT_MS };
+  const timeoutMs = laneRunTimeout(reference, baseline);
+  const started = now();
+  let result: TestRunSummary | null = null;
+  let failure = '';
+  try {
+    result = await pool.withLane(async (lane) => {
+      await pool.applyToLane(lane, o.applied, o.job.base.files);
+      const command = fullSuiteCommand(reference, lane, spec);
+      const res = await ctx.sandbox.run(command, { timeoutMs, maxOutputBytes: RUN_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir, env: laneRunEnv(reference, { stopRule: false }) });
+      if (res.killedBy === 'abort' || res.killedBy === 'wall_time' || ctx.signal.aborted) return null;
+      return summarize(command, res, res.durationMs > 0 ? res.durationMs : now() - started);
+    });
+  } catch (e: unknown) {
+    failure = e instanceof Error ? e.message : String(e);
+    result = null;
+  }
+  const elapsed = now() - started;
+  budget.testRunsLeft = Math.max(0, budget.testRunsLeft - 1);
+  budget.testWallLeftMs = Math.max(0, budget.testWallLeftMs - elapsed);
+  const c = o.applied.candidate;
+  const what = result === null ? (failure === '' ? 'aborted' : `lane failure: ${failure}`) : `${result.passed}/${result.total} pass, ${result.failed} failed, ${result.errors} errors${result.timedOut ? ', timed out' : ''} in ${result.durationMs} ms`;
+  ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail: `${goal.id}: full-suite regression run of the held partial ${c.source}/${c.op} at ${c.site.file.path}:${c.site.line}: ${what}`, candidates: 1, tested: result === null ? 0 : 1 });
+  return result;
 }

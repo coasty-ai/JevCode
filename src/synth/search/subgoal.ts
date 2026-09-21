@@ -7,11 +7,14 @@
  * 35–36/40 over three runs, experiments/designs/grammar-synthesis.md Appendix A); it never
  * removes a source or a site.
  *
- * Pure collaborators (decideRunPlan, the site helpers, commitPartial, commitSuspect) are imported;
- * the ones that touch Jev, the workspace or the sandbox (localisation, the seed sources, the
- * sketch and beam rounds, the ranker, the queue, the runner, the guard, the pairs of partials)
- * are injected through `SubGoalDeps`, so the control flow is unit-tested with fakes and
- * src/synth/index.ts is the one place that names the real modules.
+ * Pure collaborators (decideRunPlan, the site helpers, commitSuspect, the progress-commit gate)
+ * are imported; the ones that touch Jev, the workspace or the sandbox (localisation, the seed
+ * sources, the sketch and beam rounds, the ranker, the queue, the runner, the guard, the pairs of
+ * partials) are injected through `SubGoalDeps`, so the control flow is unit-tested with fakes and
+ * src/synth/index.ts is the one place that names the real modules. The one exception is the
+ * regression run of a progress commit (`commitProgress`): its default is the runner's own
+ * (sieve/runner.ts runRegressionCheck) so the wiring needs no new member; tests inject theirs
+ * through the optional `SubGoalDeps.regressionRun`.
  */
 import type { Json, Question, SynthesisContext } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
@@ -22,16 +25,19 @@ import { scopeAt } from '../py/structure.js';
 import { EDIT_CLASS_IDS } from '../sketch/productions.js';
 import type { EditClass } from '../sketch/productions.js';
 import { EDIT_CLASSES, EDIT_CLASS_INSTRUCTIONS, EDIT_CLASS_QUESTION_ID } from '../sketch/questions.js';
-import type { Candidate, CandidateSource, CandidateSourceName, EnumerateOptions, FailureView, LocalizeResult, RankResult, Site, SourceFile } from '../types.js';
+import type { Candidate, CandidateSource, CandidateSourceName, EnumerateOptions, FailureView, LocalizeResult, RankResult, Site, SourceFile, TestRunSummary } from '../types.js';
+import { runRegressionCheck, subsetScope } from '../sieve/runner.js';
 import type { RunnerMemory } from '../sieve/runner.js';
 import { applyCandidate } from '../verify/apply.js';
-import { commitPartial } from './bases.js';
+import { progress } from '../verify/progress.js';
+import { appliedOnCommitted, dropHeldPartial, heldPartialOutcome } from './bases.js';
 import type { GuardMemory } from './bases.js';
 import { SIEVE_MAX_T_RUN_MS, decideRunPlan, runsLeft } from './budget.js';
 import type { SearchOverrides } from './directive.js';
-import { commitSuspect } from './guard.js';
+import { commitSuspect, gateHeldPartial } from './guard.js';
 import type { SearchMemory } from './memory.js';
 import { wasTried } from './memory.js';
+import { MAX_PATCH_FILES } from './proposal.js';
 import { WIDENED_SITES_MAX, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, widenedSites } from './sites.js';
 import type { Base, Decision, Goal, GoalSearchTrace, OracleModel, Phase, VerifyJob, VerifyOutcome } from './types.js';
 import { PHASES } from './types.js';
@@ -268,7 +274,12 @@ export interface SubGoalDeps {
   decide(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, results: readonly VerifyOutcome[]): Promise<GuardVerdict>;
   /** search/bases.ts pairsOfPartials: ≤ 10 composite candidates joining two partials of different sites */
   pairsOfPartials(mem: SubGoalMemory, goal: Goal): Candidate[];
+  /** the full-suite regression run of the held partial before a progress commit; sieve/runner.ts runRegressionCheck when absent */
+  regressionRun?: RegressionRun;
 }
+
+/** One full-suite run of `outcome`'s candidate (over its base) on a lane: the check a progress commit rests on. Null when it could not run. */
+export type RegressionRun = (ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, outcome: VerifyOutcome) => Promise<TestRunSummary | null>;
 
 export type SubGoalResult = Decision & { trace: GoalSearchTrace };
 
@@ -599,6 +610,107 @@ async function drainRetries(st: LoopState): Promise<BatchOutcome> {
 }
 
 // ---------------------------------------------------------------------------------------
+// The progress commit (§2.3 last line, reachable at every step end; jev-only-rungs-1-2.md §19.7)
+// ---------------------------------------------------------------------------------------
+
+export type ProgressReason = 'nothing_held' | 'pairs_untested' | 'unproposable' | 'unverifiable' | 'regressed' | 'held' | 'committed';
+
+export interface ProgressCommit {
+  /** the partial-fix commit (`note: 'partial'`, `allGoalTestsPass: false`, `after` its full-suite run), or null */
+  decision: Decision | null;
+  /** Jev requests spent (the Q16 advisory, at most one) */
+  requests: number;
+  /** test runs made (the regression run, at most one) */
+  runs: number;
+  reason: ProgressReason;
+}
+
+export interface ProgressOptions {
+  /** untested pairs of complementary partials exist: they run first (this step or the next), a passing pair beats a lone partial */
+  pairsUntested: boolean;
+  regressionRun?: RegressionRun;
+  /** transcript note by phase (`progress`, `guard`) */
+  note?: (phase: string, detail: string) => void;
+}
+
+/**
+ * When a goal's step ends — on its budget, or with nothing plausible after every source — and the
+ * goal holds a partial (a candidate that newly passes ≥ 1 goal test with nothing newly failing),
+ * the best partial (the improved base `holdBestPartial` keeps: most newly passing, then the code
+ * tie-break) is committed as a PARTIAL FIX instead of the goal parking with nothing. The long
+ * tier's chain goals (ladder `masked`, `long_chain`, the merged goals of `shared_frame` and
+ * `six_hunks`) found the gold, ranked it first, ran it, classified it `partial` — the merged
+ * goal's other tests need a later fix — and dropped it at the park, every run (§19.7). Order:
+ *   1. untested pairs of complementary partials first (§15): a passing pair beats a lone partial,
+ *      and when the pairs could not run this step the goal stays open and runs them next step;
+ *   2. the one full-suite regression run the commit rests on (the runner classifies a partial
+ *      from the goal subset alone): a partial that regresses anywhere, times out or passes none of
+ *      the goal's tests on the whole suite is dropped, not committed;
+ *   3. the guard's suspicion signals with the Q16 advisory, exactly as for a lone passer (guard.ts
+ *      gateHeldPartial): a doubtful partial is held, never committed.
+ * The remaining goal tests stay open and are re-clustered from the next baseline (goals.ts
+ * noteCommit, reconcile); the proposal and its evidence say the fix is partial (proposal.ts).
+ */
+export async function commitProgress(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, opts: ProgressOptions): Promise<ProgressCommit> {
+  const note = opts.note ?? ((): void => undefined);
+  const none = (reason: ProgressReason, runs = 0, requests = 0): ProgressCommit => ({ decision: null, requests, runs, reason });
+  const held = heldPartialOutcome(mem, goal);
+  const committed = mem.bases.find((b) => b.origin === 'committed');
+  if (held === null || committed === undefined) return none('nothing_held');
+  const c = held.applied.candidate;
+  const where = `${c.source}/${c.op} at ${c.site.file.path}:${c.site.line}`;
+  if (opts.pairsUntested) {
+    note('progress', `${goal.id}: the held partial ${where} waits: untested pairs of complementary partials run first`);
+    return none('pairs_untested');
+  }
+  // a commit is one `patch` of at most MAX_PATCH_FILES files (proposal.ts): a cumulative edit over more (a pair of a
+  // pair, an improved-base partial in a third file) cannot be proposed, so it is dropped here, before anything is recorded
+  const files = appliedOnCommitted(mem, held).files.length;
+  if (files > MAX_PATCH_FILES) {
+    dropHeldPartial(mem, goal);
+    note('progress', `${goal.id}: the held partial ${where} edits ${files} files and cannot be proposed as one patch (at most ${MAX_PATCH_FILES}); dropped`);
+    return none('unproposable');
+  }
+  // the full-suite run: the outcome's own when it has one, its subset run when that was the whole suite, else one run now
+  let full = held.full ?? (subsetScope(mem.oracle, goal).kind === 'full' ? held.subset : undefined);
+  let runs = 0;
+  if (full === undefined) {
+    const run = await (opts.regressionRun ?? runRegressionCheck)(ctx, mem, goal, held);
+    runs = 1;
+    if (run === null) {
+      note('progress', `${goal.id}: the held partial ${where} could not be verified on the full suite this step (no lane, or the run was aborted); held`);
+      return none('unverifiable', runs);
+    }
+    full = run;
+  }
+  const p = progress(committed.summary, full);
+  const goalPassing = p.newlyPassing.filter((t) => goal.tests.includes(t));
+  if (full.timedOut || p.regressed || goalPassing.length === 0) {
+    dropHeldPartial(mem, goal);
+    note('progress', `${goal.id}: the held partial ${where} is no partial on the full suite (${p.newlyFailing.length} newly failing, ${goalPassing.length} of ${goal.tests.length} goal tests newly passing${full.timedOut ? ', timed out' : ''}); dropped`);
+    return none('regressed', runs);
+  }
+  const verified: VerifyOutcome = { ...held, full, progress: p };
+  const gate = await gateHeldPartial(mem, goal, verified, ctx.ask, { budget: mem.stepBudget, stage: 'propose', note: (d) => note('guard', d) });
+  if (gate.decision === null) return none('held', runs, gate.requests);
+  note('progress', `${goal.id}: progress commit — partial fix ${where}: ${goalPassing.length} of ${goal.tests.length} goal tests pass (${committed.summary.passed}→${full.passed} of ${full.total}), no regressions; the remaining ${goal.tests.length - goalPassing.length} stay open and are re-clustered from the next baseline`);
+  return { decision: gate.decision, requests: gate.requests, runs, reason: 'committed' };
+}
+
+/** `commitProgress` for the loop: the pairs check on its deps, the requests and runs on the budget and the trace. */
+async function commitProgressHere(st: LoopState): Promise<Decision | null> {
+  const opts: ProgressOptions = { pairsUntested: freshPairs(st) !== null, note: (phase, detail) => note(st, phase, detail) };
+  if (st.deps.regressionRun !== undefined) opts.regressionRun = st.deps.regressionRun;
+  const r = await commitProgress(st.ctx, st.mem, st.goal, opts);
+  if (r.requests > 0) {
+    spend(st.mem, r.requests);
+    st.trace.jevRequests += r.requests;
+  }
+  st.trace.testRuns += r.runs;
+  return r.decision;
+}
+
+// ---------------------------------------------------------------------------------------
 // Sources at a site
 // ---------------------------------------------------------------------------------------
 
@@ -802,7 +914,9 @@ function finish(st: LoopState, decision: Decision): SubGoalResult {
 /**
  * The step ends on its budget (§13.4 (b)): the pairs of partials get their reserve, a passer the
  * guard still holds (rule (a) pending, rule (b) suspect) is committed rather than dropped with
- * the goal's bookkeeping, and only then does the step return `budget`.
+ * the goal's bookkeeping, then the held partial is committed as a progress commit
+ * (`commitProgress`: pairs first, the regression run, the guard), and only then does the step
+ * return `budget`.
  */
 async function exitOnBudget(st: LoopState): Promise<SubGoalResult> {
   const pairs = await visitPairs(st);
@@ -812,6 +926,8 @@ async function exitOnBudget(st: LoopState): Promise<SubGoalResult> {
     note(st, 'guard', `${st.goal.id}: the step ends on its budget; committing the held passer${held.kind === 'commit' && held.note !== undefined ? ` as ${held.note}` : ''}`);
     return finish(st, held);
   }
+  const partial = await commitProgressHere(st);
+  if (partial !== null) return finish(st, partial);
   return finish(st, { kind: 'budget' });
 }
 
@@ -917,14 +1033,15 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
   }
 
   // Step end (§2.3 tail): untested pairs of partials and re-queued timeouts first; then a flagged
-  // passer beats nothing (the guard never overrides the tests); then the held partial; else park.
+  // passer beats nothing (the guard never overrides the tests); then the held partial as a
+  // progress commit (regression run, guard); else park.
   const pairs = await visitPairs(st);
   if (pairs.kind === 'exit') return exitOn(st, pairs.decision);
   const retried = await drainRetries(st);
   if (retried.kind === 'exit') return exitOn(st, retried.decision);
   const suspect = commitSuspect(mem, goal);
   if (suspect !== null) return finish(st, suspect);
-  const partial = commitPartial(mem, goal);
+  const partial = await commitProgressHere(st);
   if (partial !== null) return finish(st, partial);
   return finish(st, { kind: 'parked', reason: describeExhaustion(goal, sites) });
 }

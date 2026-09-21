@@ -200,11 +200,20 @@ export interface FakeSubGoalOptions {
   rank?: (cands: readonly Candidate[], site: Site) => RankResult;
   /** status per job (default: 'unchanged') */
   statusOf?: (job: VerifyJob, batch: number) => VerifyStatus;
+  /** the goal-subset summary of a job's run (default: `outcomeOf`'s per status — a `partial` needs one that still fails a goal test) */
+  subsetOf?: (job: VerifyJob, batch: number) => TestRunSummary | undefined;
   /** the guard's verdict per batch (default: `continue`) */
   decide?: (results: readonly VerifyOutcome[], batch: number, mem: RunMemory) => GuardVerdict;
   /** charged per run by the fake runner (default 1 run, 0 ms) */
   runCost?: { runs: number; wallMs: number };
-  pairs?: Candidate[];
+  /** the pairs of partials of the goal: a fixed list, or a function of the memory (e.g. the real bases.ts pairsOfPartials) */
+  pairs?: Candidate[] | ((mem: RunMemory, goal: Goal) => Candidate[]);
+  /**
+   * The full-suite regression run of a held partial before its progress commit (subgoal.ts
+   * commitProgress). Default: the partial's own subset run stands for the suite (a clean partial).
+   * `null` from the fake means the run could not be made (the partial stays held).
+   */
+  regressionRun?: (outcome: VerifyOutcome, goal: Goal) => TestRunSummary | null;
 }
 
 export function fakeQueue(): SearchQueue & { items: VerifyJob[] } {
@@ -262,7 +271,10 @@ export function fakeSubGoalDeps(o: FakeSubGoalOptions): SubGoalDeps & { rec: Rec
       const cost = o.runCost ?? { runs: 1, wallMs: 0 };
       mem.stepBudget.testRunsLeft -= cost.runs * jobs.length;
       mem.stepBudget.testWallLeftMs -= cost.wallMs * jobs.length;
-      const outcomes = jobs.map((j) => outcomeOf(j, o.statusOf?.(j, batch) ?? 'unchanged'));
+      const outcomes = jobs.map((j) => {
+        const subset = o.subsetOf?.(j, batch);
+        return outcomeOf(j, o.statusOf?.(j, batch) ?? 'unchanged', subset === undefined ? {} : { subset });
+      });
       // like sieve/runner.ts: only a completed (classified) candidate is `tried`
       for (const out of outcomes) mem.tried.add(sha12(out.applied.diff));
       return outcomes;
@@ -271,7 +283,11 @@ export function fakeSubGoalDeps(o: FakeSubGoalOptions): SubGoalDeps & { rec: Rec
       rec.decideCalls.push([...results]);
       return o.decide?.(results, rec.decideCalls.length, mem) ?? { kind: 'continue' };
     },
-    pairsOfPartials: () => o.pairs ?? [],
+    pairsOfPartials: (mem, goal) => (typeof o.pairs === 'function' ? o.pairs(mem as RunMemory, goal) : (o.pairs ?? [])),
+    regressionRun: async (_ctx, mem, goal, outcome) => {
+      mem.stepBudget.testRunsLeft -= 1;
+      return o.regressionRun === undefined ? outcome.subset : o.regressionRun(outcome, goal);
+    },
   };
 }
 

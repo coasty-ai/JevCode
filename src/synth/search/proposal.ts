@@ -2,9 +2,12 @@
  * Proposal builders of the Ledger + Sieve synthesizer (docs/JEV-ONLY-DESIGN.md §5.1, §5.2, §5.5).
  *
  * Everything the synthesizer hands back to the engine goes through here so the shape is the
- * same every step: the action is one of `patch`, `run`, `done` or `read` (never `edit` or
- * `write`: a `patch` carries multi-line `extraEdits` atomically and the engine runs
- * `git apply --check`); the plan draft uses the fixed grammar `fix <first_test_id>[, +N more] in
+ * same every step: the action is one of `patch`, `run` or `done` — never `read` (the synthesizer
+ * holds every source file itself, search/index.ts loadPythonFiles, and a `read` it proposed was
+ * declined at review-band risk 7–12 times per miss in bench runs with no reviewer, tripping the
+ * loop detector into `max_replans`: jev-only-rungs-1-2.md §19.7), never `edit` or `write` (a
+ * `patch` carries multi-line `extraEdits` atomically and the engine runs `git apply --check`);
+ * the plan draft uses the fixed grammar `fix <first_test_id>[, +N more] in
  * <path>` so the engine's Jev stages can read it and `memory.ts parseGoalItem` can parse it back
  * on `--resume`; `openProblems` carries human-readable notes only (it is Jev-visible in the risk
  * stage's `plan_mismatch` level); `rawText` is the JSON of the step's `GoalSearchTrace` (or a
@@ -35,9 +38,6 @@ import type { Base, Goal, GoalSearchTrace, VerifyOutcome } from './types.js';
  * (ladder `table`, bench/data/ladder/README.md). More files means a source violated the contract.
  */
 export const MAX_PATCH_FILES = 2;
-
-/** The engine's `read` bound ("12 files, 16 KB each", provider/actions.ts tool schema). */
-export const READ_MAX_PATHS = 12;
 
 /** Test ids in goal texts are clipped so a long pytest node id cannot swallow the sentence. */
 export const TEST_ID_MAX_CHARS = 80;
@@ -150,25 +150,41 @@ export function describeEdit(applied: AppliedCandidate): string {
   return `${c.op} at ${c.site.file.path}:${c.site.line}`;
 }
 
+/** How many of the goal's tests the evidence shows newly passing (other goals' tests the same edit fixed do not count here). */
+export function goalTestsPassing(goal: Pick<Goal, 'tests'>, evidence: Pick<ProposalEvidence, 'newlyPassing'>): number {
+  const passing = new Set(evidence.newlyPassing);
+  return goal.tests.filter((t) => passing.has(t)).length;
+}
+
+/** `partial fix: k of n goal tests pass, no regressions; the remaining m stay open` — the summary of a progress commit, shared by the goal text and the note. */
+export function partialFixSummary(goal: Pick<Goal, 'tests'>, evidence: Pick<ProposalEvidence, 'newlyPassing' | 'newlyFailing'>): string {
+  const k = goalTestsPassing(goal, evidence);
+  const n = goal.tests.length;
+  const r = evidence.newlyFailing.length;
+  const regressions = r === 0 ? 'no regressions' : `${r} regression${r === 1 ? '' : 's'}`;
+  return `partial fix: ${k} of ${n} goal test${n === 1 ? '' : 's'} pass, ${regressions}; the remaining ${n - k} stay open`;
+}
+
 /**
  * The goal text of a `patch` (§5.1 row 1). With the shadow-run evidence it states what was
  * measured, so the risk stage's `plan_mismatch` and `out_of_scope` Scores read a verified change
  * and not a claim: `apply verified fix: <tests> now pass (N→M of T), no regressions; <source>/<op>
- * at <path>:<line>`. Without evidence (a revert, a re-proposal whose evidence is gone) it is the
- * plain `fix <tests> in <path>:<line> (<source>/<op>)`.
+ * at <path>:<line>`; for a progress commit `apply partial fix: k of n goal tests pass (<tests>)
+ * (N→M of T), no regressions; the remaining m stay open; <source>/<op> at <path>:<line>`. Without
+ * evidence (a revert, a re-proposal whose evidence is gone) it is the plain `fix <tests> in
+ * <path>:<line> (<source>/<op>)`.
  */
 export function patchGoalText(applied: AppliedCandidate, goal: Goal, evidence?: ProposalEvidence): string {
   const c = applied.candidate;
   const where = `${c.site.file.path}:${c.site.line}`;
   if (evidence === undefined) return `fix ${testsLabel(goal)} in ${where} (${c.source}/${c.op})`;
-  const passing = new Set(evidence.newlyPassing);
-  const allGoalTestsPass = goal.tests.length > 0 && goal.tests.every((t) => passing.has(t));
-  const tests = allGoalTestsPass
-    ? `${testsLabel(goal)} now ${goal.tests.length === 1 ? 'passes' : 'pass'}`
-    : `${evidence.newlyPassing.length} of ${goal.tests.length} goal test${goal.tests.length === 1 ? '' : 's'} now pass (${testsLabel(goal)})`;
+  const k = goalTestsPassing(goal, evidence);
+  const allGoalTestsPass = goal.tests.length > 0 && k === goal.tests.length;
+  const counts = `(${evidence.before.passed}→${evidence.after.passed} of ${evidence.after.total})`;
   const n = evidence.newlyFailing.length;
   const regressions = n === 0 ? 'no regressions' : `${n} regression${n === 1 ? '' : 's'}`;
-  return `apply ${allGoalTestsPass ? 'verified' : 'partial'} fix: ${tests} (${evidence.before.passed}→${evidence.after.passed} of ${evidence.after.total}), ${regressions}; ${c.source}/${c.op} at ${where}`;
+  if (allGoalTestsPass) return `apply verified fix: ${testsLabel(goal)} now ${goal.tests.length === 1 ? 'passes' : 'pass'} ${counts}, ${regressions}; ${c.source}/${c.op} at ${where}`;
+  return `apply partial fix: ${k} of ${goal.tests.length} goal test${goal.tests.length === 1 ? '' : 's'} pass (${testsLabel(goal)}) ${counts}, ${regressions}; the remaining ${goal.tests.length - k} stay open; ${c.source}/${c.op} at ${where}`;
 }
 
 /**
@@ -631,13 +647,14 @@ export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, g
   const paths = diffPaths(applied.diff);
   if (paths.length > MAX_PATCH_FILES) throw new ProposalError(`diff touches ${paths.length} files (${paths.join(', ')}); a candidate may touch at most ${MAX_PATCH_FILES}`);
   const notes: string[] = [];
+  const e = evidence ?? undefined;
   if (note === 'possible overfit') notes.push(`possible overfit: ${describeEdit(applied)} passes every test, but Jev rated no test-passing candidate a general fix; review the change`);
-  if (note === 'partial') notes.push(`partial: ${describeEdit(applied)} fixes some of ${testsLabel(goal)} without regressions; the rest stay open`);
+  // a progress commit says so in the words the evidence measured (proposal + evidence agree: newlyPassing = its tests, goalTests = the goal's)
+  if (note === 'partial') notes.push(e === undefined ? `partial fix: ${describeEdit(applied)} fixes some of ${testsLabel(goal)} without regressions; the rest stay open` : `${partialFixSummary(goal, e)} (${describeEdit(applied)})`);
   notes.push(...(opts.notes ?? []));
   const record: JsonObject = trace ? traceRecord(trace) : { kind: 'patch', goalId: goal.id, ledger: ledgerLine(mem.goals), edit: editRecord(applied) };
   if (note !== undefined) record['note'] = note;
   if (opts.notes !== undefined && opts.notes.length > 0) record['notes'] = [...opts.notes];
-  const e = evidence ?? undefined;
   if (e !== undefined) record['evidence'] = { before: e.before.passed, after: e.after.passed, total: e.after.total, newlyPassing: e.newlyPassing.length, newlyFailing: e.newlyFailing.length };
   return withEvidence(
     {
@@ -745,20 +762,6 @@ export function proposeDone(ctx: SynthesisContext, mem: ProposalMemory, mode: Do
     action: { kind: 'done', summary: clip(summary, 600) },
     plan: draft(claims, remainingItems(ctx, mem, new Set(claims)), openProblemNotes(mem, notes)),
     rawText: rawText(record),
-  };
-}
-
-/** `read` of bounded workspace paths (§5.1 gather_context row); the plan is unchanged. */
-export function proposeRead(ctx: SynthesisContext, paths: readonly string[], mem?: ProposalMemory): Proposal {
-  const unique: string[] = [];
-  for (const p of paths) if (p.trim().length > 0 && !unique.includes(p)) unique.push(p);
-  if (unique.length === 0) throw new ProposalError('read needs at least one path');
-  const bounded = unique.slice(0, READ_MAX_PATHS);
-  return {
-    goal: clip(`read ${bounded.join(', ')}`, PLAN_ITEM_MAX_CHARS),
-    action: { kind: 'read', paths: bounded },
-    plan: draft([], mem === undefined ? [...ctx.plan.remaining] : remainingItems(ctx, mem), [...ctx.plan.openProblems]),
-    rawText: rawText({ kind: 'read', paths: bounded }),
   };
 }
 

@@ -29,7 +29,9 @@ import { isPersistedSearchState } from '../../../../src/synth/search/types.js';
 import type { SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/index.js';
 import { sha12 } from '../../../../src/core/hash.js';
-import { freshPairsOfPartials, guardState, improvedBase, pairsOfPartials, partialsFromPersisted, partialsOf, siteKeyOf } from '../../../../src/synth/search/bases.js';
+import { freshPairsOfPartials, guardState, holdBestPartial, improvedBase, pairsOfPartials, partialsFromPersisted, partialsOf, siteKeyOf } from '../../../../src/synth/search/bases.js';
+import { handleDirective } from '../../../../src/synth/search/directive.js';
+import { directiveText } from '../../../../src/loop/stages/replan.js';
 import { siteKey } from '../../../../src/synth/search/sites.js';
 import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
 import { makeTrace, patchEntry, runEntry } from './proposal-helpers.js';
@@ -73,6 +75,8 @@ interface HarnessOptions {
   bestGuess?: ((goal: Goal, mem: RunMemory) => SubGoalResult)[];
   /** workspace files handed to loadFiles (default: gcd.py) */
   files?: SourceFile[];
+  /** the regression run of a progress commit the controller makes itself (default: the partial's subset run stands for the suite) */
+  regressionRun?: SearchDeps['regressionRun'];
 }
 
 interface TracebackFrameLike {
@@ -170,6 +174,12 @@ function harness(o: HarnessOptions = {}): Harness {
       if (next === undefined) return fixFor(goal, file);
       return next(goal, mem);
     },
+    regressionRun:
+      o.regressionRun ??
+      (async (_ctx, _mem, _goal, outcome) => {
+        calls.push('regressionRun');
+        return outcome.subset;
+      }),
     now: () => 1_000,
   };
   return { synth: new LedgerSieveSynthesizer(deps), file, calls, goalsSearched, runTestCommands };
@@ -276,13 +286,13 @@ describe('LedgerSieveSynthesizer.synthesize: the §2.2 step', () => {
     expect(mem.goals.map((g) => g.status)).toEqual(['fixed']);
   });
 
-  it('the step after an executed `patch` is the full-suite `run`; it claims the goals the fresh baseline shows fixed, and under `investigate` the unseen patched file is read first', async () => {
+  it('the step after an executed `patch` is the full-suite `run`; it claims the goals the fresh baseline shows fixed, whatever the intent (never a `read`)', async () => {
     const h = harness();
     const runId = 'ctl-run-after-patch';
     await h.synth.synthesize(ctxFor({ runId, step: 1 }));
-    // investigate intent, patched file not shown: a `read` of it comes before the run
+    // investigate intent, patched file not shown: still the run — the synthesizer never proposes a read (§19.7)
     const r = await h.synth.synthesize(ctxFor({ runId, step: 2, intent: 'investigate', window: [executedPatch(1)] }));
-    expect(r.action).toEqual({ kind: 'read', paths: ['gcd.py'] });
+    expect(r.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
     const ctx = ctxFor({ runId, step: 2, window: [executedPatch(1)], plan: { remaining: [`fix ${GCD_TEST} in gcd.py`] } });
     const p = await h.synth.synthesize(ctx);
     expect(p.action).toEqual({ kind: 'run', command: TEST_COMMAND, timeoutMs: expect.any(Number) });
@@ -300,7 +310,8 @@ describe('LedgerSieveSynthesizer.synthesize: the §2.2 step', () => {
     expect(pg.plan.done).toEqual([`fix ${GCD_TEST} in gcd.py`]);
     expect(pg.plan.remaining).toEqual([VERIFY_ITEM]); // never empty on a run: an empty remaining reads as a completion claim
     // the patch changed the workspace: the synthesizer re-baselines (so the run's plan carries the ledger) but does not search
-    expect(h.calls.filter((c) => c === 'runTests')).toHaveLength(2);
+    // (two re-baselines: the `investigate` step above and this one both saw the workspace changed since their baseline)
+    expect(h.calls.filter((c) => c === 'runTests').length).toBeGreaterThanOrEqual(2);
     expect(h.calls.filter((c) => c.startsWith('searchSubGoal'))).toHaveLength(1);
     // the ledger follows the tests: the scripted re-baseline still fails the goal's test, so the goal is open again
     expect(ledgerOf(ctx)).toEqual(['fixed 0, open 1, parked 0']);
@@ -602,24 +613,19 @@ describe('the ledger follows the workspace: patches the engine did not execute',
     expect(p1.plan.remaining.at(-1)).toBe(VERIFY_ITEM);
     expect(p1.plan.done).toEqual([]);
   });
-  it('intent investigate: one `read` of the source files the ledger points at (unseen first, else the relevant ones); after an executed read the search proceeds', async () => {
+  it('intent investigate: never a `read` (§19.7: 7–12 declined reads per miss tripped the loop detector); the search proceeds at once and every proposal of the run is a patch, run or done', async () => {
     const runId = 'ctl-investigate';
     const h = harness({ baselines: [{ summary: summary({ command: TEST_COMMAND, failing: [GCD_TEST], passing: [GCD_OTHER_TEST] }), output: '' }] });
     const p1 = await h.synth.synthesize(ctxFor({ runId, step: 1, intent: 'investigate' }));
-    expect(p1.action.kind).toBe('read');
-    if (p1.action.kind === 'read') expect(p1.action.paths.every((x) => !/test/.test(x))).toBe(true);
-    expect(h.goalsSearched).toEqual([]);
-    // one executed read: a second is allowed (INVESTIGATE_READS_MAX = 2); after two the search runs
-    const readEntry = { step: 1, intent: 'investigate' as const, action: 'read gcd.py', outcome: 'executed' as const, shownFiles: ['gcd.py'], notes: [] };
-    const again = await h.synth.synthesize(ctxFor({ runId, step: 2, intent: 'investigate', window: [readEntry] }));
-    expect(again.action.kind).toBe('read');
-    const p2 = await h.synth.synthesize(ctxFor({ runId, step: 3, intent: 'investigate', window: [readEntry, { ...readEntry, step: 2 }] }));
-    expect(p2.action.kind).toBe('patch');
-    // a declined read counts too: two trailing read proposals, whatever their outcome, end the allowance
+    expect(p1.action.kind).toBe('patch');
+    expect(h.goalsSearched).toEqual(['g1']);
+    // a window full of earlier reads (an engine that read on its own) changes nothing: still no read, and no `read` event
+    const readEntry = { step: 1, intent: 'investigate' as const, action: 'read gcd.py', outcome: 'declined' as const, shownFiles: [], notes: [] };
     const h2 = harness({ baselines: [{ summary: summary({ command: TEST_COMMAND, failing: [GCD_TEST], passing: [GCD_OTHER_TEST] }), output: '' }] });
-    const p3 = await h2.synth.synthesize(ctxFor({ runId: 'ctl-investigate-declined', step: 3, intent: 'investigate', window: [readEntry, { ...readEntry, step: 2, outcome: 'declined' as const }] }));
-    expect(p3.action.kind).toBe('patch');
-    expect(h.goalsSearched).toHaveLength(1);
+    const ctx2 = ctxFor({ runId: 'ctl-investigate-window', step: 3, intent: 'investigate', window: [readEntry, { ...readEntry, step: 2 }] });
+    const p2 = await h2.synth.synthesize(ctx2);
+    expect(['patch', 'run', 'done']).toContain(p2.action.kind);
+    expect(ctx2.events.some((e) => e.type === 'synth' && e.phase === 'read')).toBe(false);
   });
   it('the post-patch run is a standing obligation: after the engine declined it, the next step proposes it again instead of searching', async () => {
     const runId = 'ctl-run-insist';
@@ -652,9 +658,9 @@ describe('step policy: the establishing run, one claim per verdict, done after t
       const again = await h.synth.synthesize(ctxFor({ runId, step: 2, intent, engineRun: false, window: [runEntry({ step: 1, command: TEST_COMMAND, outcome: 'declined', parsed: false })] }));
       expect(again.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
       expect(h.goalsSearched).toEqual([]);
-      // the engine executed it: the search proceeds (under `investigate` through its one compliance read)
+      // the engine executed it: the search proceeds under every intent (never a compliance read, §19.7)
       const p2 = await h.synth.synthesize(ctxFor({ runId, step: 3, intent, engineRun: false, window: [executedRun(2, TEST_COMMAND, { passed: 1, failed: 1 })] }));
-      expect(p2.action.kind).toBe(intent === 'investigate' ? 'read' : 'patch');
+      expect(p2.action.kind).toBe('patch');
       expect(h.calls.filter((c) => c === 'runTests')).toHaveLength(1); // one synthesizer baseline for the unchanged workspace
     }
   });
@@ -1332,5 +1338,143 @@ describe('loadPythonFiles: a re-baseline re-analyses only the files whose text c
     expect(fourth.get('pkg/a.py')).toBe(third.get('pkg/a.py'));
     expect(runMemory('cache-run').fileCache.size).toBe(2);
     dropMemory('cache-run');
+  });
+});
+
+// Progress commits and no `read` churn (jev-only-rungs-1-2.md §19.7)
+// ---------------------------------------------------------------------------------------
+
+describe('progress commits: a lone partial at the budget exit is committed as a partial fix, the goal stays open and its remaining tests re-cluster', () => {
+  const TWO = 'tests/test_gcd.py::test_two';
+  const FILE = sourceFile('gcd.py', GCD_BUGGY);
+  /** One pytest FAILURES section: the test's own frame, then `frame` (a source frame) and the error line. */
+  const section = (name: string, frame: string): string => `___________________________________ ${name} ___________________________________\ntests/test_gcd.py:10: in ${name}\n    assert run() == 1\n${frame}\nE   RecursionError: maximum recursion depth exceeded\n`;
+  const gcdFrame = 'gcd.py:5: in gcd\n    return gcd(a % b, b)';
+  /** A baseline whose failing tests all raise at gcd.py:gcd, so frame clustering makes them ONE goal (the long tier's merged-goal shape). */
+  function framedBaseline(failing: string[], passing: string[]): BaselineRun {
+    const output = `============================= FAILURES =============================\n${failing.map((t) => section(t.split('::')[1] ?? t, gcdFrame)).join('')}${failing.length} failed, ${passing.length} passed in 0.10s\n`;
+    return { summary: summary({ command: TEST_COMMAND, failing, passing }), output };
+  }
+
+  it('a `budget` result with a held partial and no untested pair: the controller commits it as a partial fix with the partial-fix evidence; the goal stays open with one progress commit', async () => {
+    const h = harness({
+      baselines: [framedBaseline([GCD_TEST, TWO], [GCD_OTHER_TEST])],
+      results: [
+        (goal, mem) => {
+          const committed = mem.bases.find((b) => b.origin === 'committed');
+          if (committed === undefined) throw new Error('no committed base');
+          const o = outcomeOf(jobOf(cand(siteAt(FILE, 5), 'return gcd(b, a % b)  # half'), committed), 'partial', { subset: summary({ command: TEST_COMMAND, passing: [GCD_OTHER_TEST, GCD_TEST], failing: [TWO] }) });
+          holdBestPartial(mem, [o], goal);
+          // verdicts the runner recorded for this goal: one `unchanged` (judged under the failure the commit removes), one regression
+          mem.tried.add('aaaaaaaaaaa1').add('bbbbbbbbbbb2');
+          mem.unchangedTried = new Map([[goal.id, new Set(['aaaaaaaaaaa1'])]]);
+          return budget()(goal);
+        },
+      ],
+    });
+    const ctx = ctxFor({ step: 1 });
+    const p = await h.synth.synthesize(ctx);
+    expect(p.action.kind).toBe('patch');
+    if (p.action.kind === 'patch') expect(p.action.diff).toContain('# half');
+    // the goal's `unchanged` verdicts left `tried` (re-enumerable on the new workspace); the regression stays tried
+    const memAfter = runMemory(ctx.runId);
+    expect(memAfter.tried.has('aaaaaaaaaaa1')).toBe(false);
+    expect(memAfter.tried.has('bbbbbbbbbbb2')).toBe(true);
+    expect(memAfter.unchangedTried?.has('g1')).toBe(false);
+    // the proposal text and the evidence both say partial: newlyPassing = its tests, goalTests = the goal's
+    expect(p.goal).toBe(`apply partial fix: 1 of 2 goal tests pass (${GCD_TEST}, +1 more) (1→2 of 3), no regressions; the remaining 1 stay open; mutation/relational_swap at gcd.py:5`);
+    expect(p.evidence).toMatchObject({ kind: 'shadow_test_run', newlyPassing: [GCD_TEST], newlyFailing: [], goalTests: [GCD_TEST, TWO], before: { passed: 1, total: 3 }, after: { passed: 2, total: 3 } });
+    expect(p.plan.openProblems).toContain('partial fix: 1 of 2 goal tests pass, no regressions; the remaining 1 stay open (relational_swap at gcd.py:5)');
+    expect(p.plan.remaining).toEqual([`fix ${GCD_TEST}, +1 more in gcd.py`, VERIFY_ITEM]);
+    expect(JSON.parse(p.rawText)).toMatchObject({ outcome: 'partial', note: 'partial' });
+    // the regression run was made through the controller's dep; the goal is open, one link of the chain
+    expect(h.calls).toContain('regressionRun');
+    const mem = runMemory(ctx.runId);
+    const g = mem.goals[0];
+    if (g === undefined) throw new Error('no goal');
+    expect(g).toMatchObject({ status: 'open', progressCommits: 1, attempts: 0, tests: [GCD_TEST, TWO], phase: 'SEEDS' });
+    expect(improvedBase(mem)).toBeUndefined();
+    expect(ledgerOf(ctx)).toEqual(['fixed 0, open 1, parked 0']);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /g1: partial fix committed \(progress commit 1 of 3; 1 of 2 goal tests pass, the remaining 1 stay open\); the goal stays open and is re-clustered from the next baseline; 1 unchanged verdict taken under the old failure forgotten \(re-enumerable\)/.test(e.detail))).toBe(true);
+  });
+
+  it('a `budget` result with a held partial AND an untested pair: the pair comes first — the goal stays open, nothing is committed this step', async () => {
+    const h = harness({
+      baselines: [framedBaseline([GCD_TEST, TWO], [GCD_OTHER_TEST])],
+      results: [
+        (goal, mem) => {
+          const committed = mem.bases.find((b) => b.origin === 'committed');
+          if (committed === undefined) throw new Error('no committed base');
+          const h1 = outcomeOf(jobOf(cand(siteAt(FILE, 5), 'return gcd(b, a % b)  # half 1'), committed), 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, GCD_TEST], failing: [TWO] }) });
+          const h2 = outcomeOf(jobOf(cand(siteAt(FILE, 6, 'insert'), 'return a  # half 2', { source: 'template' }), committed), 'partial', { subset: summary({ passing: [GCD_OTHER_TEST, TWO], failing: [GCD_TEST] }) });
+          holdBestPartial(mem, [h1, h2], goal);
+          return budget()(goal);
+        },
+      ],
+    });
+    const ctx = ctxFor({ step: 1 });
+    const p = await h.synth.synthesize(ctx);
+    expect(p.action.kind).toBe('run');
+    expect(h.calls).not.toContain('regressionRun');
+    const mem = runMemory(ctx.runId);
+    expect(mem.goals[0]).toMatchObject({ status: 'open', budgetHits: 0 });
+    expect(mem.goals[0]?.progressCommits ?? 0).toBe(0);
+    expect(freshPairsOfPartials(mem, mem.goals[0]!)).toHaveLength(1);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'progress' && /waits: untested pairs of complementary partials run first/.test(e.detail))).toBe(true);
+  });
+
+  it('after a partial commit the goal keeps its remaining tests OPEN and the next baseline re-clusters them by their new frame (ladder `masked`: report → parse/aggregate); nothing is marked fixed', async () => {
+    const A = 'tests/test_gcd.py::test_a';
+    const B = 'tests/test_gcd.py::test_b';
+    const C = 'tests/test_gcd.py::test_c';
+    const other = sourceFile('other.py', 'def f(x):\n    return x + 1\n');
+    const before = framedBaseline([A, B, C], [GCD_OTHER_TEST]).output;
+    // the same tests now fail for a new reason at two new frames
+    const after = `============================= FAILURES =============================\n${section('test_b', 'gcd.py:2: in helper\n    return a')}${section('test_c', 'other.py:2: in f\n    return x + 1')}2 failed, 2 passed in 0.10s\n`;
+    const afterSummary = summary({ command: TEST_COMMAND, failing: [B, C], passing: [GCD_OTHER_TEST, A] });
+    const h = harness({
+      files: [FILE, other],
+      baselines: [
+        { summary: summary({ command: TEST_COMMAND, failing: [A, B, C], passing: [GCD_OTHER_TEST] }), output: before },
+        { summary: afterSummary, output: after },
+      ],
+      results: [(goal) => ({ kind: 'commit', applied: applyCandidate(cand(siteAt(FILE, 5), FIX_TEXT)), allGoalTestsPass: false, note: 'partial', after: afterSummary, trace: makeTrace({ goalId: goal.id, outcome: 'partial' }) })],
+    });
+    const runId = 'ctl-recluster';
+    const first = ctxFor({ runId, step: 1 });
+    const p1 = await h.synth.synthesize(first);
+    expect(p1.action.kind).toBe('patch');
+    expect(p1.goal).toMatch(/^apply partial fix: 1 of 3 goal tests pass .* the remaining 2 stay open; /);
+    const mem = runMemory(runId);
+    expect(mem.goals.map((g) => [g.id, g.status, g.tests])).toEqual([['g1', 'open', [A, B, C]]]);
+    expect(mem.goals[0]?.progressCommits).toBe(1);
+
+    // the patch executed: the next step re-baselines; B and C fail at two new frames → two OPEN goals, g1 keeps its id for one, none is fixed
+    const second = ctxFor({ runId, step: 2, window: [executedPatch(1)] });
+    const p2 = await h.synth.synthesize(second);
+    expect(p2.action.kind).toBe('run'); // the post-patch verification run, claiming nothing (no goal is fixed)
+    expect(p2.plan.done).toEqual([]);
+    const shape = mem.goals.map((g) => `${g.id}:${g.status}:${g.tests.join('+')}:${g.suspectedFiles.join('+')}`).sort();
+    expect(shape).toEqual([`g1:open:${B}:gcd.py`, `g2:open:${C}:other.py`]);
+    expect(mem.goals.find((g) => g.id === 'g1')?.progressCommits).toBe(1);
+    expect(mem.goals.find((g) => g.id === 'g2')?.progressCommits ?? 0).toBe(0);
+    expect(ledgerOf(second)).toEqual(['fixed 0, open 2, parked 0']);
+    expect(p2.plan.remaining).toEqual([`fix ${B} in gcd.py`, `fix ${C} in other.py`, VERIFY_ITEM]);
+  });
+
+  it('a `gather_context` directive never yields a `read`: the open goal is re-localised (sites dropped, source order rotated) and the step proceeds to the search', async () => {
+    const h = harness({ handleDirective: (ctx, mem) => handleDirective(ctx, mem), results: [budget(), (goal) => fixFor(goal, FILE)] });
+    const runId = 'ctl-gather';
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    const mem = runMemory(runId);
+    expect(mem.goals[0]?.status).toBe('open');
+    mem.localizeCache.set('g1', { files: [], functions: [], sites: [], requests: 0 });
+    const ctx = ctxFor({ runId, step: 2, intent: 'investigate', directive: directiveText('gather_context', 'chosen', 0.71, 0.08, 'run:abc123def456:0123456789ab') });
+    const p = await h.synth.synthesize(ctx);
+    expect(p.action.kind).toBe('patch');
+    expect(mem.overrides.sourceRotation).toEqual({ g1: 1 });
+    expect(mem.localizeCache.has('g1')).toBe(false);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'directive' && /^gather_context: rotated source order of g1 \(1\); sites of g1 dropped; file beam 5 → 10; re-localise g1 with the latest failure text$/.test(e.detail))).toBe(true);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'read')).toBe(false);
   });
 });

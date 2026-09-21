@@ -39,8 +39,8 @@ import { codeTokens, levenshtein, normaliseLine, tokenizeFragment } from '../py/
 import type { LanePool } from '../sieve/lanes.js';
 import type { Candidate, CandidateSourceName, FailureView, JevAsk, SourceFile } from '../types.js';
 import { RUN_FAILURE_ID } from '../verify/text.js';
-import { appliedOnCommitted, committedBase, guardState, holdBestPartial, isPartial, outcomeSummary, siteKeyOf } from './bases.js';
-import type { GuardMemory, HeldPasser } from './bases.js';
+import { MAX_PARTIALS_REMEMBERED, appliedOnCommitted, commitPartial, committedBase, guardState, holdBestPartial, isPartial, outcomeSummary, siteKeyOf } from './bases.js';
+import type { GuardMemory, HeldPasser, PartialAdvice } from './bases.js';
 import { SIEVE_MAX_T_RUN_MS } from './budget.js';
 import { DEFAULT_PROBE_TIMEOUT_MS, MAX_PERTURBED_INPUTS, TEST_SOURCE_MAX_BYTES, createLaneProbe, inputKey, perturbedInputs, perturbedInputsFor, programNameOf, readTestSources } from './perturb.js';
 import type { BehaviourProbe, PerturbedInput } from './perturb.js';
@@ -72,13 +72,18 @@ export type { BehaviourProbe, LinkedListShape, PerturbationKind, PerturbedInput,
 
 /**
  * The all-overfit signature (§2.6): the sets where every passer overfits answered P(escape) 0.90
- * with max Noul 0.06 (`depth_first_search`, 7 candidates, contrarian-arbitrate.all.jsonl) and 0.89
- * with max Noul 0.06 (`wrap`, the two duplicated-loop passers of jev-only-quixbugs-4-overfit, §13
- * of jev-only-rungs-1-2.md), while every set containing the gold had P(escape) ≤ 0.38 and a Noul
- * ≥ 0.45. 0.8 keeps a margin on both sides where the design's 0.90 sat on the first observation
- * and missed the second by one wire tick; 0.5 would be a coin flip on neither.
+ * with max Noul 0.06 (`depth_first_search`, 7 candidates, contrarian-arbitrate.all.jsonl), 0.89 /
+ * 0.90 / 0.88 / 0.91 / 0.88 with max Noul 0.05–0.07 (`wrap`, the duplicated-loop passers of
+ * jev-only-quixbugs-4-overfit, §13 of jev-only-rungs-1-2.md) and 0.75 / 0.67 with max Noul 0.08
+ * (ladder `masked` runs 3 and 3b, §20: five `return 0` inserts into `total_ms`, committed under the
+ * 0.8 bound and killing the goal's remaining tests), while every set containing the gold had
+ * P(escape) ≤ 0.38 and a Noul ≥ 0.45. Both halves of the signature must hold (`arbitrate`), and the
+ * Noul half alone separates the two populations; 0.5 sits between the highest gold escape (0.38)
+ * and the lowest all-overfit one (0.67). A flagged set is never withheld past the step: the
+ * smallest edit is held as the `suspect` while the remaining sites run and is committed at step
+ * end as `possible overfit` if nothing better appears.
  */
-export const SUSPECT_ESCAPE_MIN = 0.8;
+export const SUSPECT_ESCAPE_MIN = 0.5;
 export const SUSPECT_NOUL_MAX = 0.1;
 /**
  * DESIGN §5.4 Choice/Noul resolution rule: the Choice argmax is overridden only when its own Noul
@@ -849,6 +854,79 @@ export function commitSuspect(mem: GuardMemory, goal?: Pick<Goal, 'id'>): Decisi
   if (s === null || (goal !== undefined && s.goalId !== goal.id)) return null;
   st.suspect = null;
   return { kind: 'commit', applied: appliedOnCommitted(mem, s.outcome), allGoalTestsPass: true, note: 'possible overfit', outcome: s.outcome };
+}
+
+// ---------------------------------------------------------------------------------------
+// The gate on a progress commit: the held partial at a budget exit or at exhaustion
+// ---------------------------------------------------------------------------------------
+
+export type PartialVerdict = 'clean' | 'vouched' | 'held' | 'no_request';
+
+export interface PartialGate {
+  /** the progress commit, or null when the partial stays held (doubtful, or no request left to ask) */
+  decision: Decision | null;
+  requests: number;
+  signals: SuspicionSignal[];
+  /** Jev's Q16 `general` p on the partial when asked (this step or an earlier one), else null */
+  noul: number | null;
+  verdict: PartialVerdict;
+}
+
+function rememberAdvice(mem: GuardMemory, id: string, advice: PartialAdvice): void {
+  const st = guardState(mem);
+  st.partialAdvice.set(id, advice);
+  while (st.partialAdvice.size > MAX_PARTIALS_REMEMBERED) {
+    const oldest = st.partialAdvice.keys().next().value;
+    if (oldest === undefined) break;
+    st.partialAdvice.delete(oldest);
+  }
+}
+
+/**
+ * The guard on a progress commit (subgoal.ts commitProgress), exactly rule (b) on a lone passer:
+ * the code-computed suspicion signals on `verified` — the held partial with its full-suite
+ * regression run attached — and, when any fires, ONE Q16 advisory over the same one-candidate
+ * arbitration state. No signal → commit. Signals → held below LONE_PASSER_HOLD_MAX_NOUL (one
+ * signal) or LONE_PASSER_VOUCH_MIN_NOUL (two or more), committed at or above. The advisory is
+ * cached per candidate in the guard state: a partial that stays the incumbent across steps is
+ * asked about once, and one Jev rated doubtful stays held without another request. A flagged
+ * partial the step cannot ask about (no Jev request left) is held as well and asked next step —
+ * unlike a lone passer, a partial closes no goal, so a step's wait withholds nothing the tests
+ * decided. Held means: the base stays in the beam (a strictly better partial may replace it, a
+ * later batch may still pass every goal test) and the controller's budget/park bookkeeping
+ * applies as before; an all-signals doubtful partial is never committed.
+ */
+export async function gateHeldPartial(mem: GuardMemory, goal: Goal, verified: VerifyOutcome, ask: JevAsk, opts: { budget?: Pick<HoldBudget, 'jevRequestsLeft'>; stage?: StageName; note?: (detail: string) => void } = {}): Promise<PartialGate> {
+  const st = guardState(mem);
+  const note = opts.note ?? ((): void => undefined);
+  const signals = suspicionSignals(verified, goal);
+  const after = outcomeSummary(verified);
+  const id = verified.applied.candidate.id;
+  if (signals.length === 0) return { decision: commitPartial(mem, goal, { outcome: verified, after }), requests: 0, signals, noul: null, verdict: 'clean' };
+
+  let advice = st.partialAdvice.get(id);
+  let requests = 0;
+  if (advice === undefined || advice.noul === null) {
+    const canAsk = opts.budget === undefined || opts.budget.jevRequestsLeft >= 1;
+    if (!canAsk) {
+      note(`${goal.id}: the held partial ${describe(verified)} looks ${signals.join(', ')} and no Jev request is left to ask about it; held until the next step`);
+      return { decision: null, requests, signals, noul: null, verdict: 'no_request' };
+    }
+    const arbCtx: ArbitrateContext = { goal };
+    if (opts.stage !== undefined) arbCtx.stage = opts.stage;
+    const adv = await adviseLonePasser(arbCtx, verified, ask);
+    requests += adv.requests;
+    advice = { goalId: goal.id, signals: [...signals], noul: adv.p };
+    rememberAdvice(mem, id, advice);
+  }
+  const bound = signals.length >= STRONG_SIGNALS_MIN ? LONE_PASSER_VOUCH_MIN_NOUL : LONE_PASSER_HOLD_MAX_NOUL;
+  const p = advice.noul;
+  if (p !== null && p >= bound) {
+    note(`${goal.id}: the held partial ${describe(verified)} looks ${signals.join(', ')} but general ${p.toFixed(2)} ≥ ${bound} keeps it; committing it as a partial fix`);
+    return { decision: commitPartial(mem, goal, { outcome: verified, after }), requests, signals, noul: p, verdict: 'vouched' };
+  }
+  note(`${goal.id}: holds the partial ${describe(verified)} (${signals.join(', ')}; general ${p === null ? 'n/a' : p.toFixed(2)} < ${bound}); not committed`);
+  return { decision: null, requests, signals, noul: p, verdict: 'held' };
 }
 
 // ---------------------------------------------------------------------------------------

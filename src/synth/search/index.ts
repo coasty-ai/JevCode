@@ -24,7 +24,7 @@ import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
 import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, mergeSummaries, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
 import type { OracleSearch, OracleSearchInput, TracebackFrame } from '../oracle/index.js';
 import { analyse } from '../py/structure.js';
-import { subsetCommand } from '../sieve/runner.js';
+import { forgetUnchangedTried, subsetCommand } from '../sieve/runner.js';
 import type { RunnerMemory } from '../sieve/runner.js';
 import type { AppliedCandidate, LocalizeResult, SourceFile, TestRunSummary } from '../types.js';
 import { DEFAULT_TEST_OUTPUT_BYTES, isTestFile, sandboxRunFn, summarize } from '../verify/index.js';
@@ -32,14 +32,14 @@ import { PERSISTED_PARTIALS_KEY, forgetGoal, forgetHeld, freshPairsOfPartials, p
 import { fitOracle, freshBudget, laneCount } from './budget.js';
 import { defaultOverrides, handleDirective, invalidateStaleSites } from './directive.js';
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
-import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
+import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, MAX_PROGRESS_COMMITS_PER_GOAL, clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
 import { commitSuspect } from './guard.js';
 import type { GoalPick } from './goals.js';
 import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
 import type { PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
-import { BEST_GUESS_NOTE, READ_MAX_PATHS, bestGuessGoalText, commitEvidence, proposeDone, proposePatch, proposeRead, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
-import { everySiteSeedsExhausted, isTestPath, newTrace, taskIdentifiers } from './subgoal.js';
-import type { SubGoalMemory, SubGoalResult } from './subgoal.js';
+import { BEST_GUESS_NOTE, bestGuessGoalText, commitEvidence, goalTestsPassing, proposeDone, proposePatch, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
+import { commitProgress, everySiteSeedsExhausted, isTestPath, newTrace, taskIdentifiers } from './subgoal.js';
+import type { ProgressOptions, RegressionRun, SubGoalMemory, SubGoalResult } from './subgoal.js';
 import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState } from './types.js';
 import { isPersistedSearchState } from './types.js';
 
@@ -70,13 +70,6 @@ const ROLLBACK_REASON_CHARS = 160;
  * decline; three identical proposals would trip the engine's `patch:<sha12>` loop guard, so one.
  */
 const REPROPOSE_MAX = 1;
-/**
- * Consecutive executed `read`s the `investigate` compliance may propose before the search proceeds
- * regardless of the intent. Live run 10 (ladder `inventory`): after one read the intent stayed
- * `investigate` and the patch was reviewed at 0.30; after a second read it turned to `edit`. Three
- * identical reads would trip the engine's loop guard.
- */
-const INVESTIGATE_READS_MAX = 2;
 /** Proposal kinds whose execution changes the workspace (window action labels start with the kind, provider/actions.ts summariseAction). */
 const CHANGING_ACTIONS: readonly string[] = ['patch', 'edit', 'write'];
 /**
@@ -145,6 +138,8 @@ export interface SearchDeps {
   pickGoal(ctx: SynthesisContext, mem: RunMemory): Promise<GoalPick>;
   /** search/directive.ts handleDirective (§5.4) */
   handleDirective(ctx: SynthesisContext, mem: RunMemory): Promise<DirectiveResult>;
+  /** the regression run of a progress commit the controller makes itself (subgoal.ts commitProgress); the runner's own when absent */
+  regressionRun?: RegressionRun;
   now(): number;
 }
 
@@ -186,38 +181,6 @@ export function patchNotExecutedLastStep(window: readonly WindowEntry[]): { step
   const e = window.at(-1);
   if (e === undefined || e.outcome === 'executed' || !/^patch(\s|$)/.test(e.action)) return null;
   return { step: e.step, outcome: e.outcome, reason: e.reason ?? '' };
-}
-
-/**
- * Source files (never test files) the open goals point at — their suspected files and the files
- * of their localised sites — that are not in this step's `contextFiles`, ≤ READ_MAX_PATHS.
- */
-export function unseenSourceFiles(ctx: SynthesisContext, mem: Pick<RunMemory, 'goals' | 'localizeCache'>): string[] {
-  const shown = new Set(ctx.contextFiles.map((f) => f.path));
-  const out: string[] = [];
-  const push = (p: string): void => {
-    if (!shown.has(p) && !isTestPath(p) && !out.includes(p)) out.push(p);
-  };
-  for (const g of mem.goals) {
-    if (g.status !== 'open' && g.status !== 'active') continue;
-    for (const p of g.suspectedFiles) push(p);
-    for (const site of mem.localizeCache.get(g.id)?.sites ?? []) push(site.file.path);
-  }
-  return out.slice(0, READ_MAX_PATHS);
-}
-
-/** Source files (never test files) the open goals point at: their localised sites' files, else their suspected files. */
-export function relevantSourceFiles(mem: Pick<RunMemory, 'goals' | 'localizeCache'>): string[] {
-  const out: string[] = [];
-  const push = (p: string): void => {
-    if (!isTestPath(p) && !out.includes(p)) out.push(p);
-  };
-  for (const g of mem.goals) {
-    if (g.status !== 'open' && g.status !== 'active') continue;
-    for (const site of mem.localizeCache.get(g.id)?.sites ?? []) push(site.file.path);
-    for (const p of g.suspectedFiles) push(p);
-  }
-  return out;
 }
 
 /** The memory fields that record what the engine executed (memory.ts SearchMemory: they outlive the 4-entry window). */
@@ -600,11 +563,6 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     // this path states the measured expectation.
     if (engineNeedsRun(mem)) {
       const never = mem.lastEngineRun === null;
-      // the establishing run is not investigation the engine can decline in favour of a read: it is what makes the plan's first item real
-      if (!never) {
-        const read = this.investigateRead(ctx, mem);
-        if (read !== null) return read;
-      }
       const goal = scratch.lastCommit === null ? undefined : mem.goals.find((g) => g.id === scratch.lastCommit?.goalId);
       // repository mode: the baseline's command is the regression scope, never the whole suite
       const command = mem.baseline?.command ?? baselineCommand(ctx);
@@ -647,11 +605,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       return proposeDone(ctx, mem, 'green');
     }
 
-    // `investigate` is complied with once (a `read` of the files the ledger points at); the next
-    // step proceeds to the search: a patch is what moves the task.
-    const read = this.investigateRead(ctx, mem);
-    if (read !== null) return read;
-
+    // No `read` under any intent: the synthesizer holds every source file (loadPythonFiles), and
+    // the `investigate` reads it used to propose were declined at review-band risk 7–12 times per
+    // miss in bench runs with no reviewer, tripping the loop detector into `max_replans`
+    // (jev-only-rungs-1-2.md §19.7). A verified `patch` or a goal-subset `run` is what moves the
+    // task, and its evidence is what the risk stage reads.
     const pick = await this.deps.pickGoal(ctx, mem);
     if (pick.requests > 0) mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - pick.requests);
     const goal = pick.goal;
@@ -693,6 +651,14 @@ export class LedgerSieveSynthesizer implements Synthesizer {
           r = { ...held, trace: { ...r.trace, outcome: 'fixed', winner: held.applied } };
         }
       }
+      if (r.kind !== 'commit') {
+        // The same guarantee for the held partial (subgoal.ts commitProgress: pairs first, its
+        // regression run, the guard): a step that ends with a partial in hand commits it as a
+        // partial fix rather than parking with nothing (§19.7); the search does this itself at
+        // every budget exit and at exhaustion, so this is the controller's own check.
+        const partial = await this.progressCommit(ctx, mem, goal);
+        if (partial !== null) r = { ...partial, trace: { ...r.trace, outcome: 'partial', winner: partial.applied, testRuns: r.trace.testRuns } };
+      }
       if (r.kind === 'commit') evidence = commitEvidence(mem, r, goal);
     }
     this.emit(ctx, 'search', `${goal.id} ${r.kind}${r.kind === 'parked' ? `: ${r.reason}` : ''} (phase ${r.trace.phase}, ${r.trace.runMode}, sites ${r.trace.sitesConsidered}, requests ${r.trace.jevRequests}, runs ${r.trace.testRuns}, plausible ${r.trace.plausible})`, {
@@ -709,6 +675,14 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         // A commit changes the goal's files: it re-localises next time, and parked goals that suspected those files re-open (§5.3).
         mem.localizeCache.delete(goal.id);
         reopenOnChange(mem, r.applied.files.map((f) => f.path));
+        if (!r.allGoalTestsPass) {
+          // A progress commit: the goal stays open with its remaining tests; the next baseline re-clusters
+          // them by their new frame (goals.ts reconcile). The goal's `unchanged` verdicts were taken under
+          // the failure this commit removes, so they leave `tried` (sieve/runner.ts unchangedTried).
+          const k = evidence === null ? null : goalTestsPassing(goal, evidence);
+          const forgotten = forgetUnchangedTried(mem, goal.id);
+          this.emit(ctx, 'progress', `${goal.id}: partial fix committed (progress commit ${goal.progressCommits ?? 1} of ${MAX_PROGRESS_COMMITS_PER_GOAL}${k === null ? '' : `; ${k} of ${goal.tests.length} goal tests pass, the remaining ${goal.tests.length - k} stay open`}); the goal stays open and is re-clustered from the next baseline${forgotten > 0 ? `; ${forgotten} unchanged verdict${forgotten === 1 ? '' : 's'} taken under the old failure forgotten (re-enumerable)` : ''}`);
+        } else mem.unchangedTried?.delete(goal.id);
         const repo = mem.repository;
         if (repo !== undefined && isBestGuessGoal(goal)) {
           // the one unverified commit of the run: the goal parks with the reason, the plan says what was not verified
@@ -769,37 +743,18 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   }
 
   /**
-   * Under an `investigate` intent a `patch` or a `run` scores as "does not carry out the intent"
-   * (the first live run had every such proposal reviewed or blocked under a p ≈ 0.5 `investigate`).
-   * Comply once: read the source files the ledger points at — those not yet in `contextFiles`
-   * first, else the last patch's files, else the open goals' site or suspected source files — and
-   * return null after INVESTIGATE_READS_MAX consecutive executed `read`s (the search proceeds) or
-   * when no intent asks for it. Never test files; ≤ READ_MAX_PATHS.
+   * The controller's progress commit (subgoal.ts commitProgress) for a search that returned
+   * without one: untested pairs first (the goal then stays open and runs them next step, see
+   * `case 'budget'`), the regression run through `deps.regressionRun` when given, the guard.
    */
-  private investigateRead(ctx: SynthesisContext, mem: RunMemory): Proposal | null {
-    if (ctx.intent !== 'investigate') return null;
-    // every trailing `read` proposal counts, executed or not: a declined or blocked read re-proposed
-    // until the engine's loop guard trips is what the third QuixBugs bench did on depth_first_search
-    let reads = 0;
-    for (let i = ctx.window.length - 1; i >= 0; i--) {
-      const e = ctx.window[i];
-      if (e === undefined || !/^read(\s|$)/.test(e.action)) break;
-      reads += 1;
-    }
-    if (reads >= INVESTIGATE_READS_MAX) return null;
-    let paths = unseenSourceFiles(ctx, mem);
-    if (paths.length === 0) paths = (mem.committed.at(-1)?.files ?? []).map((f) => f.path).filter((p) => !isTestPath(p));
-    if (paths.length === 0) paths = relevantSourceFiles(mem);
-    // pytest goals point at test files only (tracebacks show test frames, goals.ts): on a small
-    // workspace the source files themselves are what there is to investigate
-    if (paths.length === 0) {
-      const source = [...(mem.bases.find((b) => b.origin === 'committed')?.files.keys() ?? [])].filter((p) => !isTestPath(p));
-      if (source.length <= READ_MAX_PATHS) paths = source;
-    }
-    if (paths.length === 0) return null;
-    const bounded = paths.slice(0, READ_MAX_PATHS);
-    this.emit(ctx, 'read', `intent is investigate: reading ${bounded.join(', ')}`);
-    return proposeRead(ctx, bounded, mem);
+  private async progressCommit(ctx: SynthesisContext, mem: RunMemory, goal: Goal): Promise<Extract<SubGoalResult, { kind: 'commit' }> | null> {
+    const opts: ProgressOptions = { pairsUntested: freshPairsOfPartials(mem, goal).length > 0, note: (phase, detail) => this.emit(ctx, phase, detail) };
+    if (this.deps.regressionRun !== undefined) opts.regressionRun = this.deps.regressionRun;
+    const r = await commitProgress(ctx, mem, goal, opts);
+    if (r.requests > 0) mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - r.requests);
+    if (r.decision === null || r.decision.kind !== 'commit') return null;
+    const trace = { ...newTrace(goal, mem.oracle), outcome: 'partial' as const, winner: r.decision.applied, jevRequests: r.requests, testRuns: r.runs };
+    return { ...r.decision, trace };
   }
 
   /** The cheap evidence step: a goal-subset `run` on the workspace; the search resumes from memory next step. The step's trace goes into `rawText` (§5.6: totals per record). */
@@ -922,7 +877,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       if (restored > 0) this.emit(ctx, 'pairs', `${restored} remembered partial${restored === 1 ? '' : 's'} restored from the checkpoint`);
       scratch.restored = true;
     } else {
+      // the chain rule (goals.ts MAX_PROGRESS_COMMITS_PER_GOAL): a goal at the cap hands its remaining tests to a new id here
+      const chained = mem.goals.filter((g) => g.status !== 'fixed' && (g.progressCommits ?? 0) >= MAX_PROGRESS_COMMITS_PER_GOAL).map((g) => g.id);
       mem.goals = reconcile(mem.goals, clusterFailures(baseline, clusterOpts), ctx.plan);
+      const successors = mem.goals.filter((g) => g.status !== 'fixed' && !chained.includes(g.id) && (g.progressCommits ?? 0) === 0 && g.attempts === 0);
+      if (chained.length > 0) this.emit(ctx, 'progress', `${chained.join(', ')} took ${MAX_PROGRESS_COMMITS_PER_GOAL} progress commits; the remaining tests continue as ${successors.map((g) => g.id).join(', ') || 'no goal (all pass)'}`);
     }
     return null;
   }

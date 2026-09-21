@@ -93,7 +93,10 @@ describe('evidence builders', () => {
     expect(patchGoalText(applied, goal)).toBe('fix tests/test_gcd.py::test_gcd in src/gcd.py:5 (mutation/arg_swap)');
     const two = makeGoal({ id: 'g2', tests: [GCD_TEST, 'tests/test_gcd.py::test_big'], suspectedFiles: ['src/gcd.py'] });
     const partial: ProposalEvidence = { ...e, goalTests: two.tests, after: { passed: 2, failed: 1, errors: 0, total: 3 }, before: { passed: 1, failed: 2, errors: 0, total: 3 } };
-    expect(patchGoalText(applied, two, partial)).toBe('apply partial fix: 1 of 2 goal tests now pass (tests/test_gcd.py::test_gcd, +1 more) (1→2 of 3), no regressions; mutation/arg_swap at src/gcd.py:5');
+    expect(patchGoalText(applied, two, partial)).toBe('apply partial fix: 1 of 2 goal tests pass (tests/test_gcd.py::test_gcd, +1 more) (1→2 of 3), no regressions; the remaining 1 stay open; mutation/arg_swap at src/gcd.py:5');
+    // only the GOAL's tests count toward k: another goal's test the same edit fixed is in newlyPassing but not in goalTests
+    const withOther: ProposalEvidence = { ...partial, newlyPassing: [GCD_TEST, 'tests/test_other.py::test_z'] };
+    expect(patchGoalText(applied, two, withOther)).toMatch(/^apply partial fix: 1 of 2 goal tests pass/);
     const regressed: ProposalEvidence = { ...e, newlyFailing: [GCD_OTHER_TEST] };
     expect(patchGoalText(applied, goal, regressed)).toContain('1 regression;');
 
