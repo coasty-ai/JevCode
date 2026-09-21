@@ -31,6 +31,7 @@ import { appendFileSync, existsSync, realpathSync, writeSync } from 'node:fs';
 import { open as openFile, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { basename, join, resolve as resolvePath, sep } from 'node:path';
+import type { SynthesizerOptions } from '../synth/index.js';
 import type {
   Answer,
   BlockingAnswer,
@@ -686,14 +687,18 @@ export async function buildDecider(config: ResolvedConfigWithDiagnostics, flags:
 }
 
 /**
- * jev-only: `createSynthesizer({ decider, redact })` unchanged (§15.3). llm-jev (docs/LLM-JEV-DESIGN.md) also passes the
- * `mode`, so the synthesizer knows it may draw candidates from the generator; the option travels in a variable typed as
- * a superset of today's `SynthesizerOptions` (no excess-property check), so this compiles against the synthesizer before
- * and after it learns the field. The generation parameters and the provider are wired by the synthesizer's owner.
+ * jev-only: `createSynthesizer({ decider, redact, mode: 'jev-only' })` — the unchanged Ledger + Sieve (§15.3). llm-jev
+ * (docs/LLM-JEV-DESIGN.md §9.2 stage 4): `mode: 'llm-jev'` wires the LLM candidate source over the engine's generator
+ * channel (`SynthesisContext.generate`, fed by the REAL provider buildProvider resolves for this mode), and `generation`
+ * pins the parameters the source sends on every sample — `LLM_DEFAULT_GENERATION` (§4.6 / §4.8; the config carries no
+ * llm-jev overrides, only the mode). Any other mode builds the jev-only synthesizer (the callers never ask for one).
  */
 export async function buildSynthesizer(config: ResolvedConfigWithDiagnostics, decider: Decider, mode: EngineMode = 'jev-only'): Promise<Synthesizer> {
   const { createSynthesizer } = await import('../synth/index.js');
-  const opts: Parameters<typeof createSynthesizer>[0] = { decider, redact: config.redact, mode: mode === 'llm-jev' ? 'llm-jev' : 'jev-only' };
+  const opts: SynthesizerOptions =
+    mode === 'llm-jev'
+      ? { decider, redact: config.redact, mode: 'llm-jev', generation: (await import('../synth/llm/source.js')).LLM_DEFAULT_GENERATION }
+      : { decider, redact: config.redact, mode: 'jev-only' };
   return createSynthesizer(opts);
 }
 
@@ -1737,7 +1742,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const childCap = Math.max(0, Math.min(limits.spendCapUsd, remaining));
       const meter = sessionMeter.child(childCap);
       // jev-only never validates the generator section (§15.3); llm-jev validates it like jev-on AND takes the synthesizer (docs/LLM-JEV-DESIGN.md)
-      const gen = mode === 'jev-only' || flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : cfg.generator();
+      const genCfg: GeneratorConfig | null = mode === 'jev-only' || flags.mock || flags.mockGenerator ? null : cfg.generator();
+      const gen = genCfg ?? { temperature: null, maxTokens: 4096 };
       const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : cfg.decider();
       deciderModelConfigured = dec.model;
       const synthesizer = mode === 'jev-only' || mode === 'llm-jev' ? await synthesizerOf(cfg, decider, mode) : null;
@@ -1758,6 +1764,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         redact: cfg.redact,
         secretPaths: cfg.secretPaths,
         generation: { temperature: gen.temperature, maxTokens: gen.maxTokens },
+        // docs/LLM-JEV-DESIGN.md §4.8: the table the llm-jev sample-cost estimate falls back to when no call has been priced yet
+        ...(genCfg !== null ? { generatorPricing: genCfg.pricing } : {}),
         deciderModel: { configured: dec.model, pinned: dec.pinned },
         ...(synthesizer ? { synthesizer } : {}),
         exit: engineExit,
@@ -2064,7 +2072,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       if (!known) sessionMeter.add('jev', { inputTokens: 0, outputTokens: 0, costUsd: loaded.state.spend.jev.costUsd, calls: 0 });
       const provider = await providerOf(rcfg, augmented, identity.mode);
       const decider = await deciderOf(rcfg, augmented);
-      const gen = identity.mode === 'jev-only' || flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : rcfg.generator();
+      const genCfg: GeneratorConfig | null = identity.mode === 'jev-only' || flags.mock || flags.mockGenerator ? null : rcfg.generator();
+      const gen = genCfg ?? { temperature: null, maxTokens: 4096 };
       const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : rcfg.decider();
       deciderModelConfigured = dec.model;
       const synthesizer = identity.mode === 'jev-only' || identity.mode === 'llm-jev' ? await synthesizerOf(rcfg, decider, identity.mode) : null;
@@ -2087,6 +2096,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         redact: rcfg.redact,
         secretPaths: rcfg.secretPaths,
         generation: { temperature: gen.temperature, maxTokens: gen.maxTokens },
+        ...(genCfg !== null ? { generatorPricing: genCfg.pricing } : {}),
         deciderModel: { configured: dec.model, pinned: dec.pinned },
         ...(synthesizer ? { synthesizer } : {}),
         exit: engineExit,
