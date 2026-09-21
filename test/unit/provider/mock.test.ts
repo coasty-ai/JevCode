@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import { AbortError, ProviderHttpError } from '../../../src/errors.js';
 import { MOCK_DEFAULT_USAGE, createMockProvider } from '../../../src/provider/mock.js';
+import type { MockTurnExt } from '../../../src/provider/mock.js';
 import type { MockTurn } from '../../../src/core/types.js';
+import type { CancelledGeneration } from '../../../src/provider/types.js';
 import { genOpts, request } from './helpers.js';
 
 describe('createMockProvider', () => {
@@ -79,5 +81,37 @@ describe('createMockProvider', () => {
     ac.abort(reason);
     const p = createMockProvider({ turns: [{ text: 'x' }] });
     await expect(p.generate(request(), genOpts({ signal: ac.signal }))).rejects.toBe(reason);
+  });
+
+  it('function turns key on opts.sample and may script a length stop, reasoning tokens and a generation id (LLM-JEV-DESIGN stage 3 tests)', async () => {
+    const p = createMockProvider({
+      turns: (_req, _index, o): MockTurnExt => {
+        const sample = o.sample ?? -1;
+        return sample === 1
+          ? { text: `s${sample}`, stopReason: 'length', usage: { outputTokens: 1500, reasoningTokens: 1447 }, generationId: `gen-${sample}` }
+          : { text: `s${sample}`, generationId: `gen-${sample}` };
+      },
+    });
+    const samples = [0, 1, 2];
+    // fired together, like a round of N parallel requests
+    const results = await Promise.all(samples.map((sample) => p.generate(request(), genOpts({ sample }))));
+    expect(results.map((r) => r.text)).toEqual(['s0', 's1', 's2']);
+    expect(results.map((r) => r.stopReason)).toEqual(['end_turn', 'length', 'end_turn']);
+    expect(results.map((r) => r.generationId)).toEqual(['gen-0', 'gen-1', 'gen-2']);
+    expect(results[1]!.usage).toEqual({ inputTokens: 1000, outputTokens: 1500, costUsd: 0, calls: 1, reasoningTokens: 1447 });
+    expect('reasoningTokens' in results[0]!.usage).toBe(false);
+    // without a sample the third argument still arrives (the single-sample propose path)
+    expect((await p.generate(request(), genOpts())).text).toBe('s-1');
+  });
+
+  it('a signal that fires mid-stream hands the chars/4 estimate to onCancelled and rethrows its reason', async () => {
+    const ac = new AbortController();
+    const reason = new AbortError('signal');
+    const cancelled: CancelledGeneration[] = [];
+    const p = createMockProvider({ turns: [{ text: 'abcdef', generationId: 'gen-x' }], deltaChunkSize: 2 });
+    await expect(
+      p.generate(request(), genOpts({ signal: ac.signal, onDelta: () => ac.abort(reason), onCancelled: (c) => cancelled.push(c) })),
+    ).rejects.toBe(reason);
+    expect(cancelled).toEqual([{ usage: { inputTokens: 1000, outputTokens: 1, costUsd: 0, calls: 1, estimated: true }, text: 'ab', toolChars: 0, model: 'mock', generationId: 'gen-x' }]);
   });
 });

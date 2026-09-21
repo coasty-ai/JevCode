@@ -542,7 +542,8 @@ describe('unpriced usage (TUI-DESIGN §9.5)', () => {
       const res = await createOpenRouterProvider(cfg, deps).generate(request(), genOpts());
       expect(res.usage.costUsd).toBe(0);
       expect(Object.is(res.usage.costUsd, 0)).toBe(true);
-      expect(res.usage).toEqual({ inputTokens: 444, outputTokens: 40, costUsd: 0, calls: 1 });
+      // the frame's `reasoning_tokens: 0` is a reading, not an absence (LLM-JEV-DESIGN §4.12)
+      expect(res.usage).toEqual({ inputTokens: 444, outputTokens: 40, costUsd: 0, calls: 1, reasoningTokens: 0 });
     }
     // a negative or non-numeric cost is "missing" (the `c >= 0` branch), so the §9.5 rule applies
     for (const bad of ['"cost":-1', '"cost":"0.001"', '"cost":null']) {

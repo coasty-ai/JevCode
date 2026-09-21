@@ -28,7 +28,7 @@ import {
   toTokenUsage,
   withRetry,
 } from './sse.js';
-import type { AnthropicRequestBody, AnthropicToolChoice, AnthropicToolDef, ProviderDeps, TokenBreakdown } from './types.js';
+import type { AnthropicRequestBody, AnthropicToolChoice, AnthropicToolDef, GenerateRequestExt, ProviderDeps, TokenBreakdown } from './types.js';
 
 export const ANTHROPIC_VERSION = '2023-06-01';
 
@@ -57,8 +57,15 @@ function validateRequest(req: GenerateRequest): void {
   }
 }
 
-/** Exported so tests can assert the exact wire body (temperature omission, cache markers, tool_choice). */
-export function buildAnthropicBody(cfg: GeneratorConfig, req: GenerateRequest): AnthropicRequestBody {
+/**
+ * Exported so tests can assert the exact wire body (temperature omission, cache markers, tool_choice).
+ *
+ * LLM-JEV-DESIGN §4.12: the OpenRouter-side request fields are ignored here — the Messages API has no `seed`,
+ * `providerPrefs` is OpenRouter routing, and `reasoning` maps to nothing (Sonnet 5 400s on `thinking`, research 07
+ * §1.1; the harness never asks Claude for extended thinking). The body is built field by field, so none of them
+ * can reach the wire.
+ */
+export function buildAnthropicBody(cfg: GeneratorConfig, req: GenerateRequestExt): AnthropicRequestBody {
   const body: AnthropicRequestBody = {
     model: cfg.model,
     max_tokens: req.maxTokens,

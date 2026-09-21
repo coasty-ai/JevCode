@@ -4,7 +4,7 @@
  * them for control flow. Shapes are deliberately loose (`?` everywhere): both APIs document
  * that new fields and event types may appear and must be ignored.
  */
-import type { GeneratorConfig, Json, JsonObject } from '../core/types.js';
+import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, TokenUsage } from '../core/types.js';
 
 // ---------------------------------------------------------------------------------------
 // Shared transport
@@ -48,6 +48,82 @@ export interface TokenBreakdown {
   cacheRead: number;
   cacheWrite: number;
   output: number;
+}
+
+// ---------------------------------------------------------------------------------------
+// LLM-JEV-DESIGN §4.12 / §9.3 contract, stage-2 local declarations
+//
+// Structurally identical to the optional members stage 1 adds to core/types.ts (`GenerateRequest.seed /
+// reasoning / providerPrefs`, `GenerateResult.generationId`, `TokenUsage.reasoningTokens / estimated`,
+// `GenerateOptions.sample`). Every member is optional, so a plain `GenerateRequest` is assignable to
+// `GenerateRequestExt` and a `GenerateResultExt` to `GenerateResult`: the providers implement the core
+// `Provider` interface unchanged. TODO(llm-jev merge): once core/types.ts carries the fields, alias these
+// to the core names and delete the duplicates.
+// ---------------------------------------------------------------------------------------
+
+export type ReasoningEffort = 'low' | 'medium' | 'high';
+/**
+ * `{enabled: false}` turns thinking off where the model allows it; `{enabled: true, effort}` asks for it at a level.
+ *
+ * Live 2026-09-21 (stage-2 probe + `GET /api/v1/models`): every `z-ai/glm-5.3*` variant carries `reasoning:
+ * {mandatory: true, default_enabled: true, supported_efforts: [max, high, low], default_effort: max}`, and
+ * `{enabled: false}` came back HTTP 400 "Reasoning is mandatory for this endpoint and cannot be disabled" (unbilled).
+ * For GLM send `{enabled: true, effort: 'low'}` — a forced tool call at `low` streamed in 486 ms with
+ * `reasoning_tokens: 0`; `medium` is not in GLM's list. Omitting `reasoning` runs at the default effort, `max`.
+ */
+export interface GenerateReasoning {
+  enabled: boolean;
+  effort?: ReasoningEffort;
+}
+/** OpenRouter provider routing (research 07 §2.2): `requireParameters` filters endpoints to those supporting every parameter sent (tools, seed, …); `order` pins upstreams for reproducible billing. */
+export interface GenerateProviderPrefs {
+  requireParameters?: boolean;
+  order?: string[];
+}
+export interface GenerateRequestExt extends GenerateRequest {
+  /** integer; sample diversity across N parallel requests (§4.6) */
+  seed?: number;
+  reasoning?: GenerateReasoning;
+  providerPrefs?: GenerateProviderPrefs;
+}
+export interface TokenUsageExt extends TokenUsage {
+  /** `completion_tokens_details.reasoning_tokens`; absent when the frame did not carry it */
+  reasoningTokens?: number;
+  /** true when the numbers were derived (chars / 4 on a cancelled stream), not read from an accounting frame */
+  estimated?: boolean;
+}
+export interface GenerateResultExt extends GenerateResult {
+  usage: TokenUsageExt;
+  /** OpenRouter's chunk `id` (`gen-…`): `GET /api/v1/generation?id=` names the exact bill (§4.8) */
+  generationId?: string;
+  /** OpenRouter's response `provider` field: the upstream that served the request (bills at its own rate, §8) */
+  servedProvider?: string;
+}
+/**
+ * §4.8: what a stream had produced when its signal fired. Handed to `GenerateOptionsExt.onCancelled` right before
+ * the provider rethrows `signal.reason` (an aborted sample still yields no `GenerateResult`), so the engine can meter
+ * the cancelled sample and keep the `generationId` for a post-hoc lookup.
+ */
+export interface CancelledGeneration {
+  /** `estimated: true` unless the accounting frame had already arrived */
+  usage: TokenUsageExt;
+  generationId?: string;
+  servedProvider?: string;
+  model?: string;
+  /** streamed so far */
+  text: string;
+  /** streamed tool-argument characters so far */
+  toolChars: number;
+}
+export interface GenerateOptionsExt extends GenerateOptions {
+  /** §4.6: 0-based index of this sample within a round (N parallel requests); absent for the single-sample propose path */
+  sample?: number;
+  /** §4.8: called once, before `signal.reason` is rethrown, when the signal aborted a stream in flight */
+  onCancelled?: (partial: CancelledGeneration) => void;
+}
+/** A `Provider` whose results carry the stage-2 fields; assignable to `Provider`, so every existing slot takes it. */
+export interface ProviderExt extends Provider {
+  generate(req: GenerateRequestExt, opts: GenerateOptionsExt): Promise<GenerateResultExt>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -148,6 +224,8 @@ export interface OpenRouterToolCallDelta {
 export interface OpenRouterChoiceDelta {
   role?: string;
   content?: string | null;
+  /** reasoning text when `reasoning.exclude` is false; not rendered, not accumulated */
+  reasoning?: string | null;
   tool_calls?: OpenRouterToolCallDelta[];
 }
 export interface OpenRouterChoice {
@@ -191,6 +269,20 @@ export interface OpenRouterRequestBody {
   parallel_tool_calls?: false;
   usage: { include: true };
   temperature?: number;
+  /** integer; a supported parameter of z-ai/glm-5.3-flash (config/defaults.ts) */
+  seed?: number;
+  /** https://openrouter.ai/docs/use-cases/reasoning-tokens: `enabled: false` disables thinking; `effort` asks for it at a level */
+  reasoning?: OpenRouterReasoning;
+  /** ProviderPreferences (research 07 §2.2) */
+  provider?: OpenRouterProviderPrefs;
+}
+export interface OpenRouterReasoning {
+  enabled?: boolean;
+  effort?: ReasoningEffort;
+}
+export interface OpenRouterProviderPrefs {
+  require_parameters?: boolean;
+  order?: string[];
 }
 export interface OpenRouterToolDef {
   type: 'function';
