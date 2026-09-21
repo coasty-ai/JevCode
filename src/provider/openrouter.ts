@@ -6,7 +6,7 @@
  * `provider` and the generation `id`; §4.8: a cancelled stream's facts (ids, streamed sizes) go to `onCancelled`.
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
-import type { GeneratorConfig, JsonObject, ToolCall } from '../core/types.js';
+import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, JsonObject, Provider, ToolCall } from '../core/types.js';
 import { parseJson } from '../core/json.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
@@ -30,19 +30,15 @@ import {
   resolveDeps,
   sanitiseRequestId,
   toCancelledGeneration,
-  toTokenUsageExt,
+  toTokenUsage,
   withRetry,
 } from './sse.js';
 import type {
-  GenerateOptionsExt,
-  GenerateRequestExt,
-  GenerateResultExt,
   OpenRouterProviderPrefs,
   OpenRouterReasoning,
   OpenRouterRequestBody,
   OpenRouterToolChoice,
   ProviderDeps,
-  ProviderExt,
   StreamPartial,
   TokenBreakdown,
 } from './types.js';
@@ -50,7 +46,7 @@ import type {
 export const OPENROUTER_REFERER = 'https://github.com/prateekjannu/jevcode';
 export const OPENROUTER_TITLE = 'jevcode';
 
-function validateRequest(req: GenerateRequestExt): void {
+function validateRequest(req: GenerateRequest): void {
   if (!Number.isInteger(req.maxTokens) || req.maxTokens <= 0) {
     throw new ProviderHttpError(`invalid GenerateRequest: maxTokens must be a positive integer, got ${String(req.maxTokens)}`, { status: 0, retryable: false });
   }
@@ -86,9 +82,9 @@ function validateRequest(req: GenerateRequestExt): void {
  * efforts `max | high | low`, default `max`, for every `z-ai/glm-5.3*`. `effort: 'low'` was accepted: 486 ms, served by
  * CoreWeave (32 endpoints; 3 at $0.075/$0.25, most at $0.15/$0.50), `id` and `provider` returned, `reasoning_tokens: 0`,
  * valid arguments, `usage.cost` = CoreWeave's rate exactly. This client sends what it is asked and never rewrites the
- * field: the caller picks `{effort: 'low'}` for GLM (`GenerateReasoning` in types.ts).
+ * field: the caller picks `{effort: 'low'}` for GLM (`GenerateReasoning` in core/types.ts).
  */
-export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequestExt): OpenRouterRequestBody {
+export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequest): OpenRouterRequestBody {
   const messages: OpenRouterRequestBody['messages'] = [];
   if (req.system.length > 0) messages.push({ role: 'system', content: req.system });
   for (const m of req.messages) messages.push({ role: m.role, content: m.content });
@@ -114,15 +110,15 @@ export function buildOpenRouterBody(cfg: GeneratorConfig, req: GenerateRequestEx
 }
 
 /** Discriminates on the member present (§4.12's union), never on a truthy read: `{effort}` must not degrade to `reasoning: {}` (= the model's default effort, `max` on GLM). */
-function reasoningOf(r: NonNullable<GenerateRequestExt['reasoning']>): OpenRouterReasoning {
+function reasoningOf(r: NonNullable<GenerateRequest['reasoning']>): OpenRouterReasoning {
   return 'effort' in r ? { effort: r.effort } : { enabled: false };
 }
 
-function providerPrefsOf(p: GenerateRequestExt['providerPrefs']): OpenRouterProviderPrefs | null {
+function providerPrefsOf(p: GenerateRequest['providerPrefs']): OpenRouterProviderPrefs | null {
   return p === undefined ? null : { require_parameters: p.requireParameters };
 }
 
-function toolChoice(tc: NonNullable<GenerateRequestExt['toolChoice']>): OpenRouterToolChoice {
+function toolChoice(tc: NonNullable<GenerateRequest['toolChoice']>): OpenRouterToolChoice {
   if (tc === 'auto' || tc === 'required') return tc;
   return { type: 'function', function: { name: tc.name } };
 }
@@ -152,7 +148,7 @@ interface StreamOutcome {
 
 /** What `consumeStream` needs besides the body. */
 interface StreamContext {
-  opts: GenerateOptionsExt;
+  opts: GenerateOptions;
   redact: (s: string) => string;
   firstByteTimeoutMs: number;
   requestId: string | null;
@@ -306,14 +302,14 @@ async function consumeStream(body: ReadableStream<Uint8Array>, ctx: StreamContex
   return { text, toolCalls, tokens, cost, reasoningTokens, model, generationId, servedProvider, finishReason: finishReason ?? 'stop' };
 }
 
-export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDeps): ProviderExt {
+export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDeps): Provider {
   const d = resolveDeps(deps);
   const url = `${cfg.baseUrl.replace(/\/+$/, '')}/chat/completions`;
 
   // NaN for an unpriced model: the engine emits budget:unpriced instead of billing $0 (TUI-DESIGN §9.5)
   const tablePrice = (t: TokenBreakdown): number => (cfg.priced === true ? costFromPricing(cfg.pricing, t) : Number.NaN);
 
-  async function attempt(body: string, opts: GenerateOptionsExt, held: StreamContext['held']): Promise<StreamOutcome> {
+  async function attempt(body: string, opts: GenerateOptions, held: StreamContext['held']): Promise<StreamOutcome> {
     const { controller, unlink } = linkedAbort(opts.signal);
     const t0 = d.now();
     let headersTimer: ReturnType<typeof setTimeout> | undefined;
@@ -391,7 +387,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
   return {
     name: 'openrouter',
     model: cfg.model,
-    async generate(req: GenerateRequestExt, opts: GenerateOptionsExt): Promise<GenerateResultExt> {
+    async generate(req: GenerateRequest, opts: GenerateOptions): Promise<GenerateResult> {
       validateRequest(req);
       const body = JSON.stringify(buildOpenRouterBody(cfg, req));
       const t0 = d.now();
@@ -414,7 +410,7 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       return {
         text: out.text,
         toolCalls: out.toolCalls,
-        usage: toTokenUsageExt(out.tokens, out.cost ?? tablePrice(out.tokens), out.reasoningTokens),
+        usage: toTokenUsage(out.tokens, out.cost ?? tablePrice(out.tokens), out.reasoningTokens),
         model: out.model ?? cfg.model,
         stopReason: out.finishReason,
         latencyMs: Math.round(d.now() - t0),

@@ -89,6 +89,9 @@ export function budget(over: Partial<Omit<StepBudget, 'exhausted'>> = {}): StepB
     testWallLeftMs: 90_000,
     startedMs: 0,
     recursed: false,
+    llmRoundsLeft: 0,
+    llmSamplesLeft: 0,
+    llmUsdLeft: 0,
     exhausted: () => b.testRunsLeft <= 0 || b.testWallLeftMs <= 0 || b.jevRequestsLeft <= 0,
     ...over,
   };

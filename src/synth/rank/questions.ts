@@ -12,7 +12,8 @@
  */
 import { clip } from '../../core/text.js';
 import type { Json, Question } from '../../core/types.js';
-import { ESCAPE_KEY, choice, contextNoul } from '../../jev/questions.js';
+import { ESCAPE_KEY, choice, contextNoul, noul } from '../../jev/questions.js';
+import type { NoulCriteriaSpec } from '../../jev/questions.js';
 import { codeTokens, tokenizeFragment } from '../py/tokenize.js';
 import type { Candidate, FailureView, LineEdit, RankContext, Site } from '../types.js';
 
@@ -83,6 +84,28 @@ export function taskSentence(mode: RankMode, functionName: string | null): strin
 export function compactNoulInstruction(mode: RankMode, key: string): string {
   const placement = mode === 'replace' ? 'put in place of `buggy_line`' : mode === 'insert' ? INSERT_AFTER : INSERT_BEFORE;
   return `Is \`candidates.${key}\` a correct fix per \`correct_fix_criteria\`: ${placement}, does it make every test in \`tests\` pass?`;
+}
+
+/**
+ * Full-criteria per-candidate Noul (docs/LLM-JEV-DESIGN.md §9.2 stage 4, llm-jev only): the same question as the compact
+ * form, with `CORRECT_FIX_CRITERIA` carried on the question itself instead of `state.correct_fix_criteria`.
+ */
+export function fullNoulInstruction(mode: RankMode, key: string): string {
+  const placement = mode === 'replace' ? 'put in place of `buggy_line`' : mode === 'insert' ? INSERT_AFTER : INSERT_BEFORE;
+  return `Is \`candidates.${key}\` a correct fix: ${placement}, does it make every test in \`tests\` pass?`;
+}
+
+/** `CORRECT_FIX_CRITERIA` as a Noul's criteria (mutable copies of the frozen examples). */
+export function correctFixNoulCriteria(): NoulCriteriaSpec {
+  return { true: { definition: CORRECT_FIX_CRITERIA.true.definition, examples: [...CORRECT_FIX_CRITERIA.true.examples] }, false: { definition: CORRECT_FIX_CRITERIA.false.definition, examples: [...CORRECT_FIX_CRITERIA.false.examples] } };
+}
+
+/** One full-criteria Noul per candidate (question id = option key). */
+export function buildFullNouls(keys: readonly string[], mode: RankMode): Record<string, Question> {
+  const out: Record<string, Question> = {};
+  const criteria = correctFixNoulCriteria();
+  for (const k of keys) out[k] = noul(fullNoulInstruction(mode, k), criteria);
+  return out;
 }
 
 /** Question id of the Choice in every request that carries one. */

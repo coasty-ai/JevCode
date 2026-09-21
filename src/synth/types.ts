@@ -34,6 +34,14 @@ export interface Site {
    * statement joined onto one line. Absent for a one-line site. verify/apply.ts applies the span.
    */
   endLine?: number;
+  /**
+   * Block-anchored span of an LLM candidate's site (docs/LLM-JEV-DESIGN.md §4.7 step 3, llm/candidates.ts
+   * `llmSiteAt`): the physical lines `line..endLine` are identified by the sha12 of their text, and
+   * verify/apply.ts validates the site by that hash instead of the one-statement tokenizer check (which
+   * reads a dedenting block as ''). `text === ''` on such a site deletes the whole span. Absent on every
+   * code-source site.
+   */
+  span?: { endLine: number; textSha: string };
   indent: string;
   /** enclosing function/class block line range (1-based inclusive), or null at module level */
   block: { name: string; startLine: number; endLine: number } | null;
@@ -56,7 +64,7 @@ export interface SiteEvidence {
 // Candidates
 // ---------------------------------------------------------------------------------------
 
-export type CandidateSourceName = 'mutation' | 'template' | 'donor' | 'token_beam' | 'test_value' | 'history' | 'composite';
+export type CandidateSourceName = 'mutation' | 'template' | 'donor' | 'token_beam' | 'test_value' | 'history' | 'composite' | 'llm';
 
 /** One concrete proposed edit at a site. `text` is the full replacement line (or inserted line). */
 export interface Candidate {
@@ -113,8 +121,9 @@ export interface EnumerateOptions {
   /**
    * Search phase hint (design §2.3): the sources that widen the space beyond the measured SEEDS
    * set (depth-2 wraps, templates/wrap2.ts) enumerate only when it says 'WIDENED'. Absent = SEEDS.
+   * 'LLM' is the llm-jev round phase (docs/LLM-JEV-DESIGN.md §4.2); no code source enumerates in it.
    */
-  phase?: 'SEEDS' | 'SKETCH' | 'BEAM' | 'WIDENED';
+  phase?: 'SEEDS' | 'LLM' | 'SKETCH' | 'BEAM' | 'WIDENED';
 }
 
 export interface CandidateSource {

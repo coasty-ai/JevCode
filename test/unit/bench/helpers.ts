@@ -11,6 +11,7 @@ import { createEmitter } from '../../../src/core/events.js';
 import type {
   ActionOutcome,
   AskResult,
+  BenchCondition,
   BenchDeps,
   Decider,
   Engine,
@@ -30,6 +31,8 @@ import type {
   SpendSnapshot,
   StopReason,
   Synthesizer,
+  SynthesizerArmMode,
+  SynthesizerGeneration,
   TokenUsage,
 } from '../../../src/core/types.js';
 import type { BenchDepsWithSynth, BenchSetupTools, BenchTaskSource, BuildTaskOptions, BenchTask, Evaluation } from '../../../src/bench/types.js';
@@ -218,6 +221,10 @@ export interface Captured {
   mockProviders: MockProviderOptions[];
   /** deciders handed to createSynthesizer (jev-only pairs) */
   synthesizerDeciders: Decider[];
+  /** the `mode` handed to createSynthesizer per synthesizer pair (docs/LLM-JEV-DESIGN.md §10.1) */
+  synthesizerModes: SynthesizerArmMode[];
+  /** the pinned `generation` handed to createSynthesizer per synthesizer pair (null for jev-only) */
+  synthesizerGenerations: (SynthesizerGeneration | null)[];
 }
 
 let runCounter = 0;
@@ -287,13 +294,18 @@ export function createFakeEngineFactory(script: EngineScript, captured: Captured
 }
 
 export function createCaptured(): Captured {
-  return { engines: [], generateRequests: [], askStates: [], mockProviders: [], synthesizerDeciders: [] };
+  return { engines: [], generateRequests: [], askStates: [], mockProviders: [], synthesizerDeciders: [], synthesizerModes: [], synthesizerGenerations: [] };
 }
 
-/** A synthesizer that proposes `done` at once; the scripted engine never calls it, real engines would. */
-export function createFakeSynthesizer(): Synthesizer {
+/**
+ * A synthesizer that proposes `done` at once; the scripted engine never calls it, real engines would. It echoes the mode and
+ * generation it was built with (docs/LLM-JEV-DESIGN.md §10.1: the runner refuses an arm without the echo); none when omitted.
+ */
+export function createFakeSynthesizer(mode?: SynthesizerArmMode, generation?: SynthesizerGeneration): Synthesizer {
   return {
     name: 'fake-synth',
+    ...(mode !== undefined ? { mode } : {}),
+    ...(generation !== undefined ? { generation } : {}),
     synthesize: async (ctx) => {
       ctx.emit({ type: 'synth', step: ctx.step, phase: 'fake', detail: 'fake synthesizer', candidates: 0, tested: 0 });
       return { goal: 'fake', action: { kind: 'done', summary: 'fake synthesizer' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' };
@@ -356,9 +368,11 @@ export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDepsWithSynth; 
     ? base
     : {
         ...base,
-        createSynthesizer: ({ decider }) => {
+        createSynthesizer: ({ decider, mode, generation }) => {
           captured.synthesizerDeciders.push(decider);
-          return createFakeSynthesizer();
+          captured.synthesizerModes.push(mode);
+          captured.synthesizerGenerations.push(generation ?? null);
+          return createFakeSynthesizer(mode, generation);
         },
       };
   return { deps, captured, sandbox };
@@ -371,7 +385,7 @@ export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDepsWithSynth; 
 export interface SyntheticTaskOptions {
   id: string;
   suite?: 'swebench' | 'terminal-bench';
-  evaluate?: (ctx: { condition: EngineMode; mocked: boolean }) => Evaluation;
+  evaluate?: (ctx: { condition: BenchCondition; mocked: boolean }) => Evaluation;
   setup?: (workspaceDir: string, tools: BenchSetupTools) => Promise<void>;
 }
 

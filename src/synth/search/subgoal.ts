@@ -20,6 +20,11 @@ import type { Json, Question, SynthesisContext } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { ESCAPE_KEY, choice } from '../../jev/questions.js';
 import { baseState } from '../beam/state.js';
+import { attemptFromOutcome, isLlmSite, reanchorLlmSite } from '../llm/candidates.js';
+import type { LlmApplied } from '../llm/candidates.js';
+import { q17Needed } from '../llm/rank.js';
+import type { LlmRoundSummary, SampleArrival } from '../llm/source.js';
+import type { OracleClass } from '../llm/types.js';
 import { isStatementSite, statementSiteAt } from '../localize/sites.js';
 import { scopeAt } from '../py/structure.js';
 import { EDIT_CLASS_IDS } from '../sketch/productions.js';
@@ -35,9 +40,11 @@ import type { GuardMemory } from './bases.js';
 import { SIEVE_MAX_T_RUN_MS, decideRunPlan, runsLeft } from './budget.js';
 import type { SearchOverrides } from './directive.js';
 import { commitSuspect, gateHeldPartial } from './guard.js';
+import { LLM_FEEDBACK_ROUNDS_PER_GOAL, LLM_FEEDBACK_WIDEN, attemptsFromArrival, llmMemory, needPathsOf, recordAttempts } from './llm.js';
+import type { LlmRound, SubGoalLlm } from './llm.js';
 import type { SearchMemory } from './memory.js';
 import { wasTried } from './memory.js';
-import { MAX_PATCH_FILES } from './proposal.js';
+import { patchMaxFiles } from './proposal.js';
 import { WIDENED_SITES_MAX, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, widenedSites } from './sites.js';
 import type { Base, Decision, Goal, GoalSearchTrace, OracleModel, Phase, VerifyJob, VerifyOutcome } from './types.js';
 import { PHASES } from './types.js';
@@ -106,6 +113,8 @@ export const BEST_GUESS_TOP_SITES = 3;
 /** Test-derived literals handed to the sources (§3 "test-derived values"); bounded so a long expected list does not flood the pool. */
 const MAX_TEST_LITERALS = 40;
 const MAX_TASK_IDENTIFIERS = 60;
+/** An LLM round yields ≤ N samples × 3 patches (docs/LLM-JEV-DESIGN.md §4.6): the most a streamed round can queue. */
+export const LLM_ROUND_MAX_CANDIDATES = 18;
 
 // ---------------------------------------------------------------------------------------
 // Q7 edit_class, standalone (the measured wording and options live in sketch/questions.ts)
@@ -196,8 +205,21 @@ export function orderSources(phase: Phase, prior: EditClassPrior | null, exhaust
     case 'BEAM':
       order = ['token_beam'];
       break;
+    case 'LLM':
+      order = ['llm'];
+      break;
   }
   return order.filter((s) => !exhausted.has(s));
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.1: the queue place of an LLM job by class — after the three seed sources on
+ * QuixBugs/ladder (seeds win 25/36 true-line sets there, before composite/history), before every seed on
+ * repositories (seeds are 0 % on new-logic hunks, and five weak-oracle seed "passers" must not fill the
+ * passer cap ahead of the samples). Ordering only.
+ */
+export function llmJobPrior(klass: OracleClass): number {
+  return klass === 'repository' ? 1 : sourcePriorAt(SEED_SOURCES.length);
 }
 
 /** Insert sites first when Q7 puts ≥ 0.5 on `insert_new_line` (§2.5 rule 2); otherwise the localiser's order stands. */
@@ -255,6 +277,10 @@ export interface SearchQueue {
   readonly size: number;
   addAll(jobs: Iterable<VerifyJob>): { queued: readonly VerifyJob[] };
   pop(n: number): VerifyJob[];
+  /** streaming (docs/LLM-JEV-DESIGN.md §4.8): the runner's worker awaits `next()` while the LLM round lands samples; all three or none */
+  open?(): void;
+  close?(): void;
+  next?(): Promise<VerifyJob | null>;
 }
 
 /** The guard's Decision plus the bookkeeping guard.ts's GuardDecision carries (optional so a plain Decision fits). */
@@ -277,6 +303,11 @@ export interface SubGoalDeps {
   pairsOfPartials(mem: SubGoalMemory, goal: Goal): Candidate[];
   /** the full-suite regression run of the held partial before a progress commit; sieve/runner.ts runRegressionCheck when absent */
   regressionRun?: RegressionRun;
+  /**
+   * llm-jev (docs/LLM-JEV-DESIGN.md §4, search/llm.ts): the LLM candidate source — fired right after `locate`, its
+   * samples run as they land, Q17 orders them in RANK mode. Absent in jev-only: the loop then behaves exactly as before.
+   */
+  llm?: SubGoalLlm;
 }
 
 /** One full-suite run of `outcome`'s candidate (over its base) on a lane: the check a progress commit rests on. Null when it could not run. */
@@ -288,9 +319,9 @@ export type SubGoalResult = Decision & { trace: GoalSearchTrace };
 // Helpers
 // ---------------------------------------------------------------------------------------
 
-/** Key of goal.exhausted for a site in a phase. SKETCH gets its own key because its candidates share the `token_beam` name with BEAM. */
+/** Key of goal.exhausted for a site in a phase. SKETCH gets its own key because its candidates share the `token_beam` name with BEAM; LLM its own because its rounds are per goal, not per source at a site. */
 export function exhaustedKey(site: Site, phase: Phase): string {
-  return phase === 'SKETCH' ? `${siteKey(site)}#SKETCH` : siteKey(site);
+  return phase === 'SKETCH' ? `${siteKey(site)}#SKETCH` : phase === 'LLM' ? `${siteKey(site)}#LLM` : siteKey(site);
 }
 
 function exhaustedAt(goal: Goal, site: Site, phase: Phase): Set<CandidateSourceName> {
@@ -372,6 +403,8 @@ export function siteOnBase(site: Site, base: Base): Site | null {
   if (base.origin === 'committed') return site;
   const f = base.files.get(site.file.path);
   if (f === undefined) return null;
+  // an LLM site is a block anchored by text (docs/LLM-JEV-DESIGN.md §4.7 step 3): re-anchored by its text, never by the one-statement rule
+  if (isLlmSite(site)) return reanchorLlmSite(site, base.files);
   if (isStatementSite(site)) {
     const span = statementSiteAt(f, site.line, site.evidence, site.block);
     if (span === null || span.line !== site.line || span.endLine !== site.endLine || span.currentLine !== site.currentLine) return null;
@@ -400,7 +433,7 @@ function jobsFor(cands: readonly Candidate[], base: Base, sourcePrior: number, p
 
 function emptyBySource(): GoalSearchTrace['bySource'] {
   const zero = (): { enumerated: number; tested: number; passed: number } => ({ enumerated: 0, tested: 0, passed: 0 });
-  return { mutation: zero(), template: zero(), donor: zero(), token_beam: zero(), test_value: zero(), history: zero(), composite: zero() };
+  return { mutation: zero(), template: zero(), donor: zero(), token_beam: zero(), test_value: zero(), history: zero(), composite: zero(), llm: zero() };
 }
 
 export function newTrace(goal: Goal, oracle: OracleModel): GoalSearchTrace {
@@ -452,6 +485,30 @@ function checkAborted(ctx: SynthesisContext): void {
 // The loop
 // ---------------------------------------------------------------------------------------
 
+/** The LLM source's state in one sub-goal search (docs/LLM-JEV-DESIGN.md §4.2, §6.2); present whenever `SubGoalDeps.llm` is wired (llm-jev). */
+interface LlmLoop {
+  deps: SubGoalLlm;
+  loc: LocalizeResult;
+  /** the open round (L1, then L1′); null when none is open (skipped, or settled) */
+  round: LlmRound | null;
+  /** the summaries of the rounds that closed this step (the trace) */
+  summaries: LlmRoundSummary[];
+  /** every arrival this step (the feedback prompt's `need` paths) */
+  arrivals: SampleArrival[];
+  /** `LlmApplied` of every candidate that arrived, by candidate id (Q17's hunk views) */
+  applied: Map<string, LlmApplied>;
+  /** candidate ids already queued this step: an arrival run during the grace is not run again in the LLM phase */
+  queued: Set<string>;
+  /** the top site's seed batch has been seen (the stagger release happens once, there; the grace runs at any site) */
+  topSiteDone: boolean;
+  /** sample numbers of the open round already taken from it (−1 = the cache replay): the grace waits only while none has landed (§6.2) */
+  arrived: Set<number>;
+  /** ms the loop waited for sample 0 after a seed passer landed (§6.2 grace) */
+  graceMs: number;
+  /** Q17's fix-absent signal of the last RANK round (routing only) */
+  fixAbsent: 'strong' | 'weak' | null;
+}
+
 interface LoopState {
   ctx: SynthesisContext;
   mem: SubGoalMemory;
@@ -465,6 +522,8 @@ interface LoopState {
   pairing: boolean;
   /** siteKeys with ≥ 1 classified candidate in this step (trace.sitesTested / newSitesTested are counted once per site) */
   sitesThisStep: Set<string>;
+  /** llm-jev: the LLM source's state; null in jev-only */
+  llm: LlmLoop | null;
 }
 
 /**
@@ -505,6 +564,8 @@ function recordResults(st: LoopState, results: readonly VerifyOutcome[]): void {
     }
     tested.add(key);
   }
+  // llm-jev: every classified run of any source is a row of the attempt ledger the next prompt shows (§4.4, §4.9; the LLM must not repeat a seed's failure either)
+  if (st.llm !== null) recordAttempts(st.mem, goal.id, results.filter((r) => r.status !== 'apply_failed').map((r) => attemptFromOutcome(r, st.ctx.step)));
 }
 
 /** Queue `jobs` and run them (the runner charges the budget and `tried`); nothing is decided here. */
@@ -517,11 +578,12 @@ async function runJobs(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: n
   return { queued, results };
 }
 
-/** Queue `jobs`, run them, decide. Records tests/plausibles/clusters on the trace. */
-async function runBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: number): Promise<BatchOutcome> {
+/** Queue `jobs`, run them, decide. Records tests/plausibles/clusters on the trace. A seed batch at the top site is the stagger / grace point (§4.2, §6.2). */
+async function runBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: number, opts: { seedBatch?: boolean; base?: Base } = {}): Promise<BatchOutcome> {
   const { queued, results } = await runJobs(st, jobs, runsAllowed);
   if (queued.length === 0) return { kind: 'continue', queued: 0, completed: 0 };
-  return decideBatch(st, results, queued.length);
+  const all = opts.seedBatch === true && opts.base !== undefined ? await afterSeedBatch(st, opts.base, results) : results;
+  return decideBatch(st, all, queued.length);
 }
 
 /** The guard's decision on one batch (§2.6), recorded on the trace: one decision per batch, whatever it held. */
@@ -667,12 +729,13 @@ export async function commitProgress(ctx: SynthesisContext, mem: SubGoalMemory, 
     note('progress', `${goal.id}: the held partial ${where} waits: untested pairs of complementary partials run first`);
     return none('pairs_untested');
   }
-  // a commit is one `patch` of at most MAX_PATCH_FILES files (proposal.ts): a cumulative edit over more (a pair of a
-  // pair, an improved-base partial in a third file) cannot be proposed, so it is dropped here, before anything is recorded
+  // a commit is one `patch` of at most `patchMaxFiles` files (proposal.ts: 2 for code sources, 4 for an LLM winner): a cumulative
+  // edit over more (a pair of a pair, an improved-base partial in a third file) cannot be proposed, so it is dropped here, before anything is recorded
   const files = appliedOnCommitted(mem, held).files.length;
-  if (files > MAX_PATCH_FILES) {
+  const maxFiles = patchMaxFiles(held.applied);
+  if (files > maxFiles) {
     dropHeldPartial(mem, goal);
-    note('progress', `${goal.id}: the held partial ${where} edits ${files} files and cannot be proposed as one patch (at most ${MAX_PATCH_FILES}); dropped`);
+    note('progress', `${goal.id}: the held partial ${where} edits ${files} files and cannot be proposed as one patch (at most ${maxFiles}); dropped`);
     return none('unproposable');
   }
   // the full-suite run: the outcome's own when it has one, its subset run when that was the whole suite, else one run now
@@ -793,7 +856,7 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
     jobs = top.map((r) => ({ candidate: r.candidate, base, p: r.probability, sourcePrior, key: [base.summary.passed, r.probability, sourcePrior] }));
     everythingQueued = top.length >= fresh.length;
   }
-  const out = await runBatch(st, jobs, plan.runsAllowed);
+  const out = await runBatch(st, jobs, plan.runsAllowed, { seedBatch: (phase === 'SEEDS' || phase === 'WIDENED') && SEED_SOURCES.includes(source), base });
   // Everything was queued AND ran → the source is exhausted at the site. A RANK cut leaves the
   // rest enumerable for the next step (§2.3); so does a batch the runner cut short (wall, run
   // count, deferred passers): the candidates it did not classify are not in `tried` and come back.
@@ -830,6 +893,11 @@ async function visitSeedBatch(st: LoopState, phase: Phase, base: Base, site: Sit
   const union = sets.flatMap((s) => s.fresh);
   if (union.length === 0) {
     for (const s of sets) exhausted.add(s.source);
+    // §4.2: a top site without seeds releases the staggered samples at once (nothing races them)
+    if (st.llm !== null && !st.llm.topSiteDone) {
+      st.llm.topSiteDone = true;
+      releaseLlm(st, 'the top site has no seed candidates');
+    }
     return CONTINUE;
   }
   const plan = decideRunPlan(union, site, mem.oracle, mem.stepBudget);
@@ -864,7 +932,9 @@ async function visitSeedBatch(st: LoopState, phase: Phase, base: Base, site: Sit
     if (queued.filter((j) => ids.has(j.candidate.id)).every((j) => completed.has(j.candidate.id))) exhausted.add(s.source);
   }
   if (queued.length === 0) return CONTINUE;
-  return decideBatch(st, results, queued.length);
+  // the seeds-vs-LLM race at the top site (§4.2 stagger release, §6.2 grace): the guard then decides once over the union
+  const all = await afterSeedBatch(st, base, results);
+  return decideBatch(st, all, queued.length);
 }
 
 /** Every source at one site on one base: the seed sources as one batch where SIEVE allows, then the rest (composite, or every source under RANK) one by one. `sitesLeft` as in `visitSource`. */
@@ -872,6 +942,12 @@ async function visitSite(st: LoopState, phase: Phase, base: Base, site: Site, si
   const { mem, goal } = st;
   const exhausted = exhaustedAt(goal, site, phase);
   const visited = new Set<CandidateSourceName>();
+  // llm-jev at repository sites (docs/LLM-JEV-DESIGN.md §4e, §7.2): the chunked ranking of mutation sets is skipped and mutation is
+  // marked exhausted here, so the guard's sieveHoldApplies does not hold a lone template/donor passer to the step's end
+  if (st.llm !== null && mem.repository !== undefined && (phase === 'SEEDS' || phase === 'WIDENED') && !exhausted.has('mutation')) {
+    exhausted.add('mutation');
+    note(st, 'site', `${goal.id}: ${siteKey(site)}: mutation skipped at a repository site (llm-jev); the LLM round carries the new-logic hunks`);
+  }
   if ((phase === 'SEEDS' || phase === 'WIDENED') && mem.oracle.tRunMs.goalSubset <= SIEVE_MAX_T_RUN_MS) {
     const r = await visitSeedBatch(st, phase, base, site, sitesLeft, exhausted, visited);
     if (r.kind === 'exit') return r;
@@ -888,6 +964,306 @@ async function visitSite(st: LoopState, phase: Phase, base: Base, site: Site, si
     if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
   }
   return CONTINUE;
+}
+
+// ---------------------------------------------------------------------------------------
+// The LLM source in the loop (docs/LLM-JEV-DESIGN.md §4.2, §4.9, §6.1, §6.2)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * The LLM state of a search: the L1 round fires here, right after `locate` and before the phase loop
+ * (§4.2), unless the controller fired it ahead of the search (the repository step-1 overlap, §7.1).
+ * The loop is llm-jev whenever `deps.llm` is wired, round or no round.
+ */
+function startLlm(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, deps: SubGoalLlm, loc: LocalizeResult, prior: EditClassPrior | null): LlmLoop {
+  const early = llmMemory(mem).early.get(goal.id) ?? null;
+  if (early !== null) llmMemory(mem).early.delete(goal.id);
+  const round = early ?? deps.fire(ctx, mem, goal, loc, { round: 1, editClass: prior?.top ?? null });
+  return { deps, loc, round, summaries: [], arrivals: [], applied: new Map(), queued: new Set(), topSiteDone: false, arrived: new Set(), graceMs: 0, fixAbsent: null };
+}
+
+/** Book the open round's summary on the loop and drop it (it is closed, or the source is about to replace it with the next round). */
+function closeRound(L: LlmLoop): void {
+  const s = L.round?.summary() ?? null;
+  if (s !== null) L.summaries.push(s);
+  L.round = null;
+  L.arrived = new Set();
+}
+
+/** An LLM round may still fire this step: SKETCH/BEAM (Q11–Q14) wait for that (§4.2 phase ladder). */
+function llmRoundsAvailable(st: LoopState): boolean {
+  return st.llm !== null && st.mem.stepBudget.llmRoundsLeft > 0 && st.mem.stepBudget.llmUsdLeft > 0;
+}
+
+function releaseLlm(st: LoopState, why: string): void {
+  const round = st.llm?.round ?? null;
+  if (round === null || round.released()) return;
+  round.release();
+  note(st, 'llm:release', `${st.goal.id}: samples 1..${round.n - 1} released (${why})`);
+}
+
+/** Book `arrivals` on the loop — the feedback prompt's `need` paths, Q17's hunk views, the drops' ledger rows (§4.9) — without queuing anything. */
+function ingestArrivals(st: LoopState, arrivals: readonly SampleArrival[]): void {
+  const L = st.llm;
+  if (L === null) return;
+  for (const a of arrivals) {
+    L.arrivals.push(a);
+    L.arrived.add(a.sample);
+    for (const ap of a.applied) L.applied.set(ap.candidate.id, ap);
+    recordAttempts(st.mem, st.goal.id, attemptsFromArrival(a, st.ctx.step));
+  }
+}
+
+/**
+ * The fresh candidates of `arrivals` (not queued this step, not tried), at most `max`, counted on the trace; the arrivals
+ * themselves are booked whole. A candidate past `max` is neither marked nor counted: it stays in the source's cache for
+ * the next step (§4.2 "re-queued first").
+ */
+function freshLlm(st: LoopState, arrivals: readonly SampleArrival[], base: Base, max = Number.POSITIVE_INFINITY): Candidate[] {
+  const L = st.llm;
+  if (L === null) return [];
+  ingestArrivals(st, arrivals);
+  const out: Candidate[] = [];
+  for (const a of arrivals) {
+    for (const c of a.candidates) {
+      if (out.length >= max) break;
+      if (L.queued.has(c.id) || alreadyTried(c, base, st.mem)) continue;
+      L.queued.add(c.id);
+      out.push(c);
+    }
+  }
+  st.trace.candidatesEnumerated += out.length;
+  st.trace.bySource.llm.enumerated += out.length;
+  return out;
+}
+
+/** LLM jobs in the class's queue place (§6.1), arrival order within the round. */
+function llmJobs(cands: readonly Candidate[], base: Base, klass: OracleClass): VerifyJob[] {
+  const prior = llmJobPrior(klass);
+  return jobsFor(cands, base, prior, (_c, i) => prior - i * SIEVE_ORDER_EPSILON);
+}
+
+/**
+ * The seeds-vs-LLM race after a seed batch (§4.2, §6.2). Once, at the top site: no passer → the
+ * staggered samples are released (the LLM phase consumes the round). At any site while the round is
+ * open: a seed passer → the grace — wait ≤ min(LLM_GRACE_MS, the sample deadline left) for the
+ * first arrival while none has landed yet (§6.2 "sample 0 still in flight"), run the arrived LLM
+ * candidates on a queue of their own (the goal's queue may still hold seed leftovers a cut left
+ * behind; on QuixBugs class they sort before LLM jobs and would take the dispatches), and hand the
+ * union to the one `decide` of the batch (the guard's same-cluster rule then prefers the LLM
+ * member; distinct clusters go to Q15). The seeds' outcomes are returned as they were when there is
+ * nothing to add.
+ */
+async function afterSeedBatch(st: LoopState, base: Base, results: readonly VerifyOutcome[]): Promise<VerifyOutcome[]> {
+  const L = st.llm;
+  if (L === null) return [...results];
+  const round = L.round;
+  const passer = results.some((r) => r.status === 'plausible');
+  if (!L.topSiteDone) {
+    L.topSiteDone = true;
+    if (round !== null && !passer) {
+      releaseLlm(st, 'the top-site seed batch returned without a passer');
+      return [...results];
+    }
+  }
+  if (round === null || !passer) return [...results];
+  const awaiting = !round.closed() && L.arrived.size === 0;
+  const waitMs = awaiting ? Math.min(L.deps.graceMs, round.deadlineLeftMs()) : 0;
+  const t0 = L.deps.now();
+  const arrived = await round.waitFirst(waitMs);
+  const waited = Math.max(0, Math.round(L.deps.now() - t0));
+  L.graceMs += waited;
+  const cands = arrived ? freshLlm(st, round.ready(), base) : [];
+  const what = !arrived ? 'nothing arrived; the seeds decide' : cands.length === 0 ? 'no fresh LLM candidate; the seeds decide' : `${cands.length} LLM candidate${cands.length === 1 ? '' : 's'} arrived, running them before the decision`;
+  note(st, 'grace', `${st.goal.id}: a seed passer landed with the LLM round ${round.closed() ? 'closed' : 'in flight'}; waited ${waited} ms of ${waitMs} for ${awaiting ? 'sample 0' : 'nothing (a sample had landed)'} — ${what}`);
+  if (cands.length === 0) return [...results];
+  const left = runsLeft(st.mem.oracle, st.mem.stepBudget);
+  if (left <= 0) return [...results];
+  const { ctx, mem, goal, deps } = st;
+  const own = deps.createQueue(ctx, mem, goal);
+  const { queued } = own.addAll(llmJobs(cands, base, round.klass));
+  if (queued.length === 0) return [...results];
+  const extra = await deps.runQueue(ctx, mem, own, goal, Math.min(left, queued.length));
+  recordResults(st, extra);
+  return [...results, ...extra];
+}
+
+/** The LLM phase: the open round's arrivals run (streamed on a cheap oracle, ordered by Q17 on an expensive one), then the feedback round L1′ (§4.9) when round 1 ran and found nothing. */
+async function visitLlm(st: LoopState): Promise<BatchOutcome> {
+  const L = st.llm;
+  if (L === null || L.round === null) return CONTINUE;
+  const { ctx, mem, goal } = st;
+  releaseLlm(st, 'the seed phase found no passer');
+  let out = await runLlmRound(st, L.round);
+  if (out.kind === 'exit') return out;
+  if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
+  // §4.9: taken only when round 1's candidates all ran and produced no plausible candidate and no partial the guard commits — never on a Jev prediction
+  const m = llmMemory(mem);
+  const taken = m.feedbackRounds.get(goal.id) ?? 0;
+  if (out.completed > 0 && out.completed >= out.queued && taken < LLM_FEEDBACK_ROUNDS_PER_GOAL && llmRoundsAvailable(st)) {
+    const widen = LLM_FEEDBACK_WIDEN * (L.fixAbsent === 'strong' ? 2 : 1);
+    const needPaths = needPathsOf(L.arrivals);
+    // round 1 is booked before the source's next round replaces it (its summary is read off the source's current round); a
+    // RANK round still open after "N−1 or the deadline" is cancelled first so every sample of it is metered on the trace
+    if (!L.round.closed()) await L.round.cancel('budget');
+    closeRound(L);
+    const r2 = L.deps.fire(ctx, mem, goal, L.loc, { round: 2, widen, needPaths, editClass: st.prior?.top ?? null });
+    if (r2 !== null) {
+      m.feedbackRounds.set(goal.id, taken + 1);
+      L.round = r2;
+      note(st, 'llm:feedback', `${goal.id}: round 1 ran ${out.completed} candidates without a passer; feedback round L1′ (${taken + 1} of ${LLM_FEEDBACK_ROUNDS_PER_GOAL} this run) with the verdicts and ${widen} more listing members${needPaths.length > 0 ? `, need: ${needPaths.join(', ')}` : ''}`);
+      out = await runLlmRound(st, r2);
+    }
+  }
+  return out;
+}
+
+/** Run one round's candidates: streamed into the awaitable queue on a SIEVE oracle; collected whole and Q17-ordered in RANK mode. */
+async function runLlmRound(st: LoopState, round: LlmRound): Promise<BatchOutcome> {
+  const { ctx, mem, goal, trace } = st;
+  const L = st.llm;
+  const committed = mem.bases.find((b) => b.origin === 'committed');
+  if (L === null || committed === undefined) return CONTINUE;
+  const sieve = mem.oracle.tRunMs.goalSubset <= SIEVE_MAX_T_RUN_MS;
+  const q = st.queue;
+  if (sieve && q.open !== undefined && q.close !== undefined && q.next !== undefined) return runLlmStreaming(st, round, committed, { open: q.open.bind(q), close: q.close.bind(q) });
+  // §4.8 RANK: the Q17 request is built when N−1 samples have arrived or the deadline fires, whichever first
+  const arrivals = await collectForRank(round);
+  const cands = freshLlm(st, arrivals, committed);
+  if (cands.length === 0) {
+    note(st, 'llm:phase', `${goal.id}: round ${round.round} closed with no fresh candidate (${arrivals.length} arrival${arrivals.length === 1 ? '' : 's'})`);
+    return CONTINUE;
+  }
+  const left = runsLeft(mem.oracle, mem.stepBudget);
+  const first = cands[0];
+  if (left <= 0 || first === undefined) return BUDGET_EXIT;
+  const plan = decideRunPlan(cands, first.site, mem.oracle, mem.stepBudget);
+  trace.runMode = plan.mode;
+  if (plan.runsAllowed <= 0) return BUDGET_EXIT;
+  let ordered = cands;
+  if (plan.mode === 'RANK' && q17Needed(cands.length, left, mem.oracle.tRunMs.goalSubset) && mem.stepBudget.jevRequestsLeft > 0) {
+    // §4g: Jev orders the distinct samples (|distinct| > runsLeft or t_run > 2 s); it never withholds a run
+    const applied = cands.map((c) => L.applied.get(c.id)).filter((a): a is LlmApplied => a !== undefined);
+    const order = await L.deps.order(ctx, goal, applied, committed.files);
+    spend(mem, order.requests);
+    trace.jevRequests += order.requests;
+    trace.candidatesRanked += cands.length;
+    const rank = new Map(order.order.map((id, i) => [id, i]));
+    ordered = [...cands].sort((a, b) => (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER));
+    L.fixAbsent = order.strong ? 'strong' : order.weak ? 'weak' : null;
+    note(st, 'llm:rank', `${goal.id}: Q17 ordered ${cands.length} LLM candidates in ${order.requests} request${order.requests === 1 ? '' : 's'} (escape ${order.pEscape === null ? 'n/a' : order.pEscape.toFixed(2)}, max Noul ${order.maxNoul === null ? 'n/a' : order.maxNoul.toFixed(2)}); fix-absent signal ${L.fixAbsent ?? 'none'} (routing only); running the top ${Math.min(plan.k, ordered.length)}`);
+  }
+  const top = plan.mode === 'RANK' ? ordered.slice(0, plan.k) : ordered;
+  note(st, 'llm:phase', `${goal.id}: round ${round.round} (${round.klass}): ${cands.length} fresh LLM candidate${cands.length === 1 ? '' : 's'} from ${arrivals.length} arrival${arrivals.length === 1 ? '' : 's'}; ${plan.mode}, running ${top.length}`);
+  return runLlmBatch(st, llmJobs(top, committed, round.klass), plan.runsAllowed);
+}
+
+/** RANK mode (§4.8): the round's arrivals once N−1 samples landed, the per-sample deadline passed, or the round closed — whichever first. */
+async function collectForRank(round: LlmRound): Promise<SampleArrival[]> {
+  const out: SampleArrival[] = [];
+  const enough = Math.max(1, round.n - 1);
+  while (out.length < enough) {
+    const landed = await round.waitFirst(round.deadlineLeftMs());
+    if (!landed) break; // the deadline passed with nothing more in the buffer
+    const ready = round.ready();
+    if (ready.length === 0) break; // the round closed
+    out.push(...ready);
+  }
+  return out;
+}
+
+/**
+ * Queue LLM jobs on the goal's queue, run them and decide. Seed leftovers a cut left in the queue sort ahead of LLM jobs on
+ * QuixBugs class and run first, so the dispatches allow for them (within the runs left) while `queued` / `completed` count
+ * the LLM jobs alone — the §4.9 trigger ("round 1's candidates all ran") reads them.
+ */
+async function runLlmBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowed: number): Promise<BatchOutcome> {
+  const { ctx, mem, goal, deps } = st;
+  const leftovers = st.queue.size;
+  const { queued } = st.queue.addAll(jobs);
+  if (queued.length === 0) return CONTINUE;
+  const ids = new Set(queued.map((j) => j.candidate.id));
+  const results = await deps.runQueue(ctx, mem, st.queue, goal, Math.min(runsLeft(mem.oracle, mem.stepBudget), leftovers + runsAllowed));
+  recordResults(st, results);
+  const completed = results.filter((r) => ids.has(r.job.candidate.id)).length;
+  const out = await decideBatch(st, results, queued.length);
+  return out.kind === 'continue' ? { kind: 'continue', queued: queued.length, completed } : out;
+}
+
+/** SIEVE on a cheap oracle: the queue streams, the runner's lanes start on the first arrival, the round is closed into the queue, one decision over everything that ran (§4.8, §6.2). */
+async function runLlmStreaming(st: LoopState, round: LlmRound, committed: Base, q: { open(): void; close(): void }): Promise<BatchOutcome> {
+  const { ctx, mem, goal, deps, trace } = st;
+  const left = runsLeft(mem.oracle, mem.stepBudget);
+  if (left <= 0) return BUDGET_EXIT;
+  const cap = Math.min(left, LLM_ROUND_MAX_CANDIDATES);
+  // seed leftovers already in the goal's queue (a cut batch) sort ahead of the LLM jobs and run first: the dispatches allow
+  // for them, and the LLM accounting below counts the round's ids alone
+  const leftovers = st.queue.size;
+  trace.runMode = 'SIEVE';
+  q.open();
+  const ids = new Set<string>();
+  const feed = async (): Promise<void> => {
+    try {
+      for (;;) {
+        const a = await round.next();
+        if (a === null) break;
+        if (ids.size >= cap) {
+          // past the cap: booked (ledger rows, `need` paths, Q17 views) but not queued — the candidates stay in the source's cache for the next step
+          ingestArrivals(st, [a]);
+          continue;
+        }
+        const cands = freshLlm(st, [a], committed, cap - ids.size);
+        if (cands.length === 0) continue;
+        for (const j of st.queue.addAll(llmJobs(cands, committed, round.klass)).queued) ids.add(j.candidate.id);
+      }
+    } finally {
+      q.close();
+    }
+  };
+  const feeding = feed();
+  let results: VerifyOutcome[];
+  try {
+    results = await deps.runQueue(ctx, mem, st.queue, goal, Math.min(left, leftovers + cap));
+  } catch (e) {
+    // a lane failure: the round is cancelled so the feed ends and the queue closes before the error surfaces
+    if (!round.closed()) await round.cancel(ctx.signal.aborted ? 'abort' : 'budget');
+    await feeding;
+    throw e;
+  }
+  // the runner stopped short (budget, signal, passer cap) while samples may still be in flight: they are cancelled, not awaited
+  if (!round.closed()) await round.cancel(ctx.signal.aborted ? 'abort' : 'budget');
+  await feeding;
+  recordResults(st, results);
+  const queued = ids.size;
+  const completed = results.filter((r) => ids.has(r.job.candidate.id)).length;
+  note(st, 'llm:phase', `${goal.id}: round ${round.round} (${round.klass}) streamed ${queued} LLM candidate${queued === 1 ? '' : 's'} into the lanes as they arrived; ${completed} classified${results.length > completed ? ` (+${results.length - completed} seed leftover${results.length - completed === 1 ? '' : 's'})` : ''}`);
+  if (results.length === 0) return CONTINUE;
+  const out = await decideBatch(st, results, queued);
+  return out.kind === 'continue' ? { kind: 'continue', queued, completed } : out;
+}
+
+/** Step end for the LLM source: an open round is cancelled (a commit or the budget ended the search; §4.2) and the rounds' counts go on the trace. */
+async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Promise<void> {
+  const L = st.llm;
+  if (L === null) return;
+  const round = L.round;
+  if (round !== null) {
+    if (!round.closed()) await round.cancel(outcome === 'fixed' || outcome === 'partial' ? 'commit' : 'budget');
+    closeRound(L);
+  }
+  const sum = (f: (s: LlmRoundSummary) => number): number => L.summaries.reduce((n, s) => n + f(s), 0);
+  st.trace.llm = {
+    rounds: L.summaries.length,
+    samples: sum((s) => s.fired),
+    valid: sum((s) => s.valid),
+    distinct: sum((s) => s.distinct),
+    malformed: sum((s) => s.malformed),
+    timeouts: sum((s) => s.timeouts),
+    cancelled: sum((s) => s.cancelled),
+    misanchored: sum((s) => s.misanchored),
+    graceMs: L.graceMs,
+    fixAbsent: L.fixAbsent,
+  };
 }
 
 async function visitPhase(st: LoopState, phase: Phase, sites: readonly Site[]): Promise<BatchOutcome> {
@@ -972,8 +1348,19 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
     trace.jevRequests += 1;
   }
 
-  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior, rotation: mem.overrides.sourceRotation[goal.id] ?? 0, pairing: false, sitesThisStep: new Set<string>() };
-  const sites = orderSites(loc.sites, prior);
+  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior, rotation: mem.overrides.sourceRotation[goal.id] ?? 0, pairing: false, sitesThisStep: new Set<string>(), llm: null };
+  // llm-jev (docs/LLM-JEV-DESIGN.md §4.2): the L1 round fires right after `locate`, before the phase loop — sample 0 races the seeds
+  if (deps.llm !== undefined) st.llm = startLlm(ctx, mem, goal, deps.llm, loc, prior);
+  try {
+    return await searchPhases(st, loc, orderSites(loc.sites, prior));
+  } finally {
+    await settleLlm(st, trace.outcome);
+  }
+}
+
+/** The phase ladder of `searchSubGoal` over a prepared loop state (the LLM round, if any, is already in flight). */
+async function searchPhases(st: LoopState, loc: LocalizeResult, sites: readonly Site[]): Promise<SubGoalResult> {
+  const { mem, goal, trace } = st;
   trace.sitesConsidered = sites.length;
   const committed = mem.bases.find((b) => b.origin === 'committed');
   const singleFile = committed !== undefined && isSingleFileWorkspace(committed.files);
@@ -991,13 +1378,24 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
         if (r.kind === 'continue') r = await visitPairs(st);
         break;
       }
+      case 'LLM': {
+        // llm-jev only (docs/LLM-JEV-DESIGN.md §4.2): the round fired after `locate` is consumed here once the seeds found nothing
+        if (st.llm === null) break;
+        goal.phase = phase;
+        trace.phase = phase;
+        r = await visitLlm(st);
+        break;
+      }
       case 'SKETCH': {
+        // SKETCH/BEAM (Q11–Q14) run only once no LLM round can fire this step (§4.2 phase ladder)
+        if (llmRoundsAvailable(st)) break;
         // Entered where SEEDS is exhausted (fixProbablyAbsent at every seed source counts, §2.3 phase table), top-3 sites only.
         const targets = sites.slice(0, SKETCH_TOP_SITES).filter((s) => seedsExhaustedAt(goal, s));
         if (targets.length > 0) r = await visitPhase(st, phase, targets);
         break;
       }
       case 'BEAM': {
+        if (llmRoundsAvailable(st)) break;
         if (mem.stepBudget.jevRequestsLeft < BEAM_MIN_JEV_REQUESTS_LEFT) break;
         const targets = sites.slice(0, BEAM_TOP_SITES).filter((s) => goal.exhausted.get(exhaustedKey(s, 'SKETCH'))?.has('token_beam') === true);
         if (targets.length > 0) r = await visitPhase(st, phase, targets);
@@ -1077,11 +1475,22 @@ export async function searchBestGuess(ctx: SynthesisContext, mem: SubGoalMemory,
     mem.localizeCache.set(goal.id, loc);
   }
   const committed = mem.bases.find((b) => b.origin === 'committed');
-  if (committed === undefined) return finish({ ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false, sitesThisStep: new Set<string>() }, { kind: 'parked', reason: 'no committed base to search from' });
+  if (committed === undefined) return finish({ ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false, sitesThisStep: new Set<string>(), llm: null }, { kind: 'parked', reason: 'no committed base to search from' });
   const sites = loc.sites.slice(0, BEST_GUESS_TOP_SITES);
   trace.sitesConsidered = sites.length;
-  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false, sitesThisStep: new Set<string>() };
-  if (sites.length === 0) return finish(st, { kind: 'parked', reason: `no site located for ${goal.tests[0] ?? goal.id} from the issue text` });
+  const st: LoopState = { ctx, mem, goal, deps, trace, queue: deps.createQueue(ctx, mem, goal), prior: null, rotation: 0, pairing: false, sitesThisStep: new Set<string>(), llm: null };
+  // llm-jev (docs/LLM-JEV-DESIGN.md §4.2): the repository round fires whole right after `locate`, overlapping the seed enumeration and ranking
+  if (deps.llm !== undefined) st.llm = startLlm(ctx, mem, goal, deps.llm, loc, null);
+  try {
+    return await bestGuessPhases(st, sites, committed);
+  } finally {
+    await settleLlm(st, trace.outcome);
+  }
+}
+
+async function bestGuessPhases(st: LoopState, sites: readonly Site[], committed: Base): Promise<SubGoalResult> {
+  const { ctx, mem, goal, deps, trace } = st;
+  if (sites.length === 0 && st.llm?.round === null) return finish(st, { kind: 'parked', reason: `no site located for ${goal.tests[0] ?? goal.id} from the issue text` });
 
   // sources 1–3 at each site, fresh (not tried, not the unchanged line)
   const opts = enumerateOptions(committed, goal, ctx.task);
@@ -1103,8 +1512,9 @@ export async function searchBestGuess(ctx: SynthesisContext, mem: SubGoalMemory,
     for (const c of cands) trace.bySource[c.source].enumerated += 1;
     if (cands.length > 0) perSite.push({ site, cands });
   }
-  const total = perSite.reduce((n, s) => n + s.cands.length, 0);
-  if (total === 0) return finish(st, { kind: 'parked', reason: `no candidate enumerated by ${SEED_SOURCES.join(', ')} at ${sites.length} site${sites.length === 1 ? '' : 's'} for ${goal.tests[0] ?? goal.id}` });
+  // llm-jev: the round drains while Jev ranks the seeds (§7.1 (2): the round overlaps the ranking, not the other way round);
+  // its candidates then go before every seed (§6.1 repository class: p = 1.0 − i·ε)
+  const llmRest: Promise<SampleArrival[]> = st.llm !== null && st.llm.round !== null ? st.llm.round.rest() : Promise.resolve([]);
 
   // Jev ranks each site's set; the sets merge by probability (§2.4: K is a budget, never a threshold)
   const ranked: { candidate: Candidate; probability: number; site: Site }[] = [];
@@ -1116,9 +1526,12 @@ export async function searchBestGuess(ctx: SynthesisContext, mem: SubGoalMemory,
     trace.candidatesRanked += r.ranked.length;
     for (const x of r.ranked) ranked.push({ candidate: x.candidate, probability: x.probability, site });
   }
+  const llmCands = freshLlm(st, await llmRest, committed);
+  if (perSite.length === 0 && llmCands.length === 0) return finish(st, { kind: 'parked', reason: `no candidate enumerated by ${SEED_SOURCES.join(', ')}${st.llm === null ? '' : ' or the LLM round'} at ${sites.length} site${sites.length === 1 ? '' : 's'} for ${goal.tests[0] ?? goal.id}` });
+  llmCands.forEach((c, i) => ranked.push({ candidate: c, probability: llmJobPrior('repository') - i * SIEVE_ORDER_EPSILON, site: c.site }));
   if (ranked.length === 0) return finish(st, { kind: 'budget' });
   ranked.sort((a, b) => b.probability - a.probability);
-  const first = sites[0];
+  const first = sites[0] ?? ranked[0]?.site;
   const plan = decideRunPlan(ranked.length, first ?? { kind: 'replace' }, mem.oracle, mem.stepBudget);
   if (plan.runsAllowed <= 0) return finish(st, { kind: 'budget' });
   const k = Math.min(plan.mode === 'RANK' ? plan.k : ranked.length, plan.runsAllowed, ranked.length);
@@ -1134,6 +1547,7 @@ export async function searchBestGuess(ctx: SynthesisContext, mem: SubGoalMemory,
     row.tested += 1;
     if (r.status === 'plausible') row.passed += 1;
   }
+  if (st.llm !== null) recordAttempts(mem, goal.id, results.filter((r) => r.status !== 'apply_failed').map((r) => attemptFromOutcome(r, ctx.step)));
   // the highest-ranked candidate whose scoped run shows nothing newly failing
   const order = new Map(top.map((r, i) => [r.candidate.id, i]));
   const ok = results

@@ -1,15 +1,67 @@
 /**
- * The bench conditions (DESIGN.md §13, docs/JEV-ONLY.md): jev-on is the full engine, jev-off
- * the generator-only engine, jev-only the full engine with a Synthesizer in the propose stage
- * and the NullProvider in the generator slot (no generating LLM; any generator usage
- * invalidates the record). Everything that must be identical across conditions is built here
- * so it can be recorded verbatim in summary.json.conditions.
+ * The bench conditions (DESIGN.md §13, docs/JEV-ONLY.md, docs/LLM-JEV-DESIGN.md §10.1): jev-on is the full engine,
+ * jev-off the generator-only engine, jev-only the full engine with a Synthesizer in the propose stage and the
+ * NullProvider in the generator slot (no generating LLM; any generator usage invalidates the record), llm-jev the full
+ * engine with the Synthesizer AND the real provider (the generating LLM is a candidate source inside the synthesizer;
+ * generator calls are recorded, never asserted zero). The two attribution arms of §10.1 map onto those engines:
+ * llm-sieve = the llm-jev engine with the stub Decider (zero Jev requests) and the synthesizer in `mode: 'llm-sieve'`
+ * (every Jev question replaced by its code default); jev-off-tuned = the jev-off engine behind the tuned provider
+ * (§4 generator hygiene: max_tokens 1,500, reasoning effort low, a 20 s per-call deadline that drops the call — the
+ * propose stage ends the step without a retry — `length` → doubled once, plan capped at 200 chars). Everything that must
+ * be identical across conditions — and everything that is PINNED per condition, the generation parameters first of all —
+ * is built here so it is recorded verbatim in summary.json.conditions: the synthesizer arms' parameters are the ONE
+ * `SynthesizerGeneration` object handed to the synthesizer factory and echoed back (the runner refuses an arm whose
+ * synthesizer does not echo its mode and generation), the tuned arm's are the tuned provider's own parameters.
  */
-import type { BenchDeps, Confirmer, Decider, Engine, EngineMode, EngineOptions, Provider, SpendMeter, Synthesizer } from '../core/types.js';
+import { lookupPricing } from '../config/defaults.js';
+import type { BenchCondition, BenchDeps, BenchSuite, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
-import type { BenchOptions, ConditionConfig } from './types.js';
+import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/source.js';
+import { STUB_DECIDER_MODEL } from './stub-decider.js';
+import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
+import type { BenchOptions, ConditionConfig, PinnedGeneration, ServedRate } from './types.js';
 
-export const CONDITION_ORDER: readonly EngineMode[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'];
+export const CONDITION_ORDER: readonly BenchCondition[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'];
+
+/** The engine mode an arm runs on (docs/LLM-JEV-DESIGN.md §10.1): the attribution arms are bench-side substitutions on an existing mode. */
+export function engineModeOf(condition: BenchCondition): EngineMode {
+  switch (condition) {
+    case 'llm-sieve':
+      return 'llm-jev';
+    case 'jev-off-tuned':
+      return 'jev-off';
+    default:
+      return condition;
+  }
+}
+
+/** jev-only, llm-jev and llm-sieve put a Synthesizer in the propose stage (docs/JEV-ONLY.md, docs/LLM-JEV-DESIGN.md §3). */
+export function usesSynthesizer(condition: BenchCondition): boolean {
+  const mode = engineModeOf(condition);
+  return mode === 'jev-only' || mode === 'llm-jev';
+}
+
+/** The synthesizer's mode for an arm (null when the arm has no synthesizer). */
+export function synthesizerModeOf(condition: BenchCondition): SynthesizerArmMode | null {
+  if (condition === 'llm-sieve') return 'llm-sieve';
+  const mode = engineModeOf(condition);
+  return mode === 'jev-only' || mode === 'llm-jev' ? mode : null;
+}
+
+/** llm-sieve: the decider slot holds the stub (bench/stub-decider.ts); zero Jev requests by construction. */
+export function usesStubDecider(condition: BenchCondition): boolean {
+  return condition === 'llm-sieve';
+}
+
+/** jev-off-tuned: the provider slot holds the tuned wrapper (bench/tuned-provider.ts). */
+export function usesTunedProvider(condition: BenchCondition): boolean {
+  return condition === 'jev-off-tuned';
+}
+
+/** a bench with a synthesizer condition needs BenchDeps.createSynthesizer */
+export function requiresSynthesizer(conditions: readonly BenchCondition[]): boolean {
+  return conditions.some(usesSynthesizer);
+}
 /** what summary.json records as the generator model of the jev-only condition (NullProvider.model) */
 export const NULL_GENERATOR_MODEL = 'none (jev-only)';
 
@@ -22,34 +74,125 @@ export const alwaysDecline: Confirmer = {
   },
 };
 
-export function isEngineMode(s: string): s is EngineMode {
+export function isBenchCondition(s: string): s is BenchCondition {
   return (CONDITION_ORDER as readonly string[]).includes(s);
 }
 
-/** jev-on, jev-off and llm-jev call a generating LLM; a bench of jev-only alone needs no generator provider or key. */
-export function requiresGenerator(conditions: readonly EngineMode[]): boolean {
+/** Every arm but jev-only calls a generating LLM; a bench of jev-only alone needs no generator provider or key. */
+export function requiresGenerator(conditions: readonly BenchCondition[]): boolean {
   return conditions.some((c) => c !== 'jev-only');
 }
 
-export function parseConditions(text: string): EngineMode[] {
-  const out: EngineMode[] = [];
+export function parseConditions(text: string): BenchCondition[] {
+  const out: BenchCondition[] = [];
   for (const raw of text.split(',')) {
     const c = raw.trim();
     if (c === '') continue;
-    if (!isEngineMode(c)) throw new ConfigError(`--conditions: unknown condition "${c}" (use ${CONDITION_ORDER.join(', ')})`, { setting: 'conditions' });
+    if (!isBenchCondition(c)) throw new ConfigError(`--conditions: unknown condition "${c}" (use ${CONDITION_ORDER.join(', ')})`, { setting: 'conditions' });
     if (!out.includes(c)) out.push(c);
   }
   if (out.length === 0) throw new ConfigError('--conditions: at least one condition is required', { setting: 'conditions' });
   return out;
 }
 
-export function conditionConfig(mode: EngineMode, opts: BenchOptions, generatorModel: string): ConditionConfig {
+// ---------------------------------------------------------------------------------------
+// Pinned generation parameters (docs/LLM-JEV-DESIGN.md §10.1; the user's config never reaches an arm)
+// ---------------------------------------------------------------------------------------
+
+export const GLM_FLASH_MODEL = 'z-ai/glm-5.3-flash';
+/** docs/LLM-JEV-DESIGN.md §8 / DECISIONS 2026-09-21: the provider that serves GLM 5.3 flash bills 5/3× the models-API table. */
+export const GLM_FLASH_SERVED_RATE: ServedRate = { inputPerM: 0.15, outputPerM: 0.5 };
+
+/** The rate estimates are priced at: the measured served rate for GLM flash, the pricing table for anything else (zeros when unknown). */
+export function servedRateFor(generatorModel: string): ServedRate {
+  if (generatorModel.trim().toLowerCase() === GLM_FLASH_MODEL) return { ...GLM_FLASH_SERVED_RATE };
+  const { pricing } = lookupPricing(generatorModel);
+  return { inputPerM: pricing.inputPerM, outputPerM: pricing.outputPerM };
+}
+
+/** §10.1 `jev-off`: exactly the checked-in baseline runs (`bench/results/glm-jev-off-*`): no `reasoning`, no deadline, 4,096 tokens. */
+export const BASELINE_MAX_TOKENS = 4096;
+/** §10.1 `jev-off-tuned`: the §4 hygiene where the action grammar allows it. */
+export const TUNED_MAX_TOKENS = 1500;
+/** §10.1: 20 s per call on the QuixBugs / ladder class, 30 s on repositories (the §4.8 sample deadlines) */
+export const TUNED_DEADLINE_MS = 20_000;
+export const TUNED_REPOSITORY_DEADLINE_MS = 30_000;
+/**
+ * §4.12 / §10.2 finding (a): OpenRouter answers `reasoning: {enabled: false}` with HTTP 400 on z-ai/glm-5.3* ("Reasoning is
+ * mandatory for this endpoint"), so every hygiene arm asks for `{effort: 'low'}` — the LLM source's own default — and the
+ * synthesizer arms' max_tokens base is the reasoning-on one.
+ */
+export const HYGIENE_REASONING: GenerateReasoning = LLM_DEFAULT_REASONING;
+/** §10.1 `llm-jev` / `llm-sieve`: what the LLM source sends by default (§4.6 / §4.8), handed to the synthesizer verbatim. */
+export const SYNTHESIZER_GENERATION: SynthesizerGeneration = LLM_DEFAULT_GENERATION;
+
+export function pinnedGeneration(condition: BenchCondition, generatorModel: string): PinnedGeneration {
+  const servedRate = servedRateFor(generatorModel);
+  switch (condition) {
+    case 'jev-on':
+    case 'jev-off':
+      return { proposer: 'generator', temperature: null, maxTokens: BASELINE_MAX_TOKENS, reasoning: null, deadlineMs: null, lengthHandling: 'none', servedRate };
+    case 'jev-off-tuned':
+      return { proposer: 'generator', temperature: null, maxTokens: TUNED_MAX_TOKENS, reasoning: HYGIENE_REASONING, deadlineMs: TUNED_DEADLINE_MS, repositoryDeadlineMs: TUNED_REPOSITORY_DEADLINE_MS, lengthHandling: 'double-once', servedRate };
+    case 'jev-only':
+      // no generating LLM: the NullProvider throws if called; the values are the engine's inert defaults
+      return { proposer: 'synthesizer', temperature: null, maxTokens: BASELINE_MAX_TOKENS, reasoning: null, deadlineMs: null, lengthHandling: 'none', servedRate: { inputPerM: 0, outputPerM: 0 } };
+    case 'llm-jev':
+    case 'llm-sieve': {
+      // §4.6 / §4.8: temperature per sample (0, then 0.8), max_tokens 3,000 with reasoning on and doubled once after a `length` drop,
+      // deadline clamp(2 × running p50, 10 s, 20 s) on the QuixBugs/ladder class and 30 s on repositories — every flat field
+      // is read off the one object the synthesizer receives and echoes
+      const g = SYNTHESIZER_GENERATION;
+      return {
+        proposer: 'synthesizer',
+        temperature: null,
+        sampleTemperatures: [g.sampleTemperature.first, g.sampleTemperature.rest],
+        maxTokens: g.maxTokens,
+        reasoning: g.reasoning,
+        deadlineMs: g.sampleDeadline.maxMs,
+        repositoryDeadlineMs: g.sampleDeadline.repositoryMs,
+        lengthHandling: 'double-once',
+        servedRate,
+        synthesizer: g,
+      };
+    }
+  }
+}
+
+/** The pinned generation the runner hands `createSynthesizer` for an arm (null for jev-only, which has no LLM source, and the generator arms). */
+export function synthesizerGenerationOf(condition: BenchCondition, generatorModel: string): SynthesizerGeneration | null {
+  return pinnedGeneration(condition, generatorModel).synthesizer ?? null;
+}
+
+/** SWE-bench and Terminal-Bench workspaces are repositories (§4.8 class); QuixBugs and the ladder are the cheap-test class. */
+export function isRepositorySuite(suite: BenchSuite): boolean {
+  return suite === 'swebench' || suite === 'terminal-bench';
+}
+
+/** The tuned provider's parameters for the jev-off-tuned arm, derived from the pinned generation so summary.json and the wrapper agree. */
+export function tunedParamsFor(generatorModel: string, suite: BenchSuite): TunedProviderParams {
+  const g = pinnedGeneration('jev-off-tuned', generatorModel);
+  const deadlineMs = isRepositorySuite(suite) ? (g.repositoryDeadlineMs ?? TUNED_REPOSITORY_DEADLINE_MS) : (g.deadlineMs ?? TUNED_DEADLINE_MS);
+  return { maxTokens: g.maxTokens, reasoning: g.reasoning ?? HYGIENE_REASONING, deadlineMs, lengthHandling: g.lengthHandling, servedRate: g.servedRate, planCapChars: PLAN_CAP_CHARS };
+}
+
+function deciderModelOf(condition: BenchCondition, opts: BenchOptions): string | null {
+  if (engineModeOf(condition) === 'jev-off') return null;
+  if (usesStubDecider(condition)) return STUB_DECIDER_MODEL;
+  return opts.deciderModel.configured;
+}
+
+export function conditionConfig(condition: BenchCondition, opts: BenchOptions, generatorModel: string): ConditionConfig {
+  const model = condition === 'jev-only' ? NULL_GENERATOR_MODEL : generatorModel;
+  const generation = pinnedGeneration(condition, model);
   return {
-    mode,
-    generatorModel: mode === 'jev-only' ? NULL_GENERATOR_MODEL : generatorModel,
-    deciderModel: mode === 'jev-off' ? null : opts.deciderModel.configured,
-    temperature: opts.generation.temperature,
-    maxTokens: opts.generation.maxTokens,
+    condition,
+    mode: engineModeOf(condition),
+    generatorModel: model,
+    deciderModel: deciderModelOf(condition, opts),
+    temperature: generation.temperature,
+    maxTokens: generation.maxTokens,
+    generation,
     maxSteps: opts.limits.maxSteps,
     maxWallMs: opts.limits.maxWallMs,
     maxReplans: opts.limits.maxReplans,
@@ -65,13 +208,13 @@ export function conditionConfig(mode: EngineMode, opts: BenchOptions, generatorM
 }
 
 export interface EngineBuildInput {
-  mode: EngineMode;
+  condition: BenchCondition;
   task: string;
   workspace: string;
   provider: Provider;
   decider: Decider;
   meter: SpendMeter;
-  /** jev-only: the propose stage (required by createEngine in that mode) */
+  /** synthesizer arms: the propose stage (required by createEngine in those modes) */
   synthesizer?: Synthesizer;
   resume?: { runId: string; force: boolean };
   now?: () => number;
@@ -80,11 +223,16 @@ export interface EngineBuildInput {
   extraReadableRoots?: readonly string[];
 }
 
-/** EngineOptions for one run; only `mode`, the task text, workspace, provider/decider/meter (and the jev-only synthesizer) differ per pair. */
+/**
+ * EngineOptions for one run; only the mode, the task text, workspace, provider/decider/meter (and the synthesizer) differ
+ * per pair. `generation` is the arm's PINNED parameters (never `opts.generation`, which is the user's config); the
+ * llm-sieve arm pins its decider model to the stub's so the drift check reads the stub as the configured model.
+ */
 export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions): EngineOptions {
+  const generation = pinnedGeneration(input.condition, input.provider.model);
   const out: EngineOptions = {
     task: input.task,
-    mode: input.mode,
+    mode: engineModeOf(input.condition),
     workspace: input.workspace,
     runsDir: opts.runsDir,
     provider: input.provider,
@@ -97,8 +245,8 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
     configRecord: opts.configRecord,
     redact: opts.redact,
     secretPaths: opts.secretPaths,
-    generation: { temperature: opts.generation.temperature, maxTokens: opts.generation.maxTokens },
-    deciderModel: { configured: opts.deciderModel.configured, pinned: opts.deciderModel.pinned },
+    generation: { temperature: generation.temperature, maxTokens: generation.maxTokens },
+    deciderModel: usesStubDecider(input.condition) ? { configured: STUB_DECIDER_MODEL, pinned: true } : { configured: opts.deciderModel.configured, pinned: opts.deciderModel.pinned },
     // TUI-DESIGN §15.2 bench/conditions.ts row: a bench run is its own session and writes neither index.jsonl nor history.jsonl (§1)
     session: { sessionId: null, parentRunId: null, source: 'bench' },
   };
@@ -110,7 +258,7 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   return out;
 }
 
-/** jev-on, jev-only and llm-jev are the full engine (the latter two with `engineOpts.synthesizer` set); jev-off the generator-only factory. */
-export function createEngineFor(mode: EngineMode, engineOpts: EngineOptions, deps: BenchDeps): Promise<Engine> {
-  return mode === 'jev-off' ? deps.createGeneratorOnlyEngine(engineOpts) : deps.createEngine(engineOpts);
+/** jev-off and jev-off-tuned are the generator-only factory; every other arm the full engine (the synthesizer arms with `engineOpts.synthesizer` set). */
+export function createEngineFor(condition: BenchCondition, engineOpts: EngineOptions, deps: BenchDeps): Promise<Engine> {
+  return engineModeOf(condition) === 'jev-off' ? deps.createGeneratorOnlyEngine(engineOpts) : deps.createEngine(engineOpts);
 }

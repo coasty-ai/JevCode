@@ -21,7 +21,7 @@ import { AbortError } from '../../errors.js';
 import { ESCAPE_KEY, assertQuestionBatch } from '../../jev/questions.js';
 import { CHARS_PER_TOKEN } from '../localize/budget.js';
 import type { Candidate, JevAsk, RankContext, RankResult, RankedCandidate, Ranker, Site } from '../types.js';
-import { CHOICE_QUESTION_ID, buildChoiceQuestion, buildCompactNouls, buildRankState, candidateKey, candidateSignature, isUnchanged, programRange, rankMode } from './questions.js';
+import { CHOICE_QUESTION_ID, buildChoiceQuestion, buildCompactNouls, buildFullNouls, buildRankState, candidateKey, candidateSignature, isUnchanged, programRange, rankMode } from './questions.js';
 
 export {
   CHOICE_INSTRUCTIONS,
@@ -39,6 +39,7 @@ export {
   anchorLine,
   buildChoiceQuestion,
   buildCompactNouls,
+  buildFullNouls,
   buildRankState,
   candidateDescription,
   candidateKey,
@@ -95,6 +96,13 @@ export const SHUFFLE_RERANK_MIN_T_RUN_MS = 20_000;
 export const SHUFFLE_RERANK_MARGIN = 0.1;
 /** The re-asked shortlist is at most this long (repair-search §1.5: "≤ 10 candidates"). */
 export const SHUFFLE_RERANK_MAX = 10;
+/**
+ * llm-jev (docs/LLM-JEV-DESIGN.md §9.2 stage 4, `RankerOptions.fullCriteriaNouls`): 11–150 candidates are ranked with
+ * full-criteria Nouls in chunks of ≤ 50 (top-3 40/40 at N ≤ 50 with one full-criteria Noul each, §2 principle 1) instead of the
+ * compact `contextNoul` hybrid; above 150 the two-stage path stands.
+ */
+export const FULL_NOUL_CHUNK = 50;
+export const FULL_NOUL_MAX_CANDIDATES = 150;
 
 /** Estimated input tokens of the `program` listing the rank state shows for `site`. */
 export function listingTokens(site: Site): number {
@@ -117,6 +125,8 @@ export interface RankerOptions {
   maxConcurrentRequests?: number;
   /** stage recorded on the decisions; the probes ran as `propose` */
   stage?: StageName;
+  /** llm-jev: full-criteria Nouls in chunks ≤ FULL_NOUL_CHUNK for choiceMax < N ≤ FULL_NOUL_MAX_CANDIDATES (default off: the measured compact hybrid) */
+  fullCriteriaNouls?: boolean;
 }
 
 /** Code-computed signals behind `fixProbablyAbsent`, for the transcript and the search policy. */
@@ -375,6 +385,38 @@ export function createRanker(options: RankerOptions = {}): JevRanker {
         method: 'choice',
         requests: 1,
         signals: { ...signals, pEscape, pMax, choiceFlags: flagged },
+      };
+    }
+
+    // ---- llm-jev: choiceMax < N ≤ 150 → full-criteria Nouls in chunks ≤ 50 (no Choice; the Nouls rank) ----
+    if (options.fullCriteriaNouls === true && uniques.length <= FULL_NOUL_MAX_CANDIDATES) {
+      const sizes = chunkSizes(uniques.length, FULL_NOUL_CHUNK);
+      const chunks: Unique[][] = [];
+      let offset = 0;
+      for (const size of sizes) {
+        chunks.push(uniques.slice(offset, offset + size));
+        offset += size;
+      }
+      const nouls = new Map<Unique, number>();
+      const tasks = chunks.map((chunk) => async (): Promise<void> => {
+        chunk.forEach((u, i) => (u.key = candidateKey(i)));
+        const keys = chunk.map((u) => u.key);
+        const state = buildRankState(chunk.map((u) => u.candidate), keys, site, ctx, { withCandidates: true });
+        const answers = await askAbortable(ctx.ask, stage, state, buildFullNouls(keys, mode), ctx.signal);
+        chunk.forEach((u) => nouls.set(u, noulAnswer(answers, u.key)));
+      });
+      await runPool(tasks, concurrency);
+      const noulOf = (u: Unique): number => nouls.get(u) ?? 0;
+      const maxNoul = Math.max(0, ...nouls.values());
+      const noulFlags = noulsFlagAbsent(maxNoul);
+      const ordered = orderBy(uniques, noulOf);
+      return {
+        ranked: expand(ordered, noulOf, (u) => ({ noulProbability: noulOf(u) })),
+        escapeProbability: 1 - maxNoul,
+        fixProbablyAbsent: noulFlags,
+        method: 'nouls',
+        requests: chunks.length,
+        signals: { ...signals, maxNoul, noulFlags, chunks: chunks.length },
       };
     }
 

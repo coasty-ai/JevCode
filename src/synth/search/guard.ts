@@ -175,6 +175,32 @@ function byEditCost(a: VerifyOutcome, b: VerifyOutcome): number {
   return editCost(a.applied.candidate) - editCost(b.applied.candidate) || a.applied.candidate.text.length - b.applied.candidate.text.length || a.applied.candidate.id.localeCompare(b.applied.candidate.id);
 }
 
+function isLlm(o: VerifyOutcome): boolean {
+  return o.applied.candidate.source === 'llm';
+}
+
+/** docs/LLM-JEV-DESIGN.md §6.2: on a Choice tie an `llm` member goes before a code seed (negative when `a` is the LLM one). */
+function llmFirst(a: VerifyOutcome, b: VerifyOutcome): number {
+  return Number(isLlm(b)) - Number(isLlm(a));
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.2 `preferLlmInCluster`: the representative of a behaviour cluster is its
+ * `llm` member with the most agreement (`Candidate.prior`, the folded-duplicate count; ties by edit
+ * cost), else the min-edit member. Measured: GLM 16/16 gold-or-equivalent vs 7 seed overfits in 53
+ * solves; jev-only committed 2/40 QuixBugs and 5/14 ladder overfits a larger LLM fix would have avoided.
+ */
+export function preferLlmInCluster(members: readonly VerifyOutcome[]): VerifyOutcome {
+  const llm = members.filter(isLlm).sort((a, b) => (b.applied.candidate.prior ?? 0) - (a.applied.candidate.prior ?? 0) || byEditCost(a, b));
+  const first = llm[0];
+  return first ?? minEdit(members);
+}
+
+/** A cluster that holds candidates of the LLM and of a code source (the §6.2 code rule applies, no Jev request). */
+export function mixedSourceCluster(c: Pick<BehaviourCluster, 'members'>): boolean {
+  return c.members.some(isLlm) && c.members.some((m) => !isLlm(m));
+}
+
 /** The smallest-edit member of a set (the `suspect` when every passer looks like an overfit). */
 export function minEdit(outcomes: readonly VerifyOutcome[]): VerifyOutcome {
   const sorted = [...outcomes].sort(byEditCost);
@@ -187,8 +213,10 @@ export function minEdit(outcomes: readonly VerifyOutcome[]): VerifyOutcome {
  * Group plausible candidates whose behaviour is identical: the P2P outcome vector always, joined
  * with the probe signature when `signatures` (keyed by candidate id) has one, so two candidates
  * that agree on every perturbed input but not on the suite never share a cluster. Members are
- * ordered by edit cost and the representative is the smallest edit; clusters are ordered by size,
- * then representative cost.
+ * ordered by edit cost and the representative is the smallest edit — or, when the cluster has an
+ * `llm` member, that member (`preferLlmInCluster`, docs/LLM-JEV-DESIGN.md §6.2), moved to the
+ * front so the single-cluster representatives include it; clusters are ordered by size, then
+ * representative cost.
  */
 export function clusterByBehaviour(outcomes: readonly VerifyOutcome[], signatures: ReadonlyMap<string, string> = new Map()): BehaviourCluster[] {
   const groups = new Map<string, VerifyOutcome[]>();
@@ -200,9 +228,9 @@ export function clusterByBehaviour(outcomes: readonly VerifyOutcome[], signature
   }
   const clusters = [...groups.entries()].map(([signature, members]) => {
     const sorted = [...members].sort(byEditCost);
-    const representative = sorted[0];
+    const representative = members.some(isLlm) ? preferLlmInCluster(members) : sorted[0];
     if (representative === undefined) throw new GuardError('empty behaviour cluster');
-    return { id: '', members: sorted, representative, signature };
+    return { id: '', members: [representative, ...sorted.filter((m) => m !== representative)], representative, signature };
   });
   clusters.sort((a, b) => b.members.length - a.members.length || byEditCost(a.representative, b.representative));
   return clusters.map((c, i) => ({ ...c, id: `cluster_${i + 1}` }));
@@ -523,8 +551,8 @@ export async function arbitrate(ctx: ArbitrateContext, clusters: readonly Behavi
   const maxNoul = Math.max(...reps.map((r) => nouls[r.key] ?? 0));
   const suspect = pEscape >= SUSPECT_ESCAPE_MIN && maxNoul < SUSPECT_NOUL_MAX;
 
-  // Choice argmax (ties → smaller edit), then the override rule.
-  const byChoice = [...reps].sort((a, b) => (pChoice[b.key] ?? 0) - (pChoice[a.key] ?? 0) || byEditCost(a.outcome, b.outcome));
+  // Choice argmax (ties → the LLM member, then the smaller edit; §6.2), then the override rule.
+  const byChoice = [...reps].sort((a, b) => (pChoice[b.key] ?? 0) - (pChoice[a.key] ?? 0) || llmFirst(a.outcome, b.outcome) || byEditCost(a.outcome, b.outcome));
   let pick = byChoice[0];
   if (pick === undefined) throw new GuardError('no representative to pick');
   if ((nouls[pick.key] ?? 0) < OVERRIDE_LOW) {
@@ -814,6 +842,15 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
     }
   }
   const clusters = clusterByBehaviour(plausible, signatures);
+  const single = clusters.length === 1 ? clusters[0] : undefined;
+  if (single !== undefined && mixedSourceCluster(single)) {
+    // docs/LLM-JEV-DESIGN.md §6.2: a seed and an LLM candidate that pass the same tests and behave alike — the LLM
+    // candidate is committed by code rule (the correctness witness among test-equivalent passers); no Jev request
+    clearHeld(mem, goal);
+    const pick = single.representative;
+    note(`${goal.id}: ${plausible.length} passers in one behaviour cluster with a code seed and an LLM candidate; committing the LLM member ${describe(pick)} by the preferLlmInCluster rule (no arbitration)`);
+    return commit(mem, pick, { ...base, plausible: fresh.length, clusters: 1, probeError, fallbacks: single.members.filter((m) => m !== pick) });
+  }
   const arbCtx: ArbitrateContext = { goal };
   if (opts.stage !== undefined) arbCtx.stage = opts.stage;
   const arb = await arbitrate(arbCtx, clusters, ask);

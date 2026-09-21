@@ -1,7 +1,11 @@
 /**
  * Propose stage (DESIGN.md §6, §7): the generator streams one proposal through the
  * propose_action tool (fenced json fallback); one retry on a malformed reply carrying the
- * reason and the raw-text tail; the second failure ends the step (§6 stage table).
+ * reason and the raw-text tail; the second failure ends the step (§6 stage table). A call the
+ * provider DROPPED at its own deadline (docs/LLM-JEV-DESIGN.md §10.1 "drop-not-retry":
+ * `stopReason` `DROPPED_CALL_STOP_REASON`, no tool call) is neither parsed nor re-asked — the
+ * step ends at once under the same rule as a twice-malformed reply, and its generator.jsonl row
+ * stays unmarked (it is a dropped call, not a malformed reply).
  */
 import { GeneratorResponseError } from '../../errors.js';
 import type { ChatMessage, GenerateRequest, Proposal } from '../../core/types.js';
@@ -10,6 +14,11 @@ import { buildRetryMessage, buildUserMessage, type PromptInput } from '../../pro
 import type { StageContext } from '../engine.js';
 
 export const PROPOSE_MAX_ATTEMPTS = 2;
+/**
+ * The `GenerateResult.stopReason` of a call the provider dropped at its deadline (bench/tuned-provider.ts; the engine writes
+ * the same value on a sample its own deadline aborted, core/types.ts GeneratorCallRecord). No real finish_reason spells it.
+ */
+export const DROPPED_CALL_STOP_REASON = 'timeout';
 
 export interface ProposeStageResult {
   proposal: Proposal;
@@ -33,6 +42,8 @@ export async function runProposeStage(ctx: StageContext, systemPrompt: string, i
       toolChoice: { name: PROPOSE_ACTION_TOOL.name },
     };
     const result = await ctx.generate(req, attempt);
+    // §10.1 drop-not-retry: the row is recorded (metered from the provider's estimate), the step ends here
+    if (result.stopReason === DROPPED_CALL_STOP_REASON && result.toolCalls.length === 0) throw new GeneratorResponseError(`call dropped at the provider's deadline (stopReason ${DROPPED_CALL_STOP_REASON}); not re-asked`, '');
     try {
       const parsed = parseProposal(result);
       const proposal: Proposal = { ...parsed, rawText: ctx.redact(parsed.rawText) };

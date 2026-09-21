@@ -341,6 +341,29 @@ describe('runRepositoryQueue without a reproduction (best guess)', () => {
   });
 });
 
+describe('the awaitable queue (docs/LLM-JEV-DESIGN.md §4.8)', () => {
+  it('a worker with nothing to pop awaits `next()` and runs the job that lands later', async () => {
+    const h = harness([]);
+    const gate: { resolve: ((j: VerifyJob | null) => void) | null } = { resolve: null };
+    const queue = {
+      pop: (n: number) => h.jobs.splice(0, n),
+      next: () =>
+        new Promise<VerifyJob | null>((resolve) => {
+          gate.resolve = resolve;
+        }),
+    };
+    const running = runRepositoryQueue(h.ctx, h.mem, queue, fakeGoal({ id: 'g1', tests: [REPRO_ID] }), 1, { spec, regression: { command: SCOPED, timeoutMs: 120_000 }, now: h.clock });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    expect(gate.resolve).not.toBeNull();
+    expect(h.commands).toHaveLength(0);
+    gate.resolve?.(h.job('late FIX', 0.9));
+    const out = await running;
+    expect(out.map((o) => o.status)).toEqual(['plausible']);
+    // the one job cost the reproduction, its confirmation re-run and the scoped regression
+    expect(h.mem.stepBudget.testRunsLeft).toBe(16 - 3);
+  });
+});
+
 describe('laneEnv', () => {
   it('puts the lane (and its src/ when the checkout has one) first on the module path, no bytecode', () => {
     const lane: Lane = { index: 2, dir: '/runs/r/tmp/synth/lane2', mode: 'worktree', busy: false };

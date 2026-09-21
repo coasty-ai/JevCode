@@ -22,6 +22,7 @@ import type { CriterionStrength } from '../oracle/types.js';
 import type { AppliedCandidate, LocalizeResult, SourceFile, TestRunSummary } from '../types.js';
 import { defaultOverrides } from './directive.js';
 import type { SearchOverrides } from './directive.js';
+import type { LlmMemory } from './llm.js';
 import { clusterFailures, inheritGoalState } from './goals.js';
 import type { ClusterOptions, PriorGoalState } from './goals.js';
 import type { Base, Goal, OracleModel, PersistedSearchState, StepBudget } from './types.js';
@@ -90,6 +91,12 @@ export interface SearchMemory {
    * reproduction spec, the scope, the flags) so a resumed run neither re-asks Jev nor re-localises.
    */
   repository?: RepositoryMode;
+  /**
+   * llm-jev (docs/LLM-JEV-DESIGN.md §4.11, search/llm.ts): the attempt ledger per goal, the feedback rounds taken and
+   * the round fired ahead of a goal's search. Absent in jev-only. Not persisted: the round cache lives in the
+   * source and reaches `synthState.llm` through the controller.
+   */
+  llm?: LlmMemory;
 }
 
 /** The regression scope chosen once per run (oracle/search.ts chooseRegressionScope + regressionCommandTemplate). */
@@ -155,7 +162,7 @@ export const UNFITTED_ORACLE: Readonly<OracleModel> = {
 
 /** A budget with nothing left: the search cannot run until index.ts installs `freshBudget()`. */
 export function emptyStepBudget(): StepBudget {
-  return { jevRequestsLeft: 0, testRunsLeft: 0, testWallLeftMs: 0, startedMs: Date.now(), recursed: false, exhausted: () => true };
+  return { jevRequestsLeft: 0, testRunsLeft: 0, testWallLeftMs: 0, startedMs: Date.now(), recursed: false, llmRoundsLeft: 0, llmSamplesLeft: 0, llmUsdLeft: 0, exhausted: () => true };
 }
 
 export function createMemory(runId: string): SearchMemory {

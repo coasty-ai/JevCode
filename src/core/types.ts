@@ -8,6 +8,7 @@
  */
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): conversational intake, Jev providers, mode setting, chat labels per docs/TUI-DESIGN-2.md §6; items 4 and 7 add required fields (every constructor and fake is listed there), item 8 is optional, everything else is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
+// contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
 
 import type { Log } from './log.js';
 
@@ -61,12 +62,64 @@ export interface ProposalEvidence {
   newlyFailing: string[];
   /** which failing tests this sub-goal targets */
   goalTests: string[];
-  /** 'sieve' = every candidate at the site was run; 'rank' = Jev-ranked top-k were run */
-  selection: 'sieve' | 'rank';
+  /** 'sieve' = every candidate at the site was run; 'rank' = Jev-ranked top-k were run; 'llm' = an LLM sample won (docs/LLM-JEV-DESIGN.md §6.2) */
+  selection: 'sieve' | 'rank' | 'llm';
   /** number of candidates run for this decision, code-computed */
   candidatesTested: number;
   /** true when several candidates passed and Jev's arbitration picked this one */
   arbitrated: boolean;
+  /**
+   * docs/LLM-JEV-DESIGN.md §6.6: set by the synthesizer on the claiming `run` proposal (from `doneReadiness`). The engine's
+   * `isCompleteByFact` ANDs it with the executed run's parsed counts and `workspace.testsCurrent`; `task_complete` is
+   * recorded, not consulted, in `llm-jev`.
+   */
+  completion?: CompletionEvidence;
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §4.10 / §6.6: how the repository issue oracle was established. `valid` / `valid_weak` / `weak_network`
+ * yield a code-extracted reproduction goal; `llm_valid` / `llm_weak` are LLM-written reproductions (stage 3, `synth/llm/repro.ts`)
+ * — an unverified reading of the issue that never satisfies the completion fact; the rest yield no goal
+ * (`synth/oracle/search.ts` documents each). The source of truth for `synth/oracle` and the completion evidence alike.
+ */
+export type OracleOutcome =
+  | 'valid'
+  | 'valid_weak'
+  | 'weak_network'
+  | 'no_blocks'
+  | 'no_pick'
+  | 'not_runnable'
+  | 'no_criterion'
+  | 'env_error'
+  | 'passes_on_base'
+  | 'incomplete_snippet'
+  | 'unstable'
+  | 'llm_valid'
+  | 'llm_weak';
+
+/** Every `OracleOutcome`, for reading a persisted string back into the union (search/proposal.ts `completionEvidence`). */
+export const ORACLE_OUTCOMES: readonly OracleOutcome[] = ['valid', 'valid_weak', 'weak_network', 'no_blocks', 'no_pick', 'not_runnable', 'no_criterion', 'env_error', 'passes_on_base', 'incomplete_snippet', 'unstable', 'llm_valid', 'llm_weak'];
+
+/** The oracle outcomes under which a passing reproduction completes a repository run (§6.6). */
+export const COMPLETING_ORACLE_OUTCOMES: readonly OracleOutcome[] = ['valid', 'valid_weak', 'weak_network'];
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.6: the synthesizer's code facts on the claiming `run` proposal, every one computed from harness
+ * data (`doneReadiness`, `proposal.ts`). The engine completes only when all hold together with its own parsed run:
+ * `ledgerFixed` (every ledger goal fixed), `testsChanged = []` (no committed candidate touched a test file), `!guardPending`
+ * (every multi-passer batch arbitrated), and — repository class, i.e. whenever an oracle was sought or a reproduction ran —
+ * `repro = 'pass'` with a code oracle (`COMPLETING_ORACLE_OUTCOMES`). `command` is the suite command the synthesizer expects
+ * the run to be; when present the engine requires the executed test command to match.
+ */
+export interface CompletionEvidence {
+  ledgerFixed: boolean;
+  testsChanged: string[];
+  guardPending: boolean;
+  /** the reproduction verdict on the committed workspace; 'none' when no reproduction exists (QuixBugs / pytest class) */
+  repro: 'pass' | 'fail' | 'none';
+  /** how the issue oracle was established; null when none was sought */
+  oracle: OracleOutcome | null;
+  command?: string;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -186,7 +239,14 @@ export interface JevResponse {
 
 export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete';
 
-export type DecisionVerdict = 'ok' | 'review' | 'block' | 'chosen' | 'overridden' | 'fallback';
+/**
+ * The verdict written on a resolved Choice (loop/stages/choose.ts): `chosen` = Jev's answer with its paired Noul >= floor,
+ * `overridden` = a stronger paired Noul won, `fallback` = the stage's safe default; `code` (docs/LLM-JEV-DESIGN.md §3 row 2,
+ * §9.3) = no Choice was asked and code derived the value (the llm-jev intent from the proposal kind).
+ */
+export type ChoiceVerdict = 'chosen' | 'overridden' | 'fallback' | 'code';
+
+export type DecisionVerdict = 'ok' | 'review' | 'block' | ChoiceVerdict;
 
 /** One row in the decisions pane and decisions.jsonl. */
 export interface Decision {
@@ -298,6 +358,8 @@ export interface JudgeResult {
   newInfo: number;
   tests: JudgeTests;
   doneClaims: DoneClaimResult[];
+  /** docs/LLM-JEV-DESIGN.md §3 row 7: 'code' when computed from the parsed run (llm-jev); absent or 'jev' when Jev judged */
+  source?: 'code' | 'jev';
 }
 
 export interface TokenUsage {
@@ -305,6 +367,10 @@ export interface TokenUsage {
   outputTokens: number;
   costUsd: number;
   calls: number;
+  /** docs/LLM-JEV-DESIGN.md §4.12: reasoning tokens the provider reported (GLM `reasoning_tokens`), when known */
+  reasoningTokens?: number;
+  /** docs/LLM-JEV-DESIGN.md §4.8: true for a cancelled/timed-out sample metered from an estimate (sibling prompt tokens, streamed chars / 4) */
+  estimated?: boolean;
 }
 export interface StepUsage {
   generator: TokenUsage;
@@ -318,6 +384,8 @@ export interface StepTiming {
   totalMs: number;
   /** TUI-DESIGN §15 item 3: pre + post images (§12.3); already inside harnessMs, reported separately */
   imagesMs?: number;
+  /** docs/LLM-JEV-DESIGN.md §7.5 (llm-jev): wall of `synthesize()`; generatorMs (batch wall) and the synthesizer's Jev requests sit inside it */
+  synthMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -348,6 +416,39 @@ export interface StepRecord {
   error?: { stage: StageName; code: string; message: string };
   /** TUI-DESIGN §15 item 3: the committed plan after this step, bounded, for /rewind */
   planAfter?: PlanSnapshot;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3 (llm-jev): the synthesizer's per-step verification counts. The type is the
+   * contract; the plumbing (the synthesizer reports them, the engine copies them onto the record) is stage 4
+   * (`src/synth/search/index.ts`, `SynthesisContext`) — absent until then.
+   */
+  verify?: StepVerifySummary;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed the step — `synth` (the Synthesizer) or `generic` (the per-step
+   * `propose_action` fallback when `handles()` is false; stage 4 sets it). Absent in the other modes.
+   */
+  proposer?: StepProposer;
+}
+
+/** docs/LLM-JEV-DESIGN.md §9.4 */
+export type StepProposer = 'synth' | 'generic';
+
+/** docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3: code-computed counts of one llm-jev step's LLM round and verification. */
+export interface StepVerifySummary {
+  /** LLM samples fired this step */
+  samples: number;
+  /** distinct candidates after dedupe */
+  distinct: number;
+  malformed: number;
+  timeouts: number;
+  cancelled: number;
+  misanchored: number;
+  candidatesTested: number;
+  passers: number;
+  partials: number;
+  /** ms the guard waited for sample 0 after a seed passer landed (§6.2) */
+  graceMs: number;
+  /** true when the committed change lies outside every Jev-ranked listing (the localisation missed) */
+  localisationMissed: boolean;
 }
 
 export interface RunCounters {
@@ -425,6 +526,18 @@ export interface ChatMessage {
   role: 'user' | 'assistant';
   content: string;
 }
+/** docs/LLM-JEV-DESIGN.md §4.12 verbatim. */
+export type ReasoningEffort = 'low' | 'medium';
+/**
+ * docs/LLM-JEV-DESIGN.md §4.12 verbatim: `{enabled: false}` turns thinking off where the model allows it; `{effort}` asks
+ * for it at a level (on OpenRouter `effort` alone implies enabled). Providers send it as given, never rewritten; absent =
+ * the model's default. Discriminate on the member present (`'effort' in r`), never on a truthy read.
+ */
+export type GenerateReasoning = { enabled: false } | { effort: ReasoningEffort };
+/** docs/LLM-JEV-DESIGN.md §4.12 verbatim: OpenRouter routes only to endpoints that support every parameter sent (tools, seed, …). */
+export interface GenerateProviderPrefs {
+  requireParameters: boolean;
+}
 export interface GenerateRequest {
   system: string;
   messages: ChatMessage[];
@@ -433,6 +546,12 @@ export interface GenerateRequest {
   temperature: number | null;
   tools?: ToolSpec[];
   toolChoice?: ToolChoice;
+  /** docs/LLM-JEV-DESIGN.md §4.6: per-sample seed (OpenRouter `seed`); providers without it ignore it */
+  seed?: number;
+  /** docs/LLM-JEV-DESIGN.md §4.12: reasoning control (OpenRouter `reasoning`); providers without it ignore it */
+  reasoning?: GenerateReasoning;
+  /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter routing preferences (`provider.require_parameters`); providers without it ignore it */
+  providerPrefs?: GenerateProviderPrefs;
 }
 export interface GenerateResult {
   /** concatenated text blocks (streamed via onDelta) */
@@ -442,6 +561,10 @@ export interface GenerateResult {
   model: string;
   stopReason: string;
   latencyMs: number;
+  /** docs/LLM-JEV-DESIGN.md §4.8: the provider's generation id (OpenRouter chunk `id` `gen-…`, Anthropic `message.id`), for post-hoc cost reconciliation */
+  generationId?: string;
+  /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter's response `provider` field — the upstream that served the request (bills at its own rate, §8); absent on Anthropic */
+  servedProvider?: string;
 }
 /** TUI-DESIGN §15 item 5: why a client is about to sleep before a retry; message = redacted <= 200-char hint, never a body */
 export interface RetryCause {
@@ -458,6 +581,29 @@ export interface RetryInfo {
   retryAfter: boolean;
   cause: RetryCause;
 }
+/**
+ * docs/LLM-JEV-DESIGN.md §4.8: what the provider knows about a stream when its signal fired, handed to
+ * `GenerateOptions.onCancelled` right before `signal.reason` is rethrown (an aborted sample still yields no `GenerateResult`).
+ *
+ * Facts only — the estimate is the ENGINE'S (`Engine.recordCancelledSample()`: input = a sibling sample's `prompt_tokens`,
+ * output = `toolChars` / 4, priced at the served rate, `estimated: true`). This record carries what the engine cannot recover
+ * on its own: the ids for the post-hoc lookup and the streamed sizes. It is NOT delivered when the abort lands before the
+ * response headers (the prompt may still be billed) — the engine estimates alone then. Precedence: the engine takes
+ * `generationId` / `servedProvider` / `toolChars` / `usage` from here when the callback fired, else uses its own estimate.
+ */
+export interface CancelledGeneration {
+  generationId?: string;
+  servedProvider?: string;
+  model?: string;
+  /** text streamed so far */
+  text: string;
+  /** tool-argument characters streamed so far (§4.8: the estimate's output side is `toolChars / 4`) */
+  toolChars: number;
+  /** thinking characters streamed so far (`delta.reasoning`; billed as output too); 0 on Anthropic (thinking is never requested) */
+  reasoningChars: number;
+  /** present only when the accounting frame had already arrived (the abort landed between it and the end of the stream): read and priced like a completed call, not estimated */
+  usage?: TokenUsage;
+}
 export interface GenerateOptions {
   signal: AbortSignal;
   onDelta?: (text: string) => void;
@@ -467,6 +613,14 @@ export interface GenerateOptions {
   onRetry?: (info: RetryInfo) => void;
   /** TUI-DESIGN §15 item 5: a GETTER read before each sleep (one AbortController per sleep); clients: `await sleep(waitMs, signal, opts.wake?.())` */
   wake?: () => AbortSignal | undefined;
+  /** docs/LLM-JEV-DESIGN.md §4.8: the sample index of a parallel round (llm-jev); absent for the one-sample propose stage */
+  sample?: number;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8: called at most once, after the stream's abort and before `signal.reason` is rethrown, when the
+   * signal aborted a stream whose response headers had arrived. Runs outside the retry loop: a throwing callback is a harness
+   * bug and propagates as a typed 'internal' error in place of the abort reason, exactly like a throwing `onDelta`.
+   */
+  onCancelled?: (partial: CancelledGeneration) => void;
 }
 export type ProviderName = 'anthropic' | 'openrouter' | 'mock';
 export interface Provider {
@@ -886,6 +1040,19 @@ export interface GeneratorCallRecord {
   latencyMs: number;
   stopReason: string;
   malformed: boolean;
+  /** docs/LLM-JEV-DESIGN.md §4.8 (llm-jev): the sample index within the step's round */
+  sample?: number;
+  /** docs/LLM-JEV-DESIGN.md §4.8 (llm-jev): what the sample was for */
+  purpose?: GeneratePurpose;
+  /** reasoning tokens the provider reported, when known */
+  reasoningTokens?: number;
+  /**
+   * true when the sample yielded no GenerateResult — cancelled, timed out, or failed after it had streamed (`stopReason`
+   * 'cancelled' | 'timeout' | 'error'); `usage` is then an estimate (`usage.estimated`)
+   */
+  cancelled?: boolean;
+  /** the provider's generation id, when it arrived */
+  generationId?: string;
 }
 
 export interface CheckpointStore {
@@ -1041,12 +1208,28 @@ export interface EngineOptions {
    * that follows the run log. Absent -> nothing is logged (bench, perf, tests). Logging never throws into the loop.
    */
   log?: Log;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8 / §8 (additive): the generator's resolved pricing (config overrides included) for the
+   * estimate of a cancelled or failed llm-jev sample when no finished sibling and no run mean give a served rate. Absent ->
+   * the engine reads the pricing table for `provider.model`; an unknown model is then unpriced (`budget:unpriced`, as a
+   * real call without `usage.cost`). TODO(src/cli/session.ts): pass `config.generator.pricing` here.
+   */
+  generatorPricing?: GeneratorConfig['pricing'];
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
 // ---------------------------------------------------------------------------------------
 // Jev-only synthesis (docs/JEV-ONLY.md): code proposes, Jev decides, tests verify
 // ---------------------------------------------------------------------------------------
+
+/** docs/LLM-JEV-DESIGN.md §4: what a generator sample is for */
+export type GeneratePurpose = 'propose_fix' | 'write_reproduction';
+/** docs/LLM-JEV-DESIGN.md §4.8: one sample of a parallel round; `signal` is the sample's own (deadline / loser cancellation), linked by the engine to its own */
+export interface SampleOptions {
+  sample: number;
+  purpose: GeneratePurpose;
+  signal: AbortSignal;
+}
 
 export interface SynthesisContext {
   runId: string;
@@ -1077,12 +1260,52 @@ export interface SynthesisContext {
   synthState: Json | null;
   /** persist opaque synthesizer state with the next checkpoint (kept small: <= 64 KB after redaction) */
   setSynthState: (state: Json | null) => void;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8 (llm-jev; absent in jev-only): the one sanctioned path to the generating LLM. The engine
+   * meters, records (generator.jsonl, one row per sample, cancelled samples with an estimate) and emits `generator:*` with
+   * the sample index; an aborted sample rejects with its signal's reason and yields no GenerateResult.
+   */
+  generate?: (req: GenerateRequest, o: SampleOptions) => Promise<GenerateResult>;
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §10.1 / §9.2 stage 4: the arm a synthesizer is built for. `jev-only` is the code search with Jev
+ * arbitration and no generating LLM; `llm-jev` adds the LLM candidate source through `SynthesisContext.generate`;
+ * `llm-sieve` is `llm-jev` with every Jev question replaced by its code default (traceback-frame listings, arrival-order
+ * runs, the LLM-preferred min-edit tie-break, no L2). The bench passes it to the synthesizer factory and refuses an arm whose
+ * synthesizer does not echo it back (`Synthesizer.mode`), so an arm never silently runs as a different one.
+ */
+export type SynthesizerArmMode = 'jev-only' | 'llm-jev' | 'llm-sieve';
+/**
+ * docs/LLM-JEV-DESIGN.md §4.6, §4.8, §4.12 / §10.1: the generation parameters the synthesizer's LLM source sends on every
+ * sample, pinned by the caller (the bench arms) so the record and the requests share one object; absent = the source's own
+ * defaults (`src/synth/llm/source.ts LLM_DEFAULT_GENERATION`). The synthesizer echoes what it runs with (`Synthesizer.generation`).
+ */
+export interface SynthesizerGeneration {
+  /** sent verbatim on every sample; null = the parameter is not sent (the model's default) */
+  reasoning: GenerateReasoning | null;
+  /** base max_tokens of a sample; a goal's next round doubles it once after a `length` stop (§4.5) */
+  maxTokens: number;
+  /** §4.8: clamp(2 × running p50 of valid samples, minMs, maxMs) on the QuixBugs / ladder class; repositoryMs on repositories */
+  sampleDeadline: { minMs: number; maxMs: number; repositoryMs: number };
+  /** §4.6: sample 0 / samples 1..N−1 of the first round, and of the feedback round L1′ */
+  sampleTemperature: { first: number; rest: number; feedbackFirst: number; feedbackRest: number };
 }
 
 export interface Synthesizer {
   readonly name: string;
   /** Produce exactly one proposal (usually a `patch` or `edit`, sometimes `run`/`read`/`done`) without any generating LLM. */
   synthesize(ctx: SynthesisContext): Promise<Proposal>;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): true when the synthesizer covers this workspace — Python files and a detected
+   * pytest/QuixBugs runner or a repository layout. False sends the engine to the generic per-step `propose_action` fallback
+   * (`StepRecord.proposer: 'generic'`). Absent = always handled (jev-only).
+   */
+  handles?(workspaceInfo: WorkspaceInfo, files: readonly string[]): boolean;
+  /** the arm this synthesizer implements (echo of the factory's `mode`); the bench refuses an arm it does not match */
+  readonly mode?: SynthesizerArmMode;
+  /** the generation parameters its LLM source sends (echo of the factory's `generation`); absent without an LLM source */
+  readonly generation?: SynthesizerGeneration;
 }
 
 export interface EngineStatus {
@@ -1129,7 +1352,11 @@ export type EngineEvent =
   | { type: 'stage:end'; step: number; stage: StageName; ms: number }
   | { type: 'decision'; decision: Decision }
   | { type: 'jev:request'; record: JevRequestRecord }
-  | { type: 'intent'; step: number; intent: Intent; answer: IntentAnswer; probability: number; confidence: number }
+  /**
+   * `verdict` (docs/LLM-JEV-DESIGN.md §9.3, additive): how the intent was resolved; `'code'` in llm-jev, where no Choice is
+   * asked and the event follows `proposal` (the intent is a fact of the proposal kind) instead of preceding it.
+   */
+  | { type: 'intent'; step: number; intent: Intent; answer: IntentAnswer; probability: number; confidence: number; verdict?: ChoiceVerdict }
   | { type: 'context'; step: number; files: string[]; bytes: number; candidates: number }
   // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): `sample` = 0-based index of the candidate being generated, `samples` = how many the step will generate; absent in jev-on / jev-off
   | { type: 'generator:start'; step: number; attempt: number; sample?: number; samples?: number }
@@ -1448,11 +1675,18 @@ export interface ResolvedConfig {
 export type BenchSuite = 'swebench' | 'terminal-bench' | 'quixbugs' | 'ladder'; // quixbugs/ladder: the jev-only difficulty ladder (docs/JEV-ONLY.md)
 export type BenchEvaluator = 'local-venv' | 'invalid' | 'local' | 'mock' | 'none';
 export type BenchStopReason = StopReason | 'not_run';
+/**
+ * docs/LLM-JEV-DESIGN.md §10.1: a bench arm. The four EngineModes run as themselves; the two attribution arms map onto an
+ * engine mode with a bench-side substitution — `llm-sieve` = the `llm-jev` engine with a stub Decider (zero Jev requests)
+ * and the synthesizer's code fallbacks, `jev-off-tuned` = the `jev-off` engine behind a provider that applies the §4
+ * generator hygiene (bench/conditions.ts `engineModeOf`).
+ */
+export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned';
 
 export interface BenchTaskRecord {
   suite: BenchSuite;
   task: string;
-  condition: EngineMode;
+  condition: BenchCondition;
   pass: boolean | null;
   evaluator: BenchEvaluator;
   reason?: string;
@@ -1499,9 +1733,14 @@ export interface MockTurn {
   latencyMs?: number;
   /** throw a ProviderHttpError with this status instead of answering */
   error?: { status: number; retryable: boolean };
+  /** docs/LLM-JEV-DESIGN.md stage-3 tests: overrides the derived `tool_use` / `end_turn` — e.g. `length` for a truncated sample (§4.7 drops it) */
+  stopReason?: string;
+  /** surfaced as `GenerateResult.generationId`, like OpenRouter's chunk id */
+  generationId?: string;
 }
 export interface MockProviderOptions {
-  turns: MockTurn[] | ((req: GenerateRequest, index: number) => MockTurn);
+  /** function form: `index` is the call counter, `opts` the caller's options (`opts.sample` keys the N samples of one llm-jev round) */
+  turns: MockTurn[] | ((req: GenerateRequest, index: number, opts: GenerateOptions) => MockTurn);
   /** deltas per second when latencyMs > 0 (default 0 = single delta) */
   deltaChunkSize?: number;
   model?: string;

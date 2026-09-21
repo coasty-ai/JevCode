@@ -7,8 +7,9 @@ import type { Json } from '../../core/types.js';
 import type { AppliedCandidate, Candidate, CandidateSourceName, FailureView, LineEdit, Progress, SearchTrace, Site, SourceFile, TestRunSummary } from '../types.js';
 
 export type GoalStatus = 'open' | 'active' | 'parked' | 'fixed';
-export type Phase = 'SEEDS' | 'SKETCH' | 'BEAM' | 'WIDENED';
-export const PHASES: readonly Phase[] = ['SEEDS', 'SKETCH', 'BEAM', 'WIDENED'];
+/** The phase ladder; 'LLM' (docs/LLM-JEV-DESIGN.md §4.2) runs only when an LLM source is wired, SKETCH/BEAM only once its rounds are spent. */
+export type Phase = 'SEEDS' | 'LLM' | 'SKETCH' | 'BEAM' | 'WIDENED';
+export const PHASES: readonly Phase[] = ['SEEDS', 'LLM', 'SKETCH', 'BEAM', 'WIDENED'];
 
 export interface Goal {
   /** "g3" */
@@ -78,6 +79,14 @@ export interface StepBudget {
   testWallLeftMs: number;
   startedMs: number;
   recursed: boolean;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.11: the LLM counters of the step — rounds (2), samples (N × 2) and the dollar cap
+   * `min($0.02, (spendCap − spent) / stepsLeft)`. They never end a step (`exhausted()` ignores them); a spent counter
+   * only skips the round (§4.2). Zero in jev-only, where no LLM source is wired.
+   */
+  llmRoundsLeft: number;
+  llmSamplesLeft: number;
+  llmUsdLeft: number;
   exhausted(): boolean;
 }
 
@@ -185,6 +194,25 @@ export interface GoalSearchTrace extends SearchTrace {
   newSitesTested: number;
   /** candidates that passed the reproduction once and failed the confirmation run (`VerifyStatus` `unstable` / `isUnstableOutcome`); absent when none was counted */
   unstable?: number;
+  /** llm-jev (docs/LLM-JEV-DESIGN.md §3, §9.2 stage 1 `StepRecord.verify`): the LLM rounds of this search; absent without an LLM source */
+  llm?: LlmTrace;
+}
+
+/** Code-computed counts of the LLM rounds one sub-goal search made (search/subgoal.ts settles them from the rounds' summaries). */
+export interface LlmTrace {
+  rounds: number;
+  samples: number;
+  valid: number;
+  /** distinct candidates after dedupe */
+  distinct: number;
+  malformed: number;
+  timeouts: number;
+  cancelled: number;
+  misanchored: number;
+  /** ms the loop waited for sample 0 after a seed passer landed (§6.2 grace) */
+  graceMs: number;
+  /** Q17's fix-absent signal of the last RANK round (routing only, never a gate) */
+  fixAbsent: 'strong' | 'weak' | null;
 }
 
 /** What survives a checkpoint (SynthesisContext.synthState); everything else is rebuilt from the plan and the workspace. */

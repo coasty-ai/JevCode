@@ -655,7 +655,7 @@ export interface HarnessOptions {
    */
   probeGitState?: GitState | GitProbe;
   /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
-  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides'>>;
+  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing'>>;
 }
 
 export interface Harness {

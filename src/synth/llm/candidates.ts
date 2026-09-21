@@ -10,9 +10,9 @@
  * `sha12(diff)` against the round, the `tried` set and the earlier verdicts (FactGate). The
  * attempt ledger the next prompt shows is built here from `VerifyOutcome`s and dropped hunks.
  *
- * TODO(stage 4, src/synth/verify/apply.ts): `applyCandidate` validates an `llm` site by
- * `site.span.textSha` (and treats `text === ''` as a span deletion) — until then the runner must
- * apply LLM candidates through `applyLlmCandidate` below, which implements exactly that rule.
+ * verify/apply.ts `applyCandidate` validates a `Site.span` by `textSha` and treats `text === ''` as
+ * a span deletion, so the runners apply LLM candidates through the shared path; `applyLlmCandidate`
+ * below is the same rule in one place for the dry run and the tests.
  */
 import { mkdir, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -25,7 +25,7 @@ import { diffHash } from '../search/memory.js';
 import { TEST_PATH_RE } from '../search/proposal.js';
 import type { VerifyOutcome } from '../search/types.js';
 import type { LineEdit, Site, SourceFile } from '../types.js';
-import { indentedText } from '../verify/apply.js';
+import { indentedText, spanTextSha } from '../verify/apply.js';
 import { VerifyError } from '../verify/types.js';
 import type { AttemptRecord, Listing } from './prompt.js';
 import { FIX_LIMITS, type PatchSpec } from './schema.js';
@@ -219,9 +219,9 @@ function normalisePath(p: string): string | null {
   return s;
 }
 
-/** sha12 over the span's physical lines joined by '\n' (CR stripped): the identity `applyLlmCandidate` checks. */
+/** sha12 over the span's physical lines joined by '\n' (CR stripped): the identity `applyCandidate` and `applyLlmCandidate` check (verify/apply.ts `spanTextSha`). */
 export function llmSpanSha(lines: readonly string[]): string {
-  return sha12(lines.map(stripCr).join('\n'));
+  return spanTextSha(lines);
 }
 
 function blockOf(file: SourceFile, line: number): Site['block'] {
@@ -456,6 +456,9 @@ export async function convertSample(input: ConvertInput): Promise<ConvertResult>
       out.dropped.push({ sample: input.sample, patch: j, reason: 'duplicate', detail: `same diff as ${earlier.op}`, path: primary.path, sha });
       continue;
     }
+    // reserved before the (awaited) compile check: samples land concurrently, and a twin arriving during the check is a duplicate of
+    // this one — identical post-images compile identically, so its verdict would be the same; a failed check releases the slot
+    seen.set(sha, candidate);
     if (input.compile) {
       let syntax: string | null = null;
       let failure: string | null = null;
@@ -475,15 +478,16 @@ export async function convertSample(input: ConvertInput): Promise<ConvertResult>
         }
       }
       if (failure !== null) {
+        if (seen.get(sha) === candidate) seen.delete(sha);
         out.dropped.push({ sample: input.sample, patch: j, reason: 'compile_failed', detail: failure, path: primary.path, sha });
         continue;
       }
       if (syntax !== null) {
+        if (seen.get(sha) === candidate) seen.delete(sha);
         out.dropped.push({ sample: input.sample, patch: j, reason: 'syntax_error', detail: syntax, path: primary.path, sha });
         continue;
       }
     }
-    seen.set(sha, candidate);
     out.candidates.push(candidate);
     out.applied.push(applied);
   }

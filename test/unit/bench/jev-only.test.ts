@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { JEV_ONLY_GENERATOR_CALLED, buildRecord, readTasksJsonl, runBenchWithSources, validateOptions } from '../../../src/bench/runner.js';
-import { CONDITION_ORDER, NULL_GENERATOR_MODEL, conditionConfig, createEngineFor, isEngineMode, parseConditions, requiresGenerator } from '../../../src/bench/conditions.js';
+import { CONDITION_ORDER, NULL_GENERATOR_MODEL, conditionConfig, createEngineFor, isBenchCondition, parseConditions, requiresGenerator } from '../../../src/bench/conditions.js';
 import type { BenchRecord } from '../../../src/bench/types.js';
 import type { EngineOptions } from '../../../src/core/types.js';
 import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource, tempDir, type EngineScript } from './helpers.js';
@@ -32,13 +32,14 @@ const threeWay: EngineScript = (_task, mode) => ({
 
 describe('conditions helpers', () => {
   it('order, parsing, generator requirement and per-condition config know jev-only', () => {
-    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev']);
+    // docs/LLM-JEV-DESIGN.md §10.1: llm-jev is the fourth condition (test/unit/bench/llm-jev.test.ts); llm-sieve and jev-off-tuned are the attribution arms (arms.test.ts)
+    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
     // llm-jev (docs/LLM-JEV-DESIGN.md): a condition that pays a generator AND runs the synthesizer
-    expect(isEngineMode('llm-jev')).toBe(true);
+    expect(isBenchCondition('llm-jev')).toBe(true);
     expect(requiresGenerator(['llm-jev'])).toBe(true);
     expect(parseConditions('llm-jev,jev-only')).toEqual(['llm-jev', 'jev-only']);
-    expect(isEngineMode('jev-only')).toBe(true);
-    expect(isEngineMode('jev-maybe')).toBe(false);
+    expect(isBenchCondition('jev-only')).toBe(true);
+    expect(isBenchCondition('jev-maybe')).toBe(false);
     expect(parseConditions('jev-only, jev-on')).toEqual(['jev-only', 'jev-on']);
     expect(requiresGenerator(['jev-only'])).toBe(false);
     expect(requiresGenerator(['jev-only', 'jev-off'])).toBe(true);
@@ -123,8 +124,8 @@ describe('runBench with jev-on, jev-off and jev-only', () => {
     expect(md).toContain('| generator calls (jev-only asserts 0) | 2 | 2 | 0 |');
     expect(md).toContain('| mean generator tokens/step (steps) | 30 (n=6) | 50 (n=10) | 0 (n=8) |');
     expect(md).toContain('| mean Jev tokens/step (steps) | 70 (n=6) | 0 (n=10) | 80 (n=8) |');
-    expect(md).toContain('| task | jev-on pass | jev-on steps | jev-on reads | jev-on cost | jev-off pass | jev-off steps | jev-off reads | jev-off cost | jev-only pass | jev-only steps | jev-only reads | jev-only cost |');
-    expect(md).toContain(`| jev-only | ${NULL_GENERATOR_MODEL} |`);
+    expect(md).toContain('| task | jev-on pass | jev-on steps | jev-on reads | jev-on wall | jev-on cost | jev-off pass | jev-off steps | jev-off reads | jev-off wall | jev-off cost | jev-only pass | jev-only steps | jev-only reads | jev-only wall | jev-only cost |');
+    expect(md).toContain(`| jev-only | jev-only | ${NULL_GENERATOR_MODEL} |`);
 
     const files = await Promise.all(['tasks.jsonl', 'predictions.jev-on.jsonl', 'predictions.jev-off.jsonl', 'predictions.jev-only.jsonl'].map((f) => readFile(join(out.outDir, f), 'utf8')));
     const lines = files[0]!.trim().split('\n');

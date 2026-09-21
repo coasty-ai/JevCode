@@ -6,7 +6,7 @@
  * §4.8: a cancelled stream's facts (message id, streamed sizes) go to `onCancelled` like openrouter.ts (no `servedProvider`).
  */
 import { JevCodeError, ProviderHttpError } from '../errors.js';
-import type { GenerateRequest, GeneratorConfig, Json, JsonObject, ToolCall } from '../core/types.js';
+import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, ToolCall } from '../core/types.js';
 import { parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import {
@@ -36,11 +36,7 @@ import type {
   AnthropicRequestBody,
   AnthropicToolChoice,
   AnthropicToolDef,
-  GenerateOptionsExt,
-  GenerateRequestExt,
-  GenerateResultExt,
   ProviderDeps,
-  ProviderExt,
   StreamPartial,
   TokenBreakdown,
 } from './types.js';
@@ -80,7 +76,7 @@ function validateRequest(req: GenerateRequest): void {
  * §1.1; the harness never asks Claude for extended thinking). The body is built field by field, so none of them
  * can reach the wire.
  */
-export function buildAnthropicBody(cfg: GeneratorConfig, req: GenerateRequestExt): AnthropicRequestBody {
+export function buildAnthropicBody(cfg: GeneratorConfig, req: GenerateRequest): AnthropicRequestBody {
   const body: AnthropicRequestBody = {
     model: cfg.model,
     max_tokens: req.maxTokens,
@@ -157,7 +153,7 @@ function streamError(data: JsonObject, redact: (s: string) => string, requestId:
   });
 }
 
-async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptionsExt, redact: (s: string) => string, firstByteTimeoutMs: number, requestId: string | null, held: Held): Promise<StreamOutcome> {
+async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number, requestId: string | null, held: Held): Promise<StreamOutcome> {
   const blocks = new Map<number, Block>();
   const order: number[] = [];
   let text = '';
@@ -294,13 +290,13 @@ function toToolCall(b: Extract<Block, { kind: 'tool_use' }>): ToolCall {
   return { name: b.name, input: parsed.ok ? parsed.value : null, rawJson: b.json };
 }
 
-export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps): ProviderExt {
+export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps): Provider {
   const d = resolveDeps(deps);
   const url = `${cfg.baseUrl.replace(/\/+$/, '')}/v1/messages`;
   // The Messages API reports tokens only, so the table prices every call (config fails closed on an unpriced model, §9.5).
   const tablePrice = (t: TokenBreakdown): number => costFromPricing(cfg.pricing, t);
 
-  async function attempt(body: string, opts: GenerateOptionsExt, held: Held): Promise<StreamOutcome> {
+  async function attempt(body: string, opts: GenerateOptions, held: Held): Promise<StreamOutcome> {
     const { controller, unlink } = linkedAbort(opts.signal);
     const t0 = d.now();
     let headersTimer: ReturnType<typeof setTimeout> | undefined;
@@ -374,7 +370,7 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
   return {
     name: 'anthropic',
     model: cfg.model,
-    async generate(req: GenerateRequestExt, opts: GenerateOptionsExt): Promise<GenerateResultExt> {
+    async generate(req: GenerateRequest, opts: GenerateOptions): Promise<GenerateResult> {
       validateRequest(req);
       const body = JSON.stringify(buildAnthropicBody(cfg, req));
       const t0 = d.now();

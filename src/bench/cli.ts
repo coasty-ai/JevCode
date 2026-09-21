@@ -33,6 +33,8 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
 
   let liveProvider: Provider | undefined;
   let liveDecider: Decider | undefined;
+  // docs/LLM-JEV-DESIGN.md §10.1: recorded for the report only — every arm runs the PINNED parameters of
+  // bench/conditions.ts `pinnedGeneration` (jev-off = the checked-in baseline's {null, 4096}), never the user's config
   let generation: { temperature: number | null; maxTokens: number } = { temperature: null, maxTokens: 4096 };
   let deciderModel: { configured: string; pinned: boolean } = { configured: 'typesafe/jev-1.13-20260917', pinned: true };
   if (flags.live) {
@@ -46,6 +48,7 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
     // jev-only alone needs no generator: the generator section is not validated and no provider is built (docs/JEV-ONLY.md)
     if (requiresGenerator(conditions)) {
       const gen = config.generator();
+      // the user's values, recorded as such; the arms' requests carry their pinned parameters (conditions.ts)
       generation = { temperature: gen.temperature, maxTokens: gen.maxTokens };
       liveProvider = gen.provider === 'openrouter'
         ? (await import('../provider/openrouter.js')).createOpenRouterProvider(gen, { redact: config.redact })

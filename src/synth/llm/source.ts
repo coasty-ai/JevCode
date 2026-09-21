@@ -21,14 +21,14 @@
  * priced; repro.ts reuses both for L2.
  */
 import { sha12 } from '../../core/hash.js';
-import type { Json, TokenUsage } from '../../core/types.js';
+import type { GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
 import { monotonicNow, percentile } from '../../core/time.js';
 import { linkedAbort } from '../../provider/sse.js';
 import type { SourceFile } from '../types.js';
 import { convertSample, type CompileCheck, type DroppedPatch, type LlmApplied } from './candidates.js';
 import { listingHash, type Listing } from './prompt.js';
 import { PROPOSE_FIX_TOOL, PROPOSE_FIX_TOOL_NAME, isLengthStop, parseProposeFix, type PatchSpec } from './schema.js';
-import { reasoningEnabled, type GenerateFn, type GeneratePurpose, type LlmCandidate, type LlmGenerateRequest, type LlmGenerateResult, type LlmReasoning, type LlmTokenUsage, type OracleClass } from './types.js';
+import { reasoningEnabled, type GenerateFn, type LlmCandidate, type OracleClass } from './types.js';
 
 // ---------------------------------------------------------------------------------------
 // Schedule constants (§4.6, §4.8)
@@ -42,6 +42,25 @@ export const SAMPLES_PER_ROUND: Readonly<Record<OracleClass, number>> = { quixbu
 export const SAMPLES_REPOSITORY_SLOW = 4;
 export const REPOSITORY_FAST_REPRO_MS = 2000;
 export const SAMPLE_TEMPERATURE = { first: 0, rest: 0.8, feedbackFirst: 0.6, feedbackRest: 1.0 } as const;
+/**
+ * §4.12 / §10.2 finding (a): OpenRouter answers `reasoning: {enabled: false}` with HTTP 400 on z-ai/glm-5.3* ("Reasoning is
+ * mandatory for this endpoint"), so every sample asks for the lowest effort and the max_tokens base is the reasoning-on one.
+ */
+export const LLM_DEFAULT_REASONING: GenerateReasoning = { effort: 'low' };
+/** The max_tokens base a reasoning setting implies: 3,000 with reasoning on, 1,500 off or unsent (§4.5). */
+export function maxTokensBase(reasoning: GenerateReasoning | null | undefined): number {
+  return reasoningEnabled(reasoning ?? undefined) ? LLM_MAX_TOKENS_REASONING : LLM_MAX_TOKENS;
+}
+/**
+ * What every sample sends unless the caller pins otherwise (`LlmSourceDeps.generation`): the one object the bench's llm-jev /
+ * llm-sieve arms record in summary.json AND hand to the synthesizer, so the record and the requests cannot disagree.
+ */
+export const LLM_DEFAULT_GENERATION: SynthesizerGeneration = {
+  reasoning: LLM_DEFAULT_REASONING,
+  maxTokens: maxTokensBase(LLM_DEFAULT_REASONING),
+  sampleDeadline: LLM_SAMPLE_DEADLINE,
+  sampleTemperature: SAMPLE_TEMPERATURE,
+};
 /** persisted cache bound (§4.11) */
 export const LLM_CACHE_PERSIST_BYTES = 4096;
 
@@ -55,21 +74,21 @@ export function staggered(klass: OracleClass): boolean {
   return klass !== 'repository';
 }
 
-/** `clamp(2 × running p50 of valid samples, 10 s, 20 s)` on QuixBugs/ladder (the probe's p90 for the first round, else the cap), 30 s on repositories. */
-export function sampleDeadlineMs(klass: OracleClass, p50ValidMs: number | null, probeP90Ms: number | null = null): number {
-  if (klass === 'repository') return LLM_SAMPLE_DEADLINE.repositoryMs;
-  if (p50ValidMs === null) return probeP90Ms !== null ? Math.min(LLM_SAMPLE_DEADLINE.maxMs, Math.max(LLM_SAMPLE_DEADLINE.minMs, probeP90Ms)) : LLM_SAMPLE_DEADLINE.maxMs;
-  return Math.min(LLM_SAMPLE_DEADLINE.maxMs, Math.max(LLM_SAMPLE_DEADLINE.minMs, 2 * p50ValidMs));
+/** `clamp(2 × running p50 of valid samples, minMs, maxMs)` on QuixBugs/ladder (the probe's p90 for the first round, else the cap), `repositoryMs` on repositories. */
+export function sampleDeadlineMs(klass: OracleClass, p50ValidMs: number | null, probeP90Ms: number | null = null, deadline: SynthesizerGeneration['sampleDeadline'] = LLM_SAMPLE_DEADLINE): number {
+  if (klass === 'repository') return deadline.repositoryMs;
+  if (p50ValidMs === null) return probeP90Ms !== null ? Math.min(deadline.maxMs, Math.max(deadline.minMs, probeP90Ms)) : deadline.maxMs;
+  return Math.min(deadline.maxMs, Math.max(deadline.minMs, 2 * p50ValidMs));
 }
 
 export function sampleSeed(step: number, k: number): number {
   return step * 100 + k;
 }
 
-/** Sample 0 at temperature 0 (0.6 in the feedback round), the rest at 0.8 (1.0). */
-export function sampleTemperature(k: number, round: number): number {
-  if (round >= 2) return k === 0 ? SAMPLE_TEMPERATURE.feedbackFirst : SAMPLE_TEMPERATURE.feedbackRest;
-  return k === 0 ? SAMPLE_TEMPERATURE.first : SAMPLE_TEMPERATURE.rest;
+/** Sample 0 at temperature 0 (0.6 in the feedback round), the rest at 0.8 (1.0) — or the pinned values. */
+export function sampleTemperature(k: number, round: number, t: SynthesizerGeneration['sampleTemperature'] = SAMPLE_TEMPERATURE): number {
+  if (round >= 2) return k === 0 ? t.feedbackFirst : t.feedbackRest;
+  return k === 0 ? t.first : t.rest;
 }
 
 export function llmCacheKey(goalId: string, listingHashValue: string, attemptHash: string, round: number): string {
@@ -102,7 +121,7 @@ export class LlmSampleCancelled extends Error {
   }
 }
 
-export type SampleEnd = { kind: 'result'; result: LlmGenerateResult; ms: number } | { kind: 'timeout' | 'cancelled' | 'error'; ms: number; error: unknown };
+export type SampleEnd = { kind: 'result'; result: GenerateResult; ms: number } | { kind: 'timeout' | 'cancelled' | 'error'; ms: number; error: unknown };
 
 export interface SampleRun {
   promise: Promise<SampleEnd>;
@@ -119,14 +138,14 @@ export interface SampleRunOptions {
 }
 
 /** Start one sample: a linked AbortController, a deadline timer, and an outcome that never rejects. */
-export function generateWithDeadline(generate: GenerateFn, req: LlmGenerateRequest, o: SampleRunOptions): SampleRun {
+export function generateWithDeadline(generate: GenerateFn, req: GenerateRequest, o: SampleRunOptions): SampleRun {
   const now = o.now ?? monotonicNow;
   const { controller, unlink } = linkedAbort(o.signal);
   const timeout = new LlmSampleTimeout(o.deadlineMs);
   const timer = setTimeout(() => controller.abort(timeout), Math.max(0, o.deadlineMs));
   const t0 = now();
   // the call starts synchronously so a caller can observe it right after `fire()` (and so the accounting sees one call per fired sample)
-  let started: Promise<LlmGenerateResult>;
+  let started: Promise<GenerateResult>;
   try {
     started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal });
   } catch (e) {
@@ -197,7 +216,7 @@ export interface SampleArrival {
   dropped: DroppedPatch[];
   need: { paths: string[]; symbols: string[] } | null;
   analysis: string | null;
-  usage: LlmTokenUsage | null;
+  usage: TokenUsage | null;
   /** what this sample cost the step's LLM budget (an estimate when `estimated`) */
   usd: number;
   estimated: boolean;
@@ -235,12 +254,12 @@ export interface LlmFireInput {
   listings: readonly Listing[];
   tried?: ReadonlySet<string>;
   verdictOf?: (sha: string) => string | null;
-  /** default `maxTokensFor(goalId, base)` — base 1,500, or 3,000 with reasoning on; doubled once after a `length` drop (§4.5) */
+  /** default `maxTokensFor(goalId, base)` — base = the pinned generation's (3,000 with reasoning on, 1,500 off), or the base `reasoning` implies when that is given; doubled once after a `length` drop (§4.5) */
   maxTokens?: number;
-  /** default `sampleDeadlineMs(klass, running p50)` */
+  /** default `sampleDeadlineMs(klass, running p50)` over the pinned generation's clamp */
   deadlineMs?: number;
-  /** default `{enabled: false}`; the §10.2 fallback `{effort: 'low'}` raises the `max_tokens` base */
-  reasoning?: LlmReasoning;
+  /** default the pinned generation's (`{effort: 'low'}` unless the caller pinned otherwise; `{enabled: false}` is HTTP 400 on GLM, §10.2 finding (a)) */
+  reasoning?: GenerateReasoning;
   signal: AbortSignal;
   budget: LlmBudget;
   /** identity of the attempt ledger shown (candidates.ts attemptsHash); '' when none */
@@ -296,7 +315,7 @@ export interface LlmSource {
   cancel(reason: CancelReason): Promise<void>;
   round(): LlmRoundSummary | null;
   inFlight(): number;
-  /** `max_tokens` for the goal's next round: doubled once after a `length` drop (§4.5) */
+  /** `max_tokens` for the goal's next round: the pinned base (default `LLM_DEFAULT_GENERATION.maxTokens`), doubled once after a `length` drop (§4.5) */
   maxTokensFor(goalId: string, base?: number): number;
   /** running p50 of valid samples' latency this run, null before the first */
   p50ValidMs(): number | null;
@@ -317,6 +336,8 @@ export interface LlmSourceDeps {
   cache?: Json | null;
   /** the probe's p90, used as the first round's deadline (§4.8) */
   probeP90Ms?: number | null;
+  /** what every sample sends (§10.1: pinned per bench arm and recorded verbatim); default `LLM_DEFAULT_GENERATION` */
+  generation?: SynthesizerGeneration;
 }
 
 interface CachedRound {
@@ -370,9 +391,9 @@ export interface SampleEstimateInput {
 }
 
 /** The estimated full cost of a sample the provider never priced — cancelled, timed out or failed (§4.8, §8.1): sibling prompt tokens + `max_tokens` output at the served rate. */
-export function estimatedSampleUsage(e: SampleEstimateInput): LlmTokenUsage {
+export function estimatedSampleUsage(e: SampleEstimateInput): TokenUsage {
   const inputTokens = e.siblingInputTokens ?? Math.ceil(e.promptChars / 4);
-  const usage: LlmTokenUsage = { inputTokens, outputTokens: e.maxTokens, costUsd: 0, calls: 1, estimated: true };
+  const usage: TokenUsage = { inputTokens, outputTokens: e.maxTokens, costUsd: 0, calls: 1, estimated: true };
   usage.costUsd = costOf(usage, e.pricing);
   return usage;
 }
@@ -397,6 +418,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const now = deps.now ?? monotonicNow;
   const pricing = deps.pricing ?? null;
   const emit = deps.emit ?? ((): void => undefined);
+  const gen = deps.generation ?? LLM_DEFAULT_GENERATION;
   const cache = new Map<string, CachedRound>();
   const persisted = readPersistedCache(deps.cache);
   const lengthGoals = new Set<string>();
@@ -404,11 +426,11 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   let state: RoundState | null = null;
   let cacheSeq = 0;
 
-  const maxTokensFor = (goalId: string, base = LLM_MAX_TOKENS): number => (lengthGoals.has(goalId) ? base * 2 : base);
+  const maxTokensFor = (goalId: string, base = gen.maxTokens): number => (lengthGoals.has(goalId) ? base * 2 : base);
   const p50ValidMs = (): number | null => percentile(validMs, 50);
   const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
-  function estimateUsage(st: RoundState, k: number): LlmTokenUsage {
+  function estimateUsage(st: RoundState, k: number): TokenUsage {
     return estimatedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: st.input.system.length + st.input.userFor(k).length, maxTokens: st.maxTokens, pricing });
   }
 
@@ -537,16 +559,18 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     st.input.budget.samplesLeft -= 1;
     st.fired.add(k);
     st.pending += 1;
-    const req: LlmGenerateRequest = {
+    const req: GenerateRequest = {
       system: st.input.system,
       messages: [{ role: 'user', content: st.input.userFor(k) }],
       maxTokens: st.maxTokens,
-      temperature: sampleTemperature(k, st.input.round),
+      temperature: sampleTemperature(k, st.input.round, gen.sampleTemperature),
       tools: [PROPOSE_FIX_TOOL],
       toolChoice: { name: PROPOSE_FIX_TOOL_NAME },
-      reasoning: st.input.reasoning ?? { enabled: false },
       providerPrefs: { requireParameters: true },
     };
+    // the pinned reasoning verbatim (null = not sent), unless the fire input overrides it
+    const reasoning = st.input.reasoning ?? gen.reasoning;
+    if (reasoning !== null) req.reasoning = reasoning;
     if (k > 0) req.seed = sampleSeed(st.input.step, k);
     const t0 = now();
     const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, deadlineMs: st.deadlineMs, now });
@@ -568,8 +592,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       input,
       key,
       n,
-      deadlineMs: input.deadlineMs ?? sampleDeadlineMs(input.klass, p50ValidMs(), deps.probeP90Ms ?? null),
-      maxTokens: input.maxTokens ?? maxTokensFor(input.goalId, reasoningEnabled(input.reasoning) ? LLM_MAX_TOKENS_REASONING : LLM_MAX_TOKENS),
+      deadlineMs: input.deadlineMs ?? sampleDeadlineMs(input.klass, p50ValidMs(), deps.probeP90Ms ?? null, gen.sampleDeadline),
+      // the pinned base, or the base an overriding `reasoning` implies (3,000 on, 1,500 off); doubled once for a goal after a `length` drop
+      maxTokens: input.maxTokens ?? maxTokensFor(input.goalId, input.reasoning === undefined ? gen.maxTokens : maxTokensBase(input.reasoning)),
       queue: new ArrivalQueue<SampleArrival>(),
       runs: new Map(),
       fired: new Set(),

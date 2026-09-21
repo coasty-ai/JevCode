@@ -2,7 +2,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AbortError, JevCodeError, ProviderHttpError } from '../../../src/errors.js';
 import { MAX_MESSAGE_CHARS } from '../../../src/provider/sse.js';
 import { OPENROUTER_REFERER, OPENROUTER_TITLE, buildOpenRouterBody, createOpenRouterProvider } from '../../../src/provider/openrouter.js';
-import type { CancelledGeneration, GenerateRequestExt, OpenRouterRequestBody } from '../../../src/provider/types.js';
+import type { CancelledGeneration, GenerateRequest } from '../../../src/core/types.js';
+import type { OpenRouterRequestBody } from '../../../src/provider/types.js';
 import { GLM_PRICING, PROPOSE_TOOL, fixture, genOpts, openrouterCfg, request, scriptedFetch, splitEvery, testDeps } from './helpers.js';
 
 const sse = (name: string) => ({ status: 200, headers: { 'content-type': 'text/event-stream' }, body: fixture(name) });
@@ -281,7 +282,7 @@ describe('createOpenRouterProvider', () => {
 /** LLM-JEV-DESIGN §4.12 / §4.8: the GLM request fields, the accounting fields and the facts a cancelled sample reports. */
 describe('openrouter GLM details (LLM-JEV-DESIGN §4.12)', () => {
   const glmCfg = openrouterCfg({ model: 'z-ai/glm-5.3-flash', pricing: GLM_PRICING, priced: true });
-  const ext = (over: Partial<GenerateRequestExt>): GenerateRequestExt => ({ ...request(), ...over });
+  const ext = (over: Partial<GenerateRequest>): GenerateRequest => ({ ...request(), ...over });
 
   it('maps seed, reasoning and providerPrefs onto the wire body (§4.12 shapes verbatim) and omits them when absent', () => {
     const full = buildOpenRouterBody(glmCfg, ext({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' }, seed: 41, reasoning: { effort: 'low' }, providerPrefs: { requireParameters: true } }));

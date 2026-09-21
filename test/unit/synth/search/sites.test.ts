@@ -25,6 +25,7 @@ import {
   captureLineChoiceEscape,
   functionGapSites,
   functionWeight,
+  gapBatchRequest,
   gapRequest,
   importGapSite,
   insertSitesFirst,
@@ -624,6 +625,57 @@ describe('Q6 fallback once a search reached WIDENED with nothing plausible', () 
     expect(g.notes.some((n) => n.startsWith('q6 fallback `opstack.append(token)` → after_l17 p=0.83'))).toBe(true);
     // the template pool at the chosen gap holds the statement Jev placed
     expect(createTemplateSource().enumerate(first, enumerateOptions(new Map())).some((c) => c.text === '            opstack.append(token)')).toBe(true);
+  });
+
+  it('llm-jev `batchQ6Fallback`: one request asks every statement\'s Q6 over one state; the placements match the one-per-statement shape', async () => {
+    const { ask, calls } = scriptedAsk((call) => {
+      const st = stateObject(call);
+      const statements = (st['missing_statements'] ?? {}) as Record<string, string>;
+      return answerAll(
+        call,
+        () => 0.05,
+        (id) => {
+          const k = /^insert_after_(\d+)$/.exec(id);
+          if (k === null) return {};
+          return statements[`stmt_${k[1]}`] === 'opstack.append(token)' ? { after_l17: 0.83, after_l16: 0.1 } : { after_l11: 0.6, after_l2: 0.25 };
+        },
+      );
+    });
+    const ctx: GoalSiteContext = { ask, task: 'Fix shunting_yard so the tests pass', signal: signal(), files };
+    const g = await buildGoalSites(ctx, syGoal({ phase: 'WIDENED' }), localized, undefined, { batchQ6Fallback: true });
+    const batched = calls.filter((c) => `${GAP_QUESTION_ID}_1` in c.questions);
+    expect(batched).toHaveLength(1);
+    expect(calls.filter((c) => GAP_QUESTION_ID in c.questions)).toHaveLength(0);
+    // one Q5n request (single file) + the one batched Q6
+    expect(g.requests).toBe(2);
+    const call = batched[0]!;
+    expect(Object.keys(call.questions)).toHaveLength(Q6_FALLBACK_STATEMENTS);
+    const st = stateObject(call);
+    expect(Object.keys(st['missing_statements'] as Record<string, string>)).toHaveLength(Q6_FALLBACK_STATEMENTS);
+    expect(Object.values(st['missing_statements'] as Record<string, string>)).toContain('opstack.append(token)');
+    // the same placements as the unbatched fallback
+    const first = g.insert[0]!;
+    expect(first).toMatchObject({ line: 18, kind: 'insert' });
+    expect(first.evidence.jevProbability).toBeCloseTo(0.83, 6);
+    expect(g.q6Fallback.get('opstack.append(token)')).toEqual(['after_l17']);
+    expect(g.insertFirst).toBe(true);
+  });
+
+  it('gapBatchRequest: one Choice per statement over the same gap options, ids beside their statements, the statements in the state', () => {
+    const lines = [{ line: 1, text: 'def wrap(text, cols):' }, { line: 2, text: '    lines = []' }];
+    const req = gapBatchRequest({ task: 'fix it', failures: [WRAP_FAILURE], functionName: 'wrap', lines, missingStatements: ['  lines.append(text)  ', 'return lines'] });
+    expect(req.ids).toEqual([
+      { id: `${GAP_QUESTION_ID}_1`, statement: '  lines.append(text)  ' },
+      { id: `${GAP_QUESTION_ID}_2`, statement: 'return lines' },
+    ]);
+    expect(Object.keys(req.questions)).toEqual(req.ids.map((x) => x.id));
+    const state = req.state as Record<string, unknown>;
+    expect(state['missing_statements']).toEqual({ stmt_1: 'lines.append(text)', stmt_2: 'return lines' });
+    for (const q of Object.values(req.questions)) {
+      expect(q.type).toBe('choice');
+      if (q.type === 'choice') expect(Object.keys(q.criteria).filter((k) => k !== ESCAPE_KEY).sort()).toEqual(['after_l1', 'after_l2', 'before_l1'].sort());
+    }
+    expect(() => gapBatchRequest({ task: 'fix it', failures: [WRAP_FAILURE], functionName: 'wrap', lines: [], missingStatements: ['x'] })).toThrow(RangeError);
   });
 
   it('does not run on a fresh goal: no Q6 request, the anchors and slots stand as usual', async () => {

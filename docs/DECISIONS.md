@@ -667,6 +667,20 @@ pass of the same day corrected three places where the first pass had described t
 (`--title` is inert, the `[screen reader mode: on …]` item is not emitted, a live-pane shrink resize clears 1–2 times)
 and replaced every measured figure with the run that produced it. Affects `docs/**`, `README.md`, `CHANGELOG.md`.
 
+## 2026-09-21 The full-suite passer cap is per step in every mode
+
+`MAX_FULL_SUITE_RUNS_PER_STEP` (5) bounds the full-suite runs a step spends on goal-subset passers. Until now the counter
+was a local of each `runQueue` / `runRepositoryQueue` call (`sieve/runner.ts`, `oracle/verify.ts`), so a step that entered
+the runner several times — one call per site batch — could spend 5 full-suite runs per call. It now lives in
+`RunnerMemory.passersThisStep`, reset to 0 at the start of every `synthesize()` (`search/index.ts`), and every call of the
+step continues the count. Reason: docs/LLM-JEV-DESIGN.md §4.8 mandates the per-step bound for `llm-jev`, where the LLM round
+streams into the awaitable queue and the runner is entered once per arrival burst; keeping two rules (per call in jev-only,
+per step in llm-jev) would have made the two modes' full-suite spend incomparable in the §10 head-to-head. Consequence for
+jev-only: a step whose seed batches at several sites produce more than 5 passers now defers the sixth and later full-suite
+runs to the next step instead of running up to 5 per site — the per-run cap was the design's intent all along (`runner.ts:73`
+"per step"), and the synth suite is green under the per-step count; the deferred passers keep their queue place. Rejected:
+a per-mode switch — one more behaviour the bench could not attribute.
+
 ## 2026-09-21 Default generator is OpenRouter `z-ai/glm-5.3-flash`
 
 `DEFAULT_PROVIDER` is `openrouter` and `DEFAULT_MODEL` is `z-ai/glm-5.3-flash` (`src/config/defaults.ts`); Sonnet 5

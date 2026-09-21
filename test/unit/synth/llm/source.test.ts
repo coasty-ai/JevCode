@@ -1,7 +1,8 @@
 import { describe, expect, it } from 'vitest';
 
 import type { CompileCheck } from '../../../../src/synth/llm/candidates.js';
-import { LLM_CACHE_PERSIST_BYTES, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, createLlmSource, sampleDeadlineMs, samplesFor, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
+import type { SynthesizerGeneration } from '../../../../src/core/types.js';
+import { LLM_CACHE_PERSIST_BYTES, LLM_DEFAULT_GENERATION, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, createLlmSource, sampleDeadlineMs, samplesFor, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
 import { listingSet } from '../../../../src/synth/llm/prompt.js';
 import { calcFiles, proposeFixCall, scriptedGenerate, type HunkIn } from './fixtures.js';
 
@@ -33,7 +34,9 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     const fired = src.fire(fireInput(b, { n: 3 }));
     expect(fired).toMatchObject({ fired: true, samples: 1, cached: 0, deadlineMs: 5000 });
     expect(gen.calls()).toBe(1);
-    expect(gen.requests()[0]).toMatchObject({ temperature: 0, maxTokens: LLM_MAX_TOKENS, toolChoice: { name: 'propose_fix' }, reasoning: { enabled: false }, providerPrefs: { requireParameters: true } });
+    // the default generation: reasoning effort low ({enabled: false} is HTTP 400 on the GLM endpoint) with the reasoning-on base
+    expect(LLM_DEFAULT_GENERATION).toMatchObject({ reasoning: { effort: 'low' }, maxTokens: LLM_MAX_TOKENS_REASONING });
+    expect(gen.requests()[0]).toMatchObject({ temperature: 0, maxTokens: LLM_MAX_TOKENS_REASONING, toolChoice: { name: 'propose_fix' }, reasoning: { effort: 'low' }, providerPrefs: { requireParameters: true } });
     expect(gen.requests()[0]!.seed).toBeUndefined();
     const first = await src.collect();
     expect(first).toMatchObject({ sample: 0, status: 'valid', estimated: false });
@@ -76,17 +79,37 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     ]);
     expect(arrivals.every((a) => a.candidates.length === 0)).toBe(true);
     expect(arrivals[1]!.detail).toMatch(/no tool call and no fenced json/);
-    expect(src.maxTokensFor('g1')).toBe(2 * LLM_MAX_TOKENS);
-    expect(src.maxTokensFor('g2')).toBe(LLM_MAX_TOKENS);
+    expect(src.maxTokensFor('g1')).toBe(2 * LLM_MAX_TOKENS_REASONING);
+    expect(src.maxTokensFor('g2')).toBe(LLM_MAX_TOKENS_REASONING);
     expect(gen.calls()).toBe(2);
     // the next round of the same goal asks with the doubled cap
     const again = src.fire(fireInput(b, { n: 1, stagger: false, round: 2 }));
     expect(again.fired).toBe(true);
-    expect(gen.requests().at(-1)!.maxTokens).toBe(2 * LLM_MAX_TOKENS);
+    expect(gen.requests().at(-1)!.maxTokens).toBe(2 * LLM_MAX_TOKENS_REASONING);
     await drain(src);
-    // the §10.2 reasoning fallback raises the base to 3,000 before the doubling
+    // an overriding `reasoning` is sent verbatim and sets the base it implies before the doubling: off → 1,500, effort low → 3,000
+    expect(src.fire(fireInput(budget(), { n: 1, stagger: false, round: 2, reasoning: { enabled: false } })).fired).toBe(true);
+    expect(gen.requests().at(-1)).toMatchObject({ maxTokens: 2 * LLM_MAX_TOKENS, reasoning: { enabled: false } });
+    await drain(src);
     expect(src.fire(fireInput(budget(), { n: 1, stagger: false, round: 2, reasoning: { effort: 'low' } })).fired).toBe(true);
     expect(gen.requests().at(-1)).toMatchObject({ maxTokens: 2 * LLM_MAX_TOKENS_REASONING, reasoning: { effort: 'low' } });
+    await drain(src);
+  });
+
+  it('a pinned generation is what every sample sends: reasoning verbatim (null = not sent), its max_tokens base, its temperatures and its deadline clamp', async () => {
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    const pinned: SynthesizerGeneration = { reasoning: null, maxTokens: 2222, sampleDeadline: { minMs: 100, maxMs: 7000, repositoryMs: 9000 }, sampleTemperature: { first: 0.1, rest: 0.9, feedbackFirst: 0.5, feedbackRest: 1 } };
+    const src = createLlmSource({ generate: gen.generate, pricing: PRICING, generation: pinned });
+    const { deadlineMs: _cheap, ...cheap } = fireInput(budget(), { n: 2, stagger: false });
+    expect(src.fire(cheap)).toMatchObject({ fired: true, deadlineMs: 7000 });
+    await drain(src);
+    expect(gen.requests().map((r) => [r.maxTokens, r.temperature, 'reasoning' in r])).toEqual([
+      [2222, 0.1, false],
+      [2222, 0.9, false],
+    ]);
+    expect(src.maxTokensFor('g1')).toBe(2222);
+    const { deadlineMs: _repo, ...repo } = fireInput(budget(), { goalId: 'g2', klass: 'repository', n: 1 });
+    expect(src.fire(repo)).toMatchObject({ fired: true, deadlineMs: 9000 });
     await drain(src);
   });
 
@@ -99,7 +122,7 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     src.fire(fireInput(b, { n: 2, stagger: false }));
     const arrivals = await drain(src);
     const err = arrivals.find((a) => a.sample === 1)!;
-    const estimate = (4000 * 0.5 + LLM_MAX_TOKENS * 2) / 1e6;
+    const estimate = (4000 * 0.5 + LLM_DEFAULT_GENERATION.maxTokens * 2) / 1e6;
     expect(err).toMatchObject({ status: 'error', estimated: true, detail: 'HTTP 502 after retries', candidates: [] });
     expect(err.usd).toBeCloseTo(estimate, 9);
     expect(0.02 - b.usdLeft).toBeCloseTo(estimate + (4000 * 0.5 + 300 * 2) / 1e6, 9);
@@ -133,7 +156,7 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     const next = src.fire(fireInput(budget(), { goalId: 'g2', n: 1, stagger: false, userFor: () => 'user 9', step: 0 }));
     expect(next).toMatchObject({ fired: true, samples: 1 });
     await done;
-    expect(0.02 - b1.usdLeft).toBeCloseTo(2 * ((Math.ceil(('sys'.length + 'user 0'.length) / 4) * 0.5 + LLM_MAX_TOKENS * 2) / 1e6), 9);
+    expect(0.02 - b1.usdLeft).toBeCloseTo(2 * ((Math.ceil(('sys'.length + 'user 0'.length) / 4) * 0.5 + LLM_DEFAULT_GENERATION.maxTokens * 2) / 1e6), 9);
     const arrivals = await drain(src);
     expect(arrivals.map((a) => [a.sample, a.status])).toEqual([[0, 'valid']]);
     expect(src.round()).toMatchObject({ goalId: 'g2', closed: true });
@@ -196,9 +219,9 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     expect(timedOut).toMatchObject({ status: 'timeout', estimated: true, candidates: [] });
     expect(timedOut.ms).toBeLessThan(400);
     // estimate: the sibling's prompt tokens (sample 1 landed first) and max_tokens output at the served rate
-    const estimate = (5000 * 0.5 + LLM_MAX_TOKENS * 2) / 1e6;
+    const estimate = (5000 * 0.5 + LLM_DEFAULT_GENERATION.maxTokens * 2) / 1e6;
     expect(timedOut.usd).toBeCloseTo(estimate, 9);
-    expect(timedOut.usage).toMatchObject({ inputTokens: 5000, outputTokens: LLM_MAX_TOKENS, estimated: true });
+    expect(timedOut.usage).toMatchObject({ inputTokens: 5000, outputTokens: LLM_DEFAULT_GENERATION.maxTokens, estimated: true });
     expect(src.round()).toMatchObject({ timeouts: 1, valid: 1, closed: true });
     expect(src.round()!.estimatedUsd).toBeCloseTo(estimate, 9);
     expect(0.02 - b.usdLeft).toBeCloseTo(estimate + (5000 * 0.5 + 100 * 2) / 1e6, 9);

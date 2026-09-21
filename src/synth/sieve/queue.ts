@@ -37,6 +37,12 @@
  * - carry-over: jobs that were queued but not popped this step come back from `carryOver()` and
  *   are re-enqueued next step through the constructor, keyed by candidate id, so a RANK-mode p that
  *   cost a Jev request is not re-asked and a re-enumerated copy of the same candidate is a duplicate.
+ * - llm-jev (docs/LLM-JEV-DESIGN.md §4.7 step 6, §4.8): the vocabulary check is bypassed for `llm`
+ *   candidates (it exists to prune mutants; SWE gold lines pass it only 72 %), and the queue is
+ *   awaitable while a round streams into it: `open()` puts it in streaming mode, `next()` resolves
+ *   with the best job or waits for the next `add`, `close()` releases every waiter with null. Never
+ *   opened, `next()` on an empty queue resolves null at once — the runner's worker exits exactly as
+ *   it did on an empty `pop(1)`.
  */
 import { sha12 } from '../../core/hash.js';
 import { isKeyword, PY_BUILTINS, PY_KEYWORDS, PyEditError, tokenizeFragment } from '../py/index.js';
@@ -63,6 +69,8 @@ export const SOURCE_ORDER_PRIOR: Readonly<Record<CandidateSourceName, number>> =
   test_value: 0.3,
   history: 0.2,
   token_beam: 0.1,
+  /** docs/LLM-JEV-DESIGN.md §6.1: the default-path place of an LLM candidate; the search sets the class-dependent `p` itself */
+  llm: 0.35,
 };
 
 /**
@@ -360,6 +368,8 @@ export class VerifyQueue {
   private readonly vocab: ReadonlyMap<string, Vocabulary> | null;
   private seq = 0;
   private poppedCount = 0;
+  private isStreaming = false;
+  private readonly waiters: ((job: QueuedJob | null) => void)[] = [];
   readonly dropped: Record<DropReason, number> = emptyDrops();
 
   constructor(opts: VerifyQueueOptions = {}) {
@@ -458,7 +468,8 @@ export class VerifyQueue {
     const textKey = `${base.id}\u0000${siteKey(candidate.site)}\u0000${canonicalText(candidate)}`;
     if (this.ids.has(idK) || this.texts.has(textKey)) return this.drop('duplicate');
     if (isUnchanged(candidate)) return this.drop('unchanged');
-    if (this.vocab !== null && missingFromVocabByPath(candidate, this.vocab).length > 0) return this.drop('vocab');
+    // the vocabulary prunes mutants; an LLM hunk may legitimately introduce a name the file, the tests and the task never mention (§4.7 step 6)
+    if (this.vocab !== null && candidate.source !== 'llm' && missingFromVocabByPath(candidate, this.vocab).length > 0) return this.drop('vocab');
     let diff: string;
     try {
       diff = applyCandidate(candidate, base.files).diff;
@@ -478,7 +489,50 @@ export class VerifyQueue {
     this.entries.splice(this.insertionIndex(entry), 0, entry);
     this.ids.add(idK);
     this.texts.add(textKey);
+    this.wake();
     return { result: 'queued', queued };
+  }
+
+  // ---- streaming (llm-jev) -------------------------------------------------------------
+
+  /** Streaming mode: `next()` waits for arrivals instead of resolving null on an empty queue, until `close()`. */
+  open(): void {
+    this.streaming = true;
+  }
+
+  /** End of the stream: every waiter (and every later `next()` on an empty queue) resolves null. */
+  close(): void {
+    this.streaming = false;
+    for (const w of this.waiters.splice(0)) w(null);
+  }
+
+  /** Whether the queue is in streaming mode. */
+  get streaming(): boolean {
+    return this.isStreaming;
+  }
+
+  private set streaming(v: boolean) {
+    this.isStreaming = v;
+  }
+
+  /** The best job in key order, awaiting the next `add` while the queue streams; null when it is empty and not streaming. */
+  next(): Promise<QueuedJob | null> {
+    const head = this.pop(1)[0];
+    if (head !== undefined) return Promise.resolve(head);
+    if (!this.isStreaming) return Promise.resolve(null);
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  /** Hand the best job to the longest-waiting `next()`, if any (called after every enqueue). */
+  private wake(): void {
+    const w = this.waiters.shift();
+    if (w === undefined) return;
+    const head = this.pop(1)[0];
+    if (head === undefined) {
+      this.waiters.unshift(w);
+      return;
+    }
+    w(head);
   }
 
   /** Binary search for the first entry that sorts after `entry` (equal keys go after: stable). */

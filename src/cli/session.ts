@@ -693,7 +693,7 @@ export async function buildDecider(config: ResolvedConfigWithDiagnostics, flags:
  */
 export async function buildSynthesizer(config: ResolvedConfigWithDiagnostics, decider: Decider, mode: EngineMode = 'jev-only'): Promise<Synthesizer> {
   const { createSynthesizer } = await import('../synth/index.js');
-  const opts: Parameters<typeof createSynthesizer>[0] & { mode: EngineMode } = { decider, redact: config.redact, mode };
+  const opts: Parameters<typeof createSynthesizer>[0] = { decider, redact: config.redact, mode: mode === 'llm-jev' ? 'llm-jev' : 'jev-only' };
   return createSynthesizer(opts);
 }
 
