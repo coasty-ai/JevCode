@@ -285,3 +285,8 @@ the linter verify. The question this document answers by experiment is which dec
   gold-identical + 7 equivalent = **35 verified correct**, 2 unverified (graph fixtures the probe does
   not perturb), 1 overfit (`wrap` again: the exit-gap batch was not the winner this time), 2 misses
   (`longest_common_subsequence`, `shortest_path_length`, both `max_steps`). Repeat 2 is running.
+- 2026-09-20: **rung 1a repeat 2: 38/40, 36 verified correct, 0 overfit** (`bench/results/jev-only-quixbugs-6-repeat2`,
+  same clean worktree at d610d75, $0.126, 0 generator calls; misses `shortest_path_length` and `sqrt`,
+  both `max_steps`). With run 3 (36/40, 32 verified) and repeat 1 (38/40, 35 verified) this meets the
+  design's rung-1a bar of ≥ 36/40 in every repeat and ≥ 34 correct in the last two; the in-sample
+  disclosure in the design's §7 applies to all three.
