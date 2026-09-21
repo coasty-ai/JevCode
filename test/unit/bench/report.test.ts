@@ -8,11 +8,13 @@ import { fakeRunResult, syntheticSource } from './helpers.js';
 
 function cfg(mode: EngineMode): ConditionConfig {
   return {
+    condition: mode,
     mode,
     generatorModel: 'mock',
     deciderModel: mode === 'jev-on' ? 'typesafe/jev-1.13-20260917' : null,
     temperature: null,
     maxTokens: 4096,
+    generation: { proposer: 'generator', temperature: null, maxTokens: 4096, reasoning: null, deadlineMs: null, lengthHandling: 'none', servedRate: { inputPerM: 0, outputPerM: 0 } },
     maxSteps: 3,
     maxWallMs: 60_000,
     maxReplans: 5,

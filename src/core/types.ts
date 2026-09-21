@@ -1593,11 +1593,18 @@ export interface ResolvedConfig {
 export type BenchSuite = 'swebench' | 'terminal-bench' | 'quixbugs' | 'ladder'; // quixbugs/ladder: the jev-only difficulty ladder (docs/JEV-ONLY.md)
 export type BenchEvaluator = 'local-venv' | 'invalid' | 'local' | 'mock' | 'none';
 export type BenchStopReason = StopReason | 'not_run';
+/**
+ * docs/LLM-JEV-DESIGN.md §10.1: a bench arm. The four EngineModes run as themselves; the two attribution arms map onto an
+ * engine mode with a bench-side substitution — `llm-sieve` = the `llm-jev` engine with a stub Decider (zero Jev requests)
+ * and the synthesizer's code fallbacks, `jev-off-tuned` = the `jev-off` engine behind a provider that applies the §4
+ * generator hygiene (bench/conditions.ts `engineModeOf`).
+ */
+export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned';
 
 export interface BenchTaskRecord {
   suite: BenchSuite;
   task: string;
-  condition: EngineMode;
+  condition: BenchCondition;
   pass: boolean | null;
   evaluator: BenchEvaluator;
   reason?: string;

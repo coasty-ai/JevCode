@@ -6,7 +6,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { writeFileAtomic } from '../../core/atomic.js';
 import { byteLength } from '../../core/text.js';
-import type { EngineMode } from '../../core/types.js';
+import type { BenchCondition } from '../../core/types.js';
 import { SandboxError } from '../../errors.js';
 import type { CommandRunner, PatchExtraction } from '../types.js';
 
@@ -62,11 +62,11 @@ export interface PredictionEntry {
 }
 
 /** `jevcode-<condition>-<model with / -> __>`: filesystem-safe and distinct per condition. */
-export function modelNameOrPath(condition: EngineMode, generatorModel: string): string {
+export function modelNameOrPath(condition: BenchCondition, generatorModel: string): string {
   return `jevcode-${condition}-${generatorModel.split('/').join('__')}`;
 }
 
-export function predictionsFileName(condition: EngineMode): string {
+export function predictionsFileName(condition: BenchCondition): string {
   return `predictions.${condition}.jsonl`;
 }
 
@@ -75,7 +75,7 @@ export function formatPredictions(entries: readonly PredictionEntry[]): string {
 }
 
 /** One file per condition, one line per SWE-bench instance, regenerated whole each time. */
-export async function writePredictions(outDir: string, condition: EngineMode, entries: readonly PredictionEntry[]): Promise<string> {
+export async function writePredictions(outDir: string, condition: BenchCondition, entries: readonly PredictionEntry[]): Promise<string> {
   const path = join(outDir, predictionsFileName(condition));
   await writeFileAtomic(path, formatPredictions(entries), { mkdir: true });
   return path;

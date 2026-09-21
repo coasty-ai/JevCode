@@ -5,7 +5,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { JEV_ONLY_GENERATOR_CALLED, buildRecord, runBenchWithSources, validateOptions } from '../../../src/bench/runner.js';
-import { CONDITION_ORDER, conditionConfig, isEngineMode, parseConditions, requiresGenerator, requiresSynthesizer, usesSynthesizer } from '../../../src/bench/conditions.js';
+import { CONDITION_ORDER, conditionConfig, isBenchCondition, parseConditions, requiresGenerator, requiresSynthesizer, usesSynthesizer } from '../../../src/bench/conditions.js';
 import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource, tempDir, type EngineScript } from './helpers.js';
 
 const cleanups: (() => Promise<void>)[] = [];
@@ -21,8 +21,8 @@ const script: EngineScript = (_task, mode) => ({
 
 describe('llm-jev condition', () => {
   it('is the fourth condition: parsed, generator AND synthesizer required, real generator model in the config', () => {
-    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev']);
-    expect(isEngineMode('llm-jev')).toBe(true);
+    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned']);
+    expect(isBenchCondition('llm-jev')).toBe(true);
     expect(parseConditions('llm-jev,jev-off')).toEqual(['llm-jev', 'jev-off']);
     expect(requiresGenerator(['llm-jev'])).toBe(true);
     expect(usesSynthesizer('llm-jev')).toBe(true);

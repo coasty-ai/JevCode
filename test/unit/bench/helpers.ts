@@ -11,6 +11,7 @@ import { createEmitter } from '../../../src/core/events.js';
 import type {
   ActionOutcome,
   AskResult,
+  BenchCondition,
   BenchDeps,
   Decider,
   Engine,
@@ -32,7 +33,7 @@ import type {
   Synthesizer,
   TokenUsage,
 } from '../../../src/core/types.js';
-import type { BenchDepsWithSynth, BenchSetupTools, BenchTaskSource, BuildTaskOptions, BenchTask, Evaluation } from '../../../src/bench/types.js';
+import type { BenchDepsWithSynth, BenchSetupTools, BenchTaskSource, BuildTaskOptions, BenchTask, Evaluation, SynthesizerArmMode } from '../../../src/bench/types.js';
 
 export const zeroUsage = (): TokenUsage => ({ inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 });
 
@@ -218,6 +219,8 @@ export interface Captured {
   mockProviders: MockProviderOptions[];
   /** deciders handed to createSynthesizer (jev-only pairs) */
   synthesizerDeciders: Decider[];
+  /** the `mode` handed to createSynthesizer per synthesizer pair (docs/LLM-JEV-DESIGN.md §10.1) */
+  synthesizerModes: SynthesizerArmMode[];
 }
 
 let runCounter = 0;
@@ -287,7 +290,7 @@ export function createFakeEngineFactory(script: EngineScript, captured: Captured
 }
 
 export function createCaptured(): Captured {
-  return { engines: [], generateRequests: [], askStates: [], mockProviders: [], synthesizerDeciders: [] };
+  return { engines: [], generateRequests: [], askStates: [], mockProviders: [], synthesizerDeciders: [], synthesizerModes: [] };
 }
 
 /** A synthesizer that proposes `done` at once; the scripted engine never calls it, real engines would. */
@@ -355,8 +358,9 @@ export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDepsWithSynth; 
     ? base
     : {
         ...base,
-        createSynthesizer: ({ decider }) => {
+        createSynthesizer: ({ decider, mode }) => {
           captured.synthesizerDeciders.push(decider);
+          captured.synthesizerModes.push(mode);
           return createFakeSynthesizer();
         },
       };
@@ -370,7 +374,7 @@ export function createFakeDeps(o: FakeDepsOptions): { deps: BenchDepsWithSynth; 
 export interface SyntheticTaskOptions {
   id: string;
   suite?: 'swebench' | 'terminal-bench';
-  evaluate?: (ctx: { condition: EngineMode; mocked: boolean }) => Evaluation;
+  evaluate?: (ctx: { condition: BenchCondition; mocked: boolean }) => Evaluation;
   setup?: (workspaceDir: string, tools: BenchSetupTools) => Promise<void>;
 }
 

@@ -6,15 +6,20 @@
  */
 import { randomBytes } from 'node:crypto';
 import { appendFile, mkdir, readFile, rm, stat } from 'node:fs/promises';
+import { loadavg } from 'node:os';
 import { join, resolve } from 'node:path';
 import { writeFileAtomic } from '../core/atomic.js';
 import { isFiniteNumber, isJsonObject, isString, parseJson, toJson } from '../core/json.js';
 import { percentile } from '../core/time.js';
-import type { ActionOutcome, BenchSuite, BenchTaskRecord, Decider, Engine, EngineMode, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter, Synthesizer } from '../core/types.js';
+import type { ActionOutcome, BenchCondition, BenchSuite, BenchTaskRecord, Decider, Engine, Provider, RunResult, Sandbox, SandboxRunOptions, SpendMeter, Synthesizer } from '../core/types.js';
 import { ConfigError, toJevCodeError } from '../errors.js';
 import { createNullProvider } from '../provider/null.js';
-import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isEngineMode, requiresGenerator, usesSynthesizer } from './conditions.js';
+import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, requiresGenerator, servedRateFor, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
+import { readGeneratorRecords, summariseGeneratorRecords } from './generator-records.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
+import { readStepsSummary } from './step-records.js';
+import { createStubDecider, type StubDecider } from './stub-decider.js';
+import { createTunedProvider, type TunedProvider } from './tuned-provider.js';
 import { renderComparison } from './report.js';
 import { loadLadderSources } from './ladder/loader.js';
 import { LADDER_VENV_DIR } from './ladder/venv.js';
@@ -120,7 +125,7 @@ function isRecord(v: unknown): v is BenchTaskRecord {
   if (!(isString(v['suite']) && isString(v['task']) && isString(v['condition']) && (pass === null || typeof pass === 'boolean') && isString(v['stopReason']) && isString(v['evaluator']))) return false;
   if (!BENCH_SUITES.includes(v['suite'])) return false;
   const condition = v['condition'];
-  if (!isString(condition) || !isEngineMode(condition)) return false;
+  if (!isString(condition) || !isBenchCondition(condition)) return false;
   if (!NUMERIC_FIELDS.every((k) => isFiniteNumber(v[k]))) return false;
   const cost = v['cost'];
   if (!isJsonObject(cost) || !isFiniteNumber(cost['generator']) || !isFiniteNumber(cost['jev'])) return false;
@@ -184,14 +189,19 @@ export function latestRecords(records: readonly BenchTaskRecord[]): Map<string, 
 
 export interface RecordInput {
   source: BenchTaskSource;
-  condition: EngineMode;
+  condition: BenchCondition;
   result: RunResult;
   evaluation: Evaluation;
   patch: PatchExtraction | null;
   capFired: 'bench' | 'task' | null;
   /** cap-aborted siblings record spend_cap even when the engine reported the abort */
   stopReasonOverride?: 'spend_cap';
+  /** docs/LLM-JEV-DESIGN.md §10.4: what the runner read from the run directory and the arm's wrappers after the run */
+  extras?: RunExtras;
 }
+
+/** The bench-local per-run measurements (BenchRecord's optional fields), copied verbatim onto the record. */
+export type RunExtras = Pick<BenchRecord, 'generator' | 'synth' | 'servedRate' | 'stubbedJevRequests' | 'tuned' | 'loadavg'>;
 
 /**
  * Copy every RunResult field into the record shape of §13; pass/evaluator/patch fields come from
@@ -244,6 +254,15 @@ export function buildRecord(input: RecordInput): BenchRecord {
     generatorCalls: result.usage.generator.calls,
   };
   if (Object.keys(input.source.meta).length > 0) rec.meta = { ...input.source.meta };
+  if (input.extras !== undefined) {
+    const x = input.extras;
+    if (x.generator !== undefined) rec.generator = x.generator;
+    if (x.synth !== undefined) rec.synth = x.synth;
+    if (x.servedRate !== undefined) rec.servedRate = x.servedRate;
+    if (x.stubbedJevRequests !== undefined) rec.stubbedJevRequests = x.stubbedJevRequests;
+    if (x.tuned !== undefined) rec.tuned = x.tuned;
+    if (x.loadavg !== undefined) rec.loadavg = x.loadavg;
+  }
   if (evaluation.reason !== undefined) rec.reason = evaluation.reason;
   else if (result.error) rec.reason = `${result.error.code}: ${result.error.message}`;
   if (evaluation.testsStatus) rec.testsStatus = evaluation.testsStatus;
@@ -257,7 +276,7 @@ export function buildRecord(input: RecordInput): BenchRecord {
   return rec;
 }
 
-export function notRunRecord(source: BenchTaskSource, condition: EngineMode, reason: string, runId: string | null = null): BenchRecord {
+export function notRunRecord(source: BenchTaskSource, condition: BenchCondition, reason: string, runId: string | null = null): BenchRecord {
   return {
     ...(Object.keys(source.meta).length > 0 ? { meta: { ...source.meta } } : {}),
     suite: source.suite,
@@ -294,7 +313,7 @@ export function notRunRecord(source: BenchTaskSource, condition: EngineMode, rea
 }
 
 /** A run whose engine never produced a RunResult (setup or createEngine failure). */
-export function errorRecord(source: BenchTaskSource, condition: EngineMode, reason: string, runId: string | null = null): BenchRecord {
+export function errorRecord(source: BenchTaskSource, condition: BenchCondition, reason: string, runId: string | null = null): BenchRecord {
   return { ...notRunRecord(source, condition, reason, runId), stopReason: 'error', capFired: null };
 }
 
@@ -306,7 +325,7 @@ type PairMode = { kind: 'skip'; record: BenchTaskRecord } | { kind: 'fresh' } | 
 
 interface PairPlan {
   source: BenchTaskSource;
-  condition: EngineMode;
+  condition: BenchCondition;
   mode: PairMode;
 }
 
@@ -323,7 +342,7 @@ export function planPair(existing: BenchTaskRecord | undefined): PairMode {
   return { kind: 'skip', record: existing };
 }
 
-function orderConditions(conds: readonly EngineMode[]): EngineMode[] {
+function orderConditions(conds: readonly BenchCondition[]): BenchCondition[] {
   return [...conds].sort((a, b) => CONDITION_ORDER.indexOf(a) - CONDITION_ORDER.indexOf(b));
 }
 
@@ -503,7 +522,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     }
 
     const jevOnly = condition === 'jev-only';
-    // llm-jev (docs/LLM-JEV-DESIGN.md §10.1): the synthesizer AND the real provider — the LLM is a candidate source inside the synthesizer
+    // llm-jev / llm-sieve (docs/LLM-JEV-DESIGN.md §10.1): the synthesizer AND the real provider — the LLM is a candidate source inside the synthesizer
     const withSynthesizer = usesSynthesizer(condition);
     const mockProvider = (): Provider => {
       const trajectory = task.mockTrajectory();
@@ -511,10 +530,16 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
       return deps.createMockProvider({ turns: (_req, i) => trajectory[Math.min(i, trajectory.length - 1)]! });
     };
     // jev-only: the generator slot is the NullProvider (throws if called; buildRecord invalidates the record on any generator usage)
-    const provider: Provider = jevOnly ? createNullProvider() : mocked ? mockProvider() : deps.liveProvider!;
-    const decider: Decider = mocked ? deps.createMockDecider() : deps.liveDecider!;
-    if (!jevOnly) generatorModel ??= provider.model;
-    const synthesizer: Synthesizer | undefined = withSynthesizer ? deps.createSynthesizer?.({ decider, redact: opts.redact }) : undefined;
+    const baseProvider: Provider = jevOnly ? createNullProvider() : mocked ? mockProvider() : deps.liveProvider!;
+    // jev-off-tuned: the §4 hygiene at the provider boundary; the generator-only loop itself does not move (§9.1)
+    const tuned: TunedProvider | null = usesTunedProvider(condition) ? createTunedProvider(baseProvider, tunedParamsFor(baseProvider.model, source.suite)) : null;
+    const provider: Provider = tuned ?? baseProvider;
+    // llm-sieve: zero Jev requests — the stub answers (and counts) whatever still reaches the decider slot
+    const stub: StubDecider | null = usesStubDecider(condition) ? createStubDecider() : null;
+    const decider: Decider = stub ?? (mocked ? deps.createMockDecider() : deps.liveDecider!);
+    if (!jevOnly) generatorModel ??= baseProvider.model;
+    const synthMode = synthesizerModeOf(condition);
+    const synthesizer: Synthesizer | undefined = synthMode !== null ? deps.createSynthesizer?.({ decider, redact: opts.redact, mode: synthMode }) : undefined;
     if (withSynthesizer && synthesizer === undefined) {
       const rec = errorRecord(source, condition, `engine_create_failed: condition ${condition} requires a synthesizer`);
       newRecords.push(rec);
@@ -524,7 +549,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     const meter: SpendMeter = root.child(opts.taskSpendCapUsd);
     const engineOpts = buildEngineOptions(
       {
-        mode: condition,
+        condition,
         task: task.task,
         workspace: workspaceDir,
         provider,
@@ -564,11 +589,27 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
       engine.abort('human_abort');
     }
     log(`[bench] ${source.id}/${condition}: run ${engine.runId} (${resumeRunId ? 'resumed' : 'fresh'})`);
+    // §10.1: the machine is meant to be otherwise idle; the load at engine start says whether it was
+    const load = loadavg();
+    const loadAtStart: [number, number, number] = [load[0] ?? 0, load[1] ?? 0, load[2] ?? 0];
     const result = await engine.run();
     active.delete(engine);
     checkCap();
 
     const runDir = join(opts.runsDir, result.runId);
+    // §10.4: the per-call facts of the run (generator.jsonl) and what the arm's wrappers counted
+    const extras: RunExtras = { loadavg: loadAtStart };
+    if (!jevOnly) {
+      extras.generator = summariseGeneratorRecords(await readGeneratorRecords(runDir));
+      extras.servedRate = servedRateFor(baseProvider.model);
+    }
+    const synth = await readStepsSummary(runDir);
+    if (synth !== null) extras.synth = synth;
+    if (stub !== null) extras.stubbedJevRequests = stub.stubbed().requests;
+    if (tuned !== null) {
+      const l = tuned.ledger();
+      extras.tuned = { timeouts: l.timeouts, doubled: l.doubled };
+    }
     const makeRunner = makeRunnerFactory(pair, runDir, controller.signal);
     const ctxBase = { workspaceDir, runDir, runsDir: opts.runsDir, run: makeRunner(workspaceDir), makeRunner, mocked, condition, result, outcomes, signal: controller.signal, log };
     let patch: PatchExtraction | null = null;
@@ -599,6 +640,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
       evaluation,
       patch,
       capFired,
+      extras,
       ...(abortedForCap && result.stopReason === 'human_abort' ? { stopReasonOverride: 'spend_cap' as const } : {}),
     });
     newRecords.push(rec);
