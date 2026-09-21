@@ -21,8 +21,10 @@ import type { HistoryFacts } from '../history/index.js';
 import { introspectRepro, setRunFacts } from '../introspect/index.js';
 import type { IntrospectedNames } from '../introspect/index.js';
 import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
+import { LLM_ORACLE_OPEN_PROBLEM, isLlmOracle, writeReproduction } from '../llm/repro.js';
+import type { ReproWriterResult } from '../llm/repro.js';
 import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, NETWORK_ORACLE_OPEN_PROBLEM, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, mergeSummaries, oracleNeedsArbitration, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
-import type { OracleSearch, OracleSearchInput, TracebackFrame } from '../oracle/index.js';
+import type { CriterionStrength, OracleSearch, OracleSearchInput, TracebackFrame } from '../oracle/index.js';
 import { analyse } from '../py/structure.js';
 import { forgetUnchangedTried, subsetCommand } from '../sieve/runner.js';
 import type { RunnerMemory } from '../sieve/runner.js';
@@ -30,6 +32,9 @@ import type { AppliedCandidate, LocalizeResult, SourceFile, TestRunSummary } fro
 import { DEFAULT_TEST_OUTPUT_BYTES, isTestFile, sandboxRunFn, summarize } from '../verify/index.js';
 import { PERSISTED_PARTIALS_KEY, forgetGoal, forgetHeld, freshPairsOfPartials, partialsFromPersisted, persistPartials, restorePartials } from './bases.js';
 import { fitOracle, freshBudget, laneCount } from './budget.js';
+import type { LlmBudgetInput } from './budget.js';
+import { LLM_SERVED_PRICING, llmMemory } from './llm.js';
+import type { SubGoalLlm } from './llm.js';
 import { defaultOverrides, handleDirective, invalidateStaleSites } from './directive.js';
 import type { DirectiveMemory, DirectiveResult } from './directive.js';
 import { MAX_BUDGET_HIT_STEPS, MAX_CONSECUTIVE_BUDGET_HITS, MAX_PROGRESS_COMMITS_PER_GOAL, clusterFailures, ledgerLine, newGoal, noteBudgetHit, noteCommit, park, parkReasonFor, pickGoalDetailed, reconcile, reopenOnChange } from './goals.js';
@@ -37,10 +42,10 @@ import { LONE_PASSER_HOLD_MAX_NOUL, adviseLonePasser, commitSuspect } from './gu
 import type { GoalPick } from './goals.js';
 import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
 import type { PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
-import { BEST_GUESS_NOTE, bestGuessGoalText, commitEvidence, goalTestsPassing, proposeDone, proposePatch, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
+import { BEST_GUESS_NOTE, bestGuessGoalText, commitEvidence, completionEvidence, goalTestsPassing, isFullSuiteRun, proposeDone, proposePatch, proposeRevert, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
 import { commitProgress, everySiteSeedsExhausted, isTestPath, newTrace, taskIdentifiers } from './subgoal.js';
 import type { ProgressOptions, RegressionRun, SubGoalMemory, SubGoalResult } from './subgoal.js';
-import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState } from './types.js';
+import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState, VerifyOutcome } from './types.js';
 import { isPersistedSearchState } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -140,7 +145,19 @@ export interface SearchDeps {
   handleDirective(ctx: SynthesisContext, mem: RunMemory): Promise<DirectiveResult>;
   /** the regression run of a progress commit the controller makes itself (subgoal.ts commitProgress); the runner's own when absent */
   regressionRun?: RegressionRun;
+  /**
+   * llm-jev (docs/LLM-JEV-DESIGN.md §4, search/llm.ts): the LLM source the sub-goal searches were built with — the controller fires
+   * the repository round ahead of the search (§7.1), fills the step's LLM counters from its spend, persists its cache and cleans up
+   * at step end. Absent in jev-only.
+   */
+  llm?: SubGoalLlm;
   now(): number;
+}
+
+/** docs/LLM-JEV-DESIGN.md §9.2 stage 4: the controller's mode switch (the `llm-jev` flag via `SynthesizerOptions`). */
+export interface ControllerOptions {
+  /** llm-jev: no establishing run, completion evidence on the claiming run, the revert route, the repository step-1 overlap, lane-baseline adoption */
+  llmJev?: boolean;
 }
 
 /** The real collaborators for everything but the sub-goal searches and the localiser (src/synth/index.ts adds those). */
@@ -451,6 +468,8 @@ export function networkOracleNote(repo: Pick<RepositoryMode, 'oracleOutcome' | '
 export function repositoryPatchNotes(repo: Pick<RepositoryMode, 'oracleOutcome' | 'repro' | 'scope'>): string[] {
   const network = networkOracleNote(repo);
   if (network !== null) return [network];
+  // docs/LLM-JEV-DESIGN.md §4.10: an LLM-written reproduction is an unverified reading of the issue; the note rides on every proposal
+  if (isLlmOracle(repo.oracleOutcome)) return [`${LLM_ORACLE_OPEN_PROBLEM} ${repo.repro?.spec.testId ?? 'the reproduction'}: the script encodes the model's reading of the issue and never completes the run; the evaluator's tests are the only judge`];
   if (repo.repro?.strength === 'weak') return [`weak reproduction oracle ${repo.repro.spec.testId}: the criterion only says the observed wrong value changed; the regression scope (${repo.scope.testFiles.length} files) is the other check`];
   return [];
 }
@@ -487,8 +506,14 @@ export interface RunScratch {
   /** wall clock of the first synthesize() call of this process for the run (wall remaining is approximated from it) */
   startedMs: number;
   baselineStep: number | null;
-  /** the goal whose candidate the last `patch` carried (for the claim on the following `run` and a failed-apply rollback) and the evidence it was proposed with */
-  lastCommit: { goalId: string; step: number; evidence: ProposalEvidence | null } | null;
+  /** the goal whose candidate the last `patch` carried (for the claim on the following `run` and a failed-apply rollback), the evidence it was proposed with and, when the guard committed it, its shadow outcome (lane-baseline adoption, §4a) */
+  lastCommit: { goalId: string; step: number; evidence: ProposalEvidence | null; outcome: VerifyOutcome | null } | null;
+  /** llm-jev (§6.5): the `revert_last_change` proposed for the last commit — its diff hash, how often it was proposed, whether a re-proposal is due; null when none is open */
+  revert: { hash: string; goalId: string; times: number; pending: boolean; reason: string } | null;
+  /** llm-jev: commit hashes already reverted once (`revert:` at most once per committed patch, §6.5) */
+  reverted: Set<string>;
+  /** llm-jev: the step whose executed patch was a revert (no claiming run follows a revert; the search resumes) */
+  revertExecutedStep: number | null;
   /** the baseline the last re-baseline replaced: `before` of the post-patch run's evidence (the fresh baseline is `after`) */
   previousBaseline: TestRunSummary | null;
   /** the checkpoint's synthState is consumed on the first baseline of the process */
@@ -504,8 +529,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   private readonly deps: SearchDeps;
   private readonly scratch = new Map<string, RunScratch>();
 
-  constructor(deps: SearchDeps) {
+  private readonly llmJev: boolean;
+
+  constructor(deps: SearchDeps, opts: ControllerOptions = {}) {
     this.deps = deps;
+    this.llmJev = opts.llmJev === true && deps.llm !== undefined;
   }
 
   async synthesize(ctx: SynthesisContext): Promise<Proposal> {
@@ -514,23 +542,55 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     observeWindow(mem, ctx.window);
     // §5.1 row 2: last step's claims meet the judge's verdict before this step decides what to claim
     resolveClaims(mem, ctx.window, ctx.plan);
-    mem.stepBudget = freshBudget(ctx.limits, mem.oracle, this.wallRemaining(ctx, scratch), { now: this.deps.now });
+    mem.stepBudget = this.freshBudget(ctx, mem, scratch, false);
+    // docs/LLM-JEV-DESIGN.md §4.8: the passer cap is per step however many times the runner is entered
+    mem.passersThisStep = 0;
     try {
       const proposal = await this.step(ctx, mem, scratch, false);
       // only a `run` has its claims judged (on its parsed output); a `done` claims into the completion state and executes nothing
       if (proposal.action.kind === 'run' && proposal.plan.done.length > 0) recordClaims(mem, proposal.plan.done, ctx.step);
       return proposal;
     } finally {
-      // §5.2: what survives a checkpoint, every step (the remembered partials beside memory.ts's record: bases.ts persistPartials); the ledger line every step.
-      ctx.setSynthState(toJson({ ...toPersisted(mem), [PERSISTED_PARTIALS_KEY]: persistPartials(mem, mem.goals) }));
+      // §5.2: what survives a checkpoint, every step (the remembered partials beside memory.ts's record: bases.ts persistPartials; the
+      // LLM round cache ≤ 4 KB, docs/LLM-JEV-DESIGN.md §4.11); the ledger line every step.
+      const llmCache = this.deps.llm?.exportCache(ctx.runId) ?? null;
+      ctx.setSynthState(toJson({ ...toPersisted(mem), [PERSISTED_PARTIALS_KEY]: persistPartials(mem, mem.goals), ...(llmCache === null ? {} : { llm: llmCache }) }));
+      await this.deps.llm?.stepEnd(ctx);
       this.emit(ctx, 'ledger', ledgerLine(mem.goals));
     }
+  }
+
+  /** The step budget; in llm-jev the LLM counters are filled from the run's spend and the ledger size (budget.ts `LlmBudgetInput`). `carry`: a budget re-installed within the step (a re-baseline) keeps what an earlier round of the step already spent. */
+  private freshBudget(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, carry: boolean): ReturnType<typeof freshBudget> {
+    const llm = this.llmBudgetInput(ctx, mem);
+    const fresh = freshBudget(ctx.limits, mem.oracle, this.wallRemaining(ctx, scratch), { now: this.deps.now, ...(llm === null ? {} : { llm }) });
+    const prev = mem.stepBudget;
+    if (llm !== null && carry) {
+      fresh.llmRoundsLeft = Math.min(fresh.llmRoundsLeft, prev.llmRoundsLeft);
+      fresh.llmSamplesLeft = Math.min(fresh.llmSamplesLeft, prev.llmSamplesLeft);
+      fresh.llmUsdLeft = Math.min(fresh.llmUsdLeft, prev.llmUsdLeft);
+    }
+    return fresh;
+  }
+
+  private llmBudgetInput(ctx: SynthesisContext, mem: RunMemory): LlmBudgetInput | null {
+    if (!this.llmJev || this.deps.llm === undefined) return null;
+    const repository = mem.repository !== undefined;
+    const input: LlmBudgetInput = {
+      spendCapUsd: ctx.limits.spendCapUsd,
+      spentUsd: this.deps.llm.spentUsd(ctx.runId),
+      stepsLeft: Math.max(1, ctx.limits.maxSteps - ctx.step + 1),
+      goals: Math.max(1, mem.goals.length),
+      repository,
+    };
+    if (repository) input.tReproMs = mem.oracle.tRunMs.goalSubset;
+    return input;
   }
 
   private scratchFor(runId: string): RunScratch {
     let s = this.scratch.get(runId);
     if (s === undefined) {
-      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, previousBaseline: null, restored: false, rejected: new Map(), freshRepro: null };
+      s = { startedMs: this.deps.now(), baselineStep: null, lastCommit: null, previousBaseline: null, restored: false, rejected: new Map(), freshRepro: null, revert: null, reverted: new Set(), revertExecutedStep: null };
       this.scratch.set(runId, s);
     }
     return s;
@@ -557,8 +617,14 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         const d = await this.deps.handleDirective(ctx, mem);
         if (d.kind === 'proposal') return d.proposal;
       }
+      // llm-jev (§6.5): the revert proposed last step executed (the commit leaves the ledger), or did not (rolled back, re-proposed once)
+      if (scratch.revert !== null && lastExecutedActionKind(ctx.window) === 'patch') this.finishRevert(ctx, mem, scratch, ctx.window.at(-1)?.step ?? ctx.step - 1);
       const unexecuted = patchNotExecutedLastStep(ctx.window);
       if (unexecuted !== null) this.rollbackUnexecutedPatch(ctx, mem, scratch, unexecuted);
+      if (scratch.revert !== null && scratch.revert.pending) {
+        const again = this.reproposeRevert(ctx, mem, scratch);
+        if (again !== null) return again;
+      }
     }
 
     if (mem.baseline === null || scratch.baselineStep === null || workspaceChangedSince(scratch.baselineStep, ctx.window)) {
@@ -568,6 +634,12 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     const baseline = mem.baseline;
     if (baseline === null) throw new Error('ledger-sieve: baseline missing after rebaseline');
     const repo = mem.repository;
+
+    // llm-jev (docs/LLM-JEV-DESIGN.md §6.5): the workspace disagreed with the lane — the last commit is reverted, no LLM, no Jev
+    if (this.llmJev && !recursed) {
+      const revert = this.revertDue(ctx, mem, scratch);
+      if (revert !== null) return revert;
+    }
 
     // §5.1: the full suite runs as an engine step so testsCurrent and lastTestRun see the oracle.
     // This is a standing obligation, not a one-step reflex: the engine has no test run of the
@@ -588,7 +660,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     // below: proposeDone's own fallback run carries the plain goal text, and the third QuixBugs
     // bench had that run reviewed at 0.33–0.58 as a repeat of the step-1 run that "failed", while
     // this path states the measured expectation.
-    if (engineNeedsRun(mem)) {
+    // llm-jev (docs/LLM-JEV-DESIGN.md §3 row 4a, §7.2): the establishing run of jev-only is not proposed — verified patches are code-`ok`
+    // in the risk stage, so the engine needs no executed baseline before the first patch (nor after a revert put the workspace
+    // back: the search resumes at once); the claiming run after a patch stays
+    const needsRun = engineNeedsRun(mem) && !(this.llmJev && (mem.lastChangeStep === null || mem.lastChangeStep === scratch.revertExecutedStep));
+    if (needsRun) {
       const never = mem.lastEngineRun === null;
       const goal = scratch.lastCommit === null ? undefined : mem.goals.find((g) => g.id === scratch.lastCommit?.goalId);
       // repository mode: the baseline's command is the regression scope, never the whole suite
@@ -598,15 +674,29 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       // §5.1 row 2: the run claims the fixed goals now, so the engine's done_<j> Noul judges them on this step's parsed output
       const run = proposeRun(ctx, command, 'full', goal, changed.length > 0, this.runTimeout(ctx, mem), undefined, mem);
       const shown = repo === undefined ? baseline : scopedPartOf(baseline);
+      const commit = scratch.lastCommit;
+      // the commit's own selection when its evidence exists; else the winner's source names it (an `llm` winner is `llm`, §6.2)
+      const sel = commit?.evidence ? selectionFrom(commit.evidence) : { selection: mem.committed.at(-1)?.candidate.source === 'llm' ? ('llm' as const) : ('sieve' as const), candidatesTested: 0, arbitrated: false };
+      // llm-jev (docs/LLM-JEV-DESIGN.md §6.6): every run proposed after an executed change is the claiming run — the completion facts
+      // travel on its evidence and the engine stops `complete` on this very step when its own parsed run agrees (repository class: the
+      // reproduction's workspace verdict too). After a `--resume` this process holds no record of the commit (`lastCommit`,
+      // `previousBaseline` and the committed files are empty): the evidence then compares the fresh baseline with itself and still
+      // carries the facts, so the run can end on the claiming run rather than only via `done`.
+      const claiming = this.llmJev && mem.lastChangeStep !== null;
+      const claim = (p: Proposal): Proposal => {
+        if (!claiming) return p;
+        const evidence = runEvidence(scratch.previousBaseline ?? baseline, baseline, goal, sel, command);
+        return withEvidence(p, { ...evidence, completion: completionEvidence(ctx, mem, command, repo ?? null) });
+      };
       if (changed.length === 0) {
-        if (!never) return run;
+        if (!never) return claim(run);
         if (repo !== undefined) {
           const repro = repo.repro === null ? 'no reproduction oracle from the issue text' : `the issue's reproduction ${repo.repro.spec.testId} ${repo.lastRepro?.verdict.pass === true ? 'passes' : 'fails'}`;
           const known = `${shown.failed + shown.errors} of ${shown.total} scoped tests fail at the base commit`;
-          return { ...run, goal: clip(`${ESTABLISH_GOAL_REPOSITORY} (${known}; ${repro})`, PLAN_ITEM_MAX_CHARS) };
+          return claim({ ...run, goal: clip(`${ESTABLISH_GOAL_REPOSITORY} (${known}; ${repro})`, PLAN_ITEM_MAX_CHARS) });
         }
         const failing = `${baseline.failed + baseline.errors} of ${baseline.total} fail${baseline.failed + baseline.errors === 1 ? 's' : ''} in the synthesizer's own run`;
-        return { ...run, goal: clip(`${ESTABLISH_GOAL} (${failing})`, PLAN_ITEM_MAX_CHARS) };
+        return claim({ ...run, goal: clip(`${ESTABLISH_GOAL} (${failing})`, PLAN_ITEM_MAX_CHARS) });
       }
       // The goal text says why the same command runs again and what the synthesizer's own baseline
       // measured, so the risk stage can tell this from "repeats a step that already failed the same
@@ -616,10 +706,9 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       const last = mem.lastEngineRun;
       const reproNow = repo !== undefined && repo.repro !== null && repo.lastRepro !== null ? ` and the reproduction to ${repo.lastRepro.verdict.pass ? 'pass' : 'still fail'}` : '';
       const expectation = `expect ${shown.passed} of ${shown.total} tests to pass${reproNow}${last === null ? '' : `, ${last.passed} passed in the last run`}`;
-      const commit = scratch.lastCommit;
-      const sel = commit?.evidence ? selectionFrom(commit.evidence) : { selection: 'sieve' as const, candidatesTested: 0, arbitrated: false };
-      const evidence = scratch.previousBaseline === null || commit === null ? null : runEvidence(scratch.previousBaseline, baseline, goal, sel, command);
-      return withEvidence({ ...run, goal: clip(`${run.goal} (${changed.join(', ')} changed since the last test run; ${expectation})`, PLAN_ITEM_MAX_CHARS) }, evidence);
+      const described: Proposal = { ...run, goal: clip(`${run.goal} (${changed.join(', ')} changed since the last test run; ${expectation})`, PLAN_ITEM_MAX_CHARS) };
+      if (claiming) return claim(described);
+      return withEvidence(described, scratch.previousBaseline === null || commit === null ? null : runEvidence(scratch.previousBaseline, baseline, goal, sel, command));
     }
 
     // Repository mode: a green scoped run at the base commit is not a finished task (the goals come
@@ -686,8 +775,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         const partial = await this.progressCommit(ctx, mem, goal);
         if (partial !== null) r = { ...partial, trace: { ...r.trace, outcome: 'partial', winner: partial.applied, testRuns: r.trace.testRuns } };
       }
-      // a network-dependent oracle's lone passer is arbitrated before its evidence is written (§23.3)
-      if (r.kind === 'commit' && repo !== undefined && oracleNeedsArbitration(repo.oracleOutcome)) r = await this.arbitrateNetworkPasser(ctx, mem, goal, r);
+      // a network-dependent oracle's lone passer is arbitrated before its evidence is written (§23.3); so is an LLM-written oracle's (docs/LLM-JEV-DESIGN.md §4.10)
+      if (r.kind === 'commit' && repo !== undefined && (oracleNeedsArbitration(repo.oracleOutcome) || isLlmOracle(repo.oracleOutcome))) r = await this.arbitrateNetworkPasser(ctx, mem, goal, r);
       if (r.kind === 'commit') evidence = commitEvidence(mem, r, goal);
     }
     this.emit(ctx, 'search', `${goal.id} ${r.kind}${r.kind === 'parked' ? `: ${r.reason}` : ''} (phase ${r.trace.phase}, ${r.trace.runMode}, sites ${r.trace.sitesConsidered}, requests ${r.trace.jevRequests}, runs ${r.trace.testRuns}, plausible ${r.trace.plausible}${r.trace.unstable === undefined || r.trace.unstable === 0 ? '' : `, unstable ${r.trace.unstable}`})`, {
@@ -700,7 +789,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         recordCommit(mem, r.applied);
         noteCommit(goal, r.allGoalTestsPass);
         forgetGoal(mem, goal);
-        scratch.lastCommit = { goalId: goal.id, step: ctx.step, evidence };
+        scratch.lastCommit = { goalId: goal.id, step: ctx.step, evidence, outcome: r.outcome ?? null };
         // A commit changes the goal's files: it re-localises next time, and parked goals that suspected those files re-open (§5.3).
         mem.localizeCache.delete(goal.id);
         reopenOnChange(mem, r.applied.files.map((f) => f.path));
@@ -843,6 +932,14 @@ export class LedgerSieveSynthesizer implements Synthesizer {
    * re-runs the baseline (§5.3). One test run is the price of a consistent base.
    */
   private rollbackUnexecutedPatch(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, why: { outcome: OutcomeStatus | null; reason: string }): void {
+    // llm-jev (§6.5): the unexecuted patch was the revert of the last commit — nothing to undo in the ledger; it is re-proposed once
+    const revert = scratch.revert;
+    if (revert !== null) {
+      revert.pending = revert.times <= REPROPOSE_MAX;
+      this.emit(ctx, 'rollback', `revert ${why.outcome ?? 'not executed'}${why.reason.length > 0 ? ` (${clip(why.reason, ROLLBACK_REASON_CHARS)})` : ''}; the commit stays${revert.pending ? '; re-proposing the revert once' : '; the revert is abandoned'}`);
+      if (!revert.pending) scratch.revert = null;
+      return;
+    }
     const applyFailed = why.outcome === 'failed';
     const stale = applyFailed ? invalidateStaleSites(ctx, mem) : [];
     const last = scratch.lastCommit;
@@ -877,6 +974,94 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   }
 
   /**
+   * docs/LLM-JEV-DESIGN.md §6.5: the revert trigger — the engine's claiming run passed fewer tests than the run before the patch
+   * (its parsed count against the pre-patch baseline; the scoped part on repositories), or the synthesizer's own fresh baseline
+   * after the commit did. Once per committed patch. The synthesizer holds the commit's before/after images, so the reverse diff
+   * is emitted as `revert_last_change` with no LLM and no Jev; the goal re-opens and is re-localised from the workspace's failure.
+   */
+  private revertDue(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch): Proposal | null {
+    const commit = scratch.lastCommit;
+    const last = mem.committed.at(-1);
+    const previous = scratch.previousBaseline;
+    if (commit === null || last === undefined || previous === null || scratch.revert !== null) return null;
+    const hash = diffHash(last.diff);
+    if (scratch.reverted.has(hash)) return null;
+    const before = mem.repository === undefined ? previous.passed : scopedPartOf(previous).passed;
+    const engineRun = mem.lastEngineRun;
+    // only the engine's suite run counts (a goal-subset `run` passes fewer tests by construction)
+    const engineDisagreed = engineRun !== null && engineRun.step > commit.step && isFullSuiteRun(ctx, mem, engineRun) && engineRun.passed < before;
+    const ownBaseline = mem.baseline;
+    const baselineRegressed = ownBaseline !== null && scratch.baselineStep === ctx.step && commit.step < ctx.step && (mem.repository === undefined ? ownBaseline.passed : scopedPartOf(ownBaseline).passed) < before;
+    if (!engineDisagreed && !baselineRegressed) return null;
+    const reason = engineDisagreed && engineRun !== null ? `workspace_disagreed: the engine's run passed ${engineRun.passed} tests, ${before} passed before the patch` : `workspace_disagreed: the suite passes ${ownBaseline === null ? '?' : (mem.repository === undefined ? ownBaseline.passed : scopedPartOf(ownBaseline).passed)} tests on the patched workspace, ${before} before the patch`;
+    const goal = mem.goals.find((g) => g.id === commit.goalId) ?? null;
+    if (goal !== null) {
+      // the goal re-opens and is re-localised from the workspace's failure text (the guard's `workspace_disagreed` note is this event)
+      if (goal.status === 'fixed') goal.status = 'open';
+      mem.localizeCache.delete(goal.id);
+    }
+    scratch.reverted.add(hash);
+    scratch.revert = { hash, goalId: commit.goalId, times: 1, pending: false, reason };
+    this.emit(ctx, 'revert', `${reason}; reverting ${last.candidate.source}/${last.candidate.op} at ${last.candidate.site.file.path}:${last.candidate.site.line} (revert_last_change; the candidate stays tried${goal === null ? '' : `, ${goal.id} open again`})`);
+    return proposeRevert(ctx, last, mem, { goal, reason });
+  }
+
+  /** The revert executed: the commit leaves the ledger (its hash stays in `tried`), the claim record is cleared. */
+  private finishRevert(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch, executedStep: number): void {
+    const revert = scratch.revert;
+    if (revert === null) return;
+    scratch.revertExecutedStep = executedStep;
+    const at = mem.committed.findIndex((c) => diffHash(c.diff) === revert.hash);
+    if (at !== -1) mem.committed.splice(at, 1);
+    const h = mem.committedDiffHashes.lastIndexOf(revert.hash);
+    if (h !== -1) mem.committedDiffHashes.splice(h, 1);
+    if (scratch.lastCommit?.goalId === revert.goalId) scratch.lastCommit = null;
+    scratch.revert = null;
+    this.emit(ctx, 'revert', `revert of ${revert.hash} executed; the ledger follows the workspace (${revert.reason})`);
+  }
+
+  /** A blocked or declined revert is proposed once more (REPROPOSE_MAX), then abandoned. */
+  private reproposeRevert(ctx: SynthesisContext, mem: RunMemory, scratch: RunScratch): Proposal | null {
+    const revert = scratch.revert;
+    if (revert === null || !revert.pending) return null;
+    revert.pending = false;
+    const last = mem.committed.find((c) => diffHash(c.diff) === revert.hash);
+    if (last === undefined) {
+      scratch.revert = null;
+      return null;
+    }
+    revert.times += 1;
+    const goal = mem.goals.find((g) => g.id === revert.goalId) ?? null;
+    this.emit(ctx, 'revert', `proposing the revert again (${revert.times} of ${REPROPOSE_MAX + 1}): ${revert.reason}`);
+    return proposeRevert(ctx, last, mem, { goal, reason: revert.reason });
+  }
+
+  /**
+   * docs/LLM-JEV-DESIGN.md §3 row 4a, §6.4 (graft, FactGate): after a commit the lane's regression run is the baseline when the
+   * workspace reads exactly as the lane's post-image — no re-run. The comparison is the whole loaded tree, not the touched files
+   * alone: every source file the synthesizer holds must equal the lane's base (the touched ones its `after`), and no file may have
+   * appeared or gone, so a directive or steer edit to an untouched file between the patch and the claiming run re-runs the suite
+   * instead of adopting a stale green run. (Files outside `loadPythonFiles` — tests, configuration — are not in the lane image either:
+   * a change there is caught by the engine's own claiming run.) Only a green lane run is adopted: a suite that still fails is re-run
+   * so the ledger clusters the remaining failures from the full output (the lane keeps only a bounded tail).
+   */
+  private adoptableLaneRun(scratch: RunScratch, files: ReadonlyMap<string, SourceFile>): TestRunSummary | null {
+    const outcome = scratch.lastCommit?.outcome ?? null;
+    const full = outcome?.full ?? null;
+    if (outcome === null || full === null || full.timedOut || full.failed + full.errors > 0 || full.passed === 0) return null;
+    if (outcome.applied.files.length === 0) return null;
+    const touched = new Map(outcome.applied.files.map((f) => [f.path, f.after]));
+    const base = outcome.job.base.files;
+    for (const [path, now] of files) {
+      const expected = touched.get(path) ?? base.get(path)?.src;
+      if (expected === undefined || now.src !== expected) return null;
+    }
+    for (const path of base.keys()) if (!files.has(path)) return null;
+    for (const path of touched.keys()) if (!files.has(path)) return null;
+    return full;
+  }
+
+  /**
    * §2.2 lines 4–6: one full-suite run on the committed workspace, the oracle model from it, the
    * ledger reconciled with the fresh failure clusters (rebuilt from the checkpoint on the first
    * baseline of a resumed run). Returns a Proposal only for the §4.1 exit (timed-out baseline →
@@ -889,7 +1074,9 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     if (layout !== 'quixbugs' && (mem.repository !== undefined || isRepositoryWorkspace(ctx.workspaceInfo.testCommand, paths))) return this.rebaselineRepository(ctx, mem, scratch, files, paths);
     const command = baselineCommand(ctx);
     const timeoutMs = Math.min(ctx.limits.commandTimeoutMs, ctx.limits.maxCommandTimeoutMs);
-    const { summary: baseline, output } = await this.deps.runTests(ctx, command, timeoutMs);
+    const adopted = this.llmJev ? this.adoptableLaneRun(scratch, files) : null;
+    if (adopted !== null) this.emit(ctx, 'baseline', `lane run adopted as the baseline: every touched file reads as the lane's post-image (${adopted.passed}/${adopted.total} pass); no re-run`);
+    const { summary: baseline, output } = adopted !== null ? { summary: { ...adopted, command }, output: adopted.outputTail } : await this.deps.runTests(ctx, command, timeoutMs);
     const sourcePaths = [...files.keys()];
     const clusterOpts = { output, sourcePaths, ...(layout === 'quixbugs' ? { defaultFiles: sourcePaths.filter((p) => p !== 'node.py') } : {}) };
 
@@ -898,7 +1085,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     mem.baseline = baseline;
     scratch.baselineStep = ctx.step;
     mem.oracle = fitOracle(baseline, { commandTimeoutMs: ctx.limits.commandTimeoutMs, wallRemainingMs: this.wallRemaining(ctx, scratch), workspace: { git: ctx.workspaceInfo.git } });
-    mem.stepBudget = freshBudget(ctx.limits, mem.oracle, this.wallRemaining(ctx, scratch), { now: this.deps.now });
+    mem.stepBudget = this.freshBudget(ctx, mem, scratch, true);
     // Partials held against the old workspace are stale; the committed base is the new workspace.
     mem.bases = [committedBase(files, baseline)];
     mem.localizeCache.clear();
@@ -981,9 +1168,16 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       }
     }
     const timeoutMs = Math.min(ctx.limits.maxCommandTimeoutMs, REPO_BASELINE_TIMEOUT_MS);
+    // llm-jev, step 1 (docs/LLM-JEV-DESIGN.md §7.1): the L1 round fires now, so it overlaps the scoped baseline (11–100 s) instead
+    // of waiting for the search; the search takes the round from `llm.early` instead of firing its own
+    if (first && this.llmJev) this.fireEarlyRound(ctx, mem, repo);
     let scoped: TestRunSummary;
+    const adoptedScoped = this.llmJev && repo.scope.command !== null ? this.adoptableLaneRun(scratch, files) : null;
     if (repo.scope.command === null) {
       scoped = emptyScopedSummary(baselineCommand(ctx));
+    } else if (adoptedScoped !== null) {
+      scoped = { ...scopedPartOf(adoptedScoped), command: repo.scope.command };
+      this.emit(ctx, 'baseline', `lane regression run adopted as the scoped baseline: every touched file reads as the lane's post-image; only the reproduction is re-run`);
     } else {
       scoped = (await this.deps.runTests(ctx, repo.scope.command, timeoutMs)).summary;
       if (scoped.timedOut && repo.scope.testFiles.length > REPO_SCOPE_RETRY_FILES) {
@@ -1011,7 +1205,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     const fitted = fitOracle(scoped, { commandTimeoutMs: ctx.limits.maxCommandTimeoutMs, wallRemainingMs: wall, workspace: { git: ctx.workspaceInfo.git } });
     const goalSubset = repro === null ? fitted.tRunMs.fullSuite : Math.max(1, Math.floor(repro.result.durationMs));
     mem.oracle = { ...fitted, perTestTimeoutMs: null, tRunMs: { goalSubset, fullSuite: fitted.tRunMs.fullSuite }, lanes: laneCount(goalSubset, { git: ctx.workspaceInfo.git }) };
-    mem.stepBudget = freshBudget(ctx.limits, mem.oracle, wall, { now: this.deps.now });
+    mem.stepBudget = this.freshBudget(ctx, mem, scratch, true);
     mem.bases = [committedBase(files, baseline)];
     // the establishing localisation was made on these very files; after a change the sites may have moved
     if (!first) mem.localizeCache.clear();
@@ -1068,23 +1262,31 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     const found = await this.deps.findOracle(ctx, { packageName, framework });
     mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - found.requests);
     this.emit(ctx, 'oracle', `${found.outcome}: ${found.note} (${found.requests} request${found.requests === 1 ? '' : 's'}, ${found.durationMs} ms, package ${packageName ?? '?'})`);
-    const goal = this.repositoryGoal(ctx, mem, found.goal?.spec.testId ?? null, []);
-    if (found.goal !== null) goal.failures = [found.goal.failure];
+    // llm-jev (docs/LLM-JEV-DESIGN.md §4.10): with no valid code oracle the reproduction writer L2 runs before the best guess, once per run
+    let oracle: { outcome: string; note: string; goal: OracleSearch['goal']; strength: CriterionStrength | null } = { outcome: found.outcome, note: found.note, goal: found.goal, strength: found.strength };
+    if (found.goal === null && this.llmJev && ctx.generate !== undefined) {
+      const written = await this.writeReproductionL2(ctx, mem, found, { packageName, framework });
+      if (written !== null && written.goal !== null && written.outcome !== 'llm_none') {
+        oracle = { outcome: written.outcome, note: written.note, goal: written.goal, strength: written.outcome === 'llm_valid' ? 'strong' : 'weak' };
+      }
+    }
+    const goal = this.repositoryGoal(ctx, mem, oracle.goal?.spec.testId ?? null, []);
+    if (oracle.goal !== null) goal.failures = [oracle.goal.failure];
     mem.goals = [...mem.goals.filter((g) => g.id !== goal.id), goal];
     const repo: RepositoryMode = {
       goalId: goal.id,
       moduleFiles: [],
       scope: { testFiles: [], command: null, tier: 'none', note: 'not chosen yet' },
-      repro: found.goal === null || found.strength === null ? null : { spec: found.goal.spec, strength: found.strength },
-      oracleOutcome: found.outcome,
-      oracleNote: found.note,
+      repro: oracle.goal === null || oracle.strength === null ? null : { spec: oracle.goal.spec, strength: oracle.strength },
+      oracleOutcome: oracle.outcome,
+      oracleNote: oracle.note,
       traceback: found.traceback,
       bestGuessCommitted: false,
       knownFailures: 0,
       lastRepro: null,
     };
     mem.repository = repo;
-    scratch.freshRepro = found.goal === null ? null : { result: found.goal.result, verdict: found.goal.verdict, summary: found.goal.summary, failure: found.goal.failure };
+    scratch.freshRepro = oracle.goal === null ? null : { result: oracle.goal.result, verdict: oracle.goal.verdict, summary: oracle.goal.summary, failure: oracle.goal.failure };
     // the introspected names of the failing call come before the localisation: its site list adds the
     // class-body gap of a receiver's class (search/sites.ts introspectionSites) when the facts are known
     await this.harvestIntrospection(ctx, repo, found.anchors.map((a) => a.frame));
@@ -1112,6 +1314,69 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     // the git history of the module files the localisation named (the history source reads it)
     await this.harvestHistoryFacts(ctx, repo, moduleFiles, files);
     return repo;
+  }
+
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.10: N = 3 `write_reproduction` samples → code checks → two base runs → issue-quote check → Q18 →
+   * an `llm_valid` / `llm_weak` oracle or none. Charged to the step's dollar counter only; never fatal (a failed writer leaves the
+   * best guess as it was).
+   */
+  private async writeReproductionL2(ctx: SynthesisContext, mem: RunMemory, found: OracleSearch, pkg: { packageName: string | null; framework: 'django' | null }): Promise<ReproWriterResult | null> {
+    const generate = ctx.generate;
+    if (generate === undefined) return null;
+    try {
+      const root = ctx.workspaceInfo.root;
+      const python = await venvPython(root);
+      const budget = {
+        get usdLeft() {
+          return mem.stepBudget.llmUsdLeft;
+        },
+        set usdLeft(v: number) {
+          mem.stepBudget.llmUsdLeft = v;
+        },
+      };
+      const r = await writeReproduction({
+        task: ctx.task,
+        repository: pkg.packageName ?? 'the repository',
+        packageName: pkg.packageName,
+        framework: pkg.framework,
+        extraction: found.extraction,
+        workspace: root,
+        run: sandboxRunFn(ctx.sandbox, ctx.signal),
+        ...(python === undefined ? {} : { python }),
+        generate,
+        ask: (stage, state, questions) => ctx.ask(stage, state, questions),
+        signal: ctx.signal,
+        step: ctx.step,
+        stage: 'propose',
+        pricing: LLM_SERVED_PRICING,
+        budget,
+      });
+      mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - r.requests);
+      // the run-level total the next step's `(spendCap − spent) / stepsLeft` reads (§4.11); the step counter was charged by the writer
+      this.deps.llm?.recordSpend(ctx, r.usd);
+      this.emit(ctx, 'oracle', `L2 reproduction writer: ${r.outcome} (${r.note}; ${r.trials.length} samples, ${r.requests} request${r.requests === 1 ? '' : 's'}, ${r.durationMs} ms, $${r.usd.toFixed(4)})`);
+      return r;
+    } catch (e) {
+      if (e instanceof AbortError) throw e;
+      this.emit(ctx, 'oracle', `L2 reproduction writer failed: ${e instanceof Error ? e.message : String(e)}`);
+      return null;
+    }
+  }
+
+  /** The repository round fired at the establishing step (§7.1), kept for the goal's first search under `llm.early`. */
+  private fireEarlyRound(ctx: SynthesisContext, mem: RunMemory, repo: RepositoryMode): void {
+    const llm = this.deps.llm;
+    const goal = mem.goals.find((g) => g.id === repo.goalId);
+    const loc = goal === undefined ? undefined : mem.localizeCache.get(goal.id);
+    if (llm === undefined || goal === undefined || loc === undefined || goal.status === 'parked' || goal.status === 'fixed') return;
+    const early = llmMemory(mem).early;
+    if (early.has(goal.id)) return;
+    const round = llm.fire(ctx, mem, goal, loc, { round: 1 });
+    if (round !== null) {
+      early.set(goal.id, round);
+      this.emit(ctx, 'llm:fire', `${goal.id}: the L1 round overlaps the scoped baseline (repository step 1, §7.1)`);
+    }
   }
 
   /**
@@ -1178,6 +1443,6 @@ export interface SynthesizerOptions {
 }
 
 /** The §6 factory: `createSynthesizer(opts, deps)`; src/synth/index.ts supplies the real `deps`. */
-export function createSynthesizer(_opts: SynthesizerOptions, deps: SearchDeps): Synthesizer {
-  return new LedgerSieveSynthesizer(deps);
+export function createSynthesizer(_opts: SynthesizerOptions, deps: SearchDeps, controller: ControllerOptions = {}): Synthesizer {
+  return new LedgerSieveSynthesizer(deps, controller);
 }

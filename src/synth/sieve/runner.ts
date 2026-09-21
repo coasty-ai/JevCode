@@ -144,6 +144,13 @@ export interface RunnerMemory {
   stepBudget: StepBudget;
   /** sha12(diff) of every candidate ever run */
   tried: Set<string>;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8: full-suite (regression) runs made for passers this step, across every
+   * `runQueue` / `runRepositoryQueue` call of the step — MAX_FULL_SUITE_RUNS_PER_STEP is a per-step
+   * bound however many times the runner is entered (an LLM phase enters it once more after the
+   * seeds). Reset by search/index.ts with the fresh StepBudget; absent = 0.
+   */
+  passersThisStep?: number;
   lanes?: LanePool;
   /** `${base.id}|${scope}` → baseline restricted to the goal subset (pytest without passing ids needs one run) */
   subsetBaselines?: Map<string, TestRunSummary>;
@@ -211,9 +218,15 @@ export interface PendingRetry {
   runTimeoutMs?: number;
 }
 
-/** The slice of the VerifyQueue (sieve/queue.ts) the runner consumes: the best `n` jobs in key order. */
+/**
+ * The slice of the VerifyQueue (sieve/queue.ts) the runner consumes: the best `n` jobs in key order,
+ * and — when the queue streams an LLM round (docs/LLM-JEV-DESIGN.md §4.8) — an awaitable `next()`
+ * that resolves with the next job or null once the source closed the queue, so lanes start on the
+ * first parsed sample instead of after the last. A queue without `next` ends the worker on empty.
+ */
 export interface JobQueue {
   pop(n: number): VerifyJob[];
+  next?(): Promise<VerifyJob | null>;
 }
 
 /** The full-suite command and where it runs from (the baseline's command; paths in it are workspace-relative or absolute). */
@@ -509,7 +522,8 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const batchStart = now();
   const wallAtStart = budget.testWallLeftMs;
   let dispatched = 0;
-  let passers = 0;
+  // the passer counter is the step's (RunnerMemory.passersThisStep), so a second call in the same step keeps the cap
+  let passers = mem.passersThisStep ?? 0;
   let laneFailure: unknown = null;
   const results: { order: number; outcome: VerifyOutcome }[] = [];
   const subsetDurations: number[] = [];
@@ -696,7 +710,9 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
 
   const worker = async (): Promise<void> => {
     while (!stopDispatch()) {
-      const job = carried.shift() ?? queue.pop(1)[0];
+      let job = carried.shift() ?? queue.pop(1)[0];
+      // a streaming queue (an LLM round landing samples): wait for the next job or the close (§4.8)
+      if (job === undefined && queue.next !== undefined) job = (await queue.next()) ?? undefined;
       if (job === undefined) return;
       const order = dispatched;
       dispatched += 1;
@@ -764,6 +780,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   // whatever the retry phase did not reach waits for the next call, in order
   pendingRetries.unshift(...toRetry.map((r) => r.pending));
   pendingRetries.push(...retryQueue.map((r) => r.pending));
+  mem.passersThisStep = passers;
 
   budget.testWallLeftMs = Math.max(0, wallAtStart - (now() - batchStart));
   // the oracle learns the measured cost of this goal's subset and of the full suite (§4.1: t_run per

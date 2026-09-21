@@ -8,6 +8,7 @@ import {
   CHOICE_MAX_CANDIDATES,
   CHOICE_QUESTION_ID,
   CHUNK_MAX_CANDIDATES,
+  FULL_NOUL_CHUNK,
   HYBRID_MAX_CANDIDATES,
   SHORTLIST_SIZE,
   candidateKey,
@@ -69,6 +70,33 @@ describe('regimes: method and request count', () => {
     expect(r.ranked[0]!.choiceProbability).toBeCloseTo(1 / (60 + 0.2), 6);
     expect(r.signals.maxNoul).toBeCloseTo(0.92, 6);
     expect(r.fixProbablyAbsent).toBe(false);
+  });
+
+  it('llm-jev `fullCriteriaNouls`: 10 < N ≤ 150 → full-criteria Nouls in chunks ≤ 50, one request per chunk, no Choice, method nouls, escape = 1 − max Noul', async () => {
+    const jev = scriptedAsk({ weight: () => 1, noul: noulFix });
+    const n = 120;
+    const r = await createRanker({ fullCriteriaNouls: true }).rank(pool(n, 77), context(jev.ask));
+    const chunks = chunkSizes(n, FULL_NOUL_CHUNK).length;
+    expect(chunks).toBe(3);
+    expect(r.method).toBe('nouls');
+    expect(r.requests).toBe(chunks);
+    expect(jev.calls).toHaveLength(chunks);
+    for (const call of jev.calls) {
+      expect(noulIds(call).length).toBeLessThanOrEqual(FULL_NOUL_CHUNK);
+      expect(call.questions[CHOICE_QUESTION_ID]).toBeUndefined();
+      expect(call.state).toHaveProperty('candidates');
+      expect(call.state).toHaveProperty('correct_fix_criteria');
+    }
+    expect(jev.calls.reduce((s, call) => s + noulIds(call).length, 0)).toBe(n);
+    expect(r.ranked).toHaveLength(n);
+    expect(r.ranked[0]!.candidate.id).toBe('fix');
+    expect(r.ranked[0]!.noulProbability).toBeCloseTo(0.92, 6);
+    expect(r.escapeProbability).toBeCloseTo(1 - 0.92, 6);
+    expect(r.fixProbablyAbsent).toBe(false);
+    expect(r.signals).toMatchObject({ maxNoul: 0.92, chunks });
+    // off by default: the same N takes the measured two-stage path
+    const off = scriptedAsk({ weight: preferFix, noul: noulFix });
+    expect((await createRanker().rank(pool(n, 77), context(off.ask))).method).toBe('two_stage');
   });
 
   it('N = 11 is already the hybrid regime and N = 61 is already two-stage', async () => {

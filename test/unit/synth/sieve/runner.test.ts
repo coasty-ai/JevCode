@@ -546,6 +546,12 @@ describe('runQueue on pytest (worktree lanes, scripted output)', () => {
     const fullRuns = () => sb.calls.filter((c) => c.command === 'python3 -m pytest -q').length;
     expect(fullRuns()).toBe(MAX_FULL_SUITE_RUNS_PER_STEP);
     expect(mem.deferred?.get(pyGoal.id)).toHaveLength(2);
+    // the passer cap is the step's (RunnerMemory.passersThisStep): a second call in the same step dispatches nothing more
+    expect(mem.passersThisStep).toBe(MAX_FULL_SUITE_RUNS_PER_STEP);
+    expect(await runQueue(ctxFor(sb), mem, fifoQueue([]), pyGoal, 100)).toEqual([]);
+    expect(fullRuns()).toBe(MAX_FULL_SUITE_RUNS_PER_STEP);
+    // the next step (search/index.ts installs a fresh budget and resets the counter) runs the deferred passers first
+    mem.passersThisStep = 0;
     const again = await runQueue(ctxFor(sb), mem, fifoQueue([]), pyGoal, 100);
     expect(again.map((r) => r.status)).toEqual(['plausible', 'plausible']);
     expect(fullRuns()).toBe(MAX_FULL_SUITE_RUNS_PER_STEP + 2);

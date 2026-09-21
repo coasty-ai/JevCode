@@ -2,10 +2,9 @@
  * Types local to the LLM candidate source (docs/LLM-JEV-DESIGN.md §4). The generator contract —
  * `SynthesisContext.generate`, `SampleOptions`, `GeneratePurpose`, `GenerateRequest.seed / reasoning /
  * providerPrefs`, `GenerateResult.generationId`, `TokenUsage.reasoningTokens / estimated` (§4.8, §4.12,
- * §9.3) — lives in src/core/types.ts and is imported from there; nothing here restates it.
- *
- * TODO(stage 4, src/synth/types.ts): `CandidateSourceName += 'llm'` and `Site.span?` — until then
- * `LlmCandidate` / `LlmSite` are the structural extensions below.
+ * §9.3) — lives in src/core/types.ts and is imported from there; nothing here restates it. `'llm'` is a
+ * `CandidateSourceName` and `Site.span?` the block-anchored span (src/synth/types.ts); `LlmCandidate` /
+ * `LlmSite` are the narrowed forms the source produces.
  */
 import type { GenerateReasoning, SynthesisContext } from '../../core/types.js';
 import type { Candidate, Site } from '../types.js';
@@ -18,20 +17,17 @@ export function reasoningEnabled(r: GenerateReasoning | undefined): boolean {
   return r !== undefined && 'effort' in r;
 }
 
-/** The source name the wiring stage adds to `CandidateSourceName`. */
-export const LLM_SOURCE_NAME = 'llm';
+/** The LLM's `CandidateSourceName`. */
+export const LLM_SOURCE_NAME: Extract<Candidate['source'], 'llm'> = 'llm';
 export type LlmSourceName = typeof LLM_SOURCE_NAME;
 
-/** Block-anchored span of an LLM site: validated by text hash, never by the one-statement tokenizer check (§4.7 step 3). */
-export interface LlmSpan {
-  endLine: number;
-  textSha: string;
-}
+/** Block-anchored span of an LLM site (`Site.span`): validated by text hash, never by the one-statement tokenizer check (§4.7 step 3). */
+export type LlmSpan = NonNullable<Site['span']>;
 
 export type LlmSite = Site & { span: LlmSpan };
 
-/** A `Candidate` whose source is the LLM and whose site carries a hashed span. Assignable to `Candidate` once `'llm'` joins the union. */
-export type LlmCandidate = Omit<Candidate, 'source' | 'site'> & { source: LlmSourceName; site: LlmSite };
+/** A `Candidate` whose source is the LLM and whose site carries a hashed span. */
+export type LlmCandidate = Candidate & { source: LlmSourceName; site: LlmSite };
 
 /** Oracle class the round schedule keys on (§4.6). */
 export type OracleClass = 'quixbugs' | 'ladder' | 'repository';

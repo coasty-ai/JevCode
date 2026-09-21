@@ -60,6 +60,7 @@ export function makeTrace(over: Partial<GoalSearchTrace> & { goalId: string }): 
     donor: { enumerated: 0, tested: 0, passed: 0 },
     token_beam: { enumerated: 0, tested: 0, passed: 0 },
     test_value: { enumerated: 0, tested: 0, passed: 0 },
+    llm: { enumerated: 0, tested: 0, passed: 0 },
     history: { enumerated: 0, tested: 0, passed: 0 },
     composite: { enumerated: 0, tested: 0, passed: 0 },
   };
