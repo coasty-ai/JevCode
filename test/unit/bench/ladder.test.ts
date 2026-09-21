@@ -69,7 +69,7 @@ describe('ladder records and sources (fixture)', () => {
     const records = await loadLadderRecords(FIXTURE);
     expect(records.map((r) => r.meta.name)).toEqual(['ratio', 'greet']);
     const ratio = records[0]!;
-    expect(ratio.meta).toEqual({ name: 'ratio', hunks: 2, kinds: ['operator', 'constant'], files: ['src/ratio.py'], difficulty: 2, description: expect.stringContaining('FIXTURE_SECRET'), path: 'tasks/ratio' });
+    expect(ratio.meta).toEqual({ name: 'ratio', hunks: 2, kinds: ['operator', 'constant'], files: ['src/ratio.py'], difficulty: 2, description: expect.stringContaining('FIXTURE_SECRET'), path: 'tasks/ratio', tier: 'short' });
     expect(ratio.task).toBe('Two ratio tests fail. Fix src/ratio.py so tests/test_ratio.py passes; the tests are correct and must not be edited.\n');
     expect(ratio.pytestIni).toContain('addopts = -q');
     expect(records[1]!.pytestIni).toBeNull();

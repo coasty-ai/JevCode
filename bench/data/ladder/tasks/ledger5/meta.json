@@ -1,0 +1,32 @@
+{
+  "name": "ledger5",
+  "tier": "long",
+  "hunks": 5,
+  "kinds": [
+    "off_by_one",
+    "operator",
+    "constant"
+  ],
+  "files": [
+    "src/isbn.py",
+    "src/loans.py",
+    "src/search.py",
+    "src/shelves.py"
+  ],
+  "difficulty": 4,
+  "description": "Pure chain length: five independent one-line bugs in four modules, each with its own failing tests and no shared code paths. isbn10_check_digit weights the digits 9..1 instead of 10..2 (off by one in a constant; breaks the check digit, validation and the ISBN-13 conversion), is_overdue uses >= so a loan is overdue on its due date (operator; also breaks can_renew), fine caps with max() instead of min() (wrong builtin), rank sorts ascending because reverse=False (constant), and label numbers positions from 0 instead of 1 (`number = position` drops the `+ 1`; off by one). Twelve tests fail (3 + 2 + 3 + 2 + 2), eighteen pass. The ledger must form and close five goals in sequence without regressing any of them.",
+  "expected_failing": [
+    "tests/test_isbn.py::test_isbn10_check_digit",
+    "tests/test_isbn.py::test_to_isbn13",
+    "tests/test_isbn.py::test_valid_isbn10",
+    "tests/test_loans.py::test_can_renew_on_due_date",
+    "tests/test_loans.py::test_fine_capped",
+    "tests/test_loans.py::test_fine_per_day",
+    "tests/test_loans.py::test_fine_zero_when_on_time",
+    "tests/test_loans.py::test_not_overdue_on_due_date",
+    "tests/test_search.py::test_rank_best_first",
+    "tests/test_search.py::test_rank_two_levels",
+    "tests/test_shelves.py::test_label",
+    "tests/test_shelves.py::test_labels_sequence"
+  ]
+}

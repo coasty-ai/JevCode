@@ -1,0 +1,1 @@
+The sales pipeline (src/load.py -> clean.py -> enrich.py -> totals.py -> layout.py -> report.py) is broken: every test that feeds real lines through it fails with the same ValueError from src/load.py. Fix the pipeline so the whole suite under tests/ passes; later stages are only exercised through the earlier ones, and the tests are correct and must not be edited.

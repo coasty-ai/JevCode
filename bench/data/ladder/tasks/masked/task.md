@@ -1,0 +1,1 @@
+Every test in tests/test_report.py fails, starting with a NameError in src/report.py. Fix the log-summary package (src/report.py and whatever it calls) so the whole suite under tests/ passes; the tests are correct and must not be edited.

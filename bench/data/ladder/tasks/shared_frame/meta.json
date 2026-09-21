@@ -1,0 +1,17 @@
+{
+  "name": "shared_frame",
+  "tier": "long",
+  "hunks": 2,
+  "kinds": ["constant", "call_args"],
+  "files": ["src/booking.py", "src/pricing.py"],
+  "difficulty": 4,
+  "description": "The `account` partial trap by construction: two bugs in two different modules whose failing tests all raise InvalidValue at the same line of the shared helper checks.ensure_at_least, so frame clustering merges them into one goal. booking.reserve demands at least 1 remaining seat instead of 0 (constant; two tests), and pricing.total swaps the arguments of ensure_at_least(seats, 1, ...) so any order of two or more seats is rejected (argument swap; four tests). Each correct fix alone makes only its own tests pass and is therefore a partial of the merged goal; the two partials have disjoint newly-passing sets and must be paired or committed as partials. checks.py's own tests pin `<` in the helper, so mutating the shared line regresses them. Six tests fail, nineteen pass.",
+  "expected_failing": [
+    "tests/test_booking.py::test_reserve_last_seats",
+    "tests/test_booking.py::test_sold_out_after_full_reservation",
+    "tests/test_pricing.py::test_per_person",
+    "tests/test_pricing.py::test_total_below_group_minimum_has_no_discount",
+    "tests/test_pricing.py::test_total_group_discount",
+    "tests/test_pricing.py::test_total_two_seats"
+  ]
+}

@@ -1,0 +1,1 @@
+Reserving the last seats of an event and pricing more than one ticket both raise InvalidValue from src/checks.py, although checks.py itself is correct and its own tests pass. Fix the booking package so every test under tests/ passes; the tests are correct and must not be edited.

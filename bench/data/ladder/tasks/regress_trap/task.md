@@ -1,0 +1,1 @@
+Agenda items are missing on their last day and never clash, roster badges have one letter instead of two, touching intervals do not merge and surnames come out wrong. Fix the modules under src/ so every test passes, including the ones that pass now (src/intervals.py's half-open semantics and src/names.py's helpers are pinned by their own tests); do not edit the tests.

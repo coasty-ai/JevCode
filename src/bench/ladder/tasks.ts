@@ -3,6 +3,12 @@
  * README). Loading validates every field and checks the task directory has src/, tests/,
  * task.md and gold/, so a half-authored task fails loudly before any workspace is built.
  * `description` and gold/ are the fix and never reach the task text.
+ *
+ * Tiers: the original twelve tasks are tier "short" (the default when meta.json has no `tier`);
+ * the long-horizon tasks (README "The long tier") declare `tier: "long"` and `expected_failing`,
+ * the exact failing set of the buggy tree. Records are ordered short tier first, then long, each
+ * in index order, so `--tasks 12` still selects exactly the original twelve in their original
+ * order and the long tasks follow at positions 13-20.
  */
 import { readFile, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -12,6 +18,11 @@ import { ConfigError } from '../../errors.js';
 
 export const LADDER_DIR = 'ladder';
 export const LADDER_KINDS = ['operator', 'off_by_one', 'guard', 'import', 'attribute', 'call_args', 'new_branch', 'constant', 'rename', 'two_files'] as const;
+/** in selection order: every "short" task precedes every "long" one */
+export const LADDER_TIERS = ['short', 'long'] as const;
+export type LadderTier = (typeof LADDER_TIERS)[number];
+/** `tests/test_<module>.py::test_<name>` with an optional parametrised suffix */
+const TEST_ID_RE = /^tests\/[A-Za-z0-9_]+\.py::[A-Za-z0-9_]+(\[[^\]]*\])?$/;
 
 export interface LadderMeta {
   name: string;
@@ -26,6 +37,10 @@ export interface LadderMeta {
   description: string;
   /** tasks/<name>, relative to bench/data/ladder */
   path: string;
+  /** "short" (the original twelve; the default) or "long" (tasks 13-20) */
+  tier: LadderTier;
+  /** the buggy tree's exact failing test ids, sorted; required for tier "long", absent otherwise */
+  expectedFailing?: string[];
 }
 
 export interface LadderRecord {
@@ -60,7 +75,30 @@ export function validateMeta(v: Json, where: string): LadderMeta {
   const path = v['path'];
   const rel = isString(path) ? path : `tasks/${name}`;
   if (rel.startsWith('/') || rel.split('/').includes('..')) throw new ConfigError(`${w}: path "${rel}" is not relative`);
-  return { name, hunks, kinds: [...kinds], files: [...files], difficulty, description, path: rel };
+  const tierValue = v['tier'];
+  const tier: LadderTier = tierValue === undefined ? 'short' : tierValue === 'short' || tierValue === 'long' ? tierValue : (() => {
+    throw new ConfigError(`${w}: tier must be one of ${LADDER_TIERS.join(', ')}`);
+  })();
+  const expected = v['expected_failing'];
+  const out: LadderMeta = { name, hunks, kinds: [...kinds], files: [...files], difficulty, description, path: rel, tier };
+  if (expected !== undefined) {
+    if (!isStringArray(expected) || expected.length === 0) throw new ConfigError(`${w}: expected_failing must be a non-empty string array`);
+    for (const id of expected) if (!TEST_ID_RE.test(id)) throw new ConfigError(`${w}: expected_failing entry "${id}" is not a pytest id under tests/`);
+    if (new Set(expected).size !== expected.length) throw new ConfigError(`${w}: expected_failing has duplicates`);
+    out.expectedFailing = [...expected].sort();
+  } else if (tier === 'long') {
+    throw new ConfigError(`${w}: tier long requires expected_failing`);
+  }
+  return out;
+}
+
+export function tierRank(tier: LadderTier): number {
+  return LADDER_TIERS.indexOf(tier);
+}
+
+/** Stable: short tier first, then long, each keeping the given order. */
+export function orderByTier<T extends { tier: LadderTier }>(metas: readonly T[]): T[] {
+  return [...metas].sort((a, b) => tierRank(a.tier) - tierRank(b.tier));
 }
 
 export function parseIndex(text: string, where: string): LadderMeta[] {
@@ -73,7 +111,7 @@ export function parseIndex(text: string, where: string): LadderMeta[] {
     if (seen.has(m.name)) throw new ConfigError(`${where}: duplicate task ${m.name}`);
     seen.add(m.name);
   }
-  return out;
+  return orderByTier(out);
 }
 
 async function kind(p: string): Promise<'dir' | 'file' | null> {

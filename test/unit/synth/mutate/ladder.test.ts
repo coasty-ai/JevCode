@@ -29,7 +29,11 @@ interface Hunk {
 
 function singleLineHunks(): Hunk[] {
   const out: Hunk[] = [];
-  for (const task of readdirSync(LADDER).sort()) {
+  // the short tier is the original twelve tasks these counts were measured on (the long tier, tasks
+  // 13–20, measures the horizon and is exercised by test/unit/bench/ladder-long.test.ts)
+  const index = JSON.parse(readFileSync(join(LADDER, '..', 'index.json'), 'utf8')) as { name: string; tier?: string }[];
+  const shortTier = new Set(index.filter((t) => t.tier !== 'long').map((t) => t.name));
+  for (const task of readdirSync(LADDER).sort().filter((t) => shortTier.has(t))) {
     const goldDir = join(LADDER, task, 'gold');
     for (const file of readdirSync(goldDir).sort()) {
       const src = readFileSync(join(LADDER, task, 'src', file), 'utf8');

@@ -2285,3 +2285,284 @@ env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/
 env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/reach/introspect-rank.mts                 # 4 requests, $0.00145
 python3 .scratch/wiring/make-patch.py --check                                                                              # regenerate + typecheck the wiring patch
 ```
+
+## 19. 2026-09-20 (later): the long-horizon ladder (tasks 13–20) — first runs; the ledger's chain is bounded by the lone partial
+
+Eight long-horizon tasks were added to `bench/data/ladder` (tier `long`, ids 13–20 in selection order) to measure the
+Jev-only agent's ability to **chain many verified sub-goals** (JEV-ONLY-DESIGN.md §2.1–§2.3: one goal per failing-test
+cluster, one verified sub-goal per step, partials held as a second base) rather than its reach, and they were run live
+three times today: run 1 (all eight, the controller before `1f7611e`), run 1b (four tasks re-authored after a reach
+probe, same controller) and run 2 (all eight on the merged controller `d610d75`, §15). Headline: **2/8, then 3/8 solved**;
+every miss but one is the same defect — a goal whose *first* correct fix can only be a **partial** (it passes some of the
+goal's tests, never all) is never committed: `masked`, `long_chain` and the merged goals of `shared_frame` and
+`six_hunks` all found the gold line, ranked it first, ran it, classified it `partial`, and parked. The design's own
+fallback ("if `mem.bases` has an improved base for this goal: commit it as a partial", §2.3) is unreachable in practice
+because every step of these goals ends on `budget` and the park comes first. The other classes are smaller and named
+below. Data and code paths are listed in §19.8; nothing here was committed.
+
+### 19.1 What was added (bench/data/ladder, src/bench/ladder, test/unit/bench)
+
+- `bench/data/ladder/tasks/<name>/` for `crossfile`, `import_and_guard`, `ledger5`, `long_chain`, `masked`,
+  `regress_trap`, `shared_frame`, `six_hunks` — the usual layout (task.md, meta.json, pytest.ini, src/, tests/, gold/),
+  3–6 modules and 22–30 tests each; `meta.json` gains `tier: "long"` and `expected_failing` (the buggy tree's exact
+  failing set). The original twelve are untouched. `index.json` lists the twelve, then the eight (alphabetical within
+  the tier).
+- `src/bench/ladder/tasks.ts`: `LadderMeta.tier` (`short` default) and `expectedFailing`, validated (`tier long
+  requires expected_failing`, ids must be `tests/<file>.py::<test>[…]`, no duplicates); `parseIndex` returns records
+  **short tier first, then long**, stably, so `bench --suite ladder --tasks 12` still selects exactly the original
+  twelve in their order and `--tasks 13` adds `crossfile`; `--task-id` works for all 20.
+- `bench/data/ladder/check.py`: per-tier limits (short 4–10 tests / gold < 2 s; long 20–60 / < 3 s), `expected_failing`
+  compared with the buggy run's `FAILED`/`ERROR` ids, index order = short-by-name then long-by-name, a tier column.
+- `test/unit/bench/ladder-long.test.ts` (16 tests with `ladder.test.ts`): meta validation and tier ordering on
+  fixtures; on the real data: all 20 load in the expected order, `selectSources({tasks: 12})` is the original list,
+  every gold diff `git apply --check`s onto a copy of `src/` and yields `gold/`, and (with
+  `~/.jevcode/runs/ladder-venv/bin/python` or a pytest-importing `python3`, else skipped) a real pytest run of every buggy
+  tree fails exactly `expected_failing` and every gold tree is green. `ladder.test.ts`'s fixture assertion gained
+  `tier: 'short'`. Gates: `tsc --noEmit`, `scripts/no-any.mjs`, the two test files, `check.py` over all 20 — all green
+  on the ladder files (the main checkout's tsc/no-any failures are in other owners' in-progress `src/synth/verify`,
+  `test/unit/session`, `tui` and `cli` files).
+- README: "The long tier" section (table, ordering rule, verification, the `-q` note below).
+
+| # | task | hunks | modules | failing / total | measures | the bugs (each a one-line replace, or the two-line guard the template emits) |
+|---|---|---|---|---|---|---|
+| 13 | `crossfile` | 4 | fmt, invoice, tax, discount | 8 / 25 | a coordinated pair across two files + 2 independent bugs | `money` reads its symbol under `CURRENCY_KEY` for `SYMBOL_KEY`; `invoice.render` builds its options under `CURRENCY_KEY` too; either alone regresses two invoice tests, a definition reading both keys fails `test_money_ignores_currency_option`; `tax_for` `<=` for `<`; `apply_discount` `not in` for `in` |
+| 14 | `import_and_guard` | 4 | paths, settings, retry, duration | 12 / 23 | two inserts + two replaces | missing `import re` (NameError at call time); `Settings.get` lacks `if value is None: return default` (siblings have it); `schedule` `range(1, attempts + 1)`; `parse_duration` `+` for `*` |
+| 15 | `ledger5` | 5 | isbn, loans, search, shelves | 12 / 30 | pure chain length, five independent goals | ISBN-10 weights `9 - i` for `10 - i`; `is_overdue` `>=`; `fine` `max` for `min`; `rank` `reverse=False`; `label` `number = position` for `position + 1` |
+| 16 | `long_chain` | 6 | load, clean, enrich, totals, layout, report | 16 / 26 | progress one stage at a time | one exception per stage (`float(kind)`, `row.label`, `LABELS[row.name]`, `kv[2]`, `lines.add`, `SEPARATOR`); all 16 pipeline tests start in one goal at `load.parse_row`; cumulative fixes 16 → 13 → 10 → 6 → 4 → 2 → 0 |
+| 17 | `masked` | 3 | report, aggregate, parse (+ levels) | 6 / 22 | re-clustering the same tests twice | all six report tests fail at `parse_lines(txt)` (NameError); fixed, two pass, two move to `parse.parse_line` (`int(took[:-1])`), two to `aggregate.total_ms` (`e.took`); the callee bugs have no direct tests |
+| 18 | `regress_trap` | 4 | agenda, roster, intervals, names (+ slots) | 7 / 28 | regressions never kept | `Item.span` off by one — flipping `<`→`<=` in `intervals.contains`/`overlaps` passes the agenda tests and breaks the half-open semantics pinned by `test_intervals`/`test_slots`; `badge` `[:1]` vs shortening `initials`; plus `merge` `<` and `surname` `parts[0]` |
+| 19 | `shared_frame` | 2 | booking, pricing (+ checks, schedule) | 6 / 25 | the `account` partial trap | both bugs raise `InvalidValue` at `checks.py:15` (`ensure_at_least`), one merged goal of six tests; each fix alone is a partial with a disjoint newly-passing set; `test_checks` pins the helper |
+| 20 | `six_hunks` | 6 | model, filters, sorting, render, stats | 9 / 28 | goals with two complementary partials | three parametrised integration tests (`a_only`/`b_only`/`both`) over pairs of data-dependent bugs; per-module tests cover only the unaffected inputs |
+
+### 19.2 Verification
+
+`check.py` (the venv python 3.9.6 / pytest 8.4.2), the eight long rows; `buggy`/`gold` are passing/total, each hunk
+alone shows the hunks are independent where designed and complementary where designed (`shared_frame`,
+`six_hunks`: every single hunk is a strict partial; `crossfile` h1/h2 alone regress):
+
+```
+task              tier  hunks dfclt tests   buggy    gold  each hunk alone (passed/total)                       gold s  ok
+--------------------------------------------------------------------------------------------------------------------------
+crossfile         long      4     5    25   17/25   25/25  h1:18/25 h2:15/25 h3:19/25 h4:20/25                    0.69  yes
+import_and_guard  long      4     4    23   11/23   23/23  h1:15/23 h2:13/23 h3:14/23 h4:14/23                    0.53  yes
+ledger5           long      5     4    30   18/30   30/30  h1:21/30 h2:20/30 h3:21/30 h4:20/30 h5:20/30           0.63  yes
+long_chain        long      6     5    26   10/26   26/26  h1:13/26 h2:10/26 h3:10/26 h4:10/26 h5:10/26 h6:10/26   0.43  yes
+masked            long      3     4    22   16/22   22/22  h1:18/22 h2:16/22 h3:16/22                             0.34  yes
+regress_trap      long      4     4    28   21/28   28/28  h1:24/28 h2:23/28 h3:22/28 h4:22/28                    0.48  yes
+shared_frame      long      2     4    25   19/25   25/25  h1:21/25 h2:23/25                                      0.32  yes
+six_hunks         long      6     5    28   19/28   28/28  h1:20/28 h2:20/28 h3:20/28 h4:20/28 h5:20/28 h6:20/28   0.25  yes
+```
+
+Designed behaviours, checked with single-fix / cumulative-fix / wrong-fix trees (`/tmp/ladder-long/stages.py`):
+`masked` fix A alone → two tests pass, two move to `aggregate.py:19 <genexpr>`, two to `parse.py:21 parse_line`;
+`shared_frame` h1 alone 21/25, h2 alone 23/25, relaxing the helper's `<` breaks `test_checks`/`test_booking` instead;
+`crossfile` definition alone 18/25 with two invoice regressions, call site alone 15/25, the pair 20/25 clean, the
+"read both keys" sidestep of run 1b fails the new pinning test; `regress_trap` `contains` flip passes 2 agenda tests and
+breaks `test_contains_excludes_end` + `test_end_minute_is_free`, `overlaps` flip passes the clash test and breaks
+`test_overlaps` + `test_can_book_touching_slot`, shortening `initials` passes both badge tests and breaks
+`test_initials`; `six_hunks` each fix alone passes exactly its `*_only` case; `long_chain` 16 → 13 → 10 → 6 → 4 → 2 → 0
+with the innermost frame moving load → clean → enrich → totals → layout → report.
+
+**Reach probe** (`/tmp/ladder-long/probe.mts`, the `experiments/reach/probe-line.mts` recipe on each buggy line:
+mutation, templates, donors, composite at `ENUMERATE_CAP` and uncapped, task-text identifiers and test literals as
+vocabulary): **34/34 planted lines are produced by a code source** — 32 by a depth-1 mutation (8 `off_by_one_literal`,
+7 `relational_swap`, 5 `identifier_substitution`, 4 `attribute_substitution`, 2 `off_by_one_atom`, 2 `arithmetic_swap`,
+`keyword_flip`, `drop_term`, `call_substitution`, `argument_swap`; five also by a template or donor), the `import re` by
+`import_insert_local`, the None-guard by `guard_none_return_alt_before` and a statement donor. **Run 1 did not have
+this property**: six lines of the first authoring were out of reach and were re-authored before run 1b — an edit inside
+an f-string (`ledger5` h5), a `"symbol"` string key and a keyword-argument name (`crossfile` h1/h2: now two identifier
+swaps over module constants `SYMBOL_KEY`/`CURRENCY_KEY`, in the pool only through the task text), a `","` literal
+(`long_chain` h1: now `float(kind)` for `float(price)`), an attribute used nowhere else in its file (`long_chain` h3:
+`enrich.is_known` now uses `row.kind`), and a comprehension filter (`masked` h3: now `int(took[:-1])`; a `for`-loop
+`if not line: continue` guard was tried first and is *not* what the guard template emits — its subjects are the
+function's params/locals with `is None` / `not x` bodies of `return`, so the loop form is out of reach too). The run-1
+misses of those four tasks are therefore partly `reach` by authoring and are marked so.
+
+**`pytest -q` and the engine.** The long-tier `pytest.ini` carries no `-q`: the engine runs `python3 -m pytest -q`, with
+the ini's own `-q` that is `-qq`, which drops the `N failed, M passed in …` line; `parseTestOutput` then reads the last
+16 KB of the output (`tests.ts` `TAIL_CHARS`) for the progress line, and a 16-failure suite's tracebacks push that line
+out. Run 1 `long_chain` (run `20260920-230739-j2nvsvmz`, 21 s, $0.0117) never registered its establishing run: the
+synthesizer's own baseline read 9/25 but the engine's `judge.tests` was `judged` at every step, the `run` repeated
+(`loop tripped: run:1038c0db4e6f x3` ×6), five `gather_context` replans said "nothing to change", `max_replans` at
+step 18 with no search ever started. The short tier keeps `-q` (its outputs are small).
+
+### 19.3 Run 1 — all eight, controller before `1f7611e` (22:45Z, `bench/results/jev-only-ladder-long-1`, $0.2461)
+
+| task | hunks fixed (patch vs gold) | solved | steps | stop | cost | wall | Jev req | blocked/declined | loops/replans | run id |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ledger5` | 0/5 (patch-noapply) | no | 30 | `max_steps` | $0.0410 | 739 s | 300 | 12/12 | 4/4 | `20260920-224503-27zwcaat` |
+| `masked` | 0/3 (-) | no | 20 | `max_replans` | $0.0290 | 412 s | 188 | 11/8 | 6/5 | `20260920-224503-5qnbdmhr` |
+| `shared_frame` | 0/2 (-) | no | 17 | `max_replans` | $0.0326 | 409 s | 196 | 9/8 | 6/5 | `20260920-225156-r26pz357` |
+| `crossfile` | 1/4 (h3) | no | 20 | `replan_stop` | $0.0550 | 554 s | 299 | 8/7 | 5/4 | `20260920-225722-aofehycx` |
+| `import_and_guard` | 3/4 (h1, h2, h4) | **yes** | 13 | `complete` | $0.0097 | 166 s | 97 | 0/0 | 0/0 | `20260920-225846-d42ifdun` |
+| `regress_trap` | 4/4 (h1, h2, h3, h4) | **yes** | 26 | `replan_stop` | $0.0318 | 365 s | 226 | 5/5 | 5/4 | `20260920-230133-w3afeezp` |
+| `six_hunks` | 2/6 (h3*, h4) | no | 24 | `max_replans` | $0.0354 | 385 s | 225 | 12/10 | 6/5 | `20260920-230637-ukxpiavi` |
+| `long_chain` | 0/6 (-) | no | 18 | `max_replans` | $0.0117 | 21 s | 77 | 0/0 | 6/5 | `20260920-230739-j2nvsvmz` |
+
+`*` = the bug is neutralised by a test-equivalent edit that is not the gold line. Per miss:
+
+- **`ledger5` (miss, 27/30 at `max_steps`) — budget park + churn.** Twelve assertion-failing tests → twelve one-test
+  goals (assertion frames are keyed by test function, goals.ts). Four commits in 30 steps: `shelves` (`position += 1`
+  inserted, step 10), `loans.fine` (gold `min`, step 20), `search.rank` (`return hits`, step 22 — an overfit the tests
+  then allowed; `test_search.py` now orders its inputs so that `hits` unsorted fails), `loans.is_overdue`
+  (`return min(0, (due - today).days)` inserted, step 27/28 — declined once at risk 0.30 "review" with no reviewer, then
+  executed). The three `isbn` goals never closed: `where`=`isbn10_check_digit` 0.99 and `buggy_line`=line 15 at steps
+  12–13, the gold `(10 - i)` ranked first (p 0.51) at step 16 in a step that ended on `budget` (668 runs, mostly
+  `regressed`); 12 declined + 12 blocked steps (reads at "review" risk, partial `done`s).
+- **`masked` (miss, 0/3) — lone-partial trap, with a NameError insert-site detour.** One goal (six tests at
+  `report.py:14`). Step 4: the NameError's missing name `txt` makes `sites.ts` add an import gap, and the first `fix`
+  question was an *insertion* ("the missing statement that, inserted immediately after …"); Jev put `entries =
+  parse_lines(text)` first (p 0.72) as an insert, which leaves the buggy line executing (5 tested, all `unchanged`).
+  Steps 7, 13, 16: the replace-site gold was enumerated and tested — `64 tested (57 unchanged, 7 partial)`,
+  `48 (46 unchanged, 2 partial)`, `9 (1 partial, 8 unchanged)` — a partial because A alone passes only the two
+  empty-input tests; each step ended on `budget`, the goal was parked (steps 7, 10, 16) and the partials went with it
+  (pre-`1f7611e` `forgetGoal`). Eight declined reads, five replans, `max_replans`.
+- **`shared_frame` (miss, 0/2) — budget park on top of the designed trap.** One merged goal of six tests at
+  `checks.py:15`. Localisation was right every time (`where` `reserve` 0.83–0.86 / `total` 0.73–0.77, `buggy_line`
+  line 29 0.85–0.93). 922 candidates ran at step 11 in SIEVE mode — 12–149 `regressed` per batch (mutations of the
+  shared helper, never kept) — and the gold booking line was ranked first (p 0.80) only in the 8th of the step's 12
+  `fix` questions, then reappeared untried in the 9th; five "nothing ran, test wall left 0 s" batches closed the step;
+  had it run it would have been a partial (2 of 6). Parked, eight declined reads, blocked partial `done`s, `max_replans`.
+- **`crossfile` (miss, 1/4) — reach (authoring) + one-test-goal localisation.** Seven one-test goals. Only `tax` closed
+  (gold `<`, step 6). The pair never existed as candidates (string key / kwarg name: out of reach; fixed in 1b). The
+  `discount` gold (`not in`→`in`, a `relational_swap` at index 0) never appeared in a `fix` question: at steps 3–4 the
+  `buggy_line` for `apply_discount` was `none_of_these` (0.78/0.84), the budget went to 1,487 runs of `regressed`
+  candidates elsewhere, and by step 16 the discount goals were "exhausted … at 12 sites" that were all `fmt.py`/
+  `invoice.py` gaps — re-localised into the wrong files by `gather_context`.
+- **`import_and_guard` (solved, 13 steps, $0.0097, 0 blocked/declined).** The intended shape of the tier: four goals
+  closed in order `import re` (template `import_insert_local`, 11→15), the None-guard (`guard_none_return_alt`,
+  15→17), `schedule` (`attempts -= 1` inserted — test-equivalent, not the gold `range(1, attempts)`), `parse_duration`
+  (`arithmetic_swap`, 20→23), one `patch → run` pair each.
+- **`regress_trap` (solved, 26 steps, 4/4 gold-identical).** `merge` (step 4), `surname` (8), `badge` (12) and, after
+  two budget steps whose batches held only `regressed` verdicts for the agenda goal (`9 unchanged, 4 regressed` /
+  `8 unchanged, 2 regressed` — the `contains`/`overlaps` flips, never kept), `Item.span` (`off_by_one_atom`, step 22,
+  WIDENED). Three `done`s at steps 24–26 then `replan_stop` (the §17 no-op-`done` behaviour).
+- **`six_hunks` (miss, 2/6) — one pair committed, two goals parked with partials in hand.** Goal `test_board` closed at
+  step 10 as `composite/pair_of_partials at sorting.py:18` (`t.due == None` + the render `width - 3`: the pairs source
+  worked once, exactly as designed). Goal `test_attention`: `1 partial` (step 4), `1 / 2 / 1 / 10 partial` (step 7),
+  budget, parked with two budget hits; goal `test_summary`: SKETCH/SIEVE budget, parked. Blocked partial `done`s,
+  `max_replans`.
+- **`long_chain` (miss, 0/6) — the `-qq` gap above; no search ran.**
+
+### 19.4 Run 1b — the four re-authored tasks, same controller (23:22Z, `bench/results/jev-only-ladder-long-1b`, $0.1759)
+
+| task | hunks fixed (patch vs gold) | solved | steps | stop | cost | wall | Jev req | blocked/declined | loops/replans | run id |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ledger5` | 3/5 (h1, h3, h4) | **yes** | 27 | `complete` | $0.0366 | 680 s | 252 | 4/4 | 3/3 | `20260920-232221-b2a7cqua` |
+| `masked` | 0/3 (-) | no | 17 | `max_replans` | $0.0305 | 498 s | 195 | 8/7 | 6/5 | `20260920-232221-azpvds2z` |
+| `crossfile` | 2/4 (h3*, h4*) | no | 30 | `max_steps` | $0.0802 | 859 s | 423 | 4/1 | 5/5 | `20260920-233040-eww6zglo` |
+| `long_chain` | 0/6 (-) | no | 19 | `max_replans` | $0.0286 | 323 s | 178 | 5/3 | 6/5 | `20260920-233343-mq3dsvbs` |
+
+- **`ledger5` (solved, 27 steps).** Five commits: `label` (`number += 1`-style statement, step 9), `isbn` (gold
+  `off_by_one_literal`, step 12), `fine` (gold, 16), `rank` (gold `keyword_flip`, 21), `is_overdue` (test-equivalent,
+  26). One goal parked at step 6 and reopened. With the f-string line gone the chain of five closes.
+- **`masked` (miss, 0/3) — lone-partial trap again**: `64 tested (57 unchanged, 7 partial)` at step 3, budget, parked
+  at step 6, WIDENED searches over 63–65 sites at steps 6/8/11/17 (2,663 candidates at step 8) never a passer.
+- **`crossfile` (miss, 2/4, 22/24 at `max_steps`) — overfit to a one-test goal poisons the chain.** Now that the pair
+  is in reach, the run localised it perfectly: at steps 4 and 6 Jev ranked *both* gold lines first (`fmt` 0.94/0.82,
+  `invoice` 0.80/0.77) in the same steps — but the goals are per test, each half alone regresses the two invoice tests,
+  and the pair source pairs *partials*, not two regressions; nothing was committed. At step 23 a `sketch_P11` line
+  `symbol = options.get(SYMBOL_KEY, symbol)` was inserted after the buggy read (passes the two `fmt` goals by reading
+  both keys; now rejected by `test_money_ignores_currency_option`). `discount` closed its one-test goal `test_flat_code`
+  at step 13 with `key not in CODES` (identifier substitution: makes every code a flat code; passes `test_flat_code`,
+  leaves `test_percentage_codes`/`test_best_code` failing and moves the true fix two edits away); `tax` closed with a
+  composite `amount is not None and amount < TAX_FREE_BELOW`. 30 steps, $0.0802 (the most expensive run of the day).
+- **`long_chain` (miss, 0/6) — lone-partial trap.** With the counts line back the search ran: `where`=`parse_row` 0.90,
+  `buggy_line` line 20 p 1.00 (steps 4, 11, 14), the gold `float(price)` ranked first (p 0.96) at step 5 and tested —
+  batches `188 unchanged, 6 partial` (step 4), `61 unchanged, 15 partial` … (step 5), `13 unchanged, 4 partial`
+  (step 11) — a partial by construction (stage 1 passes 3 of the goal's 16 tests). Parked at step 5 ("2 consecutive
+  budget-hit steps"), blocked partial `done`s, reopened three times, `max_replans` at 19.
+
+### 19.5 Run 2 — all eight on the merged controller `d610d75` (23:46Z, from the `bench-clean` worktree, `bench/results/jev-only-ladder-long-2`)
+
+**In progress at hand-back** (launched 23:46Z from `.claude/worktrees/bench-clean` at `d610d75`; log `/tmp/ladder-long/live-2.log`;
+records land in `.claude/worktrees/bench-clean/bench/results/jev-only-ladder-long-2/tasks.jsonl`, run dirs under `~/.jevcode/runs/`;
+load average 65–70 alongside another agent's QuixBugs bench). Finished so far:
+
+| task | hunks fixed (patch vs gold) | solved | steps | stop | cost | wall | Jev req | blocked/declined | loops/replans | run id |
+|---|---|---|---|---|---|---|---|---|---|---|
+| `ledger5` | 3/5 (h1, h3, h4) | **yes** | 28 | `replan_stop` | $0.0338 | 586 s | 231 | 1/1 | 4/3 | `20260920-234614-ql2ogigs` |
+| `masked` | 0/3 (-) | no | 25 | `max_replans` | $0.0380 | 500 s | 235 | 9/1 | 6/5 | `20260920-234614-feogdtm5` |
+| `shared_frame` | 0/2 (-) | no | 16 | `max_replans` | $0.0326 | 502 s | 201 | 3/2 | 6/5 | `20260920-235435-aoomkygm` |
+| `import_and_guard` | 3/4 (h1, h2, h4) | **yes** | 19 | `complete` | $0.0131 | 180 s | 120 | 4/4 | 2/2 | `20260921-000258-eo7synws` |
+
+- `ledger5` solved again (28 steps; `isbn` gold at step 7, `label` statement at 9, `fine` gold at 13, then the rest; one `change_approach`).
+- `masked` — lone-partial trap on the merged controller too: step 3 Jev ranked the gold replace `entries = parse_lines(text)`
+  first (p 0.99), it ran, `110 tested (103 unchanged, 7 partial)`, `budget`; parked at step 5 after a SKETCH step; §15's rules
+  commit held *passers* and *pairs of partials*, never a lone partial, so the chain's first link is dropped exactly as before;
+  WIDENED over 34 sites at steps 12/13/18, `exhausted … at 10 sites` at 21, `max_replans` at 25.
+- `shared_frame` — the second half was never localised: `buggy_line` for `pricing.py` was `none_of_these` (0.70–0.81) at
+  every step (the true line `ensure_at_least(1, seats, "seats")` was among the options), the pricing gold never exceeded p 0.39 in
+  RANK mode; the booking gold was ranked first (p 0.84) at step 10 (SIEVE) and step 16's batches held 28 + 11 partials, all
+  booking-side variants, so `pairsOfPartials` had no complementary partner and the lone partial was parked; `max_replans` at 16.
+- `crossfile`, `import_and_guard`, `regress_trap`, `six_hunks`, `long_chain`: not finished at hand-back.
+
+### 19.6 Cause classes
+
+| task | run 1 | run 1b | run 2 |
+|---|---|---|---|
+| `ledger5` | budget park + churn (isbn gold ranked first at step 16, step ended on budget; 12 declined / 12 blocked); `rank` overfit committed (`return hits`, allowed by the tests then) | **solved** 27 steps (`is_overdue` and `label` test-equivalent) | see §19.5 (run in progress) |
+| `masked` | lone-partial trap (7/2/1 partials at steps 7/13/16, parked each time) + NameError insert-site detour (step 4) | lone-partial trap (7 partials at step 3, parked at 6; WIDENED 63–65 sites never a passer) | see §19.5 (run in progress) |
+| `shared_frame` | budget park on the designed trap (gold ranked first p 0.80 in the 8th of 12 questions of step 11, untested; 922 runs, 12–149 regressed per batch) | – | see §19.5 (run in progress) |
+| `crossfile` | reach (authoring: string key, kwarg name) + re-localisation of the discount goals into fmt/invoice gaps | overfit to one-test goals (`key not in CODES`, `options.get(SYMBOL_KEY, symbol)` insert); both pair golds ranked first at steps 4/6, each alone a regression, never paired | see §19.5 (run in progress) |
+| `import_and_guard` | **solved** 13 steps, 0 blocked/declined | – | see §19.5 (run in progress) |
+| `regress_trap` | **solved** 26 steps, 4/4 gold; the trap flips ran as `regressed` and were never kept | – | see §19.5 (run in progress) |
+| `six_hunks` | one pair committed (`pair_of_partials`, `test_board`); `test_attention` and `test_summary` parked with partials in hand (lone-partial trap) | – | see §19.5 (run in progress) |
+| `long_chain` | `-qq` gap: the engine never registered the establishing run, no search (authoring; fixed) | lone-partial trap (gold `float(price)` ranked first p 0.96 at step 5, 6/15/4 partials at steps 4/5/11, parked at 5) | see §19.5 (run in progress) |
+
+### 19.7 What the tier says about the ledger
+
+1. **A lone partial is never committed.** §2.2/§2.3 promise "partials held as a second base" and a partial commit when
+   no plausible candidate exists; §15 made partials survive a park and pairs run before it, and commits a *held passer*
+   on a budget exit — but a partial is not a passer, and pairing needs a second, complementary partial. `masked`,
+   `long_chain`, the first half of `shared_frame` and two of the three `six_hunks` goals are chains whose first link can
+   only be a partial (the goal's other tests need a later fix), so the gold is found, ranked first, run, labelled
+   `partial` and dropped at the park; every one of these goals then loops through declined reads and blocked partial
+   `done`s to `max_replans`. The fix is bookkeeping, not search: when a goal's search ends on `budget` with an
+   `improved` base and no passer (§2.3's last line), commit the best partial as the step's patch and let the next
+   baseline re-cluster the remaining tests (their frame has moved: `masked` report → parse/aggregate, `long_chain`
+   load → clean). `progress.ts`' arithmetic already treats newly-passing tests as progress; the commit rule does not.
+2. **Frame clustering versus assertion goals.** Exception-raising bugs cluster all their tests into one goal (the
+   trap); assertion-failing bugs make one goal per test. Both extremes hurt: the first makes every half-fix a partial,
+   the second makes `plausible` too weak — `crossfile` 1b's `key not in CODES` passed its one-test goal and regressed
+   nothing, and moved the real fix out of depth-1 reach. A minimal `plausible` for a one-test goal should also require
+   the *sibling* failing tests of the same source frame/file not to stay failing when a cheaper candidate at the same
+   site would fix them, or the acceptance should prefer, among passers of a one-test goal, the one that newly passes
+   the most other failing tests (they were all run).
+3. **NameError → import gap first.** `masked` spent its first search step on insertions because the missing name `txt`
+   was read as an unimported module; a local name that appears nowhere in the file should not produce an import gap.
+4. **Churn is now the stop reason.** Across the misses, 7–12 `read` proposals per run were `declined` at risk 0.3–0.5
+   "review" because bench runs have no reviewer, three identical reads trip the loop detector, `change_approach` rotates
+   sources, and `max_replans` ends the run with 40–60 % of `--max-steps` unused. A declined read costs a step and buys
+   nothing; in bench runs a `review`-level read should be executed or converted into the goal-subset `run`.
+5. **The `-qq` gap** (§19.2) is a one-line hazard for any task whose `pytest.ini` adds `-q`; the loader could strip a
+   task-level `-q` or the engine could parse counts from `-rA`-style summaries when the progress line is absent.
+6. Load: runs 1–2 shared the machine with two other benches (load average 45–70); per-batch run medians were
+   0.4–1.9 s against 0.15 s idle, every SIEVE step spent its 90 s test wall on 400–1,500 runs, and the §12 load scaling
+   fired (`load ×2.9`). The `timeout` misclassification of §12 did not recur (no `timeout` verdicts in any batch), but
+   budgets are the binding constraint on every miss.
+
+### 19.8 Exact commands
+
+```
+# gates (main checkout; the worktree bench-clean at d610d75 + these files is fully clean)
+npx tsc -p tsconfig.json --noEmit && node scripts/no-any.mjs
+npx vitest run --project unit test/unit/bench/ladder.test.ts test/unit/bench/ladder-long.test.ts   # 16 passed
+python3 bench/data/ladder/check.py --python ~/.jevcode/runs/ladder-venv/bin/python                  # 20 tasks, all checks passed
+
+# run 1 (all eight; the controller before 1f7611e; tasks as first authored)
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx src/cli/main.tsx bench --suite ladder \
+  --task-id ledger5,masked,shared_frame,crossfile,import_and_guard,regress_trap,six_hunks,long_chain --conditions jev-only \
+  --live --spend-cap 1.5 --task-spend-cap 0.2 --concurrency 2 --max-steps 30 --max-wall 15m --out bench/results/jev-only-ladder-long-1
+# run 1b (the four re-authored tasks, same controller)
+… --task-id ledger5,masked,crossfile,long_chain --spend-cap 1.0 … --out bench/results/jev-only-ladder-long-1b
+# run 2 (all eight, merged controller d610d75, launched from .claude/worktrees/bench-clean; results copied to bench/results/jev-only-ladder-long-2)
+… same as run 1 … --out bench/results/jev-only-ladder-long-2
+
+# per-task tables and evidence (stdlib python; joins tasks.jsonl with ~/.jevcode/runs/<runId>/{transcript.log,decisions.jsonl,model_patch.diff};
+# hunks fixed = patched src line == gold line per planted edit in /tmp/ladder-long/<task>.json)
+python3 /tmp/ladder-long/table.py bench/results/jev-only-ladder-long-1 [task]
+python3 /tmp/ladder-long/rows.py bench/results/jev-only-ladder-long-1
+# reach probe of every planted line (mutation / templates / donors / composite at the buggy site)
+env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx /tmp/ladder-long/probe.mts ledger5 masked shared_frame crossfile import_and_guard regress_trap six_hunks long_chain
+```

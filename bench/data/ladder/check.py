@@ -3,13 +3,17 @@
 
 For every task under tasks/: run pytest on the buggy tree, on the tree with gold/
 copied over src/, and (for multi-hunk tasks) on the tree with each hunk applied alone.
-Also checks that meta.hunks equals the number of `diff -U0` hunks between src/ and gold/
-and that index.json matches the meta.json files. Runs in a temporary copy, so the
-checked-in tree is never modified.
+Also checks that meta.hunks equals the number of `diff -U0` hunks between src/ and gold/,
+that a task's `expected_failing` (required for tier "long") is exactly the buggy tree's failing
+set, and that index.json matches the meta.json files and lists the "short" tier (the original
+twelve, sorted by name) before the "long" tier (tasks 13-20, sorted by name). Runs in a
+temporary copy, so the checked-in tree is never modified.
 
     python3 bench/data/ladder/check.py --python /tmp/ladder-venv/bin/python [task ...]
 
 Exit status is 1 when any gold fails, any buggy passes, or any count disagrees.
+
+Per-tier limits: "short" 4-10 tests and a gold run under 2 s; "long" 20-60 tests and under 3 s.
 """
 from __future__ import annotations
 
@@ -28,13 +32,20 @@ from typing import Dict, List, Optional, Tuple
 
 ROOT = Path(__file__).resolve().parent
 TASKS = ROOT / "tasks"
+TIERS = ("short", "long")
+# tier -> (min tests, max tests, max gold seconds)
+LIMITS = {"short": (4, 10, 2.0), "long": (20, 60, 3.0)}
+
+
+def tier_of(meta: Dict[str, object]) -> str:
+    return str(meta.get("tier", "short"))
 
 
 def run_pytest(python: str, task_dir: Path) -> Dict[str, object]:
     env = {**os.environ, "PYTHONDONTWRITEBYTECODE": "1"}
     t0 = time.perf_counter()
     proc = subprocess.run(
-        [python, "-m", "pytest", "-p", "no:cacheprovider", "--no-header", "-rN"],  # pytest.ini adds -q
+        [python, "-m", "pytest", "-p", "no:cacheprovider", "--no-header", "-rfE"],  # pytest.ini adds -q
         cwd=task_dir, capture_output=True, text=True, env=env,
     )
     seconds = time.perf_counter() - t0
@@ -44,8 +55,9 @@ def run_pytest(python: str, task_dir: Path) -> Dict[str, object]:
         m = re.search(rf"(\d+) {word}", out)
         return int(m.group(1)) if m else 0
 
+    failing = sorted(m.group(1) for m in re.finditer(r"^(?:FAILED|ERROR) (\S+)", out, re.M))
     return {"passed": count("passed"), "failed": count("failed"), "errors": count("error"),
-            "rc": proc.returncode, "seconds": seconds, "out": out}
+            "rc": proc.returncode, "seconds": seconds, "out": out, "failing": failing}
 
 
 def hunks_between(buggy: List[str], gold: List[str]) -> List[Tuple[int, int, int, int]]:
@@ -72,6 +84,11 @@ def fmt(res: Dict[str, object]) -> str:
 def check_task(python: str, task_dir: Path, tmp_root: Path, verbose: bool) -> Tuple[Dict[str, object], List[str]]:
     meta = json.loads((task_dir / "meta.json").read_text())
     problems: List[str] = []
+    tier = tier_of(meta)
+    if tier not in TIERS:
+        problems.append(f"unknown tier {tier!r}")
+        tier = "short"
+    min_tests, max_tests, max_seconds = LIMITS[tier]
     work = tmp_root / task_dir.name
     shutil.copytree(task_dir, work)
 
@@ -80,6 +97,12 @@ def check_task(python: str, task_dir: Path, tmp_root: Path, verbose: bool) -> Tu
         problems.append("buggy version passes every test")
     if buggy["passed"] == 0:
         problems.append("buggy version passes no test (no pass-to-pass regression guard)")
+    expected = meta.get("expected_failing")
+    if expected is None and tier == "long":
+        problems.append("tier long requires expected_failing")
+    if expected is not None and sorted(expected) != buggy["failing"]:
+        problems.append("expected_failing differs from the buggy run: only in meta "
+                        f"{sorted(set(expected) - set(buggy['failing']))}, only in run {sorted(set(buggy['failing']) - set(expected))}")
 
     # Hunks per file: difflib opcodes must agree with diff -U0, and their sum with meta.hunks.
     per_file: Dict[str, Tuple[List[str], List[str], List[Tuple[int, int, int, int]]]] = {}
@@ -125,17 +148,17 @@ def check_task(python: str, task_dir: Path, tmp_root: Path, verbose: bool) -> Tu
     goldres = run_pytest(python, work)
     if goldres["rc"] != 0 or goldres["failed"] or goldres["errors"]:
         problems.append("gold fails:\n" + str(goldres["out"]))
-    if goldres["seconds"] > 2.0:
-        problems.append(f"gold run took {goldres['seconds']:.2f}s (> 2 s)")
+    if goldres["seconds"] > max_seconds:
+        problems.append(f"gold run took {goldres['seconds']:.2f}s (> {max_seconds:g} s)")
     n_tests = int(goldres["passed"])
-    if not 4 <= n_tests <= 10:
-        problems.append(f"{n_tests} tests (want 4-10)")
+    if not min_tests <= n_tests <= max_tests:
+        problems.append(f"{n_tests} tests (want {min_tests}-{max_tests} for tier {tier})")
     shutil.rmtree(work)
 
     if verbose and buggy["failed"] == 0:
         print(buggy["out"])
     row = {
-        "task": meta["name"], "hunks": meta["hunks"], "kinds": ",".join(meta["kinds"]),
+        "task": meta["name"], "tier": tier, "hunks": meta["hunks"], "kinds": ",".join(meta["kinds"]),
         "difficulty": meta["difficulty"], "tests": n_tests, "buggy": fmt(buggy), "gold": fmt(goldres),
         "single": " ".join(single) or "-", "seconds": goldres["seconds"], "ok": not problems,
     }
@@ -149,8 +172,9 @@ def check_index() -> List[str]:
     index = json.loads(index_path.read_text())
     metas = {p.name: json.loads((p / "meta.json").read_text()) for p in sorted(TASKS.iterdir()) if p.is_dir()}
     problems = []
-    if [e["name"] for e in index] != sorted(metas):
-        problems.append("index.json task list differs from tasks/ directories")
+    want = [n for tier in TIERS for n in sorted(n for n, m in metas.items() if tier_of(m) == tier)]
+    if [e["name"] for e in index] != want:
+        problems.append("index.json task list differs from tasks/ directories or is not ordered short tier (by name) then long tier (by name)")
     for entry in index:
         meta = metas.get(entry["name"])
         if meta is None:
@@ -179,11 +203,11 @@ def main() -> int:
     if not args.tasks:
         all_problems.extend(check_index())
 
-    header = f"{'task':<15} {'hunks':>5} {'dfclt':>5} {'tests':>5} {'buggy':>7} {'gold':>7}  {'each hunk alone (passed/total)':<34} {'gold s':>6}  ok"
+    header = f"{'task':<17} {'tier':<5} {'hunks':>5} {'dfclt':>5} {'tests':>5} {'buggy':>7} {'gold':>7}  {'each hunk alone (passed/total)':<52} {'gold s':>6}  ok"
     print(header)
     print("-" * len(header))
     for r in rows:
-        print(f"{r['task']:<15} {r['hunks']:>5} {r['difficulty']:>5} {r['tests']:>5} {r['buggy']:>7} {r['gold']:>7}  {r['single']:<34} {r['seconds']:>6.2f}  {'yes' if r['ok'] else 'NO'}")
+        print(f"{r['task']:<17} {r['tier']:<5} {r['hunks']:>5} {r['difficulty']:>5} {r['tests']:>5} {r['buggy']:>7} {r['gold']:>7}  {r['single']:<52} {r['seconds']:>6.2f}  {'yes' if r['ok'] else 'NO'}")
     total_tests = sum(r["tests"] for r in rows)
     print(f"\n{len(rows)} tasks, {total_tests} tests, {sum(r['hunks'] for r in rows)} hunks; "
           f"buggy column = tests passing before the fix, gold column = after.")

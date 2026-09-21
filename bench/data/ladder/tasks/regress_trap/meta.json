@@ -1,0 +1,18 @@
+{
+  "name": "regress_trap",
+  "tier": "long",
+  "hunks": 4,
+  "kinds": ["off_by_one", "constant", "operator"],
+  "files": ["src/agenda.py", "src/roster.py", "src/intervals.py", "src/names.py"],
+  "difficulty": 4,
+  "description": "Regressions must never be kept. Bug 1: agenda.Item.span returns (first_day, last_day) instead of (first_day, last_day + 1), so items vanish on their last day and never clash; the obvious mutations, `<` -> `<=` in intervals.contains or in intervals.overlaps, make the agenda tests pass but break the pinned half-open semantics in tests/test_intervals.py and tests/test_slots.py (end minute free, touching slots bookable). The fix is the off-by-one at the span line. Bug 2 has the same shape: roster.badge slices one initial instead of two, and shortening names.initials would pass the badge tests while breaking test_names. Bugs 3 and 4 are plain: intervals.merge does not merge touching intervals (< for <=) and names.surname returns the first word (parts[0] for parts[-1]). Seven tests fail, twenty-one pass.",
+  "expected_failing": [
+    "tests/test_agenda.py::test_clashing_when_sharing_a_day",
+    "tests/test_agenda.py::test_on_day_includes_last_day",
+    "tests/test_agenda.py::test_single_day_item_is_on_its_day",
+    "tests/test_intervals.py::test_merge_touching",
+    "tests/test_names.py::test_surname",
+    "tests/test_roster.py::test_badge_two_initials",
+    "tests/test_roster.py::test_badges"
+  ]
+}

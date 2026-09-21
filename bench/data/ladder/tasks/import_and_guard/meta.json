@@ -1,0 +1,23 @@
+{
+  "name": "import_and_guard",
+  "tier": "long",
+  "hunks": 4,
+  "kinds": ["import", "guard", "off_by_one", "operator"],
+  "files": ["src/paths.py", "src/settings.py", "src/retry.py", "src/duration.py"],
+  "difficulty": 4,
+  "description": "Two inserts and two replaces, independent, in four modules. paths.py uses `re` in three functions but never imports it (the annotations are postponed, so the module imports and the NameError appears at call time; one `import re` line at module level, the sibling duration.py has the same line). Settings.get lacks the `if value is None: return default` guard that get_int and get_bool directly below it have, so an unknown key raises AttributeError on None.strip(). retry.schedule iterates range(1, attempts + 1) and yields one delay too many. duration.parse_duration adds the unit size instead of multiplying by it. Twelve tests fail (4 + 2 + 3 + 3), eleven pass.",
+  "expected_failing": [
+    "tests/test_duration.py::test_parse_is_case_insensitive",
+    "tests/test_duration.py::test_parse_units",
+    "tests/test_duration.py::test_round_trip",
+    "tests/test_paths.py::test_extension",
+    "tests/test_paths.py::test_slugify",
+    "tests/test_paths.py::test_split_path",
+    "tests/test_paths.py::test_with_extension",
+    "tests/test_retry.py::test_schedule_has_one_delay_between_attempts",
+    "tests/test_retry.py::test_schedule_single_attempt_has_no_delay",
+    "tests/test_retry.py::test_total_wait",
+    "tests/test_settings.py::test_get_missing_default_is_returned_as_given",
+    "tests/test_settings.py::test_get_missing_returns_default"
+  ]
+}
