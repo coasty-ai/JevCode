@@ -44,7 +44,7 @@ function run(cmd: string, args: readonly string[], env: NodeJS.ProcessEnv = proc
 const EXPECTED: readonly [name: string, avail: CommandSpec['availableDuringTask'], plain: string, aliases: readonly string[]][] = [
   ['help', 'any', 'yes', ['h']],
   ['new', 'idle', 'yes', []],
-  ['resume', 'idle', '`/resume <id>` only', ['sessions', 'continue']],
+  ['resume', 'idle', '`/resume <id|title>` only', ['sessions', 'continue']],
   ['rename', 'any', 'yes', []],
   ['steer', 'live', 'yes', []],
   ['unsteer', 'live', 'yes', []],
