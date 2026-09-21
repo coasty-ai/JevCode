@@ -4,7 +4,9 @@
 #   drive.exp [--kill-on-timeout] <steps-file> <capture-log> <timing-jsonl> <timeout-s> -- <command> [args...]
 #
 # Environment: PTY_ROWS / PTY_COLS set the initial geometry (default 24x80); PTY_TERM sets
-# TERM for the child (default xterm-256color); PTY_KILL_ON_TIMEOUT=1 is the flag's twin.
+# TERM for the child (default xterm-256color); PTY_KILL_ON_TIMEOUT=1 is the flag's twin; PTY_AUTO_REVIEW=<keys>
+# answers every review box seen while an `expect` step waits (a one-second look, then the keys, then it waits for the
+# engine's `confirm <id> approved|declined` line so a redrawn box is never answered twice).
 #
 # <steps-file>: one step per line (blank lines and lines starting with # are ignored):
 #   expect <tcl-regex>      wait until the child's output matches (timeout -> exit 124)
@@ -30,6 +32,9 @@ if {[lindex $argv 0] eq "--kill-on-timeout"} {
   set killOnTimeout 1
   set argv [lrange $argv 1 end]
 }
+# PTY_AUTO_REVIEW=<keys>: answer every review box seen during an `expect` step with these keys (e.g. y, or "d fine\r")
+set autoReview ""
+if {[info exists env(PTY_AUTO_REVIEW)] && $env(PTY_AUTO_REVIEW) ne ""} { set autoReview [subst -nocommands -novariables $env(PTY_AUTO_REVIEW)] }
 set stepsFile [lindex $argv 0]
 set capture [lindex $argv 1]
 set timing [lindex $argv 2]
@@ -91,17 +96,41 @@ foreach raw $steps {
   set arg [string trim [string range $line [string length $op] end]]
   switch -- $op {
     expect {
-      expect {
-        -re $arg { record $tf $t0 $n expect $arg }
-        timeout {
-          record $tf $t0 $n timeout $arg
-          set timedOut 1
-          send -- "\003"
-          sleep 0.5
-          send -- "\003"
-          break
+      if {$autoReview ne ""} {
+        # PTY_AUTO_REVIEW: while waiting, answer every review box (its keys line) after a one-second look, then wait for the
+        # engine's `confirm <id> approved|declined` line before continuing so redrawn frames of the same box are not answered twice
+        expect {
+          -re {\[y\] approve \[n\] decline} {
+            record $tf $t0 $n auto-review-seen ""
+            sleep 1
+            send -- $autoReview
+            expect -timeout 20 -re {confirm [^ ]+ (approved|declined)} { record $tf $t0 $n auto-review-resolved $expect_out(1,string) } timeout { record $tf $t0 $n auto-review-unresolved "" }
+            exp_continue
+          }
+          -re $arg { record $tf $t0 $n expect $arg }
+          timeout {
+            record $tf $t0 $n timeout $arg
+            set timedOut 1
+            send -- "\003"
+            sleep 0.5
+            send -- "\003"
+            break
+          }
+          eof { record $tf $t0 $n eof-before-match $arg; break }
         }
-        eof { record $tf $t0 $n eof-before-match $arg; break }
+      } else {
+        expect {
+          -re $arg { record $tf $t0 $n expect $arg }
+          timeout {
+            record $tf $t0 $n timeout $arg
+            set timedOut 1
+            send -- "\003"
+            sleep 0.5
+            send -- "\003"
+            break
+          }
+          eof { record $tf $t0 $n eof-before-match $arg; break }
+        }
       }
     }
     send {
