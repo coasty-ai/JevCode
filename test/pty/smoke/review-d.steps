@@ -1,10 +1,12 @@
-# the review at step 2 is declined with d <note> (§6.4)
+# the review at step 2 is declined with d <note> (§6.4); the card is a rounded `╭─ review · step 2` card in the boxed tier
+# (TUI-DESIGN-2 §4.7, §8.2 review-d (ext.))
 expect \x1b\[\?25l
-expect Describe the task
+expect Say hi
 sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
+expect ╭─ (?:\x1b\[[0-9;]*m)*review · step 2
 expect \[y\] approve
 sleep 0.4
 send d
@@ -14,7 +16,7 @@ sleep 0.2
 send \r
 expect declined \(note: skip the tests\)
 expect end (complete|max_steps|generator_done)
-expect Follow-up or /command
+expect Follow-up, question
 send /exit
 sleep 0.2
 send \r

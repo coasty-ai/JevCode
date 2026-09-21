@@ -13,7 +13,7 @@ import { JevCodeError, JevHttpError, JevResponseError } from '../errors.js';
 import { sha12 } from '../core/hash.js';
 import { isJsonObject, toJson } from '../core/json.js';
 import { sleep } from '../core/time.js';
-import type { Answer, AskOptions, AskResult, Decider, JevRequest, Json, JsonObject, MockDeciderContext, MockDeciderOptions, Question, StageName } from '../core/types.js';
+import type { Answer, AskOptions, AskResult, Decider, IntakeKind, JevRequest, Json, JsonObject, MockDeciderContext, MockDeciderOptions, Question, StageName } from '../core/types.js';
 import { choiceConfidence, scoreConfidence } from './confidence.js';
 import { ESCAPE_KEY, PAIRED_PREFIX, QuestionBuildError, assertQuestionBatch } from './questions.js';
 import { isRetryableStatus } from './client.js';
@@ -22,6 +22,65 @@ import { validateJevResponse } from './validate.js';
 
 /** Commands the default risk heuristic treats as block-level (§5.5 destructive levels 3-4). */
 export const DANGEROUS_COMMAND = /rm -rf|git push --force|sudo|curl[^|]*\|\s*sh|mkfs|:\(\)\{/;
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-2 §3.13: the intake heuristics (the mock's reading of a chat submission; never used outside --mock)
+// ---------------------------------------------------------------------------------------
+
+/** §3.13: a greeting, thanks, goodbye or acknowledgement — `greeting_or_smalltalk`. */
+export const MOCK_GREETING_RE = /^\s*(hi|hello|hey|yo|thanks?|thank you|bye|ok(ay)?|good (morning|evening|afternoon))\b[!. ]*$/i;
+/** §3.13: a `?` message naming the tool — `question_about_this_tool`; any other `?` is `question_about_the_code`. */
+export const MOCK_TOOL_RE = /\b(you|jevcode|jev|mode|cost|key|command|run)\b/i;
+
+const INTAKE_KINDS: readonly IntakeKind[] = ['greeting_or_smalltalk', 'question_about_this_tool', 'question_about_the_code', 'coding_task', 'ambiguous'];
+
+/** `JEVCODE_MOCK_INTAKE=<kind>` (§3.13, dev-only): the forced `intake` reading, or null when unset or not a kind. */
+export function mockIntakeOverride(env: Readonly<Record<string, string | undefined>>): IntakeKind | null {
+  const v = env['JEVCODE_MOCK_INTAKE']?.trim();
+  return INTAKE_KINDS.find((k) => k === v) ?? null;
+}
+
+/** `JEVCODE_MOCK_JEV_MS=<ms>` (§3.13, the latency probe): the mock's delay in ms, 0 when unset or malformed. */
+export function mockJevLatencyMs(env: Readonly<Record<string, string | undefined>>): number {
+  const v = env['JEVCODE_MOCK_JEV_MS'];
+  return v !== undefined && /^\d+$/.test(v.trim()) ? Number(v.trim()) : 0;
+}
+
+/**
+ * §3.13, verbatim: greeting regex → `greeting_or_smalltalk`; `?` + a tool word → `question_about_this_tool`; any other `?` →
+ * `question_about_the_code`; ≤ 2 words without `?` → `ambiguous`; else `coding_task`.
+ */
+export function mockIntakeKind(message: string): IntakeKind {
+  if (MOCK_GREETING_RE.test(message)) return 'greeting_or_smalltalk';
+  if (message.includes('?')) return MOCK_TOOL_RE.test(message) ? 'question_about_this_tool' : 'question_about_the_code';
+  return message.trim().split(/\s+/).filter((w) => w !== '').length <= 2 ? 'ambiguous' : 'coding_task';
+}
+
+/** §3.13: the reply catalogue key — `hello_first` (`hello_again` when `conversation` is non-empty), `thanks`, `bye`, `ok_ack`. */
+export function mockReplyKey(message: string, conversationTurns: number): string {
+  const m = message.trim();
+  if (/^(thanks?|thank you)\b/i.test(m)) return 'thanks';
+  if (/^bye\b/i.test(m)) return 'bye';
+  if (/^ok(ay)?\b/i.test(m)) return 'ok_ack';
+  return conversationTurns > 0 ? 'hello_again' : 'hello_first';
+}
+
+/** §3.13: `about_<key>` → 0.8 for `mode_now` on /mode/, `cost_so_far` on /cost|spent|money/, `what_it_is` on /what can you do|what are you/, else 0.1. */
+export function mockFactProbability(key: string, message: string): number {
+  const hit = (key === 'mode_now' && /mode/i.test(message)) || (key === 'cost_so_far' && /cost|spent|money/i.test(message)) || (key === 'what_it_is' && /what can you do|what are you/i.test(message));
+  return hit ? 0.8 : 0.1;
+}
+
+/** §3.13: `file_<i>` → 0.7 when the path (from the question's backticked path) shares a keyword (≥ 3 chars) with the message, else 0.1. */
+export function mockFileProbability(question: Question, message: string): number {
+  const path = /`([^`]+)`/.exec(textOf(question.instructions))?.[1] ?? '';
+  const lower = message.toLowerCase();
+  const shares = path
+    .toLowerCase()
+    .split(/[^a-z0-9_]+/)
+    .some((tok) => tok.length >= 3 && lower.includes(tok));
+  return shares ? 0.7 : 0.1;
+}
 
 // ---------------------------------------------------------------------------------------
 // Defensive state readers: the state is whatever the engine built; never assume a field
@@ -44,6 +103,15 @@ function isEscape(key: string): boolean {
 }
 function textOf(v: Json): string {
   return typeof v === 'string' ? v : JSON.stringify(v);
+}
+/** §3.2 intake state: `message` (redacted head/tail) and `conversation` (the last turns). */
+function messageOf(state: Json): string {
+  const m = at(state, 'message');
+  return typeof m === 'string' ? m : '';
+}
+function conversationTurns(state: Json): number {
+  const c = at(state, 'conversation');
+  return Array.isArray(c) ? c.length : 0;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -190,12 +258,39 @@ function defaultNoul(id: string, question: Question, state: Json, chosen: Readon
   }
 }
 
+/**
+ * TUI-DESIGN-2 §3.13: the intake request (an `intake` Choice over the five readings) is answered from the message heuristics —
+ * `intake` at p 0.9 on the kind (`coding_task` keeps 0.05 when another reading wins, so the run floor is never met by accident),
+ * `can_<kind>` 0.9 / others 0.1, `reply` from the catalogue key, `about_*` and `file_*` from their regexes. `forced` is
+ * `MockDeciderOptions.intake` / `JEVCODE_MOCK_INTAKE`.
+ */
+function intakeAnswers(state: Json, questions: Record<string, Question>, forced: IntakeKind | null): Partial<Record<string, Answer>> {
+  const intakeQ = questions['intake'];
+  const message = messageOf(state);
+  const out: Partial<Record<string, Answer>> = {};
+  if (intakeQ === undefined || intakeQ.type !== 'choice') {
+    // the lookup's context Nouls (§3.6) arrive in their own request
+    for (const [id, q] of Object.entries(questions)) if (id.startsWith('file_') && q.type === 'noul') out[id] = noulAnswer(mockFileProbability(q, message));
+    return out;
+  }
+  const kind = forced ?? mockIntakeKind(message);
+  out['intake'] = choiceAnswer(intakeQ, { [kind]: 0.9, ...(kind === 'coding_task' ? {} : { coding_task: 0.05 }) });
+  for (const id of Object.keys(questions)) if (id.startsWith('can_')) out[id] = noulAnswer(id === `can_${kind}` ? 0.9 : 0.1);
+  const replyQ = questions['reply'];
+  if (replyQ !== undefined && replyQ.type === 'choice') out['reply'] = choiceAnswer(replyQ, { [mockReplyKey(message, conversationTurns(state))]: 1 });
+  for (const id of Object.keys(questions)) if (id.startsWith('about_')) out[id] = noulAnswer(mockFactProbability(id.slice('about_'.length), message));
+  return out;
+}
+
 /** Answers for every question not covered by a rule: Choices first so paired Nouls can see them. */
-export function defaultAnswers(state: Json, questions: Record<string, Question>, given: Partial<Record<string, Answer>>): Record<string, Answer> {
+export function defaultAnswers(state: Json, questions: Record<string, Question>, given: Partial<Record<string, Answer>>, opts: { intake?: IntakeKind | null } = {}): Record<string, Answer> {
   const out: Record<string, Answer> = {};
   const chosen = new Set<string>();
+  // §3.13: the intake heuristics fill what no rule answered (a scripted rule keeps precedence)
+  const heuristics = intakeAnswers(state, questions, opts.intake ?? null);
+  const answered = (id: string): Answer | undefined => given[id] ?? (Object.hasOwn(questions, id) ? heuristics[id] : undefined);
   for (const [id, q] of Object.entries(questions)) {
-    const g = given[id];
+    const g = answered(id);
     if (g !== undefined) {
       out[id] = g;
       if (g.type === 'choice') chosen.add(g.choice);
@@ -239,7 +334,12 @@ function malformedBody(model: string, questions: Record<string, Question>, trans
 export function createMockDecider(opts: MockDeciderOptions = {}): Decider {
   const model = opts.model ?? DEFAULT_JEV_MODEL;
   const rules = opts.rules ?? [];
-  const latencyMs = Number.isFinite(opts.latencyMs) ? Math.max(0, opts.latencyMs ?? 0) : 0;
+  // TUI-DESIGN-2 §3.13: `JEVCODE_MOCK_JEV_MS` delays the mock (the latency probe) and `JEVCODE_MOCK_INTAKE` forces the intake reading;
+  // an explicit option wins over the variable
+  const env = opts.env ?? process.env;
+  const envLatency = mockJevLatencyMs(env);
+  const latencyMs = opts.latencyMs !== undefined ? (Number.isFinite(opts.latencyMs) ? Math.max(0, opts.latencyMs) : 0) : envLatency;
+  const forcedIntake: IntakeKind | null = opts.intake ?? mockIntakeOverride(env);
   const failures: Trigger<NonNullable<MockDeciderOptions['failAt']>[number]>[] = (opts.failAt ?? []).map((spec) => ({
     spec,
     remaining: spec.times ?? Number.POSITIVE_INFINITY,
@@ -292,7 +392,7 @@ export function createMockDecider(opts: MockDeciderOptions = {}): Decider {
       if (partial === undefined) continue;
       for (const [id, a] of Object.entries(partial)) if (a !== undefined && !Object.hasOwn(given, id) && Object.hasOwn(questions, id)) given[id] = a;
     }
-    const answers = defaultAnswers(state, questions, given);
+    const answers = defaultAnswers(state, questions, given, { intake: forcedIntake });
 
     const inputTokens = JEV_TOKEN_OVERHEAD + Math.ceil(JSON.stringify(requestJson).length * JEV_TOKENS_PER_CHAR);
     const outputTokens = Object.keys(questions).length * 10;
@@ -306,7 +406,8 @@ export function createMockDecider(opts: MockDeciderOptions = {}): Decider {
     const response = validateJevResponse(body, questions);
     return {
       answers: response.answers,
-      usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens, costUsd: response.usage.cost, calls: 1 },
+      // contract 1.2 (§6 item 5): the mock always sends `cost`; the fallback keeps the optional wire field honest
+      usage: { inputTokens: response.usage.input_tokens, outputTokens: response.usage.output_tokens, costUsd: response.usage.cost ?? response.usage.input_tokens * JEV_INPUT_USD_PER_TOKEN, calls: 1 },
       latencyMs,
       model: response.model,
       requestHash,
@@ -315,5 +416,6 @@ export function createMockDecider(opts: MockDeciderOptions = {}): Decider {
     };
   }
 
-  return { model, ask };
+  // TUI-DESIGN-2 §6 item 7: the mock stands in for today's OpenRouter path ('openrouter')
+  return { model, provider: 'openrouter', ask };
 }

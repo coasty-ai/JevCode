@@ -69,8 +69,15 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
   { id: 'global:detail', short: 'details', context: 'global', keys: ['ctrl+o'], title: 'append the last step\'s decision details and recent warnings; acknowledges !n' },
   { id: 'global:repaint', short: 'repaint', context: 'global', keys: ['ctrl+l'], title: 'repaint the dynamic region (erase-lines + rewrite, never a clear)' },
   { id: 'global:suspend', short: 'suspend', context: 'global', keys: ['ctrl+z'], title: 'suspend to the shell (fg resumes and repaints)' },
-  { id: 'global:paneNext', short: 'next tab', context: 'global', keys: [']'], title: 'next pane tab (d → p → t → s)', when: 'empty draft' },
-  { id: 'global:panePrev', short: 'previous tab', context: 'global', keys: ['['], title: 'previous pane tab', when: 'empty draft' },
+  { id: 'global:paneNext', short: 'next tab', context: 'global', keys: [']'], title: 'next pane tab (d → p → t → s); opens a collapsed panel', when: 'empty draft', note: 'TUI-DESIGN-2 §4.6' },
+  { id: 'global:panePrev', short: 'previous tab', context: 'global', keys: ['['], title: 'previous pane tab; opens a collapsed panel', when: 'empty draft', note: 'TUI-DESIGN-2 §4.6' },
+  // TUI-DESIGN-2 §4.6 / §12 "Keys and commands": the Jev panel — collapsed strip · open (≤ 6 rows) · full (12 rows)
+  { id: 'global:panelToggle', short: 'panel', context: 'global', keys: ['meta+j'], title: 'toggle the Jev panel between the collapsed strip and the open 6-row form (= /panel, /panel off)', note: 'TUI-DESIGN-2 §4.6' },
+  { id: 'global:panelFull', short: 'panel full', context: 'global', keys: ['meta+shift+j'], title: 'open the Jev panel in its full 12-row form (= /panel full)', note: 'TUI-DESIGN-2 §4.6' },
+  { id: 'global:panelDecisions', short: 'decisions tab', context: 'global', keys: ['meta+d'], title: 'open the panel on the decisions tab; a second press on the same tab collapses it (= /panel d)', note: 'TUI-DESIGN-2 §4.6; Alt+D leaves kill-word-forward (Alt+Del / Ctrl+Del keep it)' },
+  { id: 'global:panelPlan', short: 'plan tab', context: 'global', keys: ['meta+p'], title: 'open the panel on the plan tab; a second press collapses it (= /panel p)', note: 'TUI-DESIGN-2 §4.6' },
+  { id: 'global:panelTimeline', short: 'timeline tab', context: 'global', keys: ['meta+t'], title: 'open the panel on the timeline tab; a second press collapses it (= /panel t)', note: 'TUI-DESIGN-2 §4.6' },
+  { id: 'global:panelSynth', short: 'synth tab', context: 'global', keys: ['meta+s'], title: 'open the panel on the synth tab; a second press collapses it (= /panel s)', note: 'TUI-DESIGN-2 §4.6' },
   { id: 'session:export', short: 'export', context: 'global', keys: [], title: 'export the session transcript (= /export)', note: 'unbound by default; e.g. "session:export": "ctrl+x ctrl+s"' },
   // composer
   { id: 'composer:submit', short: 'submit', context: 'composer', keys: ['return'], title: 'submit: task, follow-up, steer while live, /command, review note', reserved: true, note: 'empty draft → no-op; re-entrancy guard while submitting (A9)' },
@@ -84,7 +91,7 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
   { id: 'composer:killLine', short: 'kill to end', context: 'composer', keys: ['ctrl+k'], title: 'kill to the end of the line → kill ring' },
   { id: 'composer:killLineBack', short: 'kill to start', context: 'composer', keys: ['ctrl+u'], title: 'kill to the start of the line → kill ring' },
   { id: 'composer:killWordBack', short: 'kill word back', context: 'composer', keys: ['ctrl+w', 'meta+backspace'], title: 'kill the word before the cursor (unix-word-rubout)' },
-  { id: 'composer:killWordForward', short: 'kill word forward', context: 'composer', keys: ['meta+d', 'meta+delete', 'ctrl+delete'], title: 'kill the word after the cursor' },
+  { id: 'composer:killWordForward', short: 'kill word forward', context: 'composer', keys: ['meta+delete', 'ctrl+delete'], title: 'kill the word after the cursor', note: 'Alt+D is the decisions tab (TUI-DESIGN-2 §4.6)' },
   { id: 'composer:yank', short: 'yank', context: 'composer', keys: ['ctrl+y'], title: 'yank the newest kill' },
   { id: 'composer:yankPop', short: 'yank-pop', context: 'composer', keys: ['meta+y'], title: 'rotate the kill ring (right after a yank)' },
   { id: 'composer:transpose', short: 'transpose', context: 'composer', keys: ['ctrl+t'], title: 'transpose the two graphemes around the cursor' },
@@ -167,8 +174,9 @@ export function normalizeKeyToken(token: string): string | null {
   }
   const key = KEY_ALIASES[base] ?? base;
   if (key.length !== 1 && !NAMED_KEYS.has(key)) return null;
-  // a shifted single character is the character itself (`?` is `?`, never `shift+/`)
-  if (key.length === 1 && shift) shift = false;
+  // a shifted single character is the character itself (`?` is `?`, never `shift+/`); under ctrl/meta a shifted letter
+  // keeps its shift (`meta+shift+j` = Alt+Shift+J, TUI-DESIGN-2 §4.6)
+  if (key.length === 1 && shift && !((ctrl || meta) && /^[a-z]$/.test(key))) shift = false;
   const s = `${ctrl ? 'ctrl+' : ''}${meta ? 'meta+' : ''}${shift ? 'shift+' : ''}${key}`;
   return KEY_ALIASES[s] ?? s;
 }

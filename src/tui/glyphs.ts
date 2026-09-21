@@ -73,6 +73,33 @@ export interface GlyphSet {
   readonly approx: string;
   /** range dash `–` (U+2013, §7.6 `outside 0.2–0.8`) → `-` */
   readonly range: string;
+  // ----- TUI-DESIGN-2 §4.9: the cli-boxes `round` set (copied as literals — the single glyph source, §10.3), console and cards
+  /** `╭` → `+` */
+  readonly roundTopLeft: string;
+  /** `╮` → `+` */
+  readonly roundTopRight: string;
+  /** `╰` → `+` */
+  readonly roundBottomLeft: string;
+  /** `╯` → `+` */
+  readonly roundBottomRight: string;
+  /** console divider `├` → `+` */
+  readonly teeLeft: string;
+  /** console divider `┤` → `+` */
+  readonly teeRight: string;
+  /** composer prompt, wizard field, picker filter `›` → `>` (TUI-DESIGN-2 §4.4) */
+  readonly prompt: string;
+  /** panel strip `▸` → `>` (TUI-DESIGN-2 §4.6) */
+  readonly chevronRight: string;
+  /** open panel header `▾` → `v` */
+  readonly chevronDown: string;
+  /** code-fence rule `╶` → `-` (TUI-DESIGN-2 §4.5) */
+  readonly fence: string;
+  /** splash sweep head `▓ ▒ ░` → `# + .` (TUI-DESIGN-2 §5.1) */
+  readonly shade3: string;
+  readonly shade2: string;
+  readonly shade1: string;
+  /** brand rule row `◆` → `*` (TUI-DESIGN-2 §5.4) */
+  readonly brand: string;
 }
 
 const UNICODE: GlyphSet = {
@@ -111,6 +138,20 @@ const UNICODE: GlyphSet = {
   sigma: 'Σ',
   approx: '≈',
   range: '–',
+  roundTopLeft: '╭',
+  roundTopRight: '╮',
+  roundBottomLeft: '╰',
+  roundBottomRight: '╯',
+  teeLeft: '├',
+  teeRight: '┤',
+  prompt: '›',
+  chevronRight: '▸',
+  chevronDown: '▾',
+  fence: '╶',
+  shade3: '▓',
+  shade2: '▒',
+  shade1: '░',
+  brand: '◆',
 };
 
 const ASCII: GlyphSet = {
@@ -149,6 +190,20 @@ const ASCII: GlyphSet = {
   sigma: 'sum',
   approx: '~=',
   range: '-',
+  roundTopLeft: '+',
+  roundTopRight: '+',
+  roundBottomLeft: '+',
+  roundBottomRight: '+',
+  teeLeft: '+',
+  teeRight: '+',
+  prompt: '>',
+  chevronRight: '>',
+  chevronDown: 'v',
+  fence: '-',
+  shade3: '#',
+  shade2: '+',
+  shade1: '.',
+  brand: '*',
 };
 
 /** Screen-reader twin: the unicode glyphs (bars are replaced by aria text in bars.ts, §7.2). */

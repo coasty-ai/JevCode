@@ -25,6 +25,7 @@ import type {
   GenerateResult,
   GeneratorCallRecord,
   GitState,
+  JevProvider,
   JevRequestRecord,
   PlanDraft,
   Provider,
@@ -123,6 +124,8 @@ export type DeciderRule = (ctx: DeciderCall) => Partial<Record<string, Answer>> 
 
 export interface FakeDeciderOptions {
   rules?: DeciderRule[];
+  /** contract 1.2 (TUI-DESIGN-2 §6 item 7); default 'openrouter' like jev/mock.ts */
+  provider?: JevProvider;
   model?: string;
   /** every attempt at these stages throws JevHttpError(status) */
   failAt?: { stage: StageName; step?: number; status: number }[];
@@ -134,6 +137,8 @@ export interface FakeDeciderOptions {
   delayMs?: (ctx: DeciderCall) => number;
   /** TUI-DESIGN §13.2: a retry chain before the answer (or the exhausted failure) at the matching calls */
   retryAt?: (ctx: DeciderCall) => RetryScript | undefined;
+  /** TUI-DESIGN-2 §6 item 6: the AskResult's cost basis (absent = a decider that does not say, like an older client) */
+  costBasis?: 'provider' | 'table';
 }
 
 export interface FakeDecider extends Decider {
@@ -169,6 +174,7 @@ export function createFakeDecider(opts: FakeDeciderOptions = {}): FakeDecider {
   const model = opts.model ?? 'typesafe/jev-1.13-20260917';
   return {
     model,
+    provider: opts.provider ?? 'openrouter',
     calls,
     callsAt: (stage) => calls.filter((c) => c.stage === stage),
     async ask(state, questions, o) {
@@ -189,7 +195,7 @@ export function createFakeDecider(opts: FakeDeciderOptions = {}): FakeDecider {
       for (const rule of opts.rules ?? []) Object.assign(overrides, rule(ctx) ?? {});
       for (const [id, q] of Object.entries(questions)) answers[id] = overrides[id] ?? defaultAnswer(id, q, ctx);
       const usage: TokenUsage = { inputTokens: 300, outputTokens: 20, costUsd: 0.0002, calls: 1, ...opts.usage, ...(opts.usageAt?.(ctx) ?? {}) };
-      return { answers, usage, latencyMs: opts.latencyMs ?? 0, model, requestHash: `h${calls.length}`, attempts: 1, id: null };
+      return { answers, usage, latencyMs: opts.latencyMs ?? 0, model, requestHash: `h${calls.length}`, attempts: 1, id: null, ...(opts.costBasis !== undefined ? { costBasis: opts.costBasis } : {}) };
     },
   };
 }
@@ -639,7 +645,8 @@ export interface HarnessOptions {
   resume?: { runId: string; force: boolean };
   now?: () => number;
   exit?: (code: number) => never;
-  deciderModel?: { configured: string; pinned: boolean };
+  /** TUI-DESIGN-2 §6 item 8: `provider` names the naming scheme of the drift check (engine default openrouter) */
+  deciderModel?: { configured: string; pinned: boolean; provider?: JevProvider };
   /** reuse a runs dir (resume tests) */
   runsDir?: string;
   /**

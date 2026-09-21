@@ -177,7 +177,7 @@ export function makeCtx(o: CtxOptions = {}): SynthesisContext & { events: Engine
     workspace: fakeWorkspace(o.files ?? ['src/gcd.py', 'tests/test_gcd.py']),
     workspaceInfo: info,
     sandbox: fakeSandbox,
-    decider: { model: 'fake', ask: () => notUsed('decider.ask') },
+    decider: { model: 'fake', provider: 'openrouter', ask: () => notUsed('decider.ask') },
     signal: new AbortController().signal,
     limits: { maxSteps: 40, maxWallMs: 3_600_000, maxReplans: 5, completeThreshold: 0.85, impossibleThreshold: 0.9, commandTimeoutMs: 120_000, maxCommandTimeoutMs: 600_000, maxOutputBytes: 200_000, spendCapUsd: 1 },
     redact: (s) => s,

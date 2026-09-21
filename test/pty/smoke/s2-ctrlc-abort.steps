@@ -1,15 +1,15 @@
 # S2 live·empty (session): Ctrl-C aborts and stays; the composer reopens; /exit (§3.3)
 expect \x1b\[\?25l
-expect Describe the task
+expect Say hi
 sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
-expect ready
+expect \[run\](?:\x1b\[[0-9;]*m)* start 
 sleep 0.5
 send \x03
 expect end human_abort
-expect Follow-up or /command
+expect Follow-up, question
 send /exit
 sleep 0.2
 send \r

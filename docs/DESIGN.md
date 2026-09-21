@@ -1692,6 +1692,41 @@ produced while no engine is live — session start, between runs, the session ep
 `transcript.log` exists; they appear in the TUI and `--plain` as `[ui]` items and on the `--json` stream as
 `ui { text, label }` lines. Ephemeral toasts and idle Ctrl-C/Ctrl-D hints are in none of the three.
 
+**Round 2 (2026-09-21; TUI-DESIGN-2 §1, §3–§5, §9).** Three changes to the paragraphs above, each a declared
+amendment. (1) *Every submission is decided by Jev first.* `SessionHost.submit()` returns a `SubmitOutcome`
+(`became: 'run' | 'chat' | 'nothing'`); a non-command line is appended as a `[you]` item (label `'[you]'`, one item
+per line, redacted at emission), then `src/chat/intake.ts` builds one Jev request — the `intake` Choice over five
+readings with paired Nouls, the reply Choice over the 14-row catalogue (`src/chat/replies.ts`) and the 14 fact Nouls
+(`src/chat/facts.ts`) — and `resolveIntake` starts a run only for `coding_task` at Jev's own p ≥ `INTAKE_RUN_FLOOR`
+0.6 with its paired Noul ≥ 0.5; a greeting becomes one `[jevcode]` catalogue item, a tool question one item per
+selected fact (`selectFacts`, p ≥ 0.5, ≤ 4), a code question a Jev-selected lookup (`src/chat/lookup.ts`, jev-only) or
+one generator turn without tools (`src/chat/llm-turn.ts`, jev+llm, floor `LLM_ANSWER_FLOOR` 0.5), and anything weaker
+the `intake` overlay (`run this as a task?`; `y` runs, `n` replies from the answers in hand, Esc restores the draft).
+Chat spend is charged to the root session meter, which exists from startup and is never recreated
+(`SpendMeter.setCap` at the first run); the intake's `Decision` rows reach the Jev panel (`chat-decisions`, step 0,
+stage `intent`) and `/why intake`; `--json` gains one `chat` line per intake; the `chat` index line restores chat
+spend on `/resume`. The one-shot argv path passes `kind: 'task'` and never meets the intake. (2) *The TUI shows a
+declared subsequence.* `UiState.transcript` is `compact` by default: items of the stage kinds and `run:ready` are
+stamped `hidden` at append time and filtered before `<Static>` (the array stays append-only), one `step` item per
+step (`stepSummaryText`, `plain.ts`) is shown instead, and `[you]` / `[jevcode]` rows carry a dim label and a hanging
+indent. The identity of the previous paragraph is therefore **narrowed by declaration** (TUI-DESIGN-2 §9, §10.1):
+`--plain` and `transcript.log` stay identical to each other and carry every line; the TUI's `full` view equals
+`formatTranscriptItem(item)` per item word-wrapped at the commit width with a `label.length + 1` hanging indent (code
+fences drawn as `╶──── <lang>` rules); the `compact` view is the subsequence selected by `TranscriptKind`. (3) *The
+console, the cards and the splash.* `computeLayout` 1.1 gains `chrome ∈ {0, 3}` (the boxed tier at rows ≥ 16 and
+columns ≥ 40: the composer and the status row share one rounded console drawn from the cli-boxes `round` glyphs
+copied into `glyphs.ts`, `src/tui/console.ts` `consoleLines()`; every modal is a card, `src/tui/card.ts`; the wizard
+renders inside the console), `panel` (the Jev pane collapsed to a one-row strip by default, `panelStrip`, open 6,
+full 12), `splash` (5 rows while `motion.time < SPLASH_MS`) and `gate` (the secret gate as a console-hosted row);
+the vertical order and the yield order are unchanged, chrome never yields, and `rows − 2` still bounds every frame.
+The first frame is the splash's frame 0 — `src/tui/splash.ts` `splashFrame(0, columns)` plus the console with
+`step 0/–` — ticking through Ink's `useAnimation` at 50 ms (`src/tui/motion.ts`; ≤ 15 frames, none after 700 ms,
+cancelled by the first key, a run start or any overlay) and settling into the brand rule row; `launch.modeHint` and
+`launch.reducedMotion` keep the frame argv-only. The mode is a setting (`mode`: flag > `JEVCODE_MODE` > dotenv > file
+> default `jev-only`; `ResolvedConfig.mode`) and a badge (`UiState.modeBadge`, `modeBadge(mode, pending)`) in the
+console's top edge or the flat status left zone; `/mode` and `/llm` set `PendingSettings.mode` and `runLogin('mode',
+m)` opens the generator step in place.
+
 **`--json` stream and its redaction guarantee (`cli/json-stream.ts`).** NDJSON on stdout: first
 `{"v":1,"type":"stream:start","schema":"jevcode.events/1","jevcode":"<version>","t":iso}`, then
 `{ "v": 1, "t", "runId", "sessionId", ...EngineEvent }` per event (the `EngineEvent` after the engine's redacting
@@ -1907,7 +1942,37 @@ keystroke are rendered outside Ink's throttle by design — `reconciler.js` `isS
 frame and the cursor shown at the end of every frame while the composer is active; `harnessMs` p95 < 50 ms per
 step with pre/post images included and `imagesMs` p95 reported against a 15 ms target (a report row, not a gate); `<Static>` append bytes per line reported;
 plus the unit-test micro-gates (`computeLayout` ≤ 5 µs, `layoutRows` of a 12,000-char draft ≤ 2 ms, fuzzy `rank()`
-over 5,000 candidates p95 ≤ 16 ms, index fold ≤ 2 ms at 1,000 runs). On disk on 2026-09-21: `src/perf/{first-frame,render-lag,step-overhead,jev-latency,main}.ts` (the 2026-09-19
+over 5,000 candidates p95 ≤ 16 ms, index fold ≤ 2 ms at 1,000 runs).
+
+**Round 2 (2026-09-21; TUI-DESIGN-2 §9).** Every gate above stays and two are added; the probes moved to the round-2
+surface. *First frame:* the `step 0/` sentinel is unchanged and now lands in the splash's frame 0, so the probe also
+reads the wordmark cells of the first dynamic frame (`wordmarkFirstFrame`) and **gates** on them per series
+(`splashOk`, TUI-DESIGN-2 §9 row 1: all 20 runs at 40×120 and 24×80 must carry them, none at 8×40 — the flat tier;
+a splash that slipped to frame 1 fails the series, named `first frame (splash frame 0)` in the README); it sets
+`JEVCODE_ASSERT_NO_CONFIG_BEFORE_FRAME=1` beside `JEVCODE_ASSERT_NO_NETWORK=1` and fails a run that prints `config
+before first frame` (the launcher hook that would throw on a `resolveConfig` or `.git/HEAD` read before the first
+stdout write is a request to `bin/jevcode.js`'s owner; until it lands the variable is inert). *Frame rate:* the
+render-lag probe gains a splash bucket — the `dynamic` frames (the class the fps gate governs, `classifyFrames`)
+arriving within 700 ms of the first frame (`splashBucket`), the `static` and `key` frames of the same window and the
+wordmark frames reported beside them, whether the first frame carried the wordmark — gated at `⌈(maxFps + 1) ×
+0.7⌉` = 22, the typing-window gate over the window's length (the splash ticks at 50 ms through Ink's `useAnimation`, ≤
+15 frames by construction; the typist waits 800 ms after the placeholder so the splash settles by itself before its
+first key, and the window ends at the first `send` if one came earlier; the reduced-motion geometry and rows 12 draw
+none). *Intake reply wall time* (new gate): `src/perf/intake-latency.ts`
+types 20 greetings and tool questions into `chat --mock` through the typist and pairs every Enter with the first
+frame carrying its `[you]` bubble (p95 < 16 ms, the composer gate) and the first frame carrying a `[jevcode]` item
+(p95 ≤ 40 ms with the mock decider at 0 ms; net of the delay at `JEVCODE_MOCK_JEV_MS=150`, where the `⠹ thinking`
+frames are counted); no message may start a run. The live gate — p95 < 1.5 s over a real provider — is the S6 live
+scenario's and `test/live/intake.live.test.ts`'s, never this probe's. *Zero clears:* the `states` probe gains an
+`intake` card scenario at 24×80 and 12×60, expects the review card (`╭─ review · step 2`), the palette card (`╭─
+commands`) and the wizard console (`╭─ setup · `) in the boxed tier, and its `resize-live` sentinel is the panel strip
+(`jev s<N> · <n> decisions`). *Every probe that needs the scripted mocked run says `--mode jev-on`* (the round-2
+default is `jev-only`, under which `--mock` would run the real synthesizer); `pty.ts` `composerRow` unwraps the boxed
+console row (`│ › … │`) so the keystroke → frame pairing holds in both tiers; the placeholders and the live sentinel
+are TUI-DESIGN-2 §4.4's and `[run] start` (`[run] ready` is hidden by the compact transcript). The smoke
+(`test/pty/run-smoke.sh`) grows to 36 scenarios plus a `--hermetic` self-check of the child environment, and the pty
+project gains `test/pty/round2.pty.test.ts` (33 tests, 4 of them `it.fails` records of open defects; 63 pty tests in all);
+their results and the round-2 `jevcode perf` run are in `docs/STATUS.md`, "Round 2". On disk on 2026-09-21: `src/perf/{first-frame,render-lag,step-overhead,jev-latency,main}.ts` (the 2026-09-19
 gates), the wave-4 probes `src/perf/composer-latency.ts` (keystroke → frame series through `perf/drivers/pty_type.py`, a typist that sends keys on a fixed cadence and timestamps them),
 `src/perf/states.ts` (zero clears per modal state and geometry segment) and `src/perf/pty.ts` (the shared driver
 plumbing and `CLEAR_RE` with its self-test), the shell smoke `test/pty/run-smoke.sh` (19 scenarios: exit code,

@@ -11,7 +11,7 @@ import { PAIRED_PREFIX } from '../../jev/questions.js';
 import { clip } from '../../core/text.js';
 import { PAIRED_NOUL_FLOOR } from '../../loop/stages/choose.js';
 import { PLAN_ACCEPT_THRESHOLD, PLAN_REJECT_THRESHOLD } from '../../loop/plan.js';
-import { GLYPHS, fitCells, ruleRow, truncateCells, type GlyphSet } from '../glyphs.js';
+import { GLYPHS, cellWidth, fitCells, ruleRow, truncateCells, type GlyphSet } from '../glyphs.js';
 import { decisionRows } from './decisions.js';
 import { planRows, planSummaryRow } from './plan.js';
 import { synthRows } from './synth.js';
@@ -246,7 +246,7 @@ export type PaneTab = 'd' | 'p' | 't' | 's';
 export const PANE_TABS: readonly PaneTab[] = ['d', 'p', 't', 's'];
 
 /** The modal slot above the composer (`OverlayKind` in `src/tui/layout.ts`, O3); the pane only asks whether it is `'none'` (§7.2). */
-export type PaneOverlay = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm';
+export type PaneOverlay = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake';
 
 /** The last `plan` event plus what the plan tab's `done_<j>` and 120-column evidence column need (§7.2 `p` row). */
 export interface PlanView {
@@ -288,7 +288,20 @@ export interface PaneState {
   readonly timeline: readonly TimelineStep[];
   readonly synth: SynthView | null;
   readonly mode?: EngineMode | null;
+  /** TUI-DESIGN-2 §3.11: the last intakes' `s0 intake …` rows, shown above the run's rows on the decisions tab */
+  readonly chatRows?: readonly DecisionRow[];
+  /** TUI-DESIGN-2 §4.6: the last risk assessment of the run (`risk 0.44 [review]` on the strip) */
+  readonly lastRisk?: { risk: number; verdict: 'ok' | 'review' | 'block' } | null;
 }
+
+/** TUI-DESIGN-2 §4.6: the ONE threshold for the strip and the open header — long tab labels, the `jev <ms>ms` segment and the 5-rule tail from here. */
+export const PANEL_WIDE_COLUMNS = 120;
+/** TUI-DESIGN-2 §4.6 / §12 "Rule row": the 6th open row when the tab has more. */
+export function panelMoreRow(n: number, g: GlyphSet = GLYPHS.unicode): string {
+  return `  ${g.ellipsis} ${n} more row${n === 1 ? '' : 's'} ${g.dot} /panel full expands`;
+}
+/** the shortest rule fill between the strip's segments and its tab labels before a segment is dropped from the right */
+const STRIP_MIN_FILL = 4;
 
 /** TUI-DESIGN §7.2: `[`/`]` cycle through d → p → t → s. */
 export function cycleTab(tab: PaneTab, dir: 1 | -1): PaneTab {
@@ -331,15 +344,93 @@ export interface PaneOptions {
   /** the terminal height (`useWindowSize().rows`); defaults to the pane's `rows` argument, which can never reach 40 on its own */
   terminalRows?: number;
   glyphs?: GlyphSet;
+  /** TUI-DESIGN-2 §4.6: the open / full panel's header leads with `▾ ` before the tab name */
+  chevron?: boolean;
 }
 
-/** TUI-DESIGN §7.2 / §24: the pane's rule row — `─── decisions s7 · c~ derived |2p−1| ────── [d]ecisions [p]lan [t]ime [s]ynth ──` (`[t]imeline` at ≥ 120; the second tab's name appended when side by side). */
+/** TUI-DESIGN §7.2 / §24 / TUI-DESIGN-2 §4.6: the pane's rule row — `─── [▾ ]decisions s7 · c~ derived |2p−1| ────── [d]ecisions [p]lan [t]ime [s]ynth ──` (`[t]imeline` and the 5-rule tail from `PANEL_WIDE_COLUMNS`; the second tab's name appended when side by side). */
 export function paneRuleRow(state: PaneState, rows: number, columns: number, overlay: PaneOverlay, opts: PaneOptions = {}): string {
   const g = opts.glyphs ?? GLYPHS.unicode;
-  const wide = columns >= 120;
+  const wide = columns >= PANEL_WIDE_COLUMNS;
   const tabs = ` [d]ecisions [p]lan ${wide ? '[t]imeline' : '[t]ime'} [s]ynth `;
   const right = sideBySide(opts.terminalRows ?? rows, columns, overlay) ? `${tabs}${g.rule.repeat(3)} ${TAB_TITLE[cycleTab(state.tab, 1)]} ${g.rule}` : `${tabs}${g.rule.repeat(wide ? 5 : 2)}`;
-  return ruleRow(paneRuleLabel(state, columns, g), right, columns, g);
+  const label = `${opts.chevron === true ? `${g.chevronDown} ` : ''}${paneRuleLabel(state, columns, g)}`;
+  return ruleRow(label, right, columns, g);
+}
+
+/** TUI-DESIGN-2 §4.6: `plan <done>/<done + remaining>` of the plan tab's view, or null without a plan. */
+export function planProgress(state: PaneState): { done: number; total: number } | null {
+  const plan = state.plan?.plan;
+  if (!plan) return null;
+  return { done: plan.done.length, total: plan.done.length + plan.remaining.length };
+}
+
+/**
+ * TUI-DESIGN-2 §4.6 / §12 "Rule row": the collapsed panel's strip on the rule row —
+ * `─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5[ · jev 231ms] ─── [d] [p] [t] [s] ──` (long labels
+ * `[d]ecisions [p]lan [t]imeline [s]ynth`, the `jev <ms>ms` segment and the 5-rule tail from `PANEL_WIDE_COLUMNS`);
+ * segments are dropped from the right while fewer than four rule cells would separate them from the labels; with no
+ * decisions yet `─── ▸ jev · no decisions yet ──── [d] [p] [t] [s] ──`. Exactly `min(columns, 400)` cells.
+ */
+export function panelStrip(state: PaneState & { latencies: readonly (number | null)[] }, columns: number, g: GlyphSet = GLYPHS.unicode): string {
+  const wide = columns >= PANEL_WIDE_COLUMNS;
+  const right = wide ? ` [d]ecisions [p]lan [t]imeline [s]ynth ${g.rule.repeat(5)}` : ` [d] [p] [t] [s] ${g.rule.repeat(2)}`;
+  const rows = [...(state.chatRows ?? []), ...state.rows];
+  if (rows.length === 0) return ruleRow(`${g.chevronRight} jev ${g.dot} no decisions yet`, right, columns, g);
+  const segments: string[] = [`${g.chevronRight} jev s${state.step}`, `${rows.length} decision${rows.length === 1 ? '' : 's'}`];
+  const risk = state.lastRisk ?? null;
+  if (risk !== null) segments.push(`risk ${p2(risk.risk)} ${risk.verdict === 'ok' ? 'ok' : `[${risk.verdict}]`}`);
+  const plan = planProgress(state);
+  if (plan !== null) segments.push(`plan ${plan.done}/${plan.total}`);
+  const last = state.latencies.length > 0 ? state.latencies[state.latencies.length - 1] : null;
+  if (wide && last !== null && last !== undefined && Number.isFinite(last)) segments.push(`jev ${Math.round(last)}ms`);
+  const w = Math.min(Math.max(0, Math.floor(columns)), 400);
+  while (segments.length > 1) {
+    const left = segments.join(` ${g.dot} `);
+    const fill = w - cellWidth(`${g.rule.repeat(3)} ${left} `) - cellWidth(right);
+    if (fill >= STRIP_MIN_FILL) break;
+    segments.pop();
+  }
+  return ruleRow(segments.join(` ${g.dot} `), right, columns, g);
+}
+
+function p2(x: number): string {
+  return Number.isFinite(x) ? x.toFixed(2) : 'nan';
+}
+
+/** the decisions tab's rows with the intakes' rows (TUI-DESIGN-2 §3.11) ahead of the run's */
+function withChatRows(state: PaneState): PaneState {
+  const chat = state.chatRows ?? [];
+  return chat.length === 0 ? state : { ...state, rows: [...chat, ...state.rows] };
+}
+
+/**
+ * TUI-DESIGN-2 §4.6 `panelLines`: the open panel's rows (≤ 6, `CAP.panel`) or the full pane (`paneLines`). Open: the
+ * decisions tab shows the newest rows (the last intake's `s0 intake` row pinned first when present); when the tab has
+ * more rows than fit, the last row is `  … <n> more rows · /panel full expands`. Never more than `rows` rows nor wider
+ * than `columns`.
+ */
+export function panelLines(state: PaneState, rows: number, columns: number, overlay: PaneOverlay, opts: PaneOptions & { size: 'open' | 'full' }): string[] {
+  const g = opts.glyphs ?? GLYPHS.unicode;
+  const n = Math.max(0, Math.floor(Number.isFinite(rows) ? rows : 0));
+  const w = Math.max(0, Math.floor(Number.isFinite(columns) ? columns : 0));
+  if (n === 0 || w === 0) return [];
+  const full = withChatRows(state);
+  if (opts.size === 'full') return paneLines(full, n, w, overlay, opts);
+  if (state.tab === 'd') {
+    const chat = state.chatRows ?? [];
+    const pinned = chat.length > 0 ? [chat[chat.length - 1] as DecisionRow] : [];
+    const total = pinned.length + state.rows.length;
+    if (total <= n) return decisionRows({ ...state, rows: [...pinned, ...state.rows] }, n, w, g);
+    const shown = Math.max(0, n - 1);
+    const runRows = state.rows.slice(-(Math.max(0, shown - pinned.length)));
+    const lines = shown > 0 ? decisionRows({ ...state, rows: [...pinned, ...runRows] }, shown, w, g) : [];
+    return [...lines, truncateCells(panelMoreRow(total - shown, g), w, g)];
+  }
+  const all = tabLines(full, state.tab, 200, w, g);
+  if (all.length <= n) return all.slice(0, n).map((l) => truncateCells(l, w, g));
+  const shown = Math.max(0, n - 1);
+  return [...all.slice(0, shown).map((l) => truncateCells(l, w, g)), truncateCells(panelMoreRow(all.length - shown, g), w, g)];
 }
 
 /** One tab's rows in the wide (one tab) or narrow (half) form. */

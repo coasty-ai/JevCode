@@ -7,6 +7,7 @@
  * bench can be written against this file alone.
  */
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
+// contract 1.2 (2026-09-21): conversational intake, Jev providers, mode setting, chat labels per docs/TUI-DESIGN-2.md §6; items 4 and 7 add required fields (every constructor and fake is listed there), item 8 is optional, everything else is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 
@@ -172,7 +173,8 @@ export interface JevRequest {
 export interface JevUsage {
   input_tokens: number;
   output_tokens: number;
-  cost: number;
+  /** TUI-DESIGN-2 §6 item 5: TypeSafe's native response carries no cost (PROBE); the client prices it from the provider table */
+  cost?: number;
 }
 export interface JevResponse {
   model: string;
@@ -216,7 +218,12 @@ export interface JevRequestRecord {
   usage: TokenUsage;
   model: string;
   attempts: number;
+  /** TUI-DESIGN-2 §2.4 / §6 item 6 (additive): `provider` when the wire carried `usage.cost`, `table` when the client priced it; absent for a decider that does not say (older jev.jsonl, fakes) */
+  costBasis?: 'provider' | 'table';
 }
+
+/** TUI-DESIGN-2 §2.4 (additive): how the Jev requests of a run were priced — `table` when every one was, `provider` when every one carried `usage.cost`, `mixed` otherwise; null before any request */
+export type JevCostBasis = 'table' | 'provider' | 'mixed';
 
 // ---------------------------------------------------------------------------------------
 // Loop
@@ -368,7 +375,7 @@ export interface SerializedError {
   requestId?: string | null;
 }
 
-export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md)
+export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md); llm-jev: the generator writes candidate patches inside the Jev-only synthesizer; Jev decides, tests verify (docs/LLM-JEV-DESIGN.md)
 
 export interface RunResult {
   runId: string;
@@ -393,6 +400,8 @@ export interface RunResult {
   error?: SerializedError;
   resolvedJevModel: string | null;
   jevModelDrift: { step: number; served: string } | null;
+  /** TUI-DESIGN-2 §2.4 (additive): the cost basis of the Jev requests this process made (`costBlock`'s `jev table …` / `jev provider usage.cost` suffix); absent from older results */
+  jevCostBasis?: JevCostBasis | null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -489,9 +498,13 @@ export interface AskResult {
   attempts: number;
   /** response id / x-generation-id, for traceability */
   id: string | null;
+  /** TUI-DESIGN-2 §6 item 6 / §2.4: `provider` when the wire carried `usage.cost`, `table` when the client priced it (`~` in the UI) */
+  costBasis?: 'provider' | 'table';
 }
 export interface Decider {
   readonly model: string;
+  /** TUI-DESIGN-2 §6 item 7: REQUIRED; jev/client.ts sets cfg.provider, jev/mock.ts and every fake 'openrouter' */
+  readonly provider: JevProvider;
   ask(state: Json, questions: Record<string, Question>, opts: AskOptions): Promise<AskResult>;
 }
 
@@ -947,6 +960,8 @@ export interface SessionRef {
   source: RunSource;
   title?: string;
   clamp?: SessionClamp;
+  /** TUI-DESIGN-2 §6 item 13: why the run started (run.json, the `s0 intake` row); absent for argv tasks and follow-ups that skipped intake */
+  intake?: { kind: IntakeKind; probability: number; requestHash: string };
 }
 export type BlockingKind = 'jev-unreachable' | 'key-rejected' | 'spend-limit' | 'checkpoint-degraded' | 'drift' | 'sandbox-unavailable';
 export type BlockingAnswer = 'retry' | 'continue' | 'stop' | 'login' | 'pin';
@@ -984,8 +999,8 @@ export interface EngineOptions {
   secretPaths: readonly string[];
   /** generator sampling; temperature null = not sent */
   generation: { temperature: number | null; maxTokens: number };
-  /** decider model pinning info (§5.4 rule 7) */
-  deciderModel: { configured: string; pinned: boolean };
+  /** decider model pinning info (§5.4 rule 7); TUI-DESIGN-2 §6 item 8: `provider` OPTIONAL — the engine defaults to 'openrouter' (bench/cli.ts and perf/step-overhead.ts compile untouched) */
+  deciderModel: { configured: string; pinned: boolean; provider?: JevProvider };
   /** extra directories the sandbox may write to (bench stand-ins for /output etc.); realpath'ed into the profile */
   extraWritableRoots?: readonly string[];
   /** extra directories the sandbox may read but not write (bench object caches) */
@@ -1092,12 +1107,17 @@ export interface EngineStatus {
   retrying?: { side: 'jev' | 'generator'; attempt: number; maxAttempts: number; untilMs: number } | null;
   /** TUI-DESIGN §15 item 13: generator tokens used against RunLimits.maxGeneratorTokens */
   generatorTokens?: { used: number; cap: number | null };
+  /** TUI-DESIGN-2 §2.4 / §2.6 (additive): the cost basis of the Jev requests this process made, for the `/jev` line-2 suffix; null before any */
+  jevCostBasis?: JevCostBasis | null;
 }
 
 // TUI-DESIGN §15 item 14: notices and renderer labels
 export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui';
-/** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1) */
-export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]';
+/** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1); TUI-DESIGN-2 §6 item 1 / §3.10: the chat bubbles */
+export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]';
+export type ChatLabel = Extract<UiLabel, '[you]' | '[jevcode]'>;
+/** TUI-DESIGN-2 §6 item 2 / §3.3: Jev's reading of a submission (the `intake` Choice; `ambiguous` is also the fallback and the weak-`coding_task` verdict) */
+export type IntakeKind = 'greeting_or_smalltalk' | 'question_about_this_tool' | 'question_about_the_code' | 'coding_task' | 'ambiguous';
 
 export type EngineEvent =
   | { type: 'synth'; step: number; phase: string; detail: string; candidates?: number; tested?: number } // jev-only synthesizer progress
@@ -1111,10 +1131,11 @@ export type EngineEvent =
   | { type: 'jev:request'; record: JevRequestRecord }
   | { type: 'intent'; step: number; intent: Intent; answer: IntentAnswer; probability: number; confidence: number }
   | { type: 'context'; step: number; files: string[]; bytes: number; candidates: number }
-  | { type: 'generator:start'; step: number; attempt: number }
-  | { type: 'generator:delta'; step: number; text: string }
-  | { type: 'generator:tool-delta'; step: number; chars: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
-  | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string }
+  // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): `sample` = 0-based index of the candidate being generated, `samples` = how many the step will generate; absent in jev-on / jev-off
+  | { type: 'generator:start'; step: number; attempt: number; sample?: number; samples?: number }
+  | { type: 'generator:delta'; step: number; text: string; sample?: number }
+  | { type: 'generator:tool-delta'; step: number; chars: number; sample?: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
+  | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string; sample?: number }
   | { type: 'proposal'; step: number; proposal: Proposal }
   | { type: 'risk'; step: number; risk: RiskAssessment }
   | { type: 'confirm:request'; request: ConfirmRequest }
@@ -1127,7 +1148,7 @@ export type EngineEvent =
   | { type: 'loop:tripped'; step: number; signature: string; occurrences: number }
   | { type: 'replan'; step: number; directive: ReplanDirective }
   | { type: 'checkpoint'; step: number; ms: number }
-  | { type: 'step:end'; record: StepRecord }
+  | { type: 'step:end'; record: StepRecord; costUsd?: { generator: number; jev: number } } // TUI-DESIGN-2 §6 item 3: money for the `[step N]` summary line; absent → tokens
   | { type: 'status'; status: EngineStatus }
   | { type: 'transcript'; step: number | null; level: 'info' | 'warn' | 'error'; text: string }
   | { type: 'error'; step: number | null; error: SerializedError; fatal: boolean }
@@ -1200,6 +1221,10 @@ export interface LaunchSettings {
   screenReader: boolean;
   ascii: boolean;
   noColor: boolean;
+  /** TUI-DESIGN-2 §6 item 14 / §1.1: the first frame's badge word — `--mode` > `JEVCODE_MODE`; absent when neither is set (the App reads `jev-only`) */
+  modeHint?: EngineMode;
+  /** TUI-DESIGN-2 §6 item 14 / §5.3: `--no-animation` > `JEVCODE_REDUCED_MOTION` > screenReader — the splash's static form before the file is read */
+  reducedMotion: boolean;
 }
 /** the LaunchSettings members repeat the mount-time values (source flag | env | default only) */
 export interface UiConfig extends LaunchSettings {
@@ -1229,10 +1254,18 @@ export interface SecretHit {
   end: number;
   warnOnly: boolean;
 }
+/** TUI-DESIGN-2 §6 item 10 / §3.8: what a submission became — a run, a chat reply (bubble, facts, lookup, LLM turn) or nothing (kept, aborted, refused) */
+export type SubmitOutcome = { became: 'run' | 'chat' | 'nothing' };
 /** implemented by cli/session.ts over config.redact / config.addSecret; the renderer calls it, never the engine directly */
 export interface SessionHost {
-  /** addSecret('composer#n', span) per span BEFORE createEngine (§10.2) */
-  submit(text: string, opts: { kind: 'prompt' | 'follow-up'; secretSpans: readonly string[]; pinnedFiles: readonly string[] }): Promise<void>;
+  /**
+   * addSecret('composer#n', span) per span BEFORE createEngine (§10.2). TUI-DESIGN-2 §6 item 10 lands in two halves: the resolved
+   * value is the SubmitOutcome now (`| void` is the contract 1.2 W0 bridge for the pre-intake implementation, cli/session.ts:2568,
+   * and the renderer fakes, which still resolve with nothing); `kind` gains `'task'` (the one-shot argv path, never intake, §3.1)
+   * together with §3.8's `converse`, because session.ts:2572 forwards `so.kind` into `startRun`, which only S3 may widen. Both
+   * halves become the verbatim `submit(text, { kind: 'prompt' | 'follow-up' | 'task'; … }): Promise<SubmitOutcome>` in W2.
+   */
+  submit(text: string, opts: { kind: 'prompt' | 'follow-up'; secretSpans: readonly string[]; pinnedFiles: readonly string[] }): Promise<SubmitOutcome | void>;
   command(line: string): Promise<void>;
   /** addSecret per span BEFORE engine.steer; secretsAcked = spans.length */
   steer(text: string, opts: { secretSpans: readonly string[] }): SteerResult;
@@ -1279,7 +1312,8 @@ export interface SessionRow {
 }
 export interface HistoryStore {
   entries(filter: 'workspace' | 'all'): readonly string[];
-  append(kind: 'prompt' | 'steer' | 'command', text: string): void;
+  /** TUI-DESIGN-2 §6 item 12 / §3.9: `chat` = a submission that became a reply or lookup (a run stays `prompt`; one taken back with Esc is not appended) */
+  append(kind: 'prompt' | 'steer' | 'command' | 'chat', text: string): void;
   clear(): void;
 }
 
@@ -1313,6 +1347,10 @@ export interface Renderer {
   setUi?(ui: UiConfig): void;
   /** TUI-DESIGN §15 item 16: appends a local item — idle time only (§15.1) */
   notify?(text: string, opts?: { level?: 'info' | 'warn' | 'error'; detail?: string; label?: UiLabel }): void;
+  /** TUI-DESIGN-2 §6 item 11 / §3.7: Esc on the intake card puts the submitted text back into the composer */
+  restoreDraft?(text: string): void;
+  /** TUI-DESIGN-2 §6 item 11 / §3.6: the LLM turn's streamed text for the live region ('' empties it) */
+  live?(text: string): void;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1346,18 +1384,28 @@ export interface GeneratorConfig {
   priced?: boolean;
 }
 
+// TUI-DESIGN-2 §6 item 4 / §2.2: the two Jev endpoints (jev/providers.ts holds the table) and how the provider was chosen (§2.3 rules 1–2e)
+export type JevProvider = 'typesafe' | 'openrouter';
+export type JevProviderSource = 'flag' | 'env' | `dotenv:${string}` | `file:${string}` | 'auto:base-url' | 'auto:typesafe-key' | 'auto:openrouter-key' | 'default';
+/** TUI-DESIGN-2 §6 item 4: three REQUIRED fields since contract 1.2; the only production constructor is config/validate.ts `validateDecider` */
 export interface DeciderConfig {
+  provider: JevProvider;
   baseUrl: string;
   apiKey: string;
   /** configured id, verbatim */
   model: string;
-  /** normalised id ends in -YYYYMMDD */
+  /** provider-aware (§2.5): openrouter — the normalised id ends in -YYYYMMDD; typesafe — `jev-<major>.<minor>.<patch>` */
   pinned: boolean;
+  /** the provider table's rates; the client prices a response from them when the wire carries no `usage.cost` (§2.4) */
+  pricing: { inputUsdPerToken: number; outputUsdPerToken: number };
+  providerSource: JevProviderSource;
 }
 
 export interface ResolvedConfig {
   /** every setting with its source; secrets appear only as fingerprints in record() */
   readonly entries: ReadonlyMap<string, Resolved<string>>;
+  /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > default jev-only); the mode-keyed spend caps read it */
+  readonly mode: EngineMode;
   /** validates the generator section on first call; ConfigError names setting and sources */
   generator(): GeneratorConfig;
   /** validates the decider section on first call */
@@ -1468,8 +1516,13 @@ export interface MockDeciderContext {
 export type MockDeciderRule = (ctx: MockDeciderContext) => Partial<Record<string, Answer>> | undefined;
 export interface MockDeciderOptions {
   rules?: MockDeciderRule[];
+  /** default: `JEVCODE_MOCK_JEV_MS` from `env` (TUI-DESIGN-2 §3.13, the latency probe), else 0 */
   latencyMs?: number;
   model?: string;
+  /** TUI-DESIGN-2 §3.13: force the `intake` Choice to this reading; default: `JEVCODE_MOCK_INTAKE` from `env`, else the message heuristics */
+  intake?: IntakeKind;
+  /** the environment the two `JEVCODE_MOCK_*` variables are read from; default `process.env` */
+  env?: Readonly<Record<string, string | undefined>>;
   /** throw JevHttpError(status) for calls matching stage/step (every attempt) */
   failAt?: { stage: StageName; step?: number; status: number; times?: number }[];
   /** return a malformed body once at this stage/step (validation path) */
@@ -1480,7 +1533,8 @@ export interface MockDeciderOptions {
 // Factory signatures each module must export (documentation of the wiring surface)
 // ---------------------------------------------------------------------------------------
 // config/resolve.ts      export function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, cwd: string): Promise<ResolvedConfig>
-// jev/client.ts          export function createJevDecider(cfg: DeciderConfig, deps: { fetch?: typeof fetch; redact: (s: string) => string; referer?: string }): Decider
+// jev/client.ts          export function createJevDecider(cfg: DeciderConfig, deps: { fetch?: typeof fetch; redact: (s: string) => string; referer?: string }): Decider   // contract 1.2: Decider.provider = cfg.provider
+// jev/providers.ts       export const JEV_PROVIDERS: Readonly<Record<JevProvider, JevProviderSpec>>; providerForHost, isPinnedJevModel, jevModelMatches (TUI-DESIGN-2 §2.2, §2.5; pure)
 // jev/mock.ts            export function createMockDecider(opts?: MockDeciderOptions): Decider
 // provider/anthropic.ts  export function createAnthropicProvider(cfg: GeneratorConfig, deps: { fetch?: typeof fetch; redact }): Provider
 // provider/openrouter.ts export function createOpenRouterProvider(cfg: GeneratorConfig, deps: { fetch?: typeof fetch; redact }): Provider

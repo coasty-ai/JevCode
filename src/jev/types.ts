@@ -11,8 +11,16 @@ export const DEFAULT_JEV_MODEL = 'typesafe/jev-1.13-20260917';
 /** Decisions endpoint through OpenRouter (lab.mjs:14). */
 export const DEFAULT_JEV_BASE_URL = 'https://openrouter.ai/api/alpha/decisions';
 
-/** OpenRouter pricing.prompt for the model; output tokens are free (research 06 §1). */
+/** TUI-DESIGN-2 §2.1–2.2 (PROBE): TypeSafe's native endpoint accepts `jev-1.13.0` (pinned; also what `jev-latest` serves) and nothing else. */
+export const DEFAULT_TYPESAFE_MODEL = 'jev-1.13.0';
+export const DEFAULT_TYPESAFE_BASE_URL = 'https://api.typesafe.ai/v1/systemone';
+
+/** OpenRouter pricing.prompt for the model; output tokens are free (research 06 §1). TypeSafe lists the same $0.042/M input (PROBE). */
 export const JEV_INPUT_USD_PER_TOKEN = 4.2e-8;
+
+/** OpenRouter attribution headers (`HTTP-Referer`, `X-Title`; TUI-DESIGN-2 §2.2 — the typesafe spec sends neither). */
+export const DEFAULT_REFERER = 'https://github.com/prateekjannu/jevcode';
+export const APP_TITLE = 'jevcode';
 
 /** Fixed token overhead per request and per short question (REPORT §4), used by the mock. */
 export const JEV_TOKEN_OVERHEAD = 271;
@@ -65,6 +73,12 @@ export interface JevResponseHeaders {
   generationId: string | null;
   retryAfter: string | null;
   providerName: string | null;
+  /**
+   * TUI-DESIGN §15 item 4 / TUI-DESIGN-2 §2.4: the server's request id from the provider's `requestIdHeaders` in order
+   * (`x-typesafe-request-id` first on TypeSafe; `request-id`, `x-request-id`, `x-generation-id` on OpenRouter), redacted and
+   * clipped to REQUEST_ID_MAX_CHARS; null when absent or redacted away.
+   */
+  requestId: string | null;
 }
 
 export type ServedModelCheck = { ok: true; resolved: string } | { ok: false; error: JevModelDriftError };

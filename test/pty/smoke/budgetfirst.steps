@@ -1,6 +1,6 @@
 # /budget session-spend-cap before the first run survives the first submit and lands in the index (§9.4, F1)
 expect \x1b\[\?25l
-expect Describe the task
+expect Say hi
 sleep 0.3
 send /budget session-spend-cap 15
 sleep 0.2
@@ -10,7 +10,7 @@ send make the tests pass
 sleep 0.2
 send \r
 expect end (complete|max_steps|generator_done)
-expect Follow-up or /command
+expect Follow-up, question
 send /budget
 sleep 0.2
 send \r

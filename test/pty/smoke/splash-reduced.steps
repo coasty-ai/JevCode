@@ -1,0 +1,16 @@
+# --no-animation (reduced motion, TUI-DESIGN-2 §5.3): the session mounts settled — a static brand row, no wordmark row
+# anywhere in the capture; a key still echoes (§8.2 splash-reduced.steps)
+expect \x1b\[\?25l
+expect step 0/
+# raw mode on (Ink's post-commit effect writes ESC[?2004h): a key sent earlier is a cooked-mode byte the kernel echoes
+expect \x1b\[\?2004h
+sleep 0.1
+send h
+expect (?:›|>) h
+send \x03
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

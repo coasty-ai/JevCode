@@ -9,7 +9,7 @@ import type { BenchDeps, Confirmer, Decider, Engine, EngineMode, EngineOptions, 
 import { AbortError, ConfigError } from '../errors.js';
 import type { BenchOptions, ConditionConfig } from './types.js';
 
-export const CONDITION_ORDER: readonly EngineMode[] = ['jev-on', 'jev-off', 'jev-only'];
+export const CONDITION_ORDER: readonly EngineMode[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'];
 /** what summary.json records as the generator model of the jev-only condition (NullProvider.model) */
 export const NULL_GENERATOR_MODEL = 'none (jev-only)';
 
@@ -26,7 +26,7 @@ export function isEngineMode(s: string): s is EngineMode {
   return (CONDITION_ORDER as readonly string[]).includes(s);
 }
 
-/** jev-on and jev-off call a generating LLM; a bench of jev-only alone needs no generator provider or key. */
+/** jev-on, jev-off and llm-jev call a generating LLM; a bench of jev-only alone needs no generator provider or key. */
 export function requiresGenerator(conditions: readonly EngineMode[]): boolean {
   return conditions.some((c) => c !== 'jev-only');
 }
@@ -110,7 +110,7 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   return out;
 }
 
-/** jev-on and jev-only are the full engine (the latter with `engineOpts.synthesizer` set); jev-off the generator-only factory. */
+/** jev-on, jev-only and llm-jev are the full engine (the latter two with `engineOpts.synthesizer` set); jev-off the generator-only factory. */
 export function createEngineFor(mode: EngineMode, engineOpts: EngineOptions, deps: BenchDeps): Promise<Engine> {
   return mode === 'jev-off' ? deps.createGeneratorOnlyEngine(engineOpts) : deps.createEngine(engineOpts);
 }

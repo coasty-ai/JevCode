@@ -37,6 +37,7 @@ new dependency, Jev decides.
 | **D-C** intake Choice over five readings with the REPORT question rules, ≪ 1 s, charged to the session meter; greeting → catalogue reply; tool question → facts; code question → lookup (jev-only) or one LLM turn (jev+llm); task → run; ambiguous → one-row confirmation; bubbles as transcript items with line identity | §3, §4.7 | `src/chat/**`: one `decider.ask` with groups A (intake + paired Nouls), B (reply Choice), C (fact Nouls); `resolveIntake` with the run floor; `REPLIES` (14) and `harnessFacts` (14) as data; `lookupCode`; `llmChatTurn`; `intake` overlay; `[you]`/`[jevcode]` in `UiLabel`, one item per line, renderer-local while idle, `annotate()` while live |
 | **D-D** rounded boxes for composer, review card, dialogs; chat bubbles with dim labels; one line per step by default; Jev panel collapsed, ≤ 6 rows unless expanded, `/decisions`; boxed three-zone status bar with the badge; truecolor/256 with the ANSI-16 twin; rows − 2, zero clears; splash ≤ 700 ms, ≤ 30 fps, first frame < 300 ms, reduced motion static, typing aborts | §4, §5 | chrome tiers (boxed ≥ 16 rows, flat below), `CAP.chrome = 3`, `computeLayout` 1.1 with `chrome`, the console, `card.ts`, `panelStrip`/`panelLines`, compact transcript filter, `stepSummaryText`, `ColorTriple` + `colorDepth`, `splash.ts` + `motion.ts` over Ink's `useAnimation` |
 | **D-E** every existing gate | §9 | first frame is splash frame 0 with the `step 0/–` sentinel; the console adds 4 fixed rows; the splash ticks through Ink's throttle; the TUI's rows satisfy the identity predicate of §9 (`full`: `formatTranscriptItem(item)` per item, wrapped, the fence rule excepted; `compact`: a declared subsequence); no new dependency (cli-boxes glyphs copied as literals); wizard rows stay `maskedFieldRow(length)`; the review card changes drawing only |
+| **D-F** key frames take Ink's immediate render path (found at integration, 2026-09-21) | §9 | Ink 7.1.1 throttles `onRender` at ⌈1000 / maxFps⌉ = 34 ms (leading + trailing); a key that lands inside the window opened by a spinner (8 fps live) or 1 Hz tick frame waited for the trailing edge — every 5th key live, every 10th idle/palette, p95 36–44 ms against the 16 ms gate once round 2 memoised `<Transcript>` (round 1 re-rendered `<Static>` on every commit, which took the immediate path by accident and hid the throttle). Fix: `UiState.keySeq` counts `key` actions; the App passes it to the memoised `<Transcript>`, which hands `<Static>` a fresh `style` object per key; Ink's reconciler runs `commitUpdate` on the `<Static>` box → `isStaticDirty` → `onImmediateRender`, so the key's commit is written synchronously. Spinner and tick commits stay throttled (they do not change `keySeq`). Asserted against the real renderer in `test/unit/tui/key-immediate-render.test.tsx` (a plain commit inside the window is deferred; a key commit is synchronous; a tick after a key is still deferred) |
 
 **Kept from TD, untouched:** `itemsFromEvent`/`formatTranscriptItem` as the one item source, the `NullProvider` path
 (`session.ts:457–460`), `alwaysDecline`, `createTuiConfirmer`, `LIVE_FLUSH_MS = 50`, `DECISIONS_KEPT = 12`, the review
@@ -1761,6 +1762,14 @@ TypeSafe native (`jev-1.13.0`, ≈ 110 ms, no `usage.cost`) and OpenRouter (`typ
 in ids, headers, errors and cost reporting; `JEV_PROVIDERS` carries the differences, auto-detection prefers `JEV_API_KEY`
 → openrouter then `TYPESAFE_API_KEY` → typesafe, cost is derived from the published rate when absent (`costBasis:
 'table'`), `jev-1.13.0` is the pinned resolution on TypeSafe. Affects `src/jev/**`, `src/config/**`, `engine.ts` drift.
+
+## 2026-09-21 A keystroke's frame never waits for Ink's render throttle
+
+Ink renders a commit at most every 34 ms (`maxFps` 30, leading + trailing); a key typed inside the window opened by a
+spinner or clock frame was drawn at the trailing edge (p95 36–44 ms, gate 16 ms). The App counts key actions
+(`UiState.keySeq`) and the memoised `<Transcript>` gives `<Static>` a fresh `style` object per key, which is Ink's own
+immediate-render escape hatch (`isStaticDirty → onImmediateRender`): key frames are synchronous, every other commit stays
+throttled. Affects `src/tui/{useEngine.tsx,Transcript.tsx,App.tsx}`; the mechanism is asserted against the real renderer.
 
 ## 2026-09-21 The console, the compact transcript and the splash; identity kept by a declared filter
 

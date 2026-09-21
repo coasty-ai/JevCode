@@ -120,6 +120,8 @@ export interface CredentialsFile {
   provider: string | null;
   apiKey: string | null;
   jevApiKey: string | null;
+  /** TUI-DESIGN-2 §2.3 / §1.4: the Jev provider `login --jev-provider` saved next to `jevApiKey` (the `jevProvider` file key) */
+  jevProvider: string | null;
   /** parse or read error (other than ENOENT); the file is treated as empty */
   error: string | null;
 }
@@ -134,7 +136,7 @@ function stringOrNull(v: Json | undefined): string | null {
 
 /** TUI-DESIGN §11.2: tolerant read of a credentials file — missing → `exists: false`; malformed → `error` set, values empty. */
 export async function readCredentialsFile(path: string): Promise<CredentialsFile> {
-  const empty: CredentialsFile = { path, exists: false, values: {}, provider: null, apiKey: null, jevApiKey: null, error: null };
+  const empty: CredentialsFile = { path, exists: false, values: {}, provider: null, apiKey: null, jevApiKey: null, jevProvider: null, error: null };
   let text: string;
   try {
     text = await readFile(path, 'utf8');
@@ -146,7 +148,7 @@ export async function readCredentialsFile(path: string): Promise<CredentialsFile
   const parsed = parseJson(text);
   if (!parsed.ok || !isJsonObject(parsed.value)) return { ...empty, exists: true, error: `${path} is not a JSON object` };
   const values = parsed.value;
-  return { path, exists: true, values, provider: stringOrNull(values['provider']), apiKey: stringOrNull(values['apiKey']), jevApiKey: stringOrNull(values['jevApiKey']), error: null };
+  return { path, exists: true, values, provider: stringOrNull(values['provider']), apiKey: stringOrNull(values['apiKey']), jevApiKey: stringOrNull(values['jevApiKey']), jevProvider: stringOrNull(values['jevProvider']), error: null };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -233,6 +235,8 @@ export interface CredentialsPatch {
   provider?: 'anthropic' | 'openrouter';
   apiKey?: string;
   jevApiKey?: string;
+  /** TUI-DESIGN-2 §2.3 / §1.4: written as the `jevProvider` file key beside `jevApiKey` so resolve.ts reads it as the `file:` layer of decider.provider */
+  jevProvider?: 'typesafe' | 'openrouter';
 }
 
 /** TUI-DESIGN §11.2: what a write reports — fingerprints, never keys. */
@@ -271,6 +275,7 @@ export async function writeCredentials(patch: CredentialsPatch, opts: WriteOptio
   if (patch.provider) values['provider'] = patch.provider;
   if (patch.apiKey !== undefined) values['apiKey'] = patch.apiKey;
   if (patch.jevApiKey !== undefined) values['jevApiKey'] = patch.jevApiKey;
+  if (patch.jevProvider !== undefined) values['jevProvider'] = patch.jevProvider;
   const { windows, dirSecured } = await writeJsonSecure(target, values, opts);
 
   const shown = displayPath(target.path, opts.home);

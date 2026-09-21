@@ -6,7 +6,7 @@
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import type { PerfResult } from './main.js';
-import { LAG_MAX_MS, LAG_P95_MS, describeGeometry, type LagGeometry } from './render-lag.js';
+import { LAG_MAX_MS, LAG_P95_MS, SPLASH_MS, SPLASH_SETTLE_MS, describeGeometry, type LagGeometry } from './render-lag.js';
 
 export interface Row {
   measurement: string;
@@ -23,7 +23,11 @@ const pf = (ok: boolean): string => (ok ? 'pass' : 'FAIL');
 /** The named gates that failed in this result (empty when everything passed). */
 export function failures(r: PerfResult): string[] {
   const out: string[] = [];
-  if (r.firstFrame && !r.firstFrame.pass) out.push('first frame');
+  if (r.firstFrame) {
+    // TUI-DESIGN-2 §9 row 1: the time gate and "the first frame is splash frame 0" are named apart
+    if (r.firstFrame.series.some((s) => !s.timeOk)) out.push('first frame');
+    if (r.firstFrame.series.some((s) => !s.splashOk)) out.push('first frame (splash frame 0)');
+  }
   if (r.stepOverhead && !r.stepOverhead.pass) out.push('harness overhead');
   if (r.staticAppend && !r.staticAppend.pass) out.push('Static append region budget');
   if (r.renderLag) {
@@ -31,10 +35,12 @@ export function failures(r: PerfResult): string[] {
       const where = describeGeometry(g);
       if (g.gated && !g.lagOk) out.push(`event-loop lag (${where})`);
       if (g.gated && !g.fpsOk) out.push(`dynamic frame rate (${where})`);
+      if (g.gated && !g.splashOk) out.push(`splash frame count (${where})`);
       if (!g.hygieneOk) out.push(`render-lag hygiene (${where})`);
     }
     if (!r.renderLag.clearReSelfTest) out.push('CLEAR_RE self-test');
   }
+  if (r.intakeLatency) for (const s of r.intakeLatency.series) if (!s.pass) out.push(`intake latency (${s.name})`);
   if (r.composerLatency) {
     for (const s of r.composerLatency.series) {
       if (s.pass) continue;
@@ -77,6 +83,9 @@ export function resultRows(r: PerfResult): Row[] {
   if (ff) {
     for (const s of ff.series) rows.push({ measurement: `First frame \`${s.command}\` ${s.rows}×${s.columns}, cold compile cache: p95 / median over ${s.cold.runs.length} runs (warm median)`, result: `${ms(s.cold.p95)} / ${ms(s.cold.median)} (${ms(s.warm.median)})`, gate: `< ${ff.gateMs} ms`, status: pf(s.pass) });
     for (const b of ff.breakdown) rows.push({ measurement: `First frame \`${b.command}\` ${b.rows}×${b.columns} breakdown, child clock: bare \`node -e ''\` → \`render()\` returned → frame flushed (harness spawn → sentinel)`, result: `${ms(b.bareNodeMs)} → ${ms(b.mountedMs)} → ${ms(b.flushedMs)} (${ms(b.harnessMs)})`, gate: 'report', status: '' });
+    // TUI-DESIGN-2 §5.2 row 0 / §9: the first frame is splash frame 0 — the wordmark's `J` column lands in the same frame as `step 0/–`
+    const splashSeries = ff.series.map((s) => `${s.wordmarkRuns}/${s.cold.runs.length + s.warm.runs.length}${s.wordmarkExpected ? '' : ' (flat, none expected)'}`).join(' · ');
+    rows.push({ measurement: `Splash frame 0 is the first frame: runs whose first frame (the \`step 0/\` frame) already carried wordmark cells (${ff.series.map((s) => `\`${s.command}\` ${s.rows}×${s.columns}`).join(' · ')})`, result: splashSeries, gate: 'every run at ≥ 16 rows × ≥ 64 columns, none below (TUI-DESIGN-2 §9 row 1)', status: pf(ff.series.every((s) => s.splashOk)) });
   }
   const so = r.stepOverhead;
   if (so) {
@@ -99,6 +108,8 @@ export function resultRows(r: PerfResult): Row[] {
     rows.push({ measurement: `Mocked run rate under the typist: steps per second · \`<Static>\` rows committed per second over the typing window (${TRIPLE})`, result: lagTriple(r, (g) => `${n1(g.stepsPerSecond)} · ${n0(g.staticRowsPerSecond)}`), gate: 'report (the load profile the gates apply to; a real run commits a few rows per second)', status: '' });
     rows.push({ measurement: `Frames per second while typing, busiest one-second bucket, split into \`static\` · \`key\` · \`dynamic\` (${TRIPLE}): \`static\` frames carry new \`<Static>\` rows and are rendered immediately by Ink, unthrottled (\`reconciler.js\` \`isStaticDirty\` → \`onImmediateRender\`), so their rate is the item commit rate by design; \`key\` frames arrive within one throttle period (${lag.throttleMs} ms) of a keystroke — the leading-edge render, which follows the offered key rate by design; \`dynamic\` is the rest, the frames the \`maxFps\` throttle governs`, result: lagTriple(r, (g) => `${n0(g.fpsStaticMax)} · ${n0(g.fpsKeyMax)} · ${n0(g.fpsDynamicMax)}`), gate: `\`dynamic\` ≤ maxFps + 1 = ${lag.maxFps + 1} (every geometry, reduced motion included); \`static\` and \`key\` reported`, status: pf(geos.every((g) => g.fpsOk)) });
     rows.push({ measurement: `Stress row — the same run at \`JEVCODE_MOCK_STEP_MS=0\` (rows 40; ${n1(st.stepsPerSecond)} steps/s, ${n0(st.staticRowsPerSecond)} \`<Static>\` rows/s, 50–100× any real run): lag p95 net (raw) / max · frames \`static\` · \`key\` · \`dynamic\``, result: `${ms(st.lagNetP95, 2)} (${ms(st.lagP95, 2)}) / ${ms(st.lagMax, 2)} · ${n0(st.fpsStaticMax)} · ${n0(st.fpsKeyMax)} · ${n0(st.fpsDynamicMax)}`, gate: 'report (lag and frame rate not gated under the storm; hygiene below is)', status: st.lagOk && st.fpsOk ? 'within the realistic-rate gates' : 'over the realistic-rate gates (expected)' });
+    // TUI-DESIGN-2 §5.3 / §9 "dynamic fps": the splash bucket — the `dynamic` frames within 700 ms of the first frame (the typist waits for the settle), the other classes and the wordmark frames beside them
+    rows.push({ measurement: `Splash bucket — \`dynamic\` frames within ${SPLASH_MS} ms of the first frame (no key is sent before ${SPLASH_SETTLE_MS} ms, so the splash settles by itself) · \`static\` · \`key\` frames of the same window · frames of any class carrying the wordmark · first frame is splash frame 0 (${QUAD}; the splash ticks through Ink's \`useAnimation\` at 50 ms, ≤ 15 frames by construction; rows 12 is the flat tier and reduced motion mounts settled, so they draw no wordmark)`, result: lagQuad(r, (g) => `${g.splashFrames} · ${g.splashStaticFrames} · ${g.splashKeyFrames} · ${g.splashWordmarkFrames} · ${String(g.splashInFirstFrame)}${g.splashWindowMs !== SPLASH_MS ? ` (window ${g.splashWindowMs} ms)` : ''}`), gate: `\`dynamic\` ≤ ⌈(maxFps + 1) × ${SPLASH_MS / 1000}⌉ = ${lag.rows40.splashGate} (realistic geometries; stress reported)`, status: pf(geos.every((g) => g.splashOk)) });
     rows.push({ measurement: `Terminal clears after the first frame during the live run (${QUAD})`, result: lagQuad(r, (g) => String(g.clears)), gate: '0', status: pf(all.every((g) => g.clears === 0)) });
     rows.push({ measurement: `Dynamic region, tallest painted (${QUAD})`, result: lagQuad(r, (g) => `${g.regionMax} rows`), gate: '≤ rows − 2', status: pf(all.every((g) => g.regionMax <= g.rows - 2)) });
     rows.push({ measurement: `Cursor hides per frame, max · frames not ending with \`ESC[?25h\` · cursor shown at exit (${QUAD})`, result: lagQuad(r, (g) => `${g.cursorHidesMaxPerFrame} · ${g.cursorFramesWithoutShow} · ${String(g.cursorShownAtEnd)}`), gate: '≤ 1 · 0 · true', status: pf(all.every((g) => g.cursorHidesMaxPerFrame <= 1 && g.cursorFramesWithoutShow === 0 && g.cursorShownAtEnd)) });
@@ -116,12 +127,20 @@ export function resultRows(r: PerfResult): Row[] {
     rows.push({ measurement: `Frames per second while typing, busiest bucket, \`static\` · \`key\` · \`dynamic\` (${names}; "n/e" = not exercised: neither a live run nor more than ${comp.maxFps} keys/s offered; "report" = the stress series)`, result: comp.series.map((s) => `${n0(s.fpsStaticMax)} · ${n0(s.fpsKeyMax)} · ${n0(s.fpsDynamicMax)}${s.fpsGated ? '' : s.fpsExercised ? ' (report)' : ' n/e'}`).join(' / '), gate: `\`dynamic\` ≤ maxFps + 1 = ${comp.maxFps + 1} where exercised (\`live\`, \`burst30\`); \`static\` and \`key\` reported`, status: pf(comp.series.every((s) => !s.fpsGated || s.fpsOk)) });
     rows.push({ measurement: `Composer series hygiene: clears after the first frame · tallest painted region · frames not ending with \`ESC[?25h\` (${names}; the review series has no cursor while the composer is collapsed, reported only)`, result: comp.series.map((s) => `${s.clears} · ${s.regionMax} · ${s.cursorFramesWithoutShow}${s.cursorGated ? '' : ' (report)'}`).join(' / '), gate: `0 · ≤ ${comp.series[0] ? comp.series[0].rows - 2 : '–'} · 0 where the composer is active`, status: pf(comp.series.every((s) => s.clears === 0 && s.regionMax <= s.rows - 2 && (!s.cursorGated || s.cursorFramesWithoutShow === 0))) });
   }
+  const il = r.intakeLatency;
+  if (il) {
+    for (const s of il.series) {
+      const delay = s.jevMs > 0 ? ` (\`JEVCODE_MOCK_JEV_MS=${s.jevMs}\`; the reply figure is gated net of the delay)` : '';
+      rows.push({ measurement: `Intake reply latency, \`${s.name}\`: Enter → \`[you]\` bubble frame p50 / p95 / max · Enter → \`[jevcode]\` reply frame p50 / p95 / max (${s.messages} greetings and tool questions, ${s.reply.samples} located${s.dropped > 0 ? `, ${s.dropped} Enter${s.dropped === 1 ? '' : 's'} not located` : ''}, ${s.rows}×${s.columns}, mock decider at ${s.jevMs} ms${delay}; \`thinking\` seen for ${s.thinkingSeen}/${s.messages})`, result: `${ms(s.bubble.p50)} / ${ms(s.bubble.p95)} / ${ms(s.bubble.max)} · ${ms(s.reply.p50)} / ${ms(s.reply.p95)} / ${ms(s.reply.max)}${s.jevMs > 0 ? ` (net p95 ${ms(s.replyNet.p95)})` : ''}`, gate: `bubble p95 < ${il.gateBubbleMs} ms · reply p95 ≤ ${il.gateReplyMs} ms${s.jevMs > 0 ? ' net of the delay' : ''} (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's)`, status: pf(s.pass) });
+    }
+    rows.push({ measurement: `Intake hygiene: runs started by a greeting or a tool question · clears after the first frame · tallest painted region (${il.series.map((s) => `\`${s.name}\``).join(' · ')})`, result: il.series.map((s) => `${s.runsStarted} · ${s.clears} · ${s.regionMax}`).join(' / '), gate: `0 · 0 · ≤ ${il.series[0] ? il.series[0].rows - 2 : '–'}`, status: pf(il.series.every((s) => s.hygieneOk)) });
+  }
   const st = r.states;
   if (st) {
     const clears = st.scenarios.reduce((n, s) => n + s.clearsTotal, 0);
     const shrinks = st.scenarios.reduce((n, s) => n + s.segments.filter((g) => g.allowed > 0).reduce((m, g) => m + g.clears, 0), 0);
     const forbidden = st.scenarios.reduce((n, s) => n + s.forbidden, 0);
-    rows.push({ measurement: `Zero clears per state and geometry segment across ${st.scenarios.length} pty scenarios (review, palette, wizard, secret row at 24×80 and 12×60; picker; \`render:composer\` / \`render:pane\` faults; Ctrl+L; three resize sequences): clear events total · in shrink segments · \`ESC c\` + alt-screen`, result: `${clears} · ${shrinks} · ${forbidden}`, gate: '0 outside shrink segments, ≤ 1 per shrink; never `ESC c` / `ESC[?1049h`', status: pf(st.pass) });
+    rows.push({ measurement: `Zero clears per state and geometry segment across ${st.scenarios.length} pty scenarios (review card, palette card, jev-only wizard, secret row and intake card at 24×80 — boxed — and 12×60 — flat; picker; \`render:composer\` / \`render:pane\` faults; Ctrl+L; three resize sequences): clear events total · in shrink segments · \`ESC c\` + alt-screen`, result: `${clears} · ${shrinks} · ${forbidden}`, gate: '0 outside shrink segments, ≤ 1 per shrink; never `ESC c` / `ESC[?1049h`', status: pf(st.pass) });
     for (const s of st.scenarios.filter((x) => x.name.startsWith('resize'))) rows.push({ measurement: `\`${s.name}\` ${s.rows}×${s.columns} (${s.driver}): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame`, result: `${s.segments.map((g) => `${g.clears} (${g.allowed})`).join(' · ')} · ${s.segments.reduce((n, g) => n + g.stalePaints, 0)} · ${s.segments.reduce((n, g) => n + g.inFlightPaints, 0)}${(() => { const t = s.segments.map((g) => g.inFlightMs).filter((v): v is number => v !== null); return t.length ? ` (+${Math.max(...t).toFixed(1)} ms)` : ''; })()} · ${s.segments.map((g) => g.clearFramePainted).filter((v): v is number => v !== null).join('/') || '–'}`, gate: `≤ allowed · 0 · report · ≤ ${12 - 2}`, status: pf(s.pass) });
     const cl = st.scenarios.find((s) => s.name === 'ctrl-l');
     if (cl) rows.push({ measurement: `Ctrl+L repaint (3-row draft, pane open, ${cl.rows}×${cl.columns}): visible frame content equals the frame before it, in one BSU/ESU pair`, result: `${String(cl.repaintEqual)} (${cl.repaintFrames} frame)`, gate: 'true', status: pf(cl.repaintEqual === true) });
@@ -147,13 +166,14 @@ export function performanceSection(r: PerfResult): string {
   const lines: string[] = [
     '## Performance',
     '',
-    'Budgets (docs/DESIGN.md §12, docs/TUI-DESIGN.md §18): first frame under 300 ms with zero network at launch, for both',
-    'entry points and every geometry; harness overhead under 50 ms per step with pre/post images; rendering never blocks the',
+    'Budgets (docs/DESIGN.md §12, docs/TUI-DESIGN.md §18, docs/TUI-DESIGN-2.md §9): first frame under 300 ms with zero network at launch, for both',
+    'entry points and every geometry (the first frame is the startup splash\'s frame 0); harness overhead under 50 ms per step with pre/post images; rendering never blocks the',
     'loop (event-loop lag p95 < 5 ms net of the probe\'s idle floor, max < 50 ms while typing during a live mocked run at a realistic step rate —',
     '`JEVCODE_MOCK_STEP_MS=200`, about 5 steps/s, still ten times faster than a real run; the zero-latency storm is measured',
     'as a stress row and reported); composer keystroke → frame p95 < 16 ms in a real pty; zero terminal clears outside a',
     'shrink segment; `dynamic` frames per second ≤ `maxFps` + 1 (frames carrying new `<Static>` rows and the leading-edge',
-    'frame of a keystroke are counted separately: Ink renders both outside its throttle by design). `npm run perf` measures',
+    'frame of a keystroke are counted separately: Ink renders both outside its throttle by design), the splash\'s frames in its',
+    '700 ms included; an intake reply (Enter → `[jevcode]`) within 40 ms p95 against the mock decider. `npm run perf` measures',
     'all of it, writes `perf/results/latest.json` (raw values, per-series arrays, machine and load), rewrites this section',
     'from that file (`src/perf/readme.ts`; the table cannot drift from the JSON) and exits 1 when any gate fails.',
     '`JEVCODE_PERF_KEEP=<dir>` keeps every pty capture and timing file; `JEVCODE_PERF_ONLY=<probe,…>` runs a subset (written',
@@ -182,12 +202,15 @@ export function performanceSection(r: PerfResult): string {
     const boot = bd.length ? bd.map((b) => b.bareNodeMs ?? 0).reduce((a, b) => a + b, 0) / bd.length : null;
     const mounted = bd.length ? bd.map((b) => (b.mountedMs ?? 0) - (b.bareNodeMs ?? 0)).reduce((a, b) => a + b, 0) / bd.length : null;
     const flushed = bd.length ? bd.map((b) => (b.flushedMs ?? 0) - (b.mountedMs ?? 0)).reduce((a, b) => a + b, 0) / bd.length : null;
+    const wm = ff.series.filter((s) => s.wordmarkExpected);
     note([
       'First frame: `script -q /dev/null sh -c \'stty rows R cols C; exec node bin/jevcode.js <run "…"|chat> --config <unreadable>',
-      '--perf-exit-after-first-frame\'` with `JEVCODE_ASSERT_NO_NETWORK=1`, a non-existent `JEVCODE_HOME` and `XDG_CONFIG_HOME`;',
+      '--perf-exit-after-first-frame\'` with `JEVCODE_ASSERT_NO_NETWORK=1`, `JEVCODE_ASSERT_NO_CONFIG_BEFORE_FRAME=1` (inert until `bin/jevcode.js` implements the hook), a non-existent `JEVCODE_HOME` and `XDG_CONFIG_HOME`, `HOME` inside the workspace;',
       'the time is spawn → the status sentinel `step 0/` in the pty bytes; cold runs use a fresh `NODE_COMPILE_CACHE`. The',
       `breakdown (three traced runs, \`JEVCODE_TRACE\`) splits the child's own clock: about ${n0(boot)} ms of Node boot, about ${n0(mounted)} ms of`,
-      `bundle evaluation plus the first synchronous render, about ${n0(flushed)} ms until Ink has flushed the frame.`,
+      `bundle evaluation plus the first synchronous render, about ${n0(flushed)} ms until Ink has flushed the frame. Round 2 (TUI-DESIGN-2 §5): that frame is`,
+      `the startup splash's frame 0 — the wordmark's \`J\` column and sweep head land in it with the console and \`step 0/–\`; ${wm.map((s) => `${s.wordmarkRuns}/${s.cold.runs.length + s.warm.runs.length}`).join(', ')} first frames at the`,
+      `wordmark geometries carried it (the 8×40 series is the flat tier and draws none) — gated per series (TUI-DESIGN-2 §9 row 1): ${ff.series.every((s) => s.splashOk) ? 'every series as designed' : `${ff.series.filter((s) => !s.splashOk).length} of ${ff.series.length} series MISMATCH`}.`,
     ]);
   }
   if (lag) {
@@ -203,7 +226,7 @@ export function performanceSection(r: PerfResult): string {
       'child writes to its TTY synchronously, so the child blocked in `write()`: measured 11 steps in 12 s and lag p50 114 ms',
       'under a drive.exp `sleep` against 399 steps in 11 s and lag p50 1.1 ms with continuous reads). The lag probe is the',
       'child\'s 10 ms `setInterval` (`--perf-lag-probe`), started before `controller.run()` and stopped at exit, so the',
-      'distribution covers the whole session after a 500 ms warm-up — about 0.4 s of idle prologue and 1 s of abort/exit tail',
+      `distribution covers the whole session after a 500 ms warm-up — about ${((SPLASH_SETTLE_MS + 400) / 1000).toFixed(1)} s of idle prologue (the typist lets the splash settle for ${SPLASH_SETTLE_MS} ms before its first key) and 1 s of abort/exit tail`,
       'around the 15 s of typing; it is not windowed to the keystrokes (the probe emits percentiles only). The gated load',
       `profile is the \`--mock\` run paced by \`JEVCODE_MOCK_STEP_MS=${lag.realisticStepMs}\` (\`src/cli/mock-trajectory.ts\`: every mocked generator turn`,
       `takes that long, the mock decider answers at once): ${n1(g40.stepsPerSecond)} / ${n1(g12.stepsPerSecond)} / ${n1(gr.stepsPerSecond)} mocked steps/s and ${n0(g40.staticRowsPerSecond)} / ${n0(g12.staticRowsPerSecond)} / ${n0(gr.staticRowsPerSecond)} committed`,
@@ -244,7 +267,7 @@ export function performanceSection(r: PerfResult): string {
       `the same letter). \`live\` is the A109 region (pane 12 + live rows + a composer at its 6-row cap over a 2,000-char draft)`,
       `during a live mocked run at \`JEVCODE_MOCK_STEP_MS=${live?.stepMs ?? '–'}\` (p95 ${ms(live?.latency.p95)}, ${n0(live?.fpsStaticMax)} · ${n0(live?.fpsKeyMax)} · ${n0(live?.fpsDynamicMax)} static · key · dynamic frames/s); \`live-stress\` repeats it over the`,
       `zero-latency mock (p95 ${ms(stress?.latency.p95)}, ${n0(stress?.fpsStaticMax)} · ${n0(stress?.fpsKeyMax)} · ${n0(stress?.fpsDynamicMax)} frames/s) and is reported. \`review\` measures the review's \`e\` toggle (the composer is`,
-      `collapsed while a review is pending, so its frame is recognised by the painted-row change, 22 ↔ 11 rows at 24×80).`,
+      `collapsed while a review is pending, so its frame is recognised by the painted-row change; the Jev panel is opened with \`/panel full\` first, since round 2 collapses it to a strip and the toggle zeroes the pane rows).`,
       `\`burst30\` offers ${n1(burst?.keysPerSecond)} keys/s, above \`maxFps\` ${comp.maxFps}: Ink's throttle is \`leading: true\`, so a key landing after the previous ${comp.throttleMs} ms`,
       `window renders at once and one inside it waits for the trailing edge — its latency (p95 ${ms(burst?.latency.p95)}) is reported, not gated, and its`,
       `${n0(burst?.fpsKeyMax)} \`key\` frames/s follow the offered key rate by design; the gate applies to its \`dynamic\` frames (${n0(burst?.fpsDynamicMax)}). At 10 keys/s without a`,
@@ -277,10 +300,22 @@ export function performanceSection(r: PerfResult): string {
       '`JEVCODE_FAULT=jev:429` / `jev:401` / `persist:ENOSPC` are not implemented in this tree (only `render:<pane>` is).',
     ]);
   }
+  const il2 = r.intakeLatency;
+  if (il2) {
+    const m0 = il2.series.find((s) => s.name === 'mock0');
+    const m1 = il2.series.find((s) => s.name === 'mock150');
+    note([
+      `Intake reply latency (TUI-DESIGN-2 §3.12): ${m0?.messages ?? 20} greetings and questions about the tool typed into \`chat --mock\` at 24×80 through the`,
+      'typist; every one passes the mock decider\'s intake (§3.13) and ends in a `[jevcode]` reply, none in a run. Enter → the frame carrying',
+      `the \`[you]\` bubble read p95 ${ms(m0?.bubble.p95)} at 0 ms and ${ms(m1?.bubble.p95)} with the mock delayed ${m1?.jevMs ?? 150} ms (gate < ${il2.gateBubbleMs} ms, the composer gate); Enter → the`,
+      `\`[jevcode]\` reply frame read p95 ${ms(m0?.reply.p95)} at 0 ms and ${ms(m1?.replyNet.p95)} net of the delay (gate ≤ ${il2.gateReplyMs} ms). The live gate — p95 < 1.5 s over a real`,
+      'provider — is the S6 live scenario\'s (`docs/live/tui/round-2/`), not this probe\'s.',
+    ]);
+  }
   note(['`renderTime` (Ink\'s `onRender` metric) is not measured: the App registers no `onRender` callback.']);
-  const deviations = [...(comp?.deviations ?? []), ...(lag?.deviations ?? [])];
+  const deviations = [...(comp?.deviations ?? []), ...(lag?.deviations ?? []), ...(r.intakeLatency?.deviations ?? [])];
   if (deviations.length > 0) {
-    lines.push('', 'Declared deviations from docs/TUI-DESIGN.md §18 (also listed in `perf/results/latest.json`):', '');
+    lines.push('', 'Declared deviations from docs/TUI-DESIGN.md §18 and docs/TUI-DESIGN-2.md §9 (also listed in `perf/results/latest.json`):', '');
     for (const d of deviations) lines.push(`- ${d}`);
   }
   lines.push('');

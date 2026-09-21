@@ -36,6 +36,19 @@ export const DEFAULT_COMPLETE_THRESHOLD = 0.85;
 export const DEFAULT_IMPOSSIBLE_THRESHOLD = 0.85;
 export const DEFAULT_SANDBOX = 'auto';
 
+/** TUI-DESIGN-2 §2.3: the `decider.provider` row's accepted values (`auto` resolves through rules 2a–2e). */
+export const JEV_PROVIDER_SETTING_VALUES = ['auto', 'typesafe', 'openrouter'] as const;
+
+/** TUI-DESIGN-2 §1.2: the `mode` setting's values in the round-2 order (jev-only first, the default); the §12 error text joins them with `|`. */
+export const MODE_SETTING_VALUES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
+export const DEFAULT_MODE = 'jev-only';
+
+/**
+ * TUI-DESIGN-2 §2.3 Redaction: key variables whose process-environment values join the SecretSet whichever provider is
+ * selected (a TYPESAFE_API_KEY exported in the shell while the session runs `--jev-provider openrouter` is still masked).
+ */
+export const KNOWN_KEY_ENV: readonly string[] = ['JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY'];
+
 /** RunLimits members that are not user-configurable (§8). */
 export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 export const MAX_COMMAND_TIMEOUT_MS = 600_000;
@@ -90,9 +103,14 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'generator.maxTokens', flag: 'maxTokens', env: ['JEVCODE_MAX_TOKENS'], fileKey: 'maxTokens', defaultValue: String(DEFAULT_MAX_TOKENS), secret: false, description: 'generator max tokens' },
   { name: 'generator.priceInPerM', env: ['JEVCODE_PRICE_IN_PER_M'], fileKey: 'priceInPerM', defaultValue: null, secret: false, description: 'generator input price override (USD/M)' },
   { name: 'generator.priceOutPerM', env: ['JEVCODE_PRICE_OUT_PER_M'], fileKey: 'priceOutPerM', defaultValue: null, secret: false, description: 'generator output price override (USD/M)' },
+  // TUI-DESIGN-2 §2.3: resolved by resolve.ts before the key row (it prepends TYPESAFE_API_KEY when the provider is typesafe); `auto` follows rules 2a–2e
+  { name: 'decider.provider', flag: 'jevProvider', env: ['JEV_PROVIDER'], fileKey: 'jevProvider', defaultValue: 'auto', secret: false, description: 'Jev provider (auto | typesafe | openrouter); auto = typesafe when TYPESAFE_API_KEY is set, else openrouter' },
+  // The provider-keyed defaults: resolve.ts replaces these with the typesafe endpoint / `jev-1.13.0` when decider.provider resolves to typesafe (TUI-DESIGN-2 §2.3 row 4)
   { name: 'decider.baseUrl', flag: 'jevBaseUrl', env: ['JEV_BASE_URL'], fileKey: 'jevBaseUrl', defaultValue: DEFAULT_JEV_BASE_URL, secret: false, description: 'decider base URL' },
   { name: 'decider.apiKey', flag: 'jevApiKey', env: ['JEV_API_KEY', 'OPENROUTER_API_KEY'], fileKey: 'jevApiKey', defaultValue: null, secret: true, description: 'decider API key' },
   { name: 'decider.model', flag: 'jevModel', env: ['JEV_MODEL'], fileKey: 'jevModel', defaultValue: DEFAULT_JEV_MODEL, secret: false, description: 'decider model' },
+  // TUI-DESIGN-2 §1.2 (D-A): the engine mode is a setting — flag > JEVCODE_MODE > dotenv > file > default jev-only; resolve.ts reads it before the mode-keyed cap default
+  { name: 'mode', flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false, description: 'engine mode (jev-only | jev-on | jev-off | llm-jev); jev-only needs no generator key' },
   { name: 'limits.spendCapUsd', flag: 'spendCap', env: ['JEVCODE_SPEND_CAP_USD'], fileKey: 'spendCapUsd', defaultValue: String(DEFAULT_SPEND_CAP_USD), secret: false, description: 'spend cap (USD)' },
   { name: 'limits.maxSteps', flag: 'maxSteps', env: ['JEVCODE_MAX_STEPS'], fileKey: 'maxSteps', defaultValue: String(DEFAULT_MAX_STEPS), secret: false, description: 'max steps' },
   { name: 'limits.maxWall', flag: 'maxWall', env: ['JEVCODE_MAX_WALL'], fileKey: 'maxWall', defaultValue: DEFAULT_MAX_WALL, secret: false, description: 'max wall time' },

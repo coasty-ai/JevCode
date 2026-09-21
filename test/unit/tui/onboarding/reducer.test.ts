@@ -1,14 +1,20 @@
-/** tui/onboarding/reducer.ts (TUI-DESIGN §11.1, §19.0 row O7): the state machine; the reducer never holds a key; ≤ 4 rows. */
+/** tui/onboarding/reducer.ts (TUI-DESIGN §11.1, §19.0 row O7; TUI-DESIGN-2 §1.4, §8.1 S2): the state machine; the reducer never holds a key; ≤ 4 rows. */
 import { describe, expect, it } from 'vitest';
 import {
+  HINT_CTRL_C_CLOSES,
   HINT_CTRL_C_QUITS,
   HINT_REJECTED,
   HINT_TOO_SHORT,
   INITIAL_ONBOARDING,
+  JEV_PROVIDER_OPTIONS,
   WIZARD_EXIT_CODE,
+  cancelCloses,
+  expectedKeyProvider,
   hintPrefix,
   looksLikeKey,
   onboardingReducer as reduce,
+  openrouterGeneratorEntered,
+  reuseOffered,
   sanitizeKeyInput,
   wizardActive,
   wizardRows,
@@ -22,7 +28,10 @@ const OR_KEY = 'sk-or-v1-abcdefghijklmnopqrstuvwxyz0123';
 function run(actions: OnboardingAction[], start: OnboardingState = INITIAL_ONBOARDING): OnboardingState {
   return actions.reduce((s, a) => reduce(s, a), start);
 }
+/** a jev-on first run with both keys missing and nothing inferred */
 const detectBoth: OnboardingAction = { type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false };
+/** TUI-DESIGN-2 §1.1: the default first run — jev-only, only the Jev key missing */
+const detectJevOnly: OnboardingAction = { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false };
 
 /** Every string value anywhere in the state; a key byte sequence must never be among them. */
 function stringsIn(v: unknown, out: string[] = []): string[] {
@@ -33,6 +42,13 @@ function stringsIn(v: unknown, out: string[] = []): string[] {
 }
 
 describe('onboardingReducer: detect', () => {
+  it('the initial state is jev-only (TUI-DESIGN-2 §1.1) with reason `missing` and no Jev provider', () => {
+    expect(INITIAL_ONBOARDING.mode).toBe('jev-only');
+    expect(INITIAL_ONBOARDING.reason).toBe('missing');
+    expect(INITIAL_ONBOARDING.jevProvider).toBeNull();
+    expect(INITIAL_ONBOARDING.jevProviderShown).toBe(false);
+  });
+
   it('missing=[] skips every key step: trust when needed, else sandbox', () => {
     expect(reduce(INITIAL_ONBOARDING, { type: 'detect', missing: [], mode: 'jev-on', provider: null, trustNeeded: true }).step).toBe('trust');
     expect(reduce(INITIAL_ONBOARDING, { type: 'detect', missing: [], mode: 'jev-on', provider: null, trustNeeded: false }).step).toBe('sandbox');
@@ -48,15 +64,140 @@ describe('onboardingReducer: detect', () => {
     expect(pre.provider).toBe('openrouter');
   });
 
-  it('skips the provider step when only the Jev key is missing, and under jev-only even if the generator key is missing', () => {
-    const jevOnly = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false });
-    expect(jevOnly.step).toBe('jevKey');
-    expect(jevOnly.field).toBe('decider.apiKey');
-    expect(jevOnly.providerShown).toBe(false);
-    const mode = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false });
-    expect(mode.step).toBe('jevKey');
+  it('TUI-DESIGN-2 §1.4: a jev-only first run asks the Jev provider when nothing inferred it, else goes straight to the Jev key; the generator key is never asked', () => {
+    const ask = reduce(INITIAL_ONBOARDING, detectJevOnly);
+    expect(ask.step).toBe('jevProvider');
+    expect(ask.jevProviderShown).toBe(true);
+    expect(ask.providerShown).toBe(false);
+    expect(ask.field).toBeNull();
+    const inferred = reduce(INITIAL_ONBOARDING, { ...detectJevOnly, jevProvider: 'typesafe' });
+    expect(inferred.step).toBe('jevKey');
+    expect(inferred.field).toBe('decider.apiKey');
+    expect(inferred.jevProvider).toBe('typesafe');
+    expect(inferred.jevProviderShown).toBe(false);
+    // the detect-time `provider` is the RESOLVED generator provider — openrouter by default since commit 2a92d0b — and never skips
+    // the question: a TypeSafe key saved as an openrouter key would be sent to openrouter.ai (§1.4 blocker)
+    const orGen = reduce(INITIAL_ONBOARDING, { ...detectJevOnly, provider: 'openrouter' });
+    expect(orGen.step).toBe('jevProvider');
+    expect(orGen.jevProviderShown).toBe(true);
+    // only an OpenRouter generator key typed in THIS wizard (the reuse rule) or an explicit detect `jevProvider` skips it
+    const orTyped = run([{ ...detectBoth, provider: 'openrouter' }, { type: 'choose', option: 'enter' }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(orTyped.step).toBe('jevKey');
+    expect(orTyped.jevProviderShown).toBe(false);
+    expect(openrouterGeneratorEntered(orTyped)).toBe(true);
+    expect(openrouterGeneratorEntered(orGen)).toBe(false);
+    expect(reduce(INITIAL_ONBOARDING, { ...detectJevOnly, provider: 'openrouter', jevProvider: 'openrouter' }).step).toBe('jevKey');
+    // jev-only with the generator key missing too: still no generator step
+    const both = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false });
+    expect(both.step).toBe('jevProvider');
     const modeGenOnly = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['generator.apiKey'], mode: 'jev-only', provider: null, trustNeeded: true });
     expect(modeGenOnly.step).toBe('trust');
+    // jev-on with only the Jev key missing and an anthropic generator: the Jev provider is asked
+    const anth = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: 'anthropic', trustNeeded: false });
+    expect(anth.step).toBe('jevProvider');
+    expect(reduce(INITIAL_ONBOARDING, { ...detectJevOnly, reason: 'login' }).reason).toBe('login');
+    expect(reduce(INITIAL_ONBOARDING, detectJevOnly).reason).toBe('missing');
+  });
+});
+
+describe('onboardingReducer: the jevProvider step (TUI-DESIGN-2 §1.4)', () => {
+  it('1 → typesafe, 2 → openrouter, Enter → the preselection, nothing preselected asks again; then the Jev key field', () => {
+    expect(JEV_PROVIDER_OPTIONS).toEqual(['typesafe', 'openrouter']);
+    const s = reduce(INITIAL_ONBOARDING, detectJevOnly);
+    const ts = reduce(s, { type: 'choose', option: 1 });
+    expect(ts.step).toBe('jevKey');
+    expect(ts.jevProvider).toBe('typesafe');
+    expect(ts.field).toBe('decider.apiKey');
+    expect(ts.length).toBe(0);
+    const or = reduce(s, { type: 'choose', option: 2 });
+    expect(or.jevProvider).toBe('openrouter');
+    const noPre = reduce(s, { type: 'choose', option: 'enter' });
+    expect(noPre.step).toBe('jevProvider');
+    expect(noPre.hint).toBe('pick 1 or 2');
+    const pre = reduce({ ...s, jevProvider: 'typesafe' }, { type: 'choose', option: 'enter' });
+    expect(pre.step).toBe('jevKey');
+    expect(pre.jevProvider).toBe('typesafe');
+    // field actions are inert on the step
+    expect(reduce(s, { type: 'length', length: 3 })).toBe(s);
+    expect(reduce(s, { type: 'enter', length: 30, prefixOk: true })).toBe(s);
+  });
+
+  it('the save carries jevProvider only when the step was shown; a preselected (inferred) provider is never written', () => {
+    const shown = run([detectJevOnly, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(shown.step).toBe('save');
+    expect(shown.save).toEqual({ provider: null, jevProvider: 'typesafe', fields: ['decider.apiKey'], reuseGeneratorForJev: false });
+    const inferred = run([{ ...detectJevOnly, jevProvider: 'typesafe' }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(inferred.save).toEqual({ provider: null, jevProvider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false });
+    // jev-on: generator (anthropic) → jev provider asked → jev key; both providers travel with the save
+    const full = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(full.save).toEqual({ provider: 'anthropic', jevProvider: 'openrouter', fields: ['generator.apiKey', 'decider.apiKey'], reuseGeneratorForJev: false });
+  });
+
+  it('Esc from the Jev key returns to the jevProvider step when it was shown, else to the generator field / provider step / a hint', () => {
+    const atKey = run([detectJevOnly, { type: 'choose', option: 1 }]);
+    const back = reduce(atKey, { type: 'escape' });
+    expect(back.step).toBe('jevProvider');
+    expect(back.jevProvider).toBe('typesafe');
+    expect(reduce(back, { type: 'escape' }).hint).toBe(HINT_CTRL_C_QUITS);
+    // after a generator key the jevProvider step's Esc goes back to the generator field
+    const afterGen = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(afterGen.step).toBe('jevProvider');
+    const gen = reduce(afterGen, { type: 'escape' });
+    expect(gen.step).toBe('generatorKey');
+    expect(gen.entered).toEqual([]);
+    const inferred = reduce(INITIAL_ONBOARDING, { ...detectJevOnly, jevProvider: 'typesafe' });
+    expect(reduce(inferred, { type: 'escape' }).hint).toBe(HINT_CTRL_C_QUITS);
+  });
+
+  it('expectedKeyProvider: the Jev step is checked against the Jev provider (openrouter when none), the generator step against the generator; typesafe accepts any shape', () => {
+    const jev = run([detectJevOnly, { type: 'choose', option: 1 }]);
+    expect(expectedKeyProvider(jev)).toBe('typesafe');
+    expect(looksLikeKey('whatever-shape-1234', expectedKeyProvider(jev))).toBe(true);
+    const or = run([detectJevOnly, { type: 'choose', option: 2 }]);
+    expect(expectedKeyProvider(or)).toBe('openrouter');
+    expect(looksLikeKey(KEY, expectedKeyProvider(or))).toBe(false);
+    expect(looksLikeKey(OR_KEY, expectedKeyProvider(or))).toBe(true);
+    const noJev = reduce(INITIAL_ONBOARDING, { ...detectJevOnly, provider: 'anthropic', jevProvider: null });
+    expect(noJev.step).toBe('jevProvider');
+    const gen = run([detectBoth, { type: 'choose', option: 1 }]);
+    expect(expectedKeyProvider(gen)).toBe('anthropic');
+    // a `/login` reopen at the Jev key with the session's resolved provider goes straight to the field; with none it asks first
+    const reopened = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'decider.apiKey', runLive: true, jevProvider: 'openrouter' });
+    expect(reopened.step).toBe('jevKey');
+    expect(expectedKeyProvider(reopened)).toBe('openrouter');
+    const unknown = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'decider.apiKey', runLive: true });
+    expect(unknown.step).toBe('jevProvider');
+    expect(expectedKeyProvider(reduce(unknown, { type: 'choose', option: 1 }))).toBe('typesafe');
+  });
+
+  it('TUI-DESIGN-2 §1.4 (finding 2): after an OpenRouter generator key a typesafe Jev provider never offers `Enter = reuse` — an empty Enter is too short', () => {
+    // the Jev provider was inferred (typesafe) before the wizard opened; the generator is openrouter and its key was typed here
+    const atJev = run([{ ...detectBoth, jevProvider: 'typesafe' }, { type: 'choose', option: 2 }, { type: 'enter', length: OR_KEY.length, prefixOk: true }]);
+    expect(atJev.step).toBe('jevKey');
+    expect(atJev.jevProvider).toBe('typesafe');
+    expect(atJev.jevProviderShown).toBe(false);
+    expect(reuseOffered(atJev)).toBe(false);
+    const empty = reduce(atJev, { type: 'enter', length: 0, prefixOk: true });
+    expect(empty.step).toBe('jevKey');
+    expect(empty.hint).toBe(HINT_TOO_SHORT);
+    expect(empty.save).toBeNull();
+    // a typed TypeSafe key saves with the generator's key, never as a reuse
+    const typed = reduce(atJev, { type: 'enter', length: 44, prefixOk: true });
+    expect(typed.save).toEqual({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey', 'decider.apiKey'], reuseGeneratorForJev: false });
+    // the same choice made on the jevProvider step (1 = typesafe) after the openrouter key: the step is shown only when nothing inferred it — here an anthropic generator
+    const chosen = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 1 }]);
+    expect(reuseOffered(chosen)).toBe(false);
+    expect(reduce(chosen, { type: 'enter', length: 0, prefixOk: true }).hint).toBe(HINT_TOO_SHORT);
+    // openrouter (or unresolved) Jev provider after the OpenRouter key: reuse is offered
+    const or = run([{ ...detectBoth, jevProvider: 'openrouter' }, { type: 'choose', option: 2 }, { type: 'enter', length: OR_KEY.length, prefixOk: true }]);
+    expect(reuseOffered(or)).toBe(true);
+    expect(reduce(or, { type: 'enter', length: 0, prefixOk: true }).save?.reuseGeneratorForJev).toBe(true);
+    const unresolved = run([detectBoth, { type: 'choose', option: 2 }, { type: 'enter', length: OR_KEY.length, prefixOk: true }]);
+    expect(reuseOffered(unresolved)).toBe(true);
+    // never on the generator step, never without the generator key typed here
+    expect(reuseOffered({ step: 'generatorKey', provider: 'openrouter', entered: ['generator.apiKey'], jevProvider: null })).toBe(false);
+    expect(reuseOffered({ step: 'jevKey', provider: 'openrouter', entered: [], jevProvider: null })).toBe(false);
+    expect(reuseOffered({ step: 'jevKey', provider: 'anthropic', entered: ['generator.apiKey'], jevProvider: 'openrouter' })).toBe(false);
   });
 });
 
@@ -93,10 +234,18 @@ describe('onboardingReducer: provider → generator key → jev key → save', (
     expect(warned.hint).toBe(hintPrefix('anthropic'));
     expect(warned.prefixWarned).toBe(true);
     const kept = reduce(warned, { type: 'enter', length: 40, prefixOk: false });
-    expect(kept.step).toBe('jevKey');
-    expect(kept.field).toBe('decider.apiKey');
+    // anthropic generator: the Jev provider is asked before the Jev key (§1.4)
+    expect(kept.step).toBe('jevProvider');
     expect(kept.entered).toEqual(['generator.apiKey']);
-    expect(kept.length).toBe(0);
+    const atJev = reduce(kept, { type: 'choose', option: 2 });
+    expect(atJev.step).toBe('jevKey');
+    expect(atJev.field).toBe('decider.apiKey');
+    expect(atJev.length).toBe(0);
+    // an openrouter generator goes straight to the Jev key
+    const or = run([detectBoth, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(or.step).toBe('jevKey');
+    // the prefix hint on the generator step names the openrouter default when no provider is known
+    expect(reduce({ ...s0, provider: null }, { type: 'enter', length: 40, prefixOk: false }).hint).toBe(hintPrefix('openrouter'));
     // NaN / negative / Infinity lengths are clamped to 0
     expect(reduce(s0, { type: 'length', length: NaN }).length).toBe(0);
     expect(reduce(s0, { type: 'length', length: -4 }).length).toBe(0);
@@ -108,19 +257,22 @@ describe('onboardingReducer: provider → generator key → jev key → save', (
     expect(atJev.step).toBe('jevKey');
     const reused = reduce(atJev, { type: 'enter', length: 0, prefixOk: true });
     expect(reused.step).toBe('save');
-    expect(reused.save).toEqual({ provider: 'openrouter', fields: ['generator.apiKey'], reuseGeneratorForJev: true });
+    expect(reused.save).toEqual({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: true });
     const typed = reduce(atJev, { type: 'enter', length: 60, prefixOk: true });
-    expect(typed.save).toEqual({ provider: 'openrouter', fields: ['generator.apiKey', 'decider.apiKey'], reuseGeneratorForJev: false });
+    expect(typed.save).toEqual({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey', 'decider.apiKey'], reuseGeneratorForJev: false });
     // anthropic provider: an empty Jev field is too short, never a reuse
-    const anth = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: KEY.length, prefixOk: true }]);
+    const anth = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: KEY.length, prefixOk: true }, { type: 'choose', option: 2 }]);
     expect(reduce(anth, { type: 'enter', length: 0, prefixOk: true }).hint).toBe(HINT_TOO_SHORT);
-    // only the Jev key missing: no generator entered → no reuse either
-    const jevOnly = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: 'openrouter', trustNeeded: false });
+    // only the Jev key missing with the resolved (default) openrouter generator: the Jev provider is asked; no generator entered → no reuse either
+    const jevOnlyAsk = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: 'openrouter', trustNeeded: false });
+    expect(jevOnlyAsk.step).toBe('jevProvider');
+    const jevOnly = reduce(jevOnlyAsk, { type: 'choose', option: 2 });
+    expect(jevOnly.step).toBe('jevKey');
     expect(reduce(jevOnly, { type: 'enter', length: 0, prefixOk: true }).hint).toBe(HINT_TOO_SHORT);
-    // the provider step was never shown: the host must not write a provider the user never chose
-    expect(reduce(jevOnly, { type: 'enter', length: 60, prefixOk: true }).save).toEqual({ provider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false });
-    const noProviderAtAll = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false });
-    expect(reduce(noProviderAtAll, { type: 'enter', length: 40, prefixOk: true }).save?.provider).toBeNull();
+    // the provider step was never shown: the host must not write a provider the user never chose; the jevProvider step was, so its choice is written
+    expect(reduce(jevOnly, { type: 'enter', length: 60, prefixOk: true }).save).toEqual({ provider: null, jevProvider: 'openrouter', fields: ['decider.apiKey'], reuseGeneratorForJev: false });
+    const noProviderAtAll = run([{ type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false }, { type: 'choose', option: 1 }]);
+    expect(reduce(noProviderAtAll, { type: 'enter', length: 40, prefixOk: true }).save).toEqual({ provider: null, jevProvider: 'typesafe', fields: ['decider.apiKey'], reuseGeneratorForJev: false });
     const reopened = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'generator.apiKey', runLive: false });
     expect(reduce(reopened, { type: 'enter', length: 40, prefixOk: true }).save?.provider).toBeNull();
   });
@@ -158,7 +310,7 @@ describe('onboardingReducer: provider → generator key → jev key → save', (
   });
 
   it('save-failed returns to the last field with the reason as the hint', () => {
-    const s = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'enter', length: 40, prefixOk: true }]);
+    const s = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
     expect(s.step).toBe('save');
     const f = reduce(s, { type: 'save-failed', reason: 'EACCES: cannot write ~/.config/jevcode/config.json' });
     expect(f.step).toBe('jevKey');
@@ -167,16 +319,21 @@ describe('onboardingReducer: provider → generator key → jev key → save', (
     expect(f.save).toBeNull();
   });
 
-  it('save-failed with nothing entered returns to the field the detect would open, reason as the hint', () => {
+  it('save-failed with nothing entered returns to the field the detect would open, reason as the hint; under reason `mode` the target mode picks the generator field (§1.4)', () => {
     const jevOnly = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false });
-    const f = reduce({ ...jevOnly, step: 'save', field: null, entered: [], save: { provider: null, fields: [], reuseGeneratorForJev: false } }, { type: 'save-failed', reason: 'could not write ~/.config/jevcode/config.json: EACCES' });
+    const f = reduce({ ...jevOnly, step: 'save', field: null, entered: [], save: { provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false } }, { type: 'save-failed', reason: 'could not write ~/.config/jevcode/config.json: EACCES' });
     expect(f.step).toBe('jevKey');
     expect(f.field).toBe('decider.apiKey');
     expect(f.hint).toBe('could not write ~/.config/jevcode/config.json: EACCES');
     expect(f.entered).toEqual([]);
     const gen = reduce(INITIAL_ONBOARDING, detectBoth);
-    const g = reduce({ ...gen, step: 'save', entered: [], save: { provider: null, fields: [], reuseGeneratorForJev: false } }, { type: 'save-failed', reason: 'x' });
+    const g = reduce({ ...gen, step: 'save', entered: [], save: { provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false } }, { type: 'save-failed', reason: 'x' });
     expect(g.field).toBe('generator.apiKey');
+    // /mode jev-on from a jev-only session whose detect listed both keys as missing: the target mode (jev-on) needs the generator
+    const mode = run([{ type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false }, { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-on' }]);
+    const m = reduce({ ...mode, step: 'save', entered: [], save: { provider: 'anthropic', jevProvider: null, fields: [], reuseGeneratorForJev: false } }, { type: 'save-failed', reason: 'x' });
+    expect(m.field).toBe('generator.apiKey');
+    expect(m.step).toBe('generatorKey');
   });
 
   it('a rejected Jev key under openrouter: Enter on the empty field takes the reuse path (the generator key serves Jev)', () => {
@@ -187,14 +344,14 @@ describe('onboardingReducer: provider → generator key → jev key → save', (
     expect(rejected.entered).toEqual(['generator.apiKey']);
     const reuse = reduce(rejected, { type: 'enter', length: 0, prefixOk: true });
     expect(reuse.step).toBe('save');
-    expect(reuse.save).toEqual({ provider: 'openrouter', fields: ['generator.apiKey'], reuseGeneratorForJev: true });
+    expect(reuse.save).toEqual({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: true });
     // under anthropic the same Enter is "too short"
-    const anth = reduce(run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'enter', length: 40, prefixOk: true }, { type: 'saved' }, { type: 'verify-answer', yes: true }]), { type: 'verify-result', ok: false, rejected: 'decider.apiKey' });
+    const anth = reduce(run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'saved' }, { type: 'verify-answer', yes: true }]), { type: 'verify-result', ok: false, rejected: 'decider.apiKey' });
     expect(reduce(anth, { type: 'enter', length: 0, prefixOk: true }).hint).toBe(HINT_TOO_SHORT);
   });
 
   it('cancel while step === save exits 2 (no run) or closes (run live) and drops the pending save request', () => {
-    const save = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'enter', length: 40, prefixOk: true }]);
+    const save = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
     expect(save.step).toBe('save');
     expect(save.save).not.toBeNull();
     const exit = reduce(save, { type: 'cancel' });
@@ -216,10 +373,22 @@ describe('onboardingReducer: provider → generator key → jev key → save', (
     expect(again.length).toBe(0);
     expect(again.entered).toEqual([]);
     expect(again.save).toBeNull();
-    const atField = reduce(exit, { type: 'reopen', at: 'decider.apiKey', runLive: true });
+    expect(again.reason).toBe('login');
+    // at the Jev key: the session's resolved Jev provider rides along (§2.3); without one the wizard asks where Jev is reached first
+    const atField = reduce(exit, { type: 'reopen', at: 'decider.apiKey', runLive: true, jevProvider: 'typesafe' });
     expect(atField.step).toBe('jevKey');
+    expect(atField.jevProvider).toBe('typesafe');
+    expect(atField.jevProviderShown).toBe(false);
     expect(atField.exitCode).toBeNull();
     expect(atField.runLive).toBe(true);
+    const asking = reduce(exit, { type: 'reopen', at: 'decider.apiKey', runLive: true });
+    expect(asking.step).toBe('jevProvider');
+    expect(asking.jevProviderShown).toBe(true);
+    expect(reduce(asking, { type: 'choose', option: 1 }).step).toBe('jevKey');
+    // a provider chosen on the startup wizard is kept when the reopen passes none; an explicit null clears it (the session re-resolved to nothing)
+    const startupChoice = run([detectJevOnly, { type: 'choose', option: 1 }]);
+    expect(reduce(startupChoice, { type: 'reopen', at: 'decider.apiKey', runLive: false }).step).toBe('jevKey');
+    expect(reduce(startupChoice, { type: 'reopen', at: 'decider.apiKey', runLive: false, jevProvider: null }).step).toBe('jevProvider');
   });
 
   it('trust 1/2/3 records the decision and moves to the sandbox line; sandbox-shown finishes', () => {
@@ -232,6 +401,115 @@ describe('onboardingReducer: provider → generator key → jev key → save', (
       expect(reduce(d, { type: 'sandbox-shown' }).step).toBe('done');
     }
     expect(reduce(t, { type: 'sandbox-shown' })).toBe(t);
+  });
+});
+
+describe('onboardingReducer: /mode jev-on reopens the generator step in place (TUI-DESIGN-2 §1.4, §8.1 S2)', () => {
+  const startup = reduce(INITIAL_ONBOARDING, { ...detectJevOnly, jevProvider: 'typesafe' });
+
+  it('reopen with reason `mode` → the provider step, providerShown, the target mode; `at` is ignored (never the stale field of the startup detect)', () => {
+    for (const at of ['provider', 'decider.apiKey', 'generator.apiKey'] as const) {
+      const s = reduce(startup, { type: 'reopen', at, runLive: false, reason: 'mode', mode: 'jev-on' });
+      expect(s.step, at).toBe('provider');
+      expect(s.providerShown).toBe(true);
+      expect(s.reason).toBe('mode');
+      expect(s.mode).toBe('jev-on');
+      expect(s.field).toBeNull();
+      expect(s.entered).toEqual([]);
+      expect(s.runLive).toBe(false);
+    }
+    // the default reason is `login` and the mode is kept
+    const login = reduce(startup, { type: 'reopen', at: 'decider.apiKey', runLive: false });
+    expect(login.reason).toBe('login');
+    expect(login.mode).toBe('jev-only');
+    expect(login.step).toBe('jevKey');
+    expect(reduce(startup, { type: 'reopen', at: 'provider', runLive: true, reason: 'rejected' }).reason).toBe('rejected');
+  });
+
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): `/mode llm-jev` reopens like jev-on — provider → generatorKey → save with the generator key only', () => {
+    const opened = reduce(startup, { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'llm-jev' });
+    expect(opened).toMatchObject({ step: 'provider', reason: 'mode', mode: 'llm-jev', missing: ['generator.apiKey'] });
+    const s = run([{ type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'llm-jev' }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }], startup);
+    expect(s.step).toBe('save');
+    expect(s.save).toEqual({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: false });
+  });
+
+  it('the generator flow under reason `mode` saves the provider and key; the Jev key (already resolving) is not asked again', () => {
+    const s = run([{ type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-on' }, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }], startup);
+    // the startup detect listed the Jev key as missing; under reason `mode` only the generator key is (the session runs on its Jev key): no Jev step
+    expect(reduce(startup, { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-on' }).missing).toEqual(['generator.apiKey']);
+    expect(s.step).toBe('save');
+    expect(s.save).toEqual({ provider: 'anthropic', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: false });
+    // a plain /login reopen keeps the detect's list
+    expect(reduce(startup, { type: 'reopen', at: 'provider', runLive: false }).missing).toEqual(['decider.apiKey']);
+    const clean = run([{ type: 'detect', missing: [], mode: 'jev-only', provider: null, trustNeeded: false }, { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-on' }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(clean.step).toBe('save');
+    expect(clean.save).toEqual({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: false });
+    const saved = reduce(clean, { type: 'saved' });
+    expect(saved.step).toBe('verify');
+    // §1.4: `provider → generatorKey → save → verify? → done` — trust and the [sandbox] line were settled at startup (finding 7)
+    expect(reduce(saved, { type: 'verify-answer', yes: false }).step).toBe('done');
+  });
+
+  it('a reopened wizard (reason mode, login or rejected) ends at `done` after the keys — never the trust or sandbox steps again (finding 7)', () => {
+    for (const reason of ['mode', 'login', 'rejected'] as const) {
+      // `/login` and a 401 pane's `[l]` reopen at the Jev key (the startup detect inferred typesafe); `/mode` at the provider step
+      const at = reason === 'mode' ? 'provider' : 'decider.apiKey';
+      const base = reduce({ ...startup, trustNeeded: true, trustDecision: null }, { type: 'reopen', at, runLive: false, reason, mode: reason === 'mode' ? 'jev-on' : 'jev-only' });
+      expect(base.step, reason).toBe(reason === 'mode' ? 'provider' : 'jevKey');
+      const save = run(reason === 'mode' ? [{ type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }] : [{ type: 'enter', length: 40, prefixOk: true }], base);
+      expect(save.step, reason).toBe('save');
+      const verify = reduce(save, { type: 'saved' });
+      expect(verify.step).toBe('verify');
+      expect(reduce(verify, { type: 'verify-answer', yes: false }).step, `${reason} n`).toBe('done');
+      const ok = reduce(reduce(verify, { type: 'verify-answer', yes: true }), { type: 'verify-result', ok: true, rejected: null });
+      expect(ok.step, `${reason} y`).toBe('done');
+      const failed = reduce(reduce(verify, { type: 'verify-answer', yes: true }), { type: 'verify-result', ok: false, rejected: null });
+      expect(failed.step, `${reason} failed`).toBe('done');
+      // keep after a rejection → done as well
+      const rejected = reduce(reduce(verify, { type: 'verify-answer', yes: true }), { type: 'verify-result', ok: false, rejected: reason === 'mode' ? 'generator.apiKey' : 'decider.apiKey' });
+      expect(rejected.hint).toBe(HINT_REJECTED);
+      expect(reduce(rejected, { type: 'keep' }).step, `${reason} keep`).toBe('done');
+      // a save with nothing typed under a reopen closes too
+      expect(reduce({ ...save, entered: [] }, { type: 'saved' }).step).toBe('done');
+    }
+    // the startup wizard keeps its trust and sandbox steps
+    const startupSave = run([{ ...detectJevOnly, jevProvider: 'typesafe', trustNeeded: true }, { type: 'enter', length: 40, prefixOk: true }, { type: 'saved' }, { type: 'verify-answer', yes: false }]);
+    expect(startupSave.step).toBe('trust');
+    expect(reduce(startupSave, { type: 'trust', option: 1 }).step).toBe('sandbox');
+  });
+
+  it('Ctrl-C under reason `mode` or `login` closes (done) and never exits, idle or live; a startup `missing` wizard with no run still exits 2', () => {
+    const mode = reduce(startup, { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-on' });
+    const closed = reduce(mode, { type: 'cancel' });
+    expect(closed.step).toBe('done');
+    expect(closed.exitCode).toBeNull();
+    expect(wizardActive(closed)).toBe(false);
+    const atKey = reduce(mode, { type: 'choose', option: 1 });
+    expect(reduce(atKey, { type: 'cancel' }).step).toBe('done');
+    const login = reduce(startup, { type: 'reopen', at: 'decider.apiKey', runLive: false });
+    expect(reduce(login, { type: 'cancel' }).step).toBe('done');
+    expect(reduce(login, { type: 'cancel' }).exitCode).toBeNull();
+    const rejectedIdle = reduce(startup, { type: 'reopen', at: 'decider.apiKey', runLive: false, reason: 'rejected' });
+    expect(reduce(rejectedIdle, { type: 'cancel' }).step).toBe('exit');
+    const rejectedLive = reduce(startup, { type: 'reopen', at: 'decider.apiKey', runLive: true, reason: 'rejected' });
+    expect(reduce(rejectedLive, { type: 'cancel' }).step).toBe('done');
+    expect(reduce(startup, { type: 'cancel' }).step).toBe('exit');
+    expect(reduce(startup, { type: 'cancel' }).exitCode).toBe(WIZARD_EXIT_CODE);
+    expect(cancelCloses({ runLive: false, reason: 'mode' })).toBe(true);
+    expect(cancelCloses({ runLive: false, reason: 'login' })).toBe(true);
+    expect(cancelCloses({ runLive: false, reason: 'missing' })).toBe(false);
+    expect(cancelCloses({ runLive: false, reason: 'rejected' })).toBe(false);
+    expect(cancelCloses({ runLive: true, reason: 'missing' })).toBe(true);
+  });
+
+  it('Esc on the first step hints `Ctrl-C closes` when Ctrl-C closes, `Ctrl-C quits` when it exits', () => {
+    const mode = reduce(startup, { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-on' });
+    expect(reduce(mode, { type: 'escape' }).hint).toBe(HINT_CTRL_C_CLOSES);
+    const login = reduce(startup, { type: 'reopen', at: 'generator.apiKey', runLive: false });
+    expect(reduce(login, { type: 'escape' }).hint).toBe(HINT_CTRL_C_CLOSES);
+    expect(reduce(startup, { type: 'escape' }).hint).toBe(HINT_CTRL_C_QUITS);
+    expect(reduce(reduce(INITIAL_ONBOARDING, detectBoth), { type: 'escape' }).hint).toBe(HINT_CTRL_C_QUITS);
   });
 });
 
@@ -249,15 +527,16 @@ describe('onboardingReducer: Esc and Ctrl-C', () => {
     const hinted = reduce(toProvider, { type: 'escape' });
     expect(hinted.step).toBe('provider');
     expect(hinted.hint).toBe(HINT_CTRL_C_QUITS);
-    // generator field reached without a provider step (reopen at the field): Esc hints
+    // generator field reached without a provider step (reopen at the field, reason login): Esc hints that Ctrl-C closes
     const reopened = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'generator.apiKey', runLive: false });
-    expect(reduce(reopened, { type: 'escape' }).hint).toBe(HINT_CTRL_C_QUITS);
+    expect(reduce(reopened, { type: 'escape' }).hint).toBe(HINT_CTRL_C_CLOSES);
     const jevOnly = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false });
+    expect(jevOnly.step).toBe('jevProvider');
     expect(reduce(jevOnly, { type: 'escape' }).hint).toBe(HINT_CTRL_C_QUITS);
     expect(reduce(reduce(INITIAL_ONBOARDING, { type: 'detect', missing: [], mode: 'jev-on', provider: null, trustNeeded: true }), { type: 'escape' }).step).toBe('trust');
   });
 
-  it('Ctrl-C exits 2 only when no run exists; during /login mid-run it closes the wizard (E5); it is inert once done', () => {
+  it('Ctrl-C exits 2 only for a startup wizard with no run; during /login mid-run it closes the wizard (E5); it is inert once done', () => {
     const s = run([detectBoth, { type: 'choose', option: 1 }, { type: 'length', length: 12 }]);
     const exit = reduce(s, { type: 'cancel' });
     expect(exit.step).toBe('exit');
@@ -272,14 +551,17 @@ describe('onboardingReducer: Esc and Ctrl-C', () => {
     expect(reduce(atTrust, { type: 'cancel' }).exitCode).toBe(2);
   });
 
-  it('/login re-enters at the provider step or at a field with runLive carried', () => {
+  it('/login re-enters at the provider step or at a field with runLive carried; Ctrl-C closes either way (a command opened it)', () => {
     const p = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'provider', runLive: true });
     expect(p.step).toBe('provider');
     expect(p.runLive).toBe(true);
-    const f = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'decider.apiKey', runLive: true });
+    const f = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'decider.apiKey', runLive: true, jevProvider: 'openrouter' });
     expect(f.step).toBe('jevKey');
     expect(f.field).toBe('decider.apiKey');
     expect(reduce(f, { type: 'cancel' }).step).toBe('done');
+    const idle = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'decider.apiKey', runLive: false });
+    expect(idle.step).toBe('jevProvider'); // no Jev provider known: asked before the key (§1.4)
+    expect(reduce(idle, { type: 'cancel' }).step).toBe('done');
   });
 });
 
@@ -292,6 +574,7 @@ describe('onboardingReducer: invariants', () => {
       { type: 'choose', option: 1 },
       { type: 'length', length: KEY.length },
       { type: 'enter', length: KEY.length, prefixOk: looksLikeKey(KEY, 'anthropic') },
+      { type: 'choose', option: 2 },
       { type: 'length', length: OR_KEY.length },
       { type: 'enter', length: OR_KEY.length, prefixOk: true },
       { type: 'saved' },
@@ -312,7 +595,7 @@ describe('onboardingReducer: invariants', () => {
     // the action union has no member carrying a key value
     const keys = new Set<string>();
     for (const a of script) for (const k of Object.keys(a)) keys.add(k);
-    expect([...keys].sort()).toEqual(['at', 'length', 'missing', 'mode', 'option', 'prefixOk', 'provider', 'trustNeeded', 'type', 'yes'].filter((k) => k !== 'at'));
+    expect([...keys].sort()).toEqual(['length', 'missing', 'mode', 'option', 'prefixOk', 'provider', 'trustNeeded', 'type', 'yes']);
   });
 
   it('unknown or out-of-step actions return the same state object', () => {
@@ -326,12 +609,13 @@ describe('onboardingReducer: invariants', () => {
     expect(reduce(s, { type: 'bogus' } as unknown as OnboardingAction)).toBe(s);
   });
 
-  it('wizardRows: provider 3, key 3, verify 2, trust 4 (2 below rows 12), else 0 — never more than 4; wizardActive covers save', () => {
+  it('wizardRows: jevProvider 3, provider 3, key 3, verify 2, trust 4 (2 below rows 12), else 0 — never more than 4; wizardActive covers save', () => {
+    expect(wizardRows(reduce(INITIAL_ONBOARDING, detectJevOnly), 24)).toBe(3);
     const base = reduce(INITIAL_ONBOARDING, detectBoth);
     expect(wizardRows(base, 24)).toBe(3);
     const key = reduce(base, { type: 'choose', option: 1 });
     expect(wizardRows(key, 24)).toBe(3);
-    const save = run([{ type: 'enter', length: 40, prefixOk: true }, { type: 'enter', length: 40, prefixOk: true }], key);
+    const save = run([{ type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }], key);
     expect(wizardRows(save, 24)).toBe(0);
     expect(wizardActive(save)).toBe(true);
     const verify = reduce(save, { type: 'saved' });
@@ -349,11 +633,13 @@ describe('onboardingReducer: invariants', () => {
 });
 
 describe('looksLikeKey / sanitizeKeyInput (pure helpers the component applies to its ref)', () => {
-  it('prefix hints per provider; null provider accepts anything', () => {
+  it('prefix hints per provider; null provider accepts anything; typesafe accepts anything (its key shape is unknown, TUI-DESIGN-2 §2.3)', () => {
     expect(looksLikeKey(KEY, 'anthropic')).toBe(true);
     expect(looksLikeKey(KEY, 'openrouter')).toBe(false);
     expect(looksLikeKey(OR_KEY, 'openrouter')).toBe(true);
     expect(looksLikeKey('whatever', null)).toBe(true);
+    expect(looksLikeKey('whatever', 'typesafe')).toBe(true);
+    expect(looksLikeKey('', 'typesafe')).toBe(true);
     expect(looksLikeKey('', 'anthropic')).toBe(false);
   });
 
@@ -368,7 +654,7 @@ describe('looksLikeKey / sanitizeKeyInput (pure helpers the component applies to
     expect(sanitizeKeyInput(`\u001bOA${KEY}\u001bOB`)).toBe(KEY);
     expect(sanitizeKeyInput(` ${KEY}\t \n`)).toBe(KEY);
     expect(sanitizeKeyInput('a\u0007b\u001b]0;title\u0007c\u007fd')).toBe('abcd');
-    expect(sanitizeKeyInput('é')).toBe('é');
+    expect(sanitizeKeyInput('é')).toBe('é');
     expect(sanitizeKeyInput('')).toBe('');
     expect(sanitizeKeyInput('日本　語')).toBe('日本語');
   });

@@ -8,7 +8,7 @@ import type { SettingReader } from '../../../src/config/validate.js';
 
 const HOME = '/home/me';
 const CWD = '/work/proj';
-const launch: LaunchSettings = { fps: 30, renderMode: 'standard', screenReader: false, ascii: false, noColor: false };
+const launch: LaunchSettings = { fps: 30, renderMode: 'standard', screenReader: false, ascii: false, noColor: false, reducedMotion: false };
 
 function reader(values: Partial<Record<SettingName, string | Resolved<string>>>): SettingReader {
   const m = new Map<SettingName, Resolved<string>>();
@@ -108,6 +108,12 @@ describe('resolveUiConfig (TUI-DESIGN §16 session settings)', () => {
 });
 
 describe('sessionSpendCap derivation (TUI-DESIGN §9.1, §16)', () => {
+  it('llm-jev (docs/LLM-JEV-DESIGN.md) pays a generator: the $2.00 run default and the derived $10.00 session cap, like jev-on', () => {
+    expect(defaultRunSpendCapUsd('llm-jev')).toBe(2);
+    expect(runSpendCapUsd(reader({}), 'llm-jev')).toBe(2);
+    expect(resolveSessionSpendCap(reader({}), 'llm-jev')).toEqual({ value: 10, source: 'derived', derived: true });
+  });
+
   it('mode-keyed run default: $2.00, $0.25 under jev-only', () => {
     expect(defaultRunSpendCapUsd('jev-on')).toBe(2);
     expect(defaultRunSpendCapUsd('jev-off')).toBe(2);

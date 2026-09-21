@@ -3,14 +3,19 @@
  * every §16 flag under the key the config layer reads, `--json[=verbose]`, `-c`, `--resume <id|title>` (any non-empty
  * value; the id check moved to the controller), bare argv / leading flag → `chat`, `jevcode run` with no task on a
  * TTY → `chat` (A101), the `--no-input` usage error, and the usage text; every pre-existing flag keeps working.
+ * TUI-DESIGN-2 §1.2 / §2.3: `--mode` help names jev-only as the default; `--jev-provider auto|typesafe|openrouter`.
  */
 import { describe, expect, it } from 'vitest';
 import {
   BOOLEAN_FLAGS,
+  CONDITIONS,
   CLI_SOURCES,
   COMMANDS,
   COMPLETION_SHELLS,
   FLAGS,
+  JEV_PROVIDERS,
+  LOGIN_JEV_PROVIDERS,
+  MODES,
   NO_INPUT_NEEDS_TASK,
   RUN_ID_RE,
   SESSIONS_OPS,
@@ -433,8 +438,13 @@ describe('usageText', () => {
     expect(usageText('run')).toContain('--task-file <path>');
     expect(usageText('why')).toContain('Usage: jevcode why <id> <step> <ref>');
     expect(usageText('completion')).toContain('bash|zsh|fish');
-    expect(usageText('run')).toMatch(/--mode jev-on\|jev-off\|jev-only/);
+    expect(usageText('run')).toMatch(/--mode jev-only\|jev-on\|jev-off/);
     expect(usageText()).toContain('jev-only');
+    // TUI-DESIGN-2 §1.4: `jevcode login --jev-provider typesafe|openrouter`
+    expect(usageText()).toContain('jevcode login [--provider anthropic|openrouter] [--jev-provider typesafe|openrouter]');
+    // finding 9: login's flag table agrees with its usage line (`auto` = infer is what an absent flag means there)
+    expect(login).toContain('--jev-provider typesafe|openrouter ');
+    expect(login).not.toContain('auto|typesafe|openrouter');
   });
 
   it('the spec covers every ParsedFlags key exactly once, COMMANDS is the documented list in order, short forms are unique', () => {
@@ -451,7 +461,35 @@ describe('usageText', () => {
   });
 });
 
-describe('parseCliArgs: --mode and the jev-only condition', () => {
+describe('parseCliArgs: --mode and the jev-only condition (TUI-DESIGN-2 §1.2)', () => {
+  it('--mode help names jev-only as the default and orders the enum jev-only|jev-on|jev-off|llm-jev; the flag itself stays optional (the default lives in the config layer)', () => {
+    const mode = FLAGS.find((f) => f.key === 'mode');
+    expect(mode?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
+    expect(mode?.help).toBe('engine mode: jev-only (default; no generating LLM), jev-on (Jev + LLM), jev-off (generator only), llm-jev (GLM candidates inside the Jev-only search; Jev decides, tests verify)');
+    expect(FLAGS.find((f) => f.key === 'condition')?.arg).toBe('jev-only|jev-on|jev-off|llm-jev');
+    expect(MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    expect(parseCliArgs([]).mode).toBeUndefined();
+    expect(parseCliArgs(['chat']).mode).toBeUndefined();
+    expect(usage(['run', 'x', '--mode', 'jev-maybe']).message).toMatch(/--mode: expected one of jev-only\|jev-on\|jev-off\|llm-jev/);
+    expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
+    expect(usageText()).not.toContain('[--mode jev-on|jev-off|jev-only]');
+    expect(usageText()).toContain('opens the interactive session in jev-only mode');
+  });
+
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): --mode / --condition / bench --conditions accept the fourth mode; the bench default stays jev-on,jev-off', () => {
+    expect(parseCliArgs(['run', 'x', '--mode', 'llm-jev']).mode).toBe('llm-jev');
+    expect(parseCliArgs(['chat', '--mode', ' LLM-JEV ']).mode).toBe('llm-jev');
+    expect(parseCliArgs(['run', 'x', '--condition', 'llm-jev']).condition).toBe('llm-jev');
+    expect(parseCliArgs(['bench', '--conditions', 'jev-on,llm-jev']).conditions).toBe('jev-on,llm-jev');
+    expect(CONDITIONS).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev']);
+    expect(FLAGS.find((f) => f.key === 'conditions')?.arg).toBe('jev-on,jev-off[,jev-only,llm-jev]');
+    expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (default jev-on,jev-off)');
+    expect(usageText('run')).toContain('--mode jev-only|jev-on|jev-off|llm-jev ');
+    expect(usageText('bench')).toContain('--conditions jev-on,jev-off[,jev-only,llm-jev] ');
+    expect(usageText()).toContain('[--mode jev-only|jev-on|jev-off|llm-jev]');
+    expect(usageText()).toContain('[--conditions jev-on,jev-off,jev-only,llm-jev]');
+  });
+
   it('parses --mode, folds the hidden --condition alias into it, and rejects disagreement', () => {
     expect(parseCliArgs(['run', 'x', '--mode', 'jev-only']).mode).toBe('jev-only');
     expect(parseCliArgs(['run', 'x', '--mode', ' JEV-OFF ']).mode).toBe('jev-off');
@@ -469,12 +507,46 @@ describe('parseCliArgs: --mode and the jev-only condition', () => {
     expect(usage(['config', '--mode', 'jev-only']).message).toMatch(/mode/);
   });
 
-  it('bench --conditions accepts jev-only alone or with the others; usage mentions it', () => {
+  it('bench --conditions accepts jev-only alone or with the others; usage mentions it; the bench default order is untouched (§1.1)', () => {
     expect(parseCliArgs(['bench', '--conditions', 'jev-on,jev-only']).conditions).toBe('jev-on,jev-only');
     expect(parseCliArgs(['bench', '--conditions', 'jev-only']).conditions).toBe('jev-only');
     expect(parseCliArgs(['bench', '--conditions', 'jev-on,jev-off,jev-only']).conditions).toBe('jev-on,jev-off,jev-only');
     expect(usage(['bench', '--conditions', 'jev-on,nope']).message).toMatch(/--conditions/);
     expect(usageText()).toContain('jev-only');
-    expect(usageText('run')).toMatch(/--mode jev-on\|jev-off\|jev-only/);
+    expect(usageText('run')).toMatch(/--mode jev-only\|jev-on\|jev-off/);
+    expect(FLAGS.find((f) => f.key === 'conditions')?.help).toBe('conditions to run (default jev-on,jev-off)');
+  });
+});
+
+describe('parseCliArgs: --jev-provider (TUI-DESIGN-2 §2.3, §1.4)', () => {
+  it('parses auto|typesafe|openrouter (lowercased) on every run-like command and on login; anything else is a usage error; logout does not take it', () => {
+    expect(STRING_FLAGS).toContain('jevProvider');
+    expect(JEV_PROVIDERS).toEqual(['auto', 'typesafe', 'openrouter']);
+    expect(parseCliArgs(['run', 'x', '--jev-provider', 'typesafe']).jevProvider).toBe('typesafe');
+    expect(parseCliArgs(['chat', '--jev-provider', ' OpenRouter ']).jevProvider).toBe('openrouter');
+    expect(parseCliArgs(['--jev-provider', 'auto'])).toEqual({ command: 'chat', jevProvider: 'auto' });
+    expect(parseCliArgs(['config', '--jev-provider', 'typesafe']).jevProvider).toBe('typesafe');
+    expect(parseCliArgs(['bench', '--jev-provider', 'typesafe']).jevProvider).toBe('typesafe');
+    expect(parseCliArgs(['perf', '--jev-provider', 'openrouter']).jevProvider).toBe('openrouter');
+    expect(parseCliArgs(['login', '--jev-provider', 'typesafe', '--jev-key-stdin'])).toEqual({ command: 'login', jevProvider: 'typesafe', jevKeyStdin: true });
+    expect(parseCliArgs(['login', '--jev-provider', 'OpenRouter']).jevProvider).toBe('openrouter');
+    // TUI-DESIGN-2 §1.4 (finding 9): login's usage line says typesafe|openrouter — `auto` is what an absent flag means there and is refused
+    expect(LOGIN_JEV_PROVIDERS).toEqual(['typesafe', 'openrouter']);
+    expect(usage(['login', '--jev-provider', 'auto']).message).toMatch(/--jev-provider: expected one of typesafe\|openrouter, got "auto"/);
+    expect(usage(['login', '--jev-provider', 'auto']).message).toContain('jevcode login');
+    expect(usageText('login')).toContain('--jev-provider typesafe|openrouter ');
+    expect(usageText('login')).not.toContain('auto|typesafe|openrouter');
+    expect(usageText('run')).toContain('--jev-provider auto|typesafe|openrouter');
+    expect(usageText()).toContain('[--jev-provider typesafe|openrouter]'); // the login synopsis line
+    expect(usage(['run', 'x', '--jev-provider', 'gemini']).message).toMatch(/--jev-provider: expected one of auto\|typesafe\|openrouter, got "gemini"/);
+    expect(usage(['logout', '--jev-provider', 'typesafe']).message).toMatch(/--jev-provider/);
+    expect(parseCliArgs(['run', 'x']).jevProvider).toBeUndefined();
+    const spec = FLAGS.find((f) => f.key === 'jevProvider');
+    expect(spec?.name).toBe('jev-provider');
+    expect(spec?.arg).toBe('auto|typesafe|openrouter');
+    expect(spec?.help).toBe('Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)');
+    expect(spec?.commands).toEqual(['chat', 'run', 'config', 'bench', 'perf', 'login']);
+    expect(spec?.argFor).toEqual({ login: 'typesafe|openrouter' });
+    expect(usageText('run')).toContain('--jev-provider auto|typesafe|openrouter');
   });
 });

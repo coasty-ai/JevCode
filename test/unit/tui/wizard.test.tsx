@@ -1,5 +1,5 @@
 /**
- * TUI-DESIGN §19.3 (`wizard.test.tsx`, §11.1, F10): the masked field — zero key bytes in every frame, the bytes only
+ * TUI-DESIGN §19.3 (`wizard.test.tsx`, §11.1, F10; TUI-DESIGN-2 §1.4): the masked field — zero key bytes in every frame, the bytes only
  * in the `useMaskedBytes` ref, `•`/`*` cells, the cursor after the bullets; the wizard hook — digits pick the provider,
  * typed / pasted bytes change only `length`, Enter with < 8 chars hints, Enter saves through the host with `addSecret`
  * before the `[setup]` items (the host's order), Esc clears then steps back, Ctrl-C exits 2 with no run and closes the
@@ -16,6 +16,14 @@ import { stringWidth } from '../../../src/tui/composer/width.js';
 afterEach(() => cleanup());
 const strip = (s: string | undefined): string => (s ?? '').replace(/\x1b\[[0-9;]*m/g, '');
 const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
+/** wait for an async host round trip (save → saved → verify; verify n → done) instead of a fixed tick — the full suite runs under load */
+async function until(cond: () => boolean, timeoutMs = 2000): Promise<void> {
+  const t0 = Date.now();
+  while (!cond()) {
+    if (Date.now() - t0 > timeoutMs) throw new Error('until: condition not met in time');
+    await tick(5);
+  }
+}
 const KEY = 'sk-ant-api03-SECRET-CANARY-0123456789abcdef';
 
 describe('<MaskedField>', () => {
@@ -206,8 +214,9 @@ describe('useWizard + <Wizard> (§11.1)', () => {
 
   it('every wizard row is ≤ columns cells at 40 columns (F-N)', async () => {
     const h = harness();
-    h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false });
+    h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, jevProvider: 'typesafe', trustNeeded: false });
     await tick();
+    expect(h.ctl().state.step).toBe('jevKey');
     h.ctl().apply({ type: 'wizard', op: 'input', text: 'x'.repeat(108) });
     await tick();
     const ui = render(<Wizard state={h.ctl().state} rows={3} columns={40} top={0} />);
@@ -215,5 +224,152 @@ describe('useWizard + <Wizard> (§11.1)', () => {
     expect(lines).toHaveLength(3);
     for (const l of lines) expect(stringWidth(l)).toBeLessThanOrEqual(40);
     expect(lines[1]).toBe(`> ${'•'.repeat(37)}`);
+  });
+
+  it('TUI-DESIGN-2 §1.4: a jev-only first run with nothing inferred asks the Jev provider (digits pick), then the `1/1` Jev key; the save carries jevProvider and no generator provider', async () => {
+    const h = harness();
+    h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, jevProvider: null, trustNeeded: false });
+    await tick();
+    expect(h.ctl().state.step).toBe('jevProvider');
+    expect(h.frame()).toContain('No Jev key found. Where do you reach Jev?');
+    expect(h.frame()).toContain('1 typesafe');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: '1' });
+    await tick();
+    expect(h.ctl().state.step).toBe('jevKey');
+    expect(h.frame()).toContain('Jev API key (TYPESAFE_API_KEY)  1/1');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: `ts-${KEY}` });
+    await tick();
+    expect(h.frame()).not.toContain(KEY);
+    expect(h.frame()).toContain(`> ${'•'.repeat(`ts-${KEY}`.length)}`);
+    // Esc on the empty field steps back to the provider question, Enter accepts the preselection
+    h.ctl().apply({ type: 'wizard', op: 'clear' });
+    h.ctl().apply({ type: 'wizard', op: 'back' });
+    await tick();
+    expect(h.ctl().state.step).toBe('jevProvider');
+    h.ctl().apply({ type: 'wizard', op: 'submit' });
+    await tick();
+    expect(h.ctl().state.step).toBe('jevKey');
+    expect(h.ctl().state.jevProvider).toBe('typesafe');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: `ts-${KEY}` });
+    await tick();
+    // typesafe: every key shape passes the prefix check on the first Enter
+    h.ctl().apply({ type: 'wizard', op: 'submit' });
+    await tick(20);
+    expect(h.host.saves).toHaveLength(1);
+    expect(h.host.saves[0]).toMatchObject({ provider: null, jevProvider: 'typesafe', fields: ['decider.apiKey'], reuseGeneratorForJev: false });
+    expect(h.host.saves[0]?.values['decider.apiKey']).toBe(`ts-${KEY}`);
+    expect(h.host.saves[0]?.values['generator.apiKey']).toBeUndefined();
+    // the verify detail names the typesafe probe; n skips → done
+    expect(h.frame()).toContain('one Jev decision at api.typesafe.ai ~$0.00002 (jev-1.13.0)');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: 'n' });
+    await tick(60);
+    expect(h.done).toBe(1);
+    expect(h.exits).toEqual([]);
+    for (const i of h.items) expect(i).not.toContain(KEY);
+  });
+
+  it('TUI-DESIGN-2 §1.4: `/mode jev-on` with no generator key reopens at the provider step with its own title; Ctrl-C closes the wizard and never exits; host.verify receives jevProvider', async () => {
+    const verifies: { provider: string | null; jevProvider: string | null }[] = [];
+    const h = harness({ verify: async (i) => {
+      verifies.push({ provider: i.provider, jevProvider: i.jevProvider });
+      return { ok: true, rejected: null, items: [] };
+    } });
+    h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, jevProvider: 'typesafe', trustNeeded: false });
+    await tick();
+    h.ctl().cancel(); // the startup wizard exits 2 (no run)
+    await tick(60);
+    expect(h.exits).toEqual([2]);
+    h.ctl().reopen('provider', false, { reason: 'mode', mode: 'jev-on' });
+    await tick();
+    expect(h.ctl().state.step).toBe('provider');
+    expect(h.ctl().state.mode).toBe('jev-on');
+    expect(h.frame()).toContain('jev+llm needs a generator. Pick the provider:');
+    expect(h.frame()).toContain('Ctrl-C keeps jev-only');
+    h.ctl().cancel();
+    await tick(60);
+    expect(h.exits).toEqual([2]); // no second exit: the /mode wizard closes
+    expect(h.done).toBe(1);
+    expect(h.frame()).toBe('closed');
+    // and the saving path: provider 2 → key → save carries the provider → verify y → host.verify sees jevProvider (from the startup detect)
+    h.ctl().reopen('provider', false, { reason: 'mode', mode: 'jev-on' });
+    await tick();
+    h.ctl().apply({ type: 'wizard', op: 'input', text: '2' });
+    await tick();
+    expect(h.frame()).toContain('OpenRouter API key (OPENROUTER_API_KEY)');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: `sk-or-v1-${KEY}` });
+    await tick();
+    h.ctl().apply({ type: 'wizard', op: 'submit' });
+    await tick(20);
+    expect(h.host.saves).toHaveLength(1);
+    expect(h.host.saves[0]).toMatchObject({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'] });
+    const itemsBefore = h.items.length;
+    h.ctl().apply({ type: 'wizard', op: 'input', text: 'y' });
+    await tick(60);
+    expect(verifies).toEqual([{ provider: 'openrouter', jevProvider: 'typesafe' }]);
+    expect(h.done).toBe(2);
+    expect(h.exits).toEqual([2]);
+    // finding 7: a reopened wizard ends at `done` after the keys — no second `[sandbox]` item from host.sandboxLine()
+    expect(h.items.slice(itemsBefore).filter((i) => i.startsWith('[sandbox]'))).toEqual([]);
+    expect(h.frame()).toBe('closed');
+  });
+
+  it('TUI-DESIGN-2 §1.4: a `/login` reopen emits no `[sandbox]` item (verify `n` → done); reopen at the Jev key asks the provider unless the session passes it', async () => {
+    const h = harness();
+    h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, jevProvider: 'typesafe', trustNeeded: false });
+    await tick();
+    h.ctl().apply({ type: 'wizard', op: 'input', text: `ts-${KEY}` });
+    await tick();
+    h.ctl().apply({ type: 'wizard', op: 'submit' });
+    await until(() => h.ctl().state.step === 'verify');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: 'n' });
+    await until(() => h.done === 1);
+    // the startup wizard appends the one sandbox line
+    expect(h.items.filter((i) => i.startsWith('[sandbox]'))).toHaveLength(1);
+    // /login at the Jev key with the session's resolved provider: straight to the field, save, verify n → done, still one sandbox line
+    h.ctl().reopen('decider.apiKey', false, { jevProvider: 'typesafe' });
+    await tick();
+    expect(h.ctl().state.step).toBe('jevKey');
+    expect(h.frame()).toContain('Jev API key (TYPESAFE_API_KEY)  1/1');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: `ts2-${KEY}` });
+    await tick();
+    h.ctl().apply({ type: 'wizard', op: 'submit' });
+    await until(() => h.ctl().state.step === 'verify');
+    expect(h.host.saves).toHaveLength(2);
+    expect(h.host.saves[1]).toMatchObject({ provider: null, jevProvider: null, fields: ['decider.apiKey'] });
+    h.ctl().apply({ type: 'wizard', op: 'input', text: 'n' });
+    await until(() => h.done === 2);
+    expect(h.items.filter((i) => i.startsWith('[sandbox]'))).toHaveLength(1);
+    expect(h.frame()).toBe('closed');
+    // a reopen at the Jev key with nothing known asks where Jev is reached first (§1.4: a Jev key never saved without its provider)
+    h.ctl().reopen('decider.apiKey', false, { jevProvider: null });
+    await tick();
+    expect(h.ctl().state.step).toBe('jevProvider');
+    expect(h.frame()).toContain('No Jev key found. Where do you reach Jev?');
+    expect(h.frame()).toContain('1 typesafe');
+    h.ctl().apply({ type: 'wizard', op: 'input', text: '2' });
+    await tick();
+    expect(h.frame()).toContain('Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY)  1/1');
+    h.ctl().cancel();
+    await until(() => h.done === 3);
+    expect(h.exits).toEqual([]);
+    for (const i of h.items) expect(i).not.toContain(KEY);
+  });
+
+  it('TUI-DESIGN-2 §4.3: the `prompt` prop draws the boxed console\'s `› ` masked row and places the cursor after the bullets', async () => {
+    const positions: (CursorPosition | undefined)[] = [];
+    const ui = render(<MaskedField length={6} columns={76} top={1} prompt="› " cursor={(p) => positions.push(p)} />);
+    expect(strip(ui.lastFrame())).toBe('› ••••••');
+    expect(positions.at(-1)).toEqual({ x: 8, y: 1 });
+    cleanup();
+    const h = harness();
+    h.ctl().start({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, jevProvider: 'openrouter', trustNeeded: false });
+    await tick();
+    h.ctl().apply({ type: 'wizard', op: 'input', text: 'sk-or-v1-abc' });
+    await tick();
+    const boxed = render(<Wizard state={h.ctl().state} rows={3} columns={76} top={0} prompt="› " />);
+    const lines = strip(boxed.lastFrame()).split('\n');
+    expect(lines[0]).toBe('Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY)  1/1');
+    expect(lines[1]).toBe(`› ${'•'.repeat(12)}`);
+    for (const l of lines) expect(stringWidth(l)).toBeLessThanOrEqual(76);
   });
 });

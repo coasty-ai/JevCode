@@ -11,8 +11,9 @@ import { createJevDecider } from '../../../src/jev/client.js';
 import { JEV_RETRY } from '../../../src/jev/types.js';
 import { FAKE_KEY, fakeFetch, redact, sampleQuestions, validBody } from './helpers.js';
 import type { Scripted } from './helpers.js';
+import { JEV_PROVIDERS } from '../../../src/jev/providers.js';
 
-const cfg: DeciderConfig = { baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: FAKE_KEY, model: 'typesafe/jev-1.13-20260917', pinned: true };
+const cfg: DeciderConfig = { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: FAKE_KEY, model: 'typesafe/jev-1.13-20260917', pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing, providerSource: 'default' };
 const state: Json = { task: 'fix the failing test' };
 
 type HookSleep = (ms: number, signal: AbortSignal, wake?: AbortSignal) => Promise<void>;

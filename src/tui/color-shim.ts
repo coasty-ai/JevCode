@@ -65,3 +65,36 @@ export function colorEnabled(opts: ColorEnabledOptions = {}): boolean {
   }
   return stream.isTTY === true;
 }
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-2 §4.9: colour depth (chalk's supports-color order; a wrong guess only loses fidelity — Ink downsamples)
+// ---------------------------------------------------------------------------------------
+
+/** TUI-DESIGN-2 §4.9: 0 = colour off · 16 = ANSI names · 256 = `ansi256(n)` · 24 = truecolor `#rrggbb`. */
+export type ColorDepth = 0 | 16 | 256 | 24;
+
+const TRUECOLOR_PROGRAMS: ReadonlySet<string> = new Set(['iterm.app', 'wezterm', 'ghostty', 'vscode']);
+const TERM_256: ReadonlySet<string> = new Set(['alacritty', 'xterm-kitty', 'wezterm', 'foot']);
+
+/**
+ * TUI-DESIGN-2 §4.9 `colorDepth`: `--no-color` / `NO_COLOR` / `TERM=dumb` → 0 (through `colorEnabled`); `FORCE_COLOR`
+ * 3 → 24, 2 → 256, 1 → 16; `COLORTERM` ∈ {truecolor, 24bit} → 24; `TERM_PROGRAM` iTerm.app · WezTerm · ghostty · vscode →
+ * 24, Apple_Terminal → 256; `TERM` matching `/-256(color)?$/` or alacritty · xterm-kitty · wezterm · foot → 256; else 16.
+ * No terminal query is ever sent (A112). Pure over its inputs.
+ */
+export function colorDepth(opts: ColorEnabledOptions = {}): ColorDepth {
+  if (!colorEnabled(opts)) return 0;
+  const env = opts.env ?? process.env;
+  const forced = (env['FORCE_COLOR'] ?? '').trim();
+  if (forced === '3') return 24;
+  if (forced === '2') return 256;
+  if (forced === '1') return 16;
+  const colorterm = (env['COLORTERM'] ?? '').trim().toLowerCase();
+  if (colorterm === 'truecolor' || colorterm === '24bit') return 24;
+  const program = (env['TERM_PROGRAM'] ?? '').trim().toLowerCase();
+  if (TRUECOLOR_PROGRAMS.has(program)) return 24;
+  if (program === 'apple_terminal') return 256;
+  const term = (env['TERM'] ?? '').trim().toLowerCase();
+  if (/-256(color)?$/.test(term) || TERM_256.has(term)) return 256;
+  return 16;
+}

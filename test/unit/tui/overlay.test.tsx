@@ -60,7 +60,7 @@ describe('<Overlay> (§0, §24)', () => {
     const box = render(<Overlay kind="followup" rows={5} previewRows={0} columns={80} terminalRows={24} top={0} data={{ followup }} />);
     const rows = strip(box.lastFrame());
     expect(rows).toHaveLength(5);
-    expect(rows[0]).toMatch(/^┌ follow-up would exceed the session cap ─+┐$/);
+    expect(rows[0]).toMatch(/^╭ follow-up would exceed the session cap ─+╮$/);
     expect(rows[1]).toContain('[y] start, run cap clamped to $0.42   [r] raise session cap   [n]/Esc cancel');
     expect(rows[3]).toContain('Enter does nothing here. A clamped run stops at the session cap (spend_cap).');
     for (const r of rows) expect(stringWidth(r)).toBeLessThanOrEqual(80);

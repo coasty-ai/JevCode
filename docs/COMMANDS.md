@@ -26,12 +26,15 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/budget` | [spend-cap\|session-spend-cap\|max-steps\|max-wall\|max-replans <v>] | any | yes | show or set (§9.4); `session-spend-cap none` lifts the session cap; `max-generator-tokens <n>` is the --allow-unpriced token cap (§9.5) |
 | `/model` | <id> | any | yes | pending for the **next** run only (memory); a differing `--model` on `/resume` stays `ConfigError` |
 | `/provider` | <p> | any | yes | pending for the **next** run only (memory) |
-| `/mode` | <m> | any | yes | pending for the **next** run only (memory) |
+| `/mode` | [jev-only\|jev-on\|jev-off\|llm-jev] | any | yes | no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard's generator step in place; persist with `jevcode config set mode <m>` |
+| `/llm` | <on\|off> | any | yes | `/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only` |
 | `/config` | — | any | yes | masked table with `source` column, effective session cap, sandbox footer |
 | `/login` | — | any | `/login` raw-mode prompt | wizard field re-entry (§11.2); `saved — applies to the next run` |
 | `/logout` | [generator\|jev] | any | yes | rewrites the credentials file atomically and reports env-sourced keys without touching them (§11.2) |
 | `/trust` | — | idle | yes | reopen the trust gate |
 | `/theme` | <dark\|light\|daltonized\|ansi> | any | n/a | new items and the dynamic region only |
+| `/panel` | [d\|p\|t\|s\|off\|full] | any | yes | no argument toggles collapsed ↔ open (≤ 6 rows); `d\|p\|t\|s` opens that tab (the same tab again collapses); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows |
+| `/transcript` | [compact\|full] | any | n/a | no argument shows the current view; `compact` (default) hides the stage kinds and shows one `[step N]` line per step; `full` shows every item (new items only, §4.5); `--plain` is always `full` |
 | `/copy` | [last\|proposal\|diff\|draft] | any | n/a | §10.5 |
 | `/export` | [file] | idle | yes | §8.7 |
 | `/status` | — | any | yes | run id, session id, step/max, stage, sandbox, workspace, git, stop reason, lock |

@@ -27,11 +27,12 @@
  * Every leave request (`/exit`, Ctrl-C ×2, Ctrl-D ×2, `[y]`) goes through `host.exit()`, where `--exit-code=last-run`
  * is applied (`leaveExitCode`). While a run is live the controller's own lines go to `<runDir>/jevcode.log` (§13.6).
  */
-import { appendFileSync, existsSync, writeSync } from 'node:fs';
-import { readFile } from 'node:fs/promises';
+import { appendFileSync, existsSync, realpathSync, writeSync } from 'node:fs';
+import { open as openFile, readFile } from 'node:fs/promises';
 import { homedir } from 'node:os';
-import { basename, join, resolve as resolvePath } from 'node:path';
+import { basename, join, resolve as resolvePath, sep } from 'node:path';
 import type {
+  Answer,
   BlockingAnswer,
   BlockingRequest,
   Candidate,
@@ -44,8 +45,16 @@ import type {
   EngineOptions,
   EngineSeed,
   EngineStatus,
+  FileView,
+  GeneratorConfig,
   GitState,
   HistoryStore,
+  IntakeKind,
+  JevProvider,
+  Json,
+  JsonObject,
+  LastTestRun,
+  MockDeciderOptions,
   LaunchSettings,
   PendingDirective,
   Plan,
@@ -64,14 +73,17 @@ import type {
   StepRecord,
   SteerResult,
   StopReason,
+  SubmitOutcome,
   Synthesizer,
+  TokenUsage,
   UiConfig,
   UiLabel,
   UndoLogEntry,
+  WindowEntry,
 } from '../core/types.js';
 import type { ParsedFlags } from './args.js';
 import { classifyResumeValue } from './args.js';
-import { ConfigError, EXIT_CODES, UsageError, isJevCodeError } from '../errors.js';
+import { AbortError, ConfigError, EXIT_CODES, JevHttpError, ProviderHttpError, UsageError, isAbortError, isJevCodeError } from '../errors.js';
 import { nowIso as defaultNowIso } from '../core/time.js';
 import { createLog, fallbackLogPath, logSettingsFromEnv, nullLog, type Log } from '../core/log.js';
 import { detectSecrets as detectSecretsByPattern, patternRedact, secretSpans as spansOf } from '../core/redact.js';
@@ -85,7 +97,7 @@ import { loadInstructions as realLoadInstructions, projectInstructionFile } from
 import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrustInputs as realProbeTrustInputs, trustKey, trustWorkspaceFlag, type TrustDecision, type TrustInputs, type TrustOption } from '../config/trust.js';
 import { PROVIDER_ENV } from '../tui/onboarding/lines.js';
 import { INSTRUCTIONS_NOT_TRUSTED_LINE, dotenvSourceText, fixBlockLines, sandboxText, trustLines } from '../tui/onboarding/lines.js';
-import type { WizardProvider } from '../tui/onboarding/reducer.js';
+import { WIZARD_EXIT_CODE, type WizardProvider } from '../tui/onboarding/reducer.js';
 import { keyEnteredText } from '../config/credentials.js';
 import { fingerprint } from '../core/hash.js';
 import { detectSandboxLevel } from '../sandbox/seatbelt.js';
@@ -93,7 +105,7 @@ import { isMentionDenied } from '../sandbox/paths.js';
 import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
 import { CHECKPOINT_FILES, createCheckpointStore, isRunMeta } from '../checkpoint/store.js';
 import { readPostImages, readPreImage } from '../checkpoint/images.js';
-import { INDEX_FILE, appendIndexLine as realAppendIndexLine, readIndex as realReadIndex, sessionFieldsOf, text60, type IndexLine } from '../session/index.js';
+import { INDEX_FILE, appendIndexLine as realAppendIndexLine, readIndex as realReadIndex, sessionFieldsOf, text60, type ChatSpendRow, type IndexLine } from '../session/index.js';
 import { buildSeed, carriedSteers, seedSource, type SeedParent } from '../session/seed.js';
 import { defaultExportPath, exportSession as realExportSession, type ExportRun } from '../session/export.js';
 import { ambiguousResumeMessage, noSessionMessage, pickerHeader, pickerRows, recentSessionHint, resolveResumeTarget } from '../session/picker-lines.js';
@@ -107,7 +119,7 @@ import type { UiAction } from '../tui/useEngine.js';
 import { createHistoryStore as realCreateHistoryStore, type FileHistoryStore } from '../tui/composer/history.js';
 import { COMMANDS } from '../tui/commands/registry.js';
 import { dispatchCommand, type CommandAction, type DispatchContext } from '../tui/commands/dispatch.js';
-import { formatTranscriptItem, itemsFromEvent, type LineSource } from '../tui/plain.js';
+import { READLINE_MAX_PROMPTS, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
 import { plainSupports } from '../tui/plain-composer.js';
 import { blockingRowsFull } from '../tui/blocking/lines.js';
 import { gatePlainPrompt, gateRefusalLine } from '../tui/secrets/gate-lines.js';
@@ -130,11 +142,24 @@ import {
 } from '../tui/budget/lines.js';
 import { epilogueItemLines, epilogueLines, type EpilogueContext } from './epilogue.js';
 import { configTableLines } from './config-table.js';
-import type { JsonStream } from './json-stream.js';
+import type { JsonStream, JsonStreamContext } from './json-stream.js';
 import { GLYPHS } from '../tui/glyphs.js';
 import { findDecision, parseWhyRef, whyBlock } from '../tui/why.js';
 import { calibrationBlock, calibrationStats, scanCalibration } from '../tui/calibration.js';
 import { toDecisionRow, type DecisionRow } from '../tui/pane/model.js';
+import { TOAST_INFO_MS } from '../tui/toasts.js';
+import { modeBadgeWord } from '../tui/status/lines.js';
+import { JEV_PROVIDERS } from '../jev/providers.js';
+import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/lines.js';
+// TUI-DESIGN-2 §3 (D-C): the conversational intake — pure builders in src/chat/**, the state machine of §3.1 lives here (§3.8)
+import { buildIntakeState, chatKindAfterNo, filesBucket, routeOf, routeOfKind, runIntake, testsFromCandidates, type ChatKind, type ChatRoute, type IntakeResult } from '../chat/intake.js';
+import { INTAKE_READLINE_PROMPT, INTAKE_SR_LINES, parseIntakeAnswer } from '../chat/lines.js';
+import { fillReply, pickReply, replyByKey, type ReplyFacts } from '../chat/replies.js';
+import { harnessFacts, selectFacts, type FactsInput } from '../chat/facts.js';
+import { LOOKUP_READ_BYTES, lookupCode, lookupLines, type LookupInput } from '../chat/lookup.js';
+import { CHAT_FILES_MAX, CHAT_FILE_BYTES, CHAT_FIXED_INPUT_TOKENS, chatMaxTokens, llmChatTurn, type LlmTurnInput } from '../chat/llm-turn.js';
+import { CHAT_LABELS, bubbleLines, type ChatRole } from '../chat/bubbles.js';
+import { createChatLedger, type ChatTurn } from '../chat/ledger.js';
 import { decisionRows } from '../tui/pane/decisions.js';
 import { planRows } from '../tui/pane/plan.js';
 import { applyUndo, prepareUndo, type ApplyUndoResult, type UndoAsk } from '../undo/apply.js';
@@ -174,6 +199,76 @@ export const STARTING_STEER_CAP = 8;
 export const FINAL_FLUSH_BOUND_MS = 300;
 /** §12.4 "all checks before the first write": the commands that run one at a time (files, credentials, the session's run list) */
 export const EXCLUSIVE_COMMANDS: ReadonlySet<CommandAction['kind']> = new Set<CommandAction['kind']>(['undo', 'rewind', 'diff', 'export', 'report', 'login', 'logout', 'resume', 'new', 'trust', 'historyClear']);
+
+// --- TUI-DESIGN-2 §12 strings of the conversational intake (§3.1, §3.6–3.8) and the mode items (§1.3) ------------------------
+/** §12 "Mode items": the `[ui] error:` text when no Jev key resolves for a chat submission */
+export const MISSING_JEV_KEY = 'missing decider.apiKey: set TYPESAFE_API_KEY or OPENROUTER_API_KEY, or run jevcode login';
+export const RUN_LIVE_ERROR = 'a run is live; Enter steers it (Esc pauses, Esc Esc aborts)';
+export const CONFIG_NOT_READY = 'configuration not ready yet';
+/** §3.7 Esc / Ctrl-C on the intake card, or no composer to answer it */
+export const INTAKE_KEPT = 'Okay — edit it and press Enter, or ask me something.';
+/** §3.6: a weak `question_about_the_code` under jev+llm took the lookup */
+export const LLM_FLOORED_HINT = 'Ask again more specifically for an LLM answer.';
+/** §3.1 row 12: Jev unreachable / `JevHttpError` after the client's retries; `<short>` is the redacted message ≤ 80 chars */
+export function INTAKE_UNREACHABLE(short: string): string {
+  return `I couldn't reach Jev to read that (${short}). Press Enter to send it again.`;
+}
+/** §3.1 row 12′ */
+export function LLM_UNREACHABLE(model: string, short: string): string {
+  return `I couldn't get an answer from ${model} (${short}). Ask again, or /mode jev-only for the lookup.`;
+}
+/** a 401/403 from Jev on the intake or lookup is not "unreachable": the bubble names /login and the TUI opens the wizard (finding 12; the engine path's key-rejected pane, TD §13.3) */
+export function JEV_KEY_REJECTED(status: number): string {
+  return `Jev rejected the key (HTTP ${status}). /login saves a new one.`;
+}
+/** the generator's 401/403 during the LLM turn */
+export function LLM_KEY_REJECTED(model: string, status: number): string {
+  return `${model} rejected the key (HTTP ${status}). /login saves a new one.`;
+}
+/** §3.6: an unpriced generator refuses before sending unless --allow-unpriced */
+export function LLM_UNPRICED_REFUSAL(model: string): string {
+  return `I can't answer through the LLM: ${model} has no pricing entry and --allow-unpriced is off (jev-only lookup still works).`;
+}
+/** §3.1 row 3 / §3.9: at or over the session cap chat refuses too (no request) */
+export function SESSION_CAP_CHAT_REFUSAL(capUsd: number): string {
+  return `The session cap (${usd2(capUsd)}) is reached, so I'm not sending anything to Jev. Raise it with /budget session-spend-cap <usd>, or /new for a fresh session.`;
+}
+/** §12 "Status" toasts */
+export const STOPPED_THINKING_TOAST = 'stopped thinking';
+export const STILL_THINKING_TOAST = 'one moment — still thinking';
+/** §12 "Mode items" (§1.3 `case 'mode'`, S2's request landed here) */
+export const MODE_JEV_ON_SET = 'mode jev+llm from the next run — Claude writes the code, Jev still decides every step (persist: jevcode config set mode jev-on)';
+export const MODE_JEV_ONLY_SET = 'mode jev-only from the next run — no generating LLM; code proposes, Jev decides, tests verify';
+export const MODE_JEV_OFF_SET = 'mode llm-only from the next run — the generator alone, no Jev (bench condition; reviews still ask)';
+export const MODE_LLM_JEV_SET = 'mode llm-jev from the next run — GLM writes candidate patches inside the Jev-only search; Jev decides, tests verify (persist: jevcode config set mode llm-jev)';
+/** §3.11: intakes whose decision rows the panel keeps */
+export const CHAT_INTAKES_KEPT = 3;
+/** §3.6 `chatEstimateUsd`: input tokens per message char and per file byte */
+export const CHAT_TOKENS_PER_CHAR = 0.25;
+export const CHAT_TOKENS_PER_FILE_BYTE = 0.25;
+
+/** TUI-DESIGN-2 §3.8 `thinking(phase)`: what the status row shows while a chat request is in flight */
+export type ThinkingPhase = 'intake' | 'lookup' | 'replying';
+/**
+ * TUI-DESIGN-2 §6 item 15: the reducer actions the controller dispatches for the chat and the mode badge (S4 adds them to
+ * `UiAction`; typed here so the controller compiles before that lands — the union collapses once it does).
+ */
+export type ChatUiAction =
+  | { type: 'thinking'; phase: ThinkingPhase | null }
+  | { type: 'chat-decisions'; rows: readonly DecisionRow[] }
+  | { type: 'mode'; mode: EngineMode; pending: EngineMode | null };
+/** §1.3 / §1.4: why the wizard opened (`mode` = `/mode jev-on` without a generator key; Ctrl-C then keeps the session) */
+export type WizardReason = 'missing' | 'login' | 'rejected' | 'mode';
+
+/** what the LLM chat turn reads of the generator section; `--mock` / `--mock-generator` never validate it (like startRun, §15.3) */
+export type ChatGenerator = Pick<GeneratorConfig, 'model' | 'priced' | 'pricing' | 'maxTokens'>;
+export const MOCK_CHAT_GENERATOR: ChatGenerator = { model: 'mock', priced: true, pricing: { inputPerM: 0, outputPerM: 0, cacheReadPerM: 0, cacheWritePerM: 0 }, maxTokens: 4096 };
+
+/** §3.6: the cost bound checked before an LLM chat turn — (1,200 + chars × 0.25 + file bytes × 0.25) × in-price + min(800, maxTokens) × out-price */
+export function chatEstimateUsd(gen: Pick<GeneratorConfig, 'pricing' | 'maxTokens'>, text: string, fileBytes: number): number {
+  const inputTokens = CHAT_FIXED_INPUT_TOKENS + text.length * CHAT_TOKENS_PER_CHAR + fileBytes * CHAT_TOKENS_PER_FILE_BYTE;
+  return inputTokens * (gen.pricing.inputPerM / 1e6) + chatMaxTokens(gen.maxTokens) * (gen.pricing.outputPerM / 1e6);
+}
 
 /** TUI-DESIGN §1: `CI` / `CONTINUOUS_INTEGRATION` set and not `0`/`false`. */
 export function isInCi(env: NodeJS.ProcessEnv): boolean {
@@ -244,8 +339,13 @@ export type WizardOutcome = { kind: 'saved'; patch: CredentialsPatch } | { kind:
  * `main.tsx`), the `--plain` TTY uses `createPlainPrompter` over the readline composer's line source.
  */
 export interface Prompter {
-  /** §11.1 wizard (`reason` `missing` at start, `login` for `/login`, `rejected` after a 401 pane) */
-  wizard?(missing: readonly SecretSettingName[], o: { provider: WizardProvider | null; reason: 'missing' | 'login' | 'rejected' }): Promise<WizardOutcome>;
+  /**
+   * §11.1 wizard (`reason` `missing` at start, `login` for `/login`, `rejected` after a 401 pane; TUI-DESIGN-2 §1.4: `mode` for
+   * `/mode jev-on` without a generator key — `mode` is the target mode the keys are for)
+   */
+  wizard?(missing: readonly SecretSettingName[], o: { provider: WizardProvider | null; reason: WizardReason; mode?: EngineMode }): Promise<WizardOutcome>;
+  /** TUI-DESIGN-2 §3.7: the ambiguity card — `run` (y) · `chat` (n) · `keep` (Esc / Ctrl-C); absent (a pipe, --no-input) → `keep`, never a run */
+  intake?(message: string): Promise<'run' | 'chat' | 'keep'>;
   /** §11.3 trust gate: 1 trust · 2 this session only · 3 don't trust; null = cancelled (= 3) */
   trust?(inputs: TrustInputs): Promise<TrustOption | null>;
   /** §9.3 follow-up box */
@@ -299,7 +399,7 @@ export interface SessionDeps {
   createEngine?: (opts: EngineOptions) => Promise<Engine>;
   buildProvider?: (config: ResolvedConfigWithDiagnostics, flags: ParsedFlags, mode: EngineMode) => Promise<Provider>;
   buildDecider?: (config: ResolvedConfigWithDiagnostics, flags: ParsedFlags) => Promise<Decider>;
-  buildSynthesizer?: (config: ResolvedConfigWithDiagnostics, decider: Decider) => Promise<Synthesizer>;
+  buildSynthesizer?: (config: ResolvedConfigWithDiagnostics, decider: Decider, mode?: EngineMode) => Promise<Synthesizer>;
   listCandidates?: typeof realListCandidates;
   readIndex?: typeof realReadIndex;
   appendIndexLine?: typeof realAppendIndexLine;
@@ -446,7 +546,8 @@ export interface SessionView {
 
 // ---------------------------------------------------------------------------------------
 // Provider / decider / engine factories (§15.3: the jev-only branch is untouched — NullProvider, createSynthesizer,
-// config.generator() never called under `--mode jev-only`)
+// config.generator() never called under `--mode jev-only`; llm-jev (docs/LLM-JEV-DESIGN.md) takes the REAL generator
+// provider like jev-on AND the synthesizer like jev-only)
 // ---------------------------------------------------------------------------------------
 
 /**
@@ -484,30 +585,116 @@ export function mockReviewStep(env: NodeJS.ProcessEnv): number | null {
   return Number(v.trim());
 }
 
+/** `JEVCODE_MOCK_INTAKE=<kind>` (TUI-DESIGN-2 §3.13, dev-only, `--mock`): forces the mock's `intake` answer (`chat-ambiguous.steps`). */
+export function mockIntakeOverride(env: NodeJS.ProcessEnv): IntakeKind | null {
+  const v = env['JEVCODE_MOCK_INTAKE']?.trim();
+  return v === 'greeting_or_smalltalk' || v === 'question_about_this_tool' || v === 'question_about_the_code' || v === 'coding_task' || v === 'ambiguous' ? v : null;
+}
+/** `JEVCODE_MOCK_JEV_MS=<ms>` (§3.13): delays the mock (the latency probe). */
+export function mockJevLatencyMs(env: NodeJS.ProcessEnv): number {
+  const v = env['JEVCODE_MOCK_JEV_MS'];
+  return v !== undefined && /^\d+$/.test(v.trim()) ? Number(v.trim()) : 0;
+}
+
+const MOCK_GREETING_RE = /^\s*(hi|hello|hey|yo|thanks?|thank you|bye|ok(ay)?|good (morning|evening|afternoon))\b[!. ]*$/i;
+const MOCK_TOOL_RE = /\b(you|jevcode|jev|mode|cost|key|command|run)\b/i;
+
+/**
+ * TUI-DESIGN-2 §3.13 — the mock decider's intake heuristics, as rules over the mock's `MockDeciderRule` hook (the W2 bridge until
+ * S1 lands them inside `src/jev/mock.ts`; the heuristics are the design's, verbatim): `intake` → greeting on the greeting regex,
+ * `question_about_this_tool` on `?` + a tool word, `question_about_the_code` on any other `?`, `ambiguous` for ≤ 2 words
+ * without `?`, else `coding_task` at p 0.9 with `can_coding_task` 0.9; `reply` → hello_first (hello_again with a conversation),
+ * thanks, bye, ok_ack; `about_*` → 0.8 for mode_now on /mode/, cost_so_far on /cost|spent|money/, what_it_is on
+ * /what can you do|what are you/, else 0.1; `file_<i>` → 0.7 when the path shares a keyword. Never used outside `--mock`.
+ */
+export async function mockIntakeRules(env: NodeJS.ProcessEnv): Promise<NonNullable<MockDeciderOptions['rules']>> {
+  const { choiceAnswer, noulAnswer } = await import('../jev/mock.js');
+  const forced = mockIntakeOverride(env);
+  const messageOf = (state: Json): string => {
+    const m = state !== null && typeof state === 'object' && !Array.isArray(state) ? state['message'] : undefined;
+    return typeof m === 'string' ? m : '';
+  };
+  const conversationOf = (state: Json): number => {
+    const c = state !== null && typeof state === 'object' && !Array.isArray(state) ? state['conversation'] : undefined;
+    return Array.isArray(c) ? c.length : 0;
+  };
+  const kindOf = (message: string): IntakeKind => {
+    if (forced !== null) return forced;
+    if (MOCK_GREETING_RE.test(message)) return 'greeting_or_smalltalk';
+    if (message.includes('?')) return MOCK_TOOL_RE.test(message) ? 'question_about_this_tool' : 'question_about_the_code';
+    return message.trim().split(/\s+/).filter((w) => w !== '').length <= 2 ? 'ambiguous' : 'coding_task';
+  };
+  const replyOf = (message: string, turns: number): string => {
+    const m = message.trim();
+    if (/^(thanks?|thank you)\b/i.test(m)) return 'thanks';
+    if (/^bye\b/i.test(m)) return 'bye';
+    if (/^ok(ay)?\b/i.test(m)) return 'ok_ack';
+    return turns > 0 ? 'hello_again' : 'hello_first';
+  };
+  const rule: NonNullable<MockDeciderOptions['rules']>[number] = (ctx) => {
+    const intakeQ = ctx.questions['intake'];
+    if (intakeQ === undefined || intakeQ.type !== 'choice') {
+      // the lookup's context Nouls (§3.6): 0.7 when the path shares a keyword with the message
+      const out: Partial<Record<string, Answer>> = {};
+      const message = messageOf(ctx.state).toLowerCase();
+      for (const [id, q] of Object.entries(ctx.questions)) {
+        if (!id.startsWith('file_') || q.type !== 'noul') continue;
+        const path = /`([^`]+)`/.exec(typeof q.instructions === 'string' ? q.instructions : '')?.[1] ?? '';
+        const shares = path
+          .toLowerCase()
+          .split(/[^a-z0-9_]+/)
+          .some((tok) => tok.length >= 3 && message.includes(tok));
+        out[id] = noulAnswer(shares ? 0.7 : 0.1);
+      }
+      return Object.keys(out).length > 0 ? out : undefined;
+    }
+    const message = messageOf(ctx.state);
+    const kind = kindOf(message);
+    const out: Partial<Record<string, Answer>> = { intake: choiceAnswer(intakeQ, { [kind]: 0.9, ...(kind === 'coding_task' ? {} : { coding_task: 0.05 }) }) };
+    for (const id of Object.keys(ctx.questions)) if (id.startsWith('can_')) out[id] = noulAnswer(id === `can_${kind}` ? 0.9 : 0.1);
+    const replyQ = ctx.questions['reply'];
+    if (replyQ !== undefined && replyQ.type === 'choice') out['reply'] = choiceAnswer(replyQ, { [replyOf(message, conversationOf(ctx.state))]: 1 });
+    for (const id of Object.keys(ctx.questions)) {
+      if (!id.startsWith('about_')) continue;
+      const key = id.slice('about_'.length);
+      const hit = (key === 'mode_now' && /mode/i.test(message)) || (key === 'cost_so_far' && /cost|spent|money/i.test(message)) || (key === 'what_it_is' && /what can you do|what are you/i.test(message));
+      out[id] = noulAnswer(hit ? 0.8 : 0.1);
+    }
+    return out;
+  };
+  return [rule];
+}
+
 export async function buildDecider(config: ResolvedConfigWithDiagnostics, flags: ParsedFlags, env: NodeJS.ProcessEnv = process.env): Promise<Decider> {
   if (flags.mock) {
     const { createMockDecider, scoreAnswer } = await import('../jev/mock.js');
     const reviewAt = mockReviewStep(env);
-    if (reviewAt === null) return createMockDecider({});
-    return createMockDecider({
-      rules: [
-        (ctx) => {
-          if (ctx.stage !== 'risk' || ctx.step !== reviewAt) return undefined;
-          const q = ctx.questions['destructive'];
-          if (q === undefined || q.type !== 'score') return undefined;
-          return { destructive: scoreAnswer(q, { 2: 1 }) };
-        },
-      ],
-    });
+    const latencyMs = mockJevLatencyMs(env);
+    const rules = await mockIntakeRules(env);
+    if (reviewAt !== null) {
+      rules.push((ctx) => {
+        if (ctx.stage !== 'risk' || ctx.step !== reviewAt) return undefined;
+        const q = ctx.questions['destructive'];
+        if (q === undefined || q.type !== 'score') return undefined;
+        return { destructive: scoreAnswer(q, { 2: 1 }) };
+      });
+    }
+    return createMockDecider({ rules, ...(latencyMs > 0 ? { latencyMs } : {}) });
   }
   const { createJevDecider } = await import('../jev/client.js');
   return createJevDecider(config.decider(), { redact: config.redact });
 }
 
-/** jev-only: `createSynthesizer({ decider, redact })` unchanged (§15.3). */
-export async function buildSynthesizer(config: ResolvedConfigWithDiagnostics, decider: Decider): Promise<Synthesizer> {
+/**
+ * jev-only: `createSynthesizer({ decider, redact })` unchanged (§15.3). llm-jev (docs/LLM-JEV-DESIGN.md) also passes the
+ * `mode`, so the synthesizer knows it may draw candidates from the generator; the option travels in a variable typed as
+ * a superset of today's `SynthesizerOptions` (no excess-property check), so this compiles against the synthesizer before
+ * and after it learns the field. The generation parameters and the provider are wired by the synthesizer's owner.
+ */
+export async function buildSynthesizer(config: ResolvedConfigWithDiagnostics, decider: Decider, mode: EngineMode = 'jev-only'): Promise<Synthesizer> {
   const { createSynthesizer } = await import('../synth/index.js');
-  return createSynthesizer({ decider, redact: config.redact });
+  const opts: Parameters<typeof createSynthesizer>[0] & { mode: EngineMode } = { decider, redact: config.redact, mode };
+  return createSynthesizer(opts);
 }
 
 /** `jev-off` → the generator-only engine; everything else → `createEngine` (both dynamic imports: the first frame never pays for them). */
@@ -548,6 +735,8 @@ export interface PlainPrompterOptions {
   /** raw-mode capable stdin: the masked `/login` fields set raw mode so nothing echoes (§11.2 "raw-mode prompt") */
   stdin?: { setRawMode?: ((mode: boolean) => unknown) | undefined; isRaw?: boolean | undefined } | undefined;
   ascii?: boolean;
+  /** TUI-DESIGN-2 §3.7: a screen reader gets the `1 run it  2 just chatting  3 keep the text` / `Enter selection (1-3):` form (TD §6.5) — `launch.screenReader` */
+  screenReader?: boolean;
 }
 
 /**
@@ -651,6 +840,20 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
     async secretGate(hits) {
       const a = lower(await ask(`${gatePlainPrompt(hits)} `));
       return a === 'y' || a === 'yes';
+    },
+    // TUI-DESIGN-2 §3.7: the readline twin of the ambiguity card — `y`/`yes` runs, `n`/`no` chats, empty keeps the text; an invalid
+    // answer asks again, five of them keep (READLINE_MAX_PROMPTS); EOF keeps. The [you] bubble already shows the message, so the row never repeats it.
+    async intake(message) {
+      void message;
+      const sr = o.screenReader === true;
+      if (sr) write(`${INTAKE_SR_LINES[0]}\n`);
+      for (let asked = 0; asked < READLINE_MAX_PROMPTS; asked++) {
+        const line = await ask(sr ? `${INTAKE_SR_LINES[1]} ` : INTAKE_READLINE_PROMPT);
+        if (line === null) return 'keep';
+        const a = parseIntakeAnswer(line);
+        if (a !== null) return a;
+      }
+      return 'keep';
     },
     async wizard(missing, w) {
       const patch: CredentialsPatch = {};
@@ -899,6 +1102,38 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let deciderModelConfigured: string | null = null;
   let workspaceRoot = cwd;
   let diffSeq = 0;
+  // --- TUI-DESIGN-2 §3 conversational intake state ---------------------------------------------
+  /** §3.9: the turns of this session's chat (≤ 200; the last 6 go to Jev) */
+  const ledger = createChatLedger();
+  /** §3.8 `chatSignal()`: one AbortController per submission — Ctrl-C ×1 while thinking, /exit, SIGINT/SIGTERM abort it */
+  let chatAbort: AbortController | null = null;
+  /** §3.1 rows 10–11: a chat request is in flight (`⠹ thinking` · `looking` · `replying`) */
+  let thinkingPhase: ThinkingPhase | null = null;
+  /** §3.11: the decision rows of the last ≤ 3 intakes (`s0 intake` rows of the panel) */
+  let chatIntakes: readonly (readonly Decision[])[] = [];
+  /** §3.9: the session-cap thresholds chat spend already announced (once each, like the engine's) */
+  const chatThresholdsSeen = new Set<BudgetPct>();
+  /** §3.5 `last_tests`: the newest parsed test run of this session's runs */
+  let lastTests: LastTestRun | null = null;
+  /** the startup listing, resolved (the intake state's `files` bucket and the lookup's candidates) */
+  let candidateList: readonly Candidate[] = [];
+  /** the decider of the last chat request (`/jev`, the facts' provider line) */
+  let lastDecider: Decider | null = null;
+  /** the mode of the live run (§1.3 `/mode` shows it while live) */
+  let currentRunMode: EngineMode = baseMode;
+  /** §3.9: `chat` index lines issued before the session had an id — written with the first run's session id beside `deferredBudgetLines`; a session that never runs drops them */
+  let deferredChatLines: { t: string; intake: IntakeKind; route: ChatRoute; costUsd: number; provider: JevProvider | 'generator' }[] = [];
+  /** §3.9: the per-session chat spend folded from the index (`seedMeterFromIndex` restores it on /resume, -c, --resume <title>) */
+  let indexChat: Map<string, ChatSpendRow> = new Map();
+  const trackCandidates = (p: Promise<readonly Candidate[]>): Promise<readonly Candidate[]> => {
+    void p.then(
+      (l) => {
+        candidateList = l;
+      },
+      () => undefined,
+    );
+    return p;
+  };
 
   const columns = (): number => prompter?.columns?.() ?? (typeof o.stdout.columns === 'number' && o.stdout.columns > 0 ? o.stdout.columns : 80);
   /** `JEVCODE_TRACE=<file>`: startup and run-lifecycle checkpoints (never a key or a draft; §10.6) */
@@ -922,8 +1157,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     setSessionSpend?(session: { totalUsd: number; capUsd: number } | null): void;
     setGitDirs?(dirs: { gitDir: string | null; commonDir: string | null }): void;
     setTitle?(title: string | null): void;
-    /** O9's reducer channel (`UiAction`): the controller uses it for the `thresholds` row only */
-    dispatch?(action: UiAction): void;
+    /** O9's reducer channel (`UiAction`): `thresholds`, `toast`; TUI-DESIGN-2 §6 item 15: `thinking`, `chat-decisions`, `mode` */
+    dispatch?(action: UiAction | ChatUiAction): void;
   };
   const extras = renderer as RendererExtras;
   /** §9.6 / §7.4: the live root meter — `setCap` mutates it, so the cap read here is always the current one (`/budget session-spend-cap`) */
@@ -1007,6 +1242,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   async function refold(): Promise<void> {
     const r = await readIndexFn(indexPath);
     index = r.sessions;
+    indexChat = r.chat;
     if (r.error) log.warn(r.error);
   }
   function sessionRows(): SessionRow[] {
@@ -1037,6 +1273,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function finishSession(code: number, why: 'exit' | 'error' | 'run-end'): void {
     if (exiting) return;
     exiting = true;
+    // TUI-DESIGN-2 §3.8 `chatSignal()`: /exit and a signal abort a chat request in flight
+    abortChat();
     // §13.5 / F3: every pending prompt settles with its safe default now, so no controller await outlives the renderer
     try {
       prompter?.cancelAll?.();
@@ -1142,6 +1380,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         if (current) {
           current.records.push(e.record);
           current.steps = Math.max(current.steps, e.record.step);
+        }
+        // TUI-DESIGN-2 §3.5 `last_tests`: the newest parsed test run of the session
+        if (e.record.judge?.tests && e.record.judge.tests.source === 'parsed') {
+          const t = e.record.judge.tests;
+          const action = e.record.proposal?.action;
+          lastTests = { step: e.record.step, command: action?.kind === 'run' ? action.command : '', passed: t.passed, failed: t.failed, errors: t.errors, allPassed: t.allPassed };
         }
         break;
       case 'steer:queued':
@@ -1257,11 +1501,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     pushThresholds(config.limits());
   }
 
-  /** the wizard (start or `/login`); true when a key was saved */
-  async function runLogin(reason: 'missing' | 'login' | 'rejected'): Promise<boolean> {
+  /**
+   * the wizard (start, `/login`, a rejected key, or TUI-DESIGN-2 §1.3 `/mode <m>` without the keys `m` needs); true when a key was
+   * saved. `target` is the mode the keys are for (§1.4: `missing = config.missingSecrets(mode)` for THAT mode; default: the next run's).
+   */
+  async function runLogin(reason: WizardReason, target?: EngineMode): Promise<boolean> {
     if (!config) return false;
-    const mode = pending.mode ?? baseMode;
-    const missing = reason === 'missing' ? config.missingSecrets(mode) : (['generator.apiKey', 'decider.apiKey'] as const).filter((n) => mode !== 'jev-only' || n !== 'generator.apiKey');
+    const mode = target ?? pending.mode ?? baseMode;
+    const missing = reason === 'missing' || reason === 'mode' ? config.missingSecrets(mode) : (['generator.apiKey', 'decider.apiKey'] as const).filter((n) => mode !== 'jev-only' || n !== 'generator.apiKey');
     if (missing.length === 0) {
       note('every key resolves already; use /logout to remove one', { label: '[setup]' });
       return false;
@@ -1272,11 +1519,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       block('no key found — set them in the environment or run jevcode login:', fixBlockLines(), { label: '[setup]', level: 'warn' });
       return false;
     }
-    const outcome = await prompter.wizard(missing, { provider, reason });
+    const outcome = await prompter.wizard(missing, { provider, reason, mode });
     if (outcome.kind === 'cancelled') return false;
     // 'persisted': the Ink wizard's host already saved through persistCredentials (tui-prompter.ts)
     const saved = outcome.kind === 'persisted' ? true : (await persistCredentials(outcome.patch, reason === 'missing' ? 'wizard' : 'login')).ok;
-    if (saved && reason !== 'missing') note(LOGIN_SAVED_TOAST, { label: '[setup]' });
+    // §1.3: the `mode` wizard's own item is MODE_*_SET (the caller's); the `/login` toast stays for `login` / `rejected`
+    if (saved && reason !== 'missing' && reason !== 'mode') note(LOGIN_SAVED_TOAST, { label: '[setup]' });
     return saved;
   }
 
@@ -1347,9 +1595,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     sessionMeter = createSpendMeter(sessionCapUsd);
     sessionCapExplicit = false;
     deferredBudgetLines = [];
+    deferredChatLines = [];
   }
 
-  /** §9.1 `/resume` of a run this controller did not run: fold the index excluding the resumed run, add every finished run's cost */
+  /**
+   * §9.1 `/resume` of a run this controller did not run: fold the index excluding the resumed run, add every finished run's cost;
+   * TUI-DESIGN-2 §3.9: the session's chat spend (its `chat` index lines: intakes, lookups, LLM turns) comes back with it
+   */
   function seedMeterFromIndex(sid: string, excludeRunId: string): void {
     const s = index.find((x) => x.sessionId === sid);
     if (!s) return;
@@ -1358,6 +1610,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       sessionMeter.add('generator', { inputTokens: 0, outputTokens: 0, costUsd: r.costUsd.generator, calls: 0 });
       sessionMeter.add('jev', { inputTokens: 0, outputTokens: 0, costUsd: r.costUsd.jev, calls: 0 });
     }
+    const chat = indexChat.get(sid);
+    if (chat !== undefined) {
+      if (chat.jev > 0) sessionMeter.add('jev', { inputTokens: 0, outputTokens: 0, costUsd: chat.jev, calls: 0 });
+      if (chat.generator > 0) sessionMeter.add('generator', { inputTokens: 0, outputTokens: 0, costUsd: chat.generator, calls: 0 });
+    }
   }
 
   // --- the run (§1 loop body) -------------------------------------------------------------------
@@ -1365,6 +1622,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     kind: 'prompt' | 'follow-up';
     pinnedFiles: readonly string[];
     secretsAcked: number;
+    /** TUI-DESIGN-2 §6 item 13: why the run started (the intake's reading); absent for argv tasks */
+    intake?: { kind: IntakeKind; probability: number; requestHash: string };
   }
 
   /** §9.3: start | confirm (y/r/n) | refuse; the `clamp` for EngineOptions.session */
@@ -1436,20 +1695,33 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       return;
     }
     if (pending.model !== undefined || pending.provider !== undefined || pending.mode !== undefined) await reresolve();
-    const cfg = config;
     const mode = pending.mode ?? baseMode;
-    if (cfg.missingSecrets(mode).length > 0) {
-      const saved = await runLogin('missing');
+    if (config.missingSecrets(mode).length > 0) {
+      const saved = await runLogin('missing', mode);
       if (!saved && config.missingSecrets(mode).length > 0) {
         uiError(`missing ${config.missingSecrets(mode).join(', ')}: run jevcode login or set the environment variable`);
         return;
       }
     }
+    // TUI-DESIGN-2 §3.8 (finding 26): read the config AFTER the wizard — persistCredentials → reresolve() replaced the object
+    const cfg = config;
+    if (!cfg) {
+      uiError(CONFIG_NOT_READY);
+      return;
+    }
     const limits = limitsWithPending(cfg.limits());
     runCapUsd = limits.spendCapUsd;
     pushThresholds(limits);
-    // §9.4: the first run rebuilds the root meter from the config (the mode may have changed) unless `/budget session-spend-cap` set it
-    if (runs.length === 0 && sessionId === null && !sessionCapExplicit) newSessionMeter();
+    // §9.4 / TUI-DESIGN-2 §3.9 (finding 13): the first run re-derives the root cap from the config (the mode may have changed) unless
+    // `/budget session-spend-cap` set it — on the SAME meter (`setCap`, "never recreate a meter"), so the intake / lookup spend, the
+    // threshold state and the deferred index lines of the chat before it survive into the run
+    if (runs.length === 0 && sessionId === null && !sessionCapExplicit) {
+      const cap = cfg.sessionSpendCap(mode).value;
+      if (typeof sessionMeter.setCap === 'function') {
+        sessionMeter.setCap(cap);
+        sessionCapUsd = cap;
+      } else newSessionMeter();
+    }
     const gate = await followUpGate(limits.spendCapUsd);
     if (!gate.ok) return;
     phase = 'starting';
@@ -1464,11 +1736,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const remaining = sessionRemainingUsd(sessionCapOf(), sessionTotal());
       const childCap = Math.max(0, Math.min(limits.spendCapUsd, remaining));
       const meter = sessionMeter.child(childCap);
-      // jev-only never validates the generator section (§15.3)
+      // jev-only never validates the generator section (§15.3); llm-jev validates it like jev-on AND takes the synthesizer (docs/LLM-JEV-DESIGN.md)
       const gen = mode === 'jev-only' || flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : cfg.generator();
       const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : cfg.decider();
       deciderModelConfigured = dec.model;
-      const synthesizer = mode === 'jev-only' ? await synthesizerOf(cfg, decider) : null;
+      const synthesizer = mode === 'jev-only' || mode === 'llm-jev' ? await synthesizerOf(cfg, decider, mode) : null;
       const source = flags.source === 'perf' ? 'perf' : 'cli';
       const opts: EngineOptions = {
         task: text,
@@ -1496,6 +1768,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           parentRunId: seeded.parentRunId,
           source,
           ...(title !== null ? { title } : {}),
+          ...(so.intake !== undefined ? { intake: so.intake } : {}),
           ...(gate.clamp !== null ? { clamp: { runCapUsd: limits.spendCapUsd, clampedToUsd: gate.clamp, sessionSpentUsd: sessionTotal(), sessionCapUsd: sessionCapOf() } } : {}),
         },
         ...(seeded.seed ? { seed: seeded.seed } : {}),
@@ -1599,6 +1872,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     lastPlan = null;
     const record: RunRecord = { runId: f.runId, runDir: f.runDir, startedAt: f.startedAt, endedAt: null, task: f.task, stopReason: null, exitCode: null, steps: 0, costUsd: { generator: 0, jev: 0 }, changedFiles: [], changedSteps: [], records: [], resumable: false, degraded: false };
     current = record;
+    currentRunMode = f.mode;
     runs.push(record);
     if (sessionId === null) sessionId = f.runId;
     const sid = sessionId;
@@ -1610,6 +1884,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     indexLine({ v: 1, t: f.startedAt, kind: 'run:start', sessionId: sid, runId: f.runId, parentRunId: f.parentRunId, workspace: workspaceRoot, task60: f.task, mode: f.mode, source: flags.source === 'perf' ? 'perf' : 'cli', branch, resumeOf: f.resumed ? f.runId : null });
     // §8.2 / §9.4: `/budget session-spend-cap` lines issued before the session had an id carry this session's id now
     for (const b of deferredBudgetLines.splice(0)) indexLine({ v: 1, t: b.t, kind: 'budget', sessionId: sid, runId: null, setting: 'session.spendCapUsd', from: b.from, to: b.to });
+    // TUI-DESIGN-2 §3.9: the chat requests before the first run (intakes, lookups, LLM turns) carry this session's id now
+    for (const c of deferredChatLines.splice(0)) indexLine({ v: 1, t: c.t, kind: 'chat', sessionId: sid, intake: c.intake, route: c.route, costUsd: c.costUsd, provider: c.provider });
     if (!sessionStartAnnounced) {
       sessionStartAnnounced = true;
       json?.sessionStart({ sessionId: sid, runId: f.runId, parentRunId: f.parentRunId, workspace: workspaceRoot });
@@ -1675,7 +1951,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     void refold();
     void reprobeGit(cfg, record);
-    if (cfg) candidates = listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []);
+    if (cfg) candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
   }
 
   /** the run:end event `onEvent` captured (read through a call so the closure assignment is visible to the type checker) */
@@ -1791,7 +2067,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const gen = identity.mode === 'jev-only' || flags.mock || flags.mockGenerator ? { temperature: null, maxTokens: 4096 } : rcfg.generator();
       const dec = flags.mock ? { model: 'typesafe/jev-1.13-20260917', pinned: true } : rcfg.decider();
       deciderModelConfigured = dec.model;
-      const synthesizer = identity.mode === 'jev-only' ? await synthesizerOf(rcfg, decider) : null;
+      const synthesizer = identity.mode === 'jev-only' || identity.mode === 'llm-jev' ? await synthesizerOf(rcfg, decider, identity.mode) : null;
       const undoNote = undoNotes.length > 0 ? undoNotes.join('\n') : null;
       const source = flags.source === 'perf' ? 'perf' : 'cli';
       const opts: EngineOptions = {
@@ -2196,11 +2472,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       session: { spentUsd: sessionTotal(), capUsd: sessionCapOf(), runs: runs.filter((r) => r.endedAt !== null).length },
       gen: run ? { usd: genUsd, tablePriced } : null,
       jev: run ? { usd: jevUsd, questions, p50Ms: p50 } : null,
-      basis: { generator: mode === 'jev-only' ? null : tablePriced ? 'table' : 'provider usage.cost', jev: 'provider usage.cost' },
+      basis: { generator: mode === 'jev-only' ? null : tablePriced ? 'table' : 'provider usage.cost', jev: 'provider usage.cost' }, // llm-jev pays a generator: non-null like jev-on
       pending: pendingBudgetPairs(),
       ...(flags.allowUnpriced ? { unpriced: true } : {}),
     });
-    block(lines[0] ?? 'cost', lines.slice(1));
+    // TUI-DESIGN-2 §3.9 / §12: `chat $<usd> for <n> messages (~$<each> each, p50 <ms> ms)`
+    const chat = ledger.stats();
+    // a greeting costs ≈ $0.0002: three decimals would print $0.000, so the sub-millicent form has four (§4.5's cost rule)
+    const chatLine = chat.messages > 0 ? [`chat ${stepCostText(chat.costUsd)} for ${chat.messages} message${chat.messages === 1 ? '' : 's'} (~$${(chat.costUsd / chat.messages).toExponential(1)} each${chat.p50Ms === null ? '' : `, p50 ${Math.round(chat.p50Ms)} ms`})`] : [];
+    block(lines[0] ?? 'cost', [...lines.slice(1), ...chatLine]);
   }
 
   function jevCommand(): void {
@@ -2221,9 +2501,23 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     };
     const jevUsd = lastResult?.usage.jev.costUsd ?? lastStatus?.spend.jev.costUsd ?? 0;
     const questions = lastResult?.jevQuestions ?? decisions.length;
+    const chat = ledger.stats();
+    // TUI-DESIGN-2 §2.6 line 1: `<provider> · <host> · <model> (pinned|alias)` — the provider and the host the session reaches Jev
+    // through; the mock decider and a keyless / invalid decider section fall back to today's `decider <configured id>`
+    const head = ((): string => {
+      if (!config || flags.mock) return `decider ${configured}`;
+      try {
+        const d = config.decider();
+        return `${d.provider} · ${new URL(d.baseUrl).host} · ${d.model} (${d.pinned ? 'pinned' : 'alias'})`;
+      } catch {
+        return `decider ${configured}`;
+      }
+    })();
     block('jev', [
-      `decider ${configured}${resolved ? ` → resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} → ${drift.served}` : ''}`,
+      `${head}${resolved ? ` → resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} → ${drift.served}` : ''}`,
       `questions ${questions} · latency p50 ${p(50)} · p95 ${p(95)} · jev cost ${usd3(jevUsd)}`,
+      // TUI-DESIGN-2 §2.6 / §12: `intake: <n> messages · p50 <ms> ms · $<usd> · last: <kind> <p>`
+      ...(chat.messages > 0 ? [`intake: ${chat.messages} message${chat.messages === 1 ? '' : 's'} · p50 ${chat.p50Ms === null ? '—' : `${Math.round(chat.p50Ms)} ms`} · ${stepCostText(chat.costUsd)}${chat.last ? ` · last: ${chat.last.kind} ${chat.last.probability.toFixed(2)}` : ''}`] : []),
     ]);
   }
 
@@ -2258,15 +2552,18 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function whyCommand(ref: string): void {
     const parsed = parseWhyRef(ref);
     if (parsed === null) {
-      uiError(`/why: expected s7.risk.plan_mismatch, risk.plan_mismatch or a digit 1-5, got "${ref}"`);
+      uiError(`/why: expected s7.risk.plan_mismatch, risk.plan_mismatch, a digit 1-5 or intake[.reply|.about_<key>|.can_<kind>], got "${ref}"`);
       return;
     }
-    const d = findDecision(decisions, parsed, currentStep() > 0 ? currentStep() : null);
+    // TUI-DESIGN-2 §3.11: `intake[.<id>]` addresses the last intake's step-0 rows (they belong to no run, so never to `decisions`)
+    const pool: readonly Decision[] = parsed.kind === 'intake' ? (chatIntakes.at(-1) ?? []) : decisions;
+    const d = findDecision(pool, parsed, currentStep() > 0 ? currentStep() : null);
     if (d === null) {
       uiError(`/why: no decision matches ${ref}`);
       return;
     }
-    const lines = whyBlock(d, { siblings: decisions.filter((x) => x.step === d.step), model: lastResult?.resolvedJevModel ?? null }, o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode);
+    const model = parsed.kind === 'intake' ? (lastDecider?.model ?? null) : (lastResult?.resolvedJevModel ?? null);
+    const lines = whyBlock(d, { siblings: pool.filter((x) => x.step === d.step), model }, o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode);
     block(lines[0] ?? 'why', lines.slice(1));
   }
 
@@ -2461,10 +2758,30 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         pending.provider = a.provider;
         note(`provider ${a.provider} pending (next run)`);
         return;
-      case 'mode':
+      case 'mode': {
+        // TUI-DESIGN-2 §1.3: no argument shows current and next; with one, pends it for the next run (the wizard's generator step in place when the keys are missing)
+        const next = pending.mode ?? baseMode;
+        const cur = live() && current !== null ? currentRunMode : next;
+        if (a.mode === null) {
+          note(`mode ${modeBadgeWord(cur)} (next run: ${modeBadgeWord(next)})`);
+          return;
+        }
+        if (a.mode === next) {
+          note(`mode ${modeBadgeWord(a.mode)} already`);
+          return;
+        }
+        if (config && config.missingSecrets(a.mode).length > 0) {
+          const saved = await runLogin('mode', a.mode);
+          if (!saved) {
+            note(`mode stays ${modeBadgeWord(next)} — no generator key was saved`, { level: 'warn' });
+            return;
+          }
+        }
         pending.mode = a.mode;
-        note(`mode ${a.mode} pending (next run)`);
+        extras.dispatch?.({ type: 'mode', mode: live() && current !== null ? currentRunMode : baseMode, pending: a.mode });
+        note(a.mode === 'jev-only' ? MODE_JEV_ONLY_SET : a.mode === 'jev-on' ? MODE_JEV_ON_SET : a.mode === 'llm-jev' ? MODE_LLM_JEV_SET : MODE_JEV_OFF_SET);
         return;
+      }
       case 'config': {
         if (!config) return;
         const lines = configTableLines(config.record(), { sandboxLevel: detectSandboxLevel(config.sandbox) });
@@ -2563,13 +2880,460 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
   }
 
+  // --- TUI-DESIGN-2 §3.8: the controller's submit path (the state machine of §3.1) ---------------------------------
+  /** §3.10: one item per line through note() — `annotate()` while live, a renderer-local item while idle */
+  function say(role: ChatRole, lines: readonly string[]): void {
+    for (const l of lines) note(l, { label: CHAT_LABELS[role] });
+  }
+  /** §3.8 `thinking(phase)`: status `⠹ thinking` · `looking` · `replying`; null when the request settled */
+  function thinking(phase: ThinkingPhase | null): void {
+    if (phase === null && thinkingPhase === null) return; // nothing was in flight (a catalogue or facts reply): no dispatch
+    thinkingPhase = phase;
+    try {
+      extras.dispatch?.({ type: 'thinking', phase });
+    } catch {
+      /* the renderer is gone */
+    }
+  }
+  /** §3.8 `uiToast`: a toast in the TUI; the `--plain` renderer prints `(text)` as a bare line — never an item (TD §15.1) */
+  function uiToast(text: string): void {
+    if (o.rendererKind === 'tui') {
+      try {
+        extras.dispatch?.({ type: 'toast', text, level: 'info', ms: TOAST_INFO_MS });
+      } catch {
+        /* the renderer is gone */
+      }
+    } else if (o.rendererKind === 'plain') o.stdout.write(`(${text})\n`);
+  }
+  /** §3.8: the chat request in flight — one AbortController per submission (`converse` creates it); Ctrl-C ×1 while thinking, /exit, SIGINT/SIGTERM abort it */
+  function abortChat(): void {
+    const c = chatAbort;
+    chatAbort = null;
+    if (c !== null && !c.signal.aborted) c.abort(new AbortError('human_abort'));
+  }
+  /** an abort that landed while a pre-request step (`buildDecider`, `buildProvider`, the listing, a file read) was awaited: nothing paid goes out (finding 6) */
+  function throwIfAborted(signal: AbortSignal): void {
+    if (signal.aborted) throw signal.reason instanceof Error ? signal.reason : new AbortError('human_abort');
+  }
+  const jsonCtx = (): JsonStreamContext => ({ runId: current?.runId ?? null, sessionId });
+
+  async function converse(text: string, so: { kind: 'prompt' | 'follow-up'; pinnedFiles: readonly string[]; secretSpans: readonly string[] }): Promise<SubmitOutcome> {
+    if (exiting) return { became: 'nothing' };
+    // §3.1 row 11: Enter while thinking is ignored with a toast; the draft keeps accepting text
+    if (thinkingPhase !== null) {
+      uiToast(STILL_THINKING_TOAST);
+      return { became: 'nothing' };
+    }
+    if (live()) {
+      uiError(RUN_LIVE_ERROR);
+      return { became: 'nothing' };
+    }
+    if (!config) {
+      uiError(CONFIG_NOT_READY);
+      return { became: 'nothing' };
+    }
+    // the [you] bubble, always first: redacted at emission, one item per line (§3.10)
+    say('you', bubbleLines(text, redact));
+    // §3.1 row 2: no Jev key → the wizard once, then `[ui] error: missing decider.apiKey: …`
+    if (config.missingSecrets('jev-only').length > 0 && !(await runLogin('missing', pending.mode ?? baseMode))) {
+      uiError(MISSING_JEV_KEY);
+      return { became: 'nothing' };
+    }
+    // read AFTER the wizard: persistCredentials → reresolve() replaced the object (finding 26)
+    const cfg = config;
+    if (!cfg || cfg.missingSecrets('jev-only').length > 0) {
+      uiError(MISSING_JEV_KEY);
+      return { became: 'nothing' };
+    }
+    // §3.1 row 3 / §3.9: the root meter exists since startup; at or over the cap nothing is sent
+    if (sessionMeter.exceeded()) {
+      say('jevcode', [SESSION_CAP_CHAT_REFUSAL(sessionCapOf())]);
+      return { became: 'chat' };
+    }
+    const mode = pending.mode ?? baseMode;
+    // §3.8 `chatSignal()`: ONE AbortController per submission — the intake, the lookup or LLM request it leads to and every awaited
+    // step between them share it, so a Ctrl-C that lands while `buildProvider` or a file read is pending still stops the paid request
+    const ac = new AbortController();
+    chatAbort = ac;
+    const signal = ac.signal;
+    try {
+      thinking('intake');
+      let res: IntakeResult;
+      try {
+        const decider = await deciderOf(cfg, flags);
+        lastDecider = decider;
+        throwIfAborted(signal);
+        const list = await candidates;
+        throwIfAborted(signal);
+        res = await runIntake({ decider, state: intakeState(text, so.pinnedFiles, list), facts: harnessFacts(factsInput()), signal, redact });
+      } catch (e) {
+        thinking(null);
+        return chatFailure(e, 'jev');
+      }
+      thinking(null);
+      const route = routeOf(res.intake, mode);
+      meterChat('jev', res.usage, res.provider, route, res.intake.kind);
+      chatDecisions(res.rows);
+      ledger.push(youTurn(text, res));
+      // §3.8 / §6 item 17: the `chat` --json line of the intake — what the reading decided and what it cost; never the message
+      json?.chat(chatLine(res, route), jsonCtx());
+      // never the message (§3.9 "Redaction", §9 "keys never in logs")
+      log.info(`intake ${res.intake.kind} p=${res.intake.probability.toFixed(2)} ${Math.round(res.latencyMs)}ms ${res.requestHash} → ${route}`);
+      const run = async (): Promise<SubmitOutcome> => {
+        chatAbort = null; // the run has its own abort path (Esc Esc / Ctrl-C while live)
+        const before = runs.length;
+        await startRun(text, { kind: so.kind, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretSpans.length, intake: { kind: res.intake.kind, probability: res.intake.probability, requestHash: res.requestHash } });
+        // a run started when the record exists (a fast run may already have ended by the time startRun's caller resumes)
+        return { became: live() || runs.length > before ? 'run' : 'nothing' };
+      };
+      switch (res.intake.kind) {
+        case 'coding_task':
+          return await run();
+        case 'ambiguous': {
+          // §3.7: never a silent run — `y` runs, `n` answers from the same answers (no new request), Esc / no composer keeps the text (C46)
+          const a = prompter?.intake ? await prompter.intake(text) : 'keep';
+          if (exiting) return { became: 'nothing' };
+          if (a === 'run') return await run();
+          if (a === 'keep') {
+            say('jevcode', [INTAKE_KEPT]);
+            renderer.restoreDraft?.(text);
+            return { became: 'nothing' };
+          }
+          return await reply(text, res, chatKindAfterNo(res), so, signal);
+        }
+        default:
+          return await reply(text, res, res.intake.kind, so, signal);
+      }
+    } finally {
+      if (chatAbort === ac) chatAbort = null;
+    }
+  }
+
+  async function reply(text: string, res: IntakeResult, kind: ChatKind, so: { pinnedFiles: readonly string[] }, signal: AbortSignal): Promise<SubmitOutcome> {
+    const mode = pending.mode ?? baseMode;
+    // §3.3 / §3.6 floor; false in jev-only and for weak readings (the `n` of the card passes the same check)
+    const viaLlm = routeOfKind(kind, res, mode) === 'llm';
+    let lines: string[];
+    let costUsd = 0;
+    try {
+      if (kind === 'greeting_or_smalltalk') lines = [fillReply(replyByKey(pickReply(res.answers).key), replyFacts())];
+      else if (kind === 'question_about_this_tool') lines = selectFacts(harnessFacts(factsInput()), res.answers).map((f) => f.text);
+      else if (!viaLlm) {
+        thinking('lookup');
+        const cfg = config;
+        if (!cfg) throw new ConfigError(CONFIG_NOT_READY);
+        const decider = lastDecider ?? (await deciderOf(cfg, flags));
+        throwIfAborted(signal);
+        const input = await lookupInput(text, so.pinnedFiles, decider, signal);
+        throwIfAborted(signal);
+        const r = await lookupCode(input);
+        meterChat('jev', r.usage, r.provider, 'lookup', res.intake.kind);
+        json?.chat({ intake: res.intake.kind, probability: res.intake.probability, route: 'lookup', provider: r.provider, costUsd: r.usage.costUsd, latencyMs: r.latencyMs, requestHash: r.requestHash }, jsonCtx());
+        costUsd = r.usage.costUsd;
+        lines = lookupLines(r, basename(workspaceRoot));
+        if (mode !== 'jev-only') lines.push(LLM_FLOORED_HINT);
+      } else {
+        const cfg = config;
+        if (!cfg) throw new ConfigError(CONFIG_NOT_READY);
+        const gen: ChatGenerator = flags.mock || flags.mockGenerator ? MOCK_CHAT_GENERATOR : cfg.generator(); // ConfigError (invalid generator section) → chatFailure → [ui] error
+        if (gen.priced !== true && flags.allowUnpriced !== true) lines = [LLM_UNPRICED_REFUSAL(gen.model)];
+        else if (sessionMeter.exceeded() || sessionTotal() + chatEstimateUsd(gen, text, pinnedBytes(so.pinnedFiles)) > sessionCapOf()) lines = [SESSION_CAP_CHAT_REFUSAL(sessionCapOf())];
+        else {
+          thinking('replying');
+          const provider = await providerOf(cfg, flags, mode);
+          throwIfAborted(signal);
+          const input = await llmInput(text, so.pinnedFiles, gen, provider, signal);
+          throwIfAborted(signal);
+          const r = await llmChatTurn(input);
+          meterChat('generator', r.usage, 'generator', 'llm', res.intake.kind);
+          // the LLM turn is no Jev request: no request hash
+          json?.chat({ intake: res.intake.kind, probability: res.intake.probability, route: 'llm', provider: 'generator', costUsd: r.usage.costUsd, latencyMs: r.latencyMs, requestHash: '' }, jsonCtx());
+          costUsd = r.usage.costUsd;
+          lines = r.text.split('\n').filter((l) => l.trim() !== '');
+          renderer.live?.('');
+        }
+      }
+    } catch (e) {
+      thinking(null);
+      renderer.live?.('');
+      return chatFailure(e, viaLlm ? 'generator' : 'jev');
+    }
+    thinking(null);
+    say('jevcode', lines);
+    ledger.push({ role: 'jevcode', text: lines.join('\n'), at: nowIso(), costUsd, provider: viaLlm ? 'generator' : (lastDecider?.provider ?? 'openrouter') });
+    return { became: 'chat' };
+  }
+
+  /** every failure of a chat request lands here (§3.1 rows 10, 12, 12′, 13); the meter is never touched (a failed request carries no usage) */
+  function chatFailure(e: unknown, side: 'jev' | 'generator'): SubmitOutcome {
+    // the client rethrows `signal.reason` (an AbortError), so the error itself says whether Ctrl-C landed — no stale-signal test (finding 5)
+    if (isAbortError(e) || (e instanceof Error && e.name === 'AbortError')) {
+      // Ctrl-C ×1 / exit: no bubble, the draft is not restored
+      uiToast(STOPPED_THINKING_TOAST);
+      return { became: 'nothing' };
+    }
+    if (e instanceof ConfigError) {
+      uiError(`config: ${redact(e.message)}`);
+      return { became: 'nothing' };
+    }
+    // a 401/403 is a rejected key, not an unreachable host (finding 12): the bubble names /login; the TUI opens the wizard like the engine's key-rejected pane
+    const rejected = (e instanceof JevHttpError || e instanceof ProviderHttpError) && (e.status === 401 || e.status === 403) ? e.status : null;
+    if (rejected !== null) {
+      log.warn(`chat ${side} request: the key was rejected (HTTP ${rejected})`);
+      say('jevcode', [side === 'jev' ? JEV_KEY_REJECTED(rejected) : LLM_KEY_REJECTED(generatorModelLabel(), rejected)]);
+      if (o.rendererKind === 'tui' && prompter?.wizard) void runLogin('rejected');
+      return { became: 'chat' };
+    }
+    // JevHttpError · ProviderHttpError · network
+    const short = redact(describe(e)).slice(0, 80);
+    log.warn(`chat ${side} request failed: ${redact(describe(e))}`);
+    say('jevcode', [side === 'jev' ? INTAKE_UNREACHABLE(short) : LLM_UNREACHABLE(generatorModelLabel(), short)]);
+    return { became: 'chat' };
+  }
+
+  // --- the controller helpers of §3.8 (pure builders live in src/chat/**) -------------------------------------------
+  function finishedRuns(): number {
+    return runs.filter((r) => r.endedAt !== null).length;
+  }
+  function intakeState(text: string, pinned: readonly string[], list: readonly Candidate[]): JsonObject {
+    const tests = testsFromCandidates(list.map((c) => c.path));
+    const last = lastFinishedRun();
+    return buildIntakeState(
+      {
+        message: text,
+        conversation: ledger.recent(),
+        workspace: { name: basename(workspaceRoot), git: gitAtStart?.repo === true, hasTests: tests.hasTests, testRunner: tests.testRunner, files: filesBucket(list.length) },
+        session: {
+          mode: pending.mode ?? baseMode,
+          runs: finishedRuns(),
+          lastRun: last !== null && last.stopReason !== null ? { task: last.task, stopReason: last.stopReason, steps: last.steps, testsAllPassed: lastTests?.allPassed ?? null } : null,
+          pendingMode: pending.mode ?? null,
+        },
+        mentions: pinned,
+      },
+      redact,
+    );
+  }
+  /**
+   * §3.5 `(<ENV or file>, never printed)`: `env <NAME>` · `dotenv <path>` · `file <path>` · `flag` — never a value. The resolver
+   * records `env` without the variable, so `envName` re-derives the one it consulted first (§2.3 step 3: the provider's own
+   * variable when the provider was explicit or key-inferred, then the row's `JEV_API_KEY`, `OPENROUTER_API_KEY`).
+   */
+  function sourceText(source: string, envName: () => string): string {
+    if (source === 'env') return `env ${envName()}`;
+    if (source.startsWith('dotenv:')) return `dotenv ${source.slice('dotenv:'.length)}`;
+    if (source.startsWith('file:')) return `file ${source.slice('file:'.length)}`;
+    if (source === 'flag') return 'flag';
+    if (source === 'wizard') return 'saved by the wizard';
+    return source;
+  }
+  /** the environment variable the Jev key resolved from (`source: 'env'`): the provider's own first unless the provider itself was inferred from `JEV_API_KEY` / `OPENROUTER_API_KEY` (§2.3 rules 2b, 2d), then the row's two names */
+  function jevKeyEnvName(cfg: ResolvedConfigWithDiagnostics): string {
+    let provider: JevProvider = 'openrouter';
+    let providerSource = 'default';
+    try {
+      const d = cfg.decider();
+      provider = d.provider;
+      providerSource = d.providerSource;
+    } catch {
+      const p = cfg.entries.get('decider.provider')?.value;
+      if (p === 'typesafe' || p === 'openrouter') provider = p;
+    }
+    const own = JEV_PROVIDERS[provider].keyEnv;
+    const order = providerSource === 'auto:openrouter-key' || providerSource === 'default' ? ['JEV_API_KEY', 'OPENROUTER_API_KEY'] : [own, 'JEV_API_KEY', 'OPENROUTER_API_KEY'];
+    return order.find((n) => (env[n] ?? '') !== '') ?? own;
+  }
+  /** the environment variable the generator key resolved from: the provider's (`ANTHROPIC_API_KEY` / `OPENROUTER_API_KEY`, prepended by the resolver), else the row's `JEVCODE_API_KEY` */
+  function generatorKeyEnvName(cfg: ResolvedConfigWithDiagnostics): string {
+    const p = cfg.entries.get('generator.provider')?.value;
+    const own = p === 'anthropic' || p === 'openrouter' ? PROVIDER_ENV[p] : null;
+    const order = [...(own !== null ? [own] : []), 'JEVCODE_API_KEY'];
+    return order.find((n) => (env[n] ?? '') !== '') ?? own ?? 'JEVCODE_API_KEY';
+  }
+  function chatP50Ms(): number | null {
+    const fromChat = ledger.stats().p50Ms;
+    if (fromChat !== null) return fromChat;
+    const latencies = decisions.map((d) => d.latencyMs).filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
+    return latencies.length === 0 ? null : latencies[Math.floor((latencies.length - 1) / 2)] ?? null;
+  }
+  function deciderProviderInfo(cfg: ResolvedConfigWithDiagnostics | null): FactsInput['provider'] {
+    if (!cfg) return null;
+    const p50Ms = chatP50Ms();
+    if (flags.mock) {
+      const d = lastDecider;
+      return { name: d?.provider ?? 'openrouter', host: 'mock', model: d?.model ?? JEV_PROVIDERS.openrouter.defaultModel, p50Ms };
+    }
+    try {
+      const d = cfg.decider();
+      let host = JEV_PROVIDERS[d.provider].displayHost;
+      try {
+        host = new URL(d.baseUrl).host;
+      } catch {
+        /* the table's host */
+      }
+      return { name: d.provider, host, model: d.model, p50Ms };
+    } catch {
+      return null;
+    }
+  }
+  function factsInput(): FactsInput {
+    const cfg = config;
+    const last = lastFinishedRun();
+    const tests = testsFromCandidates(candidateList.map((c) => c.path));
+    const jevEntry = cfg?.entries.get('decider.apiKey');
+    const genEntry = cfg?.entries.get('generator.apiKey');
+    const genProvider = cfg?.entries.get('generator.provider')?.value ?? 'anthropic';
+    const providerInfo = deciderProviderInfo(cfg);
+    return {
+      mode: baseMode,
+      nextMode: pending.mode ?? baseMode,
+      // the command a run parsed, else the listing's detected runner (`tests: pytest (detected)`) — the same fact the intake state carries (finding 9)
+      workspace: { root: workspaceRoot, git: gitAtStart, hasTests: tests.hasTests, testCommand: lastTests !== null && lastTests.command !== '' ? lastTests.command : null, testRunner: tests.testRunner },
+      lastRun: last !== null && last.stopReason !== null ? { runId: last.runId, task: last.task, stopReason: last.stopReason, steps: last.steps, costUsd: last.costUsd, paused: last.stopReason === 'human_pause' } : null,
+      lastTests,
+      keys: {
+        jev: cfg && jevEntry !== undefined && providerInfo !== null ? { provider: providerInfo.name, source: sourceText(jevEntry.source, () => jevKeyEnvName(cfg)) } : null,
+        generator: cfg && genEntry !== undefined ? { provider: genProvider, source: sourceText(genEntry.source, () => generatorKeyEnvName(cfg)) } : null,
+      },
+      spend: { sessionUsd: sessionTotal(), sessionCapUsd: sessionCapOf(), runs: finishedRuns(), chats: ledger.messages },
+      sandbox: cfg ? detectSandboxLevel(cfg.sandbox) : 'none',
+      runsDir: cfg?.runsDir ?? join(jdir, 'runs'),
+      provider: providerInfo,
+    };
+  }
+  function replyFacts(): ReplyFacts {
+    const last = lastFinishedRun();
+    const lastRun = last === null || last.stopReason === null ? null : last.stopReason === 'human_pause' ? `the last run is paused after step ${last.steps} (/resume continues)` : `the last run ended ${last.stopReason} after ${last.steps} step${last.steps === 1 ? '' : 's'}`;
+    return { dir: basename(workspaceRoot), lastRun, mode: pending.mode ?? baseMode, runsDir: config?.runsDir ?? join(jdir, 'runs'), home };
+  }
+  /** a bounded, denylisted read inside the workspace (`isMentionDenied` first, realpath confined to the workspace); null = denied or unreadable */
+  async function readWorkspaceFile(rel: string, maxBytes: number): Promise<FileView | null> {
+    const cfg = config;
+    if (!cfg || isMentionDenied(workspaceRoot, rel, cfg.secretPaths)) return null;
+    try {
+      const rootReal = realpathSync(workspaceRoot);
+      const real = realpathSync(resolvePath(workspaceRoot, rel));
+      if (real !== rootReal && !real.startsWith(rootReal + sep)) return null;
+      const fh = await openFile(real, 'r');
+      try {
+        const size = (await fh.stat()).size;
+        const buf = Buffer.alloc(Math.min(size, maxBytes));
+        const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
+        return { path: rel, content: cfg.redact(buf.subarray(0, bytesRead).toString('utf8')), bytes: size, truncatedBytes: Math.max(0, size - bytesRead) };
+      } finally {
+        await fh.close();
+      }
+    } catch {
+      return null;
+    }
+  }
+  async function lookupInput(text: string, pinned: readonly string[], decider: Decider, signal: AbortSignal): Promise<LookupInput> {
+    const list = await candidates;
+    return {
+      message: text,
+      mentions: pinned,
+      candidates: list,
+      read: (rel, maxBytes) => readWorkspaceFile(rel, Math.min(maxBytes, LOOKUP_READ_BYTES)),
+      ask: (state, questions) => decider.ask(state, questions, { signal, stage: 'context', step: 0 }),
+      provider: decider.provider,
+      redact,
+      signal,
+    };
+  }
+  async function llmInput(text: string, pinned: readonly string[], gen: ChatGenerator, provider: Provider, signal: AbortSignal): Promise<LlmTurnInput> {
+    const cfg = config;
+    const files: FileView[] = [];
+    for (const p of pinned.slice(0, CHAT_FILES_MAX)) {
+      throwIfAborted(signal);
+      const v = await readWorkspaceFile(p, CHAT_FILE_BYTES);
+      if (v !== null) files.push(v);
+    }
+    const last = lastFinishedRun();
+    let window: readonly WindowEntry[] = [];
+    if (last !== null && cfg) {
+      const loaded = await loadRunFn(cfg.runsDir, last.runId, cfg.redact).catch(() => null);
+      window = loaded?.state?.window ?? [];
+    }
+    let streamed = '';
+    return {
+      provider,
+      message: text,
+      conversation: ledger.recent(),
+      facts: harnessFacts(factsInput()),
+      context: { plan: lastPlan ?? lastResult?.finalPlan ?? null, window, files },
+      instructions: instructions?.text ?? null,
+      generation: { maxTokens: chatMaxTokens(gen.maxTokens), temperature: null },
+      signal,
+      onDelta: (d) => {
+        streamed += d;
+        renderer.live?.(redact(streamed));
+      },
+      redact,
+      warn: (m) => log.warn(m),
+    };
+  }
+  /** Σ bytes of the @-mentioned files (from the listing; nothing is read) */
+  function pinnedBytes(pinned: readonly string[]): number {
+    let n = 0;
+    for (const c of candidateList) if (pinned.includes(c.path)) n += Math.min(c.bytes, CHAT_FILE_BYTES);
+    return n;
+  }
+  /**
+   * §3.9: `sessionMeter.add(source, usage)` → the 50/80/95 % session items (once each) → `pushSessionSpend()` → the `chat` index line
+   * (§6 item 17; buffered with `deferredBudgetLines` before the first run and written with its session id, so `seedMeterFromIndex`
+   * restores chat spend on /resume; a session that never runs drops them)
+   */
+  function meterChat(source: 'jev' | 'generator', usage: TokenUsage, provider: JevProvider | 'generator', route: ChatRoute, intake: IntakeKind): void {
+    sessionMeter.add(source, usage);
+    const snap = sessionMeter.snapshot();
+    if (Number.isFinite(snap.capUsd) && snap.capUsd > 0) {
+      const pct = (snap.totalUsd / snap.capUsd) * 100;
+      for (const t of BUDGET_THRESHOLDS) {
+        if (pct < t || chatThresholdsSeen.has(t)) continue;
+        chatThresholdsSeen.add(t);
+        for (const l of budgetItems({ type: 'budget:warn', scope: 'session', pct: t, spentUsd: snap.totalUsd, capUsd: snap.capUsd, step: 0, stepsLeftEstimate: null, restored: false })) note(l, { level: t >= 80 ? 'warn' : 'info' });
+      }
+    }
+    pushSessionSpend();
+    const line = { t: nowIso(), intake, route, costUsd: usage.costUsd, provider };
+    if (sessionId !== null) indexLine({ v: 1, kind: 'chat', sessionId, ...line });
+    else deferredChatLines.push(line);
+  }
+  /** §3.8 / §6 item 17: the `--json` `chat` line of an intake */
+  function chatLine(res: IntakeResult, route: ChatRoute): { intake: IntakeKind; probability: number; route: ChatRoute; provider: JevProvider | 'generator'; costUsd: number; latencyMs: number; requestHash: string } {
+    return { intake: res.intake.kind, probability: res.intake.probability, route, provider: res.provider, costUsd: res.usage.costUsd, latencyMs: res.latencyMs, requestHash: res.requestHash };
+  }
+  /** §3.11: keeps the last ≤ 3 intakes; the panel's `s0 intake` rows */
+  function chatDecisions(rows: readonly Decision[]): void {
+    chatIntakes = [...chatIntakes, rows].slice(-CHAT_INTAKES_KEPT);
+    const limits = config?.limits();
+    try {
+      extras.dispatch?.({ type: 'chat-decisions', rows: chatIntakes.flat().map((d) => toDecisionRow(d, limits?.completeThreshold, limits?.impossibleThreshold)) });
+    } catch {
+      /* the renderer is gone */
+    }
+  }
+  function youTurn(text: string, res: IntakeResult): ChatTurn {
+    return { role: 'you', text: redact(text), at: nowIso(), kind: res.intake.kind, probability: res.intake.probability, requestHash: res.requestHash, latencyMs: res.latencyMs, costUsd: res.usage.costUsd, provider: res.provider };
+  }
+  /** `config.generator().model`, or `the LLM` — never throws (used inside chatFailure) */
+  function generatorModelLabel(): string {
+    if (flags.mock || flags.mockGenerator) return MOCK_CHAT_GENERATOR.model;
+    try {
+      return config?.generator().model ?? 'the LLM';
+    } catch {
+      return 'the LLM';
+    }
+  }
+
   // --- the host (§15 item 16) --------------------------------------------------------------------
   const host: ControllerHost = {
-    async submit(text, so) {
+    // TUI-DESIGN-2 §3.8: every composer submission passes intake (`converse`); the one-shot argv task (`submitTask`) goes straight to startRun
+    async submit(text, so): Promise<SubmitOutcome> {
       await startupDone;
       // §10.2: addSecret('composer#n', span) per span BEFORE createEngine
       for (const span of so.secretSpans) config?.addSecret(`composer#${++secretSeq}`, span);
-      await startRun(text, { kind: so.kind, pinnedFiles: so.pinnedFiles, secretsAcked: so.secretSpans.length });
+      return converse(text, so);
     },
     async command(line) {
       await startupDone;
@@ -2599,6 +3363,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         b.resolve('stop');
         return;
       }
+      // TUI-DESIGN-2 §3.1 row 10: Ctrl-C ×1 while a chat request is in flight aborts it (no bubble, a toast; the draft is not restored)
+      if (!live() && thinkingPhase !== null) {
+        abortChat();
+        return;
+      }
       if (engine !== null && live()) {
         engine.abort('human_abort');
         phase = 'aborting';
@@ -2617,6 +3386,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         engine.abort('human_abort');
         phase = 'aborting';
         return;
+      }
+      // TUI-DESIGN-2 §1.4 / §12 "Wizard": Ctrl-C at the startup wizard (exit 2 with a key still missing) prints the fix block —
+      // the two Jev variables and the piped `jevcode login --jev-provider … --jev-key-stdin` — as a [setup] item; it commits in
+      // finishSession's final flush, before the unmount (the same lines the non-TTY paths print)
+      if (code === WIZARD_EXIT_CODE && config !== null) {
+        const mode = pending.mode ?? baseMode;
+        if (config.missingSecrets(mode).length > 0) block('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode), { label: '[setup]', level: 'warn' });
       }
       // §1: `/exit`, Ctrl-C ×2 idle and Ctrl-D ×2 → 0, or the last run's code under `--exit-code=last-run`
       finishSession(leaveExitCode(code), 'exit');
@@ -2737,7 +3513,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     trace('startup: trust gate done');
     note(sandboxText(detectSandboxLevel(config.sandbox)), { label: '[sandbox]' });
     const cfg = config;
-    candidates = listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []);
+    candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
     await refold();
     if (exiting) return;
     newSessionMeter();

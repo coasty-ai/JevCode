@@ -1,23 +1,31 @@
 /**
- * The one height allocator of the interactive TUI (TUI-DESIGN §2.1, D1, F3). Pure: no I/O, no clock,
- * no Ink. Vertical order top to bottom is `<Static>` scrollback · rule · live · banner · pane · queue ·
- * overlay · preview · composer · status; allocation order is the priority (status → rule → composer
- * floor → overlay → composer growth → queue → preview → live → banner → pane) and F3's yield order is
- * its reverse (pane → banner → live → preview → queue → composer growth → overlay → composer-to-1).
- * `App.tsx` still carries the previous `computeLayout`; O9 switches it to this module (§15.2).
+ * The one height allocator of the interactive TUI (TUI-DESIGN §2.1, D1, F3; TUI-DESIGN-2 §4.1–4.2 `computeLayout`
+ * 1.1). Pure: no I/O, no clock, no Ink. Vertical order top to bottom is `<Static>` scrollback · rule · live ·
+ * banner · pane · queue · overlay · preview · [console: top edge · gate · composer · divider · status · bottom edge]
+ * (flat tier: composer · status). Allocation order is the priority (status → rule → composer floor → chrome →
+ * overlay → composer growth → queue → preview → live → banner → pane) and F3's yield order is its reverse (pane →
+ * banner → live → preview → queue → composer growth → overlay → composer-to-1); chrome, rule and status never yield.
  */
 
 /** TUI-DESIGN §2.1: below this many rows the region degrades to status · notice · composer (A100). */
 export const MIN_ROWS = 8;
 /** TUI-DESIGN §2.1: below this many columns the region degrades to status · notice · composer (A100). */
 export const MIN_COLUMNS = 40;
+/** TUI-DESIGN-2 §4.1: the boxed tier (console + cards) needs this many rows; below it the flat tier draws today's rows. */
+export const BOXED_MIN_ROWS = 16;
+/** TUI-DESIGN-2 §4.1 / §5.1: the 5-row wordmark needs this many columns; below it the brand row carries the splash. */
+export const WORDMARK_MIN_COLUMNS = 64;
 
-/** TUI-DESIGN §2.1: the A109 cap set — the most rows each slot may ever take. */
+/** TUI-DESIGN §2.1 / TUI-DESIGN-2 §4.2: the A109 cap set — the most rows each slot may ever take. */
 export const CAP = {
   live: 2,
   queue: 2,
   pane: 12,
+  /** TUI-DESIGN-2 §4.6: the open (not full) Jev panel */
+  panel: 6,
   reviewHeader: 8,
+  /** TUI-DESIGN-2 §4.7: the boxed review card (title edge, keys, ruler, four gauges, matches_intent, bottom edge) */
+  reviewCard: 9,
   preview: 8,
   wizard: 4,
   followup: 5,
@@ -26,24 +34,42 @@ export const CAP = {
   palette: 8,
   undo: 1,
   exitConfirm: 1,
+  /** TUI-DESIGN-2 §3.7: the flat intake row; boxed = 1 + card */
+  intake: 1,
   minsize: 1,
+  /** TUI-DESIGN-2 §4.7: the two edges a card adds */
+  card: 2,
   composer: 6,
   composerTall: 8,
   banner: 1,
+  /** TUI-DESIGN-2 §4.3: the console's top edge, divider and bottom edge */
+  chrome: 3,
+  /** TUI-DESIGN-2 §5.1: the wordmark rows in the pane slot while the splash runs */
+  splash: 5,
 } as const;
 
-/** TUI-DESIGN §2.1: the one modal slot directly above the composer holds at most one of these. */
-export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm';
+/** TUI-DESIGN §2.1 / TUI-DESIGN-2 §3.7: the one modal slot directly above the composer holds at most one of these. */
+export type OverlayKind = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake';
 
 /** TUI-DESIGN §2.1: every overlay kind, in declaration order (tests iterate it). */
-export const OVERLAY_KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm'];
+export const OVERLAY_KINDS: readonly OverlayKind[] = ['none', 'review', 'wizard', 'followup', 'secret', 'blocking', 'palette', 'undo', 'exitConfirm', 'intake'];
 
-/** overlays that collapse the composer to one inactive row (F3) */
-const COLLAPSING: ReadonlySet<OverlayKind> = new Set<OverlayKind>(['review', 'followup', 'blocking', 'exitConfirm']);
+/** overlays that collapse the composer to one inactive row (F3; TUI-DESIGN-2 §3.7 adds `intake`) */
+const COLLAPSING: ReadonlySet<OverlayKind> = new Set<OverlayKind>(['review', 'followup', 'blocking', 'exitConfirm', 'intake']);
 
 /** TUI-DESIGN §2.1: true for the overlays that collapse the composer to one inactive row (F3, §6.2). */
 export function isCollapsingOverlay(overlay: OverlayKind): boolean {
   return COLLAPSING.has(overlay);
+}
+
+/**
+ * TUI-DESIGN-2 §4.1: the chrome tier is a function of geometry alone — never of the remaining budget — so a box is
+ * never half-drawn: `boxed` (3 rows of chrome) at rows ≥ 16 and columns ≥ 40 without a screen reader, else `flat` (0).
+ */
+export function chromeRows(rows: number, columns: number, screenReader: boolean): 0 | 3 {
+  const r = Number.isFinite(rows) ? Math.floor(rows) : 0;
+  const c = Number.isFinite(columns) ? Math.floor(columns) : 0;
+  return r >= BOXED_MIN_ROWS && c >= MIN_COLUMNS && !screenReader ? CAP.chrome : 0;
 }
 
 /** TUI-DESIGN §2.1: the wants a frame has; `rows`/`columns` come from `useWindowSize()` only (A93). */
@@ -51,7 +77,7 @@ export interface LayoutInput {
   rows: number;
   columns: number;
   overlay: OverlayKind;
-  /** review 8 · wizard 2–4 · followup 5 · secret 1 · blocking 2–4 · palette 2–8 · undo 1 · exitConfirm 1 */
+  /** review 8 (boxed 9) · wizard 2–4 · followup 5 · secret 1 (boxed 0) · blocking 2–4 (boxed ≤ 6) · palette 2–8 · undo 1 (boxed 3) · exitConfirm 1 (boxed 3) · intake 1 (boxed 3) */
   overlayWant: number;
   /** review only: confirmPreviewLines(req).length */
   previewWant: number;
@@ -65,8 +91,12 @@ export interface LayoutInput {
   liveWant: number;
   /** loop signature at x2/3 or a replan directive active (A45) */
   bannerWant: 0 | 1;
-  /** 0 until run:ready or a picker; rows the active tab can fill, ≤ 12 */
+  /** 0 (collapsed) · 6 (open) · 12 (full / picker) · 5 (splash); rows the active tab can fill */
   paneWant: number;
+  /** TUI-DESIGN-2 §4.2: `chromeRows(rows, columns, screenReader)` — 3 in the boxed tier, 0 flat */
+  chrome: 0 | 3;
+  /** TUI-DESIGN-2 §4.2: the secret-gate row the console hosts (boxed tier only; the flat tier keeps the `secret` overlay) */
+  gate: 0 | 1;
 }
 
 /** TUI-DESIGN §2.1: rows granted to every slot; `total ≤ budget = rows − 2` always. */
@@ -81,7 +111,12 @@ export interface Layout {
   queue: number;
   overlay: number;
   preview: number;
+  /** the composer rows incl. the hosted gate row (`gate`) */
   composer: number;
+  /** TUI-DESIGN-2 §4.2: the console's three edge rows (whole or absent) */
+  chrome: number;
+  /** TUI-DESIGN-2 §4.2: the hosted secret-gate row (inside `composer`) */
+  gate: 0 | 1;
   total: number;
 }
 
@@ -94,11 +129,13 @@ function size(n: number): number {
 }
 
 /**
- * TUI-DESIGN §2.1 `computeLayout` — the design's function verbatim (A10, A107, A109, C47, D1), with
- * non-finite inputs normalised first so NaN/Infinity can never leak into a row count. Invariants
- * (unit-tested exhaustively): `total ≤ budget`; `status === 1` at rows ≥ 3; `composer ≥ 1` at rows ≥ 5
- * unless the wizard owns the input; a non-wizard overlay is whole at rows ≥ max(8, want + 5), the wizard
- * at rows ≥ max(8, want + 4); fields reach 0 in `YIELD_ORDER`; the review header keeps ≥ 3 rows at rows ≥ 8;
+ * TUI-DESIGN §2.1 `computeLayout` — the design's function verbatim (A10, A107, A109, C47, D1) plus TUI-DESIGN-2
+ * §4.2's step 3b (the console's chrome, whole or absent, after the composer floor and before the overlay; the
+ * composer floor is `1 + gate` in the boxed tier), with non-finite inputs normalised first so NaN/Infinity can never
+ * leak into a row count. Invariants (unit-tested exhaustively): `total ≤ budget`; `status === 1` at rows ≥ 3;
+ * `composer ≥ 1` at rows ≥ 5 unless the wizard owns the input; `chrome ∈ {0, 3}` and `chrome === 3 ⇒ rows ≥ 16`;
+ * a flat non-wizard overlay is whole at rows ≥ max(8, want + 5) (boxed: want + 8 + gate), the wizard at rows ≥
+ * max(8, want + 4) (boxed: want + 7); fields reach 0 in `YIELD_ORDER`; the review header keeps ≥ 3 rows at rows ≥ 8;
  * ≤ 5 µs per call.
  */
 export function computeLayout(i: LayoutInput): Layout {
@@ -112,7 +149,7 @@ export function computeLayout(i: LayoutInput): Layout {
     rem -= got;
     return got;
   };
-  const z: Layout = { budget, degraded: 'none', status: 0, rule: 0, live: 0, banner: 0, pane: 0, queue: 0, overlay: 0, preview: 0, composer: 0, total: 0 };
+  const z: Layout = { budget, degraded: 'none', status: 0, rule: 0, live: 0, banner: 0, pane: 0, queue: 0, overlay: 0, preview: 0, composer: 0, chrome: 0, gate: 0, total: 0 };
   if (rows < 3) {
     // budget 0 or 1: <Static> keeps flowing, nothing dynamic
     z.degraded = 'static-only';
@@ -127,10 +164,17 @@ export function computeLayout(i: LayoutInput): Layout {
     z.total = budget - rem;
     return z;
   }
+  const boxed = i.chrome === CAP.chrome && rows >= BOXED_MIN_ROWS;
+  const gate: 0 | 1 = boxed && i.gate === 1 ? 1 : 0;
   z.status = take(1); // 1 never yields
   z.rule = take(1); // 2 never yields at rows ≥ 8
-  if (i.overlay !== 'wizard') z.composer = take(1); // 3 composer floor ("composer-to-1" is the last yield); the wizard IS the input (refund)
-  z.overlay = take(i.overlay === 'none' ? 0 : i.overlayWant); // 4 modal slot (review header: keys line is row 2)
+  if (i.overlay !== 'wizard') {
+    // 3 composer floor ("composer-to-1" is the last yield); the wizard IS the input (refund); the hosted gate row never yields (§4.2)
+    z.composer = take(1 + gate);
+    z.gate = z.composer > 1 ? gate : 0;
+  }
+  z.chrome = boxed && rem >= CAP.chrome ? take(CAP.chrome) : 0; // 3b the console's edges: whole or absent, never yields (§4.2)
+  z.overlay = take(i.overlay === 'none' ? 0 : i.overlayWant); // 4 modal slot (review header: keys line is row 2; boxed: the card)
   const cap = COLLAPSING.has(i.overlay) ? 1 : rows >= 40 ? CAP.composerTall : CAP.composer;
   if (i.overlay !== 'wizard') z.composer += take(Math.min(i.composerWant, cap) - 1); // 5 composer growth
   z.queue = take(Math.min(i.queueWant, CAP.queue)); // 6 queue ≤ 2
@@ -143,9 +187,18 @@ export function computeLayout(i: LayoutInput): Layout {
 }
 
 /**
- * TUI-DESIGN §4.3: the row the composer starts on inside the dynamic region — `rule + live + banner +
- * pane + queue + overlay + preview` from the same `Layout`, so cursor and frame cannot disagree.
+ * TUI-DESIGN-2 §4.2: the console's top-edge row inside the dynamic region (boxed) — `rule + live + banner + pane +
+ * queue + overlay + preview`; identical to the flat tier's composer row.
+ */
+export function consoleTop(l: Layout): number {
+  return l.rule + l.live + l.banner + l.pane + l.queue + l.overlay + l.preview;
+}
+
+/**
+ * TUI-DESIGN §4.3 / TUI-DESIGN-2 §4.2: the row the `›` composer starts on inside the dynamic region — one below the
+ * console's top edge, below the hosted gate row when it is up; the flat tier's value is `consoleTop` itself. The only
+ * cursor formula: `{ x: 2 + view.cursor.x, y: composerTop(layout) + view.cursor.row }` in the boxed tier.
  */
 export function composerTop(l: Layout): number {
-  return l.rule + l.live + l.banner + l.pane + l.queue + l.overlay + l.preview;
+  return consoleTop(l) + (l.chrome > 0 ? 1 + l.gate : 0);
 }

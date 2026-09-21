@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BUDGET_SETTINGS, COMMANDS, THEMES, availabilityError, commandNames, findCommand, isExactCommand, takesRest, type CommandSpec } from '../../../../src/tui/commands/registry.js';
+import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, LLM_STATE_MODE, THEMES, availabilityError, commandNames, findCommand, isExactCommand, takesRest, type CommandSpec } from '../../../../src/tui/commands/registry.js';
 
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const COMMANDS_MD = `${ROOT}docs/COMMANDS.md`;
@@ -63,11 +63,14 @@ const EXPECTED: readonly [name: string, avail: CommandSpec['availableDuringTask'
   ['model', 'any', 'yes', []],
   ['provider', 'any', 'yes', []],
   ['mode', 'any', 'yes', []],
+  ['llm', 'any', 'yes', []],
   ['config', 'any', 'yes', []],
   ['login', 'any', '`/login` raw-mode prompt', []],
   ['logout', 'any', 'yes', []],
   ['trust', 'idle', 'yes', []],
   ['theme', 'any', 'n/a', []],
+  ['panel', 'any', 'yes', []],
+  ['transcript', 'any', 'n/a', []],
   ['copy', 'any', 'n/a', []],
   ['export', 'idle', 'yes', []],
   ['status', 'any', 'yes', []],
@@ -116,6 +119,32 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     expect(findCommand('export')?.args[0]).toMatchObject({ kind: 'path', optional: true });
     expect((findCommand('resume')?.flags ?? []).find((f) => f.name === 'sort')).toMatchObject({ value: true, values: ['updated', 'created'] });
     expect(COMMANDS.filter(takesRest).map((c) => c.name)).toEqual(['rename', 'steer', 'why']);
+  });
+  it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional jev-only|jev-on|jev-off|llm-jev; /llm <on|off>; /panel [d|p|t|s|off|full]; /transcript [compact|full] — strings verbatim', () => {
+    const mode = findCommand('mode') as CommandSpec;
+    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]' });
+    expect(mode.title).toBe('engine mode: show, or set for the next run');
+    expect(mode.usage).toBe('[jev-only|jev-on|jev-off|llm-jev]');
+    expect(mode.semantics).toBe('no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`');
+    expect(ENGINE_MODES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    const llm = findCommand('llm') as CommandSpec;
+    expect(llm.args[0]).toEqual({ name: 'state', kind: 'enum', values: ['on', 'off'], hint: '<on|off>' });
+    expect(llm.title).toBe('Jev + LLM on (= /mode jev-on) or off (= /mode jev-only)');
+    expect(llm.usage).toBe('<on|off>');
+    expect(llm.semantics).toBe('`/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only`');
+    expect(llm.category).toBe('config');
+    expect(LLM_STATE_MODE).toEqual({ on: 'jev-on', off: 'jev-only' });
+    const panel = findCommand('panel') as CommandSpec;
+    expect(panel.args[0]).toMatchObject({ kind: 'enum', values: ['d', 'p', 't', 's', 'off', 'full'], optional: true, hint: '[d|p|t|s|off|full]' });
+    expect(panel.usage).toBe('[d|p|t|s|off|full]');
+    expect(panel.category).toBe('ui');
+    const transcript = findCommand('transcript') as CommandSpec;
+    expect(transcript.args[0]).toMatchObject({ kind: 'enum', values: ['compact', 'full'], optional: true, hint: '[compact|full]' });
+    expect(transcript.usage).toBe('[compact|full]');
+    expect(transcript.category).toBe('ui');
+    // the palette lists them; `/llm` is a name, not an alias of /mode (its own row in docs/COMMANDS.md)
+    for (const n of ['/mode', '/llm', '/panel', '/transcript']) expect(commandNames()).toContain(n);
+    expect(findCommand('llm')?.name).toBe('llm');
   });
   it('findCommand resolves names and aliases case-insensitively, with or without the slash; isExactCommand is strict', () => {
     expect(findCommand('/Quit')?.name).toBe('exit');

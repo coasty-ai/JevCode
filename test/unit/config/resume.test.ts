@@ -1,8 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import type { CheckpointState, ConfigRecordValue, Resolved, RunLimits, RunMeta, StopReason } from '../../../src/core/types.js';
+import type { CheckpointState, ConfigRecordValue, DeciderConfig, Resolved, RunLimits, RunMeta, StopReason } from '../../../src/core/types.js';
 import type { SettingName } from '../../../src/config/types.js';
 import { parseCliArgs } from '../../../src/cli/args.js';
 import { reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom, type ResumeCurrentInputs } from '../../../src/config/resolve.js';
+import { ConfigError } from '../../../src/errors.js';
 
 const RUN_ID = '20260919-142301-k7q2m3xa';
 const WS = '/private/tmp/ws';
@@ -72,12 +73,14 @@ describe('resumeIdentityFromRunMeta', () => {
       baseUrl: 'https://api.anthropic.com',
       jevModel: 'typesafe/jev-1.13-20260917',
       jevBaseUrl: 'https://openrouter.ai/api/alpha/decisions',
+      jevProvider: null, // TUI-DESIGN-2 §2.5: a run recorded before the row (reads as openrouter)
       completeThreshold: 0.9,
       impossibleThreshold: 0.8,
       sandbox: 'seatbelt',
     });
     const sparse = meta({}, { config: { sandbox: { value: 'weird', source: 'flag' } } });
-    expect(resumeIdentityFromRunMeta(sparse)).toMatchObject({ provider: null, model: null, jevModel: null, completeThreshold: null, sandbox: null });
+    expect(resumeIdentityFromRunMeta(sparse)).toMatchObject({ provider: null, model: null, jevModel: null, jevProvider: null, completeThreshold: null, sandbox: null });
+    expect(resumeIdentityFromRunMeta(meta({ 'decider.provider': 'typesafe' })).jevProvider).toBe('typesafe');
   });
 });
 
@@ -243,5 +246,52 @@ describe('reconcileResumeConfig', () => {
     const b = reconcileResumeConfig(current(), m, resume());
     expect(JSON.stringify(a)).toBe(JSON.stringify(b));
     expect(JSON.stringify(m)).toBe(before);
+  });
+});
+
+describe('TUI-DESIGN-2 §2.5: decider.provider on --resume', () => {
+  const tsDecider: DeciderConfig = { provider: 'typesafe', baseUrl: 'https://api.typesafe.ai/v1/systemone', apiKey: 'k-12345678', model: 'jev-1.13.0', pinned: true, pricing: { inputUsdPerToken: 4.2e-8, outputUsdPerToken: 0 }, providerSource: 'auto:typesafe-key' };
+
+  it("--jev-model under the other provider's naming is the same model when EQUIVALENT_IDS says so", () => {
+    expect(reconcileResumeConfig(current(), meta(), resume('--jev-model', 'jev-1.13.0')).errors).toEqual([]);
+    expect(reconcileResumeConfig(current(), meta(), resume('--jev-model', 'jev-1.13.1')).errors.map((e) => e.setting)).toEqual(['decider.model']);
+  });
+
+  it("a cross-provider resume is an override when the run's resolved model maps onto what the new provider serves, else a ConfigError naming the way out", () => {
+    const run = meta({}, { resolvedJevModel: 'typesafe/jev-1.13-20260917' });
+    const toTypesafe = reconcileResumeConfig(current({ decider: { provider: 'typesafe', model: 'jev-1.13.0' } }), run, resume());
+    expect(toTypesafe.errors).toEqual([]);
+    expect(toTypesafe.overrides).toEqual([{ setting: 'decider.provider', from: 'openrouter', to: 'typesafe', atStep: 7 }]);
+    // jev-latest resolves to jev-1.13.0 (PROBE), so the alias is accepted too
+    expect(reconcileResumeConfig(current({ decider: { provider: 'typesafe', model: 'jev-latest' } }), run, resume()).errors).toEqual([]);
+    // other weights: refused, naming the run's provider and model and the two ways out
+    const other = reconcileResumeConfig(current({ decider: { provider: 'typesafe', model: 'jev-2.0.0' } }), run, resume());
+    expect(other.errors.map((e) => e.message)).toEqual([`--resume: run ${RUN_ID} used decider.provider openrouter with typesafe/jev-1.13-20260917; pass --jev-provider openrouter, or start a follow-up`]);
+    expect(other.errors[0]).toBeInstanceOf(ConfigError);
+    expect(other.errors[0]?.exitCode).toBe(2);
+    expect(other.errors[0]?.setting).toBe('decider.provider');
+    expect(other.overrides).toEqual([]);
+    // the configured id stands in when the run never resolved one; no recorded model at all is refused
+    expect(reconcileResumeConfig(current({ decider: { provider: 'typesafe', model: 'jev-1.13.0' } }), meta(), resume()).errors).toEqual([]);
+    const noModel = reconcileResumeConfig(current({ decider: { provider: 'typesafe', model: 'jev-1.13.0' } }), meta({}, { config: {} }), resume());
+    expect(noModel.errors.some((e) => e.setting === 'decider.provider' && e.message.includes('with an unrecorded model'))).toBe(true);
+    // the other direction, from a run that recorded typesafe
+    const tsRun = meta({ 'decider.provider': 'typesafe', 'decider.model': 'jev-1.13.0', 'decider.baseUrl': 'https://api.typesafe.ai/v1/systemone' });
+    expect(reconcileResumeConfig(current({ decider: { provider: 'openrouter', model: 'typesafe/jev-1.13-20260917' } }), tsRun, resume()).overrides).toEqual([{ setting: 'decider.provider', from: 'typesafe', to: 'openrouter', atStep: 7 }]);
+    expect(reconcileResumeConfig(current({ decider: { provider: 'openrouter', model: 'typesafe/jev-1.13' } }), tsRun, resume()).errors).toEqual([]);
+    // the same provider, or no decider given: nothing to reconcile
+    expect(reconcileResumeConfig(current({ decider: { provider: 'openrouter', model: 'typesafe/jev-1.13' } }), run, resume()).overrides).toEqual([]);
+    expect(reconcileResumeConfig(current(), tsRun, resume()).errors).toEqual([]);
+  });
+
+  it('resumeInputsFrom carries the current provider + model from config.decider(); a decider() that throws or is absent leaves it out', () => {
+    const state = { step: 1, spend: { totalUsd: 0 }, wallMsUsed: 0, loopDetector: { replanCount: 0 }, stopReason: null } as unknown as CheckpointState;
+    expect(resumeInputsFrom({ limits: () => limits(), decider: () => tsDecider }, state, null).decider).toEqual({ provider: 'typesafe', model: 'jev-1.13.0' });
+    const throwing = (): DeciderConfig => {
+      throw new ConfigError('decider.apiKey: the Jev API key is not set', { setting: 'decider.apiKey' });
+    };
+    expect(resumeInputsFrom({ limits: () => limits(), decider: throwing }, state, null).decider).toBeUndefined();
+    expect(resumeInputsFrom({ limits: () => limits() }, state, null).decider).toBeUndefined();
+    expect('decider' in resumeInputsFrom({ limits: () => limits() }, state, null)).toBe(false);
   });
 });

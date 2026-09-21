@@ -26,6 +26,8 @@ export interface SpinnerInput {
   readonly pendingReview: ConfirmRequest | null;
   readonly overlay: OverlayKind;
   readonly blocking: unknown | null;
+  /** TUI-DESIGN-2 §4.8: a submission is between Enter and its reply (`⠹ thinking` · `⠹ looking` · `⠹ replying`) */
+  readonly thinking?: string | null;
 }
 
 /**
@@ -33,6 +35,7 @@ export interface SpinnerInput {
  * reported one), no review is pending and no blocking pane is up. `starting` spins too (a stage is about to run).
  */
 export function spinnerActive(s: SpinnerInput): boolean {
+  if (s.thinking !== undefined && s.thinking !== null && s.run === 'none') return true;
   if (s.run === 'none' || s.run === 'aborting') return false;
   if (s.pendingReview !== null || s.overlay === 'review') return false;
   if (s.blocking !== null || s.status?.blocked) return false;

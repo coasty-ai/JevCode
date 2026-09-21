@@ -17,6 +17,9 @@ import { GLYPHS, oneLineCells, padEndCells, padStartCells, type GlyphSet } from 
 import { p2 } from './plain.js';
 import { RISK_BLOCK_THRESHOLD, RISK_REVIEW_THRESHOLD, consumerRule, criteriaText, riskDimensionMode, type DecisionThresholds } from './pane/model.js';
 import { reviewRowForDigit } from './review/lines.js';
+// TUI-DESIGN-2 §3.11: `/why intake` re-derives the reading from the rows in hand and names the intake's consumers
+import { INTAKE_RUN_FLOOR, answersOfRows, resolveIntake } from '../chat/intake.js';
+import { FACT_QUESTION_PREFIX, FACT_SELECT_FLOOR } from '../chat/facts.js';
 
 /** §7.6: a `/why` item's `detail` is ≤ 60 lines. */
 export const WHY_MAX_LINES = 60;
@@ -32,14 +35,26 @@ export interface WhyContext extends Partial<DecisionThresholds> {
   model?: string | null;
 }
 
-export type WhyRef = { kind: 'ref'; step: number | null; stage: StageName | null; id: string } | { kind: 'digit'; digit: number };
+export type WhyRef =
+  | { kind: 'ref'; step: number | null; stage: StageName | null; id: string }
+  | { kind: 'digit'; digit: number }
+  /** TUI-DESIGN-2 §3.11: `intake` (the Choice), `intake.reply`, `intake.about_<key>`, `intake.can_<kind>` — the last intake's step-0 rows */
+  | { kind: 'intake'; id: string };
 
 const STAGES: ReadonlySet<string> = new Set<StageName>(['replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete']);
 
-/** TUI-DESIGN §7.6 ref grammar: `s<step>.<stage>.<id>`, `<stage>.<id>` (current step) or a pane digit `1`–`5`; null when it parses as none. */
+/** TUI-DESIGN-2 §3.11: the `/why` argument grammar of the intake rows — `intake` alone is the Choice itself */
+const INTAKE_REF_RE = /^intake(?:\.([a-z][a-z0-9_]*))?$/;
+
+/**
+ * TUI-DESIGN §7.6 ref grammar: `s<step>.<stage>.<id>`, `<stage>.<id>` (current step) or a pane digit `1`–`5`; TUI-DESIGN-2 §3.11
+ * adds `intake[.<id>]` for the last intake's rows. Null when it parses as none.
+ */
 export function parseWhyRef(text: string): WhyRef | null {
   const t = text.trim();
   if (/^[1-5]$/.test(t)) return { kind: 'digit', digit: Number(t) };
+  const intake = INTAKE_REF_RE.exec(t);
+  if (intake) return { kind: 'intake', id: intake[1] ?? 'intake' };
   const m = /^(?:s(\d+)\.)?([a-z_]+)\.(.+)$/.exec(t);
   if (!m) return null;
   const [, step, stage, id] = m;
@@ -52,8 +67,30 @@ export function whyRef(d: Pick<Decision, 'step' | 'stage' | 'id'>): string {
   return `s${d.step}.${d.stage}.${d.id}`;
 }
 
+/** TUI-DESIGN-2 §3.11: the intake row `ref.id` names among the last intake's step-0 `intent` rows (`intake`, `reply`, `about_*`, `can_*`); null when absent */
+export function findIntakeDecision(rows: readonly Decision[], ref: Extract<WhyRef, { kind: 'intake' }>): Decision | null {
+  return rows.find((d) => d.step === 0 && d.stage === 'intent' && d.id === ref.id) ?? null;
+}
+
+/**
+ * TUI-DESIGN-2 §3.11 `consumedBy` of the intake rows: `resolveChoice → run floor 0.60 → <kind>` (the Choice, `<kind>` re-derived
+ * from the rows in hand), `argmax → catalogue` (the reply Choice), `≥ 0.5 → answer line` (a fact Noul); null for every other row
+ * (the paired `can_*` Nouls keep the §7.1 `paired ≥ 0.50` rule).
+ */
+export function intakeConsumedBy(d: Decision, siblings: readonly Decision[], g: GlyphSet = GLYPHS.unicode): string | null {
+  if (d.step !== 0 || d.stage !== 'intent') return null;
+  if (d.id === 'intake') {
+    const kind = resolveIntake(answersOfRows([d, ...siblings.filter((s) => s !== d)])).kind;
+    return `resolveChoice ${g.arrow} run floor ${INTAKE_RUN_FLOOR.toFixed(2)} ${g.arrow} ${kind}`;
+  }
+  if (d.id === 'reply') return `argmax ${g.arrow} catalogue`;
+  if (d.id.startsWith(FACT_QUESTION_PREFIX)) return `${g.ge} ${FACT_SELECT_FLOOR.toFixed(1)} ${g.arrow} answer line`;
+  return null;
+}
+
 /** TUI-DESIGN §7.6: the decision a ref names among `decisions` (a digit = the current step's risk row `w`+digit names); null when absent. */
 export function findDecision(decisions: readonly Decision[], ref: WhyRef, currentStep: number | null): Decision | null {
+  if (ref.kind === 'intake') return findIntakeDecision(decisions, ref);
   if (ref.kind === 'digit') {
     const key = reviewRowForDigit(ref.digit);
     if (key === null || currentStep === null) return null;
@@ -84,6 +121,8 @@ export function whyHead(d: Decision, ctx: WhyContext = {}): string {
 
 /** TUI-DESIGN §7.6 consumer line: `risk band (review ≥ 0.30, block ≥ 0.70); wire two-decimal, noise sd ≈ 0.02` for risk dimensions, the §7.1 rule otherwise; drawn with the glyph set (`≥` / `≈` / `→` have `--ascii` twins). */
 export function whyConsumedBy(d: Decision, ctx: WhyContext = {}, g: GlyphSet = GLYPHS.unicode): string {
+  const intake = intakeConsumedBy(d, ctx.siblings ?? [], g);
+  if (intake !== null) return intake;
   if (d.stage === 'risk' && (RISK_DIMENSIONS as readonly string[]).includes(d.id)) {
     return `risk band (review ${g.ge} ${RISK_REVIEW_THRESHOLD.toFixed(2)}, block ${g.ge} ${RISK_BLOCK_THRESHOLD.toFixed(2)}); wire two-decimal, noise sd ${g.approx} ${WIRE_NOISE_SD.toFixed(2)}`;
   }

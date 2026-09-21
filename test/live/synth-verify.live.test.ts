@@ -10,6 +10,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeciderConfig } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
+import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from '../../src/jev/types.js';
 import type { JevAsk } from '../../src/synth/types.js';
 import { pickNextFailingTest, progress, summarize } from '../../src/synth/verify/index.js';
@@ -21,7 +22,7 @@ const FIXTURES = join(import.meta.dirname, '../fixtures/synth/verify');
 
 describe.skipIf(reason !== null)(`synth/verify live (${reason ?? 'enabled'})`, () => {
   it('progress is code-computed on gcd buggy → correct; attack-first picks an offered test', async () => {
-    const cfg: DeciderConfig = { baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true };
+    const cfg: DeciderConfig = { provider: 'openrouter', baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing, providerSource: 'default' };
     const decider = createJevDecider(cfg, { redact: (s) => s.split(apiKey).join('[KEY]') });
     const signal = new AbortController().signal;
     let cost = 0;

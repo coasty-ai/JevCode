@@ -34,10 +34,10 @@ import type { ReadlineComposer } from '../tui/plain-composer.js';
 import type { TuiRenderer } from '../tui/index.js';
 import { createTuiPrompter, type TuiPrompterBundle } from './tui-prompter.js';
 
-/** `--mode` (or its hidden alias `--condition`, already folded into `mode` by args.ts); default jev-on. */
+/** `--mode` (or its hidden alias `--condition`, already folded into `mode` by args.ts); TUI-DESIGN-2 §1.1 / §1.2: default jev-only. */
 export function modeFromFlags(flags: ParsedFlags): EngineMode {
   const m = flags.mode ?? flags.condition;
-  return m === 'jev-off' || m === 'jev-only' ? m : 'jev-on';
+  return m === 'jev-on' || m === 'jev-off' || m === 'llm-jev' ? m : 'jev-only';
 }
 
 /** the process facts the §1 rule reads; probed once in `main`, injected in tests */
@@ -356,14 +356,29 @@ async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: 
     workspace,
     record: () => config.record(),
     sandbox: config.sandbox,
+    // the two secrets, plus `decider.provider` (TUI-DESIGN-2 §2.3): `jevcode login` infers the Jev provider from the session's own
+    // resolution (flag > JEV_PROVIDER > ./.env > <OPEN_ASSIST_PATH>/.env > file > auto rules) so login and the session never disagree
     secrets: async () => {
       const m = new Map<string, import('../core/types.js').Resolved<string>>();
-      for (const name of ['generator.apiKey', 'decider.apiKey'] as const) {
+      for (const name of ['generator.apiKey', 'decider.apiKey', 'decider.provider'] as const) {
         const r = config.entries.get(name);
         if (r) m.set(name, r);
       }
       return m;
     },
+  };
+}
+
+/** TUI-DESIGN §11.2 / TUI-DESIGN-2 §1.4: the `jevcode login` flags `commandLogin` receives — `--jev-provider typesafe|openrouter` rides along with `--provider` and the two `--*-stdin` flags. Pure. */
+export function loginFlagsFrom(flags: ParsedFlags): import('./login.js').LoginFlags {
+  return {
+    ...(flags.provider !== undefined ? { provider: flags.provider } : {}),
+    ...(flags.jevProvider !== undefined ? { jevProvider: flags.jevProvider } : {}),
+    ...(flags.generatorKeyStdin ? { generatorKeyStdin: true } : {}),
+    ...(flags.jevKeyStdin ? { jevKeyStdin: true } : {}),
+    ...(flags.status ? { status: true } : {}),
+    ...(flags.verify ? { verify: true } : {}),
+    ...(flags.config !== undefined ? { config: flags.config } : {}),
   };
 }
 
@@ -422,17 +437,7 @@ export async function main(argv: string[]): Promise<number> {
       return commandPerf(flags);
     case 'login': {
       const { commandLogin } = await import('./login.js');
-      return commandLogin(
-        {
-          ...(flags.provider !== undefined ? { provider: flags.provider } : {}),
-          ...(flags.generatorKeyStdin ? { generatorKeyStdin: true } : {}),
-          ...(flags.jevKeyStdin ? { jevKeyStdin: true } : {}),
-          ...(flags.status ? { status: true } : {}),
-          ...(flags.verify ? { verify: true } : {}),
-          ...(flags.config !== undefined ? { config: flags.config } : {}),
-        },
-        await loginIo(flags),
-      );
+      return commandLogin(loginFlagsFrom(flags), await loginIo(flags));
     }
     case 'logout': {
       const { commandLogout } = await import('./login.js');

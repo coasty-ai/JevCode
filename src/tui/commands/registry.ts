@@ -1,5 +1,5 @@
 /**
- * The command table (TUI-DESIGN §5.2): one typed array feeds the dispatcher, the palette, help,
+ * The command table (TUI-DESIGN §5.2; TUI-DESIGN-2 §1.3 `/mode` `/llm`, §4.6 `/panel` `/transcript`): one typed array feeds the dispatcher, the palette, help,
  * `docs/COMMANDS.md` (scripts/gen-docs.mjs) and the `--plain` readline composer. Pure data plus lookups.
  * `availableDuringTask`: idle | live | any. `plain`: whether the readline composer supports the command.
  */
@@ -63,6 +63,16 @@ export const BUDGET_SETTINGS = ['spend-cap', 'session-spend-cap', 'max-steps', '
 
 /** TUI-DESIGN §16: `/theme` values. */
 export const THEMES = ['dark', 'light', 'daltonized', 'ansi'] as const;
+
+/** TUI-DESIGN-2 §1.2 / §1.3: the engine modes in the round-2 order (jev-only is the default); llm-jev last (docs/LLM-JEV-DESIGN.md §9.3). */
+export const ENGINE_MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
+/** TUI-DESIGN-2 §1.3: `/llm on|off` → `/mode jev-on` | `/mode jev-only`. */
+export const LLM_STATES = ['on', 'off'] as const;
+export const LLM_STATE_MODE: Readonly<Record<(typeof LLM_STATES)[number], 'jev-on' | 'jev-only'>> = { on: 'jev-on', off: 'jev-only' };
+/** TUI-DESIGN-2 §4.6: `/panel [d|p|t|s|off|full]`. */
+export const PANEL_ARGS = ['d', 'p', 't', 's', 'off', 'full'] as const;
+/** TUI-DESIGN-2 §4.5: `/transcript [compact|full]`. */
+export const TRANSCRIPT_VIEWS = ['compact', 'full'] as const;
 
 /** TUI-DESIGN §5.2 `COMMANDS` — the table, in the design's row order. */
 export const COMMANDS: readonly CommandSpec[] = [
@@ -312,15 +322,27 @@ export const COMMANDS: readonly CommandSpec[] = [
     semantics: 'pending for the **next** run only (memory)',
     category: 'config',
   },
+  // TUI-DESIGN-2 §1.3: `/mode` shows or pends; `/llm on|off` is its alias pair
   {
     name: 'mode',
     aliases: [],
-    args: [{ name: 'm', kind: 'enum', values: ['jev-on', 'jev-off', 'jev-only'], hint: '<m>' }],
+    args: [{ name: 'm', kind: 'enum', values: ENGINE_MODES, optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]' }],
     availableDuringTask: 'any',
     plain: 'yes',
-    title: 'engine mode for the next run only',
-    usage: '<m>',
-    semantics: 'pending for the **next** run only (memory)',
+    title: 'engine mode: show, or set for the next run',
+    usage: '[jev-only|jev-on|jev-off|llm-jev]',
+    semantics: 'no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`',
+    category: 'config',
+  },
+  {
+    name: 'llm',
+    aliases: [],
+    args: [{ name: 'state', kind: 'enum', values: LLM_STATES, hint: '<on|off>' }],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'Jev + LLM on (= /mode jev-on) or off (= /mode jev-only)',
+    usage: '<on|off>',
+    semantics: '`/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only`',
     category: 'config',
   },
   {
@@ -377,6 +399,29 @@ export const COMMANDS: readonly CommandSpec[] = [
     title: 'colour theme for new items and the dynamic region',
     usage: '<dark|light|daltonized|ansi>',
     semantics: 'new items and the dynamic region only',
+    category: 'ui',
+  },
+  // TUI-DESIGN-2 §4.6: the Jev panel and the transcript view (S4's rows, landed with the table)
+  {
+    name: 'panel',
+    aliases: [],
+    args: [{ name: 'what', kind: 'enum', values: PANEL_ARGS, optional: true, hint: '[d|p|t|s|off|full]' }],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'Jev panel: toggle, open a tab (d|p|t|s), collapse (off) or expand (full)',
+    usage: '[d|p|t|s|off|full]',
+    semantics: 'no argument toggles collapsed ↔ open (≤ 6 rows); `d|p|t|s` opens that tab (the same tab again collapses); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows',
+    category: 'ui',
+  },
+  {
+    name: 'transcript',
+    aliases: [],
+    args: [{ name: 'view', kind: 'enum', values: TRANSCRIPT_VIEWS, optional: true, hint: '[compact|full]' }],
+    availableDuringTask: 'any',
+    plain: 'n/a',
+    title: 'transcript view: compact (one line per step) or full (every stage line)',
+    usage: '[compact|full]',
+    semantics: 'no argument shows the current view; `compact` (default) hides the stage kinds and shows one `[step N]` line per step; `full` shows every item (new items only, §4.5); `--plain` is always `full`',
     category: 'ui',
   },
   {

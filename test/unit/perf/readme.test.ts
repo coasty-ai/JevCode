@@ -8,6 +8,7 @@ import { describe, expect, it } from 'vitest';
 import type { PerfResult } from '../../../src/perf/main.js';
 import type { LagGeometry } from '../../../src/perf/render-lag.js';
 import type { ComposerSeries } from '../../../src/perf/composer-latency.js';
+import type { IntakeSeries } from '../../../src/perf/intake-latency.js';
 import { failures, performanceSection, replacePerformanceSection, resultRows } from '../../../src/perf/readme.js';
 
 function geometry(rows: number, over: Partial<LagGeometry> = {}): LagGeometry {
@@ -34,6 +35,14 @@ function geometry(rows: number, over: Partial<LagGeometry> = {}): LagGeometry {
     throttleMs: 34,
     fpsGate: 31,
     fpsOk: true,
+    splashFrames: 14,
+    splashStaticFrames: 1,
+    splashKeyFrames: 0,
+    splashWordmarkFrames: 13,
+    splashWindowMs: 700,
+    splashInFirstFrame: true,
+    splashGate: 22,
+    splashOk: true,
     frameClasses: { static: 180, key: 150, dynamic: 70 },
     regionMax: rows - 2,
     cursorHidesMaxPerFrame: 1,
@@ -90,6 +99,32 @@ function series(name: ComposerSeries['name'], over: Partial<ComposerSeries> = {}
   };
 }
 
+/** an intake series (TUI-DESIGN-2 §3.12): 20 messages, bubble and reply frames located for every one */
+function intake(name: IntakeSeries['name'], over: Partial<IntakeSeries> = {}): IntakeSeries {
+  return {
+    name,
+    rows: 24,
+    columns: 80,
+    jevMs: 0,
+    messages: 20,
+    dropped: 0,
+    bubble: { samples: 20, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
+    reply: { samples: 20, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
+    replyNet: { samples: 20, p50: 4.1, p95: 7.2, max: 9.9, raw: [] },
+    thinkingSeen: 0,
+    runsStarted: 0,
+    clears: 0,
+    regionMax: 6,
+    exitCode: 0,
+    timedOut: false,
+    bubbleOk: true,
+    replyOk: true,
+    hygieneOk: true,
+    pass: true,
+    ...over,
+  };
+}
+
 function result(): PerfResult {
   return {
     measuredAt: '2026-09-21T10:00:00.000Z',
@@ -101,7 +136,10 @@ function result(): PerfResult {
     partial: false,
     firstFrame: {
       gateMs: 300,
-      series: [{ command: 'chat', rows: 24, columns: 80, cold: { runs: [110, 112], median: 111, p95: 112 }, warm: { runs: [90], median: 90, p95: 90 }, slowest: null, clean: true, pass: true }],
+      series: [
+        { command: 'chat', rows: 24, columns: 80, cold: { runs: [110, 112], median: 111, p95: 112 }, warm: { runs: [90], median: 90, p95: 90 }, slowest: null, clean: true, wordmarkExpected: true, wordmarkRuns: 3, splashOk: true, timeOk: true, pass: true },
+        { command: 'chat', rows: 8, columns: 40, cold: { runs: [108], median: 108, p95: 108 }, warm: { runs: [89], median: 89, p95: 89 }, slowest: null, clean: true, wordmarkExpected: false, wordmarkRuns: 0, splashOk: true, timeOk: true, pass: true },
+      ],
       breakdown: [{ command: 'chat', rows: 24, columns: 80, harnessMs: 111, mountedMs: 99.9, flushedMs: 103.7, bareNodeMs: 24.2 }],
       pass: true,
     },
@@ -158,6 +196,13 @@ function result(): PerfResult {
       deviations: ['200 keys per series'],
       pass: false,
     },
+    intakeLatency: {
+      gateBubbleMs: 16,
+      gateReplyMs: 40,
+      series: [intake('mock0'), intake('mock150', { jevMs: 150, reply: { samples: 20, p50: 158.2, p95: 163.4, max: 170.1, raw: [] }, replyNet: { samples: 20, p50: 8.2, p95: 13.4, max: 20.1, raw: [] }, thinkingSeen: 20 })],
+      deviations: ['the live gate is the S6 scenario'],
+      pass: true,
+    },
     states: {
       clearReSelfTest: true,
       scenarios: [
@@ -199,6 +244,19 @@ describe('failures()', () => {
     r.renderLag!.stress = geometry(40, { profile: 'stress', stepMs: 0, gated: false, clears: 1, hygieneOk: false, pass: false });
     expect(failures(r)).toContain('render-lag hygiene (rows 40 stress)');
     expect(failures(r)).not.toContain('event-loop lag (rows 40 stress)');
+    // TUI-DESIGN-2 §9: the splash bucket and the intake series are gates of their own
+    r.renderLag!.rows40Reduced = geometry(40, { reducedMotion: true, splashFrames: 35, splashOk: false, pass: false });
+    r.intakeLatency!.series[1] = intake('mock150', { jevMs: 150, replyOk: false, pass: false });
+    expect(failures(r)).toContain('splash frame count (rows 40 reduced motion)');
+    expect(failures(r)).toContain('intake latency (mock150)');
+    // TUI-DESIGN-2 §9 row 1: "the first frame is splash frame 0" is a gate of the first-frame probe, named apart from the time gate
+    const ff = result();
+    ff.firstFrame!.series[0] = { ...ff.firstFrame!.series[0]!, wordmarkRuns: 2, splashOk: false, pass: false };
+    ff.firstFrame!.pass = false;
+    expect(failures(ff)).toContain('first frame (splash frame 0)');
+    expect(failures(ff)).not.toContain('first frame');
+    ff.firstFrame!.series[1] = { ...ff.firstFrame!.series[1]!, clean: false, timeOk: false, pass: false };
+    expect(failures(ff)).toContain('first frame');
   });
 });
 
@@ -224,6 +282,22 @@ describe('resultRows()', () => {
     expect(by('Composer series hygiene')).toMatchObject({ result: '0 · 5 · 0 / 0 · 22 · 0 / 0 · 22 · 0 / 0 · 11 · 0 / 0 · 5 · 206 (report) / 0 · 5 · 0', status: 'pass' });
     expect(by('`resize-live` 40×120 (typist)')).toMatchObject({ result: '0 (0) · 1 (1) · 0 (0) · 0 (0) · 0 · 1 (+2.1 ms) · 10', status: 'pass' });
     expect(by('Ctrl+L repaint')).toMatchObject({ result: 'true (1 frame)', status: 'pass' });
+    // TUI-DESIGN-2 §5 / §9: splash frame 0 per first-frame series, the splash bucket per lag geometry, the intake rows
+    expect(by('Splash frame 0 is the first frame')).toMatchObject({ result: '3/3 · 0/2 (flat, none expected)', gate: expect.stringContaining('TUI-DESIGN-2 §9 row 1'), status: 'pass' });
+    // the splash bucket row: `dynamic` · `static` · `key` · wordmark · first frame, gated at ⌈31 × 0.7⌉ = 22 dynamic frames; a clipped window is named
+    expect(by('Splash bucket')).toMatchObject({ result: '14 · 1 · 0 · 13 · true / 14 · 1 · 0 · 13 · true / 14 · 1 · 0 · 13 · true / 14 · 1 · 0 · 13 · true', gate: '`dynamic` ≤ ⌈(maxFps + 1) × 0.7⌉ = 22 (realistic geometries; stress reported)', status: 'pass' });
+    const clipped = result();
+    clipped.renderLag!.stress = geometry(40, { profile: 'stress', gated: false, splashFrames: 9, splashKeyFrames: 2, splashWindowMs: 420, splashGate: 14 });
+    clipped.firstFrame!.series[0] = { ...clipped.firstFrame!.series[0]!, splashOk: false, pass: false };
+    const rows2 = resultRows(clipped);
+    expect(rows2.find((r) => r.measurement.includes('Splash bucket'))!.result).toBe('14 · 1 · 0 · 13 · true / 14 · 1 · 0 · 13 · true / 14 · 1 · 0 · 13 · true / 9 · 1 · 2 · 13 · true (window 420 ms)');
+    expect(rows2.find((r) => r.measurement.includes('Splash frame 0 is the first frame'))!.status).toBe('FAIL');
+    expect(by('Intake reply latency, `mock0`')).toMatchObject({ measurement: expect.stringContaining('20 greetings and tool questions, 20 located, 24×80'), result: '4.1 ms / 7.2 ms / 9.9 ms · 4.1 ms / 7.2 ms / 9.9 ms', gate: expect.stringContaining('bubble p95 < 16 ms · reply p95 ≤ 40 ms'), status: 'pass' });
+    const dropped = result();
+    dropped.intakeLatency!.series[0] = intake('mock0', { dropped: 1, reply: { samples: 19, p50: 4.1, p95: 7.2, max: 9.9, raw: [] }, bubble: { samples: 19, p50: 4.1, p95: 7.2, max: 9.9, raw: [] }, bubbleOk: false, replyOk: false, pass: false });
+    expect(resultRows(dropped).find((r) => r.measurement.includes('Intake reply latency, `mock0`'))).toMatchObject({ measurement: expect.stringContaining('19 located, 1 Enter not located'), status: 'FAIL' });
+    expect(by('Intake reply latency, `mock150`')).toMatchObject({ measurement: expect.stringContaining('`JEVCODE_MOCK_JEV_MS=150`'), result: '4.1 ms / 7.2 ms / 9.9 ms · 158.2 ms / 163.4 ms / 170.1 ms (net p95 13.4 ms)', gate: expect.stringContaining('net of the delay'), status: 'pass' });
+    expect(by('Intake hygiene')).toMatchObject({ result: '0 · 0 · 6 / 0 · 0 · 6', gate: '0 · 0 · ≤ 22', status: 'pass' });
     // no cell may break the Markdown table
     for (const r of rows) for (const v of [r.measurement, r.result, r.gate, r.status]) expect(v).not.toContain('|');
   });
@@ -244,9 +318,17 @@ describe('performanceSection() / replacePerformanceSection()', () => {
     expect(s).toContain('35.0 steps/s and 457 `<Static>` rows/s');
     expect(s).toContain('`isStaticDirty` → `onImmediateRender`');
     expect(s).toContain('14 · 10 · 20 / 14 · 10 · 33 / 12 · 10 · 9 static · key · dynamic');
-    expect(s).toContain('Declared deviations from docs/TUI-DESIGN.md §18');
+    expect(s).toContain('Declared deviations from docs/TUI-DESIGN.md §18 and docs/TUI-DESIGN-2.md §9');
     expect(s).toContain('- 200 keys per series');
     expect(s).toContain('- the lag window is the whole session');
+    expect(s).toContain('- the live gate is the S6 scenario');
+    expect(s).toContain("the startup splash's frame 0");
+    expect(s).toContain('3/3 first frames at the');
+    expect(s).toContain('gated per series (TUI-DESIGN-2 §9 row 1): every series as designed');
+    expect(s).toContain('the typist lets the splash settle for 800 ms before its first key');
+    expect(s).toContain('Intake reply latency (TUI-DESIGN-2 §3.12): 20 greetings');
+    expect(s).toContain('read p95 7.2 ms at 0 ms and 7.2 ms with the mock delayed 150 ms');
+    expect(s).toContain('read p95 7.2 ms at 0 ms and 13.4 ms net of the delay');
     expect(s).not.toContain('\n## Bench');
   });
   it('replaces only the Performance section of a README and reports a missing heading', () => {

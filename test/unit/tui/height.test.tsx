@@ -7,8 +7,9 @@
  */
 import { render } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
-import { App } from '../../../src/tui/App.js';
-import { CAP, computeLayout } from '../../../src/tui/layout.js';
+import { App, createBridge, type Bridge } from '../../../src/tui/App.js';
+import { CAP, chromeRows, computeLayout, type LayoutInput } from '../../../src/tui/layout.js';
+import type { LaunchSettings } from '../../../src/core/types.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
 import type { Action } from '../../../src/core/types.js';
@@ -26,12 +27,16 @@ interface Busy {
   stdout: StubStdout;
 }
 
-async function renderBusy(rows: number, columns: number, action?: Action, opts: { review?: boolean; wait?: number } = {}): Promise<Busy> {
+/** TUI-DESIGN-2 §5.3: reduced motion mounts with the splash `done`, so a first frame never depends on the animation clock. */
+const STILL: LaunchSettings & { reducedMotion: boolean } = { fps: 30, renderMode: 'standard', screenReader: false, ascii: false, noColor: true, reducedMotion: true };
+
+async function renderBusy(rows: number, columns: number, action?: Action, opts: { review?: boolean; wait?: number; panel?: 'open' | 'full' } = {}): Promise<Busy> {
   const stdout = new StubStdout(rows, columns);
   const stdin = new StubStdin();
   const bus = createEventBus();
   const confirmer = createTuiConfirmer();
-  const instance = render(<App task="budget task" resumeId={null} source={bus} confirmer={confirmer} onAbort={() => undefined} mode="one-shot" tickMs={0} />, {
+  const bridge: Bridge = createBridge(null, null);
+  const instance = render(<App task="budget task" resumeId={null} source={bus} confirmer={confirmer} onAbort={() => undefined} mode="one-shot" tickMs={0} bridge={bridge} launch={STILL} />, {
     stdout: stdout as unknown as NodeJS.WriteStream,
     stdin: stdin as unknown as NodeJS.ReadStream,
     debug: true,
@@ -42,6 +47,7 @@ async function renderBusy(rows: number, columns: number, action?: Action, opts: 
 
   bus.emit({ type: 'run:start', runId: 'r1', task: 'budget task', mode: 'jev-on', resumedFromStep: null });
   bus.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 'budget task', resumed: false });
+  if (opts.panel) bridge.command({ type: 'dispatch', action: { type: 'panel', panel: opts.panel } });
   bus.emit({ type: 'generator:start', step: 1, attempt: 1 });
   for (let i = 0; i < 200; i++) bus.emit({ type: 'generator:delta', step: 1, text: `streamed line ${i} ${'x'.repeat(120)}\n` });
   for (let i = 0; i < 30; i++) bus.emit({ type: 'decision', decision: mkDecision({ id: `dim${i}`, step: 1, verdict: i % 3 === 0 ? 'block' : i % 3 === 1 ? 'review' : 'ok' }) });
@@ -52,7 +58,8 @@ async function renderBusy(rows: number, columns: number, action?: Action, opts: 
     void confirmer.confirm(req, { signal: new AbortController().signal }).catch(() => undefined);
   }
   // the review box appears after the §6.3 deferral (~1 s idle)
-  await tick(opts.wait ?? (opts.review === false ? LIVE_FLUSH_MS * 3 : 1250));
+  // reduced motion flushes the live region at 250 ms (§14.2), so the no-review frame waits past one flush
+  await tick(opts.wait ?? (opts.review === false ? LIVE_FLUSH_MS * 8 : 1250));
   const frame = stripSgr(stdout.lastFrame());
   const staticRows = frame.replace(/\n$/, '').split('\n').length - dynamicRegion(frame, columns).length;
   return { frame, staticRows, stdout };
@@ -60,9 +67,13 @@ async function renderBusy(rows: number, columns: number, action?: Action, opts: 
 
 const bigWrite: Action = { kind: 'write', path: 'big.txt', content: Array.from({ length: 40 }, (_, i) => `content line ${i}`).join('\n') };
 
-const reviewInput = (rows: number, columns: number) => ({ rows, columns, overlay: 'review' as const, overlayWant: CAP.reviewHeader, previewWant: 40, expanded: false, composerWant: 1, queueWant: 0, liveWant: 0, bannerWant: 0 as const, paneWant: CAP.pane });
+/** TUI-DESIGN-2 §4.2: the pending-review input — the boxed tier wants the 9-row card, the flat tier the 8-row header; the panel is collapsed unless opened. */
+const reviewInput = (rows: number, columns: number, panel: 'collapsed' | 'open' | 'full' = 'collapsed'): LayoutInput => {
+  const chrome = chromeRows(rows, columns, false);
+  return { rows, columns, overlay: 'review', overlayWant: chrome === 3 ? CAP.reviewCard : CAP.reviewHeader, previewWant: 40, expanded: false, composerWant: 1, queueWant: 0, liveWant: 0, bannerWant: 0, paneWant: panel === 'open' ? CAP.panel : panel === 'full' ? CAP.pane : 0, chrome, gate: 0 };
+};
 
-describe('height budget (§2)', () => {
+describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
   it.each([12, 24])('rows=%i columns=80: dynamic region ≤ rows − 2 and equal to computeLayout().total with 200 streamed lines, 30 decisions and a pending review', async (rows) => {
     const { frame, staticRows } = await renderBusy(rows, 80, bigWrite);
     const dyn = dynamicRegion(frame, 80);
@@ -70,7 +81,6 @@ describe('height budget (§2)', () => {
     expect(dyn.length).toBe(computeLayout(reviewInput(rows, 80)).total);
     for (const line of dyn) expect(stringWidth(line)).toBeLessThanOrEqual(80);
     const text = dyn.join('\n');
-    expect(text).toContain('review  step 1');
     expect(text).toContain('[y] approve [n] decline');
     expect(text).toContain('step 1/40');
     // a pending review reclaims the live rows (A42) and collapses the composer to one inactive row
@@ -78,30 +88,34 @@ describe('height budget (§2)', () => {
     expect(text).toContain('(review pending');
     expect(staticRows).toBeGreaterThanOrEqual(2);
     if (rows === 24) {
-      // F-G: rule 1 + pane 7 + header 8 + preview 4 + composer 1 + status 1 = 22
+      // H-F1: rule 1 + card 9 + preview 7 + console 5 = 22 (the panel is collapsed: its strip sits on the rule row)
+      expect(text).toContain('╭─ review · step 1');
       expect(text).toContain('content line 0');
-      expect(text).toContain('[review]');
+      expect(text).toMatch(/^─── ▸ jev s1 · 12 decisions/m);
       expect(text).not.toContain('content line 39');
+      for (const line of dyn) if (/^[╭│├╰]/.test(line)) expect(stringWidth(line)).toBe(80);
     }
     if (rows === 12) {
-      // F-H: header cut to 7 by reviewHeaderLines(req, 7): the keys line survives, no preview, no pane
+      // F-H (flat tier): header cut to 7 by reviewHeaderLines(req, 7): the keys line survives, no preview, no pane, no box
+      expect(text).toContain('review  step 1');
       expect(text).not.toContain('content line');
       expect(text).not.toContain('dim29');
+      expect(text).not.toContain('╭');
     }
   });
 
-  it('a 40-row terminal shows the decisions pane, a clipped preview with the `e expands` tail and still fits', async () => {
-    const { frame } = await renderBusy(40, 100, bigWrite);
+  it('a 40-row terminal with the panel open full shows the decisions pane, a clipped preview with the `e expands` tail and still fits', async () => {
+    const { frame } = await renderBusy(40, 100, bigWrite, { panel: 'full' });
     const dyn = dynamicRegion(frame, 100);
     expect(dyn.length).toBeLessThanOrEqual(38);
-    expect(dyn.length).toBe(computeLayout(reviewInput(40, 100)).total);
+    expect(dyn.length).toBe(computeLayout(reviewInput(40, 100, 'full')).total);
     expect(dyn.join('\n')).toContain('dim29');
     // CAP.preview = 8: seven content rows plus the `…[k more preview lines · e expands]` tail
     expect(dyn.filter((l) => l.includes('content line')).length).toBe(7);
     expect(dyn.filter((l) => l.includes('more preview lines · e expands')).length).toBe(1);
   });
 
-  it('live streaming without a review: live 2 + pane + composer 1 + status; the last two stream lines show', async () => {
+  it('live streaming without a review: live 2 + console; the last two stream lines show', async () => {
     const { frame } = await renderBusy(24, 80, undefined, { review: false });
     const dyn = dynamicRegion(frame, 80);
     expect(dyn.length).toBeLessThanOrEqual(22);
@@ -122,7 +136,7 @@ describe('height budget (§2)', () => {
     const { frame } = await renderBusy(6, 80, undefined, { review: false });
     const lines = stripSgr(frame).replace(/\n$/, '').split('\n');
     expect(lines.some((l) => l.includes('terminal 80×6 is below the 40×8 minimum — panes hidden, transcript above'))).toBe(true);
-    expect(lines.some((l) => l.includes('[run] ready r1 step 0/40'))).toBe(true);
+    expect(lines.some((l) => l.includes('[run] start r1 mode=jev-on'))).toBe(true); // `run:ready` is hidden by the compact view (TUI-DESIGN-2 §4.5)
     expect(lines.at(-1)).toContain('step 1/40');
   });
 
@@ -130,7 +144,7 @@ describe('height budget (§2)', () => {
     const stdout = new StubStdout(40, 80);
     const stdin = new StubStdin();
     const bus = createEventBus();
-    const instance = render(<App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} mode="session" cwd="/tmp/proj" tickMs={0} />, {
+    const instance = render(<App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} mode="session" cwd="/tmp/proj" tickMs={0} launch={STILL} />, {
       stdout: stdout as unknown as NodeJS.WriteStream,
       stdin: stdin as unknown as NodeJS.ReadStream,
       debug: true,
@@ -181,15 +195,15 @@ describe('height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × c
     expect(dyn.length).toBeLessThanOrEqual(22);
     expect(dyn.length).toBe(computeLayout(reviewInput(24, columns)).total);
     for (const line of dyn) expect(stringWidth(line)).toBeLessThanOrEqual(columns);
-    expect(dyn.join('\n')).toContain('review  step 1');
+    expect(dyn.join('\n')).toContain('review · step 1');
     expect(dyn.join('\n')).toContain('[y] approve');
   });
 
-  it.each([40, 80, 120])('columns=%i: the normalised session first frame matches its snapshot', async (columns) => {
+  it.each([40, 80, 120])('columns=%i: the normalised session first frame (reduced motion: the brand row, no splash) matches its snapshot', async (columns) => {
     const stdout = new StubStdout(24, columns);
     const stdin = new StubStdin();
     const bus = createEventBus();
-    const instance = render(<App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} mode="session" cwd="/tmp/proj" tickMs={0} />, {
+    const instance = render(<App task="" resumeId={null} source={bus} confirmer={createTuiConfirmer()} onAbort={() => undefined} mode="session" cwd="/tmp/proj" tickMs={0} launch={STILL} />, {
       stdout: stdout as unknown as NodeJS.WriteStream,
       stdin: stdin as unknown as NodeJS.ReadStream,
       debug: true,

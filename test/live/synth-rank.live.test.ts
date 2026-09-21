@@ -7,6 +7,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { DeciderConfig } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
+import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from '../../src/jev/types.js';
 import { createRanker } from '../../src/synth/rank/index.js';
 import type { Candidate, JevAsk } from '../../src/synth/types.js';
@@ -18,7 +19,7 @@ const reason = !live ? 'JEVCODE_LIVE is not 1' : apiKey.length === 0 ? 'no JEV_A
 
 describe.skipIf(reason !== null)(`synth rank live (${reason ?? 'enabled'})`, () => {
   it('ranks the gcd fix first with a 5-way Choice and with a 20-way Choice + compact Nouls', async () => {
-    const cfg: DeciderConfig = { baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true };
+    const cfg: DeciderConfig = { provider: 'openrouter', baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing, providerSource: 'default' };
     const decider = createJevDecider(cfg, { redact: (s) => s.split(apiKey).join('[KEY]') });
     const controller = new AbortController();
     let costUsd = 0;

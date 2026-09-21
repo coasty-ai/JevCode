@@ -198,7 +198,10 @@ describe('validateJevResponse: transient failures (retried once by the client)',
     expectFailure(body, sampleQuestions, 'usage', true);
     expectFailure(validBody(sampleQuestions, { usage: { input_tokens: 'many', output_tokens: 1, cost: 0 } }), sampleQuestions, 'usage.input_tokens', true);
     expectFailure(validBody(sampleQuestions, { usage: { input_tokens: 1, output_tokens: 1, cost: -1 } }), sampleQuestions, 'usage.cost', true);
-    expectFailure(validBody(sampleQuestions, { usage: { input_tokens: 1, output_tokens: 1 } }), sampleQuestions, 'usage.cost', true);
+    // TUI-DESIGN-2 §2.4 / §6 item 5: TypeSafe's native response carries no `cost` (PROBE) — accepted, the field stays absent for the client to price
+    expect(validateJevResponse(validBody(sampleQuestions, { usage: { input_tokens: 1, output_tokens: 1 } }), sampleQuestions).usage).toEqual({ input_tokens: 1, output_tokens: 1 });
+    expectFailure(validBody(sampleQuestions, { usage: { input_tokens: 1, output_tokens: 1, cost: 'free' } }), sampleQuestions, 'usage.cost', true);
+    expectFailure(validBody(sampleQuestions, { usage: { input_tokens: 1, output_tokens: 1, cost: Number.NaN } }), sampleQuestions, 'usage', true);
   });
   it('rejects a non-string answer type as transient', () => {
     expectFailure(patched(sampleQuestions, 'in_scope', (a) => { delete a['type']; }), sampleQuestions, 'answers."in_scope".type', true);

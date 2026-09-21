@@ -1,24 +1,35 @@
 /**
- * The onboarding / `/login` wizard (TUI-DESIGN §11.1, §11.2, F10, F-M, F-N, F-O, §24 "Wizard"): ≤ 4 rows in the
- * overlay slot (the composer is refunded, D1), rows from the pure `wizardLines(state, view)`, the masked field
- * with its bytes in `useMaskedBytes` (never the reducer, never a frame), digits pick (provider `1`/`2`, trust
- * `1`/`2`/`3`), Enter submits / reuses the OpenRouter key for Jev, Esc clears or steps back, Ctrl-C exits 2 only
- * when no run exists (`/login` mid-run closes the wizard, judge-safety E5). Saving runs through `WizardHost`
+ * The onboarding / `/login` / `/mode` wizard (TUI-DESIGN §11.1, §11.2, F10, F-M, F-N, F-O, §24 "Wizard"; TUI-DESIGN-2 §1.4):
+ * ≤ 4 rows in the overlay slot (the composer is refunded, D1; the boxed console hosts them under `setup · <step>`, §4.3),
+ * rows from the pure `wizardLines(state, view)`, the masked field with its bytes in `useMaskedBytes` (never the reducer,
+ * never a frame), digits pick (jev provider `1`/`2`, provider `1`/`2`, trust `1`/`2`/`3`), Enter submits / reuses the
+ * OpenRouter key for Jev, Esc clears or steps back, Ctrl-C exits 2 only for a startup wizard with no run live (`/login`,
+ * `/mode` and a live run close it instead — the reducer's `cancelCloses`). Saving runs through `WizardHost`
  * (the session controller's `writeCredentials` + `addSecret` FIRST, then the `[setup]` items); the reducer's
  * `save` step is transient. Keys are resolved by `resolveKey` in `<App>` (`wizard` actions).
  */
 import { useCallback, useEffect, useMemo, useReducer, useRef } from 'react';
 import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
-import type { EngineMode, SecretSettingName } from '../../core/types.js';
+import type { EngineMode, JevProvider, SecretSettingName } from '../../core/types.js';
 import type { TrustInputs } from '../../config/trust.js';
 import type { KeyAction } from '../keys/resolve.js';
 import { textProps, themeFor, type Theme } from '../theme.js';
 import { MaskedField, useMaskedBytes } from './MaskedField.js';
 import { wizardLines, type WizardView } from './lines.js';
-import { INITIAL_ONBOARDING, looksLikeKey, onboardingReducer, wizardActive, wizardRows, type OnboardingAction, type OnboardingState, type SaveRequest, type TrustOption, type WizardField, type WizardProvider } from './reducer.js';
+import { INITIAL_ONBOARDING, expectedKeyProvider, looksLikeKey, onboardingReducer, wizardActive, wizardRows, type OnboardingAction, type OnboardingState, type SaveRequest, type TrustOption, type WizardField, type WizardProvider, type WizardReason } from './reducer.js';
 
-export type { OnboardingState, SaveRequest, TrustOption, WizardField, WizardProvider };
+export type { OnboardingState, SaveRequest, TrustOption, WizardField, WizardProvider, WizardReason };
+
+/**
+ * TUI-DESIGN-2 §1.4: the optional third argument of `reopen` — `/mode jev-on` reopens at the provider step with the target mode;
+ * `jevProvider` is the session's resolved Jev provider (§2.3; null = unresolved, the Jev key reopen asks the jevProvider step first).
+ */
+export interface WizardReopenOptions {
+  reason?: Exclude<WizardReason, 'missing'>;
+  mode?: EngineMode;
+  jevProvider?: JevProvider | null;
+}
 
 export interface WizardSaveInput extends SaveRequest {
   /** the key bytes by field, read from the masked refs and forgotten afterwards */
@@ -32,8 +43,8 @@ export type WizardVerifyResult = { ok: boolean; rejected: WizardField | null; it
 export interface WizardHost {
   /** `addSecret` first, then the atomic 0600 write; returns the `[setup]` item texts to append */
   save(input: WizardSaveInput): Promise<WizardSaveResult>;
-  /** the optional priced verification on an explicit `y` */
-  verify?(input: { provider: WizardProvider | null; fields: readonly WizardField[] }): Promise<WizardVerifyResult>;
+  /** the optional priced verification on an explicit `y` (TUI-DESIGN-2 §2.7: `jevProvider` keys the Jev check — one decision at api.typesafe.ai under typesafe) */
+  verify?(input: { provider: WizardProvider | null; jevProvider: JevProvider | null; fields: readonly WizardField[] }): Promise<WizardVerifyResult>;
   /** the trust decision */
   trust?(option: TrustOption): void;
   /** the sandbox line to append when the wizard reaches its sandbox step */
@@ -47,6 +58,10 @@ export interface WizardDetect {
   missing: readonly SecretSettingName[];
   mode: EngineMode;
   provider: WizardProvider | null;
+  /** TUI-DESIGN-2 §1.4: the Jev provider a §2.3 rule inferred (the jevProvider step is skipped); null / absent = ask */
+  jevProvider?: JevProvider | null;
+  /** TUI-DESIGN-2 §1.4: why the wizard opens (default `missing`) */
+  reason?: WizardReason;
   trustNeeded: boolean;
   runLive?: boolean;
 }
@@ -68,7 +83,8 @@ export interface WizardController {
   /** rows wanted in the overlay slot for the terminal height */
   rows(terminalRows: number): number;
   start(detect: WizardDetect): void;
-  reopen(at: 'provider' | WizardField, runLive: boolean): void;
+  /** TUI-DESIGN-2 §1.4: `opts.reason === 'mode'` forces the provider step (the generator step in place) with `opts.mode` as the target */
+  reopen(at: 'provider' | WizardField, runLive: boolean, opts?: WizardReopenOptions): void;
   apply(action: Extract<KeyAction, { type: 'wizard' }>): void;
   /** Ctrl-C: exit 2 with no run, close mid-run */
   cancel(): void;
@@ -125,7 +141,7 @@ export function useWizard(deps: WizardDeps): WizardController {
           return;
         }
         try {
-          const r = await host.verify({ provider: s.provider, fields: s.entered });
+          const r = await host.verify({ provider: s.provider, jevProvider: s.jevProvider, fields: s.entered });
           for (const item of r.items) depsRef.current.onItem(item, '[setup]');
           dispatch({ type: 'verify-result', ok: r.ok, rejected: r.rejected });
         } catch (e) {
@@ -171,7 +187,7 @@ export function useWizard(deps: WizardDeps): WizardController {
             return;
           }
           const ch = text.trim();
-          if (s.step === 'provider' && (ch === '1' || ch === '2')) dispatch({ type: 'choose', option: ch === '1' ? 1 : 2 });
+          if ((s.step === 'provider' || s.step === 'jevProvider') && (ch === '1' || ch === '2')) dispatch({ type: 'choose', option: ch === '1' ? 1 : 2 });
           else if (s.step === 'verify' && (ch === 'y' || ch === 'Y')) dispatch({ type: 'verify-answer', yes: true });
           else if (s.step === 'verify' && (ch === 'n' || ch === 'N')) dispatch({ type: 'verify-answer', yes: false });
           else if (s.step === 'trust' && (ch === '1' || ch === '2' || ch === '3')) {
@@ -201,10 +217,11 @@ export function useWizard(deps: WizardDeps): WizardController {
               dispatch({ type: 'keep' });
               return;
             }
-            dispatch({ type: 'enter', length: s.length, prefixOk: looksLikeKey(bytes.peek(field), s.provider) });
+            // TUI-DESIGN-2 §1.4 / §2.3: the Jev step is checked against the Jev provider's key shape (typesafe: every shape passes), the generator step against the generator's
+            dispatch({ type: 'enter', length: s.length, prefixOk: looksLikeKey(bytes.peek(field), expectedKeyProvider(s)) });
             return;
           }
-          if (s.step === 'provider') dispatch({ type: 'choose', option: 'enter' });
+          if (s.step === 'provider' || s.step === 'jevProvider') dispatch({ type: 'choose', option: 'enter' });
           else if (s.step === 'verify' && !s.verifying) dispatch({ type: 'verify-answer', yes: false });
           return;
       }
@@ -218,16 +235,34 @@ export function useWizard(deps: WizardDeps): WizardController {
         return stateRef.current;
       },
       get active() {
-        return wizardActive(stateRef.current) || stateRef.current.step === 'verify' || stateRef.current.step === 'trust' || stateRef.current.step === 'sandbox';
+        // TUI-DESIGN-2 §1.4: a wizard opened by a missing key at startup exits 2 — the `exit` step keeps the setup console on
+        // screen until the unmount, so no idle console (`╭─ jev-only`, the task placeholder) is drawn on the way out
+        return wizardActive(stateRef.current) || stateRef.current.step === 'verify' || stateRef.current.step === 'trust' || stateRef.current.step === 'sandbox' || stateRef.current.step === 'exit';
       },
       rows: (terminalRows) => wizardRows(stateRef.current, terminalRows),
       start: (d) => {
         answered.current = false;
-        dispatch({ type: 'detect', missing: d.missing, mode: d.mode, provider: d.provider, trustNeeded: d.trustNeeded, ...(d.runLive !== undefined ? { runLive: d.runLive } : {}) });
+        dispatch({
+          type: 'detect',
+          missing: d.missing,
+          mode: d.mode,
+          provider: d.provider,
+          trustNeeded: d.trustNeeded,
+          ...(d.jevProvider !== undefined ? { jevProvider: d.jevProvider } : {}),
+          ...(d.reason !== undefined ? { reason: d.reason } : {}),
+          ...(d.runLive !== undefined ? { runLive: d.runLive } : {}),
+        });
       },
-      reopen: (at, runLive) => {
+      reopen: (at, runLive, opts) => {
         answered.current = false;
-        dispatch({ type: 'reopen', at, runLive });
+        dispatch({
+          type: 'reopen',
+          at,
+          runLive,
+          ...(opts?.reason !== undefined ? { reason: opts.reason } : {}),
+          ...(opts?.mode !== undefined ? { mode: opts.mode } : {}),
+          ...(opts?.jevProvider !== undefined ? { jevProvider: opts.jevProvider } : {}),
+        });
       },
       apply,
       cancel: () => {
@@ -255,13 +290,15 @@ export interface WizardProps {
   trust?: TrustInputs | null;
   theme?: Theme;
   color?: boolean;
+  /** TUI-DESIGN-2 §4.3: the prompt glyph of the masked row (`glyphs.prompt`, `› ` inside the boxed console); default `> ` */
+  prompt?: string;
 }
 
 /** §11.1 / F-M / F-N / F-O: the wizard rows; the masked field row places the cursor. */
 export function Wizard(p: WizardProps): React.JSX.Element | null {
   const rows = Math.max(0, Math.floor(p.rows));
   if (rows === 0) return null;
-  const view: WizardView = { rows: p.rows, columns: p.columns, ...(p.ascii !== undefined ? { ascii: p.ascii } : {}), ...(p.screenReader !== undefined ? { screenReader: p.screenReader } : {}), ...(p.trust ? { trust: p.trust } : {}) };
+  const view: WizardView = { rows: p.rows, columns: p.columns, ...(p.ascii !== undefined ? { ascii: p.ascii } : {}), ...(p.screenReader !== undefined ? { screenReader: p.screenReader } : {}), ...(p.trust ? { trust: p.trust } : {}), ...(p.prompt !== undefined ? { prompt: p.prompt } : {}) };
   const lines = wizardLines(p.state, view).slice(0, rows);
   const theme = p.theme ?? themeFor('dark');
   const color = p.color ?? true;
@@ -270,7 +307,7 @@ export function Wizard(p: WizardProps): React.JSX.Element | null {
     <Box flexDirection="column" height={rows} overflow="hidden">
       {lines.map((line, i) =>
         i === fieldRow ? (
-          <MaskedField key={`w${i}`} length={p.state.length} columns={p.columns} top={p.top + i} {...(p.cursor ? { cursor: p.cursor } : {})} {...(p.ascii !== undefined ? { ascii: p.ascii } : {})} />
+          <MaskedField key={`w${i}`} length={p.state.length} columns={p.columns} top={p.top + i} {...(p.cursor ? { cursor: p.cursor } : {})} {...(p.ascii !== undefined ? { ascii: p.ascii } : {})} {...(p.prompt !== undefined ? { prompt: p.prompt } : {})} />
         ) : (
           <Text key={`w${i}`} wrap="truncate" {...(i === 0 ? { bold: true } : i === lines.length - 1 && p.state.hint !== null ? textProps(theme, 'warn', color) : textProps(theme, 'dim', color))}>
             {line}

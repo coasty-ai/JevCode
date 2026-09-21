@@ -10,7 +10,8 @@
 #
 # <steps-file>: one step per line (blank lines and lines starting with # are ignored):
 #   expect <tcl-regex>      wait until the child's output matches (timeout -> exit 124)
-#   send   <text>           write to the pty; backslash escapes are interpreted (\r \x03 \x1b)
+#   send   <text>           write to the pty; backslash escapes are interpreted (\r \x03 \x1b). Tcl 8.5's \xhh swallows
+#                           every following hex digit and keeps the last two: write Alt+letter as \033d, never \x1bd (= \xbd, ½)
 #   sleep  <seconds>        pause (fractions allowed) while draining the pty in the background,
 #                           so a chatty child never blocks in a synchronous tty write (research 20
 #                           request (b)); the drained bytes still reach <capture-log>

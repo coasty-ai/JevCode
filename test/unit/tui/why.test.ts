@@ -1,9 +1,32 @@
 import { describe, expect, it } from 'vitest';
-import type { Decision } from '../../../src/core/types.js';
+import type { Answer, Decision } from '../../../src/core/types.js';
 import { GLYPHS } from '../../../src/tui/glyphs.js';
-import { WHY_MAX_LINES, findDecision, parseWhyRef, stepWhyBlocks, whyBlock, whyHead, whyRef } from '../../../src/tui/why.js';
+import { WHY_MAX_LINES, findDecision, findIntakeDecision, intakeConsumedBy, parseWhyRef, stepWhyBlocks, whyBlock, whyHead, whyRef } from '../../../src/tui/why.js';
+import { INTAKE_KINDS, answersOfRows, buildAllIntakeQuestions, decisionRows, resolveIntake } from '../../../src/chat/intake.js';
+import { annotateChoiceRows } from '../../../src/loop/stages/choose.js';
+import { harnessFacts } from '../../../src/chat/facts.js';
+import { ESCAPE_KEY } from '../../../src/jev/questions.js';
 import { mkDecision } from '../../fixtures/tui/fixtures.js';
+import { keyedFixture } from '../chat/facts.test.js';
 import { stepSevenDecisions } from './pane/helpers.js';
+
+/** TUI-DESIGN-2 §3.11: the step-0 `intent` rows of one intake (the Choice, five paired Nouls, the reply Choice, 14 fact Nouls) */
+function intakeRows(kind: string, p: number, paired: number): Decision[] {
+  const questions = buildAllIntakeQuestions(harnessFacts(keyedFixture()));
+  const answers: Record<string, Answer> = {};
+  const keys = [...INTAKE_KINDS, ESCAPE_KEY];
+  for (const [id, q] of Object.entries(questions)) {
+    if (id === 'intake') answers[id] = { type: 'choice', choice: kind, probabilities: Object.fromEntries(keys.map((k) => [k, k === kind ? p : (1 - p) / (keys.length - 1)])), confidence: 0.7 };
+    else if (id === 'reply' && q.type === 'choice') answers[id] = { type: 'choice', choice: 'hello_first', probabilities: Object.fromEntries(Object.keys(q.criteria).map((k) => [k, k === 'hello_first' ? 0.9 : 0.01])), confidence: 0.8 };
+    else if (id.startsWith('can_')) answers[id] = { type: 'noul', noul: id === `can_${kind}` ? paired : 0.1 };
+    else answers[id] = { type: 'noul', noul: id === 'about_mode_now' ? 0.8 : 0.1 };
+  }
+  const rows = decisionRows(questions, answers, 118, 'a1b2c3d4e5f6', 'jev-1.13.0', 'jev-1.13.0');
+  // what `runIntake` does after the request: the Choice row carries the resolution's verdict
+  const r = resolveIntake(answersOfRows(rows));
+  annotateChoiceRows(rows, 'intake', { option: r.kind, verdict: r.verdict, answer: r.answer, probability: r.probability, pairedNoul: r.pairedNoul });
+  return rows;
+}
 
 describe('ref grammar (TUI-DESIGN §7.6)', () => {
   it.each([
@@ -15,8 +38,16 @@ describe('ref grammar (TUI-DESIGN §7.6)', () => {
   ])('%j parses', (text, expected) => {
     expect(parseWhyRef(text)).toEqual(expected);
   });
-  it.each(['', 'foo', '6', '0', 'nostage.x', 's7.risk', 's7..x', 'risk.', 'sx.risk.y'])('%j does not parse', (text) => {
+  it.each(['', 'foo', '6', '0', 'nostage.x', 's7.risk', 's7..x', 'risk.', 'sx.risk.y', 'intake.', 'intake.Reply', 'intake..reply', 'intakes'])('%j does not parse', (text) => {
     expect(parseWhyRef(text)).toBeNull();
+  });
+  it.each([
+    ['intake', { kind: 'intake', id: 'intake' }],
+    ['intake.reply', { kind: 'intake', id: 'reply' }],
+    [' intake.about_mode_now ', { kind: 'intake', id: 'about_mode_now' }],
+    ['intake.can_coding_task', { kind: 'intake', id: 'can_coding_task' }],
+  ])('TUI-DESIGN-2 §3.11: %j parses as an intake ref', (text, expected) => {
+    expect(parseWhyRef(text)).toEqual(expected);
   });
   it('whyRef round-trips and findDecision resolves refs and pane digits', () => {
     const decs = stepSevenDecisions();
@@ -81,6 +112,44 @@ describe('whyBlock shape', () => {
     for (const l of whyBlock(decs[0]!, { siblings: decs }, GLYPHS.ascii)) expect(l).toMatch(ascii);
     expect(whyBlock(decs.find((d) => d.id === 'task_complete')!, {}, GLYPHS.ascii).at(-1)).toBe('  consumed by: >= 0.85 -> stop');
     for (const l of stepWhyBlocks(decs, 7, GLYPHS.ascii).flat()) expect(l).toMatch(ascii);
+  });
+});
+
+describe('TUI-DESIGN-2 §3.11: /why intake — the last intake\'s step-0 rows and their consumers', () => {
+  it('findDecision resolves intake refs against step-0 intent rows only; an unknown id is null', () => {
+    const rows = intakeRows('coding_task', 0.78, 0.9);
+    expect(rows.length).toBe(1 + 5 + 1 + 14);
+    expect(findDecision(rows, parseWhyRef('intake')!, null)?.id).toBe('intake');
+    expect(findDecision(rows, parseWhyRef('intake.reply')!, 7)?.id).toBe('reply');
+    expect(findIntakeDecision(rows, { kind: 'intake', id: 'about_mode_now' })?.id).toBe('about_mode_now');
+    expect(findDecision(rows, parseWhyRef('intake.nope')!, null)).toBeNull();
+    // a run's step-7 intent row is never an intake row
+    expect(findDecision(stepSevenDecisions(), parseWhyRef('intake')!, 7)).toBeNull();
+  });
+
+  it('the standard block with the §3.11 consumers: `resolveChoice → run floor 0.60 → <kind>` (re-derived from the rows), `argmax → catalogue`, `≥ 0.5 → answer line`; paired Nouls keep the §7.1 `paired ≥ 0.5`', () => {
+    const rows = intakeRows('coding_task', 0.78, 0.9);
+    const by = (id: string): Decision => rows.find((d) => d.id === id)!;
+    const intake = whyBlock(by('intake'), { siblings: rows, model: 'jev-1.13.0' });
+    expect(intake[0]).toBe('why s0.intent.intake  request a1b2c3d4  118ms  jev-1.13.0');
+    expect(intake.at(-1)).toBe('  consumed by: resolveChoice → run floor 0.60 → coding_task');
+    expect(intake.some((l) => l.startsWith('  resolution: chosen'))).toBe(true);
+    expect(whyBlock(by('reply'), { siblings: rows }).at(-1)).toBe('  consumed by: argmax → catalogue');
+    expect(whyBlock(by('about_mode_now'), { siblings: rows }).at(-1)).toBe('  consumed by: ≥ 0.5 → answer line');
+    expect(whyBlock(by('can_coding_task'), { siblings: rows }).at(-1)).toBe('  consumed by: paired ≥ 0.5');
+    // a weak coding_task (p 0.55 < the 0.60 floor) re-derives to ambiguous
+    const weak = intakeRows('coding_task', 0.55, 0.9);
+    expect(whyBlock(weak.find((d) => d.id === 'intake')!, { siblings: weak }).at(-1)).toBe('  consumed by: resolveChoice → run floor 0.60 → ambiguous');
+    expect(intakeConsumedBy(stepSevenDecisions()[0]!, [])).toBeNull();
+    expect(intakeConsumedBy(by('can_coding_task'), rows)).toBeNull();
+  });
+
+  it('the ascii twin', () => {
+    const rows = intakeRows('greeting_or_smalltalk', 0.9, 0.9);
+    const by = (id: string): Decision => rows.find((d) => d.id === id)!;
+    expect(whyBlock(by('intake'), { siblings: rows }, GLYPHS.ascii).at(-1)).toBe('  consumed by: resolveChoice -> run floor 0.60 -> greeting_or_smalltalk');
+    expect(whyBlock(by('about_mode_now'), { siblings: rows }, GLYPHS.ascii).at(-1)).toBe('  consumed by: >= 0.5 -> answer line');
+    expect(whyBlock(by('reply'), { siblings: rows }, GLYPHS.ascii).at(-1)).toBe('  consumed by: argmax -> catalogue');
   });
 });
 

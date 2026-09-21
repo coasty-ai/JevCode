@@ -3,8 +3,12 @@
  * `ui.noColor` resolve **flag > env > default** from argv and `process.env` alone — no file, no I/O — because
  * Ink fixes `maxFps` / `incrementalRendering` / `isScreenReaderEnabled` in its constructor and F1 forbids any
  * file read before the first frame. Everything here is pure: the same inputs give the same output.
+ *
+ * TUI-DESIGN-2 §6 item 14 adds two argv + env members for the first frame: `modeHint` (`--mode` > `JEVCODE_MODE`; the badge
+ * word of §1.5 until `resolveConfig` reads the `mode` setting) and `reducedMotion` (`--no-animation` > `JEVCODE_REDUCED_MOTION`
+ * > screenReader; the splash's static form of §5.3 until the `ui.reducedMotion` chain is read).
  */
-import type { ConfigSource, LaunchSettings } from '../core/types.js';
+import type { ConfigSource, EngineMode, LaunchSettings } from '../core/types.js';
 import { DEFAULT_FPS, MAX_FPS, MIN_FPS, SSH_FPS } from './defaults.js';
 
 /**
@@ -17,6 +21,10 @@ export interface LaunchFlags {
   screenReader?: boolean;
   ascii?: boolean;
   noColor?: boolean;
+  /** TUI-DESIGN-2 §6 item 14: `--mode` (args.ts folds `--condition` into it) */
+  mode?: string;
+  /** TUI-DESIGN-2 §6 item 14: `--no-animation` */
+  noAnimation?: boolean;
 }
 
 /** Where each launch member came from; `jevcode config` prints it beside the value (§16). */
@@ -24,6 +32,12 @@ export type LaunchSource = Extract<ConfigSource, 'flag' | 'env' | 'default'>;
 export type LaunchSources = Readonly<Record<keyof LaunchSettings, LaunchSource>>;
 
 export const RENDER_MODES = ['standard', 'incremental'] as const;
+
+/** TUI-DESIGN-2 §1.2 / §6 item 14: a `--mode` / `JEVCODE_MODE` value, or null so the next layer applies (the `mode` setting reports a bad value later, with its source). */
+export function parseModeHint(text: string): EngineMode | null {
+  const t = text.trim().toLowerCase();
+  return t === 'jev-only' || t === 'jev-on' || t === 'jev-off' ? t : null;
+}
 
 function envValue(env: NodeJS.ProcessEnv, name: string): string | null {
   const v = env[name];
@@ -134,9 +148,38 @@ export function resolveLaunchSettingsWithSources(flags: LaunchFlags, env: NodeJS
     ncSource = 'flag';
   }
 
+  // TUI-DESIGN-2 §6 item 14 / §1.1: modeHint = --mode > JEVCODE_MODE, absent otherwise (the App reads jev-only); a bad value is
+  // skipped here (nothing can render an error yet) and reported by the `mode` setting with its source
+  let modeHint: EngineMode | undefined;
+  let modeSource: LaunchSource = 'default';
+  const modeEnv = envValue(env, 'JEVCODE_MODE');
+  const modeFromEnv = modeEnv === null ? null : parseModeHint(modeEnv);
+  if (modeFromEnv !== null) {
+    modeHint = modeFromEnv;
+    modeSource = 'env';
+  }
+  const modeFromFlag = typeof flags.mode === 'string' ? parseModeHint(flags.mode) : null;
+  if (modeFromFlag !== null) {
+    modeHint = modeFromFlag;
+    modeSource = 'flag';
+  }
+
+  // TUI-DESIGN-2 §6 item 14 / §5.3: reducedMotion = --no-animation > JEVCODE_REDUCED_MOTION (`=0` overrides) > screenReader
+  let reducedMotion = screenReader;
+  let rmSource: LaunchSource = 'default';
+  const reducedEnv = envValue(env, 'JEVCODE_REDUCED_MOTION');
+  if (reducedEnv !== null) {
+    reducedMotion = parseEnvBoolean(reducedEnv);
+    rmSource = 'env';
+  }
+  if (flags.noAnimation === true) {
+    reducedMotion = true;
+    rmSource = 'flag';
+  }
+
   return {
-    settings: { fps, renderMode, screenReader, ascii, noColor },
-    sources: { fps: fpsSource, renderMode: renderSource, screenReader: srSource, ascii: asciiSource, noColor: ncSource },
+    settings: { fps, renderMode, screenReader, ascii, noColor, ...(modeHint !== undefined ? { modeHint } : {}), reducedMotion },
+    sources: { fps: fpsSource, renderMode: renderSource, screenReader: srSource, ascii: asciiSource, noColor: ncSource, modeHint: modeSource, reducedMotion: rmSource },
   };
 }
 

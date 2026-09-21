@@ -1,12 +1,36 @@
 import { describe, expect, it } from 'vitest';
-import { asciiAuto, isSshSession, parseEnvBoolean, parseFps, resolveLaunchSettings, resolveLaunchSettingsWithSources, type LaunchFlags } from '../../../src/config/launch.js';
+import { asciiAuto, isSshSession, parseEnvBoolean, parseFps, parseModeHint, resolveLaunchSettings, resolveLaunchSettingsWithSources, type LaunchFlags } from '../../../src/config/launch.js';
 
 const none: LaunchFlags = {};
 
 describe('resolveLaunchSettings (TUI-DESIGN §16: flag > env > default, pure, no file)', () => {
-  it('defaults: fps 30, standard, no screen reader, Unicode glyphs, colour', () => {
-    expect(resolveLaunchSettings(none, {})).toEqual({ fps: 30, renderMode: 'standard', screenReader: false, ascii: false, noColor: false });
-    expect(resolveLaunchSettingsWithSources(none, {}).sources).toEqual({ fps: 'default', renderMode: 'default', screenReader: 'default', ascii: 'default', noColor: 'default' });
+  it('defaults: fps 30, standard, no screen reader, Unicode glyphs, colour, motion; no modeHint (TUI-DESIGN-2 §6 item 14)', () => {
+    expect(resolveLaunchSettings(none, {})).toEqual({ fps: 30, renderMode: 'standard', screenReader: false, ascii: false, noColor: false, reducedMotion: false });
+    expect('modeHint' in resolveLaunchSettings(none, {})).toBe(false);
+    expect(resolveLaunchSettingsWithSources(none, {}).sources).toEqual({ fps: 'default', renderMode: 'default', screenReader: 'default', ascii: 'default', noColor: 'default', modeHint: 'default', reducedMotion: 'default' });
+  });
+
+  it('TUI-DESIGN-2 §6 item 14 modeHint: --mode > JEVCODE_MODE > absent (the App reads jev-only); a bad value is skipped here and reported by the `mode` setting with its source', () => {
+    expect(resolveLaunchSettingsWithSources(none, { JEVCODE_MODE: 'jev-on' })).toMatchObject({ settings: { modeHint: 'jev-on' }, sources: { modeHint: 'env' } });
+    expect(resolveLaunchSettingsWithSources({ mode: 'jev-off' }, { JEVCODE_MODE: 'jev-on' })).toMatchObject({ settings: { modeHint: 'jev-off' }, sources: { modeHint: 'flag' } });
+    expect(resolveLaunchSettings({ mode: 'JEV-ONLY' }, {}).modeHint).toBe('jev-only');
+    expect(resolveLaunchSettings({ mode: 'turbo' }, { JEVCODE_MODE: 'jev-on' }).modeHint).toBe('jev-on');
+    expect('modeHint' in resolveLaunchSettings(none, { JEVCODE_MODE: 'turbo' })).toBe(false);
+    expect('modeHint' in resolveLaunchSettings(none, { JEVCODE_MODE: '  ' })).toBe(false);
+    expect(parseModeHint(' jev-on ')).toBe('jev-on');
+    expect(parseModeHint('jev-only')).toBe('jev-only');
+    expect(parseModeHint('x')).toBeNull();
+  });
+
+  it('TUI-DESIGN-2 §6 item 14 / §5.3 reducedMotion: --no-animation > JEVCODE_REDUCED_MOTION (`=0` overrides) > screenReader', () => {
+    expect(resolveLaunchSettingsWithSources(none, {})).toMatchObject({ settings: { reducedMotion: false }, sources: { reducedMotion: 'default' } });
+    expect(resolveLaunchSettingsWithSources(none, { INK_SCREEN_READER: '1' })).toMatchObject({ settings: { screenReader: true, reducedMotion: true }, sources: { reducedMotion: 'default' } });
+    expect(resolveLaunchSettingsWithSources(none, { JEVCODE_REDUCED_MOTION: '1' })).toMatchObject({ settings: { reducedMotion: true }, sources: { reducedMotion: 'env' } });
+    expect(resolveLaunchSettings(none, { JEVCODE_REDUCED_MOTION: 'true' }).reducedMotion).toBe(true);
+    expect(resolveLaunchSettings(none, { JEVCODE_REDUCED_MOTION: '0', INK_SCREEN_READER: '1' }).reducedMotion).toBe(false);
+    expect(resolveLaunchSettingsWithSources({ noAnimation: true }, { JEVCODE_REDUCED_MOTION: '0' })).toMatchObject({ settings: { reducedMotion: true }, sources: { reducedMotion: 'flag' } });
+    expect(resolveLaunchSettings({ noAnimation: false }, {}).reducedMotion).toBe(false);
+    expect(resolveLaunchSettings({ screenReader: true }, {}).reducedMotion).toBe(true);
   });
 
   it('is pure: same inputs, same output; the env object is never mutated', () => {

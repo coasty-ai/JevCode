@@ -1,0 +1,74 @@
+{"t":146,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":146,"step":2,"op":"mark","arg":"first-frame"}
+{"t":146,"step":3,"op":"expect","arg":"step 0/"}
+{"t":147,"step":4,"op":"expect","arg":"\\x1b\\[\\?2004h"}
+{"t":199,"step":5,"op":"expect","arg":"Say hi"}
+{"t":246,"step":6,"op":"expect","arg":"sess \\$"}
+{"t":246,"step":7,"op":"mark","arg":"composer-ready"}
+{"t":849,"step":8,"op":"expect","arg":"◆ jevcode"}
+{"t":849,"step":9,"op":"mark","arg":"splash-settled"}
+{"t":1152,"step":10,"op":"sleep","arg":"0.3"}
+{"t":1152,"step":11,"op":"send","arg":"hi"}
+{"t":1352,"step":12,"op":"sleep","arg":"0.2"}
+{"t":1352,"step":13,"op":"send","arg":"\\r"}
+{"t":1352,"step":14,"op":"mark","arg":"hi-sent"}
+{"t":1368,"step":15,"op":"expect","arg":"\\[you\\](?:\\x1b\\[[0-9;]*m)* (?:\\x1b\\[[0-9;]*m)*hi"}
+{"t":1617,"step":16,"op":"expect","arg":"\\[jevcode\\](?:\\x1b\\[[0-9;]*m)*"}
+{"t":1617,"step":17,"op":"mark","arg":"hi-reply"}
+{"t":2118,"step":18,"op":"sleep","arg":"0.5"}
+{"t":2118,"step":19,"op":"send","arg":"what can you do?"}
+{"t":2318,"step":20,"op":"sleep","arg":"0.2"}
+{"t":2318,"step":21,"op":"send","arg":"\\r"}
+{"t":2318,"step":22,"op":"mark","arg":"facts-sent"}
+{"t":2325,"step":23,"op":"expect","arg":"\\[you\\](?:\\x1b\\[[0-9;]*m)* (?:\\x1b\\[[0-9;]*m)*what can you do\\?"}
+{"t":2445,"step":24,"op":"expect","arg":"\\[jevcode\\](?:\\x1b\\[[0-9;]*m)*"}
+{"t":2445,"step":25,"op":"mark","arg":"facts-reply"}
+{"t":2947,"step":26,"op":"sleep","arg":"0.5"}
+{"t":2947,"step":27,"op":"send","arg":"/jev"}
+{"t":3149,"step":28,"op":"sleep","arg":"0.2"}
+{"t":3149,"step":29,"op":"send","arg":"\\r"}
+{"t":3155,"step":30,"op":"expect","arg":"typesafe · api\\.typesafe\\.ai · jev-1\\.13\\.0 \\(pinned\\)"}
+{"t":3155,"step":31,"op":"expect","arg":"intake: 2 messages"}
+{"t":3155,"step":32,"op":"mark","arg":"jev-before-run"}
+{"t":3456,"step":33,"op":"sleep","arg":"0.3"}
+{"t":3456,"step":34,"op":"send","arg":"/mode jev-on"}
+{"t":3657,"step":35,"op":"sleep","arg":"0.2"}
+{"t":3657,"step":36,"op":"send","arg":"\\r"}
+{"t":3673,"step":37,"op":"expect","arg":"(jev\\+llm from the next run|Pick the provider)"}
+{"t":3673,"step":38,"op":"mark","arg":"mode-jev-on"}
+{"t":3673,"step":39,"op":"expect","arg":"╭─ (?:\\x1b\\[[0-9;]*m)*jev\\+llm(?:\\x1b\\[[0-9;]*m)* · next run"}
+{"t":3978,"step":40,"op":"sleep","arg":"0.3"}
+{"t":3978,"step":41,"op":"send","arg":"/mode jev-only"}
+{"t":4179,"step":42,"op":"sleep","arg":"0.2"}
+{"t":4179,"step":43,"op":"send","arg":"\\r"}
+{"t":4182,"step":44,"op":"expect","arg":"mode jev-only from the next run"}
+{"t":4182,"step":45,"op":"expect","arg":"╭─ (?:\\x1b\\[[0-9;]*m)*jev-only(?:\\x1b\\[[0-9;]*m)*"}
+{"t":4182,"step":46,"op":"mark","arg":"mode-jev-only"}
+{"t":4486,"step":47,"op":"sleep","arg":"0.3"}
+{"t":4486,"step":48,"op":"send","arg":"Fix the failing tests in tests/test_core.py without changing the tests."}
+{"t":4788,"step":49,"op":"sleep","arg":"0.3"}
+{"t":4788,"step":50,"op":"send","arg":"\\r"}
+{"t":4788,"step":51,"op":"mark","arg":"task-sent"}
+{"t":4968,"step":52,"op":"expect","arg":"\\[run\\](?:\\x1b\\[[0-9;]*m)* start"}
+{"t":4968,"step":53,"op":"mark","arg":"run-started"}
+{"t":9895,"step":54,"op":"expect","arg":"\\[step 1\\]"}
+{"t":9897,"step":55,"op":"mark","arg":"step-1"}
+{"t":19665,"step":56,"op":"expect","arg":"end (complete|max_steps|spend_cap|wall_time|human_pause|replan_stop|impossible|error)"}
+{"t":19665,"step":57,"op":"mark","arg":"run-ended"}
+{"t":20165,"step":58,"op":"sleep","arg":"0.5"}
+{"t":20165,"step":59,"op":"send","arg":"/jev"}
+{"t":20366,"step":60,"op":"sleep","arg":"0.2"}
+{"t":20366,"step":61,"op":"send","arg":"\\r"}
+{"t":20383,"step":62,"op":"expect","arg":"→ resolved jev-1\\.13\\.0"}
+{"t":20383,"step":63,"op":"mark","arg":"jev-after-run"}
+{"t":20383,"step":64,"op":"send","arg":"/cost"}
+{"t":20585,"step":65,"op":"sleep","arg":"0.2"}
+{"t":20585,"step":66,"op":"send","arg":"\\r"}
+{"t":20601,"step":67,"op":"expect","arg":"chat \\$"}
+{"t":20601,"step":68,"op":"mark","arg":"cost-shown"}
+{"t":20905,"step":69,"op":"sleep","arg":"0.3"}
+{"t":20905,"step":70,"op":"send","arg":"/exit"}
+{"t":21106,"step":71,"op":"sleep","arg":"0.2"}
+{"t":21107,"step":72,"op":"send","arg":"\\r"}
+{"t":21221,"step":73,"op":"eof","arg":""}
+{"t":21221,"step":0,"op":"exit","arg":"0"}

@@ -156,7 +156,9 @@ describe('F-T: the timeline tab at 80×40', () => {
 describe('F-P and F-X: the follow-up box and the 120-column compact review', () => {
   it('F-P box rows are exact', () => {
     const f = frame('F-P');
-    expect(followupLines({ runCapUsd: 2, clampedToUsd: 0.42, sessionSpentUsd: 9.58, sessionCapUsd: 10, runs: 5, lastRunUsd: 0.71 }, 5, 80)).toEqual(f.slice(13, 18));
+    // TUI-DESIGN-2 §4.7: the box draws the cli-boxes `round` corners now (`╭ ╮ ╰ ╯`); the design frame's square corners map onto them
+    const round = (l: string): string => l.replace('┌', '╭').replace('┐', '╮').replace('└', '╰').replace('┘', '╯');
+    expect(followupLines({ runCapUsd: 2, clampedToUsd: 0.42, sessionSpentUsd: 9.58, sessionCapUsd: 10, runs: 5, lastRunUsd: 0.71 }, 5, 80)).toEqual(f.slice(13, 18).map(round));
     expect(decisionRows(paneState({ rows: rows(frameBDecisions()) }), 12, 80).map(partial)).toEqual(f.slice(1, 13).map(partial));
   });
   it('F-X title, keys and the three-dimension compact row are exact', () => {

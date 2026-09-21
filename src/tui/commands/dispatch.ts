@@ -1,15 +1,15 @@
 /**
- * Pure command resolution (TUI-DESIGN §5.1, §5.2, §4.9): `dispatchCommand` turns a parsed line into the
+ * Pure command resolution (TUI-DESIGN §5.1, §5.2, §4.9; TUI-DESIGN-2 §1.3, §4.6): `dispatchCommand` turns a parsed line into the
  * action descriptor the controller executes, or into the `[ui] error:` text the composer appends while
  * keeping the draft. Validates `ArgSpec`s, flags and `availableDuringTask`. No I/O, no clock, and no
  * import from `cli/**` (the controller depends on this module, never the reverse).
  */
 import { isValidRunId } from '../../checkpoint/run-id.js';
 import { parseDuration } from '../../core/time.js';
-import type { StageName } from '../../core/types.js';
+import type { EngineMode, StageName } from '../../core/types.js';
 import type { KeyRunPhase } from '../keys/resolve.js';
 import { commandName, parseCommand, restOf, type ParseResult, type ParsedCommand } from './parse.js';
-import { BUDGET_SETTINGS, COMMANDS, THEMES, availabilityError, findCommand, takesRest, type ArgSpec, type CommandSpec } from './registry.js';
+import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, LLM_STATE_MODE, LLM_STATES, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, takesRest, type ArgSpec, type CommandSpec } from './registry.js';
 
 /** TUI-DESIGN §5.1: what the resolver needs to know about the session to validate arguments. */
 export interface DispatchContext {
@@ -54,7 +54,11 @@ export type CommandAction =
   | { kind: 'budget'; set: BudgetValue | null }
   | { kind: 'model'; id: string }
   | { kind: 'provider'; provider: 'anthropic' | 'openrouter' }
-  | { kind: 'mode'; mode: 'jev-on' | 'jev-off' | 'jev-only' }
+  // TUI-DESIGN-2 §1.3 / §6 item 17: `/mode` alone shows (null); `/llm on` → jev-on, `/llm off` → jev-only
+  | { kind: 'mode'; mode: EngineMode | null }
+  // TUI-DESIGN-2 §4.6: `/panel` alone toggles; a tab letter opens it; `off` collapses; `full` expands. `/transcript` alone shows the view
+  | { kind: 'panel'; panel: 'toggle' | (typeof PANEL_ARGS)[number] }
+  | { kind: 'transcript'; view: (typeof TRANSCRIPT_VIEWS)[number] | null }
   | { kind: 'config' }
   | { kind: 'login' }
   | { kind: 'logout'; which: 'generator' | 'jev' | null }
@@ -371,10 +375,34 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
     case 'mode': {
       const t = tooMany(spec, p, 1);
       if (t) return t;
-      if (a0 === undefined) return cmdErr(spec.name, 'expected <m>: jev-on|jev-off|jev-only');
+      if (a0 === undefined) return ok({ kind: 'mode', mode: null });
       const v = enumArg(spec.args[0] as ArgSpec, a0);
       if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
-      return ok({ kind: 'mode', mode: v as 'jev-on' | 'jev-off' | 'jev-only' });
+      return ok({ kind: 'mode', mode: v as (typeof ENGINE_MODES)[number] });
+    }
+    case 'llm': {
+      const t = tooMany(spec, p, 1);
+      if (t) return t;
+      if (a0 === undefined) return cmdErr(spec.name, `expected <on|off>: on = /mode jev-on, off = /mode jev-only`);
+      const v = enumArg(spec.args[0] as ArgSpec, a0);
+      if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
+      return ok({ kind: 'mode', mode: LLM_STATE_MODE[v as (typeof LLM_STATES)[number]] });
+    }
+    case 'panel': {
+      const t = tooMany(spec, p, 1);
+      if (t) return t;
+      if (a0 === undefined) return ok({ kind: 'panel', panel: 'toggle' });
+      const v = enumArg(spec.args[0] as ArgSpec, a0);
+      if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
+      return ok({ kind: 'panel', panel: v as (typeof PANEL_ARGS)[number] });
+    }
+    case 'transcript': {
+      const t = tooMany(spec, p, 1);
+      if (t) return t;
+      if (a0 === undefined) return ok({ kind: 'transcript', view: null });
+      const v = enumArg(spec.args[0] as ArgSpec, a0);
+      if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
+      return ok({ kind: 'transcript', view: v as (typeof TRANSCRIPT_VIEWS)[number] });
     }
     case 'logout': {
       const t = tooMany(spec, p, 1);

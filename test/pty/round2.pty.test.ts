@@ -1,0 +1,804 @@
+/**
+ * TUI-DESIGN-2 §8.2 pty scenarios of round 2, every run `--mock` (no network) inside a real pty driven by
+ * scripts/pty/drive.exp: a greeting → a `[jevcode]` reply and no run, with the Enter → reply wall time recorded (§3.1
+ * row 6, §3.12); a question about the tool → facts (§3.5); a task → a run whose transcript is the compact subsequence
+ * (§4.5); the ambiguity card (§3.7: Enter inert — the card stays open until `n`, which replies; `y` runs; the flat-tier
+ * row at 12×60); `/mode jev-on` without and with a generator key, `/llm on` and the no-argument `/mode` item, the badge
+ * promotion at `run:start` (§1.3, §1.5, H-G1); the splash at 24×80 and 40×120, under reduced motion, settling by itself
+ * and cancelled by `run:start` (§5); the Jev panel strip / open / full through `/panel` and the Alt keys (§4.6), its
+ * `s0` intake rows (§3.11); the chrome tiers across a shrink and a grow (§4.1); the two zero-argument starts and the
+ * keyless wizard (§1.1, §1.4); keys never in logs (§9: the masked fields of both wizard paths); `[you]` redaction at
+ * emission (§3.10) in the TUI and `--plain`; `--ascii` twins (TD §14.1); `--plain`'s intake readline (§3.7); `/jev` and
+ * `/cost` after a greeting (§2.6, §3.9); `/transcript full` and identity predicate (a) (§4.5, §9). Mocked runs say
+ * `--mode jev-on` (`MOCK_RUN_MODE`); the conversational scenarios run under the default `jev-only`.
+ *
+ * Tests marked `it.fails` record defects of the tree against the design (docs/STATUS.md "Round 2", requests to S2 / S3
+ * / S4): they pass while the defect stands and start failing the moment the owning slot lands the fix, which is the
+ * signal to turn them into plain `it`.
+ */
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import {
+  BADGE_JEV_LLM,
+  BADGE_JEV_ONLY,
+  CHAT_OPEN,
+  CHAT_OPEN_NARROW,
+  EXIT_IDLE,
+  FIRST_FRAME_STEP,
+  HIDDEN_STAGE_RE,
+  IDLE_STEP,
+  MOCK_RUN_MODE,
+  PLACEHOLDER_FOLLOWUP,
+  PLACEHOLDER_TASK,
+  PROMPT,
+  RAW_MODE_STEP,
+  RUN_OPEN,
+  RUN_STARTED_STEP,
+  SGR_GAP,
+  afterFirstFrame,
+  cleanupScratch,
+  contiguous,
+  countClears,
+  drive,
+  echoStep,
+  frameTier,
+  frames,
+  hasExpect,
+  isBoxEdge,
+  isItemRow,
+  isLocalItem,
+  labelStep,
+  reflowAgainst,
+  segmentClears,
+  staticRows,
+  stripAnsi,
+  syncFrames,
+  syncFramesWith,
+  timingOf,
+  topEdgeStep,
+  units,
+  wallBetween,
+  type Drive,
+} from './helpers.js';
+
+afterEach(cleanupScratch);
+
+/** a fake key never leaves the machine: `JEVCODE_ASSERT_NO_NETWORK=1` makes any http(s) fetch throw (bin/jevcode.js) */
+const FAKE_KEY = `sk-fake-${'x'.repeat(40)}`;
+/** a second fake key, typed into the wizard's masked field (never saved: Ctrl-C leaves the wizard) */
+const TYPED_KEY = `sk-fake-${'z'.repeat(40)}`;
+/** an Anthropic-shaped canary for the secret gate (`detectSecrets`: `sk-ant-api03-` + 95 chars) */
+const CANARY = `sk-ant-api03-${'A'.repeat(95)}`;
+const NO_NETWORK = { JEVCODE_ASSERT_NO_NETWORK: '1' } as const;
+/** the round-2 gate on the intake wall time (TUI-DESIGN-2 §9: p95 < 1.5 s live; the mock answers at once) */
+const INTAKE_WALL_MS = 1500;
+/** an SGR gap inside a coloured badge (` · next run` may be its own span) */
+const PROMPT_GAP = SGR_GAP;
+/** TUI-DESIGN-2 §5.2: the splash ticks through Ink's `useAnimation` at 50 ms — ≤ 15 frames in its 700 ms */
+const SPLASH_MAX_FRAMES = 15;
+/** the brand row that replaces the wordmark once the splash settled (§5.4; expected as raw bytes — `◆ jevcode` opens its own accent span) */
+const BRAND_STEP = 'expect ◆ jevcode';
+/** Alt chords as the pty bytes: ESC + letter (`keys/bindings.ts` `meta+j` …; the App re-buffers a bare ESC for 30 ms) */
+// Tcl 8.5's `\xhh` (macOS expect) swallows every following hex digit and keeps the last two, so `\x1bd` is `\xbd` = `½`, not ESC+d;
+// the octal form is exactly three digits (research 20 driver notes)
+const ALT = (letter: string): string => `send \\033${letter}`;
+const WORDMARK_RE = /██/;
+
+/** every regular file under `dir`, recursively (the scenario's JEVCODE_HOME holds history.jsonl, sessions/, logs/, xdg/) */
+function filesUnder(dir: string): string[] {
+  if (!existsSync(dir)) return [];
+  const out: string[] = [];
+  for (const e of readdirSync(dir, { withFileTypes: true })) {
+    const p = join(dir, e.name);
+    if (e.isDirectory()) out.push(...filesUnder(p));
+    else if (statSync(p).isFile()) out.push(p);
+  }
+  return out;
+}
+
+/** the files under the scenario's home (and workspace) whose bytes contain `needle` — the "keys never in logs" gate of §9 */
+function filesContaining(r: Drive, needle: string): string[] {
+  return [...filesUnder(r.home), ...filesUnder(r.workspace)].filter((p) => readFileSync(p, 'latin1').includes(needle));
+}
+
+describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
+  it('chat-hi: `hi` → [you] bubble, [jevcode] catalogue reply, no run, badge jev-only; Enter → reply wall time recorded', async () => {
+    const r = await drive({
+      name: 'r2-chat-hi',
+      args: ['chat', '--mock'],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', 'mark hi-sent', labelStep('you', 'hi'), labelStep('jevcode', 'Hi\\.'), 'mark hi-reply', topEdgeStep(BADGE_JEV_ONLY), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    // §3.10: one item per line, the bubble labels verbatim; §3.4 `hello_first` (the reply word-wraps at 80 columns with a hanging indent under the text column, §4.5)
+    expect(plain).toContain('[you] hi');
+    expect(plain).toMatch(/\[jevcode\] Hi\. I'm ready when you are — describe a change you want in\s+\S+, or ask what I can do\./);
+    // §3.1 row 6: no run — no `[run] start`, no run directory
+    expect(plain).not.toMatch(/\[run\] start /);
+    expect(r.runDirs()).toEqual([]);
+    // §4.4: a chat reply is a turn, so the placeholder flips to `followup`
+    expect(plain).toContain('Follow-up, question, or /command…');
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+    // §3.12 / §9: Enter → the reply frame, from the driver's clock (`send \r` completion → `expect [jevcode]` match)
+    const wall = wallBetween(r.timing, '\\r', 'jevcode');
+    expect(wall).not.toBeNull();
+    expect(wall!).toBeLessThan(INTAKE_WALL_MS);
+    // the status word between Enter and the reply is reported (design §3.1 row 1 `⠹ thinking`; docs/STATUS.md "Round 2" deviation 4)
+    const between = syncFrames(r.text).filter((f) => f.lines.some((l) => l.includes('[you] hi')) || f.dynamic.some((l) => /^│ (?:starting|⠹ thinking|• thinking)/.test(l)));
+    console.log(`chat-hi: Enter → [jevcode] reply ${wall} ms (mock decider; gate ${INTAKE_WALL_MS} ms); status words seen between Enter and the reply: ${[...new Set(between.flatMap((f) => f.dynamic.filter((l) => /^│ (?:starting|⠹ thinking|• thinking)/.test(l)).map((l) => l.slice(2, 14).trim())))].join(', ') || 'none'}`);
+  });
+
+  it('chat-facts: `what can you do?` → the what_it_is fact; `which mode is this?` → `Mode: jev-only`; no run', async () => {
+    const r = await drive({
+      name: 'r2-chat-facts',
+      args: ['chat', '--mock'],
+      steps: [...CHAT_OPEN, 'send what can you do?', echoStep('what can you do?'), 'send \\r', labelStep('jevcode', 'JevCode is a coding agent'), 'send which mode is this?', echoStep('which mode is this?'), 'send \\r', labelStep('jevcode', 'Mode: jev-only'), ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    expect(plain).toContain('[jevcode] JevCode is a coding agent where Jev, a decision model, makes every');
+    expect(plain).toContain('[jevcode] Mode: jev-only — no generating LLM; code proposes, Jev decides, tests');
+    expect(plain).not.toMatch(/\[run\] start /);
+    expect(r.runDirs()).toEqual([]);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+  });
+
+  it('chat-task: a task → [run] start, one [step N] line per step, the stage lines absent (compact), a run dir with jevcode.log', async () => {
+    const r = await drive({
+      name: 'r2-chat-task',
+      args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
+      steps: [...CHAT_OPEN, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', labelStep('you', 'fix the failing test'), RUN_STARTED_STEP, labelStep('step 1', ''), 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    const rows = plain.split(/\r?\n/);
+    const steps = rows.filter((l) => /^\[step \d+\] /.test(l));
+    expect(steps.length).toBeGreaterThanOrEqual(4);
+    expect(rows.filter((l) => HIDDEN_STAGE_RE.test(l))).toEqual([]);
+    const dirs = r.runDirs();
+    expect(dirs).toHaveLength(1);
+    expect(existsSync(`${dirs[0]}/jevcode.log`)).toBe(true);
+    // the transcript keeps every stage line; the TUI showed a subsequence of it
+    const t = r.transcript()!;
+    expect(t.some((l) => HIDDEN_STAGE_RE.test(l))).toBe(true);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+  });
+
+  /**
+   * §3.7 "Enter inert": the frames carrying the card form one contiguous run from the card's first frame to the frame
+   * before the reply — an Enter that answered `y` would start a run, one that closed the card like Esc would draw the
+   * `Okay — edit it …` bubble and a card-less frame before `n` was sent; neither may appear
+   */
+  function expectCardOpenUntilAnswer(r: Drive, title: string): void {
+    const all = syncFrames(r.text);
+    const card = syncFramesWith(all, title);
+    expect(card.length).toBeGreaterThan(0);
+    expect(contiguous(card)).toBe(true);
+    const reply = syncFramesWith(all, '[jevcode] ').filter((i) => i > card[0]!);
+    expect(reply.length).toBeGreaterThan(0);
+    expect(reply[0]!).toBeGreaterThanOrEqual(card.at(-1)!);
+    const plain = stripAnsi(r.text);
+    expect(plain).not.toContain('Okay — edit it and press Enter');
+    expect(plain).not.toMatch(/\[run\] start /);
+    expect(r.runDirs()).toEqual([]);
+  }
+
+  it('chat-ambiguous: the card `run this as a task?` — Enter before the arm never answers (the card stays open), `n` replies without a run', async () => {
+    const r = await drive({
+      name: 'r2-chat-ambiguous',
+      args: ['chat', '--mock'],
+      env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
+      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'send \\r', 'sleep 0.25', 'mark before-n', 'send n', labelStep('jevcode', ''), ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    // §3.7: the card's title and body, the collapsed composer, the status word
+    expect(plain).toMatch(/^╭─ run this as a task\? ─/m);
+    expect(plain).toContain('[y] run it   [n] just chatting   (Esc keeps the text; Enter does nothing)');
+    expect(plain).toContain('(waiting for y/n)');
+    expect(plain).toMatch(/^│ asking /m);
+    expectCardOpenUntilAnswer(r, '╭─ run this as a task?');
+    // exactly one card was opened (one contiguous run) and the reply is a fact / catalogue text, never the kept-text echo
+    expect(syncFramesWith(syncFrames(r.text), '╭─ run this as a task?').length).toBeGreaterThan(0);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+  });
+
+  it('chat-ambiguous at 12x60 (flat tier): the 39-cell ladder row `run this as a task?  [y] [n]  Esc keeps`, ≤ 10 dynamic rows, Enter inert, `n` replies, 0 clears', async () => {
+    const r = await drive({
+      name: 'r2-chat-ambiguous-flat',
+      args: ['chat', '--mock'],
+      rows: 12,
+      cols: 60,
+      env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
+      steps: [...CHAT_OPEN_NARROW, 'sleep 0.3', 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?  \\[y\\] \\[n\\]  Esc keeps', 'send \\r', 'sleep 0.25', 'send n', labelStep('jevcode', ''), ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    // §3.7 flat, < 72 columns: the narrow form; never a card edge in the flat tier (§4.1)
+    expect(plain).toContain('run this as a task?  [y] [n]  Esc keeps');
+    expect(plain).not.toContain('╭─ run this as a task');
+    expect(plain).toContain('(waiting for y/n)');
+    expect(plain).toMatch(/^jev-only · asking/m);
+    expectCardOpenUntilAnswer(r, 'run this as a task?  [y] [n]  Esc keeps');
+    // rows − 2 at 12 rows: the intake frame is rule + row + composer + status = 4 dynamic rows
+    const all = syncFrames(r.text);
+    const intake = all.filter((f) => f.dynamic.some((l) => l.startsWith('run this as a task?')));
+    expect(intake.length).toBeGreaterThan(0);
+    for (const f of intake) expect(f.dynamic.length).toBeLessThanOrEqual(10);
+    for (const f of all) expect(f.dynamic.some(isBoxEdge)).toBe(false);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+    console.log(`chat-ambiguous flat: intake frame ${intake[0]!.dynamic.length} dynamic rows at 12×60`);
+  });
+
+  it('chat-ambiguous: `y` after the arm runs the task', async () => {
+    const r = await drive({
+      name: 'r2-chat-ambiguous-y',
+      args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
+      env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
+      steps: [...CHAT_OPEN, 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'sleep 0.25', 'send y', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    expect(stripAnsi(r.text)).toMatch(/\[run\] start \S+ mode=jev-on task: the date parsing/);
+    expect(r.runDirs()).toHaveLength(1);
+  });
+
+  it('--plain intake readline: `run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > `, `n` replies, no run (§3.7 twin)', async () => {
+    const r = await drive({
+      name: 'r2-plain-intake',
+      args: ['chat', '--plain', '--mock'],
+      env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
+      steps: ['expect \\[sandbox\\]', 'sleep 0.3', 'send the date parsing\\r', 'expect \\[you\\] the date parsing', 'expect keep the text > ', 'send n\\r', 'expect \\[jevcode\\] ', 'sleep 0.2', 'send /exit\\r', 'eof'],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text).replace(/\r\n/g, '\n');
+    // §3.7 `--plain` readline twin, verbatim (`src/chat/lines.ts` INTAKE_READLINE_PROMPT), the answer echoed by the kernel
+    expect(plain).toContain('run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > n');
+    expect(plain).toMatch(/^\[you\] the date parsing$/m);
+    expect(plain).toMatch(/^\[jevcode\] /m);
+    expect(plain).not.toMatch(/\[run\] start /);
+    expect(r.runDirs()).toEqual([]);
+  });
+
+  it('[you] bubbles are redacted at emission (§3.10): a question carrying a secret passes the gate with `y` and shows the masked bubble in the TUI; the key bytes are in no frame and no file', async () => {
+    const question = `what can you do with ${CANARY}?`;
+    const r = await drive({
+      name: 'r2-redact-tui',
+      args: ['chat', '--mock'],
+      steps: [...CHAT_OPEN, `send ${question}`, 'sleep 0.3', 'send \\r', 'expect Looks like this contains', 'sleep 0.4', 'send y', labelStep('you', 'what can you do with \\[REDACTED'), labelStep('jevcode', ''), ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    // TD §4.10 gate row in the console, then the bubble with the span masked (`redactSpans`) and a facts reply
+    expect(plain).toMatch(/Looks like this contains a secret \(sk-ant-…\)\. Send anyway\? y\/N/);
+    expect(plain).toMatch(/\[you\] what can you do with \[REDACTED:[^\]]+\]\?/);
+    expect(plain).toMatch(/\[jevcode\] /);
+    // keys never in logs (§9): not in the capture (the composer masks the span as it is typed), not in history.jsonl, the index, the logs
+    expect(r.text).not.toContain('AAAAAAAAAAAA');
+    expect(filesContaining(r, 'AAAAAAAAAAAA')).toEqual([]);
+    const history = join(r.home, 'history.jsonl');
+    expect(existsSync(history)).toBe(true);
+    expect(readFileSync(history, 'utf8')).toContain('[REDACTED:');
+    expect(r.runDirs()).toEqual([]);
+  });
+
+  it('[you] bubbles are redacted at emission (§3.10) in --plain too: the readline gate answered `y`, the masked bubble on its own line', async () => {
+    const question = `what can you do with ${CANARY}?`;
+    const r = await drive({
+      name: 'r2-redact-plain',
+      args: ['chat', '--plain', '--mock'],
+      // the readline twin of the §4.10 gate row: `jevcode: looks like this contains a secret (sk-ant-…); type y to send, anything else to cancel: `
+      steps: ['expect \\[sandbox\\]', 'sleep 0.3', `send ${question}\\r`, 'expect type y to send, anything else to cancel: ', 'send y\\r', 'expect \\[you\\] what can you do with \\[REDACTED', 'expect \\[jevcode\\] ', 'sleep 0.2', 'send /exit\\r', 'eof'],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text).replace(/\r\n/g, '\n');
+    expect(plain).toContain('jevcode: looks like this contains a secret (sk-ant-…); type y to send, anything else to cancel: y');
+    expect(plain).toMatch(/^\[you\] what can you do with \[REDACTED:[^\]]+\]\?$/m);
+    // the cooked-mode echo of the typed line is the kernel's, not the renderer's; every renderer-written line is masked
+    const rendererLines = plain.split('\n').filter((l) => /^\[(?:you|jevcode|ui|run)\] /.test(l));
+    for (const l of rendererLines) expect(l).not.toContain('AAAAAAAAAAAA');
+    expect(filesContaining(r, 'AAAAAAAAAAAA')).toEqual([]);
+  });
+
+  it('/jev and /cost after a greeting: `intake: 1 message · p50 <ms> ms · $<usd> · last: greeting_or_smalltalk <p>` and `chat $<usd> for 1 message (~$<each> each, p50 <ms> ms)` (§2.6, §3.9, §12)', async () => {
+    const r = await drive({
+      name: 'r2-jev-cost',
+      args: ['chat', '--mock'],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /jev', echoStep('/jev'), 'send \\r', 'expect intake: 1 message', 'send /cost', echoStep('/cost'), 'send \\r', 'expect chat \\$', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    expect(plain).toMatch(/^intake: 1 message · p50 \d+ ms · \$\d+\.\d+ · last: greeting_or_smalltalk \d\.\d\d$/m);
+    expect(plain).toMatch(/^chat \$\d+\.\d+ for 1 message \(~\$[\d.e+-]+ each, p50 \d+ ms\)$/m);
+    expect(r.runDirs()).toEqual([]);
+  });
+});
+
+describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
+  it('mode-switch without a generator key: the wizard provider step opens in place; Ctrl-C keeps jev-only and never exits', async () => {
+    const r = await drive({
+      name: 'r2-mode-switch',
+      args: ['chat'],
+      env: { ...NO_NETWORK, TYPESAFE_API_KEY: FAKE_KEY },
+      steps: [...CHAT_OPEN, 'send /mode jev-on', echoStep('/mode jev-on'), 'send \\r', 'expect Pick the provider', 'sleep 0.3', 'send \\x03', 'expect mode stays jev-only', topEdgeStep(BADGE_JEV_ONLY), ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    expect(plain).toContain('jev+llm needs a generator. Pick the provider:');
+    expect(plain).toContain('mode stays jev-only — no generator key was saved');
+    expect(plain).not.toContain('No API key found');
+    expect(plain).not.toContain(FAKE_KEY);
+    expect(r.runDirs()).toEqual([]);
+  });
+
+  it('mode-switch with a generator key: the mode item and the `jev+llm · next run` badge in the console top edge; a command is not a turn', async () => {
+    const r = await drive({
+      name: 'r2-mode-switch-keyed',
+      args: ['chat'],
+      env: { ...NO_NETWORK, OPENROUTER_API_KEY: FAKE_KEY },
+      steps: [...CHAT_OPEN, 'send /mode jev-on', echoStep('/mode jev-on'), 'send \\r', `expect ${BADGE_JEV_LLM} from the next run`, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} · next run`), 'sleep 0.3', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    expect(plain).toContain('mode jev+llm from the next run — Claude writes the code, Jev still decides');
+    expect(plain).toMatch(/^╭─ jev\+llm · next run ─/m);
+    // §4.4 / H-G1: a command is not a turn — the frame after `/mode jev-on` still shows the `task` placeholder, not `followup`
+    const after = frames(r.text).filter((u) => u.lines.slice(u.ruleIndex).some((l) => l.startsWith('╭─ jev+llm · next run')));
+    expect(after.length).toBeGreaterThan(0);
+    const last = after.at(-1)!;
+    const dyn = last.lines.slice(last.ruleIndex).join('\n');
+    expect(dyn).toContain(PLACEHOLDER_TASK);
+    expect(dyn).not.toContain(PLACEHOLDER_FOLLOWUP);
+    expect(plain).not.toContain(FAKE_KEY);
+  });
+
+  it('mode-switch with ANTHROPIC_API_KEY: `/llm on` is `/mode jev-on`, the no-argument `/mode` item names the next run, and `run:start` promotes `jev+llm · next run` → `jev+llm`', async () => {
+    const r = await drive({
+      name: 'r2-mode-switch-anthropic',
+      args: ['chat', '--mock', '--mock-steps', '3'],
+      env: { ...NO_NETWORK, ANTHROPIC_API_KEY: FAKE_KEY, TYPESAFE_API_KEY: FAKE_KEY },
+      steps: [...CHAT_OPEN, 'send /llm on', echoStep('/llm on'), 'send \\r', `expect ${BADGE_JEV_LLM} from the next run`, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} · next run`), 'send /mode', echoStep('/mode'), 'send \\r', `expect next run: ${BADGE_JEV_LLM}`, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} ─`), 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    // §1.3: the alias and the mode item (§12 "Mode items")
+    expect(plain).toContain('[ui] mode jev+llm from the next run — Claude writes the code, Jev still decides');
+    const modeItem = /^\[ui\] mode (jev-only|jev\+llm|llm-only) \(next run: jev\+llm\)$/m.exec(plain);
+    expect(modeItem).not.toBeNull();
+    // §1.5: pending badge before the run, promoted at `run:start` (the run's `mode=jev-on`), no ` · next run` afterwards
+    expect(plain).toMatch(/^╭─ jev\+llm · next run ─/m);
+    expect(plain).toMatch(/\[run\] start \S+ mode=jev-on task: fix the failing test/);
+    const all = syncFrames(r.text);
+    const started = syncFramesWith(all, /^\[run\] start /);
+    expect(started.length).toBe(1);
+    const afterStart = all.slice(started[0]!).filter((f) => f.dynamic.some((l) => l.startsWith('╭─ ')));
+    expect(afterStart.length).toBeGreaterThan(0);
+    for (const f of afterStart) expect(f.dynamic.find((l) => l.startsWith('╭─ '))).toMatch(/^╭─ jev\+llm ─/);
+    expect(plain).not.toContain(FAKE_KEY);
+    // design §12: `mode <badge> (next run: <badge>)` — the tree's first word idle is the pending mode (docs/STATUS.md "Round 2", deviation)
+    console.log(`mode item idle after /llm on: "${modeItem![0]}"`);
+  });
+});
+
+describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
+  for (const [rows, cols] of [
+    [24, 80],
+    [40, 120],
+  ] as const) {
+    it(`splash ${rows}x${cols}: frame 0 is the first frame (< 300 ms warm), a key at ~100 ms cancels it, no wordmark after the key, zero clears`, async () => {
+      const r = await drive({ name: `r2-splash-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', `expect ${PROMPT} h`, 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
+      expect(r.timeouts).toBe(0);
+      expect(r.code).toBe(0);
+      const first = timingOf(r.timing, 'expect', '25l');
+      expect(first!.t).toBeLessThan(300);
+      const fs = frames(r.text);
+      const [frame] = fs;
+      const body = frame!.lines.slice(frame!.ruleIndex);
+      // §5.2 row 0 / H-A1: the `J` column and the sweep head, the console complete with the badge and `step 0/–`, 11 dynamic rows
+      expect(body.filter((l) => WORDMARK_RE.test(l)).length).toBe(5);
+      expect(body.some((l) => /▓▒░/.test(l))).toBe(true);
+      expect(body.some((l) => l.startsWith('╭─ jev-only '))).toBe(true);
+      expect(body.at(-2)).toMatch(/step 0\/–/);
+      expect(frame!.rows).toBe(11);
+      for (const l of body.filter(isBoxEdge)) expect([...l].length).toBe(cols);
+      // §5.3 cancel: the frame that echoes the key shows no wordmark row, nor does any later frame
+      const echo = fs.findIndex((u) => u.lines.some((l) => /[›>] h/.test(l)));
+      expect(echo).toBeGreaterThan(0);
+      for (const u of fs.slice(echo)) expect(u.lines.some((l) => WORDMARK_RE.test(l))).toBe(false);
+      // the idle frame after the splash: brand row + 5-row console = 6 dynamic rows (H-A3)
+      expect(fs.at(-1)!.rows).toBe(6);
+      expect(fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]).toMatch(/^─── ◆ jevcode \d+\.\d+\.\d+ ─/);
+      expect(countClears(afterFirstFrame(r.text))).toBe(0);
+      console.log(`splash ${rows}x${cols}: first frame ${first!.t} ms, ${fs.slice(0, echo).filter((u) => u.lines.some((l) => WORDMARK_RE.test(l))).length} wordmark frames before the key at frame ${echo}`);
+    });
+  }
+
+  it('splash-reduced: --no-animation mounts settled — the brand row, no wordmark anywhere', async () => {
+    const r = await drive({ name: 'r2-splash-reduced', args: ['chat', '--mock', '--no-animation'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', `expect ${PROMPT} h`, 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    expect(stripAnsi(r.text)).not.toMatch(WORDMARK_RE);
+    const [frame] = frames(r.text);
+    expect(frame!.lines[frame!.ruleIndex]).toMatch(/^─── ◆ jevcode /);
+    expect(frame!.rows).toBe(6);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+  });
+
+  it('splash settles by itself: no key — ≤ 15 wordmark frames, the brand row `─── ◆ jevcode` in the settled frame, no wordmark frame at or after it, zero clears', async () => {
+    const r = await drive({ name: 'r2-splash-settle', args: ['chat', '--mock'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, BRAND_STEP, 'mark settled', IDLE_STEP, ...EXIT_IDLE] });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const all = syncFrames(r.text).filter((f) => f.ruleIndex >= 0);
+    const wordmark = all.filter((f) => f.dynamic.some((l) => WORDMARK_RE.test(l))).map((f) => f.index);
+    // §5.2: frame 0 carries the wordmark; ≤ 15 frames in 700 ms at the 50 ms tick; the settle frame replaces the rule row with the brand row (§5.4)
+    expect(wordmark[0]).toBe(all[0]!.index);
+    expect(wordmark.length).toBeGreaterThanOrEqual(1);
+    expect(wordmark.length).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
+    const brand = all.filter((f) => /^─── ◆ jevcode \d+\.\d+\.\d+ ─/.test(f.dynamic[0] ?? '')).map((f) => f.index);
+    expect(brand.length).toBeGreaterThan(0);
+    expect(wordmark.every((i) => i < brand[0]!)).toBe(true);
+    expect(all.at(-1)!.dynamic.length).toBe(6);
+    // the settle time on the driver's clock (first frame → brand row): ≈ 700 ms by construction
+    const t0 = timingOf(r.timing, 'expect', 'step 0/')!.t;
+    const settled = timingOf(r.timing, 'expect', 'jevcode')!.t - t0;
+    expect(settled).toBeGreaterThanOrEqual(500);
+    expect(settled).toBeLessThan(2500);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+    console.log(`splash settle: ${wordmark.length} wordmark frames, brand row at frame ${brand[0]}, ${settled} ms after the first frame`);
+  });
+
+  it('run:start cancels the splash: a one-shot `run` starting before 700 ms leaves no wordmark frame after `[run] start`', async () => {
+    const r = await drive({ name: 'r2-splash-run-cancel', args: ['run', 'fix the failing test', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...RUN_OPEN, 'mark started', 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const all = syncFrames(r.text);
+    const started = syncFramesWith(all, /^\[run\] start /);
+    expect(started.length).toBe(1);
+    // §5.3: `run:start` is a cancel row — every frame from the start item on draws no wordmark; the frames before it may
+    const before = all.slice(0, started[0]!).filter((f) => f.dynamic.some((l) => WORDMARK_RE.test(l))).length;
+    for (const f of all.slice(started[0]!)) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
+    expect(before).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
+    const t0 = timingOf(r.timing, 'expect', '25l')!.t;
+    const startAt = timingOf(r.timing, 'expect', 'start')!.t - t0;
+    expect(startAt).toBeLessThan(700);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+    console.log(`splash cancelled by run:start ${startAt} ms after the first frame; ${before} wordmark frames before it`);
+  });
+
+  it('--ascii twins (TD §14.1): `#` letters and the `#+.` sweep head, `+-|` console and card edges, `* jevcode` brand row; no Unicode box or block cell anywhere', async () => {
+    const r = await drive({
+      name: 'r2-ascii',
+      args: ['chat', '--mock', '--ascii'],
+      env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
+      steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, IDLE_STEP, 'sleep 0.8', 'send the date parsing', echoStep('the date parsing'), 'send \\r', 'expect run this as a task\\?', 'sleep 0.3', 'send n', labelStep('jevcode', ''), ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    const [first] = frames(r.text);
+    const body = first!.lines.slice(first!.ruleIndex);
+    expect(body.filter((l) => /##/.test(l)).length).toBe(5);
+    expect(body.some((l) => /#\+\./.test(l))).toBe(true);
+    expect(body.some((l) => /^\+- jev-only -/.test(l))).toBe(true);
+    expect(body.some((l) => /^\| > Say hi, ask a question, or describe a task\.\.\./.test(l))).toBe(true);
+    expect(plain).toMatch(/^--- \* jevcode \d+\.\d+\.\d+ -/m);
+    expect(plain).toMatch(/^\+- run this as a task\? -+\+$/m);
+    expect(plain).toMatch(/^\| \[y\] run it {3}\[n\] just chatting {3}\(Esc keeps the text; Enter does nothing\) +\|$/m);
+    expect(plain).not.toMatch(/[╭╮╰╯│├┤─█▓▒░◆›…]/);
+    expect(r.runDirs()).toEqual([]);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+  });
+});
+
+describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers (§4)', () => {
+  it('panel: the strip after a run; /panel opens ≤ 6 rows with the `more rows` line; /panel off collapses it', async () => {
+    const r = await drive({
+      name: 'r2-panel',
+      args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
+      // the strip precedes the console in every frame: expect it before the placeholder of the same frame (expect consumes its buffer up to each match)
+      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ▸${PROMPT_GAP} jev s\\d+ · \\d+ decisions`, `expect ${PLACEHOLDER_FOLLOWUP}`, 'send /panel', echoStep('/panel'), 'send \\r', `expect ▾${PROMPT_GAP} decisions`, 'expect more rows', 'mark open', 'send Z', echoStep('Z'), 'send \\x03', 'send /panel off', echoStep('/panel off'), 'send \\r', `expect ▸${PROMPT_GAP} jev`, 'mark closed', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const fs = frames(r.text);
+    const openIdx = fs.findIndex((u) => u.lines.some((l) => /^─── ▾ decisions/.test(l)));
+    expect(openIdx).toBeGreaterThan(0);
+    const open = fs[openIdx]!;
+    const dyn = open.lines.slice(open.ruleIndex);
+    // §4.6: rule (header) + ≤ 6 pane rows + the 5-row console → ≤ 12 dynamic rows; the 6th pane row is the `more rows` line
+    expect(open.rows).toBeLessThanOrEqual(12);
+    const consoleTop = dyn.findIndex((l) => l.startsWith('╭─ '));
+    expect(consoleTop).toBeGreaterThan(0);
+    expect(consoleTop - 1).toBeLessThanOrEqual(6);
+    expect(dyn.some((l) => /… \d+ more rows · \/panel full expands/.test(l))).toBe(true);
+    // the strip before and after: `▸ jev s<N> · <n> decisions …`
+    const strip = fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]!;
+    expect(strip).toMatch(/^─── ▸ jev s\d+ · \d+ decisions · risk /);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+  });
+
+  /** the dynamic rows of the last frame whose header names `tab`, and its pane row count (rule → console top) */
+  function paneRows(r: Drive, tab: string): { rows: number; pane: number } {
+    const all = syncFrames(r.text).filter((f) => new RegExp(`^─── ▾ ${tab}`).test(f.dynamic[0] ?? ''));
+    expect(all.length).toBeGreaterThan(0);
+    const dyn = all.at(-1)!.dynamic;
+    const consoleTop = dyn.findIndex((l) => l.startsWith('╭─ '));
+    expect(consoleTop).toBeGreaterThan(0);
+    return { rows: dyn.length, pane: consoleTop - 1 };
+  }
+
+  it('panel keys (§4.6): Alt-Shift-J opens the full 12-row form, Alt-J toggles, Alt-P / Alt-T / Alt-S pick a tab (open, 6 rows), `/panel d` + `/panel full` = 12 rows', async () => {
+    const r = await drive({
+      name: 'r2-panel-keys',
+      args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
+      steps: [
+        ...CHAT_OPEN,
+        'send make the tests pass',
+        echoStep('make the tests pass'),
+        'send \\r',
+        RUN_STARTED_STEP,
+        'expect end (complete|max_steps)',
+        `expect ${PLACEHOLDER_FOLLOWUP}`,
+        'sleep 0.3',
+        ALT('J'),
+        `expect ▾${PROMPT_GAP} decisions`,
+        'sleep 0.3',
+        'mark full',
+        ALT('j'),
+        `expect ▸${PROMPT_GAP} jev`,
+        'sleep 0.3',
+        ALT('p'),
+        `expect ▾${PROMPT_GAP} plan`,
+        'sleep 0.3',
+        ALT('t'),
+        `expect ▾${PROMPT_GAP} timeline`,
+        'sleep 0.3',
+        ALT('s'),
+        `expect ▾${PROMPT_GAP} synth`,
+        'sleep 0.3',
+        ALT('j'),
+        `expect ▸${PROMPT_GAP} jev`,
+        'sleep 0.3',
+        'send /panel d',
+        echoStep('/panel d'),
+        'send \\r',
+        `expect ▾${PROMPT_GAP} decisions`,
+        'sleep 0.3',
+        'mark open-d',
+        'send /panel full',
+        echoStep('/panel full'),
+        'send \\r',
+        `expect ▾${PROMPT_GAP} decisions`,
+        'sleep 0.4',
+        'mark cmd-full',
+        'send /panel off',
+        echoStep('/panel off'),
+        'send \\r',
+        `expect ▸${PROMPT_GAP} jev`,
+        ...EXIT_IDLE,
+      ],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    // full = 12 pane rows: rule + 12 + the 5-row console = 18 dynamic rows (≤ rows − 2 = 22); open tabs: 6 pane rows or fewer (synth has fewer rows)
+    const all = syncFrames(r.text);
+    const decisions = all.filter((f) => /^─── ▾ decisions/.test(f.dynamic[0] ?? ''));
+    expect(decisions.length).toBeGreaterThan(0);
+    const paneOf = (dyn: readonly string[]): number => dyn.findIndex((l) => l.startsWith('╭─ ')) - 1;
+    const fullFrames = decisions.filter((f) => paneOf(f.dynamic) === 12);
+    expect(fullFrames.length).toBeGreaterThan(0);
+    expect(fullFrames[0]!.dynamic.length).toBe(18);
+    expect(paneRows(r, 'plan').pane).toBeLessThanOrEqual(6);
+    expect(paneRows(r, 'timeline').pane).toBeLessThanOrEqual(6);
+    expect(paneRows(r, 'synth').pane).toBeLessThanOrEqual(6);
+    // the `/panel d` form is the 6-row one and `/panel full` the 12-row one (both frames name the decisions tab)
+    expect(decisions.some((f) => paneOf(f.dynamic) <= 6)).toBe(true);
+    for (const f of all) expect(f.dynamic.length).toBeLessThanOrEqual(22);
+    expect(countClears(afterFirstFrame(r.text))).toBe(0);
+    console.log(`panel keys: full ${fullFrames[0]!.dynamic.length} dynamic rows (12 pane), plan ${paneRows(r, 'plan').pane} · timeline ${paneRows(r, 'timeline').pane} · synth ${paneRows(r, 'synth').pane} pane rows`);
+  });
+
+  it('panel keys (§4.6): Alt-D opens the decisions tab from the collapsed strip (the earlier `½` was the driver\'s Tcl `\\x1bd` → `\\xbd`, not the tree)', async () => {
+    const r = await drive({
+      name: 'r2-panel-alt-d',
+      args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
+      timeoutS: 5,
+      steps: [...CHAT_OPEN, 'send make the tests pass', echoStep('make the tests pass'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ALT('d'), `expect ▾${PROMPT_GAP} decisions`, 'send \\x03', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(stripAnsi(r.text)).not.toMatch(/[›>] ½/);
+  });
+
+  it('the Jev panel after a greeting (§3.11): `/panel` shows the intake\'s `s0` Noul rows (`about_*`), none written to decisions.jsonl', async () => {
+    const r = await drive({
+      name: 'r2-panel-intake',
+      args: ['chat', '--mock'],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /panel full', echoStep('/panel full'), 'send \\r', `expect ▾${PROMPT_GAP} decisions s0`, 'expect s0 ', 'sleep 0.3', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    const rows = plain.split(/\r?\n/).filter((l) => /^s0 /.test(l));
+    expect(rows.length).toBeGreaterThan(0);
+    expect(rows.some((l) => /^s0 \S+\s+about_\S+\s+noul\s+/.test(l))).toBe(true);
+    // design §3.11 names the rows `s0 intake  intake  <kind> … chosen` (the Choice pinned first) beside the `about_*` Nouls; the tree's label and row set are reported (docs/STATUS.md "Round 2")
+    const ids = [...new Set(rows.map((l) => l.split(/\s+/)[2] ?? ''))];
+    console.log(`panel after hi: ${rows.length} s0 rows, stage word "${rows[0]!.split(/\s+/)[1]}", ids ${ids.join(' ')}; intake Choice row ${rows.some((l) => /^s0 \S+\s+intake\s/.test(l)) ? 'present' : 'absent'}`);
+    expect(r.runDirs()).toEqual([]);
+  });
+
+  it('/why intake after a greeting prints the standard block (§3.11)', async () => {
+    const r = await drive({
+      name: 'r2-why-intake',
+      args: ['chat', '--mock'],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', labelStep('jevcode', 'Hi\\.'), 'send /why intake', echoStep('/why intake'), 'send \\r', 'expect (?:intake|error)', 'sleep 0.3', 'send \\x03', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    expect(stripAnsi(r.text)).not.toContain('/why: no decision intake');
+  });
+
+  it('/transcript full (§4.5 / §9 (a)): the stage lines of new items appear in the TUI and every transcript.log line is rebuilt from the wrapped rows at 80 columns', async () => {
+    const r = await drive({
+      name: 'r2-transcript-full',
+      args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'],
+      steps: [...CHAT_OPEN, 'send /transcript full', echoStep('/transcript full'), 'send \\r', 'sleep 0.3', 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, 'sleep 0.3', ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const rows = staticRows(r.text);
+    // the stage kinds hidden by `compact` are drawn in `full`, and so is `run:ready`
+    expect(rows.some((l) => /^\[step 1\] intent=/.test(l))).toBe(true);
+    expect(rows.some((l) => /^\[step 1\] proposal /.test(l))).toBe(true);
+    expect(rows.some((l) => /^\[step 1\] judge /.test(l))).toBe(true);
+    expect(rows.some((l) => /^\[run\] ready /.test(l))).toBe(true);
+    // identity (a): after stripAnsi, the rows equal formatTranscriptItem(item) word-wrapped — rebuilt against transcript.log with the
+    // continuation indent dropped (the design's hanging indent of `label.length + 1` cells; a full-width wrap rebuilds the same way)
+    const transcript = r.transcript()!;
+    const reflow = reflowAgainst(rows, transcript, { hangingIndent: true });
+    expect(reflow.mismatches).toEqual([]);
+    expect(reflow.lines).toEqual(transcript);
+    // every row above the rule is a transcript line, its continuation, or a renderer-local item (the header, [sandbox], [ui], the bubbles)
+    for (const l of reflow.leftovers) expect(isLocalItem(l) || !isItemRow(l)).toBe(true);
+    const continuation = rows.filter((l) => /^ {9,}\S/.test(l)).length;
+    console.log(`/transcript full: ${transcript.length} transcript lines rebuilt from ${rows.length} rows (${reflow.wrappedRows} continuation rows, ${continuation} of them indented ≥ 9 cells)`);
+  });
+
+  it('chrome-tiers: boxed at 24x80, flat at 12x60 (badge leads the status), boxed again; ≤ 1 clear in the shrink segment, 0 in the grow', async () => {
+    const r = await drive({
+      name: 'r2-chrome-tiers',
+      args: ['chat', '--mock'],
+      // an expect right after each resize (the driver's `sleep` drains and consumes the pty, so a frame that arrived during a sleep is gone for a later expect), then a settle
+      steps: [...CHAT_OPEN, 'send A', echoStep('A'), 'resize 12 60', `expect jev-only${PROMPT_GAP} · idle`, 'sleep 0.5', 'send B', echoStep('AB'), 'resize 24 80', topEdgeStep(BADGE_JEV_ONLY), 'sleep 0.5', 'send C', echoStep('ABC'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const all = units(r.text);
+    const segments = segmentClears(all, [' A', ' AB', ' ABC']);
+    expect(segments.every((s) => s.unit !== undefined)).toBe(true);
+    expect(segments[0]!.clears).toBe(0);
+    expect(segments[1]!.clears).toBeLessThanOrEqual(1); // shrink 24×80 → 12×60
+    expect(segments[2]!.clears).toBe(0); // grow
+    expect(frameTier(segments[0]!.unit!)).toBe('boxed');
+    expect(frameTier(segments[1]!.unit!)).toBe('flat');
+    expect(frameTier(segments[2]!.unit!)).toBe('boxed');
+    // §1.5 flat: `<badge> · <leftWord>` leads the status left zone; no box row anywhere in the flat frame
+    const flat = segments[1]!.unit!;
+    expect(flat.lines.slice(flat.ruleIndex).some(isBoxEdge)).toBe(false);
+    expect(flat.lines.at(-1)).toMatch(/^jev-only · idle/);
+    expect(flat.rows).toBeLessThanOrEqual(10);
+    console.log(`chrome tiers: clears per segment ${segments.map((s) => s.clears).join('/')}; rows boxed ${segments[0]!.unit!.rows} · flat ${flat.rows} · boxed ${segments[2]!.unit!.rows}`);
+  });
+});
+
+describe.skipIf(!hasExpect)('pty round 2: zero-argument starts and the keyless wizard (§1.1, §1.4)', () => {
+  for (const [name, args] of [
+    ['bare `jevcode`', ['--mock']],
+    ['`jevcode run` without a task', ['run', '--mock']],
+  ] as const) {
+    it(`zero-argument start (${name}): a jev-only session, the badge from the first frame, the round-2 placeholder, no wizard`, async () => {
+      const r = await drive({ name: `r2-zero-arg-${args[0] === 'run' ? 'run' : 'chat'}`, args: [...args], steps: [FIRST_FRAME_STEP, topEdgeStep(BADGE_JEV_ONLY), `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP, ...EXIT_IDLE] });
+      expect(r.timeouts).toBe(0);
+      expect(r.code).toBe(0);
+      const [frame] = frames(r.text);
+      expect(frame!.lines.slice(frame!.ruleIndex).some((l) => l.startsWith('╭─ jev-only '))).toBe(true);
+      const plain = stripAnsi(r.text);
+      expect(plain).toMatch(/\[run\] jevcode session · \S+ \| step 0\/– starting/);
+      expect(plain).not.toContain('Where do you reach Jev');
+      expect(plain).not.toContain('Pick the generator provider');
+      expect(r.runDirs()).toEqual([]);
+    });
+  }
+
+  /** the keyless startup wizard: `childEnv` gives an empty HOME / XDG dir (no credentials file), no .env in the workspace, every key variable removed */
+  const WIZARD_OPEN = [FIRST_FRAME_STEP, 'expect Where do you reach Jev'];
+
+  it('zero-argument start with no key anywhere: the jev-only wizard asks for the Jev provider only (`setup · jev provider`); Ctrl-C at startup exits 2', async () => {
+    const r = await drive({ name: 'r2-zero-arg-wizard', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(2);
+    const plain = stripAnsi(r.text);
+    // §1.4 / §12 "Wizard": the jev-only first run asks for the Jev provider inside the console (`setup · jev provider`), never the generator
+    expect(plain).toContain('No Jev key found. Where do you reach Jev?');
+    expect(plain).toMatch(/^╭─ setup · jev provider ─/m);
+    expect(plain).toContain('1 typesafe   2 openrouter');
+    expect(plain).not.toContain('Pick the generator provider');
+    expect(plain).not.toContain('ANTHROPIC_API_KEY=');
+    expect(r.runDirs()).toEqual([]);
+  });
+
+  it('Ctrl-C at the startup wizard prints the fix block (`printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin`, §1.4 / §12)', async () => {
+    const r = await drive({ name: 'r2-zero-arg-wizard-fix', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
+    expect(r.code).toBe(2);
+    // the fix line is 82 cells, so at 80 columns it wraps after `typesafe `: the rows are re-joined before the check
+    const plain = stripAnsi(r.text);
+    const joined = plain.split(/\r?\n/).map((l) => l.trim()).join(' ');
+    expect(joined).toContain('printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin');
+    expect(plain).toContain('export TYPESAFE_API_KEY=');
+  });
+
+  it('Ctrl-C at the startup wizard exits without falling through to an idle console (§1.4: "one opened by a missing key at startup exits 2")', async () => {
+    const r = await drive({ name: 'r2-zero-arg-wizard-exit', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
+    expect(r.code).toBe(2);
+    const all = syncFrames(r.text);
+    const setup = syncFramesWith(all, /^╭─ setup/);
+    expect(setup.length).toBeGreaterThan(0);
+    const afterSetup = all.slice(setup.at(-1)! + 1);
+    expect(afterSetup.some((f) => f.dynamic.some((l) => l.startsWith('╭─ jev-only ') || l.includes(PLACEHOLDER_TASK)))).toBe(false);
+  });
+
+  it('keys never in logs (§9): a key typed into the startup wizard\'s masked Jev-key field shows as `•` cells, then Ctrl-C — the bytes are in no frame, history.jsonl, sessions/index.jsonl or any file under JEVCODE_HOME / XDG', async () => {
+    const r = await drive({
+      name: 'r2-wizard-masked-startup',
+      args: [],
+      env: NO_NETWORK,
+      steps: [...WIZARD_OPEN, 'sleep 0.4', 'send 1', 'expect Jev API key \\(TYPESAFE_API_KEY\\)  1/1', 'sleep 0.3', `send ${TYPED_KEY}`, 'expect •{20}', 'sleep 0.3', 'mark typed', 'send \\x03', 'eof'],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(2);
+    const plain = stripAnsi(r.text);
+    // §1.4 / §12: the `setup · jev key` console title, the masked row `› •••`, the counter row with the length only
+    expect(plain).toMatch(/^╭─ setup · jev key ─/m);
+    expect(plain).toMatch(/^│ › •{48}/m);
+    expect(plain).toContain(`${TYPED_KEY.length} chars · Enter saves`);
+    expect(r.text).not.toContain(TYPED_KEY);
+    expect(r.text).not.toContain('zzzzzzzz');
+    expect(filesContaining(r, 'zzzzzzzz')).toEqual([]);
+    expect(existsSync(join(r.home, 'xdg', 'jevcode', 'config.json'))).toBe(false);
+  });
+
+  it('keys never in logs (§9): the `/mode jev-on` wizard\'s masked generator-key field (`setup · generator key`), Ctrl-C keeps jev-only — the typed bytes and the session\'s fake Jev key are in no frame and no file', async () => {
+    const r = await drive({
+      name: 'r2-wizard-masked-mode',
+      args: ['chat'],
+      env: { ...NO_NETWORK, TYPESAFE_API_KEY: FAKE_KEY },
+      steps: [...CHAT_OPEN, 'send /mode jev-on', echoStep('/mode jev-on'), 'send \\r', 'expect Pick the provider', 'sleep 0.3', 'send 1', 'expect Anthropic API key \\(ANTHROPIC_API_KEY\\)', 'sleep 0.3', `send ${TYPED_KEY}`, 'expect •{20}', 'sleep 0.3', 'mark typed', 'send \\x03', 'expect mode stays jev-only', topEdgeStep(BADGE_JEV_ONLY), ...EXIT_IDLE],
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const plain = stripAnsi(r.text);
+    expect(plain).toMatch(/^╭─ setup · provider ─/m);
+    expect(plain).toMatch(/^╭─ setup · generator key ─/m);
+    expect(plain).toMatch(/^│ › •{48}/m);
+    expect(plain).toContain('mode stays jev-only — no generator key was saved');
+    for (const secret of [TYPED_KEY, FAKE_KEY, 'zzzzzzzz']) {
+      expect(r.text).not.toContain(secret);
+      expect(filesContaining(r, secret)).toEqual([]);
+    }
+    expect(existsSync(join(r.home, 'xdg', 'jevcode', 'config.json'))).toBe(false);
+    expect(r.runDirs()).toEqual([]);
+  });
+});

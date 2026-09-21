@@ -106,6 +106,34 @@ describe("uiReducer: today's rules kept", () => {
     expect(committed).toMatchObject({ live: '', toolChars: 0 });
   });
 
+  it('llm-jev (docs/LLM-JEV-DESIGN.md §9.3): `sampling` follows generator:start carrying samples > 1; sample ≥ 1 never clears or feeds the live buffer; proposal / step:end / run:end clear it; the live row carries ` · sample k/N`', () => {
+    const base = started();
+    expect(base.sampling).toBeNull();
+    // jev-on shape (no sample fields): nothing changes
+    expect(uiReducer(base, ev({ type: 'generator:start', step: 1, attempt: 1 })).sampling).toBeNull();
+    let s = uiReducer(base, ev({ type: 'generator:start', step: 1, attempt: 1, sample: 0, samples: 4 }));
+    expect(s.sampling).toEqual({ k: 1, n: 4 });
+    s = uiReducer(s, { type: 'live', text: 'abc', toolChars: 3 });
+    // a sibling sample starting beside sample 0 moves the counter and leaves sample 0's buffer alone
+    s = uiReducer(s, ev({ type: 'generator:start', step: 1, attempt: 1, sample: 2, samples: 4 }));
+    expect(s).toMatchObject({ sampling: { k: 3, n: 4 }, live: 'abc', toolChars: 3 });
+    // a tool-delta from sample ≥ 1 is not counted in the live region; sample 0's is
+    expect(uiReducer(s, ev({ type: 'generator:tool-delta', step: 1, chars: 900, sample: 1 }))).toBe(s);
+    expect(uiReducer(s, ev({ type: 'generator:tool-delta', step: 1, chars: 900, sample: 0 })).toolChars).toBe(900);
+    expect(uiReducer(s, ev({ type: 'generator:start', step: 1, attempt: 1, sample: 2, samples: 4 }))).toBe(s);
+    expect(liveLines('', 2, 80, 40, null, s.sampling)).toEqual(['streaming action… 40 chars · sample 3/4']);
+    expect(liveLines('x'.repeat(1234), 2, 80, 0, null, s.sampling)).toEqual(['streaming… 1.2k chars · sample 3/4']);
+    expect(liveLines('a\nb\n', 2, 80, 0, null, s.sampling)).toEqual(['a', 'b']);
+    expect(liveLines('', 2, 80, 40, null, null)).toEqual(['streaming action… 40 chars']);
+    // samples ≤ 1 clears the counter; a start without `samples` keeps it
+    expect(uiReducer(s, ev({ type: 'generator:start', step: 1, attempt: 2, sample: 0, samples: 1 })).sampling).toBeNull();
+    expect(uiReducer(s, ev({ type: 'generator:start', step: 1, attempt: 2 })).sampling).toEqual({ k: 3, n: 4 });
+    expect(uiReducer(s, ev({ type: 'proposal', step: 1, proposal: mkProposal() }))).toMatchObject({ sampling: null, live: '', toolChars: 0 });
+    expect(uiReducer(s, ev({ type: 'step:end', record: record(1) })).sampling).toBeNull();
+    expect(uiReducer(s, ev({ type: 'run:end', result: mkRunResult() })).sampling).toBeNull();
+    expect(initialUiState('t', null).sampling).toBeNull();
+  });
+
   it('status feeds the status line through statusView; `step 0/–` before any status; the synth marker in jev-only', () => {
     const s = uiReducer(initialUiState('t', null, { mode: 'session' }), ev({ type: 'status', status: mkStatus(3, 'risk') }));
     expect(s.status?.step).toBe(3);

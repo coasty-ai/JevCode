@@ -25,6 +25,8 @@ import type {
   DeciderConfig,
   EngineMode,
   GeneratorConfig,
+  JevProvider,
+  JevProviderSource,
   Json,
   LaunchSettings,
   Resolved,
@@ -40,10 +42,12 @@ import { formatDuration, parseDuration } from '../core/time.js';
 import { clip } from '../core/text.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { ConfigError } from '../errors.js';
-import { createRedactor, patternRedact, SECRET_NAME_RE, type SecretEntry } from '../core/redact.js';
+import { MIN_SECRET_LENGTH, createRedactor, patternRedact, SECRET_NAME_RE, type SecretEntry } from '../core/redact.js';
+import { JEV_PROVIDERS, equivalentJevModel, jevModelMatches as providerJevModelMatches, providerForHost, sameJevWeights } from '../jev/providers.js';
 import {
   CACHE_READ_FACTOR,
   CACHE_WRITE_FACTOR,
+  KNOWN_KEY_ENV,
   SESSION_CAP_MULTIPLIER,
   SETTINGS,
   SECRET_SETTINGS,
@@ -56,7 +60,7 @@ import {
   xdgConfigDir,
 } from './defaults.js';
 import { readDotenv } from './env.js';
-import { resolveLaunchSettingsWithSources, type LaunchFlags } from './launch.js';
+import { parseModeHint as parseModeHintText, resolveLaunchSettingsWithSources, type LaunchFlags } from './launch.js';
 import { maskEntries } from './mask.js';
 import { defaultRunSpendCapUsd, resolveSessionSpendCap, resolveUiConfig, runSpendCapUsd } from './ui.js';
 import {
@@ -64,6 +68,8 @@ import {
   jevModelMatches,
   normaliseJevModelId,
   parseBooleanSetting,
+  parseJevProviderSetting,
+  parseModeSetting,
   readAllowUnpriced,
   validateDecider,
   validateGenerator,
@@ -203,7 +209,8 @@ export async function readConfigFile(path: string): Promise<LoadedConfigFile> {
   return { path, values, unknownKeys, ignoredLaunch };
 }
 
-interface Layers {
+/** The precedence layers `resolveConfig` reads (flag > env > dotenvs > file > default); exported for `resolveMode` (TUI-DESIGN-2 §1.2). */
+export interface Layers {
   flags: ParsedFlags;
   env: NodeJS.ProcessEnv;
   dotenvs: LoadedDotenv[];
@@ -308,10 +315,84 @@ function flagNameFor(spec: SettingSpec): string | null {
   return null;
 }
 
-/** `--mode` (or its hidden alias `--condition`); default jev-on — the same rule as cli/main.tsx `modeFromFlags`. */
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-2 §2.3: the Jev provider (rules 1–2e), resolved before the key row so it can steer the key order (step 3)
+// ---------------------------------------------------------------------------------------
+
+/** What `decider.provider` resolved to and why. */
+interface JevProviderResolution {
+  provider: JevProvider;
+  providerSource: JevProviderSource;
+  /** the `decider.provider` entry: the explicit row, `derived` for an auto rule, `default` when nothing decided (rule 2e) */
+  entry: Resolved<string>;
+}
+
+function isExplicitProviderSource(s: string): s is 'flag' | 'env' | `dotenv:${string}` | `file:${string}` {
+  return s === 'flag' || s === 'env' || s.startsWith('dotenv:') || s.startsWith('file:');
+}
+
+/** rules 2b–2d: the variable is set (non-empty) in the process environment or in any loaded .env */
+function keyVariablePresent(layers: Layers, name: string): boolean {
+  const v = layers.env[name];
+  if (typeof v === 'string' && v.trim() !== '') return true;
+  return layers.dotenvs.some((d) => (d.vars.get(name) ?? '').trim() !== '');
+}
+
+/** A reader over the layers alone for the eager, pre-`entries` validations (`decider.provider`, `mode`): the row given plus the consulted-sources list. */
+function layerReader(layers: Layers, name: SettingName, row: Resolved<string> | undefined): SettingReader {
+  return {
+    get: (n) => (n === name ? row : undefined),
+    sources: (n) => describeSources(layers, settingSpec(n), flagNameFor(settingSpec(n))),
+  };
+}
+
+/**
+ * TUI-DESIGN-2 §2.3 rules 1–2e. Rule 1's "any other value → ConfigError (exit 2) naming the source" is eager (like `validateSandbox`):
+ * `JEV_PROVIDER=foo jevcode chat --mock` fails at resolveConfig rather than running silently with the bad row recorded (`decider()`
+ * is never called under --mock).
+ */
+function resolveJevProvider(layers: Layers): JevProviderResolution {
+  const row = lookup(layers, settingSpec('decider.provider')) ?? { value: 'auto', source: 'default' };
+  // rule 1: flag > JEV_PROVIDER > ./.env > <OPEN_ASSIST_PATH>/.env > file jevProvider; any other value is a ConfigError naming the source
+  const v = parseJevProviderSetting(layerReader(layers, 'decider.provider', row), row);
+  if (v === 'typesafe' || v === 'openrouter') return { provider: v, providerSource: isExplicitProviderSource(row.source) ? row.source : 'default', entry: { value: v, source: row.source } };
+  // rule 2a: a configured base URL whose host the table knows
+  const baseR = lookup(layers, settingSpec('decider.baseUrl'));
+  if (baseR && baseR.source !== 'default') {
+    const host = providerForHost(baseR.value.trim());
+    if (host !== null) return { provider: host, providerSource: 'auto:base-url', entry: { value: host, source: 'derived' } };
+  }
+  // rules 2b–2d: today's users configured JEV_API_KEY for OpenRouter and are not redirected; then the TypeSafe key; then the OpenRouter key
+  if (keyVariablePresent(layers, 'JEV_API_KEY')) return { provider: 'openrouter', providerSource: 'auto:openrouter-key', entry: { value: 'openrouter', source: 'derived' } };
+  if (keyVariablePresent(layers, 'TYPESAFE_API_KEY')) return { provider: 'typesafe', providerSource: 'auto:typesafe-key', entry: { value: 'typesafe', source: 'derived' } };
+  if (keyVariablePresent(layers, 'OPENROUTER_API_KEY')) return { provider: 'openrouter', providerSource: 'auto:openrouter-key', entry: { value: 'openrouter', source: 'derived' } };
+  // rule 2e: nothing — the wizard asks (§1.4); nothing is sent
+  return { provider: 'openrouter', providerSource: 'default', entry: { value: 'openrouter', source: 'default' } };
+}
+
+/** TUI-DESIGN-2 §1.2: `--mode` (or its hidden alias `--condition`) as an argv-only hint; default jev-only — the same rule as cli/main.tsx `modeFromFlags`. */
 export function modeFromParsedFlags(flags: ParsedFlags): EngineMode {
   const m = flags.mode ?? flags.condition;
-  return m === 'jev-off' || m === 'jev-only' ? m : 'jev-on';
+  return m === 'jev-on' || m === 'jev-off' || m === 'llm-jev' ? m : 'jev-only';
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-2 §1.2 (D-A): the `mode` setting — flag > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > default jev-only
+// ---------------------------------------------------------------------------------------
+
+/** The `mode` row through the chain; `--condition` (args.ts's hidden alias, not the row's flag key) counts as the flag layer. */
+function modeRow(layers: Layers): Resolved<string> {
+  const spec = settingSpec('mode');
+  const fromFlag = flagLayer(layers.flags, spec);
+  if (fromFlag) return fromFlag;
+  const condition = flagValue(layers.flags, 'condition');
+  if (typeof condition === 'string' && condition.trim() !== '') return { value: condition, source: 'flag' };
+  return lookup(layers, spec) ?? { value: spec.defaultValue ?? 'jev-only', source: 'default' };
+}
+
+/** TUI-DESIGN-2 §1.2: the resolved engine mode, or the §12 ConfigError `mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev`. */
+export function resolveMode(layers: Layers): EngineMode {
+  return parseModeSetting(modeRow(layers));
 }
 
 const LAUNCH_ROW_NAMES: readonly SettingName[] = ['ui.fps', 'ui.renderMode', 'ui.screenReader', 'ui.ascii', 'ui.noColor'];
@@ -326,6 +407,9 @@ function launchRows(flags: ParsedFlags, env: NodeJS.ProcessEnv): Map<SettingName
     ...(flagValue(flags, 'screenReader') === true ? { screenReader: true } : {}),
     ...(flagValue(flags, 'ascii') === true ? { ascii: true } : {}),
     ...(flagValue(flags, 'noColor') === true ? { noColor: true } : {}),
+    // TUI-DESIGN-2 §6 item 14: modeHint / reducedMotion are computed too (the rows below are the five §16 launch settings only)
+    ...(typeof flagValue(flags, 'mode') === 'string' ? { mode: flagValue(flags, 'mode') as string } : {}),
+    ...(flagValue(flags, 'noAnimation') === true ? { noAnimation: true } : {}),
   };
   const { settings, sources } = resolveLaunchSettingsWithSources(launchFlags, env);
   return new Map<SettingName, Resolved<string>>([
@@ -347,8 +431,6 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const warnings: string[] = [];
   const consultedPaths: string[] = [];
   const layers: Layers = { flags, env, dotenvs: [], file: null, extraEnv: {} };
-  // TUI-DESIGN §9.1 (P45): the run-cap default is keyed on the mode; a --resume re-resolve passes run.json's mode (opts.mode)
-  const mode = opts.mode ?? modeFromParsedFlags(flags);
 
   // 1. ./.env
   const cwdDotenv = join(cwd, '.env');
@@ -411,23 +493,49 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     }
   }
 
-  // 4. Provider first: it decides which env var holds the generator key.
+  // 3b. TUI-DESIGN-2 §1.2: the `mode` setting, resolved once every layer is loaded and before the mode-keyed cap default below.
+  //     A --resume re-resolve passes run.json's mode (opts.mode) and the chain is not consulted (TUI-DESIGN §9.1, P45).
   const entries = new Map<SettingName, Resolved<string>>();
+  const modeR = modeRow(layers);
+  const mode: EngineMode = opts.mode ?? parseModeSetting(modeR);
+  entries.set('mode', opts.mode !== undefined ? { value: opts.mode, source: modeR.source !== 'default' && parseModeHintText(modeR.value) === opts.mode ? modeR.source : 'default' } : { value: mode, source: modeR.source });
+
+  // 4. Provider first: it decides which env var holds the generator key.
   const providerR = lookup(layers, settingSpec('generator.provider'));
   if (providerR) {
     entries.set('generator.provider', providerR);
     const keyEnv = PROVIDER_KEY_ENV[providerR.value.trim().toLowerCase()];
     if (keyEnv) layers.extraEnv['generator.apiKey'] = [keyEnv];
   }
+  // 4b. TUI-DESIGN-2 §2.3: the Jev provider likewise — step 3 prepends its variable (TYPESAFE_API_KEY) to the decider key
+  //     lookup when the provider was explicit, host- or TypeSafe-key-inferred; under `auto:openrouter-key` / `default` today's
+  //     order `JEV_API_KEY, OPENROUTER_API_KEY` applies unchanged, so no existing user's paying key changes.
+  //     §10 deviation (recorded): for an explicit `openrouter` the variable is already in the row, so today's order
+  //     `JEV_API_KEY, OPENROUTER_API_KEY` stands (the spec's own openrouter consulted-list string) rather than a prepend that would
+  //     flip the paying key of a user holding both.
+  const jev = resolveJevProvider(layers);
+  entries.set('decider.provider', jev.entry);
+  const jevKeyEnv = JEV_PROVIDERS[jev.provider].keyEnv;
+  if (jev.providerSource !== 'auto:openrouter-key' && jev.providerSource !== 'default' && !settingSpec('decider.apiKey').env.includes(jevKeyEnv)) {
+    layers.extraEnv['decider.apiKey'] = [jevKeyEnv];
+  }
 
   let logFileHit: Hit | null = null;
+  let deciderKeyHit: Hit | null = null;
   for (const spec of SETTINGS) {
-    if (spec.name === 'generator.provider' || spec.name === 'configFile' || spec.name === 'openAssistPath') continue;
+    if (spec.name === 'generator.provider' || spec.name === 'decider.provider' || spec.name === 'mode' || spec.name === 'configFile' || spec.name === 'openAssistPath') continue;
     if (spec.launch) continue; // TUI-DESIGN §16: launch rows never read the file (added below from resolveLaunchSettings)
     const hit = lookupDetailed(layers, spec);
     if (!hit) continue;
     entries.set(spec.name, { value: hit.value, source: hit.source });
     if (spec.name === 'log.file') logFileHit = hit;
+    if (spec.name === 'decider.apiKey') deciderKeyHit = hit;
+  }
+  // TUI-DESIGN-2 §2.3 row 4: an unset base URL / model takes the provider's own values (`default (typesafe)` in `jevcode config`)
+  {
+    const spec = JEV_PROVIDERS[jev.provider];
+    if (entries.get('decider.baseUrl')?.source === 'default') entries.set('decider.baseUrl', { value: spec.baseUrl, source: 'default' });
+    if (entries.get('decider.model')?.source === 'default') entries.set('decider.model', { value: spec.defaultModel, source: 'default' });
   }
   // `--verbose` is `--log-level debug` (TUI-DESIGN §16); an explicit --log-level wins.
   if (flagValue(flags, 'verbose') === true && entries.get('log.level')?.source !== 'flag') entries.set('log.level', { value: 'debug', source: 'flag' });
@@ -437,7 +545,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     const level = entries.get('log.level');
     if (!level || layerRank(level.source) > layerRank(logFileHit.source)) entries.set('log.level', { value: TRACE_LOG_LEVEL, source: logFileHit.source });
   }
-  // TUI-DESIGN §9.1 / §16 (P45): the run cap default is mode-keyed once --mode is known.
+  // TUI-DESIGN §9.1 / §16 (P45) / TUI-DESIGN-2 §1.2: the run cap default is mode-keyed on the `mode` setting ($0.25 under jev-only).
   const capR = entries.get('limits.spendCapUsd');
   if (!capR || capR.source === 'default') entries.set('limits.spendCapUsd', { value: String(defaultRunSpendCapUsd(mode)), source: 'default' });
   for (const [name, r] of launchRows(flags, env)) entries.set(name, r);
@@ -481,6 +589,12 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   }
   for (const d of layers.dotenvs) for (const [k, v] of d.vars) if (SECRET_NAME_RE.test(k)) secrets.push({ name: k, value: v });
   if (configFile) for (const [k, v] of configFile.values) if (SECRET_NAME_RE.test(k)) secrets.push({ name: k, value: v });
+  // TUI-DESIGN-2 §2.3 Redaction: every known key variable exported in the process environment, whichever provider was selected
+  // (a TYPESAFE_API_KEY in the shell under `--jev-provider openrouter` is masked too); a value already named by a setting keeps that name
+  for (const name of KNOWN_KEY_ENV) {
+    const v = env[name];
+    if (typeof v === 'string' && v.trim().length >= MIN_SECRET_LENGTH) secrets.push({ name, value: v.trim() });
+  }
   const redactor = createRedactor(secrets);
 
   const secretPaths = [...new Set(consultedPaths.filter((p) => isAbsolute(p)))];
@@ -529,17 +643,23 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
         if (LAUNCH_ROW_NAMES.includes(name)) out[`${name}.ignored`] = { value, source: 'ignored:launch' };
       }
     }
+    // TUI-DESIGN-2 §2.6: `--json` carries why the provider was chosen; the table folds it into the `decider.provider` source column
+    out['decider.providerSource'] = { value: jev.providerSource, source: 'derived' };
     return out;
   }
 
   return {
     entries,
+    // contract 1.2 (TUI-DESIGN-2 §6 item 9 / §1.2): the `mode` setting the caps above were keyed on — opts.mode (a --resume
+    // re-resolve) or the chain (flag > JEVCODE_MODE > dotenv > file > default jev-only)
+    mode,
     generator() {
       if (!generatorMemo) generatorMemo = validateGenerator(reader, warn, { allowUnpriced: readAllowUnpriced(reader) });
       return generatorMemo;
     },
     decider() {
-      if (!deciderMemo) deciderMemo = validateDecider(reader);
+      // TUI-DESIGN-2 §2.3: the resolved provider and the variable the key came from (row 3's OPENROUTER_API_KEY-under-typesafe refusal)
+      if (!deciderMemo) deciderMemo = validateDecider(reader, { provider: { name: jev.provider, source: jev.providerSource }, keyVia: deciderKeyHit?.via ?? null });
       return deciderMemo;
     },
     limits() {
@@ -561,6 +681,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     warnings,
     sourcesConsulted: (name) => reader.sources(name),
     // TUI-DESIGN §15 item 17 / §11.1 (D5): non-throwing; the generator key is skipped for jev-only and --mock*, the Jev key for --mock
+    // (llm-jev needs both: the generator writes candidates inside the Jev-only search, docs/LLM-JEV-DESIGN.md)
     missingSecrets(m: EngineMode): readonly SecretSettingName[] {
       const out: SecretSettingName[] = [];
       if (m !== 'jev-only' && !mockedGenerator && !hasSecret('generator.apiKey')) out.push('generator.apiKey');
@@ -612,6 +733,8 @@ export function resumeIdentityFromRunMeta(meta: RunMeta): ResumeIdentity {
     baseUrl: recordString(c, 'generator.baseUrl'),
     jevModel: recordString(c, 'decider.model'),
     jevBaseUrl: recordString(c, 'decider.baseUrl'),
+    // TUI-DESIGN-2 §2.5: a run recorded before the row reads as openrouter (the caller applies that default)
+    jevProvider: recordString(c, 'decider.provider'),
     completeThreshold: recordNumber(c, 'limits.completeThreshold'),
     impossibleThreshold: recordNumber(c, 'limits.impossibleThreshold'),
     sandbox,
@@ -623,8 +746,17 @@ export function resumeIdentityFromRunMeta(meta: RunMeta): ResumeIdentity {
  * fields the stored stop reason is compared against. `workspaceRealpath` is the realpath of
  * an explicit --workspace (null when the flag was not given, or the directory is missing).
  */
-export function resumeInputsFrom(config: Pick<ResolvedConfig, 'limits'> & Partial<Pick<ResolvedConfig, 'entries'>>, state: CheckpointState, workspaceRealpath: string | null): ResumeCurrentInputs {
+export function resumeInputsFrom(config: Pick<ResolvedConfig, 'limits'> & Partial<Pick<ResolvedConfig, 'entries' | 'decider'>>, state: CheckpointState, workspaceRealpath: string | null): ResumeCurrentInputs {
   const limits = config.limits();
+  // TUI-DESIGN-2 §2.5: the current Jev provider + model for the cross-provider check; a decider() that cannot validate (no key
+  // under --mock, a bad model) reports itself where the engine is built, so it is simply absent here
+  let decider: ResumeCurrentInputs['decider'];
+  try {
+    const d = config.decider?.();
+    if (d) decider = { provider: d.provider, model: d.model };
+  } catch {
+    decider = undefined;
+  }
   // TUI-DESIGN §8.7 / §9.5: the token counter survives --resume, rebuilt from generatorTokensPerStep (absent in older checkpoints = 0)
   const generatorTokens = (state.generatorTokensPerStep ?? []).reduce((acc, n) => acc + (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0), 0);
   const capSource = config.entries?.get('limits.spendCapUsd')?.source;
@@ -641,6 +773,7 @@ export function resumeInputsFrom(config: Pick<ResolvedConfig, 'limits'> & Partia
       generatorTokens,
     },
     ...(config.entries ? { sources: { ...(capSource ? { spendCapUsd: capSource } : {}), ...(tokensSource ? { maxGeneratorTokens: tokensSource } : {}) } } : {}),
+    ...(decider ? { decider } : {}),
   };
 }
 
@@ -665,8 +798,21 @@ export function reconcileResumeConfig(current: ResumeCurrentInputs, runMeta: Run
     errors.push(new ConfigError(`--model "${flags.model}" differs from the run's model "${identity.model}"; a resumed run keeps its model`, { setting: 'generator.model' }));
   }
   if (flags.jevModel !== undefined && identity.jevModel !== null) {
-    const same = normaliseJevModelId(flags.jevModel).normalised === normaliseJevModelId(identity.jevModel).normalised || jevModelMatches(flags.jevModel, identity.jevModel);
+    // TUI-DESIGN-2 §2.5: the same weights under the other provider's naming (jev-1.13-20260917 ≡ jev-1.13.0) are the same model
+    const same = normaliseJevModelId(flags.jevModel).normalised === normaliseJevModelId(identity.jevModel).normalised || jevModelMatches(flags.jevModel, identity.jevModel) || sameJevWeights(flags.jevModel, identity.jevModel);
     if (!same) errors.push(new ConfigError(`--jev-model "${flags.jevModel}" differs from the run's decider model "${identity.jevModel}"; a resumed run keeps its model`, { setting: 'decider.model' }));
+  }
+  // TUI-DESIGN-2 §2.5: a cross-provider resume is allowed only when EQUIVALENT_IDS maps the run's resolved model onto what the
+  // current provider will serve (recorded as a `decider.provider` override); a run without the row reads as openrouter
+  const runProvider = identity.jevProvider ?? 'openrouter';
+  if (current.decider !== undefined && current.decider.provider !== runProvider) {
+    const runModel = runMeta.resolvedJevModel ?? identity.jevModel;
+    const equivalent = runModel === null ? null : equivalentJevModel(runModel, current.decider.provider);
+    if (equivalent !== null && providerJevModelMatches(current.decider.model, equivalent, current.decider.provider)) {
+      overrides.push({ setting: 'decider.provider', from: runProvider, to: current.decider.provider, atStep });
+    } else {
+      errors.push(new ConfigError(`--resume: run ${runMeta.runId} used decider.provider ${runProvider} with ${runModel ?? 'an unrecorded model'}; pass --jev-provider ${runProvider}, or start a follow-up`, { setting: 'decider.provider' }));
+    }
   }
   if (flags.workspace !== undefined && current.workspaceRealpath !== identity.workspace) {
     errors.push(

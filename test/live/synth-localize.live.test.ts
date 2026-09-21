@@ -9,6 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import type { DeciderConfig } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
+import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL } from '../../src/jev/types.js';
 import { createLocalizer } from '../../src/synth/localize/index.js';
 import { analyse } from '../../src/synth/py/index.js';
@@ -21,7 +22,7 @@ const here = dirname(fileURLToPath(import.meta.url));
 
 describe.skipIf(reason !== null)(`synth localize live (${reason ?? 'enabled'})`, () => {
   it('localises the gcd bug to line 5 with one request', async () => {
-    const cfg: DeciderConfig = { baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true };
+    const cfg: DeciderConfig = { provider: 'openrouter', baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing, providerSource: 'default' };
     const redact = (s: string): string => s.split(apiKey).join('[KEY]');
     const decider = createJevDecider(cfg, { redact });
     const controller = new AbortController();

@@ -10,7 +10,7 @@
  */
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
-import type { Candidate, PendingDirective, SecretHit, SessionHost, SessionRow, SteerResult, UiLabel } from '../../../src/core/types.js';
+import type { Candidate, PendingDirective, SecretHit, SessionHost, SessionRow, SteerResult, SubmitOutcome, UiLabel } from '../../../src/core/types.js';
 import type { KeyRunPhase } from '../../../src/tui/keys/resolve.js';
 import { CTRL_C_AGAIN_HINT, PLAIN_PROMPT, RUN_ENDING_HINT, STEER_QUEUE_FULL_HINT, createReadlineComposer, plainSupports, plainUnavailableError, type SignalSource } from '../../../src/tui/plain-composer.js';
 import { READLINE_CONFIRM_KEYS, createPlainRenderer, createReadlineConfirmer, type ConfirmInput } from '../../../src/tui/plain.js';
@@ -52,6 +52,8 @@ interface Fake {
   aborts: string[];
   steerResult: SteerResult;
   hits: (s: string) => readonly SecretHit[];
+  /** TUI-DESIGN-2 §3.9: what `submit` resolves — undefined is a pre-1.2 host (a run) */
+  submitOutcome: SubmitOutcome | undefined;
 }
 
 function fakeHost(): Fake {
@@ -63,6 +65,7 @@ function fakeHost(): Fake {
     exits: [],
     aborts: [],
     steerResult: { ok: true, index: 1, queued: 1 },
+    submitOutcome: undefined,
     hits: (s) => {
       const out: SecretHit[] = [];
       const i = s.indexOf(SECRET);
@@ -76,6 +79,7 @@ function fakeHost(): Fake {
         f.calls.push({ kind: 'submit', args: [text, opts] });
         f.order.push('submit');
         await tick();
+        return f.submitOutcome;
       },
       command: async (line) => {
         f.calls.push({ kind: 'command', args: [line] });
@@ -228,6 +232,41 @@ describe('createReadlineComposer: prompt and submissions (§1, §4.9)', () => {
     await tick();
     await s.composer.idle();
     expect(s.fake.calls.map((c) => c.args[0])).toEqual(['first', 'second', '/status']);
+    s.composer.close();
+  });
+});
+
+describe('TUI-DESIGN-2 §3.9 "History": the kind follows the SubmitOutcome', () => {
+  it('a reply or lookup (`chat`) appends kind chat, a run appends prompt, a kept draft (`nothing`) appends nothing, a void (pre-1.2) host appends prompt — always after the host call', async () => {
+    const s = setup();
+    s.fake.submitOutcome = { became: 'chat' };
+    await s.type('hi');
+    expect(s.fake.history).toEqual([{ kind: 'chat', text: 'hi' }]);
+    expect(s.fake.order).toEqual(['submit', 'history:chat']);
+    s.fake.submitOutcome = { became: 'nothing' };
+    await s.type('the date parsing');
+    expect(s.fake.history).toHaveLength(1);
+    expect(s.fake.calls.map((c) => c.args[0])).toEqual(['hi', 'the date parsing']);
+    s.fake.submitOutcome = { became: 'run' };
+    await s.type('fix the failing test');
+    expect(s.fake.history.at(-1)).toEqual({ kind: 'prompt', text: 'fix the failing test' });
+    s.fake.submitOutcome = undefined;
+    await s.type('another task');
+    expect(s.fake.history.at(-1)).toEqual({ kind: 'prompt', text: 'another task' });
+    expect(s.fake.history).toHaveLength(3);
+    s.composer.close();
+  });
+
+  it('the steer-fallback submission (the run ended between the phase read and the steer) follows the same rule', async () => {
+    const s = setup({ phase: 'live', ranBefore: true });
+    s.fake.steerResult = { ok: false, reason: 'finished', queued: 0 };
+    s.fake.submitOutcome = { became: 'chat' };
+    await s.type('thanks');
+    expect(s.fake.calls.at(-1)).toEqual({ kind: 'submit', args: ['thanks', { kind: 'follow-up', secretSpans: [], pinnedFiles: [] }] });
+    expect(s.fake.history).toEqual([{ kind: 'chat', text: 'thanks' }]);
+    s.fake.submitOutcome = { became: 'nothing' };
+    await s.type('hm');
+    expect(s.fake.history).toHaveLength(1);
     s.composer.close();
   });
 });

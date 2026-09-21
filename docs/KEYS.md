@@ -17,8 +17,14 @@ Reserved and never rebindable (A24): `Ctrl+C`, `Ctrl+D`, `Ctrl+M`, `Ctrl+[`, `Ct
 | `global:detail` | `Ctrl+O` | append the last step's decision details and recent warnings; acknowledges !n |  |  |
 | `global:repaint` | `Ctrl+L` | repaint the dynamic region (erase-lines + rewrite, never a clear) |  |  |
 | `global:suspend` | `Ctrl+Z` | suspend to the shell (fg resumes and repaints) |  |  |
-| `global:paneNext` | `]` | next pane tab (d → p → t → s) | empty draft |  |
-| `global:panePrev` | `[` | previous pane tab | empty draft |  |
+| `global:paneNext` | `]` | next pane tab (d → p → t → s); opens a collapsed panel | empty draft | TUI-DESIGN-2 §4.6 |
+| `global:panePrev` | `[` | previous pane tab; opens a collapsed panel | empty draft | TUI-DESIGN-2 §4.6 |
+| `global:panelToggle` | `Alt+J` | toggle the Jev panel between the collapsed strip and the open 6-row form (= /panel, /panel off) |  | TUI-DESIGN-2 §4.6 |
+| `global:panelFull` | `Alt+Shift+J` | open the Jev panel in its full 12-row form (= /panel full) |  | TUI-DESIGN-2 §4.6 |
+| `global:panelDecisions` | `Alt+D` | open the panel on the decisions tab; a second press on the same tab collapses it (= /panel d) |  | TUI-DESIGN-2 §4.6; Alt+D leaves kill-word-forward (Alt+Del / Ctrl+Del keep it) |
+| `global:panelPlan` | `Alt+P` | open the panel on the plan tab; a second press collapses it (= /panel p) |  | TUI-DESIGN-2 §4.6 |
+| `global:panelTimeline` | `Alt+T` | open the panel on the timeline tab; a second press collapses it (= /panel t) |  | TUI-DESIGN-2 §4.6 |
+| `global:panelSynth` | `Alt+S` | open the panel on the synth tab; a second press collapses it (= /panel s) |  | TUI-DESIGN-2 §4.6 |
 | `session:export` | _unbound_ | export the session transcript (= /export) |  | unbound by default; e.g. "session:export": "ctrl+x ctrl+s" |
 
 ## Composer
@@ -36,7 +42,7 @@ Reserved and never rebindable (A24): `Ctrl+C`, `Ctrl+D`, `Ctrl+M`, `Ctrl+[`, `Ct
 | `composer:killLine` | `Ctrl+K` | kill to the end of the line → kill ring |  |  |
 | `composer:killLineBack` | `Ctrl+U` | kill to the start of the line → kill ring |  |  |
 | `composer:killWordBack` | `Ctrl+W`, `Alt+⌫` | kill the word before the cursor (unix-word-rubout) |  |  |
-| `composer:killWordForward` | `Alt+D`, `Alt+Del`, `Ctrl+Del` | kill the word after the cursor |  |  |
+| `composer:killWordForward` | `Alt+Del`, `Ctrl+Del` | kill the word after the cursor |  | Alt+D is the decisions tab (TUI-DESIGN-2 §4.6) |
 | `composer:yank` | `Ctrl+Y` | yank the newest kill |  |  |
 | `composer:yankPop` | `Alt+Y` | rotate the kill ring (right after a yank) |  |  |
 | `composer:transpose` | `Ctrl+T` | transpose the two graphemes around the cursor |  |  |

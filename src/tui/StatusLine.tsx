@@ -10,7 +10,7 @@
 import { Box, Text } from 'ink';
 import { SYNTH_MARKER, statusLineText, stepText, type StatusLineOptions, type StatusLineState } from './status/lines.js';
 import type { UiState } from './useEngine.js';
-import { textProps, themeFor, type Theme } from './theme.js';
+import { textProps, themeFor, type ColorOn, type Theme } from './theme.js';
 
 export { SYNTH_MARKER };
 
@@ -48,6 +48,9 @@ export function statusView(s: UiState, o: { picker?: boolean } = {}): StatusLine
     picker: o.picker ?? s.picker,
     wallMs: wall,
     doneExitCode: s.doneExitCode,
+    // TUI-DESIGN-2 §1.5 / §4.8
+    modeBadge: s.modeBadge,
+    thinking: s.thinking,
   };
 }
 
@@ -56,13 +59,19 @@ export interface StatusLineProps {
   columns: number;
   options?: StatusLineOptions;
   theme?: Theme;
-  color?: boolean;
+  color?: ColorOn;
+}
+
+/** TUI-DESIGN §7.4: the row's colour role — `ok`/`warn` bold once a run ended, `secret` while the draft has a hit, none otherwise. */
+export function statusRole(state: StatusLineState): 'ok' | 'warn' | 'secret' | null {
+  const done = state.done !== null && state.run === 'none';
+  return done ? (state.done?.stopReason === 'complete' ? 'ok' : 'warn') : state.draft.secretHits > 0 ? 'secret' : null;
 }
 
 export function StatusLine({ state, columns, options = {}, theme = themeFor('dark'), color = true }: StatusLineProps): React.JSX.Element {
   const text = statusLineText(state, columns, options);
   const done = state.done !== null && state.run === 'none';
-  const role = done ? (state.done?.stopReason === 'complete' ? 'ok' : 'warn') : state.draft.secretHits > 0 ? 'secret' : null;
+  const role = statusRole(state);
   return (
     <Box height={1} overflow="hidden">
       <Text wrap="truncate" bold={done} {...(role ? textProps(theme, role, color) : {})}>

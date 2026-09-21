@@ -19,7 +19,10 @@ import type { PickerOpen, TuiRenderer, WizardHost, WizardSaveInput } from '../tu
 import type { WizardProvider } from '../tui/onboarding/reducer.js';
 import { childCapUsd } from '../tui/budget/lines.js';
 import type { UndoAskKey } from '../undo/plan.js';
-import type { Prompter, WizardOutcome } from './session.js';
+import type { Prompter, WizardOutcome, WizardReason } from './session.js';
+// TUI-DESIGN-2 §3.7: the ambiguity card's rows come from the one string source shared with `--plain` and the screen reader
+import { INTAKE_CARD_BODY, intakeCardTitle, intakeRowLines } from '../chat/lines.js';
+import type { IntakeOverlay } from '../tui/Overlay.js';
 
 /** the controller hooks the wizard host bridge calls back into */
 export interface TuiPrompterControls {
@@ -79,6 +82,8 @@ export function patchFromWizard(input: WizardSaveInput): CredentialsPatch {
   if (gen !== undefined && gen !== '') patch.apiKey = gen;
   if (jev !== undefined && jev !== '') patch.jevApiKey = jev;
   else if (input.reuseGeneratorForJev && patch.apiKey !== undefined) patch.jevApiKey = patch.apiKey;
+  // TUI-DESIGN-2 §1.4 / §2.3: the Jev provider chosen on the jevProvider step is written beside the key (never inferred from a host)
+  if (input.jevProvider !== null && input.jevProvider !== undefined) patch.jevProvider = input.jevProvider;
   return patch;
 }
 
@@ -154,7 +159,7 @@ export function createTuiPrompter(): TuiPrompterBundle {
   };
 
   const prompter: Prompter = {
-    wizard(missing: readonly SecretSettingName[], o: { provider: WizardProvider | null; reason: 'missing' | 'login' | 'rejected' }) {
+    wizard(missing: readonly SecretSettingName[], o: { provider: WizardProvider | null; reason: WizardReason; mode?: EngineMode }) {
       return new Promise<WizardOutcome>((resolve) => {
         const r = renderer;
         if (!r) {
@@ -163,10 +168,28 @@ export function createTuiPrompter(): TuiPrompterBundle {
         }
         pendingWizard?.({ kind: 'cancelled' });
         pendingWizard = resolve;
-        if (o.reason === 'missing') r.openWizard({ missing, mode: controls?.mode() ?? 'jev-on', provider: o.provider, trustNeeded: false });
+        // TUI-DESIGN-2 §1.4: the default mode is jev-only (one key suffices); the missing-key wizard asks for what that mode needs
+        if (o.reason === 'missing') r.openWizard({ missing, mode: o.mode ?? controls?.mode() ?? 'jev-only', provider: o.provider, trustNeeded: false });
+        // TUI-DESIGN-2 §1.3 / §1.4: `/mode <m>` without the keys `m` needs reopens for THAT mode; Ctrl-C closes it and keeps the session.
+        // The step follows `missing`: a generator key → the provider step (reason `mode`); only the Jev key (`/mode jev-only` after
+        // `/logout decider`) → the Jev key step — under reason `login`, because the reducer forces `provider` for reason `mode`
+        // (S2's `case 'reopen'`; `cancel` keeps the session under `login` too, §1.4)
+        else if (o.reason === 'mode') {
+          const mode = o.mode ?? controls?.mode() ?? 'jev-only';
+          if (missing.includes('generator.apiKey')) r.reopenWizard('provider', controls?.runLive() ?? false, { reason: 'mode', mode });
+          else r.reopenWizard('decider.apiKey', controls?.runLive() ?? false, { reason: 'login', mode });
+        }
         // §11.1: Ctrl-C in a reopened wizard closes it when a run is live (`/login` mid-run, the 401 pane's `[l]`) and exits 2 otherwise
         else r.reopenWizard(missing.includes('generator.apiKey') ? 'generator.apiKey' : 'decider.apiKey', controls?.runLive() ?? false);
       });
+    },
+    // TUI-DESIGN-2 §3.7: the ambiguity card — the App answers `run` (y) · `chat` (n) · `keep` (Esc / Ctrl-C); no renderer or the unmount → keep (C46, never a run)
+    intake(message) {
+      const r = renderer;
+      if (!r) return Promise.resolve('keep');
+      const columns = prompter.columns?.() ?? 80;
+      const card: IntakeOverlay = { title: intakeCardTitle(message, columns - 4), body: [INTAKE_CARD_BODY], flat: intakeRowLines(columns) };
+      return cancellable(r.promptIntake(card), 'keep');
     },
     trust(inputs: TrustInputs) {
       return new Promise<TrustOption | null>((resolve) => {

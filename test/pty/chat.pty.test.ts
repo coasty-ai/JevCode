@@ -3,6 +3,11 @@
  * NO_COLOR, tiny terminals, the resize storms and Ctrl-Z. Every run is `--mock` (no network) inside a real pty driven by
  * scripts/pty/drive.exp; sentinels are expected, never slept for, except where the design itself arms a key one frame
  * after a row is drawn (§6.3) or an external sampler needs the process alive for a moment — those waits are named inline.
+ * Round 2 (TUI-DESIGN-2 §8.2): the placeholders are `Say hi, …` / `Follow-up, question, …`, the prompt is `› ` (matched
+ * glyph-agnostically), a run is live at its `[run] start` item (`run:ready` is hidden by the compact transcript, §4.5),
+ * mocked runs say `--mode jev-on` (the default is `jev-only`, §1.1, under which `--mock` would run the real synthesizer),
+ * the first frame is splash frame 0 (§5) and still carries `step 0/–`, and the geometry settle patterns match any
+ * full-width row (the brand row is no longer one dim run).
  */
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -13,6 +18,11 @@ import {
   CURSOR_HIDE,
   CURSOR_SHAPE_RESET,
   EXIT_IDLE,
+  MOCK_RUN_MODE,
+  PLACEHOLDER_FOLLOWUP,
+  PLACEHOLDER_STEER,
+  PLACEHOLDER_TASK,
+  PROMPT,
   RAW_MODE_STEP,
   SGR_GAP,
   afterFirstFrame,
@@ -21,7 +31,9 @@ import {
   countForbidden,
   countSgr,
   drive,
+  echoStep,
   frames,
+  fullWidthRowStep,
   hasExpect,
   jevcodeProcesses,
   markOf,
@@ -42,7 +54,9 @@ import {
 afterEach(cleanupScratch);
 
 /** a live run long enough for a typed interaction before it ends (~20 ms per mocked step, research 20) */
-const LONG_RUN = ['--mock', '--mock-steps', '200', '--max-steps', '200', '--max-replans', '50'] as const;
+const LONG_RUN = [...MOCK_RUN_MODE, '--mock', '--mock-steps', '200', '--max-steps', '200', '--max-replans', '50'] as const;
+/** a short mocked run (the scripted trajectory needs jev-on, see `MOCK_RUN_MODE`) */
+const MOCK_RUN = [...MOCK_RUN_MODE, '--mock'] as const;
 
 /** 30 resizes 2 ms apart between the two storm geometries (the brief's storm; 15 shrinks, 15 grows) */
 function stormSteps(): string[] {
@@ -51,20 +65,20 @@ function stormSteps(): string[] {
   return storm;
 }
 
-/** the composer echo of the draft plus the markers typed so far, one needle per slow-cycle segment (the first is the storm's end) */
+/** the composer echo of the draft plus the markers typed so far, one needle per slow-cycle segment (the first is the storm's end); prompt-agnostic (`› ` boxed or flat, `> ` ascii) */
 function markerNeedles(draft: string, markers: readonly string[]): string[] {
   const needles: string[] = [];
   let acc = `${draft}Z`;
-  needles.push(`> ${acc}`);
+  needles.push(` ${acc}`);
   for (const m of markers) {
     acc += m;
-    needles.push(`> ${acc}`);
+    needles.push(` ${acc}`);
   }
   return needles;
 }
 
 describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
-  it('first frame: argv-only, composer visible, `step 0/` sentinel, < 300 ms warm, zero clears', async () => {
+  it('first frame: argv-only, composer visible, `step 0/` sentinel, splash frame 0 with the badge, < 300 ms warm, zero clears', async () => {
     const r = await drive({ name: 'chat-first-frame', args: ['chat', '--mock'], steps: [...CHAT_OPEN, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -74,9 +88,15 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     const [frame] = frames(r.text);
     expect(frame).toBeDefined();
     const body = frame!.lines.slice(frame!.ruleIndex).join('\n');
-    expect(body).toContain('Describe the task…');
+    expect(body).toContain('Say hi, ask a question, or describe a task…');
     expect(body).toMatch(/step 0\/–/);
-    expect(frame!.rows).toBe(3); // rule · composer · status before a run (§2.3)
+    // TUI-DESIGN-2 §5.2 row 0 / H-A1: the first frame is splash frame 0 — rule · 5 wordmark rows (the `J` column and the
+    // sweep head) · the 5-row console (top edge with the `jev-only` badge, `›` row, divider, status, bottom edge) = 11
+    // dynamic rows at 24×80; the first frame carries no session meter and no git zone (they arrive after resolveConfig)
+    expect(frame!.rows).toBe(11);
+    expect(body).toMatch(/^╭─ jev-only /m);
+    expect(body).toMatch(/██/);
+    expect(body).not.toMatch(/sess \$/);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
     expect(countForbidden(r.text)).toBe(0);
     // the header is written before the first dynamic frame (research 20 §3)
@@ -84,17 +104,22 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     console.log(`first frame (pty, warm): ${first!.t} ms`);
   });
 
-  it('typing + Enter starts a run and the composer keeps focus (steer placeholder, keys still echo)', async () => {
+  it('typing + Enter starts a run and the composer keeps focus (steer placeholder, keys still echo); the [you] bubble precedes the run', async () => {
     const r = await drive({
       name: 'chat-submit-focus',
       args: ['chat', ...LONG_RUN],
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect Type to steer the next step', 'send k', `expect > ${SGR_GAP}k`, 'send \\x03', 'expect Type to steer the next step', 'send \\x03', 'expect end human_abort', 'expect Follow-up or /command', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), `expect ${PLACEHOLDER_STEER}`, 'send k', `expect ${PROMPT} ${SGR_GAP}k`, 'send \\x03', `expect ${PLACEHOLDER_STEER}`, 'send \\x03', 'expect end human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
+    // TUI-DESIGN-2 §3.1 rows 1 and 5: the submission is a `[you]` bubble first, then the intake (mock: `coding_task`) starts the run
+    expect(plain).toContain('[you] make the tests pass');
     expect(plain).toMatch(/\[run\] start \S+ mode=jev-on task: make the tests pass/);
-    expect(plain).toMatch(/\[run\] ready \S+ step 0\/200/);
+    expect(plain.indexOf('[you] make the tests pass')).toBeLessThan(plain.indexOf('[run] start'));
+    // §4.5: `run:ready` is one of the kinds the compact transcript hides — the TUI never shows it, transcript.log keeps it
+    expect(plain).not.toMatch(/\[run\] ready \S+ step 0\/200/);
+    expect(r.transcript()!.some((l) => /^\[run\] ready \S+ step 0\/200$/.test(l))).toBe(true);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
@@ -102,7 +127,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     const r = await drive({
       name: 'chat-steer',
       args: ['chat', ...LONG_RUN],
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send keep the CHANGELOG format', `expect > ${SGR_GAP}keep the CHANGELOG format`, 'send \\r', 'expect steer queued \\(1\\) for step \\d+: keep the CHANGELOG format', 'send \\x03', 'expect end (human_abort|complete)', 'expect Follow-up or /command', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send keep the CHANGELOG format', `expect ${PROMPT} ${SGR_GAP}keep the CHANGELOG format`, 'send \\r', 'expect steer queued \\(1\\) for step \\d+: keep the CHANGELOG format', 'send \\x03', 'expect end (human_abort|complete)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -120,7 +145,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     const r = await drive({
       name: 'chat-paste-chip',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, `send \\x1b[200~${body}\\x1b[201~`, 'expect \\[Pasted #1, 400 lines\\]', 'send \\x03', 'expect Describe the task', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, `send \\x1b[200~${body}\\x1b[201~`, 'expect \\[Pasted #1, 400 lines\\]', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -140,7 +165,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     const r = await drive({
       name: 'chat-secret-gate',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, `send \\x1b[200~use this token: ${token}\\nfor the deploy\\x1b[201~`, 'expect secret\\?', 'send \\r', 'expect Looks like this contains a secret \\(ghp_…\\)\\. Send anyway\\? y/N', 'send \\x1b', 'expect Tip: put it in \\.env', 'send \\x03', 'expect Describe the task', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, `send \\x1b[200~use this token: ${token}\\nfor the deploy\\x1b[201~`, 'expect secret\\?', 'send \\r', 'expect Looks like this contains a secret \\(ghp_…\\)\\. Send anyway\\? y/N', 'send \\x1b', 'expect Tip: put it in \\.env', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -161,9 +186,9 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
   it('NO_COLOR=1 → no SGR in any frame; the one SGR of the capture is the exit string’s attribute reset', async () => {
     const r = await drive({
       name: 'chat-no-color',
-      args: ['chat', '--mock', '--mock-steps', '4'],
+      args: ['chat', ...MOCK_RUN, '--mock-steps', '4'],
       env: { NO_COLOR: '1' },
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect end complete', 'expect Follow-up or /command', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -183,10 +208,11 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     it(`tiny terminal ${rows}x${cols}: the dynamic region never exceeds rows − 2 = ${rows - 2}, zero clears`, async () => {
       const r = await drive({
         name: `chat-tiny-${rows}x${cols}`,
-        args: ['chat', '--mock', '--mock-steps', '6'],
+        args: ['chat', ...MOCK_RUN, '--mock-steps', '6'],
         rows,
         cols,
-        steps: [...CHAT_OPEN_NARROW, ...submitTask('fix it'), 'expect end complete', 'expect Follow-up or /command', ...EXIT_IDLE],
+        // `fix the failing test`, not `fix it`: the mock intake (TUI-DESIGN-2 §3.13) reads a ≤ 2-word line without `?` as `ambiguous`
+        steps: [...CHAT_OPEN_NARROW, ...submitTask('fix the failing test'), 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
       });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
@@ -203,20 +229,22 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     });
   }
 
-  // The rule row is the first dynamic row and is drawn dim at the terminal width (`ESC[2m ─×cols ESC[22m`), so a frame
-  // laid out for a geometry is recognised by its rule width: expect consumes its buffer up to each match, so a settle
-  // pattern can only match a frame rendered after the previous marker's echo — the geometry the previous segment ended
-  // in never matches it. Ink's own `resized` pass re-renders the stale tree first (the old width's rule), which these
-  // patterns skip; they match the App's re-render with the new columns.
-  const RULE_60 = 'expect \\x1b\\[2m[^\\x1b]{60}\\x1b\\[22m\\r\\n';
-  const RULE_100 = 'expect \\x1b\\[2m[^\\x1b]{100}\\x1b\\[22m\\r\\n';
+  // A frame laid out for a geometry is recognised by a full-width row (the rule / brand row, the console edges, the
+  // status row — every `lines()` twin pads to the terminal width): expect consumes its buffer up to each match, so a
+  // settle pattern can only match a frame rendered after the previous marker's echo — the geometry the previous segment
+  // ended in never matches it. Ink's own `resized` pass re-renders the stale tree first (the old width's rows), which
+  // these patterns skip; they match the App's re-render with the new columns. (Round 1 matched one dim run of `─`; the
+  // round-2 brand row `─── ◆ jevcode 0.2.0 ───` carries an accent span, TUI-DESIGN-2 §5.4, so the pattern skips SGRs.)
+  const RULE_60 = fullWidthRowStep(60);
+  const RULE_100 = fullWidthRowStep(100);
 
   describe('resize storm idle (3-row frame, 40x100 ↔ 12x60): no crash, draft intact, clears per geometry segment', () => {
     // Segments are delimited by draft markers typed after each slow resize settles (never by clocks; the capture has no
-    // timestamps, so the 2 ms storm itself is one segment). A 3-row idle frame fits both geometries, so no frame ever
-    // overflows and Ink never reaches its clear-terminal fallback: the storm's bound is 0, not the ≤ 15 that "one per
-    // shrink" would allow; the per-shrink design bound (≤ 1, research 20 §1) and the grow bound (0) are asserted on the
-    // slow cycles, where each segment is one resize.
+    // timestamps, so the 2 ms storm itself is one segment). The idle frame is 6 rows in the boxed tier at 40×100
+    // (rule + the 5-row console, TUI-DESIGN-2 §4.2) and 3 rows in the flat tier at 12×60 (rows < 16, §4.1) — both fit
+    // their geometry, so no frame ever overflows and Ink never reaches its clear-terminal fallback: the storm's bound is
+    // 0, not the ≤ 15 that "one per shrink" would allow; the per-shrink design bound (≤ 1, research 20 §1) and the grow
+    // bound (0) are asserted on the slow cycles, where each segment is one resize.
     const draft = 'a draft that survives a resize';
     const markers = ['a', 'b', 'c', 'd', 'e', 'f'] as const;
     let r: Drive;
@@ -228,14 +256,14 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
       let typed = `${draft}Z`;
       for (const [i, m] of markers.entries()) {
         typed += m;
-        cycles.push(i % 2 === 0 ? 'resize 12 60' : 'resize 40 100', i % 2 === 0 ? RULE_60 : RULE_100, `send ${m}`, `expect > ${typed}`);
+        cycles.push(i % 2 === 0 ? 'resize 12 60' : 'resize 40 100', i % 2 === 0 ? RULE_60 : RULE_100, `send ${m}`, echoStep(typed));
       }
       r = await drive({
         name: 'chat-resize-storm',
         args: ['chat', '--mock'],
         rows: 40,
         cols: 100,
-        steps: [...CHAT_OPEN, `send ${draft}`, `expect > ${draft}`, 'mark storm-start', ...stormSteps(), 'mark storm-end', 'send Z', `expect > ${draft}Z`, ...cycles, 'send \\x03', 'expect Describe the task', ...EXIT_IDLE],
+        steps: [...CHAT_OPEN, `send ${draft}`, echoStep(draft), 'mark storm-start', ...stormSteps(), 'mark storm-end', 'send Z', echoStep(`${draft}Z`), ...cycles, 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
       });
       all = units(r.text);
       fs = frames(r.text);
@@ -250,7 +278,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
       expect(r.code).toBe(0);
       const plain = stripAnsi(r.text);
       expect(plain).not.toMatch(/stopped —|uncaught|Error:/);
-      expect(plain).toContain(`> ${draft}Zabcdef`);
+      expect(plain).toMatch(new RegExp(`[›>] ${draft}Zabcdef`));
       expect(countForbidden(r.text)).toBe(0);
       expect(fs.at(-1)!.ruleWidth).toBe(100);
       for (const f of fs) {
@@ -259,7 +287,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
       }
     });
 
-    it('the 2 ms storm costs 0 clears (a 3-row frame never overflows either geometry)', () => {
+    it('the 2 ms storm costs 0 clears (a 6-row boxed / 3-row flat idle frame never overflows either geometry)', () => {
       expect(segments[0]!.clears).toBe(0);
       expect(segments[0]!.unit).toBeDefined();
     });
@@ -282,17 +310,19 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     });
   });
 
-  describe('resize storm during a live run (pane open, 15-row frames at 40x100)', () => {
-    // research 20 §1: only a frame taller than the new terminal makes Ink fall back to clearTerminal, so the storm has
-    // to hit a tall live frame. Segments are delimited by draft markers typed after each settle, never by clocks; a
-    // geometry counts as settled when the status line is laid out for it (60 columns drop the `sess` badge, so the row
-    // ends right after the run meter; 100 columns carry `sess … ok`, the jev sparkline once it exists, then `? help`).
-    // An `expect` drains the pty eagerly, which a driver `sleep` does not (25 ms ticks): under a 40x100 live frame the
-    // child would block on its TTY writes. expect consumes its buffer up to each match, so a settle pattern can only
+  describe('resize storm during a live run (live region + panel strip + console at 40x100)', () => {
+    // research 20 §1: only a frame taller than the new terminal makes Ink fall back to clearTerminal. In round 1 the
+    // live frame was 15 rows (pane 12 pinned open); in round 2 the Jev panel is a one-row strip by default
+    // (TUI-DESIGN-2 §4.6), so the live frame at 40×100 is rule + live 2 + console 5 ≈ 8 rows and fits a 12-row
+    // terminal — a shrink may cost 0 clears; the bound stays ≤ 1 per shrink. Segments are delimited by draft markers
+    // typed after each settle, never by clocks; a geometry counts as settled when a full-width row of the new width
+    // was written after the previous marker's echo (the status row at 60 columns in the flat tier, a console row at
+    // 100). An `expect` drains the pty eagerly, which a driver `sleep` does not (25 ms ticks): under a 40x100 live frame
+    // the child would block on its TTY writes. expect consumes its buffer up to each match, so a settle pattern can only
     // match a frame rendered after the previous marker's echo — the geometry the previous segment ended in never matches it.
     const draft = 'steer draft';
-    const SETTLED_60 = `expect run \\$\\d+\\.\\d\\d/2\\.00 ok${SGR_GAP}\\r\\n`;
-    const SETTLED_100 = `expect sess \\$\\d+\\.\\d\\d/10\\.00 ok[^\\r\\n]*\\? help${SGR_GAP}\\r\\n`;
+    const SETTLED_60 = fullWidthRowStep(60);
+    const SETTLED_100 = fullWidthRowStep(100);
     const markers = ['a', 'b', 'c', 'd', 'e', 'f'] as const;
     let r: Drive;
     let fs: FrameUnit[] = [];
@@ -305,14 +335,15 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
       let typed = `${draft}Z`;
       for (const [i, m] of markers.entries()) {
         typed += m;
-        cycles.push(i % 2 === 0 ? 'resize 12 60' : 'resize 40 100', i % 2 === 0 ? SETTLED_60 : SETTLED_100, `send ${m}`, `expect > ${SGR_GAP}${typed}`);
+        cycles.push(i % 2 === 0 ? 'resize 12 60' : 'resize 40 100', i % 2 === 0 ? SETTLED_60 : SETTLED_100, `send ${m}`, `expect ${PROMPT} ${SGR_GAP}${typed}`);
       }
       r = await drive({
         name: 'chat-resize-storm-live',
-        args: ['chat', '--mock', '--mock-steps', '400', '--max-steps', '400', '--max-replans', '100'],
+        args: ['chat', ...MOCK_RUN, '--mock-steps', '400', '--max-steps', '400', '--max-replans', '100'],
         rows: 40,
         cols: 100,
-        steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect decisions s\\d+', `send ${draft}`, `expect > ${SGR_GAP}${draft}`, 'mark storm-start', ...stormSteps(), 'mark storm-end', 'send Z', `expect > ${SGR_GAP}${draft}Z`, SETTLED_100, ...cycles, 'send \\x03', 'expect Type to steer the next step', 'send \\x03', 'expect end human_abort', 'expect Follow-up or /command', ...EXIT_IDLE],
+        // `jev s<N> · <n> decisions`: the collapsed panel strip once decisions exist (TUI-DESIGN-2 §4.6), the round-2 twin of the pane header
+        steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'expect jev s\\d+ · \\d+ decisions', `send ${draft}`, `expect ${PROMPT} ${SGR_GAP}${draft}`, 'mark storm-start', ...stormSteps(), 'mark storm-end', 'send Z', `expect ${PROMPT} ${SGR_GAP}${draft}Z`, SETTLED_100, ...cycles, 'send \\x03', `expect ${PLACEHOLDER_STEER}`, 'send \\x03', 'expect end human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
       });
       const all = units(r.text);
       fs = frames(r.text);
@@ -330,7 +361,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
       expect(r.code).toBe(0);
       const plain = stripAnsi(r.text);
       expect(plain).not.toMatch(/jevcode: stopped|uncaught|Error:/);
-      expect(plain).toContain(`> ${draft}Zabcdef`);
+      expect(plain).toMatch(new RegExp(`[›>] ${draft}Zabcdef`));
       expect(countForbidden(r.text)).toBe(0);
       expect(segments).toHaveLength(7);
       expect(segments[0]!.unit).toBeDefined();
@@ -345,14 +376,14 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     });
 
     it('design bound (§19.5 storm row, research 20 §1): every slow shrink costs ≤ 1 clear, the 15-shrink storm ≤ 15', () => {
-      // The frame drawn for 40x100 (15 rows) is taller than the 12-row terminal, so Ink's first render after a shrink
-      // takes its clear-terminal fallback once (`wasOverflowing`: previousOutputHeight 15 > viewportRows 12). The App's
-      // early `resize` listener (App.tsx `onEarlyResize`: the new geometry is stored on the bridge and a shrink is
-      // re-rendered synchronously, before Ink's own `resized` pass) means that pass already sees the shrunken tree, so
-      // the second clear an earlier bundle paid (`isOverflowing && hadPreviousFrame` on the stale tree, then
-      // `wasOverflowing` again on the App's re-render — measured 2 per shrink on 2026-09-21 before the fix) no longer
-      // happens: measured 1/0/1/0/1/0 after it. The 2 ms storm cannot be segmented (the capture has no timestamps), so
-      // its bound is 15 shrinks × 1; the throttle merges most of them (5 measured).
+      // A frame taller than the 12-row terminal makes Ink's first render after a shrink take its clear-terminal fallback
+      // once (`wasOverflowing`: previousOutputHeight > viewportRows). The App's early `resize` listener (App.tsx
+      // `onEarlyResize`: the new geometry is stored on the bridge and a shrink is re-rendered synchronously, before
+      // Ink's own `resized` pass) means that pass already sees the shrunken tree, so the second clear an earlier bundle
+      // paid no longer happens: measured 1/0/1/0/1/0 on the round-1 15-row live frame. With the round-2 collapsed panel
+      // the live frame is ≈ 8 rows and fits 12 rows, so a shrink may cost 0 (the console rows vanish with the tier, §4.1);
+      // the bound stays ≤ 1. The 2 ms storm cannot be segmented (the capture has no timestamps), so its bound is 15
+      // shrinks × 1; the throttle merges most of them.
       expect(shrinks).toHaveLength(3);
       for (const n of shrinks) expect(n).toBeLessThanOrEqual(1);
       expect(segments[0]!.clears).toBeLessThanOrEqual(15);
@@ -365,7 +396,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
       args: ['chat', '--mock'],
       // `sleep 0.4` after the resumed echo: the external `stty -a` sampler (below) needs the process alive in raw mode
       // for a moment; the driver's remaining steps would otherwise end the process within its 25 ms poll
-      steps: [...CHAT_OPEN, 'send \\x1a', 'sleep 1.2', 'signal CONT', RAW_MODE_STEP, 'send Q', 'expect > Q', 'sleep 0.4', 'send \\x03', 'expect Describe the task', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send \\x1a', 'sleep 1.2', 'signal CONT', RAW_MODE_STEP, 'send Q', echoStep('Q'), 'sleep 0.4', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
       during: async ({ workspace }) => {
         const stopped = await waitForProcessState(workspace, 'T', 8000);
         const pid = jevcodeProcesses(workspace)[0]?.pid ?? null;
@@ -396,7 +427,7 @@ describe.skipIf(!hasExpect)('pty: chat session (§1, §3, §4, §14)', () => {
     expect(firstRestore).toBeGreaterThan(0);
     expect(r.text.indexOf(CURSOR_SHAPE_RESET, firstRestore + 1)).toBeGreaterThan(firstRestore);
     expect(r.text.indexOf(CURSOR_HIDE, firstRestore)).toBeGreaterThan(firstRestore);
-    expect(stripAnsi(r.text)).toContain('> Q');
+    expect(stripAnsi(r.text)).toMatch(/[›>] Q/);
     // no checkpoint is written by a suspend: an idle session still has no run dir after the stop/resume
     expect(r.runDirs()).toEqual([]);
     const lflags = (dump: string): string => dump.split('\n').find((l) => l.startsWith('lflags:')) ?? dump.trim().split('\n')[0] ?? '';

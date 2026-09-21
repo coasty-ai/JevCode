@@ -7,7 +7,8 @@
  * whose **composer row** ends with the key (`pty.ts` `composerEndsWithKey`, the row above the status line) minus the
  * send time — both from the driver's clock (0.1 ms resolution). Six series at 24×80 (`chat --mock`):
  *
- *   idle         200 keys, 100 ms apart, the session-start composer (pane closed) — gated
+ *   idle         200 keys, 100 ms apart, the session-start composer (pane closed; round 2: inside the boxed console of
+ *                TUI-DESIGN-2 §4.3, whose `│ › … │` row `pty.ts` `composerRow` unwraps) — gated
  *   live         200 keys, 100 ms apart, during a live mocked run at the A109 region: pane 12 + live rows + a composer
  *                at its 6-row cap over a 2,000-char draft (125 unmeasured lowercase 16-letter chunks, delivered like
  *                fast typing; the design's "rows 24: pane 12 + live 2 + queue 2 + composer 6" — no steer is queued, so
@@ -20,10 +21,12 @@
  *   palette      200 keys, 100 ms apart, with the palette open (`/Z…`: no command matches, so no ghost text) — gated
  *   review       200 `e` presses, 100 ms apart, with a review pending (`JEVCODE_MOCK_REVIEW_AT=2`): the composer is
  *                collapsed to one inactive row while a review is pending (D1), so the measured key is the review's own
- *                `e` (expand / collapse the preview, which hides / shows the pane: 22 ↔ 11 painted rows at 24×80) and a
+ *                `e` (expand / collapse the preview, which zeroes / restores the Jev panel, `layout.ts` step 10) and a
  *                key's frame is the first one whose painted rows differ from the screen the key acted on (`pty.ts`
  *                `paintedRowsChanged`; the spinner is off during a review, `src/tui/spinner.ts`, so only the 1 Hz clock
- *                repaints in between and it keeps the layout) — gated
+ *                repaints in between and it keeps the layout). Round 2 collapses the panel to a one-row strip by default
+ *                (TUI-DESIGN-2 §4.6) and the mock's preview is one line, so `e` would change nothing; the series opens the
+ *                panel with `/panel full` right after the run starts, and the toggle then moves the pane rows — gated
  *   burst30      200 keys, 30 ms apart (33 keys/s offered, above maxFps 30): Ink's throttle is `leading: true`, so a
  *                key that lands after the previous 34 ms window renders at once and one inside it waits for the
  *                trailing edge; the latency therefore measures composer + throttle and is reported, not gated (§18);
@@ -48,7 +51,7 @@
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { END_PATTERN, NO_FPS, classCounts, classifyFrames, clearsAfter, composerEndsWithKey, cursorStats, firstDynamicFrameOffset, frameAt, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, paintedRowsChanged, safeKey, sendTimes, splitFrames, summarise, throttleMs, typist, type FrameClassCounts, type KeyFrameMatcher, type LatencySummary, type TypistStep } from './pty.js';
+import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, SGR_GAP, classCounts, classifyFrames, clearsAfter, composerEndsWithKey, cursorStats, firstDynamicFrameOffset, frameAt, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, paintedRowsChanged, safeKey, sendTimes, splitFrames, summarise, throttleMs, typist, type FrameClassCounts, type KeyFrameMatcher, type LatencySummary, type TypistStep } from './pty.js';
 import { REALISTIC_STEP_MS, STRESS_STEP_MS } from './render-lag.js';
 
 export const MAX_FPS = 30;
@@ -119,7 +122,13 @@ export interface ComposerLatencyResult {
 const ROWS = 24;
 const COLUMNS = 80;
 const FIRST_FRAME: TypistStep = { op: 'expect', pattern: '\\x1b\\[\\?25l', timeoutMs: 20_000 };
-const PLACEHOLDER: TypistStep = { op: 'expect', pattern: 'Describe the task', timeoutMs: 20_000 };
+/** the round-2 `task` placeholder (TUI-DESIGN-2 §4.4 `Say hi, ask a question, or describe a task…`) */
+const PLACEHOLDER: TypistStep = { op: 'expect', pattern: 'Say hi', timeoutMs: 20_000 };
+/** the run is live at its `[run] start` item (`[run] ready` is hidden by the compact transcript, TUI-DESIGN-2 §4.5) */
+const RUN_STARTED: TypistStep = { op: 'expect', pattern: RUN_STARTED_PATTERN, timeoutMs: 20_000 };
+const FOLLOWUP: TypistStep = { op: 'expect', pattern: 'Follow-up, question', timeoutMs: 20_000 };
+/** every mocked run says `--mode jev-on`: the scripted trajectory is a generator trajectory and the round-2 default is `jev-only` (§1.1) */
+const MOCK_RUN_MODE = ['--mode', 'jev-on'] as const;
 const PROLOGUE: TypistStep[] = [FIRST_FRAME, PLACEHOLDER, { op: 'sleep', ms: 500 }];
 const START_RUN: TypistStep[] = [{ op: 'send', text: 'start the perf run' }, { op: 'sleep', ms: 200 }, { op: 'send', text: '\r' }];
 const EXIT_IDLE: TypistStep[] = [
@@ -178,21 +187,22 @@ export const PREFILL_CHUNKS = 125;
 export const PREFILL_CHUNK = 'abcdefghijklmnop';
 
 function planLive(n: number, spacingMs: number): Plan {
-  const plan = newPlan([...PROLOGUE, ...START_RUN, { op: 'expect', pattern: 'ready', timeoutMs: 20_000 }, { op: 'sleep', ms: 300 }]);
+  const plan = newPlan([...PROLOGUE, ...START_RUN, RUN_STARTED, { op: 'sleep', ms: 300 }]);
   for (let i = 0; i < PREFILL_CHUNKS; i++) plan.steps.push({ op: 'send', text: PREFILL_CHUNK }, { op: 'sleep', ms: 20 });
   plan.steps.push({ op: 'sleep', ms: 300 });
   typeMeasured(plan, n, spacingMs);
   // Ctrl-C with a draft clears it; Ctrl-C on the empty live composer aborts the run (§3.3 S2); then /exit
-  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, { op: 'expect', pattern: 'Follow-up or /command', timeoutMs: 20_000 }, ...EXIT_IDLE);
+  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, FOLLOWUP, ...EXIT_IDLE);
   return plan;
 }
 
 function planReview(n: number, spacingMs: number): Plan {
-  // the §6 box appears when the mock decider sends step 2 to review; `e` toggles the preview expansion (App.tsx `review:expand`)
-  const plan = newPlan([...PROLOGUE, ...START_RUN, { op: 'expect', pattern: '\\[y\\] approve', timeoutMs: 20_000 }, { op: 'sleep', ms: 600 }], paintedRowsChanged, false);
+  // the §6 card appears when the mock decider sends step 2 to review; `e` toggles the preview expansion (App.tsx `review:expand`),
+  // which zeroes the pane while expanded — so the panel is opened to its full form first (TUI-DESIGN-2 §4.6; `/panel` is `any`)
+  const plan = newPlan([...PROLOGUE, ...START_RUN, RUN_STARTED, { op: 'send', text: '/panel full' }, { op: 'sleep', ms: 150 }, { op: 'send', text: '\r' }, { op: 'expect', pattern: `▾${SGR_GAP} decisions`, timeoutMs: 20_000 }, { op: 'expect', pattern: '\\[y\\] approve', timeoutMs: 20_000 }, { op: 'sleep', ms: 600 }], paintedRowsChanged, false);
   typeMeasured(plan, n, spacingMs, () => 'e');
   // approve: the run finishes its remaining mocked steps, then /exit
-  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: 'y' }, { op: 'expect', pattern: 'confirm \\S+ approved', timeoutMs: 20_000 }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, { op: 'expect', pattern: 'Follow-up or /command', timeoutMs: 20_000 }, ...EXIT_IDLE);
+  plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: 'y' }, { op: 'expect', pattern: 'confirm \\S+ approved', timeoutMs: 20_000 }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, FOLLOWUP, ...EXIT_IDLE);
   return plan;
 }
 
@@ -220,7 +230,7 @@ async function runSeries(root: string, bin: string, spec: SeriesSpec, gate: { p9
       rows: ROWS,
       columns: COLUMNS,
       steps: plan.steps,
-      command: [process.execPath, bin, 'chat', '--mock', '--source', 'perf', '--workspace', ws, ...spec.args],
+      command: [process.execPath, bin, 'chat', ...(spec.stepMs !== null || spec.name === 'review' ? MOCK_RUN_MODE : []), '--mock', '--source', 'perf', '--workspace', ws, ...spec.args],
       env: { JEVCODE_HOME: home, NODE_ENV: 'production', ...(stepMs !== null ? { JEVCODE_MOCK_STEP_MS: String(stepMs) } : {}), ...spec.env },
       wallMs: 300_000,
       label: `composer-${name}`,
@@ -291,7 +301,7 @@ async function runSeries(root: string, bin: string, spec: SeriesSpec, gate: { p9
 
 export const COMPOSER_DEVIATIONS: readonly string[] = [
   '200 keys per series (the wave-4 brief) rather than §18\'s 500 printable bytes; the live draft is the 2,000 chars §18 names',
-  'review series: the composer is collapsed to one inactive row while a review is pending (D1), so the measured key is the review\'s `e` toggle and a frame is recognised by its painted-row change, not by the composer row; the per-frame `ESC[?25h` rule is reported there (no cursor while the composer is inactive)',
+  'review series: the composer is collapsed to one inactive row while a review is pending (D1), so the measured key is the review\'s `e` toggle and a frame is recognised by its painted-row change, not by the composer row; the per-frame `ESC[?25h` rule is reported there (no cursor while the composer is inactive); round 2 opens the Jev panel with `/panel full` before the review so the toggle has pane rows to zero (the default strip and the one-line mock preview would leave `e` without a visible effect)',
   'the frame-rate gate applies to dynamic frames only and only where it is exercised (a live run at the realistic step rate, or an achieved key rate above maxFps); at 10 keys/s without a run it is reported as not exercised, and the live-stress series reports it',
 ];
 

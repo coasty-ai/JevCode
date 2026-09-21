@@ -18,8 +18,8 @@ import { writeFileAtomicSync } from '../../core/atomic.js';
 import type { HistoryStore } from '../../core/types.js';
 import { normaliseChunk } from './filter.js';
 
-/** The three kinds a history line records (TUI-DESIGN §4.6). */
-export type HistoryKind = 'prompt' | 'steer' | 'command';
+/** The kinds a history line records (TUI-DESIGN §4.6); TUI-DESIGN-2 §3.9 / §6 item 17: `chat` = a submission that became a reply or lookup (Up-arrow and Ctrl-R include it). */
+export type HistoryKind = 'prompt' | 'steer' | 'command' | 'chat';
 
 /** One JSONL line of the history file (TUI-DESIGN §4.6). */
 export interface HistoryEntry {
@@ -67,7 +67,7 @@ export const HISTORY_DIR_MODE = 0o700;
 /** `onWriteError` code when the injected redactor throws: the entry is dropped, never written unredacted (TUI-DESIGN §4.6, §10). */
 export const HISTORY_REDACT_ERROR = 'EREDACT';
 
-const KINDS: ReadonlySet<string> = new Set<HistoryKind>(['prompt', 'steer', 'command']);
+const KINDS: ReadonlySet<string> = new Set<HistoryKind>(['prompt', 'steer', 'command', 'chat']);
 
 /** The `HistoryStore` contract (TUI-DESIGN §15 item 16) plus what the composer wiring and tests need beyond it. */
 export interface FileHistoryStore extends HistoryStore {

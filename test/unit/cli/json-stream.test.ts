@@ -113,6 +113,19 @@ describe('writeJsonStream (§8.9)', () => {
     expect(s.lines).toBe(7);
   });
 
+  it('TUI-DESIGN-2 §6 item 17: `chat` lines carry the intake reading, probability, route, provider, cost, latency and the redacted request hash — never the message', () => {
+    const sink = new Sink();
+    const s = stream(sink, { redact: (x) => x.replace('SECRET', '[REDACTED:pattern]') });
+    s.chat({ intake: 'greeting_or_smalltalk', probability: 0.94, route: 'reply', provider: 'typesafe', costUsd: 0.00018, latencyMs: 118, requestHash: 'a1b2SECRET' }, { runId: null, sessionId: null });
+    s.chat({ intake: 'question_about_the_code', probability: 0.7, route: 'llm', provider: 'generator', costUsd: 0.0031, latencyMs: 900, requestHash: '' }, { runId: null, sessionId: 'S' });
+    expect(sink.lines).toEqual([
+      { v: 1, t: T, runId: null, sessionId: null, type: 'chat', intake: 'greeting_or_smalltalk', probability: 0.94, route: 'reply', provider: 'typesafe', costUsd: 0.00018, latencyMs: 118, requestHash: 'a1b2[REDACTED:pattern]' },
+      { v: 1, t: T, runId: null, sessionId: 'S', type: 'chat', intake: 'question_about_the_code', probability: 0.7, route: 'llm', provider: 'generator', costUsd: 0.0031, latencyMs: 900, requestHash: '' },
+    ]);
+    expect(sink.chunks.join('')).not.toContain('message');
+    expect(s.lines).toBe(2);
+  });
+
   it('run:end carries exitCode, resumable and paths unchanged; session:refused takes reason unpriced; a live `notice ui` and an idle `ui` line carry the same text', () => {
     const sink = new Sink();
     const s = stream(sink);

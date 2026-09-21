@@ -7,13 +7,13 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CHAT_OPEN, CURSOR_SHAPE_RESET, EXIT_IDLE, RUN_OPEN, SGR_GAP, afterFirstFrame, cleanupScratch, countClears, drive, hasExpect, lastTimingOf, stripAnsi, submitTask, timingOf } from './helpers.js';
+import { CHAT_OPEN, CURSOR_SHAPE_RESET, EXIT_IDLE, MOCK_RUN_MODE, PLACEHOLDER_FOLLOWUP, PLACEHOLDER_STEER, PLACEHOLDER_TASK, PROMPT, RUN_OPEN, SGR_GAP, afterFirstFrame, cleanupScratch, countClears, drive, echoStep, hasExpect, lastTimingOf, stripAnsi, submitTask, timingOf } from './helpers.js';
 
 afterEach(cleanupScratch);
 
 /** a live run long enough for typed interactions (~20 ms per mocked step); the mock trajectory trips the loop detector
  * around step 70, so the replan cap is raised to keep the run live for the full 200 steps (~4 s) */
-const LONG = ['--mock', '--mock-steps', '200', '--max-steps', '200', '--max-replans', '50'] as const;
+const LONG = [...MOCK_RUN_MODE, '--mock', '--mock-steps', '200', '--max-steps', '200', '--max-replans', '50'] as const;
 const EPILOGUE_RE = /jevcode: stopped — (\S+)[^\n]*\(exit (\d+)\)/;
 
 describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
@@ -29,7 +29,7 @@ describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
   });
 
   it('S1 idle·text: Ctrl-C clears the draft to history and never exits', async () => {
-    const r = await drive({ name: 'int-s1', args: ['chat', '--mock'], steps: [...CHAT_OPEN, 'send half a thought', 'expect > half a thought', 'send \\x03', 'expect Describe the task', ...EXIT_IDLE] });
+    const r = await drive({ name: 'int-s1', args: ['chat', '--mock'], steps: [...CHAT_OPEN, 'send half a thought', echoStep('half a thought'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
@@ -41,9 +41,10 @@ describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
   });
 
   it('S2 live·empty, one-shot: Ctrl-C after step 1 aborts → exit 130 with the epilogue, state.json written, steps.jsonl has step 1 and no declined step', async () => {
-    // steps.jsonl gets its first record when a step completes (engine.ts appendStep), so the abort is sent once step 2 has
-    // started: step 1 is on disk, step 2 is the in-flight step the abort discards (rule 1)
-    const r = await drive({ name: 'int-s2-oneshot', args: ['run', 'probe task', ...LONG], steps: [...RUN_OPEN, 'expect \\[step 2\\] intent', 'send \\x03', 'expect end human_abort', 'eof'] });
+    // steps.jsonl gets its first record when a step completes (engine.ts appendStep), so the abort is sent once step 1 has
+    // committed: its `[step 1]` summary line (TUI-DESIGN-2 §4.5, the one item per step the compact transcript shows) is on
+    // the screen, step 2 is the in-flight step the abort discards (rule 1)
+    const r = await drive({ name: 'int-s2-oneshot', args: ['run', 'probe task', ...LONG], steps: [...RUN_OPEN, 'expect \\[step 1\\] ', 'send \\x03', 'expect end human_abort', 'eof'] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(130);
     const plain = stripAnsi(r.text);
@@ -68,12 +69,12 @@ describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
   });
 
   it('S2 live·empty, session: Ctrl-C aborts and stays — `run:end` item carries exit 130, the composer reopens', async () => {
-    const r = await drive({ name: 'int-s2-session', args: ['chat', ...LONG], steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send \\x03', 'expect end human_abort', 'expect Follow-up or /command', ...EXIT_IDLE] });
+    const r = await drive({ name: 'int-s2-session', args: ['chat', ...LONG], steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send \\x03', 'expect end human_abort', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     expect(plain).toMatch(/\[run\] end human_abort steps=\d+[\s\S]{0,200}?exit 130/); // wrap-tolerant: the item may soft-wrap at 80 columns
-    expect(plain).toContain('Follow-up or /command');
+    expect(plain).toContain('Follow-up, question, or /command…');
     const t = r.transcript();
     expect(t?.at(-1)).toMatch(/^\[run\] end human_abort .* exit 130$/);
   });
@@ -81,8 +82,8 @@ describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
   it('S3 live·text: Ctrl-C clears the draft, the run continues to `complete`', async () => {
     const r = await drive({
       name: 'int-s3',
-      args: ['chat', '--mock', '--mock-steps', '40', '--max-steps', '40'],
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send typed while live', `expect > ${SGR_GAP}typed while live`, 'send \\x03', 'expect Type to steer the next step', 'expect end complete', 'expect Follow-up or /command', ...EXIT_IDLE],
+      args: ['chat', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '40', '--max-steps', '40'],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send typed while live', `expect ${PROMPT} ${SGR_GAP}typed while live`, 'send \\x03', `expect ${PLACEHOLDER_STEER}`, 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -130,7 +131,7 @@ describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
         'expect a run is live: \\[y\\] abort and exit',
         'sleep 0.25', // §6.3 arming: y counts one frame after the row is drawn
         'send n',
-        'expect Type to steer the next step',
+        `expect ${PLACEHOLDER_STEER}`,
         'send \\x04',
         'expect run is live — Ctrl-D again to choose',
         'send \\x04',
@@ -162,7 +163,7 @@ describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
     const r = await drive({
       name: 'int-exit-live',
       args: ['chat', ...LONG],
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send /exit', `expect > ${SGR_GAP}/exit`, 'send \\r', 'expect a run is live: \\[y\\] abort and exit', 'sleep 0.25', 'send y', 'expect end human_abort', 'eof'],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send /exit', `expect ${PROMPT} ${SGR_GAP}/exit`, 'send \\r', 'expect a run is live: \\[y\\] abort and exit', 'sleep 0.25', 'send y', 'expect end human_abort', 'eof'],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);

@@ -21,6 +21,7 @@ import {
   xdgConfigDir,
 } from '../../../src/config/defaults.js';
 import type { SettingName } from '../../../src/config/types.js';
+import { DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
 
 const HOME = '/home/me';
 
@@ -56,6 +57,8 @@ describe('the §16 SETTINGS table', () => {
       'generator.priceCacheWritePerM',
       'update.notify',
       'configFile',
+      'decider.provider', // TUI-DESIGN-2 §2.3
+      'mode', // TUI-DESIGN-2 §1.2
     ];
     for (const n of expected) expect(names).toContain(n);
     const envNames = SETTINGS.flatMap((s) => [...s.env, ...(s.negateEnv ?? [])]);
@@ -129,5 +132,33 @@ describe('XDG paths (TUI-DESIGN §16, §12.7)', () => {
   it('defaultKeybindingsPath', () => {
     expect(defaultKeybindingsPath(HOME, {})).toBe(join(HOME, '.config', 'jevcode', 'keybindings.json'));
     expect(defaultKeybindingsPath(HOME, { XDG_CONFIG_HOME: '/tmp/x' })).toBe('/tmp/x/jevcode/keybindings.json');
+  });
+});
+
+describe('TUI-DESIGN-2 §2.3: the decider.provider row and the known key variables', () => {
+  it('sits directly before decider.baseUrl: --jev-provider / JEV_PROVIDER / jevProvider, default auto, not secret, the §2.3 description verbatim', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(names.indexOf('decider.provider')).toBe(names.indexOf('decider.baseUrl') - 1);
+    expect(settingSpec('decider.provider')).toMatchObject({ flag: 'jevProvider', env: ['JEV_PROVIDER'], fileKey: 'jevProvider', defaultValue: 'auto', secret: false });
+    expect(settingSpec('decider.provider').description).toBe('Jev provider (auto | typesafe | openrouter); auto = typesafe when TYPESAFE_API_KEY is set, else openrouter');
+    expect(settingSpec('decider.provider').launch).toBeUndefined();
+    expect(JEV_PROVIDER_SETTING_VALUES).toEqual(['auto', 'typesafe', 'openrouter']);
+    // the key row is unchanged: TYPESAFE_API_KEY arrives through resolve.ts's extraEnv (§2.3 step 3)
+    expect(settingSpec('decider.apiKey').env).toEqual(['JEV_API_KEY', 'OPENROUTER_API_KEY']);
+    expect(KNOWN_KEY_ENV).toEqual(['JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY']);
+  });
+});
+
+describe('TUI-DESIGN-2 §1.2: the `mode` row', () => {
+  it('sits directly after decider.model: --mode / JEVCODE_MODE / `mode`, default jev-only, not secret, not a launch row, the §1.2 description verbatim', () => {
+    const names = SETTINGS.map((s) => s.name);
+    expect(names.indexOf('mode')).toBe(names.indexOf('decider.model') + 1);
+    expect(settingSpec('mode')).toMatchObject({ flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: 'jev-only', secret: false });
+    expect(settingSpec('mode').description).toBe('engine mode (jev-only | jev-on | jev-off | llm-jev); jev-only needs no generator key');
+    expect(settingSpec('mode').launch).toBeUndefined();
+    expect(settingSpec('mode').boolFlag).toBeUndefined();
+    expect(MODE_SETTING_VALUES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    expect(DEFAULT_MODE).toBe('jev-only');
+    expect(settingSpec('mode').defaultValue).toBe(DEFAULT_MODE);
   });
 });

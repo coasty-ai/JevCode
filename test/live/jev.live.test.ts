@@ -8,6 +8,7 @@ import type { DeciderConfig, Json } from '../../src/core/types.js';
 import { checkServedModel, createJevDecider } from '../../src/jev/client.js';
 import { decisionConfidence, riskFromProbabilities } from '../../src/jev/confidence.js';
 import { choice, noul, score } from '../../src/jev/questions.js';
+import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { DEFAULT_JEV_BASE_URL, DEFAULT_JEV_MODEL, JEV_INPUT_USD_PER_TOKEN } from '../../src/jev/types.js';
 
 const apiKey = process.env['JEV_API_KEY'] ?? process.env['OPENROUTER_API_KEY'] ?? '';
@@ -16,7 +17,7 @@ const reason = !live ? 'JEVCODE_LIVE is not 1' : apiKey.length === 0 ? 'no JEV_A
 
 describe.skipIf(reason !== null)(`jev live (${reason ?? 'enabled'})`, () => {
   it('one noul + one 3-option choice with escape + one 5-level score against a tiny state', async () => {
-    const cfg: DeciderConfig = { baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true };
+    const cfg: DeciderConfig = { provider: 'openrouter', baseUrl: process.env['JEV_BASE_URL'] ?? DEFAULT_JEV_BASE_URL, apiKey, model: DEFAULT_JEV_MODEL, pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing, providerSource: 'default' };
     const redact = (s: string): string => s.split(apiKey).join('[KEY]');
     const decider = createJevDecider(cfg, { redact });
 

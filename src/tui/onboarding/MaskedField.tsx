@@ -1,14 +1,15 @@
 /**
- * The wizard's masked key field (TUI-DESIGN §11.1, A114–A115, F10, F-N): `'•'.repeat(min(len, columns − 3))`
- * (`*` in ASCII) after the `> ` prompt, the real cursor after the bullets. The key bytes live only in a `useRef`
- * (`useMaskedBytes`): never in React state, the reducer (`{ step, field, length }` only), an item, a log line or
- * a frame. Every keystroke is traced as `key masked len=1` (§10.6) by the caller.
+ * The wizard's masked key field (TUI-DESIGN §11.1, A114–A115, F10, F-N; TUI-DESIGN-2 §4.3): `'•'.repeat(min(len, columns − 3))`
+ * (`*` in ASCII) after the prompt — `> ` in the flat tier, `› ` (`glyphs.prompt`) inside the boxed console — the real cursor
+ * after the bullets. The key bytes live only in a `useRef` (`useMaskedBytes`): never in React state, the reducer
+ * (`{ step, field, length }` only), an item, a log line or a frame. Every keystroke is traced as `key masked len=1` (§10.6)
+ * by the caller.
  */
 import { useRef } from 'react';
 import { Text } from 'ink';
 import type { CursorPosition } from 'ink';
 import { sanitizeKeyInput, type WizardField } from './reducer.js';
-import { maskedFieldCursorX, maskedFieldRow } from './lines.js';
+import { MASKED_PROMPT_DEFAULT, maskedFieldCursorX, maskedFieldRow } from './lines.js';
 
 export interface MaskedBytes {
   /** append typed / pasted text (sanitised: whitespace stripped, NFC); returns the new length */
@@ -71,12 +72,15 @@ export interface MaskedFieldProps {
   ascii?: boolean;
   /** `--screen-reader`: the aria label instead of bullets */
   screenReader?: boolean;
+  /** TUI-DESIGN-2 §4.3: the prompt glyph (`glyphs.prompt`); default `> ` */
+  prompt?: string;
 }
 
 /** §11.1: the masked row; places the cursor after the bullets through the App-owned setter. */
 export function MaskedField(p: MaskedFieldProps): React.JSX.Element {
-  const row = maskedFieldRow(p.length, p.columns, p.ascii ?? false);
-  p.cursor?.({ x: Math.min(Math.max(0, p.columns - 1), maskedFieldCursorX(p.length, p.columns)), y: p.top });
+  const prompt = p.prompt ?? MASKED_PROMPT_DEFAULT;
+  const row = maskedFieldRow(p.length, p.columns, p.ascii ?? false, prompt);
+  p.cursor?.({ x: Math.min(Math.max(0, p.columns - 1), maskedFieldCursorX(p.length, p.columns, prompt)), y: p.top });
   return (
     <Text wrap="truncate" {...(p.screenReader ? { 'aria-label': `API key field, ${p.length} characters entered, hidden` } : {})}>
       {row}

@@ -1,0 +1,18 @@
+# the startup splash at 40x120 (TUI-DESIGN-2 §5, H-A1w): the same scenario as splash.steps in the wide geometry
+# cancels it — the next frame shows the character and no wordmark row; the smoke checks the wordmark was drawn before the
+# key and never after it, zero clears (§8.2 splash.steps)
+expect \x1b\[\?25l
+expect step 0/
+# raw mode on (Ink's post-commit effect writes ESC[?2004h): a key sent earlier is a cooked-mode byte the kernel echoes
+expect \x1b\[\?2004h
+sleep 0.1
+send h
+expect (?:›|>) h
+sleep 0.3
+send \x03
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

@@ -162,7 +162,7 @@ describe('foldIndex (TUI-DESIGN §8.2)', () => {
   });
 
   it('empty input folds to nothing', () => {
-    expect(foldIndex([])).toEqual({ sessions: new Map(), skipped: 0 });
+    expect(foldIndex([])).toEqual({ sessions: new Map(), skipped: 0, chat: new Map() });
   });
 
   it('a run:end whose stopReason is not a StopReason is skipped and counted, never folded into a typed row', () => {
@@ -257,6 +257,58 @@ describe('foldIndex (TUI-DESIGN §8.2)', () => {
   });
 });
 
+describe('chat lines (TUI-DESIGN-2 §3.9, §6 item 17): one per chat request, folded into the session total and `chat`', () => {
+  const chat = (o: Partial<Extract<IndexLine, { kind: 'chat' }>> = {}): IndexLine => ({ v: 1, t: T(2), kind: 'chat', sessionId: S1, intake: 'greeting_or_smalltalk', route: 'reply', costUsd: 0.0002, provider: 'typesafe', ...o });
+
+  it('parses a valid line back to itself; an unknown reading, route or provider skips the line; a negative or non-numeric cost reads 0', () => {
+    const line = chat({ route: 'llm', provider: 'generator', intake: 'question_about_the_code', costUsd: 0.0031 });
+    expect(parseIndexLine(J(line))).toEqual(line);
+    // a raw object: the typed builder cannot express an invalid reading, route, provider or cost
+    const raw = (o: Record<string, unknown>): string => JSON.stringify({ ...chat(), ...o });
+    expect(parseIndexLine(raw({ intake: 'shopping' }))).toBeNull();
+    expect(parseIndexLine(raw({ route: 'teleport' }))).toBeNull();
+    expect(parseIndexLine(raw({ provider: 'anthropic' }))).toBeNull();
+    expect(parseIndexLine(raw({ costUsd: -1 }))).toMatchObject({ kind: 'chat', costUsd: 0 });
+    expect(parseIndexLine(raw({ costUsd: 'lots' }))).toMatchObject({ kind: 'chat', costUsd: 0 });
+    const { sessions, skipped } = foldIndex([raw({ intake: 'shopping' })]);
+    expect(sessions.size).toBe(0);
+    expect(skipped).toBe(1);
+  });
+
+  it('fold: chat lines add to totalUsd and sum per meter source in `chat` (messages count every route but `run`); a session without them has no `chat` entry; they move lastUsed', () => {
+    const lines = [start(), end(), chat({ t: T(6) }), chat({ t: T(7), route: 'run', intake: 'coding_task' }), chat({ t: T(8), route: 'llm', provider: 'generator', intake: 'question_about_the_code', costUsd: 0.0031 })];
+    const { sessions, chat: spend, skipped } = foldIndex(lines.map(J));
+    expect(skipped).toBe(0);
+    const s = sessions.get(S1)!;
+    expect(s.totalUsd).toBeCloseTo(0.104 + 0.011 + 0.0002 + 0.0002 + 0.0031, 9);
+    expect(s.lastUsed).toBe(T(8));
+    expect(s.runs).toHaveLength(1);
+    expect(spend.get(S1)).toEqual({ jev: expect.closeTo(0.0004, 9), generator: expect.closeTo(0.0031, 9), messages: 2 });
+    const bare = foldIndex([J(start()), J(end())]);
+    expect(bare.chat.size).toBe(0);
+    expect(bare.sessions.get(S1)!.totalUsd).toBeCloseTo(0.115, 9);
+  });
+
+  it('a chat line has no text field: redactIndexLine leaves it untouched; appendIndexLine writes it and readIndex returns the per-session chat spend', async () => {
+    const line = chat();
+    expect(redactIndexLine(line, () => '[X]')).toEqual(line);
+    const dir = await mkdtemp(join(tmpdir(), 'jevcode-index-chat-'));
+    try {
+      const path = join(dir, 'sessions', 'index.jsonl');
+      expect(appendIndexLine(path, start(), (s) => s)).toBe(true);
+      expect(appendIndexLine(path, end(), (s) => s)).toBe(true);
+      expect(appendIndexLine(path, chat({ t: T(6) }), (s) => s)).toBe(true);
+      expect(appendIndexLine(path, chat({ t: T(7), provider: 'generator', route: 'llm', costUsd: 0.003 }), (s) => s)).toBe(true);
+      const idx = await readIndex(path);
+      expect(idx.sessions[0]?.totalUsd).toBeCloseTo(0.115 + 0.0002 + 0.003, 9);
+      expect(idx.chat.get(S1)).toEqual({ jev: expect.closeTo(0.0002, 9), generator: expect.closeTo(0.003, 9), messages: 2 });
+      expect(Buffer.byteLength(J(line), 'utf8')).toBeLessThan(INDEX_LINE_MAX_BYTES);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('text fields (E13)', () => {
   it('text60 = clip(oneLine(redact(x)), 60), control characters and bidi marks dropped', () => {
     const redact = (s: string): string => s.replace(/sk-secret-[a-z0-9]+/g, '[REDACTED:key]');
@@ -344,7 +396,7 @@ describe('appendIndexLine / readIndex / reindex (I/O)', () => {
   });
 
   it('readIndex: a missing file is an empty index, a torn last line is skipped, an unreadable file reports error', async () => {
-    expect(await readIndex(join(dir, 'nope.jsonl'))).toEqual({ sessions: [], skipped: 0 });
+    expect(await readIndex(join(dir, 'nope.jsonl'))).toEqual({ sessions: [], skipped: 0, chat: new Map() });
     const path = join(dir, 'index.jsonl');
     await writeFile(path, `${J(start())}\n${J(end())}\n${J(start({ runId: R2 })).slice(0, 30)}`);
     const idx = await readIndex(path);

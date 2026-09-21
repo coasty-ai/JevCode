@@ -1,16 +1,21 @@
-# the review at step 2 (JEVCODE_MOCK_REVIEW_AT=2) is approved with y (§6)
+# the review at step 2 (JEVCODE_MOCK_REVIEW_AT=2) is approved with y (§6); the card is a rounded `╭─ review · step 2` card in
+# the boxed tier (TUI-DESIGN-2 §4.7, §8.2 review-y (ext.)); Enter on the armed card is inert (§9 "review invariants": only
+# `y` approves) — the smoke counts exactly one `confirm … approved` in transcript.log and no `› y` composer echo
 expect \x1b\[\?25l
-expect Describe the task
+expect Say hi
 sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
+expect ╭─ (?:\x1b\[[0-9;]*m)*review · step 2
 expect \[y\] approve
 sleep 0.4
+send \r
+sleep 0.25
 send y
 expect confirm \S+ approved
 expect end (complete|max_steps|generator_done)
-expect Follow-up or /command
+expect Follow-up, question
 send /exit
 sleep 0.2
 send \r

@@ -6,7 +6,7 @@
  * frame-rate gate.
  */
 import { describe, expect, it } from 'vitest';
-import { BSU, CLEAR_RE, ESU, chunkTimeAt, classCounts, classifyFrame, classifyFrames, clearReSelfTest, clearStats, composerRow, countClears, cursorStats, decodeSendText, frameContent, frameMix, frameRows, framesPerSecond, framesPerSecondByClass, keyLatencies, lastSendAtOrBefore, paintedRows, paintedRowsChanged, parseTiming, safeKey, sendTimes, splitFrames, staticRows, stripAnsi, summarise, throttleMs, toTypistSteps, type Chunk } from '../../../src/perf/pty.js';
+import { BSU, CLEAR_RE, ESU, chunkTimeAt, classCounts, classifyFrame, classifyFrames, clearReSelfTest, clearStats, composerEndsWithKey, composerRow, countClears, cursorStats, decodeSendText, frameContent, frameMix, frameRows, framesPerSecond, framesPerSecondByClass, isBoxedFrame, keyLatencies, lastSendAtOrBefore, paintedRows, paintedRowsChanged, parseTiming, safeKey, sendTimes, splitFrames, staticRows, stripAnsi, summarise, throttleMs, toTypistSteps, wordmarkCells, type Chunk } from '../../../src/perf/pty.js';
 
 const RULE = '\x1b[2m' + '─'.repeat(20) + '\x1b[22m';
 /** an Ink frame as the pty shows it: hide, return to bottom, erase `prev + 1` rows, rows, cursor suffix */
@@ -151,6 +151,28 @@ describe('frame rows (composer row, painted rows, cursor per frame)', () => {
     expect(frameRows(body)).toEqual(['─'.repeat(20), '> abc', 'idle  ? help']);
     expect(composerRow(body)).toBe('> abc');
     expect(composerRow(`${BSU}\x1b[?25l\x1b[1A\x1b[3G\x1b[?25h${ESU}`.slice(BSU.length, -ESU.length))).toBeNull();
+    expect(isBoxedFrame(body)).toBe(false);
+  });
+  it('composerRow unwraps the boxed console (TUI-DESIGN-2 §4.3): the fourth row from the bottom without its edges and padding, in utf8, latin1 and --ascii', () => {
+    const boxed = [RULE, '╭─ jev-only ───── proj ─╮', '│ › a draft         │', '│   more textK      │', '├───────────────────┤', '│ idle       ? help │', '╰───────────────────╯'];
+    const body = splitFrames(frame(boxed, 7)).frames[0]!.body;
+    expect(isBoxedFrame(body)).toBe(true);
+    expect(composerRow(body)).toBe('  more textK');
+    expect(composerEndsWithKey(splitFrames(frame(boxed, 7)).frames[0]!, 'K', null)).toBe(true);
+    // the same frame as a latin1-decoded capture (`│` = C3 94 82 → â\u0094\u0082)
+    const latin1 = Buffer.from(frame(boxed, 7), 'utf8').toString('latin1');
+    expect(composerRow(splitFrames(latin1).frames[0]!.body)).toBe('  more textK');
+    const ascii = [RULE, '+- jev-only ----- proj -+', '| > a draft         |', '|   more textK      |', '+-------------------+', '| idle       ? help |', '+-------------------+'];
+    expect(composerRow(splitFrames(frame(ascii, 7)).frames[0]!.body)).toBe('  more textK');
+    // the flat tier is unchanged: the row above the status row
+    expect(composerRow(splitFrames(frame([RULE, '› abc', 'jev-only · idle'], 3)).frames[0]!.body)).toBe('› abc');
+  });
+  it('wordmarkCells counts the `█` cells of a splash frame in utf8 and latin1', () => {
+    const rows = [RULE, '    ██ ▓▒░', '    ██ ▓▒░', '╭─ jev-only ─╮', '│ › Say hi   │', '├────────────┤', '│ idle       │', '╰────────────╯'];
+    const body = splitFrames(frame(rows, 0)).frames[0]!.body;
+    expect(wordmarkCells(body)).toBe(4);
+    expect(wordmarkCells(Buffer.from(body, 'utf8').toString('latin1'))).toBe(4);
+    expect(wordmarkCells(splitFrames(frame([RULE, '› x', 'idle'], 3)).frames[0]!.body)).toBe(0);
     // a row whose text ends in a carriage return arrives as CR CR LF through the pty: one line break, not two
     expect(frameRows('a\r\r\nb\r\nc\r\n')).toEqual(['a', 'b', 'c']);
     expect(paintedRows(`${'─'.repeat(4)}\r\nloop banner\r\r\n> x\r\nidle\r\n`)).toBe(4);

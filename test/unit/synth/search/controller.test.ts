@@ -512,6 +512,7 @@ describe('LedgerSieveSynthesizer.synthesize: the §2.2 step', () => {
     });
     const throwingDecider: SynthesisContext['decider'] = {
       model: 'raw',
+      provider: 'openrouter',
       ask: () => {
         throw new Error('the raw decider must not be called');
       },

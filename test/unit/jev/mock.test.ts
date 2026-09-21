@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import { AbortError, JevCodeError, JevHttpError, JevResponseError } from '../../../src/errors.js';
 import type { Answer, AskOptions, Json, Question } from '../../../src/core/types.js';
 import { decisionConfidence, riskFromProbabilities } from '../../../src/jev/confidence.js';
-import { DANGEROUS_COMMAND, choiceAnswer, createMockDecider, defaultAnswers, noulAnswer, scoreAnswer } from '../../../src/jev/mock.js';
+import { DANGEROUS_COMMAND, MOCK_GREETING_RE, MOCK_TOOL_RE, choiceAnswer, createMockDecider, defaultAnswers, mockFactProbability, mockFileProbability, mockIntakeKind, mockIntakeOverride, mockJevLatencyMs, mockReplyKey, noulAnswer, scoreAnswer } from '../../../src/jev/mock.js';
+import { buildAllIntakeQuestions } from '../../../src/chat/intake.js';
+import type { IntakeKind } from '../../../src/core/types.js';
 import { choice, contextNoul, noul, pairedNouls, score } from '../../../src/jev/questions.js';
 import { DEFAULT_JEV_MODEL } from '../../../src/jev/types.js';
 import { validateJevResponse } from '../../../src/jev/validate.js';
@@ -70,6 +72,7 @@ describe('createMockDecider: default heuristics', () => {
   it('intent: first non-escape option at 0.8, rest spread, escape 0; paired Nouls follow the pick', async () => {
     const d = createMockDecider();
     expect(d.model).toBe(DEFAULT_JEV_MODEL);
+    expect(d.provider).toBe('openrouter'); // contract 1.2 (TUI-DESIGN-2 §6 item 7)
     const res = await d.ask(baseState, intentQuestions, opts('intent'));
     const intent = res.answers['intent'];
     expect(intent?.type).toBe('choice');
@@ -316,5 +319,132 @@ describe('createMockDecider: scripting surface', () => {
     expect(noulAnswer(1)).toEqual({ type: 'noul', noul: 0.99 });
     expect(noulAnswer(0)).toEqual({ type: 'noul', noul: 0.01 });
     expect(noulAnswer(Number.NaN)).toEqual({ type: 'noul', noul: 0.5 });
+  });
+});
+
+describe('TUI-DESIGN-2 §3.13: the intake heuristics inside the mock (--mock)', () => {
+  /** the real intake request (group A + B) plus three fact Nouls (group C) */
+  const questions: Record<string, Question> = { ...buildAllIntakeQuestions([]), about_mode_now: noul('Is the human asking which mode is active?', both), about_cost_so_far: noul('Is the human asking about cost?', both), about_what_it_is: noul('Is the human asking what JevCode is?', both) };
+  const askIntake = async (d: ReturnType<typeof createMockDecider>, message: string, conversation: Json[] = []) => d.ask({ message, conversation, workspace: { git: true }, session: { mode: 'jev-only' } }, questions, opts('intent', 0));
+  const choiceOf = (a: Answer | undefined): { choice: string; probabilities: Record<string, number> } => {
+    if (a?.type !== 'choice') throw new Error('expected choice');
+    return a;
+  };
+
+  it('intake kind per message class: greeting, tool question, code question, ≤ 2 words, task — p 0.9 on the kind, coding_task kept at 0.05, paired Nouls 0.9 / 0.1', async () => {
+    const d = createMockDecider({ env: {} });
+    const rows: [string, IntakeKind][] = [
+      ['hi', 'greeting_or_smalltalk'],
+      ['Hello!', 'greeting_or_smalltalk'],
+      ['thanks', 'greeting_or_smalltalk'],
+      ['thank you.', 'greeting_or_smalltalk'],
+      ['good morning', 'greeting_or_smalltalk'],
+      ['okay', 'greeting_or_smalltalk'],
+      ['bye', 'greeting_or_smalltalk'],
+      ['what can you do?', 'question_about_this_tool'],
+      ['which mode is this?', 'question_about_this_tool'],
+      ['how much has this cost?', 'question_about_this_tool'],
+      ['did the last run pass?', 'question_about_this_tool'],
+      ['where is the date parsing?', 'question_about_the_code'],
+      ['why does test_parse_date fail?', 'question_about_the_code'],
+      ['what does utils/dates.py export?', 'question_about_the_code'],
+      ['parse_date', 'ambiguous'],
+      ['the tests', 'ambiguous'],
+      ['fix the failing test in utils/dates.py', 'coding_task'],
+      ['add a --dry-run flag to the cli', 'coding_task'],
+      ['the date parsing', 'coding_task'],
+    ];
+    for (const [message, kind] of rows) {
+      expect(mockIntakeKind(message), message).toBe(kind);
+      const r = await askIntake(d, message);
+      const intake = choiceOf(r.answers['intake']);
+      expect(intake.choice, message).toBe(kind);
+      expect(intake.probabilities[kind]!, message).toBeGreaterThan(0.9);
+      if (kind !== 'coding_task') expect(intake.probabilities['coding_task']!, message).toBeCloseTo(0.05 / 0.95, 6);
+      expect(intake.probabilities['none_of_these']).toBe(0);
+      for (const id of Object.keys(questions).filter((q) => q.startsWith('can_'))) expect(pickNoul(r.answers[id]), `${message} ${id}`).toBeCloseTo(id === `can_${kind}` ? 0.9 : 0.1, 9);
+    }
+    // the regexes are the design's, verbatim
+    expect(MOCK_GREETING_RE.test('hi there')).toBe(false);
+    expect(MOCK_GREETING_RE.test('  yo!  ')).toBe(true);
+    expect(MOCK_TOOL_RE.test('what does jevcode cost?')).toBe(true);
+    expect(MOCK_TOOL_RE.test('where is parse_date?')).toBe(false);
+  });
+
+  it('reply: hello_first / hello_again (non-empty conversation) / thanks / bye / ok_ack; about_*: 0.8 on the matching regex else 0.1; file_<i>: 0.7 on a shared keyword else 0.1 (a separate request)', async () => {
+    const d = createMockDecider({ env: {} });
+    expect(choiceOf((await askIntake(d, 'hi')).answers['reply']).choice).toBe('hello_first');
+    expect(choiceOf((await askIntake(d, 'hi', [{ role: 'you', text: 'hi' }])).answers['reply']).choice).toBe('hello_again');
+    expect(choiceOf((await askIntake(d, 'thanks!')).answers['reply']).choice).toBe('thanks');
+    expect(choiceOf((await askIntake(d, 'bye')).answers['reply']).choice).toBe('bye');
+    expect(choiceOf((await askIntake(d, 'ok')).answers['reply']).choice).toBe('ok_ack');
+    expect(mockReplyKey('Thank you', 0)).toBe('thanks');
+    expect(mockReplyKey('okay then', 3)).toBe('ok_ack');
+    expect(mockReplyKey('hello', 2)).toBe('hello_again');
+    const mode = await askIntake(d, 'which mode is this?');
+    expect(pickNoul(mode.answers['about_mode_now'])).toBeCloseTo(0.8, 9);
+    expect(pickNoul(mode.answers['about_cost_so_far'])).toBeCloseTo(0.1, 9);
+    expect(pickNoul(mode.answers['about_what_it_is'])).toBeCloseTo(0.1, 9);
+    const cost = await askIntake(d, 'how much money have we spent?');
+    expect(pickNoul(cost.answers['about_cost_so_far'])).toBeCloseTo(0.8, 9);
+    expect(pickNoul((await askIntake(d, 'what can you do?')).answers['about_what_it_is'])).toBeCloseTo(0.8, 9);
+    expect(mockFactProbability('mode_now', 'mode?')).toBe(0.8);
+    expect(mockFactProbability('what_it_is', 'what are you')).toBe(0.8);
+    expect(mockFactProbability('other', 'mode cost what can you do')).toBe(0.1);
+    // §3.6: the lookup's context Nouls arrive without an `intake` question
+    const lookup: Record<string, Question> = {
+      file_0: contextNoul('Would reading `utils/dates.py` help answer `message`?'),
+      file_1: contextNoul('Would reading `src/cli/main.ts` help answer `message`?'),
+    };
+    const r = await d.ask({ message: 'what does utils/dates.py export?' }, lookup, opts('intent', 0));
+    expect(pickNoul(r.answers['file_0'])).toBeCloseTo(0.7, 9);
+    expect(pickNoul(r.answers['file_1'])).toBeCloseTo(0.1, 9);
+    expect(mockFileProbability(lookup['file_0']!, 'dates please')).toBe(0.7);
+    expect(mockFileProbability(lookup['file_0']!, 'where is the date parsing?')).toBe(0.1); // `date` is not the token `dates`
+    expect(mockFileProbability(lookup['file_0']!, 'py')).toBe(0.1); // tokens shorter than 3 chars never match
+    expect(mockFileProbability(contextNoul({ path: '`src/cli/main.ts`' }), 'the cli main')).toBe(0.7); // non-string instructions are stringified
+  });
+
+  it('JEVCODE_MOCK_INTAKE forces the kind (env or the `intake` option; nonsense is ignored); JEVCODE_MOCK_JEV_MS delays (env or `latencyMs`, which wins)', async () => {
+    const forced = createMockDecider({ env: { JEVCODE_MOCK_INTAKE: 'ambiguous' } });
+    const f = await askIntake(forced, 'fix the failing test');
+    expect(choiceOf(f.answers['intake']).choice).toBe('ambiguous');
+    expect(pickNoul(f.answers['can_ambiguous'])).toBeCloseTo(0.9, 9);
+    expect(pickNoul(f.answers['can_coding_task'])).toBeCloseTo(0.1, 9);
+    const viaOption = createMockDecider({ env: { JEVCODE_MOCK_INTAKE: 'ambiguous' }, intake: 'coding_task' });
+    expect(choiceOf((await askIntake(viaOption, 'hi')).answers['intake']).choice).toBe('coding_task');
+    const nonsense = createMockDecider({ env: { JEVCODE_MOCK_INTAKE: 'nonsense' } });
+    expect(choiceOf((await askIntake(nonsense, 'hi')).answers['intake']).choice).toBe('greeting_or_smalltalk');
+    expect(mockIntakeOverride({ JEVCODE_MOCK_INTAKE: 'nonsense' })).toBeNull();
+    expect(mockIntakeOverride({ JEVCODE_MOCK_INTAKE: ' coding_task ' })).toBe('coding_task');
+    expect(mockIntakeOverride({})).toBeNull();
+    expect(mockJevLatencyMs({ JEVCODE_MOCK_JEV_MS: '250' })).toBe(250);
+    expect(mockJevLatencyMs({ JEVCODE_MOCK_JEV_MS: 'slow' })).toBe(0);
+    expect(mockJevLatencyMs({})).toBe(0);
+    const slow = createMockDecider({ env: { JEVCODE_MOCK_JEV_MS: '40' } });
+    const t0 = performance.now();
+    const r = await askIntake(slow, 'hi');
+    expect(performance.now() - t0).toBeGreaterThanOrEqual(35);
+    expect(r.latencyMs).toBe(40);
+    const fast = createMockDecider({ env: { JEVCODE_MOCK_JEV_MS: '400' }, latencyMs: 0 });
+    const t1 = performance.now();
+    expect((await askIntake(fast, 'hi')).latencyMs).toBe(0);
+    expect(performance.now() - t1).toBeLessThan(200);
+  });
+
+  it('a scripted rule keeps precedence over the heuristics; a batch without an `intake` question is untouched; every heuristic answer validates', async () => {
+    const d = createMockDecider({ env: {}, rules: [() => ({ intake: choiceAnswer(questions['intake'] as Extract<Question, { type: 'choice' }>, { coding_task: 1 }) })] });
+    const r = await askIntake(d, 'hi');
+    expect(choiceOf(r.answers['intake']).choice).toBe('coding_task');
+    // the paired Nouls still follow the heuristics' own reading (a rule answers only what it names)
+    expect(pickNoul(r.answers['can_greeting_or_smalltalk'])).toBeCloseTo(0.9, 9);
+    const plain = createMockDecider({ env: {} });
+    const res = await plain.ask(baseState, intentQuestions, opts('intent'));
+    expect(choiceOf(res.answers['intent']).choice).toBe('investigate');
+    // defaultAnswers itself: heuristics fill only what `given` left open, and the result validates on the wire
+    const answers = defaultAnswers({ message: 'hi', conversation: [] }, questions, {}, { intake: null });
+    expect(() => validateJevResponse({ model: 'm', answers: answers as unknown as Json, usage: { input_tokens: 1, output_tokens: 1, cost: 0 } }, questions)).not.toThrow();
+    expect(choiceOf(answers['intake']).choice).toBe('greeting_or_smalltalk');
+    expect(choiceOf(defaultAnswers({ message: 'hi', conversation: [] }, questions, {}, { intake: 'ambiguous' })['intake']).choice).toBe('ambiguous');
   });
 });

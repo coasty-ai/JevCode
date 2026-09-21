@@ -11,8 +11,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { BlockingRequest, Engine, EngineOptions } from '../../../src/core/types.js';
-import { EXIT_CONFIRM_ROW, STARTING_STEER_CAP, applyRawEdits, exportFilePath, helpLines, isInCi, isInteractive, jevcodeDir, mockReviewStep, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps } from '../../../src/cli/session.js';
-import { sessionCapChangedLine, sessionCapReachedItem } from '../../../src/tui/budget/lines.js';
+import { EXIT_CONFIRM_ROW, INTAKE_KEPT, LOGIN_SAVED_TOAST, MODE_JEV_OFF_SET, MODE_JEV_ONLY_SET, MODE_JEV_ON_SET, MODE_LLM_JEV_SET, SESSION_CAP_CHAT_REFUSAL, STARTING_STEER_CAP, applyRawEdits, exportFilePath, helpLines, isInCi, isInteractive, jevcodeDir, mockReviewStep, mostRecentSession, pausedItemText, sessionEndedText, type SessionDeps, type WizardReason } from '../../../src/cli/session.js';
+import { sessionCapChangedLine } from '../../../src/tui/budget/lines.js';
 import { sandboxText } from '../../../src/tui/onboarding/lines.js';
 import { detectSandboxLevel } from '../../../src/sandbox/seatbelt.js';
 import { gateRefusalLine } from '../../../src/tui/secrets/gate-lines.js';
@@ -20,7 +20,7 @@ import { detectSecrets } from '../../../src/core/redact.js';
 import { NOT_RESUMABLE } from '../../../src/cli/epilogue.js';
 import type { Log } from '../../../src/core/log.js';
 import { DEFAULT_THRESHOLDS } from '../../../src/tui/useEngine.js';
-import { finishedRunLines, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness } from './helpers.js';
+import { finishedRunLines, harnessDecider, loadedRun, makeController, scriptedRunId, tick, waitFor, type Harness } from './helpers.js';
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234';
 const AWS = 'AKIAIOSFODNN7EXAMPLE';
@@ -80,6 +80,119 @@ describe('pure helpers (§1)', () => {
     expect(EXIT_CONFIRM_ROW).toBe('a run is live: [y] abort and exit   [n] stay              (Enter does nothing)');
     expect(pausedItemText(5)).toBe('paused after step 5 — /resume continues, or type a follow-up');
     expect(sessionEndedText('s1', 2, 1.5)).toBe('session s1 ended: 2 runs, $1.50 total');
+  });
+});
+
+describe('TUI-DESIGN-2 §3 conversational intake (the submit path, summary rows; the matrix is session-chat.test.ts)', () => {
+  it('"hi" never starts a run: one [you] item, one [jevcode] reply, no createEngine call', async () => {
+    const h = await build({ decider: harnessDecider({ usage: { costUsd: 0.0002, inputTokens: 1500, outputTokens: 40, calls: 1 } }) });
+    void h.controller.run();
+    await h.ready();
+    expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(h.factory.calls).toHaveLength(0);
+    expect(h.renderer.notes.filter((n) => n.label === '[you]').map((n) => n.text)).toEqual(['hi']);
+    expect(h.renderer.notes.filter((n) => n.label === '[jevcode]')).toHaveLength(1);
+    expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002, 9);
+  });
+
+  it('an ambiguous reading asks through Prompter.intake (the §3.7 row / card) and never runs on its own', async () => {
+    const asked: string[] = [];
+    const h = await build({ decider: harnessDecider({ classify: () => 'ambiguous' }), prompts: { intake: async (m) => { asked.push(m); return 'keep'; } } });
+    void h.controller.run();
+    await h.ready();
+    expect(await h.host.submit('the date parsing', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'nothing' });
+    expect(asked).toEqual(['the date parsing']);
+    expect(h.factory.calls).toHaveLength(0);
+    expect(h.renderer.notes.at(-1)).toMatchObject({ label: '[jevcode]', text: INTAKE_KEPT });
+    expect(h.renderer.restored).toEqual(['the date parsing']);
+  });
+
+  it('a task reading starts the run as before (kind prompt, then follow-up), recording the intake on EngineOptions.session', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.submit('fix parse_date tz handling');
+    await h.submit('now update the docs');
+    expect(h.factory.calls).toHaveLength(2);
+    expect(h.factory.calls[0]!.session?.intake).toMatchObject({ kind: 'coding_task' });
+    expect(h.factory.calls[1]!.seed?.parentRunId).toBe(h.factory.engines[0]!.runId);
+  });
+});
+
+describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, landed in the controller)', () => {
+  const NO_OPEN_ASSIST = '/nonexistent/open-assist';
+  const modeActions = (h: Harness): unknown[] => h.renderer.dispatched.filter((a) => a.type === 'mode');
+
+  it('/mode alone shows current and next; /llm on pends jev-on with MODE_JEV_ON_SET and a `mode` dispatch; the same mode twice says already; /llm off and /mode jev-off pend their modes', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/mode');
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev-only (next run: jev-only)');
+    // `--mock` never needs a generator key (missingSecrets skips it), so /llm on pends at once
+    await h.command('/llm on');
+    expect(h.controller.view.pending.mode).toBe('jev-on');
+    expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ON_SET);
+    expect(MODE_JEV_ON_SET).toBe('mode jev+llm from the next run — Claude writes the code, Jev still decides every step (persist: jevcode config set mode jev-on)');
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: 'jev-on' });
+    await h.command('/mode jev-on');
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev+llm already');
+    // §1.3 `case 'mode'`: idle, the current mode IS the next run's (`cur = live() ? currentRunMode : next`)
+    await h.command('/mode');
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev+llm (next run: jev+llm)');
+    await h.command('/llm off');
+    expect(h.controller.view.pending.mode).toBe('jev-only');
+    expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ONLY_SET);
+    await h.command('/mode jev-off');
+    expect(h.controller.view.pending.mode).toBe('jev-off');
+    expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_OFF_SET);
+    expect(modeActions(h)).toHaveLength(3);
+  });
+
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): /mode llm-jev pends the fourth mode with MODE_LLM_JEV_SET and a `mode` dispatch; the badge word is llm-jev', async () => {
+    const h = await build();
+    void h.controller.run();
+    await h.ready();
+    await h.command('/mode llm-jev');
+    expect(h.controller.view.pending.mode).toBe('llm-jev');
+    expect(h.renderer.notes.at(-1)?.text).toBe(MODE_LLM_JEV_SET);
+    expect(MODE_LLM_JEV_SET).toBe('mode llm-jev from the next run — GLM writes candidate patches inside the Jev-only search; Jev decides, tests verify (persist: jevcode config set mode llm-jev)');
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: 'llm-jev' });
+    await h.command('/mode llm-jev');
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode llm-jev already');
+    await h.command('/mode');
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode llm-jev (next run: llm-jev)');
+  });
+
+  it('/mode jev-on without a generator key opens the wizard with reason mode for jev-on: cancelled → `mode stays jev-only — no generator key was saved` (warn, nothing pends); saved → pends, MODE_JEV_ON_SET, no login toast', async () => {
+    const calls: { missing: readonly string[]; reason: WizardReason; mode: string | undefined }[] = [];
+    let answer: 'cancelled' | 'saved' = 'cancelled';
+    const h = await build({
+      flags: { mock: false, mode: 'jev-only', openAssistPath: NO_OPEN_ASSIST },
+      env: { TYPESAFE_API_KEY: `ts-${'0123456789abcdef'.repeat(3)}` },
+      prompts: {
+        wizard: async (missing, o) => {
+          calls.push({ missing, reason: o.reason, mode: o.mode });
+          return answer === 'cancelled' ? { kind: 'cancelled' } : { kind: 'saved', patch: { provider: 'anthropic', apiKey: `sk-ant-api03-${'a'.repeat(40)}` } };
+        },
+      },
+    });
+    void h.controller.run();
+    await h.ready();
+    expect(calls).toHaveLength(0); // jev-only needs no generator key at startup
+    await h.command('/mode jev-on');
+    expect(calls).toEqual([{ missing: ['generator.apiKey'], reason: 'mode', mode: 'jev-on' }]);
+    expect(h.renderer.notes.at(-1)).toMatchObject({ text: 'mode stays jev-only — no generator key was saved', level: 'warn' });
+    expect(h.controller.view.pending.mode).toBeUndefined();
+    expect(modeActions(h)).toHaveLength(0);
+    answer = 'saved';
+    await h.command('/mode jev-on');
+    expect(calls).toHaveLength(2);
+    expect(h.controller.view.pending.mode).toBe('jev-on');
+    expect(h.renderer.notes.at(-1)?.text).toBe(MODE_JEV_ON_SET);
+    expect(h.renderer.notes.some((n) => n.text === LOGIN_SAVED_TOAST)).toBe(false);
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-only', pending: 'jev-on' });
+    expect(JSON.stringify(h.renderer.notes)).not.toContain('sk-ant-api03-aaaa');
   });
 });
 
@@ -245,7 +358,8 @@ describe('host wiring (§15 item 16, §10.2)', () => {
 
 describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
   it('the second run is seeded from the first: sessionId shared, parentRunId = R1, plan.done and window carried, index run:start/run:end pairs', async () => {
-    const h = await build();
+    // TUI-DESIGN-2 §1.1: the default mode is jev-only ($0.25 / $1.25); this row is about the jev-on money (5 × $2.00), so it says so
+    const h = await build({ flags: { mode: 'jev-on' } });
     void h.controller.run();
     await h.ready();
     await h.submit('fix parse_date tz handling');
@@ -280,7 +394,8 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
     expect(h.factory.calls[1]!.meter.snapshot().capUsd).toBeCloseTo(0.25, 9);
     await h.submit('three');
     expect(h.factory.calls).toHaveLength(2);
-    expect(h.renderer.notes.at(-1)?.text).toBe(sessionCapReachedItem(0.5, 0.5));
+    // TUI-DESIGN-2 §3.1 row 3 / §3.9: at the cap a composer submission is refused before intake (no request), with the chat refusal text
+    expect(h.renderer.notes.at(-1)?.text).toBe(SESSION_CAP_CHAT_REFUSAL(0.5));
   });
 
   it('follow-up confirm through the prompter: n cancels, y clamps (§9.3)', async () => {
@@ -298,7 +413,8 @@ describe('sessions, seeds and money (§8.3, §9.1, §9.3)', () => {
   });
 
   it('/budget session-spend-cap mutates the root meter now (setCap), writes the index budget line and the §24 item; spend-cap is pending for the next run', async () => {
-    const h = await build({ flags: { sessionSpendCap: '10' } });
+    // jev-on: the configured run cap is $2.00 (TUI-DESIGN-2 §1.2; the jev-only default would be $0.25)
+    const h = await build({ flags: { sessionSpendCap: '10', mode: 'jev-on' } });
     void h.controller.run();
     await h.ready();
     await h.submit('one');
@@ -434,7 +550,8 @@ describe('commands (§5.2)', () => {
     await h.command('/status');
     expect(h.renderer.notes.at(-1)?.detail).toContain(`session ${h.controller.view.sessionId}`);
     await h.command('/cost');
-    expect(h.renderer.notes.at(-1)?.text).toMatch(/^run \$0\.115 of \$2\.000/);
+    // TUI-DESIGN-2 §1.2: the default mode is jev-only, whose run cap is $0.25
+    expect(h.renderer.notes.at(-1)?.text).toMatch(/^run \$0\.115 of \$0\.250/);
     await h.command('/jev');
     expect(h.renderer.notes.at(-1)?.detail).toContain('decider typesafe/jev-1.13-20260917');
     await h.command('/config');

@@ -42,6 +42,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
+            '--jev-provider[Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)]:jev-provider:(auto typesafe openrouter)' \
             '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
@@ -83,7 +84,7 @@ _jevcode() {
             '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
-            '--mode[engine mode: jev-on (default), jev-off (generator only), jev-only (no generating LLM)]:mode:(jev-on jev-off jev-only)' \
+            '--mode[engine mode: jev-only (default; no generating LLM), jev-on (Jev + LLM), jev-off (generator only), llm-jev (GLM candidates inside the Jev-only search; Jev decides, tests verify)]:mode:(jev-only jev-on jev-off llm-jev)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
@@ -99,6 +100,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
+            '--jev-provider[Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)]:jev-provider:(auto typesafe openrouter)' \
             '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
@@ -141,7 +143,7 @@ _jevcode() {
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--task-file[read the task text from a file]:<path>:_files' \
-            '--mode[engine mode: jev-on (default), jev-off (generator only), jev-only (no generating LLM)]:mode:(jev-on jev-off jev-only)' \
+            '--mode[engine mode: jev-only (default; no generating LLM), jev-on (Jev + LLM), jev-off (generator only), llm-jev (GLM candidates inside the Jev-only search; Jev decides, tests verify)]:mode:(jev-only jev-on jev-off llm-jev)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]' \
@@ -158,6 +160,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
+            '--jev-provider[Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)]:jev-provider:(auto typesafe openrouter)' \
             '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
@@ -210,6 +213,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
+            '--jev-provider[Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)]:jev-provider:(auto typesafe openrouter)' \
             '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
@@ -227,7 +231,7 @@ _jevcode() {
             '--suite[benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)]:suite:(swebench terminal-bench quixbugs ladder all)' \
             '--tasks[number of tasks]:n:' \
             '--task-id[specific task ids]:id[,id...]:' \
-            '--conditions[conditions to run (default jev-on,jev-off)]:jev-on,jev-off[,jev-only]:' \
+            '--conditions[conditions to run (default jev-on,jev-off)]:jev-on,jev-off[,jev-only,llm-jev]:' \
             '--concurrency[parallel runs]:n:' \
             '--live[use the real generator and Jev (requires --spend-cap)]' \
             '--task-spend-cap[per-run spend cap (default 2.00)]:usd:' \
@@ -247,6 +251,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
+            '--jev-provider[Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)]:jev-provider:(auto typesafe openrouter)' \
             '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
@@ -268,6 +273,7 @@ _jevcode() {
         login)
           _arguments \
             '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--jev-provider[Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)]:jev-provider:(typesafe openrouter)' \
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \

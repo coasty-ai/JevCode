@@ -63,3 +63,66 @@ describe('configTableRows / configTableLines (§16)', () => {
     expect(configTableLines({}, { sandboxLevel: 'none' })[0]).toBe('setting  value  source');
   });
 });
+
+describe('TUI-DESIGN-2 §2.6: the decider.provider row, provider-keyed defaults and the folded providerSource row', () => {
+  const rec: Record<string, ConfigRecordValue> = {
+    'decider.provider': { value: 'typesafe', source: 'derived' },
+    'decider.baseUrl': { value: 'https://api.typesafe.ai/v1/systemone', source: 'default' },
+    'decider.apiKey': { value: { source: 'dotenv:/Users/me/proj/.env', fingerprint: '3f9a2c1d' }, source: 'dotenv:/Users/me/proj/.env' },
+    'decider.model': { value: 'jev-1.13.0', source: 'default' },
+    'decider.providerSource': { value: 'auto:typesafe-key', source: 'derived' },
+  };
+
+  it('prints the §2.6 block: `derived (auto: TYPESAFE_API_KEY is set)`, `default (typesafe)`, the fingerprint; providerSource is not a row', () => {
+    const rows = configTableRows(rec);
+    expect(rows).toEqual([
+      { setting: 'decider.provider', value: 'typesafe', source: 'derived (auto: TYPESAFE_API_KEY is set)' },
+      { setting: 'decider.baseUrl', value: 'https://api.typesafe.ai/v1/systemone', source: 'default (typesafe)' },
+      { setting: 'decider.apiKey', value: '<dotenv:/Users/me/proj/.env> (sha256:3f9a2c1d)', source: 'dotenv:/Users/me/proj/.env' },
+      { setting: 'decider.model', value: 'jev-1.13.0', source: 'default (typesafe)' },
+    ]);
+    const lines = configTableLines(rec, { sandboxLevel: 'none' });
+    expect(lines[1]).toMatch(/^decider\.provider\s+typesafe\s+derived \(auto: TYPESAFE_API_KEY is set\)$/);
+    expect(lines[2]).toMatch(/^decider\.baseUrl\s+https:\/\/api\.typesafe\.ai\/v1\/systemone\s+default \(typesafe\)$/);
+    expect(lines[4]).toMatch(/^decider\.model\s+jev-1\.13\.0\s+default \(typesafe\)$/);
+    expect(lines.some((l) => l.includes('providerSource'))).toBe(false);
+  });
+
+  it('every providerSource has its derivation text; an explicit source prints itself; a configured model keeps its source', () => {
+    const at = (source: ConfigRecordValue['source'], providerSource: string): string => configTableRows({ 'decider.provider': { value: 'openrouter', source }, 'decider.providerSource': { value: providerSource, source: 'derived' } })[0]!.source;
+    expect(at('derived', 'auto:openrouter-key')).toBe('derived (auto: JEV_API_KEY or OPENROUTER_API_KEY is set)');
+    expect(at('derived', 'auto:base-url')).toBe('derived (auto: decider.baseUrl names it)');
+    expect(at('derived', 'auto:something-new')).toBe('derived (auto:something-new)');
+    expect(at('env', 'env')).toBe('env');
+    expect(at('flag', 'flag')).toBe('flag');
+    expect(at('default', 'default')).toBe('default');
+    // no providerSource row (an older run.json): plain `derived`
+    expect(configTableRows({ 'decider.provider': { value: 'typesafe', source: 'derived' } })[0]!.source).toBe('derived');
+    const or = configTableRows({ 'decider.provider': { value: 'openrouter', source: 'env' }, 'decider.model': { value: 'typesafe/jev-1.13-20260917', source: 'default' }, 'decider.baseUrl': { value: 'https://proxy.test', source: 'flag' } });
+    expect(or.map((r) => r.source)).toEqual(['env', 'default (openrouter)', 'flag']);
+    // no provider row at all (a record from before the row): defaults print as before
+    expect(configTableRows({ 'decider.model': { value: 'typesafe/jev-1.13-20260917', source: 'default' } })[0]!.source).toBe('default');
+  });
+});
+
+describe('TUI-DESIGN-2 §2.6 edge rows: an unknown provider value, the `mode` row', () => {
+  it('a record whose decider.provider value is not a provider (an older or hand-edited run.json) prints the raw value and plain `default` on the provider-keyed rows', () => {
+    const rows = configTableRows({
+      'decider.provider': { value: 'foo', source: 'env' },
+      'decider.baseUrl': { value: 'https://openrouter.ai/api/alpha/decisions', source: 'default' },
+      'decider.model': { value: 'typesafe/jev-1.13-20260917', source: 'default' },
+      'decider.providerSource': { value: 'env', source: 'derived' },
+    });
+    expect(rows).toEqual([
+      { setting: 'decider.provider', value: 'foo', source: 'env' },
+      { setting: 'decider.baseUrl', value: 'https://openrouter.ai/api/alpha/decisions', source: 'default' },
+      { setting: 'decider.model', value: 'typesafe/jev-1.13-20260917', source: 'default' },
+    ]);
+  });
+
+  it('§1.2 / §12: `mode  jev-only  default` prints like any plain row; a file source prints its path', () => {
+    expect(configTableRows({ mode: { value: 'jev-only', source: 'default' } })).toEqual([{ setting: 'mode', value: 'jev-only', source: 'default' }]);
+    expect(configTableLines({ mode: { value: 'jev-only', source: 'default' } }, { sandboxLevel: 'none' })[1]).toMatch(/^mode\s+jev-only\s+default$/);
+    expect(configTableRows({ mode: { value: 'jev-on', source: 'file:/Users/me/proj/jevcode.json' } })).toEqual([{ setting: 'mode', value: 'jev-on', source: 'file:/Users/me/proj/jevcode.json' }]);
+  });
+});

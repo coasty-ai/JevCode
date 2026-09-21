@@ -43,8 +43,54 @@ export const CURSOR_SHAPE_RESET = '\x1b[0 q';
 
 /** a Tcl regex fragment that skips SGR sequences between two visible runs (the live composer's yellow `> `) */
 export const SGR_GAP = '(?:\\x1b\\[[0-9;]*m)*';
-/** the first-frame sentinel of research 20 §3: `expect \x1b\[\?25l` */
+/**
+ * TUI-DESIGN-2 §4.5 / §4.9: every transcript label is its own dim span (`ESC[2m[step 2]ESC[22m read …`,
+ * `ESC[2m[you]ESC[22m ESC[38;5;147mhi`), the badge in the console's top edge is an accent span after `╭─ `, so a sentinel
+ * that spans a label and its text (or the edge and the badge) needs an SGR gap at the boundary — `labelStep` and
+ * `topEdgeStep` build them; the round-1 `\[run\] start` no longer matches the raw bytes.
+ */
+export function labelStep(label: string, text: string): string {
+  return `expect \\[${label}\\]${SGR_GAP} ${SGR_GAP}${text}`;
+}
+/** the console's top edge with this badge or title (`╭─ <badge>`, TUI-DESIGN-2 §4.3), the badge's colour span skipped */
+export function topEdgeStep(badgeOrTitle: string): string {
+  return `expect ╭─ ${SGR_GAP}${badgeOrTitle}`;
+}
+/**
+ * the first-frame sentinel of research 20 §3: `expect \x1b\[\?25l`. Two rules every scenario keeps: expect consumes
+ * its buffer up to each match, so a row drawn *before* a matched row in the same frame (the panel strip above the
+ * console's placeholder) must be expected first; and the driver's `sleep` drains the pty into the capture, so a frame
+ * that arrived during a sleep can never be matched by a later expect — expect first, then sleep.
+ */
 export const FIRST_FRAME_STEP = 'expect \\x1b\\[\\?25l';
+/**
+ * The composer prompt as a Tcl regex fragment: `› ` in the Unicode glyph set, `> ` under `--ascii` and in `--plain`
+ * (TUI-DESIGN-2 §4.4 `PROMPT_UNICODE` / `PROMPT_ASCII`); the flat tier draws it at column 0, the boxed tier inside the
+ * console row `│ › …`. Scenarios expect the prompt-agnostic form so a glyph change never re-times a scenario.
+ */
+export const PROMPT = '(?:›|>)';
+/** `expect <prompt> <text>`: the composer echo of `text` (regex metacharacters escaped) in either tier and glyph set */
+export function echoStep(text: string): string {
+  return `expect ${PROMPT} ${text.replace(/[\\^$.|?*+()[\]{}]/g, '\\$&')}`;
+}
+/** the composer placeholders of TUI-DESIGN-2 §4.4 (the leading words, enough to be unique in a frame) */
+export const PLACEHOLDER_TASK = 'Say hi';
+export const PLACEHOLDER_FOLLOWUP = 'Follow-up, question';
+export const PLACEHOLDER_STEER = 'Type to steer the next step';
+/** the mode badge words of TUI-DESIGN-2 §1.5 as they appear in the console's top edge (boxed) or the status left zone (flat) */
+export const BADGE_JEV_ONLY = 'jev-only';
+export const BADGE_JEV_LLM = 'jev\\+llm';
+/**
+ * A settle pattern for a geometry: one row of exactly `cols` visible cells between two line breaks, SGR sequences
+ * skipped. Every full-width row (the rule / brand row, the console edges and status compartment, the flat status row)
+ * is padded to the terminal width by its `lines()` function, so a match means a frame laid out for that width was
+ * written after the previous marker's echo (expect consumes its buffer up to each match). The brand row of
+ * TUI-DESIGN-2 §5.4 carries `◆ jevcode` in the accent colour, so a pattern on one dim run (the round-1 `RULE_60`) no
+ * longer matches it.
+ */
+export function fullWidthRowStep(cols: number): string {
+  return `expect \\r\\n(?:(?:\\x1b\\[[0-9;]*m)*[^\\x1b\\r\\n]){${cols}}(?:\\x1b\\[[0-9;]*m)*\\r\\n`;
+}
 
 export interface TimingRecord {
   t: number;
@@ -106,17 +152,32 @@ export function cleanupScratch(): void {
 }
 
 /**
- * The child environment: the caller's env minus CI, colour, SSH and dev hooks, plus an isolated home and XDG config
- * dir. `SSH_TTY`/`SSH_CONNECTION` are removed because `resolveLaunchSettings` (src/config/launch.ts) drops the default
- * fps to 15 on a slow link, which would change every frame count and arming margin of the suite on an SSH session.
+ * The variables `childEnv` removes from the caller's environment: CI, colour, SSH and dev hooks, every key variable
+ * (TUI-DESIGN-2 §1.1 / §8.2: the zero-argument and mode-switch scenarios depend on which keys exist; a developer's shell
+ * must not decide), `JEVCODE_CONFIG` (a configured credentials file would be read before the XDG/legacy candidates,
+ * `src/config/resolve.ts`) and the terminal multiplexer markers.
+ */
+export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'OPEN_ASSIST_PATH', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
+
+/**
+ * The child environment: the caller's env minus `CHILD_ENV_UNSET`, plus an isolated `HOME`, `JEVCODE_HOME` and XDG
+ * config dir — hermetic against a developer's saved login: `resolveConfig` falls back to the legacy
+ * `$HOME/.config/jevcode/config.json` when the XDG file is absent (`src/config/resolve.ts` candidates `[cwd/jevcode.json,
+ * xdgFile, legacyFile]`), so `HOME` must point into the scenario's temp home too, not only `XDG_CONFIG_HOME`
+ * (`test/unit/perf/hermetic.test.ts` spawns `jevcode config` under this env with a legacy credentials file in the
+ * caller's HOME and asserts no `file:` source). `SSH_TTY`/`SSH_CONNECTION` are removed because `resolveLaunchSettings`
+ * (src/config/launch.ts) drops the default fps to 15 on a slow link, which would change every frame count and arming
+ * margin of the suite on an SSH session.
  */
 export function childEnv(home: string, rows: number, cols: number, extra: Readonly<Record<string, string>> = {}): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env };
-  for (const k of ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_HOME', 'JEVCODE_ASSERT_NO_NETWORK', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY']) {
-    delete env[k];
-  }
+  for (const k of CHILD_ENV_UNSET) delete env[k];
+  env['HOME'] = home;
   env['JEVCODE_HOME'] = home;
   env['XDG_CONFIG_HOME'] = join(home, 'xdg');
+  // `<OPEN_ASSIST_PATH>/.env` is a dotenv layer whose default is the package root's sibling `../open-assist` (src/config/resolve.ts);
+  // on a machine where that directory holds keys no scenario would ever be keyless, so it points at a directory that does not exist
+  env['OPEN_ASSIST_PATH'] = join(home, 'no-open-assist');
   env['PTY_ROWS'] = String(rows);
   env['PTY_COLS'] = String(cols);
   if (env['LANG'] === undefined || env['LANG'] === '') env['LANG'] = 'en_US.UTF-8';
@@ -228,8 +289,9 @@ const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1
 const SGR_RE = /\x1b\[([0-9;]*)m/g;
 // the rule row opens the dynamic region: `────…` idle, `─── decisions s7 · …` with the pane, `---` under --ascii
 const RULE_RE = /^(?:─{3}|-{3})(?:[ ─-]|$)/;
-// an item line of the three-way identity (§15.1): `stepLabel()` or a renderer label, then a space
-const ITEM_RE = /^\[(?:run|step \d+|ui|setup|config|sandbox)\] /;
+// an item line of the three-way identity (§15.1): `stepLabel()` or a renderer label, then a space; TUI-DESIGN-2 §3.10
+// adds the chat labels `[you]` / `[jevcode]` (one item per line)
+const ITEM_RE = /^\[(?:run|step \d+|ui|setup|config|sandbox|you|jevcode)\] /;
 
 export function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, '');
@@ -336,6 +398,58 @@ export function frames(text: string, opts: { untilRestore?: boolean } = {}): Fra
   return units(text, opts).filter((u) => u.rows !== null);
 }
 
+/** the synchronized-output brackets every frame is written inside (`ESC[?2026h` … `ESC[?2026l`; `src/perf/pty.ts` `BSU`/`ESU`) */
+export const BSU = '\x1b[?2026h';
+
+export interface SyncFrame {
+  /** index in the frame list */
+  index: number;
+  /** ANSI-stripped lines (trailing empty lines removed) */
+  lines: string[];
+  /** index of the last rule row, or -1 when the frame draws none */
+  ruleIndex: number;
+  /** the dynamic region (rule row → last row); empty without a rule row */
+  dynamic: string[];
+}
+
+/**
+ * The capture split at the synchronized-output bracket (`BSU`) instead of the cursor hide: Ink writes `ESC[?25l` only
+ * while the cursor is shown, so the frames drawn while it stays hidden — under a card or the intake row, where the
+ * composer is collapsed — carry no hide and `units()` merges them into one unit. Every frame opens with a BSU (the
+ * App's render wrapper), so this split is one frame per bracket. Text after the exit string's cursor-shape reset is
+ * dropped like in `units()`.
+ */
+export function syncFrames(text: string): SyncFrame[] {
+  let t = text;
+  const first = t.indexOf(BSU);
+  const cut = first < 0 ? -1 : t.indexOf(CURSOR_SHAPE_RESET, first);
+  if (cut >= 0) t = t.slice(0, cut);
+  const parts = t.split(BSU).slice(1);
+  return parts.map((raw, index) => {
+    const lines = stripAnsi(raw).replace(/\r\n|\r/g, '\n').split('\n');
+    while (lines.length > 0 && lines.at(-1) === '') lines.pop();
+    let ruleIndex = -1;
+    for (let i = lines.length - 1; i >= 0; i--) {
+      if (RULE_RE.test(lines[i] ?? '')) {
+        ruleIndex = i;
+        break;
+      }
+    }
+    return { index, lines, ruleIndex, dynamic: ruleIndex >= 0 ? lines.slice(ruleIndex) : [] };
+  });
+}
+
+/** indices of the sync frames whose lines contain `needle` */
+export function syncFramesWith(all: readonly SyncFrame[], needle: string | RegExp): number[] {
+  const test = typeof needle === 'string' ? (l: string): boolean => l.includes(needle) : (l: string): boolean => needle.test(l);
+  return all.filter((f) => f.lines.some(test)).map((f) => f.index);
+}
+
+/** true when the indices form one contiguous run (a card that stayed open draws in every frame between its first and last) */
+export function contiguous(indices: readonly number[]): boolean {
+  return indices.every((v, i) => i === 0 || v === indices[i - 1]! + 1);
+}
+
 /** index of the first unit whose stripped lines contain `needle` (a visible marker typed into the composer), or -1 */
 export function unitIndexOf(all: readonly FrameUnit[], needle: string): number {
   return all.findIndex((u) => u.lines.some((l) => l.includes(needle)));
@@ -387,9 +501,61 @@ export function isItemRow(row: string): boolean {
   return ITEM_RE.test(row);
 }
 
-/** true for the renderer-local items that have no transcript.log twin (the header, the sandbox line, idle `[ui]` rows) */
+/**
+ * true for the renderer-local items that have no transcript.log twin (the header, the sandbox line, idle `[ui]` rows,
+ * and the chat bubbles — TUI-DESIGN-2 §3.10: `[you]` is appended before any run starts and a `[jevcode]` reply is
+ * emitted while no engine is live, so neither has a transcript.log line)
+ */
 export function isLocalItem(row: string): boolean {
-  return /^\[run\] jevcode (?:session ·|task:|resuming) /.test(row) || row.startsWith('[sandbox] ') || row.startsWith('[ui] ') || row.startsWith('[setup] ') || row.startsWith('[config] ');
+  return /^\[run\] jevcode (?:session ·|task:|resuming) /.test(row) || row.startsWith('[sandbox] ') || row.startsWith('[ui] ') || row.startsWith('[setup] ') || row.startsWith('[config] ') || row.startsWith('[you] ') || row.startsWith('[jevcode] ');
+}
+
+/**
+ * TUI-DESIGN-2 §4.5 / §9 (b): in the default `compact` transcript the TUI's item rows are a subsequence of
+ * `transcript.log` — the stage kinds (`intent`, `context`, `proposal`, `risk`, `outcome`, `judge`, `plan`) and `run:ready`
+ * are hidden, one `[step N]` summary line per step is shown. Returns the transcript indices matched in order, or the
+ * first row that is not in the transcript (after the previous match) as `missing`.
+ */
+export function subsequenceOf(rows: readonly string[], transcript: readonly string[]): { matched: number[]; missing: string | null } {
+  const matched: number[] = [];
+  let from = 0;
+  for (const row of rows) {
+    let at = -1;
+    for (let i = from; i < transcript.length; i++) {
+      if (transcript[i] === row) {
+        at = i;
+        break;
+      }
+    }
+    if (at < 0) return { matched, missing: row };
+    matched.push(at);
+    from = at + 1;
+  }
+  return { matched, missing: null };
+}
+
+/** the stage lines the compact transcript hides (TUI-DESIGN-2 §4.5): `[step N] intent=…`, `context …`, `proposal …`, `risk …`, `outcome …`, `judge …`, `plan …`, and `[run] ready …` */
+// the compact-hidden kinds' text shapes (src/tui/plain.ts COMPACT_HIDDEN_KINDS): `intent=…`, `context N files…`, `synth <phase>: …`, `proposal <kind> …`,
+// `risk=0.01 ok: …`, `outcome …`, `judge …`, `plan done=…`, and `[run] ready …`
+export const HIDDEN_STAGE_RE = /^\[step \d+\] (?:intent=|context |synth |proposal |risk[= ]|outcome |judge |plan )|^\[run\] ready /;
+
+/** true when a stripped frame line is a boxed-tier console or card edge (TUI-DESIGN-2 §4.1: `╭ … ╮`, `╰ … ╯`; `+-` under --ascii) */
+export function isBoxEdge(line: string): boolean {
+  return /^[╭╰]/.test(line) || /^\+-/.test(line);
+}
+
+/** the composer/console tier a frame was drawn in (TUI-DESIGN-2 §4.1): boxed when a console top edge is among its dynamic rows */
+export function frameTier(unit: FrameUnit): 'boxed' | 'flat' {
+  const dyn = unit.ruleIndex >= 0 ? unit.lines.slice(unit.ruleIndex) : unit.lines;
+  return dyn.some((l) => /^╭─ /.test(l) || /^\+- /.test(l)) ? 'boxed' : 'flat';
+}
+
+/** the wall time between a `send` step whose arg is `sendArg` (first occurrence at or after `afterStep`) and the next `expect` step matching `expectIncludes` */
+export function wallBetween(timing: readonly TimingRecord[], sendArg: string, expectIncludes: string, afterStep = 0): number | null {
+  const sent = timing.find((r) => r.op === 'send' && r.arg === sendArg && r.step >= afterStep);
+  if (sent === undefined) return null;
+  const got = timing.find((r) => r.op === 'expect' && r.step > sent.step && r.arg.includes(expectIncludes));
+  return got === undefined ? null : got.t - sent.t;
 }
 
 export interface Reflow {
@@ -412,11 +578,14 @@ export interface Reflow {
  * trimmed break spaces. A row with a §15.1 label that starts the next transcript line opens it; every other row —
  * the header, `[sandbox]`, `[ui]` items and their continuations, the dim detail rows under a proposal — is a leftover.
  */
-export function reflowAgainst(rows: readonly string[], transcript: readonly string[]): Reflow {
+export function reflowAgainst(rows: readonly string[], transcript: readonly string[], opts: { hangingIndent?: boolean } = {}): Reflow {
   const out: Reflow = { lines: [], wrappedRows: 0, leftovers: [], mismatches: [] };
   let next = 0;
   let open: { text: string; remaining: string } | null = null;
-  for (const row of rows) {
+  for (const raw of rows) {
+    // TUI-DESIGN-2 §3.10 / §9 (a): in `full` a continuation row is indented by `label.length + 1` cells — the indent is not
+    // part of the line, so it is dropped before the row is matched against the open line's remainder
+    const row: string = open !== null && opts.hangingIndent ? raw.replace(/^ +/, '') : raw;
     if (open !== null) {
       let rest: string | null = null;
       if (open.remaining.startsWith(row)) rest = open.remaining.slice(row.length);
@@ -434,7 +603,7 @@ export function reflowAgainst(rows: readonly string[], transcript: readonly stri
         }
         continue;
       }
-      out.mismatches.push({ row, remaining: open.remaining });
+      out.mismatches.push({ row: raw, remaining: open.remaining });
       open = null;
     }
     const line = transcript[next];
@@ -572,14 +741,23 @@ export const RAW_MODE_STEP = 'expect \\x1b\\[\\?2004h';
  */
 export const IDLE_STEP = 'expect sess \\$';
 /** the standard opening of every chat scenario at ≥ 80 columns: first frame, placeholder, raw mode, host attached */
-export const CHAT_OPEN: readonly string[] = [FIRST_FRAME_STEP, 'expect Describe the task', RAW_MODE_STEP, IDLE_STEP];
+export const CHAT_OPEN: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP];
 /** the narrow-terminal opening: the status line may drop the `sess` badge, so the sandbox item stands in for the host */
-export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, 'expect Describe the task', RAW_MODE_STEP, 'expect \\[sandbox\\]'];
-/** the opening of a one-shot `run` scenario: the first frame, raw mode (the steering composer), then `run:ready` */
-export const RUN_OPEN: readonly string[] = [FIRST_FRAME_STEP, RAW_MODE_STEP, 'expect ready'];
-/** type a task and submit it; the run is live once `ready` appears */
+export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect \\[sandbox\\]'];
+/**
+ * The run is live: the `[run] start <id> mode=… task: …` item (TUI-DESIGN-2 §4.5 shows `run:start` in the compact
+ * transcript; `[run] ready …` is one of the hidden kinds, so `expect ready` no longer works — the start item precedes it
+ * on every path). Every mocked run of the pty project says `--mode jev-on` explicitly (`MOCK_RUN_MODE`): the scripted
+ * `--mock` trajectory is a generator trajectory, and under the round-2 default `jev-only` (§1.1) the real synthesizer
+ * would run instead of it.
+ */
+export const RUN_STARTED_STEP = labelStep('run', 'start ');
+export const MOCK_RUN_MODE: readonly string[] = ['--mode', 'jev-on'];
+/** the opening of a one-shot `run` scenario: the first frame, raw mode (the steering composer), then the run's start item */
+export const RUN_OPEN: readonly string[] = [FIRST_FRAME_STEP, RAW_MODE_STEP, RUN_STARTED_STEP];
+/** type a task and submit it; the run is live once its `[run] start` item appears (the mock intake reads a ≥ 3-word imperative without `?` as `coding_task`, TUI-DESIGN-2 §3.13) */
 export function submitTask(text: string): string[] {
-  return [`send ${text}`, `expect > ${text.replace(/[\\^$.|?*+()[\]{}]/g, '\\$&')}`, 'send \\r', 'expect ready'];
+  return [`send ${text}`, echoStep(text), 'send \\r', RUN_STARTED_STEP];
 }
 /** leave an idle session through /exit */
-export const EXIT_IDLE: readonly string[] = ['send /exit', 'expect > /exit', 'send \\r', 'eof'];
+export const EXIT_IDLE: readonly string[] = ['send /exit', echoStep('/exit'), 'send \\r', 'eof'];

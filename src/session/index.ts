@@ -10,7 +10,8 @@ import { mkdir, readFile, readdir, rename, stat, writeFile } from 'node:fs/promi
 import { dirname, join } from 'node:path';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
-import type { EngineMode, RunMeta, RunRow, RunSource, SessionRow, StopReason } from '../core/types.js';
+import type { EngineMode, IntakeKind, JevProvider, RunMeta, RunRow, RunSource, SessionRow, StopReason } from '../core/types.js';
+import type { ChatRoute } from '../chat/intake.js';
 import { isRunMeta, parseEnvelope } from '../checkpoint/store.js';
 import { exitCodeFor } from '../loop/stop.js';
 import { oneLine } from '../tui/plain.js';
@@ -27,10 +28,20 @@ export type IndexLine =
   | { v: 1; t: string; kind: 'steer'; sessionId: string; runId: string; step: number; text60: string }
   | { v: 1; t: string; kind: 'undo'; sessionId: string; runId: string; step: number; by: 'undo' | 'rewind'; files: number; skipped: number }
   | { v: 1; t: string; kind: 'pause'; sessionId: string; runId: string; step: number }
-  | { v: 1; t: string; kind: 'budget'; sessionId: string; runId: string | null; setting: string; from: string; to: string };
+  | { v: 1; t: string; kind: 'budget'; sessionId: string; runId: string | null; setting: string; from: string; to: string }
+  // TUI-DESIGN-2 §3.9 / §6 item 17: one chat request (intake, lookup or LLM turn) and what it cost, so `seedMeterFromIndex` restores chat spend on /resume
+  | { v: 1; t: string; kind: 'chat'; sessionId: string; intake: IntakeKind; route: ChatRoute; costUsd: number; provider: JevProvider | 'generator' };
 
 export type IndexKind = IndexLine['kind'];
-const INDEX_KINDS: readonly string[] = ['run:start', 'run:end', 'rename', 'steer', 'undo', 'pause', 'budget'];
+const INDEX_KINDS: readonly string[] = ['run:start', 'run:end', 'rename', 'steer', 'undo', 'pause', 'budget', 'chat'];
+
+/** TUI-DESIGN-2 §3.9: the chat spend of one session folded from its `chat` lines (the meter's `jev` / `generator` sources) */
+export interface ChatSpendRow {
+  jev: number;
+  generator: number;
+  /** `chat` lines whose route was not `run` — the `you` turns answered without a run */
+  messages: number;
+}
 
 /** Bidi controls (LRM/RLM, embeddings, isolates): never in an index field a picker row renders (E13). */
 const BIDI_RE = /[\u200e\u200f\u202a-\u202e\u2066-\u2069]/g;
@@ -111,7 +122,7 @@ function num(v: unknown, fallback: number): number {
   return typeof v === 'number' && Number.isFinite(v) ? v : fallback;
 }
 
-const MODES: readonly string[] = ['jev-on', 'jev-off', 'jev-only'];
+const MODES: readonly string[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev'];
 const SOURCES: readonly string[] = ['cli', 'bench', 'perf'];
 /** Every `StopReason` (a compile error here when core/types.ts gains or loses one), so an unknown `stopReason` never folds into a typed row. */
 const STOP_REASON_SET: Readonly<Record<StopReason, true>> = {
@@ -130,6 +141,21 @@ const STOP_REASON_SET: Readonly<Record<StopReason, true>> = {
   token_cap: true,
 };
 export const STOP_REASONS: readonly StopReason[] = Object.keys(STOP_REASON_SET) as StopReason[];
+
+/** Every `IntakeKind` (TUI-DESIGN-2 §6 item 2), so a `chat` line with an unknown reading is skipped rather than folded (a compile error here when the union changes). */
+const INTAKE_KIND_SET: Readonly<Record<IntakeKind, true>> = { greeting_or_smalltalk: true, question_about_this_tool: true, question_about_the_code: true, coding_task: true, ambiguous: true };
+/** Every `ChatRoute` (TUI-DESIGN-2 §3.3). */
+const CHAT_ROUTE_SET: Readonly<Record<ChatRoute, true>> = { run: true, asked: true, reply: true, facts: true, lookup: true, llm: true };
+const CHAT_PROVIDER_SET: Readonly<Record<JevProvider | 'generator', true>> = { typesafe: true, openrouter: true, generator: true };
+function isIntakeKind(v: unknown): v is IntakeKind {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(INTAKE_KIND_SET, v);
+}
+function isChatRoute(v: unknown): v is ChatRoute {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(CHAT_ROUTE_SET, v);
+}
+function isChatProvider(v: unknown): v is JevProvider | 'generator' {
+  return typeof v === 'string' && Object.prototype.hasOwnProperty.call(CHAT_PROVIDER_SET, v);
+}
 
 /** Type guard over the `StopReason` union. */
 export function isStopReason(v: unknown): v is StopReason {
@@ -224,6 +250,14 @@ function parseIndexBody(o: Readonly<Record<string, unknown>>, kind: string, t: s
     }
     case 'budget':
       return { v: 1, t, kind: 'budget', sessionId, runId: str('runId'), setting: str('setting') ?? '', from: str('from') ?? '', to: str('to') ?? '' };
+    case 'chat': {
+      // TUI-DESIGN-2 §3.9: an unknown reading, route or provider skips the line (never folded into a typed row)
+      const intake = o['intake'];
+      const route = o['route'];
+      const provider = o['provider'];
+      if (!isIntakeKind(intake) || !isChatRoute(route) || !isChatProvider(provider)) return null;
+      return { v: 1, t, kind: 'chat', sessionId, intake, route, costUsd: Math.max(0, num(o['costUsd'], 0)), provider };
+    }
     default:
       return null;
   }
@@ -240,15 +274,18 @@ interface SessionFold {
   lastUsedMs: number;
   createdAtMs: number;
   renamed: boolean;
+  /** TUI-DESIGN-2 §3.9: Σ `chat` lines by meter source */
+  chat: ChatSpendRow;
 }
 
 /**
  * TUI-DESIGN §8.2 fold (pure): group by sessionId; per runId the last `run:start` / `run:end` win (a resume's
  * `run:start` with `resumeOf` counts as a resume, not a new run); title = last rename else the first task60;
  * lastUsed = max t over all kinds; `live` = started and not ended in the index (the picker ANDs it with `run.lock`);
- * torn, non-`v:1` and unknown lines are skipped and counted.
+ * torn, non-`v:1` and unknown lines are skipped and counted. TUI-DESIGN-2 §3.9: `chat` lines add their cost to the
+ * session's `totalUsd` and are summed per source in `chat` (what `seedMeterFromIndex` restores on /resume).
  */
-export function foldIndex(lines: readonly string[]): { sessions: Map<string, SessionRow>; skipped: number } {
+export function foldIndex(lines: readonly string[]): { sessions: Map<string, SessionRow>; skipped: number; chat: Map<string, ChatSpendRow> } {
   const folds = new Map<string, SessionFold>();
   let skipped = 0;
   for (const raw of lines) {
@@ -267,6 +304,7 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
         lastUsedMs: at,
         createdAtMs: at,
         renamed: false,
+        chat: { jev: 0, generator: 0, messages: 0 },
       };
       folds.set(line.sessionId, f);
     }
@@ -322,6 +360,11 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
         f.renamed = true;
         s.title = line.title60;
         break;
+      case 'chat':
+        if (line.provider === 'generator') f.chat.generator += line.costUsd;
+        else f.chat.jev += line.costUsd;
+        if (line.route !== 'run') f.chat.messages += 1;
+        break;
       case 'steer':
       case 'undo':
       case 'pause':
@@ -332,14 +375,17 @@ export function foldIndex(lines: readonly string[]): { sessions: Map<string, Ses
     }
   }
   const sessions = new Map<string, SessionRow>();
+  const chat = new Map<string, ChatSpendRow>();
   for (const f of folds.values()) {
     const runs = [...f.runs.values()].sort((a, b) => a.startedMs - b.startedMs).map((x) => x.row);
     f.row.runs = runs;
-    f.row.totalUsd = runs.reduce((acc, r) => acc + (r.costUsd ? r.costUsd.generator + r.costUsd.jev : 0), 0);
+    // TUI-DESIGN-2 §3.9: the session total is the runs plus every chat request (the picker's `$` agrees with the meter)
+    f.row.totalUsd = runs.reduce((acc, r) => acc + (r.costUsd ? r.costUsd.generator + r.costUsd.jev : 0), 0) + f.chat.jev + f.chat.generator;
     if (f.row.title === '') f.row.title = f.row.task60;
     sessions.set(f.row.sessionId, f.row);
+    if (f.chat.jev > 0 || f.chat.generator > 0 || f.chat.messages > 0) chat.set(f.row.sessionId, { ...f.chat });
   }
-  return { sessions, skipped };
+  return { sessions, skipped, chat };
 }
 
 /** Split file text into lines, dropping the trailing empty fragment; a torn last line stays and is skipped by the fold. */
@@ -356,19 +402,19 @@ function errnoCode(e: unknown): string | null {
 /**
  * TUI-DESIGN §8.2: one `readFile`, then the fold; sessions sorted by `lastUsed` descending. A missing file is an empty
  * index; any other read error (EACCES, EISDIR) is reported in `error` with an empty result — the session works without
- * its history.
+ * its history. `chat` (TUI-DESIGN-2 §3.9) is the per-session chat spend the controller seeds its meter from.
  */
-export async function readIndex(path: string): Promise<{ sessions: SessionRow[]; skipped: number; error?: string }> {
+export async function readIndex(path: string): Promise<{ sessions: SessionRow[]; skipped: number; chat: Map<string, ChatSpendRow>; error?: string }> {
   let text: string;
   try {
     text = await readFile(path, 'utf8');
   } catch (e) {
-    if (errnoCode(e) === 'ENOENT') return { sessions: [], skipped: 0 };
-    return { sessions: [], skipped: 0, error: `${errnoCode(e) ?? 'error'}: cannot read ${path}` };
+    if (errnoCode(e) === 'ENOENT') return { sessions: [], skipped: 0, chat: new Map() };
+    return { sessions: [], skipped: 0, chat: new Map(), error: `${errnoCode(e) ?? 'error'}: cannot read ${path}` };
   }
-  const { sessions, skipped } = foldIndex(splitIndexText(text));
+  const { sessions, skipped, chat } = foldIndex(splitIndexText(text));
   const rows = [...sessions.values()].sort((a, b) => ms(b.lastUsed) - ms(a.lastUsed));
-  return { sessions: rows, skipped };
+  return { sessions: rows, skipped, chat };
 }
 
 /** Apply the E13 rule to every free-text field of a line before it is serialised. */

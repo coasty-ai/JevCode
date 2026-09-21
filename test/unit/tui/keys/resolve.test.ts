@@ -133,8 +133,16 @@ describe('composer context: text and the five bound printables (TUI-DESIGN §3.1
     expect(acts(s, k('ctrl+u'))).toEqual([{ type: 'kill', what: 'toStart' }]);
     expect(acts(s, k('ctrl+w'))).toEqual([{ type: 'kill', what: 'wordBack' }]);
     expect(acts(s, k('meta+backspace'))).toEqual([{ type: 'kill', what: 'wordBack' }]);
-    expect(acts(s, k('meta+d'))).toEqual([{ type: 'kill', what: 'wordForward' }]);
+    expect(acts(s, k('meta+delete'))).toEqual([{ type: 'kill', what: 'wordForward' }]);
     expect(acts(s, k('ctrl+delete'))).toEqual([{ type: 'kill', what: 'wordForward' }]);
+    // TUI-DESIGN-2 §4.6: Alt+D/P/T/S open a panel tab, Alt+J toggles, Alt+Shift+J opens it full (Alt+D left kill-word-forward)
+    expect(acts(s, k('meta+d'))).toEqual([{ type: 'panel', op: 'tab', tab: 'd' }]);
+    expect(acts(s, k('meta+p'))).toEqual([{ type: 'panel', op: 'tab', tab: 'p' }]);
+    expect(acts(s, k('meta+t'))).toEqual([{ type: 'panel', op: 'tab', tab: 't' }]);
+    expect(acts(s, k('meta+s'))).toEqual([{ type: 'panel', op: 'tab', tab: 's' }]);
+    expect(acts(s, k('meta+j'))).toEqual([{ type: 'panel', op: 'toggle' }]);
+    expect(acts(s, k('meta+shift+j'))).toEqual([{ type: 'panel', op: 'full' }]);
+    expect(acts(s, { input: 'J', key: { ...k('meta+j').key, shift: true } })).toEqual([{ type: 'panel', op: 'full' }]);
     expect(acts(s, k('ctrl+y'))).toEqual([{ type: 'yank' }]);
     expect(acts(s, k('meta+y'))).toEqual([{ type: 'yankPop' }]);
     expect(acts(s, k('ctrl+t'))).toEqual([{ type: 'transpose' }]);
@@ -233,7 +241,7 @@ describe('Esc re-buffer (TUI-DESIGN §3.3, 30 ms)', () => {
     const buffered = after(liveText, k('escape'), 5000);
     expect(resolveKey(buffered, text('b'), 5000 + ESC_REBUFFER_MS)).toEqual([{ type: 'arm', armed: liveText.armed }, { type: 'move', to: 'wordLeft' }]);
     expect(acts(buffered, text('f'), 5010)).toEqual([{ type: 'move', to: 'wordRight' }]);
-    expect(acts(buffered, text('d'), 5010)).toEqual([{ type: 'kill', what: 'wordForward' }]);
+    expect(acts(buffered, text('d'), 5010)).toEqual([{ type: 'panel', op: 'tab', tab: 'd' }]); // ESC d = Alt+D = the decisions tab (TUI-DESIGN-2 §4.6)
     expect(acts(buffered, text('y'), 5010)).toEqual([{ type: 'yankPop' }]);
     expect(acts(buffered, k('return'), 5010)).toEqual([{ type: 'newline' }]);
     expect(acts(buffered, k('backspace'), 5010)).toEqual([{ type: 'kill', what: 'wordBack' }]);

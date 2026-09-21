@@ -8,9 +8,10 @@
 import { RISK_DIMENSIONS, type ConfirmRequest, type RiskDimension, type RiskDimensionResult, type SessionClamp } from '../../core/types.js';
 import { buildRiskQuestions, riskLevelTexts } from '../../loop/stages/risk.js';
 import { noulConfidence } from '../../jev/confidence.js';
-import { describeAction, oneLine, p2 } from '../plain.js';
+import { confirmPreviewLines, describeAction, oneLine, p2 } from '../plain.js';
 import { barAriaLabel, eighthBar } from '../bars.js';
 import { GLYPHS, cellWidth, fitCells, oneLineCells, padEndCells, padStartCells, truncateCells, type GlyphSet } from '../glyphs.js';
+import { cardBottom, cardRow, cardTop } from '../card.js';
 
 /** The full header (§6.1 "Full header at 80 columns (8 rows)"). */
 export const REVIEW_HEADER_ROWS = 8;
@@ -115,6 +116,52 @@ export function reviewTitle(req: ConfirmRequest, columns: number, g: GlyphSet = 
   }
   return truncateCells(line, columns, g);
 }
+
+/**
+ * TUI-DESIGN-2 §4.7 / §12 "Cards": the review card's title edge text — `review · step 7 · risk 0.44 (tail) · edit src/a.py
+ * "<goal ≤ 40>"`; at ≥ 120 `(tail on <dim>)`, the full goal and ` · jev <ms>ms`. The card's top edge cuts it to `columns − 6`.
+ */
+export function reviewCardTitle(req: ConfirmRequest, columns: number, g: GlyphSet = GLYPHS.unicode): string {
+  const wide = columns >= 120;
+  const dom = dominantDimension(req);
+  const bound = wide ? `${bnd(dimOf(req, dom))} on ${dom}` : bnd(dimOf(req, dom));
+  const a = describeAction(req.proposal.action);
+  const target = truncateCells(oneLine(a.target), wide ? TARGET_CELLS_120 : TARGET_CELLS_80, g);
+  const goalRaw = oneLine(req.proposal.goal).trim();
+  const goal = wide ? goalRaw : truncateCells(goalRaw, GOAL_CELLS_80, g);
+  const jev = wide && req.jevLatencyMs !== undefined && Number.isFinite(req.jevLatencyMs) ? ` ${g.dot} jev ${Math.round(req.jevLatencyMs)}ms` : '';
+  return `review ${g.dot} step ${req.step} ${g.dot} risk ${p2(req.risk.risk)} (${bound}) ${g.dot} ${a.kind} ${target} "${goal}"${jev}`;
+}
+
+/**
+ * TUI-DESIGN-2 §4.7: the boxed review card — title edge · keys row (the `d` note field replaces it) · ruler · four gauges ·
+ * `5 matches_intent` · `previewRows` preview rows indented two cells (with the `…[k more preview lines · e expands]` tail) ·
+ * bottom edge. The ladder over the card's `n` rows: n ≥ 9 full · 8 drops the ruler · 7 drops matches_intent · 6..4 title
+ * edge, keys, n − 3 compact rows, bottom edge · 3 title edge, keys, bottom edge · n ≤ 2 → the flat ladder
+ * (`reviewHeaderLines`). The cut is a function, never Ink clipping; every row is exactly `columns` cells (the flat rows ≤).
+ */
+export function reviewCardLines(req: ConfirmRequest, n: number, previewRows: number, columns: number, g: GlyphSet = GLYPHS.unicode, note?: { text: string; gate: string | null; spans?: readonly { start: number; end: number }[] } | null): string[] {
+  const rows = Math.floor(Number.isFinite(n) ? n : 0);
+  const w = Math.floor(Number.isFinite(columns) ? columns : 0);
+  if (rows <= 0 || w <= 0) return [];
+  if (rows <= 2) return reviewHeaderLines(req, rows, w, g);
+  const inner = Math.max(1, w - 4);
+  const keys = note !== undefined && note !== null ? (note.gate !== null ? note.gate : `${NOTE_LABEL_TEXT}${note.text}`) : reviewKeys(inner, g);
+  let body: string[];
+  if (rows === 3) body = [keys];
+  else if (rows <= 6) body = [keys, ...compactRows(req, rows - 3, inner, g)];
+  else {
+    const gauges = RISK_DIMENSIONS.map((dim) => gaugeRow(req, dim, inner, g));
+    if (rows === 7) body = [keys, ...gauges];
+    else if (rows === 8 || g.mode === 'sr') body = [keys, ...gauges, matchesIntentRow(req, inner, g)];
+    else body = [keys, reviewRuler(inner, g), ...gauges, matchesIntentRow(req, inner, g)];
+  }
+  const preview = reviewPreviewLines(confirmPreviewLines(req), previewRows, inner, g);
+  return [cardTop(reviewCardTitle(req, w, g), w, g), ...body.map((b) => cardRow(b, w, g)), ...preview.map((l) => cardRow(l, w, g)), cardBottom(w, g)];
+}
+
+/** §6.2 / §24: the note field label (mirrors `NOTE_LABEL` in composer/Composer.tsx, which this Ink-free module cannot import). */
+export const NOTE_LABEL_TEXT = 'note (≤ 600, Enter sends, Esc cancels): ';
 
 /** TUI-DESIGN §6.1 row 2 (§24 verbatim): the keys row; `[e] expand preview` and `[ctrl-c] abort run` at ≥ 120. */
 export function reviewKeys(columns: number, g: GlyphSet = GLYPHS.unicode): string {
@@ -302,10 +349,11 @@ export function followupLines(input: FollowupInput, n: number, columns: number, 
   const session = followupSessionLine(input, g);
   if (rows >= FOLLOWUP_ROWS && w >= 20) {
     const inner = w - 4; // `│ ` + text + ` │`
-    const top = `${g.boxTopLeft} ${FOLLOWUP_TITLE} `;
-    const topLine = cellWidth(top) + 1 <= w ? `${top}${g.boxHorizontal.repeat(w - cellWidth(top) - 1)}${g.boxTopRight}` : truncateCells(`${g.boxTopLeft} ${FOLLOWUP_TITLE}`, w, g);
+    // TUI-DESIGN-2 §4.7: the cli-boxes `round` set (`╭ ╮ ╰ ╯`), the title in the top edge
+    const top = `${g.roundTopLeft} ${FOLLOWUP_TITLE} `;
+    const topLine = cellWidth(top) + 1 <= w ? `${top}${g.boxHorizontal.repeat(w - cellWidth(top) - 1)}${g.roundTopRight}` : truncateCells(`${g.roundTopLeft} ${FOLLOWUP_TITLE}`, w, g);
     const framed = (s: string): string => `${g.boxVertical} ${fitCells(s, inner, g)} ${g.boxVertical}`;
-    return [topLine, framed(keys), framed(session), framed(FOLLOWUP_NOTE), `${g.boxBottomLeft}${g.boxHorizontal.repeat(w - 2)}${g.boxBottomRight}`];
+    return [topLine, framed(keys), framed(session), framed(FOLLOWUP_NOTE), `${g.roundBottomLeft}${g.boxHorizontal.repeat(w - 2)}${g.roundBottomRight}`];
   }
   const plain = [FOLLOWUP_TITLE, keys, session, FOLLOWUP_NOTE];
   return plain.slice(0, Math.min(rows, 4)).map((l) => truncateCells(l, w, g));

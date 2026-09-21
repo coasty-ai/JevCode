@@ -225,7 +225,8 @@ export function renderMan(r) {
   for (const [p, d] of files) L.push('.TP', `.I ${roff(p)}`, ...fill(d));
   L.push('.SH ENVIRONMENT');
   const env = [
-    ['ANTHROPIC_API_KEY, OPENROUTER_API_KEY, JEV_API_KEY', 'generator and decider keys'],
+    ['TYPESAFE_API_KEY, OPENROUTER_API_KEY, JEV_API_KEY, ANTHROPIC_API_KEY', 'decider (Jev) and generator keys; jev\\-only needs one Jev key'],
+    ['JEVCODE_MODE, JEV_PROVIDER', 'engine mode (jev\\-only, the default | jev\\-on | jev\\-off) and Jev provider (auto | typesafe | openrouter)'],
     ['JEVCODE_HOME', 'root of runs/, sessions/ and history (default ~/.jevcode)'],
     ['JEVCODE_CONFIG, JEVCODE_KEYBINDINGS', 'configuration and keybindings file paths'],
     ['JEVCODE_SPEND_CAP_USD, JEVCODE_SESSION_SPEND_CAP_USD', 'run and session spend caps'],
@@ -274,8 +275,10 @@ export function renderZsh(r) {
     L.push(`        ${c})`, '          _arguments \\');
     const specs = flagsFor(r, c).map((f) => {
       let action = '';
+      // TUI-DESIGN-2 §1.4: a per-command value list (`--jev-provider typesafe|openrouter` on login) narrows the enum
+      const arg = f.argFor?.[c] ?? f.arg;
       if (f.name === 'resume') action = ':run id:_jevcode_runs';
-      else if (f.arg && /^[a-z0-9-]+(\|[a-z0-9-]+)+$/.test(f.arg)) action = `:${f.name}:(${f.arg.split('|').join(' ')})`;
+      else if (arg && /^[a-z0-9-]+(\|[a-z0-9-]+)+$/.test(arg)) action = `:${f.name}:(${arg.split('|').join(' ')})`;
       else if (/file|path|config|out/.test(f.name)) action = `:${f.arg ?? 'file'}:_files`;
       else if (/dir|workspace/.test(f.name)) action = `:${f.arg ?? 'dir'}:_files -/`;
       else if (f.arg) action = `:${f.arg.replace(/[<>]/g, '')}:`;

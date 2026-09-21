@@ -10,213 +10,24 @@
 import { EventEmitter } from 'node:events';
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import type { BlockingRequest, HistoryStore, LaunchSettings, RetryInfo, SecretHit, SessionHost, SteerResult } from '../../../src/core/types.js';
-import { App, COALESCED_ENTER_TOAST, EXITED_CTRL_C, EXITED_CTRL_D, SR_REVIEW_MENU, SR_REVIEW_PROMPT, builderFaultFor, createBridge, createTuiRenderer, draftsDirFor, liveLines, queueRows, splitInputChunk, srReviewAnswer, type Bridge } from '../../../src/tui/App.js';
+import type { BlockingRequest, LaunchSettings } from '../../../src/core/types.js';
+import { App, COALESCED_ENTER_TOAST, EXITED_CTRL_C, EXITED_CTRL_D, SR_REVIEW_MENU, SR_REVIEW_PROMPT, builderFaultFor, createBridge, createTuiRenderer, draftsDirFor, liveLines, queueRows, splitInputChunk, srReviewAnswer } from '../../../src/tui/App.js';
 import { REVIEW_KEYS_80 } from '../../../src/tui/review/lines.js';
-import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer, type UiAction, type UiState } from '../../../src/tui/useEngine.js';
+import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { IDENTITY_NO_TTY, formatTranscriptItem, itemsFromEvent, plainFirstLine } from '../../../src/tui/plain.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
+import { WORDMARK } from '../../../src/tui/splash.js';
 import { EXIT_CONFIRM_ROW } from '../../../src/tui/Overlay.js';
 import { renderFaultFor, resetRenderFaults } from '../../../src/tui/PaneBoundary.js';
 import { resolveLaunchSettings } from '../../../src/config/launch.js';
-import { detectSecrets, patternRedact } from '../../../src/core/redact.js';
+import { detectSecrets } from '../../../src/core/redact.js';
 import { fakeEngine, loadRunEvents, mkConfirmRequest, mkDecision, mkProposal, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion } from './stub-stdout.js';
 
 afterEach(() => cleanup());
 beforeEach(() => resetRenderFaults());
 
-const ESC = '\x1b';
-const CTRL_C = '\x03';
-const CTRL_D = '\x04';
-const CTRL_G = '\x07';
-const CTRL_O = '\x0f';
-const CTRL_R = '\x12';
-const UP = '\x1b[A';
-const DOWN = '\x1b[B';
-const CANARY = `sk-ant-api03-${'A'.repeat(40)}`;
-
-/** An in-memory `HistoryStore` recording every append (kind + text). */
-interface FakeHistory extends HistoryStore {
-  appended: { kind: string; text: string }[];
-  list: string[];
-}
-
-function fakeHistory(entries: readonly string[] = []): FakeHistory {
-  const s: FakeHistory = {
-    appended: [],
-    list: [...entries],
-    entries: () => s.list,
-    append: (kind, text) => {
-      s.appended.push({ kind, text });
-      s.list.push(text);
-    },
-    clear: () => {
-      s.list = [];
-    },
-  };
-  return s;
-}
-
-interface FakeHost extends SessionHost {
-  submitted: { text: string; kind: string; secretSpans: readonly string[]; pinnedFiles: readonly string[] }[];
-  steered: { text: string; secretSpans: readonly string[] }[];
-  secrets: { name: string; value: string }[];
-  notes: string[];
-  commands: string[];
-  exits: number[];
-  aborts: string[];
-  paused: number;
-  retries: number;
-  order: string[];
-  steerResult: SteerResult;
-  historyStore: FakeHistory | null;
-}
-
-function fakeHost(): FakeHost {
-  const h: FakeHost = {
-    submitted: [],
-    steered: [],
-    secrets: [],
-    notes: [],
-    commands: [],
-    exits: [],
-    aborts: [],
-    paused: 0,
-    retries: 0,
-    order: [],
-    steerResult: { ok: true, index: 1, queued: 1 },
-    historyStore: null,
-    submit: async (text, opts) => {
-      h.order.push('submit');
-      h.submitted.push({ text, kind: opts.kind, secretSpans: opts.secretSpans, pinnedFiles: opts.pinnedFiles });
-    },
-    command: async (line) => {
-      h.commands.push(line);
-    },
-    steer: (text, opts) => {
-      h.order.push('steer');
-      h.steered.push({ text, secretSpans: opts.secretSpans });
-      return h.steerResult;
-    },
-    unsteer: () => null,
-    pause: () => {
-      h.paused += 1;
-    },
-    abort: (r) => {
-      h.aborts.push(r);
-    },
-    retryNow: () => {
-      h.retries += 1;
-      return true;
-    },
-    note: (text) => {
-      h.notes.push(text);
-    },
-    redact: (s) => patternRedact(s),
-    addSecret: (name, value) => {
-      h.order.push('addSecret');
-      h.secrets.push({ name, value });
-      return true;
-    },
-    detectSecrets: (s): readonly SecretHit[] => detectSecrets(s),
-    exit: (code) => {
-      h.exits.push(code);
-    },
-    index: () => [],
-    history: () => h.historyStore,
-    workspaceCandidates: async () => [],
-  };
-  return h;
-}
-
-interface Mounted {
-  bus: ReturnType<typeof createEventBus>;
-  confirmer: ReturnType<typeof createTuiConfirmer>;
-  aborts: string[];
-  exits: number[];
-  host: FakeHost | null;
-  bridge: Bridge;
-  stdin: { write: (s: string) => void };
-  lastFrame: () => string;
-  frames: string[];
-  state: () => UiState | null;
-  dispatch: (a: UiAction) => void;
-}
-
-interface MountOptions {
-  mode?: 'session' | 'one-shot';
-  task?: string;
-  host?: FakeHost | null;
-  now?: () => number;
-  fault?: string;
-  launch?: LaunchSettings;
-  bridge?: Bridge;
-  runsDir?: string;
-  home?: string;
-}
-
-/** Mount through ink-testing-library: real key parsing, `debug` frames (static + dynamic in one string). */
-function mountApp(opts: MountOptions = {}): Mounted {
-  const bus = createEventBus();
-  const confirmer = createTuiConfirmer();
-  const aborts: string[] = [];
-  const exits: number[] = [];
-  const host = opts.host ?? null;
-  // the bridge is private to App.tsx: hand the host through createTuiRenderer's shape by mounting with the same props it uses
-  const bridge = opts.bridge ?? createBridge(host, null);
-  const ui = render(
-    <App
-      task={opts.task ?? (opts.mode === 'session' ? '' : 'Fix the failing test')}
-      resumeId={null}
-      source={bus}
-      confirmer={confirmer}
-      onAbort={(r) => aborts.push(r)}
-      mode={opts.mode ?? 'one-shot'}
-      cwd="/Users/x/proj"
-      onExit={(c) => exits.push(c)}
-      tickMs={0}
-      {...(opts.now ? { now: opts.now } : {})}
-      {...(opts.fault !== undefined ? { fault: opts.fault } : {})}
-      {...(opts.launch ? { launch: opts.launch } : {})}
-      {...(opts.runsDir !== undefined ? { runsDir: opts.runsDir } : {})}
-      {...(opts.home !== undefined ? { home: opts.home } : {})}
-      bridge={bridge}
-    />,
-  );
-  return {
-    bus,
-    confirmer,
-    aborts,
-    exits,
-    host,
-    bridge,
-    stdin: ui.stdin,
-    lastFrame: () => stripSgr(ui.lastFrame() ?? ''),
-    frames: ui.frames,
-    state: () => bridge.stateReader?.() ?? null,
-    dispatch: (a) => bridge.command({ type: 'dispatch', action: a }),
-  };
-}
-
-const retryInfo = (attempt: number, waitMs = 12_000): RetryInfo => ({ attempt, maxAttempts: 3, waitMs, retryAfter: true, cause: { kind: 'http', status: 429, code: null, message: 'rate limited' } });
-
-function stripSgr(s: string): string {
-  return s.replace(/\x1b\[[0-9;]*m/g, '');
-}
-
-/** Dynamic region = everything from the last rule row onwards (the <Static> scrollback sits above it). */
-function dynamicLines(frame: string): string[] {
-  const lines = frame.split('\n');
-  const idx = lines.map((l) => /^[─-]{3,}/.test(l.trim()) && /[─-]{2,}$/.test(l.trim())).lastIndexOf(true);
-  return lines.slice(idx);
-}
-
-function goLive(m: Mounted, step = 1): void {
-  m.bus.emit({ type: 'run:start', runId: 'r1', task: 'Fix the failing test', mode: 'jev-on', resumedFromStep: null });
-  m.bus.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 'Fix the failing test', resumed: false });
-  m.bus.emit({ type: 'status', status: mkStatus(step, 'propose') });
-}
+import { CANARY, CTRL_C, CTRL_D, CTRL_G, CTRL_O, CTRL_R, DOWN, ESC, UP, dynamicLines, fakeHistory, fakeHost, goLive, mountApp, retryInfo, stripSgr, waitFor, type Mounted } from './app-harness.js';
 
 describe('<App> first frame (§1)', () => {
   it('one-shot: renders the status sentinel `step 0/` and the task header in the very first frame, before any engine is attached', () => {
@@ -228,14 +39,26 @@ describe('<App> first frame (§1)', () => {
     expect(m.lastFrame()).toContain('─'.repeat(10));
   });
 
-  it('session: header `jevcode session · <dir> | step 0/– starting`, the rule, the composer placeholder and the idle status line — from argv only (F-A)', () => {
+  it('session: header `jevcode session · <dir> | step 0/– starting`, splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` settles into the brand row (H-A3)', async () => {
     const m = mountApp({ mode: 'session' });
     const f = m.lastFrame();
     expect(f).toContain('[run] jevcode session · proj | step 0/– starting');
-    expect(f).toContain(`> ${PLACEHOLDERS.task}`);
-    const dyn = dynamicLines(f);
-    expect(dyn).toHaveLength(3); // rule + composer + status
-    expect(dyn[2]).toMatch(/^idle\s+step 0\/–\s+\? help$/);
+    expect(f).toContain(`› ${PLACEHOLDERS.task}`);
+    expect(f).toContain('step 0/–');
+    // TUI-DESIGN-2 §5.2 row 0: the `J` (wordmark cells 0–6) and the sweep head are in the very first frame
+    expect(f).toContain(`${WORDMARK[3]!.slice(0, 7)}▓▒░`);
+    expect(m.state()?.splash).toBe('running');
+    m.dispatch({ type: 'splash:done' });
+    await tick(20);
+    const dyn = dynamicLines(m.lastFrame());
+    expect(dyn).toHaveLength(6); // brand rule + console (top, composer, divider, status, bottom)
+    expect(dyn[0]).toMatch(/^─── ◆ jevcode \S+ ─+$/);
+    expect(dyn[1]).toMatch(/^╭─ jev-only ─+ proj ─╮$/);
+    expect(dyn[2]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(96 - 2 - PLACEHOLDERS.task.length)} │`);
+    expect(dyn[3]).toMatch(/^├─+┤$/);
+    expect(dyn[4]).toMatch(/^│ idle\s+step 0\/–\s+\? help │$/);
+    expect(dyn[5]).toMatch(/^╰─+╯$/);
+    expect(m.state()?.splash).toBe('done');
   });
 
   it('resume mode: the first frame names the run being resumed', () => {
@@ -272,7 +95,12 @@ describe('<App> transcript, live region and pane', () => {
     fe.emit({ type: 'decision', decision: mkDecision({ stage: 'judge', id: 'succeeded', question: { type: 'noul', instructions: 'x', criteria: { true: 't', false: 'f' } }, answer: { type: 'noul', noul: 0.92 }, probability: 0.92, confidence: 0.84 }) });
     fe.emit({ type: 'status', status: mkStatus(3, 'judge') });
     await tick(20);
+    // TUI-DESIGN-2 §4.6: the panel is collapsed by default (the strip on the rule row); /panel full opens today's pane
+    expect(m.lastFrame()).toMatch(/─── ▸ jev s3 · 3 decisions/);
+    m.dispatch({ type: 'panel', panel: 'full' });
+    await tick(20);
     const f = m.lastFrame();
+    expect(f).toContain('─── ▾ decisions s3');
     expect(f).toContain('[d]ecisions [p]lan [t]ime [s]ynth');
     expect(f).toMatch(/s3 risk\s+destructive\s+L1 .*\[review\]/);
     expect(f).toMatch(/s3 risk\s+irreversible\s+L1 .*\[block\]/);
@@ -280,42 +108,75 @@ describe('<App> transcript, live region and pane', () => {
     expect(f).toContain('step 3/40');
   });
 
-  it('`]` and `[` cycle the tabs on an empty composer; `d p t s` insert text', async () => {
+  it('`]` opens a collapsed panel, then `]` and `[` cycle the tabs on an empty composer; `d p t s` insert text (TUI-DESIGN-2 §4.6)', async () => {
     const m = mountApp();
     goLive(m);
     await tick(10);
+    expect(m.state()?.panel).toBe('collapsed');
     m.stdin.write(']');
     await tick(10);
-    expect(m.lastFrame()).toContain('─── plan s1');
+    expect(m.state()?.panel).toBe('open');
+    expect(m.lastFrame()).toContain('─── ▾ decisions s1');
+    m.stdin.write(']');
+    await tick(10);
+    expect(m.lastFrame()).toContain('─── ▾ plan s1');
     m.stdin.write('[');
     await tick(10);
-    expect(m.lastFrame()).toContain('─── decisions s1');
+    expect(m.lastFrame()).toContain('─── ▾ decisions s1');
     m.stdin.write('d');
     await tick(10);
-    expect(m.lastFrame()).toContain('> d');
-    expect(m.lastFrame()).toContain('─── decisions s1');
+    expect(m.lastFrame()).toContain('› d');
+    expect(m.lastFrame()).toContain('─── ▾ decisions s1');
   });
 
-  it('renders the whole scripted run: transcript rows match formatTranscriptItem line for line; run:end reopens the composer with the follow-up placeholder', async () => {
+  it('renders the whole scripted run in `full`: every transcript row is formatTranscriptItem(item) word-wrapped with a hanging indent (TUI-DESIGN-2 §9); run:end reopens the composer with the follow-up placeholder', async () => {
+    const m = mountApp({ mode: 'session' });
+    m.dispatch({ type: 'transcript', view: 'full' });
+    await tick(10);
+    const events = loadRunEvents();
+    for (const e of events) m.bus.emit(e);
+    await tick(LIVE_FLUSH_MS * 2);
+    const f = m.lastFrame();
+    // the identity predicate: modulo Ink's word-wrap (rows hang under the text column), every row is the item's line
+    const cells = (x: string): string => x.replace(/\s+/g, '');
+    const flat = cells(f);
+    let seq = 0;
+    for (const e of events) {
+      for (const item of itemsFromEvent(e, seq)) {
+        expect(flat).toContain(cells(formatTranscriptItem(item)));
+        seq += 1;
+      }
+    }
+    // a short item is byte-identical on one row (label, one space, text)
+    expect(f).toContain('[run] ready 20260919-120000-ab12 step 0/40');
+    expect(f).toContain('idle exit 4');
+    expect(f).toContain(`› ${PLACEHOLDERS.followup}`);
+    expect(m.state()?.run).toBe('none');
+  });
+
+  it('`compact` (the default) hides the stage kinds and `run:ready` and keeps `run:start`, `run:end`, `confirm:resolved`, `error` (TUI-DESIGN-2 §4.5 — the declared subsequence of transcript.log)', async () => {
     const m = mountApp({ mode: 'session' });
     const events = loadRunEvents();
     for (const e of events) m.bus.emit(e);
     await tick(LIVE_FLUSH_MS * 2);
     const f = m.lastFrame();
     let seq = 0;
+    const hidden = new Set(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
     for (const e of events) {
       for (const item of itemsFromEvent(e, seq)) {
-        expect(f).toContain(formatTranscriptItem(item));
+        const line = formatTranscriptItem(item);
+        if (hidden.has(item.kind)) expect(f, line).not.toContain(line.slice(0, 40));
+        else expect(f.replace(/\s+/g, '')).toContain(line.replace(/\s+/g, ''));
         seq += 1;
       }
     }
-    expect(f).toContain('idle exit 4');
-    expect(f).toContain(`> ${PLACEHOLDERS.followup}`);
-    expect(m.state()?.run).toBe('none');
+    expect(m.state()?.items.some((i) => i.hidden === true)).toBe(true);
+    expect(m.state()?.items.filter((i) => i.hidden !== true).length).toBeGreaterThan(0);
   });
 
   it('streams deltas into the live region (coalesced) and commits exactly one proposal item that clears the live region', async () => {
     const m = mountApp();
+    m.dispatch({ type: 'transcript', view: 'full' });
     goLive(m);
     m.bus.emit({ type: 'generator:start', step: 1, attempt: 1 });
     const before = m.frames.length;
@@ -354,12 +215,12 @@ describe('<App> review (§6)', () => {
     expect(m.lastFrame()).toContain('review pending…');
     m.stdin.write('y');
     await tick(30);
-    expect(m.lastFrame()).toContain('> yy');
+    expect(m.lastFrame()).toContain('› yy');
     expect(m.confirmer.pending()?.id).toBe('c1');
     // typing keeps deferring (visibleAt = lastKeystrokeAt + 1000)
     await tick(1250);
     const f = m.lastFrame();
-    expect(f).toContain('review  step 3  risk 0.50 (exp)  edit src/a.py "fix the off-by-one"');
+    expect(f).toContain('╭─ review · step 3 · risk 0.50 (exp) · edit src/a.py "fix the off-by-one" ─');
     expect(f).toContain(REVIEW_KEYS_80);
     expect(f).toContain('--- old');
     expect(f).toContain('(review pending');
@@ -381,7 +242,7 @@ describe('<App> review (§6)', () => {
     const req = mkConfirmRequest('c2', 4);
     const p = m.confirmer.confirm(req, { signal });
     await tick(1250);
-    expect(m.lastFrame()).toContain('review  step 4');
+    expect(m.lastFrame()).toContain('review · step 4');
     m.stdin.write('\r');
     await tick(20);
     expect(m.confirmer.pending()?.id).toBe('c2');
@@ -436,12 +297,17 @@ describe('<App> review (§6)', () => {
     m.stdin.write('\r');
     await expect(p).resolves.toEqual({ approved: false, note: 'skip the tests' });
     await tick(20);
-    expect(m.lastFrame()).toContain('> my draft');
+    expect(m.lastFrame()).toContain('› my draft');
   });
 
-  it('e expands the preview (pane yields); w then a digit appends the /why block', async () => {
-    const m = mountApp();
+  it('e expands the preview (the open panel yields); w then a digit appends the /why block', async () => {
+    // TUI-DESIGN-2 §4.2: at 24 rows the 9-row card plus the console leave 7 rows — the preview already takes them and the open panel
+    // gets none, so `e` has nothing to reclaim; at 40 rows the open panel holds 6 rows the expanded preview takes back
+    const bridge = createBridge(null, null);
+    bridge.geometry = { rows: 40, columns: 100 };
+    const m = mountApp({ bridge });
     goLive(m, 3);
+    m.dispatch({ type: 'panel', panel: 'open' });
     m.bus.emit({ type: 'decision', decision: mkDecision({ step: 3, stage: 'risk', id: 'destructive', verdict: 'review' }) });
     const req = mkConfirmRequest('c6', 3, { kind: 'write', path: 'big.txt', content: Array.from({ length: 30 }, (_, i) => `content line ${i}`).join('\n') });
     void m.confirmer.confirm(req, { signal: new AbortController().signal });
@@ -489,7 +355,7 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
     expect(m.lastFrame()).toContain('Esc again clears the draft');
     m.stdin.write(ESC);
     await tick(80);
-    expect(m.lastFrame()).not.toContain('> again');
+    expect(m.lastFrame()).not.toContain('› again');
   });
 
   it('S2 live·empty: one-shot Ctrl-C aborts (human_abort); session Ctrl-C aborts and stays; Esc pauses with the toast', async () => {
@@ -527,7 +393,7 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
     m.stdin.write(CTRL_D);
     await tick(20);
     expect(m.lastFrame()).toContain('a run is live: [y] abort and exit   [n] stay');
-    expect(m.lastFrame()).toContain('> (waiting for y/n)');
+    expect(m.lastFrame()).toContain('› (waiting for y/n)');
     m.stdin.write('y'); // not armed yet (< 150 ms): inert
     await tick(20);
     expect(host.aborts).toEqual([]);
@@ -594,11 +460,11 @@ describe('<App> composer, steer, paste, gate, palette (§4, §5, §8.6, §10)', 
     m.stdin.write('\r');
     await tick(20);
     expect(host.notes).toContain('error: unknown command /budgett; type / to list commands');
-    expect(m.lastFrame()).toContain('> /budgett');
+    expect(m.lastFrame()).toContain('› /budgett');
     expect(host.submitted).toEqual([]);
     m.stdin.write(CTRL_C); // S5 palette: closes the palette, the draft is kept
     await tick(20);
-    expect(m.lastFrame()).toContain('> /budgett');
+    expect(m.lastFrame()).toContain('› /budgett');
     expect(m.lastFrame()).not.toContain('Tab completes');
     m.stdin.write(CTRL_C); // S1: clears the draft
     await tick(20);
@@ -716,6 +582,7 @@ describe('createTuiRenderer', () => {
     });
     await r.firstFrame();
     expect(r.confirmer.identity).toBe(IDENTITY_NO_TTY);
+    r.dispatch({ type: 'transcript', view: 'full' });
     const fe = fakeEngine();
     r.attach(fe.engine);
     fe.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 'piped task', resumed: false });
@@ -753,7 +620,7 @@ describe('<App> a submission that never becomes a run (§4.9, finding 1)', () =>
     await tick(30);
     expect(host.submitted).toHaveLength(1);
     expect(m.state()?.run).toBe('none');
-    expect(dynamicLines(m.lastFrame()).at(-1)).toMatch(/^idle\s/);
+    expect(dynamicLines(m.lastFrame()).at(-2)).toMatch(/^│ idle\s/); // the status row sits inside the console (TUI-DESIGN-2 §4.3)
     expect(m.lastFrame()).not.toContain('run is ending; wait for run:end');
     m.stdin.write('second attempt');
     await tick(10);
@@ -784,7 +651,7 @@ describe('<App> a submission that never becomes a run (§4.9, finding 1)', () =>
     expect(m.lastFrame()).not.toContain(EXIT_CONFIRM_ROW);
   });
 
-  it('while the submit is still in flight (starting, no engine) Ctrl-C follows the S0 rules: hint then exit 0 through the host, never an abort on nothing', async () => {
+  it('while the submit is still in flight (starting, no engine, no thinking phase) Ctrl-C follows the S0 rules: hint then exit 0 through the host, never an abort on nothing (TUI-DESIGN-2 §3.1 row 10 — with a phase set, round2-app.test.tsx: one press aborts the request)', async () => {
     const host = fakeHost();
     let release: () => void = () => undefined;
     host.submit = () =>
@@ -795,7 +662,7 @@ describe('<App> a submission that never becomes a run (§4.9, finding 1)', () =>
     m.stdin.write('slow start\r');
     await tick(30);
     expect(m.state()?.run).toBe('starting');
-    expect(m.lastFrame()).toMatch(/\nstarting\s/);
+    expect(m.lastFrame()).toMatch(/│ starting\s/);
     m.stdin.write(CTRL_C);
     await tick(20);
     expect(host.aborts).toEqual([]);
@@ -868,7 +735,7 @@ describe('<App> coalesced input chunks (§4.5 step 1 amended, finding 2)', () =>
     m.stdin.write('probe task via chat\r');
     await tick(30);
     expect(host.submitted.map((s) => s.text)).toEqual(['probe task via chat']);
-    expect(m.lastFrame()).not.toContain('> probe task via chat');
+    expect(m.lastFrame()).not.toContain('› probe task via chat');
     m.stdin.write('\x03\x03/exit\r');
     await tick(30);
     expect(host.exits[0]).toBe(0);
@@ -892,7 +759,7 @@ describe('<App> coalesced input chunks (§4.5 step 1 amended, finding 2)', () =>
     await tick(30);
     // the `Tip:` toast still owns the left zone (info toasts queue, ≤ 4): the folded-Enter toast is queued behind it
     expect(m.state()?.toasts.map((t) => t.text)).toContain(COALESCED_ENTER_TOAST);
-    expect(m.lastFrame()).toContain('> two lines');
+    expect(m.lastFrame()).toContain('› two lines');
     expect(m.lastFrame()).toContain('  typed fast');
     expect(host.submitted).toEqual([]);
   });
@@ -908,10 +775,14 @@ describe('<App> the `d` note field (§6.2, §6.4, findings 3 and 8)', () => {
     }
     const req = mkConfirmRequest('cn', 4);
     const p = m.confirmer.confirmDetailed(req, { signal: new AbortController().signal });
-    await tick(1250);
+    // finding 7: wait for the armed review (the §6.3 deferral + Ink's throttled commit), never a fixed tick — `d` before the
+    // arm would land in the draft; then wait for the note field itself before reading its frame
+    await waitFor(() => m.state()?.overlay === 'review' && m.state()?.overlayArmed === true, 3000);
+    await waitFor(() => m.lastFrame().includes(REVIEW_KEYS_80));
     expect(m.lastFrame()).toContain(REVIEW_KEYS_80);
     m.stdin.write('d');
-    await tick(20);
+    await waitFor(() => m.state()?.noteMode === true);
+    await waitFor(() => m.lastFrame().includes('note (≤ 600, Enter sends, Esc cancels):'));
     expect(m.lastFrame()).toContain('note (≤ 600, Enter sends, Esc cancels):');
     return p;
   }
@@ -962,7 +833,7 @@ describe('<App> the `d` note field (§6.2, §6.4, findings 3 and 8)', () => {
     m.stdin.write('n');
     await expect(p).resolves.toEqual({ approved: false });
     await tick(20);
-    expect(m.lastFrame()).toContain('> my real draft');
+    expect(m.lastFrame()).toContain('› my real draft');
   });
 
   it('a review settled from outside while the note is open (a second request) restores the stashed draft', async () => {
@@ -977,7 +848,7 @@ describe('<App> the `d` note field (§6.2, §6.4, findings 3 and 8)', () => {
     void m.confirmer.confirmDetailed(req2, { signal: new AbortController().signal }).catch(() => undefined);
     await tick(30);
     expect(m.state()?.noteMode).toBe(false);
-    expect(m.lastFrame()).toContain('> keep me');
+    expect(m.lastFrame()).toContain('› keep me');
     expect(m.lastFrame()).not.toContain('typing a note');
   });
 });
@@ -1062,7 +933,7 @@ describe('<App> App-level fault injection (§13.4, finding 5)', () => {
     m.stdin.write('/');
     await tick(30);
     expect(m.lastFrame()).toContain('ui: overlay pane failed to render (InjectedRenderFault)');
-    expect(m.lastFrame()).toContain('> /');
+    expect(m.lastFrame()).toContain('› /');
     cleanup();
     const m2 = mountApp({ mode: 'session', host: fakeHost(), fault: renderFaultFor('overlay') });
     goLive(m2, 3);
@@ -1100,13 +971,13 @@ describe('<App> retry row `[r] retry now` (§13.2, finding 7)', () => {
     m.stdin.write('r');
     await tick(10);
     expect(host.retries).toBe(2);
-    expect(m.lastFrame()).not.toContain('> r');
+    expect(m.lastFrame()).not.toContain('› r');
     m.stdin.write('ab');
     await tick(10);
     m.stdin.write('r');
     await tick(10);
     expect(host.retries).toBe(2);
-    expect(m.lastFrame()).toContain('> abr');
+    expect(m.lastFrame()).toContain('› abr');
     m.stdin.write(CTRL_C);
     await tick(10);
     m.bus.emit({ type: 'retry:settled', side: 'jev', step: 2, stage: 'propose', attempts: 2 } as never);
@@ -1115,7 +986,7 @@ describe('<App> retry row `[r] retry now` (§13.2, finding 7)', () => {
     m.stdin.write('r');
     await tick(10);
     expect(host.retries).toBe(2);
-    expect(m.lastFrame()).toContain('> r');
+    expect(m.lastFrame()).toContain('› r');
   });
 
   it('the retry countdown follows the 1 Hz tick and clears on retry:settled through the mounted App', async () => {
@@ -1153,7 +1024,7 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix, the remaining cells (§3.3)', () =
     expect(host.paused).toBe(0);
     m.stdin.write(ESC);
     await tick(80);
-    expect(m.lastFrame()).not.toContain('> again');
+    expect(m.lastFrame()).not.toContain('› again');
     expect(host.aborts).toEqual([]);
   });
 
@@ -1169,7 +1040,7 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix, the remaining cells (§3.3)', () =
     m.stdin.write('x');
     m.stdin.write('\r');
     await tick(20);
-    expect(m.lastFrame()).not.toContain('> x');
+    expect(m.lastFrame()).not.toContain('› x');
     m.stdin.write(ESC);
     await tick(80);
     expect(host.paused).toBe(0);
@@ -1209,7 +1080,7 @@ describe('<App> Ctrl-C / Esc / Ctrl-D matrix, the remaining cells (§3.3)', () =
     m.stdin.write(ESC);
     await tick(80);
     expect(m.state()?.overlay).toBe('palette');
-    expect(m.lastFrame()).toContain('> /');
+    expect(m.lastFrame()).toContain('› /');
     expect(m.lastFrame()).toMatch(/\/rewind|\/undo|\/resume|\/new/);
     m.stdin.write(ESC);
     await tick(80);
@@ -1302,7 +1173,7 @@ describe('<App> composer paths (§4.6, §5.4, §8.6, §10.2, finding 12)', () =>
     await tick(20);
     m.stdin.write('\r');
     await tick(20);
-    expect(m.lastFrame()).toContain('> @src/parse_date.py');
+    expect(m.lastFrame()).toContain('› @src/parse_date.py');
     expect(m.state()?.overlay).toBe('none');
   });
 
@@ -1317,7 +1188,7 @@ describe('<App> composer paths (§4.6, §5.4, §8.6, §10.2, finding 12)', () =>
     expect(m.lastFrame()).toContain('↑1 queued for step 6: taken back');
     m.stdin.write(UP);
     await tick(20);
-    expect(m.lastFrame()).toContain('> taken back');
+    expect(m.lastFrame()).toContain('› taken back');
     m.stdin.write(CTRL_C); // clears the draft → history (§10.7): `taken back` becomes the newest entry
     await tick(20);
     expect(host.historyStore.appended.at(-1)).toEqual({ kind: 'prompt', text: 'taken back' });
@@ -1325,16 +1196,16 @@ describe('<App> composer paths (§4.6, §5.4, §8.6, §10.2, finding 12)', () =>
     await tick(20);
     m.stdin.write(UP);
     await tick(20);
-    expect(m.lastFrame()).toContain('> taken back');
+    expect(m.lastFrame()).toContain('› taken back');
     m.stdin.write(UP);
     await tick(20);
-    expect(m.lastFrame()).toContain('> newer prompt');
+    expect(m.lastFrame()).toContain('› newer prompt');
     m.stdin.write(UP);
     await tick(20);
-    expect(m.lastFrame()).toContain('> older prompt');
+    expect(m.lastFrame()).toContain('› older prompt');
     m.stdin.write(DOWN);
     await tick(20);
-    expect(m.lastFrame()).toContain('> newer prompt');
+    expect(m.lastFrame()).toContain('› newer prompt');
     m.stdin.write(CTRL_C);
     await tick(20);
     m.stdin.write(CTRL_R);
@@ -1355,7 +1226,9 @@ describe('<App> composer paths (§4.6, §5.4, §8.6, §10.2, finding 12)', () =>
     await tick(10);
     m.stdin.write(CTRL_G);
     await tick(30);
-    expect(m.lastFrame()).toContain('editor: the draft contains a secret (sk-ant-…); remove it or send it first');
+    // the toast owns the status left zone at the console's inner width (100 − 4), so its tail is cut by the ellipsis (TUI-DESIGN-2 §10.1)
+    expect(m.lastFrame()).toContain('editor: the draft contains a secret (sk-ant-…); remove it or send it');
+    expect(host.notes).toContain('! editor: the draft contains a secret (sk-ant-…); remove it or send it first');
     expect(m.lastFrame()).toContain('token ••••');
     expect(draftsDirFor({ run: 'live', paths: null, runId: 'r1' }, { home: '/tmp/jev-home', runsDir: '/tmp/jev-runs' })).toBe('/tmp/jev-runs/r1/drafts');
     expect(draftsDirFor({ run: 'live', paths: { runDir: '/x/r2', transcript: '', log: '' }, runId: 'r2' }, { home: '/tmp/jev-home' })).toBe('/x/r2/drafts');
@@ -1421,7 +1294,7 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
     m.bridge.command({ type: 'followup', input, resolve: (a) => answers.push(a) });
     await tick(20);
     expect(m.lastFrame()).toContain('follow-up would exceed the session cap');
-    expect(m.lastFrame()).toContain('> (waiting for y/r/n)');
+    expect(m.lastFrame()).toContain('› (waiting for y/r/n)');
     m.stdin.write('y');
     await tick(10);
     expect(answers).toEqual([]);
@@ -1435,7 +1308,7 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
     m.stdin.write('r');
     await tick(20);
     expect(answers).toEqual(['start', 'raise']);
-    expect(m.lastFrame()).toContain('> /budget session-spend-cap 12.00');
+    expect(m.lastFrame()).toContain('› /budget session-spend-cap 12.00');
     m.stdin.write(CTRL_C);
     await tick(20);
     m.bridge.command({ type: 'followup', input, resolve: (a) => answers.push(a) });
@@ -1496,7 +1369,7 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
     m.bridge.command({ type: 'blocking', request, resolve: (a) => answers.push(a) });
     await tick(20);
     expect(m.lastFrame()).toContain('jev: key rejected (HTTP 401 — "User not found.")');
-    expect(m.lastFrame()).toContain('> (paused — answer the pane above)');
+    expect(m.lastFrame()).toContain('› (paused — answer the pane above)');
     m.stdin.write('r');
     await tick(20);
     expect(answers).toEqual(['retry']);
@@ -1572,7 +1445,7 @@ describe('<App> bridge prompts, blocking pane and wizard (§9.3, §12.4, §13.3,
     expect(answers).toEqual([]);
     expect(m.state()?.overlay).toBe('secret');
     expect(m.lastFrame()).toContain('Send anyway? y/N');
-    expect(m.lastFrame()).not.toContain('> y'); // the early y never reached the composer either
+    expect(m.lastFrame()).not.toContain('› y'); // the early y never reached the composer either
     expect(host.submitted).toEqual([]);
     await tick(200);
     m.stdin.write('y'); // armed now: the same prompt resolves true
@@ -1632,7 +1505,7 @@ describe('<App> screen-reader review answering (§6.5)', () => {
     expect(host.notes).toContain(SR_REVIEW_PROMPT);
     expect(host.notes.indexOf(SR_REVIEW_MENU)).toBeLessThan(host.notes.indexOf(SR_REVIEW_PROMPT));
     expect(m.frames.some((f) => f.includes('\x07'))).toBe(true);
-    expect(m.lastFrame()).not.toContain('> half a thought');
+    expect(m.lastFrame()).not.toContain('› half a thought');
     m.stdin.write('\r'); // an empty line: re-announce, no answer
     await tick(20);
     expect(m.confirmer.pending()?.id).toBe('sr1');
@@ -1648,7 +1521,7 @@ describe('<App> screen-reader review answering (§6.5)', () => {
     m.stdin.write('\r');
     await expect(p).resolves.toBe(false);
     await tick(20);
-    expect(m.lastFrame()).toContain('> half a thought');
+    expect(m.lastFrame()).toContain('› half a thought');
   });
 
   it('`1` approves and `3` opens the note field (Enter sends the note); Esc declines', async () => {
@@ -1705,7 +1578,7 @@ describe('createTuiRenderer: unmount flushes the final frame (finding 10); resiz
     expect(lastDynamic).toContain('done max_steps');
     expect(lastDynamic).not.toContain('Type to steer the next step…');
     // §1 / §3.3: a one-shot run has no follow-up — the scrollback left behind must not invite one
-    expect(after).not.toContain('Follow-up or /command…');
+    expect(after).not.toContain(PLACEHOLDERS.followup);
     expect(lastDynamic).not.toMatch(/[⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏] judge/);
   });
 
@@ -1718,6 +1591,7 @@ describe('createTuiRenderer: unmount flushes the final frame (finding 10); resiz
     r.attach(fe.engine);
     fe.emit({ type: 'run:start', runId: 'r1', task: 't', mode: 'jev-on', resumedFromStep: null });
     fe.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 't', resumed: false });
+    r.dispatch({ type: 'panel', panel: 'full' }); // TUI-DESIGN-2 §4.6: the panel is collapsed by default; open it full so the region is taller than the 12-row terminal to come
     for (let i = 0; i < 12; i++) fe.emit({ type: 'decision', decision: mkDecision({ id: `d${i}`, step: 1 }) });
     fe.emit({ type: 'status', status: mkStatus(1, 'risk') });
     await tick(60);
@@ -1742,7 +1616,7 @@ describe('createTuiRenderer: unmount flushes the final frame (finding 10); resiz
     await tick(120);
     const grown = stdout.frames.slice(beforeGrow).map(stripAnsi);
     expect(grown.length).toBeGreaterThan(0);
-    expect(grown.some((f) => f.split('\n').some((line) => line.length > 60))).toBe(true); // laid out at 80 columns again (the rule row carries the pane title, so no bare 80-cell rule)
+    expect(grown.some((f) => f.split('\n').some((line) => line.length > 60))).toBe(true); // laid out at 80 columns again (the rule row carries the pane header, so no bare 80-cell rule)
     await r.unmount();
     cleanup();
     const zero = new StubStdout(0, 0, true);

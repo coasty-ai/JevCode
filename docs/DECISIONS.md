@@ -696,3 +696,39 @@ rate, is left open. Rejected: keeping Anthropic as the default
 with GLM opt-in — the price gap is the point of the change, and every jev-only bench already ran through OpenRouter.
 Not changed here: `jevcode login` and the first-run wizard still default their provider prompt to `anthropic`
 (`src/cli/login.ts`, `src/tui/onboarding/lines.ts`); aligning them is a follow-up for their owner.
+
+## 2026-09-21 Jev-only is the default; a session needs one key
+
+`jevcode` alone opened a two-key wizard because the default mode was `jev-on`. The default becomes `jev-only` through a
+`mode` setting (flag > `JEVCODE_MODE` > dotenv > file > default); `/mode jev-on` (alias `/llm on`) switches the next run
+and opens the wizard's generator step in place when no generator key exists; the mode is a badge in every frame.
+Affects `src/config/**`, `src/cli/{args,main,session}.ts`, `src/tui/onboarding/**`, `registry.ts`. (TUI-DESIGN-2 §11;
+consequence for the harness: the scripted `--mock` trajectory is a generator trajectory, so every mocked run of the pty
+smoke, the pty vitest project and the perf probes says `--mode jev-on` explicitly, and the zero-argument scenarios test
+the default.)
+
+## 2026-09-21 Jev decides what a submission is
+
+Every Enter was a paid run. A submission now passes one Jev request (an intake Choice with paired Nouls, a reply Choice
+and fact Nouls folded in); only `coding_task` at Jev's own p ≥ 0.6 with its paired Noul ≥ 0.5 starts a run; weaker
+readings ask `run this as a task?`. No keyword classifier exists outside the mock decider. Affects `src/chat/**`,
+`src/cli/session.ts`, `UiLabel`, the Jev panel. (TUI-DESIGN-2 §11.)
+
+## 2026-09-21 Two Jev providers, one client
+
+TypeSafe native (`jev-1.13.0`, ≈ 110 ms, no `usage.cost`) and OpenRouter (`typesafe/jev-1.13-20260917`, ≈ 240 ms) differ
+in ids, headers, errors and cost reporting; `JEV_PROVIDERS` carries the differences, auto-detection prefers `JEV_API_KEY`
+→ openrouter then `TYPESAFE_API_KEY` → typesafe, cost is derived from the published rate when absent (`costBasis:
+'table'`), `jev-1.13.0` is the pinned resolution on TypeSafe. Affects `src/jev/**`, `src/config/**`, `engine.ts` drift.
+(TUI-DESIGN-2 §11; the native API's accepted ids were measured in `docs/research/tui/round-2/typesafe-native-probe.md`:
+only `jev-latest` and `jev-1.13.0`, 400 `api_usage_error` otherwise.)
+
+## 2026-09-21 The console, the compact transcript and the splash; identity kept by a declared filter
+
+Boxes exist only where rows exist (boxed ≥ 16 rows); the console shares its edges between composer and status (+3 rows);
+the transcript shows one `[step N]` line per step through a kind filter stamped at append time; the Jev panel collapses to
+a strip; a ≤ 700 ms splash ticks through Ink's own timer and dies on the first key. In `full` every `<Static>` row is still
+`formatTranscriptItem(item)` (word-wrapped; fence rows drawn as a rule); `compact` narrows the TUI to a declared subsequence
+of `transcript.log` — a recorded deviation from TD §15.1/F13 (TUI-DESIGN-2 §10.1). Affects `src/tui/**`. (TUI-DESIGN-2 §11;
+for the harness the pty identity test asserts the subsequence rule and the `--plain` = `transcript.log` equality, and the
+render-lag probe gains a splash frame bucket gated at `maxFps + 1`.)

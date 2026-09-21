@@ -1,11 +1,11 @@
 # S1 idle·text: Ctrl-C clears the draft (never exits); /exit leaves 0 (§3.3)
 expect \x1b\[\?25l
-expect Describe the task
+expect Say hi
 sleep 0.4
 send half a thought
-expect > half a thought
+expect half a thought
 send \x03
-expect Describe the task
+expect Say hi
 send /exit
 sleep 0.2
 send \r

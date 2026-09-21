@@ -1,9 +1,9 @@
 # idle with a draft: 24x80 -> 12x60 (one clear allowed for the shrink, research 20) -> 24x80 (a grow: zero clears); the draft survives
 expect \x1b\[\?25l
-expect Describe the task
+expect Say hi
 sleep 0.4
 send a draft that survives a resize
-expect > a draft that survives
+expect a draft that survives
 sleep 0.3
 resize 12 60
 sleep 0.8
@@ -14,7 +14,7 @@ mark grown
 send Z
 expect resizeZ
 send \x03
-expect Describe the task
+expect Say hi
 send /exit
 sleep 0.2
 send \r

@@ -1,15 +1,27 @@
-/** tui/onboarding/lines.ts (TUI-DESIGN §11.1–§11.3, §24 "Wizard"; §19.0 row O7): ≤ 4 rows; masked field twins; verbatim strings. */
+/** tui/onboarding/lines.ts (TUI-DESIGN §11.1–§11.3, §24 "Wizard"; §19.0 row O7; TUI-DESIGN-2 §1.4, §2.7, §4.3, §12 "Wizard"): ≤ 4 rows; masked field twins; verbatim strings. */
 import { describe, expect, it } from 'vitest';
 import {
+  DEFAULT_WIZARD_PROVIDER,
   FIX_BLOCK_FOOTER,
   INSTRUCTIONS_NOT_TRUSTED_LINE,
+  JEV_PROVIDER_ENV,
+  LOGIN_JEV_PROVIDER_PROMPT,
+  LOGIN_JEV_PROVIDER_REQUIRED,
+  MASKED_PROMPT_DEFAULT,
   WINDOWS_ACL_NOTE,
+  WIZARD_JEV_PROVIDER_OPTIONS,
+  WIZARD_JEV_PROVIDER_OPTIONS_NARROW,
+  WIZARD_JEV_PROVIDER_TITLE,
   WIZARD_JEV_TITLE,
   WIZARD_PROVIDER_HINT,
+  WIZARD_PROVIDER_HINT_MODE,
   WIZARD_PROVIDER_OPTIONS,
   WIZARD_PROVIDER_TITLE,
+  WIZARD_PROVIDER_TITLE_MODE,
   WIZARD_REUSE_HINT,
   WIZARD_TRUST_OPTIONS,
+  WIZARD_VERIFY_DETAIL,
+  WIZARD_VERIFY_DETAIL_TYPESAFE,
   WIZARD_VERIFY_TITLE,
   agentsChangedLine,
   dotenvSourceText,
@@ -17,6 +29,8 @@ import {
   fixBlockLines,
   formatSize,
   generatorKeyTitle,
+  jevKeyTitle,
+  providerTitleMode,
   keyEnteredText,
   keyHintRow,
   maskedFieldCursorX,
@@ -27,6 +41,9 @@ import {
   trustLines,
   verificationFailedText,
   verifiedText,
+  verifiedTypesafeText,
+  verifyDetail,
+  wizardConsoleTitle,
   wizardLines,
 } from '../../../../src/tui/onboarding/lines.js';
 import { INITIAL_ONBOARDING, onboardingReducer as reduce, wizardRows, type OnboardingAction, type OnboardingState } from '../../../../src/tui/onboarding/reducer.js';
@@ -35,6 +52,8 @@ import * as credentials from '../../../../src/config/credentials.js';
 import { asciiRow, clipRow } from '../../../../src/tui/onboarding/lines.js';
 
 const detectBoth: OnboardingAction = { type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: true };
+/** TUI-DESIGN-2 §1.1: the default first run — jev-only, only the Jev key missing, nothing inferred */
+const detectJevOnly: OnboardingAction = { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false };
 function run(actions: OnboardingAction[], start: OnboardingState = INITIAL_ONBOARDING): OnboardingState {
   return actions.reduce((s, a) => reduce(s, a), start);
 }
@@ -74,8 +93,47 @@ describe('§24 wizard strings are verbatim', () => {
     expect(agentsChangedLine('1a2b3c4d', '9f8e7d6c', true)).toBe('AGENTS.md changed since you trusted it (sha256 1a2b3c4d -> 9f8e7d6c)');
   });
 
-  it('fix block: the four §24 lines plus the footer, verbatim (never provider-aware)', () => {
-    expect(fixBlockLines()).toEqual(['export ANTHROPIC_API_KEY=…', 'export JEV_API_KEY=…', 'printenv OPENROUTER_API_KEY | jevcode login --jev-key-stdin', 'jevcode login', FIX_BLOCK_FOOTER]);
+  it('TUI-DESIGN-2 §1.4 / §12: the fix block leads with the two Jev variables and the piped TypeSafe login; the Anthropic line joins only when the mode needs a non-openrouter generator', () => {
+    const jev = ['export TYPESAFE_API_KEY=…', 'export OPENROUTER_API_KEY=…', 'printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin', 'jevcode login'];
+    expect(fixBlockLines()).toEqual([...jev, FIX_BLOCK_FOOTER]);
+    expect(fixBlockLines('jev-only')).toEqual([...jev, FIX_BLOCK_FOOTER]);
+    expect(fixBlockLines('jev-only', 'anthropic')).toEqual([...jev, FIX_BLOCK_FOOTER]);
+    expect(fixBlockLines('jev-on')).toEqual([...jev, 'export ANTHROPIC_API_KEY=…', FIX_BLOCK_FOOTER]);
+    expect(fixBlockLines('jev-off', 'anthropic')).toEqual([...jev, 'export ANTHROPIC_API_KEY=…', FIX_BLOCK_FOOTER]);
+    // the default generator is OpenRouter (glm-5.3-flash): its variable is already the second line
+    expect(fixBlockLines('jev-on', 'openrouter')).toEqual([...jev, FIX_BLOCK_FOOTER]);
+    for (const l of fixBlockLines('jev-on')) expect(l).not.toMatch(/sk-|[A-Za-z0-9]{20,}/);
+  });
+
+  it('TUI-DESIGN-2 §12 "Wizard": the round-2 strings are verbatim', () => {
+    expect(WIZARD_JEV_PROVIDER_TITLE).toBe('No Jev key found. Where do you reach Jev?');
+    expect(WIZARD_JEV_PROVIDER_OPTIONS).toBe('  1 typesafe (TYPESAFE_API_KEY, api.typesafe.ai)   2 openrouter (OPENROUTER_API_KEY, also the generator)');
+    expect(WIZARD_JEV_PROVIDER_OPTIONS_NARROW).toBe('  1 typesafe   2 openrouter');
+    expect(WIZARD_PROVIDER_TITLE_MODE).toBe('jev+llm needs a generator. Pick the provider:');
+    expect(WIZARD_PROVIDER_HINT_MODE).toBe('Keys are never shown, logged or echoed · Esc back · Ctrl-C keeps jev-only');
+    expect(WIZARD_VERIFY_DETAIL_TYPESAFE).toBe('one Jev decision at api.typesafe.ai ~$0.00002 (jev-1.13.0)');
+    expect(LOGIN_JEV_PROVIDER_PROMPT).toBe('Where do you reach Jev?  1 typesafe  2 openrouter');
+    expect(LOGIN_JEV_PROVIDER_REQUIRED).toBe('jevcode login: pass --jev-provider typesafe|openrouter with --jev-key-stdin');
+    expect(jevKeyTitle('typesafe', '1/1')).toBe('Jev API key (TYPESAFE_API_KEY)  1/1');
+    expect(jevKeyTitle('openrouter', '1/1')).toBe('Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY)  1/1');
+    expect(jevKeyTitle(null, '2/2')).toBe(WIZARD_JEV_TITLE);
+    expect(verifyDetail('typesafe')).toBe(WIZARD_VERIFY_DETAIL_TYPESAFE);
+    expect(verifyDetail('openrouter')).toBe(WIZARD_VERIFY_DETAIL);
+    expect(verifyDetail(null)).toBe(WIZARD_VERIFY_DETAIL);
+    expect(verifiedTypesafeText('jev-1.13.0', 319)).toBe('verified: typesafe key ok (jev-1.13.0, 319 input tokens)');
+    expect(verifiedTypesafeText('jev-1.13.0', null)).toBe('verified: typesafe key ok (jev-1.13.0, usage unknown)');
+    expect(JEV_PROVIDER_ENV).toEqual({ typesafe: 'TYPESAFE_API_KEY', openrouter: 'JEV_API_KEY' });
+    expect(DEFAULT_WIZARD_PROVIDER).toBe('openrouter');
+  });
+
+  it('TUI-DESIGN-2 §4.3 / §12 "Console": the boxed console title of each wizard step is `setup · <step>`; null outside a step', () => {
+    expect(wizardConsoleTitle({ step: 'jevProvider' })).toBe('setup · jev provider');
+    expect(wizardConsoleTitle({ step: 'provider' })).toBe('setup · provider');
+    expect(wizardConsoleTitle({ step: 'generatorKey' })).toBe('setup · generator key');
+    expect(wizardConsoleTitle({ step: 'jevKey' })).toBe('setup · jev key');
+    expect(wizardConsoleTitle({ step: 'verify' })).toBe('setup · verify');
+    expect(wizardConsoleTitle({ step: 'trust' })).toBe('setup · trust');
+    for (const step of ['detect', 'save', 'sandbox', 'done', 'exit'] as const) expect(wizardConsoleTitle({ step })).toBeNull();
   });
 
   it('the item builders are declared in config/credentials.ts (config never imports the TUI) and re-exported here', () => {
@@ -103,6 +161,23 @@ describe('masked field twins', () => {
     expect(maskedFieldCursorX(500, 80)).toBe(79);
   });
 
+  it('TUI-DESIGN-2 §4.3: the boxed console passes `› ` — the row is `› •••••`, `> *****` under --ascii, the cursor after the bullets; the default prompt is `> `', () => {
+    expect(MASKED_PROMPT_DEFAULT).toBe('> ');
+    expect(maskedFieldRow(5, 80, false, '› ')).toBe('› •••••');
+    expect(maskedFieldRow(20, 76, false, '› ')).toBe(`› ${'•'.repeat(20)}`);
+    expect(maskedFieldRow(200, 80, false, '› ')).toBe(`› ${'•'.repeat(77)}`);
+    expect(cells(maskedFieldRow(200, 80, false, '› '))).toBe(79);
+    expect(maskedFieldRow(5, 80, true, '› ')).toBe('> *****');
+    expect(maskedFieldRow(0, 80, false, '› ')).toBe('› ');
+    expect(maskedFieldCursorX(5, 80, '› ')).toBe(7);
+    expect(maskedFieldCursorX(500, 80, '› ')).toBe(79);
+    // a wizard view carries the prompt into the key row; every other row is untouched
+    const gen = run([detectBoth, { type: 'choose', option: 2 }, { type: 'length', length: 12 }]);
+    expect(wizardLines(gen, { rows: 24, columns: 100, prompt: '› ' })[1]).toBe(`› ${'•'.repeat(12)}`);
+    expect(wizardLines(gen, { rows: 24, columns: 100, prompt: '› ', ascii: true })[1]).toBe(`> ${'*'.repeat(12)}`);
+    expect(wizardLines(gen, { rows: 24, columns: 100 })[1]).toBe(`> ${'•'.repeat(12)}`);
+  });
+
   it('keyHintRow: the wide form when it fits, the narrow twin below ~72 columns, ASCII glyphs', () => {
     expect(keyHintRow(108, 120)).toBe('108 chars · Enter saves · Backspace · Ctrl-U clears · paste ok · Esc back');
     expect(keyHintRow(108, 40)).toBe('108 · Enter · ⌫ · ^U · Esc');
@@ -111,10 +186,10 @@ describe('masked field twins', () => {
     expect(keyHintRow(NaN, 120).startsWith('0 chars')).toBe(true);
   });
 
-  it('generatorKeyTitle is the §24 `<Provider> API key (<ENV>)` verbatim — no counter', () => {
+  it('generatorKeyTitle is the §24 `<Provider> API key (<ENV>)` verbatim — no counter; TUI-DESIGN-2 §1.4: the unprompted default is openrouter (commit 2a92d0b)', () => {
     expect(generatorKeyTitle('anthropic')).toBe('Anthropic API key (ANTHROPIC_API_KEY)');
     expect(generatorKeyTitle('openrouter')).toBe('OpenRouter API key (OPENROUTER_API_KEY)');
-    expect(generatorKeyTitle(null)).toBe('Anthropic API key (ANTHROPIC_API_KEY)');
+    expect(generatorKeyTitle(null)).toBe('OpenRouter API key (OPENROUTER_API_KEY)');
   });
 
   it('clipRow measures terminal cells, cuts on grapheme boundaries and ends in … (or ... in ASCII, still fitting)', () => {
@@ -156,6 +231,52 @@ describe('wizardLines', () => {
     expect(ascii[2]).not.toContain('·');
   });
 
+  it('TUI-DESIGN-2 §1.4: the jevProvider step — 3 rows, the narrow options at 40, the preselection on the hint row, SR and ASCII twins', () => {
+    const s = reduce(INITIAL_ONBOARDING, detectJevOnly);
+    expect(s.step).toBe('jevProvider');
+    const at120 = wizardLines(s, { rows: 24, columns: 120 });
+    expect(at120).toEqual([WIZARD_JEV_PROVIDER_TITLE, WIZARD_JEV_PROVIDER_OPTIONS, WIZARD_PROVIDER_HINT]);
+    expect(at120.length).toBe(wizardRows(s, 24));
+    const at80 = wizardLines(s, { rows: 24, columns: 80 });
+    expect(at80[1]).toBe(WIZARD_JEV_PROVIDER_OPTIONS_NARROW);
+    for (const l of at80) expect(cells(l)).toBeLessThanOrEqual(80);
+    for (const l of wizardLines(s, { rows: 8, columns: 40 })) expect(cells(l)).toBeLessThanOrEqual(40);
+    const pre = wizardLines({ ...s, jevProvider: 'typesafe' }, { rows: 24, columns: 120 });
+    expect(pre[2]).toBe(`${WIZARD_PROVIDER_HINT} · Enter = typesafe`);
+    expect(wizardLines({ ...s, hint: 'pick 1 or 2' }, { rows: 24, columns: 120 })[2]).toBe('pick 1 or 2');
+    const sr = wizardLines(s, { rows: 24, columns: 120, screenReader: true });
+    expect(sr[1]).toBe('1. typesafe (TYPESAFE_API_KEY, api.typesafe.ai)  2. openrouter (OPENROUTER_API_KEY, also the generator)');
+    expect(sr[2]).toBe('Enter selection (1-2):');
+    for (const l of wizardLines(s, { rows: 24, columns: 120, ascii: true })) expect(l).toMatch(/^[\x20-\x7e]*$/);
+  });
+
+  it('TUI-DESIGN-2 §1.4: the provider step under reason `mode` carries its own title and Ctrl-C hint; the login/missing titles are unchanged', () => {
+    const mode = reduce(reduce(INITIAL_ONBOARDING, { ...detectJevOnly, jevProvider: 'typesafe' }), { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-on' });
+    expect(mode.step).toBe('provider');
+    expect(wizardLines(mode, { rows: 24, columns: 120 })).toEqual([WIZARD_PROVIDER_TITLE_MODE, WIZARD_PROVIDER_OPTIONS, WIZARD_PROVIDER_HINT_MODE]);
+    expect(wizardLines({ ...mode, provider: 'openrouter' }, { rows: 24, columns: 120 })[2]).toBe(`${WIZARD_PROVIDER_HINT_MODE} · Enter = openrouter`);
+    expect(wizardLines(mode, { rows: 24, columns: 120, screenReader: true })[0]).toBe(WIZARD_PROVIDER_TITLE_MODE);
+    const login = reduce(INITIAL_ONBOARDING, { type: 'reopen', at: 'provider', runLive: false });
+    expect(wizardLines(login, { rows: 24, columns: 120 })[0]).toBe(WIZARD_PROVIDER_TITLE);
+    expect(wizardLines(login, { rows: 24, columns: 120 })[2]).toBe(WIZARD_PROVIDER_HINT);
+    for (const l of wizardLines(mode, { rows: 24, columns: 80 })) expect(cells(l)).toBeLessThanOrEqual(80);
+    // finding 6: `/mode jev-off` opens the same wizard — the title names the TARGET mode's badge word (`llm-only`), not jev+llm
+    const off = reduce(reduce(INITIAL_ONBOARDING, { ...detectJevOnly, jevProvider: 'typesafe' }), { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'jev-off' });
+    expect(off.mode).toBe('jev-off');
+    expect(wizardLines(off, { rows: 24, columns: 120 })[0]).toBe('llm-only needs a generator. Pick the provider:');
+    expect(wizardLines(off, { rows: 24, columns: 120, screenReader: true })[0]).toBe('llm-only needs a generator. Pick the provider:');
+    expect(providerTitleMode('jev-on')).toBe(WIZARD_PROVIDER_TITLE_MODE);
+    expect(providerTitleMode('jev-off')).toBe('llm-only needs a generator. Pick the provider:');
+    expect(providerTitleMode('jev-only')).toBe(WIZARD_PROVIDER_TITLE_MODE); // jev-only never needs a generator; the jev+llm text is the fallback
+    // llm-jev (docs/LLM-JEV-DESIGN.md): the same wizard names the target badge word; the prompted provider default stays openrouter
+    expect(providerTitleMode('llm-jev')).toBe('llm-jev needs a generator. Pick the provider:');
+    const llmJev = reduce(reduce(INITIAL_ONBOARDING, { ...detectJevOnly, jevProvider: 'typesafe' }), { type: 'reopen', at: 'provider', runLive: false, reason: 'mode', mode: 'llm-jev' });
+    expect(llmJev.mode).toBe('llm-jev');
+    expect(wizardLines(llmJev, { rows: 24, columns: 120 })[0]).toBe('llm-jev needs a generator. Pick the provider:');
+    expect(DEFAULT_WIZARD_PROVIDER).toBe('openrouter');
+    for (const l of wizardLines(off, { rows: 24, columns: 80, ascii: true })) expect(l).toMatch(/^[\x20-\x7e]*$/);
+  });
+
   it('key steps: title, masked row, hint; the Jev title carries 2/2 after a generator key; reuse hint under openrouter; the hint wins', () => {
     const gen = run([detectBoth, { type: 'choose', option: 2 }, { type: 'length', length: 12 }]);
     const g = wizardLines(gen, { rows: 24, columns: 100 });
@@ -169,9 +290,29 @@ describe('wizardLines', () => {
     expect(wizardLines(typing, { rows: 24, columns: 100 })[2]).toBe('3 chars · Enter saves · Backspace · Ctrl-U clears · paste ok · Esc back');
     const hinted = reduce(typing, { type: 'enter', length: 3, prefixOk: true });
     expect(wizardLines(hinted, { rows: 24, columns: 100 })[2]).toBe('key too short (8+ characters)');
-    // §24: the Jev title always carries its `2/2`, even when it is the only field
-    const jevOnly = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: false });
-    expect(wizardLines(jevOnly, { rows: 24, columns: 100 })[0]).toBe(WIZARD_JEV_TITLE);
+    // TUI-DESIGN-2 §12: the Jev title carries `1/1` when it is the only field and names the provider's variable
+    const jevOnlyTs = reduce(INITIAL_ONBOARDING, { ...detectJevOnly, jevProvider: 'typesafe' });
+    expect(wizardLines(jevOnlyTs, { rows: 24, columns: 100 })[0]).toBe('Jev API key (TYPESAFE_API_KEY)  1/1');
+    const jevOnlyOr = run([detectJevOnly, { type: 'choose', option: 2 }]);
+    expect(wizardLines(jevOnlyOr, { rows: 24, columns: 100 })[0]).toBe('Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY)  1/1');
+    // the resolved openrouter generator alone asks the Jev provider first (§1.4); `2` → the OpenRouter-titled `1/1` field
+    const jevOnlyAsk = reduce(INITIAL_ONBOARDING, { type: 'detect', missing: ['decider.apiKey'], mode: 'jev-on', provider: 'openrouter', trustNeeded: false });
+    expect(wizardLines(jevOnlyAsk, { rows: 24, columns: 100 })[0]).toBe(WIZARD_JEV_PROVIDER_TITLE);
+    const jevOnlyNull = reduce(jevOnlyAsk, { type: 'choose', option: 2 });
+    expect(wizardLines(jevOnlyNull, { rows: 24, columns: 100 })[0]).toBe('Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY)  1/1');
+    expect(wizardLines(jevOnlyNull, { rows: 24, columns: 100 })[2]).not.toBe(WIZARD_REUSE_HINT);
+    // finding 2: a typesafe Jev provider after the OpenRouter generator key shows the plain key hint, never `Enter = reuse`
+    const tsAfterOr = run([{ ...detectBoth, jevProvider: 'typesafe' }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(wizardLines(tsAfterOr, { rows: 24, columns: 100 })).toEqual(['Jev API key (TYPESAFE_API_KEY)  2/2', '> ', '0 chars · Enter saves · Backspace · Ctrl-U clears · paste ok · Esc back']);
+    expect(wizardLines(reduce(tsAfterOr, { type: 'enter', length: 0, prefixOk: true }), { rows: 24, columns: 100 })[2]).toBe('key too short (8+ characters)');
+    const orAfterOr = run([{ ...detectBoth, jevProvider: 'openrouter' }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
+    expect(wizardLines(orAfterOr, { rows: 24, columns: 100 })[2]).toBe(WIZARD_REUSE_HINT);
+    // after a generator step the counter is 2/2 whichever Jev provider
+    const afterGenTs = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 1 }]);
+    expect(wizardLines(afterGenTs, { rows: 24, columns: 100 })[0]).toBe('Jev API key (TYPESAFE_API_KEY)  2/2');
+    // the masked row and hint of the jev-only first run
+    expect(wizardLines(jevOnlyTs, { rows: 24, columns: 100 })[1]).toBe('> ');
+    expect(wizardLines(jevOnlyTs, { rows: 24, columns: 100 })[2]).toBe('0 chars · Enter saves · Backspace · Ctrl-U clears · paste ok · Esc back');
     // ASCII and screen-reader twins never contain a bullet or a key
     const ascii = wizardLines(gen, { rows: 24, columns: 100, ascii: true });
     expect(ascii[1]).toBe(`> ${'*'.repeat(12)}`);
@@ -187,6 +328,13 @@ describe('wizardLines', () => {
     for (const a of [{ type: 'choose', option: 2 }, { type: 'length', length: 300 }, { type: 'enter', length: 300, prefixOk: true }, { type: 'enter', length: 0, prefixOk: true }, { type: 'saved' }, { type: 'verify-answer', yes: true }, { type: 'verify-result', ok: true, rejected: null }, { type: 'trust', option: 1 }, { type: 'sandbox-shown' }] as OnboardingAction[]) {
       s = reduce(s, a);
       states.push(s);
+    }
+    // and the jev-only first run: jevProvider → jevKey → save → verify
+    let j = reduce(INITIAL_ONBOARDING, detectJevOnly);
+    states.push(j);
+    for (const a of [{ type: 'choose', option: 1 }, { type: 'length', length: 300 }, { type: 'enter', length: 300, prefixOk: true }, { type: 'saved' }] as OnboardingAction[]) {
+      j = reduce(j, a);
+      states.push(j);
     }
     const trust = { root: '/Users/x/repo', agents: { name: 'AGENTS.md' as const, bytes: 2150 }, dotenv: { vars: 3, secretLike: 2 }, jevcodeJson: null };
     for (const st of states) {
@@ -237,12 +385,15 @@ describe('wizardLines', () => {
     expect(trustLines({ root: '/r', agents: null, dotenv: { vars: 0, secretLike: 0, unreadable: true }, jevcodeJson: null }, 24, 120)[1]).toBe('  AGENTS.md (none)   ./.env (unreadable)');
   });
 
-  it('verify: two rows; the second flips to the verifying notice', () => {
-    const v = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'enter', length: 40, prefixOk: true }, { type: 'saved' }]);
+  it('verify: two rows; the second flips to the verifying notice; TUI-DESIGN-2 §2.7: the detail is keyed by the Jev provider', () => {
+    const v = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'saved' }]);
     const lines = wizardLines(v, { rows: 24, columns: 120 });
     expect(lines[0]).toBe(WIZARD_VERIFY_TITLE);
     expect(lines[1]).toBe('GET openrouter.ai/api/v1/key $0 · GET api.anthropic.com/v1/models $0 · one Jev decision ~$0.0001');
     expect(wizardLines(reduce(v, { type: 'verify-answer', yes: true }), { rows: 24, columns: 120 })[1]).toBe('verifying… (Ctrl-C cancels)');
+    const ts = run([detectJevOnly, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'saved' }]);
+    expect(wizardLines(ts, { rows: 24, columns: 120 })).toEqual([WIZARD_VERIFY_TITLE, 'one Jev decision at api.typesafe.ai ~$0.00002 (jev-1.13.0)']);
+    expect(wizardLines(ts, { rows: 24, columns: 120, ascii: true })[1]).toBe('one Jev decision at api.typesafe.ai ~$0.00002 (jev-1.13.0)');
   });
 
   it('trust: 4 rows with sizes and counts only (never values); 2 rows below 12; the changed line replaces the listing; SR twin numbered', () => {
@@ -277,7 +428,7 @@ describe('wizardLines', () => {
   });
 
   it('save, sandbox, done and exit render no rows', () => {
-    const save = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'enter', length: 40, prefixOk: true }]);
+    const save = run([detectBoth, { type: 'choose', option: 1 }, { type: 'enter', length: 40, prefixOk: true }, { type: 'choose', option: 2 }, { type: 'enter', length: 40, prefixOk: true }]);
     expect(wizardLines(save, { rows: 24, columns: 80 })).toEqual([]);
     expect(wizardLines({ ...save, step: 'sandbox' }, { rows: 24, columns: 80 })).toEqual([]);
     expect(wizardLines({ ...save, step: 'done' }, { rows: 24, columns: 80 })).toEqual([]);

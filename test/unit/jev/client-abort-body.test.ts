@@ -3,8 +3,9 @@ import { createJevDecider } from '../../../src/jev/client.js';
 import { noul } from '../../../src/jev/questions.js';
 import { AbortError } from '../../../src/errors.js';
 import type { DeciderConfig } from '../../../src/core/types.js';
+import { JEV_PROVIDERS } from '../../../src/jev/providers.js';
 
-const cfg: DeciderConfig = { baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: 'sk-or-v1-testkey-0123456789abcdef', model: 'typesafe/jev-1.13-20260917', pinned: true };
+const cfg: DeciderConfig = { provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: 'sk-or-v1-testkey-0123456789abcdef', model: 'typesafe/jev-1.13-20260917', pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing, providerSource: 'default' };
 const crit = { true: { definition: 'yes', examples: ['a', 'b'] }, false: { definition: 'no', examples: ['c', 'd'] } };
 
 describe('Jev client: abort after headers with a body that never arrives', () => {

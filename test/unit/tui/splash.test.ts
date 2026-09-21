@@ -1,0 +1,184 @@
+/**
+ * TUI-DESIGN-2 §5 / §8.1 S4 (`splash.test.ts`): the wordmark rows are exactly 56 cells; `splashFrame(t)` gives 5 rows
+ * (0 below 64 columns and at t ≥ 700), a monotone reveal, ≤ 12 changed cells per 50 ms, the H-A1 / H-A2 rows byte for
+ * byte; the brand row and its pulse; the `--ascii` twin; ≤ 15 frames in 700 ms by construction.
+ */
+import { describe, expect, it } from 'vitest';
+import { GLYPHS, cellWidth } from '../../../src/tui/glyphs.js';
+import {
+  HEAD_CELLS,
+  REVEAL_FLOOR_CELLS,
+  SPLASH_INTERVAL_MS,
+  SPLASH_MS,
+  SWEEP_CELLS,
+  WORDMARK,
+  WORDMARK_CELLS,
+  WORDMARK_MIN_COLUMNS,
+  WORDMARK_ROWS,
+  brandGlyph,
+  brandRow,
+  brandSpan,
+  revealedCells,
+  splashFrame,
+  splashPhase,
+  sweepStart,
+  wordmarkOffset,
+} from '../../../src/tui/splash.js';
+
+const H_A1_80 = ['                ██ ▓▒░', '                ██ ▓▒░', '                ██ ▓▒░', '            ██  ██ ▓▒░', '             ████  ▓▒░'];
+const H_A2_80 = [
+  '                ██ ███████ ██    ██  ██████  ██████  █▓▒░',
+  '                ██ ██      ██    ██ ██      ██    ██ █▓▒░',
+  '                ██ █████   ██    ██ ██      ██    ██ █▓▒░',
+  '            ██  ██ ██       ██  ██  ██      ██    ██ █▓▒░',
+  '             ████  ███████   ████    ██████  ██████  █▓▒░',
+];
+
+function changedCells(a: string, b: string): number {
+  const x = [...a];
+  const y = [...b];
+  const n = Math.max(x.length, y.length);
+  let d = 0;
+  for (let i = 0; i < n; i++) if ((x[i] ?? ' ') !== (y[i] ?? ' ')) d++;
+  return d;
+}
+
+describe('WORDMARK and the schedule (TUI-DESIGN-2 §5.1, §5.2)', () => {
+  it('five rows, every one exactly 56 cells; JEV ends at cell 22 and CODE starts at 24 on every row', () => {
+    expect(WORDMARK.length).toBe(WORDMARK_ROWS);
+    expect(WORDMARK.every((r) => cellWidth(r) === WORDMARK_CELLS)).toBe(true);
+    for (const r of WORDMARK) {
+      expect([...r][23]).toBe(' ');
+      expect(r.slice(0, 23).includes('█')).toBe(true);
+      expect(r.slice(24).includes('█')).toBe(true);
+    }
+    expect(SPLASH_MS).toBe(700);
+    expect(SPLASH_INTERVAL_MS).toBe(50);
+    expect(Math.ceil(SPLASH_MS / SPLASH_INTERVAL_MS) + 1).toBeLessThanOrEqual(15); // ≤ 15 frames in 700 ms by construction
+  });
+  it('phases by time: reveal < 450, shimmer < 600, fade < 700, settled', () => {
+    expect(splashPhase(0)).toBe('reveal');
+    expect(splashPhase(449)).toBe('reveal');
+    expect(splashPhase(450)).toBe('shimmer');
+    expect(splashPhase(599)).toBe('shimmer');
+    expect(splashPhase(600)).toBe('fade');
+    expect(splashPhase(699)).toBe('fade');
+    expect(splashPhase(700)).toBe('settled');
+    expect(splashPhase(Number.NaN)).toBe('reveal');
+  });
+  it('revealedCells: the J (7) in frame 0, ⌈56·t/400⌉ afterwards (42 at 300 ms), 56 from 400 ms; monotone', () => {
+    expect(revealedCells(0)).toBe(REVEAL_FLOOR_CELLS);
+    expect(revealedCells(300)).toBe(42);
+    expect(revealedCells(400)).toBe(56);
+    expect(revealedCells(1000)).toBe(56);
+    let last = 0;
+    for (let t = 0; t <= 700; t += 10) {
+      const r = revealedCells(t);
+      expect(r).toBeGreaterThanOrEqual(last);
+      last = r;
+    }
+    expect(sweepStart(450)).toBe(0);
+    expect(sweepStart(550)).toBe(WORDMARK_CELLS - SWEEP_CELLS);
+    expect(wordmarkOffset(80)).toBe(12);
+    expect(wordmarkOffset(120)).toBe(32);
+  });
+});
+
+describe('splashFrame (TUI-DESIGN-2 §5.1–5.3)', () => {
+  it('H-A1: frame 0 at 80 and 120 columns — the J column and the ▓▒░ head, right-trimmed', () => {
+    const f = splashFrame(0, 80);
+    expect(f.phase).toBe('reveal');
+    expect(f.rows).toEqual(H_A1_80);
+    expect(splashFrame(0, 120).rows).toEqual(H_A1_80.map((r) => `${' '.repeat(20)}${r}`));
+    for (const row of f.rows) expect(cellWidth(row)).toBeLessThanOrEqual(80);
+    // spans: JEV accent on cells 12..19, the head as sweep on 19..22
+    expect(f.spans.filter((s) => s.row === 0)).toEqual([
+      { row: 0, from: 12, to: 19, role: 'accent' },
+      { row: 0, from: 19, to: 22, role: 'sweep' },
+    ]);
+  });
+  it('H-A2: frame 6 (t = 300, 42 cells) at 80 columns', () => {
+    expect(splashFrame(300, 80).rows).toEqual(H_A2_80);
+  });
+  it('5 rows while running (≥ 64 columns), [] below 64 columns and at t ≥ 700; ≤ columns cells; ≤ 12 changed cells per 50 ms tick', () => {
+    for (let t = 0; t < SPLASH_MS; t += SPLASH_INTERVAL_MS) {
+      const f = splashFrame(t, 80);
+      expect(f.rows.length).toBe(WORDMARK_ROWS);
+      for (const row of f.rows) expect(cellWidth(row)).toBeLessThanOrEqual(80);
+      expect(splashFrame(t, 63).rows).toEqual([]);
+      expect(splashFrame(t, WORDMARK_MIN_COLUMNS).rows.length).toBe(WORDMARK_ROWS);
+    }
+    expect(splashFrame(700, 80).rows).toEqual([]);
+    expect(splashFrame(700, 80).phase).toBe('settled');
+    expect(splashFrame(5000, 80).rows).toEqual([]);
+    for (let t = SPLASH_INTERVAL_MS; t < SPLASH_MS; t += SPLASH_INTERVAL_MS) {
+      const a = splashFrame(t - SPLASH_INTERVAL_MS, 80).rows;
+      const b = splashFrame(t, 80).rows;
+      for (let r = 0; r < WORDMARK_ROWS; r++) expect(changedCells(a[r] ?? '', b[r] ?? ''), `t=${t} row ${r}`).toBeLessThanOrEqual(7 + HEAD_CELLS);
+    }
+  });
+  it('the reveal is monotone (a revealed cell never blanks again) and the complete mark at 400 ms is the padded WORDMARK centred', () => {
+    let prev = splashFrame(0, 80).rows;
+    for (let t = SPLASH_INTERVAL_MS; t <= 400; t += SPLASH_INTERVAL_MS) {
+      const cur = splashFrame(t, 80).rows;
+      for (let r = 0; r < WORDMARK_ROWS; r++) {
+        const a = [...(prev[r] ?? '')];
+        const b = [...(cur[r] ?? '')];
+        const edge = 12 + revealedCells(t - SPLASH_INTERVAL_MS);
+        for (let i = 12; i < edge; i++) if (a[i] === '█') expect(b[i], `t=${t} row ${r} cell ${i}`).toBe('█');
+      }
+      prev = cur;
+    }
+    expect(splashFrame(400, 80).rows).toEqual(WORDMARK.map((r) => `${' '.repeat(12)}${r}`.replace(/\s+$/, '')));
+  });
+  it('shimmer: a 6-cell sweep band moves left → right once; fade 600 drops the accent, 650 dims every letter', () => {
+    const s0 = splashFrame(450, 80);
+    expect(s0.phase).toBe('shimmer');
+    const band0 = s0.spans.filter((s) => s.role === 'sweep' && s.row === 0);
+    expect(band0).toEqual([{ row: 0, from: 12, to: 18, role: 'sweep' }]);
+    const s1 = splashFrame(550, 80);
+    expect(s1.spans.filter((s) => s.role === 'sweep' && s.row === 0)).toEqual([{ row: 0, from: 12 + 50, to: 12 + 56, role: 'sweep' }]);
+    const f1 = splashFrame(600, 80);
+    expect(f1.phase).toBe('fade');
+    expect(f1.spans.filter((s) => s.role === 'accent')).toEqual([]);
+    expect(f1.spans.filter((s) => s.row === 0)).toEqual([{ row: 0, from: 12 + 23, to: 12 + 56, role: 'dim' }]);
+    const f2 = splashFrame(650, 80);
+    expect(f2.spans.filter((s) => s.row === 0).map((s) => s.role)).toEqual(['dim', 'dim']);
+  });
+  it('the --ascii twin draws # letters with a # + . head and is pure ASCII', () => {
+    const f = splashFrame(0, 80, GLYPHS.ascii);
+    expect(f.rows[3]).toBe('            ##  ## #+.');
+    for (let t = 0; t < SPLASH_MS; t += 50) for (const row of splashFrame(t, 80, GLYPHS.ascii).rows) expect(row).toMatch(/^[\x20-\x7e]*$/);
+  });
+});
+
+describe('brandRow (TUI-DESIGN-2 §5.4)', () => {
+  it('H-A3: `─── ◆ jevcode 0.2.0 ───…` exactly columns cells; the one-line pulse ░ ▒ ▓ ◆ twice over 400 ms; the ascii twin', () => {
+    expect(brandRow('0.2.0', 80)).toBe('─── ◆ jevcode 0.2.0 ────────────────────────────────────────────────────────────');
+    expect(cellWidth(brandRow('0.2.0', 120))).toBe(120);
+    expect(brandRow('0.2.0', 40, null)).toBe(`─── ◆ jevcode 0.2.0 ${'─'.repeat(20)}`);
+    expect([0, 50, 100, 150, 200, 250, 300, 350].map((t) => brandGlyph(t))).toEqual(['░', '▒', '▓', '◆', '░', '▒', '▓', '◆']);
+    expect(brandGlyph(400)).toBe('◆');
+    expect(brandGlyph(null)).toBe('◆');
+    expect(brandRow('0.2.0', 40, 50)).toBe(`─── ▒ jevcode 0.2.0 ${'─'.repeat(20)}`);
+    expect(brandRow('0.2.0', 40, 700)).toBe(brandRow('0.2.0', 40, null));
+    expect(brandRow('0.2.0', 40, null, GLYPHS.ascii)).toBe(`--- * jevcode 0.2.0 ${'-'.repeat(20)}`);
+  });
+  it('finding 10: brandSpan covers `<glyph> jevcode <version>` for every pulse glyph (░ ▒ ▓ ◆) and the ascii twins; null on a strip or a plain rule', () => {
+    for (const t of [0, 50, 100, 150, null]) {
+      const row = brandRow('0.2.0', 80, t);
+      const span = brandSpan(row);
+      expect(span).not.toBeNull();
+      expect(row.slice(span!.from, span!.to)).toBe(`${brandGlyph(t)} jevcode 0.2.0`);
+      expect(span!.from).toBe(4);
+    }
+    for (const t of [0, 50, 100, null]) {
+      const row = brandRow('0.2.0', 80, t, GLYPHS.ascii);
+      const span = brandSpan(row, GLYPHS.ascii);
+      expect(row.slice(span!.from, span!.to)).toBe(`${brandGlyph(t, GLYPHS.ascii)} jevcode 0.2.0`);
+    }
+    expect(brandSpan('─── ▸ jev · no decisions yet ──── [d] [p] [t] [s] ──')).toBeNull();
+    expect(brandSpan('─'.repeat(80))).toBeNull();
+    expect(brandSpan('')).toBeNull();
+  });
+});

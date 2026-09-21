@@ -315,6 +315,7 @@ export function createFakeProvider(captured: Captured, model = 'mock-model'): Pr
 export function createFakeDecider(captured: Captured): Decider {
   return {
     model: 'mock-jev',
+    provider: 'openrouter', // contract 1.2 (TUI-DESIGN-2 §6 item 7)
     async ask(state, questions): Promise<AskResult> {
       captured.askStates.push(state);
       const answers: AskResult['answers'] = {};

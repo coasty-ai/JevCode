@@ -3,11 +3,17 @@
  * in a real pty and the capture is checked for `CLEAR_RE` (ESC[2J, ESC[3J, ESC c, ESC[?1049h/l — self-tested first),
  * the painted dynamic region (rows − 2, read from every frame with `pty.ts` `paintedRows`) and the exit code.
  *
- *   review    `JEVCODE_MOCK_REVIEW_AT=2` under `--mock`: the §6 box, answered with `y`
- *   palette   `/` opens it, two letters filter, Esc closes
- *   picker    `/resume` after a mocked run opens the session picker (`> filter:`), Esc closes
- *   wizard    `chat` with no key anywhere (temp HOME / XDG, no .env): the §11 wizard, Ctrl-C exits 2
- *   secret    a draft holding an `sk-ant-api03-…` canary + Enter: the §4.10 gate row, Esc dismisses
+ *   review    `JEVCODE_MOCK_REVIEW_AT=2` under `--mock`: the §6 box — in the boxed tier (24×80) the review card
+ *             `╭─ review · step 2 …╮` of TUI-DESIGN-2 §4.7, flat at 12×60 — answered with `y`
+ *   palette   `/` opens it (the `╭─ commands` card in the boxed tier), two letters filter, Esc closes
+ *   picker    `/resume` after a mocked run opens the session picker (`filter:`), Esc closes
+ *   wizard    `chat` with no key anywhere (temp HOME / XDG, no .env): the jev-only first-run wizard of TUI-DESIGN-2 §1.4
+ *             (`No Jev key found. Where do you reach Jev?`, hosted in the console as `setup · jev provider` in the boxed
+ *             tier), Ctrl-C exits 2
+ *   secret    a draft holding an `sk-ant-api03-…` canary + Enter: the §4.10 gate row (a console-hosted row in the boxed
+ *             tier, TUI-DESIGN-2 §4.2), Esc dismisses
+ *   intake    `JEVCODE_MOCK_INTAKE=ambiguous`: `the date parsing` opens the intake card `run this as a task?`
+ *             (TUI-DESIGN-2 §3.7; a card in the boxed tier, one row flat), `n` takes the chat reading — no run
  *   fault     `JEVCODE_FAULT=render:composer` and `render:pane`: the §13.4 fallback row, the run continues
  *   resize    after a mocked run (pane open, idle) with a draft: 40×120 → 12×120 → 40×120; segments are delimited by
  *             marker keys typed before and after each resize (`A` | shrink | `B` | grow | `C`): the pre-shrink and the
@@ -40,11 +46,15 @@
  *
  * The retry row (`JEVCODE_FAULT=jev:429`) and the blocking panes (`jev:401`, `persist:ENOSPC`) are listed in the
  * result as not driven: those fault hooks are not implemented in the tree (only `render:<pane>` is), see the report.
+ *
+ * Round 2 (TUI-DESIGN-2): every scenario that needs the scripted `--mock` run says `--mode jev-on` (the default is
+ * `jev-only`, §1.1, under which `--mock` would run the real synthesizer); a run is live at its `[run] start` item
+ * (`[run] ready` is hidden by the compact transcript, §4.5); the placeholders are §4.4's.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { END_PATTERN, clearReSelfTest, clearStats, composerRow, drive, firstDynamicFrameOffset, frameAt, frameContent, frameTime, paintedRows, sleepStep, splitFrames, toTypistSteps, typist, type Chunk, type DriveResult, type Frame } from './pty.js';
+import { END_PATTERN, RUN_STARTED_PATTERN, SGR_GAP, clearReSelfTest, clearStats, composerRow, drive, firstDynamicFrameOffset, frameAt, frameContent, frameTime, paintedRows, sleepStep, splitFrames, toTypistSteps, topEdgePattern, typist, type Chunk, type DriveResult, type Frame } from './pty.js';
 
 export interface Segment {
   label: string;
@@ -104,13 +114,29 @@ export interface StatesResult {
   pass: boolean;
 }
 
-const PROLOGUE = ['expect \\x1b\\[\\?25l', 'expect Describe the task', sleepStep(300)];
-const START_RUN = ['send start the perf run', sleepStep(200), 'send \\r', 'expect ready'];
-const RUN = [...START_RUN, `expect ${END_PATTERN}`, 'expect Follow-up or /command', sleepStep(300)];
+const PROLOGUE = ['expect \\x1b\\[\\?25l', 'expect Say hi', sleepStep(300)];
+/**
+ * The prologue of a scenario that submits a message: the host is attached once the session meter is in the status row
+ * (`test/pty/helpers.ts` `IDLE_STEP`), expected *before* the settle — the driver's `sleep` consumes what arrives during it,
+ * and in the flat tier (no splash animation) no later frame repeats the row.
+ */
+const PROLOGUE_IDLE = ['expect \\x1b\\[\\?25l', 'expect Say hi', 'expect sess \\$', sleepStep(300)];
+const START_RUN = ['send start the perf run', sleepStep(200), 'send \\r', `expect ${RUN_STARTED_PATTERN}`];
+const RUN = [...START_RUN, `expect ${END_PATTERN}`, 'expect Follow-up, question', sleepStep(300)];
 const EXIT_IDLE = ['send /exit', sleepStep(200), 'send \\r', 'eof'];
+/** the scripted mock trajectory is a generator trajectory: `--mode jev-on` (TUI-DESIGN-2 §1.1) */
+const MOCK_RUN = ['--mode', 'jev-on', '--mock'];
+/** TUI-DESIGN-2 §4.1: the boxed tier draws the console and the cards at rows ≥ 16 and columns ≥ 40 */
+const boxed = (rows: number, columns: number): boolean => rows >= 16 && columns >= 40;
 const CANARY = `sk-ant-api03-${'A'.repeat(40)}`;
-/** a marker key typed into the draft, then a wait for its frame, then a settle */
-const marker = (key: string): string[] => ['send ' + key, `expect ${key}\\r\\n`, sleepStep(300)];
+/**
+ * The echo of a marker key at the end of the composer row: `A\r\n` in the flat tier, `A<padding>ESC[2m │` in the boxed
+ * tier (the console row is padded to its edge and the edge is its own dim span, TUI-DESIGN-2 §4.3 / §4.9); a Tcl ARE for
+ * drive.exp and a Python bytes regex for the typist alike.
+ */
+const echoOf = (key: string): string => `expect ${key}${SGR_GAP}(?: +${SGR_GAP} ?│|\\r\\n)`;
+/** a marker key typed into the draft, then a wait for its echo, then a settle */
+const marker = (key: string): string[] => ['send ' + key, echoOf(key), sleepStep(300)];
 const EXPECT_TIMEOUT_S = 40;
 
 interface Spec {
@@ -141,13 +167,14 @@ function specs(): Spec[] {
   ];
   const out: Spec[] = [];
   for (const [rows, columns] of both) {
+    const card = boxed(rows, columns);
     out.push({
       name: 'review',
       rows,
       columns,
-      args: ['--mock', '--mock-steps', '5'],
+      args: [...MOCK_RUN, '--mock-steps', '5'],
       env: { JEVCODE_MOCK_REVIEW_AT: '2' },
-      steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', 'expect \\[y\\] approve', sleepStep(400), 'send y', 'expect confirm \\S+ approved', `expect ${END_PATTERN}`, 'expect Follow-up or /command', ...EXIT_IDLE],
+      steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', ...(card ? [`expect ${topEdgePattern('review · step 2')}`] : []), 'expect \\[y\\] approve', sleepStep(400), 'send y', 'expect confirm \\S+ approved', `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE],
       expectedExit: 0,
     });
     out.push({
@@ -156,7 +183,7 @@ function specs(): Spec[] {
       columns,
       args: ['--mock'],
       env: {},
-      steps: [...PROLOGUE, 'send /', 'expect Tab completes', sleepStep(200), 'send he', sleepStep(200), 'send \\x1b', sleepStep(200), 'send \\x03', 'expect Describe the task', ...EXIT_IDLE],
+      steps: [...PROLOGUE, 'send /', ...(card ? [`expect ${topEdgePattern('commands')}`] : []), 'expect Tab completes', sleepStep(200), 'send he', sleepStep(200), 'send \\x1b', sleepStep(200), 'send \\x03', 'expect Say hi', ...EXIT_IDLE],
       expectedExit: 0,
     });
     out.push({
@@ -166,7 +193,7 @@ function specs(): Spec[] {
       args: [],
       env: {},
       isolated: true,
-      steps: ['expect \\x1b\\[\\?25l', 'expect No API key found', sleepStep(500), 'send \\x03', 'eof'],
+      steps: ['expect \\x1b\\[\\?25l', ...(card ? [`expect ${topEdgePattern('setup · ')}`] : []), 'expect Where do you reach Jev', sleepStep(500), 'send \\x03', 'eof'],
       expectedExit: 2,
     });
     out.push({
@@ -175,7 +202,18 @@ function specs(): Spec[] {
       columns,
       args: ['--mock'],
       env: {},
-      steps: [...PROLOGUE, `send token ${CANARY}`, sleepStep(200), 'send \\r', 'expect Looks like this contains', sleepStep(400), 'send \\x1b', sleepStep(200), 'send \\x03', 'expect Describe the task', ...EXIT_IDLE],
+      steps: [...PROLOGUE, `send token ${CANARY}`, sleepStep(200), 'send \\r', 'expect Looks like this contains', sleepStep(400), 'send \\x1b', sleepStep(200), 'send \\x03', 'expect Say hi', ...EXIT_IDLE],
+      expectedExit: 0,
+    });
+    out.push({
+      name: 'intake',
+      rows,
+      columns,
+      args: ['--mock'],
+      env: { JEVCODE_MOCK_INTAKE: 'ambiguous' },
+      // the card's title (boxed) or the one-row twin (flat), then its `[y]` key — the title occurs once per frame, so it is expected once;
+      // the flat row's width ladder (TUI-DESIGN-2 §3.7) drops `run it` below 72 columns, so only the `[y]` is expected
+      steps: [...PROLOGUE_IDLE, 'send the date parsing', sleepStep(200), 'send \\r', card ? `expect ${topEdgePattern('run this as a task\\?')}` : 'expect run this as a task\\?', 'expect \\[y\\]', sleepStep(400), 'send n', `expect \\[jevcode\\]${SGR_GAP} `, sleepStep(300), ...EXIT_IDLE],
       expectedExit: 0,
     });
   }
@@ -183,9 +221,9 @@ function specs(): Spec[] {
     name: 'picker',
     rows: 24,
     columns: 80,
-    args: ['--mock', '--mock-steps', '4'],
+    args: [...MOCK_RUN, '--mock-steps', '4'],
     env: {},
-    steps: [...PROLOGUE, ...RUN, 'send /resume', sleepStep(200), 'send \\r', 'expect filter:', sleepStep(400), 'send \\x1b', 'expect Follow-up or /command', ...EXIT_IDLE],
+    steps: [...PROLOGUE, ...RUN, 'send /resume', sleepStep(200), 'send \\r', 'expect filter:', sleepStep(400), 'send \\x1b', 'expect Follow-up, question', ...EXIT_IDLE],
     expectedExit: 0,
   });
   // render:composer throws in the first frame: the boundary's fallback row is a bare `>` (no placeholder) for the rest of the
@@ -194,19 +232,20 @@ function specs(): Spec[] {
     name: 'fault-composer',
     rows: 24,
     columns: 80,
-    args: ['--mock', '--mock-steps', '4'],
+    args: [...MOCK_RUN, '--mock-steps', '4'],
     env: { JEVCODE_FAULT: 'render:composer' },
-    steps: ['expect \\x1b\\[\\?25l', 'expect composer pane failed to render', sleepStep(500), 'send start the perf run', sleepStep(200), 'send \\r', 'expect ready', `expect ${END_PATTERN}`, sleepStep(500), ...EXIT_IDLE],
+    steps: ['expect \\x1b\\[\\?25l', 'expect composer pane failed to render', sleepStep(500), 'send start the perf run', sleepStep(200), 'send \\r', `expect ${RUN_STARTED_PATTERN}`, `expect ${END_PATTERN}`, sleepStep(500), ...EXIT_IDLE],
     expectedExit: 0,
   });
-  // render:pane throws when the decisions pane first renders (after run:ready)
+  // render:pane throws when the decisions pane first renders; round 2 collapses the panel to a strip (TUI-DESIGN-2 §4.6), so the
+  // scenario opens it with `/panel` (any) right after the run starts — the pane then renders and the fault fires
   out.push({
     name: 'fault-pane',
     rows: 24,
     columns: 80,
-    args: ['--mock', '--mock-steps', '4'],
+    args: [...MOCK_RUN, '--mock-steps', '40', '--max-steps', '40'],
     env: { JEVCODE_FAULT: 'render:pane' },
-    steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', 'expect ready', 'expect pane pane failed to render', `expect ${END_PATTERN}`, 'expect Follow-up or /command', ...EXIT_IDLE],
+    steps: [...PROLOGUE, 'send start the perf run', sleepStep(200), 'send \\r', `expect ${RUN_STARTED_PATTERN}`, 'send /panel', sleepStep(150), 'send \\r', 'expect pane pane failed to render', `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE],
     expectedExit: 0,
   });
   const resizeMarkers = (hi: number): NonNullable<Spec['markers']> => [
@@ -220,9 +259,9 @@ function specs(): Spec[] {
     rows: 40,
     columns: 120,
     driver: 'typist',
-    args: ['--mock', '--mock-steps', '4'],
+    args: [...MOCK_RUN, '--mock-steps', '4'],
     env: {},
-    steps: resizeSteps([...PROLOGUE, ...RUN], '12 120', '40 120', ['send \\x03', 'expect Follow-up or /command', ...EXIT_IDLE]),
+    steps: resizeSteps([...PROLOGUE, ...RUN], '12 120', '40 120', ['send \\x03', 'expect Follow-up, question', ...EXIT_IDLE]),
     expectedExit: 0,
     markers: resizeMarkers(40),
   });
@@ -232,9 +271,10 @@ function specs(): Spec[] {
     rows: 40,
     columns: 120,
     driver: 'typist',
-    args: ['--mock', '--mock-steps', '3000', '--max-steps', '3000', '--max-replans', '100000'],
+    args: [...MOCK_RUN, '--mock-steps', '3000', '--max-steps', '3000', '--max-replans', '100000'],
     env: {},
-    steps: resizeSteps([...PROLOGUE, ...START_RUN, 'expect decisions s\\d+'], '12 120', '40 120', ['send \\x03', sleepStep(300), 'send \\x03', `expect ${END_PATTERN}`, 'expect Follow-up or /command', ...EXIT_IDLE]),
+    // `jev s<N> · <n> decisions`: the collapsed panel strip once decisions exist (TUI-DESIGN-2 §4.6), the round-2 twin of the pane header
+    steps: resizeSteps([...PROLOGUE, ...START_RUN, `expect ▸${SGR_GAP} jev s\\d+ · \\d+ decisions`], '12 120', '40 120', ['send \\x03', sleepStep(300), 'send \\x03', `expect ${END_PATTERN}`, 'expect Follow-up, question', ...EXIT_IDLE]),
     expectedExit: 0,
     markers: resizeMarkers(40),
   });
@@ -246,7 +286,7 @@ function specs(): Spec[] {
     driver: 'typist',
     args: ['--mock'],
     env: {},
-    steps: resizeSteps([...PROLOGUE], '12 60', '24 80', ['send \\x03', 'expect Describe the task', ...EXIT_IDLE]),
+    steps: resizeSteps([...PROLOGUE], '12 60', '24 80', ['send \\x03', 'expect Say hi', ...EXIT_IDLE]),
     expectedExit: 0,
     markers: resizeMarkers(24),
   });
@@ -254,9 +294,10 @@ function specs(): Spec[] {
     name: 'ctrl-l',
     rows: 24,
     columns: 80,
-    args: ['--mock', '--mock-steps', '4'],
+    args: [...MOCK_RUN, '--mock-steps', '4'],
     env: {},
-    steps: [...PROLOGUE, ...RUN, `send ${'x'.repeat(70)} ${'y'.repeat(70)} `, sleepStep(200), 'send Q', 'expect Q\\r\\n', sleepStep(400), 'send \\x0c', sleepStep(500), 'send R', 'expect R\\r\\n', sleepStep(200), 'send \\x03', 'expect Follow-up or /command', ...EXIT_IDLE],
+    // the marker frame is recognised by `composerRow` (states.ts `markerFrame`), which unwraps the boxed console row
+    steps: [...PROLOGUE, ...RUN, `send ${'x'.repeat(70)} ${'y'.repeat(70)} `, sleepStep(200), 'send Q', echoOf('Q'), sleepStep(400), 'send \\x0c', sleepStep(500), 'send R', echoOf('R'), sleepStep(200), 'send \\x03', 'expect Follow-up, question', ...EXIT_IDLE],
     expectedExit: 0,
     ctrlL: { before: 'Q', after: 'R' },
   });

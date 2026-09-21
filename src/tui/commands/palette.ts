@@ -279,22 +279,37 @@ function packLines(items: readonly string[], width: number, indent: string, sep:
   return lines;
 }
 
+/** TUI-DESIGN §5.3: the help block's tail pointer when even the last compaction level overflows `HELP_MAX_LINES`. */
+export const HELP_POINTER = '  … see docs/KEYS.md and docs/COMMANDS.md for the rest';
+/** the compaction ladder of `helpLines`, in order; `HELP_COMPACTION_LEVELS[k]` documents level `k` */
+export const HELP_COMPACTION_LEVELS: readonly string[] = [
+  'every binding, one context title line per key context, the `notes` header',
+  'the context title shares its first packed line; no `notes` header',
+  'only the primary key of each action',
+  'the key contexts packed into one block (`<context>: …` markers) — every command keeps its own line',
+  'the per-terminal notes are dropped — a command line (`/exit`) outranks a terminal tip',
+];
+
 /**
  * TUI-DESIGN §5.3 `helpLines` — the one `<Static>` block `?`/F1/`/help` append (≤ 60 lines): keys grouped by
  * context (effective bindings when given), then commands with one-liners, then the per-terminal notes.
- * `topic` narrows it to keys or commands. Compaction levels keep the cap: the context name shares the first
- * packed line; then only the primary key of each action is shown; then the tail is cut with a pointer to
- * docs/KEYS.md and docs/COMMANDS.md.
+ * `topic` narrows it to keys or commands. Compaction levels keep the cap (`HELP_COMPACTION_LEVELS`): the context
+ * name shares the first packed line; then only the primary key of each action is shown; then the key contexts pack
+ * into one block; then the notes go; only then is the tail cut with a pointer to docs/KEYS.md and docs/COMMANDS.md.
+ * Every command has its own `  /<name>` line at every level — at 80 columns (TUI-DESIGN-2 §1.3 `/mode` `/llm`, §4.6
+ * `/panel` `/transcript` and the panel keys) level 3 holds the whole block, `/exit` and both notes included.
  */
 export function helpLines(columns: number, opts: { bindings?: Bindings; ascii?: boolean; topic?: 'all' | 'keys' | 'commands' } = {}): string[] {
   const width = Math.max(20, Math.floor(Number.isFinite(columns) ? columns : 80));
   const ascii = opts.ascii ?? false;
   const topic = opts.topic ?? 'all';
   const sep = ascii ? ' - ' : ' · ';
-  const render = (level: 0 | 1 | 2): string[] => {
+  const render = (level: 0 | 1 | 2 | 3 | 4): string[] => {
     const lines: string[] = [];
     if (topic !== 'commands') {
       lines.push('keys');
+      /** level ≥ 3: one packed block, each context's first item prefixed `<context>: ` */
+      const merged: string[] = [];
       for (const ctx of KEY_CONTEXTS) {
         const items: string[] = [];
         for (const a of KEY_ACTIONS) {
@@ -306,7 +321,9 @@ export function helpLines(columns: number, opts: { bindings?: Bindings; ascii?: 
         }
         if (items.length === 0) continue;
         const title = contextTitle(ctx);
-        if (level === 0) {
+        if (level >= 3) {
+          merged.push(...items.map((it, i) => (i === 0 ? `${title}: ${it}` : it)));
+        } else if (level === 0) {
           lines.push(`  ${title}`);
           lines.push(...packLines(items, width, '    ', sep));
         } else {
@@ -317,6 +334,7 @@ export function helpLines(columns: number, opts: { bindings?: Bindings; ascii?: 
           lines.push(...packed.slice(1));
         }
       }
+      if (level >= 3) lines.push(...packLines(merged, width, '  ', sep));
     }
     if (topic !== 'keys') {
       lines.push('commands');
@@ -326,18 +344,17 @@ export function helpLines(columns: number, opts: { bindings?: Bindings; ascii?: 
         lines.push(cut(`${head} ${c.title}${c.availableDuringTask === 'any' ? '' : ` (${c.availableDuringTask} only)`}`, width, ascii));
       }
     }
-    if (topic === 'all') {
+    if (topic === 'all' && level < 4) {
       if (level === 0) lines.push('notes');
       for (const n of HELP_NOTES) lines.push(cut(`  ${n}`, width, ascii));
     }
     return lines;
   };
   let lines = render(0);
-  if (lines.length > HELP_MAX_LINES) lines = render(1);
-  if (lines.length > HELP_MAX_LINES) lines = render(2);
+  for (const level of [1, 2, 3, 4] as const) if (lines.length > HELP_MAX_LINES) lines = render(level);
   if (lines.length > HELP_MAX_LINES) {
     const kept = lines.slice(0, HELP_MAX_LINES - 1);
-    kept.push(cut('  … see docs/KEYS.md and docs/COMMANDS.md for the rest', width, ascii));
+    kept.push(cut(HELP_POINTER, width, ascii));
     return kept;
   }
   return lines;

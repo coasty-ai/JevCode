@@ -23,7 +23,8 @@ import { basename, join } from 'node:path';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { Box, Text, render, useApp, useCursor, useInput, usePaste, useStdin, useStdout, useWindowSize } from 'ink';
 import type { Instance, Key } from 'ink';
-import type { BlockingAnswer, BlockingRequest, Engine, LaunchSettings, Renderer, RendererOptions, SecretHit, SessionHost, SessionRow, UiConfig, UiLabel } from '../core/types.js';
+import type { BlockingAnswer, BlockingRequest, Engine, EngineMode, LaunchSettings, Renderer, RendererOptions, SecretHit, SessionHost, SessionRow, UiConfig, UiLabel } from '../core/types.js';
+import { VERSION } from '../version.js';
 import { detectSecrets, patternRedact } from '../core/redact.js';
 import { createLog, nullLog, type KeyClass, type Log } from '../core/log.js';
 import { resolveLaunchSettings } from '../config/launch.js';
@@ -36,19 +37,24 @@ import { defaultTab, cycleTab } from './pane/model.js';
 import { helpLines, paletteGhost, paletteMatches, type PaletteState } from './commands/palette.js';
 import type { CommandAction, DispatchContext } from './commands/dispatch.js';
 import { rank } from './commands/fuzzy.js';
-import { Composer, draftRows, hitSpans, openExternalEditor, useComposer, type ComposerMode } from './composer/Composer.js';
+import { Composer, draftRows, hitSpans, openExternalEditor, promptFor, useComposer, type ComposerMode } from './composer/Composer.js';
+import { Console, pickerConsoleTitle, wizardConsoleTitle } from './Console.js';
+import { consoleInnerWidth } from './console-lines.js';
+import { useMotion } from './motion.js';
+import { SPLASH_MS, WORDMARK_MIN_COLUMNS, brandSpan, splashFrame } from './splash.js';
+import { nextPanel, parsePanelCommand } from './pane/commands.js';
 import { createBuffer, type Snapshot } from './composer/buffer.js';
 import { routeSend, routeSubmit, type SubmitDecision } from './composer/submit.js';
 import { stringWidth } from './composer/width.js';
-import { colorEnabled } from './color-shim.js';
+import { colorDepth, colorEnabled, type ColorDepth } from './color-shim.js';
 import { GLYPHS, glyphSet, type GlyphSet } from './glyphs.js';
 import { DEFAULT_BINDINGS, type Bindings } from './keys/bindings.js';
 import { interruptHint, type InterruptAction } from './keys/interrupts.js';
 import { initialKeyState, resolveKey, type Armed, type KeyAction, type KeyEvent, type KeyState } from './keys/resolve.js';
-import { CAP, computeLayout, composerTop, isCollapsingOverlay, type Layout, type LayoutInput, type OverlayKind } from './layout.js';
+import { CAP, chromeRows, computeLayout, composerTop, consoleTop, isCollapsingOverlay, type Layout, type LayoutInput, type OverlayKind } from './layout.js';
 import { createNotifier, createNotifyTimers } from './notify.js';
-import { Overlay, overlayPreviewWant, overlayWant, type OverlayData } from './Overlay.js';
-import { Pane, paneRule, paneStateOf, plainRule } from './Pane.js';
+import { Overlay, overlayPreviewWant, overlayWant, type IntakeOverlay, type OverlayData } from './Overlay.js';
+import { Pane, paneStateOf, plainRule, ruleRowText } from './Pane.js';
 import { PaneBoundary, RENDER_FAULTS_FIRED, renderFaultFor, type PaneFailure } from './PaneBoundary.js';
 import { INITIAL_PICKER, PICKER_PANE_WANT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedRewindStep, selectedSession, visibleRewindSteps, visibleSessions } from './Picker.js';
 import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, sessionHeaderItem, type TranscriptItem, type TranscriptLevel } from './plain.js';
@@ -59,15 +65,15 @@ import { retryLiveLines } from './retry.js';
 import { gateLines, GATE_DISMISS_TIP } from './secrets/gate-lines.js';
 import { copyRedacted } from './secrets/clipboard.js';
 import { spinnerActive, useSpinner } from './spinner.js';
-import { kShort, statusLineText, type StatusLineOptions, type StatusLineState } from './status/lines.js';
+import { kShort, modeBadge, statusLineText, type StatusLineOptions, type StatusLineState } from './status/lines.js';
 import { StatusLine, statusView } from './StatusLine.js';
 import { createResizeDebounce, installTerminalHygiene, processRestoreTerminal, rearmRestoreTerminal, restoreTerminal, suspendProcess, writeCursorShape, type TerminalHygiene } from './terminal.js';
 import { themeFor, textProps, type Theme } from './theme.js';
 import { TOAST_ERROR_MS, TOAST_INFO_MS } from './toasts.js';
 import { Transcript } from './Transcript.js';
 import { useGitHead } from './useGitHead.js';
-import { createEventBus, createTuiConfirmer, useEngine, type EventBus, type EventSource, type QueueEntry, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
-import { useWizard, type WizardDetect, type WizardHost } from './onboarding/Wizard.js';
+import { createEventBus, createTuiConfirmer, useEngine, useVisibleItems, type EventBus, type EventSource, type QueueEntry, type RunPhase, type TuiConfirmer, type UiAction, type UiState } from './useEngine.js';
+import { useWizard, type WizardDetect, type WizardHost, type WizardReopenOptions } from './onboarding/Wizard.js';
 import { stepWhyBlocks, whyBlock } from './why.js';
 
 export const DEFAULT_ROWS = 24;
@@ -98,6 +104,48 @@ export const SR_REVIEW_MENU = '1 approve  2 decline  3 decline with a note';
 export const SR_REVIEW_PROMPT = 'Enter selection (1-3):';
 /** §14.2 screen reader: one BEL when the review opens. */
 export const BEL = '\x07';
+/** TUI-DESIGN-2 §3.1 row 11 / §12 "Status": Enter while a submission is still thinking. */
+export const STILL_THINKING_TOAST = 'one moment — still thinking';
+/**
+ * TUI-DESIGN-2 §3.1 / §4.9: an engine run owns the session — `live`, `aborting`, `pausing`. `starting` is a submission in
+ * flight with no engine yet (the intake, a lookup or a reply under `thinking`, or the window before `run:start`), so it
+ * follows the idle rules: `thinking` wins the status word, the placeholder and Ctrl-C ×1; the console border stays `border`.
+ */
+export function runIsLive(run: RunPhase): boolean {
+  return run === 'live' || run === 'aborting' || run === 'pausing';
+}
+/** §3.1 rows 1, 10, 11: a chat request is in flight — the phase is set and no engine run owns the session. */
+export function chatThinking(s: Pick<UiState, 'run' | 'thinking'>): boolean {
+  return s.thinking !== null && !runIsLive(s.run);
+}
+/** TUI-DESIGN-2 §3.7 / §12 "Transcript": the bubble after Esc on the intake card is the controller's; the App only restores the draft. */
+export type IntakeAnswer = 'run' | 'chat' | 'keep';
+
+/**
+ * TUI-DESIGN-2 §1.5 / §5.3: the launch members S1's `launch.ts` adds (`modeHint`, `reducedMotion`); read structurally so the
+ * first frame follows argv + env as soon as they land and falls back to `jev-only` / `screenReader` until then.
+ */
+interface LaunchExtras {
+  screenReader: boolean;
+  modeHint?: EngineMode;
+  reducedMotion?: boolean;
+}
+
+/** TUI-DESIGN-2 §5.3 (fallback while `launch.reducedMotion` is S1's request): `--no-animation` / `--reduced-motion` on argv, then `JEVCODE_REDUCED_MOTION`, then the screen reader. */
+export function reducedMotionFallback(env: NodeJS.ProcessEnv, argv: readonly string[] = process.argv): boolean {
+  if (argv.includes('--no-animation') || argv.includes('--reduced-motion')) return true;
+  const v = env['JEVCODE_REDUCED_MOTION'];
+  if (typeof v === 'string' && v.trim() !== '') {
+    const t = v.trim().toLowerCase();
+    return !(t === '0' || t === 'false' || t === 'no' || t === 'off');
+  }
+  const sr = env['JEVCODE_SCREEN_READER'] ?? env['INK_SCREEN_READER'];
+  if (typeof sr === 'string' && sr.trim() !== '') {
+    const t = sr.trim().toLowerCase();
+    return !(t === '0' || t === 'false' || t === 'no' || t === 'off');
+  }
+  return false;
+}
 
 /**
  * §4.8: the external editor's draft dir — `<runDir>/drafts` while a run is live (the run dir is `<runsDir>/<runId>`
@@ -130,15 +178,18 @@ export function builderFaultFor(pane: string): string {
  * are cut to `columns + 1` characters before Ink measures them (the +1 keeps Ink's truncation ellipsis), so a
  * 64 KB unbroken tail never costs a 64 KB width measurement per frame. With an empty text buffer and
  * tool-argument chars streaming, the region reads `streaming action… N chars`. In jev-only there is no generator
- * stream: with an empty buffer the region shows the last `synth` line of the step (docs/JEV-ONLY.md).
+ * stream: with an empty buffer the region shows the last `synth` line of the step (docs/JEV-ONLY.md). In llm-jev
+ * (docs/LLM-JEV-DESIGN.md §9.3) the bucketed rows carry ` · sample k/N` while `sampling` is set (null elsewhere: every
+ * other string is unchanged).
  */
-export function liveLines(live: string, rows: number, columns: number = DEFAULT_COLUMNS, toolChars = 0, synth: string | null = null): string[] {
+export function liveLines(live: string, rows: number, columns: number = DEFAULT_COLUMNS, toolChars = 0, synth: string | null = null, sampling: { k: number; n: number } | null = null): string[] {
   if (rows <= 0) return [];
+  const sample = sampling === null ? '' : ` · sample ${sampling.k}/${sampling.n}`;
   if (live === '') {
-    if (toolChars > 0) return [`streaming action… ${kShort(toolChars)} chars`];
+    if (toolChars > 0) return [`streaming action… ${kShort(toolChars)} chars${sample}`];
     return synth !== null ? [synth] : [];
   }
-  if (!/[\r\n]/.test(live)) return [`streaming… ${kShort(live.length)} chars`];
+  if (!/[\r\n]/.test(live)) return [`streaming… ${kShort(live.length)} chars${sample}`];
   const parts = live.split(/\r\n|\r|\n/);
   if (parts[parts.length - 1] === '') parts.pop();
   const max = Math.max(1, Math.floor(columns)) + 1;
@@ -187,7 +238,11 @@ export interface PickerOpen {
 
 type BridgeCommand =
   | { type: 'wizard'; detect: WizardDetect }
-  | { type: 'wizard:reopen'; at: 'provider' | 'generator.apiKey' | 'decider.apiKey'; runLive: boolean }
+  | { type: 'wizard:reopen'; at: 'provider' | 'generator.apiKey' | 'decider.apiKey'; runLive: boolean; opts?: WizardReopenOptions }
+  /** TUI-DESIGN-2 §3.7: the intake card; resolves with the key pressed (`keep` on Esc / Ctrl-C) */
+  | { type: 'intake'; card: IntakeOverlay; resolve: (a: IntakeAnswer) => void }
+  /** TUI-DESIGN-2 §6 item 11: `Renderer.restoreDraft` — Esc on the intake card puts the text back */
+  | { type: 'restoreDraft'; text: string }
   | { type: 'picker'; open: PickerOpen }
   | { type: 'followup'; input: FollowupInput; resolve: (a: 'start' | 'raise' | 'cancel') => void }
   | { type: 'undo'; row: string; resolve: (a: 'yes' | 'no' | 'all' | 'skipRest' | 'abort') => void }
@@ -270,8 +325,14 @@ export interface TuiRenderer extends Renderer {
   dispatch(action: UiAction): void;
   state(): UiState | null;
   openWizard(detect: WizardDetect): void;
-  reopenWizard(at: 'provider' | 'generator.apiKey' | 'decider.apiKey', runLive: boolean): void;
+  reopenWizard(at: 'provider' | 'generator.apiKey' | 'decider.apiKey', runLive: boolean, opts?: WizardReopenOptions): void;
   openPicker(open: PickerOpen): void;
+  /** TUI-DESIGN-2 §3.7: the intake card `run this as a task?`; `y` → run, `n` → chat, Esc / Ctrl-C → keep */
+  promptIntake(card: IntakeOverlay): Promise<IntakeAnswer>;
+  /** TUI-DESIGN-2 §6 item 11: put a submission's text back into the composer */
+  restoreDraft(text: string): void;
+  /** TUI-DESIGN-2 §6 item 11: the LLM turn's streamed text for the live region */
+  live(text: string): void;
   /** §9.3: the follow-up box; resolves with the key pressed */
   confirmFollowUp(input: FollowupInput): Promise<'start' | 'raise' | 'cancel'>;
   /** §12.4: the one-row undo ask */
@@ -459,32 +520,58 @@ export function App(p: AppProps): React.JSX.Element {
   const mode = p.mode ?? 'one-shot';
   const env = p.env ?? process.env;
   const now = p.now ?? Date.now;
-  const log = p.log ?? nullLog();
+  // one log object per mount: `onPaneFail` (finding 3) and the effects below key on its identity
+  const log = useMemo(() => p.log ?? nullLog(), [p.log]);
   const bridgeRef = useRef<Bridge | null>(null);
   bridgeRef.current ??= p.bridge ?? createBridge(null, null);
   const bridge = bridgeRef.current;
   useBridge(bridge);
   const launch = p.launch ?? resolveLaunchSettings({}, env);
+  const lx: LaunchExtras = launch;
   const ui = bridge.ui;
   const glyphs = glyphSet({ ascii: launch.ascii, screenReader: launch.screenReader });
   const theme: Theme = themeFor(ui?.theme);
   const { stdout, write } = useStdout();
   const color = colorEnabled({ noColor: launch.noColor || ui?.noColor === true, env, stream: stdout });
-  const reducedMotion = ui?.reducedMotion ?? launch.screenReader;
+  // TUI-DESIGN-2 §4.9: the depth is computed at mount and at `setUi` for `ui.noColor`; Ink downsamples a wrong guess
+  const depth: ColorDepth = color ? colorDepth({ noColor: launch.noColor || ui?.noColor === true, env, stream: stdout }) : 0;
+  // TUI-DESIGN-2 §5.3: `--no-animation` > `JEVCODE_REDUCED_MOTION` > `screenReader` at launch; the file key follows at `setUi`.
+  // Until S1's `launch.reducedMotion` lands, the same two argv + env sources are read here (no file, no I/O — §1 holds).
+  const launchReducedMotion = lx.reducedMotion ?? reducedMotionFallback(env);
+  const reducedMotion = ui?.reducedMotion ?? launchReducedMotion ?? launch.screenReader;
   // §14.1: `useWindowSize()` is the geometry; after a SIGWINCH the renderer's early listener has already stored the new
   // numbers on the bridge (and, on a shrink, re-rendered synchronously), so this render already uses the new budget
   const windowSize = useWindowSize();
   const rows = bridge.geometry?.rows ?? windowSize.rows;
   const columns = bridge.geometry?.columns ?? windowSize.columns;
+  // TUI-DESIGN-2 §4.1: the chrome tier is a function of geometry alone (boxed ≥ 16 rows and ≥ 40 columns, never under a screen reader)
+  const chrome = chromeRows(rows, columns, launch.screenReader);
+  const boxed = chrome === CAP.chrome;
   const { isRawModeSupported } = useStdin();
   const { suspendTerminal, waitUntilRenderFlush } = useApp();
   const { setCursorPosition } = useCursor();
   const bindings = p.bindings ?? DEFAULT_BINDINGS;
 
-  const { state, dispatch } = useEngine(p.source, p.confirmer, p.task, p.resumeId, { mode, now, flushMs: reducedMotion ? 250 : 50, ...(p.tickMs !== undefined ? { tickMs: p.tickMs } : {}) });
+  const { state, dispatch } = useEngine(p.source, p.confirmer, p.task, p.resumeId, {
+    mode,
+    now,
+    flushMs: reducedMotion ? 250 : 50,
+    ...(p.tickMs !== undefined ? { tickMs: p.tickMs } : {}),
+    modeHint: lx.modeHint ?? 'jev-only',
+    // TUI-DESIGN-2 §5.3: the first frame is splash frame 0 in the boxed tier; reduced motion / a screen reader mount `done`
+    splash: boxed && !launchReducedMotion && !launch.screenReader ? 'running' : 'done',
+  });
   const stateRef = useRef(state);
   stateRef.current = state;
   bridge.stateReader = () => stateRef.current;
+  // TUI-DESIGN-2 §5.1–5.3: the splash's time comes from Ink's shared animation timer; the settle effect ends it in the same
+  // commit `settled` first turns true (never the 1 Hz tick); the file-level reduced-motion key snaps it to `done` at setUi
+  const splashRunning = state.splash === 'running';
+  const motion = useMotion(splashRunning, SPLASH_MS);
+  const settled = motion.settled;
+  useEffect(() => {
+    if (splashRunning && (settled || ui?.reducedMotion === true)) dispatch({ type: 'splash:done' });
+  }, [splashRunning, settled, ui?.reducedMotion, dispatch]);
 
   const host = bridge.host;
   const detect = useCallback((s: string): readonly SecretHit[] => (bridge.host ? bridge.host.detectSecrets(s) : detectSecrets(s)), [bridge]);
@@ -510,6 +597,7 @@ export function App(p: AppProps): React.JSX.Element {
   const pendingUndo = useRef<{ row: string; resolve: (a: 'yes' | 'no' | 'all' | 'skipRest' | 'abort') => void } | null>(null);
   const pendingExit = useRef<((a: boolean) => void) | null>(null);
   const pendingBlocking = useRef<((a: BlockingAnswer) => void) | null>(null);
+  const pendingIntake = useRef<{ card: IntakeOverlay; resolve: (a: IntakeAnswer) => void } | null>(null);
   const [wrapColumns, setWrapColumns] = useState(columns);
   const gitHead = useGitHead(bridge.gitDirs.gitDir, bridge.gitDirs.commonDir, state.git?.head ?? null);
 
@@ -625,7 +713,7 @@ export function App(p: AppProps): React.JSX.Element {
         traceLine(`tui.arm effect cleanup armed=${armed}`);
       };
     }
-    if (overlay === 'secret' || overlay === 'followup' || overlay === 'undo' || overlay === 'exitConfirm') {
+    if (overlay === 'secret' || overlay === 'followup' || overlay === 'undo' || overlay === 'exitConfirm' || overlay === 'intake') {
       // never within GATE_ARM_MS of the Enter that opened the row (§4.10, §6.3), measured from the commit
       let alive = true;
       const t = setTimeout(() => {
@@ -686,9 +774,11 @@ export function App(p: AppProps): React.JSX.Element {
 
   // ----- the draft mirror (§15 item 20)
   const buffer = composer.buffer;
+  // TUI-DESIGN-2 §4.3: the console lays the draft out at the inner width (`columns − 4`)
+  const wrapInner = boxed ? consoleInnerWidth(wrapColumns) : wrapColumns;
   useEffect(() => {
-    dispatch({ type: 'draft', draft: composer.mirror(wrapColumns) });
-  }, [buffer, wrapColumns, composer, dispatch]);
+    dispatch({ type: 'draft', draft: composer.mirror(wrapInner, promptFor(glyphs)) });
+  }, [buffer, wrapInner, composer, dispatch, glyphs]);
 
   // ----- default tab (jev-only: `s` while propose runs, §7.2)
   const stage = state.status?.stage ?? null;
@@ -764,6 +854,26 @@ export function App(p: AppProps): React.JSX.Element {
     if (gateRef.current) closeOverlay('secret');
   };
 
+  // ----- TUI-DESIGN-2 §4.6 / §4.5: the panel and transcript commands
+  const applyPanelCommand = (c: ReturnType<typeof parsePanelCommand>): void => {
+    if (c === null) return;
+    const s = stateRef.current;
+    if (c.kind === 'transcript') {
+      if (c.view === null) {
+        noteLine(`transcript ${s.transcript}`, { label: '[ui]' });
+        return;
+      }
+      dispatch({ type: 'transcript', view: c.view });
+      return;
+    }
+    const next = nextPanel({ panel: s.panel, tab: s.tab }, c.arg);
+    if (next.tab !== s.tab) {
+      tabTouched.current = true;
+      dispatch({ type: 'tab', tab: next.tab });
+    }
+    if (next.panel !== s.panel) dispatch({ type: 'panel', panel: next.panel });
+  };
+
   // ----- send paths (§4.9). History is appended after the host has `addSecret()`ed the spans (§10.7 / §4.6 ordering),
   // with the redacted text captured before the composer is cleared; `history` overrides the entry for a `/steer` line.
   const send = (decision: SubmitDecision, history?: { kind: 'prompt' | 'steer' | 'command'; text: string }): void => {
@@ -800,6 +910,10 @@ export function App(p: AppProps): React.JSX.Element {
         dispatch({ type: 'run:starting' });
         void h
           .submit(decision.full, { kind: decision.promptKind, secretSpans: decision.secretSpans, pinnedFiles: decision.pinnedFiles })
+          .then((outcome) => {
+            // TUI-DESIGN-2 §4.4 / §3.8: a chat reply is a turn (a run counts at `run:start`) — the placeholder reads `followup` from here on
+            if (outcome !== undefined && outcome !== null && typeof outcome === 'object' && outcome.became === 'chat') dispatch({ type: 'turn' });
+          })
           .catch((e: unknown) => noteLine(`error: ${e instanceof Error ? e.message : String(e)}`, { label: '[ui]', level: 'error' }))
           .finally(() => {
             submittingRef.current = false;
@@ -831,6 +945,9 @@ export function App(p: AppProps): React.JSX.Element {
       case 'why': {
         const digit = /^[1-5]$/.test(action.ref.trim()) ? Number(action.ref.trim()) : null;
         const ref = action.ref.trim();
+        // TUI-DESIGN-2 §3.11: `intake[.reply|.about_<key>|.can_<kind>]` addresses the last intake's step-0 rows, which belong to no run —
+        // the controller keeps them (`chatIntakes`, full `Decision`s; the App's `chatRows` are panel projections), so its `/why` answers
+        if (h && /^intake(?:\.[a-z_]+)?$/.test(ref)) break;
         const all = [...s.decisionsByStep.values()].flat();
         const step = s.pendingReview?.step ?? s.step;
         let d = null as (typeof all)[number] | null;
@@ -846,6 +963,7 @@ export function App(p: AppProps): React.JSX.Element {
         }
         if (d === null) {
           noteLine(`error: /why: no decision ${ref} in the last ${3} steps`, { label: '[ui]', level: 'warn' });
+          composer.clear(); // a failed /why leaves no command text behind for the next line to append to (docs/STATUS.md "Round 2" finding 16)
           return;
         }
         const block = whyBlock(d, { siblings: all.filter((x) => x.step === d!.step), model: s.done?.resolvedJevModel ?? null }, glyphs);
@@ -942,6 +1060,21 @@ export function App(p: AppProps): React.JSX.Element {
     if (picker.kind && pickerOpenRef.current !== null) return; // handled by the picker ops
     if (mode === 'one-shot' && s.run === 'none' && (s.done !== null || s.runsEnded > 0)) return; // §1 / §3.3: nothing to submit after a one-shot run:end
     const text = composer.buffer.text;
+    // TUI-DESIGN-2 §4.6 / §4.5: `/panel …` and `/transcript …` are the App's own (the registry rows are S2's)
+    const local = parsePanelCommand(text);
+    if (local !== null && s.overlay !== 'wizard') {
+      if (s.overlay === 'palette') closeOverlay('palette');
+      applyPanelCommand(local);
+      appendHistory('command', text.trim());
+      composer.clear();
+      return;
+    }
+    // TUI-DESIGN-2 §3.1 row 11: Enter while a submission is still thinking (`run: 'starting'` under a phase) is ignored with a
+    // toast; the draft keeps accepting text
+    if (chatThinking(s) && text.trim().length > 0 && !text.trimStart().startsWith('/')) {
+      toast(STILL_THINKING_TOAST);
+      return;
+    }
     const decision = routeSubmit({
       text,
       submitting: submittingRef.current,
@@ -1119,6 +1252,10 @@ export function App(p: AppProps): React.JSX.Element {
           pendingExit.current?.(false);
           pendingExit.current = null;
         }
+        if (k === 'intake') {
+          pendingIntake.current?.resolve('keep');
+          pendingIntake.current = null;
+        }
         if (k === 'wizard') wizard.cancel();
         if (k === 'secret') toast(GATE_DISMISS_TIP);
         closeOverlay(k);
@@ -1192,9 +1329,32 @@ export function App(p: AppProps): React.JSX.Element {
         retryNow();
         return;
       case 'paneTab':
+        // TUI-DESIGN-2 §4.6: `]` / `[` on an empty draft open a collapsed panel first, then cycle the tabs
+        if (s.panel === 'collapsed') {
+          dispatch({ type: 'panel', panel: 'open' });
+          return;
+        }
         tabTouched.current = true;
         dispatch({ type: 'tab', tab: cycleTab(s.tab, action.dir) });
         return;
+      case 'panel': {
+        // TUI-DESIGN-2 §4.6: Alt+J toggles, Alt+Shift+J opens full, Alt+D/P/T/S open a tab (a second press on the same tab collapses)
+        const next = nextPanel({ panel: s.panel, tab: s.tab }, action.op === 'toggle' ? null : action.op === 'full' ? 'full' : (action.tab ?? s.tab));
+        if (next.tab !== s.tab) {
+          tabTouched.current = true;
+          dispatch({ type: 'tab', tab: next.tab });
+        }
+        if (next.panel !== s.panel) dispatch({ type: 'panel', panel: next.panel });
+        return;
+      }
+      case 'intake': {
+        // TUI-DESIGN-2 §3.7: y → run · n → chat (a reply from the answers in hand) · Esc / Ctrl-C → keep (the controller restores the draft)
+        const i = pendingIntake.current;
+        pendingIntake.current = null;
+        closeOverlay('intake');
+        i?.resolve(action.op);
+        return;
+      }
       case 'export':
         runCommand({ kind: 'export', file: null }, '/export');
         return;
@@ -1527,6 +1687,20 @@ export function App(p: AppProps): React.JSX.Element {
     if (ev.escExpired !== true) log.key(keyClassOf(ev.input, ev.key as Key, ev.paste === true), ev.input.length, stateRef.current.overlay === 'wizard');
     if (ev.paste === true) log.paste(ev.input.length);
     const ks = keyState();
+    const cur = stateRef.current;
+    // TUI-DESIGN-2 §3.1 row 10: Ctrl-C ×1 while a submission is thinking (`run: 'starting'` under a phase, finding 1) aborts the
+    // request (the controller's `chatSignal` → toast `stopped thinking`); no arm, no bubble, no exit — the S0 rules resume afterwards
+    if (chatThinking(cur) && cur.overlay === 'none' && ev.key.ctrl && ev.input === 'c' && ev.paste !== true) {
+      if (bridge.host) bridge.host.abort('human_abort');
+      else p.onAbort('human_abort');
+      return;
+    }
+    // TUI-DESIGN-2 §4.6: Esc on an empty idle draft collapses an open panel before arming Esc Esc (the buffered lone Esc)
+    if (ev.escExpired === true && cur.overlay === 'none' && !runIsLive(cur.run) && cur.panel !== 'collapsed' && composer.buffer.text.length === 0 && pickerOpenRef.current === null && !cur.noteMode) {
+      armedRef.current = { ...armedRef.current, escBufferAt: null };
+      dispatch({ type: 'panel', panel: 'collapsed' });
+      return;
+    }
     // the note's own secret gate (§6.4): only `y` sends, anything else cancels the gate
     const n = noteRef.current;
     if (n && n.gate !== null && ks.overlay === 'review') {
@@ -1590,7 +1764,17 @@ export function App(p: AppProps): React.JSX.Element {
           wizard.start(c.detect);
           return;
         case 'wizard:reopen':
-          wizard.reopen(c.at, c.runLive);
+          wizard.reopen(c.at, c.runLive, c.opts);
+          return;
+        case 'intake': {
+          // TUI-DESIGN-2 §3.7: one card at a time — a previous card resolves `keep`
+          pendingIntake.current?.resolve('keep');
+          pendingIntake.current = { card: c.card, resolve: c.resolve };
+          dispatch({ type: 'overlay', overlay: 'intake' });
+          return;
+        }
+        case 'restoreDraft':
+          composer.set(c.text);
           return;
         case 'picker':
           pickerOpenRef.current = c.open;
@@ -1651,15 +1835,22 @@ export function App(p: AppProps): React.JSX.Element {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [bridge, wizard, dispatch]);
 
-  // ----- pane failures (§13.4)
-  const onPaneFail = (f: PaneFailure): void => {
-    log.error(`render fault pane=${f.pane} ${f.error.name}: ${redact(f.error.message)} ${redact(f.componentStack ?? '')}`.slice(0, 500));
-    dispatch({ type: 'local', text: `ui: ${f.pane} pane failed to render (${f.error.name}) — run continues; details in ${log.file || 'jevcode.log'}`, label: '[ui]', level: 'error' });
-    if (f.pane === 'overlay' && stateRef.current.pendingReview) {
-      p.confirmer.resolveDetailed(stateRef.current.pendingReview.id, { approved: false });
-      dispatch({ type: 'confirm:settled', id: stateRef.current.pendingReview.id });
-    }
-  };
+  // ----- pane failures (§13.4). Referentially stable (TUI-DESIGN-2 §4.5, finding 3): it is a prop of the memoised
+  // <Transcript>, and a fresh arrow per render would re-render <Static> on every App commit — including a hidden-only
+  // batch — and take Ink's `isStaticDirty → onImmediateRender` path; the state is read through `stateRef`
+  const confirmer = p.confirmer;
+  const onPaneFail = useCallback(
+    (f: PaneFailure): void => {
+      log.error(`render fault pane=${f.pane} ${f.error.name}: ${redact(f.error.message)} ${redact(f.componentStack ?? '')}`.slice(0, 500));
+      dispatch({ type: 'local', text: `ui: ${f.pane} pane failed to render (${f.error.name}) — run continues; details in ${log.file || 'jevcode.log'}`, label: '[ui]', level: 'error' });
+      const pending = stateRef.current.pendingReview;
+      if (f.pane === 'overlay' && pending) {
+        confirmer.resolveDetailed(pending.id, { approved: false });
+        dispatch({ type: 'confirm:settled', id: pending.id });
+      }
+    },
+    [log, redact, dispatch, confirmer],
+  );
   const fault = p.fault ?? env['JEVCODE_FAULT'];
   // §13.4 at the App level: the pure line builders run in this render body, outside every <PaneBoundary>; a throw
   // there would reach Ink's InternalErrorBoundary. `guard()` degrades that one pane to its fallback instead and
@@ -1698,6 +1889,7 @@ export function App(p: AppProps): React.JSX.Element {
   const overlayData: OverlayData = guard<OverlayData>(
     'overlay',
     () => ({
+      intake: pendingIntake.current?.card ?? null,
       review: state.pendingReview && state.overlay === 'review' ? { req: state.pendingReview, note: noteView() } : null,
       wizard: state.overlay === 'wizard' ? { state: wizard.state, trust: (bridge.wizardHost?.trustInputs?.() ?? null) as TrustInputs | null } : null,
       followup: pendingFollowup.current?.input ?? null,
@@ -1717,16 +1909,23 @@ export function App(p: AppProps): React.JSX.Element {
   // once the run ended nothing can be steered or submitted, so the composer row is inert and shows no placeholder
   const oneShotDone = mode === 'one-shot' && state.run === 'none' && (state.done !== null || state.runsEnded > 0);
   const composerActive = !collapsing && !oneShotDone && (state.pendingReview === null || srReview) && overlayKind !== 'wizard' && overlayKind !== 'blocking';
-  const composerWant = collapsing || state.noteMode ? 1 : guard('composer', () => draftRows(buffer.text, buffer.chips, wrapColumns, pickerOpen ? `> filter: ` : '> '), 1);
+  const composerWant = collapsing || state.noteMode ? 1 : guard('composer', () => draftRows(buffer.text, buffer.chips, wrapInner, pickerOpen ? `${promptFor(glyphs)}filter: ` : promptFor(glyphs)), 1);
   const banner = guard('banner', () => bannerRow(state.loop, columns, glyphs), null);
-  const liveRows = guard<string[]>('live', () => (state.retrying ? retryLiveLines(state.retrying, state.nowMs, CAP.live, columns, glyphs) : liveLines(state.live, CAP.live, columns, state.toolChars, state.synth)), []);
-  const paneWant = pickerOpen ? PICKER_PANE_WANT : state.ready !== null || state.done !== null ? CAP.pane : 0;
+  const liveRows = guard<string[]>('live', () => (state.retrying ? retryLiveLines(state.retrying, state.nowMs, CAP.live, columns, glyphs) : liveLines(state.live, CAP.live, columns, state.toolChars, state.synth, state.sampling)), []);
+  // TUI-DESIGN-2 §5.2 row 14 / §4.2 step 10: the 5-row splash slot only while the wordmark has rows to show (never a blank hole)
+  const splashOn = state.splash === 'running' && motion.time < SPLASH_MS && columns >= WORDMARK_MIN_COLUMNS && boxed;
+  const splash = splashOn ? guard('pane', () => splashFrame(motion.time, columns, glyphs), null) : null;
+  const wordmarkOn = splash !== null && splash.rows.length > 0;
+  // TUI-DESIGN-2 §4.6: 0 (collapsed) · 6 (open) · 12 (full / picker) · 5 (splash)
+  const paneWant = pickerOpen ? PICKER_PANE_WANT : wordmarkOn ? CAP.splash : state.panel === 'open' ? CAP.panel : state.panel === 'full' ? CAP.pane : 0;
+  // TUI-DESIGN-2 §4.2: in the boxed tier the secret gate is a console row, never the `secret` overlay
+  const gateUp: 0 | 1 = boxed && overlayKind === 'secret' && gateRef.current !== null ? 1 : 0;
   const layoutInput: LayoutInput = {
     rows,
     columns,
     overlay: overlayKind,
     // a failed overlay builder still gets one row: the boundary's fallback row needs it
-    overlayWant: guard('overlay', () => overlayWant(overlayKind, overlayData, rows, columns), overlayKind === 'none' ? 0 : 1),
+    overlayWant: guard('overlay', () => overlayWant(overlayKind, overlayData, rows, columns, chrome), overlayKind === 'none' || (boxed && overlayKind === 'secret') ? 0 : 1),
     previewWant: guard('overlay', () => overlayPreviewWant(overlayKind, overlayData), 0),
     expanded: state.expanded,
     composerWant,
@@ -1734,39 +1933,77 @@ export function App(p: AppProps): React.JSX.Element {
     liveWant: liveRows.length,
     bannerWant: banner !== null ? 1 : 0,
     paneWant,
+    chrome,
+    gate: gateUp,
   };
   const layout = computeLayout(layoutInput);
   layoutRef.current = layout;
   const top = composerTop(layout);
+  // TUI-DESIGN-2 §4.3: the wizard's rows live inside the console (its top edge sits above the overlay allocation)
+  const wizardHosted = boxed && overlayKind === 'wizard' && layout.chrome > 0;
+  const cTop = consoleTop(layout) - (wizardHosted ? layout.overlay : 0);
   const overlayTop = layout.rule + layout.live + layout.banner + layout.pane + layout.queue;
   const header = useMemo(() => (mode === 'session' ? sessionHeaderItem(p.cwd ?? process.cwd()) : headerItem(p.task, p.resumeId)), [mode, p.cwd, p.task, p.resumeId]);
   const spinner = useSpinner(spinnerActive(state), reducedMotion);
-  const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode };
+  const statusOpts: StatusLineOptions = { ascii: glyphs.mode === 'ascii', reducedMotion, spinnerFrame: spinner, mode, flatBadge: !boxed };
+  // TUI-DESIGN-2 §3.1 (finding 1): an engine run — never a submission in flight — colours the border `borderFocus` and the prompt `steer`
+  const runLive = runIsLive(state.run);
+  const thinking = chatThinking(state);
   const composerMode: ComposerMode = pickerOpen
     ? 'filter'
     : oneShotDone
       ? 'done'
-      : overlayKind === 'review' || (state.pendingReview !== null && state.run !== 'none' && overlayKind === 'none')
-      ? state.pendingReview !== null && overlayKind === 'review'
-        ? 'review'
-        : state.run !== 'none'
-          ? 'steer'
-          : 'task'
-      : overlayKind === 'followup'
-        ? 'followupWait'
-        : overlayKind === 'exitConfirm'
-          ? 'exitWait'
-          : overlayKind === 'blocking'
-            ? 'blocked'
+      : overlayKind === 'intake'
+        ? 'intakeWait'
+        : overlayKind === 'review' || (state.pendingReview !== null && state.run !== 'none' && overlayKind === 'none')
+          ? state.pendingReview !== null && overlayKind === 'review'
+            ? 'review'
             : state.run !== 'none'
               ? 'steer'
-              : state.runsEnded > 0 || state.done !== null
-                ? 'followup'
-                : 'task';
+              : 'task'
+          : overlayKind === 'followup'
+            ? 'followupWait'
+            : overlayKind === 'exitConfirm'
+              ? 'exitWait'
+              : overlayKind === 'blocking'
+                ? 'blocked'
+                : thinking
+                  ? 'thinking' // §3.1 row 1 / §4.4: `(thinking…)` while the intake, lookup or reply is in flight (the run is `starting`)
+                  : state.run !== 'none'
+                    ? 'steer'
+                    : state.turns > 0 || state.runsEnded > 0 || state.done !== null
+                      ? 'followup'
+                      : 'task';
   const paneState = guard('pane', () => paneStateOf(state), { tab: state.tab, step: state.step, rows: [], plan: null, timeline: [], synth: null, mode: state.mode });
   const pickerView = pickerOpen ? guard('pane', () => pickerLines(picker, { filter: picker.renaming ? '' : buffer.text, rows: layout.pane, columns, nowMs: state.nowMs, glyphs }), null) : null;
-  const rule = guard('rule', () => paneRule(paneState, layout.pane, columns, overlayKind, rows, glyphs, pickerOpen ? pickerRule(picker, columns, glyphs) : null), plainRule(columns, glyphs));
+  // TUI-DESIGN-2 §5.4 (finding 2): the brand row is the idle rule row until the first `run:ready`; a submission in flight
+  // (`starting`, the chat phase) never swaps it for the strip and back
+  const ranBefore = state.ready !== null || state.done !== null || state.runsEnded > 0;
+  const rule = guard(
+    'rule',
+    () =>
+      ruleRowText({
+        state: paneState,
+        latencies: state.jevLatencies,
+        paneRows: layout.pane,
+        columns,
+        overlay: overlayKind,
+        terminalRows: rows,
+        panel: pickerOpen ? 'full' : state.panel,
+        splash: state.splash,
+        splashTime: state.splash === 'running' ? motion.time : null,
+        ranBefore,
+        version: VERSION,
+        glyphs,
+        pickerHeader: pickerOpen ? pickerRule(picker, columns, glyphs) : null,
+      }),
+    plainRule(columns, glyphs),
+  );
   const statusState = guard<StatusLineState | null>('status', () => statusView({ ...state, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen }), null);
+  const badge = modeBadge(state.modeBadge.mode, state.modeBadge.pending, glyphs);
+  const consoleTitle = wizardHosted ? wizardConsoleTitle(wizard.state.step, glyphs) : pickerOpen && picker.kind ? pickerConsoleTitle(picker.kind, glyphs) : null;
+  const gateRow = gateUp === 1 && gateRef.current ? (gateLines(gateRef.current.hits, consoleInnerWidth(columns))[0] ?? null) : null;
+  const visible = useVisibleItems(state.items, state.staticEpoch);
   const queueLines = guard<string[]>('queue', () => queueRows(state.queue, state.step + 1, layout.queue, columns, glyphs), []);
   const ghost = palette && palette.mode === 'command' ? guard('composer', () => paletteGhost(buffer.text.trim(), paletteMatches(buffer.text.trim(), paletteState())), null) : null;
   // the App owns the single cursor: hidden unless a child places it during its render
@@ -1778,14 +2015,12 @@ export function App(p: AppProps): React.JSX.Element {
   return (
     <Box flexDirection="column">
       {/* §13.4: each <Static> item has its own boundary inside <Transcript>; this outer one is the last resort and retries with the next item */}
-      <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={state.items.length}>
-        <Transcript items={state.items} header={header} theme={theme} color={color} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} />
+      <PaneBoundary pane="transcript" onFail={onPaneFail} resetKey={visible.length}>
+        <Transcript items={visible} header={header} theme={theme} color={depth} glyphs={glyphs} epoch={state.staticEpoch} onFail={onPaneFail} fault={fault} log={logName} columns={columns} keySeq={state.keySeq} />
       </PaneBoundary>
       {!staticOnly && layout.rule > 0 ? (
         <Box height={layout.rule} overflow="hidden">
-          <Text wrap="truncate" {...textProps(theme, 'rule', color)}>
-            {rule}
-          </Text>
+          <RuleRow text={rule} theme={theme} color={depth} glyphs={glyphs} />
         </Box>
       ) : null}
       {!staticOnly && layout.live > 0 ? (
@@ -1806,9 +2041,15 @@ export function App(p: AppProps): React.JSX.Element {
           </Text>
         </Box>
       ) : null}
-      {!staticOnly && layout.pane > 0 ? (
+      {!staticOnly && layout.pane > 0 && wordmarkOn && splash !== null ? (
+        <Box flexDirection="column" height={layout.pane} overflow="hidden">
+          {splash.rows.slice(0, layout.pane).map((row, i) => (
+            <SplashRow key={`s${i}`} row={row} spans={splash.spans.filter((sp) => sp.row === i)} theme={theme} color={depth} />
+          ))}
+        </Box>
+      ) : !staticOnly && layout.pane > 0 ? (
         <PaneBoundary pane="pane" onFail={onPaneFail} fault={fault} log={logName} resetKey={state.runId ?? ''}>
-          <Pane state={paneState} rows={layout.pane} columns={columns} overlay={overlayKind} terminalRows={rows} lines={pickerView?.lines ?? null} selected={pickerView?.selected ?? null} glyphs={glyphs} theme={theme} color={color} />
+          <Pane state={paneState} rows={layout.pane} columns={columns} overlay={overlayKind} terminalRows={rows} lines={pickerView?.lines ?? null} selected={pickerView?.selected ?? null} glyphs={glyphs} theme={theme} color={depth} {...(pickerOpen ? {} : { size: state.panel === 'open' ? 'open' : 'full' })} />
         </PaneBoundary>
       ) : null}
       {!staticOnly && layout.queue > 0 ? (
@@ -1820,12 +2061,55 @@ export function App(p: AppProps): React.JSX.Element {
           ))}
         </Box>
       ) : null}
-      {!staticOnly && (layout.overlay > 0 || layout.preview > 0) ? (
+      {!staticOnly && (layout.overlay > 0 || layout.preview > 0) && !wizardHosted ? (
         <PaneBoundary pane="overlay" onFail={onPaneFail} fault={fault} log={logName} resetKey={overlayKind}>
-          <Overlay kind={layout.degraded === 'minsize' ? 'none' : overlayKind} rows={layout.overlay} previewRows={layout.preview} columns={columns} terminalRows={rows} top={overlayTop} data={overlayData} degraded={layout.degraded} cursor={setCursorPosition} glyphs={glyphs} theme={theme} color={color} screenReader={launch.screenReader} />
+          <Overlay kind={layout.degraded === 'minsize' ? 'none' : overlayKind} rows={layout.overlay} previewRows={layout.preview} columns={columns} terminalRows={rows} top={overlayTop} data={overlayData} degraded={layout.degraded} cursor={setCursorPosition} glyphs={glyphs} theme={theme} color={depth} screenReader={launch.screenReader} chrome={chrome} />
         </PaneBoundary>
       ) : null}
-      {!staticOnly && layout.composer > 0 ? (
+      {!staticOnly && layout.chrome > 0 && (layout.composer > 0 || wizardHosted) ? (
+        // TUI-DESIGN-2 §4.3: the boxed tier — one console around the composer (or the wizard's rows) and the status bar
+        <PaneBoundary
+          pane="composer"
+          onFail={onPaneFail}
+          fault={fault}
+          log={logName}
+          fallback={() => (
+            <Box flexDirection="column" height={layout.chrome + layout.composer + layout.status} overflow="hidden">
+              <Text wrap="truncate">{`${promptFor(glyphs)}${maskHits(buffer.text, hitSpans(composer.hits()), maskGlyph).split('\n').at(-1) ?? ''}`}</Text>
+              <Text wrap="truncate">{statusState ? statusLineText(statusState, columns, statusOpts) : `step ${state.step}/${state.status?.maxSteps ?? '–'}`}</Text>
+            </Box>
+          )}
+        >
+          <Console
+            buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer}
+            columns={columns}
+            bodyColumns={wrapColumns}
+            height={wizardHosted ? layout.overlay : Math.max(1, layout.composer - layout.gate)}
+            top={cTop}
+            scrollTop={composer.scrollTop}
+            cursor={setCursorPosition}
+            active={wizardHosted ? true : composerActive && !state.noteMode}
+            mode={composerMode}
+            rows={rows}
+            live={runLive}
+            spans={hitSpans(state.noteMode ? [] : composer.hits())}
+            ghost={ghost}
+            searchRow={composer.searchRow()}
+            badge={badge}
+            dir={sessionDirName(p.cwd ?? process.cwd())}
+            title={consoleTitle}
+            gate={gateRow}
+            status={statusState ?? statusView(state, { picker: pickerOpen })}
+            statusOptions={statusOpts}
+            wizard={wizardHosted ? { state: wizard.state, trust: (bridge.wizardHost?.trustInputs?.() ?? null) as TrustInputs | null, screenReader: launch.screenReader } : null}
+            glyphs={glyphs}
+            theme={theme}
+            color={depth}
+            onScroll={(n) => composer.setScrollTop(n)}
+          />
+        </PaneBoundary>
+      ) : null}
+      {!staticOnly && layout.chrome === 0 && layout.composer > 0 ? (
         <PaneBoundary
           pane="composer"
           onFail={onPaneFail}
@@ -1834,18 +2118,72 @@ export function App(p: AppProps): React.JSX.Element {
           fallback={() => (
             // §13.4: the single-row plain input — the draft's last line with its hit spans masked (§4.3 holds here too)
             <Box height={layout.composer} overflow="hidden">
-              <Text wrap="truncate">{`> ${maskHits(buffer.text, hitSpans(composer.hits()), maskGlyph).split('\n').at(-1) ?? ''}`}</Text>
+              <Text wrap="truncate">{`${promptFor(glyphs)}${maskHits(buffer.text, hitSpans(composer.hits()), maskGlyph).split('\n').at(-1) ?? ''}`}</Text>
             </Box>
           )}
         >
-          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={wrapColumns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={setCursorPosition} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={state.run !== 'none'} spans={hitSpans(state.noteMode ? [] : composer.hits())} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={color} onScroll={(n) => composer.setScrollTop(n)} />
+          <Composer buffer={state.noteMode || collapsing ? EMPTY_BUFFER : buffer} columns={wrapColumns} height={layout.composer} top={top} scrollTop={composer.scrollTop} cursor={setCursorPosition} active={composerActive && !state.noteMode} mode={composerMode} rows={rows} live={runLive} spans={hitSpans(state.noteMode ? [] : composer.hits())} ghost={ghost} searchRow={composer.searchRow()} glyphs={glyphs} theme={theme} color={depth} onScroll={(n) => composer.setScrollTop(n)} />
         </PaneBoundary>
       ) : null}
-      {layout.status > 0 ? (
+      {layout.status > 0 && layout.chrome === 0 ? (
         <PaneBoundary pane="status" onFail={onPaneFail} fault={fault} log={logName} fallback={() => <Text wrap="truncate">{statusState ? statusLineText(statusState, columns, statusOpts) : `step ${state.step}/${state.status?.maxSteps ?? '–'}`}</Text>}>
-          {statusState ? <StatusLine state={statusState} columns={columns} options={statusOpts} theme={theme} color={color} /> : <Text wrap="truncate">{`step ${state.step}/${state.status?.maxSteps ?? '–'}`}</Text>}
+          {statusState ? <StatusLine state={statusState} columns={columns} options={statusOpts} theme={theme} color={depth} /> : <Text wrap="truncate">{`step ${state.step}/${state.status?.maxSteps ?? '–'}`}</Text>}
         </PaneBoundary>
       ) : null}
+    </Box>
+  );
+}
+
+/**
+ * TUI-DESIGN-2 §5.4: the rule row — `◆ jevcode <version>` in `accent` on the brand row, the rest in `rule`. The span comes
+ * from `brandSpan`, which accepts the four pulse glyphs (`░ ▒ ▓ ◆`), so the accent holds through the one-line splash
+ * below 64 columns (finding 10).
+ */
+export function RuleRow({ text, theme, color, glyphs }: { text: string; theme: Theme; color: ColorDepth; glyphs: GlyphSet }): React.JSX.Element {
+  const span = brandSpan(text, glyphs);
+  if (span === null) {
+    return (
+      <Text wrap="truncate" {...textProps(theme, 'rule', color)}>
+        {text}
+      </Text>
+    );
+  }
+  return (
+    <Text wrap="truncate">
+      <Text {...textProps(theme, 'rule', color)}>{text.slice(0, span.from)}</Text>
+      <Text {...textProps(theme, 'accent', color)}>{text.slice(span.from, span.to)}</Text>
+      <Text {...textProps(theme, 'rule', color)}>{text.slice(span.to)}</Text>
+    </Text>
+  );
+}
+
+/** TUI-DESIGN-2 §5.1: one wordmark row — the text unchanged, its cells coloured by the frame's spans (`accent` JEV, `dim` CODE, `sweep` head / band). */
+function SplashRow({ row, spans, theme, color }: { row: string; spans: readonly { from: number; to: number; role: import('./theme.js').ColorRole }[]; theme: Theme; color: ColorDepth }): React.JSX.Element {
+  const cells = [...row];
+  const parts: React.JSX.Element[] = [];
+  let at = 0;
+  const sorted = [...spans].filter((s) => s.from < cells.length).sort((a, b) => a.from - b.from);
+  // the sweep band paints over the letter roles: later spans win inside their range
+  const roleAt = (i: number): import('./theme.js').ColorRole | null => {
+    let role: import('./theme.js').ColorRole | null = null;
+    for (const s of sorted) if (i >= s.from && i < s.to) role = s.role;
+    return role;
+  };
+  while (at < cells.length) {
+    const role = roleAt(at);
+    let end = at + 1;
+    while (end < cells.length && roleAt(end) === role) end++;
+    const text = cells.slice(at, end).join('');
+    parts.push(
+      <Text key={`p${at}`} {...(role === null ? {} : textProps(theme, role, color))}>
+        {text}
+      </Text>,
+    );
+    at = end;
+  }
+  return (
+    <Box height={1} overflow="hidden">
+      <Text wrap="truncate">{parts}</Text>
     </Box>
   );
 }
@@ -1998,8 +2336,15 @@ export function createTuiRenderer(opts: TuiRendererOptions): TuiRenderer {
     openWizard(detect) {
       bridge.command({ type: 'wizard', detect });
     },
-    reopenWizard(at, runLive) {
-      bridge.command({ type: 'wizard:reopen', at, runLive });
+    reopenWizard(at, runLive, opts) {
+      bridge.command({ type: 'wizard:reopen', at, runLive, ...(opts ? { opts } : {}) });
+    },
+    promptIntake: (card) => new Promise((resolve) => bridge.command({ type: 'intake', card, resolve })),
+    restoreDraft(text) {
+      bridge.command({ type: 'restoreDraft', text });
+    },
+    live(text) {
+      bridge.command({ type: 'dispatch', action: { type: 'live', text } });
     },
     openPicker(open) {
       bridge.command({ type: 'picker', open });

@@ -1,23 +1,32 @@
 // Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
 
-exports[`height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × columns 40/80/120) > columns=40: the normalised session first frame matches its snapshot 1`] = `
+exports[`height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × columns 40/80/120) > columns=40: the normalised session first frame (reduced motion: the brand row, no splash) matches its snapshot 1`] = `
 "[run] jevcode session · proj | step 0/–
-starting
-────────────────────────────────────────
-> Describe the task…   / commands · @ f…
-idle                    step 0/–  ? help"
+      starting
+─── ◆ jevcode 0.3.0 ────────────────────
+╭─ jev-only ──────────────────── proj ─╮
+│ › Say hi, ask a question, or descri… │
+├──────────────────────────────────────┤
+│ idle                step 0/–  ? help │
+╰──────────────────────────────────────╯"
 `;
 
-exports[`height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × columns 40/80/120) > columns=80: the normalised session first frame matches its snapshot 1`] = `
+exports[`height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × columns 40/80/120) > columns=80: the normalised session first frame (reduced motion: the brand row, no splash) matches its snapshot 1`] = `
 "[run] jevcode session · proj | step 0/– starting
-────────────────────────────────────────────────────────────────────────────────
-> Describe the task…   / commands · @ files · ? help · Enter runs
-idle                                                            step 0/–  ? help"
+─── ◆ jevcode 0.3.0 ────────────────────────────────────────────────────────────
+╭─ jev-only ──────────────────────────────────────────────────────────── proj ─╮
+│ › Say hi, ask a question, or describe a task…                                │
+├──────────────────────────────────────────────────────────────────────────────┤
+│ idle                                                        step 0/–  ? help │
+╰──────────────────────────────────────────────────────────────────────────────╯"
 `;
 
-exports[`height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × columns 40/80/120) > columns=120: the normalised session first frame matches its snapshot 1`] = `
+exports[`height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × columns 40/80/120) > columns=120: the normalised session first frame (reduced motion: the brand row, no splash) matches its snapshot 1`] = `
 "[run] jevcode session · proj | step 0/– starting
-────────────────────────────────────────────────────────────────────────────────────────────────────────────────────────
-> Describe the task…   / commands · @ files · ? help · Enter runs
-idle                                                                                                    step 0/–  ? help"
+─── ◆ jevcode 0.3.0 ────────────────────────────────────────────────────────────────────────────────────────────────────
+╭─ jev-only ──────────────────────────────────────────────────────────────────────────────────────────────────── proj ─╮
+│ › Say hi, ask a question, or describe a task…                                                   / commands · @ files │
+├──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────┤
+│ idle                                                                                                step 0/–  ? help │
+╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯"
 `;

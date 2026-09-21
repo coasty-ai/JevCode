@@ -9,8 +9,8 @@ import { existsSync, readFileSync } from 'node:fs';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { CredentialsPatch } from '../../../src/config/credentials.js';
 import type { EngineOptions } from '../../../src/core/types.js';
-import { LOGIN_SAVED_TOAST, exportFilePath, pausedItemText } from '../../../src/cli/session.js';
-import { sessionCapChangedLine, sessionCapReachedItem } from '../../../src/tui/budget/lines.js';
+import { LOGIN_SAVED_TOAST, SESSION_CAP_CHAT_REFUSAL, exportFilePath, pausedItemText } from '../../../src/cli/session.js';
+import { sessionCapChangedLine } from '../../../src/tui/budget/lines.js';
 import { makeController, waitFor, type Harness, type RunScript } from './helpers.js';
 
 const NEW_KEY = 'sk-ant-api03-NEWKEYNEWKEYNEWKEYNEWKEYNEWKEY42';
@@ -171,7 +171,8 @@ describe('the ten-run session (§19.7, controller rows)', () => {
     expect(spent2).toBeGreaterThanOrEqual(10);
     await h.submit('and another');
     expect(calls()).toHaveLength(13);
-    expect(lastNote()).toBe(sessionCapReachedItem(spent2, 10));
+    // TUI-DESIGN-2 §3.1 row 3: over the cap the submission is refused before intake — the chat refusal, not the follow-up gate's item
+    expect(lastNote()).toBe(SESSION_CAP_CHAT_REFUSAL(10));
     await h.command('/budget session-spend-cap 15');
     expect(lastNote()).toBe(sessionCapChangedLine(10, 15));
     expect(h.controller.view.sessionMeter.snapshot().capUsd).toBe(15);

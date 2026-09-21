@@ -14,7 +14,8 @@
  * `waitMs`). Every line is one `JSON.stringify` — a value that cannot be serialised becomes a `stream:error` line
  * (a type consumers ignore) rather than an exception inside the engine's listener.
  */
-import type { Confirmer, Engine, EngineEvent, Renderer, RendererOptions, SessionHost, UiConfig, UiLabel } from '../core/types.js';
+import type { Confirmer, Engine, EngineEvent, IntakeKind, JevProvider, Renderer, RendererOptions, SessionHost, UiConfig, UiLabel } from '../core/types.js';
+import type { ChatRoute } from '../chat/intake.js';
 
 export const JSON_STREAM_VERSION = 1 as const;
 export const JSON_STREAM_SCHEMA = 'jevcode.events/1';
@@ -43,8 +44,14 @@ export type JsonSessionBudget = LineHead & { type: 'session:budget'; setting: st
 export type JsonSessionRefused = LineHead & { type: 'session:refused'; reason: 'session-cap' | 'unpriced' | 'secret'; spentUsd?: number; capUsd?: number; exitCode: number };
 /** an idle-time renderer-local item (§15.1); while a run is live the same line is a `notice { kind: 'ui' }` engine event */
 export type JsonUiLine = LineHead & { type: 'ui'; text: string; label: UiLabel; level: 'info' | 'warn' | 'error' };
+/**
+ * TUI-DESIGN-2 §3.8 / §3.10 / §6 item 17: one line per chat request — the intake (`route` = what the reading decided:
+ * `run` · `asked` · `reply` · `facts` · `lookup` · `llm`), then a second line for the lookup or LLM request it led to
+ * (`provider` `'generator'` for the LLM turn). Never the message; `requestHash` is the client's hash of the request.
+ */
+export type JsonChatLine = LineHead & { type: 'chat'; intake: IntakeKind; probability: number; route: ChatRoute; provider: JevProvider | 'generator'; costUsd: number; latencyMs: number; requestHash: string };
 export type JsonStreamError = LineHead & { type: 'stream:error'; message: string; eventType: string | null };
-export type JsonControllerLine = JsonSessionStart | JsonSessionEnd | JsonSessionBudget | JsonSessionRefused | JsonUiLine;
+export type JsonControllerLine = JsonSessionStart | JsonSessionEnd | JsonSessionBudget | JsonSessionRefused | JsonUiLine | JsonChatLine;
 export type JsonStreamLine = JsonStreamStart | JsonEventLine | JsonControllerLine | JsonStreamError;
 
 /** Event types that ride the stream only with `--json=verbose` (§8.9: "status events only with --json=verbose"). */
@@ -76,6 +83,8 @@ export interface JsonStream {
   sessionBudget(o: { setting: string; from: string; to: string; appliesTo: 'now' | 'next' }, ctx: JsonStreamContext): void;
   sessionRefused(o: { reason: 'session-cap' | 'unpriced' | 'secret'; spentUsd?: number; capUsd?: number; exitCode: number }, ctx: JsonStreamContext): void;
   ui(text: string, o: { label?: UiLabel; level?: 'info' | 'warn' | 'error' }, ctx: JsonStreamContext): void;
+  /** TUI-DESIGN-2 §6 item 17: one `chat` line per chat request (intake · lookup · LLM turn) */
+  chat(o: { intake: IntakeKind; probability: number; route: ChatRoute; provider: JevProvider | 'generator'; costUsd: number; latencyMs: number; requestHash: string }, ctx: JsonStreamContext): void;
   /** lines written so far, envelope included */
   readonly lines: number;
   readonly started: boolean;
@@ -141,6 +150,10 @@ export function writeJsonStream(opts: JsonStreamOptions): JsonStream {
     },
     ui(text, o, ctx) {
       emit({ ...head(ctx), type: 'ui', text: redact(text), label: o.label ?? '[ui]', level: o.level ?? 'info' });
+    },
+    chat(o, ctx) {
+      // the request hash is the client's (redacted before it reaches the controller); every other field is a number or an enum
+      emit({ ...head(ctx), type: 'chat', intake: o.intake, probability: o.probability, route: o.route, provider: o.provider, costUsd: o.costUsd, latencyMs: o.latencyMs, requestHash: redact(o.requestHash) });
     },
     get lines() {
       return lines;

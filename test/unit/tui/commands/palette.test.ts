@@ -9,7 +9,7 @@ import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { buildBindings } from '../../../../src/tui/keys/bindings.js';
-import { HELP_MAX_LINES, HELP_NOTES, PALETTE_FOOTER, cells, cut, cutTitle, helpLines, isSuggested, paletteGhost, paletteLines, paletteMatches, paletteRows, type PaletteState } from '../../../../src/tui/commands/palette.js';
+import { HELP_COMPACTION_LEVELS, HELP_MAX_LINES, HELP_NOTES, HELP_POINTER, PALETTE_FOOTER, cells, cut, cutTitle, helpLines, isSuggested, paletteGhost, paletteLines, paletteMatches, paletteRows, type PaletteState } from '../../../../src/tui/commands/palette.js';
 import { COMMANDS, findCommand, type CommandSpec } from '../../../../src/tui/commands/registry.js';
 
 const DESIGN = fileURLToPath(new URL('../../../../docs/TUI-DESIGN.md', import.meta.url));
@@ -228,18 +228,54 @@ describe('paletteRows / paletteLines', () => {
 });
 
 describe('helpLines (TUI-DESIGN §5.3)', () => {
-  it('≤ 60 lines: keys by context, commands with one-liners, the two per-terminal notes verbatim', () => {
+  /** every command has its own `  /<name>` line (the strict form of the finding-4 assertion) */
+  const everyCommand = (lines: string[]): string[] => COMMANDS.filter((c) => !lines.some((l) => l.startsWith(`  /${c.name}`))).map((c) => c.name);
+  const bothNotes = (lines: string[]): boolean => HELP_NOTES.every((n) => lines.includes(`  ${n}`));
+
+  it('≤ 60 lines at 80 columns with EVERY command on its own line and both per-terminal notes verbatim — the round-2 rows (TUI-DESIGN-2 §1.3 /mode /llm, §4.6 /panel /transcript, the panel keys) fit through compaction level 3, never the tail cut', () => {
     const lines = helpLines(80);
     expect(lines.length).toBeLessThanOrEqual(HELP_MAX_LINES);
     expect(lines[0]).toBe('keys');
-    for (const ctx of ['  global', '  composer', '  review box', '  session picker', '  palette']) expect(lines.some((l) => l.startsWith(ctx)), ctx).toBe(true);
     expect(lines).toContain('commands');
-    for (const c of COMMANDS) expect(lines.some((l) => l.startsWith(`  /${c.name}`)), c.name).toBe(true);
-    for (const n of HELP_NOTES) expect(lines).toContain(`  ${n}`);
-    // wide terminals keep the uncompacted form with the `notes` header
-    expect(helpLines(200)).toContain('notes');
-    expect(HELP_NOTES).toEqual(['Shift+Enter needs a keyboard protocol: use Ctrl+J or \\ then Enter', 'macOS: turn on "Option as Meta" for Alt-b/Alt-f']);
+    // level 3: the key contexts pack into one block, each context named where its keys start
+    for (const ctx of ['global:', 'composer:', 'review box:', 'session picker:', 'palette:']) expect(lines.some((l) => l.includes(ctx)), ctx).toBe(true);
+    expect(everyCommand(lines)).toEqual([]);
+    for (const name of ['exit', 'mode', 'llm', 'panel', 'transcript', 'help', 'quit'.replace('quit', 'exit')]) expect(lines.some((l) => l.startsWith(`  /${name}`)), name).toBe(true);
+    expect(bothNotes(lines)).toBe(true);
+    expect(lines[lines.length - 1]).not.toBe(HELP_POINTER);
     for (const l of lines) expect(cells(l), l).toBeLessThanOrEqual(80);
+    // at 100 columns the block is whole too
+    const wide = helpLines(100);
+    expect(wide.length).toBeLessThanOrEqual(HELP_MAX_LINES);
+    expect(everyCommand(wide)).toEqual([]);
+    expect(bothNotes(wide)).toBe(true);
+    for (const l of wide) expect(cells(l), l).toBeLessThanOrEqual(100);
+    // wide terminals keep the uncompacted form: one context title line per key context and the `notes` header
+    const level0 = helpLines(200);
+    expect(level0).toContain('notes');
+    for (const ctx of ['  global', '  composer', '  review box', '  session picker', '  palette']) expect(level0).toContain(ctx);
+    expect(HELP_NOTES).toEqual(['Shift+Enter needs a keyboard protocol: use Ctrl+J or \\ then Enter', 'macOS: turn on "Option as Meta" for Alt-b/Alt-f']);
+  });
+  it('the compaction ladder: 70 columns drops the notes (level 4) before any command; below 60 the tail is cut with the docs pointer; the ladder is documented', () => {
+    expect(HELP_COMPACTION_LEVELS).toHaveLength(5);
+    expect(HELP_POINTER).toBe('  … see docs/KEYS.md and docs/COMMANDS.md for the rest');
+    const at70 = helpLines(70);
+    expect(at70.length).toBeLessThanOrEqual(HELP_MAX_LINES);
+    expect(everyCommand(at70)).toEqual([]);
+    expect(bothNotes(at70)).toBe(false);
+    expect(at70[at70.length - 1]).not.toBe(HELP_POINTER);
+    for (const width of [40, 50, 59]) {
+      const narrow = helpLines(width);
+      expect(narrow.length, `${width}`).toBe(HELP_MAX_LINES);
+      expect(narrow[narrow.length - 1], `${width}`).toBe(cut(HELP_POINTER, width));
+      for (const l of narrow) expect(cells(l), l).toBeLessThanOrEqual(width);
+    }
+    // every level keeps one `  /<name>` line per command that survives the cut (commands are never packed two to a line)
+    for (const width of [40, 60, 70, 80, 100, 200]) {
+      const commandLines = helpLines(width).filter((l) => l.startsWith('  /'));
+      expect(commandLines.length, `${width}`).toBeGreaterThan(0);
+      for (const l of commandLines) expect(l, `${width}`).not.toMatch(/ · \//);
+    }
   });
   it('honours the effective bindings, the ascii flag and the topic filter; never exceeds the cap at narrow widths', () => {
     const b = buildBindings(new Map([['composer:externalEditor', ['ctrl+x ctrl+e']], ['global:help', []]]));

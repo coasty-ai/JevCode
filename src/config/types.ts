@@ -1,6 +1,6 @@
 /** Config-module types (DESIGN.md §3, TUI-DESIGN §16). The public `ResolvedConfig` lives in core/types.ts; these are the internals plus the resume helper shapes. */
 import type { ConfigError } from '../errors.js';
-import type { ConfigSource, ConfigRecordValue, EngineMode, ResolvedConfig, RunLimits, SandboxProfile, StopReason } from '../core/types.js';
+import type { ConfigSource, ConfigRecordValue, EngineMode, JevProvider, ResolvedConfig, RunLimits, SandboxProfile, StopReason } from '../core/types.js';
 import type { BooleanFlagKey, StringFlagKey } from '../cli/args.js';
 
 export type SettingName =
@@ -14,6 +14,8 @@ export type SettingName =
   | 'generator.priceOutPerM'
   | 'generator.priceCacheReadPerM'
   | 'generator.priceCacheWritePerM'
+  | 'decider.provider'
+  | 'mode'
   | 'decider.baseUrl'
   | 'decider.apiKey'
   | 'decider.model'
@@ -77,7 +79,12 @@ export type TuiBooleanFlagKey =
   | 'verbose'
   | 'allowUnpriced'
   | 'updateNotify';
-export type AnyStringFlagKey = StringFlagKey | TuiStringFlagKey;
+/**
+ * TUI-DESIGN-2 §2.3 / §6 item 17: the `--jev-provider` value flag that `cli/args.ts` (S2) adds to `STRING_FLAGS`; typed here
+ * so the `decider.provider` row compiles first (the parser reads flags structurally, so an absent key falls through to env).
+ */
+export type ProviderStringFlagKey = 'jevProvider';
+export type AnyStringFlagKey = StringFlagKey | TuiStringFlagKey | ProviderStringFlagKey;
 export type AnyBooleanFlagKey = BooleanFlagKey | TuiBooleanFlagKey;
 
 /** A boolean flag feeding a setting: `--no-history` (negate) sets `ui.history` to false; `--notify` sets `ui.notify` to true. */
@@ -136,9 +143,9 @@ export interface ResolveOptions {
   /** home directory used for `~/.jevcode/runs` and `~/.config/jevcode/config.json`; os.homedir() when absent */
   homedir?: string;
   /**
-   * TUI-DESIGN §9.1 / §16 (P45): the engine mode the run-cap default is keyed on, when it is known from somewhere other
-   * than `--mode` / `--condition` — a `--resume` re-resolve passes `identity.mode` from run.json so a jev-only run keeps
-   * its $0.25 default. Absent: read from the flags (default jev-on).
+   * TUI-DESIGN §9.1 / §16 (P45) / TUI-DESIGN-2 §1.2: the engine mode the run-cap default is keyed on, when it is known from
+   * somewhere other than the `mode` setting — a `--resume` re-resolve passes `identity.mode` from run.json so a jev-only run
+   * keeps its $0.25 default. Absent: `resolveMode(layers)` (flag > JEVCODE_MODE > dotenv > file > default jev-only).
    */
   mode?: EngineMode;
   /** TUI-DESIGN §16 (P30): skip the legacy-config-path warning for this call (it is already once per process and path) */
@@ -173,6 +180,8 @@ export interface ResumeIdentity {
   baseUrl: string | null;
   jevModel: string | null;
   jevBaseUrl: string | null;
+  /** TUI-DESIGN-2 §2.5: the run's `decider.provider` row; null for a run recorded before the row (reads as openrouter) */
+  jevProvider: string | null;
   completeThreshold: number | null;
   impossibleThreshold: number | null;
   sandbox: SandboxProfile | null;
@@ -207,6 +216,8 @@ export interface ResumeCurrentInputs {
    * treated as configured (the legacy behaviour: every difference is an override).
    */
   sources?: ResumeLimitSources;
+  /** TUI-DESIGN-2 §2.5: the Jev provider and model this invocation resolved to, for the cross-provider check; absent = not checked */
+  decider?: { provider: JevProvider; model: string };
 }
 
 export interface ResumeOverride {

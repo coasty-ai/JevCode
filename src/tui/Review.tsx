@@ -13,8 +13,8 @@ import { NOTE_LABEL } from './composer/Composer.js';
 import { stringWidth } from './composer/width.js';
 import { GLYPHS, type GlyphSet, truncateCells } from './glyphs.js';
 import { confirmPreviewLines } from './plain.js';
-import { reviewHeaderLines, reviewPreviewLines } from './review/lines.js';
-import { textProps, themeFor, type Theme } from './theme.js';
+import { reviewCardLines, reviewHeaderLines, reviewPreviewLines } from './review/lines.js';
+import { textProps, themeFor, type ColorOn, type Theme } from './theme.js';
 
 export { NOTE_LABEL };
 
@@ -80,6 +80,17 @@ export function previewWant(req: ConfirmRequest): number {
   return confirmPreviewLines(req).length;
 }
 
+/**
+ * TUI-DESIGN-2 §4.7: the boxed review card rows — `reviewCardLines` with the note field (masked spans, or its gate row)
+ * replacing the keys row for its lifetime. Pure.
+ */
+export function reviewCardRows(req: ConfirmRequest, rows: number, previewRows: number, columns: number, g: GlyphSet = GLYPHS.unicode, note: ReviewNote | null = null): string[] {
+  const n = Math.max(0, Math.floor(Number.isFinite(rows) ? rows : 0));
+  if (n === 0) return [];
+  const masked = note === null ? null : { text: maskHits(note.text, note.spans ?? [], maskGlyphFor(g)), gate: note.gate };
+  return reviewCardLines(req, n, Math.max(0, Math.floor(previewRows)), columns, g, masked);
+}
+
 export interface ReviewProps {
   req: ConfirmRequest;
   /** header rows granted (`layout.overlay`) */
@@ -94,7 +105,9 @@ export interface ReviewProps {
   cursor?: (pos: CursorPosition | undefined) => void;
   glyphs?: GlyphSet;
   theme?: Theme;
-  color?: boolean;
+  color?: ColorOn;
+  /** TUI-DESIGN-2 §4.7: the boxed tier draws the card (`reviewCardLines`) — `rows` is the card's want incl. its two edges */
+  boxed?: boolean;
 }
 
 /** §6: the review header (title and keys in the verdict colour) and the dim preview, as fixed-height truncating rows. */
@@ -102,6 +115,7 @@ export function Review(p: ReviewProps): React.JSX.Element | null {
   const g = p.glyphs ?? GLYPHS.unicode;
   const theme = p.theme ?? themeFor('dark');
   const color = p.color ?? true;
+  if (p.boxed === true) return <ReviewCard {...p} glyphs={g} theme={theme} color={color} />;
   const header = reviewRows(p.req, p.rows, p.columns, g, p.note ?? null);
   const preview = reviewPreview(p.req, p.previewRows, p.columns, g);
   const total = header.length + preview.length;
@@ -123,6 +137,54 @@ export function Review(p: ReviewProps): React.JSX.Element | null {
           {line}
         </Text>
       ))}
+    </Box>
+  );
+}
+
+/**
+ * TUI-DESIGN-2 §4.7: the boxed review card — edges in the verdict colour (`review` yellow, `block` red bold), the keys row
+ * bold, preview rows dim, the note cursor at `{ x: 2 + label + masked text, y: top + 1 }` (the keys row is the card's row 1).
+ */
+function ReviewCard(p: ReviewProps & { glyphs: GlyphSet; theme: Theme; color: ColorOn }): React.JSX.Element | null {
+  const g = p.glyphs;
+  const lines = reviewCardRows(p.req, p.rows, p.previewRows, p.columns, g, p.note ?? null);
+  if (lines.length === 0) return null;
+  const verdict = p.req.risk.verdict === 'block' ? 'block' : 'review';
+  const edges = textProps(p.theme, verdict, p.color);
+  const boxed = lines.length >= 3;
+  const bodyRows = boxed ? lines.length - 2 : lines.length;
+  const headerRows = Math.max(0, bodyRows - (boxed ? Math.min(p.previewRows, Math.max(0, bodyRows - 1)) : 0));
+  if (p.note && p.cursor && boxed) {
+    const masked = p.note.gate === null ? stringWidth(`${NOTE_LABEL}${maskHits(p.note.text, p.note.spans ?? [], maskGlyphFor(g))}`) : 0;
+    p.cursor({ x: Math.min(p.columns - 3, 2 + masked), y: p.top + 1 });
+  }
+  return (
+    <Box flexDirection="column" height={lines.length} overflow="hidden">
+      {lines.map((line, i) => {
+        const isEdge = boxed && (i === 0 || i === lines.length - 1);
+        const isKeys = boxed && i === 1 && !p.note;
+        const isGate = boxed && i === 1 && p.note?.gate;
+        const isPreview = boxed && i >= 1 + headerRows && i < lines.length - 1;
+        if (isEdge) {
+          return (
+            <Text key={`c${i}`} wrap="truncate" {...edges}>
+              {line}
+            </Text>
+          );
+        }
+        // `│ ` + body + ` │`: the edges keep the verdict colour, the body its own
+        const inner = [...line];
+        const left = inner.slice(0, 2).join('');
+        const right = inner.slice(-2).join('');
+        const body = inner.slice(2, -2).join('');
+        return (
+          <Text key={`c${i}`} wrap="truncate">
+            <Text {...edges}>{left}</Text>
+            <Text {...(isKeys ? { ...textProps(p.theme, verdict, p.color), bold: true } : isGate ? textProps(p.theme, 'secret', p.color) : isPreview ? textProps(p.theme, 'dim', p.color) : {})}>{body}</Text>
+            <Text {...edges}>{right}</Text>
+          </Text>
+        );
+      })}
     </Box>
   );
 }

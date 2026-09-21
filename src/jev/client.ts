@@ -1,6 +1,7 @@
 /**
- * Jev decider over OpenRouter's decisions endpoint (DESIGN.md §5.1), a port of lab.mjs
- * raw()/ask() with the retry policy adopted in RESEARCH.md §5.2.
+ * Jev decider over the decisions endpoint of either provider (DESIGN.md §5.1; TUI-DESIGN-2 §2: OpenRouter's router or
+ * TypeSafe's native API, one client, the differences in the `JEV_PROVIDERS` table), a port of lab.mjs raw()/ask() with
+ * the retry policy adopted in RESEARCH.md §5.2.
  *
  * The client returns the paid, validated response and nothing else: spend accounting is the
  * engine's (§6), model pinning is decided by the engine through `checkServedModel` (§5.4
@@ -12,24 +13,21 @@ import { sha12 } from '../core/hash.js';
 import { parseJson, toJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
-import type { AskOptions, AskResult, Decider, DeciderConfig, JevRequest, JevResponse, Json, Question, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
+import type { AskOptions, AskResult, Decider, DeciderConfig, JevProvider, JevRequest, JevResponse, Json, Question, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
 import { QuestionBuildError, assertQuestionBatch } from './questions.js';
-import { JEV_ERROR_BODY_MAX, JEV_RESPONSE_BODY_MAX_BYTES, JEV_RETRY } from './types.js';
+import { JEV_PROVIDERS, aliasMatches, isPinnedJevModel, normaliseModelId } from './providers.js';
+import { DEFAULT_REFERER, JEV_ERROR_BODY_MAX, JEV_RESPONSE_BODY_MAX_BYTES, JEV_RETRY } from './types.js';
 import type { JevClientDeps, JevResponseHeaders, ServedModelCheck } from './types.js';
 import { validateJevResponse } from './validate.js';
 
-export const DEFAULT_REFERER = 'https://github.com/prateekjannu/jevcode';
-export const APP_TITLE = 'jevcode';
+// contract 1.2 (TUI-DESIGN-2 §2.2): the constants moved to jev/types.ts and the id normaliser to the pure jev/providers.ts (the
+// provider table needs both without importing the client); every existing `from './client.js'` import keeps compiling.
+export { APP_TITLE, DEFAULT_REFERER } from './types.js';
+export { normaliseModelId } from './providers.js';
 
 // ---------------------------------------------------------------------------------------
 // Model id handling (§5.4 rule 7): pure helpers so config, engine and bench agree
 // ---------------------------------------------------------------------------------------
-
-/** Lowercase, trimmed, without a leading `typesafe/` (REPORT §2 accepts every one of these forms). */
-export function normaliseModelId(id: string): string {
-  const t = id.trim().toLowerCase();
-  return t.startsWith('typesafe/') ? t.slice('typesafe/'.length) : t;
-}
 
 /** A normalised id ending in -YYYYMMDD is dated (pinned); anything else is an alias. */
 export function isDatedModelId(id: string): boolean {
@@ -40,20 +38,25 @@ export function isDatedModelId(id: string): boolean {
  * Compare the served id with the configured one. `resolved` is the id the run already
  * resolved to (null on the first Jev call). The engine turns `ok: false` into an abort on
  * the first call or a drift record later; `error.exitCode` already reflects that.
+ *
+ * TUI-DESIGN-2 §2.5: `pinned` is the DeciderConfig's provider-aware verdict (`-YYYYMMDD` on openrouter, `jev-<major>.<minor>.<patch>`
+ * on typesafe); an alias matches through `aliasMatches` — `jev-latest` accepts any `jev-*` (PROBE: it serves `jev-1.13.0`),
+ * `jev-1.13` accepts `jev-1.13-20260917`. `provider` is optional so bench and the existing callers compile; when it is given the
+ * verdict is `jevModelMatches` under that naming — a caller that derived `pinned` with the OpenRouter-only `normaliseJevModelId`
+ * still sees `jev-1.13.0` pinned on typesafe (`pinned || isPinnedJevModel(model, provider)`; a caller's `pinned: true` is never undone).
  */
-export function checkServedModel(configured: { model: string; pinned: boolean }, served: string, resolved: string | null): ServedModelCheck {
+export function checkServedModel(configured: { model: string; pinned: boolean; provider?: JevProvider }, served: string, resolved: string | null): ServedModelCheck {
   const s = normaliseModelId(served);
   const firstCall = resolved === null;
   if (resolved !== null) {
     return s === normaliseModelId(resolved) ? { ok: true, resolved } : { ok: false, error: new JevModelDriftError(configured.model, served, { firstCall }) };
   }
   const c = normaliseModelId(configured.model);
-  if (configured.pinned) {
+  const pinned = configured.provider !== undefined ? configured.pinned || isPinnedJevModel(configured.model, configured.provider) : configured.pinned;
+  if (pinned) {
     return s === c ? { ok: true, resolved: served } : { ok: false, error: new JevModelDriftError(configured.model, served, { firstCall }) };
   }
-  // Alias: the served id is the alias itself or the alias followed by a dated suffix.
-  // A bare prefix test would let `jev-1.1` accept `jev-1.13-…`.
-  if (s === c || s.startsWith(`${c}-`)) return { ok: true, resolved: served };
+  if (aliasMatches(c, s)) return { ok: true, resolved: served };
   return { ok: false, error: new JevModelDriftError(configured.model, served, { firstCall }) };
 }
 
@@ -130,12 +133,17 @@ const RETRY_CAUSE_MESSAGE_MAX = 200;
 type JevSleep = (ms: number, signal: AbortSignal, wake?: AbortSignal) => Promise<void>;
 
 /**
- * TUI-DESIGN §15 item 4: the server's request id — `request-id`, then `x-request-id`, then OpenRouter's `x-generation-id`.
+ * TUI-DESIGN §15 item 4 / TUI-DESIGN-2 §2.4: the server's request id from the provider's `requestIdHeaders`, first hit wins
+ * (typesafe: `x-typesafe-request-id`, then the generic pair; openrouter: `request-id`, `x-request-id`, `x-generation-id`).
  * Wire text that reaches `toJSON()` / `state.json` / the §13.2 `last:` row, so it is redacted like a body (a proxy may echo a
  * client header) BEFORE the clip to the shared REQUEST_ID_MAX_CHARS (F9); blank or redacted-away → null.
  */
-function requestIdOf(h: Headers, redact: (s: string) => string): string | null {
-  const v = h.get('request-id') ?? h.get('x-request-id') ?? h.get('x-generation-id');
+function requestIdOf(h: Headers, names: readonly string[], redact: (s: string) => string): string | null {
+  let v: string | null = null;
+  for (const name of names) {
+    v = h.get(name);
+    if (v !== null) break;
+  }
   if (v === null) return null;
   const id = redact(v.trim()).trim();
   return id.length > 0 ? clip(id, REQUEST_ID_MAX_CHARS) : null;
@@ -172,23 +180,41 @@ function notifyRetry(opts: AskOptions, info: RetryInfo): AbortSignal | undefined
   }
 }
 
-/** First 200 chars of `error.message` from an OpenRouter/TypeSafe error body, if any. */
-function errorHint(text: string): string {
+/** Whitespace-collapsed first 200 chars, the shape of every hint below. */
+function hintText(s: string): string {
+  return s.replace(/\s+/g, ' ').trim().slice(0, 200);
+}
+
+/**
+ * TUI-DESIGN-2 §2.4: the human part of an error body, ≤ 200 chars, from an already-redacted text — OpenRouter's
+ * `error.message`, then TypeSafe's `detail.message` (400 `{ detail: { error_type: 'api_usage_error', message } }`, PROBE),
+ * then a string `detail` (FastAPI's 422 form), then the body itself.
+ */
+export function errorHint(text: string): string {
   const parsed = parseJson(text);
   if (parsed.ok && typeof parsed.value === 'object' && parsed.value !== null && !Array.isArray(parsed.value)) {
     const err = parsed.value['error'];
-    if (typeof err === 'object' && err !== null && !Array.isArray(err) && typeof err['message'] === 'string') {
-      return err['message'].replace(/\s+/g, ' ').slice(0, 200);
-    }
+    if (typeof err === 'object' && err !== null && !Array.isArray(err) && typeof err['message'] === 'string') return hintText(err['message']);
+    const detail = parsed.value['detail'];
+    if (typeof detail === 'object' && detail !== null && !Array.isArray(detail) && typeof detail['message'] === 'string') return hintText(detail['message']);
+    if (typeof detail === 'string') return hintText(detail);
   }
-  return text.replace(/\s+/g, ' ').slice(0, 200);
+  return hintText(text);
 }
 
-function captureHeaders(h: Headers): JevResponseHeaders {
+/**
+ * TUI-DESIGN-2 §2.4: a 400/422 whose hint says the model does not exist is a configuration error, not a Jev failure —
+ * TypeSafe's `Unknown model: jev-1.13` (PROBE), OpenRouter's `… is not a valid model ID` / `No endpoints found …`. Tested on
+ * every host (a proxy may front either API); a mismatched base URL is already refused offline (§2.3 row 4).
+ */
+export const UNKNOWN_MODEL_HINT_RE = /unknown model|is not a valid model|no endpoints found/i;
+
+function captureHeaders(h: Headers, requestIdHeaders: readonly string[], redact: (s: string) => string): JevResponseHeaders {
   return {
     generationId: h.get('x-generation-id'),
     retryAfter: h.get('retry-after'),
     providerName: h.get('x-provider-name'),
+    requestId: requestIdOf(h, requestIdHeaders, redact),
   };
 }
 
@@ -254,6 +280,8 @@ function isSendableState(state: Json): boolean {
 type AttemptOutcome =
   | { kind: 'ok'; response: JevResponse; headers: JevResponseHeaders; latencyMs: number }
   | { kind: 'http'; error: JevHttpError }
+  /** TUI-DESIGN-2 §2.4: the endpoint does not serve `cfg.model` — exit 2, never retried, never billed (a 400 carries no usage) */
+  | { kind: 'config'; error: ConfigError }
   | { kind: 'invalid'; error: JevResponseError };
 
 /** Opt-in trace (JEVCODE_TRACE=<file>) for shutdown debugging; never affects the request. */
@@ -280,6 +308,9 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
   const referer = deps.referer ?? DEFAULT_REFERER;
 
   // resolveConfig validates these already; re-checking here keeps the client safe to build directly (tests, bench --live).
+  // TUI-DESIGN-2 §2.2: the provider row of the table decides headers, request-id header and the unknown-model hint.
+  if (cfg.provider !== 'typesafe' && cfg.provider !== 'openrouter') throw new ConfigError(`--jev-provider: "${String(cfg.provider)}" is not one of typesafe|openrouter`, { setting: 'decider.provider' });
+  const spec = JEV_PROVIDERS[cfg.provider];
   if (typeof cfg.apiKey !== 'string' || cfg.apiKey.length === 0) throw new ConfigError('--jev-api-key: no key configured', { setting: 'jev-api-key' });
   if (typeof cfg.model !== 'string' || cfg.model.trim().length === 0) throw new ConfigError('--jev-model: model id is empty', { setting: 'jev-model' });
   let baseUrl: URL;
@@ -292,23 +323,30 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
     throw new ConfigError(`--jev-base-url: "${redact(cfg.baseUrl)}" must use http or https`, { setting: 'jev-base-url' });
   }
 
-  const headers: Record<string, string> = {
-    Authorization: `Bearer ${cfg.apiKey}`,
-    'Content-Type': 'application/json',
-    'HTTP-Referer': referer,
-    'X-Title': APP_TITLE,
-  };
+  // TUI-DESIGN-2 §2.2 / §2.4: OpenRouter gets the attribution pair (`HTTP-Referer`, `X-Title`), TypeSafe the bearer + content type
+  const headers: Record<string, string> = spec.headers(cfg.apiKey, referer);
 
-  function httpError(status: number, text: string, retryAfter: string | null, requestId: string | null): JevHttpError {
+  function httpError(status: number, text: string, retryAfter: string | null, requestId: string | null): { error: JevHttpError; hint: string } {
     const body = redact(text).slice(0, JEV_ERROR_BODY_MAX);
     const hint = errorHint(body);
-    return new JevHttpError(redact(`Jev HTTP ${status}${hint ? `: ${hint}` : ''}`), {
+    const error = new JevHttpError(redact(`Jev HTTP ${status}${hint ? `: ${hint}` : ''}`), {
       status,
       retryable: isRetryableStatus(status),
       retryAfterMs: parseRetryAfterMs(retryAfter),
       body,
       requestId, // TUI-DESIGN §15 item 4: rides toJSON() and the §13.2 `last: … · request-id <id>` row
     });
+    return { error, hint };
+  }
+
+  /**
+   * TUI-DESIGN-2 §2.4: `--jev-model: "<model>" is not served by <host> (<hint>); <TypeSafe|OpenRouter accepts …>` — the host
+   * actually used (not `spec.displayHost`), the redacted hint, the provider's own `accepts` line; `setting: 'decider.model'`. The
+   * JevHttpError of the 400/422 rides as `cause`, so the server's request id (`x-typesafe-request-id`, PROBE: on every response)
+   * stays reachable for a support report (`toJSON()`, the log) without changing the §12 message.
+   */
+  function unknownModelError(hint: string, cause: JevHttpError): ConfigError {
+    return new ConfigError(redact(`--jev-model: "${cfg.model}" is not served by ${baseUrl.host} (${hint}); ${spec.accepts}`), { setting: 'decider.model', cause });
   }
 
   async function attempt(body: string, questions: Record<string, Question>, signal: AbortSignal): Promise<AttemptOutcome> {
@@ -331,14 +369,12 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
     let text: string;
     let truncated: boolean;
     let captured: JevResponseHeaders;
-    let requestId: string | null;
     try {
       jtrace('attempt: fetch start');
       const res = await doFetch(cfg.baseUrl, { method: 'POST', headers, body, signal: attemptCtl.signal });
       jtrace(`attempt: headers status=${res.status}`);
       status = res.status;
-      captured = captureHeaders(res.headers);
-      requestId = requestIdOf(res.headers, redact);
+      captured = captureHeaders(res.headers, spec.requestIdHeaders, redact);
       ({ text, truncated } = await readBodyBounded(res, JEV_RESPONSE_BODY_MAX_BYTES, attemptCtl.signal));
       jtrace(`attempt: body read bytes=${text.length}`);
     } catch (e) {
@@ -356,7 +392,12 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
       signal.removeEventListener('abort', onParentAbort);
     }
     const latencyMs = Math.max(0, now() - t0);
-    if (status !== 200) return { kind: 'http', error: httpError(status, text, captured.retryAfter, requestId) };
+    if (status !== 200) {
+      const { error, hint } = httpError(status, text, captured.retryAfter, captured.requestId);
+      // TUI-DESIGN-2 §2.4: 400 (TypeSafe `api_usage_error`) or 422 naming an unknown model → ConfigError, exit 2, no retry
+      if ((status === 400 || status === 422) && UNKNOWN_MODEL_HINT_RE.test(hint)) return { kind: 'config', error: unknownModelError(hint, error) };
+      return { kind: 'http', error };
+    }
     if (truncated) {
       return {
         kind: 'invalid',
@@ -406,12 +447,15 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
 
       if (outcome.kind === 'ok') {
         const { response, headers: h, latencyMs } = outcome;
+        // TUI-DESIGN-2 §2.4 / §6 items 5–6: OpenRouter sends `usage.cost`; TypeSafe's native response carries none, so the
+        // provider table prices it (`costBasis: 'table'`, `~` in the UI). A present non-finite cost still surfaces as NaN
+        // (TUI-DESIGN §9.5: the meter clamps it to 0, figures render `$?`, the engine emits budget:unpriced).
+        const provided = response.usage.cost;
+        const table = response.usage.input_tokens * cfg.pricing.inputUsdPerToken + response.usage.output_tokens * cfg.pricing.outputUsdPerToken;
         const usage: TokenUsage = {
           inputTokens: response.usage.input_tokens,
           outputTokens: response.usage.output_tokens,
-          // TUI-DESIGN §9.5: a non-finite usage.cost surfaces as NaN (the meter clamps it to 0, figures render `$?`) so the
-          // engine can emit budget:unpriced; validateJevResponse currently rejects such bodies before this point
-          costUsd: Number.isFinite(response.usage.cost) ? response.usage.cost : Number.NaN,
+          costUsd: typeof provided === 'number' ? (Number.isFinite(provided) ? provided : Number.NaN) : table,
           calls: 1,
         };
         return {
@@ -421,9 +465,13 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
           model: response.model,
           requestHash,
           attempts,
-          id: response.id ?? h.generationId ?? null,
+          // §2.4: the body id (`gen-dec-…`), else OpenRouter's generation header, else the provider's request id (`x-typesafe-request-id`)
+          id: response.id ?? h.generationId ?? h.requestId ?? null,
+          costBasis: typeof provided === 'number' ? 'provider' : 'table',
         };
       }
+
+      if (outcome.kind === 'config') throw outcome.error;
 
       if (outcome.kind === 'invalid') {
         // A bad body is not a network failure: one extra try for transient shapes, none for
@@ -443,5 +491,6 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
     }
   }
 
-  return { model: cfg.model, ask };
+  // contract 1.2 (TUI-DESIGN-2 §6 item 7): the provider rides the Decider so intake ledgers and `/jev` name it without the config
+  return { model: cfg.model, provider: cfg.provider, ask };
 }

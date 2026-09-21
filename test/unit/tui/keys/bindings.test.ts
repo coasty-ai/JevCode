@@ -44,7 +44,13 @@ describe('KEY_ACTIONS registry (TUI-DESIGN §3.2, §3.4)', () => {
     expect(key('composer:lineStart')).toEqual(['ctrl+a', 'home']);
     expect(key('composer:wordLeft')).toEqual(['meta+b', 'ctrl+left']);
     expect(key('composer:killWordBack')).toEqual(['ctrl+w', 'meta+backspace']);
-    expect(key('composer:killWordForward')).toEqual(['meta+d', 'meta+delete', 'ctrl+delete']);
+    expect(key('composer:killWordForward')).toEqual(['meta+delete', 'ctrl+delete']); // TUI-DESIGN-2 §4.6: Alt+D is the decisions tab
+    expect(key('global:panelToggle')).toEqual(['meta+j']);
+    expect(key('global:panelFull')).toEqual(['meta+shift+j']);
+    expect(key('global:panelDecisions')).toEqual(['meta+d']);
+    expect(key('global:panelPlan')).toEqual(['meta+p']);
+    expect(key('global:panelTimeline')).toEqual(['meta+t']);
+    expect(key('global:panelSynth')).toEqual(['meta+s']);
     expect(key('composer:undo')).toEqual(['ctrl+_']);
     expect(key('composer:redo')).toEqual(['ctrl+^']);
     expect(key('composer:palette')).toEqual(['/']);

@@ -20,8 +20,8 @@ import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
 import type { HistoryStore, SecretHit } from '../../core/types.js';
 import type { KeyAction } from '../keys/resolve.js';
-import { GLYPHS, type GlyphSet } from '../glyphs.js';
-import { textProps, themeFor, type Theme } from '../theme.js';
+import { GLYPHS, glyphTwin, type GlyphSet } from '../glyphs.js';
+import { textProps, themeFor, type ColorOn, type Theme } from '../theme.js';
 import { editorRefusalToast } from '../secrets/gate-lines.js';
 import { chipSpans, createBuffer, normaliseText, reduceBuffer, snapshotOf, type BufferAction, type ChipRef, type Snapshot, type TextBuffer } from './buffer.js';
 import { PasteStore } from './paste.js';
@@ -31,9 +31,15 @@ import { stringWidth } from './width.js';
 
 export { DEFAULT_GUTTER as GUTTER };
 
-/** §4.3 prompts: row 0 `> ` (yellow while a run is live = steer mode), continuation rows two spaces. */
+/** §4.3 prompts: row 0 `> ` in `--plain` / `--ascii` (yellow while a run is live = steer mode), continuation rows two spaces. TUI-DESIGN-2 §4.4: the Unicode TUI draws `› `. */
 export const PROMPT = '> ';
+export const PROMPT_ASCII = PROMPT;
+export const PROMPT_UNICODE = '› ';
 export const CONTINUATION = '  ';
+/** TUI-DESIGN-2 §4.4: `› ` (`glyphs.prompt`) under Unicode / SR, `> ` under `--ascii`; identical cell width. */
+export function promptFor(g: GlyphSet = GLYPHS.unicode): string {
+  return `${g.prompt} `;
+}
 /** §8.4 / F-L: the composer as the picker's filter. */
 export const FILTER_LABEL = 'filter: ';
 /** §4.6 Ctrl-R: the search row prefix. */
@@ -43,46 +49,77 @@ export const NOTE_LABEL = 'note (≤ 600, Enter sends, Esc cancels): ';
 /** §6.4: a note is one line of at most this many characters. */
 export const NOTE_MAX = 600;
 
-/** §24 "Header and placeholders", verbatim. */
+/** TUI-DESIGN-2 §4.4 / §12 "Console": the placeholders, verbatim; the `*Hint` members are appended at ≥ 100 inner cells. */
 export const PLACEHOLDERS = {
-  task: 'Describe the task…   / commands · @ files · ? help · Enter runs',
-  followup: 'Follow-up or /command…   Enter runs · ↑ history · Esc Esc menu · ? help',
-  steer: 'Type to steer the next step…   Esc pauses · Esc Esc aborts',
-  reviewLong: '(review pending — keys above; d opens a note)',
+  task: 'Say hi, ask a question, or describe a task…',
+  taskHint: '/ commands · @ files',
+  followup: 'Follow-up, question, or /command…',
+  followupHint: '↑ history · Esc Esc menu',
+  steer: 'Type to steer the next step…  Esc pauses',
+  steerHint: 'Esc Esc aborts',
+  reviewLong: '(review pending — keys in the card; d opens a note)',
   reviewShort: '(review pending)',
+  thinking: '(thinking…)',
+  intakeWait: '(waiting for y/n)',
   followupWait: '(waiting for y/r/n)',
   exitWait: '(waiting for y/n)',
   blocked: '(paused — answer the pane above)',
   filter: FILTER_LABEL,
 } as const;
 
-/** `done`: one-shot mode after `run:end` — the composer was mounted for steering only (§1) and the process is exiting (§3.3), so no placeholder invites input */
-export type ComposerMode = 'task' | 'followup' | 'steer' | 'review' | 'followupWait' | 'exitWait' | 'blocked' | 'filter' | 'done';
+/**
+ * `done`: one-shot mode after `run:end` — the composer was mounted for steering only (§1) and the process is exiting (§3.3), so
+ * no placeholder invites input. TUI-DESIGN-2 §4.4: `thinking` (a submission between Enter and its reply; the draft stays editable,
+ * Enter is queued) and `intakeWait` (the intake card owns `y`/`n`).
+ */
+export type ComposerMode = 'task' | 'followup' | 'steer' | 'review' | 'thinking' | 'intakeWait' | 'followupWait' | 'exitWait' | 'blocked' | 'filter' | 'done';
 
 /** Below this many rows the review placeholder takes its short form (F-H, F-I, F-X vs F-G, F-J). */
 export const SHORT_PLACEHOLDER_ROWS = 16;
+/** TUI-DESIGN-2 §4.4: the hint suffix appears from this many inner cells. */
+export const PLACEHOLDER_HINT_MIN_COLUMNS = 100;
+/** the gap between a placeholder and its inline hint */
+export const PLACEHOLDER_HINT_GAP = '   ';
 
-/** §24: the placeholder for a state (the short review form on short terminals). */
-export function placeholderFor(mode: ComposerMode, rows: number): string {
+/** TUI-DESIGN-2 §4.4: the placeholder's text and its width-gated hint (`right`: the console right-aligns it, H-A1w; `inline`: three spaces after the text, H-D1w). */
+export interface PlaceholderParts {
+  text: string;
+  hint: string;
+  align: 'right' | 'inline';
+}
+
+/** TUI-DESIGN-2 §4.4: the placeholder parts for a state (the short review form below 16 rows; the hint only at ≥ 100 inner cells). */
+export function placeholderParts(mode: ComposerMode, rows: number, innerColumns: number = 0): PlaceholderParts {
+  const wide = Number.isFinite(innerColumns) && innerColumns >= PLACEHOLDER_HINT_MIN_COLUMNS;
   switch (mode) {
     case 'task':
-      return PLACEHOLDERS.task;
+      return { text: PLACEHOLDERS.task, hint: wide ? PLACEHOLDERS.taskHint : '', align: 'right' };
     case 'followup':
-      return PLACEHOLDERS.followup;
+      return { text: PLACEHOLDERS.followup, hint: wide ? PLACEHOLDERS.followupHint : '', align: 'right' };
     case 'steer':
-      return PLACEHOLDERS.steer;
+      return { text: PLACEHOLDERS.steer, hint: wide ? PLACEHOLDERS.steerHint : '', align: 'inline' };
     case 'review':
-      return rows < SHORT_PLACEHOLDER_ROWS ? PLACEHOLDERS.reviewShort : PLACEHOLDERS.reviewLong;
+      return { text: rows < SHORT_PLACEHOLDER_ROWS ? PLACEHOLDERS.reviewShort : PLACEHOLDERS.reviewLong, hint: '', align: 'inline' };
+    case 'thinking':
+      return { text: PLACEHOLDERS.thinking, hint: '', align: 'inline' };
+    case 'intakeWait':
+      return { text: PLACEHOLDERS.intakeWait, hint: '', align: 'inline' };
     case 'followupWait':
-      return PLACEHOLDERS.followupWait;
+      return { text: PLACEHOLDERS.followupWait, hint: '', align: 'inline' };
     case 'exitWait':
-      return PLACEHOLDERS.exitWait;
+      return { text: PLACEHOLDERS.exitWait, hint: '', align: 'inline' };
     case 'blocked':
-      return PLACEHOLDERS.blocked;
+      return { text: PLACEHOLDERS.blocked, hint: '', align: 'inline' };
     case 'filter':
     case 'done':
-      return '';
+      return { text: '', hint: '', align: 'inline' };
   }
+}
+
+/** TUI-DESIGN-2 §4.4: the placeholder for a state — the text, then the hint after three spaces at ≥ 100 inner cells (the short review form on short terminals). */
+export function placeholderFor(mode: ComposerMode, rows: number, innerColumns: number = 0): string {
+  const p = placeholderParts(mode, rows, innerColumns);
+  return p.hint === '' ? p.text : `${p.text}${PLACEHOLDER_HINT_GAP}${p.hint}`;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -101,7 +138,7 @@ export interface ComposerViewInput {
   spans?: readonly Span[];
   /** `•` (or `*` under --ascii) */
   maskGlyph?: string;
-  /** row-0 prefix (`> `, `> filter: `) */
+  /** row-0 prefix (`› `, `› filter: `); defaults to the glyph set's prompt */
   prompt?: string;
   glyphs?: GlyphSet;
 }
@@ -135,7 +172,7 @@ export function composerView(i: ComposerViewInput): ComposerView {
   const g = i.glyphs ?? GLYPHS.unicode;
   const columns = Math.max(1, Math.floor(Number.isFinite(i.columns) ? i.columns : 80));
   const height = Math.max(1, Math.floor(Number.isFinite(i.height) ? i.height : 1));
-  const prompt = i.prompt ?? PROMPT;
+  const prompt = i.prompt ?? promptFor(g);
   const gutter = Math.max(stringWidth(prompt), CONTINUATION.length);
   const rows: Row[] = layoutRows(i.text, columns, gutter, { atoms: chipSpans(i.text, i.chips) });
   const at = cursorToRowX(rows, i.text, i.cursor);
@@ -175,7 +212,7 @@ export function composerView(i: ComposerViewInput): ComposerView {
 }
 
 /** §4.3: the visual row count of a draft for `LayoutInput.composerWant` (≥ 1). */
-export function draftRows(text: string, chips: readonly ChipRef[], columns: number, prompt: string = PROMPT): number {
+export function draftRows(text: string, chips: readonly ChipRef[], columns: number, prompt: string = PROMPT_UNICODE): number {
   return Math.max(1, layoutRows(text, Math.max(1, Math.floor(columns)), Math.max(stringWidth(prompt), CONTINUATION.length), { atoms: chipSpans(text, chips) }).length);
 }
 
@@ -321,7 +358,7 @@ export function useComposer(deps: ComposerDeps): ComposerController {
       hits() {
         return depsRef.current.detect(bufferRef.current.text);
       },
-      mirror(columns, prompt = PROMPT) {
+      mirror(columns, prompt = PROMPT_UNICODE) {
         const b = bufferRef.current;
         const rows = layoutRows(b.text, Math.max(1, Math.floor(columns)), Math.max(stringWidth(prompt), CONTINUATION.length), { atoms: chipSpans(b.text, b.chips) });
         const at = cursorToRowX(rows, b.text, b.cursor);
@@ -526,6 +563,7 @@ export async function openExternalEditor(text: string, d: EditorDeps): Promise<E
 
 export interface ComposerProps {
   buffer: TextBuffer;
+  /** the width the rows are laid out in (the console's inner width in the boxed tier) */
   columns: number;
   /** rows granted by `computeLayout` */
   height: number;
@@ -548,8 +586,23 @@ export interface ComposerProps {
   searchRow?: string | null;
   glyphs?: GlyphSet;
   theme?: Theme;
-  color?: boolean;
+  color?: ColorOn;
   onScroll?: (scrollTop: number) => void;
+  /** TUI-DESIGN-2 §4.3: the console's inner width the placeholder hint is right-aligned in (defaults to `columns`) */
+  innerColumns?: number;
+  /** TUI-DESIGN-2 §4.3: the console row's `x` offset (2 inside `│ `); the flat tier passes 0 */
+  cursorOffsetX?: number;
+}
+
+/** TUI-DESIGN-2 §4.4 / TD §14.1: the placeholder row text after the prompt — text, then the hint right-aligned (`right`) or after three spaces (`inline`), never wider than `width`; `--ascii` draws the glyph twins (`...`, `-`, `^`). */
+export function placeholderRow(mode: ComposerMode, rows: number, width: number, promptWidth: number, g: GlyphSet = GLYPHS.unicode): string {
+  const raw = placeholderParts(mode, rows, width);
+  const parts = { text: glyphTwin(raw.text, g), hint: glyphTwin(raw.hint, g), align: raw.align };
+  if (parts.hint === '') return parts.text;
+  const room = width - promptWidth;
+  if (parts.align === 'inline') return stringWidth(parts.text) + PLACEHOLDER_HINT_GAP.length + stringWidth(parts.hint) <= room ? `${parts.text}${PLACEHOLDER_HINT_GAP}${parts.hint}` : parts.text;
+  const gap = room - stringWidth(parts.text) - stringWidth(parts.hint);
+  return gap >= PLACEHOLDER_HINT_GAP.length ? `${parts.text}${' '.repeat(gap)}${parts.hint}` : parts.text;
 }
 
 /** §4.3: the composer box — `height` pre-sliced rows, the placeholder as a dim sibling, the cursor at `cursorToRowX`. */
@@ -558,14 +611,16 @@ export function Composer(p: ComposerProps): React.JSX.Element {
   const theme = p.theme ?? themeFor('dark');
   const color = p.color ?? true;
   const height = Math.max(1, Math.floor(p.height));
-  const prompt = p.mode === 'filter' ? `${PROMPT}${FILTER_LABEL}` : PROMPT;
+  const base = promptFor(g);
+  const prompt = p.mode === 'filter' ? `${base}${FILTER_LABEL}` : base;
   const view = composerView({ text: p.buffer.text, cursor: p.buffer.cursor, chips: p.buffer.chips, columns: p.columns, height, scrollTop: p.scrollTop, spans: p.spans ?? [], prompt, glyphs: g });
   if (view.scrollTop !== p.scrollTop) p.onScroll?.(view.scrollTop);
   const empty = p.buffer.text.length === 0;
-  const placeholder = placeholderFor(p.mode, p.rows);
+  const placeholder = placeholderRow(p.mode, p.rows, p.innerColumns ?? p.columns, stringWidth(prompt), g);
   const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : {};
-  if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: view.cursor.x, y: p.top + view.cursor.row });
-  else if (p.active && p.searchRow != null) p.cursor({ x: Math.min(p.columns - 1, stringWidth(p.searchRow)), y: p.top });
+  const dx = p.cursorOffsetX ?? 0;
+  if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: dx + view.cursor.x, y: p.top + view.cursor.row });
+  else if (p.active && p.searchRow != null) p.cursor({ x: Math.min(dx + p.columns - 1, dx + stringWidth(p.searchRow)), y: p.top });
   else p.cursor(undefined);
   const rowsOut = view.rows.map((r, i) => {
     const isPromptRow = view.scrollTop + i === 0 && r.startsWith(prompt);

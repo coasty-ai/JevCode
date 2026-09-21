@@ -3,10 +3,12 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCliArgs, type ParsedFlags } from '../../../src/cli/args.js';
-import { detectPackageRoot, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
+import { detectPackageRoot, modeFromParsedFlags, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
 import type { RunMeta } from '../../../src/core/types.js';
 import { fingerprint } from '../../../src/config/mask.js';
 import { ConfigError } from '../../../src/errors.js';
+import { configTableLines } from '../../../src/cli/config-table.js';
+import { writeCredentials } from '../../../src/config/credentials.js';
 
 const FIX = join(import.meta.dirname, '../../fixtures/config');
 const OR_KEY = 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
@@ -57,8 +59,11 @@ describe('resolveConfig precedence', () => {
       commandTimeoutMs: 120_000,
       maxCommandTimeoutMs: 600_000,
       maxOutputBytes: 200 * 1024,
-      spendCapUsd: 2,
+      // TUI-DESIGN-2 §1.2: zero arguments resolve to jev-only, whose run-cap default is $0.25 (P45)
+      spendCapUsd: 0.25,
     });
+    expect(c.mode).toBe('jev-only');
+    expect(c.entries.get('mode')).toEqual({ value: 'jev-only', source: 'default' });
   });
 
   it('flag > env > ./.env > <OPEN_ASSIST_PATH>/.env > config file > default, one layer at a time', async () => {
@@ -178,11 +183,38 @@ describe('resolveConfig keys and lazy validation', () => {
 
   it('decider(): verbatim model, pinned iff the normalised id ends in -YYYYMMDD, URL trailing slash stripped', async () => {
     const env = { OPENROUTER_API_KEY: OR_KEY };
-    expect((await resolve(run(), env)).decider()).toEqual({ baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: OR_KEY, model: 'typesafe/jev-1.13-20260917', pinned: true });
+    // contract 1.2 (TUI-DESIGN-2 §6 item 4): provider, pricing and providerSource ride the DeciderConfig
+    // TUI-DESIGN-2 §2.3 rule 2d: an OPENROUTER_API_KEY alone infers openrouter (`auto:openrouter-key`)
+    expect((await resolve(run(), env)).decider()).toEqual({ provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: OR_KEY, model: 'typesafe/jev-1.13-20260917', pinned: true, pricing: { inputUsdPerToken: 4.2e-8, outputUsdPerToken: 0 }, providerSource: 'auto:openrouter-key' });
     expect((await resolve(run('--jev-model', 'TypeSafe/Jev-1.13'), env)).decider()).toMatchObject({ model: 'TypeSafe/Jev-1.13', pinned: false });
     expect((await resolve(run('--jev-model', 'jev-1.13-20260917', '--jev-base-url', 'https://proxy.test/decisions/'), env)).decider()).toMatchObject({ pinned: true, baseUrl: 'https://proxy.test/decisions' });
     const badModel = await resolve(run('--jev-model', '!!bad'), env);
     expect(() => badModel.decider()).toThrow(/decider\.model/);
+  });
+
+  it('decider(): a configured base URL on api.typesafe.ai names the typesafe provider (TUI-DESIGN-2 §2.3 rule 2a) with provider-aware pinning (§2.5)', async () => {
+    const env = { JEV_API_KEY: 'jev-key-12345678' };
+    const ts = (await resolve(run('--jev-model', 'jev-1.13.0', '--jev-base-url', 'https://api.typesafe.ai/v1/systemone'), env)).decider();
+    expect(ts).toMatchObject({ provider: 'typesafe', providerSource: 'auto:base-url', model: 'jev-1.13.0', pinned: true, baseUrl: 'https://api.typesafe.ai/v1/systemone', pricing: { inputUsdPerToken: 4.2e-8, outputUsdPerToken: 0 } });
+    // jev-latest is an alias on TypeSafe; the dated OpenRouter id is refused offline under typesafe (§2.5)
+    expect((await resolve(run('--jev-model', 'jev-latest', '--jev-base-url', 'https://api.typesafe.ai/v1/systemone'), env)).decider()).toMatchObject({ provider: 'typesafe', pinned: false });
+    const dated = await resolve(run('--jev-model', 'jev-1.13-20260917', '--jev-base-url', 'https://api.typesafe.ai/v1/systemone'), env);
+    expect(() => dated.decider()).toThrow(/is an OpenRouter id/);
+    // an unknown host stays on today's OpenRouter path (JEV_API_KEY → `auto:openrouter-key`, rule 2b); the default URL is never a derivation
+    expect((await resolve(run('--jev-base-url', 'https://proxy.test/decisions'), env)).decider()).toMatchObject({ provider: 'openrouter', providerSource: 'auto:openrouter-key' });
+    expect((await resolve(run(), env)).decider()).toMatchObject({ provider: 'openrouter', providerSource: 'auto:openrouter-key' });
+  });
+
+  it('mode (TUI-DESIGN-2 §1.2 / §6 item 9): the config carries the `mode` setting its caps were keyed on — default jev-only, --mode / --condition, or opts.mode on a re-resolve', async () => {
+    const env = { OPENROUTER_API_KEY: OR_KEY };
+    expect((await resolve(run(), env)).mode).toBe('jev-only');
+    expect((await resolve(run('--mode', 'jev-on'), env)).mode).toBe('jev-on');
+    expect((await resolve(run('--mode', 'jev-off'), env)).mode).toBe('jev-off');
+    expect((await resolve(run('--condition', 'jev-on'), env)).mode).toBe('jev-on');
+    expect((await resolve(run(), env, { mode: 'jev-on' })).mode).toBe('jev-on');
+    // the run-cap default follows the same value (TUI-DESIGN §9.1, P45)
+    expect((await resolve(run(), env)).limits().spendCapUsd).toBe(0.25);
+    expect((await resolve(run('--mode', 'jev-on'), env)).limits().spendCapUsd).toBe(2);
   });
 
   it('pricing: table for the default GLM 5.3 Flash and for Sonnet 5, env overrides, zeros plus a warning for unknown models', async () => {
@@ -330,7 +362,7 @@ describe('detectPackageRoot', () => {
 
 describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the six contract members', () => {
   const withFlags = (extra: Record<string, string | boolean>, ...argv: string[]): ParsedFlags => Object.assign(run(...argv), extra) as ParsedFlags;
-  const LAUNCH = { fps: 30, renderMode: 'standard' as const, screenReader: false, ascii: false, noColor: false };
+  const LAUNCH = { fps: 30, renderMode: 'standard' as const, screenReader: false, ascii: false, noColor: false, reducedMotion: false };
 
   it('XDG file first, legacy ~/.config/jevcode/config.json as a fallback with a one-time warning', async () => {
     const xdg = join(root, 'xdg');
@@ -367,14 +399,16 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect(jo.limits().spendCapUsd).toBe(0.25);
     expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
     expect((await resolve(run('--condition', 'jev-only'))).limits().spendCapUsd).toBe(0.25);
-    expect((await resolve(run())).limits().spendCapUsd).toBe(2);
+    // TUI-DESIGN-2 §1.2: zero arguments = jev-only ($0.25); jev-on / jev-off keep $2.00
+    expect((await resolve(run())).limits().spendCapUsd).toBe(0.25);
+    expect((await resolve(run('--mode', 'jev-on'))).limits().spendCapUsd).toBe(2);
     expect((await resolve(run('--mode', 'jev-off'))).limits().spendCapUsd).toBe(2);
     expect((await resolve(run('--mode', 'jev-only', '--spend-cap', '1'))).limits().spendCapUsd).toBe(1);
     expect((await resolve(run('--mode', 'jev-only'), { JEVCODE_SPEND_CAP_USD: '0.5' })).entries.get('limits.spendCapUsd')).toEqual({ value: '0.5', source: 'env' });
   });
 
   it('sessionSpendCap(mode): derived 5 × run cap, configured through the chain, none = +Infinity; the record prints the derived row', async () => {
-    const c = await resolve(run());
+    const c = await resolve(run('--mode', 'jev-on'));
     expect(c.sessionSpendCap('jev-on')).toEqual({ value: 10, source: 'derived', derived: true });
     expect(c.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
     expect(c.record()['session.spendCapUsd']).toEqual({ value: '10', source: 'derived' });
@@ -454,6 +488,21 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect(() => bad.ui(LAUNCH)).toThrow(/ui\.theme: "neon" \(from env\)/);
   });
 
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): missingSecrets needs BOTH keys like jev-on; the mode resolves through the chain and pays the $2.00 generator cap', async () => {
+    const none = await resolve(run(), { JEVCODE_PROVIDER: 'openai' });
+    expect(none.missingSecrets('llm-jev')).toEqual(['generator.apiKey', 'decider.apiKey']);
+    expect((await resolve(run('--mock-generator'))).missingSecrets('llm-jev')).toEqual(['decider.apiKey']);
+    expect((await resolve(run('--mock'))).missingSecrets('llm-jev')).toEqual([]);
+    expect((await resolve(run(), { OPENROUTER_API_KEY: OR_KEY })).missingSecrets('llm-jev')).toEqual([]);
+    expect((await resolve(run(), { ANTHROPIC_API_KEY: 'anthropic-key-1234' })).missingSecrets('llm-jev')).toEqual(['generator.apiKey', 'decider.apiKey']);
+    const viaEnv = await resolve(run(), { JEVCODE_MODE: 'llm-jev' });
+    expect(viaEnv.mode).toBe('llm-jev');
+    expect(viaEnv.limits().spendCapUsd).toBe(2);
+    expect((await resolve(run('--mode', 'llm-jev'))).mode).toBe('llm-jev');
+    expect(modeFromParsedFlags(run('--mode', 'llm-jev'))).toBe('llm-jev');
+    expect(modeFromParsedFlags(run('--condition', 'llm-jev'))).toBe('llm-jev');
+  });
+
   it('missingSecrets(mode) never throws and skips the generator key for jev-only and --mock*, both keys for --mock', async () => {
     const none = await resolve(run(), { JEVCODE_PROVIDER: 'openai' });
     expect(none.missingSecrets('jev-on')).toEqual(['generator.apiKey', 'decider.apiKey']);
@@ -481,7 +530,7 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
 
   it('priced fail-closed through generator(): an unpriced Anthropic model is a ConfigError unless --allow-unpriced, which sets the token cap', async () => {
     const env = { ANTHROPIC_API_KEY: 'anthropic-key-1234' };
-    const bad = await resolve(run('--provider', 'anthropic', '--model', 'claude-next'), env);
+    const bad = await resolve(run('--mode', 'jev-on', '--provider', 'anthropic', '--model', 'claude-next'), env);
     expect(() => bad.generator()).toThrow('generator.model "claude-next" has no pricing entry, so the $2.000 spend cap could not be enforced. Set JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M (USD per million tokens), or pass --allow-unpriced to run under a token cap instead.');
     expect('maxGeneratorTokens' in bad.limits()).toBe(false);
     const ok = await resolve(withFlags({ allowUnpriced: true }, '--provider', 'anthropic', '--model', 'claude-next', '--spend-cap', '1.5'), env);
@@ -673,5 +722,227 @@ describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the si
     expect((await resolve(run('--mode', 'jev-only'), {}, {})).limits().spendCapUsd).toBe(0.25);
     // a configured cap is never touched by the mode
     expect((await resolve(run('--spend-cap', '1'), {}, { mode: 'jev-only' })).limits().spendCapUsd).toBe(1);
+  });
+});
+
+describe('TUI-DESIGN-2 §2.3: decider.provider — auto-detection, precedence, key order, offline refusals, redaction, §2.6 rows', () => {
+  const TS_KEY = 'ts-live-0123456789abcdef0123456789abcdef';
+  const JEV_KEY = 'jev-key-0123456789abcdef';
+  /** the `--jev-provider` flag, structurally (cli/args.ts gains the key in S2's PR; resolve reads flags by name) */
+  const withFlag = (flags: ParsedFlags, jevProvider: string): ParsedFlags => ({ ...flags, jevProvider }) as ParsedFlags;
+
+  it('auto (rules 2b–2e): JEV_API_KEY → openrouter; TYPESAFE_API_KEY → typesafe with its defaults; both → openrouter; OPENROUTER_API_KEY → openrouter; nothing → openrouter/default', async () => {
+    expect((await resolve(run(), { JEV_API_KEY: JEV_KEY })).decider()).toMatchObject({ provider: 'openrouter', providerSource: 'auto:openrouter-key', apiKey: JEV_KEY, model: 'typesafe/jev-1.13-20260917', baseUrl: 'https://openrouter.ai/api/alpha/decisions' });
+    // the user's .env: TYPESAFE_API_KEY, OPENROUTER_API_KEY, ANTHROPIC_API_KEY, no JEV_API_KEY → typesafe, jev-1.13.0
+    const ts = await resolve(run(), { TYPESAFE_API_KEY: TS_KEY, OPENROUTER_API_KEY: OR_KEY, ANTHROPIC_API_KEY: 'anthropic-key-1234' });
+    expect(ts.decider()).toEqual({ provider: 'typesafe', providerSource: 'auto:typesafe-key', apiKey: TS_KEY, model: 'jev-1.13.0', pinned: true, baseUrl: 'https://api.typesafe.ai/v1/systemone', pricing: { inputUsdPerToken: 4.2e-8, outputUsdPerToken: 0 } });
+    expect(ts.entries.get('decider.provider')).toEqual({ value: 'typesafe', source: 'derived' });
+    expect(ts.entries.get('decider.baseUrl')).toEqual({ value: 'https://api.typesafe.ai/v1/systemone', source: 'default' });
+    expect(ts.entries.get('decider.model')).toEqual({ value: 'jev-1.13.0', source: 'default' });
+    expect(ts.entries.get('decider.apiKey')).toEqual({ value: TS_KEY, source: 'env' });
+    expect(ts.missingSecrets('jev-only')).toEqual([]);
+    // today's users: JEV_API_KEY keeps them on OpenRouter even beside a TypeSafe key (rule 2b before 2c)
+    expect((await resolve(run(), { JEV_API_KEY: JEV_KEY, TYPESAFE_API_KEY: TS_KEY })).decider()).toMatchObject({ provider: 'openrouter', providerSource: 'auto:openrouter-key', apiKey: JEV_KEY });
+    expect((await resolve(run(), { OPENROUTER_API_KEY: OR_KEY })).decider()).toMatchObject({ provider: 'openrouter', providerSource: 'auto:openrouter-key', apiKey: OR_KEY });
+    const none = await resolve(run());
+    expect(none.entries.get('decider.provider')).toEqual({ value: 'openrouter', source: 'default' });
+    expect(none.entries.get('decider.model')).toEqual({ value: 'typesafe/jev-1.13-20260917', source: 'default' });
+    expect(none.missingSecrets('jev-only')).toEqual(['decider.apiKey']);
+    expect(() => none.decider()).toThrow(/decider\.apiKey/);
+    expect(none.record()['decider.providerSource']).toEqual({ value: 'default', source: 'derived' });
+  });
+
+  it('auto (rule 2a): a configured base URL whose host the table knows wins over the keys; a dotenv TypeSafe key counts too', async () => {
+    const byUrl = await resolve(run('--jev-base-url', 'https://api.typesafe.ai/v1/systemone'), { JEV_API_KEY: JEV_KEY });
+    expect(byUrl.decider()).toMatchObject({ provider: 'typesafe', providerSource: 'auto:base-url', apiKey: JEV_KEY, model: 'jev-1.13.0' });
+    expect(byUrl.record()['decider.providerSource']).toEqual({ value: 'auto:base-url', source: 'derived' });
+    expect((await resolve(run(), { JEV_BASE_URL: 'https://openrouter.ai/api/alpha/decisions', TYPESAFE_API_KEY: TS_KEY, OPENROUTER_API_KEY: OR_KEY })).decider()).toMatchObject({ provider: 'openrouter', providerSource: 'auto:base-url', apiKey: OR_KEY });
+    await writeFile(join(cwd, '.env'), `TYPESAFE_API_KEY=${TS_KEY}\n`);
+    const dot = await resolve(run());
+    expect(dot.decider()).toMatchObject({ provider: 'typesafe', providerSource: 'auto:typesafe-key', apiKey: TS_KEY });
+    expect(dot.entries.get('decider.apiKey')).toEqual({ value: TS_KEY, source: `dotenv:${join(cwd, '.env')}` });
+  });
+
+  it('rule 1: an explicit provider — flag > JEV_PROVIDER > ./.env > file jevProvider — keeps its source; any other value is an eager ConfigError naming the source (even under --mock); `auto` reads as absent', async () => {
+    expect((await resolve(withFlag(run(), 'typesafe'), { TYPESAFE_API_KEY: TS_KEY, JEV_PROVIDER: 'openrouter' })).decider()).toMatchObject({ provider: 'typesafe', providerSource: 'flag' });
+    const env = await resolve(run(), { JEV_PROVIDER: 'TypeSafe', TYPESAFE_API_KEY: TS_KEY });
+    expect(env.decider()).toMatchObject({ provider: 'typesafe', providerSource: 'env' });
+    expect(env.entries.get('decider.provider')).toEqual({ value: 'typesafe', source: 'env' });
+    await writeFile(join(cwd, '.env'), `JEV_PROVIDER=openrouter\nOPENROUTER_API_KEY=${OR_KEY}\n`);
+    expect((await resolve(run(), { TYPESAFE_API_KEY: TS_KEY })).decider()).toMatchObject({ provider: 'openrouter', providerSource: `dotenv:${join(cwd, '.env')}`, apiKey: OR_KEY });
+    await rm(join(cwd, '.env'));
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ jevProvider: 'typesafe' }));
+    expect((await resolve(run(), { TYPESAFE_API_KEY: TS_KEY, OPENROUTER_API_KEY: OR_KEY })).decider()).toMatchObject({ provider: 'typesafe', providerSource: `file:${join(cwd, 'jevcode.json')}`, apiKey: TS_KEY });
+    await rm(join(cwd, 'jevcode.json'));
+    // rule 1's refusal is eager (like the sandbox profile): `JEV_PROVIDER=foo jevcode chat --mock` fails at resolveConfig, which --mock
+    // reaches although it never calls decider()
+    let err: unknown;
+    try {
+      await resolve(run(), { JEV_PROVIDER: 'foo', OPENROUTER_API_KEY: OR_KEY });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toMatch(/^decider\.provider: "foo" \(from env\) is not one of auto\|typesafe\|openrouter \(consulted: --jev-provider \(flag\), JEV_PROVIDER \(env\)/);
+    expect((err as ConfigError).exitCode).toBe(2);
+    expect((err as ConfigError).setting).toBe('decider.provider');
+    await expect(resolve(parseCliArgs(['chat', '--mock']), { JEV_PROVIDER: 'foo' })).rejects.toThrow(/^decider\.provider: "foo" \(from env\) is not one of auto\|typesafe\|openrouter/);
+    await expect(resolve(withFlag(run(), 'both'), {})).rejects.toThrow(/^decider\.provider: "both" \(from flag\)/);
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ jevProvider: 'neither' }));
+    await expect(resolve(run(), {})).rejects.toThrow(`decider.provider: "neither" (from file:${join(cwd, 'jevcode.json')})`);
+    await rm(join(cwd, 'jevcode.json'));
+    // an explicit `auto` is the absent row: the same derivation, the same `derived` entry
+    const explicitAuto = await resolve(run(), { JEV_PROVIDER: 'auto', TYPESAFE_API_KEY: TS_KEY });
+    const absent = await resolve(run(), { TYPESAFE_API_KEY: TS_KEY });
+    expect(explicitAuto.decider()).toEqual(absent.decider());
+    expect(explicitAuto.entries.get('decider.provider')).toEqual({ value: 'typesafe', source: 'derived' });
+    expect(explicitAuto.record()['decider.providerSource']).toEqual(absent.record()['decider.providerSource']);
+  });
+
+  it('a `jevProvider` saved by writeCredentials into the XDG config.json is read back as the `file:` layer (§1.4: a saved TypeSafe key never resolves to openrouter)', async () => {
+    const env = { XDG_CONFIG_HOME: join(home, 'xdg') };
+    await writeCredentials({ jevApiKey: TS_KEY, jevProvider: 'typesafe' }, { env, home, cwd, platform: 'darwin' }, 'login');
+    const path = join(home, 'xdg', 'jevcode', 'config.json');
+    const c = await resolve(run(), env);
+    expect(c.configFile).toBe(path);
+    expect(c.decider()).toMatchObject({ provider: 'typesafe', providerSource: `file:${path}`, apiKey: TS_KEY, model: 'jev-1.13.0', baseUrl: 'https://api.typesafe.ai/v1/systemone' });
+    expect(c.entries.get('decider.provider')).toEqual({ value: 'typesafe', source: `file:${path}` });
+    expect(c.entries.get('decider.apiKey')).toEqual({ value: TS_KEY, source: `file:${path}` });
+    expect(c.record()['decider.providerSource']).toEqual({ value: `file:${path}`, source: 'derived' });
+    expect(configTableLines(c.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('decider.provider '))).toMatch(/^decider\.provider\s+typesafe\s+file:/);
+    // the saved provider steers the key order too (§2.3 step 3): TYPESAFE_API_KEY in the shell wins over JEV_API_KEY
+    expect((await resolve(run(), { ...env, JEV_API_KEY: JEV_KEY, TYPESAFE_API_KEY: `${TS_KEY}-shell` })).decider().apiKey).toBe(`${TS_KEY}-shell`);
+  });
+
+  it("step 3 key order: the provider's variable is consulted first when the provider was explicit or TypeSafe-inferred; today's order otherwise; OPENROUTER_API_KEY under typesafe is refused", async () => {
+    // --jev-provider typesafe + JEV_API_KEY + TYPESAFE_API_KEY → TYPESAFE_API_KEY
+    expect((await resolve(withFlag(run(), 'typesafe'), { JEV_API_KEY: JEV_KEY, TYPESAFE_API_KEY: TS_KEY })).decider().apiKey).toBe(TS_KEY);
+    // JEV_API_KEY + OPENROUTER_API_KEY (auto) → JEV_API_KEY, as today
+    expect((await resolve(run(), { JEV_API_KEY: JEV_KEY, OPENROUTER_API_KEY: OR_KEY })).decider().apiKey).toBe(JEV_KEY);
+    // explicit openrouter keeps today's order (its variable is already in the row: no duplicate in the consulted list)
+    const or = await resolve(withFlag(run(), 'openrouter'), { JEV_API_KEY: JEV_KEY, OPENROUTER_API_KEY: OR_KEY });
+    expect(or.decider().apiKey).toBe(JEV_KEY);
+    expect(or.sourcesConsulted('decider.apiKey')).toContain('JEV_API_KEY / OPENROUTER_API_KEY (env)');
+    // under typesafe the consulted list names the TypeSafe variable first
+    const ts = await resolve(run(), { TYPESAFE_API_KEY: TS_KEY });
+    expect(ts.sourcesConsulted('decider.apiKey')).toContain('TYPESAFE_API_KEY / JEV_API_KEY / OPENROUTER_API_KEY (env)');
+    // a typesafe provider whose only key is OPENROUTER_API_KEY is refused offline with the fix named
+    const wrongKey = await resolve(run(), { JEV_PROVIDER: 'typesafe', OPENROUTER_API_KEY: OR_KEY });
+    expect(wrongKey.missingSecrets('jev-only')).toEqual([]);
+    expect(() => wrongKey.decider()).toThrow('decider.apiKey: resolved from OPENROUTER_API_KEY but decider.provider is typesafe (from env); set TYPESAFE_API_KEY or pass --jev-provider openrouter');
+    // JEV_API_KEY is the generic Jev key: accepted under typesafe
+    expect((await resolve(run(), { JEV_PROVIDER: 'typesafe', JEV_API_KEY: JEV_KEY })).decider()).toMatchObject({ provider: 'typesafe', apiKey: JEV_KEY });
+  });
+
+  it("row 4 / §2.5: a configured base URL of the other provider's host and a model of the other naming are refused offline; jev-latest is an alias on both", async () => {
+    const mismatch = await resolve(run('--jev-base-url', 'https://openrouter.ai/api/alpha/decisions'), { JEV_PROVIDER: 'typesafe', TYPESAFE_API_KEY: TS_KEY });
+    expect(() => mismatch.decider()).toThrow(`decider.baseUrl: "https://openrouter.ai/api/alpha/decisions" (from flag) is openrouter's endpoint but decider.provider is typesafe (from env); pass --jev-provider openrouter or drop --jev-base-url`);
+    const proxied = await resolve(run('--jev-base-url', 'https://proxy.test/decisions'), { JEV_PROVIDER: 'typesafe', TYPESAFE_API_KEY: TS_KEY });
+    expect(proxied.decider()).toMatchObject({ provider: 'typesafe', baseUrl: 'https://proxy.test/decisions', model: 'jev-1.13.0' });
+    const orModel = await resolve(run('--jev-model', 'typesafe/jev-1.13'), { TYPESAFE_API_KEY: TS_KEY });
+    expect(() => orModel.decider()).toThrow('decider.model: "typesafe/jev-1.13" (from flag) is an OpenRouter id; the typesafe provider serves jev-1.13.0 (or pass --jev-provider openrouter)');
+    for (const m of ['jev-1.13-20260917', 'jev-1.13']) {
+      const c = await resolve(run('--jev-model', m), { TYPESAFE_API_KEY: TS_KEY });
+      expect(() => c.decider()).toThrow(/is an OpenRouter id/);
+    }
+    const tsModel = await resolve(run('--jev-model', 'jev-1.13.0'), { OPENROUTER_API_KEY: OR_KEY });
+    expect(() => tsModel.decider()).toThrow('decider.model: "jev-1.13.0" (from flag) is a TypeSafe id; the openrouter provider serves typesafe/jev-1.13-20260917 (or pass --jev-provider typesafe)');
+    expect((await resolve(run('--jev-model', 'jev-latest'), { TYPESAFE_API_KEY: TS_KEY })).decider()).toMatchObject({ provider: 'typesafe', model: 'jev-latest', pinned: false });
+    expect((await resolve(run('--jev-model', 'jev-latest'), { OPENROUTER_API_KEY: OR_KEY })).decider()).toMatchObject({ provider: 'openrouter', model: 'jev-latest', pinned: false });
+  });
+
+  it('Redaction: a known key variable exported in the shell is masked whichever provider runs; short values never join the set', async () => {
+    const c = await resolve(run(), { JEV_PROVIDER: 'openrouter', OPENROUTER_API_KEY: OR_KEY, TYPESAFE_API_KEY: TS_KEY, ANTHROPIC_API_KEY: 'anthropic-key-1234' });
+    expect(c.decider().apiKey).toBe(OR_KEY);
+    // the OpenRouter key was already named by the generator setting (same value); the TypeSafe and Anthropic keys are masked under their variable names
+    expect(c.redact(`a ${TS_KEY} b ${OR_KEY} c anthropic-key-1234`)).toBe('a [REDACTED:TYPESAFE_API_KEY] b [REDACTED:generator.apiKey] c [REDACTED:ANTHROPIC_API_KEY]');
+    expect(c.redactJson({ k: TS_KEY })).toEqual({ k: '[REDACTED:TYPESAFE_API_KEY]' });
+    const short = await resolve(run(), { TYPESAFE_API_KEY: 'abc' });
+    expect(short.redact('abc def')).toBe('abc def');
+  });
+
+  it('§2.6: record() carries decider.provider and decider.providerSource; the table prints `derived (auto: TYPESAFE_API_KEY is set)` and `default (typesafe)`; the identity reads the row back', async () => {
+    const c = await resolve(run(), { TYPESAFE_API_KEY: TS_KEY });
+    const rec = c.record();
+    expect(rec['decider.provider']).toEqual({ value: 'typesafe', source: 'derived' });
+    expect(rec['decider.providerSource']).toEqual({ value: 'auto:typesafe-key', source: 'derived' });
+    expect(rec['decider.baseUrl']).toEqual({ value: 'https://api.typesafe.ai/v1/systemone', source: 'default' });
+    expect(rec['decider.model']).toEqual({ value: 'jev-1.13.0', source: 'default' });
+    expect(rec['decider.apiKey']).toEqual({ value: { source: 'env', fingerprint: fingerprint(TS_KEY) }, source: 'env' });
+    expect(JSON.stringify(rec)).not.toContain(TS_KEY.slice(0, 12));
+    const lines = configTableLines(rec, { sandboxLevel: 'none' });
+    expect(lines.find((l) => l.startsWith('decider.provider '))).toMatch(/^decider\.provider\s+typesafe\s+derived \(auto: TYPESAFE_API_KEY is set\)$/);
+    expect(lines.find((l) => l.startsWith('decider.baseUrl '))).toMatch(/^decider\.baseUrl\s+https:\/\/api\.typesafe\.ai\/v1\/systemone\s+default \(typesafe\)$/);
+    expect(lines.find((l) => l.startsWith('decider.model '))).toMatch(/^decider\.model\s+jev-1\.13\.0\s+default \(typesafe\)$/);
+    expect(lines.some((l) => l.includes('providerSource'))).toBe(false);
+    const or = (await resolve(run(), { JEV_PROVIDER: 'openrouter', OPENROUTER_API_KEY: OR_KEY })).record();
+    expect(or['decider.provider']).toEqual({ value: 'openrouter', source: 'env' });
+    expect(or['decider.providerSource']).toEqual({ value: 'env', source: 'derived' });
+    expect(configTableLines(or, { sandboxLevel: 'none' }).find((l) => l.startsWith('decider.model '))).toMatch(/default \(openrouter\)$/);
+    const meta: RunMeta = { runId: 'r', task: 't', workspace: cwd, mode: 'jev-only', config: rec, versions: { jevcode: '0', node: '0' }, createdAt: '2026-09-21T00:00:00.000Z', overrides: [], resumes: [], resolvedJevModel: null, jevModelDrift: null };
+    expect(resumeIdentityFromRunMeta(meta)).toMatchObject({ jevProvider: 'typesafe', jevModel: 'jev-1.13.0', jevBaseUrl: 'https://api.typesafe.ai/v1/systemone' });
+  });
+});
+
+describe('TUI-DESIGN-2 §1.2: the `mode` setting', () => {
+  it('chain: --mode > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > default jev-only; each layer records its source; the run-cap default follows', async () => {
+    const dflt = await resolve(run());
+    expect(dflt.mode).toBe('jev-only');
+    expect(dflt.entries.get('mode')).toEqual({ value: 'jev-only', source: 'default' });
+    expect(dflt.record()['mode']).toEqual({ value: 'jev-only', source: 'default' });
+    // §2.6 / §12: `mode  jev-only  default`
+    expect(configTableLines(dflt.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('mode '))).toMatch(/^mode\s+jev-only\s+default$/);
+    // file `mode: jev-on` → source file:<path>, cap default $2.00 (§8.1 S1 row)
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ mode: 'jev-on' }));
+    const file = await resolve(run());
+    expect(file.mode).toBe('jev-on');
+    expect(file.entries.get('mode')).toEqual({ value: 'jev-on', source: `file:${join(cwd, 'jevcode.json')}` });
+    expect(file.entries.get('limits.spendCapUsd')).toEqual({ value: '2', source: 'default' });
+    expect(file.limits().spendCapUsd).toBe(2);
+    expect(file.sessionSpendCap(file.mode)).toEqual({ value: 10, source: 'derived', derived: true });
+    const modeLine = configTableLines(file.record(), { sandboxLevel: 'none' }).find((l) => l.startsWith('mode '));
+    expect(modeLine).toMatch(/^mode\s+jev-on\s+file:/);
+    expect(modeLine).toContain(join(cwd, 'jevcode.json'));
+    // the Open Assist dotenv beats the file, ./.env beats it, the process env beats both, a flag beats everything
+    const oa = join(root, 'open-assist');
+    await mkdir(oa);
+    await writeFile(join(oa, '.env'), 'JEVCODE_MODE=jev-off\n');
+    expect((await resolve(run(), { OPEN_ASSIST_PATH: oa })).entries.get('mode')).toEqual({ value: 'jev-off', source: `dotenv:${join(oa, '.env')}` });
+    await writeFile(join(cwd, '.env'), 'JEVCODE_MODE=jev-only\n');
+    expect((await resolve(run(), { OPEN_ASSIST_PATH: oa })).entries.get('mode')).toEqual({ value: 'jev-only', source: `dotenv:${join(cwd, '.env')}` });
+    expect((await resolve(run(), { OPEN_ASSIST_PATH: oa, JEVCODE_MODE: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'env' });
+    expect((await resolve(run('--mode', 'jev-off'), { OPEN_ASSIST_PATH: oa, JEVCODE_MODE: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-off', source: 'flag' });
+    // --condition (args.ts's hidden alias) is the flag layer too; values are case-insensitive and stored normalised
+    expect((await resolve(run('--condition', 'jev-on'), { JEVCODE_MODE: 'jev-only' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'flag' });
+    expect((await resolve(run(), { JEVCODE_MODE: 'JEV-ON' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'env' });
+    // the mode-keyed cap follows the resolved value from any layer
+    expect((await resolve(run(), { JEVCODE_MODE: 'jev-on' })).limits().spendCapUsd).toBe(2);
+    expect((await resolve(run(), { JEVCODE_MODE: 'jev-only' })).limits().spendCapUsd).toBe(0.25);
+  });
+
+  it('§12: `mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev` — eager, exit 2, verbatim; opts.mode (a --resume re-resolve) skips the chain', async () => {
+    let err: unknown;
+    try {
+      await resolve(run(), { JEVCODE_MODE: 'turbo' });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toBe('mode: "turbo" (from env) is not one of jev-only|jev-on|jev-off|llm-jev');
+    expect((err as ConfigError).exitCode).toBe(2);
+    expect((err as ConfigError).setting).toBe('mode');
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ mode: 'fast' }));
+    await expect(resolve(run())).rejects.toThrow(`mode: "fast" (from file:${join(cwd, 'jevcode.json')}) is not one of jev-only|jev-on|jev-off|llm-jev`);
+    // a --resume re-resolve passes run.json's mode and never consults the chain: the bad file value is not even read
+    const resumed = await resolve(run(), {}, { mode: 'jev-on' });
+    expect(resumed.mode).toBe('jev-on');
+    expect(resumed.entries.get('mode')).toEqual({ value: 'jev-on', source: 'default' });
+    expect(resumed.limits().spendCapUsd).toBe(2);
+    await rm(join(cwd, 'jevcode.json'));
+    // opts.mode agreeing with an explicit layer keeps that layer's source; disagreeing, the re-resolve's value stands as `default`
+    expect((await resolve(run('--mode', 'jev-only'), {}, { mode: 'jev-only' })).entries.get('mode')).toEqual({ value: 'jev-only', source: 'flag' });
+    expect((await resolve(run('--mode', 'jev-only'), {}, { mode: 'jev-on' })).entries.get('mode')).toEqual({ value: 'jev-on', source: 'default' });
+    // `record()` never throws for a valid chain and `jevcode config` prints the row (`config` command flags)
+    expect((await resolve(parseCliArgs(['config']), { JEVCODE_MODE: 'jev-off' })).record()['mode']).toEqual({ value: 'jev-off', source: 'env' });
   });
 });

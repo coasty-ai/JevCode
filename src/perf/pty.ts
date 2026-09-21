@@ -186,21 +186,38 @@ export interface DriveResult {
   wallMs: number;
 }
 
-function baseEnv(opts: { env?: Readonly<Record<string, string>>; rows: number; columns: number }, dir: string): Record<string, string> {
+/**
+ * The hermetic environment of every perf drive: a minimal env (never the parent's — no key variable, no `JEVCODE_CONFIG`,
+ * no `CI`), `HOME` and `XDG_CONFIG_HOME` inside the scenario's temp dir so neither the XDG file nor the legacy
+ * `$HOME/.config/jevcode/config.json` of the developer's saved login can reach the child (`src/config/resolve.ts`
+ * candidates `[cwd/jevcode.json, xdgFile, legacyFile]`), and `OPEN_ASSIST_PATH` at a directory that does not exist
+ * (`<OPEN_ASSIST_PATH>/.env` defaults to the package root's sibling `../open-assist`, which may hold keys). A scenario's
+ * own `env` is layered on top (`JEVCODE_HOME`, the mock knobs; `XDG_CONFIG_HOME` when it wants its own).
+ * `test/unit/perf/hermetic.test.ts` spawns `jevcode config` under this env with a legacy credentials file in the
+ * parent's HOME and asserts that no `file:` source appears.
+ */
+export function baseEnv(opts: { env?: Readonly<Record<string, string>>; rows: number; columns: number }, dir: string): Record<string, string> {
   return {
     PATH: process.env['PATH'] ?? '/usr/bin:/bin',
-    HOME: process.env['HOME'] ?? dir,
+    HOME: dir,
+    XDG_CONFIG_HOME: join(dir, 'xdg'),
     TERM: 'xterm-256color',
+    OPEN_ASSIST_PATH: join(dir, 'no-open-assist'),
     ...opts.env,
     PTY_ROWS: String(opts.rows),
     PTY_COLS: String(opts.columns),
   };
 }
 
-function runDriver(driver: string, args: string[], env: Record<string, string>, wallMs: number): Promise<{ code: number | null; stderr: string; wallMs: number }> {
+/**
+ * Run a driver with the scenario's temp dir as the child's cwd: `./.env` is a dotenv layer read from the process cwd
+ * (src/config/resolve.ts), so a driver inheriting `jevcode perf`'s cwd — the repository root — would hand every keyless
+ * scenario the repository's keys. Every path the drivers and the child use is absolute.
+ */
+function runDriver(driver: string, args: string[], env: Record<string, string>, wallMs: number, cwd: string): Promise<{ code: number | null; stderr: string; wallMs: number }> {
   const t0 = performance.now();
   return new Promise((resolveRun) => {
-    const child = spawn(driver, args, { stdio: ['ignore', 'ignore', 'pipe'], env });
+    const child = spawn(driver, args, { stdio: ['ignore', 'ignore', 'pipe'], env, cwd });
     let stderr = '';
     child.stderr.on('data', (b: Buffer) => {
       stderr += b.toString('utf8');
@@ -234,7 +251,7 @@ export async function drive(opts: DriveOptions): Promise<DriveResult> {
   const timing = join(dir, 'timing.jsonl');
   writeFileSync(stepsFile, `${opts.steps.join('\n')}\n`);
   try {
-    const r = await runDriver(join(opts.root, 'scripts/pty/drive.exp'), ['--kill-on-timeout', stepsFile, capture, timing, String(opts.timeoutS ?? 60), '--', ...opts.command], baseEnv(opts, dir), opts.wallMs ?? 240_000);
+    const r = await runDriver(join(opts.root, 'scripts/pty/drive.exp'), ['--kill-on-timeout', stepsFile, capture, timing, String(opts.timeoutS ?? 60), '--', ...opts.command], baseEnv(opts, dir), opts.wallMs ?? 240_000, dir);
     const cap = readOr(capture, 'utf8');
     const { steps } = parseTiming(readOr(timing, 'utf8'));
     keepEvidence(opts.label, capture, timing);
@@ -281,7 +298,7 @@ export async function typist(opts: TypistOptions): Promise<TypistResult> {
   const timing = join(dir, 'timing.jsonl');
   writeFileSync(stepsFile, JSON.stringify(opts.steps));
   try {
-    const r = await runDriver('/usr/bin/python3', [join(opts.root, 'perf/drivers/pty_type.py'), stepsFile, capture, timing, '--', ...opts.command], baseEnv(opts, dir), opts.wallMs ?? 240_000);
+    const r = await runDriver('/usr/bin/python3', [join(opts.root, 'perf/drivers/pty_type.py'), stepsFile, capture, timing, '--', ...opts.command], baseEnv(opts, dir), opts.wallMs ?? 240_000, dir);
     const cap = readOr(capture, 'latin1');
     const { steps, chunks } = parseTiming(readOr(timing, 'utf8'));
     keepEvidence(opts.label, capture, timing);
@@ -396,13 +413,39 @@ export function frameRows(body: string): string[] {
   return rows;
 }
 
+/** the console's bottom edge (`╰…╯`, TUI-DESIGN-2 §4.3), its side (`│`) and divider (`├`) glyphs in utf8, latin1 and `--ascii` (`+`, `|`) */
+const BOX_BOTTOM_RE = /^(?:╰|\u00e2\u0095\u00b0|\+-)/;
+const BOX_SIDE_RE = /^(?:│|\u00e2\u0094\u0082|\|)/;
+const BOX_DIVIDER_RE = /^(?:├|\u00e2\u0094\u009c|\+-)/;
+const BOX_SIDE_LEFT_RE = /^(?:│|\u00e2\u0094\u0082|\|) ?/;
+const BOX_SIDE_RIGHT_RE = / ?(?:│|\u00e2\u0094\u0082|\|)$/;
+
 /**
- * The composer's last row: the row directly above the status line (§2.1: `… composer · status` is the bottom of every
- * frame at rows ≥ 3; toasts render inside the status line). Null for a frame with fewer than two rows.
+ * The composer's last row. Flat tier (TUI-DESIGN §2.1): the row directly above the status line (`… composer · status`
+ * is the bottom of every frame at rows ≥ 3; toasts render inside the status line). Boxed tier (TUI-DESIGN-2 §4.3): the
+ * console ends `composer rows · divider ├─┤ · status │…│ · bottom edge ╰─╯`, so the composer's last row is the fourth
+ * row from the bottom, returned without its `│ ` / ` │` edges and right padding — its text ends with the last key
+ * typed, as in the flat tier. Null for a frame with too few rows.
  */
 export function composerRow(body: string): string | null {
   const rows = frameRows(body);
-  return rows.length >= 2 ? rows[rows.length - 2]! : null;
+  const n = rows.length;
+  if (n >= 4 && BOX_BOTTOM_RE.test(rows[n - 1]!) && BOX_SIDE_RE.test(rows[n - 2]!) && BOX_DIVIDER_RE.test(rows[n - 3]!) && BOX_SIDE_RE.test(rows[n - 4]!)) {
+    return rows[n - 4]!.replace(BOX_SIDE_RIGHT_RE, '').replace(BOX_SIDE_LEFT_RE, '').trimEnd();
+  }
+  return n >= 2 ? rows[n - 2]! : null;
+}
+
+/** true when the frame's dynamic rows are drawn in the boxed tier (a console bottom edge closes the frame, TUI-DESIGN-2 §4.1) */
+export function isBoxedFrame(body: string): boolean {
+  const rows = frameRows(body);
+  const n = rows.length;
+  return n >= 4 && BOX_BOTTOM_RE.test(rows[n - 1]!) && BOX_SIDE_RE.test(rows[n - 2]!) && BOX_DIVIDER_RE.test(rows[n - 3]!);
+}
+
+/** wordmark cells in a frame (`█`, TUI-DESIGN-2 §5.1; `#` letters under --ascii are not counted — the sweep head `#+.` would alias them) — utf8 or latin1 */
+export function wordmarkCells(body: string): number {
+  return (body.match(/█|\u00e2\u0096\u0088/g) ?? []).length;
 }
 
 /** The rule row opens the dynamic region: `────…` idle, `─── decisions s7 · …` with the pane, `---` under --ascii; `─` is `â\u0094\u0080` in a latin1 capture. */
@@ -755,3 +798,11 @@ export function toTypistSteps(lines: readonly string[], timeoutMs: number): Typi
 
 /** The transcript's end item: `end <reason> steps=…` (any stop reason, `max_replans` included). */
 export const END_PATTERN = 'end [a-z_]+ steps=';
+/** an SGR run between two visible spans — Tcl ARE (drive.exp) and Python bytes regex (the typist) read it alike */
+export const SGR_GAP = '(?:\\x1b\\[[0-9;]*m)*';
+/** TUI-DESIGN-2 §4.5: every transcript label is its own dim span (`ESC[2m[run]ESC[22m start …`), so a sentinel spanning label and text carries a gap */
+export const RUN_STARTED_PATTERN = `\\[run\\]${SGR_GAP} start `;
+/** the console's top edge with a badge or a card's title edge (`╭─ <title>`, TUI-DESIGN-2 §4.3 / §4.7): the title's colour span is skipped */
+export function topEdgePattern(title: string): string {
+  return `╭─ ${SGR_GAP}${title}`;
+}

@@ -160,6 +160,8 @@ export type KeyAction =
   | { type: 'repaint' }
   | { type: 'suspend' }
   | { type: 'paneTab'; dir: 1 | -1 }
+  /** TUI-DESIGN-2 §4.6: Alt+J toggles the panel, Alt+Shift+J opens it full, Alt+D/P/T/S open a tab (a second press on the same tab collapses) */
+  | { type: 'panel'; op: 'toggle' | 'full' | 'tab'; tab?: 'd' | 'p' | 't' | 's' }
   | { type: 'export' }
   | { type: 'palette'; op: 'move' | 'page' | 'accept' | 'run' | 'close'; by?: -1 | 1 }
   | { type: 'picker'; op: 'move' | 'page' | 'open' | 'accept' | 'preview' | 'allWorkspaces' | 'rename' | 'deleteArm' | 'deleteConfirm' | 'close'; by?: -1 | 1 }
@@ -168,6 +170,8 @@ export type KeyAction =
   | { type: 'followup'; op: 'start' | 'raise' | 'cancel' }
   | { type: 'undoPrompt'; op: 'yes' | 'no' | 'all' | 'skipRest' | 'abort' }
   | { type: 'exitConfirm'; op: 'abortExit' | 'stay' }
+  /** TUI-DESIGN-2 §3.7: the intake card — `y` runs (armed), `n` replies from the answers in hand, Esc / Ctrl-C keep the text */
+  | { type: 'intake'; op: 'run' | 'chat' | 'keep' }
   | { type: 'wizard'; op: 'input' | 'submit' | 'back' | 'backspace' | 'clear'; text?: string }
   | { type: 'blocking'; key: 'r' | 'c' | 'q' | 'p' | 'l' }
   | { type: 'toast'; text: string }
@@ -175,6 +179,8 @@ export type KeyAction =
 
 /** TUI-DESIGN §24: the toast for a non-key printable while the review box owns the input. */
 export const REVIEW_PENDING_TOAST = 'review pending: y n d e w · Esc declines';
+/** TUI-DESIGN-2 §3.7 / §12 "Status": the toast for a printable while the intake card owns the input. */
+export const INTAKE_PENDING_TOAST = 'intake pending: y n · Esc keeps the text';
 
 const CSI_LEAK = /^\[(?:I|O|\?\d+[uc]|\d+;\d+R|27;\d+;\d+~|<\d+;\d+;\d+[Mm]|\?62;[\d;]*c)$/;
 const OSC_LEAK = /^\]\d+;/;
@@ -257,6 +263,8 @@ export function keyString(k: KeyEvent): string | null {
   if (ch === '\u001a') return 'ctrl+z';
   if (ch === '\n') return 'ctrl+j';
   if (ch === ' ') return `${mods}space`;
+  // TUI-DESIGN-2 §4.6: a shifted letter under a modifier keeps its shift (`meta+shift+j` is Alt+Shift+J, never Alt+J)
+  if ((f.ctrl || f.meta) && /^[a-z]$/i.test(ch)) return `${mods}${f.shift || ch !== ch.toLowerCase() ? 'shift+' : ''}${ch.toLowerCase()}`;
   if (f.ctrl || f.meta) return `${mods}${ch.toLowerCase()}`;
   return ch;
 }
@@ -328,6 +336,18 @@ function composerAction(id: string, s: KeyState, k: KeyEvent): KeyAction[] | nul
       return s.draftEmpty ? [{ type: 'paneTab', dir: 1 }] : textActions(k);
     case 'global:panePrev':
       return s.draftEmpty ? [{ type: 'paneTab', dir: -1 }] : textActions(k);
+    case 'global:panelToggle':
+      return [{ type: 'panel', op: 'toggle' }];
+    case 'global:panelFull':
+      return [{ type: 'panel', op: 'full' }];
+    case 'global:panelDecisions':
+      return [{ type: 'panel', op: 'tab', tab: 'd' }];
+    case 'global:panelPlan':
+      return [{ type: 'panel', op: 'tab', tab: 'p' }];
+    case 'global:panelTimeline':
+      return [{ type: 'panel', op: 'tab', tab: 't' }];
+    case 'global:panelSynth':
+      return [{ type: 'panel', op: 'tab', tab: 's' }];
     case 'session:export':
       return [{ type: 'export' }];
     case 'composer:newline':
@@ -586,6 +606,14 @@ function resolveYGated(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
       if (y) return s.overlayArmed ? one({ type: 'exitConfirm', op: 'abortExit' }) : none;
       if (n) return one({ type: 'exitConfirm', op: 'stay' });
       return none;
+    case 'intake':
+      // TUI-DESIGN-2 §3.7: Esc / Ctrl-C keep the text; Enter inert; a paste never matches; `y` only once armed (committed frame + 150 ms)
+      if (isCtrl(k, 'c') || k.key.escape) return one({ type: 'intake', op: 'keep' });
+      if (isEnter(k) || isCtrl(k, 'd') || k.paste) return none;
+      if (y) return s.overlayArmed ? one({ type: 'intake', op: 'run' }) : none;
+      if (n) return one({ type: 'intake', op: 'chat' });
+      if (isPrintable(k)) return one({ type: 'toast', text: INTAKE_PENDING_TOAST });
+      return none;
     default:
       return none;
   }
@@ -752,6 +780,7 @@ function resolveOne(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step {
     case 'followup':
     case 'undo':
     case 'exitConfirm':
+    case 'intake':
       return resolveYGated(s, k, now, b);
     case 'palette':
       return resolvePalette(s, k, now, b);

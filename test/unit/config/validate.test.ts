@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import type { Resolved } from '../../../src/core/types.js';
+import type { SettingName } from '../../../src/config/types.js';
 import { ConfigError } from '../../../src/errors.js';
-import { deriveMaxGeneratorTokens, jevModelMatches, normaliseJevModelId, parseNumberSetting, parseUrlSetting, readAllowUnpriced, unpricedModelMessage, validateGenerator, validateLimits, type SettingReader } from '../../../src/config/validate.js';
+import { deriveMaxGeneratorTokens, foreignJevModelProvider, jevModelMatches, normaliseJevModelId, parseJevProviderSetting, parseModeSetting, parseNumberSetting, parseUrlSetting, readAllowUnpriced, unpricedModelMessage, validateDecider, validateGenerator, validateLimits, type DeciderValidateOptions, type SettingReader } from '../../../src/config/validate.js';
+import { JEV_PROVIDERS } from '../../../src/jev/providers.js';
 import { fingerprint, formatRecordValue, maskEntries, renderConfigTable } from '../../../src/config/mask.js';
 import { CACHE_WRITE_FACTOR, DEFAULT_MODEL, DEFAULT_PROVIDER, DEFAULT_SPEND_CAP_USD, lookupPricing, SETTINGS } from '../../../src/config/defaults.js';
 import { costFromPricing } from '../../../src/provider/sse.js';
@@ -224,5 +226,118 @@ describe('priced / fail-closed / cache derivation / token cap (TUI-DESIGN §9.5,
     expect(readAllowUnpriced(mk({}))).toBe(false);
     expect(readAllowUnpriced(mk({ 'limits.allowUnpriced': '1' }))).toBe(true);
     expect(() => readAllowUnpriced(mk({ 'limits.allowUnpriced': 'maybe' }))).toThrow(ConfigError);
+  });
+});
+
+describe('validateDecider (TUI-DESIGN-2 §2.3 rows 3–4, §2.5)', () => {
+  const mapReader = (rows: Partial<Record<SettingName, Resolved<string>>>): SettingReader => ({ get: (n) => rows[n], sources: () => [] });
+  const base: Partial<Record<SettingName, Resolved<string>>> = {
+    'decider.baseUrl': { value: 'https://openrouter.ai/api/alpha/decisions', source: 'default' },
+    'decider.apiKey': { value: 'k-12345678', source: 'env' },
+    'decider.model': { value: 'typesafe/jev-1.13-20260917', source: 'default' },
+  };
+
+  it("a bare reader: today's OpenRouter path by default; an explicit provider row or a known base-URL host selects typesafe with its own defaults", () => {
+    expect(validateDecider(mapReader({ ...base }))).toEqual({ provider: 'openrouter', providerSource: 'default', baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey: 'k-12345678', model: 'typesafe/jev-1.13-20260917', pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing });
+    expect(validateDecider(mapReader({ ...base, 'decider.provider': { value: 'typesafe', source: 'env' } }))).toEqual({ provider: 'typesafe', providerSource: 'env', baseUrl: 'https://api.typesafe.ai/v1/systemone', apiKey: 'k-12345678', model: 'jev-1.13.0', pinned: true, pricing: JEV_PROVIDERS.typesafe.pricing });
+    expect(validateDecider(mapReader({ ...base, 'decider.baseUrl': { value: 'https://api.typesafe.ai/v1/systemone/', source: 'flag' } }))).toMatchObject({ provider: 'typesafe', providerSource: 'auto:base-url', baseUrl: 'https://api.typesafe.ai/v1/systemone', model: 'jev-1.13.0' });
+    // `auto` defers to the derivation; a `derived` row source (resolveConfig's own) reads as default when no opts say more
+    expect(validateDecider(mapReader({ ...base, 'decider.provider': { value: 'auto', source: 'default' } })).providerSource).toBe('default');
+    expect(validateDecider(mapReader({ ...base, 'decider.provider': { value: 'typesafe', source: 'derived' } }))).toMatchObject({ provider: 'typesafe', providerSource: 'default' });
+    // a proxy host keeps the selected provider and the configured URL
+    expect(validateDecider(mapReader({ ...base, 'decider.provider': { value: 'typesafe', source: 'flag' }, 'decider.baseUrl': { value: 'https://proxy.test/decisions/', source: 'env' } }))).toMatchObject({ provider: 'typesafe', baseUrl: 'https://proxy.test/decisions', model: 'jev-1.13.0' });
+  });
+
+  it('opts.provider is authoritative; a key resolved from OPENROUTER_API_KEY under typesafe is refused with the fix named', () => {
+    const opts: DeciderValidateOptions = { provider: { name: 'typesafe', source: 'auto:typesafe-key' }, keyVia: 'TYPESAFE_API_KEY' };
+    expect(validateDecider(mapReader({ ...base }), opts)).toMatchObject({ provider: 'typesafe', providerSource: 'auto:typesafe-key', model: 'jev-1.13.0', baseUrl: 'https://api.typesafe.ai/v1/systemone' });
+    expect(() => validateDecider(mapReader({ ...base }), { ...opts, keyVia: 'OPENROUTER_API_KEY' })).toThrow('decider.apiKey: resolved from OPENROUTER_API_KEY but decider.provider is typesafe (from auto:typesafe-key); set TYPESAFE_API_KEY or pass --jev-provider openrouter');
+    expect(() => validateDecider(mapReader({ ...base }), { provider: { name: 'openrouter', source: 'flag' }, keyVia: 'OPENROUTER_API_KEY' })).not.toThrow();
+    expect(() => validateDecider(mapReader({ ...base }), { ...opts, keyVia: 'JEV_API_KEY' })).not.toThrow();
+    expect(() => validateDecider(mapReader({ ...base }), { ...opts, keyVia: null })).not.toThrow();
+  });
+
+  it('a configured base URL of the other host, an unknown provider value and a model of the other naming are ConfigErrors (exit 2) with the §2.3 / §2.5 texts', () => {
+    const ts: DeciderValidateOptions = { provider: { name: 'typesafe', source: 'flag' } };
+    expect(() => validateDecider(mapReader({ ...base, 'decider.baseUrl': { value: 'https://openrouter.ai/api/alpha/decisions', source: 'env' } }), ts)).toThrow(
+      `decider.baseUrl: "https://openrouter.ai/api/alpha/decisions" (from env) is openrouter's endpoint but decider.provider is typesafe (from flag); pass --jev-provider openrouter or drop --jev-base-url`,
+    );
+    expect(() => validateDecider(mapReader({ ...base, 'decider.provider': { value: 'openrouter', source: 'flag' }, 'decider.baseUrl': { value: 'https://api.typesafe.ai/v1/systemone', source: 'file:/x/jevcode.json' } }))).toThrow(/is typesafe's endpoint but decider\.provider is openrouter \(from flag\); pass --jev-provider typesafe/);
+    expect(() => validateDecider(mapReader({ ...base, 'decider.provider': { value: 'both', source: 'flag' } }))).toThrow(/decider\.provider: "both" \(from flag\) is not one of auto\|typesafe\|openrouter/);
+    expect(() => validateDecider(mapReader({ ...base, 'decider.model': { value: 'typesafe/jev-1.13-20260917', source: 'flag' } }), ts)).toThrow('decider.model: "typesafe/jev-1.13-20260917" (from flag) is an OpenRouter id; the typesafe provider serves jev-1.13.0 (or pass --jev-provider openrouter)');
+    for (const m of ['jev-1.13-20260917', 'jev-1.13', 'typesafe/jev-latest']) expect(() => validateDecider(mapReader({ ...base, 'decider.model': { value: m, source: 'env' } }), ts)).toThrow(/is an OpenRouter id/);
+    expect(() => validateDecider(mapReader({ ...base, 'decider.model': { value: 'jev-1.13.0', source: 'env' } }))).toThrow('decider.model: "jev-1.13.0" (from env) is a TypeSafe id; the openrouter provider serves typesafe/jev-1.13-20260917 (or pass --jev-provider typesafe)');
+    let err: unknown;
+    try {
+      validateDecider(mapReader({ ...base, 'decider.model': { value: 'jev-1.13.0', source: 'env' } }));
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).exitCode).toBe(2);
+    expect((err as ConfigError).setting).toBe('decider.model');
+    // aliases pass on both; the id grammar accepts a vendor slash; junk is still rejected
+    expect(validateDecider(mapReader({ ...base, 'decider.model': { value: 'jev-latest', source: 'flag' } }), ts)).toMatchObject({ model: 'jev-latest', pinned: false });
+    expect(validateDecider(mapReader({ ...base, 'decider.model': { value: 'jev-latest', source: 'flag' } }))).toMatchObject({ model: 'jev-latest', pinned: false });
+    expect(validateDecider(mapReader({ ...base, 'decider.model': { value: 'vendor/jev-x', source: 'flag' } }))).toMatchObject({ model: 'vendor/jev-x', pinned: false });
+    expect(() => validateDecider(mapReader({ ...base, 'decider.model': { value: '!!bad', source: 'flag' } }))).toThrow(/decider\.model/);
+  });
+
+  it('foreignJevModelProvider / parseJevProviderSetting / the 3-arg jevModelMatches tables', () => {
+    expect(foreignJevModelProvider('typesafe/jev-1.13', 'typesafe')).toBe('openrouter');
+    expect(foreignJevModelProvider('jev-1.13-20260917', 'typesafe')).toBe('openrouter');
+    expect(foreignJevModelProvider('jev-1.13', 'typesafe')).toBe('openrouter');
+    expect(foreignJevModelProvider('jev-1.13.0', 'typesafe')).toBeNull();
+    expect(foreignJevModelProvider('jev-latest', 'typesafe')).toBeNull();
+    expect(foreignJevModelProvider('jev-1.13.0', 'openrouter')).toBe('typesafe');
+    expect(foreignJevModelProvider('typesafe/jev-1.13.0', 'openrouter')).toBe('typesafe');
+    expect(foreignJevModelProvider('typesafe/jev-1.13-20260917', 'openrouter')).toBeNull();
+    expect(foreignJevModelProvider('jev-1.13', 'openrouter')).toBeNull();
+    expect(foreignJevModelProvider('jev-latest', 'openrouter')).toBeNull();
+    expect(parseJevProviderSetting(reader, r('Auto'))).toBe('auto');
+    expect(parseJevProviderSetting(reader, r(' typesafe '))).toBe('typesafe');
+    expect(parseJevProviderSetting(reader, r('openrouter'))).toBe('openrouter');
+    expect(() => parseJevProviderSetting(reader, r('x'))).toThrow(ConfigError);
+    expect(jevModelMatches('jev-latest', 'jev-1.13.0', 'typesafe')).toBe(true);
+    expect(jevModelMatches('jev-1.13.0', 'jev-1.13.1', 'typesafe')).toBe(false);
+    expect(jevModelMatches('jev-1.13', 'typesafe/jev-1.13-20260917')).toBe(true);
+  });
+});
+
+describe('parseModeSetting (TUI-DESIGN-2 §1.2 / §12)', () => {
+  it('accepts the three modes case-insensitively; anything else is the verbatim ConfigError (exit 2, setting `mode`, no consulted suffix)', () => {
+    expect(parseModeSetting({ value: 'jev-only', source: 'default' })).toBe('jev-only');
+    expect(parseModeSetting({ value: ' JEV-ON ', source: 'env' })).toBe('jev-on');
+    expect(parseModeSetting({ value: 'jev-off', source: 'flag' })).toBe('jev-off');
+    let err: unknown;
+    try {
+      parseModeSetting({ value: 'turbo', source: 'file:/x/jevcode.json' });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).message).toBe('mode: "turbo" (from file:/x/jevcode.json) is not one of jev-only|jev-on|jev-off|llm-jev');
+    expect((err as ConfigError).exitCode).toBe(2);
+    expect((err as ConfigError).setting).toBe('mode');
+    expect(() => parseModeSetting({ value: '', source: 'env' })).toThrow('mode: "" (from env) is not one of jev-only|jev-on|jev-off|llm-jev');
+  });
+
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): the fourth mode is accepted case-insensitively and named last in the §12 enumeration', () => {
+    expect(parseModeSetting({ value: 'llm-jev', source: 'flag' })).toBe('llm-jev');
+    expect(parseModeSetting({ value: ' LLM-JEV ', source: 'env' })).toBe('llm-jev');
+    expect(() => parseModeSetting({ value: 'llm', source: 'env' })).toThrow('mode: "llm" (from env) is not one of jev-only|jev-on|jev-off|llm-jev');
+  });
+
+  it('validateDecider on a resumed run.json record: a `derived`-sourced provider row with no opts.provider follows the row value with source `default`', () => {
+    const mapReader = (rows: Partial<Record<SettingName, Resolved<string>>>): SettingReader => ({ get: (n) => rows[n], sources: () => [] });
+    const rec: Partial<Record<SettingName, Resolved<string>>> = {
+      'decider.provider': { value: 'typesafe', source: 'derived' },
+      'decider.baseUrl': { value: 'https://api.typesafe.ai/v1/systemone', source: 'default' },
+      'decider.apiKey': { value: 'k-12345678', source: 'env' },
+      'decider.model': { value: 'jev-1.13.0', source: 'default' },
+    };
+    expect(validateDecider(mapReader(rec))).toEqual({ provider: 'typesafe', providerSource: 'default', baseUrl: 'https://api.typesafe.ai/v1/systemone', apiKey: 'k-12345678', model: 'jev-1.13.0', pinned: true, pricing: JEV_PROVIDERS.typesafe.pricing });
+    // the recorded default model of the other naming is not re-read as a foreign id: a default-source model takes the provider's own
+    expect(validateDecider(mapReader({ ...rec, 'decider.model': { value: 'typesafe/jev-1.13-20260917', source: 'default' } })).model).toBe('jev-1.13.0');
   });
 });

@@ -22,9 +22,11 @@ import type {
   RendererOptions,
   SecretHit,
   SessionHost,
+  StepRecord,
   UiConfig,
   UiLabel,
 } from '../core/types.js';
+import { DEFAULT_COMPLETE_THRESHOLD } from '../config/defaults.js';
 import { AbortError } from '../errors.js';
 import { clip, firstLine } from '../core/text.js';
 import { formatDuration } from '../core/time.js';
@@ -69,7 +71,13 @@ export type TranscriptKind =
   | 'workspace'
   | 'blocking'
   | 'secret-ack'
-  | 'ui';
+  | 'ui'
+  // contract 1.2 (TUI-DESIGN-2 §6 item 17, §4.5): the one-line step summary (`step:end`) and the `[you]` / `[jevcode]` bubbles (§3.10)
+  | 'step'
+  | 'chat';
+
+/** TUI-DESIGN-2 §4.5: the stage kinds the TUI's `compact` transcript hides (stamped `hidden: true` at append time); every sink still writes them */
+export const COMPACT_HIDDEN_KINDS: ReadonlySet<TranscriptKind> = new Set<TranscriptKind>(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
 
 export type TranscriptLevel = 'info' | 'warn' | 'error';
 
@@ -89,6 +97,13 @@ export interface TranscriptItem {
   readonly local?: boolean;
   /** TUI-DESIGN §15 item 19 / §15.1: printed instead of stepLabel(); only notice kind 'ui' and local items set it */
   readonly label?: UiLabel;
+  /** TUI-DESIGN-2 §4.5 / §6 item 17: hidden by the TUI's `compact` transcript (stamped at append time); `--plain` and transcript.log ignore it */
+  readonly hidden?: boolean;
+}
+
+/** TUI-DESIGN-2 §3.10: the two bubble labels; an item carrying one is of kind `chat` in every sink */
+export function isChatLabel(label: UiLabel | undefined): label is '[you]' | '[jevcode]' {
+  return label === '[you]' || label === '[jevcode]';
 }
 
 /** Caps keeping every transcript line bounded no matter what the generator or a command emits. */
@@ -338,8 +353,12 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
     case 'notice':
       // contract 1.1 (TUI-DESIGN §15.1 / §24 "Engine items"): a labelled notice (Engine.annotate) prints `<label> <text>`; the engine's own
       // kinds already emit self-describing texts (`seeded from run …`, `checkpoint degraded: …`, `run <id> is in use …`) and print bare;
-      // `notice <kind>: <text>` is the fallback for a kind that does not describe itself (an unlabelled `ui`, or one from a newer engine)
-      return make(e.step, 'notice', e.label || BARE_NOTICE_KINDS.has(e.kind) ? e.text : `notice ${e.kind}: ${e.text}`, e.level, { ...(e.detail ? { detail: clipDetail(e.detail) } : {}), ...(e.label ? { label: e.label } : {}) });
+      // `notice <kind>: <text>` is the fallback for a kind that does not describe itself (an unlabelled `ui`, or one from a newer engine).
+      // TUI-DESIGN-2 §3.10: a `[you]` / `[jevcode]` annotation while a run is live is a `chat` item (the compact transcript shows it)
+      return make(e.step, isChatLabel(e.label) ? 'chat' : 'notice', e.label || BARE_NOTICE_KINDS.has(e.kind) ? e.text : `notice ${e.kind}: ${e.text}`, e.level, { ...(e.detail ? { detail: clipDetail(e.detail) } : {}), ...(e.label ? { label: e.label } : {}) });
+    case 'step:end':
+      // TUI-DESIGN-2 §4.5: one `[step N]` summary line per step in all three sinks (the compact TUI shows this row alone)
+      return make(e.record.step, 'step', stepSummaryText(e.record, e.costUsd));
     // --- TUI-DESIGN §15.1 item table: the contract 1.1 engine items (§24 "Engine items" strings) ---------------------
     case 'steer:queued':
       return make(e.step, 'steer:queued', steerQueuedText(e));
@@ -393,6 +412,77 @@ export function itemsFromEvent(e: EngineEvent, seq: number): TranscriptItem[] {
   }
 }
 
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-2 §4.5: the step summary line
+// ---------------------------------------------------------------------------------------
+
+const STEP_TARGET_CELLS = 40;
+const STEP_GOAL_CHARS = 32;
+
+/** `$0.004` — three decimals, four below $0.001 (§4.5 "cost or tokens") */
+export function stepCostText(x: number): string {
+  if (!Number.isFinite(x)) return '$?';
+  return x > 0 && x < 0.001 ? `$${x.toFixed(4)}` : usd(x);
+}
+
+/** `1.2s` under ten seconds, then `formatDuration` (`12s`, `1m2s`) */
+export function stepWallText(ms: number): string {
+  if (!Number.isFinite(ms) || ms < 0) return '?';
+  if (ms < 10_000) return `${(ms / 1000).toFixed(1)}s`;
+  return formatDuration(ms);
+}
+
+function stepActionText(r: StepRecord): string {
+  const p = r.proposal;
+  if (p === null) return r.intent !== null ? `${r.intent} (no proposal)` : '(no proposal)';
+  const d = describeAction(p.action);
+  const target = clip(oneLine(d.target), STEP_TARGET_CELLS);
+  const goal = p.action.kind === 'edit' || p.action.kind === 'write' || p.action.kind === 'patch' ? oneLine(p.goal).trim() : '';
+  return `${d.kind} ${target}${goal !== '' ? ` "${clip(goal, STEP_GOAL_CHARS)}"` : ''}`.trim();
+}
+
+function stepOutcomeText(o: ActionOutcome | null): string | null {
+  if (o === null) return null;
+  switch (o.status) {
+    case 'executed':
+      return o.changedFiles.length > 0 ? `${o.changedFiles.length} file${o.changedFiles.length === 1 ? '' : 's'}` : null;
+    case 'noop':
+      return 'skipped';
+    case 'declined':
+    case 'failed':
+    case 'blocked':
+    case 'interrupted':
+      return o.status;
+  }
+}
+
+/**
+ * `<action> · risk <r> <verdict> · <outcome> · tests <p>p/<f>f/<e>e · judge <p>[ · complete <c>] · <wall> · $<cost>|jev <k>` —
+ * the text of the `step` item (`[step N]` is its label, `stepLabel`); action and verdict come first so wall and cost wrap.
+ * An interrupted step reads `interrupted at <stage> (<reason>)`. `costUsd` comes from the event (§6 item 3); absent → tokens.
+ */
+export function stepSummaryText(r: StepRecord, costUsd?: { generator: number; jev: number }, opts: { completeThreshold?: number } = {}): string {
+  if (r.interruptedAt !== undefined) return `interrupted at ${r.interruptedAt.stage} (${r.interruptedAt.reason})`;
+  const parts: string[] = [stepActionText(r)];
+  if (r.risk !== null) parts.push(`risk ${p2(r.risk.risk)} ${r.risk.verdict === 'ok' ? 'ok' : `[${r.risk.verdict}]`}`);
+  const outcome = stepOutcomeText(r.outcome);
+  if (outcome !== null) parts.push(outcome);
+  const tests = r.judge?.tests;
+  if (tests && tests.source === 'parsed') parts.push(`tests ${tests.passed}p/${tests.failed}f/${tests.errors}e`);
+  if (r.judge !== null) {
+    const threshold = opts.completeThreshold ?? DEFAULT_COMPLETE_THRESHOLD;
+    parts.push(`judge ${p2(r.judge.succeeded)}${r.completion !== null && r.completion >= threshold ? ` · complete ${p2(r.completion)}` : ''}`);
+  }
+  parts.push(stepWallText(r.timing.totalMs));
+  if (costUsd !== undefined) parts.push(stepCostText(costUsd.generator + costUsd.jev));
+  else {
+    const gen = r.usage.generator.inputTokens + r.usage.generator.outputTokens;
+    const jev = r.usage.jev.inputTokens + r.usage.jev.outputTokens;
+    parts.push(gen > 0 ? `gen ${kTokens(gen)} jev ${kTokens(jev)}` : `jev ${kTokens(jev)}`);
+  }
+  return parts.join(' · ');
+}
+
 /** The one-line form written to transcript.log, by the plain renderer and by the TUI's <Static> rows. A `label` (TUI-DESIGN §15.1) replaces the step label. */
 export function formatTranscriptItem(item: TranscriptItem): string {
   return `${item.label ?? stepLabel(item.step)} ${item.text}`;
@@ -409,7 +499,8 @@ export function localItem(text: string, seq: number, opts: { label?: UiLabel; le
     key: `local:${label}:${seq}`,
     seq,
     step: null,
-    kind: 'ui',
+    // TUI-DESIGN-2 §3.10 / §6 item 17: an idle-time bubble is a `chat` item (one per line, printed `[you] <text>` / `[jevcode] <text>`)
+    kind: isChatLabel(label) ? 'chat' : 'ui',
     level: opts.level ?? 'info',
     text: clip(oneLine(text), TRANSCRIPT_TEXT_MAX),
     local: true,
@@ -771,10 +862,21 @@ export interface PlainRendererOptions extends RendererOptions {
 }
 
 /** The plain renderer: `Renderer` plus the contract-1.1 hooks it implements (TUI-DESIGN §15 item 16). */
+/**
+ * TUI-DESIGN-2 §3.7 / §6 item 11, the `--plain` twin of `Renderer.restoreDraft`: cooked-mode readline has no composer buffer
+ * to refill, so the kept text is echoed as a bare `(kept: …)` line (TD §15.1's toast form — never an item), redacted like
+ * the `[you]` bubble and flattened to one line.
+ */
+export function intakeKeptEcho(text: string): string {
+  return `(kept: ${oneLine(text)})`;
+}
+
 export interface PlainRenderer extends Renderer {
   setHost(host: SessionHost): void;
   setUi(ui: UiConfig): void;
   notify(text: string, opts?: { level?: TranscriptLevel; detail?: string; label?: UiLabel }): void;
+  /** TUI-DESIGN-2 §3.7: Esc / empty on the readline intake twin — the kept draft is echoed (`intakeKeptEcho`), through the host's redactor */
+  restoreDraft(text: string): void;
   /**
    * TUI-DESIGN §1 / §6.5: hand the readline composer's `lines` to the confirmer so both share the one stdin
    * interface; must run before the first review (before the first run starts) on a `--plain` TTY.
@@ -837,6 +939,8 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
 
   function handle(e: EngineEvent): void {
     if (e.type === 'generator:delta') {
+      // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): only the first candidate streams; later samples would interleave here
+      if (e.sample !== undefined && e.sample >= 1) return;
       const text = sanitizeStream(e.text);
       if (text.length === 0) return;
       stdout.write(text);
@@ -878,6 +982,12 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
       const item = localItem(text, localSeq++, { ...(o.label ? { label: o.label } : {}), ...(o.level ? { level: o.level } : {}), ...(o.detail ? { detail: o.detail } : {}) });
       endStream();
       write(`${formatTranscriptItem(item)}\n`);
+    },
+    // TUI-DESIGN-2 §3.7 / §6 item 11: the readline composer cannot be refilled, so the kept text is echoed (redacted) as a bare line
+    restoreDraft(text) {
+      endStream();
+      const redacted = host ? host.redact(text) : text;
+      write(`${intakeKeptEcho(redacted)}\n`);
     },
     async unmount() {
       detach?.();

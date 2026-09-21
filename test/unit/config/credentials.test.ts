@@ -94,7 +94,15 @@ describe('writeCredentials', () => {
     const again = JSON.parse(await readFile(target, 'utf8')) as Record<string, unknown>;
     expect(again['apiKey']).toBe(KEY);
     expect(again['jevApiKey']).toBe('another-jev-key-000');
+    expect(again['jevProvider']).toBeUndefined();
     expect(await mode(target)).toBe(0o600);
+    // TUI-DESIGN-2 §2.3 / §1.4: `login --jev-provider typesafe` saves the provider beside the Jev key as the `jevProvider` file key
+    await writeCredentials({ jevApiKey: 'ts-key-value-000000', jevProvider: 'typesafe' }, { env, home, cwd, platform: 'darwin' }, 'login');
+    const withProvider = await readCredentialsFile(target);
+    expect(withProvider.jevProvider).toBe('typesafe');
+    expect(withProvider.jevApiKey).toBe('ts-key-value-000000');
+    expect(withProvider.apiKey).toBe(KEY);
+    expect(withProvider.values['jevProvider']).toBe('typesafe');
   });
 
   it('honours --config and JEVCODE_CONFIG; prints the Windows ACL note instead of the mode on win32', async () => {
@@ -239,13 +247,14 @@ describe('writeCredentials', () => {
 describe('readCredentialsFile / removeCredentials / writeConfigValue', () => {
   it('reads tolerantly: missing → exists false; malformed → error; values kept', async () => {
     const p = join(dir, 'c.json');
-    expect(await readCredentialsFile(p)).toEqual({ path: p, exists: false, values: {}, provider: null, apiKey: null, jevApiKey: null, error: null });
+    expect(await readCredentialsFile(p)).toEqual({ path: p, exists: false, values: {}, provider: null, apiKey: null, jevApiKey: null, jevProvider: null, error: null });
     await writeFile(p, '{"provider":"openrouter","apiKey":"","jevApiKey":"jjjjjjjjjj","extra":1}');
     const f = await readCredentialsFile(p);
     expect(f.exists).toBe(true);
     expect(f.provider).toBe('openrouter');
     expect(f.apiKey).toBeNull();
     expect(f.jevApiKey).toBe('jjjjjjjjjj');
+    expect(f.jevProvider).toBeNull();
     expect(f.values['extra']).toBe(1);
     await writeFile(p, 'nope');
     expect((await readCredentialsFile(p)).error).toContain('not a JSON object');

@@ -10,6 +10,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { BlockingRequest, SessionRow } from '../../../src/core/types.js';
 import type { OverlayKind, PickerOpen, TuiRenderer, UiState, WizardDetect } from '../../../src/tui/index.js';
+import type { IntakeOverlay } from '../../../src/tui/Overlay.js';
+import { INTAKE_CARD_BODY, INTAKE_ROW_MEDIUM } from '../../../src/chat/lines.js';
 import { createTuiPrompter, hasSecretGate, patchFromWizard, undoKeyOf, type SecretGateRenderer, type TuiPrompterControls } from '../../../src/cli/tui-prompter.js';
 import { detectSecrets } from '../../../src/core/redact.js';
 import { mkConfirmRequest } from '../../fixtures/tui/fixtures.js';
@@ -23,6 +25,9 @@ interface Fake {
   undoAnswer: 'yes' | 'no' | 'all' | 'skipRest' | 'abort';
   /** what `state().overlay` reports (null = no state yet) */
   overlay: OverlayKind | null;
+  /** TUI-DESIGN-2 §3.7: the last intake card the App was asked to show, and the answer it gives */
+  lastIntake: IntakeOverlay | null;
+  intakeAnswer: 'run' | 'chat' | 'keep';
   /** renderer promises that never settle (the App unmounted) */
   hang: boolean;
   gateAnswer: boolean;
@@ -39,6 +44,8 @@ function fakeTui(): Fake {
     followUpAnswer: 'start',
     undoAnswer: 'yes',
     overlay: null,
+    lastIntake: null,
+    intakeAnswer: 'chat',
     hang: false,
     gateAnswer: true,
     renderer: {
@@ -55,9 +62,16 @@ function fakeTui(): Fake {
         f.calls.push('openWizard');
         f.lastWizard = d;
       },
-      reopenWizard: (at, runLive) => {
-        f.calls.push(`reopenWizard:${at}:${runLive ? 'live' : 'idle'}`);
+      reopenWizard: (at, runLive, opts) => {
+        f.calls.push(`reopenWizard:${at}:${runLive ? 'live' : 'idle'}${opts ? `:${opts.reason ?? '-'}:${opts.mode ?? '-'}` : ''}`);
       },
+      promptIntake: (card) => {
+        f.calls.push('promptIntake');
+        f.lastIntake = card;
+        return f.hang ? never() : Promise.resolve(f.intakeAnswer);
+      },
+      restoreDraft: () => undefined,
+      live: () => undefined,
       openPicker: (o) => {
         f.calls.push(`openPicker:${o.kind}`);
         f.lastPicker = o;
@@ -153,7 +167,7 @@ describe('createTuiPrompter', () => {
     );
     const w = b.prompter.wizard!(['decider.apiKey'], { provider: 'openrouter', reason: 'missing' });
     expect(f.lastWizard).toEqual({ missing: ['decider.apiKey'], mode: 'jev-only', provider: 'openrouter', trustNeeded: false });
-    const r = await b.wizardHost.save({ provider: 'openrouter', fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } });
+    const r = await b.wizardHost.save({ provider: 'openrouter', jevProvider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } });
     expect(r).toEqual({ ok: true, items: [] });
     expect(saved).toEqual([{ patch: { provider: 'openrouter', jevApiKey: 'sk-or-v1-abcdefghijklmnop' }, source: 'wizard' }]);
     expect(await w).toEqual({ kind: 'persisted' });
@@ -161,10 +175,12 @@ describe('createTuiPrompter', () => {
     void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'login' });
     expect(f.calls.at(-1)).toBe('reopenWizard:generator.apiKey:idle');
     // reuseGeneratorForJev copies the generator key into the Jev slot
-    expect(patchFromWizard({ provider: 'openrouter', fields: ['generator.apiKey'], reuseGeneratorForJev: true, values: { 'generator.apiKey': 'sk-or-v1-zzzzzzzzzzzz' } })).toEqual({ provider: 'openrouter', apiKey: 'sk-or-v1-zzzzzzzzzzzz', jevApiKey: 'sk-or-v1-zzzzzzzzzzzz' });
+    expect(patchFromWizard({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: true, values: { 'generator.apiKey': 'sk-or-v1-zzzzzzzzzzzz' } })).toEqual({ provider: 'openrouter', apiKey: 'sk-or-v1-zzzzzzzzzzzz', jevApiKey: 'sk-or-v1-zzzzzzzzzzzz' });
+    // TUI-DESIGN-2 §1.4: the Jev provider chosen on its step rides the patch beside the key
+    expect(patchFromWizard({ provider: null, jevProvider: 'typesafe', fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'ts-key-abcdefghijklmnop' } })).toEqual({ jevApiKey: 'ts-key-abcdefghijklmnop', jevProvider: 'typesafe' });
     // a failed save is reported to the wizard and leaves the prompt pending
     b.control(controls({ persistCredentials: async () => ({ ok: false, items: [], error: 'EACCES' }) }));
-    expect(await b.wizardHost.save({ provider: null, fields: [], reuseGeneratorForJev: false, values: {} })).toEqual({ ok: false, reason: 'EACCES' });
+    expect(await b.wizardHost.save({ provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false, values: {} })).toEqual({ ok: false, reason: 'EACCES' });
   });
 
   it('reopenWizard carries the controller\'s live flag, not the reason: a 401 pane `[l]` with a live run reopens live (Ctrl-C closes), an idle /login reopens idle (Ctrl-C exits 2) (§11.1)', () => {
@@ -224,11 +240,64 @@ describe('createTuiPrompter', () => {
     void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'login' }).then((o) => {
       saved = o;
     });
-    await b.wizardHost.save({ provider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } });
+    await b.wizardHost.save({ provider: null, jevProvider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } });
     expect(saved).toEqual({ kind: 'persisted' });
     b.wizardHost.cancel(); // the App's `done` without a further answer, or a later Ctrl-C: nothing pending
     await vi.advanceTimersByTimeAsync(0);
     expect(saved).toEqual({ kind: 'persisted' });
+  });
+
+  it('TUI-DESIGN-2 §1.4: wizard({ reason: mode, mode }) reopens at the provider step with the target mode; a missing-key wizard defaults to jev-only', () => {
+    const f = fakeTui();
+    const b = createTuiPrompter();
+    b.attach(f.renderer);
+    void b.prompter.wizard!(['generator.apiKey'], { provider: null, reason: 'mode', mode: 'jev-on' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:provider:idle:mode:jev-on');
+    b.control(controls({ runLive: () => true, mode: () => 'jev-only' }));
+    void b.prompter.wizard!(['generator.apiKey'], { provider: null, reason: 'mode', mode: 'jev-off' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:provider:live:mode:jev-off');
+    // no controls yet → the default mode is jev-only (was jev-on)
+    const b2 = createTuiPrompter();
+    const f2 = fakeTui();
+    b2.attach(f2.renderer);
+    void b2.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'missing' });
+    expect(f2.lastWizard).toEqual({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false });
+    void b2.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'missing', mode: 'jev-on' });
+    expect(f2.lastWizard?.mode).toBe('jev-on');
+  });
+
+  it('finding 11: the reopen step follows `missing` — only the Jev key missing (/mode jev-only after /logout decider) reopens at the Jev key step (reason login: the reducer forces `provider` under reason mode; Ctrl-C keeps the session either way); both keys → the provider step', () => {
+    const f = fakeTui();
+    const b = createTuiPrompter();
+    b.attach(f.renderer);
+    void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'mode', mode: 'jev-only' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:idle:login:jev-only');
+    void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'mode', mode: 'jev-on' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:idle:login:jev-on');
+    void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'mode', mode: 'jev-on' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:provider:idle:mode:jev-on');
+    b.control(controls({ runLive: () => true }));
+    void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'mode', mode: 'jev-only' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:live:login:jev-only');
+  });
+
+  it('TUI-DESIGN-2 §3.7: intake() shows the card (title, body, flat rows at the prompter\'s width) and forwards the App\'s answer; no renderer or cancelAll → keep', async () => {
+    const b0 = createTuiPrompter();
+    expect(await b0.prompter.intake!('the date parsing')).toBe('keep');
+    const f = fakeTui();
+    const b = createTuiPrompter();
+    b.attach(f.renderer);
+    f.intakeAnswer = 'run';
+    expect(await b.prompter.intake!('the date parsing')).toBe('run');
+    expect(f.calls.at(-1)).toBe('promptIntake');
+    const columns = b.prompter.columns!();
+    expect(f.lastIntake).toEqual({ title: columns - 4 >= 100 ? '"the date parsing" — run this as a task?' : 'run this as a task?', body: [INTAKE_CARD_BODY], flat: columns >= 100 ? [expect.stringContaining('run this as a task?')] : columns >= 72 ? [INTAKE_ROW_MEDIUM] : [expect.stringContaining('run this as a task?')] });
+    f.intakeAnswer = 'chat';
+    expect(await b.prompter.intake!('tests?')).toBe('chat');
+    f.hang = true;
+    const pending = b.prompter.intake!('parse_date');
+    b.prompter.cancelAll!();
+    expect(await pending).toBe('keep');
   });
 
   it('secretGate: refuses without a renderer (the controller falls back to the pipe rule) and forwards the App\'s promptSecretGate answer (§10.2, §4.10)', async () => {

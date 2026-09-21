@@ -50,6 +50,7 @@ import type { AskResult,
   GitState,
   HarnessProblem,
   Intent,
+  JevCostBasis,
   JevRequestRecord,
   Json,
   JsonObject,
@@ -97,6 +98,7 @@ import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
 import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
 import { checkpointDegradedDetail, driftDetail, keyRejectedDetail } from '../tui/blocking/lines.js';
+import { EQUIVALENT_IDS, equivalentIdsRow, equivalentJevModel, jevModelMatches, normaliseModelId, sameJevWeights } from '../jev/providers.js';
 import { VERSION } from '../version.js';
 import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGitState, toRunGitMeta } from '../workspace/gitstate.js';
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
@@ -355,10 +357,6 @@ function redactDeep(v: unknown, redact: Redact): unknown {
   return out;
 }
 
-function normaliseModelId(id: string): string {
-  return id.trim().toLowerCase().replace(/^typesafe\//, '');
-}
-
 /** jev-on and jev-only consume Jev answers (intent, context, risk, judge, replan); jev-off is the generator alone (§13). */
 export function usesJev(mode: EngineMode): boolean {
   return mode !== 'jev-off';
@@ -476,6 +474,10 @@ class EngineImpl implements Engine {
   private readonly createdThisRun = new Set<string>();
   private resolvedJevModel: string | null = null;
   private jevModelDrift: { step: number; served: string } | null = null;
+  /** TUI-DESIGN-2 §2.5: the checkpoint's resolved id was re-keyed to the new provider's naming on this cross-provider resume (persisted in run()) */
+  private resolvedRekeyed = false;
+  /** TUI-DESIGN-2 §2.4: how the Jev requests of THIS process were priced (`costBlock` / `/jev` suffix); jev.jsonl holds the per-request truth */
+  private readonly jevBasisCounts = { table: 0, provider: 0 };
   private stopReason: StopReason | null = null;
   private stateError: { stage: StageName; code: string } | undefined;
   private interrupted: CheckpointState['interrupted'] = null;
@@ -640,6 +642,19 @@ class EngineImpl implements Engine {
       for (const p of s.createdThisRun) this.createdThisRun.add(p);
       this.resolvedJevModel = s.resolvedJevModel;
       this.jevModelDrift = s.jevModelDrift;
+      // TUI-DESIGN-2 §2.5: a cross-provider resume (reconcileResumeConfig's `decider.provider` override) carries the run's resolved id in
+      // the OLD naming (`typesafe/jev-1.13-20260917`); it is re-keyed to the id the new provider serves (`jev-1.13.0`, EQUIVALENT_IDS) so
+      // the first call of the resumed run is not read as drift. The override's `to` names the target (it is set even when the caller
+      // built `deciderModel` without `provider`); run() persists the re-keyed id with this resume's resumes[] entry.
+      const providerSwap = (init.opts.resumeOverrides ?? []).find((o) => o.setting === 'decider.provider');
+      if (providerSwap !== undefined && this.resolvedJevModel !== null) {
+        const target = providerSwap.to === 'typesafe' || providerSwap.to === 'openrouter' ? providerSwap.to : (init.opts.deciderModel.provider ?? 'openrouter');
+        const rekeyed = equivalentJevModel(this.resolvedJevModel, target);
+        if (rekeyed !== null) {
+          this.resolvedJevModel = rekeyed;
+          this.resolvedRekeyed = true;
+        }
+      }
       this.consecutiveStageFailures = s.consecutiveStageFailures;
       this.jevQuestions = s.jevQuestions ?? 0;
       this.synthState = s.synthState ?? null;
@@ -776,7 +791,16 @@ class EngineImpl implements Engine {
       blocked: this.blocked?.kind ?? null,
       retrying: this.retrying,
       generatorTokens: { used: this.generatorTokens, cap: this.opts.limits.maxGeneratorTokens ?? null },
+      // TUI-DESIGN-2 §2.4 / §2.6: the `/jev` line-2 suffix reads one value
+      jevCostBasis: this.jevCostBasis(),
     };
+  }
+
+  /** TUI-DESIGN-2 §2.4: `table` when every Jev request of this process was table-priced, `provider` when every one carried `usage.cost`, `mixed` otherwise; null before any. */
+  private jevCostBasis(): JevCostBasis | null {
+    const { table, provider } = this.jevBasisCounts;
+    if (table === 0 && provider === 0) return null;
+    return table > 0 && provider > 0 ? 'mixed' : table > 0 ? 'table' : 'provider';
   }
 
   snapshotState(): CheckpointState | null {
@@ -987,7 +1011,15 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §9.4: one budget:override per override the controller computed for THIS resume (EngineOptions.resumeOverrides);
     // they are appended to run.json.overrides[] below with the resumes[] entry — never re-derived from run.json
     const resumeOverrides = this.resumed ? (this.opts.resumeOverrides ?? []) : [];
-    for (const o of resumeOverrides) this.emit({ type: 'budget:override', setting: o.setting, from: o.from, to: o.to, appliesTo: 'resume', source: o.source ?? 'flag' });
+    for (const o of resumeOverrides) {
+      if (o.setting === 'decider.provider') {
+        // TUI-DESIGN-2 §2.5 / §12: `[run] decider provider changed <from> → <to> (same weights: <openrouter id> ≡ <typesafe id>)` — a
+        // config notice, not a budget item (run.json.overrides[] keeps the entry for --resume history)
+        this.emit({ type: 'notice', step: null, kind: 'config', level: 'info', text: providerChangedText(o.from, o.to, this.resolvedJevModel ?? this.opts.deciderModel.configured) });
+        continue;
+      }
+      this.emit({ type: 'budget:override', setting: o.setting, from: o.from, to: o.to, appliesTo: 'resume', source: o.source ?? 'flag' });
+    }
     // TUI-DESIGN §8.3: the seeded line names the parent and what was carried
     if (this.seeded && this.opts.seed) this.emit({ type: 'notice', step: null, kind: 'seeded', level: 'info', text: seedNoticeText(this.opts.seed, this.opts.seed.carriedDirectives ?? 0) });
     // TUI-DESIGN §10.2: the count of secrets the human sent on request (never the values)
@@ -1000,7 +1032,12 @@ class EngineImpl implements Engine {
       this.emit({ type: 'transcript', step: null, level: 'info', text: `resumed at step ${this.step + 1}` });
       // TUI-DESIGN §9.4: this resume's overrides are recorded in run.json together with its resumes[] entry
       this.persist(
-        this.store.updateMeta({ resumes: [{ resumedAt: nowIso(), previousStopReason: this.stopReason }], ...(resumeOverrides.length > 0 ? { overrides: resumeOverrides.map((o) => ({ ...o })) } : {}) }),
+        this.store.updateMeta({
+          resumes: [{ resumedAt: nowIso(), previousStopReason: this.stopReason }],
+          ...(resumeOverrides.length > 0 ? { overrides: resumeOverrides.map((o) => ({ ...o })) } : {}),
+          // TUI-DESIGN-2 §2.5: the resolved id under the new provider's naming (see the constructor)
+          ...(this.resolvedRekeyed ? { resolvedJevModel: this.resolvedJevModel } : {}),
+        }),
         CHECKPOINT_FILES.meta,
       );
       this.stopReason = null;
@@ -1208,7 +1245,58 @@ class EngineImpl implements Engine {
   // Helpers
   // -------------------------------------------------------------------------------------
 
+  /** re-entrancy guard for `emit`: events raised by a listener while one is being delivered wait until that delivery completes */
+  private emitting = false;
+  private readonly emitQueue: EngineEvent[] = [];
+
+  /**
+   * Every sink — transcript.log (written first), the log, typed listeners, `onAny` listeners — sees the events in ONE order
+   * (TUI-DESIGN §10 / §15.1 line identity). A listener that re-enters the engine while an event is being delivered (the TUI
+   * or a test calling `steer()` / `annotate()` from `on('step:end')`) would otherwise have its events delivered to the
+   * remaining listeners before they receive the event in flight, and transcript.log would disagree with the renderer's
+   * stream as soon as that event yields a line (TUI-DESIGN-2 §4.5: `step:end` does). Nested emits are queued and drained
+   * synchronously once the current dispatch finishes, so delivery stays synchronous and ordered.
+   */
   private emit(e: EngineEvent): void {
+    if (this.emitting) {
+      this.emitQueue.push(e);
+      return;
+    }
+    this.emitting = true;
+    try {
+      this.dispatch(e);
+    } finally {
+      // Drained even when the dispatch above threw: a nested event left in the queue would otherwise be delivered after the NEXT
+      // unrelated event — the very reordering the queue exists to prevent.
+      try {
+        this.drainNested();
+      } finally {
+        this.emitting = false;
+      }
+    }
+  }
+
+  /**
+   * Deliver the events queued by re-entrant listeners, in order. A nested dispatch that throws is contained the way it was when
+   * the emit ran synchronously inside the listener (createEmitter's listener guard, core/events.ts): a warn transcript line
+   * names it and the remaining queued events still go out in order.
+   */
+  private drainNested(): void {
+    while (this.emitQueue.length > 0) {
+      const next = this.emitQueue.shift()!;
+      try {
+        this.dispatch(next);
+      } catch (err) {
+        try {
+          this.dispatch({ type: 'transcript', step: null, level: 'warn', text: `nested emit failed on ${next.type}: ${err instanceof Error ? this.redact(err.message) : String(err)}` });
+        } catch {
+          /* nothing left to report to */
+        }
+      }
+    }
+  }
+
+  private dispatch(e: EngineEvent): void {
     const redacted = redactDeep(e, this.redact) as EngineEvent;
     this.recordTranscript(redacted);
     this.logEvent(redacted);
@@ -1479,7 +1567,9 @@ class EngineImpl implements Engine {
     addUsage(draft.usage.jev, usage);
     draft.timing.jevMs += res.latencyMs;
     const ids = Object.keys(questions);
-    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage, model: res.model, attempts: res.attempts };
+    // TUI-DESIGN-2 §2.4 / §6 item 6: the client's cost basis rides the record (jev.jsonl) and the run-level aggregate (`/jev`, costBlock)
+    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage, model: res.model, attempts: res.attempts, ...(res.costBasis !== undefined ? { costBasis: res.costBasis } : {}) };
+    if (res.costBasis !== undefined) this.jevBasisCounts[res.costBasis] += 1;
     draft.jevRequests.push(record);
     this.jevLatencyMs.push(res.latencyMs);
     this.emit({ type: 'jev:request', record });
@@ -1615,6 +1705,7 @@ class EngineImpl implements Engine {
     const self = this;
     const decider: Decider = {
       model: this.opts.decider.model,
+      provider: this.opts.decider.provider, // contract 1.2 (TUI-DESIGN-2 §6 item 7)
       ask: async (state, questions, o) => (await self.askRecorded(draft, o.stage, state, questions)).res,
     };
     return {
@@ -1652,14 +1743,29 @@ class EngineImpl implements Engine {
     };
   }
 
-  /** §5.4 rule 7. Returns the served id when it must be recorded on the rows, else null. */
+  /**
+   * §5.4 rule 7. Returns the served id when it must be recorded on the rows, else null. TUI-DESIGN-2 §2.5 / §6 item 8: the
+   * first call matches under the provider's naming through `jevModelMatches` (`jev-latest` → `jev-1.13.0` on TypeSafe,
+   * `jev-1.13` → `jev-1.13-20260917` on OpenRouter; a bare prefix no longer lets `jev-1.1` accept `jev-1.13-…`); `provider`
+   * defaults to openrouter so bench/cli.ts and perf/step-overhead.ts build the options untouched.
+   */
   private checkModelDrift(servedRaw: string, firstCall: boolean, step: number): string | null {
-    const cfg = normaliseModelId(this.opts.deciderModel.configured);
+    const { configured, pinned } = this.opts.deciderModel;
+    const provider = this.opts.deciderModel.provider ?? 'openrouter';
+    const cfg = normaliseModelId(configured);
     const served = normaliseModelId(servedRaw);
     let ok: boolean;
-    if (this.resolvedJevModel !== null) ok = served === normaliseModelId(this.resolvedJevModel);
-    else if (this.opts.deciderModel.pinned) ok = served === cfg;
-    else ok = served.startsWith(cfg);
+    let rekey = false;
+    if (this.resolvedJevModel !== null) {
+      ok = served === normaliseModelId(this.resolvedJevModel);
+      // TUI-DESIGN-2 §2.5: the same weights under the other naming (EQUIVALENT_IDS — a cross-provider --resume, or a router renaming the
+      // id) are not drift; the resolved id follows the served naming from here on, so later calls compare equal
+      if (!ok && sameJevWeights(this.resolvedJevModel, servedRaw)) {
+        ok = true;
+        rekey = true;
+      }
+    } else if (pinned) ok = served === cfg;
+    else ok = jevModelMatches(configured, servedRaw, provider);
     if (ok) {
       if (this.resolvedJevModel === null) {
         this.resolvedJevModel = servedRaw;
@@ -1667,6 +1773,11 @@ class EngineImpl implements Engine {
         if (!this.opts.deciderModel.pinned) {
           this.emit({ type: 'transcript', step, level: 'warn', text: `jev model alias ${this.opts.deciderModel.configured} resolved to ${servedRaw}; pin it with --jev-model ${servedRaw} for reproducible thresholds` });
         }
+      } else if (rekey || (this.resolvedRekeyed && this.resolvedJevModel !== servedRaw)) {
+        // the re-keyed table id gives way to the id actually served (verbatim, like a first call's)
+        this.resolvedJevModel = servedRaw;
+        this.resolvedRekeyed = false;
+        this.persist(this.store.updateMeta({ resolvedJevModel: servedRaw }), 'run.json');
       }
       return null;
     }
@@ -2410,7 +2521,8 @@ class EngineImpl implements Engine {
         this.noteDiskError(e, file, step);
       }
     })();
-    this.emit({ type: 'step:end', record });
+    // TUI-DESIGN-2 §6 item 3: money for the `[step N]` summary line (absent → the renderer falls back to tokens)
+    this.emit({ type: 'step:end', record, costUsd: { generator: record.usage.generator.costUsd, jev: record.usage.jev.costUsd } });
     this.emitStatus();
     this.draft = null;
     this.currentStage = 'idle';
@@ -2443,7 +2555,8 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §9.2 / §9.5: the budget:stop item precedes the stop and run:end lines (not for a refused resume, whose transcript is muted)
     if (!opts.skipWrite) this.emitBudgetStop(reason, opts.detail);
     const snapshot = this.buildCheckpointState();
-    const result = assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error });
+    // TUI-DESIGN-2 §2.4: the cost basis of this process's Jev requests rides the result for `costBlock`'s suffix
+    const result: RunResult = { ...assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error }), jevCostBasis: this.jevCostBasis() };
     const stopLine: EngineEvent = { type: 'transcript', step: null, level: reason === 'complete' ? 'info' : 'warn', text: stopTranscriptLine(reason, this.step, opts.detail) };
     let stateWritten = opts.skipWrite === true; // a refused resume leaves the stored state.json as it was
     // TUI-DESIGN §13.5 / §15 item 14: exit code, resumability and the artefact paths ride run:end; built when the final write has settled.
@@ -2687,6 +2800,15 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     lock = takeRunLock(runDir, runId);
   }
   return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift });
+}
+
+/**
+ * TUI-DESIGN-2 §2.5 / §12: `decider provider changed <from> → <to> (same weights: <openrouter id> ≡ <typesafe id>)` — the EQUIVALENT_IDS
+ * row of the run's resolved (or configured) id; the table's first row when the id is an alias (`jev-latest`).
+ */
+export function providerChangedText(from: string, to: string, id: string): string {
+  const row = equivalentIdsRow(id) ?? EQUIVALENT_IDS[0]!;
+  return `decider provider changed ${from} → ${to} (same weights: ${row[0]} ≡ ${row[1]})`;
 }
 
 /** Effective intent helper exported for tests and the TUI: the safe default of Choice resolution. */

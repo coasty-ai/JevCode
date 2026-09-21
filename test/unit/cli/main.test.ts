@@ -11,7 +11,8 @@ import { join } from 'node:path';
 import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { ResolvedConfigWithDiagnostics } from '../../../src/config/types.js';
-import { ensureWiring, firstFrameTask, modeFromFlags, readTask, selectRenderer, versionJson } from '../../../src/cli/main.js';
+import { parseCliArgs } from '../../../src/cli/args.js';
+import { ensureWiring, firstFrameTask, loginFlagsFrom, modeFromFlags, readTask, selectRenderer, versionJson } from '../../../src/cli/main.js';
 import { RESTORE, createRestoreTerminal, processRestoreTerminal, restoreTerminal, setProcessRestore } from '../../../src/tui/terminal.js';
 import { UsageError } from '../../../src/errors.js';
 import { buildProvider, defaultEngineFactory } from '../../../src/cli/session.js';
@@ -121,10 +122,33 @@ describe('readTask and versions', () => {
       w.uninstall();
     }
   });
-  it('modeFromFlags: --mode, the hidden --condition alias, default jev-on', () => {
-    expect(modeFromFlags({ command: 'run' })).toBe('jev-on');
+  it('modeFromFlags: --mode, the hidden --condition alias, default jev-only (TUI-DESIGN-2 §1.1 / §1.2: `jevcode` and `jevcode run` alone are jev-only)', () => {
+    expect(modeFromFlags({ command: 'run' })).toBe('jev-only');
+    expect(modeFromFlags({ command: 'chat' })).toBe('jev-only');
+    expect(modeFromFlags({ command: 'run', mode: 'jev-on' })).toBe('jev-on');
     expect(modeFromFlags({ command: 'run', mode: 'jev-only' })).toBe('jev-only');
     expect(modeFromFlags({ command: 'run', condition: 'jev-off' })).toBe('jev-off');
+    expect(modeFromFlags({ command: 'run', condition: 'jev-on' })).toBe('jev-on');
+    // an unknown value never reaches here (args.ts rejects it); a stray one falls back to the default, never to jev-on
+    expect(modeFromFlags({ command: 'run', mode: 'nope' })).toBe('jev-only');
+    // llm-jev (docs/LLM-JEV-DESIGN.md): the fourth mode passes through both spellings
+    expect(modeFromFlags({ command: 'run', mode: 'llm-jev' })).toBe('llm-jev');
+    expect(modeFromFlags({ command: 'chat', condition: 'llm-jev' })).toBe('llm-jev');
+  });
+  it('loginFlagsFrom: `jevcode login --jev-provider typesafe --jev-key-stdin` forwards jevProvider to commandLogin with the other login flags (TUI-DESIGN-2 §1.4)', () => {
+    expect(loginFlagsFrom(parseCliArgs(['login', '--jev-provider', 'typesafe', '--jev-key-stdin']))).toEqual({ jevProvider: 'typesafe', jevKeyStdin: true });
+    expect(loginFlagsFrom(parseCliArgs(['login', '--provider', 'anthropic', '--jev-provider', 'OpenRouter', '--generator-key-stdin', '--jev-key-stdin', '--status', '--verify', '--config', '/x/c.json']))).toEqual({
+      provider: 'anthropic',
+      jevProvider: 'openrouter',
+      generatorKeyStdin: true,
+      jevKeyStdin: true,
+      status: true,
+      verify: true,
+      config: '/x/c.json',
+    });
+    // nothing is forwarded that was not given (an absent --jev-provider stays absent, so login infers)
+    expect(loginFlagsFrom(parseCliArgs(['login']))).toEqual({});
+    expect(Object.keys(loginFlagsFrom(parseCliArgs(['login', '--jev-key-stdin'])))).toEqual(['jevKeyStdin']);
   });
 });
 
@@ -146,6 +170,22 @@ describe('jev-only preservation (§15.3)', () => {
     const m = await buildProvider(config, { command: 'run', mock: true }, 'jev-on');
     expect(m.name).toBe('mock');
     expect(generatorCalls).toBe(0);
+  });
+  it('llm-jev (docs/LLM-JEV-DESIGN.md): buildProvider constructs the REAL generator exactly as jev-on does — never the NullProvider; --mock* keep the scripted provider', async () => {
+    let generatorCalls = 0;
+    const sentinel = new Error('generator section validated');
+    const config = {
+      generator: () => {
+        generatorCalls += 1;
+        throw sentinel;
+      },
+      redact: (s: string) => s,
+    } as unknown as ResolvedConfigWithDiagnostics;
+    await expect(buildProvider(config, { command: 'run' }, 'llm-jev')).rejects.toBe(sentinel);
+    expect(generatorCalls).toBe(1);
+    const m = await buildProvider(config, { command: 'run', mockGenerator: true }, 'llm-jev');
+    expect(m.name).toBe('mock');
+    expect(generatorCalls).toBe(1);
   });
   it('the engine factory routes jev-off to the generator-only engine and everything else to createEngine (dynamic imports)', async () => {
     // a jev-only engine without a synthesizer is refused by createEngine itself — proof the real factory was reached

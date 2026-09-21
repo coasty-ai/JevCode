@@ -1,0 +1,12 @@
+# the startup splash left alone (TUI-DESIGN-2 §5.2 / §5.4): no key — the wordmark ticks at 50 ms (≤ 15 frames in 700 ms)
+# and settles by itself into the brand row `─── ◆ jevcode <version> ───`; no wordmark frame at or after the brand row's
+# frame; zero clears. The `◆ jevcode` accent span is expected as raw bytes (the brand glyph opens its own colour span).
+expect \x1b\[\?25l
+expect step 0/
+expect ◆ jevcode
+mark settled
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

@@ -9,12 +9,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createEmitter } from '../../../src/core/events.js';
 import type {
+  Answer,
   BlockingAnswer,
   CheckpointState,
   Confirmer,
+  Decider,
   Engine,
   EngineEvent,
   EngineOptions,
+  IntakeKind,
   LaunchSettings,
   PendingDirective,
   Renderer,
@@ -31,10 +34,92 @@ import { exitCodeFor } from '../../../src/loop/stop.js';
 import { nullLog } from '../../../src/core/log.js';
 import { notRepoState } from '../../../src/workspace/gitstate.js';
 import { appendIndexLine, type IndexLine } from '../../../src/session/index.js';
-import { createSessionController, sessionsIndexPath, type ControllerHost, type LoadedRun, type Prompter, type SessionController, type SessionControllerOptions, type SessionDeps } from '../../../src/cli/session.js';
+import { createSessionController, sessionsIndexPath, type ChatUiAction, type ControllerHost, type LoadedRun, type Prompter, type SessionController, type SessionControllerOptions, type SessionDeps } from '../../../src/cli/session.js';
 import { mkRunResult } from '../../fixtures/tui/fixtures.js';
 import type { UiAction } from '../../../src/tui/useEngine.js';
 import { makeMeta, makeState, spend } from '../session/helpers.js';
+import { choiceOver, createFakeDecider, noulA, type DeciderCall, type DeciderRule, type FakeDecider, type FakeDeciderOptions } from '../loop/fakes.js';
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-2 §3: the harness's Jev — a scripted fake decider for the intake (the controller's `deps.buildDecider`)
+// ---------------------------------------------------------------------------------------
+
+/** the harness's reading of a submission: greetings and questions by shape, everything else a task (the engine tests submit `one`, `go`, `fix it`) */
+export function harnessClassify(message: string): IntakeKind {
+  const m = message.trim();
+  if (/^(hi|hello|hey|thanks|thank you|bye|ok|okay|good morning|good evening)\b[!. ]*$/i.test(m)) return 'greeting_or_smalltalk';
+  if (m.endsWith('?')) return /\b(you|jevcode|jev|mode|cost|key|command|run)\b/i.test(m) ? 'question_about_this_tool' : 'question_about_the_code';
+  return 'coding_task';
+}
+
+export interface HarnessIntakeOptions {
+  /** the intake reading per message (default `harnessClassify`) */
+  classify?: (message: string) => IntakeKind;
+  /** the `intake` Choice's probability of the chosen kind (default 0.9); the paired Noul follows (0.9 chosen / 0.1 others) */
+  p?: number;
+  /** the paired Noul of the chosen kind (default 0.9) */
+  paired?: number;
+  /** the `reply` row chosen for a greeting (default hello_first) */
+  reply?: string;
+  /** `about_<key>` Nouls ≥ 0.5 for a tool question (default: mode_now, what_it_is) */
+  facts?: readonly string[];
+  /** every `file_<i>` lookup Noul (default 0.7 for the first candidate, 0.1 for the rest) */
+  fileP?: (index: number) => number;
+}
+
+function messageOf(state: unknown): string {
+  if (state === null || typeof state !== 'object' || Array.isArray(state)) return '';
+  const m = (state as Record<string, unknown>)['message'];
+  return typeof m === 'string' ? m : '';
+}
+
+/** one rule answering the intake request (groups A, B, C) and the lookup's context Nouls */
+export function harnessIntakeRule(o: HarnessIntakeOptions = {}): DeciderRule {
+  const classify = o.classify ?? harnessClassify;
+  return (ctx: DeciderCall) => {
+    const out: Partial<Record<string, Answer>> = {};
+    const intakeQ = ctx.questions['intake'];
+    if (intakeQ === undefined || intakeQ.type !== 'choice') {
+      let i = 0;
+      for (const [id, q] of Object.entries(ctx.questions)) {
+        if (!id.startsWith('file_') || q.type !== 'noul') continue;
+        out[id] = noulA(o.fileP ? o.fileP(i) : i === 0 ? 0.7 : 0.1);
+        i += 1;
+      }
+      return Object.keys(out).length > 0 ? out : undefined;
+    }
+    const kind = classify(messageOf(ctx.state));
+    out['intake'] = choiceOver(Object.keys(intakeQ.criteria), kind, o.p ?? 0.9);
+    for (const id of Object.keys(ctx.questions)) if (id.startsWith('can_')) out[id] = noulA(id === `can_${kind}` ? (o.paired ?? 0.9) : 0.1);
+    const replyQ = ctx.questions['reply'];
+    if (replyQ !== undefined && replyQ.type === 'choice') out['reply'] = choiceOver(Object.keys(replyQ.criteria), o.reply ?? 'hello_first', 0.9);
+    const facts = new Set(o.facts ?? ['mode_now', 'what_it_is']);
+    for (const id of Object.keys(ctx.questions)) if (id.startsWith('about_')) out[id] = noulA(facts.has(id.slice('about_'.length)) ? 0.8 : 0.1);
+    return out;
+  };
+}
+
+/** a decider whose `ask` calls are recorded (stage, step, state, questions) — what `Harness.decider` exposes whatever decider the test passed */
+export type TrackedDecider = Decider & { readonly calls: DeciderCall[] };
+export function trackDecider(d: Decider): TrackedDecider {
+  const calls: DeciderCall[] = [];
+  return {
+    model: d.model,
+    provider: d.provider,
+    calls,
+    ask(state, questions, o) {
+      calls.push({ stage: o.stage, step: o.step, state, questions });
+      return d.ask(state, questions, o);
+    },
+  };
+}
+
+/** the harness's default decider: `harnessIntakeRule` over a zero-cost fake (the existing money assertions of the engine tests hold); `usage`/`failAt`/`delayMs` override */
+export function harnessDecider(o: HarnessIntakeOptions & Omit<FakeDeciderOptions, 'rules'> & { rules?: DeciderRule[] } = {}): FakeDecider {
+  const { classify, p, paired, reply, facts, fileP, rules, ...rest } = o;
+  // the harness rule first: a caller's `rules` run after it and override (createFakeDecider merges rules in order)
+  return createFakeDecider({ usage: { costUsd: 0, inputTokens: 0, outputTokens: 0, calls: 1 }, ...rest, rules: [harnessIntakeRule({ ...(classify ? { classify } : {}), ...(p !== undefined ? { p } : {}), ...(paired !== undefined ? { paired } : {}), ...(reply ? { reply } : {}), ...(facts ? { facts } : {}), ...(fileP ? { fileP } : {}) }), ...(rules ?? [])] });
+}
 
 export const tick = (ms = 0): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
@@ -65,13 +150,19 @@ export interface FakeRenderer extends Renderer {
   calls: string[];
   /** every engine event forwarded through attach() */
   events: EngineEvent[];
-  /** every reducer action the controller dispatched (`thresholds`, §15 item 20) */
-  dispatched: UiAction[];
+  /** every reducer action the controller dispatched (`thresholds`, §15 item 20; TUI-DESIGN-2 §6 item 15 `thinking` / `chat-decisions` / `mode` / `toast`) */
+  dispatched: (UiAction | ChatUiAction)[];
+  /** TUI-DESIGN-2 §3.7: every `restoreDraft(text)` (Esc on the intake card) */
+  restored: string[];
+  /** TUI-DESIGN-2 §3.6: every `live(text)` of a streamed LLM turn ('' empties) */
+  liveTexts: string[];
   prompts?: Prompter;
   setHost(host: SessionHost): void;
   setUi(ui: UiConfig): void;
   notify(text: string, opts?: { level?: 'info' | 'warn' | 'error'; detail?: string; label?: UiLabel }): void;
-  dispatch(action: UiAction): void;
+  dispatch(action: UiAction | ChatUiAction): void;
+  restoreDraft(text: string): void;
+  live(text: string): void;
 }
 
 const decline: Confirmer = { identity: 'test decliner', confirm: () => Promise.resolve(false) };
@@ -86,6 +177,8 @@ export function fakeRenderer(o: { prompts?: Prompter; firstFrameDelayMs?: number
     attached: [],
     events: [],
     dispatched: [],
+    restored: [],
+    liveTexts: [],
     unmounted: 0,
     firstFrameResolved: false,
     calls: [],
@@ -118,6 +211,12 @@ export function fakeRenderer(o: { prompts?: Prompter; firstFrameDelayMs?: number
     },
     dispatch(action) {
       r.dispatched.push(action);
+    },
+    restoreDraft(text) {
+      r.restored.push(text);
+    },
+    live(text) {
+      r.liveTexts.push(text);
     },
   };
   return r;
@@ -321,13 +420,15 @@ export function scriptedEngineFactory(script: (opts: EngineOptions, n: number) =
   };
 }
 
-export const LAUNCH: LaunchSettings = { fps: 30, renderMode: 'standard', screenReader: false, ascii: false, noColor: true };
+export const LAUNCH: LaunchSettings = { fps: 30, renderMode: 'standard', screenReader: false, ascii: false, noColor: true, reducedMotion: false };
 
 export interface Harness {
   controller: SessionController;
   host: ControllerHost;
   renderer: FakeRenderer;
   factory: ScriptedFactory;
+  /** the decider the intake used, call-recording (`harnessDecider()` unless `HarnessOptions.decider` was given; an idle wrapper under `'controller'`) */
+  decider: TrackedDecider;
   home: string;
   workspace: string;
   indexPath: string;
@@ -357,17 +458,24 @@ export interface HarnessOptions {
   deps?: Partial<SessionDeps>;
   /** index lines written before the controller starts (a pre-existing session) */
   indexLines?: IndexLine[];
+  /** TUI-DESIGN-2 §3: the Jev the intake talks to (default `harnessDecider()`: tasks unless the text is a greeting or a question, zero cost); `'controller'` = the controller's own `buildDecider` (the `--mock` bridge of §3.13) */
+  decider?: Decider | 'controller';
   /** runs `loadRun` knows before the controller starts */
   loaded?: Record<string, LoadedRun>;
   options?: Partial<SessionControllerOptions>;
+  /** reuse another harness's `JEVCODE_HOME` (its sessions index, credentials) — a second controller over the same session (`-c`, TUI-DESIGN-2 §3.9) */
+  home?: string;
+  /** reuse another harness's workspace (the index rows are keyed by it) */
+  workspace?: string;
 }
 
 export async function makeController(o: HarnessOptions = {}): Promise<Harness> {
-  const home = mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
+  const home = o.home ?? mkdtempSync(join(tmpdir(), 'jevcode-cli-home-'));
   // the engine stores the workspace realpath in run.json; the harness uses it everywhere so a --resume workspace check agrees
-  const workspace = realpathSync(mkdtempSync(join(tmpdir(), 'jevcode-cli-ws-')));
-  writeFileSync(join(workspace, 'README.md'), '# ws\n');
+  const workspace = o.workspace ?? realpathSync(mkdtempSync(join(tmpdir(), 'jevcode-cli-ws-')));
+  if (o.workspace === undefined) writeFileSync(join(workspace, 'README.md'), '# ws\n');
   const factory = scriptedEngineFactory(o.script);
+  const decider: TrackedDecider = trackDecider(o.decider === 'controller' || o.decider === undefined ? harnessDecider() : o.decider);
   for (const [id, l] of Object.entries(o.loaded ?? {})) factory.loaded.set(id, l);
   const renderer = fakeRenderer({ ...(o.prompts ? { prompts: o.prompts } : {}) });
   const indexPath = sessionsIndexPath(home);
@@ -402,6 +510,7 @@ export async function makeController(o: HarnessOptions = {}): Promise<Harness> {
     },
     deps: {
       createEngine: factory.factory,
+      ...(o.decider === 'controller' ? {} : { buildDecider: async () => decider }),
       listCandidates: async () => [],
       probeGitState: async () => notRepoState('not-a-repo', { probedAt: '2026-09-20T15:00:00.000Z', probeMs: 1 }),
       loadRun: async (_runsDir, runId) => factory.loaded.get(runId) ?? null,
@@ -425,6 +534,7 @@ export async function makeController(o: HarnessOptions = {}): Promise<Harness> {
     host,
     renderer,
     factory,
+    decider,
     home,
     workspace,
     indexPath,

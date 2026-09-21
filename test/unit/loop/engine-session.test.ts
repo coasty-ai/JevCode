@@ -384,7 +384,7 @@ describe('the loop team\'s three requests', () => {
 describe('bench (§15.2 bench/conditions.ts row)', () => {
   it('buildEngineOptions passes session source bench and alwaysDecline is untouched', () => {
     const opts = buildEngineOptions(
-      { mode: 'jev-on', task: 't', workspace: '/ws', provider: createFakeProvider([read()]), decider: { model: 'm', ask: async () => ({ answers: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, latencyMs: 0, model: 'm', requestHash: 'h', attempts: 1, id: null }) }, meter: benchMeter(1) },
+      { mode: 'jev-on', task: 't', workspace: '/ws', provider: createFakeProvider([read()]), decider: { model: 'm', provider: 'openrouter', ask: async () => ({ answers: {}, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, latencyMs: 0, model: 'm', requestHash: 'h', attempts: 1, id: null }) }, meter: benchMeter(1) },
       { runsDir: '/runs', limits: { maxSteps: 1, maxWallMs: 1, maxReplans: 1, completeThreshold: 0.85, impossibleThreshold: 0.85, commandTimeoutMs: 1, maxCommandTimeoutMs: 1, maxOutputBytes: 1, spendCapUsd: 1 }, taskSpendCapUsd: 1, sandboxProfile: 'none', noNetwork: false, configRecord: {}, redact: (x: string) => x, secretPaths: [], generation: { temperature: null, maxTokens: 1 }, deciderModel: { configured: 'm', pinned: true } } as never,
     );
     expect(opts.session).toEqual({ sessionId: null, parentRunId: null, source: 'bench' });

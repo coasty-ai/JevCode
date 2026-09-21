@@ -2,6 +2,7 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import {
   BARE_NOTICE_KINDS,
+  COMPACT_HIDDEN_KINDS,
   CONFIRM_HEADER_COLUMNS,
   CONFIRM_HEADER_ROWS,
   CONFIRM_KEYS_LINE,
@@ -19,6 +20,7 @@ import {
   createReadlineConfirmer,
   formatTranscriptItem,
   headerItem,
+  isChatLabel,
   itemsFromEvent,
   localItem,
   normaliseNote,
@@ -27,6 +29,7 @@ import {
   retrySettledText,
   sanitizeStream,
   sessionHeaderItem,
+  stepSummaryText,
   type ConfirmInput,
   type NoteGate,
 } from '../../../src/tui/plain.js';
@@ -36,8 +39,11 @@ import { makeEngine, turn } from '../loop/fakes.js';
 import { budgetItems } from '../../../src/tui/budget/lines.js';
 import { gitBannerLine, headDriftWarning } from '../../../src/workspace/gitstate.js';
 import { AbortError } from '../../../src/errors.js';
-import type { EngineEvent, LaunchSettings, NoticeKind, RunGitMeta, SecretHit, SessionHost } from '../../../src/core/types.js';
+import type { EngineEvent, JudgeResult, LaunchSettings, NoticeKind, RunGitMeta, SecretHit, SessionHost } from '../../../src/core/types.js';
+import { makeProposal, makeStepRecord } from '../../fixtures/checkpoint/make.js';
 import { fakeEngine, loadRunEvents, mkConfirmRequest, tick } from '../../fixtures/tui/fixtures.js';
+// TUI-DESIGN-2 §3.7 / §6 item 11: the --plain twin of Renderer.restoreDraft
+import { intakeKeptEcho } from '../../../src/tui/plain.js';
 
 class Sink extends PassThrough {
   text = '';
@@ -201,6 +207,24 @@ describe('createPlainRenderer', () => {
     await r.unmount();
     const lines = out.text.split('\n');
     expect(lines).toEqual([plainFirstLine('t', null), '[step 1] after control-only delta', 'plain [31mred[0m text', '[step 1] after stream', '']);
+  });
+
+  it('llm-jev: only the first candidate streams — deltas with sample ≥ 1 are not written (docs/LLM-JEV-DESIGN.md §9.3); absent or 0 streams as before', async () => {
+    const out = new Sink();
+    const r = createPlainRenderer({ task: 't', resumeId: null, onAbort: () => undefined, stdout: out as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream });
+    await r.firstFrame();
+    const fe = fakeEngine();
+    r.attach(fe.engine);
+    fe.emit({ type: 'generator:start', step: 1, attempt: 1, sample: 0, samples: 3 });
+    fe.emit({ type: 'generator:delta', step: 1, text: 'first', sample: 0 });
+    fe.emit({ type: 'generator:start', step: 1, attempt: 1, sample: 1, samples: 3 });
+    fe.emit({ type: 'generator:delta', step: 1, text: ' SECOND', sample: 1 });
+    fe.emit({ type: 'generator:start', step: 1, attempt: 1, sample: 2, samples: 3 });
+    fe.emit({ type: 'generator:delta', step: 1, text: ' THIRD', sample: 2 });
+    fe.emit({ type: 'generator:delta', step: 1, text: ' legacy' });
+    fe.emit({ type: 'transcript', step: 1, level: 'info', text: 'after samples' });
+    await r.unmount();
+    expect(out.text.split('\n')).toEqual([plainFirstLine('t', null), 'first legacy', '[step 1] after samples', '']);
   });
 });
 
@@ -555,6 +579,23 @@ describe('createPlainRenderer: local items, labels, session mode, host hand-over
     workspaceCandidates: async () => [],
   });
 
+  it('TUI-DESIGN-2 §3.7 / §6 item 11: restoreDraft echoes the kept draft as one bare `(kept: …)` line through the host redactor (never an item), after ending an open stream', async () => {
+    const out = new Sink();
+    const r = createPlainRenderer({ task: 't', resumeId: null, onAbort: () => undefined, stdout: out as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream });
+    await r.firstFrame();
+    r.setHost(noHost());
+    const fe = fakeEngine();
+    r.attach(fe.engine);
+    fe.emit({ type: 'generator:delta', step: 1, text: 'partial' });
+    r.restoreDraft('the date parsing\nkey SECRETVALUE');
+    await r.unmount();
+    const lines = out.text.split('\n');
+    expect(lines).toContain('partial');
+    expect(lines).toContain('(kept: the date parsing ⏎ key [REDACTED:h])');
+    expect(intakeKeptEcho('x')).toBe('(kept: x)');
+    expect(lines.some((l) => l.startsWith('[ui]') && l.includes('kept'))).toBe(false);
+  });
+
   it('notify prints idle-time items with their label, terminating an open stream first; the TUI would print the same line', async () => {
     const out = new Sink();
     const r = createPlainRenderer({ task: 't', resumeId: null, onAbort: () => undefined, stdout: out as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream });
@@ -682,7 +723,7 @@ describe('createReadlineConfirmer: interactive (TUI-DESIGN §1 C46: --no-input /
 });
 
 describe('createPlainRenderer: the §14.1 glyph twin on stdout (--ascii)', () => {
-  const launch = (ascii: boolean): LaunchSettings => ({ fps: 30, renderMode: 'standard', screenReader: false, ascii, noColor: false });
+  const launch = (ascii: boolean): LaunchSettings => ({ fps: 30, renderMode: 'standard', screenReader: false, ascii, noColor: false, reducedMotion: false });
   const git: RunGitMeta = { repo: true, head: { kind: 'branch', name: 'main', oid: 'abcdef0123456789' }, upstream: 'origin/main', ahead: 2, behind: 1, linkedWorktree: false, prefix: '', dirtyAtStart: { modified: 3, staged: 0, untracked: 0 } };
   const ws: EngineEvent = { type: 'workspace', git, instructions: [], sandbox: 'seatbelt' };
 
@@ -882,5 +923,84 @@ describe('the three-writer identity (TUI-DESIGN §15.1, §15.3, §19.1)', () => 
     } finally {
       h.cleanup();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-2 §4.5 / §3.10 / §6 item 17 (S3): the `step` summary line and the `chat` bubbles in every sink
+// ---------------------------------------------------------------------------------------
+describe('TUI-DESIGN-2 §4.5: stepSummaryText and the `step` item (one line per step in all three sinks)', () => {
+  const risk = (r: number, verdict: 'ok' | 'review' | 'block') => ({ dims: {} as never, risk: r, verdict, reason: '' });
+  const judge = (succeeded: number, tests: JudgeResult['tests'] = null) => ({ succeeded, errorPresent: 0.1, newInfo: 0.1, tests, doneClaims: [] });
+
+  it('full form: `<action> · risk <r> <verdict> · <outcome> · tests <p>p/<f>f/<e>e · judge <p>[ · complete <c>] · <wall> · $<cost>`', () => {
+    const r = makeStepRecord(4, {
+      proposal: makeProposal({ goal: 'guard k > len', action: { kind: 'edit', path: 'kth.py', old: 'a', new: 'b' } }),
+      risk: risk(0.12, 'ok'),
+      outcome: { status: 'executed', summary: 'edited', changedFiles: ['kth.py'] },
+      judge: judge(0.89, { source: 'parsed', allPassed: true, passed: 41, failed: 0, errors: 0 }),
+      completion: 0.93,
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1234 },
+    });
+    expect(stepSummaryText(r, { generator: 0.003, jev: 0.001 })).toBe('edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests 41p/0f/0e · judge 0.89 · complete 0.93 · 1.2s · $0.004');
+    const item = itemsFromEvent({ type: 'step:end', record: r, costUsd: { generator: 0.003, jev: 0.001 } }, 5)[0]!;
+    expect(item).toMatchObject({ kind: 'step', step: 4, key: '4:step:5', level: 'info' });
+    expect(formatTranscriptItem(item)).toBe('[step 4] edit kth.py "guard k > len" · risk 0.12 ok · 1 file · tests 41p/0f/0e · judge 0.89 · complete 0.93 · 1.2s · $0.004');
+  });
+
+  it('verdict words, outcomes, the completion cut, the four-decimal cost below $0.001 and the token form without cost (jev-only `jev 1.4k`, else `gen … jev …`)', () => {
+    const base = makeStepRecord(2, { risk: risk(0.44, 'review'), outcome: { status: 'declined', reason: 'no' }, judge: judge(0.5), completion: 0.3, timing: { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 12_000 }, usage: { generator: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, jev: { inputTokens: 1300, outputTokens: 100, costUsd: 0, calls: 3 } } });
+    expect(stepSummaryText(base)).toBe('run $ pytest -q · risk 0.44 [review] · declined · judge 0.50 · 12s · jev 1.4k');
+    expect(stepSummaryText({ ...base, risk: risk(0.81, 'block'), outcome: { status: 'blocked', reason: 'x' } }, { generator: 0, jev: 0.0004 })).toBe('run $ pytest -q · risk 0.81 [block] · blocked · judge 0.50 · 12s · $0.0004');
+    expect(stepSummaryText({ ...base, outcome: { status: 'noop', summary: 'done' }, usage: { generator: { inputTokens: 5000, outputTokens: 400, costUsd: 0, calls: 1 }, jev: { inputTokens: 1300, outputTokens: 100, costUsd: 0, calls: 3 } } })).toBe('run $ pytest -q · risk 0.44 [review] · skipped · judge 0.50 · 12s · gen 5.4k jev 1.4k');
+    expect(stepSummaryText({ ...base, outcome: { status: 'executed', summary: 'ran', changedFiles: [] }, timing: { ...base.timing, totalMs: 62_000 } })).toBe('run $ pytest -q · risk 0.44 [review] · judge 0.50 · 1m2s · jev 1.4k');
+    // the completion clause follows the threshold (default 0.85; overridable)
+    expect(stepSummaryText({ ...base, completion: 0.86 })).toContain(' · complete 0.86 · ');
+    expect(stepSummaryText({ ...base, completion: 0.86 }, undefined, { completeThreshold: 0.9 })).not.toContain('complete');
+    // action target ≤ 40 cells, goal only for edit/write/patch and ≤ 32 chars, `done <summary>`
+    const long = makeStepRecord(1, { proposal: makeProposal({ goal: 'g'.repeat(80), action: { kind: 'write', path: `${'p'.repeat(60)}.py`, content: '' } }), risk: null, outcome: null, judge: null });
+    const text = stepSummaryText(long);
+    expect(text.startsWith(`write ${'p'.repeat(39)}… "${'g'.repeat(31)}…" · `)).toBe(true);
+    expect(stepSummaryText(makeStepRecord(1, { proposal: makeProposal({ goal: 'finish', action: { kind: 'done', summary: 'all tests pass now' } }), risk: null, outcome: { status: 'noop', summary: 'done' }, judge: null }))).toBe('done all tests pass now · skipped · 0.0s · jev 0');
+    expect(stepSummaryText(makeStepRecord(1, { proposal: makeProposal({ action: { kind: 'read', paths: ['tests/test_kth.py', 'kth.py'] } }), risk: null, outcome: null, judge: null }))).toBe('read tests/test_kth.py, kth.py · 0.0s · jev 0');
+    expect(stepSummaryText(makeStepRecord(1, { proposal: null, intent: 'edit', risk: null, outcome: null, judge: null }))).toBe('edit (no proposal) · 0.0s · jev 0');
+  });
+
+  it('an interrupted step reads `interrupted at <stage> (<reason>)`', () => {
+    const r = makeStepRecord(3, { interruptedAt: { stage: 'intent', reason: 'human_abort' } });
+    expect(stepSummaryText(r)).toBe('interrupted at intent (human_abort)');
+    expect(formatTranscriptItem(itemsFromEvent({ type: 'step:end', record: r }, 0)[0]!)).toBe('[step 3] interrupted at intent (human_abort)');
+  });
+
+  it('the compact filter set names the stage kinds and run:ready; `step`, `chat`, `run:start`, `run:end` stay visible', () => {
+    for (const k of ['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready'] as const) expect(COMPACT_HIDDEN_KINDS.has(k), k).toBe(true);
+    for (const k of ['step', 'chat', 'run:start', 'run:end', 'confirm:resolved', 'error', 'ui', 'notice', 'budget'] as const) expect(COMPACT_HIDDEN_KINDS.has(k), k).toBe(false);
+  });
+});
+
+describe('TUI-DESIGN-2 §3.10: [you] / [jevcode] items are kind `chat` in every sink', () => {
+  it('localItem with a bubble label → kind chat; other labels stay ui; formatTranscriptItem prints `[you] hi`', () => {
+    const you = localItem('hi', 0, { label: '[you]' });
+    expect(you).toMatchObject({ kind: 'chat', local: true, label: '[you]', key: 'local:[you]:0' });
+    expect(formatTranscriptItem(you)).toBe('[you] hi');
+    expect(localItem("Hi. I'm ready when you are", 1, { label: '[jevcode]' })).toMatchObject({ kind: 'chat', label: '[jevcode]' });
+    expect(localItem('x', 2, { label: '[config]' }).kind).toBe('ui');
+    expect(localItem('x', 3).kind).toBe('ui');
+    expect(isChatLabel('[you]') && isChatLabel('[jevcode]') && !isChatLabel('[ui]') && !isChatLabel(undefined)).toBe(true);
+  });
+
+  it('a live annotate() with a bubble label is a chat item too; the plain renderer prints the same row for an idle bubble', async () => {
+    const live = itemsFromEvent({ type: 'notice', step: null, kind: 'ui', level: 'info', text: 'hi', label: '[you]' }, 4)[0]!;
+    expect(live).toMatchObject({ kind: 'chat', label: '[you]', key: 'run:chat:4' });
+    expect(formatTranscriptItem(live)).toBe('[you] hi');
+    const out = new Sink();
+    const r = createPlainRenderer({ task: 'chat', resumeId: null, onAbort: () => undefined, stdout: out as unknown as NodeJS.WriteStream, stdin: new PassThrough() as unknown as NodeJS.ReadStream });
+    await r.firstFrame();
+    r.notify('hi', { label: '[you]' });
+    r.notify("Hi. I'm ready when you are — describe a change you want in proj, or ask what I can do.", { label: '[jevcode]' });
+    await r.unmount();
+    const lines = out.text.split('\n');
+    expect(lines).toContain('[you] hi');
+    expect(lines).toContain("[jevcode] Hi. I'm ready when you are — describe a change you want in proj, or ask what I can do.");
   });
 });

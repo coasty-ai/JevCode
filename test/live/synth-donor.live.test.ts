@@ -11,6 +11,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { Json, Question, StageName } from '../../src/core/types.js';
 import { createJevDecider } from '../../src/jev/client.js';
+import { JEV_PROVIDERS } from '../../src/jev/providers.js';
 import { fillHolesSequentially, identifierHoles } from '../../src/synth/donor/holes.js';
 import type { HoleContext } from '../../src/synth/donor/holes.js';
 import { analyse, blockAt, scopeAt } from '../../src/synth/py/structure.js';
@@ -23,7 +24,7 @@ const reason = !live ? 'JEVCODE_LIVE is not 1' : apiKey.length === 0 ? 'no OPENR
 describe.skipIf(reason !== null)(`donor hole filling live (${reason ?? 'enabled'})`, () => {
   it('fills the changed identifier of bucketsort with counts in the top-2', async () => {
     const redact = (s: string): string => (apiKey.length >= 8 ? s.split(apiKey).join('[REDACTED:key]') : s);
-    const decider = createJevDecider({ baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey, model: 'typesafe/jev-1.13-20260917', pinned: true }, { redact });
+    const decider = createJevDecider({ provider: 'openrouter', baseUrl: 'https://openrouter.ai/api/alpha/decisions', apiKey, model: 'typesafe/jev-1.13-20260917', pinned: true, pricing: JEV_PROVIDERS.openrouter.pricing, providerSource: 'default' }, { redact });
     const src = readFileSync(join(process.cwd(), 'bench', 'data', 'quixbugs', 'programs', 'bucketsort.py'), 'utf8');
     const file: SourceFile = { path: 'bucketsort.py', src, mod: analyse(src) };
     const line = file.mod.lines.findIndex((l) => l.includes('enumerate(arr)')) + 1;

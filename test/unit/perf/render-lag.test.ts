@@ -1,11 +1,14 @@
 /**
  * `src/perf/render-lag.ts` pure parts: the child's `LAG_JSON` parser, the probe-floor calibration (`baselineFrom`,
  * `netLagP95`, `lagVerdict`: the gate is on the p95 net of the floor's median, raw when the floor is unusable, max
- * always raw) and the geometry label; plus a real run of the baseline probe source itself.
+ * always raw), the geometry label and the splash bucket (TUI-DESIGN-2 §9: `dynamic` frames within 700 ms of the first
+ * frame, the other classes reported, the window clipped at the first send, the gate ⌈(maxFps + 1) × 0.7⌉); plus a real
+ * run of the baseline probe source itself.
  */
 import { describe, expect, it } from 'vitest';
-import { BASELINE_SECONDS, LAG_MAX_MS, LAG_P95_MS, LAG_PROBE_SOURCE, baselineFrom, describeGeometry, lagVerdict, measureLagBaseline, netLagP95, parseLag, type LagBaseline } from '../../../src/perf/render-lag.js';
+import { BASELINE_SECONDS, LAG_MAX_MS, LAG_P95_MS, LAG_PROBE_SOURCE, SPLASH_MS, SPLASH_SETTLE_MS, baselineFrom, describeGeometry, lagVerdict, measureLagBaseline, netLagP95, parseLag, splashBucket, splashGateFor, type LagBaseline } from '../../../src/perf/render-lag.js';
 import type { LagGeometry } from '../../../src/perf/render-lag.js';
+import { BSU, ESU, classifyFrames, splitFrames, type Chunk } from '../../../src/perf/pty.js';
 
 const floor: LagBaseline = { seconds: 17, samples: 1300, p50: 1.83, p95: 2.08, max: 2.71, ok: true };
 const noisy: LagBaseline = { seconds: 17, samples: 1300, p50: 4.1, p95: 6.2, max: 9, ok: false };
@@ -41,6 +44,45 @@ describe('netLagP95 / lagVerdict', () => {
     expect(describeGeometry(g)).toBe('rows 40');
     expect(describeGeometry({ ...g, reducedMotion: true })).toBe('rows 40 reduced motion');
     expect(describeGeometry({ ...g, profile: 'stress' })).toBe('rows 40 stress');
+  });
+});
+
+describe('splashBucket (TUI-DESIGN-2 §5.3 / §9 "dynamic fps")', () => {
+  const fr = (rows: readonly string[]): string => `${BSU}\x1b[?25l${rows.join('\r\n')}\r\n\x1b[?25h${ESU}`;
+  const wm = ['──', '  ██ ▓▒░', '╭─ jev-only ─╮', '│ › x │', '├──┤', '│ idle │', '╰──╯'];
+  const settled = ['─── ◆ jevcode 0.2.0 ──', '╭─ jev-only ─╮', '│ › x │', '├──┤', '│ idle │', '╰──╯'];
+  it('counts every frame within 700 ms of the first dynamic frame as dynamic when no classes are given, the wordmark frames among them, and whether the first frame carried the wordmark', () => {
+    const cap = fr(wm) + fr(wm) + fr(settled) + fr(settled) + fr(settled);
+    const { frames } = splitFrames(cap);
+    const chunks: Chunk[] = frames.map((f, i) => ({ t: [100, 150, 700, 800, 1500][i]!, off: f.start, n: f.end - f.start }));
+    expect(SPLASH_MS).toBe(700);
+    expect(splashBucket(frames, chunks, 0)).toEqual({ frames: 4, staticFrames: 0, keyFrames: 0, wordmarkFrames: 2, inFirstFrame: true, windowMs: 700 });
+    expect(splashBucket(frames, chunks, 2)).toEqual({ frames: 2, staticFrames: 0, keyFrames: 0, wordmarkFrames: 0, inFirstFrame: false, windowMs: 700 });
+    expect(splashBucket(frames, chunks, 0, { windowMs: 100 })).toEqual({ frames: 2, staticFrames: 0, keyFrames: 0, wordmarkFrames: 2, inFirstFrame: true, windowMs: 100 });
+    expect(splashBucket(frames, chunks, 9)).toEqual({ frames: 0, staticFrames: 0, keyFrames: 0, wordmarkFrames: 0, inFirstFrame: false, windowMs: 700 });
+    // no chunk time for the first frame: nothing can be bucketed, the wordmark check still reads the frame
+    expect(splashBucket(frames, [], 0)).toEqual({ frames: 0, staticFrames: 0, keyFrames: 0, wordmarkFrames: 0, inFirstFrame: true, windowMs: 700 });
+  });
+  it('counts only the `dynamic` class as splash frames: a typing (key) frame and a Static-carrying frame inside the window are reported apart, never gated', () => {
+    const typed = ['──', '  ██ ▓▒░', '╭─ jev-only ─╮', '│ › xh │', '├──┤', '│ idle │', '╰──╯'];
+    const bubble = ['[you] hi', '─── ◆ jevcode 0.2.0 ──', '╭─ jev-only ─╮', '│ › x │', '├──┤', '│ idle │', '╰──╯'];
+    const cap = fr(wm) + fr(wm) + fr(typed) + fr(bubble) + fr(settled) + fr(settled);
+    const { frames } = splitFrames(cap);
+    const chunks: Chunk[] = frames.map((f, i) => ({ t: [100, 150, 210, 400, 650, 1500][i]!, off: f.start, n: f.end - f.start }));
+    // a key sent at 200 ms: the 210 ms frame is its leading-edge render (`key`); the bubble frame carries a new Static row (`static`)
+    const classes = classifyFrames(frames, chunks, [200], 34);
+    expect(classes).toEqual(['dynamic', 'dynamic', 'key', 'static', 'dynamic', 'dynamic']);
+    expect(splashBucket(frames, chunks, 0, { classes })).toEqual({ frames: 3, staticFrames: 1, keyFrames: 1, wordmarkFrames: 3, inFirstFrame: true, windowMs: 700 });
+    // the window ends at the first send when that came earlier than 700 ms after the first frame: the key can never be a splash frame
+    expect(splashBucket(frames, chunks, 0, { classes, firstSendAt: 200 })).toEqual({ frames: 2, staticFrames: 0, keyFrames: 0, wordmarkFrames: 2, inFirstFrame: true, windowMs: 100 });
+    // a send after the window leaves it whole
+    expect(splashBucket(frames, chunks, 0, { classes, firstSendAt: 900 }).windowMs).toBe(700);
+  });
+  it('splashGateFor is the dynamic-fps gate over the window: ⌈(maxFps + 1) × window / 1000⌉ — 22 at 30 fps over 700 ms, 15 at 20 fps, 4 over a 100 ms window', () => {
+    expect(splashGateFor(30)).toBe(22);
+    expect(splashGateFor(20)).toBe(15);
+    expect(splashGateFor(30, 100)).toBe(4);
+    expect(SPLASH_SETTLE_MS).toBeGreaterThan(SPLASH_MS);
   });
 });
 

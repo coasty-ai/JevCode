@@ -1,0 +1,8 @@
+# a bare `jevcode` with no key anywhere (no --mock, every key variable unset, an empty HOME/XDG): the jev-only first-run
+# wizard asks for the Jev provider and key only — never the generator; Ctrl-C at startup prints the fix block and exits 2
+# (TUI-DESIGN-2 §1.1, §1.4)
+expect \x1b\[\?25l
+expect Where do you reach Jev
+sleep 0.4
+send \x03
+eof

@@ -22,6 +22,20 @@ export const DERIVATIONS: Readonly<Record<string, string>> = {
   'generator.priceCacheWritePerM': `default: ${CACHE_WRITE_FACTOR} × generator.priceInPerM`,
 };
 
+/**
+ * TUI-DESIGN-2 §2.6: the `decider.provider` row's source column when resolveConfig derived it (`derived (auto: TYPESAFE_API_KEY is
+ * set)`), keyed by the `decider.providerSource` record row that `--json` keeps and the table folds away.
+ */
+export const PROVIDER_DERIVATIONS: Readonly<Record<string, string>> = {
+  'auto:typesafe-key': 'auto: TYPESAFE_API_KEY is set',
+  'auto:openrouter-key': 'auto: JEV_API_KEY or OPENROUTER_API_KEY is set',
+  'auto:base-url': 'auto: decider.baseUrl names it',
+};
+
+/** TUI-DESIGN-2 §2.6: the rows whose defaults are provider-keyed print `default (<provider>)`. */
+const PROVIDER_KEYED_DEFAULTS: ReadonlySet<string> = new Set(['decider.baseUrl', 'decider.model']);
+const PROVIDER_SOURCE_ROW = 'decider.providerSource';
+
 /** Money settings print as `$10.000` in the table (three decimals like every item); `none`/`Infinity` stay words. */
 const USD_SETTINGS: ReadonlySet<string> = new Set(['session.spendCapUsd', 'limits.spendCapUsd']);
 
@@ -54,8 +68,19 @@ export function configTableRows(record: Readonly<Record<string, ConfigRecordValu
   const entries = Object.entries(record);
   const ignored = new Map<string, ConfigTableRow>();
   const main: ConfigTableRow[] = [];
+  // TUI-DESIGN-2 §2.6: `decider.providerSource` is folded into the provider row's source column; provider-keyed defaults name the provider
+  const providerSourceV = record[PROVIDER_SOURCE_ROW]?.value;
+  const providerSource = typeof providerSourceV === 'string' ? providerSourceV : null;
+  // an older or hand-edited record may carry any text in the row: only a known provider labels the provider-keyed defaults
+  const providerV = record['decider.provider']?.value;
+  const provider = providerV === 'typesafe' || providerV === 'openrouter' ? providerV : null;
   for (const [setting, v] of entries) {
-    const row: ConfigTableRow = { setting, value: configValueText(setting, v), source: v.source };
+    if (setting === PROVIDER_SOURCE_ROW) continue;
+    // the provider row's derivation lives in the source column (§2.6), so its value stays the bare provider name
+    const value = setting === 'decider.provider' && typeof v.value === 'string' ? v.value : configValueText(setting, v);
+    const row: ConfigTableRow = { setting, value, source: v.source };
+    if (setting === 'decider.provider' && v.source === 'derived' && providerSource !== null) row.source = `derived (${PROVIDER_DERIVATIONS[providerSource] ?? providerSource})`;
+    if (PROVIDER_KEYED_DEFAULTS.has(setting) && v.source === 'default' && provider !== null) row.source = `default (${provider})`;
     if (v.source === 'ignored:launch' && setting.endsWith('.ignored')) ignored.set(setting.slice(0, -'.ignored'.length), row);
     else main.push(row);
   }

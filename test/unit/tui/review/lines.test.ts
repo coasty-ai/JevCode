@@ -241,11 +241,11 @@ describe('followupLines (§9.3 box, §24 "Overlays")', () => {
   it('renders the F-P box at 5 rows × 80 columns', () => {
     const box = followupLines(input, 5, 80);
     expect(box).toEqual([
-      '┌ follow-up would exceed the session cap ──────────────────────────────────────┐',
+      '╭ follow-up would exceed the session cap ──────────────────────────────────────╮',
       '│ [y] start, run cap clamped to $0.42   [r] raise session cap   [n]/Esc cancel │',
       '│ session $9.58 of $10.00 (5 runs) · run cap $2.00 · last run $0.71            │',
       '│ Enter does nothing here. A clamped run stops at the session cap (spend_cap). │',
-      '└──────────────────────────────────────────────────────────────────────────────┘',
+      '╰──────────────────────────────────────────────────────────────────────────────╯',
     ]);
     for (const l of box) expect(cellWidth(l)).toBe(80);
   });
@@ -263,11 +263,11 @@ describe('followupLines (§9.3 box, §24 "Overlays")', () => {
     const narrow = followupLines(input, 5, 19);
     expect(narrow.length).toBe(4);
     expect(narrow[0]).toBe('follow-up would ex…');
-    expect(narrow.some((l) => l.includes('┌') || l.includes('│') || l.includes('└'))).toBe(false);
+    expect(narrow.some((l) => l.includes('╭') || l.includes('│') || l.includes('╰'))).toBe(false);
     for (const l of narrow) expect(cellWidth(l)).toBeLessThanOrEqual(19);
     const framed = followupLines(input, 5, 20);
     expect(framed.length).toBe(5);
-    expect(framed[0]!.startsWith('┌')).toBe(true);
+    expect(framed[0]!.startsWith('╭')).toBe(true);
     for (const l of framed) expect(cellWidth(l)).toBe(20);
     for (const l of followupLines(input, 5, 1)) expect(cellWidth(l)).toBeLessThanOrEqual(1);
   });

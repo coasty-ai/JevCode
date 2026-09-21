@@ -54,13 +54,24 @@
  * at exit; the painted dynamic region never above rows − 2 (`pty.ts` `paintedRows`, on every frame); the child exits 0.
  * The stress row applies the hygiene items only.
  *
+ * Splash bucket (TUI-DESIGN-2 §5.3, §9 "dynamic fps": `framesPerSecondByClass(frames, …, 0, SPLASH_MS)`): the ≤ 700 ms
+ * startup splash ticks through Ink's `useAnimation` at a 50 ms interval, so the `dynamic` frames (the class the fps gate
+ * governs, `pty.ts` `classifyFrame`) arriving within `SPLASH_MS` of the first dynamic frame are counted per geometry
+ * (`splashFrames`; the `static` and `key` frames of the same window are reported beside it, `splashWordmarkFrames` of
+ * any class carry wordmark cells) and gated at `⌈(maxFps + 1) · SPLASH_MS / 1000⌉` — the typing-window gate expressed
+ * over the window's length (22 frames at 30 fps; the splash itself is ≤ 15 by construction). The typist leaves the
+ * splash alone: its first key comes ≥ 800 ms after the first frame (`SPLASH_SETTLE_MS`), so the window holds the splash
+ * settling by itself plus the idle clock; should a `send` land earlier, the window ends there (`splashWindowMs`).
+ * The reduced-motion geometry mounts settled (no wordmark rows, §5.3) and rows 12 is the flat tier (no wordmark, §4.1);
+ * both still count their frames.
+ *
  * `renderTime` (Ink's `onRender` metric) is not measured: the App registers no `onRender` callback (`src/tui/**`).
  */
 import { spawn } from 'node:child_process';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { END_PATTERN, NO_FPS, classCounts, classifyFrames, clearReSelfTest, clearsAfter, cursorStats, firstDynamicFrameOffset, frameAt, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, safeKey, sendTimes, splitFrames, staticRows, summarise, throttleMs, typist, type FrameClassCounts, type LatencySummary, type TypistStep } from './pty.js';
+import { END_PATTERN, NO_FPS, RUN_STARTED_PATTERN, classCounts, classifyFrames, clearReSelfTest, clearsAfter, cursorStats, firstDynamicFrameOffset, frameAt, frameTime, framesPerSecondByClass, keyLatencies, keystrokeSteps, maxStepSeen, paintedMax, safeKey, sendTimes, splitFrames, staticRows, summarise, throttleMs, typist, wordmarkCells, type Chunk, type Frame, type FrameClass, type FrameClassCounts, type LatencySummary, type TypistStep } from './pty.js';
 
 export { CLEAR_RE, clearReSelfTest } from './pty.js';
 
@@ -99,6 +110,22 @@ export interface LagGeometry {
   /** the frame-rate gate (maxFps + 1), applied to `fpsDynamicMax` */
   fpsGate: number;
   fpsOk: boolean;
+  /** `dynamic` frames that arrived within `splashWindowMs` of the first dynamic frame (TUI-DESIGN-2 §5.2: ≤ 15 by construction at 50 ms) — the gated count */
+  splashFrames: number;
+  /** `static` frames of the same window (new `<Static>` rows: the header repeat, a `[you]` bubble …), reported */
+  splashStaticFrames: number;
+  /** `key` frames of the same window (a keystroke's leading-edge render), reported; 0 when the typist waited for the settle */
+  splashKeyFrames: number;
+  /** frames of any class in the window carrying wordmark cells (0 in the flat tier and under reduced motion) */
+  splashWordmarkFrames: number;
+  /** the window actually counted: `SPLASH_MS`, or shorter when the typist's first `send` came earlier */
+  splashWindowMs: number;
+  /** the first frame carried wordmark cells — splash frame 0 is the first frame (§5.2 row 0); false where no wordmark is drawn */
+  splashInFirstFrame: boolean;
+  /** `⌈(maxFps + 1) · splashWindowMs / 1000⌉` — the fps gate over the window's length */
+  splashGate: number;
+  /** `splashFrames ≤ splashGate` (gated where `gated`) */
+  splashOk: boolean;
   /** frames of the whole capture per class */
   frameClasses: FrameClassCounts;
   /** tallest dynamic region painted after the first frame */
@@ -149,6 +176,55 @@ export const LAG_MAX_MS = 50;
 /** §18: the realistic mocked step rate the gates apply to (about 5 steps/s; real steps take 2–10 s) */
 export const REALISTIC_STEP_MS = 200;
 export const STRESS_STEP_MS = 0;
+/** TUI-DESIGN-2 §5.1 `SPLASH_MS`: the splash window measured from the first dynamic frame */
+export const SPLASH_MS = 700;
+/** the typist's pause after the placeholder before its first key: past `SPLASH_MS`, so the splash settles by itself (§5.2) and the splash bucket holds no typing */
+export const SPLASH_SETTLE_MS = 800;
+
+export interface SplashBucket {
+  /** `dynamic` frames in the window (frames without a class count as dynamic) */
+  frames: number;
+  staticFrames: number;
+  keyFrames: number;
+  /** frames of any class in the window carrying wordmark cells */
+  wordmarkFrames: number;
+  inFirstFrame: boolean;
+  /** the window counted: `windowMs`, or `firstSendAt − t0` when the first send came earlier */
+  windowMs: number;
+}
+
+/** `⌈(maxFps + 1) · windowMs / 1000⌉`: the dynamic-fps gate expressed over a window of `windowMs` (22 at 30 fps over 700 ms) */
+export function splashGateFor(maxFps: number, windowMs: number = SPLASH_MS): number {
+  return Math.ceil(((maxFps + 1) * windowMs) / 1000);
+}
+
+/**
+ * The frames that arrived within `windowMs` of the first dynamic frame (`firstIdx`), timed by the chunk that completed
+ * each and counted per class (`classes[i]` for frame `i`, `pty.ts` `classifyFrames`; a missing class is `dynamic`). The
+ * window ends at the typist's first `send` when that came earlier (`firstSendAt`, driver clock), so a key can never be
+ * counted as a splash frame.
+ */
+export function splashBucket(frames: readonly Frame[], chunks: readonly Chunk[], firstIdx: number, opts: { classes?: readonly FrameClass[]; firstSendAt?: number | null; windowMs?: number } = {}): SplashBucket {
+  const want = opts.windowMs ?? SPLASH_MS;
+  const first = frames[firstIdx];
+  if (first === undefined) return { frames: 0, staticFrames: 0, keyFrames: 0, wordmarkFrames: 0, inFirstFrame: false, windowMs: want };
+  const inFirstFrame = wordmarkCells(first.body) > 0;
+  const t0 = frameTime(first, chunks);
+  if (t0 === null) return { frames: 0, staticFrames: 0, keyFrames: 0, wordmarkFrames: 0, inFirstFrame, windowMs: want };
+  const sendAt = opts.firstSendAt ?? null;
+  const windowMs = sendAt !== null && sendAt - t0 < want ? Math.max(0, sendAt - t0) : want;
+  const out: SplashBucket = { frames: 0, staticFrames: 0, keyFrames: 0, wordmarkFrames: 0, inFirstFrame, windowMs };
+  for (let i = firstIdx; i < frames.length; i++) {
+    const t = frameTime(frames[i]!, chunks);
+    if (t === null || t - t0 > windowMs) continue;
+    const cls = opts.classes?.[i] ?? 'dynamic';
+    if (cls === 'static') out.staticFrames += 1;
+    else if (cls === 'key') out.keyFrames += 1;
+    else out.frames += 1;
+    if (wordmarkCells(frames[i]!.body) > 0) out.wordmarkFrames += 1;
+  }
+  return out;
+}
 
 interface LagJson {
   p50: number | null;
@@ -248,12 +324,13 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
   try {
     const steps: TypistStep[] = [
       { op: 'expect', pattern: '\\x1b\\[\\?25l', timeoutMs: 20_000 },
-      { op: 'expect', pattern: 'Describe the task', timeoutMs: 20_000 },
-      { op: 'sleep', ms: 300 },
+      { op: 'expect', pattern: 'Say hi', timeoutMs: 20_000 },
+      // the splash settles by itself before the first key (TUI-DESIGN-2 §5.2; the splash bucket then holds no typing)
+      { op: 'sleep', ms: SPLASH_SETTLE_MS },
       { op: 'send', text: 'start the perf run' },
       { op: 'sleep', ms: 200 },
       { op: 'send', text: '\r' },
-      { op: 'expect', pattern: 'ready', timeoutMs: 20_000 },
+      { op: 'expect', pattern: RUN_STARTED_PATTERN, timeoutMs: 20_000 },
       { op: 'sleep', ms: 200 },
     ];
     const measured = new Set<number>();
@@ -265,13 +342,14 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
       steps.push(...keystrokeSteps(key, KEY_SPACING_MS));
     }
     // Ctrl-C with a draft clears it; a second Ctrl-C on the empty live composer aborts the run (§3.3 S2); then /exit so LAG_JSON is printed
-    steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, { op: 'expect', pattern: 'Follow-up or /command', timeoutMs: 20_000 }, { op: 'send', text: '/exit' }, { op: 'sleep', ms: 200 }, { op: 'send', text: '\r' }, { op: 'eof', timeoutMs: 20_000 });
+    steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, { op: 'expect', pattern: 'Follow-up, question', timeoutMs: 20_000 }, { op: 'send', text: '/exit' }, { op: 'sleep', ms: 200 }, { op: 'send', text: '\r' }, { op: 'eof', timeoutMs: 20_000 });
+    // `--mode jev-on`: the scripted `--mock` trajectory is a generator trajectory; under the round-2 default `jev-only` the real synthesizer would run (TUI-DESIGN-2 §1.1)
     const r = await typist({
       root,
       rows,
       columns: COLUMNS,
       steps,
-      command: [process.execPath, bin, 'chat', '--mock', '--mock-steps', String(mockSteps), '--max-steps', String(mockSteps), '--max-replans', '100000', '--source', 'perf', '--perf-lag-probe', '--workspace', ws, ...(reducedMotion ? ['--no-animation'] : [])],
+      command: [process.execPath, bin, 'chat', '--mode', 'jev-on', '--mock', '--mock-steps', String(mockSteps), '--max-steps', String(mockSteps), '--max-replans', '100000', '--source', 'perf', '--perf-lag-probe', '--workspace', ws, ...(reducedMotion ? ['--no-animation'] : [])],
       env: { JEVCODE_HOME: home, NODE_ENV: 'production', JEVCODE_MOCK_STEP_MS: String(stepMs) },
       wallMs: 300_000,
       label: `render-lag-${rows}x${COLUMNS}${reducedMotion ? '-reduced' : ''}-${profile}`,
@@ -309,10 +387,14 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
     const keysWhileLive = endAt < 0 ? lat.length : lat.filter((l) => frames[l.frameIndex]!.start < endAt).length;
     const fpsGate = maxFps + 1;
     const fpsOk = fps.dynamic.max !== null && fps.dynamic.max <= fpsGate;
+    const sends = sendTimes(r.timing);
+    const splash = splashBucket(frames, r.chunks, firstIdx, { classes, firstSendAt: sends[0] ?? null });
+    const splashGate = splashGateFor(maxFps, splash.windowMs);
+    const splashOk = splash.frames <= splashGate;
     const verdict = lagVerdict(lag, baseline);
     const lagOk = verdict.ok;
     const hygieneOk = clears === 0 && cursor.hidesMaxPerFrame <= 1 && cursor.framesWithoutShow === 0 && cursor.shownAtEnd && regionMax <= rows - 2 && r.code === 0 && !r.timedOut;
-    const pass = hygieneOk && (!gated || (lagOk && fpsOk));
+    const pass = hygieneOk && (!gated || (lagOk && fpsOk && splashOk));
     return {
       rows,
       columns: COLUMNS,
@@ -336,6 +418,14 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
       throttleMs: throttle,
       fpsGate,
       fpsOk,
+      splashFrames: splash.frames,
+      splashStaticFrames: splash.staticFrames,
+      splashKeyFrames: splash.keyFrames,
+      splashWordmarkFrames: splash.wordmarkFrames,
+      splashWindowMs: splash.windowMs,
+      splashInFirstFrame: splash.inFirstFrame,
+      splashGate,
+      splashOk,
       frameClasses: classCounts(classes),
       regionMax,
       cursorHidesMaxPerFrame: cursor.hidesMaxPerFrame,
@@ -359,7 +449,7 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
 }
 
 export const RENDER_LAG_DEVIATIONS: readonly string[] = [
-  'the lag distribution covers the whole session after the 500 ms warm-up (≈ 0.4 s of idle prologue and ≈ 1 s of abort/exit tail around ≈ 15 s of typing): the child probe emits percentiles only, so it cannot be windowed to [first key, last key] from here',
+  'the lag distribution covers the whole session after the 500 ms warm-up (≈ 0.9 s of idle prologue while the splash settles, ≈ 1 s of abort/exit tail, around ≈ 15 s of typing): the child probe emits percentiles only, so it cannot be windowed to [first key, last key] from here',
   `the gated load profile is the --mock run paced by JEVCODE_MOCK_STEP_MS=${REALISTIC_STEP_MS} (about 5 steps/s, one delta per turn), not §18's "500 delta/s mock"; the zero-latency stress profile is reported alongside`,
   'the frame-rate gate applies to dynamic frames only: Ink renders <Static> changes immediately (reconciler.js isStaticDirty → onImmediateRender) and a keystroke on the throttle\'s leading edge, so static and key frames are reported, not gated',
   'reduced motion is gated at dynamic ≤ maxFps + 1 like the other geometries: §18\'s "≤ 4/s" is the 250 ms live-flush cadence, which a live run cannot separate from state-change repaints',
@@ -377,7 +467,7 @@ export async function measureRenderLag(opts: { root: string; bin: string; steps?
   const mockSteps = opts.steps ?? 3000;
   const realisticStepMs = opts.stepMs ?? REALISTIC_STEP_MS;
   const line = (g: LagGeometry): string =>
-    `render lag ${describeGeometry(g)} (step ${g.stepMs} ms${g.gated ? '' : ', lag/fps reported only'}): lag p50 ${g.lagP50?.toFixed(2)} p95 ${g.lagP95?.toFixed(2)} (net ${g.lagNetP95?.toFixed(2)}) max ${g.lagMax?.toFixed(2)} ms (${g.samples} samples${g.lagOk ? '' : '; OVER'}), clears ${g.clears}, frames ${g.frames} (${g.frameClasses.static} static, ${g.frameClasses.key} key, ${g.frameClasses.dynamic} dynamic), fps max ${g.fpsMax?.toFixed(0)} mean ${g.fpsMean?.toFixed(1)} (static ${g.fpsStaticMax?.toFixed(0)}, key ${g.fpsKeyMax?.toFixed(0)}, dynamic ${g.fpsDynamicMax?.toFixed(0)}; gate dynamic ≤ ${g.fpsGate}${g.fpsOk ? '' : ' EXCEEDED'}), region max ${g.regionMax}, cursor hides ≤ ${g.cursorHidesMaxPerFrame} / ${g.cursorFramesWithoutShow} frames without show, typing p95 ${g.typing.p95?.toFixed(1)} ms (${g.keysWhileLive}/${g.typing.samples} keys while live, step ${g.stepsSeen}/${g.mockSteps}, ${g.stepsPerSecond?.toFixed(1)} steps/s, ${g.staticRowsPerSecond?.toFixed(0)} static rows/s), exit ${g.exitCode}${g.timedOut ? ' TIMEOUT' : ''} → ${g.pass ? 'pass' : 'FAIL'}`;
+    `render lag ${describeGeometry(g)} (step ${g.stepMs} ms${g.gated ? '' : ', lag/fps reported only'}): lag p50 ${g.lagP50?.toFixed(2)} p95 ${g.lagP95?.toFixed(2)} (net ${g.lagNetP95?.toFixed(2)}) max ${g.lagMax?.toFixed(2)} ms (${g.samples} samples${g.lagOk ? '' : '; OVER'}), clears ${g.clears}, frames ${g.frames} (${g.frameClasses.static} static, ${g.frameClasses.key} key, ${g.frameClasses.dynamic} dynamic), fps max ${g.fpsMax?.toFixed(0)} mean ${g.fpsMean?.toFixed(1)} (static ${g.fpsStaticMax?.toFixed(0)}, key ${g.fpsKeyMax?.toFixed(0)}, dynamic ${g.fpsDynamicMax?.toFixed(0)}; gate dynamic ≤ ${g.fpsGate}${g.fpsOk ? '' : ' EXCEEDED'}), splash ${g.splashFrames} dynamic frames in ${g.splashWindowMs} ms (+ ${g.splashStaticFrames} static, ${g.splashKeyFrames} key; ${g.splashWordmarkFrames} with the wordmark; first frame ${g.splashInFirstFrame ? 'is' : 'is not'} splash frame 0; gate ≤ ${g.splashGate}${g.splashOk ? '' : ' EXCEEDED'}), region max ${g.regionMax}, cursor hides ≤ ${g.cursorHidesMaxPerFrame} / ${g.cursorFramesWithoutShow} frames without show, typing p95 ${g.typing.p95?.toFixed(1)} ms (${g.keysWhileLive}/${g.typing.samples} keys while live, step ${g.stepsSeen}/${g.mockSteps}, ${g.stepsPerSecond?.toFixed(1)} steps/s, ${g.staticRowsPerSecond?.toFixed(0)} static rows/s), exit ${g.exitCode}${g.timedOut ? ' TIMEOUT' : ''} → ${g.pass ? 'pass' : 'FAIL'}`;
   const baseline = await measureLagBaseline();
   opts.onProgress?.(`lag probe floor (bare idle node, ${baseline.seconds} s): p50 ${baseline.p50?.toFixed(2)} p95 ${baseline.p95?.toFixed(2)} max ${baseline.max?.toFixed(2)} ms (${baseline.samples} samples) → ${baseline.ok ? `calibration applies: gate on p95 − ${baseline.p50?.toFixed(2)} ms` : 'floor too noisy, raw p95 gated'}`);
   const run = async (spec: GeometrySpec): Promise<LagGeometry> => {

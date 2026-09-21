@@ -8,16 +8,58 @@
 import { Box, Text } from 'ink';
 import type { OverlayKind } from './layout.js';
 import { GLYPHS, type GlyphSet } from './glyphs.js';
-import { paneLines, paneRuleRow, type PaneState } from './pane/model.js';
-import { textProps, themeFor, type ColorRole, type Theme } from './theme.js';
-import type { UiState } from './useEngine.js';
+import { panelLines, panelStrip, paneLines, paneRuleRow, type PaneState } from './pane/model.js';
+import { brandRow, WORDMARK_MIN_COLUMNS } from './splash.js';
+import { textProps, themeFor, type ColorOn, type ColorRole, type Theme } from './theme.js';
+import type { PanelState, UiState } from './useEngine.js';
 
 /** §14.1: the rule is capped at `min(columns, 400)` cells. */
 export const RULE_MAX_CELLS = 400;
 
-/** §7.2: `UiState` 1.1 → the pane builders' input. */
+/** §7.2: `UiState` 1.1 → the pane builders' input (TUI-DESIGN-2 §3.11 / §4.6: the intakes' rows and the last risk assessment ride along). */
 export function paneStateOf(s: UiState): PaneState {
-  return { tab: s.tab, step: s.step, rows: s.rows, plan: s.plan, timeline: s.timeline, synth: s.synthView, mode: s.mode };
+  return { tab: s.tab, step: s.step, rows: s.rows, plan: s.plan, timeline: s.timeline, synth: s.synthView, mode: s.mode, chatRows: s.chatRows, lastRisk: s.lastRisk };
+}
+
+/** TUI-DESIGN-2 §4.6 / §5.4: everything the rule row depends on. */
+export interface RuleRowInput {
+  state: PaneState;
+  /** the last Jev latencies (the strip's `jev <ms>ms` segment at ≥ 120) */
+  latencies: readonly (number | null)[];
+  /** rows granted to the pane slot (`layout.pane`) */
+  paneRows: number;
+  columns: number;
+  overlay: OverlayKind;
+  terminalRows: number;
+  panel: PanelState;
+  /** the splash is running (its wordmark rows in the pane slot at ≥ 64 columns; the pulsing brand row below) */
+  splash: 'running' | 'done';
+  /** elapsed splash ms (the brand glyph pulse) */
+  splashTime: number | null;
+  /** TUI-DESIGN-2 §5.4: `run:ready` has been seen (or a run ended) in this session — before it the brand row is the idle rule row */
+  ranBefore: boolean;
+  version: string;
+  glyphs?: GlyphSet;
+  pickerHeader?: string | null;
+}
+
+/**
+ * TUI-DESIGN-2 §4.6 / §5.3 / §5.4: the rule row — the picker's header when the picker is open; the plain rule while
+ * the wordmark rows run above the console (splash, ≥ 64 columns); the open / full panel's tab header with `▾ ` whenever
+ * the pane has rows (also before the first run: `]`, Alt+J or `/panel` on the idle frame open a headed `(no decisions
+ * yet)` tab, never a headerless hole — §4.6's table, finding 4); else the brand row (pulsing while the splash runs below
+ * 64 columns) until the first `run:ready`; then the collapsed panel's strip.
+ */
+export function ruleRowText(i: RuleRowInput): string {
+  const g = i.glyphs ?? GLYPHS.unicode;
+  const cols = Math.min(RULE_MAX_CELLS, Math.max(0, Math.floor(Number.isFinite(i.columns) ? i.columns : 0)));
+  if (i.pickerHeader !== undefined && i.pickerHeader !== null) return i.pickerHeader;
+  if (cols < 40) return plainRule(cols, g);
+  if (i.splash === 'running') return cols >= WORDMARK_MIN_COLUMNS && i.paneRows > 0 ? plainRule(cols, g) : brandRow(i.version, cols, i.splashTime, g);
+  // the open (6-row) panel never goes side by side; `full` keeps TD §7.2's rule (columns ≥ 120 && rows ≥ 40 && overlay none)
+  if (i.panel !== 'collapsed' && i.paneRows > 0) return paneRuleRow(i.state, i.paneRows, cols, i.overlay, { terminalRows: i.panel === 'full' ? i.terminalRows : 0, glyphs: g, chevron: true });
+  if (!i.ranBefore) return brandRow(i.version, cols, null, g);
+  return panelStrip({ ...i.state, latencies: i.latencies }, cols, g);
 }
 
 /** The plain rule (`─` × columns): before the first run, on tiny terminals, and whenever the pane has no rows. */
@@ -43,6 +85,7 @@ export function paneRowRole(line: string): ColorRole | null {
   if (line.includes('[chosen]')) return 'chosen';
   if (line.startsWith('[!]')) return 'warn';
   if (line.startsWith('(no ')) return 'dim';
+  if (/^\s+(…|\.\.\.) \d+ more row/.test(line)) return 'dim';
   return null;
 }
 
@@ -60,7 +103,9 @@ export interface PaneProps {
   selected?: number | null;
   glyphs?: GlyphSet;
   theme?: Theme;
-  color?: boolean;
+  color?: ColorOn;
+  /** TUI-DESIGN-2 §4.6: `open` draws ≤ 6 rows with the `… n more rows` tail, `full` today's 12-row pane */
+  size?: 'open' | 'full';
 }
 
 /** §7.2: the pane box — `rows` truncating rows of the active tab (or the picker's rows). */
@@ -70,7 +115,8 @@ export function Pane(p: PaneProps): React.JSX.Element | null {
   const g = p.glyphs ?? GLYPHS.unicode;
   const theme = p.theme ?? themeFor('dark');
   const color = p.color ?? true;
-  const lines = (p.lines ?? paneLines(p.state, rows, p.columns, p.overlay, { terminalRows: p.terminalRows, glyphs: g })).slice(0, rows);
+  const built = p.size === undefined ? paneLines(p.state, rows, p.columns, p.overlay, { terminalRows: p.terminalRows, glyphs: g }) : panelLines(p.state, rows, p.columns, p.overlay, { terminalRows: p.terminalRows, glyphs: g, size: p.size });
+  const lines = (p.lines ?? built).slice(0, rows);
   return (
     <Box flexDirection="column" height={rows} overflow="hidden">
       {lines.map((line, i) => {

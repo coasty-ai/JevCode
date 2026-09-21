@@ -61,7 +61,7 @@ export function validateOptions(opts: BenchOptions, deps: BenchDepsWithSynth): v
     if (requiresGenerator(opts.conditions) && !deps.liveProvider) throw new ConfigError('--live requires a live provider for jev-on/jev-off and a live decider', { setting: 'live' });
     if (!deps.liveDecider) throw new ConfigError('--live requires a live decider', { setting: 'live' });
   }
-  if (opts.conditions.includes('jev-only') && !deps.createSynthesizer) throw new ConfigError('condition jev-only requires a synthesizer (BenchDeps.createSynthesizer)', { setting: 'conditions' });
+  if ((opts.conditions.includes('jev-only') || opts.conditions.includes('llm-jev')) && !deps.createSynthesizer) throw new ConfigError('condition jev-only requires a synthesizer (BenchDeps.createSynthesizer)', { setting: 'conditions' });
   if (opts.tasks !== undefined && opts.tasks !== null && (!Number.isInteger(opts.tasks) || opts.tasks < 1)) throw new ConfigError('--tasks must be a positive integer', { setting: 'tasks' });
   if (opts.resumeBenchId !== undefined && opts.resumeBenchId !== null && !BENCH_ID_RE.test(opts.resumeBenchId)) throw new ConfigError(`--resume: "${opts.resumeBenchId}" is not a bench id`, { setting: 'resume' });
 }
@@ -501,6 +501,8 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     }
 
     const jevOnly = condition === 'jev-only';
+    // llm-jev (docs/LLM-JEV-DESIGN.md): the real (or mock) generator like jev-on AND the synthesizer like jev-only
+    const withSynth = jevOnly || condition === 'llm-jev';
     const mockProvider = (): Provider => {
       const trajectory = task.mockTrajectory();
       // a function so an engine that asks again after the final `done` keeps receiving `done` instead of exhausting the script
@@ -510,9 +512,9 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     const provider: Provider = jevOnly ? createNullProvider() : mocked ? mockProvider() : deps.liveProvider!;
     const decider: Decider = mocked ? deps.createMockDecider() : deps.liveDecider!;
     if (!jevOnly) generatorModel ??= provider.model;
-    const synthesizer: Synthesizer | undefined = jevOnly ? deps.createSynthesizer?.({ decider, redact: opts.redact }) : undefined;
-    if (jevOnly && synthesizer === undefined) {
-      const rec = errorRecord(source, condition, 'engine_create_failed: condition jev-only requires a synthesizer');
+    const synthesizer: Synthesizer | undefined = withSynth ? deps.createSynthesizer?.({ decider, redact: opts.redact }) : undefined;
+    if (withSynth && synthesizer === undefined) {
+      const rec = errorRecord(source, condition, `engine_create_failed: condition ${condition} requires a synthesizer`);
       newRecords.push(rec);
       await appendRecord(rec);
       return;

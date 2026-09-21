@@ -62,8 +62,10 @@ export function renderZsh(): string {
     L.push(`        ${c})`, '          _arguments \\');
     const specs = flagsFor(c).map((f) => {
       let action = '';
+      // TUI-DESIGN-2 §1.4: a per-command value list (`--jev-provider typesafe|openrouter` on login) narrows the enum, as in scripts/gen-docs.mjs
+      const arg = f.argFor?.[c] ?? f.arg;
       if (f.name === 'resume') action = ':run id:_jevcode_runs';
-      else if (f.arg !== undefined && ENUM_ARG_RE.test(f.arg)) action = `:${f.name}:(${f.arg.split('|').join(' ')})`;
+      else if (arg !== undefined && ENUM_ARG_RE.test(arg)) action = `:${f.name}:(${arg.split('|').join(' ')})`;
       else if (/file|path|config|out/.test(f.name)) action = `:${f.arg ?? 'file'}:_files`;
       else if (/dir|workspace/.test(f.name)) action = `:${f.arg ?? 'dir'}:_files -/`;
       else if (f.arg !== undefined) action = `:${f.arg.replace(/[<>]/g, '')}:`;

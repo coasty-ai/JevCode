@@ -32,7 +32,7 @@ import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD } from '../con
 import { foldByStep, foldPlanRecord, foldStageEnd, foldStepEnd, toDecisionRow, type DecisionRow, type PaneTab, type PlanView, type SynthView, type TimelineStep } from './pane/model.js';
 import { IDENTITY_REVIEWER, itemsFromEvent, localItem, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { retryViewFrom, startTicker, type RetryView } from './retry.js';
-import type { GitZone } from './status/lines.js';
+import type { GitZone, ThinkingPhase } from './status/lines.js';
 import { toastReducer, type Toast } from './toasts.js';
 
 export type { RetryView } from './retry.js';
@@ -57,6 +57,46 @@ export const DECISION_STEPS_KEPT = 3;
 export const JEV_LATENCIES_KEPT = 12;
 /** The 1 Hz tick (§15 item 20 `nowMs`). */
 export const TICK_MS = 1000;
+/** TUI-DESIGN-2 §3.11: the controller keeps the last three intakes' decision rows for the panel. */
+export const CHAT_ROWS_KEPT = 3;
+
+/** TUI-DESIGN-2 §4.5: the stage kinds the default `compact` transcript hides (they stay in transcript.log, `--plain` and the panel). */
+export const COMPACT_HIDDEN_KINDS: ReadonlySet<string> = new Set(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
+
+/** TUI-DESIGN-2 §4.5: a transcript item stamped with the default filter's verdict at append time (`hidden` never changes afterwards). */
+export type UiTranscriptItem = TranscriptItem & { readonly hidden?: boolean };
+
+/** TUI-DESIGN-2 §4.5: true when the `compact` view hides an item of this kind. */
+export function hiddenInCompact(kind: string): boolean {
+  return COMPACT_HIDDEN_KINDS.has(kind);
+}
+
+/** TUI-DESIGN-2 §4.5: the items `<Static>` receives — the filtered array is append-only too (A25 holds). */
+export function visibleItems(items: readonly UiTranscriptItem[]): readonly UiTranscriptItem[] {
+  return items.filter((i) => i.hidden !== true);
+}
+
+/**
+ * TUI-DESIGN-2 §4.5 / §13 finding 12: `visibleItems` with a stable reference — a hidden-only batch (the same visible rows, the
+ * same epoch) hands `<Transcript>` the previous array, so the memoised component commits nothing and no `<Static>` subtree is
+ * dirtied. Appends keep the array append-only; a soft-cap remount (`epoch`) starts a fresh one.
+ */
+export function useVisibleItems(items: readonly UiTranscriptItem[], epoch: number): readonly UiTranscriptItem[] {
+  const ref = useRef<{ visible: readonly UiTranscriptItem[]; epoch: number }>({ visible: [], epoch });
+  const filtered = visibleItems(items);
+  const prev = ref.current;
+  const same = prev.epoch === epoch && prev.visible.length === filtered.length && (filtered.length === 0 || prev.visible[filtered.length - 1]?.key === filtered[filtered.length - 1]?.key);
+  const visible = same ? prev.visible : filtered;
+  ref.current = { visible, epoch };
+  return visible;
+}
+
+/** TUI-DESIGN-2 §4.6: the Jev panel's three sizes. */
+export type PanelState = 'collapsed' | 'open' | 'full';
+/** TUI-DESIGN-2 §4.5: the transcript's two views (`compact` = one `[step N]` line per step). */
+export type TranscriptView = 'compact' | 'full';
+/** TUI-DESIGN-2 §5: the splash runs from the first frame until a key, a run, an overlay or the 700 ms settle. */
+export type SplashState = 'running' | 'done';
 
 /** TUI-DESIGN §15 item 20 `RunPhase` — no 'paused': a blocking pause is overlay 'blocking' with run 'live'; human_pause ends the run. */
 export type RunPhase = 'none' | 'starting' | 'live' | 'aborting' | 'pausing';
@@ -92,7 +132,7 @@ export const DEFAULT_THRESHOLDS: Thresholds = { complete: DEFAULT_COMPLETE_THRES
 
 /** TUI-DESIGN §15 item 20 `UiState` 1.1 — today's fields kept, the design's additions, and the additive pane inputs the tab builders read. */
 export interface UiState {
-  readonly items: readonly TranscriptItem[];
+  readonly items: readonly UiTranscriptItem[];
   /** monotonic counter behind engine item keys */
   readonly seq: number;
   readonly live: string;
@@ -100,6 +140,8 @@ export interface UiState {
   readonly toolChars: number;
   /** jev-only: the last `synth` line of the current step, shown in the live region while no generator stream is active */
   readonly synth: string | null;
+  /** llm-jev (docs/LLM-JEV-DESIGN.md §9.3): `sample k/N` of the current step's generator round — set by `generator:start` carrying `samples > 1`, cleared at `proposal` / `step:end` / `run:end`; null in every other mode */
+  readonly sampling: { k: number; n: number } | null;
   readonly mode: EngineMode | null;
   readonly decisions: readonly Decision[];
   readonly status: EngineStatus | null;
@@ -120,6 +162,13 @@ export interface UiState {
   readonly pendingReview: ConfirmRequest | null;
   readonly visibleAt: number | null;
   readonly lastKeystrokeAt: number;
+  /**
+   * Count of `key` actions (TUI-DESIGN-2 §9 "keystroke → frame", decision D-F). The App hands it to the memoised
+   * `<Transcript>`, whose `<Static>` gets a fresh `style` object per key: Ink 7.1.1 renders a commit that updated the
+   * `<Static>` node immediately (`reconciler.js` `commitUpdate` → `isStaticDirty` → `onImmediateRender`), so a key's
+   * frame never waits for the trailing edge of the 34 ms render throttle behind a spinner or 1 Hz tick frame.
+   */
+  readonly keySeq: number;
   readonly expanded: boolean;
   readonly noteMode: boolean;
   readonly retrying: RetryView | null;
@@ -176,6 +225,25 @@ export interface UiState {
   readonly localSeq: number;
   /** the run's resolved completion / impossible thresholds (`thresholds` action from the controller; defaults until then) */
   readonly thresholds: Thresholds;
+  // ----- TUI-DESIGN-2 §6 item 16 (round 2)
+  /** §1.5: the badge — the live (or base) mode and the `/mode` pending for the next run */
+  readonly modeBadge: { mode: EngineMode; pending: EngineMode | null };
+  /** §4.8: between Enter and the reply */
+  readonly thinking: ThinkingPhase | null;
+  /** §3.11: the last intakes' `s0 intake …` rows */
+  readonly chatRows: readonly DecisionRow[];
+  /** §5: the startup splash */
+  readonly splash: SplashState;
+  /** §5.3: when the App mounted (`now()`), the splash's time origin */
+  readonly mountedAt: number;
+  /** §4.6: the Jev panel */
+  readonly panel: PanelState;
+  /** §4.5: the transcript filter for new items */
+  readonly transcript: TranscriptView;
+  /** §4.4: runs + chat replies — `followup` placeholder once > 0 */
+  readonly turns: number;
+  /** §4.6: the run's last risk assessment (`risk 0.44 [review]` on the panel strip) */
+  readonly lastRisk: { risk: number; verdict: 'ok' | 'review' | 'block' } | null;
 }
 
 /** TUI-DESIGN §15 item 20 `UiAction` (today's four, the design's additions, and the additive `picker` / `title` / `spend:session` / `git:dirs`). */
@@ -207,11 +275,30 @@ export type UiAction =
   | { type: 'title'; title: string | null }
   | { type: 'spend:session'; session: { totalUsd: number; capUsd: number } | null }
   /** the controller's resolved `--complete-threshold` / `--impossible-threshold` (after resolveConfig; §7.1 rows) */
-  | { type: 'thresholds'; complete: number; impossible: number };
+  | { type: 'thresholds'; complete: number; impossible: number }
+  // ----- TUI-DESIGN-2 §6 item 15 (round 2)
+  /** §1.5: after `resolveConfig` and on every `/mode` — `run:start` promotes `pending` to `mode` */
+  | { type: 'mode'; mode: EngineMode; pending: EngineMode | null }
+  /** §4.8: the controller's conversational phase */
+  | { type: 'thinking'; phase: ThinkingPhase | null }
+  /** §3.11: the intake's decision rows (the controller keeps the last ≤ 3 intakes) */
+  | { type: 'chat-decisions'; rows: readonly DecisionRow[] }
+  /** §5.3: the splash ended (a key, the settle effect, a run, an overlay) */
+  | { type: 'splash:done' }
+  /** §4.6: `/panel`, Alt+J, `]` */
+  | { type: 'panel'; panel: PanelState }
+  /** §4.5: `/transcript compact|full` (new items only, R4) */
+  | { type: 'transcript'; view: TranscriptView }
+  /** §4.4: a chat reply counted as a turn (`SubmitOutcome.became === 'chat'`; a run counts at `run:start`) */
+  | { type: 'turn' };
 
 export interface InitialStateOptions {
   mode?: 'session' | 'one-shot';
   nowMs?: number;
+  /** TUI-DESIGN-2 §1.5: `launch.modeHint` (`--mode` > `JEVCODE_MODE`), else `jev-only` */
+  modeHint?: EngineMode;
+  /** TUI-DESIGN-2 §5.3: `running` from the first frame (boxed, motion allowed), `done` under reduced motion / SR / --plain */
+  splash?: SplashState;
 }
 
 export function initialUiState(task: string, resumeId: string | null, opts: InitialStateOptions = {}): UiState {
@@ -221,6 +308,7 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     live: '',
     toolChars: 0,
     synth: null,
+    sampling: null,
     mode: null,
     decisions: [],
     status: null,
@@ -238,6 +326,7 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     pendingReview: null,
     visibleAt: null,
     lastKeystrokeAt: 0,
+    keySeq: 0,
     expanded: false,
     noteMode: false,
     retrying: null,
@@ -274,7 +363,21 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     staticEpoch: 0,
     localSeq: 0,
     thresholds: DEFAULT_THRESHOLDS,
+    modeBadge: { mode: opts.modeHint ?? 'jev-only', pending: null },
+    thinking: null,
+    chatRows: [],
+    splash: opts.splash ?? 'done',
+    mountedAt: opts.nowMs ?? 0,
+    panel: 'collapsed',
+    transcript: 'compact',
+    turns: 0,
+    lastRisk: null,
   };
+}
+
+/** TUI-DESIGN-2 §5.3: the splash dies on a key, a run, a review, any overlay change or a blocking request. */
+function endSplash(s: UiState): UiState {
+  return s.splash === 'running' ? { ...s, splash: 'done' } : s;
 }
 
 function clearReview(s: UiState): UiState {
@@ -302,15 +405,18 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       const now = action.at ?? state.nowMs;
       // §6.2: a second request declines the first (createTuiConfirmer) — its box, note field and expansion close and
       // the new request goes through the deferral again, so a key in flight never answers the replacement
-      const base = state.pendingReview !== null ? clearReview(state) : state;
+      const base = endSplash(state.pendingReview !== null ? clearReview(state) : state);
       return { ...base, pendingConfirm: action.request, pendingReview: action.request, visibleAt: Math.max(now, base.lastKeystrokeAt + REVIEW_DEFER_MS) };
     }
     case 'confirm:settled':
       return state.pendingConfirm?.id === action.id ? clearReview(state) : state;
     case 'event':
       return applyEvent(state, action.event, action.at ?? state.nowMs);
-    case 'key':
-      return state.lastKeystrokeAt === action.at ? state : { ...state, lastKeystrokeAt: action.at };
+    case 'key': {
+      const s = endSplash(state);
+      // always a new state: `keySeq` must advance for every key (two keys in one millisecond share `at`)
+      return { ...s, lastKeystrokeAt: action.at, keySeq: s.keySeq + 1 };
+    }
     case 'tick': {
       const toasts = toastReducer(state.toasts, { type: 'tick' }, action.now);
       return state.nowMs === action.now && toasts === state.toasts ? state : { ...state, nowMs: action.now, toasts };
@@ -318,7 +424,7 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     case 'draft':
       return sameDraft(state.draft, action.draft) ? state : { ...state, draft: action.draft };
     case 'overlay':
-      return state.overlay === action.overlay ? state : { ...state, overlay: action.overlay, overlayArmed: false };
+      return state.overlay === action.overlay ? state : { ...endSplash(state), overlay: action.overlay, overlayArmed: false };
     case 'overlay:armed':
       return state.overlay === 'none' || state.overlayArmed ? state : { ...state, overlayArmed: true };
     case 'review:visible':
@@ -370,6 +476,21 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       const impossible = Number.isFinite(action.impossible) ? action.impossible : state.thresholds.impossible;
       return state.thresholds.complete === complete && state.thresholds.impossible === impossible ? state : { ...state, thresholds: { complete, impossible } };
     }
+    // ----- TUI-DESIGN-2 §6 item 15
+    case 'mode':
+      return state.modeBadge.mode === action.mode && state.modeBadge.pending === action.pending ? state : { ...state, modeBadge: { mode: action.mode, pending: action.pending } };
+    case 'thinking':
+      return state.thinking === action.phase ? state : { ...state, thinking: action.phase };
+    case 'chat-decisions':
+      return { ...state, chatRows: [...action.rows] };
+    case 'splash:done':
+      return endSplash(state);
+    case 'panel':
+      return state.panel === action.panel ? state : { ...state, panel: action.panel };
+    case 'transcript':
+      return state.transcript === action.view ? state : { ...state, transcript: action.view };
+    case 'turn':
+      return { ...state, turns: state.turns + 1 };
   }
 }
 
@@ -377,11 +498,16 @@ function sameDraft(a: DraftMirror, b: DraftMirror): boolean {
   return a.empty === b.empty && a.rows === b.rows && a.cursorRow === b.cursorRow && a.secretHits === b.secretHits;
 }
 
-/** Append items; past the `<Static>` soft cap the array restarts with a new epoch (A28: a keyed remount, nothing re-printed). */
+/**
+ * Append items; past the `<Static>` soft cap the array restarts with a new epoch (A28: a keyed remount, nothing re-printed).
+ * TUI-DESIGN-2 §4.5: under the `compact` view the stage kinds are stamped `hidden: true` at append time (a later `/transcript
+ * full` shows new items only, R4); `UiState.items` keeps every item for `/export`.
+ */
 function appendItems(state: UiState, items: readonly TranscriptItem[]): UiState {
   if (items.length === 0) return state;
-  if (state.items.length + items.length > STATIC_SOFT_CAP) return { ...state, items: [...items], staticEpoch: state.staticEpoch + 1 };
-  return { ...state, items: [...state.items, ...items] };
+  const stamped: UiTranscriptItem[] = state.transcript === 'compact' ? items.map((i) => (hiddenInCompact(i.kind) ? { ...i, hidden: true } : i)) : [...items];
+  if (state.items.length + stamped.length > STATIC_SOFT_CAP) return { ...state, items: stamped, staticEpoch: state.staticEpoch + 1 };
+  return { ...state, items: [...state.items, ...stamped] };
 }
 
 function pushLatency(list: readonly (number | null)[], ms: number | null): readonly (number | null)[] {
@@ -415,6 +541,7 @@ function resetForRun(s: UiState, e: Extract<EngineEvent, { type: 'run:start' }>,
     live: '',
     toolChars: 0,
     synth: null,
+    sampling: null,
     synthView: null,
     retrying: null,
     loop: null,
@@ -439,6 +566,14 @@ function resetForRun(s: UiState, e: Extract<EngineEvent, { type: 'run:start' }>,
     diskErrors: 0,
     errors: 0,
     jevLatencies: [],
+    // TUI-DESIGN-2 §1.5 / §4.6 / §5.3 / §4.4: the run promotes the pending mode, collapses the panel, ends the splash and is a turn
+    modeBadge: { mode: e.mode, pending: null },
+    panel: 'collapsed',
+    splash: 'done',
+    turns: s.turns + 1,
+    // TUI-DESIGN-2 §3.1 row 5: the intake settled (`thinking(null)`) before `startRun`; a run never shows a chat phase
+    thinking: null,
+    lastRisk: null,
   };
 }
 
@@ -483,6 +618,9 @@ function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
     }
     case 'jev:request':
       return { ...next, jevLatencies: pushLatency(next.jevLatencies, Number.isFinite(e.record.latencyMs) ? e.record.latencyMs : null) };
+    case 'risk':
+      // TUI-DESIGN-2 §4.6: the strip's `risk <r> <verdict>` segment
+      return { ...next, lastRisk: { risk: e.risk.risk, verdict: e.risk.verdict } };
     case 'status': {
       const stageChanged = next.status?.stage !== e.status.stage;
       const retrying = e.status.retrying && next.retrying ? { ...next.retrying, attempt: e.status.retrying.attempt, maxAttempts: e.status.retrying.maxAttempts, untilMs: e.status.retrying.untilMs } : next.retrying;
@@ -505,19 +643,29 @@ function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
       return { ...next, synth: synthText(e), synthView: { step: e.step, phase: e.phase, detail: e.detail, ...(e.candidates !== undefined ? { candidates: e.candidates } : {}), ...(e.tested !== undefined ? { tested: e.tested } : {}) } };
     // A new stream (or a command) starts with an empty live region; `proposal` and `outcome`
     // end it in the same update that appends their item, so no frame shows text twice or not at all.
-    case 'generator:start':
-    case 'exec:start':
+    // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): a `generator:start` with `sample ≥ 1` runs beside sample 0 — it moves the
+    // `sample k/N` counter and leaves sample 0's live buffer alone; `samples > 1` sets the counter, `proposal` clears it.
+    case 'generator:start': {
+      const sampling = e.samples === undefined ? next.sampling : e.samples > 1 ? { k: (e.sample ?? 0) + 1, n: e.samples } : null;
+      const cleared = (e.sample ?? 0) >= 1 || (next.live === '' && next.toolChars === 0 && next.synth === null) ? next : { ...next, live: '', toolChars: 0, synth: null };
+      return sampling === cleared.sampling || (sampling !== null && cleared.sampling !== null && sampling.k === cleared.sampling.k && sampling.n === cleared.sampling.n) ? cleared : { ...cleared, sampling };
+    }
     case 'proposal':
+      return next.live !== '' || next.toolChars !== 0 || next.synth !== null || next.sampling !== null ? { ...next, live: '', toolChars: 0, synth: null, sampling: null } : next;
+    case 'exec:start':
     case 'outcome':
       return next.live !== '' || next.toolChars !== 0 || next.synth !== null ? { ...next, live: '', toolChars: 0, synth: null } : next;
-    // Cumulative count from the engine; the live region shows `streaming action… N chars` while the text buffer is empty.
+    // Cumulative count from the engine; the live region shows `streaming action… N chars` while the text buffer is empty
+    // (llm-jev: only sample 0's count reaches the live region).
     case 'generator:tool-delta':
+      if ((e.sample ?? 0) >= 1) return next;
       return next.toolChars === e.chars ? next : { ...next, toolChars: e.chars };
     case 'step:end': {
       const fold = foldLoopStep(next.loopFold, e.record);
       const changed = e.record.outcome?.status === 'executed' && e.record.outcome.changedFiles.length > 0;
       return {
         ...next,
+        sampling: null,
         loopFold: fold,
         loop: loopView(fold),
         timeline: foldStepEnd(next.timeline, e.record),
@@ -546,7 +694,7 @@ function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
       return next.run === 'live' || next.run === 'starting' ? { ...next, run: 'pausing' } : next;
     case 'confirm:request': {
       if (next.pendingConfirm?.id === e.request.id) return next;
-      const base = next.pendingReview !== null ? clearReview(next) : next;
+      const base = endSplash(next.pendingReview !== null ? clearReview(next) : next);
       return { ...base, pendingConfirm: e.request, pendingReview: e.request, visibleAt: Math.max(now, base.lastKeystrokeAt + REVIEW_DEFER_MS) };
     }
     case 'confirm:resolved':
@@ -562,7 +710,7 @@ function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
     case 'budget:clamp':
       return { ...next, spend: { ...next.spend, session: { totalUsd: e.sessionSpentUsd, capUsd: e.sessionCapUsd } } };
     case 'blocking:request':
-      return { ...next, blocking: e.request, overlay: 'blocking', overlayArmed: false, unauthorized: next.unauthorized || e.request.kind === 'key-rejected' };
+      return { ...endSplash(next), blocking: e.request, overlay: 'blocking', overlayArmed: false, unauthorized: next.unauthorized || e.request.kind === 'key-rejected' };
     case 'blocking:resolved':
       return next.blocking !== null && next.blocking.id === e.id ? { ...next, blocking: null, overlay: next.overlay === 'blocking' ? 'none' : next.overlay } : next;
     case 'notice':
@@ -587,6 +735,7 @@ function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
         live: '',
         toolChars: 0,
         synth: null,
+        sampling: null,
         retrying: null,
         blocking: null,
         queue: [],
@@ -768,6 +917,10 @@ export interface UseEngineOptions {
   flushMs?: number;
   /** the 1 Hz tick; 0 disables it (tests drive `tick` themselves) */
   tickMs?: number;
+  /** TUI-DESIGN-2 §1.5: `launch.modeHint` for the first frame's badge */
+  modeHint?: EngineMode;
+  /** TUI-DESIGN-2 §5.3: `running` in the boxed tier with motion allowed */
+  splash?: SplashState;
 }
 
 /**
@@ -779,7 +932,7 @@ export interface UseEngineOptions {
  */
 export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: string, resumeId: string | null, opts: UseEngineOptions = {}): { state: UiState; dispatch: (a: UiAction) => void } {
   const now = opts.now ?? Date.now;
-  const [state, dispatch] = useReducer(uiReducer, null, () => initialUiState(task, resumeId, { ...(opts.mode ? { mode: opts.mode } : {}), nowMs: now() }));
+  const [state, dispatch] = useReducer(uiReducer, null, () => initialUiState(task, resumeId, { ...(opts.mode ? { mode: opts.mode } : {}), nowMs: now(), ...(opts.modeHint ? { modeHint: opts.modeHint } : {}), ...(opts.splash ? { splash: opts.splash } : {}) }));
   const nowRef = useRef(now);
   nowRef.current = now;
 
@@ -805,7 +958,10 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
     };
     const unsubscribe = source.subscribe((e) => {
       switch (e.type) {
+        // llm-jev (docs/LLM-JEV-DESIGN.md §9.3): only sample 0 (or an unsampled call) streams into the live region;
+        // samples ≥ 1 are counted by the reducer's `sampling` and never touch the buffer
         case 'generator:delta':
+          if ((e.sample ?? 0) >= 1) return;
           buffer = appendTail(buffer, e.text);
           schedule();
           return;
@@ -814,10 +970,18 @@ export function useEngine(source: EventSource, confirmer: TuiConfirmer, task: st
           schedule();
           return;
         case 'generator:tool-delta':
+          if ((e.sample ?? 0) >= 1) return;
           toolChars = e.chars;
           schedule();
           return;
         case 'generator:start':
+          if ((e.sample ?? 0) >= 1) {
+            dispatch({ type: 'event', event: e, at: nowRef.current() });
+            return;
+          }
+          clearLive();
+          dispatch({ type: 'event', event: e, at: nowRef.current() });
+          return;
         case 'exec:start':
         case 'proposal':
         case 'outcome':

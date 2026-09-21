@@ -11,19 +11,24 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { stringWidth } from '../../../../src/tui/composer/width.js';
 import {
+  BOXED_MIN_ROWS,
   CAP,
   MIN_COLUMNS,
   MIN_ROWS,
   OVERLAY_KINDS,
   YIELD_ORDER,
+  chromeRows,
   composerTop,
   computeLayout,
+  consoleTop,
   isCollapsingOverlay,
   type Layout,
   type LayoutInput,
 } from '../../../../src/tui/layout.js';
 
 const DESIGN = fileURLToPath(new URL('../../../../docs/TUI-DESIGN.md', import.meta.url));
+/** TUI-DESIGN-2 §8.1 S4: the round-2 design's `H-` frames. */
+const DESIGN2 = fileURLToPath(new URL('../../../../docs/TUI-DESIGN-2.md', import.meta.url));
 
 function input(o: Partial<LayoutInput> = {}): LayoutInput {
   return {
@@ -38,6 +43,8 @@ function input(o: Partial<LayoutInput> = {}): LayoutInput {
     liveWant: 0,
     bannerWant: 0,
     paneWant: 0,
+    chrome: 0,
+    gate: 0,
     ...o,
   };
 }
@@ -45,6 +52,11 @@ function input(o: Partial<LayoutInput> = {}): LayoutInput {
 /** the design's `rule·live·banner·pane·queue·overlay·preview·composer·status = total` notation */
 function cells(l: Layout): string {
   return `${l.rule}·${l.live}·${l.banner}·${l.pane}·${l.queue}·${l.overlay}·${l.preview}·${l.composer}·${l.status} = ${l.total}`;
+}
+
+/** TUI-DESIGN-2 §4.2: the boxed notation adds the console's chrome (`…·composer·chrome·status`). */
+function cells2(l: Layout): string {
+  return `${l.rule}·${l.live}·${l.banner}·${l.pane}·${l.queue}·${l.overlay}·${l.preview}·${l.composer}·${l.chrome}·${l.status} = ${l.total}`;
 }
 
 function mulberry32(seed: number): () => number {
@@ -63,24 +75,34 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
   const { rows, columns, overlay, overlayWant } = i;
   const l = computeLayout(i);
   const budget = Math.max(0, rows - 2);
-  const tag = `rows ${rows} cols ${columns} ${overlay}/${overlayWant} c${i.composerWant} q${i.queueWant} l${i.liveWant} p${i.paneWant} v${i.previewWant} → ${cells(l)}`;
+  const tag = `rows ${rows} cols ${columns} ${overlay}/${overlayWant} c${i.composerWant} q${i.queueWant} l${i.liveWant} p${i.paneWant} v${i.previewWant} ch${i.chrome} g${i.gate} → ${cells2(l)}`;
   if (l.budget !== budget) note(`budget ${tag}`);
-  const sum = l.status + l.rule + l.live + l.banner + l.pane + l.queue + l.overlay + l.preview + l.composer;
+  const sum = l.status + l.rule + l.live + l.banner + l.pane + l.queue + l.overlay + l.preview + l.composer + l.chrome;
   if (sum !== l.total) note(`sum≠total ${tag}`);
   if (l.total > budget) note(`total>budget ${tag}`);
-  for (const k of ['status', 'rule', 'live', 'banner', 'pane', 'queue', 'overlay', 'preview', 'composer'] as const) {
+  for (const k of ['status', 'rule', 'live', 'banner', 'pane', 'queue', 'overlay', 'preview', 'composer', 'chrome', 'gate'] as const) {
     if (l[k] < 0 || !Number.isInteger(l[k])) note(`negative/fractional ${k} ${tag}`);
   }
+  // TUI-DESIGN-2 §4.2: chrome ∈ {0, 3}; chrome === 3 ⇒ rows ≥ 16 and the boxed tier was asked for; the gate row only inside the chrome
+  const boxed = i.chrome === 3 && rows >= BOXED_MIN_ROWS && l.degraded === 'none';
+  if (l.chrome !== 0 && l.chrome !== CAP.chrome) note(`chrome∉{0,3} ${tag}`);
+  if (l.chrome === CAP.chrome && (rows < BOXED_MIN_ROWS || i.chrome !== 3)) note(`chrome without the boxed tier ${tag}`);
+  if (boxed && l.chrome !== CAP.chrome) note(`boxed but no chrome ${tag}`);
+  if (l.gate !== 0 && l.gate !== 1) note(`gate∉{0,1} ${tag}`);
+  if (l.gate === 1 && (l.chrome === 0 || i.gate !== 1 || overlay === 'wizard')) note(`gate outside the console ${tag}`);
+  if (boxed && i.gate === 1 && overlay !== 'wizard' && l.gate !== 1) note(`gate row missing ${tag}`);
   if (rows >= 3 && l.status !== 1) note(`status≠1 ${tag}`);
   if (rows < 3 && (l.degraded !== 'static-only' || l.total !== 0)) note(`rows<3 not static-only ${tag}`);
-  if (rows >= 5 && overlay !== 'wizard' && l.composer < 1) note(`composer<1 ${tag}`);
+  if (rows >= 5 && overlay !== 'wizard' && l.composer < 1 + l.gate) note(`composer<1+gate ${tag}`);
   const degradedExpected = rows < 3 ? 'static-only' : rows < MIN_ROWS || columns < MIN_COLUMNS ? 'minsize' : 'none';
   if (l.degraded !== degradedExpected) note(`degraded ${l.degraded}≠${degradedExpected} ${tag}`);
   if (l.degraded === 'none') {
     if (l.rule !== 1) note(`rule≠1 ${tag}`);
     if (overlay === 'wizard' && l.composer !== 0) note(`wizard composer≠0 ${tag}`);
-    if (overlay !== 'wizard' && overlay !== 'none' && rows >= Math.max(8, overlayWant + 5) && l.overlay !== overlayWant) note(`overlay whole ${tag}`);
-    if (overlay === 'wizard' && rows >= Math.max(8, overlayWant + 4) && l.overlay !== overlayWant) note(`wizard whole ${tag}`);
+    // a flat non-wizard overlay is whole at rows ≥ max(8, want + 5); boxed at want + 8 + gate (the fixed rows grow by the chrome); the wizard at want + 4 / want + 7
+    const wholeAt = boxed ? overlayWant + 8 + l.gate : overlayWant + 5;
+    if (overlay !== 'wizard' && overlay !== 'none' && rows >= Math.max(8, wholeAt) && l.overlay !== overlayWant) note(`overlay whole ${tag}`);
+    if (overlay === 'wizard' && rows >= Math.max(8, overlayWant + (boxed ? 7 : 4)) && l.overlay !== overlayWant) note(`wizard whole ${tag}`);
     if (overlay === 'none' && l.overlay !== 0) note(`none overlay≠0 ${tag}`);
     if (overlay === 'review' && overlayWant >= 3 && l.overlay < 3) note(`review header<3 ${tag}`);
     if (overlay === 'review' && l.live !== 0) note(`review live≠0 ${tag}`);
@@ -89,7 +111,7 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
     if (l.live > CAP.live || l.queue > CAP.queue || l.pane > CAP.pane || l.banner > CAP.banner) note(`cap ${tag}`);
     if (!i.expanded && l.preview > CAP.preview) note(`preview cap ${tag}`);
     const composerCap = isCollapsingOverlay(overlay) ? 1 : rows >= 40 ? CAP.composerTall : CAP.composer;
-    if (overlay !== 'wizard' && l.composer > Math.max(1, Math.min(i.composerWant, composerCap))) note(`composer cap ${tag}`);
+    if (overlay !== 'wizard' && l.composer > Math.max(1, Math.min(i.composerWant, composerCap)) + l.gate) note(`composer cap ${tag}`);
     // yield order: when a later-yielding field is short of its want, every earlier-yielding field is 0
     const wants: Record<(typeof YIELD_ORDER)[number], number> = {
       pane: i.expanded ? 0 : Math.min(i.paneWant, CAP.pane),
@@ -97,13 +119,15 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
       live: overlay === 'review' ? 0 : Math.min(i.liveWant, CAP.live),
       preview: overlay === 'review' ? Math.min(i.previewWant, i.expanded ? Infinity : CAP.preview) : 0,
       queue: Math.min(i.queueWant, CAP.queue),
-      composer: overlay === 'wizard' ? 0 : Math.max(1, Math.min(i.composerWant, composerCap)),
+      composer: overlay === 'wizard' ? 0 : Math.max(1, Math.min(i.composerWant, composerCap)) + l.gate,
       overlay: overlay === 'none' ? 0 : overlayWant,
       status: 1,
       rule: 1,
       budget: 0,
       degraded: 0,
       total: 0,
+      chrome: l.chrome,
+      gate: l.gate,
     };
     for (let a = 0; a < YIELD_ORDER.length; a++) {
       const later = YIELD_ORDER[a] as keyof typeof wants;
@@ -116,17 +140,19 @@ function checkInvariants(i: LayoutInput, note: (msg: string) => void): void {
       for (let b = 0; b < a; b++) {
         const earlier = YIELD_ORDER[b] as keyof Layout;
         const v = l[earlier] as number;
-        // the composer floor (1) never yields; only its growth does
-        const floor = earlier === 'composer' && overlay !== 'wizard' ? 1 : 0;
+        // the composer floor (1, plus the hosted gate row) never yields; only its growth does
+        const floor = earlier === 'composer' && overlay !== 'wizard' ? 1 + l.gate : 0;
         if (v > floor) note(`yield order: ${String(later)} short but ${String(earlier)}=${v} ${tag}`);
       }
     }
   } else if (l.degraded === 'minsize') {
-    if (l.rule !== 0 || l.live !== 0 || l.pane !== 0 || l.queue !== 0 || l.preview !== 0 || l.banner !== 0) note(`minsize extra fields ${tag}`);
+    if (l.rule !== 0 || l.live !== 0 || l.pane !== 0 || l.queue !== 0 || l.preview !== 0 || l.banner !== 0 || l.chrome !== 0 || l.gate !== 0) note(`minsize extra fields ${tag}`);
     if (l.overlay !== Math.min(1, Math.max(0, budget - 1))) note(`minsize notice ${tag}`);
     if (l.composer !== Math.min(1, Math.max(0, budget - 2))) note(`minsize composer ${tag}`);
   }
-  if (composerTop(l) + l.composer + l.status !== l.total) note(`composerTop ${tag}`);
+  // TUI-DESIGN-2 §4.2: the console's top edge sits after the preview; the `›` row is one below it (below the gate row when up)
+  if (consoleTop(l) + l.chrome + l.composer + l.status !== l.total) note(`consoleTop ${tag}`);
+  if (composerTop(l) !== consoleTop(l) + (l.chrome > 0 ? 1 + l.gate : 0)) note(`composerTop ${tag}`);
 }
 
 describe('computeLayout invariants (TUI-DESIGN §2.1)', () => {
@@ -152,7 +178,10 @@ describe('computeLayout invariants (TUI-DESIGN §2.1)', () => {
               queueWant: [0, 0, 1, 2, 8][Math.floor(rnd() * 5)] ?? 0,
               liveWant: [0, 1, 2][Math.floor(rnd() * 3)] ?? 0,
               bannerWant: rnd() < 0.3 ? 1 : 0,
-              paneWant: [0, 3, 12][Math.floor(rnd() * 3)] ?? 0,
+              paneWant: [0, 3, 5, 6, 12][Math.floor(rnd() * 5)] ?? 0,
+              // TUI-DESIGN-2 §4.2: the sweep gains chrome ∈ {0, 3} and gate ∈ {0, 1}
+              chrome: rnd() < 0.5 ? 3 : 0,
+              gate: rnd() < 0.3 ? 1 : 0,
             }, note);
             calls++;
           }
@@ -169,23 +198,27 @@ describe('computeLayout invariants (TUI-DESIGN §2.1)', () => {
     const note = (msg: string): void => {
       if (violations.length < 20) violations.push(msg);
     };
-    const fixed: Omit<LayoutInput, 'rows' | 'columns' | 'overlay'> = { overlayWant: 6, previewWant: 4, expanded: false, composerWant: 2, queueWant: 1, liveWant: 1, bannerWant: 0, paneWant: 12 };
+    const fixed: Omit<LayoutInput, 'rows' | 'columns' | 'overlay' | 'chrome' | 'gate'> = { overlayWant: 6, previewWant: 4, expanded: false, composerWant: 2, queueWant: 1, liveWant: 1, bannerWant: 0, paneWant: 12 };
     const sweeps: (keyof typeof fixed)[] = ['composerWant', 'queueWant', 'liveWant', 'paneWant', 'previewWant', 'bannerWant'];
     for (let rows = 2; rows <= 60; rows++) {
       for (const columns of [20, 39, 40, 80, 120, 400]) {
         for (const overlay of OVERLAY_KINDS) {
-          for (const key of sweeps) {
-            for (let want = 0; want <= 12; want++) {
-              for (const expanded of overlay === 'review' && key === 'previewWant' ? [false, true] : [false]) {
-                checkInvariants({ rows, columns, overlay, ...fixed, [key]: want, expanded }, note);
-                calls++;
+          for (const chrome of [0, 3] as const) {
+            for (const gate of [0, 1] as const) {
+              for (const key of sweeps) {
+                for (let want = 0; want <= 12; want++) {
+                  for (const expanded of overlay === 'review' && key === 'previewWant' ? [false, true] : [false]) {
+                    checkInvariants({ rows, columns, overlay, ...fixed, [key]: want, expanded, chrome, gate }, note);
+                    calls++;
+                  }
+                }
               }
             }
           }
         }
       }
     }
-    expect(calls).toBe(59 * 6 * (OVERLAY_KINDS.length * 6 * 13 + 13));
+    expect(calls).toBe(59 * 6 * 4 * (OVERLAY_KINDS.length * 6 * 13 + 13));
     expect(violations).toEqual([]);
   });
 
@@ -322,6 +355,48 @@ describe('the §2.2 allocation table, recomputed from the function', () => {
     expect(l.total).toBeLessThanOrEqual(27 + (i.expanded ? l.preview : 0));
   });
 
+  it('TUI-DESIGN-2 §4.2: the boxed allocation at 80×24 — splash 11 · idle 6 · live jev-only 7 · panel open 12 · full 18 · review card + 4 preview = 19 · review + panel open = 22 · wizard 8 · exit/undo/intake card 9 · blocking 12 · palette 14', () => {
+    const boxed = (o: Partial<LayoutInput>): Layout => computeLayout(input({ rows: 24, columns: 80, chrome: 3, ...o }));
+    expect(cells2(boxed({ paneWant: CAP.splash }))).toBe('1·0·0·5·0·0·0·1·3·1 = 11');
+    expect(boxed({}).total).toBe(6);
+    expect(boxed({ liveWant: 1 }).total).toBe(7);
+    expect(boxed({ paneWant: CAP.panel }).total).toBe(12);
+    expect(boxed({ paneWant: CAP.pane }).total).toBe(18);
+    expect(cells2(boxed({ overlay: 'review', overlayWant: CAP.reviewCard, previewWant: 4 }))).toBe('1·0·0·0·0·9·4·1·3·1 = 19');
+    expect(boxed({ overlay: 'review', overlayWant: CAP.reviewCard, previewWant: 4, paneWant: CAP.panel }).total).toBe(22);
+    expect(cells2(boxed({ overlay: 'wizard', overlayWant: 3 }))).toBe('1·0·0·0·0·3·0·0·3·1 = 8');
+    for (const overlay of ['exitConfirm', 'undo', 'intake'] as const) expect(boxed({ overlay, overlayWant: 1 + CAP.card }).total).toBe(9);
+    expect(boxed({ overlay: 'blocking', overlayWant: 6 }).total).toBe(12);
+    expect(boxed({ overlay: 'palette', overlayWant: CAP.palette }).total).toBe(14);
+    // the hosted gate row: composer floor 1 + gate, the `›` row one below it
+    const gate = boxed({ overlay: 'secret', overlayWant: 0, gate: 1, composerWant: 3 });
+    expect(gate.gate).toBe(1);
+    expect(gate.composer).toBe(4);
+    expect(composerTop(gate)).toBe(consoleTop(gate) + 2);
+    expect(composerTop(boxed({}))).toBe(consoleTop(boxed({})) + 1);
+    // flat: today's values (consoleTop === composerTop)
+    const flat = computeLayout(input({ rows: 12, columns: 60, chrome: 0, gate: 1 }));
+    expect(flat.chrome).toBe(0);
+    expect(flat.gate).toBe(0);
+    expect(composerTop(flat)).toBe(consoleTop(flat));
+    // the chrome never yields and is whole or absent: at rows 16 with a 12-row overlay it stays and the overlay is cut
+    const tight = boxed({ rows: 16, overlay: 'review', overlayWant: 12 });
+    expect(tight.chrome).toBe(3);
+    expect(tight.total).toBeLessThanOrEqual(14);
+  });
+
+  it('TUI-DESIGN-2 §4.1 chromeRows: boxed at rows ≥ 16 and columns ≥ 40 without a screen reader, flat otherwise — geometry alone', () => {
+    expect(chromeRows(24, 80, false)).toBe(3);
+    expect(chromeRows(16, 40, false)).toBe(3);
+    expect(chromeRows(15, 80, false)).toBe(0);
+    expect(chromeRows(24, 39, false)).toBe(0);
+    expect(chromeRows(24, 80, true)).toBe(0);
+    expect(chromeRows(Number.NaN, 80, false)).toBe(0);
+    expect(chromeRows(12, 60, false)).toBe(0);
+    // below 16 rows the layout ignores a boxed request too (the tier never depends on the budget)
+    expect(computeLayout(input({ rows: 15, columns: 80, chrome: 3 })).chrome).toBe(0);
+  });
+
   it('minimum size (rows 5–7 or columns < 40): rows 6 → notice 1 + composer 1 + status 1 = 3 of 4', () => {
     const l = computeLayout(input({ rows: 6, paneWant: 12, composerWant: 4 }));
     expect(l.budget).toBe(4);
@@ -350,14 +425,14 @@ interface Frame {
   caption: string;
 }
 
-/** captions `W×H (D dynamic rows[; S scrollback rows above])` or `(N of D dynamic rows shown)` (§19.1) */
-function readFrames(): Frame[] {
-  const text = readFileSync(DESIGN, 'utf8');
+/** captions `W×H (D dynamic rows[; S scrollback rows above])` or `(N of D dynamic rows shown)` (§19.1); TUI-DESIGN-2 §8.1 S4: the same grammar under the `H-` ids of the second design */
+function readFrames(path: string = DESIGN, idRe: RegExp = /^\*\*(F-[A-Z]+)\.\s+(.*)$/): Frame[] {
+  const text = readFileSync(path, 'utf8');
   const lines = text.split('\n');
   const frames: Frame[] = [];
   for (let n = 0; n < lines.length; n++) {
     const line = lines[n] ?? '';
-    const m = /^\*\*F-([A-Z]+)\.\s+(.*)$/.exec(line);
+    const m = idRe.exec(line);
     if (!m) continue;
     const caption = m[2] ?? '';
     const geo = /(\d+)×(\d+)\s+\(/.exec(caption);
@@ -370,7 +445,7 @@ function readFrames(): Frame[] {
     const body: string[] = [];
     for (k++; k < lines.length && lines[k] !== '```'; k++) body.push(lines[k] ?? '');
     frames.push({
-      id: `F-${m[1]}`,
+      id: m[1] ?? '',
       columns: Number(geo[1]),
       rows: Number(geo[2]),
       dynamic: Number(dyn[1] ?? dyn[2]),
@@ -392,5 +467,24 @@ describe('every fenced frame of docs/TUI-DESIGN.md §2.3 (TUI-DESIGN §19.1)', (
     for (const row of f.lines) expect(stringWidth(row), `${f.id} row wider than ${f.columns}: ${JSON.stringify(row)}`).toBeLessThanOrEqual(f.columns);
     // the dynamic rows shown never exceed the rows − 2 budget of the captioned geometry
     expect(f.dynamic).toBeLessThanOrEqual(Math.max(0, f.rows - 2));
+  });
+});
+
+describe('every fenced frame of docs/TUI-DESIGN-2.md §4.10 (TUI-DESIGN-2 §8.1 S4, readFrames v2)', () => {
+  const frames = readFrames(DESIGN2, /^\*\*(H-[A-Z0-9]+w?)\.\s+(.*)$/);
+  it('finds the 24 worked frames H-A1 … H-J2', () => {
+    expect(frames.map((f) => f.id)).toEqual(['H-A1', 'H-A1w', 'H-A2', 'H-A2w', 'H-A3', 'H-A3w', 'H-B2', 'H-B2w', 'H-C1', 'H-C1w', 'H-D1', 'H-D1w', 'H-E1', 'H-E1w', 'H-F1', 'H-F1w', 'H-G1', 'H-G1w', 'H-H2', 'H-H2w', 'H-I1', 'H-I1w', 'H-J1', 'H-J2']);
+  });
+  it.each(frames.map((f) => ({ id: f.id, f })))('$id: every row ≤ W cells; console and card rows and the rule row exactly W; dynamic ≤ rows − 2; the row count matches its caption', ({ f }) => {
+    expect(f.lines.length).toBe(f.dynamic + f.scrollback);
+    for (const row of f.lines) expect(stringWidth(row), `${f.id} row wider than ${f.columns}: ${JSON.stringify(row)}`).toBeLessThanOrEqual(f.columns);
+    expect(f.dynamic).toBeLessThanOrEqual(Math.max(0, f.rows - 2));
+    for (const row of f.lines) if (/^[╭│├╰]/.test(row)) expect(stringWidth(row), `${f.id} box row not ${f.columns}: ${JSON.stringify(row)}`).toBe(f.columns);
+    const rule = f.lines[f.scrollback] ?? '';
+    expect(rule.startsWith('───'), `${f.id} first dynamic row is not the rule row: ${JSON.stringify(rule)}`).toBe(true);
+    expect(stringWidth(rule), `${f.id} rule row not ${f.columns}`).toBe(f.columns);
+    // the boxed frames (rows ≥ 16) end in the console's bottom edge; the flat ones in a bare status row
+    if (f.rows >= BOXED_MIN_ROWS) expect(f.lines.at(-1)).toMatch(/^╰─+╯$/);
+    else expect(f.lines.at(-1)).toMatch(/step 0\/–/);
   });
 });

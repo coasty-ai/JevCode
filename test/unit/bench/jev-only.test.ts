@@ -32,7 +32,11 @@ const threeWay: EngineScript = (_task, mode) => ({
 
 describe('conditions helpers', () => {
   it('order, parsing, generator requirement and per-condition config know jev-only', () => {
-    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only']);
+    expect(CONDITION_ORDER).toEqual(['jev-on', 'jev-off', 'jev-only', 'llm-jev']);
+    // llm-jev (docs/LLM-JEV-DESIGN.md): a condition that pays a generator AND runs the synthesizer
+    expect(isEngineMode('llm-jev')).toBe(true);
+    expect(requiresGenerator(['llm-jev'])).toBe(true);
+    expect(parseConditions('llm-jev,jev-only')).toEqual(['llm-jev', 'jev-only']);
     expect(isEngineMode('jev-only')).toBe(true);
     expect(isEngineMode('jev-maybe')).toBe(false);
     expect(parseConditions('jev-only, jev-on')).toEqual(['jev-only', 'jev-on']);

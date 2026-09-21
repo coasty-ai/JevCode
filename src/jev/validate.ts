@@ -124,6 +124,10 @@ function validateAnswer(raw: unknown, question: Question, path: string): Answer 
   }
 }
 
+/**
+ * TUI-DESIGN-2 §2.4 / §6 item 5: `cost` is optional on the wire — TypeSafe's native response carries none (PROBE) and the
+ * client prices it from the provider table; a present non-finite or negative cost still fails transient.
+ */
 function validateUsage(raw: unknown, path: string): JevUsage {
   if (!isJsonObject(raw)) fail(path, 'expected an object', 'transient');
   const read = (k: keyof JevUsage): number => {
@@ -131,7 +135,9 @@ function validateUsage(raw: unknown, path: string): JevUsage {
     if (!isFiniteNumber(v) || v < 0) fail(`${path}.${k}`, 'expected a finite non-negative number', 'transient');
     return v;
   };
-  return { input_tokens: read('input_tokens'), output_tokens: read('output_tokens'), cost: read('cost') };
+  const usage: JevUsage = { input_tokens: read('input_tokens'), output_tokens: read('output_tokens') };
+  if (raw['cost'] !== undefined) usage.cost = read('cost');
+  return usage;
 }
 
 /** Optional wire identifier: absent when missing/empty/not a string, clipped when oversize. */

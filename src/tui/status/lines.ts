@@ -10,7 +10,10 @@
  * at the end of the row, never dropped); meter bars at ≥ 140. Drop order when short: ShortHelp →
  * sparkline → git → session meter → wall → centre. Cells are measured by O2's `stringWidth`, bars
  * and the sparkline are O4's, the money and meter words O6's, so every twin draws the same picture.
- * No I/O, no clock: `state.nowMs`.
+ * No I/O, no clock: `state.nowMs`. TUI-DESIGN-2 §1.5 / §4.8: the mode badge (`jev-only` · `jev+llm` · `llm-only`,
+ * ` · next run` while a `/mode` is pending) and the conversational left words (`⠹ thinking` · `⠹ looking` ·
+ * `⠹ replying` · `asking`); in the boxed tier the row is drawn at the console's inner width, in the flat tier the
+ * badge leads the left zone (`jev-only · idle`) and is the first thing dropped when short.
  */
 import type { BlockingKind, BlockingRequest, ConfirmRequest, EngineMode, EngineStatus, GitHead, RetryCause, RunResult, SandboxLevel, SpendSnapshot, StopReason } from '../../core/types.js';
 import { exitCodeFor } from '../../loop/stop.js';
@@ -85,6 +88,29 @@ export interface StatusLineState {
   readonly wallMs?: number | null;
   /** `run:end.exitCode`; derived with `exitCodeFor(done.stopReason, done.error)` when absent */
   readonly doneExitCode?: number | null;
+  /** TUI-DESIGN-2 §1.5: the mode badge — the live mode and the `/mode` pending for the next run */
+  readonly modeBadge?: { mode: EngineMode; pending: EngineMode | null } | null;
+  /** TUI-DESIGN-2 §4.8: the conversational phase of a submission (`⠹ thinking` · `⠹ looking` · `⠹ replying`) */
+  readonly thinking?: ThinkingPhase | null;
+}
+
+/** TUI-DESIGN-2 §4.8: the three phases between Enter and a reply. */
+export type ThinkingPhase = 'intake' | 'lookup' | 'replying';
+/** TUI-DESIGN-2 §4.8 / §12 "Status": the left words per phase (`asking` is the `intake` overlay's word). */
+export const THINKING_WORDS: Readonly<Record<ThinkingPhase, string>> = { intake: 'thinking', lookup: 'looking', replying: 'replying' };
+/** TUI-DESIGN-2 §3.7 / §12: the left word while the intake card asks `run this as a task?`. */
+export const ASKING_WORD = 'asking';
+
+/** TUI-DESIGN-2 §1.5: the badge words (llm-jev: docs/LLM-JEV-DESIGN.md §9.3). */
+export type ModeBadge = 'jev-only' | 'jev+llm' | 'llm-only' | 'llm-jev';
+/** TUI-DESIGN-2 §1.5: jev-only → `jev-only`; jev-on → `jev+llm`; jev-off → `llm-only`; llm-jev → `llm-jev`. */
+export function modeBadgeWord(mode: EngineMode): ModeBadge {
+  return mode === 'jev-on' ? 'jev+llm' : mode === 'jev-off' ? 'llm-only' : mode === 'llm-jev' ? 'llm-jev' : 'jev-only';
+}
+/** TUI-DESIGN-2 §1.5 / §12 "Console": `jev-only`; `jev+llm · next run` while a pending mode differs from the live one. */
+export function modeBadge(mode: EngineMode, pending: EngineMode | null, g: GlyphSet = GLYPHS.unicode): string {
+  if (pending !== null && pending !== mode) return `${modeBadgeWord(pending)} ${g.dot} next run`;
+  return modeBadgeWord(mode);
 }
 
 /** TUI-DESIGN §7.4 / §14.1: glyph mode, motion, spinner phase and renderer mode (all default to the Unicode session TUI). */
@@ -93,6 +119,8 @@ export interface StatusLineOptions {
   reducedMotion?: boolean;
   spinnerFrame?: number;
   mode?: 'session' | 'one-shot';
+  /** TUI-DESIGN-2 §1.5 / §4.8: the flat tier — `state.modeBadge` leads the left zone as `<badge> · <word>` (dropped first when short) */
+  flatBadge?: boolean;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -296,9 +324,15 @@ export function leftZoneWord(s: StatusLineState, o: StatusLineOptions = {}): str
 function leftWord(s: StatusLineState, o: StatusLineOptions): string {
   if (s.overlay === 'wizard') return 'setup';
   if (s.overlay === 'palette') return 'palette';
+  // TUI-DESIGN-2 §3.7 / §4.8: the intake card owns the left word
+  if (s.overlay === 'intake') return ASKING_WORD;
   if (s.picker === true) return 'picker';
   if (s.run === 'aborting') return 'aborting';
   if (s.run === 'pausing') return `pausing after step ${stepOf(s)}`;
+  // TUI-DESIGN-2 §3.1 row 1 / §4.8: between Enter and the reply — `⠹ thinking` · `⠹ looking` · `⠹ replying` (`• thinking`
+  // under reduced motion). The submission runs under `run: 'starting'` until the reply or `run:start` (§3.1 row 5), so the
+  // chat phase wins over the bare `starting` word; a live run never carries a phase (the controller refuses `converse` then)
+  if (s.thinking !== undefined && s.thinking !== null && (s.run === 'none' || s.run === 'starting')) return `${spinnerGlyph(o)} ${THINKING_WORDS[s.thinking]}`;
   if (s.run === 'starting') return 'starting';
   if (s.run === 'none') {
     if (s.done === null) return 'idle';
@@ -338,11 +372,19 @@ export function secretBadge(s: StatusLineState, ascii = false): string {
   return `${glyphs(ascii).warn} secret?`;
 }
 
-/** TUI-DESIGN §7.4 / §7.5: the whole left zone — the active toast, or the word followed by the badges. */
+/** TUI-DESIGN §7.4 / §7.5: the whole left zone — the active toast, or the word followed by the badges (the flat-tier badge prefix is `statusZones`'s, so it can be dropped first). */
 export function leftZoneText(s: StatusLineState, o: StatusLineOptions = {}): string {
   const toast = activeToast(s.toasts, s.nowMs);
   if (toast !== null) return toastText(toast, o.ascii === true);
   return [leftZoneWord(s, o), ...badges(s)].join(' ');
+}
+
+/** TUI-DESIGN-2 §1.5 / §4.8: the flat tier's `<badge> · ` prefix — only with `flatBadge`, a badge in the state and no toast on the zone; '' otherwise. */
+export function flatBadgePrefix(s: StatusLineState, o: StatusLineOptions = {}): string {
+  if (o.flatBadge !== true || s.modeBadge === undefined || s.modeBadge === null) return '';
+  if (activeToast(s.toasts, s.nowMs) !== null) return '';
+  const g = glyphs(o.ascii === true);
+  return `${modeBadge(s.modeBadge.mode, s.modeBadge.pending, g)} ${g.dot} `;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -360,7 +402,7 @@ function seg(id: SegmentId, text: string): Segment {
   return { id, text, width: stringWidth(text) };
 }
 
-/** TUI-DESIGN §7.4 drop order when short: ShortHelp → sparkline → git → session meter → wall (→ centre, which needs ≥ 24 free cells anyway). */
+/** TUI-DESIGN §7.4 drop order when short: ShortHelp → sparkline → git → session meter → wall (→ centre, which needs ≥ 24 free cells anyway); the flat-tier badge prefix goes before all of them (TUI-DESIGN-2 §1.5). */
 export const DROP_ORDER: readonly ('help' | 'spark' | 'git' | 'sess' | 'wall')[] = ['help', 'spark', 'git', 'sess', 'wall'];
 
 /**
@@ -442,7 +484,7 @@ export interface StatusZones {
   centre: string;
   right: string[];
   /** which drops were needed to fit */
-  dropped: ('help' | 'spark' | 'git' | 'sess' | 'wall' | 'centre')[];
+  dropped: ('badge' | 'help' | 'spark' | 'git' | 'sess' | 'wall' | 'centre')[];
 }
 
 /** The usable width: NaN and negatives → 0, +Infinity and anything absurd → `MAX_COLUMNS`, fractions floored. */
@@ -455,7 +497,9 @@ function clampColumns(columns: number): number {
 export function statusZones(s: StatusLineState, columns: number, o: StatusLineOptions = {}): StatusZones {
   const cols = clampColumns(columns);
   const ascii = o.ascii === true;
-  let left = leftZoneText(s, o);
+  const word = leftZoneText(s, o);
+  const prefix = flatBadgePrefix(s, o);
+  let left = `${prefix}${word}`;
   let leftWidth = stringWidth(left);
   const { segments, wall } = rightZoneSegments(s, cols, o);
   const dropped: StatusZones['dropped'] = [];
@@ -471,6 +515,12 @@ export function statusZones(s: StatusLineState, columns: number, o: StatusLineOp
     segments.splice(i, 1);
     return true;
   };
+  // TUI-DESIGN-2 §1.5: the flat-tier badge yields before `help`
+  if (prefix !== '' && !fits()) {
+    left = word;
+    leftWidth = stringWidth(left);
+    dropped.push('badge');
+  }
   for (const d of DROP_ORDER) {
     if (fits()) break;
     if (d === 'wall') {

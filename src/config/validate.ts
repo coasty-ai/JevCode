@@ -4,9 +4,10 @@
  */
 import { ConfigError } from '../errors.js';
 import { parseDuration } from '../core/time.js';
-import type { DeciderConfig, GeneratorConfig, Resolved, RunLimits } from '../core/types.js';
+import type { DeciderConfig, EngineMode, GeneratorConfig, JevProvider, JevProviderSource, Resolved, RunLimits } from '../core/types.js';
+import { JEV_PROVIDERS, isPinnedJevModel, jevModelMatches as providerJevModelMatches, normaliseModelId, providerForHost } from '../jev/providers.js';
 import type { SettingName } from './types.js';
-import { BASE_URLS, CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_SPEND_CAP_USD, MAX_COMMAND_TIMEOUT_MS, UNPRICED_TOKENS_PER_USD, lookupPricing } from './defaults.js';
+import { BASE_URLS, CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, DEFAULT_COMMAND_TIMEOUT_MS, DEFAULT_MAX_OUTPUT_BYTES, DEFAULT_SPEND_CAP_USD, JEV_PROVIDER_SETTING_VALUES, MAX_COMMAND_TIMEOUT_MS, MODE_SETTING_VALUES, UNPRICED_TOKENS_PER_USD, lookupPricing } from './defaults.js';
 
 /** How a validator reads settings: value + source, and the human list of places that were checked. */
 export interface SettingReader {
@@ -78,19 +79,44 @@ export function parseUrlSetting(reader: SettingReader, name: SettingName, r: Res
 }
 
 const DATED_RE = /-\d{8}$/;
+/** TUI-DESIGN-2 §2.5: TypeSafe's own versioned id (`jev-1.13.0`) and the unpatched alias TypeSafe does not serve (`jev-1.13`, 400 per PROBE). */
+const TYPESAFE_PINNED_RE = /^jev-\d+\.\d+\.\d+$/;
+const UNPATCHED_ALIAS_RE = /^jev-\d+\.\d+$/;
 
-/** §5.4 rule 7: lowercase, strip a leading `typesafe/`; pinned iff the result ends in -YYYYMMDD. */
+/** §5.4 rule 7 under OpenRouter's naming: lowercase, strip a leading `typesafe/`; pinned iff the result ends in -YYYYMMDD (provider-aware callers use `isPinnedJevModel`). */
 export function normaliseJevModelId(id: string): { normalised: string; pinned: boolean } {
-  const normalised = id.trim().toLowerCase().replace(/^typesafe\//, '');
+  const normalised = normaliseModelId(id);
   return { normalised, pinned: DATED_RE.test(normalised) };
 }
 
-/** True when a served id is acceptable for a configured id: equal when pinned, prefix-extended when an alias. */
-export function jevModelMatches(configured: string, served: string): boolean {
-  const c = normaliseJevModelId(configured);
-  const s = normaliseJevModelId(served);
-  if (c.pinned) return c.normalised === s.normalised;
-  return s.normalised === c.normalised || s.normalised.startsWith(`${c.normalised}-`);
+/** True when a served id is acceptable for a configured id under `provider`'s naming (TUI-DESIGN-2 §2.5; default openrouter, today's callers). */
+export function jevModelMatches(configured: string, served: string, provider: JevProvider = 'openrouter'): boolean {
+  return providerJevModelMatches(configured, served, provider);
+}
+
+/**
+ * TUI-DESIGN-2 §1.2 / §12: the `mode` setting's value, or the ConfigError `mode: "<v>" (from <source>) is not one of
+ * jev-only|jev-on|jev-off|llm-jev` (exit 2; the §12 text verbatim, so no consulted-sources suffix).
+ */
+export function parseModeSetting(r: Resolved<string>): EngineMode {
+  const v = r.value.trim().toLowerCase();
+  if (v === 'jev-only' || v === 'jev-on' || v === 'jev-off' || v === 'llm-jev') return v;
+  throw new ConfigError(`mode: "${r.value}" (from ${r.source}) is not one of ${MODE_SETTING_VALUES.join('|')}`, { setting: 'mode' });
+}
+
+/** TUI-DESIGN-2 §2.3 rule 1: the `decider.provider` row's value, or a ConfigError naming the source. */
+export function parseJevProviderSetting(reader: SettingReader, r: Resolved<string>): 'auto' | JevProvider {
+  const v = r.value.trim().toLowerCase();
+  if (v === 'auto' || v === 'typesafe' || v === 'openrouter') return v;
+  throw invalid(reader, 'decider.provider', r, `one of ${JEV_PROVIDER_SETTING_VALUES.join('|')}`);
+}
+
+/** TUI-DESIGN-2 §2.5: the offline verdict on a configured model under `provider`'s naming — null when it belongs, else the other provider's name. */
+export function foreignJevModelProvider(model: string, provider: JevProvider): JevProvider | null {
+  const raw = model.trim().toLowerCase();
+  const n = normaliseModelId(model);
+  if (provider === 'typesafe') return raw.startsWith('typesafe/') || DATED_RE.test(n) || UNPATCHED_ALIAS_RE.test(n) ? 'openrouter' : null;
+  return TYPESAFE_PINNED_RE.test(n) ? 'typesafe' : null;
 }
 
 /** TUI-DESIGN §9.5 (Q40): the generator token cap under --allow-unpriced, `spendCapUsd / 15 × 1e6` (≈ 133k for $2.00). */
@@ -179,18 +205,68 @@ export function validateGenerator(reader: SettingReader, warn: (msg: string) => 
   return { provider, model, apiKey: keyR.value.trim(), baseUrl, temperature, maxTokens, pricing, priced };
 }
 
-export function validateDecider(reader: SettingReader): DeciderConfig {
+export interface DeciderValidateOptions {
+  /** TUI-DESIGN-2 §2.3: the provider resolveConfig chose (rules 1–2e) and why; absent = derive from the reader alone (bench, tests) */
+  provider?: { name: JevProvider; source: JevProviderSource };
+  /** the variable the decider key resolved from (`Hit.via`), null for a flag / file value; drives the §2.3 row 3 refusal */
+  keyVia?: string | null;
+}
+
+function isExplicitProviderSource(s: string): s is 'flag' | 'env' | `dotenv:${string}` | `file:${string}` {
+  return s === 'flag' || s === 'env' || s.startsWith('dotenv:') || s.startsWith('file:');
+}
+
+/** The reader-only provider derivation (no resolveConfig): the explicit row, else the base URL's host (rule 2a), else today's OpenRouter. */
+function deriveProvider(reader: SettingReader, baseR: Resolved<string> | undefined): { name: JevProvider; source: JevProviderSource } {
+  const providerR = reader.get('decider.provider');
+  const explicit = providerR ? parseJevProviderSetting(reader, providerR) : 'auto';
+  if (explicit !== 'auto' && providerR) return { name: explicit, source: isExplicitProviderSource(providerR.source) ? providerR.source : 'default' };
+  const host = baseR && baseR.source !== 'default' ? providerForHost(baseR.value.trim()) : null;
+  return host === null ? { name: 'openrouter', source: 'default' } : { name: host, source: 'auto:base-url' };
+}
+
+/**
+ * DESIGN §3 + TUI-DESIGN-2 §2.3 rows 3–4, §2.5: the decider section under the resolved provider. Offline refusals, all exit 2:
+ * a base URL of the other provider's host, a key resolved from OPENROUTER_API_KEY under typesafe, a model id of the other
+ * provider's naming. `pinned` and `pricing` are provider-aware; an unset base URL / model takes the provider's own values.
+ */
+export function validateDecider(reader: SettingReader, opts: DeciderValidateOptions = {}): DeciderConfig {
+  const providerR = reader.get('decider.provider');
+  if (providerR) parseJevProviderSetting(reader, providerR); // rule 1: an unknown value is a ConfigError naming the source
   const baseR = reader.get('decider.baseUrl');
-  if (!baseR) throw missing(reader, 'decider.baseUrl', 'the decider base URL');
-  const baseUrl = parseUrlSetting(reader, 'decider.baseUrl', baseR);
+  const { name: provider, source: providerSource } = opts.provider ?? deriveProvider(reader, baseR);
+  const spec = JEV_PROVIDERS[provider];
+  // row 4: an unset (default-source) base URL is the provider's own endpoint, whatever the SETTINGS row's OpenRouter default says
+  const configuredBase = baseR && baseR.source !== 'default' ? baseR : null;
+  const baseUrl = configuredBase ? parseUrlSetting(reader, 'decider.baseUrl', configuredBase) : spec.baseUrl;
+  const hostProvider = configuredBase ? providerForHost(baseUrl) : null;
+  if (configuredBase && hostProvider !== null && hostProvider !== provider) {
+    throw new ConfigError(
+      `decider.baseUrl: "${configuredBase.value.trim()}" (from ${configuredBase.source}) is ${hostProvider}'s endpoint but decider.provider is ${provider} (from ${providerSource}); pass --jev-provider ${hostProvider} or drop --jev-base-url`,
+      { setting: 'decider.baseUrl' },
+    );
+  }
+
   const keyR = reader.get('decider.apiKey');
   if (!keyR || keyR.value.trim().length === 0) throw missing(reader, 'decider.apiKey', 'the Jev API key');
+  if (provider === 'typesafe' && opts.keyVia === 'OPENROUTER_API_KEY') {
+    throw new ConfigError(`decider.apiKey: resolved from OPENROUTER_API_KEY but decider.provider is typesafe (from ${providerSource}); set TYPESAFE_API_KEY or pass --jev-provider openrouter`, { setting: 'decider.apiKey' });
+  }
+
   const modelR = reader.get('decider.model');
   if (!modelR || modelR.value.trim().length === 0) throw missing(reader, 'decider.model', 'the decider model id');
-  const model = modelR.value.trim();
-  const { normalised, pinned } = normaliseJevModelId(model);
-  if (!/^[a-z0-9][a-z0-9._-]*$/.test(normalised)) throw invalid(reader, 'decider.model', modelR, 'a model id such as typesafe/jev-1.13-20260917');
-  return { baseUrl, apiKey: keyR.value.trim(), model, pinned };
+  // row 4: an unset (default-source) model is the provider's pinned default (`jev-1.13.0` on typesafe)
+  const model = modelR.source === 'default' ? spec.defaultModel : modelR.value.trim();
+  const normalised = normaliseModelId(model);
+  if (!/^[a-z0-9][a-z0-9._/-]*$/.test(normalised)) throw invalid(reader, 'decider.model', modelR, `a model id such as ${spec.defaultModel}`);
+  const foreign = foreignJevModelProvider(model, provider);
+  if (foreign !== null) {
+    const label = foreign === 'openrouter' ? 'an OpenRouter id' : 'a TypeSafe id';
+    throw new ConfigError(`decider.model: "${model}" (from ${modelR.source}) is ${label}; the ${provider} provider serves ${spec.defaultModel} (or pass --jev-provider ${foreign})`, { setting: 'decider.model' });
+  }
+  // §2.5: pinning is provider-aware (`-YYYYMMDD` on openrouter, `jev-<major>.<minor>.<patch>` on typesafe)
+  const pinned = isPinnedJevModel(model, provider);
+  return { provider, baseUrl, apiKey: keyR.value.trim(), model, pinned, pricing: spec.pricing, providerSource };
 }
 
 export interface LimitsValidateOptions {

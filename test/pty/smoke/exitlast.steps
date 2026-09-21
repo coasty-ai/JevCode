@@ -1,12 +1,12 @@
 # --exit-code last-run: the run ends max_steps (4); Ctrl-C ×2 idle exits 4 through host.exit(0) (§1, §13.5, F2)
 expect \x1b\[\?25l
-expect Describe the task
+expect Say hi
 sleep 0.3
 send make the tests pass
 sleep 0.2
 send \r
 expect end max_steps
-expect Follow-up or /command
+expect Follow-up, question
 sleep 0.3
 send \x03
 expect press Ctrl-C again to exit

@@ -16,7 +16,7 @@
  * defaults.
  */
 import { createInterface, type Interface } from 'node:readline';
-import type { SecretHit, SessionHost } from '../core/types.js';
+import type { SecretHit, SessionHost, SubmitOutcome } from '../core/types.js';
 import { dispatchCommand, type CommandAction, type DispatchContext } from './commands/dispatch.js';
 import { isCommandLine } from './commands/parse.js';
 import type { CommandSpec } from './commands/registry.js';
@@ -174,6 +174,15 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
     },
   };
 
+  /**
+   * TUI-DESIGN-2 §3.9 "History": a submission that became a run is `prompt`, a reply or lookup is `chat`, one taken back
+   * (Esc / keep, `nothing`) is not appended; a pre-1.2 host that returns nothing is a run (`prompt`). After the host call (§10.2).
+   */
+  function appendSubmitHistory(outcome: SubmitOutcome | void, text: string): void {
+    if (outcome === undefined || outcome.became === 'run') host.history()?.append('prompt', text);
+    else if (outcome.became === 'chat') host.history()?.append('chat', text);
+  }
+
   /** TUI-DESIGN §4.9 `send`: steer while live, submit while idle, dropped while aborting; history after the host call (§10.2). */
   async function send(full: string, hits: readonly SecretHit[]): Promise<void> {
     const denied = opts.dispatch?.().isDeniedPath;
@@ -191,8 +200,8 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
         if (r.reason === 'full') hint(STEER_QUEUE_FULL_HINT);
         else if (r.reason === 'finished') {
           // the run ended between the phase read and the steer: the text becomes a submission (§4.9 idle path)
-          await host.submit(d.full, { kind: ranBefore() ? 'follow-up' : 'prompt', secretSpans: d.secretSpans, pinnedFiles: [] });
-          host.history()?.append('prompt', d.full);
+          const late = await host.submit(d.full, { kind: ranBefore() ? 'follow-up' : 'prompt', secretSpans: d.secretSpans, pinnedFiles: [] });
+          appendSubmitHistory(late, d.full);
           repromptWhenRunEnds();
         }
         return;
@@ -201,8 +210,8 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
       return;
     }
     // TUI-DESIGN §10.2: `submit` registers the acknowledged spans (`addSecret`) — only then may the store see the text
-    await host.submit(d.full, { kind: d.promptKind, secretSpans: d.secretSpans, pinnedFiles: d.pinnedFiles });
-    host.history()?.append('prompt', d.full);
+    const outcome = await host.submit(d.full, { kind: d.promptKind, secretSpans: d.secretSpans, pinnedFiles: d.pinnedFiles });
+    appendSubmitHistory(outcome, d.full);
     repromptWhenRunEnds();
   }
 

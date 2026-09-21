@@ -163,6 +163,24 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     expect(bad('/provider gemini')).toBe('error: /provider: expected one of anthropic|openrouter, got "gemini"');
     expect(bad('/provider')).toMatch(/expected <p>/);
     expect(ok('/mode jev-only')).toEqual({ kind: 'mode', mode: 'jev-only' });
+    // TUI-DESIGN-2 §1.3: `/mode` alone shows (null); `/llm on|off` maps onto the mode action; `/panel` and `/transcript` (§4.6, §4.5)
+    expect(ok('/mode')).toEqual({ kind: 'mode', mode: null });
+    expect(ok('/mode JEV-ON', live)).toEqual({ kind: 'mode', mode: 'jev-on' });
+    expect(bad('/mode jev-maybe')).toBe('error: /mode: expected one of jev-only|jev-on|jev-off|llm-jev, got "jev-maybe"');
+    expect(bad('/mode jev-on jev-off')).toBe('error: /mode: takes at most 1 argument, got 2');
+    expect(ok('/llm on')).toEqual({ kind: 'mode', mode: 'jev-on' });
+    expect(ok('/llm OFF', live)).toEqual({ kind: 'mode', mode: 'jev-only' });
+    expect(bad('/llm')).toBe('error: /llm: expected <on|off>: on = /mode jev-on, off = /mode jev-only');
+    expect(bad('/llm maybe')).toBe('error: /llm: expected one of on|off, got "maybe"');
+    expect(ok('/panel')).toEqual({ kind: 'panel', panel: 'toggle' });
+    expect(ok('/panel d', live)).toEqual({ kind: 'panel', panel: 'd' });
+    expect(ok('/panel OFF')).toEqual({ kind: 'panel', panel: 'off' });
+    expect(ok('/panel full')).toEqual({ kind: 'panel', panel: 'full' });
+    expect(bad('/panel x')).toBe('error: /panel: expected one of d|p|t|s|off|full, got "x"');
+    expect(ok('/transcript')).toEqual({ kind: 'transcript', view: null });
+    expect(ok('/transcript full', live)).toEqual({ kind: 'transcript', view: 'full' });
+    expect(ok('/transcript compact')).toEqual({ kind: 'transcript', view: 'compact' });
+    expect(bad('/transcript all')).toBe('error: /transcript: expected one of compact|full, got "all"');
     expect(ok('/model claude-sonnet-5')).toEqual({ kind: 'model', id: 'claude-sonnet-5' });
     expect(bad('/model')).toBe('error: /model: expected <id>');
     expect(ok('/theme daltonized')).toEqual({ kind: 'theme', theme: 'daltonized' });
@@ -190,7 +208,7 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     const p = parseCommand('/budget spend-cap 3');
     expect(p.ok).toBe(true);
     if (p.ok) expect(dispatchCommand(p.command, idle)).toMatchObject({ ok: true, action: { kind: 'budget' } });
-    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', budget: '', model: 'm', provider: 'anthropic', mode: 'jev-on', theme: 'dark', history: 'clear' };
+    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', budget: '', model: 'm', provider: 'anthropic', mode: 'jev-on', llm: 'on', theme: 'dark', history: 'clear' };
     for (const c of COMMANDS) {
       const ctx = c.availableDuringTask === 'live' ? live : idle;
       const r = dispatchCommand(`/${c.name} ${sample[c.name] ?? ''}`.trim(), ctx);
@@ -207,6 +225,9 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     expect(argumentCandidates(findCommand('help') as CommandSpec, 3, idle)).toEqual([]);
     expect(COMMAND_TOKENS).toContain('/quit');
     expect(COMMAND_TOKENS).toContain('/sessions');
+    expect(COMMAND_TOKENS).toContain('/llm');
+    expect(argumentCandidates(findCommand('mode') as CommandSpec, 0, idle)).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
+    expect(argumentCandidates(findCommand('panel') as CommandSpec, 0, idle)).toEqual(['d', 'p', 't', 's', 'off', 'full']);
   });
   it('dispatch.ts never imports cli/** (the controller depends on it, not the reverse)', () => {
     const src = readFileSync(fileURLToPath(new URL('../../../../src/tui/commands/dispatch.ts', import.meta.url)), 'utf8');

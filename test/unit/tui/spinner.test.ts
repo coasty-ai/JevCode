@@ -106,6 +106,11 @@ describe('§14.2 source scan: setInterval only in spinner.ts and retry.ts; no us
     return out;
   }
   const files = walk(join(process.cwd(), 'src', 'tui'));
+  it('useAnimation( only in motion.ts (TUI-DESIGN-2 §5.3: the third module allowed to drive time)', () => {
+    const offenders = files.filter((f) => /useAnimation\(/.test(readFileSync(f, 'utf8')) && !/\/motion\.ts$/.test(f));
+    expect(offenders).toEqual([]);
+    expect(files.some((f) => /\/motion\.ts$/.test(f) && /useAnimation\(/.test(readFileSync(f, 'utf8')))).toBe(true);
+  });
   it('setInterval(', () => {
     const offenders = files.filter((f) => /setInterval\(/.test(readFileSync(f, 'utf8')) && !/\/(spinner|retry)\.ts$/.test(f));
     expect(offenders).toEqual([]);
