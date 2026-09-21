@@ -1,19 +1,22 @@
 /**
  * The LLM source in the sub-goal loop (docs/LLM-JEV-DESIGN.md §4.2, §6.1, §6.2, §9.2 stage 4) with a
- * scripted `SubGoalLlm`: the fire point after `locate`, the seeds-vs-LLM race at the top site (seeds
- * win → the round is cancelled; sample 0 within the grace → one decision over the union; grace 0 never
- * waits), the stagger release when the seeds miss and the streamed LLM phase, an empty round on its
- * deadline releasing SKETCH, Q17's order on a RANK oracle, the repository fire point in the best-guess
- * search and the mutation skip at repository sites. jev-only (no `deps.llm`) is untouched: the existing
- * subgoal tests cover it.
+ * scripted `SubGoalLlm`: the fire point after `locate`, the seeds-vs-LLM race (seeds win → the round is
+ * cancelled; sample 0 within the grace → one decision over the union; grace 0 never waits; the grace at a
+ * later site once the top site released the samples; the grace's own queue beside a seed leftover), the
+ * stagger release when the seeds miss and the streamed LLM phase (arrivals past the cap booked, not
+ * queued), the feedback round with both rounds on the trace, an empty round on its deadline releasing
+ * SKETCH, Q17's order on a RANK oracle after N−1 samples, the repository fire point in the best-guess
+ * search overlapping Q9 and the mutation skip at repository sites. jev-only (no `deps.llm`) is untouched:
+ * the existing subgoal tests cover it.
  */
 import { describe, expect, it } from 'vitest';
 
 import type { RepositoryMode } from '../../../../src/synth/search/memory.js';
-import { EDIT_CLASS_QUESTION_ID, LLM_ROUND_MAX_CANDIDATES, SEED_SOURCES, exhaustedKey, llmJobPrior, orderSources, searchBestGuess, searchSubGoal, sourcePriorAt } from '../../../../src/synth/search/subgoal.js';
+import { LLM_FEEDBACK_WIDEN } from '../../../../src/synth/search/llm.js';
+import { EDIT_CLASS_QUESTION_ID, LLM_ROUND_MAX_CANDIDATES, SEED_SOURCES, llmJobPrior, searchBestGuess, searchSubGoal, sourcePriorAt } from '../../../../src/synth/search/subgoal.js';
 import type { GuardVerdict } from '../../../../src/synth/search/subgoal.js';
 import type { VerifyOutcome } from '../../../../src/synth/search/types.js';
-import { GCD_OTHER_TEST, GCD_TEST, cand, choiceOn, fakeBudget, fakeCtx, fakeGoal, fakeLlm, fakeMemory, fakeSubGoalDeps, fastOracle, gcdFixture, slowOracle, summary } from './controller-fakes.js';
+import { GCD_OTHER_TEST, GCD_TEST, cand, choiceOn, fakeBudget, fakeCtx, fakeGoal, fakeLlm, fakeMemory, fakeQueue, fakeSubGoalDeps, fastOracle, gcdFixture, slowOracle, summary } from './controller-fakes.js';
 
 const FIX = 'return gcd(b, a % b)';
 const LLM_FIX = 'return gcd(b, a % b)  # llm';
@@ -39,11 +42,7 @@ function repositoryOf(goalId: string): RepositoryMode {
 }
 
 describe('pure rules', () => {
-  it('the LLM phase has the one `llm` source, its own exhausted key, and the class-dependent queue place of §6.1', () => {
-    expect(orderSources('LLM', null, new Set())).toEqual(['llm']);
-    expect(orderSources('LLM', null, new Set(['llm']))).toEqual([]);
-    const { replace } = gcdFixture();
-    expect(exhaustedKey(replace, 'LLM')).toBe('gcd.py:5:replace#LLM');
+  it('the class-dependent queue place of §6.1 (what `llmJobs` keys the LLM jobs by)', () => {
     // QuixBugs/ladder: after the three seed sources; repository: before every seed
     expect(llmJobPrior('quixbugs')).toBe(sourcePriorAt(SEED_SOURCES.length));
     expect(llmJobPrior('ladder')).toBe(sourcePriorAt(SEED_SOURCES.length));
@@ -52,7 +51,7 @@ describe('pure rules', () => {
   });
 });
 
-describe('the race at the top site (§4.2, §6.2)', () => {
+describe('the race and the grace (§4.2, §6.2)', () => {
   it('seeds win: the round fires after locate, sample 0 does not land within the grace, the seeds decide alone and the round is cancelled on the commit', async () => {
     const { file, replace } = gcdFixture();
     const ctx = fakeCtx();
@@ -133,6 +132,65 @@ describe('the race at the top site (§4.2, §6.2)', () => {
     expect(r.trace.llm?.graceMs).toBeLessThan(5);
   });
 
+  it('the grace runs at any site: the top-site seeds miss (release), a seed passer at the second site waits for sample 0 and the batch is decided once over the union', async () => {
+    const { file, replace, insert } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    const llm = fakeLlm({ graceMs: 1000, rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 60 }] } : null) });
+    const INSERT_FIX = 'a, b = b, a % b';
+    const deps = fakeSubGoalDeps({
+      sites: [replace, insert],
+      seed: (source, site) => (source !== 'mutation' ? [] : site.kind === 'replace' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : [cand(site, INSERT_FIX, { op: 'insert_statement' })]),
+      statusOf: (job) => (job.candidate.text === INSERT_FIX || job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'),
+      decide: commitFirstPlausible,
+    });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(LLM_FIX);
+    // site 1: no passer → the staggered samples were released; site 2: a seed passer → the grace waited for sample 0, then one decision over seeds ∪ LLM
+    expect(llm.rec.released).toBe(1);
+    expect(deps.rec.decideCalls).toHaveLength(2);
+    expect(deps.rec.decideCalls[0]!.map((o) => o.applied.candidate.text)).toEqual([WRONG]);
+    expect(deps.rec.decideCalls[1]!.map((o) => o.applied.candidate.text).sort()).toEqual([INSERT_FIX, LLM_FIX].sort());
+    expect(r.trace.llm!.graceMs).toBeGreaterThanOrEqual(30);
+    const grace = ctx.events.find((e) => e.type === 'synth' && e.phase === 'grace');
+    expect(grace?.type === 'synth' ? grace.detail : '').toMatch(/1 LLM candidate arrived, running them before the decision/);
+  });
+
+  it("the grace runs the arrived LLM candidates on a queue of their own: a seed leftover in the goal's queue (sorting before LLM jobs on QuixBugs class) takes none of their dispatches", async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    const llm = fakeLlm({ graceMs: 1000, rounds: () => ({ arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }] }) });
+    const LEFTOVER = 'return gcd(a, b % a)  # leftover';
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, FIX, { op: 'argument_swap' })] : []),
+      statusOf: (job) => (job.candidate.text === FIX || job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'),
+      decide: commitFirstPlausible,
+    });
+    deps.llm = llm;
+    // the goal's queue as a cut left it: a seed job keyed between the seeds' place (1.0) and the LLM place (0.7), ordered like the real queue
+    const committed = mem.bases[0]!;
+    let queues = 0;
+    deps.createQueue = () => {
+      const q = fakeQueue({ ordered: true });
+      if (queues++ === 0) q.addAll([{ candidate: cand(replace, LEFTOVER, { op: 'leftover' }), base: committed, p: 0.8, sourcePrior: 0.8, key: [committed.summary.passed, 0.8, 0.8] }]);
+      return q;
+    };
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(LLM_FIX);
+    expect(queues).toBe(2);
+    // batch 1: the seed (the leftover sorts behind it; the plan allowed one run); batch 2: the grace's LLM candidate alone — the leftover never ran
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.text))).toEqual([[FIX], [LLM_FIX]]);
+    expect(deps.rec.decideCalls).toHaveLength(1);
+    expect(deps.rec.decideCalls[0]!.map((o) => o.applied.candidate.text).sort()).toEqual([FIX, LLM_FIX].sort());
+  });
+
   it('the seeds miss: samples 1..N−1 are released at the top-site batch and the LLM phase streams the arrivals into the lanes; the LLM passer commits and SKETCH/BEAM never run while a round is available', async () => {
     const { file, replace } = gcdFixture();
     const ctx = fakeCtx();
@@ -174,6 +232,76 @@ describe('the race at the top site (§4.2, §6.2)', () => {
     // SKETCH is gated while the step still has LLM rounds (the fake never spends the counters)
     expect(deps.rec.sketchCalls).toEqual([]);
     expect(r.trace.llm).toMatchObject({ rounds: 1, samples: 2, valid: 2 });
+  });
+
+  it('the feedback round L1′ (§4.9): round 1 ran without a passer, round 2 fires with the widened listing, and both rounds are booked on the trace', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    const llm = fakeLlm({
+      graceMs: 1000,
+      rounds: (o) =>
+        o.round === 1
+          ? { arrivals: [{ candidates: [cand(replace, 'return gcd(a % b, a)', { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }] }
+          : { arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }], staggered: false },
+    });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : []),
+      statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'),
+      decide: commitFirstPlausible,
+    });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(LLM_FIX);
+    expect(llm.rec.fires).toEqual([
+      { round: 1, editClass: null },
+      { round: 2, widen: LLM_FEEDBACK_WIDEN, needPaths: [], editClass: null },
+    ]);
+    expect(mem.llm?.feedbackRounds.get(goal.id)).toBe(1);
+    // round 1's summary is booked before round 2 replaces it: the trace counts both rounds (the §10.4 rows read this)
+    expect(r.trace.llm).toMatchObject({ rounds: 2, samples: 2, valid: 2, cancelled: 0 });
+    expect(r.trace.bySource.llm).toEqual({ enumerated: 2, tested: 2, passed: 1 });
+  });
+
+  it("arrivals past the run cap are booked, not queued: their dropped hunks reach the attempt ledger and the candidates stay for the source's cache", async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    // 3 runs this step: 1 for the seed, 2 for the LLM phase → a cap of 2 over the round's 3 samples
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: fakeBudget({ jev: 30, runs: 3, llmRounds: 2, llmSamples: 8, llmUsd: 0.02 }) });
+    const goal = fakeGoal();
+    const llm = fakeLlm({
+      rounds: (o) =>
+        o.round === 1
+          ? {
+              arrivals: [
+                { candidates: [cand(replace, 'return gcd(a % b, a)', { source: 'llm', op: 'sample_0_0' })], delayMs: 1 },
+                { candidates: [cand(replace, 'return gcd(a, a % b)', { source: 'llm', op: 'sample_1_0' })], delayMs: 2 },
+                { candidates: [cand(replace, 'return gcd(b, a // b)', { source: 'llm', op: 'sample_2_0' })], delayMs: 8, dropped: [{ sample: 2, patch: 1, reason: 'syntax_error', detail: 'invalid syntax', sha: 'deadbeef0000' }] },
+              ],
+            }
+          : null,
+    });
+    const deps = fakeSubGoalDeps({ sites: [replace], seed: (source, site) => (source === 'mutation' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : []) });
+    // the lanes take a moment (a real run does): the third sample lands while the second batch runs
+    const inner = deps.runQueue;
+    deps.runQueue = async (...args) => {
+      const out = await inner(...args);
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      return out;
+    };
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('budget');
+    // two LLM candidates streamed into the lanes; the third arrival was booked but not queued
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.op))).toEqual([['identifier_substitution'], ['sample_0_0', 'sample_1_0']]);
+    expect(r.trace.bySource.llm).toEqual({ enumerated: 2, tested: 2, passed: 0 });
+    expect(r.trace.llm).toMatchObject({ rounds: 1, samples: 3, valid: 3, cancelled: 0 });
+    expect(mem.llm?.attempts.get(goal.id)?.find((a) => a.op === 'sample_2_1')?.verdict).toMatch(/syntax error: invalid syntax/);
+    // nothing but the three classified runs is `tried`: the third sample's candidate can be replayed from the cache next step
+    expect(mem.tried.size).toBe(3);
   });
 
   it('a round that ends on its deadline with nothing: the LLM phase moves on and SKETCH runs once no round can fire this step', async () => {
@@ -224,6 +352,28 @@ describe('RANK on an expensive oracle (§4g): Q17 orders the arrived candidates,
     expect(r.trace.jevRequests).toBe(4);
     expect(deps.rec.rankCalls).toEqual([]);
   });
+
+  it('builds the Q17 request when N−1 samples have arrived (§4.8): the last sample is not waited for and is cancelled when the search ends', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx({ ask: (qs) => ({ [EDIT_CLASS_QUESTION_ID]: choiceOn(qs[EDIT_CLASS_QUESTION_ID]!, 'substitute_one_token') }) });
+    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    const c1 = cand(replace, 'return gcd(a % b, a)', { source: 'llm', op: 'sample_0_0' });
+    const c2 = cand(replace, LLM_FIX, { source: 'llm', op: 'sample_1_0' });
+    const c3 = cand(replace, 'return gcd(b, a // b)', { source: 'llm', op: 'sample_2_0' });
+    const llm = fakeLlm({ rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [c1], delayMs: 1 }, { candidates: [c2], delayMs: 2 }, { candidates: [c3], delayMs: 5_000 }], staggered: false } : null) });
+    const deps = fakeSubGoalDeps({ sites: [replace], statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'), decide: commitFirstPlausible });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(LLM_FIX);
+    expect(llm.rec.orders).toEqual([[c1.id, c2.id]]);
+    expect(deps.rec.runBatches).toHaveLength(1);
+    expect(deps.rec.runBatches[0]!.map((j) => j.candidate.id)).toEqual([c1.id, c2.id]);
+    // sample 2 was still in flight when the commit ended the search
+    expect(llm.rec.cancelled).toEqual(['commit']);
+    expect(r.trace.llm).toMatchObject({ rounds: 1, samples: 3, valid: 2, cancelled: 1 });
+  });
 });
 
 describe('repository class (§4.2, §4e)', () => {
@@ -234,13 +384,24 @@ describe('repository class (§4.2, §4e)', () => {
     const goal = fakeGoal();
     mem.repository = repositoryOf(goal.id);
     const llmCand = cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' });
-    const llm = fakeLlm({ rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [llmCand], delayMs: 5 }], klass: 'repository' } : null) });
-    const deps = fakeSubGoalDeps({ sites: [replace], seed: (source, site) => (source === 'mutation' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : []), statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged') });
+    const llm = fakeLlm({ rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [llmCand], delayMs: 40 }], klass: 'repository' } : null) });
+    let roundOpenAtRank: boolean | null = null;
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : []),
+      statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'),
+      rank: (cands) => {
+        roundOpenAtRank = !llm.rec.rounds[0]!.closed();
+        return { ranked: cands.map((c, i) => ({ candidate: c, probability: 0.9 - i * 0.05, rank: i + 1 })), escapeProbability: 0.05, fixProbablyAbsent: false, method: 'choice' as const, requests: 1 };
+      },
+    });
     deps.llm = llm;
     const r = await searchBestGuess(ctx, mem, goal, deps);
     expect(r.kind).toBe('commit');
     if (r.kind === 'commit') expect(r.applied.candidate.source).toBe('llm');
     expect(llm.rec.fires).toEqual([{ round: 1, editClass: null }]);
+    // §7.1 (2): Jev ranked the seeds while the round was still in flight (its sample lands 40 ms after the fire)
+    expect(roundOpenAtRank).toBe(true);
     const batch = deps.rec.runBatches[0]!;
     expect(batch.map((j) => j.candidate.source)).toEqual(['llm', 'mutation']);
     expect(batch[0]!.p).toBe(1);

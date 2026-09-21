@@ -17,7 +17,7 @@
  * the pick with `oracleOutcome`. Until then the members are declared here (`LlmOracleOutcome`).
  */
 import { clip } from '../../core/text.js';
-import type { Answer, GenerateRequest, Json, Question, StageName, TokenUsage } from '../../core/types.js';
+import type { Answer, GenerateReasoning, GenerateRequest, Json, Question, StageName, TokenUsage } from '../../core/types.js';
 import { monotonicNow } from '../../core/time.js';
 import { ESCAPE_KEY, assertQuestionBatch, choice, noul } from '../../jev/questions.js';
 import { reproductionGoal, type ReproGoal } from '../oracle/goal.js';
@@ -28,7 +28,7 @@ import type { CodeBlock, Extraction, FailureKind, ReproRunResult, Verdict } from
 import type { VerifyRunFn } from '../verify/types.js';
 import { REPRO_LIMITS, WRITE_REPRODUCTION_TOOL, WRITE_REPRODUCTION_TOOL_NAME, isLengthStop, parseWriteReproduction, type ReproductionOutput } from './schema.js';
 import { costOf, estimatedSampleUsage, generateWithDeadline, sampleSeed, type LlmBudget, type LlmPricing, type SampleEnd } from './source.js';
-import type { GenerateFn } from './types.js';
+import { reasoningEnabled, type GenerateFn } from './types.js';
 
 export type LlmOracleOutcome = 'llm_valid' | 'llm_weak';
 
@@ -51,6 +51,10 @@ export const REPRO_SAMPLES = 3;
 export const REPRO_TEMPERATURES: readonly number[] = [0, 0.7, 0.7];
 export const REPRO_DEADLINE_MS = 20_000;
 export const REPRO_MAX_TOKENS = 1500;
+/** `max_tokens` with reasoning on (§4.8: base 3,000 — the reasoning tokens count against the cap); L2 is one round per run, so it never doubles */
+export const REPRO_MAX_TOKENS_REASONING = 3000;
+/** §4.13 / §10.2 finding (a): OpenRouter answers HTTP 400 to `reasoning: {enabled: false}` on z-ai/glm-5.3*; low effort is the default of every LLM call in this mode */
+export const REPRO_DEFAULT_REASONING: GenerateReasoning = { effort: 'low' };
 export const REPRO_ISSUE_CHARS = 8000;
 export const REPRO_BLOCKS_SHOWN = 6;
 export const REPRO_BLOCK_CHARS = 1500;
@@ -261,6 +265,8 @@ export interface ReproWriterInput {
   pricing?: LlmPricing | null;
   /** the step's LLM counters; only `usdLeft` is charged (L2 is one round per run, outside the L1 round/sample counters) */
   budget?: Pick<LlmBudget, 'usdLeft'> | null;
+  /** the request's reasoning setting; default REPRO_DEFAULT_REASONING (`{effort: 'low'}`, the §4.13 default — `{enabled: false}` is refused by the z-ai endpoint) */
+  reasoning?: GenerateReasoning;
 }
 
 export interface ReproWriterResult {
@@ -303,15 +309,17 @@ export async function writeReproduction(input: ReproWriterInput): Promise<ReproW
   const n = input.n ?? REPRO_SAMPLES;
   const system = buildReproSystemPrompt();
   const user = buildReproUserMessage({ task: input.task, repository: input.repository, packageName: input.packageName, framework: input.framework, extraction: input.extraction });
+  const reasoning = input.reasoning ?? REPRO_DEFAULT_REASONING;
+  const maxTokens = reasoningEnabled(reasoning) ? REPRO_MAX_TOKENS_REASONING : REPRO_MAX_TOKENS;
   const runs = Array.from({ length: n }, (_, k) => {
-    const req: GenerateRequest = { system, messages: [{ role: 'user', content: user }], maxTokens: REPRO_MAX_TOKENS, temperature: REPRO_TEMPERATURES[k] ?? REPRO_TEMPERATURES.at(-1) ?? 0.7, tools: [WRITE_REPRODUCTION_TOOL], toolChoice: { name: WRITE_REPRODUCTION_TOOL_NAME }, reasoning: { enabled: false }, providerPrefs: { requireParameters: true } };
+    const req: GenerateRequest = { system, messages: [{ role: 'user', content: user }], maxTokens, temperature: REPRO_TEMPERATURES[k] ?? REPRO_TEMPERATURES.at(-1) ?? 0.7, tools: [WRITE_REPRODUCTION_TOOL], toolChoice: { name: WRITE_REPRODUCTION_TOOL_NAME }, reasoning, providerPrefs: { requireParameters: true } };
     if (k > 0) req.seed = sampleSeed(input.step ?? 0, k);
     return generateWithDeadline(input.generate, req, { sample: k, purpose: 'write_reproduction', signal: input.signal, deadlineMs: input.deadlineMs ?? REPRO_DEADLINE_MS, now });
   });
   const ends = await Promise.all(runs.map((r) => r.promise));
   const pricing = input.pricing ?? null;
   const sibling = ends.find((e): e is Extract<SampleEnd, { kind: 'result' }> => e.kind === 'result' && e.result.usage.inputTokens > 0);
-  const estimate = (): TokenUsage => estimatedSampleUsage({ siblingInputTokens: sibling?.result.usage.inputTokens ?? null, promptChars: system.length + user.length, maxTokens: REPRO_MAX_TOKENS, pricing });
+  const estimate = (): TokenUsage => estimatedSampleUsage({ siblingInputTokens: sibling?.result.usage.inputTokens ?? null, promptChars: system.length + user.length, maxTokens, pricing });
   const trials = ends.map((end, k) => readSample(k, end, estimate, pricing));
   const usd = trials.reduce((s, t) => s + t.usd, 0);
   const estimatedUsd = trials.filter((t) => t.estimated).reduce((s, t) => s + t.usd, 0);

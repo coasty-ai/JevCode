@@ -20,7 +20,7 @@ import { monotonicNow } from '../../core/time.js';
 import { attemptFromDrop, attemptLedger, attemptsHash, createAstCompileCheck, type AstCompileCheck, type CompileCheck, type LlmApplied } from '../llm/candidates.js';
 import { buildFixSystemPrompt, buildFixUserMessage, hintSchedule, listingSet, PROMPT_LIMITS_FIX, type AttemptRecord, type HintAnchor, type Listing, type ListingMember, type LocalisationLine, type OutlineView } from '../llm/prompt.js';
 import { orderByQ17, type Q17Order } from '../llm/rank.js';
-import { createLlmSource, type CancelReason, type LlmBudget, type LlmFireInput, type LlmPricing, type LlmRoundSummary, type LlmSource, type SampleArrival } from '../llm/source.js';
+import { createLlmSource, samplesFor, type CancelReason, type LlmBudget, type LlmFireInput, type LlmPricing, type LlmRoundSummary, type LlmSource, type SampleArrival } from '../llm/source.js';
 import type { OracleClass } from '../llm/types.js';
 import { outline, tracebackFrames } from '../localize/outline.js';
 import type { LocalizeResult, SourceFile } from '../types.js';
@@ -45,6 +45,8 @@ export const LLM_FEEDBACK_ROUNDS_PER_GOAL = 2;
 export const LLM_ATTEMPTS_KEPT = 60;
 /** Compile-check temp files live under `<runDir>/tmp/synth/compile` (§4.7 step 4). */
 export const LLM_COMPILE_DIR = 'tmp/synth/compile';
+/** A cache replay has no provider deadline; its re-anchoring and compile check run through the sandbox, so the loop's waits on it are bounded by this. */
+export const LLM_REPLAY_DEADLINE_MS = 10_000;
 const COMPILE_OUTPUT_BYTES = 64 * 1024;
 
 // ---------------------------------------------------------------------------------------
@@ -103,7 +105,7 @@ export interface LlmRound {
   /** abort the in-flight samples; resolves once every cancelled sample is metered */
   cancel(reason: CancelReason): Promise<void>;
   closed(): boolean;
-  /** ms until the round's per-sample deadline passes (0 once it has) */
+  /** ms until the per-sample deadline of the round's latest-fired samples passes (0 once it has; a stagger release restarts it) */
   deadlineLeftMs(): number;
   summary(): LlmRoundSummary | null;
 }
@@ -133,6 +135,8 @@ class PumpedRound implements LlmRound {
   private waiters: (() => void)[] = [];
   private ended = false;
   private wasReleased: boolean;
+  /** when `release()` fired samples 1..N−1: their deadline runs from here, not from the round's start */
+  private releasedMs: number | null = null;
 
   constructor(src: LlmSource, meta: RoundMeta, now: () => number) {
     this.src = src;
@@ -177,6 +181,7 @@ class PumpedRound implements LlmRound {
   }
 
   release(): void {
+    if (!this.wasReleased) this.releasedMs = this.now();
     this.wasReleased = true;
     this.src.release();
   }
@@ -213,8 +218,16 @@ class PumpedRound implements LlmRound {
       if (this.buffer.length > 0 || this.ended) return true;
       const left = until - this.now();
       if (left <= 0) return false;
-      const timer = new Promise<void>((resolve) => setTimeout(resolve, left));
-      await Promise.race([this.untilChange(), timer]);
+      // the timer is cleared when an arrival wins the race, so a grace leaves nothing dangling
+      let handle: ReturnType<typeof setTimeout> | null = null;
+      const timer = new Promise<void>((resolve) => {
+        handle = setTimeout(resolve, left);
+      });
+      try {
+        await Promise.race([this.untilChange(), timer]);
+      } finally {
+        if (handle !== null) clearTimeout(handle);
+      }
     }
   }
 
@@ -228,7 +241,7 @@ class PumpedRound implements LlmRound {
   }
 
   deadlineLeftMs(): number {
-    return Math.max(0, this.startedMs + this.deadlineMs - this.now());
+    return Math.max(0, (this.releasedMs ?? this.startedMs) + this.deadlineMs - this.now());
   }
 
   summary(): LlmRoundSummary | null {
@@ -256,12 +269,16 @@ export interface LlmFireOptions {
 export interface SubGoalLlm {
   /** the seed-vs-LLM grace window (§6.2), ms */
   readonly graceMs: number;
+  /** the clock the rounds' deadlines run on (the loop measures the grace with it) */
+  readonly now: () => number;
   /** start a round for the goal at its located sites; null when skipped (§4.2: counters spent, no `generate`, nothing to list) */
   fire(ctx: SynthesisContext, mem: LlmSearchMemory, goal: Goal, loc: LocalizeResult, opts: LlmFireOptions): LlmRound | null;
   /** Q17 over the distinct arrived candidates: an order, never a gate (§4g) */
   order(ctx: SynthesisContext, goal: Goal, applied: readonly LlmApplied[], files: ReadonlyMap<string, SourceFile>): Promise<Q17Order>;
   /** dollars the run's rounds have spent so far (estimates included), for the step cap (§4.11) */
   spentUsd(runId: string): number;
+  /** an LLM spend made outside the rounds (the L2 reproduction writer, §4.10) joins the run's total so `(spendCap − spent) / stepsLeft` sees it */
+  recordSpend(ctx: SynthesisContext, usd: number): void;
   /** the persisted round cache for `synthState` (≤ 4 KB), null before the first round */
   exportCache(runId: string): Json | null;
   /** step end: the compile temp files are removed (§4.7 step 4) */
@@ -297,26 +314,32 @@ function committedFiles(mem: LlmSearchMemory): ReadonlyMap<string, SourceFile> |
   return mem.bases.find((b) => b.origin === 'committed')?.files ?? null;
 }
 
-/** The step's LLM counters as the source charges them (`LlmBudget` over `StepBudget`). */
-function budgetView(sb: StepBudget): LlmBudget {
+/**
+ * The step's LLM counters as the source charges them (`LlmBudget` over `StepBudget`). The view reads `mem.stepBudget`
+ * at every access, never a captured object: a re-baseline within the step installs a fresh budget (the repository
+ * step-1 overlap fires the round before the scoped baseline replaces it), and the samples that land afterwards must
+ * decrement the counters the rest of the step reads.
+ */
+function budgetView(mem: Pick<LlmSearchMemory, 'stepBudget'>): LlmBudget {
+  const sb = (): StepBudget => mem.stepBudget;
   return {
     get roundsLeft() {
-      return sb.llmRoundsLeft;
+      return sb().llmRoundsLeft;
     },
     set roundsLeft(v: number) {
-      sb.llmRoundsLeft = v;
+      sb().llmRoundsLeft = v;
     },
     get samplesLeft() {
-      return sb.llmSamplesLeft;
+      return sb().llmSamplesLeft;
     },
     set samplesLeft(v: number) {
-      sb.llmSamplesLeft = v;
+      sb().llmSamplesLeft = v;
     },
     get usdLeft() {
-      return sb.llmUsdLeft;
+      return sb().llmUsdLeft;
     },
     set usdLeft(v: number) {
-      sb.llmUsdLeft = v;
+      sb().llmUsdLeft = v;
     },
   };
 }
@@ -405,7 +428,10 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
     const tReproMs = repository ? mem.oracle.tRunMs.goalSubset : null;
     const klass = llmClassOf(mem.oracle, mem.goals.length, repository);
     const n = decideLlmN(mem.oracle, mem.stepBudget, klass, tReproMs);
-    if (n <= 0) return skip(`LLM counters spent: ${mem.stepBudget.llmRoundsLeft} rounds, ${mem.stepBudget.llmSamplesLeft} samples, $${mem.stepBudget.llmUsdLeft.toFixed(4)} left`);
+    // §4.2: spent counters skip the generation, not the site cache — the source still re-queues the cached untried candidates
+    // of an earlier step first; it refuses to generate on the same counters itself
+    const spent = n <= 0;
+    const spentNote = `LLM counters spent: ${mem.stepBudget.llmRoundsLeft} rounds, ${mem.stepBudget.llmSamplesLeft} samples, $${mem.stepBudget.llmUsdLeft.toFixed(4)} left`;
     const traceback = repo?.traceback ?? mem.baseline?.outputTail ?? null;
     const { listings, frames } = listingsFor(files, loc, traceback, { ...(o.widen === undefined ? {} : { widen: o.widen }), ...(o.needPaths === undefined ? {} : { needPaths: o.needPaths }) });
     if (listings.length === 0) return skip('no listing member (no located site, no workspace traceback frame)');
@@ -438,7 +464,8 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       step: ctx.step,
       round: o.round,
       klass,
-      n,
+      // the class's N stands when the counters are spent: it is only compared with the cache size then
+      n: spent ? samplesFor(klass, tReproMs) : n,
       tReproMs,
       system: buildFixSystemPrompt(),
       userFor,
@@ -449,7 +476,7 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       // §10.2 live finding (a): OpenRouter answers 400 to `reasoning: {enabled: false}` on z-ai/glm-5.3*; low effort is the default
       reasoning: { effort: 'low' },
       signal: ctx.signal,
-      budget: budgetView(mem.stepBudget),
+      budget: budgetView(mem),
       attemptHash: attemptsHash(attempts),
     };
     // the feedback round fires whole (§4.6: "all"); the class decides otherwise unless a test overrides it
@@ -457,18 +484,23 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
     else if (o.round === 2) input.stagger = false;
     const startedMs = now();
     const fired = run.source.fire(input);
-    const meta = { goalId: goal.id, round: o.round, klass, n, startedMs };
+    const meta = { goalId: goal.id, round: o.round, klass, n: input.n ?? n, startedMs };
     if (fired.fired) return new PumpedRound(run.source, { ...meta, staggered: input.stagger ?? klass !== 'repository', deadlineMs: fired.deadlineMs }, now);
     // a cache replay is a round of its own (its candidates arrive through the queue and the round closes after them)
-    if (fired.cached > 0 && fired.key !== null) return new PumpedRound(run.source, { ...meta, staggered: false, deadlineMs: 0 }, now);
-    return skip(fired.reason);
+    if (fired.cached > 0 && fired.key !== null) return new PumpedRound(run.source, { ...meta, n: fired.cached, staggered: false, deadlineMs: LLM_REPLAY_DEADLINE_MS }, now);
+    return skip(spent ? spentNote : fired.reason);
   }
 
   return {
     graceMs,
+    now,
     fire,
     order: (ctx, goal, applied, files) => orderByQ17({ task: ctx.task, failures: goal.failures, candidates: applied, files }, ctx.ask, ctx.signal, 'propose'),
     spentUsd: (runId) => runs.get(runId)?.spentUsd ?? 0,
+    recordSpend: (ctx, usd) => {
+      const run = runOf(ctx);
+      if (run !== null && Number.isFinite(usd) && usd > 0) run.spentUsd += usd;
+    },
     exportCache: (runId) => runs.get(runId)?.source.exportCache() ?? null,
     stepEnd: async (ctx) => {
       const run = runs.get(ctx.runId);

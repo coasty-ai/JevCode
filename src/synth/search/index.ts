@@ -674,15 +674,29 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       // §5.1 row 2: the run claims the fixed goals now, so the engine's done_<j> Noul judges them on this step's parsed output
       const run = proposeRun(ctx, command, 'full', goal, changed.length > 0, this.runTimeout(ctx, mem), undefined, mem);
       const shown = repo === undefined ? baseline : scopedPartOf(baseline);
+      const commit = scratch.lastCommit;
+      // the commit's own selection when its evidence exists; else the winner's source names it (an `llm` winner is `llm`, §6.2)
+      const sel = commit?.evidence ? selectionFrom(commit.evidence) : { selection: mem.committed.at(-1)?.candidate.source === 'llm' ? ('llm' as const) : ('sieve' as const), candidatesTested: 0, arbitrated: false };
+      // llm-jev (docs/LLM-JEV-DESIGN.md §6.6): every run proposed after an executed change is the claiming run — the completion facts
+      // travel on its evidence and the engine stops `complete` on this very step when its own parsed run agrees (repository class: the
+      // reproduction's workspace verdict too). After a `--resume` this process holds no record of the commit (`lastCommit`,
+      // `previousBaseline` and the committed files are empty): the evidence then compares the fresh baseline with itself and still
+      // carries the facts, so the run can end on the claiming run rather than only via `done`.
+      const claiming = this.llmJev && mem.lastChangeStep !== null;
+      const claim = (p: Proposal): Proposal => {
+        if (!claiming) return p;
+        const evidence = runEvidence(scratch.previousBaseline ?? baseline, baseline, goal, sel, command);
+        return withEvidence(p, { ...evidence, completion: completionEvidence(ctx, mem, command, repo ?? null) });
+      };
       if (changed.length === 0) {
-        if (!never) return run;
+        if (!never) return claim(run);
         if (repo !== undefined) {
           const repro = repo.repro === null ? 'no reproduction oracle from the issue text' : `the issue's reproduction ${repo.repro.spec.testId} ${repo.lastRepro?.verdict.pass === true ? 'passes' : 'fails'}`;
           const known = `${shown.failed + shown.errors} of ${shown.total} scoped tests fail at the base commit`;
-          return { ...run, goal: clip(`${ESTABLISH_GOAL_REPOSITORY} (${known}; ${repro})`, PLAN_ITEM_MAX_CHARS) };
+          return claim({ ...run, goal: clip(`${ESTABLISH_GOAL_REPOSITORY} (${known}; ${repro})`, PLAN_ITEM_MAX_CHARS) });
         }
         const failing = `${baseline.failed + baseline.errors} of ${baseline.total} fail${baseline.failed + baseline.errors === 1 ? 's' : ''} in the synthesizer's own run`;
-        return { ...run, goal: clip(`${ESTABLISH_GOAL} (${failing})`, PLAN_ITEM_MAX_CHARS) };
+        return claim({ ...run, goal: clip(`${ESTABLISH_GOAL} (${failing})`, PLAN_ITEM_MAX_CHARS) });
       }
       // The goal text says why the same command runs again and what the synthesizer's own baseline
       // measured, so the risk stage can tell this from "repeats a step that already failed the same
@@ -692,14 +706,9 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       const last = mem.lastEngineRun;
       const reproNow = repo !== undefined && repo.repro !== null && repo.lastRepro !== null ? ` and the reproduction to ${repo.lastRepro.verdict.pass ? 'pass' : 'still fail'}` : '';
       const expectation = `expect ${shown.passed} of ${shown.total} tests to pass${reproNow}${last === null ? '' : `, ${last.passed} passed in the last run`}`;
-      const commit = scratch.lastCommit;
-      // the commit's own selection when its evidence exists; else the winner's source names it (an `llm` winner is `llm`, §6.2)
-      const sel = commit?.evidence ? selectionFrom(commit.evidence) : { selection: mem.committed.at(-1)?.candidate.source === 'llm' ? ('llm' as const) : ('sieve' as const), candidatesTested: 0, arbitrated: false };
-      let evidence = scratch.previousBaseline === null || commit === null ? null : runEvidence(scratch.previousBaseline, baseline, goal, sel, command);
-      // llm-jev (docs/LLM-JEV-DESIGN.md §6.6): this is the claiming run — the completion facts travel on its evidence and the engine
-      // stops `complete` on this very step when its own parsed run agrees (repository class: the reproduction's workspace verdict too)
-      if (this.llmJev && evidence !== null) evidence = { ...evidence, completion: completionEvidence(ctx, mem, command, repo ?? null) };
-      return withEvidence({ ...run, goal: clip(`${run.goal} (${changed.join(', ')} changed since the last test run; ${expectation})`, PLAN_ITEM_MAX_CHARS) }, evidence);
+      const described: Proposal = { ...run, goal: clip(`${run.goal} (${changed.join(', ')} changed since the last test run; ${expectation})`, PLAN_ITEM_MAX_CHARS) };
+      if (claiming) return claim(described);
+      return withEvidence(described, scratch.previousBaseline === null || commit === null ? null : runEvidence(scratch.previousBaseline, baseline, goal, sel, command));
     }
 
     // Repository mode: a green scoped run at the base commit is not a finished task (the goals come
@@ -1028,19 +1037,27 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   }
 
   /**
-   * docs/LLM-JEV-DESIGN.md §3 row 4a (graft, FactGate): after a commit the lane's regression run is the baseline when every file it
-   * touched reads in the workspace exactly as the lane's post-image — no re-run. Only a green lane run is adopted: a suite that still
-   * fails is re-run so the ledger clusters the remaining failures from the full output (the lane keeps only a bounded tail).
+   * docs/LLM-JEV-DESIGN.md §3 row 4a, §6.4 (graft, FactGate): after a commit the lane's regression run is the baseline when the
+   * workspace reads exactly as the lane's post-image — no re-run. The comparison is the whole loaded tree, not the touched files
+   * alone: every source file the synthesizer holds must equal the lane's base (the touched ones its `after`), and no file may have
+   * appeared or gone, so a directive or steer edit to an untouched file between the patch and the claiming run re-runs the suite
+   * instead of adopting a stale green run. (Files outside `loadPythonFiles` — tests, configuration — are not in the lane image either:
+   * a change there is caught by the engine's own claiming run.) Only a green lane run is adopted: a suite that still fails is re-run
+   * so the ledger clusters the remaining failures from the full output (the lane keeps only a bounded tail).
    */
   private adoptableLaneRun(scratch: RunScratch, files: ReadonlyMap<string, SourceFile>): TestRunSummary | null {
     const outcome = scratch.lastCommit?.outcome ?? null;
     const full = outcome?.full ?? null;
     if (outcome === null || full === null || full.timedOut || full.failed + full.errors > 0 || full.passed === 0) return null;
     if (outcome.applied.files.length === 0) return null;
-    for (const f of outcome.applied.files) {
-      const now = files.get(f.path);
-      if (now === undefined || now.src !== f.after) return null;
+    const touched = new Map(outcome.applied.files.map((f) => [f.path, f.after]));
+    const base = outcome.job.base.files;
+    for (const [path, now] of files) {
+      const expected = touched.get(path) ?? base.get(path)?.src;
+      if (expected === undefined || now.src !== expected) return null;
     }
+    for (const path of base.keys()) if (!files.has(path)) return null;
+    for (const path of touched.keys()) if (!files.has(path)) return null;
     return full;
   }
 
@@ -1336,6 +1353,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         budget,
       });
       mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - r.requests);
+      // the run-level total the next step's `(spendCap − spent) / stepsLeft` reads (§4.11); the step counter was charged by the writer
+      this.deps.llm?.recordSpend(ctx, r.usd);
       this.emit(ctx, 'oracle', `L2 reproduction writer: ${r.outcome} (${r.note}; ${r.trials.length} samples, ${r.requests} request${r.requests === 1 ? '' : 's'}, ${r.durationMs} ms, $${r.usd.toFixed(4)})`);
       return r;
     } catch (e) {

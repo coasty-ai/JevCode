@@ -288,13 +288,13 @@ export function searchDeps(wiring: { llm?: SubGoalLlm } = {}): SearchDeps {
 }
 
 /**
- * docs/LLM-JEV-DESIGN.md §9.4: the synthesizer covers a workspace with Python source files and either a detected pytest/QuixBugs
- * layout or a repository (a whole-project suite or a large package). A non-Python, test-less or feature-work workspace is the
- * engine's generic per-step fallback — outside the dominance claim.
+ * docs/LLM-JEV-DESIGN.md §9.4: the synthesizer covers a workspace with Python source files and either a pytest/QuixBugs layout
+ * whose runner the workspace detected (`info.testCommand`) or a repository (a whole-project suite or a large package). A non-Python,
+ * test-less, runner-less or feature-work workspace is the engine's generic per-step fallback — outside the dominance claim.
  */
 export function synthesizerHandles(info: Pick<WorkspaceInfo, 'testCommand'>, files: readonly string[]): boolean {
   if (!files.some((p) => p.endsWith('.py') && !isTestPath(p))) return false;
-  if (detectLayout(files) !== 'other') return true;
+  if (detectLayout(files) !== 'other') return info.testCommand !== null;
   return isRepositoryWorkspace(info.testCommand, files);
 }
 

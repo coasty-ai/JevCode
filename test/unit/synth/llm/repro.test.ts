@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Answer, ToolCall } from '../../../../src/core/types.js';
 import { ESCAPE_KEY } from '../../../../src/jev/questions.js';
-import { Q18, REPRO_MAX_TOKENS, isLlmOracle, issueQuoteAnchored, scriptProblems, writeReproduction, type ReproWriterInput } from '../../../../src/synth/llm/repro.js';
+import { Q18, REPRO_MAX_TOKENS_REASONING, isLlmOracle, issueQuoteAnchored, scriptProblems, writeReproduction, type ReproWriterInput } from '../../../../src/synth/llm/repro.js';
 import { WRITE_REPRODUCTION_TOOL_NAME } from '../../../../src/synth/llm/schema.js';
 import { extractBlocks } from '../../../../src/synth/oracle/extract.js';
 import { REPRO_SENTINEL } from '../../../../src/synth/oracle/runner.js';
@@ -156,14 +156,16 @@ describe('L2 reproduction writer', () => {
     const budget = { usdLeft: 0.02 };
     const res = await writeReproduction(writerInput({ generate: failing, run: fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }] }).run, pricing, budget, ask: async (_stage, _state, questions) => ({ answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, q.type === 'choice' ? choiceAnswer(q, id === Q18.choiceId ? { script_0: 0.9 } : { exception_raised: 1 }) : noulAnswer(0.8)])) }) }));
     const priced = (4000 * 0.5 + 300 * 2) / 1e6;
-    const estimate = (4000 * 0.5 + REPRO_MAX_TOKENS * 2) / 1e6;
+    // the default request reasons at low effort (§4.13), so the estimate of a sample that never returned assumes the reasoning cap
+    expect(gen.requests()[0]).toMatchObject({ reasoning: { effort: 'low' }, maxTokens: REPRO_MAX_TOKENS_REASONING });
+    const estimate = (4000 * 0.5 + REPRO_MAX_TOKENS_REASONING * 2) / 1e6;
     expect(res.trials.map((t) => [t.status, t.estimated])).toEqual([
       ['accepted', false],
       ['rejected', false],
       ['error', true],
     ]);
     expect(res.trials[0]!.usd).toBeCloseTo(priced, 9);
-    expect(res.trials[2]).toMatchObject({ reason: 'TransportError: stream', usage: { inputTokens: 4000, outputTokens: REPRO_MAX_TOKENS, estimated: true } });
+    expect(res.trials[2]).toMatchObject({ reason: 'TransportError: stream', usage: { inputTokens: 4000, outputTokens: REPRO_MAX_TOKENS_REASONING, estimated: true } });
     expect(res.trials[2]!.usd).toBeCloseTo(estimate, 9);
     expect(res.usd).toBeCloseTo(2 * priced + estimate, 9);
     expect(res.estimatedUsd).toBeCloseTo(estimate, 9);

@@ -11,6 +11,7 @@ import { describe, expect, it } from 'vitest';
 import type { Proposal, WindowEntry } from '../../../../src/core/types.js';
 import { synthesizerHandles } from '../../../../src/synth/index.js';
 import { ESTABLISH_GOAL, LedgerSieveSynthesizer, runMemory } from '../../../../src/synth/search/index.js';
+import { dropMemory } from '../../../../src/synth/search/memory.js';
 import type { BaselineRun, RunMemory, SearchDeps } from '../../../../src/synth/search/index.js';
 import type { SubGoalResult } from '../../../../src/synth/search/subgoal.js';
 import type { Goal } from '../../../../src/synth/search/types.js';
@@ -162,6 +163,41 @@ describe('llm-jev: no establishing run, the claiming run\'s completion facts, la
     await g.synth.synthesize(ctxFor({ runId: gid, step: 2, window: [executedPatch(1)] }));
     expect(g.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(2);
   });
+
+  it('lane adoption compares the whole loaded tree (§6.4): an untouched file that changed between the patch and the claiming run re-runs the suite; the same tree adopts', async () => {
+    const other = sourceFile('util.py', 'def helper():\n    return 1\n');
+    const edited = sourceFile('util.py', 'def helper():\n    return 2\n');
+    const h = harness({ baselines: [failingBaseline(), greenBaseline()], results: [fixFor(true)], files: [[buggy, other], [patched, edited]] });
+    const runId = 'llm-ctl-tree';
+    await h.synth.synthesize(ctxFor({ runId, step: 1 }));
+    const ctx = ctxFor({ runId, step: 2, window: [executedPatch(1)] });
+    await h.synth.synthesize(ctx);
+    expect(h.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(2);
+    expect(ctx.events.some((e) => e.type === 'synth' && e.phase === 'baseline' && e.detail.includes('adopted'))).toBe(false);
+    const g = harness({ baselines: [failingBaseline(), greenBaseline()], results: [fixFor(true)], files: [[buggy, other], [patched, other]] });
+    const gid = 'llm-ctl-tree-same';
+    await g.synth.synthesize(ctxFor({ runId: gid, step: 1 }));
+    await g.synth.synthesize(ctxFor({ runId: gid, step: 2, window: [executedPatch(1)] }));
+    expect(g.calls.filter((c) => c.startsWith('runTests'))).toHaveLength(1);
+  });
+
+  it('after a resume (a fresh process: no commit record, no previous baseline) the claiming run still carries the completion facts (§6.6)', async () => {
+    const runId = 'llm-ctl-resume';
+    const h = harness({ baselines: [failingBaseline()] });
+    const first = ctxFor({ runId, step: 1 });
+    await h.synth.synthesize(first);
+    const persisted = first.synthStates.at(-1) ?? null;
+    // the process restarts: the run memory is gone and a new synthesizer holds no scratch for the run
+    expect(dropMemory(runId)).toBe(true);
+    const resumed = harness({ baselines: [greenBaseline()] });
+    const ctx = ctxFor({ runId, step: 2, window: [executedPatch(1)], synthState: persisted });
+    const p = await resumed.synth.synthesize(ctx);
+    expect(p.action).toMatchObject({ kind: 'run', command: TEST_COMMAND });
+    expect(p.evidence?.completion).toMatchObject({ testsChanged: [], guardPending: false, repro: 'none', oracle: null, command: TEST_COMMAND });
+    // no earlier baseline in this process: the evidence compares the fresh baseline with itself
+    expect(p.evidence?.before).toEqual(p.evidence?.after);
+    expect(p.evidence).toMatchObject({ newlyPassing: [], newlyFailing: [] });
+  });
 });
 
 describe('llm-jev: the revert route (§6.5)', () => {
@@ -224,6 +260,8 @@ describe('synthesizerHandles (§9.4)', () => {
     expect(synthesizerHandles(pytest, ['gcd.py', 'tests/test_gcd.py'])).toBe(true);
     expect(synthesizerHandles(pytest, ['src/a.py', 'src/b.py', 'tests/test_a.py'])).toBe(true);
     expect(synthesizerHandles({ testCommand: null }, ['a.py'])).toBe(false);
+    // a QuixBugs layout whose runner the workspace did not detect is the generic fallback's (§9.4: "detected runner")
+    expect(synthesizerHandles({ testCommand: null }, ['gcd.py', 'tests/test_gcd.py'])).toBe(false);
     expect(synthesizerHandles(pytest, ['index.ts', 'test/index.test.ts'])).toBe(false);
     expect(synthesizerHandles({ testCommand: { command: 'python runtests.py', runner: 'django' } }, ['django/db/models.py'])).toBe(true);
   });

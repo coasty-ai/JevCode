@@ -12,7 +12,7 @@ import { committedBase } from '../../../../src/synth/search/index.js';
 import { createMemory } from '../../../../src/synth/search/memory.js';
 import type { LlmFireOptions, LlmRound, SubGoalLlm } from '../../../../src/synth/search/llm.js';
 import type { CancelReason, LlmRoundSummary, SampleArrival } from '../../../../src/synth/llm/source.js';
-import type { LlmApplied } from '../../../../src/synth/llm/candidates.js';
+import type { DroppedPatch, LlmApplied } from '../../../../src/synth/llm/candidates.js';
 import type { OracleClass } from '../../../../src/synth/llm/types.js';
 import type { GuardVerdict, JevEnumeration, JevSource, SearchQueue, SubGoalDeps } from '../../../../src/synth/search/subgoal.js';
 import type { Base, Goal, VerifyJob, VerifyOutcome, VerifyStatus } from '../../../../src/synth/search/types.js';
@@ -223,8 +223,8 @@ export interface FakeSubGoalOptions {
   regressionRun?: (outcome: VerifyOutcome, goal: Goal) => TestRunSummary | null;
 }
 
-/** A FIFO SearchQueue with the awaitable `open/next/close` of sieve/queue.ts (the LLM round streams into it). */
-export function fakeQueue(): SearchQueue & { items: VerifyJob[]; streaming: boolean } {
+/** A SearchQueue with the awaitable `open/next/close` of sieve/queue.ts (the LLM round streams into it): FIFO, or ordered by `p` descending (stable) like the real queue when `ordered`. */
+export function fakeQueue(o: { ordered?: boolean } = {}): SearchQueue & { items: VerifyJob[]; streaming: boolean } {
   const items: VerifyJob[] = [];
   const waiters: ((j: VerifyJob | null) => void)[] = [];
   const q = {
@@ -235,7 +235,11 @@ export function fakeQueue(): SearchQueue & { items: VerifyJob[]; streaming: bool
     },
     addAll(jobs: Iterable<VerifyJob>) {
       const queued = [...jobs];
-      items.push(...queued);
+      for (const j of queued) {
+        const at = o.ordered === true ? items.findIndex((x) => x.p < j.p) : -1;
+        if (at === -1) items.push(j);
+        else items.splice(at, 0, j);
+      }
       while (waiters.length > 0 && items.length > 0) waiters.shift()!(items.shift()!);
       return { queued };
     },
@@ -366,6 +370,9 @@ export interface FakeArrival {
   candidates: Candidate[];
   /** ms after the sample is started (sample 0 at fire; the rest at release on a staggered round) */
   delayMs?: number;
+  /** hunks the source dropped on arrival (their ledger rows must reach the attempt ledger even when the sample is not queued) */
+  dropped?: DroppedPatch[];
+  need?: { paths: string[]; symbols: string[] } | null;
 }
 
 export interface FakeRoundScript {
@@ -384,6 +391,8 @@ export interface FakeLlmRecord {
   cancelled: CancelReason[];
   /** candidate ids handed to `order`, per call */
   orders: string[][];
+  /** the rounds handed out, in fire order (tests read their state while the loop runs) */
+  rounds: LlmRound[];
 }
 
 class FakeRound implements LlmRound {
@@ -403,6 +412,8 @@ class FakeRound implements LlmRound {
   private ended = false;
   private wasReleased: boolean;
   private cancelledAs: CancelReason | null = null;
+  /** like search/llm.ts PumpedRound: the deadline runs from the release once samples 1..N−1 fired */
+  private releasedMs: number | null = null;
 
   constructor(goalId: string, round: number, script: FakeRoundScript, rec: FakeLlmRecord) {
     this.goalId = goalId;
@@ -430,7 +441,7 @@ class FakeRound implements LlmRound {
     const t = setTimeout(() => {
       if (this.ended) return;
       const applied: LlmApplied[] = a.candidates.map((c) => applyCandidate(c) as LlmApplied);
-      this.buffer.push({ sample: k, status: 'valid', ms: a.delayMs ?? 0, candidates: a.candidates as LlmApplied['candidate'][], applied, dropped: [], need: null, analysis: null, usage: null, usd: 0.001, estimated: false, generationId: null, detail: '' });
+      this.buffer.push({ sample: k, status: 'valid', ms: a.delayMs ?? 0, candidates: a.candidates as LlmApplied['candidate'][], applied, dropped: a.dropped ?? [], need: a.need ?? null, analysis: null, usage: null, usd: 0.001, estimated: false, generationId: null, detail: '' });
       this.delivered += 1;
       if (this.delivered >= this.script.arrivals.length && !(this.script.hang ?? false)) this.end();
       else this.wake();
@@ -458,6 +469,7 @@ class FakeRound implements LlmRound {
   release(): void {
     if (this.wasReleased) return;
     this.wasReleased = true;
+    this.releasedMs = Date.now();
     this.rec.released += 1;
     for (let k = 1; k < this.script.arrivals.length; k++) this.schedule(k);
   }
@@ -512,7 +524,7 @@ class FakeRound implements LlmRound {
   }
 
   deadlineLeftMs(): number {
-    return Math.max(0, this.startedMs + this.deadlineMs - Date.now());
+    return Math.max(0, (this.releasedMs ?? this.startedMs) + this.deadlineMs - Date.now());
   }
 
   summary(): LlmRoundSummary | null {
@@ -530,16 +542,21 @@ export interface FakeLlmOptions {
   order?: (ids: readonly string[]) => string[];
 }
 
-/** A `SubGoalLlm` whose rounds are scripted; records fires, releases, cancellations and Q17 calls. */
-export function fakeLlm(o: FakeLlmOptions): SubGoalLlm & { rec: FakeLlmRecord } {
-  const rec: FakeLlmRecord = { fires: [], released: 0, cancelled: [], orders: [] };
-  return {
+/** A `SubGoalLlm` whose rounds are scripted; records fires, releases, cancellations, Q17 calls and spends. */
+export function fakeLlm(o: FakeLlmOptions): SubGoalLlm & { rec: FakeLlmRecord; spent: number } {
+  const rec: FakeLlmRecord = { fires: [], released: 0, cancelled: [], orders: [], rounds: [] };
+  const llm: SubGoalLlm & { rec: FakeLlmRecord; spent: number } = {
     rec,
+    spent: 0,
     graceMs: o.graceMs ?? 0,
+    now: () => Date.now(),
     fire: (_ctx, _mem, goal, _loc, opts) => {
       rec.fires.push(opts);
       const script = o.rounds(opts, goal);
-      return script === null ? null : new FakeRound(goal.id, opts.round, script, rec);
+      if (script === null) return null;
+      const round = new FakeRound(goal.id, opts.round, script, rec);
+      rec.rounds.push(round);
+      return round;
     },
     order: async (_ctx, _goal, applied) => {
       const ids = applied.map((a) => a.candidate.id);
@@ -549,8 +566,12 @@ export function fakeLlm(o: FakeLlmOptions): SubGoalLlm & { rec: FakeLlmRecord } 
       order.forEach((id, i) => (pChoice[id] = 0.8 - i * 0.1));
       return { order, pChoice, pEscape: 0.05, pMax: 0.8, nouls: {}, maxNoul: 0.7, strong: false, weak: false, requests: 1 };
     },
-    spentUsd: () => 0,
+    spentUsd: () => llm.spent,
+    recordSpend: (_ctx, usd) => {
+      llm.spent += usd;
+    },
     exportCache: () => null,
     stepEnd: async () => undefined,
   };
+  return llm;
 }

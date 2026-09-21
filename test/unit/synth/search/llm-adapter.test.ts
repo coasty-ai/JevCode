@@ -101,4 +101,54 @@ describe('createSearchLlm.fire', () => {
     expect(llm.fire(noGenerate, mem, goal, loc(), { round: 1 })).toBeNull();
     expect(llm.fire(ctx, { ...mem, bases: [] }, goal, loc(), { round: 1 })).toBeNull();
   });
+
+  it('the budget view follows a budget re-installed within the step: samples landing after a re-baseline charge the fresh counters (§4.11 step cap)', async () => {
+    const { ctx, mem, goal } = setup('adapter-rebudget');
+    const llm = createSearchLlm({ pricing: LLM_SERVED_PRICING });
+    const first = mem.stepBudget;
+    const round = llm.fire(ctx, mem, goal, loc(), { round: 1, stagger: false });
+    expect(round).not.toBeNull();
+    if (round === null) return;
+    // the round and its four samples are charged at fire time, on the budget installed then
+    expect(first.llmRoundsLeft).toBe(1);
+    expect(first.llmSamplesLeft).toBe(4);
+    // a re-baseline (the repository step-1 overlap, §7.1) replaces the step budget while the samples are in flight
+    const fresh = fakeBudget({ llmRounds: 1, llmSamples: 4, llmUsd: 0.02 });
+    mem.stepBudget = fresh;
+    await round.rest();
+    expect(first.llmUsdLeft).toBe(0.02);
+    expect(fresh.llmUsdLeft).toBeCloseTo(0.02 - 4 * ((3000 * 0.15 + 200 * 0.5) / 1e6), 9);
+    await llm.stepEnd(ctx);
+  });
+
+  it('spent counters still replay the site cache (§4.2 "re-queued first"): a later fire for the same listing returns the cached untried candidates as a round of its own, without a generation', async () => {
+    const { ctx, mem, goal, gen } = setup('adapter-replay');
+    const llm = createSearchLlm({ pricing: LLM_SERVED_PRICING });
+    const first = llm.fire(ctx, mem, goal, loc(), { round: 1, stagger: false });
+    expect(first).not.toBeNull();
+    if (first === null) return;
+    expect((await first.rest()).flatMap((a) => a.candidates)).toHaveLength(1);
+    // the next step: the round counter is spent, but the cache holds one untried candidate for this listing
+    mem.stepBudget.llmRoundsLeft = 0;
+    const replay = llm.fire(ctx, mem, goal, loc(), { round: 1, stagger: false });
+    expect(replay).not.toBeNull();
+    if (replay === null) return;
+    expect(replay).toMatchObject({ round: 1, n: 1, staggered: false });
+    expect(replay.deadlineLeftMs()).toBeGreaterThan(0);
+    const arrivals = await replay.rest();
+    expect(arrivals.map((a) => [a.sample, a.status])).toEqual([[-1, 'cached']]);
+    expect(arrivals[0]!.candidates.map((c) => c.text.trim())).toEqual(['return (a or 0) + b']);
+    expect(replay.closed()).toBe(true);
+    expect(gen.calls()).toBe(4);
+    await llm.stepEnd(ctx);
+  });
+
+  it('recordSpend adds an out-of-round spend (the L2 writer, §4.10) to the run total the step cap reads', () => {
+    const { ctx } = setup('adapter-spend');
+    const llm = createSearchLlm();
+    expect(llm.spentUsd('adapter-spend')).toBe(0);
+    llm.recordSpend(ctx, 0.004);
+    llm.recordSpend(ctx, Number.NaN);
+    expect(llm.spentUsd('adapter-spend')).toBeCloseTo(0.004, 12);
+  });
 });
