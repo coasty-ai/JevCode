@@ -9,7 +9,7 @@
  * only for that verification is satisfied by the run. Jev still decides; the threshold is unchanged.
  */
 import { noul, ref } from '../../jev/questions.js';
-import type { Question } from '../../core/types.js';
+import { COMPLETING_ORACLE_OUTCOMES, type ActionKind, type CompletionEvidence, type OutcomeStatus, type Question, type TestCounts } from '../../core/types.js';
 
 export const TASK_COMPLETE_ID = 'task_complete';
 
@@ -44,4 +44,52 @@ export function buildCompleteQuestion(): Question {
 /** `task_complete >= completeThreshold` (§5.5 stop rule). */
 export function isComplete(completion: number | null, threshold: number): boolean {
   return completion !== null && completion >= threshold;
+}
+
+/** docs/LLM-JEV-DESIGN.md §6.6: `tests_pass_unparsed` stands in for the parsed counts only when the runner's output could not be parsed. */
+export const TESTS_PASS_UNPARSED_THRESHOLD = 0.85;
+
+export interface CompletionFactInput {
+  /** the executed proposal's action kind (null: no proposal) */
+  action: ActionKind | null;
+  outcome: OutcomeStatus | null;
+  /** the engine's parse of the executed run when it was the workspace test command; null for any other action or command */
+  tests: { command: string; parsed: TestCounts | null; allPassed: boolean | null } | null;
+  /** `workspace.testsCurrent`: no workspace change was executed at or after the run (a code fact of `lastChangeStep`) */
+  testsCurrent: boolean;
+  /** the synthesizer's declaration that this `run` is the claiming run (`ProposalEvidence.completion`) */
+  completion: CompletionEvidence | undefined;
+  /** the recorded `tests_pass_unparsed` answer; null when not asked (parsed run) */
+  testsPassUnparsed: number | null;
+  /** engine-computed (risk.ts VerifiedCompletion): a `done` claiming nothing remains after the engine's own passing, current run */
+  verifiedDone: boolean;
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.6: the synthesizer's side of the fact — every ledger goal fixed, no committed candidate touched a
+ * test file, every multi-passer batch arbitrated, and on the repository class (an oracle was sought or a reproduction ran)
+ * the reproduction passes under a code oracle: an `llm_valid` / `llm_weak` oracle never completes, nor does a run whose
+ * oracle search found nothing. When the evidence names the suite command, the executed run must be that command.
+ */
+export function completionEvidenceHolds(c: CompletionEvidence, executedCommand: string): boolean {
+  if (!c.ledgerFixed || c.testsChanged.length > 0 || c.guardPending) return false;
+  if (c.command !== undefined && c.command.trim() !== executedCommand.trim()) return false;
+  const repository = c.oracle !== null || c.repro !== 'none';
+  return !repository || (c.repro === 'pass' && c.oracle !== null && COMPLETING_ORACLE_OUTCOMES.includes(c.oracle));
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.6 (llm-jev): completion is a code fact declared on the evidence. On the claiming `run` step: the
+ * run executed the workspace test command, the parser read `failed = errors = 0` and `passed > 0` (or, when it read nothing,
+ * `tests_pass_unparsed` stands in), the run is current, and the synthesizer's `evidence.completion` holds in full
+ * (`completionEvidenceHolds`). A `done` completes only when the engine's own passing, current run verifies it (a partial
+ * `done` never does). `task_complete` is recorded, never consulted.
+ */
+export function isCompleteByFact(i: CompletionFactInput): boolean {
+  if (i.action === 'done') return i.outcome === 'noop' && i.verifiedDone;
+  if (i.action !== 'run' || i.outcome !== 'executed' || i.completion === undefined || i.tests === null || !i.testsCurrent) return false;
+  if (!completionEvidenceHolds(i.completion, i.tests.command)) return false;
+  const parsed = i.tests.parsed;
+  if (parsed === null) return i.testsPassUnparsed !== null && i.testsPassUnparsed >= TESTS_PASS_UNPARSED_THRESHOLD;
+  return i.tests.allPassed === true && parsed.failed === 0 && parsed.errors === 0 && parsed.passed > 0;
 }

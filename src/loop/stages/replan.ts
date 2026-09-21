@@ -5,7 +5,7 @@
  * threshold -> impossible regardless of the move.
  */
 import { choice, noul, pairedNouls, ref } from '../../jev/questions.js';
-import type { JsonObject, Question, ReplanDirective, ReplanMove } from '../../core/types.js';
+import type { ChoiceVerdict, JsonObject, Question, ReplanDirective, ReplanMove } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
 import { describeSignatureKind, signatureKind, type LoopDetector } from '../loopdetect.js';
 import { buildReplanState } from '../state.js';
@@ -80,7 +80,7 @@ function falseExamples(option: string): string[] {
 
 export type ReplanOutcome = { kind: 'directive'; directive: ReplanDirective } | { kind: 'stop'; reason: 'replan_stop' | 'impossible'; directive: ReplanDirective };
 
-export function directiveText(move: ReplanMove, verdict: 'chosen' | 'overridden' | 'fallback', probability: number, taskImpossible: number, signature: string): string {
+export function directiveText(move: ReplanMove, verdict: ChoiceVerdict, probability: number, taskImpossible: number, signature: string): string {
   const kind = describeSignatureKind(signatureKind(signature));
   if (move === 'none_of_these' || verdict === 'fallback') {
     return `Jev found no listed recovery applicable after repeating the same ${kind} 3 times (p=${probability.toFixed(2)}, task_impossible=${taskImpossible.toFixed(2)}); propose a different action from anything shown in recent steps.`;

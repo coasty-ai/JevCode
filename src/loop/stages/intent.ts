@@ -201,6 +201,6 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
     confidence = row ? row.confidence : 0;
   });
   const answer: IntentAnswer = resolved.answer === 'none_of_these' || (INTENT_LIST as readonly string[]).includes(resolved.answer) ? (resolved.answer as IntentAnswer) : 'none_of_these';
-  ctx.emit({ type: 'intent', step: ctx.step, intent: resolved.option, answer, probability: resolved.probability, confidence });
+  ctx.emit({ type: 'intent', step: ctx.step, intent: resolved.option, answer, probability: resolved.probability, confidence, verdict: resolved.verdict });
   return { intent: resolved.option, answer, verdict: resolved.verdict, probability: resolved.probability, confidence, pairedNoul: resolved.pairedNoul, planStillValid };
 }

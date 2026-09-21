@@ -2,16 +2,50 @@
  * Judge stage (DESIGN.md §5.5 judge): Nouls succeeded / error_present / new_information,
  * tests_pass_unparsed when the test command ran without a parsable summary, one done_<j>
  * per newly claimed plan item; batched with the completion Noul (complete.ts) in one request.
+ *
+ * llm-jev (docs/LLM-JEV-DESIGN.md §3 row 7, §6.3): the judge is code on every step. A `run`'s
+ * JudgeResult is computed from the parsed counts (`codeJudge`, `source: 'code'`), the plan claims are
+ * accepted by arithmetic (the suite passed, or the claim's goal tests are in the confirmed
+ * `newlyPassing`), and Q21 `done_<j>` / Q22 `task_complete` are asked in one request and recorded
+ * only — a disagreement with the code verdict is logged, never consumed. `tests_pass_unparsed` is
+ * consumed only when the parser read nothing. `patch`/`read`/`edit`/`write` steps have `judge: null`
+ * and ask nothing (patches claim nothing); a `done` records Q22 and its claims follow the code fact
+ * the engine computed (`verifiedDone`).
  */
 import { noul, ref } from '../../jev/questions.js';
-import type { Answer, Decision, DoneClaimResult, JsonObject, JudgeResult, Proposal, Question } from '../../core/types.js';
+import { clip } from '../../core/text.js';
+import type { Answer, Decision, DoneClaimResult, JsonObject, JudgeResult, Proposal, ProposalEvidence, Question } from '../../core/types.js';
 import type { StageContext } from '../engine.js';
-import { buildJudgeState, type ExecutedInfo } from '../state.js';
+import { buildJudgeState, type ExecutedInfo, type ExecutedTests } from '../state.js';
 import { PLAN_ACCEPT_THRESHOLD } from '../plan.js';
-import { TASK_COMPLETE_ID, buildCompleteQuestion } from './complete.js';
+import { TASK_COMPLETE_ID, TESTS_PASS_UNPARSED_THRESHOLD, buildCompleteQuestion } from './complete.js';
 
 export function doneClaimId(j: number): string {
   return `done_${j}`;
+}
+
+function testsPassUnparsedQuestion(): Question {
+  return noul(`Does ${ref('executed.output')} show the test command finishing with every test passing?`, {
+    true: { definition: 'a final summary reporting only passes/skips, exit code 0', examples: ['12 passed in 3.1s', 'ok  pkg/foo  0.412s', 'PASS'] },
+    false: {
+      definition: 'any failed/error count, a traceback after the summary, non-zero exit, or no summary because the run was cut off',
+      examples: ['1 failed, 11 passed', 'FAIL  pkg/foo', 'ERRORS', 'Killed / timed out'],
+    },
+  });
+}
+
+function doneClaimQuestion(j: number): Question {
+  return noul(`Do ${ref('executed')} and ${ref('recent')} show that \`claims[${j}]\` is finished?`, {
+    true: {
+      definition:
+        'the item\'s outcome is visible in `executed.output`, `executed.changedFiles`, or `executed.tests.parsed`, or in an earlier `recent` entry\'s output (a passing test run, an applied edit whose effect is then verified, a command that produced the required artefact)',
+      examples: ['12 passed after the edit to src/a.py', 'artefact build/report.html listed by ls'],
+    },
+    false: {
+      definition: 'claimed but not shown; shown only by the engineer\'s own text or summary; attempted but failed or blocked; or its verification has not run yet',
+      examples: ['plan says fixed, no test run since the edit', 'exit 1 on the command that was to produce it'],
+    },
+  });
 }
 
 export function buildJudgeQuestions(opts: { testsUnparsed: boolean; claims: readonly string[]; read?: boolean }): Record<string, Question> {
@@ -50,36 +84,104 @@ export function buildJudgeQuestions(opts: { testsUnparsed: boolean; claims: read
       examples: ['same traceback as step 5', 'tests pass as expected'],
     },
   });
-  if (opts.testsUnparsed) {
-    qs['tests_pass_unparsed'] = noul(`Does ${ref('executed.output')} show the test command finishing with every test passing?`, {
-      true: { definition: 'a final summary reporting only passes/skips, exit code 0', examples: ['12 passed in 3.1s', 'ok  pkg/foo  0.412s', 'PASS'] },
-      false: {
-        definition: 'any failed/error count, a traceback after the summary, non-zero exit, or no summary because the run was cut off',
-        examples: ['1 failed, 11 passed', 'FAIL  pkg/foo', 'ERRORS', 'Killed / timed out'],
-      },
-    });
-  }
+  if (opts.testsUnparsed) qs['tests_pass_unparsed'] = testsPassUnparsedQuestion();
   opts.claims.forEach((_claim, j) => {
-    qs[doneClaimId(j)] = noul(`Do ${ref('executed')} and ${ref('recent')} show that \`claims[${j}]\` is finished?`, {
-      true: {
-        definition:
-          'the item\'s outcome is visible in `executed.output`, `executed.changedFiles`, or `executed.tests.parsed`, or in an earlier `recent` entry\'s output (a passing test run, an applied edit whose effect is then verified, a command that produced the required artefact)',
-        examples: ['12 passed after the edit to src/a.py', 'artefact build/report.html listed by ls'],
-      },
-      false: {
-        definition: 'claimed but not shown; shown only by the engineer\'s own text or summary; attempted but failed or blocked; or its verification has not run yet',
-        examples: ['plan says fixed, no test run since the edit', 'exit 1 on the command that was to produce it'],
-      },
-    });
+    qs[doneClaimId(j)] = doneClaimQuestion(j);
   });
   return qs;
 }
 
+/** llm-jev: Q21 `done_<j>` (+ `tests_pass_unparsed` when the parser read nothing) and Q22, the same wordings, recorded only. */
+export function buildRecordOnlyQuestions(opts: { testsUnparsed: boolean; claims: readonly string[] }): Record<string, Question> {
+  const qs: Record<string, Question> = {};
+  if (opts.testsUnparsed) qs['tests_pass_unparsed'] = testsPassUnparsedQuestion();
+  opts.claims.forEach((_claim, j) => {
+    qs[doneClaimId(j)] = doneClaimQuestion(j);
+  });
+  qs[TASK_COMPLETE_ID] = buildCompleteQuestion();
+  return qs;
+}
+
 export interface JudgeStageResult {
-  /** null on a noop (done) step */
+  /** null on a noop (done) step; llm-jev: null on every step but a `run` */
   judge: JudgeResult | null;
-  completion: number;
-  claimProbabilities: Map<string, number>;
+  /** `task_complete`; null when it was not asked (llm-jev patch/read steps) */
+  completion: number | null;
+  /** per-claim verdicts for the plan (Jev's `done_<j>`, or the code verdicts in llm-jev); null when the step carries no claim evidence */
+  claimProbabilities: Map<string, number> | null;
+}
+
+export interface JudgeStageOptions {
+  /** llm-jev (docs/LLM-JEV-DESIGN.md §6.6): the `done` is verified by the engine's own passing, current run — its claims are accepted by code */
+  verifiedDone?: boolean;
+}
+
+/** The executed run as the code judge reads it (llm-jev). */
+export interface CodeJudgeRun {
+  /** the executed run when it was the workspace test command (command, parsed counts, allPassed); null for another command */
+  tests: ExecutedTests | null;
+  /** exit code of the executed command when known (non-test runs are judged on it) */
+  exitCode: number | null;
+  /** the proposal's shadow-run evidence: its `newlyPassing` ids are the executed run's when the parsed counts agree */
+  evidence: Pick<ProposalEvidence, 'after' | 'newlyPassing'> | null;
+  /** the recorded `tests_pass_unparsed` answer; consumed only when the parser read nothing */
+  testsPassUnparsed: number | null;
+}
+
+// the ledger grammar of synth/search/memory.ts planItemFor: `fix <test>[, +N more] in <path>`; test ids may contain " in ", paths never contain spaces
+const LEDGER_CLAIM_RE = /^fix (.+) in (?:\S+|the workspace)$/;
+const LEDGER_MORE_RE = /^(.*), \+\d+ more$/;
+
+/**
+ * The test ids each claim names: the ledger item's first test, widened to the goal's full test set when the
+ * proposal's `evidence.goalTests` contains it (the item names one test and `+N more`); a claim outside the
+ * grammar (e.g. the standing verification item) names none and is accepted only by a passing suite.
+ */
+export function ledgerGoalsOf(claims: readonly string[], goalTests: readonly string[] = []): Map<string, readonly string[]> {
+  const out = new Map<string, readonly string[]>();
+  for (const claim of claims) {
+    const m = LEDGER_CLAIM_RE.exec(claim.trim());
+    if (m === null || m[1] === undefined) {
+      out.set(claim, []);
+      continue;
+    }
+    const first = (LEDGER_MORE_RE.exec(m[1])?.[1] ?? m[1]).trim();
+    out.set(claim, goalTests.includes(first) ? [...goalTests] : [first]);
+  }
+  return out;
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §3 row 7: the JudgeResult of a `run` from harness data alone. `succeeded` = every test passed
+ * (`failed = errors = 0`, `passed > 0`; `tests_pass_unparsed >= 0.85` stands in when the parser read nothing), `errorPresent`
+ * = the parser counted errors, `newInfo` = 0 (nothing is inferred), a claim is accepted iff the test suite passed or its
+ * goal tests are all in the `newlyPassing` the executed counts confirm; a non-test command's `succeeded` is its exit code,
+ * which accepts no claim (exit 0 of `echo ok` says nothing about the ledger).
+ */
+export function codeJudge(run: CodeJudgeRun, claims: readonly string[], ledgerGoals: ReadonlyMap<string, readonly string[]>): JudgeResult {
+  const parsed = run.tests?.parsed ?? null;
+  let allPassed: boolean;
+  if (parsed !== null) allPassed = run.tests?.allPassed === true && parsed.failed === 0 && parsed.errors === 0 && parsed.passed > 0;
+  else if (run.tests !== null) allPassed = run.testsPassUnparsed !== null && run.testsPassUnparsed >= TESTS_PASS_UNPARSED_THRESHOLD;
+  else allPassed = run.exitCode === 0;
+  const e = run.evidence;
+  const countsAgree = parsed !== null && e !== null && e.after.passed === parsed.passed && e.after.failed === parsed.failed && e.after.errors === parsed.errors;
+  const newlyPassing: readonly string[] = countsAgree && e !== null ? e.newlyPassing : [];
+  // §3 row 7: only the passing test suite accepts every claim; a non-test command's exit 0 says nothing about the ledger
+  const suitePassed = run.tests !== null && allPassed;
+  const doneClaims: DoneClaimResult[] = claims.map((text) => {
+    const goals = ledgerGoals.get(text) ?? [];
+    const judged = suitePassed || (goals.length > 0 && goals.every((t) => newlyPassing.includes(t))) ? 1 : 0;
+    return { text, judged, accepted: judged >= PLAN_ACCEPT_THRESHOLD };
+  });
+  let tests: JudgeResult['tests'] = null;
+  if (run.tests !== null) {
+    tests = parsed !== null
+      ? { source: 'parsed', allPassed: run.tests.allPassed === true, passed: parsed.passed, failed: parsed.failed, errors: parsed.errors }
+      : { source: 'judged', allPassed: run.testsPassUnparsed ?? 0 };
+  }
+  const errorPresent = parsed !== null ? (parsed.errors > 0 ? 1 : 0) : run.tests === null && run.exitCode !== null && run.exitCode !== 0 ? 1 : 0;
+  return { succeeded: allPassed ? 1 : 0, errorPresent, newInfo: 0, tests, doneClaims, source: 'code' };
 }
 
 function noulOf(answers: Record<string, Answer>, id: string, fallback: number): number {
@@ -91,7 +193,8 @@ function noulOf(answers: Record<string, Answer>, id: string, fallback: number): 
  * One request: judge Nouls (+ done_<j>) and task_complete, or task_complete alone for a
  * `noop` step (§6 done path). The task_complete row is labelled stage 'complete' for the pane.
  */
-export async function runJudgeStage(ctx: StageContext, common: JsonObject, proposal: Proposal, executed: ExecutedInfo, claims: readonly string[]): Promise<JudgeStageResult> {
+export async function runJudgeStage(ctx: StageContext, common: JsonObject, proposal: Proposal, executed: ExecutedInfo, claims: readonly string[], opts: JudgeStageOptions = {}): Promise<JudgeStageResult> {
+  if (ctx.mode === 'llm-jev') return runCodeJudgeStage(ctx, common, proposal, executed, claims, opts);
   const reduced = executed.outcome.status === 'noop';
   const read = proposal.action.kind === 'read';
   const testsUnparsed = executed.tests !== null && executed.tests.parsed === null;
@@ -119,6 +222,51 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
     }
     // errorPresent is 0 (not asked) on a read: file contents are not a command failure.
     judge = { succeeded: noulOf(answers, 'succeeded', 0), errorPresent: read ? 0 : noulOf(answers, 'error_present', 0), newInfo: noulOf(answers, 'new_information', 0), tests, doneClaims };
+  });
+  ctx.emit({ type: 'judge', step: ctx.step, judge, completion });
+  return { judge, completion, claimProbabilities };
+}
+
+/** llm-jev (docs/LLM-JEV-DESIGN.md §3 row 7): code on every step; Q21/Q22 recorded only. */
+async function runCodeJudgeStage(ctx: StageContext, common: JsonObject, proposal: Proposal, executed: ExecutedInfo, claims: readonly string[], opts: JudgeStageOptions): Promise<JudgeStageResult> {
+  const kind = proposal.action.kind;
+  const claimProbabilities = new Map<string, number>();
+  if (kind === 'done' && executed.outcome.status === 'noop') {
+    // Q22 recorded; the stop is the engine's code fact (isCompleteByFact) and the claims follow the same fact
+    let completion = 0;
+    await ctx.ask('judge', buildJudgeState(common, proposal, executed, [], ctx.redact), { [TASK_COMPLETE_ID]: buildCompleteQuestion() }, (answers, rows: Decision[]) => {
+      for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
+      completion = noulOf(answers, TASK_COMPLETE_ID, 0);
+    });
+    for (const text of claims) claimProbabilities.set(text, opts.verifiedDone === true ? 1 : 0);
+    ctx.emit({ type: 'judge', step: ctx.step, judge: null, completion });
+    return { judge: null, completion, claimProbabilities };
+  }
+  if (kind !== 'run' || executed.outcome.status !== 'executed') {
+    // patch / read / edit / write: nothing is judged and nothing is asked — patches claim nothing (§3 row 7)
+    ctx.emit({ type: 'judge', step: ctx.step, judge: null, completion: null });
+    return { judge: null, completion: null, claimProbabilities: null };
+  }
+  const testsUnparsed = executed.tests !== null && executed.tests.parsed === null;
+  const state = buildJudgeState(common, proposal, executed, claims, ctx.redact);
+  let completion = 0;
+  let testsPassUnparsed: number | null = null;
+  let jevClaims: number[] = [];
+  await ctx.ask('judge', state, buildRecordOnlyQuestions({ testsUnparsed, claims }), (answers, rows: Decision[]) => {
+    for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
+    completion = noulOf(answers, TASK_COMPLETE_ID, 0);
+    if (testsUnparsed) testsPassUnparsed = noulOf(answers, 'tests_pass_unparsed', 0);
+    jevClaims = claims.map((_c, j) => noulOf(answers, doneClaimId(j), 0));
+  });
+  const exec = executed.outcome.exec;
+  const exitCode = typeof exec?.exitCode === 'number' ? exec.exitCode : null;
+  const judge = codeJudge({ tests: executed.tests, exitCode, evidence: proposal.evidence ?? null, testsPassUnparsed }, claims, ledgerGoalsOf(claims, proposal.evidence?.goalTests ?? []));
+  judge.doneClaims.forEach((c, j) => {
+    claimProbabilities.set(c.text, c.judged);
+    const jev = jevClaims[j];
+    if (jev !== undefined && jev >= PLAN_ACCEPT_THRESHOLD !== c.accepted) {
+      ctx.emit({ type: 'transcript', step: ctx.step, level: 'info', text: `judge: Jev ${doneClaimId(j)}=${jev.toFixed(2)} disagrees with the code verdict ${c.judged} for '${clip(c.text, 80)}' (recorded only)` });
+    }
   });
   ctx.emit({ type: 'judge', step: ctx.step, judge, completion });
   return { judge, completion, claimProbabilities };

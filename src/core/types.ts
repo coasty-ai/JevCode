@@ -60,12 +60,61 @@ export interface ProposalEvidence {
   newlyFailing: string[];
   /** which failing tests this sub-goal targets */
   goalTests: string[];
-  /** 'sieve' = every candidate at the site was run; 'rank' = Jev-ranked top-k were run */
-  selection: 'sieve' | 'rank';
+  /** 'sieve' = every candidate at the site was run; 'rank' = Jev-ranked top-k were run; 'llm' = an LLM sample won (docs/LLM-JEV-DESIGN.md §6.2) */
+  selection: 'sieve' | 'rank' | 'llm';
   /** number of candidates run for this decision, code-computed */
   candidatesTested: number;
   /** true when several candidates passed and Jev's arbitration picked this one */
   arbitrated: boolean;
+  /**
+   * docs/LLM-JEV-DESIGN.md §6.6: set by the synthesizer on the claiming `run` proposal (from `doneReadiness`). The engine's
+   * `isCompleteByFact` ANDs it with the executed run's parsed counts and `workspace.testsCurrent`; `task_complete` is
+   * recorded, not consulted, in `llm-jev`.
+   */
+  completion?: CompletionEvidence;
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §4.10 / §6.6: how the repository issue oracle was established. `valid` / `valid_weak` / `weak_network`
+ * yield a code-extracted reproduction goal; `llm_valid` / `llm_weak` are LLM-written reproductions (stage 3, `synth/llm/repro.ts`)
+ * — an unverified reading of the issue that never satisfies the completion fact; the rest yield no goal
+ * (`synth/oracle/search.ts` documents each). The source of truth for `synth/oracle` and the completion evidence alike.
+ */
+export type OracleOutcome =
+  | 'valid'
+  | 'valid_weak'
+  | 'weak_network'
+  | 'no_blocks'
+  | 'no_pick'
+  | 'not_runnable'
+  | 'no_criterion'
+  | 'env_error'
+  | 'passes_on_base'
+  | 'incomplete_snippet'
+  | 'unstable'
+  | 'llm_valid'
+  | 'llm_weak';
+
+/** The oracle outcomes under which a passing reproduction completes a repository run (§6.6). */
+export const COMPLETING_ORACLE_OUTCOMES: readonly OracleOutcome[] = ['valid', 'valid_weak', 'weak_network'];
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.6: the synthesizer's code facts on the claiming `run` proposal, every one computed from harness
+ * data (`doneReadiness`, `proposal.ts`). The engine completes only when all hold together with its own parsed run:
+ * `ledgerFixed` (every ledger goal fixed), `testsChanged = []` (no committed candidate touched a test file), `!guardPending`
+ * (every multi-passer batch arbitrated), and — repository class, i.e. whenever an oracle was sought or a reproduction ran —
+ * `repro = 'pass'` with a code oracle (`COMPLETING_ORACLE_OUTCOMES`). `command` is the suite command the synthesizer expects
+ * the run to be; when present the engine requires the executed test command to match.
+ */
+export interface CompletionEvidence {
+  ledgerFixed: boolean;
+  testsChanged: string[];
+  guardPending: boolean;
+  /** the reproduction verdict on the committed workspace; 'none' when no reproduction exists (QuixBugs / pytest class) */
+  repro: 'pass' | 'fail' | 'none';
+  /** how the issue oracle was established; null when none was sought */
+  oracle: OracleOutcome | null;
+  command?: string;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -184,7 +233,14 @@ export interface JevResponse {
 
 export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete';
 
-export type DecisionVerdict = 'ok' | 'review' | 'block' | 'chosen' | 'overridden' | 'fallback';
+/**
+ * The verdict written on a resolved Choice (loop/stages/choose.ts): `chosen` = Jev's answer with its paired Noul >= floor,
+ * `overridden` = a stronger paired Noul won, `fallback` = the stage's safe default; `code` (docs/LLM-JEV-DESIGN.md §3 row 2,
+ * §9.3) = no Choice was asked and code derived the value (the llm-jev intent from the proposal kind).
+ */
+export type ChoiceVerdict = 'chosen' | 'overridden' | 'fallback' | 'code';
+
+export type DecisionVerdict = 'ok' | 'review' | 'block' | ChoiceVerdict;
 
 /** One row in the decisions pane and decisions.jsonl. */
 export interface Decision {
@@ -291,6 +347,8 @@ export interface JudgeResult {
   newInfo: number;
   tests: JudgeTests;
   doneClaims: DoneClaimResult[];
+  /** docs/LLM-JEV-DESIGN.md §3 row 7: 'code' when computed from the parsed run (llm-jev); absent or 'jev' when Jev judged */
+  source?: 'code' | 'jev';
 }
 
 export interface TokenUsage {
@@ -298,6 +356,10 @@ export interface TokenUsage {
   outputTokens: number;
   costUsd: number;
   calls: number;
+  /** docs/LLM-JEV-DESIGN.md §4.12: reasoning tokens the provider reported (GLM `reasoning_tokens`), when known */
+  reasoningTokens?: number;
+  /** docs/LLM-JEV-DESIGN.md §4.8: true for a cancelled/timed-out sample metered from an estimate (sibling prompt tokens, streamed chars / 4) */
+  estimated?: boolean;
 }
 export interface StepUsage {
   generator: TokenUsage;
@@ -311,6 +373,8 @@ export interface StepTiming {
   totalMs: number;
   /** TUI-DESIGN §15 item 3: pre + post images (§12.3); already inside harnessMs, reported separately */
   imagesMs?: number;
+  /** docs/LLM-JEV-DESIGN.md §7.5 (llm-jev): wall of `synthesize()`; generatorMs (batch wall) and the synthesizer's Jev requests sit inside it */
+  synthMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -341,6 +405,39 @@ export interface StepRecord {
   error?: { stage: StageName; code: string; message: string };
   /** TUI-DESIGN §15 item 3: the committed plan after this step, bounded, for /rewind */
   planAfter?: PlanSnapshot;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3 (llm-jev): the synthesizer's per-step verification counts. The type is the
+   * contract; the plumbing (the synthesizer reports them, the engine copies them onto the record) is stage 4
+   * (`src/synth/search/index.ts`, `SynthesisContext`) — absent until then.
+   */
+  verify?: StepVerifySummary;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed the step — `synth` (the Synthesizer) or `generic` (the per-step
+   * `propose_action` fallback when `handles()` is false; stage 4 sets it). Absent in the other modes.
+   */
+  proposer?: StepProposer;
+}
+
+/** docs/LLM-JEV-DESIGN.md §9.4 */
+export type StepProposer = 'synth' | 'generic';
+
+/** docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3: code-computed counts of one llm-jev step's LLM round and verification. */
+export interface StepVerifySummary {
+  /** LLM samples fired this step */
+  samples: number;
+  /** distinct candidates after dedupe */
+  distinct: number;
+  malformed: number;
+  timeouts: number;
+  cancelled: number;
+  misanchored: number;
+  candidatesTested: number;
+  passers: number;
+  partials: number;
+  /** ms the guard waited for sample 0 after a seed passer landed (§6.2) */
+  graceMs: number;
+  /** true when the committed change lies outside every Jev-ranked listing (the localisation missed) */
+  localisationMissed: boolean;
 }
 
 export interface RunCounters {
@@ -368,7 +465,9 @@ export interface SerializedError {
   requestId?: string | null;
 }
 
-export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only'; // jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md)
+// jev-only: no generating LLM; a Synthesizer proposes (§JEV-ONLY.md). llm-jev (docs/LLM-JEV-DESIGN.md): the Synthesizer proposes with the
+// generating LLM as one candidate source inside it; intent/context are not run, risk is a code fact for verified proposals, judge and completion are code.
+export type EngineMode = 'jev-on' | 'jev-off' | 'jev-only' | 'llm-jev';
 
 export interface RunResult {
   runId: string;
@@ -424,6 +523,12 @@ export interface GenerateRequest {
   temperature: number | null;
   tools?: ToolSpec[];
   toolChoice?: ToolChoice;
+  /** docs/LLM-JEV-DESIGN.md §4.6: per-sample seed (OpenRouter `seed`); providers without it ignore it */
+  seed?: number;
+  /** docs/LLM-JEV-DESIGN.md §4.12: reasoning control (OpenRouter `reasoning`); providers without it ignore it */
+  reasoning?: { enabled: boolean; effort?: 'low' | 'medium' | 'high' };
+  /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter routing preferences (`provider.require_parameters`, `provider.order`) */
+  providerPrefs?: { requireParameters?: boolean; order?: string[] };
 }
 export interface GenerateResult {
   /** concatenated text blocks (streamed via onDelta) */
@@ -433,6 +538,8 @@ export interface GenerateResult {
   model: string;
   stopReason: string;
   latencyMs: number;
+  /** docs/LLM-JEV-DESIGN.md §4.8: the provider's generation id (OpenRouter chunk `id`), for post-hoc cost reconciliation */
+  generationId?: string;
 }
 /** TUI-DESIGN §15 item 5: why a client is about to sleep before a retry; message = redacted <= 200-char hint, never a body */
 export interface RetryCause {
@@ -458,6 +565,8 @@ export interface GenerateOptions {
   onRetry?: (info: RetryInfo) => void;
   /** TUI-DESIGN §15 item 5: a GETTER read before each sleep (one AbortController per sleep); clients: `await sleep(waitMs, signal, opts.wake?.())` */
   wake?: () => AbortSignal | undefined;
+  /** docs/LLM-JEV-DESIGN.md §4.8: the sample index of a parallel round (llm-jev); absent for the one-sample propose stage */
+  sample?: number;
 }
 export type ProviderName = 'anthropic' | 'openrouter' | 'mock';
 export interface Provider {
@@ -873,6 +982,19 @@ export interface GeneratorCallRecord {
   latencyMs: number;
   stopReason: string;
   malformed: boolean;
+  /** docs/LLM-JEV-DESIGN.md §4.8 (llm-jev): the sample index within the step's round */
+  sample?: number;
+  /** docs/LLM-JEV-DESIGN.md §4.8 (llm-jev): what the sample was for */
+  purpose?: GeneratePurpose;
+  /** reasoning tokens the provider reported, when known */
+  reasoningTokens?: number;
+  /**
+   * true when the sample yielded no GenerateResult — cancelled, timed out, or failed after it had streamed (`stopReason`
+   * 'cancelled' | 'timeout' | 'error'); `usage` is then an estimate (`usage.estimated`)
+   */
+  cancelled?: boolean;
+  /** the provider's generation id, when it arrived */
+  generationId?: string;
 }
 
 export interface CheckpointStore {
@@ -1026,12 +1148,28 @@ export interface EngineOptions {
    * that follows the run log. Absent -> nothing is logged (bench, perf, tests). Logging never throws into the loop.
    */
   log?: Log;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8 / §8 (additive): the generator's resolved pricing (config overrides included) for the
+   * estimate of a cancelled or failed llm-jev sample when no finished sibling and no run mean give a served rate. Absent ->
+   * the engine reads the pricing table for `provider.model`; an unknown model is then unpriced (`budget:unpriced`, as a
+   * real call without `usage.cost`). TODO(src/cli/session.ts): pass `config.generator.pricing` here.
+   */
+  generatorPricing?: GeneratorConfig['pricing'];
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
 // ---------------------------------------------------------------------------------------
 // Jev-only synthesis (docs/JEV-ONLY.md): code proposes, Jev decides, tests verify
 // ---------------------------------------------------------------------------------------
+
+/** docs/LLM-JEV-DESIGN.md §4: what a generator sample is for */
+export type GeneratePurpose = 'propose_fix' | 'write_reproduction';
+/** docs/LLM-JEV-DESIGN.md §4.8: one sample of a parallel round; `signal` is the sample's own (deadline / loser cancellation), linked by the engine to its own */
+export interface SampleOptions {
+  sample: number;
+  purpose: GeneratePurpose;
+  signal: AbortSignal;
+}
 
 export interface SynthesisContext {
   runId: string;
@@ -1062,6 +1200,12 @@ export interface SynthesisContext {
   synthState: Json | null;
   /** persist opaque synthesizer state with the next checkpoint (kept small: <= 64 KB after redaction) */
   setSynthState: (state: Json | null) => void;
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8 (llm-jev; absent in jev-only): the one sanctioned path to the generating LLM. The engine
+   * meters, records (generator.jsonl, one row per sample, cancelled samples with an estimate) and emits `generator:*` with
+   * the sample index; an aborted sample rejects with its signal's reason and yields no GenerateResult.
+   */
+  generate?: (req: GenerateRequest, o: SampleOptions) => Promise<GenerateResult>;
 }
 
 export interface Synthesizer {
@@ -1109,12 +1253,17 @@ export type EngineEvent =
   | { type: 'stage:end'; step: number; stage: StageName; ms: number }
   | { type: 'decision'; decision: Decision }
   | { type: 'jev:request'; record: JevRequestRecord }
-  | { type: 'intent'; step: number; intent: Intent; answer: IntentAnswer; probability: number; confidence: number }
+  /**
+   * `verdict` (docs/LLM-JEV-DESIGN.md §9.3, additive): how the intent was resolved; `'code'` in llm-jev, where no Choice is
+   * asked and the event follows `proposal` (the intent is a fact of the proposal kind) instead of preceding it.
+   */
+  | { type: 'intent'; step: number; intent: Intent; answer: IntentAnswer; probability: number; confidence: number; verdict?: ChoiceVerdict }
   | { type: 'context'; step: number; files: string[]; bytes: number; candidates: number }
-  | { type: 'generator:start'; step: number; attempt: number }
-  | { type: 'generator:delta'; step: number; text: string }
-  | { type: 'generator:tool-delta'; step: number; chars: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
-  | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string }
+  // docs/LLM-JEV-DESIGN.md §4.8: `sample` is present for the samples of an llm-jev round (the TUI streams sample 0)
+  | { type: 'generator:start'; step: number; attempt: number; sample?: number }
+  | { type: 'generator:delta'; step: number; text: string; sample?: number }
+  | { type: 'generator:tool-delta'; step: number; chars: number; sample?: number } // cumulative streamed tool-argument chars ("streaming action… N chars")
+  | { type: 'generator:end'; step: number; usage: TokenUsage; latencyMs: number; finishReason: string; sample?: number }
   | { type: 'proposal'; step: number; proposal: Proposal }
   | { type: 'risk'; step: number; risk: RiskAssessment }
   | { type: 'confirm:request'; request: ConfirmRequest }

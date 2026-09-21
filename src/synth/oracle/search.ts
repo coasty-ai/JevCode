@@ -21,7 +21,7 @@ import { createHash } from 'node:crypto';
 import { access } from 'node:fs/promises';
 import { join } from 'node:path';
 
-import type { Answer, Json, Question, StageName, TestCommand } from '../../core/types.js';
+import type { Answer, Json, OracleOutcome as CoreOracleOutcome, Question, StageName, TestCommand } from '../../core/types.js';
 import type { FailureView, TestRunSummary } from '../types.js';
 import { scopedTestCommand } from '../verify/index.js';
 import { isTestFile, relatedTestFiles } from '../verify/runners.js';
@@ -203,8 +203,11 @@ export function bestGuessFailure(task: string): FailureView {
  * run AND the guard's arbitration (Q15/Q16) before a commit, and the evidence carries
  * NETWORK_ORACLE_OPEN_PROBLEM; `unstable`: the base verdict did not repeat (fail/pass or
  * pass/fail across two runs of the same commit) — no goal, the best guess; the rest: no goal.
+ * `llm_valid` / `llm_weak` (docs/LLM-JEV-DESIGN.md §4.10) are the LLM-written reproductions of
+ * stage 3 (`synth/llm/repro.ts`); this search never produces them. The union itself lives in
+ * core/types.ts so the engine's completion evidence (§6.6) names the same members.
  */
-export type OracleOutcome = 'valid' | 'valid_weak' | 'weak_network' | 'no_blocks' | 'no_pick' | 'not_runnable' | 'no_criterion' | 'env_error' | 'passes_on_base' | 'incomplete_snippet' | 'unstable';
+export type OracleOutcome = CoreOracleOutcome;
 
 /** The `openProblems` entry every proposal made under a network-dependent oracle must carry. */
 export const NETWORK_ORACLE_OPEN_PROBLEM = 'network-dependent reproduction';

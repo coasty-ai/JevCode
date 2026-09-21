@@ -50,6 +50,7 @@ import type { AskResult,
   GitState,
   HarnessProblem,
   Intent,
+  IntentAnswer,
   JevRequestRecord,
   Json,
   JsonObject,
@@ -57,6 +58,7 @@ import type { AskResult,
   PendingDirective,
   Plan,
   PlanSnapshot,
+  StepProposer,
   Proposal,
   Question,
   ReplanDirective,
@@ -67,6 +69,7 @@ import type { AskResult,
   RunLimits,
   RunMeta,
   RunResult,
+  SampleOptions,
   Sandbox,
   SandboxCreateOptions,
   SerializedError,
@@ -103,6 +106,8 @@ import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
 import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provider/prompts.js';
+import { linkedAbort } from '../core/abort.js';
+import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
@@ -110,7 +115,7 @@ import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyP
 import { buildCommonState, testsCurrent, type Redact } from './state.js';
 import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
-import { isComplete } from './stages/complete.js';
+import { isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
 import { runExecuteStage } from './stages/execute.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
@@ -301,6 +306,14 @@ interface StepDraft {
   usage: StepUsage;
   /** imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none */
   timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null };
+  /** docs/LLM-JEV-DESIGN.md §7.5: wall of synthesize() (synth modes); null when the propose stage was the generator's */
+  synthMs: number | null;
+  /** the Jev latency spent inside synthesize(); `timing.jevMs - synthJevMs` is the shell's share */
+  synthJevMs: number;
+  /** docs/LLM-JEV-DESIGN.md §4.8: the in-flight samples of the llm-jev round, for the batch wall in `timing.generatorMs` */
+  generatorBatch: { inFlight: number; startedAt: number };
+  /** docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed — the synthesizer, or the generic per-step fallback (stage 4); null in the other modes */
+  proposer: StepProposer | null;
   generatorFailReason: string | null;
   errorClass: string | null;
   error: { stage: StageName; code: string; message: string } | null;
@@ -359,9 +372,28 @@ function normaliseModelId(id: string): string {
   return id.trim().toLowerCase().replace(/^typesafe\//, '');
 }
 
-/** jev-on and jev-only consume Jev answers (intent, context, risk, judge, replan); jev-off is the generator alone (§13). */
+/**
+ * jev-on and jev-only consume Jev answers (intent, context, risk, judge, replan); jev-off is the generator alone (§13).
+ * llm-jev is true here too (docs/LLM-JEV-DESIGN.md §6.3) while every intent/context/judge branch it guards is edited to
+ * skip or compute in that mode: replan on a trip, harm-only risk, code judge, code completion.
+ */
 export function usesJev(mode: EngineMode): boolean {
   return mode !== 'jev-off';
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §3 row 2 / §9.3 (llm-jev): the step intent is a code fact of the proposal kind — no Jev Choice is
+ * asked, and the verdict `'code'` tells the TUI intent line so (a Jev-resolved intent is chosen / overridden / fallback).
+ */
+export function codeIntent(kind: Action['kind']): IntentStageResult {
+  const intent: Intent = kind === 'run' ? 'verify' : kind === 'done' ? 'finish' : kind === 'read' ? 'investigate' : 'edit';
+  return { intent, answer: intent, verdict: 'code', probability: 1, confidence: 1, pairedNoul: 1, planStillValid: 1 };
+}
+
+/** §4.8: the generator.jsonl `stopReason` of an aborted sample — its deadline ('timeout') or a cancellation (loser, engine stop). */
+function abortStopReason(reason: unknown): 'timeout' | 'cancelled' {
+  const timeout = reason instanceof Error && (reason.name === 'TimeoutError' || /\b(timeout|timed out|deadline)\b/i.test(reason.message));
+  return timeout ? 'timeout' : 'cancelled';
 }
 
 /** TUI-DESIGN §8.7 / §15 item 1: `token_cap` joins the plain budget set; `human_pause` never does (a /resume proceeds without --force). */
@@ -530,6 +562,8 @@ class EngineImpl implements Engine {
   private activeHuman: { texts: string[]; step: number } | null = null;
   /** one AbortController per retry sleep (§13.2): created by onRetry, aborted by retryNow(), nulled when the chain settles */
   private retryWaker: AbortController | null = null;
+  /** docs/LLM-JEV-DESIGN.md §4.8: the retry wakers of the llm-jev samples other than sample 0 (whose waker is `retryWaker`, shown in the status) */
+  private readonly sampleWakers = new Map<number, AbortController>();
   private retrying: NonNullable<EngineStatus['retrying']> | null = null;
   /** carried from the seed or EngineOptions.undoLog, checkpointed, never written into a finished run (§15 item 9) */
   private undoLog: UndoLogEntry[] = [];
@@ -903,7 +937,11 @@ class EngineImpl implements Engine {
    */
   retryNow(): boolean {
     const w = this.retryWaker;
-    if (w === null) return false;
+    // llm-jev (docs/LLM-JEV-DESIGN.md §4.8): every in-flight sample's retry sleep is woken as well
+    const samples = [...this.sampleWakers.values()];
+    this.sampleWakers.clear();
+    for (const s of samples) s.abort();
+    if (w === null) return samples.length > 0;
     this.retryWaker = null;
     w.abort();
     return true;
@@ -1374,6 +1412,10 @@ class EngineImpl implements Engine {
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
       timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null },
+      synthMs: null,
+      synthJevMs: 0,
+      generatorBatch: { inFlight: 0, startedAt: 0 },
+      proposer: null,
       generatorFailReason: null,
       errorClass: null,
       error: null,
@@ -1521,22 +1563,30 @@ class EngineImpl implements Engine {
    * read per attempt; `settled` (call it in the finally of the call) emits `retry:settled` when a retry happened and
    * nulls the waker so a later retryNow() reports false.
    */
-  private retryHooks(side: 'jev' | 'generator', step: number, stage: StageName): { onRetry: (info: RetryInfo) => void; wake: () => AbortSignal | undefined; settled: (ok: boolean) => void } {
+  private retryHooks(side: 'jev' | 'generator', step: number, stage: StageName, sample?: number): { onRetry: (info: RetryInfo) => void; wake: () => AbortSignal | undefined; settled: (ok: boolean) => void } {
     let retries = 0;
     let totalWaitMs = 0;
+    // docs/LLM-JEV-DESIGN.md §4.8: wakers are keyed per sample; the status line (`retrying`) shows sample 0's — or the one-sample call's
+    const shown = sample === undefined || sample === 0;
+    const key = sample ?? 0;
+    const setWaker = (w: AbortController | null): void => {
+      if (shown) this.retryWaker = w;
+      else if (w === null) this.sampleWakers.delete(key);
+      else this.sampleWakers.set(key, w);
+    };
     return {
       onRetry: (info) => {
         retries += 1;
         totalWaitMs += Math.max(0, info.waitMs);
-        this.retryWaker = new AbortController();
-        this.retrying = { side, attempt: info.attempt, maxAttempts: info.maxAttempts, untilMs: Date.now() + Math.max(0, info.waitMs) };
+        setWaker(new AbortController());
+        if (shown) this.retrying = { side, attempt: info.attempt, maxAttempts: info.maxAttempts, untilMs: Date.now() + Math.max(0, info.waitMs) };
         this.emit({ type: 'retry', side, step, stage, info });
         this.emitStatus();
       },
-      wake: () => this.retryWaker?.signal,
+      wake: () => (shown ? this.retryWaker : this.sampleWakers.get(key))?.signal,
       settled: (ok) => {
-        this.retryWaker = null;
-        this.retrying = null;
+        setWaker(null);
+        if (shown) this.retrying = null;
         if (retries === 0) return;
         this.emit({ type: 'retry:settled', side, step, attempts: retries + 1, ok, totalWaitMs });
         this.emitStatus();
@@ -1649,6 +1699,9 @@ class EngineImpl implements Engine {
         self.synthState = text.length <= SYNTH_STATE_MAX_BYTES ? (JSON.parse(text) as Json) : null;
         if (text.length > SYNTH_STATE_MAX_BYTES) self.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `synth state dropped: ${text.length} bytes exceeds ${SYNTH_STATE_MAX_BYTES}` });
       },
+      // docs/LLM-JEV-DESIGN.md §4.8: the sanctioned generator channel — metered, recorded per sample, events carry the sample
+      // index; absent in jev-only, where the propose stage never reaches the LLM (generate() throws there in any case)
+      ...(this.mode === 'jev-only' ? {} : { generate: (req: GenerateRequest, o: SampleOptions) => self.generate(draft, req, 1, o) }),
     };
   }
 
@@ -1693,22 +1746,43 @@ class EngineImpl implements Engine {
     return servedRaw;
   }
 
-  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number): Promise<GenerateResult> {
+  /**
+   * The one metered, recorded path to the generating LLM. Without `sample` it is the propose stage's call (jev-on, jev-off:
+   * one attempt, the engine's signal). With `sample` (llm-jev, docs/LLM-JEV-DESIGN.md §4.8) it is one sample of the
+   * synthesizer's round: the sample's signal is linked to the engine's, every event and the generator.jsonl row carry the
+   * sample index, a sample aborted (or failed after streaming) before its result is metered from an estimate
+   * (`recordUnfinishedSample`) and rejects with the signal's reason, a sample already cancelled when it arrives is never
+   * dispatched (no event, no row, no metering), and `timing.generatorMs` takes the wall of the round, not the sum of the samples.
+   */
+  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions): Promise<GenerateResult> {
     // Defence in depth for docs/JEV-ONLY.md: even with a real provider in the slot, jev-only never reaches it.
     if (this.mode === 'jev-only') throw new ConfigError('jev-only mode: the generating LLM must not be called', { setting: 'mode' });
-    this.emit({ type: 'generator:start', step: draft.step, attempt });
+    // §4.8: a sample cancelled before it reached the channel (a loser cancellation racing a stagger fire, or the engine
+    // stopping) was never served — reject with the reason before any event, row or metered token
+    if (sample !== undefined && sample.signal.aborted) throw sample.signal.reason;
+    if (sample !== undefined && this.signal.aborted) throw this.signal.reason;
+    const at = sample === undefined ? {} : { sample: sample.sample };
+    this.emit({ type: 'generator:start', step: draft.step, attempt, ...at });
     // Tool-call argument fragments are reported as a cumulative character count per call; the
     // renderer coalesces ("streaming action… N chars", §7/§10). The text itself is parsed once at the end.
     let toolChars = 0;
-    const retry = this.retryHooks('generator', draft.step, 'propose');
+    let textChars = 0;
+    const retry = this.retryHooks('generator', draft.step, 'propose', sample?.sample);
+    const link = sample === undefined ? null : this.linkSample(sample);
+    const t0 = this.clock();
+    if (sample !== undefined) this.noteSampleStart(draft);
     let res: GenerateResult;
     try {
       res = await this.opts.provider.generate(req, {
-        signal: this.signal,
-        onDelta: (text) => this.emit({ type: 'generator:delta', step: draft.step, text }),
+        signal: link?.signal ?? this.signal,
+        ...at,
+        onDelta: (text) => {
+          textChars += text.length;
+          this.emit({ type: 'generator:delta', step: draft.step, text, ...at });
+        },
         onToolDelta: (fragment) => {
           toolChars += fragment.length;
-          this.emit({ type: 'generator:tool-delta', step: draft.step, chars: toolChars });
+          this.emit({ type: 'generator:tool-delta', step: draft.step, chars: toolChars, ...at });
         },
         onRetry: retry.onRetry,
         wake: retry.wake,
@@ -1716,7 +1790,18 @@ class EngineImpl implements Engine {
       retry.settled(true);
     } catch (e) {
       retry.settled(false);
+      if (sample !== undefined && link !== null) {
+        const streamedChars = toolChars + textChars;
+        const latencyMs = Math.max(0, this.clock() - t0);
+        // §4.8: an aborted sample (deadline, loser cancellation, or the engine's own abort) yields no result but was served — meter the estimate
+        if (link.signal.aborted) this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason: abortStopReason(sample.signal.aborted ? sample.signal.reason : this.signal.reason) });
+        // §2 principle 8: a sample the provider failed after it had streamed (stream cut, 5xx once the retries ran out) was served too
+        else if (streamedChars > 0) this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason: 'error' });
+      }
       throw e;
+    } finally {
+      link?.unlink();
+      if (sample !== undefined) this.noteSampleEnd(draft);
     }
     this.opts.meter.add('generator', res.usage);
     // TUI-DESIGN §9.5: the token counter behind token_cap (input + output; NaN reads as 0 like the meter)
@@ -1725,21 +1810,118 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN) cost; the record, the event, the step draft and the sum take the clamped copy
     const usage = pricedUsage(res.usage);
     addUsage(draft.usage.generator, usage);
-    draft.timing.generatorMs += res.latencyMs;
+    // the one-sample call adds the provider's latency; a round's samples close their batch wall in noteSampleEnd
+    if (sample === undefined) draft.timing.generatorMs += res.latencyMs;
     draft.generatorRecords.push({
       step: draft.step,
       attempt,
       promptHash: sha12(toJson({ system: req.system, messages: req.messages })),
       model: res.model,
-      temperature: this.opts.generation.temperature,
-      maxTokens: this.opts.generation.maxTokens,
+      // the request's own values (the propose stage sends opts.generation; a sample may differ per §4.6)
+      temperature: req.temperature,
+      maxTokens: req.maxTokens,
       usage,
       latencyMs: res.latencyMs,
       stopReason: res.stopReason,
       malformed: false,
+      ...(sample !== undefined ? { sample: sample.sample, purpose: sample.purpose } : {}),
+      ...(res.usage.reasoningTokens !== undefined ? { reasoningTokens: res.usage.reasoningTokens } : {}),
+      ...(res.generationId !== undefined ? { generationId: res.generationId } : {}),
     });
-    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: res.latencyMs, finishReason: res.stopReason });
+    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: res.latencyMs, finishReason: res.stopReason, ...at });
     return res;
+  }
+
+  /** llm-jev: one controller aborted by either the sample's signal (deadline / cancellation) or the engine's (stop / budget). */
+  private linkSample(sample: SampleOptions): { signal: AbortSignal; unlink: () => void } {
+    const engine = linkedAbort(this.signal);
+    const onAbort = (): void => engine.controller.abort(sample.signal.reason);
+    if (sample.signal.aborted) onAbort();
+    else sample.signal.addEventListener('abort', onAbort, { once: true });
+    return {
+      signal: engine.controller.signal,
+      unlink: () => {
+        engine.unlink();
+        sample.signal.removeEventListener('abort', onAbort);
+      },
+    };
+  }
+
+  /** docs/LLM-JEV-DESIGN.md §4.8: `generatorMs` of an llm-jev step is the wall of the round (the union of the samples' intervals), never the sum. */
+  private noteSampleStart(draft: StepDraft): void {
+    const b = draft.generatorBatch;
+    if (b.inFlight === 0) b.startedAt = this.clock();
+    b.inFlight += 1;
+  }
+
+  private noteSampleEnd(draft: StepDraft): void {
+    const b = draft.generatorBatch;
+    b.inFlight = Math.max(0, b.inFlight - 1);
+    if (b.inFlight === 0) draft.timing.generatorMs += Math.max(0, this.clock() - b.startedAt);
+  }
+
+  /**
+   * docs/LLM-JEV-DESIGN.md §4.8 / §2 principle 8: a sample aborted by its deadline or a loser cancellation — or failed by the
+   * provider after it had streamed — yields no GenerateResult, but it was served. Input tokens = a finished sibling's prompt
+   * tokens (same prompt hash: the round shares one prefix; any other finished row — an L2 reproduction request, an earlier
+   * round — is a different prompt and says nothing), else the prompt's chars / 4; output tokens = streamed chars / 4; cost per
+   * `estimateCostUsd`. The usage is marked `estimated`, metered so the spend cap and the token cap see it, and written as a
+   * generator.jsonl row with `cancelled: true` and `stopReason` 'timeout' | 'cancelled' | 'error'. `GET /api/v1/generation?id=`
+   * can replace the estimate post hoc once stage 2 surfaces the generation id on the abort (TODO src/provider/openrouter.ts).
+   */
+  private recordUnfinishedSample(draft: StepDraft, req: GenerateRequest, attempt: number, sample: SampleOptions, o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' }): void {
+    const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
+    const sibling = draft.generatorRecords.find((r) => r.cancelled !== true && r.promptHash === promptHash);
+    const promptChars = req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0);
+    const inputTokens = sibling !== undefined ? sibling.usage.inputTokens : Math.ceil(promptChars / 4);
+    const outputTokens = Math.ceil(o.streamedChars / 4);
+    const raw: TokenUsage = { inputTokens, outputTokens, costUsd: this.estimateCostUsd(sibling, inputTokens, outputTokens), calls: 1, estimated: true };
+    this.opts.meter.add('generator', raw);
+    this.generatorTokens += inputTokens + outputTokens;
+    this.noteUsage('generator', this.opts.provider.model, draft.step, 'propose', raw);
+    // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN = unpriced) cost; the record, the event and the step sum take the clamped copy
+    const usage = pricedUsage(raw);
+    addUsage(draft.usage.generator, usage);
+    draft.generatorRecords.push({
+      step: draft.step,
+      attempt,
+      promptHash,
+      model: this.opts.provider.model,
+      temperature: req.temperature,
+      maxTokens: req.maxTokens,
+      usage,
+      latencyMs: o.latencyMs,
+      stopReason: o.stopReason,
+      malformed: false,
+      sample: sample.sample,
+      purpose: sample.purpose,
+      cancelled: true,
+    });
+    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: o.stopReason, sample: sample.sample });
+  }
+
+  /**
+   * §4.8 / §8 (cancelled samples at full price): the estimate's cost. A finished same-prompt sibling's served rate ($/token
+   * over its own call) first, else the run's mean generator rate so far, else the pricing table — `opts.generatorPricing`
+   * (the resolved config, overrides included) or the built-in row for `provider.model` — at its separate input / output
+   * rates. A model the table does not know, with nothing served yet, is unpriced: NaN, which `noteUsage` turns into
+   * `budget:unpriced` exactly as a real call without `usage.cost` — never a silent $0 the spend cap cannot see.
+   */
+  private estimateCostUsd(sibling: GeneratorCallRecord | undefined, inputTokens: number, outputTokens: number): number {
+    const tokens = inputTokens + outputTokens;
+    if (sibling !== undefined) {
+      const served = sibling.usage.inputTokens + sibling.usage.outputTokens;
+      if (served > 0 && Number.isFinite(sibling.usage.costUsd)) return (sibling.usage.costUsd / served) * tokens;
+    }
+    const snap = this.opts.meter.snapshot();
+    if (this.generatorTokens > 0 && Number.isFinite(snap.generator.costUsd)) return (snap.generator.costUsd / this.generatorTokens) * tokens;
+    let table = this.opts.generatorPricing ?? null;
+    if (table === null) {
+      const row = lookupPricing(this.opts.provider.model);
+      if (row.known) table = row.pricing;
+    }
+    if (table === null) return Number.NaN;
+    return (inputTokens * table.inputPerM + outputTokens * table.outputPerM) / 1e6;
   }
 
   // -------------------------------------------------------------------------------------
@@ -1752,7 +1934,8 @@ class EngineImpl implements Engine {
     this.draft = draft;
     this.stageBlock = null;
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
-    let stage: StageName = usesJev(this.mode) ? (this.detector.tripped() ? 'replan' : 'intent') : 'propose';
+    // llm-jev (docs/LLM-JEV-DESIGN.md §3): replan on a trip, otherwise straight to the synth propose stage — no intent or context request
+    let stage: StageName = usesJev(this.mode) ? (this.detector.tripped() ? 'replan' : this.mode === 'llm-jev' ? 'propose' : 'intent') : 'propose';
     let changedFiles: string[] = [];
     let stopAfterCommit: StopReason | null = null;
     let commonState: JsonObject | null = null;
@@ -1784,29 +1967,61 @@ class EngineImpl implements Engine {
           }
           draft.directive = r.directive;
         }
-        stage = 'intent';
-        draft.intent = await this.stage('intent', () => runIntentStage(ctx, common()));
-        if (draft.intent.verdict === 'fallback') draft.observed = true;
-        stage = 'context';
-        const intentInfo = { intent: draft.intent.intent, answer: draft.intent.answer, probability: draft.intent.probability };
-        const cx = await this.stage('context', () => runContextStage(ctx, common(), intentInfo));
-        draft.contextFiles = cx.files.map((f) => f.path);
+        const llmJev = this.mode === 'llm-jev';
+        let intentInfo: { intent: Intent; answer: IntentAnswer; probability: number };
+        let contextFiles: FileView[] = [];
+        if (llmJev) {
+          // docs/LLM-JEV-DESIGN.md §3 rows 2–3 / §13: no intent Choice and no context Nouls — the synthesizer holds every
+          // file itself and `draft.intent` is code-derived from the proposal kind once the synth stage returned
+          intentInfo = { intent: INTENT_FALLBACK, answer: INTENT_FALLBACK, probability: 1 };
+        } else {
+          stage = 'intent';
+          draft.intent = await this.stage('intent', () => runIntentStage(ctx, common()));
+          if (draft.intent.verdict === 'fallback') draft.observed = true;
+          stage = 'context';
+          intentInfo = { intent: draft.intent.intent, answer: draft.intent.answer, probability: draft.intent.probability };
+          const cx = await this.stage('context', () => runContextStage(ctx, common(), intentInfo));
+          draft.contextFiles = cx.files.map((f) => f.path);
+          contextFiles = cx.files;
+        }
         stage = 'propose';
         let p: { proposal: Proposal };
-        if (this.mode === 'jev-only') {
-          // The Synthesizer proposes (docs/JEV-ONLY.md): no generator call, no generator:* events, no generator.jsonl row.
+        if (this.mode === 'jev-only' || llmJev) {
+          // The Synthesizer proposes (docs/JEV-ONLY.md): in jev-only no generator call, no generator:* events, no generator.jsonl
+          // row; in llm-jev the synthesizer spends generator samples through SynthesisContext.generate (docs/LLM-JEV-DESIGN.md §4.8).
           const synthesizer = this.synthesizer;
-          if (synthesizer === null) throw new ConfigError('jev-only mode requires a synthesizer', { setting: 'mode' });
-          const sctx = this.synthesisContext(draft, cx.files);
-          p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
+          if (synthesizer === null) throw new ConfigError(`${this.mode} mode requires a synthesizer`, { setting: 'mode' });
+          // TODO(stage 4, docs/LLM-JEV-DESIGN.md §9.4): when `synthesizer.handles(wsInfo, files)` is false, run runProposeStage
+          // here with draft.proposer = 'generic' — the flag (not the mode) keys `generator_done` and the verbatim claim evidence
+          if (llmJev) draft.proposer = 'synth';
+          const sctx = this.synthesisContext(draft, contextFiles);
+          const s0 = this.clock();
+          const jev0 = draft.timing.jevMs;
+          try {
+            p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
+          } finally {
+            // docs/LLM-JEV-DESIGN.md §7.5: the synth wall and the Jev latency spent inside it (the shell's share is the rest)
+            draft.synthMs = Math.max(0, this.clock() - s0);
+            draft.synthJevMs = Math.max(0, draft.timing.jevMs - jev0);
+          }
+          // llm-jev: the round's per-sample rows (cancelled estimates included) reach generator.jsonl exactly as after runProposeStage; a no-op in jev-only
+          this.flushGeneratorRecords(draft);
         } else {
-          const prompt = this.promptInput(draft, changedFiles, cx.files, null);
+          const prompt = this.promptInput(draft, changedFiles, contextFiles, null);
           p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
           this.flushGeneratorRecords(draft);
         }
         draft.proposal = p.proposal;
         draft.proposeCompleted = true;
         claimsOf(p.proposal);
+        if (llmJev) {
+          // §3 row 2: the intent is a code fact of the proposal kind (patch → edit, run → verify, done → finish, read → investigate).
+          // It cannot exist before the proposal, so in this mode the `intent` event follows `proposal` (core/types.ts documents
+          // the order; `verdict: 'code'` marks it) — no provisional intent is emitted, because none would be a fact.
+          draft.intent = codeIntent(p.proposal.action.kind);
+          intentInfo = { intent: draft.intent.intent, answer: draft.intent.answer, probability: 1 };
+          this.emit({ type: 'intent', step, intent: draft.intent.intent, answer: draft.intent.answer, probability: 1, confidence: 1, verdict: 'code' });
+        }
         stage = 'risk';
         const rk = await this.stage('risk', () => runRiskStage(ctx, common(), p.proposal, intentInfo, { verifiedCompletion: this.verifiedCompletion(p.proposal) }));
         draft.risk = rk.risk;
@@ -1891,7 +2106,8 @@ class EngineImpl implements Engine {
           const judgeCommon = this.commonState(await this.workspace.changedFiles().catch(() => changedFiles), recent, draft);
           const j = await this.stage('judge', () =>
             // lastRunOutput: the engine's last parsed test run tail reaches a no-op done state even outside the 4-step window (state.ts doneExecutedJson)
-            runJudgeStage(ctx, judgeCommon, draft.proposal!, { outcome: ex.outcome, output: ex.output, changedFiles: ex.changedFiles, tests: ex.tests, lastRunOutput: this.lastTestRunOutput }, draft.claims),
+            // verifiedDone: llm-jev only (docs/LLM-JEV-DESIGN.md §6.6) — a `done` after the engine's own passing, current run has its claims accepted by code
+            runJudgeStage(ctx, judgeCommon, draft.proposal!, { outcome: ex.outcome, output: ex.output, changedFiles: ex.changedFiles, tests: ex.tests, lastRunOutput: this.lastTestRunOutput }, draft.claims, { verifiedDone: this.verifiedCompletion(draft.proposal!) !== null }),
           );
           draft.judge = j.judge;
           draft.completion = j.completion;
@@ -1922,8 +2138,9 @@ class EngineImpl implements Engine {
       this.stateError = { stage: u.stage, code: 'config' };
       return { stop: 'error', detail: 'unpriced_usage' };
     }
-    if (usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold)) return { stop: 'complete' };
-    if (this.mode === 'jev-off' && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
+    if (this.completeAfter(draft)) return { stop: 'complete' };
+    // docs/LLM-JEV-DESIGN.md §9.4: the generic fallback's `done` (draft.proposer 'generic', stage 4) stops as the generator's, like jev-off
+    if ((this.mode === 'jev-off' || draft.proposer === 'generic') && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
     if (this.consecutiveStageFailures >= CONSECUTIVE_STAGE_FAILURE_LIMIT) {
       const err = draft.error ?? { stage, code: 'internal' };
       this.stateError = { stage: err.stage, code: err.code };
@@ -2000,7 +2217,55 @@ class EngineImpl implements Engine {
     this.timing.jevMs += draft.timing.jevMs;
     this.timing.execMs += draft.timing.execMs;
     this.timing.totalMs += total;
-    this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs);
+    if (this.mode === 'llm-jev') {
+      const t = this.llmJevTiming(draft, total);
+      this.timing.harnessMs += t.harnessMs;
+      this.timing.synthMs = (this.timing.synthMs ?? 0) + (t.synthMs ?? 0);
+    } else {
+      this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs);
+    }
+  }
+
+  /**
+   * docs/LLM-JEV-DESIGN.md §7.5 (llm-jev): `synthMs` = wall of synthesize(); `harnessMs` = total − synthMs − execMs − confirmMs −
+   * the shell's Jev latency (requests outside the synthesizer). The generator batch wall and the synthesizer's Jev requests sit
+   * inside synthMs and are reported in their own buckets without being subtracted again.
+   */
+  private llmJevTiming(draft: StepDraft, total: number): StepTiming {
+    const synthMs = draft.synthMs ?? 0;
+    const shellJevMs = Math.max(0, draft.timing.jevMs - draft.synthJevMs);
+    return {
+      generatorMs: draft.timing.generatorMs,
+      jevMs: draft.timing.jevMs,
+      execMs: draft.timing.execMs,
+      harnessMs: Math.max(0, total - synthMs - draft.timing.execMs - draft.timing.confirmMs - shellJevMs),
+      totalMs: total,
+      synthMs,
+      ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+    };
+  }
+
+  /** The stop rule after a step: llm-jev → the code fact of docs/LLM-JEV-DESIGN.md §6.6; jev-on / jev-only → `task_complete >= completeThreshold`. */
+  private completeAfter(draft: StepDraft): boolean {
+    if (this.mode === 'llm-jev') return isCompleteByFact(this.completionFact(draft));
+    return usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold);
+  }
+
+  private completionFact(draft: StepDraft): CompletionFactInput {
+    const proposal = draft.proposal;
+    const judged = draft.judge?.tests;
+    return {
+      action: proposal?.action.kind ?? null,
+      outcome: draft.outcome?.status ?? null,
+      tests: draft.tests,
+      // §6.6 `workspace.testsCurrent` on the claiming run itself: no change was executed at or after it (commit() has already
+      // folded this step into lastChangeStep, which a `run` never sets)
+      testsCurrent: this.lastChangeStep === null || this.lastChangeStep < draft.step,
+      completion: proposal?.evidence?.completion,
+      // the recorded `tests_pass_unparsed` stands in only when the parser read nothing (judge.ts codeJudge)
+      testsPassUnparsed: judged && judged.source === 'judged' ? judged.allPassed : null,
+      verifiedDone: proposal !== null && this.verifiedCompletion(proposal) !== null,
+    };
   }
 
   private async confirm(draft: StepDraft, proposal: Proposal, risk: RiskAssessment): Promise<ConfirmOutcome> {
@@ -2243,8 +2508,11 @@ class EngineImpl implements Engine {
     const status = outcome?.status ?? null;
     const evidence: ClaimEvidence = (() => {
       if (proposal === null) return { kind: 'none', because: 'no proposal' };
-      if (this.mode === 'jev-off') return status === 'executed' || status === 'noop' ? { kind: 'verbatim' } : { kind: 'none', because: `outcome ${status ?? 'none'}` };
+      // jev-off, and the llm-jev generic fallback (docs/LLM-JEV-DESIGN.md §9.4: keyed on draft.proposer, not the mode): claims verbatim
+      if (this.mode === 'jev-off' || draft.proposer === 'generic') return status === 'executed' || status === 'noop' ? { kind: 'verbatim' } : { kind: 'none', because: `outcome ${status ?? 'none'}` };
       if (draft.claimProbabilities !== null && draft.judge !== null) return { kind: 'judged', probabilities: draft.claimProbabilities };
+      // llm-jev (docs/LLM-JEV-DESIGN.md §3 row 7): the code verdicts are the claim evidence even without a JudgeResult (a verified `done`); a step without them claims nothing
+      if (this.mode === 'llm-jev' && draft.claimProbabilities !== null && !draft.interruptedAt) return { kind: 'judged', probabilities: draft.claimProbabilities };
       if (draft.interruptedAt) return { kind: 'none', because: 'interrupted' };
       if (draft.error) return { kind: 'none', because: `stage failure at ${draft.error.stage}` };
       return { kind: 'none', because: `outcome ${status ?? 'none'}` };
@@ -2265,7 +2533,10 @@ class EngineImpl implements Engine {
     });
     let plan = update.plan;
     const notes = [...draft.notes, ...update.notes];
-    if (status === 'noop' && usesJev(this.mode) && draft.completion !== null && !isComplete(draft.completion, this.opts.limits.completeThreshold)) {
+    if (status === 'noop' && this.mode === 'llm-jev') {
+      // docs/LLM-JEV-DESIGN.md §6.6: a `done` completes only on the engine's own passing, current run; `task_complete` is recorded, not consulted
+      if (!this.completeAfter(draft)) notes.push(`done rejected: no passing, current run verifies it${draft.completion !== null ? ` (task_complete=${draft.completion.toFixed(2)} recorded only)` : ''}`);
+    } else if (status === 'noop' && usesJev(this.mode) && draft.completion !== null && !isComplete(draft.completion, this.opts.limits.completeThreshold)) {
       notes.push(`done rejected: task_complete=${draft.completion.toFixed(2)}`);
     }
     if (draft.interruptedAt?.stage === 'execute') notes.push(draft.interruptedAt.reason === 'wall_time' ? 'stopped by wall-time budget' : `interrupted (${draft.interruptedAt.reason})`);
@@ -2297,21 +2568,25 @@ class EngineImpl implements Engine {
 
     // Timing and usage.
     const total = Math.max(0, this.clock() - draft.t0);
-    const timing: StepTiming = {
-      generatorMs: draft.timing.generatorMs,
-      jevMs: draft.timing.jevMs,
-      execMs: draft.timing.execMs,
-      harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs),
-      totalMs: total,
-      // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
-      ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
-    };
+    const timing: StepTiming =
+      this.mode === 'llm-jev'
+        ? this.llmJevTiming(draft, total)
+        : {
+            generatorMs: draft.timing.generatorMs,
+            jevMs: draft.timing.jevMs,
+            execMs: draft.timing.execMs,
+            harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs),
+            totalMs: total,
+            // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
+            ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
+          };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
     this.timing.execMs += timing.execMs;
     this.timing.harnessMs += timing.harnessMs;
     this.timing.totalMs += timing.totalMs;
     if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
+    if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
@@ -2387,9 +2662,10 @@ class EngineImpl implements Engine {
       timing,
       loopSignatures: signatures,
     };
+    if (draft.proposer !== null) record.proposer = draft.proposer;
     if (draft.interruptedAt) record.interruptedAt = draft.interruptedAt;
     if (draft.error) record.error = draft.error;
-    if (usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold)) record.stoppedAt = 'complete';
+    if (this.completeAfter(draft)) record.stoppedAt = 'complete';
     else if (checkBudgets(this.budgetInput()) !== null) record.stoppedAt = 'step_start';
     // TUI-DESIGN §8.7 / §15 item 3: the committed plan after this step, bounded, so /rewind N seeds without replaying drafts
     record.planAfter = planSnapshot(plan);
@@ -2596,7 +2872,8 @@ function trace(msg: string): void {
 }
 
 export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): Promise<Engine> {
-  if (opts.mode === 'jev-only' && !opts.synthesizer) throw new ConfigError('jev-only mode requires a synthesizer (EngineOptions.synthesizer)', { setting: 'mode' });
+  // jev-only and llm-jev (docs/LLM-JEV-DESIGN.md §3) put the Synthesizer in the propose stage
+  if ((opts.mode === 'jev-only' || opts.mode === 'llm-jev') && !opts.synthesizer) throw new ConfigError(`${opts.mode} mode requires a synthesizer (EngineOptions.synthesizer)`, { setting: 'mode' });
   const d = await resolveDeps(deps);
   const redact = opts.redact;
   let root: string;
