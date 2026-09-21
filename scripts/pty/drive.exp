@@ -51,7 +51,7 @@ log_user 0
 log_file -a $capture
 set timeout $timeout_s
 set stty_init "rows $rows cols $cols"
-match_max 1000000
+match_max 65536   ;# a small window keeps expect's per-chunk regex scan cheap: a 1 MB window made the reader lag behind a chatty TUI (docs/live/tui attempt 2)
 
 set fh [open $stepsFile r]
 set steps [split [read $fh] "\n"]
