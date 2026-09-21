@@ -43,7 +43,7 @@ describe('anchorHunk: three tiers and near_line', () => {
 });
 
 describe('convertSample: block-anchored sites, deletions, multi-file, drops, dedupe, compile', () => {
-  it('replaces a dedenting block through the text-hashed span (where the one-statement check would call it stale)', async () => {
+  it('replaces a dedenting block through the text-hashed span; the shipped applier agrees on the unchanged base and only the hashed span notices a reformatted copy', async () => {
     const old = '            continue\n        out.append(x * k)';
     const res = await convert([patch([{ old, new: '            pass\n        out.append(x * k * 2)' }])]);
     expect(res.dropped).toEqual([]);
@@ -60,8 +60,15 @@ describe('convertSample: block-anchored sites, deletions, multi-file, drops, ded
     expect(applied.diff).toContain('+            pass');
     expect(applied.diff).toContain('+        out.append(x * k * 2)');
     expect(applied.files[0]!.after.split('\n')[17]).toBe('        out.append(x * k * 2)');
-    // the local applier and the shipped one agree wherever the shipped span check accepts the block (stage 4 routes llm sites by textSha)
-    expect(applyCandidate(c as unknown as Parameters<typeof applyCandidate>[0], files).diff).toBe(applied.diff);
+    // TODO(stage 4, src/synth/types.ts): drop the cast once 'llm' joins CandidateSourceName and Site carries span?
+    const asShipped = c as unknown as Parameters<typeof applyCandidate>[0];
+    // agreement: on the unchanged base the shipped applier (code-token span check) and the local one (textSha) produce the same diff
+    expect(applyCandidate(asShipped, files).diff).toBe(applied.diff);
+    // why the textSha rule (§4.7 step 3): the shipped check compares code tokens only, so a base where one span line was reformatted
+    // (same tokens, different text) still passes it and is rewritten blind; the hashed span calls it stale and stage 4 re-anchors by text instead
+    const reformatted = new Map([['src/calc.py', sourceFile('src/calc.py', CALC_SRC.replace('        out.append(x * k)', '        out.append(x*k)'))]]);
+    expect(applyCandidate(asShipped, reformatted).diff).toContain('-        out.append(x*k)');
+    expect(() => applyLlmCandidate(c, reformatted)).toThrow(/stale llm site/);
   });
 
   it('a deletion hunk deletes every span line, primary included', async () => {

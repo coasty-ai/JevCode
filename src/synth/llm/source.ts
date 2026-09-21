@@ -6,13 +6,19 @@
  * AbortController linked to the parent signal and a deadline; every sample is parsed, anchored
  * and compile-checked on arrival and pushed into an awaitable queue (`collect()` yields the
  * next arrival, null at round end) so lanes start before the last sample lands; `cancel()`
- * aborts the losers. A cancelled or timed-out sample is metered at its estimated full cost
- * (sibling prompt tokens + `max_tokens` output at the served rate) until the engine's ledger
- * says otherwise. Rounds are cached in memory by (goal, listing set, attempt ledger, round):
- * a re-fire with the same key replays the cached patches (converted against the current base)
- * and skips generation when ≥ N distinct untried candidates are already known.
+ * aborts the losers and resolves once their accounting is complete. A sample the provider never
+ * priced — cancelled, timed out or failed — is metered at its estimated full cost (sibling prompt
+ * tokens + `max_tokens` output at the served rate) until the engine's ledger says otherwise.
+ * Every started sample settles exactly once (a rejecting compile check or a throwing callback
+ * becomes an `error` arrival), so a round always closes. Rounds are cached in memory by (goal,
+ * listing set, attempt ledger, round): a re-fire with the same key replays the cached patches
+ * (converted and compile-checked against the current base) and skips generation when ≥ N
+ * distinct untried candidates are already known. A `fire()` while a cancelled or fully-fired
+ * round is still draining supersedes it (the old round keeps its accounting and cache write);
+ * only a staggered round still awaiting `release()` is refused with `round_open`.
  *
- * `generateWithDeadline` is the one place a sample is started; repro.ts reuses it for L2.
+ * `generateWithDeadline` and `estimatedSampleUsage` are the one place a sample is started and
+ * priced; repro.ts reuses both for L2.
  */
 import { sha12 } from '../../core/hash.js';
 import type { Json, TokenUsage } from '../../core/types.js';
@@ -22,7 +28,7 @@ import type { SourceFile } from '../types.js';
 import { convertSample, type CompileCheck, type DroppedPatch, type LlmApplied } from './candidates.js';
 import { listingHash, type Listing } from './prompt.js';
 import { PROPOSE_FIX_TOOL, PROPOSE_FIX_TOOL_NAME, isLengthStop, parseProposeFix, type PatchSpec } from './schema.js';
-import type { GenerateFn, GeneratePurpose, LlmCandidate, LlmGenerateRequest, LlmGenerateResult, LlmReasoning, LlmTokenUsage, OracleClass } from './types.js';
+import { reasoningEnabled, type GenerateFn, type GeneratePurpose, type LlmCandidate, type LlmGenerateRequest, type LlmGenerateResult, type LlmReasoning, type LlmTokenUsage, type OracleClass } from './types.js';
 
 // ---------------------------------------------------------------------------------------
 // Schedule constants (§4.6, §4.8)
@@ -229,12 +235,12 @@ export interface LlmFireInput {
   listings: readonly Listing[];
   tried?: ReadonlySet<string>;
   verdictOf?: (sha: string) => string | null;
-  /** default `maxTokensFor(goalId)` (doubled once after a `length` drop) */
+  /** default `maxTokensFor(goalId, base)` — base 1,500, or 3,000 with reasoning on; doubled once after a `length` drop (§4.5) */
   maxTokens?: number;
   /** default `sampleDeadlineMs(klass, running p50)` */
   deadlineMs?: number;
+  /** default `{enabled: false}`; the §10.2 fallback `{effort: 'low'}` raises the `max_tokens` base */
   reasoning?: LlmReasoning;
-  providerOrder?: string[];
   signal: AbortSignal;
   budget: LlmBudget;
   /** identity of the attempt ledger shown (candidates.ts attemptsHash); '' when none */
@@ -259,6 +265,8 @@ export interface LlmRoundSummary {
   errors: number;
   misanchored: number;
   syntaxErrors: number;
+  /** patches whose compile check itself failed (sandbox abort / spawn failure) */
+  compileFailed: number;
   duplicates: number;
   tried: number;
   /** distinct candidates the round produced (cache replay included) */
@@ -272,16 +280,20 @@ export interface LlmRoundSummary {
 }
 
 export interface LlmSource {
-  /** start a round; synchronous — arrivals come through `collect()` */
+  /**
+   * Start a round; synchronous — arrivals come through `collect()`. A cancelled or fully-fired round
+   * that is still draining is superseded (it keeps its accounting); a staggered round still awaiting
+   * `release()` is refused with `round_open`.
+   */
   fire(input: LlmFireInput): FireOutcome;
-  /** stagger: fire samples 1..N−1 now (the top-site seed batch returned without a passer, or the site set has no seeds) */
+  /** stagger: fire samples 1..N−1 now (the top-site seed batch returned without a passer, or the site set has no seeds); nothing fires once the dollar or sample counter is spent or the step signal is aborted */
   release(): void;
-  /** the next arrival, or null when the round has ended (every fired sample settled and no more will fire) */
+  /** the next arrival of the current round, or null when it has ended (every started sample settled and no more will fire) */
   collect(): Promise<SampleArrival | null>;
-  /** every remaining arrival; only after `release()` or `cancel()` on a staggered round */
+  /** every remaining arrival of the current round; only after `release()` or `cancel()` on a staggered round */
   collectAll(): Promise<SampleArrival[]>;
-  /** abort every in-flight sample (a commit after the grace, the step budget, the step signal) and end the round */
-  cancel(reason: CancelReason): void;
+  /** abort every in-flight sample (a commit after the grace, the step budget, the step signal); resolves when the round has closed, i.e. every cancelled sample is metered */
+  cancel(reason: CancelReason): Promise<void>;
   round(): LlmRoundSummary | null;
   inFlight(): number;
   /** `max_tokens` for the goal's next round: doubled once after a `length` drop (§4.5) */
@@ -312,6 +324,8 @@ interface CachedRound {
   round: number;
   shas: string[];
   patches: PatchSpec[];
+  /** write order, so `exportCache` keeps the freshest rounds under the 4 KB bound */
+  seq: number;
 }
 
 interface RoundState {
@@ -327,6 +341,9 @@ interface RoundState {
   released: boolean;
   noMore: boolean;
   closed: boolean;
+  /** resolves when the round closes */
+  done: Promise<void>;
+  resolveDone: () => void;
   startedMs: number;
   wallMs: number;
   siblingInput: number | null;
@@ -336,10 +353,28 @@ interface RoundState {
   patchOf: Map<string, PatchSpec>;
 }
 
-function costOf(usage: TokenUsage, pricing: LlmPricing | null): number {
+/** The provider's cost when it gave one, else the served rate over the tokens; 0 without pricing. */
+export function costOf(usage: TokenUsage, pricing: LlmPricing | null): number {
   if (Number.isFinite(usage.costUsd) && usage.costUsd > 0) return usage.costUsd;
   if (pricing === null) return 0;
   return (usage.inputTokens * pricing.inputPerM + usage.outputTokens * pricing.outputPerM) / 1e6;
+}
+
+export interface SampleEstimateInput {
+  /** a sibling sample's `prompt_tokens` (same prefix); null before the first sibling lands → chars / 4 */
+  siblingInputTokens: number | null;
+  /** system + user message chars, for the fallback */
+  promptChars: number;
+  maxTokens: number;
+  pricing: LlmPricing | null;
+}
+
+/** The estimated full cost of a sample the provider never priced — cancelled, timed out or failed (§4.8, §8.1): sibling prompt tokens + `max_tokens` output at the served rate. */
+export function estimatedSampleUsage(e: SampleEstimateInput): LlmTokenUsage {
+  const inputTokens = e.siblingInputTokens ?? Math.ceil(e.promptChars / 4);
+  const usage: LlmTokenUsage = { inputTokens, outputTokens: e.maxTokens, costUsd: 0, calls: 1, estimated: true };
+  usage.costUsd = costOf(usage, e.pricing);
+  return usage;
 }
 
 function emptyArrival(sample: number, status: SampleStatus, ms: number, detail: string): SampleArrival {
@@ -367,15 +402,14 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const lengthGoals = new Set<string>();
   const validMs: number[] = [];
   let state: RoundState | null = null;
+  let cacheSeq = 0;
 
   const maxTokensFor = (goalId: string, base = LLM_MAX_TOKENS): number => (lengthGoals.has(goalId) ? base * 2 : base);
   const p50ValidMs = (): number | null => percentile(validMs, 50);
+  const messageOf = (e: unknown): string => (e instanceof Error ? e.message : String(e));
 
   function estimateUsage(st: RoundState, k: number): LlmTokenUsage {
-    const inputTokens = st.siblingInput ?? Math.ceil((st.input.system.length + st.input.userFor(k).length) / 4);
-    const usage: LlmTokenUsage = { inputTokens, outputTokens: st.maxTokens, costUsd: 0, calls: 1, estimated: true };
-    usage.costUsd = costOf(usage, pricing);
-    return usage;
+    return estimatedSampleUsage({ siblingInputTokens: st.siblingInput, promptChars: st.input.system.length + st.input.userFor(k).length, maxTokens: st.maxTokens, pricing });
   }
 
   function charge(st: RoundState, usd: number): void {
@@ -400,6 +434,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       errors: count('error'),
       misanchored: drops('misanchored'),
       syntaxErrors: drops('syntax_error'),
+      compileFailed: drops('compile_failed'),
       duplicates: drops('duplicate'),
       tried: drops('tried'),
       distinct: st.seen.size,
@@ -421,20 +456,39 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const shas = [...new Set([...(prev?.shas ?? []), ...st.seen.keys()])];
     const patchOf = (sha: string): PatchSpec | undefined => st.patchOf.get(sha) ?? prev?.patches[prev.shas.indexOf(sha)];
     const patches = shas.map(patchOf).filter((p): p is PatchSpec => p !== undefined);
-    if (shas.length > 0 && patches.length === shas.length) cache.set(st.key, { goalId: st.input.goalId, round: st.input.round, shas, patches });
+    if (shas.length > 0 && patches.length === shas.length) cache.set(st.key, { goalId: st.input.goalId, round: st.input.round, shas, patches, seq: ++cacheSeq });
     st.queue.close();
+    st.resolveDone();
     const s = summaryOf(st);
-    emit('llm:round', `goal ${s.goalId} round ${s.round}: ${s.fired} fired, ${s.valid} valid, ${s.malformed} malformed, ${s.length} length, ${s.timeouts} timeout, ${s.cancelled} cancelled, ${s.distinct} distinct candidates, ${s.wallMs} ms, $${s.usd.toFixed(4)}${s.estimatedUsd > 0 ? ` (est. $${s.estimatedUsd.toFixed(4)})` : ''}`);
+    emit('llm:round', `goal ${s.goalId} round ${s.round}: ${s.fired} fired, ${s.valid} valid, ${s.malformed} malformed, ${s.length} length, ${s.timeouts} timeout, ${s.cancelled} cancelled, ${s.errors} error, ${s.distinct} distinct candidates, ${s.wallMs} ms, $${s.usd.toFixed(4)}${s.estimatedUsd > 0 ? ` (est. $${s.estimatedUsd.toFixed(4)})` : ''}`);
   }
 
+  /** Record one arrival. The queue push, the pending count and the close run in `finally`, so a throwing `emit`/`onSample` cannot leave the round open. */
   function settle(st: RoundState, a: SampleArrival): void {
     st.arrivals.push(a);
-    const drops = a.dropped.length > 0 ? ` (${a.dropped.map((d) => d.reason).join(', ')})` : '';
-    emit('llm:sample', `k=${a.sample} ${a.status} ${a.ms} ms: ${a.candidates.length} candidates${drops}${a.estimated ? `, est. $${a.usd.toFixed(4)}` : ''}${a.status === 'valid' || a.status === 'empty' || a.status === 'cached' ? '' : ` — ${a.detail}`}`);
-    deps.onSample?.(a);
-    st.queue.push(a);
-    st.pending -= 1;
-    maybeClose(st);
+    try {
+      const drops = a.dropped.length > 0 ? ` (${a.dropped.map((d) => d.reason).join(', ')})` : '';
+      emit('llm:sample', `k=${a.sample} ${a.status} ${a.ms} ms: ${a.candidates.length} candidates${drops}${a.estimated ? `, est. $${a.usd.toFixed(4)}` : ''}${a.status === 'valid' || a.status === 'empty' || a.status === 'cached' ? '' : ` — ${a.detail}`}`);
+      deps.onSample?.(a);
+    } finally {
+      st.queue.push(a);
+      st.pending -= 1;
+      maybeClose(st);
+    }
+  }
+
+  /** The terminal handler of every sample chain: a callback that threw is reported, never left as an unhandled rejection. */
+  function reportFailure(e: unknown): void {
+    try {
+      emit('llm:error', messageOf(e));
+    } catch {
+      // the emitter itself is broken; nothing else to do
+    }
+  }
+
+  /** An arrival for a sample whose processing threw after its cost was booked (usd 0: nothing more to charge). */
+  function internalFailure(k: number, ms: number, e: unknown): SampleArrival {
+    return emptyArrival(k, 'error', ms, `internal: ${messageOf(e)}`);
   }
 
   async function convert(st: RoundState, sample: number, patches: readonly PatchSpec[], compile: CompileCheck | null): Promise<Pick<SampleArrival, 'candidates' | 'applied' | 'dropped'>> {
@@ -449,16 +503,11 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   async function handleEnd(st: RoundState, k: number, end: SampleEnd): Promise<SampleArrival> {
     if (end.kind !== 'result') {
+      // no priced result — a timeout, a cancellation or a provider error alike is booked at the estimated full cost (§4.8; every accounting is complete)
       const usage = estimateUsage(st, k);
       charge(st, usage.costUsd);
-      const detail = end.kind === 'timeout' ? `deadline ${st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : end.error instanceof Error ? end.error.message : String(end.error);
-      const a = emptyArrival(k, end.kind, end.ms, detail);
-      if (end.kind !== 'error') {
-        a.usage = usage;
-        a.usd = usage.costUsd;
-        a.estimated = true;
-      }
-      return a;
+      const detail = end.kind === 'timeout' ? `deadline ${st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : messageOf(end.error);
+      return { ...emptyArrival(k, end.kind, end.ms, detail), usage, usd: usage.costUsd, estimated: true };
     }
     const { result } = end;
     const usd = costOf(result.usage, pricing);
@@ -472,13 +521,19 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const parsed = parseProposeFix(result);
     if (!parsed.ok) return { ...base, status: 'malformed', detail: parsed.reason };
     validMs.push(end.ms);
-    const conv = await convert(st, k, parsed.value.patches, deps.compile ?? null);
-    return { ...base, ...conv, status: parsed.value.patches.length === 0 ? 'empty' : 'valid', need: parsed.value.need, analysis: parsed.value.analysis, detail: parsed.value.analysis };
+    try {
+      const conv = await convert(st, k, parsed.value.patches, deps.compile ?? null);
+      return { ...base, ...conv, status: parsed.value.patches.length === 0 ? 'empty' : 'valid', need: parsed.value.need, analysis: parsed.value.analysis, detail: parsed.value.analysis };
+    } catch (e) {
+      // the conversion threw past convertSample's own drops: the sample stays booked, its patches are not passed on
+      return { ...base, status: 'error', need: parsed.value.need, analysis: parsed.value.analysis, detail: `conversion failed: ${messageOf(e)}` };
+    }
   }
 
   function startSample(st: RoundState, k: number): boolean {
     if (st.closed || st.noMore || st.fired.has(k)) return false;
-    if (st.input.budget.samplesLeft <= 0) return false;
+    // the §4.2 skip conditions hold per sample: sample 0 may have spent the dollar counter, the step may have ended before release()
+    if (st.input.signal.aborted || st.input.budget.samplesLeft <= 0 || st.input.budget.usdLeft <= 0) return false;
     st.input.budget.samplesLeft -= 1;
     st.fired.add(k);
     st.pending += 1;
@@ -490,30 +545,31 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       tools: [PROPOSE_FIX_TOOL],
       toolChoice: { name: PROPOSE_FIX_TOOL_NAME },
       reasoning: st.input.reasoning ?? { enabled: false },
-      providerPrefs: { requireParameters: true, ...(st.input.providerOrder !== undefined ? { order: st.input.providerOrder } : {}) },
+      providerPrefs: { requireParameters: true },
     };
     if (k > 0) req.seed = sampleSeed(st.input.step, k);
+    const t0 = now();
     const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, deadlineMs: st.deadlineMs, now });
     st.runs.set(k, run);
-    void run.promise.then((end) => handleEnd(st, k, end)).then((a) => settle(st, a));
+    void run.promise
+      .then((end) => handleEnd(st, k, end))
+      .catch((e: unknown) => internalFailure(k, Math.round(now() - t0), e))
+      .then((a) => settle(st, a))
+      .catch(reportFailure);
     return true;
   }
 
-  function fire(input: LlmFireInput): FireOutcome {
-    if (state !== null && !state.closed) return { fired: false, reason: 'round_open', cached: 0, key: null };
-    const n = input.n ?? samplesFor(input.klass, input.tReproMs ?? null);
-    const key = input.cacheKey ?? llmCacheKey(input.goalId, listingHash(input.listings), input.attemptHash ?? '', input.round);
-    const hit = cache.get(key);
-    const cachedUntried = hit === undefined ? 0 : hit.shas.filter((s) => !input.tried?.has(s)).length;
-    if (input.signal.aborted) return { fired: false, reason: 'aborted', cached: cachedUntried, key };
-    if (input.budget.roundsLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_rounds', cached: 0, key };
-    if (input.budget.usdLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
-    const st: RoundState = {
+  function newRound(input: LlmFireInput, key: string, n: number): RoundState {
+    let resolveDone: () => void = () => undefined;
+    const done = new Promise<void>((resolve) => {
+      resolveDone = resolve;
+    });
+    return {
       input,
       key,
       n,
       deadlineMs: input.deadlineMs ?? sampleDeadlineMs(input.klass, p50ValidMs(), deps.probeP90Ms ?? null),
-      maxTokens: input.maxTokens ?? maxTokensFor(input.goalId),
+      maxTokens: input.maxTokens ?? maxTokensFor(input.goalId, reasoningEnabled(input.reasoning) ? LLM_MAX_TOKENS_REASONING : LLM_MAX_TOKENS),
       queue: new ArrivalQueue<SampleArrival>(),
       runs: new Map(),
       fired: new Set(),
@@ -521,6 +577,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       released: false,
       noMore: false,
       closed: false,
+      done,
+      resolveDone,
       startedMs: now(),
       wallMs: 0,
       siblingInput: null,
@@ -528,11 +586,35 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       arrivals: [],
       patchOf: new Map(),
     };
+  }
+
+  function fire(input: LlmFireInput): FireOutcome {
+    const cur = state;
+    if (cur !== null && !cur.closed) {
+      // a staggered round still awaiting release() is open; a cancelled or fully-fired round only drains — it keeps its accounting and cache write while the new round takes over
+      if (!cur.noMore && !cur.released) return { fired: false, reason: 'round_open', cached: 0, key: null };
+      emit('llm:fire', `goal ${cur.input.goalId} round ${cur.input.round}: superseded while ${cur.pending} samples drain`);
+    }
+    const n = input.n ?? samplesFor(input.klass, input.tReproMs ?? null);
+    const key = input.cacheKey ?? llmCacheKey(input.goalId, listingHash(input.listings), input.attemptHash ?? '', input.round);
+    const hit = cache.get(key);
+    const cachedUntried = hit === undefined ? 0 : hit.shas.filter((s) => !input.tried?.has(s)).length;
+    if (input.signal.aborted) return { fired: false, reason: 'aborted', cached: cachedUntried, key };
+    if (input.budget.roundsLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_rounds', cached: 0, key };
+    if (input.budget.usdLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
+    const st = newRound(input, key, n);
     state = st;
     if (hit !== undefined && hit.patches.length > 0) {
       st.pending += 1;
       const t0 = now();
-      void convert(st, -1, hit.patches, null).then((conv) => settle(st, { ...emptyArrival(-1, 'cached', Math.round(now() - t0), `replayed ${hit.patches.length} cached patches`), ...conv }));
+      // replayed patches are re-anchored against the current base, so the post-image is compile-checked like a fresh sample (the checker caches by content hash)
+      void convert(st, -1, hit.patches, deps.compile ?? null)
+        .then(
+          (conv): SampleArrival => ({ ...emptyArrival(-1, 'cached', Math.round(now() - t0), `replayed ${hit.patches.length} cached patches`), ...conv }),
+          (e: unknown) => internalFailure(-1, Math.round(now() - t0), e),
+        )
+        .then((a) => settle(st, a))
+        .catch(reportFailure);
     }
     if (cachedUntried >= n) {
       st.noMore = true;
@@ -563,12 +645,16 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     let fired = 0;
     for (let k = 1; k < st.n; k++) if (startSample(st, k)) fired += 1;
     if (fired > 0) emit('llm:fire', `goal ${st.input.goalId} round ${st.input.round}: released ${fired} more samples (top-site seeds returned no passer)`);
+    else if (!st.noMore && st.n > 1) {
+      const why = st.input.signal.aborted ? 'step aborted' : st.input.budget.usdLeft <= 0 ? 'llm dollar counter spent' : st.input.budget.samplesLeft <= 0 ? 'no samples left' : 'all fired';
+      emit('llm:fire', `goal ${st.input.goalId} round ${st.input.round}: release() fired nothing (${why})`);
+    }
     maybeClose(st);
   }
 
-  function cancel(reason: CancelReason): void {
+  function cancel(reason: CancelReason): Promise<void> {
     const st = state;
-    if (st === null || st.closed) return;
+    if (st === null || st.closed) return Promise.resolve();
     st.noMore = true;
     let aborted = 0;
     for (const [k, run] of st.runs) {
@@ -578,6 +664,28 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     }
     if (aborted > 0) emit('llm:cancel', `goal ${st.input.goalId} round ${st.input.round}: ${aborted} in-flight samples cancelled (${reason}), metered at the estimated full cost`);
     maybeClose(st);
+    return st.done;
+  }
+
+  function exportCache(): Json {
+    // priority order: this run's rounds newest first (the latest round per goal; they win over the persisted ones), then the
+    // persisted rounds of goals not seen this run; the 4 KB trim drops from the tail, so a stale persisted sha never outlives a fresh round
+    const latest = new Map<string, { round: number; shas: string[]; seq: number }>();
+    for (const c of cache.values()) {
+      const cur = latest.get(c.goalId);
+      if (cur === undefined || c.round > cur.round || (c.round === cur.round && c.seq > cur.seq)) latest.set(c.goalId, { round: c.round, shas: c.shas, seq: c.seq });
+    }
+    const ordered: [string, { round: number; shas: string[] }][] = [...latest].sort((a, b) => b[1].seq - a[1].seq);
+    for (const [g, v] of persisted) if (!latest.has(g)) ordered.push([g, v]);
+    const out: Record<string, Json> = {};
+    for (const [g, v] of ordered) {
+      out[g] = { round: v.round, sha12: [...v.shas] };
+      if (JSON.stringify(out).length > LLM_CACHE_PERSIST_BYTES) {
+        delete out[g];
+        break;
+      }
+    }
+    return out;
   }
 
   return {
@@ -586,9 +694,10 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     collect: () => (state === null ? Promise.resolve(null) : state.queue.next()),
     collectAll: async () => {
       const out: SampleArrival[] = [];
-      if (state === null) return out;
+      const st = state;
+      if (st === null) return out;
       for (;;) {
-        const a = await state.queue.next();
+        const a = await st.queue.next();
         if (a === null) return out;
         out.push(a);
       }
@@ -598,22 +707,6 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     inFlight: () => (state === null ? 0 : state.pending),
     maxTokensFor,
     p50ValidMs,
-    exportCache: () => {
-      // the in-memory rounds win over the persisted ones; latest round per goal; bounded to 4 KB
-      const latest = new Map<string, { round: number; shas: string[] }>(persisted);
-      for (const c of cache.values()) {
-        const cur = latest.get(c.goalId);
-        if (cur === undefined || cur.round <= c.round) latest.set(c.goalId, { round: c.round, shas: c.shas });
-      }
-      const out: Record<string, Json> = {};
-      for (const [g, v] of latest) {
-        out[g] = { round: v.round, sha12: [...v.shas] };
-        if (JSON.stringify(out).length > LLM_CACHE_PERSIST_BYTES) {
-          delete out[g];
-          break;
-        }
-      }
-      return out;
-    },
+    exportCache,
   };
 }

@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { Answer, ToolCall } from '../../../../src/core/types.js';
 import { ESCAPE_KEY } from '../../../../src/jev/questions.js';
-import { Q18, isLlmOracle, issueQuoteAnchored, scriptProblems, writeReproduction, type ReproWriterInput } from '../../../../src/synth/llm/repro.js';
+import { Q18, REPRO_MAX_TOKENS, isLlmOracle, issueQuoteAnchored, scriptProblems, writeReproduction, type ReproWriterInput } from '../../../../src/synth/llm/repro.js';
 import { WRITE_REPRODUCTION_TOOL_NAME } from '../../../../src/synth/llm/schema.js';
 import { extractBlocks } from '../../../../src/synth/oracle/extract.js';
 import { REPRO_SENTINEL } from '../../../../src/synth/oracle/runner.js';
@@ -147,5 +147,27 @@ describe('L2 reproduction writer', () => {
     expect(res.outcome).toBe('llm_none');
     expect(res.goal).toBeNull();
     expect(res.pick?.reason).toMatch(/reproduces_issue 0\.20 < 0\.3/);
+  });
+
+  it('meters every sample — priced results at their cost, a failed one at the estimated full cost — and charges the step budget', async () => {
+    const pricing = { inputPerM: 0.5, outputPerM: 2 };
+    const gen = scriptedGenerate((k) => ({ toolCall: call(SCRIPTS[k]!, k === 1 ? 'not in the issue at all, truly' : 'raises TypeError: Invalid comparison of complex I'), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    const failing: typeof gen.generate = (req, o) => (o.sample === 2 ? Promise.reject(new Error('TransportError: stream')) : gen.generate(req, o));
+    const budget = { usdLeft: 0.02 };
+    const res = await writeReproduction(writerInput({ generate: failing, run: fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }] }).run, pricing, budget, ask: async (_stage, _state, questions) => ({ answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, q.type === 'choice' ? choiceAnswer(q, id === Q18.choiceId ? { script_0: 0.9 } : { exception_raised: 1 }) : noulAnswer(0.8)])) }) }));
+    const priced = (4000 * 0.5 + 300 * 2) / 1e6;
+    const estimate = (4000 * 0.5 + REPRO_MAX_TOKENS * 2) / 1e6;
+    expect(res.trials.map((t) => [t.status, t.estimated])).toEqual([
+      ['accepted', false],
+      ['rejected', false],
+      ['error', true],
+    ]);
+    expect(res.trials[0]!.usd).toBeCloseTo(priced, 9);
+    expect(res.trials[2]).toMatchObject({ reason: 'TransportError: stream', usage: { inputTokens: 4000, outputTokens: REPRO_MAX_TOKENS, estimated: true } });
+    expect(res.trials[2]!.usd).toBeCloseTo(estimate, 9);
+    expect(res.usd).toBeCloseTo(2 * priced + estimate, 9);
+    expect(res.estimatedUsd).toBeCloseTo(estimate, 9);
+    expect(0.02 - budget.usdLeft).toBeCloseTo(res.usd, 9);
+    expect(res.outcome).toBe('llm_valid');
   });
 });

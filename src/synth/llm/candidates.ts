@@ -163,7 +163,7 @@ export function createAstCompileCheck(run: CompileRun, dir: string, python = 'py
 // Sample → Candidate
 // ---------------------------------------------------------------------------------------
 
-export type DropReason = 'invalid_path' | 'test_path' | 'not_in_base' | 'too_many_files' | 'too_many_edits' | 'empty_old' | 'misanchored' | 'overlapping' | 'apply_failed' | 'unchanged' | 'syntax_error' | 'duplicate' | 'tried';
+export type DropReason = 'invalid_path' | 'test_path' | 'not_in_base' | 'too_many_files' | 'too_many_edits' | 'empty_old' | 'misanchored' | 'overlapping' | 'apply_failed' | 'unchanged' | 'syntax_error' | 'compile_failed' | 'duplicate' | 'tried';
 
 export interface DroppedPatch {
   sample: number;
@@ -171,7 +171,7 @@ export interface DroppedPatch {
   reason: DropReason;
   detail: string;
   path?: string;
-  /** the diff hash when the patch applied (duplicate / tried / syntax_error) */
+  /** the diff hash when the patch applied (duplicate / tried / syntax_error / compile_failed) */
   sha?: string;
 }
 
@@ -458,12 +458,25 @@ export async function convertSample(input: ConvertInput): Promise<ConvertResult>
     }
     if (input.compile) {
       let syntax: string | null = null;
+      let failure: string | null = null;
       for (const f of applied.files) {
-        const v = await input.compile(f.path, f.after);
+        let v: CompileVerdict;
+        try {
+          v = await input.compile(f.path, f.after);
+        } catch (e) {
+          // the checker itself failed (the sandbox rejects on an engine abort or a spawn failure): the post-image is
+          // unverified, so the patch is dropped with the message rather than passed on or left to hang the round
+          failure = `compile check failed for ${f.path}: ${e instanceof Error ? e.message : String(e)}`;
+          break;
+        }
         if (!v.ok) {
           syntax = `${v.message} in ${f.path}`;
           break;
         }
+      }
+      if (failure !== null) {
+        out.dropped.push({ sample: input.sample, patch: j, reason: 'compile_failed', detail: failure, path: primary.path, sha });
+        continue;
       }
       if (syntax !== null) {
         out.dropped.push({ sample: input.sample, patch: j, reason: 'syntax_error', detail: syntax, path: primary.path, sha });

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
-import { LLM_MAX_TOKENS, createLlmSource, sampleDeadlineMs, samplesFor, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
+import type { CompileCheck } from '../../../../src/synth/llm/candidates.js';
+import { LLM_CACHE_PERSIST_BYTES, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, createLlmSource, sampleDeadlineMs, samplesFor, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
 import { listingSet } from '../../../../src/synth/llm/prompt.js';
 import { calcFiles, proposeFixCall, scriptedGenerate, type HunkIn } from './fixtures.js';
 
@@ -83,6 +84,106 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     expect(again.fired).toBe(true);
     expect(gen.requests().at(-1)!.maxTokens).toBe(2 * LLM_MAX_TOKENS);
     await drain(src);
+    // the §10.2 reasoning fallback raises the base to 3,000 before the doubling
+    expect(src.fire(fireInput(budget(), { n: 1, stagger: false, round: 2, reasoning: { effort: 'low' } })).fired).toBe(true);
+    expect(gen.requests().at(-1)).toMatchObject({ maxTokens: 2 * LLM_MAX_TOKENS_REASONING, reasoning: { effort: 'low' } });
+    await drain(src);
+  });
+
+  it('books a provider error at the estimated full cost, and release() fires nothing once the dollar counter is spent or the step ended', async () => {
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    // the failure lands after sample 0, so the estimate takes the sibling's prompt tokens
+    const failing: typeof gen.generate = (req, o) => (o.sample === 1 ? new Promise((_, reject) => setTimeout(() => reject(new Error('HTTP 502 after retries')), 30)) : gen.generate(req, o));
+    const src = createLlmSource({ generate: failing, pricing: PRICING });
+    const b = budget();
+    src.fire(fireInput(b, { n: 2, stagger: false }));
+    const arrivals = await drain(src);
+    const err = arrivals.find((a) => a.sample === 1)!;
+    const estimate = (4000 * 0.5 + LLM_MAX_TOKENS * 2) / 1e6;
+    expect(err).toMatchObject({ status: 'error', estimated: true, detail: 'HTTP 502 after retries', candidates: [] });
+    expect(err.usd).toBeCloseTo(estimate, 9);
+    expect(0.02 - b.usdLeft).toBeCloseTo(estimate + (4000 * 0.5 + 300 * 2) / 1e6, 9);
+    expect(src.round()).toMatchObject({ errors: 1, valid: 1, closed: true });
+    // sample 0 spends the whole dollar counter: release() starts none of samples 1..N−1 and the round closes
+    const spent = budget({ usdLeft: 0.001 });
+    src.fire(fireInput(spent, { goalId: 'g2', n: 3 }));
+    expect((await src.collect())!.status).toBe('valid');
+    expect(spent.usdLeft).toBeLessThanOrEqual(0);
+    src.release();
+    expect(gen.calls()).toBe(2);
+    expect(await src.collect()).toBeNull();
+    expect(spent.samplesLeft).toBe(7);
+    // an aborted step signal stops release() the same way
+    const parent = new AbortController();
+    src.fire(fireInput(budget(), { goalId: 'g3', n: 3, signal: parent.signal }));
+    await src.collect();
+    parent.abort(new Error('step over'));
+    src.release();
+    expect(gen.calls()).toBe(3);
+    expect(src.round()).toMatchObject({ fired: 1, closed: true });
+  });
+
+  it('fire() right after cancel() supersedes the draining round, cancel() resolves once its estimates are booked; a staggered round awaiting release() stays open', async () => {
+    const gen = scriptedGenerate((k) => ({ toolCall: proposeFixCall([FIX_A]), latencyMs: k === 9 ? 0 : 2000 }));
+    const src = createLlmSource({ generate: gen.generate, pricing: PRICING });
+    const b1 = budget();
+    src.fire(fireInput(b1, { n: 2, stagger: false }));
+    const done = src.cancel('commit');
+    // the design's main path: seeds win → cancel → the next goal fires without awaiting the losers
+    const next = src.fire(fireInput(budget(), { goalId: 'g2', n: 1, stagger: false, userFor: () => 'user 9', step: 0 }));
+    expect(next).toMatchObject({ fired: true, samples: 1 });
+    await done;
+    expect(0.02 - b1.usdLeft).toBeCloseTo(2 * ((Math.ceil(('sys'.length + 'user 0'.length) / 4) * 0.5 + LLM_MAX_TOKENS * 2) / 1e6), 9);
+    const arrivals = await drain(src);
+    expect(arrivals.map((a) => [a.sample, a.status])).toEqual([[0, 'valid']]);
+    expect(src.round()).toMatchObject({ goalId: 'g2', closed: true });
+    // staggered and not yet released: sample 0 is racing the seeds, a second fire() is refused; after release() the round only drains and can be superseded
+    src.fire(fireInput(budget(), { goalId: 'g3', n: 2 }));
+    expect(src.fire(fireInput(budget(), { goalId: 'g4', n: 1 }))).toMatchObject({ fired: false, reason: 'round_open' });
+    src.release();
+    expect(src.fire(fireInput(budget(), { goalId: 'g4', n: 1, stagger: false }))).toMatchObject({ fired: true });
+    await src.cancel('abort');
+  });
+
+  it('compile-checks cache replays against the current base, and a checker that rejects drops the patch without hanging the round', async () => {
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]) }));
+    let verdict: 'ok' | 'syntax' | 'reject' = 'ok';
+    const compile: CompileCheck = async (_path, _source) => {
+      if (verdict === 'reject') throw new Error('sandbox aborted');
+      return verdict === 'ok' ? { ok: true } : { ok: false, message: 'SyntaxError: invalid syntax (line 4)' };
+    };
+    const src = createLlmSource({ generate: gen.generate, compile });
+    src.fire(fireInput(budget(), { n: 1, stagger: false }));
+    expect((await drain(src)).flatMap((a) => a.candidates)).toHaveLength(1);
+    // the replay re-anchors the cached patch against the current base, so its post-image goes through the checker again
+    verdict = 'syntax';
+    expect(src.fire(fireInput(budget(), { n: 1, stagger: false }))).toMatchObject({ fired: false, reason: 'cached' });
+    const [replay] = await drain(src);
+    expect(replay).toMatchObject({ status: 'cached', candidates: [] });
+    expect(replay!.dropped.map((d) => d.reason)).toEqual(['syntax_error']);
+    // a rejecting checker (the sandbox rejects on an engine abort) is a compile_failed drop; the sample settles and the round closes
+    verdict = 'reject';
+    src.fire(fireInput(budget(), { goalId: 'g2', n: 1, stagger: false }));
+    const [a] = await drain(src);
+    expect(a).toMatchObject({ status: 'valid', candidates: [] });
+    expect(a!.dropped[0]).toMatchObject({ reason: 'compile_failed', detail: 'compile check failed for src/calc.py: sandbox aborted' });
+    expect(src.round()).toMatchObject({ compileFailed: 1, closed: true });
+    expect(await src.collect()).toBeNull();
+  });
+
+  it('exportCache keeps this run’s rounds over the persisted ones under the 4 KB bound', async () => {
+    const stale: Record<string, { round: number; sha12: string[] }> = {};
+    for (let i = 0; i < 80; i++) stale[`old${i}`] = { round: 1, sha12: Array.from({ length: 4 }, (_, j) => `${i}`.padStart(6, 'a') + `${j}`.padStart(6, 'b')) };
+    expect(JSON.stringify(stale).length).toBeGreaterThan(LLM_CACHE_PERSIST_BYTES);
+    const gen = scriptedGenerate(() => ({ toolCall: proposeFixCall([FIX_A]) }));
+    const src = createLlmSource({ generate: gen.generate, cache: stale });
+    src.fire(fireInput(budget(), { n: 1, stagger: false }));
+    await drain(src);
+    const exported = src.exportCache() as Record<string, { round: number; sha12: string[] }>;
+    expect(Object.keys(exported)[0]).toBe('g1');
+    expect(exported['g1']!.sha12).toHaveLength(1);
+    expect(JSON.stringify(exported).length).toBeLessThanOrEqual(LLM_CACHE_PERSIST_BYTES);
+    expect(Object.keys(exported).length).toBeLessThan(81);
   });
 
   it('aborts a sample past its deadline and meters it as an estimate the budget sees', async () => {

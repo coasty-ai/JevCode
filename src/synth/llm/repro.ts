@@ -8,7 +8,9 @@
  * `issue_quote` is not a verbatim ≥ 6-token substring of the issue (the assertion must be
  * anchored in the issue text, not in the model's reading of it). Only the survivors reach Jev
  * Q18; the pick becomes a `ReproGoal` with outcome `llm_valid` (Noul ≥ 0.7) or `llm_weak`
- * (0.3 ≤ p < 0.7). An `llm_*` oracle never satisfies the completion fact (§6.6).
+ * (0.3 ≤ p < 0.7). An `llm_*` oracle never satisfies the completion fact (§6.6). Every sample is
+ * metered (§8.1 books the round at ≈ $0.0024): a priced result at its cost, a timed-out, cancelled
+ * or failed one at the estimated full cost, charged to the step's `llmUsdLeft` when a budget is given.
  *
  * TODO(stage 4, src/synth/oracle/search.ts): `OracleOutcome += 'llm_valid' | 'llm_weak'`,
  * `oracleYieldsGoal` and `oracleNeedsArbitration` true for both; `RepositoryMode.repro` persists
@@ -25,7 +27,7 @@ import { snippetIncomplete, type OracleAsk } from '../oracle/search.js';
 import type { CodeBlock, Extraction, FailureKind, ReproRunResult, Verdict } from '../oracle/types.js';
 import type { VerifyRunFn } from '../verify/types.js';
 import { REPRO_LIMITS, WRITE_REPRODUCTION_TOOL, WRITE_REPRODUCTION_TOOL_NAME, isLengthStop, parseWriteReproduction, type ReproductionOutput } from './schema.js';
-import { generateWithDeadline, sampleSeed, type SampleEnd } from './source.js';
+import { costOf, estimatedSampleUsage, generateWithDeadline, sampleSeed, type LlmBudget, type LlmPricing, type SampleEnd } from './source.js';
 import type { GenerateFn, LlmGenerateRequest, LlmTokenUsage } from './types.js';
 
 export type LlmOracleOutcome = 'llm_valid' | 'llm_weak';
@@ -230,7 +232,10 @@ export interface ReproScriptTrial {
   verdict: Verdict | null;
   goal: ReproGoal | null;
   ms: number;
-  usage: LlmTokenUsage | null;
+  usage: LlmTokenUsage;
+  /** what this sample cost the step's LLM budget (an estimate when `estimated`) */
+  usd: number;
+  estimated: boolean;
 }
 
 export interface ReproWriterInput {
@@ -252,6 +257,10 @@ export interface ReproWriterInput {
   n?: number;
   stage?: StageName;
   now?: () => number;
+  /** served rate for estimates and for results without a cost; null → estimates cost 0 */
+  pricing?: LlmPricing | null;
+  /** the step's LLM counters; only `usdLeft` is charged (L2 is one round per run, outside the L1 round/sample counters) */
+  budget?: Pick<LlmBudget, 'usdLeft'> | null;
 }
 
 export interface ReproWriterResult {
@@ -263,19 +272,28 @@ export interface ReproWriterResult {
   requests: number;
   note: string;
   durationMs: number;
+  /** the round's cost, estimates included */
+  usd: number;
+  /** the part of `usd` that is an estimate (samples the provider never priced) */
+  estimatedUsd: number;
 }
 
-function trialOf(sample: number, status: ReproTrialStatus, reason: string, ms: number, usage: LlmTokenUsage | null, output: ReproductionOutput | null = null): ReproScriptTrial {
-  return { sample, status, reason, output, result: null, verdict: null, goal: null, ms, usage };
+function trialOf(sample: number, status: ReproTrialStatus, reason: string, ms: number, usage: LlmTokenUsage, usd: number, estimated: boolean, output: ReproductionOutput | null = null): ReproScriptTrial {
+  return { sample, status, reason, output, result: null, verdict: null, goal: null, ms, usage, usd, estimated };
 }
 
-function readSample(k: number, end: SampleEnd): ReproScriptTrial {
-  if (end.kind !== 'result') return trialOf(k, end.kind, end.error instanceof Error ? end.error.message : String(end.error), end.ms, null);
+/** One sample's trial row with its cost: the provider's for a result, the estimated full cost for a timeout, a cancellation or an error (§4.8). */
+function readSample(k: number, end: SampleEnd, estimate: () => LlmTokenUsage, pricing: LlmPricing | null): ReproScriptTrial {
+  if (end.kind !== 'result') {
+    const usage = estimate();
+    return trialOf(k, end.kind, end.error instanceof Error ? end.error.message : String(end.error), end.ms, usage, usage.costUsd, true);
+  }
   const { result } = end;
-  if (isLengthStop(result.stopReason)) return trialOf(k, 'length', 'finish_reason length', end.ms, result.usage);
+  const usd = costOf(result.usage, pricing);
+  if (isLengthStop(result.stopReason)) return trialOf(k, 'length', 'finish_reason length', end.ms, result.usage, usd, false);
   const parsed = parseWriteReproduction(result);
-  if (!parsed.ok) return trialOf(k, 'malformed', parsed.reason, end.ms, result.usage);
-  return trialOf(k, 'accepted', '', end.ms, result.usage, parsed.value);
+  if (!parsed.ok) return trialOf(k, 'malformed', parsed.reason, end.ms, result.usage, usd, false);
+  return trialOf(k, 'accepted', '', end.ms, result.usage, usd, false, parsed.value);
 }
 
 /** N samples, the code checks, two base runs each, Q18 over the survivors → an `llm_*` oracle or none. Never throws on a failing script. */
@@ -291,7 +309,13 @@ export async function writeReproduction(input: ReproWriterInput): Promise<ReproW
     return generateWithDeadline(input.generate, req, { sample: k, purpose: 'write_reproduction', signal: input.signal, deadlineMs: input.deadlineMs ?? REPRO_DEADLINE_MS, now });
   });
   const ends = await Promise.all(runs.map((r) => r.promise));
-  const trials = ends.map((end, k) => readSample(k, end));
+  const pricing = input.pricing ?? null;
+  const sibling = ends.find((e): e is Extract<SampleEnd, { kind: 'result' }> => e.kind === 'result' && e.result.usage.inputTokens > 0);
+  const estimate = (): LlmTokenUsage => estimatedSampleUsage({ siblingInputTokens: sibling?.result.usage.inputTokens ?? null, promptChars: system.length + user.length, maxTokens: REPRO_MAX_TOKENS, pricing });
+  const trials = ends.map((end, k) => readSample(k, end, estimate, pricing));
+  const usd = trials.reduce((s, t) => s + t.usd, 0);
+  const estimatedUsd = trials.filter((t) => t.estimated).reduce((s, t) => s + t.usd, 0);
+  if (input.budget && Number.isFinite(usd) && usd > 0) input.budget.usdLeft -= usd;
 
   const options: Omit<ReproRunOptions, 'workspace' | 'python'> = { packageName: input.packageName, framework: input.framework, timeoutMs: input.timeoutMs ?? REPRO_TIMEOUT_MS };
   const runOpts: ReproRunOptions = { ...options, workspace: input.workspace };
@@ -362,7 +386,7 @@ export async function writeReproduction(input: ReproWriterInput): Promise<ReproW
     goals.set(key, goal);
   }
 
-  const done = (outcome: ReproWriterResult['outcome'], pick: Q18Pick | null, requests: number, note: string): ReproWriterResult => ({ outcome, goal: pick?.key !== null && pick?.key !== undefined ? (goals.get(pick.key) ?? null) : null, pick, trials, requests, note, durationMs: Math.round(now() - started) });
+  const done = (outcome: ReproWriterResult['outcome'], pick: Q18Pick | null, requests: number, note: string): ReproWriterResult => ({ outcome, goal: pick?.key !== null && pick?.key !== undefined ? (goals.get(pick.key) ?? null) : null, pick, trials, requests, note, durationMs: Math.round(now() - started), usd, estimatedUsd });
   if (survivors.length === 0) {
     const reasons = trials.map((t) => `${t.sample}: ${t.status}${t.reason === '' ? '' : ` (${clip(t.reason, 80)})`}`).join('; ');
     return done('llm_none', null, 0, `no LLM-written script survived the code checks — ${reasons}`);

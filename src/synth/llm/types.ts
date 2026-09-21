@@ -18,14 +18,17 @@ export interface SampleOptions {
   signal: AbortSignal;
 }
 
-export interface LlmReasoning {
-  enabled: boolean;
-  effort?: 'low' | 'medium' | 'high';
+/** `GenerateRequest.reasoning` exactly as §4.12 states it: off (the default), or on at a bounded effort (the §10.2 fallback). */
+export type LlmReasoning = { enabled: false } | { effort: 'low' | 'medium' };
+
+/** `GenerateRequest.providerPrefs` exactly as §4.12 states it (`provider: {require_parameters}`). */
+export interface LlmProviderPrefs {
+  requireParameters: boolean;
 }
 
-export interface LlmProviderPrefs {
-  requireParameters?: boolean;
-  order?: string[];
+/** True when the request asks for reasoning tokens — the `max_tokens` cap then rises to `LLM_MAX_TOKENS_REASONING` (§4.5). */
+export function reasoningEnabled(r: LlmReasoning | undefined): boolean {
+  return r !== undefined && 'effort' in r;
 }
 
 /** `GenerateRequest` plus the fields §4.12 maps onto the OpenRouter body (`seed`, `reasoning`, `provider.require_parameters`). */
