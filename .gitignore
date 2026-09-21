@@ -21,3 +21,5 @@ perf/results/*
 # local scratch and agent worktrees (never committed)
 .scratch/
 .claude/worktrees/
+!bench/results/glm-*/
+!bench/results/llm-jev-*/
