@@ -17,6 +17,7 @@ import type { Json, Question, SynthesisContext } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { ESCAPE_KEY, choice } from '../../jev/questions.js';
 import { baseState } from '../beam/state.js';
+import { isStatementSite, statementSiteAt } from '../localize/sites.js';
 import { scopeAt } from '../py/structure.js';
 import { EDIT_CLASS_IDS } from '../sketch/productions.js';
 import type { EditClass } from '../sketch/productions.js';
@@ -336,19 +337,34 @@ export function taskIdentifiers(task: string): string[] {
   return [...out].slice(0, MAX_TASK_IDENTIFIERS);
 }
 
+/**
+ * The options every source enumerates with at a site on `base`. `phase` is the goal's current
+ * phase (visitPhase sets it before a site is visited): the sources that widen the space beyond the
+ * measured SEEDS set — the depth-2 wraps of templates/wrap2.ts and mutate's
+ * `collapse_collection_to_element` — read it and enumerate only in WIDENED (jev-only-rungs-1-2.md
+ * §16: SEEDS totals unchanged on 40/40 QuixBugs sites).
+ */
 export function enumerateOptions(base: Base, goal: Goal, task: string): EnumerateOptions {
-  return { cap: ENUMERATE_CAP, testLiterals: testLiterals(goal.failures), taskIdentifiers: taskIdentifiers(task), corpus: base.files };
+  return { cap: ENUMERATE_CAP, testLiterals: testLiterals(goal.failures), taskIdentifiers: taskIdentifiers(task), corpus: base.files, phase: goal.phase };
 }
 
 /**
  * The site as seen on `base`: unchanged on the committed base; on an 'improved' base the file is
  * the base's copy, kept only when the line still reads `currentLine` (a partial that shifted the
- * line makes the site stale there; applyCandidate would refuse it anyway).
+ * line makes the site stale there; applyCandidate would refuse it anyway). A statement-level site
+ * (`Site.endLine`, localize/sites.ts) is compared as a span: the statement at its first line must
+ * still end at `endLine` and join to the same text — its first physical line alone (`return
+ * hash((`) says nothing about the continuation lines a partial may have edited.
  */
 export function siteOnBase(site: Site, base: Base): Site | null {
   if (base.origin === 'committed') return site;
   const f = base.files.get(site.file.path);
   if (f === undefined) return null;
+  if (isStatementSite(site)) {
+    const span = statementSiteAt(f, site.line, site.evidence, site.block);
+    if (span === null || span.line !== site.line || span.endLine !== site.endLine || span.currentLine !== site.currentLine) return null;
+    return { ...site, file: f, scope: span.scope };
+  }
   if (site.kind === 'replace' && (f.mod.lines[site.line - 1] ?? null) !== site.currentLine) return null;
   if (site.kind === 'insert' && site.line > f.mod.lines.length + 1) return null;
   return { ...site, file: f, scope: scopeAt(f.mod, site.line) };

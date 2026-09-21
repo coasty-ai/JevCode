@@ -30,12 +30,23 @@ function underscorePrefixes(name: string): string[] {
   return out;
 }
 
+/** One computation per analysed module: the queue's vocabulary and the site list ask for every file of a corpus. */
+const PREFIX_CACHE = new WeakMap<PyModule, MethodPrefix[]>();
+
 /**
  * The dispatch prefix of every class in `mod` that has one: the prefix shared by the most methods
  * (longest on a tie), carried by ≥ PREFIX_MIN_METHODS methods of which at least one has a CapWord
- * suffix (a type name), so `get_a` / `get_b` accessor pairs do not count.
+ * suffix (a type name), so `get_a` / `get_b` accessor pairs do not count. Cached per module object.
  */
 export function classMethodPrefixes(mod: PyModule): MethodPrefix[] {
+  const cached = PREFIX_CACHE.get(mod);
+  if (cached !== undefined) return cached;
+  const out = computeClassMethodPrefixes(mod);
+  PREFIX_CACHE.set(mod, out);
+  return out;
+}
+
+function computeClassMethodPrefixes(mod: PyModule): MethodPrefix[] {
   const out: MethodPrefix[] = [];
   for (const cls of mod.blocks) {
     if (cls.kind !== 'class') continue;

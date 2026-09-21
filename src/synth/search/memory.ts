@@ -16,9 +16,10 @@
  */
 import { sha12 } from '../../core/hash.js';
 import type { Plan, WindowEntry } from '../../core/types.js';
+import { clearRunFacts } from '../introspect/facts.js';
 import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
 import type { CriterionStrength } from '../oracle/types.js';
-import type { AppliedCandidate, LocalizeResult, TestRunSummary } from '../types.js';
+import type { AppliedCandidate, LocalizeResult, SourceFile, TestRunSummary } from '../types.js';
 import { defaultOverrides } from './directive.js';
 import type { SearchOverrides } from './directive.js';
 import { clusterFailures, inheritGoalState } from './goals.js';
@@ -45,6 +46,16 @@ export interface SearchMemory {
   localizeCache: Map<string, LocalizeResult>;
   /** per goal id: how far the WIDENED all-lines phase got (§2.3 phase W) */
   widenCursor: Map<string, number>;
+  /**
+   * The workspace's analysed Python files as of the last load (index.ts loadPythonFiles), path →
+   * SourceFile. A re-baseline re-reads every file but re-analyses only those whose text changed
+   * and hands back the SAME SourceFile object for the rest, so the per-file caches keyed by
+   * object identity (WeakMaps in search/sites.ts, search/composite.ts) survive and two
+   * re-baselines do not hold two copies of an 858-file corpus (the 9-instance live run of
+   * jev-only-rungs-1-2.md §17 died at the 4 GB heap limit on two Django tasks). Not persisted;
+   * dropped with the memory.
+   */
+  fileCache: Map<string, SourceFile>;
   /** commit order, for revert directives; lost on resume (only the hashes survive) */
   committed: AppliedCandidate[];
   /** sha12(diff) of every commit of this run, including those made before a resume */
@@ -157,6 +168,7 @@ export function createMemory(runId: string): SearchMemory {
     tried: new Set(),
     localizeCache: new Map(),
     widenCursor: new Map(),
+    fileCache: new Map(),
     committed: [],
     committedDiffHashes: [],
     stepBudget: emptyStepBudget(),
@@ -169,19 +181,43 @@ export function createMemory(runId: string): SearchMemory {
 
 const memories = new Map<string, SearchMemory>();
 
-/** The memory of a run, created on first use. One process may host several runs (bench). */
+/**
+ * Run memories kept at once, most recently used last. Nothing in the engine or the bench drops a
+ * run's memory at its end (there is no run-end hook on a Synthesizer), and a repository memory
+ * holds its whole analysed corpus (`bases[0].files`, `fileCache`: Django 858 files ≈ 0.4 GB), so
+ * a bench process that runs many repository tasks would keep every one of them. A bench drives
+ * at most `--concurrency` runs at a time (2 in every live run so far); the least recently used
+ * memory beyond this bound is dropped, with its run facts. A dropped run that resumes rebuilds
+ * from its checkpoint (§2.1: lost state costs test time, never a wrong commit).
+ */
+export const MEMORIES_MAX = 4;
+
+/** The memory of a run, created on first use. One process may host several runs (bench); see MEMORIES_MAX. */
 export function getMemory(runId: string): SearchMemory {
   let mem = memories.get(runId);
   if (mem === undefined) {
     mem = createMemory(runId);
-    memories.set(runId, mem);
-  }
+    while (memories.size >= MEMORIES_MAX) {
+      const oldest = memories.keys().next().value;
+      if (oldest === undefined) break;
+      dropMemory(oldest);
+    }
+  } else memories.delete(runId);
+  // (re-)inserted last: the map's insertion order is the recency order
+  memories.set(runId, mem);
   return mem;
 }
 
-/** Forget a run's memory (run end, tests). Returns whether there was one. */
+/** Forget a run's memory and its harvested facts (run end, eviction, tests). Returns whether there was one. */
 export function dropMemory(runId: string): boolean {
-  return memories.delete(runId);
+  clearRunFacts(runId);
+  const had = memories.delete(runId);
+  return had;
+}
+
+/** The run ids whose memory is held, least recently used first (tests, diagnostics). */
+export function heldMemories(): string[] {
+  return [...memories.keys()];
 }
 
 /** The registered memory whose ledger is exactly this array (identity), for callers holding only `mem.goals`. */

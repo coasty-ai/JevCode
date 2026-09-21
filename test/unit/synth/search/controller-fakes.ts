@@ -77,9 +77,11 @@ export function choiceOn(q: Question, key: string, p = 0.8): Answer {
 // Repository-mode collaborators a QuixBugs/ladder-shaped test never reaches
 // ---------------------------------------------------------------------------------------
 
-/** The repository-mode deps (oracle, localiser, scope, reproduction re-run, best guess) as no-ops: a small pytest workspace never enters that mode. */
-export function unusedRepositoryDeps(): Pick<SearchDeps, 'searchBestGuess' | 'locate' | 'findOracle' | 'regressionScope' | 'verifyRepro'> {
+/** The repository-mode deps (oracle, localiser, scope, reproduction re-run, best guess, the introspection and history harvests) as no-ops: a small pytest workspace never enters that mode. */
+export function unusedRepositoryDeps(): Pick<SearchDeps, 'searchBestGuess' | 'locate' | 'findOracle' | 'regressionScope' | 'verifyRepro' | 'introspect' | 'harvestHistory'> {
   return {
+    introspect: async () => null,
+    harvestHistory: async () => null,
     searchBestGuess: async () => {
       throw new Error('searchBestGuess is not scripted for this test');
     },

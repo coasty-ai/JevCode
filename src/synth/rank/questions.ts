@@ -137,6 +137,25 @@ export function anchorLine(site: Site): number {
   return site.line > 1 ? site.line - 1 : site.line;
 }
 
+/** A statement-level replace site (localize/sites.ts `Site.endLine`): the candidates replace the physical span `line..endLine` with one line. */
+function isSpanSite(site: Pick<Site, 'kind' | 'line' | 'endLine'>): site is Site & { endLine: number } {
+  return site.kind === 'replace' && site.endLine !== undefined && site.endLine > site.line;
+}
+
+/**
+ * What the state shows as `buggy_line`, and the `L<n>` it names. A physical-line site shows the
+ * program's line; a statement-level site shows the statement joined onto one line (its
+ * `currentLine`) and names the span `L<first>-L<last>`: the candidates are one-line rewrites of the
+ * whole statement, and the ≤ 255-option Choice and the Noul rubric would otherwise compare them
+ * with an unbalanced bracket fragment (`return hash((`) that no option resembles.
+ */
+export function buggyLineOf(site: Site): { number: string; text: string } {
+  const lines = site.file.mod.lines;
+  if (isSpanSite(site)) return { number: `L${site.line}-L${site.endLine}`, text: site.currentLine };
+  const anchor = anchorLine(site);
+  return { number: `L${anchor}`, text: lines[anchor - 1] ?? site.currentLine };
+}
+
 /** 1-based inclusive line range shown as `program`: the enclosing block, bounded and centred on the anchor. */
 export function programRange(site: Site): { start: number; end: number } {
   const total = site.file.mod.lines.length;
@@ -237,13 +256,13 @@ export function buildRankState(candidates: readonly Candidate[], keys: readonly 
   const lines = site.file.mod.lines;
   const program: Record<string, Json> = {};
   for (let n = start; n <= end; n++) program[`L${n}`] = lines[n - 1] ?? '';
-  const anchor = anchorLine(site);
+  const buggy = buggyLineOf(site);
   const state: Record<string, Json> = {
     task: taskSentence(mode, site.block?.name ?? null),
     file: site.file.path,
     program,
-    buggy_line_number: `L${anchor}`,
-    buggy_line: lines[anchor - 1] ?? site.currentLine,
+    buggy_line_number: buggy.number,
+    buggy_line: buggy.text,
     tests: ctx.failures.slice(0, MAX_TESTS_IN_STATE).map(testView),
   };
   const userTask = ctx.task.trim();

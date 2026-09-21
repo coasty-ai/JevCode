@@ -8,7 +8,11 @@ import { describe, expect, it } from 'vitest';
 
 import type { Proposal, SynthesisContext, WindowEntry } from '../../../../src/core/types.js';
 import { toJson } from '../../../../src/core/json.js';
-import { DEFAULT_TEST_COMMAND, ESTABLISH_GOAL, ESTABLISH_GOAL_REPOSITORY, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, lastExecutedActionKind, lastWorkspaceChangeStep, mentionedInTask, moduleFilesOf, normaliseTestCommand, patchNotExecutedLastStep, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
+import { DEFAULT_TEST_COMMAND, ESTABLISH_GOAL, ESTABLISH_GOAL_REPOSITORY, LedgerSieveSynthesizer, SUITE_TOO_SLOW, allPass, detectLayout, framesOfTraceback, lastExecutedActionKind, lastWorkspaceChangeStep, loadPythonFiles, mentionedInTask, moduleFilesOf, normaliseTestCommand, patchNotExecutedLastStep, runMemory, workspaceChangedSince } from '../../../../src/synth/search/index.js';
+import { emptyIntrospection, runFacts } from '../../../../src/synth/introspect/index.js';
+import type { IntrospectedNames } from '../../../../src/synth/introspect/index.js';
+import type { HistoryFacts } from '../../../../src/synth/history/index.js';
+import { fakeWorkspace } from './proposal-helpers.js';
 import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, bestGuessTestId, mergeSummaries } from '../../../../src/synth/oracle/index.js';
 import type { OracleSearch, ReproGoal, ReproSpec, VerifyReproResult } from '../../../../src/synth/oracle/index.js';
 import { dropMemory } from '../../../../src/synth/search/memory.js';
@@ -63,9 +67,18 @@ interface HarnessOptions {
   locate?: SearchDeps['locate'];
   regressionScope?: SearchDeps['regressionScope'];
   verifyRepro?: SearchDeps['verifyRepro'];
+  /** the introspection pass and the history harvest, scripted (recorded in `calls` only when given) */
+  introspect?: SearchDeps['introspect'];
+  harvestHistory?: SearchDeps['harvestHistory'];
   bestGuess?: ((goal: Goal, mem: RunMemory) => SubGoalResult)[];
   /** workspace files handed to loadFiles (default: gcd.py) */
   files?: SourceFile[];
+}
+
+interface TracebackFrameLike {
+  file: string;
+  line: number;
+  fn: string | null;
 }
 
 interface Harness {
@@ -106,6 +119,16 @@ function harness(o: HarnessOptions = {}): Harness {
     verifyRepro: async (ctx, spec) => {
       calls.push('verifyRepro');
       return (o.verifyRepro ?? stubs.verifyRepro)(ctx, spec);
+    },
+    introspect: async (ctx, spec, anchors) => {
+      if (o.introspect === undefined) return stubs.introspect(ctx, spec, anchors);
+      calls.push('introspect');
+      return o.introspect(ctx, spec, anchors);
+    },
+    harvestHistory: async (ctx, moduleFiles, sources) => {
+      if (o.harvestHistory === undefined) return stubs.harvestHistory(ctx, moduleFiles, sources);
+      calls.push('harvestHistory');
+      return o.harvestHistory(ctx, moduleFiles, sources);
     },
     searchBestGuess: async (_ctx, mem, goal) => {
       calls.push(`searchBestGuess:${goal.id}`);
@@ -929,6 +952,85 @@ describe('repository mode (Django/sympy-shaped workspace): oracle goal, best gue
     if (p4.action.kind === 'done') expect(p4.action.summary).toContain(BEST_GUESS_REJECTED_REASON);
   });
 
+  it('the establishing step harvests the introspected names before the localisation and the module files\' history after the scope, once per run; a post-patch re-baseline harvests nothing again; the facts are registered per run and named in the transcript', async () => {
+    const file = moduleFile();
+    const introspected: IntrospectedNames = { ...emptyIntrospection('ran', '1 operand, 2 classes, 1 predicates, 0 attributes, 0 module names'), classes: ['CharField', 'Field'], predicates: ['is_relation'], operands: [{ expr: 'f', typeName: 'CharField', classes: ['CharField', 'Field'], predicates: ['is_relation'], falsyPredicates: ['is_relation'], attributes: [], frame: null, raisingReceiver: true }], durationMs: 640 };
+    const history: HistoryFacts = { commits: [{ sha: 'a'.repeat(40), subject: 'Fixed #31750 -- equality', time: 2, reason: 'ticket:#31750', hunks: [] }], files: [MODULE], commands: 3, durationMs: 1700, note: '1 commit, 0 change runs in 1 file (3 git commands; ticket #31750: 1 commit)' };
+    const seen: { specIds: string[]; anchors: number[]; historyFiles: string[][]; sourcePaths: string[][] } = { specIds: [], anchors: [], historyFiles: [], sourcePaths: [] };
+    let reproNow: () => VerifyReproResult = reproPassing;
+    const h = harness({
+      files: [file],
+      baselines: [scopedGreen()],
+      findOracle: async () => oracleFound(),
+      locate: locateModule(file),
+      regressionScope: scopeFor(),
+      verifyRepro: async () => reproNow(),
+      introspect: async (_ctx, s, anchors) => {
+        seen.specIds.push(s.testId);
+        seen.anchors.push(anchors.length);
+        return introspected;
+      },
+      harvestHistory: async (_ctx, moduleFiles, sources) => {
+        seen.historyFiles.push([...moduleFiles]);
+        seen.sourcePaths.push(sources.map((f) => f.path));
+        return history;
+      },
+      results: [reproCommit(file, true)],
+    });
+    const runId = 'repo-facts';
+    const ctx1 = repoCtx({ runId, step: 1 });
+    await h.synth.synthesize(ctx1);
+    // introspection right after the oracle (its anchors), the history once the localisation named the module files
+    expect(h.calls).toEqual(['loadFiles', 'findOracle', 'introspect', 'locate:g1', 'regressionScope', 'harvestHistory', 'runTests']);
+    expect(seen).toEqual({ specIds: [REPRO_ID], anchors: [0], historyFiles: [[MODULE]], sourcePaths: [[MODULE]] });
+    expect(runFacts(runId)).toEqual({ introspected, history });
+    const phases = ctx1.events.filter((e) => e.type === 'synth').map((e) => (e.type === 'synth' ? `${e.phase}: ${e.detail}` : ''));
+    expect(phases.map((p) => p.split(':')[0])).toEqual(['oracle', 'introspect', 'localize', 'scope', 'history', 'baseline', 'verify', 'ledger']);
+    expect(phases[1]).toBe('introspect: ran in 640 ms: 1 operand, 2 classes, 1 predicates, 0 attributes, 0 module names; f: CharField (1 predicate, receiver)');
+    expect(phases[4]).toBe('history: 1 commit, 0 change runs in 1 file (3 git commands; ticket #31750: 1 commit) (1700 ms)');
+    // the search commits; the post-patch re-baseline re-runs the scope and the reproduction, never the harvests
+    await h.synth.synthesize(repoCtx({ runId, step: 2, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 })] }));
+    await h.synth.synthesize(repoCtx({ runId, step: 3, window: [scopedRun(1, SCOPED, { passed: 2, failed: 0 }), executedPatch(2, [MODULE])], plan: { remaining: [`fix ${REPRO_ID} in ${MODULE}`, VERIFY_ITEM] } }));
+    expect(h.calls.filter((c) => c === 'introspect' || c === 'harvestHistory')).toEqual(['introspect', 'harvestHistory']);
+    expect(h.calls.filter((c) => c === 'loadFiles')).toHaveLength(2);
+    expect(runFacts(runId)).toEqual({ introspected, history });
+  });
+
+  it('a resumed run harvests the facts again from the checkpoint\'s traceback and module files (they are not persisted); a failing harvest is a transcript line, never fatal', async () => {
+    const file = moduleFile();
+    const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => ({ ...oracleFound(), traceback: '  File "django/db/models/fields/__init__.py", line 3, in __hash__\n' }), locate: locateModule(file), regressionScope: scopeFor() });
+    const runId = 'repo-facts-resume';
+    const ctx1 = repoCtx({ runId, step: 1 });
+    await h.synth.synthesize(ctx1);
+    expect(runFacts(runId)).toEqual({ introspected: null, history: null });
+    const persisted = persistedOf(ctx1);
+    dropMemory(runId);
+    const anchors: TracebackFrameLike[][] = [];
+    const h2 = harness({
+      files: [file],
+      baselines: [scopedGreen()],
+      verifyRepro: async () => reproFailing(),
+      introspect: async (_ctx, _spec, frames) => {
+        anchors.push(frames.map((f) => ({ file: f.file, line: f.line, fn: f.fn })));
+        return emptyIntrospection('timeout', 'the introspection run did not finish in 60000 ms', 60_000);
+      },
+      harvestHistory: async () => {
+        throw new Error('git is not available');
+      },
+      results: [parked('nothing found')],
+    });
+    const ctx2 = repoCtx({ runId, step: 5, synthState: toJson(persisted), plan: { remaining: [`fix ${REPRO_ID} in ${MODULE}`, VERIFY_ITEM] }, window: [scopedRun(4, SCOPED, { passed: 2, failed: 0 })] });
+    const p = await h2.synth.synthesize(ctx2);
+    expect(h2.calls.slice(0, 4)).toEqual(['loadFiles', 'introspect', 'harvestHistory', 'runTests']);
+    expect(anchors).toEqual([[{ file: 'django/db/models/fields/__init__.py', line: 3, fn: '__hash__' }]]);
+    expect(runFacts(runId)).toEqual({ introspected: expect.objectContaining({ status: 'timeout' }), history: null });
+    const events = ctx2.events.filter((e) => e.type === 'synth').map((e) => (e.type === 'synth' ? `${e.phase}: ${e.detail}` : ''));
+    expect(events).toContain('introspect: timeout in 60000 ms: the introspection run did not finish in 60000 ms');
+    expect(events).toContain('history: history harvest failed: git is not available');
+    expect(p.action.kind).toBe('done');
+    expect(framesOfTraceback(null)).toEqual([]);
+  });
+
   it('a resumed run restores the oracle goal and the scope from synthState: no second Jev request, no re-localisation, the reproduction re-measured on the workspace', async () => {
     const file = moduleFile();
     const h = harness({ files: [file], baselines: [scopedGreen()], findOracle: async () => oracleFound(), locate: locateModule(file), regressionScope: scopeFor() });
@@ -1172,5 +1274,63 @@ describe('§5.3 budget-hit steps: progress at a new site is not stagnation (2026
     await h.synth.synthesize(ctxFor({ runId, step: 2, window: windowAfterRun }));
     expect(g.status).toBe('parked');
     expect(g.parkedReason).toBe('2 consecutive budget-hit steps that tested nothing new');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The re-baseline file cache (memory.ts SearchMemory.fileCache; §17's heap finding)
+// ---------------------------------------------------------------------------------------
+
+describe('loadPythonFiles: a re-baseline re-analyses only the files whose text changed and hands back the same SourceFile objects for the rest', () => {
+  function workspaceCtx(runId: string, contents: Map<string, string>): ReturnType<typeof fakeCtx> {
+    const base = fakeCtx({ runId, files: [...contents.keys()] });
+    const ws = fakeWorkspace([...contents.keys()]);
+    return {
+      ...base,
+      workspace: {
+        ...ws,
+        listCandidates: async () => [...contents.keys()].map((path) => ({ path, bytes: contents.get(path)?.length ?? 0 })),
+        read: async (path) => {
+          const content = contents.get(path);
+          if (content === undefined) throw new Error(`no such file ${path}`);
+          return { path, content, bytes: content.length, truncatedBytes: 0 };
+        },
+      },
+    };
+  }
+
+  it('reuses unchanged files by identity, re-analyses a changed one, drops a vanished one, and says so in the transcript', async () => {
+    const contents = new Map([
+      ['pkg/a.py', 'def a():\n    return 1\n'],
+      ['pkg/b.py', 'def b():\n    return 2\n'],
+      ['pkg/c.py', 'def c():\n    return 3\n'],
+      ['tests/test_a.py', 'def test_a():\n    assert a() == 1\n'],
+    ]);
+    const cache = new Map<string, SourceFile>();
+    const ctx1 = workspaceCtx('cache-run', contents);
+    const first = await loadPythonFiles(ctx1, cache);
+    expect([...first.keys()]).toEqual(['pkg/a.py', 'pkg/b.py', 'pkg/c.py']);
+    expect(cache.size).toBe(3);
+    expect(ctx1.events.filter((e) => e.type === 'synth')).toEqual([]); // the first load reuses nothing: no line
+    // a commit changed b.py; c.py is gone
+    contents.set('pkg/b.py', 'def b():\n    return 20\n');
+    contents.delete('pkg/c.py');
+    const ctx2 = workspaceCtx('cache-run', contents);
+    const second = await loadPythonFiles(ctx2, cache);
+    expect([...second.keys()]).toEqual(['pkg/a.py', 'pkg/b.py']);
+    expect(second.get('pkg/a.py')).toBe(first.get('pkg/a.py'));
+    expect(second.get('pkg/b.py')).not.toBe(first.get('pkg/b.py'));
+    expect(second.get('pkg/b.py')?.src).toBe('def b():\n    return 20\n');
+    expect(second.get('pkg/b.py')?.mod.lines[1]).toBe('    return 20');
+    expect(cache.has('pkg/c.py')).toBe(false);
+    expect(cache.get('pkg/b.py')).toBe(second.get('pkg/b.py'));
+    const line = ctx2.events.find((e) => e.type === 'synth' && e.phase === 'files');
+    expect(line !== undefined && line.type === 'synth' ? line.detail : '').toMatch(/^2 Python files: 1 unchanged since the last load \(reused\), 1 analysed \(\d+ ms\)$/);
+    // by default the cache is the run memory's, so the controller's re-baselines share it
+    const third = await loadPythonFiles(workspaceCtx('cache-run', contents));
+    const fourth = await loadPythonFiles(workspaceCtx('cache-run', contents));
+    expect(fourth.get('pkg/a.py')).toBe(third.get('pkg/a.py'));
+    expect(runMemory('cache-run').fileCache.size).toBe(2);
+    dropMemory('cache-run');
   });
 });

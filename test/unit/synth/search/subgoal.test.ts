@@ -11,7 +11,8 @@ import type { Answer, Question } from '../../../../src/core/types.js';
 import { sha12 } from '../../../../src/core/hash.js';
 import { guardState, pairsOfPartials, siteKeyOf } from '../../../../src/synth/search/bases.js';
 import { createDecide } from '../../../../src/synth/search/guard.js';
-import { EDIT_CLASSES, EDIT_CLASS_QUESTION_ID, INSERT_FIRST_MIN_P, PAIRS_RESERVE_RUNS, PAIRS_RESERVE_WALL_MS, PERMUTATION_OPERATORS, alreadyTried, describeExhaustion, editClassQuestion, everySiteSeedsExhausted, exhaustedKey, isSingleFileWorkspace, orderCandidates, orderSites, orderSources, priorFromAnswer, runsBeforeReserve, searchSubGoal, seedsExhaustedAt, siteOnBase, taskIdentifiers, testLiterals } from '../../../../src/synth/search/subgoal.js';
+import { EDIT_CLASSES, EDIT_CLASS_QUESTION_ID, INSERT_FIRST_MIN_P, PAIRS_RESERVE_RUNS, PAIRS_RESERVE_WALL_MS, PERMUTATION_OPERATORS, alreadyTried, describeExhaustion, editClassQuestion, enumerateOptions, everySiteSeedsExhausted, exhaustedKey, isSingleFileWorkspace, orderCandidates, orderSites, orderSources, priorFromAnswer, runsBeforeReserve, searchSubGoal, seedsExhaustedAt, siteOnBase, taskIdentifiers, testLiterals } from '../../../../src/synth/search/subgoal.js';
+import { statementSiteAt } from '../../../../src/synth/localize/sites.js';
 import type { EditClassPrior } from '../../../../src/synth/search/subgoal.js';
 import { siteKey } from '../../../../src/synth/search/sites.js';
 import type { Base, VerifyJob } from '../../../../src/synth/search/types.js';
@@ -645,5 +646,38 @@ describe('searchSubGoal: the RANK take follows the run budget on a cheap reposit
     const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 30, source)) });
     await searchSubGoal(ctx, mem, fakeGoal(), deps);
     expect(deps.rec.runBatches.map((b) => b.length)).toEqual([3, 3, 3, 5, 5, 5]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Statement-level sites on an improved base, and the phase hint the sources read
+// ---------------------------------------------------------------------------------------
+
+describe('statement-level sites (Site.endLine) in the loop helpers', () => {
+  const SRC = ['def f(self):', '    return hash((', '        self.a,', '        self.b,', '    ))', '    x = 1', ''].join('\n');
+  const file = sourceFile('m.py', SRC);
+  const span = statementSiteAt(file, 2, { notes: ['n'] })!;
+  const committed: Base = { id: 'committed', origin: 'committed', fromGoal: null, files: new Map([[file.path, file]]), summary: baseline(), depth: 0 };
+
+  it('siteOnBase keeps a statement site on an improved base while the span still joins to the same text, and drops it when a continuation line or the line numbering changed', () => {
+    expect(span).toMatchObject({ line: 2, endLine: 5, currentLine: '    return hash((self.a, self.b))' });
+    expect(siteOnBase(span, committed)).toBe(span);
+    const elsewhere = sourceFile('m.py', SRC.replace('    x = 1', '    x = 2'));
+    const improved: Base = { ...committed, id: 'improved', origin: 'improved', fromGoal: 'g1', files: new Map([[elsewhere.path, elsewhere]]), depth: 1 };
+    const kept = siteOnBase(span, improved);
+    expect(kept?.file).toBe(elsewhere);
+    expect(kept).toMatchObject({ line: 2, endLine: 5, currentLine: '    return hash((self.a, self.b))' });
+    // the first physical line reads the same, a continuation line does not: stale as a span
+    const inner = sourceFile('m.py', SRC.replace('        self.b,', '        self.c,'));
+    expect(inner.mod.lines[1]).toBe(file.mod.lines[1]);
+    expect(siteOnBase(span, { ...improved, files: new Map([[inner.path, inner]]) })).toBeNull();
+    const shifted = sourceFile('m.py', `import math\n${SRC}`);
+    expect(siteOnBase(span, { ...improved, files: new Map([[shifted.path, shifted]]) })).toBeNull();
+  });
+
+  it('enumerateOptions carries the goal\'s phase so the WIDENED-only sources (depth-2 wraps, collapse_collection_to_element) read it', () => {
+    expect(enumerateOptions(committed, fakeGoal(), 'task').phase).toBe('SEEDS');
+    expect(enumerateOptions(committed, fakeGoal({ phase: 'WIDENED' }), 'task').phase).toBe('WIDENED');
+    expect(enumerateOptions(committed, fakeGoal(), 'task')).toMatchObject({ cap: 254, corpus: committed.files });
   });
 });

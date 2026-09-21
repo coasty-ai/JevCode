@@ -64,12 +64,14 @@ import { lineKey } from '../localize/keys.js';
 import { codeLines, entryAt, functionEntries } from '../localize/outline.js';
 import type { CodeLine } from '../localize/outline.js';
 import { FAILING_RUN_SUFFIX, LINE_QUESTION_ID } from '../localize/questions.js';
-import { buildSites, functionGapSlots, indentAfter, indentBefore, isDefLine, sbflAnchorsFor, sbflKey } from '../localize/sites.js';
+import { classMethodPrefixes } from '../introspect/prefixes.js';
+import type { IntrospectedNames } from '../introspect/types.js';
+import { buildSites, functionGapSlots, indentAfter, indentBefore, isDefLine, sbflAnchorsFor, sbflKey, statementSiteAt } from '../localize/sites.js';
 import type { Anchor, GapSlot } from '../localize/sites.js';
 import type { FunctionEntry } from '../localize/types.js';
 import { indentOf } from '../py/edits.js';
-import { scopeAt, statementAt } from '../py/structure.js';
-import type { Statement } from '../py/structure.js';
+import { blockAt, scopeAt, statementAt } from '../py/structure.js';
+import type { Block, Statement } from '../py/structure.js';
 import type { PerTestResult, RankedLine } from '../sbfl/types.js';
 import { isFailing } from '../sbfl/ochiai.js';
 import { importInsertLine, unboundNames } from '../templates/imports.js';
@@ -331,11 +333,35 @@ function isCodeLine(file: SourceFile, line: number): boolean {
   return t !== '' && !t.startsWith('#');
 }
 
-/** A replace site at a code line, with the given evidence; null on a blank, comment or `def` line. */
+/**
+ * A replace site at a code line, with the given evidence; null on a blank, comment or `def` line.
+ * At the FIRST line of a multi-line statement the statement-level site (localize/sites.ts
+ * `statementSiteAt`: the statement joined onto one line, `Site.endLine` the span) stands in place of
+ * the physical-line site, as `buildSites` builds it for the Jev anchors — the sources then see
+ * `return hash((a, b))` whole instead of `return hash((` (swebench-reach-oracle-9.md capability 4);
+ * at a later line of the statement the physical site is returned (`statementSiteFor` adds the span).
+ */
 export function replaceSiteAt(file: SourceFile, line: number, evidence: SiteEvidence): Site | null {
   if (!isCodeLine(file, line) || isDefLine(file, line)) return null;
+  const st = statementAt(file.mod, line);
+  if (st !== undefined && st.startLine === line && st.endLine > st.startLine) {
+    const span = statementSiteAt(file, line, evidence, blockFor(file, line));
+    if (span !== null) return span;
+  }
   const text = file.mod.lines[line - 1] ?? '';
   return { file, line, kind: 'replace', currentLine: text, indent: indentOf(text), block: blockFor(file, line), scope: scopeAt(file.mod, line), evidence };
+}
+
+/**
+ * The statement-level site of the multi-line statement a CONTINUATION line belongs to (null at a
+ * statement's first line, where `replaceSiteAt` already returns it, and for one-line statements):
+ * the Q5n / SBFL rows of `buildGoalSites` add it once beside the physical-line site, as
+ * localize/sites.ts `buildSites` does for the anchors.
+ */
+export function statementSiteFor(file: SourceFile, line: number, evidence: SiteEvidence): Site | null {
+  const st = statementAt(file.mod, line);
+  if (st === undefined || st.startLine === line || st.endLine === st.startLine) return null;
+  return statementSiteAt(file, line, evidence, blockFor(file, st.startLine));
 }
 
 /** The gap after the statement that starts (or continues) at `line`: `Site.line` is the line the new statement goes before. */
@@ -691,6 +717,8 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
         if (q5 !== undefined) evidence.jevProbability = q5;
         const site = replaceSiteAt(fileOf, line, evidence);
         if (site !== null) addReplace(site, p);
+        const span = statementSiteFor(fileOf, line, evidence);
+        if (span !== null) addReplace(span, p);
       }
       const confident = ranked.filter(([, p]) => p >= Q5N_SHORT_CIRCUIT_P);
       if (confident.length === 1) {
@@ -712,6 +740,8 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
   for (const r of byDesc(editable, (r) => -r.rank).slice(0, sbflAnchorsFor(ctx.files.size))) {
     const site = replaceSiteAt(ctx.files.get(r.file)!, r.line, { sbflRank: r.rank, sbflScore: r.score, notes: [`sbfl rank ${r.rank}`] });
     if (site !== null) addReplace(site, 0);
+    const span = statementSiteFor(ctx.files.get(r.file)!, r.line, { sbflRank: r.rank, sbflScore: r.score, notes: [`sbfl rank ${r.rank}`] });
+    if (span !== null) addReplace(span, 0);
   }
 
   // 4. Order: the short-circuit line, then Jev evidence by p, then SBFL-only by rank; cut at 6.
@@ -919,6 +949,156 @@ async function q6FallbackSites(ctx: GoalSiteContext, goal: Goal, fn: BeamFunctio
   // the placement Jev is surest about is sieved first, whichever statement it belongs to (stable across statements)
   out.sites = out.sites.map((site, i) => ({ site, i })).sort((a, b) => (b.site.evidence.jevProbability ?? 0) - (a.site.evidence.jevProbability ?? 0) || a.i - b.i).map((x) => x.site);
   return out;
+}
+
+// ---------------------------------------------------------------------------------------
+// Introspection-derived sites: the class body the failing call's objects point at
+// ---------------------------------------------------------------------------------------
+
+/** Extra sites the introspected names add per goal, after the Jev-ranked list: one class-body gap and one module-level import gap. */
+export const INTROSPECTION_SITES_MAX = 2;
+/** Prefix of the evidence note that marks an introspection-derived site. */
+export const INTROSPECTION_SITE_NOTE = 'introspection:';
+
+interface ClassTarget {
+  file: SourceFile;
+  cls: Block;
+  /** the method of `cls` the fact points at (the raising / anchored frame's, the site's), or null */
+  method: Block | null;
+  why: string;
+}
+
+/** The innermost `class` block enclosing `line` of `file`, with the direct method of that class the line is in (or null). */
+function classAround(file: SourceFile, line: number): { cls: Block; method: Block | null } | null {
+  const mod = file.mod;
+  let b = blockAt(mod, line);
+  let method: Block | null = null;
+  while (b !== undefined && b.kind !== 'class') {
+    if (b.kind === 'def') method = b;
+    b = b.parent === null ? undefined : mod.blocks[b.parent];
+  }
+  if (b === undefined) return null;
+  return { cls: b, method: method !== null && method.parent === b.index ? method : null };
+}
+
+/** The corpus file a frame path names: the path itself, else the one file whose path is a suffix of it (or of which it is a suffix). */
+function fileOfPath(files: ReadonlyMap<string, SourceFile>, path: string): SourceFile | undefined {
+  const direct = files.get(path.replace(/^\.\//, ''));
+  if (direct !== undefined) return direct;
+  for (const [p, f] of files) if (path.endsWith(`/${p}`) || p.endsWith(`/${path}`)) return f;
+  return undefined;
+}
+
+/**
+ * The class-body gap of `target`: after the method the fact points at when that method is a
+ * direct child of the class (the alias production appends `<prefix><Class> = <method>` there),
+ * else before the first method of the class; at the class body's indent, `block` the class, in
+ * no def. Null when the class has no method at all (nothing to alias to).
+ */
+function classBodyGap(target: ClassTarget): Site | null {
+  const { file, cls } = target;
+  const mod = file.mod;
+  const methods = mod.blocks.filter((b) => b.kind === 'def' && b.parent === cls.index);
+  const first = methods[0];
+  if (first === undefined) return null;
+  const after = target.method !== null && methods.includes(target.method) ? target.method : null;
+  const line = after !== null ? after.endLine + 1 : first.startLine;
+  const indent = indentOf(mod.lines[cls.bodyStart - 1] ?? '') || ' '.repeat(cls.bodyIndent);
+  const where = after !== null ? `after ${after.name} (L${after.startLine}-${after.endLine})` : `before ${first.name} (L${first.startLine})`;
+  return {
+    file,
+    line,
+    kind: 'insert',
+    currentLine: '',
+    indent,
+    block: { name: cls.name, startLine: cls.startLine, endLine: cls.endLine },
+    scope: scopeAt(mod, Math.max(1, line - 1)),
+    evidence: { notes: [`${INTROSPECTION_SITE_NOTE} class-body gap of ${cls.name} ${where}`, target.why] },
+  };
+}
+
+/** The `class <name>` block defined in one of `files` (the first file in map order that defines it). */
+function classNamed(files: readonly SourceFile[], name: string): { file: SourceFile; cls: Block } | null {
+  for (const file of files) {
+    const cls = file.mod.blocks.find((b) => b.kind === 'class' && b.name === name);
+    if (cls !== undefined) return { file, cls };
+  }
+  return null;
+}
+
+/**
+ * Sites the introspected names of the failing call add to a goal's list (swebench-reach-oracle-9.md
+ * capability 2; jev-only-rungs-1-2.md §18.5 caveat 1): localisation builds function-level sites
+ * only, so `mro_method_alias` (`<prefix><MroClass> = <method>` at a class-body gap) reached the
+ * class body only through the `after_dedent` form at a method's last line. When the class the
+ * facts point at is defined in a LOCALISED file — the class whose method raised (the innermost
+ * workspace frame of the reproduction's traceback, then the anchored frames), the class of a
+ * raising receiver operand (`type(self)`), else the class enclosing the Jev-ranked sites — its
+ * class-body gap (after the raising / located method, else before the first method) and the
+ * module-level import gap of that file become insert sites, ≤ `max` in all, deduplicated against
+ * `sites`. Classes with a dispatch prefix (introspect/prefixes.ts) come first: they are the ones the
+ * alias production can write into. Pure; nothing is asked.
+ */
+export function introspectionSites(names: IntrospectedNames, files: ReadonlyMap<string, SourceFile>, localised: readonly string[], sites: readonly Site[], max: number = INTROSPECTION_SITES_MAX): Site[] {
+  if (max <= 0) return [];
+  const localFiles = [...new Set(localised)].map((p) => files.get(p)).filter((f): f is SourceFile => f !== undefined);
+  if (localFiles.length === 0) return [];
+  const localPaths = new Set(localFiles.map((f) => f.path));
+  const targets: ClassTarget[] = [];
+  const seenClass = new Set<string>();
+  const push = (t: ClassTarget | null): void => {
+    if (t === null || !localPaths.has(t.file.path)) return;
+    const k = `${t.file.path}:${t.cls.index}`;
+    if (seenClass.has(k)) return;
+    seenClass.add(k);
+    targets.push(t);
+  };
+  // 1. the class whose method the reproduction's traceback raised in (innermost first), then the frames the operands were read in
+  const frames = [...[...names.frames].reverse(), ...names.operands.map((o) => o.frame).filter((f): f is NonNullable<typeof f> => f !== null)];
+  for (const fr of frames) {
+    const file = fileOfPath(files, fr.path);
+    if (file === undefined) continue;
+    const around = classAround(file, fr.line);
+    if (around !== null) push({ file, cls: around.cls, method: around.method, why: `the failing call's frame ${fr.fn ?? '?'} at ${file.path}:${fr.line}` });
+  }
+  // 2. the class of a raising receiver (`self` / an argument of the raising frame), when a localised file defines it
+  for (const o of names.operands) {
+    if (!o.raisingReceiver) continue;
+    for (const name of [o.typeName, ...o.classes.slice(0, 2)]) {
+      const found = classNamed(localFiles, name);
+      if (found !== null) push({ file: found.file, cls: found.cls, method: null, why: `the raising receiver ${o.expr} is a ${name}` });
+    }
+  }
+  // 3. the class enclosing the Jev-ranked sites, in site order
+  for (const s of sites) {
+    if (!localPaths.has(s.file.path)) continue;
+    const around = classAround(s.file, s.kind === 'insert' ? Math.max(1, s.line - 1) : s.line);
+    if (around !== null) push({ file: s.file, cls: around.cls, method: around.method, why: `the located site ${siteKey(s)} is in ${around.cls.name}` });
+  }
+  if (targets.length === 0) return [];
+  // the class the alias production can write into first: one with a dispatch prefix shared by ≥ 2 methods
+  const prefixed = (t: ClassTarget): number => (classMethodPrefixes(t.file.mod).some((p) => p.classIndex === t.cls.index) ? 0 : 1);
+  targets.sort((a, b) => prefixed(a) - prefixed(b));
+  const taken = new Set(sites.map(siteKey));
+  const out: Site[] = [];
+  const add = (s: Site | null): void => {
+    if (s === null || out.length >= max) return;
+    const k = siteKey(s);
+    if (taken.has(k)) return;
+    taken.add(k);
+    out.push(s);
+  };
+  const top = targets[0]!;
+  add(classBodyGap(top));
+  // the module-level import gap of the same file: an alias or a guard may need a name the module does not import yet
+  const line = importInsertLine(top.file.mod);
+  add({ file: top.file, line, kind: 'insert', currentLine: '', indent: '', block: null, scope: scopeAt(top.file.mod, line), evidence: { notes: [`${INTROSPECTION_SITE_NOTE} module-level import gap of ${top.file.path}`, top.why] } });
+  return out;
+}
+
+/** True for a site `introspectionSites` built. */
+export function isIntrospectionSite(site: Pick<Site, 'evidence'>): boolean {
+  return site.evidence.notes.some((n) => n.startsWith(INTROSPECTION_SITE_NOTE));
 }
 
 // ---------------------------------------------------------------------------------------

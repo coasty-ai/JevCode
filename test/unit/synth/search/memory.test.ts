@@ -11,7 +11,9 @@ import {
   dropMemory,
   emptyStepBudget,
   getMemory,
+  heldMemories,
   markTried,
+  MEMORIES_MAX,
   parseGoalItem,
   planItemFor,
   rebuildFromPlan,
@@ -26,6 +28,8 @@ import {
   wasTried,
 } from '../../../../src/synth/search/memory.js';
 import { isPersistedSearchState } from '../../../../src/synth/search/types.js';
+import { runFacts, setRunFacts } from '../../../../src/synth/introspect/facts.js';
+import { emptyIntrospection } from '../../../../src/synth/introspect/index.js';
 import type { AppliedCandidate } from '../../../../src/synth/types.js';
 import { baselineOf, failure, goal, pytestBaseline, searchFixture } from './memory-goals.helpers.js';
 
@@ -74,6 +78,32 @@ describe('getMemory / tried / committed', () => {
     expect(getMemory('run-x')).not.toBe(a);
     dropMemory('run-x');
     dropMemory('run-y');
+  });
+
+  it('holds at most MEMORIES_MAX run memories, least recently used dropped first (with its run facts); a touch renews a run; dropMemory clears the facts too', () => {
+    for (const id of heldMemories()) dropMemory(id);
+    const ids = Array.from({ length: MEMORIES_MAX + 1 }, (_, i) => `lru-${i}`);
+    const first = getMemory(ids[0]!);
+    setRunFacts(ids[0]!, { introspected: emptyIntrospection('ran', 'test') });
+    for (const id of ids.slice(1, MEMORIES_MAX)) getMemory(id);
+    // touching the oldest renews it: the second-oldest is the one to go when a new run arrives
+    expect(getMemory(ids[0]!)).toBe(first);
+    expect(heldMemories()).toEqual([...ids.slice(1, MEMORIES_MAX), ids[0]]);
+    getMemory(ids[MEMORIES_MAX]!);
+    expect(heldMemories()).toEqual([...ids.slice(2, MEMORIES_MAX), ids[0], ids[MEMORIES_MAX]]);
+    expect(heldMemories()).toHaveLength(MEMORIES_MAX);
+    expect(runFacts(ids[0]!)).not.toBeNull();
+    // three more runs push the renewed one out in its turn; the evicted run comes back empty, its facts gone with it
+    for (const id of ['lru-5', 'lru-6', 'lru-7']) getMemory(id);
+    expect(heldMemories()).toEqual([ids[MEMORIES_MAX], 'lru-5', 'lru-6', 'lru-7']);
+    expect(runFacts(ids[0]!)).toBeNull();
+    expect(getMemory(ids[0]!)).not.toBe(first);
+    setRunFacts(ids[0]!, { introspected: emptyIntrospection('ran', 'again') });
+    dropMemory(ids[0]!);
+    expect(runFacts(ids[0]!)).toBeNull();
+    for (const id of heldMemories()) dropMemory(id);
+    expect(getMemory('lru-fresh').fileCache.size).toBe(0);
+    dropMemory('lru-fresh');
   });
 
   it('markTried is idempotent per diff and matches the loop detector hash; recordCommit keeps the hash durable', () => {

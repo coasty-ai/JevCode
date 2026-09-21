@@ -25,7 +25,8 @@ import {
   rankMode,
   taskSentence,
 } from '../../../../src/synth/rank/index.js';
-import { FIXTURES, GCD_BUGGY_LINE, GCD_FILE, GCD_FIX, candidate, context, siteAt, sourceFile } from './helpers.js';
+import { FIXTURES, GCD_BUGGY_LINE, GCD_FAILURES, GCD_FILE, GCD_FIX, candidate, context, siteAt, sourceFile } from './helpers.js';
+import { statementSiteAt } from '../../../../src/synth/localize/sites.js';
 
 const site = siteAt(GCD_FILE, GCD_BUGGY_LINE);
 
@@ -224,5 +225,30 @@ describe('frozen gcd request (snapshot of the exact wording sent to Jev)', () =>
     };
     const frozen: unknown = JSON.parse(readFileSync(`${FIXTURES}gcd-rank-request.json`, 'utf8'));
     expect(request).toEqual(frozen);
+  });
+});
+
+describe('statement-level sites (Site.endLine): the joined statement is what Jev compares the options with', () => {
+  const SRC = ['def f(self):', '    return hash((', '        self.a,', '        self.b,', '    ))', ''].join('\n');
+  const file = sourceFile('m.py', SRC);
+  const span = statementSiteAt(file, 2, { notes: ['n'] })!;
+  const ctx = { task: 'fix hash', failures: GCD_FAILURES };
+
+  it('buggy_line is the statement joined onto one line and buggy_line_number names the span; the program still lists the physical lines', () => {
+    const c = candidate(span, '    return hash(self.a)');
+    const s = buildRankState([c], ['candidate_aa'], span, ctx, { withCandidates: true });
+    expect(s['buggy_line']).toBe('    return hash((self.a, self.b))');
+    expect(s['buggy_line_number']).toBe('L2-L5');
+    expect(s['program']).toEqual({ L1: 'def f(self):', L2: '    return hash((', L3: '        self.a,', L4: '        self.b,', L5: '    ))' });
+    expect(s['task']).toBe(taskSentence('replace', 'f'));
+    expect(rankMode(span)).toBe('replace');
+    // a candidate equal to the joined statement is the unchanged line, whatever its spacing
+    expect(isUnchanged(candidate(span, '    return hash((self.a,self.b))'), span)).toBe(true);
+    expect(isUnchanged(c, span)).toBe(false);
+    // a physical-line site is unchanged: the line itself, `L<n>`
+    const phys = siteAt(file, 3);
+    const p = buildRankState([candidate(phys, '        self.c,')], ['candidate_aa'], phys, ctx, { withCandidates: false });
+    expect(p['buggy_line_number']).toBe('L3');
+    expect(p['buggy_line']).toBe('        self.a,');
   });
 });

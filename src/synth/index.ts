@@ -14,6 +14,9 @@ import type { Decider, SynthesisContext, Synthesizer } from '../core/types.js';
 import { createTokenBeamSource } from './beam/index.js';
 import { createDonorSource } from './donor/index.js';
 import { fillSketches } from './fill/beam.js';
+import { createHistorySource } from './history/index.js';
+import { runFacts, vocabularyAdditions } from './introspect/index.js';
+import type { RunFacts } from './introspect/index.js';
 import { createLocalizer } from './localize/index.js';
 import { createMutationSource } from './mutate/index.js';
 import { isBestGuessTestId, runRepositoryQueue, venvPython } from './oracle/index.js';
@@ -24,7 +27,7 @@ import { createCompositeSource } from './search/composite.js';
 import { decideForSearch } from './search/guard.js';
 import { LedgerSieveSynthesizer, REPO_BASELINE_TIMEOUT_MS, defaultSearchDeps } from './search/index.js';
 import type { RunMemory, SearchDeps } from './search/index.js';
-import { buildGoalSites, captureLineChoiceEscape } from './search/sites.js';
+import { buildGoalSites, captureLineChoiceEscape, introspectionSites } from './search/sites.js';
 import { EDIT_CLASS_QUESTION_ID, priorFromAnswer, searchBestGuess, searchSubGoal } from './search/subgoal.js';
 import type { JevSource, SearchQueue, SubGoalDeps, SubGoalMemory } from './search/subgoal.js';
 import type { Goal } from './search/types.js';
@@ -34,7 +37,7 @@ import { runQueue } from './sieve/runner.js';
 import { sketchPool } from './sketch/pool.js';
 import { keepK, sketchQuestions } from './sketch/questions.js';
 import { createTemplateSource } from './templates/index.js';
-import type { Candidate, LocalizeResult, Site, SourceFile } from './types.js';
+import type { Candidate, CandidateSource, EnumerateOptions, LocalizeResult, Site, SourceFile } from './types.js';
 
 export { LedgerSieveSynthesizer } from './search/index.js';
 export type { SearchDeps } from './search/index.js';
@@ -52,6 +55,30 @@ const BEAM_CONFIDENT_EXPAND = 0.9;
 /** Jev requests one localisation may spend: Q2 chunks + Q3 + ≤ 5 Q4 + ≤ 5 Q5 fit in the repository-class step cap of 60 (§4.3). */
 const LOCALIZE_MAX_REQUESTS = 20;
 
+/**
+ * The harvested facts of the run being searched (search/index.ts harvestIntrospection /
+ * harvestHistoryFacts → introspect/facts.ts): `CandidateSource.enumerate(site, opts)` has no run in
+ * reach, so `createQueue` (called at the start of every sub-goal search) and `locate` refresh this
+ * ref from the registry, and the wrapped sources read it.
+ */
+const runFactsRef: { current: RunFacts | null } = { current: null };
+
+/**
+ * The options a source sees: the plain ones plus the run's introspection, history and the names the
+ * vocabulary must accept for this file (`extraNames`: the flat introspected names ∪ the alias names
+ * the file's own dispatch prefix composes from them). Unchanged when nothing was harvested.
+ */
+export function enrichEnumerateOptions(site: Site, opts: EnumerateOptions, facts: RunFacts | null = runFactsRef.current): EnumerateOptions {
+  if (facts === null) return opts;
+  const out: EnumerateOptions = { ...opts };
+  if (facts.introspected !== null) {
+    out.introspected = facts.introspected;
+    out.extraNames = vocabularyAdditions(facts.introspected, site.file);
+  }
+  if (facts.history !== null) out.history = facts.history;
+  return out;
+}
+
 /** Numbered listing of the site's enclosing function for the ranker's state. */
 function functionListing(site: Site): string {
   const { start, end } = programRange(site);
@@ -61,10 +88,23 @@ function functionListing(site: Site): string {
   return out.join('\n');
 }
 
-function createQueue(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): SearchQueue {
+/**
+ * The verification queue of one sub-goal search: `tried` exclusion and the vocabulary pre-check
+ * per file. With introspected names the vocabulary of every file is `vocabularyOf(...) ∪
+ * vocabularyAdditions(introspected, file)` — the flat names (classes, `is_*` predicates,
+ * attributes, module names of the failing call's objects) and the `<prefix><Class>` alias names
+ * the file's own dispatch prefix composes — so the pre-check (sieve/queue.ts missingFromVocab)
+ * accepts exactly what templates/introspect.ts writes and nothing else new.
+ */
+export function createQueue(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): SearchQueue {
   const committed = mem.bases.find((b) => b.origin === 'committed');
+  runFactsRef.current = runFacts(ctx.runId);
+  const introspected = runFactsRef.current?.introspected ?? null;
   const vocab = new Map<string, Vocabulary>();
-  for (const [path, file] of committed?.files ?? []) vocab.set(path, vocabularyOf(file, goal.failures, ctx.task));
+  for (const [path, file] of committed?.files ?? []) {
+    const base = vocabularyOf(file, goal.failures, ctx.task);
+    vocab.set(path, introspected === null ? base : new Set([...base, ...vocabularyAdditions(introspected, file)]));
+  }
   return new VerifyQueue({ tried: mem.tried, vocab });
 }
 
@@ -77,6 +117,7 @@ function createQueue(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): Sea
 async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): Promise<LocalizeResult> {
   const committed = mem.bases.find((b) => b.origin === 'committed');
   const files = committed?.files ?? new Map<string, SourceFile>();
+  runFactsRef.current = runFacts(ctx.runId);
   const captured = captureLineChoiceEscape(ctx.ask);
   // repository mode: the issue's traceback (the frames Jev judged inside the fix, and the reproduction's raising frames) anchors the goal
   const traceback = mem.repository !== undefined && mem.repository.goalId === goal.id ? mem.repository.traceback : null;
@@ -88,7 +129,13 @@ async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): Pr
     stage: 'propose',
     ...(q5Escape === null ? {} : { q5EscapeProbability: q5Escape }),
   });
-  return { files: localized.files, functions: localized.functions, sites: goalSites.ordered, requests: localized.requests + goalSites.requests };
+  // the introspected names' sites (≤ 2, after the Jev-ranked list): the class-body gap of the class the
+  // failing call's objects point at, when a localised file defines it, and that file's import gap
+  const introspected = runFactsRef.current?.introspected ?? null;
+  const localised = [...new Set([...goal.suspectedFiles, ...localized.files.map((f) => f.path), ...goalSites.ordered.map((s) => s.file.path)])];
+  const extra = introspected === null ? [] : introspectionSites(introspected, files, localised, goalSites.ordered);
+  if (extra.length > 0) ctx.emit({ type: 'synth', step: ctx.step, phase: 'localize', detail: `${goal.id}: ${extra.length} introspection site${extra.length === 1 ? '' : 's'} after the ${goalSites.ordered.length} located: ${extra.map((s) => `${s.file.path}:${s.line} (gap, indent ${s.indent.length}; ${s.evidence.notes[0] ?? ''})`).join('; ')}` });
+  return { files: localized.files, functions: localized.functions, sites: [...goalSites.ordered, ...extra], requests: localized.requests + goalSites.requests };
 }
 
 /** SKETCH phase (§3 row 5): one Q12 + Q7 request, keep K, slot-fill (Q13), concrete candidates. */
@@ -115,10 +162,29 @@ const beamSource: JevSource = {
   },
 };
 
-function subGoalDeps(): SubGoalDeps {
+/**
+ * The sub-goal search's collaborators with the real modules. The template and donor seeds are
+ * wrapped so they enumerate with the run's harvested facts (`enrichEnumerateOptions`): the
+ * introspection-fed productions of templates/introspect.ts fire only with `opts.introspected`, and
+ * the history source rides with the donor seed (subgoal.ts orderSources has no slot of its own for
+ * design §3's last row and `SubGoalDeps.seeds` is a fixed record): its few reversals go first, then
+ * the donors, capped at `opts.cap`; both keep their own `source` name for the trace and the queue's
+ * prior. Composite pairs over the wrapped seeds, so pairs are pairs of what SEEDS ran.
+ */
+export function createSubGoalDeps(): SubGoalDeps {
   const mutation = createMutationSource();
-  const template = createTemplateSource();
-  const donor = createDonorSource();
+  const plainTemplate = createTemplateSource();
+  const plainDonor = createDonorSource();
+  const history = createHistorySource();
+  const template: CandidateSource = { name: 'template', enumerate: (site, opts) => plainTemplate.enumerate(site, enrichEnumerateOptions(site, opts)) };
+  const donor: CandidateSource = {
+    name: 'donor',
+    enumerate: (site, opts) => {
+      const o = enrichEnumerateOptions(site, opts);
+      const reversals = history.enumerate(site, o);
+      return [...reversals, ...plainDonor.enumerate(site, o)].slice(0, Math.max(0, opts.cap));
+    },
+  };
   const ranker = createRanker({ stage: 'propose' });
   return {
     locate,
@@ -154,7 +220,7 @@ function subGoalDeps(): SubGoalDeps {
 }
 
 export function searchDeps(): SearchDeps {
-  const sub = subGoalDeps();
+  const sub = createSubGoalDeps();
   return { ...defaultSearchDeps(), searchSubGoal: (ctx, mem: RunMemory, goal) => searchSubGoal(ctx, mem, goal, sub), searchBestGuess: (ctx, mem: RunMemory, goal) => searchBestGuess(ctx, mem, goal, sub), locate: (ctx, mem: RunMemory, goal) => locate(ctx, mem, goal) };
 }
 

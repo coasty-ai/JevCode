@@ -44,6 +44,9 @@ import {
   traceTailGap,
   widenedSites,
 } from '../../../../src/synth/search/sites.js';
+import { INTROSPECTION_SITES_MAX, INTROSPECTION_SITE_NOTE, introspectionSites, isIntrospectionSite, replaceSiteAt, statementSiteFor } from '../../../../src/synth/search/sites.js';
+import { emptyIntrospection } from '../../../../src/synth/introspect/index.js';
+import type { IntrospectedNames } from '../../../../src/synth/introspect/index.js';
 import { functionGapSlots } from '../../../../src/synth/localize/sites.js';
 import { createTemplateSource } from '../../../../src/synth/templates/index.js';
 import { quixbugsProgram } from './helpers.js';
@@ -679,5 +682,91 @@ describe('repository path: anchors ordered by p × the beam function probability
     expect(createTemplateSource().enumerate(gold, enumerateOptions(files)).some((c) => c.text === '            nodesvisited.add(node)')).toBe(true);
     // visiting order: each anchor's replace site, then its gaps; node.py's anchors last
     expect(g.ordered.slice(0, 6).map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['11r', '13i', '11i', '9r', '10i', '9i']);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Statement-level sites from the search's own builders (capability 4 reaches the engine)
+// ---------------------------------------------------------------------------------------
+
+describe('statement-level replace sites built by replaceSiteAt / widenedSites (swebench-reach-oracle-9.md capability 4)', () => {
+  const SRC = ['def f(self):', '    return hash((', '        self.a,', '        self.b,', '    ))', '    x = 1', ''].join('\n');
+  const file = sf('pkg/m.py', SRC);
+  const ev = { notes: ['n'] };
+
+  it("at a multi-line statement's first line the statement site stands in place of the physical site; at a continuation line the physical site stays and statementSiteFor adds the span once", () => {
+    const first = replaceSiteAt(file, 2, ev)!;
+    expect(first).toMatchObject({ line: 2, endLine: 5, kind: 'replace', currentLine: '    return hash((self.a, self.b))', indent: '    ', block: { name: 'f' } });
+    expect(first.evidence.notes).toEqual(['n', 'statement L2-5 joined']);
+    const cont = replaceSiteAt(file, 3, ev)!;
+    expect(cont).toMatchObject({ line: 3, currentLine: '        self.a,' });
+    expect(cont.endLine).toBeUndefined();
+    expect(statementSiteFor(file, 3, ev)).toMatchObject({ line: 2, endLine: 5, currentLine: '    return hash((self.a, self.b))' });
+    // nothing to add at the first line (replaceSiteAt already returned the span) or at a one-line statement
+    expect(statementSiteFor(file, 2, ev)).toBeNull();
+    expect(statementSiteFor(file, 6, ev)).toBeNull();
+    expect(replaceSiteAt(file, 6, ev)).toMatchObject({ line: 6, currentLine: '    x = 1' });
+    expect(replaceSiteAt(file, 1, ev)).toBeNull();
+  });
+
+  it('WIDENED lists the statement site at the first line and the physical sites of the continuation lines', () => {
+    const all = widenedSites([{ file, name: 'f', startLine: 1, endLine: 6 }]);
+    const replaces = all.filter((s) => s.kind === 'replace').map((s) => [s.line, s.endLine ?? null]);
+    expect(replaces).toEqual([[2, 5], [3, null], [4, null], [5, null], [6, null]]);
+    expect(all.find((s) => s.kind === 'replace' && s.line === 2)!.currentLine).toBe('    return hash((self.a, self.b))');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Introspection-derived sites (capability 2's class-body gap reaches the live search)
+// ---------------------------------------------------------------------------------------
+
+describe('introspectionSites: the class-body gap of the class the failing call points at, plus the import gap, ≤ 2, after the located sites', () => {
+  const PRINTER = ['import math', '', 'class Printer(Base):', '    """doc"""', '    def _print_Foo(self, e):', '        return "foo"', '', '    def _print_Bar(self, e):', '        return "bar"', '', '    def helper(self):', '        return 1', '', 'def free():', '    return 2', ''].join('\n');
+  const printer = sf('pkg/printer.py', PRINTER);
+  const other = sf('pkg/other.py', 'class Plain:\n    def a(self):\n        return 1\n\n    def b(self):\n        return 2\n');
+  const corpus = new Map([[printer.path, printer], [other.path, other]]);
+  const names = (over: Partial<IntrospectedNames>): IntrospectedNames => ({ ...emptyIntrospection('ran', 'test'), ...over });
+  const operand = (expr: string, typeName: string, receiver: boolean, frame: IntrospectedNames['operands'][number]['frame'] = null): IntrospectedNames['operands'][number] => ({ expr, typeName, classes: [typeName], predicates: [], falsyPredicates: [], attributes: [], frame, raisingReceiver: receiver });
+
+  it('the raising frame in a method of a localised class: the gap after that method (class indent, block = the class) and the module import gap', () => {
+    const facts = names({ frames: [{ path: 'pkg/printer.py', line: 9, fn: '_print_Bar', code: 'return "bar"' }], classes: ['Baz'] });
+    const out = introspectionSites(facts, corpus, ['pkg/printer.py'], []);
+    expect(out.map((s) => [s.line, s.kind, s.indent, s.block?.name ?? null])).toEqual([[10, 'insert', '    ', 'Printer'], [2, 'insert', '', null]]);
+    expect(out[0]!.evidence.notes[0]).toBe(`${INTROSPECTION_SITE_NOTE} class-body gap of Printer after _print_Bar (L8-9)`);
+    expect(out[0]!.evidence.notes[1]).toContain('_print_Bar at pkg/printer.py:9');
+    expect(out[1]!.evidence.notes[0]).toBe(`${INTROSPECTION_SITE_NOTE} module-level import gap of pkg/printer.py`);
+    expect(out.every(isIntrospectionSite)).toBe(true);
+    expect(out).toHaveLength(INTROSPECTION_SITES_MAX);
+    // a frame path given absolute (as CPython prints it) resolves by suffix
+    const abs = names({ frames: [{ path: '/work/pkg/printer.py', line: 9, fn: '_print_Bar', code: null }] });
+    expect(introspectionSites(abs, corpus, ['pkg/printer.py'], []).map((s) => s.line)).toEqual([10, 2]);
+  });
+
+  it('a raising receiver whose class a localised file defines: the gap before the first method; the class enclosing a located site otherwise; nothing when no localised file defines the class', () => {
+    const receiver = names({ operands: [operand('self', 'Printer', true)] });
+    expect(introspectionSites(receiver, corpus, ['pkg/printer.py'], []).map((s) => [s.line, s.evidence.notes[0]])).toEqual([[5, `${INTROSPECTION_SITE_NOTE} class-body gap of Printer before _print_Foo (L5)`], [2, `${INTROSPECTION_SITE_NOTE} module-level import gap of pkg/printer.py`]]);
+    // the class is not in a localised file: no site
+    expect(introspectionSites(receiver, corpus, ['pkg/other.py'], [])).toEqual([]);
+    // no fact points anywhere: the class around the top located site (in _print_Foo) gets the gap after that method
+    const none = names({ classes: ['Baz'] });
+    const located = [siteAt(printer, 6)];
+    expect(introspectionSites(none, corpus, ['pkg/printer.py'], located).map((s) => s.line)).toEqual([7, 2]);
+    // a prefixed class outranks a plain one when both are pointed at (the alias production writes only into the former)
+    const both = names({ frames: [{ path: 'pkg/other.py', line: 3, fn: 'a', code: null }, { path: 'pkg/printer.py', line: 9, fn: '_print_Bar', code: null }] });
+    expect(introspectionSites(both, corpus, ['pkg/other.py', 'pkg/printer.py'], []).map((s) => s.file.path)).toEqual(['pkg/printer.py', 'pkg/printer.py']);
+    // with only the plain class localised its gap still comes (bounded, after the Jev list); the alias production is inert there
+    expect(introspectionSites(both, corpus, ['pkg/other.py'], []).map((s) => [s.file.path, s.line])).toEqual([['pkg/other.py', 4], ['pkg/other.py', 1]]);
+  });
+
+  it('is bounded and deduplicated against the located sites; nothing without facts or localised files', () => {
+    const facts = names({ frames: [{ path: 'pkg/printer.py', line: 9, fn: '_print_Bar', code: null }] });
+    expect(introspectionSites(facts, corpus, ['pkg/printer.py'], [], 1).map((s) => s.line)).toEqual([10]);
+    expect(introspectionSites(facts, corpus, ['pkg/printer.py'], [], 0)).toEqual([]);
+    const already = siteAt(printer, 10, 'insert');
+    expect(introspectionSites(facts, corpus, ['pkg/printer.py'], [already]).map((s) => s.line)).toEqual([2]);
+    expect(introspectionSites(emptyIntrospection('no_target', 'nothing'), corpus, ['pkg/printer.py'], [])).toEqual([]);
+    expect(introspectionSites(facts, corpus, [], [])).toEqual([]);
+    expect(introspectionSites(facts, corpus, ['missing.py'], [])).toEqual([]);
   });
 });

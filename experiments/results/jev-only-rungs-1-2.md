@@ -2566,3 +2566,112 @@ python3 /tmp/ladder-long/rows.py bench/results/jev-only-ladder-long-1
 # reach probe of every planted line (mutation / templates / donors / composite at the buggy site)
 env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx /tmp/ladder-long/probe.mts ledger5 masked shared_frame crossfile import_and_guard regress_trap six_hunks long_chain
 ```
+## 20. 2026-09-20 (later): wiring — introspected sites and names, history, statement sites, phase hint, re-baseline cache; nine oracle instances live
+
+Follow-up to §16 ("Engine wiring needed"), §18 ("Wiring patch", "Failures / caveats") and the §17 heap finding (the 9-instance run
+`bench/results/jev-only-swebench-2-oracle` died with `FATAL ERROR: Reached heap limit` at 4 GB on two Django tasks). Working tree on
+HEAD 7ea40b2; files touched: `src/synth/search/{index,subgoal,sites,memory}.ts`, `src/synth/index.ts`, `src/synth/rank/questions.ts`,
+`src/synth/introspect/prefixes.ts` (a cache), their tests, `test/unit/synth/wiring.test.ts` (new), `.scratch/wiring-introspect-history.patch`
+(now the record of the applied diff). Nothing under `src/core`, `src/loop`, `search/{guard,bases,goals,budget,directive,proposal}.ts`,
+`oracle/**` or `templates/**` changed. Offline work: **$0**. Live: the nine-instance run below.
+
+### 20.1 What changed (file:line)
+
+1. **The harvests are controller collaborators, run once per process** — `search/index.ts:137 SearchDeps.introspect(ctx, spec, anchors)`
+   and `:139 SearchDeps.harvestHistory(ctx, moduleFiles, sources)` (both nullable: null = nothing harvested, no transcript line), defaults
+   `:444 introspectInWorkspace` (introspect/index.ts `introspectRepro` through the engine's sandbox with the workspace venv, ≤ 60 s) and
+   `:451 harvestHistoryInWorkspace` (history/harvest.ts, ≤ 8 read-only git commands of 10 s with `taskIdentifiers(ctx.task)`).
+   `initRepository` calls `:1070 harvestIntrospection` right after the oracle (its judged frames are the anchors) and BEFORE the
+   localisation, so the site list can read the facts (item 4), and `:1093 harvestHistoryFacts` after the regression scope (the localised
+   module files are the query's `-- <paths>`); the checkpoint-restore branch (`:957`) runs both again from `repo.traceback`
+   (`:1147 framesOfTraceback`) and `repo.moduleFiles`, since the facts are not persisted. Both register with `setRunFacts(ctx.runId, …)`
+   (introspect/facts.ts) and emit one `introspect` / `history` synth line; a throwing harvest is a transcript line, never fatal
+   (`:1107`, `:1130`). A post-patch re-baseline harvests nothing again.
+2. **The sources read the facts** — `src/synth/index.ts:64 runFactsRef` (refreshed from the registry in `:99 createQueue`, the start of every
+   sub-goal search, and in `locate`), `:71 enrichEnumerateOptions(site, opts, facts)` adds `introspected`, `history` and `extraNames =
+   vocabularyAdditions(introspected, site.file)`; `:174 createSubGoalDeps` wraps the template seed (the introspect family fires only with
+   `opts.introspected`) and the donor seed (`:181`: the history reversals first, then the donors, cut at `opts.cap`; each keeps its own
+   `source` for the trace and the queue's prior — `orderSources` has no slot for design §3's last row); composite pairs over the wrapped
+   seeds (`:193`). `createQueue` builds each file's vocabulary as `vocabularyOf(...) ∪ vocabularyAdditions(introspected, file)`
+   (`:106`), so sieve/queue.ts's pre-check accepts what templates/introspect.ts writes and nothing else new
+   (`introspect/prefixes.ts:34 PREFIX_CACHE`: one `classMethodPrefixes` per module object, the vocabulary asks for every corpus file).
+3. **Phase hint** — `search/subgoal.ts:347 enumerateOptions` passes `phase: goal.phase` (visitPhase sets it before a site is visited), so the
+   depth-2 wraps (templates/wrap2.ts) and `collapse_collection_to_element` enumerate in the engine's WIDENED and nowhere else; the SEEDS
+   sets are unchanged (the templates' "SEEDS identical with and without `phase: 'SEEDS'`" and the QuixBugs snapshot tests still pass).
+4. **Statement-level sites reach the engine** — `search/sites.ts:344 replaceSiteAt` returns the statement-level site (localize/sites.ts
+   `statementSiteAt`: the statement joined onto one line, `Site.endLine` the span) at the FIRST line of a multi-line statement, as
+   `buildSites` does for the Jev anchors, and the physical site elsewhere; `:361 statementSiteFor` adds the span once beside a continuation
+   line's physical site (Q5n rows `:720`, SBFL rows `:743`); `widenedSites` inherits both through `replaceSiteAt`. `subgoal.ts:359
+   siteOnBase` keeps a statement site on an 'improved' base by span compare (`:363`: the statement at `line` must still end at `endLine`
+   and join to `currentLine`; a changed continuation line or a shifted file makes it stale), not by the first physical line.
+   `rank/questions.ts:152 buggyLineOf`: a span site shows the joined statement as `buggy_line` and names `L<first>-L<last>` as
+   `buggy_line_number` (`:259`), so the ≤ 255-option Choice and the Noul rubric compare the one-line rewrites with the whole statement,
+   not with `return hash((`; `isUnchanged` already compared against `currentLine`.
+5. **Introspection-derived sites** — `search/sites.ts:1042 introspectionSites(names, files, localised, sites, max = 2)`: the class the facts
+   point at — the class whose method the reproduction's innermost workspace frame raised in, then the frames the operands were read in,
+   then the class of a `raisingReceiver` operand (`type(self)`) a localised file defines, else the class enclosing the Jev-ranked sites —
+   when a LOCALISED file defines it, yields its class-body gap (`:998 classBodyGap`: after the raising / located method when that method is a
+   direct child of the class, else before the first method; class body indent; `block` = the class, no def) and the module-level import
+   gap of that file; classes with a dispatch prefix first (the alias production writes only into those); ≤ `INTROSPECTION_SITES_MAX` 2,
+   deduplicated against the located sites. `src/synth/index.ts:136 locate` appends them AFTER `buildGoalSites`'s ordered list with one
+   `localize` transcript line; the localised files are the goal's suspected files ∪ the file beam ∪ the located sites' files.
+6. **Re-baseline memory** — `search/memory.ts:58 SearchMemory.fileCache` (path → SourceFile of the last load) and `search/index.ts:342
+   loadPythonFiles(ctx, cache = getMemory(ctx.runId).fileCache)`: every file is re-read (a patch may have touched any), a file whose text
+   equals the cached copy is handed back as the SAME `SourceFile` object (the WeakMap caches keyed by object identity in sites.ts /
+   composite.ts survive), only changed text is analysed, vanished paths leave the cache, and one `files` transcript line counts
+   `reused` / `analysed` when anything was reused. `memory.ts:193 MEMORIES_MAX = 4`, `:196 getMemory`: the run registry is an LRU — a
+   bench process never drops a finished run's memory (no run-end hook on a Synthesizer) and a repository memory holds its whole corpus,
+   so the least recently used memory beyond four is dropped with its run facts (`:212 dropMemory` clears both); `--concurrency 2` keeps
+   two active runs and two finished ones at most.
+
+### 20.2 Heap, measured (`.scratch/heap-rebaseline.mts`, Django checkout `/tmp/jevonly/repos/django__django-15315`, 858 non-test files, `--expose-gc`, heapUsed after two forced GCs)
+
+| load | wall | heapUsed after |
+| --- | --- | --- |
+| before any load | – | 12.3 MB |
+| 1 — establishing baseline (cache empty): 858 analysed | 484 ms | 161.0 MB (**one analysed Django corpus ≈ 149 MB**) |
+| 2 — re-baseline after a one-file commit, WITH the cache: 857 reused, 1 analysed | 31 ms | 164.2 MB (+3.2 MB) |
+| 3 — second re-baseline, WITH the cache: 858 reused, 0 analysed | 17 ms | 164.2 MB (+0) |
+| 4 — re-baseline WITHOUT the cache while the earlier corpus is still referenced (the old behaviour: an improved base, a localisation cache, a held partial) | 373 ms | 311.9 MB (+147.7 MB) |
+| 5 — second re-baseline WITHOUT the cache | 379 ms | 459.6 MB (+147.7 MB) |
+
+Every unchanged file is the same `SourceFile` object across loads 1–3 (asserted in the script). Reading: one Django corpus is ≈ 150 MB, not
+the whole 4 GB — the 9-run's heap was many corpora: every re-baseline of every Django step analysed 858 files again while older copies were
+still reachable, and every finished run's memory (corpus included) stayed in the registry for the life of the bench process. Both paths
+are closed: a re-baseline now costs the changed files (≈ 3 MB, 31 ms instead of ≈ 148 MB, 380 ms), and at most four run memories are held.
+
+### 20.3 Tests (gate: `npx tsc -p tsconfig.json --noEmit` clean outside the peer WIP (3 pre-existing errors under `test/unit/tui`, `test/unit/cli`); `node scripts/no-any.mjs` ok; `npx vitest run --project unit test/unit/synth --exclude test/unit/synth/mutate/ladder.test.ts --exclude test/unit/synth/donor/corpus.test.ts` → **79 files, 1,315 tests pass**)
+
+- `test/unit/synth/search/controller.test.ts` (repository block): fake introspection + fake history — call order `loadFiles, findOracle,
+  introspect, locate, regressionScope, harvestHistory, runTests`, the spec / anchors / module files / sources each harvest received, the
+  facts registered under the run id, the `introspect:` and `history:` transcript lines, no second harvest on the post-patch re-baseline;
+  a resumed run harvests again from the checkpoint's traceback (`framesOfTraceback`) and module files, a timed-out introspection and a
+  throwing history harvest are transcript lines and the step still ends `done`. New describe: `loadPythonFiles` reuses unchanged files by
+  identity, re-analyses the changed one, drops the vanished one, names the counts, and defaults to the run memory's cache.
+- `test/unit/synth/wiring.test.ts` (new): `enrichEnumerateOptions` (introspected, history, `extraNames` = flat names ∪ `_print_<Class>`
+  aliases; untouched without facts); with the facts registered the wired template seed yields the four `mro_method_alias` lines at a
+  class-body gap and `createQueue`'s vocabulary queues all four, without them the same site yields no alias and the queue drops them
+  (`_print_Baz` in no vocabulary); the wired donor seed puts the history reversal first (`return hash(self.a)` + 3 deletes, `provenance`
+  `reverse of a1b2c3d4e5 "Fixed #31750 -- …" (ticket:#31750)`), then the donors, within `opts.cap`; no facts → the plain donor set.
+- `test/unit/synth/search/sites.test.ts`: `replaceSiteAt` returns the span at a statement's first line and the physical site at a
+  continuation line, `statementSiteFor` adds the span once, `widenedSites` lists `[2, 5], [3], [4], [5], [6]`; `introspectionSites`: the gap
+  after the raising method (class indent, block = the class) + the import gap, an absolute frame path resolves by suffix, a raising
+  receiver's class → the gap before its first method, the class around a located site otherwise, a prefixed class outranks a plain one,
+  nothing when no localised file defines the class, bounded (`max` 1 / 0), deduplicated against the located sites.
+- `test/unit/synth/search/subgoal.test.ts`: `siteOnBase` keeps a statement site on an improved base whose change is elsewhere, drops it when
+  a continuation line changed (first physical line identical) or the file shifted; `enumerateOptions(...).phase` follows `goal.phase`.
+- `test/unit/synth/rank/questions.test.ts`: a span site's `buggy_line` is the joined statement, `buggy_line_number` `L2-L5`, `program` the
+  physical lines, `isUnchanged` on the joined text whatever its spacing; a physical site unchanged.
+- `test/unit/synth/search/memory.test.ts`: the LRU holds `MEMORIES_MAX`, a touch renews, eviction drops the run facts, `dropMemory` too.
+
+### 20.4 Offline check on the real files (`.scratch/check-introspection-sites.mts`, the bench workspaces read-only, $0)
+
+- sympy-15345 (`mathematica.py`, a value statement: no frame, no receiver): the located site L102 (`_print_Function`'s last line) puts the
+  class-body gap of `MCodePrinter` after `_print_Function` at **L103** (indent 4) and the import gap at L9; the template seed with the
+  facts yields 127 candidates at that gap, 120 `mro_method_alias`, **`_print_MinMaxBase = _print_Function` at index 1** (after
+  `_print_Max = _print_Function`); `vocabularyAdditions` holds `_print_MinMaxBase`; without facts the gap yields 0 aliases.
+- sympy-17139 (`fu.py`): the frames end in `Expr.__lt__` (expr.py, not localised) and fu.py's module-level `_f` / `TR6`, the receiver is
+  `ImaginaryUnit` (numbers.py): **no extra site**, as designed — the guard production works at the existing gap.
+- django-15315 (`fields/__init__.py`): the located line 545 is now the statement site **545–549** (`return hash((self.creation_counter,
+  self.model._meta.app_label if hasattr(self, 'model') else None, …))`); with no facts (an `assert` in the snippet) the class around it,
+  `Field`, still gets its class-body gap after `__hash__` (L559) and the import gap (L30): 10 plain templates there, bounded noise.

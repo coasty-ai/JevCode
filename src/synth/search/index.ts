@@ -16,9 +16,13 @@ import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
 import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { SPEC_FILE } from '../../workspace/tests.js';
+import { harvestHistory } from '../history/index.js';
+import type { HistoryFacts } from '../history/index.js';
+import { introspectRepro, setRunFacts } from '../introspect/index.js';
+import type { IntrospectedNames } from '../introspect/index.js';
 import type { ReproSpec, VerifyReproResult } from '../oracle/goal.js';
 import { BEST_GUESS_PARK_REASON, BEST_GUESS_REJECTED_REASON, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, mergeSummaries, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, venvPython, verifyRepro } from '../oracle/index.js';
-import type { OracleSearch, OracleSearchInput } from '../oracle/index.js';
+import type { OracleSearch, OracleSearchInput, TracebackFrame } from '../oracle/index.js';
 import { analyse } from '../py/structure.js';
 import { subsetCommand } from '../sieve/runner.js';
 import type { RunnerMemory } from '../sieve/runner.js';
@@ -34,7 +38,7 @@ import type { GoalPick } from './goals.js';
 import { attachPlanItems, diffHash, getMemory, planItemFor, rebuildFromPlan, recordClaims, recordCommit, repositoryFromPersisted, resolveClaims, restoreMemory, toPersisted } from './memory.js';
 import type { PersistedRepositoryState, RepositoryMode, RepositoryScope, SearchMemory } from './memory.js';
 import { BEST_GUESS_NOTE, READ_MAX_PATHS, bestGuessGoalText, commitEvidence, proposeDone, proposePatch, proposeRead, proposeRun, runEvidence, selectionFrom, withEvidence } from './proposal.js';
-import { everySiteSeedsExhausted, isTestPath, newTrace } from './subgoal.js';
+import { everySiteSeedsExhausted, isTestPath, newTrace, taskIdentifiers } from './subgoal.js';
 import type { SubGoalMemory, SubGoalResult } from './subgoal.js';
 import type { Base, Goal, GoalSearchTrace, Lane, PersistedSearchState } from './types.js';
 import { isPersistedSearchState } from './types.js';
@@ -125,6 +129,14 @@ export interface SearchDeps {
   regressionScope(ctx: SynthesisContext, moduleFiles: readonly string[], paths: readonly string[], max?: number): Promise<RepositoryScope>;
   /** the reproduction re-run on the committed workspace with its venv (oracle/goal.ts verifyRepro); default below */
   verifyRepro(ctx: SynthesisContext, spec: ReproSpec): Promise<VerifyReproResult>;
+  /**
+   * The introspection pass over the reproduction in the committed workspace with its venv
+   * (introspect/index.ts introspectRepro: the operands of the failing call, their MRO class names,
+   * `is_*` predicates, the raising module's names); null when nothing was harvested. Default below.
+   */
+  introspect(ctx: SynthesisContext, spec: ReproSpec, anchors: readonly TracebackFrame[]): Promise<IntrospectedNames | null>;
+  /** ≤ 8 read-only git commands over the localised module files (history/harvest.ts); null when nothing was harvested. Default below. */
+  harvestHistory(ctx: SynthesisContext, moduleFiles: readonly string[], sources: readonly SourceFile[]): Promise<HistoryFacts | null>;
   /** the workspace's non-test Python files (path → analysed source); default reads through ctx.workspace */
   loadFiles(ctx: SynthesisContext): Promise<Map<string, SourceFile>>;
   /** one test command in the workspace root through ctx.sandbox, summarised; default below */
@@ -144,6 +156,8 @@ export function defaultSearchDeps(): Omit<SearchDeps, 'searchSubGoal' | 'searchB
     findOracle: findOracleInWorkspace,
     regressionScope: regressionScopeInWorkspace,
     verifyRepro: verifyReproInWorkspace,
+    introspect: introspectInWorkspace,
+    harvestHistory: harvestHistoryInWorkspace,
     pickGoal: (ctx, mem) => pickGoalDetailed(ctx, mem, ctx.ask, { stage: 'propose' }),
     handleDirective,
     now: () => Date.now(),
@@ -316,25 +330,48 @@ export function mentionedInTask(path: string, task: string): number {
   return stem.length >= 3 && task.includes(stem) ? 1 : 0;
 }
 
-/** Non-test Python files of the workspace, read and analysed; unparsable or truncated files are skipped. Task-named files first, then alphabetical, cut at MAX_WORKSPACE_PY_FILES. */
-export async function loadPythonFiles(ctx: SynthesisContext): Promise<Map<string, SourceFile>> {
+/**
+ * Non-test Python files of the workspace, read and analysed; unparsable or truncated files are
+ * skipped. Task-named files first, then alphabetical, cut at MAX_WORKSPACE_PY_FILES. Every file
+ * is re-read on every call (a patch may have changed any of them), but a file whose text equals
+ * the run's cached copy (`SearchMemory.fileCache`, memory.ts) is handed back as the same
+ * `SourceFile` object instead of being analysed again: a re-baseline on Django re-analyses the
+ * one or two files the commit touched, not 858, and the process holds one analysed corpus per
+ * run, not one per re-baseline. The cache is the run memory's; `cache` overrides it (tests).
+ */
+export async function loadPythonFiles(ctx: SynthesisContext, cache: Map<string, SourceFile> = getMemory(ctx.runId).fileCache): Promise<Map<string, SourceFile>> {
+  const started = Date.now();
   const out = new Map<string, SourceFile>();
   const paths = (await ctx.workspace.listCandidates())
     .map((c) => c.path)
     .filter((p) => p.endsWith('.py') && !isTestPath(p) && !p.includes('.jevcode-synth/'))
     .sort((a, b) => mentionedInTask(b, ctx.task) - mentionedInTask(a, ctx.task) || (a < b ? -1 : a > b ? 1 : 0))
     .slice(0, MAX_WORKSPACE_PY_FILES);
+  let reused = 0;
+  let analysed = 0;
   for (const path of paths) {
     if (ctx.signal.aborted) throw new AbortError('signal');
     try {
       const view = await ctx.workspace.read(path, MAX_PY_FILE_BYTES);
       if (view.truncatedBytes > 0) continue;
-      out.set(path, { path, src: view.content, mod: analyse(view.content) });
+      const cached = cache.get(path);
+      if (cached !== undefined && cached.src === view.content) {
+        out.set(path, cached);
+        reused += 1;
+        continue;
+      }
+      const file: SourceFile = { path, src: view.content, mod: analyse(view.content) };
+      out.set(path, file);
+      cache.set(path, file);
+      analysed += 1;
     } catch (e) {
       if (e instanceof AbortError) throw e;
       // unreadable or unparsable: not a candidate file
     }
   }
+  // a file that vanished (or is no longer listed, or failed to parse) leaves the cache with it
+  for (const path of [...cache.keys()]) if (!out.has(path)) cache.delete(path);
+  if (reused > 0) ctx.emit({ type: 'synth', step: ctx.step, phase: 'files', detail: `${out.size} Python files: ${reused} unchanged since the last load (reused), ${analysed} analysed (${Date.now() - started} ms)` });
   return out;
 }
 
@@ -401,6 +438,19 @@ export async function regressionScopeInWorkspace(ctx: SynthesisContext, moduleFi
 export async function verifyReproInWorkspace(ctx: SynthesisContext, spec: ReproSpec): Promise<VerifyReproResult> {
   const root = ctx.workspaceInfo.root;
   return verifyRepro(sandboxRunFn(ctx.sandbox, ctx.signal), root, spec, await venvPython(root));
+}
+
+/** The introspection pass of the reproduction in the committed workspace with its venv (introspect/index.ts), through the engine's sandbox; ≤ 60 s. */
+export async function introspectInWorkspace(ctx: SynthesisContext, spec: ReproSpec, anchors: readonly TracebackFrame[]): Promise<IntrospectedNames | null> {
+  const root = ctx.workspaceInfo.root;
+  const python = await venvPython(root);
+  return introspectRepro(sandboxRunFn(ctx.sandbox, ctx.signal), spec, { workspace: root, anchors, ...(python === undefined ? {} : { python }) });
+}
+
+/** The git history of the localised module files (history/harvest.ts): the ticket / commit the issue names, `-S<identifier>` for its identifiers; read-only, ≤ 8 commands of 10 s. */
+export async function harvestHistoryInWorkspace(ctx: SynthesisContext, moduleFiles: readonly string[], sources: readonly SourceFile[]): Promise<HistoryFacts | null> {
+  if (moduleFiles.length === 0) return null;
+  return harvestHistory(sandboxRunFn(ctx.sandbox, ctx.signal), { workspace: ctx.workspaceInfo.root, files: moduleFiles, task: ctx.task, identifiers: taskIdentifiers(ctx.task), sources });
 }
 
 /** The goal of a repository workspace is the oracle's reproduction or the one best guess; both are told apart by their synthetic test id. */
@@ -903,6 +953,9 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         mem.repository = repo;
         if (!mem.goals.some((g) => g.id === repo?.goalId)) mem.goals.push(this.repositoryGoal(ctx, mem, repo.repro === null ? null : repo.repro.spec.testId, repo.moduleFiles));
         this.emit(ctx, 'oracle', `restored from the checkpoint: ${repo.oracleOutcome} (${repo.oracleNote}); regression scope ${repo.scope.testFiles.length} file${repo.scope.testFiles.length === 1 ? '' : 's'}`);
+        // the harvested facts are not in the checkpoint: one interpreter run and a few git commands rebuild them (once per process)
+        await this.harvestIntrospection(ctx, repo, framesOfTraceback(repo.traceback));
+        await this.harvestHistoryFacts(ctx, repo, repo.moduleFiles, files);
       } else {
         repo = await this.initRepository(ctx, mem, scratch, files, paths);
       }
@@ -1012,6 +1065,9 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     };
     mem.repository = repo;
     scratch.freshRepro = found.goal === null ? null : { result: found.goal.result, verdict: found.goal.verdict, summary: found.goal.summary, failure: found.goal.failure };
+    // the introspected names of the failing call come before the localisation: its site list adds the
+    // class-body gap of a receiver's class (search/sites.ts introspectionSites) when the facts are known
+    await this.harvestIntrospection(ctx, repo, found.anchors.map((a) => a.frame));
     // one localisation from the task text (and the oracle's anchors): the module files bound the scope, the sites serve the search
     mem.bases = [committedBase(files, emptyScopedSummary(baselineCommand(ctx)))];
     let loc: LocalizeResult | null = null;
@@ -1033,8 +1089,66 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     repo.scope = await this.deps.regressionScope(ctx, moduleFiles, paths);
     this.emit(ctx, 'localize', `${goal.id}: ${moduleFiles.length > 0 ? moduleFiles.join(', ') : 'no module file localised'} (${loc?.requests ?? 0} requests, ${loc?.sites.length ?? 0} sites)`);
     this.emit(ctx, 'scope', `${repo.scope.testFiles.length} test file${repo.scope.testFiles.length === 1 ? '' : 's'} (${repo.scope.tier}): ${repo.scope.testFiles.join(', ') || '-'}; ${repo.scope.note}; command: ${repo.scope.command ?? 'none'}`);
+    // the git history of the module files the localisation named (the history source reads it)
+    await this.harvestHistoryFacts(ctx, repo, moduleFiles, files);
     return repo;
   }
+
+  /**
+   * The introspected names of a run (src/synth/introspect; swebench-reach-oracle-9.md capability 2),
+   * once per process at the establishing step and again on a resume: one introspection run of the
+   * reproduction in the committed workspace with its venv (≤ 60 s; the operands of the failing
+   * expression, their MRO class names, `is_*` predicates and attributes, the raising module's
+   * names). Registered per run id (introspect/facts.ts); src/synth/index.ts hands them to the
+   * template source as `EnumerateOptions.introspected` / `.extraNames`, to the queue's vocabulary
+   * and to the site list (search/sites.ts introspectionSites). Never fatal: a failed pass leaves
+   * the sources as they were.
+   */
+  private async harvestIntrospection(ctx: SynthesisContext, repo: RepositoryMode, anchors: readonly TracebackFrame[]): Promise<void> {
+    let introspected: IntrospectedNames | null = null;
+    if (repo.repro !== null) {
+      try {
+        introspected = await this.deps.introspect(ctx, repo.repro.spec, anchors);
+        if (introspected !== null) {
+          const ops = introspected.operands.slice(0, 4).map((o) => `${o.expr}: ${o.typeName} (${o.predicates.length} predicate${o.predicates.length === 1 ? '' : 's'}${o.raisingReceiver ? ', receiver' : ''})`).join(', ');
+          this.emit(ctx, 'introspect', `${introspected.status} in ${introspected.durationMs} ms: ${introspected.note}${ops === '' ? '' : `; ${ops}`}`);
+        }
+      } catch (e) {
+        if (e instanceof AbortError) throw e;
+        this.emit(ctx, 'introspect', `introspection failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    setRunFacts(ctx.runId, { introspected });
+  }
+
+  /**
+   * The git history of the localised module files (src/synth/history; capability 3): ≤ 8 read-only
+   * git commands (the ticket / commit the issue names, `-S<identifier>` for the issue's
+   * identifiers). Registered with the run facts; src/synth/index.ts hands it to the history source
+   * as `EnumerateOptions.history` (its reversals ride with the donor seed). Never fatal.
+   */
+  private async harvestHistoryFacts(ctx: SynthesisContext, _repo: RepositoryMode, moduleFiles: readonly string[], files: ReadonlyMap<string, SourceFile>): Promise<void> {
+    let history: HistoryFacts | null = null;
+    if (moduleFiles.length > 0) {
+      try {
+        const sources = moduleFiles.map((p) => files.get(p)).filter((f): f is SourceFile => f !== undefined);
+        history = await this.deps.harvestHistory(ctx, moduleFiles, sources);
+        if (history !== null) this.emit(ctx, 'history', `${history.note} (${history.durationMs} ms)`);
+      } catch (e) {
+        if (e instanceof AbortError) throw e;
+        this.emit(ctx, 'history', `history harvest failed: ${e instanceof Error ? e.message : String(e)}`);
+      }
+    }
+    setRunFacts(ctx.runId, { history });
+  }
+}
+
+/** The frames of a `RepositoryMode.traceback` text (oracle/search.ts tracebackTextFor renders them as CPython does), for the introspection anchors on a resume. */
+export function framesOfTraceback(text: string | null): TracebackFrame[] {
+  const out: TracebackFrame[] = [];
+  if (text === null) return out;
+  for (const m of text.matchAll(/File "([^"]+)", line (\d+), in (\S+)/g)) out.push({ file: m[1] ?? '', line: Number(m[2]), fn: m[3] ?? null, code: null });
+  return out;
 }
 
 export interface SynthesizerOptions {
