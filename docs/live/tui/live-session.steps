@@ -34,9 +34,11 @@ expect diff \(run
 send /decisions\r
 expect \[ui\] decisions
 mark inspected
-# 6. resume the paused run and let it finish
-send /resume\r
-expect (end (complete|max_steps|spend_cap|wall_time|replan_stop|impossible|error)|\[ui\] error)
+# 6. continue the paused run (/continue = the most recently used run here; bare /resume opens the picker) and let it finish
+send /continue\r
+expect \[run\] ready
+mark resumed-started
+expect (end (complete|max_steps|spend_cap|wall_time|human_pause|replan_stop|impossible|error)|\[ui\] error)
 mark resumed-ended
 sleep 1
 send /exit\r
