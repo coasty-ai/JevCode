@@ -796,8 +796,14 @@ class EngineImpl implements Engine {
     if (opts.signal) this.signalName = opts.signal;
     if (reason === 'error' && opts.error) this.fatalSerialized = opts.error;
     if (this.aborting) {
-      // Second press while shutting down: synchronous last-resort write, then exit (§11).
-      if (this.lastResult === null) this.forceExit(exitCodeFor('signal', undefined, false, this.signalName ?? undefined));
+      // Second press while shutting down: synchronous last-resort write, then exit (§11). finish() may not have run
+      // yet (the first abort's tree kill or the rejected stage can still be settling), so the snapshot written here
+      // records the stop and the §9.1 rule-1 discard itself; otherwise state.json would carry stopReason null and no
+      // `interrupted` for the discarded step (observed in the first live TUI session, docs/live/tui).
+      if (this.lastResult === null) {
+        this.markLastResort(reason);
+        this.forceExit(exitCodeFor('signal', undefined, false, this.signalName ?? undefined));
+      }
       return;
     }
     this.aborting = true;
@@ -805,6 +811,8 @@ class EngineImpl implements Engine {
     void this.sandbox.killAll().catch(() => undefined);
     const handler = (): void => {
       try {
+        // the process is exiting before finish() completed: record the stop and the discarded step (§9.1 rule 1)
+        this.markLastResort(reason);
         const snap = this.snapshotState();
         if (snap) this.store.writeStateSync(snap);
       } catch {
@@ -814,6 +822,17 @@ class EngineImpl implements Engine {
     };
     this.exitHandler = handler;
     process.on('exit', handler);
+  }
+
+  /**
+   * Before a synchronous last-resort write: the stop reason finish() would have set, and the in-flight step as a
+   * rule-1 discard (`interrupted`), so `--resume` restarts that step and the run reads as stopped, not crashed.
+   */
+  private markLastResort(reason: 'human_abort' | 'signal' | 'error'): void {
+    if (this.stopReason === null) this.stopReason = reason;
+    if (this.interrupted === null && this.draft !== null && this.draft.step > this.step) {
+      this.interrupted = { step: this.draft.step, stage: this.currentStage === 'idle' ? 'intent' : this.currentStage, proposal: this.draft.proposal };
+    }
   }
 
   private forceExit(code: number): void {

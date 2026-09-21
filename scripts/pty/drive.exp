@@ -100,7 +100,7 @@ foreach raw $steps {
         # PTY_AUTO_REVIEW: while waiting, answer every review box (its keys line) after a one-second look, then wait for the
         # engine's `confirm <id> approved|declined` line before continuing so redrawn frames of the same box are not answered twice
         expect {
-          -re {\[y\] approve \[n\] decline} {
+          -re {\[y\] approve +\[n\] decline} {
             record $tf $t0 $n auto-review-seen ""
             sleep 1
             send -- $autoReview

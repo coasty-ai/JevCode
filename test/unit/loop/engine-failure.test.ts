@@ -313,7 +313,10 @@ describe('abort semantics (§9.1)', () => {
     expect(() => h.engine.abort('human_abort')).toThrow(AbortError);
     expect(exits).toEqual([130]);
     expect(store.syncStates).toHaveLength(1);
-    expect(store.syncStates[0]!.interrupted).toBeNull(); // snapshot before the step-level handling ran
+    // the last-resort snapshot records the stop and the in-flight step as a §9.1 rule-1 discard even though
+    // finish() has not run yet (docs/live/tui: the first live session left stopReason null here)
+    expect(store.syncStates[0]!.stopReason).toBe('human_abort');
+    expect(store.syncStates[0]!.interrupted).toMatchObject({ step: 1 });
     const r = await running;
     expect(r.stopReason).toBe('human_abort');
     h.engine.abort('human_abort'); // after the run ended: no-op
