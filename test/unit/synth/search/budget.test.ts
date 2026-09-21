@@ -1,22 +1,34 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  applyLiveTRun,
   CASE_TAIL_MAX_CASES,
   caseProfile,
   caseTail,
   COMPACT_NOUL_MIN_CANDIDATES,
   decideRunPlan,
   detectRunner,
+  emptyRunSamples,
   estimateRunMs,
   fitOracle,
   freshBudget,
   hasCheapGoalSubset,
   LANE_MAX_CASE_TIMEOUTS,
   laneRunTimeout,
+  LIVE_MIN_SAMPLES,
+  LIVE_REPRO_WINDOW,
+  LIVE_SCOPED_WINDOW,
+  liveMedian,
+  liveTRun,
   LOAD_SCALE_MIN_RATIO,
   loadRatio,
   MIN_RUN_TIMEOUT_MS,
   oracleClass,
+  passersReserveMs,
+  QUIXBUGS_CLASS_MAX_FULL_SUITE_MS,
+  QUIXBUGS_TEST_WALL_MAX_MS,
+  recordRunSamples,
+  stepTestWallMs,
   parseQuixbugsCommand,
   perTestTimeout,
   PER_TEST_TIMEOUT_FACTOR,
@@ -34,6 +46,7 @@ import {
   REPO_PASSERS_RESERVED,
   REPO_TEST_RUNS_CAP,
   REPO_TEST_RUNS_MAX,
+  REPO_TEST_WALL_MAX_MS,
   repositoryRunsPerStep,
   RETRY_CASE_TIMEOUT_MS,
   runsLeft,
@@ -261,12 +274,12 @@ describe('fitOracle on timeout-dominated baselines (§4.1 adaptive per-test time
     expect(decideRunPlan(421, { kind: 'replace' }, o, b)).toEqual({ mode: 'SIEVE', k: 421, runsAllowed: 421 });
     expect((421 * o.tRunMs.goalSubset) / o.lanes).toBeLessThan(90_000);
     // without the stop rule the same 500 ms timeout costs 9 × 500 + 238 = 4.7 s a run: repository class, RANK; the runs per
-    // step follow the wall: floor((min(8 × 18 238, 360 000) − 5 × 4738) / 4738) × 4 lanes = 25 × 4 = 100 (repositoryRunsPerStep)
+    // step follow the wall: floor((min(8 × 18 238, 360 000) − 5 × 4738) × 4 lanes / 4738) = 103 (repositoryRunsPerStep, lane-seconds)
     const noStop = { ...o, tRunMs: { goalSubset: 4738, fullSuite: 4738 }, lanes: 4 };
     expect(oracleClass(noStop)).toBe('repository_class');
     const rb = freshBudget({ maxWallMs: 360_000 }, noStop, 360_000, { now: () => 0 });
     expect(rb.testWallLeftMs).toBe(8 * 18_238);
-    expect(rb.testRunsLeft).toBe(100);
+    expect(rb.testRunsLeft).toBe(103);
     expect(decideRunPlan(421, { kind: 'replace' }, noStop, rb)).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
   });
   it('refineTRun keeps a sieve-eligible estimate through a load spike within 1.5 × SIEVE_MAX_T_RUN_MS, takes anything else as measured', () => {
@@ -477,8 +490,10 @@ describe('repository-class runs per step from the measured oracle, and the budge
   it('runs = floor((testWall − 5 × t_full) / t_repro) × lanes, bounded to [16, 160]', () => {
     // sympy-15345: wall 8 × 18.6 s = 149 s; reserve 93 s; floor(55.9 s / 2.06 s) = 27 → × 4 = 108 (the design's 16 let 16 of 727 run)
     expect(repositoryRunsPerStep(sympy, 8 * 18_642)).toBe(108);
-    // Django: the 600 s cap; (600 − 500) / 2.8 = 35 → 140
-    expect(repositoryRunsPerStep(django, 600_000)).toBe(140);
+    // Django: the 600 s cap; (600 − 500) × 4 / 2.8 = 142.8 → 142 (lane-seconds over t_run; the old floor-then-× lanes gave 140)
+    expect(repositoryRunsPerStep(django, 600_000)).toBe(142);
+    // the same wall with the reproduction measured at 8 s under load (the lanes' running median): 108 × 2.06 / 8 → 27
+    expect(repositoryRunsPerStep({ ...sympy, tRunMs: { goalSubset: 8000, fullSuite: 18_642 } }, 8 * 18_642)).toBe(27);
     // a scoped suite over 120 s: the reserve exceeds the capped wall → the floor
     expect(repositoryRunsPerStep(oracle({ lanes: 4, tRunMs: { goalSubset: 3000, fullSuite: 150_000 } }), 600_000)).toBe(REPO_TEST_RUNS_MAX);
     // the cap: a fast reproduction against a 60 s scope: (480 − 300) / 2 = 90 → 360 → 160
@@ -494,7 +509,7 @@ describe('repository-class runs per step from the measured oracle, and the budge
     expect(b.jevRequestsLeft).toBe(REPO_JEV_REQUESTS_MAX);
     // the wall remaining bounds the count too: 60 s of run left → wall 60 s → floor((60 − 93) …) < 0 → the floor
     expect(freshBudget({ maxWallMs: 1_500_000 }, sympy, 60_000).testRunsLeft).toBe(REPO_TEST_RUNS_MAX);
-    expect(freshBudget({ maxWallMs: 1_500_000 }, django, 1_400_000).testRunsLeft).toBe(140);
+    expect(freshBudget({ maxWallMs: 1_500_000 }, django, 1_400_000).testRunsLeft).toBe(142);
     const quix = oracle({ lanes: 8, tRunMs: { goalSubset: 300, fullSuite: 4000 } });
     expect(hasCheapGoalSubset(quix)).toBe(true);
     expect(freshBudget({ maxWallMs: 3_600_000 }, quix, 600_000).testRunsLeft).toBe(QUIXBUGS_TEST_RUNS_MAX);
@@ -529,5 +544,101 @@ describe('repository-class runs per step from the measured oracle, and the budge
     const qb = budget({ testWallLeftMs: 3000 }); // 80 runs
     expect(decideRunPlan(80, replace, quix, qb, { sitesLeft: 1 }).mode).toBe('SIEVE');
     expect(decideRunPlan(81, replace, quix, qb, { sitesLeft: 1 })).toEqual({ mode: 'RANK', k: 5, runsAllowed: 5 });
+  });
+});
+
+describe('the class reads both oracle costs, the wall reserves the scoped run, t_run follows the lanes (SWE-bench rung 3, 2026-09-20)', () => {
+  // sympy-19954 as measured in rung 3: the reproduction 916 ms (3.5 s before the memory fix), the scoped baseline 41 353 ms idle,
+  // its lane runs 48–82 s under `--concurrency 2`; 8 lanes (the reproduction is under 1 s)
+  const sympy19954 = oracle({ runner: 'other', lanes: 8, tRunMs: { goalSubset: 916, fullSuite: 48_000 }, perTestTimeoutMs: null, baselineDurationMs: 41_353 });
+  // django-15128 (solved by a SIEVE of 410 at step 2): a 985 ms reproduction, a 2.5 s scoped run
+  const django15128 = oracle({ runner: 'other', lanes: 8, tRunMs: { goalSubset: 985, fullSuite: 2522 }, perTestTimeoutMs: null, baselineDurationMs: 2522 });
+  const LIMITS_25M = { maxWallMs: 1_500_000 };
+
+  it('oracleClass: QuixBugs only when the goal-subset run is under 2 s AND the scoped run under 10 s; QuixBugs and the ladder (equal costs) unchanged', () => {
+    expect(QUIXBUGS_CLASS_MAX_FULL_SUITE_MS).toBe(10_000);
+    expect(oracleClass(sympy19954)).toBe('repository_class');
+    expect(oracleClass(django15128)).toBe('quixbugs_class');
+    expect(oracleClass(oracle({ tRunMs: { goalSubset: 1999, fullSuite: 9999 } }))).toBe('quixbugs_class');
+    expect(oracleClass(oracle({ tRunMs: { goalSubset: 1999, fullSuite: 10_000 } }))).toBe('repository_class');
+    expect(oracleClass(oracle({ tRunMs: { goalSubset: 2000, fullSuite: 100 } }))).toBe('repository_class');
+    expect(oracleClass(oracle({ tRunMs: { goalSubset: 300, fullSuite: 300 } }))).toBe('quixbugs_class');
+    expect(oracleClass(oracle({ runner: 'pytest', tRunMs: { goalSubset: 5000, fullSuite: 5000 } }))).toBe('repository_class');
+  });
+  it('repro 0.9 s + scoped 48 s: repository class, the runs derived, the wall 8 × the scoped run with 5 × 48 s reserved for the passers', () => {
+    const b = freshBudget(LIMITS_25M, sympy19954, 1_400_000, { now: () => 0 });
+    expect(b.testWallLeftMs).toBe(8 * 48_000);
+    expect(passersReserveMs(sympy19954)).toBe(5 * 48_000);
+    // (384 s − 240 s) × 8 lanes / 0.916 s = 1257 → the 160 cap; the derived count, not the QuixBugs 1,500
+    expect(b.testRunsLeft).toBe(REPO_TEST_RUNS_CAP);
+    expect(b.testRunsLeft).toBe(repositoryRunsPerStep(sympy19954, b.testWallLeftMs));
+    expect(Math.floor(((8 * 48_000 - 5 * 48_000) * 8) / 916)).toBe(1257);
+    expect(b.jevRequestsLeft).toBe(REPO_JEV_REQUESTS_MAX);
+    // the wall is the scoped run's cost, not the idle baseline's: 8 × 41.4 s would have been 331 s
+    expect(b.testWallLeftMs).not.toBe(8 * 41_353);
+    // under load the scoped median reads 80 s: the wall hits the 600 s cap and the reserve (400 s) leaves 200 s × 8 / 0.916 → still the cap
+    const loaded = { ...sympy19954, tRunMs: { goalSubset: 1338, fullSuite: 80_000 } };
+    expect(stepTestWallMs(loaded, 1_400_000)).toBe(REPO_TEST_WALL_MAX_MS);
+    expect(repositoryRunsPerStep(loaded, REPO_TEST_WALL_MAX_MS)).toBe(REPO_TEST_RUNS_CAP);
+    // a reserve past the wall (5 × 130 s over 600 s): the floor
+    expect(repositoryRunsPerStep({ ...sympy19954, tRunMs: { goalSubset: 1000, fullSuite: 130_000 } }, REPO_TEST_WALL_MAX_MS)).toBe(REPO_TEST_RUNS_MAX);
+    // the remaining run wall still bounds it
+    expect(stepTestWallMs(sympy19954, 100_000)).toBe(100_000);
+    // a SIEVE of the whole set only when it fits the derived count: 762 candidates do not, 150 do
+    expect(decideRunPlan(762, { kind: 'insert' }, sympy19954, b).mode).toBe('RANK');
+    expect(decideRunPlan(150, { kind: 'insert' }, sympy19954, b)).toEqual({ mode: 'SIEVE', k: 150, runsAllowed: 150 });
+    expect(decideRunPlan(762, { kind: 'insert' }, sympy19954, b, { sitesLeft: 10 })).toEqual({ mode: 'RANK', k: 16, runsAllowed: 16 });
+  });
+  it('a cheap scoped run keeps the QuixBugs class, and its wall carries the passers\' reserve on top of the 90 s (django-15128\'s SIEVE of 410 still fits)', () => {
+    const b = freshBudget(LIMITS_25M, django15128, 1_400_000, { now: () => 0 });
+    expect(b.testRunsLeft).toBe(QUIXBUGS_TEST_RUNS_MAX);
+    expect(b.testWallLeftMs).toBe(QUIXBUGS_TEST_WALL_MAX_MS + 5 * 2522);
+    expect(decideRunPlan(410, { kind: 'insert' }, django15128, b)).toEqual({ mode: 'SIEVE', k: 410, runsAllowed: 410 });
+    // the reserve never takes the wall past what the run has left
+    expect(stepTestWallMs(django15128, 20_000)).toBe(Math.min(20_000, Math.floor(20_000 / 4) + 5 * 2522));
+    expect(stepTestWallMs(django15128, 8_000)).toBe(8_000);
+    // equal costs: no reserve, the design's numbers exactly
+    expect(passersReserveMs(oracle({ tRunMs: { goalSubset: 300, fullSuite: 300 } }))).toBe(0);
+    expect(stepTestWallMs(oracle({ tRunMs: { goalSubset: 300, fullSuite: 300 }, baselineDurationMs: 300 }), 600_000)).toBe(QUIXBUGS_TEST_WALL_MAX_MS);
+    expect(stepTestWallMs(oracle({ runner: 'pytest', lanes: 4, tRunMs: { goalSubset: 5000, fullSuite: 5000 }, baselineDurationMs: 5000 }), 1_000_000)).toBe(40_000);
+  });
+  it('run samples: bounded windows of the last 16 reproduction and 4 scoped runs; a median only from 3 samples on', () => {
+    expect([LIVE_REPRO_WINDOW, LIVE_SCOPED_WINDOW, LIVE_MIN_SAMPLES]).toEqual([16, 4, 3]);
+    const s = emptyRunSamples();
+    recordRunSamples(s, [900, 1000], [48_000]);
+    expect(s).toEqual({ repro: [900, 1000], scoped: [48_000] });
+    expect(liveMedian(s.repro)).toBeNull();
+    recordRunSamples(s, [1100.4, Number.NaN, 0, -5], [72_000, 82_000, 47_000, 81_000]);
+    expect(s.repro).toEqual([900, 1000, 1100]);
+    expect(s.scoped).toEqual([72_000, 82_000, 47_000, 81_000]); // the 48 s run fell out of the window of 4
+    expect(liveMedian(s.repro)).toBe(1000);
+    expect(liveMedian(s.scoped)).toBe(76_500);
+    recordRunSamples(s, Array.from({ length: 20 }, (_, i) => 2000 + i), []);
+    expect(s.repro).toHaveLength(16);
+    expect(s.repro[0]).toBe(2004);
+  });
+  it('liveTRun / applyLiveTRun: the windows\' medians once live (the reproduction through the §2.4 hysteresis), the oracle\'s numbers before', () => {
+    const o = oracle({ runner: 'other', lanes: 8, tRunMs: { goalSubset: 916, fullSuite: 41_353 }, perTestTimeoutMs: null, baselineDurationMs: 41_353 });
+    const s = recordRunSamples(emptyRunSamples(), [1300, 1400], [80_000, 72_000]);
+    expect(liveTRun(o, s)).toEqual({ goalSubset: 916, fullSuite: 41_353, live: { repro: false, scoped: false } });
+    recordRunSamples(s, [1338], [82_000]);
+    const t = applyLiveTRun(o, s);
+    expect(t).toEqual({ goalSubset: 1338, fullSuite: 80_000, live: { repro: true, scoped: true } });
+    expect(o.tRunMs).toEqual({ goalSubset: 1338, fullSuite: 80_000 });
+    // the class and the step follow: repository class, wall 600 s (8 × 80 s capped), 160 runs
+    expect(oracleClass(o)).toBe('repository_class');
+    const b = freshBudget({ maxWallMs: 1_500_000 }, o, 1_200_000, { now: () => 0 });
+    expect(b.testWallLeftMs).toBe(REPO_TEST_WALL_MAX_MS);
+    expect(b.testRunsLeft).toBe(REPO_TEST_RUNS_CAP);
+    // hysteresis: a sieve-eligible 1.9 s reproduction measured at 2.5 s under load keeps 1.9 s; 8 s is the truth
+    const sieve = oracle({ tRunMs: { goalSubset: 1900, fullSuite: 18_642 } });
+    expect(liveTRun(sieve, recordRunSamples(emptyRunSamples(), [2500, 2500, 2600], [])).goalSubset).toBe(1900);
+    expect(liveTRun(sieve, recordRunSamples(emptyRunSamples(), [8000, 8000, 8100], [])).goalSubset).toBe(8000);
+    // idle 2 s → 108 runs a step; the same oracle with the lanes reporting 8 s → 27 (sympy-15345's numbers)
+    const idle = oracle({ runner: 'other', lanes: 4, tRunMs: { goalSubset: 2058, fullSuite: 18_642 }, perTestTimeoutMs: null, baselineDurationMs: 18_642 });
+    expect(freshBudget({ maxWallMs: 1_500_000 }, idle, 1_400_000).testRunsLeft).toBe(108);
+    applyLiveTRun(idle, recordRunSamples(emptyRunSamples(), [8000, 7900, 8100], []));
+    expect(idle.tRunMs.goalSubset).toBe(8000);
+    expect(freshBudget({ maxWallMs: 1_500_000 }, idle, 1_400_000).testRunsLeft).toBe(27);
   });
 });

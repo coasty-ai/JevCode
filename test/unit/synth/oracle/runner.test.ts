@@ -6,7 +6,7 @@ import { describe, expect, it } from 'vitest';
 
 import type { VerifyRunFn } from '../../../../src/synth/verify/types.js';
 import { extractBlocks } from '../../../../src/synth/oracle/extract.js';
-import { REPRO_SENTINEL, boundNames, buildCriterion, buildReproScript, chunksOf, chunksWithContext, evaluateCriterion, normaliseValue, parseReproOutput, reproCommand, runRepro, valuesEqual, valuesEqualLoose } from '../../../../src/synth/oracle/runner.js';
+import { NETWORK_ERROR_TYPES, REPRO_SENTINEL, boundNames, buildCriterion, buildReproScript, chunksOf, chunksWithContext, detectNetworkUse, evaluateCriterion, normaliseValue, parseReproOutput, reproCommand, runRepro, valuesEqual, valuesEqualLoose } from '../../../../src/synth/oracle/runner.js';
 import type { CodeBlock, Criterion, Extraction, ReproRunResult, StatementResult } from '../../../../src/synth/oracle/types.js';
 
 const pythonAvailable = spawnSync('python3', ['--version']).status === 0;
@@ -270,5 +270,34 @@ describe('chunks and context', () => {
     const c = chunksWithContext(ex.blocks[0]!, ex);
     expect(c.chunks).toHaveLength(6);
     expect(c.offset).toBe(0);
+  });
+});
+
+describe('detectNetworkUse (a verdict that is the network\'s, not the code\'s)', () => {
+  it('static: a network module import (or call form) together with a URL literal naming a non-local host', () => {
+    expect(detectNetworkUse(['import requests', 'requests.put("http://httpbin.org/put", data=u"ööö".encode("utf-8"))'], null)).toEqual({ kind: 'static', evidence: 'requests against httpbin.org' });
+    expect(detectNetworkUse(['from urllib.request import urlopen', "urlopen('https://api.github.com/repos')"], null)).toEqual({ kind: 'static', evidence: 'urllib against api.github.com' });
+    expect(detectNetworkUse(['import socket, http.client', 'c = http.client.HTTPSConnection("example.org")', 'u = "https://example.org/x"'], null)).toEqual({ kind: 'static', evidence: 'http, socket against example.org' });
+    // the call form without a visible import
+    expect(detectNetworkUse(['r = requests.get("https://pypi.org/simple/")'], null)).toEqual({ kind: 'static', evidence: 'a network call against pypi.org' });
+  });
+  it('null: a local host, a URL without a network module (Django\'s HttpRequest URLs), a network module without a URL', () => {
+    expect(detectNetworkUse(['import urllib.request', "urllib.request.urlopen('http://localhost:8000/')"], null)).toBeNull();
+    expect(detectNetworkUse(['import requests', 'requests.get("http://127.0.0.1:5000/health")'], null)).toBeNull();
+    expect(detectNetworkUse(['from django.http import HttpResponseRedirect', "HttpResponseRedirect('http://example.com/')"], null)).toBeNull();
+    expect(detectNetworkUse(['from django.test import Client', "Client().get('http://testserver/')"], null)).toBeNull();
+    expect(detectNetworkUse(['import socket', 'socket.gethostname()'], null)).toBeNull();
+    expect(detectNetworkUse(['from sympy import symbols, Max', 'mathematica_code(Max(x,2))'], null)).toBeNull();
+    expect(detectNetworkUse([], null)).toBeNull();
+  });
+  it('runtime: a statement that raised one of the script\'s network error types or a connection message', () => {
+    expect(NETWORK_ERROR_TYPES.has('ConnectionError')).toBe(true);
+    expect(NETWORK_ERROR_TYPES.has('gaierror')).toBe(true);
+    const conn = ran([stmt({ exception: { type: 'ConnectionError', message: "HTTPConnectionPool(host='httpbin.org', port=80): Max retries exceeded", frames: [] }, environment: true })]);
+    expect(detectNetworkUse(['x = f()'], conn)).toEqual({ kind: 'runtime', evidence: "ConnectionError: HTTPConnectionPool(host='httpbin.org', port=80): Max retries exceeded" });
+    const os = ran([stmt({ exception: { type: 'OSError', message: '[Errno 8] nodename nor servname provided, or not known', frames: [] } })]);
+    expect(detectNetworkUse([], os)?.kind).toBe('runtime');
+    expect(detectNetworkUse([], ran([stmt({ exception: { type: 'ValueError', message: 'bad value', frames: [] } })]))).toBeNull();
+    expect(detectNetworkUse([], ran([stmt({ value: '1' })]))).toBeNull();
   });
 });

@@ -351,6 +351,81 @@ export async function runRepro(run: VerifyRunFn, chunks: readonly string[], opts
 }
 
 // ---------------------------------------------------------------------------------------
+// Network use (a verdict that is the network's, not the code's)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * Exception types the reproduction script marks as environment gaps (its `NETWORK_ERRORS` set),
+ * mirrored here for the runtime tell of `detectNetworkUse`.
+ */
+export const NETWORK_ERROR_TYPES: ReadonlySet<string> = new Set(['ConnectionError', 'ConnectTimeout', 'ReadTimeout', 'MaxRetryError', 'NewConnectionError', 'gaierror', 'URLError', 'HTTPError', 'SSLError', 'ProxyError', 'RemoteDisconnected', 'timeout', 'TimeoutError', 'ConnectionRefusedError', 'ConnectionResetError']);
+/** Modules whose import in a snippet, together with a URL literal, says the snippet talks to the network. */
+const NETWORK_MODULES = ['requests', 'urllib', 'urllib2', 'urllib3', 'socket', 'http', 'httplib', 'httpx', 'aiohttp', 'ftplib', 'smtplib', 'websocket', 'websockets'];
+const NETWORK_MODULE_SET: ReadonlySet<string> = new Set(NETWORK_MODULES);
+const IMPORT_LINE = /^\s*import\s+(.+?)\s*$/gm;
+const FROM_LINE = /^\s*from\s+([A-Za-z_][\w.]*)\s+import\b/gm;
+
+/** The network modules a snippet imports (`import a, b.c as d`, `from a.b import x`), sorted. */
+function networkImports(text: string): string[] {
+  const out = new Set<string>();
+  for (const m of text.matchAll(IMPORT_LINE)) {
+    for (const part of (m[1] ?? '').split(',')) {
+      const root = part.trim().split(/\s+/)[0]?.split('.')[0] ?? '';
+      if (NETWORK_MODULE_SET.has(root)) out.add(root);
+    }
+  }
+  for (const m of text.matchAll(FROM_LINE)) {
+    const root = (m[1] ?? '').split('.')[0] ?? '';
+    if (NETWORK_MODULE_SET.has(root)) out.add(root);
+  }
+  return [...out].sort();
+}
+/** `requests.get(`, `urlopen(`, `socket.create_connection(`, `HTTPConnection(`: the call forms of those modules. */
+const NETWORK_CALL = /\b(?:requests\.(?:get|post|put|patch|delete|head|options|request|Session)|urlopen|urlretrieve|create_connection|HTTP(?:S)?Connection|httpx\.(?:get|post|put|Client)|aiohttp\.ClientSession)\s*\(/;
+const URL_LITERAL = /["'](?:https?|ftp|wss?):\/\/([^"'/\s:?#]+)/g;
+/** Hosts a snippet may name without leaving the machine (Django's test client uses `testserver`). */
+const LOCAL_HOST = /^(?:localhost|127\.\d+\.\d+\.\d+|0\.0\.0\.0|\[?::1\]?|testserver)$/i;
+const NETWORK_MESSAGE = /connection|name resolution|network is unreachable|failed to establish|temporary failure|nodename nor servname|max retries exceeded/i;
+
+/** How a reproduction depends on the network: read from its text (`static`) or from what a run raised (`runtime`). */
+export interface NetworkUse {
+  kind: 'static' | 'runtime';
+  /** one line for the transcript: the modules and host, or the exception */
+  evidence: string;
+}
+
+/**
+ * Whether the reproduction needs the network: statically, an import (or call form) of a network
+ * module together with a URL literal naming a non-local host — requests-2931's oracle is
+ * `requests.put("http://httpbin.org/put", …)` inside the `requests` checkout, so the gold
+ * `return data` read `unchanged` while a wrong `.decode()` line read `plausible` (rung 3,
+ * §21.6 item 1); at run time, a statement that raised one of the script's network error types or
+ * a connection message. Null when nothing points at the network.
+ */
+export function detectNetworkUse(chunks: readonly string[], result: ReproRunResult | null): NetworkUse | null {
+  const text = chunks.join('\n');
+  const modules = networkImports(text);
+  const calls = NETWORK_CALL.test(text);
+  const hosts: string[] = [];
+  for (const m of text.matchAll(URL_LITERAL)) {
+    const host = m[1] ?? '';
+    if (host !== '' && !LOCAL_HOST.test(host) && !hosts.includes(host)) hosts.push(host);
+  }
+  if ((modules.length > 0 || calls) && hosts.length > 0) {
+    const by = modules.length > 0 ? modules.join(', ') : 'a network call';
+    return { kind: 'static', evidence: `${by} against ${hosts.slice(0, 2).join(', ')}` };
+  }
+  if (result !== null) {
+    for (const s of result.statements) {
+      const e = s.exception;
+      if (e === null) continue;
+      if (NETWORK_ERROR_TYPES.has(e.type) || NETWORK_MESSAGE.test(e.message)) return { kind: 'runtime', evidence: `${e.type}: ${e.message.slice(0, 80)}` };
+    }
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------------------
 // Chunks of a block
 // ---------------------------------------------------------------------------------------
 

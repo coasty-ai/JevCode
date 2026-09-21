@@ -12,7 +12,7 @@ import { describe, expect, it } from 'vitest';
 import type { Answer, Question } from '../../../../src/core/types.js';
 import { REPRO_ID_PREFIX } from '../../../../src/synth/oracle/goal.js';
 import { REPRO_SENTINEL } from '../../../../src/synth/oracle/runner.js';
-import { BEST_GUESS_ID_PREFIX, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, isReproTestId, mergeSummaries, moduleStems, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, stemRelatedTestFiles, tracebackTextFor } from '../../../../src/synth/oracle/search.js';
+import { BEST_GUESS_ID_PREFIX, bestGuessFailure, bestGuessTestId, chooseRegressionScope, emptyScopedSummary, findIssueOracle, frameworkOf, isBestGuessTestId, isRepositoryWorkspace, isReproTestId, mergeSummaries, moduleStems, NETWORK_ORACLE_OPEN_PROBLEM, oracleNeedsArbitration, oracleYieldsGoal, packageNameOf, regressionCommandTemplate, scopeCommand, scopedPartOf, stemRelatedTestFiles, tracebackTextFor } from '../../../../src/synth/oracle/search.js';
 import type { OracleSearchInput } from '../../../../src/synth/oracle/search.js';
 import type { FrameJudgement, ReproRunResult, StatementResult } from '../../../../src/synth/oracle/types.js';
 import type { VerifyRunFn } from '../../../../src/synth/verify/types.js';
@@ -267,10 +267,28 @@ describe('findIssueOracle', () => {
     expect(kept.note).toContain('confirmation run did not report');
   });
   it('passes_on_base when the criterion already holds; no_blocks without code; no_pick below the threshold', async () => {
-    const passes = await findIssueOracle(input({ run: sentinelRun([stmtOk(0, 'from sympy import symbols, Max'), stmtValue(0, 'mathematica_code(Max(x,2))', "'Max[x, 2]'")]) }));
+    let passRuns = 0;
+    const passing: VerifyRunFn = async (command, opts) => {
+      passRuns += 1;
+      return sentinelRun([stmtOk(0, 'from sympy import symbols, Max'), stmtValue(0, 'mathematica_code(Max(x,2))', "'Max[x, 2]'")])(command, opts);
+    };
+    const passes = await findIssueOracle(input({ run: passing }));
     expect(passes.outcome).toBe('passes_on_base');
     expect(passes.goal).toBeNull();
     expect(passes.requests).toBe(1);
+    // the pass side is confirmed too: a base that passes and then fails shows a pass rate above zero and below one
+    expect(passRuns).toBe(2);
+    expect(passes.note).toContain('(twice)');
+    let n = 0;
+    const coin: VerifyRunFn = async (command, opts) => {
+      n += 1;
+      return sentinelRun([stmtOk(0, 'from sympy import symbols, Max'), stmtValue(0, 'mathematica_code(Max(x,2))', n === 1 ? "'Max[x, 2]'" : "'Max(2, x)'")])(command, opts);
+    };
+    const flipped = await findIssueOracle(input({ run: coin }));
+    expect(flipped.outcome).toBe('unstable');
+    expect(flipped.goal).toBeNull();
+    expect(flipped.note).toContain('passed once at the base commit');
+    expect(n).toBe(2);
     const none = await findIssueOracle(input({ task: 'Please add a feature that prints things nicely.' }));
     expect(none).toMatchObject({ outcome: 'no_blocks', requests: 0, goal: null });
     const low = await findIssueOracle(input({ repro: 0.2 }));
@@ -296,5 +314,45 @@ describe('findIssueOracle', () => {
     expect(r.goal?.spec.criterion).toEqual({ form: 'no_exception' });
     expect(r.goal?.failure.actual).toContain('TypeError');
     expect(r.traceback).toContain('File "/work/sympy/simplify/fu.py", line 504, in _f');
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Network-dependent reproductions (requests-2931, rung 3 §21.6 item 1)
+// ---------------------------------------------------------------------------------------
+
+describe('findIssueOracle on a reproduction that needs the network', () => {
+  const REQUESTS_TASK = ['Request with binary payload fails due to calling to_native_string', '', '```python', 'import requests', 'requests.put("http://httpbin.org/put", data=u"ööö".encode("utf-8"))', '```', '', 'This raises `UnicodeDecodeError`.', ''].join('\n');
+  const raising = sentinelRun([stmtOk(0, 'import requests'), { ...stmtValue(0, 'requests.put("http://httpbin.org/put", data=u"ööö".encode("utf-8"))', ''), value: null, exception: { type: 'UnicodeDecodeError', message: "'ascii' codec can't decode byte 0xc3 in position 0", frames: [] } }]);
+  it('is an oracle, but weak_network: strength weak, the note names the open problem, passers need arbitration', async () => {
+    const r = await findIssueOracle(input({ task: REQUESTS_TASK, repository: 'requests', packageName: 'requests', kind: 'exception_raised', run: raising }));
+    expect(r.outcome).toBe('weak_network');
+    expect(r.strength).toBe('weak');
+    expect(r.goal).not.toBeNull();
+    expect(r.goal?.spec.criterion).toEqual({ form: 'no_exception' });
+    expect(r.network).toEqual({ kind: 'static', evidence: 'requests against httpbin.org' });
+    expect(r.note).toContain('network-weak oracle');
+    expect(r.note).toContain(NETWORK_ORACLE_OPEN_PROBLEM);
+    expect(r.note).toContain("Jev's arbitration");
+    expect(oracleYieldsGoal(r.outcome)).toBe(true);
+    expect(oracleNeedsArbitration(r.outcome)).toBe(true);
+    expect(oracleNeedsArbitration('valid')).toBe(false);
+    expect(oracleNeedsArbitration('valid_weak')).toBe(false);
+    expect(oracleYieldsGoal('unstable')).toBe(false);
+    expect(NETWORK_ORACLE_OPEN_PROBLEM).toBe('network-dependent reproduction');
+  });
+  it('the sympy oracle (no network module, no URL) stays valid with network null', async () => {
+    const r = await findIssueOracle(input({}));
+    expect(r.outcome).toBe('valid');
+    expect(r.network).toBeNull();
+  });
+  it('an env_error caused by a connection error names the network in its note', async () => {
+    const offline = sentinelRun([stmtOk(0, 'import requests'), { ...stmtValue(0, 'requests.put("http://httpbin.org/put", data=b"x")', ''), value: null, exception: { type: 'ConnectionError', message: 'HTTPConnectionPool(host=\'httpbin.org\', port=80): Max retries exceeded', frames: [] }, environment: true }]);
+    const r = await findIssueOracle(input({ task: REQUESTS_TASK, repository: 'requests', packageName: 'requests', kind: 'exception_raised', run: offline }));
+    expect(r.outcome).toBe('env_error');
+    expect(r.goal).toBeNull();
+    expect(r.network?.kind).toBe('static');
+    expect(r.note).toContain('network call failed');
+    expect(r.note).toContain('ConnectionError');
   });
 });

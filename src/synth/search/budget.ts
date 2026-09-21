@@ -160,6 +160,30 @@ export const REPO_JEV_REQUESTS_MAX = 60;
  * `tRunMs.fullSuite` on one lane.
  */
 export const REPO_PASSERS_RESERVED = 5;
+/**
+ * The class reads both oracle costs (2026-09-20, SWE-bench rung 3 §21.7): sympy-19954's
+ * reproduction measured 916 ms once the memory fix sped the lanes up (3.5 s before), so the
+ * goal-subset rule alone put a 41 s scoped suite in the QuixBugs class — 1,500 runs, a 90 s test
+ * wall, a SIEVE over the first site's 762 candidates; the wall was gone after 379 runs and every
+ * later 90 s wall went to one or two 72–82 s regression runs (`6 tested … 6 deferred`). A suite
+ * is QuixBugs-class only when the goal-subset run is under 2 s AND the full (scoped) run is under
+ * this; a cheap reproduction in front of a costly scoped suite is repository-class, with the
+ * derived, load-aware run count. QuixBugs and the ladder (both costs equal) are unaffected.
+ */
+export const QUIXBUGS_CLASS_MAX_FULL_SUITE_MS = 10_000;
+/**
+ * Load-aware sizing (rung 3, §21.6 item 2): t_run is the median of the last LIVE_REPRO_WINDOW
+ * reproduction runs and the last LIVE_SCOPED_WINDOW scoped runs the lanes measured, once at least
+ * LIVE_MIN_SAMPLES of a kind exist; before that the baseline's estimate stands. Under
+ * `--concurrency 2` the same instance's reproduction ran 41 s where the idle baseline said 2–5 s,
+ * and the scoped run 72–82 s where it said 11–18 s (sympy-19954, -17139); a step sized from the
+ * idle numbers handed out runs it could not finish and deferred the ranked winner. Sixteen runs
+ * is two rounds of the fast suite's 8 lanes (the sieve runner's LOAD_SAMPLE_MIN_RUNS × 4); four
+ * scoped runs is one round of the passers' cap minus one, so a single slow run cannot set it.
+ */
+export const LIVE_REPRO_WINDOW = 16;
+export const LIVE_SCOPED_WINDOW = 4;
+export const LIVE_MIN_SAMPLES = 3;
 
 /** §2.4: K = 3 at replace sites (Noul top-3 36–40/40, `probe-selection.md`). */
 export const RANK_K_REPLACE = 3;
@@ -571,9 +595,78 @@ export function refineTRun(previousMs: number, measuredMs: number): number {
   return measured;
 }
 
-/** §4.3 class of a suite: the goal-subset run under 2 s is QuixBugs-class, anything slower repository-class. */
-export function oracleClass(oracle: OracleModel): OracleClass {
-  return oracle.tRunMs.goalSubset < QUIXBUGS_CLASS_MAX_T_RUN_MS ? 'quixbugs_class' : 'repository_class';
+/**
+ * §4.3 class of a suite, from both oracle costs: QuixBugs-class when the goal-subset run is under
+ * 2 s and the full (scoped) run under QUIXBUGS_CLASS_MAX_FULL_SUITE_MS; repository-class
+ * otherwise — a slow goal subset, or a cheap reproduction in front of a costly scoped suite
+ * (sympy-19954: 0.9 s against 41 s; see the constant).
+ */
+export function oracleClass(oracle: Pick<OracleModel, 'tRunMs'>): OracleClass {
+  return oracle.tRunMs.goalSubset < QUIXBUGS_CLASS_MAX_T_RUN_MS && oracle.tRunMs.fullSuite < QUIXBUGS_CLASS_MAX_FULL_SUITE_MS ? 'quixbugs_class' : 'repository_class';
+}
+
+// ---------------------------------------------------------------------------------------
+// Running measurements (load-aware t_run)
+// ---------------------------------------------------------------------------------------
+
+/** The lanes' recent run times, most recent last: ≤ LIVE_REPRO_WINDOW reproduction runs, ≤ LIVE_SCOPED_WINDOW scoped runs. */
+export interface RunSamples {
+  repro: number[];
+  scoped: number[];
+}
+
+export function emptyRunSamples(): RunSamples {
+  return { repro: [], scoped: [] };
+}
+
+/** Append measured durations (ms; non-positive and non-finite ones ignored) and keep the windows. Returns `samples`. */
+export function recordRunSamples(samples: RunSamples, repro: readonly number[], scoped: readonly number[]): RunSamples {
+  const keep = (xs: number[], add: readonly number[], window: number): number[] => {
+    const out = [...xs, ...add.filter((d) => Number.isFinite(d) && d > 0).map((d) => Math.round(d))];
+    return out.length > window ? out.slice(out.length - window) : out;
+  };
+  samples.repro = keep(samples.repro, repro, LIVE_REPRO_WINDOW);
+  samples.scoped = keep(samples.scoped, scoped, LIVE_SCOPED_WINDOW);
+  return samples;
+}
+
+/** The median of a window once it has LIVE_MIN_SAMPLES; null before that (the baseline's estimate stands). */
+export function liveMedian(xs: readonly number[]): number | null {
+  if (xs.length < LIVE_MIN_SAMPLES) return null;
+  const s = [...xs].sort((a, b) => a - b);
+  const mid = Math.floor(s.length / 2);
+  return Math.round(s.length % 2 === 1 ? (s[mid] ?? 0) : ((s[mid - 1] ?? 0) + (s[mid] ?? 0)) / 2);
+}
+
+export interface LiveTRun {
+  goalSubset: number;
+  fullSuite: number;
+  /** which of the two is the lanes' running median rather than the baseline's estimate */
+  live: { repro: boolean; scoped: boolean };
+}
+
+/**
+ * t_run from the running measurements: the reproduction window's median through the §2.4
+ * hysteresis (`refineTRun`: a loaded batch within 1.5 × the sieve line does not flip a
+ * sieve-eligible estimate), the scoped window's median as is; the oracle's own numbers where a
+ * window has fewer than LIVE_MIN_SAMPLES. Never the idle baseline once the samples exist.
+ */
+export function liveTRun(oracle: Pick<OracleModel, 'tRunMs'>, samples: RunSamples): LiveTRun {
+  const repro = liveMedian(samples.repro);
+  const scoped = liveMedian(samples.scoped);
+  return {
+    goalSubset: repro === null ? oracle.tRunMs.goalSubset : refineTRun(oracle.tRunMs.goalSubset, repro),
+    fullSuite: scoped === null ? oracle.tRunMs.fullSuite : scoped,
+    live: { repro: repro !== null, scoped: scoped !== null },
+  };
+}
+
+/** Write the running t_run into the oracle model (`freshBudget`, `decideRunPlan` and `runsLeft` read it there). Returns what was applied. */
+export function applyLiveTRun(oracle: Pick<OracleModel, 'tRunMs'>, samples: RunSamples): LiveTRun {
+  const t = liveTRun(oracle, samples);
+  oracle.tRunMs.goalSubset = t.goalSubset;
+  oracle.tRunMs.fullSuite = t.fullSuite;
+  return t;
 }
 
 /**
@@ -588,20 +681,56 @@ export function hasCheapGoalSubset(oracle: Pick<OracleModel, 'tRunMs'>): boolean
 }
 
 /**
+ * The wall reserved for the passers' scoped regression runs: REPO_PASSERS_RESERVED ×
+ * tRun(fullSuite) — the running median once the lanes have measured it (`applyLiveTRun`), the
+ * baseline's estimate before — when the goal subset is the cheaper reproduction; nothing when
+ * both scopes cost the same (every run is then a full suite and the fixed caps price it).
+ */
+export function passersReserveMs(oracle: Pick<OracleModel, 'tRunMs'>): number {
+  if (!hasCheapGoalSubset(oracle)) return 0;
+  return REPO_PASSERS_RESERVED * Math.max(0, Math.floor(oracle.tRunMs.fullSuite));
+}
+
+/**
  * §4.3 runs per step for the repository class, from the measured oracle: the test wall minus the
- * reserve for the passers' full-suite runs (REPO_PASSERS_RESERVED × tRun(fullSuite)), spread over
- * the lanes at tRun(goalSubset) per run, bounded to [REPO_TEST_RUNS_MAX, REPO_TEST_RUNS_CAP].
+ * reserve for the passers' full-suite runs (REPO_PASSERS_RESERVED × tRun(fullSuite)), in
+ * lane-seconds over tRun(goalSubset) per run, bounded to [REPO_TEST_RUNS_MAX, REPO_TEST_RUNS_CAP].
  * When both scopes cost the same the arithmetic gives ≤ 12 (8b − 5b over b, × 4 lanes) and the
  * floor is the design's 16; when the reserve exceeds the wall (a scoped suite over 120 s at the
- * 600 s cap) the floor applies too. sympy-15345: floor((149 s − 5 × 18.6 s) / 2.06 s) × 4 = 108;
- * Django with a 100 s scope and a 2.8 s reproduction: floor((600 − 500) / 2.8) × 4 = 140.
+ * 600 s cap) the floor applies too. sympy-15345 idle: floor((149 s − 5 × 18.6 s) × 4 / 2.06 s) =
+ * 108; the same wall with the reproduction measured at 8 s under load: 27; Django with a 100 s
+ * scope and a 2.8 s reproduction: floor((600 − 500) × 4 / 2.8) = 142. The two t_run inputs are
+ * whatever the oracle model holds: the running medians after `applyLiveTRun`, so the count is
+ * re-derived from the lanes' own measurements at every `freshBudget` and never from the idle
+ * baseline once LIVE_MIN_SAMPLES runs exist.
  */
 export function repositoryRunsPerStep(oracle: Pick<OracleModel, 'tRunMs' | 'lanes'>, testWallMs: number): number {
   const tRun = Math.max(1, oracle.tRunMs.goalSubset);
   const reserve = REPO_PASSERS_RESERVED * Math.max(0, oracle.tRunMs.fullSuite);
   const wall = Math.max(0, Math.floor(testWallMs) - reserve);
-  const runs = Math.floor(wall / tRun) * Math.max(1, oracle.lanes);
+  const runs = Math.floor((wall * Math.max(1, oracle.lanes)) / tRun);
   return clamp(runs, REPO_TEST_RUNS_MAX, REPO_TEST_RUNS_CAP);
+}
+
+/**
+ * §4.3 test wall of a step. QuixBugs class: min(90 s, wallRemaining / 4), plus the passers'
+ * reserve when the goal subset is a cheap reproduction in front of a (sub-10 s) scoped suite, so
+ * a SIEVE step is never eaten by its own regression runs. Repository class: min(8 × the scoped
+ * run's cost, 600 s, wallRemaining) — the running median of the scoped run once measured (a
+ * 41 s baseline that runs at 80 s under load sizes the wall at 600 s, not 330 s), the raw
+ * baseline duration for equal-cost oracles (the ladder's pytest modules, the best-guess goal),
+ * where the design's 8 × baseline stands. `repositoryRunsPerStep` takes the reserve out of it.
+ */
+export function stepTestWallMs(oracle: OracleModel, wallRemainingMs: number): number {
+  const wallRemaining = Math.max(0, wallRemainingMs);
+  const reserve = passersReserveMs(oracle);
+  if (oracleClass(oracle) === 'quixbugs_class') {
+    const base = Math.min(QUIXBUGS_TEST_WALL_MAX_MS, wallRemaining / QUIXBUGS_TEST_WALL_FRACTION);
+    // the reserve rides on top of the design's number, never past what the run has left
+    return Math.floor(Math.min(base + reserve, wallRemaining));
+  }
+  const scoped = hasCheapGoalSubset(oracle) ? oracle.tRunMs.fullSuite : oracle.baselineDurationMs;
+  return Math.floor(Math.min(REPO_TEST_WALL_BASELINE_FACTOR * Math.max(0, scoped), REPO_TEST_WALL_MAX_MS, wallRemaining));
 }
 
 // ---------------------------------------------------------------------------------------
@@ -622,10 +751,7 @@ export function freshBudget(limits: Pick<RunLimits, 'maxWallMs'>, oracle: Oracle
   // a remaining wall above the run's whole limit (or not finite) is unknown: the limit is the bound then
   const wallRemaining = Number.isFinite(wallRemainingMs) ? Math.max(0, Math.min(wallRemainingMs, limits.maxWallMs)) : limits.maxWallMs;
   const cls = oracleClass(oracle);
-  const testWallLeftMs =
-    cls === 'quixbugs_class'
-      ? Math.floor(Math.min(QUIXBUGS_TEST_WALL_MAX_MS, wallRemaining / QUIXBUGS_TEST_WALL_FRACTION))
-      : Math.floor(Math.min(REPO_TEST_WALL_BASELINE_FACTOR * oracle.baselineDurationMs, REPO_TEST_WALL_MAX_MS, wallRemaining));
+  const testWallLeftMs = stepTestWallMs(oracle, wallRemaining);
   const budget: StepBudget = {
     jevRequestsLeft: cls === 'quixbugs_class' ? QUIXBUGS_JEV_REQUESTS_MAX : REPO_JEV_REQUESTS_MAX,
     testRunsLeft: cls === 'quixbugs_class' ? QUIXBUGS_TEST_RUNS_MAX : repositoryRunsPerStep(oracle, testWallLeftMs),
@@ -637,7 +763,11 @@ export function freshBudget(limits: Pick<RunLimits, 'maxWallMs'>, oracle: Oracle
   return budget;
 }
 
-/** Runs the step can still afford: the count cap, or the wall cap spread over the lanes (§2.4 `runsLeft`). */
+/**
+ * Runs the step can still afford: the count cap, or the wall cap spread over the lanes (§2.4
+ * `runsLeft`), at the oracle's current t_run (the lanes' running median after `applyLiveTRun`,
+ * so every `decideRunPlan` re-derives the take from what the runs actually cost).
+ */
 export function runsLeft(oracle: OracleModel, budget: StepBudget): number {
   const tRun = Math.max(1, oracle.tRunMs.goalSubset);
   const byWall = Math.floor((Math.max(0, budget.testWallLeftMs) * Math.max(1, oracle.lanes)) / tRun);

@@ -3395,3 +3395,193 @@ python3 /tmp/ladder-long/rows3.py bench/results/jev-only-ladder-long-3c long_cha
 node node_modules/.bin/tsx .scratch/tried-check2.mts 20260921-013110-ap6quqpt shared_frame 1
 ```
 
+
+## 23. 2026-09-21: confirmed passers, network-weak oracles, load-aware step sizing — the three verdict defects of §21.4/§21.6 as code rules (offline, $0)
+
+Owner scope: `src/synth/oracle/{verify,search,runner}.ts`, `src/synth/search/budget.ts` and their tests; nothing in `search/{index,subgoal,guard,…}.ts`,
+`synth/index.ts`, `history/**`, `rank/**` changed (what those must wire is listed at the end). No live call.
+
+**Correction to §21.6 item 2 first.** The rung-3 records show sympy-19954 (`20260921-004052-jx3hxdij`) was not sized by the §21.2
+formula at all: its reproduction measured 916 ms (3.5 s in the runs that solved it), so `oracleClass` read `quixbugs_class` — 1,500
+runs, a 90 s test wall (`runs left 1483/1487` in every `synth verify` line), a SIEVE over the first site's 762 candidates (379 ran
+before the wall was gone at step 4), and from step 7 on each 90 s wall went to one or two 48–82 s regression runs of *carried*
+passers (`6 tested … 6 deferred`, `5 tested (5 regressed) … 3 deferred`, then `0 tested … 5 deferred`) dispatched ahead of the
+step's fresh ranking; at step 17 the known guard ranked #1 was popped behind them and deferred. sympy-17139 (`…-cvx24qye`,
+reproduction 881 ms, scoped 107 s) has the same shape. The formula was right and never consulted; the class was wrong.
+
+### 23.1 Rules (file:line on the working tree)
+
+1. **A lane pass is confirmed in the same lane** — `oracle/verify.ts:78-83` (`UNSTABLE_ACTUAL_PREFIX`, `isUnstableOutcome`),
+   `:309-321`: a candidate whose reproduction passes is run once more on its lane before anything else; pass/pass → the scoped
+   regression run → `plausible`; pass/fail → **unstable**: status `unchanged` (the shared `VerifyStatus` in `search/types.ts` is not
+   this agent's to extend), `tried`, never dispatched to the regression run, the subset failure text prefixed `unstable:`, counted
+   as `N unstable` in the batch's `verify` event (`… (1 unstable, 34 unchanged, …); … 1 passed once and failed the confirmation run
+   (unstable, not regression-tested)`). Cost: one ≈ 0.4–1.4 s reproduction per passer (≤ 5 a step); django-15315's 1/8 coin
+   becomes a 1/64 coin per dead-code candidate (≈ 0.6 false passers a step instead of the cap of 5), while the real fix passes twice.
+2. **The base verdict is confirmed on both sides** — `oracle/search.ts:355-368`: `findIssueOracle` runs the snippet twice at the
+   base commit in every case; fail/pass was already `unstable` (§21.2 item 3); pass/fail is now `unstable` too (`the reproduction
+   passed once at the base commit … and failed when run again: its verdict is a coin`) instead of `passes_on_base`; pass/pass reads
+   `already passes at the base commit (twice)`. Either `unstable` → no goal → the best-guess path.
+3. **Network-dependent reproductions are `weak_network`** — `oracle/runner.ts:361-431` `detectNetworkUse(chunks, result)`: static
+   (an import of `requests|urllib|urllib3|socket|http|httpx|aiohttp|…` or one of their call forms, together with a URL literal naming a
+   non-local host; `localhost`, `127.x`, `::1`, Django's `testserver` do not count; `from django.http import …` is not a network
+   module) or runtime (a statement raised one of the script's `NETWORK_ERRORS` types or a connection message). `oracle/search.ts:207`
+   `OracleOutcome` gains `weak_network`; `:376-397`: such an oracle keeps its goal (it found the failure at base; requests-2931's
+   `requests.put("http://httpbin.org/put", …)` → `network-weak oracle repro::… (…; network-dependent reproduction (requests against
+   httpbin.org): passers need the regression run and Jev's arbitration)`), `strength` is `'weak'` (so the existing weak-oracle note
+   in `search/index.ts` applies), `OracleSearch.network` carries the evidence, and the constants `NETWORK_ORACLE_OPEN_PROBLEM =
+   'network-dependent reproduction'`, `oracleYieldsGoal(outcome)`, `oracleNeedsArbitration(outcome)` (`:210-224`) are what the
+   controller and the guard wire. A base run whose network call failed while the statements around it "passed" is `env_error`
+   (`the reproduction's network call failed (ConnectionError: …); the statements that ran show no verdict`, `:345-352`), not
+   `passes_on_base`.
+4. **The class reads both oracle costs** (the coordinator's rung-3 amendment) — `search/budget.ts:173` `QUIXBUGS_CLASS_MAX_FULL_SUITE_MS
+   = 10_000`, `:604-606` `oracleClass`: QuixBugs-class only when the goal-subset run is < 2 s AND the scoped run < 10 s; a cheap
+   reproduction in front of a costly scoped suite (19954: 0.9 s / 41 s) is repository-class with the derived run count. QuixBugs and
+   the ladder (equal costs) are unaffected; django-15128 (0.985 s / 2.5 s, solved by a SIEVE of 410) stays QuixBugs-class.
+5. **The wall reserves the scoped run's cost in either class** — `budget.ts:689-692` `passersReserveMs` (5 × t_run(fullSuite) when
+   the goal subset is the cheaper reproduction, 0 for equal costs), `:724-733` `stepTestWallMs`: QuixBugs class = the design's
+   min(90 s, wallRemaining / 4) **plus the reserve** (15128: 90 + 12.6 s), never past the run's remaining wall; repository class =
+   min(8 × **the scoped run's running cost** (`tRunMs.fullSuite`), 600 s, wallRemaining) for a cheap-subset oracle (19954: 8 × 41 s =
+   330 s at the baseline, 600 s once the lanes read 80 s), the raw baseline duration for equal-cost oracles as before.
+   `repositoryRunsPerStep` (`:707-712`) takes the reserve out of it in lane-seconds: floor((wall − 5 × t_scoped) × lanes / t_repro),
+   bounded to [16, 160] — idle sympy-15345 108 (as before), Django 100 s / 2.8 s 142 (was 140: floor-then-× lanes), the same
+   sympy-15345 wall with the reproduction measured at 8 s under load **27**.
+6. **t_run from the lanes' running measurements** — `budget.ts:184-186` (`LIVE_REPRO_WINDOW` 16, `LIVE_SCOPED_WINDOW` 4,
+   `LIVE_MIN_SAMPLES` 3), `:612-670` `RunSamples`, `recordRunSamples`, `liveMedian`, `liveTRun`, `applyLiveTRun`: the median of the
+   last ≤ 16 reproduction runs (through the §2.4 `refineTRun` hysteresis, so a 1.9 s reproduction measured at 2.5 s under load keeps
+   the sieve; 8 s is the truth) and the last ≤ 4 scoped runs, written into `oracle.tRunMs` once ≥ 3 samples of a kind exist, never the
+   idle baseline from then on; `oracle/verify.ts:98-109` `runSamplesOf(mem)` keeps the windows per runner memory (a WeakMap: they
+   survive the per-step budget and the re-baselined oracle model; `RunnerMemory` is not this agent's type to extend), `:388-392`
+   records every batch and applies the medians (this batch's medians before the windows are live, as before). `freshBudget`,
+   `runsLeft` and therefore every `decideRunPlan` read `oracle.tRunMs`, so the wall, the count and the take are re-derived from what
+   the runs actually cost; the `verify` event says `t_run reproduction 1338 ms (live), scoped 80000 ms (live)`.
+7. **Rank order, and the #1 never deferred** — `oracle/verify.ts:240-247` `nextJob`: carried (deferred) and fresh jobs are dispatched
+   in `VerifyJob.key` order (`compareRank`, `:90-96`; ties to the carried job so the earlier ranking keeps its place), with a
+   one-job lookahead on the queue (a popped fresh job that ranks below a carried one waits under the goal, never lost);
+   `:230-237` `admitPasser`: the regression slots go to passers in rank order — a passer takes a slot only when the slots left
+   exceed the higher-ranked jobs still awaiting their reproduction verdict, waits on its lane otherwise (one reproduction's time),
+   is deferred once the cap is reached — so the passer cap defers the **lowest-ranked** passers whatever order the lanes finish in,
+   and the top-ranked passer always runs; `:250-262` the top job's runs (reproduction, confirmation, regression) are not cut by the
+   step's wall (§4.3: a step may overrun by one in-flight run), every other job's are; `mem.deferred[goal]` is kept sorted.
+
+### 23.2 Tests and gates
+
+`test/unit/synth/oracle/verify.test.ts` (fake lanes with a fake clock that honours timeouts): pass/pass → `plausible`, three runs
+charged, the confirmation is the same command in the same lane; pass/fail → `unchanged` + `isUnstableOutcome`, no scoped command, the
+event's `1 unstable`; the rank-merge of carried and fresh jobs (`fresh 0.9, carried 0.6, carried 0.5 (tie), fresh 0.5 (tie), fresh
+0.4, carried 0.3`); a fresh job popped behind a higher carried one waits under the goal; 8 lanes, a slow top-ranked passer against
+six fast ones → the top `plausible`, 5 plausible, the deferred two are `p4, p3` (and with the top failing, `p3` alone); the top's
+regression at the full timeout with a 3 s wall vs the second-ranked passer's cut to `3000 − 3 × 610` ms and deferred; the live windows
+(`[2000, 2200, 2100]` → 2100, then a 9 s run → 2150, not 9000). `test/unit/synth/search/budget.test.ts`: the class on both costs (0.9 s +
+48 s → repository, 1999/9999 → QuixBugs, 1999/10000 → repository), `freshBudget` on the 19954 numbers (wall 384 s, reserve 240 s, 160
+runs, RANK on 762 / SIEVE on 150, k = 16 with 10 sites left), 15128 (1,500 runs, wall 90 s + 12.6 s, SIEVE of 410), equal-cost walls
+unchanged, the windows and medians, `applyLiveTRun` with the hysteresis, **idle 2 s → 108, live 8 s → 27**, Django 142, `noStop`
+103. `test/unit/synth/oracle/search.test.ts`: pass/pass → `passes_on_base (twice)`, pass/fail → `unstable`, requests-2931's task →
+`weak_network` / weak / `network.evidence = 'requests against httpbin.org'`, the sympy oracle `network: null`, the offline run →
+`env_error`. `test/unit/synth/oracle/runner.test.ts`: `detectNetworkUse` static / local-host / Django-URL / runtime cases.
+
+Gates: `tsc` clean on every `synth` file (remaining errors: `src/cli/main.tsx`, `test/unit/provider/retry-hooks.test.ts`,
+`test/unit/undo/apply.test.ts` — peers' WIP); `no-any: ok`; `vitest --project unit test/unit/synth/oracle test/unit/synth/search/budget.test.ts
+test/unit/synth/sieve`: 11 files, 229 tests pass; the whole `test/unit/synth`: 1,368 pass, the 4 failures are in `search/sites.test.ts`
+and `templates/introspect.test.ts` (the §22 wiring in progress, not touched here).
+
+### 23.3 What the other owners must wire (not done here)
+
+- `search/index.ts initRepository`: `found.outcome === 'weak_network'` already yields the goal (`found.goal !== null`, strength
+  `'weak'`); add `NETWORK_ORACLE_OPEN_PROBLEM` to every proposal's `openProblems` while `repo.oracleOutcome === 'weak_network'`
+  (`repositoryNotes` / `search/proposal.ts` evidence), and pass `oracleNeedsArbitration(repo.oracleOutcome)` to the guard so a lone
+  passer of such an oracle goes through Q15/Q16 (the rule-(b) advisory at least) instead of a direct commit; `memory.ts` persists
+  `oracleOutcome` as a string, so nothing changes there.
+- `search/types.ts VerifyStatus`: an `'unstable'` member would let the guard and the trace name it directly; until then
+  `isUnstableOutcome(o)` / `UNSTABLE_ACTUAL_PREFIX` (oracle/verify.ts) tell it apart from `unchanged`, and `GoalSearchTrace` could
+  carry an `unstable` count.
+- `oracle/index.ts` re-exports for `synth/index.ts`: `detectNetworkUse`, `NETWORK_ERROR_TYPES`, `NetworkUse` (runner.ts);
+  `NETWORK_ORACLE_OPEN_PROBLEM`, `oracleYieldsGoal`, `oracleNeedsArbitration` (search.ts); `compareRank`, `isUnstableOutcome`,
+  `runSamplesOf`, `UNSTABLE_ACTUAL_PREFIX` (verify.ts).
+- `docs/JEV-ONLY-DESIGN.md` §4.3 (line ≈ 350): the class on both costs, the reserve in the wall, the running-median t_run, the
+  lane-seconds count; §4.2: the confirmation run and the rank-ordered passer cap.
+- The regression run's own timeout (`synth/index.ts runQueue`: `min(runTimeoutMs, maxCommandTimeoutMs, REPO_BASELINE_TIMEOUT_MS)`)
+  should stay above the lanes' scoped median (`mem.oracle.tRunMs.fullSuite`, live) — the 72–82 s runs of §21.6 were within it, but a
+  3 × baseline bound fitted to an 11 s idle baseline would not be.
+
+Live spend of this section: $0.
+
+## 22. 2026-09-20 (later): history candidates: own sites, capped share (rung-3 error class); introspection sites merged onto colliding gaps; the guard targets the raising statement
+
+Offline only (Jev $0). Fixes the defect §21.5 found ("history/ranker site mismatch": 43 `ranker: candidate … is not at the site being
+ranked` in 12 runs, nine runs stopped with `error` at steps 4–6, sympy-11618 lost at step 5) and the two placement findings of §21.5's
+reach-target check (sympy-15345's class-body gap deduplicated away; sympy-17139's guard inside the raising `if`'s body).
+
+### 22.1 Root cause, confirmed
+
+`src/synth/history/source.ts` (commit 5486f7a, lines 96 and 110) built every reversal with `site: at` — the site of the CURRENT lines of
+the hunk it reverts (sequence match, `locateLines`) — and `enumerateHistory` offered it at any site within 80 lines or the same block;
+`src/synth/index.ts:184-185` (§20's wiring) spliced those reversals FIRST into the donor seed of whatever site was being enumerated,
+`[...reversals, ...donors].slice(0, cap)`; `src/synth/rank/index.ts:307` asserts every ranked candidate is at the ranked site and threw.
+Transcript `~/.jevcode/runs/20260921-011312-ij7bpwi3/transcript.log:31` (django-15375): `hist_0c763317_56_57871c58d5` at
+`django/db/models/sql/compiler.py:1679 (replace)` while ranking `compiler.py:1686 (replace)` — the same function, 7 lines apart.
+
+Reproduced offline before changing anything (`test/unit/synth/history/fixtures.ts` `compilerFixture`: an `as_sql` spanning L1674–1688, one
+harvested hunk that changed L1679, the ranked site L1686): with HEAD's `source.ts` the seed of L1686 held one foreign-site candidate,
+`hist_0c763317_0_690eaa6f17 at compiler.py:1679 (foreign=true)`; after the change it holds none, `historySites` lists `compiler.py:1679
+(replace)` with the provenance note, and at L1679 the reversal is emitted with the enumerated site object itself.
+
+### 22.2 What changed
+
+1. **A reversal is emitted only at its own site** (`history/source.ts`). `locateReversal(file, commit, hunk, index)` places each run at
+   its current lines — a one-line replace, a statement-level span `line..endLine` (the `currentLine` rendered from the span's code
+   tokens so verify/apply.ts's staleness check round-trips; a span that does not tokenize yields nothing), or an insert after its
+   leading context — and `enumerateHistory(site)` emits it only when `sameSpan(located, site)` (same file, line, kind and span end;
+   an insert's indent is not part of the identity, the text carries its own), with `candidate.site = site`. No more `extraEdits`
+   deletes: the span deletes are apply's. `HISTORY_WINDOW_LINES` stays exported for distance reporting; nothing uses it to widen.
+2. **Reversals located elsewhere get their own sites** (`search/sites.ts` `historySites(facts, files, localised, sites = [], max = 2)`,
+   mirroring `introspectionSites`): after the Jev-ranked and the introspection sites, ≤ 2 per goal, most recent commit first, then
+   nearest to the located sites of the same file, then run order; none whose `siteKey` a located site holds (the goal's `exhausted`
+   and visit bookkeeping is by `siteKey`, so a same-key site with another span is left out — documented limit). `locate`
+   (`src/synth/index.ts`) appends them and emits `N history site(s) after the M located: path:line (kind; reverse of <sha> …)`.
+3. **History's share of the donor seed is capped** (`index.ts` `seedWithHistory`, `historySeedCap(cap) = min(16, ⌊0.25·cap⌋)`: 254 → 16,
+   60 → 15, 1 → 0) and placed AFTER the donors' top half; the wrapper also filters to `sameSpan` itself (a misbehaving source cannot
+   get a foreign candidate through). With no reversal at the site the seed is exactly the plain donors (asserted).
+4. **The ranker invariant stays and names the source**: `ranker: history candidate "hist_…" (reverse of …) is at f:1679 (replace), not
+   at the site being ranked (f:1686, replace); the history source must emit a candidate only at the site it enumerates`
+   (`shuffleRerank`'s message likewise).
+5. **(a) sympy-15345 — introspection sites are merged, not dropped** (`search/sites.ts` `mergeIntrospectionSites`, used by `locate`;
+   `introspectionSites` keeps its old semantics for callers): a candidate whose `siteKey` (path:line:kind) a located site already holds
+   gets its notes appended onto that site — the class-body mark `CLASS_BODY_GAP_NOTE` (`introspection: class-body gap of <Class> …`,
+   now a constant of `templates/introspect.ts`) — and `aliasPlacement` accepts a marked gap whatever its own indent, writing the alias at
+   the class body's indent (apply inserts indented text verbatim). Verified offline on the 15345 shape: located gap at the method's
+   block-end line with the method-body indent → merged → `_print_Baz = _print_Bar` at indent 4, applied after `return "bar"`.
+6. **(b) sympy-17139 — the guard targets the raising statement** (`templates/introspect.ts` `guardTargetLine`, `framePathMatches`): when
+   an operand's frame is in the site's file, `attribute_predicate_guard` fires ONLY at the gap immediately before the statement that
+   frame names (written at that statement's indent, whatever the site's) or at that statement itself (`_before` form only; the
+   `_after`-into-the-header's-body form is dead code there); other gaps of the file get nothing. Operands without a frame in this file
+   fall back to every gap where their root is visible, as before. So that the target is always in the site list when its file is
+   localised, `introspectionSites` now also builds that gap (`RAISING_GAP_NOTE`, receivers first, statement start for a continuation
+   line), ahead of the class-body and import gaps: `INTROSPECTION_SITES_MAX` 2 → 3 (merges do not count).
+
+### 22.3 sympy-19954: history did NOT displace the guard that solved it — the site was never visited
+
+Checked as asked. The rung-3 run (`20260921-004052-jx3hxdij`) harvested `5 commits, 48 change runs in 3 files`; re-harvesting the surviving
+workspace offline (`~/.jevcode/runs/bench-work/20260921-002827-57b7e1/sympy__sympy-19954/jev-only/workspace`, `.scratch/hist-19954.mts`,
+local git only) gives 5 commits / 44 runs, 39 of them in `perm_groups.py`, 27 locatable — the nearest at L2298 (distance 96, `is_subgroup`),
+then L2098 (104), L1955 (247): **none within the 80-line window or the `minimal_blocks` block (L2133–2214) of the visited site
+`perm_groups.py:2202:insert`, so the old rule put 0 reversals in its donor seed** (plain donors 254 = the cap; displaced 0). The
+transcript agrees: `synth site: … 2202:insert … mutation 254, template 254, donor 254` at step 4 and the same single site at steps 7,
+10 and 17 (`template 117/111/109, donor 245`). The pass on the previous tree (`jev-only-swebench-2`, run `20260921-000331-sxnrfz76`, 6
+steps) was `pick template/guard_index_break at sympy/combinatorics/perm_groups.py:2201:insert` in RANK mode (12 sites, 21 tested, 3
+plausible) — a TEMPLATE candidate at the gap before L2201; history rides only with the donor seed and cannot displace a template. In
+rung 3 the goal ran in SIEVE mode with the derived run budget (383 runs at step 4, 379 tested at the one site 2202, 375 unchanged + 4
+regressed, `budget-hit step 1 of 4`, then 5–6 tested per step under `test wall left 0 s`) and never reached `2201:insert`. The loss
+belongs to §21.6 items 1–2 (per-site run spending and the regression-run timing), not to the history source.
+
+### 22.4 Tests and gates
+
+`test/unit/synth/history/history.test.ts` (source: span sites, own-site emission, the rung-3 reproduction), `history/fixtures.ts`,
+`wiring.test.ts` (donor wrapper: after the top half, share cap table, exact donors without facts, the rung-3 seed ranks without the
+invariant firing, a rogue foreign-site source is filtered), `search/sites.test.ts` (`historySites` order/bounds/dedup;
+`mergeIntrospectionSites` + the alias firing at the merged gap; the raising-statement gap first), `rank/ranker.test.ts` (the message
+names the source and provenance), `templates/introspect.test.ts` (guard target: at the gap before the raising statement at its indent,
+nothing inside the raising `if` or elsewhere in the file, `_before` only at the line, fallback without a frame, absolute frame paths;
+alias at a marked gap). Gates: `npx vitest run --project unit test/unit/synth` (ladder/corpus excluded) 79 files, 1,362 tests pass;
+`npx tsc --noEmit` clean for every file touched (remaining errors: `src/cli/main.tsx:260` and peers' WIP directories); `node
+scripts/no-any.mjs` ok. Budget: $0 live.
