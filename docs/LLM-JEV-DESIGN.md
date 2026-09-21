@@ -208,6 +208,12 @@ When the workspace has no failing test and `findIssueOracle` is not `valid`/`val
 
 ---
 
+### 4.13 Addendum (2026-09-21, live findings during implementation)
+
+- **Reasoning cannot be disabled on GLM 5.3.** OpenRouter answers HTTP 400 ("Reasoning is mandatory for this endpoint and cannot be disabled") to `reasoning: {enabled: false}` on every `z-ai/glm-5.3*` id; `reasoning: {effort: 'low'}` is accepted. The default for every LLM call in this mode is therefore `{effort: 'low'}` with the once-doubling `max_tokens` rule of §4.8 at its reasoning-on base (3,000). The §7 wall projections that assumed reasoning off are conditional on the §10.2 probe with effort `low`.
+- **Served rate.** The provider actually serving `z-ai/glm-5.3-flash` billed $0.15 / $0.50 per M (5/3× the models-API minimum); the engine meters `usage.cost` when present and the table is a fallback only (DECISIONS 2026-09-21).
+- **Contract 1.2** (`src/core/types.ts`): `GenerateReasoning = {enabled: false} | {effort: 'low'|'medium'}`, `GenerateProviderPrefs {requireParameters}`, `GenerateResult.servedProvider?`, `GenerateOptions.onCancelled?(CancelledGeneration)` with facts only (the cost estimate for a cancelled sample is the engine's, from sibling served rates); the stage-2 line anchors cited in §4.12 predate this.
+
 ## 5. Jev questions
 
 All built with `choice()`/`noul()`/`contextNoul()`/`score()` from `src/jev/questions.ts` (escape appended, snake_case descriptive keys, both-sided criteria enforced at build time), asked through `ctx.ask` so they land in `decisions.jsonl`, `jev.jsonl`, the meter and the pane. Model pinned `typesafe/jev-1.13-20260917`; the bench refuses aliases. Wordings marked *existing* are unchanged code. Compliance: **B** batched per stage/state, **E** escape present, **P** paired Nouls or sanctioned escape-only form, **C** definition + ≥ 2 examples per side (or the sanctioned `criteria` object for ≤ 250 file Nouls), **N** never counts/computes, **T** no consumed 0.5 threshold.
