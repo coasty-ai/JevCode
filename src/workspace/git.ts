@@ -10,7 +10,7 @@
  */
 import { dirname } from 'node:path';
 
-import type { ExecResult, Sandbox } from '../core/types.js';
+import type { ExecResult, GitHead, GitState, Sandbox, StatusEntryV2 } from '../core/types.js';
 
 export interface GitRunOptions {
   timeoutMs?: number;
@@ -215,4 +215,173 @@ export async function diffAgainst(sandbox: Sandbox, ws: string, base: string, ex
   const pathspec = ['--', '.', ...excludes.map((e) => `:(exclude)${e}`)];
   const r = await runGit(sandbox, ws, ['diff', '--binary', base, ...pathspec], { maxOutputBytes: 32 * 1024 * 1024, ...opts });
   return { diff: r.stdout, ok: r.ok, truncated: r.truncated, stderr: r.stderr };
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN §12.1: `git status --porcelain=v2 --branch --untracked-files=all -z`, parsed
+// ---------------------------------------------------------------------------------------
+
+/** TUI-DESIGN §12.1: the dirty-set counts and entries of a porcelain v2 listing (the shape of `GitState.dirty`). */
+export type GitDirty = GitState['dirty'];
+
+/** TUI-DESIGN §12.1: everything `statusPorcelainV2` reads from the probe's stdout. */
+export interface PorcelainV2 {
+  /** null when the output carried no `--branch` headers */
+  head: GitHead | null;
+  upstream: string | null;
+  /** null without an upstream (`# branch.ab` absent) */
+  ahead: number | null;
+  behind: number | null;
+  /** `# stash <n>` (only with `--show-stash`); null when absent */
+  stash: number | null;
+  dirty: GitDirty;
+  /** the output ended without its NUL terminator or held a malformed entry: counts are lower bounds */
+  torn: boolean;
+}
+
+/** `?` entries carry no XY field in v2; they are recorded with the v1 code so callers can treat both listings alike. */
+export const UNTRACKED_XY = '??';
+const NO_SUBMODULE = 'N...';
+const OID_RE = /^[0-9a-f]{4,64}$/;
+
+function emptyDirty(): GitDirty {
+  return { modified: 0, staged: 0, untracked: 0, renamed: 0, unmerged: 0, submodules: 0, entries: [] };
+}
+
+/** Split `line` into its first `n` space-separated tokens and the verbatim remainder (paths may contain spaces). */
+function tokens(line: string, n: number): { fields: string[]; rest: string } | null {
+  const fields: string[] = [];
+  let pos = 0;
+  for (let k = 0; k < n; k++) {
+    const sp = line.indexOf(' ', pos);
+    if (sp === -1) return null;
+    fields.push(line.slice(pos, sp));
+    pos = sp + 1;
+  }
+  const rest = line.slice(pos);
+  return rest.length === 0 ? null : { fields, rest };
+}
+
+const COUNT_RE = /^[+-]?\d{1,15}$/;
+
+/** `+2` / `-0` / `3` → a non-negative integer; an empty, missing or non-numeric field → null (never 0). */
+function parseCount(s: string | undefined): number | null {
+  if (s === undefined || !COUNT_RE.test(s)) return null;
+  return Number(s.replace(/^[+-]/, ''));
+}
+
+function headOf(oid: string | null, name: string | null): GitHead | null {
+  if (oid === null && name === null) return null;
+  if (oid === '(initial)') return { kind: 'unborn', name: name === null || name === '(detached)' ? 'HEAD' : name };
+  if (name === '(detached)') return oid !== null && OID_RE.test(oid) ? { kind: 'detached', oid } : { kind: 'unborn', name: 'HEAD' };
+  return { kind: 'branch', name: name ?? 'HEAD', oid: oid !== null && OID_RE.test(oid) ? oid : null };
+}
+
+/**
+ * TUI-DESIGN §12.1: pure parser of `git status --porcelain=v2 --branch --untracked-files=all -z`
+ * output (never spawns). Handles the ten line kinds — the four `# branch.*` headers, `# stash`,
+ * ordinary (`1`), rename/copy (`2`, NUL-separated original path), unmerged (`u`), untracked (`?`)
+ * and ignored (`!`) entries — plus `(initial)`, `(detached)`, `S<c><m><u>` submodule columns and
+ * torn output. Paths are top-level relative exactly as git prints them (the caller strips
+ * `prefix`). `modified` counts entries with a worktree change (Y ≠ '.'), `staged` those with an
+ * index change (X ≠ '.'); a file that is both counts in both.
+ */
+export function statusPorcelainV2(stdout: string): PorcelainV2 {
+  const dirty = emptyDirty();
+  let oid: string | null = null;
+  let headName: string | null = null;
+  let upstream: string | null = null;
+  let ahead: number | null = null;
+  let behind: number | null = null;
+  let stash: number | null = null;
+  let torn = false;
+  if (typeof stdout !== 'string' || stdout.length === 0) {
+    return { head: null, upstream: null, ahead: null, behind: null, stash: null, dirty, torn: false };
+  }
+  const parts = stdout.split('\0');
+  // A well-formed listing ends with NUL, so the final element is empty; anything else is a torn tail.
+  const tail = parts.pop();
+  if (tail !== undefined && tail.length > 0) torn = true;
+
+  for (let i = 0; i < parts.length; i++) {
+    const line = parts[i]!;
+    if (line.length < 2) {
+      if (line.length > 0) torn = true;
+      continue;
+    }
+    const kind = line[0]!;
+    if (kind === '#') {
+      if (line.startsWith('# branch.oid ')) oid = line.slice('# branch.oid '.length);
+      else if (line.startsWith('# branch.head ')) headName = line.slice('# branch.head '.length);
+      else if (line.startsWith('# branch.upstream ')) upstream = line.slice('# branch.upstream '.length);
+      else if (line.startsWith('# branch.ab ')) {
+        const ab = line.slice('# branch.ab '.length).split(' ');
+        ahead = parseCount(ab[0]);
+        behind = parseCount(ab[1]);
+      } else if (line.startsWith('# stash ')) stash = parseCount(line.slice('# stash '.length));
+      // other headers are ignored (forward compatibility)
+      continue;
+    }
+    if (kind === '?' || kind === '!') {
+      if (line[1] !== ' ' || line.length < 3) {
+        torn = true;
+        continue;
+      }
+      if (kind === '?') {
+        dirty.untracked++;
+        dirty.entries.push({ xy: UNTRACKED_XY, sub: NO_SUBMODULE, path: line.slice(2) });
+      }
+      continue;
+    }
+    if (kind === '1' || kind === '2') {
+      // 1 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <path>
+      // 2 <XY> <sub> <mH> <mI> <mW> <hH> <hI> <X><score> <path> NUL <origPath>
+      const t = tokens(line, kind === '1' ? 8 : 9);
+      if (t === null) {
+        torn = true;
+        continue;
+      }
+      const [, xy = '', sub = NO_SUBMODULE, , , mW = '', hH = '', hI = ''] = t.fields;
+      if (xy.length !== 2) {
+        torn = true;
+        continue;
+      }
+      const entry: StatusEntryV2 = { xy, sub, path: t.rest, hH, hI, mode: mW };
+      if (kind === '2') {
+        const from = parts[i + 1];
+        if (from === undefined || from.length === 0) {
+          torn = true;
+          continue;
+        }
+        i++;
+        entry.from = from;
+        dirty.renamed++;
+      }
+      if (xy[0] !== '.') dirty.staged++;
+      if (xy[1] !== '.') dirty.modified++;
+      if (sub[0] === 'S') dirty.submodules++;
+      dirty.entries.push(entry);
+      continue;
+    }
+    if (kind === 'u') {
+      // u <XY> <sub> <m1> <m2> <m3> <mW> <h1> <h2> <h3> <path>
+      const t = tokens(line, 10);
+      if (t === null) {
+        torn = true;
+        continue;
+      }
+      const [, xy = '', sub = NO_SUBMODULE, , , , mW = ''] = t.fields;
+      if (xy.length !== 2) {
+        torn = true;
+        continue;
+      }
+      dirty.unmerged++;
+      if (sub[0] === 'S') dirty.submodules++;
+      dirty.entries.push({ xy, sub, path: t.rest, mode: mW });
+      continue;
+    }
+    // unknown record kind: skip it, but say the listing was not fully understood
+    torn = true;
+  }
+  return { head: headOf(oid, headName), upstream, ahead, behind, stash, dirty, torn };
 }

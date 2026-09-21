@@ -1349,19 +1349,18 @@ export interface ResolvedConfig {
   redactJson: (v: Json) => Json;
   /** masked table for run.json and `jevcode config` */
   record(): Record<string, ConfigRecordValue>;
-  // TUI-DESIGN §15 item 17 — OPTIONAL in contract 1.1 wave 0 (config/resolve.ts does not implement them yet); O6 makes them
-  // required in wave 1 together with the implementations (missingSecrets, ui, sessionSpendCap, addSecret, dropSecret, configDirs).
+  // TUI-DESIGN §15 item 17 — required since contract 1.1 wave 1 (config/resolve.ts implements them; O6).
   /** non-throwing; skips generator.apiKey for jev-only and --mock* */
-  missingSecrets?(mode: EngineMode): readonly SecretSettingName[];
+  missingSecrets(mode: EngineMode): readonly SecretSettingName[];
   /** session settings through the full chain; the launch members are copied from the argument, never re-resolved */
-  ui?(launch: LaunchSettings): UiConfig;
+  ui(launch: LaunchSettings): UiConfig;
   /** 'none' -> +Infinity */
-  sessionSpendCap?(mode: EngineMode): { value: number; source: ConfigSource; derived: boolean };
+  sessionSpendCap(mode: EngineMode): { value: number; source: ConfigSource; derived: boolean };
   /** delegate to the redactor */
-  addSecret?(name: string, value: string): boolean;
-  dropSecret?(name: string): boolean;
+  addSecret(name: string, value: string): boolean;
+  dropSecret(name: string): boolean;
   /** resolved XDG + legacy jevcode dirs (§12.7) */
-  readonly configDirs?: readonly string[];
+  readonly configDirs: readonly string[];
 }
 
 // ---------------------------------------------------------------------------------------

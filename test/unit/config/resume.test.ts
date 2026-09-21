@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import type { CheckpointState, ConfigRecordValue, RunLimits, RunMeta, StopReason } from '../../../src/core/types.js';
+import type { CheckpointState, ConfigRecordValue, Resolved, RunLimits, RunMeta, StopReason } from '../../../src/core/types.js';
+import type { SettingName } from '../../../src/config/types.js';
 import { parseCliArgs } from '../../../src/cli/args.js';
 import { reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom, type ResumeCurrentInputs } from '../../../src/config/resolve.js';
 
@@ -55,7 +56,7 @@ const limits = (p: Partial<RunLimits> = {}): RunLimits => ({
 });
 
 function current(p: Partial<ResumeCurrentInputs> = {}, state: Partial<ResumeCurrentInputs['state']> = {}): ResumeCurrentInputs {
-  return { limits: limits(), workspaceRealpath: null, state: { step: 7, spendTotalUsd: 0.5, wallMsUsed: 60_000, replanCount: 1, stopReason: null, ...state }, ...p };
+  return { limits: limits(), workspaceRealpath: null, state: { step: 7, spendTotalUsd: 0.5, wallMsUsed: 60_000, replanCount: 1, stopReason: null, generatorTokens: 0, ...state }, ...p };
 }
 
 const resume = (...extra: string[]) => parseCliArgs(['run', '--resume', RUN_ID, ...extra]);
@@ -151,15 +152,15 @@ describe('reconcileResumeConfig', () => {
     });
   }
 
-  it('other stored stop reasons resume normally', () => {
-    for (const stop of ['human_abort', 'signal', 'error', 'replan_stop', 'impossible', 'generator_done'] as const) {
+  it('other stored stop reasons resume normally (human_pause included, §8.7)', () => {
+    for (const stop of ['human_abort', 'signal', 'error', 'replan_stop', 'impossible', 'generator_done', 'human_pause'] as const) {
       const r = reconcileResumeConfig(current({}, { stopReason: stop }), meta(), resume());
       expect(r.immediateStop).toBeNull();
       expect(r.errors).toEqual([]);
     }
   });
 
-  it('resumeInputsFrom picks the checkpoint fields the stop reasons are compared against', () => {
+  it('resumeInputsFrom picks the checkpoint fields the stop reasons are compared against, Σ generatorTokensPerStep and the cap sources', () => {
     const state = {
       step: 12,
       spend: { totalUsd: 1.25 },
@@ -168,10 +169,60 @@ describe('reconcileResumeConfig', () => {
       stopReason: 'spend_cap',
     } as unknown as CheckpointState;
     const inputs = resumeInputsFrom({ limits: () => limits({ spendCapUsd: 1 }) }, state, WS);
-    expect(inputs).toEqual({ limits: limits({ spendCapUsd: 1 }), workspaceRealpath: WS, state: { step: 12, spendTotalUsd: 1.25, wallMsUsed: 4_000, replanCount: 3, stopReason: 'spend_cap' } });
+    expect(inputs).toEqual({ limits: limits({ spendCapUsd: 1 }), workspaceRealpath: WS, state: { step: 12, spendTotalUsd: 1.25, wallMsUsed: 4_000, replanCount: 3, stopReason: 'spend_cap', generatorTokens: 0 } });
     const r = reconcileResumeConfig(inputs, meta(), resume('--workspace', '/tmp/ws'));
     expect(r.errors).toEqual([]);
     expect(r.immediateStop?.reason).toBe('spend_cap');
+    // generatorTokens = Σ generatorTokensPerStep (non-finite / negative entries ignored); sources come from entries when present
+    const tokens = { ...state, generatorTokensPerStep: [100, 200, Number.NaN, -5, 50] } as unknown as CheckpointState;
+    const entries = new Map<SettingName, Resolved<string>>([['limits.spendCapUsd', { value: '2', source: 'default' }]]);
+    const withEntries = resumeInputsFrom({ limits: () => limits({ maxGeneratorTokens: 133_333 }), entries }, tokens, null);
+    expect(withEntries.state.generatorTokens).toBe(350);
+    expect(withEntries.sources).toEqual({ spendCapUsd: 'default', maxGeneratorTokens: 'derived' });
+    entries.set('limits.maxGeneratorTokens', { value: '50000', source: 'env' });
+    expect(resumeInputsFrom({ limits: () => limits({ maxGeneratorTokens: 50_000 }), entries }, tokens, null).sources).toEqual({ spendCapUsd: 'default', maxGeneratorTokens: 'env' });
+    expect(resumeInputsFrom({ limits: () => limits(), entries }, tokens, null).sources).toEqual({ spendCapUsd: 'default' });
+  });
+
+  it('P45: a jev-only run (stored $0.25 default) resumed without --mode keeps its cap — a default meets a default, no override', () => {
+    const jevOnly = meta({ 'limits.spendCapUsd': '0.25' }, { mode: 'jev-only' });
+    // main.tsx re-resolves without the mode: the current default is $2.00 (source default)
+    const r = reconcileResumeConfig(current({ limits: limits({ spendCapUsd: 2 }), sources: { spendCapUsd: 'default' } }), jevOnly, resume());
+    expect(r.errors).toEqual([]);
+    expect(r.overrides).toEqual([]);
+    expect(r.limits.spendCapUsd).toBe(0.25);
+    expect(r.identity.mode).toBe('jev-only');
+    // an explicit --spend-cap is a real override
+    const raised = reconcileResumeConfig(current({ limits: limits({ spendCapUsd: 3 }), sources: { spendCapUsd: 'flag' } }), jevOnly, resume('--spend-cap', '3'));
+    expect(raised.overrides).toEqual([{ setting: 'limits.spendCapUsd', from: '0.25', to: '3', atStep: 7 }]);
+    expect(raised.limits.spendCapUsd).toBe(3);
+    // a stored configured cap is still re-resolved from the current chain (the legacy rule)
+    const storedFlag = meta({}, { mode: 'jev-on', config: { ...meta().config, 'limits.spendCapUsd': { value: '0.5', source: 'flag' } } });
+    const re = reconcileResumeConfig(current({ sources: { spendCapUsd: 'default' } }), storedFlag, resume());
+    expect(re.overrides).toEqual([{ setting: 'limits.spendCapUsd', from: '0.5', to: '2', atStep: 7 }]);
+    // without sources (unknown) every difference is an override, as before
+    expect(reconcileResumeConfig(current(), jevOnly, resume()).overrides).toEqual([{ setting: 'limits.spendCapUsd', from: '0.25', to: '2', atStep: 7 }]);
+    // the stored spend_cap stop is judged against the kept cap
+    const stuck = reconcileResumeConfig(current({ limits: limits({ spendCapUsd: 2 }), sources: { spendCapUsd: 'default' } }, { stopReason: 'spend_cap', spendTotalUsd: 0.26 }), jevOnly, resume());
+    expect(stuck.immediateStop?.message).toContain('cap $0.25');
+    // a derived token cap follows the kept spend cap; a configured one does not
+    const derived = reconcileResumeConfig(current({ limits: limits({ spendCapUsd: 2, maxGeneratorTokens: 133_333 }), sources: { spendCapUsd: 'default', maxGeneratorTokens: 'derived' } }), jevOnly, resume());
+    expect(derived.limits.maxGeneratorTokens).toBe(16_666);
+    const configured = reconcileResumeConfig(current({ limits: limits({ spendCapUsd: 2, maxGeneratorTokens: 50_000 }), sources: { spendCapUsd: 'default', maxGeneratorTokens: 'env' } }), jevOnly, resume());
+    expect(configured.limits.maxGeneratorTokens).toBe(50_000);
+  });
+
+  it('stored token_cap: immediate stop naming --max-generator-tokens until the limit exceeds the tokens used; no token cap now → the engine decides', () => {
+    const stuck = reconcileResumeConfig(current({ limits: limits({ maxGeneratorTokens: 133_333 }) }, { stopReason: 'token_cap', generatorTokens: 140_000 }), meta(), resume());
+    expect(stuck.errors).toEqual([]);
+    expect(stuck.immediateStop).toEqual({ reason: 'token_cap', message: 'stopped: token_cap (140000 tokens used, limit 133333); raise --max-generator-tokens above 140000 to continue' });
+    const equal = reconcileResumeConfig(current({ limits: limits({ maxGeneratorTokens: 140_000 }) }, { stopReason: 'token_cap', generatorTokens: 140_000 }), meta(), resume());
+    expect(equal.immediateStop?.reason).toBe('token_cap');
+    const raised = reconcileResumeConfig(current({ limits: limits({ maxGeneratorTokens: 200_000 }) }, { stopReason: 'token_cap', generatorTokens: 140_000 }), meta(), resume());
+    expect(raised.immediateStop).toBeNull();
+    const noCap = reconcileResumeConfig(current({}, { stopReason: 'token_cap', generatorTokens: 140_000 }), meta(), resume());
+    expect(noCap.immediateStop).toBeNull();
+    expect(noCap.errors).toEqual([]);
   });
 
   it('is pure: the same inputs give the same output and inputs are not mutated', () => {

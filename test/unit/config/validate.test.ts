@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Resolved } from '../../../src/core/types.js';
 import { ConfigError } from '../../../src/errors.js';
-import { jevModelMatches, normaliseJevModelId, parseNumberSetting, parseUrlSetting, type SettingReader } from '../../../src/config/validate.js';
+import { deriveMaxGeneratorTokens, jevModelMatches, normaliseJevModelId, parseNumberSetting, parseUrlSetting, readAllowUnpriced, unpricedModelMessage, validateGenerator, validateLimits, type SettingReader } from '../../../src/config/validate.js';
 import { fingerprint, formatRecordValue, maskEntries, renderConfigTable } from '../../../src/config/mask.js';
 import { lookupPricing, SETTINGS } from '../../../src/config/defaults.js';
 import { sha256Hex } from '../../../src/core/hash.js';
@@ -106,5 +106,85 @@ describe('mask', () => {
     expect(table).toContain('generator.apiKey');
     expect(table).toContain('sandbox.level');
     expect(table.split('\n')[0]).toMatch(/^setting\s+value\s+source$/);
+  });
+});
+
+describe('priced / fail-closed / cache derivation / token cap (TUI-DESIGN §9.5, §16)', () => {
+  type Name = Parameters<SettingReader['get']>[0];
+  const mk = (values: Partial<Record<Name, string>>): SettingReader => ({
+    get: (n) => (values[n] === undefined ? undefined : { value: values[n]!, source: 'env' }),
+    sources: () => ['--x (flag)'],
+  });
+  const base: Partial<Record<Name, string>> = { 'generator.provider': 'anthropic', 'generator.model': 'claude-sonnet-5', 'generator.apiKey': 'anthropic-key-1234', 'generator.maxTokens': '4096', 'limits.spendCapUsd': '2' };
+
+  it('deriveMaxGeneratorTokens = floor(spendCapUsd / 15 × 1e6); malformed caps use the $2.00 default', () => {
+    expect(deriveMaxGeneratorTokens(2)).toBe(133_333);
+    expect(deriveMaxGeneratorTokens(0.25)).toBe(16_666);
+    expect(deriveMaxGeneratorTokens(Number.NaN)).toBe(133_333);
+    expect(deriveMaxGeneratorTokens(-1)).toBe(133_333);
+    expect(deriveMaxGeneratorTokens(1e-9)).toBe(1);
+  });
+
+  it('the §24 fail-closed message names both env vars and the flag', () => {
+    expect(unpricedModelMessage('claude-x', 2)).toBe(
+      'generator.model "claude-x" has no pricing entry, so the $2.000 spend cap could not be enforced. Set JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M (USD per million tokens), or pass --allow-unpriced to run under a token cap instead.',
+    );
+    expect(unpricedModelMessage('m', Number.NaN)).toContain('$2.000');
+  });
+
+  it('a known model is priced with the table cache rates; both overrides make an unknown model priced', () => {
+    const warns: string[] = [];
+    const g = validateGenerator(mk(base), (m) => warns.push(m));
+    expect(g.priced).toBe(true);
+    expect(g.pricing).toEqual({ inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 });
+    expect(warns).toEqual([]);
+    const over = validateGenerator(mk({ ...base, 'generator.model': 'claude-next', 'generator.priceInPerM': '3', 'generator.priceOutPerM': '15' }), (m) => warns.push(m));
+    expect(over.priced).toBe(true);
+    expect(over.pricing).toEqual({ inputPerM: 3, outputPerM: 15, cacheReadPerM: expect.closeTo(0.3, 12), cacheWritePerM: 3.75 });
+    expect(warns).toEqual([]);
+    // explicit cache overrides win over the derivation
+    const cache = validateGenerator(mk({ ...base, 'generator.model': 'claude-next', 'generator.priceInPerM': '3', 'generator.priceOutPerM': '15', 'generator.priceCacheReadPerM': '0.5', 'generator.priceCacheWritePerM': '4' }), () => undefined);
+    expect(cache.pricing).toMatchObject({ cacheReadPerM: 0.5, cacheWritePerM: 4 });
+  });
+
+  it('an unpriced Anthropic model fails closed unless allowUnpriced; then it warns and runs under the token cap', () => {
+    const reader = mk({ ...base, 'generator.model': 'claude-next' });
+    let err: unknown;
+    try {
+      validateGenerator(reader, () => undefined);
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ConfigError);
+    expect((err as ConfigError).setting).toBe('generator.model');
+    expect((err as ConfigError).exitCode).toBe(2);
+    expect((err as ConfigError).message).toBe(unpricedModelMessage('claude-next', 2));
+    const warns: string[] = [];
+    const g = validateGenerator(reader, (m) => warns.push(m), { allowUnpriced: true });
+    expect(g.priced).toBe(false);
+    expect(g.pricing).toEqual({ inputPerM: 0, outputPerM: 0, cacheReadPerM: 0, cacheWritePerM: 0 });
+    expect(warns).toEqual(['generator.model "claude-next" has no pricing entry; running under a token cap of 133333 generator tokens (--allow-unpriced), figures render as $?']);
+    // only one override → still unpriced
+    expect(() => validateGenerator(mk({ ...base, 'generator.model': 'claude-next', 'generator.priceInPerM': '3' }), () => undefined)).toThrow(ConfigError);
+  });
+
+  it('OpenRouter keeps today\'s warning for an unpriced model (usage.cost prices it at run time)', () => {
+    const warns: string[] = [];
+    const g = validateGenerator(mk({ ...base, 'generator.provider': 'openrouter', 'generator.model': 'vendor/other' }), (m) => warns.push(m));
+    expect(g.priced).toBe(false);
+    expect(warns).toEqual(['generator.model "vendor/other" has no pricing entry; costs default to $0/M unless JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M are set']);
+  });
+
+  it('validateLimits: maxGeneratorTokens only under allowUnpriced (configured, else derived); readAllowUnpriced parses booleans', () => {
+    const lim: Partial<Record<Name, string>> = { 'limits.spendCapUsd': '2', 'limits.maxSteps': '40', 'limits.maxWall': '30m', 'limits.maxReplans': '5', 'limits.completeThreshold': '0.85', 'limits.impossibleThreshold': '0.85' };
+    expect('maxGeneratorTokens' in validateLimits(mk(lim))).toBe(false);
+    expect(validateLimits(mk({ ...lim, 'limits.allowUnpriced': 'true' })).maxGeneratorTokens).toBe(133_333);
+    expect(validateLimits(mk(lim), { allowUnpriced: true }).maxGeneratorTokens).toBe(133_333);
+    expect(validateLimits(mk({ ...lim, 'limits.allowUnpriced': 'yes', 'limits.maxGeneratorTokens': '200000' })).maxGeneratorTokens).toBe(200_000);
+    expect(() => validateLimits(mk({ ...lim, 'limits.allowUnpriced': 'true', 'limits.maxGeneratorTokens': '0' }))).toThrow(/limits\.maxGeneratorTokens/);
+    expect('maxGeneratorTokens' in validateLimits(mk({ ...lim, 'limits.maxGeneratorTokens': '200000' }))).toBe(false);
+    expect(readAllowUnpriced(mk({}))).toBe(false);
+    expect(readAllowUnpriced(mk({ 'limits.allowUnpriced': '1' }))).toBe(true);
+    expect(() => readAllowUnpriced(mk({ 'limits.allowUnpriced': 'maybe' }))).toThrow(ConfigError);
   });
 });

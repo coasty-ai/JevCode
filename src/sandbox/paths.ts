@@ -10,6 +10,7 @@
 import { lstat, realpath } from 'node:fs/promises';
 import { lstatSync, realpathSync } from 'node:fs';
 import { basename, dirname, isAbsolute, resolve, sep } from 'node:path';
+import { normalize as posixNormalize } from 'node:path/posix';
 
 import { PathEscapeError, SecretPathError } from '../errors.js';
 import type { PathEscapeKind } from '../errors.js';
@@ -136,4 +137,48 @@ export function isSecretPath(ws: string, p: string, secretPaths: readonly string
 export function assertNotSecret(ws: string, p: string, secretPaths: readonly string[], canonical?: string): void {
   if (isSecretPath(ws, p, secretPaths)) throw new SecretPathError(p);
   if (canonical !== undefined && isSecretPath(ws, canonical, secretPaths)) throw new SecretPathError(p);
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN §10.4: the `@` mention denylist
+// ---------------------------------------------------------------------------------------
+
+const MENTION_DENY_BASENAMES = new Set(['.npmrc', '.pypirc']);
+const MENTION_DENY_PATTERNS: readonly RegExp[] = [/credential/i, /\.(p12|pfx|jks)$/i];
+
+/**
+ * TUI-DESIGN §10.4: the basename rule for `@` mentions — `isSecretBasename` plus `/credential/i`,
+ * `.npmrc`, `.pypirc` and `.p12`/`.pfx`/`.jks` key stores. (§10.4 folds these into `isSecretPath`
+ * itself; wave 1 keeps them mention-only so the seatbelt profile and candidate listings are
+ * unchanged until their owner lands the rule with its snapshot tests.)
+ */
+export function isMentionDeniedBasename(name: string): boolean {
+  if (isSecretBasename(name)) return true;
+  if (MENTION_DENY_BASENAMES.has(name)) return true;
+  return MENTION_DENY_PATTERNS.some((re) => re.test(name));
+}
+
+/**
+ * TUI-DESIGN §10.4: true when `rel` must never be offered or attached by an `@` mention: a
+ * configured secret store or secret basename (`isSecretPath`), one of the mention-only basenames
+ * above, anything under a `.git/` directory in any letter case (the `@`-only rule), or a path that
+ * is empty, malformed or escapes the workspace lexically. Purely lexical — safe to run over a
+ * 5,000-entry listing per keystroke without touching disk — so `ws` and `secretPaths` must be
+ * given in the same (canonical) form: a symlinked workspace path and a canonical store path do
+ * not match each other here; `files.ts` (wave 2) passes both canonical.
+ */
+export function isMentionDenied(ws: string, rel: string, secretPaths: readonly string[]): boolean {
+  if (typeof rel !== 'string' || rel.length === 0 || rel.includes('\0')) return true;
+  const unix = rel.replace(/\\/g, '/');
+  const segments = posixNormalize(unix).split('/').filter((s) => s.length > 0 && s !== '.');
+  if (segments.length === 0 || segments.includes('..')) return true;
+  // case-insensitive: APFS and NTFS resolve `.GIT/config` to the same directory
+  if (segments.some((s) => s.toLowerCase() === '.git')) return true;
+  const wsAbs = resolve(ws);
+  const abs = resolve(wsAbs, unix);
+  if (!isWithin(wsAbs, abs)) return true;
+  // a relative secret store is taken relative to the workspace (never to process.cwd())
+  const stores = secretPaths.map((s) => (typeof s === 'string' && s.length > 0 && !isAbsolute(s) ? resolve(wsAbs, s) : s));
+  if (isSecretPath(wsAbs, unix, stores)) return true;
+  return isMentionDeniedBasename(segments[segments.length - 1]!);
 }

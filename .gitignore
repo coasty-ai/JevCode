@@ -16,3 +16,4 @@ perf/results/*
 !perf/results/latest.json
 /tmp/
 .smoke/
+.vitest/

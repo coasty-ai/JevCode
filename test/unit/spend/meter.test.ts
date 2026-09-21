@@ -153,3 +153,91 @@ describe('createSpendMeter', () => {
     expect(m.exceeded()).toBe(false);
   });
 });
+
+describe('session meter tree (TUI-DESIGN §9.1, §15 item 7)', () => {
+  it('a root snapshot has no parent fields at all; a child carries parentExceeded and the parent totals', () => {
+    const root = createSpendMeter(10);
+    const child = root.child(2);
+    const rs = root.snapshot();
+    expect('parent' in rs).toBe(false);
+    expect('parentExceeded' in rs).toBe(false);
+    expect(Object.keys(rs).sort()).toEqual(['capUsd', 'exceeded', 'generator', 'jev', 'totalUsd']);
+    child.add('jev', usage(0.5));
+    expect(child.snapshot()).toMatchObject({ capUsd: 2, totalUsd: 0.5, exceeded: false, parentExceeded: false, parent: { totalUsd: 0.5, capUsd: 10 } });
+    expect(JSON.stringify(root.snapshot())).not.toContain('parent');
+  });
+
+  it('setCap on the root is observed by a live child through parent.capUsd and exceeded(); the child cap is unchanged', () => {
+    const root = createSpendMeter(10);
+    root.add('generator', usage(9.5));
+    const child = root.child(Math.min(2, 10 - root.snapshot().totalUsd));
+    expect(child.snapshot().capUsd).toBeCloseTo(0.5, 12);
+    const s = child.add('jev', usage(0.4));
+    expect(s.exceeded).toBe(false);
+    expect(s.parentExceeded).toBe(false);
+    child.add('jev', usage(0.2));
+    expect(child.exceeded()).toBe(true);
+    expect(child.snapshot().parentExceeded).toBe(true);
+    expect(root.exceeded()).toBe(true);
+    expect(typeof root.setCap).toBe('function');
+    root.setCap!(15);
+    expect(root.snapshot().capUsd).toBe(15);
+    expect(root.exceeded()).toBe(false);
+    const after = child.snapshot();
+    expect(after.capUsd).toBeCloseTo(0.5, 12);
+    expect(after.parent).toEqual({ totalUsd: expect.closeTo(10.1, 9), capUsd: 15 });
+    expect(after.parentExceeded).toBe(false);
+    // the child is still over its own cap ($0.60 ≥ $0.50); a fresh child forwards to the same, raised root
+    expect(child.exceeded()).toBe(true);
+    const next = root.child(Math.min(2, 15 - root.snapshot().totalUsd));
+    expect(next.snapshot().capUsd).toBe(2);
+    next.add('generator', usage(0.1));
+    expect(root.snapshot().totalUsd).toBeCloseTo(10.2, 9);
+    // `none` = +Infinity; NaN fails closed to 0 like the constructor
+    root.setCap!(Number.POSITIVE_INFINITY);
+    expect(root.exceeded()).toBe(false);
+    expect(next.snapshot().parent?.capUsd).toBe(Number.POSITIVE_INFINITY);
+    root.setCap!(Number.NaN);
+    expect(root.snapshot().capUsd).toBe(0);
+    expect(next.exceeded()).toBe(true);
+  });
+
+  it('/resume child-cap order (§9.1): the child is created before the resumed spend is added', () => {
+    // cap $10.00, earlier runs $8.00, the resumed run at $1.50 of its $2.00 cap
+    const right = createSpendMeter(10);
+    right.add('generator', usage(8));
+    const remaining = 10 - right.snapshot().totalUsd;
+    const child = right.child(Math.min(2, remaining));
+    right.add('generator', usage(1.5));
+    child.restore({ generator: { inputTokens: 0, outputTokens: 0, costUsd: 1.5, calls: 1 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, totalUsd: 1.5, capUsd: 2, exceeded: false });
+    expect(child.snapshot().capUsd).toBe(2);
+    expect(child.exceeded()).toBe(false);
+    expect(right.snapshot().totalUsd).toBeCloseTo(9.5, 12);
+    // the wrong order: adding first leaves remaining $0.50 → child cap $0.50 → restore($1.50) → exceeded at the first check
+    const wrong = createSpendMeter(10);
+    wrong.add('generator', usage(8));
+    wrong.add('generator', usage(1.5));
+    const badChild = wrong.child(Math.min(2, 10 - wrong.snapshot().totalUsd));
+    badChild.restore({ generator: { inputTokens: 0, outputTokens: 0, costUsd: 1.5, calls: 1 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, totalUsd: 1.5, capUsd: 2, exceeded: false });
+    expect(badChild.snapshot().capUsd).toBeCloseTo(0.5, 12);
+    expect(badChild.exceeded()).toBe(true);
+  });
+
+  it('a parent whose snapshot throws yields a child snapshot without parent fields, never an exception', () => {
+    const broken: SpendMeter = {
+      add: () => {
+        throw new Error('boom');
+      },
+      exceeded: () => false,
+      snapshot: () => {
+        throw new Error('boom');
+      },
+      restore: () => undefined,
+      child: (cap) => createSpendMeter(cap),
+    };
+    const m = createSpendMeter(1, broken);
+    const s = m.add('jev', usage(0.1));
+    expect('parent' in s).toBe(false);
+    expect(s.totalUsd).toBeCloseTo(0.1, 12);
+  });
+});

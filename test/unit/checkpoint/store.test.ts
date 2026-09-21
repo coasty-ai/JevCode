@@ -295,9 +295,12 @@ describe('redaction', () => {
       await store.appendJevRequest({ step: 1, stage: 'intent', requestHash: FAKE_KEY, latencyMs: 1, questions: 1, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 }, model: 'm', attempts: 1 });
       await store.appendGenerator({ step: 1, attempt: 1, promptHash: FAKE_KEY, model: 'm', temperature: null, maxTokens: 1, usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 }, latencyMs: 1, stopReason: 's', malformed: false });
       await store.appendTranscript(`$ export KEY=${FAKE_KEY}`);
+      await store.writeUi({ draft: FAKE_KEY });
       await store.flush();
       const files = await readdir(dir);
-      expect(files.sort()).toEqual(Object.values(CHECKPOINT_FILES).sort());
+      // every artefact the store itself writes (log / lock / pre / post / tmp / drafts belong to other modules)
+      const F = CHECKPOINT_FILES;
+      expect(files.sort()).toEqual([F.meta, F.state, F.prev, F.steps, F.decisions, F.jev, F.generator, F.transcript, F.ui].sort());
       for (const f of files) {
         const text = await readFile(join(dir, f), 'utf8');
         expect(text, f).not.toContain(FAKE_KEY);
@@ -374,5 +377,119 @@ describe('serialisation failures', () => {
       await expect(store.appendDecisions([makeDecision(1, 'a')])).rejects.toBeInstanceOf(CheckpointError);
       await store.flush();
       expect((await readdir(dir)).length).toBe(0);
+    }));
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN §15 item 10 / §13.3 / §19.0: CHECKPOINT_FILES additions, writeUi, updateMeta({ git }), classifyDiskError
+// ---------------------------------------------------------------------------------------
+
+describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
+  it('CHECKPOINT_FILES names the session-era artefacts', async () => {
+    const { DISK_ERROR_CODES } = await import('../../../src/checkpoint/store.js');
+    expect(CHECKPOINT_FILES.ui).toBe('ui.json');
+    expect(CHECKPOINT_FILES.log).toBe('jevcode.log');
+    expect(CHECKPOINT_FILES.lock).toBe('run.lock');
+    expect(CHECKPOINT_FILES.pre).toBe('pre');
+    expect(CHECKPOINT_FILES.post).toBe('post');
+    expect(CHECKPOINT_FILES.tmp).toBe('tmp');
+    expect(CHECKPOINT_FILES.drafts).toBe('drafts');
+    expect(DISK_ERROR_CODES).toEqual(['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE']);
+  });
+
+  it('writeUi writes ui.json atomically and redacted', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, fakeRedact);
+      await store.writeUi({ theme: 'dark', note: `key ${FAKE_KEY}`, nested: { list: [1, 'two', null] } });
+      const onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.ui), 'utf8')) as Record<string, unknown>;
+      expect(onDisk['theme']).toBe('dark');
+      expect(onDisk['note']).toBe(`key ${REDACTED}`);
+      expect(onDisk['nested']).toEqual({ list: [1, 'two', null] });
+      expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toEqual([]);
+      // a second write replaces the first (scalar file, no append)
+      await store.writeUi({ theme: 'light' });
+      expect(JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.ui), 'utf8'))).toEqual({ theme: 'light' });
+    }));
+
+  it('updateMeta({ git }) / title / instructions replace as scalars and keep every other field', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      const git = { repo: true, head: { kind: 'branch' as const, name: 'main', oid: 'abc123' }, upstream: 'origin/main', linkedWorktree: false, prefix: '', dirtyAtStart: { modified: 1, staged: 0, untracked: 2 } };
+      await store.updateMeta({ git, title: 'first title', instructions: [{ path: 'AGENTS.md', sha256: 'deadbeef', bytes: 12 }] });
+      let onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.git).toEqual(git);
+      expect(onDisk.title).toBe('first title');
+      expect(onDisk.instructions).toEqual([{ path: 'AGENTS.md', sha256: 'deadbeef', bytes: 12 }]);
+      expect(onDisk.task).toBe('fix the bug');
+      // run:end re-probe (P51): the whole git record is replaced, not merged
+      await store.updateMeta({ git: { ...git, end: { head: git.head, upstream: 'origin/main', ahead: 2, behind: 0, dirty: { modified: 0, staged: 0, untracked: 0 } } } });
+      onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.git?.end?.ahead).toBe(2);
+      expect(onDisk.title).toBe('first title');
+      // a patch without the new keys never writes `undefined` into them
+      await store.updateMeta({ resolvedJevModel: 'jev-1.13' });
+      const text = await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8');
+      expect(text).not.toContain('undefined');
+      expect((JSON.parse(text) as ReturnType<typeof makeMeta>).title).toBe('first title');
+    }));
+
+  it('classifyDiskError: the six codes through a cause chain, file inferred from the message, null otherwise', async () => {
+    const { classifyDiskError } = await import('../../../src/checkpoint/store.js');
+    const errno = (code: string): Error & { code: string } => Object.assign(new Error(`${code}: boom`), { code });
+    expect(classifyDiskError(errno('ENOSPC'), 'state.json')).toEqual({ code: 'ENOSPC', file: 'state.json', text: 'checkpoint degraded: ENOSPC on state.json', key: 'state.json:ENOSPC' });
+    // wrapped by the store's fail(): the file is named in the message and the errno sits in `cause`
+    const wrapped = new CheckpointError('cannot rotate state.json: ENOSPC: no space left on device (/tmp/run)', '/tmp/run', { cause: errno('ENOSPC') });
+    expect(classifyDiskError(wrapped)).toMatchObject({ code: 'ENOSPC', file: 'state.json' });
+    const append = new CheckpointError('append to steps.jsonl failed: EACCES (/tmp/run)', '/tmp/run', { cause: errno('EACCES') });
+    expect(classifyDiskError(append)).toMatchObject({ code: 'EACCES', file: 'steps.jsonl', key: 'steps.jsonl:EACCES' });
+    for (const code of ['EROFS', 'EDQUOT', 'EIO', 'EMFILE']) expect(classifyDiskError(errno(code))?.code).toBe(code);
+    // unknown file → "run dir"
+    expect(classifyDiskError(errno('EROFS'))).toEqual({ code: 'EROFS', file: null, text: 'checkpoint degraded: EROFS on run dir', key: 'run dir:EROFS' });
+    // not a disk condition
+    expect(classifyDiskError(errno('ENOENT'))).toBeNull();
+    expect(classifyDiskError(new Error('plain'))).toBeNull();
+    expect(classifyDiskError(null)).toBeNull();
+    expect(classifyDiskError('ENOSPC')).toBeNull();
+    // a cyclic cause chain terminates
+    const cyclic: Error & { cause?: unknown } = new Error('loop');
+    cyclic.cause = cyclic;
+    expect(classifyDiskError(cyclic)).toBeNull();
+    // the explicit file wins over the message
+    expect(classifyDiskError(wrapped, 'ui.json')?.file).toBe('ui.json');
+  });
+
+  it('classifyDiskError: a run-dir path containing an artefact name never names that file; the earliest artefact in the text wins', async () => {
+    const { classifyDiskError } = await import('../../../src/checkpoint/store.js');
+    const errno = (code: string, msg = `${code}: boom`): Error & { code: string } => Object.assign(new Error(msg), { code });
+    const runDir = '/tmp/ui.json-runs/abc';
+    // no artefact outside the run dir → run dir
+    const listing = new CheckpointError(`cannot list post images: ENOSPC (${runDir})`, runDir, { cause: errno('ENOSPC') });
+    expect(classifyDiskError(listing)).toEqual({ code: 'ENOSPC', file: null, text: 'checkpoint degraded: ENOSPC on run dir', key: 'run dir:ENOSPC' });
+    // the errno text names the temp file under the run dir: the artefact is state.json, not ui.json
+    const tmp = new CheckpointError(`cannot write state.json temp file: ENOSPC: write '${runDir}/state.json.tmp-1-abcd' (${runDir})`, runDir, { cause: errno('ENOSPC') });
+    expect(classifyDiskError(tmp)).toMatchObject({ file: 'state.json', key: 'state.json:ENOSPC' });
+    // the rotation names both state.json and state.prev.json: the one that comes first in the text is the failing write
+    const rotate = new CheckpointError(`cannot rotate state.json: EIO: rename '${runDir}/state.json' -> '${runDir}/state.prev.json' (${runDir})`, runDir, { cause: errno('EIO') });
+    expect(classifyDiskError(rotate)?.file).toBe('state.json');
+    const prevFirst = new CheckpointError(`cannot rename state.prev.json aside for state.json: EIO (${runDir})`, runDir, { cause: errno('EIO') });
+    expect(classifyDiskError(prevFirst)?.file).toBe('state.prev.json');
+    // a plain errno carries no runDir to strip: the explicit `file` argument is what every engine call site passes
+    expect(classifyDiskError(errno('EACCES', `EACCES: open '/tmp/jevcode.log-dir/x'`), 'steps.jsonl')?.file).toBe('steps.jsonl');
+    expect(classifyDiskError(errno('EACCES', `EACCES: open '/tmp/x'`))?.file).toBeNull();
+  });
+
+  it('overlapping writeUi calls serialise: the last wins, the file is whole JSON, no temp file is left behind', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      const writes: Promise<void>[] = [];
+      for (let i = 0; i < 25; i++) writes.push(store.writeUi({ seq: i, pad: 'x'.repeat(2000 + i) }));
+      await Promise.all(writes);
+      await store.flush();
+      const text = await readFile(join(dir, CHECKPOINT_FILES.ui), 'utf8');
+      expect((JSON.parse(text) as { seq: number }).seq).toBe(24);
+      expect(text.endsWith('}\n')).toBe(true);
+      expect((await readdir(dir)).filter((f) => f.includes('.tmp-'))).toEqual([]);
+      expect(await readdir(dir)).toEqual([CHECKPOINT_FILES.ui]);
     }));
 });

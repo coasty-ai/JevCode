@@ -1,11 +1,16 @@
 /**
- * Configuration resolution (DESIGN.md §3) and the pure --resume reconciliation (§9).
+ * Configuration resolution (DESIGN.md §3, TUI-DESIGN §16) and the pure --resume reconciliation (§9).
  *
  * Precedence, highest first: flag > process env > ./.env > <OPEN_ASSIST_PATH>/.env > config
  * file > default. Every entry records its source. Nothing is validated here except what is
  * needed to find the other sources (config file, Open Assist path) and the eager, cheap
- * settings (sandbox, booleans, paths); generator(), decider() and limits() validate lazily
- * so `jevcode run` can render its first frame before any key is checked.
+ * settings (sandbox, booleans, paths); generator(), decider(), limits() and ui() validate lazily
+ * so `jevcode run` / `jevcode chat` can render the first frame before any key is checked.
+ *
+ * TUI-DESIGN §16 adds two resolution classes: launch settings (fps, renderMode, ascii, screenReader, noColor) come
+ * from `resolveLaunchSettings(flags, env)` — flag > env > default, never the file (a file value is recorded as
+ * `ignored:launch`) — and session settings follow the full chain through `ui(launch)`. The run spend cap default is
+ * mode-keyed (P45: $0.25 under jev-only) and the session cap derives from it (5 ×, source `derived`).
  */
 import { existsSync, readFileSync, statSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
@@ -13,18 +18,62 @@ import { homedir as osHomedir } from 'node:os';
 import { dirname, isAbsolute, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import type { ParsedFlags } from '../cli/args.js';
-import type { CheckpointState, ConfigRecordValue, ConfigSource, DeciderConfig, GeneratorConfig, Json, Resolved, ResolvedConfig, RunLimits, RunMeta, SandboxProfile, StopReason } from '../core/types.js';
+import type {
+  CheckpointState,
+  ConfigRecordValue,
+  ConfigSource,
+  DeciderConfig,
+  EngineMode,
+  GeneratorConfig,
+  Json,
+  LaunchSettings,
+  Resolved,
+  ResolvedConfig,
+  RunLimits,
+  RunMeta,
+  SandboxProfile,
+  SecretSettingName,
+  StopReason,
+  UiConfig,
+} from '../core/types.js';
 import { formatDuration, parseDuration } from '../core/time.js';
+import { clip } from '../core/text.js';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { ConfigError } from '../errors.js';
 import { createRedactor, patternRedact, SECRET_NAME_RE, type SecretEntry } from '../core/redact.js';
-import { SETTINGS, SECRET_SETTINGS, settingSpec } from './defaults.js';
+import {
+  CACHE_READ_FACTOR,
+  CACHE_WRITE_FACTOR,
+  SESSION_CAP_MULTIPLIER,
+  SETTINGS,
+  SECRET_SETTINGS,
+  TRACE_ENV,
+  TRACE_LOG_LEVEL,
+  configDirsFor,
+  legacyConfigDir,
+  lookupPricing,
+  settingSpec,
+  xdgConfigDir,
+} from './defaults.js';
 import { readDotenv } from './env.js';
+import { resolveLaunchSettingsWithSources, type LaunchFlags } from './launch.js';
 import { maskEntries } from './mask.js';
-import { jevModelMatches, normaliseJevModelId, parseBooleanSetting, validateDecider, validateGenerator, validateLimits, validateSandbox, type SettingReader } from './validate.js';
+import { defaultRunSpendCapUsd, resolveSessionSpendCap, resolveUiConfig, runSpendCapUsd } from './ui.js';
+import {
+  deriveMaxGeneratorTokens,
+  jevModelMatches,
+  normaliseJevModelId,
+  parseBooleanSetting,
+  readAllowUnpriced,
+  validateDecider,
+  validateGenerator,
+  validateLimits,
+  validateSandbox,
+  type SettingReader,
+} from './validate.js';
 import type { LoadedConfigFile, LoadedDotenv, ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeReconciliation, SettingName, SettingSpec } from './types.js';
 
-export type { ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeReconciliation, ResumeStateSummary, ResumeOverride } from './types.js';
+export type { ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeLimitSources, ResumeReconciliation, ResumeStateSummary, ResumeOverride } from './types.js';
 
 /** A config file larger than this is not ours to parse. */
 export const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
@@ -74,14 +123,37 @@ function scalarToString(v: Json): string | null {
   return null;
 }
 
-/** Keys accepted in jevcode.json: the camelCase fileKey of each setting, or any of its env variable names. */
+/** Keys accepted in jevcode.json: the camelCase fileKey of each setting, any of its env variable names (inverted ones included), or a launch setting's ignored key. */
 function fileKeyToSetting(): Map<string, SettingSpec> {
   const m = new Map<string, SettingSpec>();
   for (const s of SETTINGS) {
     if (s.fileKey) m.set(s.fileKey, s);
+    if (s.ignoredFileKey) m.set(s.ignoredFileKey, s);
     for (const e of s.env) m.set(e, s);
+    for (const e of s.negateEnv ?? []) m.set(e, s);
   }
   return m;
+}
+
+/**
+ * TUI-DESIGN §16 inverted-polarity variables (`JEVCODE_NO_HISTORY=1` → `ui.history` false): a recognised boolean is
+ * flipped; anything else is kept verbatim so the validator reports the malformed value with its real source.
+ */
+export function negateBooleanText(v: string): string {
+  const t = v.trim().toLowerCase();
+  if (t === 'true' || t === '1' || t === 'yes') return 'false';
+  if (t === 'false' || t === '0' || t === 'no') return 'true';
+  return v;
+}
+
+/** How far down the chain a source sits (flag 0 … default 4); `derived` and the rest rank below every real layer. */
+function layerRank(source: string): number {
+  if (source === 'flag') return 0;
+  if (source === 'env') return 1;
+  if (source.startsWith('dotenv:')) return 2;
+  if (source.startsWith('file:')) return 3;
+  if (source === 'default') return 4;
+  return 5;
 }
 
 /**
@@ -94,6 +166,7 @@ function sanitiseJsonError(message: string): string {
   return patternRedact(message.replace(/, "[^"]*"(?:\.\.\.)? is not valid JSON/, ' (source not shown)'));
 }
 
+/** DESIGN §3: parse jevcode.json; TUI-DESIGN §16: a launch setting's key is kept apart as `ignoredLaunch` (never applied). */
 export async function readConfigFile(path: string): Promise<LoadedConfigFile> {
   let text: string;
   try {
@@ -109,18 +182,25 @@ export async function readConfigFile(path: string): Promise<LoadedConfigFile> {
   if (!isJsonObject(parsed.value)) throw new ConfigError(`configFile: ${path} must contain a JSON object`, { setting: 'configFile' });
   const known = fileKeyToSetting();
   const values = new Map<string, string>();
+  const ignoredLaunch = new Map<SettingName, string>();
   const unknownKeys: string[] = [];
   for (const [k, v] of Object.entries(parsed.value)) {
     const spec = known.get(k);
-    if (!spec || !spec.fileKey) {
+    if (!spec || (!spec.fileKey && !spec.ignoredFileKey)) {
       unknownKeys.push(k);
+      continue;
+    }
+    if (spec.launch) {
+      // TUI-DESIGN §16: a launch key can never take effect, so its shape is not worth a fatal error — it is only reported (ignored:launch).
+      ignoredLaunch.set(spec.name, scalarToString(v) ?? clip(JSON.stringify(v), 80));
       continue;
     }
     const s = scalarToString(v);
     if (s === null) throw new ConfigError(`configFile: ${path} key "${k}" must be a string, number or boolean`, { setting: spec.name });
-    values.set(spec.fileKey, s);
+    // an inverted variable name used as a file key (`"JEVCODE_NO_HISTORY": true`) keeps the variable's polarity
+    if (spec.fileKey) values.set(spec.fileKey, spec.negateEnv?.includes(k) === true ? negateBooleanText(s) : s);
   }
-  return { path, values, unknownKeys };
+  return { path, values, unknownKeys, ignoredLaunch };
 }
 
 interface Layers {
@@ -132,59 +212,143 @@ interface Layers {
   extraEnv: Partial<Record<SettingName, readonly string[]>>;
 }
 
-function envNames(layers: Layers, spec: SettingSpec): readonly string[] {
-  const extra = layers.extraEnv[spec.name];
-  return extra ? [...extra, ...spec.env] : spec.env;
+interface EnvName {
+  name: string;
+  /** TUI-DESIGN §16: an inverted-polarity variable (`JEVCODE_NO_HISTORY`); its boolean is flipped on read */
+  negate: boolean;
 }
 
-/** Empty strings count as unset at every layer: `.env.example` ships `ANTHROPIC_API_KEY=`. */
-function lookup(layers: Layers, spec: SettingSpec, opts: { useFile: boolean; useDefault: boolean } = { useFile: true, useDefault: true }): Resolved<string> | null {
+/** The env / dotenv names of a setting in precedence order: provider-specific extras, `env`, then the inverted names. */
+function envNames(layers: Layers, spec: SettingSpec): readonly EnvName[] {
+  const extra = layers.extraEnv[spec.name] ?? [];
+  return [...extra.map((name) => ({ name, negate: false })), ...spec.env.map((name) => ({ name, negate: false })), ...(spec.negateEnv ?? []).map((name) => ({ name, negate: true }))];
+}
+
+/** A resolved value plus the variable name that produced it (null for a flag, file or default hit). */
+interface Hit extends Resolved<string> {
+  via: string | null;
+}
+
+/**
+ * Structural flag read: `ParsedFlags` is typed by the flag lists in cli/args.ts, which gain the §16 keys in O10's PR;
+ * reading by name keeps this module compiling either way (an unknown key is simply absent).
+ */
+function flagValue(flags: ParsedFlags, key: string): unknown {
+  return (flags as unknown as Readonly<Record<string, unknown>>)[key];
+}
+
+/** The flag layer of a setting: a non-empty value flag, or a boolean flag's presence (`true`, or `false` when it negates). */
+function flagLayer(flags: ParsedFlags, spec: SettingSpec): Resolved<string> | null {
   if (spec.flag) {
-    const v = layers.flags[spec.flag];
+    const v = flagValue(flags, spec.flag);
     if (typeof v === 'string' && v.trim() !== '') return { value: v, source: 'flag' };
   }
+  if (spec.boolFlag && flagValue(flags, spec.boolFlag.key) === true) return { value: spec.boolFlag.negate ? 'false' : 'true', source: 'flag' };
+  return null;
+}
+
+/** Empty strings count as unset at every layer: `.env.example` ships `ANTHROPIC_API_KEY=`. Inverted names flip their boolean. */
+function lookupDetailed(layers: Layers, spec: SettingSpec, opts: { useFile: boolean; useDefault: boolean } = { useFile: true, useDefault: true }): Hit | null {
+  const fromFlag = flagLayer(layers.flags, spec);
+  if (fromFlag) return { ...fromFlag, via: null };
   const names = envNames(layers, spec);
+  const read = (n: EnvName, v: string | undefined, source: ConfigSource): Hit | null => {
+    if (v === undefined || v.trim() === '') return null;
+    return { value: n.negate ? negateBooleanText(v) : v, source, via: n.name };
+  };
   for (const n of names) {
-    const v = layers.env[n];
-    if (v !== undefined && v.trim() !== '') return { value: v, source: 'env' };
+    const hit = read(n, layers.env[n.name], 'env');
+    if (hit) return hit;
   }
   for (const d of layers.dotenvs) {
     for (const n of names) {
-      const v = d.vars.get(n);
-      if (v !== undefined && v.trim() !== '') return { value: v, source: `dotenv:${d.path}` };
+      const hit = read(n, d.vars.get(n.name), `dotenv:${d.path}`);
+      if (hit) return hit;
     }
   }
   if (opts.useFile && layers.file && spec.fileKey) {
     const v = layers.file.values.get(spec.fileKey);
-    if (v !== undefined && v.trim() !== '') return { value: v, source: `file:${layers.file.path}` };
+    if (v !== undefined && v.trim() !== '') return { value: v, source: `file:${layers.file.path}`, via: null };
   }
-  if (opts.useDefault && spec.defaultValue !== null) return { value: spec.defaultValue, source: 'default' };
+  if (opts.useDefault && spec.defaultValue !== null) return { value: spec.defaultValue, source: 'default', via: null };
   return null;
+}
+
+/** `lookupDetailed` without the variable name: exactly `{ value, source }`, the shape `entries` and `record()` hold. */
+function lookup(layers: Layers, spec: SettingSpec, opts?: { useFile: boolean; useDefault: boolean }): Resolved<string> | null {
+  const hit = lookupDetailed(layers, spec, opts);
+  return hit ? { value: hit.value, source: hit.source } : null;
 }
 
 function describeSources(layers: Layers, spec: SettingSpec, flagName: string | null): string[] {
   const out: string[] = [];
   if (flagName) out.push(`--${flagName} (flag)`);
-  const names = envNames(layers, spec);
+  const names = envNames(layers, spec).map((n) => (n.negate ? `${n.name} (inverted)` : n.name));
   if (names.length > 0) out.push(`${names.join(' / ')} (env)`);
   for (const d of layers.dotenvs) if (names.length > 0) out.push(`${names.join(' / ')} (dotenv:${d.path})`);
   if (layers.file && spec.fileKey) out.push(`${spec.fileKey} (file:${layers.file.path})`);
+  if (layers.file && spec.launch && spec.ignoredFileKey) out.push(`${spec.ignoredFileKey} (file:${layers.file.path}, ignored:launch)`);
   out.push(spec.defaultValue !== null ? `default ${spec.defaultValue}` : 'no default');
   return out;
 }
 
-function flagNameFor(spec: SettingSpec): string | null {
-  if (!spec.flag) return null;
-  // ParsedFlags keys are camelCase of the long flag; reverse it for messages.
-  return spec.flag.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+/** A derived number for the record: 12 significant digits, so `3 × 0.1` prints `0.3`, not `0.30000000000000004`. */
+function numText(n: number): string {
+  return String(Number(n.toPrecision(12)));
 }
 
+function kebab(camel: string): string {
+  return camel.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`);
+}
+
+function flagNameFor(spec: SettingSpec): string | null {
+  // ParsedFlags keys are camelCase of the long flag; reverse it for messages.
+  if (spec.flag) return kebab(spec.flag);
+  if (spec.boolFlag) return kebab(spec.boolFlag.key);
+  return null;
+}
+
+/** `--mode` (or its hidden alias `--condition`); default jev-on — the same rule as cli/main.tsx `modeFromFlags`. */
+export function modeFromParsedFlags(flags: ParsedFlags): EngineMode {
+  const m = flags.mode ?? flags.condition;
+  return m === 'jev-off' || m === 'jev-only' ? m : 'jev-on';
+}
+
+const LAUNCH_ROW_NAMES: readonly SettingName[] = ['ui.fps', 'ui.renderMode', 'ui.screenReader', 'ui.ascii', 'ui.noColor'];
+
+/** TUI-DESIGN §16 (P30): legacy config paths already warned about in this process — the warning is printed once. */
+const legacyWarned = new Set<string>();
+
+function launchRows(flags: ParsedFlags, env: NodeJS.ProcessEnv): Map<SettingName, Resolved<string>> {
+  const launchFlags: LaunchFlags = {
+    ...(typeof flagValue(flags, 'fps') === 'string' ? { fps: flagValue(flags, 'fps') as string } : {}),
+    ...(typeof flagValue(flags, 'renderMode') === 'string' ? { renderMode: flagValue(flags, 'renderMode') as string } : {}),
+    ...(flagValue(flags, 'screenReader') === true ? { screenReader: true } : {}),
+    ...(flagValue(flags, 'ascii') === true ? { ascii: true } : {}),
+    ...(flagValue(flags, 'noColor') === true ? { noColor: true } : {}),
+  };
+  const { settings, sources } = resolveLaunchSettingsWithSources(launchFlags, env);
+  return new Map<SettingName, Resolved<string>>([
+    ['ui.fps', { value: String(settings.fps), source: sources.fps }],
+    ['ui.renderMode', { value: settings.renderMode, source: sources.renderMode }],
+    ['ui.screenReader', { value: String(settings.screenReader), source: sources.screenReader }],
+    ['ui.ascii', { value: String(settings.ascii), source: sources.ascii }],
+    ['ui.noColor', { value: String(settings.noColor), source: sources.noColor }],
+  ]);
+}
+
+/**
+ * DESIGN §3 / TUI-DESIGN §16: resolve every setting with its source. Throws ConfigError only for what the first frame
+ * needs (config file location and syntax, sandbox profile, the two eager booleans); every section validates lazily.
+ */
 export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, cwd: string, opts: ResolveOptions = {}): Promise<ResolvedConfigWithDiagnostics> {
   const home = opts.homedir ?? osHomedir();
   const packageRoot = opts.packageRoot ?? detectPackageRoot();
   const warnings: string[] = [];
   const consultedPaths: string[] = [];
   const layers: Layers = { flags, env, dotenvs: [], file: null, extraEnv: {} };
+  // TUI-DESIGN §9.1 (P45): the run-cap default is keyed on the mode; a --resume re-resolve passes run.json's mode (opts.mode)
+  const mode = opts.mode ?? modeFromParsedFlags(flags);
 
   // 1. ./.env
   const cwdDotenv = join(cwd, '.env');
@@ -192,12 +356,14 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const localEnv = await readDotenv(cwdDotenv);
   if (localEnv) layers.dotenvs.push(localEnv);
 
-  // 2. config file: flag > env > ./.env, then the two default locations. It cannot come from
-  //    the Open Assist .env or from itself.
+  // 2. config file: flag > env > ./.env, then ./jevcode.json, the XDG file, the legacy file (TUI-DESIGN §16, P30: XDG
+  //    preferred, legacy checked with a one-time warning). It cannot come from the Open Assist .env or from itself.
   let configFile: LoadedConfigFile | null = null;
   let configFileEntry: Resolved<string> | null = null;
   const cfgSpec = settingSpec('configFile');
   const cfgR = lookup(layers, cfgSpec, { useFile: false, useDefault: false });
+  const xdgFile = join(xdgConfigDir(home, env), 'config.json');
+  const legacyFile = join(legacyConfigDir(home), 'config.json');
   if (cfgR) {
     const p = resolvePath(cwd, cfgR.value);
     consultedPaths.push(p);
@@ -205,17 +371,27 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     configFile = await readConfigFile(p);
     configFileEntry = { value: p, source: cfgR.source };
   } else {
-    for (const candidate of [join(cwd, 'jevcode.json'), join(home, '.config', 'jevcode', 'config.json')]) {
+    const candidates = [join(cwd, 'jevcode.json'), xdgFile, ...(legacyFile !== xdgFile ? [legacyFile] : [])];
+    for (const candidate of candidates) {
       consultedPaths.push(candidate);
       if (isFile(candidate)) {
         configFile = await readConfigFile(candidate);
         configFileEntry = { value: candidate, source: 'default' };
+        if (candidate === legacyFile && legacyFile !== xdgFile && opts.suppressLegacyWarning !== true && !legacyWarned.has(legacyFile)) {
+          // P30: warn once per process (the 7b flow re-runs resolveConfig after /login; the user reads this once)
+          legacyWarned.add(legacyFile);
+          warnings.push(`configFile: using the legacy ${legacyFile}; move it to ${xdgFile} (XDG_CONFIG_HOME) — the legacy path is read only when the XDG file is absent`);
+        }
         break;
       }
     }
   }
   layers.file = configFile;
   if (configFile && configFile.unknownKeys.length > 0) warnings.push(`configFile: ${configFile.path} has unknown keys ignored: ${configFile.unknownKeys.join(', ')}`);
+  if (configFile && configFile.ignoredLaunch.size > 0) {
+    const keys = [...configFile.ignoredLaunch.keys()].map((n) => settingSpec(n).ignoredFileKey ?? n);
+    warnings.push(`configFile: ${configFile.path} sets launch settings that a file cannot change (${keys.join(', ')}); use the flag or the environment variable (ignored:launch)`);
+  }
 
   // 3. Open Assist path: flag > env > ./.env > file > sibling default; then its .env joins the chain.
   const oaSpec = settingSpec('openAssistPath');
@@ -244,17 +420,27 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     if (keyEnv) layers.extraEnv['generator.apiKey'] = [keyEnv];
   }
 
+  let logFileHit: Hit | null = null;
   for (const spec of SETTINGS) {
     if (spec.name === 'generator.provider' || spec.name === 'configFile' || spec.name === 'openAssistPath') continue;
-    if (spec.name === 'noNetwork' || spec.name === 'plain') {
-      const flagOn = spec.name === 'noNetwork' ? flags.noNetwork === true : flags.plain === true;
-      const r = flagOn ? { value: 'true', source: 'flag' as ConfigSource } : lookup(layers, spec);
-      if (r) entries.set(spec.name, r);
-      continue;
-    }
-    const r = lookup(layers, spec);
-    if (r) entries.set(spec.name, r);
+    if (spec.launch) continue; // TUI-DESIGN §16: launch rows never read the file (added below from resolveLaunchSettings)
+    const hit = lookupDetailed(layers, spec);
+    if (!hit) continue;
+    entries.set(spec.name, { value: hit.value, source: hit.source });
+    if (spec.name === 'log.file') logFileHit = hit;
   }
+  // `--verbose` is `--log-level debug` (TUI-DESIGN §16); an explicit --log-level wins.
+  if (flagValue(flags, 'verbose') === true && entries.get('log.level')?.source !== 'flag') entries.set('log.level', { value: 'debug', source: 'flag' });
+  // TUI-DESIGN §16: `JEVCODE_TRACE=<file>` is `JEVCODE_LOG=<file>` at level `trace` — it sets log.level at its own layer's
+  // precedence, so a flag or a same-or-higher-layer JEVCODE_LOG_LEVEL still wins.
+  if (logFileHit !== null && logFileHit.via === TRACE_ENV) {
+    const level = entries.get('log.level');
+    if (!level || layerRank(level.source) > layerRank(logFileHit.source)) entries.set('log.level', { value: TRACE_LOG_LEVEL, source: logFileHit.source });
+  }
+  // TUI-DESIGN §9.1 / §16 (P45): the run cap default is mode-keyed once --mode is known.
+  const capR = entries.get('limits.spendCapUsd');
+  if (!capR || capR.source === 'default') entries.set('limits.spendCapUsd', { value: String(defaultRunSpendCapUsd(mode)), source: 'default' });
+  for (const [name, r] of launchRows(flags, env)) entries.set(name, r);
   if (configFileEntry) entries.set('configFile', configFileEntry);
   if (oaEntry) entries.set('openAssistPath', oaEntry);
 
@@ -299,6 +485,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
 
   const secretPaths = [...new Set(consultedPaths.filter((p) => isAbsolute(p)))];
   const dotenvFiles = layers.dotenvs.map((d) => d.path);
+  const configDirs = configDirsFor(home, env);
 
   let generatorMemo: GeneratorConfig | null = null;
   let deciderMemo: DeciderConfig | null = null;
@@ -306,11 +493,49 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const warn = (m: string): void => {
     if (!warnings.includes(m)) warnings.push(m);
   };
+  const hasSecret = (name: SecretSettingName): boolean => {
+    const r = entries.get(name);
+    return r !== undefined && r.value.trim() !== '';
+  };
+  const mocked = flags.mock === true;
+  const mockedGenerator = mocked || flags.mockGenerator === true;
+
+  /** TUI-DESIGN §16: rows that exist only by derivation (`derived`) or as an ignored file value (`ignored:launch`). */
+  function derivedRows(): Record<string, ConfigRecordValue> {
+    const out: Record<string, ConfigRecordValue> = {};
+    if (!entries.has('session.spendCapUsd')) {
+      out['session.spendCapUsd'] = { value: String(SESSION_CAP_MULTIPLIER * runSpendCapUsd(reader, mode)), source: 'derived' };
+    }
+    let allowUnpriced = false;
+    try {
+      allowUnpriced = readAllowUnpriced(reader);
+    } catch {
+      allowUnpriced = false; // limits() reports the malformed boolean; the record must never throw
+    }
+    if (allowUnpriced && !entries.has('limits.maxGeneratorTokens')) {
+      out['limits.maxGeneratorTokens'] = { value: String(deriveMaxGeneratorTokens(runSpendCapUsd(reader, mode))), source: 'derived' };
+    }
+    const modelR = entries.get('generator.model');
+    if (modelR && !lookupPricing(modelR.value).known) {
+      const inR = entries.get('generator.priceInPerM');
+      const inPerM = inR ? Number(inR.value.trim()) : Number.NaN;
+      if (Number.isFinite(inPerM) && inPerM >= 0) {
+        if (!entries.has('generator.priceCacheReadPerM')) out['generator.priceCacheReadPerM'] = { value: numText(inPerM * CACHE_READ_FACTOR), source: 'derived' };
+        if (!entries.has('generator.priceCacheWritePerM')) out['generator.priceCacheWritePerM'] = { value: numText(inPerM * CACHE_WRITE_FACTOR), source: 'derived' };
+      }
+    }
+    if (configFile) {
+      for (const [name, value] of configFile.ignoredLaunch) {
+        if (LAUNCH_ROW_NAMES.includes(name)) out[`${name}.ignored`] = { value, source: 'ignored:launch' };
+      }
+    }
+    return out;
+  }
 
   return {
     entries,
     generator() {
-      if (!generatorMemo) generatorMemo = validateGenerator(reader, warn);
+      if (!generatorMemo) generatorMemo = validateGenerator(reader, warn, { allowUnpriced: readAllowUnpriced(reader) });
       return generatorMemo;
     },
     decider() {
@@ -318,7 +543,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
       return deciderMemo;
     },
     limits() {
-      if (!limitsMemo) limitsMemo = validateLimits(reader);
+      if (!limitsMemo) limitsMemo = validateLimits(reader, { allowUnpriced: readAllowUnpriced(reader) });
       return limitsMemo;
     },
     workspace: workspace.value,
@@ -332,9 +557,28 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     secretPaths,
     redact: redactor.redact,
     redactJson: redactor.redactJson,
-    record: () => maskEntries(entries, secretNames),
+    record: () => ({ ...maskEntries(entries, secretNames), ...derivedRows() }),
     warnings,
     sourcesConsulted: (name) => reader.sources(name),
+    // TUI-DESIGN §15 item 17 / §11.1 (D5): non-throwing; the generator key is skipped for jev-only and --mock*, the Jev key for --mock
+    missingSecrets(m: EngineMode): readonly SecretSettingName[] {
+      const out: SecretSettingName[] = [];
+      if (m !== 'jev-only' && !mockedGenerator && !hasSecret('generator.apiKey')) out.push('generator.apiKey');
+      if (!mocked && !hasSecret('decider.apiKey')) out.push('decider.apiKey');
+      return out;
+    },
+    // TUI-DESIGN §16: session settings through the full chain; launch members copied from the argument
+    ui(launch: LaunchSettings): UiConfig {
+      return resolveUiConfig(reader, launch, { home, cwd, env });
+    },
+    // TUI-DESIGN §9.1: configured, `none` → +Infinity, else derived 5 × the mode-keyed run cap
+    sessionSpendCap(m: EngineMode) {
+      return resolveSessionSpendCap(reader, m);
+    },
+    // TUI-DESIGN §15 item 19 / §10.2: in-place mutation of the one redactor every holder shares
+    addSecret: (name: string, value: string) => redactor.addSecret(name, value),
+    dropSecret: (name: string) => redactor.dropSecret(name),
+    configDirs,
   };
 }
 
@@ -379,9 +623,14 @@ export function resumeIdentityFromRunMeta(meta: RunMeta): ResumeIdentity {
  * fields the stored stop reason is compared against. `workspaceRealpath` is the realpath of
  * an explicit --workspace (null when the flag was not given, or the directory is missing).
  */
-export function resumeInputsFrom(config: Pick<ResolvedConfig, 'limits'>, state: CheckpointState, workspaceRealpath: string | null): ResumeCurrentInputs {
+export function resumeInputsFrom(config: Pick<ResolvedConfig, 'limits'> & Partial<Pick<ResolvedConfig, 'entries'>>, state: CheckpointState, workspaceRealpath: string | null): ResumeCurrentInputs {
+  const limits = config.limits();
+  // TUI-DESIGN §8.7 / §9.5: the token counter survives --resume, rebuilt from generatorTokensPerStep (absent in older checkpoints = 0)
+  const generatorTokens = (state.generatorTokensPerStep ?? []).reduce((acc, n) => acc + (typeof n === 'number' && Number.isFinite(n) && n > 0 ? n : 0), 0);
+  const capSource = config.entries?.get('limits.spendCapUsd')?.source;
+  const tokensSource: ConfigSource | undefined = limits.maxGeneratorTokens === undefined ? undefined : (config.entries?.get('limits.maxGeneratorTokens')?.source ?? 'derived');
   return {
-    limits: config.limits(),
+    limits,
     workspaceRealpath,
     state: {
       step: state.step,
@@ -389,11 +638,14 @@ export function resumeInputsFrom(config: Pick<ResolvedConfig, 'limits'>, state: 
       wallMsUsed: state.wallMsUsed,
       replanCount: state.loopDetector.replanCount,
       stopReason: state.stopReason,
+      generatorTokens,
     },
+    ...(config.entries ? { sources: { ...(capSource ? { spendCapUsd: capSource } : {}), ...(tokensSource ? { maxGeneratorTokens: tokensSource } : {}) } } : {}),
   };
 }
 
-const BUDGET_STOPS: ReadonlySet<StopReason> = new Set<StopReason>(['spend_cap', 'max_steps', 'wall_time', 'max_replans']);
+/** TUI-DESIGN §8.7: the stored stops that still block a resume until their limit is raised (`token_cap` like `spend_cap`; `human_pause` is not one). */
+const BUDGET_STOPS: ReadonlySet<StopReason> = new Set<StopReason>(['spend_cap', 'max_steps', 'wall_time', 'max_replans', 'token_cap']);
 
 /**
  * Decide how a stored run continues under the current invocation: identity comes from
@@ -424,13 +676,25 @@ export function reconcileResumeConfig(current: ResumeCurrentInputs, runMeta: Run
     );
   }
 
+  const c = runMeta.config;
+  // TUI-DESIGN §9.1 (P45): a default meets a default — the run keeps its own mode-keyed default (a jev-only run resumed
+  // without `--mode jev-only` stays at $0.25); only a configured value (flag / env / dotenv / file) overrides the stored cap.
+  let spendCapUsd = current.limits.spendCapUsd;
+  let maxGeneratorTokens = current.limits.maxGeneratorTokens;
+  const storedCap = c['limits.spendCapUsd'];
+  const storedCapValue = recordNumber(c, 'limits.spendCapUsd');
+  if (current.sources?.spendCapUsd === 'default' && storedCap?.source === 'default' && storedCapValue !== null && storedCapValue > 0) {
+    spendCapUsd = storedCapValue;
+    if (maxGeneratorTokens !== undefined && current.sources.maxGeneratorTokens === 'derived') maxGeneratorTokens = deriveMaxGeneratorTokens(spendCapUsd);
+  }
   const limits: RunLimits = {
     ...current.limits,
+    spendCapUsd,
+    ...(maxGeneratorTokens !== undefined ? { maxGeneratorTokens } : {}),
     completeThreshold: identity.completeThreshold ?? current.limits.completeThreshold,
     impossibleThreshold: identity.impossibleThreshold ?? current.limits.impossibleThreshold,
   };
 
-  const c = runMeta.config;
   const diffNumber = (setting: SettingName, to: number): void => {
     const from = recordNumber(c, setting);
     if (from !== null && from !== to) overrides.push({ setting, from: String(from), to: String(to), atStep });
@@ -463,6 +727,9 @@ export function reconcileResumeConfig(current: ResumeCurrentInputs, runMeta: Run
       immediateStop = { reason: stop, message: `stopped: wall_time (${formatDuration(s.wallMsUsed)} used, limit ${formatDuration(limits.maxWallMs)}); raise --max-wall above ${formatDuration(s.wallMsUsed)} to continue` };
     } else if (stop === 'max_replans' && limits.maxReplans <= s.replanCount) {
       immediateStop = { reason: stop, message: `stopped: max_replans (${s.replanCount} replans, limit ${limits.maxReplans}); raise --max-replans above ${s.replanCount} to continue` };
+    } else if (stop === 'token_cap' && limits.maxGeneratorTokens !== undefined && limits.maxGeneratorTokens <= s.generatorTokens) {
+      // TUI-DESIGN §8.7 / §9.5: blocked until /budget max-generator-tokens <n> raised the limit; without a token cap now (allowUnpriced off) the engine decides
+      immediateStop = { reason: stop, message: `stopped: token_cap (${s.generatorTokens} tokens used, limit ${limits.maxGeneratorTokens}); raise --max-generator-tokens above ${s.generatorTokens} to continue` };
     }
   }
 

@@ -20,6 +20,7 @@ import type {
   Decision,
   GeneratorCallRecord,
   JevRequestRecord,
+  Json,
   RunMeta,
   StepRecord,
 } from '../core/types.js';
@@ -34,7 +35,87 @@ export const CHECKPOINT_FILES = {
   jev: 'jev.jsonl',
   generator: 'generator.jsonl',
   transcript: 'transcript.log',
+  // TUI-DESIGN §15 item 19: session-era artefacts under the same run directory
+  /** renderer settings snapshot (§8.8), written by writeUi() */
+  ui: 'ui.json',
+  /** the run log (§13.6) */
+  log: 'jevcode.log',
+  /** liveness lock (§8.5) */
+  lock: 'run.lock',
+  /** pre-images directory: pre/<step>/<sha256(relpath)> (§12.3) */
+  pre: 'pre',
+  /** post-images directory: post/<step>.json (§12.3) */
+  post: 'post',
+  /** scratch files such as /diff --full patches (§12.6) */
+  tmp: 'tmp',
+  /** cleared composer drafts, redacted (§10.7) */
+  drafts: 'drafts',
 } as const;
+
+// ---------------------------------------------------------------------------------------
+// Disk-error classification (TUI-DESIGN §13.3, §13.5: `checkpoint degraded: <code> on <file>`)
+// ---------------------------------------------------------------------------------------
+
+/** The errno codes that make a checkpoint write a degraded-but-not-fatal condition (TUI-DESIGN §13.3). */
+export const DISK_ERROR_CODES = ['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE'] as const;
+export type DiskErrorCode = (typeof DISK_ERROR_CODES)[number];
+
+export interface DiskError {
+  code: DiskErrorCode;
+  /** the checkpoint artefact the write was for, when known (`state.json`, `steps.jsonl`, …) */
+  file: string | null;
+  /** `checkpoint degraded: <code> on <file>` (TUI-DESIGN §24); `<file>` falls back to `run dir` */
+  text: string;
+  /** stable identity for the engine's once-per-(file, code) rule */
+  key: string;
+}
+
+function isDiskErrorCode(v: unknown): v is DiskErrorCode {
+  return typeof v === 'string' && (DISK_ERROR_CODES as readonly string[]).includes(v);
+}
+
+/** Walk `cause` chains (CheckpointError wraps the errno error) up to a small bound; cycles end at the bound. */
+function findErrnoCode(e: unknown): DiskErrorCode | null {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 8 && typeof cur === 'object' && cur !== null; depth++) {
+    const code = (cur as { code?: unknown }).code;
+    if (isDiskErrorCode(code)) return code;
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/**
+ * The artefact the error text names first (by position), so `fail()` messages like "cannot rotate state.json: …"
+ * and errno texts like "ENOSPC: write '<run>/state.json.tmp-…'" name the file. Every occurrence of the run
+ * directory is removed first, so a run-dir path that happens to contain an artefact name never counts.
+ */
+function fileNamedIn(message: string, runDir: string | null): string | null {
+  const text = runDir !== null && runDir.length > 0 ? message.split(runDir).join('<run>') : message;
+  let best: { name: string; at: number } | null = null;
+  for (const name of Object.values(CHECKPOINT_FILES)) {
+    if (!name.includes('.')) continue;
+    const at = text.indexOf(name);
+    if (at >= 0 && (best === null || at < best.at)) best = { name, at };
+  }
+  return best?.name ?? null;
+}
+
+/**
+ * TUI-DESIGN §13.3: classify a write failure by errno. Returns null for anything that is not one of the
+ * six disk conditions (those keep today's fatal path). `file` (the artefact the caller was writing: pass it at
+ * every engine call site) overrides the name inferred from the message; a CheckpointError's `runDir` is
+ * stripped from the text before the inference.
+ */
+export function classifyDiskError(e: unknown, file?: string): DiskError | null {
+  const code = findErrnoCode(e);
+  if (code === null) return null;
+  const message = e instanceof Error ? e.message : typeof e === 'string' ? e : '';
+  const runDir = e instanceof CheckpointError ? e.runDir : null;
+  const named = file ?? fileNamedIn(message, runDir);
+  const shown = named ?? 'run dir';
+  return { code, file: named, text: `checkpoint degraded: ${code} on ${shown}`, key: `${shown}:${code}` };
+}
 
 /**
  * Where an unreadable state.json is parked when the next write lands after load() had to
@@ -59,6 +140,8 @@ export type Redactor = (s: string) => string;
 export interface DiskCheckpointStore extends CheckpointStore {
   /** Warnings collected by the most recent load() or readStepsAfter() (torn lines, prev fallback). */
   lastWarnings(): readonly string[];
+  /** TUI-DESIGN §15 item 10: ui.json (required on the disk store; optional on the contract so fakes type-check). */
+  writeUi(ui: Json): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -281,7 +364,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
     try {
       await writeFileAtomic(tmp, text, { fsync: true });
     } catch (e) {
-      throw fail(`cannot write checkpoint temp file: ${describe(e)}`, e);
+      throw fail(`cannot write ${CHECKPOINT_FILES.state} temp file: ${describe(e)}`, e);
     }
     try {
       // Rotation order is the durability contract: the old state becomes prev by rename
@@ -359,6 +442,11 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
           resumes: patch.resumes ? [...current.resumes, ...patch.resumes] : current.resumes,
           resolvedJevModel: patch.resolvedJevModel !== undefined ? patch.resolvedJevModel : current.resolvedJevModel,
           jevModelDrift: patch.jevModelDrift !== undefined ? patch.jevModelDrift : current.jevModelDrift,
+          // TUI-DESIGN §15 item 10: title / instructions / git replace as scalars (git: run:end re-probe, resumedOn);
+          // conditional spreads keep exactOptionalPropertyTypes happy and never write `undefined`.
+          ...(patch.title !== undefined ? { title: patch.title } : {}),
+          ...(patch.instructions !== undefined ? { instructions: patch.instructions } : {}),
+          ...(patch.git !== undefined ? { git: patch.git } : {}),
         };
         await writeMeta(next);
       });
@@ -374,7 +462,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
       try {
         writeFileAtomicSync(tmp, text, { fsync: true });
       } catch (e) {
-        throw fail(`cannot write checkpoint temp file: ${describe(e)}`, e);
+        throw fail(`cannot write ${CHECKPOINT_FILES.state} temp file: ${describe(e)}`, e);
       }
       try {
         try {
@@ -451,6 +539,18 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
       }
       warnings = collected;
       return [...byStep.values()].filter((r) => r.step > step).sort((a, b) => a.step - b.step);
+    },
+
+    /** TUI-DESIGN §15 item 10 / §8.8: ui.json, redacted like every other artefact, atomic, serialised per file. */
+    writeUi(ui: Json) {
+      return enqueue(CHECKPOINT_FILES.ui, async () => {
+        const text = JSON.stringify(redactDeep(ui, redact), null, 2);
+        try {
+          await writeFileAtomic(pathOf(CHECKPOINT_FILES.ui), `${text}\n`);
+        } catch (e) {
+          throw fail(`cannot write ${CHECKPOINT_FILES.ui}: ${describe(e)}`, e);
+        }
+      });
     },
 
     async flush() {

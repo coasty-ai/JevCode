@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCliArgs, type ParsedFlags } from '../../../src/cli/args.js';
-import { detectPackageRoot, resolveConfig } from '../../../src/config/resolve.js';
+import { detectPackageRoot, negateBooleanText, reconcileResumeConfig, resolveConfig, resumeIdentityFromRunMeta, type ResolveOptions } from '../../../src/config/resolve.js';
+import type { RunMeta } from '../../../src/core/types.js';
 import { fingerprint } from '../../../src/config/mask.js';
 import { ConfigError } from '../../../src/errors.js';
 
@@ -28,7 +29,7 @@ afterEach(async () => {
 });
 
 const run = (...argv: string[]): ParsedFlags => parseCliArgs(['run', 'task', ...argv]);
-const resolve = (flags: ParsedFlags, env: NodeJS.ProcessEnv = {}) => resolveConfig(flags, env, cwd, { packageRoot: pkg, homedir: home });
+const resolve = (flags: ParsedFlags, env: NodeJS.ProcessEnv = {}, opts: ResolveOptions = {}) => resolveConfig(flags, env, cwd, { packageRoot: pkg, homedir: home, ...opts });
 
 describe('resolveConfig precedence', () => {
   it('uses defaults with their source when nothing is set, and never throws for a missing key', async () => {
@@ -308,5 +309,345 @@ describe('detectPackageRoot', () => {
     expect(detectPackageRoot(join(pkg, 'dist'))).toBe(pkg);
     expect(detectPackageRoot()).toBe(await realpath(join(import.meta.dirname, '../../..')));
     expect(detectPackageRoot(join(root, 'home'))).toBeNull();
+  });
+});
+
+describe('TUI-DESIGN §16: XDG config path, mode-keyed caps, launch rows, the six contract members', () => {
+  const withFlags = (extra: Record<string, string | boolean>, ...argv: string[]): ParsedFlags => Object.assign(run(...argv), extra) as ParsedFlags;
+  const LAUNCH = { fps: 30, renderMode: 'standard' as const, screenReader: false, ascii: false, noColor: false };
+
+  it('XDG file first, legacy ~/.config/jevcode/config.json as a fallback with a one-time warning', async () => {
+    const xdg = join(root, 'xdg');
+    await mkdir(join(xdg, 'jevcode'), { recursive: true });
+    await mkdir(join(home, '.config', 'jevcode'), { recursive: true });
+    await writeFile(join(home, '.config', 'jevcode', 'config.json'), '{"maxReplans": 9}');
+    const legacy = await resolve(run(), { XDG_CONFIG_HOME: xdg });
+    expect(legacy.configFile).toBe(join(home, '.config', 'jevcode', 'config.json'));
+    expect(legacy.warnings.filter((w) => w.includes('legacy'))).toHaveLength(1);
+    expect(legacy.warnings[0]).toContain(join(xdg, 'jevcode', 'config.json'));
+    await writeFile(join(xdg, 'jevcode', 'config.json'), '{"maxReplans": 4}');
+    const preferred = await resolve(run(), { XDG_CONFIG_HOME: xdg });
+    expect(preferred.configFile).toBe(join(xdg, 'jevcode', 'config.json'));
+    expect(preferred.entries.get('limits.maxReplans')?.value).toBe('4');
+    expect(preferred.warnings).toEqual([]);
+    expect(preferred.secretPaths).toContain(join(xdg, 'jevcode', 'config.json'));
+    // no XDG_CONFIG_HOME: the XDG path is the legacy path, no warning
+    const plain = await resolve(run());
+    expect(plain.configFile).toBe(join(home, '.config', 'jevcode', 'config.json'));
+    expect(plain.warnings).toEqual([]);
+    // ./jevcode.json still wins over both
+    await writeFile(join(cwd, 'jevcode.json'), '{"maxReplans": 1}');
+    expect((await resolve(run(), { XDG_CONFIG_HOME: xdg })).configFile).toBe(join(cwd, 'jevcode.json'));
+  });
+
+  it('configDirs = XDG dir then legacy dir, deduplicated', async () => {
+    expect((await resolve(run())).configDirs).toEqual([join(home, '.config', 'jevcode')]);
+    expect((await resolve(run(), { XDG_CONFIG_HOME: '/tmp/x' })).configDirs).toEqual(['/tmp/x/jevcode', join(home, '.config', 'jevcode')]);
+  });
+
+  it('the run cap default is mode-keyed after --mode (P45): $0.25 under jev-only, $2.00 otherwise, explicit values untouched', async () => {
+    const jo = await resolve(run('--mode', 'jev-only'));
+    expect(jo.entries.get('limits.spendCapUsd')).toEqual({ value: '0.25', source: 'default' });
+    expect(jo.limits().spendCapUsd).toBe(0.25);
+    expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
+    expect((await resolve(run('--condition', 'jev-only'))).limits().spendCapUsd).toBe(0.25);
+    expect((await resolve(run())).limits().spendCapUsd).toBe(2);
+    expect((await resolve(run('--mode', 'jev-off'))).limits().spendCapUsd).toBe(2);
+    expect((await resolve(run('--mode', 'jev-only', '--spend-cap', '1'))).limits().spendCapUsd).toBe(1);
+    expect((await resolve(run('--mode', 'jev-only'), { JEVCODE_SPEND_CAP_USD: '0.5' })).entries.get('limits.spendCapUsd')).toEqual({ value: '0.5', source: 'env' });
+  });
+
+  it('sessionSpendCap(mode): derived 5 × run cap, configured through the chain, none = +Infinity; the record prints the derived row', async () => {
+    const c = await resolve(run());
+    expect(c.sessionSpendCap('jev-on')).toEqual({ value: 10, source: 'derived', derived: true });
+    expect(c.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
+    expect(c.record()['session.spendCapUsd']).toEqual({ value: '10', source: 'derived' });
+    const flagged = await resolve(run('--spend-cap', '3'));
+    expect(flagged.sessionSpendCap('jev-on')).toEqual({ value: 15, source: 'derived', derived: true });
+    const env = await resolve(run(), { JEVCODE_SESSION_SPEND_CAP_USD: '15' });
+    expect(env.sessionSpendCap('jev-on')).toEqual({ value: 15, source: 'env', derived: false });
+    expect(env.record()['session.spendCapUsd']).toEqual({ value: '15', source: 'env' });
+    expect((await resolve(withFlags({ sessionSpendCap: 'none' }))).sessionSpendCap('jev-on')).toEqual({ value: Number.POSITIVE_INFINITY, source: 'flag', derived: false });
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ sessionSpendCapUsd: 7 }));
+    expect((await resolve(run())).sessionSpendCap('jev-on')).toEqual({ value: 7, source: `file:${join(cwd, 'jevcode.json')}`, derived: false });
+    const bad = await resolve(run(), { JEVCODE_SESSION_SPEND_CAP_USD: '0' });
+    expect(() => bad.sessionSpendCap('jev-on')).toThrow(/session\.spendCapUsd: "0" \(from env\) is not a number > 0/);
+  });
+
+  it('launch rows resolve flag > env > default and never from the file; a file value is recorded as ignored:launch with a warning', async () => {
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ fps: 20, renderMode: 'incremental', theme: 'light', screenReader: true }));
+    const c = await resolve(run(), { JEVCODE_FPS: '25' });
+    expect(c.entries.get('ui.fps')).toEqual({ value: '25', source: 'env' });
+    expect(c.entries.get('ui.renderMode')).toEqual({ value: 'standard', source: 'default' });
+    expect(c.entries.get('ui.screenReader')).toEqual({ value: 'false', source: 'default' });
+    expect(c.entries.get('ui.ascii')).toEqual({ value: 'false', source: 'default' });
+    expect(c.entries.get('ui.noColor')).toEqual({ value: 'false', source: 'default' });
+    expect(c.entries.get('ui.theme')).toEqual({ value: 'light', source: `file:${join(cwd, 'jevcode.json')}` });
+    const rec = c.record();
+    expect(rec['ui.fps']).toEqual({ value: '25', source: 'env' });
+    expect(rec['ui.fps.ignored']).toEqual({ value: '20', source: 'ignored:launch' });
+    expect(rec['ui.renderMode.ignored']).toEqual({ value: 'incremental', source: 'ignored:launch' });
+    expect(rec['ui.screenReader.ignored']).toEqual({ value: 'true', source: 'ignored:launch' });
+    expect(rec['ui.theme']).toEqual({ value: 'light', source: `file:${join(cwd, 'jevcode.json')}` });
+    expect(c.warnings.some((w) => w.includes('ignored:launch') && w.includes('fps') && w.includes('renderMode') && w.includes('screenReader'))).toBe(true);
+    expect(c.warnings.some((w) => w.includes('unknown keys'))).toBe(false);
+    expect(c.sourcesConsulted('ui.fps')).toEqual(['--fps (flag)', 'JEVCODE_FPS (env)', `fps (file:${join(cwd, 'jevcode.json')}, ignored:launch)`, 'default 30']);
+    const flagged = await resolve(withFlags({ fps: '10', ascii: true, noColor: true, screenReader: true, renderMode: 'incremental' }), { JEVCODE_FPS: '25', TERM: 'dumb' });
+    expect(flagged.entries.get('ui.fps')).toEqual({ value: '10', source: 'flag' });
+    expect(flagged.entries.get('ui.ascii')).toEqual({ value: 'true', source: 'flag' });
+    expect(flagged.entries.get('ui.noColor')).toEqual({ value: 'true', source: 'flag' });
+    expect(flagged.entries.get('ui.screenReader')).toEqual({ value: 'true', source: 'flag' });
+    expect(flagged.entries.get('ui.renderMode')).toEqual({ value: 'incremental', source: 'flag' });
+    expect((await resolve(run(), { TERM: 'dumb', NO_COLOR: '1' })).entries.get('ui.ascii')).toEqual({ value: 'true', source: 'default' });
+    expect((await resolve(run(), { NO_COLOR: '1' })).entries.get('ui.noColor')).toEqual({ value: 'true', source: 'env' });
+  });
+
+  it('ui(launch): session settings through the full chain, launch members copied from the argument', async () => {
+    await writeFile(join(cwd, '.env'), 'JEVCODE_THEME=daltonized\nJEVCODE_OSC52=1\n');
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ theme: 'light', history: false, exitCode: 'last-run', logLevel: 'warn', log: 'my.log', fps: 5 }));
+    const c = await resolve(withFlags({ noHistory: true, noAnimation: true, notify: true, verbose: true }, '--plain'));
+    const ui = c.ui({ ...LAUNCH, fps: 12, screenReader: true });
+    expect(ui).toEqual({
+      fps: 12,
+      renderMode: 'standard',
+      screenReader: true,
+      ascii: false,
+      noColor: false,
+      theme: 'daltonized',
+      title: false,
+      reducedMotion: true,
+      notify: true,
+      osc52: true,
+      history: false,
+      noInput: false,
+      trustWorkspace: false,
+      budgetWarnings: true,
+      allowSecretMention: false,
+      exitCode: 'last-run',
+      logLevel: 'debug',
+      logFile: join(cwd, 'my.log'),
+      keybindingsFile: join(home, '.config', 'jevcode', 'keybindings.json'),
+    });
+    expect(c.entries.get('ui.history')).toEqual({ value: 'false', source: 'flag' });
+    expect(c.entries.get('log.level')).toEqual({ value: 'debug', source: 'flag' });
+    expect((await resolve(withFlags({ verbose: true, logLevel: 'trace' }))).entries.get('log.level')).toEqual({ value: 'trace', source: 'flag' });
+    expect((await resolve(withFlags({ noBudgetWarnings: true }))).ui(LAUNCH).budgetWarnings).toBe(false);
+    expect((await resolve(withFlags({ theme: 'ansi', exitCode: 'zero', keybindings: 'kb.json' }))).ui(LAUNCH)).toMatchObject({ theme: 'ansi', exitCode: 'zero', keybindingsFile: join(cwd, 'kb.json') });
+    expect((await resolve(run(), { XDG_CONFIG_HOME: '/tmp/x' })).ui(LAUNCH).keybindingsFile).toBe('/tmp/x/jevcode/keybindings.json');
+    const bad = await resolve(run(), { JEVCODE_THEME: 'neon' });
+    expect(() => bad.ui(LAUNCH)).toThrow(/ui\.theme: "neon" \(from env\)/);
+  });
+
+  it('missingSecrets(mode) never throws and skips the generator key for jev-only and --mock*, both keys for --mock', async () => {
+    const none = await resolve(run(), { JEVCODE_PROVIDER: 'openai' });
+    expect(none.missingSecrets('jev-on')).toEqual(['generator.apiKey', 'decider.apiKey']);
+    expect(none.missingSecrets('jev-off')).toEqual(['generator.apiKey', 'decider.apiKey']);
+    expect(none.missingSecrets('jev-only')).toEqual(['decider.apiKey']);
+    expect((await resolve(run('--mock'))).missingSecrets('jev-on')).toEqual([]);
+    expect((await resolve(run('--mock-generator'))).missingSecrets('jev-on')).toEqual(['decider.apiKey']);
+    expect((await resolve(run(), { ANTHROPIC_API_KEY: 'anthropic-key-1234' })).missingSecrets('jev-on')).toEqual(['decider.apiKey']);
+    expect((await resolve(run(), { OPENROUTER_API_KEY: OR_KEY })).missingSecrets('jev-on')).toEqual(['generator.apiKey']);
+    expect((await resolve(run('--provider', 'openrouter'), { OPENROUTER_API_KEY: OR_KEY })).missingSecrets('jev-on')).toEqual([]);
+    expect((await resolve(run(), { ANTHROPIC_API_KEY: '   ', JEV_API_KEY: '' })).missingSecrets('jev-on')).toEqual(['generator.apiKey', 'decider.apiKey']);
+  });
+
+  it('addSecret / dropSecret delegate to the redactor', async () => {
+    const c = await resolve(run());
+    expect(c.addSecret('login', 'short')).toBe(false);
+    expect(c.addSecret('login', 'new-login-key-0123456789')).toBe(true);
+    expect(c.redact('x new-login-key-0123456789 y')).toBe('x [REDACTED:login] y');
+    expect(c.addSecret('login', 'new-login-key-0123456789')).toBe(false);
+    expect(typeof c.dropSecret('login')).toBe('boolean');
+  });
+
+  it('priced fail-closed through generator(): an unpriced Anthropic model is a ConfigError unless --allow-unpriced, which sets the token cap', async () => {
+    const env = { ANTHROPIC_API_KEY: 'anthropic-key-1234' };
+    const bad = await resolve(run('--model', 'claude-next'), env);
+    expect(() => bad.generator()).toThrow('generator.model "claude-next" has no pricing entry, so the $2.000 spend cap could not be enforced. Set JEVCODE_PRICE_IN_PER_M and JEVCODE_PRICE_OUT_PER_M (USD per million tokens), or pass --allow-unpriced to run under a token cap instead.');
+    expect('maxGeneratorTokens' in bad.limits()).toBe(false);
+    const ok = await resolve(withFlags({ allowUnpriced: true }, '--model', 'claude-next', '--spend-cap', '1.5'), env);
+    expect(ok.generator().priced).toBe(false);
+    expect(ok.limits().maxGeneratorTokens).toBe(100_000);
+    expect(ok.warnings.some((w) => w.includes('no pricing entry') && w.includes('100000'))).toBe(true);
+    expect(ok.record()['limits.maxGeneratorTokens']).toEqual({ value: '100000', source: 'derived' });
+    expect(ok.record()['limits.allowUnpriced']).toEqual({ value: 'true', source: 'flag' });
+    const viaEnv = await resolve(run('--model', 'claude-next'), { ...env, JEVCODE_ALLOW_UNPRICED: '1', JEVCODE_MAX_GENERATOR_TOKENS: '50000' });
+    expect(viaEnv.limits().maxGeneratorTokens).toBe(50_000);
+    expect(viaEnv.record()['limits.maxGeneratorTokens']).toEqual({ value: '50000', source: 'env' });
+    expect((await resolve(run(), env)).generator().priced).toBe(true);
+    expect((await resolve(run(), env)).record()['limits.maxGeneratorTokens']).toBeUndefined();
+  });
+
+  it('cache price rows: table for known models, derived 0.1× / 1.25× input for unknown ones, explicit overrides win', async () => {
+    const env = { OPENROUTER_API_KEY: OR_KEY };
+    const known = await resolve(run('--provider', 'openrouter'), env);
+    expect(known.record()['generator.priceCacheReadPerM']).toBeUndefined();
+    const derived = await resolve(run('--provider', 'openrouter', '--model', 'vendor/other'), { ...env, JEVCODE_PRICE_IN_PER_M: '3', JEVCODE_PRICE_OUT_PER_M: '15' });
+    expect(derived.generator().pricing).toEqual({ inputPerM: 3, outputPerM: 15, cacheReadPerM: expect.closeTo(0.3, 12), cacheWritePerM: 3.75 });
+    expect(derived.record()['generator.priceCacheReadPerM']).toEqual({ value: '0.3', source: 'derived' });
+    expect(derived.record()['generator.priceCacheWritePerM']).toEqual({ value: '3.75', source: 'derived' });
+    const explicit = await resolve(run('--provider', 'openrouter', '--model', 'vendor/other'), { ...env, JEVCODE_PRICE_IN_PER_M: '3', JEVCODE_PRICE_OUT_PER_M: '15', JEVCODE_PRICE_CACHE_READ_PER_M: '0.5' });
+    expect(explicit.generator().pricing).toMatchObject({ cacheReadPerM: 0.5, cacheWritePerM: 3.75 });
+    expect(explicit.record()['generator.priceCacheReadPerM']).toEqual({ value: '0.5', source: 'env' });
+    expect(explicit.record()['generator.priceCacheWritePerM']).toEqual({ value: '3.75', source: 'derived' });
+  });
+
+  it('record() never throws, even with malformed booleans, and keeps every existing row', async () => {
+    const c = await resolve(run(), { JEVCODE_ALLOW_UNPRICED: 'maybe' });
+    const rec = c.record();
+    expect(rec['generator.provider']).toEqual({ value: 'anthropic', source: 'default' });
+    expect(rec['ui.theme']).toEqual({ value: 'dark', source: 'default' });
+    expect(rec['limits.maxGeneratorTokens']).toBeUndefined();
+    expect(() => c.limits()).toThrow(/limits\.allowUnpriced: "maybe" \(from env\) is not a boolean/);
+  });
+
+  it('JEVCODE_NO_HISTORY is inverted at every layer: process env, ./.env, and the variable name used as a config-file key', async () => {
+    const viaEnv = await resolve(run(), { JEVCODE_NO_HISTORY: '1' });
+    expect(viaEnv.entries.get('ui.history')).toEqual({ value: 'false', source: 'env' });
+    expect(viaEnv.ui(LAUNCH).history).toBe(false);
+    expect((await resolve(run(), { JEVCODE_NO_HISTORY: 'true' })).ui(LAUNCH).history).toBe(false);
+    expect((await resolve(run(), { JEVCODE_NO_HISTORY: 'yes' })).ui(LAUNCH).history).toBe(false);
+    // `=0` re-enables, an empty value is unset, a malformed value keeps its text and source for the validator
+    expect((await resolve(run(), { JEVCODE_NO_HISTORY: '0' })).entries.get('ui.history')).toEqual({ value: 'true', source: 'env' });
+    expect((await resolve(run(), { JEVCODE_NO_HISTORY: '' })).entries.get('ui.history')).toEqual({ value: 'true', source: 'default' });
+    const malformed = await resolve(run(), { JEVCODE_NO_HISTORY: 'maybe' });
+    expect(malformed.entries.get('ui.history')).toEqual({ value: 'maybe', source: 'env' });
+    expect(() => malformed.ui(LAUNCH)).toThrow(/ui\.history: "maybe" \(from env\) is not a boolean/);
+    await writeFile(join(cwd, '.env'), 'JEVCODE_NO_HISTORY=true\n');
+    const viaDotenv = await resolve(run());
+    expect(viaDotenv.entries.get('ui.history')).toEqual({ value: 'false', source: `dotenv:${join(cwd, '.env')}` });
+    expect(viaDotenv.ui(LAUNCH).history).toBe(false);
+    await rm(join(cwd, '.env'));
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ JEVCODE_NO_HISTORY: true }));
+    const viaFileKey = await resolve(run());
+    expect(viaFileKey.entries.get('ui.history')).toEqual({ value: 'false', source: `file:${join(cwd, 'jevcode.json')}` });
+    expect(viaFileKey.ui(LAUNCH).history).toBe(false);
+    expect(viaFileKey.warnings.some((w) => w.includes('unknown keys'))).toBe(false);
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ history: false }));
+    expect((await resolve(run())).ui(LAUNCH).history).toBe(false);
+    // the flag still wins and stays negated; the consulted list names the inverted variable
+    expect((await resolve(withFlags({ noHistory: true }), { JEVCODE_NO_HISTORY: '0' })).ui(LAUNCH).history).toBe(false);
+    expect(viaEnv.sourcesConsulted('ui.history')).toContain('JEVCODE_NO_HISTORY (inverted) (env)');
+    expect(negateBooleanText('1')).toBe('false');
+    expect(negateBooleanText(' No ')).toBe('true');
+    expect(negateBooleanText('maybe')).toBe('maybe');
+  });
+
+  it('NO_UPDATE_NOTIFIER=1 disables update.notify; JEVCODE_UPDATE_NOTIFY is checked first within a layer', async () => {
+    expect((await resolve(run(), { NO_UPDATE_NOTIFIER: '1' })).entries.get('update.notify')).toEqual({ value: 'false', source: 'env' });
+    expect((await resolve(run(), { NO_UPDATE_NOTIFIER: '0' })).entries.get('update.notify')).toEqual({ value: 'true', source: 'env' });
+    // the positive name wins within a layer and keeps its raw text (`1`), which the boolean validator accepts
+    const both = await resolve(run(), { JEVCODE_UPDATE_NOTIFY: '1', NO_UPDATE_NOTIFIER: '1' });
+    expect(both.entries.get('update.notify')).toEqual({ value: '1', source: 'env' });
+    expect((await resolve(run())).entries.get('update.notify')).toEqual({ value: 'false', source: 'default' });
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ updateNotify: true }));
+    expect((await resolve(run(), { NO_UPDATE_NOTIFIER: '1' })).entries.get('update.notify')?.value).toBe('false');
+    expect((await resolve(run())).entries.get('update.notify')?.value).toBe('true');
+  });
+
+  it('JEVCODE_TRACE=<file> is JEVCODE_LOG=<file> at level trace unless a flag or a higher layer sets log.level', async () => {
+    const traced = await resolve(run(), { JEVCODE_TRACE: 't.log' });
+    expect(traced.entries.get('log.file')).toEqual({ value: 't.log', source: 'env' });
+    expect(traced.entries.get('log.level')).toEqual({ value: 'trace', source: 'env' });
+    expect(traced.ui(LAUNCH)).toMatchObject({ logFile: join(cwd, 't.log'), logLevel: 'trace' });
+    // --log-level / --verbose (flags) win; an explicit JEVCODE_LOG_LEVEL in the same layer wins
+    expect((await resolve(withFlags({ logLevel: 'warn' }), { JEVCODE_TRACE: 't.log' })).entries.get('log.level')).toEqual({ value: 'warn', source: 'flag' });
+    expect((await resolve(withFlags({ verbose: true }), { JEVCODE_TRACE: 't.log' })).entries.get('log.level')).toEqual({ value: 'debug', source: 'flag' });
+    expect((await resolve(run(), { JEVCODE_TRACE: 't.log', JEVCODE_LOG_LEVEL: 'error' })).entries.get('log.level')).toEqual({ value: 'error', source: 'env' });
+    // JEVCODE_LOG is checked before JEVCODE_TRACE: when both are set the level is not forced
+    const both = await resolve(run(), { JEVCODE_LOG: 'a.log', JEVCODE_TRACE: 'b.log' });
+    expect(both.entries.get('log.file')).toEqual({ value: 'a.log', source: 'env' });
+    expect(both.entries.get('log.level')).toEqual({ value: 'info', source: 'default' });
+    // an empty / blank JEVCODE_TRACE is unset
+    expect((await resolve(run(), { JEVCODE_TRACE: '   ' })).entries.get('log.level')).toEqual({ value: 'info', source: 'default' });
+    // a dotenv JEVCODE_TRACE beats a file logLevel but not an env JEVCODE_LOG_LEVEL
+    await writeFile(join(cwd, '.env'), 'JEVCODE_TRACE=d.log\n');
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ logLevel: 'warn' }));
+    const fromDotenv = await resolve(run());
+    expect(fromDotenv.entries.get('log.file')).toEqual({ value: 'd.log', source: `dotenv:${join(cwd, '.env')}` });
+    expect(fromDotenv.entries.get('log.level')).toEqual({ value: 'trace', source: `dotenv:${join(cwd, '.env')}` });
+    expect((await resolve(run(), { JEVCODE_LOG_LEVEL: 'error' })).entries.get('log.level')).toEqual({ value: 'error', source: 'env' });
+  });
+
+  it('a non-scalar value under a launch file key is reported as ignored:launch, never a fatal ConfigError', async () => {
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ fps: [1, 2], renderMode: { a: 1 }, screenReader: null, maxReplans: 3 }));
+    const c = await resolve(run());
+    expect(c.entries.get('ui.fps')).toEqual({ value: '30', source: 'default' });
+    expect(c.entries.get('limits.maxReplans')?.value).toBe('3');
+    const rec = c.record();
+    expect(rec['ui.fps.ignored']).toEqual({ value: '[1,2]', source: 'ignored:launch' });
+    expect(rec['ui.renderMode.ignored']).toEqual({ value: '{"a":1}', source: 'ignored:launch' });
+    expect(rec['ui.screenReader.ignored']).toEqual({ value: 'null', source: 'ignored:launch' });
+    expect(c.warnings.some((w) => w.includes('ignored:launch') && w.includes('fps'))).toBe(true);
+    // a huge non-scalar is clipped in the record
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ fps: Array.from({ length: 200 }, (_, i) => i) }));
+    expect(String((await resolve(run())).record()['ui.fps.ignored']?.value).length).toBeLessThanOrEqual(80);
+    // a non-scalar under a session key is still the fatal error
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ theme: [1] }));
+    await expect(resolve(run())).rejects.toThrow(/must be a string, number or boolean/);
+  });
+
+  it('record() `.ignored` rows never influence the resume identity or reconciliation (round trip through run.json)', async () => {
+    await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ fps: 20, screenReader: true, spendCapUsd: 0.5 }));
+    const c = await resolve(run(), { JEVCODE_FPS: '25' });
+    const rec = c.record();
+    expect(Object.keys(rec).filter((k) => k.endsWith('.ignored')).sort()).toEqual(['ui.fps.ignored', 'ui.screenReader.ignored']);
+    const meta: RunMeta = {
+      runId: '20260920-140211-abcdefgh',
+      task: 't',
+      workspace: cwd,
+      mode: 'jev-on',
+      config: rec,
+      versions: { jevcode: '0', node: '22' },
+      createdAt: '2026-09-20T14:02:11.123Z',
+      overrides: [],
+      resumes: [],
+      resolvedJevModel: null,
+      jevModelDrift: null,
+    };
+    const identity = resumeIdentityFromRunMeta(meta);
+    expect(identity).toMatchObject({ provider: 'anthropic', model: 'claude-sonnet-5', sandbox: 'auto' });
+    expect(JSON.stringify(identity)).not.toContain('ignored');
+    const again = await resolve(run(), { JEVCODE_FPS: '25' });
+    const rc = reconcileResumeConfig({ limits: again.limits(), workspaceRealpath: null, state: { step: 3, spendTotalUsd: 0.1, wallMsUsed: 1, replanCount: 0, stopReason: null, generatorTokens: 0 } }, meta, parseCliArgs(['run', '--resume', meta.runId]));
+    expect(rc.errors).toEqual([]);
+    expect(rc.overrides).toEqual([]);
+    expect(rc.limits.spendCapUsd).toBe(0.5);
+  });
+
+  it('dropSecret delegates to the shared redactor: a just-added secret is dropped and no longer masked', async () => {
+    const c = await resolve(run());
+    expect(c.addSecret('login', 'new-login-key-0123456789')).toBe(true);
+    expect(c.redact('x new-login-key-0123456789 y')).toBe('x [REDACTED:login] y');
+    expect(c.dropSecret('login')).toBe(true);
+    expect(c.redact('x new-login-key-0123456789 y')).toBe('x new-login-key-0123456789 y');
+    expect(c.dropSecret('login')).toBe(false);
+    expect(c.dropSecret('never-added')).toBe(false);
+  });
+
+  it('the legacy config-path warning fires once per process for a path; suppressLegacyWarning silences it', async () => {
+    const xdg = join(root, 'xdg2');
+    await mkdir(join(xdg, 'jevcode'), { recursive: true });
+    await mkdir(join(home, '.config', 'jevcode'), { recursive: true });
+    await writeFile(join(home, '.config', 'jevcode', 'config.json'), '{"maxReplans": 9}');
+    const first = await resolve(run(), { XDG_CONFIG_HOME: xdg });
+    expect(first.warnings.filter((w) => w.includes('legacy'))).toHaveLength(1);
+    const second = await resolve(run(), { XDG_CONFIG_HOME: xdg });
+    expect(second.configFile).toBe(join(home, '.config', 'jevcode', 'config.json'));
+    expect(second.warnings.filter((w) => w.includes('legacy'))).toHaveLength(0);
+    const third = await resolve(run(), { XDG_CONFIG_HOME: xdg }, { suppressLegacyWarning: true });
+    expect(third.warnings).toEqual([]);
+  });
+
+  it('ResolveOptions.mode keys the run-cap default when the flags carry no --mode (the --resume re-resolve)', async () => {
+    const jo = await resolve(run(), {}, { mode: 'jev-only' });
+    expect(jo.entries.get('limits.spendCapUsd')).toEqual({ value: '0.25', source: 'default' });
+    expect(jo.limits().spendCapUsd).toBe(0.25);
+    expect(jo.sessionSpendCap('jev-only')).toEqual({ value: 1.25, source: 'derived', derived: true });
+    expect((await resolve(run(), {}, { mode: 'jev-on' })).limits().spendCapUsd).toBe(2);
+    // an explicit --mode on the command line is the same signal
+    expect((await resolve(run('--mode', 'jev-only'), {}, {})).limits().spendCapUsd).toBe(0.25);
+    // a configured cap is never touched by the mode
+    expect((await resolve(run('--spend-cap', '1'), {}, { mode: 'jev-only' })).limits().spendCapUsd).toBe(1);
   });
 });

@@ -1,10 +1,14 @@
 /**
- * SpendMeter (DESIGN.md §4, §6 Budgets): the only home of spend. Generator and Jev cost are
- * kept apart, summed for the cap, and forwarded to an optional parent (the bench-wide meter).
+ * SpendMeter (DESIGN.md §4, §6 Budgets; TUI-DESIGN §9.1 D3): the only home of spend. Generator and Jev cost are
+ * kept apart, summed for the cap, and forwarded to an optional parent (the bench-wide meter, or the session meter).
  *
  * add() never throws: a meter that could fail would turn a bookkeeping bug into a lost step,
  * and the caller has already paid for the tokens it is reporting. Malformed numbers are
  * clamped to 0 rather than poisoning the total with NaN, which would silently disable the cap.
+ *
+ * TUI-DESIGN §9.1: `setCap()` replaces the cap of the same object (`/budget session-spend-cap` mutates the root every
+ * live child forwards to — a recreated root would orphan the child), and `snapshot().parent` carries the parent's
+ * totals so the engine can emit session-scope `budget:warn` without knowing the parent object.
  */
 import type { SpendMeter, SpendSnapshot, SpendSource, TokenUsage } from '../core/types.js';
 
@@ -38,8 +42,9 @@ export function sanitiseCap(capUsd: number): number {
   return typeof capUsd === 'number' && capUsd >= 0 ? capUsd : 0;
 }
 
+/** TUI-DESIGN §9.1 / §15 item 7: `createSpendMeter(cap, parent)`; the root of a session tree gains `setCap`. */
 export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMeter {
-  const cap = sanitiseCap(capUsd);
+  let cap = sanitiseCap(capUsd);
   let generator = zeroUsage();
   let jev = zeroUsage();
 
@@ -57,8 +62,27 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
   function exceeded(): boolean {
     return totalUsd() >= cap || parentExceeded();
   }
+  /** The parent's totals for `snapshot().parent`; null when the parent misbehaves (bookkeeping never throws). */
+  function parentTotals(): { totalUsd: number; capUsd: number } | null {
+    if (parent === undefined) return null;
+    try {
+      const p = parent.snapshot();
+      return { totalUsd: nonNegative(p.totalUsd), capUsd: sanitiseCap(p.capUsd) };
+    } catch {
+      return null;
+    }
+  }
   function snapshot(): SpendSnapshot {
-    return { generator: { ...generator }, jev: { ...jev }, totalUsd: totalUsd(), capUsd: cap, exceeded: exceeded() };
+    const p = parentTotals();
+    // exactOptionalPropertyTypes: `parent` / `parentExceeded` are spread in only with a parent, never assigned undefined
+    return {
+      generator: { ...generator },
+      jev: { ...jev },
+      totalUsd: totalUsd(),
+      capUsd: cap,
+      exceeded: exceeded(),
+      ...(p ? { parentExceeded: parentExceeded(), parent: { totalUsd: p.totalUsd, capUsd: p.capUsd } } : {}),
+    };
   }
 
   const meter: SpendMeter = {
@@ -87,6 +111,10 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
     },
     child(childCapUsd: number): SpendMeter {
       return createSpendMeter(childCapUsd, meter);
+    },
+    setCap(newCapUsd: number): void {
+      // TUI-DESIGN §9.1: the same object keeps its usage and its children; only the cap changes (+Infinity = `none`).
+      cap = sanitiseCap(newCapUsd);
     },
   };
   return meter;
