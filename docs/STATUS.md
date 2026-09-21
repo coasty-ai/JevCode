@@ -513,7 +513,7 @@ state.json,run.json}`) contain no key material (0 hits for the `sk-or-v1-`/`sk-a
 | loop detection → replan by Jev | run 1 ended `replan_stop` at step 4 (`task_impossible=0.42`), 20 s, $0.045, exit 4; 1 loop/replan line(s) |
 | follow-up seeded from the previous run | `[run] seeded from run 20260921-103525-arhva4xt: plan done=4 remaining=4 unverified=0 · window 4 entries · 0 created` |
 | Esc → pause at the step boundary | `end human_pause steps=1`, exit 4; epilogue `paused after step 1 — /resume continues, or type a follow-up` |
-| Jev review answered through the pty | 4 review/confirm line(s) in run 2: `[step 3] proposal run $ python -m pytest -q: Run the test suite once more to confirm stabi` — approved on the first `y`, 1.0 s after the box was drawn |
+| Jev review answered through the pty | `[step 1] confirm 20260921-103547-ntj6esxg:1 approved` — approved on the first `y`, 1.0 s after the box was drawn |
 | `/cost`, `/plan`, `/diff`, `/decisions` while paused | `[ui] run $0.013 of $1.000 (1 %)`, `[ui] plan`, `[ui] diff (run … · 0 files · +0 −0 …)`, `[ui] decisions (last 12)` |
 | `/continue` resumes the paused run | `[run] ready … step 1/12 (resumed)` → `resumed at step 2` → `end complete steps=3`, 17 s, $0.041, exit 0 |
 | `/exit` | process exit 0; `sessions/index.jsonl` carries `run:start`, `run:end`, `pause`, `run:start`, `run:end` for the session |
