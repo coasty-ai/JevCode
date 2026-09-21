@@ -314,8 +314,10 @@ the linter verify. The question this document answers by experiment is which dec
   (§21.3): the integration code on the 9 oracle instances 1/9 (sympy-19954), the budget-round code on the
   crashed full run 1/8. AFTER: **django-15128 solved** (SIEVE lone passer `alias += table_name` at step 2,
   `complete` at step 4, $0.011; not the gold's shape, F2P and local P2P accept it), sympy-19954 lost to load
-  (scoped baseline 41 s instead of 11 s under two 8-lane sympy runs; runs-per-step collapsed to 6–10; the guard
-  that solved it twice was ranked #1 at step 17 and never run). Oracle found 10/30 (8 strong, 2 weak, every one
+  (§21.7: its reproduction measured 0.9 s instead of 3.5 s once the heap stopped thrashing, which put the run in
+  the QuixBugs oracle class — 1,500 runs, SIEVE, a 90-s wall — so the first site's 762 candidates took every step
+  and the gap before the raising `del`, where the guard won twice, was never visited; the guard was run only at the
+  gap after it. History reversals did not displace it: the guard is a template candidate). Oracle found 10/30 (8 strong, 2 weak, every one
   confirmed by a second run); introspection ran on 9/9 oracle instances, the history harvest on 9/9 and found
   django-15315's ticket #31750 commit. Reach check from the records (`experiments/inspect/reach-check-3.mts`):
   the test-passing line is now in the set on 4/7 reach targets (15345 alias, 17139 `is_real` guard, 2931
@@ -324,11 +326,34 @@ the linter verify. The question this document answers by experiment is which dec
   rejected by the httpbin oracle. Three commits on oracle instances all failed the evaluator (15315 dead code
   ×4, 15563 weak-oracle overfit, 2931 wrong passer). **Defect:** the history source's reversals carry their own
   site and the ranker throws `ranker: candidate "hist_…" is at <file>:<line>, not at the site being ranked`
-  (`src/synth/rank/index.ts:307`) — 43 occurrences in 12 runs, 9 no-oracle runs and sympy-11618 stopped with
-  `error` at steps 4–6. **django-15315's oracle is a 1/8 coin that `PYTHONHASHSEED=0` does not fix**: 16 runs
+  (`src/synth/rank/index.ts:307`) — 43 occurrences in 12 runs; the nine `error` stops (8 without an oracle + sympy-11618, steps 4–6) are
+  classified `wiring_defect_history_site`, not a search or oracle class (§21.7). **django-15315's oracle is a 1/8 coin that `PYTHONHASHSEED=0` does not fix**: 16 runs
   of the runner's own command give AssertionError ×13 / PASS ×3 in both workspace and lane, because
   `hash(None)` is address-based on CPython 3.9 (fixed in 3.12) — a lane `plausible` needs a confirming
   second run (§21.4 addendum, `experiments/inspect/repro-15315-repeat.mts`). Binding constraint (§21.6): the
   verdict a produced candidate receives — flaky/networked/weak oracles feeding a 5-passer cap, the run budget
   derived from idle timings collapsing under load, and RANK mode dropping the right line at p 0.03 — not the
   candidate set. Report script kept as `experiments/inspect/swe-report.mts`.
+- 2026-09-21: **progress commits, and no `read` churn** (merged as c9badd0; `experiments/results/jev-only-rungs-1-2.md`
+  §22). A step that ends with a regression-free partial in hand now commits it as a *partial fix* — pairs
+  of complementary partials first, then one full-suite regression run, then the guard's suspicion signals
+  and Q16 advisory — with evidence that says so ("k of n goal tests pass, the remaining m stay open");
+  the goal stays open, its remaining tests re-cluster by frame, and a goal may chain at most three
+  progress commits before its remainder becomes a new goal. A progress commit also forgets the goal's
+  `unchanged` verdicts (a line rejected under an earlier failure can be the fix under the new one). The
+  jev-only synthesizer no longer proposes `read` at all: `gather_context` re-localises every open goal
+  and reopens goals the search parked. The arbitration escape threshold moved 0.8 → 0.5 after `masked`
+  committed five all-overfit `return 0` inserts at escape 0.67–0.75. Live on the four long-tier tasks
+  that exposed the defect (`jev-only-ladder-long-3{,b,c}`, $0.36): `masked` solved once (7 steps,
+  `complete`), `long_chain` 2/6 hunks gold with a three-link chain, `six_hunks` 1/6, `shared_frame` 0/2;
+  0 `read` proposals in 12 runs (run 2 had 6–10 declined reads per task); every remaining miss is a
+  localisation miss (Jev's Q2 `where` says `none_of_these` for the frame's function, so the innermost
+  traceback line never becomes a site) followed by six blocked partial `done`s. **SWE-bench rung 3** on
+  the wired tree (§21, `jev-only-swebench-3`): **1/30** — `django__django-15128` newly solved (4 steps,
+  $0.011), `sympy__sympy-19954` lost under load; oracle found 10/30; memory fix held (RSS peak 3.0 GB,
+  55 min, $1.16); nine no-oracle instances died on a wiring defect (git-history reversals ranked at a
+  foreign site) — fix in flight, with two more from the same report: a lane passer must pass its
+  reproduction twice (django-15315's oracle is a 1/8 coin because `hash(None)` is address-based on
+  CPython 3.9), and the per-step run count must come from the running measurements, not the idle
+  baseline (under two-way concurrency the runs collapsed to 6–10 per step and the #1-ranked candidate
+  was deferred and never run).
