@@ -40,22 +40,50 @@ export function monotonicNow(): number {
   return performance.now();
 }
 
-/** Sleep that rejects with `signal.reason` when aborted. */
-export function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+/** Injectable sleep shape shared by the Jev client and the provider transport (TUI-DESIGN §15 item 5; §15.2 `core/time.ts`). */
+export type SleepFn = (ms: number, signal?: AbortSignal, wake?: AbortSignal) => Promise<void>;
+
+/**
+ * Node caps a timer delay at 2^31 − 1 ms (larger values fire after 1 ms with a warning). `sleep` clamps to it:
+ * Infinity and anything above the cap wait the full cap (a caller asking for "until woken" must never fire early);
+ * NaN, negatives and zero run on the next tick.
+ */
+export const MAX_TIMER_MS = 2_147_483_647;
+
+/**
+ * Sleep that rejects with `signal.reason` when aborted and resolves early when `wake` aborts
+ * (TUI-DESIGN §13.2: `[r] retry now` aborts the engine-owned waker, one AbortController per sleep;
+ * §15.2 `core/time.ts`). `signal` wins when both are already aborted. Every settle path clears the
+ * timer and removes both listeners, so a settled sleep holds nothing and a later abort of either
+ * signal is a no-op. The timer stays ref'd on purpose: during a retry backoff in a headless run
+ * (bench, `--plain` on a pipe) it can be the only live handle, and an unref'd timer lets Node exit
+ * mid-run (measured 2026-09-20: exit 13 "unsettled top-level await" after a refused connection).
+ */
+export function sleep(ms: number, signal?: AbortSignal, wake?: AbortSignal): Promise<void> {
   return new Promise((resolve, reject) => {
     if (signal?.aborted) {
       reject(signal.reason);
       return;
     }
-    const t = setTimeout(() => {
-      signal?.removeEventListener('abort', onAbort);
+    if (wake?.aborted) {
       resolve();
-    }, ms);
-    function onAbort(): void {
-      clearTimeout(t);
-      reject(signal!.reason);
+      return;
     }
+    // NaN > 0 is false → next tick; Infinity → the cap (see MAX_TIMER_MS)
+    const delay = ms > 0 ? Math.min(ms, MAX_TIMER_MS) : 0;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const settle = (fn: () => void): void => {
+      if (timer !== null) clearTimeout(timer);
+      timer = null;
+      signal?.removeEventListener('abort', onAbort);
+      wake?.removeEventListener('abort', onWake);
+      fn();
+    };
+    const onAbort = (): void => settle(() => reject(signal?.reason));
+    const onWake = (): void => settle(resolve);
+    timer = setTimeout(() => settle(resolve), delay);
     signal?.addEventListener('abort', onAbort, { once: true });
+    wake?.addEventListener('abort', onWake, { once: true });
   });
 }
 

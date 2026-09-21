@@ -282,6 +282,19 @@ export async function main(argv: string[]): Promise<number> {
       return commandBench(flags);
     case 'perf':
       return commandPerf(flags);
+    case 'chat':
+    case 'login':
+    case 'logout':
+    case 'sessions':
+    case 'report':
+    case 'why':
+    case 'calibration':
+    case 'completion':
+    case 'upgrade':
+      // TUI-DESIGN §1: wired by the session controller (cli/session.ts) in wave 3; until then the command is
+      // parsed (args.ts) but has no handler in this build.
+      process.stderr.write(`jevcode ${flags.command}: not available in this build yet\n`);
+      return EXIT_CODES.config;
   }
 }
 

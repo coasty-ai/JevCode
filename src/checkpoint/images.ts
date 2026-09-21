@@ -456,8 +456,9 @@ export async function writePostImages(runDir: string, step: number, changedFiles
       st = await lstat(abs);
     } catch (e) {
       if (errnoCode(e) === 'ENOENT' || errnoCode(e) === 'ENOTDIR') {
-        // gone after the step: a deletion when it existed before, nothing to record otherwise
-        if (before === undefined || before.existed) files[rel] = { deleted: true, preImage, source: opts.source };
+        // gone after the step: a deletion when it existed before, nothing to record otherwise; `cleanAtStart` is kept so
+        // /undo can bring a clean tracked file a command deleted back from HEAD (TUI-DESIGN §12.4 restore source 3)
+        if (before === undefined || before.existed) files[rel] = { deleted: true, preImage, source: opts.source, cleanAtStart: opts.cleanAtStart(rel) };
         continue;
       }
       skipped.push({ path: rel, reason: 'not-recoverable' });

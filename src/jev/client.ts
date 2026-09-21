@@ -7,11 +7,12 @@
  * rule 7), and every string that can carry an HTTP body or a key passes through `redact`.
  */
 import { appendFileSync } from 'node:fs';
-import { ConfigError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError } from '../errors.js';
+import { ConfigError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, REQUEST_ID_MAX_CHARS, toJevCodeError } from '../errors.js';
 import { sha12 } from '../core/hash.js';
 import { parseJson, toJson } from '../core/json.js';
+import { clip } from '../core/text.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
-import type { AskOptions, AskResult, Decider, DeciderConfig, JevRequest, JevResponse, Json, Question, TokenUsage } from '../core/types.js';
+import type { AskOptions, AskResult, Decider, DeciderConfig, JevRequest, JevResponse, Json, Question, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
 import { QuestionBuildError, assertQuestionBatch } from './questions.js';
 import { JEV_ERROR_BODY_MAX, JEV_RESPONSE_BODY_MAX_BYTES, JEV_RETRY } from './types.js';
 import type { JevClientDeps, JevResponseHeaders, ServedModelCheck } from './types.js';
@@ -86,12 +87,89 @@ function isTimeoutError(e: unknown): boolean {
   return typeof e === 'object' && e !== null && 'name' in e && (e as { name: unknown }).name === 'TimeoutError';
 }
 
+/**
+ * TUI-DESIGN §13.2: the per-attempt timer fired but the transport rejected with something other than a `TimeoutError`
+ * (an injected fetch, a runtime that surfaces the abort as `AbortError`). The classification rides the error's cause
+ * chain so `retryCauseOf` and the "timed out" message can never disagree; the raw rejection stays reachable as `cause`.
+ */
+class AttemptTimeoutError extends Error {
+  constructor(message: string, cause: unknown) {
+    super(message, { cause });
+    this.name = 'TimeoutError';
+  }
+}
+
 function errorMessage(e: unknown): string {
   if (e instanceof Error) {
     const cause = e.cause instanceof Error ? ` (${e.cause.message})` : '';
     return `${e.name}: ${e.message}${cause}`;
   }
   return String(e);
+}
+
+/** Walk a thrown value's `cause` chain for a string `code` (OS errno / undici `UND_ERR_*`); JevCodeErrors are skipped (their `code` is ours). */
+function errnoOf(e: unknown): string | null {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 8 && typeof cur === 'object' && cur !== null; depth++) {
+    if (!(cur instanceof JevCodeError)) {
+      const code = (cur as { code?: unknown }).code;
+      if (typeof code === 'string' && code.length > 0) return code;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** TUI-DESIGN §13.2: codes rendered as `no response from <host> in 10 s` rather than as "offline". */
+const TIMEOUT_CODES: ReadonlySet<string> = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
+
+/** TUI-DESIGN §15 item 5: `RetryCause.message` is a redacted hint of at most 200 chars, never a body. */
+const RETRY_CAUSE_MESSAGE_MAX = 200;
+
+/** `core/time.ts` `sleep` narrowed to this client's call shape (the engine signal is always passed; `wake` is the §13.2 waker). */
+type JevSleep = (ms: number, signal: AbortSignal, wake?: AbortSignal) => Promise<void>;
+
+/**
+ * TUI-DESIGN §15 item 4: the server's request id — `request-id`, then `x-request-id`, then OpenRouter's `x-generation-id`.
+ * Wire text that reaches `toJSON()` / `state.json` / the §13.2 `last:` row, so it is redacted like a body (a proxy may echo a
+ * client header) BEFORE the clip to the shared REQUEST_ID_MAX_CHARS (F9); blank or redacted-away → null.
+ */
+function requestIdOf(h: Headers, redact: (s: string) => string): string | null {
+  const v = h.get('request-id') ?? h.get('x-request-id') ?? h.get('x-generation-id');
+  if (v === null) return null;
+  const id = redact(v.trim()).trim();
+  return id.length > 0 ? clip(id, REQUEST_ID_MAX_CHARS) : null;
+}
+
+/**
+ * TUI-DESIGN §15 item 5: why the client is about to sleep. The message is the error's own (already
+ * redacted, body-free) clipped to 200 chars; `code` carries the errno for network / timeout causes so
+ * the retry row can render the §13.2 offline copy. Only status-0 errors can be network or timeout.
+ */
+function retryCauseOf(err: JevHttpError): RetryCause {
+  const message = clip(err.message, RETRY_CAUSE_MESSAGE_MAX);
+  if (err.status > 0) return { kind: 'http', status: err.status, code: null, message };
+  // The attempt timer's word wins (§13.2 `no response from <host> in 10 s`): a TimeoutError cause is a timeout whatever
+  // errno the transport happened to surface underneath it; a socket-level timeout code is a timeout too.
+  if (isTimeoutError(err.cause)) return { kind: 'timeout', status: null, code: 'TimeoutError', message };
+  const code = errnoOf(err.cause);
+  if (code !== null && TIMEOUT_CODES.has(code)) return { kind: 'timeout', status: null, code, message };
+  return { kind: 'network', status: null, code, message };
+}
+
+/**
+ * TUI-DESIGN §13.2 / §15.2 `jev/client.ts` row: call `onRetry` with the RetryInfo, then read the `wake`
+ * GETTER for this one sleep (the engine's handler creates a fresh AbortController per call, so every
+ * sleep sees its own). A throwing hook is a harness bug, not a Jev failure: it surfaces typed as
+ * 'internal' so the chain never re-bills it.
+ */
+function notifyRetry(opts: AskOptions, info: RetryInfo): AbortSignal | undefined {
+  try {
+    opts.onRetry?.(info);
+    return opts.wake?.();
+  } catch (e) {
+    throw toJevCodeError(e);
+  }
 }
 
 /** First 200 chars of `error.message` from an OpenRouter/TypeSafe error body, if any. */
@@ -196,7 +274,8 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
   const doFetch = deps.fetch ?? fetch;
   const now = deps.now ?? monotonicNow;
   const random = deps.random ?? Math.random;
-  const sleep = deps.sleep ?? defaultSleep;
+  // TUI-DESIGN §15.2 `core/time.ts`: the 3-arg shape (signal always given here); an injected 2-arg sleep (JevClientDeps) simply ignores the waker
+  const sleep: JevSleep = deps.sleep ?? defaultSleep;
   const redact = deps.redact;
   const referer = deps.referer ?? DEFAULT_REFERER;
 
@@ -220,7 +299,7 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
     'X-Title': APP_TITLE,
   };
 
-  function httpError(status: number, text: string, retryAfter: string | null): JevHttpError {
+  function httpError(status: number, text: string, retryAfter: string | null, requestId: string | null): JevHttpError {
     const body = redact(text).slice(0, JEV_ERROR_BODY_MAX);
     const hint = errorHint(body);
     return new JevHttpError(redact(`Jev HTTP ${status}${hint ? `: ${hint}` : ''}`), {
@@ -228,6 +307,7 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
       retryable: isRetryableStatus(status),
       retryAfterMs: parseRetryAfterMs(retryAfter),
       body,
+      requestId, // TUI-DESIGN §15 item 4: rides toJSON() and the §13.2 `last: … · request-id <id>` row
     });
   }
 
@@ -251,12 +331,14 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
     let text: string;
     let truncated: boolean;
     let captured: JevResponseHeaders;
+    let requestId: string | null;
     try {
       jtrace('attempt: fetch start');
       const res = await doFetch(cfg.baseUrl, { method: 'POST', headers, body, signal: attemptCtl.signal });
       jtrace(`attempt: headers status=${res.status}`);
       status = res.status;
       captured = captureHeaders(res.headers);
+      requestId = requestIdOf(res.headers, redact);
       ({ text, truncated } = await readBodyBounded(res, JEV_RESPONSE_BODY_MAX_BYTES, attemptCtl.signal));
       jtrace(`attempt: body read bytes=${text.length}`);
     } catch (e) {
@@ -265,13 +347,16 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
       if (signal.aborted) throw signal.reason;
       const timedOut = timedOutByTimer || isTimeoutError(e);
       const message = timedOut ? `Jev request timed out after ${JEV_RETRY.attemptTimeoutMs} ms` : `Jev request failed: ${errorMessage(e)}`;
-      return { kind: 'http', error: new JevHttpError(redact(message), { status: 0, retryable: true, cause: e }) };
+      // TUI-DESIGN §13.2: one predicate for the message and for retryCauseOf — a timer-fired attempt whose transport rejected
+      // with a non-TimeoutError is still classified 'timeout' (the decision rides the cause; the raw rejection stays under it)
+      const cause = timedOut && !isTimeoutError(e) ? new AttemptTimeoutError(message, e) : e;
+      return { kind: 'http', error: new JevHttpError(redact(message), { status: 0, retryable: true, cause }) };
     } finally {
       clearTimeout(timer);
       signal.removeEventListener('abort', onParentAbort);
     }
     const latencyMs = Math.max(0, now() - t0);
-    if (status !== 200) return { kind: 'http', error: httpError(status, text, captured.retryAfter) };
+    if (status !== 200) return { kind: 'http', error: httpError(status, text, captured.retryAfter, requestId) };
     if (truncated) {
       return {
         kind: 'invalid',
@@ -324,7 +409,9 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
         const usage: TokenUsage = {
           inputTokens: response.usage.input_tokens,
           outputTokens: response.usage.output_tokens,
-          costUsd: response.usage.cost,
+          // TUI-DESIGN §9.5: a non-finite usage.cost surfaces as NaN (the meter clamps it to 0, figures render `$?`) so the
+          // engine can emit budget:unpriced; validateJevResponse currently rejects such bodies before this point
+          costUsd: Number.isFinite(response.usage.cost) ? response.usage.cost : Number.NaN,
           calls: 1,
         };
         return {
@@ -350,7 +437,9 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
       const err = outcome.error;
       if (!err.retryable || httpAttempts >= JEV_RETRY.attempts) throw err;
       const waitMs = err.retryAfterMs ?? backoffMs(httpAttempts, random);
-      await sleep(waitMs, opts.signal);
+      // TUI-DESIGN §13.2 / §15.2 `jev/client.ts` row: RetryInfo before the sleep; the waker getter is read per sleep
+      const wake = notifyRetry(opts, { attempt: httpAttempts, maxAttempts: JEV_RETRY.attempts, waitMs, retryAfter: err.retryAfterMs !== null, cause: retryCauseOf(err) });
+      await sleep(waitMs, opts.signal, wake);
     }
   }
 

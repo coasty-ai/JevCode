@@ -5,6 +5,8 @@
  */
 import { headTail, clip } from '../core/text.js';
 import { toJson } from '../core/json.js';
+// TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective
+import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type {
   ActionOutcome,
   CandidateView,
@@ -81,7 +83,16 @@ export interface CommonStateInput {
   };
   budget: { stepsUsed: number; stepsMax: number; spentUsd: number; capUsd: number };
   redact: Redact;
+  /**
+   * TUI-DESIGN §8.6 / §15 item 19: the human directives applied to this step (≤ 8 × 600, masked by redactJson below);
+   * `state.human` is present only when non-null, so Jev's state is unchanged for steps without one
+   */
+  human?: { directives: readonly string[]; step: number } | null;
 }
+
+/** TUI-DESIGN §8.6: bounds of `state.human.directives` (F7: max 8 × 600) — the one definition lives in core/types.ts. */
+export const HUMAN_DIRECTIVES_MAX: number = PENDING_DIRECTIVES_MAX;
+export const HUMAN_DIRECTIVE_CHARS: number = DIRECTIVE_MAX_CHARS;
 
 /** testsCurrent (§5.5): true iff no file has changed since the last parsed test run. */
 export function testsCurrent(lastTestRun: LastTestRun | null, lastChangeStep: number | null): boolean {
@@ -131,6 +142,8 @@ export function buildCommonState(input: CommonStateInput): JsonObject {
     },
     budget: { stepsUsed: input.budget.stepsUsed, stepsMax: input.budget.stepsMax, spentUsd: round4(input.budget.spentUsd), capUsd: input.budget.capUsd },
   };
+  // TUI-DESIGN §8.6: `state.human` only for a step with directives (P1: Jev sees them, masked where a secret was acked)
+  if (input.human) state['human'] = { directives: input.human.directives.slice(0, HUMAN_DIRECTIVES_MAX).map((t) => clip(t, HUMAN_DIRECTIVE_CHARS)), step: input.human.step };
   return redactJson(state, input.redact) as JsonObject;
 }
 

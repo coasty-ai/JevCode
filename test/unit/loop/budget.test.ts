@@ -15,6 +15,13 @@ describe('checkBudgets', () => {
     expect(checkBudgets({ ...base, replans: 2, replanPending: true })).toBe('max_replans');
     expect(checkBudgets({ ...base, replans: 2, replanPending: false })).toBeNull();
   });
+  it('token_cap (TUI-DESIGN §9.5) sits after spend_cap and fires only when a cap is set and reached', () => {
+    expect(checkBudgets({ ...base, generatorTokens: 133_000 })).toBeNull();
+    expect(checkBudgets({ ...base, generatorTokens: 133_000, maxGeneratorTokens: 133_000 })).toBe('token_cap');
+    expect(checkBudgets({ ...base, generatorTokens: 132_999, maxGeneratorTokens: 133_000 })).toBeNull();
+    expect(checkBudgets({ ...base, spendExceeded: true, generatorTokens: 1, maxGeneratorTokens: 1 })).toBe('spend_cap');
+    expect(checkBudgets({ ...base, wallMsUsed: 1000, generatorTokens: 1, maxGeneratorTokens: 1 })).toBe('token_cap');
+  });
   it('`only` restricts the checks (before execute: spend_cap and wall_time)', () => {
     expect(checkBudgets({ ...base, steps: 10, only: ['spend_cap', 'wall_time'] })).toBeNull();
     expect(checkBudgets({ ...base, steps: 10, wallMsUsed: 2000, only: ['spend_cap', 'wall_time'] })).toBe('wall_time');
@@ -46,5 +53,13 @@ describe('checkBudgets', () => {
     expect(exitCodeFor('human_abort')).toBe(130);
     expect(exitCodeFor('error', { name: 'JevHttpError', code: 'jev_http', message: '', exitCode: 5 })).toBe(5);
     expect(exitCodeFor('error')).toBe(1);
+    // TUI-DESIGN §13.5: human_pause and token_cap are the exit-4 family; degraded → 3; signals 143 / 129 / 130
+    expect(exitCodeFor('human_pause')).toBe(4);
+    expect(exitCodeFor('token_cap')).toBe(4);
+    expect(exitCodeFor('complete', undefined, true)).toBe(3);
+    expect(exitCodeFor('error', { name: 'E', code: 'jev_http', message: '', exitCode: 5 }, true)).toBe(5);
+    expect(exitCodeFor('signal', undefined, false, 'SIGTERM')).toBe(143);
+    expect(exitCodeFor('signal', undefined, false, 'SIGHUP')).toBe(129);
+    expect(exitCodeFor('signal', undefined, false, 'SIGINT')).toBe(130);
   });
 });

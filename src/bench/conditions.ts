@@ -99,6 +99,8 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
     secretPaths: opts.secretPaths,
     generation: { temperature: opts.generation.temperature, maxTokens: opts.generation.maxTokens },
     deciderModel: { configured: opts.deciderModel.configured, pinned: opts.deciderModel.pinned },
+    // TUI-DESIGN §15.2 bench/conditions.ts row: a bench run is its own session and writes neither index.jsonl nor history.jsonl (§1)
+    session: { sessionId: null, parentRunId: null, source: 'bench' },
   };
   if (input.synthesizer) out.synthesizer = input.synthesizer;
   if (input.resume) out.resume = input.resume;

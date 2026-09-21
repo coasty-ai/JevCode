@@ -4,6 +4,8 @@
  * is bounded here and the total is clipped as a last resort.
  */
 import { clip, headTail } from '../core/text.js';
+// TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective
+import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { Candidate, EngineMode, FileView, Intent, IntentAnswer, Plan, ReplanDirective, SandboxLevel, WindowEntry } from '../core/types.js';
 
 export const PROMPT_LIMITS = {
@@ -67,13 +69,25 @@ export interface PromptInput {
   /** jev-off: the candidate list (path + bytes), no contents */
   candidates: Candidate[] | null;
   toolName: string;
+  /** TUI-DESIGN §8.6 / §15 item 19: human directives applied to this step (≤ 8 × 600) → one hints line each */
+  humanDirectives?: readonly string[];
+  /** TUI-DESIGN §15 item 11: @-mentioned files the human pinned for this task */
+  pinnedFiles?: readonly string[];
 }
 
 export interface SystemPromptOptions {
   mode: EngineMode;
   sandboxLevel: SandboxLevel;
   toolName: string;
+  /** TUI-DESIGN §11.3 / §15 item 19: AGENTS.md text (≤ 32 KiB) appended as `## Project instructions`; generator only */
+  instructions?: string;
 }
+
+/** TUI-DESIGN §11.3 (D6): the instruction text never exceeds 32 KiB in the prompt, whatever the loader passed. */
+export const INSTRUCTIONS_MAX_CHARS = 32 * 1024;
+/** TUI-DESIGN §8.6: each human directive line is clipped at 600 (F7: 8 × 600, never re-clipped as a batch) — defined once in core/types.ts. */
+export const HUMAN_DIRECTIVE_CHARS: number = DIRECTIVE_MAX_CHARS;
+const PINNED_FILES_SHOWN = 20;
 
 const SCHEMA_EXAMPLE = `{ "goal": "one sentence",
   "action": { "kind": "edit", "path": "src/a.py", "old": "exact text copied verbatim", "new": "replacement" },
@@ -88,7 +102,7 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
     opts.mode === 'jev-on'
       ? 'A separate decision model (Jev) scores every proposed action for risk before it runs, judges the result, and decides whether the task is complete; blocked or declined actions come back to you with the reason. Jev also sets the intent of each step and picks which files you see.'
       : 'Every well-formed action is executed; there is no reviewer. You obtain file contents only through `read` actions.';
-  return [
+  const base = [
     'You are the engineer in a coding-agent harness. You write code; you do not decide when the task is finished, the harness does.',
     'Each turn you receive the task, the accepted plan, recent steps with their results, and workspace information. You reply by calling the tool ' +
       `\`${opts.toolName}\` exactly once with { goal, action, plan }. If tool calling is unavailable, reply with exactly one fenced \`\`\`json block of the same shape and nothing after it:`,
@@ -104,6 +118,9 @@ export function buildSystemPrompt(opts: SystemPromptOptions): string {
     `- ${reviewer}`,
     '- Keep any text before the tool call to a few sentences of reasoning.',
   ].join('\n\n');
+  // TUI-DESIGN §15.2 prompts.ts row: `\n\n## Project instructions\n<text>` — the generator sees AGENTS.md, Jev never does (D6)
+  const instructions = opts.instructions?.trim() ?? '';
+  return instructions.length === 0 ? base : `${base}\n\n## Project instructions\n${clip(instructions, INSTRUCTIONS_MAX_CHARS)}`;
 }
 
 function item(s: string, max = PROMPT_LIMITS.planItemChars): string {
@@ -167,6 +184,10 @@ function hintsSection(input: PromptInput): string | null {
     lines.push(`Replan directive from Jev (move \`${d.move}\`, p=${d.probability.toFixed(2)}, task_impossible=${d.taskImpossible.toFixed(2)}): ${clip(d.text, 600)}`);
   }
   if (input.loopNotice) lines.push(clip(input.loopNotice, 600));
+  // TUI-DESIGN §8.6 / §15.2 prompts.ts row: one line per human directive, after the replan line, each clipped at 600 (≤ 8 lines)
+  for (const d of (input.humanDirectives ?? []).slice(0, PENDING_DIRECTIVES_MAX)) lines.push(`Instruction from the human for this step (it takes precedence over the plan's order): ${clip(d, HUMAN_DIRECTIVE_CHARS)}`);
+  const pinned = input.pinnedFiles ?? [];
+  if (pinned.length > 0) lines.push(`The human pinned these files for this task (@-mentions): ${pinned.slice(0, PINNED_FILES_SHOWN).join(', ')}${pinned.length > PINNED_FILES_SHOWN ? `, … (${pinned.length - PINNED_FILES_SHOWN} more)` : ''}`);
   if (lines.length === 0) return null;
   return ['## Notes from the harness', ...lines.map((l) => `- ${l}`)].join('\n');
 }

@@ -4,7 +4,7 @@
  * Messages must already be redacted by the thrower when they can contain command output
  * or HTTP bodies (see core/redact.ts).
  */
-import type { SignalName } from './core/types.js';
+import type { SerializedError, SignalName } from './core/types.js';
 
 export type ErrorCode =
   | 'config'
@@ -41,6 +41,26 @@ export class JevCodeError extends Error {
   }
 }
 
+/**
+ * TUI-DESIGN §15 item 4: the wire shape of an HTTP-side error (`JevHttpError` / `ProviderHttpError`
+ * `toJSON()`); a `SerializedError` that keeps `JevCodeError.toJSON()`'s `ErrorCode` narrowing and
+ * always carries `status`, `retryable`, `side` and `requestId`.
+ */
+export interface HttpErrorJson extends SerializedError {
+  code: ErrorCode;
+  status: number;
+  retryable: boolean;
+  side: 'jev' | 'generator';
+  requestId: string | null;
+}
+
+/**
+ * TUI-DESIGN §15 item 4 / §13.2 `last: … · request-id <id>`: the one cap on a server request id copied into an
+ * error (both sides). A request id is server-controlled wire text like a body: the reader redacts it first (a proxy
+ * may echo a client header), then clips it here; an id that redacts to nothing is `null`.
+ */
+export const REQUEST_ID_MAX_CHARS = 128;
+
 /** Bad or missing configuration, or a usage error (unknown flag, missing task text). Exit 2. */
 export class ConfigError extends JevCodeError {
   readonly setting: string | undefined;
@@ -68,12 +88,23 @@ export class JevHttpError extends JevError {
   readonly retryable: boolean;
   readonly retryAfterMs: number | null;
   readonly body: string;
-  constructor(message: string, opts: { status: number; retryable: boolean; retryAfterMs?: number | null; body?: string; cause?: unknown }) {
+  /**
+   * TUI-DESIGN §15 item 4 / §13.2 `last: … · request-id <id>`: the server's request id when the response carried one —
+   * `request-id`, then `x-request-id`, then OpenRouter's `x-generation-id` — redacted and clipped to REQUEST_ID_MAX_CHARS
+   * by the client; null for a network failure or a timeout.
+   */
+  readonly requestId: string | null;
+  constructor(message: string, opts: { status: number; retryable: boolean; retryAfterMs?: number | null; body?: string; requestId?: string | null; cause?: unknown }) {
     super('jev_http', message, { cause: opts.cause });
     this.status = opts.status;
     this.retryable = opts.retryable;
     this.retryAfterMs = opts.retryAfterMs ?? null;
     this.body = opts.body ?? '';
+    this.requestId = opts.requestId ?? null;
+  }
+  /** TUI-DESIGN §15.2 `jev/client.ts` row: `toJSON()` adds `status`, `retryable`, `side: 'jev'`, `requestId` (never the body). */
+  override toJSON(): HttpErrorJson & { side: 'jev' } {
+    return { ...super.toJSON(), status: this.status, retryable: this.retryable, side: 'jev', requestId: this.requestId };
   }
 }
 
@@ -114,12 +145,24 @@ export class ProviderHttpError extends ProviderError {
   readonly retryable: boolean;
   readonly retryAfterMs: number | null;
   readonly body: string;
-  constructor(message: string, opts: { status: number; retryable: boolean; retryAfterMs?: number | null; body?: string; cause?: unknown }) {
+  /**
+   * TUI-DESIGN §15 item 4 / §13.2: `request-id` (Anthropic; its error bodies also carry `request_id`) or `x-request-id`
+   * (OpenRouter and proxies) when the response carried one; a mid-stream API error after a 200 carries that response's
+   * id. Redacted and clipped to REQUEST_ID_MAX_CHARS by the transport; null for a transport failure (`TransportError`,
+   * `IdleTimeoutError`).
+   */
+  readonly requestId: string | null;
+  constructor(message: string, opts: { status: number; retryable: boolean; retryAfterMs?: number | null; body?: string; requestId?: string | null; cause?: unknown }) {
     super('provider_http', message, { cause: opts.cause });
     this.status = opts.status;
     this.retryable = opts.retryable;
     this.retryAfterMs = opts.retryAfterMs ?? null;
     this.body = opts.body ?? '';
+    this.requestId = opts.requestId ?? null;
+  }
+  /** TUI-DESIGN §15.2 `provider/sse.ts` row: `toJSON()` likewise, with `side: 'generator'`. */
+  override toJSON(): HttpErrorJson & { side: 'generator' } {
+    return { ...super.toJSON(), status: this.status, retryable: this.retryable, side: 'generator', requestId: this.requestId };
   }
 }
 

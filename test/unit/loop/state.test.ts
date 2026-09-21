@@ -22,6 +22,32 @@ function common(): JsonObject {
   });
 }
 
+describe('state.human (TUI-DESIGN §8.6 / §15 item 19)', () => {
+  const base = {
+    task: 't',
+    plan: { done: [], remaining: [], unverified: [], openProblems: [], harnessProblems: [] },
+    recent: [],
+    workspace: { root: '/ws', git: true, hasTests: false, testCommand: null, changedFiles: [], createdThisRun: [], lastChangeStep: null, lastTestRun: null, sandbox: 'none' as const },
+    budget: { stepsUsed: 0, stepsMax: 1, spentUsd: 0, capUsd: 1 },
+    redact: (s: string) => s.replaceAll('SECRET', '[REDACTED:x]'),
+  };
+  it('is absent without directives (null or omitted) and present, bounded and redacted with them', () => {
+    expect(buildCommonState(base)['human']).toBeUndefined();
+    expect(buildCommonState({ ...base, human: null })['human']).toBeUndefined();
+    const many = Array.from({ length: 9 }, (_, i) => `d${i} SECRET ${'x'.repeat(700)}`);
+    const st = buildCommonState({ ...base, human: { directives: many, step: 4 } });
+    const human = st['human'] as { directives: string[]; step: number };
+    expect(human.step).toBe(4);
+    expect(human.directives).toHaveLength(8);
+    for (const d of human.directives) {
+      // clipped at 600 before redaction (the mask is longer than the secret it replaces)
+      expect(d.length).toBeLessThanOrEqual(600 + '[REDACTED:x]'.length - 'SECRET'.length);
+      expect(d).toContain('[REDACTED:x]');
+      expect(d).not.toContain('SECRET');
+    }
+  });
+});
+
 describe('Jev state (§5.5)', () => {
   it('common state: code-computed testsCurrent, redacted strings, bounded plan items', () => {
     const s = common();

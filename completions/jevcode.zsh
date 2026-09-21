@@ -10,10 +10,19 @@ _jevcode_runs() {
 _jevcode() {
   local -a commands
   commands=(
+    'chat:interactive session'
     'run:run one task'
     'config:print the resolved configuration'
     'bench:run the benchmark suites'
     'perf:run the performance gates'
+    'login:store an API key'
+    'logout:remove a stored API key'
+    'sessions:list or maintain sessions'
+    'report:write a support bundle'
+    'why:explain a Jev decision'
+    'calibration:reliability report'
+    'completion:print a completion script'
+    'upgrade:upgrade jevcode'
   )
   _arguments -C \
     '1:command:->cmd' \
@@ -22,6 +31,63 @@ _jevcode() {
     cmd) _describe -t commands "jevcode command" commands ;;
     args)
       case "${words[1]}" in
+        chat)
+          _arguments \
+            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--model[generator model id]:id:' \
+            '--api-key[generator API key (prefer the env var)]:key:' \
+            '--base-url[generator base URL]:url:' \
+            '--temperature[generator temperature (unset = not sent)]:t:' \
+            '--max-tokens[generator max output tokens]:n:' \
+            '--jev-base-url[decider (Jev) base URL]:url:' \
+            '--jev-api-key[decider API key (prefer the env var)]:key:' \
+            '--jev-model[decider model id (dated id pins it)]:id:' \
+            '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
+            '--max-steps[max steps per run]:n:' \
+            '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
+            '--max-replans[max replans per run]:n:' \
+            '--complete-threshold[completion probability threshold]:p:' \
+            '--impossible-threshold[task-impossible probability threshold]:p:' \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
+            '--no-network[deny network to sandboxed commands]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
+            '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
+            '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
+            '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
+            '--title[set the terminal title (OSC 2)]' \
+            '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \
+            '--no-animation[reduced motion: static spinner, 1 Hz clock (default on with --screen-reader)]' \
+            '--notify[terminal notification (BEL / OSC) when a review waits or a run ends]' \
+            '--osc52[allow clipboard writes through OSC 52 (write only)]' \
+            '--no-history[do not persist composer history to ~/.jevcode/history.jsonl]' \
+            '--no-input[no interactive renderer; every prompt takes its safe default (run only: needs a task)]' \
+            '--trust-workspace[trust the workspace (AGENTS.md, ./.env, jevcode.json) without the prompt (scripts)]:dir:_files -/' \
+            '--no-budget-warnings[mute budget toasts and the bell (items and JSON events stay)]' \
+            '--allow-secret-mention[allow @-mentions of denylisted secret files after a per-mention y/N]' \
+            '--no-color[disable colour (same as NO_COLOR)]' \
+            '--exit-code[session exit code: always 0 (default) or the last run’s code]:exit-code:(zero last-run)' \
+            '--keybindings[keybindings file (default ${XDG_CONFIG_HOME:-~/.config}/jevcode/keybindings.json)]:file:' \
+            '--log[log file (default <runDir>/jevcode.log; JEVCODE_TRACE=<file> is the same at level trace)]:file:' \
+            '--log-level[log level (default info; file only, keys never appear in logs)]:log-level:(error warn info debug trace)' \
+            '--verbose[same as --log-level debug (decisions, hashes, latencies, checkpoint timings to the file only)]' \
+            '--session-spend-cap[session spend cap in USD (default 5 × the run cap); none = uncapped]:usd|none:' \
+            '--allow-unpriced[run an unpriced generator model under a token cap instead of refusing]' \
+            '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
+            '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
+            '--continue[continue the most recently used session in this workspace]' \
+            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
+            '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
+            '--list-sessions[print the sessions of this workspace and exit]' \
+            '--mode[engine mode: jev-on (default), jev-off (generator only), jev-only (no generating LLM)]:mode:(jev-on jev-off jev-only)' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
         run)
           _arguments \
             '--provider[generator provider]:provider:(anthropic openrouter)' \
@@ -33,7 +99,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
-            '--spend-cap[spend cap in USD (bench: total for the bench)]:usd:' \
+            '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
             '--max-replans[max replans per run]:n:' \
@@ -42,16 +108,43 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
-            '--config[config file (default: ./jevcode.json, else ~/.config/jevcode/config.json)]:<file>:_files' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
+            '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
+            '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
+            '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
+            '--title[set the terminal title (OSC 2)]' \
+            '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \
+            '--no-animation[reduced motion: static spinner, 1 Hz clock (default on with --screen-reader)]' \
+            '--notify[terminal notification (BEL / OSC) when a review waits or a run ends]' \
+            '--osc52[allow clipboard writes through OSC 52 (write only)]' \
+            '--no-history[do not persist composer history to ~/.jevcode/history.jsonl]' \
+            '--no-input[no interactive renderer; every prompt takes its safe default (run only: needs a task)]' \
+            '--trust-workspace[trust the workspace (AGENTS.md, ./.env, jevcode.json) without the prompt (scripts)]:dir:_files -/' \
+            '--no-budget-warnings[mute budget toasts and the bell (items and JSON events stay)]' \
+            '--allow-secret-mention[allow @-mentions of denylisted secret files after a per-mention y/N]' \
+            '--no-color[disable colour (same as NO_COLOR)]' \
+            '--exit-code[session exit code: always 0 (default) or the last run’s code]:exit-code:(zero last-run)' \
+            '--keybindings[keybindings file (default ${XDG_CONFIG_HOME:-~/.config}/jevcode/keybindings.json)]:file:' \
+            '--log[log file (default <runDir>/jevcode.log; JEVCODE_TRACE=<file> is the same at level trace)]:file:' \
+            '--log-level[log level (default info; file only, keys never appear in logs)]:log-level:(error warn info debug trace)' \
+            '--verbose[same as --log-level debug (decisions, hashes, latencies, checkpoint timings to the file only)]' \
+            '--session-spend-cap[session spend cap in USD (default 5 × the run cap); none = uncapped]:usd|none:' \
+            '--allow-unpriced[run an unpriced generator model under a token cap instead of refusing]' \
+            '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
+            '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
+            '--continue[continue the most recently used session in this workspace]' \
+            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
+            '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
+            '--list-sessions[print the sessions of this workspace and exit]' \
             '--task-file[read the task text from a file]:<path>:_files' \
-            '--resume[run: resume <run-id>; bench: resume <bench-id>]:run id:_jevcode_runs' \
-            '--force[with --resume: resume a run whose stopReason is complete]' \
             '--mode[engine mode: jev-on (default), jev-off (generator only), jev-only (no generating LLM)]:mode:(jev-on jev-off jev-only)' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]' \
             '*:task text:'
           ;;
         config)
@@ -65,7 +158,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
-            '--spend-cap[spend cap in USD (bench: total for the bench)]:usd:' \
+            '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
             '--max-replans[max replans per run]:n:' \
@@ -74,13 +167,37 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
-            '--config[config file (default: ./jevcode.json, else ~/.config/jevcode/config.json)]:<file>:_files' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI]' \
-            '--json[print the resolved table as JSON]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
+            '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
+            '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
+            '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
+            '--title[set the terminal title (OSC 2)]' \
+            '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \
+            '--no-animation[reduced motion: static spinner, 1 Hz clock (default on with --screen-reader)]' \
+            '--notify[terminal notification (BEL / OSC) when a review waits or a run ends]' \
+            '--osc52[allow clipboard writes through OSC 52 (write only)]' \
+            '--no-history[do not persist composer history to ~/.jevcode/history.jsonl]' \
+            '--no-input[no interactive renderer; every prompt takes its safe default (run only: needs a task)]' \
+            '--trust-workspace[trust the workspace (AGENTS.md, ./.env, jevcode.json) without the prompt (scripts)]:dir:_files -/' \
+            '--no-budget-warnings[mute budget toasts and the bell (items and JSON events stay)]' \
+            '--allow-secret-mention[allow @-mentions of denylisted secret files after a per-mention y/N]' \
+            '--no-color[disable colour (same as NO_COLOR)]' \
+            '--exit-code[session exit code: always 0 (default) or the last run’s code]:exit-code:(zero last-run)' \
+            '--keybindings[keybindings file (default ${XDG_CONFIG_HOME:-~/.config}/jevcode/keybindings.json)]:file:' \
+            '--log[log file (default <runDir>/jevcode.log; JEVCODE_TRACE=<file> is the same at level trace)]:file:' \
+            '--log-level[log level (default info; file only, keys never appear in logs)]:log-level:(error warn info debug trace)' \
+            '--verbose[same as --log-level debug (decisions, hashes, latencies, checkpoint timings to the file only)]' \
+            '--session-spend-cap[session spend cap in USD (default 5 × the run cap); none = uncapped]:usd|none:' \
+            '--allow-unpriced[run an unpriced generator model under a token cap instead of refusing]' \
+            '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
+            '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
-            '--version[print the version]'
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
           ;;
         bench)
           _arguments \
@@ -93,7 +210,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
-            '--spend-cap[spend cap in USD (bench: total for the bench)]:usd:' \
+            '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
             '--max-replans[max replans per run]:n:' \
@@ -102,11 +219,11 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
-            '--config[config file (default: ./jevcode.json, else ~/.config/jevcode/config.json)]:<file>:_files' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI]' \
-            '--resume[run: resume <run-id>; bench: resume <bench-id>]:run id:_jevcode_runs' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
             '--suite[benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)]:suite:(swebench terminal-bench quixbugs ladder all)' \
             '--tasks[number of tasks]:n:' \
             '--task-id[specific task ids]:id[,id...]:' \
@@ -115,9 +232,9 @@ _jevcode() {
             '--live[use the real generator and Jev (requires --spend-cap)]' \
             '--task-spend-cap[per-run spend cap (default 2.00)]:usd:' \
             '--allow-model-alias[allow an undated --jev-model]' \
-            '--out[bench: results dir; perf: results file]:<path>:_files' \
+            '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
             '--help[show usage]' \
-            '--version[print the version]'
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
           ;;
         perf)
           _arguments \
@@ -130,7 +247,7 @@ _jevcode() {
             '--jev-base-url[decider (Jev) base URL]:url:' \
             '--jev-api-key[decider API key (prefer the env var)]:key:' \
             '--jev-model[decider model id (dated id pins it)]:id:' \
-            '--spend-cap[spend cap in USD (bench: total for the bench)]:usd:' \
+            '--spend-cap[run spend cap in USD (bench: total for the bench)]:usd:' \
             '--max-steps[max steps per run]:n:' \
             '--max-wall[max wall time per run, e.g. 30m, 7h30m, 90s]:dur:' \
             '--max-replans[max replans per run]:n:' \
@@ -139,14 +256,86 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
-            '--config[config file (default: ./jevcode.json, else ~/.config/jevcode/config.json)]:<file>:_files' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
             '--live[use the real generator and Jev (requires --spend-cap)]' \
-            '--out[bench: results dir; perf: results file]:<path>:_files' \
+            '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
             '--help[show usage]' \
-            '--version[print the version]'
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        login)
+          _arguments \
+            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--generator-key-stdin[read the generator key from the first stdin line (pipes)]' \
+            '--jev-key-stdin[read the Jev key from stdin (the next line)]' \
+            '--status[print which keys are set and where they come from (fingerprints only)]' \
+            '--verify[verify the saved keys with one priced Jev call (~$0.0001)]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        logout)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--generator[remove the saved generator key]' \
+            '--jev[remove the saved Jev key]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        sessions)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        report)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
+            '--include-requests[include the redacted jev.jsonl request bodies in the bundle]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        why)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        calibration)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        completion)
+          _arguments \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
+          ;;
+        upgrade)
+          _arguments \
+            '--check[only report whether a newer version exists (2 s registry timeout)]' \
+            '--method[package manager to upgrade with (default: detected from the install path)]:method:(npm brew bun pnpm yarn)' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, bundle)]'
           ;;
       esac ;;
   esac

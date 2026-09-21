@@ -47,6 +47,38 @@ describe('signatures (§6)', () => {
   });
 });
 
+describe('resetCounts (TUI-DESIGN §8.6: a human directive restarts the repetition count)', () => {
+  it('clears counts, the trip and lastSignature; keeps the trips history and replanCount', () => {
+    const d = createLoopDetector();
+    d.observe(1, ['run:a:b']);
+    d.observe(2, ['run:a:b']);
+    expect(d.observe(3, ['run:a:b'])).toEqual({ signature: 'run:a:b', occurrences: 3 });
+    d.onReplan(4, 'Jev directs `change_approach`');
+    d.observe(4, ['run:a:b']);
+    d.observe(5, ['run:a:b']);
+    expect(d.toState().counts).toEqual({ 'run:a:b': 2 });
+    d.resetCounts();
+    const st = d.toState();
+    expect(st.counts).toEqual({});
+    expect(st.tripped).toBe(false);
+    expect(st.lastSignature).toBeNull();
+    expect(st.replanCount).toBe(1);
+    expect(st.tripsBySignature['run:a:b']).toEqual({ trips: 1, directives: [{ step: 4, directive: 'Jev directs `change_approach`' }] });
+    expect(d.trippedSignature()).toBeNull();
+    // the third identical result after the reset counts from one again: no trip until three more
+    expect(d.observe(6, ['run:a:b'])).toBeNull();
+    expect(d.observe(7, ['run:a:b'])).toBeNull();
+    expect(d.observe(8, ['run:a:b'])).toEqual({ signature: 'run:a:b', occurrences: 3 });
+    // a tripped detector is untripped by the reset (the replan the human pre-empted never runs)
+    const t = createLoopDetector();
+    for (let i = 1; i <= 3; i++) t.observe(i, ['done:x']);
+    expect(t.tripped()).toBe(true);
+    t.resetCounts();
+    expect(t.tripped()).toBe(false);
+    expect(t.replanCount()).toBe(0);
+  });
+});
+
 describe('fail: signature of a failing test run is the failing set (§6, ladder round 6)', () => {
   const run = (command: string, stdout: string, stderr = ''): string[] =>
     computeSignatures({ ...base, proposal: prop({ kind: 'run', command }), outcome: { status: 'executed', exec: execResult({ exitCode: 1, stdout, stderr }), summary: 'exit 1', changedFiles: [] }, output: stdout + stderr });

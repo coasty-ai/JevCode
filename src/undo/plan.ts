@@ -46,9 +46,21 @@ export interface UndoPlanInput {
 /** How a restore would be performed, in the §12.4 source order. */
 export type RestoreVia = 'pre-image' | 'unlink' | 'git-restore';
 
+/**
+ * TUI-DESIGN §12.4 "all checks before the first write": what the plan saw on disk for a row it will write (or ask
+ * about). The ask overlay is human-paced, so apply.ts re-reads the file right before the write and compares it
+ * against this — a row whose file changed in between is asked again or kept, never overwritten unseen.
+ */
+export interface ExpectedState {
+  /** lstat succeeded when the plan was made */
+  exists: boolean;
+  /** sha256 of the bytes the plan (or the answered ask) saw; null when missing, unhashed or too large */
+  sha256: string | null;
+}
+
 export type UndoDecision =
-  | { kind: 'restore'; path: string; via: RestoreVia }
-  | { kind: 'ask'; path: string; via: RestoreVia; prompt: string }
+  | { kind: 'restore'; path: string; via: RestoreVia; expected: ExpectedState }
+  | { kind: 'ask'; path: string; via: RestoreVia; prompt: string; expected: ExpectedState }
   | { kind: 'refuse'; path: string; laterStep: number; message: string }
   | { kind: 'skip'; path: string; reason: UndoSkipReason; message: string };
 
@@ -73,6 +85,10 @@ export const NOT_RECOVERABLE_SIZE = 'not recoverable — no pre-image (file > 1 
 /** The pre-image was skipped by the 200-file / 16 MiB copy cap (TUI-DESIGN §12.3) — `UndoSkipReason 'cap'`. */
 export const NOT_RECOVERABLE_CAP = 'not recoverable — no pre-image (copy cap reached)';
 export const UNDO_ASK_TAIL = 'Overwrite? [y/N]  a=all  s=skip rest  Esc=abort';
+/** The skip message of a restore row whose file changed between the plan (or its answered ask) and the write (§12.4 re-verification; §24 names no text yet). */
+export const CHANGED_DURING_UNDO = 'kept (changed during undo)';
+/** The skip message of an ask row answered `n` (or left to the default). */
+export const KEPT_DECLINED = 'kept (declined)';
 
 /** `not recoverable — HEAD moved since step N` (TUI-DESIGN §12.4, new rule E10). */
 export function headMovedMessage(step: number): string {
@@ -141,12 +157,30 @@ function decide(path: string, file: PostImageFile, input: UndoPlanInput): UndoDe
   if (cur.submodule === true) return { kind: 'skip', path, reason: 'submodule', message: 'submodule' };
   const via = resolveVia(path, file, input);
   if ('skip' in via) return { kind: 'skip', path, reason: via.skip, message: via.message };
-  // comparison rows
+  // comparison rows; `expected` is the disk state the row was decided on, re-verified by apply.ts before the write
+  const expected = expectedState(cur);
   const unchanged = file.deleted === true ? !cur.exists : cur.exists && file.sha256 !== null && file.sha256 !== undefined && cur.sha256 === file.sha256;
-  if (unchanged) return { kind: 'restore', path, via: via.via };
+  if (unchanged) return { kind: 'restore', path, via: via.via, expected };
   const later = laterStepMatching(path, cur, input);
   if (later !== null) return { kind: 'refuse', path, laterStep: later, message: refuseMessage(path, input.step, later) };
-  return { kind: 'ask', path, via: via.via, prompt: askPrompt(path, input.step) };
+  return { kind: 'ask', path, via: via.via, prompt: askPrompt(path, input.step), expected };
+}
+
+/** TUI-DESIGN §12.4: the `expected` snapshot of a row from the current facts (existence + hash). Pure. */
+export function expectedState(cur: CurrentFileState): ExpectedState {
+  return { exists: cur.exists, sha256: cur.sha256 };
+}
+
+/**
+ * TUI-DESIGN §12.4 re-verification: the row's expected state still holds — same existence, and the same hash when
+ * the plan had one (a file unhashed at plan time — too large or unreadable — can only be checked for existence).
+ * Pure; apply.ts runs it over a fresh `readCurrentFiles` right before the first write.
+ */
+export function stillExpected(expected: ExpectedState, cur: CurrentFileState): boolean {
+  if (cur.exists !== expected.exists) return false;
+  if (!expected.exists) return true;
+  if (expected.sha256 === null) return true;
+  return cur.sha256 === expected.sha256;
 }
 
 /**
@@ -232,7 +266,7 @@ export function resolveAsks(plan: UndoPlan, answers: Readonly<Record<string, boo
     if (d.kind !== 'ask') return d;
     const a = answers[d.path];
     if (a === undefined) return d;
-    return a ? { kind: 'restore', path: d.path, via: d.via } : { kind: 'skip', path: d.path, reason: 'declined', message: 'kept (declined)' };
+    return a ? { kind: 'restore', path: d.path, via: d.via, expected: d.expected } : { kind: 'skip', path: d.path, reason: 'declined', message: KEPT_DECLINED };
   });
 }
 
@@ -252,7 +286,7 @@ export function skipsFromDecisions(decisions: readonly UndoDecision[]): UndoSkip
   const out: UndoSkip[] = [];
   for (const d of decisions) {
     if (d.kind === 'refuse') out.push({ path: d.path, reason: 'refused', message: d.message });
-    else if (d.kind === 'ask') out.push({ path: d.path, reason: 'declined', message: 'kept (declined)' });
+    else if (d.kind === 'ask') out.push({ path: d.path, reason: 'declined', message: KEPT_DECLINED });
     else if (d.kind === 'skip') out.push({ path: d.path, reason: d.reason, message: d.message });
   }
   return out;

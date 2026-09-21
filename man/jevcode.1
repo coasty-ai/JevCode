@@ -17,6 +17,30 @@ jevcode \- coding\-agent harness where Jev decides and Claude writes the code
 .br
 .B jevcode perf
 [\fIflags\fR]
+.br
+.B jevcode login
+[\fIflags\fR]
+.br
+.B jevcode logout
+[\fIflags\fR]
+.br
+.B jevcode sessions
+[\fIflags\fR]
+.br
+.B jevcode report
+[\fIflags\fR]
+.br
+.B jevcode why
+[\fIflags\fR]
+.br
+.B jevcode calibration
+[\fIflags\fR]
+.br
+.B jevcode completion
+[\fIflags\fR]
+.br
+.B jevcode upgrade
+[\fIflags\fR]
 .SH DESCRIPTION
 A bare \fBjevcode\fR opens the interactive session TUI: a scrollback\-native
 transcript, a composer, the Jev decision pane and a status line. \fBjevcode
@@ -25,6 +49,9 @@ run\fR runs one task and exits with the run\(aqs code. Every human decision
 never appear in logs, secrets are detected at every entry point and the
 sandbox confines every command the generator proposes.
 .SH COMMANDS
+.TP
+.B chat
+interactive session (the default when no command is given)
 .TP
 .B run
 run one task; \-\-resume continues a stored run
@@ -37,6 +64,30 @@ run the benchmark suites
 .TP
 .B perf
 run the performance gates
+.TP
+.B login
+store an API key (masked prompt or \-\-*\-stdin)
+.TP
+.B logout
+remove a stored API key
+.TP
+.B sessions
+list, reindex, prune or unlock sessions
+.TP
+.B report
+write a redacted support bundle for a run
+.TP
+.B why
+explain one Jev decision of a stored run
+.TP
+.B calibration
+reliability report over this workspace\(aqs runs
+.TP
+.B completion
+print the shell completion script (bash|zsh|fish)
+.TP
+.B upgrade
+upgrade through the detected package manager
 .SH OPTIONS
 Common flags (every command):
 .TP
@@ -68,7 +119,7 @@ decider API key (prefer the env var)
 decider model id (dated id pins it)
 .TP
 .BI \-\-spend\-cap " <usd>"
-spend cap in USD (bench: total for the bench)
+run spend cap in USD (bench: total for the bench)
 .TP
 .BI \-\-max\-steps " <n>"
 max steps per run
@@ -95,7 +146,8 @@ run directory root (default: ~/.jevcode/runs)
 Open Assist checkout whose .env is a fallback
 .TP
 .BI \-\-config " <file>"
-config file (default: ./jevcode.json, else ~/.config/jevcode/config.json)
+config file (default: ./jevcode.json, else
+${XDG_CONFIG_HOME:\-~/.config}/jevcode/config.json)
 .TP
 .BI \-\-sandbox " auto|seatbelt|none"
 sandbox profile
@@ -104,24 +156,218 @@ sandbox profile
 deny network to sandboxed commands
 .TP
 .BI \-\-plain
-plain line renderer instead of the TUI
+plain line renderer instead of the TUI (readline composer on a TTY)
+.TP
+.BI \-\-json
+chat/run: NDJSON event stream on stdout (non\-interactive; \-\-json=verbose
+adds status events); config/sessions/why/calibration: JSON output
 .TP
 .BI \-\-help
 show usage
 .TP
 .BI \-\-version
-print the version
+print the version (\-\-json: name, version, node, ink, bundle)
+.PP
+Flags of \fBchat\fR:
+.TP
+.BI \-\-theme " dark|light|daltonized|ansi"
+colour theme (no auto\-detect)
+.TP
+.BI \-\-fps " <n>"
+render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch
+.TP
+.BI \-\-render\-mode " standard|incremental"
+Ink render mode (default standard); fixed at launch
+.TP
+.BI \-\-ascii
+ASCII glyphs (auto on TERM=dumb, TERM=linux, non\-UTF\-8 locale); fixed at
+launch
+.TP
+.BI \-\-title
+set the terminal title (OSC 2)
+.TP
+.BI \-\-screen\-reader
+screen\-reader mode (numbered prompts, no bars; implies \-\-plain on a pipe);
+fixed at launch
+.TP
+.BI \-\-no\-animation
+reduced motion: static spinner, 1 Hz clock (default on with
+\-\-screen\-reader)
+.TP
+.BI \-\-notify
+terminal notification (BEL / OSC) when a review waits or a run ends
+.TP
+.BI \-\-osc52
+allow clipboard writes through OSC 52 (write only)
+.TP
+.BI \-\-no\-history
+do not persist composer history to ~/.jevcode/history.jsonl
+.TP
+.BI \-\-no\-input
+no interactive renderer; every prompt takes its safe default (run only: needs
+a task)
+.TP
+.BI \-\-trust\-workspace
+trust the workspace (AGENTS.md, ./.env, jevcode.json) without the prompt
+(scripts)
+.TP
+.BI \-\-no\-budget\-warnings
+mute budget toasts and the bell (items and JSON events stay)
+.TP
+.BI \-\-allow\-secret\-mention
+allow @\-mentions of denylisted secret files after a per\-mention y/N
+.TP
+.BI \-\-no\-color
+disable colour (same as NO_COLOR)
+.TP
+.BI \-\-exit\-code " zero|last\-run"
+session exit code: always 0 (default) or the last run’s code
+.TP
+.BI \-\-keybindings " <file>"
+keybindings file (default
+${XDG_CONFIG_HOME:\-~/.config}/jevcode/keybindings.json)
+.TP
+.BI \-\-log " <file>"
+log file (default <runDir>/jevcode.log; JEVCODE_TRACE=<file> is the same at
+level trace)
+.TP
+.BI \-\-log\-level " error|warn|info|debug|trace"
+log level (default info; file only, keys never appear in logs)
+.TP
+.BI \-\-verbose
+same as \-\-log\-level debug (decisions, hashes, latencies, checkpoint timings
+to the file only)
+.TP
+.BI \-\-session\-spend\-cap " <usd>|none"
+session spend cap in USD (default 5 × the run cap); none = uncapped
+.TP
+.BI \-\-allow\-unpriced
+run an unpriced generator model under a token cap instead of refusing
+.TP
+.BI \-\-max\-generator\-tokens " <n>"
+generator token cap under \-\-allow\-unpriced (default spend cap / 15 ×
+1e6)
+.TP
+.BI \-\-update\-notify
+post\-run update check through a detached jevcode upgrade \-\-check
+.TP
+.BI \-\-continue
+continue the most recently used session in this workspace
+.TP
+.BI \-\-resume " <id|title>"
+chat/run: continue a run by id, or a session by exact title or unique prefix;
+bench: resume <bench\-id>
+.TP
+.BI \-\-force
+with \-\-resume/\-\-continue: resume a run whose stopReason is complete
+instead of seeding a follow\-up
+.TP
+.BI \-\-list\-sessions
+print the sessions of this workspace and exit
+.TP
+.BI \-\-mode " jev\-on|jev\-off|jev\-only"
+engine mode: jev\-on (default), jev\-off (generator only), jev\-only (no
+generating LLM)
 .PP
 Flags of \fBrun\fR:
 .TP
-.BI \-\-task\-file " <path>"
-read the task text from a file
+.BI \-\-theme " dark|light|daltonized|ansi"
+colour theme (no auto\-detect)
 .TP
-.BI \-\-resume " <id>"
-run: resume <run\-id>; bench: resume <bench\-id>
+.BI \-\-fps " <n>"
+render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch
+.TP
+.BI \-\-render\-mode " standard|incremental"
+Ink render mode (default standard); fixed at launch
+.TP
+.BI \-\-ascii
+ASCII glyphs (auto on TERM=dumb, TERM=linux, non\-UTF\-8 locale); fixed at
+launch
+.TP
+.BI \-\-title
+set the terminal title (OSC 2)
+.TP
+.BI \-\-screen\-reader
+screen\-reader mode (numbered prompts, no bars; implies \-\-plain on a pipe);
+fixed at launch
+.TP
+.BI \-\-no\-animation
+reduced motion: static spinner, 1 Hz clock (default on with
+\-\-screen\-reader)
+.TP
+.BI \-\-notify
+terminal notification (BEL / OSC) when a review waits or a run ends
+.TP
+.BI \-\-osc52
+allow clipboard writes through OSC 52 (write only)
+.TP
+.BI \-\-no\-history
+do not persist composer history to ~/.jevcode/history.jsonl
+.TP
+.BI \-\-no\-input
+no interactive renderer; every prompt takes its safe default (run only: needs
+a task)
+.TP
+.BI \-\-trust\-workspace
+trust the workspace (AGENTS.md, ./.env, jevcode.json) without the prompt
+(scripts)
+.TP
+.BI \-\-no\-budget\-warnings
+mute budget toasts and the bell (items and JSON events stay)
+.TP
+.BI \-\-allow\-secret\-mention
+allow @\-mentions of denylisted secret files after a per\-mention y/N
+.TP
+.BI \-\-no\-color
+disable colour (same as NO_COLOR)
+.TP
+.BI \-\-exit\-code " zero|last\-run"
+session exit code: always 0 (default) or the last run’s code
+.TP
+.BI \-\-keybindings " <file>"
+keybindings file (default
+${XDG_CONFIG_HOME:\-~/.config}/jevcode/keybindings.json)
+.TP
+.BI \-\-log " <file>"
+log file (default <runDir>/jevcode.log; JEVCODE_TRACE=<file> is the same at
+level trace)
+.TP
+.BI \-\-log\-level " error|warn|info|debug|trace"
+log level (default info; file only, keys never appear in logs)
+.TP
+.BI \-\-verbose
+same as \-\-log\-level debug (decisions, hashes, latencies, checkpoint timings
+to the file only)
+.TP
+.BI \-\-session\-spend\-cap " <usd>|none"
+session spend cap in USD (default 5 × the run cap); none = uncapped
+.TP
+.BI \-\-allow\-unpriced
+run an unpriced generator model under a token cap instead of refusing
+.TP
+.BI \-\-max\-generator\-tokens " <n>"
+generator token cap under \-\-allow\-unpriced (default spend cap / 15 ×
+1e6)
+.TP
+.BI \-\-update\-notify
+post\-run update check through a detached jevcode upgrade \-\-check
+.TP
+.BI \-\-continue
+continue the most recently used session in this workspace
+.TP
+.BI \-\-resume " <id|title>"
+chat/run: continue a run by id, or a session by exact title or unique prefix;
+bench: resume <bench\-id>
 .TP
 .BI \-\-force
-with \-\-resume: resume a run whose stopReason is complete
+with \-\-resume/\-\-continue: resume a run whose stopReason is complete
+instead of seeding a follow\-up
+.TP
+.BI \-\-list\-sessions
+print the sessions of this workspace and exit
+.TP
+.BI \-\-task\-file " <path>"
+read the task text from a file
 .TP
 .BI \-\-mode " jev\-on|jev\-off|jev\-only"
 engine mode: jev\-on (default), jev\-off (generator only), jev\-only (no
@@ -129,13 +375,92 @@ generating LLM)
 .PP
 Flags of \fBconfig\fR:
 .TP
-.BI \-\-json
-print the resolved table as JSON
+.BI \-\-theme " dark|light|daltonized|ansi"
+colour theme (no auto\-detect)
+.TP
+.BI \-\-fps " <n>"
+render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch
+.TP
+.BI \-\-render\-mode " standard|incremental"
+Ink render mode (default standard); fixed at launch
+.TP
+.BI \-\-ascii
+ASCII glyphs (auto on TERM=dumb, TERM=linux, non\-UTF\-8 locale); fixed at
+launch
+.TP
+.BI \-\-title
+set the terminal title (OSC 2)
+.TP
+.BI \-\-screen\-reader
+screen\-reader mode (numbered prompts, no bars; implies \-\-plain on a pipe);
+fixed at launch
+.TP
+.BI \-\-no\-animation
+reduced motion: static spinner, 1 Hz clock (default on with
+\-\-screen\-reader)
+.TP
+.BI \-\-notify
+terminal notification (BEL / OSC) when a review waits or a run ends
+.TP
+.BI \-\-osc52
+allow clipboard writes through OSC 52 (write only)
+.TP
+.BI \-\-no\-history
+do not persist composer history to ~/.jevcode/history.jsonl
+.TP
+.BI \-\-no\-input
+no interactive renderer; every prompt takes its safe default (run only: needs
+a task)
+.TP
+.BI \-\-trust\-workspace
+trust the workspace (AGENTS.md, ./.env, jevcode.json) without the prompt
+(scripts)
+.TP
+.BI \-\-no\-budget\-warnings
+mute budget toasts and the bell (items and JSON events stay)
+.TP
+.BI \-\-allow\-secret\-mention
+allow @\-mentions of denylisted secret files after a per\-mention y/N
+.TP
+.BI \-\-no\-color
+disable colour (same as NO_COLOR)
+.TP
+.BI \-\-exit\-code " zero|last\-run"
+session exit code: always 0 (default) or the last run’s code
+.TP
+.BI \-\-keybindings " <file>"
+keybindings file (default
+${XDG_CONFIG_HOME:\-~/.config}/jevcode/keybindings.json)
+.TP
+.BI \-\-log " <file>"
+log file (default <runDir>/jevcode.log; JEVCODE_TRACE=<file> is the same at
+level trace)
+.TP
+.BI \-\-log\-level " error|warn|info|debug|trace"
+log level (default info; file only, keys never appear in logs)
+.TP
+.BI \-\-verbose
+same as \-\-log\-level debug (decisions, hashes, latencies, checkpoint timings
+to the file only)
+.TP
+.BI \-\-session\-spend\-cap " <usd>|none"
+session spend cap in USD (default 5 × the run cap); none = uncapped
+.TP
+.BI \-\-allow\-unpriced
+run an unpriced generator model under a token cap instead of refusing
+.TP
+.BI \-\-max\-generator\-tokens " <n>"
+generator token cap under \-\-allow\-unpriced (default spend cap / 15 ×
+1e6)
+.TP
+.BI \-\-update\-notify
+post\-run update check through a detached jevcode upgrade \-\-check
 .PP
 Flags of \fBbench\fR:
 .TP
-.BI \-\-resume " <id>"
-run: resume <run\-id>; bench: resume <bench\-id>
+.BI \-\-resume " <id|title>"
+chat/run: continue a run by id, or a session by exact title or unique prefix;
+bench: resume <bench\-id>
 .TP
 .BI \-\-suite " swebench|terminal\-bench|quixbugs|ladder|all"
 benchmark suite (quixbugs/ladder: the jev\-only difficulty ladder)
@@ -162,7 +487,8 @@ per\-run spend cap (default 2.00)
 allow an undated \-\-jev\-model
 .TP
 .BI \-\-out " <path>"
-bench: results dir; perf: results file
+bench: results dir; perf: results file; report: bundle dir (default
+~/.jevcode/reports/<id>/)
 .PP
 Flags of \fBperf\fR:
 .TP
@@ -170,7 +496,47 @@ Flags of \fBperf\fR:
 use the real generator and Jev (requires \-\-spend\-cap)
 .TP
 .BI \-\-out " <path>"
-bench: results dir; perf: results file
+bench: results dir; perf: results file; report: bundle dir (default
+~/.jevcode/reports/<id>/)
+.PP
+Flags of \fBlogin\fR:
+.TP
+.BI \-\-generator\-key\-stdin
+read the generator key from the first stdin line (pipes)
+.TP
+.BI \-\-jev\-key\-stdin
+read the Jev key from stdin (the next line)
+.TP
+.BI \-\-status
+print which keys are set and where they come from (fingerprints only)
+.TP
+.BI \-\-verify
+verify the saved keys with one priced Jev call (~$0.0001)
+.PP
+Flags of \fBlogout\fR:
+.TP
+.BI \-\-generator
+remove the saved generator key
+.TP
+.BI \-\-jev
+remove the saved Jev key
+.PP
+Flags of \fBreport\fR:
+.TP
+.BI \-\-out " <path>"
+bench: results dir; perf: results file; report: bundle dir (default
+~/.jevcode/reports/<id>/)
+.TP
+.BI \-\-include\-requests
+include the redacted jev.jsonl request bodies in the bundle
+.PP
+Flags of \fBupgrade\fR:
+.TP
+.BI \-\-check
+only report whether a newer version exists (2 s registry timeout)
+.TP
+.BI \-\-method " npm|brew|bun|pnpm|yarn"
+package manager to upgrade with (default: detected from the install path)
 .SH INTERACTIVE COMMANDS
 Typed at the composer; Enter runs a command only on an exact name or alias
 match. avail: idle | live | any.

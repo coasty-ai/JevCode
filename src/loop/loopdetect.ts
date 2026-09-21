@@ -301,6 +301,8 @@ export interface LoopDetector {
   priorDirectives(signature: string): { step: number; directive: string }[];
   /** replan (jev-on) or fixed text (jev-off) issued: the answered signature's count reset, trip cleared, history kept */
   onReplan(step: number, directive: string): void;
+  /** TUI-DESIGN §8.6 / §15 item 19: a human directive applied — counts, lastSignature and the trip cleared; trips history and replanCount kept */
+  resetCounts(): void;
   replanCount(): number;
   toState(): LoopDetectorState;
 }
@@ -361,6 +363,12 @@ export function createLoopDetector(initial?: LoopDetectorState): LoopDetector {
       }
       st.tripped = false;
       st.replanCount += 1;
+    },
+    resetCounts() {
+      // TUI-DESIGN §8.6: the human changed course, so the repetition count restarts; what was tripped and directed before stays on record
+      st.counts = {};
+      st.lastSignature = null;
+      st.tripped = false;
     },
     replanCount: () => st.replanCount,
     toState: () => ({

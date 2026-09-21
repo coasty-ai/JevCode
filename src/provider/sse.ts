@@ -6,11 +6,12 @@
  *  - the pricing arithmetic used when the API returns no cost.
  * Everything here is provider-agnostic; the two clients only add their wire shapes.
  */
-import { ProviderHttpError, toJevCodeError } from '../errors.js';
+import { JevCodeError, ProviderHttpError, REQUEST_ID_MAX_CHARS, toJevCodeError } from '../errors.js';
 import { isFiniteNumber, isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
-import type { Json, JsonObject, TokenUsage } from '../core/types.js';
+import type { SleepFn } from '../core/time.js';
+import type { Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
 import type { Pricing, ProviderDeps, SseOptions, SseRecord, TokenBreakdown } from './types.js';
 
 export const FIRST_BYTE_TIMEOUT_MS = 30_000;
@@ -26,6 +27,77 @@ export class IdleTimeoutError extends ProviderHttpError {
     super(`idle_timeout: no ${phase === 'first_byte' ? 'byte' : 'data'} received for ${Math.round(waitedMs)} ms`, { status: 0, retryable: true });
     this.phase = phase;
   }
+}
+
+/** TUI-DESIGN §15 item 5 (`RetryCause.kind`): what a retryable status-0 failure was. */
+export type TransportKind = 'network' | 'stream' | 'invalid';
+
+/**
+ * A retryable transport failure without an HTTP status, classified for `RetryCause` (TUI-DESIGN §13.2,
+ * §15 item 5): `network` = the request never got an answer, `stream` = the answer was cut or empty,
+ * `invalid` = a frame was not the documented JSON. `errno` is the OS / undici code found on the cause
+ * chain (`ENOTFOUND`, `ECONNREFUSED`, `UND_ERR_CONNECT_TIMEOUT`, …) — a code word, never a body.
+ */
+export class TransportError extends ProviderHttpError {
+  readonly kind: TransportKind;
+  readonly errno: string | null;
+  constructor(kind: TransportKind, message: string, opts: { cause?: unknown } = {}) {
+    super(message, { status: 0, retryable: true, cause: opts.cause });
+    this.kind = kind;
+    this.errno = errnoOf(opts.cause);
+  }
+}
+
+/** Walk a thrown value's `cause` chain for a string `code` (OS errno / undici `UND_ERR_*`); JevCodeErrors are skipped (their `code` is ours). */
+export function errnoOf(e: unknown): string | null {
+  let cur: unknown = e;
+  for (let depth = 0; depth < 8 && typeof cur === 'object' && cur !== null; depth++) {
+    if (!(cur instanceof JevCodeError)) {
+      const code = (cur as { code?: unknown }).code;
+      if (typeof code === 'string' && code.length > 0) return code;
+    }
+    cur = (cur as { cause?: unknown }).cause;
+  }
+  return null;
+}
+
+/** TUI-DESIGN §13.2: codes rendered as `no response from <host> in N s` (a connect / headers / body timeout is a timeout, not "offline"). */
+const TIMEOUT_CODES: ReadonlySet<string> = new Set(['ETIMEDOUT', 'UND_ERR_CONNECT_TIMEOUT', 'UND_ERR_HEADERS_TIMEOUT', 'UND_ERR_BODY_TIMEOUT']);
+
+/** TUI-DESIGN §15 item 5: `RetryCause.message` is a redacted hint of at most 200 chars, never a body. */
+const RETRY_CAUSE_MESSAGE_MAX = 200;
+
+/**
+ * TUI-DESIGN §15 item 4 / §10 (F9): a request id is server-controlled wire text and flows into `toJSON()` →
+ * `SerializedError` → `state.json`, the epilogue and the `last: … · request-id <id>` row, so it is redacted like a body
+ * (a proxy may echo a client header) BEFORE the clip — clipping first could cut a key so its pattern no longer matches.
+ * Blank, missing or fully redacted-away ids are null.
+ */
+export function sanitiseRequestId(id: string | null | undefined, redact: (s: string) => string): string | null {
+  if (id === null || id === undefined) return null;
+  const t = redact(id.trim()).trim();
+  return t.length > 0 ? clip(t, REQUEST_ID_MAX_CHARS) : null;
+}
+
+/** TUI-DESIGN §15 item 4: `request-id` (Anthropic) or `x-request-id` (OpenRouter and proxies), redacted and clipped; null when the response carried neither. */
+export function requestIdOf(headers: Headers, redact: (s: string) => string): string | null {
+  return sanitiseRequestId(headers.get('request-id') ?? headers.get('x-request-id'), redact);
+}
+
+/**
+ * TUI-DESIGN §15 item 5: the cause a client reports before a retry sleep. The message is the error's own
+ * (already redacted by its thrower) clipped to 200 chars; `code` is set for network / timeout causes so
+ * the retry row can render the §13.2 offline copy from it.
+ */
+export function retryCauseOf(e: ProviderHttpError): RetryCause {
+  const message = clip(e.message, RETRY_CAUSE_MESSAGE_MAX);
+  if (e instanceof IdleTimeoutError) return { kind: 'timeout', status: null, code: 'TimeoutError', message };
+  if (e.status > 0) return { kind: 'http', status: e.status, code: null, message };
+  if (e instanceof TransportError) {
+    if (e.kind === 'network' && e.errno !== null && TIMEOUT_CODES.has(e.errno)) return { kind: 'timeout', status: null, code: e.errno, message };
+    return { kind: e.kind, status: null, code: e.errno, message };
+  }
+  return { kind: 'stream', status: null, code: errnoOf(e.cause), message };
 }
 
 interface TimedRead {
@@ -207,6 +279,8 @@ export interface HttpErrorInput {
   /** short label extracted from the body (`error.type` / `metadata.error_type`) */
   kind?: string;
   message?: string;
+  /** TUI-DESIGN §15 item 4: overrides the header-derived request id (e.g. Anthropic's body `request_id`); redacted and clipped here like the header value */
+  requestId?: string | null;
 }
 
 /** Build the typed error for a non-200 response; message and body are redacted and bounded. */
@@ -222,6 +296,8 @@ export function httpError(input: HttpErrorInput): ProviderHttpError {
     retryable,
     retryAfterMs: parseRetryAfter(input.headers),
     body: clip(input.redact(input.body), 2048),
+    // TUI-DESIGN §15 item 4: the request id rides the error into toJSON() / the retry row — redacted like the body (F9)
+    requestId: sanitiseRequestId(input.requestId ?? requestIdOf(input.headers, input.redact), input.redact),
   });
 }
 
@@ -282,14 +358,36 @@ export interface RetryContext {
 }
 
 /**
+ * TUI-DESIGN §15 item 5 / §13.2: the hooks a provider threads from `GenerateOptions`. `onRetry` runs before
+ * each backoff sleep with the `RetryInfo`; `wake` is a GETTER read after it, once per sleep, so the engine's
+ * handler can hand every sleep a fresh AbortController (`[r] retry now` aborts the current one).
+ */
+export interface RetryHooks {
+  onRetry?: (info: RetryInfo) => void;
+  wake?: () => AbortSignal | undefined;
+}
+
+/** A throwing `wake` getter is a harness bug like a throwing `onDelta` (see `notify`): typed 'internal', never re-billed. */
+function readWake(hooks: RetryHooks | undefined): AbortSignal | undefined {
+  if (!hooks?.wake) return undefined;
+  try {
+    return hooks.wake();
+  } catch (e) {
+    throw toJevCodeError(e);
+  }
+}
+
+/**
  * Run `attempt` up to MAX_ATTEMPTS times. Retries only ProviderHttpError with `retryable`;
  * everything else (abort reasons, programming errors, non-retryable HTTP errors) propagates at
- * once. Backoff sleeps await `signal`, so an engine abort ends the wait immediately.
+ * once. Backoff sleeps await `signal`, so an engine abort ends the wait immediately; `hooks.wake`
+ * (TUI-DESIGN §13.2) ends one sleep early without touching the attempt count or the schedule.
  */
 export async function withRetry<T>(
-  deps: Required<Pick<ProviderDeps, 'sleep' | 'random'>>,
+  deps: { sleep: SleepFn; random: () => number },
   signal: AbortSignal,
   attempt: (ctx: RetryContext) => Promise<T>,
+  hooks?: RetryHooks,
 ): Promise<T> {
   for (let i = 0; ; i++) {
     if (signal.aborted) throw signal.reason;
@@ -299,7 +397,9 @@ export async function withRetry<T>(
       if (signal.aborted) throw signal.reason;
       if (!(e instanceof ProviderHttpError) || !e.retryable || i + 1 >= MAX_ATTEMPTS) throw e;
       const delay = e.retryAfterMs ?? backoffMs(i, deps.random);
-      await deps.sleep(delay, signal);
+      // TUI-DESIGN §15.2 `provider/sse.ts` row: report the retry, then read the waker getter for this one sleep
+      notify(hooks?.onRetry, { attempt: i + 1, maxAttempts: MAX_ATTEMPTS, waitMs: delay, retryAfter: e.retryAfterMs !== null, cause: retryCauseOf(e) });
+      await deps.sleep(delay, signal, readWake(hooks));
     }
   }
 }

@@ -175,12 +175,20 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
   const runHome = join(runDir, 'home');
 
   const level = detectSandboxLevel(opts.profile, internals.platform ?? process.platform);
+  // TUI-DESIGN §12.7 / §15 item 18: the probe's git dirs and the resolved jevcode config dirs, forwarded
+  // to buildProfile and folded into the profile-path hash (two sandboxes of one run dir that differ only
+  // here must not share a file); absent → the hash input is exactly today's.
+  const gitDir = typeof opts.gitDir === 'string' && opts.gitDir.length > 0 ? resolve(opts.gitDir) : null;
+  const gitCommonDir = typeof opts.gitCommonDir === 'string' && opts.gitCommonDir.length > 0 ? resolve(opts.gitCommonDir) : null;
+  const configDirs = (opts.configDirs ?? []).filter((p): p is string => typeof p === 'string' && p.length > 0).map((p) => resolve(p));
   let profilePath: string | null = null;
   if (level === 'seatbelt') {
     // One profile file per sandbox instance: several sandboxes can share a run dir (the bench
     // creates one per root: workspace, venv, bare-clone cache), and a fixed name let a later
     // sandbox overwrite an earlier one's profile mid-run, leaving its workspace unreadable.
-    profilePath = join(runDir, `sandbox-${createHash('sha256').update(`${workspaceRoot}\n${extraRoots.join('\n')}\n${opts.noNetwork ? 1 : 0}`).digest('hex').slice(0, 12)}.sb`);
+    const hashInput = [workspaceRoot, extraRoots.join('\n'), opts.noNetwork ? '1' : '0'];
+    if (gitDir !== null || gitCommonDir !== null || configDirs.length > 0) hashInput.push(gitDir ?? '', gitCommonDir ?? '', configDirs.join('\n'));
+    profilePath = join(runDir, `sandbox-${createHash('sha256').update(hashInput.join('\n')).digest('hex').slice(0, 12)}.sb`);
     const profile = buildProfile({
       ws: workspaceRoot,
       runTmp,
@@ -191,6 +199,9 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
       extraWritable: extraRoots,
       extraReadable: (opts.extraReadable ?? []).filter((p): p is string => typeof p === 'string' && p.length > 0).map((p) => resolve(p)),
       ...(opts.protectGit === false ? { protectGit: false } : {}),
+      ...(gitDir !== null ? { gitDir } : {}),
+      ...(gitCommonDir !== null ? { gitCommonDir } : {}),
+      ...(configDirs.length > 0 ? { configDirs } : {}),
     });
     try {
       writeFileSync(profilePath, profile, { mode: 0o600 });

@@ -51,12 +51,13 @@ describe('createOpenRouterProvider', () => {
     expect(res.usage.costUsd).toBe(0.001288);
   });
 
-  it('accumulates tool_calls arguments across chunks by index, and prices from the table when cost is null', async () => {
+  it('accumulates tool_calls arguments across chunks by index, and prices a table-priced model from the table when cost is null', async () => {
     const f = scriptedFetch([{ status: 200, body: splitEvery(fixture('openrouter-tool.sse'), 13) }]);
     const { deps } = testDeps(f.fetch);
     const deltas: string[] = [];
     const toolDeltas: string[] = [];
-    const res = await createOpenRouterProvider(openrouterCfg(), deps).generate(
+    // TUI-DESIGN §9.5: the table fallback needs `priced` (validateGenerator sets it); an unpriced model surfaces NaN (retry-hooks.test.ts)
+    const res = await createOpenRouterProvider(openrouterCfg({ priced: true }), deps).generate(
       request({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' } }),
       genOpts({ onDelta: (t) => deltas.push(t), onToolDelta: (t) => toolDeltas.push(t) }),
     );

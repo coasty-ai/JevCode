@@ -10,7 +10,7 @@ _jevcode() {
   local i
   for ((i = 1; i < COMP_CWORD; i++)); do
     case "${COMP_WORDS[i]}" in
-      run|config|bench|perf) cmd="${COMP_WORDS[i]}"; break ;;
+      chat|run|config|bench|perf|login|logout|sessions|report|why|calibration|completion|upgrade) cmd="${COMP_WORDS[i]}"; break ;;
     esac
   done
   case "$prev" in
@@ -20,20 +20,34 @@ _jevcode() {
       return 0 ;;
     --provider) COMPREPLY=( $(compgen -W 'anthropic openrouter' -- "$cur") ); return 0 ;;
     --sandbox) COMPREPLY=( $(compgen -W 'auto seatbelt none' -- "$cur") ); return 0 ;;
+    --theme) COMPREPLY=( $(compgen -W 'dark light daltonized ansi' -- "$cur") ); return 0 ;;
+    --render-mode) COMPREPLY=( $(compgen -W 'standard incremental' -- "$cur") ); return 0 ;;
+    --exit-code) COMPREPLY=( $(compgen -W 'zero last-run' -- "$cur") ); return 0 ;;
+    --log-level) COMPREPLY=( $(compgen -W 'error warn info debug trace' -- "$cur") ); return 0 ;;
     --mode) COMPREPLY=( $(compgen -W 'jev-on jev-off jev-only' -- "$cur") ); return 0 ;;
     --suite) COMPREPLY=( $(compgen -W 'swebench terminal-bench quixbugs ladder all' -- "$cur") ); return 0 ;;
+    --method) COMPREPLY=( $(compgen -W 'npm brew bun pnpm yarn' -- "$cur") ); return 0 ;;
     --task-file|--config|--out) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;
     --workspace|--runs-dir|--open-assist-path) COMPREPLY=( $(compgen -d -- "$cur") ); return 0 ;;
   esac
   if [ -z "$cmd" ]; then
-    COMPREPLY=( $(compgen -W 'run config bench perf --help --version' -- "$cur") )
+    COMPREPLY=( $(compgen -W 'chat run config bench perf login logout sessions report why calibration completion upgrade --help --version' -- "$cur") )
     return 0
   fi
   case "$cmd" in
-    run) COMPREPLY=( $(compgen -W '--provider --model --api-key --base-url --temperature --max-tokens --jev-base-url --jev-api-key --jev-model --spend-cap --max-steps --max-wall --max-replans --complete-threshold --impossible-threshold --workspace --runs-dir --open-assist-path --config --sandbox --no-network --plain --task-file --resume --force --mode --help --version' -- "$cur") ) ;;
-    config) COMPREPLY=( $(compgen -W '--provider --model --api-key --base-url --temperature --max-tokens --jev-base-url --jev-api-key --jev-model --spend-cap --max-steps --max-wall --max-replans --complete-threshold --impossible-threshold --workspace --runs-dir --open-assist-path --config --sandbox --no-network --plain --json --help --version' -- "$cur") ) ;;
+    chat) COMPREPLY=( $(compgen -W '--provider --model --api-key --base-url --temperature --max-tokens --jev-base-url --jev-api-key --jev-model --spend-cap --max-steps --max-wall --max-replans --complete-threshold --impossible-threshold --workspace --runs-dir --open-assist-path --config --sandbox --no-network --plain --theme --fps --render-mode --ascii --title --screen-reader --no-animation --notify --osc52 --no-history --no-input --trust-workspace --no-budget-warnings --allow-secret-mention --no-color --exit-code --keybindings --log --log-level --verbose --session-spend-cap --allow-unpriced --max-generator-tokens --update-notify --continue --resume --force --list-sessions --mode --json --help --version' -- "$cur") ) ;;
+    run) COMPREPLY=( $(compgen -W '--provider --model --api-key --base-url --temperature --max-tokens --jev-base-url --jev-api-key --jev-model --spend-cap --max-steps --max-wall --max-replans --complete-threshold --impossible-threshold --workspace --runs-dir --open-assist-path --config --sandbox --no-network --plain --theme --fps --render-mode --ascii --title --screen-reader --no-animation --notify --osc52 --no-history --no-input --trust-workspace --no-budget-warnings --allow-secret-mention --no-color --exit-code --keybindings --log --log-level --verbose --session-spend-cap --allow-unpriced --max-generator-tokens --update-notify --continue --resume --force --list-sessions --task-file --mode --json --help --version' -- "$cur") ) ;;
+    config) COMPREPLY=( $(compgen -W '--provider --model --api-key --base-url --temperature --max-tokens --jev-base-url --jev-api-key --jev-model --spend-cap --max-steps --max-wall --max-replans --complete-threshold --impossible-threshold --workspace --runs-dir --open-assist-path --config --sandbox --no-network --plain --theme --fps --render-mode --ascii --title --screen-reader --no-animation --notify --osc52 --no-history --no-input --trust-workspace --no-budget-warnings --allow-secret-mention --no-color --exit-code --keybindings --log --log-level --verbose --session-spend-cap --allow-unpriced --max-generator-tokens --update-notify --json --help --version' -- "$cur") ) ;;
     bench) COMPREPLY=( $(compgen -W '--provider --model --api-key --base-url --temperature --max-tokens --jev-base-url --jev-api-key --jev-model --spend-cap --max-steps --max-wall --max-replans --complete-threshold --impossible-threshold --workspace --runs-dir --open-assist-path --config --sandbox --no-network --plain --resume --suite --tasks --task-id --conditions --concurrency --live --task-spend-cap --allow-model-alias --out --help --version' -- "$cur") ) ;;
     perf) COMPREPLY=( $(compgen -W '--provider --model --api-key --base-url --temperature --max-tokens --jev-base-url --jev-api-key --jev-model --spend-cap --max-steps --max-wall --max-replans --complete-threshold --impossible-threshold --workspace --runs-dir --open-assist-path --config --sandbox --no-network --plain --live --out --help --version' -- "$cur") ) ;;
+    login) COMPREPLY=( $(compgen -W '--provider --workspace --runs-dir --config --generator-key-stdin --jev-key-stdin --status --verify --help --version' -- "$cur") ) ;;
+    logout) COMPREPLY=( $(compgen -W '--workspace --runs-dir --config --generator --jev --help --version' -- "$cur") ) ;;
+    sessions) COMPREPLY=( $(compgen -W '--workspace --runs-dir --config --json --help --version' -- "$cur") ) ;;
+    report) COMPREPLY=( $(compgen -W '--workspace --runs-dir --config --out --include-requests --help --version' -- "$cur") ) ;;
+    why) COMPREPLY=( $(compgen -W '--workspace --runs-dir --config --json --help --version' -- "$cur") ) ;;
+    calibration) COMPREPLY=( $(compgen -W '--workspace --runs-dir --config --json --help --version' -- "$cur") ) ;;
+    completion) COMPREPLY=( $(compgen -W '--help --version' -- "$cur") ) ;;
+    upgrade) COMPREPLY=( $(compgen -W '--check --method --help --version' -- "$cur") ) ;;
   esac
   return 0
 }

@@ -96,14 +96,14 @@ describe('height budget (§10)', () => {
     for (const line of dyn) expect(line.length).toBeLessThanOrEqual(80);
     const text = dyn.join('\n');
     expect(text).toContain('streamed line 199');
-    expect(text).toContain('confirm c1 step 1');
-    expect(text).toContain('[y] approve  [n] decline');
+    expect(text).toContain('review  step 1');
+    expect(text).toContain('[y] approve [n] decline');
     expect(text).toContain('step 1/40');
     // the scrollback above the rule holds the committed rows (run:start, run:ready) and is not budgeted
     expect(staticRows).toBeGreaterThanOrEqual(2);
     if (rows === 24) {
       expect(text).toContain('content line 0');
-      expect(text).toContain('[block]');
+      // wave 2: the 8-row review header leaves 2 decision rows at rows 24 (was 4), so only the newest verdicts show
       expect(text).toContain('[review]');
       expect(text).not.toContain('content line 39');
     }

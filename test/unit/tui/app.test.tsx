@@ -84,11 +84,11 @@ describe('<App>', () => {
     const p = confirmer.confirm(req, { signal });
     await tick();
     const f = lastFrame() ?? '';
-    expect(f).toContain('confirm c1 step 3: fix the off-by-one');
-    expect(f).toContain('action: edit src/a.py');
-    expect(f).toContain('destructive L2 p=0.60 r=0.50 c=0.70');
-    expect(f).toContain('irreversible L1 p=0.60 r=0.25 c=0.70');
-    expect(f).toContain('reason: risk=0.50 destructive: level 2 (0.50)');
+    // wave 2: confirmHeaderLines delegates to the §6.1 review header (8 rows, keys on row 2)
+    expect(f).toContain('review  step 3  risk 0.50 (exp)  edit src/a.py "fix the off-by-one"');
+    expect(f).toContain('1 destructive    L2');
+    expect(f).toContain('4 irreversible   L1');
+    expect(f).toContain('0.50 exp  0.70');
     expect(f).toContain(CONFIRM_KEYS_LINE);
     expect(f).toContain('--- old');
     stdin.write('y');
@@ -99,7 +99,7 @@ describe('<App>', () => {
     const req2 = mkConfirmRequest('c2', 4);
     const p2 = confirmer.confirm(req2, { signal });
     await tick();
-    expect(lastFrame()).toContain('confirm c2 step 4');
+    expect(lastFrame()).toContain('review  step 4');
     stdin.write('n');
     await expect(p2).resolves.toBe(false);
   });

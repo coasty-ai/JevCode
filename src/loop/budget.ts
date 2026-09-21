@@ -7,10 +7,15 @@ import { BudgetError } from '../errors.js';
 import type { BudgetKind } from '../errors.js';
 import type { RunLimits } from '../core/types.js';
 
-export const BUDGET_ORDER: readonly BudgetKind[] = ['spend_cap', 'wall_time', 'max_steps', 'max_replans'];
+/** TUI-DESIGN §9.5 / §15 item 19: `token_cap` (--allow-unpriced) sits right after `spend_cap`. */
+export const BUDGET_ORDER: readonly BudgetKind[] = ['spend_cap', 'token_cap', 'wall_time', 'max_steps', 'max_replans'];
 
 export interface BudgetInput {
   spendExceeded: boolean;
+  /** TUI-DESIGN §9.5: generator tokens used so far (input + output); only compared when a token cap is set */
+  generatorTokens?: number;
+  /** TUI-DESIGN §9.5: RunLimits.maxGeneratorTokens under --allow-unpriced; absent = no token cap */
+  maxGeneratorTokens?: number;
   wallMsUsed: number;
   maxWallMs: number;
   /** committed steps */
@@ -36,6 +41,10 @@ export function checkBudgets(input: BudgetInput): BudgetKind | null {
     switch (kind) {
       case 'spend_cap':
         if (input.spendExceeded) return kind;
+        break;
+      case 'token_cap':
+        // TUI-DESIGN §9.5: `generatorTokens >= maxGeneratorTokens`; a missing or non-finite cap never fires
+        if (input.maxGeneratorTokens !== undefined && Number.isFinite(input.maxGeneratorTokens) && (input.generatorTokens ?? 0) >= input.maxGeneratorTokens) return kind;
         break;
       case 'wall_time':
         if (input.wallMsUsed >= input.maxWallMs) return kind;

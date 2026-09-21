@@ -626,7 +626,11 @@ export interface GitState {
 }
 /** TUI-DESIGN §15 item 12: what run.json keeps of the probe; `end` from the run:end re-probe (P51), `resumedOn` on --resume when head moved (P52) */
 export type RunGitMeta = Pick<GitState, 'repo' | 'reason' | 'head' | 'upstream' | 'linkedWorktree' | 'prefix'> & {
-  dirtyAtStart: { modified: number; staged: number; untracked: number };
+  /** TUI-DESIGN §12.2 (wave 2, additive): `unmerged` lifts the banner to `warn`; absent in run.json files written before it */
+  dirtyAtStart: { modified: number; staged: number; untracked: number; unmerged?: number };
+  /** TUI-DESIGN §12.2 (wave 2, additive): ahead/behind at run start for the `↑2 ↓1` banner; the `end` block keeps the run:end values */
+  ahead?: number | null;
+  behind?: number | null;
   end?: Pick<GitState, 'head' | 'upstream' | 'ahead' | 'behind'> & { dirty: { modified: number; staged: number; untracked: number } };
   resumedOn?: GitHead | null;
 };
@@ -791,6 +795,12 @@ export interface PendingDirective {
   at: string;
   index: number;
 }
+/**
+ * TUI-DESIGN §8.6 / F7 (max 8 × 600): the one definition of the steer bounds — the engine's queue, `state.human.directives`
+ * (loop/state.ts) and the generator hints lines (provider/prompts.ts) all read these, so the three can never disagree.
+ */
+export const PENDING_DIRECTIVES_MAX = 8;
+export const DIRECTIVE_MAX_CHARS = 600;
 /** TUI-DESIGN §15 item 9 */
 export type UndoSkipReason = 'link' | 'escape' | 'submodule' | 'not-recoverable' | 'head-moved' | 'refused' | 'declined' | 'cap' | 'size';
 /** TUI-DESIGN §15 item 9 */
@@ -823,8 +833,8 @@ export interface RunMeta {
   config: Record<string, ConfigRecordValue>;
   versions: { jevcode: string; node: string };
   createdAt: string;
-  /** appended on resume (§9) */
-  overrides: { setting: string; from: string; to: string; atStep: number }[];
+  /** appended on resume (§9); TUI-DESIGN §9.4 (additive): `source` names who raised it — `/budget` (pending value) or a flag; absent reads as 'flag' */
+  overrides: { setting: string; from: string; to: string; atStep: number; source?: '/budget' | 'flag' }[];
   resumes: { resumedAt: string; previousStopReason: StopReason | null }[];
   resolvedJevModel: string | null;
   jevModelDrift: { step: number; served: string } | null;
@@ -919,6 +929,8 @@ export interface EngineSeed {
   undoLog?: UndoLogEntry[];
   /** @-mentions: boosted into the context candidates, never past the caps */
   pinnedFiles?: string[];
+  /** TUI-DESIGN §8.3 (additive): steers carried from the parent's pendingDirectives, for the ` · N pending steer carried` suffix of the seeded notice */
+  carriedDirectives?: number;
 }
 /** §9.3: main() emits budget:clamp from it right after run:ready */
 export interface SessionClamp {
@@ -1000,6 +1012,12 @@ export interface EngineOptions {
   blocker?: (req: BlockingRequest) => Promise<BlockingAnswer>;
   /** TUI-DESIGN §15 item 11: resolved XDG + legacy jevcode config dirs -> seatbelt read denies (§12.7) */
   configDirs?: readonly string[];
+  /**
+   * TUI-DESIGN §9.4 (additive): the overrides reconcileResumeConfig computed for THIS resume. main() appends them to
+   * run.json.overrides[] with the resumes[] entry and emits one budget:override each after run:ready; absent -> nothing
+   * is announced (the engine never re-derives them from run.json, where two resumes at one step are indistinguishable).
+   */
+  resumeOverrides?: RunMeta['overrides'];
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
@@ -1111,7 +1129,7 @@ export type EngineEvent =
   | { type: 'steer:applied'; step: number; count: number; superseded: string[] }
   | { type: 'steer:withdrawn'; step: number; index: number }
   | { type: 'pause:requested'; step: number }
-  | { type: 'budget:warn'; scope: 'run' | 'session'; pct: 50 | 80 | 95; spentUsd: number; capUsd: number; step: number; stepsLeftEstimate: number | null; restored: boolean; jevShare?: { jevUsd: number; generatorUsd: number } }
+  | { type: 'budget:warn'; scope: 'run' | 'session'; pct: 50 | 80 | 95; spentUsd: number; capUsd: number; step: number; stepsLeftEstimate: number | null; restored: boolean; jevShare?: { jevUsd: number; generatorUsd: number }; perStepUsd?: number } // TUI-DESIGN §9.2: perStepUsd = the p50 cost/step behind stepsLeftEstimate (additive, read by tui/budget/lines.ts)
   | { type: 'budget:stop'; scope: 'run' | 'session'; by: 'run' | 'session' | 'tokens'; spentUsd: number; capUsd: number; step: number; at: StoppedAt; raise: { command: string; flag: string; minimum: number } } // the follow-up refusal is a controller line (§9.3, §8.9), not an event
   | { type: 'budget:clamp'; runCapUsd: number; clampedToUsd: number; sessionSpentUsd: number; sessionCapUsd: number } // emitted by main() after run:ready from EngineOptions.session.clamp (§9.3)
   | { type: 'budget:override'; setting: string; from: string; to: string; appliesTo: 'resume'; source: '/budget' | 'flag' } // emitted by main() per run.json.overrides[] entry recorded on this resume (§9.4)
@@ -1312,7 +1330,11 @@ export interface GeneratorConfig {
   maxTokens: number;
   /** USD per million tokens, used when the API returns no cost */
   pricing: { inputPerM: number; outputPerM: number; cacheReadPerM: number; cacheWritePerM: number };
-  /** TUI-DESIGN §15 item 17: OPTIONAL: validateGenerator always sets it; resolveConfig / validate.ts treat absent as false */
+  /**
+   * TUI-DESIGN §15 item 17: OPTIONAL: validateGenerator always sets it; resolveConfig / validate.ts treat absent as false.
+   * §9.5: absent ⇒ a null OpenRouter `usage.cost` yields `costUsd` NaN (`budget:unpriced`, stop `error unpriced_usage` unless
+   * --allow-unpriced), never a table price — a GeneratorConfig built without validateGenerator must set it to get the table.
+   */
   priced?: boolean;
 }
 

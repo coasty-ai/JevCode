@@ -120,7 +120,8 @@ describe('computeLayout', () => {
       }
     }
     expect(computeLayout(12, true, 40)).toMatchObject({ budget: 10, status: 1, rule: 1, live: 2, confirmHeader: 6, preview: 0, decisions: 0 });
-    expect(computeLayout(24, true, 40)).toMatchObject({ budget: 22, confirmHeader: 6, preview: 8, decisions: 4 });
+    // TUI-DESIGN §6.1 / wave 2: the confirmation header is 8 rows (review header) — 1+1+2+8+8 = 20, so 2 decision rows remain
+    expect(computeLayout(24, true, 40)).toMatchObject({ budget: 22, confirmHeader: 8, preview: 8, decisions: 2 });
     expect(computeLayout(24, false, 0)).toMatchObject({ decisions: 12, total: 16 });
   });
 

@@ -6,9 +6,11 @@
 import { JevCodeError, ProviderHttpError } from '../errors.js';
 import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, Provider, ToolCall } from '../core/types.js';
 import { parseJson } from '../core/json.js';
+import { clip } from '../core/text.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
   IdleTimeoutError,
+  TransportError,
   clipMessage,
   costFromPricing,
   getNum,
@@ -21,6 +23,7 @@ import {
   parseJsonObject,
   parseSse,
   readBodyCapped,
+  requestIdOf,
   resolveDeps,
   toTokenUsage,
   withRetry,
@@ -114,7 +117,7 @@ function readUsage(u: JsonObject | null, into: TokenBreakdown): void {
   if (out !== null) into.output = Math.max(0, Math.round(out));
 }
 
-function streamError(data: JsonObject, redact: (s: string) => string): ProviderHttpError {
+function streamError(data: JsonObject, redact: (s: string) => string, requestId: string | null): ProviderHttpError {
   const err = getObj(data, 'error');
   const type = getStr(err, 'type') ?? 'unknown_error';
   const message = getStr(err, 'message') ?? '';
@@ -123,10 +126,11 @@ function streamError(data: JsonObject, redact: (s: string) => string): ProviderH
     status,
     retryable: isRetryableStatus(status),
     body: redact(JSON.stringify(data)).slice(0, 2048),
+    requestId, // TUI-DESIGN §15 item 4: the 200 response's request-id names the stream that failed
   });
 }
 
-async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number): Promise<StreamOutcome> {
+async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number, requestId: string | null): Promise<StreamOutcome> {
   const blocks = new Map<number, Block>();
   const order: number[] = [];
   let text = '';
@@ -140,7 +144,11 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
     // Live streams pad the JSON with trailing spaces; parse the trimmed text.
     const parsed = parseJson(rec.data.trim());
     if (!parsed.ok || typeof parsed.value !== 'object' || parsed.value === null || Array.isArray(parsed.value)) {
-      throw new ProviderHttpError(redact(`anthropic: malformed sse data (${rec.event ?? 'no event'}): ${parsed.ok ? 'not an object' : parsed.error}`), { status: 0, retryable: true });
+      // TUI-DESIGN §15 item 5: RetryCause kind 'invalid'. A fixed hint, never `parsed.error`: V8's JSON.parse message embeds a
+      // body snippet ("Unexpected token 'o', \"not json sk\"... is not valid JSON") that pattern redaction cannot recognise;
+      // the event name is wire text too, so it is redacted and clipped.
+      const eventLabel = rec.event === undefined ? 'no event' : clip(rec.event, 40);
+      throw new TransportError('invalid', clipMessage(redact(`anthropic: malformed sse data (${eventLabel}): ${parsed.ok ? 'not a JSON object' : 'not valid JSON'}`)));
     }
     const data = parsed.value;
     const type = getStr(data, 'type') ?? rec.event ?? '';
@@ -207,7 +215,7 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
       case 'ping':
         break;
       case 'error':
-        throw streamError(data, redact);
+        throw streamError(data, redact, requestId);
       default:
         // "new event types may be added, and your code should handle unknown event types gracefully"
         break;
@@ -215,7 +223,8 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
     if (sawStop) break;
   }
   if (!sawStop && !sawDelta) {
-    throw new ProviderHttpError('anthropic: stream ended before message_delta/message_stop', { status: 0, retryable: true });
+    // TUI-DESIGN §15 item 5: RetryCause kind 'stream'
+    throw new TransportError('stream', 'anthropic: stream ended before message_delta/message_stop');
   }
 
   const toolCalls: ToolCall[] = [];
@@ -271,10 +280,13 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         if (e instanceof ProviderHttpError) throw e;
-        throw new ProviderHttpError(d.redact(`anthropic: network error: ${e instanceof Error ? e.message : String(e)}`), { status: 0, retryable: true, cause: e });
+        // TUI-DESIGN §15 item 5: RetryCause kind 'network' with the errno from the cause chain
+        throw new TransportError('network', d.redact(`anthropic: network error: ${e instanceof Error ? e.message : String(e)}`), { cause: e });
       } finally {
         clearTimeout(headersTimer);
       }
+      // TUI-DESIGN §15 item 4: Anthropic sends `request-id` as a header and `request_id` in error bodies; both are wire text → redacted (F9)
+      const requestId = requestIdOf(res.headers, d.redact);
       if (res.status !== 200) {
         const bodyText = await readBodyCapped(res);
         const json = parseJsonObject(bodyText);
@@ -289,21 +301,22 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
           headers: res.headers,
           body: bodyText,
           redact: d.redact,
+          requestId: requestId ?? getStr(json, 'request_id'),
           ...(kind !== undefined ? { kind } : {}),
           ...(message !== undefined ? { message } : {}),
           ...(spendLimit ? { retryableOverride: false } : {}),
         });
       }
-      if (!res.body) throw new ProviderHttpError('anthropic: 200 without a body', { status: 0, retryable: true });
+      if (!res.body) throw new TransportError('stream', 'anthropic: 200 without a body');
       const remaining = Math.max(1, FIRST_BYTE_TIMEOUT_MS - (d.now() - t0));
       try {
-        return await consumeStream(res.body, opts, d.redact, remaining);
+        return await consumeStream(res.body, opts, d.redact, remaining, requestId);
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         // Typed errors (HTTP/stream errors, renderer-callback bugs via notify) keep their class; anything
-        // else (decoder faults, stream resets) is a transport failure and retried.
+        // else (decoder faults, stream resets) is a transport failure and retried (RetryCause kind 'stream').
         if (e instanceof JevCodeError) throw e;
-        throw new ProviderHttpError(d.redact(`anthropic: stream failure: ${e instanceof Error ? e.message : String(e)}`), { status: 0, retryable: true, cause: e });
+        throw new TransportError('stream', d.redact(`anthropic: stream failure: ${e instanceof Error ? e.message : String(e)}`), { cause: e });
       } finally {
         controller.abort();
       }
@@ -319,7 +332,9 @@ export function createAnthropicProvider(cfg: GeneratorConfig, deps: ProviderDeps
       validateRequest(req);
       const body = JSON.stringify(buildAnthropicBody(cfg, req));
       const t0 = d.now();
-      const out = await withRetry(d, opts.signal, () => attempt(body, opts));
+      // TUI-DESIGN §15.2 `provider/anthropic.ts`: GenerateOptions.onRetry / wake thread into withRetry (§13.2)
+      const out = await withRetry(d, opts.signal, () => attempt(body, opts), opts);
+      // The Messages API reports tokens only, so the table prices every call (config fails closed on an unpriced model, §9.5).
       const costUsd = costFromPricing(cfg.pricing, out.tokens);
       return {
         text: out.text,

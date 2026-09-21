@@ -13,7 +13,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { SandboxLevel, SandboxProfile } from '../core/types.js';
-import { canonicalPathSync } from './paths.js';
+import { canonicalPathSync, isWithin } from './paths.js';
 
 export interface ProfileOptions {
   ws: string;
@@ -32,6 +32,16 @@ export interface ProfileOptions {
   extraReadable?: readonly string[];
   /** emit the .git/config + .git/hooks write denials (default true) */
   protectGit?: boolean;
+  /**
+   * TUI-DESIGN §12.7 (A149): the probe's git dir (realpath'd here). Writes under it are allowed when it
+   * lies outside `ws` (linked worktree, subdirectory workspace) and `<gitDir>/config.worktree` is denied.
+   * Absent → today's `<ws>/.git` rules, byte for byte.
+   */
+  gitDir?: string;
+  /** TUI-DESIGN §12.7: the probe's common dir; the `config`/`hooks` denies and the `modules/*` regexes live there. */
+  gitCommonDir?: string;
+  /** TUI-DESIGN §12.7: resolved `${XDG_CONFIG_HOME:-~/.config}/jevcode` + legacy dirs, appended to the `file-read*` denies. */
+  configDirs?: readonly string[];
 }
 
 /** SBPL string literal: double-quoted with backslash and quote escaped. */
@@ -39,8 +49,26 @@ export function sbplString(s: string): string {
   return `"${s.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
 }
 
+/**
+ * TUI-DESIGN §12.7: a path as a regex fragment. Metacharacters take ONE backslash: the profile reader
+ * hands `\.` to the matcher as-is, while a doubled `\\.` compiles to a pattern that never matches and
+ * the deny silently vanishes (verified with sandbox-exec on macOS 26 — see the O5 wave-2 report).
+ */
+export function regexQuote(s: string): string {
+  return s.replace(/[\\^$.*+?()[\]{}|]/g, '\\$&');
+}
+
+/** SBPL regex literal `#"…"`; only the quote is escaped (backslashes are regex escapes, see `regexQuote`). */
+export function sbplRegex(pattern: string): string {
+  return `#"${pattern.replace(/"/g, '\\"')}"`;
+}
+
 const HOME_SECRET_SUBPATHS = [join('.config', 'jevcode'), '.ssh', '.aws', join('.config', 'gh')];
 const HOME_SECRET_LITERALS = ['.netrc'];
+
+function canonOption(p: string | undefined): string | null {
+  return typeof p === 'string' && p.length > 0 ? canonicalPathSync(p) : null;
+}
 
 export function buildProfile(opts: ProfileOptions): string {
   const ws = canonicalPathSync(opts.ws);
@@ -55,20 +83,55 @@ export function buildProfile(opts: ProfileOptions): string {
     if (canon !== ws && canon !== runTmp && canon !== runHome && !extra.includes(canon)) extra.push(canon);
   }
 
+  // TUI-DESIGN §12.7: the probe's dirs. One of the two given → the other defaults to it (a main tree
+  // has gitDir === commonDir). Neither → the legacy `<ws>/.git` rules so today's snapshots hold.
+  const gitDirOpt = canonOption(opts.gitDir);
+  const commonOpt = canonOption(opts.gitCommonDir);
+  const gitDir = gitDirOpt ?? commonOpt;
+  const commonDir = commonOpt ?? gitDirOpt;
+  // writable when outside the workspace (linked worktree: `<main>/.git/worktrees/<wt>` + `<main>/.git`;
+  // subdirectory workspace: the repository's `.git` above it); the broader root first, nested ones dropped
+  const gitRoots: string[] = [];
+  for (const d of [commonDir, gitDir]) {
+    if (d === null || isWithin(ws, d) || isWithin(runTmp, d) || isWithin(runHome, d)) continue;
+    if (extra.some((r) => isWithin(r, d)) || gitRoots.some((r) => isWithin(r, d))) continue;
+    gitRoots.push(d);
+  }
+  const writable = [...extra, ...gitRoots];
+
   const lines: string[] = ['(version 1)', '(allow default)', '(deny file-write*)'];
   lines.push(
-    `(allow file-write* (subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${extra.map((p) => ` (subpath ${sbplString(p)})`).join('')}`,
+    `(allow file-write* (subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${writable.map((p) => ` (subpath ${sbplString(p)})`).join('')}`,
     '  (literal "/dev/null") (literal "/dev/stdout") (literal "/dev/stderr") (literal "/dev/tty")',
     '  (literal "/dev/ptmx") (regex #"^/dev/ttys[0-9]+$") (subpath "/dev/fd"))',
   );
-  const gitDenies = [`(literal ${sbplString(join(ws, '.git', 'config'))})`, `(subpath ${sbplString(join(ws, '.git', 'hooks'))})`];
-  if (opts.ttyPath && opts.ttyPath.startsWith('/dev/')) gitDenies.push(`(literal ${sbplString(canonicalPathSync(opts.ttyPath))})`);
+  const gitDenies: string[] = [];
+  if (gitDir === null || commonDir === null) {
+    gitDenies.push(`(literal ${sbplString(join(ws, '.git', 'config'))})`, `(subpath ${sbplString(join(ws, '.git', 'hooks'))})`);
+  } else {
+    // TUI-DESIGN §12.7: the executable knobs live in the common dir (`config`, `hooks`, every submodule's
+    // `modules/<name>/{config,hooks}` — names may contain `/`), in the worktree's own `config.worktree` and
+    // (fix-pass finding 4) in EVERY other linked worktree's `worktrees/<name>/config.worktree` under the common
+    // dir, which the write allow above made reachable: a run in worktree A must not plant `core.fsmonitor` or
+    // `core.hooksPath` into worktree B's per-worktree config (live once `extensions.worktreeConfig` is on —
+    // sparse-checkout users have it — and executed by the user's own shell in B, not by the flag-neutralised harness).
+    const modules = regexQuote(join(commonDir, 'modules'));
+    const worktrees = regexQuote(join(commonDir, 'worktrees'));
+    gitDenies.push(
+      `(literal ${sbplString(join(commonDir, 'config'))})`,
+      `(subpath ${sbplString(join(commonDir, 'hooks'))})`,
+      `(literal ${sbplString(join(gitDir, 'config.worktree'))})`,
+      `(regex ${sbplRegex(`^${worktrees}/[^/]+/config\\.worktree$`)})`,
+      `(regex ${sbplRegex(`^${modules}/.+/config$`)})`,
+      `(regex ${sbplRegex(`^${modules}/.+/hooks(/.*)?$`)})`,
+    );
+  }
+  const ttyDeny = opts.ttyPath && opts.ttyPath.startsWith('/dev/') ? [`(literal ${sbplString(canonicalPathSync(opts.ttyPath))})`] : [];
   if (opts.protectGit === false) {
     // infrastructure sandbox (fresh clone into the root): only the harness tty stays denied
-    const ttyOnly = gitDenies.slice(2);
-    if (ttyOnly.length > 0) lines.push(`(deny file-write* ${ttyOnly.join(' ')})`);
+    if (ttyDeny.length > 0) lines.push(`(deny file-write* ${ttyDeny.join(' ')})`);
   } else {
-    lines.push(`(deny file-write* ${gitDenies.join(' ')})`);
+    lines.push(`(deny file-write* ${[...gitDenies, ...ttyDeny].join(' ')})`);
   }
 
   const reads: string[] = [];
@@ -89,6 +152,14 @@ export function buildProfile(opts: ProfileOptions): string {
   }
   for (const rel of HOME_SECRET_SUBPATHS) addRead(`(subpath ${sbplString(canonicalPathSync(join(home, rel)))})`);
   for (const rel of HOME_SECRET_LITERALS) addRead(`(literal ${sbplString(canonicalPathSync(join(home, rel)))})`);
+  // TUI-DESIGN §12.7: the resolved jevcode config dirs (XDG_CONFIG_HOME may point anywhere; the wizard's
+  // key file would otherwise be readable unless it happened to be in readDenies); appended, deduplicated
+  for (const p of opts.configDirs ?? []) {
+    if (typeof p !== 'string' || p.length === 0) continue;
+    const canon = canonicalPathSync(p);
+    addRead(`(literal ${sbplString(canon)})`);
+    addRead(`(subpath ${sbplString(canon)})`);
+  }
   lines.push(`(deny file-read* ${reads.join(' ')})`);
   // The jevcode home holds every run's checkpoints and the bench work areas. Deny reading file
   // CONTENTS there (other runs' prompts and outputs stay private) but keep metadata readable, so
@@ -103,9 +174,9 @@ export function buildProfile(opts: ProfileOptions): string {
   for (const p of opts.extraReadable ?? []) {
     if (typeof p !== 'string' || p.length === 0) continue;
     const canon = canonicalPathSync(p);
-    if (canon !== ws && canon !== runTmp && canon !== runHome && !extra.includes(canon) && !readable.includes(canon)) readable.push(canon);
+    if (canon !== ws && canon !== runTmp && canon !== runHome && !writable.includes(canon) && !readable.includes(canon)) readable.push(canon);
   }
-  const roots = `(subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${[...extra, ...readable].map((p) => ` (subpath ${sbplString(p)})`).join('')}`;
+  const roots = `(subpath ${sbplString(ws)}) (subpath ${sbplString(runTmp)}) (subpath ${sbplString(runHome)})${[...writable, ...readable].map((p) => ` (subpath ${sbplString(p)})`).join('')}`;
   lines.push(`(allow file-read-data ${roots})`);
   lines.push(`(allow file-read* ${roots})`);
 

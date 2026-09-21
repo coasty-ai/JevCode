@@ -11,6 +11,7 @@ import type {
   Candidate,
   CheckpointState,
   CheckpointStore,
+  ConfirmOutcome,
   Confirmer,
   Decider,
   Decision,
@@ -23,13 +24,16 @@ import type {
   GenerateRequest,
   GenerateResult,
   GeneratorCallRecord,
+  GitState,
   JevRequestRecord,
   PlanDraft,
   Provider,
   Question,
+  RetryInfo,
   RunLimits,
   RunMeta,
   Sandbox,
+  SandboxCreateOptions,
   SpendMeter,
   SpendSnapshot,
   StageName,
@@ -41,8 +45,32 @@ import type {
   Workspace,
   WorkspaceInfo,
 } from '../../../src/core/types.js';
+import { sleep } from '../../../src/core/time.js';
 import { AbortError, EditError, FileNotFoundError, JevHttpError, PatchError, PathEscapeError, ProviderHttpError } from '../../../src/errors.js';
-import { createEngine, type EngineDeps } from '../../../src/loop/engine.js';
+import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/engine.js';
+import { notRepoState } from '../../../src/workspace/gitstate.js';
+
+// ---------------------------------------------------------------------------------------
+// Retry chains (TUI-DESIGN §13.2): a fake that fails `count` attempts, calling onRetry and sleeping wakeably before each retry
+// ---------------------------------------------------------------------------------------
+
+export interface RetryScript {
+  /** failed attempts before the final one */
+  count: number;
+  waitMs: number;
+  status: number;
+  /** the final attempt fails too (the chain is exhausted) */
+  exhausted?: boolean;
+}
+
+/** Drive one scripted retry chain exactly as jev/client.ts and provider/sse.ts do: onRetry(info) then `sleep(waitMs, signal, wake?.())` per failed attempt. */
+export async function driveRetries(script: RetryScript, o: { signal: AbortSignal; onRetry?: (info: RetryInfo) => void; wake?: () => AbortSignal | undefined }): Promise<void> {
+  const maxAttempts = script.count + 1;
+  for (let attempt = 1; attempt <= script.count; attempt++) {
+    o.onRetry?.({ attempt, maxAttempts, waitMs: script.waitMs, retryAfter: false, cause: { kind: 'http', status: script.status, code: null, message: `HTTP ${script.status}` } });
+    await sleep(script.waitMs, o.signal, o.wake?.());
+  }
+}
 
 // ---------------------------------------------------------------------------------------
 // Answers
@@ -104,6 +132,8 @@ export interface FakeDeciderOptions {
   usageAt?: (ctx: DeciderCall) => Partial<TokenUsage> | undefined;
   /** real delay before answering; rejects with signal.reason on abort */
   delayMs?: (ctx: DeciderCall) => number;
+  /** TUI-DESIGN §13.2: a retry chain before the answer (or the exhausted failure) at the matching calls */
+  retryAt?: (ctx: DeciderCall) => RetryScript | undefined;
 }
 
 export interface FakeDecider extends Decider {
@@ -147,6 +177,11 @@ export function createFakeDecider(opts: FakeDeciderOptions = {}): FakeDecider {
       if (o.signal.aborted) throw o.signal.reason;
       const delay = opts.delayMs?.(ctx) ?? 0;
       if (delay > 0) await sleepAbortable(delay, o.signal);
+      const retry = opts.retryAt?.(ctx);
+      if (retry) {
+        await driveRetries(retry, o);
+        if (retry.exhausted) throw new JevHttpError(`Jev HTTP ${retry.status}`, { status: retry.status, retryable: retry.status >= 500 || retry.status === 429 || retry.status === 0, body: '' });
+      }
       const f = opts.failAt?.find((x) => x.stage === o.stage && (x.step === undefined || x.step === o.step));
       if (f) throw new JevHttpError(`Jev HTTP ${f.status}`, { status: f.status, retryable: f.status >= 500, body: '' });
       const answers: Record<string, Answer> = {};
@@ -189,8 +224,10 @@ export interface ProposalTurn {
   text?: string;
   /** real delay before replying; rejects with signal.reason on abort */
   delayMs?: number;
+  /** TUI-DESIGN §13.2: a retry chain before the reply */
+  retries?: RetryScript;
 }
-export type RawTurn = { raw: string; usage?: Partial<TokenUsage> } | { rawInput: unknown; usage?: Partial<TokenUsage> } | { httpError: number };
+export type RawTurn = { raw: string; usage?: Partial<TokenUsage> } | { rawInput: unknown; usage?: Partial<TokenUsage> } | { httpError: number; body?: string; retries?: RetryScript };
 export type Turn = ProposalTurn | RawTurn;
 
 export interface FakeProvider extends Provider {
@@ -214,7 +251,11 @@ export function createFakeProvider(turns: Turn[] | ((req: GenerateRequest, index
       if (o.signal.aborted) throw o.signal.reason;
       const t = typeof turns === 'function' ? turns(req, index) : (turns[index] ?? turns[turns.length - 1]);
       if (!t) throw new Error('fake provider: no turn scripted');
-      if ('httpError' in t) throw new ProviderHttpError(`HTTP ${t.httpError}`, { status: t.httpError, retryable: false });
+      if ('httpError' in t) {
+        if (t.retries) await driveRetries(t.retries, o);
+        throw new ProviderHttpError(`HTTP ${t.httpError}`, { status: t.httpError, retryable: false, ...(t.body !== undefined ? { body: t.body } : {}) });
+      }
+      if ('retries' in t && t.retries) await driveRetries(t.retries, o);
       const usage: TokenUsage = { inputTokens: 1000, outputTokens: 200, costUsd: 0.004, calls: 1, ...('usage' in t ? t.usage : undefined) };
       const base: GenerateResult = { text: '', toolCalls: [], usage, model, stopReason: 'tool_use', latencyMs: 0 };
       if ('raw' in t) return { ...base, text: t.raw, stopReason: 'end_turn' };
@@ -237,6 +278,10 @@ export interface FakeWorkspaceOptions {
   git?: boolean;
   testCommand?: { command: string; runner: 'pytest' | 'jest' | 'vitest' | 'npm' | 'cargo' | 'go' | 'unknown' } | null;
   root?: string;
+  /** TUI-DESIGN §15 item 8: `gitState()` when set (null = no repository known) */
+  gitState?: GitState | null;
+  /** TUI-DESIGN §15 item 8: `dirtySet()` when set */
+  dirtySet?: ReadonlySet<string>;
 }
 
 export interface FakeWorkspace extends Workspace {
@@ -336,6 +381,8 @@ export function createFakeWorkspace(opts: FakeWorkspaceOptions = {}): FakeWorksp
       const c = created.has(path);
       return { path, existsBefore, tracked, createdThisRun: c, recoverable: tracked || c };
     },
+    ...(opts.gitState !== undefined ? { gitState: () => opts.gitState ?? null } : {}),
+    ...(opts.dirtySet !== undefined ? { dirtySet: () => opts.dirtySet! } : {}),
   };
   return ws;
 }
@@ -461,6 +508,10 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
       if (patch.overrides) st.meta.overrides.push(...patch.overrides);
       if (patch.resolvedJevModel !== undefined) st.meta.resolvedJevModel = patch.resolvedJevModel;
       if (patch.jevModelDrift !== undefined) st.meta.jevModelDrift = patch.jevModelDrift;
+      // TUI-DESIGN §15 item 10: title / instructions / git are scalar replaces
+      if (patch.title !== undefined) st.meta.title = patch.title;
+      if (patch.instructions !== undefined) st.meta.instructions = patch.instructions;
+      if (patch.git !== undefined) st.meta.git = structuredClone(patch.git);
     },
     async writeState(state) {
       if (st.stallWrites) await new Promise<void>(() => undefined);
@@ -530,6 +581,23 @@ export function createFakeMeter(capUsd: number): SpendMeter {
 export const alwaysDecline: Confirmer = { identity: 'no reviewer in bench runs', confirm: async () => false };
 export const alwaysApprove: Confirmer = { identity: 'reviewer', confirm: async () => true };
 export const declineAsReviewer: Confirmer = { identity: 'reviewer', confirm: async () => false };
+/** TUI-DESIGN §15 item 6: a confirmer with `confirmDetailed` (the TUI's `d` note path); `confirm` is never called when it is present. */
+export function detailedConfirmer(outcome: ConfirmOutcome | ((step: number) => ConfirmOutcome)): Confirmer & { confirmCalls: number; detailedCalls: number } {
+  const c = {
+    identity: 'reviewer',
+    confirmCalls: 0,
+    detailedCalls: 0,
+    async confirm(): Promise<boolean> {
+      c.confirmCalls += 1;
+      return false;
+    },
+    async confirmDetailed(req: { step: number }): Promise<ConfirmOutcome> {
+      c.detailedCalls += 1;
+      return typeof outcome === 'function' ? outcome(req.step) : outcome;
+    },
+  };
+  return c;
+}
 /** Rejects with AbortError('human_abort') as the TUI confirmer does on Ctrl-C. */
 export const abortingConfirmer: Confirmer = {
   identity: 'reviewer',
@@ -573,6 +641,13 @@ export interface HarnessOptions {
   deciderModel?: { configured: string; pinned: boolean };
   /** reuse a runs dir (resume tests) */
   runsDir?: string;
+  /**
+   * TUI-DESIGN §12.1: the run-start probe. Default: a not-a-repo GitState with zero spawns. A GitState is returned as is; a
+   * function is the injected probe (it may reject to exercise the git-missing fallback).
+   */
+  probeGitState?: GitState | GitProbe;
+  /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
+  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides'>>;
 }
 
 export interface Harness {
@@ -585,8 +660,45 @@ export interface Harness {
   store: FakeStore;
   meter: SpendMeter;
   runsDir: string;
+  /** what createEngine handed to the injected factories, in call order (TUI-DESIGN §12.1 order test) */
+  calls: { order: string[]; sandboxOptions: SandboxCreateOptions | null; workspaceDeps: { gitState?: GitState } | null };
   cleanup(): void;
   of<T extends EngineEvent['type']>(type: T): Extract<EngineEvent, { type: T }>[];
+}
+
+/** A not-a-repo probe result (the default of makeEngine: no git spawn in unit tests). */
+export function noRepoState(): GitState {
+  return notRepoState('not-a-repo', { probedAt: '2026-09-20T00:00:00.000Z', probeMs: 1 });
+}
+
+/** A repository on `main` at `oid` with the given dirty paths, for the images / banner tests (TUI-DESIGN §12.1). */
+export function repoState(o: { oid?: string | null; dirty?: readonly string[]; untracked?: readonly string[]; gitDir?: string; commonDir?: string; ahead?: number | null; behind?: number | null; unmerged?: number } = {}): GitState {
+  const oid = o.oid === undefined ? '7d731c0e9f1e4b2a8c6d5e4f3a2b1c0d9e8f7a6b' : o.oid;
+  const dirty = o.dirty ?? [];
+  const untracked = o.untracked ?? [];
+  return {
+    repo: true,
+    gitDir: o.gitDir ?? '/repo/.git',
+    commonDir: o.commonDir ?? o.gitDir ?? '/repo/.git',
+    topLevel: '/repo',
+    prefix: '',
+    linkedWorktree: (o.commonDir ?? o.gitDir ?? '/repo/.git') !== (o.gitDir ?? '/repo/.git'),
+    head: oid === null ? { kind: 'unborn', name: 'main' } : { kind: 'branch', name: 'main', oid },
+    upstream: 'origin/main',
+    ahead: o.ahead ?? 0,
+    behind: o.behind ?? 0,
+    dirty: {
+      modified: dirty.length,
+      staged: 0,
+      untracked: untracked.length,
+      renamed: 0,
+      unmerged: o.unmerged ?? 0,
+      submodules: 0,
+      entries: [...dirty.map((path) => ({ xy: '.M', sub: 'N...', path })), ...untracked.map((path) => ({ xy: '??', sub: 'N...', path }))],
+    },
+    probedAt: '2026-09-20T00:00:00.000Z',
+    probeMs: 2,
+  };
 }
 
 export const FIXED_RUN_ID = '20260919-120000-abcdefgh';
@@ -622,11 +734,27 @@ export async function makeEngine(h: HarnessOptions = {}): Promise<Harness> {
   if (h.now) opts.now = h.now;
   if (h.exit) opts.exit = h.exit;
   if (h.synthesizer) opts.synthesizer = h.synthesizer;
+  if (h.engine) Object.assign(opts, h.engine);
+  const calls: Harness['calls'] = { order: [], sandboxOptions: null, workspaceDeps: null };
+  const given = h.probeGitState;
+  const probe: GitProbe = typeof given === 'function' ? given : async () => given ?? noRepoState();
   const deps: EngineDeps = {
     createCheckpointStore: () => store,
-    createWorkspace: async () => workspace,
-    createSandbox: () => sandbox,
+    createWorkspace: async (_root, _runDir, wsDeps) => {
+      calls.order.push('createWorkspace');
+      calls.workspaceDeps = wsDeps.gitState ? { gitState: wsDeps.gitState } : {};
+      return workspace;
+    },
+    createSandbox: (o) => {
+      calls.order.push('createSandbox');
+      calls.sandboxOptions = o;
+      return sandbox;
+    },
     newRunId: () => FIXED_RUN_ID,
+    probeGitState: async (root) => {
+      calls.order.push('probeGitState');
+      return probe(root);
+    },
   };
   const engine = await createEngine(opts, deps);
   const events: EngineEvent[] = [];
@@ -641,6 +769,7 @@ export async function makeEngine(h: HarnessOptions = {}): Promise<Harness> {
     store,
     meter,
     runsDir,
+    calls,
     cleanup: () => {
       if (!h.runsDir) rmSync(runsDir, { recursive: true, force: true });
     },

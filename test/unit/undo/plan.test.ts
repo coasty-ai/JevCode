@@ -6,6 +6,8 @@ import { describe, expect, it } from 'vitest';
 import type { PostImage, PostImageFile } from '../../../src/checkpoint/images.js';
 import { stringCells } from '../../../src/undo/diff.js';
 import {
+  CHANGED_DURING_UNDO,
+  KEPT_DECLINED,
   NOT_RECOVERABLE_CAP,
   NOT_RECOVERABLE_COMMAND,
   NOT_RECOVERABLE_NO_GIT,
@@ -14,6 +16,7 @@ import {
   REWIND_RULE,
   askPrompt,
   currentAsk,
+  expectedState,
   headMovedMessage,
   planRewind,
   planUndo,
@@ -24,6 +27,7 @@ import {
   rewindPickerRows,
   skipsFromDecisions,
   startUndoAsks,
+  stillExpected,
   undoAsksDone,
   undoLogEntry,
   undoNote,
@@ -48,14 +52,14 @@ const cur = (sha256: string | null, exists = true, extra: Partial<CurrentFileSta
 describe('planUndo decision table (§12.4)', () => {
   it('sha256 equal → restore via the pre-image', () => {
     const plan = planUndo(input({ post: image(7, { 'src/a.py': edited }), current: { 'src/a.py': cur('aaa') } }));
-    expect(plan.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'pre-image' }]);
+    expect(plan.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'pre-image', expected: { exists: true, sha256: 'aaa' } }]);
     expect(plan.refusals).toEqual([]);
     expect(plan.asks).toEqual([]);
   });
 
   it('missing and deleted: true → restore (the pre-image brings it back)', () => {
     const plan = planUndo(input({ post: image(7, { 'old.txt': { deleted: true, preImage: true, source: 'edit' } }) }));
-    expect(plan.decisions).toEqual([{ kind: 'restore', path: 'old.txt', via: 'pre-image' }]);
+    expect(plan.decisions).toEqual([{ kind: 'restore', path: 'old.txt', via: 'pre-image', expected: { exists: false, sha256: null } }]);
   });
 
   it('differs and a later step recorded the current state → refuse with the /rewind hint (latest matching step wins)', () => {
@@ -76,7 +80,7 @@ describe('planUndo decision table (§12.4)', () => {
 
   it('differs otherwise → ask, default n, with the §24 prompt', () => {
     const plan = planUndo(input({ post: image(7, { 'src/a.py': edited }), current: { 'src/a.py': cur('zzz') } }));
-    expect(plan.decisions).toEqual([{ kind: 'ask', path: 'src/a.py', via: 'pre-image', prompt: 'src/a.py changed since step 7 (outside JevCode). Overwrite? [y/N]  a=all  s=skip rest  Esc=abort' }]);
+    expect(plan.decisions).toEqual([{ kind: 'ask', path: 'src/a.py', via: 'pre-image', prompt: 'src/a.py changed since step 7 (outside JevCode). Overwrite? [y/N]  a=all  s=skip rest  Esc=abort', expected: { exists: true, sha256: 'zzz' } }]);
     expect(plan.asks).toHaveLength(1);
     expect(askPrompt('p', 2)).toBe('p changed since step 2 (outside JevCode). Overwrite? [y/N]  a=all  s=skip rest  Esc=abort');
   });
@@ -101,14 +105,14 @@ describe('planUndo decision table (§12.4)', () => {
 
   it('a created file: unchanged → restore via unlink; changed → ask (overwrite = delete)', () => {
     const created: PostImageFile = { sha256: 'nnn', bytes: 4, mode: 0o644, source: 'write', created: true };
-    expect(planUndo(input({ post: image(7, { 'new.py': created }), current: { 'new.py': cur('nnn') } })).decisions).toEqual([{ kind: 'restore', path: 'new.py', via: 'unlink' }]);
+    expect(planUndo(input({ post: image(7, { 'new.py': created }), current: { 'new.py': cur('nnn') } })).decisions).toEqual([{ kind: 'restore', path: 'new.py', via: 'unlink', expected: { exists: true, sha256: 'nnn' } }]);
     expect(planUndo(input({ post: image(7, { 'new.py': created }), current: { 'new.py': cur('mmm') } })).decisions[0]).toMatchObject({ kind: 'ask', via: 'unlink' });
   });
 
   it('run-changed, clean at start, tracked, HEAD unchanged → git-restore; HEAD moved → skip head-moved (E10)', () => {
     const runFile: PostImageFile = { sha256: 'rrr', bytes: 9, mode: 0o644, source: 'run', preImage: false, cleanAtStart: true };
     const same = planUndo(input({ post: image(7, { 'src/a.py': runFile }), current: { 'src/a.py': cur('rrr') }, headOid: HEAD }));
-    expect(same.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'git-restore' }]);
+    expect(same.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'git-restore', expected: { exists: true, sha256: 'rrr' } }]);
     const moved = planUndo(input({ post: image(7, { 'src/a.py': runFile }), current: { 'src/a.py': cur('rrr') }, headOid: '91ab3c4d' }));
     expect(moved.decisions).toEqual([{ kind: 'skip', path: 'src/a.py', reason: 'head-moved', message: 'not recoverable — HEAD moved since step 7' }]);
     expect(headMovedMessage(7)).toBe('not recoverable — HEAD moved since step 7');
@@ -117,14 +121,14 @@ describe('planUndo decision table (§12.4)', () => {
     expect(unborn.decisions[0]).toMatchObject({ kind: 'skip', reason: 'not-recoverable', message: NOT_RECOVERABLE_COMMAND });
     // HEAD moved but a pre-image exists (the file was dirty before the run): the pre-image wins, HEAD is irrelevant
     const withPre = planUndo(input({ post: image(7, { 'src/a.py': { ...runFile, preImage: true, cleanAtStart: false } }), current: { 'src/a.py': cur('rrr') }, headOid: 'other' }));
-    expect(withPre.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'pre-image' }]);
+    expect(withPre.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'pre-image', expected: { exists: true, sha256: 'rrr' } }]);
   });
 
   it('staged-then-modified: dirty at start means a pre-image was taken before the command, so it restores from it', () => {
     // `git add src/a.py` before the run (staged → dirty set) then the step's command rewrote it
     const staged: PostImageFile = { sha256: 'sss', bytes: 5, mode: 0o644, source: 'run', preImage: true, cleanAtStart: false };
     const plan = planUndo(input({ post: image(7, { 'src/a.py': staged }), current: { 'src/a.py': cur('sss') }, headOid: 'moved-too' }));
-    expect(plan.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'pre-image' }]);
+    expect(plan.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'pre-image', expected: { exists: true, sha256: 'sss' } }]);
     // the same file changed by a command without a pre-image and not clean → not recoverable by a command
     const noPre = planUndo(input({ post: image(7, { 'build/out.txt': { ...staged, preImage: false } }), current: { 'build/out.txt': cur('sss') } }));
     expect(noPre.decisions).toEqual([{ kind: 'skip', path: 'build/out.txt', reason: 'not-recoverable', message: NOT_RECOVERABLE_COMMAND }]);
@@ -135,8 +139,8 @@ describe('planUndo decision table (§12.4)', () => {
     const plan = planUndo(input({ post: image(7, { 'src/a.py': runFile, 'pre.txt': edited, 'new.txt': { sha256: 'n', bytes: 1, mode: 0o644, source: 'write', created: true } }, null), current: { 'src/a.py': cur('rrr'), 'pre.txt': cur('aaa'), 'new.txt': cur('n') }, headOid: null, git: false }));
     expect(plan.decisions).toEqual([
       { kind: 'skip', path: 'src/a.py', reason: 'not-recoverable', message: NOT_RECOVERABLE_NO_GIT },
-      { kind: 'restore', path: 'pre.txt', via: 'pre-image' },
-      { kind: 'restore', path: 'new.txt', via: 'unlink' },
+      { kind: 'restore', path: 'pre.txt', via: 'pre-image', expected: { exists: true, sha256: 'aaa' } },
+      { kind: 'restore', path: 'new.txt', via: 'unlink', expected: { exists: true, sha256: 'n' } },
     ]);
   });
 
@@ -154,7 +158,7 @@ describe('planUndo decision table (§12.4)', () => {
     // a `run` file that is clean at start with HEAD unchanged still restores from HEAD even when its dirty-set copy was capped
     const runClean: PostImageFile = { sha256: 'rrr', bytes: 9, mode: 0o644, source: 'run', preImage: false, cleanAtStart: true };
     const postRun = { ...image(7, { 'src/a.py': runClean }), skipped: [{ path: 'src/a.py', reason: 'cap' as const }] };
-    expect(planUndo(input({ post: postRun, current: { 'src/a.py': cur('rrr') } })).decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'git-restore' }]);
+    expect(planUndo(input({ post: postRun, current: { 'src/a.py': cur('rrr') } })).decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'git-restore', expected: { exists: true, sha256: 'rrr' } }]);
     // …and once HEAD moved, the cap explains the missing copy before the HEAD-moved rule
     expect(planUndo(input({ post: postRun, current: { 'src/a.py': cur('rrr') }, headOid: 'moved' })).decisions[0]).toMatchObject({ kind: 'skip', reason: 'cap' });
     // a skip recorded for another path changes nothing
@@ -197,7 +201,24 @@ describe('the ask overlay (§12.4, §24)', () => {
     expect(reduceUndoAsk(s, 'y')).toBe(s);
     const resolved = resolveAsks(plan, s.answers);
     expect(resolved.map((d) => d.kind)).toEqual(['restore', 'skip', 'skip', 'restore']);
-    expect(resolved[1]).toEqual({ kind: 'skip', path: 'b', reason: 'declined', message: 'kept (declined)' });
+    expect(resolved[1]).toEqual({ kind: 'skip', path: 'b', reason: 'declined', message: KEPT_DECLINED });
+    // an answered `y` keeps the ask's expected snapshot: apply.ts re-verifies the bytes the user said yes to
+    expect(resolved[0]).toEqual({ kind: 'restore', path: 'a', via: 'pre-image', expected: { exists: true, sha256: 'x' } });
+  });
+
+  it('expected snapshots (§12.4 re-verification): existence and hash; an unhashed plan-time file checks existence only', () => {
+    expect(expectedState(cur('abc'))).toEqual({ exists: true, sha256: 'abc' });
+    expect(expectedState(cur(null, false))).toEqual({ exists: false, sha256: null });
+    expect(stillExpected({ exists: true, sha256: 'abc' }, cur('abc'))).toBe(true);
+    expect(stillExpected({ exists: true, sha256: 'abc' }, cur('def'))).toBe(false);
+    expect(stillExpected({ exists: true, sha256: 'abc' }, cur(null))).toBe(false); // grew past the hash bound or unreadable now
+    expect(stillExpected({ exists: true, sha256: 'abc' }, cur(null, false))).toBe(false); // vanished
+    expect(stillExpected({ exists: false, sha256: null }, cur(null, false))).toBe(true);
+    expect(stillExpected({ exists: false, sha256: null }, cur('new'))).toBe(false); // reappeared
+    expect(stillExpected({ exists: true, sha256: null }, cur('whatever'))).toBe(true);
+    expect(stillExpected({ exists: true, sha256: null }, cur(null, false))).toBe(false);
+    expect(CHANGED_DURING_UNDO).toBe('kept (changed during undo)');
+    expect(KEPT_DECLINED).toBe('kept (declined)');
   });
 
   it('a = all remaining overwrite, s = skip rest, Esc = abort', () => {

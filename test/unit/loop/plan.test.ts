@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Plan } from '../../../src/core/types.js';
-import { PLAN_ACCEPT_THRESHOLD, PLAN_MAX_CLAIMS, PLAN_REJECT_THRESHOLD, applyPlanDraft, emptyPlan, newClaims } from '../../../src/loop/plan.js';
+import type { HarnessProblem } from '../../../src/core/types.js';
+import { HUMAN_SEED_TTL_STEPS, HUMAN_STEER_TTL_STEPS, PLAN_ACCEPT_THRESHOLD, PLAN_MAX_CLAIMS, PLAN_MAX_HARNESS_PROBLEMS, PLAN_REJECT_THRESHOLD, applyPlanDraft, boundHarnessProblems, emptyPlan, humanExpired, isSeedProblem, newClaims } from '../../../src/loop/plan.js';
 
 function plan(over: Partial<Plan> = {}): Plan {
   return { ...emptyPlan(), remaining: ['fix f', 'run tests'], ...over };
@@ -82,9 +83,86 @@ describe('Plan rules (§6)', () => {
     expect(r2.plan.done.map((d) => d.text)).toEqual(['fix f']);
     expect(r2.plan.unverified).toEqual([]);
   });
+  it('TUI-DESIGN §8.6: `human: true` unlocks rule (b) drops without a replan problem; false/absent keeps retaining', () => {
+    const base = plan({ remaining: ['fix f', 'run tests', 'update docs'] });
+    const draft = { done: [], remaining: ['fix f'], openProblems: [] };
+    const steered = applyPlanDraft({ plan: base, draft, step: 2, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'x' }, newInformation: null, replan: null, stale: null, human: true });
+    expect(steered.plan.remaining).toEqual(['fix f']);
+    expect(steered.retained).toEqual([]);
+    expect(steered.notes).toEqual([]);
+    expect(steered.plan.harnessProblems).toEqual([]);
+    const kept = applyPlanDraft({ plan: base, draft, step: 2, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'x' }, newInformation: null, replan: null, stale: null, human: false });
+    expect(kept.plan.remaining).toEqual(['fix f', 'run tests', 'update docs']);
+    // unverified / rejected items are kept even under a human directive (mustKeep wins)
+    const withUnverified = applyPlanDraft({ plan: plan({ remaining: ['fix f', 'run tests'] }), draft: { done: ['run tests'], remaining: [], openProblems: [] }, step: 2, claims: ['run tests'], claimsDropped: 0, evidence: { kind: 'judged', probabilities: new Map([['run tests', 0.5]]) }, newInformation: null, replan: null, stale: null, human: true });
+    expect(withUnverified.plan.remaining).toEqual(['run tests']);
+  });
+  it('TUI-DESIGN §8.6: human problems expire — steers 4 steps after their step, seed/undo notes (step 0) after step 8; other kinds never through this rule', () => {
+    expect(HUMAN_STEER_TTL_STEPS).toBe(4);
+    expect(HUMAN_SEED_TTL_STEPS).toBe(8);
+    const steer = { kind: 'human' as const, text: 's', step: 3 };
+    const seed = { kind: 'human' as const, text: 'f', step: 0 };
+    expect(humanExpired(steer, 7)).toBe(false);
+    expect(humanExpired(steer, 8)).toBe(true);
+    expect(humanExpired(seed, 8)).toBe(false);
+    expect(humanExpired(seed, 9)).toBe(true);
+    expect(humanExpired({ kind: 'replan', text: 'r', step: 0 }, 99)).toBe(false);
+    const base = plan({ harnessProblems: [steer, seed, { kind: 'rejected_claim', text: 'c', step: 1 }] });
+    const at7 = applyPlanDraft({ plan: base, draft: null, step: 7, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'x' }, newInformation: null, replan: null, stale: null });
+    expect(at7.plan.harnessProblems.map((h) => `${h.kind}@${h.step}`)).toEqual(['human@3', 'human@0', 'rejected_claim@1']);
+    const at8 = applyPlanDraft({ plan: base, draft: { done: [], remaining: base.remaining, openProblems: [] }, step: 8, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'x' }, newInformation: null, replan: null, stale: null });
+    expect(at8.plan.harnessProblems.map((h) => `${h.kind}@${h.step}`)).toEqual(['human@0', 'rejected_claim@1']);
+    const at9 = applyPlanDraft({ plan: base, draft: null, step: 9, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'x' }, newInformation: null, replan: null, stale: null });
+    expect(at9.plan.harnessProblems.map((h) => `${h.kind}@${h.step}`)).toEqual(['rejected_claim@1']);
+  });
   it('a null draft keeps the plan and applies only replan / stale bookkeeping', () => {
     const r = applyPlanDraft({ plan: plan(), draft: null, step: 2, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'no proposal' }, newInformation: null, replan: null, stale: null });
     expect(r.plan.remaining).toEqual(['fix f', 'run tests']);
     expect(r.notes).toEqual([]);
   });
 });
+
+describe('boundHarnessProblems (TUI-DESIGN §8.6: the step-0 framing is never evicted ahead of a younger problem)', () => {
+  const seed: HarnessProblem = { kind: 'human', step: 0, text: 'Follow-up to run x' };
+  const other = (i: number): HarnessProblem => ({ kind: 'rejected_claim', step: i, text: `claim ${i}` });
+  const steer = (i: number): HarnessProblem => ({ kind: 'human', step: i, text: `steer ${i}` });
+
+  it('under the cap the list is copied unchanged; at the cap the oldest non-seed problems go first and order is kept', () => {
+    const small = [seed, other(1), steer(2)];
+    expect(boundHarnessProblems(small)).toEqual(small);
+    expect(boundHarnessProblems(small)).not.toBe(small);
+    const many = [seed, ...Array.from({ length: 9 }, (_, i) => other(i + 1)), ...Array.from({ length: 8 }, (_, i) => steer(10 + i))];
+    expect(many).toHaveLength(18);
+    const bounded = boundHarnessProblems(many);
+    expect(bounded).toHaveLength(PLAN_MAX_HARNESS_PROBLEMS);
+    expect(bounded[0]).toEqual(seed);
+    expect(bounded.slice(1, 8)).toEqual(many.slice(3, 10));
+    expect(bounded.slice(8)).toEqual(many.slice(10));
+    // a plain slice would have dropped the seed
+    expect(many.slice(-PLAN_MAX_HARNESS_PROBLEMS)).not.toContainEqual(seed);
+  });
+
+  it('a seed problem in the middle survives too; only seed problems left → the oldest seeds go; custom max', () => {
+    const list = [other(1), other(2), seed, other(3)];
+    expect(boundHarnessProblems(list, 2)).toEqual([seed, other(3)]);
+    const seeds = Array.from({ length: 5 }, (_, i) => ({ ...seed, text: `seed ${i}` }));
+    expect(boundHarnessProblems(seeds, 3)).toEqual(seeds.slice(2));
+    expect(isSeedProblem(seed)).toBe(true);
+    expect(isSeedProblem(steer(1))).toBe(false);
+    expect(isSeedProblem(other(0))).toBe(false);
+  });
+
+  it('applyPlanDraft bounds harnessProblems through the same rule at commit', () => {
+    const base = { ...emptyPlan(), remaining: ['fix f'], harnessProblems: [seed, ...Array.from({ length: 15 }, (_, i) => other(i + 1))] };
+    const draft = { done: [], remaining: ['fix f'], openProblems: [] };
+    const r = applyPlanDraft({ plan: base, draft, step: 20, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'x' }, newInformation: null, replan: { text: 'try again' }, stale: null });
+    // 16 + a replan problem = 17 → 16: the seed (step 0, not yet expired at step 20? it is: > 8) — use step 5 for the live case
+    expect(r.plan.harnessProblems).toHaveLength(PLAN_MAX_HARNESS_PROBLEMS);
+    const live = applyPlanDraft({ plan: base, draft, step: 5, claims: [], claimsDropped: 0, evidence: { kind: 'none', because: 'x' }, newInformation: null, replan: { text: 'try again' }, stale: null });
+    expect(live.plan.harnessProblems).toHaveLength(PLAN_MAX_HARNESS_PROBLEMS);
+    expect(live.plan.harnessProblems[0]).toEqual(seed);
+    expect(live.plan.harnessProblems.at(-1)).toMatchObject({ kind: 'replan', text: 'try again', step: 5 });
+    expect(live.plan.harnessProblems.some((h) => h.text === 'claim 1')).toBe(false);
+  });
+});
+

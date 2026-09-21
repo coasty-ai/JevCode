@@ -9,6 +9,7 @@ import { parseJson } from '../core/json.js';
 import {
   FIRST_BYTE_TIMEOUT_MS,
   IdleTimeoutError,
+  TransportError,
   clipMessage,
   costFromPricing,
   getArr,
@@ -23,6 +24,7 @@ import {
   parseRetryAfter,
   parseSse,
   readBodyCapped,
+  requestIdOf,
   resolveDeps,
   toTokenUsage,
   withRetry,
@@ -85,7 +87,7 @@ interface StreamOutcome {
 }
 
 /** A `data:` chunk with a top-level `error` after HTTP 200 (research 07 §2.3): map to its status. */
-function chunkError(err: JsonObject | null, redact: (s: string) => string): ProviderHttpError {
+function chunkError(err: JsonObject | null, redact: (s: string) => string, requestId: string | null): ProviderHttpError {
   const rawCode = err?.['code'];
   const status = typeof rawCode === 'number' && Number.isInteger(rawCode) ? rawCode : typeof rawCode === 'string' && /^\d{3}$/.test(rawCode) ? Number(rawCode) : 500;
   const kind = getStr(getObj(err, 'metadata'), 'error_type') ?? '';
@@ -94,10 +96,11 @@ function chunkError(err: JsonObject | null, redact: (s: string) => string): Prov
     status,
     retryable: isRetryableStatus(status),
     body: redact(JSON.stringify(err ?? {})).slice(0, 2048),
+    requestId, // TUI-DESIGN §15 item 4: the 200 response's request id names the stream that failed
   });
 }
 
-async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number): Promise<StreamOutcome> {
+async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOptions, redact: (s: string) => string, firstByteTimeoutMs: number, requestId: string | null): Promise<StreamOutcome> {
   let text = '';
   let model: string | null = null;
   let finishReason: string | null = null;
@@ -116,11 +119,13 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
     }
     const parsed = parseJson(data);
     if (!parsed.ok || typeof parsed.value !== 'object' || parsed.value === null || Array.isArray(parsed.value)) {
-      throw new ProviderHttpError(redact(`openrouter: malformed sse data: ${parsed.ok ? 'not an object' : parsed.error}`), { status: 0, retryable: true });
+      // TUI-DESIGN §15 item 5: RetryCause kind 'invalid'. A fixed hint, never `parsed.error`: V8's JSON.parse message embeds a
+      // body snippet that pattern redaction cannot recognise (§15 item 5: the message is "never a body").
+      throw new TransportError('invalid', clipMessage(redact(`openrouter: malformed sse data: ${parsed.ok ? 'not a JSON object' : 'not valid JSON'}`)));
     }
     const chunk = parsed.value;
     const err = getObj(chunk, 'error');
-    if (err) throw chunkError(err, redact);
+    if (err) throw chunkError(err, redact, requestId);
     model = getStr(chunk, 'model') ?? model;
 
     const choice = getArr(chunk, 'choices')?.find((c) => typeof c === 'object' && c !== null && !Array.isArray(c) && (getNum(c, 'index') ?? 0) === 0);
@@ -179,10 +184,11 @@ async function consumeStream(body: ReadableStream<Uint8Array>, opts: GenerateOpt
   // The accounting frame is documented as always present; a stream cut before it is a transport
   // failure (the partial output was likely truncated too), so it is retried like a network error.
   if (!sawDone && !(finishReason !== null && sawUsage)) {
-    throw new ProviderHttpError('openrouter: stream ended before [DONE] / usage frame', { status: 0, retryable: true });
+    // TUI-DESIGN §15 item 5: RetryCause kind 'stream'
+    throw new TransportError('stream', 'openrouter: stream ended before [DONE] / usage frame');
   }
   if (!sawUsage) {
-    throw new ProviderHttpError('openrouter: stream completed without a usage frame', { status: 0, retryable: true });
+    throw new TransportError('stream', 'openrouter: stream completed without a usage frame');
   }
 
   const toolCalls: ToolCall[] = order.map((i) => {
@@ -230,10 +236,13 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         if (e instanceof ProviderHttpError) throw e;
-        throw new ProviderHttpError(d.redact(`openrouter: network error: ${e instanceof Error ? e.message : String(e)}`), { status: 0, retryable: true, cause: e });
+        // TUI-DESIGN §15 item 5: RetryCause kind 'network' with the errno from the cause chain
+        throw new TransportError('network', d.redact(`openrouter: network error: ${e instanceof Error ? e.message : String(e)}`), { cause: e });
       } finally {
         clearTimeout(headersTimer);
       }
+      // TUI-DESIGN §15 item 4: `x-request-id` when OpenRouter or a proxy sets one (httpError reads the same headers); redacted wire text (F9)
+      const requestId = requestIdOf(res.headers, d.redact);
       if (res.status !== 200) {
         const bodyText = await readBodyCapped(res);
         const json = parseJsonObject(bodyText);
@@ -253,16 +262,16 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
           ...(inFlight402 ? { retryableOverride: true } : {}),
         });
       }
-      if (!res.body) throw new ProviderHttpError('openrouter: 200 without a body', { status: 0, retryable: true });
+      if (!res.body) throw new TransportError('stream', 'openrouter: 200 without a body');
       const remaining = Math.max(1, FIRST_BYTE_TIMEOUT_MS - (d.now() - t0));
       try {
-        return await consumeStream(res.body, opts, d.redact, remaining);
+        return await consumeStream(res.body, opts, d.redact, remaining, requestId);
       } catch (e) {
         if (opts.signal.aborted) throw opts.signal.reason;
         // Typed errors (HTTP/stream errors, renderer-callback bugs via notify) keep their class; anything
-        // else (decoder faults, stream resets) is a transport failure and retried.
+        // else (decoder faults, stream resets) is a transport failure and retried (RetryCause kind 'stream').
         if (e instanceof JevCodeError) throw e;
-        throw new ProviderHttpError(d.redact(`openrouter: stream failure: ${e instanceof Error ? e.message : String(e)}`), { status: 0, retryable: true, cause: e });
+        throw new TransportError('stream', d.redact(`openrouter: stream failure: ${e instanceof Error ? e.message : String(e)}`), { cause: e });
       } finally {
         controller.abort();
       }
@@ -278,9 +287,13 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       validateRequest(req);
       const body = JSON.stringify(buildOpenRouterBody(cfg, req));
       const t0 = d.now();
-      const out = await withRetry(d, opts.signal, () => attempt(body, opts));
-      // usage.cost is what OpenRouter bills; pricing is the fallback for BYOK / missing cost.
-      const costUsd = out.cost ?? costFromPricing(cfg.pricing, out.tokens);
+      // TUI-DESIGN §15.2 `provider/openrouter.ts`: GenerateOptions.onRetry / wake thread into withRetry (§13.2)
+      const out = await withRetry(d, opts.signal, () => attempt(body, opts), opts);
+      // usage.cost is what OpenRouter bills. Without it (BYOK, a missing frame field) a table-priced model
+      // (cfg.priced, set by validateGenerator; absent = false) falls back to the table; an unpriced one
+      // surfaces NaN so the engine can emit budget:unpriced (TUI-DESIGN §9.5 — the meter clamps NaN to 0
+      // and figures render `$?`) instead of silently billing $0.
+      const costUsd = out.cost ?? (cfg.priced === true ? costFromPricing(cfg.pricing, out.tokens) : Number.NaN);
       return {
         text: out.text,
         toolCalls: out.toolCalls,

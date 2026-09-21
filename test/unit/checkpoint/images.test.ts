@@ -31,6 +31,7 @@ import {
 import { CHECKPOINT_FILES } from '../../../src/checkpoint/store.js';
 import { sha256Hex } from '../../../src/core/hash.js';
 import { CheckpointError } from '../../../src/errors.js';
+import { planUndo } from '../../../src/undo/plan.js';
 import { withTempDir } from '../../fixtures/checkpoint/make.js';
 
 async function setup(dir: string): Promise<{ root: string; runDir: string }> {
@@ -97,7 +98,8 @@ describe('layout (§12.3)', () => {
       expect(img.headOid).toBe('7d731c0e');
       expect(img.hashSkipped).toBe(false);
       expect(img.files['src/a.py']).toEqual({ sha256: sha256Hex('x = 2\n'), bytes: 6, mode: expect.any(Number), source: 'edit', preImage: true, cleanAtStart: true });
-      expect(img.files['old.txt']).toEqual({ deleted: true, preImage: true, source: 'edit' });
+      // a deleted entry keeps `cleanAtStart` so /undo can bring a clean tracked file a command deleted back from HEAD (§12.4)
+      expect(img.files['old.txt']).toEqual({ deleted: true, preImage: true, source: 'edit', cleanAtStart: false });
       expect(img.files['src/new/deep/x.py']).toEqual({ sha256: sha256Hex('new\n'), bytes: 4, mode: expect.any(Number), source: 'edit', created: true });
       expect(img.files['build/out.txt']).toEqual({ sha256: sha256Hex('fresh output\n'), bytes: 13, mode: expect.any(Number), source: 'edit', preImage: false, cleanAtStart: false });
       expect(img.skipped).toEqual([]);
@@ -465,6 +467,31 @@ describe('re-runs, caps by default, permissions, odd names (§12.3, DESIGN §9.1
       } finally {
         await chmod(readOnly, 0o755);
       }
+    }));
+});
+
+describe('a `run` step deleting a clean tracked file (§12.3 deleted entries, §12.4 restore source 3)', () => {
+  it('records `{ deleted: true, cleanAtStart: true, source: run }` and planUndo yields the git-restore row while HEAD is unchanged', () =>
+    withTempDir(async (dir) => {
+      const { root, runDir } = await setup(dir);
+      // clean tracked files need no dirty-set copy (§12.3): the pre-image call carries no targets
+      const pre = await writePreImages(runDir, 3, [], { root, source: 'run' });
+      const { unlink } = await import('node:fs/promises');
+      await unlink(join(root, 'src/a.py'));
+      const post = await writePostImages(runDir, 3, ['src/a.py'], { root, source: 'run', headOid: 'h3', cleanAtStart: () => true, pre, at: '2026-09-20T12:00:00.000Z', yieldBetweenChunks: noYield });
+      expect(post.image.files['src/a.py']).toEqual({ deleted: true, preImage: false, source: 'run', cleanAtStart: true });
+      const same = planUndo({ step: 3, post: post.image, current: {}, later: [], headOid: 'h3', git: true });
+      expect(same.decisions).toEqual([{ kind: 'restore', path: 'src/a.py', via: 'git-restore', expected: { exists: false, sha256: null } }]);
+      // HEAD moved since: the E10 rule, not a restore
+      const moved = planUndo({ step: 3, post: post.image, current: {}, later: [], headOid: 'h4', git: true });
+      expect(moved.decisions).toEqual([{ kind: 'skip', path: 'src/a.py', reason: 'head-moved', message: 'not recoverable — HEAD moved since step 3' }]);
+      // the same deletion of a file that was dirty (copied) restores from the pre-image whatever HEAD did
+      await writeFile(join(root, 'src/a.py'), 'x = 1\n');
+      const preDirty = await writePreImages(runDir, 4, ['src/a.py'], { root, source: 'run' });
+      await unlink(join(root, 'src/a.py'));
+      const postDirty = await writePostImages(runDir, 4, ['src/a.py'], { root, source: 'run', headOid: 'h3', cleanAtStart: () => false, pre: preDirty, yieldBetweenChunks: noYield });
+      expect(postDirty.image.files['src/a.py']).toEqual({ deleted: true, preImage: true, source: 'run', cleanAtStart: false });
+      expect(planUndo({ step: 4, post: postDirty.image, current: {}, later: [], headOid: 'other', git: true }).decisions[0]).toMatchObject({ kind: 'restore', via: 'pre-image' });
     }));
 });
 

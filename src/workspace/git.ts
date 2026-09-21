@@ -1,12 +1,15 @@
 /**
- * The only module that spawns git (DESIGN.md §8, defence 2).
+ * The only module that spawns git through the sandbox (DESIGN.md §8, defence 2).
  *
  * A `run` action may plant `core.fsmonitor`, hooks, `diff.external` or a pager in the
  * workspace's `.git/config`; ordinary harness commands (`status`, `ls-files`, `diff`) would
- * execute them with the harness's environment. So every harness git call goes through the
- * sandbox with the scrubbed env plus GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL=/dev/null and
- * `-c` overrides that neutralise the executable knobs. Output is untrusted text: bounded and
- * parsed defensively.
+ * execute them with the harness's environment. So every sandboxed harness git call goes through
+ * `runGit` with the scrubbed env plus GIT_CONFIG_NOSYSTEM / GIT_CONFIG_GLOBAL=/dev/null and
+ * `-c` overrides that neutralise the executable knobs. One exception, by design: the two
+ * read-only run-start probes of `workspace/gitstate.ts` (`rev-parse`, `--no-optional-locks
+ * status`) run UNSANDBOXED — they precede the sandbox, whose profile needs their answer — with
+ * exactly the same `GIT_BASE_FLAGS` + `GIT_ENV` (TUI-DESIGN §12.1); defence 1 (the seatbelt)
+ * does not cover them, defence 2 does. Output is untrusted text: bounded and parsed defensively.
  */
 import { dirname } from 'node:path';
 
@@ -176,10 +179,22 @@ export async function statusPorcelain(sandbox: Sandbox, ws: string, opts: GitRun
   return { entries, ok: true, truncated: r.truncated };
 }
 
-/** `git ls-files --error-unmatch -- <path>` succeeds only for tracked paths. */
+/**
+ * TUI-DESIGN §12.4 (C40): the top-level flag that makes every pathspec of ONE command a literal path — no glob
+ * characters, no `:` magic. `restoreFromHead` and `lsFilesTracked` take recorded file names, where `pages/[slug].tsx`
+ * must mean that file and never `pages/s.tsx`, and `:!keep.txt` must never mean "everything but". Never part of
+ * `GIT_BASE_FLAGS`: `diffAgainst` relies on `:(exclude)` magic.
+ */
+export const LITERAL_PATHSPECS_FLAG = '--literal-pathspecs';
+
+/**
+ * `git --literal-pathspecs ls-files --error-unmatch -z -- <path>` succeeds only for tracked paths; the listing must
+ * name exactly `relPath` (fix-pass finding 8: with glob pathspecs `pages/[slug].tsx` also matched a tracked `pages/s.tsx`
+ * and an untracked bracket-named file read as tracked).
+ */
 export async function lsFilesTracked(sandbox: Sandbox, ws: string, relPath: string, opts: GitRunOptions = {}): Promise<boolean> {
-  const r = await runGit(sandbox, ws, ['ls-files', '--error-unmatch', '-z', '--', relPath], opts);
-  return r.ok && r.stdout.length > 0;
+  const r = await runGit(sandbox, ws, [LITERAL_PATHSPECS_FLAG, 'ls-files', '--error-unmatch', '-z', '--', relPath], opts);
+  return r.ok && splitNul(r.stdout).includes(relPath);
 }
 
 /**
@@ -202,6 +217,30 @@ export function applyCheck(sandbox: Sandbox, ws: string, patchFile: string, opts
 export function apply(sandbox: Sandbox, ws: string, patchFile: string, opts: GitRunOptions & { plain?: boolean } = {}): Promise<ExecResult> {
   const { plain, ...rest } = opts;
   return runGit(sandbox, ws, ['apply', '-p1', '--', patchFile], { ...rest, env: { ...applyEnv(ws, plain === true), ...(rest.env ?? {}) } });
+}
+
+/** TUI-DESIGN §12.4 (C40, D8): the one restore verb — worktree only, never `checkout --`, `--staged`, `stash`, `reset` or `clean`. */
+export const RESTORE_ARGS: readonly string[] = ['restore', '--source=HEAD', '--worktree'];
+
+/**
+ * TUI-DESIGN §12.4 (A146, C40): `git --literal-pathspecs restore --source=HEAD --worktree -- <paths>`
+ * through `runGit` with the neutralising flags. Restores the working-tree copy of clean tracked files a
+ * command changed; the index and refs are never touched. Paths are workspace-relative LITERAL file
+ * names (cwd = `ws`): without `--literal-pathspecs` they would be glob pathspecs, and a recorded
+ * `pages/[slug].tsx` restored a dirty `pages/s.tsx` while a `:!keep.txt` restored the whole tree
+ * (fix-pass blocker 1, verified on git 2.50.1) — the promise that only the recorded paths are touched
+ * would be broken with no pre-image to recover from. Absolute paths, `..` segments, empty strings and
+ * NUL are refused before anything is spawned, and an empty list is a caller bug (`git restore` would
+ * otherwise print usage and exit 128).
+ */
+export function restoreFromHead(sandbox: Sandbox, ws: string, paths: readonly string[], opts: GitRunOptions = {}): Promise<ExecResult> {
+  if (!Array.isArray(paths) || paths.length === 0) throw new TypeError('restoreFromHead: at least one path is required');
+  for (const p of paths) {
+    if (typeof p !== 'string' || p.length === 0 || p.includes('\0')) throw new TypeError('restoreFromHead: paths must be non-empty strings without NUL');
+    if (p.startsWith('/') || p.split('/').includes('..')) throw new TypeError(`restoreFromHead: path "${p}" must be workspace-relative`);
+  }
+  // `runGit` keeps a flag before the subcommand where git wants it: `git -c … --literal-pathspecs restore …`
+  return runGit(sandbox, ws, [LITERAL_PATHSPECS_FLAG, ...RESTORE_ARGS, '--', ...paths], opts);
 }
 
 /**
@@ -246,6 +285,40 @@ const OID_RE = /^[0-9a-f]{4,64}$/;
 
 function emptyDirty(): GitDirty {
   return { modified: 0, staged: 0, untracked: 0, renamed: 0, unmerged: 0, submodules: 0, entries: [] };
+}
+
+const V1_UNMERGED = new Set(['DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU']);
+
+/**
+ * TUI-DESIGN §12.1 / §15 item 8: the per-command `git status --porcelain=v1` refresh re-expressed as
+ * `GitState.dirty` so `workspace.gitState()` keeps current counts without a second listing. v1 has no
+ * submodule column (`sub` is `N...`) and no hashes; `' '` becomes `'.'` so `xy` reads like v2.
+ */
+export function statusV1ToDirty(entries: readonly StatusEntry[]): GitDirty {
+  const dirty = emptyDirty();
+  for (const e of entries) {
+    if (typeof e.code !== 'string' || e.code.length !== 2 || typeof e.path !== 'string' || e.path.length === 0) continue;
+    const x = e.code[0] ?? ' ';
+    const y = e.code[1] ?? ' ';
+    if (x === '?' || y === '?') {
+      dirty.untracked++;
+      dirty.entries.push({ xy: UNTRACKED_XY, sub: NO_SUBMODULE, path: e.path });
+      continue;
+    }
+    if (x === '!' || y === '!') continue;
+    const xy = `${x === ' ' ? '.' : x}${y === ' ' ? '.' : y}`;
+    const entry: StatusEntryV2 = { xy, sub: NO_SUBMODULE, path: e.path, ...(e.from !== undefined ? { from: e.from } : {}) };
+    if (V1_UNMERGED.has(e.code)) {
+      dirty.unmerged++;
+      dirty.entries.push(entry);
+      continue;
+    }
+    if (x === 'R' || x === 'C' || y === 'R' || y === 'C') dirty.renamed++;
+    if (x !== ' ') dirty.staged++;
+    if (y !== ' ') dirty.modified++;
+    dirty.entries.push(entry);
+  }
+  return dirty;
 }
 
 /** Split `line` into its first `n` space-separated tokens and the verbatim remainder (paths may contain spaces). */

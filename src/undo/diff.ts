@@ -1,15 +1,25 @@
 /**
- * `/diff` rendering (TUI-DESIGN §12.6, D9) — pure.
+ * `/diff` rendering (TUI-DESIGN §12.6, D9) — pure, plus the sandboxed runner at the end of the file.
  *
  * `diffStatBlock` turns `git diff --numstat -z` output (plus the untracked `--no-index` rows, the run-start dirty
  * set and the submodule list) into the inline block: header, one row per file with the letter `M/A/D/R/?/B/S`,
  * `+n −m`, a ≤ 10-cell bar, `†` for paths dirty before the run, the legend, and the 40-row cap.
  * `diffStepLines` renders `/diff <step>` from pre/post images with a dependency-free Myers line diff.
  *
- * Cell widths come from O2's `src/tui/composer/width.ts` (§4.2, string-width-identical); the helpers at the bottom
- * add the left-truncation and padding the diff rows need on top of `stringWidth` / `truncateCells`.
+ * Cell widths come from O2's `src/tui/composer/width.ts` (§4.2, string-width-identical); the cell helpers add the
+ * left-truncation and padding the diff rows need on top of `stringWidth` / `truncateCells`.
+ *
+ * Wave 2 (I/O, last section): `collectDiffStat` / `diffStatBlockFromGit` run the one `git diff --numstat -z HEAD --
+ * <files>` spawn and the per-untracked `--no-index` spawns through the `Sandbox` interface (`runGit`, exit 1 =
+ * success per A151) and feed the pure renderer; `collectFullDiff` produces the `/diff --full` text for pager.ts.
  */
+import { lstat } from 'node:fs/promises';
+import { resolve } from 'node:path';
+import { normaliseRelPath } from '../checkpoint/images.js';
+import type { ExecResult, Sandbox } from '../core/types.js';
+import { isSecretPath } from '../sandbox/paths.js';
 import { cellWidth, stringWidth, truncateCells } from '../tui/composer/width.js';
+import { runGit, shellQuote, type GitRunOptions } from '../workspace/git.js';
 
 // ---------------------------------------------------------------------------------------
 // Constants (TUI-DESIGN §12.6)
@@ -608,4 +618,401 @@ export function truncateRightCells(s: string, max: number): string {
 export function padEndCells(s: string, width: number): string {
   const w = stringCells(s);
   return w >= width ? s : s + ' '.repeat(width - w);
+}
+
+// ---------------------------------------------------------------------------------------
+// I/O: the sandboxed `git diff --numstat -z HEAD -- <files>` runner behind diffStatBlock (TUI-DESIGN §12.6, D9)
+// ---------------------------------------------------------------------------------------
+
+/** TUI-DESIGN §12.6 (A151): `--no-index` (and `--exit-code`) exit 1 means "differences found", not failure. */
+export function noIndexOk(r: Pick<ExecResult, 'exitCode' | 'killedBy'>): boolean {
+  return r.killedBy === null && (r.exitCode === 0 || r.exitCode === 1);
+}
+
+/** TUI-DESIGN §12.6: `/dev/null` is the empty side of every untracked file's `--no-index` diff. */
+export const DEV_NULL = '/dev/null';
+/** Default per-spawn timeout of the diff runners (the whole `/diff` is one keystroke's worth of waiting, never the loop's). */
+export const DIFF_GIT_TIMEOUT_MS = 15_000;
+/** `/diff --full` output bound (the pager file); past it a trailer says so. */
+export const DIFF_FULL_MAX_BYTES = 16 * 1024 * 1024;
+/** Untracked files shown in `/diff --full` (one `--no-index` spawn each). */
+export const DIFF_FULL_UNTRACKED_MAX = 200;
+/**
+ * TUI-DESIGN §12.4 / §12.6 (C40): every pathspec-taking harness git call (`diff`, `ls-files`, `restore`) runs with
+ * literal pathspecs — a recorded name such as `pages/[id].tsx` or `a*.py` is a file name, never a glob that would
+ * also match (and, for `restore`, revert) `pages/i.tsx`. Merged into the child env by `runGit` (`GitRunOptions.env`).
+ */
+export const LITERAL_PATHSPECS_ENV: Readonly<Record<string, string>> = { GIT_LITERAL_PATHSPECS: '1' };
+/**
+ * TUI-DESIGN §12.6: pathspecs are handed to `sh -c` in one command string, so a run that touched thousands of files
+ * is split into batches whose quoted pathspecs sum to at most this many bytes (Linux caps one argument at 128 KiB;
+ * macOS the whole argv at 1 MiB) and the `-z` outputs are concatenated.
+ */
+export const DIFF_PATHSPEC_CHUNK_BYTES = 64 * 1024;
+/**
+ * TUI-DESIGN §12.6: the per-untracked-file `--no-index` spawns run at most this many at a time — `/diff` is allowed
+ * while a run is live, and twenty simultaneous `sandbox-exec`/`sh`/`git` trios would compete with the live step.
+ */
+export const DIFF_NO_INDEX_CONCURRENCY = 2;
+/** TUI-DESIGN §12.6 / §10: a changed file on the secret denylist is listed, never diffed, in `/diff --full`. */
+export const SECRET_PATH_SKIP = 'secret path';
+
+export interface DiffIoOptions {
+  sandbox: Sandbox;
+  /** realpath of the workspace (the sandbox's cwd; every path below is relative to it) */
+  root: string;
+  runId: string;
+  /** pathspec batch bound in quoted bytes (default DIFF_PATHSPEC_CHUNK_BYTES) */
+  pathspecChunkBytes?: number;
+  /** the run's changed files (`state.createdThisRun` ∪ every `outcome.changedFiles`), workspace-relative */
+  changedFiles: readonly string[];
+  /** untracked paths among them (`??` in the status snapshot ∪ created files that were never added); derived with one `git ls-files --others` spawn when absent */
+  untracked?: readonly string[];
+  /** HEAD is unborn: diff against EMPTY_TREE_OID (§12.6) */
+  unborn?: boolean;
+  /** paths dirty before the run → `†` */
+  dirtyAtStart?: ReadonlySet<string>;
+  /** files the run created → `A` when tracked */
+  created?: ReadonlySet<string>;
+  /** submodule paths → `S` */
+  submodules?: ReadonlySet<string>;
+  signal?: AbortSignal;
+  timeoutMs?: number;
+}
+
+export interface DiffStatIoOptions extends DiffIoOptions {
+  /** `--all`: lift the 40-row cap */
+  all?: boolean;
+  /** untracked files past this many get sizes instead of a `--no-index` numstat (default 20) */
+  untrackedNumstatMax?: number;
+}
+
+export interface DiffIoTrace {
+  /** sandbox spawns performed */
+  spawns: number;
+  /** git failures, one line each (never thrown: the block renders what it has) */
+  errors: string[];
+}
+
+export interface DiffStatCollected extends DiffIoTrace {
+  input: DiffStatInput;
+}
+
+interface PathFacts {
+  /** normalised relative paths that exist on disk, with their sizes */
+  existing: Map<string, number>;
+  deleted: Set<string>;
+  skipped: { path: string; reason: string }[];
+}
+
+function errnoOf(e: unknown): string | null {
+  if (typeof e === 'object' && e !== null && 'code' in e) {
+    const code = (e as { code?: unknown }).code;
+    return typeof code === 'string' ? code : null;
+  }
+  return null;
+}
+
+/** lstat every changed file once: sizes for the untracked rows, `D` for the missing ones, skips for the unreadable or escaping. */
+async function pathFacts(root: string, changedFiles: readonly string[]): Promise<PathFacts> {
+  const existing = new Map<string, number>();
+  const deleted = new Set<string>();
+  const skipped: { path: string; reason: string }[] = [];
+  const seen = new Set<string>();
+  for (const raw of changedFiles) {
+    const rel = normaliseRelPath(raw);
+    if (rel === null) {
+      if (!seen.has(`\0${raw}`)) {
+        seen.add(`\0${raw}`);
+        skipped.push({ path: raw, reason: 'outside the workspace' });
+      }
+      continue;
+    }
+    if (seen.has(rel)) continue;
+    seen.add(rel);
+    try {
+      const st = await lstat(resolve(root, rel));
+      if (st.isSymbolicLink() || !st.isFile()) {
+        skipped.push({ path: rel, reason: st.isSymbolicLink() ? 'symlink' : 'not a regular file' });
+        continue;
+      }
+      existing.set(rel, st.size);
+    } catch (e) {
+      const code = errnoOf(e);
+      if (code === 'ENOENT' || code === 'ENOTDIR') deleted.add(rel);
+      else skipped.push({ path: rel, reason: `unreadable (${code ?? 'error'})` });
+    }
+  }
+  return { existing, deleted, skipped };
+}
+
+/** Every diff runner spawn: the caller's timeout / signal, literal pathspecs (C40), then the call's own additions. */
+function gitOpts(o: DiffIoOptions, extra: GitRunOptions = {}): GitRunOptions {
+  const { env: extraEnv, ...rest } = extra;
+  return { timeoutMs: o.timeoutMs ?? DIFF_GIT_TIMEOUT_MS, ...(o.signal ? { signal: o.signal } : {}), ...rest, env: { ...LITERAL_PATHSPECS_ENV, ...(extraEnv ?? {}) } };
+}
+
+function failureText(what: string, r: ExecResult): string {
+  const line = r.stderr.split(/\r?\n/).find((l) => l.trim().length > 0)?.trim() ?? '';
+  return `${what}: ${line.length > 0 ? line : `git exited ${r.exitCode ?? 'by signal'}`}`;
+}
+
+/**
+ * TUI-DESIGN §12.6: split pathspecs into batches whose shell-quoted lengths (plus one separator each) stay within
+ * `maxBytes`; a single pathspec longer than the bound forms its own batch. Pure; order preserved.
+ */
+export function chunkPathspecs(paths: readonly string[], maxBytes: number = DIFF_PATHSPEC_CHUNK_BYTES): string[][] {
+  const cap = Number.isFinite(maxBytes) && maxBytes > 0 ? Math.floor(maxBytes) : DIFF_PATHSPEC_CHUNK_BYTES;
+  const out: string[][] = [];
+  let cur: string[] = [];
+  let used = 0;
+  for (const p of paths) {
+    const cost = Buffer.byteLength(shellQuote(p)) + 1;
+    if (cur.length > 0 && used + cost > cap) {
+      out.push(cur);
+      cur = [];
+      used = 0;
+    }
+    cur.push(p);
+    used += cost;
+  }
+  if (cur.length > 0) out.push(cur);
+  return out;
+}
+
+/** `Promise.all` with at most `limit` tasks in flight; results in input order; never rejects when `fn` does not. */
+export async function mapLimit<T, R>(items: readonly T[], limit: number, fn: (item: T, index: number) => Promise<R>): Promise<R[]> {
+  const n = Number.isFinite(limit) && limit >= 1 ? Math.floor(limit) : 1;
+  const out: R[] = new Array<R>(items.length);
+  let next = 0;
+  const worker = async (): Promise<void> => {
+    while (next < items.length) {
+      const i = next++;
+      out[i] = await fn(items[i] as T, i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(n, items.length) }, () => worker()));
+  return out;
+}
+
+/** One `git ls-files -z --others --exclude-standard -- <files>` per pathspec batch: which of the existing files are untracked (only when the caller did not say). */
+async function deriveUntracked(o: DiffIoOptions, files: readonly string[], trace: DiffIoTrace): Promise<string[]> {
+  if (files.length === 0) return [];
+  const out: string[] = [];
+  for (const batch of chunkPathspecs(files, o.pathspecChunkBytes)) {
+    try {
+      trace.spawns += 1;
+      const r = await runGit(o.sandbox, o.root, ['ls-files', '-z', '--others', '--exclude-standard', '--', ...batch], gitOpts(o));
+      if (!r.ok) {
+        trace.errors.push(failureText('ls-files', r));
+        continue;
+      }
+      out.push(...r.stdout.split('\0').filter((p) => p.length > 0));
+    } catch (e) {
+      trace.errors.push(`ls-files: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  return out;
+}
+
+/**
+ * TUI-DESIGN §12.6: the `/diff` data through the sandbox — one `git diff --numstat -z --ignore-submodules=dirty
+ * <HEAD | empty tree> -- <tracked>` spawn (awaited off the loop; `runGit` adds `--no-ext-diff --no-textconv` and
+ * the neutralising flags), plus `git diff --no-index --numstat -z -- /dev/null <f>` for the first 20 untracked
+ * files (exit 1 = differences = success, A151) and sizes for the rest. Never throws for a git failure: the block
+ * renders what it has and `errors` says what did not.
+ */
+export async function collectDiffStat(o: DiffStatIoOptions): Promise<DiffStatCollected> {
+  const trace: DiffIoTrace = { spawns: 0, errors: [] };
+  const facts = await pathFacts(o.root, o.changedFiles);
+  const existing = [...facts.existing.keys()];
+  const untrackedList = o.untracked === undefined ? await deriveUntracked(o, existing, trace) : o.untracked.map((p) => normaliseRelPath(p)).filter((p): p is string => p !== null);
+  const untracked = new Set(untrackedList.filter((p) => facts.existing.has(p)));
+  const tracked = [...existing.filter((p) => !untracked.has(p)), ...facts.deleted];
+  let numstat = '';
+  // one `--numstat -z` spawn per pathspec batch (one batch for any ordinary run); `-z` records concatenate cleanly
+  for (const batch of chunkPathspecs(tracked, o.pathspecChunkBytes)) {
+    try {
+      trace.spawns += 1;
+      const base = o.unborn === true ? EMPTY_TREE_OID : 'HEAD';
+      const r = await runGit(o.sandbox, o.root, ['diff', '--numstat', '-z', '--ignore-submodules=dirty', base, '--', ...batch], gitOpts(o));
+      if (noIndexOk(r)) numstat += r.stdout;
+      else trace.errors.push(failureText('diff', r));
+    } catch (e) {
+      trace.errors.push(`diff: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const max = Math.max(0, Math.floor(o.untrackedNumstatMax ?? DIFF_UNTRACKED_NUMSTAT_MAX));
+  const untrackedRows: { path: string; numstat?: string; bytes?: number }[] = [];
+  const list = [...untracked];
+  const withNumstat = list.slice(0, max);
+  // bounded concurrency: `/diff` may run beside a live step (§12.6)
+  const results = await mapLimit(withNumstat, DIFF_NO_INDEX_CONCURRENCY, async (p): Promise<{ path: string; numstat?: string; bytes?: number }> => {
+    const bytes = facts.existing.get(p) ?? 0;
+    try {
+      trace.spawns += 1;
+      const r = await runGit(o.sandbox, o.root, ['diff', '--no-index', '--numstat', '-z', '--', DEV_NULL, p], gitOpts(o));
+      if (noIndexOk(r)) return { path: p, numstat: r.stdout };
+      trace.errors.push(failureText(`diff --no-index ${p}`, r));
+    } catch (e) {
+      trace.errors.push(`diff --no-index ${p}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+    return { path: p, bytes };
+  });
+  untrackedRows.push(...results);
+  for (const p of list.slice(max)) untrackedRows.push({ path: p, bytes: facts.existing.get(p) ?? 0 });
+  const input: DiffStatInput = {
+    runId: o.runId,
+    numstat,
+    untracked: untrackedRows,
+    deleted: facts.deleted,
+    skipped: facts.skipped,
+    ...(o.dirtyAtStart ? { dirtyAtStart: o.dirtyAtStart } : {}),
+    ...(o.created ? { created: o.created } : {}),
+    ...(o.submodules ? { submodules: o.submodules } : {}),
+    ...(o.all === true ? { all: true } : {}),
+  };
+  return { input, spawns: trace.spawns, errors: trace.errors };
+}
+
+/** TUI-DESIGN §12.6: `collectDiffStat` fed to the pure `diffStatBlock` — the inline `/diff` item's lines. */
+export async function diffStatBlockFromGit(o: DiffStatIoOptions, columns: number): Promise<{ lines: string[]; spawns: number; errors: string[] }> {
+  const c = await collectDiffStat(o);
+  return { lines: diffStatBlock(c.input, columns), spawns: c.spawns, errors: c.errors };
+}
+
+export interface FullDiffIoOptions extends DiffIoOptions {
+  /** `--color=always` for the pager; false for the inline block */
+  color: boolean;
+  /** files larger than this are excluded (default 1 MiB, §12.6) */
+  maxFileBytes?: number;
+  maxOutputBytes?: number;
+  /** the configured secret stores (§10; `config.secretPaths`); with the basename denylist they decide `isDenied` when it is not given */
+  secretPaths?: readonly string[];
+  /** TUI-DESIGN §10 / §12.6: a changed file that must be listed, never diffed (default: `isSecretPath(root, rel, secretPaths)`) */
+  isDenied?: (rel: string) => boolean;
+  /** `config.redact` — the assembled text passes through it before it is written or rendered (§10.6, §13.6) */
+  redact?: (s: string) => string;
+}
+
+export interface FullDiffCollected extends DiffIoTrace {
+  /** the unified diff text (tracked files first, then one `--no-index` block per untracked file), redacted */
+  text: string;
+  skipped: { path: string; reason: string }[];
+  /** the git output hit `maxOutputBytes` */
+  truncated: boolean;
+  /** the inline block's first line when the text is incomplete (null otherwise) — pager.ts `notice` */
+  notice: string | null;
+}
+
+/** `core.quotePath=false` cannot ride `runGit`'s `-c` position (its value is not a flag), so it travels as a scoped config env (git ≥ 2.31). */
+const QUOTEPATH_ENV: Readonly<Record<string, string>> = { GIT_CONFIG_COUNT: '1', GIT_CONFIG_KEY_0: 'core.quotePath', GIT_CONFIG_VALUE_0: 'false' };
+
+/** The sandbox glues `head + marker + 16 KB tail` when the output cap is passed (run.ts `StreamCollector.finish`). */
+const TRUNCATION_MARKER_RE = /\n…\[output truncated: \d+ bytes omitted\]…\n/;
+/** A file-diff boundary, with or without the `--color=always` SGR prefix. */
+const DIFF_GIT_BOUNDARY_RE = /\n(?:\x1b\[[0-9;]*m)*diff --git /g;
+
+/** `… output truncated at 16 MiB` — the trailer at the end of an incomplete `/diff --full` text (§12.6). */
+export function truncatedTrailer(maxBytes: number): string {
+  return `… output truncated at ${formatBytes(maxBytes)}`;
+}
+
+/** TUI-DESIGN §12.6: the inline block's first line when the patch is incomplete. */
+export function truncatedNotice(maxBytes: number): string {
+  return `${truncatedTrailer(maxBytes)} — the patch ends at the last complete file diff`;
+}
+
+/**
+ * TUI-DESIGN §12.6: a capped git output as an appliable prefix — the sandbox's head only (the tail after the
+ * `…[output truncated: N bytes omitted]…` marker is dropped), cut back to the last `diff --git` boundary so no torn
+ * hunk survives; with a single torn file diff the cut falls on the last complete line instead. Text without the
+ * marker (the cap was hit on stderr, or not at all) is returned unchanged. Pure.
+ */
+export function cutTruncatedDiff(stdout: string): string {
+  const m = TRUNCATION_MARKER_RE.exec(stdout);
+  if (m === null) return stdout;
+  const head = stdout.slice(0, m.index);
+  let lastBoundary = -1;
+  for (const b of head.matchAll(DIFF_GIT_BOUNDARY_RE)) lastBoundary = b.index;
+  if (lastBoundary > 0) return head.slice(0, lastBoundary + 1);
+  const lastLine = head.lastIndexOf('\n');
+  return lastLine >= 0 ? head.slice(0, lastLine + 1) : '';
+}
+
+/**
+ * TUI-DESIGN §12.6: the `/diff --full` text — `git diff [--color=always] --submodule=short --ignore-submodules=dirty
+ * <HEAD | empty tree> -- <tracked ≤ 1 MiB>` with `core.quotePath=false` and literal pathspecs, one spawn per
+ * pathspec batch, then `git diff --no-index -- /dev/null <f>` per untracked file (exit 1 = success). Files over
+ * `maxFileBytes` and files on the secret denylist (§10) are listed in `skipped`, never diffed; a capped output is cut
+ * at the last complete file diff (never a torn hunk with the sandbox's marker in it) and the text ends with the
+ * `… output truncated at …` trailer; the whole text passes `redact` before it leaves this function.
+ */
+export async function collectFullDiff(o: FullDiffIoOptions): Promise<FullDiffCollected> {
+  const trace: DiffIoTrace = { spawns: 0, errors: [] };
+  const maxFile = o.maxFileBytes ?? DIFF_MAX_FILE_BYTES;
+  const maxOut = o.maxOutputBytes ?? DIFF_FULL_MAX_BYTES;
+  const denied = o.isDenied ?? ((rel: string): boolean => isSecretPath(o.root, rel, o.secretPaths ?? []));
+  const redact = o.redact ?? ((s: string): string => s);
+  const facts = await pathFacts(o.root, o.changedFiles);
+  const skipped = [...facts.skipped];
+  const small: string[] = [];
+  for (const [p, bytes] of facts.existing) {
+    if (denied(p)) skipped.push({ path: p, reason: SECRET_PATH_SKIP });
+    else if (bytes > maxFile) skipped.push({ path: p, reason: `> ${formatBytes(maxFile)}` });
+    else small.push(p);
+  }
+  const deleted: string[] = [];
+  for (const p of facts.deleted) {
+    // a deleted secret file's diff would print its former content
+    if (denied(p)) skipped.push({ path: p, reason: SECRET_PATH_SKIP });
+    else deleted.push(p);
+  }
+  const untrackedList = o.untracked === undefined ? await deriveUntracked(o, small, trace) : o.untracked.map((p) => normaliseRelPath(p)).filter((p): p is string => p !== null);
+  const untracked = new Set(untrackedList.filter((p) => facts.existing.has(p)));
+  const tracked = [...small.filter((p) => !untracked.has(p)), ...deleted];
+  const color = o.color ? ['--color=always'] : ['--no-color'];
+  const parts: string[] = [];
+  let truncated = false;
+  let budget = maxOut;
+  const take = (r: ExecResult): void => {
+    const text = r.truncated ? cutTruncatedDiff(r.stdout) : r.stdout;
+    parts.push(text);
+    budget -= Buffer.byteLength(text);
+    truncated = truncated || r.truncated;
+  };
+  for (const batch of chunkPathspecs(tracked, o.pathspecChunkBytes)) {
+    if (budget <= 0) {
+      truncated = true;
+      break;
+    }
+    try {
+      trace.spawns += 1;
+      const base = o.unborn === true ? EMPTY_TREE_OID : 'HEAD';
+      const r = await runGit(o.sandbox, o.root, ['diff', ...color, '--submodule=short', '--ignore-submodules=dirty', base, '--', ...batch], gitOpts(o, { maxOutputBytes: budget, env: { ...QUOTEPATH_ENV } }));
+      if (noIndexOk(r)) take(r);
+      else trace.errors.push(failureText('diff', r));
+    } catch (e) {
+      trace.errors.push(`diff: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  const list = [...untracked].filter((p) => small.includes(p));
+  for (const p of list.slice(0, DIFF_FULL_UNTRACKED_MAX)) {
+    if (budget <= 0) {
+      truncated = true;
+      break;
+    }
+    try {
+      trace.spawns += 1;
+      const r = await runGit(o.sandbox, o.root, ['diff', '--no-index', ...color, '--', DEV_NULL, p], gitOpts(o, { maxOutputBytes: budget, env: { ...QUOTEPATH_ENV } }));
+      if (noIndexOk(r)) take(r);
+      else trace.errors.push(failureText(`diff --no-index ${p}`, r));
+    } catch (e) {
+      trace.errors.push(`diff --no-index ${p}: ${e instanceof Error ? e.message : String(e)}`);
+    }
+  }
+  for (const p of list.slice(DIFF_FULL_UNTRACKED_MAX)) skipped.push({ path: p, reason: `untracked file cap (${DIFF_FULL_UNTRACKED_MAX})` });
+  let text = parts.join('');
+  if (truncated) text += `${text.endsWith('\n') || text.length === 0 ? '' : '\n'}${truncatedTrailer(maxOut)}\n`;
+  return { text: redact(text), skipped, truncated, notice: truncated ? truncatedNotice(maxOut) : null, spawns: trace.spawns, errors: trace.errors };
 }

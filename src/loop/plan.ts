@@ -14,6 +14,10 @@ export const PLAN_ITEM_MAX_CHARS = 200;
 export const PLAN_MAX_CLAIMS = 8;
 export const PLAN_MAX_OPEN_PROBLEMS = 16;
 export const PLAN_MAX_HARNESS_PROBLEMS = 16;
+/** TUI-DESIGN §8.6 / §15.2 plan.ts row: a steer problem (`human`, step > 0) expires when `step > h.step + HUMAN_STEER_TTL_STEPS`. */
+export const HUMAN_STEER_TTL_STEPS = 4;
+/** TUI-DESIGN §8.6: a seed / undo problem (`human`, step 0) expires when `step > HUMAN_SEED_TTL_STEPS`. */
+export const HUMAN_SEED_TTL_STEPS = 8;
 
 export function emptyPlan(): Plan {
   return { done: [], remaining: [], unverified: [], openProblems: [], harnessProblems: [] };
@@ -62,6 +66,11 @@ export interface PlanUpdateInput {
   replan: { text: string } | null;
   /** plan_still_valid below 0.3 this step */
   stale: { probability: number } | null;
+  /**
+   * TUI-DESIGN §8.6 / §15 item 19: a human directive applied to this step (or step 1 of a seeded run, §8.3):
+   * rule (b) may drop obsolete `remaining` items without a replan problem
+   */
+  human?: boolean;
 }
 
 export interface PlanUpdateResult {
@@ -80,6 +89,37 @@ function fmt(p: number): string {
   return p.toFixed(2);
 }
 
+/** TUI-DESIGN §8.6: steer problems expire `HUMAN_STEER_TTL_STEPS` after their step, seed / undo problems (step 0) after step `HUMAN_SEED_TTL_STEPS`. */
+export function humanExpired(h: HarnessProblem, step: number): boolean {
+  if (h.kind !== 'human') return false;
+  return h.step > 0 ? step > h.step + HUMAN_STEER_TTL_STEPS : step > HUMAN_SEED_TTL_STEPS;
+}
+
+/** TUI-DESIGN §8.3 / §8.6: a seed or undo framing problem (`human`, step 0) — never superseded by a steer, expires only by age. */
+export function isSeedProblem(h: HarnessProblem): boolean {
+  return h.kind === 'human' && h.step === 0;
+}
+
+/**
+ * TUI-DESIGN §8.6: bound `harnessProblems` at `max` without ever dropping a step-0 seed / undo problem while a younger
+ * problem could go instead — the oldest non-seed problems are dropped first (a plain `.slice(-max)` would evict the
+ * follow-up framing F7 requires as soon as eight steers met eight other problems). Order is preserved.
+ */
+export function boundHarnessProblems(problems: readonly HarnessProblem[], max: number = PLAN_MAX_HARNESS_PROBLEMS): HarnessProblem[] {
+  if (problems.length <= max) return [...problems];
+  let toDrop = problems.length - max;
+  const kept: HarnessProblem[] = [];
+  for (const h of problems) {
+    if (toDrop > 0 && !isSeedProblem(h)) {
+      toDrop -= 1;
+      continue;
+    }
+    kept.push(h);
+  }
+  // only seed problems remain and still too many: the oldest go (they were bounded by the seed builder anyway)
+  return kept.slice(-max);
+}
+
 /** Apply rules (a), (b), (c) and the harnessProblems expiry rules. */
 export function applyPlanDraft(input: PlanUpdateInput): PlanUpdateResult {
   const { plan, draft, step } = input;
@@ -92,8 +132,9 @@ export function applyPlanDraft(input: PlanUpdateInput): PlanUpdateResult {
   const done = plan.done.map((d) => ({ text: d.text, evidence: { ...d.evidence } }));
   let remaining = [...plan.remaining];
   let unverifiedList = plan.unverified.map((u) => ({ ...u }));
-  // Expiry: stale-plan notes live for one step; the rest is handled below.
-  let harness: HarnessProblem[] = plan.harnessProblems.filter((h) => !(h.kind === 'stale_plan' && h.step < step));
+  // Expiry: stale-plan notes live for one step; human problems by TUI-DESIGN §8.6 (steers 4 steps after the step
+  // they steered, seed / undo notes — step 0 — until step 8); the rest is handled below.
+  let harness: HarnessProblem[] = plan.harnessProblems.filter((h) => !(h.kind === 'stale_plan' && h.step < step) && !humanExpired(h, step));
 
   if (draft) {
     // (a) done claims
@@ -141,7 +182,8 @@ export function applyPlanDraft(input: PlanUpdateInput): PlanUpdateResult {
     const draftRemaining = dedupe(draft.remaining);
     const acceptedSet = new Set(done.map((d) => d.text));
     const mustKeep = new Set<string>([...unverified.map((u) => u.text), ...rejected.map((r) => r.text)]);
-    const dropAllowed = input.replan !== null || (input.newInformation !== null && input.newInformation >= 0.7);
+    // TUI-DESIGN §8.6: a human directive (or the first step of a seeded run) also unlocks drops (rule (b))
+    const dropAllowed = input.replan !== null || input.human === true || (input.newInformation !== null && input.newInformation >= 0.7);
     const next: string[] = [];
     for (const r of draftRemaining) if (!acceptedSet.has(r)) next.push(r);
     const retained: string[] = [];
@@ -167,7 +209,8 @@ export function applyPlanDraft(input: PlanUpdateInput): PlanUpdateResult {
       harness = harness.filter((h) => h.kind !== 'stale_plan');
       harness.push({ kind: 'stale_plan', text: `Jev judged the plan stale at step ${step} (p=${fmt(input.stale.probability)})`, step });
     }
-    harness = harness.slice(-PLAN_MAX_HARNESS_PROBLEMS);
+    // TUI-DESIGN §8.6: the bound never evicts a step-0 seed problem ahead of a younger one
+    harness = boundHarnessProblems(harness);
     return {
       plan: { done, remaining, unverified: unverifiedList, openProblems, harnessProblems: harness },
       accepted,
@@ -189,7 +232,7 @@ export function applyPlanDraft(input: PlanUpdateInput): PlanUpdateResult {
     harness.push({ kind: 'stale_plan', text: `Jev judged the plan stale at step ${step} (p=${fmt(input.stale.probability)})`, step });
   }
   return {
-    plan: { done, remaining, unverified: unverifiedList, openProblems: [...plan.openProblems], harnessProblems: harness.slice(-PLAN_MAX_HARNESS_PROBLEMS) },
+    plan: { done, remaining, unverified: unverifiedList, openProblems: [...plan.openProblems], harnessProblems: boundHarnessProblems(harness) },
     accepted,
     rejected,
     unverified,

@@ -16,15 +16,23 @@
  */
 import { appendFileSync } from 'node:fs';
 import { mkdir, realpath } from 'node:fs/promises';
+import { hostname } from 'node:os';
 import { join, sep } from 'node:path';
 import { createEmitter } from '../core/events.js';
 import { sha12 } from '../core/hash.js';
 import { toJson } from '../core/json.js';
-import { monotonicNow, nowIso } from '../core/time.js';
+import { clip } from '../core/text.js';
+import { monotonicNow, nowIso, sleep } from '../core/time.js';
+// TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective; re-exported below under the engine's names
+import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { AskResult,
+  Action,
   ActionOutcome,
   Answer,
+  BlockingAnswer,
+  BlockingRequest,
   CheckpointState,
+  ConfirmOutcome,
   CheckpointStore,
   ConfirmRequest,
   Decider,
@@ -39,6 +47,8 @@ import type { AskResult,
   GenerateRequest,
   GenerateResult,
   GeneratorCallRecord,
+  GitState,
+  HarnessProblem,
   Intent,
   JevRequestRecord,
   Json,
@@ -46,11 +56,14 @@ import type { AskResult,
   JudgeResult,
   PendingDirective,
   Plan,
+  PlanSnapshot,
   Proposal,
   Question,
   ReplanDirective,
+  RetryInfo,
   RiskAssessment,
   RunCounters,
+  RunGitMeta,
   RunLimits,
   RunMeta,
   RunResult,
@@ -58,23 +71,34 @@ import type { AskResult,
   SandboxCreateOptions,
   SerializedError,
   SignalName,
+  SpendSource,
   StageName,
   SteerResult,
   StepRecord,
   StepTiming,
   StepUsage,
   StopReason,
+  StoppedAt,
   SynthesisContext,
   Synthesizer,
   TargetInfo,
   TestCounts,
   TokenUsage,
   UiLabel,
+  UndoLogEntry,
   WindowEntry,
   Workspace,
   WorkspaceInfo,
 } from '../core/types.js';
-import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevModelDriftError, JevResponseError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError } from '../errors.js';
+import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, ProviderHttpError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError, type BudgetKind } from '../errors.js';
+import { CHECKPOINT_FILES, classifyDiskError } from '../checkpoint/store.js';
+import { writePostImages, writePreImages, type ImageSource, type PreImageResult } from '../checkpoint/images.js';
+import { acquireRunLock, releaseRunLock } from '../session/lock.js';
+import { seedNoticeText } from '../session/seed.js';
+import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
+import { checkpointDegradedDetail, driftDetail, keyRejectedDetail } from '../tui/blocking/lines.js';
+import { VERSION } from '../version.js';
+import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGitState, toRunGitMeta } from '../workspace/gitstate.js';
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
@@ -82,7 +106,7 @@ import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provid
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
-import { applyPlanDraft, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
+import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
 import { buildCommonState, testsCurrent, type Redact } from './state.js';
 import { assembleRunResult, classifyAbort, exitCodeFor, serializeError, stopTranscriptLine, tokenSeriesOrZeros } from './stop.js';
 import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
@@ -115,8 +139,11 @@ export interface ResumeLoad {
 }
 
 export type CheckpointStoreFactory = (runsDir: string, runId: string, redact: Redact) => CheckpointStore;
-export type WorkspaceFactory = (root: string, runDir: string, deps: { sandbox: Sandbox; secretPaths: readonly string[]; redact: Redact }) => Promise<Workspace>;
+/** TUI-DESIGN §12.1 / §15 item 8: `gitState` is the run-start probe; given, createWorkspace performs zero spawns. */
+export type WorkspaceFactory = (root: string, runDir: string, deps: { sandbox: Sandbox; secretPaths: readonly string[]; redact: Redact; gitState?: GitState }) => Promise<Workspace>;
 export type SandboxFactory = (opts: SandboxCreateOptions) => Sandbox;
+/** TUI-DESIGN §12.1 (D7): the two unsandboxed spawns before the sandbox exists; injectable so tests need no git. */
+export type GitProbe = (root: string) => Promise<GitState>;
 export type ResumeLoader = (runsDir: string, runId: string, redact: Redact, store: CheckpointStore) => Promise<ResumeLoad>;
 
 export interface EngineDeps {
@@ -129,6 +156,8 @@ export interface EngineDeps {
    * factory is injected without a loader, `store.load()` + `store.readStepsAfter()` is used.
    */
   loadForResume?: ResumeLoader;
+  /** default: workspace/gitstate.ts probeGitState (TUI-DESIGN §12.1); a probe that rejects reads as `git-missing` */
+  probeGitState?: GitProbe;
 }
 
 interface ResolvedDeps {
@@ -137,6 +166,7 @@ interface ResolvedDeps {
   createSandbox: SandboxFactory;
   newRunId: (now: Date) => string;
   loadForResume: ResumeLoader;
+  probeGitState: GitProbe;
 }
 
 // Real sibling modules (static imports: esbuild bundles them; tests still inject fakes via EngineDeps).
@@ -162,7 +192,8 @@ async function resolveDeps(deps: EngineDeps): Promise<ResolvedDeps> {
       };
     }
   }
-  return { createCheckpointStore, createWorkspace, createSandbox, newRunId, loadForResume };
+  const probeGitState: GitProbe = deps.probeGitState ?? ((root) => realProbeGitState(root));
+  return { createCheckpointStore, createWorkspace, createSandbox, newRunId, loadForResume, probeGitState };
 }
 
 async function storeBasedLoadForResume(_runsDir: string, _runId: string, _redact: Redact, store: CheckpointStore): Promise<ResumeLoad> {
@@ -177,9 +208,33 @@ const RUN_DIR_ATTEMPTS = 5;
 export const SHUTDOWN_CHECKPOINT_BOUND_MS = 5_000;
 export const SYNTH_STATE_MAX_BYTES = 64 * 1024;
 const CONSECUTIVE_STAGE_FAILURE_LIMIT = 3;
-/** contract 1.1 (TUI-DESIGN §15 item 15, §8.6): at most 8 queued steers of at most 600 chars each */
-export const MAX_PENDING_DIRECTIVES = 8;
-export const DIRECTIVE_MAX_CHARS = 600;
+/** contract 1.1 (TUI-DESIGN §15 item 15, §8.6): at most 8 queued steers of at most 600 chars each — one definition (core/types.ts, F7) */
+export const MAX_PENDING_DIRECTIVES: number = PENDING_DIRECTIVES_MAX;
+export { DIRECTIVE_MAX_CHARS };
+/** TUI-DESIGN §8.6 annotate(): a renderer-originated line is clipped at 600 and its TUI-only body at 12,000 (through sanitizeStream) */
+export const ANNOTATE_TEXT_MAX_CHARS = 600;
+export const ANNOTATE_DETAIL_MAX_CHARS = 12_000;
+/** TUI-DESIGN §13.2 / §13.3: `paused: jev unreachable` auto-retries after 30 s, doubling to 5 min across consecutive pauses */
+export const JEV_UNREACHABLE_RETRY_MS = 30_000;
+export const JEV_UNREACHABLE_RETRY_MAX_MS = 300_000;
+/** TUI-DESIGN §15 item 9: `CheckpointState.undoLog` keeps at most 20 entries */
+export const UNDO_LOG_MAX = 20;
+/** TUI-DESIGN §15 item 3: `StepRecord.planAfter` lists are bounded to 20 × 200 chars */
+const PLAN_SNAPSHOT_ITEMS = 20;
+const PLAN_SNAPSHOT_CHARS = 200;
+/** TUI-DESIGN §9.5: the `raise:` suggestion of a token_cap stop rounds up to the next 10k tokens above what was used */
+const TOKEN_CAP_RAISE_STEP = 10_000;
+/** TUI-DESIGN §13.3: a 429 whose message names the account's spend/credit limit is a spend-limit pause, not a rate limit */
+const SPEND_LIMIT_RE = /spend|credit|billing|quota|insufficient/i;
+/** TUI-DESIGN §15 item 6: a reviewer note is one line of at most 600 chars */
+const REVIEWER_NOTE_MAX = 600;
+
+/**
+ * TUI-DESIGN §13.3: what a failing stage asks for, before the loop top installs it. The id and the auto-retry interval
+ * are allocated only at install time (`installBlock`), so a request handleStepError discards (an action already ran, a
+ * pane is already up) advances neither the blocking sequence nor the `jev-unreachable` backoff.
+ */
+type BlockSpec = Omit<BlockingRequest, 'id' | 'retryInMs'> & { autoRetry?: boolean };
 
 // ---------------------------------------------------------------------------------------
 // Stage context (what stages/*.ts see)
@@ -244,7 +299,8 @@ interface StepDraft {
   jevRequests: JevRequestRecord[];
   generatorRecords: GeneratorCallRecord[];
   usage: StepUsage;
-  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number };
+  /** imagesMs: TUI-DESIGN §12.3 pre + post images, inside harnessMs; null when the step took none */
+  timing: { generatorMs: number; jevMs: number; execMs: number; confirmMs: number; imagesMs: number | null };
   generatorFailReason: string | null;
   errorClass: string | null;
   error: { stage: StageName; code: string; message: string } | null;
@@ -264,10 +320,20 @@ interface StepDraft {
 function zeroUsage(): TokenUsage {
   return { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 };
 }
+/**
+ * TUI-DESIGN §9.5: a non-finite `costUsd` means "unpriced" (OpenRouter / Jev `usage.cost` null). `noteUsage` reads the raw
+ * value for `budget:unpriced`; every artefact and sum takes this clamped copy, because `JSON.stringify({ costUsd: NaN })` is
+ * `{"costUsd":null}` (steps.jsonl / `generator:end` / `--json` would carry null for a `number`) and one NaN poisons the p50
+ * behind `stepsLeftEstimate`. spend/meter.ts clamps the same way.
+ */
+function pricedUsage(u: TokenUsage): TokenUsage {
+  return Number.isFinite(u.costUsd) ? u : { ...u, costUsd: 0 };
+}
 function addUsage(a: TokenUsage, b: TokenUsage): void {
   a.inputTokens += b.inputTokens;
   a.outputTokens += b.outputTokens;
-  a.costUsd += b.costUsd;
+  // TUI-DESIGN §9.5: an unpriced (non-finite) cost adds nothing — see pricedUsage
+  a.costUsd += Number.isFinite(b.costUsd) ? b.costUsd : 0;
   a.calls += b.calls;
 }
 function zeroTiming(): StepTiming {
@@ -298,8 +364,77 @@ export function usesJev(mode: EngineMode): boolean {
   return mode !== 'jev-off';
 }
 
-function isPlainStopBudget(reason: StopReason): reason is 'spend_cap' | 'max_steps' | 'wall_time' | 'max_replans' {
-  return reason === 'spend_cap' || reason === 'max_steps' || reason === 'wall_time' || reason === 'max_replans';
+/** TUI-DESIGN §8.7 / §15 item 1: `token_cap` joins the plain budget set; `human_pause` never does (a /resume proceeds without --force). */
+function isPlainStopBudget(reason: StopReason): reason is 'spend_cap' | 'token_cap' | 'max_steps' | 'wall_time' | 'max_replans' {
+  return reason === 'spend_cap' || reason === 'token_cap' || reason === 'max_steps' || reason === 'wall_time' || reason === 'max_replans';
+}
+
+/** TUI-DESIGN §12.3: only workspace-changing actions take images; `read` and `done` change nothing. */
+function imageSourceOf(action: Action): ImageSource | null {
+  switch (action.kind) {
+    case 'edit':
+    case 'write':
+    case 'patch':
+    case 'run':
+      return action.kind;
+    default:
+      return null;
+  }
+}
+
+/** TUI-DESIGN §15 item 3: the committed plan after a step, each list ≤ 20 × 200 chars, for /rewind. */
+export function planSnapshot(plan: Plan): PlanSnapshot {
+  const item = (t: string): string => clip(t, PLAN_SNAPSHOT_CHARS);
+  return {
+    done: plan.done.slice(-PLAN_SNAPSHOT_ITEMS).map((d) => ({ text: item(d.text), evidence: { ...d.evidence } })),
+    remaining: plan.remaining.slice(0, PLAN_SNAPSHOT_ITEMS).map(item),
+    unverified: plan.unverified.slice(-PLAN_SNAPSHOT_ITEMS).map((u) => ({ ...u, text: item(u.text) })),
+    harnessProblems: plan.harnessProblems.slice(-PLAN_SNAPSHOT_ITEMS).map((h) => ({ ...h, text: item(h.text) })),
+  };
+}
+
+/** TUI-DESIGN §12.1 / §12.2: what run.json and the `workspace` event keep of a probe — plus ahead/behind and unmerged for the banner (wave 2 fields). */
+export function runGitMetaOf(g: GitState): RunGitMeta {
+  return { ...toRunGitMeta(g), ahead: g.ahead, behind: g.behind, dirtyAtStart: { modified: g.dirty.modified, staged: g.dirty.staged, untracked: g.dirty.untracked, unmerged: g.dirty.unmerged } };
+}
+
+/** TUI-DESIGN §15 item 4: an HTTP-side error keeps its status, side and request id on the wire. */
+function serializeStopError(e: unknown, redact: Redact): SerializedError {
+  const base = serializeError(e, redact);
+  if (e instanceof JevHttpError) return { ...base, status: e.status, retryable: e.retryable, side: 'jev', requestId: e.requestId };
+  if (e instanceof ProviderHttpError) return { ...base, status: e.status, retryable: e.retryable, side: 'generator', requestId: e.requestId };
+  return base;
+}
+
+/**
+ * TUI-DESIGN §8.6: `clip(…, max)` for human text — `clip` cuts by UTF-16 index, so a surrogate pair straddling the bound
+ * would leave a lone high surrogate before the marker (an ill-formed string in every artefact and on the wire).
+ */
+function clipText(s: string, max: number): string {
+  const c = clip(s, max);
+  if (c === s) return c;
+  const body = c.slice(0, -1);
+  const last = body.charCodeAt(body.length - 1);
+  return last >= 0xd800 && last <= 0xdbff ? `${body.slice(0, -1)}…` : c;
+}
+
+/** TUI-DESIGN §12.3: the HEAD oid a post image records (null: unborn or no repository). */
+function headOidOf(g: GitState | null): string | null {
+  const head = g?.head ?? null;
+  if (head === null || head.kind === 'unborn') return null;
+  return head.oid;
+}
+
+/** TUI-DESIGN §8.5: the lock is taken after store.create / the resume load; a live foreign lock is a ConfigError (exit 2), anything else only a warning. */
+function takeRunLock(runDir: string, runId: string): { held: boolean; warning: string | null } {
+  let warning: string | null = null;
+  try {
+    acquireRunLock(runDir, { runId, pid: process.pid, host: hostname(), nowIso: nowIso(), warn: (m) => (warning = m) });
+    return { held: true, warning };
+  } catch (e) {
+    if (e instanceof ConfigError) throw e;
+    return { held: false, warning: `run.lock could not be written: ${e instanceof Error ? e.message : String(e)}` };
+  }
 }
 
 class EngineImpl implements Engine {
@@ -390,6 +525,59 @@ class EngineImpl implements Engine {
   /** run() was called (set before the loop's synchronous prefix emits its first events, unlike `finished`) */
   private started = false;
 
+  // contract 1.1 wave 2 (TUI-DESIGN §15.2 "fields after L370"): directive consumption, retry waking, images, blocking pauses, money events
+  /** the directives applied to the step about to run (§8.6); cleared at commit; re-derived from plan.harnessProblems on --resume */
+  private activeHuman: { texts: string[]; step: number } | null = null;
+  /** one AbortController per retry sleep (§13.2): created by onRetry, aborted by retryNow(), nulled when the chain settles */
+  private retryWaker: AbortController | null = null;
+  private retrying: NonNullable<EngineStatus['retrying']> | null = null;
+  /** carried from the seed or EngineOptions.undoLog, checkpointed, never written into a finished run (§15 item 9) */
+  private undoLog: UndoLogEntry[] = [];
+  /** `[c] continue without checkpoints` was chosen, or a disk-class error hit state.json (§13.3): a later stop exits 3 */
+  private checkpointDegraded = false;
+  /** `checkpoint degraded: <code> on <file>` keys already noticed (once per (file, code), §13.3) */
+  private readonly warned = new Set<string>();
+  /** generator input + output tokens over the run; rebuilt from generatorTokensPerStep on --resume (§9.5 token_cap) */
+  private generatorTokens = 0;
+  private seeded = false;
+  /** the blocking pause awaiting an answer at the loop top (§13.3); set by the failing stage after the rule-1 discard */
+  private blocked: BlockingRequest | null = null;
+  private blockedError: unknown = null;
+  /** a block a stage decided mid-call (first-call drift) before its throw reaches handleStepError */
+  private stageBlock: { request: BlockSpec; error: unknown } | null = null;
+  private blockingSeq = 0;
+  /** consecutive `jev-unreachable` pauses: 30 s, 60 s, … 5 min (§13.2) */
+  private unreachablePauses = 0;
+  /** budget:warn thresholds announced this run, per scope (§9.2: once per (scope, pct) per run) */
+  private announcedRun: ReadonlySet<BudgetPct> = new Set<BudgetPct>();
+  private announcedSession: ReadonlySet<BudgetPct>;
+  /** the spend restored from the checkpoint on this resume: its crossings are re-announced once with `restored: true` (§9.2) */
+  private readonly restoredSpentUsd: number | undefined;
+  /** committed per-step cost this process, for the p50 behind `stepsLeftEstimate` (§9.2) */
+  private readonly costPerStep: number[] = [];
+  /** the output of the engine's last parsed test run, for the `done` state's `lastRun.output` (state.ts ExecutedInfo.lastRunOutput) */
+  private lastTestRunOutput: string | null = null;
+  /** a provider reported usage without a finite cost (§9.5): the run stops with error after the step commits unless --allow-unpriced */
+  private unpriced: { side: SpendSource; model: string; stage: StageName } | null = null;
+  /** `budget:unpriced` is one item per (side, model) per run (§9.5), not one per metered call */
+  private readonly unpricedAnnounced = new Set<string>();
+  /** finish() is in flight (the final snapshot is built): steer/unsteer/pause/annotate read as finished so nothing is confirmed and then dropped (§8.6) */
+  private finishing = false;
+  /** the run-start probe (§12.1); null when the probe was unavailable */
+  private readonly gitState: GitState | null;
+  private readonly gitMeta: RunGitMeta;
+  /** paths dirty at run start (top-level relative, prefix stripped): a changed file outside it was clean at start (§12.3 cleanAtStart) */
+  private readonly dirtyAtStart: ReadonlySet<string>;
+  private readonly runDir: string;
+  private lockHeld: boolean;
+  /** notices decided before run(): the stale-lock replacement, the HEAD-drift warning; emitted after run:ready so every writer sees them */
+  private readonly startupNotices: { kind: 'lock' | 'drift'; level: 'warn'; text: string }[] = [];
+  /**
+   * TUI-DESIGN §8.6 / §15.2: steer, unsteer, pause and secret-ack items decided before run() (EngineOptions.humanDirective
+   * included) are announced after run:ready in the order they happened, so every writer sees run:start first.
+   */
+  private deferredAnnouncements: EngineEvent[] = [];
+
   constructor(init: {
     runId: string;
     opts: EngineOptions;
@@ -398,6 +586,10 @@ class EngineImpl implements Engine {
     sandbox: Sandbox;
     wsInfo: WorkspaceInfo;
     resume: ResumeLoad | null;
+    gitState: GitState | null;
+    runDir: string;
+    lock: { held: boolean; warning: string | null };
+    headDrift: string | null;
   }) {
     this.runId = init.runId;
     this.opts = init.opts;
@@ -413,10 +605,21 @@ class EngineImpl implements Engine {
       // Listener bugs never propagate into the loop; they are reported through the transcript channel.
       if (event.type !== 'transcript') this.events.emit({ type: 'transcript', step: null, level: 'warn', text: `listener error on ${event.type}: ${err instanceof Error ? this.redact(err.message) : String(err)}` });
     });
-    this.systemPrompt = buildSystemPrompt({ mode: this.mode, sandboxLevel: init.sandbox.level, toolName: 'propose_action' });
+    // TUI-DESIGN §15.2 constructor row: AGENTS.md text reaches the generator system prompt only (D6)
+    const instructions = init.opts.instructions?.text ?? '';
+    this.systemPrompt = buildSystemPrompt({ mode: this.mode, sandboxLevel: init.sandbox.level, toolName: 'propose_action', ...(instructions.length > 0 ? { instructions } : {}) });
     this.synthesizer = init.opts.synthesizer ?? null;
     this.resumed = init.resume !== null;
     this.resumeStop = null;
+    this.gitState = init.gitState;
+    this.gitMeta = runGitMetaOf(init.gitState ?? notRepoState('git-missing', { probedAt: nowIso(), probeMs: 0 }));
+    const prefix = init.gitState?.prefix ?? '';
+    this.dirtyAtStart = new Set((init.gitState?.dirty.entries ?? []).map((e) => (prefix.length > 0 && e.path.startsWith(prefix) ? e.path.slice(prefix.length) : e.path)));
+    this.runDir = init.runDir;
+    this.lockHeld = init.lock.held;
+    if (init.lock.warning !== null) this.startupNotices.push({ kind: 'lock', level: 'warn', text: init.lock.warning });
+    if (init.headDrift !== null) this.startupNotices.push({ kind: 'drift', level: 'warn', text: init.headDrift });
+    let restoredSpentUsd: number | undefined;
     if (init.resume) {
       const s = init.resume.state;
       this.step = s.step;
@@ -446,11 +649,22 @@ class EngineImpl implements Engine {
       // contract 1.1 (TUI-DESIGN §15.2): steers queued before the stop are consumed by the resumed run
       this.pendingDirectives = (s.pendingDirectives ?? []).map((d) => ({ ...d }));
       this.steerSeq = this.pendingDirectives.reduce((m, d) => Math.max(m, d.index + 1), 0);
+      // TUI-DESIGN §15.2 constructor (resume) row: undoLog merged with the /undo entries of this resume, token counter rebuilt.
+      // `checkpointDegraded` is NOT inherited (deviation from the §15.2 row, see §13.3): the state just loaded proves the
+      // checkpoint chain is intact, and the exit-3 rule describes failures observed by the process that stops — inheriting
+      // the flag made every stop of a healthy resumed run exit 3 with `resumable: false`.
+      this.undoLog = [...(s.undoLog ?? []), ...(init.opts.undoLog ?? [])].slice(-UNDO_LOG_MAX);
+      this.checkpointDegraded = false;
+      this.generatorTokens = this.generatorTokensPerStep.reduce((n, t) => n + t, 0);
+      restoredSpentUsd = s.spend.totalUsd;
       for (const rec of [...init.resume.foldedSteps].sort((a, b) => a.step - b.step)) {
         if (rec.step <= this.step) continue;
         this.window = foldStepRecord(this.window, rec);
         this.step = rec.step;
       }
+      // TUI-DESIGN §8.6: activeHuman is re-derived from the plan, not stored — a rule-1 discard or crash followed by a resume re-arms the hint
+      const humanTexts = this.plan.harnessProblems.filter((h) => h.kind === 'human' && h.step === this.step + 1).map((h) => h.text);
+      if (humanTexts.length > 0) this.activeHuman = { texts: humanTexts, step: this.step + 1 };
       this.opts.meter.restore(s.spend);
       // A prepared loader (checkpoint/resume.ts) has already cleared stopReason and bumped resumes.
       const previousStop = init.resume.previousStopReason !== undefined ? init.resume.previousStopReason : s.stopReason;
@@ -463,7 +677,61 @@ class EngineImpl implements Engine {
       }
     } else {
       this.detector = createLoopDetector();
+      const seed = init.opts.seed;
+      if (seed) {
+        // TUI-DESIGN §8.3 / §15.2 constructor (fresh) row: plan/window/createdThisRun/lastTestRun/undoLog from the seed; spend, wall,
+        // the loop detector and resolvedJevModel start fresh; lastChangeStep null so testsCurrent is recomputed honestly
+        this.plan = { done: seed.plan.done.map((d) => ({ ...d, evidence: { ...d.evidence } })), remaining: [...seed.plan.remaining], unverified: seed.plan.unverified.map((u) => ({ ...u })), openProblems: [], harnessProblems: seed.plan.harnessProblems.map((h) => ({ ...h })) };
+        this.window = seed.window.map((e) => ({ ...e, shownFiles: [...e.shownFiles], notes: [...e.notes] }));
+        for (const p of seed.createdThisRun) this.createdThisRun.add(p);
+        this.lastTestRun = seed.lastTestRun ? { ...seed.lastTestRun } : null;
+        this.lastChangeStep = null;
+        this.undoLog = [...(seed.undoLog ?? []), ...(init.opts.undoLog ?? [])].slice(-UNDO_LOG_MAX);
+        this.seeded = true;
+      } else {
+        this.undoLog = [...(init.opts.undoLog ?? [])].slice(-UNDO_LOG_MAX);
+      }
     }
+    this.restoredSpentUsd = restoredSpentUsd;
+    // TUI-DESIGN §15.2 constructor row (both branches): the initial directive is queued exactly like a steer (same bounds, same
+    // deferred steer:queued line after run:ready) and consumed at the first step start
+    if (typeof init.opts.humanDirective === 'string') this.steer(init.opts.humanDirective);
+    // TUI-DESIGN §9.2: the session set starts with the thresholds earlier runs already crossed (seeded from the parent meter's totals)
+    const parent = init.opts.meter.snapshot().parent;
+    this.announcedSession = parent ? seedAnnounced(parent.totalUsd, parent.capUsd) : new Set<BudgetPct>();
+  }
+
+  /** TUI-DESIGN §8.6: queue one already sanitised, trimmed and clipped directive (steer() did the checks). */
+  private queueDirective(text: string): PendingDirective {
+    const directive: PendingDirective = { text, at: nowIso(), index: this.steerSeq++ };
+    this.pendingDirectives.push(directive);
+    return directive;
+  }
+
+  /** finish() in flight or run() resolved: nothing may be queued, withdrawn, paused or annotated any more (§8.6). */
+  private isFinished(): boolean {
+    return this.finishing || this.lastResult !== null;
+  }
+
+  /**
+   * TUI-DESIGN §8.6 / §15.2: emit steer, unsteer, pause and secret-ack items now, or — before run() — hold them for the
+   * announcement right after run:ready, so transcript.log, --plain and the TUI all see run:start first.
+   */
+  private announce(events: readonly EngineEvent[]): void {
+    if (!this.started) {
+      this.deferredAnnouncements.push(...events);
+      return;
+    }
+    for (const e of events) this.emit(e);
+    this.emitStatus();
+  }
+
+  private flushDeferredAnnouncements(): void {
+    if (this.deferredAnnouncements.length === 0) return;
+    const events = this.deferredAnnouncements;
+    this.deferredAnnouncements = [];
+    for (const e of events) this.emit(e);
+    this.emitStatus();
   }
 
   /** §9: a stored budget stop whose limit was not raised ends the resumed run immediately. */
@@ -481,6 +749,9 @@ class EngineImpl implements Engine {
         return s.wallMsUsed >= lim.maxWallMs ? r : null;
       case 'max_replans':
         return s.loopDetector.replanCount >= lim.maxReplans ? r : null;
+      case 'token_cap':
+        // TUI-DESIGN §8.7 / §9.5: refused until /budget max-generator-tokens <n> raised the limit (no cap now = raised)
+        return lim.maxGeneratorTokens !== undefined && this.generatorTokens >= lim.maxGeneratorTokens ? r : null;
     }
   }
 
@@ -497,6 +768,14 @@ class EngineImpl implements Engine {
       stage: this.currentStage,
       spend: this.opts.meter.snapshot(),
       stopReason: this.stopReason,
+      // TUI-DESIGN §15 item 13
+      maxReplans: this.opts.limits.maxReplans,
+      replans: this.detector.replanCount(),
+      pausing: this.pauseRequested && this.lastResult === null,
+      pendingDirectives: this.pendingDirectives.length,
+      blocked: this.blocked?.kind ?? null,
+      retrying: this.retrying,
+      generatorTokens: { used: this.generatorTokens, cap: this.opts.limits.maxGeneratorTokens ?? null },
     };
   }
 
@@ -531,6 +810,7 @@ class EngineImpl implements Engine {
       } catch {
         // nothing more can be done on 'exit'
       }
+      this.releaseLock();
     };
     this.exitHandler = handler;
     process.on('exit', handler);
@@ -543,8 +823,16 @@ class EngineImpl implements Engine {
     } catch {
       // fall through to exit
     }
+    this.releaseLock();
     const exit = this.opts.exit ?? ((c: number): never => process.exit(c));
     exit(code);
+  }
+
+  /** TUI-DESIGN §8.5: `run.lock` is removed in finish() and by the 'exit' handler; only this process's own lock, never throws. */
+  private releaseLock(): void {
+    if (!this.lockHeld) return;
+    this.lockHeld = false;
+    releaseRunLock(this.runDir, { pid: process.pid });
   }
 
   // -------------------------------------------------------------------------------------
@@ -553,40 +841,53 @@ class EngineImpl implements Engine {
 
   /**
    * Queue a human directive for the next step start (§8.6). Raw in memory; every artefact sees it
-   * through the redacting emit / the store's write-time redaction. Consumption (applyPendingDirectives
-   * at the loop top) is wave 2; until then the queue is checkpointed and restored so nothing is lost.
+   * through the redacting emit / the store's write-time redaction. Consumed by applyPendingDirectives at
+   * the loop top; a queue that outlives the run is checkpointed and restored so nothing is lost.
    */
-  steer(text: string, _opts: { secretsAcked?: number } = {}): SteerResult {
-    const trimmed = sanitizeStream(text).trim();
+  steer(text: string, opts: { secretsAcked?: number } = {}): SteerResult {
     const queued = this.pendingDirectives.length;
+    // TUI-DESIGN §8.6: finished → empty → full, in that order; finished includes a finish() in flight (the final snapshot is
+    // already built, so a directive accepted now would be confirmed to the human and never persisted)
+    if (this.isFinished()) return { ok: false, reason: 'finished', queued };
+    const trimmed = clipText(sanitizeStream(text).trim(), DIRECTIVE_MAX_CHARS);
     if (trimmed === '') return { ok: false, reason: 'empty', queued };
-    if (this.lastResult !== null) return { ok: false, reason: 'finished', queued };
     if (queued >= MAX_PENDING_DIRECTIVES) return { ok: false, reason: 'full', queued };
-    const index = this.steerSeq++;
-    const directive: PendingDirective = { text: trimmed.slice(0, DIRECTIVE_MAX_CHARS), at: nowIso(), index };
-    this.pendingDirectives.push(directive);
-    this.emit({ type: 'steer:queued', step: this.step + 1, index, text: directive.text, queued: this.pendingDirectives.length });
-    return { ok: true, index, queued: this.pendingDirectives.length };
+    const directive = this.queueDirective(trimmed);
+    const events: EngineEvent[] = [];
+    // TUI-DESIGN §8.6: the ack is true — the secret does reach the generator; the count only, never the value (P59)
+    if (opts.secretsAcked !== undefined && opts.secretsAcked > 0) events.push({ type: 'secret-ack', step: this.step + 1, count: opts.secretsAcked });
+    events.push({ type: 'steer:queued', step: this.step + 1, index: directive.index, text: directive.text, queued: this.pendingDirectives.length });
+    this.announce(events);
+    return { ok: true, index: directive.index, queued: this.pendingDirectives.length };
   }
 
-  /** Withdraw the newest queued directive; null when none. */
+  /** Withdraw the newest queued directive; null when none — or when the run is finished (the queue is already on disk, §8.6). */
   unsteer(): PendingDirective | null {
+    if (this.isFinished()) return null;
     const d = this.pendingDirectives.pop();
     if (d === undefined) return null;
-    this.emit({ type: 'steer:withdrawn', step: this.step + 1, index: d.index });
+    this.announce([{ type: 'steer:withdrawn', step: this.step + 1, index: d.index }]);
     return d;
   }
 
   /** Stop with 'human_pause' at the next loop top (§9.1 rule 1: the in-flight step commits whole first); idempotent. */
   pause(): void {
-    if (this.pauseRequested || this.lastResult !== null) return;
+    if (this.pauseRequested || this.isFinished()) return;
     this.pauseRequested = true;
-    this.emit({ type: 'pause:requested', step: this.step + 1 });
+    this.announce([{ type: 'pause:requested', step: this.step + 1 }]);
   }
 
-  /** End the current retry sleep early; false when none is active. No retry sleep is wakeable yet (wave 2 wires the waker). */
+  /**
+   * TUI-DESIGN §13.2 (F12 `[r]`): end the current retry sleep (or the jev-unreachable auto-retry wait) early. The waker
+   * is one AbortController per sleep — created by onRetry before each sleep, aborted here, nulled so a second press
+   * before the next sleep is a no-op (never a tight loop); false when no retry sleep is active.
+   */
   retryNow(): boolean {
-    return false;
+    const w = this.retryWaker;
+    if (w === null) return false;
+    this.retryWaker = null;
+    w.abort();
+    return true;
   }
 
   /**
@@ -595,15 +896,20 @@ class EngineImpl implements Engine {
    * finished (or before it started): the renderer then keeps the item local.
    */
   annotate(text: string, opts: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' } = {}): boolean {
-    if (!this.started || this.lastResult !== null) return false;
+    if (!this.started || this.isFinished()) return false;
+    // TUI-DESIGN §8.6: text ≤ 600 and the TUI-only body ≤ 12,000, both through sanitizeStream — the raw event reaches --json and
+    // every listener, so the bound lives here, not only in itemsFromEvent. The step label names the in-flight step (draft), like
+    // every other per-step event, and `[run]` between steps (deviation from §8.6's `this.step > 0 ? this.step : null`, which
+    // would label a /why during step 3 as `[step 2]`).
+    const detail = opts.detail !== undefined ? clipText(sanitizeStream(opts.detail), ANNOTATE_DETAIL_MAX_CHARS) : '';
     this.emit({
       type: 'notice',
       step: this.draft?.step ?? null,
       kind: 'ui',
       level: opts.level ?? 'info',
-      text,
+      text: clipText(sanitizeStream(text), ANNOTATE_TEXT_MAX_CHARS),
       label: opts.label ?? '[ui]',
-      ...(opts.detail ? { detail: opts.detail } : {}),
+      ...(detail.length > 0 ? { detail } : {}),
     });
     return true;
   }
@@ -634,15 +940,50 @@ class EngineImpl implements Engine {
   private async main(): Promise<RunResult> {
     this.emit({ type: 'run:start', runId: this.runId, task: this.opts.task, mode: this.mode, resumedFromStep: this.resumed ? this.step : null });
     if (this.resumeStop !== null) {
+      // the items decided before run() still reach the listeners (transcript.log is muted for a refused resume)
+      this.flushDeferredAnnouncements();
       this.emit({ type: 'transcript', step: null, level: 'warn', text: `resume refused: stored stopReason ${this.resumeStop} and its limit was not raised` });
       return this.finish(this.resumeStop, { skipWrite: true });
     }
-    this.emit({ type: 'run:ready', runId: this.runId, step: this.step, maxSteps: this.opts.limits.maxSteps, task: this.opts.task, resumed: this.resumed });
+    const session = this.opts.session;
+    // TUI-DESIGN §15.2 main() row: the session fields, the sandbox level and the replan cap ride run:ready
+    this.emit({
+      type: 'run:ready',
+      runId: this.runId,
+      step: this.step,
+      maxSteps: this.opts.limits.maxSteps,
+      task: this.opts.task,
+      resumed: this.resumed,
+      sessionId: session?.sessionId ?? this.runId,
+      parentRunId: session?.parentRunId ?? null,
+      sandbox: this.sandbox.level,
+      noNetwork: this.opts.noNetwork,
+      maxReplans: this.opts.limits.maxReplans,
+    });
+    // TUI-DESIGN §12.2: the git banner and the instruction files as one event right after run:ready (notice-only, never a gate)
+    this.emit({ type: 'workspace', git: this.gitMeta, instructions: (this.opts.instructions?.files ?? []).map((f) => ({ ...f })), sandbox: this.sandbox.level });
+    for (const n of this.startupNotices) this.emit({ type: 'notice', step: null, kind: n.kind, level: n.level, text: n.text });
+    // TUI-DESIGN §9.3: the clamp is an engine item so all three writers carry it
+    if (session?.clamp) this.emit({ type: 'budget:clamp', runCapUsd: session.clamp.runCapUsd, clampedToUsd: session.clamp.clampedToUsd, sessionSpentUsd: session.clamp.sessionSpentUsd, sessionCapUsd: session.clamp.sessionCapUsd });
+    // TUI-DESIGN §9.4: one budget:override per override the controller computed for THIS resume (EngineOptions.resumeOverrides);
+    // they are appended to run.json.overrides[] below with the resumes[] entry — never re-derived from run.json
+    const resumeOverrides = this.resumed ? (this.opts.resumeOverrides ?? []) : [];
+    for (const o of resumeOverrides) this.emit({ type: 'budget:override', setting: o.setting, from: o.from, to: o.to, appliesTo: 'resume', source: o.source ?? 'flag' });
+    // TUI-DESIGN §8.3: the seeded line names the parent and what was carried
+    if (this.seeded && this.opts.seed) this.emit({ type: 'notice', step: null, kind: 'seeded', level: 'info', text: seedNoticeText(this.opts.seed, this.opts.seed.carriedDirectives ?? 0) });
+    // TUI-DESIGN §10.2: the count of secrets the human sent on request (never the values)
+    if (this.opts.secretsAcked !== undefined && this.opts.secretsAcked > 0) this.emit({ type: 'secret-ack', step: null, count: this.opts.secretsAcked });
+    // TUI-DESIGN §8.6 / §15.2: steers, withdrawals, a pause and secret-acks decided before run(), in order, after every writer saw run:ready
+    this.flushDeferredAnnouncements();
     this.runStartMono = this.clock();
     this.deadline = armWallDeadline(this.controller, this.opts.limits.maxWallMs - this.wallMsUsedBefore);
     if (this.resumed) {
       this.emit({ type: 'transcript', step: null, level: 'info', text: `resumed at step ${this.step + 1}` });
-      this.persist(this.store.updateMeta({ resumes: [{ resumedAt: nowIso(), previousStopReason: this.stopReason }] }), 'run.json');
+      // TUI-DESIGN §9.4: this resume's overrides are recorded in run.json together with its resumes[] entry
+      this.persist(
+        this.store.updateMeta({ resumes: [{ resumedAt: nowIso(), previousStopReason: this.stopReason }], ...(resumeOverrides.length > 0 ? { overrides: resumeOverrides.map((o) => ({ ...o })) } : {}) }),
+        CHECKPOINT_FILES.meta,
+      );
       this.stopReason = null;
     }
     for (;;) {
@@ -655,10 +996,193 @@ class EngineImpl implements Engine {
       }
       // contract 1.1 (TUI-DESIGN §9.1, §15.2): a requested pause ends the run only here, after the in-flight step committed whole
       if (this.pauseRequested) return this.finish('human_pause');
+      // TUI-DESIGN §13.3: every blocking pause is awaited here — nothing is in flight and the last commit is whole
+      if (this.blocked !== null) {
+        const req = this.blocked;
+        const answer = await this.awaitBlocker(req);
+        if (this.signal.aborted) continue; // the abort is classified at the top
+        // TUI-DESIGN §13.3: the drift pane offers `[p] pin … for the next run` and `[q] stop` only — every answer ends the run with
+        // exit 2 (a `retry` would re-run on the drifted model: the second call is no longer a first call)
+        if (answer === 'stop' || req.kind === 'drift') {
+          this.adoptBlockedError(req);
+          return this.finish(req.stop);
+        }
+        this.blocked = null;
+        this.blockedError = null;
+        if (req.kind === 'checkpoint-degraded') {
+          if (answer === 'continue') this.checkpointDegraded = true;
+          else await this.retryStateWrite(req.step);
+        }
+        this.emitStatus();
+        continue; // re-check abort, budgets and pause before the next step
+      }
+      this.applyPendingDirectives();
       const result = await this.runStep();
       trace(`runStep done step=${this.step} stop=${result.stop ?? 'null'}`);
       if (result.stop) return this.finish(result.stop, result.detail ? { detail: result.detail } : {});
     }
+  }
+
+  // -------------------------------------------------------------------------------------
+  // TUI-DESIGN §8.6: the one plan mutation outside commit() — human directives at step start
+  // -------------------------------------------------------------------------------------
+
+  private applyPendingDirectives(): void {
+    if (this.pendingDirectives.length === 0) return;
+    const step = this.step + 1;
+    // each ≤ 600, ≤ 8 of them → ≤ 4,800 chars; NEVER re-clipped as a batch (F7: max 8 × 600)
+    const texts = this.pendingDirectives.map((d) => d.text);
+    // seed / undo problems carry step 0 (§8.3) and are never superseded by a steer
+    const isSteer = (h: HarnessProblem): boolean => h.kind === 'human' && h.step > 0;
+    const superseded = this.plan.harnessProblems.filter((h) => isSteer(h) || h.kind === 'replan');
+    // one problem per directive: ≤ 8 of the 16 PLAN_MAX_HARNESS_PROBLEMS slots; planJson clips per problem at 600 (state.ts);
+    // the bound drops the oldest non-seed problems first, so the step-0 framing survives eight steers meeting eight other problems
+    const added: HarnessProblem[] = texts.map((text) => ({ kind: 'human', text, step }));
+    this.plan = { ...this.plan, harnessProblems: boundHarnessProblems([...this.plan.harnessProblems.filter((h) => !isSteer(h)), ...added], PLAN_MAX_HARNESS_PROBLEMS) };
+    // reaches exactly this step's prompt hints, common state and SynthesisContext.directive; cleared at commit
+    this.activeHuman = { texts, step };
+    // counts and tripped cleared; trips history and replanCount kept
+    this.detector.resetCounts();
+    this.pendingDirectives = [];
+    this.emit({ type: 'steer:applied', step, count: texts.length, superseded: superseded.map((h) => clip(h.text, 80)) });
+    this.emitStatus();
+  }
+
+  // -------------------------------------------------------------------------------------
+  // TUI-DESIGN §13.3: blocking pauses (one mechanism for every kind)
+  // -------------------------------------------------------------------------------------
+
+  private nextBlockingId(): string {
+    this.blockingSeq += 1;
+    return `${this.runId}:block:${this.blockingSeq}`;
+  }
+
+  /**
+   * TUI-DESIGN §13.3: install the pause the loop top will await — the one place that allocates a blocking id and, for
+   * `jev-unreachable`, advances the 30 s → 5 min backoff. A pane already up keeps its place (the later failure is dropped).
+   */
+  private installBlock(spec: BlockSpec, error: unknown): void {
+    if (this.blocked !== null) return;
+    const { autoRetry, ...request } = spec;
+    let retryInMs: number | undefined;
+    if (autoRetry === true) {
+      this.unreachablePauses += 1;
+      retryInMs = Math.min(JEV_UNREACHABLE_RETRY_MS * 2 ** (this.unreachablePauses - 1), JEV_UNREACHABLE_RETRY_MAX_MS);
+    }
+    this.blocked = { id: this.nextBlockingId(), ...request, ...(retryInMs !== undefined ? { retryInMs } : {}) };
+    this.blockedError = error;
+  }
+
+  /**
+   * Emit `blocking:request`, await the controller's answer raced against the auto-retry timer (`jev-unreachable` only;
+   * the timer's wait is wakeable by retryNow()), emit `blocking:resolved`. No blocker (bench, --plain pipe, --no-input,
+   * --json) → 'stop' at once. An engine abort while waiting → 'stop' too; the caller re-checks the signal.
+   */
+  private async awaitBlocker(req: BlockingRequest): Promise<BlockingAnswer> {
+    this.emit({ type: 'blocking:request', request: req });
+    this.emitStatus();
+    const blocker = this.opts.blocker;
+    let answer: BlockingAnswer = 'stop';
+    let auto = false;
+    if (blocker) {
+      let onAbort: (() => void) | null = null;
+      const aborted = new Promise<{ answer: BlockingAnswer; auto: boolean }>((resolve) => {
+        onAbort = (): void => resolve({ answer: 'stop', auto: false });
+        if (this.signal.aborted) onAbort();
+        else this.signal.addEventListener('abort', onAbort, { once: true });
+      });
+      // a blocker that throws (or rejects after the timer won) answers 'stop' and never surfaces as an unhandled rejection
+      const answered = Promise.resolve()
+        .then(() => blocker(req))
+        .then((a) => ({ answer: a, auto: false }), () => ({ answer: 'stop' as const, auto: false }));
+      const races: Promise<{ answer: BlockingAnswer; auto: boolean }>[] = [aborted, answered];
+      const waker = req.kind === 'jev-unreachable' && req.retryInMs !== undefined ? new AbortController() : null;
+      if (waker !== null && req.retryInMs !== undefined) {
+        this.retryWaker = waker;
+        races.push(sleep(req.retryInMs, undefined, waker.signal).then(() => ({ answer: 'retry' as const, auto: true })));
+      }
+      try {
+        ({ answer, auto } = await Promise.race(races));
+        // a `[r] now` press (retryNow aborted the waker) ended the wait early: a retry answered by the human, not by the timer
+        if (auto && waker !== null && waker.signal.aborted) auto = false;
+      } catch {
+        answer = 'stop';
+      } finally {
+        if (onAbort !== null) this.signal.removeEventListener('abort', onAbort);
+        if (waker !== null) {
+          // the wait is over either way: release the waker so a later retryNow() reports false, and end the timer
+          if (this.retryWaker === waker) this.retryWaker = null;
+          waker.abort();
+        }
+      }
+    }
+    this.emit({ type: 'blocking:resolved', id: req.id, answer, auto });
+    return answer;
+  }
+
+  /** TUI-DESIGN §13.3 `[q] stop`: the run ends with the request's stop reason and exit code; the failing error travels as the fatal error. */
+  private adoptBlockedError(req: BlockingRequest): void {
+    if (req.stop !== 'error' || this.fatalSerialized !== null) return;
+    const e = this.blockedError;
+    // a disk-class errno on the run dir is a checkpoint error (exit 3) whatever object the store threw
+    const source = req.kind === 'checkpoint-degraded' && !isJevCodeError(e) ? new CheckpointError(`checkpoint degraded: ${req.detail}`, this.runDir, { cause: e }) : (e ?? new JevCodeError('internal', req.detail));
+    const base = serializeStopError(source, this.redact);
+    this.fatalSerialized = { ...base, exitCode: req.exitCode, ...(req.side ? { side: req.side } : {}) };
+  }
+
+  /** TUI-DESIGN §13.3 `[r] retry the write`: state.json again; success → `checkpoint:restored`, a disk-class failure re-blocks. */
+  private async retryStateWrite(step: number): Promise<void> {
+    try {
+      await this.store.writeState(this.buildCheckpointState());
+      this.emit({ type: 'notice', step, kind: 'checkpoint:restored', level: 'info', text: `checkpoint restored: ${CHECKPOINT_FILES.state} written` });
+    } catch (e) {
+      this.emit({ type: 'error', step, error: serializeError(e, this.redact), fatal: false });
+      this.noteDiskError(e, CHECKPOINT_FILES.state, step);
+    }
+  }
+
+  /**
+   * TUI-DESIGN §13.3: a write failure of one of the six disk classes → `notice checkpoint:degraded` once per (file, code);
+   * state.json → the checkpoint-degraded pause (exit 3). Returns false for anything that is not a disk-class error.
+   */
+  private noteDiskError(e: unknown, file: string | undefined, step: number | null): boolean {
+    const disk = classifyDiskError(e, file);
+    if (disk === null) return false;
+    if (!this.warned.has(disk.key)) {
+      this.warned.add(disk.key);
+      this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.text });
+    }
+    // `[c] continue without checkpoints` was chosen: later state.json failures stay notices, the run is already degraded;
+    // a failure of the FINAL write (finish() in flight) has no loop top left to pause at — it makes the run exit 3 instead
+    if (disk.file === CHECKPOINT_FILES.state && this.blocked === null && !this.checkpointDegraded && !this.finishing) {
+      this.installBlock({ step: step ?? this.step, kind: 'checkpoint-degraded', detail: checkpointDegradedDetail(disk.code, disk.file), stop: 'error', exitCode: 3 }, e);
+      this.emitStatus();
+    }
+    return true;
+  }
+
+  /**
+   * TUI-DESIGN §13.3: the blocking pause a failing stage asks for, or null when the failure keeps today's path.
+   * 401/403 on either side → key-rejected (exit 2, first call or a key revoked mid-run alike); 402 or a spend-worded 429
+   * → spend-limit (exit 5, no auto-retry); an exhausted Jev chain (network, 5xx, rate limit) → jev-unreachable, in session
+   * mode only (a blocker exists) — without one the three failures → exit 5 of A165 stay.
+   */
+  private classifyBlocking(e: unknown, step: number): BlockSpec | null {
+    // pure: no counter moves and no id is allocated until installBlock() — handleStepError may discard the result
+    const http = e instanceof JevHttpError ? { side: 'jev' as const, err: e } : e instanceof ProviderHttpError ? { side: 'generator' as const, err: e } : null;
+    if (http === null) return null;
+    const { side, err } = http;
+    const message = this.redact(err.message);
+    if (err.status === 401 || err.status === 403) {
+      return { step, kind: 'key-rejected', side, detail: keyRejectedDetail(err.status, message), stop: 'error', exitCode: 2 };
+    }
+    if (err.status === 402 || (err.status === 429 && SPEND_LIMIT_RE.test(`${err.message}\n${err.body}`))) {
+      return { step, kind: 'spend-limit', side, detail: clip(message, 200), stop: 'error', exitCode: 5 };
+    }
+    if (side === 'jev' && this.opts.blocker && (err.retryable || err.status === 0 || err.status === 408 || err.status === 429 || err.status >= 500)) {
+      return { step, kind: 'jev-unreachable', side, detail: clip(message, 200), autoRetry: true, stop: 'error', exitCode: 5 };
+    }
+    return null;
   }
 
   // -------------------------------------------------------------------------------------
@@ -691,10 +1215,13 @@ class EngineImpl implements Engine {
   private persist(p: Promise<void>, what: string): void {
     const tracked: Promise<void> = p
       .catch((e: unknown) => {
-        const ev: EngineEvent = { type: 'transcript', step: this.draft?.step ?? null, level: 'warn', text: `${what} write failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` };
+        const step = this.draft?.step ?? null;
+        const ev: EngineEvent = { type: 'transcript', step, level: 'warn', text: `${what} write failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` };
         // A transcript.log failure is reported to the renderers only; recording it would try the same file again.
         if (what === 'transcript') this.events.emit(redactDeep(ev, this.redact) as EngineEvent);
         else this.emit(ev);
+        // TUI-DESIGN §13.3: ENOSPC/EACCES/EROFS/EDQUOT/EIO/EMFILE → `checkpoint degraded: <code> on <file>` once per (file, code)
+        this.noteDiskError(e, what === 'transcript' ? CHECKPOINT_FILES.transcript : what, step);
       })
       .finally(() => {
         this.pendingPersists.delete(tracked);
@@ -710,9 +1237,12 @@ class EngineImpl implements Engine {
     return Math.max(0, this.opts.limits.maxWallMs - this.wallMsUsed());
   }
 
-  private budgetInput(only?: readonly ('spend_cap' | 'wall_time' | 'max_steps' | 'max_replans')[]): Parameters<typeof checkBudgets>[0] {
+  private budgetInput(only?: readonly BudgetKind[]): Parameters<typeof checkBudgets>[0] {
     const input: Parameters<typeof checkBudgets>[0] = {
       spendExceeded: this.opts.meter.exceeded(),
+      // TUI-DESIGN §9.5: the token cap exists only under --allow-unpriced
+      generatorTokens: this.generatorTokens,
+      ...(this.opts.limits.maxGeneratorTokens !== undefined ? { maxGeneratorTokens: this.opts.limits.maxGeneratorTokens } : {}),
       wallMsUsed: this.wallMsUsed(),
       maxWallMs: this.opts.limits.maxWallMs,
       steps: this.step,
@@ -754,6 +1284,8 @@ class EngineImpl implements Engine {
       ...(this.synthState !== null ? { synthState: this.synthState } : {}),
       // contract 1.1 (TUI-DESIGN §15 item 9): conditional spread, so an empty queue reads as absent (older readers unchanged)
       ...(this.pendingDirectives.length > 0 ? { pendingDirectives: this.pendingDirectives.map((d) => ({ ...d })) } : {}),
+      ...(this.undoLog.length > 0 ? { undoLog: this.undoLog.map((u) => ({ ...u, restored: [...u.restored], skipped: u.skipped.map((k) => ({ ...k })) })) } : {}),
+      ...(this.checkpointDegraded ? { checkpointDegraded: true } : {}),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -786,7 +1318,7 @@ class EngineImpl implements Engine {
       jevRequests: [],
       generatorRecords: [],
       usage: { generator: zeroUsage(), jev: zeroUsage() },
-      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0 },
+      timing: { generatorMs: 0, jevMs: 0, execMs: 0, confirmMs: 0, imagesMs: null },
       generatorFailReason: null,
       errorClass: null,
       error: null,
@@ -873,18 +1405,26 @@ class EngineImpl implements Engine {
     assertQuestionBatch(questions);
     trace(`engine.ask ${stage} step=${draft.step} start`);
     let res: AskResult;
+    const retry = this.retryHooks('jev', draft.step, stage);
     try {
-      res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step });
+      res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
+      retry.settled(true);
     } catch (e) {
+      retry.settled(false);
       trace(`engine.ask ${stage} rejected ${e instanceof Error ? e.name : typeof e}`);
       throw e;
     }
     trace(`engine.ask ${stage} resolved attempts=${res.attempts}`);
+    // TUI-DESIGN §13.2: a reachable Jev restarts the unreachable backoff (30 s again on the next pause)
+    this.unreachablePauses = 0;
     this.opts.meter.add('jev', res.usage);
-    addUsage(draft.usage.jev, res.usage);
+    this.noteUsage('jev', res.model, draft.step, stage, res.usage);
+    // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN) cost; the record, the step draft and the sum take the clamped copy
+    const usage = pricedUsage(res.usage);
+    addUsage(draft.usage.jev, usage);
     draft.timing.jevMs += res.latencyMs;
     const ids = Object.keys(questions);
-    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage: res.usage, model: res.model, attempts: res.attempts };
+    const record: JevRequestRecord = { step: draft.step, stage, requestHash: res.requestHash, latencyMs: res.latencyMs, questions: ids.length, usage, model: res.model, attempts: res.attempts };
     draft.jevRequests.push(record);
     this.jevLatencyMs.push(res.latencyMs);
     this.emit({ type: 'jev:request', record });
@@ -921,6 +1461,95 @@ class EngineImpl implements Engine {
   }
 
   /**
+   * TUI-DESIGN §13.2 / §15 item 5: the `onRetry` / `wake` pair handed to one decider or provider call. `onRetry` creates a
+   * fresh waker before every sleep (an AbortController aborts once) and emits `retry`; `wake` is the getter the clients
+   * read per attempt; `settled` (call it in the finally of the call) emits `retry:settled` when a retry happened and
+   * nulls the waker so a later retryNow() reports false.
+   */
+  private retryHooks(side: 'jev' | 'generator', step: number, stage: StageName): { onRetry: (info: RetryInfo) => void; wake: () => AbortSignal | undefined; settled: (ok: boolean) => void } {
+    let retries = 0;
+    let totalWaitMs = 0;
+    return {
+      onRetry: (info) => {
+        retries += 1;
+        totalWaitMs += Math.max(0, info.waitMs);
+        this.retryWaker = new AbortController();
+        this.retrying = { side, attempt: info.attempt, maxAttempts: info.maxAttempts, untilMs: Date.now() + Math.max(0, info.waitMs) };
+        this.emit({ type: 'retry', side, step, stage, info });
+        this.emitStatus();
+      },
+      wake: () => this.retryWaker?.signal,
+      settled: (ok) => {
+        this.retryWaker = null;
+        this.retrying = null;
+        if (retries === 0) return;
+        this.emit({ type: 'retry:settled', side, step, attempts: retries + 1, ok, totalWaitMs });
+        this.emitStatus();
+      },
+    };
+  }
+
+  /**
+   * After every meter.add (TUI-DESIGN §9.2, §9.5): the 50/80/95 % warnings for the run (own snapshot) and the session
+   * (`snapshot.parent`), and the unpriced-usage notice when the provider reported no finite cost.
+   */
+  private noteUsage(side: SpendSource, model: string, step: number, stage: StageName, usage: TokenUsage): void {
+    if (!Number.isFinite(usage.costUsd)) {
+      // TUI-DESIGN §9.5 (A135–A137): unknown pricing fails closed — the step commits, then the run stops with error unless
+      // --allow-unpriced; the item is announced once per (side, model) per run, not once per metered call
+      const key = `${side}:${model}`;
+      if (!this.unpricedAnnounced.has(key)) {
+        this.unpricedAnnounced.add(key);
+        this.emit({ type: 'budget:unpriced', side, model, step, tokens: { input: Number.isFinite(usage.inputTokens) ? usage.inputTokens : 0, output: Number.isFinite(usage.outputTokens) ? usage.outputTokens : 0 } });
+      }
+      if (this.opts.allowUnpriced !== true && this.unpriced === null) this.unpriced = { side, model, stage };
+    }
+    this.emitBudgetWarn(step);
+  }
+
+  /** TUI-DESIGN §9.2: once per (scope, pct) per run, the highest only when one add crosses two, `restored` after a resume, never for +Infinity. */
+  private emitBudgetWarn(step: number): void {
+    const snap = this.opts.meter.snapshot();
+    const run = nextBudgetWarn(snap.totalUsd, snap.capUsd, this.announcedRun, this.restoredSpentUsd !== undefined ? { restoredSpentUsd: this.restoredSpentUsd } : {});
+    this.announcedRun = run.announced;
+    if (run.warn !== null) {
+      const rate = this.perStepRate(snap.totalUsd);
+      this.emit({
+        type: 'budget:warn',
+        scope: 'run',
+        pct: run.warn.pct,
+        spentUsd: snap.totalUsd,
+        capUsd: snap.capUsd,
+        step,
+        stepsLeftEstimate: stepsLeftEstimate(snap.totalUsd, snap.capUsd, rate),
+        restored: run.warn.restored,
+        ...(rate !== null ? { perStepUsd: rate } : {}),
+        ...(snap.jev.costUsd > snap.generator.costUsd ? { jevShare: { jevUsd: snap.jev.costUsd, generatorUsd: snap.generator.costUsd } } : {}),
+      });
+    }
+    const parent = snap.parent;
+    if (parent) {
+      const session = nextBudgetWarn(parent.totalUsd, parent.capUsd, this.announcedSession);
+      this.announcedSession = session.announced;
+      if (session.warn !== null) {
+        this.emit({ type: 'budget:warn', scope: 'session', pct: session.warn.pct, spentUsd: parent.totalUsd, capUsd: parent.capUsd, step, stepsLeftEstimate: null, restored: false });
+      }
+    }
+  }
+
+  /** TUI-DESIGN §9.2: the p50 cost of the steps committed in this process; the run's mean per step right after a resume; null before any step. */
+  private perStepRate(totalUsd: number): number | null {
+    if (this.costPerStep.length > 0) {
+      const sorted = [...this.costPerStep].sort((a, b) => a - b);
+      const mid = Math.floor(sorted.length / 2);
+      const p50 = sorted.length % 2 === 1 ? sorted[mid]! : (sorted[mid - 1]! + sorted[mid]!) / 2;
+      return p50 > 0 ? p50 : null;
+    }
+    if (this.step > 0 && totalUsd > 0) return totalUsd / this.step;
+    return null;
+  }
+
+  /**
    * jev-only (docs/JEV-ONLY.md): what the Synthesizer sees for one step. `emit` is the engine's
    * redacting emit (so `synth` lines reach transcript.log and the renderers); `ask` and
    * `decider.ask` both go through askRecorded (metered, jev.jsonl, decisions.jsonl, the pane,
@@ -951,7 +1580,8 @@ class EngineImpl implements Engine {
       emit: (e) => self.emit(e),
       ask: (stage, state, questions) => self.ask(draft, stage, state, questions),
       createdThisRun: this.createdThisRun,
-      directive: draft.directive?.text ?? null,
+      // TUI-DESIGN §8.6 / §15.3: the human texts join Jev's directive with a blank line and no batch clip (parseDirective only scans for a move name)
+      directive: [draft.directive?.text, ...(this.activeHuman?.step === draft.step ? this.activeHuman.texts : [])].filter((t): t is string => typeof t === 'string' && t.length > 0).join('\n\n') || null,
       runDir: this.store.dir,
       synthState: this.synthState,
       setSynthState: (state) => {
@@ -987,6 +1617,11 @@ class EngineImpl implements Engine {
     }
     const err = new JevModelDriftError(this.opts.deciderModel.configured, servedRaw, { firstCall });
     if (firstCall) {
+      if (this.opts.blocker) {
+        // TUI-DESIGN §13.3: in session mode the first-call drift is a blocking pane (`[p] pin … for the next run  [q] stop (exit 2)`), not an abort
+        this.stageBlock = { request: { step, kind: 'drift', side: 'jev', detail: driftDetail(this.opts.deciderModel.configured, servedRaw), stop: 'error', exitCode: 2 }, error: err };
+        throw err;
+      }
       // First call of the run: abort with the ConfigError exit code (§5.4 rule 7).
       this.fatalError = err;
       if (!this.controller.signal.aborted) this.controller.abort(new AbortError('error'));
@@ -1010,16 +1645,31 @@ class EngineImpl implements Engine {
     // Tool-call argument fragments are reported as a cumulative character count per call; the
     // renderer coalesces ("streaming action… N chars", §7/§10). The text itself is parsed once at the end.
     let toolChars = 0;
-    const res = await this.opts.provider.generate(req, {
-      signal: this.signal,
-      onDelta: (text) => this.emit({ type: 'generator:delta', step: draft.step, text }),
-      onToolDelta: (fragment) => {
-        toolChars += fragment.length;
-        this.emit({ type: 'generator:tool-delta', step: draft.step, chars: toolChars });
-      },
-    });
+    const retry = this.retryHooks('generator', draft.step, 'propose');
+    let res: GenerateResult;
+    try {
+      res = await this.opts.provider.generate(req, {
+        signal: this.signal,
+        onDelta: (text) => this.emit({ type: 'generator:delta', step: draft.step, text }),
+        onToolDelta: (fragment) => {
+          toolChars += fragment.length;
+          this.emit({ type: 'generator:tool-delta', step: draft.step, chars: toolChars });
+        },
+        onRetry: retry.onRetry,
+        wake: retry.wake,
+      });
+      retry.settled(true);
+    } catch (e) {
+      retry.settled(false);
+      throw e;
+    }
     this.opts.meter.add('generator', res.usage);
-    addUsage(draft.usage.generator, res.usage);
+    // TUI-DESIGN §9.5: the token counter behind token_cap (input + output; NaN reads as 0 like the meter)
+    this.generatorTokens += (Number.isFinite(res.usage.inputTokens) ? res.usage.inputTokens : 0) + (Number.isFinite(res.usage.outputTokens) ? res.usage.outputTokens : 0);
+    this.noteUsage('generator', res.model, draft.step, 'propose', res.usage);
+    // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN) cost; the record, the event, the step draft and the sum take the clamped copy
+    const usage = pricedUsage(res.usage);
+    addUsage(draft.usage.generator, usage);
     draft.timing.generatorMs += res.latencyMs;
     draft.generatorRecords.push({
       step: draft.step,
@@ -1028,12 +1678,12 @@ class EngineImpl implements Engine {
       model: res.model,
       temperature: this.opts.generation.temperature,
       maxTokens: this.opts.generation.maxTokens,
-      usage: res.usage,
+      usage,
       latencyMs: res.latencyMs,
       stopReason: res.stopReason,
       malformed: false,
     });
-    this.emit({ type: 'generator:end', step: draft.step, usage: res.usage, latencyMs: res.latencyMs, finishReason: res.stopReason });
+    this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: res.latencyMs, finishReason: res.stopReason });
     return res;
   }
 
@@ -1045,6 +1695,7 @@ class EngineImpl implements Engine {
     const step = this.step + 1;
     const draft = this.newDraft(step);
     this.draft = draft;
+    this.stageBlock = null;
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
     let stage: StageName = usesJev(this.mode) ? (this.detector.tripped() ? 'replan' : 'intent') : 'propose';
     let changedFiles: string[] = [];
@@ -1111,13 +1762,16 @@ class EngineImpl implements Engine {
           this.counters.blocked += 1;
           this.emit({ type: 'outcome', step, outcome: draft.outcome });
         } else if (rk.risk.verdict === 'review') {
-          const approved = await this.confirm(draft, p.proposal, rk.risk);
+          const outcome = await this.confirm(draft, p.proposal, rk.risk);
           // Counted only once the review resolved: an abort while it is pending discards the step
           // (§9.1 rule 1) and the resumed run asks again, so counting early would double it.
           this.counters.reviews += 1;
-          if (!approved) {
+          // TUI-DESIGN §6.4 (P6): the reviewer's `d` note reaches the window notes and, on a decline, the reason Jev and the generator see
+          if (outcome.note !== undefined) draft.notes.push(`reviewer note: ${outcome.note}`);
+          if (!outcome.approved) {
             const identity = this.opts.confirmer.identity;
-            const reason = identity === 'reviewer' ? `declined by reviewer: ${rk.risk.reason}` : `not approved (${identity}): ${rk.risk.reason}`;
+            const base = identity === 'reviewer' ? `declined by reviewer: ${rk.risk.reason}` : `not approved (${identity}): ${rk.risk.reason}`;
+            const reason = outcome.note !== undefined ? `${base} — reviewer note: ${outcome.note}` : base;
             draft.outcome = { status: 'declined', reason };
             this.counters.declined += 1;
             this.emit({ type: 'outcome', step, outcome: draft.outcome });
@@ -1141,6 +1795,13 @@ class EngineImpl implements Engine {
       if (draft.outcome === null && draft.proposal !== null) {
         // Await the overlapped checkpoint of the previous step before anything touches the workspace (§9).
         if (this.pendingCheckpoint) await this.pendingCheckpoint;
+        if (this.blocked !== null) {
+          // TUI-DESIGN §13.3: that checkpoint failed on a disk class (or a pause was requested by a write): nothing executes until the pane is answered
+          this.interrupted = { step, stage: 'execute', proposal: draft.proposal };
+          this.emit({ type: 'transcript', step, level: 'warn', text: `${this.blocked.kind} before execute; step ${step} discarded` });
+          this.absorbDiscardedTiming(draft);
+          return { stop: null };
+        }
         const b = checkBudgets(this.budgetInput(['spend_cap', 'wall_time']));
         if (b !== null) {
           this.interrupted = { step, stage: 'execute', proposal: draft.proposal };
@@ -1149,6 +1810,9 @@ class EngineImpl implements Engine {
           return { stop: b, detail: 'before_execute' };
         }
         stage = 'execute';
+        // TUI-DESIGN §12.3: pre-images of the targets (edit|write|patch) or the dirty set (run) before anything touches the workspace
+        const imageSource = imageSourceOf(draft.proposal.action);
+        const pre = imageSource !== null ? await this.takePreImages(draft, imageSource, changedFiles) : null;
         draft.executeStarted = true;
         const ex = await this.stage('execute', () => runExecuteStage(ctx, draft.proposal!));
         draft.outcome = ex.outcome;
@@ -1158,6 +1822,8 @@ class EngineImpl implements Engine {
         draft.created = ex.created;
         draft.timing.execMs += ex.execMs;
         draft.executeFinished = true;
+        // TUI-DESIGN §12.3: post-images right after execute, still inside runStep() so harnessMs sees them
+        if (imageSource !== null) await this.takePostImages(draft, imageSource, ex.changedFiles, pre);
         this.emit({ type: 'outcome', step, outcome: ex.outcome });
         if (ex.outcome.status === 'interrupted') {
           const cls = classifyAbort(this.signal.reason);
@@ -1169,7 +1835,8 @@ class EngineImpl implements Engine {
           const recent = pushWindow(this.window, this.provisionalEntry(draft));
           const judgeCommon = this.commonState(await this.workspace.changedFiles().catch(() => changedFiles), recent, draft);
           const j = await this.stage('judge', () =>
-            runJudgeStage(ctx, judgeCommon, draft.proposal!, { outcome: ex.outcome, output: ex.output, changedFiles: ex.changedFiles, tests: ex.tests }, draft.claims),
+            // lastRunOutput: the engine's last parsed test run tail reaches a no-op done state even outside the 4-step window (state.ts doneExecutedJson)
+            runJudgeStage(ctx, judgeCommon, draft.proposal!, { outcome: ex.outcome, output: ex.output, changedFiles: ex.changedFiles, tests: ex.tests, lastRunOutput: this.lastTestRunOutput }, draft.claims),
           );
           draft.judge = j.judge;
           draft.completion = j.completion;
@@ -1193,6 +1860,13 @@ class EngineImpl implements Engine {
     const committed = this.commit(draft);
     if (committed.stop) return { stop: committed.stop };
     if (stopAfterCommit) return { stop: stopAfterCommit };
+    if (this.unpriced !== null) {
+      // TUI-DESIGN §9.5: usage.cost null/non-finite → the step committed, the run stops with error unless --allow-unpriced (exit 2, the flag is named)
+      const u = this.unpriced;
+      this.fatalError = new ConfigError(`${u.side} usage.cost missing for ${u.model}: the $${this.opts.limits.spendCapUsd.toFixed(3)} spend cap cannot be enforced; pass --allow-unpriced to run under a token cap instead`, { setting: u.side === 'jev' ? 'decider.model' : 'generator.model' });
+      this.stateError = { stage: u.stage, code: 'config' };
+      return { stop: 'error', detail: 'unpriced_usage' };
+    }
     if (usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold)) return { stop: 'complete' };
     if (this.mode === 'jev-off' && draft.outcome?.status === 'noop') return { stop: 'generator_done' };
     if (this.consecutiveStageFailures >= CONSECUTIVE_STAGE_FAILURE_LIMIT) {
@@ -1201,6 +1875,61 @@ class EngineImpl implements Engine {
       return { stop: 'error' };
     }
     return { stop: null };
+  }
+
+  /** TUI-DESIGN §12.3: `writePreImages` for the targets (edit|write|patch) or the dirty set (run: `workspace.dirtySet()`, else the changed files). */
+  private async takePreImages(draft: StepDraft, source: ImageSource, changedFiles: readonly string[]): Promise<PreImageResult | null> {
+    const action = draft.proposal?.action;
+    let targets: string[];
+    if (source === 'run') targets = [...(this.workspace.dirtySet?.() ?? changedFiles)];
+    else if (draft.patchTargets.length > 0) targets = draft.patchTargets.map((t) => t.path);
+    else targets = action !== undefined && (action.kind === 'edit' || action.kind === 'write') ? [action.path] : [];
+    // a `run` with nothing dirty has nothing to copy: no pre-image directory (clean tracked files are recoverable from HEAD)
+    if (source === 'run' && targets.length === 0) return null;
+    const t0 = this.clock();
+    try {
+      const r = await writePreImages(this.runDir, draft.step, targets, { root: this.workspace.root, source, now: () => this.clock() });
+      draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + r.ms;
+      return r;
+    } catch (e) {
+      draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
+      this.noteImagesFailure(draft, 'pre', e);
+      return null;
+    }
+  }
+
+  /** TUI-DESIGN §12.3: `writePostImages` of the changed files with `cleanAtStart` and the HEAD oid from the workspace's probe. */
+  private async takePostImages(draft: StepDraft, source: ImageSource, changedFiles: readonly string[], pre: PreImageResult | null): Promise<void> {
+    // a `run` that changed nothing and had nothing dirty records no post image (a missing post/<step>.json reads as "no changes")
+    if (source === 'run' && changedFiles.length === 0 && pre === null) return;
+    // headOid follows the workspace's live view (its gitState() tracks a committing `run`, §12.2); the engine's own probe is the fallback
+    const git = this.workspace.gitState?.() ?? this.gitState;
+    // cleanAtStart is judged against the ENGINE's probe only: `dirtyAtStart` was built from it, so without it (probe rejected,
+    // the workspace probing for itself) nothing reads clean — a `git-restore` undo of a file the human had modified before the
+    // run would overwrite those modifications (§12.4 rule 3)
+    const probe = this.gitState;
+    const t0 = this.clock();
+    try {
+      const r = await writePostImages(this.runDir, draft.step, changedFiles, {
+        root: this.workspace.root,
+        source,
+        headOid: headOidOf(git),
+        // tracked and unmodified at run start: in a repository, a path outside the run-start dirty set that this run did not create
+        cleanAtStart: (rel) => probe !== null && probe.repo && !this.dirtyAtStart.has(rel) && !this.createdThisRun.has(rel) && !draft.created.includes(rel),
+        pre,
+        now: () => this.clock(),
+      });
+      draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + r.ms;
+    } catch (e) {
+      draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
+      this.noteImagesFailure(draft, 'post', e);
+    }
+  }
+
+  /** An image write that failed never fails the step: a warning line, and the disk-class notice when it is one (§13.3). */
+  private noteImagesFailure(draft: StepDraft, which: 'pre' | 'post', e: unknown): void {
+    this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `${which}-images write failed: ${e instanceof Error ? this.redact(e.message) : String(e)}` });
+    this.noteDiskError(e, which === 'pre' ? CHECKPOINT_FILES.pre : CHECKPOINT_FILES.post, draft.step);
   }
 
   private flushGeneratorRecords(draft: StepDraft): void {
@@ -1219,15 +1948,28 @@ class EngineImpl implements Engine {
     this.timing.harnessMs += Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs);
   }
 
-  private async confirm(draft: StepDraft, proposal: Proposal, risk: RiskAssessment): Promise<boolean> {
-    const req: ConfirmRequest = { id: `${this.runId}:${draft.step}`, step: draft.step, proposal, risk };
+  private async confirm(draft: StepDraft, proposal: Proposal, risk: RiskAssessment): Promise<ConfirmOutcome> {
+    // TUI-DESIGN §15 item 6: matches_intent (row 8 of the review box) and the risk stage's Jev latency (120-column title), spread in only when known
+    const riskRequests = draft.jevRequests.filter((r) => r.stage === 'risk');
+    const req: ConfirmRequest = {
+      id: `${this.runId}:${draft.step}`,
+      step: draft.step,
+      proposal,
+      risk,
+      ...(draft.matchesIntent !== null ? { matchesIntent: draft.matchesIntent } : {}),
+      ...(riskRequests.length > 0 ? { jevLatencyMs: riskRequests.reduce((n, r) => n + r.latencyMs, 0) } : {}),
+    };
     this.emit({ type: 'confirm:request', request: req });
     const c0 = this.clock();
     try {
-      const approved = await this.opts.confirmer.confirm(req, { signal: this.signal });
+      const c = this.opts.confirmer;
+      // TUI-DESIGN §15.2 confirm() row: confirmDetailed preferred when present (the TUI's `d` note); confirm() stays the fallback
+      const r: ConfirmOutcome = c.confirmDetailed ? await c.confirmDetailed(req, { signal: this.signal }) : { approved: await c.confirm(req, { signal: this.signal }) };
       draft.timing.confirmMs += Math.max(0, this.clock() - c0);
-      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved, aborted: false });
-      return approved;
+      const rawNote = typeof r.note === 'string' ? clip(sanitizeStream(r.note).replace(/\s+/g, ' ').trim(), REVIEWER_NOTE_MAX) : '';
+      const note = rawNote.length > 0 ? rawNote : undefined;
+      this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: r.approved, aborted: false, ...(note !== undefined ? { note } : {}) });
+      return { approved: r.approved, ...(note !== undefined ? { note } : {}) };
     } catch (e) {
       draft.timing.confirmMs += Math.max(0, this.clock() - c0);
       this.emit({ type: 'confirm:resolved', step: draft.step, id: req.id, approved: false, aborted: true });
@@ -1288,6 +2030,8 @@ class EngineImpl implements Engine {
       },
       budget: { stepsUsed: this.step, stepsMax: this.opts.limits.maxSteps, spentUsd: snap.totalUsd, capUsd: snap.capUsd },
       redact: this.redact,
+      // TUI-DESIGN §8.6: the directives applied to this step reach intent, context, risk and judge (P1: Jev sees them)
+      human: this.activeHuman?.step === (draft?.step ?? this.step + 1) ? { directives: this.activeHuman.texts, step: this.activeHuman.step } : null,
     });
   }
 
@@ -1313,6 +2057,9 @@ class EngineImpl implements Engine {
       contextFiles,
       candidates,
       toolName: 'propose_action',
+      // TUI-DESIGN §8.6: one hints line per directive for exactly this step; §15 item 11: the @-mentioned files
+      humanDirectives: this.activeHuman?.step === draft.step ? [...this.activeHuman.texts] : [],
+      pinnedFiles: [...(this.opts.seed?.pinnedFiles ?? [])],
     };
   }
 
@@ -1370,6 +2117,17 @@ class EngineImpl implements Engine {
       draft.interruptedAt = { stage: 'judge', reason: cls.interrupt };
       draft.notes.push('interrupted before judge');
       return { discard: false, stop: cls.stop };
+    }
+    // TUI-DESIGN §13.3: a failure that asks for a blocking pause discards the step (rule 1) when no action ran; the loop top awaits the answer
+    const staged = this.stageBlock;
+    this.stageBlock = null;
+    const block = staged?.request ?? this.classifyBlocking(e, draft.step);
+    if (block !== null && !draft.executeStarted) {
+      this.installBlock(block, staged?.error ?? e);
+      this.interrupted = { step: draft.step, stage, proposal: draft.proposal };
+      this.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `step ${draft.step} interrupted during ${stage} (${block.kind}); discarded` });
+      this.emitStatus();
+      return { discard: true, stop: null };
     }
     const err = toJevCodeError(e);
     if (e instanceof GeneratorResponseError && stage === 'propose') {
@@ -1447,6 +2205,8 @@ class EngineImpl implements Engine {
       newInformation: draft.judge?.newInfo ?? null,
       replan: draft.directive ? { text: draft.directive.text } : null,
       stale,
+      // TUI-DESIGN §8.3 / §8.6: step 1 of a seeded run and a steered step may drop obsolete `remaining` items without a replan problem
+      human: (this.seeded && step === 1) || this.activeHuman?.step === step,
     });
     let plan = update.plan;
     const notes = [...draft.notes, ...update.notes];
@@ -1474,6 +2234,8 @@ class EngineImpl implements Engine {
     if (status === 'executed' && draft.changedFiles.length > 0 && proposal && proposal.action.kind !== 'run' && proposal.action.kind !== 'read') this.lastChangeStep = step;
     if (draft.tests?.parsed) {
       this.lastTestRun = { step, command: draft.tests.command, passed: draft.tests.parsed.passed, failed: draft.tests.parsed.failed, errors: draft.tests.parsed.errors, allPassed: draft.tests.allPassed === true };
+      // the run's output tail for the `done` state's `lastRun.output` (loop/synth team request; state.ts ExecutedInfo.lastRunOutput)
+      this.lastTestRunOutput = draft.output;
     }
     for (const p of draft.created) this.createdThisRun.add(p);
     if (status === 'executed' && proposal?.action.kind === 'read') this.counters.reads += 1;
@@ -1486,12 +2248,17 @@ class EngineImpl implements Engine {
       execMs: draft.timing.execMs,
       harnessMs: Math.max(0, total - draft.timing.generatorMs - draft.timing.jevMs - draft.timing.execMs - draft.timing.confirmMs),
       totalMs: total,
+      // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
+      ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
     };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
     this.timing.execMs += timing.execMs;
     this.timing.harnessMs += timing.harnessMs;
     this.timing.totalMs += timing.totalMs;
+    if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
+    // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
+    this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
     const jevTokens = draft.usage.jev.inputTokens + draft.usage.jev.outputTokens;
     this.generatorTokensPerStep.push(generatorTokens);
@@ -1515,6 +2282,8 @@ class EngineImpl implements Engine {
       errorClass: draft.errorClass,
       observed: draft.observed,
       workspaceRoot: this.workspace.root,
+      // the workspace test command's runner, so the fail: signature uses its parser (loop/synth team request; loopdetect.ts SignatureInput.testRunner)
+      testRunner: draft.tests ? (this.wsInfo.testCommand?.runner ?? null) : null,
     });
     const trip = this.detector.observe(step, signatures);
     if (trip) {
@@ -1542,6 +2311,8 @@ class EngineImpl implements Engine {
     this.plan = plan;
     this.window = window;
     this.interrupted = null;
+    // TUI-DESIGN §8.6: the directives reached exactly this step; the next steer re-arms them
+    if (this.activeHuman?.step === step) this.activeHuman = null;
     this.emit({ type: 'plan', step, plan, rejectedDone: update.rejected.map((r) => r.text), unverifiedDone: update.unverified.map((u) => u.text) });
 
     const record: StepRecord = {
@@ -1565,16 +2336,23 @@ class EngineImpl implements Engine {
     if (draft.error) record.error = draft.error;
     if (usesJev(this.mode) && isComplete(draft.completion, this.opts.limits.completeThreshold)) record.stoppedAt = 'complete';
     else if (checkBudgets(this.budgetInput()) !== null) record.stoppedAt = 'step_start';
+    // TUI-DESIGN §8.7 / §15 item 3: the committed plan after this step, bounded, so /rewind N seeds without replaying drafts
+    record.planAfter = planSnapshot(plan);
 
     const snapshot = this.buildCheckpointState();
     const c0 = this.clock();
     this.pendingCheckpoint = (async () => {
+      // TUI-DESIGN §12.3: nothing is hashed in here, where the lag gate could not see it
+      let file: string = CHECKPOINT_FILES.steps;
       try {
         await this.store.appendStep(record);
+        file = CHECKPOINT_FILES.state;
         await this.store.writeState(snapshot);
         this.emit({ type: 'checkpoint', step, ms: Math.max(0, this.clock() - c0) });
       } catch (e) {
         this.emit({ type: 'error', step, error: serializeError(e, this.redact), fatal: false });
+        // TUI-DESIGN §13.3: a disk-class failure of state.json pauses at the next boundary (`checkpoint degraded: <code> on state.json`)
+        this.noteDiskError(e, file, step);
       }
     })();
     this.emit({ type: 'step:end', record });
@@ -1591,6 +2369,8 @@ class EngineImpl implements Engine {
   private async finish(reason: StopReason, opts: { detail?: string; skipWrite?: boolean } = {}): Promise<RunResult> {
     trace(`finish(${reason}) pendingCheckpoint=${this.pendingCheckpoint !== null} persists=${this.pendingPersists.size}`);
     if (this.lastResult) return this.lastResult;
+    // TUI-DESIGN §8.6: from here on steer/unsteer/pause/annotate read as finished — the snapshot below is what gets written
+    this.finishing = true;
     this.deadline?.clear();
     this.currentStage = 'idle';
     this.stopReason = reason;
@@ -1605,11 +2385,20 @@ class EngineImpl implements Engine {
         if (isJevCodeError(src) && !this.stateError) this.stateError = { stage: this.lastErrorStage ?? 'intent', code: src.code };
       }
     }
+    // TUI-DESIGN §9.2 / §9.5: the budget:stop item precedes the stop and run:end lines (not for a refused resume, whose transcript is muted)
+    if (!opts.skipWrite) this.emitBudgetStop(reason, opts.detail);
     const snapshot = this.buildCheckpointState();
     const result = assembleRunResult({ runId: this.runId, mode: this.mode, reason, state: snapshot, error });
     const stopLine: EngineEvent = { type: 'transcript', step: null, level: reason === 'complete' ? 'info' : 'warn', text: stopTranscriptLine(reason, this.step, opts.detail) };
+    let stateWritten = opts.skipWrite === true; // a refused resume leaves the stored state.json as it was
+    // TUI-DESIGN §13.5 / §15 item 14: exit code, resumability and the artefact paths ride run:end; built when the final write has settled.
     // Pre-redacted so the line written before flush is the very event the renderers receive last.
-    const endEvent = redactDeep({ type: 'run:end', result } satisfies EngineEvent, this.redact) as EngineEvent;
+    const buildEnd = (): EngineEvent => {
+      const resumable = stateWritten && !this.checkpointDegraded && reason !== 'complete' && reason !== 'generator_done';
+      const paths = { runDir: this.runDir, transcript: join(this.runDir, CHECKPOINT_FILES.transcript), log: join(this.runDir, CHECKPOINT_FILES.log) };
+      return redactDeep({ type: 'run:end', result, exitCode: this.exitCodeOf(reason, error), resumable, paths } satisfies EngineEvent, this.redact) as EngineEvent;
+    };
+    let endEvent: EngineEvent | null = null;
     let stopEmitted = false;
     if (!opts.skipWrite) {
       const phase = (async (): Promise<void> => {
@@ -1617,11 +2406,19 @@ class EngineImpl implements Engine {
         if (!this.aborting) await this.sandbox.killAll().catch(() => undefined);
         if (this.pendingCheckpoint) await this.pendingCheckpoint;
         trace('finish: checkpoint awaited, writing final state');
-        await this.store.writeState(snapshot);
+        try {
+          await this.store.writeState(snapshot);
+        } catch (e) {
+          // TUI-DESIGN §13.3 / §13.5: a disk-class failure of the final state.json makes the run not resumable (exit 3)
+          if (this.noteDiskError(e, CHECKPOINT_FILES.state, null)) this.checkpointDegraded = true;
+          throw e;
+        }
+        stateWritten = true;
         trace('finish: final state written');
         // The stop line and the run:end line reach transcript.log through the same item model as every other line (§10).
         stopEmitted = true;
         this.emit(stopLine);
+        endEvent = buildEnd();
         this.recordTranscript(endEvent);
         await Promise.allSettled([...this.pendingPersists]);
         await this.store.flush();
@@ -1638,7 +2435,8 @@ class EngineImpl implements Engine {
       if (outcome === 'timeout') {
         this.events.emit({ type: 'transcript', step: null, level: 'error', text: `final checkpoint exceeded ${SHUTDOWN_CHECKPOINT_BOUND_MS} ms; writing state synchronously and exiting` });
         try {
-          this.forceExit(exitCodeFor(reason, error ?? undefined, false, this.signalName ?? undefined));
+          // TUI-DESIGN §13.4: the injected exit restores the terminal and prints the epilogue before the process ends
+          this.forceExit(this.exitCodeOf(reason, error));
         } catch {
           // an injected exit that throws (tests) must not re-enter the stop path
         }
@@ -1646,6 +2444,8 @@ class EngineImpl implements Engine {
         this.events.emit({ type: 'transcript', step: null, level: 'error', text: 'final checkpoint write failed' });
       }
     }
+    // TUI-DESIGN §8.5: the lock ends with the run
+    this.releaseLock();
     if (this.exitHandler) {
       process.removeListener('exit', this.exitHandler);
       this.exitHandler = null;
@@ -1654,8 +2454,38 @@ class EngineImpl implements Engine {
     if (!stopEmitted) this.emit(stopLine);
     this.emitStatus();
     // Already recorded in the checkpoint phase (or muted); emitted raw so it is not written twice.
-    this.events.emit(endEvent);
+    this.events.emit(endEvent ?? buildEnd());
     return result;
+  }
+
+  /** TUI-DESIGN §13.5: the one exit-code call — the fatal error, the degraded flag and the signal name refine it. */
+  private exitCodeOf(reason: StopReason, error: SerializedError | null): number {
+    return exitCodeFor(reason, error ?? this.fatalSerialized ?? undefined, this.checkpointDegraded, this.signalName ?? undefined);
+  }
+
+  /**
+   * TUI-DESIGN §9.2 / §9.5: `budget:stop` before `run:end` for spend_cap (by the run or the session cap) and token_cap, with the
+   * raise the epilogue and `/budget` name (`suggestedSpendCapUsd`: the whole dollar above the cap, above the spend).
+   */
+  private emitBudgetStop(reason: StopReason, detail: string | undefined): void {
+    if (reason !== 'spend_cap' && reason !== 'token_cap') return;
+    const at: StoppedAt = detail === 'before_execute' ? 'before_execute' : 'step_start';
+    const step = this.step;
+    if (reason === 'token_cap') {
+      const cap = this.opts.limits.maxGeneratorTokens ?? this.generatorTokens;
+      const minimum = Math.ceil((this.generatorTokens + 1) / TOKEN_CAP_RAISE_STEP) * TOKEN_CAP_RAISE_STEP;
+      this.emit({ type: 'budget:stop', scope: 'run', by: 'tokens', spentUsd: this.generatorTokens, capUsd: cap, step, at, raise: { command: `/budget max-generator-tokens ${minimum}`, flag: '--max-generator-tokens', minimum } });
+      return;
+    }
+    const snap = this.opts.meter.snapshot();
+    const parent = snap.parent;
+    if (parent && snap.parentExceeded === true && snap.totalUsd < snap.capUsd) {
+      const minimum = suggestedSpendCapUsd(parent.capUsd, parent.totalUsd);
+      this.emit({ type: 'budget:stop', scope: 'session', by: 'session', spentUsd: parent.totalUsd, capUsd: parent.capUsd, step, at, raise: { command: `/budget session-spend-cap ${minimum.toFixed(2)}`, flag: '--session-spend-cap', minimum } });
+      return;
+    }
+    const minimum = suggestedSpendCapUsd(snap.capUsd, snap.totalUsd);
+    this.emit({ type: 'budget:stop', scope: 'run', by: 'run', spentUsd: snap.totalUsd, capUsd: snap.capUsd, step, at, raise: { command: `/budget spend-cap ${minimum.toFixed(2)}`, flag: '--spend-cap', minimum } });
   }
 }
 
@@ -1723,6 +2553,7 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
   let runId: string;
   let store: CheckpointStore;
   let resume: ResumeLoad | null = null;
+  let lock: { held: boolean; warning: string | null } | null = null;
   if (opts.resume) {
     runId = opts.resume.runId;
     await validateResumeId(opts.runsDir, runId);
@@ -1732,25 +2563,22 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     if (resume.state.runId !== runId) throw new CheckpointError(`state.json belongs to run ${resume.state.runId}, not ${runId}`, store.dir);
     if (resume.state.mode !== opts.mode) throw new ConfigError(`--resume: run ${runId} was a ${resume.state.mode} run`, { setting: 'mode' });
     if ((resume.previousStopReason ?? resume.state.stopReason) === 'complete' && !opts.resume.force) throw new ConfigError(`--resume: run ${runId} is complete; pass --force to continue it`, { setting: 'resume' });
+    // TUI-DESIGN §8.5: a live lock (same host, pid alive) refuses the resume with exit 2 before any further work
+    lock = takeRunLock(store.dir || join(opts.runsDir, runId), runId);
   } else {
     runId = await createRunDir(opts.runsDir, d.newRunId);
     store = d.createCheckpointStore(opts.runsDir, runId, redact);
-    const meta: RunMeta = {
-      runId,
-      task: opts.task,
-      workspace: root,
-      mode: opts.mode,
-      config: opts.configRecord,
-      versions: { jevcode: process.env['npm_package_version'] ?? '0.1.0', node: process.version },
-      createdAt: nowIso(),
-      overrides: [],
-      resumes: [],
-      resolvedJevModel: null,
-      jevModelDrift: null,
-    };
-    await store.create(meta);
   }
   const runDir = store.dir || join(opts.runsDir, runId);
+  // TUI-DESIGN §12.1 (D7): the two unsandboxed spawns before the sandbox exists; a probe that rejects reads as `git-missing`
+  // and is not handed to createWorkspace, which then probes for itself
+  let git: GitState | null;
+  try {
+    git = await d.probeGitState(root);
+  } catch {
+    git = null;
+  }
+  const gitForMeta = git ?? notRepoState('git-missing', { probedAt: nowIso(), probeMs: 0 });
   const sandbox = d.createSandbox({
     workspaceRoot: root,
     runDir,
@@ -1760,10 +2588,50 @@ export async function createEngine(opts: EngineOptions, deps: EngineDeps = {}): 
     redact,
     ...(opts.extraWritableRoots ? { extraWritable: opts.extraWritableRoots } : {}),
     ...(opts.extraReadableRoots ? { extraReadable: opts.extraReadableRoots } : {}),
+    // TUI-DESIGN §12.7 / §15 item 18: the seatbelt learns the git dirs and the config dirs from here
+    ...(git?.gitDir ? { gitDir: git.gitDir } : {}),
+    ...(git?.commonDir ? { gitCommonDir: git.commonDir } : {}),
+    ...(opts.configDirs ? { configDirs: opts.configDirs } : {}),
   });
-  const workspace = await d.createWorkspace(root, runDir, { sandbox, secretPaths: opts.secretPaths, redact });
+  // TUI-DESIGN §12.1: given the probe, createWorkspace performs zero spawns
+  const workspace = await d.createWorkspace(root, runDir, { sandbox, secretPaths: opts.secretPaths, redact, ...(git ? { gitState: git } : {}) });
   const wsInfo = await workspace.info();
-  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume });
+  const session = opts.session;
+  let headDrift: string | null = null;
+  if (resume) {
+    // TUI-DESIGN §12.1 / §12.2 (P52): --resume on a different HEAD warns and records `resumedOn`
+    const current = resume.meta.git;
+    // no comparison when git is unavailable on the resuming machine (probe rejected / not found): a null head is not a moved HEAD
+    if (current !== undefined && git !== null && git.repo && headMoved(current.head, git.head)) {
+      headDrift = headDriftWarning(current.head, git.head).replace(/^warning: /, '');
+      await store.updateMeta({ git: { ...current, resumedOn: git.head } });
+    }
+  } else {
+    const meta: RunMeta = {
+      runId,
+      task: opts.task,
+      workspace: root,
+      mode: opts.mode,
+      config: opts.configRecord,
+      versions: { jevcode: VERSION, node: process.version },
+      createdAt: nowIso(),
+      overrides: [],
+      resumes: [],
+      resolvedJevModel: null,
+      jevModelDrift: null,
+      // TUI-DESIGN §15 item 10 / §15.2 createEngine row: session identity, source, title, the bounded git facts, the instruction files
+      sessionId: session?.sessionId ?? runId,
+      parentRunId: session?.parentRunId ?? null,
+      source: session?.source ?? 'cli',
+      ...(session?.title !== undefined ? { title: session.title } : {}),
+      git: runGitMetaOf(gitForMeta),
+      ...(opts.instructions ? { instructions: opts.instructions.files.map((f) => ({ ...f })) } : {}),
+    };
+    await store.create(meta);
+    // TUI-DESIGN §8.5: run.lock after store.create
+    lock = takeRunLock(runDir, runId);
+  }
+  return new EngineImpl({ runId, opts, store, workspace, sandbox, wsInfo, resume, gitState: git, runDir, lock: lock ?? { held: false, warning: null }, headDrift });
 }
 
 /** Effective intent helper exported for tests and the TUI: the safe default of Choice resolution. */

@@ -4,7 +4,6 @@ import type { GitState, RunGitMeta } from '../../../src/core/types.js';
 import { statusPorcelainV2 } from '../../../src/workspace/git.js';
 import {
   GIT_PROBE_ARGS,
-  PROBE_NOT_WIRED,
   bannerInput,
   buildGitState,
   gitBannerLine,
@@ -14,7 +13,6 @@ import {
   notRepoReason,
   notRepoState,
   parseRevParse,
-  probeGitState,
   shortOid,
   toRunGitMeta,
   toRunGitMetaEnd,
@@ -41,11 +39,7 @@ function state(over: Partial<GitState> = {}): GitState {
   };
 }
 
-describe('probeGitState stub (wave 1)', () => {
-  it('rejects with the not-wired message and never resolves to a state', async () => {
-    await expect(probeGitState('/tmp')).rejects.toThrow(PROBE_NOT_WIRED);
-    await expect(probeGitState('/tmp', { timeoutMs: 1 })).rejects.toThrow('not wired in wave 1');
-  });
+describe('GIT_PROBE_ARGS (§12.1)', () => {
   it('the two argument vectors are fixed: no --abbrev-ref, status is read-only and lock-free', () => {
     expect(GIT_PROBE_ARGS.revParse).toEqual(['rev-parse', '--is-inside-work-tree', '--show-prefix', '--absolute-git-dir', '--git-common-dir', '--show-toplevel']);
     expect(GIT_PROBE_ARGS.status).toEqual(['--no-optional-locks', 'status', '--porcelain=v2', '--branch', '--untracked-files=all', '-z']);
@@ -139,16 +133,19 @@ describe('buildGitState / notRepoState / toRunGitMeta', () => {
     expect(g.dirty.entries).toEqual([]);
     expect(notRepoState('timeout', { probedAt: AT.probedAt, probeMs: -3 }).probeMs).toBe(0);
   });
-  it('toRunGitMeta is bounded: no paths, no entries, the HEAD oid kept, no undefined-valued keys', () => {
+  it('toRunGitMeta is bounded: no paths, no entries, the HEAD oid kept, ahead/behind and unmerged carried, no undefined-valued keys', () => {
     const m = toRunGitMeta(state());
-    expect(m).toEqual({ repo: true, head: { kind: 'branch', name: 'main', oid: OID }, upstream: 'origin/main', linkedWorktree: false, prefix: '', dirtyAtStart: { modified: 3, staged: 1, untracked: 1 } });
+    expect(m).toEqual({ repo: true, head: { kind: 'branch', name: 'main', oid: OID }, upstream: 'origin/main', linkedWorktree: false, prefix: '', ahead: 2, behind: 0, dirtyAtStart: { modified: 3, staged: 1, untracked: 1, unmerged: 0 } });
+    expect(Object.values(m).some((v) => v === undefined)).toBe(false);
     expect('reason' in m).toBe(false);
     expect(Object.keys(m)).not.toContain('gitDir');
     expect(Object.keys(m)).not.toContain('entries');
     expect(JSON.parse(JSON.stringify(m))).toEqual(m);
     const none = toRunGitMeta(notRepoState('not-a-repo', AT));
     expect(none.reason).toBe('not-a-repo');
-    expect(none.dirtyAtStart).toEqual({ modified: 0, staged: 0, untracked: 0 });
+    expect(none.dirtyAtStart).toEqual({ modified: 0, staged: 0, untracked: 0, unmerged: 0 });
+    expect(none.ahead).toBeNull();
+    expect(none.behind).toBeNull();
     const end = toRunGitMetaEnd(state({ ahead: 0, behind: 4 }));
     expect(end).toEqual({ head: { kind: 'branch', name: 'main', oid: OID }, upstream: 'origin/main', ahead: 0, behind: 4, dirty: { modified: 3, staged: 1, untracked: 1 } });
     const meta: RunGitMeta = { ...m, end };
@@ -170,7 +167,8 @@ describe('gitBannerLine (§12.2)', () => {
     expect(gitBannerLine(bannerInput(notRepoState('bare', AT)), { ascii: true }).text).toBe('git none - bare repository: no work tree to edit; /undo and /diff use step pre-images only');
     expect(notRepoReason(undefined)).toBe(notRepoReason('not-a-repo'));
     expect(gitBannerLine(bannerInput(notRepoState('git-missing', AT))).text).toBe('git none · git not found on PATH: /undo and /diff use step pre-images only');
-    expect(gitBannerLine(bannerInput(notRepoState('timeout', AT))).text).toBe('git none · git did not answer in time: /undo and /diff use step pre-images only');
+    // `timeout` covers every "dirty snapshot unknown" outcome (a status that timed out, failed or overflowed) until O1 adds a distinct reason
+    expect(gitBannerLine(bannerInput(notRepoState('timeout', AT))).text).toBe('git none · git status failed or timed out: /undo and /diff use step pre-images only');
     const unmerged = gitBannerLine(bannerInput(state({ upstream: null, ahead: null, behind: null, dirty: { modified: 412, staged: 0, untracked: 0, renamed: 0, unmerged: 1, submodules: 0, entries: [] } })));
     expect(unmerged).toEqual({ text: 'git main · 412 modified · working tree has unmerged paths (u) — commands may fail on conflict markers', level: 'warn' });
   });
@@ -179,10 +177,16 @@ describe('gitBannerLine (§12.2)', () => {
     expect(gitBannerLine(bannerInput(state({ behind: 1 })), { ascii: true }).text).toBe('git main ^2 v1 - 3 modified - 1 staged - 1 untracked');
     expect(gitBannerLine(bannerInput(state({ ahead: 0, behind: 0 }))).text).toBe('git main · 3 modified · 1 staged · 1 untracked');
     expect(gitBannerLine(bannerInput(state({ prefix: 'pkg/', ahead: 0 }))).text).toBe('git main · 3 modified · 1 staged · 1 untracked · in subdirectory pkg/ of the repository');
-    // the workspace event carries RunGitMeta only: no ahead/behind, no worktree path, no unmerged count
-    expect(gitBannerLine(toRunGitMeta(state())).text).toBe('git main · 3 modified · 1 staged · 1 untracked');
-    expect(gitBannerLine(toRunGitMeta(state({ linkedWorktree: true, dirty: { modified: 0, staged: 0, untracked: 0, renamed: 0, unmerged: 0, submodules: 0, entries: [] } }))).text).toBe('git main (linked worktree) · clean');
-    expect(gitBannerLine(toRunGitMeta(state({ head: null }))).text).toBe('git HEAD ↑2 · 3 modified · 1 staged · 1 untracked'.replace(' ↑2', ''));
+    // the workspace event carries RunGitMeta: ahead/behind and unmerged ride along, the worktree path does not
+    expect(gitBannerLine(toRunGitMeta(state())).text).toBe('git main ↑2 · 3 modified · 1 staged · 1 untracked');
+    expect(gitBannerLine(toRunGitMeta(state({ behind: 1 }))).text).toBe('git main ↑2 ↓1 · 3 modified · 1 staged · 1 untracked');
+    expect(gitBannerLine(toRunGitMeta(state({ linkedWorktree: true, ahead: 0, dirty: { modified: 0, staged: 0, untracked: 0, renamed: 0, unmerged: 0, submodules: 0, entries: [] } }))).text).toBe('git main (linked worktree) · clean');
+    expect(gitBannerLine(toRunGitMeta(state({ head: null }))).text).toBe('git HEAD ↑2 · 3 modified · 1 staged · 1 untracked');
+    const fromMeta = gitBannerLine(toRunGitMeta(state({ upstream: null, dirty: { modified: 4, staged: 0, untracked: 0, renamed: 0, unmerged: 1, submodules: 0, entries: [] } })));
+    expect(fromMeta).toEqual({ text: 'git main · 4 modified · working tree has unmerged paths (u) — commands may fail on conflict markers', level: 'warn' });
+    // a run.json written before the additive fields existed: no ahead/behind, no unmerged → info, no arrows
+    const legacy: RunGitMeta = { repo: true, head: { kind: 'branch', name: 'main', oid: OID }, upstream: 'origin/main', linkedWorktree: false, prefix: '', dirtyAtStart: { modified: 3, staged: 1, untracked: 1 } };
+    expect(gitBannerLine(legacy)).toEqual({ text: 'git main · 3 modified · 1 staged · 1 untracked', level: 'info' });
     const unmergedAscii = gitBannerLine({ ...toRunGitMeta(state()), unmerged: 2 }, { ascii: true });
     expect(unmergedAscii.level).toBe('warn');
     expect(unmergedAscii.text).toContain('(u) - commands may fail');
