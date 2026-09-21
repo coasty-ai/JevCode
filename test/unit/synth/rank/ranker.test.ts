@@ -1,4 +1,5 @@
 import { describe, expect, it } from 'vitest';
+import type { Candidate } from '../../../../src/synth/types.js';
 
 import type { Json } from '../../../../src/core/types.js';
 import { AbortError } from '../../../../src/errors.js';
@@ -338,10 +339,12 @@ describe('errors', () => {
     expect(started).toBe(1);
   });
 
-  it('rejects candidates from different sites', async () => {
+  it('rejects candidates from different sites, naming the source (and its provenance) that emitted the foreign one', async () => {
     const other = siteAt(GCD_FILE, 2);
     const jev = scriptedAsk();
-    await expect(createRanker().rank([candidate(site, GCD_FIX), candidate(other, '    if b == 1:')], context(jev.ask))).rejects.toThrow(/not at the site/);
+    await expect(createRanker().rank([candidate(site, GCD_FIX), candidate(other, '    if b == 1:')], context(jev.ask))).rejects.toThrow(/mutation candidate "c\d+" is at gcd\.py:2 \(replace\), not at the site being ranked \(gcd\.py:5, replace\); the mutation source must emit a candidate only at the site it enumerates/);
+    const foreign: Candidate = { ...candidate(other, '    if b == 1:', { id: 'hist_0c763317_56_57871c58d5', source: 'history', op: 'history_revert_change' }), provenance: 'reverse of 0c763317aa "Fixed #12345" (ticket:#12345)' };
+    await expect(createRanker().rank([candidate(site, GCD_FIX), foreign], context(jev.ask))).rejects.toThrow('ranker: history candidate "hist_0c763317_56_57871c58d5" (reverse of 0c763317aa "Fixed #12345" (ticket:#12345)) is at gcd.py:2 (replace), not at the site being ranked (gcd.py:5, replace)');
   });
 
   it('rejects a malformed answer set (missing choice)', async () => {

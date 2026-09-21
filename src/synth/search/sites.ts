@@ -65,6 +65,8 @@ import { codeLines, entryAt, functionEntries } from '../localize/outline.js';
 import type { CodeLine } from '../localize/outline.js';
 import { FAILING_RUN_SUFFIX, LINE_QUESTION_ID } from '../localize/questions.js';
 import { classMethodPrefixes } from '../introspect/prefixes.js';
+import { HISTORY_SITE_NOTE, distanceToSite, locateReversals, sameSpan } from '../history/source.js';
+import type { HistoryFacts } from '../history/types.js';
 import type { IntrospectedNames } from '../introspect/types.js';
 import { buildSites, functionGapSlots, indentAfter, indentBefore, isDefLine, sbflAnchorsFor, sbflKey, statementSiteAt } from '../localize/sites.js';
 import type { Anchor, GapSlot } from '../localize/sites.js';
@@ -76,6 +78,7 @@ import type { PerTestResult, RankedLine } from '../sbfl/types.js';
 import { isFailing } from '../sbfl/ochiai.js';
 import { importInsertLine, unboundNames } from '../templates/imports.js';
 import { enumerateTemplates } from '../templates/index.js';
+import { CLASS_BODY_GAP_NOTE } from '../templates/introspect.js';
 import type { EnumerateOptions, FailureView, FunctionCandidate, JevAsk, LocalizeResult, Site, SiteEvidence, SourceFile } from '../types.js';
 import type { Goal } from './types.js';
 
@@ -952,13 +955,19 @@ async function q6FallbackSites(ctx: GoalSiteContext, goal: Goal, fn: BeamFunctio
 }
 
 // ---------------------------------------------------------------------------------------
-// Introspection-derived sites: the class body the failing call's objects point at
+// Introspection-derived sites: the raising statement's gap, the class body the failing call's objects point at, the import gap
 // ---------------------------------------------------------------------------------------
 
-/** Extra sites the introspected names add per goal, after the Jev-ranked list: one class-body gap and one module-level import gap. */
-export const INTROSPECTION_SITES_MAX = 2;
+/**
+ * Extra sites the introspected names add per goal, after the Jev-ranked list: the gap before the
+ * statement an operand of the failing call was read in, one class-body gap and one module-level
+ * import gap (a candidate that collides with a located site is merged onto it and not counted).
+ */
+export const INTROSPECTION_SITES_MAX = 3;
 /** Prefix of the evidence note that marks an introspection-derived site. */
 export const INTROSPECTION_SITE_NOTE = 'introspection:';
+/** Prefix of the note on the gap before the statement an operand was read in: templates/introspect.ts writes the guard exactly there. */
+export const RAISING_GAP_NOTE = `${INTROSPECTION_SITE_NOTE} gap before the raising statement`;
 
 interface ClassTarget {
   file: SourceFile;
@@ -993,7 +1002,8 @@ function fileOfPath(files: ReadonlyMap<string, SourceFile>, path: string): Sourc
  * The class-body gap of `target`: after the method the fact points at when that method is a
  * direct child of the class (the alias production appends `<prefix><Class> = <method>` there),
  * else before the first method of the class; at the class body's indent, `block` the class, in
- * no def. Null when the class has no method at all (nothing to alias to).
+ * no def. Null when the class has no method at all (nothing to alias to). The first note is the
+ * `CLASS_BODY_GAP_NOTE` mark templates/introspect.ts reads, also once merged onto a located gap.
  */
 function classBodyGap(target: ClassTarget): Site | null {
   const { file, cls } = target;
@@ -1013,7 +1023,7 @@ function classBodyGap(target: ClassTarget): Site | null {
     indent,
     block: { name: cls.name, startLine: cls.startLine, endLine: cls.endLine },
     scope: scopeAt(mod, Math.max(1, line - 1)),
-    evidence: { notes: [`${INTROSPECTION_SITE_NOTE} class-body gap of ${cls.name} ${where}`, target.why] },
+    evidence: { notes: [`${CLASS_BODY_GAP_NOTE} ${cls.name} ${where}`, target.why] },
   };
 }
 
@@ -1027,23 +1037,41 @@ function classNamed(files: readonly SourceFile[], name: string): { file: SourceF
 }
 
 /**
- * Sites the introspected names of the failing call add to a goal's list (swebench-reach-oracle-9.md
- * capability 2; jev-only-rungs-1-2.md §18.5 caveat 1): localisation builds function-level sites
- * only, so `mro_method_alias` (`<prefix><MroClass> = <method>` at a class-body gap) reached the
- * class body only through the `after_dedent` form at a method's last line. When the class the
- * facts point at is defined in a LOCALISED file — the class whose method raised (the innermost
- * workspace frame of the reproduction's traceback, then the anchored frames), the class of a
- * raising receiver operand (`type(self)`), else the class enclosing the Jev-ranked sites — its
- * class-body gap (after the raising / located method, else before the first method) and the
- * module-level import gap of that file become insert sites, ≤ `max` in all, deduplicated against
- * `sites`. Classes with a dispatch prefix (introspect/prefixes.ts) come first: they are the ones the
- * alias production can write into. Pure; nothing is asked.
+ * The gap immediately before the statement each operand of the failing call was read in
+ * (`operand.frame`), when that frame is in a localised file: at the statement's own indent, so the
+ * `attribute_predicate_guard` written there protects exactly that statement (jev-only-rungs-1-2.md
+ * §21.5: sympy-17139's guard was tested only inside the raising `if`'s body). Raising receivers
+ * first; one gap per statement; a `def` header is not guarded.
  */
-export function introspectionSites(names: IntrospectedNames, files: ReadonlyMap<string, SourceFile>, localised: readonly string[], sites: readonly Site[], max: number = INTROSPECTION_SITES_MAX): Site[] {
-  if (max <= 0) return [];
+function raisingGaps(names: IntrospectedNames, files: ReadonlyMap<string, SourceFile>, localPaths: ReadonlySet<string>): Site[] {
+  const out: Site[] = [];
+  const seen = new Set<string>();
+  const operands = [...names.operands].sort((a, b) => Number(b.raisingReceiver) - Number(a.raisingReceiver));
+  for (const o of operands) {
+    if (o.frame === null) continue;
+    const file = fileOfPath(files, o.frame.path);
+    if (file === undefined || !localPaths.has(file.path)) continue;
+    if (o.frame.line < 1 || o.frame.line > file.mod.lines.length) continue;
+    const line = statementAt(file.mod, o.frame.line)?.startLine ?? o.frame.line;
+    if (isDefLine(file, line)) continue;
+    const key = `${file.path}:${line}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const text = file.mod.lines[line - 1] ?? '';
+    out.push({ file, line, kind: 'insert', currentLine: '', indent: indentOf(text), block: blockFor(file, line), scope: scopeAt(file.mod, Math.max(1, line - 1)), evidence: { notes: [`${RAISING_GAP_NOTE} L${line} of ${file.path}`, `the operand ${o.expr} was read there${o.frame.fn === null ? '' : ` (${o.frame.fn})`}`] } });
+  }
+  return out;
+}
+
+/**
+ * The introspection sites in priority order, before any deduplication: the raising-statement gaps,
+ * the class-body gap of the class the facts point at, that file's import gap.
+ */
+function introspectionCandidates(names: IntrospectedNames, files: ReadonlyMap<string, SourceFile>, localised: readonly string[], sites: readonly Site[]): Site[] {
   const localFiles = [...new Set(localised)].map((p) => files.get(p)).filter((f): f is SourceFile => f !== undefined);
   if (localFiles.length === 0) return [];
   const localPaths = new Set(localFiles.map((f) => f.path));
+  const out: Site[] = raisingGaps(names, files, localPaths);
   const targets: ClassTarget[] = [];
   const seenClass = new Set<string>();
   const push = (t: ClassTarget | null): void => {
@@ -1075,30 +1103,146 @@ export function introspectionSites(names: IntrospectedNames, files: ReadonlyMap<
     const around = classAround(s.file, s.kind === 'insert' ? Math.max(1, s.line - 1) : s.line);
     if (around !== null) push({ file: s.file, cls: around.cls, method: around.method, why: `the located site ${siteKey(s)} is in ${around.cls.name}` });
   }
-  if (targets.length === 0) return [];
+  if (targets.length === 0) return out;
   // the class the alias production can write into first: one with a dispatch prefix shared by ≥ 2 methods
   const prefixed = (t: ClassTarget): number => (classMethodPrefixes(t.file.mod).some((p) => p.classIndex === t.cls.index) ? 0 : 1);
   targets.sort((a, b) => prefixed(a) - prefixed(b));
-  const taken = new Set(sites.map(siteKey));
-  const out: Site[] = [];
-  const add = (s: Site | null): void => {
-    if (s === null || out.length >= max) return;
-    const k = siteKey(s);
-    if (taken.has(k)) return;
-    taken.add(k);
-    out.push(s);
-  };
   const top = targets[0]!;
-  add(classBodyGap(top));
+  const gap = classBodyGap(top);
+  if (gap !== null) out.push(gap);
   // the module-level import gap of the same file: an alias or a guard may need a name the module does not import yet
   const line = importInsertLine(top.file.mod);
-  add({ file: top.file, line, kind: 'insert', currentLine: '', indent: '', block: null, scope: scopeAt(top.file.mod, line), evidence: { notes: [`${INTROSPECTION_SITE_NOTE} module-level import gap of ${top.file.path}`, top.why] } });
+  out.push({ file: top.file, line, kind: 'insert', currentLine: '', indent: '', block: null, scope: scopeAt(top.file.mod, line), evidence: { notes: [`${INTROSPECTION_SITE_NOTE} module-level import gap of ${top.file.path}`, top.why] } });
   return out;
 }
 
-/** True for a site `introspectionSites` built. */
+/**
+ * Sites the introspected names of the failing call add to a goal's list (swebench-reach-oracle-9.md
+ * capability 2; jev-only-rungs-1-2.md §18.5 caveat 1, §21.5): localisation builds function-level
+ * sites only, so (1) the guard production's target — the gap before the statement an operand was
+ * read in, when its file is localised — (2) the class-body gap of the class the facts point at,
+ * when a LOCALISED file defines it — the class whose method raised (the innermost workspace frame
+ * of the reproduction's traceback, then the anchored frames), the class of a raising receiver
+ * operand (`type(self)`), else the class enclosing the Jev-ranked sites; after the raising /
+ * located method, else before the first method — and (3) the module-level import gap of that file
+ * become insert sites, ≤ `max` in all, in that order, those whose `siteKey` a located site holds
+ * left out (see `mergeIntrospectionSites` for the merge `locate` uses instead). Classes with a
+ * dispatch prefix (introspect/prefixes.ts) come first: they are the ones the alias production can
+ * write into. Pure; nothing is asked.
+ */
+export function introspectionSites(names: IntrospectedNames, files: ReadonlyMap<string, SourceFile>, localised: readonly string[], sites: readonly Site[], max: number = INTROSPECTION_SITES_MAX): Site[] {
+  if (max <= 0) return [];
+  const taken = new Set(sites.map(siteKey));
+  const out: Site[] = [];
+  for (const s of introspectionCandidates(names, files, localised, sites)) {
+    if (out.length >= max) break;
+    const k = siteKey(s);
+    if (taken.has(k)) continue;
+    taken.add(k);
+    out.push(s);
+  }
+  return out;
+}
+
+export interface MergedSites {
+  /** the located sites (colliding ones replaced by their merged copy) followed by the added introspection sites */
+  sites: Site[];
+  added: Site[];
+  merged: Site[];
+}
+
+/**
+ * The goal's site list with the introspection sites: a candidate whose `siteKey` a located site
+ * already holds is MERGED onto that site — its notes appended, so the class-body mark
+ * (`CLASS_BODY_GAP_NOTE`) makes `mro_method_alias` fire there at the class indent and the
+ * raising-gap mark travels with the site — instead of being dropped (§21.5: sympy-15345's
+ * `MCodePrinter` gap collided with the method's block-end slot at the same line and only the
+ * import gap survived); the others are appended, ≤ `max` of them. Merges do not count.
+ */
+export function mergeIntrospectionSites(sites: readonly Site[], names: IntrospectedNames, files: ReadonlyMap<string, SourceFile>, localised: readonly string[], max: number = INTROSPECTION_SITES_MAX): MergedSites {
+  const out = [...sites];
+  const added: Site[] = [];
+  const merged: Site[] = [];
+  const at = new Map<string, number>();
+  out.forEach((s, i) => {
+    const k = siteKey(s);
+    if (!at.has(k)) at.set(k, i);
+  });
+  for (const s of introspectionCandidates(names, files, localised, sites)) {
+    const k = siteKey(s);
+    const i = at.get(k);
+    if (i !== undefined) {
+      const cur = out[i]!;
+      const notes = s.evidence.notes.filter((n) => !cur.evidence.notes.includes(n));
+      if (notes.length === 0) continue;
+      const m: Site = { ...cur, evidence: { ...cur.evidence, notes: [...cur.evidence.notes, ...notes] } };
+      out[i] = m;
+      merged.push(m);
+      continue;
+    }
+    if (added.length >= max) continue;
+    at.set(k, out.length);
+    out.push(s);
+    added.push(s);
+  }
+  return { sites: out, added, merged };
+}
+
+/** True for a site `introspectionSites` built (or marked by `mergeIntrospectionSites`). */
 export function isIntrospectionSite(site: Pick<Site, 'evidence'>): boolean {
   return site.evidence.notes.some((n) => n.startsWith(INTROSPECTION_SITE_NOTE));
+}
+
+/** True for the gap before a raising statement (`raisingGaps`), built or merged. */
+export function isRaisingGap(site: Pick<Site, 'evidence'>): boolean {
+  return site.evidence.notes.some((n) => n.startsWith(RAISING_GAP_NOTE));
+}
+
+// ---------------------------------------------------------------------------------------
+// History-derived sites: where the harvested commits' reversals sit
+// ---------------------------------------------------------------------------------------
+
+/** History sites per goal, after the Jev-ranked and the introspection sites. */
+export const HISTORY_SITES_MAX = 2;
+
+/**
+ * The sites of the reversals that are NOT at a located site (history/source.ts locates the reverse
+ * of each change run of the harvested commits at its own lines and emits it only there, so a
+ * reversal elsewhere is reachable only through its own site): ≤ `max`, most recent commit first,
+ * then nearest to the located sites of the same file (farthest last; files without a located site
+ * after those with one), then run order. One per `siteKey`, and none whose key a located site
+ * already holds — the goal's bookkeeping (`exhausted`, the visit key) is by `siteKey`, so a second
+ * site under the same key would share it. Pure.
+ */
+export function historySites(facts: Pick<HistoryFacts, 'commits'>, files: ReadonlyMap<string, SourceFile>, localised: readonly string[], sites: readonly Site[] = [], max: number = HISTORY_SITES_MAX): Site[] {
+  if (max <= 0 || facts.commits.length === 0) return [];
+  const localFiles = [...new Set(localised)].map((p) => files.get(p)).filter((f): f is SourceFile => f !== undefined);
+  const taken = new Set(sites.map(siteKey));
+  const rows: { site: Site; recency: number; index: number; distance: number }[] = [];
+  for (const file of localFiles) {
+    const located = sites.filter((s) => s.file.path === file.path);
+    for (const r of locateReversals(file, facts)) {
+      if (located.some((s) => sameSpan(s, r.candidate.site))) continue;
+      if (taken.has(siteKey(r.candidate.site))) continue;
+      const distance = located.length === 0 ? Number.POSITIVE_INFINITY : Math.min(...located.map((s) => distanceToSite(s, r.candidate.site)));
+      rows.push({ site: r.candidate.site, recency: r.recency, index: r.index, distance });
+    }
+  }
+  rows.sort((a, b) => a.recency - b.recency || a.distance - b.distance || a.index - b.index || a.site.file.path.localeCompare(b.site.file.path));
+  const out: Site[] = [];
+  for (const r of rows) {
+    if (out.length >= max) break;
+    const k = siteKey(r.site);
+    if (taken.has(k)) continue;
+    taken.add(k);
+    out.push(r.site);
+  }
+  return out;
+}
+
+/** True for a site `historySites` listed (history/source.ts built it). */
+export function isHistorySite(site: Pick<Site, 'evidence'>): boolean {
+  return site.evidence.notes.some((n) => n.startsWith(HISTORY_SITE_NOTE));
 }
 
 // ---------------------------------------------------------------------------------------

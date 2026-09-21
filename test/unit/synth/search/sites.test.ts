@@ -8,7 +8,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Question } from '../../../../src/core/types.js';
 import { LINE_QUESTION_ID, createLocalizer } from '../../../../src/synth/localize/index.js';
-import type { LocalizeResult } from '../../../../src/synth/types.js';
+import type { LocalizeResult, Site } from '../../../../src/synth/types.js';
 import {
   GAP_FUNCTION_MAX_LINES,
   GAP_QUESTION,
@@ -44,7 +44,11 @@ import {
   traceTailGap,
   widenedSites,
 } from '../../../../src/synth/search/sites.js';
-import { INTROSPECTION_SITES_MAX, INTROSPECTION_SITE_NOTE, introspectionSites, isIntrospectionSite, replaceSiteAt, statementSiteFor } from '../../../../src/synth/search/sites.js';
+import { HISTORY_SITES_MAX, INTROSPECTION_SITES_MAX, INTROSPECTION_SITE_NOTE, RAISING_GAP_NOTE, historySites, introspectionSites, isHistorySite, isIntrospectionSite, isRaisingGap, mergeIntrospectionSites, replaceSiteAt, statementSiteFor } from '../../../../src/synth/search/sites.js';
+import { CLASS_BODY_GAP_NOTE, isClassBodyGapSite } from '../../../../src/synth/templates/introspect.js';
+import { enumerateHistory, sameSpan } from '../../../../src/synth/history/index.js';
+import { applyCandidate } from '../../../../src/synth/verify/apply.js';
+import { COMPILER_PATH, HISTORY_LINE, RANKED_LINE, compilerFixture, compilerFixtureWithOlderFarCommit } from '../history/fixtures.js';
 import { emptyIntrospection } from '../../../../src/synth/introspect/index.js';
 import type { IntrospectedNames } from '../../../../src/synth/introspect/index.js';
 import { functionGapSlots } from '../../../../src/synth/localize/sites.js';
@@ -737,7 +741,9 @@ describe('introspectionSites: the class-body gap of the class the failing call p
     expect(out[0]!.evidence.notes[1]).toContain('_print_Bar at pkg/printer.py:9');
     expect(out[1]!.evidence.notes[0]).toBe(`${INTROSPECTION_SITE_NOTE} module-level import gap of pkg/printer.py`);
     expect(out.every(isIntrospectionSite)).toBe(true);
-    expect(out).toHaveLength(INTROSPECTION_SITES_MAX);
+    // no operand carries a frame: no raising-statement gap, two of the INTROSPECTION_SITES_MAX slots used
+    expect(out).toHaveLength(2);
+    expect(INTROSPECTION_SITES_MAX).toBe(3);
     // a frame path given absolute (as CPython prints it) resolves by suffix
     const abs = names({ frames: [{ path: '/work/pkg/printer.py', line: 9, fn: '_print_Bar', code: null }] });
     expect(introspectionSites(abs, corpus, ['pkg/printer.py'], []).map((s) => s.line)).toEqual([10, 2]);
@@ -768,5 +774,106 @@ describe('introspectionSites: the class-body gap of the class the failing call p
     expect(introspectionSites(emptyIntrospection('no_target', 'nothing'), corpus, ['pkg/printer.py'], [])).toEqual([]);
     expect(introspectionSites(facts, corpus, [], [])).toEqual([]);
     expect(introspectionSites(facts, corpus, ['missing.py'], [])).toEqual([]);
+  });
+});
+
+describe('introspection sites merged onto colliding located sites, and the gap before the raising statement (§24)', () => {
+  const PRINTER = ['import math', '', 'class Printer(Base):', '    """doc"""', '    def _print_Foo(self, e):', '        return "foo"', '', '    def _print_Bar(self, e):', '        return "bar"', '', '    def helper(self):', '        return 1', '', 'def free():', '    return 2', ''].join('\n');
+  const printer = sf('pkg/printer.py', PRINTER);
+  const corpus = new Map([[printer.path, printer]]);
+  const names = (over: Partial<IntrospectedNames>): IntrospectedNames => ({ ...emptyIntrospection('ran', 'test'), ...over });
+  const operand = (expr: string, typeName: string, receiver: boolean, frame: IntrospectedNames['operands'][number]['frame'] = null): IntrospectedNames['operands'][number] => ({ expr, typeName, classes: [typeName], predicates: ['is_x'], falsyPredicates: ['is_x'], attributes: [], frame, raisingReceiver: receiver });
+
+  it("mergeIntrospectionSites: the class-body gap colliding with the method's block-end slot (same path:line:kind, another indent) is merged onto it — the slot keeps its indent and gains the class-body mark — and the alias production fires there at the class indent; the import gap is added", () => {
+    const slot: Site = { ...siteAt(printer, 10, 'insert'), indent: '        ', evidence: { notes: ['insert after anchor L9'] } };
+    const located = [siteAt(printer, 9), slot];
+    const facts = names({ frames: [{ path: 'pkg/printer.py', line: 9, fn: '_print_Bar', code: 'return "bar"' }], classes: ['Baz'] });
+    // the old API drops the colliding gap
+    expect(introspectionSites(facts, corpus, ['pkg/printer.py'], located).map((s) => s.line)).toEqual([2]);
+    const m = mergeIntrospectionSites(located, facts, corpus, ['pkg/printer.py']);
+    expect(m.sites.map((s) => [s.line, s.kind, s.indent])).toEqual([[9, 'replace', '        '], [10, 'insert', '        '], [2, 'insert', '']]);
+    expect(m.added.map((s) => s.line)).toEqual([2]);
+    expect(m.merged).toHaveLength(1);
+    const merged = m.merged[0]!;
+    expect(m.sites[1]).toBe(merged);
+    expect(merged.indent).toBe('        ');
+    expect(merged.evidence.notes).toEqual(['insert after anchor L9', `${CLASS_BODY_GAP_NOTE} Printer after _print_Bar (L8-9)`, "the failing call's frame _print_Bar at pkg/printer.py:9"]);
+    expect(isClassBodyGapSite(merged)).toBe(true);
+    expect(isIntrospectionSite(merged)).toBe(true);
+    // the alias production reads the mark: `_print_Baz = <method>` at the class indent, applied after `_print_Bar`
+    const aliases = createTemplateSource().enumerate(merged, { ...enumerateOptions(corpus), introspected: facts }).filter((c) => c.op === 'mro_method_alias');
+    expect(aliases.map((c) => c.text)).toEqual(['    _print_Baz = _print_Bar', '    _print_Baz = _print_Foo']);
+    expect(applyCandidate(aliases[0]!).files[0]!.after).toContain('        return "bar"\n    _print_Baz = _print_Bar\n');
+    // unmarked, the same slot offers no alias
+    expect(createTemplateSource().enumerate(slot, { ...enumerateOptions(corpus), introspected: facts }).some((c) => c.op === 'mro_method_alias')).toBe(false);
+    // merging twice adds nothing new
+    const again = mergeIntrospectionSites(m.sites, facts, corpus, ['pkg/printer.py']);
+    expect(again.added).toEqual([]);
+    expect(again.merged).toEqual([]);
+    expect(again.sites).toEqual(m.sites);
+  });
+
+  it("the gap before the statement an operand was read in comes first (raising receivers first, at that line's indent), then the class-body gap, then the import gap: INTROSPECTION_SITES_MAX = 3", () => {
+    const facts = names({ operands: [operand('e.exp', 'Unit', true, { path: '/work/pkg/printer.py', line: 9, fn: '_print_Bar', code: null })], classes: ['Baz'] });
+    const out = introspectionSites(facts, corpus, ['pkg/printer.py'], []);
+    expect(out.map((s) => [s.line, s.kind, s.indent])).toEqual([[9, 'insert', '        '], [10, 'insert', '    '], [2, 'insert', '']]);
+    expect(out).toHaveLength(INTROSPECTION_SITES_MAX);
+    expect(isRaisingGap(out[0]!)).toBe(true);
+    expect(out[0]!.evidence.notes).toEqual([`${RAISING_GAP_NOTE} L9 of pkg/printer.py`, 'the operand e.exp was read there (_print_Bar)']);
+    expect(out[0]!.block?.name).toBe('Printer._print_Bar');
+    // a frame in a file that is not localised adds no gap; a receiver outranks a plain operand
+    expect(introspectionSites(names({ operands: [operand('e', 'T', true, { path: 'pkg/other.py', line: 3, fn: 'g', code: null })] }), corpus, ['pkg/printer.py'], []).some(isRaisingGap)).toBe(false);
+    const two = names({ operands: [operand('a', 'T', false, { path: 'pkg/printer.py', line: 6, fn: '_print_Foo', code: null }), operand('b', 'T', true, { path: 'pkg/printer.py', line: 12, fn: 'helper', code: null })] });
+    expect(introspectionSites(two, corpus, ['pkg/printer.py'], []).filter(isRaisingGap).map((s) => s.line)).toEqual([12, 6]);
+    // the gap colliding with a located gap at the same line is merged (the mark travels), not duplicated
+    const located = [siteAt(printer, 9, 'insert')];
+    const m = mergeIntrospectionSites(located, facts, corpus, ['pkg/printer.py']);
+    expect(m.sites.map((s) => s.line)).toEqual([9, 10, 2]);
+    expect(isRaisingGap(m.sites[0]!)).toBe(true);
+    expect(m.merged).toHaveLength(1);
+  });
+});
+
+describe("historySites: the reversals' own sites after the located ones (§24)", () => {
+  it('lists the site of a reversal that is not at a located site (the rung-3 shape: L1679 while L1686 is ranked), where the history source then emits it; nothing at a located site with the same span', () => {
+    const { file, facts, siteAt: at } = compilerFixture();
+    const files = new Map([[COMPILER_PATH, file]]);
+    const ranked = at(RANKED_LINE);
+    const hs = historySites(facts, files, [COMPILER_PATH], [ranked]);
+    expect(hs.map((s) => [s.file.path, s.line, s.kind, s.endLine])).toEqual([[COMPILER_PATH, HISTORY_LINE, 'replace', undefined]]);
+    const own = hs[0]!;
+    expect(isHistorySite(own)).toBe(true);
+    expect(own.evidence.notes).toEqual(['history: the lines a past commit added', 'reverse of 0c763317aa "Fixed #12345 -- Read the combinator from the query." (ticket:#12345)']);
+    expect(own.block?.name).toBe('as_sql');
+    // the source emits the reversal there, and only there
+    const opts = { cap: 254, testLiterals: [], taskIdentifiers: [], corpus: files, history: facts };
+    expect(enumerateHistory(ranked, opts)).toEqual([]);
+    const there = enumerateHistory(own, opts);
+    expect(there).toHaveLength(1);
+    expect(there[0]!.site).toBe(own);
+    expect(sameSpan(there[0]!.site, own)).toBe(true);
+    // already a located site (same span): not listed again
+    expect(historySites(facts, files, [COMPILER_PATH], [ranked, at(HISTORY_LINE)])).toEqual([]);
+    // a located site under the same siteKey with another span holds the key: the reversal's site is left out (goal bookkeeping is by siteKey)
+    expect(historySites(facts, files, [COMPILER_PATH], [{ ...at(HISTORY_LINE), endLine: HISTORY_LINE + 1 }])).toEqual([]);
+    // bounds and absences
+    expect(historySites(facts, files, [COMPILER_PATH], [ranked], 0)).toEqual([]);
+    expect(historySites({ commits: [] }, files, [COMPILER_PATH], [ranked])).toEqual([]);
+    expect(historySites(facts, files, [], [ranked])).toEqual([]);
+    expect(historySites(facts, files, ['missing.py'], [ranked])).toEqual([]);
+    expect(HISTORY_SITES_MAX).toBe(2);
+  });
+
+  it('orders by commit recency, then proximity to the located sites of the file, then run order; cut at max', () => {
+    const { file, facts, siteAt: at } = compilerFixtureWithOlderFarCommit();
+    const files = new Map([[COMPILER_PATH, file]]);
+    const ranked = at(RANKED_LINE);
+    // the newest commit's run (L1679, 7 lines away) before the older commit's (L5, far)
+    expect(historySites(facts, files, [COMPILER_PATH], [ranked]).map((s) => s.line)).toEqual([HISTORY_LINE, 5]);
+    expect(historySites(facts, files, [COMPILER_PATH], [ranked], 1).map((s) => s.line)).toEqual([HISTORY_LINE]);
+    // two runs of one commit: the nearer first; without a located site in the file, run order
+    const oneCommit = { commits: [{ ...facts.commits[0]!, hunks: [...facts.commits[1]!.hunks, ...facts.commits[0]!.hunks] }] };
+    expect(historySites(oneCommit, files, [COMPILER_PATH], [ranked]).map((s) => s.line)).toEqual([HISTORY_LINE, 5]);
+    expect(historySites(oneCommit, files, [COMPILER_PATH], []).map((s) => s.line)).toEqual([5, HISTORY_LINE]);
   });
 });

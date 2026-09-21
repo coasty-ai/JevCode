@@ -1,22 +1,39 @@
 /**
  * The `history` candidate source: the reverse of each change run of the harvested commits
- * (harvest.ts, once per run; handed in as `EnumerateOptions.history`) that touches the site's
- * file at or near the site. A run whose added lines are still in the file verbatim becomes a
- * replace candidate on those lines (the removed lines come back; a pure addition is deleted); a
- * run whose lines were only removed comes back as an insert after its leading context. Nothing
- * is guessed: a run whose text is no longer in the file yields nothing. Candidates are ranked by
- * distance to the site, then commit recency; ≤ `opts.cap` (254). Ordinary `Candidate`s with
- * `source: 'history'` and a `provenance` line naming the commit, so the queue, the ranker and the
- * trace treat them like any other source.
+ * (harvest.ts, once per run; handed in as `EnumerateOptions.history`) whose current location IS
+ * the site being enumerated. A run whose added lines are still in the file verbatim is located as
+ * a replace of those lines — one line, or the statement-level span `line..endLine` when the run
+ * is longer (verify/apply.ts deletes the continuation lines) — where the removed lines come back
+ * (a pure addition is deleted); a run whose lines were only removed is located as an insert after
+ * its leading context. Nothing is guessed: a run whose text is no longer in the file, or whose
+ * span does not tokenize, yields nothing.
+ *
+ * A reversal is emitted for a site ONLY when its located site equals that site (`sameSpan`: same
+ * file, line, kind and, for replaces, the same span end), and then with `candidate.site` the
+ * enumerated site itself — so what a source hands the ranker is at the ranked site, which
+ * rank/index.ts asserts (jev-only-rungs-1-2.md §21.5: reversals located at their own lines rode
+ * with the donor seed of whatever site was being enumerated and the ranker threw; nine rung-3
+ * runs stopped on it). Reversals located elsewhere are not lost: search/sites.ts `historySites`
+ * lists their sites (≤ 2 per goal, recency then proximity) after the Jev-ranked ones, and the
+ * source emits them there. Ordinary `Candidate`s with `source: 'history'` and a `provenance` line
+ * naming the commit, so the queue, the ranker and the trace treat them like any other source.
  */
 import { createHash } from 'node:crypto';
 import { indentOf } from '../py/edits.js';
 import { blockAt, scopeAt } from '../py/structure.js';
-import type { Candidate, CandidateSource, EnumerateOptions, LineEdit, Site, SourceFile } from '../types.js';
-import type { HistoryCommit, HistoryHunk } from './types.js';
+import { codeTokens, renderTokens, tokenizeFragment } from '../py/tokenize.js';
+import type { Candidate, CandidateSource, EnumerateOptions, Site, SourceFile } from '../types.js';
+import type { HistoryCommit, HistoryFacts, HistoryHunk } from './types.js';
 
-/** A change run whose current location is farther than this from the site (and outside its block) is not "near" it. */
+/**
+ * The distance (lines) beyond which `reverseHunk` callers used to treat a run as not "near" a site.
+ * `enumerateHistory` no longer needs a window (a reversal is at the site or it is not); the
+ * constant stays for callers that report distances.
+ */
 export const HISTORY_WINDOW_LINES = 80;
+
+/** Prefix of the evidence note on a site `locateReversal` built (search/sites.ts `historySites` lists such sites). */
+export const HISTORY_SITE_NOTE = 'history:';
 
 function norm(s: string): string {
   return s.replace(/\s+/g, ' ').trim();
@@ -46,14 +63,46 @@ function blockOf(file: SourceFile, line: number): Site['block'] {
   return b === undefined ? null : { name: b.name, startLine: b.startLine, endLine: b.endLine };
 }
 
-function replaceSiteAt(file: SourceFile, line: number): Site {
-  const text = file.mod.lines[line - 1] ?? '';
-  return { file, line, kind: 'replace', currentLine: text, indent: indentOf(text), block: blockOf(file, line), scope: scopeAt(file.mod, line), evidence: { notes: ['history: the lines a past commit added'] } };
+/** Last physical line a site's edit covers: `endLine` of a statement-level replace site, else its line. */
+export function spanEndOf(site: Pick<Site, 'line' | 'kind' | 'endLine'>): number {
+  return site.kind === 'replace' && site.endLine !== undefined && site.endLine > site.line ? site.endLine : site.line;
 }
 
-function insertSiteAt(file: SourceFile, line: number, indent: string): Site {
+/**
+ * True when two sites are the same place to edit: same file, line and kind, and for replaces the
+ * same span end (a one-line site and the statement-level site starting at that line differ). An
+ * insert site's indent is not part of the identity: the reversal's text carries its own.
+ */
+export function sameSpan(a: Pick<Site, 'file' | 'line' | 'kind' | 'endLine'>, b: Pick<Site, 'file' | 'line' | 'kind' | 'endLine'>): boolean {
+  return a.file.path === b.file.path && a.line === b.line && a.kind === b.kind && spanEndOf(a) === spanEndOf(b);
+}
+
+/**
+ * The span `start..end` of `file` as a replace site: the physical line when `end === start`, else
+ * the statement-level form (`endLine`, `currentLine` the span's code tokens rendered on one line,
+ * which is what verify/apply.ts's staleness check compares the span against). Null when the span
+ * does not tokenize.
+ */
+function replaceSpanSite(file: SourceFile, start: number, end: number, note: string): Site | null {
+  const lines = file.mod.lines;
+  const first = lines[start - 1] ?? '';
+  const indent = indentOf(first);
+  const base: Site = { file, line: start, kind: 'replace', currentLine: first, indent, block: blockOf(file, start), scope: scopeAt(file.mod, start), evidence: { notes: [`${HISTORY_SITE_NOTE} the lines a past commit added`, note] } };
+  if (end <= start) return base;
+  let rendered: string;
+  try {
+    const toks = codeTokens(tokenizeFragment(lines.slice(start - 1, end).join('\n')));
+    if (toks.length === 0) return null;
+    rendered = renderTokens(toks);
+  } catch {
+    return null;
+  }
+  return { ...base, currentLine: indent + rendered, endLine: end, evidence: { notes: [`${HISTORY_SITE_NOTE} the lines a past commit added`, note, `span L${start}-${end}`] } };
+}
+
+function insertSiteAt(file: SourceFile, line: number, indent: string, note: string): Site {
   const anchor = Math.max(1, Math.min(line - 1, file.mod.lines.length));
-  return { file, line, kind: 'insert', currentLine: '', indent, block: blockOf(file, anchor), scope: scopeAt(file.mod, anchor), evidence: { notes: ['history: where a past commit removed lines'] } };
+  return { file, line, kind: 'insert', currentLine: '', indent, block: blockOf(file, anchor), scope: scopeAt(file.mod, anchor), evidence: { notes: [`${HISTORY_SITE_NOTE} where a past commit removed lines`, note] } };
 }
 
 function shortHash(s: string): string {
@@ -69,33 +118,32 @@ function codeLines(lines: readonly string[]): string[] {
   return lines.slice(first, last + 1);
 }
 
-interface Placed {
-  candidate: Candidate;
-  distance: number;
+/** `reverse of <sha> "<subject>" (<reason>)`: the candidate's provenance and the site note. */
+export function provenanceOf(commit: Pick<HistoryCommit, 'sha' | 'subject' | 'reason'>): string {
+  return `reverse of ${commit.sha.slice(0, 10)}${commit.subject === '' ? '' : ` "${commit.subject.slice(0, 70)}"`}${commit.reason === '' ? '' : ` (${commit.reason})`}`;
 }
 
-/** The reverse of one change run at its current location in `site.file`, or null when the run's text is gone. */
-export function reverseHunk(site: Site, commit: HistoryCommit, hunk: HistoryHunk, index: number): Placed | null {
-  const file = site.file;
+/**
+ * The reverse of one change run at its current location in `file`, as a candidate whose `site` is
+ * that location (built here, not the caller's), or null when the run's text is gone, the span does
+ * not tokenize, or the reversal would change nothing.
+ */
+export function locateReversal(file: SourceFile, commit: HistoryCommit, hunk: HistoryHunk, index: number): Candidate | null {
+  if (hunk.file !== file.path) return null;
   const lines = file.mod.lines;
-  const provenance = `reverse of ${commit.sha.slice(0, 10)}${commit.subject === '' ? '' : ` "${commit.subject.slice(0, 70)}"`}${commit.reason === '' ? '' : ` (${commit.reason})`}`;
+  const provenance = provenanceOf(commit);
   const added = codeLines(hunk.newLines);
   const removed = hunk.oldLines;
   const id = (text: string, line: number): string => `hist_${commit.sha.slice(0, 8)}_${index}_${shortHash(`${file.path}:${line}:${text}`)}`;
   if (added.length > 0) {
     const start = locateLines(lines, added, hunk.newStart);
     if (start < 0) return null;
-    const end = start + added.length - 1;
-    const distance = site.line < start ? start - site.line : site.line > end ? site.line - end : 0;
-    const at = replaceSiteAt(file, start);
-    const text = removed.join('\n');
     // a candidate that changes nothing is not a candidate
     if (removed.length === added.length && removed.every((l, k) => norm(l) === norm(added[k] ?? ''))) return null;
-    const extraEdits: LineEdit[] = [];
-    for (let l = start + 1; l <= end; l++) extraEdits.push({ path: file.path, line: l, kind: 'delete' });
-    const candidate: Candidate = { id: id(text, start), site: at, text, source: 'history', op: removed.length === 0 ? 'history_revert_addition' : 'history_revert_change', prior: distance === 0 ? 0.6 : 0.45, provenance };
-    if (extraEdits.length > 0) candidate.extraEdits = extraEdits;
-    return { candidate, distance };
+    const at = replaceSpanSite(file, start, start + added.length - 1, provenance);
+    if (at === null) return null;
+    const text = removed.join('\n');
+    return { id: id(text, start), site: at, text, source: 'history', op: removed.length === 0 ? 'history_revert_addition' : 'history_revert_change', prior: 0.6, provenance };
   }
   // a pure deletion in the commit: the removed lines come back after their leading context
   const before = codeLines(hunk.before);
@@ -103,34 +151,70 @@ export function reverseHunk(site: Site, commit: HistoryCommit, hunk: HistoryHunk
   const ctxStart = locateLines(lines, before, hunk.newStart - before.length);
   if (ctxStart < 0) return null;
   const line = ctxStart + before.length;
-  const distance = Math.abs(line - site.line);
   const indent = indentOf(removed.find((l) => l.trim() !== '') ?? '');
-  const at = insertSiteAt(file, line, indent);
   const text = removed.join('\n');
-  return { candidate: { id: id(text, line), site: at, text, source: 'history', op: 'history_revert_deletion', prior: distance === 0 ? 0.6 : 0.45, provenance }, distance };
+  return { id: id(text, line), site: insertSiteAt(file, line, indent, provenance), text, source: 'history', op: 'history_revert_deletion', prior: 0.6, provenance };
 }
 
-/** Enumerate the reversals near `site` from `opts.history`; [] without history facts. */
-export function enumerateHistory(site: Site, opts: EnumerateOptions): Candidate[] {
-  const facts = opts.history;
-  if (facts === undefined || facts.commits.length === 0) return [];
-  const placed: (Placed & { recency: number; index: number })[] = [];
+/** One located reversal of `locateReversals`: the candidate at its own site, the commit's recency rank (0 = most recent) and the run's index. */
+export interface LocatedReversal {
+  candidate: Candidate;
+  commit: HistoryCommit;
+  recency: number;
+  index: number;
+}
+
+/** Every reversal of `facts` that locates in `file`, most recent commit first then run order, one per (site, text). */
+export function locateReversals(file: SourceFile, facts: Pick<HistoryFacts, 'commits'>): LocatedReversal[] {
+  const out: LocatedReversal[] = [];
   const seen = new Set<string>();
   facts.commits.forEach((commit, recency) => {
     commit.hunks.forEach((hunk, index) => {
-      if (hunk.file !== site.file.path) return;
-      const p = reverseHunk(site, commit, hunk, index);
-      if (p === null) return;
-      const sameBlock = site.block !== null && p.candidate.site.line >= site.block.startLine && p.candidate.site.line <= site.block.endLine;
-      if (p.distance > HISTORY_WINDOW_LINES && !sameBlock) return;
-      const key = `${p.candidate.site.line}|${p.candidate.site.kind}|${p.candidate.text}`;
+      const candidate = locateReversal(file, commit, hunk, index);
+      if (candidate === null) return;
+      const key = `${candidate.site.line}|${candidate.site.kind}|${spanEndOf(candidate.site)}|${candidate.text}`;
       if (seen.has(key)) return;
       seen.add(key);
-      placed.push({ ...p, recency, index });
+      out.push({ candidate, commit, recency, index });
     });
   });
-  placed.sort((a, b) => a.distance - b.distance || a.recency - b.recency || a.index - b.index);
-  return placed.slice(0, Math.max(0, opts.cap)).map((p) => p.candidate);
+  return out;
+}
+
+interface Placed {
+  candidate: Candidate;
+  distance: number;
+}
+
+/** Distance in lines from `site.line` to the span a candidate's site covers (0 inside it). */
+export function distanceToSite(site: Pick<Site, 'line'>, at: Pick<Site, 'line' | 'kind' | 'endLine'>): number {
+  const end = spanEndOf(at);
+  return site.line < at.line ? at.line - site.line : site.line > end ? site.line - end : 0;
+}
+
+/** The reverse of one change run at its current location in `site.file` with its distance to `site`, or null when the run's text is gone. */
+export function reverseHunk(site: Site, commit: HistoryCommit, hunk: HistoryHunk, index: number): Placed | null {
+  const candidate = locateReversal(site.file, commit, hunk, index);
+  if (candidate === null) return null;
+  return { candidate, distance: distanceToSite(site, candidate.site) };
+}
+
+/**
+ * Enumerate the reversals located AT `site` from `opts.history` (`sameSpan`), each with `site` as
+ * its site; [] without history facts. Most recent commit first, then run order; ≤ `opts.cap`.
+ */
+export function enumerateHistory(site: Site, opts: EnumerateOptions): Candidate[] {
+  const facts = opts.history;
+  if (facts === undefined || facts.commits.length === 0) return [];
+  const out: Candidate[] = [];
+  const seen = new Set<string>();
+  for (const r of locateReversals(site.file, facts)) {
+    if (!sameSpan(r.candidate.site, site)) continue;
+    if (seen.has(r.candidate.text)) continue;
+    seen.add(r.candidate.text);
+    out.push({ ...r.candidate, site });
+  }
+  return out.slice(0, Math.max(0, opts.cap));
 }
 
 export function createHistorySource(): CandidateSource {

@@ -3506,13 +3506,13 @@ and `templates/introspect.test.ts` (the §22 wiring in progress, not touched her
 
 Live spend of this section: $0.
 
-## 22. 2026-09-20 (later): history candidates: own sites, capped share (rung-3 error class); introspection sites merged onto colliding gaps; the guard targets the raising statement
+## 24. 2026-09-20 (later): history candidates: own sites, capped share (rung-3 error class); introspection sites merged onto colliding gaps; the guard targets the raising statement
 
 Offline only (Jev $0). Fixes the defect §21.5 found ("history/ranker site mismatch": 43 `ranker: candidate … is not at the site being
 ranked` in 12 runs, nine runs stopped with `error` at steps 4–6, sympy-11618 lost at step 5) and the two placement findings of §21.5's
 reach-target check (sympy-15345's class-body gap deduplicated away; sympy-17139's guard inside the raising `if`'s body).
 
-### 22.1 Root cause, confirmed
+### 24.1 Root cause, confirmed
 
 `src/synth/history/source.ts` (commit 5486f7a, lines 96 and 110) built every reversal with `site: at` — the site of the CURRENT lines of
 the hunk it reverts (sequence match, `locateLines`) — and `enumerateHistory` offered it at any site within 80 lines or the same block;
@@ -3526,7 +3526,7 @@ harvested hunk that changed L1679, the ranked site L1686): with HEAD's `source.t
 `hist_0c763317_0_690eaa6f17 at compiler.py:1679 (foreign=true)`; after the change it holds none, `historySites` lists `compiler.py:1679
 (replace)` with the provenance note, and at L1679 the reversal is emitted with the enumerated site object itself.
 
-### 22.2 What changed
+### 24.2 What changed
 
 1. **A reversal is emitted only at its own site** (`history/source.ts`). `locateReversal(file, commit, hunk, index)` places each run at
    its current lines — a one-line replace, a statement-level span `line..endLine` (the `currentLine` rendered from the span's code
@@ -3559,7 +3559,7 @@ harvested hunk that changed L1679, the ranked site L1686): with HEAD's `source.t
    localised, `introspectionSites` now also builds that gap (`RAISING_GAP_NOTE`, receivers first, statement start for a continuation
    line), ahead of the class-body and import gaps: `INTROSPECTION_SITES_MAX` 2 → 3 (merges do not count).
 
-### 22.3 sympy-19954: history did NOT displace the guard that solved it — the site was never visited
+### 24.3 sympy-19954: history did NOT displace the guard that solved it — the site was never visited
 
 Checked as asked. The rung-3 run (`20260921-004052-jx3hxdij`) harvested `5 commits, 48 change runs in 3 files`; re-harvesting the surviving
 workspace offline (`~/.jevcode/runs/bench-work/20260921-002827-57b7e1/sympy__sympy-19954/jev-only/workspace`, `.scratch/hist-19954.mts`,
@@ -3574,7 +3574,7 @@ rung 3 the goal ran in SIEVE mode with the derived run budget (383 runs at step 
 regressed, `budget-hit step 1 of 4`, then 5–6 tested per step under `test wall left 0 s`) and never reached `2201:insert`. The loss
 belongs to §21.6 items 1–2 (per-site run spending and the regression-run timing), not to the history source.
 
-### 22.4 Tests and gates
+### 24.4 Tests and gates
 
 `test/unit/synth/history/history.test.ts` (source: span sites, own-site emission, the rung-3 reproduction), `history/fixtures.ts`,
 `wiring.test.ts` (donor wrapper: after the top half, share cap table, exact donors without facts, the rung-3 seed ranks without the

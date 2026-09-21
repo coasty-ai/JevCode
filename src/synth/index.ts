@@ -14,7 +14,7 @@ import type { Decider, SynthesisContext, Synthesizer } from '../core/types.js';
 import { createTokenBeamSource } from './beam/index.js';
 import { createDonorSource } from './donor/index.js';
 import { fillSketches } from './fill/beam.js';
-import { createHistorySource } from './history/index.js';
+import { createHistorySource, sameSpan } from './history/index.js';
 import { runFacts, vocabularyAdditions } from './introspect/index.js';
 import type { RunFacts } from './introspect/index.js';
 import { createLocalizer } from './localize/index.js';
@@ -27,7 +27,7 @@ import { createCompositeSource } from './search/composite.js';
 import { decideForSearch } from './search/guard.js';
 import { LedgerSieveSynthesizer, REPO_BASELINE_TIMEOUT_MS, defaultSearchDeps } from './search/index.js';
 import type { RunMemory, SearchDeps } from './search/index.js';
-import { buildGoalSites, captureLineChoiceEscape, introspectionSites } from './search/sites.js';
+import { buildGoalSites, captureLineChoiceEscape, historySites, mergeIntrospectionSites } from './search/sites.js';
 import { EDIT_CLASS_QUESTION_ID, priorFromAnswer, searchBestGuess, searchSubGoal } from './search/subgoal.js';
 import type { JevSource, SearchQueue, SubGoalDeps, SubGoalMemory } from './search/subgoal.js';
 import type { Goal } from './search/types.js';
@@ -129,13 +129,30 @@ async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): Pr
     stage: 'propose',
     ...(q5Escape === null ? {} : { q5EscapeProbability: q5Escape }),
   });
-  // the introspected names' sites (≤ 2, after the Jev-ranked list): the class-body gap of the class the
-  // failing call's objects point at, when a localised file defines it, and that file's import gap
-  const introspected = runFactsRef.current?.introspected ?? null;
+  // the introspected names' sites (≤ 3, after the Jev-ranked list): the gap before the statement an operand
+  // was read in, the class-body gap of the class the failing call's objects point at, when a localised file
+  // defines it, and that file's import gap; one that collides with a located site is merged onto it
+  const facts = runFactsRef.current;
   const localised = [...new Set([...goal.suspectedFiles, ...localized.files.map((f) => f.path), ...goalSites.ordered.map((s) => s.file.path)])];
-  const extra = introspected === null ? [] : introspectionSites(introspected, files, localised, goalSites.ordered);
-  if (extra.length > 0) ctx.emit({ type: 'synth', step: ctx.step, phase: 'localize', detail: `${goal.id}: ${extra.length} introspection site${extra.length === 1 ? '' : 's'} after the ${goalSites.ordered.length} located: ${extra.map((s) => `${s.file.path}:${s.line} (gap, indent ${s.indent.length}; ${s.evidence.notes[0] ?? ''})`).join('; ')}` });
-  return { files: localized.files, functions: localized.functions, sites: [...goalSites.ordered, ...extra], requests: localized.requests + goalSites.requests };
+  let sites: Site[] = goalSites.ordered;
+  const describe = (s: Site): string => `${s.file.path}:${s.line} (${s.kind === 'insert' ? `gap, indent ${s.indent.length}` : `replace${s.endLine === undefined ? '' : `, span L${s.line}-${s.endLine}`}`}; ${s.evidence.notes.find((n) => n.startsWith('introspection:') || n.startsWith('history:')) ?? s.evidence.notes[0] ?? ''})`;
+  const introspected = facts?.introspected ?? null;
+  if (introspected !== null) {
+    const m = mergeIntrospectionSites(sites, introspected, files, localised);
+    sites = m.sites;
+    if (m.added.length + m.merged.length > 0) ctx.emit({ type: 'synth', step: ctx.step, phase: 'localize', detail: `${goal.id}: ${m.added.length} introspection site${m.added.length === 1 ? '' : 's'} after the ${goalSites.ordered.length} located${m.merged.length === 0 ? '' : `, ${m.merged.length} merged onto located site${m.merged.length === 1 ? '' : 's'}`}: ${[...m.added, ...m.merged].map(describe).join('; ')}` });
+  }
+  // the history reversals' own sites (≤ 2, after those): history/source.ts emits a reversal only at the site it
+  // is located at, so a reversal elsewhere than the located sites is reachable through these alone
+  const history = facts?.history ?? null;
+  if (history !== null) {
+    const hs = historySites(history, files, localised, sites);
+    if (hs.length > 0) {
+      ctx.emit({ type: 'synth', step: ctx.step, phase: 'localize', detail: `${goal.id}: ${hs.length} history site${hs.length === 1 ? '' : 's'} after the ${sites.length} located: ${hs.map(describe).join('; ')}` });
+      sites = [...sites, ...hs];
+    }
+  }
+  return { files: localized.files, functions: localized.functions, sites, requests: localized.requests + goalSites.requests };
 }
 
 /** SKETCH phase (§3 row 5): one Q12 + Q7 request, keep K, slot-fill (Q13), concrete candidates. */
@@ -162,27 +179,53 @@ const beamSource: JevSource = {
   },
 };
 
+/** History's share of a site's donor seed: at most this many reversals … */
+export const HISTORY_SEED_MAX = 16;
+/** … and at most this fraction of `opts.cap`, whichever is smaller (254 → 16; 60 → 15; 1 → 0). */
+export const HISTORY_SEED_SHARE = 0.25;
+
+/** The number of history reversals a donor seed of cap `cap` may carry. */
+export function historySeedCap(cap: number): number {
+  return Math.max(0, Math.min(HISTORY_SEED_MAX, Math.floor(cap * HISTORY_SEED_SHARE)));
+}
+
+/**
+ * The donor seed of `site` with its history reversals spliced in AFTER the donors' top half — ≤
+ * `historySeedCap(cap)` of them, only those at the site (`sameSpan`; the history source emits no
+ * others, this is the enumerator's own check) — the union cut at `cap`. Exactly the donors when
+ * there is no reversal: history never displaces a donor it does not sit beside (§21.5 measured
+ * reversals going FIRST and the union cut at the cap; §18 counted 10 noise reversals on one site).
+ */
+export function seedWithHistory(donors: readonly Candidate[], reversals: readonly Candidate[], site: Site, cap: number): Candidate[] {
+  const limit = Math.max(0, cap);
+  const own = reversals.filter((c) => sameSpan(c.site, site)).slice(0, historySeedCap(cap));
+  if (own.length === 0) return donors.slice(0, limit);
+  const half = Math.ceil(donors.length / 2);
+  return [...donors.slice(0, half), ...own, ...donors.slice(half)].slice(0, limit);
+}
+
 /**
  * The sub-goal search's collaborators with the real modules. The template and donor seeds are
  * wrapped so they enumerate with the run's harvested facts (`enrichEnumerateOptions`): the
  * introspection-fed productions of templates/introspect.ts fire only with `opts.introspected`, and
  * the history source rides with the donor seed (subgoal.ts orderSources has no slot of its own for
- * design §3's last row and `SubGoalDeps.seeds` is a fixed record): its few reversals go first, then
- * the donors, capped at `opts.cap`; both keep their own `source` name for the trace and the queue's
- * prior. Composite pairs over the wrapped seeds, so pairs are pairs of what SEEDS ran.
+ * design §3's last row and `SubGoalDeps.seeds` is a fixed record): its reversals AT the site follow
+ * the donors' top half (`seedWithHistory`, share-capped), the union cut at `opts.cap`; both keep
+ * their own `source` name for the trace and the queue's prior. Composite pairs over the wrapped
+ * seeds, so pairs are pairs of what SEEDS ran. `over` replaces a source (tests).
  */
-export function createSubGoalDeps(): SubGoalDeps {
+export function createSubGoalDeps(over: Partial<{ history: CandidateSource; donor: CandidateSource }> = {}): SubGoalDeps {
   const mutation = createMutationSource();
   const plainTemplate = createTemplateSource();
-  const plainDonor = createDonorSource();
-  const history = createHistorySource();
+  const plainDonor = over.donor ?? createDonorSource();
+  const history = over.history ?? createHistorySource();
   const template: CandidateSource = { name: 'template', enumerate: (site, opts) => plainTemplate.enumerate(site, enrichEnumerateOptions(site, opts)) };
   const donor: CandidateSource = {
     name: 'donor',
     enumerate: (site, opts) => {
       const o = enrichEnumerateOptions(site, opts);
-      const reversals = history.enumerate(site, o);
-      return [...reversals, ...plainDonor.enumerate(site, o)].slice(0, Math.max(0, opts.cap));
+      const donors = plainDonor.enumerate(site, o);
+      return seedWithHistory(donors, o.history === undefined ? [] : history.enumerate(site, o), site, opts.cap);
     },
   };
   const ranker = createRanker({ stage: 'propose' });

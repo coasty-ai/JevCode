@@ -2,19 +2,24 @@
  * Unit tests of src/synth/history: the issue-reference and identifier ranking, the diff parser
  * (change runs with context), the harvest against a real temporary git repository through a
  * sandbox-shaped `run` (bounded commands), and the source's reversals: a changed run comes back
- * as a replace with deletes, an addition as a deletion, a deletion as an insert after its
- * context, ranked by distance to the site and applied cleanly by verify/apply.ts.
+ * as a statement-level replace, an addition as a deletion, a deletion as an insert after its
+ * context — each emitted ONLY at the site it is located at (`sameSpan`, the site object being the
+ * enumerated one) and applied cleanly by verify/apply.ts; reversals elsewhere are reached through
+ * search/sites.ts `historySites` (tested there). The rung-3 reproduction: a reversal located at
+ * L1679 never enters the seed of L1686 (jev-only-rungs-1-2.md §21.5 / §24).
  */
 import { execFileSync, spawnSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { HISTORY_MAX_COMMANDS, HISTORY_WINDOW_LINES, createHistorySource, enumerateHistory, harvestHistory, issueRefs, locateLines, parseShowDiff, parseShowOutput, rankIdentifiers } from '../../../../src/synth/history/index.js';
+import { HISTORY_MAX_COMMANDS, HISTORY_SITE_NOTE, HISTORY_WINDOW_LINES, createHistorySource, enumerateHistory, harvestHistory, issueRefs, locateLines, locateReversals, parseShowDiff, parseShowOutput, rankIdentifiers, sameSpan, spanEndOf } from '../../../../src/synth/history/index.js';
 import type { HistoryFacts } from '../../../../src/synth/history/index.js';
 import { analyse, blockAt, indentOf, scopeAt } from '../../../../src/synth/py/index.js';
+import { replaceSiteAt } from '../../../../src/synth/search/sites.js';
 import type { EnumerateOptions, Site, SourceFile } from '../../../../src/synth/types.js';
 import { applyCandidate } from '../../../../src/synth/verify/apply.js';
+import { compilerFixture } from './fixtures.js';
 import type { VerifyRunFn } from '../../../../src/synth/verify/types.js';
 
 function sourceFromText(path: string, src: string): SourceFile {
@@ -25,6 +30,18 @@ function replaceSite(file: SourceFile, line: number): Site {
   const currentLine = file.mod.lines[line - 1] ?? '';
   const b = blockAt(file.mod, line);
   return { file, line, kind: 'replace', currentLine, indent: indentOf(currentLine), block: b === undefined ? null : { name: b.name, startLine: b.startLine, endLine: b.endLine }, scope: scopeAt(file.mod, line), evidence: { notes: ['test'] } };
+}
+
+function insertSite(file: SourceFile, line: number, indent: string): Site {
+  const b = blockAt(file.mod, Math.max(1, line - 1));
+  return { file, line, kind: 'insert', currentLine: '', indent, block: b === undefined ? null : { name: b.name, startLine: b.startLine, endLine: b.endLine }, scope: scopeAt(file.mod, Math.max(1, line - 1)), evidence: { notes: ['test'] } };
+}
+
+/** The statement-level site search/sites.ts builds at the first line of a multi-line statement (what the Jev-ranked list holds there). */
+function statementSite(file: SourceFile, line: number): Site {
+  const s = replaceSiteAt(file, line, { notes: ['test'] });
+  if (s === null) throw new Error(`no replace site at ${file.path}:${line}`);
+  return s;
 }
 
 function options(over: Partial<EnumerateOptions> = {}): EnumerateOptions {
@@ -160,31 +177,39 @@ describe.skipIf(!gitAvailable)('harvest and source on a real repository', () => 
     expect(unknown.commands).toBe(2);
   });
 
-  it('the source reverses the changed run at its current lines (replace + deletes), the addition as a deletion, ranked by distance, applied cleanly', async () => {
+  it('the source reverses the changed run at the statement-level site of its current lines, the addition as a deletion at its own line, each only at its own site, applied cleanly', async () => {
     const facts: HistoryFacts = await harvestHistory(run, { workspace: repo, files: ['pkg/fields.py'], task: 'reverting #4242', identifiers: ['model'] });
     const file = sourceFromText('pkg/fields.py', V3);
-    const site = replaceSite(file, 7);
+    // every reversal of the file at its own location: the hash tuple L7-10 (a span) and the added `self.model = None` L4
+    const located = locateReversals(file, facts);
+    expect(located.map((r) => [r.candidate.site.line, r.candidate.site.kind, spanEndOf(r.candidate.site), r.candidate.op])).toEqual([[4, 'replace', 4, 'history_revert_addition'], [7, 'replace', 10, 'history_revert_change']]);
+    expect(located.every((r) => r.candidate.site.evidence.notes[0]?.startsWith(HISTORY_SITE_NOTE) && r.candidate.site.evidence.notes[1] === r.candidate.provenance)).toBe(true);
+    // at the statement site L7-10 (what buildGoalSites holds at L7): the change comes back, the candidate AT that site object, no extra edits (apply deletes the span)
+    const site = statementSite(file, 7);
+    expect(site.endLine).toBe(10);
     const cands = enumerateHistory(site, options({ history: facts }));
-    expect(cands.length).toBeGreaterThanOrEqual(2);
-    expect(cands.every((c) => c.source === 'history')).toBe(true);
+    expect(cands.map((c) => c.op)).toEqual(['history_revert_change']);
     const revert = cands[0]!;
-    expect(revert.op).toBe('history_revert_change');
-    expect(revert.site.line).toBe(7);
+    expect(revert.site).toBe(site);
+    expect(revert.source).toBe('history');
     expect(revert.text).toBe('        return hash(self.counter)');
-    expect(revert.extraEdits).toEqual([8, 9, 10].map((line) => ({ path: 'pkg/fields.py', line, kind: 'delete' })));
+    expect(revert.extraEdits).toBeUndefined();
     expect(revert.provenance).toContain('#4242');
     expect(applyCandidate(revert).files[0]!.after).toBe(V1.replace('        self.counter = n\n', '        self.counter = n\n        self.model = None\n'));
-    const addition = cands.find((c) => c.op === 'history_revert_addition');
-    expect(addition).toBeDefined();
-    expect(addition!.site.line).toBe(4);
-    expect(addition!.text).toBe('');
-    expect(applyCandidate(addition!).files[0]!.after).toBe(V2.replace('        self.counter = n\n', '        self.counter = n\n\n'));
+    // at the one-line site L7 (span 7..7 ≠ 7..10) and at L8 nothing: the reversal is not at those sites
+    expect(enumerateHistory(replaceSite(file, 7), options({ history: facts }))).toEqual([]);
+    expect(enumerateHistory(replaceSite(file, 8), options({ history: facts }))).toEqual([]);
+    // the addition's reversal only at L4, as a deletion of that line
+    const at4 = enumerateHistory(replaceSite(file, 4), options({ history: facts }));
+    expect(at4.map((c) => c.op)).toEqual(['history_revert_addition']);
+    expect(at4[0]!.text).toBe('');
+    expect(applyCandidate(at4[0]!).files[0]!.after).toBe(V2.replace('        self.counter = n\n', '        self.counter = n\n\n'));
     // the same set through the CandidateSource, and nothing without facts
     expect(createHistorySource().enumerate(site, options({ history: facts })).map((c) => c.id)).toEqual(cands.map((c) => c.id));
     expect(createHistorySource().enumerate(site, options())).toEqual([]);
   });
 
-  it('a run far from the site and outside its block is not offered; a pure deletion comes back as an insert after its context', () => {
+  it('a pure deletion comes back as an insert at the gap after its context, only there; a far change is offered at its own line whatever the distance, and never at another site', () => {
     const pad = Array.from({ length: HISTORY_WINDOW_LINES + 20 }, (_, i) => `x${i} = ${i}`).join('\n');
     const src = `${pad}\ndef f():\n    a = 1\n    return a\n`;
     const file = sourceFromText('m.py', src);
@@ -199,15 +224,38 @@ describe.skipIf(!gitAvailable)('harvest and source on a real repository', () => 
       ],
     };
     const lastLine = file.mod.lines.length;
-    const site = replaceSite(file, lastLine);
-    const cands = enumerateHistory(site, options({ history: facts }));
+    // the deletion's reversal is an insert before `return a`: not at the replace site of that line, only at the gap
+    expect(enumerateHistory(replaceSite(file, lastLine), options({ history: facts }))).toEqual([]);
+    const gap = insertSite(file, lastLine, '    ');
+    const cands = enumerateHistory(gap, options({ history: facts }));
     expect(cands.map((c) => c.op)).toEqual(['history_revert_deletion']);
     const ins = cands[0]!;
-    expect(ins.site.kind).toBe('insert');
-    expect(ins.site.line).toBe(lastLine);
+    expect(ins.site).toBe(gap);
     expect(applyCandidate(ins).files[0]!.after).toBe(`${pad}\ndef f():\n    a = 1\n    if a is None:\n        return 0\n    return a\n`);
-    // at the top of the file the far change is near and offered
-    expect(enumerateHistory(replaceSite(file, 1), options({ history: facts })).map((c) => c.op)).toEqual(['history_revert_change']);
+    // the far change: at its own line, HISTORY_WINDOW_LINES away from everything else; nowhere else
+    expect(enumerateHistory(replaceSite(file, 1), options({ history: facts })).map((c) => [c.op, c.text])).toEqual([['history_revert_change', 'x0 = 100']]);
+    expect(enumerateHistory(replaceSite(file, 2), options({ history: facts }))).toEqual([]);
+    // sameSpan: file, line, kind and span end; an insert's indent is not part of the identity
+    expect(sameSpan(gap, insertSite(file, lastLine, ''))).toBe(true);
+    expect(sameSpan(gap, replaceSite(file, lastLine))).toBe(false);
+    expect(sameSpan(replaceSite(file, 1), { ...replaceSite(file, 1), endLine: 2 })).toBe(false);
+  });
+
+  it('rung-3 reproduction (§21.5): a reversal located at L1679 never enters the seed of the site L1686 in the same function; it is listed among the located reversals at its own site', () => {
+    const { file, facts, siteAt } = compilerFixture();
+    const site = siteAt(1686);
+    expect(site.block?.name).toBe('as_sql');
+    const located = locateReversals(file, facts);
+    expect(located.map((r) => `${r.candidate.site.file.path}:${r.candidate.site.line}:${r.candidate.site.kind}`)).toEqual(['django/db/models/sql/compiler.py:1679:replace']);
+    expect(located[0]!.candidate.site.block?.name).toBe('as_sql');
+    // the site being enumerated gets none of it (before the fix: one foreign-site candidate, and the ranker threw)
+    const seed = enumerateHistory(site, options({ history: facts, corpus: new Map([[file.path, file]]) }));
+    expect(seed).toEqual([]);
+    // at its own site the reversal is emitted, with that site object
+    const own = siteAt(1679);
+    const there = enumerateHistory(own, options({ history: facts }));
+    expect(there.map((c) => [c.site === own, c.text.trim(), c.op])).toEqual([[true, 'combinator = getattr(self.query, "combinator", None)', 'history_revert_change']]);
+    expect(there.every((c) => sameSpan(c.site, own))).toBe(true);
   });
 
   it('reading the file back confirms the fixture repository is what the harvest saw', () => {

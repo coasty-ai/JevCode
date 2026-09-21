@@ -304,7 +304,7 @@ export function createRanker(options: RankerOptions = {}): JevRanker {
     let excludedUnchanged = 0;
     let duplicatesFolded = 0;
     for (const c of candidates) {
-      if (!sameSite(c.site, site)) throw new RangeError(`ranker: candidate "${c.id}" is at ${c.site.file.path}:${c.site.line} (${c.site.kind}), not at the site being ranked (${site.file.path}:${site.line}, ${site.kind})`);
+      if (!sameSite(c.site, site)) throw new RangeError(`ranker: ${c.source} candidate "${c.id}"${c.provenance === undefined ? '' : ` (${c.provenance})`} is at ${c.site.file.path}:${c.site.line} (${c.site.kind}), not at the site being ranked (${site.file.path}:${site.line}, ${site.kind}); the ${c.source} source must emit a candidate only at the site it enumerates`);
       if (isUnchanged(c, site)) {
         excludedUnchanged++;
         continue;
@@ -539,7 +539,7 @@ export async function shuffleRerank(shortlist: readonly RankedCandidateDetail[],
   if (shortlist.length < 2) return { ranked: [...shortlist], reaskedProbability: {}, requests: 0 };
   const first = shortlist[0]!;
   const site = first.candidate.site;
-  for (const r of shortlist) if (!sameSite(r.candidate.site, site)) throw new RangeError(`shuffleRerank: candidate "${r.candidate.id}" is not at the shortlist's site`);
+  for (const r of shortlist) if (!sameSite(r.candidate.site, site)) throw new RangeError(`shuffleRerank: ${r.candidate.source} candidate "${r.candidate.id}" is at ${r.candidate.site.file.path}:${r.candidate.site.line} (${r.candidate.site.kind}), not at the shortlist's site (${site.file.path}:${site.line}, ${site.kind})`);
   const seed = options.seed ?? fnv1a(shortlist.map((r) => r.candidate.id).join('\u0000'));
   const order = shuffledOrder(shortlist.length, seed);
   const shuffled = order.map((i) => shortlist[i]!);

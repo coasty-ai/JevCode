@@ -2,18 +2,24 @@
  * The wiring of the harvested facts into the real sources (src/synth/index.ts): the run facts
  * registered by the controller reach the template and donor seeds as enriched EnumerateOptions
  * (`introspected`, `history`, `extraNames`), the verification queue's vocabulary accepts the
- * names the introspection-fed productions write, the history reversals ride first with the donor
- * seed and carry their provenance, and nothing changes for a run without facts.
+ * names the introspection-fed productions write, the history reversals AT the site ride with the
+ * donor seed after the donors' top half (share-capped, `seedWithHistory`) and carry their
+ * provenance, a reversal located at another site never reaches the seed nor the ranker (the
+ * rung-3 defect of jev-only-rungs-1-2.md §21.5), and nothing changes for a run without facts.
  */
 import { describe, expect, it } from 'vitest';
 import type { HistoryFacts } from '../../../src/synth/history/index.js';
-import { createQueue, createSubGoalDeps, enrichEnumerateOptions } from '../../../src/synth/index.js';
+import { HISTORY_SEED_MAX, createQueue, createSubGoalDeps, enrichEnumerateOptions, historySeedCap, seedWithHistory } from '../../../src/synth/index.js';
+import { sameSpan } from '../../../src/synth/history/index.js';
+import { replaceSiteAt } from '../../../src/synth/search/sites.js';
 import { clearRunFacts, emptyIntrospection, setRunFacts } from '../../../src/synth/introspect/index.js';
 import type { IntrospectedNames } from '../../../src/synth/introspect/index.js';
 import { analyse, blockAt, scopeAt } from '../../../src/synth/py/structure.js';
 import { enumerateOptions } from '../../../src/synth/search/subgoal.js';
 import type { Base, VerifyJob } from '../../../src/synth/search/types.js';
-import type { Candidate, Site, SourceFile } from '../../../src/synth/types.js';
+import type { Candidate, CandidateSource, Site, SourceFile } from '../../../src/synth/types.js';
+import { COMPILER_PATH, HISTORY_LINE, RANKED_LINE, compilerFixture } from './history/fixtures.js';
+import { scriptedAnswers } from './rank/helpers.js';
 import { fakeCtx, fakeGoal, fakeMemory, summary } from './search/controller-fakes.js';
 
 function sf(path: string, src: string): SourceFile {
@@ -87,31 +93,87 @@ describe('the wired seeds and the queue read the run facts of the run being sear
     expect(bare.addAll(aliases.map((c) => jobOn(c, base))).queued).toHaveLength(0);
   });
 
-  it('donor: the history reversals come first with their provenance, then the donors, within opts.cap; a run without history facts sees the plain donors', () => {
+  it('donor: the history reversal AT the statement site rides after the donors\' top half with its provenance and the site object itself; a run without history facts sees exactly the plain donors', () => {
     const ctx = fakeCtx({ runId: 'wiring-history' });
     const mem = fakeMemory([hashed, printer], baseline);
     const goal = fakeGoal({ suspectedFiles: ['m.py'] });
     const base = mem.bases[0]!;
-    const site = siteAt(hashed, 2);
+    // buildGoalSites holds the statement-level site at the first line of `return hash((...))` (L2-5)
+    const site = replaceSiteAt(hashed, 2, { notes: ['test'] });
+    if (site === null) throw new Error('no site');
+    expect(site.endLine).toBe(5);
     const deps = createSubGoalDeps();
-    setRunFacts(ctx.runId, { introspected: null, history });
-    createQueue(ctx, mem, goal);
-    const cands = deps.seeds.donor.enumerate(site, enumerateOptions(base, goal, ctx.task));
-    expect(cands.length).toBeGreaterThan(0);
-    const first = cands[0]!;
-    expect(first.source).toBe('history');
-    expect(first.op).toBe('history_revert_change');
-    expect(first.text).toBe('    return hash(self.a)');
-    expect(first.extraEdits).toEqual([3, 4, 5].map((line) => ({ path: 'm.py', line, kind: 'delete' })));
-    expect(first.provenance).toBe('reverse of a1b2c3d4e5 "Fixed #31750 -- hash the model too" (ticket:#31750)');
-    expect(cands.slice(1).every((c) => c.source === 'donor')).toBe(true);
-    // the cap bounds the union
-    expect(deps.seeds.donor.enumerate(site, { ...enumerateOptions(base, goal, ctx.task), cap: 1 })).toHaveLength(1);
-    // no facts: no reversal, the plain donor set
+    // no facts: the plain donor set
     clearRunFacts(ctx.runId);
     createQueue(ctx, mem, goal);
     const plain = deps.seeds.donor.enumerate(site, enumerateOptions(base, goal, ctx.task));
     expect(plain.every((c) => c.source === 'donor')).toBe(true);
-    expect(plain.map((c) => c.id)).toEqual(cands.slice(1).map((c) => c.id));
+    // with the facts: the same donors, the reversal spliced in after their top half
+    setRunFacts(ctx.runId, { introspected: null, history });
+    createQueue(ctx, mem, goal);
+    const cands = deps.seeds.donor.enumerate(site, enumerateOptions(base, goal, ctx.task));
+    const hist = cands.filter((c) => c.source === 'history');
+    expect(hist).toHaveLength(1);
+    const rev = hist[0]!;
+    expect(rev.op).toBe('history_revert_change');
+    expect(rev.text).toBe('    return hash(self.a)');
+    expect(rev.site).toBe(site);
+    expect(rev.extraEdits).toBeUndefined();
+    expect(rev.provenance).toBe('reverse of a1b2c3d4e5 "Fixed #31750 -- hash the model too" (ticket:#31750)');
+    expect(cands.indexOf(rev)).toBe(Math.ceil(plain.length / 2));
+    expect(cands.filter((c) => c.source === 'donor').map((c) => c.id)).toEqual(plain.map((c) => c.id));
+    // at the one-line site L2 the reversal (span L2-5) is not at the site: donors only
+    const oneLine = siteAt(hashed, 2);
+    expect(deps.seeds.donor.enumerate(oneLine, enumerateOptions(base, goal, ctx.task)).every((c) => c.source === 'donor')).toBe(true);
+    clearRunFacts(ctx.runId);
+  });
+
+  it('seedWithHistory: history\'s share is min(16, 25 % of the cap), placed after the donors\' top half, never displacing the top half, reversals at other sites dropped; the donors alone without reversals', () => {
+    const file = sf('s.py', 'def f(x):\n    return x\n');
+    const site = siteAt(file, 2);
+    const elsewhere = siteAt(file, 1);
+    const donors: Candidate[] = Array.from({ length: 10 }, (_, i) => ({ id: `d${i}`, site, text: `    return x + ${i}`, source: 'donor', op: 'donor_line' }));
+    const reversals: Candidate[] = [...Array.from({ length: 3 }, (_, i) => ({ id: `h${i}`, site, text: `    return x - ${i}`, source: 'history' as const, op: 'history_revert_change' })), { id: 'foreign', site: elsewhere, text: 'def g(x):', source: 'history', op: 'history_revert_change' }];
+    expect([historySeedCap(254), historySeedCap(60), historySeedCap(8), historySeedCap(1), historySeedCap(0)]).toEqual([HISTORY_SEED_MAX, 15, 2, 0, 0]);
+    expect(seedWithHistory(donors, reversals, site, 254).map((c) => c.id)).toEqual(['d0', 'd1', 'd2', 'd3', 'd4', 'h0', 'h1', 'h2', 'd5', 'd6', 'd7', 'd8', 'd9']);
+    // the cap cuts the tail donors, the top half stays
+    expect(seedWithHistory(donors, reversals, site, 12).map((c) => c.id)).toEqual(['d0', 'd1', 'd2', 'd3', 'd4', 'h0', 'h1', 'h2', 'd5', 'd6', 'd7', 'd8']);
+    // a small cap shrinks history's share before the donors'
+    expect(seedWithHistory(donors, reversals, site, 8).map((c) => c.id)).toEqual(['d0', 'd1', 'd2', 'd3', 'd4', 'h0', 'h1', 'd5']);
+    expect(seedWithHistory(donors, reversals, site, 1).map((c) => c.id)).toEqual(['d0']);
+    // no reversal at the site: the donors, unchanged in count and order
+    expect(seedWithHistory(donors, [reversals[3]!], site, 254)).toEqual(donors);
+    expect(seedWithHistory(donors, [], site, 254)).toEqual(donors);
+    expect(seedWithHistory([], reversals, site, 254).map((c) => c.id)).toEqual(['h0', 'h1', 'h2']);
+  });
+
+  it('rung-3 reproduction (§21.5): with a reversal located at L1679 in the run facts, the donor seed of L1686 holds no history candidate, every candidate is at the site, the ranker accepts the set; a rogue history source emitting a foreign-site candidate is filtered by the wrapper', async () => {
+    const { file, facts, siteAt: at } = compilerFixture();
+    const ctx = fakeCtx({ runId: 'wiring-1679', ask: (questions, state) => scriptedAnswers(state, questions) });
+    const mem = fakeMemory([file], baseline);
+    const goal = fakeGoal({ suspectedFiles: [COMPILER_PATH] });
+    const base = mem.bases[0]!;
+    const site = at(RANKED_LINE);
+    setRunFacts(ctx.runId, { introspected: null, history: facts });
+    const deps = createSubGoalDeps();
+    createQueue(ctx, mem, goal);
+    const opts = enumerateOptions(base, goal, ctx.task);
+    const seed = deps.seeds.donor.enumerate(site, opts);
+    expect(seed.some((c) => c.source === 'history')).toBe(false);
+    expect(seed.every((c) => sameSpan(c.site, site))).toBe(true);
+    // the reversal is at its own site
+    const own = deps.seeds.donor.enumerate(at(HISTORY_LINE), opts).filter((c) => c.source === 'history');
+    expect(own.map((c) => [c.site.line, c.text.trim()])).toEqual([[HISTORY_LINE, 'combinator = getattr(self.query, "combinator", None)']]);
+    // what the seeds hand the ranker ranks without the invariant firing
+    const cands = [...deps.seeds.mutation.enumerate(site, opts), ...seed].slice(0, 12);
+    expect(cands.length).toBeGreaterThan(0);
+    const ranked = await deps.rank(ctx, mem, cands, site, goal);
+    expect(ranked.ranked.every((r) => sameSpan(r.candidate.site, site))).toBe(true);
+    // a source that misbehaves (the old history source did) cannot get a foreign-site candidate through the donor wrapper
+    const rogue: CandidateSource = { name: 'history', enumerate: () => [{ id: 'rogue', site: at(HISTORY_LINE), text: '            combinator = None', source: 'history', op: 'history_revert_change', provenance: 'reverse of 0c763317aa' }] };
+    const withRogue = createSubGoalDeps({ history: rogue }).seeds.donor.enumerate(site, opts);
+    expect(withRogue.some((c) => c.id === 'rogue')).toBe(false);
+    expect(withRogue.map((c) => c.id)).toEqual(seed.map((c) => c.id));
+    clearRunFacts(ctx.runId);
   });
 });

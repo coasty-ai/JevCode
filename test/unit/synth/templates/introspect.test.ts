@@ -2,9 +2,12 @@
  * The two introspection-fed template productions (src/synth/templates/introspect.ts): inert
  * without `EnumerateOptions.introspected` (identical candidate sets on QuixBugs sites), the
  * attribute-predicate guard on a synthetic function (subject from the raising line, falsy
- * predicates first, sibling return bodies, `_before` form at a replace site), the MRO alias at a
- * class-body gap and appended after a method's last line, the caps, `familyOf`, and the leakage
- * guard: neither the module texts nor the examples quote a benchmark gold line.
+ * predicates first, sibling return bodies, `_before` form at a replace site) and its target — the
+ * gap before the statement the operand's frame names, at that statement's indent, never the other
+ * gaps of the file (jev-only-rungs-1-2.md §21.5 / §24, sympy-17139) — the MRO alias at a class-body
+ * gap, at a located gap MARKED as the class-body gap (§24, sympy-15345) and appended after a
+ * method's last line, the caps, `familyOf`, and the leakage guard: neither the module texts nor
+ * the examples quote a benchmark gold line.
  */
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -12,6 +15,9 @@ import { describe, expect, it } from 'vitest';
 import { emptyIntrospection } from '../../../../src/synth/introspect/index.js';
 import type { IntrospectOperand, IntrospectedNames } from '../../../../src/synth/introspect/index.js';
 import { INTROSPECT_ALIAS_DRAFTS_MAX, INTROSPECT_EXAMPLES, INTROSPECT_GUARD_DRAFTS_MAX, TEMPLATE_FAMILIES, createTemplateSource, familyOf } from '../../../../src/synth/templates/index.js';
+import { CLASS_BODY_GAP_NOTE, framePathMatches, guardTargetLine, isClassBodyGapSite } from '../../../../src/synth/templates/introspect.js';
+import type { Site } from '../../../../src/synth/types.js';
+import { applyCandidate as applyReal } from '../../../../src/synth/verify/apply.js';
 import { benchmarkCorpus, leaks } from '../sketch/no-benchmark-leakage.test.js';
 import { QUIXBUGS, REPO, applyCandidate, compileFailures, insertSite, norm, options, replaceSite, sourceFile, sourceFromText } from './helpers.js';
 
@@ -82,6 +88,43 @@ describe('attribute_predicate_guard', () => {
     const moduleFile = sourceFromText('m.py', 'x = compute(rv)\nprint(x)\n');
     expect(source.enumerate(replaceSite(moduleFile, 1), options({ introspected })).filter((c) => familyOf(c.op) === 'introspect')).toEqual([]);
   });
+  it('targets the raising statement: at the gap before it the guard is written at that line\'s indent whatever the site\'s; nothing at the gaps inside the raising `if` or elsewhere in the file; only the `_before` form at the line itself', () => {
+    const pick = (site: Site): ReturnType<typeof source.enumerate> => source.enumerate(site, options({ introspected })).filter((c) => familyOf(c.op) === 'introspect');
+    // the gap inside the body of `if (item.exp < 0) == True:` — dead code for a guard of item.exp — gets nothing from the frame-bearing operands
+    expect(pick(insertSite(file, 6, 12))).toEqual([]);
+    // a gap before the loop (L2): item is visible there, the frame says L5, so nothing
+    expect(pick(insertSite(file, 2, 4))).toEqual([]);
+    // a gap at the raising line but at another indent (a colliding slot the introspection site was merged onto): written at the statement's indent (8)
+    const off = pick(insertSite(file, 5, 12));
+    expect(off.length).toBeGreaterThan(0);
+    expect(off.every((c) => c.text.startsWith('        if ') && !c.text.startsWith('         '))).toBe(true);
+    expect(norm(off[0]!.text)).toBe(norm('if not item.exp.is_real:\n    return rv'));
+    // the production apply inserts the guard verbatim at the statement's indent (the test helper would re-indent to the site's)
+    expect(compileFailures(off.slice(0, 6).map((c) => ({ id: c.id, src: applyReal(c).files[0]!.after })))).toEqual([]);
+    expect(applyReal(off[0]!).files[0]!.after).toContain('            return rv\n        if not item.exp.is_real:\n            return rv\n        if (item.exp < 0) == True:');
+    // at the raising line itself only `_before`: inside the header's body the guard would be dead
+    const atLine = pick(replaceSite(file, 5));
+    expect(atLine.length).toBeGreaterThan(0);
+    expect(atLine.every((c) => c.op === 'attribute_predicate_guard_before')).toBe(true);
+    // a continuation line of the raising statement is not the gap before it
+    expect(guardTargetLine({ mod: file.mod, site: insertSite(file, 5, 8) }, { path: 't.py', line: 5, fn: 'transform', code: null })).toBe(5);
+    expect(guardTargetLine({ mod: file.mod, site: insertSite(file, 5, 8) }, { path: 'pkg/other.py', line: 5, fn: null, code: null })).toBeNull();
+    expect(guardTargetLine({ mod: file.mod, site: insertSite(file, 5, 8) }, null)).toBeNull();
+  });
+
+  it('falls back to every gap where the root is visible only when the operand has no frame in this file (none, or another file); an absolute frame path still targets', () => {
+    const only = (n: IntrospectedNames, site: Site): string[] => source.enumerate(site, options({ introspected: n })).filter((c) => familyOf(c.op) === 'introspect').map((c) => norm(c.text));
+    const noFrame = names({ operands: [operand({ expr: 'rv', typeName: 'R', predicates: ['is_ok'], falsyPredicates: ['is_ok'], frame: null })] });
+    expect(only(noFrame, insertSite(file, 6, 12))).toContain(norm('if not rv.is_ok:\n    return rv'));
+    const otherFile = names({ operands: [operand({ expr: 'rv', typeName: 'R', predicates: ['is_ok'], falsyPredicates: ['is_ok'], frame: { path: 'pkg/other.py', line: 3, fn: 'g', code: null } })] });
+    expect(only(otherFile, insertSite(file, 6, 12))).toContain(norm('if not rv.is_ok:\n    return rv'));
+    const abs = names({ operands: [operand({ expr: 'rv', typeName: 'R', predicates: ['is_ok'], falsyPredicates: ['is_ok'], frame: { path: '/work/t.py', line: 5, fn: 'transform', code: null } })] });
+    expect(only(abs, insertSite(file, 6, 12))).toEqual([]);
+    expect([...only(abs, insertSite(file, 5, 8))].sort()).toEqual([norm('if not rv.is_ok:\n    return rv'), norm('if not rv.is_ok:\n    return limit'), norm('if not rv.is_ok:\n    return None'), norm('if not rv.is_ok:\n    continue')].sort());
+    expect(framePathMatches('/work/t.py', 't.py')).toBe(true);
+    expect(framePathMatches('./t.py', 't.py')).toBe(true);
+    expect(framePathMatches('/work/not.py', 't.py')).toBe(false);
+  });
 });
 
 describe('mro_method_alias', () => {
@@ -108,6 +151,17 @@ describe('mro_method_alias', () => {
     expect(cands[0]!.text).toBe('        return "bar"\n    _print_Baz = _print_Bar');
     expect(compileFailures(cands.map((c) => ({ id: c.id, src: applyCandidate(c) })))).toEqual([]);
     expect(source.enumerate(replaceSite(file, 2), options({ introspected })).filter((c) => c.op.startsWith('mro_method_alias'))).toEqual([]);
+  });
+
+  it('at a located gap MARKED as the class-body gap (search/sites.ts merged the introspection site onto it) the alias is written at the class indent whatever the gap\'s own indent; unmarked, the same gap is a method-body gap', () => {
+    const marked: Site = { ...insertSite(file, 7, 8), evidence: { notes: ['insert after anchor L6', `${CLASS_BODY_GAP_NOTE} Printer after _print_Bar (L5-6)`] } };
+    expect(isClassBodyGapSite(marked)).toBe(true);
+    const cands = source.enumerate(marked, options({ introspected })).filter((c) => familyOf(c.op) === 'introspect');
+    expect(cands.map((c) => c.text)).toEqual(['    _print_Baz = _print_Bar', '    _print_Qux = _print_Bar', '    _print_Baz = _print_Foo', '    _print_Qux = _print_Foo']);
+    expect(cands.every((c) => c.op === 'mro_method_alias')).toBe(true);
+    expect(compileFailures(cands.map((c) => ({ id: c.id, src: applyReal(c).files[0]!.after })))).toEqual([]);
+    expect(applyReal(cands[0]!).files[0]!.after).toContain('        return "bar"\n    _print_Baz = _print_Bar\n');
+    expect(source.enumerate(insertSite(file, 7, 8), options({ introspected })).filter((c) => familyOf(c.op) === 'introspect')).toEqual([]);
   });
 
   it('caps the combinations at INTROSPECT_ALIAS_DRAFTS_MAX', () => {
