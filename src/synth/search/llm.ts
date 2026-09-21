@@ -7,15 +7,17 @@
  * the step's LLM counters (budget.ts `decideLlmN`), wraps a fired round as an `LlmRound` whose
  * arrivals are pumped into a buffer (so the grace of §6.2 can wait on the first one and the LLM
  * phase can drain the rest), asks Q17 for an order in RANK mode, and keeps one `LlmSource` per run
- * (its cache, running p50 and doubled `max_tokens` outlive a step). Default request shape per the
- * §10.2 live findings: `reasoning: {effort: 'low'}` (OpenRouter refuses `{enabled: false}` on the
- * z-ai endpoint) and estimates at the served GLM rate ($0.15/$0.50 per M).
+ * (its cache, running p50 and doubled `max_tokens` outlive a step). Request shape: the pinned
+ * generation parameters (`SearchLlmOptions.generation`, default llm/source.ts `LLM_DEFAULT_GENERATION`
+ * per the §10.2 live findings — `reasoning: {effort: 'low'}`, OpenRouter refuses `{enabled: false}`
+ * on the z-ai endpoint — the one object the bench records and the synthesizer echoes) and estimates
+ * at the served GLM rate ($0.15/$0.50 per M).
  *
  * Nothing here decides: the loop runs every candidate and the guard commits; Jev is asked once at
  * most (Q17), and only to order.
  */
 import { join } from 'node:path';
-import type { Json, SynthesisContext } from '../../core/types.js';
+import type { Json, SynthesisContext, SynthesizerGeneration } from '../../core/types.js';
 import { monotonicNow } from '../../core/time.js';
 import { attemptFromDrop, attemptLedger, attemptsHash, createAstCompileCheck, type AstCompileCheck, type CompileCheck, type LlmApplied } from '../llm/candidates.js';
 import { buildFixSystemPrompt, buildFixUserMessage, hintSchedule, listingSet, PROMPT_LIMITS_FIX, type AttemptRecord, type HintAnchor, type Listing, type ListingMember, type LocalisationLine, type OutlineView } from '../llm/prompt.js';
@@ -291,6 +293,8 @@ export interface SearchLlmOptions {
   /** the probe's p90, the first round's deadline (§4.8) */
   probeP90Ms?: number | null;
   now?: () => number;
+  /** what every sample sends (§10.1: pinned per bench arm, echoed by the synthesizer); default `LLM_DEFAULT_GENERATION` */
+  generation?: SynthesizerGeneration;
 }
 
 interface RunLlm {
@@ -400,6 +404,7 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       now,
       cache: persistedLlmCache(ctx.synthState),
       probeP90Ms: opts.probeP90Ms ?? null,
+      ...(opts.generation === undefined ? {} : { generation: opts.generation }),
     });
     const run: RunLlm = { source, spentUsd: 0, compile: null, current: null };
     holder.run = run;
@@ -473,8 +478,8 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       listings,
       tried: mem.tried,
       verdictOf: (sha) => verdicts.get(sha) ?? null,
-      // §10.2 live finding (a): OpenRouter answers 400 to `reasoning: {enabled: false}` on z-ai/glm-5.3*; low effort is the default
-      reasoning: { effort: 'low' },
+      // no `reasoning` / `maxTokens` override: the source sends the pinned generation (default `{effort: 'low'}` with the reasoning-on
+      // base — §10.2 finding (a): OpenRouter answers 400 to `{enabled: false}` on z-ai/glm-5.3*), so the echo states what the samples sent
       signal: ctx.signal,
       budget: budgetView(mem),
       attemptHash: attemptsHash(attempts),

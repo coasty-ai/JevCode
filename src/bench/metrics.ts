@@ -5,7 +5,10 @@
  * stop-reason histogram, paired intersection with modelDrift excluded.
  */
 import { percentile } from '../core/time.js';
-import type { BenchSuite, BenchTaskRecord, EngineMode } from '../core/types.js';
+import { emptyGeneratorSummary, mergeGeneratorSummaries } from './generator-records.js';
+import { wilson } from './stats.js';
+import { emptyStepsSummary, mergeStepsSummaries } from './step-records.js';
+import type { BenchCondition, BenchSuite, BenchTaskRecord } from '../core/types.js';
 import type { BenchRecord, ConditionMetrics, MeanTokensPerStep, PairedRow, SolvePoint, Stat, SuiteComparison, SuiteMetrics, TokenSeries, TokensPoint } from './types.js';
 
 export function mean(xs: readonly number[]): number | null {
@@ -82,7 +85,7 @@ function sum(xs: readonly number[]): number {
   return xs.reduce((a, b) => a + b, 0);
 }
 
-export function computeConditionMetrics(all: readonly BenchTaskRecord[], condition: EngineMode, maxSteps: number): ConditionMetrics {
+export function computeConditionMetrics(all: readonly BenchTaskRecord[], condition: BenchCondition, maxSteps: number): ConditionMetrics {
   const records = all.filter((r) => r.condition === condition);
   const evaluated = records.filter(isEvaluated);
   const passed = evaluated.filter((r) => r.pass === true);
@@ -101,6 +104,7 @@ export function computeConditionMetrics(all: readonly BenchTaskRecord[], conditi
     passed: passed.length,
     passRate: evaluated.length === 0 ? null : passed.length / evaluated.length,
     passRateText: `${passed.length}/${evaluated.length} (n=${evaluated.length})`,
+    passRateWilson: wilson(passed.length, evaluated.length),
     unevaluated: records.filter(isUnevaluated).map((r) => r.task),
     unsupported: records.filter(isUnsupported).map((r) => r.task),
     notRun: records.filter(isNotRun).map((r) => r.task),
@@ -126,15 +130,20 @@ export function computeConditionMetrics(all: readonly BenchTaskRecord[], conditi
     replans: sum(ran.map((r) => r.replans)),
     reads: { total: reads, meanPerRun: ran.length === 0 ? null : reads / ran.length },
     cost: { generator, jev, total: generator + jev },
+    costPerSolved: passed.length === 0 ? null : (generator + jev) / passed.length,
     wallMs: stat(ran.map((r) => r.wallMs)),
+    // records written before the field existed (or runs without a generator.jsonl) contribute zeros
+    generator: mergeGeneratorSummaries(ran.map((r: BenchRecord) => r.generator ?? emptyGeneratorSummary())),
+    synth: mergeStepsSummaries(ran.map((r: BenchRecord) => r.synth ?? emptyStepsSummary())),
+    stubbedJevRequests: sum(ran.map((r: BenchRecord) => r.stubbedJevRequests ?? 0)),
     modelDrift: records.filter((r) => r.modelDrift).map((r) => r.task),
     runsWithError: records.filter((r) => r.stopReason === 'error').map((r) => r.task),
   };
 }
 
 /** Tasks with an evaluated record in every condition; tasks with modelDrift in any condition are excluded. */
-export function pairedTaskIds(records: readonly BenchTaskRecord[], conditions: readonly EngineMode[]): { paired: string[]; incomplete: string[]; drift: string[] } {
-  const byTask = new Map<string, Map<EngineMode, BenchTaskRecord>>();
+export function pairedTaskIds(records: readonly BenchTaskRecord[], conditions: readonly BenchCondition[]): { paired: string[]; incomplete: string[]; drift: string[] } {
+  const byTask = new Map<string, Map<BenchCondition, BenchTaskRecord>>();
   for (const r of records) {
     let m = byTask.get(r.task);
     if (!m) {
@@ -161,7 +170,7 @@ export function pairedTaskIds(records: readonly BenchTaskRecord[], conditions: r
   return { paired: paired.sort(), incomplete: incomplete.sort(), drift: drift.sort() };
 }
 
-export function computeSuiteComparison(records: readonly BenchTaskRecord[], suite: BenchSuite, conditions: readonly EngineMode[], maxSteps: number): SuiteComparison {
+export function computeSuiteComparison(records: readonly BenchTaskRecord[], suite: BenchSuite, conditions: readonly BenchCondition[], maxSteps: number): SuiteComparison {
   const suiteRecords = records.filter((r) => r.suite === suite);
   const { paired, incomplete, drift } = pairedTaskIds(suiteRecords, conditions);
   const pairedSet = new Set(paired);
@@ -169,20 +178,21 @@ export function computeSuiteComparison(records: readonly BenchTaskRecord[], suit
   const perCondition: Record<string, ConditionMetrics> = {};
   for (const c of conditions) perCondition[c] = computeConditionMetrics(pairedRecords, c, maxSteps);
   const rows: PairedRow[] = paired.map((task) => {
-    const row: PairedRow = { task, pass: {}, steps: {}, reads: {}, cost: {} };
+    const row: PairedRow = { task, pass: {}, steps: {}, reads: {}, cost: {}, wallMs: {} };
     for (const c of conditions) {
       const r = pairedRecords.find((x) => x.task === task && x.condition === c)!;
       row.pass[c] = r.pass;
       row.steps[c] = r.steps;
       row.reads[c] = r.reads;
       row.cost[c] = r.cost.generator + r.cost.jev;
+      row.wallMs[c] = r.wallMs;
     }
     return row;
   });
   return { suite, conditions: [...conditions], pairedTasks: paired, incompletePairs: incomplete, excludedForDrift: drift, perCondition, rows };
 }
 
-export function computeSuiteMetrics(records: readonly BenchTaskRecord[], suite: BenchSuite, conditions: readonly EngineMode[], maxSteps: number): SuiteMetrics {
+export function computeSuiteMetrics(records: readonly BenchTaskRecord[], suite: BenchSuite, conditions: readonly BenchCondition[], maxSteps: number): SuiteMetrics {
   const suiteRecords = records.filter((r) => r.suite === suite);
   const perCondition: Record<string, ConditionMetrics> = {};
   for (const c of conditions) perCondition[c] = computeConditionMetrics(suiteRecords, c, maxSteps);
@@ -196,8 +206,8 @@ export function suitesIn(records: readonly BenchTaskRecord[]): BenchSuite[] {
 }
 
 /** pairComplete = every condition of the task has a record whose engine ran (not `not_run`). */
-export function withPairComplete<R extends BenchTaskRecord>(records: readonly R[], conditions: readonly EngineMode[]): R[] {
-  const ranBy = new Map<string, Set<EngineMode>>();
+export function withPairComplete<R extends BenchTaskRecord>(records: readonly R[], conditions: readonly BenchCondition[]): R[] {
+  const ranBy = new Map<string, Set<BenchCondition>>();
   for (const r of records) {
     if (isNotRun(r)) continue;
     const key = `${r.suite}\u0000${r.task}`;

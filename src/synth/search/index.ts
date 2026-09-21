@@ -13,7 +13,7 @@
 import { toJson } from '../../core/json.js';
 import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
-import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, WindowEntry } from '../../core/types.js';
+import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, SynthesizerGeneration, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { SPEC_FILE } from '../../workspace/tests.js';
 import { harvestHistory } from '../history/index.js';
@@ -158,6 +158,8 @@ export interface SearchDeps {
 export interface ControllerOptions {
   /** llm-jev: no establishing run, completion evidence on the claiming run, the revert route, the repository step-1 overlap, lane-baseline adoption */
   llmJev?: boolean;
+  /** llm-jev: the pinned generation parameters (§10.1) the L2 reproduction writer reuses (`reasoning`, the max_tokens base); absent = the writer's default */
+  generation?: SynthesizerGeneration;
 }
 
 /** The real collaborators for everything but the sub-goal searches and the localiser (src/synth/index.ts adds those). */
@@ -530,10 +532,13 @@ export class LedgerSieveSynthesizer implements Synthesizer {
   private readonly scratch = new Map<string, RunScratch>();
 
   private readonly llmJev: boolean;
+  /** the pinned generation the L2 writer reuses (`ControllerOptions.generation`); the public echo is the outer synthesizer's (src/synth/index.ts) */
+  private readonly l2Generation: SynthesizerGeneration | undefined;
 
   constructor(deps: SearchDeps, opts: ControllerOptions = {}) {
     this.deps = deps;
     this.llmJev = opts.llmJev === true && deps.llm !== undefined;
+    this.l2Generation = opts.generation;
   }
 
   async synthesize(ctx: SynthesisContext): Promise<Proposal> {
@@ -1351,6 +1356,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         stage: 'propose',
         pricing: LLM_SERVED_PRICING,
         budget,
+        // §10.1: the L2 samples send the arm's pinned `reasoning` and max_tokens base, the same object the synthesizer echoes
+        ...(this.l2Generation === undefined ? {} : { generation: this.l2Generation }),
       });
       mem.stepBudget.jevRequestsLeft = Math.max(0, mem.stepBudget.jevRequestsLeft - r.requests);
       // the run-level total the next step's `(spendCap − spent) / stepsLeft` reads (§4.11); the step counter was charged by the writer

@@ -1,9 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import type { Answer, ToolCall } from '../../../../src/core/types.js';
+import type { Answer, GenerateRequest, ToolCall } from '../../../../src/core/types.js';
 import { ESCAPE_KEY } from '../../../../src/jev/questions.js';
-import { Q18, REPRO_MAX_TOKENS_REASONING, isLlmOracle, issueQuoteAnchored, scriptProblems, writeReproduction, type ReproWriterInput } from '../../../../src/synth/llm/repro.js';
+import { Q18, isLlmOracle, issueQuoteAnchored, scriptProblems, writeReproduction, type ReproWriterInput } from '../../../../src/synth/llm/repro.js';
 import { WRITE_REPRODUCTION_TOOL_NAME } from '../../../../src/synth/llm/schema.js';
+import { LLM_DEFAULT_GENERATION } from '../../../../src/synth/llm/source.js';
 import { extractBlocks } from '../../../../src/synth/oracle/extract.js';
 import { REPRO_SENTINEL } from '../../../../src/synth/oracle/runner.js';
 import type { VerifyRunFn } from '../../../../src/synth/verify/types.js';
@@ -156,20 +157,46 @@ describe('L2 reproduction writer', () => {
     const budget = { usdLeft: 0.02 };
     const res = await writeReproduction(writerInput({ generate: failing, run: fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }] }).run, pricing, budget, ask: async (_stage, _state, questions) => ({ answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, q.type === 'choice' ? choiceAnswer(q, id === Q18.choiceId ? { script_0: 0.9 } : { exception_raised: 1 }) : noulAnswer(0.8)])) }) }));
     const priced = (4000 * 0.5 + 300 * 2) / 1e6;
-    // the default request reasons at low effort (§4.13), so the estimate of a sample that never returned assumes the reasoning cap
-    expect(gen.requests()[0]).toMatchObject({ reasoning: { effort: 'low' }, maxTokens: REPRO_MAX_TOKENS_REASONING });
-    const estimate = (4000 * 0.5 + REPRO_MAX_TOKENS_REASONING * 2) / 1e6;
+    // L2 sends the default generation too — reasoning at low effort (§4.13; {enabled: false} is HTTP 400 on GLM) with the reasoning-on
+    // base 3,000 — so the estimate of a sample that never returned assumes that cap
+    expect(LLM_DEFAULT_GENERATION.maxTokens).toBe(3000);
+    expect(gen.requests()[0]).toMatchObject({ maxTokens: LLM_DEFAULT_GENERATION.maxTokens, reasoning: { effort: 'low' } });
+    const estimate = (4000 * 0.5 + LLM_DEFAULT_GENERATION.maxTokens * 2) / 1e6;
     expect(res.trials.map((t) => [t.status, t.estimated])).toEqual([
       ['accepted', false],
       ['rejected', false],
       ['error', true],
     ]);
     expect(res.trials[0]!.usd).toBeCloseTo(priced, 9);
-    expect(res.trials[2]).toMatchObject({ reason: 'TransportError: stream', usage: { inputTokens: 4000, outputTokens: REPRO_MAX_TOKENS_REASONING, estimated: true } });
+    expect(res.trials[2]).toMatchObject({ reason: 'TransportError: stream', usage: { inputTokens: 4000, outputTokens: LLM_DEFAULT_GENERATION.maxTokens, estimated: true } });
     expect(res.trials[2]!.usd).toBeCloseTo(estimate, 9);
     expect(res.usd).toBeCloseTo(2 * priced + estimate, 9);
     expect(res.estimatedUsd).toBeCloseTo(estimate, 9);
     expect(0.02 - budget.usdLeft).toBeCloseTo(res.usd, 9);
+    expect(res.outcome).toBe('llm_valid');
+  });
+
+  it('sends a pinned generation verbatim — reasoning null is not sent, the base is its max_tokens — and estimates at that cap (§10.1)', async () => {
+    const pricing = { inputPerM: 0.5, outputPerM: 2 };
+    const gen = scriptedGenerate((k) => ({ toolCall: call(SCRIPTS[k]!, 'raises TypeError: Invalid comparison of complex I'), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    // the wrapper records every request itself: the failing sample rejects before the scripted generator sees it
+    const sent: GenerateRequest[] = [];
+    const failing: typeof gen.generate = (req, o) => {
+      sent.push(req);
+      return o.sample === 1 ? Promise.reject(new Error('TransportError: stream')) : gen.generate(req, o);
+    };
+    const res = await writeReproduction(writerInput({ generate: failing, n: 2, run: fakeRun({ a: [{ raise: 'TypeError' }, { raise: 'TypeError' }] }).run, pricing, generation: { reasoning: null, maxTokens: 1500 }, ask: async (_stage, _state, questions) => ({ answers: Object.fromEntries(Object.entries(questions).map(([id, q]) => [id, q.type === 'choice' ? choiceAnswer(q, id === Q18.choiceId ? { script_0: 0.9 } : { exception_raised: 1 }) : noulAnswer(0.8)])) }) }));
+    expect(sent).toHaveLength(2);
+    for (const req of sent) {
+      expect(req.maxTokens).toBe(1500);
+      expect(req).not.toHaveProperty('reasoning');
+    }
+    expect(res.trials.map((t) => [t.status, t.estimated])).toEqual([
+      ['accepted', false],
+      ['error', true],
+    ]);
+    expect(res.trials[1]).toMatchObject({ usage: { inputTokens: 4000, outputTokens: 1500, estimated: true } });
+    expect(res.trials[1]!.usd).toBeCloseTo((4000 * 0.5 + 1500 * 2) / 1e6, 9);
     expect(res.outcome).toBe('llm_valid');
   });
 });

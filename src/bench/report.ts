@@ -3,10 +3,13 @@
  * comparison, the solve and tokens-per-step curves as tables with inline bars and n columns,
  * stop-reason histograms, per-task rows. Terminal-Bench numbers carry the non-comparable label;
  * QuixBugs adds a pass-rate breakdown by bug kind and Ladder by hunks and difficulty (from the
- * records' `meta`, docs/JEV-ONLY.md).
+ * records' `meta`, docs/JEV-ONLY.md). When the jev-off baseline and an LLM+Jev arm are both
+ * present, a head-to-head section (docs/LLM-JEV-DESIGN.md §10.4 / §10.6: discordant pairs,
+ * Wilson intervals, the pre-registered criteria) is added per suite (bench/headtohead.ts).
  */
 import { formatDuration } from '../core/time.js';
-import type { BenchSuite, EngineMode } from '../core/types.js';
+import type { BenchCondition, BenchSuite } from '../core/types.js';
+import { criteriaLines, evaluateAttribution, suiteHeadToHead, suiteHeadToHeadLines, verdictParagraph, type SuiteHeadToHead } from './headtohead.js';
 import type { BenchRecord, ConditionMetrics, Summary, TokensPoint } from './types.js';
 
 export const TB_LABEL = 'local shim, non-comparable to the tbench.ai leaderboard';
@@ -70,7 +73,7 @@ function sortKeys(keys: Iterable<string>): string[] {
  * several keys (a Ladder task with two kinds counts in both); records without the field fall
  * under `unknown`.
  */
-export function breakdownTable(records: readonly BenchRecord[], conds: readonly EngineMode[], label: string, keysOf: (r: BenchRecord) => readonly string[]): string {
+export function breakdownTable(records: readonly BenchRecord[], conds: readonly BenchCondition[], label: string, keysOf: (r: BenchRecord) => readonly string[]): string {
   const groups = new Map<string, BenchRecord[]>();
   for (const r of records) {
     const keys = keysOf(r);
@@ -99,7 +102,7 @@ export function breakdownTable(records: readonly BenchRecord[], conds: readonly 
 const str = (v: string | number | undefined): string[] => (v === undefined ? [] : [String(v)]);
 
 /** The per-suite breakdown sections: QuixBugs by bug kind; Ladder by hunks and by difficulty. */
-export function breakdownSections(suite: BenchSuite, records: readonly BenchRecord[], conds: readonly EngineMode[]): string[] {
+export function breakdownSections(suite: BenchSuite, records: readonly BenchRecord[], conds: readonly BenchCondition[]): string[] {
   const out: string[] = [];
   const section = (title: string, label: string, keysOf: (r: BenchRecord) => readonly string[]): void => {
     out.push(`### ${title} (all evaluated records)`, '', breakdownTable(records, conds, label, keysOf), '');
@@ -121,17 +124,39 @@ export const CONDITIONS_PARAGRAPH =
   'at all: the generator slot is a NullProvider that throws if called (a record with any generator usage is marked ' +
   '`invalid` and excluded from the evaluated set), a code Synthesizer proposes from search over candidate edits, Jev ' +
   'selects, tests verify, and intent, context, risk, judge and replan run as in jev-on. `read`-action counts ' +
-  'are therefore reported beside steps-to-solve, and steps-to-solve is defined over passed tasks only.';
+  'are therefore reported beside steps-to-solve, and steps-to-solve is defined over passed tasks only. ' +
+  '**llm-jev** (docs/LLM-JEV-DESIGN.md) is the full engine with the Synthesizer AND the real generator: the LLM writes ' +
+  'candidate patches inside the synthesizer (parallel samples with per-sample deadlines, seeds racing them), Jev localises ' +
+  'and arbitrates, shadow lanes verify, risk on verified proposals and the judge are code facts; generator calls are recorded ' +
+  'per sample and never asserted zero. Two attribution arms share its tasks and limits: **llm-sieve** is llm-jev with zero ' +
+  'Jev requests — the decider slot holds a stub that answers every question deterministically (Noul 0.5, first option, ' +
+  'harm level 0) and counts them (`stubbed`), while the synthesizer replaces every question by its code default (the runner ' +
+  'refuses a synthesizer arm whose synthesizer does not acknowledge the mode and the pinned generation, so an arm never runs ' +
+  'as another one); ' +
+  '**jev-off-tuned** is jev-off behind a provider that applies the §4 generator hygiene (max_tokens 1,500 with one doubling ' +
+  'after a `length` stop, reasoning effort low, a 20 s per-call deadline that drops the call — no retry, the step ends — and ' +
+  'meters it from an estimate, plan capped at 200 chars). Generation parameters are PINNED per arm (the table below); jev-off ' +
+  'runs exactly the checked-in baseline parameters, never the user config.';
+
+function fmtReasoning(g: Summary['conditions'][string]['generation']): string {
+  const r = g.reasoning;
+  return r === null ? 'not sent' : 'effort' in r ? `effort ${r.effort}` : 'off';
+}
 
 function conditionRows(summary: Summary): string[][] {
   return summary.conditionOrder.map((c) => {
     const cfg = summary.conditions[c]!;
+    const g = cfg.generation;
     return [
       c,
+      cfg.mode,
       cfg.generatorModel,
       cfg.deciderModel ?? '—',
-      cfg.temperature === null ? 'not sent' : String(cfg.temperature),
-      String(cfg.maxTokens),
+      g.sampleTemperatures !== undefined ? `per sample ${g.sampleTemperatures.join(' / ')}` : cfg.temperature === null ? 'not sent' : String(cfg.temperature),
+      `${cfg.maxTokens}${g.lengthHandling === 'double-once' ? ' (×2 once on length)' : ''}`,
+      fmtReasoning(g),
+      g.deadlineMs === null ? 'none' : `${formatDuration(g.deadlineMs)}${g.repositoryDeadlineMs !== undefined ? ` / ${formatDuration(g.repositoryDeadlineMs)} repo` : ''}`,
+      `$${g.servedRate.inputPerM}/$${g.servedRate.outputPerM} per M`,
       String(cfg.maxSteps),
       formatDuration(cfg.maxWallMs),
       fmtUsd(cfg.taskSpendCapUsd),
@@ -142,8 +167,8 @@ function conditionRows(summary: Summary): string[][] {
   });
 }
 
-function metricRows(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>): string[][] {
-  const get = (c: EngineMode): ConditionMetrics => m[c]!;
+function metricRows(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>): string[][] {
+  const get = (c: BenchCondition): ConditionMetrics => m[c]!;
   const row = (label: string, f: (x: ConditionMetrics) => string): string[] => [label, ...conds.map((c) => f(get(c)))];
   return [
     row('pass rate (passed/evaluated)', (x) => `${x.passRateText} ${pct(x.passRate)}`),
@@ -161,11 +186,32 @@ function metricRows(conds: readonly EngineMode[], m: Record<string, ConditionMet
     row('mean Jev tokens/step (steps)', (x) => `${fmt(x.meanJevTokensPerStep.mean, 0)} (n=${x.meanJevTokensPerStep.steps})`),
     row('mean tokens/step, generator+Jev (steps)', (x) => `${fmt(x.meanTokensPerStep.mean, 0)} (n=${x.meanTokensPerStep.steps})`),
     row('wall time mean', (x) => (x.wallMs.mean === null ? 'null' : formatDuration(x.wallMs.mean))),
+    row('wall time median', (x) => (x.wallMs.median === null ? 'null' : formatDuration(x.wallMs.median))),
     row('cost generator / Jev / total', (x) => `${fmtUsd(x.cost.generator)} / ${fmtUsd(x.cost.jev)} / ${fmtUsd(x.cost.total)}`),
+    row('$ per solved task', (x) => (x.costPerSolved === null ? 'null' : fmtUsd(x.costPerSolved))),
+    row('pass rate Wilson 95%', (x) => (x.passRateWilson === null ? 'null' : `[${pct(x.passRateWilson.lo)}, ${pct(x.passRateWilson.hi)}]`)),
+    row('generator.jsonl calls / samples / valid', (x) => `${x.generator.calls} / ${x.generator.samples} / ${x.generator.valid}`),
+    row('generator malformed / length / dropped (timeouts)', (x) => `${x.generator.malformed} / ${x.generator.lengthStops} / ${x.generator.cancelled} (${x.generator.timeouts})`),
+    row('generator latency p50 / p90 ms, valid p50 / p90', (x) => `${fmt(x.generator.latencyMs.p50, 0)} / ${fmt(x.generator.latencyMs.p90, 0)}, ${fmt(x.generator.validLatencyMs.p50, 0)} / ${fmt(x.generator.validLatencyMs.p90, 0)}`),
+    row('generator estimated $ (dropped samples) / reasoning tokens', (x) => `${fmtUsd(x.generator.estimatedUsd)} / ${x.generator.reasoningTokens}`),
+    row('stubbed Jev requests (llm-sieve)', (x) => String(x.stubbedJevRequests)),
+    row('synth wall total / per synth step (steps)', (x) => `${formatDuration(x.synth.synthMs)} / ${x.synth.synthSteps === 0 ? 'null' : formatDuration(x.synth.synthMs / x.synth.synthSteps)} (n=${x.synth.synthSteps})`),
+    row('verify: samples / distinct / malformed / timeouts / cancelled / misanchored', (x) => `${x.synth.verify.samples} / ${x.synth.verify.distinct} / ${x.synth.verify.malformed} / ${x.synth.verify.timeouts} / ${x.synth.verify.cancelled} / ${x.synth.verify.misanchored}`),
+    row('verify: candidates tested / passers / partials', (x) => `${x.synth.verify.candidatesTested} / ${x.synth.verify.passers} / ${x.synth.verify.partials}`),
+    row('grace wait total / localisation missed / generic steps', (x) => `${formatDuration(x.synth.verify.graceMs)} / ${x.synth.verify.localisationMissed} / ${x.synth.genericSteps}`),
   ];
 }
 
-function solveCurveTable(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>): string {
+/** The llm-jev arms whose presence beside the jev-off baseline turns the head-to-head section on. */
+const H2H_ARMS: readonly BenchCondition[] = ['llm-jev', 'llm-sieve', 'jev-off-tuned'];
+
+function headToHeadSuites(summary: Summary, records: readonly BenchRecord[]): SuiteHeadToHead[] {
+  const conds = summary.conditionOrder;
+  if (!conds.includes('jev-off') || !conds.some((c) => H2H_ARMS.includes(c))) return [];
+  return summary.suites.filter((s) => s !== 'terminal-bench').map((suite) => suiteHeadToHead(suite, records, conds));
+}
+
+function solveCurveTable(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>): string {
   const longest = Math.max(0, ...conds.map((c) => m[c]!.solveCurve.length));
   if (longest === 0) return '_no evaluated runs_';
   const header = ['k', ...conds.flatMap((c) => [`${c} solved(k)`, `${c} fraction`, `${c}`])];
@@ -195,7 +241,7 @@ export const TOKEN_SUB_SERIES: readonly { label: string; curve: (x: ConditionMet
 export const TOKEN_PRICING_NOTE = "Jev tokens are priced at $0.042 per million input tokens (output free); generator tokens at the generator's rates; see the cost row.";
 
 /** One sub-series as a table: `mean (n)` per step and condition with a bar scaled to the table's own maximum. */
-function tokensCurveTable(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>, curve: (x: ConditionMetrics) => TokensPoint[]): string {
+function tokensCurveTable(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>, curve: (x: ConditionMetrics) => TokensPoint[]): string {
   const longest = Math.max(0, ...conds.map((c) => curve(m[c]!).length));
   if (longest === 0) return '_no executed steps_';
   const max = Math.max(1, ...conds.flatMap((c) => curve(m[c]!).map((p) => p.mean)));
@@ -217,7 +263,7 @@ function tokensCurveTable(conds: readonly EngineMode[], m: Record<string, Condit
 }
 
 /** Generator, Jev and combined tokens per step as three adjacent tables (each bar column scaled to its own table). */
-function tokensCurveSection(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>): string[] {
+function tokensCurveSection(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>): string[] {
   const out: string[] = [];
   for (const s of TOKEN_SUB_SERIES) {
     out.push(`#### ${s.label} tokens per step`);
@@ -229,7 +275,7 @@ function tokensCurveSection(conds: readonly EngineMode[], m: Record<string, Cond
   return out;
 }
 
-function stopReasonTable(conds: readonly EngineMode[], m: Record<string, ConditionMetrics>): string {
+function stopReasonTable(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>): string {
   const reasons = new Set<string>();
   for (const c of conds) for (const k of Object.keys(m[c]!.stopReasons)) reasons.add(k);
   if (reasons.size === 0) return '_no runs_';
@@ -256,8 +302,19 @@ export function renderComparison(summary: Summary, records: readonly BenchRecord
   out.push('');
   out.push(CONDITIONS_PARAGRAPH);
   out.push('');
-  out.push(table(['condition', 'generator', 'decider', 'temperature', 'maxTokens', 'max steps', 'max wall', 'per-run cap', 'sandbox', 'command timeout', 'output cap'], conditionRows(summary)));
+  out.push(table(['condition', 'engine mode', 'generator', 'decider', 'temperature', 'maxTokens', 'reasoning', 'deadline', 'served rate', 'max steps', 'max wall', 'per-run cap', 'sandbox', 'command timeout', 'output cap'], conditionRows(summary)));
   out.push('');
+  // docs/LLM-JEV-DESIGN.md §10.6: the head-to-head verdict comes first when the baseline and an LLM+Jev arm are both present
+  const h2h = headToHeadSuites(summary, records);
+  if (h2h.length > 0) {
+    const attribution = evaluateAttribution(h2h.map((h) => h.attribution));
+    out.push('## Head-to-head verdict (docs/LLM-JEV-DESIGN.md §1.3, §10.6)');
+    out.push('');
+    out.push(verdictParagraph(h2h, attribution));
+    out.push('');
+    out.push(...criteriaLines(attribution));
+    out.push('');
+  }
   out.push('## Spend');
   out.push('');
   out.push(`Bench cap ${fmtUsd(summary.spendCapUsd)}, per-run cap ${fmtUsd(summary.taskSpendCapUsd)}; spent generator ${fmtUsd(summary.spentUsd.generator)} + Jev ${fmtUsd(summary.spentUsd.jev)} = ${fmtUsd(summary.spentUsd.total)}. Bench cap fired: ${summary.capFired === 'bench' ? '**yes**' : 'no'}. Pairs not run: ${summary.notRun.count}${summary.notRun.count ? ` (${list(summary.notRun.tasks)})` : ''}.`);
@@ -301,14 +358,20 @@ export function renderComparison(summary: Summary, records: readonly BenchRecord
     out.push('');
     out.push(stopReasonTable(conds, sm.perCondition));
     out.push('');
+    const h = h2h.find((x) => x.suite === suite);
+    if (h !== undefined) {
+      out.push('### Head-to-head (docs/LLM-JEV-DESIGN.md §10.4; correct-by-verdict needs experiments/inspect/*-verdicts.mts → experiments/llm-jev/headtohead.mts)');
+      out.push('');
+      out.push(...suiteHeadToHeadLines(h, records, { perTask: false }));
+    }
     out.push('### Per task (paired)');
     out.push('');
     if (cmp.rows.length === 0) out.push('_no paired tasks_');
     else {
       out.push(
         table(
-          ['task', ...conds.flatMap((c) => [`${c} pass`, `${c} steps`, `${c} reads`, `${c} cost`])],
-          cmp.rows.map((r) => [r.task, ...conds.flatMap((c) => [r.pass[c] === true ? 'pass' : r.pass[c] === false ? 'fail' : 'null', String(r.steps[c] ?? ''), String(r.reads[c] ?? ''), fmtUsd(r.cost[c] ?? 0)])]),
+          ['task', ...conds.flatMap((c) => [`${c} pass`, `${c} steps`, `${c} reads`, `${c} wall`, `${c} cost`])],
+          cmp.rows.map((r) => [r.task, ...conds.flatMap((c) => [r.pass[c] === true ? 'pass' : r.pass[c] === false ? 'fail' : 'null', String(r.steps[c] ?? ''), String(r.reads[c] ?? ''), formatDuration(r.wallMs[c] ?? 0), fmtUsd(r.cost[c] ?? 0)])]),
         ),
       );
     }
