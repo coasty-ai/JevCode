@@ -18,7 +18,8 @@
  * parsed counts are the evidence the `done_<j>` Noul needs when the plan item is claimed.
  */
 import { clip } from '../../core/text.js';
-import type { Json, JsonObject, PlanDraft, Proposal, ProposalEvidence, SynthesisContext, WindowEntry } from '../../core/types.js';
+import { ORACLE_OUTCOMES } from '../../core/types.js';
+import type { CompletionEvidence, Json, JsonObject, OracleOutcome, PlanDraft, Proposal, ProposalEvidence, SynthesisContext, WindowEntry } from '../../core/types.js';
 import { PLAN_ITEM_MAX_CHARS, PLAN_MAX_OPEN_PROBLEMS, normaliseItem } from '../../loop/plan.js';
 import { patchTouchedPaths } from '../../provider/actions.js';
 import { isReproTestId } from '../oracle/search.js';
@@ -38,6 +39,16 @@ import type { Base, Goal, GoalSearchTrace, VerifyOutcome } from './types.js';
  * (ladder `table`, bench/data/ladder/README.md). More files means a source violated the contract.
  */
 export const MAX_PATCH_FILES = 2;
+/**
+ * docs/LLM-JEV-DESIGN.md §6.2: an `llm` winner is a verified multi-file repair (≤ 4 files, `FIX_LIMITS.files`); the
+ * risk stage's `verifiedPatchOk` accepts the same bound. Code sources keep MAX_PATCH_FILES.
+ */
+export const VERIFIED_PATCH_MAX_FILES = 4;
+
+/** The file bound of a committed candidate's patch by its source (§6.2). */
+export function patchMaxFiles(applied: Pick<AppliedCandidate, 'candidate'>): number {
+  return applied.candidate.source === 'llm' ? VERIFIED_PATCH_MAX_FILES : MAX_PATCH_FILES;
+}
 
 /** Test ids in goal texts are clipped so a long pytest node id cannot swallow the sentence. */
 export const TEST_ID_MAX_CHARS = 80;
@@ -86,6 +97,8 @@ export interface PatchOptions {
   goalText?: string;
   /** appended to `openProblems` after the parked reasons and the commit note */
   notes?: readonly string[];
+  /** files the diff may touch (default `patchMaxFiles(applied)`: 2 for code sources, 4 for an `llm` winner) */
+  maxFiles?: number;
 }
 export type RunScope = 'full' | 'subset';
 export type DoneMode = 'green' | 'partial';
@@ -212,8 +225,10 @@ export interface EvidenceSelection {
   arbitrated: boolean;
 }
 
-export function selectionOf(trace: Pick<GoalSearchTrace, 'runMode' | 'candidatesTested' | 'arbitrated'>): EvidenceSelection {
-  return { selection: trace.runMode === 'RANK' ? 'rank' : 'sieve', candidatesTested: trace.candidatesTested, arbitrated: trace.arbitrated };
+export function selectionOf(trace: Pick<GoalSearchTrace, 'runMode' | 'candidatesTested' | 'arbitrated'>, winner?: Pick<AppliedCandidate, 'candidate'>): EvidenceSelection {
+  // docs/LLM-JEV-DESIGN.md §6.2: an LLM sample that won is `llm`, whatever mode ordered the queue
+  const selection: ProposalEvidence['selection'] = winner?.candidate.source === 'llm' ? 'llm' : trace.runMode === 'RANK' ? 'rank' : 'sieve';
+  return { selection, candidatesTested: trace.candidatesTested, arbitrated: trace.arbitrated };
 }
 
 /** The selection an existing evidence record carries (a re-proposal or the post-patch run reuse the commit's). */
@@ -265,7 +280,7 @@ export function commitEvidence(
 ): ProposalEvidence | null {
   const before = mem.baseline;
   if (before === null) return null;
-  const sel = selectionOf(r.trace);
+  const sel = selectionOf(r.trace, r.applied);
   if (r.after !== undefined) return shadowEvidence(before, r.after, goal, sel, before.command);
   if (r.outcome !== undefined) {
     const o = r.outcome;
@@ -494,6 +509,8 @@ export function traceRecord(trace: GoalSearchTrace): JsonObject {
     bySource,
   };
   if (trace.unstable !== undefined) rec['unstable'] = trace.unstable;
+  // llm-jev (docs/LLM-JEV-DESIGN.md §9.3 `StepRecord.verify`): the rounds' counts travel in the step's rawText
+  if (trace.llm !== undefined) rec['llm'] = { ...trace.llm };
   if (trace.winner) rec['winner'] = editRecord(trace.winner);
   return rec;
 }
@@ -630,6 +647,36 @@ export function doneReadiness(ctx: SynthesisContext, mem: ProposalMemory): DoneR
   return { green: blockers.length === 0, testsCurrent: executedRun !== null, executedRun, testsChanged, guardPending, blockers };
 }
 
+/** The repository facts `completionEvidence` reads (memory.ts RepositoryMode, structural). */
+export interface CompletionRepository {
+  oracleOutcome: string;
+  lastRepro: { verdict: { pass: boolean } } | null;
+}
+
+/**
+ * docs/LLM-JEV-DESIGN.md §6.6: the synthesizer's code facts on the claiming `run` proposal. `ledgerFixed` = every
+ * ledger goal fixed (and at least one goal exists); `testsChanged` / `guardPending` as `doneReadiness` computes them;
+ * `repro` = the reproduction's verdict on the committed workspace (the synthesizer's own re-run, §6.4), 'none' without
+ * one; `oracle` = how the issue oracle was established (null off the repository class); `command` = the suite command
+ * the run must execute for the fact to hold. The engine ANDs these with its own parsed run (`isCompleteByFact`).
+ */
+export function completionEvidence(ctx: SynthesisContext, mem: ProposalMemory, command: string, repo: CompletionRepository | null = null): CompletionEvidence {
+  const ready = doneReadiness(ctx, mem);
+  const oracle = repo === null ? null : isOracleOutcome(repo.oracleOutcome) ? repo.oracleOutcome : null;
+  return {
+    ledgerFixed: mem.goals.length > 0 && mem.goals.every((g) => g.status === 'fixed'),
+    testsChanged: ready.testsChanged,
+    guardPending: ready.guardPending,
+    repro: repo === null || repo.lastRepro === null ? 'none' : repo.lastRepro.verdict.pass ? 'pass' : 'fail',
+    oracle,
+    command,
+  };
+}
+
+function isOracleOutcome(s: string): s is OracleOutcome {
+  return (ORACLE_OUTCOMES as readonly string[]).includes(s);
+}
+
 // ---------------------------------------------------------------------------------------
 // The builders
 // ---------------------------------------------------------------------------------------
@@ -646,7 +693,8 @@ function draft(done: string[], remaining: string[], openProblems: string[]): Pla
 export function proposePatch(ctx: SynthesisContext, applied: AppliedCandidate, goal: Goal, mem: ProposalMemory, note?: CommitNote, trace?: GoalSearchTrace, evidence?: ProposalEvidence | null, opts: PatchOptions = {}): Proposal {
   if (applied.diff.trim().length === 0) throw new ProposalError(`empty diff for ${describeEdit(applied)}`);
   const paths = diffPaths(applied.diff);
-  if (paths.length > MAX_PATCH_FILES) throw new ProposalError(`diff touches ${paths.length} files (${paths.join(', ')}); a candidate may touch at most ${MAX_PATCH_FILES}`);
+  const maxFiles = opts.maxFiles ?? patchMaxFiles(applied);
+  if (paths.length > maxFiles) throw new ProposalError(`diff touches ${paths.length} files (${paths.join(', ')}); a ${applied.candidate.source} candidate may touch at most ${maxFiles}`);
   const notes: string[] = [];
   const e = evidence ?? undefined;
   if (note === 'possible overfit') notes.push(`possible overfit: ${describeEdit(applied)} passes every test, but Jev rated no test-passing candidate a general fix; review the change`);

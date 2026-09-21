@@ -485,6 +485,8 @@ class EngineImpl implements Engine {
   private readonly systemPrompt: string;
   /** jev-only propose stage; null in the other modes (createEngine rejects jev-only without one) */
   private readonly synthesizer: Synthesizer | null;
+  /** docs/LLM-JEV-DESIGN.md §9.4: the synthesizer's `handles()` verdict for this run, decided at the first propose stage */
+  private synthHandles: boolean | null = null;
   private readonly resumed: boolean;
   private readonly resumeStop: StopReason | null;
 
@@ -1661,6 +1663,19 @@ class EngineImpl implements Engine {
    * the REPORT question rules), so a synthesizer cannot spend Jev budget or take a decision the
    * run does not record. The signal is the engine's; a synthesizer's own signal is ignored.
    */
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.4: whether the synthesizer covers this workspace, decided once per run from the workspace listing
+   * (the layout does not change under the run); a synthesizer without `handles` covers everything.
+   */
+  private async synthesizerHandles(synthesizer: Synthesizer): Promise<boolean> {
+    if (this.synthHandles !== null) return this.synthHandles;
+    if (synthesizer.handles === undefined) return (this.synthHandles = true);
+    const listing = await this.workspace.listCandidates().catch(() => []);
+    const handles = synthesizer.handles(this.wsInfo, listing.map((c) => c.path));
+    if (!handles) this.emit({ type: 'transcript', step: this.step + 1, level: 'info', text: `synthesizer ${synthesizer.name} does not cover this workspace; proposing through the generic per-step fallback (docs/LLM-JEV-DESIGN.md §9.4)` });
+    return (this.synthHandles = handles);
+  }
+
   private synthesisContext(draft: StepDraft, contextFiles: readonly FileView[]): SynthesisContext {
     const self = this;
     const decider: Decider = {
@@ -1991,21 +2006,30 @@ class EngineImpl implements Engine {
           // row; in llm-jev the synthesizer spends generator samples through SynthesisContext.generate (docs/LLM-JEV-DESIGN.md §4.8).
           const synthesizer = this.synthesizer;
           if (synthesizer === null) throw new ConfigError(`${this.mode} mode requires a synthesizer`, { setting: 'mode' });
-          // TODO(stage 4, docs/LLM-JEV-DESIGN.md §9.4): when `synthesizer.handles(wsInfo, files)` is false, run runProposeStage
-          // here with draft.proposer = 'generic' — the flag (not the mode) keys `generator_done` and the verbatim claim evidence
-          if (llmJev) draft.proposer = 'synth';
-          const sctx = this.synthesisContext(draft, contextFiles);
-          const s0 = this.clock();
-          const jev0 = draft.timing.jevMs;
-          try {
-            p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
-          } finally {
-            // docs/LLM-JEV-DESIGN.md §7.5: the synth wall and the Jev latency spent inside it (the shell's share is the rest)
-            draft.synthMs = Math.max(0, this.clock() - s0);
-            draft.synthJevMs = Math.max(0, draft.timing.jevMs - jev0);
+          // docs/LLM-JEV-DESIGN.md §9.4: a workspace the synthesizer does not cover (non-Python, no tests, feature work) falls back per step
+          // to the generic `propose_action` sample — the flag (not the mode) keys `generator_done` and the verbatim claim evidence
+          if (llmJev && !(await this.synthesizerHandles(synthesizer))) {
+            draft.proposer = 'generic';
+            const listing = await this.workspace.listCandidates().catch(() => []);
+            const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
+            const prompt = this.promptInput(draft, changedFiles, [], candidates);
+            p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
+            this.flushGeneratorRecords(draft);
+          } else {
+            if (llmJev) draft.proposer = 'synth';
+            const sctx = this.synthesisContext(draft, contextFiles);
+            const s0 = this.clock();
+            const jev0 = draft.timing.jevMs;
+            try {
+              p = await this.stage('propose', () => runSynthStage(ctx, synthesizer, sctx));
+            } finally {
+              // docs/LLM-JEV-DESIGN.md §7.5: the synth wall and the Jev latency spent inside it (the shell's share is the rest)
+              draft.synthMs = Math.max(0, this.clock() - s0);
+              draft.synthJevMs = Math.max(0, draft.timing.jevMs - jev0);
+            }
+            // llm-jev: the round's per-sample rows (cancelled estimates included) reach generator.jsonl exactly as after runProposeStage; a no-op in jev-only
+            this.flushGeneratorRecords(draft);
           }
-          // llm-jev: the round's per-sample rows (cancelled estimates included) reach generator.jsonl exactly as after runProposeStage; a no-op in jev-only
-          this.flushGeneratorRecords(draft);
         } else {
           const prompt = this.promptInput(draft, changedFiles, contextFiles, null);
           p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));

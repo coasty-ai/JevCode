@@ -60,14 +60,12 @@ describe('convertSample: block-anchored sites, deletions, multi-file, drops, ded
     expect(applied.diff).toContain('+            pass');
     expect(applied.diff).toContain('+        out.append(x * k * 2)');
     expect(applied.files[0]!.after.split('\n')[17]).toBe('        out.append(x * k * 2)');
-    // TODO(stage 4, src/synth/types.ts): drop the cast once 'llm' joins CandidateSourceName and Site carries span?
-    const asShipped = c as unknown as Parameters<typeof applyCandidate>[0];
-    // agreement: on the unchanged base the shipped applier (code-token span check) and the local one (textSha) produce the same diff
-    expect(applyCandidate(asShipped, files).diff).toBe(applied.diff);
-    // why the textSha rule (§4.7 step 3): the shipped check compares code tokens only, so a base where one span line was reformatted
-    // (same tokens, different text) still passes it and is rewritten blind; the hashed span calls it stale and stage 4 re-anchors by text instead
+    // agreement: on the unchanged base the shared applier (verify/apply.ts, `Site.span` by textSha) and the local one produce the same diff
+    expect(applyCandidate(c, files).diff).toBe(applied.diff);
+    // the textSha rule (§4.7 step 3): a base where one span line was reformatted (same code tokens, different text) is stale to both
+    // appliers — the one-statement tokenizer check would have rewritten it blind; the search re-anchors such a site by text instead
     const reformatted = new Map([['src/calc.py', sourceFile('src/calc.py', CALC_SRC.replace('        out.append(x * k)', '        out.append(x*k)'))]]);
-    expect(applyCandidate(asShipped, reformatted).diff).toContain('-        out.append(x*k)');
+    expect(() => applyCandidate(c, reformatted)).toThrow(/stale llm site/);
     expect(() => applyLlmCandidate(c, reformatted)).toThrow(/stale llm site/);
   });
 

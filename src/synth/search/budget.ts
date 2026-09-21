@@ -7,6 +7,8 @@
  * experiments/results/ and experiments/designs/contrarian.md.
  */
 import type { RunLimits } from '../../core/types.js';
+import { samplesFor } from '../llm/source.js';
+import type { OracleClass as LlmClass } from '../llm/types.js';
 import type { Candidate, Site, TestRunSummary } from '../types.js';
 import { countCaseTimeouts, isCaseNotRun, isCaseTimeout } from '../verify/quixbugs.js';
 import type { OracleModel, RunPlan, StepBudget } from './types.js';
@@ -740,6 +742,8 @@ export function stepTestWallMs(oracle: OracleModel, wallRemainingMs: number): nu
 export interface FreshBudgetOptions {
   /** injectable clock for tests */
   now?: () => number;
+  /** docs/LLM-JEV-DESIGN.md §4.11: fills the LLM counters; absent (jev-only) leaves them at 0 */
+  llm?: LlmBudgetInput;
 }
 
 /**
@@ -752,15 +756,66 @@ export function freshBudget(limits: Pick<RunLimits, 'maxWallMs'>, oracle: Oracle
   const wallRemaining = Number.isFinite(wallRemainingMs) ? Math.max(0, Math.min(wallRemainingMs, limits.maxWallMs)) : limits.maxWallMs;
   const cls = oracleClass(oracle);
   const testWallLeftMs = stepTestWallMs(oracle, wallRemaining);
+  const llm = opts.llm ?? null;
+  const klass = llmClassOf(oracle, llm?.goals ?? 1, llm?.repository ?? false);
   const budget: StepBudget = {
     jevRequestsLeft: cls === 'quixbugs_class' ? QUIXBUGS_JEV_REQUESTS_MAX : REPO_JEV_REQUESTS_MAX,
     testRunsLeft: cls === 'quixbugs_class' ? QUIXBUGS_TEST_RUNS_MAX : repositoryRunsPerStep(oracle, testWallLeftMs),
     testWallLeftMs,
     startedMs: (opts.now ?? Date.now)(),
     recursed: false,
+    // docs/LLM-JEV-DESIGN.md §4.11: rounds, samples (N × 2 for the class) and the dollar cap; zero without an LLM source
+    llmRoundsLeft: llm === null ? 0 : LLM_ROUNDS_PER_STEP,
+    llmSamplesLeft: llm === null ? 0 : samplesFor(klass, llm.tReproMs ?? null) * LLM_ROUNDS_PER_STEP,
+    llmUsdLeft: llm === null ? 0 : llmStepUsd(llm),
     exhausted: () => budget.testRunsLeft <= 0 || budget.testWallLeftMs <= 0 || budget.jevRequestsLeft <= 0,
   };
   return budget;
+}
+
+// ---------------------------------------------------------------------------------------
+// LLM counters (docs/LLM-JEV-DESIGN.md §4.6, §4.11)
+// ---------------------------------------------------------------------------------------
+
+/** Rounds per step: L1 and at most one feedback round L1′ (§4.9, §4.11). */
+export const LLM_ROUNDS_PER_STEP = 2;
+/** The step's dollar cap (§4.11 `llmUsdLeft = min($0.02, (spendCap − spent) / stepsLeft)`). */
+export const LLM_STEP_USD_MAX = 0.02;
+
+/** What the LLM counters of a fresh budget need to know (absent = no LLM source wired: every counter 0). */
+export interface LlmBudgetInput {
+  /** the run's spend cap and what the LLM rounds have spent so far (the synthesizer's own ledger) */
+  spendCapUsd: number;
+  spentUsd: number;
+  /** steps left in the run, this one included (≥ 1) */
+  stepsLeft: number;
+  /** ledger size: ≥ 2 goals on the QuixBugs class is the ladder class (§4.6) */
+  goals: number;
+  repository: boolean;
+  /** repository class: the measured reproduction run time (N drops to 4 above 2 s) */
+  tReproMs?: number | null;
+}
+
+/** `min($0.02, (spendCap − spent) / stepsLeft)`, never negative. */
+export function llmStepUsd(i: Pick<LlmBudgetInput, 'spendCapUsd' | 'spentUsd' | 'stepsLeft'>): number {
+  const left = Math.max(0, i.spendCapUsd - i.spentUsd);
+  return Math.max(0, Math.min(LLM_STEP_USD_MAX, left / Math.max(1, i.stepsLeft)));
+}
+
+/**
+ * The §4.6 class of a run: repository mode is the repository class; a QuixBugs-class oracle with
+ * ≥ 2 ledger goals is the ladder class (same oracle class, several goals); one goal is QuixBugs.
+ */
+export function llmClassOf(oracle: Pick<OracleModel, 'tRunMs'>, goals: number, repository: boolean): LlmClass {
+  if (repository || oracleClass(oracle) === 'repository_class') return 'repository';
+  return goals >= 2 ? 'ladder' : 'quixbugs';
+}
+
+/** N for the next round: the class's N (§4.6), bounded by the samples left this step; 0 when the rounds or the dollars are spent (§4.2). */
+export function decideLlmN(oracle: Pick<OracleModel, 'tRunMs'>, budget: Pick<StepBudget, 'llmRoundsLeft' | 'llmSamplesLeft' | 'llmUsdLeft'>, klass: LlmClass, tReproMs: number | null = null): number {
+  if (budget.llmRoundsLeft <= 0 || budget.llmUsdLeft <= 0 || budget.llmSamplesLeft <= 0) return 0;
+  const n = klass === 'repository' ? samplesFor(klass, tReproMs ?? oracle.tRunMs.goalSubset) : samplesFor(klass);
+  return Math.max(0, Math.min(n, budget.llmSamplesLeft));
 }
 
 /**

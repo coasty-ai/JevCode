@@ -618,7 +618,7 @@ function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((x) => typeof x === 'string');
 }
 
-const SOURCE_NAMES: readonly string[] = ['mutation', 'template', 'donor', 'token_beam', 'test_value', 'history', 'composite'];
+const SOURCE_NAMES: readonly string[] = ['mutation', 'template', 'donor', 'token_beam', 'test_value', 'history', 'composite', 'llm'];
 
 function isSourceName(v: unknown): v is CandidateSourceName {
   return typeof v === 'string' && SOURCE_NAMES.includes(v);

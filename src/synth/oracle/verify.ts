@@ -195,7 +195,8 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
   const reproTimeoutMs = opts.spec?.options.timeoutMs ?? 30_000;
   const minRunWallMs = Math.min(reproTimeoutMs, Math.max(1, oracle.tRunMs.goalSubset));
   let dispatched = 0;
-  let passers = 0;
+  // the passer cap is the step's (RunnerMemory.passersThisStep, docs/LLM-JEV-DESIGN.md §4.8): a second call this step keeps counting
+  let passers = mem.passersThisStep ?? 0;
   let unstable = 0;
   /** dispatch orders (= ranks within this call) whose reproduction verdict is not in yet */
   const pending = new Set<number>();
@@ -236,9 +237,10 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
     }
   };
 
-  /** The next job in rank order across the carried and the fresh queue (one-job lookahead on the queue). */
-  const nextJob = (): VerifyJob | undefined => {
-    const fresh = queue.pop(1)[0];
+  /** The next job in rank order across the carried and the fresh queue (one-job lookahead on the queue); with nothing carried, a streaming queue is awaited (§4.8). */
+  const nextJob = async (): Promise<VerifyJob | undefined> => {
+    let fresh = queue.pop(1)[0];
+    if (fresh === undefined && carried.length === 0 && queue.next !== undefined) fresh = (await queue.next()) ?? undefined;
     if (fresh === undefined) return carried.shift();
     const top = carried[0];
     if (top === undefined || compareRank(fresh, top) < 0) return fresh;
@@ -359,7 +361,7 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
 
   const worker = async (): Promise<void> => {
     while (!stopDispatch()) {
-      const job = nextJob();
+      const job = await nextJob();
       if (job === undefined) return;
       const order = dispatched;
       dispatched += 1;
@@ -379,6 +381,7 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
   };
   const workers = Math.max(1, Math.min(pool.lanes.length, oracle.lanes));
   await Promise.all(Array.from({ length: workers }, () => worker()));
+  mem.passersThisStep = passers;
   deferred.unshift(...carried);
   deferred.sort(compareRank);
 

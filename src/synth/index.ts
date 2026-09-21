@@ -10,7 +10,7 @@
  * them to the Ledger + Sieve controller (search/index.ts) and the sub-goal search
  * (search/subgoal.ts), whose collaborators are injected so they are unit-tested with fakes.
  */
-import type { Decider, SynthesisContext, Synthesizer } from '../core/types.js';
+import type { Decider, EngineMode, SynthesisContext, Synthesizer, WorkspaceInfo } from '../core/types.js';
 import { createTokenBeamSource } from './beam/index.js';
 import { createDonorSource } from './donor/index.js';
 import { fillSketches } from './fill/beam.js';
@@ -19,16 +19,18 @@ import { runFacts, vocabularyAdditions } from './introspect/index.js';
 import type { RunFacts } from './introspect/index.js';
 import { createLocalizer } from './localize/index.js';
 import { createMutationSource } from './mutate/index.js';
-import { isBestGuessTestId, runRepositoryQueue, venvPython } from './oracle/index.js';
+import { isBestGuessTestId, isRepositoryWorkspace, runRepositoryQueue, venvPython } from './oracle/index.js';
 import { SHUFFLE_RERANK_MAX, createRanker, shouldShuffleRerank, shuffleRerank } from './rank/index.js';
 import { programRange } from './rank/questions.js';
 import { pairsOfPartials } from './search/bases.js';
 import { createCompositeSource } from './search/composite.js';
 import { decideForSearch } from './search/guard.js';
-import { LedgerSieveSynthesizer, REPO_BASELINE_TIMEOUT_MS, defaultSearchDeps } from './search/index.js';
+import { LedgerSieveSynthesizer, REPO_BASELINE_TIMEOUT_MS, defaultSearchDeps, detectLayout } from './search/index.js';
 import type { RunMemory, SearchDeps } from './search/index.js';
+import { createSearchLlm } from './search/llm.js';
+import type { SearchLlmOptions, SubGoalLlm } from './search/llm.js';
 import { buildGoalSites, captureLineChoiceEscape, historySites, mergeIntrospectionSites } from './search/sites.js';
-import { EDIT_CLASS_QUESTION_ID, priorFromAnswer, searchBestGuess, searchSubGoal } from './search/subgoal.js';
+import { EDIT_CLASS_QUESTION_ID, isTestPath, priorFromAnswer, searchBestGuess, searchSubGoal } from './search/subgoal.js';
 import type { JevSource, SearchQueue, SubGoalDeps, SubGoalMemory } from './search/subgoal.js';
 import type { Goal } from './search/types.js';
 import { VerifyQueue, vocabularyOf } from './sieve/queue.js';
@@ -46,6 +48,13 @@ export interface SynthesizerOptions {
   /** the run's decider; prefer `ctx.ask` inside synthesize() so usage and decisions are recorded */
   decider: Decider;
   redact: (s: string) => string;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.2 stage 4: `'llm-jev'` wires the LLM candidate source (search/llm.ts over `SynthesisContext.generate`),
+   * the controller's llm-jev switches and `handles()`; anything else (default `'jev-only'`) is the unchanged Ledger + Sieve.
+   */
+  mode?: Extract<EngineMode, 'jev-only' | 'llm-jev'>;
+  /** llm-jev knobs (pricing, grace, the probe's p90); defaults per the §10.2 live findings */
+  llm?: SearchLlmOptions;
 }
 
 /** Token beam (§3 row 6): W = 3, ≤ 25 tokens, expand 1 at p ≥ 0.9 (probe-token-synthesis.md). */
@@ -114,7 +123,7 @@ export function createQueue(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goa
  * "insert sites first when Q5 put ≥ 0.3 on the escape" rule (§2.5 item 2) has its input; SBFL
  * evidence is not wired yet (it needs a coverage run through src/synth/sbfl on the lanes).
  */
-async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): Promise<LocalizeResult> {
+async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, opts: { batchQ6Fallback?: boolean } = {}): Promise<LocalizeResult> {
   const committed = mem.bases.find((b) => b.origin === 'committed');
   const files = committed?.files ?? new Map<string, SourceFile>();
   runFactsRef.current = runFacts(ctx.runId);
@@ -128,6 +137,8 @@ async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): Pr
     maxInsertSites: mem.overrides.siteBeam,
     stage: 'propose',
     ...(q5Escape === null ? {} : { q5EscapeProbability: q5Escape }),
+    // llm-jev: the Q6 fallback's statements go in one request over one state (docs/LLM-JEV-DESIGN.md §9.2 stage 4)
+    ...(opts.batchQ6Fallback === true ? { batchQ6Fallback: true } : {}),
   });
   // the introspected names' sites (≤ 3, after the Jev-ranked list): the gap before the statement an operand
   // was read in, the class-body gap of the class the failing call's objects point at, when a localised file
@@ -214,7 +225,8 @@ export function seedWithHistory(donors: readonly Candidate[], reversals: readonl
  * their own `source` name for the trace and the queue's prior. Composite pairs over the wrapped
  * seeds, so pairs are pairs of what SEEDS ran. `over` replaces a source (tests).
  */
-export function createSubGoalDeps(over: Partial<{ history: CandidateSource; donor: CandidateSource }> = {}): SubGoalDeps {
+export function createSubGoalDeps(over: Partial<{ history: CandidateSource; donor: CandidateSource }> = {}, wiring: { llm?: SubGoalLlm } = {}): SubGoalDeps {
+  const llmJev = wiring.llm !== undefined;
   const mutation = createMutationSource();
   const plainTemplate = createTemplateSource();
   const plainDonor = over.donor ?? createDonorSource();
@@ -228,9 +240,10 @@ export function createSubGoalDeps(over: Partial<{ history: CandidateSource; dono
       return seedWithHistory(donors, o.history === undefined ? [] : history.enumerate(site, o), site, opts.cap);
     },
   };
-  const ranker = createRanker({ stage: 'propose' });
+  // llm-jev: full-criteria Nouls in chunks ≤ 50 for 11–150 candidates (docs/LLM-JEV-DESIGN.md §9.2 stage 4); the measured compact hybrid otherwise
+  const ranker = createRanker({ stage: 'propose', ...(llmJev ? { fullCriteriaNouls: true } : {}) });
   return {
-    locate,
+    locate: (ctx, mem, goal) => locate(ctx, mem, goal, llmJev ? { batchQ6Fallback: true } : {}),
     // Source 4 (§3 row 4): depth-2 pairs of the top-10 single edits, the signature + call-site unit and
     // the multi-line donor body unit, over the same three seed sources so pairs are pairs of what SEEDS ran.
     seeds: { mutation, template, donor, composite: createCompositeSource({ singles: [mutation, template, donor] }) },
@@ -259,15 +272,40 @@ export function createSubGoalDeps(over: Partial<{ history: CandidateSource; dono
     },
     decide: decideForSearch,
     pairsOfPartials,
+    ...(wiring.llm === undefined ? {} : { llm: wiring.llm }),
   };
 }
 
-export function searchDeps(): SearchDeps {
-  const sub = createSubGoalDeps();
-  return { ...defaultSearchDeps(), searchSubGoal: (ctx, mem: RunMemory, goal) => searchSubGoal(ctx, mem, goal, sub), searchBestGuess: (ctx, mem: RunMemory, goal) => searchBestGuess(ctx, mem, goal, sub), locate: (ctx, mem: RunMemory, goal) => locate(ctx, mem, goal) };
+export function searchDeps(wiring: { llm?: SubGoalLlm } = {}): SearchDeps {
+  const sub = createSubGoalDeps({}, wiring);
+  return {
+    ...defaultSearchDeps(),
+    searchSubGoal: (ctx, mem: RunMemory, goal) => searchSubGoal(ctx, mem, goal, sub),
+    searchBestGuess: (ctx, mem: RunMemory, goal) => searchBestGuess(ctx, mem, goal, sub),
+    locate: (ctx, mem: RunMemory, goal) => locate(ctx, mem, goal, wiring.llm === undefined ? {} : { batchQ6Fallback: true }),
+    ...(wiring.llm === undefined ? {} : { llm: wiring.llm }),
+  };
 }
 
-/** The Ledger + Sieve synthesizer with the real modules wired in. */
-export function createSynthesizer(_opts: SynthesizerOptions): Synthesizer {
-  return new LedgerSieveSynthesizer(searchDeps());
+/**
+ * docs/LLM-JEV-DESIGN.md §9.4: the synthesizer covers a workspace with Python source files and either a detected pytest/QuixBugs
+ * layout or a repository (a whole-project suite or a large package). A non-Python, test-less or feature-work workspace is the
+ * engine's generic per-step fallback — outside the dominance claim.
+ */
+export function synthesizerHandles(info: Pick<WorkspaceInfo, 'testCommand'>, files: readonly string[]): boolean {
+  if (!files.some((p) => p.endsWith('.py') && !isTestPath(p))) return false;
+  if (detectLayout(files) !== 'other') return true;
+  return isRepositoryWorkspace(info.testCommand, files);
+}
+
+/**
+ * The Ledger + Sieve synthesizer with the real modules wired in. In `llm-jev` the LLM candidate source rides in
+ * (`SynthesisContext.generate`, when the engine exposes it), the controller takes its llm-jev switches and `handles()`
+ * answers the engine's §9.4 question; every other mode is the unchanged jev-only synthesizer.
+ */
+export function createSynthesizer(opts: SynthesizerOptions): Synthesizer {
+  if (opts.mode !== 'llm-jev') return new LedgerSieveSynthesizer(searchDeps());
+  const llm = createSearchLlm(opts.llm ?? {});
+  const inner = new LedgerSieveSynthesizer(searchDeps({ llm }), { llmJev: true });
+  return { name: inner.name, synthesize: (ctx) => inner.synthesize(ctx), handles: synthesizerHandles };
 }

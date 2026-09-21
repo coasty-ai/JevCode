@@ -160,6 +160,12 @@ export interface GoalSiteOptions {
   maxInsertSites?: number;
   /** stage recorded on the decision rows (the design routes every synthesizer question through `propose`) */
   stage?: StageName;
+  /**
+   * llm-jev (docs/LLM-JEV-DESIGN.md §9.2 stage 4): the Q6 fallback asks about every statement template in ONE request over one
+   * state (`missing_statements.stmt_<k>`, one Choice each) instead of one request per statement. Off by default: the measured
+   * probe-donor state carries a single `missing_statement`.
+   */
+  batchQ6Fallback?: boolean;
 }
 
 export interface GoalSites {
@@ -286,6 +292,37 @@ export function gapRequest(input: GapRequestInput): { state: Json; questions: Re
   const options: Record<string, Json | null> = { [gapBeforeKey(first.line)]: `insert as the new first line, before L${first.line}: ${clip(first.text.trim(), LINE_CHARS_MAX)}` };
   for (const l of input.lines) options[gapAfterKey(l.line)] = `insert directly after L${l.line}: ${clip(l.text.trim(), LINE_CHARS_MAX)}`;
   return { state, questions: { [GAP_QUESTION_ID]: choice(GAP_QUESTION, options) } };
+}
+
+/**
+ * The Q6 fallback batched (llm-jev): one state with `missing_statements: {stmt_1, …}` and one Choice per statement over the
+ * same gap options; question ids are `${GAP_QUESTION_ID}_<k>`, returned beside the statement they ask about.
+ */
+export function gapBatchRequest(input: Omit<GapRequestInput, 'missingStatement'> & { missingStatements: readonly string[] }): { state: Json; questions: Record<string, Question>; ids: { id: string; statement: string }[] } {
+  const first = input.lines[0];
+  if (first === undefined) throw new RangeError('gapBatchRequest: no lines');
+  const program: Record<string, Json> = {};
+  for (const l of input.lines) program[`L${l.line}`] = clip(l.text, LINE_CHARS_MAX);
+  const statements: Record<string, Json> = {};
+  const ids: { id: string; statement: string }[] = [];
+  const questions: Record<string, Question> = {};
+  const options: Record<string, Json | null> = { [gapBeforeKey(first.line)]: `insert as the new first line, before L${first.line}: ${clip(first.text.trim(), LINE_CHARS_MAX)}` };
+  for (const l of input.lines) options[gapAfterKey(l.line)] = `insert directly after L${l.line}: ${clip(l.text.trim(), LINE_CHARS_MAX)}`;
+  input.missingStatements.forEach((statement, i) => {
+    const key = `stmt_${i + 1}`;
+    statements[key] = clip(statement.trim(), LINE_CHARS_MAX);
+    const id = `${GAP_QUESTION_ID}_${i + 1}`;
+    ids.push({ id, statement });
+    questions[id] = choice(`Where in \`program\` must \`missing_statements.${key}\` be inserted so that all \`tests\` pass?`, options);
+  });
+  const state: Record<string, Json> = {
+    task: `The function \`${input.functionName}\` in \`program\` is missing one statement, which makes some cases in \`tests\` fail. Each entry of \`missing_statements\` is a candidate for that statement (indentation will be adjusted to the chosen position).`,
+    program,
+    tests: input.failures.slice(0, TESTS_IN_STATE).map((f) => ({ call: clip(f.call, FAILURE_FIELD_CHARS_MAX), expected: clip(f.expected, FAILURE_FIELD_CHARS_MAX), actual: clip(f.actual, FAILURE_FIELD_CHARS_MAX) })),
+    missing_statements: statements,
+  };
+  assertQuestionBatch(questions);
+  return { state, questions, ids };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -596,12 +633,8 @@ async function askLineNouls(ctx: GoalSiteContext, goal: Goal, fns: readonly Beam
   return { probs, requests: 1 };
 }
 
-/** Q6 for one statement over one function's gaps; returns the gap keys ranked by p (escape excluded). */
-async function askGaps(ctx: GoalSiteContext, goal: Goal, fn: BeamFunction, lines: readonly CodeLine[], statement: string, stage: StageName): Promise<{ key: string; p: number }[]> {
-  const req = gapRequest({ task: ctx.task, failures: goal.failures, functionName: fn.name, lines, missingStatement: statement });
-  if (ctx.signal.aborted) throw new AbortError('signal');
-  const r = await ctx.ask(stage, req.state, req.questions);
-  const a = r.answers[GAP_QUESTION_ID];
+/** The gap keys of a Choice answer ranked by p (escape excluded). */
+function rankedGaps(a: Answer | undefined): { key: string; p: number }[] {
   if (a === undefined || a.type !== 'choice') return [];
   return byDesc(
     Object.entries(a.probabilities)
@@ -609,6 +642,22 @@ async function askGaps(ctx: GoalSiteContext, goal: Goal, fn: BeamFunction, lines
       .map(([key, p]) => ({ key, p })),
     (x) => x.p,
   );
+}
+
+/** Q6 for one statement over one function's gaps; returns the gap keys ranked by p (escape excluded). */
+async function askGaps(ctx: GoalSiteContext, goal: Goal, fn: BeamFunction, lines: readonly CodeLine[], statement: string, stage: StageName): Promise<{ key: string; p: number }[]> {
+  const req = gapRequest({ task: ctx.task, failures: goal.failures, functionName: fn.name, lines, missingStatement: statement });
+  if (ctx.signal.aborted) throw new AbortError('signal');
+  const r = await ctx.ask(stage, req.state, req.questions);
+  return rankedGaps(r.answers[GAP_QUESTION_ID]);
+}
+
+/** Q6 for every statement in one request (llm-jev, `batchQ6Fallback`); the ranked gaps per statement. */
+async function askGapsBatched(ctx: GoalSiteContext, goal: Goal, fn: BeamFunction, lines: readonly CodeLine[], statements: readonly string[], stage: StageName): Promise<Map<string, { key: string; p: number }[]>> {
+  const req = gapBatchRequest({ task: ctx.task, failures: goal.failures, functionName: fn.name, lines, missingStatements: statements });
+  if (ctx.signal.aborted) throw new AbortError('signal');
+  const r = await ctx.ask(stage, req.state, req.questions);
+  return new Map(req.ids.map(({ id, statement }) => [statement, rankedGaps(r.answers[id])]));
 }
 
 /**
@@ -841,7 +890,7 @@ export async function buildGoalSites(ctx: GoalSiteContext, goal: Goal, localized
       if (slots.length > 0) notes.push(`${slots.length} gap slots of ${top.name}`);
     }
     if (q6FallbackApplies(goal)) {
-      const fb = await q6FallbackSites(ctx, goal, top, slots, stage);
+      const fb = await q6FallbackSites(ctx, goal, top, slots, stage, options.batchQ6Fallback === true);
       requests += fb.requests;
       for (const [stmt, keys] of fb.placements) q6Fallback.set(stmt, keys);
       notes.push(...fb.notes);
@@ -910,7 +959,7 @@ export function topStatementTemplates(file: SourceFile, fn: Pick<FunctionCandida
  * and Jev's probability in their evidence. `after_l<i>` maps to the slots after the statement at
  * line i (several when a blank line gave a second level); `before_l<def>` lies outside the function.
  */
-async function q6FallbackSites(ctx: GoalSiteContext, goal: Goal, fn: BeamFunction, slots: readonly GapSlot[], stage: StageName): Promise<{ sites: Site[]; placements: Map<string, string[]>; requests: number; notes: string[] }> {
+async function q6FallbackSites(ctx: GoalSiteContext, goal: Goal, fn: BeamFunction, slots: readonly GapSlot[], stage: StageName, batch = false): Promise<{ sites: Site[]; placements: Map<string, string[]>; requests: number; notes: string[] }> {
   const out = { sites: [] as Site[], placements: new Map<string, string[]>(), requests: 0, notes: [] as string[] };
   const lines = codeLines(fn.file.mod, fn.startLine, fn.endLine);
   if (slots.length < Q6_FALLBACK_MIN_GAPS || lines.length > Q6_FALLBACK_MAX_LINES) {
@@ -923,9 +972,16 @@ async function q6FallbackSites(ctx: GoalSiteContext, goal: Goal, fn: BeamFunctio
     return out;
   }
   const seen = new Set<string>();
+  // llm-jev: one request over one state for every statement; else one request per statement (the measured shape)
+  const batched = batch ? await askGapsBatched(ctx, goal, fn, lines, statements.map((s) => s.text), stage) : null;
+  if (batched !== null) out.requests += 1;
   for (const { text } of statements) {
-    const ranked = await askGaps(ctx, goal, fn, lines, text, stage);
-    out.requests += 1;
+    let ranked: { key: string; p: number }[];
+    if (batched !== null) ranked = batched.get(text) ?? [];
+    else {
+      ranked = await askGaps(ctx, goal, fn, lines, text, stage);
+      out.requests += 1;
+    }
     const kept = ranked.filter((r, i) => i === 0 || r.p >= Q6_FALLBACK_MIN_P).slice(0, Q6_TOP_GAPS);
     out.placements.set(text, kept.map((r) => r.key));
     for (const { key, p } of kept) {

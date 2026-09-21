@@ -96,6 +96,9 @@ export type OracleOutcome =
   | 'llm_valid'
   | 'llm_weak';
 
+/** Every `OracleOutcome`, for reading a persisted string back into the union (search/proposal.ts `completionEvidence`). */
+export const ORACLE_OUTCOMES: readonly OracleOutcome[] = ['valid', 'valid_weak', 'weak_network', 'no_blocks', 'no_pick', 'not_runnable', 'no_criterion', 'env_error', 'passes_on_base', 'incomplete_snippet', 'unstable', 'llm_valid', 'llm_weak'];
+
 /** The oracle outcomes under which a passing reproduction completes a repository run (§6.6). */
 export const COMPLETING_ORACLE_OUTCOMES: readonly OracleOutcome[] = ['valid', 'valid_weak', 'weak_network'];
 
@@ -1256,6 +1259,12 @@ export interface Synthesizer {
   readonly name: string;
   /** Produce exactly one proposal (usually a `patch` or `edit`, sometimes `run`/`read`/`done`) without any generating LLM. */
   synthesize(ctx: SynthesisContext): Promise<Proposal>;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): true when the synthesizer covers this workspace — Python files and a detected
+   * pytest/QuixBugs runner or a repository layout. False sends the engine to the generic per-step `propose_action` fallback
+   * (`StepRecord.proposer: 'generic'`). Absent = always handled (jev-only).
+   */
+  handles?(workspaceInfo: WorkspaceInfo, files: readonly string[]): boolean;
 }
 
 export interface EngineStatus {

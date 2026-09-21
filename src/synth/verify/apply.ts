@@ -12,7 +12,13 @@
  * lines deleted), and the site is stale when the span's code tokens no longer read as the joined
  * `currentLine` (comments and line breaks are not part of the identity). An extra edit that lands
  * inside the span would race the deletion, so it is refused.
+ *
+ * Block-anchored sites (`Site.span`, docs/LLM-JEV-DESIGN.md §4.7 step 3; llm/candidates.ts): an LLM
+ * hunk replaces an arbitrary physical block, whose code tokens may read as '' (a dedenting block),
+ * so the site is validated by the sha12 of the span's text (`spanTextSha`) instead, and `text === ''`
+ * deletes every span line (the first included: `replaceLine('')` would leave a blank line).
  */
+import { sha12 } from '../../core/hash.js';
 import { deleteLine, indentOf, insertLine, lineCount, reindent, replaceLine, splitPhysicalLines } from '../py/index.js';
 import { unifiedDiff } from '../py/edits.js';
 import { codeTokens, tokenizeFragment } from '../py/tokenize.js';
@@ -49,14 +55,21 @@ function applyOne(src: string, edit: LineEdit, indent: string): string {
   }
 }
 
-/** Site edit as a LineEdit, so the site and the extras go through one path. */
+/** Site edit as a LineEdit, so the site and the extras go through one path; a block-anchored deletion (`span`, `text === ''`) deletes the first span line instead of replacing it. */
 function siteEdit(c: Candidate): LineEdit {
+  if (c.site.span !== undefined && c.site.kind === 'replace' && c.text === '') return { path: c.site.file.path, line: c.site.line, kind: 'delete' };
   return { path: c.site.file.path, line: c.site.line, kind: c.site.kind, text: c.text };
 }
 
-/** Last physical line the site edit covers: `endLine` of a statement-level site, else the site line. */
-export function siteSpanEnd(site: Pick<Candidate['site'], 'line' | 'kind' | 'endLine'>): number {
-  return site.kind === 'replace' && site.endLine !== undefined && site.endLine > site.line ? site.endLine : site.line;
+/** Last physical line the site edit covers: `span.endLine` of a block-anchored site, `endLine` of a statement-level site, else the site line. */
+export function siteSpanEnd(site: Pick<Candidate['site'], 'line' | 'kind' | 'endLine' | 'span'>): number {
+  const end = site.span?.endLine ?? site.endLine;
+  return site.kind === 'replace' && end !== undefined && end > site.line ? end : site.line;
+}
+
+/** sha12 over a span's physical lines joined by '\n' (CR stripped): the identity of a block-anchored site (`Site.span.textSha`). */
+export function spanTextSha(lines: readonly string[]): string {
+  return sha12(lines.map((l) => l.replace(/\r$/, '')).join('\n'));
 }
 
 /**
@@ -111,7 +124,14 @@ export function applyCandidate(candidate: Candidate, files?: ReadonlyMap<string,
   }
 
   const before = current(sitePath);
-  if (candidate.site.kind === 'replace') {
+  if (candidate.site.kind === 'replace' && candidate.site.span !== undefined) {
+    // a block-anchored (LLM) site: the span must still read the anchored text, byte for byte (§4.7 step 3)
+    const lines = splitPhysicalLines(before);
+    const span = lines.slice(candidate.site.line - 1, spanEnd);
+    if (span.length !== spanEnd - candidate.site.line + 1 || spanTextSha(span) !== candidate.site.span.textSha) {
+      throw new VerifyError(`stale llm site: ${sitePath}:${candidate.site.line}-${spanEnd} no longer reads the anchored block`);
+    }
+  } else if (candidate.site.kind === 'replace') {
     const lines = splitPhysicalLines(before);
     if (spanEnd > candidate.site.line) {
       // a statement-level site: the span's code tokens must still read as the joined statement
