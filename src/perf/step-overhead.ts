@@ -1,32 +1,110 @@
 /**
- * Harness overhead per step (DESIGN.md §12): the engine in-process with a mock provider and
- * mock decider at zero latency, a 5,000-file git fixture plus a 5,000-file node_modules to
- * skip, 50 steps whose trajectory includes `run` actions (cache invalidation path).
- * harnessMs = StepRecord.timing.harnessMs from step:end events. Gate: p95 < 50 ms.
+ * Harness overhead per step (DESIGN.md §12; TUI-DESIGN §18 last row): the engine in-process with a mock provider and
+ * mock decider at zero latency, no TUI attached, over a git fixture of 5,000 small files (70 dirs) plus a 5,000-file
+ * `node_modules/` that must be skipped. The trajectory is the `--mock` cycle write → read → run → edit, so every
+ * fourth step is a `run` action (the cache-invalidation path and the §12.3 pre-image of the dirty set).
+ *
+ * §12.3 additions: 50 files modified after the fixture commit, 300 KiB each (15 MiB in total — the worst case inside
+ * the 200-file / 16 MiB `run` pre-image cap, each under the 1 MiB per-file limit, so all 50 are copied at every `run`
+ * step), and one `run` step whose command writes a 60 MiB artefact, which the post-image must record with
+ * `hashSkipped: true` (it exceeds the 16 MiB per-step hashing budget) without hashing it. `harnessMs` is
+ * `StepRecord.timing.harnessMs` from `step:end` (images are awaited inside `runStep()`, so the gate sees them — the
+ * design's choice, D8: `imagesMs` is recorded inside `harnessMs`); `imagesMs` is `StepTiming.imagesMs`. Gate:
+ * harnessMs p95 < 50 ms; imagesMs p95 reported against 15 ms. The `run` steps carry the p95 (each copies the 15 MiB
+ * dirty set), so their own p95 / p50 are reported as a row of their own: the margin under the gate is theirs, a few
+ * milliseconds, and it is load-sensitive — a release number is taken with the 1-minute load ≤ `LOAD_QUIET` (`main.ts`).
  */
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
-import type { Confirmer, EngineOptions } from '../core/types.js';
+import type { Action, Confirmer, EngineOptions, MockTurn, PlanDraft } from '../core/types.js';
 import { percentile } from '../core/time.js';
-import { mockTrajectory } from '../cli/mock-trajectory.js';
 
 export interface StepOverheadResult {
   steps: number;
   harnessMs: number[];
   p50: number | null;
   p95: number | null;
+  /** harnessMs of the `run` steps alone (the 15 MiB pre-image copy happens there; they carry the p95) */
+  harnessRun: number[];
+  harnessRunP50: number | null;
+  harnessRunP95: number | null;
+  /** harnessMs of every other step */
+  harnessOtherP95: number | null;
+  /** imagesMs of every step that took images (pre or post) */
+  imagesMs: number[];
+  imagesP50: number | null;
+  imagesP95: number | null;
+  /** imagesMs of the `run` steps alone (the dirty-set copy) */
+  imagesRunP95: number | null;
+  imagesTargetMs: number;
+  imagesWithinTarget: boolean;
+  /** the 60 MiB artefact step's post image carries hashSkipped: true */
+  hashSkipped: boolean | null;
+  artefactStep: number;
+  dirtyFiles: number;
+  dirtyBytes: number;
   pass: boolean;
   gateMs: number;
 }
 
 const neverAsked: Confirmer = { identity: 'perf', confirm: async () => false };
+const DIRTY_FILES = 50;
+const DIRTY_FILE_BYTES = 300 * 1024;
+const ARTEFACT_MIB = 60;
 
-export async function measureStepOverhead(opts: { steps: number; gateMs?: number }): Promise<StepOverheadResult> {
+function turn(goal: string, action: Action, plan: PlanDraft): MockTurn {
+  return {
+    text: `${goal}\n`,
+    toolCall: { name: 'propose_action', input: { goal, action: action as unknown as Record<string, string>, plan } as never, rawJson: JSON.stringify({ goal, action, plan }) },
+    usage: { inputTokens: 1200, outputTokens: 150, costUsd: 0, calls: 1 },
+  };
+}
+
+/** The `--mock` cycle (write → read → run → edit) with the `run` of cycle `artefactCycle` writing the 60 MiB artefact. */
+function trajectory(steps: number, artefactStep: number): MockTurn[] {
+  const turns: MockTurn[] = [];
+  const remaining = ['create the scratch module', 'exercise it', 'verify with a command'];
+  for (let i = 0; i < steps; i++) {
+    const k = i % 4;
+    const plan: PlanDraft = { done: [], remaining, openProblems: [] };
+    if (k === 0) turns.push(turn(`Create scratch_${i}.py`, { kind: 'write', path: `scratch_${i}.py`, content: `VALUE_${i} = ${i}\n` }, plan));
+    else if (k === 1) turns.push(turn(`Read scratch_${i - 1}.py`, { kind: 'read', paths: [`scratch_${i - 1}.py`] }, plan));
+    else if (k === 2) {
+      if (i + 1 === artefactStep) turns.push(turn('Produce the build artefact', { kind: 'run', command: `head -c ${ARTEFACT_MIB * 1024 * 1024} /dev/zero > artefact.bin` }, plan));
+      else turns.push(turn('Check the shell works', { kind: 'run', command: `printf 'ok %s\\n' ${i}` }, plan));
+    } else turns.push(turn(`Edit scratch_${i - 3}.py`, { kind: 'edit', path: `scratch_${i - 3}.py`, old: `VALUE_${i - 3} = ${i - 3}`, new: `VALUE_${i - 3} = ${i}` }, plan));
+  }
+  return turns;
+}
+
+function readHashSkipped(runsDir: string, step: number): boolean | null {
+  // post/<step>.json lives under <runsDir>/<runId>/; there is exactly one run
+  try {
+    const runs = spawnSync('ls', [runsDir], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean);
+    for (const id of runs) {
+      const p = join(runsDir, id, 'post', `${step}.json`);
+      try {
+        const v: unknown = JSON.parse(readFileSync(p, 'utf8'));
+        if (typeof v === 'object' && v !== null && typeof (v as Record<string, unknown>)['hashSkipped'] === 'boolean') return (v as Record<string, unknown>)['hashSkipped'] as boolean;
+      } catch {
+        /* next run dir */
+      }
+    }
+  } catch {
+    return null;
+  }
+  return null;
+}
+
+export async function measureStepOverhead(opts: { steps: number; gateMs?: number; imagesTargetMs?: number }): Promise<StepOverheadResult> {
   const gateMs = opts.gateMs ?? 50;
+  const imagesTargetMs = opts.imagesTargetMs ?? 15;
   const ws = mkdtempSync(join(tmpdir(), 'jevcode-perf-ws-'));
   const runs = mkdtempSync(join(tmpdir(), 'jevcode-perf-runs-'));
+  // the 60 MiB artefact is written by the `run` of the third cycle (step 11), so nine steps see the plain dirty set first
+  const artefactStep = 11;
   try {
     for (let d = 0; d < 70; d++) {
       mkdirSync(join(ws, 'src', `pkg${d}`), { recursive: true });
@@ -36,18 +114,27 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       mkdirSync(join(ws, 'node_modules', `dep${d}`), { recursive: true });
       for (let f = 0; f < 100; f++) writeFileSync(join(ws, 'node_modules', `dep${d}`, `f${f}.js`), `module.exports=${f};\n`);
     }
+    mkdirSync(join(ws, 'data'), { recursive: true });
+    const blob = Buffer.alloc(DIRTY_FILE_BYTES, 0x61);
+    for (let i = 0; i < DIRTY_FILES; i++) writeFileSync(join(ws, 'data', `set${i}.bin`), blob);
     writeFileSync(join(ws, '.gitignore'), 'node_modules/\n');
     spawnSync('git', ['init', '-q'], { cwd: ws });
     spawnSync('git', ['-c', 'user.email=perf@jevcode', '-c', 'user.name=perf', 'add', '-A'], { cwd: ws });
     spawnSync('git', ['-c', 'user.email=perf@jevcode', '-c', 'user.name=perf', 'commit', '-qm', 'fixture'], { cwd: ws });
+    // the dirty set: 50 tracked files modified after the commit (300 KiB each, 15 MiB in total)
+    const dirty = Buffer.alloc(DIRTY_FILE_BYTES, 0x62);
+    let dirtyBytes = 0;
+    for (let i = 0; i < DIRTY_FILES; i++) {
+      writeFileSync(join(ws, 'data', `set${i}.bin`), dirty);
+      dirtyBytes += statSync(join(ws, 'data', `set${i}.bin`)).size;
+    }
 
     const { createMockProvider } = await import('../provider/mock.js');
     const { createMockDecider } = await import('../jev/mock.js');
     const { createSpendMeter } = await import('../spend/meter.js');
     const { createEngine } = await import('../loop/engine.js');
     const { patternRedact } = await import('../core/redact.js');
-    const turns = mockTrajectory(opts.steps + 1);
-    turns.pop(); // drop the trailing `done`; the mock decider keeps the run going until max_steps
+    const turns = trajectory(opts.steps, artefactStep);
     const engineOpts: EngineOptions = {
       task: 'perf: exercise the loop with scratch files',
       mode: 'jev-on',
@@ -68,10 +155,46 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
     };
     const engine = await createEngine(engineOpts);
     const harnessMs: number[] = [];
-    engine.events.on('step:end', (e) => harnessMs.push(e.record.timing.harnessMs));
+    const harnessRun: number[] = [];
+    const harnessOther: number[] = [];
+    const imagesMs: number[] = [];
+    const imagesRun: number[] = [];
+    engine.events.on('step:end', (e) => {
+      const isRun = e.record.proposal?.action.kind === 'run';
+      harnessMs.push(e.record.timing.harnessMs);
+      (isRun ? harnessRun : harnessOther).push(e.record.timing.harnessMs);
+      const im = e.record.timing.imagesMs;
+      if (im !== undefined) {
+        imagesMs.push(im);
+        if (isRun) imagesRun.push(im);
+      }
+    });
     await engine.run();
+    const hashSkipped = readHashSkipped(runs, artefactStep);
     const p95 = percentile(harnessMs, 95);
-    return { steps: harnessMs.length, harnessMs, p50: percentile(harnessMs, 50), p95, pass: p95 !== null && p95 < gateMs && harnessMs.length >= Math.min(opts.steps, 10), gateMs };
+    const imagesP95 = percentile(imagesMs, 95);
+    return {
+      steps: harnessMs.length,
+      harnessMs,
+      p50: percentile(harnessMs, 50),
+      p95,
+      harnessRun,
+      harnessRunP50: percentile(harnessRun, 50),
+      harnessRunP95: percentile(harnessRun, 95),
+      harnessOtherP95: percentile(harnessOther, 95),
+      imagesMs,
+      imagesP50: percentile(imagesMs, 50),
+      imagesP95,
+      imagesRunP95: percentile(imagesRun, 95),
+      imagesTargetMs,
+      imagesWithinTarget: imagesP95 !== null && imagesP95 < imagesTargetMs,
+      hashSkipped,
+      artefactStep,
+      dirtyFiles: DIRTY_FILES,
+      dirtyBytes,
+      pass: p95 !== null && p95 < gateMs && harnessMs.length >= Math.min(opts.steps, 10) && hashSkipped === true,
+      gateMs,
+    };
   } finally {
     rmSync(ws, { recursive: true, force: true });
     rmSync(runs, { recursive: true, force: true });

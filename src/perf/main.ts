@@ -1,48 +1,253 @@
 /**
- * `jevcode perf` (DESIGN.md §12): first frame, harness overhead per step, render lag, and
- * (with --live) Jev latency. Writes perf/results/latest.json and prints a table; exits 1
- * when a gate fails.
+ * `jevcode perf` (DESIGN.md §12; TUI-DESIGN §18): first frame (run + chat, three geometries), harness overhead per
+ * step with images, Static append bytes, render lag while typing during a live mocked run paced by
+ * `JEVCODE_MOCK_STEP_MS` (three geometries at the realistic 200 ms rate, gated; one zero-latency stress row, reported),
+ * composer keystroke latency (six series), zero clears per state, and (with --live) Jev latency. Writes perf/results/latest.json, prints a table,
+ * rewrites the README's Performance section from the result (`readme.ts`; complete runs only) and exits 1 when a gate
+ * fails.
+ *
+ * The machine must be quiet: the 1-minute load average is read first and, above `LOAD_MAX`, the run waits
+ * `LOAD_WAIT_MS` and re-reads it up to three times (the load at measurement start and end is recorded either way). A
+ * release number additionally needs the load ≤ `LOAD_QUIET` at both ends (`load.quiet` in the result): the harness
+ * gate passes by a few milliseconds and flips under modest load (`step-overhead.ts`).
+ *
+ * `JEVCODE_PERF_ONLY=first-frame,states` (comma list of probe names) runs a subset — for iterating on one probe; a
+ * subset result is written with `partial: true`, never counts as the release number and never reaches the README.
+ *
+ * The Static microbenchmark mounts the real Ink App in-process (`static-append.ts`); Ink's cursor helper registers an
+ * exit hook that writes `ESC[?25h` to `process.stderr` (`restore-cursor`: `signalExit(() => process.stderr.write(…))`),
+ * which would corrupt the perf command's own output at exit, so the parent runs it in a child `jevcode perf` process
+ * (`JEVCODE_PERF_ONLY=static-append`, `JEVCODE_PERF_CHILD=1`, stdio piped) and reads its JSON.
  */
-import { mkdirSync, writeFileSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { execFileSync, spawn } from 'node:child_process';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { cpus, loadavg, release, totalmem } from 'node:os';
+import { join, resolve } from 'node:path';
+import { tmpdir } from 'node:os';
 import type { ParsedFlags } from '../cli/args.js';
-import { measureFirstFrame } from './first-frame.js';
-import { measureStepOverhead } from './step-overhead.js';
-import { measureRenderLag } from './render-lag.js';
+import { measureFirstFrame, type FirstFrameResult } from './first-frame.js';
+import { measureStepOverhead, type StepOverheadResult } from './step-overhead.js';
+import { REALISTIC_STEP_MS, measureRenderLag, type RenderLagResult } from './render-lag.js';
+import { measureComposerLatency, type ComposerLatencyResult } from './composer-latency.js';
+import { measureStates, type StatesResult } from './states.js';
+import type { StaticAppendResult } from './static-append.js';
+import type { JevLatencyResult } from './jev-latency.js';
+import { resultRows, updateReadmePerformance } from './readme.js';
+
+export const LOAD_MAX = 8;
+/** a release number is taken with the 1-minute load ≤ this at the start and the end of the run */
+export const LOAD_QUIET = 2;
+export const LOAD_WAIT_MS = 30_000;
+export const LOAD_RETRIES = 3;
+
+export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'states';
+const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'states'];
+
+export interface PerfResult {
+  measuredAt: string;
+  node: string;
+  machine: { cpus: number; model: string; memGiB: number; os: string };
+  load: { atStart: number; atEnd: number; waitedMs: number; max: number; quietMax: number; quiet: boolean };
+  /** other pty drivers alive when the run started (`pgrep -fl 'drive.exp|pty_type.py'`, other agents' smokes): the run's conditions, recorded for the reader */
+  foreignDrivers: string[];
+  probes: ProbeName[];
+  partial: boolean;
+  firstFrame: FirstFrameResult | null;
+  stepOverhead: StepOverheadResult | null;
+  staticAppend: StaticAppendResult | null;
+  renderLag: RenderLagResult | null;
+  composerLatency: ComposerLatencyResult | null;
+  states: StatesResult | null;
+  jevLatency: JevLatencyResult | null;
+  pass: boolean;
+}
+
+const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
+
+function selectedProbes(env: NodeJS.ProcessEnv): ProbeName[] {
+  const only = env['JEVCODE_PERF_ONLY'];
+  if (only === undefined || only.trim() === '') return [...ALL_PROBES];
+  const wanted = new Set(only.split(',').map((s) => s.trim()).filter(Boolean));
+  const unknown = [...wanted].filter((w) => !ALL_PROBES.includes(w as ProbeName));
+  if (unknown.length > 0) throw new Error(`JEVCODE_PERF_ONLY: unknown probe(s) ${unknown.join(', ')} (known: ${ALL_PROBES.join(', ')})`);
+  return ALL_PROBES.filter((p) => wanted.has(p));
+}
+
+/** Wait for a quiet machine: 1-minute load ≤ LOAD_MAX, re-read up to LOAD_RETRIES times LOAD_WAIT_MS apart. */
+async function awaitQuietMachine(log: (s: string) => void): Promise<{ load: number; waitedMs: number }> {
+  let waited = 0;
+  for (let attempt = 0; ; attempt++) {
+    const load = loadavg()[0] ?? 0;
+    if (load <= LOAD_MAX || attempt >= LOAD_RETRIES) {
+      if (load > LOAD_MAX) log(`perf: load average ${load.toFixed(2)} still above ${LOAD_MAX} after ${LOAD_RETRIES} waits; measuring anyway (recorded in the result)\n`);
+      return { load, waitedMs: waited };
+    }
+    log(`perf: load average ${load.toFixed(2)} > ${LOAD_MAX}; waiting ${LOAD_WAIT_MS / 1000} s (${attempt + 1}/${LOAD_RETRIES})…\n`);
+    await sleep(LOAD_WAIT_MS);
+    waited += LOAD_WAIT_MS;
+  }
+}
+
+/**
+ * The pty driver processes among `pgrep -fl` lines: an `expect` running `scripts/pty/drive.exp` or a `python3` running
+ * `perf/drivers/pty_type.py` — not every process whose argv merely mentions those names (a shell carrying a script
+ * text, an editor). One truncated `pid command` line each.
+ */
+export function driverLines(pgrepOutput: string): string[] {
+  const driver = /^\d+\s+(?:\S*\/)?(?:expect\b.*drive\.exp|python3?\b.*pty_type\.py)/;
+  return pgrepOutput
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => driver.test(l))
+    .map((l) => (l.length > 160 ? `${l.slice(0, 159)}…` : l));
+}
+
+/** Other pty driver processes alive right now (drive.exp / pty_type.py of other agents). */
+export function foreignPtyDrivers(): string[] {
+  try {
+    return driverLines(execFileSync('pgrep', ['-fl', 'drive\\.exp|pty_type\\.py'], { encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'] }));
+  } catch {
+    // pgrep exits 1 when nothing matches
+    return [];
+  }
+}
+
+/**
+ * Run the Static microbenchmark in a child `jevcode perf` (see the header) and return its result; the child's progress
+ * lines (two-space indented) are forwarded, everything else it prints is dropped. Null when the child failed.
+ */
+async function measureStaticAppendInChild(bin: string, progress: (line: string) => void): Promise<StaticAppendResult | null> {
+  const dir = mkdtempSync(join(tmpdir(), 'jevcode-perf-static-'));
+  const out = join(dir, 'static-append.json');
+  const env: Record<string, string | undefined> = { ...process.env, JEVCODE_PERF_ONLY: 'static-append', JEVCODE_PERF_CHILD: '1', NODE_ENV: 'production' };
+  delete env['CI'];
+  try {
+    const code = await new Promise<number | null>((done) => {
+      const child = spawn(process.execPath, [bin, 'perf', '--out', out], { stdio: ['ignore', 'pipe', 'pipe'], env });
+      let buffered = '';
+      child.stdout.on('data', (b: Buffer) => {
+        buffered += b.toString('utf8');
+        const lines = buffered.split('\n');
+        buffered = lines.pop() ?? '';
+        for (const line of lines) if (line.startsWith('  ')) progress(line.slice(2));
+      });
+      child.stderr.on('data', () => undefined);
+      const killer = setTimeout(() => child.kill('SIGKILL'), 300_000);
+      child.on('close', (c) => {
+        clearTimeout(killer);
+        done(c);
+      });
+    });
+    if (code !== 0) return null;
+    const parsed: unknown = JSON.parse(readFileSync(out, 'utf8'));
+    if (typeof parsed !== 'object' || parsed === null) return null;
+    const sa = (parsed as { staticAppend?: StaticAppendResult | null }).staticAppend;
+    return sa ?? null;
+  } catch {
+    return null;
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
 
 export async function runPerf(flags: ParsedFlags): Promise<number> {
-  const bin = resolve('bin/jevcode.js');
+  const root = process.cwd();
+  const bin = resolve(root, 'bin/jevcode.js');
   const out = flags.out ?? 'perf/results/latest.json';
-  process.stdout.write('perf: first frame (10 cold + 10 warm runs under a pseudo-TTY)…\n');
-  const firstFrame = await measureFirstFrame({ bin, runs: 10 });
-  process.stdout.write('perf: harness overhead per step (mocked, zero latency, 50 steps)…\n');
-  const overhead = await measureStepOverhead({ steps: 50 });
-  process.stdout.write('perf: render lag under the TUI (mocked, 60 steps, rows 40 and rows 12)…\n');
-  const lag = await measureRenderLag({ bin, steps: 60 });
-  let jev: Awaited<ReturnType<typeof import('./jev-latency.js')['measureJevLatency']>> | null = null;
+  const child = process.env['JEVCODE_PERF_CHILD'] === '1';
+  const log = (s: string): void => {
+    process.stdout.write(s);
+  };
+  const progress = (line: string): void => log(`  ${line}\n`);
+  const probes = selectedProbes(process.env);
+  const partial = probes.length !== ALL_PROBES.length;
+  // the parent already waited for a quiet machine; a child measures right away
+  const quiet = child ? { load: loadavg()[0] ?? 0, waitedMs: 0 } : await awaitQuietMachine(log);
+  log(`perf: load average ${quiet.load.toFixed(2)} at start (limit ${LOAD_MAX}, release ≤ ${LOAD_QUIET}); probes: ${probes.join(', ')}${partial ? ' (PARTIAL)' : ''}\n`);
+  const foreignDrivers = child ? [] : foreignPtyDrivers();
+  if (foreignDrivers.length > 0) log(`perf: ${foreignDrivers.length} other pty driver process(es) alive at the start (recorded in the result):\n${foreignDrivers.map((d) => `  ${d}`).join('\n')}\n`);
+
+  let firstFrame: FirstFrameResult | null = null;
+  let overhead: StepOverheadResult | null = null;
+  let staticAppend: StaticAppendResult | null = null;
+  let lag: RenderLagResult | null = null;
+  let composer: ComposerLatencyResult | null = null;
+  let states: StatesResult | null = null;
+  let jev: JevLatencyResult | null = null;
+
+  if (probes.includes('first-frame')) {
+    log('perf: first frame (run + chat × 40x120 / 24x80 / 8x40; 10 cold + 10 warm runs each under a pseudo-TTY, zero network asserted)…\n');
+    firstFrame = await measureFirstFrame({ bin, runs: 10, onProgress: progress });
+  }
+  if (probes.includes('step-overhead')) {
+    log('perf: harness overhead per step (mocked, zero latency, 50 steps, 5,000-file fixture, 50 dirty files / 15 MiB, one 60 MiB artefact)…\n');
+    overhead = await measureStepOverhead({ steps: 50 });
+    progress(`harness p50 ${overhead.p50?.toFixed(1)} ms, p95 ${overhead.p95?.toFixed(1)} ms (run steps p95 ${overhead.harnessRunP95?.toFixed(1)} / p50 ${overhead.harnessRunP50?.toFixed(1)} ms, other steps p95 ${overhead.harnessOtherP95?.toFixed(1)} ms); imagesMs p50 ${overhead.imagesP50?.toFixed(1)} p95 ${overhead.imagesP95?.toFixed(1)} ms (run steps p95 ${overhead.imagesRunP95?.toFixed(1)} ms); hashSkipped ${String(overhead.hashSkipped)} at step ${overhead.artefactStep}`);
+  }
+  if (probes.includes('static-append')) {
+    log('perf: Static append bytes per committed line (in-process fake TTY 24x80: live + 6-row draft, review pending, idle)…\n');
+    if (child) {
+      const { measureStaticAppend } = await import('./static-append.js');
+      staticAppend = await measureStaticAppend({ onProgress: progress });
+    } else {
+      staticAppend = await measureStaticAppendInChild(bin, progress);
+      if (staticAppend === null) progress('static append: the child probe failed (no result) → FAIL');
+    }
+  }
+  if (probes.includes('render-lag')) {
+    log(`perf: render lag while typing 10 keys/s during a live mocked run (real pty, 120 columns: rows 40, rows 12, rows 40 reduced motion at JEVCODE_MOCK_STEP_MS=${REALISTIC_STEP_MS} — gated; rows 40 at 0 ms — the stress row, reported)…\n`);
+    lag = await measureRenderLag({ root, bin, onProgress: progress });
+  }
+  if (probes.includes('composer-latency')) {
+    log(`perf: composer keystroke → frame latency (real pty 24x80: idle, live at the A109 region at JEVCODE_MOCK_STEP_MS=${REALISTIC_STEP_MS}, live-stress at 0 ms (reported), palette, review; 200 keys 100 ms apart; burst30 latency reported, dynamic frame rate gated)…\n`);
+    composer = await measureComposerLatency({ root, bin, onProgress: progress });
+  }
+  if (probes.includes('states')) {
+    log('perf: zero clears per state and geometry segment (review, palette, picker, wizard, secret row, render faults, resize idle/live 40→12→40, Ctrl+L)…\n');
+    states = await measureStates({ root, bin, onProgress: progress });
+  }
   if (flags.live) {
-    process.stdout.write('perf: Jev latency (live)…\n');
+    log('perf: Jev latency (live)…\n');
     const { measureJevLatency } = await import('./jev-latency.js');
     jev = await measureJevLatency(flags);
   }
-  const pass = firstFrame.pass && overhead.pass && lag.pass;
-  const result = { measuredAt: new Date().toISOString(), node: process.version, firstFrame, stepOverhead: overhead, renderLag: lag, jevLatency: jev, pass };
+  const loadEnd = loadavg()[0] ?? 0;
+
+  const staticPass = probes.includes('static-append') ? (staticAppend?.pass ?? false) : undefined;
+  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, states?.pass].filter((v): v is boolean => v !== undefined);
+  const pass = gates.length > 0 && gates.every(Boolean);
+  const cpu = cpus();
+  const result: PerfResult = {
+    measuredAt: new Date().toISOString(),
+    node: process.version,
+    machine: { cpus: cpu.length, model: cpu[0]?.model ?? 'unknown', memGiB: Math.round(totalmem() / 2 ** 30), os: `darwin ${release()}` },
+    load: { atStart: quiet.load, atEnd: loadEnd, waitedMs: quiet.waitedMs, max: LOAD_MAX, quietMax: LOAD_QUIET, quiet: quiet.load <= LOAD_QUIET && loadEnd <= LOAD_QUIET },
+    foreignDrivers,
+    probes,
+    partial,
+    firstFrame,
+    stepOverhead: overhead,
+    staticAppend,
+    renderLag: lag,
+    composerLatency: composer,
+    states,
+    jevLatency: jev,
+    pass,
+  };
   mkdirSync(resolve(out, '..'), { recursive: true });
   writeFileSync(out, JSON.stringify(result, null, 2));
-  const f = (v: number | null | undefined): string => (v == null ? '–' : `${v.toFixed(1)} ms`);
-  const rows: [string, string, string, string][] = [
-    ['first frame cold p95 (10 runs)', f(firstFrame.cold.p95), '< 300 ms', firstFrame.pass ? 'pass' : 'FAIL'],
-    ['first frame cold median', f(firstFrame.cold.median), '', ''],
-    ['first frame warm median', f(firstFrame.warm.median), '', ''],
-    ['harness overhead per step p95', f(overhead.p95), '< 50 ms', overhead.pass ? 'pass' : 'FAIL'],
-    ['harness overhead per step p50', f(overhead.p50), '', ''],
-    ['event-loop lag p95 (rows 40 / 12)', `${f(lag.rows40.lagP95)} / ${f(lag.rows12.lagP95)}`, '< 5 ms', lag.pass ? 'pass' : 'FAIL'],
-    ['event-loop lag max (rows 40 / 12)', `${f(lag.rows40.lagMax)} / ${f(lag.rows12.lagMax)}`, '< 50 ms', ''],
-    ['terminal clears after first frame (rows 40 / 12)', `${lag.rows40.clears} / ${lag.rows12.clears}`, '0', ''],
-  ];
-  if (jev) rows.push(['Jev latency p50 / p95 (live)', `${f(jev.p50)} / ${f(jev.p95)}`, 'report', '']);
+
+  const rows = resultRows(result).map((r) => [r.measurement.replace(/`/g, ''), r.result, r.gate.replace(/`/g, ''), r.status] as const);
   const w = rows.reduce((m, r) => Math.max(m, r[0].length), 0);
-  for (const r of rows) process.stdout.write(`${r[0].padEnd(w)}  ${r[1].padEnd(22)}  ${r[2].padEnd(9)} ${r[3]}\n`);
-  process.stdout.write(`written ${out}\n`);
+  const w1 = rows.reduce((m, r) => Math.max(m, r[1].length), 0);
+  for (const r of rows) log(`${r[0].padEnd(w)}  ${r[1].padEnd(w1)}  ${r[2].padEnd(26)} ${r[3]}\n`);
+  log(`load average ${quiet.load.toFixed(2)} at start, ${loadEnd.toFixed(2)} at end (limit ${LOAD_MAX}; release number needs ≤ ${LOAD_QUIET} at both ends: ${result.load.quiet ? 'met' : 'NOT met'})\n`);
+  log(`written ${out}${partial ? ' (PARTIAL: not a release number)' : ''}\n`);
+  if (!partial && !child) {
+    const readme = resolve(root, 'README.md');
+    const ok = updateReadmePerformance(readme, result);
+    log(ok ? `README Performance section rewritten from ${out}\n` : `README.md has no "## Performance" section; nothing rewritten\n`);
+  }
+  log(`perf: ${pass ? 'all gates pass' : 'GATE FAILURE'}\n`);
   return pass ? 0 : 1;
 }

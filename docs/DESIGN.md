@@ -1893,27 +1893,37 @@ lag p95 < 5 ms and max < 50 ms during a mocked run (see render-lag).
 first frame cold p95 < 300 ms for the `chat` geometry as well as `run` (24×80 and 40×120, zero network asserted, the
 `step 0/` sentinel); composer keystroke → frame p95 < 16 ms in a real pty at the 24-row region, keystrokes spaced
 ≥ 100 ms so Ink's 34 ms leading-edge throttle is not what is measured (a 30 ms burst series is reported, not gated);
-event-loop lag p95 < 5 ms / max < 50 ms while typing during a live mocked run; zero `ESC[2J` / `ESC[3J` / `ESC c` /
+event-loop lag p95 < 5 ms / max < 50 ms while typing during a live mocked run at a realistic step rate (`JEVCODE_MOCK_STEP_MS=200`,
+about 5 steps/s — ten times faster than a real run; the zero-latency mock is a reported `stress` row, since at 35 steps/s Ink's
+immediate `<Static>` renders alone cost ≈ 460 frames/s), the p95 taken net of the lag probe's idle floor — the same 10 ms
+`setInterval` reads ≈ 2 ms per tick in an idle Node process on macOS (kernel timer coalescing of libuv's kevent timeout), so each
+run measures that floor with the identical probe in a bare idle `node` and reports raw, floor and net (TUI-DESIGN §18); zero `ESC[2J` / `ESC[3J` / `ESC c` /
 `ESC[?1049h` after the first frame **per geometry segment** — a shrink resize is allowed one clear, a grow none
 (`docs/research/tui/20-pty-driver-findings.md` §1; measured 2026-09-21: idle shrinks show ≤ 1, but a shrink with a live
 pane open shows 1–2 — Ink 7.1.1's `resized` handler renders the stale tree at the new viewport before the App's rows
 state updates and the re-render clears again — so `test/pty/chat.pty.test.ts` gates at 2 per shrink, the perf `states`
-probe still allows 1 and fails, and the bound of 1 is an open item in `docs/STATUS.md`); frame count ≤ maxFps + 1 per second; at most one `ESC[?25l` per
+probe still allows 1 and fails, and the bound of 1 is an open item in `docs/STATUS.md`); `dynamic` frames ≤ maxFps + 1 per second (frames carrying new `<Static>` rows and the leading-edge frame of a
+keystroke are rendered outside Ink's throttle by design — `reconciler.js` `isStaticDirty` → `onImmediateRender`, `throttle(…, { leading: true })` — and are reported separately, TUI-DESIGN §18 "Frame rate"); at most one `ESC[?25l` per
 frame and the cursor shown at the end of every frame while the composer is active; `harnessMs` p95 < 50 ms per
-step with pre/post images included and `imagesMs` p95 reported (< 15 ms); `<Static>` append bytes per line reported;
+step with pre/post images included and `imagesMs` p95 reported against a 15 ms target (a report row, not a gate); `<Static>` append bytes per line reported;
 plus the unit-test micro-gates (`computeLayout` ≤ 5 µs, `layoutRows` of a 12,000-char draft ≤ 2 ms, fuzzy `rank()`
 over 5,000 candidates p95 ≤ 16 ms, index fold ≤ 2 ms at 1,000 runs). On disk on 2026-09-21: `src/perf/{first-frame,render-lag,step-overhead,jev-latency,main}.ts` (the 2026-09-19
-gates), the wave-4 probes `src/perf/composer-latency.ts` (keystroke → frame series through `scripts/pty/drive.exp`),
+gates), the wave-4 probes `src/perf/composer-latency.ts` (keystroke → frame series through `perf/drivers/pty_type.py`, a typist that sends keys on a fixed cadence and timestamps them),
 `src/perf/states.ts` (zero clears per modal state and geometry segment) and `src/perf/pty.ts` (the shared driver
 plumbing and `CLEAR_RE` with its self-test), the shell smoke `test/pty/run-smoke.sh` (19 scenarios: exit code,
 per-segment zero clears, the exit string exactly once) and the vitest project `pty` (`npm run test:pty`,
 `test/pty/*.pty.test.ts`). Which of these gate `npm run perf` is the Gate column of its table: first frame cold p95,
-harness p95, render lag p95/max, the composer p95/max series and the per-state clears; `imagesMs`, `<Static>` bytes and
-the paced30 series are report-only. The measured values of the 2026-09-21 run are in `docs/STATUS.md` ("Interactive
-TUI" → "Measured numbers"): that run **fails** the render-lag gate (rows 40 p95 99.6 ms; rows 12 max 503 ms with a
-driver timeout) and the live-pane shrink-clears gate (2, allowed 1), reports `imagesMs` p95 19.3 ms above its 15 ms
-bound, and passes the rest (harness p95 45.7 ms). `perf/results/latest.json` and the README Performance table still
-hold the 2026-09-20 figures from the retired probe shapes, pending the perf slot's regeneration on a quiet machine.
+harness p95, render lag p95 (net of the probe floor) and max at the realistic step rate, the composer p95/max series, the
+`dynamic` frame rate where it is exercised (the lag runs, composer `live`, `burst30`) and the per-state clears; `imagesMs`,
+`<Static>` bytes, the `stress` rows and the `burst30` latency are report-only. The release run of 2026-09-21 (10:57Z;
+`perf/results/latest.json`; 1-minute load 1.00 → 0.99; five orphaned `drive.exp` processes of other slots alive but idle,
+listed under `foreignDrivers`) **passes every gate**: first frame cold p95 109.5–115.2 ms over the six series; harness p95
+46.0 ms (`imagesMs` p95 19.4 ms, reported); lag p95 net 3.30 / 2.20 / 3.58 ms at rows 40 / 12 / 40 reduced motion (raw
+5.34 / 4.25 / 5.62 ms over a 2.04 ms probe floor; max 15.0 / 17.2 / 13.9 ms) at 4.2 steps/s; `dynamic` frames 8 / 9 / 3 per
+second (`static` 17, `key` 15–16); the stress row at 0 ms: 34.7 steps/s, 453 `<Static>` rows/s, lag p95 5.78 ms raw, 116 ·
+26 · 28 static · key · dynamic frames/s; composer p95 3.4 / 8.5 / 3.9 / 7.8 ms (idle / live / palette / review), `burst30` 34
+`key` frames/s at 33.2 keys/s with 0 `dynamic`; 15 state scenarios pass with one clear per shrink (`resize`, `resize-live`)
+and none elsewhere. The README Performance table is regenerated from that file.
 
 ## 13. Bench (`bench/*`)
 

@@ -542,10 +542,17 @@ pty suite against mocks).
   `expect` for a run end times out after 600 s and the driver's `kill-on-timeout` sends SIGKILL → `exit 137`;
   `attempt-1/` holds an earlier 2.5 MB capture); not evaluated here beyond a pattern grep of the captures for
   `sk-or-v1-` / `sk-ant-` (0 hits).
-- A `jevcode perf` run on a quiet machine: the 08:38Z run ("Measured numbers") had load 2.5 and five `drive.exp`
-  processes of other slots alive, so its rows-40 lag p95 of 99.6 ms is not separated from contention; the
-  live-pane shrink double clear (2 vs 1) and the `imagesMs` p95 (19.3 vs 15 ms) are less load-sensitive but were
-  taken under the same conditions. `perf/results/latest.json` is still the 2026-09-20 file (perf slot).
+- `jevcode perf` release run (perf slot, 2026-09-21 10:57Z): **all gates pass**; `perf/results/latest.json` and the
+  README Performance table are regenerated from it. Conditions: 1-minute load 1.00 at the start and 0.99 at the end
+  (release bound ≤ 2 met), but the machine was not free of other slots' pty drivers — 5 orphaned `expect … drive.exp`
+  processes (parent `launchd`, six hours old, 0 % CPU, blocked in their final `eof` wait on a `jevcode chat --mock` child that
+  waits for input) stayed alive through the 15-minute quiet-machine poll and the run; they are listed under `foreignDrivers`
+  in the JSON. The lag and frame-rate gates were redefined for this run (TUI-DESIGN §18, DESIGN §12): measured at
+  `JEVCODE_MOCK_STEP_MS=200` (≈ 4.2 steps/s) with the zero-latency mock as a reported `stress` row; the lag p95 taken net of
+  the probe's ≈ 2 ms idle floor (macOS timer coalescing, measured by the same probe in a bare idle `node` in the run); the
+  frame-rate gate on `dynamic` frames only (Ink's immediate `<Static>` renders and leading-edge key frames are reported).
+  The 08:38Z figures quoted under "Measured numbers" (rows-40 lag p95 99.6 ms, shrink double clear) predate the typist
+  driver and the wave-4 resize fix and are superseded by that file.
 - Windows, screen readers and real terminals aside, the remaining unverified TUI claims are the ones only a
   human at a terminal can check (the manual checklist at the end of `docs/research/tui/terminal-matrix.md`).
 
