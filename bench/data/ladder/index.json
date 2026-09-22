@@ -408,5 +408,164 @@
       "tests/test_todo.py::test_summary[f_only]"
     ],
     "path": "tasks/six_hunks"
+  },
+  {
+    "name": "csv_schema",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "new_branch",
+      "two_files"
+    ],
+    "files": [
+      "src/cells.py",
+      "src/infer.py",
+      "src/schema.py"
+    ],
+    "difficulty": 5,
+    "description": "A CSV schema inferrer whose type lattice is broken in two places that only work together. (A) cells.widen returns the NARROWER of two kinds on the int < float < str chain, `RANK[left] < RANK[right]` for `>`. (B) infer.column_type seeds the fold with WIDEST and folds over every kind, where it must start at kinds[0] (and answer WIDEST only for an empty column). The two cancel: with A's min the WIDEST seed is harmless and homogeneous columns come out right, which is why test_an_int_column, test_a_float_column and test_blanks_are_ignored_when_typing pass on the buggy tree. Fixing A alone makes the seed dominate and every column becomes str -- three passing tests break. Fixing B alone recovers the bool and date columns only; mixed int/float and int/str columns stay wrong. (C) schema.validate reports only a row that is too SHORT, `len(row) < len(schema.columns)` for `!=`, so a spare cell slips through and zip() silently truncates. Eight tests fail, thirty-one pass. Plausible wrong fixes, all verified: (W1) repair cells.widen and stop -- the failing test names it directly, and it takes the tree from 8 to 9 failures by breaking test_an_int_column, test_a_float_column and test_blanks_are_ignored_when_typing (9 failed / 30 passed); (W2) the coupled pair plus `len(row) > len(schema.columns)`, the case the failing test shows -- all eight target tests green, breaks the pinned tests/test_schema.py::test_validate_reports_a_short_row (1 failed / 38 passed); (W3) leave cells.widen alone and hand-roll the precedence inside column_type (all-equal shortcut, `set(kinds) <= {int,float}` -> float, else str) -- every column test green and only tests/test_cells.py::test_widen_keeps_the_kind_that_holds_the_other left red, i.e. the per-module test that pins the pairwise rule is the only thing standing between the suite and an overfit (1 failed / 38 passed).",
+    "expected_failing": [
+      "tests/test_cells.py::test_widen_keeps_the_kind_that_holds_the_other",
+      "tests/test_infer.py::test_a_bool_column",
+      "tests/test_infer.py::test_a_date_column",
+      "tests/test_infer.py::test_ints_beside_decimals_make_the_column_float",
+      "tests/test_infer.py::test_one_word_makes_the_whole_column_text",
+      "tests/test_schema.py::test_a_cell_count_problem_hides_the_rest",
+      "tests/test_schema.py::test_infer_schema_types_each_column",
+      "tests/test_schema.py::test_validate_reports_a_row_with_a_spare_cell"
+    ],
+    "path": "tasks/csv_schema"
+  },
+  {
+    "name": "deadline_queue",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "call_args",
+      "operator",
+      "guard",
+      "two_files"
+    ],
+    "files": [
+      "src/slack.py",
+      "src/schedule.py"
+    ],
+    "difficulty": 5,
+    "description": "A deadline scheduler whose sign error is cancelled by a swapped call. (A) slack.lateness returns `due_at - finish_at`, the negation of the lateness its docstring describes, which also drags is_late and headroom the wrong way. (B) schedule.lateness_of calls lateness(slot.job.due_at, slot.finish) with the two arguments the wrong way round, which negates A back: every schedule-side lateness number, late_jobs, total_lateness and the whole of report.py are right on the buggy tree, and only the five tests/test_slack.py tests that call the helper directly are red. Repairing either half alone flips the sign of the whole schedule and report side. (C) schedule.lay_out gives a slot to a job of no length; the gold inserts `if job.minutes <= 0: continue`, and the tempting place to drop that job instead is ranking.order, which the suite forbids. Six tests fail, thirty-one pass. Plausible wrong fixes, all verified: (W1) flip slack.lateness and stop -- all five slack tests green, and five schedule tests (test_lateness_of_a_slot_that_lands_late, test_lateness_of_a_slot_that_lands_early, test_late_jobs_are_named_in_schedule_order, test_nothing_is_late_when_there_is_room, test_total_lateness_counts_only_the_late_jobs) plus five tests/test_report.py tests break (11 failed / 26 passed, up from 6); (W2) the coupled pair plus filtering the no-length job out in ranking.order -- all six target tests green, breaks the previously passing tests/test_ranking.py::test_order_keeps_every_job_including_one_of_no_length, which pins that ranking drops nothing (1 failed / 36 passed); (W3) un-swap schedule.lateness_of alone (16 failed / 21 passed).",
+    "expected_failing": [
+      "tests/test_schedule.py::test_a_job_of_no_length_gets_no_slot",
+      "tests/test_slack.py::test_headroom_is_the_time_to_spare",
+      "tests/test_slack.py::test_headroom_of_a_late_job_is_zero",
+      "tests/test_slack.py::test_is_late_reads_the_sign_of_the_lateness",
+      "tests/test_slack.py::test_lateness_when_a_job_lands_after_its_deadline",
+      "tests/test_slack.py::test_lateness_when_a_job_lands_early"
+    ],
+    "path": "tasks/deadline_queue"
+  },
+  {
+    "name": "dep_order",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "off_by_one",
+      "constant",
+      "two_files"
+    ],
+    "files": [
+      "src/layers.py",
+      "src/order.py",
+      "src/plan.py"
+    ],
+    "difficulty": 5,
+    "description": "An install-order resolver whose two off-by-ones cancel. (A) layers.depth folds with `max(..., default=0)` where the empty fold must be -1, so a package that requires nothing comes out at depth 1 and every depth in the graph is one too high. (B) order.round_number returns depth(graph, name) without the `+ FIRST_ROUND` that turns a 0-based depth into a 1-based round. A's shift is exactly B's missing offset, so every round_number, schedule and max_rounds test passes on the buggy tree, and layers() is unaffected because a constant shift does not change the grouping: the only visible failures are the four tests/test_layers.py depth tests. Fixing either one alone turns the four order tests red. (C) plan.check walks `wanted` only, so an unknown name in `installed` is never reported; the gold walks `list(wanted) + list(installed)`, which is also what pins the order of the two. Six tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) repair layers.depth and stop -- the four depth tests are the only ones that name it, and it breaks test_the_shallowest_packages_go_in_round_one, test_a_round_per_step_down_the_chain, test_the_schedule_numbers_every_package and test_max_rounds_counts_the_rounds (still 6 failed / 26 passed, a different six); (W2) the coupled pair plus check() switched from `wanted` to `installed`, the name the failing test complains about -- five of the six target tests green and the previously passing tests/test_plan.py::test_check_reports_an_unknown_wanted_package red (2 failed / 30 passed); (W3) repair order.round_number alone -- fixes nothing and breaks the four order tests as well (10 failed / 22 passed).",
+    "expected_failing": [
+      "tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero",
+      "tests/test_layers.py::test_an_isolated_package_is_at_depth_zero_too",
+      "tests/test_layers.py::test_depth_follows_the_longest_chain_not_the_shortest",
+      "tests/test_layers.py::test_depth_is_one_more_than_the_deepest_requirement",
+      "tests/test_plan.py::test_check_reports_an_unknown_installed_package",
+      "tests/test_plan.py::test_check_reports_the_wanted_ones_before_the_installed_ones"
+    ],
+    "path": "tasks/dep_order"
+  },
+  {
+    "name": "hunk_merge",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "off_by_one",
+      "two_files",
+      "call_args"
+    ],
+    "files": [
+      "src/hunks.py",
+      "src/apply.py",
+      "src/merge.py"
+    ],
+    "difficulty": 5,
+    "description": "A diff-hunk merger with a 1-based/0-based confusion that has been compensated for at the call site. (A) hunks.Hunk.index returns self.start, the 1-based diff line number, where it must return self.start - 1. (B) apply.apply subtracts that 1 back out again, `start = hunk.index() - 1` where it must be `start = hunk.index()`. Every apply test, and preview.preview on top of it, passes on the buggy tree because the two cancel exactly; only the four tests that read index(), last_index() and replaced_lines() directly are red, and none of them mentions apply.py. Removing either half alone shifts every hunk by one line. (C) merge.merge asks conflicts(left, right), which only pairs one side against the other, so a side that overlaps itself merges happily; the gold asks clashes(list(left) + list(right)), the sibling function directly above it that pairs a whole set against itself. Six tests fail, thirty-six pass. Plausible wrong fixes, all verified: (W1) make Hunk.index() 0-based and stop -- the four failing hunks tests point straight at it, and it breaks ten apply tests, test_a_merged_set_applies_cleanly and test_preview_is_the_patched_file_as_text (14 failed / 28 passed); (W2) the coupled pair plus `clashes(left) or clashes(right)`, exactly the two cases the failing tests show -- all six target tests green, breaks the previously passing tests/test_merge.py::test_merge_refuses_two_sides_that_lay_claim_to_the_same_lines (1 failed / 41 passed); (W3) drop the compensating `- 1` in apply.py alone (17 failed / 25 passed).",
+    "expected_failing": [
+      "tests/test_hunks.py::test_index_is_the_zero_based_offset",
+      "tests/test_hunks.py::test_last_index_is_the_offset_of_the_last_replaced_line",
+      "tests/test_hunks.py::test_last_index_of_an_insert_sits_one_before_its_index",
+      "tests/test_hunks.py::test_replaced_lines_are_the_ones_the_hunk_covers",
+      "tests/test_merge.py::test_merge_refuses_a_left_side_that_overlaps_itself",
+      "tests/test_merge.py::test_merge_refuses_a_right_side_that_overlaps_itself"
+    ],
+    "path": "tasks/hunk_merge"
+  },
+  {
+    "name": "route_match",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "operator",
+      "two_files",
+      "new_branch"
+    ],
+    "files": [
+      "src/pattern.py",
+      "src/router.py"
+    ],
+    "difficulty": 5,
+    "description": "A URL router whose specificity score and the comparison that reads it are both inverted. (A) pattern.specificity counts the PLACEHOLDER segments where its docstring says it counts the segments the pattern pins down, i.e. the static ones. (B) router.match picks min(...) of that score where it must pick max(...). Every route that matches one path has the same segment count, so static = width - placeholders and min(placeholders) is exactly max(static): the router picks the right route on the buggy tree, and only the four tests/test_pattern.py tests that read specificity, more_specific and rank directly are red. Repairing either half alone makes the router pick the LEAST specific route and breaks three match tests. (C) router.reverse tests `wanted - set(params)`, which only catches a placeholder with no value; the gold tests `wanted != set(params)`, which also catches a value for a placeholder the route does not have. Six tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) make specificity count static segments and stop -- the four failing pattern tests point straight at it, and it breaks test_match_prefers_a_static_segment_over_a_placeholder, test_match_falls_back_to_the_placeholder_route and test_match_captures_the_placeholder_values (5 failed / 27 passed); (W2) the coupled pair plus `set(params) - wanted`, the direction the two failing reverse tests show -- all six target tests green, breaks the previously passing tests/test_router.py::test_reverse_refuses_a_missing_parameter (1 failed / 31 passed); (W3) turn router.match's min into a max alone (9 failed / 23 passed).",
+    "expected_failing": [
+      "tests/test_pattern.py::test_more_specific_compares_two_patterns",
+      "tests/test_pattern.py::test_rank_puts_the_most_specific_first",
+      "tests/test_pattern.py::test_specificity_counts_the_segments_that_are_pinned_down",
+      "tests/test_pattern.py::test_specificity_drops_when_a_segment_becomes_a_placeholder",
+      "tests/test_router.py::test_reverse_refuses_a_parameter_on_a_route_that_takes_none",
+      "tests/test_router.py::test_reverse_refuses_an_unknown_parameter"
+    ],
+    "path": "tasks/route_match"
+  },
+  {
+    "name": "token_bucket",
+    "tier": "long-2",
+    "hunks": 3,
+    "kinds": [
+      "guard",
+      "two_files",
+      "operator",
+      "rename"
+    ],
+    "files": [
+      "src/bucket.py",
+      "src/limiter.py",
+      "src/policy.py"
+    ],
+    "difficulty": 5,
+    "description": "A token-bucket rate limiter with a coupled pair plus a unit bug. (A) bucket.wait_for is missing the `if cost > self.capacity: return None` guard, so a request larger than the bucket gets a finite wait instead of the never-ending one the docstring promises. (B) limiter.allow tests the wait for truthiness, `if not wait:` where it must be `if wait == 0.0:`, so a None wait reads as 'allowed'. A and B are coupled and neither is a fix alone: B is latent while A is present (the buggy wait_for returns a truthy float for over-burst requests, so test_a_request_above_the_burst_is_denied passes by accident), and fixing A alone turns that passing test red. B alone is visible through the no-refill `batch` quota, whose exhausted bucket already returns None. (C) policy.bucket_for passes policy.per_minute where the TokenBucket wants tokens per second; the donor is the Policy.refill_rate property right above it, which already calls clock.per_second. Seven tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) insert the capacity guard in wait_for and stop -- fixes both over-burst tests and breaks tests/test_limiter.py::test_a_request_above_the_burst_is_denied (6 failed / 27 passed); (W2) the whole fix but with `if cost >= self.capacity` -- all seven target tests green, breaks tests/test_bucket.py::test_wait_for_a_whole_capacity_request_is_finite, which pins that a bucket of ten can serve a request for ten (1 failed / 32 passed); (W3) fix the rate by rewriting POLICIES (60.0 -> 1.0, 600.0 -> 10.0) instead of converting in bucket_for -- all seven target tests green, breaks test_the_policy_table_is_written_in_requests_per_minute and test_refill_rate_is_the_per_minute_rate_spread_over_a_minute (2 failed / 31 passed).",
+    "expected_failing": [
+      "tests/test_bucket.py::test_wait_for_above_the_capacity_never_ends",
+      "tests/test_limiter.py::test_a_batch_quota_is_denied_once_it_is_spent",
+      "tests/test_limiter.py::test_a_later_start_delays_the_first_refill",
+      "tests/test_limiter.py::test_retry_after_above_the_burst_never_ends",
+      "tests/test_limiter.py::test_retry_after_is_the_shortfall_in_seconds",
+      "tests/test_limiter.py::test_the_bucket_refills_over_a_minute",
+      "tests/test_policy.py::test_bucket_for_refills_at_the_policy_rate"
+    ],
+    "path": "tasks/token_bucket"
   }
 ]
