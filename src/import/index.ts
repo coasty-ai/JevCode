@@ -27,7 +27,7 @@ import { buildPlan } from './plan.js';
 import type { PlanCandidate, PlanInput } from './plan.js';
 import { askImport, fileKindQuestions, mergeBatches, secretQuestions } from './questions.js';
 import type { FileCandidate, JevSample, SecretCandidate } from './questions.js';
-import { SOURCES, allRoots } from './sources.js';
+import { SOURCES, allRoots, specById } from './sources.js';
 import type {
   CannotRead,
   ConfigLeaf,
@@ -307,8 +307,13 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
   for (const item of found.items) {
     const parsed = await parseItem(item, fs, redact);
     const keys: readonly KeyVerdict[] = parsed.leaves.length > 0 ? classifyConfig(parsed.leaves) : [];
+    // §4.4.1 rule 1 is "the atlas row declares a class and the parse succeeded", so the spec that
+    // produced this item MUST reach the classifier — without it every atlas row falls through to
+    // rule 12 (`skip:unrelated`) and the whole plan is empty.
+    const spec = specById(item.artefact);
     const verdict: FileVerdict = classifyFile({
       item,
+      ...(spec !== undefined ? { spec } : {}),
       doc: parsed.doc ?? undefined,
       frontmatter: parsed.frontmatter,
       isDestination: (opts.destinations ?? []).includes(item.realpath),

@@ -202,8 +202,13 @@ describe('import-no-exec — nothing executes (§1 property 3, §2.6)', () => {
     const destinations = [...filesUnder(f.userDir), ...filesUnder(join(f.ws, '.jevcode'))];
     expect(destinations.length).toBeGreaterThan(0);
     expect(destinations.some(([, text]) => text.includes('```text (not run)')), 'no destination carries an inert fence').toBe(true);
-    // every destination that mentions the command does so inside a `text (not run)` fence
+    // Every *markdown* destination that mentions the command does so inside a `text (not run)`
+    // fence. `mcp.json` is deliberately exempt: §2.7 makes it "a durable, reviewable record of
+    // what the human had", so it must keep `command` and `args` verbatim — a fence inside JSON
+    // would be meaningless. Its §1 property 3 obligation is `enabled: false`, asserted below,
+    // and JevCode has no MCP client to run it with.
     for (const [p, text] of destinations) {
+      if (p.endsWith('mcp.json')) continue;
       if (!text.includes(f.sentinel)) continue;
       expect(text.includes('```text (not run)'), `${p} carries the command without a fence`).toBe(true);
     }

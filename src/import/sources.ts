@@ -153,6 +153,21 @@ export function displayRoot(path: string, home: string): string {
   return path;
 }
 
+/**
+ * §4.2.5: the form every artefact shows — **workspace-relative inside the workspace**, `~/…`
+ * outside it, absolute only when it is neither. This is `instructions.ts displayFor`'s rule,
+ * and it is what makes the report read `AGENTS.md` and `.cursor/rules/style.mdc` rather than a
+ * 70-character absolute path. It is also load-bearing for apply: `ApplyOptions.sourcePath`
+ * resolves a row back to disk from `display`, so a display form the caller cannot invert makes
+ * every row fail its re-read. Separators are normalised to `/` for display (§6 row 85).
+ */
+export function displayIn(path: string, workspace: string, home: string): string {
+  if (workspace.length > 0 && (path.startsWith(`${workspace}/`) || path.startsWith(`${workspace}\\`))) {
+    return path.slice(workspace.length + 1).split('\\').join('/');
+  }
+  return displayRoot(path, home);
+}
+
 interface TokenExpansion {
   path: string;
   via: 'default' | 'env';

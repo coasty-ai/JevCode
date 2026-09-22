@@ -19,7 +19,7 @@ import { sha256Hex } from '../core/hash.js';
 import { IMPORT_LIMITS, type ImportLimits } from '../core/limits.js';
 import { patternRedact } from '../core/redact.js';
 import { isSecretBasename, isWithin } from '../sandbox/paths.js';
-import { ALWAYS_EXCLUDED, displayRoot, globCanDescend, matchGlob, rootFor, SOURCES } from './sources.js';
+import { ALWAYS_EXCLUDED, displayIn, displayRoot, globCanDescend, matchGlob, rootFor, SOURCES } from './sources.js';
 import { parseJsonc } from './parse/jsonc.js';
 import { parseJsonl, transcriptMeta } from './parse/jsonl.js';
 import { looksBinary, parseMarkdown } from './parse/markdown.js';
@@ -158,9 +158,11 @@ export async function readSource(
 // §3.2 / §6 row 15 — Claude's project slug
 // ---------------------------------------------------------------------------------------
 
-/** Claude's slug: the absolute path with `/` → `-`. `/x/.claude/y` therefore contains a doubled `-`. */
+/** Claude's slug: the absolute path with `/` and `.` both folded to `-`, so `/x/.claude/y` carries a doubled dash. */
 export function slugOfPath(path: string): string {
-  return path.split('/').join('-');
+  // Claude folds BOTH separators: `/Users/x/JevCode/.claude/worktrees/w` → `-Users-x-JevCode--claude-worktrees-w`
+  // (the doubled dash in the real observed slug is `/` + `.`, §6 row 15). Hence two replacements, not one.
+  return path.split('/').join('-').split('.').join('-');
 }
 
 /**
@@ -535,6 +537,9 @@ async function collect(opts: CollectOptions): Promise<Collected> {
   const optIn = opts.optIn ?? [];
   const destinations = (opts.destinations ?? []).map((d) => resolvePath(d));
   const probe = opts.probe === true;
+  // §4.2.5: items are keyed by realpath, so the workspace they are displayed against must be the
+  // realpath too (macOS `/var` -> `/private/var`). Resolved once; falls back to the given path.
+  const wsReal = await opts.fs.realpath(opts.env.workspace).catch(() => resolvePath(opts.env.workspace));
   const specs = (opts.sources ?? SOURCES).filter((s) => {
     if (s.optIn !== undefined && !optIn.includes(s.optIn)) return !probe;
     if (probe && (s.class === 'skip' || s.class === 'secret')) return false;
@@ -621,7 +626,7 @@ async function collect(opts: CollectOptions): Promise<Collected> {
           }
           continue;
         }
-        const item = await buildItem(f, spec, { ...opts, limits, destinations, probe, optIn, rootDisplay: displayRoot(path, opts.env.home) });
+        const item = await buildItem(f, spec, { ...opts, limits, destinations, probe, optIn, wsReal, rootDisplay: displayRoot(path, opts.env.home) });
         drafts.set(key, { item, tools: new Set(item.tools) });
       }
     }
@@ -639,6 +644,13 @@ interface BuildContext extends DiscoverOptions {
   optIn: readonly string[];
   /** the `~/…` form of the root that found this item — the symlink notice names it (§6 row 10) */
   rootDisplay: string;
+  /**
+   * realpath of the workspace. Items are keyed by realpath, so `display` must be measured against
+   * the canonical workspace too: on macOS `/var` is a symlink to `/private/var`, and comparing a
+   * realpath'd item against the given workspace path silently produces an absolute display that
+   * `ApplyOptions.sourcePath` cannot invert (every row then fails its §4.7.2 re-read).
+   */
+  wsReal: string;
 }
 
 async function buildItem(f: Found, spec: SourceSpec, ctx: BuildContext): Promise<SourceItem> {
@@ -647,7 +659,7 @@ async function buildItem(f: Found, spec: SourceSpec, ctx: BuildContext): Promise
   const base: SourceItem = {
     id: sha256Hex(f.real).slice(0, 12),
     realpath: f.real,
-    display: displayRoot(f.real, ctx.env.home),
+    display: displayIn(f.real, ctx.wsReal, ctx.env.home),
     tools: [spec.tool],
     artefact: spec.id,
     format: spec.format,

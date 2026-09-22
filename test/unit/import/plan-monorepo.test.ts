@@ -1,5 +1,5 @@
 /**
- * §6 rows 17 and 18 — **the monorepo**: `packages/*/AGENTS.md` and `packages/*/.cursor/rules/*`
+ * §6 rows 17 and 18 — **the monorepo**: `packages/<n>/AGENTS.md` and `packages/<n>/.cursor/rules/`
  * are scoped by their own directory, never flattened into one always-on `AGENTS.md`; the root
  * `AGENTS.md` still lands at the repository root; and `ruleFiles: 200` **[G1.6]** caps the number
  * of rule files a session will match against per step.

@@ -15,7 +15,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
-import { REDACTING_PATTERNS, WARN_ONLY_PATTERNS, detectSecrets, redactSpans } from '../../../src/core/redact.js';
+import { REDACTING_PATTERNS, WARN_ONLY_PATTERNS, createRedactor, detectSecrets, redactSpans } from '../../../src/core/redact.js';
 import type { Decider, Json, Question } from '../../../src/core/types.js';
 import { SOURCES, applicableRows, applyPlan, discover, fenceExecutables, nodeImportFs, parseMarkdown, planImport, renderPlanJson, renderReport } from '../../../src/import/index.js';
 import type { ApplyOptions, ImportClock, ImportEnvironment, ImportWriteFs, SourceItem } from '../../../src/import/index.js';
@@ -46,7 +46,17 @@ const NEEDLES: Readonly<Record<string, string>> = {
 const FAMILIES: readonly string[] = [...REDACTING_PATTERNS.map((p) => p.family), ...WARN_ONLY_PATTERNS.map((p) => p.family)];
 const ALL_NEEDLES: readonly string[] = FAMILIES.map((f) => NEEDLES[f] ?? `MISSING-NEEDLE-FOR-${f}`);
 /** The fixture's own secrets, beyond the family patterns (§1 property 4 greps for both). */
-const FIXTURE_SECRETS: readonly string[] = ['hunter2-the-fixture-password', 'corporate-shared-passphrase-2026'];
+/**
+ * §6 row 45: a 32-hex value at a leaf name that is neither in the non-secret allowlist nor matched
+ * by `SECRET_NAME_RE`, and that no family regex recognises. That combination is the only way into
+ * §4.4.2 rule 8's band, and the band is the only thing that makes a group I Jev request happen —
+ * without it `capture.bodies` is empty and the "every captured Jev request body" half of §1
+ * property 4 is vacuous. It is graded as a fixture secret too: a banded value must reach neither an
+ * artefact nor a request body, because Jev is given its shape only (§4.4.3 group I).
+ */
+const BAND_VALUE = 'a7f3c2e1b9d4058613f2ca7e94b1d0c5';
+
+const FIXTURE_SECRETS: readonly string[] = ['hunter2-the-fixture-password', 'corporate-shared-passphrase-2026', BAND_VALUE];
 
 // ---------------------------------------------------------------------------------------
 // the seams
@@ -84,12 +94,20 @@ function nodeWriteFs(): ImportWriteFs {
 const clock: ImportClock = { now: () => new Date('2026-09-21T12:00:00.000Z'), monotonicMs: () => 0 };
 
 /**
- * §2.9: imported text is redacted **at write time** with the session's redactor. The exact layer is
- * empty here (nothing is configured), so the pattern layer does the work — and it has to be the
- * `detectSecrets` + `redactSpans` pair, not `patternRedact` alone: §1 property 4 requires zero hits
- * for the **warn-only** families too, and `patternRedact` masks only the six redacting ones.
+ * §2.9: imported text is redacted **at write time** with the session's redactor — "the exact
+ * `SecretSet` layer first (`config.addSecret` registrations), then the pattern layer". Both halves
+ * matter here and each catches what the other cannot:
+ *
+ *  - the **pattern** half must be `detectSecrets` + `redactSpans`, not `patternRedact` alone,
+ *    because §1 property 4 counts the nine **warn-only** families too and `patternRedact` masks
+ *    only the six redacting ones (`patternRedact` would leak aws/slack/jwt/PEM/stripe/npm/hf/glpat);
+ *  - the **exact** half is the only thing that can catch a fixture secret no regex knows — a bare
+ *    password like `hunter2-…` matches no family, so without a registration it survives into the
+ *    destination. That is not a bug in the engine: it is exactly why §2.9 puts the configured
+ *    layer first, and the gate has to exercise it to mean anything.
  */
-const writeTimeRedact = (s: string): string => redactSpans(s, detectSecrets(s), '[REDACTED:pattern]');
+const exactLayer = createRedactor(FIXTURE_SECRETS.map((value, i) => ({ name: `fixture.secret.${i}`, value })));
+const writeTimeRedact = (s: string): string => redactSpans(s, detectSecrets(s, exactLayer), '[REDACTED:pattern]');
 
 /** Every state and question set handed to Jev, verbatim, for the grep (§1 property 4, §4.4.3). */
 interface Capture {
@@ -151,7 +169,11 @@ async function fixture(): Promise<Fixture> {
   });
   await write(
     join(home, '.claude', 'settings.json'),
-    `${JSON.stringify({ model: 'sonnet', env: envBlock, permissions: { allow: ['Bash(git *)'] }, hooks: { PreToolUse: [{ command: 'echo hi' }] } }, null, 2)}\n`,
+    `${JSON.stringify(
+      { model: 'sonnet', clientId: BAND_VALUE, env: envBlock, permissions: { allow: ['Bash(git *)'] }, hooks: { PreToolUse: [{ command: 'echo hi' }] } },
+      null,
+      2,
+    )}\n`,
   );
   await write(
     join(ws, '.mcp.json'),
@@ -262,7 +284,8 @@ describe('import-leak — no secret leaves its file (§1 property 4, §8.3)', ()
       ...filesUnder(join(f.ws, '.jevcode')),
     ];
     expect(artefacts.length).toBeGreaterThan(6);
-    expect(capture.bodies.length).toBeGreaterThan(0);
+    // the band candidate in the fixture guarantees a group I request, so this half of the gate is real
+    expect(capture.bodies.length, 'no Jev request was captured: the band clause would be vacuous').toBeGreaterThan(0);
 
     for (const [label, text] of artefacts) {
       for (const needle of [...ALL_NEEDLES, ...FIXTURE_SECRETS]) {
