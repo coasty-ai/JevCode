@@ -165,7 +165,12 @@ async function localize(ctx: LocalizeContext, o: LocalizerOptions): Promise<Loca
   // Stage 3: functions, one Choice per beam file; when not even one Choice is affordable, the
   // traceback and SBFL name the functions in code so the last request can still go to lines.
   let fnBeam = await stageFunctions(ctx, o, asker, fileBeam, frames, sbfl);
-  if (fnBeam.length === 0 && asker.canAsk()) fnBeam = codeDerivedFunctions(fileBeam, frames, sbfl, o.functionBeam);
+  // OOS iteration 3, item 4: the fallback used to be gated on `asker.canAsk()`, which is backwards
+  // — it costs no request and exists FOR the case where none is left. With `--jev off` the file
+  // and confirm stages spend the whole localise budget (6 requests), `stageFunctions` can then
+  // afford nobody, and the run parked with `no site located for …` and `sites 0` on every goal
+  // (the ladder `units` Ring-1 loss, run `20260922-155631-5dprh2ue`: 12 steps, 1 s, 0 candidates).
+  if (fnBeam.length === 0) fnBeam = codeDerivedFunctions(fileBeam, frames, sbfl, o.functionBeam);
 
   // Stage 4: lines, one Choice per beam function.
   const anchors = await stageLines(ctx, o, asker, fnBeam, frames, sbfl);
@@ -383,21 +388,25 @@ async function askLines(ctx: LocalizeContext, o: LocalizerOptions, asker: Asker,
 }
 
 async function stageLines(ctx: LocalizeContext, o: LocalizerOptions, asker: Asker, beam: readonly FunctionBeamEntry[], frames: readonly TracebackFrame[], sbfl: ReadonlyMap<string, RankedLine>): Promise<Anchor[]> {
-  const asked = beam.slice(0, asker.affordable(0));
+  // OOS iteration 3, item 4: a beam function the budget cannot pay a Choice for used to be
+  // DROPPED, which is the same clause-3 hole as the function stage's — the code order costs no
+  // request. `affordable(0)` decides who is ASKED about; everybody else is answered in code.
+  const affordable = asker.affordable(0);
   const perFunction = await Promise.all(
-    asked.map(async (f): Promise<{ anchor: Anchor; score: number }[]> => {
+    beam.map(async (f, i): Promise<{ anchor: Anchor; score: number; jev: boolean }[]> => {
       const focus = focusFor(f.entry.file, f.entry, frames, sbfl);
       const listing = listingFor(f.entry, focus, o.maxChoiceOptions);
       if (listing.length === 0) return [];
-      const probs = await askLines(ctx, o, asker, f.entry.file, listing, focus, { file: f.entry.file.path, function: f.entry.qualname });
+      const probs = i < affordable ? await askLines(ctx, o, asker, f.entry.file, listing, focus, { file: f.entry.file.path, function: f.entry.qualname }) : new Map<number, number>();
       const top = byProbabilityDesc([...probs.keys()], (l) => probs.get(l) ?? 0).slice(0, o.anchorsPerFunction);
-      const out: { anchor: Anchor; score: number }[] = [];
+      const out: { anchor: Anchor; score: number; jev: boolean }[] = [];
       top.forEach((line, i) => {
         const p = probs.get(line) ?? 0;
         if (p <= 0) return;
         out.push({
           anchor: { file: f.entry.file, line, entry: f.entry.kind === 'module' ? null : f.entry, jevProbability: p, lineProbabilities: probs, notes: [`jev anchor #${i + 1} in ${f.entry.qualname}`] },
           score: f.joint * p,
+          jev: true,
         });
       });
       if (out.length > 0) return out;
@@ -406,14 +415,19 @@ async function stageLines(ctx: LocalizeContext, o: LocalizerOptions, asker: Aske
       // OOS iteration 3, item 4: and it stands in with `escapedAnchors`, not the Jev beam's 3 —
       // the code order is not a ranking, so cutting it at a ranking's width leaves the defect out
       // of the site list whenever it is not in the first three lines of its function.
-      return codeDerivedLines(f.entry, listing, focus, frames, sbfl, o.escapedAnchors).map((line, i) => ({
-        anchor: { file: f.entry.file, line, entry: f.entry.kind === 'module' ? null : f.entry, lineProbabilities: new Map<number, number>(), notes: [`code anchor #${i + 1} in ${f.entry.qualname} (no Jev opinion: the line Choice escaped)`] },
-        score: f.joint / (i + 1),
+      const why = i < affordable ? 'no Jev opinion: the line Choice escaped' : 'no Jev request left for this function';
+      return codeDerivedLines(f.entry, listing, focus, frames, sbfl, o.escapedAnchors).map((line, k) => ({
+        anchor: { file: f.entry.file, line, entry: f.entry.kind === 'module' ? null : f.entry, lineProbabilities: new Map<number, number>(), notes: [`code anchor #${k + 1} in ${f.entry.qualname} (${why})`] },
+        score: f.joint / (k + 1),
+        jev: false,
       }));
     }),
   );
   // Flattened in beam order so equal scores rank deterministically regardless of completion order.
-  return byProbabilityDesc(perFunction.flat(), (s) => s.score).map((s) => s.anchor);
+  // OOS iteration 3, item 4: an anchor with no Jev evidence never outranks one that has it — the
+  // code order is what stands in for a missing opinion, not something that competes with one.
+  const flat = perFunction.flat();
+  return [...byProbabilityDesc(flat.filter((a) => a.jev), (s) => s.score), ...byProbabilityDesc(flat.filter((a) => !a.jev), (s) => s.score)].map((s) => s.anchor);
 }
 
 /** Union with SBFL: its top-k lines become anchors too (measured: union of two top-3 lists covered 38/40). */

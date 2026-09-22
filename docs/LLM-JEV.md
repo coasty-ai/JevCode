@@ -299,9 +299,19 @@ With no Jev opinion, no traceback frame and no coverage the "code order" is the 
 is the first three lines of the function. The recorded `--jev off` `kth` run visited nine sites and **every one was an
 insert gap** (`kth.py:2 (gap), kth.py:10 (gap), kth.py:12 (gap), …`) — no replace site anywhere in the run, `plausible
 0` on every step, `replan_stop` at 11 — while the gold REPLACES L12. `mergesort`'s gold replaces L17 (the first
-statement after the nested `merge` def) and `units`' rewrites L24 onwards. New option `escapedAnchors` (40) is used on
-the escaped branch only, so a Jev-on trajectory is unchanged (pinned by a test that a ranked line Choice still gets its
-three-anchor beam and a strictly shorter site list).
+statement after the nested `merge` def). New option `escapedAnchors` (40) is used on the escaped branch only, so a
+Jev-on trajectory is unchanged (pinned by a test that a ranked line Choice still gets its three-anchor beam and a
+strictly shorter site list) and the site list stays bounded (`units` 2 files / 57 lines → 70 sites, `crossfile` 5 /
+156 → 47, `six_hunks` 6 / 148 → 20).
+
+**4b. And a second Ring-1 hole, which is what `units` actually was.** The anchor width does not explain `units` — its
+gold lines 24–26 are anchored either way. Run `20260922-155631-5dprh2ue` (`--jev off`, ladder `units`) parks every
+goal with `no site located for …` and `sites 0, requests 6, runs 0`: with Jev off the file Nouls are inert, the file
+and confirm stages spend the whole localise budget, and both code fallbacks that cost NO request —
+`codeDerivedFunctions` in the pipeline and `codeDerivedLines` in `stageLines` — were gated behind `asker.canAsk()` /
+`affordable(0)`, i.e. behind the very budget whose exhaustion is what they exist for. Both gates are gone: the
+affordable prefix of the function beam is ASKED about and the rest is answered in code, and an anchor with no Jev
+evidence is ordered after every anchor that has some, so a starved beam can never outrank a Choice.
 
 Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{guard,llm,subgoal,index,types}.ts`,
 `src/synth/llm/source.ts`, `src/synth/localize/{index,types}.ts`, `src/bench/{step-records,types}.ts`,

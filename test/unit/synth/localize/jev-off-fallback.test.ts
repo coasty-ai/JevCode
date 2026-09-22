@@ -122,6 +122,35 @@ describe('question 5: with every Choice escaped the localiser falls through to t
     expect(ms.sites.some((s) => s.line === 17 && s.kind === 'replace')).toBe(true);
   });
 
+  /**
+   * OOS iteration 3, item 4, second hole — the ladder `units` Ring-1 loss, which the anchor width
+   * does NOT explain (its defect lines 24–26 are anchored either way).
+   *
+   * Run `20260922-155631-5dprh2ue` (`--jev off`, ladder `units`): every goal parks with
+   * `no site located for …` and `sites 0, requests 6, runs 0` — 12 steps, 1 s, 0 candidates
+   * tested. With Jev off the file Nouls are inert and the file + confirm stages spend the whole
+   * localise budget, so `stageFunctions` can afford nobody and `stageLines` can afford nobody;
+   * both then returned NOTHING, and the two code fallbacks that cost no request at all —
+   * `codeDerivedFunctions` and `codeDerivedLines` — were gated behind `asker.canAsk()` /
+   * `affordable(0)`, i.e. behind the very budget whose exhaustion is what they exist for. §1.2
+   * clause 3 says a fallback is deterministic code, not another thing the router has to pay for.
+   */
+  it('a spent request budget takes the code fallback instead of returning no site at all (Ring 1 ladder: `units`)', async () => {
+    const { ask, calls } = jevOffAsk();
+    // budget 2: the file stage and the confirmation take both, exactly as the recorded run did
+    const res = await createLocalizer().localize({ ask, task: TASK, files: twoFileWorkspace(), failures: [GEOMETRY_FAILURE], traceback: GEOMETRY_TRACEBACK, signal: signal(), budget: { maxRequests: 2 } });
+    expect(calls.length).toBeLessThanOrEqual(2);
+    expect(res.functions.length).toBeGreaterThan(0);
+    expect(res.sites.length).toBeGreaterThan(0);
+    expect(res.sites.some((s) => s.kind === 'replace')).toBe(true);
+    // the traceback frame is still reachable, with no request left to ask about it
+    expect(res.sites.some((s) => s.file.path === 'pkg/geometry.py' && s.line === 17)).toBe(true);
+    // and with NO budget at all there is still a code order rather than an empty site list
+    const zero = await createLocalizer().localize({ ask: jevOffAsk().ask, task: TASK, files: twoFileWorkspace(), failures: [GEOMETRY_FAILURE], traceback: GEOMETRY_TRACEBACK, signal: signal(), budget: { maxRequests: 0 } });
+    expect(zero.requests).toBe(0);
+    expect(zero.sites.length).toBeGreaterThan(0);
+  });
+
   it('the wider code order is the ESCAPE path only: a Jev that ranks lines still gets its measured top-3 beam', async () => {
     const kth = ['def kth(arr, k):', '    pivot = arr[0]', '    below = [x for x in arr if x < pivot]', '    above = [x for x in arr if x > pivot]', '', '    num_less = len(below)', '    num_lessoreq = len(arr) - len(above)', '', '    if k < num_less:', '        return kth(below, k)', '    elif k >= num_lessoreq:', '        return kth(above, k)', '    else:', '        return pivot', ''].join('\n');
     // a Jev with an opinion: mass on L12, L11, L9 — the measured top-3 shape

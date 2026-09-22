@@ -116,10 +116,17 @@ describe('budget-starved paths', () => {
     expect(stateObject(calls[0]!)['function']).toBe('mean');
     // the beam lists both SBFL-named functions by rank; only the first was affordable to ask
     expect(res.functions.map((f) => f.name)).toEqual(['mean', 'Point.distance']);
-    // the Jev anchor first, then the SBFL union brings geometry:17 in as an anchor without a Choice probability
+    // the Jev anchor first — OOS iteration 3 item 4 orders an anchor with no Jev evidence after
+    // every anchor that has some, so the unasked function's code order cannot outrank a Choice
     expect(res.sites[0]).toMatchObject({ line: 13, kind: 'replace' });
     const g17 = res.sites.find((s) => s.file.path === 'pkg/geometry.py' && s.line === 17 && s.kind === 'replace')!;
-    expect(g17.evidence).toEqual({ sbflRank: 2, sbflScore: 0.5, notes: ['sbfl rank 2'] });
+    // and the second beam function is no longer DROPPED for want of a request: its lines are the
+    // code order, so the SBFL union annotates the anchor that is already there rather than adding one
+    expect(g17.evidence.sbflRank).toBe(2);
+    expect(g17.evidence.sbflScore).toBe(0.5);
+    expect(g17.evidence.jevProbability).toBeUndefined();
+    expect(g17.evidence.notes).toContain('sbfl rank 2');
+    expect(g17.evidence.notes.some((n) => n.includes('no Jev request left for this function'))).toBe(true);
   });
 
   it('budget 1 with no traceback and no SBFL asks nothing rather than guessing a function', async () => {
