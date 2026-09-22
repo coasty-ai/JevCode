@@ -304,7 +304,17 @@ Jev-on trajectory is unchanged (pinned by a test that a ranked line Choice still
 strictly shorter site list) and the site list stays bounded (`units` 2 files / 57 lines → 70 sites, `crossfile` 5 /
 156 → 47, `six_hunks` 6 / 148 → 20).
 
-**4b. And a second Ring-1 hole, which is what `units` actually was.** The anchor width does not explain `units` — its
+**4b. The hole underneath it: a replace site with no Jev probability was dropped.** `jevProbability` is ABSENT on an
+anchor the code order produced (`localize/index.ts` sets it only on a Jev anchor, on purpose), and
+`search/sites.ts q5Anchors` filtered on `p ≥ Q5_ANCHOR_MIN_P` (0.05) — so with every Choice escaped the goal's site
+list held NO REPLACE SITE AT ALL, only the code-derived insert gaps, whatever the anchor width. That is the recorded
+`--jev off` `kth` run verbatim (`20260922-155658-35hfmbqm`: nine sites, every one a gap). `p ≥ 0.05` is a filter on a
+FLAT answer ("below 0.05 a line is noise"); it cannot also mean "no answer at all", which is §1.2 clause 3's own
+fallback trigger. When not one replace site carries a probability the localiser's order stands in whole (the
+per-function top-3 is a ranking cut with nothing to rank), and a localisation that DID get an answer keeps the
+measured top-3 exactly.
+
+**4c. And a third, which is what `units` actually was.** The anchor width does not explain `units` — its
 gold lines 24–26 are anchored either way. Run `20260922-155631-5dprh2ue` (`--jev off`, ladder `units`) parks every
 goal with `no site located for …` and `sites 0, requests 6, runs 0`: with Jev off the file Nouls are inert, the file
 and confirm stages spend the whole localise budget, and both code fallbacks that cost NO request —
@@ -314,7 +324,7 @@ affordable prefix of the function beam is ASKED about and the rest is answered i
 evidence is ordered after every anchor that has some, so a starved beam can never outrank a Choice.
 
 Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{guard,llm,subgoal,index,types}.ts`,
-`src/synth/llm/source.ts`, `src/synth/localize/{index,types}.ts`, `src/bench/{step-records,types}.ts`,
+`src/synth/llm/source.ts`, `src/synth/localize/{index,types}.ts`, `src/synth/search/sites.ts`, `src/bench/{step-records,types}.ts`,
 `src/core/types.ts`. Tests: `test/unit/synth/search/{late-guard,gold-free-pool}.test.ts`,
-`test/unit/synth/llm/deadline-growth.test.ts`, `test/unit/synth/localize/jev-off-fallback.test.ts`,
+`test/unit/synth/llm/deadline-growth.test.ts`, `test/unit/synth/localize/{jev-off-fallback,review}.test.ts`, `test/unit/synth/search/sites.test.ts`,
 `test/unit/bench/records.test.ts`. Flag names: **`JEVCODE_DEADLINE_GROWTH`** (`served` | `always`, default `always`).

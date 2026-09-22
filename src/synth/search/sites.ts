@@ -563,9 +563,21 @@ function beamFunctions(localized: LocalizeResult, anchors: readonly Site[]): Bea
  * the localizer's anchors are exactly the top-3 of each Choice.
  */
 export function q5Anchors(localized: LocalizeResult, perFunction = ANCHORS_PER_FUNCTION, minP = Q5_ANCHOR_MIN_P, weight: (site: Site) => number = () => 1): Site[] {
+  // OOS iteration 3, item 4 — the deepest of the three `--jev off` holes, and the one that
+  // survived iteration 2's localiser fallback. `jevProbability` is ABSENT on an anchor the code
+  // order produced (localize/index.ts says so on purpose: "these anchors carry no Jev evidence
+  // and say so"), and this filter then dropped every one of them — so with every Choice escaped
+  // the goal's site list had NO REPLACE SITE AT ALL, only the code-derived insert gaps. That is
+  // the recorded `--jev off` `kth` run (`20260922-155658-35hfmbqm`): nine sites, every one a gap,
+  // `plausible 0` on every step, while the gold REPLACES L12. `p ≥ minP` is a filter on a FLAT
+  // Jev answer ("below 0.05 a line is noise"); it cannot also mean "no answer at all", which is
+  // §1.2 clause 3's fallback trigger. When not one replace site of the localisation carries a
+  // probability, the localiser's own order stands in — it is already the code order.
+  const evidenced = localized.sites.some((s) => s.kind === 'replace' && s.evidence.jevProbability !== undefined);
   const groups = new Map<string, Site[]>();
   for (const s of localized.sites) {
-    if (s.kind !== 'replace' || s.evidence.jevProbability === undefined || s.evidence.jevProbability < minP) continue;
+    if (s.kind !== 'replace') continue;
+    if (evidenced && (s.evidence.jevProbability === undefined || s.evidence.jevProbability < minP)) continue;
     if (isDefLine(s.file, s.line) || !isCodeLine(s.file, s.line)) continue;
     const k = `${s.file.path}:${s.block?.startLine ?? 'module'}`;
     const g = groups.get(k) ?? [];
@@ -573,7 +585,9 @@ export function q5Anchors(localized: LocalizeResult, perFunction = ANCHORS_PER_F
     groups.set(k, g);
   }
   const out: Site[] = [];
-  for (const g of groups.values()) out.push(...byDesc(g, (s) => s.evidence.jevProbability ?? 0).slice(0, perFunction));
+  // with no Jev evidence anywhere the per-function cut is a ranking cut with nothing to rank, so
+  // the whole code order of each located function is offered and the site budget decides
+  for (const g of groups.values()) out.push(...(evidenced ? byDesc(g, (s) => s.evidence.jevProbability ?? 0).slice(0, perFunction) : g));
   return byDesc(out, (s) => (s.evidence.jevProbability ?? 0) * weight(s));
 }
 
