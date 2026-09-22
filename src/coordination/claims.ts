@@ -6,6 +6,18 @@
  * engines can both read themselves as the holder (the review's A:48 / B:50 interleaving). A `Claim` is minted once per
  * process and never changes, so the verdict is a function of the two records alone — stable whatever the sync timing.
  *
+ * ORDERING (owner decision, design §14 item 18 — this file's revision-4/5 divergence is WITHDRAWN). The holder is the
+ * claim with the **HIGHEST QUALIFIED epoch**, exactly as §3.2 / §9.3 / §10.7 / §11 row 31 state it, and `Claim` is
+ * §3.2's `{ epoch, deviceId, runId, at }` (`pid` stays as display/audit and as the last-resort tiebreak). The
+ * minimum-holder rule this file used to implement inverted the fence: an epoch is minted by the incarnation that READ
+ * its predecessor's state, so the minimum is the process that has already been superseded — a legitimate `/resume` or
+ * `sessions unlock --device` takeover would have been called the fork and told to stop, while the stale writer kept
+ * the run. QUALIFIED means what it means everywhere else a foreign record changes a run (§9.3, §10.3): my own claim,
+ * or a foreign one whose record parsed `ok`, is hmac-`verified` under the key of the device subtree it was read from,
+ * and whose device is in `trusted-devices.json`. An unqualified claim can therefore raise `⚠ forked` and a notice, but
+ * it can never take the run — which is the §11 row 51 rule, now enforced by the holder rule itself rather than by every
+ * caller remembering to check `verified`.
+ *
  * Authenticity is the second half: §10.3 says only hmac-valid records from a paired device may become `steer` / `pause` /
  * `resume` / `end`, and the review extends that to the exit-2 fork stop. `hmacOf` is HMAC-SHA256 over the same canonical
  * text the checksum covers, so a record's identity fields cannot be edited without the paired key.
@@ -55,20 +67,26 @@ export function isValidClaim(c: unknown): c is Claim {
   if (!Number.isSafeInteger(o['epoch']) || (o['epoch'] as number) < 1 || (o['epoch'] as number) > MAX_CLAIM_EPOCH) return false;
   if (!Number.isSafeInteger(o['pid']) || (o['pid'] as number) <= 0) return false;
   if (typeof o['deviceId'] !== 'string' || typeof o['runId'] !== 'string') return false;
-  // + re-check (lower 5): `startedAt` is a TIEBREAK input of `compareClaim`, so its SHAPE is load-bearing: a forged
+  // + re-check (lower 5): `at` is a TIEBREAK input of `compareClaim`, so its SHAPE is load-bearing: a forged
   // `''` sorts before every real instant and would take the tie. Only a parseable ISO instant counts.
-  return isIsoInstant(o['startedAt']);
+  return isIsoInstant(o['at']);
 }
 
 /**
- * Total order on claims. The HOLDER is the MINIMUM: the earliest incarnation keeps the run and a newcomer yields, which is
- * §9.3's "the lower stamp holds" made stable. Ties inside one epoch (two processes that folded the same set) fall to
- * `startedAt` — the process that started first claimed first — then `deviceId`, then `pid`.
+ * The total order §3.2 states, as a RANK comparator: **negative means `a` OUTRANKS `b`**, so a `sort(compareClaim)` is
+ * holder-first and `[0]` is the holder. Higher `epoch` wins (the later incarnation), ties by lower `deviceId`, then
+ * lower `runId` — the design's tuple exactly.
+ *
+ * `at` then `pid` are appended as the as-built last resort (§14 item 19): `(epoch, deviceId, runId)` is NOT total for
+ * two processes of ONE device on ONE run, and `compareClaim === 0` for two different processes is the single value the
+ * fork rule cannot break — the very bug the persisted takeback claim of §9.3 was added to fix. They decide nothing any
+ * other case can reach.
  */
 export function compareClaim(a: Claim, b: Claim): -1 | 0 | 1 {
-  if (a.epoch !== b.epoch) return a.epoch < b.epoch ? -1 : 1;
-  if (a.startedAt !== b.startedAt) return a.startedAt < b.startedAt ? -1 : 1;
+  if (a.epoch !== b.epoch) return a.epoch > b.epoch ? -1 : 1; // §3.2: the HIGHER epoch holds
   if (a.deviceId !== b.deviceId) return a.deviceId < b.deviceId ? -1 : 1;
+  if (a.runId !== b.runId) return a.runId < b.runId ? -1 : 1;
+  if (a.at !== b.at) return a.at < b.at ? -1 : 1;
   if (a.pid !== b.pid) return a.pid < b.pid ? -1 : 1;
   return 0;
 }
@@ -77,7 +95,7 @@ export function sameClaim(a: Claim, b: Claim): boolean {
   return compareClaim(a, b) === 0;
 }
 
-/** The holder of a set of claims on one runId (the minimum), or null for an empty set. */
+/** The holder of a set of claims on one runId (the one that ranks first — the highest epoch), or null for an empty set. */
 export function claimHolder(claims: readonly Claim[]): Claim | null {
   let best: Claim | null = null;
   for (const c of claims) if (best === null || compareClaim(c, best) < 0) best = c;
@@ -89,8 +107,8 @@ export function claimHolder(claims: readonly Claim[]): Claim | null {
  * import is always a LATER incarnation than the one it replaces and therefore yields to an origin that is still live.
  * Minted ONCE (at `createEngine`) and never touched again.
  */
-export function mintClaim(o: { deviceId: string; runId: string; pid: number; startedAt: string; seenEpochs?: readonly number[] }): Claim {
-  return { epoch: Math.min(MAX_CLAIM_EPOCH, Math.max(FIRST_EPOCH, highEpoch(o.seenEpochs ?? []) + 1)), deviceId: o.deviceId, runId: o.runId, pid: o.pid, startedAt: o.startedAt };
+export function mintClaim(o: { deviceId: string; runId: string; pid: number; at: string; seenEpochs?: readonly number[] }): Claim {
+  return { epoch: Math.min(MAX_CLAIM_EPOCH, Math.max(FIRST_EPOCH, highEpoch(o.seenEpochs ?? []) + 1)), deviceId: o.deviceId, runId: o.runId, at: o.at, pid: o.pid };
 }
 
 /** The largest epoch worth following: a safe integer inside `[1, EPOCH_MAX]`; everything else is a hostile or torn value. */
@@ -122,7 +140,7 @@ export function qualifiedEpochs(rows: readonly { epoch: number; authority: Autho
 
 /**
  * `--force-takeback`'s gate: true when a fresh claim can still outrank everything seen. At the ceiling the mint returns
- * `EPOCH_MAX` again and `compareClaim` falls to `(startedAt, deviceId, pid)`, so the takeback is decided by those — the
+ * `EPOCH_MAX` again and `compareClaim` falls to `(deviceId, runId, at, pid)`, so the takeback is decided by those — the
  * caller must say so rather than claim a higher incarnation it cannot mint.
  */
 export function canMintAbove(seenEpochs: readonly number[]): boolean {
@@ -193,7 +211,7 @@ export function ordinaryMintEpoch(local: readonly number[]): number {
  * `--force-takeback`'s epoch, CLAMPED: a planted `MAX_CLAIM_EPOCH` can never make a takeback mint `MAX_CLAIM_EPOCH + 1`
  * (which `isValidClaim` would then reject as out of bounds, leaving the run unresumable on every device — the very
  * outcome the bound exists to prevent). At the ceiling the takeback re-mints the ceiling and `compareClaim` decides on
- * `(startedAt, deviceId, pid)`; `canMintAbove` is how the caller knows to say so.
+ * `(deviceId, runId, at, pid)`; `canMintAbove` is how the caller knows to say so.
  */
 export function forceTakebackEpoch(seenEpochs: readonly number[]): number {
   return Math.min(MAX_CLAIM_EPOCH, Math.max(FIRST_EPOCH, highEpoch(seenEpochs) + 1));
@@ -203,29 +221,60 @@ export type ForkRole = 'alone' | 'holder' | 'loser';
 
 export interface ForkVerdict {
   role: ForkRole;
-  /** the winning claim among every record for this runId (mine included) */
+  /** the QUALIFIED claim that ranks first for this runId — mine, or a trust- and hmac-qualified foreign one (§9.3) */
   holder: Claim;
-  /** the claims that lost, in order */
+  /** every other claim the reader saw, qualified or not, holder-first — the `⚠ forked` evidence */
   losers: Claim[];
   /**
-   * §10.3 + review blocker 5: true only when EVERY foreign claim that beats mine came from an authenticated record. A
-   * forged heartbeat can therefore never make this process stop — it can only raise the `⚠ forked` flag and a notice.
+   * §10.3 + review blocker 5 + §11 row 51: true only when a QUALIFIED foreign claim supersedes mine, which is the one
+   * state that authorises the exit-2 stop. A forged or unpaired record is never qualified, so it can never make this
+   * true — it can only leave a `losers` row, the `⚠ forked` flag and the `[c]/[q]` pane.
    */
   verified: boolean;
+  /** §11 row 51: a claim that outranks mine but is NOT qualified — the unverified-fork notice, never a stop */
+  unverifiedFork: boolean;
 }
 
 /**
  * The fork decision for one runId (review blocker 3 / 5). `others` are the OTHER live records' claims with the authority
  * the reader derived from their origin. Symmetric: both sides compute the same `holder` from the same immutable claims.
+ *
+ * §3.2 / §9.3 (owner decision, §14 item 18): the holder is the highest QUALIFIED epoch, so the resumer that minted above
+ * the stale process takes the run and the stale process is the loser. An unqualified claim never enters the holder
+ * computation — `role` alone is now enough to gate the stop, and `unverifiedFork` carries the row-51 notice.
  */
 export function forkVerdict(mine: Claim, others: readonly { claim: Claim; authority: Authority }[]): ForkVerdict {
-  const all = [mine, ...others.map((o) => o.claim)];
-  const holder = claimHolder(all) ?? mine;
-  const losers = all.filter((c) => !sameClaim(c, holder)).sort(compareClaim);
-  if (others.length === 0) return { role: 'alone', holder, losers: [], verified: true };
-  const beatsMe = others.filter((o) => compareClaim(o.claim, mine) < 0);
-  const verified = beatsMe.length > 0 && beatsMe.every((o) => o.authority !== 'unverified');
-  return { role: sameClaim(holder, mine) ? 'holder' : 'loser', holder, losers, verified };
+  const qualified = others.filter((o) => o.authority !== 'unverified').map((o) => o.claim);
+  const holder = claimHolder([mine, ...qualified]) ?? mine;
+  const losers = [mine, ...others.map((o) => o.claim)].filter((c) => !sameClaim(c, holder)).sort(compareClaim);
+  if (others.length === 0) return { role: 'alone', holder, losers: [], verified: true, unverifiedFork: false };
+  const verified = qualified.some((c) => compareClaim(c, mine) < 0);
+  const unverifiedFork = others.some((o) => o.authority === 'unverified' && compareClaim(o.claim, mine) < 0);
+  return { role: sameClaim(holder, mine) ? 'holder' : 'loser', holder, losers, verified, unverifiedFork };
+}
+
+/**
+ * §7.3 step 1(a) / §9.3: the `/resume` refusal, as one predicate.
+ *
+ * A resume is refused ONLY when a QUALIFIED foreign epoch strictly exceeds this device's local maximum — the run was
+ * legitimately taken over, and `--force-takeback` (`forceTakebackPlan`) is the way back. An unqualified foreign epoch
+ * is a card line and refuses nothing (§11 rows 61 / 66): without that asymmetry, `runs/<anydev>/<myRunId>/claims.json`
+ * with a planted epoch would lock the run out of every device forever. Both sides are filtered to the bound, so a
+ * planted ceiling cannot refuse either.
+ */
+export function claimRefusal(
+  local: readonly number[],
+  foreign: readonly { epoch: number; deviceId: string; qualified: boolean }[],
+): { deviceId: string; epoch: number } | null {
+  const mine = highEpoch(local);
+  let best: { deviceId: string; epoch: number } | null = null;
+  for (const r of foreign) {
+    if (!r.qualified) continue;
+    if (!Number.isSafeInteger(r.epoch) || r.epoch < FIRST_EPOCH || r.epoch > MAX_CLAIM_EPOCH) continue;
+    if (r.epoch <= mine) continue;
+    if (best === null || r.epoch > best.epoch || (r.epoch === best.epoch && r.deviceId < best.deviceId)) best = { deviceId: r.deviceId, epoch: r.epoch };
+  }
+  return best;
 }
 
 // ── authenticity ──────────────────────────────────────────────────────────────────────────────────────────────────────

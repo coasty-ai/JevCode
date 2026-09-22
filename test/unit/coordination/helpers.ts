@@ -42,7 +42,7 @@ export function stamp(n: number, deviceId = DEV_A, rid = runId(1)): Stamp {
 
 /** The immutable per-process claim the fork rule compares (review blocker 3). */
 export function claim(patch: Partial<Claim> = {}): Claim {
-  return { epoch: 1, deviceId: DEV_A, runId: runId(1), pid: 4242, startedAt: iso(T0 - 60_000), ...patch };
+  return { epoch: 1, deviceId: DEV_A, runId: runId(1), at: iso(T0 - 60_000), pid: 4242, ...patch };
 }
 
 export const SELF: RecordOrigin = { self: true, source: null, authenticated: true };
