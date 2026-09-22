@@ -588,7 +588,7 @@ describe('whole-site batches, the pairs reserve and the held passer on a budget 
         decide: (results, _batch, m) => {
           const first = results[0];
           if (first === undefined) throw new Error('expected the one candidate');
-          if (hold === 'suspect') guardState(m).suspect = { goalId: 'g1', outcome: first, phase: 'SEEDS', signals: ['deletes_statement'], noul: 0.1 };
+          if (hold === 'suspect') guardState(m).suspect = { goalId: 'g1', outcome: first, phase: 'SEEDS', signals: ['deletes_statement', 'duplicates_block'], noul: 0.5 };
           else guardState(m).pending = { goalId: 'g1', outcome: first, siteKey: siteKeyOf(first.applied.candidate), phase: 'SEEDS' };
           return { kind: 'continue', plausible: 1 };
         },

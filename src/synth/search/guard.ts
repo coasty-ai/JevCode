@@ -4,32 +4,46 @@
  *
  * Code first, Jev only where tests cannot decide:
  *   0 plausible → hold the best partial (bases.ts) and keep searching;
- *   1 plausible → commit; tests are the oracle and no Noul threshold withholds a lone passer
- *                 (`quicksort` gold Noul 0.15) — at STEP END. Within the step two holds delay it
+ *   1 plausible → commit; tests are the oracle and no Noul threshold withholds a clean lone passer
+ *                 (`quicksort` gold Noul 0.15). Within the step two holds delay it
  *                 (jev-only-quixbugs-3-inspection.md §1: `detect_cycle` and `wrap` committed the
  *                 first lone passer of the step while the gold's site was still unvisited):
  *                 (a) SIEVE mode: a lone passer waits until its site's other seed sources ran, so
  *                     the decision sees the whole site batch (`pending`, rule (a) below);
  *                 (b) a lone passer that is structurally suspicious by code-computed signals
  *                     (deletes a statement, duplicates a block, guards a different variable than
- *                     the failing traceback dereferences, guards an expression nothing reads) is
- *                     put to Q16 as an advisory; below LONE_PASSER_HOLD_MAX_NOUL (one signal) or
- *                     below LONE_PASSER_VOUCH_MIN_NOUL (two or more) it is held as the `suspect`
- *                     and the search runs on through the remaining sources and sites of the step.
- *                     A later passer is arbitrated against it.
- *                 Both holds are released by the next decision once the step's budget is inside
- *                 HOLD_RESERVE_* (the last batch of a step always ends in a decision), and by
- *                 `commitSuspect` at step end; nothing is ever withheld past the step.
+ *                     the failing traceback dereferences, guards an expression nothing reads, ADDS
+ *                     a special-case guard or literal — `if x:`, `return 0`, `** 2`) is put to Q16
+ *                     as an advisory whenever a Jev request is left; below LONE_PASSER_HOLD_MAX_NOUL
+ *                     it is held as the `suspect` and that hold is NEVER released — not on the
+ *                     budget reserve, not at step end (`commitSuspect` returns null and the step
+ *                     ends on its honest partial or parks); with two or more signals a p below
+ *                     LONE_PASSER_VOUCH_MIN_NOUL holds it too, released on the reserve or at step
+ *                     end as `possible overfit` as before. A later passer is decided against it.
+ *                 The pending hold and the vouch-bound hold are released by the next decision once
+ *                 the step's budget is inside HOLD_RESERVE_*, and by `commitSuspect` at step end.
  *   ≥ 2        → cluster by behaviour on code-generated perturbed inputs (perturb.ts: the goal's
- *                 calls, the JSON cases, the linked lists the tests build; pytest: the P2P outcome
- *                 vector), then ONE request: Q15 `genuine_fix` Choice over ≤ 20 representatives +
- *                 Q16 `general_<xx>` Nouls; the measured all-overfit signature
- *                 (P(escape) ≥ 0.9 ∧ max Noul < 0.1: `depth_first_search` 0.90 / 0.06) flags a
- *                 `suspect` and continues; otherwise the Choice argmax is committed, with the
- *                 Choice/Noul override rule of DESIGN §5.4 and the other representatives as fallbacks.
+ *                 calls, the JSON cases, the linked lists the tests build, the harvested test calls
+ *                 of a ladder-class workspace; elsewhere the P2P outcome vector). Generality by
+ *                 code before Jev (llm-jev-headtohead.md §9 class A: `wrap`'s Q15 chose GLM's
+ *                 `if text:` variant at 0.95 over the gold seed):
+ *                   - one cluster mixing a code seed and an LLM candidate → its LLM member (§6.2);
+ *                   - a cluster holding a strict MAJORITY of the independent support (distinct
+ *                     source × site pairs, `clusterSupport`) → its representative;
+ *                   - clusters split → the representative adding the FEWEST special-case guards
+ *                     (`specialCaseScore`: conditionals + literals beyond the replaced line);
+ *                   - a residual tie (or a single all-seed cluster of ≥ 2) → ONE request: Q15
+ *                     `genuine_fix` Choice over ≤ 20 representatives + Q16 `general_<xx>` Nouls,
+ *                     with the PERTURBATION TABLE (which inputs differ, each output) in the state.
+ *                 The all-overfit signature (P(escape) ≥ SUSPECT_ESCAPE_MIN ∧ max Noul <
+ *                 SUSPECT_NOUL_MAX) DROPS the set: nothing is held or committed, the search goes on
+ *                 with the batch's best partial held; otherwise the Choice argmax is committed,
+ *                 with the Choice/Noul override rule of DESIGN §5.4 and the others as fallbacks.
  *
- * The guard never overrides the tests: a candidate failing a goal test is never proposed, a passing
- * one is proposed at step end even when flagged (`openProblems: possible overfit`).
+ * The guard never overrides the tests upward: a candidate failing a goal test is never proposed.
+ * It does refuse passers: one whose arbitration answered the all-overfit signature, and a lone
+ * passer Jev confidently doubted, are never committed (head-to-head v1 committed 5 overfits where
+ * the baseline committed 0; experiments/results/llm-jev-headtohead.md §5, §9).
  */
 import type { Json, StageName, SynthesisContext } from '../../core/types.js';
 import { choice, ESCAPE_KEY, noul } from '../../jev/questions.js';
@@ -42,19 +56,29 @@ import { RUN_FAILURE_ID } from '../verify/text.js';
 import { MAX_PARTIALS_REMEMBERED, appliedOnCommitted, commitPartial, committedBase, guardState, holdBestPartial, isPartial, outcomeSummary, siteKeyOf } from './bases.js';
 import type { GuardMemory, HeldPasser, PartialAdvice } from './bases.js';
 import { SIEVE_MAX_T_RUN_MS } from './budget.js';
-import { DEFAULT_PROBE_TIMEOUT_MS, MAX_PERTURBED_INPUTS, TEST_SOURCE_MAX_BYTES, createLaneProbe, inputKey, perturbedInputs, perturbedInputsFor, programNameOf, readTestSources } from './perturb.js';
-import type { BehaviourProbe, PerturbedInput } from './perturb.js';
+import { DEFAULT_PROBE_TIMEOUT_MS, LADDER_MAX_PROBE_INPUTS, MAX_PERTURBED_INPUTS, TEST_SOURCE_MAX_BYTES, createLadderProbe, createLaneProbe, describeInput, harvestLadderInputs, inputKey, ladderLayoutOf, perturbedInputs, perturbedInputsFor, programNameOf, readTestSources } from './perturb.js';
+import type { BehaviourProbe, LadderLayout, PerturbedInput } from './perturb.js';
 import type { Arbitration, BehaviourCluster, Decision, Goal, OracleModel, StepBudget, VerifyOutcome } from './types.js';
 
 export {
   DEFAULT_PROBE_TIMEOUT_MS,
+  LADDER_HARNESS,
+  LADDER_MAX_PROBE_INPUTS,
   MAX_PERTURBED_INPUTS,
   PROBE_OUTPUT_BOUND,
   behaviourProbeCommand,
+  createLadderProbe,
   createLaneProbe,
+  describeInput,
+  harvestLadderInputs,
+  ladderHarvestCommand,
+  ladderLayoutOf,
+  ladderReplayCommand,
   linkedListInputs,
   linkedListShape,
   parseBehaviourProbe,
+  parseLadderHarvest,
+  parseLadderReplay,
   parseQuixbugsCall,
   perturbationsOf,
   perturbedInputs,
@@ -64,7 +88,7 @@ export {
   programNameOf,
   readTestSources,
 } from './perturb.js';
-export type { BehaviourProbe, LinkedListShape, PerturbationKind, PerturbedInput, ProbeCommandOptions, TestSources } from './perturb.js';
+export type { BehaviourProbe, HarvestedCall, LadderHarvest, LadderLayout, LinkedListShape, PerturbationKind, PerturbedInput, ProbeCommandOptions, TestSources } from './perturb.js';
 
 // ---------------------------------------------------------------------------------------
 // Constants (each with the measurement behind it)
@@ -74,17 +98,29 @@ export type { BehaviourProbe, LinkedListShape, PerturbationKind, PerturbedInput,
  * The all-overfit signature (§2.6): the sets where every passer overfits answered P(escape) 0.90
  * with max Noul 0.06 (`depth_first_search`, 7 candidates, contrarian-arbitrate.all.jsonl), 0.89 /
  * 0.90 / 0.88 / 0.91 / 0.88 with max Noul 0.05–0.07 (`wrap`, the duplicated-loop passers of
- * jev-only-quixbugs-4-overfit, §13 of jev-only-rungs-1-2.md) and 0.75 / 0.67 with max Noul 0.08
- * (ladder `masked` runs 3 and 3b, §20: five `return 0` inserts into `total_ms`, committed under the
- * 0.8 bound and killing the goal's remaining tests), while every set containing the gold had
- * P(escape) ≤ 0.38 and a Noul ≥ 0.45. Both halves of the signature must hold (`arbitrate`), and the
- * Noul half alone separates the two populations; 0.5 sits between the highest gold escape (0.38)
- * and the lowest all-overfit one (0.67). A flagged set is never withheld past the step: the
- * smallest edit is held as the `suspect` while the remaining sites run and is committed at step
- * end as `possible overfit` if nothing better appears.
+ * jev-only-quixbugs-4-overfit, §13 of jev-only-rungs-1-2.md), 0.75 / 0.67 with max Noul 0.08
+ * (ladder `masked` runs 3 and 3b, §20: five `return 0` inserts into `total_ms`) and, in the
+ * llm-jev head-to-head (llm-jev-headtohead.md §5.2, §9 class A), 0.86 / 0.12 (`textstats`,
+ * `tokens.append(n)` inside `ngrams`) and 0.78 / 0.11 (`django-15315`, a dead-code donor) — the
+ * last two committed under the old Noul bound of 0.1. Every set containing the gold had P(escape)
+ * ≤ 0.38 and a Noul ≥ 0.45. Both halves must hold (`arbitrate`). The Noul bound is the
+ * "confidently false" 0.3 of DESIGN §5.4 (OVERRIDE_LOW): 0.18 above the two new sets, 0.15 under
+ * the lowest gold Noul. The escape bound stays at 0.5, between the highest gold escape (0.38) and
+ * the lowest all-overfit one (0.67): the fix brief's 0.7 would let `masked` 3b through again, and
+ * 0.5 ∧ 0.3 is a superset of it. A flagged set is DROPPED (rule (1) of the head-to-head fix):
+ * its passers stay in `tried`, nothing is held, no reserve or step-end release exists for them,
+ * and the search goes on with the batch's best partial held. Before 2026-09-21 the smallest edit
+ * was held as the `suspect` and committed at step end as `possible overfit`.
  */
 export const SUSPECT_ESCAPE_MIN = 0.5;
-export const SUSPECT_NOUL_MAX = 0.1;
+export const SUSPECT_NOUL_MAX = 0.3;
+/** Rows of the perturbation table Jev sees with Q15: inputs on which the representatives' outputs differ (the probes run 16–32 inputs). */
+export const PERTURBATION_ROWS_MAX = 12;
+/** One output in that table is cut here (repr() or the exception class; the clustering compares the full text). */
+export const PERTURBATION_OUTPUT_MAX = 120;
+/** Explains the `perturbations` table; added to the measured state only when the probe ran and the representatives differ somewhere. */
+export const PERTURBATION_NOTE =
+  'Each row of `perturbations` is an input derived from the tests by a structural perturbation, with what every candidate returns on it (repr() of the result, or the exception class; `[arguments mutated to …]` when the call changed its own input). The candidates agree on every input not listed. The genuine fix is right on every valid input, not only on `tests`.';
 /**
  * DESIGN §5.4 Choice/Noul resolution rule: the Choice argmax is overridden only when its own Noul
  * is confidently false (< 0.3) and another representative's is confidently true (≥ 0.7). Gold
@@ -236,11 +272,103 @@ export function clusterByBehaviour(outcomes: readonly VerifyOutcome[], signature
   return clusters.map((c, i) => ({ ...c, id: `cluster_${i + 1}` }));
 }
 
+/**
+ * The independent support of a behaviour cluster: its distinct source × site pairs. Members of one
+ * source at one site are near-duplicates — the mutation operators write `>=`, `not <` and
+ * `not (<)` for one wrong boundary (`next_permutation`: three overfits against two golds, the
+ * measured Q15 set), so a head count would crown the overfit; a seed and an LLM sample, or seeds
+ * at two sites, agreeing on every perturbed input are separate derivations of one behaviour.
+ */
+export function clusterSupport(c: Pick<BehaviourCluster, 'members'>): number {
+  return new Set(c.members.map((m) => `${m.applied.candidate.source}@${siteKeyOf(m.applied.candidate)}`)).size;
+}
+
+/**
+ * Rule (2) of the head-to-head fix, first half: the cluster whose support is a strict majority of
+ * every cluster's support together (more than all the others combined), else null. Its
+ * representative (`preferLlmInCluster` when it has an LLM member) is committed by code, no Jev.
+ */
+export function majorityCluster(clusters: readonly BehaviourCluster[]): BehaviourCluster | null {
+  if (clusters.length < 2) return null;
+  const support = clusters.map((c) => clusterSupport(c));
+  const total = support.reduce((a, b) => a + b, 0);
+  for (let i = 0; i < clusters.length; i++) {
+    const c = clusters[i];
+    if (c !== undefined && (support[i] ?? 0) * 2 > total) return c;
+  }
+  return null;
+}
+
+/**
+ * Rule (2), second half: when the clusters split (no majority), the representative that adds the
+ * fewest special-case guards (`specialCaseScore`), when it is alone at the minimum; null on a tie,
+ * which goes to Q15. `wrap` (llm-jev-headtohead.md §8.1): the gold `lines.append(text)` adds 0,
+ * GLM's `if text:` variant 1, the copied loop 5 — code picks the gold that Jev's Choice had at 0.05.
+ */
+export function fewestSpecialCases(reps: readonly VerifyOutcome[]): VerifyOutcome | null {
+  let best: VerifyOutcome | null = null;
+  let bestScore = Number.POSITIVE_INFINITY;
+  let tied = false;
+  for (const r of reps) {
+    const s = specialCaseScore(r.applied.candidate).total;
+    if (s < bestScore) {
+      best = r;
+      bestScore = s;
+      tied = false;
+    } else if (s === bestScore) tied = true;
+  }
+  return tied ? null : best;
+}
+
 // ---------------------------------------------------------------------------------------
 // Structural suspicion signals (code) on a lone passer
 // ---------------------------------------------------------------------------------------
 
-export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard';
+export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard' | 'adds_special_case';
+
+// ---------------------------------------------------------------------------------------
+// Special-case guards (code metric): the conditionals and literals a candidate adds
+// ---------------------------------------------------------------------------------------
+
+/** Keywords that open or extend a condition (a ternary's `if` included; `not` negates and guards nothing). */
+const CONDITION_KEYWORDS: ReadonlySet<string> = new Set(['if', 'elif', 'while', 'and', 'or', 'except']);
+const LITERAL_NAMES: ReadonlySet<string> = new Set(['None', 'True', 'False']);
+
+export interface SpecialCaseScore {
+  /** condition keywords the candidate's lines have beyond the line it replaces */
+  conditionals: number;
+  /** number, string and None/True/False tokens beyond the replaced line's */
+  literals: number;
+  total: number;
+}
+
+function countSpecialCases(text: string): { conditionals: number; literals: number } {
+  let conditionals = 0;
+  let literals = 0;
+  for (const t of codeTokens(tokenizeFragment(text))) {
+    if (t.type === 'NAME' && CONDITION_KEYWORDS.has(t.text)) conditionals += 1;
+    else if (t.type === 'NUMBER' || t.type === 'STRING' || (t.type === 'NAME' && LITERAL_NAMES.has(t.text))) literals += 1;
+  }
+  return { conditionals, literals };
+}
+
+/**
+ * How many special-case guards a candidate ADDS (the head-to-head's failure class A,
+ * llm-jev-headtohead.md §9): condition keywords and literal tokens in its lines beyond those of
+ * the line it replaces — counts, not a multiset, so `== 0` → `<= 1` changes a literal and adds
+ * none; an insert adds everything it says. The committed overfits all add at least one: `if text:`
+ * (a conditional), `return 0` and `subtotal ** 2` (a literal), `if tortoise.successor is None:
+ * return False` (one conditional, two literals), `wrap`'s copied loop (a `while` and four
+ * literals). The golds beside them added none (`lines.append(text)`, `>=` for `>`, `sum` for
+ * `len`) or fewer (`detect_cycle`'s `hare is None or …`: one conditional, one literal).
+ */
+export function specialCaseScore(c: Candidate): SpecialCaseScore {
+  const after = countSpecialCases(candidateLines(c).join('\n'));
+  const before = c.site.kind === 'replace' ? countSpecialCases(c.site.currentLine) : { conditionals: 0, literals: 0 };
+  const conditionals = Math.max(0, after.conditionals - before.conditionals);
+  const literals = Math.max(0, after.literals - before.literals);
+  return { conditionals, literals, total: conditionals + literals };
+}
 
 /** The candidate's own lines (site text and non-delete extra edits), trimmed, non-empty. */
 function candidateLines(c: Candidate): string[] {
@@ -349,8 +477,11 @@ function isUsed(s: string, lines: readonly string[]): boolean {
  *     `not X` guards name no root variable dereferenced on the traceback line (`detect_cycle`:
  *     `tortoise.successor` guarded, `hare.successor` crashed);
  *   - `dead_guard`: an added guard statement whose subject expression nothing in the function
- *     reads (`tortoise.successor` is never dereferenced, indexed, iterated or passed).
- * Advisory only: the signals trigger a Q16 question, never a rejection.
+ *     reads (`tortoise.successor` is never dereferenced, indexed, iterated or passed);
+ *   - `adds_special_case`: the edit adds a conditional or a literal over the line it replaces
+ *     (`specialCaseScore` > 0: `if x:`, `return 0`, `subtotal ** 2` — the shape of every lone
+ *     passer the head-to-head committed as an overfit, llm-jev-headtohead.md §9 class A).
+ * The signals trigger a Q16 question; what Jev answers decides the hold (`decide`, rule (b)).
  */
 export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>): SuspicionSignal[] {
   const c = o.applied.candidate;
@@ -373,6 +504,7 @@ export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>)
     const addsStatement = c.site.kind === 'insert' || added.length >= 2;
     if (addsStatement && subjects.every((s) => !isUsed(s, fn.map((l) => l.text)))) out.push('dead_guard');
   }
+  if (specialCaseScore(c).total > 0) out.push('adds_special_case');
   return out;
 }
 
@@ -490,7 +622,7 @@ function optionDescription(c: Candidate): string {
 }
 
 /** The measured state: `{ task, program, tests, buggy_program_failure, candidates }`. */
-export function arbitrateState(ctx: ArbitrateContext, reps: readonly Representative[]): Json {
+export function arbitrateState(ctx: ArbitrateContext, reps: readonly Representative[]): { [k: string]: Json } {
   const files = new Map<string, { file: SourceFile; lines: number[]; n: number }>();
   for (const r of reps) {
     const site = r.outcome.applied.candidate.site;
@@ -522,15 +654,66 @@ export function arbitrateState(ctx: ArbitrateContext, reps: readonly Representat
   return state;
 }
 
+/** One row of the perturbation table Jev sees with Q15: an input on which the representatives' outputs differ. */
+export interface PerturbationRow {
+  /** the call text, the expressions, or the JSON arguments (`describeInput`) */
+  input: string;
+  /** the perturbation that produced it */
+  how: string;
+  /** representative key → its output on this input */
+  outputs: Record<string, string>;
+}
+
+/**
+ * The inputs on which ≥ 2 representatives' probe outputs differ, each one's output beside it
+ * (repr() or the exception class; `[arguments mutated to …]` when a call changed its input), in
+ * input order, ≤ PERTURBATION_ROWS_MAX. Only `outputs:` signatures (`createLaneProbe`,
+ * `createLadderProbe`) carry per-input outputs; a P2P-only or foreign signature contributes
+ * nothing, and fewer than two representatives with outputs give no table.
+ */
+export function perturbationTable(reps: readonly Representative[], inputs: readonly PerturbedInput[], signatures: ReadonlyMap<string, string>): PerturbationRow[] {
+  const outputsOf = new Map<string, string[]>();
+  for (const r of reps) {
+    const sig = signatures.get(r.outcome.applied.candidate.id);
+    if (sig !== undefined && sig.startsWith('outputs:')) outputsOf.set(r.key, sig.slice('outputs:'.length).split('\u001f'));
+  }
+  if (outputsOf.size < 2) return [];
+  const rows: PerturbationRow[] = [];
+  inputs.forEach((p, k) => {
+    if (rows.length >= PERTURBATION_ROWS_MAX) return;
+    const outputs: Record<string, string> = {};
+    const distinct = new Set<string>();
+    for (const [key, outs] of outputsOf) {
+      const o = outs[k];
+      if (o === undefined) continue;
+      outputs[key] = o.length > PERTURBATION_OUTPUT_MAX ? `${o.slice(0, PERTURBATION_OUTPUT_MAX - 1)}…` : o;
+      distinct.add(o);
+    }
+    if (distinct.size >= 2) rows.push({ input: describeInput(p), how: p.how, outputs });
+  });
+  return rows;
+}
+
+export interface ArbitrateExtras {
+  /** the perturbation table (`perturbationTable`), shown to Jev as `perturbations` when non-empty */
+  perturbations?: readonly PerturbationRow[];
+}
+
 /**
  * Q15 + Q16 in one request over the representatives of `clusters`. Returns the Choice argmax as
  * `pick` after the §5.4 override rule, the suspect flag, and the other representatives as
- * fallbacks ordered by Choice probability. Throws GuardError when Jev's answer shape is wrong.
+ * fallbacks ordered by Choice probability. With `extras.perturbations` the measured state gains
+ * the table and its note, so Jev judges on which inputs the options differ and what each returns,
+ * not on the diffs alone. Throws GuardError when Jev's answer shape is wrong.
  */
-export async function arbitrate(ctx: ArbitrateContext, clusters: readonly BehaviourCluster[], ask: JevAsk): Promise<ArbitrationResult> {
+export async function arbitrate(ctx: ArbitrateContext, clusters: readonly BehaviourCluster[], ask: JevAsk, extras: ArbitrateExtras = {}): Promise<ArbitrationResult> {
   const reps = representativesOf(clusters);
   if (reps.length < 2) throw new GuardError(`arbitrate needs at least two representatives, got ${reps.length}`);
   const state = arbitrateState(ctx, reps);
+  if (extras.perturbations !== undefined && extras.perturbations.length > 0) {
+    state['perturbations_note'] = PERTURBATION_NOTE;
+    state['perturbations'] = extras.perturbations.map((r): Json => ({ input: r.input, how: r.how, outputs: { ...r.outputs } }));
+  }
   const options: Record<string, Json | null> = {};
   for (const r of reps) options[r.key] = optionDescription(r.outcome.applied.candidate);
   const questions = { [GENUINE_FIX_ID]: choice(GENUINE_FIX_INSTRUCTIONS, options) };
@@ -587,6 +770,9 @@ export async function adviseLonePasser(ctx: ArbitrateContext, o: VerifyOutcome, 
 
 export type HoldKind = 'pending' | 'suspect';
 
+/** The code rule that decided a commit without a Jev request (rule (2) and DESIGN §22.5), when one did. */
+export type CodeRule = 'llm_in_cluster' | 'majority_cluster' | 'fewest_special_cases';
+
 /** The bookkeeping every guard decision carries beside the Decision itself. */
 export interface GuardFields {
   /** plausible candidates in THIS batch (held ones are not counted again) */
@@ -594,7 +780,7 @@ export interface GuardFields {
   clusters: number;
   arbitrated: boolean;
   requests: number;
-  /** other arbitrated representatives, for later steps if the judge rejects the pick */
+  /** other arbitrated (or code-ranked) representatives, for later steps if the judge rejects the pick */
   fallbacks: VerifyOutcome[];
   /** the behaviour probe failed and clustering fell back to the P2P vectors (message), else null */
   probeError: string | null;
@@ -602,6 +788,10 @@ export interface GuardFields {
   held: HoldKind | null;
   /** the structural signals computed on a fresh lone passer this decision */
   signals: SuspicionSignal[];
+  /** passers dropped by the all-overfit signature this decision (they stay in `tried`; none is ever committed) */
+  dropped: number;
+  /** the code rule that committed without Jev, if any */
+  codeRule: CodeRule | null;
 }
 
 export type GuardDecision = Decision & GuardFields;
@@ -618,8 +808,10 @@ export interface DecideOptions {
   oracle?: OracleModel;
   /** runs the behaviour probe on the lanes; absent → P2P vectors only */
   probe?: BehaviourProbe;
-  /** extra probe inputs beyond the goal's calls (test-file-derived, perturb.ts), fetched only when ≥ 2 passers need them */
-  inputs?: () => Promise<readonly PerturbedInput[]>;
+  /** extra probe inputs beyond the goal's calls (test-file-derived or harvested, perturb.ts), fetched only when ≥ 2 passers need them */
+  inputs?: (plausible: readonly VerifyOutcome[]) => Promise<readonly PerturbedInput[]>;
+  /** cap of the probe's input set (default MAX_PERTURBED_INPUTS; the ladder harvest allows LADDER_MAX_PROBE_INPUTS) */
+  inputsMax?: number;
   /** the step budget; a hold is started or kept only inside HOLD_RESERVE_* (absent → no budget limit, as in unit tests) */
   budget?: HoldBudget;
   /** transcript note (`synth` event) for holds and releases */
@@ -734,14 +926,15 @@ export function sieveHoldApplies(goal: Pick<Goal, 'phase' | 'exhausted'>, o: Ver
   return SITE_BATCH_SOURCES.some((s) => s !== c.source && !exhausted.has(s));
 }
 
-/** Probe inputs for the goal: its calls' perturbations plus the test-file-derived ones, deduplicated and bounded. */
-async function probeInputs(goal: Goal, opts: DecideOptions): Promise<PerturbedInput[]> {
+/** Probe inputs for the goal: its calls' perturbations plus the test-file-derived (or harvested) ones, deduplicated and bounded. */
+async function probeInputs(goal: Goal, opts: DecideOptions, plausible: readonly VerifyOutcome[]): Promise<PerturbedInput[]> {
   if (opts.oracle === undefined) return [];
+  const max = opts.inputsMax ?? MAX_PERTURBED_INPUTS;
   const out: PerturbedInput[] = [];
   const seen = new Set<string>();
   const add = (list: readonly PerturbedInput[]): void => {
     for (const p of list) {
-      if (out.length >= MAX_PERTURBED_INPUTS) return;
+      if (out.length >= max) return;
       const k = inputKey(p);
       if (seen.has(k)) continue;
       seen.add(k);
@@ -749,13 +942,37 @@ async function probeInputs(goal: Goal, opts: DecideOptions): Promise<PerturbedIn
     }
   };
   add(perturbedInputs(goal, opts.oracle));
-  if (opts.inputs !== undefined) add(await opts.inputs());
+  if (opts.inputs !== undefined) add(await opts.inputs(plausible));
   return out;
 }
 
 function describe(o: VerifyOutcome): string {
   const c = o.applied.candidate;
   return `${c.source}/${c.op} at ${siteKeyOf(c)}`;
+}
+
+/**
+ * Rule (3) of the head-to-head fix: a held passer Jev confidently doubted (Q16 `general` below
+ * LONE_PASSER_HOLD_MAX_NOUL) is never released — not by the budget reserve, not by `commitSuspect`
+ * at step end. The step ends on its honest partial or parks; the passer stays in `tried`.
+ * `shipping` (llm-jev-headtohead.md §5.2): `subtotal ** 2` was committed with 14 s of test wall
+ * left, inside the reserve, with no advisory asked.
+ */
+export function unreleasable(h: Pick<HeldPasser, 'noul'>): boolean {
+  return h.noul !== undefined && h.noul < LONE_PASSER_HOLD_MAX_NOUL;
+}
+
+function supportSummary(clusters: readonly BehaviourCluster[]): string {
+  return clusters.map((c) => `${c.id} ${c.members.length} member${c.members.length === 1 ? '' : 's'}/support ${clusterSupport(c)}`).join(', ');
+}
+
+function scoreSummary(reps: readonly VerifyOutcome[]): string {
+  return reps
+    .map((r) => {
+      const s = specialCaseScore(r.applied.candidate);
+      return `${describe(r)} +${s.conditionals}c/+${s.literals}l`;
+    })
+    .join('; ');
 }
 
 /**
@@ -770,7 +987,7 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   const partial = results.filter((o) => !isPlausible(o, goal) && isPartial(o));
   const carried = heldPassers(mem, goal);
   const plausible = mostPassing(dedupeById([...carried, ...fresh]));
-  const base = { plausible: fresh.length, clusters: 0, arbitrated: false, requests: 0, fallbacks: [] as VerifyOutcome[], probeError: null as string | null, held: null as HoldKind | null, signals: [] as SuspicionSignal[] };
+  const base = { plausible: fresh.length, clusters: 0, arbitrated: false, requests: 0, fallbacks: [] as VerifyOutcome[], probeError: null as string | null, held: null as HoldKind | null, signals: [] as SuspicionSignal[], dropped: 0, codeRule: null as CodeRule | null };
 
   if (plausible.length === 0) {
     // Code only: strictly more passed wins, ties by the bases.ts tie-break rule (no Jev request).
@@ -781,13 +998,16 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   const only = plausible[0];
   if (plausible.length === 1 && only !== undefined) {
     const budgetOk = budgetAllowsHold(opts.budget);
-    // A held passer, still alone: keep it, or release it when the step cannot afford more.
+    // A held passer, still alone: keep it, or release it when the step cannot afford more — unless
+    // Jev confidently doubted it (rule (3), `unreleasable`): that hold outlasts the reserve, and
+    // `commitSuspect` drops it at step end.
     if (st.suspect !== null && st.suspect.goalId === goal.id && st.suspect.outcome === only) {
-      if (!budgetOk) {
+      if (!budgetOk && !unreleasable(st.suspect)) {
         clearHeld(mem, goal);
         note(`${goal.id}: releases the held suspect ${describe(only)} (budget reserve); committing as possible overfit`);
         return commit(mem, only, { ...base, note: 'possible overfit' });
       }
+      if (!budgetOk) note(`${goal.id}: the budget reserve is spent but the held suspect ${describe(only)} (general ${st.suspect.noul?.toFixed(2) ?? 'n/a'} < ${LONE_PASSER_HOLD_MAX_NOUL}) is not released; the step ends on its partial or parks`);
       return { kind: 'continue', ...base, held: 'suspect' };
     }
     if (st.pending !== null && st.pending.goalId === goal.id && st.pending.outcome === only) {
@@ -804,20 +1024,35 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
     clearHeld(mem, goal);
     const signals = suspicionSignals(only, goal);
     let requests = 0;
-    if (signals.length > 0 && budgetOk) {
+    let doubted = false;
+    // The advisory is asked whenever a request is left, reserve or not: `shipping`'s `** 2` was
+    // committed unasked inside the reserve. A confidently doubted passer holds without a release
+    // (rule (3)); a doubted one with strong signals holds as before while the step can afford it.
+    const canAsk = opts.budget === undefined || opts.budget.jevRequestsLeft >= 1;
+    if (signals.length > 0 && canAsk) {
       const arbCtx: ArbitrateContext = { goal };
       if (opts.stage !== undefined) arbCtx.stage = opts.stage;
       const adv = await adviseLonePasser(arbCtx, only, ask);
       requests += adv.requests;
       const bound = signals.length >= STRONG_SIGNALS_MIN ? LONE_PASSER_VOUCH_MIN_NOUL : LONE_PASSER_HOLD_MAX_NOUL;
-      if (adv.p !== null && adv.p < bound) {
+      if (adv.p !== null && adv.p < LONE_PASSER_HOLD_MAX_NOUL) {
         const held: HeldPasser = { goalId: goal.id, outcome: only, phase: goal.phase, signals, noul: adv.p };
         st.suspect = held;
-        note(`${goal.id}: holds the lone passer ${describe(only)} as suspect (${signals.join(', ')}; general ${adv.p.toFixed(2)} < ${bound}); searching on through the step's remaining sources and sites`);
+        note(`${goal.id}: holds the lone passer ${describe(only)} as suspect (${signals.join(', ')}; general ${adv.p.toFixed(2)} < ${LONE_PASSER_HOLD_MAX_NOUL}): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins`);
         return { kind: 'continue', ...base, requests, signals, held: 'suspect' };
       }
-      note(`${goal.id}: lone passer ${describe(only)} looks ${signals.join(', ')} but general ${adv.p === null ? 'n/a' : adv.p.toFixed(2)} ≥ ${bound} keeps it`);
-    }
+      if (adv.p !== null && adv.p < bound) {
+        doubted = true;
+        if (budgetOk) {
+          const held: HeldPasser = { goalId: goal.id, outcome: only, phase: goal.phase, signals, noul: adv.p };
+          st.suspect = held;
+          note(`${goal.id}: holds the lone passer ${describe(only)} as suspect (${signals.join(', ')}; general ${adv.p.toFixed(2)} < ${bound}); searching on through the step's remaining sources and sites`);
+          return { kind: 'continue', ...base, requests, signals, held: 'suspect' };
+        }
+        note(`${goal.id}: lone passer ${describe(only)} looks ${signals.join(', ')} and general ${adv.p.toFixed(2)} < ${bound}, but the budget reserve is spent; committing as possible overfit`);
+      } else note(`${goal.id}: lone passer ${describe(only)} looks ${signals.join(', ')} but general ${adv.p === null ? 'n/a' : adv.p.toFixed(2)} ≥ ${bound} keeps it`);
+    } else if (signals.length > 0) note(`${goal.id}: lone passer ${describe(only)} looks ${signals.join(', ')} and no Jev request is left to ask about it; committing it`);
+    if (doubted) return commit(mem, only, { ...base, requests, signals, note: 'possible overfit' });
     if (budgetOk && sieveHoldApplies(goal, only, opts.oracle)) {
       st.pending = { goalId: goal.id, outcome: only, siteKey: siteKeyOf(only.applied.candidate), phase: goal.phase };
       note(`${goal.id}: holds the lone passer ${describe(only)} until its site's seed sources ran`);
@@ -831,53 +1066,83 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   // vectors (the design's pytest behaviour).
   let signatures: ReadonlyMap<string, string> = new Map();
   let probeError: string | null = null;
-  let probed = 0;
+  let inputs: readonly PerturbedInput[] = [];
   if (opts.probe !== undefined && opts.oracle !== undefined) {
     try {
-      const inputs = await probeInputs(goal, opts);
-      probed = inputs.length;
+      inputs = await probeInputs(goal, opts, plausible);
       if (inputs.length > 0) signatures = await opts.probe(plausible, inputs);
     } catch (e) {
       probeError = e instanceof Error ? e.message : String(e);
     }
   }
   const clusters = clusterByBehaviour(plausible, signatures);
+  const probeNote = opts.probe === undefined ? 'no probe' : `probe ${inputs.length} inputs, ${signatures.size}/${plausible.length} signatures${probeError === null ? '' : `, error: ${probeError}`}`;
+  const common = { ...base, plausible: fresh.length, clusters: clusters.length, probeError };
   const single = clusters.length === 1 ? clusters[0] : undefined;
   if (single !== undefined && mixedSourceCluster(single)) {
     // docs/LLM-JEV-DESIGN.md §6.2: a seed and an LLM candidate that pass the same tests and behave alike — the LLM
     // candidate is committed by code rule (the correctness witness among test-equivalent passers); no Jev request
     clearHeld(mem, goal);
     const pick = single.representative;
-    note(`${goal.id}: ${plausible.length} passers in one behaviour cluster with a code seed and an LLM candidate; committing the LLM member ${describe(pick)} by the preferLlmInCluster rule (no arbitration)`);
-    return commit(mem, pick, { ...base, plausible: fresh.length, clusters: 1, probeError, fallbacks: single.members.filter((m) => m !== pick) });
+    note(`${goal.id}: ${plausible.length} passers in one behaviour cluster with a code seed and an LLM candidate (${probeNote}); committing the LLM member ${describe(pick)} by the preferLlmInCluster rule (no arbitration)`);
+    return commit(mem, pick, { ...common, clusters: 1, fallbacks: single.members.filter((m) => m !== pick), codeRule: 'llm_in_cluster' });
   }
+  if (clusters.length >= 2) {
+    // Rule (2): generality by code before Jev. The clusters differ on some perturbed input (or on
+    // the suite), so at most one of them is right; independent agreement, then the fewest
+    // special-case guards, pick it without a request. Q15 is asked only on the residual tie.
+    const majority = majorityCluster(clusters);
+    if (majority !== null) {
+      clearHeld(mem, goal);
+      const pick = majority.representative;
+      const fallbacks = clusters.filter((c) => c !== majority).map((c) => c.representative);
+      guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
+      note(`${goal.id}: ${plausible.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); ${majority.id} holds the majority of the independent support; committing its representative ${describe(pick)} by code (no arbitration)`);
+      return commit(mem, pick, { ...common, fallbacks, codeRule: 'majority_cluster' });
+    }
+    const reps = clusters.map((c) => c.representative);
+    const fewest = fewestSpecialCases(reps);
+    if (fewest !== null) {
+      clearHeld(mem, goal);
+      const fallbacks = reps.filter((r) => r !== fewest).sort((a, b) => specialCaseScore(a.applied.candidate).total - specialCaseScore(b.applied.candidate).total || byEditCost(a, b));
+      guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
+      note(`${goal.id}: ${plausible.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); the clusters split; committing ${describe(fewest)} with the fewest added special-case guards (${scoreSummary(reps)}) by code (no arbitration)`);
+      return commit(mem, fewest, { ...common, fallbacks, codeRule: 'fewest_special_cases' });
+    }
+  }
+  // The residual: a single all-seed cluster of ≥ 2, or split clusters whose representatives tie on
+  // the code metric. One Q15 + Q16 request, with the perturbation table in the state.
   const arbCtx: ArbitrateContext = { goal };
   if (opts.stage !== undefined) arbCtx.stage = opts.stage;
-  const arb = await arbitrate(arbCtx, clusters, ask);
-  const common = { ...base, plausible: fresh.length, clusters: clusters.length, arbitrated: true, requests: arb.requests, probeError };
-  const probeNote = opts.probe === undefined ? 'no probe' : `probe ${probed} inputs, ${signatures.size}/${plausible.length} signatures${probeError === null ? '' : `, error: ${probeError}`}`;
-  note(`${goal.id}: arbitrated ${plausible.length} passers (${carried.length} held) in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'} (${probeNote}); escape ${arb.pEscape.toFixed(2)}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)}; ${arb.suspect ? `all-overfit signature, holding ${describe(minEdit(plausible))}` : `pick ${describe(arb.pick)}`}`);
+  const table = perturbationTable(representativesOf(clusters), inputs, signatures);
+  const arb = await arbitrate(arbCtx, clusters, ask, table.length > 0 ? { perturbations: table } : {});
+  const arbitrated = { ...common, arbitrated: true, requests: arb.requests };
+  note(`${goal.id}: arbitrated ${plausible.length} passers (${carried.length} held) in ${clusters.length} cluster${clusters.length === 1 ? '' : 's'} (${probeNote}${table.length > 0 ? `, ${table.length} differing input${table.length === 1 ? '' : 's'} shown` : ''}); escape ${arb.pEscape.toFixed(2)}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)}; ${arb.suspect ? 'all-overfit signature' : `pick ${describe(arb.pick)}`}`);
 
   if (arb.suspect) {
-    // Every passer looks like an overfit: remember the smallest edit and keep searching (gap
-    // sites next); it is committed at step end with `possible overfit` if nothing better appears.
-    const candidate = minEdit(plausible);
+    // Rule (1): every passer looks like an overfit (P(escape) ≥ SUSPECT_ESCAPE_MIN, max general <
+    // SUSPECT_NOUL_MAX). None is committed — not now, not on the reserve, not at step end: the set
+    // is dropped (its diffs are in `tried`), a held passer among it goes too, and the search runs
+    // on with the batch's best partial held for the step's honest progress commit.
     clearHeld(mem, goal);
-    st.suspect = { goalId: goal.id, outcome: candidate, phase: goal.phase, signals: [] };
-    return { kind: 'continue', ...common, held: 'suspect' };
+    holdBestPartial(mem, partial, goal);
+    note(`${goal.id}: all-overfit signature (escape ${arb.pEscape.toFixed(2)} ≥ ${SUSPECT_ESCAPE_MIN}, max general ${Math.max(...Object.values(arb.noul)).toFixed(2)} < ${SUSPECT_NOUL_MAX}); dropping the ${plausible.length} passer${plausible.length === 1 ? '' : 's'} (kept in tried, none is committed); searching on${partial.length > 0 ? ` with the batch's best partial held` : ''}`);
+    return { kind: 'continue', ...arbitrated, dropped: plausible.length };
   }
   clearHeld(mem, goal);
   guardState(mem).fallbacks = { goalId: goal.id, outcomes: arb.fallbacks };
-  return commit(mem, arb.pick, { ...common, fallbacks: arb.fallbacks });
+  return commit(mem, arb.pick, { ...arbitrated, fallbacks: arb.fallbacks });
 }
 
 /**
- * Step-end rule (§2.3): a passer held for `goal` is still proposed, because the guard never
- * overrides the tests: rule (a)'s pending passer as a plain commit, rule (b)'s or the
- * all-overfit suspect marked `possible overfit`. Clears the hold so the next step starts clean;
- * another goal's hold is left alone (and null is returned). Without `goal` any held passer is
- * committed (callers that search one goal per step should pass it so a parked goal's flagged
- * passer never surfaces under a later goal).
+ * Step-end rule (§2.3): a passer held for `goal` is still proposed — rule (a)'s pending passer as
+ * a plain commit, rule (b)'s vouch-bound suspect marked `possible overfit` — EXCEPT a suspect Jev
+ * confidently doubted (`unreleasable`, rule (3) of the head-to-head fix): that one is dropped and
+ * null is returned, so the caller ends the step on its honest partial or parks (subgoal.ts
+ * exitOnBudget / step end, index.ts). Clears the hold so the next step starts clean; another
+ * goal's hold is left alone (and null is returned). Without `goal` any held passer is decided
+ * (callers that search one goal per step should pass it so a parked goal's flagged passer never
+ * surfaces under a later goal).
  */
 export function commitSuspect(mem: GuardMemory, goal?: Pick<Goal, 'id'>): Decision | null {
   const st = guardState(mem);
@@ -890,6 +1155,7 @@ export function commitSuspect(mem: GuardMemory, goal?: Pick<Goal, 'id'>): Decisi
   const s = st.suspect;
   if (s === null || (goal !== undefined && s.goalId !== goal.id)) return null;
   st.suspect = null;
+  if (unreleasable(s)) return null;
   return { kind: 'commit', applied: appliedOnCommitted(mem, s.outcome), allGoalTestsPass: true, note: 'possible overfit', outcome: s.outcome };
 }
 
@@ -1013,15 +1279,41 @@ async function testDerivedInputs(ctx: Pick<SynthesisContext, 'workspace'>, mem: 
 }
 
 /**
+ * The harvested test calls of a ladder-class goal (perturb.ts `harvestLadderInputs`), run once per
+ * goal and memory on a lane holding the committed tree; a harvest that gives no protocol line is
+ * remembered as empty (the probe then degrades to the P2P vectors for the run). `plausible` only
+ * lends the lane API a candidate to name.
+ */
+async function harvestedInputs(ctx: SynthesisContext, mem: SearchMemoryLike, pool: LanePool, goal: Goal, layout: LadderLayout, plausible: readonly VerifyOutcome[]): Promise<PerturbedInput[]> {
+  let cache = PROBE_INPUTS.get(mem);
+  if (cache === undefined) {
+    cache = new Map();
+    PROBE_INPUTS.set(mem, cache);
+  }
+  const hit = cache.get(goal.id);
+  if (hit !== undefined) return hit;
+  const sample = plausible[0]?.applied;
+  if (sample === undefined) return [];
+  const harvest = await harvestLadderInputs(ctx, pool, committedBase(mem).files, sample, layout);
+  const inputs = harvest?.inputs ?? [];
+  cache.set(goal.id, inputs);
+  const errors = harvest === null ? '' : Object.entries(harvest.importErrors).map(([m, e]) => `${m}: ${e}`).join(', ');
+  ctx.emit({ type: 'synth', step: ctx.step, phase: 'guard', detail: harvest === null ? `${goal.id}: the test-call harvest on ${layout.modules.join(', ')} gave no protocol line; clustering on the P2P vectors` : `${goal.id}: harvested ${harvest.recorded} test calls over ${harvest.functions} functions of ${layout.modules.join(', ')} (${layout.testModules.join(', ')}); ${inputs.length} perturbed inputs for the probe${errors === '' ? '' : `; import errors: ${errors}`}` });
+  return inputs;
+}
+
+/**
  * `decide` in the controller's argument order, with `ctx.ask` as the Jev, `mem.oracle` as the
  * oracle and `mem.stepBudget` as the hold bound. On a QuixBugs-layout workspace (a test module
  * `tests/<name>_test.py` or `tests/test_<name>.py` beside `<name>.py`, `programNameOf`) whose
  * lanes exist, the behaviour probe runs on them (perturb.ts `createLaneProbe`) with the goal's
- * calls, its JSON cases and the linked lists its test module builds as inputs. The gate is the
- * layout, not `oracle.runner`: the bench's QuixBugs workspaces are pytest modules and `fitOracle`
- * labels them `pytest`. Elsewhere (repositories, or a `probe` given here) candidates cluster on
- * their P2P vectors, which is the design's pytest behaviour and still arbitrates a single cluster
- * of ≥ 2.
+ * calls, its JSON cases and the linked lists its test module builds as inputs. On a ladder-class
+ * layout (`src/<module>.py` + `tests/test_*.py`, `ladderLayoutOf`) the probe replays the
+ * harvested test calls and their perturbations (`createLadderProbe`, `harvestLadderInputs`). The
+ * gate is the layout, not `oracle.runner`: the bench's QuixBugs workspaces are pytest modules and
+ * `fitOracle` labels them `pytest`. Elsewhere (repositories, or a `probe` given here) candidates
+ * cluster on their P2P vectors, which is the design's pytest behaviour and still arbitrates a
+ * single cluster of ≥ 2.
  */
 export function createDecide(opts: { probe?: BehaviourProbe; stage?: StageName } = {}): (ctx: SynthesisContext, mem: SearchMemoryLike, goal: Goal, results: readonly VerifyOutcome[]) => Promise<Decision> {
   return (ctx, mem, goal, results) => {
@@ -1030,11 +1322,20 @@ export function createDecide(opts: { probe?: BehaviourProbe; stage?: StageName }
     if (mem.stepBudget !== undefined) o.budget = mem.stepBudget;
     if (opts.probe !== undefined) o.probe = opts.probe;
     else if (mem.oracle !== undefined && mem.lanes !== undefined) {
-      const program = programNameOf(goal, committedBase(mem).files);
+      const lanes = mem.lanes;
+      const files = committedBase(mem).files;
+      const program = programNameOf(goal, files);
       if (program !== null) {
         const perInput = Math.min(mem.oracle.perTestTimeoutMs ?? DEFAULT_PROBE_TIMEOUT_MS, DEFAULT_PROBE_TIMEOUT_MS);
-        o.probe = createLaneProbe(ctx, mem.lanes, program, perInput);
+        o.probe = createLaneProbe(ctx, lanes, program, perInput);
         o.inputs = () => testDerivedInputs(ctx, mem, goal, program);
+      } else {
+        const layout = ladderLayoutOf(goal, files);
+        if (layout !== null) {
+          o.probe = createLadderProbe(ctx, lanes);
+          o.inputs = (plausible) => harvestedInputs(ctx, mem, lanes, goal, layout, plausible);
+          o.inputsMax = LADDER_MAX_PROBE_INPUTS;
+        }
       }
     }
     return decide(results, mem, goal, ctx.ask, o);

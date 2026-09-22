@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -18,6 +18,7 @@ import {
   MAX_PERTURBED_INPUTS,
   OVERRIDE_HIGH,
   OVERRIDE_LOW,
+  PERTURBATION_NOTE,
   SINGLE_CLUSTER_MAX_MEMBERS,
   SUSPECT_ESCAPE_MIN,
   SUSPECT_NOUL_MAX,
@@ -26,21 +27,25 @@ import {
   behaviourProbeCommand,
   budgetAllowsHold,
   clusterByBehaviour,
+  clusterSupport,
   commitSuspect,
   createDecide,
   decide,
   editCost,
+  fewestSpecialCases,
   gateHeldPartial,
   generalInstructions,
   guardSubjects,
   isPlausible,
   linkedListInputs,
   linkedListShape,
+  majorityCluster,
   minEdit,
   noneDereference,
   p2pVector,
   parseBehaviourProbe,
   parseQuixbugsCall,
+  perturbationTable,
   perturbedInputs,
   perturbedInputsFromCases,
   probeTimeoutMs,
@@ -48,8 +53,10 @@ import {
   mostPassing,
   sieveHoldApplies,
   siteBatchDone,
+  specialCaseScore,
   STRONG_SIGNALS_MIN,
   suspicionSignals,
+  unreleasable,
 } from '../../../../src/synth/search/guard.js';
 import type { HoldBudget, PerturbedInput } from '../../../../src/synth/search/guard.js';
 import type { Base, Goal, VerifyOutcome } from '../../../../src/synth/search/types.js';
@@ -77,6 +84,7 @@ import {
   NEXT_PERMUTATION_LINE,
   NEXT_PERMUTATION_PLAUSIBLE,
   QUIXBUGS_DIR,
+  REPO_ROOT,
   arbitrationScript,
   candidate,
   committedBase,
@@ -334,7 +342,7 @@ describe('decide: the §2.6 table', () => {
     const unchanged = outcome(npCands[1]!, NP_BASE, { subset: NP_BASELINE });
     const timedOut = outcome(npCands[2]!, NP_BASE, { subset: summary({ passed: 0, failing: ['<test run>'], timedOut: true }), status: 'timeout' });
     const d = await decide([regressed, unchanged, timedOut], mem, NP_GOAL, throwingAsk);
-    expect(d).toEqual({ kind: 'continue', plausible: 0, clusters: 0, arbitrated: false, requests: 0, fallbacks: [], probeError: null, held: null, signals: [] });
+    expect(d).toEqual({ kind: 'continue', plausible: 0, clusters: 0, arbitrated: false, requests: 0, fallbacks: [], probeError: null, held: null, signals: [], dropped: 0, codeRule: null });
     expect(improvedBase(mem)).toBeUndefined();
     expect(guardState(mem).suspect).toBeNull();
   });
@@ -469,46 +477,46 @@ describe('decide: the §2.6 table', () => {
     const q = ask.calls[0]!.questions['genuine_fix']!;
     if (q.type === 'choice') expect(Object.keys(q.criteria)).toHaveLength(SINGLE_CLUSTER_MAX_MEMBERS + 1);
   });
-  it('the suspect signature (depth_first_search: escape 0.90, max Noul 0.06) → guardState(mem).suspect = min-edit, continue; committed at step end as possible overfit', async () => {
+  it('the all-overfit signature (depth_first_search: escape 0.90, max Noul 0.06) → the set is DROPPED: nothing held, nothing committed at step end, the batch\'s partial kept', async () => {
     const mem = createGuardMemory(DFS_BASE);
     const ask = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.1 }, escape: 0.9, noul: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.03, 'node for nextnode in node.successors': 0.04, 'any for nextnode in node.successors': 0.04, 'goalnode for nextnode in node.successors': 0.04 } }));
     const d = await decide(dfsPlausible(), mem, DFS_GOAL, ask);
-    expect(d).toEqual({ kind: 'continue', plausible: 7, clusters: 1, arbitrated: true, requests: 1, fallbacks: [], probeError: null, held: 'suspect', signals: [] });
-    expect(guardState(mem).suspect).not.toBeNull();
-    expect(guardState(mem).suspect?.goalId).toBe('g1');
-    expect(text(guardState(mem).suspect!.outcome)).toBe('search_from(goalnode) for nextnode in node.successors');
-    expect(guardState(mem).fallbacks).toBeNull();
-    // 0.5: between the highest gold-containing escape measured (0.38, with a Noul ≥ 0.45) and the lowest all-overfit one (0.67, max Noul 0.08: ladder `masked` run 3b, §20)
-    expect(SUSPECT_ESCAPE_MIN).toBe(0.5);
-    expect(SUSPECT_NOUL_MAX).toBe(0.1);
-
-    // the suspect belongs to its goal: another goal's step end does not commit it, forgetGoal drops it
-    const suspect = guardState(mem).suspect!;
-    expect(commitSuspect(mem, { id: 'g2' })).toBeNull();
-    expect(guardState(mem).suspect).toBe(suspect);
-    const end = commitSuspect(mem, DFS_GOAL);
-    // the commit carries the shadow run it rests on (search/proposal.ts turns it into Proposal.evidence)
-    expect(end).toEqual({ kind: 'commit', applied: suspect.outcome.applied, allGoalTestsPass: true, note: 'possible overfit', outcome: suspect.outcome });
+    expect(d).toEqual({ kind: 'continue', plausible: 7, clusters: 1, arbitrated: true, requests: 1, fallbacks: [], probeError: null, held: null, signals: [], dropped: 7, codeRule: null });
     expect(guardState(mem).suspect).toBeNull();
+    expect(guardState(mem).pending).toBeNull();
+    expect(guardState(mem).fallbacks).toBeNull();
+    // rule (1): no step-end release and no reserve release exist for a dropped set
     expect(commitSuspect(mem, DFS_GOAL)).toBeNull();
-    await decide(dfsPlausible(), mem, DFS_GOAL, ask);
-    expect(guardState(mem).suspect).not.toBeNull();
+    expect(commitSuspect(mem)).toBeNull();
+    // 0.5: between the highest gold-containing escape measured (0.38, with a Noul ≥ 0.45) and the lowest all-overfit one (0.67, max Noul 0.08: ladder `masked` run 3b, §20);
+    // 0.3: the "confidently false" bound of §5.4, above the head-to-head's committed textstats (0.12) and django-15315 (0.11) sets
+    expect(SUSPECT_ESCAPE_MIN).toBe(0.5);
+    expect(SUSPECT_NOUL_MAX).toBe(0.3);
+    expect(SUSPECT_NOUL_MAX).toBe(OVERRIDE_LOW);
+
+    // a second decision over the same set drops it again (nothing was remembered as held)
+    const again = await decide(dfsPlausible().slice(0, 3), mem, DFS_GOAL, ask);
+    expect(again).toMatchObject({ kind: 'continue', dropped: 3, held: null });
     forgetGoal(mem, DFS_GOAL);
     expect(guardState(mem).suspect).toBeNull();
   });
-  it('escape high but a Noul ≥ 0.1 is not the signature: commit the argmax; escape 0.89 with Nouls ≤ 0.06 (wrap, §13) is', async () => {
+  it('escape high with a Noul ≥ 0.3 is not the signature (commit); textstats 0.86 / 0.12, wrap 0.89 / 0.06 and masked 0.67 / 0.08 are (dropped); the gold set 0.38 / 0.45 commits', async () => {
     const mem = createGuardMemory(DFS_BASE);
-    const ask = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.1 }, escape: 0.9, noul: { 'nextnode for nextnode in node.successors': 0.12 } }));
+    const ask = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.1 }, escape: 0.9, noul: { 'nextnode for nextnode in node.successors': 0.35 } }));
     const d = await decide(dfsPlausible(), mem, DFS_GOAL, ask);
     expect(d.kind).toBe('commit');
     expect(guardState(mem).suspect).toBeNull();
+    // llm-jev-headtohead.md §5.2: `tokens.append(n)` committed at escape 0.86, max general 0.12 under the old 0.1 bound
+    const textstatsLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.08, 'search_from(goalnode) for nextnode in node.successors': 0.06 }, escape: 0.86, noul: { 'nextnode for nextnode in node.successors': 0.12, 'search_from(goalnode) for nextnode in node.successors': 0.1, 'node for nextnode in node.successors': 0.07 } }));
+    const textstats = await decide(dfsPlausible().slice(0, 3), createGuardMemory(DFS_BASE), DFS_GOAL, textstatsLike);
+    expect(textstats).toMatchObject({ kind: 'continue', held: null, arbitrated: true, dropped: 3 });
     const wrapLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.05 }, escape: 0.89, noul: { 'nextnode for nextnode in node.successors': 0.06, 'search_from(goalnode) for nextnode in node.successors': 0.05 } }));
-    const held = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, wrapLike);
-    expect(held).toMatchObject({ kind: 'continue', held: 'suspect', arbitrated: true });
+    const wrap = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, wrapLike);
+    expect(wrap).toMatchObject({ kind: 'continue', held: null, arbitrated: true, dropped: 2 });
     // ladder `masked` runs 3 / 3b (§20): five `return 0` inserts, escape 0.75 / 0.67 with max Noul 0.08 — the signature
     const maskedLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.2, 'search_from(goalnode) for nextnode in node.successors': 0.13 }, escape: 0.67, noul: { 'nextnode for nextnode in node.successors': 0.08, 'search_from(goalnode) for nextnode in node.successors': 0.05 } }));
-    const heldToo = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, maskedLike);
-    expect(heldToo).toMatchObject({ kind: 'continue', held: 'suspect', arbitrated: true });
+    const masked = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, maskedLike);
+    expect(masked).toMatchObject({ kind: 'continue', held: null, dropped: 2 });
     // the highest gold-containing escape measured (0.38) came with a Noul ≥ 0.45: committed
     const goldLike = scriptedAsk(arbitrationScript({ choice: { 'nextnode for nextnode in node.successors': 0.5 }, escape: 0.38, noul: { 'nextnode for nextnode in node.successors': 0.45 } }));
     const committed = await decide(dfsPlausible().slice(0, 2), createGuardMemory(DFS_BASE), DFS_GOAL, goldLike);
@@ -571,6 +579,22 @@ const OVERFIT_TEXT = 'if tortoise.successor is None:';
 const ample: HoldBudget = { exhausted: () => false, testWallLeftMs: 60_000, testRunsLeft: 500, jevRequestsLeft: 20 };
 const thin: HoldBudget = { exhausted: () => false, testWallLeftMs: HOLD_RESERVE_WALL_MS - 1, testRunsLeft: 500, jevRequestsLeft: 20 };
 
+// The ladder `shipping` task (bench/data/ladder/tasks/shipping): the head-to-head committed the seed
+// `subtotal ** 2` as a lone passer with 14 s of test wall left (llm-jev-headtohead.md §5.2, §9 class A).
+const SHIPPING = sourceFile('src/shipping.py', readFileSync(join(REPO_ROOT, 'bench/data/ladder/tasks/shipping/src/shipping.py'), 'utf8'));
+const SHIPPING_INIT = sourceFile('src/__init__.py', '');
+/** `    cost = 0.0 if subtotal >= CONFIG["free_over"] else rate` */
+const SHIPPING_COST_LINE = SHIPPING.mod.lines.findIndex((l) => l.includes('cost = 0.0 if subtotal >= CONFIG["free_over"] else rate')) + 1;
+/** `    "free_over": 500.0,` */
+const SHIPPING_CONFIG_LINE = SHIPPING.mod.lines.findIndex((l) => l.includes('"free_over": 500.0,')) + 1;
+const SHIPPING_SQUARED = '    cost = 0.0 if subtotal ** 2 >= CONFIG["free_over"] else rate';
+const SHIPPING_GOLD = '    "free_over": 50.0,';
+const SHIPPING_TESTS = ['test_free_at_threshold', 'test_free_over_threshold_any_method', 'test_remote_surcharge_still_applies_when_free', 'test_describe'].map((t) => `tests/test_shipping.py::${t}`);
+const SHIPPING_FAILURES = SHIPPING_TESTS.map((t) => failure(t, '0.0', '4.99'));
+const SHIPPING_BASE: Base = committedBase(SHIPPING, summary({ passed: 6, failing: SHIPPING_TESTS, failures: SHIPPING_FAILURES, total: 10 }), [SHIPPING_INIT]);
+const shippingSquared = (): VerifyOutcome => plausibleOutcome(candidate(siteAt(SHIPPING, SHIPPING_COST_LINE), SHIPPING_SQUARED, { id: 'ship_sq', source: 'mutation', op: 'operand_power' }), SHIPPING_BASE);
+const shippingGold = (): VerifyOutcome => plausibleOutcome(candidate(siteAt(SHIPPING, SHIPPING_CONFIG_LINE), SHIPPING_GOLD, { id: 'ship_gold', source: 'template', op: 'literal_from_test' }), SHIPPING_BASE);
+
 describe('rule (b): code-computed structural signals on a lone passer', () => {
   it('noneDereference: the attribute the tests crash on and the receivers on the traceback line of the site file', () => {
     expect(noneDereference(DETECT_CYCLE_FAILURES, DETECT_CYCLE_TAIL, DETECT_CYCLE)).toEqual({ attr: 'successor', receivers: new Set(['hare']), line: 5 });
@@ -585,20 +609,38 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if hare.successor is not None:'))).toEqual([]);
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if not f(x) or hare.successor is None:'))).toEqual([]);
   });
-  it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences and guards an expression nothing reads; the gold and a genuine inserted guard are clean', () => {
-    expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard']);
-    expect(suspicionSignals(dcGold(), DC_GOAL)).toEqual([]);
+  it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences, guards an expression nothing reads and adds a special case; the gold adds a clause (one signal), a genuine inserted guard too', () => {
+    expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case']);
+    // `hare is None or` adds a conditional (`or`) and a literal (`None`) over the replaced line: the advisory is asked, and the measured gold answered 0.85
+    expect(suspicionSignals(dcGold(), DC_GOAL)).toEqual(['adds_special_case']);
+    expect(specialCaseScore(dcGoldCand())).toEqual({ conditionals: 1, literals: 1, total: 2 });
     const genuine = plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 5, 'insert'), '        if hare is None:\n            return False', { id: 'guard_before' }), DC_BASE);
-    expect(suspicionSignals(genuine, DC_GOAL)).toEqual([]);
-    // without the traceback line only the dead-guard signal remains
+    expect(suspicionSignals(genuine, DC_GOAL)).toEqual(['adds_special_case']);
+    // without the traceback line the other-variable signal goes
     const noTail = committedBase(DETECT_CYCLE, { ...DC_BASELINE, outputTail: '' }, [NODE]);
-    expect(suspicionSignals(plausibleOutcome(detectCycleOverfit(), noTail), DC_GOAL)).toEqual(['duplicates_block', 'dead_guard']);
+    expect(suspicionSignals(plausibleOutcome(detectCycleOverfit(), noTail), DC_GOAL)).toEqual(['duplicates_block', 'dead_guard', 'adds_special_case']);
   });
-  it('wrap: the loop copied under itself duplicates a block; the one-line gold does not; two lines sharing one with the function do not', () => {
-    expect(suspicionSignals(wrapOver(), WRAP_GOAL)).toEqual(['duplicates_block']);
+  it('wrap: the loop copied under itself duplicates a block and adds a `while` with literals; the one-line gold is clean; GLM\'s `if text:` adds one conditional', () => {
+    expect(suspicionSignals(wrapOver(), WRAP_GOAL)).toEqual(['duplicates_block', 'adds_special_case']);
+    expect(specialCaseScore(wrapOverfit()).conditionals).toBe(2);
+    expect(specialCaseScore(wrapOverfit()).literals).toBe(4);
     expect(suspicionSignals(wrapGold(), WRAP_GOAL)).toEqual([]);
+    expect(specialCaseScore(wrapGold().applied.candidate)).toEqual({ conditionals: 0, literals: 0, total: 0 });
     const twoLines = plausibleOutcome(candidate(siteAt(WRAP, WRAP_GOLD_LINE, 'insert'), '    if text:\n        lines.append(text)', { id: 'two' }), WRAP_BASE);
-    expect(suspicionSignals(twoLines, WRAP_GOAL)).toEqual([]);
+    expect(suspicionSignals(twoLines, WRAP_GOAL)).toEqual(['adds_special_case']);
+    expect(specialCaseScore(twoLines.applied.candidate)).toEqual({ conditionals: 1, literals: 0, total: 1 });
+  });
+  it('specialCaseScore counts what the edit ADDS over the replaced line: `** 2` and `return 0` a literal, `if x:` a conditional, `<= 1` for `== 0` and `>=` for `>` nothing', () => {
+    const shipping = sourceFile('src/shipping.py', ['def shipping_cost(subtotal, method):', '    rate = 4.99', '    cost = 0.0 if subtotal >= CONFIG["free_over"] else rate', '    return round(cost, 2)', ''].join('\n'));
+    expect(specialCaseScore(candidate(siteAt(shipping, 3), '    cost = 0.0 if subtotal ** 2 >= CONFIG["free_over"] else rate'))).toEqual({ conditionals: 0, literals: 1, total: 1 });
+    expect(specialCaseScore(candidate(siteAt(shipping, 3, 'insert'), '    return 0'))).toEqual({ conditionals: 0, literals: 1, total: 1 });
+    expect(specialCaseScore(candidate(siteAt(shipping, 3, 'insert'), '    if not method:\n        return None'))).toEqual({ conditionals: 1, literals: 1, total: 2 });
+    const grades = sourceFile('src/grades.py', ['def letter(score, minimum):', '    if score > minimum:', '        return "A"', '    return "B"', ''].join('\n'));
+    expect(specialCaseScore(candidate(siteAt(grades, 2), '    if score >= minimum:')).total).toBe(0);
+    const merge = sourceFile('mergesort.py', ['def mergesort(arr):', '    if len(arr) == 0:', '        return arr', ''].join('\n'));
+    expect(specialCaseScore(candidate(siteAt(merge, 2), '    if len(arr) <= 1:')).total).toBe(0);
+    // a replaced line that already had the guard is not an addition
+    expect(specialCaseScore(candidate(siteAt(grades, 2), '    if score > minimum and score > 0:'))).toEqual({ conditionals: 1, literals: 1, total: 2 });
   });
   it('deletes_statement: a delete extra edit or an empty / `pass` replacement', () => {
     const del = plausibleOutcome(candidate(siteAt(WRAP, 3), '    while len(text) >= cols:', { id: 'del', extraEdits: [{ path: WRAP.path, line: 8, kind: 'delete' }] }), WRAP_BASE);
@@ -620,7 +662,7 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
 });
 
 describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against the gold when it arrives', () => {
-  it('detect_cycle: held on Q16 0.12, kept through a passer-less batch, then two clusters and Q15 picks the gold', async () => {
+  it('detect_cycle: held on Q16 0.12 (never released), kept through a passer-less batch, then two clusters split and the code metric picks the gold — no Q15', async () => {
     const mem = createGuardMemory(DC_BASE);
     const g = goal(DETECT_CYCLE_FAILURES);
     const ask = scriptedAsk(arbitrationScript({ choice: { [DETECT_CYCLE_GOLD.trim()]: 0.8, [OVERFIT_TEXT]: 0.1 }, escape: 0.1, noul: { [DETECT_CYCLE_GOLD.trim()]: 0.85, [OVERFIT_TEXT]: 0.12 } }));
@@ -631,9 +673,11 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     };
     const opts = { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample };
     const over = dcOverfit();
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
     const d1 = await decide([over], mem, g, ask, opts);
-    expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'], requests: 1, plausible: 1, clusters: 0, arbitrated: false });
-    expect(guardState(mem).suspect).toEqual({ goalId: 'g1', outcome: over, phase: 'SEEDS', signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'], noul: 0.12 });
+    expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals, requests: 1, plausible: 1, clusters: 0, arbitrated: false });
+    expect(guardState(mem).suspect).toEqual({ goalId: 'g1', outcome: over, phase: 'SEEDS', signals, noul: 0.12 });
+    expect(unreleasable(guardState(mem).suspect!)).toBe(true);
     expect(ask.calls).toHaveLength(1);
 
     // the search runs on: another site's batch with nothing plausible keeps the hold and asks nothing
@@ -641,7 +685,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(d2).toMatchObject({ kind: 'continue', held: 'suspect', requests: 0, plausible: 0, signals: [] });
     expect(ask.calls).toHaveLength(1);
 
-    // the gold at line 5: the held passer joins, the probe separates them, one Q15/Q16 request decides
+    // the gold at line 5: the held passer joins, the probe separates them (support 1 vs 1: no majority), the gold adds fewer special cases (2 vs 3) — committed by code
     const gold = dcGold();
     const d3 = await decide([gold], mem, g, ask, opts);
     expect(d3.kind).toBe('commit');
@@ -649,17 +693,15 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
       expect(d3.applied.candidate.id).toBe('dc_gold');
       expect(d3.note).toBeUndefined();
     }
-    expect(d3).toMatchObject({ plausible: 1, clusters: 2, arbitrated: true, requests: 1, held: null, probeError: null });
+    expect(d3).toMatchObject({ plausible: 1, clusters: 2, arbitrated: false, requests: 0, held: null, probeError: null, codeRule: 'fewest_special_cases' });
     expect(d3.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['dc_overfit']);
     expect(probed).toHaveLength(MAX_PERTURBED_INPUTS);
     expect(probed.every((p) => p.exprs !== undefined)).toBe(true);
     expect(guardState(mem).suspect).toBeNull();
     expect(guardState(mem).fallbacks?.outcomes.map((o) => o.applied.candidate.id)).toEqual(['dc_overfit']);
-    expect(ask.calls).toHaveLength(2);
-    const arbState = ask.calls[1]!.state as { candidates: Record<string, { with: string }> };
-    expect(Object.values(arbState.candidates).map((c) => c.with).sort()).toEqual([DETECT_CYCLE_GOLD.trim(), OVERFIT_TEXT].sort());
+    expect(ask.calls).toHaveLength(1);
   });
-  it('wrap: the duplicated loop is held; the gold arriving from a later site wins the arbitration', async () => {
+  it('wrap: the duplicated loop is held; the gold arriving from a later site wins by the code metric (0 added special cases vs 6), no Q15', async () => {
     const mem = createGuardMemory(WRAP_BASE);
     const g = goal(WRAP_FAILURES);
     const overText = 'while len(text) > cols:';
@@ -671,14 +713,16 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     };
     const opts = { oracle: oracle(), probe, inputs: () => Promise.resolve(perturbedInputsFromCases(cases, 'wrap')), budget: ample };
     const d1 = await decide([wrapOver()], mem, g, ask, opts);
-    expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['duplicates_block'], requests: 1 });
+    expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['duplicates_block', 'adds_special_case'], requests: 1 });
     const d2 = await decide([wrapGold()], mem, g, ask, opts);
     expect(d2.kind).toBe('commit');
     if (d2.kind === 'commit') expect(d2.applied.candidate.id).toBe('wrap_gold');
-    expect(d2).toMatchObject({ clusters: 2, arbitrated: true, held: null });
+    expect(d2).toMatchObject({ clusters: 2, arbitrated: false, requests: 0, held: null, codeRule: 'fewest_special_cases' });
     expect(guardState(mem).suspect).toBeNull();
+    expect(ask.calls).toHaveLength(1);
   });
   it('a passer with ≥ 2 signals is committed at once only when Jev vouches confidently (p ≥ LONE_PASSER_VOUCH_MIN_NOUL); the live 0.39 holds it', async () => {
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
     const run = async (p: number): Promise<ReturnType<typeof decide>> => {
       const mem = createGuardMemory(DC_BASE);
       const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: p } }));
@@ -687,34 +731,51 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
       g.exhausted.set(siteKeyOf(over.applied.candidate), new Set(['mutation', 'template']));
       return decide([over], mem, g, ask, { oracle: oracle(), budget: ample });
     };
-    expect(await run(0.39)).toMatchObject({ kind: 'continue', held: 'suspect', requests: 1, signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'] });
+    expect(await run(0.39)).toMatchObject({ kind: 'continue', held: 'suspect', requests: 1, signals });
     expect(await run(0.69)).toMatchObject({ kind: 'continue', held: 'suspect' });
-    expect(await run(0.75)).toMatchObject({ kind: 'commit', held: null, requests: 1, signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'], plausible: 1, clusters: 1 });
+    expect(await run(0.75)).toMatchObject({ kind: 'commit', held: null, requests: 1, signals, plausible: 1, clusters: 1 });
     expect(LONE_PASSER_HOLD_MAX_NOUL).toBe(OVERRIDE_LOW);
     expect(LONE_PASSER_VOUCH_MIN_NOUL).toBe(OVERRIDE_HIGH);
     expect(STRONG_SIGNALS_MIN).toBe(2);
   });
-  it('a passer with ONE signal is held only when Jev confidently doubts it (p < LONE_PASSER_HOLD_MAX_NOUL)', async () => {
+  it('a passer with ONE signal (shipping: `subtotal ** 2` adds a literal) is held only when Jev confidently doubts it (p < LONE_PASSER_HOLD_MAX_NOUL)', async () => {
     const run = async (p: number): Promise<ReturnType<typeof decide>> => {
-      const mem = createGuardMemory(WRAP_BASE);
-      const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { 'while len(text) > cols:': p } }));
-      const g = goal(WRAP_FAILURES);
-      const over = wrapOver();
-      g.exhausted.set(siteKeyOf(over.applied.candidate), new Set(['mutation', 'template']));
+      const mem = createGuardMemory(SHIPPING_BASE);
+      const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [SHIPPING_SQUARED.trim()]: p } }));
+      const g = goal(SHIPPING_FAILURES);
+      const over = shippingSquared();
+      // the site batch is over (no rule (a) hold), so the decision is the advisory's alone
+      g.exhausted.set(siteKeyOf(over.applied.candidate), new Set(['mutation', 'template', 'donor']));
       return decide([over], mem, g, ask, { oracle: oracle(), budget: ample });
     };
-    expect(await run(0.07)).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['duplicates_block'] });
-    expect(await run(0.39)).toMatchObject({ kind: 'commit', held: null, signals: ['duplicates_block'] });
+    expect(await run(0.07)).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['adds_special_case'] });
+    const kept = await run(0.39);
+    expect(kept).toMatchObject({ kind: 'commit', held: null, signals: ['adds_special_case'], requests: 1 });
+    // one signal, p ≥ the hold bound: a plain commit, not `possible overfit`
+    expect(kept).not.toHaveProperty('note');
   });
-  it('a clean lone passer on a RANK oracle is committed without any Jev, exactly as before', async () => {
-    const mem = createGuardMemory(DC_BASE);
-    const d = await decide([dcGold()], mem, goal(DETECT_CYCLE_FAILURES), throwingAsk, { oracle: oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
-    expect(d).toMatchObject({ kind: 'commit', held: null, requests: 0, signals: [] });
+  it('a clean lone passer (next_permutation gold: an operand swap adds nothing) on a RANK oracle is committed without any Jev, exactly as before', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const d = await decide([plausibleOutcome(npCands[3]!, NP_BASE)], mem, NP_GOAL, throwingAsk, { oracle: oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', held: null, requests: 0, signals: [], codeRule: null });
+    // grades-class: `>=` for `>` and `sum` for `len` are general-looking changes — no signal, no request
+    const grades = sourceFile('src/grades.py', ['def letter(score, minimum):', '    if score > minimum:', '        return "A"', '    return "B"', ''].join('\n'));
+    const gBase = committedBase(grades, summary({ passed: 1, failing: ['tests/test_grades.py::test_boundary'], failures: [failure('tests/test_grades.py::test_boundary')] }));
+    const d2 = await decide([plausibleOutcome(candidate(siteAt(grades, 2), '    if score >= minimum:', { id: 'ge' }), gBase)], createGuardMemory(gBase), goal([failure('tests/test_grades.py::test_boundary')]), throwingAsk, { oracle: oracle({ runner: 'pytest', tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
+    expect(d2).toMatchObject({ kind: 'commit', requests: 0, signals: [] });
   });
-  it('below the budget reserve nothing is held and no advisory is asked (the passer is committed)', async () => {
+  it('inside the budget reserve the advisory is still asked (shipping was committed unasked with 14 s left): doubted → possible overfit, confidently doubted → held and never released; no request left → committed', async () => {
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
+    const doubted = await decide([dcOverfit()], createGuardMemory(DC_BASE), goal(DETECT_CYCLE_FAILURES), scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.5 } })), { oracle: oracle(), budget: thin });
+    expect(doubted).toMatchObject({ kind: 'commit', note: 'possible overfit', held: null, requests: 1, signals });
     const mem = createGuardMemory(DC_BASE);
-    const d = await decide([dcOverfit()], mem, goal(DETECT_CYCLE_FAILURES), throwingAsk, { oracle: oracle(), budget: thin });
-    expect(d).toMatchObject({ kind: 'commit', held: null, requests: 0, signals: ['duplicates_block', 'guards_other_variable', 'dead_guard'] });
+    const g = goal(DETECT_CYCLE_FAILURES);
+    const confident = await decide([dcOverfit()], mem, g, scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.1 } })), { oracle: oracle(), budget: thin });
+    expect(confident).toMatchObject({ kind: 'continue', held: 'suspect', requests: 1, signals });
+    expect(commitSuspect(mem, g)).toBeNull();
+    expect(guardState(mem).suspect).toBeNull();
+    const noRequest = await decide([dcOverfit()], createGuardMemory(DC_BASE), goal(DETECT_CYCLE_FAILURES), throwingAsk, { oracle: oracle(), budget: { ...thin, jevRequestsLeft: 0 } });
+    expect(noRequest).toMatchObject({ kind: 'commit', held: null, requests: 0, signals });
     expect(budgetAllowsHold(undefined)).toBe(true);
     expect(budgetAllowsHold(ample)).toBe(true);
     expect(budgetAllowsHold(thin)).toBe(false);
@@ -722,36 +783,51 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(budgetAllowsHold({ ...ample, jevRequestsLeft: 0 })).toBe(false);
     expect(budgetAllowsHold({ ...ample, exhausted: () => true })).toBe(false);
   });
-  it('the held suspect survives every later phase of the step and is released as `possible overfit` only by the budget reserve or the step end', async () => {
-    const hold = async (): Promise<{ mem: ReturnType<typeof createGuardMemory>; g: Goal; over: VerifyOutcome }> => {
+  it('a vouch-bound hold (p 0.5, ≥ 2 signals) survives every later phase and is released as `possible overfit` by the reserve or the step end; a confidently doubted hold (p 0.1) is never released — commitSuspect drops it', async () => {
+    const hold = async (p: number): Promise<{ mem: ReturnType<typeof createGuardMemory>; g: Goal; over: VerifyOutcome }> => {
       const mem = createGuardMemory(DC_BASE);
       const g = goal(DETECT_CYCLE_FAILURES);
-      const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.1 } }));
+      const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: p } }));
       const over = dcOverfit();
       expect((await decide([over], mem, g, ask, { oracle: oracle(), budget: ample })).held).toBe('suspect');
       return { mem, g, over };
     };
-    const a = await hold();
+    const a = await hold(0.5);
     for (const phase of ['SKETCH', 'BEAM', 'WIDENED'] as const) {
       a.g.phase = phase;
       expect((await decide([], a.mem, a.g, throwingAsk, { oracle: oracle(), budget: ample })).held).toBe('suspect');
     }
     expect(guardState(a.mem).suspect?.phase).toBe('SEEDS');
+    expect(unreleasable(guardState(a.mem).suspect!)).toBe(false);
 
-    const b = await hold();
+    const b = await hold(0.5);
     const cut = await decide([dcUnchanged(9, '        hare = hare.successor')], b.mem, b.g, throwingAsk, { oracle: oracle(), budget: thin });
     expect(cut).toMatchObject({ kind: 'commit', note: 'possible overfit', held: null });
 
-    // step end: commitSuspect commits the held suspect, marked
-    const c = await hold();
+    // step end: commitSuspect commits the vouch-bound suspect, marked
+    const c = await hold(0.5);
     const end = commitSuspect(c.mem, c.g);
     expect(end).toEqual({ kind: 'commit', applied: c.over.applied, allGoalTestsPass: true, note: 'possible overfit', outcome: c.over });
     expect(guardState(c.mem).suspect).toBeNull();
+
+    // rule (3): confidently doubted — the reserve does not release it, the step end drops it (the goal parks or ends on its partial)
+    const d = await hold(0.1);
+    expect(unreleasable(guardState(d.mem).suspect!)).toBe(true);
+    for (const phase of ['SKETCH', 'BEAM', 'WIDENED'] as const) {
+      d.g.phase = phase;
+      expect((await decide([], d.mem, d.g, throwingAsk, { oracle: oracle(), budget: thin })).held).toBe('suspect');
+    }
+    expect(await decide([dcUnchanged(9, '        hare = hare.successor')], d.mem, d.g, throwingAsk, { oracle: oracle(), budget: thin })).toMatchObject({ kind: 'continue', held: 'suspect' });
+    expect(commitSuspect(d.mem, { id: 'g2' })).toBeNull();
+    expect(guardState(d.mem).suspect).not.toBeNull();
+    expect(commitSuspect(d.mem, d.g)).toBeNull();
+    expect(guardState(d.mem).suspect).toBeNull();
+    expect(commitSuspect(d.mem, d.g)).toBeNull();
   });
-  it('a later passer that passes MORE tests than the held suspect replaces it outright (tests before Jev)', async () => {
+  it('a later passer that passes MORE tests than the held suspect replaces it outright (tests before Jev); its own advisory is asked alone', async () => {
     const mem = createGuardMemory(DC_BASE);
     const g = goal(DETECT_CYCLE_FAILURES);
-    const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.1 } }));
+    const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.1, [DETECT_CYCLE_GOLD.trim()]: 0.85 } }));
     // a base with a second failing test the overfit leaves failing: the overfit is plausible for g1, the gold also fixes the other
     const other = 'tests/detect_cycle_test.py::test6';
     const baseline = { ...summary({ passed: 4, failing: [...DETECT_CYCLE_FAILURES.map((f) => f.testId), other], failures: [...DETECT_CYCLE_FAILURES, failure(other)], total: 6 }), outputTail: DETECT_CYCLE_TAIL };
@@ -762,10 +838,12 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     const d1 = await decide([over], memB, g, ask, { oracle: oracle(), budget: ample });
     expect(d1.held).toBe('suspect');
     const gold = plausibleOutcome(dcGoldCand(), base);
-    const d2 = await decide([gold], memB, g, throwingAsk, { oracle: oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
-    expect(d2).toMatchObject({ kind: 'commit', arbitrated: false, requests: 0, held: null });
+    // the gold adds a clause (`adds_special_case`), so its own Q16 is asked — alone, never against the dropped suspect
+    const d2 = await decide([gold], memB, g, ask, { oracle: oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
+    expect(d2).toMatchObject({ kind: 'commit', arbitrated: false, requests: 1, held: null, signals: ['adds_special_case'] });
     if (d2.kind === 'commit') expect(d2.applied.candidate.id).toBe('dc_gold');
     expect(guardState(memB).suspect).toBeNull();
+    expect(Object.keys(ask.calls[1]!.questions)).toEqual(['general_cand_01']);
     void mem;
   });
 });
@@ -915,6 +993,9 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     const d = await decideLive(ctx, mem, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
     expect(d.kind).toBe('commit');
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_gold');
+    // the two clusters split (support 1 vs 1) and the gold adds fewer special cases: committed by code, Jev not asked
+    expect(d).toMatchObject({ codeRule: 'fewest_special_cases', arbitrated: false, requests: 0 });
+    expect(ask.calls).toHaveLength(0);
     // one probe process per passer, importing the lane's detect_cycle.py with the lane on sys.path, 16 linked-list inputs
     expect(applied.sort()).toEqual(['dc_gold', 'dc_overfit']);
     expect(commands).toHaveLength(2);
@@ -922,12 +1003,12 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     expect(commands[0]).toContain('__jev_chain(__jev_class(\\"node\\", \\"Node\\"), \\"successor\\", 4, None)'.replace(/\\\\"/g, '\\"'));
     expect(commands[0]?.endsWith("'/lanes/lane0' <<'JEVCODE_BEHAVIOUR_PROBE'\n" + commands[0]!.split("<<'JEVCODE_BEHAVIOUR_PROBE'\n")[1]!)).toBe(true);
     expect(reads).toEqual(['tests/detect_cycle_test.py', 'tests/detect_cycle.json']);
-    expect(events.some((e) => e.includes('probe 16 inputs, 2/2 signatures') && e.includes('2 clusters'))).toBe(true);
+    expect(events.some((e) => e.includes('probe 16 inputs, 2/2 signatures') && e.includes('2 behaviour clusters') && e.includes('fewest added special-case guards'))).toBe(true);
     // the test sources are read once per goal and memory
     await decideLive(ctx, mem, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
     expect(reads).toHaveLength(2);
   });
-  it('without lanes, or on a repository layout (no <name>.py beside the test module), no probe: P2P clustering as before', async () => {
+  it('without lanes, or on a repository layout (no <name>.py beside the test module, no src/ package), no probe: P2P clustering as before', async () => {
     const events: string[] = [];
     const ask = scriptedAsk(arbitrationScript({ choice: { [DETECT_CYCLE_GOLD.trim()]: 0.8 }, escape: 0.1, noul: { [DETECT_CYCLE_GOLD.trim()]: 0.85 } }));
     const ctx = { step: 3, ask, signal: new AbortController().signal, emit: (e: { detail?: string }) => e.detail !== undefined && events.push(e.detail), sandbox: { run: async () => { throw new Error('no probe expected'); } }, workspace: { read: async () => { throw new Error('no read expected'); } } } as unknown as SynthesisContext;
@@ -935,8 +1016,8 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     const d = await createDecide()(ctx, noLanes, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
     expect(d.kind).toBe('commit');
     expect(events.some((e) => e.includes('(no probe)') && e.includes('1 cluster'))).toBe(true);
-    // a repository: the test module names `grades` but the source lives under src/
-    const repoFile = sourceFile('src/grades.py', 'def grades(x):\n    return x\n');
+    // a repository: the test module names `grades` but the source lives in a package that is not `src/`
+    const repoFile = sourceFile('lib/grades.py', 'def grades(x):\n    return x\n');
     const repoBase = committedBase(repoFile, summary({ passed: 1, failing: ['tests/test_grades.py::test_a'], failures: [failure('tests/test_grades.py::test_a')] }));
     const repoMem = { ...createGuardMemory(repoBase), oracle: oracle({ runner: 'pytest' }), lanes: {} as LanePool } as Parameters<ReturnType<typeof createDecide>>[1];
     const g = goal([failure('tests/test_grades.py::test_a')]);
@@ -946,6 +1027,239 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     const d2 = await createDecide()({ ...ctx, ask: askRepo } as unknown as SynthesisContext, repoMem, g, [a, b]);
     expect(d2.kind).toBe('commit');
     expect(events.filter((e) => e.includes('(no probe)'))).toHaveLength(2);
+  });
+  it('a ladder-class layout (src/<module>.py + tests/test_*.py) harvests the test calls once on a lane and replays them per passer; the clusters split and the code metric picks the literal fix over `** 2`', async () => {
+    const mem = { ...createGuardMemory(SHIPPING_BASE), oracle: oracle({ runner: 'pytest', perTestTimeoutMs: null }), stepBudget: { ...ample, startedMs: 0, recursed: false } } as Parameters<ReturnType<typeof createDecide>>[1];
+    const lane = { index: 0, dir: '/lanes/lane0', mode: 'copy' as const, busy: false };
+    const applied: { id: string; files: number }[] = [];
+    const pool: LanePool = {
+      mode: 'copy',
+      lanes: [lane],
+      workspaceRoot: '/ws',
+      pathInLane: (_l, rel) => `/lanes/lane0/${rel}`,
+      withLane: async (fn) => fn(lane),
+      applyToLane: async (_l, a) => {
+        applied.push({ id: a.candidate.id, files: a.files.length });
+      },
+      resetLane: async () => undefined,
+      disposeLanes: async () => undefined,
+    };
+    mem.lanes = pool;
+    const commands: string[] = [];
+    const events: string[] = [];
+    const blob = Buffer.from('pickle').toString('base64');
+    const records = [
+      { module: 'src.shipping', qualname: 'shipping_cost', blob: `${blob}A`, how: 'recorded', source: 'test_shipping.py::test_free_at_threshold', text: "shipping_cost(50.0, 'standard')" },
+      { module: 'src.shipping', qualname: 'shipping_cost', blob: `${blob}B`, how: 'float_minus_half', source: 'perturbed from test_shipping.py::test_free_at_threshold', text: "shipping_cost(49.5, 'standard')" },
+      { module: 'src.shipping', qualname: 'describe', blob: `${blob}C`, how: 'none', source: 'perturbed from test_shipping.py::test_describe', text: 'describe(20.0, None)' },
+    ];
+    const ctx = {
+      step: 2,
+      ask: throwingAsk,
+      signal: new AbortController().signal,
+      emit: (e: { type: string; detail?: string }) => {
+        if (e.detail !== undefined) events.push(e.detail);
+      },
+      sandbox: {
+        run: async (command: string): Promise<ExecResult> => {
+          commands.push(command);
+          const replays = commands.filter((c) => c.includes(" 'replay' ")).length;
+          const line = command.includes(" 'harvest' ")
+            ? JSON.stringify({ probe: 'ok', recorded: 1, inputs: 3, functions: 7, stats: { tests_run: 10 }, import_errors: {}, records })
+            : // both passers ship 50.0 free; on the perturbed 49.5 one charges 4.99 and the other ships free (the squared seed): two signatures
+              JSON.stringify({ probe: 'ok', outputs: [{ r: '0.0', t: false, a: "((50.0, 'standard'), {})", m: false }, { r: replays % 2 === 1 ? '4.99' : '0.0', t: true, a: "((49.5, 'standard'), {})", m: false }, { r: "'Standard shipping: $4.99'", t: true, a: '((20.0, None), {})', m: false }] });
+          return { ok: true, exitCode: 0, signal: null, stdout: `${line}\n`, stderr: '', truncated: false, bytesSeen: 10, killedBy: null } as ExecResult;
+        },
+      },
+      workspace: { read: async () => { throw new Error('no read expected on the ladder layout'); } },
+    } as unknown as SynthesisContext;
+    const decideLive = createDecide();
+    const d = await decideLive(ctx, mem, goal(SHIPPING_FAILURES), [shippingSquared(), shippingGold()]);
+    expect(d.kind).toBe('commit');
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('ship_gold');
+    expect(d).toMatchObject({ clusters: 2, arbitrated: false, requests: 0, codeRule: 'fewest_special_cases' });
+    // one harvest on the committed tree (a candidate named, no files written), then one replay per passer over the 3 harvested calls
+    expect(commands).toHaveLength(3);
+    expect(commands[0]).toContain(" 'harvest' '/lanes/lane0' 'src.shipping' 'tests/test_shipping.py' ");
+    expect(commands[0]?.endsWith("'-' <<'JEVCODE_LADDER_HARNESS'\n" + commands[0]!.split("<<'JEVCODE_LADDER_HARNESS'\n")[1]!)).toBe(true);
+    expect(applied[0]?.files).toBe(0);
+    expect(commands.slice(1).every((c) => c.includes(" 'replay' '/lanes/lane0' ") && c.includes('shipping_cost') && c.includes('"blob":"'))).toBe(true);
+    expect(applied.slice(1).map((a) => a.id).sort()).toEqual(['ship_gold', 'ship_sq']);
+    expect(events.some((e) => e.includes('harvested 1 test calls over 7 functions of src.shipping (tests/test_shipping.py); 3 perturbed inputs'))).toBe(true);
+    expect(events.some((e) => e.includes('probe 3 inputs, 2/2 signatures') && e.includes('2 behaviour clusters'))).toBe(true);
+    // the harvest is cached per goal and memory: a second decision replays only
+    await decideLive(ctx, mem, goal(SHIPPING_FAILURES), [shippingSquared(), shippingGold()]);
+    expect(commands.filter((c) => c.includes(" 'harvest' "))).toHaveLength(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The five head-to-head overfits (experiments/results/llm-jev-headtohead.md §5, §8.1, §9 class A)
+// ---------------------------------------------------------------------------------------
+
+describe('head-to-head fix (a): textstats / django-15315 — the all-overfit signature is dropped, never released; the honest partial is what the step keeps', () => {
+  it('two seeds in one P2P cluster answered escape 0.86 / max general 0.12: dropped, no suspect, commitSuspect null; the batch\'s partial becomes the improved base', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    // the measured textstats numbers on two test-equivalent seeds (both `plausible`), plus a partial in the same batch
+    const ask = scriptedAsk(arbitrationScript({ choice: { 'if perm[j] > perm[i]:': 0.08, 'if perm[j] >= perm[i]:': 0.06 }, escape: 0.86, noul: { 'if perm[j] > perm[i]:': 0.12, 'if perm[j] >= perm[i]:': 0.1 } }));
+    const partial = partialOutcome(candidate(siteAt(NEXT_PERMUTATION, 3), '    for i in range(len(perm) - 2, -1, -1):  # partial', { id: 'np_partial' }), NP_BASE, [NEXT_PERMUTATION_FAILURES[0]!.testId]);
+    const d = await decide([npPlausible()[0]!, npPlausible()[1]!, partial], mem, NP_GOAL, ask, { oracle: oracle({ runner: 'pytest' }) });
+    expect(d).toMatchObject({ kind: 'continue', plausible: 2, clusters: 1, arbitrated: true, requests: 1, held: null, dropped: 2, codeRule: null });
+    expect(guardState(mem).suspect).toBeNull();
+    expect(commitSuspect(mem, NP_GOAL)).toBeNull();
+    expect(improvedBase(mem)?.candidate?.candidate.id).toBe('np_partial');
+    expect(heldPartialOutcome(mem, NP_GOAL)).toBe(partial);
+    // the honest partial is the progress commit the step ends on (subgoal.ts commitProgress → gateHeldPartial): clean, no request
+    const gate = await gateHeldPartial(mem, NP_GOAL, partial, throwingAsk);
+    expect(gate.verdict).toBe('clean');
+    expect(gate.decision).toMatchObject({ kind: 'commit', note: 'partial', allGoalTestsPass: false });
+  });
+  it('a suspect held under rule (b) that joins an all-overfit arbitration is dropped with the set', async () => {
+    const mem = createGuardMemory(DC_BASE);
+    const g = goal(DETECT_CYCLE_FAILURES);
+    const other = 'if tortoise is None:';
+    const ask = scriptedAsk(arbitrationScript({ choice: { [OVERFIT_TEXT]: 0.05, [other]: 0.05 }, escape: 0.9, noul: { [OVERFIT_TEXT]: 0.5, [other]: 0.06 } }));
+    expect((await decide([dcOverfit()], mem, g, ask, { oracle: oracle(), budget: ample })).held).toBe('suspect');
+    // a second doubtful insert at the same gap, behaving differently on the probe
+    const second = plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 10, 'insert'), `        ${other}`, { id: 'dc_other', source: 'template', extraEdits: [{ path: DETECT_CYCLE.path, line: 10, kind: 'insert', text: '            return True' }] }), DC_BASE);
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, `outputs:${o.applied.candidate.id}`]));
+    const askAll = scriptedAsk(arbitrationScript({ choice: { [OVERFIT_TEXT]: 0.05, [other]: 0.05 }, escape: 0.9, noul: { [OVERFIT_TEXT]: 0.06, [other]: 0.06 } }));
+    const d = await decide([second], mem, g, askAll, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
+    // both add the same special cases (one conditional, two literals): a residual tie → Q15/Q16 → the signature → dropped, the held one too
+    expect(d).toMatchObject({ kind: 'continue', clusters: 2, arbitrated: true, dropped: 2, held: null });
+    expect(guardState(mem).suspect).toBeNull();
+    expect(commitSuspect(mem, g)).toBeNull();
+  });
+});
+
+describe('head-to-head fix (b): wrap — generality by code before Jev; Q15 only on a residual tie, with the perturbation table', () => {
+  const cases = JSON.parse(quixbugsTestFile('wrap.json')) as Json;
+  const wrapInputs = (): PerturbedInput[] => perturbedInputsFromCases(cases, 'wrap').slice(0, 3);
+  const llmVariant = (): VerifyOutcome => plausibleOutcome(candidate(siteAt(WRAP, WRAP_GOLD_LINE), '    if text:\n        lines.append(text)\n    return lines', { id: 'llm:sample_3_0', source: 'llm', op: 'sample_3_0', prior: 1 }), WRAP_BASE);
+
+  it('three passers in three clusters (gold seed, GLM\'s `if text:`, the copied loop): the code metric commits the gold; Jev — who chose the guarded variant at 0.95 — is not asked', async () => {
+    const mem = createGuardMemory(WRAP_BASE);
+    const g = goal(WRAP_FAILURES);
+    const sig: Record<string, string> = {
+      wrap_gold: "outputs:['The']\u001f['']\u001f['a', 'b']",
+      'llm:sample_3_0': "outputs:['The']\u001f[]\u001f['a', 'b']",
+      wrap_overfit: "outputs:[]\u001f[]\u001f['a', 'b']",
+    };
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, sig[o.applied.candidate.id] ?? '']));
+    const d = await decide([wrapGold(), llmVariant(), wrapOver()], mem, g, throwingAsk, { oracle: oracle(), probe, inputs: () => Promise.resolve(wrapInputs()), budget: ample });
+    expect(d.kind).toBe('commit');
+    if (d.kind === 'commit') {
+      expect(d.applied.candidate.id).toBe('wrap_gold');
+      expect(d.note).toBeUndefined();
+    }
+    expect(d).toMatchObject({ plausible: 3, clusters: 3, arbitrated: false, requests: 0, codeRule: 'fewest_special_cases', held: null });
+    // fallbacks by added special cases: the one-conditional LLM variant before the loop
+    expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['llm:sample_3_0', 'wrap_overfit']);
+    expect(guardState(mem).fallbacks?.outcomes.map((o) => o.applied.candidate.id)).toEqual(['llm:sample_3_0', 'wrap_overfit']);
+    const reps = clusterByBehaviour([wrapGold(), llmVariant(), wrapOver()], new Map(Object.entries(sig))).map((c) => c.representative);
+    expect(fewestSpecialCases(reps)?.applied.candidate.id).toBe('wrap_gold');
+    expect(majorityCluster(clusterByBehaviour([wrapGold(), llmVariant(), wrapOver()], new Map(Object.entries(sig))))).toBeNull();
+  });
+  it('a residual tie on the metric (next_permutation `>` vs `>=`, both add nothing) goes to Q15 with the perturbation table: the differing input and each output', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const [strict, nonStrict] = npPlausible();
+    const inputs: PerturbedInput[] = [
+      { input: [[1, 2, 1]], derivedFrom: 'extra', how: 'list_dup_first' },
+      { input: [[1, 2, 3]], derivedFrom: 'extra', how: 'list_dup_last' },
+    ];
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, o === strict || o.applied.candidate.id === strict!.applied.candidate.id ? 'outputs:[2, 1, 1]\u001f[1, 3, 2]' : 'outputs:[1, 1, 2]\u001f[1, 3, 2]']));
+    const ask = scriptedAsk(arbitrationScript({ choice: { 'if perm[j] > perm[i]:': 0.79, 'if perm[j] >= perm[i]:': 0.02 }, escape: 0.06, noul: { 'if perm[j] > perm[i]:': 0.65, 'if perm[j] >= perm[i]:': 0.22 } }));
+    const d = await decide([strict!, nonStrict!], mem, NP_GOAL, ask, { oracle: oracle({ runner: 'pytest' }), probe, inputs: () => Promise.resolve(inputs), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: true, requests: 1, codeRule: null });
+    if (d.kind === 'commit') expect(d.applied.candidate.text.trim()).toBe('if perm[j] > perm[i]:');
+    expect(ask.calls).toHaveLength(1);
+    const state = ask.calls[0]!.state as { perturbations?: Json; perturbations_note?: string; candidates: Record<string, { with: string }> };
+    expect(state.perturbations_note).toBe(PERTURBATION_NOTE);
+    const nonStrictKey = Object.entries(state.candidates).find(([, c]) => c.with === 'if perm[j] >= perm[i]:')![0];
+    const strictKey = Object.entries(state.candidates).find(([, c]) => c.with === 'if perm[j] > perm[i]:')![0];
+    expect(state.perturbations).toEqual([{ input: '([1,2,1])', how: 'list_dup_first', outputs: { [strictKey]: '[2, 1, 1]', [nonStrictKey]: '[1, 1, 2]' } }]);
+    // the table builder alone: no `outputs:` signatures → no table
+    const reps = representativesOf(clusterByBehaviour([strict!, nonStrict!], new Map([[strict!.applied.candidate.id, 'a'], [nonStrict!.applied.candidate.id, 'b']])));
+    expect(perturbationTable(reps, inputs, new Map([[strict!.applied.candidate.id, 'a'], [nonStrict!.applied.candidate.id, 'b']]))).toEqual([]);
+  });
+  it('majority by independent support: a seed and an LLM sample agreeing on every perturbed input outvote a lone seed by code; one source at one site never outvotes (next_permutation 3 vs 2)', async () => {
+    const mem = createGuardMemory(NP_BASE);
+    const seed = plausibleOutcome(candidate(NP_SITE, NEXT_PERMUTATION_PLAUSIBLE[0]!, { id: 'np_seed', source: 'mutation' }), NP_BASE);
+    const llm = plausibleOutcome(candidate(NP_SITE, NEXT_PERMUTATION_PLAUSIBLE[3]!, { id: 'llm:np', source: 'llm', op: 'sample_0_0', prior: 2 }), NP_BASE);
+    const other = plausibleOutcome(candidate(NP_SITE, NEXT_PERMUTATION_PLAUSIBLE[1]!, { id: 'np_other', source: 'template' }), NP_BASE);
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, o.applied.candidate.id === 'np_other' ? 'outputs:B' : 'outputs:A']));
+    const d = await decide([seed, llm, other], mem, NP_GOAL, throwingAsk, { oracle: oracle(), probe, budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, codeRule: 'majority_cluster' });
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('llm:np');
+    expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['np_other']);
+    const clusters = clusterByBehaviour([seed, llm, other], new Map([['np_seed', 'A'], ['llm:np', 'A'], ['np_other', 'B']]));
+    expect(clusters.map(clusterSupport)).toEqual([2, 1]);
+    expect(majorityCluster(clusters)?.members.map((m) => m.applied.candidate.id)).toEqual(['llm:np', 'np_seed']);
+    // the measured next_permutation set: three `>=` forms against two strict ones, all mutations at one site — support 1 vs 1, no majority, metric tie → Q15 (the test above)
+    const measured = npPlausible();
+    const sig = new Map(measured.map((o) => [o.applied.candidate.id, /perm\[j\] > perm\[i\]|perm\[i\] < perm\[j\]/.test(text(o)) ? 'strict' : 'non_strict']));
+    const np = clusterByBehaviour(measured, sig);
+    expect(np.map((c) => c.members.length)).toEqual([3, 2]);
+    expect(np.map(clusterSupport)).toEqual([1, 1]);
+    expect(majorityCluster(np)).toBeNull();
+    expect(fewestSpecialCases(np.map((c) => c.representative))).toBeNull();
+    // two clusters of equal support with the metric tied: null both ways
+    expect(majorityCluster(clusterByBehaviour([seed, other], new Map([['np_seed', 'A'], ['np_other', 'B']])))).toBeNull();
+  });
+});
+
+describe('head-to-head fix (c) and (d): shipping `** 2` and the grades/mergesort-class lone passers', () => {
+  it('shipping: the lone `** 2` seed inside the budget reserve is asked about, held on 0.1, kept by every later thin decision, and dropped at step end (commitSuspect null → the step ends on its partial or parks)', async () => {
+    const mem = createGuardMemory(SHIPPING_BASE);
+    const g = goal(SHIPPING_FAILURES);
+    const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [SHIPPING_SQUARED.trim()]: 0.1 } }));
+    const notes: string[] = [];
+    const reserve: HoldBudget = { exhausted: () => false, testWallLeftMs: 14_000, testRunsLeft: 22, jevRequestsLeft: 8 };
+    const d1 = await decide([shippingSquared()], mem, g, ask, { oracle: oracle({ runner: 'pytest' }), budget: reserve, note: (n) => notes.push(n) });
+    expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['adds_special_case'], requests: 1, plausible: 1 });
+    expect(guardState(mem).suspect).toMatchObject({ goalId: 'g1', noul: 0.1 });
+    expect(notes.some((n) => n.includes('never released on the budget reserve'))).toBe(true);
+    const d2 = await decide([], mem, g, throwingAsk, { oracle: oracle({ runner: 'pytest' }), budget: { ...reserve, testWallLeftMs: 1000 } });
+    expect(d2).toMatchObject({ kind: 'continue', held: 'suspect' });
+    expect(commitSuspect(mem, g)).toBeNull();
+    expect(guardState(mem).suspect).toBeNull();
+    expect(ask.calls).toHaveLength(1);
+  });
+  it('shipping: the held `** 2` against the gold literal fix arriving later — the probe splits them and the code metric commits the gold, no Q15', async () => {
+    const mem = createGuardMemory(SHIPPING_BASE);
+    const g = goal(SHIPPING_FAILURES);
+    const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [SHIPPING_SQUARED.trim()]: 0.1 } }));
+    expect((await decide([shippingSquared()], mem, g, ask, { oracle: oracle({ runner: 'pytest' }), budget: ample })).held).toBe('suspect');
+    const calls: PerturbedInput[] = [{ input: [], derivedFrom: 'perturbed from test_shipping.py::test_free_at_threshold', how: 'float_minus_half', call: { module: 'src.shipping', qualname: 'shipping_cost', blob: 'AAAA', text: "shipping_cost(49.5, 'standard')" } }];
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, o.applied.candidate.id === 'ship_gold' ? 'outputs:4.99' : 'outputs:0.0']));
+    const d = await decide([shippingGold()], mem, g, throwingAsk, { oracle: oracle({ runner: 'pytest' }), probe, inputs: () => Promise.resolve(calls), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, codeRule: 'fewest_special_cases', held: null });
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('ship_gold');
+    expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['ship_sq']);
+    expect(guardState(mem).suspect).toBeNull();
+  });
+  it('grades/mergesort-class: a lone `return 0` insert doubted at 0.2 parks; `>=` for `>` and `<= 1` for `== 0` commit at once with no request (the design\'s overfit-free path)', async () => {
+    const grades = sourceFile('src/grades.py', ['def average(total, weights):', '    if not weights:', '        raise ValueError("no weights")', '    return total / len(weights)', ''].join('\n'));
+    const test = 'tests/test_grades.py::test_weighted_average';
+    const gBase = committedBase(grades, summary({ passed: 3, failing: [test], failures: [failure(test)], total: 4 }));
+    const g = goal([failure(test)]);
+    // (d) the special-case seed: `return 0` inserted before the division
+    const memHold = createGuardMemory(gBase);
+    const zero = plausibleOutcome(candidate(siteAt(grades, 4, 'insert'), '    return 0', { id: 'ret0', source: 'template', op: 'return_constant' }), gBase);
+    const held = await decide([zero], memHold, g, scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { 'return 0': 0.2 } })), { oracle: oracle({ runner: 'pytest' }), budget: ample });
+    expect(held).toMatchObject({ kind: 'continue', held: 'suspect', signals: ['adds_special_case'], requests: 1 });
+    expect(commitSuspect(memHold, g)).toBeNull();
+    // the general-looking change: `sum` for `len` — no signal, committed at once, Jev never asked
+    const memClean = createGuardMemory(gBase);
+    const clean = plausibleOutcome(candidate(siteAt(grades, 4), '    return total / sum(weights)', { id: 'sum', source: 'mutation', op: 'call_swap' }), gBase);
+    const d = await decide([clean], memClean, g, throwingAsk, { oracle: oracle({ runner: 'pytest', tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', held: null, requests: 0, signals: [], codeRule: null });
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('sum');
+    // mergesort: `if len(arr) <= 1:` for `== 0` changes a literal, adds none
+    const merge = sourceFile('mergesort.py', ['def mergesort(arr):', '    if len(arr) == 0:', '        return arr', '    return arr', ''].join('\n'));
+    const mBase = committedBase(merge, summary({ passed: 4, failing: ['mergesort([1])'], failures: [failure('mergesort([1])')], total: 5 }));
+    const m = await decide([plausibleOutcome(candidate(siteAt(merge, 2), '    if len(arr) <= 1:', { id: 'le1' }), mBase)], createGuardMemory(mBase), goal([failure('mergesort([1])')]), throwingAsk, { oracle: oracle({ tRunMs: { goalSubset: 5000, fullSuite: 5000 } }), budget: ample });
+    expect(m).toMatchObject({ kind: 'commit', requests: 0, signals: [] });
   });
 });
 

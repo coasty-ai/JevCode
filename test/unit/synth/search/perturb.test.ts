@@ -1,20 +1,30 @@
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 
 import type { Json } from '../../../../src/core/types.js';
 import {
+  LADDER_HARVEST_SEED,
+  LADDER_MAX_PROBE_INPUTS,
+  LADDER_PER_FUNCTION_CAP,
   LINKED_LIST_MAX_LENGTH,
   MAX_PERTURBED_INPUTS,
   NO_TEST_SOURCES,
   behaviourProbeCommand,
   chainExpr,
+  describeInput,
   inputKey,
+  ladderHarvestCommand,
+  ladderLayoutOf,
+  ladderOutputText,
+  ladderReplayCommand,
   linkedListInputs,
   linkedListShape,
   parseBehaviourProbe,
+  parseLadderHarvest,
+  parseLadderReplay,
   perturbationsOf,
   perturbedInputs,
   perturbedInputsFor,
@@ -32,6 +42,7 @@ import {
   DETECT_CYCLE_LINE,
   NODE,
   QUIXBUGS_DIR,
+  REPO_ROOT,
   WRAP,
   WRAP_FAILURES,
   WRAP_GOLD,
@@ -43,6 +54,7 @@ import {
   oracle,
   quixbugsTestFile,
   siteAt,
+  sourceFile,
   wrapOverfit,
 } from './helpers.js';
 
@@ -225,5 +237,134 @@ describe('behaviour probe (real python3): the run-3 overfits and their golds lan
     const p = write('build_error', 'def build_error(x):\n    return x\n');
     const inputs: PerturbedInput[] = [{ input: [], exprs: ['__jev_class(None, "Missing")'], derivedFrom: 't', how: 'linked_list_acyclic' }, { input: [1], derivedFrom: 't', how: 'int_plus_one' }];
     expect(parseBehaviourProbe(run(behaviourProbeCommand({ name: 'build_error', candidatePath: p, inputs, perInputTimeoutMs: 500 })))).toBe('outputs:ERROR NameError\u00011'.replace('\u0001', '\u001f'));
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Ladder-class workspaces: the harvested test calls (LADDER_HARNESS, moved here from
+// experiments/inspect/ladder-verdicts.mts; the head-to-head's shipping / textstats / grades)
+// ---------------------------------------------------------------------------------------
+
+describe('ladder-class workspaces: harvest and replay of the test calls (real python3, the bench shipping task)', () => {
+  const TASK = join(REPO_ROOT, 'bench/data/ladder/tasks/shipping');
+  const dir = mkdtempSync(join(tmpdir(), 'jevcode-ladder-'));
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+  // the buggy tree (free_over 500.0) and the gold tree (50.0), each `src/` + `tests/`
+  const buggy = join(dir, 'buggy');
+  const gold = join(dir, 'gold');
+  for (const t of [buggy, gold]) {
+    cpSync(join(TASK, 'src'), join(t, 'src'), { recursive: true });
+    cpSync(join(TASK, 'tests'), join(t, 'tests'), { recursive: true });
+  }
+  cpSync(join(TASK, 'gold', 'shipping.py'), join(gold, 'src', 'shipping.py'));
+  const runIn = (cmd: string, cwd: string): string => execFileSync('sh', ['-c', cmd], { encoding: 'utf8', timeout: 60_000, cwd, stdio: ['ignore', 'pipe', 'pipe'] });
+  const SHIPPING_FILES = new Map([
+    ['src/shipping.py', sourceFile('src/shipping.py', readFileSync(join(TASK, 'src', 'shipping.py'), 'utf8'))],
+    ['src/__init__.py', sourceFile('src/__init__.py', '')],
+  ]);
+  const SHIPPING_GOAL = goal([failure('tests/test_shipping.py::test_free_at_threshold', '0.0', '4.99')]);
+  const harvest = (): NonNullable<ReturnType<typeof parseLadderHarvest>> => {
+    const h = parseLadderHarvest(runIn(ladderHarvestCommand({ tree: buggy, modules: ['src.shipping'], testModules: ['tests/test_shipping.py'] }), buggy));
+    if (h === null) throw new Error('no harvest');
+    return h;
+  };
+
+  it('ladderLayoutOf: the src/ modules and the goal\'s test modules; null for a QuixBugs program, a package outside src/, or no test module', () => {
+    expect(ladderLayoutOf(SHIPPING_GOAL, SHIPPING_FILES)).toEqual({ modules: ['src.shipping'], testModules: ['tests/test_shipping.py'] });
+    const nested = new Map([...SHIPPING_FILES, ['src/util/money.py', sourceFile('src/util/money.py', 'X = 1\n')], ['src/util/__init__.py', sourceFile('src/util/__init__.py', '')]]);
+    expect(ladderLayoutOf(SHIPPING_GOAL, nested)?.modules).toEqual(['src.shipping', 'src.util.money']);
+    expect(ladderLayoutOf(WRAP_GOAL, WRAP_FILES)).toBeNull();
+    expect(ladderLayoutOf(SHIPPING_GOAL, new Map([['lib/shipping.py', sourceFile('lib/shipping.py', 'X = 1\n')]]))).toBeNull();
+    expect(ladderLayoutOf(goal([failure('shipping_cost(20.0, "standard")')]), SHIPPING_FILES)).toBeNull();
+  });
+
+  it('harvest: the recorder sees the test calls and the nested ones; perturbed calls first, round-robin over the functions, recorded originals last; ≤ LADDER_MAX_PROBE_INPUTS, deduplicated', () => {
+    const h = harvest();
+    expect(h.functions).toBe(7);
+    expect(h.recorded).toBeGreaterThanOrEqual(10);
+    expect(h.importErrors).toEqual({});
+    expect(h.inputs).toHaveLength(LADDER_MAX_PROBE_INPUTS);
+    expect(h.inputs.every((p) => p.call?.module === 'src.shipping' && p.input.length === 0)).toBe(true);
+    expect(new Set(h.inputs.map(inputKey)).size).toBe(h.inputs.length);
+    const kinds = new Set(h.inputs.map((p) => p.how));
+    expect(kinds.has('float_minus_half')).toBe(true);
+    expect(kinds.has('none')).toBe(true);
+    expect(kinds.has('str_empty')).toBe(true);
+    // half-step float perturbations the visible tests never make (`shipping_cost(49.5, …)`, `describe(79.5, …)`; which survive the seeded per-function cap varies)
+    expect(h.inputs.some((p) => /^(?:shipping_cost|describe|quote|cheapest_method)\(\d+\.5[,)]/.test(p.call?.text ?? ''))).toBe(true);
+    // round-robin: the first six inputs cover the six functions that take arguments (`methods()` has none to perturb); a recorded original never precedes a perturbed one
+    expect(new Set(h.inputs.slice(0, 6).map((p) => p.call?.qualname)).size).toBe(6);
+    const firstRecorded = h.inputs.findIndex((p) => p.how === 'recorded');
+    if (firstRecorded >= 0) expect(h.inputs.slice(firstRecorded).every((p) => p.how === 'recorded')).toBe(true);
+    expect(describeInput(h.inputs[0]!)).toBe(h.inputs[0]!.call?.text);
+    expect(h.inputs[0]?.derivedFrom.startsWith('perturbed from test_shipping.py::')).toBe(true);
+    // a smaller cap keeps the ordering
+    const five = parseLadderHarvest(runIn(ladderHarvestCommand({ tree: buggy, modules: ['src.shipping'], testModules: ['tests/test_shipping.py'], perFnCap: 2 }), buggy), 5);
+    expect(five?.inputs).toHaveLength(5);
+    // no test module named and none under tests/: nothing recorded, no inputs, still a protocol line
+    const bare = join(dir, 'bare');
+    mkdirSync(join(bare, 'src'), { recursive: true });
+    writeFileSync(join(bare, 'src', '__init__.py'), '');
+    writeFileSync(join(bare, 'src', 'm.py'), 'def f(x):\n    return x\n');
+    const none = parseLadderHarvest(runIn(ladderHarvestCommand({ tree: bare, modules: ['src.m', 'src.missing'], testModules: [] }), bare));
+    expect(none).toMatchObject({ inputs: [], recorded: 0, functions: 1, importErrors: { 'src.missing': 'ModuleNotFoundError' } });
+  });
+
+  it('replay: the buggy and the gold tree differ exactly on the calls that cross the threshold; the signature is `outputs:` like the QuixBugs probe', () => {
+    const h = harvest();
+    const b = parseLadderReplay(runIn(ladderReplayCommand({ tree: buggy, inputs: h.inputs, perInputTimeoutMs: 1000 }), buggy));
+    const g = parseLadderReplay(runIn(ladderReplayCommand({ tree: gold, inputs: h.inputs, perInputTimeoutMs: 1000 }), gold));
+    expect(b?.startsWith('outputs:')).toBe(true);
+    expect(g?.startsWith('outputs:')).toBe(true);
+    expect(b).not.toBe(g);
+    const bo = outputsOf(b);
+    const go = outputsOf(g);
+    expect(bo).toHaveLength(h.inputs.length);
+    const differing = h.inputs.filter((_, k) => bo[k] !== go[k]);
+    expect(differing.length).toBeGreaterThan(0);
+    // every differing call goes through the threshold (shipping_cost, or a caller of it) with a subtotal between 50.0 and 500.0 — only the fix decides it
+    expect(differing.every((p) => /^(?:shipping_cost|describe|quote|cheapest_method)\((\d+(?:\.\d+)?)/.test(p.call?.text ?? ''))).toBe(true);
+    for (const p of differing) {
+      const subtotal = Number(/\((\d+(?:\.\d+)?)/.exec(p.call?.text ?? '')?.[1]);
+      expect(subtotal).toBeGreaterThanOrEqual(50);
+      expect(subtotal).toBeLessThan(500);
+    }
+    // the agreeing calls (the 4.99 rate below the threshold, the remote surcharge, the unknown method) are the bulk
+    expect(differing.length).toBeLessThan(h.inputs.length / 2);
+  });
+
+  it('a fix that mutates its arguments is a different behaviour: the replay marks it (textstats `tokens.append(n)`)', () => {
+    const tree = join(dir, 'mut');
+    mkdirSync(join(tree, 'src'), { recursive: true });
+    mkdirSync(join(tree, 'tests'), { recursive: true });
+    writeFileSync(join(tree, 'src', '__init__.py'), '');
+    writeFileSync(join(tree, 'src', 'ngrams.py'), 'def count(tokens, n):\n    tokens.append(n)\n    return len(tokens)\n');
+    writeFileSync(join(tree, 'tests', 'test_ngrams.py'), 'from src.ngrams import count\n\n\ndef test_count():\n    assert count(["a", "b"], 2) == 3\n');
+    const h = parseLadderHarvest(runIn(ladderHarvestCommand({ tree, modules: ['src.ngrams'], testModules: ['tests/test_ngrams.py'] }), tree));
+    expect(h?.recorded).toBe(1);
+    const recorded = h!.inputs.find((p) => p.how === 'recorded')!;
+    expect(recorded.call?.text).toBe("count(['a', 'b'], 2)");
+    const sig = parseLadderReplay(runIn(ladderReplayCommand({ tree, inputs: [recorded], perInputTimeoutMs: 1000 }), tree));
+    // the canonical `(args, kwargs)` after the call, as the verdict script compares it
+    expect(sig).toBe("outputs:3 [arguments mutated to ((['a', 'b', 2], 2), {})]");
+    expect(ladderOutputText('3', 'x', false)).toBe('3');
+  });
+
+  it('commands and parsers: argv shapes, inline or file-borne inputs, tolerated garbage', () => {
+    const call = { module: 'src.a', qualname: 'f', blob: 'QUJD', text: 'f(1)' };
+    const input: PerturbedInput = { input: [], derivedFrom: 't', how: 'int_plus_one', call };
+    expect(inputKey(input)).toBe('call:src.a.f:QUJD');
+    const hv = ladderHarvestCommand({ tree: '/t', modules: ['src.a', 'src.b'], testModules: ['tests/test_a.py'] });
+    expect(hv.startsWith(`PYTHONDONTWRITEBYTECODE=1 PYTHONHASHSEED=0 python3 - 'harvest' '/t' 'src.a,src.b' 'tests/test_a.py' '${LADDER_HARVEST_SEED}' '${LADDER_PER_FUNCTION_CAP}' '-' <<'JEVCODE_LADDER_HARNESS'\n`)).toBe(true);
+    expect(ladderHarvestCommand({ tree: '/t', modules: ['src.a'], testModules: [], outPath: '/x/inputs.json', seed: 1, perFnCap: 80 })).toContain(" 'harvest' '/t' 'src.a' '' '1' '80' '/x/inputs.json' ");
+    const rp = ladderReplayCommand({ tree: '/t', inputs: [input, { input: [1], derivedFrom: 't', how: 'int_plus_one' }], perInputTimeoutMs: 500 });
+    expect(rp).toContain(` 'replay' '/t' '[{"module":"src.a","qualname":"f","blob":"QUJD"}]' '0.5' `);
+    expect(ladderReplayCommand({ tree: '/t', inputs: [input], perInputTimeoutMs: 500, inputsPath: '/x/inputs.json' })).toContain(" 'replay' '/t' '@/x/inputs.json' '0.5' ");
+    expect(parseLadderHarvest('Traceback: boom')).toBeNull();
+    expect(parseLadderHarvest('{"probe":"import_error"}')).toBeNull();
+    expect(parseLadderHarvest('{"probe":"ok","recorded":0,"functions":0,"records":[{"module":"m","qualname":"f","blob":"x","how":"unknown_kind","text":"f()"}]}')).toMatchObject({ inputs: [], recorded: 0, functions: 0 });
+    expect(parseLadderReplay('nothing')).toBeNull();
+    expect(parseLadderReplay('{"probe":"ok","outputs":"x"}')).toBeNull();
+    expect(parseLadderReplay('{"probe":"ok","outputs":[{"r":"1","t":true,"a":"((1,), {})","m":false},{"r":"ERROR ValueError","t":null,"a":"","m":true}]}')).toBe('outputs:1\u001fERROR ValueError [arguments mutated to ]');
   });
 });
