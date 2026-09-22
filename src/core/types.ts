@@ -2068,6 +2068,12 @@ export interface ResolvedConfig {
   ui(launch: LaunchSettings): UiConfig;
   /** 'none' -> +Infinity */
   sessionSpendCap(mode: EngineMode): { value: number; source: ConfigSource; derived: boolean };
+  /**
+   * TUI-DESIGN-4 §8 (the round-4 config rows): the relaxed-context policy from the config chain
+   * (docs/COORDINATION-DESIGN.md §8), with ONLY the members the user set — the engine keeps `src/core/limits.ts`'s
+   * defaults for the rest. Optional so no existing `ResolvedConfig` fake breaks; `config/resolve.ts` always sets it.
+   */
+  context?(): ContextPolicyOptions;
   /** delegate to the redactor */
   addSecret(name: string, value: string): boolean;
   dropSecret(name: string): boolean;
