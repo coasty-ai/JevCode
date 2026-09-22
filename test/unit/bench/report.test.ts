@@ -160,4 +160,22 @@ describe('comparison.md carries the two arm markers', () => {
     const out = md({ ...s, warm: { ...s.warm!, mode: 'unsupported-runner', disabled: 3, disabledReason: 'no fork-capable runner' } }, emptyStepsSummary());
     expect(out).toContain('| warm plane: mode / offered / screened / confirmed / mismatches / fallbacks | unsupported-runner / 9 / 7 / 6 / 1 / 2 (3 disabled: no fork-capable runner) | off |');
   });
+
+  /**
+   * B5 — the S2 row's hit rate is `Σ read / Σ input` over the steps that REPORTED cache, which is not the same as
+   * the arm's whole input: `cacheCountsOf` (src/synth/llm/source.ts) emits nothing at all for a round whose samples
+   * reported neither a read nor a write, so a step that served 1,000 uncached input tokens is not in the
+   * denominator. The number can therefore only overstate, and the row's LABEL has to say which steps it is over —
+   * the emitter change that would make the unqualified claim true is F26 in §9.1 (a mechanism change, not a
+   * finishing fix: it contradicts the pinned "report NOTHING rather than a zero" decision at
+   * test/unit/synth/llm/cache-and-reasoning-cap.test.ts).
+   */
+  it('the S2 cache row names the steps its denominator is over, and prints n/a rather than 0 when none reported', () => {
+    const hit = (): StepsSummary => ({ ...emptyStepsSummary(), steps: 2, s2: { ...emptyStepsSummary().s2, cacheRead: 90, cacheWrite: 0, cacheInput: 100 } });
+    const out = md(hit(), emptyStepsSummary());
+    expect(out).toContain('hit rate over the reporting steps |');
+    expect(out).toContain('90+0 / 90/100 90.0%');
+    // the arm that reported nothing says so: a 0 % would read as "the cache missed"
+    expect(out).toMatch(/hit rate over the reporting steps \|[^|]*\| [^|]*n\/a \|/);
+  });
 });

@@ -623,6 +623,13 @@ export interface RunScratch {
  * `cacheInput`, that denominator, is reported too, so the run and the arm can do the same sum over their steps
  * (F19: without it the only run-level figure available was the mean of the steps' ratios, which is the error the
  * line above rules out one level down).
+ *
+ * The guard below is also what BOUNDS that sum (B5): a round whose samples reported neither a read nor a write
+ * reaches this function with `cacheRead === cacheWrite === cacheInput === 0` — `LlmSource.cacheCountsOf` emits
+ * nothing for it — so its input tokens are in neither sum and `Σ read / Σ input` is over the reporting steps, not
+ * over the step's whole input. Closing that means emitting the denominator on a measured miss here, in
+ * `search/subgoal.ts`'s trace fold and in `llm/source.ts`, which changes what the §3.4 instrument reports on every
+ * provider: docs/LLM-LOOP-DESIGN.md §9.1 F26, owned by §3.4, not by a finishing pass.
  */
 function fastlaneCounts(prior: LlmTrace | undefined, llm: LlmTrace): Partial<StepVerifySummary> {
   const ttfbMs = [...(prior?.ttfbMs ?? []), ...(llm.ttfbMs ?? [])];

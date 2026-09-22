@@ -244,10 +244,13 @@ function metricRows(conds: readonly BenchCondition[], m: Record<string, Conditio
     row('fast path: decline reasons (R-d)', (x) => declineReasons(x.synth)),
     row('routers: issued / applied / dropped / max wait ms (R-a)', (x) => `${x.synth.routers.issued} / ${x.synth.routers.applied} / ${x.synth.routers.dropped} / ${x.synth.routers.maxWaitMs}`),
     row('risk: code verdicts / Jev unavailable (R-e)', (x) => `${x.synth.risk.codeVerdicts} / ${x.synth.risk.jevUnavailable}`),
-    // §3.3 / §3.4: the hit rate is recomputed here as Σread / Σinput over the arm's steps. It is NOT the mean of the
-    // steps' own `cacheHitRate`s, which is a different and flattering number, and `n/a` (never 0) when no step of the
-    // arm reported a priced sample — a provider that served no cache did not miss, it measured nothing.
-    row('S2: TTFB p50 / p90 ms (n) / hedges / hedge wins / cache read+write / hit rate', (x) => `${fmt(percentile(x.synth.s2.ttfbMs, 50), 0)} / ${fmt(percentile(x.synth.s2.ttfbMs, 90), 0)} (n=${x.synth.s2.ttfbMs.length}) / ${x.synth.s2.hedges} / ${x.synth.s2.hedgeWins} / ${x.synth.s2.cacheRead}+${x.synth.s2.cacheWrite} / ${x.synth.s2.cacheInput === 0 ? 'n/a' : `${x.synth.s2.cacheRead}/${x.synth.s2.cacheInput} ${pct(x.synth.s2.cacheRead / x.synth.s2.cacheInput)}`}`),
+    // §3.3 / §3.4: the hit rate is recomputed here as Σread / Σinput over the steps that REPORTED cache. It is NOT
+    // the mean of the steps' own `cacheHitRate`s, which is a different and flattering number, and `n/a` (never 0)
+    // when no step of the arm reported a priced sample — a provider that served no cache did not miss, it measured
+    // nothing. The label says "reporting steps" because the denominator is not the arm's whole input: a round whose
+    // samples reported neither a read nor a write contributes nothing at all (B5 / F26 in §9.1 owns closing that),
+    // so this share can only overstate, and the row must not be read as "the arm's prompts were 90 % cached".
+    row('S2: TTFB p50 / p90 ms (n) / hedges / hedge wins / cache read+write / hit rate over the reporting steps', (x) => `${fmt(percentile(x.synth.s2.ttfbMs, 50), 0)} / ${fmt(percentile(x.synth.s2.ttfbMs, 90), 0)} (n=${x.synth.s2.ttfbMs.length}) / ${x.synth.s2.hedges} / ${x.synth.s2.hedgeWins} / ${x.synth.s2.cacheRead}+${x.synth.s2.cacheWrite} / ${x.synth.s2.cacheInput === 0 ? 'n/a' : `${x.synth.s2.cacheRead}/${x.synth.s2.cacheInput} ${pct(x.synth.s2.cacheRead / x.synth.s2.cacheInput)}`}`),
     // OOS iterations 2 and 3: the two ARM markers. They are summed into tasks.jsonl and carried through `--resume`,
     // and until these rows existed they appeared nowhere in the artefact a human reads — the numbers reached the
     // file and stopped one hop short of the table the arm is judged from.

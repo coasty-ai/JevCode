@@ -20,7 +20,6 @@ import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/sour
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { JEV_OFF_MODEL, jevOffModeFrom } from '../jev/off.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
-import { isJsonObject } from '../core/json.js';
 import type { ArmMechanisms, BenchOptions, ConditionConfig, PinnedGeneration, S2Generation, S2State, ServedRate } from './types.js';
 
 export const CONDITION_ORDER: readonly BenchCondition[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast'];
@@ -54,14 +53,21 @@ export function isNextArm(condition: BenchCondition): boolean {
  * `'off'`, whatever the arm table says.
  *
  * `observed` is the other half and the one that survives slot A wiring S2 onto `jev-on` (F17, §9.1): when the run
- * reported what it did (`mechanisms.s2` off its state / step records, `observedS2` below), THAT is recorded and the
- * clamp does not apply — the record follows the run in both directions, and can never be a constant again.
+ * reported what it did (`StepRecord.mechanisms.s2`, folded onto `StepsSummary.s2.state` by the §5.5 bridge and read
+ * back by `bench/next-arms.ts observedArmS2`), THAT is recorded and the clamp does not apply — the record follows
+ * the run in both directions, and can never be a constant again.
+ *
+ * B4: `observed` is `S2State | null | undefined`, and only a real measurement overrides. "No run reported the
+ * member" (`null`) and "the run reported that S2 was off" (`'off'`) are different facts, and the reader this
+ * argument was written for used to collapse both to `'off'` — which would silently overwrite a pinned `'on'` with
+ * a measurement nobody made the moment the runner started passing an observation in (it never did: the argument
+ * had no caller in src at all until B4 wired it).
  */
-export function armMechanisms(condition: BenchCondition, observed?: S2State): ArmMechanisms {
+export function armMechanisms(condition: BenchCondition, observed?: S2State | null): ArmMechanisms {
   const mech = (fastPath: ArmMechanisms['fastPath'], routers: boolean, pinnedS2: S2State): ArmMechanisms => ({
     fastPath,
     routers,
-    // the clamp: a pinned claim survives only on an arm whose mode reaches the mechanisms; an observation always does
+    // the clamp: a pinned claim survives only on an arm whose mode reaches the mechanisms; a MEASURED value always wins
     s2: observed ?? (engineModeOf(condition) === 'llm-jev' ? pinnedS2 : 'off'),
   });
   switch (condition) {
@@ -73,28 +79,6 @@ export function armMechanisms(condition: BenchCondition, observed?: S2State): Ar
     default:
       return mech('off', false, 'off');
   }
-}
-
-/**
- * F05: the run's own answer to "did S2 run?", read off the records the run wrote rather than off a constant.
- *
- * Slot A (F25) exposes `mechanisms.s2: 'on' | 'partial' | 'off'` on the engine state and the step records; until it
- * merges, no run reports the member and every arm reads `'off'`, which is exactly what those runs did. Rows are read
- * as loosely as everything else that crosses the steps.jsonl boundary: an absent member and a value outside the union
- * are both "nothing was measured", never an `'on'`.
- *
- * Steps that disagree fold to `'partial'`. Rounding a mixed run up to `'on'` would let one S2 step stand for the arm,
- * and the arm exists to be a one-mechanism contrast.
- */
-export function observedS2(records: readonly unknown[]): S2State {
-  let seen: S2State | null = null;
-  for (const record of records) {
-    const mech = isJsonObject(record) ? record['mechanisms'] : undefined;
-    const v = isJsonObject(mech) ? mech['s2'] : undefined;
-    if (v !== 'on' && v !== 'partial' && v !== 'off') continue;
-    seen = seen === null || seen === v ? v : 'partial';
-  }
-  return seen ?? 'off';
 }
 
 /**
@@ -308,11 +292,13 @@ function deciderModelOf(condition: BenchCondition, opts: BenchOptions): string |
  *
  * F05: `observed` is how `mechanisms.s2` stops being a constant. Everything else here is pinned BEFORE the run by
  * definition (it is the arm's specification), but "did the §3 generation path run?" is a fact ABOUT the run, and a
- * pinned answer to it is how summary.json came to describe a run that did not happen. Pass `{ s2: observedS2(rows) }`
- * at the END of the run, from the state / step records the run wrote; omit it and the row reads the arm's pinned value,
- * which `armMechanisms` clamps to `'off'` on every arm whose mode cannot reach the mechanisms.
+ * pinned answer to it is how summary.json came to describe a run that did not happen. The bench runner passes
+ * `{ s2: observedArmS2(records, condition) }` at the END of the run, from the step records the run wrote (B4 — until
+ * that wiring landed this argument had no caller in src and the record was the constant again); `null` or omitted and
+ * the row reads the arm's pinned value, which `armMechanisms` clamps to `'off'` on every arm whose mode cannot reach
+ * the mechanisms.
  */
-export function conditionConfig(condition: BenchCondition, opts: BenchOptions, generatorModel: string, observed?: { s2?: S2State }): ConditionConfig {
+export function conditionConfig(condition: BenchCondition, opts: BenchOptions, generatorModel: string, observed?: { s2?: S2State | null }): ConditionConfig {
   const model = condition === 'jev-only' ? NULL_GENERATOR_MODEL : generatorModel;
   const generation = pinnedGeneration(condition, model);
   return {

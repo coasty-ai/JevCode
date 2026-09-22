@@ -601,6 +601,13 @@ beside them (F19), so a run or an arm recomputes the rate as `Σ read / Σ input
 the steps' ratios: 10/1,000 with 90/100 is a true 9.1 % and a mean-of-ratios 45.5 %. `StepsSummary.s2` carries
 `cacheInput` and NOT `cacheHitRate`, for that reason; `src/bench/report.ts` prints the recomputed rate.
 
+**The denominator covers the rounds whose provider REPORTED cache, not every round** (B5, F26 in §9.1). `LlmSource`'s
+`cacheCountsOf` returns nothing at all when a round's samples reported neither a cache read nor a cache write, so a
+round that served 1,000 uncached input tokens contributes neither numerator nor denominator, and the arm's printed
+rate is `Σ read / Σ input` over the REPORTING steps — a number that can only overstate. Until F26 lands, the report
+row and this sentence say so rather than claiming a share of the arm's whole input; the mean-of-ratios error F19
+removed one level down is still removed, and this residual is the same error one level up, bounded and named.
+
 ### 3.5 `--quick`
 
 `src/bench/cli.ts` gains `--quick` (slot A owns `cli.ts`; slot D owns every other `src/bench` file). Global caps
@@ -1347,9 +1354,16 @@ gate on the merged tree. Commits use explicit paths — never `git add -A`, neve
 §3 mechanism lives on the llm-jev sample path: nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only
 from that path, and hedging plus the §3.4 reasoning cap are in `src/synth/llm/source.ts`, which `jev-on` never enters.
 `armMechanisms` now clamps a pinned `s2` to `'off'` outside `llm-jev`, `pinnedGeneration` no longer carries the S2
-block on these arms, and `measurementRows` carries an `R-s2` row that reads `not_evaluable` with the reason. What
-summary.json records is the OBSERVED value when a run reports one (`conditionConfig(…, { s2: observedS2(rows) })`),
-never a constant — so wiring S2 onto `jev-on` (F17) cannot make the record wrong in the other direction either.
+block on these arms, and `measurementRows` carries an `R-s2` row that reads `not_evaluable` with the reason — naming
+the arm's own mode, since the function takes any `BenchCondition` (B6). What summary.json records is the OBSERVED
+value when a run reports one, never a constant — so wiring S2 onto `jev-on` (F17) cannot make the record wrong in
+the other direction either. That observation travels the way every other steps.jsonl fact travels (§5.5):
+`StepRecord.mechanisms.s2` → `StepsSummary.s2.state` (unioned, disagreeing steps fold to `'partial'`) → `runner.ts`'s
+`conditionConfig(c, opts, model, { s2: observedArmS2(records, c) })` for summary.json AND the `R-s2` row, so the two
+read the same member and cannot disagree. `observedArmS2` is `null` — not `'off'` — when no run reported the member,
+because "nothing measured it" must not overwrite a pin the way a measured `'off'` does (B4: the runner had no such
+call at all, and the raw-row reader it replaces collapsed both cases to `'off'`; that reader is deleted rather than
+left beside the wired one, so there is no second copy to leave unwired).
 
 **The `jev-on-next-nofast` control is the single most valuable device in the plan.** Without it a
 `jev-on-next` win confounds tuned generation + routers + the fast path. The two arms run as a **paired
@@ -1447,10 +1461,12 @@ The wave is accepted when **all** hold:
 2. R-a and R-b pass. R-c passes on every suite, or the predicate is revised and the arms re-run.
 3. Prediction (a) holds **and** (b) holds.
 4. (f) holds, i.e. the paired control attributes the win to the fast path — **or** (f) was EVALUATED and lost while
-   the fast path is retired under §8.4, and the wave ships as S2 + routers alone with `fastPath` defaulted `'off'`
+   the fast path is retired under §8.4, and the wave ships as **the routers alone** with `fastPath` defaulted `'off'`
    in every mode. As built, the escape requires an evaluated (f): "the control never ran" is `not_evaluable`, never
-   a pass — a retired R9 does not substitute for the contrast, or "ship S2 + routers alone" is a hope rather than a
-   measured statement.
+   a pass — a retired R9 does not substitute for the contrast, or "ship the routers alone" is a hope rather than a
+   measured statement. The escape used to name the §3 generation path alongside the routers; after F05 no arm of
+   this plan runs it, so that wording authorised shipping an unmeasured mechanism on the strength of a measured one.
+   The §3 path ships with F17 (§9.1), on an arm whose mode can reach it and against its own measurement.
 5. R-e's `riskSource: 'code'` and `jevUnavailable` counts are **reported** for the §2.4 judgement. As built this
    clause carries NO machine condition: whether a harmful command was allowed under a dropped ask is read off the
    steps by a person. If one was, §2.4 is reverted and slot B's risk change is backed out independently of the rest.
@@ -1535,6 +1551,17 @@ The default-mode flip.
   `s2: false` off the `llm-jev` path, no `PinnedGeneration.s2` there, and an `S2` row reading `not_evaluable`);
   wiring the mechanisms onto `jev-on` is a mechanism change and is **slot A's F25**, which exposes a runtime
   `mechanisms.s2: 'on' | 'partial' | 'off'` for summary.json to record instead of a constant.
+- **F26 — `cacheInput` counts only the rounds the provider reported cache for.** `cacheCountsOf`
+  (`src/synth/llm/source.ts`) returns `{}` when a round's samples reported neither a cache read nor a cache write,
+  so a round that priced 1,000 uncached input tokens contributes no denominator; `subgoal.ts`'s trace fold and
+  `fastlaneCounts` (`src/synth/search/index.ts`) repeat the same `cacheRead > 0 || cacheWrite > 0` guard. A step
+  that served 1,000 tokens on a miss beside one that served 90/100 therefore prints 90 %, not 8.2 %, and §3.3 cannot
+  see a prefix break on a provider that does not report cache writes. The fix is three guarded spreads — emit
+  `cacheInput` (and the rate) whenever `input > 0`, keeping `cacheRead`/`cacheWrite` absent when the provider
+  reported none — but it CHANGES what the §3.4 instrument reports on every provider and contradicts a pinned
+  decision (`test/unit/synth/llm/cache-and-reasoning-cap.test.ts`: "reports NOTHING rather than a zero when the
+  provider caches nothing"), so it is a mechanism change and not a finishing fix, exactly as F17 is. Owner = §3.4
+  (slot A). Until then §3.4 above and `src/bench/report.ts`'s S2 row say what the denominator covers.
 - **`llm-sieve` still runs L2.** F06 constructs the arm (it used to throw, turning `--conditions llm-sieve` into a
   run directory of `engine_create_failed` and criterion 5a into a permanent `not_evaluable`), and the stub decider
   supplies §10.1's "every Jev question replaced by its code default". §10.1's row also says "no L2 (code oracle

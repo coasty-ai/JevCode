@@ -142,8 +142,16 @@ export interface StepsSummary {
    * `StepVerifySummary.cacheHitRate` is NOT carried here: the run's hit rate is `cacheRead / cacheInput` over the
    * summed tokens, and the mean of the steps' own rates is a different number (10/1,000 with 90/100 is a true 9.1 %
    * and a mean-of-ratios 45.5 %). Recomputing beats folding a ratio, so the denominator travels and the rate does not.
+   * (F26 in §9.1: `cacheInput` covers the rounds whose provider reported cache at all — a round that reported none
+   * contributes neither numerator nor denominator, so the rate is over the reporting steps, not over the arm's input.)
+   *
+   * `state` is NOT a count and not a token figure: it is what the run said about the §3 mechanisms themselves
+   * (`StepRecord.mechanisms.s2`, slot A's F25), unioned exactly as `deadlineGrowth` and `warm.mode` are — steps that
+   * disagree fold to `'partial'`, because one S2 step must not stand for an arm that exists to be a one-mechanism
+   * contrast. ABSENT means no step reported the member, which is a different fact from a measured `'off'`: only the
+   * second may overwrite an arm's pinned `ArmMechanisms.s2` (F05, B4; `bench/next-arms.ts observedArmS2`).
    */
-  s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number; cacheInput: number };
+  s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number; cacheInput: number; state?: S2State };
   /**
    * OOS iteration 2, defect 2 / defect 4: the S1 warm verification plane's counters, summed over
    * the run's steps (`StepRecord.verify.warm`, core/types.ts `StepWarmSummary`). Absent when no
