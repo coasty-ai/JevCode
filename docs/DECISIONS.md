@@ -1437,3 +1437,25 @@ forced by it. **Still owed before the head-to-head (arms `jev-on-next`, `jev-on-
 `CONDITIONS` rows and the `--quick` flag in `src/cli/args.ts` (TUI session), and slot B's engine seam (per-call abort on router asks, the record
 writer for `routerWaitMs`/`router`/`riskSource`/`jevUnavailable`, `completionDecision` at `completeAfter`, per-request retry waker, option-over-env
 precedence) on branch `llm-loop-seam`. The default-mode flip to `jev-on` is decided only on those rows, never bundled.
+
+## 2026-09-22 Iteration 4 lands; the overfit-signal search stops here; what is open is named
+
+Iteration 4 (`oos-iter-4`, two adversarial reviews — `docs/research/llm-jev/review-oos-iter-4-2026-09-22.md` — and two fix passes) lands
+the localisation half of the `--jev off` losses: the step-4 replace-site sort no longer compares `Infinity − Infinity` (NaN read as
+equal, i.e. file order), the `--jev off` double's inert 0.5 on every Q5n line is no longer read as a ranking (a flat answer over more
+than one line ranks nothing, with a note; a one-line function's genuine answer still short-circuits), `orderByCodeEvidence` orders
+unranked replace sites by call distance → failure-vocabulary overlap (capped at 60, traceback furniture dropped) → a statement-kind
+prior measured once per rewritten statement over all 198 gold patches (the 43 SWE-bench hunk fragments recovered) → round-robin over
+functions, continuation lines last; WIDENED is reachable when Jev actually had no opinion (Q5 escaped and Q5n flat), not when
+`evidence.jevProbability` happens to be absent. `kth`'s gold line is now in the first six under `--jev off` (it was never in them);
+`kth` still fails there because no candidate source enumerates its gold expression — a generation gap, recorded, not pursued.
+**Truth about Jev-ON:** the relative order of unranked tail sites changes in every run, so a Jev-ON kept set can differ from before;
+pinned as a deliberate change, not claimed byte-identical. **The gold-free-pool rule keeps iteration 3's set** `{mutates_new_argument}`:
+`guards_derived_local`, rewritten so that only a use the guarded value would make fail counts (None-clauses take any dereference,
+emptiness-clauses only indexing/pop/min/max/next/unpacking) and only along the failing path, is silent on all 14 correct shapes and on
+198 golds (power 6) — and on both recorded overfits, so it is a lone-passer signal; `guards_other_variable`, `dead_guard` and
+`duplicates_block` have clean sweeps of power 51/51/198 but no replay record where they separate an overfit from a gold. The bar now
+reads: clean sweep WITH stated power, plus positive replay evidence. **Consequence, stated plainly:** the `detect_cycle` class-A′
+hole (a ≥ 2-passer pool committed by a code rule with no Jev request) is open again. **By the user's direction of 2026-09-22 the
+overfit-signal search stops here**: no iteration 5; the open items (the detect_cycle pool, the `kth` generation gap, the item-C
+signals' missing replay evidence, Ring 1 re-measurement on the merged tip) are recorded in `docs/LLM-JEV.md` for whoever picks them up.

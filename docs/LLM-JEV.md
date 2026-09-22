@@ -498,3 +498,414 @@ cases and its corpus-coverage case; `gold-free-pool.test.ts`'s Q16 wording cases
 Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{guard,llm,sites,subgoal,index,types}.ts`,
 `src/synth/llm/source.ts`, `src/synth/localize/{index,types}.ts`, `src/bench/{step-records,types}.ts`,
 `src/core/types.ts`. Flag: **`JEVCODE_DEADLINE_GROWTH`** (`served` | `always`, default `always`).
+
+## 2026-09-22 — iteration 4 (implemented, unmeasured)
+
+Branch `oos-iter-4` from `5ac0042`. **Nothing here is a pass, wall or cost measurement of the mode.** Every number
+below comes from a code sweep of `bench/data` (198 gold patches), from an offline replay of the recorded
+`bench/results/iter1-*` and `~/.jevcode/runs/20260922-*` runs, or from the Ring-1 arms at the end — and those arms ran
+while another live bench held the machine at load 79–118, so they are reported, not gated. Four items: the no-Jev
+replace-site order (the `kth` loss iteration 3 handed over by name), the data-flow signal the iteration-3 author asked
+for, the gold sweeps of the three signals nobody had swept, and the lone-vs-pool bound asymmetry.
+
+**A. The replace-site order when there is no Jev ranking** (`src/synth/search/sites.ts`, `subgoal.ts`).
+
+The mechanism, exactly. With no Choice answered — `--jev off`, the request budget spent mid-beam, or every line
+Choice escaped — every `ScoredReplace.jev` is 0 and every `sbflRank` is `+Infinity`, so `buildGoalSites` step 4's tail
+comparator `a.sbflRank - b.sbflRank` evaluates `Infinity - Infinity` = **NaN**. V8 reads a NaN comparator as "equal",
+`Array.prototype.sort` is stable, and the six `REPLACE_SITES_MAX` keeps are therefore the first six lines of the file.
+`kth`'s gold is `return kth(above, k)` on L12, the tenth code line of its only function counting the `def`, so the
+replace site iteration 3 finally made available was thrown away one layer down. Recorded run
+`20260922-155658-35hfmbqm`: nine sites, every one an insert gap, `plausible 0` on every step, `replan_stop` at 11, and
+`grep -ic sbfl transcript.log` = 0 — there was no coverage in that run at all.
+
+Two things were wrong, not one. The second: Q5n is asked on every single-file workspace, and `JEVCODE_JEV=off`
+answers a Noul with the **inert 0.5** (`src/jev/off.ts`). `buildGoalSites` took that as evidence, gave the first three
+lines of the file `jev = 0.50` and ordered them ahead of everything the code had to say. A Q5n whose every line
+carries one value ranks nothing, whoever produced it, so a flat answer is now ignored with a note — the same argument
+`q5Anchors` already makes about the escape ("`p ≥ minP` is a filter on an answer; it cannot also mean *no answer at
+all*").
+
+The order (`orderByCodeEvidence`), built only from evidence already in reach:
+
+1. the failing call's function first, then its callees (`callDistance`, from `FailureView.call` and `mod.functions[].calls`) — as the grouping the round-robin rotates over;
+2. overlap with the failure's own words (`failureVocabulary`: `testLiterals` ∪ `taskIdentifiers` ∪ the identifiers of each failure's call / expected / actual, Python keywords and builtins dropped), distinct whole tokens on the line, descending;
+3. the statement-kind prior measured below, descending;
+4. line order, so the result is total and stable;
+5. then **round-robin across function groups**, so one function cannot take all six;
+6. and, ahead of all of it, **a continuation physical line is ranked last** — the statement-span site covers it.
+
+SBFL is unchanged and still leads: the tail is split into the rows the spectrum ranked (sorted by rank, exactly as
+before) and the rows it said nothing about (this order).
+
+**The scope of the change, corrected** (review defect 3). The first version of this entry said "a Jev-ON trajectory
+with a real ranking is byte-identical". **That is withdrawn: it is false.** `Infinity - Infinity` is not the no-Jev
+case — two tail sites share `+Infinity` whenever the spectrum ranked neither, which is routine with full coverage and
+a full Jev answer, because `statementSiteFor` spans start at a statement's first line and that line usually has no
+spectrum row of its own. The reviewer's probe (one file, a real Q5 Choice, a real non-flat Q5n, a real spectrum) goes
+`9,10,8,3,6,2,5` on `5ac0042` and `9,10,8,3,6,5,2` on the branch, and at `REPLACE_SITES_MAX = 6` the **kept set
+differs**: main keeps L2, the branch keeps L5. The true claim is narrower: a finite rank still sorts exactly as it
+did and still beats an infinite one, so **the only order that changes is the relative order of tail sites the
+spectrum did not rank — in every run, Jev-ON included.** `code-order.test.ts` pins a Jev-ON mixed finite/infinite
+case (`9, 8, 3, 6, 5, 2`, where L5 wins on sharing the test literal `1`) as a deliberate behaviour change, labelled
+as such. `sites.test.ts`'s `[9, 7, 15, 8, 2, 4]` and `[9, 8, 15, 2, 4]` pins, the `test/fixtures/loop/*golden*`
+fixtures and the iteration-3 starved-beam pin in `review.test.ts` all still pass — they simply have no two
+infinite-rank tail sites, which is why they never showed this.
+
+**Consequence for the next measurement:** the Jev-ON arms are NOT a no-op re-run of `5ac0042`, so the iteration-3
+Jev-ON baseline is not comparable.
+
+**The statement-kind prior, re-measured over all 198 patches** (review defects 2, 6 and 7 — the first version of
+this table covered 155 of 198 and gave `continuation` a prior above `return`).
+
+Two corrections. **(a) All 198 are analysable.** 43 SWE-bench hunk images do not tokenize after a plain dedent,
+because `hunkPatches` cuts a window out of the middle of a file: 19 `unindent does not match any outer indentation
+level`, 18 `EOF in multi-line string`, 6 `EOF in multi-line statement`. `gold-corpus.helpers.ts analysableImage`
+recovers **43 of 43** with an `if True:` prologue at every indent width the fragment uses (a fixed 1-space ladder is
+not enough — `sympy-15345`'s window runs 20 → 8 → 4) plus a closing `"""`/bracket tail, all outside the patch text.
+**(b) A rewritten multi-line statement counts ONCE, at its first line, on both sides.** Counting every physical line
+of one gave `continuation` 1.71, above `return` 1.68, so the order offered `* rate` as a replace site ahead of the
+`return (` that owns it — a syntax error waiting to happen, and exactly what the statement-span site exists to
+prevent. With statements counted once the kind is gone from the table, and `orderByCodeEvidence` ranks a
+continuation physical line LAST rather than scoring it.
+
+195 gold statements against 2,335 background statements, so r0 = 195/2335 = **0.0835** (was 0.0742). The smoothing is
+unchanged and still fixed by the measurement: one pseudo gold statement on top and, on the bottom, the
+1/r0 = 11.97 background statements one gold statement is worth at the base rate, so
+`prior(k) = ((gold_k + 1) / (bg_k + 1/r0)) / r0`, and a kind the corpus never showed lands on exactly 1.00.
+
+| statement kind | gold stmts | background stmts | raw rate | smoothed rate | **prior** | was |
+|---|---|---|---|---|---|---|
+| `while` | 3 | 15 | 20.0 % | 14.8 % | **1.78** | 1.89 |
+| `return` | 70 | 473 | 14.8 % | 14.6 % | **1.75** | 1.68 |
+| `break` | 1 | 5 | 20.0 % | 11.8 % | **1.41** | 1.46 |
+| `assign` | 53 | 502 | 10.6 % | 10.5 % | **1.26** | 1.14 |
+| `augassign` | 3 | 33 | 9.1 % | 8.9 % | **1.06** | 0.95 |
+| `for` | 7 | 91 | 7.7 % | 7.8 % | **0.93** | 0.95 |
+| `assert` | 0 | 1 | 0.0 % | 7.7 % | **0.92** | 0.93 |
+| `expr` | 33 | 473 | 7.0 % | 7.0 % | **0.84** | 0.45 |
+| `if` | 22 | 333 | 6.6 % | 6.7 % | **0.80** | 1.28 |
+| `continue` | 0 | 4 | 0.0 % | 6.3 % | **0.75** | 0.77 |
+| `try` | 0 | 7 | 0.0 % | 5.3 % | **0.63** | 0.73 |
+| `except` | 0 | 8 | 0.0 % | 5.0 % | **0.60** | 0.69 |
+| `import` | 0 | 9 | 0.0 % | 4.8 % | **0.57** | 0.60 |
+| `elif` | 0 | 11 | 0.0 % | 4.4 % | **0.52** | 0.57 |
+| `other` | 2 | 91 | 2.2 % | 2.9 % | **0.35** | 0.42 |
+| `else` | 0 | 24 | 0.0 % | 2.8 % | **0.33** | 0.37 |
+| `raise` | 0 | 52 | 0.0 % | 1.6 % | **0.19** | 0.21 |
+| `from_import` | 1 | 203 | 0.5 % | 0.9 % | **0.11** | 0.12 |
+| `continuation` | — | — | — | — | **gone** | 1.71 |
+
+Per corpus, the gold statements behind it: QuixBugs 37 (`return` 10, `assign` 8, `if` 7, `expr` 4, `while` 3,
+`for` 3, `augassign` 1, `other` 1); ladder 67 (`return` 35, `assign` 18, `if` 8, `expr` 4, `for` 1, `augassign` 1);
+SWE-bench Verified **91** (`assign` 27, `return` 25, `expr` 25, `if` 7, `for` 3, `other` 1, `from_import` 1,
+`augassign` 1, `break` 1) — 57 before the recovery, so the only real-world corpus now carries 47 % of the
+measurement instead of 35 %. The two movements that matter are **`if` 1.28 → 0.80** and **`expr` 0.45 → 0.84**, both
+driven by the recovered SWE-bench hunks; `while` (3 golds) and `break` (1) remain thin cells that the smoothing
+holds near the base rate. `code-order.test.ts` re-derives the whole table from `bench/data` and checks the **rank
+order plus a ±0.15 tolerance** rather than exact equality, so adding a ladder task is no longer a src change
+(review defect 13); `signal-sweeps.test.ts` derives its patch count from the corpus for the same reason.
+
+**`kth` under `--jev off`**, through the real localiser and `buildGoalSites` on the recorded run's own task text and
+failure: the six replace sites are **`L10, L12, L14, L2, L3, L4`** — the two lines naming `kth` (the task's own
+backticked identifier) first, then the remaining `return`, then the assignments in line order (`if` now scores below
+`assign`). On `5ac0042` the same inputs give **`[2, 3, 4, 6, 7, 9]`** — review defect 8: the earlier entry said
+`[2, 3, 4, 10, 12, 14]`, which has the gold L12 inside it and contradicted both the measurement and this branch's own
+test. The gain is therefore larger than the first write-up claimed: on main the gold was not in the six at all, and
+it is now reached second.
+
+**WIDENED.** `sites.every(seedsExhaustedAt)` is the right gate for a site budget a Jev RANKING chose. With no
+ranking the six are a code ORDER and `REPLACE_SITES_MAX` is a cut justified by "a Jev top-3 covers 36/40", so
+running it out exhausts the order, not the space; `widenedReachable` adds that every REPLACE site being spent is
+then enough, gaps or no gaps. The recorded `kth` run parks in phase `LLM` with its gaps still open and never reaches
+WIDENED.
+
+**The test for "Jev had no opinion" is `jevRankedSites`, not `evidence.jevProbability`** (review defect 4).
+`jevProbability` is written ONLY by Q5 anchors, while the ranking the single-file path actually uses is the Q5n
+Noul, which lives in `GoalSites.lineNouls` and reaches a site only as its `q5n noul 0.xx` note. So a goal whose line
+Choice escaped — which the branch's own `kth` record shows four times — but whose Q5n answered **0.90 and
+short-circuited** carried no `jevProbability` anywhere and took the new clause: WIDENED opening early on a goal Jev
+was as confident about as it ever gets, with five insert gaps still unspent. The predicate now reads both, and a
+flat Q5n (the `--jev off` inert 0.5) leaves no note, which is exactly the split the clause needs.
+`code-order.test.ts` pins the reviewer's probe: short-circuit → gate false; flat → gate true.
+
+**Flat Q5n** (review defect 5). `const flat = new Set(r.probs.values()).size <= 1` put the `size > 1` test on the
+NOTE and not on the RULE, so a function with exactly one code line produced one Noul, read as "flat", and was
+dropped silently — measured on `def scale(v, k): return v * k` with Jev answering 0.95, the L2 short-circuit
+disappeared where `5ac0042` had it. Now `r.probs.size > 1 && new Set(...).size <= 1`. The reviewer also settled the
+empirical question: over 1,180 runs and 903 Q5n request groups, **401 groups are flat and every one is exactly
+0.5**, all in runs whose every Noul is 0.5 — so every flat Q5n on record is the `--jev off` inert answer and a real
+Jev never returned one.
+
+**B. `guards_derived_local` — the data-flow signal, and why it ends the iteration lone-passer-only**
+(`src/synth/py/structure.ts` `parameterDerivedLocals` / `guardsDerivedLocal`, differenced by
+`src/synth/search/guard.ts` `newlyDerivedLocalGuards`).
+
+The iteration-3 author's disagreement 1, as code. A function's contract is about its PARAMETERS, so a guard on a
+parameter is a precondition and belongs at the top; a guard on a value the function computed for itself, placed
+behind a use the guard does not protect, is a patch for the one path the tests took. Precisely: for at least one
+operand path P of a guard clause the patch ADDS, with root R — R is a `parameterDerivedLocals` name of the enclosing
+`def` (bound to a fixed point from an expression reading a parameter, never a parameter itself); a statement
+UNCONDITIONALLY reached before the clause BINDS R; and a statement unconditionally reached before the clause uses P
+in a way **the value the clause rejects would have made fail**.
+
+**Two corrections from the review, and they are iteration 3's `late_guard` lesson at one remove.**
+
+*Defect 1a — a use that cannot fail is not evidence, and what "fail" means depends on what the clause tests.* An
+`X is None` clause is broken by any dereference (`P.attr`, `P[…]`, `P(…)`). A truthiness/emptiness clause
+(`not X`, `if X:`, `len(X) == 0`, `X == []`) is not: `items.sort()`, `s.lower()`, `cfg.get(k)` and
+`rows.append(1)` all succeed on an empty container or string. Since "add `if not X:` in front of the indexing that
+crashed, behind a harmless method call" is the commonest shape of a real `IndexError` fix, the old rule called that
+whole family an overfit. The clause kind is now read off the condition (`GuardClause.tests`), and an emptiness
+clause requires a use an empty value breaks: subscripting, `.pop()`/`.popleft()`/`.popitem()`, `min`/`max`/`next`,
+or tuple unpacking.
+
+*Defect 1b — a branch not taken is not "in front of".* `before` was
+`statements.filter(s => s.blockIndex === block.index && s.startLine < g.line)`, and `blockIndex` is the enclosing
+DEF, so a use inside an unrelated `if` branch, an `else`, a `try` whose `except` already handles the empty case, or
+a `while` body all counted. `GuardClause.preceding` is now the clause's own preceding siblings (headers only) under
+everything the enclosing suites unconditionally ran to get there.
+
+All **14** correct shapes both reviews list are silent, and the rule is not vacuous — a NONE clause behind a
+dereference, an emptiness clause behind `ys[0]`, `min(ys)`, `ys.pop()` or `a, b = ys` all still fire, and the same
+prior use is evidence for `if o is None:` and not for `if not o:` (`signal-sweeps.test.ts`).
+
+| corpus | patches | analysable | `guards_derived_local` fires | **sweep POWER** (patches that could fire) |
+|---|---|---|---|---|
+| QuixBugs golds | 41 | 41 | **0** | 2 |
+| ladder golds | 65 files, 26 tasks | 65 | **0** | 4 |
+| SWE-bench Verified golds | 92 hunks / 30 instances | 92 (43 recovered) | **0** | **0** |
+| **total** | **198** | **198** | **0** | **6** |
+
+**The replay, and it reverses the iteration's headline result:**
+
+| record | at b3c28a0 | now | why |
+|---|---|---|---|
+| ladder `stats` | FIRED | **no** | the only use in front, `return float(ordered[mid])`, sits inside `if len(ordered) % 2:` — a branch the EMPTY input never takes, so on the failing path nothing had touched `ordered` before the guard. What is left (`mid = len(ordered) // 2`, `if len(ordered) % 2:`) cannot fail on an empty list |
+| QuixBugs `detect_cycle` | FIRED | **no** | the clause tests `hare.successor.successor` for truthiness and what stands in front is `if hare.successor is None:` — a dereference of `hare`, which a falsy `hare.successor.successor` would not have broken |
+| ladder `token_bucket` | no | **no** | unchanged: the overfit and the gold guard the same two parameters |
+
+So: **0 of 3.** Under the bar — a clean sweep **with stated power** plus a replay record where the signal separates
+an overfit from its gold — `guards_derived_local` is exactly where `late_guard` stood in iteration 3: clean on the
+golds, silent on the records, power 6 of 198. It is **LONE-PASSER ONLY**, and `POOL_SUSPECT_SIGNALS` is
+`{mutates_new_argument}` — iteration 3's set. **Iteration 4 adds no pool signal.**
+
+**What that means for `detect_cycle`, stated plainly.** Its class A′ guard pools are **NOT** gold-free: no
+contender carries a swept signal, so `poolSuspect` is false and `probe_majority` commits a guard at L9 with no Jev
+request while the gold replaces L5. That is the hole `20260922-013715-nlsygcax` showed, it is **still open**, and
+`guard.test.ts` now asserts it rather than claiming it is closed. The data-flow property is real and the signal is
+worth having on the lone path; what it does not have is a record proving it separates an overfit from a gold, and
+this iteration's attempt to claim one rested on two uses that could not fail.
+
+**C. The three unswept signals** (`duplicates_block`, `guards_other_variable`, `dead_guard`). These were in
+`SuspicionSignal` from the start and no sweep had ever been run on them. It found four gold fires, each a concrete
+false positive:
+
+All 198 patches are analysable after the recovery, and the POWER column is the review's demand (defect 2): how many
+patches could fire at all. For these three it is much wider than `guards_derived_local`'s 6, so their clean sweep is
+the stronger evidence of the two — what they lack is the other half of the bar.
+
+| signal | QuixBugs 41 | ladder 65 | SWE 92 (all analysable) | fires as it stood | after the fix | sweep power |
+|---|---|---|---|---|---|---|
+| `guards_other_variable` | 0 | 0 | 0 | clean | **0** — stays lone-passer-only | 51 of 198 add a guard subject |
+| `dead_guard` | 1 — `topological_ordering.py` | 0 | 2 — `sympy__sympy-17139`, `pytest-dev__pytest-10081` | 3 fires | **0** — stays lone-passer-only | 51 of 198 |
+| `duplicates_block` | 0 | 0 | 1 — `sympy__sympy-12489` | 1 fire | **0** — stays lone-passer-only | 198 (any patch adding ≥ 2 lines) |
+
+The three fixes, each with the gold that forced it:
+
+- `guardSubjectsIn` read the `in` of `nextnode not in ordered_nodes` as a guarded name, because `NOT_GUARD` matches
+  `not <NAME>` and `in` is a NAME. The QuixBugs gold `topological_ordering.py`, whose whole patch is
+  `outgoing_nodes` → `incoming_nodes` **inside exactly that condition**, then fired `dead_guard` — nothing in the
+  function dereferences a variable called `in`. A subject whose head is a Python keyword is not a subject.
+- `dead_guard` asked only "is the subject dereferenced anywhere in the function". `sympy__sympy-17139`'s gold guards
+  `rv.exp.is_real`, a predicate attribute `_f` never names at all, and `pytest-dev__pytest-10081`'s guards `skipped`,
+  a local the patch itself introduces two lines above its own guard. "Nothing reads it" is evidence only about a value
+  the code HAS: the subject must now OCCUR in the pre-patch function and never be dereferenced there. That is exactly
+  `detect_cycle`'s `tortoise.successor` (`tortoise = tortoise.successor`, never dereferenced), which still fires.
+- `duplicates_block` asked only "is this added line, identifiers and literals abstracted, a line the function already
+  has" — which is true of every in-place RENAME, because abstracting the identifiers is what makes a renamed line look
+  like the line it replaced. `sympy__sympy-12489` is that patch and nothing else (`_af_new` → `cls._af_new`,
+  `Perm` → `cls`, and a `coerse` → `coerce` typo in a docstring). "Duplicates" means the count went UP: `wrap`'s
+  copied loop takes its normalised line from one occurrence to two, a rename removes one and adds one. `wrap` still
+  fires.
+
+**These three do NOT join `POOL_SUSPECT_SIGNALS`, and the fixes above stand on their own.** The bar is the one
+docs/DECISIONS.md set on 2026-09-22 and iteration 3 applied to `late_guard`: a clean 198-gold sweep **AND** positive
+evidence on the records — a replay in which the signal separates a recorded overfit from its gold. These three now
+have the first half and not the second. A clean sweep says only "no gold carries this"; it does not say the signal
+ever marks an overfit, and a signal that marks nothing cannot be the evidence that a pool holds no gold. (This
+iteration first admitted them on the sweep alone. That was the ruling misapplied; the branch corrects it, and what
+each still lacks is named in `guard.ts`: a replay record where it separates an overfit from a gold.)
+
+`POOL_SUSPECT_SIGNALS` is therefore **`{mutates_new_argument}`** — iteration 3's set, unchanged.
+`adds_special_case`, `deletes_statement` and `late_guard` stay out for the reasons iteration 3 recorded;
+`guards_other_variable`, `dead_guard` and `duplicates_block` stay out pending a replay record; and
+`guards_derived_local` joins them there, because the correction in item B took its two replay fires away.
+**Iteration 4 adds no pool signal.**
+
+**Which pools are gold-free under that set — the thing the next measurement must look at.** `detect_cycle`'s guard
+pools are **not**. The three contenders that survive the structural rules (`dc_return`, `dc_return_alt`,
+`dc_overfit`; the two `break` guards are refused as implicit-None exits) carry `dead_guard` and
+`adds_special_case`, neither of which is swept, so `poolSuspect` is false, no Jev request is made, and
+`probe_majority` commits a guard at L9 while the gold replaces L5. `guard.test.ts` asserts exactly that, per
+contender, so the branch records the hole rather than claiming to have closed it. The hole
+`20260922-013715-nlsygcax` showed is **still open**, and closing it needs a signal with positive record evidence,
+which is what item B set out to find and did not.
+
+The upside of ending here rather than at the five-signal set: the pool's 0.3 branch stays live. With five signals
+`dead_guard` and `guards_derived_local` co-fired on every `detect_cycle` contender, making `strong.length >= 2` and
+the bound 0.7 for essentially every guard pool — review finding 9 of iteration 3 reappearing under new names.
+
+**D. Lone vs pool bound symmetry** — the asymmetry is real, and the records say to leave it. The lone branch takes
+`signals.length >= STRONG_SIGNALS_MIN`, the pool branch takes
+`pickSignals.filter(POOL_SUSPECT_SIGNALS.has).length >= STRONG_SIGNALS_MIN`; since `adds_special_case` rides on every
+inserted guard, one more signal of any kind forces 0.7 on the lone path. Replayed over `bench/results/iter1-*` and the
+`~/.jevcode/runs` records written before this iteration started (run ids `20260922-00…`–`20260922-18…`; 591 readable
+records, 85 holding a lone-passer note, 142 lone-passer decisions):
+
+| bound | signals on the lone passer | decisions |
+|---|---|---|
+| 0.3 | `adds_special_case` | 63 |
+| 0.3 | `deletes_statement` + `adds_special_case` | 6 |
+| 0.3 | `duplicates_block` | 3 |
+| 0.3 | `duplicates_block` + `adds_special_case` | 2 |
+| 0.3 | `dead_guard` + `adds_special_case` | 1 |
+| 0.3 | `deletes_statement` | 1 |
+| 0.3 | the note's signal list did not parse | 3 |
+| **0.7** | `deletes_statement` + `adds_special_case` | **24** |
+| **0.7** | `dead_guard` + `adds_special_case` | **1** |
+| **0.7** | `deletes_statement` + `duplicates_block` + `adds_special_case` | **1** |
+| **0.7** | `duplicates_block` + `adds_special_case` | **1** |
+| **0.7** | `duplicates_block` + `guards_other_variable` + `dead_guard` + `adds_special_case` | **1** |
+| n/a | the note carried no `general` (no request left, or a non-Noul answer) | 35 |
+
+All 28 of the 0.7 rows were put there by signals that were UNSWEPT at `5ac0042`; 27 are holds, 1 committed straight
+away with the reserve spent. Of the 27 holds:
+
+| question | answer |
+|---|---|
+| any with `general < 0.3`, i.e. `unreleasable` — a hold `commitSuspect` will NOT release at step end? | **0 of 27** |
+| the held site's file present in the run's final `model_patch.diff`? | **27 of 27** |
+| the most frequent single case | ladder `units`, `composite/donor_body_unit:parse_size:3stmt` at `src/units.py:24`, general 0.50, in 13 runs |
+| is that patch gold-equivalent? | **yes** — those runs finish with the `units` gold algorithm (`for unit in sorted(DURATION_UNITS, key=len, reverse=True): …`, the loop variable named `number`) |
+
+So the 0.7 bound DELAYED a gold-equivalent lone passer to step end and marked it "possible overfit"; it never refused
+one. Item D's condition for changing the lone path is not met, so **the lone path is left counting every signal**, and
+`signal-sweeps.test.ts` pins that with the mechanism (0.50 → held → `commitSuspect` releases it as a possible
+overfit; 0.12 → held → never released). `POOL_SUSPECT_SIGNALS` ends the iteration where it started, at one member,
+so the POOL bound can never reach 0.7 at all — no pick can carry two swept signals — and the caveat the first
+write-up raised is gone with the five-signal set that caused it.
+
+Three caveats on the METHOD, from the review (defect 14), which reproduced the arithmetic independently (591
+records, 104 parsed decisions with a `general` + 35 without + 3 unparsed = 142; 28 rows at bound 0.7 over 27
+distinct runs; the 24/1/1/1/1 signal table; 0 of 28 below 0.3; 28 of 28 with the held file in the final patch):
+
+- **20 of the 28 come from runs whose final patch touches exactly one file**, so for those the "held site's file is
+  in the final patch" check can only come out positive. It is evidence that the run eventually edited the same
+  file, not that the held candidate was committed, and not that the hold was free.
+- the `units` case is **15** distinct runs, not 13, and **3** of the 28 rows are commit-with-reserve-spent notes
+  rather than holds, not 1.
+- "gold-equivalent" is defensible but "finishes with the `units` gold ALGORITHM" is the accurate phrasing: the gold
+  is `text.strip().lower().replace(" ", "")` and the committed patch is `text.lower()`, which agrees only because
+  `float()` tolerates surrounding whitespace. The dropped normalisation is a real difference.
+
+None of the three touches the conclusion — the bound delayed and never refused — so the lone path is unchanged.
+
+**Ring 1, by hand at the end.** The load gate was met when the arms started (`sysctl -n vm.loadavg` first value
+**4.56**) and broke while they ran: another live bench took the machine to **79–118** within minutes, which is where
+the Jev-ON reference arm goes noisy — iteration 3 recorded the same condition. Four arms of
+`experiments/harness-next/quick.mts ring1` run by hand at `--concurrency 2` on the built bundle, offline, mock
+provider, $0.
+
+| task | Jev on | Jev off | verdict |
+|---|---|---|---|
+| `gcd` | pass, 2 steps / 32.2 s | pass, 2 steps / 60.2 s | **kept** (only slower, 1.87×) |
+| `kth` | **fail**, `max_replans`/`replan_stop`, 11 steps / 332.5 s | **fail**, `replan_stop`, 20 steps / 841.8 s | **vacuous** — the reference arm did not solve it either on this machine |
+| `mergesort` | fail, `replan_stop`, 10 steps / 269.9 s | **pass**, 14 steps / 988.2 s | **gained** (off solves what on does not) |
+| `tagcloud` | pass, 2 steps / 7.5 s | pass, 2 steps / 8.3 s | **kept** (1.11×) |
+| `units` | pass, 4 steps / 106.6 s | pass, 7 steps / 248.1 s | **kept** (only slower, 2.33×) |
+
+The gate itself — "every task the Jev-on arm solves, the Jev-off arm solves" — is **met**: `gcd`, `tagcloud` and
+`units` are all kept, and `mergesort` is a gain. The iteration-4 target, **`kth` passes off, is NOT met**, and the
+record says why, which is the useful part:
+
+- the `--jev off` `kth` run (`20260922-191528-ob2wgm5q`, `line Choice escaped` ×4, `grep -ic sbfl transcript.log` = 0
+  — no coverage, so the code order alone chose the sites) **visits `kth.py:12:replace`**. Every previous `--jev off`
+  `kth` run visited no replace site at all (`20260922-155658-35hfmbqm`) or only the first lines of the file. The
+  item-A order reaches the gold line.
+- it also **reaches WIDENED** (`widened · g1: 3 sites (1 gaps, 2 lines) over 1 function, by line evidence then
+  distance from L10, cut 24`; the site list grows 12 → 20), which the recorded run never did — `widenedReachable` is
+  what lets it.
+- and it still fails: **7,377 candidates tested over 20 steps, and the string `k - num_lessoreq` never appears in
+  the transcript or in `decisions.jsonl`.** `kth`'s gold replaces the argument `k` with the binary expression
+  `k - num_lessoreq`, and no code source enumerates that at L12. So what remained of the `kth` loss after iteration 3
+  was two problems stacked, and iteration 4 removed the localisation one: the rest is candidate generation, which is
+  the next iteration's, not this one's.
+
+The Ring-1 arms above ran before both fix passes and were **not re-run**. On the pool set, checked rather than
+assumed: over the 30 Ring-1-era run records of those five tasks, 14 reach a >= 2-passer arbitration and **not one
+logs `gold-free pool`** — `poolSuspect` never became true in any Ring-1 arm, so the size of
+`POOL_SUSPECT_SIGNALS` did not enter a single Ring-1 decision and the table stands for every configuration this
+branch passed through. On the SITE order it is the opposite, and the review says so (defects 3 and 4): the second
+fix pass changed the statement-kind prior (`if` 1.28 → 0.80, `expr` 0.45 → 0.84), so the `kth` six moved from
+`10, 12, 14, 9, 2, 3` to `10, 12, 14, 2, 3, 4`, and `widenedReachable` now reads the Q5n ranking. **The Ring-1
+table is stale on those arms and a re-run is owed** — the one thing it establishes that survives is that the gold
+line L12 is reached and WIDENED is entered, both of which the new order also does (L12 is still second).
+
+**Tests, labelled by what they establish** (a test that fails on `5ac0042` only because a symbol did not exist is not
+a failing-first record):
+
+*Failing-first by mechanism* — `signal-sweeps.test.ts`'s **14 correct shapes**, every one of which fired at some
+point in this branch's history and must not now (the six the second review measured at `b3c28a0`: `items.sort()`,
+`s.lower()`, `cfg.get()`, `rows.append()`, the `if/else` branch and the `try/except`; and the eight the first
+review measured at `822be5b`: `log(result)`, `len(ys)`, `isinstance`, the `for` loop, `visited.add`, the rebind,
+the comprehension and the nested `def`); `code-order.test.ts` "the six replace sites hold L12 …" (on `5ac0042`:
+`[2, 3, 4, 6, 7, 9]`), "a continuation physical line is ranked LAST" (`3,4,2` at `b3c28a0`), "the failure
+vocabulary is bounded", "round-robin across functions", "is total and stable …", the `widenedReachable` cases and
+the two `defect 4` Q5n cases, and `defect 5`'s one-line short-circuit (null at `b3c28a0`); `signal-sweeps.test.ts`
+"the recorded 0.50 is HELD, not refused".
+
+*Regression pin* — `code-order.test.ts` "an SBFL ranking still leads, and the code order takes only the tail";
+`sites.test.ts`'s `[9, 7, 15, 8, 2, 4]` and `[9, 8, 15, 2, 4]` orders and its mixed-localisation case, unchanged;
+`late-guard.test.ts`'s 16 correct shapes and the `sympy__sympy-17139` gold; `guard.test.ts`'s `wrap` and
+`detect_cycle` signal lists, which are the iteration-3 four again; the whole of `test/unit/loop` and
+`test/unit/bench`.
+
+*Regression pin, labelled as a deliberate behaviour change* — `code-order.test.ts`'s Jev-ON mixed finite/infinite
+case (`9, 8, 3, 6, 5, 2`): the branch re-orders the tail sites the spectrum did not rank, in every run, and this
+pin is what measures that instead of denying it.
+
+*Assertion that a hole is OPEN* — `guard.test.ts`'s two class A′ cases: `detect_cycle`'s pools are committed by
+`probe_majority` with no Jev request, per contender no swept signal, which is the `20260922-013715-nlsygcax` hole
+unclosed.
+
+*Fixture property* — `signal-sweeps.test.ts`'s three per-corpus sweeps, its "every patch is analysable, 0 skipped"
+and its `guards_derived_local` POWER (6 of 198); `code-order.test.ts`'s re-derivation of
+`GOLD_STATEMENT_KIND_PRIOR` from `bench/data`, now by rank order and tolerance so the corpus can grow.
+
+**Recorded, not fixed** (review defects 9–12, 14; each is lone-passer-only or a bounded cost, and each is
+written at the code that carries it):
+
+- **defect 9** — narrowing `dead_guard` to "the subject OCCURS in the pre-patch function" also blinds it to a guard
+  on a name the PATCH introduces and never uses, which is a textbook dead guard. One Q16 question, lone-passer-only.
+- **defect 10** — `duplicates_block`'s growth rule lets a MOVED block escape (insert two lines the function has and
+  delete the originals: growth 0; `deletes_statement` catches it instead), and the count is file-wide, so a
+  duplication in one function can cancel a deletion in another.
+- **defect 11 — FIXED**, it was a one-liner: the identifier loop over the failure text had no cap while
+  `testLiterals` has 40 and `taskIdentifiers` 60. Capped at 60, and `File "…", line N, in …` frame furniture is
+  dropped (one five-frame traceback used to yield 55 entries, mostly path components).
+- **defect 12** — the round-robin caps the failing call's own function at one of the six when there are ≥ 6 groups
+  in the tail. Accepted: it is the price of the fairness rule, still far better than file order, and a
+  single-function localisation degenerates correctly.
+- **defect 14** — item D's method caveats, recorded above with the corrected counts (15 `units` runs, 3
+  reserve-spent, 20 of 28 single-file patches).
+
+Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{sites,subgoal,guard}.ts`. No flag. `testLiterals` and
+`taskIdentifiers` moved from `subgoal.ts` to `sites.ts` (which `subgoal.ts` re-exports, so no caller changed) because
+the code-side order reads them and the other direction would be an import cycle. `test/unit/synth/search/gold-corpus.helpers.ts`
+lifts iteration 3's sweep harness out of `late-guard.test.ts`, unchanged, so every sweep in the repository reads the
+same 198 patches.
+
+Gates on this tree: `tsc --noEmit` clean; `scripts/no-any.mjs` ok (src, test, perf, scripts); `scripts/jev-contract.mjs`
+ok (32 Jev call sites, 2 four-clause blocks, 30 allow-listed); `vitest --project unit --maxWorkers=2 test/unit/synth
+test/unit/jev test/unit/loop test/unit/bench` → **205 files / 2,798 passed**.

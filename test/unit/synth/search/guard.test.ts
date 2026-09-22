@@ -58,6 +58,8 @@ import {
   siteBatchDone,
   specialCaseScore,
   STRONG_SIGNALS_MIN,
+  POOL_SUSPECT_SIGNALS,
+  structuralRejection,
   suspicionSignals,
   unreleasable,
 } from '../../../../src/synth/search/guard.js';
@@ -612,6 +614,10 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if hare.successor is not None:'))).toEqual([]);
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if not f(x) or hare.successor is None:'))).toEqual([]);
   });
+  // OOS iteration 4 briefly added `guards_derived_local` here; its review showed the prior use
+  // that carried it (`if hare.successor is None:`) is not a use a falsy `hare.successor.successor`
+  // would have broken, so the corrected rule is silent on this patch and the list is the
+  // iteration-3 four again.
   it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences, guards an expression nothing reads and adds a special case; the gold adds a clause (one signal), a genuine inserted guard too', () => {
     expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case']);
     // `hare is None or` adds a conditional (`or`) and a literal (`None`) over the replaced line: the advisory is asked, and the measured gold answered 0.85
@@ -1464,11 +1470,30 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     // Ranked change 5 (OOS 2026-09-22 Q6, record 20260922-013715-nlsygcax): both `guard_empty_break`
     // members put a `break` in the `while True:` the pre-patch function could only `return` out of,
     // so each adds an implicit-None exit and is refused before clustering. What is left are the two
-    // returning guards and the donor, whose probe majority commits `dc_return` by code — Q15/Q16 is
-    // not reached at all, and the break guard is never a pick or a fallback.
+    // returning guards and the donor.
+    //
+    // What is left are the two returning guards and the donor, whose probe majority commits
+    // `dc_return` by code — Q15/Q16 is not reached at all, and the break guard is never a pick
+    // or a fallback.
+    //
+    // OOS iteration 4 made this batch a GOLD-FREE POOL (arbitrated, one request) by admitting
+    // `guards_derived_local`, and its review then withdrew that signal from the pool set: the
+    // prior use carrying it here is `if hare.successor is None:`, a dereference of `hare`, and
+    // a falsy `hare.successor.successor` would not have broken it. With the rule corrected the
+    // signal is silent on this patch, `POOL_SUSPECT_SIGNALS` is `{mutates_new_argument}` again,
+    // and this batch is back to the iteration-3 behaviour recorded below. The hole
+    // `20260922-013715-nlsygcax` showed — a guard at L9 committed by code with no Jev request
+    // while the gold replaces L5 — is therefore STILL OPEN, and this assertion is what says so.
     expect(d).toMatchObject({ kind: 'commit', plausible: 3, clusters: 2, arbitrated: false, requests: 0, structuralDrops: 2, codeRule: 'probe_majority', held: null });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_return');
     expect(ask.calls).toHaveLength(0);
+    expect(notes.some((n) => n.includes('gold-free pool'))).toBe(false);
+    // the mechanism, stated: no contender carries a signal in the swept set, so `poolSuspect`
+    // is false — the batch is not called gold-free and the code ranking rules decide
+    const survivors = passers.filter((o) => structuralRejection(o.applied) === null);
+    expect(survivors.map((o) => o.applied.candidate.id)).toEqual(['dc_return', 'dc_return_alt', 'dc_overfit']);
+    for (const o of survivors) expect(suspicionSignals(o, g).filter((s) => POOL_SUSPECT_SIGNALS.has(s))).toEqual([]);
+    expect(suspicionSignals(survivors[0]!, g)).toEqual(['dead_guard', 'adds_special_case']);
     expect(d.fallbacks.map((o) => o.applied.candidate.id)).not.toContain('dc_break');
     expect(notes.filter((n) => n.includes('adds a path that leaves a function with an implicit `return None`'))).toHaveLength(2);
   });
@@ -1496,9 +1521,12 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     // three votes for the returning behaviour against one and one on both inputs: the family is the majority
     const maj = probeMajorityCluster(clusterByBehaviour(passers, sig), sig);
     expect([...maj.agreement.entries()].map(([id, n]) => `${id}=${n}`)).toEqual(['cluster_1=2', 'cluster_2=0', 'cluster_3=0']);
+    // ranked change 5 refuses `b1` (a `break` out of `while True:` = an implicit-None exit)
+    // before clustering, so the probe majority decides between the two clusters that are left.
+    // OOS iteration 4 briefly routed this through Q15/Q16 as a gold-free pool; its review
+    // withdrew `guards_derived_local` from the pool set, so `throwingAsk` is right again — no
+    // contender carries a swept signal, so no Jev request is made.
     const d = await decide(passers, mem, g, throwingAsk, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
-    // ranked change 5 refuses `b1` (a `break` out of `while True:` = an implicit-None exit) before
-    // clustering, so the probe majority decides between the two clusters that are left
     expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, structuralDrops: 1, codeRule: 'probe_majority' });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('a1');
     // an LLM member in any cluster, or supports that differ, leave `fewestSpecialCases` in charge
