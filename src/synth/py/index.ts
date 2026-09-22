@@ -8,7 +8,7 @@ export type { PyTokenizeErrorKind } from './errors.js';
 export { PY_KEYWORDS, PY_OPERATORS, codeTokens, indentWidth, isKeyword, lineStartOffsets, renderTokens, tokenize, tokenizeFragment, untokenize } from './tokenize.js';
 export type { Token, TokenType } from './tokenize.js';
 
-export { PY_BUILTINS, analyse, blockAt, functionAt, lineScopes, scopeAt, splitPhysicalLines, statementAt } from './structure.js';
+export { PY_BUILTINS, analyse, blockAt, fallsOffEnd, functionAt, lineScopes, mutatedParameters, qualifiedName, scopeAt, splitPhysicalLines, statementAt } from './structure.js';
 export type { AttrAssign, AttrFact, Block, CallFact, FunctionFacts, ImportEntry, LineScope, Param, PyModule, ReturnFact, Statement, StatementKind } from './structure.js';
 
 export { deleteLine, indentOf, insertLine, lineCount, reindent, replaceLine, unifiedDiff } from './edits.js';

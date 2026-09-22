@@ -280,7 +280,8 @@ describe('searchSubGoal: RANK dispatch on a slow oracle', () => {
     const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: fakeBudget({ jev: 60, runs: 16, wallMs: 600_000 }) });
     const goal = fakeGoal();
     const many = (site: Site, n: number, source: CandidateSourceName): Candidate[] => Array.from({ length: n }, (_, i) => cand(site, `return ${source}_${i}`, { source }));
-    const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 7, source)) });
+    // OOS 2026-09-22 ranked change 1: RANK is the pool-outgrows-the-budget case, so each set is 20 against 16 runs
+    const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 20, source)) });
     const r = await searchSubGoal(ctx, mem, goal, deps);
     // Q7 was one recorded request over the measured state shape
     expect(ctx.askCalls).toHaveLength(1);
@@ -293,11 +294,13 @@ describe('searchSubGoal: RANK dispatch on a slow oracle', () => {
       { source: 'mutation', line: 6, kind: 'insert' },
       { source: 'template', line: 5, kind: 'replace' },
     ]);
-    // every set of 7 ranked; K = 5 at the gap (§2.4), then the one run the cap had left at the replace site
-    expect(deps.rec.rankCalls.map((c) => c.n)).toEqual([7, 7, 7, 7]);
+    // only the candidates a run could still reach are priced (`rankPoolCap`): 16, then 11, 6, 1 as the
+    // cap is spent — never the whole set of 20 (OOS 2026-09-22 Q4: sympy-16792 ranked 27,754 to test 1,191).
+    // K = 5 at the gap (§2.4), then the one run the cap had left at the replace site
+    expect(deps.rec.rankCalls.map((c) => c.n)).toEqual([16, 11, 6, 1]);
     expect(deps.rec.runBatches.map((b) => b.length)).toEqual([5, 5, 5, 1]);
     expect(r.trace.runMode).toBe('RANK');
-    expect(r.trace.candidatesRanked).toBe(28);
+    expect(r.trace.candidatesRanked).toBe(34);
     // a RANK cut leaves the rest enumerable: the sources are not exhausted at the sites
     expect(goal.exhausted.get(siteKey(insert))?.has('template')).toBe(false);
     // the 16-run cap ended the step
@@ -329,7 +332,8 @@ describe('searchSubGoal: RANK dispatch on a slow oracle', () => {
     const goal = fakeGoal();
     const deps = fakeSubGoalDeps({
       sites: [replace, insert],
-      seed: (source, site) => (source === 'mutation' ? [cand(site, 'return 1', { source }), cand(site, 'return 2', { source })] : []),
+      // 20 mutants against 16 runs left: RANK, since a set that fits the run budget is simply run (ranked change 1)
+      seed: (source, site) => (source === 'mutation' ? Array.from({ length: 20 }, (_, i) => cand(site, `return ${i}`, { source })) : []),
       rank: (cands) => ({ ranked: cands.map((c, i) => ({ candidate: c, probability: 0.1, rank: i + 1 })), escapeProbability: 0.8, fixProbablyAbsent: true, method: 'choice', requests: 1 }),
     });
     const r = await searchSubGoal(ctx, mem, goal, deps);
@@ -621,7 +625,8 @@ describe('searchSubGoal: the RANK take follows the run budget on a cheap reposit
     const ctx = fakeCtx({ ask: askQ7 });
     const mem = fakeMemory([file], baseline(), { oracle: repoOracle(), stepBudget: fakeBudget({ jev: 60, runs: 60, wallMs: 600_000 }) });
     const goal = fakeGoal();
-    const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 30, source)) });
+    // 70 per source against 60 runs: the pool outgrows the budget, which is what RANK is for (ranked change 1)
+    const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 70, source)) });
     const r = await searchSubGoal(ctx, mem, goal, deps);
     expect(r.kind).toBe('budget');
     expect(r.trace.runMode).toBe('RANK');
@@ -638,8 +643,11 @@ describe('searchSubGoal: the RANK take follows the run budget on a cheap reposit
     mem.stepBudget = fakeBudget({ jev: 60, runs: 60, wallMs: 600_000 });
     const r2 = await searchSubGoal(fakeCtx({ ask: askQ7 }), mem, goal, deps);
     expect(r2.kind).toBe('budget');
-    expect(deps.rec.runBatches.slice(4).map((b) => b.length)).toEqual([14, 14, 16, 16]);
-    expect(r2.trace.sitesTested).toBe(2);
+    // OOS 2026-09-22 ranked change 1: step 1's RANK cut left 70 − 16 = 54 untested at the first source,
+    // and 54 now fits the 60 runs this step has — so it is run whole, with no ranking request spent on it
+    expect(deps.rec.runBatches.slice(4).map((b) => b.length)).toEqual([54, 3, 3]);
+    // the 60 runs are spent at the first site, so the second is not reached again this step
+    expect(r2.trace.sitesTested).toBe(1);
     expect(r2.trace.newSitesTested).toBe(0);
     expect(everySiteSeedsExhausted(goal, [replace, insert])).toBe(false);
   });
@@ -647,7 +655,9 @@ describe('searchSubGoal: the RANK take follows the run budget on a cheap reposit
   it('with the two scopes at the same cost (a best-guess-like oracle) the take stays at the fixed 3/5', async () => {
     const { file, replace, insert } = gcdFixture();
     const ctx = fakeCtx({ ask: askQ7 });
-    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: fakeBudget({ jev: 60, runs: 60, wallMs: 600_000 }) });
+    // 30 per source against 25 runs left: the pool outgrows the budget (so RANK), and stays under
+    // COMPACT_NOUL_MIN_CANDIDATES (so the fixed 3/5 take, not the compact 5)
+    const mem = fakeMemory([file], baseline(), { oracle: slowOracle(), stepBudget: fakeBudget({ jev: 60, runs: 25, wallMs: 600_000 }) });
     const deps = fakeSubGoalDeps({ sites: [replace, insert], seed: (source, site) => (source === 'composite' ? [] : many(site, 30, source)) });
     await searchSubGoal(ctx, mem, fakeGoal(), deps);
     expect(deps.rec.runBatches.map((b) => b.length)).toEqual([3, 3, 3, 5, 5, 5]);

@@ -354,6 +354,127 @@ function clusterByFrames(entries: FramedTest[]): Cluster[] {
   return clusters;
 }
 
+/**
+ * Couple the frame clusters that the same repair has to touch
+ * (docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 4).
+ *
+ * Q3: the four `plausible = 0` ladder losses decompose wrongly in both directions. `crossfile`
+ * (`20260922-054652-dcxbrltg`) made SEVEN goals, one per failing test, over three files, for a
+ * defect that needs coupled hunks — so every goal searched a fragment of a repair no single hunk
+ * could complete, 168 sites and 12,153 candidates later with 0 plausible. One goal per failing
+ * test is right only when the tests are independent repairs.
+ *
+ * The structural reason to be one goal, read off the traceback and not a threshold: the two
+ * clusters' frame chains meet at a SHARED CALLER — a (path, fn) source node that is on both
+ * chains and is neither cluster's own key frame. That is a call chain the defect sits on, and a
+ * repair on it fixes both tests at once; it is exactly the shape `crossfile` has and exactly what
+ * seven per-test goals cannot express.
+ *
+ * What is deliberately NOT a reason:
+ *
+ *  - the same source FILE. Two independent functions in one module are two repairs, and
+ *    `clusterByFrames` has already split one function's distant lines on FRAME_LINE_WINDOW; a
+ *    file-level merge would undo both and rebuild `masked`'s single 69-site goal.
+ *  - a node that IS a cluster's key frame. Merging on that is the same-function merge
+ *    `clusterByFrames` already did and then split on the line window.
+ *  - a test-kind frame. A single-file workspace with no source traceback (QuixBugs,
+ *    `run_tests.py`) produces only test-kind frames, so it has no shared-caller node at all and
+ *    is left exactly as `clusterByFrames` left it — which keeps a one-file, <= 2-failing-test
+ *    workspace at the ONE goal it is today.
+ *
+ * Merging is transitive (union-find) and order-free: the result depends on the frames, not on the
+ * order the clusters arrived in.
+ */
+export function mergeCoupledClusters(clusters: readonly Cluster[], chains: ReadonlyMap<number, readonly Frame[]>, keys: ReadonlyMap<number, string>): Cluster[] {
+  const parent = clusters.map((_, i) => i);
+  const find = (i: number): number => {
+    let r = i;
+    while (parent[r] !== r) r = parent[r]!;
+    return r;
+  };
+  const union = (a: number, b: number): void => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
+  };
+  // the (path, fn) source nodes on each cluster's chains, minus the cluster's own key frames
+  const nodesOf = clusters.map((c) => {
+    const own = new Set<string>();
+    for (const m of c.members) {
+      const k = keys.get(m);
+      if (k !== undefined) own.add(k);
+    }
+    const nodes = new Set<string>();
+    for (const m of c.members) {
+      for (const f of chains.get(m) ?? []) {
+        if (f.kind !== 'source' || f.fn === null) continue;
+        const node = `${f.path}|${f.fn}`;
+        if (!own.has(node)) nodes.add(node);
+      }
+    }
+    return nodes;
+  });
+  const shares = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => {
+    for (const x of a) if (b.has(x)) return true;
+    return false;
+  };
+  for (let i = 0; i < clusters.length; i += 1) {
+    for (let j = i + 1; j < clusters.length; j += 1) {
+      if (shares(nodesOf[i]!, nodesOf[j]!)) union(i, j);
+    }
+  }
+  const byRoot = new Map<number, Cluster>();
+  const order: number[] = [];
+  clusters.forEach((c, i) => {
+    const root = find(i);
+    const held = byRoot.get(root);
+    if (held === undefined) {
+      byRoot.set(root, { reason: c.reason, members: [...c.members], suspectedFiles: [...c.suspectedFiles], missingNames: [...c.missingNames] });
+      order.push(root);
+      return;
+    }
+    held.members.push(...c.members);
+    held.suspectedFiles = dedupe([...held.suspectedFiles, ...c.suspectedFiles]);
+    held.missingNames = dedupe([...held.missingNames, ...c.missingNames]);
+    held.reason = `${held.reason} + ${c.reason}`;
+  });
+  return order.map((root) => {
+    const c = byRoot.get(root)!;
+    c.members.sort((a, b) => a - b);
+    return c;
+  });
+}
+
+/**
+ * The other direction of ranked change 4: split a multi-test goal whose site list cannot be
+ * searched inside the run budget.
+ *
+ * Q3: `masked` (`plausible = 0`, `replan_stop`) was ONE goal over four coupled tests in one file
+ * with 69 sites; it enumerated 7,027 candidates and tested 4,525 without ever reaching the sites
+ * the later tests name, because one goal searches its sites in one order and the budget runs out
+ * part-way down. When a goal's sites outnumber the runs the step can spend, the goal cannot be
+ * decided as a unit this step, and its tests are better attacked one at a time — each with its
+ * own localisation, its own site order and its own share of the ledger's attention.
+ *
+ * The trigger is the same budget comparison as the rest of this iteration (`sites > runsLeft`),
+ * never a site count chosen by hand. A goal with one test is never split: there is nothing to
+ * split it into. The successors inherit the parent's suspected files and missing names, and are
+ * ids `<parent>.1 .. <parent>.n` so the ledger shows the chain.
+ */
+export function splitBySiteBudget(goal: Goal, sites: number, runsLeft: number): Goal[] {
+  if (goal.tests.length < 2 || sites <= runsLeft) return [goal];
+  return goal.tests.map((test, i) => {
+    const failures = goal.failures.filter((f) => f.testId === test);
+    const child = newGoal(`${goal.id}.${i + 1}`, [test], failures.length > 0 ? failures : [failureless(test)], [...goal.suspectedFiles], goal.missingNames ?? []);
+    child.phase = goal.phase;
+    return child;
+  });
+}
+
+function failureless(testId: string): FailureView {
+  return { testId, call: testId, expected: '', actual: 'failed: no details in the output' };
+}
+
 /** The best-ranked SBFL line (rank ≤ SBFL_CLUSTER_TOP) a test executed, or null. */
 function sbflKeyLine(testId: string, sbfl: NonNullable<ClusterOptions['sbfl']>): RankedLine | null {
   const per = sbfl.perTest.find((r) => r.id === testId);
@@ -402,7 +523,12 @@ export function clusterFailures(baseline: TestRunSummary, options: ClusterOption
     if (key === null) unframed.push(index);
     else framed.push({ index, frame: key, frames: fs, missingNames: missingOf(id) });
   });
-  const clusters = clusterByFrames(framed);
+  // ranked change 4: frame clusters the same repair has to touch are ONE goal (shared source
+  // file, or an overlapping (path, fn) node in the two chains). crossfile's seven single-test
+  // goals over three files were seven fragments of a repair no single hunk could complete.
+  const chains = new Map<number, readonly Frame[]>(framed.map((f) => [f.index, f.frames]));
+  const keyNodes = new Map<number, string>(framed.map((f) => [f.index, `${f.frame.path}|${f.frame.fn ?? ''}`]));
+  const clusters = mergeCoupledClusters(clusterByFrames(framed), chains, keyNodes);
   const bySbfl = new Map<string, Cluster>();
   for (const index of unframed) {
     const id = failing[index]!;

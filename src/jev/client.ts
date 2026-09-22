@@ -295,6 +295,17 @@ function jtrace(msg: string): void {
   }
 }
 
+/**
+ * The wire request's `requestHash`: `sha12(toJson({ model, state, questions }))`, the same bytes
+ * `ask` hashes below and every `jev.jsonl` row records. Exported so a caller can key on a request
+ * it has not sent yet (jev/cache.ts, OOS 2026-09-22 ranked change 2: 454 of 2,330 requests, 19.5 %,
+ * repeated a hash already issued in the same run). One definition, so the two can never disagree.
+ */
+export function requestHashOf(model: string, state: Json, questions: Record<string, Question>): string {
+  const request: JevRequest = { model, state, questions };
+  return sha12(toJson(request));
+}
+
 export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decider {
   // Every error message goes through redact; a missing function would surface as a bare
   // TypeError inside the error path, exactly where the unredacted text is in hand.
@@ -433,7 +444,7 @@ export function createJevDecider(cfg: DeciderConfig, deps: JevClientDeps): Decid
     if (!isSendableState(state)) throw new JevCodeError('internal', `Jev state must be a string, object or array, got ${state === null ? 'null' : typeof state}`);
     const request: JevRequest = { model: cfg.model, state, questions };
     const requestJson = toJson(request);
-    const requestHash = sha12(requestJson);
+    const requestHash = requestHashOf(cfg.model, state, questions);
     const body = JSON.stringify(requestJson);
 
     let httpAttempts = 0;

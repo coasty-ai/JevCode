@@ -53,9 +53,21 @@ const PATCH_FIX_CRITERIA_STATE: Json = {
   not_a_fix_examples: [...PATCH_FIX_CRITERIA.false.examples],
 };
 
-/** Order only when the queue cannot run every distinct sample or a run is expensive. */
-export function q17Needed(distinct: number, runsLeft: number, tRunMs: number): boolean {
-  return distinct > 1 && (distinct > runsLeft || tRunMs > Q17_T_RUN_MS);
+/**
+ * Order only when the queue cannot run every distinct sample — the same "can I just run them
+ * all?" test the seed path takes (`search/budget.ts poolFitsRunBudget`, SIEVE/RANK).
+ *
+ * OOS 2026-09-22 ranked change 1: the old second clause (`t_run > Q17_T_RUN_MS`) asked for an
+ * order over a pool every member of which was going to run anyway. `runsLeft` already prices
+ * t_run — it divides the wall left by the measured run at the current lane count — so an
+ * expensive run shrinks `runsLeft` and the first clause fires on its own when it should. The
+ * measured value of the order it bought was nil: of 65,076 `candidate_*` Noul answers 96.3 % fell
+ * in [0.0, 0.1) and 13 reached 0.5, and 99–100 % of the requests fired in `plausible = 0` steps.
+ * `tRunMs` stays in the signature: the caller has it, and dropping a parameter from a predicate
+ * this load-bearing would silently re-order every call site.
+ */
+export function q17Needed(distinct: number, runsLeft: number, _tRunMs: number): boolean {
+  return distinct > 1 && distinct > runsLeft;
 }
 
 // ---------------------------------------------------------------------------------------

@@ -20,7 +20,7 @@ import type { Answer, Decision, DoneClaimResult, JsonObject, JudgeResult, Propos
 import type { StageContext } from '../engine.js';
 import { buildJudgeState, type ExecutedInfo, type ExecutedTests } from '../state.js';
 import { PLAN_ACCEPT_THRESHOLD } from '../plan.js';
-import { TASK_COMPLETE_ID, TESTS_PASS_UNPARSED_THRESHOLD, buildCompleteQuestion, knownFailureCount, knownFailuresOf, unexpectedFailures } from './complete.js';
+import { TASK_COMPLETE_ID, TESTS_PASS_UNPARSED_THRESHOLD, buildCompleteQuestion, completeQuestionDue, knownFailureCount, knownFailuresOf, unexpectedFailures } from './complete.js';
 
 export function doneClaimId(j: number): string {
   return `done_${j}`;
@@ -94,13 +94,17 @@ export function buildJudgeQuestions(opts: { testsUnparsed: boolean; claims: read
 }
 
 /** llm-jev: Q21 `done_<j>` (+ `tests_pass_unparsed` when the parser read nothing) and Q22, the same wordings, recorded only. */
-export function buildRecordOnlyQuestions(opts: { testsUnparsed: boolean; claims: readonly string[] }): Record<string, Question> {
+export function buildRecordOnlyQuestions(opts: { testsUnparsed: boolean; claims: readonly string[]; completeDue?: boolean }): Record<string, Question> {
   const qs: Record<string, Question> = {};
   if (opts.testsUnparsed) qs['tests_pass_unparsed'] = testsPassUnparsedQuestion();
   opts.claims.forEach((_claim, j) => {
     qs[doneClaimId(j)] = doneClaimQuestion(j);
   });
-  qs[TASK_COMPLETE_ID] = buildCompleteQuestion();
+  // OOS 2026-09-22 ranked change 6 (Q2(d)): on this path Q22 is recorded and never consulted
+  // — `isCompleteByFact` is the stop — and 87.7 % of its 127 answers were below 0.5. It is due
+  // only when this step closed a goal or the plan has nothing left (complete.ts
+  // `completeQuestionDue`); absent means due, so every other caller is unchanged.
+  if (opts.completeDue !== false) qs[TASK_COMPLETE_ID] = buildCompleteQuestion();
   return qs;
 }
 
@@ -246,13 +250,19 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
 async function runCodeJudgeStage(ctx: StageContext, common: JsonObject, proposal: Proposal, executed: ExecutedInfo, claims: readonly string[], opts: JudgeStageOptions): Promise<JudgeStageResult> {
   const kind = proposal.action.kind;
   const claimProbabilities = new Map<string, number>();
+  // ranked change 6: the Q22 gate, from the claims this step makes and what the plan still lists
+  const completeDue = completeQuestionDue({ goalJustClosed: claims.length > 0, planRemaining: proposal.plan.remaining.length });
   if (kind === 'done' && executed.outcome.status === 'noop') {
-    // Q22 recorded; the stop is the engine's code fact (isCompleteByFact) and the claims follow the same fact
-    let completion = 0;
-    await ctx.ask('judge', buildJudgeState(common, proposal, executed, [], ctx.redact), { [TASK_COMPLETE_ID]: buildCompleteQuestion() }, (answers, rows: Decision[]) => {
-      for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
-      completion = noulOf(answers, TASK_COMPLETE_ID, 0);
-    });
+    // Q22 recorded; the stop is the engine's code fact (isCompleteByFact) and the claims follow the same fact.
+    // Not due (ranked change 6) means NOT ASKED, which is `null` — 0 would read back as a recorded
+    // 0.00 in the window note and in the step record, claiming an answer nobody gave.
+    let completion: number | null = completeDue ? 0 : null;
+    if (completeDue) {
+      await ctx.ask('judge', buildJudgeState(common, proposal, executed, [], ctx.redact), { [TASK_COMPLETE_ID]: buildCompleteQuestion() }, (answers, rows: Decision[]) => {
+        for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
+        completion = noulOf(answers, TASK_COMPLETE_ID, 0);
+      });
+    }
     for (const text of claims) claimProbabilities.set(text, opts.verifiedDone === true ? 1 : 0);
     ctx.emit({ type: 'judge', step: ctx.step, judge: null, completion });
     return { judge: null, completion, claimProbabilities };
@@ -264,15 +274,19 @@ async function runCodeJudgeStage(ctx: StageContext, common: JsonObject, proposal
   }
   const testsUnparsed = executed.tests !== null && executed.tests.parsed === null;
   const state = buildJudgeState(common, proposal, executed, claims, ctx.redact);
-  let completion = 0;
+  let completion: number | null = completeDue ? 0 : null;
   let testsPassUnparsed: number | null = null;
   let jevClaims: number[] = [];
-  await ctx.ask('judge', state, buildRecordOnlyQuestions({ testsUnparsed, claims }), (answers, rows: Decision[]) => {
-    for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
-    completion = noulOf(answers, TASK_COMPLETE_ID, 0);
-    if (testsUnparsed) testsPassUnparsed = noulOf(answers, 'tests_pass_unparsed', 0);
-    jevClaims = claims.map((_c, j) => noulOf(answers, doneClaimId(j), 0));
-  });
+  // with Q22 not due, a parsed run that claims nothing has no record-only question left to ask
+  const recordOnly = buildRecordOnlyQuestions({ testsUnparsed, claims, completeDue });
+  if (Object.keys(recordOnly).length > 0) {
+    await ctx.ask('judge', state, recordOnly, (answers, rows: Decision[]) => {
+      for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
+      completion = noulOf(answers, TASK_COMPLETE_ID, 0);
+      if (testsUnparsed) testsPassUnparsed = noulOf(answers, 'tests_pass_unparsed', 0);
+      jevClaims = claims.map((_c, j) => noulOf(answers, doneClaimId(j), 0));
+    });
+  }
   const exec = executed.outcome.exec;
   const exitCode = typeof exec?.exitCode === 'number' ? exec.exitCode : null;
   const judge = codeJudge({ tests: executed.tests, exitCode, evidence: proposal.evidence ?? null, testsPassUnparsed, knownFailures: knownFailuresOf(proposal.evidence?.completion) }, claims, ledgerGoalsOf(claims, proposal.evidence?.goalTests ?? []));

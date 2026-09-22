@@ -180,6 +180,13 @@ export interface BenchOptions {
   signal?: AbortSignal;
   /** setup (clone + venv) timeout, default 20 min */
   setupTimeoutMs?: number;
+  /**
+   * `--archive-runs`: after the results are written, copy every run's record files into
+   * `<resultsDir>/runs/<runId>/<name>.gz` (bench/archive.ts). Off by default — the records of a
+   * full bench are ~100 MB raw, and only an experiment that will be re-analysed needs them
+   * checked in beside its results (docs/research/llm-jev/oos-analysis-2026-09-22.md).
+   */
+  archiveRuns?: boolean;
 }
 
 export interface CommandRunOptions {
