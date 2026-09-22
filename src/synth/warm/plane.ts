@@ -90,13 +90,16 @@ export interface WarmPlaneOptions {
 }
 
 /**
- * Is the warm plane on for this oracle? Default on for the two Python lane shapes, off for every
- * other runner; `JEVCODE_WARM=off` forces today's behaviour and `=on` is only an override for a
- * shape that is already supported (it never invents one).
+ * Is the warm plane on for this oracle? **Default OFF since 2026-09-22**: the first live measurement of the merged tree
+ * (experiments/results/llm-jev-iter1.md §1) found that with the plane on an llm-jev run never completes a synthesis step —
+ * the SIEVE batch reaches the lanes, `0 tested on 8 lanes (nothing ran)`, and the wall cap takes step 1, with runs wedged
+ * at 0 % CPU; the unit suite passed because its parity tests use fakes. `JEVCODE_WARM=on` enables it for the two Python
+ * lane shapes (quixbugs, pytest) and is the switch the fix is measured behind; it never invents a shape. The default goes
+ * back to on only when a real-lane integration test and Ring 1 pass with the plane on.
  */
 export function warmModeFor(oracle: Pick<OracleModel, 'runner'>, env: Readonly<Record<string, string | undefined>> = process.env): WarmMode | null {
   const flag = (env[WARM_ENV_FLAG] ?? '').trim().toLowerCase();
-  if (flag === 'off' || flag === '0' || flag === 'false') return null;
+  if (flag !== 'on' && flag !== '1' && flag !== 'true') return null;
   if (oracle.runner === 'quixbugs') return 'quixbugs';
   if (oracle.runner === 'pytest') return 'pytest';
   return null;
