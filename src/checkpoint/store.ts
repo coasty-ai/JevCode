@@ -14,6 +14,7 @@ import { join } from 'node:path';
 import { writeFileAtomic, writeFileAtomicSync } from '../core/atomic.js';
 import { sha256Hex } from '../core/hash.js';
 import { isJsonArray, isJsonObject, parseJson } from '../core/json.js';
+import { OUTPUTS_DIR_MAX_BYTES, OUTPUT_FILE_MAX_CHARS } from '../core/limits.js';
 import { headTail } from '../core/text.js';
 import type { ContextStoreExtension } from './types.js';
 import type {
@@ -61,10 +62,6 @@ export const CHECKPOINT_FILES = {
 
 /** `context/summary.json` (docs/COORDINATION-DESIGN.md §8.6). */
 export const CONTEXT_SUMMARY_FILE = 'summary.json';
-/** §8.3: one output file holds at most this many chars (head + tail with an omission marker). */
-export const OUTPUT_FILE_MAX_CHARS = 1024 * 1024;
-/** §8.3: the `outputs/` directory holds at most this many bytes per run; the oldest files go first. */
-export const OUTPUTS_DIR_MAX_BYTES = 64 * 1024 * 1024;
 const OUTPUT_FILE_RE = /^step-([1-9]\d{0,8})\.txt$/;
 
 /** `outputs/step-<n>.txt`, run-relative. */
@@ -418,7 +415,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
    * first (never the one just written). The size ledger is seeded from the directory once per process, then kept in memory.
    */
   let outputsLedger: Map<number, number> | null = null;
-  async function boundOutputsDir(outputsDir: string, justWritten: string, bytes: number): Promise<void> {
+  async function boundOutputsDir(outputsDir: string, justWritten: string, bytes: number): Promise<number[]> {
     if (outputsLedger === null) {
       const ledger = new Map<number, number>();
       let names: string[] = [];
@@ -442,7 +439,9 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
     if (written) outputsLedger.set(Number(written[1]), bytes);
     let total = 0;
     for (const b of outputsLedger.values()) total += b;
-    if (total <= OUTPUTS_DIR_MAX_BYTES) return;
+    if (total <= OUTPUTS_DIR_MAX_BYTES) return [];
+    // §8.5 / review D12: the caller is told which steps lost their file, so the history entry stops pointing at nothing
+    const evicted: number[] = [];
     for (const step of [...outputsLedger.keys()].sort((a, b) => a - b)) {
       if (total <= OUTPUTS_DIR_MAX_BYTES) break;
       const name = outputFileName(step);
@@ -455,7 +454,9 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
       }
       outputsLedger.delete(step);
       total -= size;
+      evicted.push(step);
     }
+    return evicted;
   }
 
   const store: DiskCheckpointStore = {
@@ -630,6 +631,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
       } catch (e) {
         return Promise.reject(toFail(e, `cannot prepare ${CHECKPOINT_FILES.outputs}/step-${step}.txt`));
       }
+      let evicted: number[] = [];
       return enqueue(CHECKPOINT_FILES.outputs, async () => {
         const dir = pathOf(CHECKPOINT_FILES.outputs);
         try {
@@ -637,8 +639,8 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
         } catch (e) {
           throw fail(`cannot write ${CHECKPOINT_FILES.outputs}/${name}: ${describe(e)}`, e);
         }
-        await boundOutputsDir(dir, name, Buffer.byteLength(body, 'utf8'));
-      });
+        evicted = await boundOutputsDir(dir, name, Buffer.byteLength(body, 'utf8'));
+      }).then(() => evicted);
     },
 
     async readOutput(step: number) {

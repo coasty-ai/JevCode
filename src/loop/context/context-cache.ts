@@ -17,7 +17,7 @@ import { join } from 'node:path';
 import { normaliseRelPath } from '../../checkpoint/images.js';
 import { sha256Hex } from '../../core/hash.js';
 import type { FileView, Workspace } from '../../core/types.js';
-import { FILE_CACHE_BYTES, FILE_CACHE_MAX_ENTRIES, FILE_HASH_MAX_BYTES, FILE_MEMORY_MAX_ENTRIES, FILE_VIEW_MAX_CHARS } from './limits.js';
+import { FILE_CACHE_BYTES, FILE_CACHE_MAX_ENTRIES, FILE_HASH_MAX_BYTES, FILE_MEMORY_MAX_ENTRIES, FILE_VIEW_MAX_CHARS, READ_MAX_TOTAL_CHARS } from './limits.js';
 import type { FileCacheEntry, FileMemory, FileMemoryEntry, FilePin } from './types.js';
 
 // ---------------------------------------------------------------------------------------
@@ -148,6 +148,8 @@ export interface FilesInViewDeps {
   hash?(rel: string): Promise<string | null>;
   /** a file larger than this is never streamed for its raw hash (the step stays cheap); its shown window's hash is the detector */
   maxHashBytes?: number;
+  /** §8.5: the most one `read` may pull, which bounds how far the `[lines a–b of N]` windows can walk */
+  maxReadChars?: number;
   /** ≤ 32 KiB of one file in the prompt */
   maxFileChars?: number;
 }
@@ -155,22 +157,35 @@ export interface FilesInViewDeps {
 export interface LoadedFile {
   rel: string;
   stat: FileStatInfo | null;
+  /** the shown slice (redacted by the workspace), `[windowStart, windowStart + content.length)` of the file */
   content: string;
+  /** the whole file's size in bytes, as the workspace reported it */
   bytes: number;
+  /** bytes of the file NOT in `content` */
   truncatedBytes: number;
-  /** sha12 of the shown (redacted, possibly truncated) content — the change detector when no stat is available */
+  /** char offset of `content` within the file (0 = the head window) */
+  windowStart: number;
+  /** 1-based line numbers of the shown slice, and the file's total line count when the whole file was read */
+  lineFrom: number;
+  lineTo: number;
+  lineTotal: number | null;
+  /** sha12 of the shown slice — the change detector when no stat is available */
   contentSha12: string;
-  /** sha12 of the raw bytes when `hash` is available */
+  /** sha12 of the raw bytes when `hash` is available AND the whole file was read */
   rawSha12: string | null;
   loadedAtStep: number;
 }
 
 export interface ViewedFile {
   rel: string;
-  /** the shown content (the prompt adds the `[N more bytes …]` marker when `truncatedBytes > 0`) */
+  /** the shown content (the prompt adds the `[lines a–b of N]` / `[N more bytes …]` marker) */
   content: string;
   bytes: number;
   truncatedBytes: number;
+  windowStart: number;
+  lineFrom: number;
+  lineTo: number;
+  lineTotal: number | null;
   /** content.length, 0 when omitted */
   shownChars: number;
   pinnedBy: FilePin;
@@ -200,10 +215,35 @@ function describe(e: unknown): string {
   return e instanceof Error ? e.message : String(e);
 }
 
+function countLines(s: string): number {
+  let n = 0;
+  for (let i = s.indexOf('\n'); i !== -1; i = s.indexOf('\n', i + 1)) n += 1;
+  return n;
+}
+
+/** What the last prompt build actually rendered of a path — the only thing the zero-cost read may stand on (review D2). */
+export interface ShownFile {
+  chars: number;
+  /** the shown slice is not the whole file */
+  truncated: boolean;
+  windowStart: number;
+}
+
+/** §8.4: the answer of a `read` the context policy can serve without going to the workspace. */
+export interface ServedRead {
+  text: string;
+  /** chars the generator is charged for (0 for the unchanged line's pointer) */
+  chars: number;
+  kind: 'unchanged' | 'window';
+}
+
 export class FilesInView {
   private readonly loaded = new Map<string, LoadedFile>();
+  /** what the last `refresh()` rendered (rel → the slice actually shown); cleared at every refresh */
+  private shown = new Map<string, ShownFile>();
   private readonly maxFileChars: number;
   private readonly maxHashBytes: number;
+  private readonly maxWindowStart: number;
   private readonly deps: FilesInViewDeps;
   private readonly now: () => number;
 
@@ -212,15 +252,20 @@ export class FilesInView {
     this.now = now;
     this.maxFileChars = deps.maxFileChars ?? FILE_VIEW_MAX_CHARS;
     this.maxHashBytes = deps.maxHashBytes ?? FILE_HASH_MAX_BYTES;
+    this.maxWindowStart = Math.max(0, (deps.maxReadChars ?? READ_MAX_TOTAL_CHARS) - this.maxFileChars);
   }
 
   /** Forget the loaded content of these paths (an edit / write / patch / run touched them); the next build re-reads. */
   invalidate(rels: Iterable<string>): void {
-    for (const r of rels) this.loaded.delete(r);
+    for (const r of rels) {
+      this.loaded.delete(r);
+      this.shown.delete(r);
+    }
   }
 
   clear(): void {
     this.loaded.clear();
+    this.shown.clear();
   }
 
   has(rel: string): boolean {
@@ -229,6 +274,11 @@ export class FilesInView {
 
   get(rel: string): LoadedFile | undefined {
     return this.loaded.get(rel);
+  }
+
+  /** What the last build rendered of `rel` (undefined when it was not shown). */
+  shownAt(rel: string): ShownFile | undefined {
+    return this.shown.get(rel);
   }
 
   get size(): number {
@@ -249,6 +299,7 @@ export class FilesInView {
     // same as a sequential refresh would produce
     const order = viewOrder(cache);
     const loads = await Promise.all(order.map(async (e): Promise<LoadedFile | Error> => this.load(e.rel, step, counters).catch((err: unknown) => (err instanceof Error ? err : new Error(describe(err))))));
+    const shown = new Map<string, ShownFile>();
     for (const [i, entry] of order.entries()) {
       const result = loads[i]!;
       if (result instanceof Error) {
@@ -256,22 +307,70 @@ export class FilesInView {
         continue;
       }
       const loaded = result;
-      const shown = loaded.content.length;
-      const fits = shown <= budget;
-      if (fits) budget -= shown;
+      const chars = loaded.content.length;
+      const fits = chars <= budget;
+      if (fits) {
+        budget -= chars;
+        shown.set(entry.rel, { chars, truncated: loaded.truncatedBytes > 0, windowStart: loaded.windowStart });
+      }
       files.push({
         rel: entry.rel,
         content: fits ? loaded.content : '',
         bytes: loaded.bytes,
         truncatedBytes: loaded.truncatedBytes,
-        shownChars: fits ? shown : 0,
+        windowStart: loaded.windowStart,
+        lineFrom: loaded.lineFrom,
+        lineTo: loaded.lineTo,
+        lineTotal: loaded.lineTotal,
+        shownChars: fits ? chars : 0,
         pinnedBy: entry.pinnedBy,
         lastUsedStep: entry.lastUsedStep,
         sha12: loaded.rawSha12 ?? loaded.contentSha12,
         omitted: !fits,
       });
     }
+    this.shown = shown;
     return { files, ...counters, failed, ms: Math.max(0, this.now() - t0) };
+  }
+
+  /**
+   * The prompt shrank below what `refresh()` offered (a section floor, §8.2): only these paths were really rendered, so
+   * only these may answer a `read` for free (review D2).
+   */
+  keepShown(rels: Iterable<string>): void {
+    const keep = new Set(rels);
+    for (const rel of [...this.shown.keys()]) if (!keep.has(rel)) this.shown.delete(rel);
+  }
+
+  private async slice(rel: string, windowStart: number, counters: { stats: number; reads: number; hashes: number }): Promise<{ view: FileView; start: number }> {
+    const start = Math.max(0, Math.min(Math.floor(windowStart), this.maxWindowStart));
+    const view = await this.deps.read(rel, start + this.maxFileChars);
+    counters.reads += 1;
+    return { view, start };
+  }
+
+  private build(rel: string, view: FileView, start: number, st: FileStatInfo | null, step: number, rawSha12: string | null): LoadedFile {
+    const prefix = start > 0 ? view.content.slice(0, start) : '';
+    const content = start > 0 ? view.content.slice(start) : view.content;
+    // what the workspace could not give us at all: the bytes past `start + maxFileChars`
+    const truncatedBytes = view.truncatedBytes;
+    const whole = truncatedBytes === 0 && start === 0;
+    const lineFrom = countLines(prefix) + 1;
+    const lineTo = lineFrom + Math.max(0, countLines(content) - (content.endsWith('\n') ? 1 : 0));
+    return {
+      rel,
+      stat: st,
+      content,
+      bytes: view.bytes,
+      truncatedBytes,
+      windowStart: start,
+      lineFrom,
+      lineTo,
+      lineTotal: whole ? Math.max(lineTo, countLines(view.content) + (view.content.endsWith('\n') ? 0 : 1)) : null,
+      contentSha12: sha256Hex(content).slice(0, 12),
+      rawSha12: whole ? rawSha12 : null,
+      loadedAtStep: step,
+    };
   }
 
   private async load(rel: string, step: number, counters: { stats: number; reads: number; hashes: number }): Promise<LoadedFile> {
@@ -279,38 +378,47 @@ export class FilesInView {
     // nothing is held yet: the read is certain, so it goes out with the stat instead of after it (one round trip, §8.9)
     let st: FileStatInfo | null;
     let view: FileView;
+    let start = 0;
     if (cur === undefined) {
-      [st, view] = await Promise.all([this.deps.stat(rel), this.deps.read(rel, this.maxFileChars)]);
+      const [statResult, readResult] = await Promise.all([this.deps.stat(rel), this.slice(rel, 0, counters)]);
       counters.stats += 1;
-      counters.reads += 1;
+      st = statResult;
+      view = readResult.view;
     } else {
       st = await this.deps.stat(rel);
       counters.stats += 1;
       if (st !== null && cur.stat !== null && sameStat(cur.stat, st)) return cur;
-      view = await this.deps.read(rel, this.maxFileChars);
-      counters.reads += 1;
+      // a changed file always re-opens at its head window: the old offset may not mean anything any more
+      const readResult = await this.slice(rel, 0, counters);
+      view = readResult.view;
+      start = readResult.start;
     }
-    const contentSha12 = sha256Hex(view.content).slice(0, 12);
-    let rawSha12: string | null = cur !== undefined && cur.contentSha12 === contentSha12 ? cur.rawSha12 : null;
-    // §8.9: nothing synchronous and nothing unbounded is added to the step — a big file is never streamed for its raw hash,
-    // its shown window's hash (with the stat) is the change detector.
-    if (rawSha12 === null && this.deps.hash !== undefined && (st === null || st.size <= this.maxHashBytes)) {
-      counters.hashes += 1;
-      rawSha12 = (await this.deps.hash(rel))?.slice(0, 12) ?? null;
-    }
-    const loaded: LoadedFile = { rel, stat: st, content: view.content, bytes: view.bytes, truncatedBytes: view.truncatedBytes, contentSha12, rawSha12, loadedAtStep: step };
+    const loaded = this.build(rel, view, start, st, step, await this.rawHash(rel, view, st, counters));
     this.loaded.set(rel, loaded);
     return loaded;
   }
 
+  private async rawHash(rel: string, view: FileView, st: FileStatInfo | null, counters: { stats: number; reads: number; hashes: number }): Promise<string | null> {
+    // §8.9: nothing unbounded is added to the step — a big file is never streamed for its raw hash, its shown window's
+    // hash (with the stat) is the change detector
+    if (view.truncatedBytes > 0 || this.deps.hash === undefined) return null;
+    if (st !== null && st.size > this.maxHashBytes) return null;
+    counters.hashes += 1;
+    return (await this.deps.hash(rel))?.slice(0, 12) ?? null;
+  }
+
   /**
-   * §8.4 zero-cost `read`: when `rel` is in view and its stat is unchanged (on a mismatch, when its content hash is), the
-   * output line the read executes with — no workspace read, no generator tokens beyond the content already in view. Null
-   * when the file is not in view, cannot be stat'ed, or changed: the read runs normally.
+   * §8.4 zero-cost `read`: the output line when `rel` was rendered WHOLE in the last build and is unchanged. Null in every
+   * other case — the read must run (reviews D1/D2/D3):
+   *   - the path was not rendered last build (omitted for the files budget, or shrunk out of the prompt);
+   *   - the shown slice is a window of a bigger file (its tail would be unreachable — `nextWindow` serves that);
+   *   - the stat moved and the whole file's digest does not match (the entry is invalidated, never re-stamped).
    */
-  async unchanged(rel: string, memory: FileMemory): Promise<{ text: string; sinceStep: number } | null> {
+  async unchanged(rel: string, memory: FileMemory): Promise<ServedRead | null> {
+    const shown = this.shown.get(rel);
     const cur = this.loaded.get(rel);
-    if (cur === undefined || cur.stat === null) return null;
+    if (shown === undefined || cur === undefined || cur.stat === null) return null;
+    if (shown.truncated || cur.truncatedBytes > 0 || cur.windowStart > 0) return null;
     const st = await this.deps.stat(rel);
     if (st === null) return null;
     if (!sameStat(cur.stat, st)) {
@@ -318,15 +426,48 @@ export class FilesInView {
       try {
         view = await this.deps.read(rel, this.maxFileChars);
       } catch {
+        this.invalidate([rel]);
         return null;
       }
-      if (sha256Hex(view.content).slice(0, 12) !== cur.contentSha12) return null;
+      // only a whole-file match may re-stamp the stat; anything else invalidates, or the next build keeps stale content
+      if (view.truncatedBytes > 0 || sha256Hex(view.content).slice(0, 12) !== cur.contentSha12) {
+        this.invalidate([rel]);
+        return null;
+      }
       cur.stat = st;
     }
     const m = memory[rel];
     const sinceStep = m !== undefined && lastTouched(m) > 0 ? lastTouched(m) : cur.loadedAtStep;
     const sha = cur.rawSha12 ?? cur.contentSha12;
-    return { text: `unchanged since step ${sinceStep} (sha ${sha.slice(0, 4)}…); contents are under Files in view`, sinceStep };
+    return { text: `unchanged since step ${sinceStep} (sha ${sha.slice(0, 4)}…); the whole file is under Files in view`, chars: 0, kind: 'unchanged' };
+  }
+
+  /**
+   * §8.4 / review D1: a `read` of a path already in view but shown as a window serves the NEXT window rather than
+   * repeating or refusing, so the tail of a big file is always reachable and the loop detector never sees three
+   * identical steps. Null when the path is not in view or the whole file is already shown.
+   */
+  async nextWindow(rel: string, step: number): Promise<ServedRead | null> {
+    const cur = this.loaded.get(rel);
+    if (cur === undefined || (cur.truncatedBytes === 0 && cur.windowStart === 0)) return null;
+    const counters = { stats: 0, reads: 0, hashes: 0 };
+    const atEnd = cur.truncatedBytes === 0;
+    const wanted = atEnd ? 0 : cur.windowStart + cur.content.length;
+    let next: LoadedFile;
+    try {
+      const st = await this.deps.stat(rel);
+      counters.stats += 1;
+      const { view, start } = await this.slice(rel, wanted, counters);
+      next = this.build(rel, view, start, st, step, null);
+    } catch {
+      return null;
+    }
+    this.loaded.set(rel, next);
+    const capped = wanted > this.maxWindowStart;
+    const where = next.lineTotal === null ? `lines ${next.lineFrom}–${next.lineTo}, bytes ${next.windowStart}–${next.windowStart + next.content.length} of ${next.bytes}` : `lines ${next.lineFrom}–${next.lineTo} of ${next.lineTotal}`;
+    const more = next.truncatedBytes > 0 ? (capped ? `\n[${next.truncatedBytes} bytes past the ${this.maxWindowStart + this.maxFileChars}-char read cap; narrow the read or grep ${rel}]` : `\n[${next.truncatedBytes} more bytes; read ${rel} again for the next window]`) : `\n[end of ${rel}]`;
+    const head = atEnd ? `[back at the start of ${rel}] ` : '';
+    return { text: `${head}[${where}]\n${next.content}${more}`, chars: next.content.length, kind: 'window' };
   }
 }
 

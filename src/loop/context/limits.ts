@@ -1,75 +1,95 @@
 /**
- * Bounds of the generator's relaxed context (docs/COORDINATION-DESIGN.md §8.2–§8.6). Jev's bounds are NOT here: `STATE_LIMITS`
- * and the 4 × (400 + 200) window stay in loop/state.ts and loop/window.ts, untouched (§8.1 "two windows"). W0 moves these to
- * `src/core/limits.ts` together with the other duplicated copies; until then this file is the one definition for the context policy.
+ * The context policy's bounds and the §8.2 budget. Every constant now lives in `src/core/limits.ts` (§8.1 "one bounds
+ * module"); this file re-exports them so the policy's own modules keep one import, and adds the two derived functions.
+ * Jev's bounds are NOT here: `STATE_LIMITS` and the 4 × (400 + 200) window stay in loop/state.ts and loop/window.ts,
+ * untouched (§8.1 "two windows").
  */
-import { WINDOW_OUTPUT_HEAD, WINDOW_OUTPUT_TAIL } from '../window.js';
+import {
+  CHARS_PER_TOKEN,
+  CONTEXT_BUDGET_MAX_CHARS,
+  CONTEXT_BUDGET_MIN_CHARS,
+  CONTEXT_BUDGET_SHARE,
+  CONTEXT_BUDGET_SPEND_SHARE,
+  CONTEXT_BUDGET_WINDOW_MAX_SHARE,
+  COMPACT_EVERY,
+  DEFAULT_GENERATOR_CONTEXT_TOKENS,
+  FILE_CACHE_BYTES,
+  HISTORY_STEPS,
+} from '../../core/limits.js';
 import type { CompactionMode, ContextPolicyOptions } from './types.js';
 
-/** §12.0.3: the chars-per-token estimate behind `tokensInWindow` / `budgetTokens`; the generator's tokenizer is never called. */
-export const CHARS_PER_TOKEN = 3.4;
-/** §8.2: the default when the pricing table carries no `contextTokens` column for the generator (§14 Q4). */
-export const DEFAULT_GENERATOR_CONTEXT_TOKENS = 128_000;
-/** §8.2: `contextBudgetChars = clamp(generatorContextTokens × 3.4 × 0.55, 120k, 800k)`. */
-export const CONTEXT_BUDGET_SHARE = 0.55;
-export const CONTEXT_BUDGET_MIN_CHARS = 120_000;
-export const CONTEXT_BUDGET_MAX_CHARS = 800_000;
+export * from '../../core/limits.js';
 
-export function contextBudgetChars(generatorContextTokens: number = DEFAULT_GENERATOR_CONTEXT_TOKENS): number {
-  const tokens = Number.isFinite(generatorContextTokens) && generatorContextTokens > 0 ? generatorContextTokens : DEFAULT_GENERATOR_CONTEXT_TOKENS;
-  return Math.min(CONTEXT_BUDGET_MAX_CHARS, Math.max(CONTEXT_BUDGET_MIN_CHARS, Math.round(tokens * CHARS_PER_TOKEN * CONTEXT_BUDGET_SHARE)));
+/** What the §8.2 budget was derived from — `/context` prints the binding term and the meter surfaces `windowTooSmall`. */
+export interface ContextBudget {
+  chars: number;
+  /** the model's context window in tokens */
+  windowTokens: number;
+  /** which term bound the budget */
+  boundBy: 'window' | 'money' | 'floor' | 'ceiling';
+  /** the money term in chars when it could be computed (null when no spend cap / pricing was given) */
+  moneyChars: number | null;
+  /** estimated generator input $ per step at this budget, null when unpriced */
+  usdPerStep: number | null;
+  /** §8.2: the budget would have exceeded 90 % of the model window and was clamped to it */
+  windowTooSmall: boolean;
 }
 
-// §8.3 tiered history
-/** the generator sees at least this many recent steps */
-export const HISTORY_STEPS = 12;
-/** the newest N entries show their output whole (≤ 32 KiB, head 24k + tail 8k) */
-export const HISTORY_WHOLE = 2;
-export const HISTORY_WHOLE_HEAD = 24 * 1024;
-export const HISTORY_WHOLE_TAIL = 8 * 1024;
-/** entries 3..6 show head 4k + tail 2k of the same text */
-export const HISTORY_MID = 6;
-export const HISTORY_MID_HEAD = 4096;
-export const HISTORY_MID_TAIL = 2048;
-/** an output longer than the window body (600 chars) is written whole to `outputs/step-<n>.txt` so no clip is ever silent */
-export const OUTPUT_FILE_MIN_CHARS = WINDOW_OUTPUT_HEAD + WINDOW_OUTPUT_TAIL;
-/** §8.3: one output file is at most 1 MiB (head + tail with a marker), the `outputs/` dir at most 64 MiB per run (oldest deleted) */
-export const OUTPUT_FILE_MAX_CHARS = 1024 * 1024;
-export const OUTPUTS_DIR_MAX_BYTES = 64 * 1024 * 1024;
-/** the `read` pseudo-path prefix that serves an output file from the run dir */
-export const OUTPUT_READ_PREFIX = 'jevcode:';
+export interface BudgetInput {
+  /** the model's context window in tokens (`contextPolicy.windowTokens` → pricing table → default) */
+  windowTokens?: number;
+  /** `RunLimits.spendCapUsd` */
+  spendCapUsd?: number;
+  /** `RunLimits.maxSteps` */
+  maxSteps?: number;
+  /** `EngineOptions.generatorPricing.inputPerM` — $ per million input tokens */
+  inputPerM?: number;
+  /** `contextPolicy.budgetChars` overrides everything below the window clamp */
+  override?: number;
+}
 
-// §8.4 files in view
-export const FILE_CACHE_MAX_ENTRIES = 16;
-export const FILE_MEMORY_MAX_ENTRIES = 64;
-/** ≤ 32 KiB of one file in the prompt */
-export const FILE_VIEW_MAX_CHARS = 32 * 1024;
-/** the default `contextPolicy.fileCacheBytes`: ≤ 96 KiB of file content re-read per step */
-export const FILE_CACHE_BYTES = 96 * 1024;
-/** §8.9: a file larger than this is never streamed for its raw sha256 at prompt build (the shown window's hash detects change) */
-export const FILE_HASH_MAX_BYTES = 1024 * 1024;
+function finitePositive(v: number | undefined): number | null {
+  return v !== undefined && Number.isFinite(v) && v > 0 ? v : null;
+}
 
-// §8.2 fill order shares and floors
-export const FILES_SHARE = 0.4;
-export const HISTORY_SHARE = 0.3;
-export const SUMMARY_MAX_CHARS = 6 * 1024;
+/**
+ * §8.2: `clamp(min(windowTokens × 3.4 × 0.55, (spendCapUsd × 0.5 / (maxSteps × inputPerM)) × 1e6 × 3.4), 60k, 800k)`,
+ * then clamped to 90 % of the window so a small model is never handed a prompt budget larger than its context.
+ */
+export function contextBudget(input: BudgetInput = {}): ContextBudget {
+  const windowTokens = finitePositive(input.windowTokens) ?? DEFAULT_GENERATOR_CONTEXT_TOKENS;
+  const windowChars = windowTokens * CHARS_PER_TOKEN * CONTEXT_BUDGET_SHARE;
+  const cap = finitePositive(input.spendCapUsd);
+  const steps = finitePositive(input.maxSteps);
+  const perM = finitePositive(input.inputPerM);
+  const moneyChars = cap !== null && steps !== null && perM !== null ? ((cap * CONTEXT_BUDGET_SPEND_SHARE) / (steps * perM)) * 1e6 * CHARS_PER_TOKEN : null;
+  const override = finitePositive(input.override);
+  const wanted = override ?? (moneyChars === null ? windowChars : Math.min(windowChars, moneyChars));
+  let boundBy: ContextBudget['boundBy'] = override !== null ? 'window' : moneyChars !== null && moneyChars < windowChars ? 'money' : 'window';
+  let chars = wanted;
+  if (chars < CONTEXT_BUDGET_MIN_CHARS) {
+    chars = CONTEXT_BUDGET_MIN_CHARS;
+    boundBy = 'floor';
+  } else if (chars > CONTEXT_BUDGET_MAX_CHARS) {
+    chars = CONTEXT_BUDGET_MAX_CHARS;
+    boundBy = 'ceiling';
+  }
+  // §8.2 / review D8: never hand a 32k-window model a 120k-char prompt budget — the window wins and the run says so
+  const windowMax = Math.floor(windowTokens * CHARS_PER_TOKEN * CONTEXT_BUDGET_WINDOW_MAX_SHARE);
+  const windowTooSmall = chars > windowMax;
+  if (windowTooSmall) {
+    chars = windowMax;
+    boundBy = 'window';
+  }
+  const rounded = Math.max(1, Math.round(chars));
+  const usdPerStep = perM === null ? null : (rounded / CHARS_PER_TOKEN / 1e6) * perM;
+  return { chars: rounded, windowTokens, boundBy, moneyChars: moneyChars === null ? null : Math.round(moneyChars), usdPerStep, windowTooSmall };
+}
 
-// §8.6 compaction
-export const COMPACT_EVERY = 8;
-/** the built prompt passing this share of the budget triggers a compaction after the step commits */
-export const COMPACT_AT_PCT = 85;
-/** §8.5 meter colours */
-export const METER_AMBER_PCT = 85;
-export const METER_RED_PCT = 95;
-/** the rolling summary text is at most 3 KiB */
-export const SUMMARY_TEXT_MAX_CHARS = 3 * 1024;
-export const SUMMARY_OBJECTIVE_CHARS = 400;
-export const SUMMARY_BLOCKED_ITEMS = 4;
-export const SUMMARY_BLOCKED_CHARS = 200;
-export const SUMMARY_ACTIVE_ITEMS = 4;
-export const SUMMARY_COMPLETED_ITEMS = 12;
-export const SUMMARY_FILES_ITEMS = 16;
-export const SUMMARY_NOTES_MAX = 24;
+/** The window-only form, kept for callers that have no money context (tests, tools). */
+export function contextBudgetChars(windowTokens: number = DEFAULT_GENERATOR_CONTEXT_TOKENS): number {
+  return contextBudget({ windowTokens }).chars;
+}
 
 // ---------------------------------------------------------------------------------------
 // §12.0.1 `EngineOptions.contextPolicy?` → the bounds one engine runs with
@@ -84,6 +104,8 @@ export interface ResolvedContextPolicy {
   /** 0 disables the interval trigger */
   compactEvery: number;
   compaction: CompactionMode;
+  budget: ContextBudget;
+  /** `budget.chars`, the value every section share is taken from */
   budgetChars: number;
   /** the model's context window in tokens — reported by the meter beside the budget (review finding 51) */
   windowTokens: number;
@@ -94,18 +116,29 @@ function positive(v: number | undefined, fallback: number): number {
 }
 
 /**
- * §8.2 / §12.0.1: the policy for one run. `generatorContextTokens` is the pricing table's column when it exists (§14 Q4 is
- * still open, so today the default 128k applies unless `budgetChars` is given outright).
+ * §8.2 / §12.0.1: the policy for one run.
+ *
+ * `windowTokens` comes from `contextPolicy.windowTokens`, else from the pricing table's `contextTokens` column when the
+ * caller passes one, else the 128k default.
+ * TODO(§14 Q4, contract 1.4): `GeneratorConfig['pricing']` has no `contextTokens` member at HEAD, so `EngineOptions
+ * .generatorPricing` cannot supply it yet — `engine.ts` passes `contextPolicy.windowTokens` and this default until the
+ * column lands, at which point the engine passes `generatorPricing.contextTokens` here and nothing else changes.
  */
-export function resolveContextPolicy(p?: ContextPolicyOptions, generatorContextTokens?: number): ResolvedContextPolicy {
+export function resolveContextPolicy(p?: ContextPolicyOptions, budget?: Omit<BudgetInput, 'windowTokens' | 'override'>): ResolvedContextPolicy {
   const compactEvery = p?.compactEvery;
+  const resolved = contextBudget({
+    ...budget,
+    ...(p?.windowTokens !== undefined ? { windowTokens: p.windowTokens } : {}),
+    ...(p?.budgetChars !== undefined ? { override: p.budgetChars } : {}),
+  });
   return {
     view: p?.view ?? 'relaxed',
     historySteps: positive(p?.historySteps, HISTORY_STEPS),
     fileCacheBytes: positive(p?.fileCacheBytes, FILE_CACHE_BYTES),
     compactEvery: compactEvery !== undefined && Number.isFinite(compactEvery) && compactEvery >= 0 ? Math.floor(compactEvery) : COMPACT_EVERY,
     compaction: p?.compaction ?? 'code',
-    budgetChars: positive(p?.budgetChars, contextBudgetChars(generatorContextTokens)),
-    windowTokens: positive(generatorContextTokens, DEFAULT_GENERATOR_CONTEXT_TOKENS),
+    budget: resolved,
+    budgetChars: resolved.chars,
+    windowTokens: resolved.windowTokens,
   };
 }

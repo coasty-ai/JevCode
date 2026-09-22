@@ -44,6 +44,28 @@ export interface ContextUsage {
   lastCompactionAt: string | null;
   /** §8.6: the compactor in force */
   compaction: CompactionMode;
+  /** §8.2: which term bound `budgetChars` — `/context` prints it (`budget 96k chars — capped by the $2.00 run cap …`) */
+  budgetBoundBy: 'window' | 'money' | 'floor' | 'ceiling';
+  /** §8.2: estimated generator input $ per step at this budget, null when the generator is unpriced */
+  usdPerStep: number | null;
+  /** §8.2 / review D8: the budget was clamped to the model's window because the window is smaller than the floor */
+  windowTooSmall: boolean;
+  /** §8.2(c): the `/context` recent-steps line — `recent steps 71k of 71k (2 whole, 4 clipped, 6 one-line)` */
+  recentSteps: RecentStepsUsage;
+  /** §8.9: how long the last prompt build took (ms), and the file refresh inside it — the `promptBuildMs` gate's source */
+  promptBuildMs: number;
+  refreshMs: number;
+}
+
+/** §8.2(c): what the tier ladder did to the history at the last build. */
+export interface RecentStepsUsage {
+  chars: number;
+  allowanceChars: number;
+  whole: number;
+  clipped: number;
+  oneLine: number;
+  /** output files opened for this build (§8.3: ≤ 6, in practice 2–3 warm) */
+  reads: number;
 }
 
 /** §8.6 / §12.0.4: `EngineEvent` member `context:compacted`; carried in a `notice` (kind `ui`, label `[jevcode]`, `detail` = this JSON) until the core union gains it. */
@@ -61,6 +83,8 @@ export interface HistoryEntry extends WindowEntry {
   outputRef?: string;
   /** length of the whole output text (what the file holds, before its own 1 MiB cap) */
   fullOutputChars?: number;
+  /** §8.5 / review D12: the per-run 64 MiB bound deleted `outputRef` mid-run — the pointer must not be printed again */
+  outputEvicted?: boolean;
 }
 
 /** §8.4: why a path is in view; eviction keeps human > jev > seed > edit > read. */
@@ -120,6 +144,8 @@ export type CheckpointStateWithContext = CheckpointState & ContextCheckpointExte
 export interface ContextPolicyOptions {
   /** default `'relaxed'`; `'legacy'` is HEAD's prompt, byte for byte (review finding 28) */
   view?: 'relaxed' | 'legacy';
+  /** §8.2: the model's context window in tokens; absent → the pricing table's `contextTokens` (§14 Q4), else 128k */
+  windowTokens?: number;
   historySteps?: number;
   fileCacheBytes?: number;
   /** 0 disables the interval trigger */
@@ -134,16 +160,29 @@ export interface ContextPolicyOptions {
  */
 export type EngineOptionsWithContextPolicy = EngineOptions & { contextPolicy?: ContextPolicyOptions };
 
-/** §12.0.3: `EngineStatus.context?: ContextUsage` — the engine returns this subtype from `status()`. */
-export type EngineStatusWithContext = EngineStatus & { context: ContextUsage };
+/**
+ * §12.0.3: `EngineStatus.context?: ContextUsage` — the engine returns this subtype from `status()`. Optional because the
+ * modes that build no relaxed prompt (`jev-only`, and `llm-jev` until §8.8 column 3 exists) and the `view: 'legacy'` pin
+ * carry no meter at all rather than one stuck at 0 % (review D5/D18).
+ */
+export type EngineStatusWithContext = EngineStatus & { context?: ContextUsage };
 
 /**
  * §8.3 / §8.4 (W2 item 21): what the execute stage asks the context policy before a `read` — `StageContext.contextReads?`
  * (optional, so fakes and the synth modes are untouched).
  */
 export interface ContextReadHooks {
-  /** the §8.4 zero-cost read: the output line when `rel` is in view and unchanged (one stat), else null → the read runs normally */
+  /**
+   * The §8.4 zero-cost read: the output line when `rel` was rendered WHOLE in the last prompt build and is unchanged
+   * (one stat, no workspace read). Null in every other case — including a path the build omitted or showed as a window
+   * — so the read runs normally (reviews D1/D2/D3).
+   */
   unchanged(rel: string): Promise<string | null>;
+  /**
+   * §8.4 / review D1: `rel` is in view but shown as a `[lines a–b of N]` window — serve the NEXT window instead of the
+   * same head again, so the tail of a big file is reachable. Null when the path is not in view or is shown whole.
+   */
+  nextWindow(rel: string): Promise<string | null>;
   /** the `jevcode:outputs/step-<n>.txt` pseudo-path: the stored whole output, or null when none is on disk */
   runOutput(pathOrRef: string): Promise<string | null>;
 }

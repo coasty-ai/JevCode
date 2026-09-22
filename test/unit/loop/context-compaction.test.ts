@@ -7,8 +7,8 @@ import { describe, expect, it } from 'vitest';
 import type { LastTestRun, Plan } from '../../../src/core/types.js';
 import { SUMMARY_SECTIONS, compactCode, compactionDue, isContextSummary, renderSummary, type CompactionInput } from '../../../src/loop/context/compaction.js';
 import { buildHistoryEntry, foldableCount, needsOutputFile, outputRefFor, pushHistory } from '../../../src/loop/context/history.js';
-import { CHARS_PER_TOKEN, COMPACT_AT_PCT, COMPACT_EVERY, SUMMARY_TEXT_MAX_CHARS, contextBudgetChars, resolveContextPolicy } from '../../../src/loop/context/limits.js';
-import { computeContextUsage, formatMeter, meterLevel, restoredContextUsage } from '../../../src/loop/context/meter.js';
+import { CHARS_PER_TOKEN, COMPACT_AT_PCT, COMPACT_EVERY, SUMMARY_TEXT_MAX_CHARS, contextBudget, resolveContextPolicy } from '../../../src/loop/context/limits.js';
+import { computeContextUsage, formatBudget, formatMeter, formatRecentSteps, meterLevel, restoredContextUsage } from '../../../src/loop/context/meter.js';
 import type { HistoryEntry } from '../../../src/loop/context/types.js';
 import { buildWindowEntry } from '../../../src/loop/window.js';
 
@@ -131,9 +131,13 @@ describe('§8.6 code compaction', () => {
     expect(compactionDue({ ...base, mode: 'off' })).toBeNull();
     expect(compactionDue({ ...base, mode: 'off', manual: true })).toBeNull();
     expect(compactionDue({ ...base, compactEvery: 0 })).toBeNull();
+    // §8.6 fourth trigger: a resume that folded rows past the window
+    expect(compactionDue({ ...base, step: 7, resume: true })).toBe('resume');
+    expect(compactionDue({ ...base, step: 7, resume: true, mode: 'off' })).toBeNull();
     // review finding 53: nothing to fold → no compaction and no counter move, whatever the trigger
     expect(compactionDue({ ...base, foldable: 0 })).toBeNull();
     expect(compactionDue({ ...base, foldable: 0, manual: true })).toBeNull();
+    expect(compactionDue({ ...base, foldable: 0, resume: true })).toBeNull();
     expect(foldableCount(compactCode(input()).history)).toBe(0);
   });
 
@@ -157,20 +161,19 @@ describe('§12.0.3 ContextUsage', () => {
     expect(u.budgetTokens).toBeLessThan(u.windowTokens);
     expect(u.pct).toBe(Math.round((100 * u.tokensInWindow) / u.budgetTokens));
     expect(u.pct).toBe(14);
-    expect(u).toEqual({ ...base, tokensInWindow: u.tokensInWindow, budgetTokens: u.budgetTokens, windowTokens: 128_000, pct: 14 });
-    // a bigger model carries its own window; the budget stays 55 % of it
-    const big = computeContextUsage({ ...base, budgetChars: contextBudgetChars(200_000), windowTokens: 200_000 });
-    expect(big.windowTokens).toBe(200_000);
-    expect(big.budgetTokens).toBe(Math.round(contextBudgetChars(200_000) / CHARS_PER_TOKEN));
-    // never negative, never divides by zero, and the window is never below the budget
+    // review D15: a small window is reported as it is, never inflated to hide the budget
+    const small = computeContextUsage({ ...base, budget: contextBudget({ windowTokens: 16_000 }) });
+    expect(small.windowTokens).toBe(16_000);
+    expect(small.windowTooSmall).toBe(true);
     expect(computeContextUsage({ ...base, promptChars: -5, budgetChars: 0 }).pct).toBe(0);
-    expect(computeContextUsage({ ...base, budgetChars: 900_000, windowTokens: 1_000 }).windowTokens).toBeGreaterThanOrEqual(computeContextUsage({ ...base, budgetChars: 900_000, windowTokens: 1_000 }).budgetTokens);
   });
 
   it('before the first prompt it is derived from the restored state (promptChars 0, counters as persisted)', () => {
-    const u = restoredContextUsage({ history: [history(3)[0]!], fileCache: [{ rel: 'a', pinnedBy: 'read', lastUsedStep: 1, bytesShown: 0 }], summaryAt: 8, compactions: 2, lastCompactionAt: '2026-09-21T09:00:00.000Z' }, 239_360, 'code');
+    const budget = contextBudget();
+    const u = restoredContextUsage({ history: [history(3)[0]!], fileCache: [{ rel: 'a', pinnedBy: 'read', lastUsedStep: 1, bytesShown: 0 }], summaryAt: 8, compactions: 2, lastCompactionAt: '2026-09-21T09:00:00.000Z' }, budget, 'code');
     expect(u).toMatchObject({ promptChars: 0, pct: 0, tokensInWindow: 0, files: 1, historyEntries: 1, summaryAt: 8, lastCompactionStep: 8, compactions: 2, lastCompactionAt: '2026-09-21T09:00:00.000Z', compaction: 'code', windowTokens: 128_000 });
-    const fresh = restoredContextUsage({}, 239_360, 'off');
+    expect(u.recentSteps).toEqual({ chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 });
+    const fresh = restoredContextUsage({}, budget, 'off');
     expect(fresh).toMatchObject({ files: 0, historyEntries: 0, summaryAt: null, compactions: 0, lastCompactionAt: null, compaction: 'off' });
   });
 
@@ -180,13 +183,69 @@ describe('§12.0.3 ContextUsage', () => {
     expect(formatMeter(computeContextUsage({ ...base, files: 1, historyEntries: 1 }))).toBe('ctx 14% · 1 file · 1 step');
   });
 
-  it('the budget is model-aware and clamped, and the policy defaults are §8.2/§8.6', () => {
+  it('§8.2(c): `/context` prints the recent-steps line the tier ladder produced', () => {
+    const u = computeContextUsage({ ...base, recentSteps: { chars: 71_000, allowanceChars: 71_808, whole: 2, clipped: 4, oneLine: 6, reads: 3 } });
+    expect(formatRecentSteps(u)).toBe('recent steps 71k of 72k (2 whole, 4 clipped, 6 one-line)');
+  });
+});
+
+describe('§8.2 the budget (window AND money)', () => {
+  it('is the min of the window term and the money term, clamped to [60k, 800k]', () => {
+    // the window term alone: 128k × 3.4 × 0.55
+    expect(contextBudget({ windowTokens: 128_000 })).toMatchObject({ chars: Math.round(128_000 * CHARS_PER_TOKEN * 0.55), boundBy: 'window' });
+    // review D8: the money term binds at a ~$0.9/M model with the default $2.00 cap over 40 steps (§8.2's own example)
+    const money = contextBudget({ windowTokens: 128_000, spendCapUsd: 2, maxSteps: 40, inputPerM: 0.9 });
+    expect(money.boundBy).toBe('money');
+    expect(money.chars).toBe(Math.round(((2 * 0.5) / (40 * 0.9)) * 1e6 * CHARS_PER_TOKEN));
+    expect(money.chars).toBeLessThan(contextBudget({ windowTokens: 128_000 }).chars);
+    expect(money.usdPerStep).toBeCloseTo((money.chars / CHARS_PER_TOKEN / 1e6) * 0.9, 6);
+    // a cheap model does not bind: GLM-5.3-flash at $0.09/M leaves the window term in charge
+    expect(contextBudget({ windowTokens: 128_000, spendCapUsd: 2, maxSteps: 40, inputPerM: 0.09 }).boundBy).toBe('window');
+    // an expensive model is held at the 60k floor, not the old 120k
+    expect(contextBudget({ windowTokens: 128_000, spendCapUsd: 2, maxSteps: 40, inputPerM: 2 })).toMatchObject({ chars: 60_000, boundBy: 'floor', moneyChars: 42_500 });
+    expect(contextBudget({ windowTokens: 1_000_000 }).chars).toBe(800_000);
+  });
+
+  it('review D8: a window smaller than the floor caps the budget instead of being exceeded, and the run says so', () => {
+    // 16k tokens ≈ 54k chars of window: the 60k floor would not fit in it, so the window wins
+    const small = contextBudget({ windowTokens: 16_000 });
+    expect(small.windowTooSmall).toBe(true);
+    expect(small.chars).toBe(Math.floor(16_000 * CHARS_PER_TOKEN * 0.9));
+    expect(small.chars).toBeLessThan(60_000);
+    expect(small.chars / CHARS_PER_TOKEN).toBeLessThan(16_000);
+    // a 32k window holds the 60k floor comfortably (17.6k tokens of 32k), so nothing is clamped
+    expect(contextBudget({ windowTokens: 32_000 })).toMatchObject({ chars: 60_000, windowTooSmall: false });
+    expect(contextBudget({ windowTokens: 128_000 }).windowTooSmall).toBe(false);
+    const u = computeContextUsage({ promptChars: 1_000, budgetChars: small.chars, budget: small, files: 0, historyEntries: 0, summaryAt: null, lastCompactionStep: null, compactions: 0, lastCompactionAt: null, compaction: 'code' });
+    expect(u.windowTokens).toBe(16_000);
+    expect(formatBudget(u)).toContain('capped by the 16k-token model window');
+  });
+
+  it('§8.2: `/context` names the term that bound the budget', () => {
+    const money = contextBudget({ windowTokens: 128_000, spendCapUsd: 2, maxSteps: 40, inputPerM: 0.9 });
+    const u = computeContextUsage({ promptChars: 0, budgetChars: money.chars, budget: money, files: 0, historyEntries: 0, summaryAt: null, lastCompactionStep: null, compactions: 0, lastCompactionAt: null, compaction: 'code' });
+    // §8.2: `budget 94k chars — capped by the $2.00 run cap at 40 steps (est. $0.025 per step)`
+    expect(formatBudget(u, { spendCapUsd: 2, maxSteps: 40 })).toMatch(/^budget 94k chars — capped by the \$2\.00 run cap at 40 steps \(est\. \$0\.0\d\d per step\)$/);
+  });
+
+  it('review D9: `windowTokens` is a pass-through, not a hardcoded 128k', () => {
+    expect(resolveContextPolicy({ windowTokens: 200_000 }).windowTokens).toBe(200_000);
+    expect(resolveContextPolicy({ windowTokens: 200_000 }).budgetChars).toBe(Math.round(200_000 * CHARS_PER_TOKEN * 0.55));
+    expect(resolveContextPolicy({ windowTokens: 16_000 }).budget.windowTooSmall).toBe(true);
+    // and the money context reaches it from the engine's limits
+    expect(resolveContextPolicy(undefined, { spendCapUsd: 2, maxSteps: 40, inputPerM: 0.9 }).budget.boundBy).toBe('money');
+    expect(resolveContextPolicy(undefined, { spendCapUsd: 2, maxSteps: 40, inputPerM: 0.09 }).budget.boundBy).toBe('window');
+  });
+
+  it('the policy defaults are §8.2/§8.6, and every option is honoured', () => {
     const p = resolveContextPolicy();
-    expect(p).toEqual({ view: 'relaxed', historySteps: 12, fileCacheBytes: 96 * 1024, compactEvery: 8, compaction: 'code', budgetChars: Math.round(128_000 * CHARS_PER_TOKEN * 0.55), windowTokens: 128_000 });
-    expect(resolveContextPolicy(undefined, 200_000).windowTokens).toBe(200_000);
+    expect(p).toMatchObject({ view: 'relaxed', historySteps: 12, fileCacheBytes: 96 * 1024, compactEvery: 8, compaction: 'code', budgetChars: Math.round(128_000 * CHARS_PER_TOKEN * 0.55), windowTokens: 128_000 });
     expect(resolveContextPolicy({ compactEvery: 0 }).compactEvery).toBe(0);
     expect(resolveContextPolicy({ compaction: 'off', view: 'legacy' })).toMatchObject({ compaction: 'off', view: 'legacy' });
-    expect(resolveContextPolicy({ budgetChars: 500_000 }).budgetChars).toBe(500_000);
+    expect(resolveContextPolicy({ budgetChars: 150_000 }).budgetChars).toBe(150_000);
+    // even an explicit override never exceeds 90 % of the model window (review D8)
+    expect(resolveContextPolicy({ budgetChars: 500_000 }).budgetChars).toBe(Math.floor(128_000 * CHARS_PER_TOKEN * 0.9));
+    expect(resolveContextPolicy({ budgetChars: 500_000, windowTokens: 400_000 }).budgetChars).toBe(500_000);
     expect(resolveContextPolicy({ historySteps: -1 }).historySteps).toBe(12);
   });
 });

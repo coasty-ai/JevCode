@@ -472,6 +472,8 @@ export interface FakeStore extends CheckpointStore, ContextStoreExtension {
   outputs: Map<number, string>;
   /** §8.6: context/summary.json */
   summary: Json | null;
+  /** §8.3: how many output files this run keeps (0 = unbounded); past it `writeOutput` evicts the oldest and says so */
+  outputsMax: number;
   states: CheckpointState[];
   syncStates: CheckpointState[];
   steps: StepRecord[];
@@ -494,8 +496,18 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
     meta: null,
     outputs: new Map<number, string>(),
     summary: null,
+    outputsMax: 0,
     async writeOutput(step, text) {
       st.outputs.set(step, text);
+      // docs/COORDINATION-DESIGN.md §8.3: the per-run bound; `outputsMax` (0 = unbounded) lets a test drive the eviction
+      const evicted: number[] = [];
+      while (st.outputsMax > 0 && st.outputs.size > st.outputsMax) {
+        const oldest = Math.min(...st.outputs.keys());
+        if (oldest === step) break;
+        st.outputs.delete(oldest);
+        evicted.push(oldest);
+      }
+      return evicted;
     },
     async readOutput(step) {
       return st.outputs.get(step) ?? null;

@@ -103,10 +103,10 @@ import { hasContextStore, readContextExtension } from '../checkpoint/types.js';
 // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (Jev's window is untouched — two windows, §8.1)
 import { compactCode, compactionDue, isContextSummary, type CompactionTrigger } from './context/compaction.js';
 import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, rememberFile, touchFile, workspaceFilesInViewDeps } from './context/context-cache.js';
-import { buildHistoryEntry, expandHistory, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, pushHistory, stepsNeedingViews, tierText, type OutputView } from './context/history.js';
-import { FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
+import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, planHistory, pushHistory, renderHistory, seedHistoryEntry, tierText, type HistoryPlan, type OutputView } from './context/history.js';
+import { CONTEXT_BUDGET_MIN_CHARS, FILE_CACHE_MAX_ENTRIES, HISTORY_MID, HISTORY_SHARE, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_READ_PREFIX, resolveContextPolicy, type ResolvedContextPolicy } from './context/limits.js';
 import { computeContextUsage, restoredContextUsage } from './context/meter.js';
-import type { ContextCheckpointExtension, ContextCompactedEvent, ContextReadHooks, ContextSummary, ContextUsage, EngineOptionsWithContextPolicy, EngineStatusWithContext, FileCacheEntry, FileMemory, HistoryEntry } from './context/types.js';
+import type { ContextCheckpointExtension, ContextCompactedEvent, ContextReadHooks, ContextSummary, ContextUsage, EngineOptionsWithContextPolicy, EngineStatusWithContext, FileCacheEntry, FileMemory, HistoryEntry, RecentStepsUsage } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
 import { nextBudgetWarn, seedAnnounced, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
@@ -524,6 +524,15 @@ class EngineImpl implements Engine {
   private lastCompactionAt: string | null = null;
   private contextUsage: ContextUsage;
   private readonly contextPolicy: ResolvedContextPolicy;
+  /**
+   * §8.8 / review D5: only the modes whose generator prompt CONSUMES the relaxed view pay for it. `jev-only` never builds
+   * a generator prompt; `llm-jev` needs §8.8's third column (`SynthesisContext.contextText`), which is a core-contract
+   * addition — until it exists the bookkeeping would be dead weight (outputs/, a summary, a compaction) with a meter
+   * stuck at 0 %.
+   * TODO(§8.8 column 3, contract 1.4): when `SynthesisContext.contextText?: string` lands, add 'llm-jev' here and feed
+   * `contextView()` into `synthesisContext()`; nothing else in this file changes.
+   */
+  private readonly contextEnabled: boolean;
   private readonly filesInView: FilesInView;
   /** head + tail of the newest outputs by step (≤ HISTORY_MID); read back from `outputs/` once after a resume */
   private readonly outputViews = new Map<number, OutputView>();
@@ -532,6 +541,15 @@ class EngineImpl implements Engine {
   private contextLoaded = false;
   /** the post image of the step in flight, consumed by commitContext (§8.4 fileMemory from the hashes already computed) */
   private lastPostImage: PostImage | null = null;
+  /** §8.2 / review D8: `windowTooSmall`, announced once after run:ready (the constructor has no listeners yet) */
+  private pendingWindowNotice: string | null = null;
+  /** §8.6 / review D20: a resume that folded rows past the history window compacts once, before the first prompt */
+  private pendingResumeCompaction = false;
+  /** §8.2(c) / §8.9: what the last prompt build cost and what the tier ladder did — carried on `ContextUsage` */
+  private lastRecentSteps: RecentStepsUsage = { chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 };
+  private lastRefreshMs = 0;
+  private lastPromptBuildMs = 0;
+
   private readonly detector: LoopDetector;
   private wallMsUsedBefore = 0;
   private runStartMono: number | null = null;
@@ -786,10 +804,16 @@ class EngineImpl implements Engine {
     this.restoredSpentUsd = restoredSpentUsd;
     // docs/COORDINATION-DESIGN.md §8: the context policy — the optional state fields restored, un-checkpointed steps folded into the
     // history like the window above (a prepared loader folds the window, not the history: rows past the newest history step fold here)
-    this.contextPolicy = resolveContextPolicy((init.opts as EngineOptionsWithContextPolicy).contextPolicy);
+    // §8.2: the budget is model-aware AND money-aware — the run cap and the step count are the second term
+    this.contextPolicy = resolveContextPolicy((init.opts as EngineOptionsWithContextPolicy).contextPolicy, {
+      spendCapUsd: init.opts.limits.spendCapUsd,
+      maxSteps: init.opts.limits.maxSteps,
+      ...(init.opts.generatorPricing?.inputPerM !== undefined ? { inputPerM: init.opts.generatorPricing.inputPerM } : {}),
+    });
+    this.contextEnabled = this.contextPolicy.view === 'relaxed' && (this.mode === 'jev-on' || this.mode === 'jev-off');
     this.filesInView = new FilesInView(workspaceFilesInViewDeps(this.workspace), () => this.clock());
-    // review finding 28: under `view: 'legacy'` none of §8 exists — no history, no cache, no state additions, HEAD's prompt
-    if (this.contextPolicy.view === 'relaxed') {
+    // review finding 28 / D5: under `view: 'legacy'`, and in the modes that never read it, none of §8 exists
+    if (this.contextEnabled) {
       if (init.resume) {
         // §9.3 / §10: a state.json (possibly mirrored from another device) is untrusted input — every addition is validated
         const s: ContextCheckpointExtension = readContextExtension(init.resume.state, this.contextPolicy.historySteps);
@@ -800,20 +824,29 @@ class EngineImpl implements Engine {
         this.compactions = s.compactions ?? 0;
         this.lastCompactionAt = s.lastCompactionAt ?? null;
         const newest = this.history[this.history.length - 1]?.step ?? 0;
+        let folded = 0;
         for (const rec of [...init.resume.foldedSteps].sort((a, b) => a.step - b.step)) {
           if (rec.step <= newest || rec.step > this.step) continue;
           this.history = foldHistoryRecord(this.history, rec, this.contextPolicy.historySteps);
+          folded += 1;
         }
+        // §8.6 trigger 4 / review finding 53 + D20: compact on resume ONLY when the folded rows pushed entries out of the
+        // history window, so a resume-heavy run sees the same history as an uninterrupted one and `compactions` cannot drift
+        this.pendingResumeCompaction = folded > 0 && this.history.length >= this.contextPolicy.historySteps;
       } else {
         // §8.3: a follow-up starts with the parent's window as its history (the generator's `## Recent steps` is derived from
         // the same records as Jev's `recent`, so a seeded run sees the parent's steps exactly as the 4-entry window shows
         // them; the parent's `outputs/` live in the parent's run dir, so no pointer is carried across)
-        this.history = (init.opts.seed?.window ?? []).map((e) => buildHistoryEntry(e, e.output ?? null, null));
+        this.history = (init.opts.seed?.window ?? []).map(seedHistoryEntry);
         // §8.4: the human's @-mentions enter the cache pinned `human` (evicted last)
         for (const rel of init.opts.seed?.pinnedFiles ?? []) this.fileCache = touchFile(this.fileCache, rel, 'human', 0);
       }
     }
-    this.contextUsage = restoredContextUsage(this.contextExtension(), this.contextPolicy.budgetChars, this.contextPolicy.compaction, this.contextPolicy.windowTokens);
+    this.contextUsage = restoredContextUsage(this.contextExtension(), this.contextPolicy.budget, this.contextPolicy.compaction);
+    // §8.2 / review D8: a model whose window is smaller than the floor is a run-shaping fact, not a silent clamp
+    if (this.contextEnabled && this.contextPolicy.budget.windowTooSmall) {
+      this.pendingWindowNotice = `context budget clamped to ${this.contextPolicy.budgetChars} chars — the generator's ${this.contextPolicy.windowTokens}-token window is smaller than the ${CONTEXT_BUDGET_MIN_CHARS}-char floor`;
+    }
     // TUI-DESIGN §15.2 constructor row (both branches): the initial directive is queued exactly like a steer (same bounds, same
     // deferred steer:queued line after run:ready) and consumed at the first step start
     if (typeof init.opts.humanDirective === 'string') this.steer(init.opts.humanDirective);
@@ -881,9 +914,11 @@ class EngineImpl implements Engine {
   // -------------------------------------------------------------------------------------
 
   status(): EngineStatus {
-    // docs/COORDINATION-DESIGN.md §12.0.3: `context` rides every status (a subtype until EngineStatus gains the member)
+    // docs/COORDINATION-DESIGN.md §12.0.3: `context` rides every status (a subtype until EngineStatus gains the member).
+    // Review D5/D18: it is ABSENT — not `0 %` — in the modes and under the pin where no relaxed prompt is built, so
+    // `--json=verbose` under `view: 'legacy'` is byte-identical to HEAD and a jev-only run shows no meter that cannot move.
     const status: EngineStatusWithContext = {
-      context: this.contextUsage,
+      ...(this.contextEnabled ? { context: this.contextUsage } : {}),
       step: this.step,
       maxSteps: this.opts.limits.maxSteps,
       wallMs: this.wallMsUsed(),
@@ -1135,6 +1170,11 @@ class EngineImpl implements Engine {
     }
     // TUI-DESIGN §8.3: the seeded line names the parent and what was carried
     if (this.seeded && this.opts.seed) this.emit({ type: 'notice', step: null, kind: 'seeded', level: 'info', text: seedNoticeText(this.opts.seed, this.opts.seed.carriedDirectives ?? 0) });
+    // §8.2 / review D8: the generator's window is smaller than the context floor — the run says so once, here
+    if (this.pendingWindowNotice !== null) {
+      this.emit({ type: 'notice', step: null, kind: 'ui', level: 'warn', label: '[ui]', text: this.pendingWindowNotice });
+      this.pendingWindowNotice = null;
+    }
     // TUI-DESIGN §10.2: the count of secrets the human sent on request (never the values)
     if (this.opts.secretsAcked !== undefined && this.opts.secretsAcked > 0) this.emit({ type: 'secret-ack', step: null, count: this.opts.secretsAcked });
     // TUI-DESIGN §8.6 / §15.2: steers, withdrawals, a pause and secret-acks decided before run(), in order, after every writer saw run:ready
@@ -2296,8 +2336,8 @@ class EngineImpl implements Engine {
             draft.proposer = 'generic';
             const listing = await this.workspace.listCandidates().catch(() => []);
             const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
-            const prompt = this.promptInput(draft, changedFiles, [], candidates);
-            p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
+            // review D5: the same entry point as the other two, so the meter and the view follow the mode gate in one place
+            p = await this.stage('propose', () => this.proposeWithContext(ctx, draft, changedFiles, [], candidates));
             this.flushGeneratorRecords(draft);
           } else {
             if (llmJev) draft.proposer = 'synth';
@@ -2711,27 +2751,35 @@ class EngineImpl implements Engine {
     return ext;
   }
 
-  /** §8 / §12.0.3: the relaxed view (fresh files, expanded history), then the prompt, then the meter — all before the generator call. */
+  /** §8 / §12.0.3: the relaxed view (fresh files, planned history), then the prompt, then the meter — all before the call. */
   private async proposeWithContext(ctx: StageContext, draft: StepDraft, changedFiles: string[], contextFiles: PromptInput['contextFiles'], candidates: PromptInput['candidates']): Promise<ProposeStageResult> {
     const base = this.promptInput(draft, changedFiles, contextFiles, candidates);
-    // review finding 28: `contextPolicy.view: 'legacy'` sends HEAD's message, byte for byte — the bench baselines' prompt
-    const prompt: PromptInput = this.contextPolicy.view === 'legacy' ? base : { ...base, context: await this.contextView(draft.step) };
-    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built) });
+    // review finding 28 / D5: the legacy pin and the non-consuming modes send HEAD's message, byte for byte
+    if (!this.contextEnabled) return runProposeStage(ctx, this.systemPrompt, base);
+    const t0 = this.clock();
+    const prompt: PromptInput = { ...base, context: await this.contextView(draft.step) };
+    return runProposeStage(ctx, this.systemPrompt, prompt, { onPrompt: (built) => this.notePromptBuilt(built, t0) });
   }
 
-  /** After a resume: the summary text and the output views the whole / mid tiers need, read from the run dir once per process. */
-  private async ensureContextLoaded(): Promise<void> {
+  /** The rolling summary, read from the run dir once per process (a resume starts with `summaryAt` but no text). */
+  private async ensureSummaryLoaded(): Promise<void> {
     if (this.contextLoaded) return;
     this.contextLoaded = true;
+    if (!hasContextStore(this.store) || this.summaryAt === null || this.summary !== null) return;
+    const raw = await this.store.readContextSummary().catch(() => null);
+    if (isContextSummary(raw)) this.summary = raw;
+  }
+
+  /**
+   * §8.2(a) / §8.3: open ONLY the output files the plan's surviving tiers will show — the fit was computed from
+   * `fullOutputChars` before any read, so a tier the 30 % allowance cannot show is never opened (review D11). Warm steps
+   * read nothing: the views are memoised for the life of the process.
+   */
+  private async loadPlannedOutputs(plan: HistoryPlan): Promise<void> {
     if (!hasContextStore(this.store)) return;
-    const store = this.store;
-    if (this.summaryAt !== null && this.summary === null) {
-      const raw = await store.readContextSummary().catch(() => null);
-      if (isContextSummary(raw)) this.summary = raw;
-    }
-    for (const step of stepsNeedingViews(this.history)) {
-      if (this.outputViews.has(step)) continue;
-      const text = await store.readOutput(step).catch(() => null);
+    for (const step of plan.reads) {
+      if (this.outputViews.has(step) || this.missingOutputs.has(step)) continue;
+      const text = await this.store.readOutput(step).catch(() => null);
       // §8.5 / review finding 22: a resume whose run dir was mirrored without `outputs/` must not print a pointer at nothing
       if (text === null) this.missingOutputs.add(step);
       else this.outputViews.set(step, outputView(text));
@@ -2740,34 +2788,75 @@ class EngineImpl implements Engine {
 
   /** §8.3 / §8.4: what the prompt shows this step — one stat per cached file, a read only where a stat changed, memoised output views. */
   private async contextView(step: number): Promise<PromptContextView> {
-    await this.ensureContextLoaded();
+    await this.ensureSummaryLoaded();
+    // §8.6: the resume trigger runs before the first prompt of the resumed process, never mid-step
+    if (this.pendingResumeCompaction) {
+      this.pendingResumeCompaction = false;
+      const trigger = compactionDue({ step: this.step, compactEvery: this.contextPolicy.compactEvery, pct: 0, mode: this.contextPolicy.compaction, foldable: foldableCount(this.history), resume: true });
+      if (trigger !== null) this.compactContext(this.step, trigger);
+    }
     const refreshed = await this.filesInView.refresh(this.fileCache, step, this.contextPolicy.fileCacheBytes);
+    this.lastRefreshMs = refreshed.ms;
     if (refreshed.failed.length > 0) {
       for (const f of refreshed.failed) this.fileCache = dropFile(this.fileCache, f.rel);
-      this.emit({ type: 'transcript', step, level: 'info', text: `files in view: dropped ${refreshed.failed.map((f) => f.rel).join(', ')} (${this.redact(clip(refreshed.failed[0]!.reason, 120))})` });
+      // review D16: paths and error text are redacted like every other transcript line
+      const gone = refreshed.failed.map((f) => f.rel).join(', ');
+      this.emit({ type: 'transcript', step, level: 'info', text: this.redact(`files in view: dropped ${gone} (${clip(refreshed.failed[0]!.reason, 120)})`) });
     }
     this.fileCache = noteShown(this.fileCache, new Map(refreshed.files.map((f) => [f.rel, f.shownChars] as const)));
+    // §8.2(a): plan first (pure, from `fullOutputChars`), read only what survives, then render
+    const plan = planHistory(this.history, Math.floor(this.contextPolicy.budgetChars * HISTORY_SHARE));
+    await this.loadPlannedOutputs(plan);
+    this.lastRecentSteps = { chars: plan.chars, allowanceChars: plan.allowanceChars, whole: plan.whole, clipped: plan.clipped, oneLine: plan.oneLine, reads: plan.reads.length };
     return {
-      files: refreshed.files.map((f) => ({ path: f.rel, content: f.content, bytes: f.bytes, truncatedBytes: f.truncatedBytes, pinnedBy: f.pinnedBy, lastUsedStep: f.lastUsedStep, omitted: f.omitted })),
-      history: expandHistory(this.history, { view: (s) => this.outputViews.get(s) ?? null, missing: (s) => this.missingOutputs.has(s) }),
+      files: refreshed.files.map((f) => ({
+        path: f.rel,
+        content: f.content,
+        bytes: f.bytes,
+        truncatedBytes: f.truncatedBytes,
+        windowStart: f.windowStart,
+        lineFrom: f.lineFrom,
+        lineTo: f.lineTo,
+        lineTotal: f.lineTotal,
+        pinnedBy: f.pinnedBy,
+        lastUsedStep: f.lastUsedStep,
+        omitted: f.omitted,
+      })),
+      history: renderHistory(plan, { view: (n) => this.outputViews.get(n) ?? null, missing: (n) => this.missingOutputs.has(n) }),
       summary: this.summary?.text ?? null,
       summaryAt: this.summaryAt,
       budgetChars: this.contextPolicy.budgetChars,
+      newestClipped: plan.newestClipped,
     };
   }
 
-  /** §12.0.3 cadence point 1: the meter once the step's prompt is built, before the generator call. */
-  private notePromptBuilt(built: PromptBuild): void {
-    this.contextUsage = computeContextUsage({
-      promptChars: built.chars,
+  /**
+   * §12.0.3 cadence point 1: the meter once the step's prompt is built, before the generator call. Review D2: the
+   * zero-cost read may only stand on the files this message really rendered whole. Review D15: the meter counts the
+   * WHOLE prompt — the system prompt goes to the model on every call too.
+   */
+  private notePromptBuilt(built: PromptBuild, startedAt?: number): void {
+    this.filesInView.keepShown(built.shownFiles);
+    if (startedAt !== undefined) this.lastPromptBuildMs = Math.max(0, this.clock() - startedAt);
+    this.contextUsage = this.usage(this.systemPrompt.length + built.chars);
+  }
+
+  /** One place where `ContextUsage` is assembled, so both cadence points report the same members (§12.0.3). */
+  private usage(promptChars: number, over: { summaryAt?: number; lastCompactionAt?: string } = {}): ContextUsage {
+    const summaryAt = over.summaryAt ?? this.summaryAt;
+    return computeContextUsage({
+      promptChars,
       budgetChars: this.contextPolicy.budgetChars,
-      windowTokens: this.contextPolicy.windowTokens,
+      budget: this.contextPolicy.budget,
+      recentSteps: this.lastRecentSteps,
+      promptBuildMs: this.lastPromptBuildMs,
+      refreshMs: this.lastRefreshMs,
       files: this.fileCache.length,
       historyEntries: this.history.length,
-      summaryAt: this.summaryAt,
-      lastCompactionStep: this.summaryAt,
+      summaryAt,
+      lastCompactionStep: summaryAt,
       compactions: this.compactions,
-      lastCompactionAt: this.lastCompactionAt,
+      lastCompactionAt: over.lastCompactionAt ?? this.lastCompactionAt,
       compaction: this.contextPolicy.compaction,
     });
   }
@@ -2775,7 +2864,8 @@ class EngineImpl implements Engine {
   /** §8.3 / §8.4: the execute stage's `read` hooks — the zero-cost read (one stat) and the `jevcode:outputs/step-<n>.txt` pseudo-path. */
   private contextReadHooks(): ContextReadHooks {
     return {
-      unchanged: async (rel) => (await this.filesInView.unchanged(rel, this.fileMemory))?.text ?? null,
+      unchanged: async (rel) => (this.contextEnabled ? ((await this.filesInView.unchanged(rel, this.fileMemory))?.text ?? null) : null),
+      nextWindow: async (rel) => (this.contextEnabled ? ((await this.filesInView.nextWindow(rel, this.step + 1))?.text ?? null) : null),
       runOutput: async (pathOrRef) => {
         const step = parseOutputRef(pathOrRef);
         if (step === null) return null;
@@ -2791,13 +2881,22 @@ class EngineImpl implements Engine {
 
   /** The §8 bookkeeping at commit: the history entry (+ the whole output on disk), files in view, fileMemory, eviction, compaction. */
   private commitContext(draft: StepDraft, entry: WindowEntry, step: number): void {
-    if (this.contextPolicy.view === 'legacy') return;
-    const output = draft.output.length > 0 ? draft.output : null;
+    if (!this.contextEnabled) return;
+    // review D22: the prompt must show the SAME bytes in-process as after a resume — memoise the redacted text, which is
+    // exactly what `writeOutput` puts on disk
+    const output = draft.output.length > 0 ? this.redact(draft.output) : null;
     let ref: string | null = null;
     if (needsOutputFile(output) && hasContextStore(this.store)) {
       // §8.3 / §8.5: the whole text is on disk before any clip names it; the write rides the outputs/ chain, never the step
       ref = outputRefFor(step);
-      this.persist(this.store.writeOutput(step, output), `${CHECKPOINT_FILES.outputs}/${outputFileName(step)}`);
+      const written = this.store.writeOutput(step, output);
+      // review D12: the per-run 64 MiB bound may delete older files — mark those entries so their pointer is not printed again
+      this.persist(
+        written.then((evicted) => {
+          if (evicted.length > 0) this.noteOutputsEvicted(evicted);
+        }),
+        `${CHECKPOINT_FILES.outputs}/${outputFileName(step)}`,
+      );
     }
     if (output !== null) {
       this.outputViews.set(step, outputView(output));
@@ -2815,8 +2914,10 @@ class EngineImpl implements Engine {
           this.fileCache = touchFile(this.fileCache, p, 'read', step);
           this.fileMemory = rememberFile(this.fileMemory, p, { readAt: step });
         }
-      } else if (draft.changedFiles.length > 0) {
-        // edit / write / patch targets, or the paths a `run` changed: fresh content at the next build, `editedAt` now
+      }
+      // review D23: every path the step changed is invalidated whatever the action was — a `run` that renames or
+      // regenerates a file in view must not leave the old bytes in the next prompt
+      if (draft.changedFiles.length > 0) {
         this.filesInView.invalidate(draft.changedFiles);
         for (const p of draft.changedFiles) {
           if (isChangeAction(a.kind)) this.fileCache = touchFile(this.fileCache, p, 'edit', step);
@@ -2856,33 +2957,48 @@ class EngineImpl implements Engine {
    */
   private compactContext(step: number, trigger: CompactionTrigger): void {
     const at = nowIso();
+    const allowance = Math.floor(this.contextPolicy.budgetChars * HISTORY_SHARE);
     const r = compactCode({ step, at, task: this.opts.task, plan: this.plan, history: this.history, fileMemory: this.fileMemory, lastTestRun: this.lastTestRun, previous: this.summary });
+    // review D15: the event and the meter report PROMPT chars — what the fold removes from the message the generator
+    // sees — not the size of the persisted JSON. Both sides are measured with the planner the prompt itself uses; before
+    // the first build of a process (the §8.6 resume trigger) the two sections stand in for the whole prompt.
+    const sectionsBefore = planHistory(this.history, allowance).chars + (this.summary?.text.length ?? 0);
+    const historyAfter = planHistory(r.history, allowance).chars;
+    const sectionsAfter = historyAfter + r.summary.text.length;
+    const before = this.contextUsage.promptChars > 0 ? this.contextUsage.promptChars : sectionsBefore;
+    const chars = { before, after: Math.max(0, before - Math.max(0, sectionsBefore - sectionsAfter)) };
     this.history = r.history;
     this.summary = r.summary;
     this.summaryAt = step;
     this.compactions += 1;
     this.lastCompactionAt = at;
     if (hasContextStore(this.store)) this.persist(this.store.writeContextSummary(toJson(r.summary)), `${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}`);
-    const event: ContextCompactedEvent = { type: 'context:compacted', step, chars: r.chars, by: 'code' };
+    const event: ContextCompactedEvent = { type: 'context:compacted', step, chars, by: 'code' };
     // review finding 29: ONE shared line in all three sinks. Until `EngineEvent` gains `context:compacted`, the event rides
     // the notice channel as kind `ui` with the `[ui]` label — `itemsFromEvent` already turns that into a single `notice`
     // item (never a `[jevcode]` chat bubble), and `detail` carries the event JSON verbatim for a renderer that wants it.
-    const why = trigger === 'interval' ? `every ${this.contextPolicy.compactEvery} steps` : trigger === 'budget' ? `prompt at ${this.contextUsage.pct}% of the context budget` : 'requested';
+    const why = trigger === 'interval' ? `every ${this.contextPolicy.compactEvery} steps` : trigger === 'budget' ? `prompt at ${this.contextUsage.pct}% of the context budget` : trigger === 'resume' ? 'resumed past the history window' : 'requested';
     const folded = `${r.dropped.length} step${r.dropped.length === 1 ? '' : 's'} folded into the summary`;
-    this.emit({ type: 'notice', step, kind: 'ui', level: 'info', label: '[ui]', text: `compaction: ${r.chars.before} → ${r.chars.after} chars (code); ${folded} at step ${step} (${why})`, detail: JSON.stringify(event) });
-    // §12.0.3 cadence point 2: the meter after a compaction (promptChars = the last build less what the fold removed, until the next build)
-    this.contextUsage = computeContextUsage({
-      promptChars: Math.max(0, this.contextUsage.promptChars - Math.max(0, r.chars.before - r.chars.after)),
-      budgetChars: this.contextPolicy.budgetChars,
-      windowTokens: this.contextPolicy.windowTokens,
-      files: this.fileCache.length,
-      historyEntries: this.history.length,
-      summaryAt: step,
-      lastCompactionStep: step,
-      compactions: this.compactions,
-      lastCompactionAt: at,
-      compaction: this.contextPolicy.compaction,
+    this.emit({ type: 'notice', step, kind: 'ui', level: 'info', label: '[ui]', text: `compaction: ${chars.before} → ${chars.after} prompt chars (code); ${folded} at step ${step} (${why})`, detail: JSON.stringify(event) });
+    // §12.0.3 cadence point 2: the meter after a compaction, in the same units
+    this.lastRecentSteps = { ...this.lastRecentSteps, chars: historyAfter };
+    this.contextUsage = this.usage(chars.after, { summaryAt: step, lastCompactionAt: at });
+  }
+
+  /** §8.5 / review D12: the per-run output bound deleted these steps' files — every pointer to them stops being printed. */
+  private noteOutputsEvicted(steps: readonly number[]): void {
+    const gone = new Set(steps);
+    let hit = false;
+    this.history = this.history.map((e) => {
+      if (!gone.has(e.step) || e.outputRef === undefined || e.outputEvicted === true) return e;
+      hit = true;
+      return { ...e, outputEvicted: true };
     });
+    for (const step of gone) {
+      this.outputViews.delete(step);
+      this.missingOutputs.add(step);
+    }
+    if (hit) this.emit({ type: 'transcript', step: this.step, level: 'info', text: `outputs/: the 64 MiB per-run bound dropped step ${[...gone].sort((a, b) => a - b).join(', ')} — their history lines no longer point at a file` });
   }
 
   /** The current step's window entry before judge (Jev's `recent` includes it, §5.5). */

@@ -51,9 +51,13 @@ describe('per-step cost is flat', () => {
     // the generator sees more than the 4-entry window did, and never more than the §8.2 budget
     expect(sizes[6]!).toBeGreaterThan(sizes[0]! * 2);
     for (const n of sizes) expect(n).toBeLessThanOrEqual(contextBudgetChars());
-    // beyond the expanded tiers every further step adds one line (and the step-8 compaction folds the rest), so it settles
-    const settled = sizes.slice(7);
-    expect(Math.max(...settled)).toBeLessThan(Math.min(...settled) * 1.25);
+    // §8.2 replaces flatness with a BOUND: the relaxed prompt grows with the tiers and the compaction folds it back
+    // (a sawtooth by design), but it never passes the budget and the history section never passes its 30 % allowance.
+    const ctx = (h.engine.status() as { context?: { recentSteps: { chars: number; allowanceChars: number } } }).context!;
+    expect(ctx.recentSteps.chars).toBeLessThanOrEqual(ctx.recentSteps.allowanceChars);
+    expect(Math.max(...sizes)).toBeLessThanOrEqual(Math.floor(contextBudgetChars() * 0.4) + Math.floor(contextBudgetChars() * 0.3) + 20_000);
+    // the compaction at step 8 really does fold it back: the step-9 prompt is smaller than the step-8 one
+    expect(sizes[8]!).toBeLessThan(sizes[7]!);
     // §8.1 two windows: Jev's state is flat, exactly as before
     const judgeStates = h.decider.callsAt('judge').map((c) => JSON.stringify(c.state).length);
     expect(Math.max(...judgeStates.slice(4)) - Math.min(...judgeStates.slice(4))).toBeLessThan(Math.min(...judgeStates.slice(4)) * 0.15);

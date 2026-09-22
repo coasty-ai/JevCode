@@ -5,11 +5,29 @@
  * (head 24 KiB + tail 8 KiB, memoised per step) — the newest 2 entries whole up to 32 KiB, entries 3–6 head 4k + tail 2k, 7–12
  * one line. Every clip names the path to the full text (§8.5): `…[N chars omitted; full text: read jevcode:outputs/step-7.txt]…`.
  * Pure; the engine replaces its array at the commit point only (DESIGN §11 state-mutation rule).
+ *
+ * §8.2(a) (revision 4): the section allowance wins and **the fit is computed before the read**. `planHistory` costs every
+ * entry from `fullOutputChars` — which is already in the entry — and degrades it down the ladder
+ * `whole (32 KiB) → clipped (headTail(12k, 4k)) → mid (headTail(4k, 2k)) → the 600-char body → the one-liner`
+ * until the 30 % allowance holds, oldest first, so the newest survives longest (§8.2(c): at the 60k floor the newest is the
+ * one clipped, to 16k, and `/context` says so). Only the tiers that survive are read from disk (`stepsNeedingViews`).
  */
 import { clip } from '../../core/text.js';
 import type { StepRecord, WindowEntry } from '../../core/types.js';
 import { foldStepRecord, outcomeOutput } from '../window.js';
-import { HISTORY_MID, HISTORY_MID_HEAD, HISTORY_MID_TAIL, HISTORY_STEPS, HISTORY_WHOLE, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, OUTPUT_FILE_MIN_CHARS, OUTPUT_READ_PREFIX } from './limits.js';
+import {
+  HISTORY_CLIPPED_HEAD,
+  HISTORY_CLIPPED_TAIL,
+  HISTORY_MID,
+  HISTORY_MID_HEAD,
+  HISTORY_MID_TAIL,
+  HISTORY_STEPS,
+  HISTORY_WHOLE,
+  HISTORY_WHOLE_HEAD,
+  HISTORY_WHOLE_TAIL,
+  OUTPUT_FILE_MIN_CHARS,
+  OUTPUT_READ_PREFIX,
+} from './limits.js';
 import type { HistoryEntry } from './types.js';
 
 export const OUTPUTS_DIR = 'outputs';
@@ -39,11 +57,25 @@ export function needsOutputFile(output: string | null): output is string {
   return output !== null && output.length > OUTPUT_FILE_MIN_CHARS;
 }
 
-/** A WindowEntry plus the pointer to its whole output; `entry` is copied, never aliased. */
+/**
+ * A WindowEntry plus the pointer to its whole output; `entry` is copied, never aliased. `output` must be the WHOLE text —
+ * a caller that only has the already-clipped window body passes null (review D21: a seeded follow-up used to record the
+ * 600-char body's length as `fullOutputChars`, so the one-liner claimed a 664-char output for a 40 KiB run).
+ */
 export function buildHistoryEntry(entry: WindowEntry, output: string | null, outputRef: string | null): HistoryEntry {
   const h: HistoryEntry = { ...entry, shownFiles: [...entry.shownFiles], notes: [...entry.notes] };
   if (output !== null && output.length > 0) h.fullOutputChars = output.length;
   if (outputRef !== null) h.outputRef = outputRef;
+  return h;
+}
+
+/**
+ * §8.3 / review D21: the entry a seed carries over from a parent run. The parent's `outputs/` live in the parent's run dir,
+ * so there is no pointer and no honest `fullOutputChars` — a body the parent already clipped (`truncated`) says only that.
+ */
+export function seedHistoryEntry(entry: WindowEntry): HistoryEntry {
+  const h: HistoryEntry = { ...entry, shownFiles: [...entry.shownFiles], notes: [...entry.notes] };
+  if (entry.truncated !== true && entry.output !== undefined && entry.output.length > 0) h.fullOutputChars = entry.output.length;
   return h;
 }
 
@@ -84,31 +116,54 @@ export function omittedMarker(dropped: number, ref: string | null): string {
 }
 
 /** Head `head` + marker + tail `tail` of the text a view stands for; the whole text when it fits. */
-export function tierText(view: OutputView, head: number, tail: number, ref: string | null): string {
+export function tierText(view: OutputView, head: number, tail: number, ref: string | null, gone?: string): string {
   if (view.chars <= head + tail) return view.head + view.tail;
   const headText = view.head.slice(0, head);
   const source = view.tail.length >= tail ? view.tail : view.head + view.tail;
   const tailText = tail > 0 ? source.slice(source.length - tail) : '';
-  return headText + omittedMarker(view.chars - head - tail, ref) + tailText;
+  const dropped = view.chars - head - tail;
+  const marker = ref === null && gone !== undefined ? `\n…[${dropped} chars omitted; ${gone}]…\n` : omittedMarker(dropped, ref);
+  return headText + marker + tailText;
 }
 
 // ---------------------------------------------------------------------------------------
 // Tiers
 // ---------------------------------------------------------------------------------------
 
-export type HistoryTier = 'whole' | 'mid' | 'line';
+/**
+ * §8.2(a) ladder, widest first. `whole` = headTail(24k, 8k), `clipped` = headTail(12k, 4k), `mid` = headTail(4k, 2k),
+ * `body` = the 600-char window body already in `state.json`, `line` = the one-liner with its pointer.
+ */
+export type HistoryTier = 'whole' | 'clipped' | 'mid' | 'body' | 'line';
 
-/** 0 = the newest entry. */
+export const TIER_LADDER: readonly HistoryTier[] = ['whole', 'clipped', 'mid', 'body', 'line'];
+
+/** head + tail of a tier; `body` and `line` read nothing from disk. */
+export const TIER_CUT: Readonly<Record<HistoryTier, { head: number; tail: number }>> = {
+  whole: { head: HISTORY_WHOLE_HEAD, tail: HISTORY_WHOLE_TAIL },
+  clipped: { head: HISTORY_CLIPPED_HEAD, tail: HISTORY_CLIPPED_TAIL },
+  mid: { head: HISTORY_MID_HEAD, tail: HISTORY_MID_TAIL },
+  body: { head: OUTPUT_FILE_MIN_CHARS, tail: 0 },
+  line: { head: 0, tail: 0 },
+};
+
+/** The tier §8.3 asks for at a position (0 = the newest), before the allowance degrades it. */
 export function tierOf(indexFromNewest: number): HistoryTier {
   if (indexFromNewest < HISTORY_WHOLE) return 'whole';
   if (indexFromNewest < HISTORY_MID) return 'mid';
   return 'line';
 }
 
+/** One rung down the ladder; `line` is the floor. */
+export function degrade(tier: HistoryTier): HistoryTier {
+  const i = TIER_LADDER.indexOf(tier);
+  return i < 0 || i >= TIER_LADDER.length - 1 ? 'line' : TIER_LADDER[i + 1]!;
+}
+
 export interface RenderedHistoryEntry {
   entry: HistoryEntry;
   tier: HistoryTier;
-  /** the output text for the whole / mid tiers (already clipped with a named marker); null when there is nothing to show */
+  /** the output text for the expanded tiers (already clipped with a named marker); null when there is nothing to show */
   output: string | null;
   /** the one-line form (`[step n] <action> → <outcome> (<chars> chars; full text: read jevcode:outputs/step-n.txt)`) */
   line: string;
@@ -119,23 +174,116 @@ export interface RenderedHistoryEntry {
  * bound deleted the file) must say so — a pointer at nothing is exactly the silent clip G3(a) forbids.
  */
 export const OUTPUT_GONE = 'full text no longer on disk';
+/** §8.5 / review D12: the file was deleted by the per-run 64 MiB bound while this run was still going. */
+export const OUTPUT_EVICTED = 'full text dropped by the 64 MiB per-run output bound';
 
-/** The one-line form of an entry (tier 7–12, and every entry a compaction collapsed). */
+function goneText(e: HistoryEntry): string {
+  return e.outputEvicted === true ? OUTPUT_EVICTED : OUTPUT_GONE;
+}
+
+/** True when this entry's pointer cannot be followed on this device. */
+export function pointerLost(e: HistoryEntry, missing: boolean): boolean {
+  return e.outputRef !== undefined && (missing || e.outputEvicted === true);
+}
+
+/** The one-line form of an entry (the `line` tier, and every entry a compaction collapsed). */
 export function oneLiner(e: HistoryEntry, missing = false): string {
-  const chars = e.fullOutputChars ?? e.output?.length ?? 0;
-  const pointer = e.outputRef === undefined ? '' : missing ? `; ${OUTPUT_GONE}` : `; full text: read ${outputReadPath(e.outputRef)}`;
+  // review D21: a body the parent already clipped knows only its own length — say `≥`, never claim it is the whole output
+  const atLeast = e.fullOutputChars === undefined && e.truncated === true ? '≥ ' : '';
+  const chars = `${atLeast}${e.fullOutputChars ?? e.output?.length ?? 0}`;
+  const pointer = e.outputRef === undefined ? '' : pointerLost(e, missing) ? `; ${goneText(e)}` : `; full text: read ${outputReadPath(e.outputRef)}`;
   const reason = e.reason !== undefined && e.reason.length > 0 ? ` — ${clip(e.reason.replace(/\s+/g, ' ').trim(), 120)}` : '';
   return `[step ${e.step}] ${e.action} → ${e.outcome ?? 'not reached'}${reason} (${chars} chars${pointer})`;
 }
 
+/** The whole output's length as the entry knows it, without reading anything. */
+export function fullChars(e: HistoryEntry): number {
+  return Math.max(e.fullOutputChars ?? 0, e.output?.length ?? 0);
+}
+
+/** What the rendered form of one entry at one tier costs, from `fullOutputChars` alone — no read (§8.2(a)). */
+export function tierCost(e: HistoryEntry, tier: HistoryTier): number {
+  if (tier === 'line') return oneLiner(e).length + 3;
+  const cut = TIER_CUT[tier];
+  const shown = Math.min(fullChars(e), cut.head + cut.tail);
+  // the entry header (`### step N: …`, intent/outcome/reason/notes) plus the fenced output block
+  const header = 40 + e.action.length + (e.reason?.length ?? 0) + e.notes.reduce((n, t) => n + t.length + 8, 0) + e.shownFiles.reduce((n, t) => n + t.length + 2, 0);
+  return header + shown + 24;
+}
+
+export interface HistoryPlanEntry {
+  entry: HistoryEntry;
+  tier: HistoryTier;
+  /** the tier §8.3 asked for before the allowance degraded it */
+  wanted: HistoryTier;
+  cost: number;
+}
+
+export interface HistoryPlan {
+  /** oldest first, as stored */
+  entries: HistoryPlanEntry[];
+  chars: number;
+  allowanceChars: number;
+  whole: number;
+  clipped: number;
+  oneLine: number;
+  /** the steps whose `outputs/step-<n>.txt` the surviving tiers need — nothing else is opened */
+  reads: number[];
+  /** §8.2(c): the newest entry was degraded below `whole`, so the prompt must say where the rest is */
+  newestClipped: boolean;
+}
+
+/**
+ * §8.2(a): assemble newest-first against the allowance, costing each tier from `fullOutputChars` and degrading the OLDEST
+ * expanded entry first, so the newest keeps its content longest. Pure and I/O-free: the result names the ≤ 6 files worth
+ * opening.
+ */
+export function planHistory(history: readonly HistoryEntry[], allowanceChars: number): HistoryPlan {
+  const n = history.length;
+  const plan: HistoryPlanEntry[] = history.map((entry, idx) => {
+    const wanted = tierOf(n - 1 - idx);
+    // an entry that carries nothing beyond its one-liner (no output, judge, notes or shown files) cannot show more
+    // whatever the allowance — but one with notes, a reason or a judge still renders its header lines
+    const tier = isOneLine(entry) ? 'line' : wanted;
+    return { entry, wanted, tier, cost: tierCost(entry, tier) };
+  });
+  const allowance = Math.max(0, Math.floor(allowanceChars));
+  let total = plan.reduce((sum, p) => sum + p.cost, 0);
+  // degrade oldest-first until it fits (or everything is a one-liner)
+  for (let guard = 0; total > allowance && guard < plan.length * TIER_LADDER.length; guard++) {
+    const victim = plan.find((p) => p.tier !== 'line');
+    if (victim === undefined) break;
+    total -= victim.cost;
+    victim.tier = degrade(victim.tier);
+    victim.cost = tierCost(victim.entry, victim.tier);
+    total += victim.cost;
+  }
+  const reads: number[] = [];
+  for (const p of plan) if (p.tier !== 'line' && p.tier !== 'body' && p.entry.outputRef !== undefined && p.entry.outputEvicted !== true) reads.push(p.entry.step);
+  reads.reverse();
+  const newest = plan[plan.length - 1];
+  return {
+    entries: plan,
+    chars: total,
+    allowanceChars: allowance,
+    whole: plan.filter((p) => p.tier === 'whole').length,
+    clipped: plan.filter((p) => p.tier === 'clipped' || p.tier === 'mid' || p.tier === 'body').length,
+    oneLine: plan.filter((p) => p.tier === 'line').length,
+    reads,
+    newestClipped: newest !== undefined && newest.wanted === 'whole' && newest.tier !== 'whole' && fullChars(newest.entry) > TIER_CUT[newest.tier].head + TIER_CUT[newest.tier].tail,
+  };
+}
+
 function outputFor(e: HistoryEntry, tier: Exclude<HistoryTier, 'line'>, view: OutputView | null, missing: boolean): string | null {
-  const ref = missing ? null : (e.outputRef ?? null);
-  if (view !== null && view.chars > 0) return tier === 'whole' ? tierText(view, HISTORY_WHOLE_HEAD, HISTORY_WHOLE_TAIL, ref) : tierText(view, HISTORY_MID_HEAD, HISTORY_MID_TAIL, ref);
-  // no view yet (a resumed run whose output file is gone): the 600-char body, with the pointer — or the truth — when it is a clip
+  const lost = pointerLost(e, missing);
+  const ref = lost ? null : (e.outputRef ?? null);
+  const cut = TIER_CUT[tier];
+  if (tier !== 'body' && view !== null && view.chars > 0) return tierText(view, cut.head, cut.tail, ref, lost ? goneText(e) : undefined);
+  // the body tier, or no view (a resumed run whose output file is gone): the 600-char body, with the pointer when it is a clip
   if (e.output === undefined || e.output.length === 0) return null;
-  if ((e.fullOutputChars ?? 0) <= e.output.length) return e.output;
-  const where = ref === null ? OUTPUT_GONE : `full text: read ${outputReadPath(ref)}`;
-  return `${e.output}\n[${e.fullOutputChars} chars in total; ${where}]`;
+  if (fullChars(e) <= e.output.length) return e.output;
+  const where = ref === null ? goneText(e) : `full text: read ${outputReadPath(ref)}`;
+  return `${e.output}\n[${fullChars(e)} chars in total; ${where}]`;
 }
 
 /** Where the expansion of one prompt's history comes from: memoised head+tail views, and which refs cannot be followed. */
@@ -147,26 +295,24 @@ export interface HistoryViewSource {
 }
 
 /**
- * Expand the history for one prompt (oldest first, as stored). Pure and I/O-free — the engine reads the ≤ 2 (whole) + ≤ 4
- * (mid) output files it does not hold BEFORE calling, and records the ones that were not there as `missing`.
+ * Render a plan (oldest first, as stored). Pure and I/O-free — the engine reads `plan.reads` BEFORE calling and records
+ * the ones that were not there as `missing`.
  */
-export function expandHistory(history: readonly HistoryEntry[], source: HistoryViewSource): RenderedHistoryEntry[] {
-  const n = history.length;
-  return history.map((entry, idx) => {
-    const tier = tierOf(n - 1 - idx);
+export function renderHistory(plan: HistoryPlan, source: HistoryViewSource): RenderedHistoryEntry[] {
+  return plan.entries.map(({ entry, tier }) => {
     const missing = entry.outputRef !== undefined && (source.missing?.(entry.step) ?? false);
     return { entry, tier, output: tier === 'line' ? null : outputFor(entry, tier, source.view(entry.step), missing), line: oneLiner(entry, missing) };
   });
 }
 
-/** The steps whose OutputView a prompt build will consult (the whole and mid tiers), newest first. */
-export function stepsNeedingViews(history: readonly HistoryEntry[]): number[] {
-  const out: number[] = [];
-  for (let i = history.length - 1, k = 0; i >= 0 && k < HISTORY_MID; i--, k++) {
-    const e = history[i]!;
-    if (e.outputRef !== undefined) out.push(e.step);
-  }
-  return out;
+/** Plan + render in one call, for callers that do not need the two apart (tests, the legacy-shaped path). */
+export function expandHistory(history: readonly HistoryEntry[], source: HistoryViewSource, allowanceChars = Number.MAX_SAFE_INTEGER): RenderedHistoryEntry[] {
+  return renderHistory(planHistory(history, allowanceChars), source);
+}
+
+/** The steps whose OutputView a prompt build will consult, newest first. */
+export function stepsNeedingViews(history: readonly HistoryEntry[], allowanceChars = Number.MAX_SAFE_INTEGER): number[] {
+  return planHistory(history, allowanceChars).reads;
 }
 
 // ---------------------------------------------------------------------------------------

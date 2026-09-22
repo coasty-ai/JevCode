@@ -5,6 +5,7 @@
 import { describe, expect, it } from 'vitest';
 import type { StepRecord, WindowEntry } from '../../../src/core/types.js';
 import {
+  OUTPUT_EVICTED,
   OUTPUT_GONE,
   buildHistoryEntry,
   collapseHistory,
@@ -17,7 +18,10 @@ import {
   outputRefFor,
   outputView,
   parseOutputRef,
+  planHistory,
   pushHistory,
+  renderHistory,
+  seedHistoryEntry,
   stepsNeedingViews,
   tierOf,
   tierText,
@@ -88,9 +92,69 @@ describe('§8.3 tiered history', () => {
   });
 
   it('every output past the body bound goes to disk, so no clip is ever silent', () => {
+    // §8.3: the threshold IS the window body cap — `core/limits.ts` and `loop/window.ts` must not drift apart
+    expect(OUTPUT_FILE_MIN_CHARS).toBe(WINDOW_OUTPUT_HEAD + WINDOW_OUTPUT_TAIL);
     expect(needsOutputFile('x'.repeat(OUTPUT_FILE_MIN_CHARS))).toBe(false);
     expect(needsOutputFile('x'.repeat(OUTPUT_FILE_MIN_CHARS + 1))).toBe(true);
     expect(needsOutputFile(null)).toBe(false);
+  });
+
+  it('§8.2(a): the ladder degrades oldest-first and the fit is computed BEFORE any read', () => {
+    const { history: h } = history(12, 60 * 1024);
+    // the default 30 % of a 239k budget is ~71.8k — the 2 × 32 KiB + 4 × 6 KiB tiers do not all fit
+    const plan = planHistory(h, Math.floor(239_360 * 0.3));
+    expect(plan.chars).toBeLessThanOrEqual(plan.allowanceChars);
+    expect(plan.whole).toBeGreaterThanOrEqual(1);
+    expect(plan.entries.at(-1)!.tier).toBe('whole');
+    // the oldest expanded entries went first; the newest kept its content
+    expect(plan.entries[0]!.tier).toBe('line');
+    // only the surviving expanded tiers are worth a read
+    expect(plan.reads.length).toBeLessThanOrEqual(6);
+    expect(plan.reads.length).toBeLessThanOrEqual(plan.whole + plan.clipped);
+    expect(plan.reads.length).toBeGreaterThanOrEqual(plan.whole);
+    expect(plan.reads).toEqual([...plan.reads].sort((a, b) => b - a));
+    // an unlimited allowance gives §8.3's shape: 2 whole, 4 mid, 6 one-line
+    const full = planHistory(h, Number.MAX_SAFE_INTEGER);
+    expect(full.entries.map((e) => e.tier)).toEqual(['line', 'line', 'line', 'line', 'line', 'line', 'mid', 'mid', 'mid', 'mid', 'whole', 'whole']);
+  });
+
+  it('§8.2(c): at the 60k floor the newest output is clipped to 16k and the prompt is told', () => {
+    const { history: h, views } = history(12, 60 * 1024);
+    const plan = planHistory(h, Math.floor(60_000 * 0.3));
+    expect(plan.newestClipped).toBe(true);
+    expect(plan.entries.at(-1)!.tier).toBe('clipped');
+    expect(plan.entries.slice(0, -1).every((e) => e.tier === 'line')).toBe(true);
+    const rendered = renderHistory(plan, { view: views });
+    const newest = rendered.at(-1)!;
+    // head 12k + tail 4k of the 60 KiB output, with the pointer to the rest
+    expect(newest.output!.length).toBeGreaterThan(16 * 1024);
+    expect(newest.output!.length).toBeLessThan(17 * 1024);
+    expect(newest.output).toContain('full text: read jevcode:outputs/step-12.txt');
+    expect(plan.chars).toBeLessThanOrEqual(plan.allowanceChars);
+  });
+
+  it('review D12: an output the 64 MiB bound deleted stops being pointed at and is never re-read', () => {
+    const { history: h, views } = history(4, 20_000);
+    const evicted = h.map((e) => (e.step <= 2 ? { ...e, outputEvicted: true } : e));
+    const plan = planHistory(evicted, Number.MAX_SAFE_INTEGER);
+    expect(plan.reads).not.toContain(1);
+    expect(plan.reads).not.toContain(2);
+    const rendered = renderHistory(plan, { view: views });
+    for (const r of rendered.slice(0, 2)) {
+      expect(r.line).toContain(OUTPUT_EVICTED);
+      expect(r.line).not.toContain('jevcode:outputs');
+    }
+    expect(rendered.at(-1)!.line).toContain('full text: read jevcode:outputs/step-4.txt');
+  });
+
+  it('review D21: a seeded entry never claims the clipped body is the whole output', () => {
+    const body = 'x'.repeat(600);
+    const clipped = seedHistoryEntry({ step: 9, intent: 'verify', action: 'run pytest -q', outcome: 'executed', shownFiles: [], notes: [], output: body, truncated: true });
+    expect(clipped.fullOutputChars).toBeUndefined();
+    expect(clipped.outputRef).toBeUndefined();
+    expect(oneLiner(clipped)).toContain('(≥ 600 chars)');
+    const whole = seedHistoryEntry({ step: 9, intent: 'verify', action: 'run ls', outcome: 'executed', shownFiles: [], notes: [], output: 'short' });
+    expect(whole.fullOutputChars).toBe(5);
   });
 
   it('tiers: newest 2 whole, 3–6 head+tail, 7–12 one line — and each clip names the file', () => {

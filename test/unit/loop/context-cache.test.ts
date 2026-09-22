@@ -56,6 +56,12 @@ function disk(files: Record<string, string>) {
       content.set(rel, text);
       mtime.set(rel, (mtime.get(rel) ?? 1_000) + 1_000);
     },
+    /** change bytes in place without changing the size (the stat's size stays, the mtime moves) */
+    editAt(rel: string, at: number, text: string) {
+      const c = content.get(rel) ?? '';
+      content.set(rel, c.slice(0, at) + text + c.slice(at + text.length));
+      mtime.set(rel, (mtime.get(rel) ?? 1_000) + 1_000);
+    },
     /** rewrite the same bytes: the stat moves, the content does not (the sha decides) */
     touch(rel: string) {
       mtime.set(rel, (mtime.get(rel) ?? 1_000) + 1_000);
@@ -154,17 +160,72 @@ describe('§8.4 FilesInView (content cache)', () => {
     expect(third.files.find((f) => f.rel === 'src/b.ts')!.content).toHaveLength(200);
   });
 
-  it('a read of an unchanged file in view returns the pointer line with no read at all', async () => {
+  it('a read of a file shown WHOLE and unchanged returns the pointer line with no read at all', async () => {
     const d = disk({ 'src/a.ts': 'A'.repeat(100) });
     const view = new FilesInView(d.deps);
     const memory = rememberFile({}, 'src/a.ts', { readAt: 4 });
     await view.refresh(cache(['src/a.ts', 'read', 4]), step);
     const before = { ...d.counters };
     const r = await view.unchanged('src/a.ts', memory);
-    expect(r?.text).toMatch(/^unchanged since step 4 \(sha [0-9a-z-]{4}…\); contents are under Files in view$/);
+    expect(r?.kind).toBe('unchanged');
+    expect(r?.chars).toBe(0);
+    expect(r?.text).toMatch(/^unchanged since step 4 \(sha [0-9a-z-]{4}…\); the whole file is under Files in view$/);
     expect(d.counters.stats - before.stats).toBe(1);
     expect(d.counters.reads - before.reads).toBe(0);
     expect(d.counters.hashes - before.hashes).toBe(0);
+  });
+
+  it('review D2: a path the last build did NOT render is never served for free', async () => {
+    const d = disk({ 'big.ts': 'x'.repeat(20_000), 'small.ts': 'y'.repeat(10) });
+    const view = new FilesInView(d.deps);
+    // the byte budget omits `big.ts`: it is in `loaded` but was not rendered
+    const r = await view.refresh(cache(['big.ts', 'read', 1], ['small.ts', 'read', 2]), step, 1_000);
+    expect(r.files.find((f) => f.rel === 'big.ts')!.omitted).toBe(true);
+    expect(await view.unchanged('big.ts', {})).toBeNull();
+    expect(await view.unchanged('small.ts', {})).not.toBeNull();
+    // and a path the PROMPT dropped after the refresh (a section floor) stops being free too
+    view.keepShown([]);
+    expect(await view.unchanged('small.ts', {})).toBeNull();
+  });
+
+  it('review D1: a file shown as a window is never served for free — the next window is served instead', async () => {
+    const d = disk({ 'big.py': 'L'.repeat(40 * 1024) });
+    const view = new FilesInView({ ...d.deps, maxFileChars: 32 * 1024 });
+    const r = await view.refresh(cache(['big.py', 'read', 1]), step);
+    expect(r.files[0]!.truncatedBytes).toBe(40 * 1024 - 32 * 1024);
+    // the zero-cost path refuses: the tail would be unreachable
+    expect(await view.unchanged('big.py', {})).toBeNull();
+    const next = await view.nextWindow('big.py', step + 1);
+    expect(next).not.toBeNull();
+    expect(next!.kind).toBe('window');
+    expect(next!.chars).toBe(40 * 1024 - 32 * 1024);
+    expect(next!.text).toContain('[end of big.py]');
+    expect(next!.text).toContain('bytes 32768–40960 of 40960');
+    // and the walk wraps back to the head rather than repeating the tail for ever
+    const wrapped = await view.nextWindow('big.py', step + 2);
+    expect(wrapped!.text).toContain('back at the start of big.py');
+    expect(wrapped!.text).toContain('read big.py again for the next window');
+  });
+
+  it('review D3: a stat that moved past the shown window invalidates instead of re-stamping the stat', async () => {
+    const d = disk({ 'big.py': `${'A'.repeat(40_000)}${'B'.repeat(60_000)}` });
+    const view = new FilesInView({ ...d.deps, maxFileChars: 32 * 1024 });
+    await view.refresh(cache(['big.py', 'read', 1]), step);
+    // an edit past the shown window that keeps the size: the old code answered `unchanged`, re-stamped the stat and
+    // never re-read, so the prompt kept the pre-edit window for ever
+    d.editAt('big.py', 40_960, 'CHANGED');
+    expect(await view.unchanged('big.py', {})).toBeNull();
+    const again = await view.refresh(cache(['big.py', 'read', 1]), step + 1);
+    expect(again.reads).toBe(1);
+    // the stat was never re-stamped by the refused read, so the next window really shows the new bytes
+    const tail = await view.nextWindow('big.py', step + 2);
+    expect(tail!.text).toContain('CHANGED');
+    // a whole file whose bytes really are the same may still be served for free after a touch
+    const d2 = disk({ 'small.ts': 'A'.repeat(100) });
+    const v2 = new FilesInView(d2.deps);
+    await v2.refresh(cache(['small.ts', 'read', 1]), step);
+    d2.touch('small.ts');
+    expect(await v2.unchanged('small.ts', {})).not.toBeNull();
   });
 
   it('a stat mismatch falls back to the content hash: same bytes → still free, new bytes → the read runs', async () => {
@@ -177,6 +238,7 @@ describe('§8.4 FilesInView (content cache)', () => {
     expect(await view.unchanged('src/a.ts', {})).toBeNull();
     // a path that was never in view, and one that is gone, are never free
     expect(await view.unchanged('src/other.ts', {})).toBeNull();
+    await view.refresh(cache(['src/a.ts', 'read', 4]), step);
     d.remove('src/a.ts');
     expect(await view.unchanged('src/a.ts', {})).toBeNull();
   });

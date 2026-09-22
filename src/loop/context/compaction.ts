@@ -142,7 +142,13 @@ export function compactCode(input: CompactionInput): CompactionResult {
   return { summary, history, dropped, chars: { before: persistedChars(input.history, input.previous), after: persistedChars(history, summary) } };
 }
 
-export type CompactionTrigger = 'interval' | 'budget' | 'manual';
+/**
+ * §8.6: every trigger. `'manual'` is `/compact` — the TUI command owns that verb, so the engine seam is
+ * `compactionDue({ manual: true })`; `'resume'` is the §8.6 fourth trigger, taken only when the resume folded rows past
+ * the history window (review finding 53).
+ * TODO(§12.0.2): `/compact` reaches the engine when `Engine.compact?()` joins the contract 1.4 block.
+ */
+export type CompactionTrigger = 'interval' | 'budget' | 'manual' | 'resume';
 
 export interface CompactionDueInput {
   step: number;
@@ -154,8 +160,10 @@ export interface CompactionDueInput {
   mode: CompactionMode;
   /** entries a fold would actually collapse (`foldableCount`); 0 → nothing is due (review finding 53) */
   foldable: number;
-  /** `/compact` was requested */
+  /** `/compact` was requested (the TUI verb; see `CompactionTrigger`) */
   manual?: boolean;
+  /** §8.6 fourth trigger: this is the first prompt after a resume that folded rows past the history window */
+  resume?: boolean;
 }
 
 /** Structural check of a `context/summary.json` read back from disk. */
@@ -179,6 +187,7 @@ export function compactionDue(i: CompactionDueInput): CompactionTrigger | null {
   if (i.mode === 'off') return null;
   if (i.foldable <= 0) return null;
   if (i.manual) return 'manual';
+  if (i.resume) return 'resume';
   if (i.pct >= (i.compactAtPct ?? COMPACT_AT_PCT)) return 'budget';
   if (i.compactEvery > 0 && i.step % i.compactEvery === 0) return 'interval';
   return null;
