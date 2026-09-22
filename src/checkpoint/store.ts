@@ -743,6 +743,11 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
           // late write from an older incarnation must not lower a mark a newer one already raised.
           ...(patch.claims === undefined ? {} : { claims: capRunClaims([...(current.claims ?? []), ...patch.claims]) }),
           ...(patch.claimEpochHigh === undefined ? {} : { claimEpochHigh: Math.max(current.claimEpochHigh ?? 0, patch.claimEpochHigh) }),
+          // contract 1.5 (ORCHESTRATION-DESIGN §5.7 / §5.8): `landed` APPENDS one row per landed agent (like overrides/resumes);
+          // `undoUnavailableBelow` is a monotonic MAX — the undo floor only rises as more agents land, and a late write from an
+          // older incarnation must not lower a floor a newer one already raised.
+          ...(patch.landed === undefined ? {} : { landed: [...(current.landed ?? []), ...patch.landed] }),
+          ...(patch.undoUnavailableBelow === undefined ? {} : { undoUnavailableBelow: Math.max(current.undoUnavailableBelow ?? 0, patch.undoUnavailableBelow) }),
         };
         await writeMeta(next);
       });
