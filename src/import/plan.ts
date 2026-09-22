@@ -19,6 +19,7 @@ import { IMPORT_LIMITS } from '../core/limits.js';
 import type { Answer } from '../core/types.js';
 import type { FileVerdict, KeyVerdict } from './classify.js';
 import { resolveChoice, resolveNoul, resolveScore } from './questions.js';
+import type { ConflictCandidate, NoteCandidate, PairCandidate } from './questions.js';
 import { joinSecretVerdict } from './secrets.js';
 import type {
   CannotRead,
@@ -525,7 +526,80 @@ interface Draft {
  * `ruleFiles` (200), `rulePatterns` (200) and the destination caps of §2.8; nothing is truncated
  * silently — every clip adds a `warnings` entry on its row **and** a line in `notices`.
  */
-export function buildPlan(input: PlanInput): ImportPlan {
+/**
+ * §4.4.3 groups III–V: the band candidates this pass found, in **exactly** the order their
+ * question ids index. `buildPlan` both fills this and, on a later pass, reads the answers back
+ * by the same index — so the two can never disagree, which is the failure review defect 5 was.
+ *
+ *   `same_meaning_<i>` → `pairs[i]`   `rank_<i>` → `notes[i]`   `contradicts_<i>` → `conflicts[i]`
+ *
+ * Collected through an out-parameter rather than returned, so the plan shape stays the §4.6.1
+ * contract and the two-pass caller pays for one pass, not three: pass 1 fills this **and** names
+ * the destinations to stat, pass 2 consumes the answers and the destination state together.
+ */
+export interface PlanBands {
+  pairs: PairCandidate[];
+  notes: NoteCandidate[];
+  conflicts: ConflictCandidate[];
+}
+
+/** The longest run of headings the two documents share, in order — group III's state (§4.4.3). */
+function commonHeadingRun(a: readonly string[], b: readonly string[]): number {
+  let best = 0;
+  for (let i = 0; i < a.length; i++) {
+    for (let j = 0; j < b.length; j++) {
+      let n = 0;
+      while (i + n < a.length && j + n < b.length && a[i + n] === b[j + n]) n++;
+      if (n > best) best = n;
+    }
+  }
+  return best;
+}
+
+/** §4.4.3 group III state: paths, tools, byte counts, sha256 PREFIXES and headings. Never a body. */
+function pairCandidate(id: string, pair: { a: string; b: string; jaccard: number }, candidates: readonly PlanCandidate[]): PairCandidate {
+  const side = (itemId: string): PairCandidate['a'] => {
+    const c = candidates.find((x) => x.item.id === itemId);
+    const headings = c?.doc?.headings ?? c?.item.parse.headings ?? [];
+    return {
+      path: c?.item.display ?? itemId,
+      tool: c?.item.tools[0] ?? 'claude-code',
+      bytes: c?.item.bytes ?? 0,
+      sha8: (c?.item.sha256 ?? '').slice(0, 8),
+      headings,
+    };
+  };
+  const a = side(pair.a);
+  const b = side(pair.b);
+  return { id, a, b, jaccard: pair.jaccard, commonHeadingRun: commonHeadingRun(a.headings, b.headings) };
+}
+
+/**
+ * §4.4.3 group V state, narrowed by **[G2.4]**: the headings, the matched noun phrase and the two
+ * polarity markers — **not** the two sentences. The spine sent 200-char sentence fragments, which
+ * is the only path in the design that bends "Jev never receives a file body", and pattern
+ * redaction cannot catch a secret written in prose. Jev's effect here is limited to *ordering*
+ * the conflicts section (the verdict is `review` either way), so the weaker payload costs nothing.
+ */
+function conflictCandidate(
+  id: string,
+  con: { a: string; b: string; noun: string; positiveMarker: string; negativeMarker: string },
+  candidates: readonly PlanCandidate[],
+): ConflictCandidate {
+  const headingsOf = (itemId: string): readonly string[] => {
+    const c = candidates.find((x) => x.item.id === itemId);
+    return c?.doc?.headings ?? c?.item.parse.headings ?? [];
+  };
+  return {
+    id,
+    headings: [...headingsOf(con.a), ...headingsOf(con.b)].slice(0, IMPORT_LIMITS.jevHeadings),
+    noun: con.noun,
+    positiveMarker: con.positiveMarker,
+    negativeMarker: con.negativeMarker,
+  };
+}
+
+export function buildPlan(input: PlanInput, bands?: PlanBands): ImportPlan {
   const notices: string[] = [...(input.notices ?? [])];
   const jev = input.jev ?? { answers: {}, requests: 0, questions: 0, usd: 0, fallbacks: 0 };
   const answers = jev.answers;
@@ -576,6 +650,8 @@ export function buildPlan(input: PlanInput): ImportPlan {
   if (dd.capped) notices.push(`duplicate scan capped at ${thousands(IMPORT_LIMITS.dedupePairs)} pairs (${thousands(docs.length)} candidates)`);
 
   const mergedInto = new Map<string, string>();
+  /** survivor id → one `same as …` line per source folded into it (§4.5 pass 2, §1 property 2). */
+  const foldNotes = new Map<string, string[]>();
   const extraTools = new Map<string, SourceTool[]>();
   for (const group of dd.groups) {
     const keep = group[0];
@@ -592,6 +668,7 @@ export function buildPlan(input: PlanInput): ImportPlan {
   const dupGroupOf = new Map<string, string>();
   dd.band.forEach((pair, i) => {
     const id = `same_meaning_${i}`;
+    if (bands) bands.pairs.push(pairCandidate(id, pair, candidates));
     const same = resolveNoul(answers, id, 0.6);
     const gid = `dup-${i + 1}`;
     if (same === null) {
@@ -602,6 +679,13 @@ export function buildPlan(input: PlanInput): ImportPlan {
       mergedInto.set(pair.b, pair.a);
       const folded = candidates.find((c) => c.item.id === pair.b);
       if (folded) extraTools.set(pair.a, [...(extraTools.get(pair.a) ?? []), ...folded.item.tools]);
+      // §1 property 2: a folded source must not vanish silently. The survivor names it, so the
+      // report can still account for every discovered artefact and the human can see WHY the
+      // second copy is not being written.
+      foldNotes.set(pair.a, [
+        ...(foldNotes.get(pair.a) ?? []),
+        `same as ${folded?.item.display ?? pair.b} (jaccard ${pair.jaccard.toFixed(2)}, jev ${id} p=${same.toFixed(2)})`,
+      ]);
     }
   });
 
@@ -633,7 +717,7 @@ export function buildPlan(input: PlanInput): ImportPlan {
       indexLineBytes,
       derivedPaths,
       extraWhy: [],
-      warnings: [],
+      warnings: [...(foldNotes.get(c.item.id) ?? [])],
       ...(dupGroupOf.has(c.item.id) ? { group: dupGroupOf.get(c.item.id) } : {}),
     };
     drafts.push(draft);
@@ -645,6 +729,7 @@ export function buildPlan(input: PlanInput): ImportPlan {
   if (cf.capped) notices.push(`conflict scan capped at ${thousands(IMPORT_LIMITS.dedupePairs)} pairs (${thousands(candidates.length)} candidates)`);
   conflicts.forEach((con, i) => {
     const gid = `conflict-${i + 1}`;
+    if (bands) bands.conflicts.push(conflictCandidate(`contradicts_${i}`, con, candidates));
     const p = resolveNoul(answers, `contradicts_${i}`);
     for (const id of [con.a, con.b]) {
       const d = drafts.find((x) => x.candidate.item.id === id);
@@ -815,6 +900,7 @@ export function buildPlan(input: PlanInput): ImportPlan {
   // ---- 7. §4.5 pass 4: the budget ------------------------------------------------------
   const scores: Record<string, number> = {};
   indexCandidates.forEach((ic, i) => {
+    if (bands) bands.notes.push({ id: `rank_${i}`, path: ic.row.source.display, kind: ic.row.class, scope: ic.row.scope, bytes: ic.row.bytes });
     const s = resolveScore(answers, `rank_${i}`);
     if (s !== null) scores[ic.row.id] = s;
   });

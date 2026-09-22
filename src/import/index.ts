@@ -26,8 +26,9 @@ import { parseMdc } from './parse/mdc.js';
 import { parseToml } from './parse/toml.js';
 import { findMarkerBlocks, joinDestination } from './apply.js';
 import { buildPlan, secretCandidateId } from './plan.js';
+import type { PlanBands } from './plan.js';
 import type { PlanCandidate, PlanInput } from './plan.js';
-import { askImport, fileKindQuestions, mergeBatches, secretQuestions } from './questions.js';
+import { askImport, contradictsQuestions, fileKindQuestions, mattersHereQuestions, mergeBatches, sameMeaningQuestions, secretQuestions } from './questions.js';
 import type { FileCandidate, JevSample, SecretCandidate } from './questions.js';
 import { SOURCES, allRoots, specById } from './sources.js';
 import type {
@@ -122,6 +123,7 @@ export type {
 } from './questions.js';
 
 export { buildPlan, dedupe, expandGlobs, rankIndex, rerunAction, secretCandidateId, slugOf } from './plan.js';
+export type { PlanBands } from './plan.js';
 export type { PlanCandidate, PlanInput } from './plan.js';
 
 export { REPORT_SECTIONS, parseReport, renderPlanJson, renderReport } from './report.js';
@@ -445,18 +447,65 @@ export async function planImport(opts: PlanImportOptions): Promise<ImportPlan> {
     ...(opts.projectWritable !== undefined ? { projectWritable: opts.projectWritable } : {}),
   };
 
-  const first = buildPlan(input);
-  if (opts.destState !== undefined) return first;
+  // Pass 1 does double duty: it names the destinations to stat AND collects the group III–V band
+  // candidates, in exactly the order their question ids index. Neither is knowable before the
+  // plan exists — the dedupe pairs, the index rows and the conflict pairs are all products of
+  // the plan's own passes — which is why the engine, not the caller, has to ask.
+  const bands: PlanBands = { pairs: [], notes: [], conflicts: [] };
+  const first = buildPlan(input, bands);
+
+  // §4.4.3 groups III (same_meaning), IV (matters_here) and V (contradicts). They share the
+  // single `jevMaxUsd` cutoff and request budget with groups I and II — `askImport` stops asking
+  // and takes fallbacks when either is exceeded. Abstention stays on the conservative side
+  // (§0 principle 4): no answer means keep both copies, review the conflict, and leave the index
+  // in the code order — so a Jev that is absent, refusing or out of budget only ever produces a
+  // safer plan, never an unsafe one.
+  const lateBatches = mergeBatches(
+    [
+      ...(bands.pairs.length > 0 ? [sameMeaningQuestions(bands.pairs, sample)] : []),
+      ...(bands.notes.length > IMPORT_LIMITS.memoryIndexLines ? [mattersHereQuestions(bands.notes, opts.env.workspace)] : []),
+      ...(bands.conflicts.length > 0 ? [contradictsQuestions(bands.conflicts, sample)] : []),
+    ],
+    IMPORT_LIMITS.jevQuestions,
+  );
+  const late = await askImport(lateBatches, {
+    decider: opts.decider ?? null,
+    signal: opts.signal ?? new AbortController().signal,
+    maxUsd: opts.jevMaxUsd ?? 0.01,
+    // whatever groups I and II already spent comes off the same budget
+    requests: Math.max(0, IMPORT_LIMITS.jevRequests - jev.requests),
+  });
+
+  const answersAll: Readonly<Record<string, Answer>> = { ...answers, ...late.answers };
+  const jevTotal = {
+    answers: answersAll,
+    requests: jev.requests + late.requests,
+    questions: jev.questions + late.questions,
+    usd: jev.usd + late.usd,
+    fallbacks: jev.fallbacks + late.fallbacks,
+    ...(jev.reason !== undefined ? { reason: jev.reason } : late.reason !== undefined ? { reason: late.reason } : {}),
+  };
+  const withAnswers: PlanInput = { ...input, jev: jevTotal };
+
+  // Re-plan only when the late round actually produced ANSWERS — a refusal, a timeout or an
+  // exhausted budget changes no row (every group III–V abstention is already the plan's default),
+  // so re-running the passes would be pure cost. Its `reason`, `fallbacks` and spend still have
+  // to reach the report, though, or `jev: not asked (<reason>)` would silently read as "asked and
+  // agreed"; so the metadata is merged onto the first plan instead of being thrown away.
+  const haveLateAnswers = Object.keys(late.answers).length > 0;
+  const withJevMeta = (p: ImportPlan): ImportPlan => ({ ...p, jev: jevTotal });
+
+  if (opts.destState !== undefined) return haveLateAnswers ? buildPlan(withAnswers) : withJevMeta(first);
   // §4.7.5: the re-run matrix is evaluated at PLAN time — the report has to be able to say
   // `append`, `update` and `skip:unchanged`, not just `create`. That needs the destinations'
   // current bytes, and nobody but the engine knows what the destinations are until the plan has
   // named them. So: plan once to learn them, stat them (read-only, phase 1-3 writes nothing),
-  // and re-plan only when at least one already exists. On a first import nothing exists and the
-  // second pass is skipped entirely. Row ids are stable across the two passes because
+  // and re-plan when at least one already exists OR Jev answered a band. On a first import with
+  // no bands both are skipped entirely. Row ids are stable across the passes because
   // `PlanRow.id` is derived from the source and the destination, never from the action.
   const destState = await probeDestinations(first, destRoots, fs);
-  if (destState === null) return first;
-  return buildPlan({ ...input, destState });
+  if (destState === null) return haveLateAnswers ? buildPlan(withAnswers) : withJevMeta(first);
+  return buildPlan({ ...withAnswers, destState });
 }
 
 /** The scope→root map a caller gets when it does not supply one; mirrors `ApplyOptions.destRoots`. */
