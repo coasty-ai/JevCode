@@ -5,7 +5,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { Answer, GitState } from '../../../src/core/types.js';
-import { FACT_FALSE_EXAMPLES, FACT_KEYS, FACT_MAX_LINES, HOW_TO_TASK_SUFFIX, HOW_TO_TASK_TEXT, NOTHING_RAN_TEXT, NO_TESTS_PARSED_TEXT, WHAT_IT_IS_TEXT, buildFactQuestions, harnessFacts, selectFacts, type FactsInput } from '../../../src/chat/facts.js';
+import { FACT_FALSE_EXAMPLES, FACT_KEYS, FACT_MAX_LINES, HOW_TO_TASK_SUFFIX, HOW_TO_TASK_TEXT, MODE_SENTENCE, NOTHING_RAN_TEXT, NO_TESTS_PARSED_TEXT, SWITCH_MODE_TEXT, WHAT_IT_IS_TEXT, buildFactQuestions, harnessFacts, selectFacts, type FactsInput } from '../../../src/chat/facts.js';
+import { MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
 import { notRepoState } from '../../../src/workspace/gitstate.js';
 import { sandboxText } from '../../../src/tui/onboarding/lines.js';
 
@@ -62,7 +63,10 @@ describe('§3.5 the harness facts', () => {
   it('the fixed texts are the table\'s, verbatim', () => {
     const t = Object.fromEntries(harnessFacts(keyedFixture()).map((f) => [f.key, f.text]));
     expect(t['what_it_is']).toBe(WHAT_IT_IS_TEXT);
-    expect(t['switch_mode']).toBe('Switch with /mode jev-on (alias /llm on) or /mode jev-only; it applies to the next run. Persist it with jevcode config set mode <m>.');
+    // TUI-DESIGN-3 §1.7 / §1.9: the switch sentence names the jev-only cap; the copy names the code model, never a vendor
+    expect(t['switch_mode']).toBe('Switch with /mode jev-only (Jev alone, $0.25 run cap) or /mode jev-on (alias /llm on); it applies to the next run. Persist it with jevcode config set mode <m>.');
+    expect(t['switch_mode']).toBe(SWITCH_MODE_TEXT);
+    expect(WHAT_IT_IS_TEXT.endsWith('in jev+llm mode the code model writes the code.')).toBe(true);
     expect(t['review']).toBe('Risky actions stop for review: y approves once, n declines, d declines with a note. Nothing is ever auto-approved; Enter does nothing there.');
     expect(t['undo']).toBe("/undo reverts the last step's file changes, /rewind picks a step, /diff shows what changed.");
     expect(t['commands']).toBe('Commands start with /; type / to list them, /help for keys.');
@@ -72,15 +76,35 @@ describe('§3.5 the harness facts', () => {
 
   it('mode_now follows mode and appends the pending mode; how_to_task gets the nextMode suffix', () => {
     const on = Object.fromEntries(harnessFacts(keyedFixture({ mode: 'jev-on', nextMode: 'jev-on' })).map((f) => [f.key, f.text]));
-    expect(on['mode_now']).toBe('Mode: jev+llm — Claude writes the code, Jev decides every step.');
+    expect(on['mode_now']).toBe('Mode: jev+llm — the code model writes the code, Jev decides every step.');
+    expect(on['mode_now']).toBe(MODE_SENTENCE['jev-on']);
     expect(on['how_to_task']).toBe(HOW_TO_TASK_TEXT + HOW_TO_TASK_SUFFIX['jev-on']);
     const pending = Object.fromEntries(harnessFacts(keyedFixture({ mode: 'jev-only', nextMode: 'jev-on' })).map((f) => [f.key, f.text]));
     expect(pending['mode_now']).toBe('Mode: jev-only — no generating LLM; code proposes, Jev decides, tests verify. Next run: jev+llm.');
-    expect(pending['how_to_task']).toBe(`${HOW_TO_TASK_TEXT} Claude writes the code, Jev decides each step.`);
+    expect(pending['how_to_task']).toBe(`${HOW_TO_TASK_TEXT} The code model writes the code, Jev decides each step.`);
     const only = Object.fromEntries(harnessFacts(keyedFixture()).map((f) => [f.key, f.text]));
     expect(only['how_to_task']).toBe(`${HOW_TO_TASK_TEXT} In jev-only I fix what tests can verify; for open-ended changes switch with /mode jev-on.`);
     const off = Object.fromEntries(harnessFacts(keyedFixture({ mode: 'jev-off', nextMode: 'jev-off' })).map((f) => [f.key, f.text]));
     expect(off['how_to_task']).toBe(`${HOW_TO_TASK_TEXT} The generator alone runs it; reviews still ask.`);
+    expect(off['mode_now']).toBe('Mode: llm-only — the generator alone, no Jev (bench condition; reviews still ask).');
+    const llm = Object.fromEntries(harnessFacts(keyedFixture({ mode: 'llm-jev', nextMode: 'llm-jev' })).map((f) => [f.key, f.text]));
+    expect(llm['mode_now']).toBe('Mode: llm+jev · verified — the code model writes candidate patches, tests verify them, Jev arbitrates.');
+    expect(llm['how_to_task']).toBe(`${HOW_TO_TASK_TEXT} The code model writes candidate patches, tests verify them, Jev arbitrates.`);
+    // the pending suffix reads the badge table (D-N)
+    const toLlm = Object.fromEntries(harnessFacts(keyedFixture({ mode: 'jev-only', nextMode: 'llm-jev' })).map((f) => [f.key, f.text]));
+    expect(toLlm['mode_now']).toBe(`${MODE_SENTENCE['jev-only']} Next run: ${MODE_BADGE_WORD['llm-jev']}.`);
+  });
+
+  it('TUI-DESIGN-3 §1.9 (R3 F9): no vendor name in any fact text or mode sentence — the copy says "the code model"; every MODE_SENTENCE row reads its badge word', () => {
+    for (const fixture of [keyedFixture(), keyless(), keyedFixture({ mode: 'jev-on', nextMode: 'jev-on' }), keyedFixture({ mode: 'llm-jev', nextMode: 'llm-jev' }), keyedFixture({ mode: 'jev-off', nextMode: 'jev-off' })]) {
+      for (const f of harnessFacts(fixture)) expect(f.text, f.key).not.toMatch(/Claude|GLM writes|Sonnet/);
+    }
+    for (const m of MODE_SETTING_VALUES) {
+      expect(MODE_SENTENCE[m], m).toMatch(new RegExp(`^Mode: ${MODE_BADGE_WORD[m].replace(/[+·]/g, (c) => `\\${c}`)} — `));
+      expect(HOW_TO_TASK_SUFFIX[m], m).not.toMatch(/Claude|GLM/);
+    }
+    expect(WHAT_IT_IS_TEXT).not.toMatch(/Claude/);
+    expect(SWITCH_MODE_TEXT).not.toMatch(/Claude/);
   });
 
   it('every path or figure in a text derives from the input: workspace root, branch and dirty counts, run id, task, cost, spend, host, model, latency', () => {

@@ -12,7 +12,10 @@ import type { BlockingRequest, SessionRow } from '../../../src/core/types.js';
 import type { OverlayKind, PickerOpen, TuiRenderer, UiState, WizardDetect } from '../../../src/tui/index.js';
 import type { IntakeOverlay } from '../../../src/tui/Overlay.js';
 import { INTAKE_CARD_BODY, INTAKE_ROW_MEDIUM } from '../../../src/chat/lines.js';
-import { createTuiPrompter, hasSecretGate, patchFromWizard, undoKeyOf, type SecretGateRenderer, type TuiPrompterControls } from '../../../src/cli/tui-prompter.js';
+import { createTuiPrompter, hasSecretGate, oneKeyReopen, patchFromWizard, undoKeyOf, type SecretGateRenderer, type TuiPrompterControls } from '../../../src/cli/tui-prompter.js';
+import { DEFAULT_MODE } from '../../../src/config/defaults.js';
+import type { WizardSaveInput } from '../../../src/tui/onboarding/Wizard.js';
+import type { SaveRequest } from '../../../src/tui/onboarding/reducer.js';
 import { detectSecrets } from '../../../src/core/redact.js';
 import { mkConfirmRequest } from '../../fixtures/tui/fixtures.js';
 
@@ -34,6 +37,8 @@ interface Fake {
 }
 
 const controls = (o: Partial<TuiPrompterControls> = {}): TuiPrompterControls => ({ persistCredentials: async () => ({ ok: true, items: [] }), mode: () => 'jev-on', trustInputs: () => null, sandboxLine: () => null, runsDir: () => null, trashDir: () => null, runLive: () => false, ...o });
+/** TUI-DESIGN-3 §1.4.1: a save input with the round-3 members at their round-2-flow values */
+const save = (o: Pick<SaveRequest, 'provider' | 'jevProvider' | 'fields' | 'reuseGeneratorForJev'> & Partial<SaveRequest> & { values: WizardSaveInput['values'] }): WizardSaveInput => ({ oneKey: false, keyAs: 'both', reuseJevForGenerator: false, pendMode: null, ...o });
 
 function fakeTui(): Fake {
   const never = <T,>(): Promise<T> => new Promise<T>(() => undefined);
@@ -167,20 +172,33 @@ describe('createTuiPrompter', () => {
     );
     const w = b.prompter.wizard!(['decider.apiKey'], { provider: 'openrouter', reason: 'missing' });
     expect(f.lastWizard).toEqual({ missing: ['decider.apiKey'], mode: 'jev-only', provider: 'openrouter', trustNeeded: false });
-    const r = await b.wizardHost.save({ provider: 'openrouter', jevProvider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } });
+    const r = await b.wizardHost.save(save({ provider: 'openrouter', jevProvider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } }));
     expect(r).toEqual({ ok: true, items: [] });
     expect(saved).toEqual([{ patch: { provider: 'openrouter', jevApiKey: 'sk-or-v1-abcdefghijklmnop' }, source: 'wizard' }]);
     expect(await w).toEqual({ kind: 'persisted' });
     expect(b.wizardHost.sandboxLine?.()).toBe('seatbelt — x');
+    // TUI-DESIGN-3 §1.3.2: `/login` with both keys asked and nothing resolving → the one-paste `key` field through a detect with the reason (both sides openrouter)
     void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'login' });
-    expect(f.calls.at(-1)).toBe('reopenWizard:generator.apiKey:idle');
+    expect(f.calls.at(-1)).toBe('openWizard');
+    expect(f.lastWizard).toMatchObject({ missing: ['generator.apiKey', 'decider.apiKey'], reason: 'login', runLive: false, found: null });
+    // an anthropic generator (or a typesafe Jev provider, or a found key) keeps the two-field reopen
+    void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: 'anthropic', reason: 'login' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:generator.apiKey:idle:login:-');
+    void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'login', jevProvider: 'typesafe' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:generator.apiKey:idle:login:-');
+    expect(oneKeyReopen(['generator.apiKey', 'decider.apiKey'], null, null, undefined)).toBe(true);
+    expect(oneKeyReopen(['generator.apiKey', 'decider.apiKey'], 'openrouter', 'openrouter', null)).toBe(true);
+    expect(oneKeyReopen(['decider.apiKey'], null, null, null)).toBe(false);
+    expect(oneKeyReopen(['generator.apiKey', 'decider.apiKey'], 'anthropic', null, null)).toBe(false);
+    expect(oneKeyReopen(['generator.apiKey', 'decider.apiKey'], null, 'typesafe', null)).toBe(false);
+    expect(oneKeyReopen(['generator.apiKey', 'decider.apiKey'], null, null, 'jev')).toBe(false);
     // reuseGeneratorForJev copies the generator key into the Jev slot
-    expect(patchFromWizard({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: true, values: { 'generator.apiKey': 'sk-or-v1-zzzzzzzzzzzz' } })).toEqual({ provider: 'openrouter', apiKey: 'sk-or-v1-zzzzzzzzzzzz', jevApiKey: 'sk-or-v1-zzzzzzzzzzzz' });
+    expect(patchFromWizard(save({ provider: 'openrouter', jevProvider: null, fields: ['generator.apiKey'], reuseGeneratorForJev: true, values: { 'generator.apiKey': 'sk-or-v1-zzzzzzzzzzzz' } }))).toEqual({ provider: 'openrouter', apiKey: 'sk-or-v1-zzzzzzzzzzzz', jevApiKey: 'sk-or-v1-zzzzzzzzzzzz' });
     // TUI-DESIGN-2 §1.4: the Jev provider chosen on its step rides the patch beside the key
-    expect(patchFromWizard({ provider: null, jevProvider: 'typesafe', fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'ts-key-abcdefghijklmnop' } })).toEqual({ jevApiKey: 'ts-key-abcdefghijklmnop', jevProvider: 'typesafe' });
+    expect(patchFromWizard(save({ provider: null, jevProvider: 'typesafe', fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'ts-key-abcdefghijklmnop' } }))).toEqual({ jevApiKey: 'ts-key-abcdefghijklmnop', jevProvider: 'typesafe' });
     // a failed save is reported to the wizard and leaves the prompt pending
     b.control(controls({ persistCredentials: async () => ({ ok: false, items: [], error: 'EACCES' }) }));
-    expect(await b.wizardHost.save({ provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false, values: {} })).toEqual({ ok: false, reason: 'EACCES' });
+    expect(await b.wizardHost.save(save({ provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false, values: {} }))).toEqual({ ok: false, reason: 'EACCES' });
   });
 
   it('reopenWizard carries the controller\'s live flag, not the reason: a 401 pane `[l]` with a live run reopens live (Ctrl-C closes), an idle /login reopens idle (Ctrl-C exits 2) (§11.1)', () => {
@@ -190,14 +208,19 @@ describe('createTuiPrompter', () => {
     let live = true;
     b.control(controls({ runLive: () => live }));
     void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'rejected' });
-    expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:live');
+    expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:live:rejected:-');
     live = false;
+    void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: 'anthropic', reason: 'login' });
+    expect(f.calls.at(-1)).toBe('reopenWizard:generator.apiKey:idle:login:-');
+    // the one-paste reopen carries the live flag too
     void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'login' });
-    expect(f.calls.at(-1)).toBe('reopenWizard:generator.apiKey:idle');
+    expect(f.lastWizard).toMatchObject({ reason: 'login', runLive: false });
     // the second open cancelled the first prompt
     live = true;
     void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'login' });
-    expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:live');
+    expect(f.calls.at(-1)).toBe('reopenWizard:decider.apiKey:live:login:-');
+    void b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'rejected' });
+    expect(f.lastWizard).toMatchObject({ reason: 'rejected', runLive: true });
     b.wizardHost.cancel();
   });
 
@@ -240,14 +263,14 @@ describe('createTuiPrompter', () => {
     void b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'login' }).then((o) => {
       saved = o;
     });
-    await b.wizardHost.save({ provider: null, jevProvider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } });
+    await b.wizardHost.save(save({ provider: null, jevProvider: null, fields: ['decider.apiKey'], reuseGeneratorForJev: false, values: { 'decider.apiKey': 'sk-or-v1-abcdefghijklmnop' } }));
     expect(saved).toEqual({ kind: 'persisted' });
     b.wizardHost.cancel(); // the App's `done` without a further answer, or a later Ctrl-C: nothing pending
     await vi.advanceTimersByTimeAsync(0);
     expect(saved).toEqual({ kind: 'persisted' });
   });
 
-  it('TUI-DESIGN-2 §1.4: wizard({ reason: mode, mode }) reopens at the provider step with the target mode; a missing-key wizard defaults to jev-only', () => {
+  it('TUI-DESIGN-2 §1.4: wizard({ reason: mode, mode }) reopens at the provider step with the target mode (and the current one for the Ctrl-C hint); a missing-key wizard without controls defaults to DEFAULT_MODE', () => {
     const f = fakeTui();
     const b = createTuiPrompter();
     b.attach(f.renderer);
@@ -256,12 +279,12 @@ describe('createTuiPrompter', () => {
     b.control(controls({ runLive: () => true, mode: () => 'jev-only' }));
     void b.prompter.wizard!(['generator.apiKey'], { provider: null, reason: 'mode', mode: 'jev-off' });
     expect(f.calls.at(-1)).toBe('reopenWizard:provider:live:mode:jev-off');
-    // no controls yet → the default mode is jev-only (was jev-on)
+    // no controls yet → the fallback is DEFAULT_MODE (TUI-DESIGN-3 §1.1)
     const b2 = createTuiPrompter();
     const f2 = fakeTui();
     b2.attach(f2.renderer);
     void b2.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'missing' });
-    expect(f2.lastWizard).toEqual({ missing: ['decider.apiKey'], mode: 'jev-only', provider: null, trustNeeded: false });
+    expect(f2.lastWizard).toEqual({ missing: ['decider.apiKey'], mode: DEFAULT_MODE, provider: null, trustNeeded: false });
     void b2.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'missing', mode: 'jev-on' });
     expect(f2.lastWizard?.mode).toBe('jev-on');
   });
@@ -370,5 +393,96 @@ describe('createTuiPrompter', () => {
     expect(f.lastWizard).toMatchObject({ missing: [], trustNeeded: true });
     b.wizardHost.trust!(2);
     expect(await t).toBe(2);
+  });
+});
+
+describe('TUI-DESIGN-3 §1.4.3 / §1.5: the save-shape table, found / foundSource through openWizard, verify wired to the controller, the mode outcome, the /trust reason', () => {
+  const OR = 'sk-or-v1-abcdefghijklmnopqrstuvwxyz0123';
+  it('patchFromWizard by keyAs: both → four file keys; generator → apiKey + provider only (never jevProvider / jevApiKey); jev → jevApiKey + jevProvider + provider anthropic (never apiKey); reuseJevForGenerator copies the host\'s Jev value', () => {
+    expect(patchFromWizard(save({ provider: null, jevProvider: null, fields: ['key'], reuseGeneratorForJev: false, oneKey: true, keyAs: 'both', values: { key: OR } }))).toEqual({ apiKey: OR, jevApiKey: OR, provider: 'openrouter', jevProvider: 'openrouter' });
+    expect(patchFromWizard(save({ provider: null, jevProvider: null, fields: ['key'], reuseGeneratorForJev: false, keyAs: 'generator', values: { key: OR } }))).toEqual({ apiKey: OR, provider: 'openrouter' });
+    expect(patchFromWizard(save({ provider: null, jevProvider: null, fields: ['key'], reuseGeneratorForJev: false, keyAs: 'jev', values: { key: OR } }))).toEqual({ jevApiKey: OR, jevProvider: 'openrouter', provider: 'anthropic' });
+    // the reuse Enter: no key typed, the resolved Jev value becomes the generator key
+    expect(patchFromWizard(save({ provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false, reuseJevForGenerator: true, keyAs: 'generator', values: {} }), OR)).toEqual({ apiKey: OR, provider: 'openrouter' });
+    expect(patchFromWizard(save({ provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false, reuseJevForGenerator: true, keyAs: 'generator', values: {} }), null)).toEqual({});
+    // an empty key field writes nothing
+    expect(patchFromWizard(save({ provider: null, jevProvider: null, fields: ['key'], reuseGeneratorForJev: false, keyAs: 'both', values: { key: '' } }))).toEqual({});
+    // the provider-only save (option 4 with the Anthropic key resolving)
+    expect(patchFromWizard(save({ provider: 'anthropic', jevProvider: null, fields: [], reuseGeneratorForJev: false, keyAs: 'jev', values: {} }))).toEqual({ provider: 'anthropic' });
+  });
+
+  it('wizard(missing, { found, foundSource, foundReusable }) reaches openWizard for a startup wizard; the save reads the resolved Jev key for the reuse and names its layer; the verify goes through controls.verifyKeys with the mode and the signal', async () => {
+    const f = fakeTui();
+    const b = createTuiPrompter();
+    b.attach(f.renderer);
+    const saved: unknown[] = [];
+    const verified: unknown[] = [];
+    b.control(
+      controls({
+        mode: () => 'jev-on',
+        persistCredentials: async (patch, source, opts) => {
+          saved.push({ patch, source, opts });
+          return { ok: true, items: [] };
+        },
+        resolvedJevKey: () => OR,
+        resolvedJevSource: () => 'dotenv',
+        verifyKeys: async (i) => {
+          verified.push(i);
+          return { ok: false, rejected: 'decider.apiKey', items: ['x'] };
+        },
+        sandboxDetail: () => 'the long sentence',
+      }),
+    );
+    void b.prompter.wizard!(['generator.apiKey'], { provider: 'openrouter', reason: 'missing', found: 'jev', foundSource: 'env', foundReusable: true, jevProvider: 'openrouter' });
+    expect(f.lastWizard).toEqual({ missing: ['generator.apiKey'], mode: 'jev-on', provider: 'openrouter', trustNeeded: false, found: 'jev', foundSource: 'env', foundReusable: true });
+    await b.wizardHost.save(save({ provider: null, jevProvider: null, fields: [], reuseGeneratorForJev: false, reuseJevForGenerator: true, keyAs: 'generator', values: {} }));
+    expect(saved).toEqual([{ patch: { apiKey: OR, provider: 'openrouter' }, source: 'wizard', opts: { reusedFrom: 'dotenv' } }]);
+    const ac = new AbortController();
+    expect(await b.wizardHost.verify!({ provider: 'openrouter', jevProvider: null, fields: ['key'], mode: 'jev-on', signal: ac.signal })).toEqual({ ok: false, rejected: 'decider.apiKey', items: ['x'] });
+    expect(verified).toEqual([{ provider: 'openrouter', jevProvider: null, fields: ['key'], mode: 'jev-on', signal: ac.signal }]);
+    expect(b.wizardHost.sandboxDetail?.()).toBe('the long sentence');
+    // without controls the verify is a no-op success
+    const b0 = createTuiPrompter();
+    expect(await b0.wizardHost.verify!({ provider: null, jevProvider: null, fields: [], mode: 'jev-on' })).toEqual({ ok: true, rejected: null, items: [] });
+  });
+
+  it('the mode outcome: `3 Jev only` with no save → done() resolves { kind: mode, mode, persist }; with a save → applyMode after the key landed and the prompt resolves persisted; Ctrl-C after the choice resolves cancelled', async () => {
+    const f = fakeTui();
+    const b = createTuiPrompter();
+    b.attach(f.renderer);
+    const applied: unknown[] = [];
+    b.control(controls({ applyMode: async (mode, persist) => { applied.push({ mode, persist }); } }));
+    const w1 = b.prompter.wizard!(['generator.apiKey'], { provider: 'openrouter', reason: 'missing', found: 'typesafe', foundSource: 'env' });
+    b.wizardHost.mode!({ mode: 'jev-only', persist: true });
+    b.wizardHost.done!();
+    expect(await w1).toEqual({ kind: 'mode', mode: 'jev-only', persist: true });
+    expect(applied).toEqual([]); // runLogin applies the outcome; the prompter only carries it
+    const w2 = b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'missing' });
+    b.wizardHost.mode!({ mode: 'jev-only', persist: true });
+    await b.wizardHost.save(save({ provider: null, jevProvider: 'openrouter', fields: ['decider.apiKey'], reuseGeneratorForJev: false, pendMode: 'jev-only', values: { 'decider.apiKey': OR } }));
+    expect(applied).toEqual([{ mode: 'jev-only', persist: true }]);
+    expect(await w2).toEqual({ kind: 'persisted' });
+    b.wizardHost.done!(); // nothing pending: inert
+    const w3 = b.prompter.wizard!(['generator.apiKey', 'decider.apiKey'], { provider: null, reason: 'login' });
+    b.wizardHost.mode!({ mode: 'jev-only', persist: false });
+    b.wizardHost.cancel();
+    expect(await w3).toEqual({ kind: 'cancelled' });
+    // a plain done() with nothing chosen and nothing saved resolves cancelled
+    const w4 = b.prompter.wizard!(['decider.apiKey'], { provider: null, reason: 'login' });
+    b.wizardHost.done!();
+    expect(await w4).toEqual({ kind: 'cancelled' });
+  });
+
+  it('TUI-DESIGN-3 §4.4 F17: trust(inputs, { reopen: true }) opens the card with reason trust; the startup gate passes no reason', async () => {
+    const f = fakeTui();
+    const b = createTuiPrompter();
+    b.attach(f.renderer);
+    b.control(controls());
+    void b.prompter.trust!({ root: '/w', agents: null, dotenv: null, jevcodeJson: null }, { reopen: true });
+    expect(f.lastWizard).toMatchObject({ missing: [], trustNeeded: true, reason: 'trust', mode: 'jev-on' });
+    b.wizardHost.cancel();
+    void b.prompter.trust!({ root: '/w', agents: null, dotenv: null, jevcodeJson: null });
+    expect(f.lastWizard).toEqual({ missing: [], mode: 'jev-on', provider: null, trustNeeded: true });
+    b.wizardHost.cancel();
   });
 });

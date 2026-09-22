@@ -11,7 +11,11 @@ import AnimationContext from '../../../node_modules/ink/build/components/Animati
 import { cleanup, render } from 'ink-testing-library';
 import { Text } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
-import { Console, pickerConsoleTitle, wizardBodyRows, wizardConsoleTitle } from '../../../src/tui/Console.js';
+import { Console, ghostText, pickerConsoleTitle, wizardBodyRows, wizardConsoleTitle } from '../../../src/tui/Console.js';
+import { MODE_BADGE_WORD } from '../../../src/config/defaults.js';
+import { consoleTopEdge } from '../../../src/tui/console-lines.js';
+import { modeBadge } from '../../../src/tui/status/lines.js';
+import { textProps, themeFor } from '../../../src/tui/theme.js';
 import { consoleLines } from '../../../src/tui/console-lines.js';
 import { createBuffer, reduceBuffer } from '../../../src/tui/composer/buffer.js';
 import { PLACEHOLDERS, draftRows } from '../../../src/tui/composer/Composer.js';
@@ -228,5 +232,98 @@ describe('useMotion (TUI-DESIGN-2 §5.1, §5.3)', () => {
     expect(ui.lastFrame()).toBe('off t=0 running');
     expect(subs).toHaveLength(0);
     ui.unmount();
+  });
+});
+
+describe('round 3 (TUI-DESIGN-3 §2.6, §5.2 A6 / P6, §1.4.2, §1.1): edges, prompt, spans, the wizard titles and the badge words', () => {
+  const theme = themeFor('dark');
+  it('every console row is byte-identical to consoleLines() whatever the colour props (edgeRole, live, the spans change no text)', () => {
+    for (const props of [{}, { live: true }, { edgeRole: 'accent2' as const }, { edgeRole: 'border' as const, live: true }]) {
+      const rows = strip(render(<Console buffer={createBuffer()} columns={80} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev+llm" dir="proj" status={{ ...idle, done: { stopReason: 'complete', steps: 1, wallMs: 1, spend: { generator: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, totalUsd: 0, capUsd: 2, exceeded: false }, changedFiles: [], runDir: '/r', resumable: true, exitCode: 0 } as never }} statusOptions={{}} {...props} />).lastFrame());
+      expect(rows).toEqual(consoleLines({ columns: 80, badge: 'jev+llm', dir: 'proj', body: [`› ${PLACEHOLDERS.task}`], status: statusLineText({ ...idle, done: { stopReason: 'complete', steps: 1, wallMs: 1 } as never }, 76) }));
+      cleanup();
+    }
+  });
+  it('the edges: `border` at rest, `borderFocus` while live, the App\'s `edgeRole` (the A6 fade\'s `accent2`) when given — read back through the theme\'s 24-bit colours', () => {
+    const edgeColor = (props: { live?: boolean; edgeRole?: 'accent2' | 'border' | 'borderFocus' }): string | undefined => {
+      const frame = render(<Console buffer={createBuffer()} columns={80} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev+llm" dir="proj" status={idle} statusOptions={{}} color={24} {...props} />).lastFrame() ?? '';
+      cleanup();
+      // chalk runs at level 0 under vitest: the roles are observed through `textProps`, so the test recomputes what the console asked for
+      void frame;
+      return textProps(theme, props.edgeRole ?? (props.live === true ? 'borderFocus' : 'border'), 24).color;
+    };
+    expect(edgeColor({})).toBeUndefined(); // `border` is dim, no colour
+    expect(edgeColor({ live: true })).toBe(textProps(theme, 'borderFocus', 24).color);
+    expect(edgeColor({ edgeRole: 'accent2' })).toBe(textProps(theme, 'accent2', 24).color);
+    expect(edgeColor({ edgeRole: 'border', live: true })).toBeUndefined();
+    expect(textProps(theme, 'borderFocus', 24).color).toBe('#d45bb6');
+    expect(textProps(theme, 'accent2', 24).color).toBe('#d45bb6');
+  });
+  it('the prompt: `accent` (pink) at rest, `steer` (amber) while a run is live, nothing while inactive (D-O) — the rows\' text is unchanged', () => {
+    const rest = strip(render(<Console buffer={createBuffer()} columns={80} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev+llm" dir="proj" status={idle} statusOptions={{}} />).lastFrame());
+    expect(rest[1]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(76 - 2 - PLACEHOLDERS.task.length)} │`);
+    cleanup();
+    const live = strip(render(<Console buffer={createBuffer()} columns={80} height={1} top={1} scrollTop={0} cursor={noop} active mode="steer" rows={24} badge="jev+llm" dir="proj" status={{ ...idle, run: 'live' }} statusOptions={{}} live />).lastFrame());
+    expect(live[1]).toBe(`│ › ${PLACEHOLDERS.steer}${' '.repeat(76 - 2 - PLACEHOLDERS.steer.length)} │`);
+    expect(textProps(theme, 'accent', 24).color).toBe('#f386a1');
+    expect(textProps(theme, 'steer', 24).color).toBe('#FBBF24');
+  });
+  it('the ghost: a completion reads `get +2`; an alias arrow reads ` → /status` (` -> /status` under --ascii) — TUI-DESIGN-3 §4.1 rule 3', () => {
+    expect(ghostText({ rest: 'get', more: 2 })).toBe('get +2');
+    expect(ghostText({ rest: 'get', more: 0 })).toBe('get');
+    expect(ghostText({ arrow: '/status' })).toBe(' → /status');
+    expect(ghostText({ arrow: '/status' }, GLYPHS.ascii)).toBe(' -> /status');
+    expect(ghostText(null)).toBe('');
+    const rows = strip(render(<Console buffer={reduceBuffer(createBuffer(), { type: 'insert', text: '/s' })} columns={80} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev+llm" dir="proj" ghost={{ arrow: '/status' }} status={idle} statusOptions={{}} />).lastFrame());
+    expect(rows[1]).toBe(`│ › /s → /status${' '.repeat(76 - 14)} │`);
+  });
+  it('the status row is rendered from statusSpans: the text equals statusLineText and the row keeps its width for the done word, a meter word and a toast', () => {
+    const done = { ...idle, done: { stopReason: 'max_steps', steps: 7, wallMs: 252_000 } as never, spend: { run: { generator: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, totalUsd: 1.7, capUsd: 2, exceeded: false }, session: { totalUsd: 9.6, capUsd: 10 } } } as StatusLineState;
+    const rows = strip(render(<Console buffer={createBuffer()} columns={80} height={1} top={1} scrollTop={0} cursor={noop} active mode="followup" rows={24} badge="jev+llm" dir="proj" status={done} statusOptions={{}} />).lastFrame());
+    expect(rows[3]).toBe(`│ ${statusLineText(done, 76)} │`);
+    expect(rows[3]).toMatch(/^│ idle exit 4 .*run \$1\.70\/2\.00 high .*sess \$9\.60\/10\.00 critical/);
+    cleanup();
+    const toast = { ...idle, toasts: [{ id: 1, text: 'saved', level: 'ok' as const, untilMs: 5000 }], nowMs: 1000 };
+    const t = strip(render(<Console buffer={createBuffer()} columns={80} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev+llm" dir="proj" status={toast} statusOptions={{}} />).lastFrame());
+    expect(t[3]).toBe(`│ ${statusLineText(toast, 76)} │`);
+    expect(t[3]!.startsWith('│ ✓ saved')).toBe(true);
+  });
+  it('wizardConsoleTitle: `setup · key` / `setup · options` (TUI-DESIGN-3 §1.4.2, one source in onboarding/lines.ts) beside the round-2 steps; `setup` for a step without a title; the dot folds under --ascii', () => {
+    expect(wizardConsoleTitle('key')).toBe('setup · key');
+    expect(wizardConsoleTitle('options')).toBe('setup · options');
+    expect(wizardConsoleTitle('key', GLYPHS.ascii)).toBe('setup - key');
+    expect(wizardConsoleTitle('jevProvider')).toBe('setup · jev provider');
+    expect(wizardConsoleTitle('generatorKey')).toBe('setup · generator key');
+    expect(wizardConsoleTitle('save')).toBe('setup');
+    expect(wizardConsoleTitle('detect')).toBe('setup');
+    expect(consoleTopEdge(wizardConsoleTitle('key'), 'proj', 80)).toBe('╭─ setup · key ───────────────────────────────────────────────────────── proj ─╮');
+    expect(consoleTopEdge(wizardConsoleTitle('options'), 'proj', 80)).toBe('╭─ setup · options ───────────────────────────────────────────────────── proj ─╮');
+  });
+  it('F-R8: the one-key `key` step hosted in the console — the masked field is row 2 with the cursor on it (`isFieldStep`), the title bold, 76-cell rows', () => {
+    let state = onboardingReducer(INITIAL_ONBOARDING, { type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-on', provider: null, jevProvider: null, trustNeeded: false, reason: 'missing' } as never);
+    expect(state.step).toBe('key');
+    for (let i = 0; i < 20; i++) state = onboardingReducer(state, { type: 'length', length: i + 1 });
+    expect(state.length).toBe(20);
+    const positions: ({ x: number; y: number } | undefined)[] = [];
+    const rows = strip(render(<Console buffer={createBuffer()} columns={80} height={3} top={1} scrollTop={0} cursor={(p) => positions.push(p)} active mode="task" rows={24} badge="jev+llm" dir="proj" title={wizardConsoleTitle(state.step)} wizard={{ state, trust: null }} status={{ ...idle, overlay: 'wizard' }} statusOptions={{}} />).lastFrame());
+    expect(rows).toHaveLength(7);
+    expect(rows[0]).toBe('╭─ setup · key ───────────────────────────────────────────────────────── proj ─╮');
+    expect(rows[1]).toBe(`│ OpenRouter API key — one key runs Jev and the code model${' '.repeat(76 - 56)} │`);
+    expect(rows[2]).toBe(`│ › ${'•'.repeat(20)}${' '.repeat(76 - 22)} │`);
+    expect(rows[3]).toMatch(/^│ 20 chars · Enter saves · Ctrl-U clears · Esc clears \(again: other ways\)\s+│$/);
+    expect(rows[5]).toBe(`│ ${statusLineText({ ...idle, overlay: 'wizard' }, 76)} │`);
+    // the cursor sits after the 20 mask cells on the field row (y = top + 1 + row index 1)
+    expect(positions.at(-1)).toEqual({ x: 2 + 22, y: 3 });
+    for (const r of rows) expect([...r].length).toBe(80);
+  });
+  it('the badge words come from MODE_BADGE_WORD: `llm+jev · verified · next run` fits the top edge at 60 / 80 / 120 columns beside the dir', () => {
+    expect(modeBadge('jev-only', 'llm-jev')).toBe(`${MODE_BADGE_WORD['llm-jev']} · next run`);
+    for (const columns of [60, 80, 120]) {
+      const rows = columns === 80 || columns === 60 ? strip(render(<Console buffer={createBuffer()} columns={columns} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge={modeBadge('jev-only', 'llm-jev')} dir="proj" status={idle} statusOptions={{}} />).lastFrame()) : wideRows(<Console buffer={createBuffer()} columns={columns} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={40} badge={modeBadge('jev-only', 'llm-jev')} dir="proj" status={idle} statusOptions={{}} />, columns);
+      expect(rows[0]!.startsWith('╭─ llm+jev · verified · next run ─')).toBe(true);
+      expect(rows[0]!.endsWith(' proj ─╮')).toBe(true);
+      expect([...rows[0]!].length).toBe(columns);
+      cleanup();
+    }
   });
 });

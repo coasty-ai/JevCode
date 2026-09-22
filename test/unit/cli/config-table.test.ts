@@ -5,7 +5,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ConfigRecordValue } from '../../../src/core/types.js';
-import { SANDBOX_FOOTER, configTableLines, configTableRows, configValueText } from '../../../src/cli/config-table.js';
+import { HIDDEN_SETTINGS, SANDBOX_FOOTER, configTableLines, configTableRows, configValueText } from '../../../src/cli/config-table.js';
 
 const record: Record<string, ConfigRecordValue> = {
   'generator.provider': { value: 'anthropic', source: 'default' },
@@ -124,5 +124,18 @@ describe('TUI-DESIGN-2 §2.6 edge rows: an unknown provider value, the `mode` ro
     expect(configTableRows({ mode: { value: 'jev-only', source: 'default' } })).toEqual([{ setting: 'mode', value: 'jev-only', source: 'default' }]);
     expect(configTableLines({ mode: { value: 'jev-only', source: 'default' } }, { sandboxLevel: 'none' })[1]).toMatch(/^mode\s+jev-only\s+default$/);
     expect(configTableRows({ mode: { value: 'jev-on', source: 'file:/Users/me/proj/jevcode.json' } })).toEqual([{ setting: 'mode', value: 'jev-on', source: 'file:/Users/me/proj/jevcode.json' }]);
+  });
+});
+
+describe('TUI-DESIGN-3 §0.1 (D-Q): hidden bookkeeping rows', () => {
+  it('seen.defaultMode is hidden from the table unless `all`; every other row is untouched; the record keeps it (`--json`)', () => {
+    const withSeen: Record<string, ConfigRecordValue> = { ...record, 'seen.defaultMode': { value: 'jev-on', source: 'file:/x/config.json' } };
+    expect(HIDDEN_SETTINGS.has('seen.defaultMode')).toBe(true);
+    expect(configTableRows(withSeen).map((r) => r.setting)).not.toContain('seen.defaultMode');
+    expect(configTableRows(withSeen)).toEqual(configTableRows(record));
+    expect(configTableRows(withSeen, { all: true }).map((r) => r.setting)).toContain('seen.defaultMode');
+    expect(configTableRows(withSeen, { all: true }).find((r) => r.setting === 'seen.defaultMode')).toEqual({ setting: 'seen.defaultMode', value: 'jev-on', source: 'file:/x/config.json' });
+    expect(configTableLines(withSeen, { sandboxLevel: 'none' }).some((l) => l.startsWith('seen.defaultMode'))).toBe(false);
+    expect(configTableLines(withSeen, { sandboxLevel: 'none', all: true }).some((l) => l.startsWith('seen.defaultMode'))).toBe(true);
   });
 });

@@ -95,7 +95,7 @@ describe('pricingEntries', () => {
     const map = new Map(entries);
     expect(map.get('gpt-6-astra')).toEqual({ inputPerM: 10, outputPerM: 50, cacheReadPerM: 1, cacheWritePerM: 10 });
     expect(map.get('gemini-3.8-flash')!.outputPerM).toBe(3.75);
-    expect(map.get('z-ai/glm-5.3-flash')!.inputPerM).toBe(0.09);
+    expect(map.get('z-ai/glm-5.3-flash')!.inputPerM).toBe(0.15);
     expect(map.has('muse-')).toBe(false);
     expect(entries.length).toBe(MODEL_PRICES.filter(isKnownPrice).length);
     for (const [id] of entries) expect(id).toBe(id.toLowerCase());

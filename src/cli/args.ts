@@ -12,7 +12,7 @@ import { ConfigError, UsageError } from '../errors.js';
 import { parseDuration } from '../core/time.js';
 import { RUN_ID_RE } from '../checkpoint/run-id.js';
 import { RENDER_MODES, parseFps } from '../config/launch.js';
-import { MAX_FPS, MIN_FPS } from '../config/defaults.js';
+import { DEFAULT_MODE, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
 import { THEMES } from '../tui/commands/registry.js';
 
 // TUI-DESIGN §15.2 `cli/args.ts`: `COMMANDS += chat | login | logout | sessions | report | why | calibration | completion | upgrade`
@@ -103,9 +103,10 @@ export const BOOLEAN_FLAGS = [
   // TUI-DESIGN §1 / §8.4: `-c/--continue`, `--list-sessions`
   'continue',
   'listSessions',
-  // TUI-DESIGN §11.2 `jevcode login` / `logout`
+  // TUI-DESIGN §11.2 `jevcode login` / `logout`; TUI-DESIGN-3 §1.6 `--key-stdin` (the one-OpenRouter-key form)
   'generatorKeyStdin',
   'jevKeyStdin',
+  'keyStdin',
   'status',
   'verify',
   'generator',
@@ -114,6 +115,8 @@ export const BOOLEAN_FLAGS = [
   'includeRequests',
   'check',
   'writeCache',
+  // TUI-DESIGN-3 §0.1 (D-Q): `jevcode config --all` shows the hidden bookkeeping rows (`seen.*`)
+  'all',
 ] as const;
 
 export type StringFlagKey = (typeof STRING_FLAGS)[number];
@@ -240,8 +243,8 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'listSessions', name: 'list-sessions', type: 'boolean', commands: SESSION, help: 'print the sessions of this workspace and exit' },
   { key: 'taskFile', name: 'task-file', type: 'string', commands: RUN, arg: '<path>', help: 'read the task text from a file' },
   { key: 'perfExitAfterFirstFrame', name: 'perf-exit-after-first-frame', type: 'boolean', commands: SESSION, help: 'exit after the first frame (perf)', hidden: true },
-  // TUI-DESIGN-2 §1.2: jev-only is the default; the enum reads jev-only|jev-on|jev-off|llm-jev (docs/LLM-JEV-DESIGN.md adds the fourth)
-  { key: 'mode', name: 'mode', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: 'engine mode: jev-only (default; no generating LLM), jev-on (Jev + LLM), jev-off (generator only), llm-jev (GLM candidates inside the Jev-only search; Jev decides, tests verify)' },
+  // TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1 (D-N): the enum reads jev-only|jev-on|jev-off|llm-jev; the default is named through DEFAULT_MODE, never a literal
+  { key: 'mode', name: 'mode', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: `engine mode (default ${DEFAULT_MODE}): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)` },
   { key: 'condition', name: 'condition', type: 'string', commands: SESSION, arg: 'jev-only|jev-on|jev-off|llm-jev', help: 'alias of --mode (Harbor adapter)', hidden: true },
   { key: 'source', name: 'source', type: 'string', commands: SESSION, arg: CLI_SOURCES.join('|'), help: 'RunMeta.source for the perf drivers (perf never writes the session index or history)', hidden: true },
   // Hidden run flags used by the wiring code and perf/*: mocked provider+decider, no network.
@@ -255,19 +258,22 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|quixbugs|ladder|all', help: 'benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)' },
   { key: 'tasks', name: 'tasks', type: 'string', commands: BENCH, arg: '<n>', help: 'number of tasks' },
   { key: 'taskId', name: 'task-id', type: 'string', commands: BENCH, arg: '<id>[,<id>...]', help: 'specific task ids' },
-  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]', help: 'conditions to run (default jev-on,jev-off)' },
+  { key: 'conditions', name: 'conditions', type: 'string', commands: BENCH, arg: 'jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]', help: 'conditions to run (when omitted: the jev-on and jev-off arms)' },
   { key: 'concurrency', name: 'concurrency', type: 'string', commands: BENCH, arg: '<n>', help: 'parallel runs' },
   { key: 'live', name: 'live', type: 'boolean', commands: ['bench', 'perf'], help: 'use the real generator and Jev (requires --spend-cap)' },
   { key: 'taskSpendCap', name: 'task-spend-cap', type: 'string', commands: BENCH, arg: '<usd>', help: 'per-run spend cap (default 2.00)' },
   { key: 'allowModelAlias', name: 'allow-model-alias', type: 'boolean', commands: BENCH, help: 'allow an undated --jev-model' },
   { key: 'out', name: 'out', type: 'string', commands: ['bench', 'perf', 'report'], arg: '<path>', help: 'bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)' },
   // --- TUI-DESIGN §11.2 login / logout -----------------------------------------------------------------------------
+  // TUI-DESIGN-3 §1.6: `printenv OPENROUTER_API_KEY | jevcode login --key-stdin` — one line serves Jev and the code model
+  { key: 'keyStdin', name: 'key-stdin', type: 'boolean', commands: ['login'], help: 'read one OpenRouter key from the first stdin line: it serves Jev and the code model (pipes)' },
   { key: 'generatorKeyStdin', name: 'generator-key-stdin', type: 'boolean', commands: ['login'], help: 'read the generator key from the first stdin line (pipes)' },
   { key: 'jevKeyStdin', name: 'jev-key-stdin', type: 'boolean', commands: ['login'], help: 'read the Jev key from stdin (the next line)' },
   { key: 'status', name: 'status', type: 'boolean', commands: ['login'], help: 'print which keys are set and where they come from (fingerprints only)' },
-  { key: 'verify', name: 'verify', type: 'boolean', commands: ['login'], help: 'verify the saved keys with one priced Jev call (~$0.0001)' },
+  { key: 'verify', name: 'verify', type: 'boolean', commands: ['login'], help: 'verify the saved keys: one priced Jev decision (~$0.00002), one 1-token code-model completion (~$0.000002), the key info ($0)' },
   { key: 'generator', name: 'generator', type: 'boolean', commands: ['logout'], help: 'remove the saved generator key' },
   { key: 'jev', name: 'jev', type: 'boolean', commands: ['logout'], help: 'remove the saved Jev key' },
+  { key: 'all', name: 'all', type: 'boolean', commands: ['config'], help: 'include the hidden bookkeeping rows (seen.*)' },
   // --- TUI-DESIGN §13.6 report, §17 upgrade ------------------------------------------------------------------------
   { key: 'includeRequests', name: 'include-requests', type: 'boolean', commands: ['report'], help: 'include the redacted jev.jsonl request bodies in the bundle' },
   { key: 'check', name: 'check', type: 'boolean', commands: ['upgrade'], help: 'only report whether a newer version exists (2 s registry timeout)' },
@@ -287,8 +293,12 @@ export const SANDBOX_PROFILES = ['auto', 'seatbelt', 'none'] as const;
  * asserts the two lists are identical). The four engine modes are `MODES` below; `llm-sieve` and `jev-off-tuned` are bench-only arms.
  */
 export const CONDITIONS = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'] as const;
-/** TUI-DESIGN-2 §1.2: `--mode` / `--condition` values in the round-2 order — jev-only first, the default; llm-jev last (docs/LLM-JEV-DESIGN.md) */
+/** TUI-DESIGN-2 §1.2: `--mode` / `--condition` values in the round-2 order; llm-jev last (docs/LLM-JEV-DESIGN.md); the default is `DEFAULT_MODE` (config/defaults.ts) */
 export const MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
+/** TUI-DESIGN-3 §1.9 (R3 F9): the usage tagline — generator-neutral, `package.json`'s description agrees */
+export const TAGLINE = 'JevCode: Jev decides, the code model writes.';
+/** TUI-DESIGN-3 §1.1 (D-N): the bare-`jevcode` usage sentence names the default through DEFAULT_MODE's badge word, never a literal */
+export const BARE_JEVCODE_SENTENCE = `A bare \`jevcode\` opens the interactive session in ${MODE_BADGE_WORD[DEFAULT_MODE]} mode (one OpenRouter key serves Jev and the code model; /mode jev-only runs on Jev alone); \`/\` lists commands, \`?\` shows the keys.`;
 /** TUI-DESIGN-2 §2.3: `--jev-provider` values (`auto` = rules 2a–2e in config/resolve.ts; login infers instead) */
 export const JEV_PROVIDERS = ['auto', 'typesafe', 'openrouter'] as const;
 /** TUI-DESIGN-2 §1.4: `jevcode login --jev-provider typesafe|openrouter` — `auto` is what an absent flag means there, so it is refused as a value */
@@ -704,14 +714,14 @@ const USAGE_LINES: Readonly<Record<Command, readonly string[]>> = {
     '  jevcode run  <task text> | --task-file <path> | (stdin when not a TTY)  [--mode jev-only|jev-on|jev-off|llm-jev] [--plain | --json[=verbose] | --no-input]',
     '  jevcode run  --resume <id|title> [--force] | -c [--force]',
   ],
-  config: ['  jevcode config [--json]', '  jevcode config set <setting> <value>'],
+  config: ['  jevcode config [--json] [--all]', '  jevcode config set <setting> <value>'],
   bench: [
     '  jevcode bench --suite swebench|terminal-bench|quixbugs|ladder|all [--tasks <n> | --task-id <id>,...] [--conditions jev-on,jev-off,jev-only,llm-jev,llm-sieve,jev-off-tuned]',
     '                [--concurrency <n>] [--live --spend-cap <usd>] [--task-spend-cap <usd>] [--allow-model-alias]',
     '                [--resume <bench-id>] [--out <dir>]',
   ],
   perf: ['  jevcode perf [--live --spend-cap <usd>] [--out <file>]'],
-  login: ['  jevcode login [--provider anthropic|openrouter] [--jev-provider typesafe|openrouter] [--generator-key-stdin] [--jev-key-stdin] [--status] [--verify]'],
+  login: ['  jevcode login [--key-stdin | --generator-key-stdin --jev-key-stdin] [--provider anthropic|openrouter] [--jev-provider typesafe|openrouter] [--status] [--verify]'],
   logout: ['  jevcode logout [--generator] [--jev]'],
   sessions: ['  jevcode sessions [list | reindex | prune | unlock <id>] [--json]'],
   report: ['  jevcode report <id> [--include-requests] [--out <dir>]'],
@@ -743,12 +753,12 @@ export function usageText(command?: Command): string {
   const own = (c: Command): FlagSpec[] => FLAGS.filter((f) => f.commands.includes(c) && !isCommon(f) && !f.hidden && f.key !== 'help');
   const lines: string[] = [];
   if (command === undefined) {
-    lines.push('JevCode: Jev decides, Claude writes.', '', 'Usage:');
+    lines.push(TAGLINE, '', 'Usage:');
     for (const c of COMMANDS) lines.push(...USAGE_LINES[c]);
     lines.push(
       '  jevcode --version [--json] | --help',
       '',
-      'A bare `jevcode` opens the interactive session in jev-only mode (one Jev key suffices; /mode jev-on adds the LLM); `/` lists commands, `?` shows the keys.',
+      BARE_JEVCODE_SENTENCE,
       '',
       `Common flags (${COMMON.join(', ')}):`,
       ...common.map((f) => flagLine(f)),

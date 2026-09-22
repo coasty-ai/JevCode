@@ -2,8 +2,82 @@
 
 All notable changes to `jevcode`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
-by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-21 (`package.json` reads 0.2.0; the
-0.3.0 entry is the round-2 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-21 (`package.json` reads 0.3.0; the
+0.4.0 entry is the round-3 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+
+## [0.4.0] — 2026-09-21 (not yet published; `package.json` bump is the integrator's)
+
+Round 3 of the interactive TUI (`docs/TUI-DESIGN-3.md`, five concurrent slots; the record of what landed is `docs/STATUS.md`,
+"Round 3"). One default, one key, one brand: `jev+llm` is the default mode, one OpenRouter key runs Jev and the code model, the
+wordmark stays on screen and the palette is TypeSafe's pink.
+
+### Changed
+
+- **Default mode `jev-on` (badge `jev+llm`)** — `DEFAULT_MODE` in `src/config/defaults.ts` is the one constant every fallback
+  reads (D-G); the badge words come from the one table `MODE_BADGE_WORD` (`jev-only` · `jev+llm` · `llm-only` · `llm+jev ·
+  verified`; D-N) and no string outside `defaults.ts` names which mode is the default. The session follows `config.mode`
+  (flag > `JEVCODE_MODE` > dotenv > file > default) through `applyConfig`, so a round-2 `mode: jev-only` row keeps its session.
+  Caps by default: $2.00 per run, $10.00 per session; `/mode jev-only` and the wizard's `3 Jev only` keep the $0.25 / $1.25 path.
+  A keyed start whose `mode` resolves from the default and whose file has no `mode` row prints the `[setup] mode jev+llm (default) —
+  caps …` item once (D-Q, `seen.defaultMode`).
+- **The wordmark stays** (D-I, §3): the 5-row mark is the pane slot's idle tenant at ≥ 21 rows and ≥ 64 columns — shown while idle
+  and thinking, hidden while a run is live or a panel / picker / review owns the slot, back under the strip after `run:end` (at once
+  at ≥ 24 rows, on the first key at 21–23). A key completes the reveal instead of killing it. The splash's 6-cell sweep loops at
+  4 fps peak / 1.6 fps mean (16 frames per 4 s pass, 6 s of rest; one pass per 30 s after a minute without activity; static after
+  ten minutes; never within 3 s of a key; a reply calms it). The caption `◆ <version>` replaces the brand row as the settle
+  sentinel (≥ 73 columns); the tagline `Decisions, not strings` at ≥ 104 columns. `ui.wordmark: sweep | static | off` is the
+  escape hatch (default `static` under SSH); `--no-animation`, `NO_COLOR` and the flat tier spend no idle frame.
+- **TypeSafe pink** (D-H, §2): the `dark` theme keeps its id and becomes the typesafe.ai palette — primary `#f386a1` (cell 211) for
+  what *is* JevCode or Jev (the brand row, the wordmark letters, the badge, the `[jevcode]` label, `[chosen]`, the idle `›`, the
+  spinner), secondary `#d45bb6` (cell 169) for what is *being acted on* (the console edges while a run is live, the `[you]` label,
+  the palette cursor); red / amber / green keep their hues; the `light` theme darkens the pinks and fixes its unreadable red and
+  green; `COLORFGBG` with a white background (7 or 15) selects `light` by default (D-R). Bodies stay the terminal's default
+  foreground — the label is the bubble (D-O); the prompt is pink at rest and amber while steering; the spinner is the shade pulse
+  `░ ▒ ▓ █ ▓ ▒` in the accent (D-P), `◆` under reduced motion.
+- **Transcript polish** (D-L, D-M, §5): a fixed 10-cell right-aligned label gutter (`[jevcode]` flush, `     [ui]` padded; bodies at
+  column 10, wrapped rows hanging there); bodies wrap at ` · ` before spaces with the separator leading the continuation, and a
+  final token narrower than 4 cells never sits alone (`… (gen $0.000, jev $0.025)` / `exit 4`); detail rows indent under the body
+  column and the epilogue's `label     value` rows hang under the value; a blank row above a `[ui]` block; the status row colours
+  the left word and the meter words only; the loop banner reads `loop · …` and clears at `run:end`; the run id never sits in the
+  status centre. Engine item **text** is unchanged (D-M: `[run] start/end`, `replan`, `loop tripped` rewrites are round 4's); only
+  local items moved — `/cost`'s head is `cost` and its per-question figure reads `~$0.000006 each` (no scientific notation), `/jev`'s
+  last-intake row names the reading, the `[sandbox]` item reads `seatbelt · writes only in the workspace and run dirs · …` with the
+  old sentence as its detail.
+- **Commands** (D-K, §4): 21 shortcut aliases (`/s` status, `/p` panel, `/t` theme, `/l` login, `/m` mode, `/c` cost, `/d` diff,
+  `/u` undo, `/b` budget, `/j` jev, `/w` why, `/r` resume, `/q` exit, `/nw` new, `/pl` plan, `/tr` transcript, `/cf` config, `/cp`
+  copy, `/rw` rewind, `/dc` decisions, `/ml` model — no one-letter alias for `/abort`, `/exit`, `/new`); an exact alias pins its owner
+  to the top palette row, the palette shows an alias column, a ` → /owner` ghost and Suggested → recent → Popular groups; Tab
+  completes arguments and never wipes a typed one; an error the user cannot fix by editing clears the draft, a fixable one keeps it.
+  The 23 findings of the command audit are fixed (`/panel` and `/transcript` in `--plain`, `/theme` forwarded to the host, `/copy
+  diff` copies the diff, `/why` errors read alike in both renderers, one help formatter, `keybindings.json` reaches the App, `/new`
+  before a session, `/rename` says when it cut, commands while thinking, `/model` / `/provider` show forms, `/logout` labels,
+  `/trust` Esc closes, `/errors` acks `!n`).
+
+### Added
+
+- **One-key onboarding** (D-J, §1.4): a bare `jevcode` with no key anywhere opens on one masked OpenRouter field under the held mark
+  (`setup · key`); Enter writes the four file keys from one paste; Esc on the empty field opens `options` (`1 OpenRouter · 2 TypeSafe ·
+  3 Jev only · 4 Anthropic` — a digit highlights and shows its consequence, the same digit or Enter confirms; `3` at startup persists
+  `mode: jev-only`); a resolving TypeSafe / Jev / Anthropic key gives the field a found-title and saves only what the found state calls
+  for (a file `jevProvider` never displaces `TYPESAFE_API_KEY`). Verification on an explicit `y` sends one priced Jev decision
+  (~$0.00002), one 1-token completion and `GET /api/v1/key`, with four outcomes (ok · rejected · credits · unreachable · model);
+  `jevcode login --key-stdin` is the pipe form; the `[setup] spend caps` item after a wizard save; the jev-on fix block leads with
+  `export OPENROUTER_API_KEY=…   # one key: Jev + the code model`.
+- `ui.wordmark` setting (`sweep | static | off`; `JEVCODE_WORDMARK`); `LaunchSettings.themeHint` from `COLORFGBG`; `LaunchSettings.ssh`.
+- Perf: the `idle-frames` probe (`chat --mock` at 24×80 and 40×120 left alone for 31 s: `dynamic` frames ≤ 4 in any second and ≤ 2/s
+  mean, ≤ 12 KB/s peak / ≤ 5 KB/s mean, 0 clears, region ≤ rows − 2, child CPU reported); the composer `idle-loop` series (200 keys
+  typed 200 ms into the first sweep pass); the render-lag `run-start` bucket (the rule sweep's frames in the run's first second).
+- `scripts/pty/polish-check.mjs`: the hero-frame checklist V1–V21 of TUI-DESIGN-3 §9 over a `.cap` / `.txt` capture pair; the pty
+  smoke's `polish` / `polish-wide` scenarios run it; unit tests on synthetic captures.
+- pty scenarios: `wordmark-idle`, `wordmark-key-during-pass`, `wordmark-handoff`, `wordmark-21` / `-20` / `-22-postrun`,
+  `wordmark-reduced` (replaces `splash-reduced`), `wordmark-nocolor`, `theme-pink` / `-light` / `-ansi`, `polish`, `r3-*` wizard edges,
+  `ts-only-start` / `-restart`, `r3-env-jev-only`, `commands-{idle,live,thinking}`, `trust-esc`, `keybindings`.
+
+### Contract
+
+- contract 1.3 (`src/core/types.ts`, additive): `Renderer.setBindings?`, `WizardOutcome` `{ kind: 'mode' }`, `Prompter.wizard`
+  `found` / `foundSource`, `UiConfig.wordmark?`, `SettingName 'ui.wordmark'`, `SessionHost.dispatchContext?`; `CheckpointEnvelope.version`
+  stays 1.
 
 ## [0.3.0] — 2026-09-21 (not yet published)
 
@@ -128,6 +202,13 @@ run starts, and the interactive surface is one rounded console, one line per ste
   decisions`) instead of the pane header.
 
 ### Fixed
+
+- **The persistent wordmark no longer taxes every keystroke** (`src/tui/App.tsx`): the five mark rows are memoised by value on the
+  sweep's band tick and blank cells join the neighbouring coloured span, so a key frame re-renders the App but leaves the mark's
+  React nodes untouched — palette keystroke → frame p95 34 → 5 ms, idle p95 7.4 → 4.1 ms (isolated probes; `docs/STATUS.md` "Round 3").
+- **Frame 0 honours `--theme` / `JEVCODE_THEME`** (`src/config/launch.ts` `themeHint`): the splash and console never paint the dark
+  palette before the resolved theme applies. **Wizard:** a key pasted with a trailing newline saves (the Enter read a stale closure);
+  the `--plain` wizard's Ctrl-C prints the fix block and exits 2 instead of hanging. **`/rename`** clips once and says so.
 
 - **A keystroke's frame no longer waits for Ink's render throttle** (`src/tui/{useEngine.tsx,Transcript.tsx,App.tsx}`;
   TUI-DESIGN-2 decision D-F). Ink 7.1.1 renders a commit at most every 34 ms (`maxFps` 30, leading + trailing edge); a key

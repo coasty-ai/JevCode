@@ -7,7 +7,7 @@
  * caller stores it — the resolver itself never mutates its input.
  */
 import type { OverlayKind } from '../layout.js';
-import { DEFAULT_BINDINGS, isChordPrefix, lookupBinding, type Bindings, type KeyContext } from './bindings.js';
+import { COMMAND_KEY_ACTIONS, DEFAULT_BINDINGS, isChordPrefix, lookupBinding, type Bindings, type KeyContext } from './bindings.js';
 import { CHORD_WINDOW_MS, ESC_REBUFFER_MS, WHY_WINDOW_MS, reduceInterrupts, type InterruptAction } from './interrupts.js';
 
 /** TUI-DESIGN §3.1: the boolean part of Ink 7.1.1's `Key` (kitty fields included for forward compatibility). */
@@ -163,6 +163,8 @@ export type KeyAction =
   /** TUI-DESIGN-2 §4.6: Alt+J toggles the panel, Alt+Shift+J opens it full, Alt+D/P/T/S open a tab (a second press on the same tab collapses) */
   | { type: 'panel'; op: 'toggle' | 'full' | 'tab'; tab?: 'd' | 'p' | 't' | 's' }
   | { type: 'export' }
+  /** TUI-DESIGN-3 §4.5: a rebound key that equals a command (`session:cost` → `/cost`, `files:undo` → `/undo`, …); the App routes the line as typed */
+  | { type: 'slash'; line: string }
   | { type: 'palette'; op: 'move' | 'page' | 'accept' | 'run' | 'close'; by?: -1 | 1 }
   | { type: 'picker'; op: 'move' | 'page' | 'open' | 'accept' | 'preview' | 'allWorkspaces' | 'rename' | 'deleteArm' | 'deleteConfirm' | 'close'; by?: -1 | 1 }
   | { type: 'review'; op: 'approve' | 'decline' | 'note' | 'expand' | 'whyArm' | 'why' | 'noteSubmit' | 'noteCancel'; dim?: 1 | 2 | 3 | 4 | 5 }
@@ -350,6 +352,13 @@ function composerAction(id: string, s: KeyState, k: KeyEvent): KeyAction[] | nul
       return [{ type: 'panel', op: 'tab', tab: 's' }];
     case 'session:export':
       return [{ type: 'export' }];
+    case 'session:cost':
+    case 'session:status':
+    case 'session:mode':
+    case 'files:diff':
+    case 'files:undo':
+    case 'ui:copy':
+      return [{ type: 'slash', line: COMMAND_KEY_ACTIONS[id] as string }];
     case 'composer:newline':
       return [{ type: 'newline' }];
     case 'composer:lineStart':

@@ -32,30 +32,39 @@ export interface RuleRowInput {
   overlay: OverlayKind;
   terminalRows: number;
   panel: PanelState;
-  /** the splash is running (its wordmark rows in the pane slot at ≥ 64 columns; the pulsing brand row below) */
+  /** the splash is running (the pulsing brand row below 64 columns / while the mark has no rows) */
   splash: 'running' | 'done';
   /** elapsed splash ms (the brand glyph pulse) */
   splashTime: number | null;
   /** TUI-DESIGN-2 §5.4: `run:ready` has been seen (or a run ended) in this session — before it the brand row is the idle rule row */
   ranBefore: boolean;
+  /**
+   * TUI-DESIGN-3 §3.3: the wordmark has rows in the pane slot this frame (the splash's reveal or the resting mark) — the rule row is
+   * the plain rule before the first `run:ready` and the strip afterwards (F-W5: the strip keeps its information, the mark sits under it).
+   * Optional so the round-2 callers and fixtures keep compiling (false = today's rows).
+   */
+  wordmark?: boolean;
   version: string;
   glyphs?: GlyphSet;
   pickerHeader?: string | null;
 }
 
 /**
- * TUI-DESIGN-2 §4.6 / §5.3 / §5.4: the rule row — the picker's header when the picker is open; the plain rule while
- * the wordmark rows run above the console (splash, ≥ 64 columns); the open / full panel's tab header with `▾ ` whenever
- * the pane has rows (also before the first run: `]`, Alt+J or `/panel` on the idle frame open a headed `(no decisions
- * yet)` tab, never a headerless hole — §4.6's table, finding 4); else the brand row (pulsing while the splash runs below
- * 64 columns) until the first `run:ready`; then the collapsed panel's strip.
+ * TUI-DESIGN-2 §4.6 / §5.3 / §5.4; TUI-DESIGN-3 §3.3: the rule row — the picker's header when the picker is open; the plain
+ * rule while the wordmark rows sit above the console before the first `run:ready` (the reveal, then the resting mark);
+ * the pulsing brand row while the splash runs without wordmark rows (below 64 columns); the open / full panel's tab header
+ * with `▾ ` whenever the pane has rows (also before the first run: `]`, Alt+J or `/panel` on the idle frame open a headed
+ * `(no decisions yet)` tab, never a headerless hole — §4.6's table, finding 4); else the brand row until the first
+ * `run:ready`; then the collapsed panel's strip — with or without the mark under it (F-W5).
  */
 export function ruleRowText(i: RuleRowInput): string {
   const g = i.glyphs ?? GLYPHS.unicode;
   const cols = Math.min(RULE_MAX_CELLS, Math.max(0, Math.floor(Number.isFinite(i.columns) ? i.columns : 0)));
   if (i.pickerHeader !== undefined && i.pickerHeader !== null) return i.pickerHeader;
   if (cols < 40) return plainRule(cols, g);
-  if (i.splash === 'running') return cols >= WORDMARK_MIN_COLUMNS && i.paneRows > 0 ? plainRule(cols, g) : brandRow(i.version, cols, i.splashTime, g);
+  const wordmark = i.wordmark === true || (i.splash === 'running' && cols >= WORDMARK_MIN_COLUMNS && i.paneRows > 0);
+  if (wordmark && !i.ranBefore) return plainRule(cols, g);
+  if (i.splash === 'running' && !wordmark) return brandRow(i.version, cols, i.splashTime, g);
   // the open (6-row) panel never goes side by side; `full` keeps TD §7.2's rule (columns ≥ 120 && rows ≥ 40 && overlay none)
   if (i.panel !== 'collapsed' && i.paneRows > 0) return paneRuleRow(i.state, i.paneRows, cols, i.overlay, { terminalRows: i.panel === 'full' ? i.terminalRows : 0, glyphs: g, chevron: true });
   if (!i.ranBefore) return brandRow(i.version, cols, null, g);

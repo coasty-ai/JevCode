@@ -1,6 +1,6 @@
 /**
  * The one height allocator of the interactive TUI (TUI-DESIGN §2.1, D1, F3; TUI-DESIGN-2 §4.1–4.2 `computeLayout`
- * 1.1). Pure: no I/O, no clock, no Ink. Vertical order top to bottom is `<Static>` scrollback · rule · live ·
+ * 1.1; TUI-DESIGN-3 §3.7 `computeLayout` 1.2 — the whole-or-absent pane grant for the wordmark). Pure: no I/O, no clock, no Ink. Vertical order top to bottom is `<Static>` scrollback · rule · live ·
  * banner · pane · queue · overlay · preview · [console: top edge · gate · composer · divider · status · bottom edge]
  * (flat tier: composer · status). Allocation order is the priority (status → rule → composer floor → chrome →
  * overlay → composer growth → queue → preview → live → banner → pane) and F3's yield order is its reverse (pane →
@@ -44,7 +44,7 @@ export const CAP = {
   banner: 1,
   /** TUI-DESIGN-2 §4.3: the console's top edge, divider and bottom edge */
   chrome: 3,
-  /** TUI-DESIGN-2 §5.1: the wordmark rows in the pane slot while the splash runs */
+  /** TUI-DESIGN-2 §5.1 / TUI-DESIGN-3 §3: the wordmark rows in the pane slot (the splash, then the idle tenant) */
   splash: 5,
 } as const;
 
@@ -97,6 +97,8 @@ export interface LayoutInput {
   chrome: 0 | 3;
   /** TUI-DESIGN-2 §4.2: the secret-gate row the console hosts (boxed tier only; the flat tier keeps the `secret` overlay) */
   gate: 0 | 1;
+  /** TUI-DESIGN-3 §3.7: grant the pane its whole want or nothing (the wordmark is never cut to its top rows); panel / picker keep partial grants */
+  paneWhole?: boolean;
 }
 
 /** TUI-DESIGN §2.1: rows granted to every slot; `total ≤ budget = rows − 2` always. */
@@ -181,7 +183,9 @@ export function computeLayout(i: LayoutInput): Layout {
   z.preview = i.overlay === 'review' ? take(Math.min(i.previewWant, i.expanded ? rem : CAP.preview)) : 0; // 7
   z.live = i.overlay === 'review' ? 0 : take(Math.min(i.liveWant, CAP.live)); // 8 live rows are reclaimed by a pending review (A42)
   z.banner = take(Math.min(i.bannerWant, CAP.banner)); // 9 the loop banner is one row (A45)
-  z.pane = i.expanded ? 0 : take(Math.min(i.paneWant, CAP.pane)); // 10 pane yields first
+  // 10 pane yields first; TUI-DESIGN-3 §3.7 (`computeLayout` 1.2): under `paneWhole` the want is granted whole or not at all
+  const want = Math.min(i.paneWant, CAP.pane);
+  z.pane = i.expanded ? 0 : i.paneWhole === true ? (Number.isFinite(want) && rem >= Math.floor(want) ? take(want) : 0) : take(want);
   z.total = budget - rem;
   return z;
 }

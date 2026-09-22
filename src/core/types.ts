@@ -9,6 +9,7 @@
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): conversational intake, Jev providers, mode setting, chat labels per docs/TUI-DESIGN-2.md §6; items 4 and 7 add required fields (every constructor and fake is listed there), item 8 is optional, everything else is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
+// contract 1.3 (2026-09-21): TUI round 3 — renderer bindings, wizard `mode` outcome, ui.wordmark, host dispatch context, per docs/TUI-DESIGN-3.md §6; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 
@@ -1485,10 +1486,21 @@ export interface LaunchSettings {
   screenReader: boolean;
   ascii: boolean;
   noColor: boolean;
-  /** TUI-DESIGN-2 §6 item 14 / §1.1: the first frame's badge word — `--mode` > `JEVCODE_MODE`; absent when neither is set (the App reads `jev-only`) */
+  /** TUI-DESIGN-2 §6 item 14 / §1.1: the first frame's badge word — `--mode` > `JEVCODE_MODE`; absent when neither is set (the App reads `DEFAULT_MODE`) */
   modeHint?: EngineMode;
   /** TUI-DESIGN-2 §6 item 14 / §5.3: `--no-animation` > `JEVCODE_REDUCED_MOTION` > screenReader — the splash's static form before the file is read */
   reducedMotion: boolean;
+  /**
+   * TUI-DESIGN-3 §6 item 8 / §2.2 (D-R): `COLORFGBG` background index 7 | 15 → the `light` table is frame 0's default; absent otherwise and
+   * whenever `--theme` / `JEVCODE_THEME` is set (the chain resolves those; `ui.theme` in the file still wins at setUi)
+   */
+  themeHint?: 'dark' | 'light' | 'daltonized' | 'ansi';
+  /**
+   * TUI-DESIGN-3 §6 item 8: the SSH launch source (`SSH_TTY` / `SSH_CONNECTION`), already the fps default's input; `ui.wordmark` defaults to
+   * `static` under it. Always set by resolveLaunchSettings; optional here (the design writes `ssh: boolean`) so the LaunchSettings / UiConfig
+   * literals outside S3's files (test/unit/tui/plain.test.ts) keep compiling in W0 — readers test `launch.ssh === true`
+   */
+  ssh?: boolean;
 }
 /** the LaunchSettings members repeat the mount-time values (source flag | env | default only) */
 export interface UiConfig extends LaunchSettings {
@@ -1506,6 +1518,8 @@ export interface UiConfig extends LaunchSettings {
   logLevel: 'error' | 'warn' | 'info' | 'debug' | 'trace';
   logFile: string | null;
   keybindingsFile: string | null;
+  /** TUI-DESIGN-3 §6 item 4 / §3.2: the wordmark's idle animation — OPTIONAL; readers: `ui?.wordmark ?? (launch.ssh ? 'static' : 'sweep')` */
+  wordmark?: 'sweep' | 'static' | 'off';
 }
 /**
  * TUI-DESIGN §15 item 19 / §10.1: one detected secret span. Declared here so SessionHost is self-contained;
@@ -1548,6 +1562,8 @@ export interface SessionHost {
   history(): HistoryStore | null;
   /** pre-run: files.ts listCandidates() once after firstFrame(); from run:ready: the live workspace.listCandidates() (§5.4) */
   workspaceCandidates(): Promise<readonly Candidate[]>;
+  /** TUI-DESIGN-3 §6 item 7 (R4 F20): the host's dispatch context beyond the run phase (cli/session.ts ControllerHost declares it; the App prefers it over its own fold) */
+  dispatchContext?(): Omit<import('../tui/commands/dispatch.js').DispatchContext, 'run'>;
 }
 export interface RunRow {
   runId: string;
@@ -1615,6 +1631,12 @@ export interface Renderer {
   restoreDraft?(text: string): void;
   /** TUI-DESIGN-2 §6 item 11 / §3.6: the LLM turn's streamed text for the live region ('' empties it) */
   live?(text: string): void;
+  /**
+   * TUI-DESIGN-3 §6 item 1 (R4 F10): the effective key bindings (defaults + the keybindings file) for the App. `Bindings` is imported
+   * type-only from src/tui/keys/bindings.ts — the contract's one core → tui inversion (redeclaring its four-map shape here would be a
+   * second source of truth for the key tables)
+   */
+  setBindings?(bindings: import('../tui/keys/bindings.js').Bindings): void;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1668,7 +1690,7 @@ export interface DeciderConfig {
 export interface ResolvedConfig {
   /** every setting with its source; secrets appear only as fingerprints in record() */
   readonly entries: ReadonlyMap<string, Resolved<string>>;
-  /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > default jev-only); the mode-keyed spend caps read it */
+  /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE); the mode-keyed spend caps read it */
   readonly mode: EngineMode;
   /** validates the generator section on first call; ConfigError names setting and sources */
   generator(): GeneratorConfig;

@@ -1,0 +1,19 @@
+# TUI-DESIGN-3 §4.4 F14: a `/` line while the intake is thinking (JEVCODE_MOCK_JEV_MS=1500 delays the mock decider) is not dropped —
+# `/status` answers while the request is in flight; the reply lands afterwards; /exit leaves 0
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.3
+send hi
+sleep 0.2
+send \r
+expect thinking
+send /status
+sleep 0.15
+send \r
+expect \[ui\](?:\x1b\[[0-9;]*m)* status
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* Hi\.
+send /exit
+sleep 0.2
+send \r
+eof

@@ -3,7 +3,8 @@
  * §24 "Overlays"; TUI-DESIGN-2 §3.7, §4.7): review, wizard, follow-up confirm, secret gate row, blocking pane,
  * palette, undo prompt, exit confirm, the intake card and the minimum-size notice all render here, directly above
  * the composer, so at most one exists at a time and `computeLayout` has a single allocation order to prove. Every
- * kind is a fixed-height overflow-hidden box of `wrap="truncate"` rows built by the shared `lines()` functions —
+ * kind is a fixed-height overflow-hidden box of `wrap="truncate"` rows built by the shared `lines()` functions (TUI-DESIGN-3 §5.2
+ * A8–A9: the review card's `armed` flag rides through to `Review`; the palette's selected `▌` takes `accent2`) —
  * the `--plain`, `--screen-reader` and `--ascii` twins read the same functions. In the boxed tier (`chrome === 3`)
  * every kind but the wizard (hosted by the console) and the secret gate (a console row) is a rounded card from
  * `cardLines` — edge colours follow the card's meaning (review `review`/`block`, follow-up · undo · exit confirm ·
@@ -63,7 +64,8 @@ export interface IntakeOverlay {
 
 /** The per-kind data the overlay draws from (everything optional: the App passes what the kind needs). */
 export interface OverlayData {
-  review?: { req: ConfirmRequest; note: ReviewNote | null } | null;
+  /** TUI-DESIGN-3 §5.2 A8: `armed` — the card was drawn on a committed frame and `y` is live (the keys row wakes up); `Review` draws it (S5) */
+  review?: { req: ConfirmRequest; note: ReviewNote | null; armed?: boolean } | null;
   wizard?: { state: OnboardingState; trust: TrustInputs | null } | null;
   followup?: FollowupInput | null;
   secret?: { hits: readonly SecretHit[] } | null;
@@ -191,25 +193,45 @@ function Card({ title, body, rows, columns, glyphs, edgeRole, bodyRole, theme, c
   );
 }
 
-/** §5.3: one palette row — `▌ /name   title   hint`, matched graphemes bold, unavailable rows dim, the footer dim. */
+/** TUI-DESIGN-3 §5.2 A9: the selected row's `▌ ` (`> ` ascii) marker takes `accent2`; the rest of the row keeps its own props. */
+const MARKER_CELLS = 2;
+
+/**
+ * §5.3: one palette row — `▌ /name  a  title   tag`, matched graphemes bold, unavailable rows dim, the footer dim; TUI-DESIGN-3
+ * §5.2 A9 / §4.1 rule 4: the selected marker in `accent2`, the alias column and the group tag dim.
+ */
 function PaletteRowText({ row, theme, color }: { row: PaletteRow; theme: Theme; color: ColorOn }): React.JSX.Element {
   if (row.kind === 'footer') return <Text wrap="truncate" {...textProps(theme, 'dim', color)}>{row.text}</Text>;
-  if (row.spans.length === 0 || color === false || color === 0) return <Text wrap="truncate" {...(row.dim ? textProps(theme, 'dim', color) : row.selected ? { bold: true } : {})}>{row.text}</Text>;
+  const off = color === false || color === 0;
+  const marker = row.kind === 'command' && row.selected && !off ? row.text.slice(0, MARKER_CELLS) : '';
+  const body = marker === '' ? row.text : row.text.slice(MARKER_CELLS);
+  const shift = marker.length;
+  const rowProps = row.dim ? textProps(theme, 'dim', color) : row.selected && off ? { bold: true } : {};
+  const markerEl = marker === '' ? null : <Text {...textProps(theme, 'accent2', color)}>{marker}</Text>;
+  if (row.spans.length === 0 || off) {
+    return (
+      <Text wrap="truncate" {...rowProps}>
+        {markerEl}
+        {body}
+      </Text>
+    );
+  }
   const parts: React.JSX.Element[] = [];
   let at = 0;
-  const sorted = [...row.spans].sort((a, b) => a[0] - b[0]);
+  const sorted = [...row.spans].map(([a, b]) => [Math.max(0, a - shift), Math.max(0, b - shift)] as [number, number]).sort((a, b) => a[0] - b[0]);
   sorted.forEach(([s, e], i) => {
-    if (s > at) parts.push(<Text key={`t${i}`}>{row.text.slice(at, s)}</Text>);
+    if (s > at) parts.push(<Text key={`t${i}`}>{body.slice(at, s)}</Text>);
     parts.push(
       <Text key={`b${i}`} bold>
-        {row.text.slice(s, e)}
+        {body.slice(s, e)}
       </Text>,
     );
     at = e;
   });
-  if (at < row.text.length) parts.push(<Text key="tail">{row.text.slice(at)}</Text>);
+  if (at < body.length) parts.push(<Text key="tail">{body.slice(at)}</Text>);
   return (
-    <Text wrap="truncate" {...(row.dim ? textProps(theme, 'dim', color) : {})}>
+    <Text wrap="truncate" {...rowProps}>
+      {markerEl}
       {parts}
     </Text>
   );
@@ -268,7 +290,9 @@ export function Overlay(p: OverlayProps): React.JSX.Element | null {
     case 'review': {
       const d = p.data.review;
       if (!d) return null;
-      return <Review req={d.req} rows={rows} previewRows={p.previewRows} columns={p.columns} top={p.top} note={d.note} {...(p.cursor ? { cursor: p.cursor } : {})} glyphs={g} theme={theme} color={color} boxed={boxed} />;
+      // TUI-DESIGN-3 §5.2 A8: `armed` rides through to the card (drawing only — `resolveKey` keeps the review invariants)
+      const armed: { armed?: boolean } = d.armed === undefined ? {} : { armed: d.armed };
+      return <Review req={d.req} rows={rows} previewRows={p.previewRows} columns={p.columns} top={p.top} note={d.note} {...(p.cursor ? { cursor: p.cursor } : {})} glyphs={g} theme={theme} color={color} boxed={boxed} {...armed} />;
     }
     case 'wizard': {
       const d = p.data.wizard;
@@ -297,7 +321,7 @@ export function Overlay(p: OverlayProps): React.JSX.Element | null {
     case 'palette': {
       const m = p.data.mention;
       if (m) {
-        if (boxed && rows >= 3) return <PaletteCard title={CARD_TITLE_FILES} list={mentionRows(m, rows - CAP.card, g).map((text, i, all): PaletteRow => ({ kind: i === all.length - 1 ? 'footer' : 'value', text, selected: false, dim: false, spans: [], suggested: false }))} rows={rows} columns={p.columns} glyphs={g} theme={theme} color={color} />;
+        if (boxed && rows >= 3) return <PaletteCard title={CARD_TITLE_FILES} list={mentionRows(m, rows - CAP.card, g).map((text, i, all): PaletteRow => ({ kind: i === all.length - 1 ? 'footer' : 'value', text, selected: false, dim: false, spans: [], suggested: false, tag: null }))} rows={rows} columns={p.columns} glyphs={g} theme={theme} color={color} />;
         return <Rows lines={mentionRows(m, rows, g)} rows={rows} columns={p.columns} glyphs={g} theme={theme} color={color} />;
       }
       const d = p.data.palette;

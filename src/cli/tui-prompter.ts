@@ -12,11 +12,13 @@
  * wizard closes and the run continues, otherwise exit 2) and when the wizard reaches `done` without a save / trust answer,
  * so a pending `wizard()` resolves `cancelled` and a pending `trust()` resolves `null` at once (no overlay polling).
  */
-import type { BlockingAnswer, EngineMode, SecretSettingName, SessionRow } from '../core/types.js';
+import type { BlockingAnswer, EngineMode, JevProvider, SecretSettingName, SessionRow } from '../core/types.js';
 import type { CredentialsPatch } from '../config/credentials.js';
+import { DEFAULT_MODE } from '../config/defaults.js';
 import type { TrustInputs, TrustOption } from '../config/trust.js';
 import type { PickerOpen, TuiRenderer, WizardHost, WizardSaveInput } from '../tui/index.js';
-import type { WizardProvider } from '../tui/onboarding/reducer.js';
+import type { WizardModeChoice, WizardVerifyInput, WizardVerifyResult } from '../tui/onboarding/Wizard.js';
+import type { FoundKey, FoundSource, WizardProvider } from '../tui/onboarding/reducer.js';
 import { childCapUsd } from '../tui/budget/lines.js';
 import type { UndoAskKey } from '../undo/plan.js';
 import type { Prompter, WizardOutcome, WizardReason } from './session.js';
@@ -27,7 +29,9 @@ import type { IntakeOverlay } from '../tui/Overlay.js';
 /** the controller hooks the wizard host bridge calls back into */
 export interface TuiPrompterControls {
   /** `SessionController.persistCredentials` — addSecret first, then the 0600 write, then resolveConfig again */
-  persistCredentials(patch: CredentialsPatch, source: 'wizard' | 'login'): Promise<{ ok: boolean; items: string[]; error?: string }>;
+  persistCredentials(patch: CredentialsPatch, source: 'wizard' | 'login', opts?: { reusedFrom?: FoundSource }): Promise<{ ok: boolean; items: string[]; error?: string }>;
+  /** TUI-DESIGN-3 §1.4.1 (edges 11, 17): the layer the resolved Jev key came from (the reuse item names it) */
+  resolvedJevSource?(): FoundSource | null;
   /** the engine mode of the next run (the wizard skips the generator key for jev-only) */
   mode(): EngineMode;
   /** the trust inputs of the current workspace (the wizard's trust step) */
@@ -39,6 +43,14 @@ export interface TuiPrompterControls {
   trashDir(): string | null;
   /** §11.1: a run is live — the reopened wizard's Ctrl-C closes it instead of exiting 2 */
   runLive(): boolean;
+  /** TUI-DESIGN-3 §1.5: the wizard's `y` — one Jev decision, one 1-token completion, the key info; `items` are the `[setup]` texts, `rejected` the field to return to */
+  verifyKeys?(input: WizardVerifyInput): Promise<WizardVerifyResult>;
+  /** TUI-DESIGN-3 §1.4.3: option `3 Jev only` (or `2` + skip) — persist the mode row (a startup wizard) or pend it (`/login`); runs after the save when one follows */
+  applyMode?(mode: EngineMode, persist: boolean): Promise<void>;
+  /** TUI-DESIGN-3 §1.4.1 (edges 11, 17): the resolved Jev key's value for `reuseJevForGenerator` — read once at save time, never stored here */
+  resolvedJevKey?(): string | null;
+  /** TUI-DESIGN-3 §5.1 rule 13: the `[sandbox]` item's TUI-only detail body */
+  sandboxDetail?(): string | null;
 }
 
 /** the wizard host the App receives; `cancel()` is required here (the App calls it from `wizard.cancel()` / a `done` without an answer) */
@@ -73,8 +85,15 @@ function newestRunId(s: SessionRow): string | null {
   return r ? r.runId : null;
 }
 
-/** TUI-DESIGN §11.1 save: the wizard's typed values → the credentials patch (`reuseGeneratorForJev` copies the generator key) */
-export function patchFromWizard(input: WizardSaveInput): CredentialsPatch {
+/**
+ * TUI-DESIGN §11.1 save: the wizard's typed values → the credentials patch (`reuseGeneratorForJev` copies the generator key).
+ * TUI-DESIGN-3 §1.4.3 — the save-shape table for the one-paste `key` field, keyed on what detect found (`keyAs`):
+ *   both (nothing resolves)          → apiKey = jevApiKey = value, provider openrouter, jevProvider openrouter
+ *   generator (TypeSafe / Jev found) → apiKey = value, provider openrouter — NEVER jevProvider / jevApiKey (a file `jevProvider` would move Jev off api.typesafe.ai at the next start)
+ *   jev (Anthropic found)            → jevApiKey = value, jevProvider openrouter, provider anthropic — NEVER apiKey (GLM must not replace Anthropic silently)
+ * `reuseJevForGenerator` copies the resolved Jev value (`jevKey`, read by the host at save time) into `apiKey` with `provider: openrouter`.
+ */
+export function patchFromWizard(input: WizardSaveInput, jevKey: string | null = null): CredentialsPatch {
   const patch: CredentialsPatch = {};
   if (input.provider !== null) patch.provider = input.provider;
   const gen = input.values['generator.apiKey'];
@@ -84,7 +103,36 @@ export function patchFromWizard(input: WizardSaveInput): CredentialsPatch {
   else if (input.reuseGeneratorForJev && patch.apiKey !== undefined) patch.jevApiKey = patch.apiKey;
   // TUI-DESIGN-2 §1.4 / §2.3: the Jev provider chosen on the jevProvider step is written beside the key (never inferred from a host)
   if (input.jevProvider !== null && input.jevProvider !== undefined) patch.jevProvider = input.jevProvider;
+  const key = input.values['key'];
+  if (key !== undefined && key !== '') {
+    switch (input.keyAs) {
+      case 'both':
+        patch.apiKey = key;
+        patch.jevApiKey = key;
+        patch.provider = 'openrouter';
+        patch.jevProvider = 'openrouter';
+        break;
+      case 'generator':
+        patch.apiKey = key;
+        patch.provider = 'openrouter';
+        break;
+      case 'jev':
+        patch.jevApiKey = key;
+        patch.jevProvider = 'openrouter';
+        patch.provider = 'anthropic';
+        break;
+    }
+  } else if (input.reuseJevForGenerator && jevKey !== null && jevKey !== '') {
+    patch.apiKey = jevKey;
+    patch.provider = 'openrouter';
+  }
   return patch;
+}
+
+/** TUI-DESIGN-3 §1.3.2: both sides openrouter (or nothing resolves) and both keys asked → the one-paste `key` field on a reopen */
+export function oneKeyReopen(missing: readonly SecretSettingName[], provider: WizardProvider | null, jevProvider: JevProvider | null | undefined, found: FoundKey | undefined): boolean {
+  const both = missing.includes('generator.apiKey') && missing.includes('decider.apiKey');
+  return both && (provider === null || provider === 'openrouter') && (jevProvider === null || jevProvider === undefined || jevProvider === 'openrouter') && (found === undefined || found === null);
 }
 
 /** §12.4: the App's undo answers → the plan's ask keys */
@@ -108,6 +156,8 @@ export function createTuiPrompter(): TuiPrompterBundle {
   let controls: TuiPrompterControls | null = null;
   let pendingWizard: ((o: WizardOutcome) => void) | null = null;
   let pendingTrust: ((o: TrustOption | null) => void) | null = null;
+  /** TUI-DESIGN-3 §1.4.3: the options step's `3 Jev only` (or `2` + skip) for the wizard in flight; applied after a save, resolved at `done` without one */
+  let modeChosen: WizardModeChoice | null = null;
   /** the cancel of every pending renderer prompt (follow-up, exit confirm, blocking, undo, picker, rewind) */
   const cancels = new Set<() => void>();
 
@@ -133,6 +183,7 @@ export function createTuiPrompter(): TuiPrompterBundle {
     const t = pendingTrust;
     pendingWizard = null;
     pendingTrust = null;
+    modeChosen = null;
     w?.({ kind: 'cancelled' });
     t?.(null);
   }
@@ -140,13 +191,33 @@ export function createTuiPrompter(): TuiPrompterBundle {
   const wizardHost: TuiWizardHost = {
     async save(input) {
       if (!controls) return { ok: false, reason: 'no session controller' };
-      const r = await controls.persistCredentials(patchFromWizard(input), 'wizard');
+      // TUI-DESIGN-3 §1.4.1 (edges 11, 17): the resolved Jev value is read only for the reuse Enter, at save time
+      const jevKey = input.reuseJevForGenerator ? (controls.resolvedJevKey?.() ?? null) : null;
+      const reusedFrom = input.reuseJevForGenerator && jevKey !== null ? (controls.resolvedJevSource?.() ?? 'env') : undefined;
+      const r = await controls.persistCredentials(patchFromWizard(input, jevKey), 'wizard', reusedFrom !== undefined ? { reusedFrom } : {});
       if (r.ok) {
+        // TUI-DESIGN-3 §1.4.3: a mode chosen on the options step (`3`, or `2` + skip; `wizardHost.mode` ran first) is applied after the key landed — persist at startup, pend from /login
+        const chosen = modeChosen;
+        modeChosen = null;
+        if (chosen !== null) await controls.applyMode?.(chosen.mode, chosen.persist);
         const w = pendingWizard;
         pendingWizard = null;
         w?.({ kind: 'persisted' });
       }
       return r.ok ? { ok: true, items: [] } : { ok: false, reason: r.error ?? 'could not save the key' };
+    },
+    // TUI-DESIGN-3 §1.5: the controller verifies (it holds the resolved keys and the meter); no controller → nothing to verify
+    verify: (i) => (controls?.verifyKeys ? controls.verifyKeys(i) : Promise.resolve({ ok: true, rejected: null, items: [] })),
+    mode(choice) {
+      modeChosen = choice;
+    },
+    done() {
+      // TUI-DESIGN-3 §1.4.3: `done` after a mode choice with no save → the controller's runLogin persists / pends it (`{ kind: 'mode' }`)
+      const w = pendingWizard;
+      const chosen = modeChosen;
+      pendingWizard = null;
+      modeChosen = null;
+      if (w !== null) w(chosen !== null ? { kind: 'mode', mode: chosen.mode, persist: chosen.persist } : { kind: 'cancelled' });
     },
     trust(option) {
       const t = pendingTrust;
@@ -155,11 +226,12 @@ export function createTuiPrompter(): TuiPrompterBundle {
     },
     cancel: () => cancelWizard(),
     sandboxLine: () => controls?.sandboxLine() ?? null,
+    sandboxDetail: () => controls?.sandboxDetail?.() ?? null,
     trustInputs: () => controls?.trustInputs() ?? null,
   };
 
   const prompter: Prompter = {
-    wizard(missing: readonly SecretSettingName[], o: { provider: WizardProvider | null; reason: WizardReason; mode?: EngineMode }) {
+    wizard(missing: readonly SecretSettingName[], o: { provider: WizardProvider | null; reason: WizardReason; mode?: EngineMode; found?: FoundKey; foundSource?: FoundSource; foundReusable?: boolean; jevProvider?: JevProvider | null }) {
       return new Promise<WizardOutcome>((resolve) => {
         const r = renderer;
         if (!r) {
@@ -168,19 +240,25 @@ export function createTuiPrompter(): TuiPrompterBundle {
         }
         pendingWizard?.({ kind: 'cancelled' });
         pendingWizard = resolve;
-        // TUI-DESIGN-2 §1.4: the default mode is jev-only (one key suffices); the missing-key wizard asks for what that mode needs
-        if (o.reason === 'missing') r.openWizard({ missing, mode: o.mode ?? controls?.mode() ?? 'jev-only', provider: o.provider, trustNeeded: false });
+        modeChosen = null;
+        // TUI-DESIGN-3 §1.1: the fallback is DEFAULT_MODE; the missing-key wizard asks for what that mode needs, with the detect-time `found` hint (§1.4.3)
+        const current = controls?.mode() ?? DEFAULT_MODE;
+        const found = o.found !== undefined ? { found: o.found, ...(o.foundSource !== undefined ? { foundSource: o.foundSource } : {}) } : {};
+        if (o.reason === 'missing') r.openWizard({ missing, mode: o.mode ?? current, provider: o.provider, trustNeeded: false, ...found, ...(o.foundReusable !== undefined ? { foundReusable: o.foundReusable } : {}) });
         // TUI-DESIGN-2 §1.3 / §1.4: `/mode <m>` without the keys `m` needs reopens for THAT mode; Ctrl-C closes it and keeps the session.
         // The step follows `missing`: a generator key → the provider step (reason `mode`); only the Jev key (`/mode jev-only` after
         // `/logout decider`) → the Jev key step — under reason `login`, because the reducer forces `provider` for reason `mode`
         // (S2's `case 'reopen'`; `cancel` keeps the session under `login` too, §1.4)
         else if (o.reason === 'mode') {
-          const mode = o.mode ?? controls?.mode() ?? 'jev-only';
-          if (missing.includes('generator.apiKey')) r.reopenWizard('provider', controls?.runLive() ?? false, { reason: 'mode', mode });
-          else r.reopenWizard('decider.apiKey', controls?.runLive() ?? false, { reason: 'login', mode });
+          const mode = o.mode ?? current;
+          if (missing.includes('generator.apiKey')) r.reopenWizard('provider', controls?.runLive() ?? false, { reason: 'mode', mode, currentMode: current });
+          else r.reopenWizard('decider.apiKey', controls?.runLive() ?? false, { reason: 'login', mode, currentMode: current });
         }
+        // TUI-DESIGN-3 §1.3.2: both sides openrouter (a 401 on either, or `/login` with nothing else resolving) → the one-paste `key` field; the
+        // detect with the reason opens it (the renderer's `reopenWizard` names the two secret fields only), `runLive` keeps Ctrl-C's rule
+        else if (oneKeyReopen(missing, o.provider, o.jevProvider, o.found)) r.openWizard({ missing, mode: o.mode ?? current, provider: o.provider, trustNeeded: false, reason: o.reason === 'rejected' ? 'rejected' : 'login', runLive: controls?.runLive() ?? false, found: null });
         // §11.1: Ctrl-C in a reopened wizard closes it when a run is live (`/login` mid-run, the 401 pane's `[l]`) and exits 2 otherwise
-        else r.reopenWizard(missing.includes('generator.apiKey') ? 'generator.apiKey' : 'decider.apiKey', controls?.runLive() ?? false);
+        else r.reopenWizard(missing.includes('generator.apiKey') ? 'generator.apiKey' : 'decider.apiKey', controls?.runLive() ?? false, { reason: o.reason === 'rejected' ? 'rejected' : 'login', currentMode: current, ...found });
       });
     },
     // TUI-DESIGN-2 §3.7: the ambiguity card — the App answers `run` (y) · `chat` (n) · `keep` (Esc / Ctrl-C); no renderer or the unmount → keep (C46, never a run)
@@ -191,7 +269,7 @@ export function createTuiPrompter(): TuiPrompterBundle {
       const card: IntakeOverlay = { title: intakeCardTitle(message, columns - 4), body: [INTAKE_CARD_BODY], flat: intakeRowLines(columns) };
       return cancellable(r.promptIntake(card), 'keep');
     },
-    trust(inputs: TrustInputs) {
+    trust(inputs: TrustInputs, o?: { reopen?: boolean }) {
       return new Promise<TrustOption | null>((resolve) => {
         const r = renderer;
         if (!r) {
@@ -201,7 +279,8 @@ export function createTuiPrompter(): TuiPrompterBundle {
         pendingTrust?.(null);
         pendingTrust = resolve;
         void inputs;
-        r.openWizard({ missing: [], mode: controls?.mode() ?? 'jev-on', provider: null, trustNeeded: true });
+        // TUI-DESIGN-3 §4.4 F17: the card `/trust` reopens carries reason `trust` — Esc and Ctrl-C close it (null), nothing exits; the startup gate keeps today's rule
+        r.openWizard({ missing: [], mode: controls?.mode() ?? DEFAULT_MODE, provider: null, trustNeeded: true, ...(o?.reopen === true ? { reason: 'trust' as const } : {}) });
       });
     },
     async followUp(box) {

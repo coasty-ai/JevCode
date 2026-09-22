@@ -1,0 +1,24 @@
+# 22x80 after a mock run (TUI-DESIGN-3 §3.2 WORDMARK_POST_RUN_MIN_ROWS = 24): the mark does not return at `run:end` (the 8-row epilogue
+# would scroll off), it returns on the first key after the end (F-W5 under the strip)
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.3
+send fix the failing test
+sleep 0.2
+send \r
+expect \[run\](?:\x1b\[[0-9;]*m)* start 
+expect end (complete|max_steps|generator_done)
+expect Follow-up, question
+sleep 0.5
+mark ended
+send h
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*h
+sleep 0.3
+mark keyed
+send \x03
+expect Follow-up, question
+send /exit
+sleep 0.2
+send \r
+eof

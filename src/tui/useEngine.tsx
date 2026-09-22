@@ -28,7 +28,7 @@ import type {
 import { AbortError } from '../errors.js';
 import type { OverlayKind } from './layout.js';
 import { emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopSteer, foldLoopStep, loopView, type LoopBannerView, type LoopFold } from './pane/banner.js';
-import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD } from '../config/defaults.js';
+import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD, DEFAULT_MODE } from '../config/defaults.js';
 import { foldByStep, foldPlanRecord, foldStageEnd, foldStepEnd, toDecisionRow, type DecisionRow, type PaneTab, type PlanView, type SynthView, type TimelineStep } from './pane/model.js';
 import { IDENTITY_REVIEWER, itemsFromEvent, localItem, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { retryViewFrom, startTicker, type RetryView } from './retry.js';
@@ -244,6 +244,11 @@ export interface UiState {
   readonly turns: number;
   /** §4.6: the run's last risk assessment (`risk 0.44 [review]` on the panel strip) */
   readonly lastRisk: { risk: number; verdict: 'ok' | 'review' | 'block' } | null;
+  // ----- TUI-DESIGN-3 §6 item 8 (round 3)
+  /** §3.6: the idle loop's attention clock — set by `key`, `run:end`, `panel` and `resize`, never by a reply (`thinking → null` / `chat-decisions`) */
+  readonly lastActivityAt: number;
+  /** §3.2: false at `run:end`, true at the next `key` — below 24 rows the mark returns on that key so the epilogue stays on screen */
+  readonly postRunKeySeen: boolean;
 }
 
 /** TUI-DESIGN §15 item 20 `UiAction` (today's four, the design's additions, and the additive `picker` / `title` / `spend:session` / `git:dirs`). */
@@ -290,12 +295,15 @@ export type UiAction =
   /** §4.5: `/transcript compact|full` (new items only, R4) */
   | { type: 'transcript'; view: TranscriptView }
   /** §4.4: a chat reply counted as a turn (`SubmitOutcome.became === 'chat'`; a run counts at `run:start`) */
-  | { type: 'turn' };
+  | { type: 'turn' }
+  // ----- TUI-DESIGN-3 §6 item 8 (round 3)
+  /** §3.6: the App's geometry effect — a resize is activity for the idle loop's attention clock */
+  | { type: 'resize' };
 
 export interface InitialStateOptions {
   mode?: 'session' | 'one-shot';
   nowMs?: number;
-  /** TUI-DESIGN-2 §1.5: `launch.modeHint` (`--mode` > `JEVCODE_MODE`), else `jev-only` */
+  /** TUI-DESIGN-2 §1.5 / TUI-DESIGN-3 §1.1: `launch.modeHint` (`--mode` > `JEVCODE_MODE`), else `DEFAULT_MODE` */
   modeHint?: EngineMode;
   /** TUI-DESIGN-2 §5.3: `running` from the first frame (boxed, motion allowed), `done` under reduced motion / SR / --plain */
   splash?: SplashState;
@@ -363,7 +371,7 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     staticEpoch: 0,
     localSeq: 0,
     thresholds: DEFAULT_THRESHOLDS,
-    modeBadge: { mode: opts.modeHint ?? 'jev-only', pending: null },
+    modeBadge: { mode: opts.modeHint ?? DEFAULT_MODE, pending: null },
     thinking: null,
     chatRows: [],
     splash: opts.splash ?? 'done',
@@ -372,6 +380,8 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
     transcript: 'compact',
     turns: 0,
     lastRisk: null,
+    lastActivityAt: opts.nowMs ?? 0,
+    postRunKeySeen: true,
   };
 }
 
@@ -414,8 +424,9 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return applyEvent(state, action.event, action.at ?? state.nowMs);
     case 'key': {
       const s = endSplash(state);
-      // always a new state: `keySeq` must advance for every key (two keys in one millisecond share `at`)
-      return { ...s, lastKeystrokeAt: action.at, keySeq: s.keySeq + 1 };
+      // always a new state: `keySeq` must advance for every key (two keys in one millisecond share `at`); TUI-DESIGN-3 §3.6 / §3.2:
+      // a key is activity for the idle loop and the first key after `run:end` lets the mark return below 24 rows
+      return { ...s, lastKeystrokeAt: action.at, keySeq: s.keySeq + 1, lastActivityAt: action.at, postRunKeySeen: true };
     }
     case 'tick': {
       const toasts = toastReducer(state.toasts, { type: 'tick' }, action.now);
@@ -440,7 +451,8 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return state.run === 'none' ? { ...state, run: 'starting' } : state;
     case 'run:idle':
       // only a `starting` that never became a run returns to idle; a live / aborting / pausing run ends through run:end
-      return state.run === 'starting' ? { ...state, run: 'none' } : state;
+      // (TUI-DESIGN-3 §5.2 P7: the App's own `thinking` dispatch at Enter is cleared with it — nothing is thinking once idle)
+      return state.run === 'starting' ? { ...state, run: 'none', thinking: null } : state;
     case 'run:aborting':
       return state.run === 'none' || state.run === 'aborting' ? state : { ...state, run: 'aborting' };
     case 'run:pausing':
@@ -486,11 +498,14 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
     case 'splash:done':
       return endSplash(state);
     case 'panel':
-      return state.panel === action.panel ? state : { ...state, panel: action.panel };
+      // TUI-DESIGN-3 §3.6: a panel change is activity for the idle loop
+      return state.panel === action.panel ? state : { ...state, panel: action.panel, lastActivityAt: state.nowMs };
     case 'transcript':
       return state.transcript === action.view ? state : { ...state, transcript: action.view };
     case 'turn':
       return { ...state, turns: state.turns + 1 };
+    case 'resize':
+      return { ...state, lastActivityAt: state.nowMs };
   }
 }
 
@@ -742,6 +757,12 @@ function applyEvent(state: UiState, e: EngineEvent, now: number): UiState {
         paths: e.paths ?? null,
         step: Math.max(next.step, e.result.steps),
         runsEnded: next.runsEnded + 1,
+        // TUI-DESIGN-3 §5.1 rule 12 (R5 F8): the loop banner is a dynamic row of the run — cleared with it
+        loop: null,
+        loopFold: emptyLoopFold(next.loopFold.maxReplans),
+        // TUI-DESIGN-3 §3.6 / §3.2: the end of a run is activity; below 24 rows the mark waits for the first key
+        lastActivityAt: now,
+        postRunKeySeen: false,
       };
     default:
       return next;
@@ -917,7 +938,7 @@ export interface UseEngineOptions {
   flushMs?: number;
   /** the 1 Hz tick; 0 disables it (tests drive `tick` themselves) */
   tickMs?: number;
-  /** TUI-DESIGN-2 §1.5: `launch.modeHint` for the first frame's badge */
+  /** TUI-DESIGN-2 §1.5 / TUI-DESIGN-3 §1.1: `launch.modeHint` for the first frame's badge (else `DEFAULT_MODE`) */
   modeHint?: EngineMode;
   /** TUI-DESIGN-2 §5.3: `running` in the boxed tier with motion allowed */
   splash?: SplashState;

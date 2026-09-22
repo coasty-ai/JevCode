@@ -17,14 +17,19 @@ import type {
   JevProvider,
   JevProviderSource,
   JevUsage,
+  LaunchSettings,
   Renderer,
   ResolvedConfig,
   SessionHost,
   SessionRef,
   StepRecord,
   SubmitOutcome,
+  UiConfig,
   UiLabel,
 } from '../../../src/core/types.js';
+import type { WizardOutcome } from '../../../src/cli/session.js';
+import type { Bindings } from '../../../src/tui/keys/bindings.js';
+import { DEFAULT_BINDINGS } from '../../../src/tui/keys/bindings.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
 import { JEV_PROVIDERS } from '../../../src/jev/providers.js';
 
@@ -107,5 +112,57 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
     const so = { kind: 'prompt' as const, secretSpans: [], pinnedFiles: [] };
     expect(await oldStyle.submit('hi', so)).toBeUndefined();
     expect(await newStyle.submit('hi', so)).toEqual({ became: 'chat' });
+  });
+});
+
+describe('contract 1.3 (TUI-DESIGN-3 §6 items 1–4, 7, 8; S3 W0)', () => {
+  it('header: types.ts records contract 1.3 after the 1.2 lines and keeps CheckpointEnvelope.version at 1', () => {
+    const text = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8');
+    const lines = text.split('\n');
+    const i12 = lines.findIndex((l) => l.startsWith('// contract 1.2 (2026-09-21)'));
+    const i13 = lines.findIndex((l) => l.startsWith('// contract 1.3 (2026-09-21)'));
+    expect(i13).toBeGreaterThan(i12);
+    expect(lines.slice(i12, i13).every((l) => l.startsWith('// contract 1.2'))).toBe(true);
+    expect(lines[i13]).toContain('docs/TUI-DESIGN-3.md §6');
+    expect(lines[i13]).toContain('CheckpointEnvelope.version stays 1');
+    expect(text).toMatch(/version: 1;/);
+  });
+
+  it('item 1: Renderer.setBindings is optional and takes the tui Bindings shape (the one type-only core → tui import)', () => {
+    const without: Pick<Renderer, 'setBindings'> = {};
+    expect(without.setBindings).toBeUndefined();
+    let seen: Bindings | null = null;
+    const withIt: Pick<Renderer, 'setBindings'> = { setBindings: (b) => void (seen = b) };
+    withIt.setBindings?.(DEFAULT_BINDINGS);
+    expect(seen).toBe(DEFAULT_BINDINGS);
+    // the inversion is type-only: core/types.ts has no runtime import of src/tui
+    const text = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8');
+    expect(text.split('\n').filter((l) => /^import\s/.test(l) && l.includes('../tui'))).toEqual([]);
+  });
+
+  it('item 2: WizardOutcome gains the mode kind (mode + persist) beside saved / persisted / cancelled', () => {
+    const outcomes: WizardOutcome[] = [
+      { kind: 'cancelled' },
+      { kind: 'persisted' },
+      { kind: 'saved', patch: {} },
+      { kind: 'mode', mode: 'jev-only', persist: true },
+      { kind: 'mode', mode: 'jev-only', persist: false },
+    ];
+    expect(outcomes.filter((o) => o.kind === 'mode')).toHaveLength(2);
+  });
+
+  it('items 4 and 8: UiConfig.wordmark is optional (sweep | static | off); LaunchSettings gains themeHint (light) and ssh, both optional in W0', () => {
+    const uis: Pick<UiConfig, 'wordmark'>[] = [{}, { wordmark: 'sweep' }, { wordmark: 'static' }, { wordmark: 'off' }];
+    expect(uis.map((u) => u.wordmark)).toEqual([undefined, 'sweep', 'static', 'off']);
+    const launches: Pick<LaunchSettings, 'themeHint' | 'ssh'>[] = [{}, { themeHint: 'light' }, { ssh: true }, { themeHint: 'light', ssh: false }];
+    expect(launches[0]?.themeHint).toBeUndefined();
+    expect(launches[3]).toEqual({ themeHint: 'light', ssh: false });
+  });
+
+  it('item 7: SessionHost.dispatchContext is optional and returns the dispatch context without the run phase', () => {
+    const without: Pick<SessionHost, 'dispatchContext'> = {};
+    expect(without.dispatchContext).toBeUndefined();
+    const withIt: Pick<SessionHost, 'dispatchContext'> = { dispatchContext: () => ({ step: 3, changedSteps: [1, 2] }) };
+    expect(withIt.dispatchContext?.()).toEqual({ step: 3, changedSteps: [1, 2] });
   });
 });

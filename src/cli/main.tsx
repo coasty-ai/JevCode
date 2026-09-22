@@ -19,7 +19,7 @@ import { fileURLToPath } from 'node:url';
 import { NO_INPUT_NEEDS_TASK, parseCliArgs, usageText } from './args.js';
 import type { ParsedFlags } from './args.js';
 import { EXIT_CODES, UsageError } from '../errors.js';
-import type { Engine, EngineMode, Renderer, RendererOptions, SignalName } from '../core/types.js';
+import type { Engine, Renderer, RendererOptions, SignalName } from '../core/types.js';
 import { patternRedact } from '../core/redact.js';
 import { exitCodeFor } from '../loop/stop.js';
 import { resolveLaunchSettings } from '../config/launch.js';
@@ -33,12 +33,6 @@ import type { JsonStream } from './json-stream.js';
 import type { ReadlineComposer } from '../tui/plain-composer.js';
 import type { TuiRenderer } from '../tui/index.js';
 import { createTuiPrompter, type TuiPrompterBundle } from './tui-prompter.js';
-
-/** `--mode` (or its hidden alias `--condition`, already folded into `mode` by args.ts); TUI-DESIGN-2 §1.1 / §1.2: default jev-only. */
-export function modeFromFlags(flags: ParsedFlags): EngineMode {
-  const m = flags.mode ?? flags.condition;
-  return m === 'jev-on' || m === 'jev-off' || m === 'llm-jev' ? m : 'jev-only';
-}
 
 /** the process facts the §1 rule reads; probed once in `main`, injected in tests */
 export interface LaunchFacts {
@@ -271,13 +265,19 @@ async function startSession(flags: ParsedFlags, command: 'chat' | 'run'): Promis
   fatalRefs.context = () => c.context();
   fatalRefs.redact = (s) => c.redact(s);
   tuiBundle?.control({
-    persistCredentials: (patch, source) => c.persistCredentials(patch, source),
+    persistCredentials: (patch, source, opts) => c.persistCredentials(patch, source, opts),
     mode: () => c.mode(),
     trustInputs: () => c.trustInputs(),
     sandboxLine: () => c.sandboxLine(),
+    sandboxDetail: () => c.sandboxDetail(),
     runsDir: () => c.runsDir(),
     trashDir: () => resolvePath(jevcodeDir(env, homedir(), cwd), 'trash'),
     runLive: () => c.host.phase() !== 'none',
+    // TUI-DESIGN-3 §1.5 / §1.4.3: the Ink wizard's `y` verifies through the controller; option `3 Jev only` persists / pends through it; the reuse Enter reads the resolved Jev key
+    verifyKeys: (i) => c.verifyForWizard(i),
+    applyMode: (mode, persist) => c.applyModeChoice(mode, persist),
+    resolvedJevKey: () => c.resolvedJevKey(),
+    resolvedJevSource: () => c.resolvedJevSource(),
   });
 
   // TUI-DESIGN §1: the --plain TTY readline composer over the same dispatchCommand(); its lines feed the confirmer and the prompts
@@ -326,7 +326,8 @@ async function commandConfig(flags: ParsedFlags): Promise<number> {
     return 0;
   }
   const { configTableLines } = await import('./config-table.js');
-  process.stdout.write(`${configTableLines(record, { sandboxLevel: level }).join('\n')}\n`);
+  // TUI-DESIGN-3 §0.1 (D-Q): the `seen.*` bookkeeping rows print only under --all (`--json` above keeps the whole record)
+  process.stdout.write(`${configTableLines(record, { sandboxLevel: level, ...(flags.all ? { all: true } : {}) }).join('\n')}\n`);
   return 0;
 }
 
@@ -369,11 +370,12 @@ async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: 
   };
 }
 
-/** TUI-DESIGN §11.2 / TUI-DESIGN-2 §1.4: the `jevcode login` flags `commandLogin` receives — `--jev-provider typesafe|openrouter` rides along with `--provider` and the two `--*-stdin` flags. Pure. */
+/** TUI-DESIGN §11.2 / TUI-DESIGN-2 §1.4 / TUI-DESIGN-3 §1.6: the `jevcode login` flags `commandLogin` receives — `--key-stdin` (one OpenRouter key for both), `--jev-provider typesafe|openrouter`, `--provider` and the two `--*-stdin` flags. Pure. */
 export function loginFlagsFrom(flags: ParsedFlags): import('./login.js').LoginFlags {
   return {
     ...(flags.provider !== undefined ? { provider: flags.provider } : {}),
     ...(flags.jevProvider !== undefined ? { jevProvider: flags.jevProvider } : {}),
+    ...(flags.keyStdin ? { keyStdin: true } : {}),
     ...(flags.generatorKeyStdin ? { generatorKeyStdin: true } : {}),
     ...(flags.jevKeyStdin ? { jevKeyStdin: true } : {}),
     ...(flags.status ? { status: true } : {}),

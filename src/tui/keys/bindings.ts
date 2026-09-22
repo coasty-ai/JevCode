@@ -16,7 +16,7 @@ export const KEY_CONTEXTS: readonly KeyContext[] = ['global', 'composer', 'revie
 
 /** TUI-DESIGN §3.2/§3.4: one bindable action of the registry. */
 export interface KeyActionSpec {
-  /** `namespace:action` (§3.4); the namespace is the context except `session:*`, which is global */
+  /** `namespace:action` (§3.4); the namespace is the context except `session:*`, `files:*` and `ui:*`, which are global (TUI-DESIGN-3 §4.5) */
   readonly id: string;
   /** a compact label for the help block (§5.3) and the KEYS.md table */
   readonly short: string;
@@ -79,6 +79,13 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
   { id: 'global:panelTimeline', short: 'timeline tab', context: 'global', keys: ['meta+t'], title: 'open the panel on the timeline tab; a second press collapses it (= /panel t)', note: 'TUI-DESIGN-2 §4.6' },
   { id: 'global:panelSynth', short: 'synth tab', context: 'global', keys: ['meta+s'], title: 'open the panel on the synth tab; a second press collapses it (= /panel s)', note: 'TUI-DESIGN-2 §4.6' },
   { id: 'session:export', short: 'export', context: 'global', keys: [], title: 'export the session transcript (= /export)', note: 'unbound by default; e.g. "session:export": "ctrl+x ctrl+s"' },
+  // TUI-DESIGN-3 §4.5: keys that equal commands — unbound by default (every free printable is text, every free Ctrl is a terminal risk); a user binds e.g. "session:cost": "ctrl+x c"
+  { id: 'session:cost', short: 'cost', context: 'global', keys: [], title: 'run and session spend (= /cost)', note: 'unbound by default; e.g. "session:cost": "ctrl+x c" (TUI-DESIGN-3 §4.5)' },
+  { id: 'session:status', short: 'status', context: 'global', keys: [], title: 'run id, session id, step, stage, sandbox, workspace (= /status)', note: 'unbound by default (TUI-DESIGN-3 §4.5)' },
+  { id: 'session:mode', short: 'mode', context: 'global', keys: [], title: 'show the engine mode and the next run\'s (= /mode)', note: 'unbound by default (TUI-DESIGN-3 §4.5)' },
+  { id: 'files:diff', short: 'diff', context: 'global', keys: [], title: 'numstat block of the run\'s changes (= /diff)', note: 'unbound by default (TUI-DESIGN-3 §4.5)' },
+  { id: 'files:undo', short: 'undo', context: 'global', keys: [], title: 'restore the files a step changed (= /undo; opens the undo confirm)', note: 'unbound by default (TUI-DESIGN-3 §4.5)' },
+  { id: 'ui:copy', short: 'copy', context: 'global', keys: [], title: 'copy the last item, redacted (= /copy)', note: 'unbound by default (TUI-DESIGN-3 §4.5)' },
   // composer
   { id: 'composer:submit', short: 'submit', context: 'composer', keys: ['return'], title: 'submit: task, follow-up, steer while live, /command, review note', reserved: true, note: 'empty draft → no-op; re-entrancy guard while submitting (A9)' },
   { id: 'composer:newline', short: 'newline', context: 'composer', keys: ['ctrl+j', 'meta+return', 'shift+return'], title: 'insert a newline', note: 'also a trailing \\ before Enter; xterm CSI 27;m;13~ is swallowed as newline (R7)' },
@@ -139,6 +146,17 @@ export const KEY_ACTIONS: readonly KeyActionSpec[] = [
 ];
 
 const BY_ID: ReadonlyMap<string, KeyActionSpec> = new Map(KEY_ACTIONS.map((a) => [a.id, a]));
+
+/** TUI-DESIGN-3 §4.5: the unbound-by-default actions that equal a slash command — action id → the `/line` the App runs. */
+export const COMMAND_KEY_ACTIONS: Readonly<Record<string, string>> = {
+  'session:export': '/export',
+  'session:cost': '/cost',
+  'session:status': '/status',
+  'session:mode': '/mode',
+  'files:diff': '/diff',
+  'files:undo': '/undo',
+  'ui:copy': '/copy',
+};
 
 /** TUI-DESIGN §3.4: the registry row for an action id, or null. */
 export function keyActionById(id: string): KeyActionSpec | null {

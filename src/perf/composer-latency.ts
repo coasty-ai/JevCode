@@ -5,7 +5,8 @@
  * Every measured key is written at an exact cadence (`send X`, then a pause the driver lands within 0.1 ms while it
  * keeps draining the pty — `drain_for` in the driver); latency = the arrival time of the first frame after the send
  * whose **composer row** ends with the key (`pty.ts` `composerEndsWithKey`, the row above the status line) minus the
- * send time — both from the driver's clock (0.1 ms resolution). Six series at 24×80 (`chat --mock`):
+ * send time — both from the driver's clock (0.1 ms resolution). Seven series at 24×80 (`chat --mock`; `idle-loop` is round 3's:
+ * the idle keys typed while the wordmark's sweep is writing frames, TUI-DESIGN-3 §9):
  *
  *   idle         200 keys, 100 ms apart, the session-start composer (pane closed; round 2: inside the boxed console of
  *                TUI-DESIGN-2 §4.3, whose `│ › … │` row `pty.ts` `composerRow` unwraps) — gated
@@ -56,7 +57,7 @@ import { REALISTIC_STEP_MS, STRESS_STEP_MS } from './render-lag.js';
 
 export const MAX_FPS = 30;
 
-export type ComposerSeriesName = 'idle' | 'live' | 'live-stress' | 'palette' | 'review' | 'burst30';
+export type ComposerSeriesName = 'idle' | 'idle-loop' | 'live' | 'live-stress' | 'palette' | 'review' | 'burst30';
 
 export interface ComposerSeries {
   name: ComposerSeriesName;
@@ -127,9 +128,15 @@ const PLACEHOLDER: TypistStep = { op: 'expect', pattern: 'Say hi', timeoutMs: 20
 /** the run is live at its `[run] start` item (`[run] ready` is hidden by the compact transcript, TUI-DESIGN-2 §4.5) */
 const RUN_STARTED: TypistStep = { op: 'expect', pattern: RUN_STARTED_PATTERN, timeoutMs: 20_000 };
 const FOLLOWUP: TypistStep = { op: 'expect', pattern: 'Follow-up, question', timeoutMs: 20_000 };
-/** every mocked run says `--mode jev-on`: the scripted trajectory is a generator trajectory and the round-2 default is `jev-only` (§1.1) */
+/** every mocked run says `--mode jev-on` explicitly: the scripted `--mock` trajectory is a generator trajectory, whatever `DEFAULT_MODE` is (TUI-DESIGN-3 §1.1) */
 const MOCK_RUN_MODE = ['--mode', 'jev-on'] as const;
 const PROLOGUE: TypistStep[] = [FIRST_FRAME, PLACEHOLDER, { op: 'sleep', ms: 500 }];
+/**
+ * TUI-DESIGN-3 §3.6 / §9: the wordmark's idle sweep — `splash:done` at 700 ms, a 5,750 ms rest, the first pass from 6,450 ms with
+ * its first written band frame at 6,700 ms — so a typist that waits this long after the first frame lands its first key ≈ 200 ms
+ * into the first pass, and its 200 keys at 100 ms cover the whole 4 s pass and the rest after it (the `idle-loop` series).
+ */
+export const IDLE_LOOP_WAIT_MS = 6650;
 const START_RUN: TypistStep[] = [{ op: 'send', text: 'start the perf run' }, { op: 'sleep', ms: 200 }, { op: 'send', text: '\r' }];
 const EXIT_IDLE: TypistStep[] = [
   { op: 'send', text: '/exit' },
@@ -162,8 +169,8 @@ function typeMeasured(plan: Plan, n: number, spacingMs: number, keyAt: (i: numbe
   }
 }
 
-function planIdle(n: number, spacingMs: number): Plan {
-  const plan = newPlan([...PROLOGUE]);
+function planIdle(n: number, spacingMs: number, waitMs?: number): Plan {
+  const plan = newPlan(waitMs === undefined ? [...PROLOGUE] : [FIRST_FRAME, PLACEHOLDER, { op: 'sleep', ms: waitMs }]);
   typeMeasured(plan, n, spacingMs);
   // Ctrl-C with a draft clears it (§3.3 S1); then /exit
   plan.steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, PLACEHOLDER, ...EXIT_IDLE);
@@ -318,6 +325,8 @@ export async function measureComposerLatency(opts: { root: string; bin: string; 
   };
   const live = ['--mock-steps', '3000', '--max-steps', '3000', '--max-replans', '100000'];
   report(await runSeries(opts.root, opts.bin, { name: 'idle', plan: planIdle(n, 100), spacingMs: 100, args: [], env: {}, stepMs: null, stress: false, gated: true }, gate));
+  // TUI-DESIGN-3 §9: the same 200 keys typed while the wordmark's idle sweep is running (the first key 200 ms into the first pass)
+  report(await runSeries(opts.root, opts.bin, { name: 'idle-loop', plan: planIdle(n, 100, IDLE_LOOP_WAIT_MS), spacingMs: 100, args: [], env: {}, stepMs: null, stress: false, gated: true }, gate));
   // a long mocked run that stays live through the 2.5 s pre-fill and 200 spaced keys (≈ 25 s; 3000 steps is ample at either pace)
   report(await runSeries(opts.root, opts.bin, { name: 'live', plan: planLive(n, 100), spacingMs: 100, args: live, env: {}, stepMs: realisticStepMs, stress: false, gated: true }, gate));
   report(await runSeries(opts.root, opts.bin, { name: 'live-stress', plan: planLive(n, 100), spacingMs: 100, args: live, env: {}, stepMs: STRESS_STEP_MS, stress: true, gated: false }, gate));

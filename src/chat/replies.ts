@@ -6,6 +6,7 @@
  * `/command` inside a reply is literal.
  */
 import { homedir } from 'node:os';
+import { MODE_BADGE_WORD } from '../config/defaults.js';
 import type { Answer, EngineMode, Json, Question } from '../core/types.js';
 import { choice, ref } from '../jev/questions.js';
 import type { CriteriaSide } from './intake.js';
@@ -94,10 +95,8 @@ export function tildify(path: string, home: string = homedir()): string {
   return path.startsWith(`${home}/`) ? `~${path.slice(home.length)}` : path;
 }
 
-/** the `<mode>` word of a reply: `jev-only` / `jev+llm` / `llm-only` (§1.5 badge words) */
-export function modeWord(mode: EngineMode): 'jev-only' | 'jev+llm' | 'llm-only' | 'llm-jev' {
-  return mode === 'jev-only' ? 'jev-only' : mode === 'jev-on' ? 'jev+llm' : mode === 'llm-jev' ? 'llm-jev' : 'llm-only';
-}
+/** the `<mode>` word of a reply — TUI-DESIGN-3 §1.1 (D-N): the ONE badge table (`llm+jev · verified` for llm-jev) */
+export const modeWord = (mode: EngineMode): string => MODE_BADGE_WORD[mode];
 
 export function fillReply(spec: ReplySpec, facts: ReplyFacts): string {
   return spec.text

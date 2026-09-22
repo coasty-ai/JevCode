@@ -2,7 +2,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { LaunchSettings, Resolved } from '../../../src/core/types.js';
 import { ConfigError } from '../../../src/errors.js';
-import { EXIT_CODE_POLICIES, LOG_LEVELS, UI_THEMES, defaultRunSpendCapUsd, resolveSessionSpendCap, resolveUiConfig, runSpendCapUsd } from '../../../src/config/ui.js';
+import { EXIT_CODE_POLICIES, LOG_LEVELS, UI_THEMES, WORDMARK_MODES, defaultRunSpendCapUsd, resolveSessionSpendCap, resolveUiConfig, runSpendCapUsd } from '../../../src/config/ui.js';
 import type { SettingName } from '../../../src/config/types.js';
 import type { SettingReader } from '../../../src/config/validate.js';
 
@@ -38,7 +38,19 @@ describe('resolveUiConfig (TUI-DESIGN §16 session settings)', () => {
       logLevel: 'info',
       logFile: null,
       keybindingsFile: join(HOME, '.config', 'jevcode', 'keybindings.json'),
+      wordmark: 'sweep',
     });
+  });
+
+  it('TUI-DESIGN-3 §6 item 5 ui.wordmark: sweep | static | off through the chain (case-folded); default static under the SSH launch source, sweep otherwise', () => {
+    expect(WORDMARK_MODES).toEqual(['sweep', 'static', 'off']);
+    expect(resolveUiConfig(reader({}), launch, { home: HOME, cwd: CWD, env: {} }).wordmark).toBe('sweep');
+    expect(resolveUiConfig(reader({}), { ...launch, ssh: false }, { home: HOME, cwd: CWD, env: {} }).wordmark).toBe('sweep');
+    expect(resolveUiConfig(reader({}), { ...launch, ssh: true }, { home: HOME, cwd: CWD, env: {} }).wordmark).toBe('static');
+    expect(resolveUiConfig(reader({ 'ui.wordmark': 'Off' }), launch, { home: HOME, cwd: CWD, env: {} }).wordmark).toBe('off');
+    expect(resolveUiConfig(reader({ 'ui.wordmark': ' STATIC ' }), launch, { home: HOME, cwd: CWD, env: {} }).wordmark).toBe('static');
+    // a configured value beats the SSH default either way
+    expect(resolveUiConfig(reader({ 'ui.wordmark': { value: 'sweep', source: 'file:/x' } }), { ...launch, ssh: true }, { home: HOME, cwd: CWD, env: {} }).wordmark).toBe('sweep');
   });
 
   it('never re-resolves a launch member: a reader value for ui.fps / ui.ascii is ignored', () => {
@@ -84,6 +96,7 @@ describe('resolveUiConfig (TUI-DESIGN §16 session settings)', () => {
   it('bad values are ConfigErrors naming the setting, the value, the source and the sources consulted', () => {
     const cases: [SettingName, string, RegExp][] = [
       ['ui.theme', 'neon', /ui\.theme: "neon" \(from env\) is not one of dark\|light\|daltonized\|ansi/],
+      ['ui.wordmark', 'neon', /ui\.wordmark: "neon" \(from env\) is not one of sweep\|static\|off/],
       ['ui.exitCode', 'maybe', /ui\.exitCode: "maybe" \(from env\) is not one of zero\|last-run/],
       ['log.level', 'loud', /log\.level: "loud" \(from env\) is not one of error\|warn\|info\|debug\|trace/],
       ['ui.title', 'sometimes', /ui\.title: "sometimes" \(from env\) is not a boolean/],

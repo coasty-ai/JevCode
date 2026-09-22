@@ -5,6 +5,7 @@ import {
   budgetPct,
   childCapUsd,
   costBlock,
+  eachUsdText,
   crossedThresholds,
   followUpBoxLines,
   followUpDecision,
@@ -289,6 +290,17 @@ describe('spend-cap epilogue and /cost (§9.4, §9.6)', () => {
     ]);
   });
 
+  it('eachUsdText (TUI-DESIGN-3 §5.1 rule 6): `~$0.000006`, six decimals with the trailing zeros dropped, never `e-`', () => {
+    expect(eachUsdText(0.000006)).toBe('~$0.000006');
+    expect(eachUsdText(0.00002)).toBe('~$0.00002');
+    expect(eachUsdText(0.029 / 1204)).toBe('~$0.000024');
+    expect(eachUsdText(0.0000004)).toBe('~$0.0');
+    expect(eachUsdText(0)).toBe('~$0.0');
+    expect(eachUsdText(1.5)).toBe('~$1.5');
+    expect(eachUsdText(Number.NaN)).toBe('~$?');
+    for (const x of [1e-7, 6e-6, 2.4e-5, 0.00007, 0.5, 12]) expect(eachUsdText(x)).not.toMatch(/e[-+]/);
+  });
+
   it('costBlock: ≤ 12 rows, the §9.6 rows, jev-only drops gen, unpriced renders $?', () => {
     const block = costBlock({
       mode: 'jev-on',
@@ -303,7 +315,8 @@ describe('spend-cap epilogue and /cost (§9.4, §9.6)', () => {
       'run $0.310 of $2.000 (15 %)',
       'session $4.11 of $10.00 (41 %, 5 runs)',
       'per step p50 $0.023 · last $0.040 · about 42 steps left',
-      'gen $0.281 (~ table-priced) · jev $0.029 for 1,204 questions (~$2.4e-5 each, p50 237 ms)',
+      // TUI-DESIGN-3 §5.1 rule 6: never scientific notation — six decimals, trailing zeros dropped
+      'gen $0.281 (~ table-priced) · jev $0.029 for 1,204 questions (~$0.000024 each, p50 237 ms)',
       'basis: generator table (z-ai/glm-5.3-flash), jev provider usage.cost',
       'pending: spend-cap 3.00 (next /resume or run)',
       'raise: /budget spend-cap <usd> · /budget session-spend-cap <usd|none>',

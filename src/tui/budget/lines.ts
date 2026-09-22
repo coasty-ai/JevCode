@@ -311,6 +311,16 @@ export interface CostBlockInput {
   unpriced?: boolean;
 }
 
+/**
+ * TUI-DESIGN-3 §5.1 rule 6: the per-question figure of `/cost` — `~$0.000006`, six decimals with the trailing zeros
+ * dropped (never scientific notation; `~$0.00002`, `~$0.0`); non-finite → `~$?`.
+ */
+export function eachUsdText(each: number): string {
+  if (!Number.isFinite(each)) return '~$?';
+  const fixed = each.toFixed(6).replace(/0+$/, '');
+  return `~$${fixed.endsWith('.') ? `${fixed}0` : fixed}`;
+}
+
 function median(xs: readonly number[]): number | null {
   const s = xs.filter((x) => Number.isFinite(x)).sort((a, b) => a - b);
   if (s.length === 0) return null;
@@ -338,7 +348,7 @@ export function costBlock(i: CostBlockInput): string[] {
   if (i.mode !== 'jev-only' && i.gen) parts.push(`gen ${money(i.gen.usd)}${i.gen.tablePriced ? ' (~ table-priced)' : ''}`);
   if (i.jev) {
     const each = i.jev.questions > 0 ? i.jev.usd / i.jev.questions : null;
-    const eachText = each === null ? '' : ` (~$${each.toExponential(1)} each${i.jev.p50Ms === null ? '' : `, p50 ${Math.round(i.jev.p50Ms)} ms`})`;
+    const eachText = each === null ? '' : ` (${eachUsdText(each)} each${i.jev.p50Ms === null ? '' : `, p50 ${Math.round(i.jev.p50Ms)} ms`})`;
     parts.push(`jev ${usd3(i.jev.usd)} for ${grouped(i.jev.questions)} questions${eachText}`);
   }
   if (parts.length > 0) out.push(parts.join(' · '));

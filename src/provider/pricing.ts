@@ -208,8 +208,8 @@ export const MODEL_PRICES: readonly ModelPrice[] = [
   // ---- Anthropic direct / OpenRouter: the two providers the tree already priced; repeated here so the table is complete ----
   { provider: 'anthropic', model: 'claude-sonnet-5', match: 'prefix', source: ANTHROPIC_SOURCE, pricing: p({ in: 2, out: 10, cached: 0.2, write: 2.5 }) },
   { provider: 'openrouter', model: 'z-ai/glm-5.3-flashx', match: 'prefix', source: OPENROUTER_SOURCE, pricing: p({ in: 0.37, out: 1.25, cached: 0.075, write: 0.37 * 1.25 }) },
-  { provider: 'openrouter', model: 'z-ai/glm-5.3-flash', match: 'prefix', source: OPENROUTER_SOURCE, pricing: p({ in: 0.09, out: 0.3, cached: 0.018, write: 0.09 * 1.25 }) },
-  { provider: 'openrouter', model: 'z-ai/glm-5.3', match: 'prefix', source: OPENROUTER_SOURCE, pricing: p({ in: 0.91, out: 2.86, cached: 0.091, write: 0.91 * 1.25 }) },
+  { provider: 'openrouter', model: 'z-ai/glm-5.3-flash', match: 'prefix', source: OPENROUTER_SOURCE, pricing: p({ in: 0.15, out: 0.5, cached: 0.05, write: 0.15 * 1.25 }) }, // re-fetched 2026-09-21 (evening)
+  { provider: 'openrouter', model: 'z-ai/glm-5.3', match: 'prefix', source: OPENROUTER_SOURCE, pricing: p({ in: 0.84, out: 2.64, cached: 0.156, write: 0.84 * 1.25 }) }, // re-fetched 2026-09-21 (evening)
   { provider: 'openrouter', model: 'anthropic/claude-sonnet-5', match: 'prefix', source: ANTHROPIC_SOURCE, pricing: p({ in: 2, out: 10, cached: 0.2, write: 2.5 }) },
 ];
 

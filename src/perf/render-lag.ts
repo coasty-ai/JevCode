@@ -54,6 +54,9 @@
  * at exit; the painted dynamic region never above rows − 2 (`pty.ts` `paintedRows`, on every frame); the child exits 0.
  * The stress row applies the hygiene items only.
  *
+ * Run-start bucket (TUI-DESIGN-3 §5.2 A5, §9): the `dynamic` frames within one second of the `[run] start` frame — the rule
+ * sweep's ≤ 6 frames riding on the spinner's 8 and the live flush — gated at maxFps + 1 like every other second (`runStartBucket`).
+ *
  * Splash bucket (TUI-DESIGN-2 §5.3, §9 "dynamic fps": `framesPerSecondByClass(frames, …, 0, SPLASH_MS)`): the ≤ 700 ms
  * startup splash ticks through Ink's `useAnimation` at a 50 ms interval, so the `dynamic` frames (the class the fps gate
  * governs, `pty.ts` `classifyFrame`) arriving within `SPLASH_MS` of the first dynamic frame are counted per geometry
@@ -126,6 +129,12 @@ export interface LagGeometry {
   splashGate: number;
   /** `splashFrames ≤ splashGate` (gated where `gated`) */
   splashOk: boolean;
+  /** TUI-DESIGN-3 §5.2 A5 / §9: `dynamic` frames in the first second after `[run] start` (the rule sweep's ≤ 6 + the spinner + the live flush) */
+  runStartFrames: number;
+  /** the `run-start` bucket's gate: maxFps + 1 */
+  runStartGate: number;
+  /** `runStartFrames ≤ runStartGate` (gated where `gated`; true when the run never started) */
+  runStartOk: boolean;
   /** frames of the whole capture per class */
   frameClasses: FrameClassCounts;
   /** tallest dynamic region painted after the first frame */
@@ -224,6 +233,27 @@ export function splashBucket(frames: readonly Frame[], chunks: readonly Chunk[],
     if (wordmarkCells(frames[i]!.body) > 0) out.wordmarkFrames += 1;
   }
   return out;
+}
+
+/**
+ * TUI-DESIGN-3 §5.2 A5 / §9 "run-start bucket": the `dynamic` frames that arrived within `windowMs` after the frame carrying
+ * `[run] start` (the rule sweep's ≤ 6 frames ride on the spinner's 8 and the live flush); -1 when the run never started.
+ */
+export function runStartBucket(frames: readonly Frame[], chunks: readonly Chunk[], classes: readonly FrameClass[], capture: string, windowMs = 1000): number {
+  const at = capture.search(new RegExp(RUN_STARTED_PATTERN));
+  if (at < 0) return -1;
+  const idx = frames.findIndex((f) => f.end > at);
+  if (idx < 0) return -1;
+  const t0 = frameTime(frames[idx]!, chunks);
+  if (t0 === null) return -1;
+  let n = 0;
+  for (let i = idx; i < frames.length; i++) {
+    const t = frameTime(frames[i]!, chunks);
+    if (t === null) continue;
+    if (t - t0 >= windowMs) break; // half-open window [t0, t0 + windowMs)
+    if ((classes[i] ?? 'dynamic') === 'dynamic') n += 1;
+  }
+  return n;
 }
 
 interface LagJson {
@@ -343,7 +373,7 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
     }
     // Ctrl-C with a draft clears it; a second Ctrl-C on the empty live composer aborts the run (§3.3 S2); then /exit so LAG_JSON is printed
     steps.push({ op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'sleep', ms: 300 }, { op: 'send', text: '\x03' }, { op: 'expect', pattern: END_PATTERN, timeoutMs: 30_000 }, { op: 'expect', pattern: 'Follow-up, question', timeoutMs: 20_000 }, { op: 'send', text: '/exit' }, { op: 'sleep', ms: 200 }, { op: 'send', text: '\r' }, { op: 'eof', timeoutMs: 20_000 });
-    // `--mode jev-on`: the scripted `--mock` trajectory is a generator trajectory; under the round-2 default `jev-only` the real synthesizer would run (TUI-DESIGN-2 §1.1)
+    // `--mode jev-on` explicitly: the scripted `--mock` trajectory is a generator trajectory whatever `DEFAULT_MODE` is (under `jev-only` the real synthesizer would run; TUI-DESIGN-3 §1.1)
     const r = await typist({
       root,
       rows,
@@ -391,10 +421,13 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
     const splash = splashBucket(frames, r.chunks, firstIdx, { classes, firstSendAt: sends[0] ?? null });
     const splashGate = splashGateFor(maxFps, splash.windowMs);
     const splashOk = splash.frames <= splashGate;
+    const runStartFrames = runStartBucket(frames, r.chunks, classes, r.capture);
+    const runStartGate = maxFps + 1;
+    const runStartOk = runStartFrames < 0 || runStartFrames <= runStartGate;
     const verdict = lagVerdict(lag, baseline);
     const lagOk = verdict.ok;
     const hygieneOk = clears === 0 && cursor.hidesMaxPerFrame <= 1 && cursor.framesWithoutShow === 0 && cursor.shownAtEnd && regionMax <= rows - 2 && r.code === 0 && !r.timedOut;
-    const pass = hygieneOk && (!gated || (lagOk && fpsOk && splashOk));
+    const pass = hygieneOk && (!gated || (lagOk && fpsOk && splashOk && runStartOk));
     return {
       rows,
       columns: COLUMNS,
@@ -426,6 +459,9 @@ async function runGeometry(root: string, bin: string, spec: GeometrySpec, mockSt
       splashInFirstFrame: splash.inFirstFrame,
       splashGate,
       splashOk,
+      runStartFrames,
+      runStartGate,
+      runStartOk,
       frameClasses: classCounts(classes),
       regionMax,
       cursorHidesMaxPerFrame: cursor.hidesMaxPerFrame,
@@ -467,7 +503,7 @@ export async function measureRenderLag(opts: { root: string; bin: string; steps?
   const mockSteps = opts.steps ?? 3000;
   const realisticStepMs = opts.stepMs ?? REALISTIC_STEP_MS;
   const line = (g: LagGeometry): string =>
-    `render lag ${describeGeometry(g)} (step ${g.stepMs} ms${g.gated ? '' : ', lag/fps reported only'}): lag p50 ${g.lagP50?.toFixed(2)} p95 ${g.lagP95?.toFixed(2)} (net ${g.lagNetP95?.toFixed(2)}) max ${g.lagMax?.toFixed(2)} ms (${g.samples} samples${g.lagOk ? '' : '; OVER'}), clears ${g.clears}, frames ${g.frames} (${g.frameClasses.static} static, ${g.frameClasses.key} key, ${g.frameClasses.dynamic} dynamic), fps max ${g.fpsMax?.toFixed(0)} mean ${g.fpsMean?.toFixed(1)} (static ${g.fpsStaticMax?.toFixed(0)}, key ${g.fpsKeyMax?.toFixed(0)}, dynamic ${g.fpsDynamicMax?.toFixed(0)}; gate dynamic ≤ ${g.fpsGate}${g.fpsOk ? '' : ' EXCEEDED'}), splash ${g.splashFrames} dynamic frames in ${g.splashWindowMs} ms (+ ${g.splashStaticFrames} static, ${g.splashKeyFrames} key; ${g.splashWordmarkFrames} with the wordmark; first frame ${g.splashInFirstFrame ? 'is' : 'is not'} splash frame 0; gate ≤ ${g.splashGate}${g.splashOk ? '' : ' EXCEEDED'}), region max ${g.regionMax}, cursor hides ≤ ${g.cursorHidesMaxPerFrame} / ${g.cursorFramesWithoutShow} frames without show, typing p95 ${g.typing.p95?.toFixed(1)} ms (${g.keysWhileLive}/${g.typing.samples} keys while live, step ${g.stepsSeen}/${g.mockSteps}, ${g.stepsPerSecond?.toFixed(1)} steps/s, ${g.staticRowsPerSecond?.toFixed(0)} static rows/s), exit ${g.exitCode}${g.timedOut ? ' TIMEOUT' : ''} → ${g.pass ? 'pass' : 'FAIL'}`;
+    `render lag ${describeGeometry(g)} (step ${g.stepMs} ms${g.gated ? '' : ', lag/fps reported only'}): lag p50 ${g.lagP50?.toFixed(2)} p95 ${g.lagP95?.toFixed(2)} (net ${g.lagNetP95?.toFixed(2)}) max ${g.lagMax?.toFixed(2)} ms (${g.samples} samples${g.lagOk ? '' : '; OVER'}), clears ${g.clears}, frames ${g.frames} (${g.frameClasses.static} static, ${g.frameClasses.key} key, ${g.frameClasses.dynamic} dynamic), fps max ${g.fpsMax?.toFixed(0)} mean ${g.fpsMean?.toFixed(1)} (static ${g.fpsStaticMax?.toFixed(0)}, key ${g.fpsKeyMax?.toFixed(0)}, dynamic ${g.fpsDynamicMax?.toFixed(0)}; gate dynamic ≤ ${g.fpsGate}${g.fpsOk ? '' : ' EXCEEDED'}), splash ${g.splashFrames} dynamic frames in ${g.splashWindowMs} ms (+ ${g.splashStaticFrames} static, ${g.splashKeyFrames} key; ${g.splashWordmarkFrames} with the wordmark; first frame ${g.splashInFirstFrame ? 'is' : 'is not'} splash frame 0; gate ≤ ${g.splashGate}${g.splashOk ? '' : ' EXCEEDED'}), run-start bucket ${g.runStartFrames} dynamic frames in 1 s (gate ≤ ${g.runStartGate}${g.runStartOk ? '' : ' EXCEEDED'}), region max ${g.regionMax}, cursor hides ≤ ${g.cursorHidesMaxPerFrame} / ${g.cursorFramesWithoutShow} frames without show, typing p95 ${g.typing.p95?.toFixed(1)} ms (${g.keysWhileLive}/${g.typing.samples} keys while live, step ${g.stepsSeen}/${g.mockSteps}, ${g.stepsPerSecond?.toFixed(1)} steps/s, ${g.staticRowsPerSecond?.toFixed(0)} static rows/s), exit ${g.exitCode}${g.timedOut ? ' TIMEOUT' : ''} → ${g.pass ? 'pass' : 'FAIL'}`;
   const baseline = await measureLagBaseline();
   opts.onProgress?.(`lag probe floor (bare idle node, ${baseline.seconds} s): p50 ${baseline.p50?.toFixed(2)} p95 ${baseline.p95?.toFixed(2)} max ${baseline.max?.toFixed(2)} ms (${baseline.samples} samples) → ${baseline.ok ? `calibration applies: gate on p95 − ${baseline.p50?.toFixed(2)} ms` : 'floor too noisy, raw p95 gated'}`);
   const run = async (spec: GeometrySpec): Promise<LagGeometry> => {

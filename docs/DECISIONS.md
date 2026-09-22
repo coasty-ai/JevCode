@@ -874,6 +874,74 @@ reason (one key, no generator spend); a default should follow the behaviour on d
 document. Consequences: the wizard, the badge and the help text list the mode without preferring it; `defaultRunSpendCapUsd`
 treats `llm-jev` like the other generator modes ($2.00 — the design's §8.4 named $0.50, open); `handles()` false
 (non-Python, test-less, feature work) falls back to the generic per-step proposer and is outside the dominance claim.
+
+## 2026-09-21 Jev+LLM is the default; one OpenRouter key runs both
+
+`DEFAULT_MODE` (`src/config/defaults.ts`) becomes `jev-on` (badge `jev+llm`): the generator writes the code, Jev decides every step; the
+session follows `config.mode` through `applyConfig()` (flag > `JEVCODE_MODE` > dotenv > file > default), which it did not before (a file or
+env mode reached the caps and `jevcode config` but never the running session). One `OPENROUTER_API_KEY` serves Jev at
+`openrouter.ai/api/alpha/decisions` and the default generator `z-ai/glm-5.3-flash`; TypeSafe native Jev is preferred whenever
+`TYPESAFE_API_KEY` exists. The first-run wizard opens on one masked field and writes the file keys the detected state calls for (four from one paste when nothing
+resolves; the generator key alone beside a TypeSafe or Jev key, so a file `jevProvider` never displaces `TYPESAFE_API_KEY`); its `3 Jev only`
+persists `mode: jev-only` at startup; a keyed start without a file `mode` row prints the default-mode caps item once — when the file's `seen.defaultMode` differs
+from `DEFAULT_MODE`; printing it writes that row (D-Q as the owner ratified it, TUI-DESIGN-3 §0.1: one-time, not every start); `jevcode login --key-stdin` is the pipe form. Reason: the round-2 default (jev-only) was chosen for "one key, no generator spend" — with GLM 5.3 Flash
+at $0.09/M in the same key buys both, and the owner asked for the LLM mode by default. Consequences: caps $2.00 / $10.00 by default (the
+`[setup] spend caps` item names them after a wizard save; `/mode jev-only` and the wizard's `3 Jev only` keep the $0.25 path); every
+fallback that named a mode reads `DEFAULT_MODE`, the badge words come from one table (`MODE_BADGE_WORD`, `llm-jev` → `llm+jev · verified`),
+and a unit test refuses any literal that names a default outside `defaults.ts` — the peer's `llm-jev` flip is one literal. The two-commit
+order (behaviour first, flip + re-pin second) is recorded in TUI-DESIGN-3 §1.10.
+
+## 2026-09-21 Verification sends one priced Jev decision and one 1-token completion, on `y` only
+
+The wizard's `Verify now?` (Enter/Esc skip) and `jevcode login --verify` send one real Jev decision (~$0.00002, ~250 ms), one `max_tokens: 1`
+completion on the generator (~$0.000002; only when the mode needs a generator) and `GET /api/v1/key` ($0), and classify the answer as ok
+· rejected (401/403, exit 2) · credits (402, exit 5) · unreachable (408/429/5xx/network, exit 5) · model (400/404, exit 2). Reason:
+OpenRouter's key endpoint cannot see the balance of a key with `limit: null` and `/api/v1/credits` needs a management key (docs fetched
+2026-09-21), so only a priced request reveals a 402; a model id is verifiable only by asking for it; the Ink wizard's `y` was a no-op
+before (no `verify` host member). Consequences: the decision is metered into the session (`/cost` shows it); nothing is sent before an
+explicit `y`; `JEVCODE_ASSERT_NO_NETWORK` smokes never press it.
+
+## 2026-09-21 The wordmark stays; the sweep loops at 4 fps peak and sleeps
+
+The 5-row wordmark is the pane slot's idle tenant, granted whole or not at all (`computeLayout` 1.2 `paneWhole`): shown while idle and
+thinking at ≥ 21 rows (below, the boxed tier keeps the brand row so no palette or draft hands it off), hidden while a run is live or a panel,
+picker or review owns the slot, back under the strip after `run:end` (at once at ≥ 24 rows, on the next key at 21–23 so the epilogue stays in
+view); a key completes the reveal instead of killing it. The splash's own 6-cell sweep band loops left → right at 4 cells per 250 ms tick — 16 written frames per 4 s
+pass, 6 s of rest (mean 1.6 fps), one pass per 30 s after a minute without activity, static after ten minutes, no pass within 3 s of a key (evaluated only where a pass would start — a key never cuts a pass short), a
+reply calms rather than wakes it, off under reduced motion, at colour depth 0 and by default over SSH (`ui.wordmark: static`). Reason: the owner asked to "keep that animation … not disappear once it loads"; idle
+today writes zero frames, so the budget is an absolute one — Ink's log throttle has a 0 ms wait and `useAnimation({ interval: 250 })` yields
+exactly one render per tick at maxFps 30 and 15 (verified on the real renderer), so the loop cannot add throttle latency to a keystroke,
+only ≈ 11 ms of CPU per frame. Consequences: a new `idle-frames` perf probe gates ≤ 4 fps peak / ≤ 2 mean and ≤ 12 KB/s; the caption
+`◆ <version>` replaces the brand row as the settle sentinel; `ui.wordmark: sweep | static | off` is the escape hatch; the flat tier, 16–20 rows, < 64
+columns and the screen reader draw no mark and spend no frames.
+
+## 2026-09-21 The pink is TypeSafe's; the default theme keeps its id
+
+The `dark` theme becomes the typesafe.ai palette measured on 2026-09-21: primary `#f386a1` (211 / `magentaBright`) for what *is*
+JevCode or Jev — the brand row, the wordmark letters, the badge, the `[jevcode]` label, `[chosen]`, the idle `›`, the spinner — and
+secondary `#d45bb6` (169 / `magenta`) for what is *being acted on* — the console edges while a run is live, the `[you]` label, the
+palette cursor; error/warn/ok keep their hues; the light theme gets darkened pinks (`#be185d` / `#831843`) and fixes its unreadable
+inherited red and green (2.74:1 and 1.73:1 on white); daltonized keeps the red ↔ blue swap and lets `[chosen]` stay pink (pink vs blue ΔE
+34). Reason: the site uses `#f386a1` as its block colour and `#d45bb6` as hover/selection/border, which is a ready rule for rest vs
+active; pink is never a semantic colour, so every pink role keeps its text marker and a deuteranope who cannot split pink from salmon
+(ΔE 12) still reads `[chosen]` vs `[block]`. Consequences: the id `dark` stays (six enum sites, the man page, completions and 37 pty
+scenarios untouched); chat bodies stay the terminal's default foreground — the label is the bubble; the prompt is pink at rest and amber
+while steering. A white terminal announced through `COLORFGBG` (background 7 or 15) gets the `light` table by default (D-R); Terminal.app,
+which sets none, is told in `/help` and TUI.md.
+
+## 2026-09-21 Aliases pin their owner; availability errors clear the draft
+
+21 short aliases (`/s` status, `/p` panel, `/t` theme, `/l` login, `/m` mode, `/c` cost, …) join the registry; an exact alias pins its owner
+to the top palette row (the fuzzy scorer ranked `/steer` above `/status` for `s`), the palette shows an alias column, a `→ /owner` ghost and
+Suggested → recent → Popular groups for an empty query; Tab completes arguments and never wipes a typed one; an error the user cannot fix by
+editing (`needs a live run`, `runs when the run is idle`, `not available in --plain`) clears the draft, a fixable one keeps it. Reason: the
+audit measured `/budget spend-cap` + Tab collapsing to `/budget `, and kept drafts turning the next command into `/steer x/pause`. `a` for
+`/abort`, `x` for `/exit` and `n` for `/new` were rejected (one-letter aliases for commands whose Enter destroys state without a confirm; `/new` is `nw`). Consequences: `docs/COMMANDS.md` and the man page regenerate;
+the help block prints aliases; `/panel`, `/transcript`, `/theme`, `/copy diff`, `/decisions`, `/why`, `/help`, `/trust`, `/logout`, `/new`,
+`/rename`, `/model`, `/provider`, `/errors` and `/help reload` behave as their rows promise (TUI-DESIGN-3 §4.4).
+
+---
+
 ## 2026-09-21 The probe's majority decides an all-seed split, before any special-case count
 
 When ≥ 2 behaviour clusters survive, no cluster holds an `llm` member and every cluster carries the same independent support

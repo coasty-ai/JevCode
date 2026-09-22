@@ -82,7 +82,11 @@ export const FIRST_FRAME_GEOMETRIES: readonly { rows: number; columns: number }[
   { rows: 24, columns: 80 },
   { rows: 8, columns: 40 },
 ];
-/** TUI-DESIGN-2 §4.1 `BOXED_MIN_ROWS` and §5.1 `WORDMARK_MIN_COLUMNS`: the geometries whose first frame carries the wordmark */
+/**
+ * TUI-DESIGN-2 §4.1 `BOXED_MIN_ROWS` and §5.1 `WORDMARK_MIN_COLUMNS`: the geometries whose first frame carries the wordmark.
+ * TUI-DESIGN-3 §9 row 1 keeps them: the reveal runs at 16–20 rows too (frame 0 is splash frame 0 there as well); only the *held* mark
+ * of §3 needs `WORDMARK_MIN_ROWS` = 21, which this probe does not read.
+ */
 export const WORDMARK_MIN_ROWS = 16;
 export const WORDMARK_MIN_COLUMNS = 64;
 export function wordmarkExpectedAt(rows: number, columns: number): boolean {

@@ -17,6 +17,8 @@ import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/
 import { IDENTITY_NO_TTY, formatTranscriptItem, itemsFromEvent, plainFirstLine } from '../../../src/tui/plain.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
 import { WORDMARK } from '../../../src/tui/splash.js';
+import { VERSION } from '../../../src/version.js';
+import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../../src/config/defaults.js';
 import { EXIT_CONFIRM_ROW } from '../../../src/tui/Overlay.js';
 import { renderFaultFor, resetRenderFaults } from '../../../src/tui/PaneBoundary.js';
 import { resolveLaunchSettings } from '../../../src/config/launch.js';
@@ -39,7 +41,7 @@ describe('<App> first frame (§1)', () => {
     expect(m.lastFrame()).toContain('─'.repeat(10));
   });
 
-  it('session: header `jevcode session · <dir> | step 0/– starting`, splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` settles into the brand row (H-A3)', async () => {
+  it('session: header `jevcode session · <dir> | step 0/– starting`, splash frame 0 (the `J` column), the console with the placeholder and the idle status row — from argv only (H-A1); `splash:done` keeps the resting mark under the plain rule with its `◆ <version>` caption (TUI-DESIGN-3 §3.2 H-A3 → F-W1: 11 dynamic rows)', async () => {
     const m = mountApp({ mode: 'session' });
     const f = m.lastFrame();
     expect(f).toContain('[run] jevcode session · proj | step 0/– starting');
@@ -51,13 +53,18 @@ describe('<App> first frame (§1)', () => {
     m.dispatch({ type: 'splash:done' });
     await tick(20);
     const dyn = dynamicLines(m.lastFrame());
-    expect(dyn).toHaveLength(6); // brand rule + console (top, composer, divider, status, bottom)
-    expect(dyn[0]).toMatch(/^─── ◆ jevcode \S+ ─+$/);
-    expect(dyn[1]).toMatch(/^╭─ jev-only ─+ proj ─╮$/);
-    expect(dyn[2]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(96 - 2 - PLACEHOLDERS.task.length)} │`);
-    expect(dyn[3]).toMatch(/^├─+┤$/);
-    expect(dyn[4]).toMatch(/^│ idle\s+step 0\/–\s+\? help │$/);
-    expect(dyn[5]).toMatch(/^╰─+╯$/);
+    expect(dyn).toHaveLength(11); // plain rule + the 5-row mark + console (top, composer, divider, status, bottom)
+    expect(dyn[0]).toMatch(/^─+$/);
+    expect(dyn[0]).toHaveLength(100);
+    for (let r = 0; r < 4; r++) expect(dyn[1 + r]).toBe(`${' '.repeat(22)}${WORDMARK[r]}`.replace(/\s+$/, ''));
+    expect(dyn[5]).toBe(`${' '.repeat(22)}${WORDMARK[4]}  ◆ ${VERSION}`);
+    expect(dyn[6]).toMatch(new RegExp(`^╭─ ${MODE_BADGE_WORD[DEFAULT_MODE].replace(/[+·]/g, (c) => `\\${c}`)} ─+ proj ─╮$`));
+    expect(dyn[7]).toBe(`│ › ${PLACEHOLDERS.task}${' '.repeat(96 - 2 - PLACEHOLDERS.task.length)} │`);
+    expect(dyn[8]).toMatch(/^├─+┤$/);
+    expect(dyn[9]).toMatch(/^│ idle\s+step 0\/–\s+\? help │$/);
+    expect(dyn[10]).toMatch(/^╰─+╯$/);
+    expect(m.lastFrame()).not.toContain('▓▒░');
+    expect(m.lastFrame()).not.toMatch(/◆ jevcode/);
     expect(m.state()?.splash).toBe('done');
   });
 
@@ -651,7 +658,7 @@ describe('<App> a submission that never becomes a run (§4.9, finding 1)', () =>
     expect(m.lastFrame()).not.toContain(EXIT_CONFIRM_ROW);
   });
 
-  it('while the submit is still in flight (starting, no engine, no thinking phase) Ctrl-C follows the S0 rules: hint then exit 0 through the host, never an abort on nothing (TUI-DESIGN-2 §3.1 row 10 — with a phase set, round2-app.test.tsx: one press aborts the request)', async () => {
+  it('while the submit is still in flight the App itself enters the intake phase (TUI-DESIGN-3 §5.2 P7): no frame reads `│ starting` or the steer placeholder, and Ctrl-C ×1 aborts the request through the host (§3.1 row 10) — no exit; the resolving submit returns to idle and clears the phase', async () => {
     const host = fakeHost();
     let release: () => void = () => undefined;
     host.submit = () =>
@@ -659,21 +666,31 @@ describe('<App> a submission that never becomes a run (§4.9, finding 1)', () =>
         release = r;
       });
     const m = mountApp({ mode: 'session', host });
+    m.dispatch({ type: 'splash:done' });
+    await tick(20);
+    const before = m.frames.length;
     m.stdin.write('slow start\r');
     await tick(30);
     expect(m.state()?.run).toBe('starting');
-    expect(m.lastFrame()).toMatch(/│ starting\s/);
+    expect(m.state()?.thinking).toBe('intake');
+    for (const f of m.frames.slice(before)) {
+      const t = stripSgr(f);
+      expect(t).not.toMatch(/│ starting\s/);
+      expect(t).not.toContain(PLACEHOLDERS.steer);
+    }
+    expect(m.lastFrame()).toMatch(/│ [░▒▓█] thinking\s/);
+    expect(m.lastFrame()).toContain(`› ${PLACEHOLDERS.thinking}`);
     m.stdin.write(CTRL_C);
     await tick(20);
-    expect(host.aborts).toEqual([]);
+    expect(host.aborts).toEqual(['human_abort']);
+    expect(host.exits).toEqual([]);
     expect(m.state()?.run).toBe('starting');
-    expect(m.lastFrame()).toContain('press Ctrl-C again to exit');
-    m.stdin.write(CTRL_C);
-    await tick(20);
-    expect(host.exits).toEqual([0]);
+    expect(m.lastFrame()).not.toContain('press Ctrl-C again to exit');
     release();
     await tick(20);
     expect(m.state()?.run).toBe('none');
+    expect(m.state()?.thinking).toBeNull();
+    expect(m.lastFrame()).not.toContain(PLACEHOLDERS.thinking);
   });
 
   it('a submit that does start a run stays live (run:start flips starting → live before submit resolves)', async () => {

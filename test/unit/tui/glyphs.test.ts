@@ -29,8 +29,10 @@ describe('GLYPHS (TUI-DESIGN §14.1)', () => {
     expect([u.up, a.up, u.down, a.down]).toEqual(['↑', '^', '↓', 'v']);
     expect([u.branch, a.branch]).toEqual(['⎇', 'br']);
     expect([u.dagger, a.dagger, u.bullet, a.bullet, u.dot, a.dot, u.band, a.band]).toEqual(['†', '+', '•', '*', '·', '-', '┆', ':']);
-    expect([u.full, a.full, u.spinnerStatic, a.spinnerStatic]).toEqual(['█', '#', '•', '*']);
-    expect(a.spinner).toEqual(['|', '/', '-', '\\']);
+    // TUI-DESIGN-3 §5.2 A3 (D-P): the shade pulse and the static `◆` (the same cells as shade1..3 / full / brand — the twin table stays one-to-one)
+    expect([u.full, a.full, u.spinnerStatic, a.spinnerStatic]).toEqual(['█', '#', '◆', '*']);
+    expect(u.spinner).toEqual(['░', '▒', '▓', '█', '▓', '▒']);
+    expect(a.spinner).toEqual(['.', '+', '#', '#', '+', '.']);
     expect([u.arrow, a.arrow, u.ge, a.ge, u.le, a.le, u.approx, a.approx]).toEqual(['→', '->', '≥', '>=', '≤', '<=', '≈', '~=']);
     expect([u.range, a.range, u.minus, a.minus, u.dash, a.dash, u.sigma, a.sigma]).toEqual(['–', '-', '−', '-', '—', '-', 'Σ', 'sum']);
     expect(u.range.codePointAt(0)).toBe(0x2013);
@@ -44,7 +46,7 @@ describe('GLYPHS (TUI-DESIGN §14.1)', () => {
     expect(glyphTwin('choice resolution → intent edit', GLYPHS.unicode)).toBe('choice resolution → intent edit');
     expect(glyphTwin('choice resolution → intent edit', GLYPHS.sr)).toBe('choice resolution → intent edit');
     expect(glyphTwin('', GLYPHS.ascii)).toBe('');
-    for (const s of every(GLYPHS.unicode)) expect(glyphTwin(s, GLYPHS.ascii)).toMatch(/^[\x20-\x7e]*$|^[⠋⠙⠸⠼⠴⠦⠧⠇⠏]$/);
+    for (const s of every(GLYPHS.unicode)) expect(glyphTwin(s, GLYPHS.ascii)).toMatch(/^[\x20-\x7e]*$/);
   });
   it('stepLabelCells is 2 up to s9, 3 from s10, one more per digit, and reads every step given', () => {
     expect(stepLabelCells([])).toBe(2);

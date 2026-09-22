@@ -2,46 +2,46 @@
 
 # Slash commands
 
-Type `/` at the start of an empty composer to open the palette; Enter runs a command only on an exact name or alias match — a `/` token that matches nothing keeps the draft and appends `[ui] error: unknown command /foo; type / to list commands` (a submitted line is a paid run). `avail`: idle | live | any — an idle-only command while a run is live answers `/x runs when the run is idle; Esc pauses first`; a live-only command while idle answers `/x needs a live run`. `plain`: support in the `--plain` readline composer. Arguments follow TUI-DESIGN §5.1: bare words, `"double quotes"` with `\` escapes, `'single quotes'`; `--flag` and `--flag=value` are options.
+Type `/` at the start of an empty composer to open the palette; Enter runs a command only on an exact name or alias match — a `/` token that matches nothing keeps the draft and appends `[ui] error: unknown command /foo; type / to list commands` (a submitted line is a paid run). Aliases are shortcuts: `/s` is `/status`, `/m jev-on` is `/mode jev-on`; in the palette an exact alias pins its command to the top and the alias column shows the shortest one (TUI-DESIGN-3 §4.1). `avail`: idle | live | any — an idle-only command while a run is live answers `/x runs when the run is idle; Esc pauses first` (the draft is cleared: nothing to fix); a live-only command while idle answers `/x needs a live run`. `plain`: support in the `--plain` readline composer. Arguments follow TUI-DESIGN §5.1: bare words, `"double quotes"` with `\` escapes, `'single quotes'`; `--flag` and `--flag=value` are options; Tab completes an argument (enum values, settings, changed steps, session titles) and never wipes a typed one.
 
 | Command | Args | avail | plain | Semantics |
 | --- | --- | --- | --- | --- |
 | `/help`, alias `/h` | [keys\|commands\|reload] | any | yes | append the help block (keys by context, commands with one-liners, per-terminal notes); `reload` re-reads `keybindings.json` |
-| `/new` | — | idle | yes | end the session; the next prompt starts a new session in this workspace (new `sessionId`, fresh root meter); item shows the old session's total |
-| `/resume`, alias `/sessions`, alias `/continue` | [id\|title] | idle | `/resume <id\|title>` only | picker (§8.4); with an argument continue that run (a stopped run resumes; a `complete` run seeds a follow-up unless `--force`); after `/undo`/`/rewind` of that run the human note rides in `EngineOptions.humanDirective` and `undoLog` (§12.4); `/continue` = most recently used run here. Flags: `--force` resume a `complete` run instead of seeding a follow-up; `--sort=updated\|created` `--sort=created` orders the picker by creation time |
+| `/new`, alias `/nw` | — | idle | yes | end the session; the next prompt starts a new session in this workspace (new `sessionId`, fresh root meter); item shows the old session's total |
+| `/resume`, alias `/r`, alias `/sessions`, alias `/continue` | [id\|title] | idle | `/resume <id\|title>` only | picker (§8.4); with an argument continue that run (a stopped run resumes; a `complete` run seeds a follow-up unless `--force`); after `/undo`/`/rewind` of that run the human note rides in `EngineOptions.humanDirective` and `undoLog` (§12.4); `/continue` = most recently used run here. Flags: `--force` resume a `complete` run instead of seeding a follow-up; `--sort=updated\|created` `--sort=created` orders the picker by creation time |
 | `/rename` | <title> | any | yes | session title ≤ 60 (through the secret gate and `redact`); index `rename` line; status centre |
 | `/steer` | <text> | live | yes | = Enter with text while live (needed by `--plain`) |
 | `/unsteer` | — | live | yes | = Up on the first row: `engine.unsteer()` |
 | `/pause` | — | live | yes | `engine.pause()` (= Esc) |
 | `/abort` | — | live | yes | `engine.abort('human_abort')` (= Esc Esc) |
-| `/undo` | [n] | idle | yes (readline `y/N`) | §12.4 |
-| `/rewind` | [step] | idle | yes | picker of steps with changed files → undo last…n → `files / plan+window / both` (§12.5) |
-| `/diff` | [step] [--full] [--all] | any | inline only | §12.6 (`--full` idle only). Flags: `--full` unified diff in `$GIT_PAGER`/`$PAGER`/`less` (idle only) (idle only); `--all` lift the 40-row cap |
-| `/plan` | — | any | yes | append the plan ledger block |
-| `/decisions` | [n] [stage] | any | yes | append the last n `DecisionRow`s (default 12) |
-| `/why` | <ref\|digit> | any | yes | append the `/why` block (§7.6) for `s7.risk.plan_mismatch`, `risk.plan_mismatch` (current step) or a visible pane digit |
+| `/undo`, alias `/u` | [n] | idle | yes (readline `y/N`) | §12.4 |
+| `/rewind`, alias `/rw` | [step] | idle | yes | picker of steps with changed files → undo last…n → `files / plan+window / both` (§12.5) |
+| `/diff`, alias `/d` | [step] [--full] [--all] | any | inline only | §12.6 (`--full` idle only). Flags: `--full` unified diff in `$GIT_PAGER`/`$PAGER`/`less` (idle only) (idle only); `--all` lift the 40-row cap |
+| `/plan`, alias `/pl` | — | any | yes | append the plan ledger block |
+| `/decisions`, alias `/dc` | [n] [stage] | any | yes | append the last n `DecisionRow`s (default 12) |
+| `/why`, alias `/w` | <ref\|digit> | any | yes | append the `/why` block (§7.6) for `s7.risk.plan_mismatch`, `risk.plan_mismatch` (current step) or a visible pane digit |
 | `/calibration` | — | idle | yes | append the reliability block from `decisions.jsonl` + `steps.jsonl` of this workspace's runs (the 50 most recent runs or 32 MB of records, streamed) |
-| `/jev` | — | any | yes | decider model, resolved/drift@step, questions, latency p50/p95, Jev cost |
-| `/cost` | — | any | yes | 12-row block (§9.6) |
-| `/budget` | [spend-cap\|session-spend-cap\|max-steps\|max-wall\|max-replans <v>] | any | yes | show or set (§9.4); `session-spend-cap none` lifts the session cap; `max-generator-tokens <n>` is the --allow-unpriced token cap (§9.5) |
-| `/model` | <id> | any | yes | pending for the **next** run only (memory); a differing `--model` on `/resume` stays `ConfigError` |
-| `/provider` | <p> | any | yes | pending for the **next** run only (memory) |
-| `/mode` | [jev-only\|jev-on\|jev-off\|llm-jev] | any | yes | no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard's generator step in place; persist with `jevcode config set mode <m>` |
+| `/jev`, alias `/j` | — | any | yes | decider model, resolved/drift@step, questions, latency p50/p95, Jev cost |
+| `/cost`, alias `/c` | — | any | yes | 12-row block (§9.6) |
+| `/budget`, alias `/b` | [spend-cap\|session-spend-cap\|max-steps\|max-wall\|max-replans <v>] | any | yes | show or set (§9.4); `session-spend-cap none` lifts the session cap; `max-generator-tokens <n>` is the --allow-unpriced token cap (§9.5) |
+| `/model`, alias `/ml` | [id] | any | yes | no argument shows `model <current> (next run: <pending>)`; with one: pending for the **next** run only (memory); a differing `--model` on `/resume` stays `ConfigError` |
+| `/provider` | [anthropic\|openrouter] | any | yes | no argument shows `provider <current> (next run: <pending>)`; with one: pending for the **next** run only (memory) |
+| `/mode`, alias `/m` | [jev-only\|jev-on\|jev-off\|llm-jev] | any | yes | no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard's generator step in place; persist with `jevcode config set mode <m>` (default jev-on) |
 | `/llm` | <on\|off> | any | yes | `/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only` |
-| `/config` | — | any | yes | masked table with `source` column, effective session cap, sandbox footer |
-| `/login` | — | any | `/login` raw-mode prompt | wizard field re-entry (§11.2); `saved — applies to the next run` |
+| `/config`, alias `/cf` | — | any | yes | masked table with `source` column, effective session cap, sandbox footer |
+| `/login`, alias `/l` | — | any | `/login` raw-mode prompt | wizard field re-entry (§11.2); `saved — applies to the next run` |
 | `/logout` | [generator\|jev] | any | yes | rewrites the credentials file atomically and reports env-sourced keys without touching them (§11.2) |
 | `/trust` | — | idle | yes | reopen the trust gate |
-| `/theme` | <dark\|light\|daltonized\|ansi> | any | n/a | new items and the dynamic region only |
-| `/panel` | [d\|p\|t\|s\|off\|full] | any | yes | no argument toggles collapsed ↔ open (≤ 6 rows); `d\|p\|t\|s` opens that tab (the same tab again collapses); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows |
-| `/transcript` | [compact\|full] | any | n/a | no argument shows the current view; `compact` (default) hides the stage kinds and shows one `[step N]` line per step; `full` shows every item (new items only, §4.5); `--plain` is always `full` |
-| `/copy` | [last\|proposal\|diff\|draft] | any | n/a | §10.5 |
+| `/theme`, alias `/t` | <dark\|light\|daltonized\|ansi> | any | n/a | new items and the dynamic region only |
+| `/panel`, alias `/p` | [d\|p\|t\|s\|off\|full] | any | yes | no argument toggles collapsed ↔ open (≤ 6 rows); `d\|p\|t\|s` opens that tab (the same tab again collapses); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows |
+| `/transcript`, alias `/tr` | [compact\|full] | any | always full | no argument shows the current view; `compact` (default) hides the stage kinds and shows one `[step N]` line per step; `full` shows every item (new items only, §4.5); `--plain` is always `full` |
+| `/copy`, alias `/cp` | [last\|proposal\|diff\|draft] | any | n/a | §10.5 |
 | `/export` | [file] | idle | yes | §8.7 |
-| `/status` | — | any | yes | run id, session id, step/max, stage, sandbox, workspace, git, stop reason, lock |
+| `/status`, alias `/s` | — | any | yes | run id, session id, step/max, stage, sandbox, workspace, git, stop reason, lock |
 | `/errors` | — | any | yes | append recent warnings/errors as items; acknowledges `!n` |
 | `/report` | — | idle | yes | `~/.jevcode/reports/<run-id>/` (§13.6) |
 | `/history` | clear | any | yes | truncate `history.jsonl` after `y/N` |
 | `/editor` | — | any | n/a | = Ctrl+G |
-| `/exit`, alias `/quit` | — | any | yes | exit 0 (`exitConfirm` first while live; `--exit-code=last-run` opt-in) |
+| `/exit`, alias `/q`, alias `/quit` | — | any | yes | exit 0 (`exitConfirm` first while live; `--exit-code=last-run` opt-in) |
 
 Deferred (TUI-DESIGN §22): `/doctor` (CLI `jevcode doctor` first), `/cd`, project commands (A63), `/redo`.

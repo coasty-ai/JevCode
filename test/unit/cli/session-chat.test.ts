@@ -7,9 +7,10 @@
  * jev+llm paths (LLM turn, provider 500, weak reading → lookup + hint, `ConfigError` → `[ui] error: config:`); the wizard
  * re-read (§3.8, finding 26); the one-shot argv task skips intake; `/jev` line 3 and `/cost`'s chat line.
  */
+import { whyErrorText } from '../../../src/tui/why.js';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Answer, GenerateRequest, IntakeKind, Provider } from '../../../src/core/types.js';
-import { INTAKE_KEPT, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, LLM_FLOORED_HINT, LLM_KEY_REJECTED, LLM_UNPRICED_REFUSAL, LLM_UNREACHABLE, MISSING_JEV_KEY, MOCK_CHAT_GENERATOR, RUN_LIVE_ERROR, SESSION_CAP_CHAT_REFUSAL, STILL_THINKING_TOAST, STOPPED_THINKING_TOAST, chatEstimateUsd, mockIntakeOverride, mockIntakeRules, mockJevLatencyMs, type ChatUiAction, type WizardReason } from '../../../src/cli/session.js';
+import { CREDITS_EXHAUSTED, INTAKE_KEPT, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, LLM_FLOORED_HINT, LLM_KEY_REJECTED, LLM_UNPRICED_REFUSAL, LLM_UNREACHABLE, MISSING_JEV_KEY, MOCK_CHAT_GENERATOR, RUN_LIVE_ERROR, SESSION_CAP_CHAT_REFUSAL, STILL_THINKING_TOAST, STOPPED_THINKING_TOAST, chatEstimateUsd, mockIntakeOverride, mockIntakeRules, mockJevLatencyMs, type ChatUiAction, type WizardReason } from '../../../src/cli/session.js';
 import { writeJsonStream } from '../../../src/cli/json-stream.js';
 import { readIndex } from '../../../src/session/index.js';
 import { LOOKUP_FOOTER, LOOKUP_HEADER, lookupMissText } from '../../../src/chat/lookup.js';
@@ -217,9 +218,11 @@ describe('TUI-DESIGN-2 §3.9: money', () => {
     await h.command('/jev');
     const jev = h.renderer.notes.at(-1);
     expect(jev?.text).toBe('jev');
-    expect(jev?.detail).toContain('intake: 1 message · p50 118 ms · $0.0002 · last: greeting_or_smalltalk 0.90');
+    // TUI-DESIGN-3 §10 (D-M local text): the intake row and the last-intake row are two rows
+    expect(jev?.detail).toContain('intake: 1 message · p50 118 ms · $0.0002');
+    expect(jev?.detail).toContain('last: greeting or smalltalk (0.90)');
     await h.command('/cost');
-    expect(h.renderer.notes.at(-1)?.detail).toContain('chat $0.0002 for 1 message (~$2.0e-4 each, p50 118 ms)');
+    expect(h.renderer.notes.at(-1)?.detail).toContain('chat $0.0002 for 1 message (~$0.0002 each, p50 118 ms)'); // TUI-DESIGN-3 §5.1 rule 11: no scientific notation
   });
 });
 
@@ -628,6 +631,25 @@ describe('TUI-DESIGN-2 §3.1 rows 10–13: aborts, rejected keys, the live run a
     expect(reasons).toEqual(['rejected']);
   });
 
+  it('TUI-DESIGN-3 §1.7 (R3 F5/F10): a 402 from Jev on the intake → the CREDITS_EXHAUSTED bubble (never "unreachable"), no wizard, the meter unchanged; a 402 from the generator during the LLM turn the same', async () => {
+    const reasons: WizardReason[] = [];
+    const h = await build({ decider: harnessDecider({ usage: USAGE, failAt: [{ stage: 'intent', status: 402 }] }), prompts: { wizard: async (_m, o) => { reasons.push(o.reason); return { kind: 'cancelled' }; } } });
+    void h.controller.run();
+    await h.ready();
+    expect(await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(bubbles(h, '[jevcode]')).toEqual([CREDITS_EXHAUSTED('jev', 402)]);
+    expect(CREDITS_EXHAUSTED('jev', 402)).toBe('OpenRouter says this key has no credits (HTTP 402). Add credits at openrouter.ai/credits, or /mode jev-only ($0.25 cap; Jev bills the same key).');
+    expect(CREDITS_EXHAUSTED('jev', 402).length).toBeLessThanOrEqual(160);
+    expect(reasons).toEqual([]);
+    expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBe(0);
+    const provider = fakeProvider({ fail: new ProviderHttpError('HTTP 402 insufficient credits', { status: 402, retryable: false }) });
+    const g = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mode: 'jev-on' }, deps: { buildProvider: async () => provider } });
+    void g.controller.run();
+    await g.ready();
+    expect(await g.host.submit('why does test_parse_date fail?', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    expect(bubbles(g, '[jevcode]')).toEqual([CREDITS_EXHAUSTED('generator', 402)]);
+  });
+
   it('finding 12: a 401 from the generator during the LLM turn → `<model> rejected the key (HTTP 401). /login saves a new one.`, the live region emptied', async () => {
     const provider = fakeProvider({ fail: new ProviderHttpError('HTTP 401 invalid x-api-key', { status: 401, retryable: false }) });
     const reasons: WizardReason[] = [];
@@ -720,7 +742,7 @@ describe('TUI-DESIGN-2 §3.5 through the controller: the keys and workspace fact
     void h.controller.run();
     await h.ready();
     await h.command('/why intake');
-    expect(uiErrors(h).at(-1)).toBe('error: /why: no decision matches intake');
+    expect(uiErrors(h).at(-1)).toBe(whyErrorText('intake', 'missing'));
     await h.host.submit('hi', { kind: 'prompt', secretSpans: [], pinnedFiles: [] });
     await h.command('/why intake');
     expect(h.renderer.notes.at(-1)?.text).toBe('why s0.intent.intake  request h1  118ms  typesafe/jev-1.13-20260917');
@@ -732,9 +754,9 @@ describe('TUI-DESIGN-2 §3.5 through the controller: the keys and workspace fact
     await h.command('/why intake.can_greeting_or_smalltalk');
     expect(h.renderer.notes.at(-1)?.detail).toContain('consumed by: paired ≥ 0.5');
     await h.command('/why intake.nope');
-    expect(uiErrors(h).at(-1)).toBe('error: /why: no decision matches intake.nope');
+    expect(uiErrors(h).at(-1)).toBe(whyErrorText('intake.nope', 'missing'));
     await h.command('/why intake.Nope');
-    expect(uiErrors(h).at(-1)).toMatch(/^error: \/why: expected .* or intake\[\.reply\|\.about_<key>\|\.can_<kind>\]/);
+    expect(uiErrors(h).at(-1)).toBe(whyErrorText('intake.Nope', 'grammar')); // one text for both renderers (§4.4 F8)
   });
 });
 

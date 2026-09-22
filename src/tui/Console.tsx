@@ -4,10 +4,12 @@
  * secret-gate row, the composer rows (`› ` on row 0, two spaces on continuations; the wizard's rows when it owns the
  * input), the divider `├──┤`, `statusLineText(state, W)` and `╰──╯`, every row exactly `columns` cells and every
  * string the same as `consoleLines()` (console-lines.ts) draws — Ink only colours the parts (badge in the `badge` role,
- * edges `border`, `borderFocus` while a run is live, the steer-coloured prompt, the dim placeholder with its hint
- * right-aligned at ≥ 100 inner cells, the `secret` gate row, the status row's own role). The cursor is the one
- * formula of §4.2: `{ x: 2 + view.cursor.x, y: composerTop(layout) + view.cursor.row }` — `top` here is the top-edge
- * row, so the draft's row 0 is `top + 1 + gate`. The flat tier renders `<Composer>` + `<StatusLine>` instead.
+ * edges `border`, `borderFocus` while a run is live or the `edgeRole` the App's run-end fade names (TUI-DESIGN-3 §5.2 A6),
+ * the prompt `accent` at rest and `steer` while a run is live (D-O), the dim placeholder with its hint right-aligned at
+ * ≥ 100 inner cells, the `secret` gate row, and the status row's spans — the spinner glyph, the done word, the meter words,
+ * `⚠ secret?`, a toast (`statusSpans`, D-P: never the whole row). The cursor is the one formula of §4.2:
+ * `{ x: 2 + view.cursor.x, y: composerTop(layout) + view.cursor.row }` — `top` here is the top-edge row, so the draft's
+ * row 0 is `top + 1 + gate`. The flat tier renders `<Composer>` + `<StatusLine>` instead.
  */
 import { Box, Text } from 'ink';
 import type { CursorPosition } from 'ink';
@@ -19,17 +21,30 @@ import { stringWidth } from './composer/width.js';
 import { consoleBottom, consoleDivider, consoleInnerWidth, consoleTopEdgeParts } from './console-lines.js';
 import { GLYPHS, fitCells, padEndCells, truncateCells, type GlyphSet } from './glyphs.js';
 import { maskGlyphFor } from './Review.js';
-import { wizardLines, type WizardView } from './onboarding/lines.js';
-import type { OnboardingState } from './onboarding/reducer.js';
-import { statusLineText, type StatusLineOptions, type StatusLineState } from './status/lines.js';
-import { statusRole } from './StatusLine.js';
-import { textProps, themeFor, type ColorOn, type Theme } from './theme.js';
+import { wizardConsoleTitle as wizardStepTitle, wizardLines, type WizardView } from './onboarding/lines.js';
+import { isFieldStep, type OnboardingState } from './onboarding/reducer.js';
+import { statusSpans, type StatusLineOptions, type StatusLineState } from './status/lines.js';
+import { spanPieces } from './StatusLine.js';
+import { textProps, themeFor, type ColorOn, type ColorRole, type Theme } from './theme.js';
 
-/** TUI-DESIGN-2 §1.4 / §12 "Console": the console title while the wizard owns the input — `setup · <step>`. */
+/**
+ * TUI-DESIGN-2 §1.4 / §12 "Console", TUI-DESIGN-3 §1.4.2: the console title while the wizard owns the input — `setup · <step>`.
+ * One source: `onboarding/lines.ts`'s `wizardConsoleTitle` (which knows every step, `key` and `options` included); this
+ * wrapper only folds the `·` to the glyph set's dot and reads `setup` for a step without a title.
+ */
 export function wizardConsoleTitle(step: string, g: GlyphSet = GLYPHS.unicode): string {
-  const names: Readonly<Record<string, string>> = { jevProvider: 'jev provider', provider: 'provider', generatorKey: 'generator key', jevKey: 'jev key', verify: 'verify', trust: 'trust' };
-  const name = names[step];
-  return name === undefined ? 'setup' : `setup ${g.dot} ${name}`;
+  const title = wizardStepTitle({ step: step as OnboardingState['step'] });
+  return title === null ? 'setup' : title.replaceAll(' · ', ` ${g.dot} `);
+}
+
+/** TUI-DESIGN-3 §4.1 rule 3: the palette ghost — the completion after the cursor, or the ` → /owner` arrow of an alias. */
+export type ConsoleGhost = { rest: string; more: number } | { arrow: string };
+
+/** TUI-DESIGN-3 §4.1 rule 3: the ghost's text after the draft — `get +2` for a completion, ` → /status` (`-> ` ascii) for an alias. */
+export function ghostText(ghost: ConsoleGhost | null | undefined, g: GlyphSet = GLYPHS.unicode): string {
+  if (!ghost) return '';
+  if ('arrow' in ghost) return ` ${g.arrow} ${ghost.arrow}`;
+  return `${ghost.rest}${ghost.more > 0 ? ` +${ghost.more}` : ''}`;
 }
 
 /** TUI-DESIGN-2 §4.3 / §12 "Console": the console title while the picker filters — `sessions · filter` / `rewind · filter`. */
@@ -59,8 +74,10 @@ export interface ConsoleProps {
   /** the terminal height (placeholder form) */
   rows: number;
   live?: boolean;
+  /** TUI-DESIGN-3 §5.2 A6: the App's run-end edge fade names the edge role for a frame (`borderFocus` → `accent2` → `border`); unset = `live` decides */
+  edgeRole?: ColorRole;
   spans?: readonly Span[];
-  ghost?: { rest: string; more: number } | null;
+  ghost?: ConsoleGhost | null;
   searchRow?: string | null;
   /** `modeBadge(mode, pending)` */
   badge: string;
@@ -106,7 +123,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
   // finding 6: the draft wraps at the debounced width; the edges never wait
   const bodyInner = p.bodyColumns !== undefined && Number.isFinite(p.bodyColumns) ? consoleInnerWidth(Math.max(4, Math.floor(p.bodyColumns))) : inner;
   const height = Math.max(1, Math.floor(p.height));
-  const edges = textProps(theme, p.live === true ? 'borderFocus' : 'border', color);
+  const edges = textProps(theme, p.edgeRole ?? (p.live === true ? 'borderFocus' : 'border'), color);
   const head = p.title !== undefined && p.title !== null && p.title !== '' ? p.title : p.badge;
   const parts = consoleTopEdgeParts(head, p.dir, columns, g);
   const gateRows = p.gate !== undefined && p.gate !== null ? 1 : 0;
@@ -125,7 +142,8 @@ export function Console(p: ConsoleProps): React.JSX.Element {
     const sr = p.wizard.screenReader === true;
     const lines = wizardBodyRows(p.wizard.state, height, inner, g, p.wizard.trust, sr);
     const step = p.wizard.state.step;
-    const fieldRow = (step === 'generatorKey' || step === 'jevKey') && !sr ? 1 : -1;
+    // TUI-DESIGN-3 §1.4.1 / §1.4.3: one predicate for both renderers' masked row (`key` · `generatorKey` · `jevKey`; Wizard.tsx reads it too)
+    const fieldRow = isFieldStep(step) && !sr ? 1 : -1;
     for (let i = 0; i < height; i++) {
       const line = fitCells(lines[i] ?? '', inner, g);
       if (i === fieldRow && p.active) p.cursor({ x: Math.min(columns - 3, 2 + stringWidth((lines[i] ?? '').trimEnd())), y: bodyTop + i });
@@ -139,7 +157,8 @@ export function Console(p: ConsoleProps): React.JSX.Element {
     if (view.scrollTop !== p.scrollTop) p.onScroll?.(view.scrollTop);
     const empty = p.buffer.text.length === 0;
     const placeholder = placeholderRow(p.mode, p.rows, bodyInner, stringWidth(prompt), g);
-    const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : {};
+    // TUI-DESIGN-3 §2.6 (D-O): the prompt is pink at rest and amber while a run is live (steering must not look like idle)
+    const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : p.active ? textProps(theme, 'accent', color) : {};
     if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: 2 + view.cursor.x, y: bodyTop + view.cursor.row });
     else if (p.active && p.searchRow != null) p.cursor({ x: Math.min(columns - 3, 2 + stringWidth(truncateCells(p.searchRow, inner, g))), y: bodyTop });
     else p.cursor(undefined);
@@ -148,13 +167,13 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       const isPromptRow = view.scrollTop + i === 0 && r.startsWith(prompt);
       const body = isPromptRow ? r.slice(prompt.length) : r;
       const ghost = p.ghost && view.cursor !== null && view.cursor.row === i && p.buffer.cursor >= p.buffer.text.length ? p.ghost : null;
-      const ghostText = ghost ? `${ghost.rest}${ghost.more > 0 ? ` +${ghost.more}` : ''}` : '';
+      const ghostStr = ghostText(ghost, g);
       const showPlaceholder = i === 0 && empty && p.searchRow == null && placeholder !== '';
       if (i === 0 && p.searchRow != null) {
         bodyRows.push(wrap(<Text>{fitCells(p.searchRow, bodyInner, g)}</Text>, `c${i}`));
         continue;
       }
-      const used = stringWidth(isPromptRow ? prompt : '') + stringWidth(body) + stringWidth(ghostText);
+      const used = stringWidth(isPromptRow ? prompt : '') + stringWidth(body) + stringWidth(ghostStr);
       const ph = showPlaceholder ? truncateCells(placeholder, Math.max(0, bodyInner - used), g) : '';
       const pad = ' '.repeat(Math.max(0, bodyInner - used - stringWidth(ph)));
       bodyRows.push(
@@ -162,7 +181,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
           <>
             {isPromptRow ? <Text {...promptProps}>{prompt}</Text> : null}
             <Text>{body}</Text>
-            {ghostText ? <Text {...textProps(theme, 'dim', color)}>{ghostText}</Text> : null}
+            {ghostStr ? <Text {...textProps(theme, 'dim', color)}>{ghostStr}</Text> : null}
             {ph ? <Text {...textProps(theme, 'placeholder', color)}>{ph}</Text> : null}
             <Text>{pad}</Text>
           </>,
@@ -171,9 +190,7 @@ export function Console(p: ConsoleProps): React.JSX.Element {
       );
     }
   }
-  const statusText = statusLineText(p.status, inner, p.statusOptions);
-  const sRole = statusRole(p.status);
-  const done = p.status.done !== null && p.status.run === 'none';
+  const status = statusSpans(p.status, inner, p.statusOptions);
   return (
     <Box flexDirection="column" height={1 + gateRows + height + 3} overflow="hidden">
       <Box height={1} overflow="hidden">
@@ -193,8 +210,9 @@ export function Console(p: ConsoleProps): React.JSX.Element {
         </Text>
       </Box>
       {wrap(
-        <Text bold={done} {...(sRole ? textProps(theme, sRole, color) : {})}>
-          {padEndCells(statusText, inner)}
+        <Text>
+          {spanPieces(status.text, status.spans, theme, color)}
+          <Text>{padEndCells('', Math.max(0, inner - stringWidth(status.text)))}</Text>
         </Text>,
         'status',
       )}

@@ -103,7 +103,7 @@ describe('the picker and the engine must price a model the same way', () => {
    * below is exact in both directions: a new divergence fails, and so does removing one of these
    * without deleting its entry here.
    */
-  const KNOWN_DIVERGENCES: readonly string[] = ['z-ai/glm-5.3', 'z-ai/glm-5.3-flash'];
+  const KNOWN_DIVERGENCES: readonly string[] = []; // src/config/defaults.ts re-fetched the GLM rows on 2026-09-21 (evening)
 
   const RATES = ['inputPerM', 'outputPerM', 'cacheReadPerM', 'cacheWritePerM'] as const;
   const sameRates = (a: GeneratorConfig['pricing'], b: GeneratorConfig['pricing']): boolean => RATES.every((k) => Math.abs(a[k] - b[k]) < 1e-9);
@@ -123,13 +123,12 @@ describe('the picker and the engine must price a model the same way', () => {
     expect([...diverging].sort()).toEqual([...KNOWN_DIVERGENCES].sort());
   });
 
-  it('pins the size of the default generator gap so the config owner has the numbers', () => {
+  it('the config table agrees with the snapshot for the default generator (the 67 % gap of 2026-09-21 morning is closed)', () => {
     const snap = findPricingByModelId(DEFAULT_MODEL);
     expect(snap?.provider).toBe('openrouter');
-    expect(generatorPricingOf(snap?.pricing ?? { inputPerM: 0, outputPerM: 0 })).toEqual({ inputPerM: 0.15, outputPerM: 0.5, cacheReadPerM: 0.05, cacheWritePerM: 0.15 * CACHE_WRITE_FACTOR });
-    expect(lookupPricing(DEFAULT_MODEL).pricing).toEqual({ inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: 0.09 * CACHE_WRITE_FACTOR });
-    // 0.15 / 0.09 — the engine would under-report a run picked in the picker by a third
-    expect(0.15 / 0.09).toBeCloseTo(5 / 3, 10);
+    const expected = { inputPerM: 0.15, outputPerM: 0.5, cacheReadPerM: 0.05, cacheWritePerM: 0.15 * CACHE_WRITE_FACTOR };
+    expect(generatorPricingOf(snap?.pricing ?? { inputPerM: 0, outputPerM: 0 })).toEqual(expected);
+    expect(lookupPricing(DEFAULT_MODEL).pricing).toEqual(expected);
   });
 });
 

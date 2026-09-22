@@ -14,6 +14,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, 
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../src/config/defaults.js';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const EXPECT_BIN = '/usr/bin/expect';
@@ -69,9 +70,13 @@ export const FIRST_FRAME_STEP = 'expect \\x1b\\[\\?25l';
  * console row `│ › …`. Scenarios expect the prompt-agnostic form so a glyph change never re-times a scenario.
  */
 export const PROMPT = '(?:›|>)';
-/** `expect <prompt> <text>`: the composer echo of `text` (regex metacharacters escaped) in either tier and glyph set */
+/**
+ * `expect <prompt> <text>`: the composer echo of `text` (regex metacharacters escaped) in either tier and glyph set. TUI-DESIGN-3 §2.6 /
+ * D-O: the idle prompt is its own `accent` span, so an SGR reset sits between `› ` and the body — the gap is skipped here (forgetting
+ * it fails every echo at once).
+ */
 export function echoStep(text: string): string {
-  return `expect ${PROMPT} ${text.replace(/[\\^$.|?*+()[\]{}]/g, '\\$&')}`;
+  return `expect ${PROMPT} ${SGR_GAP}${text.replace(/[\\^$.|?*+()[\]{}]/g, '\\$&')}`;
 }
 /** the composer placeholders of TUI-DESIGN-2 §4.4 (the leading words, enough to be unique in a frame) */
 export const PLACEHOLDER_TASK = 'Say hi';
@@ -80,6 +85,11 @@ export const PLACEHOLDER_STEER = 'Type to steer the next step';
 /** the mode badge words of TUI-DESIGN-2 §1.5 as they appear in the console's top edge (boxed) or the status left zone (flat) */
 export const BADGE_JEV_ONLY = 'jev-only';
 export const BADGE_JEV_LLM = 'jev\\+llm';
+/** TUI-DESIGN-3 §1.10: the default mode's badge word as a Tcl regex fragment — read from the one table, so a later flip moves nothing here */
+export const BADGE_DEFAULT = MODE_BADGE_WORD[DEFAULT_MODE].replace(/[\\^$.|?*+()[\]{}]/g, '\\$&');
+/** the default mode's badge word as plain text (for `toContain` / `startsWith` checks on stripped captures) */
+export const BADGE_DEFAULT_TEXT = MODE_BADGE_WORD[DEFAULT_MODE];
+export { DEFAULT_MODE };
 /**
  * A settle pattern for a geometry: one row of exactly `cols` visible cells between two line breaks, SGR sequences
  * skipped. Every full-width row (the rule / brand row, the console edges and status compartment, the flat status row)
@@ -116,6 +126,8 @@ export interface Scenario {
   files?: Readonly<Record<string, string>>;
   /** runs while the driver runs (e.g. a `ps` poll); its result lands on `Drive.during` */
   during?: (ctx: { workspace: string; home: string }) => Promise<unknown>;
+  /** TUI-DESIGN-3 §1.8 edge 15: reuse an earlier scenario's HOME (its config.json) instead of a fresh one — the restart half of a two-run scenario */
+  home?: string;
 }
 
 export interface Drive {
@@ -191,9 +203,9 @@ const HARD_TIMEOUT_MS = 150_000;
 export async function drive(s: Scenario): Promise<Drive> {
   const rows = s.rows ?? 24;
   const cols = s.cols ?? 80;
-  const home = mkdtempSync(join(tmpdir(), `jevcode-pty-home-`));
+  const home = s.home ?? mkdtempSync(join(tmpdir(), `jevcode-pty-home-`));
   const workspace = mkdtempSync(join(tmpdir(), `jevcode-pty-ws-`));
-  scratch.push(home, workspace);
+  scratch.push(...(s.home === undefined ? [home] : []), workspace);
   mkdirSync(join(home, 'xdg'), { recursive: true });
   for (const [rel, body] of Object.entries(s.files ?? {})) {
     const p = join(workspace, rel);
@@ -290,8 +302,14 @@ const SGR_RE = /\x1b\[([0-9;]*)m/g;
 // the rule row opens the dynamic region: `────…` idle, `─── decisions s7 · …` with the pane, `---` under --ascii
 const RULE_RE = /^(?:─{3}|-{3})(?:[ ─-]|$)/;
 // an item line of the three-way identity (§15.1): `stepLabel()` or a renderer label, then a space; TUI-DESIGN-2 §3.10
-// adds the chat labels `[you]` / `[jevcode]` (one item per line)
-const ITEM_RE = /^\[(?:run|step \d+|ui|setup|config|sandbox|you|jevcode)\] /;
+// adds the chat labels `[you]` / `[jevcode]` (one item per line); TUI-DESIGN-3 §5.1 rule 1 (D-L) right-aligns the label in a
+// 10-cell gutter, so a label row may carry up to 9 leading spaces — `ungutter()` removes them before any identity comparison
+const ITEM_RE = /^ {0,9}\[(?:run|step \d+|ui|setup|config|sandbox|you|jevcode)\] /;
+
+/** TUI-DESIGN-3 §5.1 rule 1: a label row without its gutter padding (`    [run] start …` → `[run] start …`); other rows unchanged */
+export function ungutter(row: string): string {
+  return ITEM_RE.test(row) ? row.replace(/^ +/, '') : row;
+}
 
 export function stripAnsi(s: string): string {
   return s.replace(ANSI_RE, '');
@@ -491,9 +509,9 @@ export function staticRows(text: string): string[] {
   return rows;
 }
 
-/** rows that are transcript items (§15.1 labels), i.e. neither wrapped continuations nor TUI-only detail rows */
+/** rows that are transcript items (§15.1 labels), i.e. neither wrapped continuations nor TUI-only detail rows — returned without the gutter padding, so they compare with transcript.log lines */
 export function itemRows(rows: readonly string[]): string[] {
-  return rows.filter((r) => ITEM_RE.test(r));
+  return rows.filter((r) => ITEM_RE.test(r)).map(ungutter);
 }
 
 /** true when a row starts a transcript item (§15.1 label) */
@@ -506,7 +524,8 @@ export function isItemRow(row: string): boolean {
  * and the chat bubbles — TUI-DESIGN-2 §3.10: `[you]` is appended before any run starts and a `[jevcode]` reply is
  * emitted while no engine is live, so neither has a transcript.log line)
  */
-export function isLocalItem(row: string): boolean {
+export function isLocalItem(raw: string): boolean {
+  const row = ungutter(raw);
   return /^\[run\] jevcode (?:session ·|task:|resuming) /.test(row) || row.startsWith('[sandbox] ') || row.startsWith('[ui] ') || row.startsWith('[setup] ') || row.startsWith('[config] ') || row.startsWith('[you] ') || row.startsWith('[jevcode] ');
 }
 
@@ -537,7 +556,7 @@ export function subsequenceOf(rows: readonly string[], transcript: readonly stri
 /** the stage lines the compact transcript hides (TUI-DESIGN-2 §4.5): `[step N] intent=…`, `context …`, `proposal …`, `risk …`, `outcome …`, `judge …`, `plan …`, and `[run] ready …` */
 // the compact-hidden kinds' text shapes (src/tui/plain.ts COMPACT_HIDDEN_KINDS): `intent=…`, `context N files…`, `synth <phase>: …`, `proposal <kind> …`,
 // `risk=0.01 ok: …`, `outcome …`, `judge …`, `plan done=…`, and `[run] ready …`
-export const HIDDEN_STAGE_RE = /^\[step \d+\] (?:intent=|context |synth |proposal |risk[= ]|outcome |judge |plan )|^\[run\] ready /;
+export const HIDDEN_STAGE_RE = /^ *\[step \d+\] (?:intent=|context |synth |proposal |risk[= ]|outcome |judge |plan )|^ *\[run\] ready /;
 
 /** true when a stripped frame line is a boxed-tier console or card edge (TUI-DESIGN-2 §4.1: `╭ … ╮`, `╰ … ╯`; `+-` under --ascii) */
 export function isBoxEdge(line: string): boolean {
@@ -583,9 +602,10 @@ export function reflowAgainst(rows: readonly string[], transcript: readonly stri
   let next = 0;
   let open: { text: string; remaining: string } | null = null;
   for (const raw of rows) {
-    // TUI-DESIGN-2 §3.10 / §9 (a): in `full` a continuation row is indented by `label.length + 1` cells — the indent is not
-    // part of the line, so it is dropped before the row is matched against the open line's remainder
-    const row: string = open !== null && opts.hangingIndent ? raw.replace(/^ +/, '') : raw;
+    // TUI-DESIGN-2 §3.10 / §9 (a), TUI-DESIGN-3 §5.1 / §5.3: a continuation row hangs at column 10 and a label row is padded into the
+    // 10-cell gutter — neither indent is part of the line, so both are dropped before the row is matched (the §5.3 normaliser: strip
+    // the leading spaces, join with one space; a row that leads with the `· ` separator joins after the previous segment's last token)
+    const row: string = opts.hangingIndent ? raw.replace(/^ +/, '') : raw;
     if (open !== null) {
       let rest: string | null = null;
       if (open.remaining.startsWith(row)) rest = open.remaining.slice(row.length);
@@ -635,11 +655,17 @@ export function markOf(timing: readonly TimingRecord[], label: string): TimingRe
   return timing.find((r) => r.op === 'mark' && r.arg === label);
 }
 
-/** run-specific tokens normalised so two mocked runs of the same task compare line for line */
+/**
+ * run-specific tokens normalised so two mocked runs of the same task compare line for line: the run id, `<n>ms`, `wall=`, and the
+ * step summary's elapsed seconds (`· 0.0s ·`, TUI-DESIGN-3 §5.4) — a loaded machine measures 0.1s where an idle one measures 0.0s,
+ * and the §15.1 identity gate is about the text, never the clock
+ */
 export function normaliseRunLine(line: string): string {
   return line
     .replace(/\b\d{8}-\d{6}-[a-z0-9]{8}\b/g, '<run-id>')
     .replace(/\b\d+ms\b/g, '<ms>')
+    .replace(/\b\d+m\d{2}s\b/g, '<s>')
+    .replace(/\b\d+\.\d+s\b/g, '<s>')
     .replace(/wall=\S+/g, 'wall=<t>');
 }
 

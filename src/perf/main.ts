@@ -4,7 +4,8 @@
  * during a live mocked run paced by `JEVCODE_MOCK_STEP_MS` (three geometries at the realistic 200 ms rate, gated; one
  * zero-latency stress row, reported; a splash frame-count bucket per geometry), composer keystroke latency (six
  * series), the intake reply latency (Enter → `[you]` bubble, Enter → `[jevcode]` reply, mock at 0 ms and delayed
- * 150 ms), zero clears per state, and (with --live) Jev latency. Writes perf/results/latest.json, prints a table,
+ * 150 ms), the idle wordmark loop's frame and byte budget over 31 s (TUI-DESIGN-3 §3.9), zero clears per state, and (with
+ * --live) Jev latency. Writes perf/results/latest.json, prints a table,
  * rewrites the README's Performance section from the result (`readme.ts`; complete runs only) and exits 1 when a gate
  * fails.
  *
@@ -32,6 +33,7 @@ import { measureStepOverhead, type StepOverheadResult } from './step-overhead.js
 import { REALISTIC_STEP_MS, measureRenderLag, type RenderLagResult } from './render-lag.js';
 import { measureComposerLatency, type ComposerLatencyResult } from './composer-latency.js';
 import { measureIntakeLatency, type IntakeLatencyResult } from './intake-latency.js';
+import { measureIdleFrames, type IdleFramesResult } from './idle-frames.js';
 import { measureStates, type StatesResult } from './states.js';
 import type { StaticAppendResult } from './static-append.js';
 import type { JevLatencyResult } from './jev-latency.js';
@@ -43,8 +45,8 @@ export const LOAD_QUIET = 2;
 export const LOAD_WAIT_MS = 30_000;
 export const LOAD_RETRIES = 3;
 
-export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'states';
-const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'states'];
+export type ProbeName = 'first-frame' | 'step-overhead' | 'static-append' | 'render-lag' | 'composer-latency' | 'intake-latency' | 'idle-frames' | 'states';
+const ALL_PROBES: readonly ProbeName[] = ['first-frame', 'step-overhead', 'static-append', 'render-lag', 'composer-latency', 'intake-latency', 'idle-frames', 'states'];
 
 export interface PerfResult {
   measuredAt: string;
@@ -62,6 +64,8 @@ export interface PerfResult {
   composerLatency: ComposerLatencyResult | null;
   /** TUI-DESIGN-2 §3.12 / §9: Enter → bubble and Enter → reply against the mock decider (null before round 2's `intake-latency` probe ran) */
   intakeLatency: IntakeLatencyResult | null;
+  /** TUI-DESIGN-3 §3.9 / §9: the idle wordmark loop's frame and byte budget over 31 s (null before round 3's `idle-frames` probe ran) */
+  idleFrames: IdleFramesResult | null;
   states: StatesResult | null;
   jevLatency: JevLatencyResult | null;
   pass: boolean;
@@ -178,6 +182,7 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
   let lag: RenderLagResult | null = null;
   let composer: ComposerLatencyResult | null = null;
   let intake: IntakeLatencyResult | null = null;
+  let idle: IdleFramesResult | null = null;
   let states: StatesResult | null = null;
   let jev: JevLatencyResult | null = null;
 
@@ -212,6 +217,10 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
     log('perf: intake reply latency (real pty 24x80, chat --mock: 20 greetings and tool questions, Enter → [you] bubble frame and Enter → [jevcode] reply frame; mock decider at 0 ms, then delayed 150 ms through JEVCODE_MOCK_JEV_MS)…\n');
     intake = await measureIntakeLatency({ root, bin, onProgress: progress });
   }
+  if (probes.includes('idle-frames')) {
+    log('perf: idle animation frames (real pty, chat --mock at 24x80 and 40x120 left alone for 31 s after the settle: dynamic frames ≤ 4 per second and ≤ 2/s mean, bytes ≤ 12 KB/s peak and ≤ 5 KB/s mean, 0 clears, region ≤ rows − 2; child CPU reported)…\n');
+    idle = await measureIdleFrames({ root, bin, onProgress: progress });
+  }
   if (probes.includes('states')) {
     log('perf: zero clears per state and geometry segment (review, palette, picker, wizard, secret row, intake card, render faults, resize idle/live 40→12→40, Ctrl+L)…\n');
     states = await measureStates({ root, bin, onProgress: progress });
@@ -224,7 +233,7 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
   const loadEnd = loadavg()[0] ?? 0;
 
   const staticPass = probes.includes('static-append') ? (staticAppend?.pass ?? false) : undefined;
-  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, states?.pass].filter((v): v is boolean => v !== undefined);
+  const gates: boolean[] = [firstFrame?.pass, overhead?.pass, staticPass, lag?.pass, composer?.pass, intake?.pass, idle?.pass, states?.pass].filter((v): v is boolean => v !== undefined);
   const pass = gates.length > 0 && gates.every(Boolean);
   const cpu = cpus();
   const result: PerfResult = {
@@ -241,6 +250,7 @@ export async function runPerf(flags: ParsedFlags): Promise<number> {
     renderLag: lag,
     composerLatency: composer,
     intakeLatency: intake,
+    idleFrames: idle,
     states,
     jevLatency: jev,
     pass,

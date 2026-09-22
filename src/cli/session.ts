@@ -91,14 +91,35 @@ import { detectSecrets as detectSecretsByPattern, patternRedact, secretSpans as 
 import { parseJson } from '../core/json.js';
 import { exitCodeFor } from '../loop/stop.js';
 import { createSpendMeter } from '../spend/meter.js';
-import { resolveConfig as realResolveConfig, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
+import { resolveConfig as realResolveConfig, isEngineMode, modeFromParsedFlags, reconcileResumeConfig, resumeIdentityFromRunMeta, resumeInputsFrom } from '../config/resolve.js';
 import type { ResolvedConfigWithDiagnostics } from '../config/types.js';
-import { credentialsPath, readCredentialsFile, shadowingLine, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
+import { credentialsPath, readCredentialsFile, shadowingLine, writeConfigValue as realWriteConfigValue, writeCredentials as realWriteCredentials, type CredentialsPatch } from '../config/credentials.js';
+import { DEFAULT_MODE, MODE_BADGE_WORD } from '../config/defaults.js';
+import { parseModeHint } from '../config/launch.js';
 import { loadInstructions as realLoadInstructions, projectInstructionFile } from '../config/instructions.js';
 import { createTrustStore as realCreateTrustStore, decisionFromOption, probeTrustInputs as realProbeTrustInputs, trustKey, trustWorkspaceFlag, type TrustDecision, type TrustInputs, type TrustOption } from '../config/trust.js';
 import { PROVIDER_ENV } from '../tui/onboarding/lines.js';
-import { INSTRUCTIONS_NOT_TRUSTED_LINE, dotenvSourceText, fixBlockLines, sandboxText, trustLines } from '../tui/onboarding/lines.js';
-import { WIZARD_EXIT_CODE, type WizardProvider } from '../tui/onboarding/reducer.js';
+import {
+  INSTRUCTIONS_NOT_TRUSTED_LINE,
+  LOGIN_ONE_KEY_PROMPT,
+  LOGIN_OTHER_WAYS_PROMPT,
+  MISSING_GENERATOR_ONLY,
+  MOCK_VERIFY_NOTE,
+  PANEL_HANDLED_BY_TUI,
+  TRANSCRIPT_ALWAYS_FULL,
+  capsItem,
+  defaultModeItem,
+  dotenvSourceText,
+  fixBlockLines,
+  keyReusedText,
+  modeSavedItem,
+  sandboxDetail,
+  sandboxText,
+  trustLines,
+  typesafeWinsText,
+} from '../tui/onboarding/lines.js';
+import { WIZARD_EXIT_CODE, type FoundKey, type FoundSource, type WizardProvider } from '../tui/onboarding/reducer.js';
+import type { WizardVerifyInput, WizardVerifyResult } from '../tui/onboarding/Wizard.js';
 import { keyEnteredText } from '../config/credentials.js';
 import { fingerprint } from '../core/hash.js';
 import { detectSandboxLevel } from '../sandbox/seatbelt.js';
@@ -114,12 +135,11 @@ import { listCandidates as realListCandidates } from '../workspace/files.js';
 import { probeGitState as realProbeGitState, readHead, toRunGitMetaEnd } from '../workspace/gitstate.js';
 import { createSandbox as realCreateSandbox } from '../sandbox/run.js';
 import { keybindingsPath, loadKeybindings as realLoadKeybindings, type KeybindingsLoad } from '../tui/keys/keybindings-file.js';
-import { KEY_ACTIONS, KEY_CONTEXTS, displayKey } from '../tui/keys/bindings.js';
 import type { KeyRunPhase } from '../tui/keys/resolve.js';
 import type { UiAction } from '../tui/useEngine.js';
 import { createHistoryStore as realCreateHistoryStore, type FileHistoryStore } from '../tui/composer/history.js';
-import { COMMANDS } from '../tui/commands/registry.js';
 import { dispatchCommand, type CommandAction, type DispatchContext } from '../tui/commands/dispatch.js';
+import { helpLines as paletteHelpLines } from '../tui/commands/palette.js';
 import { READLINE_MAX_PROMPTS, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
 import { plainSupports } from '../tui/plain-composer.js';
 import { blockingRowsFull } from '../tui/blocking/lines.js';
@@ -145,9 +165,9 @@ import { epilogueItemLines, epilogueLines, type EpilogueContext } from './epilog
 import { configTableLines } from './config-table.js';
 import type { JsonStream, JsonStreamContext } from './json-stream.js';
 import { GLYPHS } from '../tui/glyphs.js';
-import { findDecision, parseWhyRef, whyBlock } from '../tui/why.js';
+import { findDecision, parseWhyRef, whyBlock, whyErrorText } from '../tui/why.js';
 import { calibrationBlock, calibrationStats, scanCalibration } from '../tui/calibration.js';
-import { toDecisionRow, type DecisionRow } from '../tui/pane/model.js';
+import { panelLines, toDecisionRow, type DecisionRow, type PaneState } from '../tui/pane/model.js';
 import { TOAST_INFO_MS } from '../tui/toasts.js';
 import { modeBadgeWord } from '../tui/status/lines.js';
 import { JEV_PROVIDERS } from '../jev/providers.js';
@@ -167,7 +187,7 @@ import { applyUndo, prepareUndo, type ApplyUndoResult, type UndoAsk } from '../u
 import { REWIND_CHOICE, REWIND_PLAN_FALLBACK_NOTICE, planRewind, rewindCandidates, rewindPickerRows, type RewindStep } from '../undo/plan.js';
 import { DIFF_INLINE_MAX_LINES, collectFullDiff, diffStatBlockFromGit, diffStepLines, type StepDiffFile } from '../undo/diff.js';
 import { openFullDiff } from '../undo/pager.js';
-import { commandLogout as realCommandLogout } from './login.js';
+import { commandLogout as realCommandLogout, verifyKeys as realVerifyKeys, type VerifyInput, type VerifyResult } from './login.js';
 import { writeReportBundle } from './report.js';
 
 // ---------------------------------------------------------------------------------------
@@ -186,10 +206,6 @@ export function pausedItemText(step: number): string {
 export function sessionEndedText(sessionId: string, runs: number, totalUsd: number): string {
   return `session ${sessionId} ended: ${runs} run${runs === 1 ? '' : 's'}, ${usd2(totalUsd)} total`;
 }
-/** TUI-DESIGN §5.3 per-terminal notes of the help block (verbatim). */
-export const HELP_TERMINAL_NOTES: readonly string[] = ['Shift+Enter needs a keyboard protocol: use Ctrl+J or \\ then Enter', 'macOS: turn on "Option as Meta" for Alt-b/Alt-f'];
-/** TUI-DESIGN §5.3: the help block is at most this many lines. */
-export const HELP_MAX_LINES = 60;
 /** decisions kept for `/decisions`, `/why` and `/calibration` of the current run */
 export const DECISIONS_KEPT_FOR_COMMANDS = 400;
 /** recent warnings/errors kept for `/errors` */
@@ -237,11 +253,34 @@ export function SESSION_CAP_CHAT_REFUSAL(capUsd: number): string {
 /** §12 "Status" toasts */
 export const STOPPED_THINKING_TOAST = 'stopped thinking';
 export const STILL_THINKING_TOAST = 'one moment — still thinking';
-/** §12 "Mode items" (§1.3 `case 'mode'`, S2's request landed here) */
-export const MODE_JEV_ON_SET = 'mode jev+llm from the next run — Claude writes the code, Jev still decides every step (persist: jevcode config set mode jev-on)';
-export const MODE_JEV_ONLY_SET = 'mode jev-only from the next run — no generating LLM; code proposes, Jev decides, tests verify';
-export const MODE_JEV_OFF_SET = 'mode llm-only from the next run — the generator alone, no Jev (bench condition; reviews still ask)';
-export const MODE_LLM_JEV_SET = 'mode llm-jev from the next run — GLM writes candidate patches inside the Jev-only search; Jev decides, tests verify (persist: jevcode config set mode llm-jev)';
+/**
+ * §12 "Mode items" / TUI-DESIGN-3 §1.1, §1.9, §10 "Mode items": ONE table per mode (generator-neutral copy — "the code model", never a
+ * vendor; R3 F9), read by `case 'mode'` through `modeSetItem`. The four round-2 names stay as aliases of its rows.
+ */
+export const MODE_SET_ITEM: Readonly<Record<EngineMode, string>> = {
+  'jev-on': `mode ${MODE_BADGE_WORD['jev-on']} from the next run — the code model writes the code, Jev still decides every step (persist: jevcode config set mode jev-on)`,
+  'jev-only': `mode ${MODE_BADGE_WORD['jev-only']} from the next run — no generating LLM; code proposes, Jev decides, tests verify (persist: jevcode config set mode jev-only)`,
+  'jev-off': `mode ${MODE_BADGE_WORD['jev-off']} from the next run — the generator alone, no Jev (bench condition; reviews still ask)`,
+  'llm-jev': `mode ${MODE_BADGE_WORD['llm-jev']} from the next run — the code model writes candidate patches, tests verify them, Jev arbitrates (persist: jevcode config set mode llm-jev)`,
+};
+export function modeSetItem(mode: EngineMode): string {
+  return MODE_SET_ITEM[mode];
+}
+export const MODE_JEV_ON_SET = MODE_SET_ITEM['jev-on'];
+export const MODE_JEV_ONLY_SET = MODE_SET_ITEM['jev-only'];
+export const MODE_JEV_OFF_SET = MODE_SET_ITEM['jev-off'];
+export const MODE_LLM_JEV_SET = MODE_SET_ITEM['llm-jev'];
+/** TUI-DESIGN-3 §1.7 / §10 "Chat" (R3 F5/F10): a 402 from OpenRouter on the intake or the LLM turn is "no credits", not "unreachable" (144 cells ≤ REPLY_TEXT_MAX) */
+export function CREDITS_EXHAUSTED(side: 'jev' | 'generator', status: number): string {
+  void side; // both sides bill the same OpenRouter key; the text keys on the host, not the side
+  return `OpenRouter says this key has no credits (HTTP ${status}). Add credits at openrouter.ai/credits, or /mode jev-only ($0.25 cap; Jev bills the same key).`;
+}
+/** TUI-DESIGN-3 §4.4 F12: `/new` before any session */
+export const NO_SESSION_YET = 'no session yet — the next prompt starts one';
+/** TUI-DESIGN-3 §4.4 F13: `/rename` cut its title */
+export const RENAME_CUT_NOTE = ' (cut to 60 chars)';
+/** TUI-DESIGN-3 §4.4 F15: `/model` / `/provider` under a jev-only next mode */
+export const GENERATOR_IGNORED_NOTE = ' — mode jev-only ignores the generator; /llm on to use it';
 /** §3.11: intakes whose decision rows the panel keeps */
 export const CHAT_INTAKES_KEPT = 3;
 /** §3.6 `chatEstimateUsd`: input tokens per message char and per file byte */
@@ -331,8 +370,11 @@ export function applyRawEdits(raw: string): string {
 
 export type RendererKind = 'tui' | 'plain' | 'json';
 
-/** TUI-DESIGN §11.1: what the wizard collected — the controller persists it (`addSecret` first, then the atomic 0600 write). */
-export type WizardOutcome = { kind: 'saved'; patch: CredentialsPatch } | { kind: 'persisted' } | { kind: 'cancelled' };
+/**
+ * TUI-DESIGN §11.1: what the wizard collected — the controller persists it (`addSecret` first, then the atomic 0600 write).
+ * TUI-DESIGN-3 §6 item 2 / §1.4: `mode` — the options step's `3 Jev only` pends (`/login`) or persists (a startup wizard) a mode without saving a key.
+ */
+export type WizardOutcome = { kind: 'saved'; patch: CredentialsPatch; mode?: { mode: EngineMode; persist: boolean } } | { kind: 'persisted' } | { kind: 'cancelled' } | { kind: 'mode'; mode: EngineMode; persist: boolean };
 
 /**
  * TUI-DESIGN §0 "one modal slot": the prompts a renderer may answer. Every member is optional; the controller takes
@@ -342,13 +384,27 @@ export type WizardOutcome = { kind: 'saved'; patch: CredentialsPatch } | { kind:
 export interface Prompter {
   /**
    * §11.1 wizard (`reason` `missing` at start, `login` for `/login`, `rejected` after a 401 pane; TUI-DESIGN-2 §1.4: `mode` for
-   * `/mode jev-on` without a generator key — `mode` is the target mode the keys are for)
+   * `/mode jev-on` without a generator key — `mode` is the target mode the keys are for). TUI-DESIGN-3 §6 item 3 / §1.4.3: `found` is the
+   * detect-time hint of which key already resolves (a source, never a value) and `foundSource` the layer it came from — the `key` step's found-title.
    */
-  wizard?(missing: readonly SecretSettingName[], o: { provider: WizardProvider | null; reason: WizardReason; mode?: EngineMode }): Promise<WizardOutcome>;
+  wizard?(
+    missing: readonly SecretSettingName[],
+    o: {
+      provider: WizardProvider | null;
+      reason: WizardReason;
+      mode?: EngineMode;
+      found?: 'typesafe' | 'jev' | 'anthropic' | null;
+      foundSource?: 'env' | 'dotenv' | 'file';
+      /** TUI-DESIGN-3 §1.4.1 (edges 11, 17): the found Jev value is an OpenRouter key (a boolean, never the value) */
+      foundReusable?: boolean;
+      /** TUI-DESIGN-3 §1.3.2: the resolved Jev provider (a reopen with both sides openrouter takes the one-paste field) */
+      jevProvider?: JevProvider | null;
+    },
+  ): Promise<WizardOutcome>;
   /** TUI-DESIGN-2 §3.7: the ambiguity card — `run` (y) · `chat` (n) · `keep` (Esc / Ctrl-C); absent (a pipe, --no-input) → `keep`, never a run */
   intake?(message: string): Promise<'run' | 'chat' | 'keep'>;
-  /** §11.3 trust gate: 1 trust · 2 this session only · 3 don't trust; null = cancelled (= 3) */
-  trust?(inputs: TrustInputs): Promise<TrustOption | null>;
+  /** §11.3 trust gate: 1 trust · 2 this session only · 3 don't trust; null = cancelled (= 3). TUI-DESIGN-3 §4.4 F17: `reopen` marks the `/trust` card (Esc / Ctrl-C close it) */
+  trust?(inputs: TrustInputs, o?: { reopen?: boolean }): Promise<TrustOption | null>;
   /** §9.3 follow-up box */
   followUp?(box: FollowUpBoxInput): Promise<'y' | 'r' | 'n'>;
   /** §3.3 exitConfirm: true = abort and exit */
@@ -414,6 +470,10 @@ export interface SessionDeps {
   /** `checkpoint/resume.ts loadForResume` — the controller reads `meta`, `state`, `previousStopReason` and `warnings` only */
   loadForResume?: (runsDir: string, runId: string, opts: { redact: (s: string) => string }) => Promise<Pick<ResumeLoadLike, 'meta' | 'state' | 'previousStopReason' | 'warnings'>>;
   writeCredentials?: typeof realWriteCredentials;
+  /** TUI-DESIGN-3 §1.4.3 / §1.7: the `mode` row (option `3`) and the `seen.defaultMode` row (D-Q) go through the config writer */
+  writeConfigValue?: typeof realWriteConfigValue;
+  /** TUI-DESIGN-3 §1.5: the wizard's `y` — injected in tests (never a network call there) */
+  verifyKeys?: (input: VerifyInput) => Promise<VerifyResult[]>;
   createSandbox?: typeof realCreateSandbox;
   exportSession?: typeof realExportSession;
   commandLogout?: typeof realCommandLogout;
@@ -476,8 +536,8 @@ export interface SessionController {
   readonly host: ControllerHost;
   /** the modal-prompt channel may attach after construction (the `--plain` readline composer needs the host first) */
   setPrompter(p: Prompter | null): void;
-  /** §11.1 save (the Ink wizard's host): addSecret first, the atomic 0600 write, the `[setup]` items, resolveConfig again */
-  persistCredentials(patch: CredentialsPatch, source: 'wizard' | 'login'): Promise<{ ok: boolean; items: string[]; error?: string }>;
+  /** §11.1 save (the Ink wizard's host): addSecret first, the atomic 0600 write, the `[setup]` items, resolveConfig again; TUI-DESIGN-3 §1.4.2: `reusedFrom` names the layer a reused Jev key came from */
+  persistCredentials(patch: CredentialsPatch, source: 'wizard' | 'login', opts?: { reusedFrom?: FoundSource }): Promise<{ ok: boolean; items: string[]; error?: string }>;
   /** the current workspace's trust inputs (null before the trust gate probed them) */
   trustInputs(): TrustInputs | null;
   /** the `[sandbox]` line for the wizard's sandbox step */
@@ -486,6 +546,16 @@ export interface SessionController {
   mode(): EngineMode;
   /** `<runsDir>` once the configuration resolved */
   runsDir(): string | null;
+  /** TUI-DESIGN-3 §1.5: the Ink wizard's `y` — one Jev decision, one 1-token completion, the key info (metered on the session meter, `meterVerify`) */
+  verifyForWizard(input: WizardVerifyInput): Promise<WizardVerifyResult>;
+  /** TUI-DESIGN-3 §1.4.3: option `3 Jev only` — persist the `mode` row (a startup wizard) or pend it (`/login`) */
+  applyModeChoice(mode: EngineMode, persist: boolean): Promise<void>;
+  /** TUI-DESIGN-3 §1.4.1 (edges 11, 17): the resolved Jev key's value for the reuse Enter (read at save time, never stored by the prompter) */
+  resolvedJevKey(): string | null;
+  /** the layer that key came from (`env` / `dotenv` / `file`), for the `reused from` item */
+  resolvedJevSource(): FoundSource | null;
+  /** TUI-DESIGN-3 §5.1 rule 13: the `[sandbox]` item's TUI-only detail */
+  sandboxDetail(): string | null;
   /** the loop: resolves with the process exit code once the session ends */
   run(): Promise<number>;
   /** an external SIGINT / SIGTERM (TUI-DESIGN §14.2): abort the live run with `signal` or exit 130/143 at once */
@@ -738,7 +808,7 @@ export interface PlainPrompterOptions {
   lines: LineSource;
   stdout: { write(s: string): unknown; columns?: number | undefined };
   /** raw-mode capable stdin: the masked `/login` fields set raw mode so nothing echoes (§11.2 "raw-mode prompt") */
-  stdin?: { setRawMode?: ((mode: boolean) => unknown) | undefined; isRaw?: boolean | undefined } | undefined;
+  stdin?: { isTTY?: boolean | undefined; setRawMode?: ((mode: boolean) => unknown) | undefined; isRaw?: boolean | undefined } | undefined;
   ascii?: boolean;
   /** TUI-DESIGN-2 §3.7: a screen reader gets the `1 run it  2 just chatting  3 keep the text` / `Enter selection (1-3):` form (TD §6.5) — `launch.screenReader` */
   screenReader?: boolean;
@@ -756,8 +826,11 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
   };
   const columns = (): number => (typeof o.stdout.columns === 'number' && o.stdout.columns > 0 ? o.stdout.columns : 80);
 
-  /** one line from the shared source (null on EOF) */
-  function ask(prompt: string): Promise<string | null> {
+  /**
+   * one line from the shared source (null on EOF, or when `watch` cancels the read — the raw-mode Ctrl-C of
+   * TUI-DESIGN-3 §1.8 edge 24). `watch` receives the cancel and returns its own detach.
+   */
+  function ask(prompt: string, watch?: (cancel: () => void) => () => void): Promise<string | null> {
     return new Promise((resolve) => {
       if (o.lines.closed) {
         resolve(null);
@@ -766,17 +839,47 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
       let done = false;
       let release: (() => void) | null = null;
       let unclose: (() => void) | null = null;
+      let unwatch: (() => void) | null = null;
       const finish = (v: string | null): void => {
         if (done) return;
         done = true;
         release?.();
         unclose?.();
+        unwatch?.();
         resolve(v);
       };
       release = o.lines.onLine((line) => finish(line));
       unclose = o.lines.onClose(() => finish(null));
+      unwatch = watch?.(() => finish(null)) ?? null;
       write(prompt);
     });
+  }
+
+  /**
+   * TUI-DESIGN-3 §1.8 edge 24: the shared stdin as a byte stream, when the caller passed a real one. `node:readline`
+   * runs with `terminal: false` and only ever reports whole lines, so a lone `\u0003` typed at a raw-mode field waited
+   * for an Enter that never came (the `--plain` wizard hung on Ctrl-C). Watching the bytes cancels the read at once;
+   * the listener is passive (a second `'data'` listener never takes a chunk from readline) and is detached with the read.
+   */
+  type ByteWatcher = { on(event: 'data', fn: (chunk: string | Uint8Array) => void): unknown; off(event: 'data', fn: (chunk: string | Uint8Array) => void): unknown };
+  function byteWatcher(): ByteWatcher | null {
+    const s: unknown = o.stdin;
+    if (typeof s !== 'object' || s === null) return null;
+    const c = s as Partial<ByteWatcher>;
+    return typeof c.on === 'function' && typeof c.off === 'function' ? (c as ByteWatcher) : null;
+  }
+  const hasCtrlC = (chunk: string | Uint8Array): boolean => (typeof chunk === 'string' ? chunk.includes('\u0003') : chunk.includes(0x03));
+  /** the `watch` of `ask`: cancel on a `\u0003` byte while the field is read in raw mode (nothing in cooked mode — the kernel keeps it) */
+  function watchCtrlC(cancel: () => void): () => void {
+    const src = byteWatcher();
+    if (src === null) return (): void => undefined;
+    const onData = (chunk: string | Uint8Array): void => {
+      if (hasCtrlC(chunk)) cancel();
+    };
+    src.on('data', onData);
+    return (): void => {
+      src.off('data', onData);
+    };
   }
 
   /** a masked line: raw mode off-echo when available; the terminal's own echo is the fallback (never our own bytes) */
@@ -791,7 +894,8 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
       }
     }
     try {
-      const line = await ask(prompt);
+      // §1.8 edge 24: in raw mode Ctrl-C is a byte on the stream, never SIGINT and never a line — cancel on it
+      const line = await ask(prompt, raw ? watchCtrlC : undefined);
       write('\n');
       if (line === null || line.includes('\u0003')) return null;
       return applyRawEdits(line);
@@ -860,10 +964,64 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
       }
       return 'keep';
     },
+    // TUI-DESIGN-3 §1.4.3 / §1.3.3: the `--plain` twin of the wizard over the same strings — the other-ways line only when both keys are
+    // missing, then the one masked OpenRouter key (`jevProvider` written on the one-key path ONLY — R3 F4 — never beside a resolving Jev key)
     async wizard(missing, w) {
       const patch: CredentialsPatch = {};
       let provider: WizardProvider | null = w.provider;
-      if (missing.includes('generator.apiKey')) {
+      const needGen = missing.includes('generator.apiKey');
+      const needJev = missing.includes('decider.apiKey');
+      const found = w.found ?? null;
+      const mode = w.mode ?? DEFAULT_MODE;
+      // the one-key path: both missing (nothing resolves) under provider null / openrouter, or the found-title path (Jev resolves, the generator is missing)
+      const oneKeyPath = needGen && needJev && found === null && (provider === null || provider === 'openrouter');
+      const foundPath = needGen && !needJev && (found === 'typesafe' || found === 'jev') && (provider === null || provider === 'openrouter');
+      if (oneKeyPath || foundPath) {
+        if (oneKeyPath) {
+          // EOF (and a Ctrl-C the line carried) cancels: `lower()` would have turned both into '' and asked for the key anyway
+          const otherLine = await ask(LOGIN_OTHER_WAYS_PROMPT);
+          if (otherLine === null || otherLine.includes('\u0003')) return { kind: 'cancelled' };
+          const other = lower(otherLine);
+          if (other === 'j') {
+            // `[j] Jev only`: the Jev provider question, the Jev key, and the mode (persisted at startup, pended from /login)
+            write('Where do you reach Jev?  1 typesafe  2 openrouter\n');
+            const p = lower(await ask('provider (1/2): '));
+            const jp: JevProvider | null = p === '1' || p === 'typesafe' ? 'typesafe' : p === '2' || p === 'openrouter' ? 'openrouter' : null;
+            if (jp === null) return { kind: 'cancelled' };
+            const k = await askMasked(`Jev API key (${jp === 'typesafe' ? 'TYPESAFE_API_KEY' : 'JEV_API_KEY'}): `);
+            if (k === null || k.length < 8) return { kind: 'cancelled' };
+            return { kind: 'saved', patch: { jevApiKey: k, jevProvider: jp }, mode: { mode: 'jev-only', persist: w.reason === 'missing' } };
+          }
+          if (other === 't') {
+            // `[t] TypeSafe Jev`: the TypeSafe key, then the optional OpenRouter generator key (Enter = skip, stays Jev-only)
+            const ts = await askMasked('Jev API key (TYPESAFE_API_KEY): ');
+            if (ts === null || ts.length < 8) return { kind: 'cancelled' };
+            patch.jevApiKey = ts;
+            patch.jevProvider = 'typesafe';
+            const gen = await askMasked('OpenRouter API key (OPENROUTER_API_KEY) — Enter = skip (stay Jev-only): ');
+            if (gen === null) return { kind: 'cancelled' };
+            if (gen.length >= 8) {
+              patch.apiKey = gen;
+              patch.provider = 'openrouter';
+              return { kind: 'saved', patch };
+            }
+            return { kind: 'saved', patch, mode: { mode: 'jev-only', persist: w.reason === 'missing' } };
+          }
+          if (other === 'a') provider = 'anthropic';
+        }
+        if (provider !== 'anthropic') {
+          const k = await askMasked(oneKeyPath ? LOGIN_ONE_KEY_PROMPT : 'OpenRouter API key (OPENROUTER_API_KEY) — the code model: ');
+          if (k === null || k.length < 8) return { kind: 'cancelled' };
+          patch.apiKey = k;
+          patch.provider = 'openrouter';
+          if (oneKeyPath) {
+            patch.jevApiKey = k;
+            patch.jevProvider = 'openrouter';
+          }
+          return { kind: 'saved', patch };
+        }
+      }
+      if (needGen && mode !== 'jev-only') {
         if (provider === null) {
           write('No API key found. Pick the generator provider:\n  1 anthropic (ANTHROPIC_API_KEY)   2 openrouter (OPENROUTER_API_KEY, also Jev)\n');
           const p = lower(await ask('provider (1/2): '));
@@ -876,13 +1034,15 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
         if (k === null || k.length < 8) return { kind: 'cancelled' };
         patch.apiKey = k;
       }
-      if (missing.includes('decider.apiKey')) {
+      if (needJev) {
         const reuse = provider === 'openrouter' && patch.apiKey !== undefined;
         const k = await askMasked(`Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY)${reuse ? ' — Enter = reuse the OpenRouter key for Jev' : ''}: `);
         if (k === null) return { kind: 'cancelled' };
         if (k.length >= 8) patch.jevApiKey = k;
-        else if (reuse && patch.apiKey !== undefined) patch.jevApiKey = patch.apiKey;
-        else return { kind: 'cancelled' };
+        else if (reuse && patch.apiKey !== undefined) {
+          patch.jevApiKey = patch.apiKey;
+          patch.jevProvider = 'openrouter';
+        } else return { kind: 'cancelled' };
       }
       return patch.apiKey !== undefined || patch.jevApiKey !== undefined ? { kind: 'saved', patch } : { kind: 'cancelled' };
     },
@@ -929,6 +1089,11 @@ export function createPlainPrompter(o: PlainPrompterOptions): Prompter {
 
 type RunEndEvent = Extract<EngineEvent, { type: 'run:end' }>;
 
+/** TUI-DESIGN-3 §4.4 F3: the exhaustiveness guard of `execute()` — a dropped `CommandAction['kind']` fails tsc, never a user */
+function assertNever(x: never): never {
+  throw new Error(`unhandled command action ${JSON.stringify(x)}`);
+}
+
 /** the last N of an array, in place */
 function keepLast<T>(xs: T[], n: number): void {
   if (xs.length > n) xs.splice(0, xs.length - n);
@@ -948,26 +1113,6 @@ export function mostRecentSession(sessions: readonly SessionRow[], workspace: st
 function newestRunId(s: SessionRow): string | null {
   const r = s.runs[s.runs.length - 1];
   return r ? r.runId : null;
-}
-
-/** TUI-DESIGN §5.3: the help block — keys grouped by context, commands with one-liners, per-terminal notes; ≤ 60 lines. */
-export function helpLines(topic: 'all' | 'keys' | 'commands', o: { live: boolean; ascii?: boolean } = { live: false }): string[] {
-  const out: string[] = [];
-  if (topic !== 'commands') {
-    for (const ctx of KEY_CONTEXTS) {
-      const rows = KEY_ACTIONS.filter((a) => a.context === ctx && a.keys.length > 0);
-      if (rows.length === 0) continue;
-      out.push(`keys · ${ctx}: ${rows.map((a) => `${a.keys.map((k) => displayKey(k, o.ascii === true)).join('/')} ${a.short}`).join(' · ')}`);
-    }
-  }
-  if (topic !== 'keys') {
-    for (const c of COMMANDS) {
-      const avail = c.availableDuringTask === 'any' ? '' : c.availableDuringTask === 'idle' ? (o.live ? '  (idle only)' : '') : o.live ? '' : '  (live only)';
-      out.push(`/${c.name}${c.usage === '—' ? '' : ` ${c.usage}`}  ${c.title}${avail}`);
-    }
-  }
-  out.push(...HELP_TERMINAL_NOTES);
-  return out.slice(0, HELP_MAX_LINES);
 }
 
 export function createSessionController(o: SessionControllerOptions): SessionController {
@@ -1007,6 +1152,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   const loadRunFn = deps.loadRun ?? loadRun;
   const loadForResumeFn = deps.loadForResume ?? ((runsDir: string, runId: string, opts: { redact: (s: string) => string }) => realLoadForResume(runsDir, runId, opts));
   const writeCredentialsFn = deps.writeCredentials ?? realWriteCredentials;
+  const writeConfigValueFn = deps.writeConfigValue ?? realWriteConfigValue;
+  const verifyKeysFn = deps.verifyKeys ?? ((input: VerifyInput): Promise<VerifyResult[]> => realVerifyKeys(input));
   const createSandboxFn = deps.createSandbox ?? realCreateSandbox;
   const exportSessionFn = deps.exportSession ?? realExportSession;
   const logoutFn = deps.commandLogout ?? realCommandLogout;
@@ -1060,6 +1207,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let themeOverride: UiConfig['theme'] | null = null;
   /** §13.6: the per-run log while a run is live, and the session log it replaced */
   let runLog: Log | null = null;
+  /** TUI-DESIGN-3 §0.1 (D-Q): the read-only-config-dir warning of the default-mode item is logged once per process */
+  let seenWriteWarned = false;
   /**
    * §13.6 `EngineOptions.log`: the engine is created before its run dir exists, so it gets a handle that follows the
    * controller's current log — the session log until `retargetLogToRun` swaps in `<runDir>/jevcode.log`, that file for the
@@ -1450,7 +1599,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     });
 
   // --- credentials (§11.1, §11.2) --------------------------------------------------------------
-  async function persistCredentials(patch: CredentialsPatch, source: 'wizard' | 'login'): Promise<{ ok: boolean; items: string[]; error?: string }> {
+  async function persistCredentials(patch: CredentialsPatch, source: 'wizard' | 'login', opts: { reusedFrom?: FoundSource } = {}): Promise<{ ok: boolean; items: string[]; error?: string }> {
     if (!config) return { ok: false, items: [], error: 'configuration not ready' };
     const items: string[] = [];
     const setup = (text: string): void => {
@@ -1460,7 +1609,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     // §11.1 save: addSecret FIRST, then the items, then the atomic 0600 write
     if (patch.apiKey !== undefined) {
       config.addSecret('wizard:generator.apiKey', patch.apiKey);
-      setup(keyEnteredText('generator', fingerprint(patch.apiKey), source));
+      // TUI-DESIGN-3 §1.4.2 (edges 11, 17): the reuse Enter copied a found Jev key — `reused from`, never `entered`
+      setup(opts.reusedFrom !== undefined ? keyReusedText(opts.reusedFrom, fingerprint(patch.apiKey)) : keyEnteredText('generator', fingerprint(patch.apiKey), source));
     }
     if (patch.jevApiKey !== undefined) {
       config.addSecret('wizard:decider.apiKey', patch.jevApiKey);
@@ -1499,6 +1649,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function applyConfig(): void {
     if (!config) return;
     workspaceRoot = config.workspace;
+    // TUI-DESIGN-3 §1.2 (R3 F1/F2): flag > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > DEFAULT_MODE (resolve.ts). A pending
+    // `/mode` re-enters the flag layer through pendingFlagOverrides(), so after a reresolve() config.mode equals the PENDING mode: the base
+    // moves only while nothing is pending, and the badge action carries the pending mode separately (` · next run` survives a wizard save)
+    if (pending.mode === undefined) baseMode = config.mode;
+    try {
+      extras.dispatch?.({ type: 'mode', mode: live() && current !== null ? currentRunMode : baseMode, pending: pending.mode ?? null });
+    } catch {
+      /* the renderer is gone */
+    }
     // §8.7: a `/theme` chosen in this session outlives every re-resolution (/login, /logout, a pending /model|/provider|/mode)
     uiConfig = { ...config.ui(o.launch), ...(themeOverride !== null ? { theme: themeOverride } : {}) };
     renderer.setUi?.(uiConfig);
@@ -1518,19 +1677,135 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       note('every key resolves already; use /logout to remove one', { label: '[setup]' });
       return false;
     }
-    const providerEntry = config.entries.get('generator.provider')?.value;
-    const provider: WizardProvider | null = providerEntry === 'anthropic' || providerEntry === 'openrouter' ? providerEntry : null;
+    const provider = providerOfConfig(config);
     if (!prompter?.wizard) {
-      block('no key found — set them in the environment or run jevcode login:', fixBlockLines(), { label: '[setup]', level: 'warn' });
+      block('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, provider), { label: '[setup]', level: 'warn' });
       return false;
     }
-    const outcome = await prompter.wizard(missing, { provider, reason, mode });
+    // TUI-DESIGN-3 §1.4.3: `found` from the RESOLVED entries, whatever the layer (a round-2 user's saved Jev key counts); only for a startup wizard
+    const f = reason === 'missing' ? foundKey(config) : null;
+    const jevProvider = resolvedJevProviderOf(config);
+    const outcome = await prompter.wizard(missing, {
+      provider,
+      reason,
+      mode,
+      found: f?.found ?? null,
+      ...(f?.foundSource !== undefined ? { foundSource: f.foundSource } : {}),
+      ...(f?.foundReusable !== undefined ? { foundReusable: f.foundReusable } : {}),
+      jevProvider,
+    });
     if (outcome.kind === 'cancelled') return false;
+    // TUI-DESIGN-3 §1.4.3: option `3 Jev only` — persisted at startup (one `writeConfigValue`, reresolve, `modeSavedItem`), pended from /login; no key saved
+    if (outcome.kind === 'mode') {
+      await applyModeChoice(outcome.mode, outcome.persist);
+      return false;
+    }
     // 'persisted': the Ink wizard's host already saved through persistCredentials (tui-prompter.ts)
     const saved = outcome.kind === 'persisted' ? true : (await persistCredentials(outcome.patch, reason === 'missing' ? 'wizard' : 'login')).ok;
-    // §1.3: the `mode` wizard's own item is MODE_*_SET (the caller's); the `/login` toast stays for `login` / `rejected`
+    if (saved && outcome.kind === 'saved' && outcome.mode !== undefined) await applyModeChoice(outcome.mode.mode, outcome.mode.persist);
+    // §1.3: the `mode` wizard's own item is MODE_SET_ITEM (the caller's); the `/login` toast stays for `login` / `rejected`
     if (saved && reason !== 'missing' && reason !== 'mode') note(LOGIN_SAVED_TOAST, { label: '[setup]' });
+    // TUI-DESIGN-3 §1.7: a wizard save on a first run names the caps of the mode it saved for (a keyed start prints `defaultModeItem` instead, D-Q)
+    if (saved && reason === 'missing' && config) {
+      const m = pending.mode ?? baseMode;
+      note(capsItem(m, config.limits().spendCapUsd, config.sessionSpendCap(m).value), { label: '[setup]' });
+    }
     return saved;
+  }
+
+  /** the resolved generator provider (`anthropic` | `openrouter`), or null when the entry is unknown */
+  function providerOfConfig(cfg: ResolvedConfigWithDiagnostics): WizardProvider | null {
+    const v = cfg.entries.get('generator.provider')?.value;
+    return v === 'anthropic' || v === 'openrouter' ? v : null;
+  }
+  /** the resolved Jev provider when a layer or rule chose it (rule 2e's `default` is nothing) */
+  function resolvedJevProviderOf(cfg: ResolvedConfigWithDiagnostics): JevProvider | null {
+    const r = cfg.entries.get('decider.provider');
+    if (!r || r.source === 'default') return null;
+    return r.value === 'typesafe' || r.value === 'openrouter' ? r.value : null;
+  }
+  /** `env` / `dotenv` / `file` from a resolved entry's source (`flag` counts as env: a process-level value) */
+  function layerOf(source: string): FoundSource {
+    return source.startsWith('file:') ? 'file' : source.startsWith('dotenv:') ? 'dotenv' : 'env';
+  }
+  /**
+   * TUI-DESIGN-3 §1.4.3: what already resolves — `decider.apiKey` present → `typesafe` (the resolved Jev provider is typesafe) or `jev`, with the
+   * entry's layer; no Jev key but `ANTHROPIC_API_KEY` in the env or a dotenv → `anthropic`; else null. `foundReusable`: the Jev value is an
+   * OpenRouter key (edges 11, 17). A source, never a value.
+   */
+  function foundKey(cfg: ResolvedConfigWithDiagnostics): { found: FoundKey; foundSource?: FoundSource; foundReusable?: boolean } {
+    const jev = cfg.entries.get('decider.apiKey');
+    if (jev && jev.value.trim() !== '') {
+      const found: FoundKey = resolvedJevProviderOf(cfg) === 'typesafe' ? 'typesafe' : 'jev';
+      return { found, foundSource: layerOf(jev.source), foundReusable: found === 'jev' && jev.value.trim().startsWith('sk-or-') };
+    }
+    if ((env['ANTHROPIC_API_KEY'] ?? '').trim() !== '') return { found: 'anthropic', foundSource: 'env' };
+    for (const d of cfg.dotenvFiles) {
+      // the dotenv layer already resolved through the redactor's secret list; `readDotenv` again would be a second read of a secret file — the
+      // consulted paths suffice for the title (`(dotenv)` names the layer, never the value)
+      void d;
+    }
+    return { found: null };
+  }
+
+  /**
+   * TUI-DESIGN-3 §1.4.3 (D-J ext., §0.1): option `3 Jev only` — a startup wizard PERSISTS `mode` (one `writeConfigValue`, then reresolve so
+   * `applyConfig` moves `baseMode` with nothing pending: badge `jev-only`, no ` · next run`) and prints `modeSavedItem`; a `/login` wizard pends it
+   * (`pending.mode` + the badge dispatch + `modeSetItem`). Both leave no key saved.
+   */
+  async function applyModeChoice(mode: EngineMode, persist: boolean): Promise<void> {
+    if (persist) {
+      try {
+        const r = await writeConfigValueFn('mode', mode, { env, home, cwd, configFlag: flags.config ?? null });
+        await reresolve();
+        note(modeSavedItem(mode, r.displayPath), { label: '[setup]' });
+        return;
+      } catch (e) {
+        warnLine(`could not save mode ${mode}: ${describe(e)} — it applies to this session only`);
+      }
+    }
+    pending.mode = mode;
+    try {
+      extras.dispatch?.({ type: 'mode', mode: live() && current !== null ? currentRunMode : baseMode, pending: mode });
+    } catch {
+      /* the renderer is gone */
+    }
+    note(modeSetItem(mode));
+  }
+
+  /**
+   * TUI-DESIGN-3 §1.5: the Ink wizard's `y` — the resolved keys (after the save) go to `verifyKeys`: one Jev decision, one 1-token completion
+   * (when the target mode bills a generator and the provider is openrouter), the key info. The decision's usage lands on the session meter
+   * (`meterVerify`), never in the chat ledger. `--mock` never reaches the network (edge 30). `rejected` names the field to return to.
+   */
+  async function verifyForWizard(input: WizardVerifyInput): Promise<WizardVerifyResult> {
+    const cfg = config;
+    if (!cfg) return { ok: true, rejected: null, items: [] };
+    if (flags.mock) return { ok: true, rejected: null, items: [MOCK_VERIFY_NOTE] };
+    const genKey = cfg.entries.get('generator.apiKey')?.value ?? null;
+    const jevKey = cfg.entries.get('decider.apiKey')?.value ?? null;
+    const jevProvider = input.jevProvider ?? resolvedJevProviderOf(cfg) ?? 'openrouter';
+    const provider = input.provider ?? providerOfConfig(cfg) ?? 'openrouter';
+    let generatorModel = '';
+    try {
+      generatorModel = input.mode === 'jev-only' ? '' : cfg.generator().model;
+    } catch {
+      generatorModel = cfg.entries.get('generator.model')?.value ?? '';
+    }
+    let jevBaseUrl = JEV_PROVIDERS[jevProvider].baseUrl;
+    let jevModel = JEV_PROVIDERS[jevProvider].defaultModel;
+    try {
+      const d = cfg.decider();
+      jevBaseUrl = d.baseUrl;
+      jevModel = d.model;
+    } catch {
+      /* the entries' defaults stand */
+    }
+    const results = await verifyKeysFn({ provider, jevProvider, generatorKey: input.mode === 'jev-only' ? null : genKey, jevKey, mode: input.mode, generatorModel, jevBaseUrl, jevModel, ...(input.signal ? { signal: input.signal } : {}) });
+    for (const r of results) if (r.usage) meterVerify(r.which === 'jev' ? 'jev' : 'generator', r.usage);
+    const failed = results.filter((r) => !r.ok);
+    const rejected = failed.find((r) => r.reason === 'rejected' || r.reason === undefined);
+    return { ok: failed.length === 0, rejected: rejected ? (rejected.which === 'jev' ? 'decider.apiKey' : 'generator.apiKey') : null, items: results.map((r) => r.text) };
   }
 
   /** §11.2 P43: the shadowing line when env/dotenv and the file disagree */
@@ -1540,8 +1815,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const target = credentialsPath({ env, home, cwd, configFlag: flags.config ?? null });
       const file = await readCredentialsFile(target.path);
       if (!file.exists) return;
-      const g = shadowingLine('generator.apiKey', config.entries.get('generator.apiKey'), 'ANTHROPIC_API_KEY', target.path, file.apiKey, home);
-      const j = shadowingLine('decider.apiKey', config.entries.get('decider.apiKey'), 'JEV_API_KEY', target.path, file.jevApiKey, home);
+      const g = shadowingLine('generator.apiKey', config.entries.get('generator.apiKey'), providerOfConfig(config) === 'anthropic' ? 'ANTHROPIC_API_KEY' : 'OPENROUTER_API_KEY', target.path, file.apiKey, home);
+      // TUI-DESIGN-3 §1.8 edge 34: an env TypeSafe key wins over a saved Jev key — the line names the variable that actually won
+      const jevR = config.entries.get('decider.apiKey');
+      const j = jevR && jevR.source === 'env' && resolvedJevProviderOf(config) === 'typesafe' && file.jevApiKey !== null && file.jevApiKey.trim() !== jevR.value.trim() ? typesafeWinsText() : shadowingLine('decider.apiKey', jevR, 'JEV_API_KEY', target.path, file.jevApiKey, home);
       for (const l of [g, j]) if (l !== null) note(l, { label: '[config]' });
     } catch {
       /* no file */
@@ -1549,8 +1826,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
 
   // --- trust gate and instruction files (§11.3) -------------------------------------------------
-  async function trustGate(reopen = false): Promise<void> {
-    if (!config) return;
+  async function trustGate(reopen = false): Promise<boolean> {
+    if (!config) return false;
     const gitRoot = gitAtStart?.topLevel ?? null;
     let loaded;
     try {
@@ -1558,7 +1835,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     } catch (e) {
       log.warn(`instructions: ${describe(e)}`);
       instructions = null;
-      return;
+      return false;
     }
     for (const n of loaded.notices) warnLine(n);
     const project = projectInstructionFile(loaded, env, home);
@@ -1578,8 +1855,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       decision = 'none';
       if (status.via === 'non-interactive' && agents) stderr.write(`jevcode: ${INSTRUCTIONS_NOT_TRUSTED_LINE}\n`);
     } else {
-      const option = prompter?.trust ? await prompter.trust(inputs) : null;
-      if (exiting) return; // F3: the prompt was settled by finishSession — nothing is decided, nothing is stored
+      // TUI-DESIGN-3 §4.4 F17: the `/trust` card (reopen) closes on Esc / Ctrl-C with null → nothing changes, the old decision stands
+      const option = prompter?.trust ? await prompter.trust(inputs, { reopen }) : null;
+      if (exiting) return false; // F3: the prompt was settled by finishSession — nothing is decided, nothing is stored
+      if (reopen && option === null) return false;
       decision = option === null ? 'none' : decisionFromOption(option);
       await store.set(key, decision, agents, nowIso(), home);
     }
@@ -1590,6 +1869,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       const dotenv = config.dotenvFiles.find((p) => p === join(workspaceRoot, '.env') || p === join(cwd, '.env'));
       if (dotenv !== undefined) note(dotenvSourceText(dotenv), { label: '[config]' });
     }
+    return true;
   }
 
   // --- session meter and follow-up gate (§9.1, §9.3) -----------------------------------------------
@@ -2489,8 +2769,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     // TUI-DESIGN-2 §3.9 / §12: `chat $<usd> for <n> messages (~$<each> each, p50 <ms> ms)`
     const chat = ledger.stats();
     // a greeting costs ≈ $0.0002: three decimals would print $0.000, so the sub-millicent form has four (§4.5's cost rule)
-    const chatLine = chat.messages > 0 ? [`chat ${stepCostText(chat.costUsd)} for ${chat.messages} message${chat.messages === 1 ? '' : 's'} (~$${(chat.costUsd / chat.messages).toExponential(1)} each${chat.p50Ms === null ? '' : `, p50 ${Math.round(chat.p50Ms)} ms`})`] : [];
-    block(lines[0] ?? 'cost', [...lines.slice(1), ...chatLine]);
+    // TUI-DESIGN-3 §5.1 rule 6: never scientific notation — `~$0.000006 each` (six decimals, trailing zeros dropped)
+    const each = chat.messages > 0 ? chat.costUsd / chat.messages : 0;
+    const chatLine = chat.messages > 0 ? [`chat ${stepCostText(chat.costUsd)} for ${chat.messages} message${chat.messages === 1 ? '' : 's'} (~$${each.toFixed(6).replace(/0+$/, '').replace(/\.$/, '.0')} each${chat.p50Ms === null ? '' : `, p50 ${Math.round(chat.p50Ms)} ms`})`] : [];
+    // TUI-DESIGN-3 §5.1 rule 5 (R5 F6, S5's row): the head is the noun `cost`; every data row (the run line first) is the body
+    block('cost', [...lines, ...chatLine]);
   }
 
   function jevCommand(): void {
@@ -2527,7 +2810,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       `${head}${resolved ? ` → resolved ${resolved}` : ''}${drift ? ` · drift@step ${drift.step} → ${drift.served}` : ''}`,
       `questions ${questions} · latency p50 ${p(50)} · p95 ${p(95)} · jev cost ${usd3(jevUsd)}`,
       // TUI-DESIGN-2 §2.6 / §12: `intake: <n> messages · p50 <ms> ms · $<usd> · last: <kind> <p>`
-      ...(chat.messages > 0 ? [`intake: ${chat.messages} message${chat.messages === 1 ? '' : 's'} · p50 ${chat.p50Ms === null ? '—' : `${Math.round(chat.p50Ms)} ms`} · ${stepCostText(chat.costUsd)}${chat.last ? ` · last: ${chat.last.kind} ${chat.last.probability.toFixed(2)}` : ''}`] : []),
+      ...(chat.messages > 0 ? [`intake: ${chat.messages} message${chat.messages === 1 ? '' : 's'} · p50 ${chat.p50Ms === null ? '—' : `${Math.round(chat.p50Ms)} ms`} · ${stepCostText(chat.costUsd)}`] : []),
+      // TUI-DESIGN-3 §10 (S5's row 3, D-M local text): `last: question about this tool (1.00)` — the kind in words, the probability in parentheses
+      ...(chat.last ? [`last: ${chat.last.kind.replaceAll('_', ' ')} (${chat.last.probability.toFixed(2)})`] : []),
     ]);
   }
 
@@ -2545,7 +2830,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   }
 
   function decisionsCommand(n: number, stage: Decision['stage'] | null): void {
-    const rows: DecisionRow[] = decisions
+    // TUI-DESIGN-3 §4.4 F6: before a run (step 0) the last intake's rows are the decisions (identity with the TUI's pane by construction)
+    const pool: readonly Decision[] = currentStep() === 0 && decisions.length === 0 ? (chatIntakes.at(-1) ?? []) : decisions;
+    const rows: DecisionRow[] = pool
       .filter((d) => stage === null || d.stage === stage)
       .slice(-n)
       .map((d) => toDecisionRow(d, config?.limits().completeThreshold, config?.limits().impossibleThreshold));
@@ -2562,14 +2849,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function whyCommand(ref: string): void {
     const parsed = parseWhyRef(ref);
     if (parsed === null) {
-      uiError(`/why: expected s7.risk.plan_mismatch, risk.plan_mismatch, a digit 1-5 or intake[.reply|.about_<key>|.can_<kind>], got "${ref}"`);
+      // TUI-DESIGN-3 §4.4 F8: one failure text for both renderers (`whyErrorText`, src/tui/why.ts)
+      uiError(whyErrorText(ref, 'grammar'));
       return;
     }
     // TUI-DESIGN-2 §3.11: `intake[.<id>]` addresses the last intake's step-0 rows (they belong to no run, so never to `decisions`)
     const pool: readonly Decision[] = parsed.kind === 'intake' ? (chatIntakes.at(-1) ?? []) : decisions;
     const d = findDecision(pool, parsed, currentStep() > 0 ? currentStep() : null);
     if (d === null) {
-      uiError(`/why: no decision matches ${ref}`);
+      uiError(whyErrorText(ref, 'missing'));
       return;
     }
     const model = parsed.kind === 'intake' ? (lastDecider?.model ?? null) : (lastResult?.resolvedJevModel ?? null);
@@ -2602,6 +2890,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   async function logoutCommand(which: 'generator' | 'jev' | null): Promise<void> {
     const cfg = config;
     if (!cfg) return;
+    // TUI-DESIGN-3 §4.4 F16: the session adds the `[setup]` label once — the command prints bare items
     const code = await logoutFn(
       { ...(which === 'generator' ? { generator: true } : {}), ...(which === 'jev' ? { jev: true } : {}), ...(flags.config !== undefined ? { config: flags.config } : {}) },
       {
@@ -2620,6 +2909,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           return m;
         },
       },
+      { labelled: false },
     );
     if (code === EXIT_CODES.ok) await reresolve();
   }
@@ -2679,17 +2969,25 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           try {
             keybindings = loadKeybindingsFn(p);
             for (const w of keybindings.warnings) log.warn(w);
+            // TUI-DESIGN-3 §4.4 F10: the reloaded table reaches the App (its `resolveKey` and `helpLines` read it)
+            renderer.setBindings?.(keybindings.bindings);
             note(`keybindings reloaded from ${p}${keybindings.found ? '' : ' (no file: defaults)'}${keybindings.warnings.length > 0 ? ` · ${keybindings.warnings.length} warning${keybindings.warnings.length === 1 ? '' : 's'} in jevcode.log` : ''}`);
           } catch (e) {
             uiError(`/help reload: ${describe(e)}`);
           }
           return;
         }
-        block('help', helpLines(a.topic, { live: live(), ...(o.launch.ascii ? { ascii: true } : {}) }));
+        // TUI-DESIGN-3 §4.4 F9: ONE help formatter (src/tui/commands/palette.ts) for the TUI, --plain and the log; `columns()` on a pipe = 80
+        block('help', paletteHelpLines(columns(), { topic: a.topic, live: live(), ...(o.launch.ascii ? { ascii: true } : {}), ...(keybindings ? { bindings: keybindings.bindings } : {}) }));
         return;
       case 'new': {
         const old = sessionId;
-        if (old !== null) note(sessionEndedText(old, runs.length, sessionTotal()));
+        // TUI-DESIGN-3 §4.4 F12: before any session there is nothing to end — say so instead of nothing
+        if (old === null) {
+          note(NO_SESSION_YET);
+          return;
+        }
+        note(sessionEndedText(old, runs.length, sessionTotal()));
         sessionId = null;
         sessionStartAnnounced = false;
         runs = [];
@@ -2713,7 +3011,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         title = text60(a.title, redact);
         extras.setTitle?.(title);
         if (sessionId) indexLine({ v: 1, t: nowIso(), kind: 'rename', sessionId, title60: title });
-        note(`renamed the session to "${title}"`);
+        // TUI-DESIGN-3 §4.4 F13: a cut title says so
+        note(`renamed the session to "${title}"${a.title.length > 60 ? RENAME_CUT_NOTE : ''}`);
         return;
       }
       case 'steer': {
@@ -2760,20 +3059,41 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       case 'budget':
         budgetCommand(a);
         return;
-      case 'model':
-        pending.model = a.id;
-        note(`model ${a.id} pending (next run)`);
+      case 'model': {
+        // TUI-DESIGN-3 §4.4 F15: the show form, the jev-only cross-check, and a soft warning when the id's shape does not fit the provider
+        const id: string | null = a.id;
+        const nextMode = pending.mode ?? baseMode;
+        if (id === null || id.trim() === '') {
+          const currentModel = generatorModelLabel();
+          note(pending.model !== undefined && pending.model !== currentModel ? `model ${currentModel} (next run: ${pending.model})` : `model ${currentModel}`);
+          return;
+        }
+        pending.model = id;
+        const provider = pending.provider ?? (config ? providerOfConfig(config) : null) ?? 'openrouter';
+        const shape = provider === 'openrouter' && !id.includes('/') ? ' — OpenRouter ids read <vendor>/<model>' : provider === 'anthropic' && id.includes('/') ? ' — Anthropic ids carry no vendor prefix' : '';
+        note(`model ${id} pending (next run)${nextMode === 'jev-only' ? GENERATOR_IGNORED_NOTE : shape}`);
         return;
-      case 'provider':
-        pending.provider = a.provider;
-        note(`provider ${a.provider} pending (next run)`);
+      }
+      case 'provider': {
+        const provider: 'anthropic' | 'openrouter' | null = a.provider;
+        const nextMode = pending.mode ?? baseMode;
+        if (provider === null) {
+          const currentProvider = (config ? providerOfConfig(config) : null) ?? 'openrouter';
+          note(pending.provider !== undefined && pending.provider !== currentProvider ? `provider ${currentProvider} (next run: ${pending.provider})` : `provider ${currentProvider}`);
+          return;
+        }
+        pending.provider = provider;
+        note(`provider ${provider} pending (next run)${nextMode === 'jev-only' ? GENERATOR_IGNORED_NOTE : ''}`);
         return;
+      }
       case 'mode': {
-        // TUI-DESIGN-2 §1.3: no argument shows current and next; with one, pends it for the next run (the wizard's generator step in place when the keys are missing)
+        // TUI-DESIGN-2 §1.3 / TUI-DESIGN-3 §4.4 F1: no argument shows the current and the next run's mode in two forms — one word when they agree
+        // (` (default)` after the word equal to MODE_BADGE_WORD[DEFAULT_MODE], D-N), else `mode <cur> — next run: <next>`; with one, pends it
+        const cur = live() && current !== null ? currentRunMode : baseMode;
         const next = pending.mode ?? baseMode;
-        const cur = live() && current !== null ? currentRunMode : next;
         if (a.mode === null) {
-          note(`mode ${modeBadgeWord(cur)} (next run: ${modeBadgeWord(next)})`);
+          const dflt = (m: EngineMode): string => (m === DEFAULT_MODE ? ' (default)' : '');
+          note(cur === next ? `mode ${modeBadgeWord(cur)}${dflt(cur)}` : `mode ${modeBadgeWord(cur)} — next run: ${modeBadgeWord(next)}${dflt(next)}`);
           return;
         }
         if (a.mode === next) {
@@ -2789,7 +3109,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         }
         pending.mode = a.mode;
         extras.dispatch?.({ type: 'mode', mode: live() && current !== null ? currentRunMode : baseMode, pending: a.mode });
-        note(a.mode === 'jev-only' ? MODE_JEV_ONLY_SET : a.mode === 'jev-on' ? MODE_JEV_ON_SET : a.mode === 'llm-jev' ? MODE_LLM_JEV_SET : MODE_JEV_OFF_SET);
+        note(modeSetItem(a.mode));
         return;
       }
       case 'config': {
@@ -2804,10 +3124,16 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       case 'logout':
         await logoutCommand(a.which);
         return;
-      case 'trust':
-        await trustGate(true);
+      case 'trust': {
+        // TUI-DESIGN-3 §4.4 F17: Esc / Ctrl-C on the card close it — the old decision stands and is not printed as new
+        const decided = await trustGate(true);
+        if (!decided) {
+          note(`trust unchanged (${trustDecision ?? 'none'})`, { label: '[config]' });
+          return;
+        }
         note(trustDecision === 'none' ? 'workspace not trusted: instruction files are ignored' : `workspace trusted (${trustDecision})`, { label: '[config]' });
         return;
+      }
       case 'theme':
         themeOverride = a.theme;
         if (uiConfig) {
@@ -2817,11 +3143,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         note(`theme ${a.theme} (new items and the dynamic region only)`);
         return;
       case 'copy': {
-        const text = a.what === 'last' ? lastItemText : a.what === 'proposal' ? lastProposalText : null;
         if (a.what === 'draft') {
           uiError('/copy draft is the composer\'s (TUI only)');
           return;
         }
+        // TUI-DESIGN-3 §4.4 F7: `/copy diff` copies the diff exactly as `/diff` builds it (the App asks the host), never the last item
+        const text = a.what === 'last' ? lastItemText : a.what === 'proposal' ? lastProposalText : await diffTextForCopy();
         if (text === null) {
           uiError(`/copy: nothing to copy for ${a.what}`);
           return;
@@ -2830,6 +3157,28 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         note(r.toast, { level: r.ok ? 'info' : 'error' });
         return;
       }
+      case 'panel': {
+        // TUI-DESIGN-3 §4.4 F3: the TUI keeps every spelling App-local (only a line typed while the wizard owns the input reaches here);
+        // `--plain` prints the rows of the requested tab
+        if (o.rendererKind === 'tui') {
+          note(PANEL_HANDLED_BY_TUI, { level: 'warn' });
+          return;
+        }
+        const tab = a.panel === 'd' || a.panel === 'p' || a.panel === 't' || a.panel === 's' ? a.panel : 'd';
+        const limits = config?.limits();
+        const rows = decisions.map((d) => toDecisionRow(d, limits?.completeThreshold, limits?.impossibleThreshold));
+        const chatRows = chatIntakes.flat().map((d) => toDecisionRow(d, limits?.completeThreshold, limits?.impossibleThreshold));
+        const plan = lastPlan ?? lastResult?.finalPlan ?? null;
+        const state: PaneState = { tab, step: currentStep(), rows, plan: plan ? { step: currentStep(), plan } : null, timeline: [], synth: null, mode: pending.mode ?? baseMode, chatRows };
+        const size = a.panel === 'full' ? 'full' : 'open';
+        const lines = panelLines(state, size === 'full' ? 12 : 6, columns(), 'none', { size, glyphs: o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode });
+        block(`panel · ${tab}`, lines.length > 0 && rows.length + chatRows.length > 0 ? lines : ['(no decisions yet)']);
+        return;
+      }
+      case 'transcript':
+        // TUI-DESIGN-3 §4.4 F3: the view is the App's; `--plain` is always full
+        note(o.rendererKind === 'tui' ? PANEL_HANDLED_BY_TUI.replace('panel', 'transcript') : TRANSCRIPT_ALWAYS_FULL, o.rendererKind === 'tui' ? { level: 'warn' } : {});
+        return;
       case 'export':
         await exportCommand(a.file);
         return;
@@ -2838,6 +3187,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         return;
       case 'errors':
         block('errors', errors.length > 0 ? errors : ['(no warnings or errors yet)']);
+        // TUI-DESIGN-3 §4.4 F18: reading the errors acknowledges the `!n` marker like Ctrl+O does
+        try {
+          extras.dispatch?.({ type: 'ack-errors' });
+        } catch {
+          /* the renderer is gone */
+        }
         return;
       case 'report':
         await reportCommand();
@@ -2855,7 +3210,23 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       case 'exit':
         await exitCommand();
         return;
+      default:
+        // TUI-DESIGN-3 §4.4 F3: a `CommandAction['kind']` without a case is a type error, never a silent drop
+        return assertNever(a);
     }
+  }
+
+  /** TUI-DESIGN-3 §4.4 F7: the diff text `/copy diff` copies — the stat block of the current or last run, exactly as `/diff` prints it; null with no run */
+  async function diffTextForCopy(): Promise<string | null> {
+    const cfg = config;
+    const run = current ?? lastFinishedRun();
+    if (!cfg || !run) return null;
+    const git = await gitFacts();
+    if (!git.git) return null;
+    const sandbox = makeSandbox(cfg, run.runDir, git);
+    if (!sandbox) return null;
+    const r = await diffStatBlockFromGit({ sandbox, root: workspaceRoot, runId: run.runId, changedFiles: run.changedFiles, ...(git.unborn ? { unborn: true } : {}) }, columns());
+    return r.lines.length > 0 ? r.lines.join('\n') : null;
   }
 
   async function runCommand(line: string): Promise<void> {
@@ -3086,6 +3457,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       uiError(`config: ${redact(e.message)}`);
       return { became: 'nothing' };
     }
+    // TUI-DESIGN-3 §1.7 (R3 F5/F10): a 402 with no Retry-After is "no credits", never "unreachable" (an in-flight-budget 402 with Retry-After is retried by the provider first)
+    if ((e instanceof JevHttpError || e instanceof ProviderHttpError) && e.status === 402 && e.retryAfterMs === null) {
+      log.warn(`chat ${side} request: the key has no credits (HTTP 402)`);
+      say('jevcode', [CREDITS_EXHAUSTED(side, 402)]);
+      return { became: 'chat' };
+    }
     // a 401/403 is a rejected key, not an unreachable host (finding 12): the bubble names /login; the TUI opens the wizard like the engine's key-rejected pane
     const rejected = (e instanceof JevHttpError || e instanceof ProviderHttpError) && (e.status === 401 || e.status === 403) ? e.status : null;
     if (rejected !== null) {
@@ -3309,6 +3686,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (sessionId !== null) indexLine({ v: 1, kind: 'chat', sessionId, ...line });
     else deferredChatLines.push(line);
   }
+  /**
+   * TUI-DESIGN-3 §1.5: the verification's priced calls land on the session meter directly — not through the chat ledger (a probe is no
+   * message: `/cost`'s `chat $x for N messages` must not count it), so `/cost` shows it in the session total only
+   */
+  function meterVerify(source: 'jev' | 'generator', usage: TokenUsage): void {
+    sessionMeter.add(source, usage);
+    pushSessionSpend();
+  }
   /** §3.8 / §6 item 17: the `--json` `chat` line of an intake */
   function chatLine(res: IntakeResult, route: ChatRoute): { intake: IntakeKind; probability: number; route: ChatRoute; provider: JevProvider | 'generator'; costUsd: number; latencyMs: number; requestHash: string } {
     return { intake: res.intake.kind, probability: res.intake.probability, route, provider: res.provider, costUsd: res.usage.costUsd, latencyMs: res.latencyMs, requestHash: res.requestHash };
@@ -3402,7 +3787,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       // finishSession's final flush, before the unmount (the same lines the non-TTY paths print)
       if (code === WIZARD_EXIT_CODE && config !== null) {
         const mode = pending.mode ?? baseMode;
-        if (config.missingSecrets(mode).length > 0) block('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode), { label: '[setup]', level: 'warn' });
+        // TUI-DESIGN-3 §1.8 edge 6: nothing missing (Ctrl-C at trust / sandbox) → no fix block
+        if (config.missingSecrets(mode).length > 0) block('no key found — set them in the environment or run jevcode login:', fixBlockLines(mode, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
       }
       // §1: `/exit`, Ctrl-C ×2 idle and Ctrl-D ×2 → 0, or the last run's code under `--exit-code=last-run`
       finishSession(leaveExitCode(code), 'exit');
@@ -3494,6 +3880,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
     if (keybindings) for (const w of keybindings.warnings) log.warn(w);
     applyConfig();
+    // TUI-DESIGN-3 §4.4 F10: the keybindings file reaches the App (before: loaded, reloaded, never passed)
+    if (keybindings) renderer.setBindings?.(keybindings.bindings);
     renderer.setHost?.(host);
     for (const w of config.warnings) warnLine(w);
     await shadowingLines();
@@ -3502,14 +3890,26 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (config.missingSecrets(mode).length > 0) {
       const saved = prompter?.wizard ? await runLogin('missing') : false;
       if (exiting) return;
-      if (!saved && config.missingSecrets(mode).length > 0) {
+      // the wizard's `3 Jev only` may have moved the mode (persisted, reresolved): re-read it before judging what is still missing
+      const after = pending.mode ?? baseMode;
+      if (!saved && config.missingSecrets(after).length > 0) {
+        const names = config.missingSecrets(after);
         if (!prompter?.wizard && (o.mode === 'one-shot' || !o.interactive)) {
-          const names = config.missingSecrets(mode);
-          throw new ConfigError(`missing ${names.join(', ')}: set the environment variable or run jevcode login`, { ...(names[0] !== undefined ? { setting: names[0] } : {}) });
+          // TUI-DESIGN-3 §1.6: a pipe with a Jev key but no generator names the three ways out
+          const text = names.length === 1 && names[0] === 'generator.apiKey' ? MISSING_GENERATOR_ONLY : `missing ${names.join(', ')}: set the environment variable or run jevcode login`;
+          throw new ConfigError(text, { ...(names[0] !== undefined ? { setting: names[0] } : {}) });
         }
-        block(`no key found for ${config.missingSecrets(mode).join(', ')}; a prompt will start once one is set:`, fixBlockLines(), { label: '[setup]', level: 'warn' });
+        // TUI-DESIGN-3 §1.8 edges 3 / 24: a startup wizard the user left (Ctrl-C) exits 2 with the §1.6 fix block. The Ink
+        // wizard does it itself (`host.exit(WIZARD_EXIT_CODE)` — `exiting` is already set above); the `--plain` twin has no
+        // renderer to call it, so the controller takes the same exit for the readline wizard it opened.
+        // (`o.interactive` is false under `--plain`; a plain renderer HAS a wizard prompter only when the readline composer lent it its lines)
+        if (prompter?.wizard && o.rendererKind === 'plain') {
+          host.exit(WIZARD_EXIT_CODE);
+          return;
+        }
+        block(`no key found for ${names.join(', ')}; a prompt will start once one is set:`, fixBlockLines(after, providerOfConfig(config)), { label: '[setup]', level: 'warn' });
       }
-    }
+    } else await defaultModeNotice();
     try {
       gitAtStart = await probeGit(workspaceRoot);
     } catch {
@@ -3521,7 +3921,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     await trustGate();
     if (exiting) return;
     trace('startup: trust gate done');
-    note(sandboxText(detectSandboxLevel(config.sandbox)), { label: '[sandbox]' });
+    // TUI-DESIGN-3 §5.1 rule 13: the one-thought `[sandbox]` item; today's sentence is its TUI-only detail
+    note(sandboxText(detectSandboxLevel(config.sandbox)), { label: '[sandbox]', detail: sandboxDetail(detectSandboxLevel(config.sandbox)) });
     const cfg = config;
     candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
     await refold();
@@ -3564,6 +3965,31 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     throw new UsageError('missing task text: pass it as a positional argument, --task-file <path>, or on stdin');
   }
 
+  /**
+   * TUI-DESIGN-3 §1.7 / §0.1 (D-Q, owner-ratified one-time rule): a keyed start whose `mode` resolves from `default` (no flag, variable or
+   * file row) under a default that bills a generator prints ONE `[setup]` item naming the default, its caps and the two ways to keep or change
+   * it — only while the config file's `seen.defaultMode` differs from `DEFAULT_MODE`; printing it writes the row (the trust gate's write
+   * path). A read-only config directory degrades to printing at every start with one log warning. Never under `--mock` / `--json`.
+   */
+  async function defaultModeNotice(): Promise<void> {
+    const cfg = config;
+    if (!cfg || flags.mock || flags.json || o.rendererKind === 'json') return;
+    const modeR = cfg.entries.get('mode');
+    if (!modeR || modeR.source !== 'default') return;
+    const mode = cfg.mode;
+    if (mode === 'jev-only') return; // a default that bills no generator changes nothing a round-2 user pays
+    if (cfg.entries.get('seen.defaultMode')?.value === DEFAULT_MODE) return;
+    note(defaultModeItem(mode, cfg.limits().spendCapUsd, cfg.sessionSpendCap(mode).value), { label: '[setup]' });
+    try {
+      await writeConfigValueFn('seenDefaultMode', DEFAULT_MODE, { env, home, cwd, configFlag: flags.config ?? null });
+    } catch (e) {
+      if (!seenWriteWarned) {
+        seenWriteWarned = true;
+        log.warn(`could not record seen.defaultMode: ${describe(e)} — the default-mode item prints at every start`);
+      }
+    }
+  }
+
   async function readTaskOption(): Promise<string | null> {
     if (o.task === undefined || o.task === null) return null;
     return typeof o.task === 'function' ? o.task() : o.task;
@@ -3575,6 +4001,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     await startRun(gated.task, { kind: ranBefore() ? 'follow-up' : 'prompt', pinnedFiles: [], secretsAcked: gated.acked });
   }
 
+  /** the mode the fix block is printed for: the resolved config's, else the flag, else `JEVCODE_MODE`, else DEFAULT_MODE */
+  function modeForFix(): EngineMode {
+    if (config) return pending.mode ?? baseMode;
+    const flag = modeFromParsedFlags(flags);
+    if (isEngineMode(flags.mode ?? flags.condition)) return flag;
+    const fromEnv = typeof env['JEVCODE_MODE'] === 'string' ? parseModeHint(env['JEVCODE_MODE']) : null;
+    return fromEnv ?? DEFAULT_MODE;
+  }
+
   const controller: SessionController = {
     host,
     setPrompter(p) {
@@ -3583,8 +4018,19 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     persistCredentials,
     trustInputs: () => lastTrustInputs,
     sandboxLine: () => (config ? sandboxText(detectSandboxLevel(config.sandbox)) : null),
+    sandboxDetail: () => (config ? sandboxDetail(detectSandboxLevel(config.sandbox)) : null),
     mode: () => pending.mode ?? baseMode,
     runsDir: () => config?.runsDir ?? null,
+    verifyForWizard,
+    applyModeChoice,
+    resolvedJevKey: () => {
+      const r = config?.entries.get('decider.apiKey');
+      return r && r.value.trim() !== '' ? r.value.trim() : null;
+    },
+    resolvedJevSource: () => {
+      const r = config?.entries.get('decider.apiKey');
+      return r && r.value.trim() !== '' ? layerOf(r.source) : null;
+    },
     async run() {
       // F3: a signal or exit request during startup ends the process even while startup awaits a prompt or a probe
       const started = startup().then(
@@ -3605,7 +4051,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         finishSession(code, 'error');
         await done;
         stderr.write(`jevcode: ${redact(describe(e))}\n`);
-        if (err instanceof ConfigError && /missing (generator|decider)\.apiKey/.test(err.message)) for (const l of fixBlockLines()) stderr.write(`${l}\n`);
+        // TUI-DESIGN-3 §1.6: the pipe's fix block names the mode's routes — the resolved mode when the config got that far, else argv / JEVCODE_MODE
+        if (err instanceof ConfigError && /missing (generator|decider)\.apiKey/.test(err.message)) for (const l of fixBlockLines(modeForFix(), config ? providerOfConfig(config) : null)) stderr.write(`${l}\n`);
         return code;
       }
       return done;

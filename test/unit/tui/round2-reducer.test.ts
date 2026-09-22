@@ -6,7 +6,9 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { EngineEvent } from '../../../src/core/types.js';
+import { DEFAULT_MODE } from '../../../src/config/defaults.js';
 import { modeBadge } from '../../../src/tui/status/lines.js';
+import { mkRunResult } from '../../fixtures/tui/fixtures.js';
 import { COMPACT_HIDDEN_KINDS, hiddenInCompact, initialUiState, uiReducer, visibleItems, type UiState } from '../../../src/tui/useEngine.js';
 import { loadRunEvents, mkConfirmRequest, mkDecision, mkProposal } from '../../fixtures/tui/fixtures.js';
 
@@ -18,10 +20,11 @@ function fresh(over: Parameters<typeof initialUiState>[2] = {}): UiState {
 }
 
 describe('UiState round 2 (TUI-DESIGN-2 §6 item 16)', () => {
-  it('starts with the badge from the mode hint (default jev-only), no thinking, the splash `done` unless asked, the panel collapsed, compact, zero turns', () => {
+  it('starts with the badge from the mode hint (default DEFAULT_MODE, TUI-DESIGN-3 §1.1), no thinking, the splash `done` unless asked, the panel collapsed, compact, zero turns', () => {
     const s = fresh();
-    expect(s.modeBadge).toEqual({ mode: 'jev-only', pending: null });
+    expect(s.modeBadge).toEqual({ mode: DEFAULT_MODE, pending: null });
     expect(fresh({ modeHint: 'jev-on' }).modeBadge).toEqual({ mode: 'jev-on', pending: null });
+    expect(fresh({ modeHint: 'jev-only' }).modeBadge).toEqual({ mode: 'jev-only', pending: null });
     expect(s.thinking).toBeNull();
     expect(s.chatRows).toEqual([]);
     expect(s.splash).toBe('done');
@@ -110,6 +113,56 @@ describe('UiState round 2 (TUI-DESIGN-2 §6 item 16)', () => {
     expect(s.rows).toHaveLength(1);
     s = uiReducer(s, ev({ ...start, runId: 'r2' }));
     expect(s.lastRisk).toBeNull();
+  });
+});
+
+describe('TUI-DESIGN-3 §6 item 8: lastActivityAt, postRunKeySeen, the run:end banner clear (§3.6, §3.2, §5.1 rule 12)', () => {
+  const end: EngineEvent = { type: 'run:end', result: mkRunResult('complete'), exitCode: 0 };
+  it('lastActivityAt starts at the mount clock and is set by key, run:end, panel and resize — never by a reply (thinking → null / chat-decisions) or a tick', () => {
+    const s0 = fresh();
+    expect(s0.lastActivityAt).toBe(5000);
+    expect(uiReducer(s0, { type: 'key', at: 5100 }).lastActivityAt).toBe(5100);
+    let s = uiReducer(s0, ev(start, 6000));
+    s = uiReducer(s, { type: 'tick', now: 7000 });
+    expect(s.lastActivityAt).toBe(5000); // run:start and the tick do not count
+    expect(uiReducer(s, ev(end, 8000)).lastActivityAt).toBe(8000);
+    expect(uiReducer(s, { type: 'panel', panel: 'open' }).lastActivityAt).toBe(7000); // the tick's clock
+    expect(uiReducer(s, { type: 'panel', panel: 'collapsed' })).toBe(s); // unchanged panel → same object
+    expect(uiReducer(s, { type: 'resize' }).lastActivityAt).toBe(7000);
+    // a reply calms: neither the phase clearing nor the intake rows move the clock
+    let r = uiReducer(uiReducer(s, { type: 'thinking', phase: 'intake' }), { type: 'tick', now: 9000 });
+    r = uiReducer(r, { type: 'thinking', phase: null });
+    expect(r.lastActivityAt).toBe(5000);
+    r = uiReducer(r, { type: 'chat-decisions', rows: [] });
+    expect(r.lastActivityAt).toBe(5000);
+  });
+  it('postRunKeySeen: true at mount, false at run:end, true at the next key', () => {
+    const s0 = fresh();
+    expect(s0.postRunKeySeen).toBe(true);
+    const live = uiReducer(s0, ev(start));
+    expect(live.postRunKeySeen).toBe(true);
+    const ended = uiReducer(live, ev(end, 8000));
+    expect(ended.postRunKeySeen).toBe(false);
+    expect(uiReducer(ended, { type: 'tick', now: 9000 }).postRunKeySeen).toBe(false);
+    expect(uiReducer(ended, { type: 'panel', panel: 'open' }).postRunKeySeen).toBe(false);
+    expect(uiReducer(ended, { type: 'key', at: 9000 }).postRunKeySeen).toBe(true);
+  });
+  it('run:end clears the loop banner and its fold (R5 F8) and keeps maxReplans; run:idle clears the App-set thinking phase (P7)', () => {
+    let s = uiReducer(fresh(), ev(start));
+    s = uiReducer(s, ev({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 't', resumed: false, maxReplans: 7 }));
+    s = uiReducer(s, ev({ type: 'replan', step: 3, directive: { move: 'change_approach', probability: 0.61, confidence: 0.4, taskImpossible: 0.12, text: 't' } }));
+    expect(s.loop).not.toBeNull();
+    expect(s.loopFold.replans).toBe(1);
+    const ended = uiReducer(s, ev(end));
+    expect(ended.loop).toBeNull();
+    expect(ended.loopFold.replans).toBe(0);
+    expect(ended.loopFold.replan).toBeNull();
+    expect(ended.loopFold.maxReplans).toBe(7);
+    const thinking = uiReducer(uiReducer(fresh(), { type: 'run:starting' }), { type: 'thinking', phase: 'intake' });
+    expect(thinking.thinking).toBe('intake');
+    const idle = uiReducer(thinking, { type: 'run:idle' });
+    expect(idle.run).toBe('none');
+    expect(idle.thinking).toBeNull();
   });
 });
 
