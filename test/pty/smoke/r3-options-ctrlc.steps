@@ -1,0 +1,11 @@
+# TUI-DESIGN-3 §1.8 edge 4: Esc on the empty `key` field opens `options` (`Other ways to start:` under `setup · options`); Ctrl-C there
+# prints the fix block and exits 2 like Ctrl-C at the field
+expect \x1b\[\?25l
+expect OpenRouter API key
+sleep 0.3
+send \x1b
+expect Other ways to start
+expect 1 OpenRouter
+sleep 0.3
+send \x03
+eof

@@ -11,9 +11,12 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
   JEV_KEY_PROMPT,
   JEV_PROVIDER_PROMPT,
+  KEY_STDIN_ONE_PROVIDER,
   LOGIN_JEV_SKIP_HINT,
   LOGIN_NEEDS_TTY_OR_STDIN,
+  OPENROUTER_KEY_URL,
   SECRET_AS_ARGUMENT_REFUSED,
+  VERIFY_COMPLETION_URL,
   VERIFY_PROBE_STATE,
   acceptKey,
   commandConfigSet,
@@ -29,13 +32,18 @@ import {
   readPlainLine,
   readStdinLines,
   resolvedJevProvider,
+  verifyExitCode,
   verifyKeys,
   verifyProbeQuestions,
+  verifyReasonFor,
   type CommandIo,
+  type VerifyResult,
 } from '../../../src/cli/login.js';
 import { fingerprint } from '../../../src/core/hash.js';
 import type { Resolved } from '../../../src/core/types.js';
-import { FIX_BLOCK_FOOTER, LOGIN_JEV_PROVIDER_REQUIRED } from '../../../src/tui/onboarding/lines.js';
+import { DEFAULT_MODE, DEFAULT_MODEL } from '../../../src/config/defaults.js';
+import { FIX_BLOCK_FOOTER, LOGIN_JEV_PROVIDER_REQUIRED, LOGIN_ONE_KEY_PROMPT, LOGIN_OTHER_WAYS_PROMPT, fixBlockLines, modeSavedItem, verificationCreditsText, verificationModelText, verificationRateLimitedText, verifiedGeneratorText, verifiedJevText } from '../../../src/tui/onboarding/lines.js';
+import { stringWidth } from '../../../src/tui/composer/width.js';
 
 let dir: string;
 let home: string;
@@ -56,8 +64,19 @@ const OR_KEY = 'sk-or-v1-abcdefghijklmnopqrstuvwxyz0123';
 const TS_KEY = 'ts-live-abcdefghijklmnopqrstuvwxyz-0123456789';
 /** TUI-DESIGN-2 §12 "Wizard": the fix block of a jev-only session (no generator line) */
 const FIX_JEV_ONLY = ['export TYPESAFE_API_KEY=…', 'export OPENROUTER_API_KEY=…', 'printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin', 'jevcode login', FIX_BLOCK_FOOTER];
-/** the same when `--provider anthropic` asked for a generator: the Anthropic line joins */
-const FIX_ANTHROPIC = [...FIX_JEV_ONLY.slice(0, 4), 'export ANTHROPIC_API_KEY=…', FIX_BLOCK_FOOTER];
+/** TUI-DESIGN-3 §1.6 / §10: the generator-mode fix block — one OpenRouter key, the piped `--key-stdin`, the TypeSafe route, the jev-only escape (the `#` column at cell 30) */
+const FIX_ONE_KEY = [
+  'export OPENROUTER_API_KEY=…   # one key: Jev + the code model',
+  'printenv OPENROUTER_API_KEY | jevcode login --key-stdin',
+  'jevcode login                 # masked prompt',
+  'export TYPESAFE_API_KEY=…     # Jev native; add OPENROUTER_API_KEY for code',
+  '                              # Jev alone: jevcode config set mode jev-only',
+  FIX_BLOCK_FOOTER,
+];
+/** the same when `--provider anthropic` asked for a generator: the Anthropic line joins before the footer */
+const FIX_ANTHROPIC = [...FIX_ONE_KEY.slice(0, 5), 'export ANTHROPIC_API_KEY=…    # the code model under --provider anthropic', FIX_BLOCK_FOOTER];
+/** TUI-DESIGN-3 §1.10: the fixtures that test the jev-only login pass the mode explicitly (the default is DEFAULT_MODE) */
+const JEV_ONLY_ENV = { JEVCODE_MODE: 'jev-only' } as const;
 
 class Sink {
   text = '';
@@ -188,12 +207,12 @@ describe('the pure helpers (TUI-DESIGN-2 §1.2, §1.4, §2.3)', () => {
     expect(parseJevProvider('anthropic')).toBeNull();
   });
 
-  it('loginMode: JEVCODE_MODE (env / .env) > the file mode key > jev-only', () => {
-    expect(loginMode(lookupOf({}), { values: {} })).toBe('jev-only');
+  it('loginMode: JEVCODE_MODE (env / .env) > the file mode key > DEFAULT_MODE (TUI-DESIGN-3 §1.1)', () => {
+    expect(loginMode(lookupOf({}), { values: {} })).toBe(DEFAULT_MODE);
     expect(loginMode(lookupOf({ JEVCODE_MODE: 'jev-on' }), { values: {} })).toBe('jev-on');
     expect(loginMode(lookupOf({}), { values: { mode: 'jev-off' } })).toBe('jev-off');
     expect(loginMode(lookupOf({ JEVCODE_MODE: 'jev-only' }), { values: { mode: 'jev-on' } })).toBe('jev-only');
-    expect(loginMode(lookupOf({ JEVCODE_MODE: 'nope' }), { values: { mode: 3 } })).toBe('jev-only');
+    expect(loginMode(lookupOf({ JEVCODE_MODE: 'nope' }), { values: { mode: 3 } })).toBe(DEFAULT_MODE);
     expect(loginMode(lookupOf({ JEVCODE_MODE: 'llm-jev' }), { values: {} })).toBe('llm-jev'); // docs/LLM-JEV-DESIGN.md
     expect(loginMode(lookupOf({}), { values: { mode: 'llm-jev' } })).toBe('llm-jev');
   });
@@ -379,22 +398,31 @@ describe('commandLogin', () => {
     expect(t3.err.text).toBe('jevcode: --jev-provider: expected typesafe|openrouter, got "nope"\n');
   });
 
-  it('a pipe without --*-stdin flags refuses with the jev-only fix block (exit 2)', async () => {
+  it('a pipe without --*-stdin flags refuses with the mode\'s fix block (exit 2): the one-key block under the default, the jev-only block under JEVCODE_MODE=jev-only; --key-stdin is named first', async () => {
     const t = io(`${KEY}\n`);
     expect(await commandLogin({}, t)).toBe(2);
     const lines = t.err.text.split('\n').filter(Boolean);
     expect(lines[0]).toBe(LOGIN_NEEDS_TTY_OR_STDIN);
-    expect(lines.slice(1)).toEqual(FIX_JEV_ONLY);
+    expect(LOGIN_NEEDS_TTY_OR_STDIN.indexOf('--key-stdin')).toBeLessThan(LOGIN_NEEDS_TTY_OR_STDIN.indexOf('--generator-key-stdin'));
+    expect(lines.slice(1)).toEqual(DEFAULT_MODE === 'jev-only' ? FIX_JEV_ONLY : FIX_ONE_KEY);
+    expect(lines.slice(1)).toEqual(fixBlockLines(DEFAULT_MODE, null));
     await expect(stat(configPath())).rejects.toThrow();
     // with --provider anthropic the Anthropic line joins
     const t2 = io(`${KEY}\n`);
     expect(await commandLogin({ provider: 'anthropic' }, t2)).toBe(2);
     expect(t2.err.text.split('\n').filter(Boolean).slice(1)).toEqual(FIX_ANTHROPIC);
+    // the jev-only twin keeps today's five lines verbatim
+    const t3 = io(`${KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV } });
+    expect(await commandLogin({}, t3)).toBe(2);
+    expect(t3.err.text.split('\n').filter(Boolean).slice(1)).toEqual(FIX_JEV_ONLY);
+    for (const l of FIX_ONE_KEY) expect(stringWidth(l)).toBeLessThanOrEqual(76);
+    for (const l of FIX_ONE_KEY.slice(0, 5)) if (l.includes('#')) expect(l.indexOf('#')).toBe(30);
   });
 
   it('TUI-DESIGN-2 §1.4: interactive jev-only (no --provider) asks where Jev is reached, then the provider-named Jev key only; the file gets jevApiKey + jevProvider and no generator provider', async () => {
     const prompts: string[] = [];
     const t = io(null, {
+      env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV },
       readLine: async (p) => {
         t.asked.push(p);
         return '1';
@@ -413,16 +441,16 @@ describe('commandLogin', () => {
     expect(await readConfig()).toEqual({ jevApiKey: TS_KEY, jevProvider: 'typesafe' });
     // `2` → the OpenRouter prompt; a typed provider name works too; three bad answers cancel with the fix block
     await rm(configPath());
-    const or = io(null, { readLine: async () => 'openrouter', readMasked: async () => OR_KEY });
+    const or = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readLine: async () => 'openrouter', readMasked: async () => OR_KEY });
     expect(await commandLogin({}, or)).toBe(0);
     expect(await readConfig()).toEqual({ jevApiKey: OR_KEY, jevProvider: 'openrouter' });
     await rm(configPath()); // a saved jevProvider would be inferred (a source of its own); the question needs nothing to infer from
-    const bad = io(null, { readLine: async () => '7', readMasked: async () => OR_KEY });
+    const bad = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readLine: async () => '7', readMasked: async () => OR_KEY });
     expect(await commandLogin({}, bad)).toBe(2);
     expect(bad.err.text.match(/pick 1 \(typesafe\) or 2 \(openrouter\)/g)).toHaveLength(3);
     expect(bad.err.text.split('\n').filter(Boolean).slice(3)).toEqual(FIX_JEV_ONLY);
     // an inferred provider skips the question
-    const inferred = io(null, { readMasked: async (p) => (prompts.push(p), TS_KEY), env: { XDG_CONFIG_HOME: join(home, 'xdg'), TYPESAFE_API_KEY: 'something-set-1234' } });
+    const inferred = io(null, { readMasked: async (p) => (prompts.push(p), TS_KEY), env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV, TYPESAFE_API_KEY: 'something-set-1234' } });
     prompts.length = 0;
     expect(await commandLogin({}, inferred)).toBe(0);
     expect(inferred.asked).toEqual([]);
@@ -430,46 +458,99 @@ describe('commandLogin', () => {
     expect((await readConfig())['jevProvider']).toBe('typesafe');
   });
 
-  it('TUI-DESIGN-2 §1.2 / finding 10: JEVCODE_MODE=jev-on (or the file mode key) brings the generator step back without --provider; the default openrouter is never a chosen Jev provider — a different Jev key is asked where it belongs', async () => {
+  it('TUI-DESIGN-3 §1.6: a generator mode (JEVCODE_MODE=jev-on, or the default) with nothing resolving asks the other-ways line, then ONE masked OpenRouter key that serves Jev and the code model — four file keys, both providers named', async () => {
     const prompts: string[] = [];
     const t = io(null, {
       readLine: async (p) => {
         t.asked.push(p);
-        return '1';
+        return ''; // Enter continues
       },
       readMasked: async (p) => {
         prompts.push(p);
-        return p.startsWith('OpenRouter') ? OR_KEY : TS_KEY;
+        return OR_KEY;
       },
       env: { XDG_CONFIG_HOME: join(home, 'xdg'), JEVCODE_MODE: 'jev-on' },
     });
     expect(await commandLogin({}, t)).toBe(0);
-    expect(prompts).toEqual(['OpenRouter API key (OPENROUTER_API_KEY): ', 'Jev API key (TYPESAFE_API_KEY): ']);
-    expect(t.asked).toEqual([JEV_PROVIDER_PROMPT]); // nothing infers the Jev provider: the bare default generator does not count
-    expect(t.out.text).toContain(`${'Enter = reuse the OpenRouter key for Jev'}\n${JEV_PROVIDER_PROMPT}`.slice(0, 'Enter = reuse the OpenRouter key for Jev'.length)); // the hint precedes the question
-    expect(await readConfig()).toEqual({ provider: 'openrouter', apiKey: OR_KEY, jevApiKey: TS_KEY, jevProvider: 'typesafe' });
-    // the generator provider is written with its key and named — the unprompted default says so
-    expect(outLines(t)).toContain('[setup] generator provider: openrouter (default)');
-    expect(outLines(t)).toContain('[setup] jev provider: typesafe (api.typesafe.ai)');
-    expect(t.out.text).not.toContain(TS_KEY);
-    expect(t.out.text).not.toContain(OR_KEY);
-    await rm(configPath());
-    // Enter on the question under the openrouter generator = reuse the OpenRouter key for Jev (jevProvider openrouter)
-    const reuse = io(null, { readLine: async () => '', readMasked: async (p) => (prompts.push(p), OR_KEY), env: { XDG_CONFIG_HOME: join(home, 'xdg'), JEVCODE_MODE: 'jev-on' } });
-    prompts.length = 0;
-    expect(await commandLogin({}, reuse)).toBe(0);
-    expect(prompts).toEqual(['OpenRouter API key (OPENROUTER_API_KEY): ']);
+    expect(t.asked).toEqual([LOGIN_OTHER_WAYS_PROMPT]);
+    expect(prompts).toEqual([LOGIN_ONE_KEY_PROMPT]);
     expect(await readConfig()).toEqual({ provider: 'openrouter', apiKey: OR_KEY, jevApiKey: OR_KEY, jevProvider: 'openrouter' });
+    expect(outLines(t)).toContain('[setup] generator provider: openrouter (default)');
+    expect(outLines(t)).toContain('[setup] jev provider: openrouter (openrouter.ai)');
+    expect(outLines(t)).toContain(`[setup] generator key: entered (sha256:${fingerprint(OR_KEY)}) source=login`);
+    expect(t.out.text).not.toContain(OR_KEY);
+    expect(stringWidth(LOGIN_OTHER_WAYS_PROMPT)).toBe(79);
     await rm(configPath());
+    // `[t] TypeSafe Jev`: the TypeSafe key, then the optional OpenRouter generator key (Enter = skip stays Jev-only through `config set mode jev-only`)
+    const tsPrompts: string[] = [];
+    const ts = io(null, { readLine: async () => 't', readMasked: async (p) => (tsPrompts.push(p), p.startsWith('Jev') ? TS_KEY : OR_KEY), env: { XDG_CONFIG_HOME: join(home, 'xdg'), JEVCODE_MODE: 'jev-on' } });
+    expect(await commandLogin({}, ts)).toBe(0);
+    expect(tsPrompts).toEqual(['Jev API key (TYPESAFE_API_KEY): ', 'OpenRouter API key (OPENROUTER_API_KEY) — Enter = skip: ']);
+    expect(await readConfig()).toEqual({ jevApiKey: TS_KEY, jevProvider: 'typesafe', provider: 'openrouter', apiKey: OR_KEY });
+    await rm(configPath());
+    const tsSkip = io(null, { readLine: async () => 't', readMasked: async (p) => (p.startsWith('Jev') ? TS_KEY : ''), env: { XDG_CONFIG_HOME: join(home, 'xdg'), JEVCODE_MODE: 'jev-on' } });
+    expect(await commandLogin({}, tsSkip)).toBe(0);
+    expect(await readConfig()).toEqual({ jevApiKey: TS_KEY, jevProvider: 'typesafe' });
+    await rm(configPath());
+    // `[j] Jev only`: the provider question, the Jev key, and `mode jev-only saved to <path>` (D-J ext.)
+    const answers = ['j', '2'];
+    const jo = io(null, { readLine: async () => answers.shift() ?? '', readMasked: async () => OR_KEY });
+    expect(await commandLogin({}, jo)).toBe(0);
+    expect(await readConfig()).toEqual({ jevApiKey: OR_KEY, jevProvider: 'openrouter', mode: 'jev-only' });
+    expect(outLines(jo)).toContain(`[setup] ${modeSavedItem('jev-only', '~/xdg/jevcode/config.json')}`);
+    await rm(configPath());
+    // `[a] Anthropic`: the Anthropic key, then the Jev question (Enter = skip)
+    const anthPrompts: string[] = [];
+    const anth = io(null, { readLine: async (p) => (p === LOGIN_OTHER_WAYS_PROMPT ? 'a' : ''), readMasked: async (p) => (anthPrompts.push(p), KEY) });
+    expect(await commandLogin({}, anth)).toBe(0);
+    expect(anthPrompts).toEqual(['Anthropic API key (ANTHROPIC_API_KEY): ']);
+    expect(await readConfig()).toEqual({ provider: 'anthropic', apiKey: KEY });
+    await rm(configPath());
+    // the file's `mode: jev-off` is a generator mode too: the same one-key line
     await mkdir(join(home, 'xdg', 'jevcode'), { recursive: true });
     await writeFile(configPath(), JSON.stringify({ mode: 'jev-off' }));
     prompts.length = 0;
     const t2 = io(null, { readMasked: async (p) => (prompts.push(p), OR_KEY) });
     expect(await commandLogin({}, t2)).toBe(0);
-    expect(prompts[0]).toBe('OpenRouter API key (OPENROUTER_API_KEY): ');
-    expect(t2.asked).toEqual([JEV_PROVIDER_PROMPT]);
+    expect(prompts).toEqual([LOGIN_ONE_KEY_PROMPT]);
+    expect(t2.asked).toEqual([LOGIN_OTHER_WAYS_PROMPT]);
     expect((await readConfig())['mode']).toBe('jev-off');
-    expect((await readConfig())['jevProvider']).toBe('openrouter'); // `2` on the question, a key typed → openrouter
+    expect((await readConfig())['jevProvider']).toBe('openrouter');
+    // Ctrl-C on the other-ways line: the one-key fix block, exit 2, nothing written
+    await rm(configPath());
+    const cancelled = io(null, { readLine: async () => null, readMasked: async () => OR_KEY });
+    expect(await commandLogin({}, cancelled)).toBe(2);
+    expect(cancelled.err.text.split('\n').filter(Boolean)).toEqual(FIX_ONE_KEY);
+    await expect(stat(configPath())).rejects.toThrow();
+  });
+
+  it('TUI-DESIGN-3 §1.6: --key-stdin reads ONE line on a pipe (a second line is ignored, nothing printed — edge 29) and writes the four file keys; too short → exit 2 with `(first stdin line)`; with --provider anthropic → the usage error; on a TTY → the masked one-key prompt', async () => {
+    const t = io(`${OR_KEY}\nignored-second-line-abcdefgh\n`);
+    expect(await commandLogin({ keyStdin: true }, t)).toBe(0);
+    expect(await readConfig()).toEqual({ provider: 'openrouter', apiKey: OR_KEY, jevApiKey: OR_KEY, jevProvider: 'openrouter' });
+    expect(t.out.text).not.toContain('ignored-second-line');
+    expect(t.out.text).not.toContain(OR_KEY);
+    expect(t.err.text).toBe('');
+    expect(outLines(t)).toContain('[setup] generator provider: openrouter (default)');
+    await rm(configPath());
+    const short = io('tiny\n');
+    expect(await commandLogin({ keyStdin: true }, short)).toBe(2);
+    expect(short.err.text).toBe('jevcode: apiKey: key too short (8+ characters) (first stdin line)\n');
+    await expect(stat(configPath())).rejects.toThrow();
+    const anth = io(`${KEY}\n`);
+    expect(await commandLogin({ keyStdin: true, provider: 'anthropic' }, anth)).toBe(2);
+    expect(anth.err.text).toBe(`jevcode: ${KEY_STDIN_ONE_PROVIDER}\n`);
+    expect(await commandLogin({ keyStdin: true, provider: 'openrouter' }, io(`${OR_KEY}\n`))).toBe(0);
+    await rm(configPath());
+    const prompts: string[] = [];
+    const tty = io(null, { readMasked: async (p) => (prompts.push(p), OR_KEY) });
+    expect(await commandLogin({ keyStdin: true }, tty)).toBe(0);
+    expect(prompts).toEqual([LOGIN_ONE_KEY_PROMPT]);
+    expect(await readConfig()).toEqual({ provider: 'openrouter', apiKey: OR_KEY, jevApiKey: OR_KEY, jevProvider: 'openrouter' });
+    // the two-line form is unchanged
+    await rm(configPath());
+    expect(await commandLogin({ generatorKeyStdin: true, jevKeyStdin: true }, io(`${OR_KEY}\n${OR_KEY}\n`))).toBe(0);
+    expect(await readConfig()).toEqual({ provider: 'openrouter', apiKey: OR_KEY, jevApiKey: OR_KEY, jevProvider: 'openrouter' });
   });
 
   it('interactive: masked prompts for both keys; Enter on the Jev prompt reuses the OpenRouter key AND persists it as jevApiKey (the wizard’s reuseGeneratorForJev) with jevProvider openrouter; the prefix hint warns once', async () => {
@@ -535,6 +616,7 @@ describe('commandLogin', () => {
   it('finding 11: interactive jev-only with the Jev key already resolving from the environment (or a dotenv the session reads) says so and exits 0 — no second key asked, nothing written; a file-sourced key still prompts', async () => {
     const prompts: string[] = [];
     const t = io(null, {
+      env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV },
       readMasked: async (p) => (prompts.push(p), TS_KEY),
       resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: TS_KEY, source: 'dotenv:/w/open-assist/.env' }], ['decider.provider', { value: 'typesafe', source: 'derived' }]]),
     });
@@ -544,13 +626,14 @@ describe('commandLogin', () => {
     expect(t.out.text).toBe(`[setup] decider.apiKey: already set from dotenv:/w/open-assist/.env (sha256:${fingerprint(TS_KEY)}) — Jev key step skipped\n`);
     expect(t.out.text).not.toContain(TS_KEY);
     await expect(stat(configPath())).rejects.toThrow();
-    const env = io(null, { readMasked: async () => TS_KEY, resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: TS_KEY, source: 'env' }]]) });
+    const env = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readMasked: async () => TS_KEY, resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: TS_KEY, source: 'env' }]]) });
     expect(await commandLogin({}, env)).toBe(0);
     expect(env.out.text).toContain('already set from env');
     // a key saved in the file is replaceable: the prompt runs, the resolved provider (file, beside its key) skips the question
     await mkdir(join(home, 'xdg', 'jevcode'), { recursive: true });
     await writeFile(configPath(), JSON.stringify({ jevApiKey: OR_KEY, jevProvider: 'typesafe' }));
     const file = io(null, {
+      env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV },
       readMasked: async (p) => (prompts.push(p), TS_KEY),
       resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: OR_KEY, source: `file:${configPath()}` }], ['decider.provider', { value: 'typesafe', source: `file:${configPath()}` }]]),
     });
@@ -561,11 +644,19 @@ describe('commandLogin', () => {
     // the session's resolution (an OPENROUTER_API_KEY in <OPEN_ASSIST_PATH>/.env the local rules never see) decides the provider
     await rm(configPath());
     prompts.length = 0;
-    const resolved = io(null, { readMasked: async (p) => (prompts.push(p), OR_KEY), resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.provider', { value: 'openrouter', source: 'derived' }]]) });
+    const resolved = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readMasked: async (p) => (prompts.push(p), OR_KEY), resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.provider', { value: 'openrouter', source: 'derived' }]]) });
     expect(await commandLogin({}, resolved)).toBe(0);
     expect(resolved.asked).toEqual([]);
     expect(prompts).toEqual([JEV_KEY_PROMPT]);
     expect(await readConfig()).toEqual({ jevApiKey: OR_KEY, jevProvider: 'openrouter' });
+    // TUI-DESIGN-3 §1.6: under the generator default the same TypeSafe key skips the Jev step and the generator prompt runs alone
+    await rm(configPath());
+    prompts.length = 0;
+    const gen = io(null, { readMasked: async (p) => (prompts.push(p), OR_KEY), resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: TS_KEY, source: 'env' }], ['decider.provider', { value: 'typesafe', source: 'derived' }]]) });
+    expect(await commandLogin({}, gen)).toBe(0);
+    expect(gen.out.text).toContain('— Jev key step skipped');
+    expect(prompts).toEqual(DEFAULT_MODE === 'jev-only' ? [] : ['OpenRouter API key (OPENROUTER_API_KEY): ']);
+    if (DEFAULT_MODE !== 'jev-only') expect(await readConfig()).toEqual({ provider: 'openrouter', apiKey: OR_KEY });
   });
 
   it('interactive anthropic with the Jev key already resolved from env: the Jev prompt is skipped, the generator key saved, exit 0', async () => {
@@ -703,10 +794,14 @@ describe('commandLogin', () => {
     expect(n).toBe(3);
     expect(t2.err.text.match(/key too short/g)).toHaveLength(3);
     // the jev-only twin: Ctrl-C on the provider question → the jev-only fix block
-    const t3 = io(null, { readLine: async () => null, readMasked: async () => TS_KEY });
+    const t3 = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readLine: async () => null, readMasked: async () => TS_KEY });
     expect(await commandLogin({}, t3)).toBe(2);
     expect(t3.err.text.split('\n').filter(Boolean)).toEqual(FIX_JEV_ONLY);
     await expect(stat(configPath())).rejects.toThrow();
+    // the default's twin: Ctrl-C on the other-ways line → the one-key fix block
+    const t4 = io(null, { readLine: async () => null, readMasked: async () => TS_KEY });
+    expect(await commandLogin({}, t4)).toBe(2);
+    expect(t4.err.text.split('\n').filter(Boolean)).toEqual(fixBlockLines(DEFAULT_MODE, null));
   });
 
   it('--provider is validated; JEVCODE_PROVIDER preselects; without --provider and a generator key the default is openrouter (commit 2a92d0b)', async () => {
@@ -729,13 +824,26 @@ describe('commandLogin', () => {
     ]);
     const t = io(null, { resolveSecrets: async () => entries });
     expect(await commandLogin({ status: true }, t)).toBe(0);
-    expect(t.out.text).toBe(`generator.apiKey: file:/x/config.json (sha256:${fingerprint(KEY)})\ndecider.apiKey: env (sha256:${fingerprint(OR_KEY)})\n`);
+    // TUI-DESIGN-3 §1.6: the third line names the mode, its source and what it needs
+    const needs = DEFAULT_MODE === 'jev-only' ? 'jev' : 'generator, jev';
+    expect(t.out.text).toBe(`generator.apiKey: file:/x/config.json (sha256:${fingerprint(KEY)})\ndecider.apiKey: env (sha256:${fingerprint(OR_KEY)})\nmode: ${DEFAULT_MODE} (default) — needs: ${needs}\n`);
     entries.delete('decider.apiKey');
     const t2 = io(null, { resolveSecrets: async () => entries });
     expect(await commandLogin({ status: true }, t2)).toBe(1);
     expect(t2.out.text).toContain('decider.apiKey: not set');
     const t3 = io(null);
     expect(await commandLogin({ status: true }, t3)).toBe(1);
+    expect(t3.out.text).toContain(`mode: ${DEFAULT_MODE} (default) — needs: ${needs}`);
+    // a jev-only session is `ok` with the Jev key alone; the source names the layer
+    const jo = new Map<string, Resolved<string>>([['decider.apiKey', { value: OR_KEY, source: 'env' }]]);
+    const t4 = io(null, { resolveSecrets: async () => jo, env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV } });
+    expect(await commandLogin({ status: true }, t4)).toBe(0);
+    expect(t4.out.text).toContain('mode: jev-only (env) — needs: jev');
+    await mkdir(join(home, 'xdg', 'jevcode'), { recursive: true });
+    await writeFile(configPath(), JSON.stringify({ mode: 'jev-on' }));
+    const t5 = io(null, { resolveSecrets: async () => jo });
+    expect(await commandLogin({ status: true }, t5)).toBe(1);
+    expect(t5.out.text).toContain('mode: jev-on (file) — needs: generator, jev');
   });
 
   it('--verify runs the injected verifier after saving with the Jev provider: a rejected key exits 2 (§13.5 key rejected), an unreachable provider 5 (api)', async () => {
@@ -769,26 +877,49 @@ describe('commandLogin', () => {
     expect(seen[1]).toEqual({ jevProvider: 'typesafe', jevKey: TS_KEY });
   });
 
-  it('verifyKeys uses the injected fetch: OpenRouter key endpoint (Bearer), Anthropic models (x-api-key), one priced TypeSafe decision (POST, Bearer, jev-1.13.0); failures become the §24 line', async () => {
+  it('TUI-DESIGN-3 §1.5 verifyKeys: one real Jev decision (POST the decisions endpoint), one 1-token completion under openrouter (POST chat/completions, max_tokens 1), Anthropic models (x-api-key), the key info GET; the typesafe twin is one decision at api.typesafe.ai', async () => {
     const calls: { url: string; method: string; headers: Record<string, string>; body: string | null }[] = [];
     const f = (async (url: string | URL | Request, init?: RequestInit) => {
       const u = String(url);
       calls.push({ url: u, method: init?.method ?? 'GET', headers: (init?.headers as Record<string, string>) ?? {}, body: typeof init?.body === 'string' ? init.body : null });
       if (u.includes('typesafe')) return new Response(JSON.stringify({ model: 'jev-1.13.0', answers: { greeting: { type: 'noul', noul: 0.99 } }, usage: { input_tokens: 319, output_tokens: 23 } }), { status: 200 });
+      if (u.includes('/decisions')) return new Response(JSON.stringify({ model: 'typesafe/jev-1.13-20260917', answers: { greeting: { type: 'noul', noul: 0.99 } }, usage: { input_tokens: 318, output_tokens: 20, cost: 0.00002 } }), { status: 200 });
+      if (u.includes('/chat/completions')) return new Response(JSON.stringify({ model: DEFAULT_MODEL, choices: [{ message: { role: 'assistant', content: 'H' } }], usage: { prompt_tokens: 8, completion_tokens: 1, cost: 0.000002 } }), { status: 200 });
       if (u.includes('openrouter')) return new Response(JSON.stringify({ data: { label: 'laptop', limit_remaining: 4.12 } }), { status: 200 });
       return new Response(JSON.stringify({ data: [{ id: 'claude-sonnet-5' }, { id: 'x' }] }), { status: 200 });
     }) as typeof fetch;
-    const res = await verifyKeys({ provider: 'anthropic', jevProvider: 'openrouter', generatorKey: KEY, jevKey: OR_KEY }, f, 1000);
-    expect(res).toEqual([
-      { which: 'generator', ok: true, text: 'verified: anthropic key ok (2 models listed)' },
-      { which: 'jev', ok: true, text: 'verified: openrouter key ok (label "laptop", limit remaining $4.12)' },
-    ]);
-    expect(calls[0]!.headers['x-api-key']).toBe(KEY);
-    expect(calls[1]!.headers['authorization']).toBe(`Bearer ${OR_KEY}`);
-    // TUI-DESIGN-2 §2.7: the typesafe check is one decision at api.typesafe.ai — no referer / title, the pinned model, the one-Noul probe
+    const res = await verifyKeys({ provider: 'anthropic', jevProvider: 'openrouter', generatorKey: KEY, jevKey: OR_KEY, mode: 'jev-on' }, f, 1000);
+    expect(res.map((r) => r.text)).toEqual([verifiedJevText('typesafe/jev-1.13-20260917', 318, 0.00002), 'verified: anthropic key ok (2 models listed)', 'verified: openrouter key ok (label "laptop", limit remaining $4.12)']);
+    expect(res.every((r) => r.ok)).toBe(true);
+    expect(res[0]!.usage).toEqual({ inputTokens: 318, outputTokens: 20, costUsd: 0.00002, calls: 1 });
+    expect(verifiedJevText('typesafe/jev-1.13-20260917', 318, 0.00002)).toBe('verified: jev ok (typesafe/jev-1.13-20260917, 318 input tokens, $0.00002)');
+    expect(calls.map((c) => [c.method, c.url])).toEqual([['POST', 'https://openrouter.ai/api/alpha/decisions'], ['GET', 'https://api.anthropic.com/v1/models'], ['GET', OPENROUTER_KEY_URL]]);
+    expect(calls[0]!.headers['Authorization']).toBe(`Bearer ${OR_KEY}`);
+    const decision = JSON.parse(calls[0]!.body ?? '{}') as { model: string; state: unknown; questions: Record<string, unknown> };
+    expect(decision.model).toBe('typesafe/jev-1.13-20260917');
+    expect(decision.state).toEqual({ message: 'hi' });
+    expect(Object.keys(decision.questions)).toEqual(['greeting']);
+    expect(calls[1]!.headers['x-api-key']).toBe(KEY);
+    expect(calls[2]!.headers['authorization']).toBe(`Bearer ${OR_KEY}`);
+    // the one-key case: the decision, the 1-token completion, the key info — three calls, one key
+    calls.length = 0;
+    const one = await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY, mode: 'jev-on', generatorModel: DEFAULT_MODEL }, f, 1000);
+    expect(calls.map((c) => [c.method, c.url])).toEqual([['POST', 'https://openrouter.ai/api/alpha/decisions'], ['POST', VERIFY_COMPLETION_URL], ['GET', OPENROUTER_KEY_URL]]);
+    const completion = JSON.parse(calls[1]!.body ?? '{}') as { model: string; max_tokens: number; temperature: number; messages: { role: string; content: string }[] };
+    expect(completion).toEqual({ model: DEFAULT_MODEL, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, temperature: 0 });
+    expect(one.map((r) => r.text)).toEqual([verifiedJevText('typesafe/jev-1.13-20260917', 318, 0.00002), verifiedGeneratorText(DEFAULT_MODEL, 0.000002), 'verified: openrouter key ok (label "laptop", limit remaining $4.12)']);
+    expect(verifiedGeneratorText(DEFAULT_MODEL, 0.000002)).toBe(`verified: ${DEFAULT_MODEL} ok (1 token, $0.000002)`);
+    expect(one[1]!.usage).toEqual({ inputTokens: 8, outputTokens: 1, costUsd: 0.000002, calls: 1 });
+    // no workspace text anywhere in a request body
+    for (const c of calls) expect(c.body ?? '').not.toMatch(/workspace|\/Users\//);
+    // jev-only: no completion whatever key is passed
+    calls.length = 0;
+    await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY, mode: 'jev-only' }, f, 1000);
+    expect(calls.map((c) => c.url)).toEqual(['https://openrouter.ai/api/alpha/decisions', OPENROUTER_KEY_URL]);
+    // TUI-DESIGN-2 §2.7: the typesafe check is one decision at api.typesafe.ai — no referer / title, the pinned model, the one-Noul probe; no key info GET
     calls.length = 0;
     const ts = await verifyKeys({ provider: 'anthropic', jevProvider: 'typesafe', generatorKey: null, jevKey: TS_KEY }, f, 1000);
-    expect(ts).toEqual([{ which: 'jev', ok: true, text: 'verified: typesafe key ok (jev-1.13.0, 319 input tokens)' }]);
+    expect(ts).toEqual([{ which: 'jev', ok: true, text: 'verified: typesafe key ok (jev-1.13.0, 319 input tokens)', usage: { inputTokens: 319, outputTokens: 23, costUsd: 319 * 4.2e-8, calls: 1 } }]);
     expect(calls).toHaveLength(1);
     expect(calls[0]!.url).toBe('https://api.typesafe.ai/v1/systemone');
     expect(calls[0]!.method).toBe('POST');
@@ -798,28 +929,100 @@ describe('commandLogin', () => {
     expect(body.model).toBe('jev-1.13.0');
     expect(body.state).toEqual({ message: 'hi' });
     expect(Object.keys(body.questions)).toEqual(['greeting']);
-    // an openrouter Jev key never reaches api.typesafe.ai and a typesafe key never reaches openrouter.ai
+    // a typesafe Jev key never reaches openrouter.ai; the OpenRouter generator key's completion and key info still run
     calls.length = 0;
-    await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY }, f, 1000);
-    expect(calls.map((c) => c.url)).toEqual(['https://openrouter.ai/api/v1/key']);
-    const rejecting = (async () => new Response('{}', { status: 401 })) as typeof fetch;
-    const bad = await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY }, rejecting, 1000);
-    expect(bad).toEqual([{ which: 'generator', ok: false, text: 'verification failed: openrouter HTTP 401 — the key was kept; fix it with /login', reason: 'rejected' }]);
-    const badTs = await verifyKeys({ provider: 'openrouter', jevProvider: 'typesafe', generatorKey: null, jevKey: TS_KEY }, rejecting, 1000);
+    await verifyKeys({ provider: 'openrouter', jevProvider: 'typesafe', generatorKey: OR_KEY, jevKey: TS_KEY, mode: 'jev-on' }, f, 1000);
+    expect(calls.map((c) => c.url)).toEqual(['https://api.typesafe.ai/v1/systemone', VERIFY_COMPLETION_URL, OPENROUTER_KEY_URL]);
+    expect(calls[0]!.headers['Authorization']).toBe(`Bearer ${TS_KEY}`);
+    expect(calls[1]!.headers['authorization']).toBe(`Bearer ${OR_KEY}`);
+    expect(await verifyKeys({ provider: 'anthropic', jevProvider: null, generatorKey: null, jevKey: null }, f, 1000)).toEqual([]);
+  });
+
+  it('TUI-DESIGN-3 §1.5 / §1.8 edges 12–14, 25: the four outcomes — 401 rejected (exit 2), 402 credits (exit 5), 429 + Retry-After rate-limited (unreachable, exit 5), 404 on the completion model (exit 2), a thrown fetch unreachable (exit 5); the key info is skipped after a rejection', async () => {
+    const status = (code: number, headers: Record<string, string> = {}) => (async () => new Response(JSON.stringify({ error: { message: `HTTP ${code}` } }), { status: code, headers })) as typeof fetch;
+    const rejected = await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY, mode: 'jev-on' }, status(401), 1000);
+    expect(rejected).toEqual([
+      { which: 'jev', ok: false, text: 'verification failed: openrouter HTTP 401 — the key was kept; fix it with /login', reason: 'rejected' },
+      { which: 'generator', ok: false, text: 'verification failed: openrouter HTTP 401 — the key was kept; fix it with /login', reason: 'rejected' },
+    ]);
+    expect(verifyExitCode(rejected)).toBe(2);
+    const badTs = await verifyKeys({ provider: 'openrouter', jevProvider: 'typesafe', generatorKey: null, jevKey: TS_KEY }, status(401), 1000);
     expect(badTs).toEqual([{ which: 'jev', ok: false, text: 'verification failed: typesafe HTTP 401 — the key was kept; fix it with /login', reason: 'rejected' }]);
+    // 402: no credits — the text names openrouter.ai/credits and the jev-only escape is the chat bubble's; exit 5
+    const credits = await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY, mode: 'jev-on' }, status(402), 1000);
+    expect(credits[0]).toEqual({ which: 'jev', ok: false, text: verificationCreditsText(402), reason: 'credits' });
+    expect(verificationCreditsText(402)).toBe('verification: no credits left on this OpenRouter key (HTTP 402) — add credits at openrouter.ai/credits; the key was kept');
+    expect(verifyExitCode(credits)).toBe(5);
+    // 429 with Retry-After: `try again in 20s`, reason unreachable, exit 5
+    const limited = await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: null, jevKey: OR_KEY, mode: 'jev-only' }, status(429, { 'retry-after': '20' }), 1000);
+    expect(limited[0]).toEqual({ which: 'jev', ok: false, text: verificationRateLimitedText(20), reason: 'unreachable' });
+    expect(verificationRateLimitedText(20)).toBe('verification: OpenRouter is rate-limiting this key (HTTP 429) — try again in 20s; the key was kept');
+    expect(verificationRateLimitedText(null)).toBe('verification: OpenRouter is rate-limiting this key (HTTP 429) — try again in a moment; the key was kept');
+    expect(verifyExitCode(limited)).toBe(5);
+    // 404 on the completion (a config model the router does not serve): the model text, reason model, exit 2; the decision itself passed
+    const f404 = (async (url: string | URL | Request) => {
+      const u = String(url);
+      if (u.includes('/chat/completions')) return new Response(JSON.stringify({ error: { message: 'z-ai/glm-nope is not a valid model ID' } }), { status: 404 });
+      if (u.includes('/decisions')) return new Response(JSON.stringify({ model: 'typesafe/jev-1.13-20260917', usage: { input_tokens: 318, cost: 0.00002 } }), { status: 200 });
+      return new Response(JSON.stringify({ data: { label: 'l', limit_remaining: 1 } }), { status: 200 });
+    }) as typeof fetch;
+    const model = await verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY, mode: 'jev-on', generatorModel: 'z-ai/glm-nope' }, f404, 1000);
+    expect(model[1]).toEqual({ which: 'generator', ok: false, text: verificationModelText('z-ai/glm-nope', 404), reason: 'model' });
+    expect(verificationModelText('z-ai/glm-nope', 404)).toBe('verification: the code model "z-ai/glm-nope" is not served by openrouter.ai (HTTP 404) — pass --model, or jevcode config set generator.model <id>; the key was kept');
+    expect(verifyExitCode(model)).toBe(2);
+    expect(model).toHaveLength(3); // the key info still runs (nothing was rejected)
+    // a thrown fetch (DNS, refused, timeout) is unreachable with `<name>: <message>`
     const throwing = (async () => {
       throw new TypeError('fetch failed');
     }) as typeof fetch;
-    const net = await verifyKeys({ provider: 'anthropic', jevProvider: null, generatorKey: KEY, jevKey: null }, throwing, 1000);
+    const net = await verifyKeys({ provider: 'anthropic', jevProvider: null, generatorKey: KEY, jevKey: null, mode: 'jev-on' }, throwing, 1000);
     expect(net[0]!.text).toBe('verification failed: TypeError: fetch failed — the key was kept; fix it with /login');
     expect(net[0]!.reason).toBe('unreachable');
+    expect(verifyExitCode(net)).toBe(5);
     const netTs = await verifyKeys({ provider: 'anthropic', jevProvider: 'typesafe', generatorKey: null, jevKey: TS_KEY }, throwing, 1000);
     expect(netTs).toEqual([{ which: 'jev', ok: false, text: 'verification failed: TypeError: fetch failed — the key was kept; fix it with /login', reason: 'unreachable' }]);
-    expect(await verifyKeys({ provider: 'anthropic', jevProvider: null, generatorKey: null, jevKey: null }, throwing, 1000)).toEqual([]);
+    // the status map itself
+    expect([200, 401, 403, 402, 408, 429, 500, 503, 404, 400].map((c) => verifyReasonFor(c))).toEqual(['rejected', 'rejected', 'rejected', 'credits', 'unreachable', 'unreachable', 'unreachable', 'unreachable', 'rejected', 'rejected']);
+    expect([404, 400].map((c) => verifyReasonFor(c, true))).toEqual(['model', 'model']);
+    // the exit code map: a rejected or unserved-model failure wins over a credits / unreachable one
+    const mixed: VerifyResult[] = [{ which: 'generator', ok: false, text: 'a', reason: 'unreachable' }, { which: 'jev', ok: false, text: 'b', reason: 'rejected' }];
+    expect(verifyExitCode(mixed)).toBe(2);
+    expect(verifyExitCode([{ which: 'jev', ok: true, text: 'ok' }])).toBe(0);
+    expect(verifyExitCode([{ which: 'jev', ok: false, text: 'x' }])).toBe(2);
+  });
+
+  it('TUI-DESIGN-3 §1.8 edge 5: an aborted `signal` ends every call as unreachable (`AbortError`), nothing is retried', async () => {
+    const ac = new AbortController();
+    const f = (async (_url: string | URL | Request, init?: RequestInit) => {
+      const sig = init?.signal;
+      // like the real fetch: an already-aborted signal rejects at once, a later abort rejects when it fires
+      return new Promise<Response>((_resolve, reject) => {
+        const fail = (): void => reject(sig?.reason instanceof Error ? sig.reason : new DOMException('aborted', 'AbortError'));
+        if (sig?.aborted) fail();
+        else sig?.addEventListener('abort', fail);
+      });
+    }) as typeof fetch;
+    const p = verifyKeys({ provider: 'openrouter', jevProvider: 'openrouter', generatorKey: OR_KEY, jevKey: OR_KEY, mode: 'jev-on', signal: ac.signal }, f, 60000);
+    ac.abort(new DOMException('verification cancelled', 'AbortError'));
+    const res = await p;
+    expect(res.length).toBeGreaterThanOrEqual(1);
+    for (const r of res) {
+      expect(r.ok).toBe(false);
+      expect(r.reason).toBe('unreachable');
+      expect(r.text).toContain('AbortError');
+    }
   });
 });
 
 describe('commandLogout', () => {
+  it('TUI-DESIGN-3 §4.4 F16: `labelled: false` prints the bare items (the session adds the one `[setup]` label)', async () => {
+    await commandLogin({ jevKeyStdin: true, jevProvider: 'typesafe' }, io(`${TS_KEY}\n`));
+    const out = io(null);
+    expect(await commandLogout({ jev: true }, out, { labelled: false })).toBe(0);
+    expect(out.out.text).toBe(`removed jev key (sha256:${fingerprint(TS_KEY)}) from ~/xdg/jevcode/config.json\n`);
+    expect(out.out.text).not.toContain('[setup]');
+  });
+
   it('removes both keys by default, one with a flag, reports fingerprints, and names env-sourced keys it does not touch', async () => {
     const t0 = io(`${KEY}\n${OR_KEY}\n`);
     await commandLogin({ provider: 'anthropic', jevProvider: 'openrouter', generatorKeyStdin: true, jevKeyStdin: true }, t0);
@@ -855,7 +1058,7 @@ describe('commandLogout', () => {
     expect(t.out.text).toBe('');
     expect((await readConfig())['jevApiKey']).toBeUndefined();
     // the interactive twin asks instead of inferring typesafe from the note
-    const ask = io(null, { readMasked: async () => OR_KEY });
+    const ask = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readMasked: async () => OR_KEY });
     expect(await commandLogin({}, ask)).toBe(0);
     expect(ask.asked).toEqual([JEV_PROVIDER_PROMPT]);
     expect(await readConfig()).toEqual({ jevApiKey: OR_KEY, jevProvider: 'openrouter' });

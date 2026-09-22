@@ -1,0 +1,12 @@
+# TUI-DESIGN-3 §1.8 edge 23 (--screen-reader): the `key` step reads its title, `API key field, 0 characters entered, hidden` and the
+# `Enter saves; Escape clears, then Escape again for other options` hint; Esc → the numbered `options` rows with `Enter selection (1-4):`;
+# Ctrl-C exits 2
+expect OpenRouter API key
+expect API key field, 0 characters entered, hidden
+sleep 0.3
+send \x1b
+expect Other ways to start
+expect Enter selection \(1-4\)
+sleep 0.3
+send \x03
+eof

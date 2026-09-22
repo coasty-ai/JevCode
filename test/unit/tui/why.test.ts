@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { Answer, Decision } from '../../../src/core/types.js';
 import { GLYPHS } from '../../../src/tui/glyphs.js';
-import { WHY_MAX_LINES, findDecision, findIntakeDecision, intakeConsumedBy, parseWhyRef, stepWhyBlocks, whyBlock, whyHead, whyRef } from '../../../src/tui/why.js';
+import { WHY_KEPT_STEPS, WHY_MAX_LINES, findDecision, findIntakeDecision, intakeConsumedBy, parseWhyRef, stepWhyBlocks, whyBlock, whyErrorText, whyHead, whyRef } from '../../../src/tui/why.js';
 import { INTAKE_KINDS, answersOfRows, buildAllIntakeQuestions, decisionRows, resolveIntake } from '../../../src/chat/intake.js';
 import { annotateChoiceRows } from '../../../src/loop/stages/choose.js';
 import { harnessFacts } from '../../../src/chat/facts.js';
@@ -27,6 +27,22 @@ function intakeRows(kind: string, p: number, paired: number): Decision[] {
   annotateChoiceRows(rows, 'intake', { option: r.kind, verdict: r.verdict, answer: r.answer, probability: r.probability, pairedNoul: r.pairedNoul });
   return rows;
 }
+
+describe('whyErrorText (TUI-DESIGN-3 §4.4 F8 / §10): one failure text for the App and the controller', () => {
+  it('`missing` → `error: /why: no decision <ref> in the last 3 steps`; `grammar` → `error: /why: <ref> is not a decision ref (…)`; the ref is trimmed', () => {
+    expect(whyErrorText('s7.risk.plan_mismatch', 'missing')).toBe('error: /why: no decision s7.risk.plan_mismatch in the last 3 steps');
+    expect(whyErrorText(' 3 ', 'missing')).toBe('error: /why: no decision 3 in the last 3 steps');
+    expect(whyErrorText('intake.nope', 'missing')).toBe('error: /why: no decision intake.nope in the last 3 steps');
+    expect(whyErrorText('foo', 'grammar')).toBe('error: /why: foo is not a decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)');
+    expect(whyErrorText('intake.Nope', 'grammar')).toBe('error: /why: intake.Nope is not a decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)');
+    expect(WHY_KEPT_STEPS).toBe(3);
+    // the two texts never depend on the renderer: a grammar failure is exactly what parseWhyRef rejects
+    for (const ref of ['foo', '6', 's7.risk', 'intake.']) {
+      expect(parseWhyRef(ref)).toBeNull();
+      expect(whyErrorText(ref, 'grammar')).toMatch(/^error: \/why: .* is not a decision ref/);
+    }
+  });
+});
 
 describe('ref grammar (TUI-DESIGN §7.6)', () => {
   it.each([

@@ -47,7 +47,9 @@ import { JEV_PROVIDERS, equivalentJevModel, jevModelMatches as providerJevModelM
 import {
   CACHE_READ_FACTOR,
   CACHE_WRITE_FACTOR,
+  DEFAULT_MODE,
   KNOWN_KEY_ENV,
+  MODE_SETTING_VALUES,
   SESSION_CAP_MULTIPLIER,
   SETTINGS,
   SECRET_SETTINGS,
@@ -370,14 +372,19 @@ function resolveJevProvider(layers: Layers): JevProviderResolution {
   return { provider: 'openrouter', providerSource: 'default', entry: { value: 'openrouter', source: 'default' } };
 }
 
-/** TUI-DESIGN-2 §1.2: `--mode` (or its hidden alias `--condition`) as an argv-only hint; default jev-only — the same rule as cli/main.tsx `modeFromFlags`. */
+/** TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1: `--mode` (or its hidden alias `--condition`) as an argv-only hint; anything else is DEFAULT_MODE (the one rule; cli/main.tsx has no twin). */
 export function modeFromParsedFlags(flags: ParsedFlags): EngineMode {
   const m = flags.mode ?? flags.condition;
-  return m === 'jev-on' || m === 'jev-off' || m === 'llm-jev' ? m : 'jev-only';
+  return isEngineMode(m) ? m : DEFAULT_MODE;
+}
+
+/** the `MODE_SETTING_VALUES` membership test as a type guard (`includes` over a readonly tuple narrows nothing) */
+export function isEngineMode(v: unknown): v is EngineMode {
+  return typeof v === 'string' && (MODE_SETTING_VALUES as readonly string[]).includes(v);
 }
 
 // ---------------------------------------------------------------------------------------
-// TUI-DESIGN-2 §1.2 (D-A): the `mode` setting — flag > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > default jev-only
+// TUI-DESIGN-2 §1.2 (D-A): the `mode` setting — flag > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > DEFAULT_MODE
 // ---------------------------------------------------------------------------------------
 
 /** The `mode` row through the chain; `--condition` (args.ts's hidden alias, not the row's flag key) counts as the flag layer. */
@@ -387,7 +394,7 @@ function modeRow(layers: Layers): Resolved<string> {
   if (fromFlag) return fromFlag;
   const condition = flagValue(layers.flags, 'condition');
   if (typeof condition === 'string' && condition.trim() !== '') return { value: condition, source: 'flag' };
-  return lookup(layers, spec) ?? { value: spec.defaultValue ?? 'jev-only', source: 'default' };
+  return lookup(layers, spec) ?? { value: spec.defaultValue ?? DEFAULT_MODE, source: 'default' };
 }
 
 /** TUI-DESIGN-2 §1.2: the resolved engine mode, or the §12 ConfigError `mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev`. */
@@ -651,7 +658,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   return {
     entries,
     // contract 1.2 (TUI-DESIGN-2 §6 item 9 / §1.2): the `mode` setting the caps above were keyed on — opts.mode (a --resume
-    // re-resolve) or the chain (flag > JEVCODE_MODE > dotenv > file > default jev-only)
+    // re-resolve) or the chain (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE)
     mode,
     generator() {
       if (!generatorMemo) generatorMemo = validateGenerator(reader, warn, { allowUnpriced: readAllowUnpriced(reader) });

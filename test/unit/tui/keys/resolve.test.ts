@@ -571,6 +571,33 @@ describe('keybindings file chords and overrides through the resolver (TUI-DESIGN
     const armed = { ...idleText, armed: { ...idleText.armed, chord: { first: 'ctrl+k', at: 0 } } };
     expect(acts(armed, k('ctrl+s'), 100, b2)).toEqual([{ type: 'export' }]);
   });
+  it('TUI-DESIGN-3 §4.5: a rebound command action fires `{ type: "slash", line }` — a chord (`ctrl+x c` → /cost) or a single key (`f5` → /status); unbound by default nothing fires; the review context never sees them', () => {
+    const cb = buildBindings(new Map<string, readonly string[]>([
+      ['session:cost', ['ctrl+x c']],
+      ['session:status', ['f5']],
+      ['session:mode', ['f6']],
+      ['files:diff', ['f7']],
+      ['files:undo', ['f8']],
+      ['ui:copy', ['f9']],
+    ]));
+    expect(cb.warnings).toEqual([]);
+    /** an F-key as Ink delivers it: `input === ''`, every flag false, parse-keypress's name */
+    const fkey = (name: string): KeyEvent => ({ input: '', key: { ...FLAGS }, name });
+    const first = resolveKey(idle, k('ctrl+x'), 1000, cb);
+    expect(first).toEqual([{ type: 'arm', armed: { ...idle.armed, chord: { first: 'ctrl+x', at: 1000 } } }]);
+    const armed = { ...idle, armed: { ...idle.armed, chord: { first: 'ctrl+x', at: 1000 } } };
+    expect(resolveKey(armed, text('c'), 1500, cb)).toEqual([{ type: 'arm', armed: idle.armed }, { type: 'slash', line: '/cost' }]);
+    expect(acts(idle, fkey('f5'), 0, cb)).toEqual([{ type: 'slash', line: '/status' }]);
+    expect(acts(idleText, fkey('f6'), 0, cb)).toEqual([{ type: 'slash', line: '/mode' }]);
+    expect(acts(live, fkey('f7'), 0, cb)).toEqual([{ type: 'slash', line: '/diff' }]);
+    expect(acts(idle, fkey('f8'), 0, cb)).toEqual([{ type: 'slash', line: '/undo' }]);
+    expect(acts(idle, fkey('f9'), 0, cb)).toEqual([{ type: 'slash', line: '/copy' }]);
+    // defaults: F5 is an unbound key, a plain `c` is text
+    expect(acts(idle, fkey('f5'))).toEqual([{ type: 'filtered', reason: 'unbound-key' }]);
+    expect(acts(idle, text('c'))).toEqual([{ type: 'insert', text: 'c' }]);
+    // the review box keeps its own keys: f5 there is filtered, never a command
+    expect(acts(review, fkey('f5'), 0, cb)[0]?.type).not.toBe('slash');
+  });
   it('"none" unbinds (Ctrl-K becomes an unbound modifier key); a rebound `?` inserts text', () => {
     expect(acts(idleText, k('ctrl+k'), 0, b)).toEqual([{ type: 'filtered', reason: 'unbound-modifier' }]);
     expect(acts(idle, text('?'), 0, b)).toEqual([{ type: 'insert', text: '?' }]);

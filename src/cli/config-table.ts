@@ -6,7 +6,7 @@
  * `--json` prints the record itself (`sandboxLevel`, `ui`, `session` rows included, `source: 'derived'` kept).
  */
 import type { ConfigRecordValue, SandboxLevel } from '../core/types.js';
-import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, SESSION_CAP_MULTIPLIER } from '../config/defaults.js';
+import { CACHE_READ_FACTOR, CACHE_WRITE_FACTOR, SESSION_CAP_MULTIPLIER, SETTINGS } from '../config/defaults.js';
 
 export interface ConfigTableRow {
   setting: string;
@@ -36,6 +36,9 @@ export const PROVIDER_DERIVATIONS: Readonly<Record<string, string>> = {
 const PROVIDER_KEYED_DEFAULTS: ReadonlySet<string> = new Set(['decider.baseUrl', 'decider.model']);
 const PROVIDER_SOURCE_ROW = 'decider.providerSource';
 
+/** TUI-DESIGN-3 §0.1 (D-Q): the rows `jevcode config` hides unless `--all` (`SettingSpec.hidden`: the `seen.*` bookkeeping) */
+export const HIDDEN_SETTINGS: ReadonlySet<string> = new Set(SETTINGS.filter((s) => s.hidden === true).map((s) => s.name));
+
 /** Money settings print as `$10.000` in the table (three decimals like every item); `none`/`Infinity` stay words. */
 const USD_SETTINGS: ReadonlySet<string> = new Set(['session.spendCapUsd', 'limits.spendCapUsd']);
 
@@ -64,8 +67,8 @@ export function configValueText(setting: string, v: ConfigRecordValue): string {
  * TUI-DESIGN §16: the rows in record order with every `<setting>.ignored` row moved directly after its effective
  * row (or kept in place when the effective row is absent). Pure.
  */
-export function configTableRows(record: Readonly<Record<string, ConfigRecordValue>>): ConfigTableRow[] {
-  const entries = Object.entries(record);
+export function configTableRows(record: Readonly<Record<string, ConfigRecordValue>>, opts: { all?: boolean } = {}): ConfigTableRow[] {
+  const entries = Object.entries(record).filter(([setting]) => opts.all === true || !HIDDEN_SETTINGS.has(setting));
   const ignored = new Map<string, ConfigTableRow>();
   const main: ConfigTableRow[] = [];
   // TUI-DESIGN-2 §2.6: `decider.providerSource` is folded into the provider row's source column; provider-keyed defaults name the provider
@@ -98,8 +101,8 @@ export function configTableRows(record: Readonly<Record<string, ConfigRecordValu
 }
 
 /** TUI-DESIGN §16: the aligned `setting  value  source` table plus the sandbox footer, one string per line. */
-export function configTableLines(record: Readonly<Record<string, ConfigRecordValue>>, opts: { sandboxLevel: SandboxLevel }): string[] {
-  const rows = configTableRows(record);
+export function configTableLines(record: Readonly<Record<string, ConfigRecordValue>>, opts: { sandboxLevel: SandboxLevel; all?: boolean }): string[] {
+  const rows = configTableRows(record, { ...(opts.all !== undefined ? { all: opts.all } : {}) });
   const w0 = Math.max(7, ...rows.map((r) => r.setting.length));
   const w1 = Math.max(5, ...rows.map((r) => r.value.length));
   const lines = [`${'setting'.padEnd(w0)}  ${'value'.padEnd(w1)}  source`];

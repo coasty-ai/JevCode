@@ -6,10 +6,11 @@ JevCode hands every control-flow decision to Jev (`jev-1.13`, a calibrated decis
 reached natively at TypeSafe — `jev-1.13.0` — or through OpenRouter's decisions endpoint —
 `typesafe/jev-1.13-20260917`): what a step is for, which files matter, whether a proposed action
 is safe to run, whether its output succeeded, whether the task is done, how to recover from a
-loop — and, in a session, what you meant by what you typed. By default (`jev-only`) no generating
-LLM is involved at all: code proposes candidate fixes, Jev decides, tests verify, and one key runs
-everything. With `--mode jev-on` a generator model (GLM 5.3 Flash through OpenRouter by default;
-Claude Sonnet 5 through Anthropic or OpenRouter with `--provider` / `--model`) writes the code
+loop — and, in a session, what you meant by what you typed. By default (`jev-on`, badge `jev+llm`)
+the code model writes the code and Jev decides every step: one OpenRouter key serves Jev
+(`openrouter.ai/api/alpha/decisions`) and the default generator (GLM 5.3 Flash; Claude Sonnet 5
+through Anthropic or OpenRouter with `--provider` / `--model`). `--mode jev-only` runs with no
+generating LLM at all — code proposes candidate fixes, Jev decides, tests verify. Either way the generator
 behind one `Provider` interface while Jev still decides every step. Code owns budgets,
 sandboxing, thresholds, arithmetic and checkpoints. One Ink TUI is an interactive session: a
 conversation-shaped transcript (`[you]` / `[jevcode]` bubbles, one line per step), a rounded
@@ -42,7 +43,7 @@ npm link               # optional: puts `jevcode` on PATH
 jevcode --version      # jevcode 0.1.0
 ```
 
-From the registry and the Homebrew tap, once 0.3.0 is published (the release procedure is
+From the registry and the Homebrew tap, once 0.4.0 is published (the release procedure is
 [docs/RELEASE.md](docs/RELEASE.md); as of 2026-09-21 the package is prepared, not published,
 and `Formula/jevcode.rb` still carries its placeholder `url`/`sha256`):
 
@@ -54,27 +55,33 @@ jevcode upgrade [--check]        # later: delegates to the manager it was instal
 jevcode completion bash|zsh|fish # static completion scripts; `man jevcode` ships in the package
 ```
 
-One key is enough. In the default `jev-only` mode a session needs the Jev key only: the first-run
-wizard (a bare `jevcode` asks for it on a masked field — and for the Jev provider, `1 typesafe
-2 openrouter`, only when nothing infers it — and writes `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json`
-with mode 0600), `jevcode login [--jev-provider typesafe|openrouter] [--jev-key-stdin]` (masked prompt
-on a terminal; the stdin form on a pipe), `./.env` (see `.env.example`), or the environment. A
-generator key is asked for only when a mode needs one (`--mode jev-on`, or `/mode jev-on` inside a
-session, which opens the wizard's generator step in place). Keys are never accepted as command-line
+One key is enough. In the default `jev+llm` mode one OpenRouter key runs Jev and the code model:
+the first-run wizard (a bare `jevcode` opens on one masked `OpenRouter API key` field under the
+wordmark and writes the four file keys from one paste into `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json`
+with mode 0600; Esc on the empty field lists the other ways to start — `1 OpenRouter · 2 TypeSafe ·
+3 Jev only · 4 Anthropic`, where `3` persists `mode: jev-only`; a resolving TypeSafe, Jev or Anthropic
+key gives the field a found-title and saves only the missing half), `jevcode login [--key-stdin]`
+(masked prompt on a terminal; the one-key stdin form on a pipe; `--jev-provider typesafe|openrouter
+--jev-key-stdin --generator-key-stdin` for the two-key forms), `./.env` (see `.env.example`), or the
+environment. Verification (`y` at the wizard's prompt, or `jevcode login --verify`) sends one priced
+Jev decision (~$0.00002), one 1-token completion and `GET /api/v1/key`, and names one of four outcomes
+(ok · rejected · no credits · unreachable · unknown model). Keys are never accepted as command-line
 arguments in the interactive flow and `jevcode config set` refuses secret settings.
 
 ```sh
-TYPESAFE_API_KEY=...                # Jev, natively at api.typesafe.ai (selected automatically when set)
-OPENROUTER_API_KEY=sk-or-v1-...     # Jev through OpenRouter's decisions endpoint, and the generator under --mode jev-on
+OPENROUTER_API_KEY=sk-or-v1-...     # one key: Jev through OpenRouter's decisions endpoint AND the code model (the default)
+TYPESAFE_API_KEY=...                # Jev, natively at api.typesafe.ai (preferred for Jev whenever set; add OPENROUTER_API_KEY for the code model)
+OPENAI_API_KEY / GEMINI_API_KEY (or GOOGLE_API_KEY) / FIREWORKS_API_KEY / META_API_KEY (or MODEL_API_KEY) / XAI_API_KEY
+                                    # other code-model providers; the model picker lists a provider once its key is present
 JEV_API_KEY=...                     # Jev through OpenRouter when it is not the OpenRouter key (keeps the openrouter provider)
-ANTHROPIC_API_KEY=sk-ant-...        # generator via --provider anthropic (jev-on only)
+ANTHROPIC_API_KEY=sk-ant-...        # the code model via --provider anthropic
 ```
 
 ## Run
 
 ```sh
-jevcode                                           # interactive session in the current directory (= jevcode chat), jev-only: one key, nothing runs until Jev reads a task
-jevcode --mode jev-on                             # the same session with a generating LLM (Jev + LLM); /mode jev-on switches inside a session
+jevcode                                           # interactive session in the current directory (= jevcode chat), jev+llm: one OpenRouter key, nothing runs until Jev reads a task
+jevcode --mode jev-only                           # the same session with no generating LLM (Jev alone, $0.25 cap); /mode jev-only switches inside a session
 jevcode run "Fix the failing tests in tests/test_core.py without changing the tests." \
   --workspace /path/to/repo --provider openrouter --model anthropic/claude-sonnet-5
 jevcode run --task-file todo.md                   # the task from a file
@@ -92,16 +99,19 @@ jevcode why <id> <step> <ref>                     # explain one Jev decision of 
 
 `jevcode --help` lists every command; `jevcode <command> --help` its flags. A bare `jevcode`,
 or a leading flag, is `jevcode chat`; `jevcode run` with no task on a terminal opens the session
-too — both in `jev-only`, with the mode badge in the first frame. Exit codes are tabled below (the
+too — both in the default `jev+llm` mode, with the mode badge in the first frame. Exit codes are tabled below (the
 checkpoint is written first in every case).
 
 ## Interactive session
 
 A bare `jevcode` draws its first frame from the command line alone — the header, the rule, the
 first frame of the startup splash (the `J` of the wordmark and its sweep head; the whole ≤ 700 ms
-wordmark follows and settles into the brand row `─── ◆ jevcode 0.3.0 ───`, or dies on your first key)
-and the rounded console: `╭─ jev-only ──── <dir> ─╮` with the mode badge, the composer row `› Say hi,
-ask a question, or describe a task…`, a divider and the status compartment `idle … step 0/–  ? help`
+reveal follows and settles into the resting mark — `JEV` in TypeSafe pink, `CODE` dim, the caption
+`◆ 0.4.0` on its last row and, at ≥ 104 columns, the tagline `Decisions, not strings` — which stays
+on screen whenever the session is idle and gives way to the run's panel while a run is live; a key
+completes the reveal instead of killing it) and the rounded console: `╭─ jev+llm ──── <dir> ─╮` with
+the mode badge, the composer row `› Say hi, ask a question, or describe a task…`, a divider and the
+status compartment `idle … step 0/–  ? help`
 — before any configuration file, `.env`, the runs directory or git is touched (the round-1 frame
 measured 82–87 ms in the pty smoke and cold p95 110.4 ms in `jevcode perf`; the gate is < 300 ms and
 the round-2 numbers are in [docs/STATUS.md](docs/STATUS.md), "Round 2"). Nothing runs, and no money
@@ -112,21 +122,24 @@ the short version:
   what it is: a greeting or small talk (`hi` → `[jevcode] Hi. I'm ready when you are — describe a
   change you want in <dir>, or ask what I can do.`), a question about JevCode itself (answered from
   the session's own facts — mode, keys, cost, the last run, the last tests, the sandbox, the commands,
-  the Jev provider), a question about the code (in `jev-only` a Jev-selected lookup of likely places;
-  in `jev+llm` one generator turn, streamed), or a task — and only a task Jev is sure of (its own
+  the Jev provider), a question about the code (in `jev+llm` one generator turn, streamed; in
+  `jev-only` a Jev-selected lookup of likely places), or a task — and only a task Jev is sure of (its own
   p ≥ 0.6) starts a paid run. Anything weaker asks `run this as a task?` with `[y] run it   [n] just
-  chatting   (Esc keeps the text; Enter does nothing)`. While Jev reads it the status word is `⠹ thinking`
-  and the composer reads `(thinking…)` (the first frame after Enter, which commits the bubble, still
-  says `starting` — [docs/STATUS.md](docs/STATUS.md), "Round 2", deviation 4); Ctrl-C once stops the
-  request. The intake costs about $0.00007 per message and is charged to the
+  chatting   (Esc keeps the text; Enter does nothing)`. While Jev reads it the status word is `▓ thinking`
+  (the pink shade pulse; `◆ thinking` under reduced motion) and the composer reads `(thinking…)` from the
+  first frame after Enter; Ctrl-C once stops the request. The intake costs about $0.00007 per message and is charged to the
   session meter. No keyword list ever starts a run.
-- **Mode.** `jev-only` by default (badge `jev-only`); `/mode jev-on` (alias `/llm on`) switches the
-  next run to Jev + LLM (badge `jev+llm · next run` until the run starts) and, when no generator key
-  is configured, opens the wizard's provider and generator-key steps inside the console; `jevcode
-  config set mode jev-on` persists it; `/mode` alone shows the current and next mode. A fourth mode,
-  `llm-jev` (`--mode llm-jev`, `/mode llm-jev`, badge `llm-jev`), keeps the jev-only search and lets the
-  generator write candidate patches inside it — Jev localises, ranks and arbitrates, tests verify; it needs
-  both keys and the jev-on spend caps (design: `docs/LLM-JEV-DESIGN.md`).
+- **Mode.** `jev-on` by default (badge `jev+llm`: the code model writes the code, Jev decides every
+  step; caps $2.00 per run, $10.00 per session); `/mode jev-only` (alias `/llm off`) switches the next
+  run to Jev alone (badge `jev-only · next run` until the run starts; $0.25 / $1.25); `/mode jev-on`
+  (alias `/llm on`, or `/m jev-on`) switches back and, when no generator key is configured, opens the
+  wizard's key step inside the console; `jevcode config set mode <m>` persists a choice; `/mode` alone
+  shows the current mode, ` (default)` after the default's word, and the next run's when it differs. A
+  keyed start without a `mode` row in the config file prints `[setup] mode jev+llm (default) — caps
+  $2.00 per run · $10.00 per session; …` once. A fourth mode, `llm-jev` (`--mode llm-jev`, `/mode
+  llm-jev`, badge `llm+jev · verified`), keeps the jev-only search and lets the generator write candidate
+  patches inside it — Jev localises, ranks and arbitrates, tests verify; it takes the jev-on spend caps
+  (design: `docs/LLM-JEV-DESIGN.md`).
 
 - **Composer.** A multi-line, readline-style editor: Ctrl+A/E, Alt+B/F, Ctrl+K/U/W/Y, Ctrl+T,
   100-step undo (Ctrl+_), Up/Down through history on the first/last row, Ctrl+R incremental
@@ -183,19 +196,30 @@ the short version:
   block; the design's `/why intake` answers `no decision intake in the last 3 steps` today (STATUS,
   "Round 2", deviation 16). The screen is never cleared: the transcript is
   your scrollback and the dynamic region never exceeds `rows − 2`; below 16 rows the boxes give way
-  to round 1's flat rows with the badge leading the status line (`jev-only · idle`).
+  to round 1's flat rows with the badge leading the status line (`jev+llm · idle`). The transcript reads as
+  a conversation: every label sits right-aligned in a 10-cell gutter (`[jevcode]` and `[sandbox]` flush,
+  `[you]`, `[run]`, `[step 7]` padded), every body starts at column 10 and wraps there — at ` · ` before
+  spaces, so a step row breaks as `… · risk 0.00 ok` / `· tests 4p/3f/0e · judge 0.49 · 4.9s · $0.006` and
+  `exit` / `4` never split; `[jevcode]` labels are pink, `[you]` labels magenta, bodies stay the terminal's
+  default colour.
 
 `--plain` on a terminal runs the same session and commands over a `> ` readline prompt; a pipe,
 `CI`, `TERM=dumb`, `--no-input` or `--json` runs one task without prompts (every question takes its
 safe default: keys missing → the fix block and exit 2, a secret in the task → refused with exit 2,
 a review → declined). `--screen-reader` numbers every prompt and replaces bars with text;
-`--ascii`, `--no-color`/`NO_COLOR` and `--theme dark|light|daltonized|ansi` are the other twins.
+`--ascii`, `--no-color`/`NO_COLOR` and `--theme dark|light|daltonized|ansi` are the other twins (`dark` is
+TypeSafe's pink — `#f386a1` for what is JevCode or Jev, `#d45bb6` for what is live or selected; a white
+terminal announced through `COLORFGBG` gets `light` by default, and Terminal.app's Basic profile, which
+announces nothing, wants `jevcode config set ui.theme light` or `/theme light` once). The wordmark's idle
+sweep (4 fps peak, 1.6 fps mean, one pass per 10 s while you are attentive, per 30 s after a quiet minute,
+asleep after ten) is `ui.wordmark: sweep | static | off` (`JEVCODE_WORDMARK`; `static` by default over
+SSH), and off under `--no-animation`, `NO_COLOR` and below 21 rows or 64 columns.
 
 ## Money
 
-Two caps: the **run cap** (`--spend-cap`, default $0.25 under the default `jev-only`, $2.00 under
-`jev-on`) and the **session cap** (`--session-spend-cap <usd|none>`, default 5 × the run cap: $1.25
-or $10.00). Every chat message's intake request is charged to the session meter from the first
+Two caps: the **run cap** (`--spend-cap`, default $2.00 under the default `jev-on`, $0.25 under
+`jev-only`) and the **session cap** (`--session-spend-cap <usd|none>`, default 5 × the run cap: $10.00
+or $1.25). Every chat message's intake request is charged to the session meter from the first
 one (`sess $0.00/1.25 ok` moves by about $0.00007 per greeting), and at the session cap chat
 refuses too (`The session cap ($1.25) is reached, so I'm not sending anything to Jev. …`). The
 status line shows both (`run $1.60/2.00 high  sess $4.11/10.00 ok`); at 50, 80 and 95 % of either
@@ -264,7 +288,7 @@ reported as `ignored:launch`.
 | Decider base URL | `--jev-base-url` | `JEV_BASE_URL` | by provider: `https://api.typesafe.ai/v1/systemone` / `https://openrouter.ai/api/alpha/decisions` (the other provider's host is refused offline) |
 | Decider key | `--jev-api-key` | `TYPESAFE_API_KEY` first under `typesafe`; `JEV_API_KEY`, falling back to `OPENROUTER_API_KEY` | none (wizard / `jevcode login`) |
 | Decider model | `--jev-model` | `JEV_MODEL` | by provider: `jev-1.13.0` (the only pinned id TypeSafe serves; `jev-latest` is its alias) / `typesafe/jev-1.13-20260917` (dated id; aliases are resolved and warned about); the other provider's id is refused offline |
-| Run spend cap, USD, generator + Jev | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `0.25` under the default `jev-only`, `2.00` under `jev-on` |
+| Run spend cap, USD, generator + Jev | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `2.00` under the default `jev-on` (and `jev-off`, `llm-jev`), `0.25` under `jev-only` |
 | Session spend cap | `--session-spend-cap <usd\|none>` | `JEVCODE_SESSION_SPEND_CAP_USD` | 5 × the run cap (`derived`); `none` = uncapped |
 | Unpriced model allowed | `--allow-unpriced` | `JEVCODE_ALLOW_UNPRICED` | `false` (refuse with exit 2) |
 | Generator token cap | `--max-generator-tokens` | `JEVCODE_MAX_GENERATOR_TOKENS` | spend cap / 15 × 1e6 (only under `--allow-unpriced`) |
@@ -273,7 +297,7 @@ reported as `ignored:launch`.
 | Max replans | `--max-replans` | `JEVCODE_MAX_REPLANS` | `5` |
 | Completion threshold | `--complete-threshold` | `JEVCODE_COMPLETE_THRESHOLD` | `0.85` |
 | Impossible threshold | `--impossible-threshold` | `JEVCODE_IMPOSSIBLE_THRESHOLD` | `0.85` |
-| Engine mode | `--mode` | `JEVCODE_MODE` (also the config key `mode`; `jevcode config set mode <m>`) | `jev-only` (no generating LLM; one key); `jev-on` (Jev + LLM); `jev-off` (generator only). `/mode` / `/llm on\|off` set it for the next run |
+| Engine mode | `--mode` | `JEVCODE_MODE` (also the config key `mode`; `jevcode config set mode <m>`) | `jev-on` (Jev + the code model; badge `jev+llm`) — the default; `jev-only` (no generating LLM; one Jev key); `jev-off` (generator only); `llm-jev` (badge `llm+jev · verified`). `/mode` / `/llm on\|off` set it for the next run |
 | Session selection | `-c`/`--continue`, `--resume <id\|title>` [`--force`], `--list-sessions` | — | — |
 | Workspace | `--workspace` | `JEVCODE_WORKSPACE` | current directory |
 | Runs dir | `--runs-dir` | `JEVCODE_HOME` (runs live in `<home>/runs`) | `~/.jevcode/runs` |
@@ -283,6 +307,7 @@ reported as `ignored:launch`.
 | Network for commands | `--no-network` | | allowed |
 | Renderer | `--plain`, `--json[=verbose]`, `--no-input` | `JEVCODE_NO_INPUT`; `CI`, `TERM=dumb` select plain | Ink when stdin and stdout are TTYs |
 | Theme | `--theme dark\|light\|daltonized\|ansi` | `JEVCODE_THEME` | `dark` (no auto-detect; `/theme` for new items) |
+| Wordmark idle animation | — (`jevcode config set ui.wordmark <v>`) | `JEVCODE_WORDMARK` | `sweep` (`static` over SSH); `static` keeps the mark without the sweep, `off` restores the round-2 brand row |
 | Frames per second (launch) | `--fps 5..30` | `JEVCODE_FPS` | `30`; `15` under `SSH_TTY`/`SSH_CONNECTION` |
 | Render mode (launch) | `--render-mode standard\|incremental` | `JEVCODE_RENDER_MODE` | `standard` |
 | ASCII glyphs (launch) | `--ascii` | `JEVCODE_ASCII` (`=0` forces Unicode) | auto on `TERM=dumb`, `TERM=linux`, non-UTF-8 locale |
@@ -517,7 +542,8 @@ loop (event-loop lag p95 < 5 ms net of the probe's idle floor, max < 50 ms while
 as a stress row and reported); composer keystroke → frame p95 < 16 ms in a real pty; zero terminal clears outside a
 shrink segment; `dynamic` frames per second ≤ `maxFps` + 1 (frames carrying new `<Static>` rows and the leading-edge
 frame of a keystroke are counted separately: Ink renders both outside its throttle by design), the splash's frames in its
-700 ms included; an intake reply (Enter → `[jevcode]`) within 40 ms p95 against the mock decider. `npm run perf` measures
+700 ms included; an intake reply (Enter → `[jevcode]`) within 40 ms p95 against the mock decider; the idle wordmark sweep
+(TUI-DESIGN-3 §3.9) at most 4 `dynamic` frames in any idle second and 2/s on average, 12 KB/s peak and 5 KB/s mean. `npm run perf` measures
 all of it, writes `perf/results/latest.json` (raw values, per-series arrays, machine and load), rewrites this section
 from that file (`src/perf/readme.ts`; the table cannot drift from the JSON) and exits 1 when any gate fails.
 `JEVCODE_PERF_KEEP=<dir>` keeps every pty capture and timing file; `JEVCODE_PERF_ONLY=<probe,…>` runs a subset (written
@@ -525,53 +551,59 @@ as `partial`, never a release number, and never written into this section).
 
 | Measurement | Result | Gate | Status |
 | --- | --- | --- | --- |
-| First frame `run` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 124.7 ms / 122.4 ms (99.5 ms) | < 300 ms | pass |
-| First frame `run` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 129.6 ms / 120.1 ms (97.6 ms) | < 300 ms | pass |
-| First frame `run` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 118.8 ms / 116.5 ms (98.2 ms) | < 300 ms | pass |
-| First frame `chat` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 123.1 ms / 120.4 ms (99.8 ms) | < 300 ms | pass |
-| First frame `chat` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 123.9 ms / 121.9 ms (99.1 ms) | < 300 ms | pass |
-| First frame `chat` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 119.3 ms / 115.8 ms (95.9 ms) | < 300 ms | pass |
-| First frame `run` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 23.7 ms → 110.4 ms → 115.0 ms (119.0 ms) | report |  |
-| First frame `chat` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 23.9 ms → 111.6 ms → 116.5 ms (119.9 ms) | report |  |
+| First frame `run` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 210.9 ms / 135.6 ms (109.0 ms) | < 300 ms | pass |
+| First frame `run` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 144.3 ms / 132.1 ms (105.9 ms) | < 300 ms | pass |
+| First frame `run` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 163.7 ms / 130.3 ms (108.8 ms) | < 300 ms | pass |
+| First frame `chat` 40×120, cold compile cache: p95 / median over 10 runs (warm median) | 176.2 ms / 147.0 ms (155.0 ms) | < 300 ms | pass |
+| First frame `chat` 24×80, cold compile cache: p95 / median over 10 runs (warm median) | 171.9 ms / 150.9 ms (115.3 ms) | < 300 ms | pass |
+| First frame `chat` 8×40, cold compile cache: p95 / median over 10 runs (warm median) | 149.1 ms / 146.8 ms (113.8 ms) | < 300 ms | pass |
+| First frame `run` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 28.9 ms → 131.5 ms → 139.1 ms (141.8 ms) | report |  |
+| First frame `chat` 24×80 breakdown, child clock: bare `node -e ''` → `render()` returned → frame flushed (harness spawn → sentinel) | 29.5 ms → 129.1 ms → 136.8 ms (139.5 ms) | report |  |
 | Splash frame 0 is the first frame: runs whose first frame (the `step 0/` frame) already carried wordmark cells (`run` 40×120 · `run` 24×80 · `run` 8×40 · `chat` 40×120 · `chat` 24×80 · `chat` 8×40) | 20/20 · 20/20 · 0/20 (flat, none expected) · 20/20 · 20/20 · 0/20 (flat, none expected) | every run at ≥ 16 rows × ≥ 64 columns, none below (TUI-DESIGN-2 §9 row 1) | pass |
-| Harness overhead per step, p95 / p50 (mocked zero-latency run, 50 steps, 5,000-file git fixture + 5,000 ignored files, 50 dirty files / 15 MiB copied at every `run` step) | 49.5 ms / 31.8 ms | < 50 ms | pass |
-| Harness overhead of the `run` steps alone, p95 / p50 (12 steps; they copy the pre-image and carry the p95 above) · every other step p95 | 56.0 ms / 44.8 ms · 37.2 ms | report (margin under 50 ms) | -6.0 ms margin |
-| `imagesMs` p95 / p50 over steps with images · `run`-step p95 (the 15 MiB dirty-set copy) | 21.7 ms / 1.2 ms · 26.1 ms | report only, not a gate (§18 target < 15 ms; the copy is inside `harnessMs`, which is gated) | above target (reported) |
+| Harness overhead per step, p95 / p50 (mocked zero-latency run, 50 steps, 5,000-file git fixture + 5,000 ignored files, 50 dirty files / 15 MiB copied at every `run` step) | 55.9 ms / 29.7 ms | < 50 ms | FAIL |
+| Harness overhead of the `run` steps alone, p95 / p50 (12 steps; they copy the pre-image and carry the p95 above) · every other step p95 | 56.6 ms / 51.9 ms · 43.1 ms | report (margin under 50 ms) | -6.6 ms margin |
+| `imagesMs` p95 / p50 over steps with images · `run`-step p95 (the 15 MiB dirty-set copy) | 23.1 ms / 1.5 ms · 23.4 ms | report only, not a gate (§18 target < 15 ms; the copy is inside `harnessMs`, which is gated) | above target (reported) |
 | 60 MiB `run` artefact: post image written with `hashSkipped: true`, nothing hashed (step 11) | true | true | pass |
-| Static append, bytes per committed line — the append frame, median / mean (`live22`, 13-row region at 24×80) | 1829 / 1832 B | report | in budget |
-| Static append, bytes per committed line — the append frame, median / mean (`review22`, 21-row region at 24×80) | 2811 / 2814 B | report | in budget |
-| Static append, bytes per committed line — the append frame, median / mean (`idle15`, 6-row region at 24×80) | 1207 / 1210 B | report | in budget |
-| Event-loop lag while typing 10 keys/s during a live mocked run at the realistic step rate (`JEVCODE_MOCK_STEP_MS=200`, about 5 steps/s), p95 net of the probe's idle floor (raw p95 in parentheses; rows 40 / rows 12 / rows 40 reduced motion; 120 columns) | 2.45 ms (3.50 ms) / 0.94 ms (1.99 ms) / 2.45 ms (3.50 ms) | < 5 ms net | pass |
-| Lag probe idle floor, measured in this run — the same 10 ms `setInterval` probe in a bare idle `node` process for 17 s: p50 / p95 / max (macOS coalesces the kevent timeout libuv waits with; the p50 is what the row above subtracts) | 1.05 ms / 1.12 ms / 2.09 ms | report (calibration; applies while the floor p95 is < 5 ms) | applied |
-| Event-loop lag, max, raw (rows 40 / rows 12 / rows 40 reduced motion) | 18.72 ms / 11.14 ms / 29.31 ms | < 50 ms | pass |
-| Mocked run rate under the typist: steps per second · `<Static>` rows committed per second over the typing window (rows 40 / rows 12 / rows 40 reduced motion) | 4.4 · 6 / 4.5 · 6 / 4.4 · 6 | report (the load profile the gates apply to; a real run commits a few rows per second) |  |
-| Frames per second while typing, busiest one-second bucket, split into `static` · `key` · `dynamic` (rows 40 / rows 12 / rows 40 reduced motion): `static` frames carry new `<Static>` rows and are rendered immediately by Ink, unthrottled (`reconciler.js` `isStaticDirty` → `onImmediateRender`), so their rate is the item commit rate by design; `key` frames arrive within one throttle period (34 ms) of a keystroke — the leading-edge render, which follows the offered key rate by design; `dynamic` is the rest, the frames the `maxFps` throttle governs | 5 · 15 · 10 / 5 · 15 · 10 / 5 · 14 · 7 | `dynamic` ≤ maxFps + 1 = 31 (every geometry, reduced motion included); `static` and `key` reported | pass |
-| Stress row — the same run at `JEVCODE_MOCK_STEP_MS=0` (rows 40; 42.2 steps/s, 56 `<Static>` rows/s, 50–100× any real run): lag p95 net (raw) / max · frames `static` · `key` · `dynamic` | 6.23 ms (7.28 ms) / 21.45 ms · 66 · 19 · 18 | report (lag and frame rate not gated under the storm; hygiene below is) | over the realistic-rate gates (expected) |
-| Splash bucket — `dynamic` frames within 700 ms of the first frame (no key is sent before 800 ms, so the splash settles by itself) · `static` · `key` frames of the same window · frames of any class carrying the wordmark · first frame is splash frame 0 (rows 40 / rows 12 / rows 40 reduced motion / stress; the splash ticks through Ink's `useAnimation` at 50 ms, ≤ 15 frames by construction; rows 12 is the flat tier and reduced motion mounts settled, so they draw no wordmark) | 14 · 1 · 0 · 14 · true / 1 · 1 · 0 · 0 · false / 1 · 1 · 0 · 0 · false / 14 · 1 · 0 · 14 · true | `dynamic` ≤ ⌈(maxFps + 1) × 0.7⌉ = 22 (realistic geometries; stress reported) | pass |
+| Static append, bytes per committed line — the append frame, median / mean (`live22`, 13-row region at 24×80) | 1834 / 1836 B | report | in budget |
+| Static append, bytes per committed line — the append frame, median / mean (`review22`, 21-row region at 24×80) | 2813 / 2816 B | report | in budget |
+| Static append, bytes per committed line — the append frame, median / mean (`idle15`, 11-row region at 24×80) | 1885 / 1888 B | report | in budget |
+| Event-loop lag while typing 10 keys/s during a live mocked run at the realistic step rate (`JEVCODE_MOCK_STEP_MS=200`, about 5 steps/s), p95 net of the probe's idle floor (raw p95 in parentheses; rows 40 / rows 12 / rows 40 reduced motion; 120 columns) | 0.30 ms (2.34 ms) / 0.33 ms (2.37 ms) / 9.03 ms (11.07 ms) | < 5 ms net | FAIL |
+| Lag probe idle floor, measured in this run — the same 10 ms `setInterval` probe in a bare idle `node` process for 17 s: p50 / p95 / max (macOS coalesces the kevent timeout libuv waits with; the p50 is what the row above subtracts) | 2.04 ms / 2.07 ms / 2.32 ms | report (calibration; applies while the floor p95 is < 5 ms) | applied |
+| Event-loop lag, max, raw (rows 40 / rows 12 / rows 40 reduced motion) | 15.62 ms / 9.06 ms / 68.98 ms | < 50 ms | FAIL |
+| Mocked run rate under the typist: steps per second · `<Static>` rows committed per second over the typing window (rows 40 / rows 12 / rows 40 reduced motion) | 4.6 · 6 / 4.5 · 6 / 3.5 · 5 | report (the load profile the gates apply to; a real run commits a few rows per second) |  |
+| Frames per second while typing, busiest one-second bucket, split into `static` · `key` · `dynamic` (rows 40 / rows 12 / rows 40 reduced motion): `static` frames carry new `<Static>` rows and are rendered immediately by Ink, unthrottled (`reconciler.js` `isStaticDirty` → `onImmediateRender`), so their rate is the item commit rate by design; `key` frames arrive within one throttle period (34 ms) of a keystroke — the leading-edge render, which follows the offered key rate by design; `dynamic` is the rest, the frames the `maxFps` throttle governs | 5 · 15 · 12 / 5 · 16 · 11 / 4 · 16 · 7 | `dynamic` ≤ maxFps + 1 = 31 (every geometry, reduced motion included); `static` and `key` reported | pass |
+| Stress row — the same run at `JEVCODE_MOCK_STEP_MS=0` (rows 40; 5.8 steps/s, 8 `<Static>` rows/s, 50–100× any real run): lag p95 net (raw) / max · frames `static` · `key` · `dynamic` | 41.63 ms (43.67 ms) / 147.22 ms · 8 · 13 · 13 | report (lag and frame rate not gated under the storm; hygiene below is) | over the realistic-rate gates (expected) |
+| Splash bucket — `dynamic` frames within 700 ms of the first frame (no key is sent before 800 ms, so the splash settles by itself) · `static` · `key` frames of the same window · frames of any class carrying the wordmark · first frame is splash frame 0 (rows 40 / rows 12 / rows 40 reduced motion / stress; the splash ticks through Ink's `useAnimation` at 50 ms, ≤ 15 frames by construction; rows 12 is the flat tier and reduced motion mounts settled, so they draw no wordmark) | 11 · 1 · 0 · 12 · true / 1 · 1 · 0 · 0 · false / 1 · 1 · 0 · 2 · true / 9 · 1 · 0 · 10 · true (window 674.9 ms) | `dynamic` ≤ ⌈(maxFps + 1) × 0.7⌉ = 22 (realistic geometries; stress reported) | pass |
+| Run-start bucket — `dynamic` frames within 1 s of the `[run] start` frame (the rule sweep's ≤ 6 frames + the spinner + the live flush; rows 40 / rows 12 / rows 40 reduced motion / stress) | 14 / 11 / 6 / 14 | ≤ maxFps + 1 = 31 (realistic geometries; stress reported) | pass |
 | Terminal clears after the first frame during the live run (rows 40 / rows 12 / rows 40 reduced motion / stress) | 0 / 0 / 0 / 0 | 0 | pass |
-| Dynamic region, tallest painted (rows 40 / rows 12 / rows 40 reduced motion / stress) | 11 rows / 5 rows / 8 rows / 11 rows | ≤ rows − 2 | pass |
+| Dynamic region, tallest painted (rows 40 / rows 12 / rows 40 reduced motion / stress) | 11 rows / 5 rows / 11 rows / 11 rows | ≤ rows − 2 | pass |
 | Cursor hides per frame, max · frames not ending with `ESC[?25h` · cursor shown at exit (rows 40 / rows 12 / rows 40 reduced motion / stress) | 1 · 0 · true / 1 · 0 · true / 1 · 0 · true / 1 · 0 · true | ≤ 1 · 0 · true | pass |
 | `CLEAR_RE` self-test (matches `ESC[2J`, `ESC[3J`, `ESC c`, `ESC[?1049h`; not `ESC[2K`) | true | true | pass |
-| Composer keystroke → frame, p50 / p95 / max (`idle`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 4.4 ms / 5.4 ms / 7.7 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`live`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=200`) | 3.5 ms / 6.0 ms / 13.2 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`live-stress`: 200/200 keys located, 100 ms apart → 9.9 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=0`) | 2.0 ms / 10.6 ms / 14.7 ms | latency report only (the zero-latency storm); hygiene gated | pass |
-| Composer keystroke → frame, p50 / p95 / max (`palette`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 5.1 ms / 6.5 ms / 7.3 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`review`: 200/200 `e` toggles located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7.1 ms / 9.5 ms / 12.4 ms | p95 < 16 ms, max < 50 ms | pass |
-| Composer keystroke → frame, p50 / p95 / max (`burst30`: 200/200 keys located, 30 ms apart → 33.2 keys/s achieved, 24×80) | 2.9 ms / 4.4 ms / 5.2 ms | latency report only (§18: a key inside Ink's 34 ms throttle window waits for the trailing edge); `dynamic` frame rate ≤ 31 gated | pass |
-| Frames per second while typing, busiest bucket, `static` · `key` · `dynamic` (`idle` · `live` · `live-stress` · `palette` · `review` · `burst30`; "n/e" = not exercised: neither a live run nor more than 30 keys/s offered; "report" = the stress series) | 0 · 10 · 0 n/e / 5 · 16 · 12 / 52 · 19 · 17 (report) / 0 · 10 · 0 n/e / 0 · 11 · 0 n/e / 0 · 34 · 0 | `dynamic` ≤ maxFps + 1 = 31 where exercised (`live`, `burst30`); `static` and `key` reported | pass |
-| Composer series hygiene: clears after the first frame · tallest painted region · frames not ending with `ESC[?25h` (`idle` · `live` · `live-stress` · `palette` · `review` · `burst30`; the review series has no cursor while the composer is collapsed, reported only) | 0 · 11 · 0 / 0 · 12 · 0 / 0 · 13 · 0 / 0 · 14 · 0 / 0 · 22 · 224 (report) / 0 · 11 · 0 | 0 · ≤ 22 · 0 where the composer is active | pass |
-| Intake reply latency, `mock0`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 0 ms; `thinking` seen for 0/20) | 9.4 ms / 12.5 ms / 14.4 ms · 9.4 ms / 12.5 ms / 14.4 ms | bubble p95 < 16 ms · reply p95 ≤ 40 ms (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | pass |
-| Intake reply latency, `mock150`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 150 ms (`JEVCODE_MOCK_JEV_MS=150`; the reply figure is gated net of the delay); `thinking` seen for 20/20) | 8.2 ms / 10.1 ms / 13.8 ms · 161.9 ms / 164.8 ms / 173.1 ms (net p95 14.8 ms) | bubble p95 < 16 ms · reply p95 ≤ 40 ms net of the delay (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | pass |
+| Composer keystroke → frame, p50 / p95 / max (`idle`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7.0 ms / 22.1 ms / 54.4 ms | p95 < 16 ms, max < 50 ms | FAIL |
+| Composer keystroke → frame, p50 / p95 / max (`idle-loop`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 7.2 ms / 18.8 ms / 58.4 ms | p95 < 16 ms, max < 50 ms | FAIL |
+| Composer keystroke → frame, p50 / p95 / max (`live`: 150/200 keys located, 100 ms apart → 7.5 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=200`) | 2626.3 ms / 5217.0 ms / 5232.2 ms | p95 < 16 ms, max < 50 ms | FAIL |
+| Composer keystroke → frame, p50 / p95 / max (`live-stress`: 175/200 keys located, 100 ms apart → 8.7 keys/s achieved, 24×80, live run at `JEVCODE_MOCK_STEP_MS=0`) | 2611.9 ms / 2626.6 ms / 2636.0 ms | latency report only (the zero-latency storm); hygiene gated | FAIL |
+| Composer keystroke → frame, p50 / p95 / max (`palette`: 200/200 keys located, 100 ms apart → 10.0 keys/s achieved, 24×80) | 9.0 ms / 26.9 ms / 55.2 ms | p95 < 16 ms, max < 50 ms | FAIL |
+| Composer keystroke → frame, p50 / p95 / max (`review`: 200/200 `e` toggles located, 100 ms apart → 9.9 keys/s achieved, 24×80) | 611.9 ms / 812.8 ms / 1115.9 ms | p95 < 16 ms, max < 50 ms | FAIL |
+| Composer keystroke → frame, p50 / p95 / max (`burst30`: 67/200 keys located, 30 ms apart → 31.1 keys/s achieved, 24×80) | 1667.1 ms / 4065.8 ms / 4139.6 ms | latency report only (§18: a key inside Ink's 34 ms throttle window waits for the trailing edge); `dynamic` frame rate ≤ 31 gated | FAIL |
+| Frames per second while typing, busiest bucket, `static` · `key` · `dynamic` (`idle` · `idle-loop` · `live` · `live-stress` · `palette` · `review` · `burst30`; "n/e" = not exercised: neither a live run nor more than 30 keys/s offered; "report" = the stress series) | 0 · 10 · 1 n/e / 0 · 13 · 2 n/e / 4 · 15 · 13 / 29 · 18 · 15 (report) / 0 · 10 · 2 n/e / 0 · 11 · 6 n/e / 0 · 29 · 0 | `dynamic` ≤ maxFps + 1 = 31 where exercised (`live`, `burst30`); `static` and `key` reported | pass |
+| Composer series hygiene: clears after the first frame · tallest painted region · frames not ending with `ESC[?25h` (`idle` · `idle-loop` · `live` · `live-stress` · `palette` · `review` · `burst30`; the review series has no cursor while the composer is collapsed, reported only) | 0 · 13 · 0 / 0 · 13 · 0 / 0 · 13 · 0 / 0 · 13 · 0 / 0 · 19 · 0 / 0 · 22 · 223 (report) / 0 · 13 · 0 | 0 · ≤ 22 · 0 where the composer is active | pass |
+| Intake reply latency, `mock0`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 0 ms; `thinking` seen for 20/20) | 19.8 ms / 37.5 ms / 46.1 ms · 19.8 ms / 37.5 ms / 46.1 ms | bubble p95 < 16 ms · reply p95 ≤ 40 ms (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | FAIL |
+| Intake reply latency, `mock150`: Enter → `[you]` bubble frame p50 / p95 / max · Enter → `[jevcode]` reply frame p50 / p95 / max (20 greetings and tool questions, 20 located, 24×80, mock decider at 150 ms (`JEVCODE_MOCK_JEV_MS=150`; the reply figure is gated net of the delay); `thinking` seen for 20/20) | 12.4 ms / 36.7 ms / 52.0 ms · 169.0 ms / 182.4 ms / 183.8 ms (net p95 32.4 ms) | bubble p95 < 16 ms · reply p95 ≤ 40 ms net of the delay (TUI-DESIGN-2 §3.12, §9; the live 1.5 s gate is the S6 scenario's) | FAIL |
 | Intake hygiene: runs started by a greeting or a tool question · clears after the first frame · tallest painted region (`mock0` · `mock150`) | 0 · 0 · 11 / 0 · 0 · 11 | 0 · 0 · ≤ 22 | pass |
-| Zero clears per state and geometry segment across 17 pty scenarios (review card, palette card, jev-only wizard, secret row and intake card at 24×80 — boxed — and 12×60 — flat; picker; `render:composer` / `render:pane` faults; Ctrl+L; three resize sequences): clear events total · in shrink segments · `ESC c` + alt-screen | 0 · 0 · 0 | 0 outside shrink segments, ≤ 1 per shrink; never `ESC c` / `ESC[?1049h` | pass |
+| Idle animation — `dynamic` frames per second over the 30 s after the wordmark settles (busiest second · mean; 24×80 · 40×120; `chat --mock` left alone, no key: the sweep's 16 frames per 10 s pass are the only writer) | 4 · 1.6 / 4 · 1.6 | ≤ 4 in every second · mean ≤ 2/s (TUI-DESIGN-3 §3.9) | pass |
+| Idle animation bytes — busiest second · mean per second · widest frame (24×80 · 40×120) | 9032 · 3545 · 2258 B / 11736 · 4628 · 2934 B | ≤ 12288 B/s peak · ≤ 5120 B/s mean | pass |
+| Idle animation hygiene — clears after the first frame · tallest painted region · frames carrying the wordmark in the window · child CPU over the window (`ps -o time`, reported) (24×80 · 40×120) | 0 · 11 · 48 · 520 ms (17.3 ms/s) / 0 · 11 · 48 · 800 ms (26.7 ms/s) | 0 · ≤ rows − 2 · report · report | pass |
+| Zero clears per state and geometry segment across 17 pty scenarios (review card, palette card, jev-only wizard, secret row and intake card at 24×80 — boxed — and 12×60 — flat; picker; `render:composer` / `render:pane` faults; Ctrl+L; three resize sequences): clear events total · in shrink segments · `ESC c` + alt-screen | 0 · 0 · 0 | 0 outside shrink segments, ≤ 1 per shrink; never `ESC c` / `ESC[?1049h` | FAIL |
 | `resize` 40×120 (typist): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame | 0 (0) · 0 (1) · 0 (0) · 0 (0) · 0 · 0 · – | ≤ allowed · 0 · report · ≤ 10 | pass |
 | `resize-live` 40×120 (typist): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame | 0 (0) · 0 (1) · 0 (0) · 0 (0) · 0 · 0 · – | ≤ allowed · 0 · report · ≤ 10 | pass |
 | `resize-idle` 24×80 (typist): clear events per segment (allowed) · stale paints at or after the TUI's reaction to a shrink · frames in flight at the shrink (ms after the ioctl) · dynamic rows painted by the clear frame | 0 (0) · 0 (1) · 0 (0) · 0 (0) · 0 · 0 · – | ≤ allowed · 0 · report · ≤ 10 | pass |
 | Ctrl+L repaint (3-row draft, pane open, 24×80): visible frame content equals the frame before it, in one BSU/ESU pair | true (1 frame) | true | pass |
+| state `palette` 24×80 | exit 124 (want 0) timeout; clears 0/0 |  | FAIL |
 
-Measured 2026-09-21 (22:23Z) on an Apple Silicon Mac (15 cores, 24 GB, Apple M5 Pro), Node 22.23.2,
-darwin 25.6.0; 1-minute load average 4.61 at the start and 1.56 at the end of the run (the suite waits while it is above 8;
-a release number needs ≤ 2 at both ends — NOT met here); no other pty driver process was alive at the start. Result of the run: **all gates pass**.
+Measured 2026-09-22 (05:51Z) on an Apple Silicon Mac (15 cores, 24 GB, Apple M5 Pro), Node 22.23.2,
+darwin 25.6.0; 1-minute load average 4.09 at the start and 59.62 at the end of the run (the suite waits while it is above 8;
+a release number needs ≤ 2 at both ends — NOT met here); no other pty driver process was alive at the start. Result of the run: **12 gates fail: harness overhead; event-loop lag (rows 40 reduced motion); intake latency (mock0); intake latency (mock150); composer idle (latency); composer idle-loop (latency); composer live (keys not located, latency); composer live-stress (keys not located); composer palette (latency); composer review (latency); composer burst30 (keys not located); state palette 24×80**.
 Raw values in `perf/results/latest.json`.
 
 How it is measured:
@@ -579,8 +611,8 @@ How it is measured:
 1. First frame: `script -q /dev/null sh -c 'stty rows R cols C; exec node bin/jevcode.js <run "…"|chat> --config <unreadable>
    --perf-exit-after-first-frame'` with `JEVCODE_ASSERT_NO_NETWORK=1`, `JEVCODE_ASSERT_NO_CONFIG_BEFORE_FRAME=1` (inert until `bin/jevcode.js` implements the hook), a non-existent `JEVCODE_HOME` and `XDG_CONFIG_HOME`, `HOME` inside the workspace;
    the time is spawn → the status sentinel `step 0/` in the pty bytes; cold runs use a fresh `NODE_COMPILE_CACHE`. The
-   breakdown (three traced runs, `JEVCODE_TRACE`) splits the child's own clock: about 24 ms of Node boot, about 87 ms of
-   bundle evaluation plus the first synchronous render, about 5 ms until Ink has flushed the frame. Round 2 (TUI-DESIGN-2 §5): that frame is
+   breakdown (three traced runs, `JEVCODE_TRACE`) splits the child's own clock: about 29 ms of Node boot, about 101 ms of
+   bundle evaluation plus the first synchronous render, about 8 ms until Ink has flushed the frame. Round 2 (TUI-DESIGN-2 §5): that frame is
    the startup splash's frame 0 — the wordmark's `J` column and sweep head land in it with the console and `step 0/–`; 20/20, 20/20, 20/20, 20/20 first frames at the
    wordmark geometries carried it (the 8×40 series is the flat tier and draws none) — gated per series (TUI-DESIGN-2 §9 row 1): every series as designed.
 2. Event-loop lag and composer latency run in a real pty through `perf/drivers/pty_type.py`, a `pty.fork` typist that
@@ -591,16 +623,16 @@ How it is measured:
    distribution covers the whole session after a 500 ms warm-up — about 1.2 s of idle prologue (the typist lets the splash settle for 800 ms before its first key) and 1 s of abort/exit tail
    around the 15 s of typing; it is not windowed to the keystrokes (the probe emits percentiles only). The gated load
    profile is the `--mock` run paced by `JEVCODE_MOCK_STEP_MS=200` (`src/cli/mock-trajectory.ts`: every mocked generator turn
-   takes that long, the mock decider answers at once): 4.4 / 4.5 / 4.4 mocked steps/s and 6 / 6 / 6 committed
+   takes that long, the mock decider answers at once): 4.6 / 4.5 / 3.5 mocked steps/s and 6 / 6 / 5 committed
    `<Static>` rows/s at rows 40 / 12 / 40 reduced motion — still ten times faster than a real run, whose steps take 2–10 s.
    The probe has a floor: in an idle Node process on macOS the same 10 ms `setInterval` reads about 2 ms per tick with nothing
    blocking (the kernel coalesces the kevent timeout libuv waits with, `kern.timer.coalescing_enabled`; a loop kept spinning by a
    1 ms interval reads 0.3 ms). A run paced at 5 steps/s idles between steps, so its raw p95 carries the floor; the storm never idles.
-   Each run therefore measures the floor first — the identical probe in a bare idle `node` for 17 s: p50 1.05 ms, p95 1.12 ms, max 2.09 ms here —
+   Each run therefore measures the floor first — the identical probe in a bare idle `node` for 17 s: p50 2.04 ms, p95 2.07 ms, max 2.32 ms here —
    and the gate applies to the p95 net of that median; raw and net are both in the table. In this run the lag p95 read
-   2.45 ms / 0.94 ms / 2.45 ms net (3.50 ms / 1.99 ms / 3.50 ms raw; max 18.72 ms / 11.14 ms / 29.31 ms) — inside the gate.
-   The stress row repeats rows 40 at `JEVCODE_MOCK_STEP_MS=0`: 42.2 steps/s and 56 `<Static>` rows/s, 50–100× any real run, where the lag p95 read
-   6.23 ms net (7.28 ms raw; max 21.45 ms) — reported, not gated: the storm is the diagnosis of what a transcript commit costs, not a budget a real run meets.
+   0.30 ms / 0.33 ms / 9.03 ms net (2.34 ms / 2.37 ms / 11.07 ms raw; max 15.62 ms / 9.06 ms / 68.98 ms) — 1 of 3 geometries outside the gate.
+   The stress row repeats rows 40 at `JEVCODE_MOCK_STEP_MS=0`: 5.8 steps/s and 8 `<Static>` rows/s, 50–100× any real run, where the lag p95 read
+   41.63 ms net (43.67 ms raw; max 147.22 ms) — reported, not gated: the storm is the diagnosis of what a transcript commit costs, not a budget a real run meets.
 3. Frame rate: every frame of the typing window is classified (`src/perf/pty.ts` `classifyFrame`). `static` frames carry
    new `<Static>` rows — Ink 7.1.1 renders a commit that changed the `<Static>` subtree at once (`ink/build/reconciler.js`
    `resetAfterCommit`: `isStaticDirty` → `onImmediateRender`, which `ink.js` binds to the unthrottled `onRender`), so a
@@ -608,8 +640,8 @@ How it is measured:
    throttle period (`ceil(1000 / maxFps)` = 34 ms) of a keystroke: the leading edge of `throttle(onRender, …, { leading: true,
    trailing: true })`, which follows the offered key rate by design. `dynamic` is the rest — spinner, 1 Hz clock, live
    flush, status-line and pane changes — the frames the `maxFps` throttle governs, and the class the gate applies to (≤ 31).
-   At the realistic rate the busiest one-second bucket held 5 · 15 · 10 / 5 · 15 · 10 / 5 · 14 · 7 static · key · dynamic
-   frames at rows 40 / 12 / 40 reduced motion — inside the gate; under the stress row 66 · 19 · 18 (reported). Reduced motion is gated
+   At the realistic rate the busiest one-second bucket held 5 · 15 · 12 / 5 · 16 · 11 / 4 · 16 · 7 static · key · dynamic
+   frames at rows 40 / 12 / 40 reduced motion — inside the gate; under the stress row 8 · 13 · 13 (reported). Reduced motion is gated
    the same way: its "≤ 4/s" figure in §18 is the 250 ms live-flush cadence, asserted in unit tests, which a live run
    cannot separate from the state-change repaints of 5 steps/s. The same split is applied in the composer series (next note).
 4. Composer latency: 200 uppercase keys per series (the wave-4 brief's count; §18 names 500 printable bytes) at an exact
@@ -618,18 +650,18 @@ How it is measured:
    directly above the status line — ends with that key; matching the key anywhere in the frame paired 23 of 200 `live`
    keys of the 2026-09-21 08:54Z run with a frame that predated them (a wrapped draft row above the cursor row ended with
    the same letter). `live` is the A109 region (pane 12 + live rows + a composer at its 6-row cap over a 2,000-char draft)
-   during a live mocked run at `JEVCODE_MOCK_STEP_MS=200` (p95 6.0 ms, 5 · 16 · 12 static · key · dynamic frames/s); `live-stress` repeats it over the
-   zero-latency mock (p95 10.6 ms, 52 · 19 · 17 frames/s) and is reported. `review` measures the review's `e` toggle (the composer is
+   during a live mocked run at `JEVCODE_MOCK_STEP_MS=200` (p95 5217.0 ms, 4 · 15 · 13 static · key · dynamic frames/s); `live-stress` repeats it over the
+   zero-latency mock (p95 2626.6 ms, 29 · 18 · 15 frames/s) and is reported. `review` measures the review's `e` toggle (the composer is
    collapsed while a review is pending, so its frame is recognised by the painted-row change; the Jev panel is opened with `/panel full` first, since round 2 collapses it to a strip and the toggle zeroes the pane rows).
-   `burst30` offers 33.2 keys/s, above `maxFps` 30: Ink's throttle is `leading: true`, so a key landing after the previous 34 ms
-   window renders at once and one inside it waits for the trailing edge — its latency (p95 4.4 ms) is reported, not gated, and its
-   34 `key` frames/s follow the offered key rate by design; the gate applies to its `dynamic` frames (0). At 10 keys/s without a
+   `burst30` offers 31.1 keys/s, above `maxFps` 30: Ink's throttle is `leading: true`, so a key landing after the previous 34 ms
+   window renders at once and one inside it waits for the trailing edge — its latency (p95 4065.8 ms) is reported, not gated, and its
+   29 `key` frames/s follow the offered key rate by design; the gate applies to its `dynamic` frames (0). At 10 keys/s without a
    live run the frame rate is reported as not exercised.
 5. Harness overhead: `StepRecord.timing.harnessMs` from `step:end` with the engine in-process (mock provider and decider
    at zero latency, no TUI). The fixture holds 50 tracked files modified after the commit (300 KiB each), so every `run`
    step copies 15 MiB of pre-images — the worst case inside the 200-file / 16 MiB cap — which is why `imagesMs` p95
-   (21.7 ms) sits above the 15 ms target — a report row, not a gate: the copy is awaited inside `runStep()` (D8), so it is already inside the gated `harnessMs` and the `run` steps carry the p95 of `harnessMs` (56.0 ms against
-   49.5 ms overall; every other step p95 37.2 ms). The margin under the gate is -6.0 ms and load-sensitive, which is why a release number requires a 1-minute load ≤ 2.
+   (23.1 ms) sits above the 15 ms target — a report row, not a gate: the copy is awaited inside `runStep()` (D8), so it is already inside the gated `harnessMs` and the `run` steps carry the p95 of `harnessMs` (56.6 ms against
+   55.9 ms overall; every other step p95 43.1 ms). The margin under the gate is -6.6 ms and load-sensitive, which is why a release number requires a 1-minute load ≤ 2.
 6. Zero clears: 17 scenarios; the resize sequences run through the typist (its `resize` record carries the capture byte
    offset, so every frame is held to the budget of the geometry it was painted in), the rest through `scripts/pty/drive.exp`.
    Clears are counted as events (Ink's `clearTerminal` is `ESC[2J ESC[3J ESC[H`, two regex matches for one clear) with
@@ -641,10 +673,14 @@ How it is measured:
    `JEVCODE_FAULT=jev:429` / `jev:401` / `persist:ENOSPC` are not implemented in this tree (only `render:<pane>` is).
 7. Intake reply latency (TUI-DESIGN-2 §3.12): 20 greetings and questions about the tool typed into `chat --mock` at 24×80 through the
    typist; every one passes the mock decider's intake (§3.13) and ends in a `[jevcode]` reply, none in a run. Enter → the frame carrying
-   the `[you]` bubble read p95 12.5 ms at 0 ms and 10.1 ms with the mock delayed 150 ms (gate < 16 ms, the composer gate); Enter → the
-   `[jevcode]` reply frame read p95 12.5 ms at 0 ms and 14.8 ms net of the delay (gate ≤ 40 ms). The live gate — p95 < 1.5 s over a real
+   the `[you]` bubble read p95 37.5 ms at 0 ms and 36.7 ms with the mock delayed 150 ms (gate < 16 ms, the composer gate); Enter → the
+   `[jevcode]` reply frame read p95 37.5 ms at 0 ms and 32.4 ms net of the delay (gate ≤ 40 ms). The live gate — p95 < 1.5 s over a real
    provider — is the S6 live scenario's (`docs/live/tui/round-2/`), not this probe's.
-8. `renderTime` (Ink's `onRender` metric) is not measured: the App registers no `onRender` callback.
+8. Idle animation (TUI-DESIGN-3 §3.4, §3.9): `chat --mock` at 24×80 and 40×120 is left alone for 33 s; the window is
+   [settle + 1 s, settle + 31 s), the settle being the caption frame `◆ <version>`. The wordmark's sweep (16 frames per 4 s pass, 6 s rest, period 10 s while
+   attentive) is the only idle writer, so every frame of the window is counted: 4 peak · 1.6 mean frames/s and 9032 B peak · 3545 B mean per second; 4 peak · 1.6 mean frames/s and 11736 B peak · 4628 B mean per second — inside the §3.9 budget.
+   The child's CPU over the window (`ps -o time=`, centiseconds) read 520 ms (17.3 ms/s) / 800 ms (26.7 ms/s) — reported, not gated (the owner lowers `LOOP_INTERVAL_MS` above 30 ms/s).
+9. `renderTime` (Ink's `onRender` metric) is not measured: the App registers no `onRender` callback.
 
 Declared deviations from docs/TUI-DESIGN.md §18 and docs/TUI-DESIGN-2.md §9 (also listed in `perf/results/latest.json`):
 
@@ -659,6 +695,8 @@ Declared deviations from docs/TUI-DESIGN.md §18 and docs/TUI-DESIGN-2.md §9 (a
 - renderTime (Ink onRender) is not measured: the App registers no onRender callback
 - the live gate of TUI-DESIGN-2 §9 (intake reply wall time p95 < 1.5 s over a real provider) is measured by the S6 live scenario and test/live/intake.live.test.ts, not here: this probe never touches the network and gates the harness share against the mock decider (≤ 40 ms p95 at 0 ms, and net of the delay at JEVCODE_MOCK_JEV_MS=150)
 - the bubble figure is the frame carrying the `[you]` item, not the composer echo of Enter: at 0 ms the bubble and the reply usually land in one immediate <Static> render, so the two figures coincide there and come apart only in the delayed series
+- the CPU figure is the child's cumulative `ps -o time=` sampled from the harness at ≈ 2 s and ≈ 32 s after the spawn (centisecond resolution, the whole process incl. the 1 Hz tick), reported and not gated (TUI-DESIGN-3 §3.9: above 30 ms/s mean the owner lowers LOOP_INTERVAL_MS by one constant)
+- frames are classed `dynamic` unless they carry new `<Static>` rows; with no key sent the `key` class is empty, so the bucket counts are the whole idle traffic
 
 ## Bench
 

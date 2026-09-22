@@ -10,8 +10,13 @@
 import { GeneratorResponseError } from '../../errors.js';
 import type { ChatMessage, GenerateRequest, Proposal } from '../../core/types.js';
 import { PROPOSE_ACTION_TOOL, parseProposal, rawTextTail } from '../../provider/actions.js';
-import { buildRetryMessage, buildUserMessage, type PromptInput } from '../../provider/prompts.js';
+import { buildPrompt, buildRetryMessage, type PromptBuild, type PromptInput } from '../../provider/prompts.js';
 import type { StageContext } from '../engine.js';
+
+/** docs/COORDINATION-DESIGN.md §12.0.3: the meter is recomputed once the step's prompt is built, before the generator call. */
+export interface ProposeStageHooks {
+  onPrompt?: (build: PromptBuild) => void;
+}
 
 export const PROPOSE_MAX_ATTEMPTS = 2;
 /**
@@ -27,8 +32,10 @@ export interface ProposeStageResult {
   promptChars: number;
 }
 
-export async function runProposeStage(ctx: StageContext, systemPrompt: string, input: PromptInput): Promise<ProposeStageResult> {
-  const userMessage = buildUserMessage(input);
+export async function runProposeStage(ctx: StageContext, systemPrompt: string, input: PromptInput, hooks?: ProposeStageHooks): Promise<ProposeStageResult> {
+  const built = buildPrompt(input);
+  hooks?.onPrompt?.(built);
+  const userMessage = built.text;
   const messages: ChatMessage[] = [{ role: 'user', content: userMessage }];
   let promptChars = userMessage.length;
   let lastError: GeneratorResponseError | null = null;

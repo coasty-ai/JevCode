@@ -10,9 +10,9 @@ import type {
   Answer,
   Candidate,
   CheckpointState,
-  CheckpointStore,
   ConfirmOutcome,
   Confirmer,
+  ContextPolicyOptions,
   Decider,
   Decision,
   Engine,
@@ -49,7 +49,9 @@ import type {
 } from '../../../src/core/types.js';
 import { sleep } from '../../../src/core/time.js';
 import { AbortError, EditError, FileNotFoundError, JevHttpError, PatchError, PathEscapeError, ProviderHttpError } from '../../../src/errors.js';
+import type { CheckpointStoreWithContext } from '../../../src/checkpoint/types.js';
 import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/engine.js';
+
 import { notRepoState } from '../../../src/workspace/gitstate.js';
 
 // ---------------------------------------------------------------------------------------
@@ -464,8 +466,14 @@ export function createFakeSandbox(script: (command: string, index: number) => Ex
 // Checkpoint store
 // ---------------------------------------------------------------------------------------
 
-export interface FakeStore extends CheckpointStore {
+export interface FakeStore extends CheckpointStoreWithContext {
   meta: RunMeta | null;
+  /** docs/COORDINATION-DESIGN.md §8.3: outputs/step-<n>.txt, by step */
+  outputs: Map<number, string>;
+  /** §8.6: context/summary.json */
+  summary: Json | null;
+  /** §8.3: how many output files this run keeps (0 = unbounded); past it `writeOutput` evicts the oldest and says so */
+  outputsMax: number;
   states: CheckpointState[];
   syncStates: CheckpointState[];
   steps: StepRecord[];
@@ -490,6 +498,30 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
   const st: FakeStore = {
     dir,
     meta: null,
+    outputs: new Map<number, string>(),
+    summary: null,
+    outputsMax: 0,
+    async writeOutput(step, text) {
+      st.outputs.set(step, text);
+      // docs/COORDINATION-DESIGN.md §8.3: the per-run bound; `outputsMax` (0 = unbounded) lets a test drive the eviction
+      const evicted: number[] = [];
+      while (st.outputsMax > 0 && st.outputs.size > st.outputsMax) {
+        const oldest = Math.min(...st.outputs.keys());
+        if (oldest === step) break;
+        st.outputs.delete(oldest);
+        evicted.push(oldest);
+      }
+      return evicted;
+    },
+    async readOutput(step) {
+      return st.outputs.get(step) ?? null;
+    },
+    async writeContextSummary(summary) {
+      st.summary = structuredClone(summary);
+    },
+    async readContextSummary() {
+      return st.summary;
+    },
     states: [],
     syncStates: [],
     steps: [],
@@ -679,7 +711,10 @@ export interface HarnessOptions {
    */
   probeGitState?: GitState | GitProbe;
   /** contract 1.1 wave 2 options spread over EngineOptions (seed, session, humanDirective, blocker, instructions, …) */
-  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing'>>;
+  engine?: Partial<Pick<EngineOptions, 'seed' | 'humanDirective' | 'undoLog' | 'session' | 'instructions' | 'secretsAcked' | 'allowUnpriced' | 'blocker' | 'configDirs' | 'redact' | 'resumeOverrides' | 'generatorPricing'>> & {
+    /** docs/COORDINATION-DESIGN.md §12.0.1 (`EngineOptionsWithContextPolicy` until core/types.ts gains the member) */
+    contextPolicy?: ContextPolicyOptions;
+  };
 }
 
 export interface Harness {

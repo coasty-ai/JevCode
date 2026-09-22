@@ -1,0 +1,89 @@
+# TUI-DESIGN-2 §8.3 S6: a zero-argument `jevcode` against live Jev through TypeSafe native (JEV_PROVIDER=typesafe, or `auto`
+# resolving to typesafe from TYPESAFE_API_KEY in the repository's ./.env), the generator key unset in the environment
+# (`env -u ANTHROPIC_API_KEY`), a temp JEVCODE_HOME, the workspace a fresh copy of examples/demo-py (git init, .venv with
+# pytest). Reviews are answered by the driver (PTY_AUTO_REVIEW=y: a one-second look, `y`, then the `confirm <id> approved` line).
+# Every pause is a draining `sleep` (research 20 §5).
+# 1. the first frame is splash frame 0 (§5.2: the `step 0/–` sentinel, the console and the badge in the same frame); raw mode on;
+#    the round-2 placeholder; the session meter arrives after resolveConfig (§5.3)
+expect \x1b\[\?25l
+mark first-frame
+expect step 0/
+expect \x1b\[\?2004h
+expect Say hi
+expect sess \$
+mark composer-ready
+# 2. no key: the splash settles by itself into the brand row (§5.2 row 14, §5.4)
+expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+
+mark splash-settled
+sleep 0.3
+# 3. a greeting: one Jev intake request, a [you] bubble, a [jevcode] catalogue reply, no run (§3.1 row 6); the wall time
+#    hi-sent → hi-reply is the round-2 gate (§9: p95 < 1.5 s live)
+send hi
+sleep 0.2
+send \r
+mark hi-sent
+expect \[you\](?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*hi
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* 
+mark hi-reply
+sleep 0.5
+# 4. a question about the tool: the harness facts, one [jevcode] item per selected fact (§3.1 row 7, §3.5)
+send what can you do?
+sleep 0.2
+send \r
+mark facts-sent
+expect \[you\](?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*what can you do\?
+expect \[jevcode\](?:\x1b\[[0-9;]*m)* 
+mark facts-reply
+sleep 0.5
+# 5. /jev before any run: `<provider> · <host> · <model> (pinned)` (§2.6 line 1) and the intake line for the two messages
+send /jev
+sleep 0.2
+send \r
+expect typesafe · api\.typesafe\.ai · jev-1\.13\.0 \(pinned\)
+expect intake: 2 messages
+mark jev-before-run
+sleep 0.3
+# 6. /mode jev-on (§1.3): a generator key resolves from the repository .env (OPENROUTER_API_KEY serves the default
+#    `openrouter` generator), so the mode pends for the next run and the badge reads `jev+llm · next run` (§1.5, H-G1);
+#    with no generator key the wizard's provider step would open in place instead (`Pick the provider`) — the
+#    alternation records which branch ran
+send /mode jev-only
+sleep 0.2
+send \r
+expect mode jev-only from the next run
+expect ╭─ (?:\x1b\[[0-9;]*m)*jev-only(?:\x1b\[[0-9;]*m)* · next run
+sleep 0.3
+send /mode jev-on
+sleep 0.2
+send \r
+expect jev\+llm from the next run
+expect ╭─ (?:\x1b\[[0-9;]*m)*jev\+llm(?:\x1b\[[0-9;]*m)* ─
+sleep 0.3
+send Fix the failing tests in tests/test_core.py without changing the tests.
+sleep 0.3
+send \r
+mark task-sent
+expect \[run\](?:\x1b\[[0-9;]*m)* start [^\r\n]*mode=jev-on
+mark run-started
+expect \[step 1\]
+mark step-1
+expect end (complete|max_steps|spend_cap|wall_time|human_pause|replan_stop|impossible|error)
+mark run-ended
+sleep 0.5
+# 9. /jev after the run: the served model — jev-1.13.0 is the pinned resolution on TypeSafe (§2.5); /cost's chat line (§3.9)
+send /jev
+sleep 0.2
+send \r
+expect → resolved jev-1\.13\.0
+mark jev-after-run
+send /cost
+sleep 0.2
+send \r
+expect chat \$
+mark cost-shown
+sleep 0.3
+# 10. leave (exit 0)
+send /exit
+sleep 0.2
+send \r
+eof

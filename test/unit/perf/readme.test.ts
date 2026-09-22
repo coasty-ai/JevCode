@@ -9,6 +9,7 @@ import type { PerfResult } from '../../../src/perf/main.js';
 import type { LagGeometry } from '../../../src/perf/render-lag.js';
 import type { ComposerSeries } from '../../../src/perf/composer-latency.js';
 import type { IntakeSeries } from '../../../src/perf/intake-latency.js';
+import type { IdleGeometry } from '../../../src/perf/idle-frames.js';
 import { failures, performanceSection, replacePerformanceSection, resultRows } from '../../../src/perf/readme.js';
 
 function geometry(rows: number, over: Partial<LagGeometry> = {}): LagGeometry {
@@ -43,6 +44,9 @@ function geometry(rows: number, over: Partial<LagGeometry> = {}): LagGeometry {
     splashInFirstFrame: true,
     splashGate: 22,
     splashOk: true,
+    runStartFrames: 19,
+    runStartGate: 31,
+    runStartOk: true,
     frameClasses: { static: 180, key: 150, dynamic: 70 },
     regionMax: rows - 2,
     cursorHidesMaxPerFrame: 1,
@@ -152,6 +156,16 @@ function result(): PerfResult {
       harnessRunP50: 43.8,
       harnessRunP95: 46.8,
       harnessOtherP95: 26.1,
+      // docs/COORDINATION-DESIGN.md §8.9 / §8.3: the relaxed context's rows
+      promptBuildMs: [1.1, 1.4],
+      promptBuildP50: 1.1,
+      promptBuildP95: 1.4,
+      promptBuildGateMs: 5,
+      promptBuildWithinGate: true,
+      coldPromptBuildMs: 8.2,
+      coldGateMs: 25,
+      coldWithinGate: true,
+      recentSteps: { whole: 2, clipped: 4, oneLine: 6, reads: 3 },
       imagesMs: [],
       imagesP50: 1.2,
       imagesP95: 20.0,
@@ -187,6 +201,7 @@ function result(): PerfResult {
       throttleMs: 34,
       series: [
         series('idle'),
+        series('idle-loop', { latency: { samples: 200, p50: 2.4, p95: 4.1, max: 9.8, raw: [] }, frameClasses: { static: 1, key: 200, dynamic: 14 } }),
         series('live', { stepMs: 200, fpsMax: 45, fpsStaticMax: 15, fpsKeyMax: 10, fpsDynamicMax: 32, fpsExercised: true, fpsGated: true, fpsOk: false, pass: false, regionMax: 22, stepSeen: 90 }),
         series('live-stress', { stepMs: 0, stress: true, gated: false, latency: { samples: 200, p50: 2.5, p95: 8, max: 12.5, raw: [] }, fpsMax: 151, fpsStaticMax: 103, fpsKeyMax: 10, fpsDynamicMax: 48, fpsExercised: true, fpsGated: false, fpsOk: false, regionMax: 22, stepSeen: 740 }),
         series('palette', { regionMax: 11 }),
@@ -232,8 +247,49 @@ function result(): PerfResult {
       notDriven: [],
       pass: true,
     },
+    idleFrames: {
+      fpsPeakGate: 4,
+      fpsMeanGate: 2,
+      bytesPeakGate: 12 * 1024,
+      bytesMeanGate: 5 * 1024,
+      windowMs: { from: 1000, to: 31_000 },
+      geometries: [idle(24, 80), idle(40, 120, { bytesMax: 11_400, bytesMean: 4400, frameBytesMax: 2850 })],
+      deviations: ['the CPU figure is reported'],
+      pass: true,
+    },
     jevLatency: null,
     pass: false,
+  };
+}
+
+/** an idle-frames geometry (TUI-DESIGN-3 §3.9): the design pass — 48 dynamic frames over 30 s, peak 4, mean 1.6 */
+function idle(rows: number, columns: number, over: Partial<IdleGeometry> = {}): IdleGeometry {
+  return {
+    rows,
+    columns,
+    wordmark: 'sweep',
+    settleAt: 562,
+    seconds: 30,
+    frames: 66,
+    dynamicFrames: 48,
+    fpsMax: 4,
+    fpsMean: 1.6,
+    buckets: Array.from({ length: 30 }, (_, i) => (i % 10 >= 5 && i % 10 < 9 ? 4 : 0)),
+    bytesMax: 8600,
+    bytesMean: 3400,
+    frameBytesMax: 2150,
+    wordmarkFrames: 48,
+    staticFrames: 0,
+    clears: 0,
+    regionMax: rows - 13,
+    cpu: { startMs: 350, endMs: 890, deltaMs: 540, perSecondMs: 18 },
+    exitCode: 0,
+    timedOut: false,
+    fpsOk: true,
+    bytesOk: true,
+    hygieneOk: true,
+    pass: true,
+    ...over,
   };
 }
 
@@ -278,8 +334,15 @@ describe('resultRows()', () => {
     expect(by('(`live-stress`:')).toMatchObject({ measurement: expect.stringContaining('`JEVCODE_MOCK_STEP_MS=0`'), gate: expect.stringContaining('latency report only (the zero-latency storm)'), status: 'pass' });
     expect(by('(`burst30`:')).toMatchObject({ measurement: expect.stringContaining('33.3 keys/s achieved'), gate: expect.stringContaining('`dynamic` frame rate ≤ 31 gated'), status: 'pass' });
     expect(by('(`review`:')).toMatchObject({ measurement: expect.stringContaining('200/200 `e` toggles located') });
-    expect(by('Frames per second while typing, busiest bucket, `static` · `key` · `dynamic` (`idle`')).toMatchObject({ result: '0 · 10 · 0 n/e / 15 · 10 · 32 / 103 · 10 · 48 (report) / 0 · 10 · 0 n/e / 0 · 10 · 0 n/e / 0 · 34 · 1', status: 'FAIL' });
-    expect(by('Composer series hygiene')).toMatchObject({ result: '0 · 5 · 0 / 0 · 22 · 0 / 0 · 22 · 0 / 0 · 11 · 0 / 0 · 5 · 206 (report) / 0 · 5 · 0', status: 'pass' });
+    // TUI-DESIGN-3 §9: the `idle-loop` series sits between `idle` and `live`
+    expect(by('Frames per second while typing, busiest bucket, `static` · `key` · `dynamic` (`idle`')).toMatchObject({ result: '0 · 10 · 0 n/e / 0 · 10 · 0 n/e / 15 · 10 · 32 / 103 · 10 · 48 (report) / 0 · 10 · 0 n/e / 0 · 10 · 0 n/e / 0 · 34 · 1', status: 'FAIL' });
+    expect(by('Composer series hygiene')).toMatchObject({ result: '0 · 5 · 0 / 0 · 5 · 0 / 0 · 22 · 0 / 0 · 22 · 0 / 0 · 11 · 0 / 0 · 5 · 206 (report) / 0 · 5 · 0', status: 'pass' });
+    expect(by('(`idle-loop`:')).toMatchObject({ result: '2.4 ms / 4.1 ms / 9.8 ms', gate: 'p95 < 16 ms, max < 50 ms', status: 'pass' });
+    // TUI-DESIGN-3 §3.9 / §9: the idle animation rows and the run-start bucket
+    expect(by('Idle animation — `dynamic` frames per second')).toMatchObject({ result: '4 · 1.6 / 4 · 1.6', gate: expect.stringContaining('≤ 4 in every second · mean ≤ 2/s'), status: 'pass' });
+    expect(by('Idle animation bytes')).toMatchObject({ result: '8600 · 3400 · 2150 B / 11400 · 4400 · 2850 B', status: 'pass' });
+    expect(by('Idle animation hygiene')).toMatchObject({ result: '0 · 11 · 48 · 540 ms (18.0 ms/s) / 0 · 27 · 48 · 540 ms (18.0 ms/s)', status: 'pass' });
+    expect(by('Run-start bucket')).toMatchObject({ result: '19 / 19 / 19 / 19', gate: expect.stringContaining('≤ maxFps + 1 = 31'), status: 'pass' });
     expect(by('`resize-live` 40×120 (typist)')).toMatchObject({ result: '0 (0) · 1 (1) · 0 (0) · 0 (0) · 0 · 1 (+2.1 ms) · 10', status: 'pass' });
     expect(by('Ctrl+L repaint')).toMatchObject({ result: 'true (1 frame)', status: 'pass' });
     // TUI-DESIGN-2 §5 / §9: splash frame 0 per first-frame series, the splash bucket per lag geometry, the intake rows

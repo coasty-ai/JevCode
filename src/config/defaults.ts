@@ -1,8 +1,9 @@
 /** Every default from the DESIGN.md §3 table and the TUI-DESIGN §16 table, the generator pricing table and the provider base URLs. */
 import { join } from 'node:path';
+import type { EngineMode } from '../core/types.js';
 import type { Pricing, SettingSpec } from './types.js';
 
-/** DECISIONS 2026-09-21: the default generator is OpenRouter `z-ai/glm-5.3-flash` (~20× cheaper than Sonnet 5, 1M context, tools + structured outputs). */
+/** DECISIONS 2026-09-21: the default generator is OpenRouter `z-ai/glm-5.3-flash` (13–20× cheaper than Sonnet 5, 1M context, tools + structured outputs). */
 export const DEFAULT_PROVIDER = 'openrouter';
 export const DEFAULT_MODEL = 'z-ai/glm-5.3-flash';
 export const DEFAULT_MAX_TOKENS = 4096;
@@ -39,9 +40,18 @@ export const DEFAULT_SANDBOX = 'auto';
 /** TUI-DESIGN-2 §2.3: the `decider.provider` row's accepted values (`auto` resolves through rules 2a–2e). */
 export const JEV_PROVIDER_SETTING_VALUES = ['auto', 'typesafe', 'openrouter'] as const;
 
-/** TUI-DESIGN-2 §1.2: the `mode` setting's values in the round-2 order (jev-only first, the default); the §12 error text joins them with `|`. */
+/** TUI-DESIGN-2 §1.2: the `mode` setting's values in the round-2 order; the §12 error text joins them with `|`. */
 export const MODE_SETTING_VALUES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
-export const DEFAULT_MODE = 'jev-only';
+/**
+ * TUI-DESIGN-3 §1.1 (D-G): the ONE constant every fallback that names the default mode reads — `jev-on` (badge `jev+llm`: the code model
+ * writes, Jev decides every step) since round 3; later: `llm-jev` (the peer's flip) — nothing else moves. No string outside this file
+ * names which mode is the default (D-N; `/mode` computes ` (default)` from it).
+ */
+export const DEFAULT_MODE: EngineMode = 'jev-on';
+/** D-N: the badge word per mode — the ONLY table that maps a mode to a word; `·` is folded to the glyph set's dot by `modeBadgeWord(mode, g)` */
+export const MODE_BADGE_WORD: Readonly<Record<EngineMode, string>> = { 'jev-only': 'jev-only', 'jev-on': 'jev+llm', 'jev-off': 'llm-only', 'llm-jev': 'llm+jev · verified' };
+/** the badge is capped so `<badge> · next run` fits the 60-column top edge (`consoleTopEdgeParts`, console-lines.ts:14 `TOP_EDGE_FIXED = 8`) */
+export const MODE_BADGE_MAX_CELLS = 20;
 
 /**
  * TUI-DESIGN-2 §2.3 Redaction: key variables whose process-environment values join the SecretSet whichever provider is
@@ -63,9 +73,9 @@ export const BASE_URLS: Readonly<Record<'anthropic' | 'openrouter', string>> = {
  * USD per million tokens. Used only when the API does not return a cost (OpenRouter's `usage.cost` wins when present).
  *
  * - Sonnet 5: research 07 §1.2, §2.5 (2026-09-19). Cache write is the 5-minute rate.
- * - GLM 5.3 (z-ai/*): the OpenRouter models API, fetched 2026-09-21. `glm-5.3-flash` lists prompt 0.00000009/tok
- *   ($0.09/M), completion 0.0000003 ($0.30/M), input_cache_read 0.000000018 ($0.018/M); `glm-5.3-flashx` (the 200 tok/s
- *   variant) prompt $0.37/M, completion $1.25/M, cache read $0.075/M; `glm-5.3` prompt $0.91/M, completion $2.86/M with
+ * - GLM 5.3 (z-ai/*): the OpenRouter models API, re-fetched 2026-09-21 (evening; the morning figures were 67 % under for
+ *   flash). `glm-5.3-flash` lists prompt $0.15/M, completion $0.50/M, input_cache_read $0.05/M; `glm-5.3-flashx` (the 200 tok/s
+ *   variant) prompt $0.37/M, completion $1.25/M, cache read $0.075/M; `glm-5.3` prompt $0.84/M, completion $2.64/M, cache read $0.156/M with
  *   no cache-read rate listed (derived: CACHE_READ_FACTOR × input). None of the three lists a cache-write rate, so it is
  *   derived as CACHE_WRITE_FACTOR × input (TUI-DESIGN §9.5). Context 1,310,720 (top provider 1,048,576), max completion
  *   131,072 tokens; tools, tool_choice, parallel_tool_calls, structured_outputs, response_format, temperature, seed, stop,
@@ -73,9 +83,9 @@ export const BASE_URLS: Readonly<Record<'anthropic' | 'openrouter', string>> = {
  *   billed at exactly 5/3× (a provider at $0.15/M / $0.50/M), so the fallback is optimistic when `usage.cost` is absent.
  */
 const SONNET_5: Pricing = { inputPerM: 2, outputPerM: 10, cacheReadPerM: 0.2, cacheWritePerM: 2.5 };
-const GLM_5_3_FLASH: Pricing = { inputPerM: 0.09, outputPerM: 0.3, cacheReadPerM: 0.018, cacheWritePerM: 0.09 * CACHE_WRITE_FACTOR };
+const GLM_5_3_FLASH: Pricing = { inputPerM: 0.15, outputPerM: 0.5, cacheReadPerM: 0.05, cacheWritePerM: 0.15 * CACHE_WRITE_FACTOR };
 const GLM_5_3_FLASHX: Pricing = { inputPerM: 0.37, outputPerM: 1.25, cacheReadPerM: 0.075, cacheWritePerM: 0.37 * CACHE_WRITE_FACTOR };
-const GLM_5_3: Pricing = { inputPerM: 0.91, outputPerM: 2.86, cacheReadPerM: 0.91 * CACHE_READ_FACTOR, cacheWritePerM: 0.91 * CACHE_WRITE_FACTOR };
+const GLM_5_3: Pricing = { inputPerM: 0.84, outputPerM: 2.64, cacheReadPerM: 0.156, cacheWritePerM: 0.84 * CACHE_WRITE_FACTOR };
 export const ZERO_PRICING: Pricing = { inputPerM: 0, outputPerM: 0, cacheReadPerM: 0, cacheWritePerM: 0 };
 
 export const PRICING_TABLE: ReadonlyMap<string, Pricing> = new Map<string, Pricing>([
@@ -109,7 +119,7 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'decider.baseUrl', flag: 'jevBaseUrl', env: ['JEV_BASE_URL'], fileKey: 'jevBaseUrl', defaultValue: DEFAULT_JEV_BASE_URL, secret: false, description: 'decider base URL' },
   { name: 'decider.apiKey', flag: 'jevApiKey', env: ['JEV_API_KEY', 'OPENROUTER_API_KEY'], fileKey: 'jevApiKey', defaultValue: null, secret: true, description: 'decider API key' },
   { name: 'decider.model', flag: 'jevModel', env: ['JEV_MODEL'], fileKey: 'jevModel', defaultValue: DEFAULT_JEV_MODEL, secret: false, description: 'decider model' },
-  // TUI-DESIGN-2 §1.2 (D-A): the engine mode is a setting — flag > JEVCODE_MODE > dotenv > file > default jev-only; resolve.ts reads it before the mode-keyed cap default
+  // TUI-DESIGN-2 §1.2 (D-A): the engine mode is a setting — flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE; resolve.ts reads it before the mode-keyed cap default
   { name: 'mode', flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false, description: 'engine mode (jev-only | jev-on | jev-off | llm-jev); jev-only needs no generator key' },
   { name: 'limits.spendCapUsd', flag: 'spendCap', env: ['JEVCODE_SPEND_CAP_USD'], fileKey: 'spendCapUsd', defaultValue: String(DEFAULT_SPEND_CAP_USD), secret: false, description: 'spend cap (USD)' },
   { name: 'limits.maxSteps', flag: 'maxSteps', env: ['JEVCODE_MAX_STEPS'], fileKey: 'maxSteps', defaultValue: String(DEFAULT_MAX_STEPS), secret: false, description: 'max steps' },
@@ -138,8 +148,14 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'ui.ascii', boolFlag: { key: 'ascii', negate: false }, env: ['JEVCODE_ASCII'], ignoredFileKey: 'ascii', defaultValue: null, secret: false, description: 'ASCII glyph table (auto on TERM=dumb, TERM=linux, non-UTF-8 locale)', launch: true },
   { name: 'ui.screenReader', boolFlag: { key: 'screenReader', negate: false }, env: ['JEVCODE_SCREEN_READER', 'INK_SCREEN_READER'], ignoredFileKey: 'screenReader', defaultValue: 'false', secret: false, description: 'screen-reader mode', launch: true },
   { name: 'ui.noColor', boolFlag: { key: 'noColor', negate: false }, env: ['NO_COLOR'], defaultValue: null, secret: false, description: 'disable colour (NO_COLOR)', launch: true },
+  // TUI-DESIGN-3 §0.1 (D-Q) / §1.7: the `[setup]` default-mode item prints once per DEFAULT_MODE value — this file key remembers which value
+  // was shown; written by the session when the item prints (the trust gate's write path), never by a flag or a variable; hidden from
+  // `jevcode config` unless --all
+  { name: 'seen.defaultMode', env: [], fileKey: 'seenDefaultMode', defaultValue: null, secret: false, description: 'the default mode the one-time [setup] item was shown for (bookkeeping)', hidden: true },
   { name: 'ui.title', boolFlag: { key: 'title', negate: false }, env: ['JEVCODE_TITLE'], fileKey: 'title', defaultValue: 'false', secret: false, description: 'set the terminal title (OSC 2)' },
   { name: 'ui.reducedMotion', boolFlag: { key: 'noAnimation', negate: false }, env: ['JEVCODE_REDUCED_MOTION'], fileKey: 'reducedMotion', defaultValue: null, secret: false, description: 'no spinner animation (default true under screen-reader mode)' },
+  // TUI-DESIGN-3 §6 item 5 / §3.2: the wordmark's idle animation; no default row — config/ui.ts derives `static` under the SSH launch source, `sweep` otherwise
+  { name: 'ui.wordmark', env: ['JEVCODE_WORDMARK'], fileKey: 'wordmark', defaultValue: null, secret: false, description: 'wordmark idle animation (sweep|static|off; default static under SSH)' },
   { name: 'ui.notify', boolFlag: { key: 'notify', negate: false }, env: ['JEVCODE_NOTIFY'], fileKey: 'notify', defaultValue: null, secret: false, description: 'terminal notifications (BEL / OSC; default true under screen-reader mode)' },
   { name: 'ui.osc52', boolFlag: { key: 'osc52', negate: false }, env: ['JEVCODE_OSC52'], fileKey: 'osc52', defaultValue: 'false', secret: false, description: 'clipboard writes through OSC 52' },
   // Inverted-polarity variable (TUI-DESIGN §16): JEVCODE_NO_HISTORY=1 → ui.history false; resolve.ts flips the recognised boolean.

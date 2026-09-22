@@ -6,12 +6,17 @@
  * `fish -n` (each skipped when the tool is absent), a deterministic `.TH` date.
  */
 import { execFileSync } from 'node:child_process';
-import { accessSync, constants, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { accessSync, constants, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { delimiter, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, LLM_STATE_MODE, THEMES, availabilityError, commandNames, findCommand, isExactCommand, takesRest, type CommandSpec } from '../../../../src/tui/commands/registry.js';
+import { DEFAULT_MODE, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../../src/config/defaults.js';
+import { COMMAND_ACTION_KINDS, dispatchCommand, type CommandAction } from '../../../../src/tui/commands/dispatch.js';
+import { paletteGhost, paletteMatches, type PaletteState } from '../../../../src/tui/commands/palette.js';
+import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, EXIT_ONE_LETTER, LLM_STATES, LLM_STATE_MODE, MODE_VALUE_HINTS, NO_ONE_LETTER_ALIAS, PANEL_ARGS, POPULAR, THEMES, TRANSCRIPT_VIEWS, availabilityError, commandNames, findCommand, isExactCommand, shortestAlias, takesRest, type CommandSpec } from '../../../../src/tui/commands/registry.js';
+import { routeSubmit } from '../../../../src/tui/composer/submit.js';
+import { parsePanelCommand } from '../../../../src/tui/pane/commands.js';
 
 const ROOT = fileURLToPath(new URL('../../../../', import.meta.url));
 const COMMANDS_MD = `${ROOT}docs/COMMANDS.md`;
@@ -41,45 +46,55 @@ function run(cmd: string, args: readonly string[], env: NodeJS.ProcessEnv = proc
   }
 }
 
+/** TUI-DESIGN §5.2 rows with the TUI-DESIGN-3 §4.1 alias table (D-K: 21 new aliases; `nw` for /new, `q`/`quit` for /exit, none for /abort) */
 const EXPECTED: readonly [name: string, avail: CommandSpec['availableDuringTask'], plain: string, aliases: readonly string[]][] = [
   ['help', 'any', 'yes', ['h']],
-  ['new', 'idle', 'yes', []],
-  ['resume', 'idle', '`/resume <id|title>` only', ['sessions', 'continue']],
+  ['new', 'idle', 'yes', ['nw']],
+  ['resume', 'idle', '`/resume <id|title>` only', ['r', 'sessions', 'continue']],
   ['rename', 'any', 'yes', []],
   ['steer', 'live', 'yes', []],
   ['unsteer', 'live', 'yes', []],
   ['pause', 'live', 'yes', []],
   ['abort', 'live', 'yes', []],
-  ['undo', 'idle', 'yes (readline `y/N`)', []],
-  ['rewind', 'idle', 'yes', []],
-  ['diff', 'any', 'inline only', []],
-  ['plan', 'any', 'yes', []],
-  ['decisions', 'any', 'yes', []],
-  ['why', 'any', 'yes', []],
+  ['undo', 'idle', 'yes (readline `y/N`)', ['u']],
+  ['rewind', 'idle', 'yes', ['rw']],
+  ['diff', 'any', 'inline only', ['d']],
+  ['plan', 'any', 'yes', ['pl']],
+  ['decisions', 'any', 'yes', ['dc']],
+  ['why', 'any', 'yes', ['w']],
   ['calibration', 'idle', 'yes', []],
-  ['jev', 'any', 'yes', []],
-  ['cost', 'any', 'yes', []],
-  ['budget', 'any', 'yes', []],
-  ['model', 'any', 'yes', []],
+  ['jev', 'any', 'yes', ['j']],
+  ['cost', 'any', 'yes', ['c']],
+  ['budget', 'any', 'yes', ['b']],
+  ['model', 'any', 'yes', ['ml']],
   ['provider', 'any', 'yes', []],
-  ['mode', 'any', 'yes', []],
+  ['mode', 'any', 'yes', ['m']],
   ['llm', 'any', 'yes', []],
-  ['config', 'any', 'yes', []],
-  ['login', 'any', '`/login` raw-mode prompt', []],
+  ['config', 'any', 'yes', ['cf']],
+  ['login', 'any', '`/login` raw-mode prompt', ['l']],
   ['logout', 'any', 'yes', []],
   ['trust', 'idle', 'yes', []],
-  ['theme', 'any', 'n/a', []],
-  ['panel', 'any', 'yes', []],
-  ['transcript', 'any', 'n/a', []],
-  ['copy', 'any', 'n/a', []],
+  ['theme', 'any', 'n/a', ['t']],
+  ['panel', 'any', 'yes', ['p']],
+  ['transcript', 'any', 'always full', ['tr']],
+  ['copy', 'any', 'n/a', ['cp']],
   ['export', 'idle', 'yes', []],
-  ['status', 'any', 'yes', []],
+  ['status', 'any', 'yes', ['s']],
   ['errors', 'any', 'yes', []],
   ['report', 'idle', 'yes', []],
   ['history', 'any', 'yes', []],
   ['editor', 'any', 'n/a', []],
-  ['exit', 'any', 'yes', ['quit']],
+  ['exit', 'any', 'yes', ['q', 'quit']],
 ];
+
+/** TUI-DESIGN-3 §4.1: the alias table, verbatim (command → aliases after round 3) */
+const ALIAS_TABLE: Readonly<Record<string, readonly string[]>> = {
+  help: ['h'], panel: ['p'], mode: ['m'], plan: ['pl'], model: ['ml'], diff: ['d'], cost: ['c'], undo: ['u'], status: ['s'], theme: ['t'],
+  resume: ['r', 'sessions', 'continue'], login: ['l'], new: ['nw'], budget: ['b'], exit: ['q', 'quit'], jev: ['j'], transcript: ['tr'], copy: ['cp'],
+  config: ['cf'], rewind: ['rw'], why: ['w'], decisions: ['dc'], llm: [], abort: [], steer: [],
+};
+const fresh: PaletteState = { lastStop: null, unauthorized: false, changedFiles: false, rewindMenu: false, live: false };
+const NAME_RE = /^[a-z][a-z0-9-]*$/;
 
 describe('COMMANDS (TUI-DESIGN §5.2)', () => {
   it('has every §5.2 row in order with avail, plain and aliases', () => {
@@ -122,7 +137,7 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
   });
   it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional jev-only|jev-on|jev-off|llm-jev; /llm <on|off>; /panel [d|p|t|s|off|full]; /transcript [compact|full] — strings verbatim', () => {
     const mode = findCommand('mode') as CommandSpec;
-    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]' });
+    expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: MODE_VALUE_HINTS, defaultValue: DEFAULT_MODE });
     expect(mode.title).toBe('engine mode: show, or set for the next run');
     expect(mode.usage).toBe('[jev-only|jev-on|jev-off|llm-jev]');
     expect(mode.semantics).toBe('no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard\'s generator step in place; persist with `jevcode config set mode <m>`');
@@ -142,12 +157,116 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     expect(transcript.args[0]).toMatchObject({ kind: 'enum', values: ['compact', 'full'], optional: true, hint: '[compact|full]' });
     expect(transcript.usage).toBe('[compact|full]');
     expect(transcript.category).toBe('ui');
+    // TUI-DESIGN-3 §4.4 F3: `--plain` is always the full view, so the readline composer forwards the line (the host answers `always full`)
+    expect(transcript.plain).toBe('always full');
+    expect(findCommand('panel')?.plain).toBe('yes');
     // the palette lists them; `/llm` is a name, not an alias of /mode (its own row in docs/COMMANDS.md)
     for (const n of ['/mode', '/llm', '/panel', '/transcript']) expect(commandNames()).toContain(n);
     expect(findCommand('llm')?.name).toBe('llm');
   });
+  it('TUI-DESIGN-3 §4.1 (D-K): the alias table verbatim; every alias a NAME_RE token, unique across names + aliases, never a name, never a PANEL_ARGS / TRANSCRIPT_VIEWS / LLM_STATES word; popular aliases ≤ 2 characters; no one-letter alias for /new, /exit, /abort (their Enter destroys state without a confirm); /undo\'s `u` passes (the undo confirm)', () => {
+    for (const [name, aliases] of Object.entries(ALIAS_TABLE)) expect(findCommand(name)?.aliases, name).toEqual(aliases);
+    const names = new Set(COMMANDS.map((c) => c.name));
+    const all = COMMANDS.flatMap((c) => c.aliases);
+    expect(new Set(all).size).toBe(all.length);
+    expect(all).toHaveLength(25); // 4 before round 3 + 21 new
+    for (const a of all) {
+      expect(a).toMatch(NAME_RE);
+      expect(names.has(a), `alias ${a} is a command name`).toBe(false);
+    }
+    // PANEL_ARGS / TRANSCRIPT_VIEWS / LLM_STATES words live after the name, so `d` the alias and `d` the argument never meet: `/p d` is /panel on the decisions tab
+    expect((PANEL_ARGS as readonly string[]).filter((w) => all.includes(w))).toEqual(['d', 'p', 't', 's']);
+    expect((TRANSCRIPT_VIEWS as readonly string[]).some((w) => all.includes(w))).toBe(false);
+    expect((LLM_STATES as readonly string[]).some((w) => all.includes(w))).toBe(false);
+    expect(parsePanelCommand('/p d')).toEqual({ kind: 'panel', arg: 'd' });
+    expect(dispatchCommand('/d 3', { run: 'none', step: 3 })).toMatchObject({ ok: true, action: { kind: 'diff', step: 3 } });
+    expect(NO_ONE_LETTER_ALIAS).toEqual(['new', 'abort']);
+    for (const name of NO_ONE_LETTER_ALIAS) for (const a of findCommand(name)?.aliases ?? []) expect(a.length, `${name} alias ${a}`).toBeGreaterThanOrEqual(2);
+    // /exit keeps `q` (the letter every pager teaches) as its only one-letter alias; `x` is gone
+    expect(EXIT_ONE_LETTER).toBe('q');
+    expect((findCommand('exit')?.aliases ?? []).filter((a) => a.length === 1)).toEqual([EXIT_ONE_LETTER]);
+    expect(findCommand('undo')?.aliases).toEqual(['u']);
+    for (const name of POPULAR) {
+      const spec = findCommand(name) as CommandSpec;
+      if (spec.aliases.length > 0) expect((shortestAlias(spec) as string).length, name).toBeLessThanOrEqual(2);
+    }
+    // `e` and `st` are not aliased (four popular e-prefixes; st is ambiguous with status)
+    expect(findCommand('e')).toBeNull();
+    expect(findCommand('st')).toBeNull();
+    expect(findCommand('a')).toBeNull();
+    expect(findCommand('x')).toBeNull();
+    expect(findCommand('n')).toBeNull();
+    expect(POPULAR).toHaveLength(16);
+    for (const name of POPULAR) expect(findCommand(name), name).not.toBeNull();
+  });
+  it('TUI-DESIGN-3 §4.1 rules 1–3 / F22–F23: every alias runs its owner on Enter (`isExactCommand`, `routeSubmit` in the palette), pins it to the top of the palette against the real scorer, and ghosts the arrow `→ /owner`', () => {
+    /** the required argument of the aliased commands that have one */
+    const arg: Record<string, string> = { why: ' 3', theme: ' dark' };
+    for (const c of COMMANDS) {
+      for (const a of c.aliases) {
+        expect(isExactCommand(`/${a}`), a).toBe(true);
+        expect(findCommand(a)?.name, a).toBe(c.name);
+        const line = `/${a}${arg[c.name] ?? ''}`;
+        const r = dispatchCommand(line, { run: c.availableDuringTask === 'live' ? 'live' : 'none', step: 0 });
+        expect(r.ok && r.spec.name, a).toBe(c.name);
+        const routed = routeSubmit({ text: line, submitting: false, overlay: 'palette', run: c.availableDuringTask === 'live' ? 'live' : 'none', host: { detectSecrets: () => [] }, chips: new Map(), ranBefore: false, dispatch: { run: c.availableDuringTask === 'live' ? 'live' : 'none', step: 0 } });
+        expect(routed.kind === 'command' && routed.spec.name, a).toBe(c.name);
+        const matches = paletteMatches(`/${a}`, fresh);
+        expect(matches[0]?.spec.name, a).toBe(c.name);
+        expect(paletteGhost(`/${a}`, matches), a).toMatchObject({ arrow: `/${c.name}` });
+      }
+    }
+    // the shortest alias is the palette column's (ties: table order)
+    expect(shortestAlias(findCommand('resume') as CommandSpec)).toBe('r');
+    expect(shortestAlias(findCommand('exit') as CommandSpec)).toBe('q');
+  });
+  it('TUI-DESIGN-3 §4.1 rule 8 (D-N): the /mode hints come from MODE_BADGE_WORD, name no default, and ENGINE_MODES is MODE_SETTING_VALUES; /model and /provider are optional (F15)', () => {
+    expect(ENGINE_MODES).toBe(MODE_SETTING_VALUES);
+    for (const m of MODE_SETTING_VALUES) expect(MODE_VALUE_HINTS[m].title.length).toBeGreaterThan(0);
+    expect(MODE_VALUE_HINTS['jev-on'].title).toBe(`${MODE_BADGE_WORD['jev-on']}: the code model writes, Jev decides every step`);
+    expect(MODE_VALUE_HINTS['llm-jev'].title).toBe(`${MODE_BADGE_WORD['llm-jev']}: candidate patches, tests verify, Jev arbitrates`);
+    expect(MODE_VALUE_HINTS['jev-only'].title).toBe('no generating LLM; code proposes, Jev decides, tests verify');
+    expect(MODE_VALUE_HINTS['jev-off'].title).toBe('the generator alone (bench condition)');
+    for (const m of MODE_SETTING_VALUES) expect(MODE_VALUE_HINTS[m].title).not.toMatch(/default/);
+    expect(findCommand('mode')?.args[0]?.defaultValue).toBe(DEFAULT_MODE);
+    expect(findCommand('model')?.args[0]).toMatchObject({ kind: 'text', optional: true, hint: '[id]' });
+    expect(findCommand('provider')?.args[0]).toMatchObject({ kind: 'enum', optional: true, values: ['anthropic', 'openrouter'] });
+    const src = readFileSync(`${ROOT}src/tui/commands/registry.ts`, 'utf8');
+    expect(src).not.toMatch(/jev-only \(default|, the default\)|is the default|default mode is/);
+  });
+  it('TUI-DESIGN-3 §8 S4 (G1–G5): every CommandAction kind has a `case` in the App\'s runCommand or the controller\'s execute() (panel/transcript: the App\'s pre-router `parsePanelCommand`), and every command name has a `/name` literal in a test outside this loop', () => {
+    const app = readFileSync(`${ROOT}src/tui/App.tsx`, 'utf8');
+    const session = readFileSync(`${ROOT}src/cli/session.ts`, 'utf8');
+    const kinds: readonly CommandAction['kind'][] = COMMAND_ACTION_KINDS;
+    expect(new Set(kinds).size).toBe(kinds.length);
+    for (const kind of kinds) {
+      const handled = app.includes(`case '${kind}':`) || session.includes(`case '${kind}':`) || ((kind === 'panel' || kind === 'transcript') && parsePanelCommand(`/${kind}`)?.kind === kind);
+      expect(handled, `CommandAction kind '${kind}' has no case in App.tsx runCommand or session.ts execute()`).toBe(true);
+    }
+    // every registry command dispatches to a listed kind
+    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', history: 'clear', theme: 'dark', llm: 'on' };
+    for (const c of COMMANDS) {
+      const r = dispatchCommand(`/${c.name} ${sample[c.name] ?? ''}`.trim(), { run: c.availableDuringTask === 'live' ? 'live' : 'none', step: 0 });
+      expect(r.ok && kinds.includes(r.action.kind), c.name).toBe(true);
+    }
+    // G1: a `/name` literal in some unit test file other than this one (the dispatch loop above does not count)
+    const testRoot = `${ROOT}test/unit/`;
+    const files: string[] = [];
+    const walk = (dir: string): void => {
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        const p = join(dir, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (/\.test\.tsx?$/.test(e.name) && !p.endsWith('commands/registry.test.ts')) files.push(readFileSync(p, 'utf8'));
+      }
+    };
+    walk(testRoot);
+    const corpus = files.join('\n');
+    for (const c of COMMANDS) expect(corpus.includes(`'/${c.name}`) || corpus.includes(`"/${c.name}`) || corpus.includes(`\`/${c.name}`), `no test outside the registry loop drives /${c.name}`).toBe(true);
+  });
   it('findCommand resolves names and aliases case-insensitively, with or without the slash; isExactCommand is strict', () => {
     expect(findCommand('/Quit')?.name).toBe('exit');
+    expect(findCommand('/S')?.name).toBe('status');
+    expect(findCommand('TR')?.name).toBe('transcript');
     expect(findCommand('sessions')?.name).toBe('resume');
     expect(findCommand('continue')?.name).toBe('resume');
     expect(findCommand('h')?.name).toBe('help');
@@ -235,11 +354,18 @@ describe('generated documentation is in sync (TUI-DESIGN §21)', () => {
   it.skipIf(!hasBin('fish'))('fish -n accepts the fish completion', () => {
     expect(run('fish', ['-n', 'completions/jevcode.fish'])).toMatchObject({ code: 0 });
   });
-  it('the man page and completions mention every CLI command and every slash command', () => {
+  it('the man page and completions mention every CLI command and every slash command; the man ENVIRONMENT mode line derives from the table and DEFAULT_MODE (D-N); aliases propagate', () => {
     const man = readFileSync(`${ROOT}man/jevcode.1`, 'utf8');
     expect(man.startsWith('.\\" generated by scripts/gen-docs.mjs')).toBe(true);
     expect(man).toContain('.TH JEVCODE 1');
     for (const c of COMMANDS) expect(man, c.name).toContain(`/${c.name}`);
+    for (const c of COMMANDS) for (const a of c.aliases) expect(man, `${c.name} alias ${a}`).toContain(`/${c.name}, /${a}`.replace(/-/g, '\\-').slice(0, `/${c.name}, /${a}`.length + 2).split(', /')[0] as string);
+    const roffMode = (m: string): string => m.replace(/-/g, '\\-');
+    expect(man).toContain(`engine mode (${MODE_SETTING_VALUES.map(roffMode).join(' | ')}; default ${roffMode(DEFAULT_MODE)})`);
+    expect(man).not.toMatch(/the default \||is the default/);
+    expect(man).not.toContain('Claude');
+    expect(man).toContain('/status, /s');
+    expect(man).toContain('/exit, /q, /quit');
     for (const code of ['0', '2', '3', '4', '5', '6', '129', '130', '143']) expect(man).toContain(`.B ${code}\n`);
     const bash = readFileSync(`${ROOT}completions/jevcode.bash`, 'utf8');
     const zsh = readFileSync(`${ROOT}completions/jevcode.zsh`, 'utf8');

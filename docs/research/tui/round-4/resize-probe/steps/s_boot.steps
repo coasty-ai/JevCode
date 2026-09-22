@@ -1,0 +1,12 @@
+sleep 1.6
+mark booted
+send h
+sleep 0.5
+mark echoed
+send \x03
+sleep 0.3
+send \x04
+sleep 0.4
+send \x04
+sleep 0.5
+eof

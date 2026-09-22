@@ -319,6 +319,18 @@ describe('createReadlineComposer: slash commands (§5.1, §5.2)', () => {
     await s.type('/resume "tz fixes"');
     await s.type('/diff 2');
     expect(s.fake.calls.map((c) => c.args[0])).toEqual(['/resume "tz fixes"', '/diff 2']);
+    // TUI-DESIGN-3 §4.4 F3: `/panel` (plain: yes — the host prints the rows) and `/transcript` (plain: always full — the host answers
+    // `transcript full (--plain is always full)`) reach the host in every spelling, aliases included; `/theme` stays n/a
+    await s.type('/panel');
+    await s.type('/p d');
+    await s.type('/Panel full');
+    await s.type('/transcript');
+    await s.type('/tr compact');
+    expect(s.fake.calls.map((c) => c.args[0]).slice(2)).toEqual(['/panel', '/p d', '/Panel full', '/transcript', '/tr compact']);
+    expect(s.fake.notes.map((n) => n.text).slice(5)).toEqual([]);
+    expect(dispatchCommand('/tr full', { run: 'none', step: 0 })).toMatchObject({ ok: true, spec: { plain: 'always full' } });
+    const tr = dispatchCommand('/transcript', { run: 'none', step: 0 });
+    expect(tr.ok && plainSupports(tr.spec, tr.action)).toEqual({ ok: true });
     expect(plainUnavailableError(findCommand('theme') as CommandSpec)).toBe('error: /theme: not available in --plain (n/a)');
     const ok = dispatchCommand('/help', { run: 'none', step: 0 });
     expect(ok.ok && plainSupports(ok.spec, ok.action)).toEqual({ ok: true });

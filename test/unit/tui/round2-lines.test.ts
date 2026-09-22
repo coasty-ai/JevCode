@@ -7,6 +7,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { ConfirmRequest } from '../../../src/core/types.js';
+import { MODE_BADGE_WORD } from '../../../src/config/defaults.js';
 import { GLYPHS, cellWidth, glyphTwin } from '../../../src/tui/glyphs.js';
 import { PANEL_WIDE_COLUMNS, panelLines, panelMoreRow, panelStrip, paneRuleRow, toDecisionRow, type PaneState } from '../../../src/tui/pane/model.js';
 import { NOTE_LABEL_TEXT, REVIEW_KEYS_80, reviewCardLines, reviewCardTitle, reviewHeaderLines, reviewKeys } from '../../../src/tui/review/lines.js';
@@ -15,6 +16,10 @@ import { mkDecision } from '../../fixtures/tui/fixtures.js';
 import { workedRequest } from './pane/helpers.js';
 import { ruleRowText, type RuleRowInput } from '../../../src/tui/Pane.js';
 import { brandRow } from '../../../src/tui/splash.js';
+
+/** the spinner frame the tests pin (`spinnerFrame: 2`) and the reduced-motion glyph, read from the glyph table (TUI-DESIGN-3 D-P swaps the frames) */
+const SPIN2 = GLYPHS.unicode.spinner[2]!;
+const STATIC = GLYPHS.unicode.spinnerStatic;
 
 function base(over: Partial<StatusLineState> = {}): StatusLineState {
   return { run: 'none', mode: null, status: null, ready: null, done: null, runId: null, overlay: 'none', pendingReview: null, retrying: null, blocking: null, errors: 0, stageStartedAt: null, toasts: [], git: null, spend: { run: null, session: { totalUsd: 0, capUsd: 1.25 } }, draft: { secretHits: 0 }, nowMs: 0, ...over };
@@ -25,8 +30,11 @@ describe('the mode badge (TUI-DESIGN-2 §1.5, §12 "Console")', () => {
     expect(modeBadgeWord('jev-only')).toBe('jev-only');
     expect(modeBadgeWord('jev-on')).toBe('jev+llm');
     expect(modeBadgeWord('jev-off')).toBe('llm-only');
-    expect(modeBadgeWord('llm-jev')).toBe('llm-jev'); // docs/LLM-JEV-DESIGN.md §9.3
-    expect(modeBadge('jev-only', 'llm-jev')).toBe('llm-jev · next run');
+    // TUI-DESIGN-3 §1.1 (D-N): the words come from MODE_BADGE_WORD; the peer's mode reads `llm+jev · verified`
+    expect(modeBadgeWord('llm-jev')).toBe(MODE_BADGE_WORD['llm-jev']);
+    expect(modeBadgeWord('llm-jev')).toBe('llm+jev · verified');
+    expect(modeBadgeWord('llm-jev', GLYPHS.ascii)).toBe('llm+jev - verified');
+    expect(modeBadge('jev-only', 'llm-jev')).toBe('llm+jev · verified · next run');
     expect(modeBadge('jev-only', null)).toBe('jev-only');
     expect(modeBadge('jev-only', 'jev-on')).toBe('jev+llm · next run');
     expect(modeBadge('jev-on', 'jev-on')).toBe('jev+llm');
@@ -55,11 +63,11 @@ describe('the mode badge (TUI-DESIGN-2 §1.5, §12 "Console")', () => {
 describe('the conversational left words (TUI-DESIGN-2 §4.8, §12 "Status")', () => {
   it('⠹ thinking · ⠹ looking · ⠹ replying while idle; • thinking under reduced motion; asking under the intake card; shortHelp is empty for intake', () => {
     expect(THINKING_WORDS).toEqual({ intake: 'thinking', lookup: 'looking', replying: 'replying' });
-    expect(leftZoneWord(base({ thinking: 'intake' }), { spinnerFrame: 2 })).toBe('⠹ thinking');
-    expect(leftZoneWord(base({ thinking: 'lookup' }), { spinnerFrame: 2 })).toBe('⠹ looking');
-    expect(leftZoneWord(base({ thinking: 'replying' }), { spinnerFrame: 2 })).toBe('⠹ replying');
-    expect(leftZoneWord(base({ thinking: 'intake' }), { reducedMotion: true })).toBe('• thinking');
-    expect(leftZoneWord(base({ thinking: 'intake' }), { ascii: true, spinnerFrame: 1 })).toBe('/ thinking');
+    expect(leftZoneWord(base({ thinking: 'intake' }), { spinnerFrame: 2 })).toBe(`${SPIN2} thinking`);
+    expect(leftZoneWord(base({ thinking: 'lookup' }), { spinnerFrame: 2 })).toBe(`${SPIN2} looking`);
+    expect(leftZoneWord(base({ thinking: 'replying' }), { spinnerFrame: 2 })).toBe(`${SPIN2} replying`);
+    expect(leftZoneWord(base({ thinking: 'intake' }), { reducedMotion: true })).toBe(`${STATIC} thinking`);
+    expect(leftZoneWord(base({ thinking: 'intake' }), { ascii: true, spinnerFrame: 1 })).toBe(`${GLYPHS.ascii.spinner[1]} thinking`);
     expect(leftZoneWord(base({ overlay: 'intake' }))).toBe(ASKING_WORD);
     expect(leftZoneWord(base({ overlay: 'intake', thinking: 'intake' }))).toBe('asking');
     expect(shortHelp(base({ overlay: 'intake' }))).toBe('');
@@ -68,11 +76,11 @@ describe('the conversational left words (TUI-DESIGN-2 §4.8, §12 "Status")', ()
     expect(shortHelp(base({ overlay: 'exitConfirm' }))).toBe('? help');
     // H-I1: the intake card's status row at the console width
     expect(statusLineText(base({ overlay: 'intake' }), 76)).toBe('asking                                          step 0/–  sess $0.00/1.25 ok');
-    // §3.1 rows 1 and 5 (finding 1): the submission runs under `starting` — the phase wins the word; the bare `starting`
-    // returns once the intake settled (`thinking(null)`) and before `run:start`
-    expect(leftZoneWord(base({ run: 'starting', thinking: 'intake' }), { spinnerFrame: 2 })).toBe('⠹ thinking');
-    expect(leftZoneWord(base({ run: 'starting', thinking: 'lookup' }), { spinnerFrame: 2 })).toBe('⠹ looking');
-    expect(leftZoneWord(base({ run: 'starting', thinking: null }))).toBe('starting');
+    // §3.1 rows 1 and 5 (finding 1): the submission runs under `starting` — the phase wins the word; TUI-DESIGN-3 §5.2 P7:
+    // once the intake settled (`thinking(null)`) and before `run:start` the row keeps the previous idle word, never `starting`
+    expect(leftZoneWord(base({ run: 'starting', thinking: 'intake' }), { spinnerFrame: 2 })).toBe(`${SPIN2} thinking`);
+    expect(leftZoneWord(base({ run: 'starting', thinking: 'lookup' }), { spinnerFrame: 2 })).toBe(`${SPIN2} looking`);
+    expect(leftZoneWord(base({ run: 'starting', thinking: null }))).toBe('idle');
     // a live run keeps its own words (a stale phase never shows over an engine run)
     expect(leftZoneWord(base({ run: 'live', thinking: 'intake' }))).toBe('starting');
     expect(leftZoneWord(base({ run: 'aborting', thinking: 'intake' }))).toBe('aborting');

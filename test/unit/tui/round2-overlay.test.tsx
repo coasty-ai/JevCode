@@ -5,13 +5,30 @@
  * the boxed tier (only `y` approves, Enter inert, no default) through the mounted App.
  */
 import { cleanup, render } from 'ink-testing-library';
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BlockingRequest } from '../../../src/core/types.js';
 import { CAP } from '../../../src/tui/layout.js';
 import { render as inkRender } from 'ink';
 import { EXIT_CONFIRM_ROW, EXIT_CONFIRM_ROW_COMPACT, Overlay, exitConfirmRow, intakeCardLines, overlayWant, type IntakeOverlay, type OverlayData } from '../../../src/tui/Overlay.js';
 import { cardRow, cardTop } from '../../../src/tui/card.js';
 import { StubStdin, StubStdout, stripSgr } from './stub-stdout.js';
+
+const probes = vi.hoisted(() => ({ roles: [] as string[], texts: [] as string[] }));
+
+// every `textProps(theme, role, on)` the overlay asks for, in render order — the colour observable (chalk runs at level 0 under vitest, so no SGR is written)
+vi.mock('../../../src/tui/theme.js', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../../src/tui/theme.js')>();
+  return {
+    ...actual,
+    textProps: (theme: Parameters<typeof actual.textProps>[0], role: Parameters<typeof actual.textProps>[1], on: Parameters<typeof actual.textProps>[2]) => {
+      probes.roles.push(role);
+      return actual.textProps(theme, role, on);
+    },
+  };
+});
+beforeEach(() => {
+  probes.roles.length = 0;
+});
 
 /** ink-testing-library's stdout is 100 columns wide; the 120-column cards render through Ink with a 120-column stub */
 function wideRows(el: React.JSX.Element, columns = 120): string[] {
@@ -94,6 +111,29 @@ describe('cards (TUI-DESIGN-2 §4.7, §12 "Cards")', () => {
     const keys = '[r] retry with the current key   [l] /login   [q] stop (exit 2)';
     expect(b[want - 2]).toBe(`│ ${keys}${' '.repeat(76 - keys.length)} │`);
     for (const l of b) expect(stringWidth(l)).toBe(80);
+  });
+  it('TUI-DESIGN-3 §5.2 A9: the selected palette row\'s `▌ ` marker takes `accent2` (the secondary pink) — in the card and the flat tier, for a row with and without spans; unselected rows never ask for it; the review card passes `armed` through (OverlayData.review.armed, A8)', () => {
+    const state = { ...paletteState, changedFiles: true };
+    strip(render(<Overlay kind="palette" rows={8} previewRows={0} columns={80} terminalRows={24} top={0} data={{ palette: { query: '/b', state, selected: 0 } }} chrome={3} />).lastFrame());
+    expect(probes.roles.filter((r) => r === 'accent2')).toHaveLength(1);
+    cleanup();
+    probes.roles.length = 0;
+    // the flat tier, the selected row has no spans (an empty query)
+    const flat = strip(render(<Overlay kind="palette" rows={8} previewRows={0} columns={80} terminalRows={12} top={0} data={{ palette: { query: '/', state, selected: 1 } }} chrome={0} />).lastFrame());
+    expect(flat[1]?.startsWith('▌ /')).toBe(true);
+    expect(probes.roles.filter((r) => r === 'accent2')).toHaveLength(1);
+    cleanup();
+    probes.roles.length = 0;
+    // colour off: no role is asked for the marker (bold only)
+    strip(render(<Overlay kind="palette" rows={8} previewRows={0} columns={80} terminalRows={24} top={0} data={{ palette: { query: '/b', state, selected: 0 } }} chrome={3} color={false} />).lastFrame());
+    expect(probes.roles.filter((r) => r === 'accent2')).toHaveLength(0);
+    cleanup();
+    // A8: `armed` is accepted on the review data and the card still renders (Review draws it once S5 lands the prop)
+    const req = mkConfirmRequest('c1', 7);
+    const data: OverlayData = { review: { req, note: null, armed: true } };
+    const rows = strip(render(<Overlay kind="review" rows={9} previewRows={0} columns={80} terminalRows={24} top={0} data={data} chrome={3} />).lastFrame());
+    expect(rows[1]).toMatch(/^│ \[y\] approve \[n\] decline/);
+    expect(data.review?.armed).toBe(true);
   });
   it('palette card `commands` with the footer as the last inner row; the mention popup is the `files` card', () => {
     const rows = strip(render(<Overlay kind="palette" rows={8} previewRows={0} columns={80} terminalRows={24} top={0} data={{ palette: { query: '/b', state: paletteState, selected: 0 } }} chrome={3} />).lastFrame());

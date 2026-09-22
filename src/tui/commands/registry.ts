@@ -1,8 +1,12 @@
 /**
- * The command table (TUI-DESIGN §5.2; TUI-DESIGN-2 §1.3 `/mode` `/llm`, §4.6 `/panel` `/transcript`): one typed array feeds the dispatcher, the palette, help,
- * `docs/COMMANDS.md` (scripts/gen-docs.mjs) and the `--plain` readline composer. Pure data plus lookups.
- * `availableDuringTask`: idle | live | any. `plain`: whether the readline composer supports the command.
+ * The command table (TUI-DESIGN §5.2; TUI-DESIGN-2 §1.3 `/mode` `/llm`, §4.6 `/panel` `/transcript`; TUI-DESIGN-3 §4.1 the shortcut
+ * aliases and `POPULAR`, D-K): one typed array feeds the dispatcher, the palette, help, `docs/COMMANDS.md` (scripts/gen-docs.mjs) and
+ * the `--plain` readline composer. Pure data plus lookups. `availableDuringTask`: idle | live | any. `plain`: whether the readline
+ * composer supports the command. Aliases (§4.1): every alias is a `NAME_RE` token, unique across names + aliases, never another
+ * command's name; no one-letter alias for a command whose Enter destroys state without a confirm (`/new`, `/exit`, `/abort`).
  */
+import { DEFAULT_MODE, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../config/defaults.js';
+import type { EngineMode } from '../../core/types.js';
 
 /** TUI-DESIGN §5.1: the argument kinds `ArgSpec` validates. */
 export type ArgKind = 'enum' | 'int' | 'usd' | 'duration' | 'run' | 'step' | 'path' | 'setting' | 'text' | 'rest';
@@ -18,6 +22,8 @@ export interface ArgSpec {
   readonly optional?: boolean;
   /** shown in the palette's arg-hint column, e.g. `<usd>` */
   readonly hint?: string;
+  /** TUI-DESIGN-3 §4.1 rule 8: the value the palette suffixes ` (default)` at render time (`/mode` reads `DEFAULT_MODE`, D-N) */
+  readonly defaultValue?: string;
 }
 
 /** TUI-DESIGN §5.2: `avail` column. */
@@ -64,8 +70,26 @@ export const BUDGET_SETTINGS = ['spend-cap', 'session-spend-cap', 'max-steps', '
 /** TUI-DESIGN §16: `/theme` values. */
 export const THEMES = ['dark', 'light', 'daltonized', 'ansi'] as const;
 
-/** TUI-DESIGN-2 §1.2 / §1.3: the engine modes in the round-2 order (jev-only is the default); llm-jev last (docs/LLM-JEV-DESIGN.md §9.3). */
-export const ENGINE_MODES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] as const;
+/** TUI-DESIGN-2 §1.2 / §1.3: the engine modes in the round-2 table order; llm-jev last (docs/LLM-JEV-DESIGN.md §9.3). The default is `DEFAULT_MODE` (config/defaults.ts), never named here (TUI-DESIGN-3 §1.1, D-N). */
+export const ENGINE_MODES: readonly EngineMode[] = MODE_SETTING_VALUES;
+/**
+ * TUI-DESIGN-3 §4.1 rule 8 / §10 "Commands": the `/mode` value hints — the badge word comes from the one table `MODE_BADGE_WORD`;
+ * the row equal to `DEFAULT_MODE` gets ` (default)` when the palette renders it (`ArgSpec.defaultValue`), so no string here names a default.
+ */
+export const MODE_VALUE_HINTS: Readonly<Record<EngineMode, { readonly title: string }>> = {
+  'jev-on': { title: `${MODE_BADGE_WORD['jev-on']}: the code model writes, Jev decides every step` },
+  'llm-jev': { title: `${MODE_BADGE_WORD['llm-jev']}: candidate patches, tests verify, Jev arbitrates` },
+  'jev-only': { title: 'no generating LLM; code proposes, Jev decides, tests verify' },
+  'jev-off': { title: 'the generator alone (bench condition)' },
+};
+/** TUI-DESIGN-3 §4.1 rule 6: the Popular group of an empty palette query, in this fixed order (16 commands). */
+export const POPULAR: readonly string[] = ['help', 'mode', 'model', 'cost', 'status', 'resume', 'new', 'panel', 'plan', 'diff', 'undo', 'theme', 'login', 'budget', 'jev', 'exit'];
+/**
+ * TUI-DESIGN-3 §4.1 (D-K): commands whose Enter destroys state without a confirm — never a one-letter alias (`a` for /abort and
+ * `n` for /new are dropped; /new gets `nw`). `/exit` keeps `q` alone (the letter every pager teaches; `x` is dropped): `EXIT_ONE_LETTER`.
+ */
+export const NO_ONE_LETTER_ALIAS: readonly string[] = ['new', 'abort'];
+export const EXIT_ONE_LETTER = 'q';
 /** TUI-DESIGN-2 §1.3: `/llm on|off` → `/mode jev-on` | `/mode jev-only`. */
 export const LLM_STATES = ['on', 'off'] as const;
 export const LLM_STATE_MODE: Readonly<Record<(typeof LLM_STATES)[number], 'jev-on' | 'jev-only'>> = { on: 'jev-on', off: 'jev-only' };
@@ -79,7 +103,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'help',
     aliases: ['h'],
-    args: [{ name: 'topic', kind: 'enum', values: ['keys', 'commands', 'reload'], optional: true, hint: '[keys|commands|reload]' }],
+    args: [{ name: 'topic', kind: 'enum', values: ['keys', 'commands', 'reload'], optional: true, hint: '[keys|commands|reload]', valueHints: { keys: { title: 'the key table only' }, commands: { title: 'the command list only' }, reload: { title: 're-read keybindings.json' } } }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'keys by context, commands with one-liners, per-terminal notes',
@@ -89,7 +113,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'new',
-    aliases: [],
+    aliases: ['nw'],
     args: [],
     availableDuringTask: 'idle',
     plain: 'yes',
@@ -100,7 +124,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'resume',
-    aliases: ['sessions', 'continue'],
+    aliases: ['r', 'sessions', 'continue'],
     args: [{ name: 'run', kind: 'run', optional: true, hint: '[id|title]' }],
     availableDuringTask: 'idle',
     plain: '`/resume <id|title>` only',
@@ -168,7 +192,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'undo',
-    aliases: [],
+    aliases: ['u'],
     args: [{ name: 'n', kind: 'step', optional: true, hint: '[n]' }],
     availableDuringTask: 'idle',
     plain: 'yes (readline `y/N`)',
@@ -180,7 +204,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'rewind',
-    aliases: [],
+    aliases: ['rw'],
     args: [{ name: 'step', kind: 'step', optional: true, hint: '[step]' }],
     availableDuringTask: 'idle',
     plain: 'yes',
@@ -192,7 +216,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'diff',
-    aliases: [],
+    aliases: ['d'],
     args: [{ name: 'step', kind: 'step', optional: true, hint: '[step]' }],
     flags: [{ name: 'full', title: 'unified diff in `$GIT_PAGER`/`$PAGER`/`less` (idle only)', idleOnly: true }, { name: 'all', title: 'lift the 40-row cap' }],
     availableDuringTask: 'any',
@@ -204,7 +228,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'plan',
-    aliases: [],
+    aliases: ['pl'],
     args: [],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -215,10 +239,26 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'decisions',
-    aliases: [],
+    aliases: ['dc'],
     args: [
       { name: 'n', kind: 'int', optional: true, hint: '[n]' },
-      { name: 'stage', kind: 'enum', values: ['replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete'], optional: true, hint: '[stage]' },
+      {
+        name: 'stage',
+        kind: 'enum',
+        values: ['replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete'],
+        optional: true,
+        hint: '[stage]',
+        valueHints: {
+          replan: { title: 'replan rows: the plan rewritten' },
+          intent: { title: 'intent rows: what the step means to do' },
+          context: { title: 'context rows: files and facts gathered' },
+          propose: { title: 'propose rows: the candidate action' },
+          risk: { title: 'risk rows: the five dimensions and the verdict' },
+          execute: { title: 'execute rows: the action as run' },
+          judge: { title: 'judge rows: did the step help' },
+          complete: { title: 'complete rows: is the task done' },
+        },
+      },
     ],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -229,7 +269,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'why',
-    aliases: [],
+    aliases: ['w'],
     args: [{ name: 'ref', kind: 'rest', hint: '<ref|digit>' }],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -251,7 +291,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'jev',
-    aliases: [],
+    aliases: ['j'],
     args: [],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -262,7 +302,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'cost',
-    aliases: [],
+    aliases: ['c'],
     args: [],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -273,7 +313,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'budget',
-    aliases: [],
+    aliases: ['b'],
     args: [
       {
         name: 'setting',
@@ -302,31 +342,31 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'model',
-    aliases: [],
-    args: [{ name: 'id', kind: 'text', hint: '<id>' }],
+    aliases: ['ml'],
+    args: [{ name: 'id', kind: 'text', optional: true, hint: '[id]' }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'generator model for the next run only',
-    usage: '<id>',
-    semantics: 'pending for the **next** run only (memory); a differing `--model` on `/resume` stays `ConfigError`',
+    usage: '[id]',
+    semantics: 'no argument shows `model <current> (next run: <pending>)`; with one: pending for the **next** run only (memory); a differing `--model` on `/resume` stays `ConfigError`',
     category: 'config',
   },
   {
     name: 'provider',
     aliases: [],
-    args: [{ name: 'p', kind: 'enum', values: ['anthropic', 'openrouter'], hint: '<p>' }],
+    args: [{ name: 'p', kind: 'enum', values: ['anthropic', 'openrouter'], optional: true, hint: '[anthropic|openrouter]' }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'generator provider for the next run only',
-    usage: '<p>',
-    semantics: 'pending for the **next** run only (memory)',
+    usage: '[anthropic|openrouter]',
+    semantics: 'no argument shows `provider <current> (next run: <pending>)`; with one: pending for the **next** run only (memory)',
     category: 'config',
   },
-  // TUI-DESIGN-2 §1.3: `/mode` shows or pends; `/llm on|off` is its alias pair
+  // TUI-DESIGN-2 §1.3: `/mode` shows or pends; `/llm on|off` is its alias pair; TUI-DESIGN-3 §4.1 rule 8: the value hints read the badge table
   {
     name: 'mode',
-    aliases: [],
-    args: [{ name: 'm', kind: 'enum', values: ENGINE_MODES, optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]' }],
+    aliases: ['m'],
+    args: [{ name: 'm', kind: 'enum', values: ENGINE_MODES, optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: MODE_VALUE_HINTS, defaultValue: DEFAULT_MODE }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'engine mode: show, or set for the next run',
@@ -347,7 +387,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'config',
-    aliases: [],
+    aliases: ['cf'],
     args: [],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -358,7 +398,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'login',
-    aliases: [],
+    aliases: ['l'],
     args: [],
     availableDuringTask: 'any',
     plain: '`/login` raw-mode prompt',
@@ -371,7 +411,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'logout',
     aliases: [],
-    args: [{ name: 'which', kind: 'enum', values: ['generator', 'jev'], optional: true, hint: '[generator|jev]' }],
+    args: [{ name: 'which', kind: 'enum', values: ['generator', 'jev'], optional: true, hint: '[generator|jev]', valueHints: { generator: { title: 'remove the saved generator (code model) key' }, jev: { title: 'remove the saved Jev key' } } }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'remove a saved key from the config file',
@@ -392,8 +432,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'theme',
-    aliases: [],
-    args: [{ name: 'theme', kind: 'enum', values: THEMES, hint: '<dark|light|daltonized|ansi>' }],
+    aliases: ['t'],
+    args: [{ name: 'theme', kind: 'enum', values: THEMES, hint: '<dark|light|daltonized|ansi>', valueHints: { dark: { title: 'TypeSafe pink' }, light: { title: 'the same roles on a light terminal' }, daltonized: { title: 'colour-blind safe: blue/orange for red/green' }, ansi: { title: 'the 16 ANSI colours only' } } }],
     availableDuringTask: 'any',
     plain: 'n/a',
     title: 'colour theme for new items and the dynamic region',
@@ -404,8 +444,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   // TUI-DESIGN-2 §4.6: the Jev panel and the transcript view (S4's rows, landed with the table)
   {
     name: 'panel',
-    aliases: [],
-    args: [{ name: 'what', kind: 'enum', values: PANEL_ARGS, optional: true, hint: '[d|p|t|s|off|full]' }],
+    aliases: ['p'],
+    args: [{ name: 'what', kind: 'enum', values: PANEL_ARGS, optional: true, hint: '[d|p|t|s|off|full]', valueHints: { d: { title: 'decisions tab' }, p: { title: 'plan tab' }, t: { title: 'timeline tab' }, s: { title: 'synth tab' }, off: { title: 'collapse to the one-row strip' }, full: { title: 'expand to the 12-row pane' } } }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'Jev panel: toggle, open a tab (d|p|t|s), collapse (off) or expand (full)',
@@ -415,10 +455,10 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'transcript',
-    aliases: [],
-    args: [{ name: 'view', kind: 'enum', values: TRANSCRIPT_VIEWS, optional: true, hint: '[compact|full]' }],
+    aliases: ['tr'],
+    args: [{ name: 'view', kind: 'enum', values: TRANSCRIPT_VIEWS, optional: true, hint: '[compact|full]', valueHints: { compact: { title: 'one line per step' }, full: { title: 'every stage line' } } }],
     availableDuringTask: 'any',
-    plain: 'n/a',
+    plain: 'always full',
     title: 'transcript view: compact (one line per step) or full (every stage line)',
     usage: '[compact|full]',
     semantics: 'no argument shows the current view; `compact` (default) hides the stage kinds and shows one `[step N]` line per step; `full` shows every item (new items only, §4.5); `--plain` is always `full`',
@@ -426,8 +466,8 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'copy',
-    aliases: [],
-    args: [{ name: 'what', kind: 'enum', values: ['last', 'proposal', 'diff', 'draft'], optional: true, hint: '[last|proposal|diff|draft]' }],
+    aliases: ['cp'],
+    args: [{ name: 'what', kind: 'enum', values: ['last', 'proposal', 'diff', 'draft'], optional: true, hint: '[last|proposal|diff|draft]', valueHints: { last: { title: 'the last transcript item' }, proposal: { title: 'the last proposal' }, diff: { title: 'the run\'s diff, as /diff prints it' }, draft: { title: 'the composer draft' } } }],
     availableDuringTask: 'any',
     plain: 'n/a',
     title: 'copy the last item, proposal, diff or draft (redacted)',
@@ -448,7 +488,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'status',
-    aliases: [],
+    aliases: ['s'],
     args: [],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -503,7 +543,7 @@ export const COMMANDS: readonly CommandSpec[] = [
   },
   {
     name: 'exit',
-    aliases: ['quit'],
+    aliases: ['q', 'quit'],
     args: [],
     availableDuringTask: 'any',
     plain: 'yes',
@@ -536,6 +576,13 @@ export function takesRest(spec: CommandSpec): boolean {
 export function findCommand(nameOrAlias: string): CommandSpec | null {
   const key = nameOrAlias.trim().replace(/^\//, '').toLowerCase();
   return BY_NAME.get(key) ?? null;
+}
+
+/** TUI-DESIGN-3 §4.1 rule 4: the alias the palette column shows — the shortest; ties keep table order; null when the command has none. */
+export function shortestAlias(spec: CommandSpec): string | null {
+  let best: string | null = null;
+  for (const a of spec.aliases) if (best === null || a.length < best.length) best = a;
+  return best;
 }
 
 /** TUI-DESIGN §5.3: every `/name` (aliases excluded) in table order — the palette's candidate list. */

@@ -15,6 +15,7 @@ import { join } from 'node:path';
 import { toJson } from '../../core/json.js';
 import { clip } from '../../core/text.js';
 import { PLAN_ITEM_MAX_CHARS } from '../../loop/plan.js';
+import type { ClaimingCompletionEvidence } from '../../loop/stages/complete.js';
 import type { Decider, EngineEvent, OutcomeStatus, Proposal, ProposalEvidence, SynthesisContext, Synthesizer, SynthesizerGeneration, WindowEntry } from '../../core/types.js';
 import { AbortError } from '../../errors.js';
 import { SPEC_FILE } from '../../workspace/tests.js';
@@ -740,7 +741,12 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       const claim = (p: Proposal): Proposal => {
         if (!claiming) return p;
         const evidence = runEvidence(scratch.previousBaseline ?? baseline, baseline, goal, sel, command);
-        return withEvidence(p, { ...evidence, completion: completionEvidence(ctx, mem, command, repo ?? null) });
+        // §6.6 as amended (llm-jev-headtohead-v2.md §9 class E′): the scoped tests that already failed at the
+        // base commit travel with the facts, so the engine's code judge and completion fact compare this run
+        // against them instead of against zero. `sympy-11618` re-claimed `done partial` for 7 steps over 43
+        // pre-existing collection errors its patch neither caused nor could fix.
+        const completion: ClaimingCompletionEvidence = { ...completionEvidence(ctx, mem, command, repo ?? null), ...(repo === undefined || repo.knownFailures <= 0 ? {} : { knownFailures: repo.knownFailures }) };
+        return withEvidence(p, { ...evidence, completion });
       };
       if (changed.length === 0) {
         if (!never) return claim(run);
@@ -1253,6 +1259,8 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     }
     const first = mem.repository === undefined;
     let repo = mem.repository;
+    /** this rebaseline is the base commit's own measurement: the mode was created here, not restored from a checkpoint taken after a commit */
+    let atBaseCommit = false;
     if (repo === undefined) {
       const restored = repositoryFromPersisted(persisted);
       if (restored !== null) {
@@ -1265,6 +1273,7 @@ export class LedgerSieveSynthesizer implements Synthesizer {
         await this.harvestHistoryFacts(ctx, repo, repo.moduleFiles, files);
       } else {
         repo = await this.initRepository(ctx, mem, scratch, files, paths);
+        atBaseCommit = true;
       }
     }
     const timeoutMs = Math.min(ctx.limits.maxCommandTimeoutMs, REPO_BASELINE_TIMEOUT_MS);
@@ -1313,7 +1322,12 @@ export class LedgerSieveSynthesizer implements Synthesizer {
     mem.subsetBaselines = new Map();
     mem.deferred = new Map();
     if (!sameWorkspace) scratch.rejected.clear();
-    repo.knownFailures = scoped.failed + scoped.errors;
+    // Known failures are the BASE COMMIT's (§22.5, and the completion fact reads them, complete.ts
+    // `knownFailuresOf`): the first rebaseline of the run measures them, every later one may only lower
+    // the count — a commit that fixed one of them — never raise it, so a regression this run caused can
+    // never travel as a pre-existing failure. A resumed run keeps the persisted count for the same reason.
+    const scopedFailing = scoped.failed + scoped.errors;
+    repo.knownFailures = atBaseCommit ? scopedFailing : Math.min(repo.knownFailures, scopedFailing);
     repo.lastRepro = repro;
     const goal = mem.goals.find((g) => g.id === repo?.goalId);
     if (goal !== undefined && repro !== null) {

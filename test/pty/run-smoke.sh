@@ -12,12 +12,15 @@
 # controller's finishSession and process 'exit'; a --plain TTY exit writes it once too), expect timeouts and the
 # scenario's own checks.
 #
-# Round 2 (TUI-DESIGN-2): the default mode is jev-only (§1.1), so every scenario that needs the scripted `--mock`
-# trajectory says `--mode jev-on` (under jev-only `--mock` would run the real synthesizer); the zero-argument scenarios
-# start without a mode and expect the `jev-only` badge. New scenarios: chat-hi (a greeting → a [jevcode] reply, no run,
+# Round 2 (TUI-DESIGN-2) / round 3 (TUI-DESIGN-3 §1.10): every scenario that needs the scripted `--mock` trajectory says
+# `--mode jev-on` explicitly (the trajectory is a generator trajectory whatever the default is; under jev-only `--mock` would run
+# the real synthesizer); the zero-argument scenarios start without a mode and expect the DEFAULT badge (`jev+llm` since round 3,
+# read from src/config/defaults.ts by `default_badge`). Round 3 adds: wordmark-* (the persistent mark, TUI-DESIGN-3 §3), theme-*
+# (the TypeSafe pink, §2), polish (the §9 hero-frame checklist through scripts/pty/polish-check.mjs), r3-* / ts-only-* (the one-key
+# wizard, §1), commands-* / trust-esc / keybindings (the §4 audit). Round-2 scenarios: chat-hi (a greeting → a [jevcode] reply, no run,
 # wall time recorded), chat-facts, chat-task (today's chat-run-exit; compact transcript), chat-ambiguous(-y) (the intake
 # card; -flat at 12x60), mode-switch(-keyed) (/mode jev-on without / with a generator key), splash, splash-wide,
-# splash-reduced, splash-settle (no key: the splash settles by itself), panel, chrome-tiers, zero-arg-chat, zero-arg-run,
+# wordmark-reduced (was splash-reduced), splash-settle (no key: the splash settles by itself), panel, chrome-tiers, zero-arg-chat, zero-arg-run,
 # zero-arg-wizard.
 # Hermetic child environment (§8.2; docs/STATUS.md "Round 2" finding 2): HOME, XDG_CONFIG_HOME and JEVCODE_HOME inside
 # the scenario's temp home — `resolveConfig` falls back to the legacy $HOME/.config/jevcode/config.json when the XDG
@@ -35,6 +38,19 @@ STEPS="$ROOT/test/pty/smoke"
 BIN="$ROOT/bin/jevcode.js"
 # a fake key never leaves the machine: JEVCODE_ASSERT_NO_NETWORK=1 makes any http(s) fetch throw (bin/jevcode.js)
 FAKE_KEY="sk-fake-$(printf 'x%.0s' $(seq 1 40))"
+# the default mode's badge word, read from the one table (TUI-DESIGN-3 §1.1 D-N: no literal names the default here)
+default_badge() {
+  python3 - "$ROOT/src/config/defaults.ts" <<'PY'
+import re,sys
+t=open(sys.argv[1]).read()
+m=re.search(r"DEFAULT_MODE: EngineMode = '([a-z-]+)'", t)
+w=re.search(r"MODE_BADGE_WORD[^=]*=\s*\{([^}]*)\}", t)
+tbl=dict(re.findall(r"'([^']+)': '([^']+)'", w.group(1)))
+print(tbl[m.group(1)])
+PY
+}
+BADGE=$(default_badge)
+BADGE_RE=$(printf '%s' "$BADGE" | sed 's/[+.]/\\&/g')
 # the variables every child loses (see the header); `env -u` takes them one by one
 UNSET="-u CI -u CONTINUOUS_INTEGRATION -u JEV_API_KEY -u TYPESAFE_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u JEVCODE_API_KEY -u JEVCODE_MODE -u JEV_PROVIDER -u JEVCODE_CONFIG -u JEVCODE_MOCK_INTAKE -u JEVCODE_MOCK_REVIEW_AT -u JEVCODE_MOCK_JEV_MS -u JEVCODE_ASSERT_NO_NETWORK -u JEVCODE_TRACE -u JEVCODE_FAULT"
 # the isolated home of one child: `hermetic_env <home>` prints the VAR=value words every scenario gets
@@ -79,7 +95,7 @@ wordmark() {
   python3 - "$1" <<'PY'
 import re,sys
 b=open(sys.argv[1],'rb').read()
-m=re.search(rb'(?:\xe2\x80\xba|>) h', b)
+m=re.search(rb'(?:\xe2\x80\xba|>)(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*h', b)  # the pink prompt closes an SGR before the echo
 if m:
     cut=b.rfind(b'\x1b[?25l', 0, m.start())
     if cut < 0: cut=m.start()
@@ -87,6 +103,129 @@ else:
     cut=len(b)
 print(b[:cut].count(b'\xe2\x96\x88\xe2\x96\x88'), b[cut:].count(b'\xe2\x96\x88\xe2\x96\x88'))
 PY
+}
+# round 3 (TUI-DESIGN-3 §3): frames = synchronized-output brackets; the settle frame is the first carrying the caption `◆ <version>`
+# (the brand row `◆ jevcode` in the frames that hide the mark). `wm_frames_between <cap> <after_re> <before_re>` prints the count
+# of frames strictly between the first frame matching <after_re> and the first later frame matching <before_re>, plus the largest
+# frame in bytes, the count of those carrying a sweep-band SGR (38;5;224 / 38;2;251;208;220) and whether every one keeps the mark's
+# letters equal to the settle frame's (stripped): "<frames> <max_bytes> <band_frames> <letters_ok>"
+wm_frames_between() {
+  python3 - "$1" "$2" "$3" <<'PY'
+import re,sys
+b=open(sys.argv[1],'rb').read()
+frames=b.split(b'\x1b[?2026h')[1:]
+strip=lambda f: re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f)
+after=re.compile(sys.argv[2].encode()); before=re.compile(sys.argv[3].encode())
+i0=next((i for i,f in enumerate(frames) if after.search(strip(f))), None)
+if i0 is None: print('-1 0 0 0'); sys.exit()
+i1=next((i for i in range(i0+1,len(frames)) if before.search(strip(frames[i]))), len(frames))
+mid=frames[i0+1:i1]
+letters=lambda f: [l for l in strip(f).split(b'\r\n') if b'\xe2\x96\x88\xe2\x96\x88' in l]
+ref=letters(frames[i0])
+ok=all(letters(f)==ref for f in mid) if mid else True
+band=sum(1 for f in mid if re.search(rb'38;5;224m|38;2;251;208;220m', f))
+print(len(mid), max([len(f) for f in mid] or [0]), band, 1 if ok else 0)
+PY
+}
+# "<head_frames> <mark_frames> <markless_frames> <frames>": frames carrying the sweep head `▓▒░` (the reveal), frames carrying the resting
+# mark (≥ 5 `██` rows), frames with a rule row but no `██` cell, all frames
+wm_shape() {
+  python3 - "$1" <<'PY'
+import re,sys
+b=open(sys.argv[1],'rb').read()
+frames=b.split(b'\x1b[?2026h')[1:]
+strip=lambda f: re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f)
+head=sum(1 for f in frames if b'\xe2\x96\x93\xe2\x96\x92\xe2\x96\x91' in strip(f))
+mark=sum(1 for f in frames if sum(1 for l in strip(f).split(b'\r\n') if b'\xe2\x96\x88\xe2\x96\x88' in l) >= 5)
+none=sum(1 for f in frames if b'\xe2\x96\x88\xe2\x96\x88' not in strip(f) and re.search(rb'(?:\xe2\x94\x80){3}', strip(f)))
+print(head, mark, none, len(frames))
+PY
+}
+# the dynamic-region row count of the frame that first matches <re> (rule row → last row), or -1
+wm_rows_at() {
+  python3 - "$1" "$2" <<'PY'
+import re,sys
+b=open(sys.argv[1],'rb').read()
+frames=b.split(b'\x1b[?2026h')[1:]
+strip=lambda f: re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f)
+pat=re.compile(sys.argv[2].encode())
+for f in frames:
+    t=strip(f)
+    if pat.search(t):
+        rows=t.split(b'\r\n')
+        while rows and rows[-1].strip()==b'': rows.pop()
+        idx=next((i for i,l in enumerate(rows) if re.match(rb'^(?:\xe2\x94\x80){3}|^-{3}', l)), None)
+        print(-1 if idx is None else len(rows)-idx); sys.exit()
+print(-1)
+PY
+}
+# frames from the first that matches <from_re> on (stripped): 0 when none of them carries ≥ 5 `██` rows, else 1
+wm_mark_after() {
+  python3 - "$1" "$2" <<'PY'
+import re,sys
+b=open(sys.argv[1],'rb').read()
+frames=[re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f) for f in b.split(b'\x1b[?2026h')[1:]]
+pat=re.compile(sys.argv[2].encode())
+i=next((i for i,f in enumerate(frames) if pat.search(f)), None)
+mark=lambda f: sum(1 for l in f.split(b'\r\n') if b'\xe2\x96\x88\xe2\x96\x88' in l)>=5
+print(-1 if i is None else (1 if any(mark(f) for f in frames[i:]) else 0))
+PY
+}
+# the wordmark-handoff / wordmark-22-postrun / wordmark-21 structural checks: prints "ok" or the failing rule
+wm_handoff() {
+  python3 - "$1" "$2" <<'PY'
+import re,sys
+b=open(sys.argv[1],'rb').read()
+frames=[re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f) for f in b.split(b'\x1b[?2026h')[1:]]
+mark=lambda f: sum(1 for l in f.split(b'\r\n') if b'\xe2\x96\x88\xe2\x96\x88' in l)>=5
+which=sys.argv[2]
+if which=='handoff':
+    start=next((i for i,f in enumerate(frames) if re.search(rb'\[run\] start ', f)), None)
+    end=next((i for i,f in enumerate(frames) if re.search(rb'\] end (complete|max_steps|generator_done)', f)), None)
+    if start is None or end is None: print('no-run'); sys.exit()
+    # the mark is hidden for the whole run; the frame that commits `[run] end` also commits the state change, so it may already
+    # carry the mark back (TUI-DESIGN-3 §3.2 "run:end -> idle": one frame earlier than the prose's "the frame after end")
+    if any(mark(f) for f in frames[start:end]): print('mark-while-live'); sys.exit()
+    after=frames[end:]
+    back=next((i for i,f in enumerate(after) if mark(f) and b'\xe2\x96\xb8 jev' in f), None)
+    if back is None: print('no-return-under-strip'); sys.exit()
+    panel=next((i for i,f in enumerate(after) if b'\xe2\x96\xbe decisions' in f), None)
+    if panel is None or mark(after[panel]): print('panel-did-not-hide'); sys.exit()
+    off=next((i for i in range(panel+1,len(after)) if b'\xe2\x96\xb8 jev' in after[i] and mark(after[i])), None)
+    print('ok' if off is not None else 'no-return-after-panel-off')
+elif which=='postrun22':
+    end=next((i for i,f in enumerate(frames) if re.search(rb'\] end (complete|max_steps|generator_done)', f)), None)
+    echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
+    if end is None or echo is None: print('no-run-or-echo'); sys.exit()
+    if any(mark(f) for f in frames[end:echo]): print('mark-before-first-key'); sys.exit()
+    print('ok' if mark(frames[echo]) else 'no-mark-on-first-key')
+elif which=='palette21':
+    pal=[f for f in frames if b'Tab' in f and b'commands' in f]
+    print('ok' if pal and all(mark(f) for f in pal) else 'palette-handoff')
+elif which=='flat-no-mark':
+    flat=[f for f in frames if re.search(rb'\xc2\xb7 idle', f) and b'\xe2\x95\xad' not in f]
+    print('ok' if flat and not any(b'\xe2\x96\x88\xe2\x96\x88' in f for f in flat) else 'mark-in-flat-tier')
+elif which=='head-after-echo':
+    echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
+    print('ok' if echo is not None and all(b'\xe2\x96\x93\xe2\x96\x92\xe2\x96\x91' not in f for f in frames[echo:]) else 'head-after-echo')
+PY
+}
+# the wall time (ms) between the first `send h` and the first `expect` that matched it, or -1
+echo_wait() {
+  python3 - "$1" <<'PY'
+import json,sys
+s=r=None
+for line in open(sys.argv[1]):
+    try: x=json.loads(line)
+    except Exception: continue
+    if x.get('op')=='send' and x.get('arg')=='h' and s is None: s=x['t']
+    if x.get('op')=='expect' and s is not None and r is None and x.get('arg','').endswith('h'): r=x['t']
+print(-1 if s is None or r is None else r-s)
+PY
+}
+# the bytes of the first dynamic frame (cursor hide → cursor show)
+first_frame() {
+  python3 -c 'import sys; b=open(sys.argv[1],"rb").read(); i=b.find(b"\x1b[?25l"); j=b.find(b"\x1b[?25h", i); sys.stdout.buffer.write(b[i:j] if i>=0 else b"")' "$1"
 }
 # the splash settling by itself (splash-settle): "<wordmark_frames> <wordmark_after_brand> <frames_before_brand>" — frames are
 # the synchronized-output brackets (BSU `ESC[?2026h` opens every frame; the cursor hide does not — a frame drawn while the
@@ -164,6 +303,8 @@ case "$1" in
 esac
 run() {
   name=$1; expected=$2; rows=$3; cols=$4; shift 4
+  steps_name=$name
+  case "$name" in polish-wide) steps_name=polish;; wordmark-idle-wide) steps_name=wordmark-idle;; esac
   home=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-home-XXXXXX"); ws=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-ws-XXXXXX")
   extra_env=$(hermetic_env "$home")
   case "$name" in
@@ -174,13 +315,20 @@ run() {
     mode-switch) extra_env="$extra_env TYPESAFE_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
     mode-switch-keyed) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
     # no key anywhere: the isolated HOME holds no credentials file, the workspace has no .env, every key variable is unset
-    zero-arg-wizard) extra_env="$extra_env JEVCODE_ASSERT_NO_NETWORK=1";;
+    zero-arg-wizard|r3-options-ctrlc|r3-key-paste-newline|r3-wizard-resize|r3-wizard-masked-key|r3-wizard-sr|r3-plain-wizard) extra_env="$extra_env JEVCODE_ASSERT_NO_NETWORK=1";;
+    ts-only-start) extra_env="$extra_env TYPESAFE_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1"; TS_HOME="$home";;
+    # the restart reuses ts-only-start's HOME (its config.json carries `mode: jev-only`)
+    ts-only-restart) if [ -n "$TS_HOME" ]; then rm -rf "$home"; home="$TS_HOME"; extra_env="$(hermetic_env "$home") TYPESAFE_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1"; fi;;
+    r3-env-jev-only) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_MODE=jev-only JEVCODE_ASSERT_NO_NETWORK=1";;
+    commands-thinking) extra_env="$extra_env JEVCODE_MOCK_JEV_MS=1500";;
+    trust-esc) printf '# instructions\nBe careful.\n' > "$ws/AGENTS.md";;
+    keybindings) printf '{ "global:help": "none" }\n' > "$ws/kb.json"; set -- chat --mock --keybindings "$ws/kb.json";;
     taskfile-header) printf 'create one scratch file and stop\n' > "$ws/todo.md"; set -- run --task-file "$ws/todo.md" --mode jev-on --mock --mock-steps 3;;
   esac
   cap="$OUT/$name.cap"; tim="$OUT/$name.jsonl"; rm -f "$cap" "$tim"
   # shellcheck disable=SC2086
   (cd "$ws" && env $UNSET PTY_ROWS="$rows" PTY_COLS="$cols" $extra_env \
-    "$ROOT/scripts/pty/drive.exp" --kill-on-timeout "$STEPS/$name.steps" "$cap" "$tim" 60 -- node "$BIN" "$@" --workspace "$ws" >"$OUT/$name.stdout" 2>&1)
+    "$ROOT/scripts/pty/drive.exp" --kill-on-timeout "$STEPS/$steps_name.steps" "$cap" "$tim" 60 -- node "$BIN" "$@" --workspace "$ws" >"$OUT/$name.stdout" 2>&1)
   code=$?
   txt="$OUT/$name.txt"; strip_cap "$cap" > "$txt"
   c=$(clears "$cap"); t=$(grep -c '"op":"timeout"' "$tim"); r=$(restores "$cap"); checks=""; ok=1
@@ -189,7 +337,7 @@ run() {
   # §14.2: the exit string exactly once per exit in every scenario (the process-wide restoreTerminal is shared by unmount, fatalExit, the engine's exit hook, finishSession and process 'exit')
   [ "$r" = "1" ] || ok=0
   case "$name" in
-    resize|chrome-tiers) [ "$c" -le 1 ] || ok=0; checks=" clears<=1(one shrink segment)";;
+    resize|chrome-tiers|r3-wizard-resize) [ "$c" -le 1 ] || ok=0; checks=" clears<=1(one shrink segment)";;
     resize-live) [ "$c" -le 2 ] || ok=0; checks=" clears<=2(two shrink segments)"
       grep -q 'end human_abort' "$txt" && checks="$checks run:human_abort" || { ok=0; checks="$checks MISSING:human_abort"; };;
     plainwarn|taskfile-missing|firstframe) ;;
@@ -206,16 +354,16 @@ run() {
     oneshot-ctrlc) grep -q 'stopped — human_abort (exit 130)' "$txt" && checks="$checks epilogue:130" || { ok=0; checks="$checks MISSING:epilogue"; };;
     exitlast) grep -q 'end max_steps' "$txt" && checks="$checks run:max_steps";;
     # TUI-DESIGN-2 §8.2 chat-task gates "run dir + jevcode.log": a scenario that must run fails without them
-    chat-task|review-y|review-d|s2-esc-pause|s2-ctrlc-abort|chat-ambiguous-y|panel) [ -f "$home/runs/$(ls "$home/runs" 2>/dev/null | head -1)/jevcode.log" ] && checks="$checks run-dir:jevcode.log" || { ok=0; checks="$checks MISSING:run-dir-jevcode.log"; };;
+    chat-task|review-y|review-d|s2-esc-pause|s2-ctrlc-abort|chat-ambiguous-y|panel|wordmark-handoff|wordmark-22-postrun|theme-pink|polish|polish-wide) [ -f "$home/runs/$(ls "$home/runs" 2>/dev/null | head -1)/jevcode.log" ] && checks="$checks run-dir:jevcode.log" || { ok=0; checks="$checks MISSING:run-dir-jevcode.log"; };;
   esac
   case "$name" in
     # TUI-DESIGN-2 §4.5: the compact transcript shows one `[step N]` summary line per step and hides the stage lines
-    chat-task) grep -q '^\[step 1\] ' "$txt" && checks="$checks step-line" || { ok=0; checks="$checks MISSING:step-line"; }
-      grep -qE '^\[step [0-9]+\] (intent=|context [0-9]+ files|proposal (edit|write|patch|run|read|done) |risk |outcome |judge succeeded=)' "$txt" && { ok=0; checks="$checks STAGE-LINES-VISIBLE"; } || checks="$checks compact:no-stage-lines"
-      grep -q '^\[run\] ready' "$txt" && { ok=0; checks="$checks RUN-READY-VISIBLE"; } || checks="$checks compact:no-run-ready";;
+    chat-task) grep -q '^ *\[step 1\] ' "$txt" && checks="$checks step-line" || { ok=0; checks="$checks MISSING:step-line"; }
+      grep -qE '^ *\[step [0-9]+\] (intent=|context [0-9]+ files|proposal (edit|write|patch|run|read|done) |risk |outcome |judge succeeded=)' "$txt" && { ok=0; checks="$checks STAGE-LINES-VISIBLE"; } || checks="$checks compact:no-stage-lines"
+      grep -qE '^ *\[run\] ready' "$txt" && { ok=0; checks="$checks RUN-READY-VISIBLE"; } || checks="$checks compact:no-run-ready";;
     # TUI-DESIGN-2 §3.1 rows 6–7, §8.2: a reply and no run; the wall time Enter → [jevcode] from the mark pair (gate 1.5 s, the live round-2 gate of §9; the mock answers at once)
-    chat-hi|chat-facts|chat-ambiguous|chat-ambiguous-flat|mode-switch|mode-switch-keyed|zero-arg-chat|zero-arg-run|splash|splash-wide|splash-reduced|splash-settle|chrome-tiers)
-      grep -q '^\[run\] start' "$txt" && { ok=0; checks="$checks RUN-STARTED"; } || checks="$checks no-run"
+    chat-hi|chat-facts|chat-ambiguous|chat-ambiguous-flat|mode-switch|mode-switch-keyed|zero-arg-chat|zero-arg-run|splash|splash-wide|wordmark-reduced|splash-settle|chrome-tiers|wordmark-idle|wordmark-idle-wide|wordmark-key-during-pass|wordmark-21|wordmark-20|wordmark-nocolor|theme-light|theme-ansi|r3-env-jev-only|ts-only-restart|commands-idle|commands-thinking|keybindings)
+      grep -qE '^ *\[run\] start' "$txt" && { ok=0; checks="$checks RUN-STARTED"; } || checks="$checks no-run"
       [ -d "$home/runs" ] && [ -n "$(ls "$home/runs" 2>/dev/null)" ] && { ok=0; checks="$checks RUN-DIR"; };;
   esac
   case "$name" in
@@ -232,22 +380,102 @@ run() {
       grep -q '› y' "$txt" && { ok=0; checks="$checks Y-TYPED-AS-TEXT"; } || checks="$checks enter-inert:no-y-echo";;
     mode-switch) grep -q 'Pick the generator provider' "$txt" && { ok=0; checks="$checks STARTUP-WIZARD"; } || checks="$checks in-place-wizard";;
     mode-switch-keyed) grep -q 'jev+llm · next run' "$txt" && checks="$checks badge:next-run" || { ok=0; checks="$checks MISSING:badge"; };;
-    splash|splash-wide) set -- $(wordmark "$cap"); checks="$checks wordmark_before_key=$1 after_key=$2"; [ "$1" -gt 0 ] && [ "$2" = "0" ] || ok=0
+    # TUI-DESIGN-3 §3.3: a key completes the reveal — wordmark cells before AND after the echo frame; no `▓▒░` head after the echo frame; the idle frame is 11 rows
+    splash|splash-wide) set -- $(wordmark "$cap"); checks="$checks wordmark_before_key=$1 after_key=$2"; [ "$1" -gt 0 ] && [ "$2" -gt 0 ] || ok=0
+      h=$(wm_handoff "$cap" head-after-echo); [ "$h" = "ok" ] && checks="$checks no-head-after-echo" || { ok=0; checks="$checks $h"; }
+      rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "11" ] && checks="$checks idle-rows=11" || { ok=0; checks="$checks IDLE-ROWS=$rows"; }
       ff=$(expect_t "$tim" 'step 0/'); checks="$checks first_frame_t=${ff}ms";;
-    splash-reduced) set -- $(wordmark "$cap"); checks="$checks wordmark_cells=$(( $1 + $2 ))"; [ "$(( $1 + $2 ))" = "0" ] || ok=0;;
-    # §5.2: no key — ≤ 15 wordmark frames (50 ms ticks over 700 ms), none at or after the brand row's frame; the settle time from the driver's clock
-    splash-settle) set -- $(splash_settle "$cap"); checks="$checks wordmark_frames=$1 after_brand=$2"; [ "$1" -ge 1 ] && [ "$1" -le 15 ] && [ "$2" = "0" ] || ok=0
-      ff=$(expect_t "$tim" 'step 0/'); st=$(expect_t "$tim" 'jevcode'); checks="$checks settle_t=$(( st - ff ))ms";;
-    chrome-tiers) grep -q '╭─ jev-only' "$txt" && grep -q 'jev-only · idle' "$txt" && checks="$checks boxed+flat" || { ok=0; checks="$checks MISSING:tier-rows"; };;
-    zero-arg-chat|zero-arg-run) grep -q '╭─ jev-only' "$txt" && checks="$checks badge:jev-only" || { ok=0; checks="$checks MISSING:badge"; }
-      grep -q 'Where do you reach Jev\|Pick the generator provider' "$txt" && { ok=0; checks="$checks WIZARD"; } || checks="$checks no-wizard";;
-    zero-arg-wizard) grep -q 'Where do you reach Jev' "$txt" && checks="$checks wizard:jev-provider" || { ok=0; checks="$checks MISSING:jev-provider-step"; }
-      grep -q 'Pick the generator provider' "$txt" && { ok=0; checks="$checks GENERATOR-STEP"; } || checks="$checks no-generator-step";;
+    # TUI-DESIGN-3 §3.2 twins: the static resting mark from frame 0, never the head, 11 rows
+    wordmark-reduced) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 mark_frames=$2 frames=$4"; [ "$1" = "0" ] && [ "$2" -ge 1 ] && [ "$2" = "$4" ] || ok=0
+      rows=$(wm_rows_at "$cap" 'step 0/'); [ "$rows" = "11" ] && checks="$checks rows=11" || { ok=0; checks="$checks ROWS=$rows"; };;
+    # TUI-DESIGN-3 §3.4 / §3.5: no key — ≤ 15 reveal frames before the caption frame, every frame after it carries the mark, 0 frames in the 5 s after the settle
+    splash-settle) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 mark_frames=$2 markless_frames=$3"; [ "$1" -ge 1 ] && [ "$1" -le 15 ] && [ "$3" = "0" ] || ok=0
+      set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks frames_after_settle_before_key=$1"; [ "$1" = "0" ] || ok=0
+      ff=$(expect_t "$tim" 'step 0/'); st=$(expect_t "$tim" '\d+\.\d+\.\d+'); checks="$checks settle_t=$(( st - ff ))ms";;
+    # TUI-DESIGN-3 §3.4 / §3.9: 12 s alone = one pass — 14–18 frames between the settle and the marker key, each ≤ 3 KB, band cells in the sweep SGR, letters unchanged, 11 rows
+    wordmark-idle|wordmark-idle-wide) set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h'); checks="$checks pass_frames=$1 max_bytes=$2 band_frames=$3 letters_ok=$4"
+      [ "$1" -ge 14 ] && [ "$1" -le 18 ] && [ "$2" -le 3072 ] && [ "$3" -ge 14 ] && [ "$4" = "1" ] || ok=0
+      rows=$(wm_rows_at "$cap" 'Say hi'); [ "$rows" = "11" ] && checks="$checks rows=11" || { ok=0; checks="$checks ROWS=$rows"; };;
+    # TUI-DESIGN-3 §3.6: the key lands mid-pass — the echo within 50 ms of the send, band frames continue after it
+    wordmark-key-during-pass) k=$(echo_wait "$tim"); checks="$checks echo_wait=${k}ms"; [ "$k" -ge 0 ] && [ "$k" -le 50 ] || ok=0
+      set -- $(wm_frames_between "$cap" '(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*h' 'Say hi'); checks="$checks band_frames_after_echo=$3"; [ "$3" -ge 1 ] || ok=0;;
+    # TUI-DESIGN-3 §3.2: hidden for the whole run, back under the strip after `end` (24 rows), gone with the panel, back with /panel off
+    wordmark-handoff) h=$(wm_handoff "$cap" handoff); [ "$h" = "ok" ] && checks="$checks handoff:run-hidden,strip+mark,panel-hides,off-restores" || { ok=0; checks="$checks HANDOFF:$h"; };;
+    # TUI-DESIGN-3 §3.1: the mark shows at 21 rows and the palette never hands it off; the brand row at 20 rows; the post-run return on the first key at 22 rows
+    wordmark-21) set -- $(wm_shape "$cap"); [ "$2" -ge 1 ] && checks="$checks mark_frames=$2" || { ok=0; checks="$checks NO-MARK"; }
+      h=$(wm_handoff "$cap" palette21); [ "$h" = "ok" ] && checks="$checks palette-keeps-mark" || { ok=0; checks="$checks $h"; };;
+    # §3.2 row "16–20 rows": the reveal still runs (its frames carry the mark), then `splash:done` collapses to the brand row — so the
+    # gate is "no resting mark from the brand-row frame on", measured there (6 dynamic rows), never "no mark in the whole capture"
+    wordmark-20) set -- $(wm_shape "$cap"); checks="$checks head_frames=$1 reveal_mark_frames=$2"; { [ "$1" -ge 1 ] && grep -q '◆ jevcode' "$txt"; } || { ok=0; checks="$checks MISSING:reveal-or-brand-row"; }
+      m=$(wm_mark_after "$cap" '\xe2\x97\x86 jevcode'); [ "$m" = "0" ] && checks="$checks no-mark-after-brand-row" || { ok=0; checks="$checks MARK-AFTER-BRAND-ROW:$m"; }
+      rows=$(wm_rows_at "$cap" '\xe2\x97\x86 jevcode'); [ "$rows" = "6" ] && checks="$checks rows=6" || { ok=0; checks="$checks ROWS=$rows"; };;  # measured at the brand-row frame, after the reveal
+    wordmark-22-postrun) h=$(wm_handoff "$cap" postrun22); [ "$h" = "ok" ] && checks="$checks post-run:mark-on-first-key" || { ok=0; checks="$checks POST-RUN:$h"; };;
+    wordmark-nocolor) set -- $(wm_frames_between "$cap" '\xe2\x97\x86(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*[0-9]+\.[0-9]+\.[0-9]+' '(?:\xe2\x80\xba|>) h'); checks="$checks idle_frames=$1"; [ "$1" = "0" ] || ok=0
+      set -- $(wm_shape "$cap"); [ "$1" -ge 1 ] && checks="$checks reveal-ran" || { ok=0; checks="$checks NO-REVEAL"; }
+      grep -q $'\x1b\[38;' "$cap" && { ok=0; checks="$checks SGR-COLOUR"; } || checks="$checks no-colour-sgr";;
+    # TUI-DESIGN-3 §2 (D-H): the pinks by depth
+    theme-pink) first_frame "$cap" > "$OUT/$name.first"
+      grep -q '38;5;211' "$OUT/$name.first" && checks="$checks first-frame:211" || { ok=0; checks="$checks MISSING:211-in-first-frame"; }
+      grep -q '38;5;117' "$OUT/$name.first" && { ok=0; checks="$checks CYAN-117"; } || checks="$checks no-117"
+      grep -q '38;5;169' "$cap" && checks="$checks live:169" || { ok=0; checks="$checks MISSING:169"; }
+      grep -q '38;5;74' "$cap" && { ok=0; checks="$checks CYAN-74"; } || checks="$checks no-74";;
+    theme-light) grep -q '38;5;125' "$cap" && checks="$checks light:125" || { ok=0; checks="$checks MISSING:125"; }
+      grep -q '38;5;211' "$cap" && { ok=0; checks="$checks DARK-211"; } || checks="$checks no-211";;
+    theme-ansi) grep -q $'\x1b\[95m' "$cap" && checks="$checks ansi:95" || { ok=0; checks="$checks MISSING:95"; }
+      grep -q '38;5;' "$cap" && { ok=0; checks="$checks 256-CELL"; } || checks="$checks no-256";;
+    # TUI-DESIGN-3 §9: the hero-frame checklist over the .cap/.txt pair (the timing file gives V19 its intake wait)
+    polish|polish-wide) pc=$(node "$ROOT/scripts/pty/polish-check.mjs" "$cap" --txt "$txt" --timing "$tim" --rows "$rows" --cols "$cols" 2>&1); pcc=$?
+      printf '%s\n' "$pc" > "$OUT/$name.polish.txt"
+      [ "$pcc" = "0" ] && checks="$checks polish-check:pass($(printf '%s\n' "$pc" | grep -c ' pass '))" || { ok=0; checks="$checks POLISH-CHECK:$(printf '%s\n' "$pc" | grep ' FAIL ' | cut -c1-4 | tr '\n' ',')"; };;
+    # TUI-DESIGN-3 §4 (D-K): the alias run, the ghost arrow, the App-local /p toggle, the kept draft; the live availability error clears the draft
+    commands-idle) grep -q '→ /status' "$txt" && checks="$checks ghost-arrow" || { ok=0; checks="$checks MISSING:ghost-arrow"; }
+      grep -q '\[ui\] status' "$txt" && checks="$checks alias-ran" || { ok=0; checks="$checks MISSING:status-block"; }
+      grep -q '▾ decisions' "$txt" && checks="$checks /p-d-opened" || { ok=0; checks="$checks MISSING:panel"; };;
+    commands-live) grep -q '/undo/pause' "$txt" && { ok=0; checks="$checks DRAFT-KEPT"; } || checks="$checks draft-cleared";;
+    commands-thinking) grep -q '\[ui\] status' "$txt" && grep -q '\[jevcode\] Hi\.' "$txt" && checks="$checks status-while-thinking+reply" || { ok=0; checks="$checks MISSING:status-or-reply"; };;
+    trust-esc) grep -q 'trust unchanged' "$txt" && checks="$checks trust-unchanged" || { ok=0; checks="$checks MISSING:trust-unchanged"; };;
+    keybindings) grep -q '› ?' "$txt" && checks="$checks ?-inserted" || { ok=0; checks="$checks MISSING:?-as-text"; }
+      grep -q 'Tab completes' "$txt" && { ok=0; checks="$checks HELP-OPENED"; } || checks="$checks no-help";;
+    # TUI-DESIGN-3 §3.2: no wordmark at 12×60 (the flat frame carries no `██` row), the mark back at 24×80
+    chrome-tiers) grep -q "╭─ $BADGE" "$txt" && grep -q "$BADGE · idle" "$txt" && checks="$checks boxed+flat" || { ok=0; checks="$checks MISSING:tier-rows"; }
+      flat_rows=$(wm_rows_at "$cap" "$BADGE_RE \xc2\xb7 idle"); [ "$flat_rows" -ge 1 ] && [ "$flat_rows" -le 10 ] && checks="$checks flat-rows=$flat_rows" || { ok=0; checks="$checks FLAT-ROWS=$flat_rows"; }
+      w=$(wm_handoff "$cap" flat-no-mark); [ "$w" = "ok" ] && checks="$checks no-mark-in-flat" || { ok=0; checks="$checks $w"; }
+      m=$(wm_mark_after "$cap" "(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*Z"); [ "$m" = "1" ] && checks="$checks mark-back-at-24x80" || { ok=0; checks="$checks MARK-NOT-BACK"; };;
+    zero-arg-chat|zero-arg-run) grep -q "╭─ $BADGE" "$txt" && checks="$checks badge:default($BADGE)" || { ok=0; checks="$checks MISSING:badge"; }
+      grep -q 'OpenRouter API key\|Where do you reach Jev\|Pick the generator provider' "$txt" && { ok=0; checks="$checks WIZARD"; } || checks="$checks no-wizard";;
+    # TUI-DESIGN-3 §1.4 / §1.6: the one-key field under `setup · key` beneath the mark, never the round-2 provider questions; Ctrl-C → the jev-on fix block
+    zero-arg-wizard|r3-options-ctrlc) grep -q 'OpenRouter API key' "$txt" && checks="$checks wizard:one-key" || { ok=0; checks="$checks MISSING:one-key-field"; }
+      grep -q '╭─ setup · key' "$txt" && checks="$checks title:setup-key" || { ok=0; checks="$checks MISSING:setup-key-title"; }
+      grep -q 'Where do you reach Jev\|Pick the generator provider' "$txt" && { ok=0; checks="$checks ROUND-2-STEP"; } || checks="$checks no-round-2-step"
+      grep -q 'export OPENROUTER_API_KEY=' "$txt" && checks="$checks fix-block:openrouter" || { ok=0; checks="$checks MISSING:fix-block"; }
+      set -- $(wm_shape "$cap"); [ "$2" -ge 1 ] && checks="$checks mark-under-wizard" || { ok=0; checks="$checks MISSING:mark"; }
+      if [ "$name" = "r3-options-ctrlc" ]; then grep -q 'Other ways to start' "$txt" && grep -q '╭─ setup · options' "$txt" && checks="$checks options-step" || { ok=0; checks="$checks MISSING:options"; }; fi;;
+    r3-key-paste-newline) cfg="$home/xdg/jevcode/config.json"; [ -f "$cfg" ] && checks="$checks config-written" || { ok=0; checks="$checks MISSING:config"; }
+      if [ -f "$cfg" ]; then grep -q '"apiKey": *"sk-or-v1-fakefakefakefakefakefakefakefakefake"' "$cfg" && grep -q '"jevApiKey"' "$cfg" && grep -q '"jevProvider": *"openrouter"' "$cfg" && checks="$checks four-keys:clean" || { ok=0; checks="$checks KEY-NOT-CLEAN-OR-INCOMPLETE"; }
+        [ "$(stat -f '%Lp' "$cfg")" = "600" ] && checks="$checks mode:0600" || { ok=0; checks="$checks MODE:$(stat -f '%Lp' "$cfg")"; }; fi
+      grep -q '\[setup\] spend caps' "$txt" && checks="$checks caps-item" || { ok=0; checks="$checks MISSING:caps-item"; }
+      grep -q 'fakefakefake' "$txt" && { ok=0; checks="$checks KEY-IN-FRAME"; } || checks="$checks no-key-bytes";;
+    r3-wizard-resize) grep -q 'OpenRouter API key' "$txt" && checks="$checks wizard" || ok=0;;
+    r3-wizard-masked-key) grep -q 'zzzzzzzz' "$cap" && { ok=0; checks="$checks KEY-IN-FRAME"; } || checks="$checks no-key-bytes"
+      grep -rq 'zzzzzzzz' "$home" 2>/dev/null && { ok=0; checks="$checks KEY-IN-FILE"; } || checks="$checks no-key-file"
+      grep -q '│ › •' "$txt" && checks="$checks masked-row" || { ok=0; checks="$checks MISSING:masked-row"; };;
+    r3-wizard-sr) grep -q 'API key field, 0 characters entered, hidden' "$txt" && grep -q 'Enter selection (1-4)' "$txt" && checks="$checks sr-rows" || { ok=0; checks="$checks MISSING:sr-rows"; };;
+    r3-plain-wizard) grep -q 'other ways: \[t\] TypeSafe Jev' "$txt" && grep -q 'export OPENROUTER_API_KEY=' "$txt" && checks="$checks plain-wizard+fix" || { ok=0; checks="$checks MISSING:plain-rows"; };;
+    ts-only-start) grep -q 'TypeSafe key found' "$txt" && checks="$checks found-title" || { ok=0; checks="$checks MISSING:found-title"; }
+      grep -q 'mode jev-only saved to' "$txt" && checks="$checks mode-saved" || { ok=0; checks="$checks MISSING:mode-saved"; }
+      grep -q '"mode": *"jev-only"' "$home/xdg/jevcode/config.json" 2>/dev/null && checks="$checks file:mode-row" || { ok=0; checks="$checks MISSING:file-mode-row"; }
+      grep -q '"apiKey"\|"jevApiKey"' "$home/xdg/jevcode/config.json" 2>/dev/null && { ok=0; checks="$checks KEY-SAVED"; } || checks="$checks no-key-saved";;
+    ts-only-restart) grep -q 'OpenRouter API key\|Other ways to start' "$txt" && { ok=0; checks="$checks WIZARD-REOPENED"; } || checks="$checks no-wizard"
+      grep -q '╭─ jev-only' "$txt" && checks="$checks badge:jev-only" || { ok=0; checks="$checks MISSING:badge"; };;
+    r3-env-jev-only) grep -q '╭─ jev-only' "$txt" && checks="$checks badge:jev-only" || { ok=0; checks="$checks MISSING:badge"; }
+      grep -q 'OpenRouter API key\|Where do you reach Jev' "$txt" && { ok=0; checks="$checks WIZARD"; } || checks="$checks no-wizard";;
     panel) grep -q '▾ decisions' "$txt" && grep -q 'more rows' "$txt" && checks="$checks panel:open+more-row" || { ok=0; checks="$checks MISSING:panel-rows"; };;
   esac
   [ "$ok" = "1" ] && verdict=PASS || { verdict=FAIL; fail=1; }
   echo "$name: $verdict exit=$code (expected $expected) clears_after_first_frame=$c restores=$r timeouts=$t$checks"
-  rm -rf "$home" "$ws"
+  # ts-only-start keeps its HOME for ts-only-restart
+  [ "$name" = "ts-only-start" ] || rm -rf "$home"
+  rm -rf "$ws"
 }
 want="$*"
 sel() { [ -z "$want" ] || echo " $want " | grep -q " $1 "; }
@@ -260,12 +488,45 @@ sel chat-facts && run chat-facts 0 24 80 chat --mock
 sel chat-ambiguous && run chat-ambiguous 0 24 80 chat --mock
 sel chat-ambiguous-y && run chat-ambiguous-y 0 24 80 chat $MOCK_RUN --mock-steps 3
 sel chat-ambiguous-flat && run chat-ambiguous-flat 0 12 60 chat --mock
-sel mode-switch && run mode-switch 0 24 80 chat
-sel mode-switch-keyed && run mode-switch-keyed 0 24 80 chat
+# TUI-DESIGN-3 §1.10: jev+llm is the default, so the switch scenarios start in jev-only explicitly
+sel mode-switch && run mode-switch 0 24 80 chat --mode jev-only
+sel mode-switch-keyed && run mode-switch-keyed 0 24 80 chat --mode jev-only
 sel splash && run splash 0 24 80 chat --mock
 sel splash-wide && run splash-wide 0 40 120 chat --mock
-sel splash-reduced && run splash-reduced 0 24 80 chat --mock --no-animation
+sel wordmark-reduced && run wordmark-reduced 0 24 80 chat --mock --no-animation
 sel splash-settle && run splash-settle 0 24 80 chat --mock
+# round 3 (TUI-DESIGN-3 §3): the persistent wordmark and its idle sweep
+sel wordmark-idle && run wordmark-idle 0 24 80 chat --mock
+sel wordmark-idle-wide && run wordmark-idle-wide 0 40 120 chat --mock
+sel wordmark-key-during-pass && run wordmark-key-during-pass 0 24 80 chat --mock
+sel wordmark-handoff && run wordmark-handoff 0 24 80 chat $MOCK_RUN --mock-steps 3
+sel wordmark-21 && run wordmark-21 0 21 80 chat --mock
+sel wordmark-20 && run wordmark-20 0 20 80 chat --mock
+sel wordmark-22-postrun && run wordmark-22-postrun 0 22 80 chat $MOCK_RUN --mock-steps 3
+sel wordmark-nocolor && run wordmark-nocolor 0 24 80 chat --mock --no-color
+# round 3 (TUI-DESIGN-3 §2): the TypeSafe pink theme by depth
+sel theme-pink && run theme-pink 0 24 80 chat $MOCK_RUN --mock-steps 3
+sel theme-light && run theme-light 0 24 80 chat --mock --theme light
+sel theme-ansi && run theme-ansi 0 24 80 chat --mock --theme ansi
+# round 3 (TUI-DESIGN-3 §9): the hero-frame checklist
+sel polish && run polish 0 24 80 chat $MOCK_RUN --mock-steps 4
+sel polish-wide && run polish-wide 0 40 120 chat $MOCK_RUN --mock-steps 4
+# round 3 (TUI-DESIGN-3 §1): the one-key wizard and the mode edges
+sel r3-options-ctrlc && run r3-options-ctrlc 2 24 80
+sel r3-key-paste-newline && run r3-key-paste-newline 0 24 80
+sel r3-wizard-resize && run r3-wizard-resize 2 24 80
+sel r3-wizard-masked-key && run r3-wizard-masked-key 2 24 80
+sel r3-wizard-sr && run r3-wizard-sr 2 24 80 --screen-reader
+sel r3-plain-wizard && run r3-plain-wizard 2 24 80 chat --plain
+sel ts-only-start && run ts-only-start 0 24 80
+sel ts-only-restart && run ts-only-restart 0 24 80
+sel r3-env-jev-only && run r3-env-jev-only 0 24 80 chat
+# round 3 (TUI-DESIGN-3 §4): commands, trust, keybindings
+sel commands-idle && run commands-idle 0 24 80 chat $MOCK_RUN --mock-steps 3
+sel commands-live && run commands-live 0 24 80 chat $MOCK_RUN --mock-steps 200 --max-steps 200 --max-replans 50
+sel commands-thinking && run commands-thinking 0 24 80 chat --mock
+sel trust-esc && run trust-esc 0 24 80 chat --mock
+sel keybindings && run keybindings 0 24 80 chat --mock
 sel panel && run panel 0 24 80 chat $MOCK_RUN --mock-steps 4
 sel chrome-tiers && run chrome-tiers 0 24 80 chat --mock
 sel zero-arg-chat && run zero-arg-chat 0 24 80 --mock

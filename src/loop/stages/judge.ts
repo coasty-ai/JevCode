@@ -4,7 +4,9 @@
  * per newly claimed plan item; batched with the completion Noul (complete.ts) in one request.
  *
  * llm-jev (docs/LLM-JEV-DESIGN.md §3 row 7, §6.3): the judge is code on every step. A `run`'s
- * JudgeResult is computed from the parsed counts (`codeJudge`, `source: 'code'`), the plan claims are
+ * JudgeResult is computed from the parsed counts against the baseline's known failures
+ * (`evidence.completion.knownFailures`, complete.ts: pre-existing failures are not the engineer's to act
+ * on — §9 class E′), the plan claims are
  * accepted by arithmetic (the suite passed, or the claim's goal tests are in the confirmed
  * `newlyPassing`), and Q21 `done_<j>` / Q22 `task_complete` are asked in one request and recorded
  * only — a disagreement with the code verdict is logged, never consumed. `tests_pass_unparsed` is
@@ -18,7 +20,7 @@ import type { Answer, Decision, DoneClaimResult, JsonObject, JudgeResult, Propos
 import type { StageContext } from '../engine.js';
 import { buildJudgeState, type ExecutedInfo, type ExecutedTests } from '../state.js';
 import { PLAN_ACCEPT_THRESHOLD } from '../plan.js';
-import { TASK_COMPLETE_ID, TESTS_PASS_UNPARSED_THRESHOLD, buildCompleteQuestion } from './complete.js';
+import { TASK_COMPLETE_ID, TESTS_PASS_UNPARSED_THRESHOLD, buildCompleteQuestion, knownFailureCount, knownFailuresOf, unexpectedFailures } from './complete.js';
 
 export function doneClaimId(j: number): string {
   return `done_${j}`;
@@ -126,6 +128,13 @@ export interface CodeJudgeRun {
   evidence: Pick<ProposalEvidence, 'after' | 'newlyPassing'> | null;
   /** the recorded `tests_pass_unparsed` answer; consumed only when the parser read nothing */
   testsPassUnparsed: number | null;
+  /**
+   * `evidence.completion.knownFailures` (complete.ts): the scoped tests that already failed at the base
+   * commit. The suite counts as passing when nothing fails beyond them — `sympy-11618`'s claiming run
+   * reads `644 passed / 0 failed / 43 errors` on an environment that had those 43 errors before the
+   * patch, and judging it against zero cost that run 7 steps and its `complete` (§9 class E′). Default 0.
+   */
+  knownFailures?: number;
 }
 
 // the ledger grammar of synth/search/memory.ts planItemFor: `fix <test>[, +N more] in <path>`; test ids may contain " in ", paths never contain spaces
@@ -160,8 +169,12 @@ export function ledgerGoalsOf(claims: readonly string[], goalTests: readonly str
  */
 export function codeJudge(run: CodeJudgeRun, claims: readonly string[], ledgerGoals: ReadonlyMap<string, readonly string[]>): JudgeResult {
   const parsed = run.tests?.parsed ?? null;
+  // §6.6 as amended: "every test passed" means nothing failed beyond the baseline's known failures; with
+  // none declared this is the original `failed = errors = 0` and the runner's own `allPassed` is required
+  const known = knownFailureCount(run.knownFailures);
+  const unexpected = parsed === null ? 0 : unexpectedFailures(parsed, known);
   let allPassed: boolean;
-  if (parsed !== null) allPassed = run.tests?.allPassed === true && parsed.failed === 0 && parsed.errors === 0 && parsed.passed > 0;
+  if (parsed !== null) allPassed = (known > 0 || run.tests?.allPassed === true) && unexpected === 0 && parsed.passed > 0;
   else if (run.tests !== null) allPassed = run.testsPassUnparsed !== null && run.testsPassUnparsed >= TESTS_PASS_UNPARSED_THRESHOLD;
   else allPassed = run.exitCode === 0;
   const e = run.evidence;
@@ -180,7 +193,9 @@ export function codeJudge(run: CodeJudgeRun, claims: readonly string[], ledgerGo
       ? { source: 'parsed', allPassed: run.tests.allPassed === true, passed: parsed.passed, failed: parsed.failed, errors: parsed.errors }
       : { source: 'judged', allPassed: run.testsPassUnparsed ?? 0 };
   }
-  const errorPresent = parsed !== null ? (parsed.errors > 0 ? 1 : 0) : run.tests === null && run.exitCode !== null && run.exitCode !== 0 ? 1 : 0;
+  // an error the engineer must act on is one the baseline did not already have (the judge's `error_present 1.00`
+  // on 43 pre-existing collection errors is what tripped sympy-11618's replan)
+  const errorPresent = parsed !== null ? (parsed.errors > 0 && unexpected > 0 ? 1 : 0) : run.tests === null && run.exitCode !== null && run.exitCode !== 0 ? 1 : 0;
   return { succeeded: allPassed ? 1 : 0, errorPresent, newInfo: 0, tests, doneClaims, source: 'code' };
 }
 
@@ -260,7 +275,7 @@ async function runCodeJudgeStage(ctx: StageContext, common: JsonObject, proposal
   });
   const exec = executed.outcome.exec;
   const exitCode = typeof exec?.exitCode === 'number' ? exec.exitCode : null;
-  const judge = codeJudge({ tests: executed.tests, exitCode, evidence: proposal.evidence ?? null, testsPassUnparsed }, claims, ledgerGoalsOf(claims, proposal.evidence?.goalTests ?? []));
+  const judge = codeJudge({ tests: executed.tests, exitCode, evidence: proposal.evidence ?? null, testsPassUnparsed, knownFailures: knownFailuresOf(proposal.evidence?.completion) }, claims, ledgerGoalsOf(claims, proposal.evidence?.goalTests ?? []));
   judge.doneClaims.forEach((c, j) => {
     claimProbabilities.set(c.text, c.judged);
     const jev = jevClaims[j];

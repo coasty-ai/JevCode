@@ -42,6 +42,9 @@ import {
   majorityCluster,
   minEdit,
   noneDereference,
+  PROBE_OUTPUT_SEP,
+  probeMajorityCluster,
+  seedOnlySplit,
   p2pVector,
   parseBehaviourProbe,
   parseQuixbugsCall,
@@ -662,7 +665,7 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
 });
 
 describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against the gold when it arrives', () => {
-  it('detect_cycle: held on Q16 0.12 (never released), kept through a passer-less batch, then two clusters split and the code metric picks the gold — no Q15', async () => {
+  it('detect_cycle: held on Q16 0.12 (never released), kept through a passer-less batch, then two singleton clusters split — no LLM member and equal support, so Q15/Q16 picks the gold, never the special-case count (class A′)', async () => {
     const mem = createGuardMemory(DC_BASE);
     const g = goal(DETECT_CYCLE_FAILURES);
     const ask = scriptedAsk(arbitrationScript({ choice: { [DETECT_CYCLE_GOLD.trim()]: 0.8, [OVERFIT_TEXT]: 0.1 }, escape: 0.1, noul: { [DETECT_CYCLE_GOLD.trim()]: 0.85, [OVERFIT_TEXT]: 0.12 } }));
@@ -685,7 +688,9 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(d2).toMatchObject({ kind: 'continue', held: 'suspect', requests: 0, plausible: 0, signals: [] });
     expect(ask.calls).toHaveLength(1);
 
-    // the gold at line 5: the held passer joins, the probe separates them (support 1 vs 1: no majority), the gold adds fewer special cases (2 vs 3) — committed by code
+    // the gold at line 5: the held passer joins and the probe splits them, but both clusters are one
+    // seed at support 1 with no LLM member — the majority vote has nothing to weigh (class A′), so the
+    // count is not consulted and Q15/Q16 decides on the perturbation table; the measured answers pick the gold
     const gold = dcGold();
     const d3 = await decide([gold], mem, g, ask, opts);
     expect(d3.kind).toBe('commit');
@@ -693,15 +698,18 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
       expect(d3.applied.candidate.id).toBe('dc_gold');
       expect(d3.note).toBeUndefined();
     }
-    expect(d3).toMatchObject({ plausible: 1, clusters: 2, arbitrated: false, requests: 0, held: null, probeError: null, codeRule: 'fewest_special_cases' });
+    expect(d3).toMatchObject({ plausible: 1, clusters: 2, arbitrated: true, requests: 1, held: null, probeError: null, codeRule: null });
     expect(d3.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['dc_overfit']);
     expect(probed).toHaveLength(MAX_PERTURBED_INPUTS);
     expect(probed.every((p) => p.exprs !== undefined)).toBe(true);
     expect(guardState(mem).suspect).toBeNull();
     expect(guardState(mem).fallbacks?.outcomes.map((o) => o.applied.candidate.id)).toEqual(['dc_overfit']);
-    expect(ask.calls).toHaveLength(1);
+    expect(ask.calls).toHaveLength(2);
+    // the request carried the differing inputs and both outputs (the table, not the diffs alone)
+    const table = (ask.calls[1]!.state as { perturbations?: { outputs: Record<string, string> }[] }).perturbations;
+    expect(table === undefined ? 0 : table.length).toBeGreaterThan(0);
   });
-  it('wrap: the duplicated loop is held; the gold arriving from a later site wins by the code metric (0 added special cases vs 6), no Q15', async () => {
+  it('wrap: the duplicated loop is held; the gold arriving from a later site is picked by Q15/Q16 (two seed singletons, class A′: the count never decides there)', async () => {
     const mem = createGuardMemory(WRAP_BASE);
     const g = goal(WRAP_FAILURES);
     const overText = 'while len(text) > cols:';
@@ -717,9 +725,9 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     const d2 = await decide([wrapGold()], mem, g, ask, opts);
     expect(d2.kind).toBe('commit');
     if (d2.kind === 'commit') expect(d2.applied.candidate.id).toBe('wrap_gold');
-    expect(d2).toMatchObject({ clusters: 2, arbitrated: false, requests: 0, held: null, codeRule: 'fewest_special_cases' });
+    expect(d2).toMatchObject({ clusters: 2, arbitrated: true, requests: 1, held: null, codeRule: null });
     expect(guardState(mem).suspect).toBeNull();
-    expect(ask.calls).toHaveLength(1);
+    expect(ask.calls).toHaveLength(2);
   });
   it('a passer with ≥ 2 signals is committed at once only when Jev vouches confidently (p ≥ LONE_PASSER_VOUCH_MIN_NOUL); the live 0.39 holds it', async () => {
     const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
@@ -993,9 +1001,9 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     const d = await decideLive(ctx, mem, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
     expect(d.kind).toBe('commit');
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_gold');
-    // the two clusters split (support 1 vs 1) and the gold adds fewer special cases: committed by code, Jev not asked
-    expect(d).toMatchObject({ codeRule: 'fewest_special_cases', arbitrated: false, requests: 0 });
-    expect(ask.calls).toHaveLength(0);
+    // two seed singletons at support 1 with no LLM member (class A′): the count decides nothing, Q15/Q16 picks the gold
+    expect(d).toMatchObject({ codeRule: null, arbitrated: true, requests: 1 });
+    expect(ask.calls).toHaveLength(1);
     // one probe process per passer, importing the lane's detect_cycle.py with the lane on sys.path, 16 linked-list inputs
     expect(applied.sort()).toEqual(['dc_gold', 'dc_overfit']);
     expect(commands).toHaveLength(2);
@@ -1003,7 +1011,7 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     expect(commands[0]).toContain('__jev_chain(__jev_class(\\"node\\", \\"Node\\"), \\"successor\\", 4, None)'.replace(/\\\\"/g, '\\"'));
     expect(commands[0]?.endsWith("'/lanes/lane0' <<'JEVCODE_BEHAVIOUR_PROBE'\n" + commands[0]!.split("<<'JEVCODE_BEHAVIOUR_PROBE'\n")[1]!)).toBe(true);
     expect(reads).toEqual(['tests/detect_cycle_test.py', 'tests/detect_cycle.json']);
-    expect(events.some((e) => e.includes('probe 16 inputs, 2/2 signatures') && e.includes('2 behaviour clusters') && e.includes('fewest added special-case guards'))).toBe(true);
+    expect(events.some((e) => e.includes('probe 16 inputs, 2/2 signatures') && e.includes('2 behaviour clusters') && e.includes('no LLM member and equal support') && e.includes('the special-case count does not decide here'))).toBe(true);
     // the test sources are read once per goal and memory
     await decideLive(ctx, mem, goal(DETECT_CYCLE_FAILURES), [dcOverfit(), dcGold()]);
     expect(reads).toHaveLength(2);
@@ -1028,7 +1036,7 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     expect(d2.kind).toBe('commit');
     expect(events.filter((e) => e.includes('(no probe)'))).toHaveLength(2);
   });
-  it('a ladder-class layout (src/<module>.py + tests/test_*.py) harvests the test calls once on a lane and replays them per passer; the clusters split and the code metric picks the literal fix over `** 2`', async () => {
+  it('a ladder-class layout (src/<module>.py + tests/test_*.py) harvests the test calls once on a lane and replays them per passer; the clusters split and, with no LLM member at equal support, Q15/Q16 picks the literal fix over `** 2`', async () => {
     const mem = { ...createGuardMemory(SHIPPING_BASE), oracle: oracle({ runner: 'pytest', perTestTimeoutMs: null }), stepBudget: { ...ample, startedMs: 0, recursed: false } } as Parameters<ReturnType<typeof createDecide>>[1];
     const lane = { index: 0, dir: '/lanes/lane0', mode: 'copy' as const, busy: false };
     const applied: { id: string; files: number }[] = [];
@@ -1053,9 +1061,10 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
       { module: 'src.shipping', qualname: 'shipping_cost', blob: `${blob}B`, how: 'float_minus_half', source: 'perturbed from test_shipping.py::test_free_at_threshold', text: "shipping_cost(49.5, 'standard')" },
       { module: 'src.shipping', qualname: 'describe', blob: `${blob}C`, how: 'none', source: 'perturbed from test_shipping.py::test_describe', text: 'describe(20.0, None)' },
     ];
+    const askShip = scriptedAsk(arbitrationScript({ choice: { [SHIPPING_GOLD.trim()]: 0.72, [SHIPPING_SQUARED.trim()]: 0.08 }, escape: 0.2, noul: { [SHIPPING_GOLD.trim()]: 0.81, [SHIPPING_SQUARED.trim()]: 0.1 } }));
     const ctx = {
       step: 2,
-      ask: throwingAsk,
+      ask: askShip,
       signal: new AbortController().signal,
       emit: (e: { type: string; detail?: string }) => {
         if (e.detail !== undefined) events.push(e.detail);
@@ -1077,7 +1086,8 @@ describe('createDecide: the lane probe is wired by workspace layout, not by the 
     const d = await decideLive(ctx, mem, goal(SHIPPING_FAILURES), [shippingSquared(), shippingGold()]);
     expect(d.kind).toBe('commit');
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('ship_gold');
-    expect(d).toMatchObject({ clusters: 2, arbitrated: false, requests: 0, codeRule: 'fewest_special_cases' });
+    // two seed singletons of equal support (class A′): the special-case count never commits there — Q15/Q16 does, on the replayed table
+    expect(d).toMatchObject({ clusters: 2, arbitrated: true, requests: 1, codeRule: null });
     // one harvest on the committed tree (a candidate named, no files written), then one replay per passer over the 3 harvested calls
     expect(commands).toHaveLength(3);
     expect(commands[0]).toContain(" 'harvest' '/lanes/lane0' 'src.shipping' 'tests/test_shipping.py' ");
@@ -1225,15 +1235,16 @@ describe('head-to-head fix (c) and (d): shipping `** 2` and the grades/mergesort
     expect(guardState(mem).suspect).toBeNull();
     expect(ask.calls).toHaveLength(1);
   });
-  it('shipping: the held `** 2` against the gold literal fix arriving later — the probe splits them and the code metric commits the gold, no Q15', async () => {
+  it('shipping: the held `** 2` against the gold literal fix arriving later — the probe splits them, and because both clusters are one seed at equal support the gold is committed by Q15/Q16, not by the count (class A′)', async () => {
     const mem = createGuardMemory(SHIPPING_BASE);
     const g = goal(SHIPPING_FAILURES);
     const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [SHIPPING_SQUARED.trim()]: 0.1 } }));
     expect((await decide([shippingSquared()], mem, g, ask, { oracle: oracle({ runner: 'pytest' }), budget: ample })).held).toBe('suspect');
     const calls: PerturbedInput[] = [{ input: [], derivedFrom: 'perturbed from test_shipping.py::test_free_at_threshold', how: 'float_minus_half', call: { module: 'src.shipping', qualname: 'shipping_cost', blob: 'AAAA', text: "shipping_cost(49.5, 'standard')" } }];
     const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, o.applied.candidate.id === 'ship_gold' ? 'outputs:4.99' : 'outputs:0.0']));
-    const d = await decide([shippingGold()], mem, g, throwingAsk, { oracle: oracle({ runner: 'pytest' }), probe, inputs: () => Promise.resolve(calls), budget: ample });
-    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, codeRule: 'fewest_special_cases', held: null });
+    const askGold = scriptedAsk(arbitrationScript({ choice: { [SHIPPING_GOLD.trim()]: 0.72, [SHIPPING_SQUARED.trim()]: 0.08 }, escape: 0.2, noul: { [SHIPPING_GOLD.trim()]: 0.81, [SHIPPING_SQUARED.trim()]: 0.1 } }));
+    const d = await decide([shippingGold()], mem, g, askGold, { oracle: oracle({ runner: 'pytest' }), probe, inputs: () => Promise.resolve(calls), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: true, requests: 1, codeRule: null, held: null });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('ship_gold');
     expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['ship_sq']);
     expect(guardState(mem).suspect).toBeNull();
@@ -1320,5 +1331,170 @@ describe('gateHeldPartial: the held partial passes the lone-passer rule (b) befo
     expect(vouched).toMatchObject({ verdict: 'vouched', requests: 1, noul: 0.8 });
     expect(vouched.decision).toMatchObject({ kind: 'commit', note: 'partial', allGoalTestsPass: false });
     expect(improvedBase(mem)).toBeUndefined();
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Head-to-head v2, class A′ (experiments/results/llm-jev-headtohead-v2.md §8.2, §9): the two
+// overfits `fewest_special_cases` committed when every cluster held only seeds at equal support
+// ---------------------------------------------------------------------------------------
+
+describe('head-to-head v2 fix, class A′: an all-seed split of equal support is decided by the probe\'s majority, never by the special-case count', () => {
+  // the ladder `stats` shape: the goal is `test_median_empty_raises`, the defect IS a missing guard
+  const STATS = sourceFile(
+    'src/stats.py',
+    [
+      'def median(values):',
+      '    """The middle value, or the mean of the two middle values for even lengths."""',
+      '    ordered = sorted(values)',
+      '    mid = len(ordered) // 2',
+      '    if len(ordered) % 2:',
+      '        return float(ordered[mid])',
+      '    return (ordered[mid - 1] + ordered[mid]) / 2',
+      '',
+    ].join('\n'),
+  );
+  const STATS_TESTS = ['tests/test_stats.py::test_median_empty_raises', 'tests/test_stats.py::test_summary_empty_raises'];
+  const STATS_FAILURES = STATS_TESTS.map((t) => failure(t, 'ValueError', 'IndexError: list index out of range'));
+  const STATS_BASE: Base = committedBase(STATS, summary({ passed: 8, failing: STATS_TESTS, failures: STATS_FAILURES, total: 10 }));
+  const STATS_SITE = siteAt(STATS, 3, 'insert');
+  const RAISE = '        raise ValueError("median of empty sequence")';
+  /** four `template` guards at one site — one behaviour, `support` 1 (source × site), the gold shape at the minimum edit */
+  const statsGuards = (): VerifyOutcome[] =>
+    (
+      [
+        ['stats_guard_raise', '    if not values:', RAISE],
+        ['stats_guard_len', '    if len(values) == 0:', RAISE],
+        ['stats_guard_not_len', '    if not len(values):', RAISE],
+        ['stats_guard_list', '    if len(list(values)) == 0:', RAISE],
+      ] as const
+    ).map(([id, head, raise]) => plausibleOutcome(candidate(STATS_SITE, head, { id, source: 'template', op: 'guard_empty_raise', extraEdits: [{ path: STATS.path, line: 3, kind: 'insert', text: raise }] }), STATS_BASE));
+  /** the committed overfit: `values.remove(mid)` — +0c/+0l, the minimum of the count metric */
+  const statsOverfit = (): VerifyOutcome => plausibleOutcome(candidate(STATS_SITE, '    values.remove(mid)', { id: 'stats_remove', source: 'mutation', op: 'statement_template' }), STATS_BASE);
+  // the harvested ladder inputs (`LADDER_HARNESS` replay): the guards raise where the mutation mangles the caller's list
+  const statsInputs = (): PerturbedInput[] =>
+    (
+      [
+        ['tuple_for_list', 'median((4, 1, 3, 2))'],
+        ['list_drop_last', 'median([1, 2])'],
+        ['list_empty', 'median([])'],
+        ['recorded', 'median([3, 1, 2])'],
+      ] as const
+    ).map(([how, text]): PerturbedInput => ({ input: [], derivedFrom: 'perturbed from tests/test_stats.py::test_median_odd_and_even', how, call: { module: 'src.stats', qualname: 'median', blob: 'AAAA', text } }));
+  const statsSignatures = (): Map<string, string> => {
+    const guard = `outputs:2.5${PROBE_OUTPUT_SEP}1.5${PROBE_OUTPUT_SEP}ValueError${PROBE_OUTPUT_SEP}2.0`;
+    const overfit = `outputs:AttributeError${PROBE_OUTPUT_SEP}1.5 [arguments mutated to ([2],)]${PROBE_OUTPUT_SEP}IndexError${PROBE_OUTPUT_SEP}2.0`;
+    const map = new Map<string, string>([['stats_remove', overfit]]);
+    for (const o of statsGuards()) map.set(o.applied.candidate.id, guard);
+    return map;
+  };
+
+  it('stats: the 4-member guard cluster outvotes the single `values.remove(mid)` on the perturbed inputs and is committed by code — the count would have committed the +0c mutation', async () => {
+    const mem = createGuardMemory(STATS_BASE);
+    const g = goal(STATS_FAILURES);
+    const sig = statsSignatures();
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, sig.get(o.applied.candidate.id) ?? '']));
+    const notes: string[] = [];
+    const passers = [...statsGuards(), statsOverfit()];
+    const d = await decide(passers, mem, g, throwingAsk, { oracle: oracle({ runner: 'pytest' }), probe, inputs: () => Promise.resolve(statsInputs()), budget: ample, note: (n) => notes.push(n) });
+    expect(d.kind).toBe('commit');
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('stats_guard_raise');
+    expect(d).toMatchObject({ plausible: 5, clusters: 2, arbitrated: false, requests: 0, held: null, codeRule: 'probe_majority' });
+    expect(d.fallbacks.map((o) => o.applied.candidate.id)).toEqual(['stats_remove']);
+    // the rule the v2 run used would have committed the mutation (fewest added special cases: +0c/+0l against +1c/+1l)
+    const clusters = clusterByBehaviour(passers, sig);
+    expect(clusters.map((c) => c.members.length)).toEqual([4, 1]);
+    expect(clusters.map(clusterSupport)).toEqual([1, 1]);
+    expect(seedOnlySplit(clusters)).toBe(true);
+    expect(majorityCluster(clusters)).toBeNull();
+    expect(fewestSpecialCases(clusters.map((c) => c.representative))?.applied.candidate.id).toBe('stats_remove');
+    const maj = probeMajorityCluster(clusters, sig);
+    expect(maj.differing).toBe(3);
+    expect([...maj.agreement.values()]).toEqual([3, 0]);
+    expect(maj.winner?.representative.applied.candidate.id).toBe('stats_guard_raise');
+    expect(notes.some((n) => n.includes('agrees with the passers\' majority on the perturbed inputs (cluster_1 3/3, cluster_2 0/3'))).toBe(true);
+  });
+
+  it('detect_cycle: three seed clusters (2/2/1) the probe cannot separate — the break-guard is not committed by its +1c/+0l minimum; Q15/Q16 decides on the perturbation table', async () => {
+    const mem = createGuardMemory(DC_BASE);
+    const g = goal(DETECT_CYCLE_FAILURES);
+    const breakGuard = (id: string, head: string): VerifyOutcome =>
+      plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 9, 'insert'), head, { id, source: 'template', op: 'guard_empty_break', extraEdits: [{ path: DETECT_CYCLE.path, line: 9, kind: 'insert', text: '            break' }] }), DC_BASE);
+    const returnGuard = (id: string, head: string): VerifyOutcome =>
+      plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 9, 'insert'), head, { id, source: 'template', op: 'guard_empty_return', extraEdits: [{ path: DETECT_CYCLE.path, line: 9, kind: 'insert', text: '            return False' }] }), DC_BASE);
+    const BREAK_TEXT = '        if not hare.successor.successor:';
+    const RETURN_TEXT = '        if hare.successor.successor is None:';
+    const passers = [
+      breakGuard('dc_break', BREAK_TEXT),
+      breakGuard('dc_break_alt', '        if hare.successor.successor is None or hare.successor is None:'),
+      returnGuard('dc_return', RETURN_TEXT),
+      returnGuard('dc_return_alt', '        if hare.successor.successor is None or hare.successor.successor is False:'),
+      plausibleOutcome(detectCycleOverfit(), DC_BASE),
+    ];
+    // 4 linked lists: the two guard families differ on the acyclic ones (None against False), the donor at line 10
+    // agrees with the returning family there and crashes on the 1-node list — nowhere is one family alone at the top
+    const sig = new Map<string, string>([
+      ['dc_break', `outputs:None${PROBE_OUTPUT_SEP}None${PROBE_OUTPUT_SEP}True${PROBE_OUTPUT_SEP}None`],
+      ['dc_break_alt', `outputs:None${PROBE_OUTPUT_SEP}None${PROBE_OUTPUT_SEP}True${PROBE_OUTPUT_SEP}None`],
+      ['dc_return', `outputs:False${PROBE_OUTPUT_SEP}False${PROBE_OUTPUT_SEP}True${PROBE_OUTPUT_SEP}False`],
+      ['dc_return_alt', `outputs:False${PROBE_OUTPUT_SEP}False${PROBE_OUTPUT_SEP}True${PROBE_OUTPUT_SEP}False`],
+      ['dc_overfit', `outputs:False${PROBE_OUTPUT_SEP}False${PROBE_OUTPUT_SEP}True${PROBE_OUTPUT_SEP}ERROR AttributeError`],
+    ]);
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, sig.get(o.applied.candidate.id) ?? '']));
+    const ask = scriptedAsk(arbitrationScript({ choice: { [RETURN_TEXT.trim()]: 0.66, [BREAK_TEXT.trim()]: 0.1, [OVERFIT_TEXT]: 0.06 }, escape: 0.18, noul: { [RETURN_TEXT.trim()]: 0.7, [BREAK_TEXT.trim()]: 0.22, [OVERFIT_TEXT]: 0.1 } }));
+    const notes: string[] = [];
+    const d = await decide(passers, mem, g, ask, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample, note: (n) => notes.push(n) });
+    const clusters = clusterByBehaviour(passers, sig);
+    expect(clusters.map((c) => c.members.length)).toEqual([2, 2, 1]);
+    expect(clusters.map(clusterSupport)).toEqual([1, 1, 1]);
+    expect(seedOnlySplit(clusters)).toBe(true);
+    // the count's minimum is the break guard (+1c/+0l) — the overfit the v2 run committed
+    expect(fewestSpecialCases(clusters.map((c) => c.representative))?.applied.candidate.id).toBe('dc_break');
+    const maj = probeMajorityCluster(clusters, sig);
+    expect(maj.differing).toBe(3);
+    expect(maj.winner).toBeNull();
+    // so the decision is Jev's, on the table, and the break guard is not it
+    expect(d).toMatchObject({ kind: 'commit', plausible: 5, clusters: 3, arbitrated: true, requests: 1, codeRule: null, held: null });
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_return');
+    expect(ask.calls).toHaveLength(1);
+    const state = ask.calls[0]!.state as { perturbations?: { outputs: Record<string, string> }[]; perturbations_note?: string };
+    expect(state.perturbations_note).toBe(PERTURBATION_NOTE);
+    expect((state.perturbations ?? []).length).toBeGreaterThan(0);
+    expect(notes.some((n) => n.includes('the probe separates none of them') && n.includes('the special-case count does not decide here'))).toBe(true);
+  });
+
+  it('the probe majority still decides a three-cluster split when one behaviour is the majority; an LLM member or unequal support keeps the count rule', async () => {
+    const mem = createGuardMemory(DC_BASE);
+    const g = goal(DETECT_CYCLE_FAILURES);
+    const guard = (id: string, head: string, tail: string, op: string): VerifyOutcome =>
+      plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 9, 'insert'), head, { id, source: 'template', op, extraEdits: [{ path: DETECT_CYCLE.path, line: 9, kind: 'insert', text: tail }] }), DC_BASE);
+    const RETURN_TEXT = '        if not hare.successor.successor:';
+    const a1 = guard('a1', RETURN_TEXT, '            return False', 'guard_empty_return');
+    const a2 = guard('a2', '        if hare.successor.successor is None:', '            return False', 'guard_empty_return');
+    const a3 = guard('a3', '        if hare.successor.successor is None or hare.successor is None:', '            return False', 'guard_empty_return');
+    const b1 = guard('b1', '        if hare.successor.successor is None:', '            break', 'guard_empty_break');
+    const c1 = plausibleOutcome(detectCycleOverfit(), DC_BASE);
+    const sig = new Map<string, string>([
+      ['a1', `outputs:False${PROBE_OUTPUT_SEP}False`],
+      ['a2', `outputs:False${PROBE_OUTPUT_SEP}False`],
+      ['a3', `outputs:False${PROBE_OUTPUT_SEP}False`],
+      ['b1', `outputs:None${PROBE_OUTPUT_SEP}None`],
+      ['dc_overfit', `outputs:ERROR AttributeError${PROBE_OUTPUT_SEP}ERROR AttributeError`],
+    ]);
+    const probe = async (plausible: readonly VerifyOutcome[]): Promise<ReadonlyMap<string, string>> => new Map(plausible.map((o) => [o.applied.candidate.id, sig.get(o.applied.candidate.id) ?? '']));
+    const passers = [a1, a2, a3, b1, c1];
+    // three votes for the returning behaviour against one and one on both inputs: the family is the majority
+    const maj = probeMajorityCluster(clusterByBehaviour(passers, sig), sig);
+    expect([...maj.agreement.entries()].map(([id, n]) => `${id}=${n}`)).toEqual(['cluster_1=2', 'cluster_2=0', 'cluster_3=0']);
+    const d = await decide(passers, mem, g, throwingAsk, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', clusters: 3, arbitrated: false, requests: 0, codeRule: 'probe_majority' });
+    if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('a1');
+    // an LLM member in any cluster, or supports that differ, leave `fewestSpecialCases` in charge
+    const llm = plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 9, 'insert'), '        if hare.successor.successor is None:\n            return False', { id: 'llm:dc', source: 'llm', op: 'sample_0_0', prior: 1 }), DC_BASE);
+    const withLlm = clusterByBehaviour([a1, b1, llm], new Map([...sig, ['llm:dc', `outputs:False${PROBE_OUTPUT_SEP}False`]]));
+    expect(seedOnlySplit(withLlm)).toBe(false);
+    const unequal = clusterByBehaviour([a1, c1, b1], new Map([...sig, ['dc_overfit', `outputs:False${PROBE_OUTPUT_SEP}False`]]));
+    expect(unequal.map(clusterSupport)).toEqual([2, 1]);
+    expect(seedOnlySplit(unequal)).toBe(false);
   });
 });

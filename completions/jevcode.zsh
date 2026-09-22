@@ -84,7 +84,7 @@ _jevcode() {
             '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
-            '--mode[engine mode: jev-only (default; no generating LLM), jev-on (Jev + LLM), jev-off (generator only), llm-jev (GLM candidates inside the Jev-only search; Jev decides, tests verify)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--mode[engine mode (default jev-on): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
@@ -143,7 +143,7 @@ _jevcode() {
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--task-file[read the task text from a file]:<path>:_files' \
-            '--mode[engine mode: jev-only (default; no generating LLM), jev-on (Jev + LLM), jev-off (generator only), llm-jev (GLM candidates inside the Jev-only search; Jev decides, tests verify)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--mode[engine mode (default jev-on): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]' \
@@ -199,6 +199,7 @@ _jevcode() {
             '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
             '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--all[include the hidden bookkeeping rows (seen.*)]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
@@ -231,7 +232,7 @@ _jevcode() {
             '--suite[benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)]:suite:(swebench terminal-bench quixbugs ladder all)' \
             '--tasks[number of tasks]:n:' \
             '--task-id[specific task ids]:id[,id...]:' \
-            '--conditions[conditions to run (default jev-on,jev-off)]:jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]:' \
+            '--conditions[conditions to run (when omitted: the jev-on and jev-off arms)]:jev-on,jev-off[,jev-only,llm-jev,llm-sieve,jev-off-tuned]:' \
             '--concurrency[parallel runs]:n:' \
             '--live[use the real generator and Jev (requires --spend-cap)]' \
             '--task-spend-cap[per-run spend cap (default 2.00)]:usd:' \
@@ -277,10 +278,11 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--key-stdin[read one OpenRouter key from the first stdin line: it serves Jev and the code model (pipes)]' \
             '--generator-key-stdin[read the generator key from the first stdin line (pipes)]' \
             '--jev-key-stdin[read the Jev key from stdin (the next line)]' \
             '--status[print which keys are set and where they come from (fingerprints only)]' \
-            '--verify[verify the saved keys with one priced Jev call (~$0.0001)]' \
+            '--verify[verify the saved keys: one priced Jev decision (~$0.00002), one 1-token code-model completion (~$0.000002), the key info ($0)]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;

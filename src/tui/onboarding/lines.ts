@@ -7,16 +7,19 @@
  * item builders live in `src/config/credentials.ts` (config never imports the TUI) and are
  * re-exported here for the renderers.
  */
-import { reuseOffered, type OnboardingState, type WizardProvider } from './reducer.js';
+import { reuseJevOffered, reuseOffered, skipOffered, targetMode, type FoundKey, type FoundSource, type OnboardingState, type WizardOption, type WizardProvider } from './reducer.js';
 import type { EngineMode, JevProvider, SandboxLevel } from '../../core/types.js';
 import type { TrustInputs } from '../../config/trust.js';
+import { DEFAULT_MODE, MODE_BADGE_WORD, SESSION_CAP_MULTIPLIER } from '../../config/defaults.js';
+import { defaultRunSpendCapUsd } from '../../config/ui.js';
 import { ELLIPSIS, stringWidth, truncateCells } from '../composer/width.js';
-import { modeBadgeWord } from '../status/lines.js';
 
 /** TUI-DESIGN §11.3: the trust prompt's inputs (declared in config/trust.ts; re-exported for the renderers). */
 export type { TrustInputs } from '../../config/trust.js';
 /** TUI-DESIGN §24 item builders (declared in config/credentials.ts; re-exported for the renderers). */
 export { WINDOWS_ACL_NOTE, keyEnteredText, savedText, shadowingText } from '../../config/credentials.js';
+/** TUI-DESIGN-3 §1.4.2: the `key` step's hints live beside the reducer's other hints (lines.ts imports the reducer, never the reverse); re-exported here as the one string source. */
+export { HINT_PASTED_TWICE, HINT_PICK_OPTION, HINT_PREFIX_KEY } from './reducer.js';
 
 /** TUI-DESIGN §11.1: geometry and twin flags for `wizardLines`. */
 export interface WizardView {
@@ -63,22 +66,202 @@ export const WIZARD_JEV_PROVIDER_OPTIONS = '  1 typesafe (TYPESAFE_API_KEY, api.
 export const WIZARD_JEV_PROVIDER_OPTIONS_NARROW = '  1 typesafe   2 openrouter';
 /** §1.4: the provider step opened by `/mode jev-on` with no generator key (reason `mode`); `providerTitleMode` keys it by the target mode. */
 export const WIZARD_PROVIDER_TITLE_MODE = 'jev+llm needs a generator. Pick the provider:';
-export const WIZARD_PROVIDER_HINT_MODE = 'Keys are never shown, logged or echoed · Esc back · Ctrl-C keeps jev-only';
+/**
+ * TUI-DESIGN-3 §1.9: the reason-`mode` hint names the CURRENT mode's badge (the one Ctrl-C keeps) through `MODE_BADGE_WORD` — 75
+ * cells with the longest badge (`llm+jev · verified`); the first draft's wording reached 83 and was clipped. `WIZARD_PROVIDER_HINT_MODE`
+ * is the jev-only form, kept for the callers that pinned it.
+ */
+export function providerHintMode(current: EngineMode): string {
+  return `Keys are never shown or logged · Esc back · Ctrl-C keeps ${MODE_BADGE_WORD[current]}`;
+}
+export const WIZARD_PROVIDER_HINT_MODE = providerHintMode('jev-only');
 /**
  * §1.4 / §1.5: the reason-`mode` provider title names the TARGET mode's badge word — `jev+llm needs a generator. Pick the
  * provider:` for `/mode jev-on`, `llm-only needs a generator. Pick the provider:` for `/mode jev-off` (the same wizard,
- * `session.ts` opens it for both); `llm-jev needs a generator. Pick the provider:` for `/mode llm-jev` (docs/LLM-JEV-DESIGN.md:
- * both keys); jev-only never needs a generator and keeps the jev+llm text.
+ * `session.ts` opens it for both); `llm+jev · verified needs a generator. Pick the provider:` for `/mode llm-jev` (docs/LLM-JEV-DESIGN.md:
+ * both keys); jev-only never needs a generator and keeps the jev+llm text. The word comes from `MODE_BADGE_WORD` (D-N).
  */
 export function providerTitleMode(mode: EngineMode): string {
-  return `${modeBadgeWord(mode === 'jev-off' || mode === 'llm-jev' ? mode : 'jev-on')} needs a generator. Pick the provider:`;
+  return `${MODE_BADGE_WORD[mode === 'jev-off' || mode === 'llm-jev' ? mode : 'jev-on']} needs a generator. Pick the provider:`;
 }
+/** TUI-DESIGN-3 §4.4 F19: the `/login` re-entry title of the jevProvider step — no "No Jev key found." (a key may well resolve). */
+export const WIZARD_JEV_PROVIDER_TITLE_LOGIN = 'Where do you reach Jev?';
 /** §2.7: the verify detail under the typesafe provider (one priced decision; the OpenRouter twin is `WIZARD_VERIFY_DETAIL`). */
 export const WIZARD_VERIFY_DETAIL_TYPESAFE = 'one Jev decision at api.typesafe.ai ~$0.00002 (jev-1.13.0)';
 /** §12 "Wizard": the `jevcode login` provider question (a plain line, not masked). */
 export const LOGIN_JEV_PROVIDER_PROMPT = 'Where do you reach Jev?  1 typesafe  2 openrouter';
 /** §12 "Wizard": `--jev-key-stdin` on a pipe with nothing to infer the provider from. */
 export const LOGIN_JEV_PROVIDER_REQUIRED = 'jevcode login: pass --jev-provider typesafe|openrouter with --jev-key-stdin';
+
+// TUI-DESIGN-3 §1.4.2 / §10 "Wizard" strings, verbatim; every console-hosted row ≤ 76 cells (`consoleInnerWidth(80)`).
+/** the `key` step (both keys missing, nothing inferred): one masked OpenRouter field (56) */
+export const WIZARD_KEY_TITLE = 'OpenRouter API key — one key runs Jev and the code model';
+/** the empty `key` field's hint (73): the next Esc opens `options`, Ctrl-C prints the fix block */
+export const WIZARD_KEY_HINT_EMPTY = 'Paste, then Enter · Esc: other ways to start · Ctrl-C quits (shows setup)';
+/** the empty `key` field under a found TypeSafe key (64) */
+export const WIZARD_KEY_HINT_FOUND_TYPESAFE = 'Paste it and press Enter · Esc: other ways (Jev only, Anthropic)';
+/** the empty `key` field under a found Anthropic key (71): the field is the Jev key */
+export const WIZARD_KEY_HINT_FOUND_ANTHROPIC = 'Paste it and press Enter (Jev only) · TypeSafe key for Jev? Esc, then 2';
+/** found `jev` from env / dotenv, the value an OpenRouter key (70): it says a secret from the environment is about to be written to disk */
+export const WIZARD_REUSE_JEV_HINT = 'Enter = save the JEV_API_KEY value as the code-model key (config file)';
+/** found `jev` from the file (54) */
+export const WIZARD_REUSE_JEV_FILE_HINT = 'Enter = reuse the saved Jev key for the code model too';
+/** the `options` step title; `optionsTitle(n)` is the highlighted form */
+export const WIZARD_OPTIONS_TITLE = 'Other ways to start:';
+/** the four options (` (default)` joins the route of `DEFAULT_MODE` at render time; 88 cells before it, ≤ 98 after) */
+export const WIZARD_OPTIONS = '  1 OpenRouter for both   2 TypeSafe for Jev   3 Jev only, no LLM   4 Anthropic for code';
+/** the narrow twin (54), chosen whenever the wide form does not fit the inner width */
+export const WIZARD_OPTIONS_NARROW = '  1 OpenRouter   2 TypeSafe   3 Jev only   4 Anthropic';
+/** the `options` hint with nothing highlighted */
+export const WIZARD_OPTIONS_HINT = 'pick 1–4 · Esc back';
+/** the one-key verify title (75); jev-only wizards keep `WIZARD_VERIFY_TITLE` */
+export const WIZARD_VERIFY_TITLE_ONE_KEY = 'Verify now? [y] one Jev decision + 1 code-model token (< $0.0001)  [n] skip';
+/** the verify detail under openrouter with a generator (73) */
+export const WIZARD_VERIFY_DETAIL_ONE_KEY = 'decision ~$0.00002 · completion ~$0.000002 · key info $0 · Enter/Esc skip';
+/** the verify detail under typesafe with a generator (72) */
+export const WIZARD_VERIFY_DETAIL_TYPESAFE_GENERATOR = 'api.typesafe.ai decision ~$0.00002 · completion ~$0.000002 · key info $0';
+/** option `2`'s generator field title (70): an empty Enter keeps Jev-only */
+export const WIZARD_GENERATOR_TITLE_SKIPPABLE = 'OpenRouter API key (OPENROUTER_API_KEY) — Enter = skip (stay Jev-only)';
+/** the screen-reader `key` hint (63) */
+export const SR_KEY_HINT = 'Enter saves; Escape clears, then Escape again for other options';
+/** the screen-reader `options` rows (three, each ≤ 76) */
+export const SR_OPTIONS_ROWS: readonly [string, string, string] = [WIZARD_OPTIONS_TITLE, '1. OpenRouter key for both  2. TypeSafe key for Jev  3. Jev only, no LLM', '4. Anthropic key for the code model · Enter selection (1-4):'];
+/** the plain / `jevcode login` twin of `options` (79; a prompt line, not a console row) */
+export const LOGIN_OTHER_WAYS_PROMPT = 'other ways: [t] TypeSafe Jev · [j] Jev only · [a] Anthropic · Enter continues: ';
+/** the plain / `jevcode login` one-key prompt */
+export const LOGIN_ONE_KEY_PROMPT = 'OpenRouter API key (one key: Jev + the code model): ';
+/** TUI-DESIGN-3 §1.8 edge 30: `/login --verify` (or `y`) in a `--mock` session never reaches the network */
+export const MOCK_VERIFY_NOTE = '(mock session: verification uses the network)';
+/** TUI-DESIGN-3 §4.4 F3: `/panel` reaching the host while the wizard owns the input (the TUI keeps every spelling App-local) */
+export const PANEL_HANDLED_BY_TUI = 'panel: handled by the TUI';
+/** TUI-DESIGN-3 §4.4 F3: `/transcript` under `--plain` */
+export const TRANSCRIPT_ALWAYS_FULL = 'transcript full (--plain is always full)';
+
+/** TUI-DESIGN-3 §1.4.2: the option whose route equals `DEFAULT_MODE`'s — `3` for jev-only, `1` (one OpenRouter key) for every generator mode */
+export function defaultOption(mode: EngineMode = DEFAULT_MODE): WizardOption {
+  return mode === 'jev-only' ? 3 : 1;
+}
+
+/** TUI-DESIGN-3 §1.4.2: `Other ways to start — Enter confirms <n>:` (41) */
+export function optionsTitle(highlight: WizardOption | null): string {
+  return highlight === null ? WIZARD_OPTIONS_TITLE : `Other ways to start — Enter confirms ${highlight}:`;
+}
+
+/**
+ * TUI-DESIGN-3 §1.4.2: the options row — the wide form when it fits the inner width (never a column threshold), else the narrow
+ * twin; ` (default)` after the option of `DEFAULT_MODE`'s route (wide form only); the highlighted digit's leading space becomes `▌` (`>` ascii).
+ */
+export function optionsRow(highlight: WizardOption | null, columns: number, ascii = false, mode: EngineMode = DEFAULT_MODE): string {
+  const inner = cols(columns);
+  const d = defaultOption(mode);
+  const wide = WIZARD_OPTIONS.replace(new RegExp(`(${d} [^0-9]+?)(   |$)`), '$1 (default)$2');
+  const row = stringWidth(wide) <= inner ? wide : WIZARD_OPTIONS_NARROW;
+  if (highlight === null) return row;
+  const marker = ascii ? '>' : '▌';
+  return row.replace(new RegExp(` (${highlight} )`), `${marker}$1`);
+}
+
+/** TUI-DESIGN-3 §1.4.2: the highlighted option's one-line consequence (65 / 75 / 73 / 75); the amounts are never literal */
+export function optionHint(n: WizardOption, runCapUsd: number = defaultRunSpendCapUsd('jev-only'), sessionCapUsd: number = defaultRunSpendCapUsd('jev-only') * SESSION_CAP_MULTIPLIER, mode: EngineMode = DEFAULT_MODE): string {
+  const dflt = defaultOption(mode) === n ? ' (default)' : '';
+  switch (n) {
+    case 1:
+      return `1: one key runs Jev and the code model${dflt} · Enter confirms`;
+    case 2:
+      return '2: TypeSafe key for Jev, OpenRouter key for the code model · Enter confirms';
+    case 3:
+      return `3: no LLM — code proposes, Jev decides, tests verify · caps ${usd2(runCapUsd)} / ${usd2(sessionCapUsd)}${dflt}`;
+    case 4:
+      return "4: Anthropic writes the code (~20× GLM's price) · Jev: OpenRouter/TypeSafe";
+  }
+}
+
+/** TUI-DESIGN-3 §1.4.2: the `key` step's found-title — a source, never a value (72 / 65 / 70) */
+export function keyFoundTitle(found: Exclude<FoundKey, null>, source: FoundSource | null = null): string {
+  switch (found) {
+    case 'typesafe':
+      return 'TypeSafe key found — Jev runs there. Code model: paste an OpenRouter key';
+    case 'jev':
+      return `Jev key found (${source === 'file' ? 'config file' : source === 'dotenv' ? 'dotenv' : 'JEV_API_KEY'}) — code model: paste an OpenRouter key`;
+    case 'anthropic':
+      return 'Anthropic key found — it writes the code. Jev needs an OpenRouter key:';
+  }
+}
+
+/** TUI-DESIGN-3 §1.4.2: the typing hint of the `key` field (71 at n = 20); the narrow twin when it does not fit */
+export function oneKeyHintRow(length: number, columns: number, ascii = false): string {
+  const g = glyphs(ascii);
+  const n = Number.isFinite(length) && length > 0 ? Math.floor(length) : 0;
+  const wide = `${n} chars ${g.dot} Enter saves ${g.dot} Ctrl-U clears ${g.dot} Esc clears (again: other ways)`;
+  if (stringWidth(wide) <= cols(columns)) return wide;
+  return `${n} ${g.dot} Enter ${g.dot} ^U ${g.dot} Esc`;
+}
+
+/** `$2.00` — two decimals for caps (§5.1 rule 6) */
+function usd2(n: number): string {
+  return Number.isFinite(n) ? `$${n.toFixed(2)}` : 'none';
+}
+/** `$0.00002` — the per-call figures of the verification items: up to six decimals, trailing zeros dropped, never scientific notation */
+export function usdMicro(n: number): string {
+  if (!Number.isFinite(n) || n <= 0) return '$0.00';
+  const t = n.toFixed(6).replace(/0+$/, '');
+  return `$${t.endsWith('.') ? `${t}00` : t}`;
+}
+
+/** TUI-DESIGN-3 §1.7 / §10: the `[setup]` caps item after a wizard save (`none (uncapped)` for a lifted session cap) */
+export function capsItem(mode: EngineMode, runCapUsd: number, sessionCapUsd: number): string {
+  const session = Number.isFinite(sessionCapUsd) ? `${usd2(sessionCapUsd)} per session` : 'none (uncapped) per session';
+  const jo = defaultRunSpendCapUsd('jev-only');
+  return `spend caps: ${usd2(runCapUsd)} per run ${'·'} ${session} (${MODE_BADGE_WORD[mode]}) — /budget changes them; /mode jev-only runs on Jev alone at ${usd2(jo)} / ${usd2(jo * SESSION_CAP_MULTIPLIER)}`;
+}
+
+/** TUI-DESIGN-3 §1.7 (D-Q) / §10: the one-time `[setup]` item of a keyed start whose `mode` resolves from `default` (159 cells; the words from the tables) */
+export function defaultModeItem(mode: EngineMode, runCapUsd: number, sessionCapUsd: number): string {
+  const jo = defaultRunSpendCapUsd('jev-only');
+  const session = Number.isFinite(sessionCapUsd) ? usd2(sessionCapUsd) : 'none (uncapped)';
+  return `mode ${MODE_BADGE_WORD[mode]} (default) — caps ${usd2(runCapUsd)} per run · ${session} per session; /mode jev-only runs on Jev alone at ${usd2(jo)} / ${usd2(jo * SESSION_CAP_MULTIPLIER)}; jevcode config set mode <m> keeps a choice`;
+}
+
+/** TUI-DESIGN-3 §1.4.3 / §10: option `3` at a startup wizard persisted the mode */
+export function modeSavedItem(mode: EngineMode, displayPath: string): string {
+  return `mode ${mode} saved to ${displayPath} — jevcode config set mode <m> changes it`;
+}
+
+/** TUI-DESIGN-3 §1.4.2 (edges 11, 17): the reuse Enter's item — `generator key: reused from JEV_API_KEY (sha256:…) source=env→file` */
+export function keyReusedText(source: FoundSource, fp: string): string {
+  const from = source === 'env' ? 'JEV_API_KEY' : source === 'dotenv' ? 'JEV_API_KEY (dotenv)' : 'the saved Jev key';
+  return `generator key: reused from ${from} (sha256:${fp.slice(0, 8)}) source=${source}→file`;
+}
+
+/** TUI-DESIGN-3 §1.5: `verified: jev ok (<model>, <n> input tokens, $<usd>)` */
+export function verifiedJevText(model: string, inputTokens: number | null, usd: number | null): string {
+  const tokens = inputTokens === null || !Number.isFinite(inputTokens) ? 'usage unknown' : `${Math.round(inputTokens)} input tokens`;
+  return `verified: jev ok (${model}, ${tokens}, ${usd === null ? 'cost unknown' : usdMicro(usd)})`;
+}
+/** TUI-DESIGN-3 §1.5: `verified: <model> ok (1 token, $<usd>)` */
+export function verifiedGeneratorText(model: string, usd: number | null): string {
+  return `verified: ${model} ok (1 token, ${usd === null ? 'cost unknown' : usdMicro(usd)})`;
+}
+/** TUI-DESIGN-3 §1.5 / §1.8 edge 12: a 402 on the verify decision or completion */
+export function verificationCreditsText(status = 402): string {
+  return `verification: no credits left on this OpenRouter key (HTTP ${status}) — add credits at openrouter.ai/credits; the key was kept`;
+}
+/** TUI-DESIGN-3 §1.5 / §1.8 edge 13: a 429 with its Retry-After */
+export function verificationRateLimitedText(retryAfterS: number | null): string {
+  const when = retryAfterS === null || !Number.isFinite(retryAfterS) ? 'in a moment' : `in ${Math.max(1, Math.round(retryAfterS))}s`;
+  return `verification: OpenRouter is rate-limiting this key (HTTP 429) — try again ${when}; the key was kept`;
+}
+/** TUI-DESIGN-3 §1.5 / §1.8 edge 25: the code model is not served (400/404 on the completion) */
+export function verificationModelText(model: string, status: number): string {
+  return `verification: the code model "${model}" is not served by openrouter.ai (HTTP ${status}) — pass --model, or jevcode config set generator.model <id>; the key was kept`;
+}
+/** TUI-DESIGN-3 §1.8 edge 34 / §10: a saved Jev key sits under an env TypeSafe key */
+export function typesafeWinsText(): string {
+  return 'decider.apiKey: env TYPESAFE_API_KEY wins over the saved key (typesafe) — pass --jev-provider openrouter to use the saved one';
+}
+
+/** TUI-DESIGN-3 §1.4.2: the hint under option `2`'s empty generator field */
+export const LOGIN_JEV_SKIP_HINT_ROW = 'Enter = skip · stays Jev-only · Ctrl-U clears · Esc back';
 
 /** TUI-DESIGN §14.1 glyph substitutions used by these rows. */
 function glyphs(ascii: boolean): { bullet: string; arrow: string; dot: string; bksp: string } {
@@ -87,7 +270,7 @@ function glyphs(ascii: boolean): { bullet: string; arrow: string; dot: string; b
 
 /** TUI-DESIGN §14.1: the `--ascii` twin of a row — every glyph these rows use has an ASCII form; user paths pass through. */
 export function asciiRow(s: string): string {
-  return s.replace(/·/g, '-').replace(/→/g, '->').replace(/•/g, '*').replace(/⌫/g, 'Bksp').replace(/—/g, '-').replace(/…/g, '...').replace(/⚠/g, '!').replace(/›/g, '>');
+  return s.replace(/·/g, '-').replace(/→/g, '->').replace(/•/g, '*').replace(/⌫/g, 'Bksp').replace(/—/g, '-').replace(/…/g, '...').replace(/⚠/g, '!').replace(/›/g, '>').replace(/▌/g, '>').replace(/×/g, 'x').replace(/–/g, '-');
 }
 
 function cols(columns: number): number {
@@ -154,14 +337,28 @@ export function jevKeyTitle(provider: JevProvider | null, counter: '1/1' | '2/2'
   return `Jev API key (${env})  ${counter}`;
 }
 
-/** TUI-DESIGN-2 §2.7: `WIZARD_VERIFY_DETAIL` keyed by the Jev provider. */
-export function verifyDetail(provider: JevProvider | null): string {
-  return provider === 'typesafe' ? WIZARD_VERIFY_DETAIL_TYPESAFE : WIZARD_VERIFY_DETAIL;
+/**
+ * TUI-DESIGN-2 §2.7 / TUI-DESIGN-3 §1.4.2: the verify detail keyed by the Jev provider and the target mode — openrouter with a
+ * generator: the one-key row (decision · completion · key info); typesafe with a generator: its twin; typesafe alone: the one
+ * decision; an anthropic generator (or jev-only under openrouter) keeps today's `WIZARD_VERIFY_DETAIL` (the models GET).
+ */
+export function verifyDetail(provider: JevProvider | null, mode: EngineMode = 'jev-only', generatorProvider: WizardProvider | null = null): string {
+  const generator = mode !== 'jev-only' && generatorProvider !== 'anthropic';
+  if (provider === 'typesafe') return generator ? WIZARD_VERIFY_DETAIL_TYPESAFE_GENERATOR : WIZARD_VERIFY_DETAIL_TYPESAFE;
+  return generator ? WIZARD_VERIFY_DETAIL_ONE_KEY : WIZARD_VERIFY_DETAIL;
+}
+/** TUI-DESIGN-3 §1.4.2: the one-key title whenever the verify includes a code-model completion; jev-only (and anthropic) wizards keep today's */
+export function verifyTitle(mode: EngineMode, generatorProvider: WizardProvider | null = null): string {
+  return mode !== 'jev-only' && generatorProvider !== 'anthropic' ? WIZARD_VERIFY_TITLE_ONE_KEY : WIZARD_VERIFY_TITLE;
 }
 
 /** TUI-DESIGN-2 §1.4 / §4.3 / §12 "Console": the boxed console's hosted title for a wizard step — `setup · <step>`; null when no step is up. */
 export function wizardConsoleTitle(state: Pick<OnboardingState, 'step'>): string | null {
   switch (state.step) {
+    case 'key':
+      return 'setup · key';
+    case 'options':
+      return 'setup · options';
     case 'jevProvider':
       return 'setup · jev provider';
     case 'provider':
@@ -215,17 +412,34 @@ export function wizardLines(state: OnboardingState, view: WizardView): string[] 
   const c = view.columns;
   const clip = (l: string): string => clipRow(l, c, ascii);
   switch (state.step) {
+    case 'key': {
+      // TUI-DESIGN-3 §1.4.2: the one-paste field — the found-title when a key already resolves, else the OpenRouter title
+      const title = state.found === null ? WIZARD_KEY_TITLE : keyFoundTitle(state.found, state.foundSource);
+      const empty = state.length === 0;
+      const reuse = reuseJevOffered(state);
+      const emptyHint = reuse ? (state.foundSource === 'file' ? WIZARD_REUSE_JEV_FILE_HINT : WIZARD_REUSE_JEV_HINT) : state.found === 'typesafe' || state.found === 'jev' ? WIZARD_KEY_HINT_FOUND_TYPESAFE : state.found === 'anthropic' ? WIZARD_KEY_HINT_FOUND_ANTHROPIC : WIZARD_KEY_HINT_EMPTY;
+      const hint = state.hint ?? (empty ? emptyHint : oneKeyHintRow(state.length, c, ascii));
+      if (sr) return [title, SR_KEY_FIELD_LABEL(state.length), state.hint ?? SR_KEY_HINT].map(clip);
+      return [title, maskedFieldRow(state.length, c, ascii, view.prompt ?? MASKED_PROMPT_DEFAULT), hint].map(clip);
+    }
+    case 'options': {
+      // TUI-DESIGN-3 §1.4.2: a digit highlights (`▌`, the title names it, the hint is its consequence); the same digit or Enter confirms
+      if (sr) return [...SR_OPTIONS_ROWS].map(clip);
+      const hint = state.hint ?? (state.highlight === null ? WIZARD_OPTIONS_HINT : optionHint(state.highlight));
+      return [optionsTitle(state.highlight), optionsRow(state.highlight, c, ascii), hint].map(clip);
+    }
     case 'jevProvider': {
-      // TUI-DESIGN-2 §1.4 / §12: `1 typesafe … 2 openrouter …`; Enter accepts a preselection
-      if (sr) return [WIZARD_JEV_PROVIDER_TITLE, '1. typesafe (TYPESAFE_API_KEY, api.typesafe.ai)  2. openrouter (OPENROUTER_API_KEY, also the generator)', 'Enter selection (1-2):'].map(clip);
+      // TUI-DESIGN-2 §1.4 / §12: `1 typesafe … 2 openrouter …`; Enter accepts a preselection. TUI-DESIGN-3 §4.4 F19: `/login` re-entry drops "No Jev key found."
+      const title = state.reason === 'login' ? WIZARD_JEV_PROVIDER_TITLE_LOGIN : WIZARD_JEV_PROVIDER_TITLE;
+      if (sr) return [title, '1. typesafe (TYPESAFE_API_KEY, api.typesafe.ai)  2. openrouter (OPENROUTER_API_KEY, also the generator)', 'Enter selection (1-2):'].map(clip);
       const options = stringWidth(WIZARD_JEV_PROVIDER_OPTIONS) <= cols(c) ? WIZARD_JEV_PROVIDER_OPTIONS : WIZARD_JEV_PROVIDER_OPTIONS_NARROW;
       const hint = state.hint ?? (state.jevProvider ? `${WIZARD_PROVIDER_HINT} · Enter = ${state.jevProvider}` : WIZARD_PROVIDER_HINT);
-      return [WIZARD_JEV_PROVIDER_TITLE, options, hint].map(clip);
+      return [title, options, hint].map(clip);
     }
     case 'provider': {
       // TUI-DESIGN-2 §1.4: under reason `mode` the step is the generator step in place — its own title (keyed by the target mode) and Ctrl-C hint
       const title = state.reason === 'mode' ? providerTitleMode(state.mode) : WIZARD_PROVIDER_TITLE;
-      const base = state.reason === 'mode' ? WIZARD_PROVIDER_HINT_MODE : WIZARD_PROVIDER_HINT;
+      const base = state.reason === 'mode' ? providerHintMode(state.currentMode) : WIZARD_PROVIDER_HINT;
       if (sr) return [title, '1. anthropic (ANTHROPIC_API_KEY)  2. openrouter (OPENROUTER_API_KEY, also Jev)', 'Enter selection (1-2):'].map(clip);
       const options = stringWidth(WIZARD_PROVIDER_OPTIONS) <= cols(c) ? WIZARD_PROVIDER_OPTIONS : WIZARD_PROVIDER_OPTIONS_NARROW;
       const hint = state.hint ?? (state.provider ? `${base} · Enter = ${state.provider}` : base);
@@ -234,16 +448,19 @@ export function wizardLines(state: OnboardingState, view: WizardView): string[] 
     case 'generatorKey':
     case 'jevKey': {
       const counter = state.entered.includes('generator.apiKey') || state.providerShown ? '2/2' : '1/1';
-      const title = state.step === 'jevKey' ? jevKeyTitle(state.jevProvider, counter) : generatorKeyTitle(state.provider);
+      // TUI-DESIGN-3 §1.4.2: option `2`'s generator field says Enter skips it
+      const title = state.step === 'jevKey' ? jevKeyTitle(state.jevProvider, counter) : state.optionsChoice === 2 ? WIZARD_GENERATOR_TITLE_SKIPPABLE : generatorKeyTitle(state.provider);
       // TUI-DESIGN-2 §1.4: `Enter = reuse` only when the OpenRouter generator key was typed here and the Jev provider is openrouter (or unresolved) — never under typesafe
       const reuse = state.length === 0 && reuseOffered(state);
-      const hint = state.hint ?? (reuse ? WIZARD_REUSE_HINT : keyHintRow(state.length, c, ascii));
+      const hint = state.hint ?? (reuse ? WIZARD_REUSE_HINT : skipOffered(state) ? LOGIN_JEV_SKIP_HINT_ROW : keyHintRow(state.length, c, ascii));
       if (sr) return [title, SR_KEY_FIELD_LABEL(state.length), hint].map(clip);
       return [title, maskedFieldRow(state.length, c, ascii, view.prompt ?? MASKED_PROMPT_DEFAULT), hint].map(clip);
     }
     case 'verify': {
-      const second = state.verifying ? WIZARD_VERIFYING : verifyDetail(state.jevProvider);
-      return [WIZARD_VERIFY_TITLE, second].map(clip);
+      // TUI-DESIGN-3 §1.4.2: the title and detail follow the target mode and the providers (one decision + one completion + the key info under openrouter)
+      const mode = targetMode(state);
+      const second = state.verifying ? WIZARD_VERIFYING : verifyDetail(state.jevProvider, mode, state.provider);
+      return [verifyTitle(mode, state.provider), second].map(clip);
     }
     case 'trust': {
       const t = view.trust ?? { root: '.', agents: null, dotenv: null, jevcodeJson: null };
@@ -287,22 +504,45 @@ export function dotenvSourceText(path: string): string {
   return `dotenv: ${path}`;
 }
 
-/** TUI-DESIGN §24 sandbox line (`[sandbox]` label). */
+/**
+ * TUI-DESIGN §24 sandbox line (`[sandbox]` label). TUI-DESIGN-3 §5.1 rule 13: one thought per row, ` · ` separators (the renderer
+ * breaks it at ` · `); the old sentence is the TUI-only `detail` (`sandboxDetail`). A renderer-local item, never in `transcript.log`.
+ */
 export function sandboxText(level: SandboxLevel, platform: string = process.platform): string {
+  return level === 'seatbelt' ? 'seatbelt · writes only in the workspace and run dirs · secrets, ~/.ssh, ~/.aws unreadable · network on (--no-network)' : `none · sandbox-exec is not available on ${platform} · cwd confinement, env scrubbing, timeout, output cap and tree kill only`;
+}
+/** TUI-DESIGN-3 §5.1 rule 13: the `[sandbox]` item's TUI-only detail body — today's sentence */
+export function sandboxDetail(level: SandboxLevel, platform: string = process.platform): string {
   return level === 'seatbelt'
     ? 'seatbelt — writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network'
     : `none — sandbox-exec is not available on ${platform}: cwd confinement, env scrubbing, timeout, output cap and tree kill only`;
 }
 
+/** TUI-DESIGN-3 §1.6 / §10: the jev-only fix block keeps today's five lines verbatim */
+export const FIX_BLOCK_JEV_ONLY: readonly string[] = ['export TYPESAFE_API_KEY=…', 'export OPENROUTER_API_KEY=…', 'printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin', 'jevcode login', FIX_BLOCK_FOOTER];
+/** TUI-DESIGN-3 §1.6 / §10: the generator-mode fix block — the `#` column is cell 30, every line ≤ 76 cells */
+export const FIX_BLOCK_ONE_KEY: readonly string[] = [
+  'export OPENROUTER_API_KEY=…   # one key: Jev + the code model',
+  'printenv OPENROUTER_API_KEY | jevcode login --key-stdin',
+  'jevcode login                 # masked prompt',
+  'export TYPESAFE_API_KEY=…     # Jev native; add OPENROUTER_API_KEY for code',
+  '                              # Jev alone: jevcode config set mode jev-only',
+];
+export const FIX_BLOCK_ANTHROPIC_LINE = 'export ANTHROPIC_API_KEY=…    # the code model under --provider anthropic';
+/** TUI-DESIGN-3 §1.6: the pipe ConfigError text when only the generator key is missing under a generator mode */
+export const MISSING_GENERATOR_ONLY = 'missing generator.apiKey: set OPENROUTER_API_KEY (the code model), run with --mode jev-only, or run jevcode login';
+
 /**
- * TUI-DESIGN §11.1 / §24 and TUI-DESIGN-2 §1.4 / §12 "Wizard": the fix block printed after the ConfigError line on a
- * non-TTY / `--plain` pipe / `CI` / `--no-input`, plus the footer. It leads with the two Jev variables and the piped
- * login for TypeSafe; the Anthropic line joins only when `mode` needs a generator whose provider is not openrouter (the
- * OpenRouter variable is already listed — it serves the default generator `z-ai/glm-5.3-flash` and Jev alike).
+ * TUI-DESIGN §11.1 / §24, TUI-DESIGN-2 §1.4 / §12 "Wizard" and TUI-DESIGN-3 §1.6: the ONE fix block, printed after the ConfigError
+ * line on a non-TTY / `--plain` pipe / `CI` / `--no-input` and as a `[setup]` block after a wizard Ctrl-C. `mode` is required (§1.1:
+ * no default argument names a mode): jev-only keeps today's five lines; every generator mode (jev-on / llm-jev / jev-off) leads with the
+ * one OpenRouter key and the piped `--key-stdin`, names the TypeSafe route and the jev-only escape, and adds the Anthropic line only
+ * under `--provider anthropic`.
  */
-export function fixBlockLines(mode: EngineMode = 'jev-only', provider: WizardProvider | null = null): string[] {
-  const lines = ['export TYPESAFE_API_KEY=…', 'export OPENROUTER_API_KEY=…', 'printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin', 'jevcode login'];
-  if (mode !== 'jev-only' && provider !== 'openrouter') lines.push('export ANTHROPIC_API_KEY=…');
+export function fixBlockLines(mode: EngineMode, provider: WizardProvider | null = null): string[] {
+  if (mode === 'jev-only') return [...FIX_BLOCK_JEV_ONLY];
+  const lines = [...FIX_BLOCK_ONE_KEY];
+  if (provider === 'anthropic') lines.push(FIX_BLOCK_ANTHROPIC_LINE);
   lines.push(FIX_BLOCK_FOOTER);
   return lines;
 }

@@ -1,0 +1,17 @@
+# --no-color (TUI-DESIGN-3 §3.2 twins): colour depth 0 turns the sweep off — the reveal still runs (its head `▓▒░` is a cell change), the
+# mark rests, and the 12 s alone write zero frames (run-smoke.sh counts the frames between the settle and the marker key's echo: 0)
+expect \x1b\[\?25l
+expect step 0/
+expect ◆(?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*\d+\.\d+\.\d+
+mark settled
+expect sess \$
+sleep 12
+mark idled
+send h
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*h
+send \x03
+expect Say hi
+send /exit
+sleep 0.2
+send \r
+eof

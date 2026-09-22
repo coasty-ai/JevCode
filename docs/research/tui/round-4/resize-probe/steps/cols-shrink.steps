@@ -1,0 +1,23 @@
+# start wide, put real scrollback in, then shrink columns only
+expect \x1b\[\?25l
+sleep 1.2
+send hi there
+sleep 0.2
+send \r
+sleep 2.0
+mark replied
+resize 24 40
+sleep 1.0
+mark narrow
+send Z
+sleep 0.4
+resize 24 120
+sleep 1.0
+mark wide
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.6
+eof

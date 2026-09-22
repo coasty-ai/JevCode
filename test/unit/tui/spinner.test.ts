@@ -1,14 +1,14 @@
 /**
- * TUI-DESIGN §19.0 (`spinner.test.ts` / `retry.test.ts` row, §7.4, §13.2, §14.2): the spinner runs only while a
- * stage runs and no review is pending, `|/-\` in ASCII, the static glyph under reduced motion, `still waiting`
- * after 45 s; the retry row model (`jev: retrying 2/3 in 12 s · HTTP 429 rate limited (Retry-After)    [r] retry
+ * TUI-DESIGN §19.0 (`spinner.test.ts` / `retry.test.ts` row, §7.4, §13.2, §14.2); TUI-DESIGN-3 §5.2 A3 (D-P): the spinner
+ * runs only while a stage runs and no review is pending, its frames are the brand's shade pulse `░ ▒ ▓ █ ▓ ▒` (`. + # # + .`
+ * in ASCII), the static `◆` (`*`) under reduced motion, `still waiting` after 45 s; the retry row model (`jev: retrying 2/3 in 12 s · HTTP 429 rate limited (Retry-After)    [r] retry
  * now`, the `last:` cause row only when the cause changed, Retry-After capped at 60 s, offline copy), and the
  * 1 Hz ticker; `setInterval(` appears in `src/tui/**` only in spinner.ts and retry.ts.
  */
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import { SPINNER_FRAMES, SPINNER_INTERVAL_MS, STILL_WAITING_MS, elapsedSeconds, spinnerActive, spinnerGlyph, stillWaiting } from '../../../src/tui/spinner.js';
+import { SPINNER_FRAMES, SPINNER_INTERVAL_MS, SPINNER_STATIC, STILL_WAITING_MS, elapsedSeconds, spinnerActive, spinnerGlyph, spinnerStatic, stillWaiting } from '../../../src/tui/spinner.js';
 import { RETRY_AFTER_CAP_S, retryCauseText, retryLastRow, retryLiveLines, retryRow, retryViewFrom, secondsLeft, startTicker, type RetryView } from '../../../src/tui/retry.js';
 import { GLYPHS } from '../../../src/tui/glyphs.js';
 import { mkConfirmRequest, mkStatus } from '../../fixtures/tui/fixtures.js';
@@ -16,9 +16,17 @@ import { mkConfirmRequest, mkStatus } from '../../fixtures/tui/fixtures.js';
 const base = { run: 'live' as const, status: mkStatus(3, 'propose'), pendingReview: null, overlay: 'none' as const, blocking: null };
 
 describe('spinner (§7.4, A50)', () => {
-  it('8 fps braille frames only while a stage runs and no review is pending; ASCII and reduced-motion twins', () => {
+  it('8 fps shade-pulse frames `░ ▒ ▓ █ ▓ ▒` (D-P) only while a stage runs and no review is pending; ASCII `. + # # + .` and the static `◆` / `*` twins', () => {
     expect(SPINNER_INTERVAL_MS).toBe(125);
     expect(SPINNER_FRAMES).toEqual(GLYPHS.unicode.spinner);
+    expect(SPINNER_FRAMES).toEqual(['░', '▒', '▓', '█', '▓', '▒']);
+    expect(GLYPHS.ascii.spinner).toEqual(['.', '+', '#', '#', '+', '.']);
+    expect(SPINNER_STATIC).toBe('◆');
+    expect(spinnerStatic()).toBe('◆');
+    expect(spinnerStatic(GLYPHS.ascii)).toBe('*');
+    // the same 125 ms timer: a 750 ms cycle, the reveal head's glyph family (`▓▒░`), one cell per frame
+    expect(SPINNER_FRAMES.length * SPINNER_INTERVAL_MS).toBe(750);
+    for (const f of SPINNER_FRAMES) expect([GLYPHS.unicode.shade1, GLYPHS.unicode.shade2, GLYPHS.unicode.shade3, GLYPHS.unicode.full]).toContain(f);
     expect(spinnerActive(base)).toBe(true);
     expect(spinnerActive({ ...base, pendingReview: mkConfirmRequest() })).toBe(false);
     expect(spinnerActive({ ...base, overlay: 'review' })).toBe(false);
@@ -27,9 +35,12 @@ describe('spinner (§7.4, A50)', () => {
     expect(spinnerActive({ ...base, run: 'starting', status: null })).toBe(true);
     expect(spinnerActive({ ...base, status: mkStatus(3, 'idle') })).toBe(false);
     expect(spinnerActive({ ...base, blocking: { id: 'b' } })).toBe(false);
-    expect(spinnerGlyph(2)).toBe('⠹');
-    expect(spinnerGlyph(12)).toBe(SPINNER_FRAMES[2]);
-    expect(spinnerGlyph(1, GLYPHS.ascii)).toBe('/');
+    expect(spinnerGlyph(2)).toBe('▓');
+    expect(spinnerGlyph(3)).toBe('█');
+    expect(spinnerGlyph(12)).toBe(SPINNER_FRAMES[0]);
+    expect(spinnerGlyph(8)).toBe(SPINNER_FRAMES[2]);
+    expect(spinnerGlyph(1, GLYPHS.ascii)).toBe('+');
+    expect(spinnerGlyph(5, GLYPHS.unicode, true)).toBe('◆');
     expect(spinnerGlyph(5, GLYPHS.unicode, true)).toBe(GLYPHS.unicode.spinnerStatic);
     expect(spinnerGlyph(5, GLYPHS.ascii, true)).toBe(GLYPHS.ascii.spinnerStatic);
     expect(spinnerGlyph(Number.NaN)).toBe(SPINNER_FRAMES[0]);

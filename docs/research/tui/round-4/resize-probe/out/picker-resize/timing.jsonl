@@ -1,0 +1,24 @@
+{"t":110,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":1310,"step":2,"op":"sleep","arg":"1.2"}
+{"t":1310,"step":3,"op":"send","arg":"/resume"}
+{"t":1510,"step":4,"op":"sleep","arg":"0.2"}
+{"t":1510,"step":5,"op":"send","arg":"\\r"}
+{"t":2510,"step":6,"op":"sleep","arg":"1.0"}
+{"t":2510,"step":7,"op":"mark","arg":"picker"}
+{"t":2513,"step":8,"op":"resize","arg":"12 60"}
+{"t":3413,"step":9,"op":"sleep","arg":"0.9"}
+{"t":3415,"step":10,"op":"resize","arg":"8 40"}
+{"t":4316,"step":11,"op":"sleep","arg":"0.9"}
+{"t":4319,"step":12,"op":"resize","arg":"40 120"}
+{"t":5220,"step":13,"op":"sleep","arg":"0.9"}
+{"t":5222,"step":14,"op":"mark","arg":"grown"}
+{"t":5222,"step":15,"op":"send","arg":"\\x1b"}
+{"t":5724,"step":16,"op":"sleep","arg":"0.5"}
+{"t":5724,"step":17,"op":"send","arg":"\\x03"}
+{"t":6026,"step":18,"op":"sleep","arg":"0.3"}
+{"t":6026,"step":19,"op":"send","arg":"\\x04"}
+{"t":6226,"step":20,"op":"sleep","arg":"0.2"}
+{"t":6226,"step":21,"op":"send","arg":"\\x04"}
+{"t":6461,"step":22,"op":"sleep","arg":"0.8"}
+{"t":6461,"step":22,"op":"eof-during-sleep","arg":"0.8"}
+{"t":6461,"step":0,"op":"exit","arg":"0"}

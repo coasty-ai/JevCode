@@ -1,0 +1,15 @@
+expect \x1b\[\?25l
+sleep 1.2
+send \\x1b[?0u
+sleep 0.8
+mark sent
+send Q
+sleep 0.5
+mark typed
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.6
+eof

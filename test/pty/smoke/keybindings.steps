@@ -1,0 +1,15 @@
+# TUI-DESIGN-3 §4.4 F10 (--keybindings): a keybindings.json mapping `global:help` to `none` reaches the App — `?` inserts text instead of
+# opening the help; /exit leaves 0
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.3
+send ?
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*\?
+sleep 0.3
+send \x03
+expect Say hi
+send /exit
+sleep 0.2
+send \r
+eof

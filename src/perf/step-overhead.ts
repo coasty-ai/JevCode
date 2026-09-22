@@ -42,6 +42,21 @@ export interface StepOverheadResult {
   imagesWithinTarget: boolean;
   /** the 60 MiB artefact step's post image carries hashSkipped: true */
   hashSkipped: boolean | null;
+  /**
+   * docs/COORDINATION-DESIGN.md §8.9 / review D14: the relaxed context's own gates. `promptBuildMs` is
+   * `EngineStatus.context.promptBuildMs` — the whole build (file refresh + tier plan + assembly) on the WARM path — and
+   * `coldPromptBuildMs` is the first build after `--resume`, when none of the output files has been read yet.
+   */
+  promptBuildMs: number[];
+  promptBuildP50: number | null;
+  promptBuildP95: number | null;
+  promptBuildGateMs: number;
+  promptBuildWithinGate: boolean;
+  coldPromptBuildMs: number | null;
+  coldGateMs: number;
+  coldWithinGate: boolean;
+  /** what the tier ladder did at the last build (§8.2(c)) */
+  recentSteps: { whole: number; clipped: number; oneLine: number; reads: number } | null;
   artefactStep: number;
   dirtyFiles: number;
   dirtyBytes: number;
@@ -98,9 +113,23 @@ function readHashSkipped(runsDir: string, step: number): boolean | null {
   return null;
 }
 
-export async function measureStepOverhead(opts: { steps: number; gateMs?: number; imagesTargetMs?: number }): Promise<StepOverheadResult> {
+/** `EngineStatus.context` until `src/core/types.ts` carries the member (docs/COORDINATION-DESIGN.md §12.0.3). */
+interface ContextMeter {
+  promptBuildMs: number;
+  recentSteps: { whole: number; clipped: number; oneLine: number; reads: number };
+}
+
+function meterOf(status: unknown): ContextMeter | null {
+  const c = (status as { context?: ContextMeter } | null)?.context;
+  return c !== undefined && typeof c.promptBuildMs === 'number' ? c : null;
+}
+
+export async function measureStepOverhead(opts: { steps: number; gateMs?: number; imagesTargetMs?: number; promptBuildGateMs?: number; coldGateMs?: number }): Promise<StepOverheadResult> {
   const gateMs = opts.gateMs ?? 50;
   const imagesTargetMs = opts.imagesTargetMs ?? 15;
+  // §8.9: `promptBuildMs` p95 < 5 ms warm; §8.3: the first build after a resume opens the output files, budget 25 ms
+  const promptBuildGateMs = opts.promptBuildGateMs ?? 5;
+  const coldGateMs = opts.coldGateMs ?? 25;
   const ws = mkdtempSync(join(tmpdir(), 'jevcode-perf-ws-'));
   const runs = mkdtempSync(join(tmpdir(), 'jevcode-perf-runs-'));
   // the 60 MiB artefact is written by the `run` of the third cycle (step 11), so nine steps see the plain dirty set first
@@ -154,12 +183,20 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       deciderModel: { configured: 'typesafe/jev-1.13-20260917', pinned: true },
     };
     const engine = await createEngine(engineOpts);
+    const promptBuildMs: number[] = [];
+    let recentSteps: StepOverheadResult['recentSteps'] = null;
     const harnessMs: number[] = [];
     const harnessRun: number[] = [];
     const harnessOther: number[] = [];
     const imagesMs: number[] = [];
     const imagesRun: number[] = [];
     engine.events.on('step:end', (e) => {
+      // §8.9: one sample per step, taken after the step's prompt was built (§12.0.3 cadence point 1)
+      const meter = meterOf(engine.status());
+      if (meter !== null && meter.promptBuildMs > 0) {
+        promptBuildMs.push(meter.promptBuildMs);
+        recentSteps = meter.recentSteps;
+      }
       const isRun = e.record.proposal?.action.kind === 'run';
       harnessMs.push(e.record.timing.harnessMs);
       (isRun ? harnessRun : harnessOther).push(e.record.timing.harnessMs);
@@ -170,6 +207,24 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       }
     });
     await engine.run();
+    // §8.3 cold-start row: a second process over the same run dir, where no `outputs/step-n.txt` has been read yet
+    let coldPromptBuildMs: number | null = null;
+    try {
+      const resumed = await createEngine({
+        ...engineOpts,
+        limits: { ...engineOpts.limits, maxSteps: opts.steps + 1 },
+        provider: createMockProvider({ turns: (_req, i) => turns[i % turns.length]! }),
+        resume: { runId: engine.runId, force: false },
+      });
+      let cold: number | null = null;
+      resumed.events.on('step:end', () => {
+        if (cold === null) cold = meterOf(resumed.status())?.promptBuildMs ?? null;
+      });
+      await resumed.run();
+      coldPromptBuildMs = cold;
+    } catch {
+      coldPromptBuildMs = null;
+    }
     const hashSkipped = readHashSkipped(runs, artefactStep);
     const p95 = percentile(harnessMs, 95);
     const imagesP95 = percentile(imagesMs, 95);
@@ -189,10 +244,19 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       imagesTargetMs,
       imagesWithinTarget: imagesP95 !== null && imagesP95 < imagesTargetMs,
       hashSkipped,
+      promptBuildMs,
+      promptBuildP50: percentile(promptBuildMs, 50),
+      promptBuildP95: percentile(promptBuildMs, 95),
+      promptBuildGateMs,
+      promptBuildWithinGate: promptBuildMs.length === 0 || (percentile(promptBuildMs, 95) ?? 0) < promptBuildGateMs,
+      coldPromptBuildMs,
+      coldGateMs,
+      coldWithinGate: coldPromptBuildMs === null || coldPromptBuildMs < coldGateMs,
+      recentSteps,
       artefactStep,
       dirtyFiles: DIRTY_FILES,
       dirtyBytes,
-      pass: p95 !== null && p95 < gateMs && harnessMs.length >= Math.min(opts.steps, 10) && hashSkipped === true,
+      pass: p95 !== null && p95 < gateMs && harnessMs.length >= Math.min(opts.steps, 10) && hashSkipped === true && (promptBuildMs.length === 0 || (percentile(promptBuildMs, 95) ?? 0) < promptBuildGateMs),
       gateMs,
     };
   } finally {

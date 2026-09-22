@@ -9,11 +9,13 @@
  */
 import { randomBytes } from 'node:crypto';
 import { renameSync, unlinkSync } from 'node:fs';
-import { appendFile, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { appendFile, readFile, readdir, rename, stat, unlink } from 'node:fs/promises';
 import { isAbsolute, join, normalize, posix, sep } from 'node:path';
 import { writeFileAtomic, writeFileAtomicSync } from '../core/atomic.js';
 import { sha256Hex } from '../core/hash.js';
 import { isJsonArray, isJsonObject, parseJson } from '../core/json.js';
+import { OUTPUTS_DIR_MAX_BYTES, OUTPUT_FILE_MAX_CHARS } from '../core/limits.js';
+import { headTail } from '../core/text.js';
 import type {
   CheckpointState,
   CheckpointStore,
@@ -52,7 +54,22 @@ export const CHECKPOINT_FILES = {
   drafts: 'drafts',
   /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): pause-now snapshots `cache/step-<n>.json` and the LLM round cache, written by writeCache() */
   cache: 'cache',
+  // docs/COORDINATION-DESIGN.md §8.3 / §8.6 (W2 item 20): the context policy's artefacts under the same run directory
+  /** whole step outputs: outputs/step-<n>.txt (≤ 1 MiB each, ≤ 64 MiB per run) */
+  outputs: 'outputs',
+  /** the rolling summary: context/summary.json */
+  context: 'context',
 } as const;
+
+/** `context/summary.json` (docs/COORDINATION-DESIGN.md §8.6). */
+export const CONTEXT_SUMMARY_FILE = 'summary.json';
+const OUTPUT_FILE_RE = /^step-([1-9]\d{0,8})\.txt$/;
+
+/** `outputs/step-<n>.txt`, run-relative. */
+export function outputFileName(step: number): string {
+  if (!Number.isInteger(step) || step < 1) throw new RangeError(`output step must be a positive integer, got ${String(step)}`);
+  return `step-${step}.txt`;
+}
 
 /**
  * contract 1.4: a `cache/` relative path is validated, never trusted — relative, normalised, no `..`, no empty component,
@@ -161,6 +178,11 @@ export interface DiskCheckpointStore extends CheckpointStore {
   writeCache(rel: string, json: Json): Promise<void>;
   readCache(rel: string): Promise<Json | null>;
   renameCache(from: string, to: string): Promise<void>;
+  /** contract 1.4 (COORDINATION-DESIGN §8.3, §8.6, W2 item 20): the context artefacts (required here, optional on the contract) */
+  writeOutput(step: number, text: string): Promise<number[]>;
+  readOutput(step: number): Promise<string | null>;
+  writeContextSummary(summary: Json): Promise<void>;
+  readContextSummary(): Promise<Json | null>;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -411,6 +433,55 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
     return parseEnvelope(text);
   }
 
+  /**
+   * docs/COORDINATION-DESIGN.md §8.3: the `outputs/` directory holds ≤ 64 MiB per run; past the bound the oldest step files go
+   * first (never the one just written). The size ledger is seeded from the directory once per process, then kept in memory.
+   */
+  let outputsLedger: Map<number, number> | null = null;
+  async function boundOutputsDir(outputsDir: string, justWritten: string, bytes: number): Promise<number[]> {
+    if (outputsLedger === null) {
+      const ledger = new Map<number, number>();
+      let names: string[] = [];
+      try {
+        names = await readdir(outputsDir);
+      } catch {
+        names = [];
+      }
+      for (const n of names) {
+        const m = OUTPUT_FILE_RE.exec(n);
+        if (!m) continue;
+        try {
+          ledger.set(Number(m[1]), (await stat(join(outputsDir, n))).size);
+        } catch {
+          /* gone between readdir and stat */
+        }
+      }
+      outputsLedger = ledger;
+    }
+    const written = OUTPUT_FILE_RE.exec(justWritten);
+    if (written) outputsLedger.set(Number(written[1]), bytes);
+    let total = 0;
+    for (const b of outputsLedger.values()) total += b;
+    if (total <= OUTPUTS_DIR_MAX_BYTES) return [];
+    // §8.5 / review D12: the caller is told which steps lost their file, so the history entry stops pointing at nothing
+    const evicted: number[] = [];
+    for (const step of [...outputsLedger.keys()].sort((a, b) => a - b)) {
+      if (total <= OUTPUTS_DIR_MAX_BYTES) break;
+      const name = outputFileName(step);
+      if (name === justWritten) continue;
+      const size = outputsLedger.get(step) ?? 0;
+      try {
+        await unlink(join(outputsDir, name));
+      } catch (e) {
+        if (errnoCode(e) !== 'ENOENT') continue;
+      }
+      outputsLedger.delete(step);
+      total -= size;
+      evicted.push(step);
+    }
+    return evicted;
+  }
+
   const store: DiskCheckpointStore = {
     dir,
 
@@ -628,6 +699,63 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
         text = await readFile(path, 'utf8');
       } catch {
         return null;
+      }
+      const parsed = parseJson(text);
+      return parsed.ok ? parsed.value : null;
+    },
+
+    // docs/COORDINATION-DESIGN.md §8.3: whole outputs under outputs/, one file per step, on the directory's chain so the
+    // per-run byte bound (oldest deleted first) is applied by one writer at a time; redacted like every other artefact.
+    writeOutput(step: number, text: string) {
+      let name: string;
+      let body: string;
+      try {
+        name = outputFileName(step);
+        body = redact(text.length > OUTPUT_FILE_MAX_CHARS ? headTail(text, OUTPUT_FILE_MAX_CHARS - 4_096, 4_000) : text);
+      } catch (e) {
+        return Promise.reject(toFail(e, `cannot prepare ${CHECKPOINT_FILES.outputs}/step-${step}.txt`));
+      }
+      let evicted: number[] = [];
+      return enqueue(CHECKPOINT_FILES.outputs, async () => {
+        const dir = pathOf(CHECKPOINT_FILES.outputs);
+        try {
+          await writeFileAtomic(join(dir, name), body, { mkdir: true });
+        } catch (e) {
+          throw fail(`cannot write ${CHECKPOINT_FILES.outputs}/${name}: ${describe(e)}`, e);
+        }
+        evicted = await boundOutputsDir(dir, name, Buffer.byteLength(body, 'utf8'));
+      }).then(() => evicted);
+    },
+
+    async readOutput(step: number) {
+      const name = outputFileName(step);
+      try {
+        return await readFile(join(pathOf(CHECKPOINT_FILES.outputs), name), 'utf8');
+      } catch (e) {
+        if (errnoCode(e) === 'ENOENT' || errnoCode(e) === 'ENOTDIR') return null;
+        throw fail(`cannot read ${CHECKPOINT_FILES.outputs}/${name}: ${describe(e)}`, e);
+      }
+    },
+
+    /** docs/COORDINATION-DESIGN.md §8.6: context/summary.json, redacted, atomic, serialised on its own chain. */
+    writeContextSummary(summary: Json) {
+      return enqueue(`${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}`, async () => {
+        const text = JSON.stringify(redactDeep(summary, redact));
+        try {
+          await writeFileAtomic(join(pathOf(CHECKPOINT_FILES.context), CONTEXT_SUMMARY_FILE), `${text}\n`, { mkdir: true });
+        } catch (e) {
+          throw fail(`cannot write ${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}: ${describe(e)}`, e);
+        }
+      });
+    },
+
+    async readContextSummary() {
+      let text: string;
+      try {
+        text = await readFile(join(pathOf(CHECKPOINT_FILES.context), CONTEXT_SUMMARY_FILE), 'utf8');
+      } catch (e) {
+        if (errnoCode(e) === 'ENOENT' || errnoCode(e) === 'ENOTDIR') return null;
+        throw fail(`cannot read ${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}: ${describe(e)}`, e);
       }
       const parsed = parseJson(text);
       return parsed.ok ? parsed.value : null;

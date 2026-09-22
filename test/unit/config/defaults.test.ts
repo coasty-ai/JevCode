@@ -21,7 +21,9 @@ import {
   xdgConfigDir,
 } from '../../../src/config/defaults.js';
 import type { SettingName } from '../../../src/config/types.js';
-import { DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
+import { DEFAULT_MODE, JEV_PROVIDER_SETTING_VALUES, KNOWN_KEY_ENV, MODE_BADGE_MAX_CELLS, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../src/config/defaults.js';
+import type { EngineMode } from '../../../src/core/types.js';
+import { cellWidth } from '../../../src/tui/glyphs.js';
 
 const HOME = '/home/me';
 
@@ -37,6 +39,7 @@ describe('the §16 SETTINGS table', () => {
       'ui.title',
       'ui.screenReader',
       'ui.reducedMotion',
+      'ui.wordmark', // TUI-DESIGN-3 §6 item 5
       'ui.notify',
       'ui.osc52',
       'ui.history',
@@ -59,6 +62,7 @@ describe('the §16 SETTINGS table', () => {
       'configFile',
       'decider.provider', // TUI-DESIGN-2 §2.3
       'mode', // TUI-DESIGN-2 §1.2
+      'seen.defaultMode', // TUI-DESIGN-3 §0.1 (D-Q)
     ];
     for (const n of expected) expect(names).toContain(n);
     const envNames = SETTINGS.flatMap((s) => [...s.env, ...(s.negateEnv ?? [])]);
@@ -87,6 +91,11 @@ describe('the §16 SETTINGS table', () => {
     expect(settingSpec('ui.history')).toMatchObject({ boolFlag: { key: 'noHistory', negate: true }, env: [], negateEnv: ['JEVCODE_NO_HISTORY'], fileKey: 'history', defaultValue: 'true' });
     expect(settingSpec('ui.budgetWarnings')).toMatchObject({ boolFlag: { key: 'noBudgetWarnings', negate: true }, env: ['JEVCODE_BUDGET_WARNINGS'], fileKey: 'budgetWarnings', defaultValue: 'true' });
     expect(settingSpec('ui.reducedMotion')).toMatchObject({ boolFlag: { key: 'noAnimation', negate: false }, env: ['JEVCODE_REDUCED_MOTION'], fileKey: 'reducedMotion', defaultValue: null });
+    // TUI-DESIGN-3 §6 item 5: ui.wordmark — a file / env row with no default of its own (config/ui.ts derives static under SSH, sweep otherwise); not a launch row, no flag
+    expect(settingSpec('ui.wordmark')).toMatchObject({ env: ['JEVCODE_WORDMARK'], fileKey: 'wordmark', defaultValue: null, secret: false });
+    expect(settingSpec('ui.wordmark').launch).toBeUndefined();
+    expect(settingSpec('ui.wordmark').flag).toBeUndefined();
+    expect(settingSpec('ui.wordmark').boolFlag).toBeUndefined();
     expect(settingSpec('ui.exitCode')).toMatchObject({ flag: 'exitCode', env: ['JEVCODE_EXIT_CODE'], fileKey: 'exitCode', defaultValue: 'zero' });
     expect(settingSpec('ui.keybindings')).toMatchObject({ flag: 'keybindings', env: ['JEVCODE_KEYBINDINGS'], fileKey: 'keybindings', defaultValue: null });
     expect(settingSpec('log.file')).toMatchObject({ flag: 'log', env: ['JEVCODE_LOG', 'JEVCODE_TRACE'], fileKey: 'log', defaultValue: null });
@@ -150,15 +159,53 @@ describe('TUI-DESIGN-2 §2.3: the decider.provider row and the known key variabl
 });
 
 describe('TUI-DESIGN-2 §1.2: the `mode` row', () => {
-  it('sits directly after decider.model: --mode / JEVCODE_MODE / `mode`, default jev-only, not secret, not a launch row, the §1.2 description verbatim', () => {
+  it('sits directly after decider.model: --mode / JEVCODE_MODE / `mode`, default DEFAULT_MODE, not secret, not a launch row, the §1.2 description verbatim', () => {
     const names = SETTINGS.map((s) => s.name);
     expect(names.indexOf('mode')).toBe(names.indexOf('decider.model') + 1);
-    expect(settingSpec('mode')).toMatchObject({ flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: 'jev-only', secret: false });
+    expect(settingSpec('mode')).toMatchObject({ flag: 'mode', env: ['JEVCODE_MODE'], fileKey: 'mode', defaultValue: DEFAULT_MODE, secret: false });
     expect(settingSpec('mode').description).toBe('engine mode (jev-only | jev-on | jev-off | llm-jev); jev-only needs no generator key');
     expect(settingSpec('mode').launch).toBeUndefined();
     expect(settingSpec('mode').boolFlag).toBeUndefined();
     expect(MODE_SETTING_VALUES).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
-    expect(DEFAULT_MODE).toBe('jev-only');
     expect(settingSpec('mode').defaultValue).toBe(DEFAULT_MODE);
+  });
+});
+
+describe('TUI-DESIGN-3 §1.1 (D-G, D-N): DEFAULT_MODE, MODE_BADGE_WORD, MODE_BADGE_MAX_CELLS', () => {
+  it('D-G: the default engine mode is jev-on (badge jev+llm) — the one intentional pin of the value; every other expectation reads DEFAULT_MODE', () => {
+    expect(DEFAULT_MODE).toBe('jev-on');
+    expect(MODE_SETTING_VALUES).toContain(DEFAULT_MODE);
+    expect(MODE_BADGE_WORD[DEFAULT_MODE]).toBe('jev+llm');
+  });
+
+  it('MODE_BADGE_WORD has a row for every MODE_SETTING_VALUES member, every word ≤ MODE_BADGE_MAX_CELLS cells, llm-jev reads llm+jev · verified', () => {
+    for (const m of MODE_SETTING_VALUES) {
+      const word = MODE_BADGE_WORD[m];
+      expect(typeof word, m).toBe('string');
+      expect(word.length, m).toBeGreaterThan(0);
+      expect(cellWidth(word), `${m}: ${word}`).toBeLessThanOrEqual(MODE_BADGE_MAX_CELLS);
+    }
+    expect(Object.keys(MODE_BADGE_WORD).sort()).toEqual([...MODE_SETTING_VALUES].sort());
+    expect(MODE_BADGE_WORD['llm-jev']).toBe('llm+jev · verified');
+    expect(MODE_BADGE_WORD['jev-only']).toBe('jev-only');
+    expect(MODE_BADGE_WORD['jev-on']).toBe('jev+llm');
+    expect(MODE_BADGE_WORD['jev-off']).toBe('llm-only');
+    expect(MODE_BADGE_MAX_CELLS).toBe(20);
+    // the words are distinct: a badge names its mode unambiguously
+    const words = MODE_SETTING_VALUES.map((m: EngineMode) => MODE_BADGE_WORD[m]);
+    expect(new Set(words).size).toBe(words.length);
+  });
+});
+
+describe('TUI-DESIGN-3 §0.1 (D-Q): the seen.defaultMode bookkeeping row', () => {
+  it('is a file-only, non-secret, hidden row with no flag and no variable; the description names it bookkeeping', () => {
+    const spec = settingSpec('seen.defaultMode');
+    expect(spec).toMatchObject({ name: 'seen.defaultMode', env: [], fileKey: 'seenDefaultMode', defaultValue: null, secret: false, hidden: true });
+    expect(spec.flag).toBeUndefined();
+    expect(spec.boolFlag).toBeUndefined();
+    expect(spec.launch).toBeUndefined();
+    expect(spec.description).toContain('bookkeeping');
+    // the only hidden row this round
+    expect(SETTINGS.filter((s) => s.hidden === true).map((s) => s.name)).toEqual(['seen.defaultMode']);
   });
 });

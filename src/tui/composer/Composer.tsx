@@ -577,11 +577,11 @@ export interface ComposerProps {
   mode: ComposerMode;
   /** the terminal height (placeholder form) */
   rows: number;
-  /** a run is live: yellow `>` (steer mode) */
+  /** a run is live: the `>` takes the `steer` role (amber); `accent` (pink) at rest — TUI-DESIGN-3 D-O */
   live?: boolean;
   spans?: readonly Span[];
-  /** the ghost completion after the cursor (dim) */
-  ghost?: { rest: string; more: number } | null;
+  /** the ghost completion after the cursor (dim), or an alias's ` → /owner` arrow (TUI-DESIGN-3 §4.1 rule 3) */
+  ghost?: { rest: string; more: number } | { arrow: string } | null;
   /** Ctrl-R row */
   searchRow?: string | null;
   glyphs?: GlyphSet;
@@ -617,7 +617,8 @@ export function Composer(p: ComposerProps): React.JSX.Element {
   if (view.scrollTop !== p.scrollTop) p.onScroll?.(view.scrollTop);
   const empty = p.buffer.text.length === 0;
   const placeholder = placeholderRow(p.mode, p.rows, p.innerColumns ?? p.columns, stringWidth(prompt), g);
-  const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : {};
+  // TUI-DESIGN-3 §2.6 (D-O): pink at rest, amber while a run is live
+  const promptProps = p.live === true && p.active ? textProps(theme, 'steer', color) : p.active ? textProps(theme, 'accent', color) : {};
   const dx = p.cursorOffsetX ?? 0;
   if (p.active && view.cursor !== null && p.searchRow == null) p.cursor({ x: dx + view.cursor.x, y: p.top + view.cursor.row });
   else if (p.active && p.searchRow != null) p.cursor({ x: Math.min(dx + p.columns - 1, dx + stringWidth(p.searchRow)), y: p.top });
@@ -631,7 +632,7 @@ export function Composer(p: ComposerProps): React.JSX.Element {
         <Text wrap="truncate">
           {isPromptRow ? <Text {...promptProps}>{prompt}</Text> : null}
           {body}
-          {ghost ? <Text {...textProps(theme, 'dim', color)}>{`${ghost.rest}${ghost.more > 0 ? ` +${ghost.more}` : ''}`}</Text> : null}
+          {ghost ? <Text {...textProps(theme, 'dim', color)}>{'arrow' in ghost ? ` ${g.arrow} ${ghost.arrow}` : `${ghost.rest}${ghost.more > 0 ? ` +${ghost.more}` : ''}`}</Text> : null}
           {i === 0 && empty && !p.searchRow && placeholder !== '' ? <Text {...textProps(theme, 'placeholder', color)}>{placeholder}</Text> : null}
         </Text>
       </Box>

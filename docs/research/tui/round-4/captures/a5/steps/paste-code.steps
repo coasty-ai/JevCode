@@ -1,0 +1,14 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.5
+send \033[200~here is the code:\n```python\ndef f(x):\n    if x:\n\n        return 1\n    return 0\n```\nwhat do you think?\033[201~
+sleep 0.6
+mark pasted
+send \r
+sleep 2.5
+mark replied
+send /exit
+sleep 0.3
+send \r
+eof

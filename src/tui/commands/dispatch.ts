@@ -1,15 +1,17 @@
 /**
- * Pure command resolution (TUI-DESIGN §5.1, §5.2, §4.9; TUI-DESIGN-2 §1.3, §4.6): `dispatchCommand` turns a parsed line into the
- * action descriptor the controller executes, or into the `[ui] error:` text the composer appends while
- * keeping the draft. Validates `ArgSpec`s, flags and `availableDuringTask`. No I/O, no clock, and no
- * import from `cli/**` (the controller depends on this module, never the reverse).
+ * Pure command resolution (TUI-DESIGN §5.1, §5.2, §4.9; TUI-DESIGN-2 §1.3, §4.6; TUI-DESIGN-3 §4.4 F15, F21): `dispatchCommand`
+ * turns a parsed line into the action descriptor the controller executes, or into the `[ui] error:` text the composer appends —
+ * with `keepDraft` true for the errors the user can fix by editing (unknown command, tokeniser, bad argument) and false for
+ * availability errors (`needs a live run`, `runs when the run is idle`), which have nothing to fix (D-K). Validates `ArgSpec`s,
+ * flags and `availableDuringTask`. No I/O, no clock, and no import from `cli/**` (the controller depends on this module, never
+ * the reverse).
  */
 import { isValidRunId } from '../../checkpoint/run-id.js';
 import { parseDuration } from '../../core/time.js';
 import type { EngineMode, StageName } from '../../core/types.js';
 import type { KeyRunPhase } from '../keys/resolve.js';
 import { commandName, parseCommand, restOf, type ParseResult, type ParsedCommand } from './parse.js';
-import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, LLM_STATE_MODE, LLM_STATES, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, takesRest, type ArgSpec, type CommandSpec } from './registry.js';
+import { BUDGET_SETTINGS, COMMANDS, LLM_STATE_MODE, LLM_STATES, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, takesRest, type ArgSpec, type CommandSpec } from './registry.js';
 
 /** TUI-DESIGN §5.1: what the resolver needs to know about the session to validate arguments. */
 export interface DispatchContext {
@@ -52,8 +54,9 @@ export type CommandAction =
   | { kind: 'jev' }
   | { kind: 'cost' }
   | { kind: 'budget'; set: BudgetValue | null }
-  | { kind: 'model'; id: string }
-  | { kind: 'provider'; provider: 'anthropic' | 'openrouter' }
+  // TUI-DESIGN-3 §4.4 F15: `/model` and `/provider` alone show (null) the current and the pending value
+  | { kind: 'model'; id: string | null }
+  | { kind: 'provider'; provider: 'anthropic' | 'openrouter' | null }
   // TUI-DESIGN-2 §1.3 / §6 item 17: `/mode` alone shows (null); `/llm on` → jev-on, `/llm off` → jev-only
   | { kind: 'mode'; mode: EngineMode | null }
   // TUI-DESIGN-2 §4.6: `/panel` alone toggles; a tab letter opens it; `off` collapses; `full` expands. `/transcript` alone shows the view
@@ -73,10 +76,28 @@ export type CommandAction =
   | { kind: 'editor' }
   | { kind: 'exit' };
 
-/** TUI-DESIGN §4.9: the resolution — an action, or the item text (`error: …`, printed under the `[ui]` label) with the draft kept. */
+/**
+ * TUI-DESIGN §4.9 / TUI-DESIGN-3 §4.4 F21: the resolution — an action, or the item text (`error: …`, printed under the `[ui]`
+ * label) with `keepDraft`: true for a fixable error (the draft stays for editing), false for an availability error (the App
+ * clears the draft, so the next line never appends to it: `› /steer x/pause`, R4 F21).
+ */
 export type DispatchResult =
   | { readonly ok: true; readonly action: CommandAction; readonly spec: CommandSpec }
-  | { readonly ok: false; readonly text: string; readonly label: '[ui]' };
+  | { readonly ok: false; readonly text: string; readonly label: '[ui]'; readonly keepDraft: boolean };
+
+/**
+ * TUI-DESIGN-3 §8 S4 (G5): every `CommandAction['kind']`, once — the exhaustiveness check of the dispatch-loop test (a `case`
+ * in the App's `runCommand` or the controller's `execute()` for each). The `satisfies` keeps the list and the union in step.
+ */
+export const COMMAND_ACTION_KINDS = [
+  'help', 'new', 'resume', 'rename', 'steer', 'unsteer', 'pause', 'abort', 'undo', 'rewind', 'diff', 'plan', 'decisions', 'why', 'calibration', 'jev', 'cost',
+  'budget', 'model', 'provider', 'mode', 'panel', 'transcript', 'config', 'login', 'logout', 'trust', 'theme', 'copy', 'export', 'status', 'errors', 'report',
+  'historyClear', 'editor', 'exit',
+] as const satisfies readonly CommandAction['kind'][];
+/** the type-level twin: a kind missing from `COMMAND_ACTION_KINDS` fails here */
+type MissingKind = Exclude<CommandAction['kind'], (typeof COMMAND_ACTION_KINDS)[number]>;
+const _everyKindListed: MissingKind extends never ? true : never = true;
+void _everyKindListed;
 
 /** TUI-DESIGN §24: the unknown-command item (a `/` token that matches nothing never submits). */
 export function unknownCommandText(token: string): string {
@@ -84,8 +105,14 @@ export function unknownCommandText(token: string): string {
   return `error: unknown command ${t}; type / to list commands`;
 }
 
+/** a fixable error: the draft is kept */
 function err(text: string): DispatchResult {
-  return { ok: false, text, label: '[ui]' };
+  return { ok: false, text, label: '[ui]', keepDraft: true };
+}
+
+/** TUI-DESIGN-3 §4.4 F21: an availability error — nothing to edit, the draft is cleared */
+function availErr(text: string): DispatchResult {
+  return { ok: false, text, label: '[ui]', keepDraft: false };
 }
 
 function cmdErr(name: string, reason: string): DispatchResult {
@@ -245,11 +272,11 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
   if (spec === null) return err(unknownCommandText(p.name));
   const live = ctx.run !== 'none';
   const unavailable = availabilityError(spec, live);
-  if (unavailable !== null) return err(unavailable);
+  if (unavailable !== null) return availErr(unavailable);
   const flagErr = checkFlags(spec, p);
   if (flagErr !== null) return flagErr;
   for (const f of spec.flags ?? []) {
-    if (f.idleOnly && live && p.options[f.name] !== undefined) return err(`error: /${spec.name} --${f.name} runs when the run is idle; Esc pauses first`);
+    if (f.idleOnly && live && p.options[f.name] !== undefined) return availErr(`error: /${spec.name} --${f.name} runs when the run is idle; Esc pauses first`);
   }
   const a0 = p.args[0];
   const ok = (action: CommandAction): DispatchResult => ({ ok: true, action, spec });
@@ -297,7 +324,8 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
     case 'rename': {
       const title = restOf(p.raw, 600);
       if (title === '') return cmdErr(spec.name, 'expected <title>');
-      return ok({ kind: 'rename', title: title.length > 60 ? title.slice(0, 60) : title });
+      // TUI-DESIGN-3 §4.4 F13: the host clips once (`text60`) and says so — the dispatcher passes the title whole
+      return ok({ kind: 'rename', title });
     }
     case 'steer': {
       const text = restOf(p.raw, 600);
@@ -361,13 +389,15 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
     case 'model': {
       const t = tooMany(spec, p, 1);
       if (t) return t;
-      if (a0 === undefined || a0.trim() === '') return cmdErr(spec.name, 'expected <id>');
+      // TUI-DESIGN-3 §4.4 F15: no argument shows `model <current> (next run: <pending>)`
+      if (a0 === undefined) return ok({ kind: 'model', id: null });
+      if (a0.trim() === '') return cmdErr(spec.name, 'expected <id>');
       return ok({ kind: 'model', id: a0.trim() });
     }
     case 'provider': {
       const t = tooMany(spec, p, 1);
       if (t) return t;
-      if (a0 === undefined) return cmdErr(spec.name, 'expected <p>: anthropic|openrouter');
+      if (a0 === undefined) return ok({ kind: 'provider', provider: null });
       const v = enumArg(spec.args[0] as ArgSpec, a0);
       if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
       return ok({ kind: 'provider', provider: v as 'anthropic' | 'openrouter' });
@@ -378,7 +408,7 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
       if (a0 === undefined) return ok({ kind: 'mode', mode: null });
       const v = enumArg(spec.args[0] as ArgSpec, a0);
       if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
-      return ok({ kind: 'mode', mode: v as (typeof ENGINE_MODES)[number] });
+      return ok({ kind: 'mode', mode: v as EngineMode });
     }
     case 'llm': {
       const t = tooMany(spec, p, 1);
@@ -448,7 +478,11 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
   }
 }
 
-/** TUI-DESIGN §5.1: the completion candidates for the argument at `argIndex` of a command (Tab inside an enum/setting argument). */
+/**
+ * TUI-DESIGN §5.1 / TUI-DESIGN-3 §4.3: the completion candidates for the argument at `argIndex` of a command — enum and setting
+ * values in palette order, the changed steps for `step`, the session titles (id when untitled) for `run`; `rest`/`text`/`path`
+ * have none (Tab is then a no-op with `no completions for <arg>`). Consumed by `completeDraft` (local.ts).
+ */
 export function argumentCandidates(spec: CommandSpec, argIndex: number, ctx: DispatchContext): readonly string[] {
   const a = spec.args[argIndex];
   if (a === undefined) return [];

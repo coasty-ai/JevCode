@@ -510,6 +510,35 @@ export async function writePostImages(runDir: string, step: number, changedFiles
 }
 
 // ---------------------------------------------------------------------------------------
+// docs/COORDINATION-DESIGN.md §8.4: what a post image tells the context policy's fileMemory
+// ---------------------------------------------------------------------------------------
+
+/** One path's identity after a step, as `fileMemory` records it (sha12 = the first 12 hex of the post-image sha256). */
+export interface PostImageIdentity {
+  rel: string;
+  /** null when the hashing budget skipped the file (`hashSkipped`) or the file is gone */
+  sha12: string | null;
+  bytes: number | null;
+  deleted: boolean;
+}
+
+/**
+ * The hashes a post image already computed, so `fileMemory` (§8.4) is filled at commit without a second read: every changed
+ * path with its sha12 and size, deletions flagged (the cache drops them). Pure; paths come back in the image's own order.
+ */
+export function fileMemoryFromPostImage(image: PostImage): PostImageIdentity[] {
+  const out: PostImageIdentity[] = [];
+  for (const [rel, f] of Object.entries(image.files)) {
+    if (f.deleted === true) {
+      out.push({ rel, sha12: null, bytes: null, deleted: true });
+      continue;
+    }
+    out.push({ rel, sha12: typeof f.sha256 === 'string' ? f.sha256.slice(0, 12) : null, bytes: typeof f.bytes === 'number' ? f.bytes : null, deleted: false });
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------------------
 // Readers
 // ---------------------------------------------------------------------------------------
 

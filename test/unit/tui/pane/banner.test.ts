@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { StepRecord } from '../../../../src/core/types.js';
 import { GLYPHS, cellWidth } from '../../../../src/tui/glyphs.js';
-import { bannerRow, describeSignature, emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopStep, foldLoopSteer, loopView, shortP } from '../../../../src/tui/pane/banner.js';
+import { bannerP, bannerRow, describeSignature, emptyLoopFold, foldLoopPlan, foldLoopReplan, foldLoopStep, foldLoopSteer, loopView, shortP } from '../../../../src/tui/pane/banner.js';
 
 const runRecord = (exitCode: number, sig: string): Pick<StepRecord, 'proposal' | 'outcome' | 'loopSignatures'> => ({
   proposal: { goal: 'g', action: { kind: 'run', command: 'pytest -q' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' },
@@ -12,17 +12,28 @@ const runRecord = (exitCode: number, sig: string): Pick<StepRecord, 'proposal' |
 /** No lone surrogate: a cut that split an astral character would leave one (the tsconfig lib predates `String.prototype.isWellFormed`). */
 const wellFormed = (s: string): boolean => !/[\ud800-\udbff](?![\udc00-\udfff])|(?<![\ud800-\udbff])[\udc00-\udfff]/.test(s);
 
-describe('bannerRow (TUI-DESIGN §7.3, §24)', () => {
-  it('renders the §24 banner exactly', () => {
-    expect(bannerRow({ signature: 'run:pytest -q›exit 1', count: 2, max: 3, replan: { n: 1, max: 5, step: 6, move: 'change_approach', p: 0.61, impossible: 0.12 } }, 80)).toBe(
-      'loop  run:pytest -q›exit 1  x2/3   replan 1/5 s6 change_approach p .61 imp .12',
+describe('bannerRow (TUI-DESIGN §7.3, §24; TUI-DESIGN-3 §5.1 rule 12)', () => {
+  it('renders the rule-12 banner exactly: ` · ` separators, `repeated 2 of 3`, `replan 1 of 5 · s6 <move> (p 0.61 · impossible 0.12)`', () => {
+    expect(bannerRow({ signature: 'run:pytest -q›exit 1', count: 2, max: 3, replan: { n: 1, max: 5, step: 6, move: 'change_approach', p: 0.61, impossible: 0.12 } }, 120)).toBe(
+      'loop · run:pytest -q›exit 1 repeated 2 of 3 · replan 1 of 5 · s6 change_approach (p 0.61 · impossible 0.12)',
     );
+    // the §5.1 rule 12 examples
+    expect(bannerRow({ signature: 'patch', count: 2, max: 3, replan: null }, 80)).toBe('loop · patch repeated 2 of 3');
+    expect(bannerRow({ signature: '', count: 0, max: 3, replan: { n: 1, max: 5, step: 7, move: 'gather_context', p: 0.62, impossible: 0.2 } }, 80)).toBe('loop · replan 1 of 5 · s7 gather_context (p 0.62 · impossible 0.20)');
+    // probabilities: two decimals (rule 6), never the `.61` short form
+    expect(bannerP(0.61)).toBe('0.61');
+    expect(bannerP(1)).toBe('1.00');
+    expect(bannerP(0)).toBe('0.00');
+    expect(bannerP(Number.NaN)).toBe('nan');
+    expect(bannerRow({ signature: 'x', count: 2, max: 3, replan: null }, 80)).not.toMatch(/ x\d\/\d| imp /);
+    // the ascii twin folds the dots
+    expect(bannerRow({ signature: 'run:x>exit 1', count: 2, max: 3, replan: { n: 1, max: 5, step: 6, move: 'change_approach', p: 0.61, impossible: 0.12 } }, 120, GLYPHS.ascii)).toBe('loop - run:x>exit 1 repeated 2 of 3 - replan 1 of 5 - s6 change_approach (p 0.61 - impossible 0.12)');
   });
   it('is absent below a count of 2 without a replan, present with either', () => {
     expect(bannerRow(null, 80)).toBeNull();
     expect(bannerRow({ signature: 'x', count: 1, max: 3, replan: null }, 80)).toBeNull();
-    expect(bannerRow({ signature: 'run:x›exit 1', count: 2, max: 3, replan: null }, 80)).toBe('loop  run:x›exit 1  x2/3');
-    expect(bannerRow({ signature: '', count: 0, max: 3, replan: { n: 2, max: 5, step: 9, move: 'gather_context', p: 1, impossible: 0 } }, 80)).toBe('loop  replan 2/5 s9 gather_context p 1.00 imp .00');
+    expect(bannerRow({ signature: 'run:x›exit 1', count: 2, max: 3, replan: null }, 80)).toBe('loop · run:x›exit 1 repeated 2 of 3');
+    expect(bannerRow({ signature: '', count: 0, max: 3, replan: { n: 2, max: 5, step: 9, move: 'gather_context', p: 1, impossible: 0 } }, 80)).toBe('loop · replan 2 of 5 · s9 gather_context (p 1.00 · impossible 0.00)');
   });
   it('cuts the command by cells, never splitting a surrogate pair or leaking bidi controls', () => {
     const astral = { ...runRecord(1, 'run:a:b'), proposal: { goal: 'g', action: { kind: 'run' as const, command: `a${'😀'.repeat(20)}` }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' } };
@@ -37,7 +48,7 @@ describe('bannerRow (TUI-DESIGN §7.3, §24)', () => {
     expect(cellWidth(describeSignature('run:a:b', cjk))).toBeLessThanOrEqual(4 + 24 + 7);
     const bidi = { ...astral, proposal: { ...astral.proposal, action: { kind: 'run' as const, command: 'rm \u202e/tmp\u202c -rf\u2028x' } } };
     expect(describeSignature('run:a:b', bidi)).toBe('run:rm /tmp -rf x›exit 1');
-    expect(bannerRow({ signature: 'run:\u202exyz\u2069', count: 2, max: 3, replan: null }, 80)).toBe('loop  run:xyz  x2/3');
+    expect(bannerRow({ signature: 'run:\u202exyz\u2069', count: 2, max: 3, replan: null }, 80)).toBe('loop · run:xyz repeated 2 of 3');
   });
   it('respects columns and has an ascii twin', () => {
     const v = { signature: 'run:pytest -q›exit 1', count: 2, max: 3, replan: { n: 1, max: 5, step: 6, move: 'change_approach', p: 0.61, impossible: 0.12 } };

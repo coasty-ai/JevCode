@@ -15,6 +15,7 @@ import { cleanup, render } from 'ink-testing-library';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { EngineEvent } from '../../../src/core/types.js';
 import { RuleRow, STILL_THINKING_TOAST, chatThinking, runIsLive } from '../../../src/tui/App.js';
+import { WORDMARK } from '../../../src/tui/splash.js';
 import { PLACEHOLDERS } from '../../../src/tui/composer/Composer.js';
 import { GLYPHS } from '../../../src/tui/glyphs.js';
 import { ESC_REBUFFER_MS } from '../../../src/tui/keys/interrupts.js';
@@ -59,10 +60,18 @@ beforeEach(() => {
 
 const SPINNER = `[${GLYPHS.unicode.spinner.join('')}]`;
 const BRAND_RE = /^─── ◆ jevcode \S+ ─+$/;
+/** TUI-DESIGN-3 §3.3: the plain rule while the resting mark has rows (before the first run:ready) */
+const PLAIN_RE = /^─+$/;
+/** the mark's second row (the `J` column) — present in every frame that shows the wordmark */
+const MARK_ROW = `${' '.repeat(22)}${WORDMARK[1]}`.replace(/\s+$/, '');
 
 /** the dynamic region's rule row of the latest frame */
 function ruleRow(m: Mounted): string {
   return dynamicLines(m.lastFrame())[0] ?? '';
+}
+/** the resting mark is on screen (TUI-DESIGN-3 §3.2: idle, thinking, after a run at ≥ 24 rows) */
+function markShown(m: Mounted): boolean {
+  return dynamicLines(m.lastFrame()).includes(MARK_ROW);
 }
 
 /** a host whose `submit` stays pending until `release()` — the intake, lookup or reply in flight */
@@ -86,23 +95,28 @@ async function settleSplash(m: Mounted): Promise<void> {
 }
 
 describe('finding 1: the thinking phase under `run: starting` (TUI-DESIGN-2 §3.1 rows 1, 10, 11; §4.4; §4.8)', () => {
-  it('status `⠹ thinking`, placeholder `(thinking…)`, the brand rule row and the idle `border` role; Enter → `one moment — still thinking` with the draft kept; Ctrl-C ×1 → host.abort and no exit', async () => {
+  it('status `▓ thinking`, placeholder `(thinking…)`, the plain rule with the mark kept (TUI-DESIGN-3 §3.2) and the idle `border` role; Enter → `one moment — still thinking` with the draft kept; Ctrl-C ×1 → host.abort and no exit', async () => {
     const { host, release } = pendingHost();
     const m = mountApp({ mode: 'session', host });
     await settleSplash(m);
-    expect(ruleRow(m)).toMatch(BRAND_RE);
+    expect(ruleRow(m)).toMatch(PLAIN_RE);
+    expect(markShown(m)).toBe(true);
     m.stdin.write('hi there\r');
     await waitFor(() => m.state()?.run === 'starting');
     expect(host.submitted.map((s) => s.text)).toEqual(['hi there']);
-    // the controller's `thinking('intake')` (§3.8) lands through the bridge while the submit is pending
+    // TUI-DESIGN-3 §5.2 P7: the App enters the intake phase with `run:starting`; the controller's `thinking('intake')` (§3.8) is idempotent
+    expect(m.state()?.thinking).toBe('intake');
     probes.roles.length = 0;
     m.dispatch({ type: 'thinking', phase: 'intake' });
     await waitFor(() => m.state()?.thinking === 'intake');
     await waitFor(() => new RegExp(`│ ${SPINNER} thinking`).test(m.lastFrame()));
+    await waitFor(() => probes.roles.length > 0); // the spinner's next frame re-renders the console
     const dyn = dynamicLines(m.lastFrame());
-    expect(dyn[0]).toMatch(BRAND_RE); // finding 2: not the strip
-    expect(dyn[2]).toBe(`│ › ${PLACEHOLDERS.thinking}${' '.repeat(96 - 2 - PLACEHOLDERS.thinking.length)} │`);
-    expect(dyn[4]).toMatch(new RegExp(`^│ ${SPINNER} thinking\\s+step 0/–`));
+    expect(dyn[0]).toMatch(PLAIN_RE); // finding 2: not the strip; §3.2: the mark stays while thinking
+    expect(dyn).toHaveLength(11);
+    expect(markShown(m)).toBe(true);
+    expect(dyn[7]).toBe(`│ › ${PLACEHOLDERS.thinking}${' '.repeat(96 - 2 - PLACEHOLDERS.thinking.length)} │`);
+    expect(dyn[9]).toMatch(new RegExp(`^│ ${SPINNER} thinking\\s+step 0/–`));
     expect(m.lastFrame()).not.toContain('│ starting');
     expect(m.lastFrame()).not.toContain(PLACEHOLDERS.steer);
     // the console border keeps the idle `border` role — no `borderFocus`, no `steer` prompt: no engine run is live
@@ -133,7 +147,8 @@ describe('finding 1: the thinking phase under `run: starting` (TUI-DESIGN-2 §3.
     release({ became: 'nothing' });
     await waitFor(() => m.state()?.run === 'none');
     expect(m.state()?.thinking).toBeNull();
-    expect(ruleRow(m)).toMatch(BRAND_RE);
+    expect(ruleRow(m)).toMatch(PLAIN_RE);
+    expect(markShown(m)).toBe(true);
     expect(m.lastFrame()).toContain('› and again'); // the draft was never restored or cleared
     expect(m.lastFrame()).not.toContain(PLACEHOLDERS.thinking);
   });
@@ -167,40 +182,46 @@ describe('finding 1: the thinking phase under `run: starting` (TUI-DESIGN-2 §3.
   });
 });
 
-describe('finding 2: the rule row between Enter and the reply (TUI-DESIGN-2 §5.4)', () => {
-  it('stays the brand row for the whole submission and after a chat reply; the strip first appears at run:ready, not run:start', async () => {
+describe('finding 2: the rule row between Enter and the reply (TUI-DESIGN-2 §5.4; TUI-DESIGN-3 §3.2–3.3)', () => {
+  it('stays the plain rule with the mark for the whole submission and after a chat reply; run:start hides the mark and shows the brand row; the strip first appears at run:ready, not run:start', async () => {
     const { host, release } = pendingHost();
     const m = mountApp({ mode: 'session', host });
     await settleSplash(m);
-    const brand = ruleRow(m);
-    expect(brand).toMatch(BRAND_RE);
+    const plain = ruleRow(m);
+    expect(plain).toMatch(PLAIN_RE);
+    expect(markShown(m)).toBe(true);
     const framesBefore = m.frames.length;
     m.stdin.write('hello\r');
     await waitFor(() => m.state()?.run === 'starting');
     m.dispatch({ type: 'thinking', phase: 'intake' });
     await waitFor(() => m.state()?.thinking === 'intake');
-    // the intake's own decision rows (§3.11) arrive while still starting — still the brand row
+    // the intake's own decision rows (§3.11) arrive while still starting — still the plain rule, the mark still there
     m.dispatch({ type: 'chat-decisions', rows: [] });
     await tick(30);
-    // every frame committed since Enter carries the brand row, never `▸ jev`
+    // every frame committed since Enter carries the plain rule and the mark, never `▸ jev`, never the brand row
     expect(m.frames.length).toBeGreaterThan(framesBefore);
     for (const f of m.frames.slice(framesBefore)) {
       const rows = dynamicLines(f.replace(/\x1b\[[0-9;]*m/g, ''));
-      expect(rows[0]).toBe(brand);
+      expect(rows[0]).toBe(plain);
+      expect(rows).toContain(MARK_ROW);
       expect(f).not.toContain('▸ jev');
+      expect(f).not.toMatch(BRAND_RE);
     }
     m.dispatch({ type: 'thinking', phase: null });
     release({ became: 'chat' });
     await waitFor(() => m.state()?.run === 'none');
-    expect(ruleRow(m)).toBe(brand);
-    // run:start alone: the brand row (§5.4: until the first run:ready)
+    expect(ruleRow(m)).toBe(plain);
+    expect(markShown(m)).toBe(true);
+    // run:start alone: the mark hides (§3.2: zero animation frames during a run) and the brand row takes the rule row (§5.4: until the first run:ready)
     m.bus.emit({ type: 'run:start', runId: 'r1', task: 'Fix the failing test', mode: 'jev-on', resumedFromStep: null });
     await waitFor(() => m.state()?.run === 'live');
-    await tick(20);
-    expect(ruleRow(m)).toBe(brand);
+    await waitFor(() => BRAND_RE.test(ruleRow(m)));
+    expect(markShown(m)).toBe(false);
+    expect(dynamicLines(m.lastFrame())).toHaveLength(6);
     m.bus.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 'Fix the failing test', resumed: false });
     await waitFor(() => m.lastFrame().includes('─── ▸ jev · no decisions yet'));
     expect(ruleRow(m)).toMatch(/^─── ▸ jev · no decisions yet ─+ \[d\] \[p\] \[t\] \[s\] ──$/);
+    expect(markShown(m)).toBe(false);
   });
 });
 
@@ -240,10 +261,11 @@ describe('finding 3: a hidden-only engine batch dirties no <Static> subtree thro
 });
 
 describe('finding 4: the panel keys on the idle first frame (TUI-DESIGN-2 §4.6, §5.4)', () => {
-  it('`]` opens a headed decisions tab (`▾ decisions s0`, `(no decisions yet)`), `]`/`[` cycle, Esc collapses back to the brand row', async () => {
+  it('`]` opens a headed decisions tab (`▾ decisions s0`, `(no decisions yet)`) in place of the mark, `]`/`[` cycle, Esc collapses back to the plain rule and the mark returns (TUI-DESIGN-3 §3.3: 11 rows)', async () => {
     const m = mountApp({ mode: 'session' });
     await settleSplash(m);
-    expect(ruleRow(m)).toMatch(BRAND_RE);
+    expect(ruleRow(m)).toMatch(PLAIN_RE);
+    expect(markShown(m)).toBe(true);
     m.stdin.write(']');
     await waitFor(() => m.state()?.panel === 'open');
     await waitFor(() => m.lastFrame().includes('─── ▾ decisions s0'));
@@ -251,19 +273,21 @@ describe('finding 4: the panel keys on the idle first frame (TUI-DESIGN-2 §4.6,
     expect(dyn[0]).toContain('─── ▾ decisions s0');
     expect(dyn[0]).toContain('[d]ecisions [p]lan [t]ime [s]ynth');
     expect(dyn[1]).toContain('(no decisions yet)');
-    expect(dyn).toHaveLength(1 + 6 + 5); // header · 6 pane rows · console
+    expect(dyn).toHaveLength(1 + 6 + 5); // header · 6 pane rows · console — the panel owns the slot, the mark is gone
+    expect(markShown(m)).toBe(false);
     expect(m.lastFrame()).not.toMatch(BRAND_RE);
     m.stdin.write(']');
     await waitFor(() => m.lastFrame().includes('─── ▾ plan s0'));
     m.stdin.write('[');
     await waitFor(() => m.lastFrame().includes('─── ▾ decisions s0'));
-    // Esc on the empty idle draft collapses the panel before it arms Esc Esc
+    // Esc on the empty idle draft collapses the panel before it arms Esc Esc — and brings the mark back (§3.3)
     m.stdin.write('\x1b');
     await tick(ESC_REBUFFER_MS + 40);
     await waitFor(() => m.state()?.panel === 'collapsed');
+    await waitFor(() => markShown(m));
     dyn = dynamicLines(m.lastFrame());
-    expect(dyn[0]).toMatch(BRAND_RE);
-    expect(dyn).toHaveLength(6);
+    expect(dyn[0]).toMatch(PLAIN_RE);
+    expect(dyn).toHaveLength(11);
   });
 
   it('Ink’s `ESC j` → global:panelToggle (open, then collapsed) and `ESC J` → global:panelFull (12 headed rows); `/panel`, `/panel t` and `/panel off` through the composer', async () => {
@@ -274,7 +298,7 @@ describe('finding 4: the panel keys on the idle first frame (TUI-DESIGN-2 §4.6,
     await waitFor(() => m.lastFrame().includes('─── ▾ decisions s0'));
     m.stdin.write('\x1bj');
     await waitFor(() => m.state()?.panel === 'collapsed');
-    await waitFor(() => BRAND_RE.test(ruleRow(m)));
+    await waitFor(() => PLAIN_RE.test(ruleRow(m)) && markShown(m));
     m.stdin.write('\x1bJ');
     await waitFor(() => m.state()?.panel === 'full');
     await waitFor(() => m.lastFrame().includes('─── ▾ decisions s0'));
@@ -286,7 +310,7 @@ describe('finding 4: the panel keys on the idle first frame (TUI-DESIGN-2 §4.6,
     expect(m.lastFrame()).toContain(`› ${PLACEHOLDERS.task}`);
     m.stdin.write('/panel off\r');
     await waitFor(() => m.state()?.panel === 'collapsed');
-    await waitFor(() => BRAND_RE.test(ruleRow(m)));
+    await waitFor(() => PLAIN_RE.test(ruleRow(m)) && markShown(m));
     m.stdin.write('/panel\r');
     await waitFor(() => m.state()?.panel === 'open');
     await waitFor(() => m.lastFrame().includes('─── ▾ decisions s0'));
@@ -294,7 +318,7 @@ describe('finding 4: the panel keys on the idle first frame (TUI-DESIGN-2 §4.6,
     await waitFor(() => m.lastFrame().includes('─── ▾ timeline s0'));
     m.stdin.write('/panel t\r'); // a second `/panel t` on the same tab collapses
     await waitFor(() => m.state()?.panel === 'collapsed');
-    await waitFor(() => BRAND_RE.test(ruleRow(m)));
+    await waitFor(() => PLAIN_RE.test(ruleRow(m)) && markShown(m));
   });
 });
 

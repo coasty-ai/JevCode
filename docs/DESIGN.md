@@ -2971,9 +2971,24 @@ engine's `generate()`, which meters, records and emits per sample (§22.6).
   (`subgoal.ts releaseLlm` calls it when the top-site seed batch returns without a passer, or at
   once when the top site has no seeds). Temperatures `{first: 0, rest: 0.8, feedbackFirst: 0.6,
   feedbackRest: 1.0}`; `seed = step × 100 + k` for k > 0; `providerPrefs: {requireParameters:
-  true}` on every sample. Deadline `sampleDeadlineMs`: `clamp(2 × running p50 of valid samples,
-  10 s, 20 s)` on the cheap classes (the first round of a run uses the probe's p90 if given, else
-  the 20 s cap), 30 s on repositories; `LLM_REPLAY_DEADLINE_MS` 10 s bounds a cache replay.
+  true}` on every sample. Deadline `sampleDeadlineMs` (**as built 2026-09-21**, after the v2
+  head-to-head cut 31 of 100 samples at a fixed deadline — llm-jev-headtohead-v2.md §9 class C′):
+  `clamp(LLM_DEADLINE_ADAPT.factor 2 × the running p90 of SERVED samples this run, the class
+  default, the class ceiling)`, i.e. the
+  deadline only ever **rises** from the class default (`LLM_SAMPLE_DEADLINE.maxMs` 20 s on the cheap
+  classes, `.repositoryMs` 30 s on repositories) up to `cheapMaxMs` 45 s / `repositoryMaxMs` 90 s.
+  The p90 is used once `LLM_DEADLINE_ADAPT.minSamples` 2 samples have been served; before that the
+  §10.2 probe's p90 stands in (clamped the same way), and with neither the class default is used.
+  Served = the provider returned a result: a timeout, a cancellation and a 429 served nothing, so
+  the sample cut by the deadline cannot pull the deadline down (the served latencies are
+  right-censored by the deadline itself, which is why the rule takes 2 × p90 and not the superseded
+  2 × p50). It is per run and in memory — nothing is persisted; the round records what it fired with
+  (`LlmRoundSummary.deadlineMs`) and the `llm:fire` line says whether it was adapted and from what.
+  When `providerSlow` (the served p90 is past the class default, i.e. the deadline has already been
+  lifted and the samples still do not land inside it) the run caps every further sample's
+  `reasoning: {maxTokens}` at `LLM_REASONING_CAP_TOKENS` 512 — one-way, never un-capped, so rounds
+  stay comparable — and emits `llm:deadline`; GLM bills reasoning, so the cap shortens both the wait
+  and the bill. `LLM_REPLAY_DEADLINE_MS` 10 s bounds a cache replay.
   `max_tokens` base 3,000 with `reasoning: {effort: 'low'}` (1,500 when reasoning is off or
   unsent), doubled once for a goal after a `length` stop (`maxTokensFor`, `lengthGoals`). Each
   sample is `generateWithDeadline`: its own `AbortController` linked to the step signal
@@ -3150,10 +3165,27 @@ the ones the probes held or routing margins.
   hold and release it as `possible overfit` — the only source of that note. One cluster that
   mixes a code seed and an LLM passer → commit the LLM member, no Jev request (GLM jev-off wrote
   16/16 gold-or-equivalent patches where it passed, the code seeds 7 overfits in 53 solves).
-  **≥ 2 clusters → code first**: the cluster with a strict majority of the independent support
-  (distinct source × site pairs, `majorityCluster`) → its representative; else the representative
-  adding the fewest special cases (`fewestSpecialCases`), when alone at the minimum; **Jev only on
-  the residual tie** (and on an all-seed single cluster of ≥ 2): one Q15 `genuine_fix` Choice +
+  **≥ 2 clusters → code first**, in this order (**as built 2026-09-21**, after the v2 head-to-head's
+  class A′, llm-jev-headtohead-v2.md §9): (i) the cluster with a strict majority of the
+  independent support (distinct source × site pairs, `majorityCluster`) → its representative
+  (`preferLlmInCluster` when it holds an LLM
+  member); (ii) **an all-seed split of equal support** — no cluster holds an `llm` member and every
+  cluster carries the same `clusterSupport` (`seedOnlySplit`) — is decided by the **probe's
+  majority**, never by the special-case count: on each perturbed input where the clusters' probe
+  outputs differ the passers vote, a cluster casting one vote per member, and the cluster alone at
+  the top of the per-input agreement count wins (`probeMajorityCluster`, the `probe_majority`
+  `CodeRule`);
+  when no cluster is alone at the top — a split vote on every differing input, or a probe that
+  separates none of them — the code rules are exhausted and Jev decides; (iii) otherwise (a cluster
+  holds an LLM member, or the supports differ) the representative adding the fewest special cases
+  (`fewestSpecialCases`), when alone at the minimum. Why (ii) exists: the special-case count is
+  right when the bug is a wrong expression and a guard would only fit the tests, and exactly wrong
+  when the defect *is* a missing guard — it committed `stats` (`values.remove(mid)` +0c over the
+  gold `if not values: raise` +1c/+1l) and `detect_cycle` (the least-guarded of three guards) as
+  overfits, in both cases with the LLM sample gone so `preferLlmInCluster` and Q15/Q16 never
+  entered; with equal support the near-duplicate worry `clusterSupport` answers cannot arise, so the
+  member count behind a behaviour is evidence again. **Jev only on the residual tie** (and on an
+  all-seed single cluster of ≥ 2): one Q15 `genuine_fix` Choice +
   Q16 `general_<xx>` Nouls over ≤ 20 representatives, with the **perturbation table** — the inputs
   on which the representatives' outputs differ, each output (`PERTURBATION_ROWS_MAX` 12) — in the
   state. **The all-overfit signature** — P(escape) ≥ `SUSPECT_ESCAPE_MIN` 0.5 ∧ max general Noul <
@@ -3162,7 +3194,15 @@ the ones the probes held or routing margins.
   best partial held (before the fix the smallest edit was held and committed at step end as
   `possible overfit`; the head-to-head committed five such overfits where the baseline committed
   none). Otherwise the Choice argmax is committed under the §5.4 override rule, `llmFirst` before
-  `byEditCost` on ties.
+  `byEditCost` on ties. Live on the two tasks the rule was written for (2026-09-21,
+  `bench/results/llm-jev-v2-leftovers-{stats,detect-cycle}`): `stats` took route (ii) — *"the
+  clusters split with no LLM member and equal support; committing template/guard_empty_raise …
+  cluster_1 agrees with the passers' majority on the perturbed inputs (cluster_1 4/4, cluster_2
+  0/4 … +1c/+1l vs +0c/+0l)"* — a weak (exception-class-only) overfit, 2/111 differential inputs,
+  where v2's count-based pick was a strong one at 9/111; `detect_cycle` took route (i) with the
+  LLM sample present — *"5 passers … in 2 behaviour clusters … cluster_1 3 members/support 2 …
+  committing its representative llm/sample_0_0"* — a hunk that differs from the reference on
+  `detect_cycle(None)` alone (1 of 500 random lists).
 - **Proposal** (`src/synth/search/proposal.ts`). `patchMaxFiles(applied)` is
   `VERIFIED_PATCH_MAX_FILES` 4 for an `llm` winner and `MAX_PATCH_FILES` 2 for code sources;
   `selectionOf` reports `'llm'` when the winner's source is `llm`; the winner is re-expressed
@@ -3188,8 +3228,18 @@ the ones the probes held or routing margins.
   Every `run` proposed after an executed change is the claiming run; its `evidence.completion` =
   `{ledgerFixed: every goal fixed (≥ 1 goal), testsChanged: test files a commit touched,
   guardPending, repro: 'pass' | 'fail' | 'none' (the synthesizer's own workspace re-run), oracle:
-  OracleOutcome | null, command}`. The engine's `isCompleteByFact` (§22.6) ANDs it with its own
-  parsed run.
+  OracleOutcome | null, command}` **plus, on the repository class, `knownFailures`** — the scoped
+  tests that already failed at the base commit (**as built 2026-09-21**). `core/types.ts` owns
+  `CompletionEvidence`, so the count travels as an optional structural extension declared in the
+  engine's own stage (`loop/stages/complete.ts KnownFailuresEvidence`,
+  `ClaimingCompletionEvidence`) and is written by the synthesizer from `RepositoryMode.knownFailures`
+  (`search/index.ts`, omitted when 0 — every QuixBugs / ladder run and every repository whose scoped
+  suite is green at the base). `knownFailures` is the **base commit's** count: the first rebaseline
+  of the run measures it (`atBaseCommit`) and every later rebaseline may only lower it — a commit
+  that fixed one of them — never raise it, so a regression this run caused can never travel as a
+  pre-existing failure; a resumed run keeps the persisted count for the same reason. The engine's
+  `isCompleteByFact` (§22.6) ANDs it with its own parsed run, comparing against the declared count
+  instead of against zero (`unexpectedFailures`).
 - **Revert route** (`search/index.ts revertDue`, `finishRevert`, `rollbackUnexecutedPatch`;
   `proposal.ts proposeRevert`). Triggers: (1) the engine's suite run after the commit passed
   fewer tests than the pre-patch baseline (the scoped part on repositories), or the synthesizer's
@@ -3241,9 +3291,15 @@ the ones the probes held or routing margins.
   `planStillValid` all 1; the `intent` event is emitted after `proposal` with `verdict: 'code'`
   (`ChoiceVerdict` and `DecisionVerdict` gained the member in `core/types.ts`).
 - **Code judge** (`stages/judge.ts runCodeJudgeStage`, `codeJudge`). On a `run`: `succeeded` = the
-  suite passed (`failed = errors = 0`, `passed > 0`; a non-test command's exit code; the recorded
-  `tests_pass_unparsed ≥ 0.85` when the parser read nothing), `errorPresent` = the parser counted
-  errors, `newInfo = 0`, `tests` from the parsed counts, `source: 'code'`; a claim is accepted
+  suite passed — **as built 2026-09-21, "passed" means nothing failed beyond the baseline's known
+  failures** (`unexpectedFailures(parsed, run.knownFailures) = 0` with `passed > 0`; with none
+  declared that is the original `failed = errors = 0` and the runner's own `allPassed` is required
+  too, since with known failures the runner exits non-zero by construction); a non-test command's
+  exit code; the recorded `tests_pass_unparsed ≥ 0.85` when the parser read nothing.
+  `errorPresent` = the parser counted
+  errors **the baseline did not already have** (`errors > 0 ∧ unexpected > 0`; the judge's
+  `error_present 1.00` on `sympy-11618`'s 43 pre-existing collection errors is what tripped its
+  replan), `newInfo = 0`, `tests` from the parsed counts, `source: 'code'`; a claim is accepted
   (`judged: 1`) iff the suite passed or its goal tests (`ledgerGoalsOf`: the ledger item's first
   test, widened to `evidence.goalTests`) are all in the `newlyPassing` the executed counts confirm.
   `draft.claimProbabilities` holds the code verdicts so `commit()` takes the `{kind: 'judged'}`
@@ -3251,7 +3307,10 @@ the ones the probes held or routing margins.
   `done` Q22 alone is recorded and the claims follow `verifiedDone`.
 - **Completion by fact** (`stages/complete.ts isCompleteByFact`, `engine.ts completeAfter`). A
   `run` completes the run when it executed the workspace test command, the parser read
-  `failed = errors = 0` and `passed > 0` (or `tests_pass_unparsed ≥ 0.85` when it read nothing),
+  `passed > 0` and **no failure beyond the baseline's known ones**
+  (`unexpectedFailures(parsed, knownFailuresOf(completion)) = 0`; with none declared that is the
+  original `failed = errors = 0`, and the runner's own `allPassed` is required too) — or
+  `tests_pass_unparsed ≥ 0.85` when it read nothing —
   no change was executed at or after it (`testsCurrent` from `lastChangeStep`), and
   `completionEvidenceHolds`: `ledgerFixed`, `testsChanged = []`, `!guardPending`, the executed
   command equals `completion.command` when present, and — whenever an oracle was sought or a
@@ -3553,9 +3612,14 @@ describe the code as it now stands.
   samples).
 - **Default spend cap** for `llm-jev` is $2.00 (`src/config/ui.ts defaultRunSpendCapUsd`,
   "jev-on, jev-off and llm-jev all pay a generator"), not the $0.50 the design's §8.4 named.
-- **First-round deadline vs the tail**: the 20 s cap against a measured valid p90 of 48 s cuts
-  ≈ 10 % of valid first-round samples (design §10.2 decision (c)); revisit if
-  `verify.timeouts / samples` exceeds 15 % on QuixBugs.
+- **First-round deadline vs the tail** — *addressed 2026-09-21, still to be re-measured.* The fixed
+  20 s / 30 s cap cut 31 of 100 samples in the v2 head-to-head (61 % on QuixBugs, every timed-out row
+  served by one provider whose served samples ran at p50 7–10 s). §22.3's adaptive deadline
+  (`clamp(2 × served p90, class default, 45 s / 90 s)`) plus the 512-token reasoning cap on a slow
+  provider replaces it; the gate stays `verify.timeouts / samples` ≤ 15 % on QuixBugs, now measured
+  against the adapted deadline the round records (`LlmRoundSummary.deadlineMs`). A full suite has not
+  been re-run since (the two leftovers runs served their samples in 6.7 s and 8.7 s, inside the
+  class default, so the adaptation never had to fire).
 - **Repository step-1 overlap** is two-way (scoped baseline ‖ L1 round); the reproduction runs of
   arriving candidates would need a runner that accepts a base without its baseline.
 - **Typed revert marker**: `recoverableRevertOk` and `proposeRevert` agree on the goal prefix

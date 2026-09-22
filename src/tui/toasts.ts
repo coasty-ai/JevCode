@@ -42,6 +42,20 @@ export function toastDurationMs(level: Toast['level']): number {
   return level === 'error' ? TOAST_ERROR_MS : TOAST_INFO_MS;
 }
 
+/** TUI-DESIGN-3 §5.2 A7: a toast's text is `dim` for its final second (`untilMs − nowMs ≤ TOAST_FADE_MS`). */
+export const TOAST_FADE_MS = 1000;
+
+/** TUI-DESIGN-3 §5.2 A7: `visible` until the last second, `fading` inside it (⇔ `untilMs − nowMs ≤ 1000`); a dim step is not motion, so reduced motion draws it too. */
+export function toastPhase(t: Pick<Toast, 'untilMs'>, nowMs: number): 'visible' | 'fading' {
+  const now = Number.isNaN(nowMs) || nowMs === Number.NEGATIVE_INFINITY ? 0 : nowMs;
+  return t.untilMs - now <= TOAST_FADE_MS ? 'fading' : 'visible';
+}
+
+/** TUI-DESIGN-3 §5.2 A7: the colour role of a toast by level — `!` info `accent`, `✓` ok `ok`, `!` error `error`. */
+export function toastRole(level: Toast['level']): 'accent' | 'ok' | 'error' {
+  return level === 'ok' ? 'ok' : level === 'error' ? 'error' : 'accent';
+}
+
 // ---------------------------------------------------------------------------------------
 // Text hygiene (§14.1) shared with the status line's centre zone
 // ---------------------------------------------------------------------------------------

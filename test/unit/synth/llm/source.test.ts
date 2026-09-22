@@ -4,7 +4,7 @@ import type { CompileCheck } from '../../../../src/synth/llm/candidates.js';
 import type { SynthesizerGeneration } from '../../../../src/core/types.js';
 import type { CancelledGeneration, GenerateResult } from '../../../../src/core/types.js';
 import { ProviderHttpError } from '../../../../src/errors.js';
-import { LLM_CACHE_PERSIST_BYTES, LLM_DEFAULT_GENERATION, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, UNFINISHED_REASONING_ALLOWANCE_TOKENS, affordableSamples, coversSample, createLlmSource, endedRateLimited, estimatedSampleUsage, maxTokensBase, rateLimitedUsage, sampleDeadlineMs, samplesFor, unfinishedSampleUsage, unservedRateLimited, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
+import { LLM_CACHE_PERSIST_BYTES, LLM_DEADLINE_ADAPT, LLM_DEFAULT_GENERATION, LLM_MAX_TOKENS, LLM_MAX_TOKENS_REASONING, LLM_REASONING_CAP_TOKENS, UNFINISHED_REASONING_ALLOWANCE_TOKENS, affordableSamples, classDeadlineMs, coversSample, createLlmSource, deadlineCeilingMs, endedRateLimited, estimatedSampleUsage, maxTokensBase, providerSlow, rateLimitedUsage, sampleDeadlineMs, samplesFor, unfinishedSampleUsage, unservedRateLimited, type LlmBudget, type LlmFireInput, type LlmSource, type SampleArrival } from '../../../../src/synth/llm/source.js';
 import { reasoningEnabled, type GenerateFn } from '../../../../src/synth/llm/types.js';
 import { listingSet } from '../../../../src/synth/llm/prompt.js';
 import { calcFiles, proposeFixCall, scriptedGenerate, type HunkIn } from './fixtures.js';
@@ -438,7 +438,21 @@ describe('createLlmSource: stagger, drops, deadlines, cancellation, cache', () =
     expect(src.fire(fireInput(budget({ usdLeft: 0 })))).toMatchObject({ fired: false, reason: 'no_usd' });
     expect(gen.calls()).toBe(0);
     expect([samplesFor('quixbugs'), samplesFor('ladder'), samplesFor('repository', 500), samplesFor('repository', 5000)]).toEqual([4, 3, 6, 4]);
-    expect([sampleDeadlineMs('quixbugs', null), sampleDeadlineMs('quixbugs', 3000), sampleDeadlineMs('quixbugs', 9000), sampleDeadlineMs('ladder', null, 12_000), sampleDeadlineMs('repository', 1000)]).toEqual([20_000, 10_000, 18_000, 12_000, 30_000]);
+    // §4.8 rev 3: the class default is the FLOOR, the served p90 only lifts it (× factor), the ceiling is 45 s / 90 s
+    expect([
+      sampleDeadlineMs('quixbugs', { p90ServedMs: null }),
+      sampleDeadlineMs('quixbugs', { p90ServedMs: 3000 }),
+      sampleDeadlineMs('quixbugs', { p90ServedMs: 14_400 }),
+      sampleDeadlineMs('quixbugs', { p90ServedMs: 40_000 }),
+      sampleDeadlineMs('ladder', { p90ServedMs: null, probeP90Ms: 12_000 }),
+      sampleDeadlineMs('ladder', { p90ServedMs: null, probeP90Ms: 32_000 }),
+      sampleDeadlineMs('repository', { p90ServedMs: 1000 }),
+      sampleDeadlineMs('repository', { p90ServedMs: 29_300 }),
+      sampleDeadlineMs('repository', { p90ServedMs: 80_000 }),
+    ]).toEqual([20_000, 20_000, 28_800, 45_000, 20_000, 32_000, 30_000, 58_600, 90_000]);
+    expect([classDeadlineMs('quixbugs'), classDeadlineMs('ladder'), classDeadlineMs('repository'), deadlineCeilingMs('quixbugs'), deadlineCeilingMs('repository')]).toEqual([20_000, 20_000, 30_000, 45_000, 90_000]);
+    // "the serving provider is slow" = its served p90 is past the class default the deadline started from
+    expect([providerSlow('quixbugs', null), providerSlow('quixbugs', 14_400), providerSlow('quixbugs', 22_000), providerSlow('repository', 22_000), providerSlow('repository', 31_000)]).toEqual([false, false, true, false, true]);
   });
 });
 
@@ -556,5 +570,98 @@ describe('reasoningEnabled / maxTokensBase (§4.5): every reasoning variant but 
     // the estimator agrees: a thinking budget is reasoning on, so a lost sample carries the allowance
     expect(unfinishedSampleUsage({ siblingInputTokens: 10, promptChars: 0, partial: null, reasoning: reasoningEnabled({ maxTokens: 800 }), pricing: PRICING }).outputTokens).toBe(UNFINISHED_REASONING_ALLOWANCE_TOKENS);
     expect(unfinishedSampleUsage({ siblingInputTokens: 10, promptChars: 0, partial: null, reasoning: reasoningEnabled({ enabled: false }), pricing: PRICING }).outputTokens).toBe(0);
+  });
+});
+
+describe('§4.8 rev 3: the sample deadline adapts from the running p90 of served samples, and a slow serving provider caps the reasoning tokens', () => {
+  /** the fire input without a pinned deadline, so the source computes it */
+  function adaptiveInput(b: LlmBudget, over: Partial<LlmFireInput> = {}): LlmFireInput {
+    const input = fireInput(b, over);
+    delete input.deadlineMs;
+    return input;
+  }
+
+  /** A generate whose samples take a scripted latency on a fake clock (`deps.now`). */
+  function timedGenerate(latencies: readonly number[]): { gen: ReturnType<typeof scriptedGenerate>; generate: GenerateFn; now: () => number } {
+    const gen = scriptedGenerate((k) => ({ toolCall: proposeFixCall([k === 0 ? FIX_A : FIX_B]), usage: { inputTokens: 4000, outputTokens: 300 } }));
+    let clock = 0;
+    let served = 0;
+    const generate: GenerateFn = async (req, o) => {
+      const start = clock;
+      const res = await gen.generate(req, o);
+      clock = start + (latencies[served++] ?? 10_000);
+      return res;
+    };
+    return { gen, generate, now: () => clock };
+  }
+
+  it('the first round takes the class default, later rounds `factor × p90` of what the provider served, clamped at the 45 s ceiling', async () => {
+    // the QuixBugs numbers of the head-to-head: served p50 8 s / p90 14.4 s under a 20 s deadline that cut 61 % of the samples
+    const { gen, generate, now } = timedGenerate([8000, 14_400, 26_000, 28_000]);
+    const events: string[] = [];
+    const src = createLlmSource({ generate, pricing: PRICING, now, emit: (phase, detail) => events.push(`${phase}: ${detail}`) });
+    const b = budget({ roundsLeft: 3, samplesLeft: 9, usdLeft: 0.06 });
+
+    const first = src.fire(adaptiveInput(b, { n: 2, stagger: false }));
+    expect(first).toMatchObject({ fired: true, deadlineMs: classDeadlineMs('quixbugs') });
+    expect(src.p90ServedMs()).toBeNull();
+    await drain(src);
+    // two served samples: the p90 is the 14.4 s one (nearest rank) and the next round's deadline is 2 × it
+    expect(src.p90ServedMs()).toBe(14_400);
+    expect(src.reasoningCapTokens()).toBeNull();
+
+    const second = src.fire(adaptiveInput(b, { n: 2, stagger: false, round: 2 }));
+    expect(second).toMatchObject({ fired: true, deadlineMs: LLM_DEADLINE_ADAPT.factor * 14_400 });
+    expect(events.some((e) => e.startsWith('llm:fire') && e.includes('adapted from the served p90 14400 ms') && e.includes('the quixbugs default is 20000 ms'))).toBe(true);
+    await drain(src);
+    expect(src.p90ServedMs()).toBe(28_000);
+
+    // 2 × 28 s is past the ceiling: the deadline stops at 45 s, and the provider is now slow by the class default
+    const third = src.fire(adaptiveInput(b, { n: 1, stagger: false, round: 2, goalId: 'g2' }));
+    expect(third).toMatchObject({ fired: true, deadlineMs: deadlineCeilingMs('quixbugs') });
+    expect(providerSlow('quixbugs', src.p90ServedMs())).toBe(true);
+    expect(src.reasoningCapTokens()).toBe(LLM_REASONING_CAP_TOKENS);
+    // every sample from here asks for a bounded thinking budget instead of the pinned effort, with the reasoning-on max_tokens base
+    expect(gen.requests().at(-1)).toMatchObject({ reasoning: { maxTokens: LLM_REASONING_CAP_TOKENS }, maxTokens: LLM_MAX_TOKENS_REASONING });
+    expect(gen.requests().slice(0, 4).every((r) => r.reasoning !== undefined && 'effort' in r.reasoning)).toBe(true);
+    expect(events.some((e) => e.startsWith('llm:deadline') && e.includes('the serving provider is slow (served p90 28000 ms > the quixbugs default deadline 20000 ms)') && e.includes(`caps reasoning at ${LLM_REASONING_CAP_TOKENS} tokens`))).toBe(true);
+    await drain(src);
+  });
+
+  it('a timed-out, cancelled or rate-limited sample was never served: it does not move the p90, and the probe\'s p90 stands in until two samples are', async () => {
+    // one sample that never returns (aborted by cancel) and one served at 30 s: only the served one counts
+    let release: (() => void) | null = null;
+    const hang: GenerateFn = (_req, o) =>
+      new Promise((_resolve, reject) => {
+        release = () => reject(new Error('cancelled'));
+        o.signal.addEventListener('abort', () => reject(new Error('cancelled')));
+      });
+    const src = createLlmSource({ generate: hang, pricing: PRICING, probeP90Ms: 26_000 });
+    const b = budget({ roundsLeft: 3, samplesLeft: 9, usdLeft: 0.06 });
+    // before any served sample the probe's p90 is the deadline (clamped into [class default, ceiling])
+    expect(src.fire(adaptiveInput(b, { n: 1, stagger: false }))).toMatchObject({ deadlineMs: 26_000 });
+    await src.cancel('commit');
+    expect(release).not.toBeNull();
+    expect(src.round()).toMatchObject({ cancelled: 1, valid: 0, closed: true });
+    expect(src.p90ServedMs()).toBeNull();
+    expect(src.fire(adaptiveInput(b, { n: 1, stagger: false, round: 2 }))).toMatchObject({ deadlineMs: 26_000 });
+    await src.cancel('commit');
+    // still nothing served: the deadline never moved off the probe's p90 and no cap was earned
+    expect(src.p90ServedMs()).toBeNull();
+    expect(src.reasoningCapTokens()).toBeNull();
+  });
+
+  it('a pin that turns reasoning off (or does not send it) is never capped: `{maxTokens}` would turn reasoning on and change the max_tokens base with it', async () => {
+    const { gen, generate, now } = timedGenerate([26_000, 28_000]);
+    const generation: SynthesizerGeneration = { ...LLM_DEFAULT_GENERATION, reasoning: { enabled: false }, maxTokens: LLM_MAX_TOKENS };
+    const src = createLlmSource({ generate, pricing: PRICING, now, generation });
+    const b = budget({ roundsLeft: 3, samplesLeft: 9, usdLeft: 0.06 });
+    src.fire(adaptiveInput(b, { n: 2, stagger: false }));
+    await drain(src);
+    expect(src.p90ServedMs()).toBe(28_000);
+    src.fire(adaptiveInput(b, { n: 1, stagger: false, round: 2 }));
+    expect(src.reasoningCapTokens()).toBeNull();
+    expect(gen.requests().at(-1)).toMatchObject({ reasoning: { enabled: false }, maxTokens: LLM_MAX_TOKENS });
+    await drain(src);
   });
 });

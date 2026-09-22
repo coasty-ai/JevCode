@@ -1,0 +1,19 @@
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+sleep 0.4
+send hi
+sleep 0.2
+send \r
+sleep 0.4
+send second message while thinking
+sleep 0.3
+send \r
+sleep 0.4
+mark enter-while-thinking
+sleep 2.5
+mark settled
+send /exit
+sleep 0.3
+send \r
+eof

@@ -10,7 +10,10 @@
  * keyless wizard (§1.1, §1.4); keys never in logs (§9: the masked fields of both wizard paths); `[you]` redaction at
  * emission (§3.10) in the TUI and `--plain`; `--ascii` twins (TD §14.1); `--plain`'s intake readline (§3.7); `/jev` and
  * `/cost` after a greeting (§2.6, §3.9); `/transcript full` and identity predicate (a) (§4.5, §9). Mocked runs say
- * `--mode jev-on` (`MOCK_RUN_MODE`); the conversational scenarios run under the default `jev-only`.
+ * `--mode jev-on` (`MOCK_RUN_MODE`); the conversational scenarios run under the default mode (`BADGE_DEFAULT`, `jev+llm` since
+ * TUI-DESIGN-3 §1.10 — every default pin below reads it from the table). Round 3 (TUI-DESIGN-3): the splash scenarios pin the
+ * persistent mark (a key completes the reveal, the caption `◆ <version>` is the settle sentinel, F-W1), the wizard scenarios the
+ * one-key field (§1.4), the `/mode` scenarios start in `jev-only` explicitly; the round-3 scenarios proper are `round3.pty.test.ts`.
  *
  * Tests marked `it.fails` record defects of the tree against the design (docs/STATUS.md "Round 2", requests to S2 / S3
  * / S4): they pass while the defect stands and start failing the moment the owning slot lands the fix, which is the
@@ -19,7 +22,10 @@
 import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
+import { MODE_SET_ITEM } from '../../src/cli/session.js';
 import {
+  BADGE_DEFAULT,
+  BADGE_DEFAULT_TEXT,
   BADGE_JEV_LLM,
   BADGE_JEV_ONLY,
   CHAT_OPEN,
@@ -31,7 +37,6 @@ import {
   MOCK_RUN_MODE,
   PLACEHOLDER_FOLLOWUP,
   PLACEHOLDER_TASK,
-  PROMPT,
   RAW_MODE_STEP,
   RUN_OPEN,
   RUN_STARTED_STEP,
@@ -75,10 +80,14 @@ const NO_NETWORK = { JEVCODE_ASSERT_NO_NETWORK: '1' } as const;
 const INTAKE_WALL_MS = 1500;
 /** an SGR gap inside a coloured badge (` · next run` may be its own span) */
 const PROMPT_GAP = SGR_GAP;
+/** TUI-DESIGN-3 §5.3 normaliser: a stripped capture with every run of whitespace collapsed, so an item that soft-wrapped over the 10-cell gutter compares with its one-line source text */
+const flatten = (text: string): string => text.replace(/\s+/g, ' ');
 /** TUI-DESIGN-2 §5.2: the splash ticks through Ink's `useAnimation` at 50 ms — ≤ 15 frames in its 700 ms */
 const SPLASH_MAX_FRAMES = 15;
-/** the brand row that replaces the wordmark once the splash settled (§5.4; expected as raw bytes — `◆ jevcode` opens its own accent span) */
-const BRAND_STEP = 'expect ◆ jevcode';
+/** TUI-DESIGN-3 §3.5: the caption `◆ <version>` on the mark's last row is the settle sentinel (the brand row is the < 21-row / < 64-column twin) */
+const CAPTION_STEP = 'expect ◆(?:\\x1b\\[[0-9;]*m)* (?:\\x1b\\[[0-9;]*m)*\\d+\\.\\d+\\.\\d+'; // SGRs sit between the diamond and the version
+/** the frames of the dynamic region that carry the complete resting mark (5 `██` rows, TUI-DESIGN-3 F-W1) */
+const hasMark = (dyn: readonly string[]): boolean => dyn.filter((l) => WORDMARK_RE.test(l)).length >= 5;
 /** Alt chords as the pty bytes: ESC + letter (`keys/bindings.ts` `meta+j` …; the App re-buffers a bare ESC for 30 ms) */
 // Tcl 8.5's `\xhh` (macOS expect) swallows every following hex digit and keeps the last two, so `\x1bd` is `\xbd` = `½`, not ESC+d;
 // the octal form is exactly three digits (research 20 driver notes)
@@ -103,11 +112,11 @@ function filesContaining(r: Drive, needle: string): string[] {
 }
 
 describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
-  it('chat-hi: `hi` → [you] bubble, [jevcode] catalogue reply, no run, badge jev-only; Enter → reply wall time recorded', async () => {
+  it('chat-hi: `hi` → [you] bubble, [jevcode] catalogue reply, no run, the default badge; Enter → reply wall time recorded', async () => {
     const r = await drive({
       name: 'r2-chat-hi',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', 'mark hi-sent', labelStep('you', 'hi'), labelStep('jevcode', 'Hi\\.'), 'mark hi-reply', topEdgeStep(BADGE_JEV_ONLY), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send hi', echoStep('hi'), 'send \\r', 'mark hi-sent', labelStep('you', 'hi'), labelStep('jevcode', 'Hi\\.'), 'mark hi-reply', topEdgeStep(BADGE_DEFAULT), `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -130,17 +139,19 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     console.log(`chat-hi: Enter → [jevcode] reply ${wall} ms (mock decider; gate ${INTAKE_WALL_MS} ms); status words seen between Enter and the reply: ${[...new Set(between.flatMap((f) => f.dynamic.filter((l) => /^│ (?:starting|⠹ thinking|• thinking)/.test(l)).map((l) => l.slice(2, 14).trim())))].join(', ') || 'none'}`);
   });
 
-  it('chat-facts: `what can you do?` → the what_it_is fact; `which mode is this?` → `Mode: jev-only`; no run', async () => {
+  it('chat-facts: `what can you do?` → the what_it_is fact; `which mode is this?` → `Mode: <default badge>`; no run', async () => {
     const r = await drive({
       name: 'r2-chat-facts',
       args: ['chat', '--mock'],
-      steps: [...CHAT_OPEN, 'send what can you do?', echoStep('what can you do?'), 'send \\r', labelStep('jevcode', 'JevCode is a coding agent'), 'send which mode is this?', echoStep('which mode is this?'), 'send \\r', labelStep('jevcode', 'Mode: jev-only'), ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send what can you do?', echoStep('what can you do?'), 'send \\r', labelStep('jevcode', 'JevCode is a coding agent'), 'send which mode is this?', echoStep('which mode is this?'), 'send \\r', labelStep('jevcode', `Mode: ${BADGE_DEFAULT}`), ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     expect(plain).toContain('[jevcode] JevCode is a coding agent where Jev, a decision model, makes every');
-    expect(plain).toContain('[jevcode] Mode: jev-only — no generating LLM; code proposes, Jev decides, tests');
+    // TUI-DESIGN-3 §1.9: the mode sentence names the default badge; the copy is generator-neutral ("the code model", never Claude)
+    expect(plain).toMatch(new RegExp(`\\[jevcode\\] Mode: ${BADGE_DEFAULT} — `));
+    expect(plain).not.toContain('Claude writes');
     expect(plain).not.toMatch(/\[run\] start /);
     expect(r.runDirs()).toEqual([]);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
@@ -156,7 +167,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     const rows = plain.split(/\r?\n/);
-    const steps = rows.filter((l) => /^\[step \d+\] /.test(l));
+    const steps = rows.filter((l) => /^ *\[step \d+\] /.test(l));
     expect(steps.length).toBeGreaterThanOrEqual(4);
     expect(rows.filter((l) => HIDDEN_STAGE_RE.test(l))).toEqual([]);
     const dirs = r.runDirs();
@@ -224,7 +235,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(plain).toContain('run this as a task?  [y] [n]  Esc keeps');
     expect(plain).not.toContain('╭─ run this as a task');
     expect(plain).toContain('(waiting for y/n)');
-    expect(plain).toMatch(/^jev-only · asking/m);
+    expect(plain).toMatch(new RegExp(`^${BADGE_DEFAULT} · asking`, 'm'));
     expectCardOpenUntilAnswer(r, 'run this as a task?  [y] [n]  Esc keeps');
     // rows − 2 at 12 rows: the intake frame is rule + row + composer + status = 4 dynamic rows
     const all = syncFrames(r.text);
@@ -261,8 +272,8 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     const plain = stripAnsi(r.text).replace(/\r\n/g, '\n');
     // §3.7 `--plain` readline twin, verbatim (`src/chat/lines.ts` INTAKE_READLINE_PROMPT), the answer echoed by the kernel
     expect(plain).toContain('run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > n');
-    expect(plain).toMatch(/^\[you\] the date parsing$/m);
-    expect(plain).toMatch(/^\[jevcode\] /m);
+    expect(plain).toMatch(/^ *\[you\] the date parsing$/m);
+    expect(plain).toMatch(/^ *\[jevcode\] /m);
     expect(plain).not.toMatch(/\[run\] start /);
     expect(r.runDirs()).toEqual([]);
   });
@@ -302,7 +313,7 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text).replace(/\r\n/g, '\n');
     expect(plain).toContain('jevcode: looks like this contains a secret (sk-ant-…); type y to send, anything else to cancel: y');
-    expect(plain).toMatch(/^\[you\] what can you do with \[REDACTED:[^\]]+\]\?$/m);
+    expect(plain).toMatch(/^ *\[you\] what can you do with \[REDACTED:[^\]]+\]\?$/m);
     // the cooked-mode echo of the typed line is the kernel's, not the renderer's; every renderer-written line is masked
     const rendererLines = plain.split('\n').filter((l) => /^\[(?:you|jevcode|ui|run)\] /.test(l));
     for (const l of rendererLines) expect(l).not.toContain('AAAAAAAAAAAA');
@@ -318,17 +329,18 @@ describe.skipIf(!hasExpect)('pty round 2: conversation (§3)', () => {
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
-    expect(plain).toMatch(/^intake: 1 message · p50 \d+ ms · \$\d+\.\d+ · last: greeting_or_smalltalk \d\.\d\d$/m);
-    expect(plain).toMatch(/^chat \$\d+\.\d+ for 1 message \(~\$[\d.e+-]+ each, p50 \d+ ms\)$/m);
+    expect(plain).toMatch(/^ *intake: 1 message · p50 \d+ ms · \$\d+\.\d+$/m); // TUI-DESIGN-3 §5.1 rule 1 / §5.4: the `/jev` detail rows hang at column 10 under the `[ui]` head
+    expect(plain).toMatch(/^ *last: greeting or smalltalk \(\d\.\d\d\)$/m); // TUI-DESIGN-3 §10: the last-intake row
+    expect(plain).toMatch(/^ *chat \$\d+\.\d+ for 1 message \(~\$[\d.e+-]+ each, p50 \d+ ms\)$/m);
     expect(r.runDirs()).toEqual([]);
   });
 });
 
 describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
-  it('mode-switch without a generator key: the wizard provider step opens in place; Ctrl-C keeps jev-only and never exits', async () => {
+  it('mode-switch without a generator key (started in jev-only, TUI-DESIGN-3 §1.10): the wizard provider step opens in place; Ctrl-C keeps jev-only and never exits', async () => {
     const r = await drive({
       name: 'r2-mode-switch',
-      args: ['chat'],
+      args: ['chat', '--mode', 'jev-only'],
       env: { ...NO_NETWORK, TYPESAFE_API_KEY: FAKE_KEY },
       steps: [...CHAT_OPEN, 'send /mode jev-on', echoStep('/mode jev-on'), 'send \\r', 'expect Pick the provider', 'sleep 0.3', 'send \\x03', 'expect mode stays jev-only', topEdgeStep(BADGE_JEV_ONLY), ...EXIT_IDLE],
     });
@@ -342,17 +354,18 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
     expect(r.runDirs()).toEqual([]);
   });
 
-  it('mode-switch with a generator key: the mode item and the `jev+llm · next run` badge in the console top edge; a command is not a turn', async () => {
+  it('mode-switch with a generator key (started in jev-only): the mode item and the `jev+llm · next run` badge in the console top edge; a command is not a turn', async () => {
     const r = await drive({
       name: 'r2-mode-switch-keyed',
-      args: ['chat'],
+      args: ['chat', '--mode', 'jev-only'],
       env: { ...NO_NETWORK, OPENROUTER_API_KEY: FAKE_KEY },
       steps: [...CHAT_OPEN, 'send /mode jev-on', echoStep('/mode jev-on'), 'send \\r', `expect ${BADGE_JEV_LLM} from the next run`, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} · next run`), 'sleep 0.3', ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
-    expect(plain).toContain('mode jev+llm from the next run — Claude writes the code, Jev still decides');
+    // TUI-DESIGN-3 §1.9 / §10: the item text is the one table's row (generator-neutral copy), rebuilt from the wrapped rows (§5.3 normaliser)
+    expect(flatten(plain)).toContain(MODE_SET_ITEM['jev-on']);
     expect(plain).toMatch(/^╭─ jev\+llm · next run ─/m);
     // §4.4 / H-G1: a command is not a turn — the frame after `/mode jev-on` still shows the `task` placeholder, not `followup`
     const after = frames(r.text).filter((u) => u.lines.slice(u.ruleIndex).some((l) => l.startsWith('╭─ jev+llm · next run')));
@@ -364,10 +377,10 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
     expect(plain).not.toContain(FAKE_KEY);
   });
 
-  it('mode-switch with ANTHROPIC_API_KEY: `/llm on` is `/mode jev-on`, the no-argument `/mode` item names the next run, and `run:start` promotes `jev+llm · next run` → `jev+llm`', async () => {
+  it('mode-switch with ANTHROPIC_API_KEY (started in jev-only): `/llm on` is `/mode jev-on`, the no-argument `/mode` item names the next run, and `run:start` promotes `jev+llm · next run` → `jev+llm`', async () => {
     const r = await drive({
       name: 'r2-mode-switch-anthropic',
-      args: ['chat', '--mock', '--mock-steps', '3'],
+      args: ['chat', '--mock', '--mock-steps', '3', '--mode', 'jev-only'],
       env: { ...NO_NETWORK, ANTHROPIC_API_KEY: FAKE_KEY, TYPESAFE_API_KEY: FAKE_KEY },
       steps: [...CHAT_OPEN, 'send /llm on', echoStep('/llm on'), 'send \\r', `expect ${BADGE_JEV_LLM} from the next run`, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} · next run`), 'send /mode', echoStep('/mode'), 'send \\r', `expect next run: ${BADGE_JEV_LLM}`, 'send fix the failing test', echoStep('fix the failing test'), 'send \\r', RUN_STARTED_STEP, topEdgeStep(`${BADGE_JEV_LLM}${PROMPT_GAP} ─`), 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
@@ -375,14 +388,15 @@ describe.skipIf(!hasExpect)('pty round 2: mode switching (§1)', () => {
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     // §1.3: the alias and the mode item (§12 "Mode items")
-    expect(plain).toContain('[ui] mode jev+llm from the next run — Claude writes the code, Jev still decides');
-    const modeItem = /^\[ui\] mode (jev-only|jev\+llm|llm-only) \(next run: jev\+llm\)$/m.exec(plain);
+    expect(flatten(plain)).toContain(`[ui] ${MODE_SET_ITEM['jev-on']}`);
+    // TUI-DESIGN-3 §4.4 F1: `mode <cur badge> — next run: <next badge>[ (default)]`; ` (default)` follows the word equal to the default's
+    const modeItem = /^ *\[ui\] mode (jev-only|jev\+llm|llm-only) — next run: jev\+llm(?: \(default\))?$/m.exec(plain);
     expect(modeItem).not.toBeNull();
     // §1.5: pending badge before the run, promoted at `run:start` (the run's `mode=jev-on`), no ` · next run` afterwards
     expect(plain).toMatch(/^╭─ jev\+llm · next run ─/m);
     expect(plain).toMatch(/\[run\] start \S+ mode=jev-on task: fix the failing test/);
     const all = syncFrames(r.text);
-    const started = syncFramesWith(all, /^\[run\] start /);
+    const started = syncFramesWith(all, /^ *\[run\] start /);
     expect(started.length).toBe(1);
     const afterStart = all.slice(started[0]!).filter((f) => f.dynamic.some((l) => l.startsWith('╭─ ')));
     expect(afterStart.length).toBeGreaterThan(0);
@@ -398,8 +412,8 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     [24, 80],
     [40, 120],
   ] as const) {
-    it(`splash ${rows}x${cols}: frame 0 is the first frame (< 300 ms warm), a key at ~100 ms cancels it, no wordmark after the key, zero clears`, async () => {
-      const r = await drive({ name: `r2-splash-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', `expect ${PROMPT} h`, 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
+    it(`splash ${rows}x${cols}: frame 0 is the first frame (< 300 ms warm), a key at ~100 ms completes the reveal — the echo frame and every later idle frame carry the resting mark, no sweep head after the echo, 11 dynamic rows, zero clears (TUI-DESIGN-3 §3.3)`, async () => {
+      const r = await drive({ name: `r2-splash-${rows}x${cols}`, args: ['chat', '--mock'], rows, cols, steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', echoStep('h'), 'sleep 0.3', 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
       const first = timingOf(r.timing, 'expect', '25l');
@@ -410,67 +424,81 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
       // §5.2 row 0 / H-A1: the `J` column and the sweep head, the console complete with the badge and `step 0/–`, 11 dynamic rows
       expect(body.filter((l) => WORDMARK_RE.test(l)).length).toBe(5);
       expect(body.some((l) => /▓▒░/.test(l))).toBe(true);
-      expect(body.some((l) => l.startsWith('╭─ jev-only '))).toBe(true);
+      expect(body.some((l) => l.startsWith(`╭─ ${BADGE_DEFAULT_TEXT} `))).toBe(true);
       expect(body.at(-2)).toMatch(/step 0\/–/);
       expect(frame!.rows).toBe(11);
       for (const l of body.filter(isBoxEdge)) expect([...l].length).toBe(cols);
-      // §5.3 cancel: the frame that echoes the key shows no wordmark row, nor does any later frame
+      // TUI-DESIGN-3 §3.3: a key completes the reveal — the echo frame shows the character AND the complete resting mark; no frame from the echo on carries the sweep head
       const echo = fs.findIndex((u) => u.lines.some((l) => /[›>] h/.test(l)));
       expect(echo).toBeGreaterThan(0);
-      for (const u of fs.slice(echo)) expect(u.lines.some((l) => WORDMARK_RE.test(l))).toBe(false);
-      // the idle frame after the splash: brand row + 5-row console = 6 dynamic rows (H-A3)
-      expect(fs.at(-1)!.rows).toBe(6);
-      expect(fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]).toMatch(/^─── ◆ jevcode \d+\.\d+\.\d+ ─/);
+      for (const u of fs.slice(echo)) {
+        expect(hasMark(u.lines.slice(u.ruleIndex))).toBe(true);
+        expect(u.lines.some((l) => /▓▒░/.test(l))).toBe(false);
+      }
+      // the idle frame: plain rule + 5-row mark + 5-row console = 11 dynamic rows (F-W1); the caption `◆ <version>` closes the mark's last row at ≥ 73 columns
+      expect(fs.at(-1)!.rows).toBe(11);
+      expect(fs.at(-1)!.lines[fs.at(-1)!.ruleIndex]).toMatch(/^─{10}/);
+      expect(fs.at(-1)!.lines.slice(fs.at(-1)!.ruleIndex).some((l) => /█ {2}◆ \d+\.\d+\.\d+$/.test(l))).toBe(true);
+      if (cols >= 104) expect(fs.at(-1)!.lines.slice(fs.at(-1)!.ruleIndex).some((l) => l.includes('Decisions, not strings'))).toBe(true);
       expect(countClears(afterFirstFrame(r.text))).toBe(0);
       console.log(`splash ${rows}x${cols}: first frame ${first!.t} ms, ${fs.slice(0, echo).filter((u) => u.lines.some((l) => WORDMARK_RE.test(l))).length} wordmark frames before the key at frame ${echo}`);
     });
   }
 
-  it('splash-reduced: --no-animation mounts settled — the brand row, no wordmark anywhere', async () => {
-    const r = await drive({ name: 'r2-splash-reduced', args: ['chat', '--mock', '--no-animation'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', `expect ${PROMPT} h`, 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
+  it('wordmark-reduced: --no-animation mounts on the static resting mark — frame 0 carries the complete mark and no sweep head, every frame keeps it, 11 rows (TUI-DESIGN-3 §3.2 twins)', async () => {
+    const r = await drive({ name: 'r3-wordmark-reduced', args: ['chat', '--mock', '--no-animation'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, 'sleep 0.1', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, IDLE_STEP, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
-    expect(stripAnsi(r.text)).not.toMatch(WORDMARK_RE);
-    const [frame] = frames(r.text);
-    expect(frame!.lines[frame!.ruleIndex]).toMatch(/^─── ◆ jevcode /);
-    expect(frame!.rows).toBe(6);
+    expect(stripAnsi(r.text)).not.toMatch(/▓▒░/);
+    const fs = frames(r.text);
+    for (const u of fs) expect(hasMark(u.lines.slice(u.ruleIndex))).toBe(true);
+    expect(fs[0]!.lines[fs[0]!.ruleIndex]).toMatch(/^─{10}/);
+    expect(fs[0]!.rows).toBe(11);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });
 
-  it('splash settles by itself: no key — ≤ 15 wordmark frames, the brand row `─── ◆ jevcode` in the settled frame, no wordmark frame at or after it, zero clears', async () => {
-    const r = await drive({ name: 'r2-splash-settle', args: ['chat', '--mock'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, BRAND_STEP, 'mark settled', IDLE_STEP, ...EXIT_IDLE] });
+  it('splash settles by itself: no key — ≤ 15 reveal frames before the caption frame `◆ <version>`, every frame after it carries the mark, 0 frames in the 5 s after the settle, zero clears (TUI-DESIGN-3 §3.4, §3.5)', async () => {
+    const r = await drive({ name: 'r3-splash-settle', args: ['chat', '--mock'], steps: [FIRST_FRAME_STEP, 'expect step 0/', RAW_MODE_STEP, CAPTION_STEP, 'mark settled', IDLE_STEP, 'sleep 5', 'mark quiet', 'send h', echoStep('h'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text).filter((f) => f.ruleIndex >= 0);
-    const wordmark = all.filter((f) => f.dynamic.some((l) => WORDMARK_RE.test(l))).map((f) => f.index);
-    // §5.2: frame 0 carries the wordmark; ≤ 15 frames in 700 ms at the 50 ms tick; the settle frame replaces the rule row with the brand row (§5.4)
-    expect(wordmark[0]).toBe(all[0]!.index);
-    expect(wordmark.length).toBeGreaterThanOrEqual(1);
-    expect(wordmark.length).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
-    const brand = all.filter((f) => /^─── ◆ jevcode \d+\.\d+\.\d+ ─/.test(f.dynamic[0] ?? '')).map((f) => f.index);
-    expect(brand.length).toBeGreaterThan(0);
-    expect(wordmark.every((i) => i < brand[0]!)).toBe(true);
-    expect(all.at(-1)!.dynamic.length).toBe(6);
-    // the settle time on the driver's clock (first frame → brand row): ≈ 700 ms by construction
+    const head = all.filter((f) => f.dynamic.some((l) => /▓▒░/.test(l))).map((f) => f.index);
+    // the reveal: frame 0 carries the wordmark head; ≤ 15 frames at the 50 ms tick; the settle frame is the first with the caption and no head
+    expect(head[0]).toBe(all[0]!.index);
+    expect(head.length).toBeGreaterThanOrEqual(1);
+    expect(head.length).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
+    const caption = all.findIndex((f) => f.dynamic.some((l) => /◆ \d+\.\d+\.\d+$/.test(l)) && !f.dynamic.some((l) => /▓▒░/.test(l)));
+    expect(caption).toBeGreaterThan(0);
+    for (const f of all.slice(caption)) expect(hasMark(f.dynamic)).toBe(true);
+    // the loop rests for 5.75 s after `splash:done`: the frames strictly between the caption frame and the marker key's echo are the host's settle (the session meter) at most
+    const echo = all.findIndex((f, i) => i > caption && f.dynamic.some((l) => /[›>] h/.test(l)));
+    expect(echo).toBeGreaterThan(caption);
+    const between = all.slice(caption + 1, echo).filter((f) => !f.dynamic.some((l) => /sess \$/.test(l)) || f.index !== all[caption + 1]?.index);
+    expect(between.length).toBeLessThanOrEqual(1);
+    expect(all.at(-1)!.dynamic.length).toBe(11);
     const t0 = timingOf(r.timing, 'expect', 'step 0/')!.t;
-    const settled = timingOf(r.timing, 'expect', 'jevcode')!.t - t0;
-    expect(settled).toBeGreaterThanOrEqual(500);
+    const settled = timingOf(r.timing, 'expect', '\\d+\\.\\d+')!.t - t0;
+    expect(settled).toBeGreaterThanOrEqual(400);
     expect(settled).toBeLessThan(2500);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
-    console.log(`splash settle: ${wordmark.length} wordmark frames, brand row at frame ${brand[0]}, ${settled} ms after the first frame`);
+    console.log(`splash settle: ${head.length} reveal frames, caption at frame ${caption}, ${settled} ms after the first frame, ${between.length} frame(s) in the 5 s after it`);
   });
 
-  it('run:start cancels the splash: a one-shot `run` starting before 700 ms leaves no wordmark frame after `[run] start`', async () => {
+  it('run:start cancels the splash: a one-shot `run` starting before 700 ms leaves no wordmark frame while the run is live; the mark returns with `[run] end` (TUI-DESIGN-3 §3.2)', async () => {
     const r = await drive({ name: 'r2-splash-run-cancel', args: ['run', 'fix the failing test', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '3'], steps: [...RUN_OPEN, 'mark started', 'expect end (complete|max_steps)', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const all = syncFrames(r.text);
-    const started = syncFramesWith(all, /^\[run\] start /);
+    const started = syncFramesWith(all, /^ *\[run\] start /);
     expect(started.length).toBe(1);
-    // §5.3: `run:start` is a cancel row — every frame from the start item on draws no wordmark; the frames before it may
+    // §5.3: `run:start` is a cancel row — no frame from the start item on draws a wordmark while the run is live; the frames before it
+    // may, and TUI-DESIGN-3 §3.2 (`run:end → idle`) brings the mark back at ≥ 24 rows in the frame that commits `[run] end`
+    const ended = all.findIndex((f) => f.lines.some((l) => /^ *\[run\] end /.test(l)));
+    expect(ended).toBeGreaterThan(started[0]!);
     const before = all.slice(0, started[0]!).filter((f) => f.dynamic.some((l) => WORDMARK_RE.test(l))).length;
-    for (const f of all.slice(started[0]!)) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
+    for (const f of all.slice(started[0]!, ended)) expect(f.dynamic.some((l) => WORDMARK_RE.test(l))).toBe(false);
     expect(before).toBeLessThanOrEqual(SPLASH_MAX_FRAMES);
+    expect(all.slice(ended).some((f) => f.dynamic.filter((l) => WORDMARK_RE.test(l)).length >= 5)).toBe(true);
     const t0 = timingOf(r.timing, 'expect', '25l')!.t;
     const startAt = timingOf(r.timing, 'expect', 'start')!.t - t0;
     expect(startAt).toBeLessThan(700);
@@ -492,9 +520,9 @@ describe.skipIf(!hasExpect)('pty round 2: splash (§5)', () => {
     const body = first!.lines.slice(first!.ruleIndex);
     expect(body.filter((l) => /##/.test(l)).length).toBe(5);
     expect(body.some((l) => /#\+\./.test(l))).toBe(true);
-    expect(body.some((l) => /^\+- jev-only -/.test(l))).toBe(true);
+    expect(body.some((l) => l.startsWith(`+- ${BADGE_DEFAULT_TEXT} -`))).toBe(true);
     expect(body.some((l) => /^\| > Say hi, ask a question, or describe a task\.\.\./.test(l))).toBe(true);
-    expect(plain).toMatch(/^--- \* jevcode \d+\.\d+\.\d+ -/m);
+    expect(plain).toMatch(/\* \d+\.\d+\.\d+/); // the resting mark's ascii caption `* <version>` (TUI-DESIGN-3 §3.5) replaces the brand row at ≥ 21 rows
     expect(plain).toMatch(/^\+- run this as a task\? -+\+$/m);
     expect(plain).toMatch(/^\| \[y\] run it {3}\[n\] just chatting {3}\(Esc keeps the text; Enter does nothing\) +\|$/m);
     expect(plain).not.toMatch(/[╭╮╰╯│├┤─█▓▒░◆›…]/);
@@ -661,10 +689,10 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     expect(r.code).toBe(0);
     const rows = staticRows(r.text);
     // the stage kinds hidden by `compact` are drawn in `full`, and so is `run:ready`
-    expect(rows.some((l) => /^\[step 1\] intent=/.test(l))).toBe(true);
-    expect(rows.some((l) => /^\[step 1\] proposal /.test(l))).toBe(true);
-    expect(rows.some((l) => /^\[step 1\] judge /.test(l))).toBe(true);
-    expect(rows.some((l) => /^\[run\] ready /.test(l))).toBe(true);
+    expect(rows.some((l) => /^ *\[step 1\] intent=/.test(l))).toBe(true);
+    expect(rows.some((l) => /^ *\[step 1\] proposal /.test(l))).toBe(true);
+    expect(rows.some((l) => /^ *\[step 1\] judge /.test(l))).toBe(true);
+    expect(rows.some((l) => /^ *\[run\] ready /.test(l))).toBe(true);
     // identity (a): after stripAnsi, the rows equal formatTranscriptItem(item) word-wrapped — rebuilt against transcript.log with the
     // continuation indent dropped (the design's hanging indent of `label.length + 1` cells; a full-width wrap rebuilds the same way)
     const transcript = r.transcript()!;
@@ -682,7 +710,7 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
       name: 'r2-chrome-tiers',
       args: ['chat', '--mock'],
       // an expect right after each resize (the driver's `sleep` drains and consumes the pty, so a frame that arrived during a sleep is gone for a later expect), then a settle
-      steps: [...CHAT_OPEN, 'send A', echoStep('A'), 'resize 12 60', `expect jev-only${PROMPT_GAP} · idle`, 'sleep 0.5', 'send B', echoStep('AB'), 'resize 24 80', topEdgeStep(BADGE_JEV_ONLY), 'sleep 0.5', 'send C', echoStep('ABC'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, 'send A', echoStep('A'), 'resize 12 60', `expect ${BADGE_DEFAULT}${PROMPT_GAP} · idle`, 'sleep 0.5', 'send B', echoStep('AB'), 'resize 24 80', topEdgeStep(BADGE_DEFAULT), 'sleep 0.5', 'send C', echoStep('ABC'), 'send \\x03', `expect ${PLACEHOLDER_TASK}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -698,7 +726,9 @@ describe.skipIf(!hasExpect)('pty round 2: panel, transcript views, chrome tiers 
     // §1.5 flat: `<badge> · <leftWord>` leads the status left zone; no box row anywhere in the flat frame
     const flat = segments[1]!.unit!;
     expect(flat.lines.slice(flat.ruleIndex).some(isBoxEdge)).toBe(false);
-    expect(flat.lines.at(-1)).toMatch(/^jev-only · idle/);
+    expect(flat.lines.at(-1)).toMatch(new RegExp(`^${BADGE_DEFAULT} · idle`));
+    // TUI-DESIGN-3 §3.2: the flat tier draws no wordmark
+    expect(flat.lines.some((l) => WORDMARK_RE.test(l))).toBe(false);
     expect(flat.rows).toBeLessThanOrEqual(10);
     console.log(`chrome tiers: clears per segment ${segments.map((s) => s.clears).join('/')}; rows boxed ${segments[0]!.unit!.rows} · flat ${flat.rows} · boxed ${segments[2]!.unit!.rows}`);
   });
@@ -709,44 +739,49 @@ describe.skipIf(!hasExpect)('pty round 2: zero-argument starts and the keyless w
     ['bare `jevcode`', ['--mock']],
     ['`jevcode run` without a task', ['run', '--mock']],
   ] as const) {
-    it(`zero-argument start (${name}): a jev-only session, the badge from the first frame, the round-2 placeholder, no wizard`, async () => {
-      const r = await drive({ name: `r2-zero-arg-${args[0] === 'run' ? 'run' : 'chat'}`, args: [...args], steps: [FIRST_FRAME_STEP, topEdgeStep(BADGE_JEV_ONLY), `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP, ...EXIT_IDLE] });
+    it(`zero-argument start (${name}): a default-mode session, the badge from the first frame, the round-2 placeholder, no wizard`, async () => {
+      const r = await drive({ name: `r2-zero-arg-${args[0] === 'run' ? 'run' : 'chat'}`, args: [...args], steps: [FIRST_FRAME_STEP, topEdgeStep(BADGE_DEFAULT), `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, IDLE_STEP, ...EXIT_IDLE] });
       expect(r.timeouts).toBe(0);
       expect(r.code).toBe(0);
       const [frame] = frames(r.text);
-      expect(frame!.lines.slice(frame!.ruleIndex).some((l) => l.startsWith('╭─ jev-only '))).toBe(true);
+      expect(frame!.lines.slice(frame!.ruleIndex).some((l) => l.startsWith(`╭─ ${BADGE_DEFAULT_TEXT} `))).toBe(true);
       const plain = stripAnsi(r.text);
       expect(plain).toMatch(/\[run\] jevcode session · \S+ \| step 0\/– starting/);
       expect(plain).not.toContain('Where do you reach Jev');
       expect(plain).not.toContain('Pick the generator provider');
+      expect(plain).not.toContain('OpenRouter API key —');
       expect(r.runDirs()).toEqual([]);
     });
   }
 
   /** the keyless startup wizard: `childEnv` gives an empty HOME / XDG dir (no credentials file), no .env in the workspace, every key variable removed */
-  const WIZARD_OPEN = [FIRST_FRAME_STEP, 'expect Where do you reach Jev'];
+  const WIZARD_OPEN = [FIRST_FRAME_STEP, 'expect OpenRouter API key'];
 
-  it('zero-argument start with no key anywhere: the jev-only wizard asks for the Jev provider only (`setup · jev provider`); Ctrl-C at startup exits 2', async () => {
-    const r = await drive({ name: 'r2-zero-arg-wizard', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
+  it('zero-argument start with no key anywhere: the one-key wizard opens on the masked OpenRouter field under `setup · key` beneath the held mark (F-R8); Ctrl-C at startup exits 2 (TUI-DESIGN-3 §1.4, D-J)', async () => {
+    const r = await drive({ name: 'r3-zero-arg-wizard', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(2);
     const plain = stripAnsi(r.text);
-    // §1.4 / §12 "Wizard": the jev-only first run asks for the Jev provider inside the console (`setup · jev provider`), never the generator
-    expect(plain).toContain('No Jev key found. Where do you reach Jev?');
-    expect(plain).toMatch(/^╭─ setup · jev provider ─/m);
-    expect(plain).toContain('1 typesafe   2 openrouter');
+    expect(plain).toContain('OpenRouter API key — one key runs Jev and the code model');
+    expect(plain).toMatch(/^╭─ setup · key ─/m);
+    expect(plain).toContain('Paste, then Enter · Esc: other ways to start · Ctrl-C quits (shows setup)');
+    expect(plain).not.toContain('Where do you reach Jev');
     expect(plain).not.toContain('Pick the generator provider');
-    expect(plain).not.toContain('ANTHROPIC_API_KEY=');
+    // F-R8: the wizard is hosted under the mark — 13 dynamic rows (status 1 + rule 1 + chrome 3 + wizard 3 + pane 5)
+    const setup = syncFrames(r.text).filter((f) => f.dynamic.some((l) => l.startsWith('╭─ setup · key')));
+    expect(setup.length).toBeGreaterThan(0);
+    expect(hasMark(setup[0]!.dynamic)).toBe(true);
+    expect(setup[0]!.dynamic.length).toBe(13);
     expect(r.runDirs()).toEqual([]);
   });
 
-  it('Ctrl-C at the startup wizard prints the fix block (`printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin`, §1.4 / §12)', async () => {
-    const r = await drive({ name: 'r2-zero-arg-wizard-fix', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
+  it('Ctrl-C at the startup wizard prints the jev-on fix block (`export OPENROUTER_API_KEY=…   # one key: Jev + the code model`, `printenv OPENROUTER_API_KEY | jevcode login --key-stdin`; TUI-DESIGN-3 §1.6)', async () => {
+    const r = await drive({ name: 'r3-zero-arg-wizard-fix', args: [], env: NO_NETWORK, steps: [...WIZARD_OPEN, 'sleep 0.4', 'send \\x03', 'eof'] });
     expect(r.code).toBe(2);
-    // the fix line is 82 cells, so at 80 columns it wraps after `typesafe `: the rows are re-joined before the check
     const plain = stripAnsi(r.text);
     const joined = plain.split(/\r?\n/).map((l) => l.trim()).join(' ');
-    expect(joined).toContain('printenv TYPESAFE_API_KEY | jevcode login --jev-provider typesafe --jev-key-stdin');
+    expect(joined).toContain('export OPENROUTER_API_KEY=');
+    expect(joined).toContain('jevcode login --key-stdin');
     expect(plain).toContain('export TYPESAFE_API_KEY=');
   });
 
@@ -757,33 +792,33 @@ describe.skipIf(!hasExpect)('pty round 2: zero-argument starts and the keyless w
     const setup = syncFramesWith(all, /^╭─ setup/);
     expect(setup.length).toBeGreaterThan(0);
     const afterSetup = all.slice(setup.at(-1)! + 1);
-    expect(afterSetup.some((f) => f.dynamic.some((l) => l.startsWith('╭─ jev-only ') || l.includes(PLACEHOLDER_TASK)))).toBe(false);
+    expect(afterSetup.some((f) => f.dynamic.some((l) => l.startsWith(`╭─ ${BADGE_DEFAULT_TEXT} `) || l.includes(PLACEHOLDER_TASK)))).toBe(false);
   });
 
-  it('keys never in logs (§9): a key typed into the startup wizard\'s masked Jev-key field shows as `•` cells, then Ctrl-C — the bytes are in no frame, history.jsonl, sessions/index.jsonl or any file under JEVCODE_HOME / XDG', async () => {
+  it('keys never in logs (§9): a key typed into the startup wizard\'s one-key masked field shows as `•` cells, then Ctrl-C — the bytes are in no frame, history.jsonl, sessions/index.jsonl or any file under JEVCODE_HOME / XDG', async () => {
     const r = await drive({
-      name: 'r2-wizard-masked-startup',
+      name: 'r3-wizard-masked-key',
       args: [],
       env: NO_NETWORK,
-      steps: [...WIZARD_OPEN, 'sleep 0.4', 'send 1', 'expect Jev API key \\(TYPESAFE_API_KEY\\)  1/1', 'sleep 0.3', `send ${TYPED_KEY}`, 'expect •{20}', 'sleep 0.3', 'mark typed', 'send \\x03', 'eof'],
+      steps: [...WIZARD_OPEN, 'sleep 0.4', `send ${TYPED_KEY}`, 'expect •{20}', 'sleep 0.3', 'mark typed', 'send \\x03', 'eof'],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(2);
     const plain = stripAnsi(r.text);
-    // §1.4 / §12: the `setup · jev key` console title, the masked row `› •••`, the counter row with the length only
-    expect(plain).toMatch(/^╭─ setup · jev key ─/m);
+    // TUI-DESIGN-3 §1.4.2: the `setup · key` console title, the masked row `› •••`, the one-key counter row with the length only
+    expect(plain).toMatch(/^╭─ setup · key ─/m);
     expect(plain).toMatch(/^│ › •{48}/m);
-    expect(plain).toContain(`${TYPED_KEY.length} chars · Enter saves`);
+    expect(plain).toContain(`${TYPED_KEY.length} chars · Enter saves · Ctrl-U clears · Esc clears (again: other ways)`);
     expect(r.text).not.toContain(TYPED_KEY);
     expect(r.text).not.toContain('zzzzzzzz');
     expect(filesContaining(r, 'zzzzzzzz')).toEqual([]);
     expect(existsSync(join(r.home, 'xdg', 'jevcode', 'config.json'))).toBe(false);
   });
 
-  it('keys never in logs (§9): the `/mode jev-on` wizard\'s masked generator-key field (`setup · generator key`), Ctrl-C keeps jev-only — the typed bytes and the session\'s fake Jev key are in no frame and no file', async () => {
+  it('keys never in logs (§9): the `/mode jev-on` wizard\'s masked generator-key field (`setup · generator key`, a session started in jev-only), Ctrl-C keeps jev-only — the typed bytes and the session\'s fake Jev key are in no frame and no file', async () => {
     const r = await drive({
       name: 'r2-wizard-masked-mode',
-      args: ['chat'],
+      args: ['chat', '--mode', 'jev-only'],
       env: { ...NO_NETWORK, TYPESAFE_API_KEY: FAKE_KEY },
       steps: [...CHAT_OPEN, 'send /mode jev-on', echoStep('/mode jev-on'), 'send \\r', 'expect Pick the provider', 'sleep 0.3', 'send 1', 'expect Anthropic API key \\(ANTHROPIC_API_KEY\\)', 'sleep 0.3', `send ${TYPED_KEY}`, 'expect •{20}', 'sleep 0.3', 'mark typed', 'send \\x03', 'expect mode stays jev-only', topEdgeStep(BADGE_JEV_ONLY), ...EXIT_IDLE],
     });

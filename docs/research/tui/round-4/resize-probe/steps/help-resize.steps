@@ -1,0 +1,19 @@
+expect \x1b\[\?25l
+sleep 1.2
+send /help
+sleep 0.2
+send \r
+sleep 1.0
+mark helped
+resize 12 60
+sleep 0.9
+resize 40 120
+sleep 0.9
+mark grown
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

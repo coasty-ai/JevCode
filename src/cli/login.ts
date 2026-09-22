@@ -6,9 +6,10 @@
  * settings are refused as arguments. Zero network unless `--verify` is asked for. Every line is
  * written through `io.stdout` / `io.stderr`, never `console`.
  *
- * The interactive twin mirrors the wizard (§11.1, TUI-DESIGN-2 §1.4): under jev-only (the default mode) and without
- * `--provider` only the Jev key is asked for; the generator step runs when `--provider` is given or the mode needs a
- * generator (`JEVCODE_MODE`, `./.env`, the file's `mode` key). The Jev provider is `--jev-provider`, else the session's own
+ * The interactive twin mirrors the wizard (§11.1, TUI-DESIGN-2 §1.4, TUI-DESIGN-3 §1.6): under jev-only and without `--provider`
+ * only the Jev key is asked for; under a generator mode (`DEFAULT_MODE`, `JEVCODE_MODE`, `./.env`, the file's `mode` key) with
+ * nothing resolving, the other-ways line and ONE masked OpenRouter key serve Jev and the code model (`--key-stdin` is the piped
+ * form: one line → four file keys). The Jev provider is `--jev-provider`, else the session's own
  * resolution of `decider.provider` (`io.resolveSecrets()`: `JEV_PROVIDER`, `./.env`, `<OPEN_ASSIST_PATH>/.env`, the
  * file's `jevProvider`, then §2.3 rules 2a–2d), else — without a resolver — the same rules over the process env and
  * `./.env`. A `jevProvider` note left in the file after `logout --jev` (no `jevApiKey` beside it) is not a chosen provider.
@@ -25,7 +26,7 @@
 import { createInterface } from 'node:readline';
 import { Writable } from 'node:stream';
 import { join } from 'node:path';
-import { DEFAULT_PROVIDER, SETTINGS } from '../config/defaults.js';
+import { DEFAULT_MODE, DEFAULT_MODEL, DEFAULT_PROVIDER, MODE_SETTING_VALUES, SETTINGS } from '../config/defaults.js';
 import { credentialsPath, displayPath, readCredentialsFile, removeCredentials, writeConfigValue, writeCredentials, type CredentialKey, type CredentialsFile, type CredentialsPatch } from '../config/credentials.js';
 import { readDotenv } from '../config/env.js';
 import { fingerprint } from '../core/hash.js';
@@ -35,13 +36,34 @@ import { ConfigError, EXIT_CODES } from '../errors.js';
 import { JEV_PROVIDERS, providerForHost } from '../jev/providers.js';
 import { noul, ref } from '../jev/questions.js';
 import { DEFAULT_REFERER } from '../jev/types.js';
-import { LOGIN_JEV_PROVIDER_PROMPT, LOGIN_JEV_PROVIDER_REQUIRED, PROVIDER_DISPLAY, PROVIDER_ENV, WIZARD_REUSE_HINT, fixBlockLines, jevKeyTitle, verificationFailedText, verifiedText, verifiedTypesafeText } from '../tui/onboarding/lines.js';
+import {
+  LOGIN_JEV_PROVIDER_PROMPT,
+  LOGIN_JEV_PROVIDER_REQUIRED,
+  LOGIN_ONE_KEY_PROMPT,
+  LOGIN_OTHER_WAYS_PROMPT,
+  PROVIDER_DISPLAY,
+  PROVIDER_ENV,
+  WIZARD_REUSE_HINT,
+  fixBlockLines,
+  jevKeyTitle,
+  modeSavedItem,
+  verificationCreditsText,
+  verificationFailedText,
+  verificationModelText,
+  verificationRateLimitedText,
+  verifiedGeneratorText,
+  verifiedJevText,
+  verifiedText,
+  verifiedTypesafeText,
+} from '../tui/onboarding/lines.js';
 import { HINT_TOO_SHORT, hintPrefix, looksLikeKey, sanitizeKeyInput, type WizardProvider } from '../tui/onboarding/reducer.js';
 
 /** TUI-DESIGN §24 (CLI): the refusal for `jevcode config set generator.apiKey …` and friends. */
 export const SECRET_AS_ARGUMENT_REFUSED = "secret settings are set with 'jevcode login' (stdin or masked prompt), never as an argument";
-/** `jevcode login` on a pipe without a `--*-stdin` flag. */
-export const LOGIN_NEEDS_TTY_OR_STDIN = 'jevcode login: stdin is not a terminal; pipe the key with --generator-key-stdin and/or --jev-key-stdin';
+/** `jevcode login` on a pipe without a `--*-stdin` flag (TUI-DESIGN-3 §1.6: `--key-stdin` first). */
+export const LOGIN_NEEDS_TTY_OR_STDIN = 'jevcode login: stdin is not a terminal; pipe one OpenRouter key with --key-stdin, or --generator-key-stdin and/or --jev-key-stdin';
+/** TUI-DESIGN-3 §1.6: `--key-stdin` is the one-OpenRouter-key form — it never names another provider */
+export const KEY_STDIN_ONE_PROVIDER = '--key-stdin is the one-OpenRouter-key form; use --generator-key-stdin --jev-key-stdin';
 /** The Jev prompt's hint when the generator is not openrouter (an empty Enter leaves `jevApiKey` untouched). */
 export const LOGIN_JEV_SKIP_HINT = 'Enter = skip';
 /** TUI-DESIGN-2 §1.4: why `jevcode login` used this generator provider (printed beside a saved generator key, never silently) */
@@ -66,6 +88,8 @@ export interface LoginFlags {
   provider?: string;
   /** `--jev-provider typesafe|openrouter` (`auto` = infer, like an absent flag) */
   jevProvider?: string;
+  /** TUI-DESIGN-3 §1.6: one OpenRouter key from the first stdin line → apiKey + jevApiKey + provider + jevProvider openrouter */
+  keyStdin?: boolean;
   generatorKeyStdin?: boolean;
   jevKeyStdin?: boolean;
   status?: boolean;
@@ -80,12 +104,21 @@ export interface LogoutFlags {
   config?: string;
 }
 
-/** TUI-DESIGN §11.1 / TUI-DESIGN-2 §2.7: what `--verify` checks; `jevProvider` keys the Jev check (null = no Jev key to check, or openrouter). */
+/**
+ * TUI-DESIGN §11.1 / TUI-DESIGN-2 §2.7 / TUI-DESIGN-3 §1.5: what `--verify` checks; `jevProvider` keys the Jev check (null = no Jev key to
+ * check, or openrouter). `mode` decides whether the generator gets its 1-token completion; `generatorModel` / `jevBaseUrl` / `jevModel`
+ * name what is sent (their defaults are the tables'); `signal` chains Ctrl-C (edge 5).
+ */
 export interface VerifyInput {
   provider: WizardProvider;
   jevProvider: JevProvider | null;
   generatorKey: string | null;
   jevKey: string | null;
+  mode?: EngineMode;
+  generatorModel?: string;
+  jevBaseUrl?: string;
+  jevModel?: string;
+  signal?: AbortSignal;
 }
 /** TUI-DESIGN §11.1: one verification outcome (status only). */
 export interface VerifyResult {
@@ -93,8 +126,13 @@ export interface VerifyResult {
   ok: boolean;
   /** the `[setup] …` item text (`verified: …` / `verification failed: …`) */
   text: string;
-  /** why it failed: the provider rejected the key (exit 2, §13.5) or it could not be reached (exit 5); absent = rejected */
-  reason?: 'rejected' | 'unreachable';
+  /**
+   * why it failed (TUI-DESIGN-3 §1.5): the provider rejected the key (exit 2, §13.5), the key has no credits (402, exit 5), the code model
+   * is not served (400/404, exit 2) or the host could not be reached (408/429/5xx/thrown, exit 5); absent = rejected
+   */
+  reason?: 'rejected' | 'credits' | 'unreachable' | 'model';
+  /** the priced call's usage (the decision, the completion) — the session meters it (`meterVerify`) */
+  usage?: { inputTokens: number; outputTokens: number; costUsd: number; calls: number };
 }
 
 /** TUI-DESIGN §11.2: the command handlers' I/O seam — streams, env, home, cwd and injectable readers. */
@@ -216,7 +254,7 @@ export function parseJevProvider(s: string | undefined): JevProvider | null {
 
 function parseMode(s: string | undefined): EngineMode | null {
   const t = s?.trim().toLowerCase();
-  return t === 'jev-only' || t === 'jev-on' || t === 'jev-off' || t === 'llm-jev' ? t : null;
+  return t !== undefined && (MODE_SETTING_VALUES as readonly string[]).includes(t) ? (t as EngineMode) : null;
 }
 
 /** the process env first, then `./.env` (TUI-DESIGN-2 §2.3: "env or dotenv"); empty values are unset */
@@ -241,10 +279,21 @@ async function envLookup(io: CommandIo): Promise<EnvLookup> {
   };
 }
 
-/** TUI-DESIGN-2 §1.2: the mode `jevcode login` shapes its prompts for — `JEVCODE_MODE` (env, `./.env`) > the file's `mode` key > jev-only. */
+/** TUI-DESIGN-2 §1.2 / TUI-DESIGN-3 §1.1: the mode `jevcode login` shapes its prompts for — `JEVCODE_MODE` (env, `./.env`) > the file's `mode` key > DEFAULT_MODE. */
 export function loginMode(lookup: EnvLookup, file: Pick<CredentialsFile, 'values'>): EngineMode {
   const fileMode = file.values['mode'];
-  return parseMode(lookup.get('JEVCODE_MODE')) ?? parseMode(typeof fileMode === 'string' ? fileMode : undefined) ?? 'jev-only';
+  return parseMode(lookup.get('JEVCODE_MODE')) ?? parseMode(typeof fileMode === 'string' ? fileMode : undefined) ?? DEFAULT_MODE;
+}
+/** TUI-DESIGN-3 §1.5: the generator model `--verify` sends its 1-token completion to — `JEVCODE_MODEL` (env, `./.env`) > the file's `model` key > the default */
+export function loginGeneratorModel(lookup: EnvLookup, file: Pick<CredentialsFile, 'values'>): string {
+  const fileModel = file.values['model'];
+  return lookup.get('JEVCODE_MODEL') ?? (typeof fileModel === 'string' && fileModel.trim() !== '' ? fileModel.trim() : DEFAULT_MODEL);
+}
+/** the `mode` row's source for `--status` (`env`, `dotenv`, `file`, `default`) */
+export function loginModeSource(lookup: EnvLookup, file: Pick<CredentialsFile, 'values'>, env: NodeJS.ProcessEnv): 'env' | 'dotenv' | 'file' | 'default' {
+  if (parseMode(lookup.get('JEVCODE_MODE')) !== null) return parseMode(env['JEVCODE_MODE']) !== null ? 'env' : 'dotenv';
+  const fileMode = file.values['mode'];
+  return parseMode(typeof fileMode === 'string' ? fileMode : undefined) !== null ? 'file' : 'default';
 }
 
 /**
@@ -372,8 +421,10 @@ function generatorPrompt(provider: WizardProvider): string {
   return `${PROVIDER_DISPLAY[provider]} API key (${PROVIDER_ENV[provider]}): `;
 }
 
-async function statusLines(io: CommandIo): Promise<{ lines: string[]; ok: boolean }> {
-  if (!io.resolveSecrets) return { lines: ['generator.apiKey: unknown (no resolver)', 'decider.apiKey: unknown (no resolver)'], ok: false };
+async function statusLines(io: CommandIo, mode: EngineMode, modeSource: string): Promise<{ lines: string[]; ok: boolean }> {
+  // TUI-DESIGN-3 §1.6: the third line names the mode, its source and what it needs — a jev-only session is `ok` with the Jev key alone
+  const modeLine = `mode: ${mode} (${modeSource}) — needs: ${mode === 'jev-only' ? 'jev' : 'generator, jev'}`;
+  if (!io.resolveSecrets) return { lines: ['generator.apiKey: unknown (no resolver)', 'decider.apiKey: unknown (no resolver)', modeLine], ok: false };
   const entries = await io.resolveSecrets();
   const lines: string[] = [];
   let ok = true;
@@ -382,9 +433,10 @@ async function statusLines(io: CommandIo): Promise<{ lines: string[]; ok: boolea
     if (r && r.value.trim() !== '') lines.push(`${name}: ${r.source} (sha256:${fingerprint(r.value.trim())})`);
     else {
       lines.push(`${name}: not set`);
-      ok = false;
+      if (name === 'decider.apiKey' || mode !== 'jev-only') ok = false;
     }
   }
+  lines.push(modeLine);
   return { lines, ok };
 }
 
@@ -406,19 +458,64 @@ export function verifyProbeQuestions(): Record<string, ReturnType<typeof noul>> 
   };
 }
 
+/** TUI-DESIGN-3 §1.5: the 1-token completion of the generator check */
+export const VERIFY_COMPLETION_URL = 'https://openrouter.ai/api/v1/chat/completions';
+export const OPENROUTER_KEY_URL = 'https://openrouter.ai/api/v1/key';
+
+/** TUI-DESIGN-3 §1.5: HTTP status → outcome (2xx `ok`; 401/403 `rejected`; 402 `credits`; 408/429/5xx `unreachable`; 400/404 on a completion `model`) */
+export function verifyReasonFor(status: number, completion = false): NonNullable<VerifyResult['reason']> {
+  if (status === 402) return 'credits';
+  if (status === 408 || status === 429 || (status >= 500 && status <= 599)) return 'unreachable';
+  if (completion && (status === 400 || status === 404)) return 'model';
+  return 'rejected';
+}
+
+function retryAfterSeconds(res: Response): number | null {
+  const h = res.headers.get('retry-after');
+  if (h === null) return null;
+  const n = Number(h.trim());
+  return Number.isFinite(n) && n >= 0 ? n : null;
+}
+
 /**
- * TUI-DESIGN §11.1 / TUI-DESIGN-2 §2.7 verification with an injectable `fetch`: OpenRouter `GET /api/v1/key`, Anthropic
- * `GET /v1/models`, and under `typesafe` one priced decision at api.typesafe.ai (`jev-1.13.0`, ≈ $0.00002); 5 s each, status only
- * in the output. An OpenRouter Jev key is checked through the OpenRouter key endpoint (it is an OpenRouter key). A non-2xx
- * answer is `rejected`; a thrown fetch (DNS, timeout, refused) is `unreachable`.
+ * TUI-DESIGN §11.1 / TUI-DESIGN-2 §2.7 / TUI-DESIGN-3 §1.5 verification with an injectable `fetch` — four outcomes per call
+ * (`ok` · `rejected` · `credits` · `unreachable`, plus `model` for a completion the router does not serve):
+ *   Jev under openrouter → ONE real decision (`POST <jevBaseUrl>`, the one-Noul probe, ≈ $0.00002); under typesafe the same probe at api.typesafe.ai
+ *   the generator under openrouter → `POST /api/v1/chat/completions { model, messages: [hi], max_tokens: 1, temperature: 0 }` (≈ $0.000002), only when
+ *     `mode` bills a generator; under anthropic `GET /v1/models` (free)
+ *   `GET /api/v1/key` ($0) for the OpenRouter key's `label` / `limit_remaining` (kept: it cannot see the balance of an unlimited key — R3 F14)
+ * Every call has `AbortSignal.any([timeout, input.signal])` so Ctrl-C at `verify` aborts (edge 5). Status only in the output; a thrown fetch
+ * (DNS, timeout, refused, aborted) is `unreachable` with `<name>: <message>`.
  */
 export async function verifyKeys(input: VerifyInput, f: typeof fetch = fetch, timeoutMs = VERIFY_TIMEOUT_MS): Promise<VerifyResult[]> {
   const out: VerifyResult[] = [];
   const short = (e: unknown): string => (e instanceof Error ? `${e.name}: ${e.message}` : String(e)).slice(0, 120);
+  const signal = (): AbortSignal => (input.signal ? AbortSignal.any([AbortSignal.timeout(timeoutMs), input.signal]) : AbortSignal.timeout(timeoutMs));
+  const mode = input.mode ?? DEFAULT_MODE;
+  const generatorModel = input.generatorModel ?? DEFAULT_MODEL;
+  const jevProvider: JevProvider = input.jevProvider ?? 'openrouter';
+  const jevSpec = JEV_PROVIDERS[jevProvider];
+  const jevBaseUrl = input.jevBaseUrl ?? jevSpec.baseUrl;
+  const jevModel = input.jevModel ?? jevSpec.defaultModel;
+  const usageOf = (body: { usage?: { input_tokens?: unknown; prompt_tokens?: unknown; output_tokens?: unknown; completion_tokens?: unknown; cost?: unknown } }, fallbackUsd: number | null): { inputTokens: number; outputTokens: number; costUsd: number; calls: number; tokens: number | null; usd: number | null } => {
+    const u = body.usage ?? {};
+    const tokens = typeof u.input_tokens === 'number' ? u.input_tokens : typeof u.prompt_tokens === 'number' ? u.prompt_tokens : null;
+    const outTokens = typeof u.output_tokens === 'number' ? u.output_tokens : typeof u.completion_tokens === 'number' ? u.completion_tokens : 0;
+    const usd = typeof u.cost === 'number' ? u.cost : fallbackUsd;
+    return { inputTokens: tokens ?? 0, outputTokens: outTokens, costUsd: usd ?? 0, calls: 1, tokens, usd };
+  };
+  /** a non-2xx answer on an OpenRouter call: the four texts */
+  const failed = (which: VerifyResult['which'], res: Response, host: 'openrouter' | 'typesafe', completion = false): VerifyResult => {
+    const reason = verifyReasonFor(res.status, completion);
+    if (host === 'openrouter' && reason === 'credits') return { which, ok: false, text: verificationCreditsText(res.status), reason };
+    if (host === 'openrouter' && res.status === 429) return { which, ok: false, text: verificationRateLimitedText(retryAfterSeconds(res)), reason };
+    if (reason === 'model') return { which, ok: false, text: verificationModelText(generatorModel, res.status), reason };
+    return { which, ok: false, text: verificationFailedText(`${host} HTTP ${res.status}`), reason };
+  };
   async function openrouterKey(which: 'generator' | 'jev', key: string): Promise<VerifyResult> {
     try {
-      const res = await f('https://openrouter.ai/api/v1/key', { headers: { authorization: `Bearer ${key}` }, signal: AbortSignal.timeout(timeoutMs) });
-      if (!res.ok) return { which, ok: false, text: verificationFailedText(`openrouter HTTP ${res.status}`), reason: 'rejected' };
+      const res = await f(OPENROUTER_KEY_URL, { headers: { authorization: `Bearer ${key}` }, signal: signal() });
+      if (!res.ok) return failed(which, res, 'openrouter');
       const body = (await res.json()) as { data?: { label?: unknown; limit_remaining?: unknown } };
       const label = typeof body.data?.label === 'string' ? body.data.label : '';
       const limit = typeof body.data?.limit_remaining === 'number' ? body.data.limit_remaining : null;
@@ -427,10 +524,27 @@ export async function verifyKeys(input: VerifyInput, f: typeof fetch = fetch, ti
       return { which, ok: false, text: verificationFailedText(short(e)), reason: 'unreachable' };
     }
   }
+  async function openrouterCompletion(key: string): Promise<VerifyResult> {
+    try {
+      const res = await f(VERIFY_COMPLETION_URL, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${key}`, 'content-type': 'application/json', 'HTTP-Referer': DEFAULT_REFERER },
+        body: JSON.stringify({ model: generatorModel, messages: [{ role: 'user', content: 'hi' }], max_tokens: 1, temperature: 0 }),
+        signal: signal(),
+      });
+      if (!res.ok) return failed('generator', res, 'openrouter', true);
+      const body = (await res.json()) as { model?: unknown; usage?: { prompt_tokens?: unknown; completion_tokens?: unknown; cost?: unknown } };
+      const model = typeof body.model === 'string' ? body.model : generatorModel;
+      const u = usageOf(body, null);
+      return { which: 'generator', ok: true, text: verifiedGeneratorText(model, u.usd), usage: { inputTokens: u.inputTokens, outputTokens: u.outputTokens, costUsd: u.costUsd, calls: 1 } };
+    } catch (e) {
+      return { which: 'generator', ok: false, text: verificationFailedText(short(e)), reason: 'unreachable' };
+    }
+  }
   async function anthropicKey(key: string): Promise<VerifyResult> {
     try {
-      const res = await f('https://api.anthropic.com/v1/models', { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' }, signal: AbortSignal.timeout(timeoutMs) });
-      if (!res.ok) return { which: 'generator', ok: false, text: verificationFailedText(`anthropic HTTP ${res.status}`), reason: 'rejected' };
+      const res = await f('https://api.anthropic.com/v1/models', { headers: { 'x-api-key': key, 'anthropic-version': '2023-06-01' }, signal: signal() });
+      if (!res.ok) return { which: 'generator', ok: false, text: verificationFailedText(`anthropic HTTP ${res.status}`), reason: verifyReasonFor(res.status) === 'unreachable' ? 'unreachable' : 'rejected' };
       const body = (await res.json()) as { data?: unknown[] };
       const n = Array.isArray(body.data) ? body.data.length : 0;
       return { which: 'generator', ok: true, text: `verified: anthropic key ok (${n} models listed)` };
@@ -438,27 +552,41 @@ export async function verifyKeys(input: VerifyInput, f: typeof fetch = fetch, ti
       return { which: 'generator', ok: false, text: verificationFailedText(short(e)), reason: 'unreachable' };
     }
   }
-  async function typesafeDecision(key: string): Promise<VerifyResult> {
-    const spec = JEV_PROVIDERS.typesafe;
+  /** one real decision — the one-Noul probe over `{ message: 'hi' }` at the Jev provider's endpoint (nothing from the workspace) */
+  async function jevDecision(key: string): Promise<VerifyResult> {
+    const host = jevProvider;
     try {
-      const res = await f(spec.baseUrl, {
+      const res = await f(jevBaseUrl, {
         method: 'POST',
-        headers: spec.headers(key, DEFAULT_REFERER),
-        body: JSON.stringify({ model: spec.defaultModel, state: VERIFY_PROBE_STATE, questions: verifyProbeQuestions() }),
-        signal: AbortSignal.timeout(timeoutMs),
+        headers: jevSpec.headers(key, DEFAULT_REFERER),
+        body: JSON.stringify({ model: jevModel, state: VERIFY_PROBE_STATE, questions: verifyProbeQuestions() }),
+        signal: signal(),
       });
-      if (!res.ok) return { which: 'jev', ok: false, text: verificationFailedText(`typesafe HTTP ${res.status}`), reason: 'rejected' };
-      const body = (await res.json()) as { model?: unknown; usage?: { input_tokens?: unknown } };
-      const model = typeof body.model === 'string' ? body.model : spec.defaultModel;
-      const tokens = typeof body.usage?.input_tokens === 'number' ? body.usage.input_tokens : null;
-      return { which: 'jev', ok: true, text: verifiedTypesafeText(model, tokens) };
+      if (!res.ok) return failed('jev', res, host);
+      const body = (await res.json()) as { model?: unknown; usage?: { input_tokens?: unknown; cost?: unknown } };
+      const model = typeof body.model === 'string' ? body.model : jevModel;
+      const u = usageOf(body, null);
+      const usd = u.usd ?? (u.tokens === null ? null : u.tokens * jevSpec.pricing.inputUsdPerToken);
+      const usage = { inputTokens: u.inputTokens, outputTokens: u.outputTokens, costUsd: usd ?? 0, calls: 1 };
+      // the typesafe twin keeps its round-2 text (status only; the model and the tokens)
+      return { which: 'jev', ok: true, text: host === 'typesafe' ? verifiedTypesafeText(model, u.tokens) : verifiedJevText(model, u.tokens, usd), usage };
     } catch (e) {
       return { which: 'jev', ok: false, text: verificationFailedText(short(e)), reason: 'unreachable' };
     }
   }
-  if (input.generatorKey) out.push(input.provider === 'anthropic' ? await anthropicKey(input.generatorKey) : await openrouterKey('generator', input.generatorKey));
-  if (input.jevKey && input.jevKey !== input.generatorKey) out.push(input.jevProvider === 'typesafe' ? await typesafeDecision(input.jevKey) : await openrouterKey('jev', input.jevKey));
+  if (input.jevKey) out.push(await jevDecision(input.jevKey));
+  if (input.generatorKey && mode !== 'jev-only') out.push(input.provider === 'anthropic' ? await anthropicKey(input.generatorKey) : await openrouterCompletion(input.generatorKey));
+  // the key info: once, with whichever OpenRouter key is in play (the Jev key under openrouter, else an OpenRouter generator key)
+  const infoKey = input.jevKey && jevProvider === 'openrouter' ? input.jevKey : input.generatorKey && input.provider === 'openrouter' ? input.generatorKey : null;
+  if (infoKey !== null && !out.some((r) => r.reason === 'rejected')) out.push(await openrouterKey(input.jevKey && jevProvider === 'openrouter' ? 'jev' : 'generator', infoKey));
   return out;
+}
+
+/** TUI-DESIGN-3 §1.5: the exit code of a failed `--verify` — a rejected key or an unserved model is 2 (§13.5), no credits / unreachable is 5 */
+export function verifyExitCode(results: readonly VerifyResult[]): number {
+  const failed = results.filter((r) => !r.ok);
+  if (failed.length === 0) return EXIT_CODES.ok;
+  return failed.some((r) => r.reason === undefined || r.reason === 'rejected' || r.reason === 'model') ? EXIT_CODES.config : EXIT_CODES.api;
 }
 
 /** Write the patch and print its items/warnings; the exit code (0, or 2 on a ConfigError, 1 otherwise). */
@@ -483,8 +611,11 @@ async function save(patch: CredentialsPatch, source: 'login' | 'stdin', flags: L
  * (§13.5: key rejected = 2); 5 when `--verify` could not reach the provider at all.
  */
 export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<number> {
+  const file = await readCredentialsFile(credentialsPath({ env: io.env, home: io.home, cwd: io.cwd, configFlag: flags.config ?? null }).path);
+  const lookup = await envLookup(io);
+  const mode = loginMode(lookup, file);
   if (flags.status) {
-    const { lines, ok } = await statusLines(io);
+    const { lines, ok } = await statusLines(io, mode, loginModeSource(lookup, file, io.env));
     for (const l of lines) io.stdout.write(`${l}\n`);
     return ok ? EXIT_CODES.ok : EXIT_CODES.unexpected;
   }
@@ -492,7 +623,11 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
     io.stderr.write(`jevcode: --jev-provider: expected typesafe|openrouter, got "${flags.jevProvider}"\n`);
     return EXIT_CODES.config;
   }
-  const file = await readCredentialsFile(credentialsPath({ env: io.env, home: io.home, cwd: io.cwd, configFlag: flags.config ?? null }).path);
+  // TUI-DESIGN-3 §1.6: `--key-stdin` is the one-OpenRouter-key form — another provider on the same command is a usage error
+  if (flags.keyStdin === true && flags.provider !== undefined && parseProvider(flags.provider) !== 'openrouter') {
+    io.stderr.write(`jevcode: ${KEY_STDIN_ONE_PROVIDER}\n`);
+    return EXIT_CODES.config;
+  }
   let generator: { provider: WizardProvider; why: GeneratorProviderWhy };
   try {
     generator = generatorProviderFor(flags, io, file);
@@ -501,21 +636,29 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
     return EXIT_CODES.config;
   }
   const { provider, why } = generator;
-  const lookup = await envLookup(io);
-  const mode = loginMode(lookup, file);
   // §1.4: the generator step runs when `--provider` is given or the mode needs a generator; jev-only alone asks for the Jev key only
   const generatorStep = flags.provider !== undefined || mode !== 'jev-only';
   const patch: CredentialsPatch = {};
   let source: 'login' | 'stdin' = 'login';
   const wantGenerator = flags.generatorKeyStdin === true;
   const wantJev = flags.jevKeyStdin === true;
+  const wantOneKey = flags.keyStdin === true;
   const interactive = io.stdin.isTTY === true || io.readMasked !== undefined;
   // §2.3: the Jev provider — the flag, the session's own resolution, else the local rules; the generator provider is never one of them
   const inferred = inferJevProvider({ flag: flags.jevProvider, resolved: await resolvedJevProvider(io, file), lookup, file });
   const fixProvider = generatorStep || wantGenerator ? provider : null;
   /** the fix block names a generator whenever this login asked for one (§12 "Wizard": the Anthropic line is jev-on only) */
-  const fixMode: EngineMode = (generatorStep || wantGenerator) && mode === 'jev-only' ? 'jev-on' : mode;
+  const fixMode: EngineMode = (generatorStep || wantGenerator || wantOneKey) && mode === 'jev-only' ? 'jev-on' : mode;
+  /** TUI-DESIGN-3 §1.6: `[j] Jev only` on the other-ways line — the mode is persisted after the save */
+  let persistJevOnly = false;
   const persist = (): Promise<number> => save(patch, source, flags, io, why);
+  /** TUI-DESIGN-3 §1.6: the one OpenRouter key serves Jev and the code model — four file keys from one value */
+  const oneKey = (k: string): void => {
+    patch.provider = 'openrouter';
+    patch.apiKey = k;
+    patch.jevApiKey = k;
+    patch.jevProvider = 'openrouter';
+  };
   /** an accepted generator key is saved before a cancelled Jev step fails the command (exit 2 with the fix block) */
   const failAfterGenerator = async (): Promise<number> => {
     if (patch.apiKey !== undefined) {
@@ -526,7 +669,27 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
     return EXIT_CODES.config;
   };
 
-  if (wantGenerator || wantJev) {
+  if (wantOneKey) {
+    if (interactive) {
+      // a terminal cannot deliver a "stdin line" without echoing it: the one key is asked for masked
+      const k = await promptKey(io, LOGIN_ONE_KEY_PROMPT, 'openrouter', false);
+      if (k === CANCELLED || k === null) {
+        printFix(io, fixMode, null);
+        return EXIT_CODES.config;
+      }
+      oneKey(k);
+    } else {
+      source = 'stdin';
+      // TUI-DESIGN-3 §1.8 edge 29: the first line only; a second line is ignored, nothing printed
+      const lines = await readStdinLines(io.stdin, 1);
+      const k = acceptKey(lines[0] ?? '');
+      if (!k) {
+        io.stderr.write(`jevcode: apiKey: ${HINT_TOO_SHORT} (first stdin line)\n`);
+        return EXIT_CODES.config;
+      }
+      oneKey(k);
+    }
+  } else if (wantGenerator || wantJev) {
     if (interactive) {
       // A terminal cannot deliver a "stdin line" without echoing it: the flagged keys are asked for masked instead.
       if (wantGenerator) {
@@ -575,6 +738,60 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
         patch.jevApiKey = k;
         patch.jevProvider = jp;
       }
+    }
+  } else if (interactive && generatorStep && flags.provider === undefined && provider === 'openrouter' && (await jevResolvedFromEnv(io)) === null && inferred === null) {
+    // TUI-DESIGN-3 §1.6: a generator mode with nothing resolving — the other-ways line the Ink `options` step and the plain twin share, then ONE
+    // masked OpenRouter key for both (`[t]` → the TypeSafe prompts, `[j]` → the Jev prompt and `mode jev-only saved`, `[a]` → the Anthropic prompts)
+    const read = io.readLine ?? ((p: string) => readPlainLine(p, io.stdin, io.stdout));
+    const other = (await read(LOGIN_OTHER_WAYS_PROMPT))?.trim().toLowerCase() ?? null;
+    if (other === null) {
+      printFix(io, fixMode, null);
+      return EXIT_CODES.config;
+    }
+    if (other === 't' || other === 'j') {
+      const jp: JevProvider = other === 't' ? 'typesafe' : (await promptJevProvider(io, false)) === 'typesafe' ? 'typesafe' : 'openrouter';
+      const jev = await promptKey(io, jevKeyPrompt(jp), null, false);
+      if (jev === CANCELLED || jev === null) {
+        printFix(io, fixMode, null);
+        return EXIT_CODES.config;
+      }
+      patch.jevApiKey = jev;
+      patch.jevProvider = jp;
+      if (other === 't') {
+        // the optional OpenRouter generator key: Enter = skip (stays Jev-only through `config set mode jev-only`)
+        const gen = await promptKey(io, 'OpenRouter API key (OPENROUTER_API_KEY) — Enter = skip: ', 'openrouter', true);
+        if (gen === CANCELLED) return failAfterGenerator();
+        if (gen !== null) {
+          patch.provider = 'openrouter';
+          patch.apiKey = gen;
+        }
+      } else persistJevOnly = true;
+    } else if (other === 'a') {
+      const gen = await promptKey(io, generatorPrompt('anthropic'), 'anthropic', false);
+      if (gen === CANCELLED || gen === null) {
+        printFix(io, fixMode, 'anthropic');
+        return EXIT_CODES.config;
+      }
+      patch.provider = 'anthropic';
+      patch.apiKey = gen;
+      io.stdout.write(`${LOGIN_JEV_SKIP_HINT}\n`);
+      const a = await promptJevProvider(io, true);
+      if (a === CANCELLED) return failAfterGenerator();
+      if (a !== null) {
+        const jev = await promptKey(io, jevKeyPrompt(a), null, true);
+        if (jev === CANCELLED) return failAfterGenerator();
+        if (jev !== null) {
+          patch.jevApiKey = jev;
+          patch.jevProvider = a;
+        }
+      }
+    } else {
+      const k = await promptKey(io, LOGIN_ONE_KEY_PROMPT, 'openrouter', false);
+      if (k === CANCELLED || k === null) {
+        printFix(io, fixMode, null);
+        return EXIT_CODES.config;
+      }
+      oneKey(k);
     }
   } else if (interactive && generatorStep) {
     const gen = await promptKey(io, generatorPrompt(provider), provider, false);
@@ -641,25 +858,35 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
 
   const saved = await persist();
   if (saved !== EXIT_CODES.ok) return saved;
+  if (persistJevOnly) {
+    // TUI-DESIGN-3 §1.6 (D-J ext.): `[j] Jev only` persists the mode beside the key
+    const r = await writeConfigValue('mode', 'jev-only', { env: io.env, home: io.home, cwd: io.cwd, configFlag: flags.config ?? null, ...(io.platform ? { platform: io.platform } : {}) });
+    io.stdout.write(`[setup] ${modeSavedItem('jev-only', r.displayPath)}\n`);
+  }
 
   if (flags.verify) {
     const verify = io.verify ?? ((input: VerifyInput) => verifyKeys(input, io.fetch ?? fetch));
-    const results = await verify({ provider, jevProvider: patch.jevProvider ?? inferred, generatorKey: patch.apiKey ?? null, jevKey: patch.jevApiKey ?? null });
+    const verifyMode: EngineMode = persistJevOnly ? 'jev-only' : patch.apiKey !== undefined && mode === 'jev-only' ? 'jev-on' : mode;
+    const jp = patch.jevProvider ?? inferred;
+    const results = await verify({ provider: patch.provider ?? provider, jevProvider: jp, generatorKey: patch.apiKey ?? null, jevKey: patch.jevApiKey ?? null, mode: verifyMode, generatorModel: loginGeneratorModel(lookup, file), jevBaseUrl: JEV_PROVIDERS[jp ?? 'openrouter'].baseUrl, jevModel: JEV_PROVIDERS[jp ?? 'openrouter'].defaultModel });
     for (const r of results) io.stdout.write(`[setup] ${r.text}\n`);
-    const failed = results.filter((r) => !r.ok);
-    if (failed.length > 0) return failed.every((r) => r.reason === 'unreachable') ? EXIT_CODES.api : EXIT_CODES.config;
+    return verifyExitCode(results);
   }
   return EXIT_CODES.ok;
 }
 
-/** TUI-DESIGN §11.2: `jevcode logout [--generator] [--jev]` — rewrites the file atomically; env-sourced keys are reported, never touched. */
-export async function commandLogout(flags: LogoutFlags, io: CommandIo): Promise<number> {
+/**
+ * TUI-DESIGN §11.2: `jevcode logout [--generator] [--jev]` — rewrites the file atomically; env-sourced keys are reported, never touched.
+ * TUI-DESIGN-3 §4.4 F16: the session calls it with `labelled: false` and adds the one `[setup]` label itself.
+ */
+export async function commandLogout(flags: LogoutFlags, io: CommandIo, opts: { labelled?: boolean } = {}): Promise<number> {
+  const label = opts.labelled === false ? '' : '[setup] ';
   const keys: CredentialKey[] = [];
   if (flags.generator || (!flags.generator && !flags.jev)) keys.push('apiKey');
   if (flags.jev || (!flags.generator && !flags.jev)) keys.push('jevApiKey');
   try {
     const result = await removeCredentials(keys, { env: io.env, home: io.home, cwd: io.cwd, configFlag: flags.config ?? null, ...(io.platform ? { platform: io.platform } : {}) });
-    for (const item of result.items) io.stdout.write(`[setup] ${item}\n`);
+    for (const item of result.items) io.stdout.write(`${label}${item}\n`);
   } catch (e) {
     io.stderr.write(`jevcode: ${e instanceof Error ? e.message : String(e)}\n`);
     return EXIT_CODES.config;
@@ -670,7 +897,7 @@ export async function commandLogout(flags: LogoutFlags, io: CommandIo): Promise<
     for (const k of keys) {
       const r = entries.get(names[k]);
       if (r && (r.source === 'env' || r.source.startsWith('dotenv:') || r.source === 'flag')) {
-        io.stdout.write(`[setup] ${names[k]} is also set from ${r.source} (sha256:${fingerprint(r.value.trim())}) — not touched\n`);
+        io.stdout.write(`${label}${names[k]} is also set from ${r.source} (sha256:${fingerprint(r.value.trim())}) — not touched\n`);
       }
     }
   }

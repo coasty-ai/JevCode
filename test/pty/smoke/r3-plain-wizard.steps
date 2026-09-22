@@ -1,0 +1,10 @@
+# TUI-DESIGN-3 §1.8 edge 24 (--plain on a TTY): the text-prompt wizard twin — `other ways: [t] TypeSafe Jev · [j] Jev only · [a] Anthropic ·
+# Enter continues:` when both keys are missing, then the masked `OpenRouter API key (one key: Jev + the code model):` prompt; Ctrl-C
+# prints the fix block and exits 2
+expect other ways:
+sleep 0.3
+send \r
+expect OpenRouter API key \(one key
+sleep 0.3
+send \x03
+eof

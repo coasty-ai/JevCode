@@ -1,0 +1,11 @@
+expect \x1b\[\?25l
+expect step 0/
+sleep 1.0
+send h
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*h
+send \x03
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

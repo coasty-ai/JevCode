@@ -1,0 +1,30 @@
+expect \x1b\[\?25l
+sleep 1.2
+send make the tests pass
+sleep 0.2
+send \r
+sleep 1.0
+mark running
+send /panel full
+sleep 0.2
+send \r
+sleep 0.8
+mark panel
+resize 12 60
+sleep 0.9
+mark shrunk
+resize 5 30
+sleep 0.9
+mark minsize
+resize 40 120
+sleep 0.9
+mark grown
+send \x03
+sleep 0.5
+send \x03
+sleep 1.0
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

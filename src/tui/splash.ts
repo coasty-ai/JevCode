@@ -1,11 +1,14 @@
 /**
- * The startup splash (TUI-DESIGN-2 §5): seven 5-row block letters on a 56-cell grid, two-tone (`JEV` in `accent`,
- * `CODE` in `dim`), revealed left to right over 400 ms behind a 3-cell `▓▒░` head, a 6-cell sweep over 450–550 ms,
- * two fade steps at 600 / 650 ms and settled at 700 ms — every phase a function of the elapsed time, never of a
- * frame count, so a slow terminal skips frames instead of running long (§5.2). `splashFrame` is the pure twin the
- * App's pane slot and the tests read; `brandRow` is the rule row the splash settles into (`─── ◆ jevcode 0.2.0 ───…`)
- * and the one-line form that carries the splash below 64 columns (the `◆` pulses `░ ▒ ▓ ◆` twice over 400 ms). No
- * clock, no I/O, no Ink here (`motion.ts` drives the time). Pure.
+ * The startup splash (TUI-DESIGN-2 §5; TUI-DESIGN-3 §3.4 A1): seven 5-row block letters on a 56-cell grid, two-tone
+ * (`JEV` in `accent`, `CODE` in `dim`), revealed left to right over 400 ms behind a 3-cell `▓▒░` head, a 6-cell sweep
+ * over 450–550 ms, then **held** from 550 ms — the resting mark with its `◆ <version>` caption (§3.5), the frame the
+ * wordmark keeps for the rest of the idle session (the fade steps and the collapse of round 2 are gone; `splash:done`
+ * still fires at 700 ms and changes no pixel). Every phase is a function of the elapsed time, never of a frame count,
+ * so a slow terminal skips frames instead of running long (§5.2). `splashFrame` is the pure twin the App's pane slot
+ * and the tests read; `restingFrame` is the held mark (`wordmark.ts` wraps it as `wordmarkFrame` and adds the idle
+ * loop's band); `brandRow` is the one-line rule row for the states that hide the mark (`─── ◆ jevcode 0.3.0 ───…`) and
+ * the form that carries the splash below 64 columns (the `◆` pulses `░ ▒ ▓ ◆` twice over 400 ms). No clock, no I/O,
+ * no Ink here (`motion.ts` drives the time). Pure.
  */
 import { GLYPHS, cellWidth, padEndCells, ruleRow, type GlyphSet } from './glyphs.js';
 import type { ColorRole } from './theme.js';
@@ -14,12 +17,12 @@ import type { ColorRole } from './theme.js';
 export const SPLASH_MS = 700;
 /** TUI-DESIGN-2 §5.1: the animation tick (20 fps ≤ maxFps 30; ≈ 67 ms effective under SSH's fps 15). */
 export const SPLASH_INTERVAL_MS = 50;
-/** TUI-DESIGN-2 §5.2: the reveal completes at 400 ms; the sweep runs 450–550; the two fade steps are 600 and 650. */
+/** TUI-DESIGN-2 §5.2 / TUI-DESIGN-3 §3.4: the reveal completes at 400 ms; the sweep runs 450–550; the mark is held from 550 (the settle sentinel). */
 export const SPLASH_REVEAL_MS = 400;
 export const SPLASH_SHIMMER_FROM_MS = 450;
 export const SPLASH_SHIMMER_TO_MS = 550;
-export const SPLASH_FADE_1_MS = 600;
-export const SPLASH_FADE_2_MS = 650;
+/** TUI-DESIGN-3 §3.4: the resting mark (with its caption) is on screen from here on — nothing after it changes a cell */
+export const SPLASH_HELD_MS = SPLASH_SHIMMER_TO_MS;
 /** TUI-DESIGN-2 §5.1: the wordmark grid width (every `WORDMARK` row is padded to exactly this many cells). */
 export const WORDMARK_CELLS = 56;
 /** TUI-DESIGN-2 §5.1: the wordmark is 5 rows high (`CAP.splash`). */
@@ -34,6 +37,12 @@ export const HEAD_CELLS = 3;
 export const SWEEP_CELLS = 6;
 /** TUI-DESIGN-2 §5.1: the 5-row wordmark needs at least this many columns; below it the one-line brand row carries the splash */
 export const WORDMARK_MIN_COLUMNS = 64;
+/** TUI-DESIGN-3 §3.5: the caption `◆ <version>` starts two cells after the last `E` — grid cell 58, span `[58, 58 + cellWidth(caption))` */
+export const CAPTION_GRID_CELL = 58;
+/** TUI-DESIGN-3 §3.5: the tagline sits two cells after the mark on row 0 at `⌊(c − 56) / 2⌋ + 58 + 22 ≤ c ⇔ c ≥ 104` */
+export const TAGLINE_MIN_COLUMNS = 104;
+/** TUI-DESIGN-3 §3.5 / §5.1 rule 13: the owner's copy line, exactly; never in the band, never a transcript item */
+export const TAGLINE = 'Decisions, not strings';
 
 const RAW: readonly [string, string, string, string, string] = [
   '    ██ ███████ ██    ██  ██████  ██████  ██████  ███████',
@@ -46,7 +55,8 @@ const RAW: readonly [string, string, string, string, string] = [
 /** TUI-DESIGN-2 §5.1: the five wordmark rows, each padded with blanks to exactly `WORDMARK_CELLS` cells. */
 export const WORDMARK: readonly [string, string, string, string, string] = [padEndCells(RAW[0], WORDMARK_CELLS), padEndCells(RAW[1], WORDMARK_CELLS), padEndCells(RAW[2], WORDMARK_CELLS), padEndCells(RAW[3], WORDMARK_CELLS), padEndCells(RAW[4], WORDMARK_CELLS)];
 
-export type SplashPhase = 'reveal' | 'shimmer' | 'fade' | 'settled';
+/** TUI-DESIGN-3 §3.4: `reveal` < 450 · `shimmer` < 550 · `held` from 550 (no fade, no settled-empty phase). */
+export type SplashPhase = 'reveal' | 'shimmer' | 'held';
 
 /** One coloured run of a row: cells `[from, to)` in the row string's own cell coordinates (the centring offset included). */
 export interface SplashSpan {
@@ -57,18 +67,17 @@ export interface SplashSpan {
 }
 
 export interface SplashFrame {
-  /** exactly `WORDMARK_ROWS` rows (right-trimmed, ≤ columns cells), or [] once settled / below `WORDMARK_MIN_COLUMNS` */
+  /** exactly `WORDMARK_ROWS` rows (right-trimmed, ≤ columns cells), or [] below `WORDMARK_MIN_COLUMNS` */
   rows: string[];
   spans: readonly SplashSpan[];
   phase: SplashPhase;
 }
 
-/** TUI-DESIGN-2 §5.2: the phase for an elapsed time (`reveal` < 450 · `shimmer` < 600 · `fade` < 700 · `settled`). */
+/** TUI-DESIGN-3 §3.4: the phase for an elapsed time (`reveal` < 450 · `shimmer` < 550 · `held`). */
 export function splashPhase(t: number): SplashPhase {
   if (!Number.isFinite(t) || t < SPLASH_SHIMMER_FROM_MS) return 'reveal';
-  if (t < SPLASH_FADE_1_MS) return 'shimmer';
-  if (t < SPLASH_MS) return 'fade';
-  return 'settled';
+  if (t < SPLASH_HELD_MS) return 'shimmer';
+  return 'held';
 }
 
 /** TUI-DESIGN-2 §5.2: cells revealed at `t` — `⌈56 · t / 400⌉`, never below the `J` (7) and never above the grid (56). */
@@ -93,24 +102,109 @@ function cellsOf(row: string): string[] {
   return [...row];
 }
 
+/** TUI-DESIGN-3 §3.5: the caption text `◆ <version>` (`* <version>` under `--ascii`). */
+export function captionText(version: string, g: GlyphSet = GLYPHS.unicode): string {
+  return `${g.brand} ${version}`;
+}
+
+/** TUI-DESIGN-3 §3.5: the caption is drawn only when `wordmarkOffset(columns) + 58 + cellWidth(caption) ≤ columns` — 73 columns for `◆ 0.3.0`, 85 for `◆ 0.10.0-rc.1`. */
+export function captionFits(columns: number, caption: string): boolean {
+  const cols = Number.isFinite(columns) ? Math.floor(columns) : 0;
+  if (cols < WORDMARK_MIN_COLUMNS) return false;
+  return wordmarkOffset(cols) + CAPTION_GRID_CELL + cellWidth(caption) <= cols;
+}
+
+/** TUI-DESIGN-3 §3.5: the tagline shows on row 0 at `columns ≥ TAGLINE_MIN_COLUMNS` (104). */
+export function taglineFits(columns: number): boolean {
+  const cols = Number.isFinite(columns) ? Math.floor(columns) : 0;
+  return cols >= TAGLINE_MIN_COLUMNS && wordmarkOffset(cols) + CAPTION_GRID_CELL + cellWidth(TAGLINE) <= cols;
+}
+
+/** A colour band over the 56-cell grid (`[from, to)` in grid cells) — the idle loop's `loopBand(k)` or the shimmer's. */
+export interface GridBand {
+  from: number;
+  to: number;
+}
+
+/** TUI-DESIGN-3 §3.4 / §3.8: the held mark — rows independent of the band, `spans(band)` colouring them. */
+export interface RestingFrame {
+  /** exactly `WORDMARK_ROWS` rows (right-trimmed, ≤ columns cells), or [] below `WORDMARK_MIN_COLUMNS` */
+  rows: string[];
+  /** `JEV` accent · `CODE` dim · the caption `◆` accent2 + version dim · the tagline dim · the band `sweep` over the letter cells only */
+  spans(band: GridBand | null): SplashSpan[];
+}
+
+const EMPTY_RESTING: RestingFrame = { rows: [], spans: () => [] };
+
 /**
- * TUI-DESIGN-2 §5.1–5.3: the wordmark rows at elapsed time `t` for a terminal `columns` wide — `WORDMARK_ROWS` rows,
- * each ≤ `columns` cells, with the colour spans on the row's own cells; [] once settled (t ≥ 700) or below 64 columns.
- * Reveal: the letters up to `revealedCells(t)` and the `▓▒░` head right after them; shimmer: the whole mark with a
- * 6-cell `sweep` band; fade 600: `JEV` loses its accent; fade 650: every letter dims. `--ascii` draws `#` letters with a
- * `# + .` head. Spans are computed on the 56-cell grid and every row is right-trimmed afterwards.
+ * TUI-DESIGN-3 §3.4–3.5: the resting mark for a terminal `columns` wide — the padded, centred `WORDMARK` rows with the
+ * caption `◆ <version>` on the bottom row (when `captionFits`) and the tagline on row 0 (at ≥ 104 columns); the letters
+ * `JEV` `accent`, `CODE` `dim`, the caption glyph `accent2`, its version and the tagline `dim`. `spans(band)` adds the
+ * `sweep` band over grid cells `[from, to)` (letters only — blank cells have no glyph to colour; the caption and tagline
+ * are never inside it). The rows never depend on the band (§3.8 ordering: the layout reads the rows, the render the band).
  */
-export function splashFrame(t: number, columns: number, g: GlyphSet = GLYPHS.unicode): SplashFrame {
+export function restingFrame(columns: number, g: GlyphSet = GLYPHS.unicode, version: string | null = null): RestingFrame {
+  const cols = Number.isFinite(columns) ? Math.floor(columns) : 0;
+  if (cols < WORDMARK_MIN_COLUMNS) return EMPTY_RESTING;
+  const offset = wordmarkOffset(cols);
+  const pad = ' '.repeat(offset);
+  const caption = version !== null && captionFits(cols, captionText(version, g)) ? captionText(version, g) : null;
+  const tagline = taglineFits(cols) ? TAGLINE : null;
+  const tail = (extra: string | null): string => (extra === null ? '' : `${' '.repeat(CAPTION_GRID_CELL - WORDMARK_CELLS)}${extra}`);
+  const rows: string[] = [];
+  for (let r = 0; r < WORDMARK_ROWS; r++) {
+    const letters = cellsOf(WORDMARK[r] ?? '')
+      .map((ch) => (ch === ' ' ? ' ' : g.full))
+      .join('');
+    const extra = r === 0 ? tail(tagline) : r === WORDMARK_ROWS - 1 ? tail(caption) : '';
+    rows.push(`${pad}${letters}${extra}`.replace(/\s+$/, ''));
+  }
+  const spans = (band: GridBand | null): SplashSpan[] => {
+    const out: SplashSpan[] = [];
+    for (let r = 0; r < WORDMARK_ROWS; r++) {
+      out.push({ row: r, from: offset, to: offset + JEV_END_CELL, role: 'accent' });
+      out.push({ row: r, from: offset + JEV_END_CELL, to: offset + WORDMARK_CELLS, role: 'dim' });
+      if (band !== null) {
+        const from = Math.max(0, Math.floor(band.from));
+        const to = Math.min(WORDMARK_CELLS, Math.floor(band.to));
+        if (to > from) out.push({ row: r, from: offset + from, to: offset + to, role: 'sweep' });
+      }
+    }
+    if (tagline !== null) out.push({ row: 0, from: offset + CAPTION_GRID_CELL, to: offset + CAPTION_GRID_CELL + cellWidth(tagline), role: 'dim' });
+    if (caption !== null) {
+      const at = offset + CAPTION_GRID_CELL;
+      const glyphCells = cellWidth(g.brand);
+      out.push({ row: WORDMARK_ROWS - 1, from: at, to: at + glyphCells, role: 'accent2' });
+      out.push({ row: WORDMARK_ROWS - 1, from: at + glyphCells, to: at + cellWidth(caption), role: 'dim' });
+    }
+    return out;
+  };
+  return { rows, spans };
+}
+
+/**
+ * TUI-DESIGN-2 §5.1–5.3 / TUI-DESIGN-3 §3.4: the wordmark rows at elapsed time `t` for a terminal `columns` wide —
+ * `WORDMARK_ROWS` rows, each ≤ `columns` cells, with the colour spans on the row's own cells; [] below 64 columns and
+ * never otherwise. Reveal: the letters up to `revealedCells(t)` and the `▓▒░` head right after them; shimmer: the
+ * whole mark with a 6-cell `sweep` band; **held** (t ≥ 550): the resting mark with the caption `◆ <version>` when a
+ * `version` is given (the App passes `VERSION`, so the frame the App swaps to at `splash:done` is cell-identical and
+ * writes nothing). `--ascii` draws `#` letters with a `# + .` head. Spans are computed on the 56-cell grid and every
+ * row is right-trimmed afterwards. Frame 0 is cell-identical to round 2's (the H-A1 fixtures).
+ */
+export function splashFrame(t: number, columns: number, g: GlyphSet = GLYPHS.unicode, version: string | null = null): SplashFrame {
   const phase = splashPhase(t);
   const cols = Number.isFinite(columns) ? Math.floor(columns) : 0;
-  if (phase === 'settled' || cols < WORDMARK_MIN_COLUMNS) return { rows: [], spans: [], phase };
+  if (cols < WORDMARK_MIN_COLUMNS) return { rows: [], spans: [], phase };
+  if (phase === 'held') {
+    const rest = restingFrame(cols, g, version);
+    return { rows: rest.rows, spans: rest.spans(null), phase };
+  }
   const offset = wordmarkOffset(cols);
   const pad = ' '.repeat(offset);
   const edge = phase === 'reveal' ? revealedCells(t) : WORDMARK_CELLS;
   const head = [g.shade3, g.shade2, g.shade1];
   const rows: string[] = [];
   const spans: SplashSpan[] = [];
-  const jevRole: ColorRole | null = phase === 'fade' ? (t >= SPLASH_FADE_2_MS ? 'dim' : null) : 'accent';
   const codeRole: ColorRole = 'dim';
   const band = phase === 'shimmer' ? sweepStart(t) : -1;
   for (let r = 0; r < WORDMARK_ROWS; r++) {
@@ -128,7 +222,7 @@ export function splashFrame(t: number, columns: number, g: GlyphSet = GLYPHS.uni
     const shown = Math.min(edge, WORDMARK_CELLS);
     if (shown > 0) {
       const jevTo = Math.min(shown, JEV_END_CELL);
-      if (jevRole !== null && jevTo > 0) spans.push({ row: r, from: offset, to: offset + jevTo, role: jevRole });
+      if (jevTo > 0) spans.push({ row: r, from: offset, to: offset + jevTo, role: 'accent' });
       if (shown > JEV_END_CELL) spans.push({ row: r, from: offset + JEV_END_CELL, to: offset + shown, role: codeRole });
     }
     if (edge < WORDMARK_CELLS) spans.push({ row: r, from: offset + edge, to: offset + Math.min(WORDMARK_CELLS, edge + HEAD_CELLS), role: 'sweep' });

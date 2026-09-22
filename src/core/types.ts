@@ -9,6 +9,7 @@
 // contract 1.1 (2026-09-20): additive TUI/session extensions per docs/TUI-DESIGN.md §15; every new field on an existing type is optional; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): conversational intake, Jev providers, mode setting, chat labels per docs/TUI-DESIGN-2.md §6; items 4 and 7 add required fields (every constructor and fake is listed there), item 8 is optional, everything else is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
+// contract 1.3 (2026-09-21): TUI round 3 — renderer bindings, wizard `mode` outcome, ui.wordmark, host dispatch context, per docs/TUI-DESIGN-3.md §6; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.4 (2026-09-21): coordination — pause points, context meter, registry API per docs/COORDINATION-DESIGN.md §12.0; every item is optional or a new union member; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
@@ -977,6 +978,16 @@ export interface CheckpointState {
    * into a resumed engine's status; the resumed run's next checkpoint drops it.
    */
   pausePoint?: PausePoint;
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §8.3, §8.4, §8.6 — moved here verbatim from src/loop/context/types.ts): the generator's
+   * relaxed context, all optional and absent on runs written before it landed. `history` ≤ 12 tiered steps with their
+   * `outputs/step-<n>.txt` pointers, `fileCache` ≤ 16 files in view, `fileMemory` ≤ 64 known paths, `summaryAt` the step
+   * whose commit produced `context/summary.json`.
+   */
+  history?: HistoryEntry[];
+  fileCache?: FileCacheEntry[];
+  fileMemory?: FileMemory;
+  summaryAt?: number | null;
   /** contract 1.4 (§12.0.3): compactions over the run's life, all resumes (ContextUsage.compactions) */
   compactions?: number;
   /** contract 1.4 (§12.0.3): ISO time of the last compaction (ContextUsage.lastCompactionAt) */
@@ -1138,6 +1149,16 @@ export interface CheckpointStore {
   /** contract 1.4 (§7.3 step 3): read `<runDir>/cache/<rel>` back; null when missing or not JSON */
   readCache?(rel: string): Promise<Json | null>;
   /**
+   * contract 1.4 (COORDINATION-DESIGN §8.3, §8.6, W2 item 20): the context policy's artefacts. `writeOutput` stores the whole
+   * (redacted) output of a step at `outputs/step-<n>.txt` (≤ 1 MiB each, ≤ 64 MiB per run) and resolves with the steps whose
+   * file the per-run bound deleted, so the caller stops pointing at them; `writeContextSummary` stores `context/summary.json`.
+   * Optional on the contract so injected fakes keep type-checking (`hasContextStore`); required on the disk store.
+   */
+  writeOutput?(step: number, text: string): Promise<number[]>;
+  readOutput?(step: number): Promise<string | null>;
+  writeContextSummary?(summary: Json): Promise<void>;
+  readContextSummary?(): Promise<Json | null>;
+  /**
    * contract 1.4 (§7.3 step 3): rename a cache file inside `cache/` — the engine supersedes `cache/step-<n>.json` to
    * `cache/step-<n>.superseded.json` the moment step n runs fresh, so no later `--replay` can resurrect it. A missing
    * source resolves; only a real failure rejects.
@@ -1216,6 +1237,8 @@ export interface EngineOptions {
   runsDir: string;
   /** contract 1.4 (§7.3 step 3, §12.0.1): `replay` = restore the paused proposal (or the arrived LLM samples) from `cache/step-<n>.json` behind the hash gate; both existing callers compile */
   resume?: { runId: string; force: boolean; replay?: boolean };
+  /** contract 1.4 (§12.0.1, §8): the generator's relaxed context; absent → the defaults of `src/loop/context/limits.ts` */
+  contextPolicy?: ContextPolicyOptions;
   provider: Provider;
   decider: Decider;
   confirmer: Confirmer;
@@ -1311,6 +1334,12 @@ export interface SynthesisContext {
   intent: Intent;
   /** files the context stage selected (path -> content view) */
   contextFiles: readonly FileView[];
+  /**
+   * contract 1.4 (COORDINATION-DESIGN §8.8 column 3): the relaxed context view the engine built for this step — the
+   * `## Recent steps` / `## Files in view` / summary block as text — for a synthesizer that prompts the generator itself
+   * (llm-jev). Absent when the run builds none (`jev-only`, `view: 'legacy'`), so the synthesizer keeps today's prompt.
+   */
+  contextText?: string;
   workspace: Workspace;
   workspaceInfo: WorkspaceInfo;
   sandbox: Sandbox;
@@ -1599,7 +1628,13 @@ export interface DeliverableMessage {
   by?: 'human' | 'engine';
 }
 
-/** §8.7 / §12.0.3: the context meter (`EngineStatus.context`) */
+/** §8.6: the compactor in force (`context.compaction`, default `code`). */
+export type CompactionMode = 'code' | 'llm' | 'off';
+
+/**
+ * §8.7 / §12.0.3: the context meter (`EngineStatus.context`). ONE definition — the members the context-policy branch
+ * declared in `src/loop/context/types.ts` are here verbatim; that file re-declares nothing.
+ */
 export interface ContextUsage {
   promptChars: number;
   budgetChars: number;
@@ -1610,16 +1645,93 @@ export interface ContextUsage {
   lastCompactionStep: number | null;
   /** round(promptChars / CHARS_PER_TOKEN) with CHARS_PER_TOKEN = 3.4 (§8.2) — an estimate; the generator's tokenizer is never called */
   tokensInWindow: number;
-  /** round(budgetChars / CHARS_PER_TOKEN) = 0.55 × windowTokens (§8.2), so pct === round(100 × tokensInWindow / budgetTokens) */
+  /**
+   * the PROMPT BUDGET in tokens: round(budgetChars / CHARS_PER_TOKEN) = 0.55 × windowTokens (§8.2), so
+   * pct === round(100 × tokensInWindow / budgetTokens) — the meter is a share of the budget, not of the model's window
+   */
   budgetTokens: number;
-  /** the generator model's full context window in tokens (§8.2 `generatorContextTokens`); `budgetTokens` is the 0.55 share of it the run may fill */
+  /** the model's context window in tokens (`generatorContextTokens`, §8.2) — what `/context` shows beside the budget */
   windowTokens: number;
   /** compactions over the run's life, all resumes; persisted as CheckpointState.compactions? */
   compactions: number;
   /** ISO time of the last compaction, null before any; persisted as CheckpointState.lastCompactionAt? */
   lastCompactionAt: string | null;
   /** §8.6: the compactor in force */
-  compaction: 'code' | 'llm' | 'off';
+  compaction: CompactionMode;
+  /** §8.2: which term bound `budgetChars` — `/context` prints it (`budget 96k chars — capped by the $2.00 run cap …`) */
+  budgetBoundBy: 'window' | 'money' | 'floor' | 'ceiling';
+  /** §8.2: estimated generator input $ per step at this budget, null when the generator is unpriced */
+  usdPerStep: number | null;
+  /** §8.2: the budget was clamped to the model's window because the window is smaller than the floor */
+  windowTooSmall: boolean;
+  /** §8.2(c): the `/context` recent-steps line — `recent steps 71k of 71k (2 whole, 4 clipped, 6 one-line)` */
+  recentSteps: RecentStepsUsage;
+  /** §8.9: how long the last prompt build took (ms), and the file refresh inside it — the `promptBuildMs` gate's source */
+  promptBuildMs: number;
+  refreshMs: number;
+}
+
+/** §8.2(c): what the tier ladder did to the history at the last build. */
+export interface RecentStepsUsage {
+  chars: number;
+  allowanceChars: number;
+  whole: number;
+  clipped: number;
+  oneLine: number;
+  /** output files opened for this build (§8.3: ≤ 6, in practice 2–3 warm) */
+  reads: number;
+}
+
+/** §8.3: a WindowEntry (600-char body) plus the pointer to the whole output on disk (`CheckpointState.history?` ≤ 12). */
+export interface HistoryEntry extends WindowEntry {
+  /** `outputs/step-<n>.txt` under the run dir when the output was longer than the 600-char body */
+  outputRef?: string;
+  /** length of the whole output text (what the file holds, before its own 1 MiB cap) */
+  fullOutputChars?: number;
+  /** §8.5: the per-run 64 MiB bound deleted `outputRef` mid-run — the pointer must not be printed again */
+  outputEvicted?: boolean;
+}
+
+/** §8.4: why a path is in view; eviction keeps human > jev > seed > edit > read. */
+export type FilePin = 'read' | 'edit' | 'human' | 'jev' | 'seed';
+
+/** §8.4: one file the generator keeps in view (`CheckpointState.fileCache?` ≤ 16). */
+export interface FileCacheEntry {
+  rel: string;
+  pinnedBy: FilePin;
+  lastUsedStep: number;
+  /** chars of the file shown at the last prompt build (0 before the first) */
+  bytesShown: number;
+}
+
+/** §8.4: what the run knows about a path's content (`CheckpointState.fileMemory?` ≤ 64 entries). */
+export interface FileMemoryEntry {
+  /** first 12 hex of the file's sha256 (post-image hash for edits; the raw file hash at load for reads); null until hashed */
+  sha12: string | null;
+  bytes: number;
+  readAt: number | null;
+  editedAt: number | null;
+}
+export type FileMemory = Record<string, FileMemoryEntry>;
+
+/**
+ * §12.0.1: `EngineOptions.contextPolicy?`.
+ *
+ * `view` is the one member the design does not list: `'legacy'` sends no context view at all, so `buildPrompt` takes the
+ * byte-identical pre-§8 path and no `outputs/` file, file cache or compaction runs — what the bench baselines were
+ * measured against.
+ */
+export interface ContextPolicyOptions {
+  /** default `'relaxed'`; `'legacy'` is HEAD's prompt, byte for byte */
+  view?: 'relaxed' | 'legacy';
+  /** §8.2: the model's context window in tokens; absent → the pricing table's `contextTokens` (§14 Q4), else 128k */
+  windowTokens?: number;
+  historySteps?: number;
+  fileCacheBytes?: number;
+  /** 0 disables the interval trigger */
+  compactEvery?: number;
+  compaction?: CompactionMode;
+  budgetChars?: number;
 }
 
 export interface Engine {
@@ -1652,6 +1764,12 @@ export interface Engine {
   end?(opts?: EndOptions): void;
   /** contract 1.4 (§5.4, §12.0.2 P8): a coordination message addressed to this run's session; returns what happened, which the caller writes into the ack */
   deliver?(msg: DeliverableMessage): AckOutcome;
+  /**
+   * contract 1.4 (§8.5, §8.6): `/compact now` — fold the history into the rolling summary at once, outside the 85 % / every-8-steps
+   * triggers. A no-op when the run builds no relaxed context (`jev-only`, `view: 'legacy'`) or once finish() began; the
+   * `context:compacted` event reports what it did.
+   */
+  compact?(): void;
   /** TUI-DESIGN §15 item 15: end the current retry sleep early (F12 `[r]`); false when no retry sleep is active */
   retryNow(): boolean;
   /** TUI-DESIGN §15 item 15: a renderer-originated transcript line while the run is live (§15.1); false once finished, then the renderer keeps it local */
@@ -1670,10 +1788,21 @@ export interface LaunchSettings {
   screenReader: boolean;
   ascii: boolean;
   noColor: boolean;
-  /** TUI-DESIGN-2 §6 item 14 / §1.1: the first frame's badge word — `--mode` > `JEVCODE_MODE`; absent when neither is set (the App reads `jev-only`) */
+  /** TUI-DESIGN-2 §6 item 14 / §1.1: the first frame's badge word — `--mode` > `JEVCODE_MODE`; absent when neither is set (the App reads `DEFAULT_MODE`) */
   modeHint?: EngineMode;
   /** TUI-DESIGN-2 §6 item 14 / §5.3: `--no-animation` > `JEVCODE_REDUCED_MOTION` > screenReader — the splash's static form before the file is read */
   reducedMotion: boolean;
+  /**
+   * TUI-DESIGN-3 §6 item 8 / §2.2 (D-R): `COLORFGBG` background index 7 | 15 → the `light` table is frame 0's default; absent otherwise and
+   * whenever `--theme` / `JEVCODE_THEME` is set (the chain resolves those; `ui.theme` in the file still wins at setUi)
+   */
+  themeHint?: 'dark' | 'light' | 'daltonized' | 'ansi';
+  /**
+   * TUI-DESIGN-3 §6 item 8: the SSH launch source (`SSH_TTY` / `SSH_CONNECTION`), already the fps default's input; `ui.wordmark` defaults to
+   * `static` under it. Always set by resolveLaunchSettings; optional here (the design writes `ssh: boolean`) so the LaunchSettings / UiConfig
+   * literals outside S3's files (test/unit/tui/plain.test.ts) keep compiling in W0 — readers test `launch.ssh === true`
+   */
+  ssh?: boolean;
 }
 /** the LaunchSettings members repeat the mount-time values (source flag | env | default only) */
 export interface UiConfig extends LaunchSettings {
@@ -1691,6 +1820,8 @@ export interface UiConfig extends LaunchSettings {
   logLevel: 'error' | 'warn' | 'info' | 'debug' | 'trace';
   logFile: string | null;
   keybindingsFile: string | null;
+  /** TUI-DESIGN-3 §6 item 4 / §3.2: the wordmark's idle animation — OPTIONAL; readers: `ui?.wordmark ?? (launch.ssh ? 'static' : 'sweep')` */
+  wordmark?: 'sweep' | 'static' | 'off';
 }
 /**
  * TUI-DESIGN §15 item 19 / §10.1: one detected secret span. Declared here so SessionHost is self-contained;
@@ -1734,6 +1865,8 @@ export interface SessionHost {
   history(): HistoryStore | null;
   /** pre-run: files.ts listCandidates() once after firstFrame(); from run:ready: the live workspace.listCandidates() (§5.4) */
   workspaceCandidates(): Promise<readonly Candidate[]>;
+  /** TUI-DESIGN-3 §6 item 7 (R4 F20): the host's dispatch context beyond the run phase (cli/session.ts ControllerHost declares it; the App prefers it over its own fold) */
+  dispatchContext?(): Omit<import('../tui/commands/dispatch.js').DispatchContext, 'run'>;
 }
 export interface RunRow {
   runId: string;
@@ -1801,6 +1934,12 @@ export interface Renderer {
   restoreDraft?(text: string): void;
   /** TUI-DESIGN-2 §6 item 11 / §3.6: the LLM turn's streamed text for the live region ('' empties it) */
   live?(text: string): void;
+  /**
+   * TUI-DESIGN-3 §6 item 1 (R4 F10): the effective key bindings (defaults + the keybindings file) for the App. `Bindings` is imported
+   * type-only from src/tui/keys/bindings.ts — the contract's one core → tui inversion (redeclaring its four-map shape here would be a
+   * second source of truth for the key tables)
+   */
+  setBindings?(bindings: import('../tui/keys/bindings.js').Bindings): void;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1824,8 +1963,8 @@ export interface GeneratorConfig {
   baseUrl: string;
   temperature: number | null;
   maxTokens: number;
-  /** USD per million tokens, used when the API returns no cost */
-  pricing: { inputPerM: number; outputPerM: number; cacheReadPerM: number; cacheWritePerM: number };
+  /** USD per million tokens, used when the API returns no cost; `contextTokens` is contract 1.4 (§8.2, §14 Q4): the model's context window, absent → DEFAULT_GENERATOR_CONTEXT_TOKENS */
+  pricing: { inputPerM: number; outputPerM: number; cacheReadPerM: number; cacheWritePerM: number; contextTokens?: number };
   /**
    * TUI-DESIGN §15 item 17: OPTIONAL: validateGenerator always sets it; resolveConfig / validate.ts treat absent as false.
    * §9.5: absent ⇒ a null OpenRouter `usage.cost` yields `costUsd` NaN (`budget:unpriced`, stop `error unpriced_usage` unless
@@ -1854,7 +1993,7 @@ export interface DeciderConfig {
 export interface ResolvedConfig {
   /** every setting with its source; secrets appear only as fingerprints in record() */
   readonly entries: ReadonlyMap<string, Resolved<string>>;
-  /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > default jev-only); the mode-keyed spend caps read it */
+  /** TUI-DESIGN-2 §6 item 9 / §1.2: the `mode` setting (flag > JEVCODE_MODE > dotenv > file > DEFAULT_MODE); the mode-keyed spend caps read it */
   readonly mode: EngineMode;
   /** validates the generator section on first call; ConfigError names setting and sources */
   generator(): GeneratorConfig;

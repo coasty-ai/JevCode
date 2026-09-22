@@ -1,0 +1,19 @@
+# TUI-DESIGN-3 §1.8 edge 1: a key pasted with a trailing CR — the App splits the chunk into the text and the Enter it ended with,
+# `sanitizeKeyInput` strips the whitespace and the Enter saves the clean key (four file keys from one paste); `Verify now?` follows
+# (`n` skips — JEVCODE_ASSERT_NO_NETWORK stays untouched), then the idle console. The `[setup] spend caps` item is written while the
+# wizard is still on `verify` (the save resolved the controller's prompt), so run-smoke.sh greps it instead of expecting it in order;
+# run-smoke.sh also checks the saved config carries the key without whitespace and mode 0600
+expect \x1b\[\?25l
+expect OpenRouter API key
+sleep 0.3
+send sk-or-v1-fakefakefakefakefakefakefakefakefake\r
+expect Verify now\?
+sleep 0.3
+send n
+expect sess \$
+expect Say hi
+sleep 0.3
+send /exit
+sleep 0.2
+send \r
+eof

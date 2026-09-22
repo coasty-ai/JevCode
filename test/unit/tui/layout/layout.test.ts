@@ -385,6 +385,82 @@ describe('the §2.2 allocation table, recomputed from the function', () => {
     expect(tight.total).toBeLessThanOrEqual(14);
   });
 
+  it('TUI-DESIGN-3 §3.7 computeLayout 1.2: `paneWhole` grants the pane its whole want or nothing; the §3.7 table at 8/12/16/21/24/40 rows (totals)', () => {
+    const boxed = (o: Partial<LayoutInput>): Layout => computeLayout(input({ columns: 80, chrome: 3, paneWhole: true, ...o }));
+    // idle + wordmark: status 1 · rule 1 · composer 1 · chrome 3 · pane 5 = 11 at 21 / 24 / 40
+    for (const rows of [21, 24, 40]) expect(cells2(boxed({ rows, paneWant: CAP.splash })), `rows ${rows}`).toBe('1·0·0·5·0·0·0·1·3·1 = 11');
+    // idle at 16–20: the mark is not wanted (paneWant 0) → 6
+    for (const rows of [16, 18, 20]) expect(boxed({ rows, paneWant: 0 }).total, `rows ${rows}`).toBe(6);
+    // a 6-row draft at 21 → 16; the palette at 21 → 19 (= budget); the wizard at 24 → 13 (no composer floor)
+    expect(cells2(boxed({ rows: 21, paneWant: CAP.splash, composerWant: 6 }))).toBe('1·0·0·5·0·0·0·6·3·1 = 16');
+    expect(cells2(boxed({ rows: 21, paneWant: CAP.splash, overlay: 'palette', overlayWant: CAP.palette }))).toBe('1·0·0·5·0·8·0·1·3·1 = 19');
+    expect(boxed({ rows: 21, paneWant: CAP.splash, overlay: 'palette', overlayWant: CAP.palette }).budget).toBe(19);
+    expect(cells2(boxed({ rows: 24, paneWant: CAP.splash, overlay: 'wizard', overlayWant: 3 }))).toBe('1·0·0·5·0·3·0·0·3·1 = 13');
+    // the boxed intake card (3) at 24 → 14; a 6-row draft at 24 → 16
+    expect(boxed({ rows: 24, paneWant: CAP.splash, overlay: 'intake', overlayWant: 1 + CAP.card }).total).toBe(14);
+    expect(boxed({ rows: 24, paneWant: CAP.splash, composerWant: 6 }).total).toBe(16);
+    // whole or absent: rem = 3, want = 5 → pane 0 (never 3); without paneWhole the same input grants 3
+    const tight = boxed({ rows: 16, paneWant: CAP.splash, overlay: 'palette', overlayWant: 5 });
+    expect(tight.budget - (tight.total - tight.pane)).toBe(3);
+    expect(tight.pane).toBe(0);
+    expect(computeLayout(input({ rows: 16, columns: 80, chrome: 3, paneWant: CAP.splash, overlay: 'palette', overlayWant: 5 })).pane).toBe(3);
+    // the review card at 24×80 (pane 3 of 5 today) → 0 under paneWhole
+    expect(computeLayout(input({ rows: 24, columns: 80, chrome: 3, overlay: 'review', overlayWant: CAP.reviewCard, previewWant: 4, paneWant: CAP.splash })).pane).toBe(3);
+    expect(boxed({ rows: 24, overlay: 'review', overlayWant: CAP.reviewCard, previewWant: 4, paneWant: CAP.splash }).pane).toBe(0);
+    // the panel / picker wants keep partial grants when paneWhole is off; under paneWhole they are whole or absent too
+    expect(computeLayout(input({ rows: 12, paneWant: 12 })).pane).toBe(7);
+    expect(computeLayout(input({ rows: 12, paneWant: 12, paneWhole: true })).pane).toBe(0);
+    // `expanded` wins: pane 0 whatever paneWhole says
+    expect(boxed({ rows: 40, overlay: 'review', overlayWant: CAP.reviewCard, previewWant: 30, expanded: true, paneWant: CAP.splash }).pane).toBe(0);
+    // flat tiers never grant the mark (the App never wants it there): 8 / 12 rows with paneWant 0 → 3
+    for (const rows of [8, 12]) expect(computeLayout(input({ rows, paneWant: 0, paneWhole: true })).total).toBe(3);
+  });
+
+  it('TUI-DESIGN-3 §3.7: under `paneWhole` every invariant of the first pass still holds and pane ∈ {0, want} over the exhaustive sweep', () => {
+    const rnd = mulberry32(0xa11);
+    const violations: string[] = [];
+    const note = (msg: string): void => {
+      if (violations.length < 20) violations.push(msg);
+    };
+    let calls = 0;
+    for (let rows = 2; rows <= 60; rows++) {
+      for (const columns of [20, 39, 40, 64, 80, 120, 400]) {
+        for (const overlay of OVERLAY_KINDS) {
+          for (let overlayWant = 0; overlayWant <= 12; overlayWant += 3) {
+            for (const paneWant of [0, 5, 6, 12]) {
+              const i: LayoutInput = {
+                rows,
+                columns,
+                overlay,
+                overlayWant,
+                previewWant: [0, 4, 30][Math.floor(rnd() * 3)] ?? 0,
+                expanded: overlay === 'review' && rnd() < 0.3,
+                composerWant: [1, 3, 6, 9][Math.floor(rnd() * 4)] ?? 1,
+                queueWant: [0, 1, 2][Math.floor(rnd() * 3)] ?? 0,
+                liveWant: [0, 1, 2][Math.floor(rnd() * 3)] ?? 0,
+                bannerWant: rnd() < 0.3 ? 1 : 0,
+                paneWant,
+                chrome: rnd() < 0.7 ? 3 : 0,
+                gate: rnd() < 0.3 ? 1 : 0,
+                paneWhole: true,
+              };
+              checkInvariants(i, note);
+              const l = computeLayout(i);
+              const want = i.expanded ? 0 : Math.min(paneWant, CAP.pane);
+              if (l.pane !== 0 && l.pane !== want) note(`paneWhole partial grant ${l.pane} of ${want} at rows ${rows} cols ${columns} ${overlay}/${overlayWant}`);
+              // whole-or-absent never leaves a want unmet that would have fitted whole
+              const without = computeLayout({ ...i, paneWhole: false });
+              if (without.pane === want && l.pane !== want) note(`paneWhole refused a whole grant at rows ${rows} cols ${columns} ${overlay}/${overlayWant}`);
+              calls++;
+            }
+          }
+        }
+      }
+    }
+    expect(calls).toBe(59 * 7 * OVERLAY_KINDS.length * 5 * 4);
+    expect(violations).toEqual([]);
+  });
+
   it('TUI-DESIGN-2 §4.1 chromeRows: boxed at rows ≥ 16 and columns ≥ 40 without a screen reader, flat otherwise — geometry alone', () => {
     expect(chromeRows(24, 80, false)).toBe(3);
     expect(chromeRows(16, 40, false)).toBe(3);

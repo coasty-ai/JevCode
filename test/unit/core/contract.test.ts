@@ -25,6 +25,7 @@ import type {
   JevProvider,
   JevProviderSource,
   JevUsage,
+  LaunchSettings,
   PauseOptions,
   PausePoint,
   PausePointReason,
@@ -35,8 +36,12 @@ import type {
   SessionRef,
   StepRecord,
   SubmitOutcome,
+  UiConfig,
   UiLabel,
 } from '../../../src/core/types.js';
+import type { WizardOutcome } from '../../../src/cli/session.js';
+import type { Bindings } from '../../../src/tui/keys/bindings.js';
+import { DEFAULT_BINDINGS } from '../../../src/tui/keys/bindings.js';
 import { AbortError } from '../../../src/errors.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
 import { JEV_PROVIDERS } from '../../../src/jev/providers.js';
@@ -112,16 +117,17 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
     expect(pick.mode).toBe('jev-only');
   });
 
-  it('contract 1.4 header: directly after the last earlier contract line (1.3 when present), names §12.0 and keeps the envelope at 1', () => {
+  it('the contract headers read 1.1, 1.2, 1.2, 1.3, 1.4 in file order, contiguous; 1.4 names §12.0 and keeps the envelope at 1', () => {
     const lines = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8').split('\n');
     const headers = lines.map((l, i) => [l, i] as const).filter(([l]) => l.startsWith('// contract '));
-    const i14 = lines.findIndex((l) => l.startsWith('// contract 1.4 (2026-09-21)'));
-    expect(i14).toBeGreaterThan(0);
-    // the 1.4 line is the last header, immediately below the previous one (the TUI's 1.3 line slots in above it)
-    expect(headers.at(-1)?.[1]).toBe(i14);
-    expect(headers.at(-2)?.[1]).toBe(i14 - 1);
-    const i13 = lines.findIndex((l) => l.startsWith('// contract 1.3 (2026-09-21)'));
-    if (i13 >= 0) expect(i13).toBeLessThan(i14);
+    // every wave's line, in the order the waves landed (two 1.2 lines: TUI round 2 and llm-jev)
+    expect(headers.map(([l]) => l.slice('// contract '.length).split(' ')[0])).toEqual(['1.1', '1.2', '1.2', '1.3', '1.4']);
+    // one contiguous block, so a later wave appends rather than slotting in somewhere
+    expect(headers.map(([, i]) => i)).toEqual(headers.map((_, k) => headers[0]![1] + k));
+    const i14 = headers.at(-1)![1];
+    expect(lines[i14]?.startsWith('// contract 1.4 (2026-09-21)')).toBe(true);
+    // 1.4 sits directly after the TUI's round-3 line, which is where the harness rebased it
+    expect(lines[i14 - 1]?.startsWith('// contract 1.3 (2026-09-21)')).toBe(true);
     expect(lines[i14]).toContain('docs/COORDINATION-DESIGN.md §12.0');
     expect(lines[i14]).toContain('CheckpointEnvelope.version stays 1');
   });
@@ -158,7 +164,28 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
     expect(ack).toHaveLength(4);
     const status: Pick<EngineStatus, 'pausePoint' | 'pauseNow' | 'context'> = { pausePoint: null, pauseNow: false };
     expect(status.context).toBeUndefined();
-    const usage: ContextUsage = { promptChars: 1, budgetChars: 2, pct: 50, files: 0, historyEntries: 0, summaryAt: null, lastCompactionStep: null, tokensInWindow: 0, budgetTokens: 1, windowTokens: 2, compactions: 0, lastCompactionAt: null, compaction: 'code' };
+    // ONE ContextUsage: §8.7's members, the agreed token names and the context-policy branch's own (budgetBoundBy … refreshMs)
+    const usage: ContextUsage = {
+      promptChars: 1,
+      budgetChars: 2,
+      pct: 50,
+      files: 0,
+      historyEntries: 0,
+      summaryAt: null,
+      lastCompactionStep: null,
+      tokensInWindow: 0,
+      budgetTokens: 1,
+      windowTokens: 2,
+      compactions: 0,
+      lastCompactionAt: null,
+      compaction: 'code',
+      budgetBoundBy: 'window',
+      usdPerStep: null,
+      windowTooSmall: false,
+      recentSteps: { chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 },
+      promptBuildMs: 0,
+      refreshMs: 0,
+    };
     expect(usage.compaction).toBe('code');
     expect(usage.budgetTokens).toBeLessThanOrEqual(usage.windowTokens);
     const resumes: NonNullable<EngineOptions['resume']>[] = [{ runId: 'r', force: false }, { runId: 'r', force: true, replay: true }];
@@ -184,5 +211,57 @@ describe('contract 1.2 (TUI-DESIGN-2 §6 items 1–13)', () => {
     const so = { kind: 'prompt' as const, secretSpans: [], pinnedFiles: [] };
     expect(await oldStyle.submit('hi', so)).toBeUndefined();
     expect(await newStyle.submit('hi', so)).toEqual({ became: 'chat' });
+  });
+});
+
+describe('contract 1.3 (TUI-DESIGN-3 §6 items 1–4, 7, 8; S3 W0)', () => {
+  it('header: types.ts records contract 1.3 after the 1.2 lines and keeps CheckpointEnvelope.version at 1', () => {
+    const text = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8');
+    const lines = text.split('\n');
+    const i12 = lines.findIndex((l) => l.startsWith('// contract 1.2 (2026-09-21)'));
+    const i13 = lines.findIndex((l) => l.startsWith('// contract 1.3 (2026-09-21)'));
+    expect(i13).toBeGreaterThan(i12);
+    expect(lines.slice(i12, i13).every((l) => l.startsWith('// contract 1.2'))).toBe(true);
+    expect(lines[i13]).toContain('docs/TUI-DESIGN-3.md §6');
+    expect(lines[i13]).toContain('CheckpointEnvelope.version stays 1');
+    expect(text).toMatch(/version: 1;/);
+  });
+
+  it('item 1: Renderer.setBindings is optional and takes the tui Bindings shape (the one type-only core → tui import)', () => {
+    const without: Pick<Renderer, 'setBindings'> = {};
+    expect(without.setBindings).toBeUndefined();
+    let seen: Bindings | null = null;
+    const withIt: Pick<Renderer, 'setBindings'> = { setBindings: (b) => void (seen = b) };
+    withIt.setBindings?.(DEFAULT_BINDINGS);
+    expect(seen).toBe(DEFAULT_BINDINGS);
+    // the inversion is type-only: core/types.ts has no runtime import of src/tui
+    const text = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8');
+    expect(text.split('\n').filter((l) => /^import\s/.test(l) && l.includes('../tui'))).toEqual([]);
+  });
+
+  it('item 2: WizardOutcome gains the mode kind (mode + persist) beside saved / persisted / cancelled', () => {
+    const outcomes: WizardOutcome[] = [
+      { kind: 'cancelled' },
+      { kind: 'persisted' },
+      { kind: 'saved', patch: {} },
+      { kind: 'mode', mode: 'jev-only', persist: true },
+      { kind: 'mode', mode: 'jev-only', persist: false },
+    ];
+    expect(outcomes.filter((o) => o.kind === 'mode')).toHaveLength(2);
+  });
+
+  it('items 4 and 8: UiConfig.wordmark is optional (sweep | static | off); LaunchSettings gains themeHint (light) and ssh, both optional in W0', () => {
+    const uis: Pick<UiConfig, 'wordmark'>[] = [{}, { wordmark: 'sweep' }, { wordmark: 'static' }, { wordmark: 'off' }];
+    expect(uis.map((u) => u.wordmark)).toEqual([undefined, 'sweep', 'static', 'off']);
+    const launches: Pick<LaunchSettings, 'themeHint' | 'ssh'>[] = [{}, { themeHint: 'light' }, { ssh: true }, { themeHint: 'light', ssh: false }];
+    expect(launches[0]?.themeHint).toBeUndefined();
+    expect(launches[3]).toEqual({ themeHint: 'light', ssh: false });
+  });
+
+  it('item 7: SessionHost.dispatchContext is optional and returns the dispatch context without the run phase', () => {
+    const without: Pick<SessionHost, 'dispatchContext'> = {};
+    expect(without.dispatchContext).toBeUndefined();
+    const withIt: Pick<SessionHost, 'dispatchContext'> = { dispatchContext: () => ({ step: 3, changedSteps: [1, 2] }) };
+    expect(withIt.dispatchContext?.()).toEqual({ step: 3, changedSteps: [1, 2] });
   });
 });

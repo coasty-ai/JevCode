@@ -327,9 +327,9 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
       [4, 'propose_fix', true, 'error'],
     ]);
     const [r0, , r1, r4] = rows;
-    // config/defaults.ts GLM 5.3 Flash row: $0.09/M in, $0.30/M out
+    // config/defaults.ts GLM 5.3 Flash row: $0.15/M in, $0.50/M out (re-fetched 2026-09-21)
     expect(r0!.usage).toMatchObject({ inputTokens: inTok, outputTokens: 2, calls: 1, estimated: true });
-    expect(r0!.usage.costUsd).toBeCloseTo((inTok * 0.09 + 2 * 0.3) / 1e6, 15);
+    expect(r0!.usage.costUsd).toBeCloseTo((inTok * 0.15 + 2 * 0.5) / 1e6, 15);
     // not sample 2's 1000 prompt tokens; priced at the run's mean rate over everything metered so far
     expect(r1!.usage).toMatchObject({ inputTokens: inTok, outputTokens: 0, calls: 1, estimated: true });
     expect(r1!.usage.costUsd).toBeCloseTo(((r0!.usage.costUsd + 0.004) / (inTok + 2 + 1200)) * inTok, 15);

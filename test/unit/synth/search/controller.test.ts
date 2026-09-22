@@ -35,9 +35,10 @@ import { LONE_PASSER_HOLD_MAX_NOUL } from '../../../../src/synth/search/guard.js
 import { noulAnswer } from './helpers.js';
 import { directiveText } from '../../../../src/loop/stages/replan.js';
 import { siteKey } from '../../../../src/synth/search/sites.js';
-import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
+import { GCD_BUGGY, GCD_OTHER_TEST, GCD_TEST, cand, executedPatch, executedRun, fakeCtx, fakeLlm, jobOf, outcomeOf, siteAt, sourceFile, summary, unusedRepositoryDeps } from './controller-fakes.js';
 import type { AskScript } from './controller-fakes.js';
 import { makeTrace, patchEntry, runEntry } from './proposal-helpers.js';
+import { isCompleteByFact } from '../../../../src/loop/stages/complete.js';
 
 // ---------------------------------------------------------------------------------------
 // Harness
@@ -63,6 +64,8 @@ function fixFor(goal: Goal, file: SourceFile): SubGoalResult {
 }
 
 interface HarnessOptions {
+  /** the llm-jev switches (no establishing run, the claiming run's completion facts); default jev-only */
+  llmJev?: boolean;
   baselines?: BaselineRun[];
   results?: ((goal: Goal, mem: RunMemory) => SubGoalResult)[];
   handleDirective?: SearchDeps['handleDirective'];
@@ -184,8 +187,10 @@ function harness(o: HarnessOptions = {}): Harness {
         return outcome.subset;
       }),
     now: () => 1_000,
+    // the llm-jev switches need a generator channel (`opts.llmJev && deps.llm !== undefined`); the fake fires no round
+    ...(o.llmJev === true ? { llm: fakeLlm({ rounds: () => null }) } : {}),
   };
-  return { synth: new LedgerSieveSynthesizer(deps), file, calls, goalsSearched, runTestCommands };
+  return { synth: new LedgerSieveSynthesizer(deps, o.llmJev === true ? { llmJev: true } : {}), file, calls, goalsSearched, runTestCommands };
 }
 
 let runCounter = 0;
@@ -890,6 +895,38 @@ describe('repository mode (Django/sympy-shaped workspace): oracle goal, best gue
     expect(q3.plan.done).toEqual([]);
     expect(runMemory(runId2).goals[0]?.status).toBe('open');
     expect(q3.goal).toContain('expect 2 of 2 tests to pass and the reproduction to still fail');
+  });
+
+  it('known failures are the base commit\'s and travel on the claiming run (llm-jev §6.6, v2 class E′: sympy-11618\'s 43 pre-existing collection errors)', async () => {
+    const file = moduleFile();
+    // the scoped suite of this environment errors on 43 collections before anything is patched
+    const scopedWithErrors = (errors: number): BaselineRun => ({ summary: summary({ command: SCOPED, passing: SCOPED_PASSING, failing: [], errors, total: SCOPED_PASSING.length + errors, durationMs: 4000 }), output: '' });
+    const h = harness({
+      llmJev: true,
+      files: [file],
+      baselines: [scopedWithErrors(43), scopedWithErrors(43), scopedWithErrors(45)],
+      findOracle: async () => oracleFound(),
+      locate: locateModule(file),
+      regressionScope: scopeFor(),
+      verifyRepro: async () => reproPassing(),
+      results: [reproCommit(file, true)],
+    });
+    const runId = 'repo-known-failures';
+    // step 1 (llm-jev: no establishing run) commits the verified fix; the base commit's count is measured at the first re-baseline
+    const p1 = await h.synth.synthesize(repoCtx({ runId, step: 1 }));
+    expect(p1.action.kind).toBe('patch');
+    const mem = runMemory(runId);
+    expect(mem.repository?.knownFailures).toBe(43);
+    expect(repositoryNotes(mem.repository!).some((n) => n === '43 scoped tests fail at the base commit too (pre-existing, not goals)')).toBe(true);
+    // step 2: the patch executed → the claiming run carries the completion facts AND the base commit's known failures
+    const p2 = await h.synth.synthesize(repoCtx({ runId, step: 2, window: [executedPatch(1, [MODULE])], plan: { remaining: [`fix ${REPRO_ID} in ${MODULE}`, VERIFY_ITEM] } }));
+    expect(p2.action).toMatchObject({ kind: 'run', command: SCOPED });
+    expect(p2.evidence?.completion).toEqual({ ledgerFixed: true, testsChanged: [], guardPending: false, repro: 'pass', oracle: 'valid', command: SCOPED, knownFailures: 43 });
+    // the engine's own run of that command shows 2 passed / 43 errors — the fact holds because the baseline had those 43
+    expect(isCompleteByFact({ action: 'run', outcome: 'executed', tests: { command: SCOPED, parsed: { passed: 2, failed: 0, errors: 43, skipped: 0 }, allPassed: false }, testsCurrent: true, completion: p2.evidence?.completion, testsPassUnparsed: null, verifiedDone: false })).toBe(true);
+    // a later re-baseline that shows MORE failures never raises the count: a regression can not travel as pre-existing
+    await h.synth.synthesize(repoCtx({ runId, step: 3, window: [executedPatch(1, [MODULE]), scopedRun(2, SCOPED, { passed: 2, failed: 0 })], plan: { remaining: [VERIFY_ITEM] } }));
+    expect(mem.repository?.knownFailures).toBe(43);
   });
 
   it('a green scoped run at the base commit is not a finished task: without an oracle the best-guess goal is searched, committed once with the unverified note, then parked and the run ends partial', async () => {

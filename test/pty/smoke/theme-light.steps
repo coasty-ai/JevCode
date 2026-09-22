@@ -1,0 +1,8 @@
+# --theme light (TUI-DESIGN-3 §2.2): the darkened primary `38;5;125` paints the badge and the prompt; no `38;5;211` anywhere
+expect \x1b\[\?25l
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

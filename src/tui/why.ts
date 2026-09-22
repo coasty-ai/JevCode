@@ -23,6 +23,18 @@ import { FACT_QUESTION_PREFIX, FACT_SELECT_FLOOR } from '../chat/facts.js';
 
 /** §7.6: a `/why` item's `detail` is ≤ 60 lines. */
 export const WHY_MAX_LINES = 60;
+/** TUI-DESIGN-3 §4.4 F8 / §10: the `/why` failure text names how far back a ref can reach. */
+export const WHY_KEPT_STEPS = 3;
+
+/**
+ * TUI-DESIGN-3 §4.4 F8 / §10 `whyErrorText` — the one `/why` failure text for both renderers (the App's local lookup and the
+ * controller's): `missing` → `error: /why: no decision <ref> in the last 3 steps`; `grammar` → `error: /why: <ref> is not a
+ * decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)`. The `error: ` prefix is part of the text (`uiError` keeps it).
+ */
+export function whyErrorText(ref: string, reason: 'missing' | 'grammar'): string {
+  const r = ref.trim();
+  return reason === 'missing' ? `error: /why: no decision ${r} in the last ${WHY_KEPT_STEPS} steps` : `error: /why: ${r} is not a decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)`;
+}
 /** Instructions and criteria texts are clipped to one line of this many characters. */
 const WHY_TEXT_CHARS = 160;
 /** Two-decimal wire probabilities: the noise floor quoted beside the risk band (§7.6). */

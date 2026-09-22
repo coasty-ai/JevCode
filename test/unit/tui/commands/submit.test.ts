@@ -6,7 +6,8 @@
  */
 import { describe, expect, it } from 'vitest';
 import type { SecretHit } from '../../../../src/core/types.js';
-import { CHIP_LABEL_RE, MIN_SECRET_LENGTH, TASK_CHARS_LIMIT, TRUNCATION_NOTICE, deniedMentionNotice, expandChips, mentionedPaths, routeSend, routeSubmit, secretSpans, type SubmitInput } from '../../../../src/tui/composer/submit.js';
+import { CHIP_LABEL_RE, MIN_SECRET_LENGTH, READ_ONLY_WHILE_THINKING, STILL_THINKING_TOAST, TASK_CHARS_LIMIT, TRUNCATION_NOTICE, deniedMentionNotice, expandChips, mentionedPaths, routeSend, routeSubmit, secretSpans, whileThinking, type SubmitInput } from '../../../../src/tui/composer/submit.js';
+import { COMMANDS, findCommand, type CommandSpec } from '../../../../src/tui/commands/registry.js';
 
 const noHits = { detectSecrets: () => [] as readonly SecretHit[] };
 const hitAt = (start: number, end: number, label = 'sk-ant-…'): SecretHit => ({ family: 'anthropic', label, start, end, warnOnly: false });
@@ -29,27 +30,76 @@ describe('routeSubmit (TUI-DESIGN §4.9)', () => {
   it('re-entrancy: while submitting Enter is ignored', () => {
     expect(routeSubmit(input({ submitting: true }))).toEqual({ kind: 'ignore', reason: 'submitting' });
   });
-  it('a `/` token that matches nothing never submits: error item, draft kept', () => {
-    expect(routeSubmit(input({ text: '/foo' }))).toEqual({ kind: 'error', text: 'error: unknown command /foo; type / to list commands', label: '[ui]' });
-    expect(routeSubmit(input({ text: '/bud' }))).toEqual({ kind: 'error', text: 'error: unknown command /bud; type / to list commands', label: '[ui]' });
-    expect(routeSubmit(input({ text: '/export "x' }))).toEqual({ kind: 'error', text: 'error: /export: unterminated quote', label: '[ui]' });
+  it('a `/` token that matches nothing never submits: error item, draft kept (fixable errors keep it, availability errors clear it — TUI-DESIGN-3 F21, D-K)', () => {
+    expect(routeSubmit(input({ text: '/foo' }))).toEqual({ kind: 'error', text: 'error: unknown command /foo; type / to list commands', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '/bud' }))).toEqual({ kind: 'error', text: 'error: unknown command /bud; type / to list commands', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '/export "x' }))).toEqual({ kind: 'error', text: 'error: /export: unterminated quote', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '/rename "x' }))).toMatchObject({ kind: 'command', action: { kind: 'rename', title: '"x' } });
-    expect(routeSubmit(input({ text: '/budget spend-cap abc' }))).toEqual({ kind: 'error', text: 'error: /budget spend-cap: expected a positive USD amount, got "abc"', label: '[ui]' });
-    expect(routeSubmit(input({ text: '/undo', run: 'live', dispatch: { run: 'live', step: 3 } }))).toEqual({ kind: 'error', text: 'error: /undo runs when the run is idle; Esc pauses first', label: '[ui]' });
+    expect(routeSubmit(input({ text: '/budget spend-cap abc' }))).toEqual({ kind: 'error', text: 'error: /budget spend-cap: expected a positive USD amount, got "abc"', label: '[ui]', keepDraft: true });
+    expect(routeSubmit(input({ text: '/undo', run: 'live', dispatch: { run: 'live', step: 3 } }))).toEqual({ kind: 'error', text: 'error: /undo runs when the run is idle; Esc pauses first', label: '[ui]', keepDraft: false });
+    expect(routeSubmit(input({ text: '/steer x' }))).toEqual({ kind: 'error', text: 'error: /steer needs a live run', label: '[ui]', keepDraft: false });
+    expect(routeSubmit(input({ text: '/budgett', overlay: 'palette' }))).toMatchObject({ kind: 'error', keepDraft: true });
+    expect(routeSubmit(input({ text: '/undo', overlay: 'palette', run: 'live', dispatch: { run: 'live', step: 3 } }))).toMatchObject({ kind: 'error', keepDraft: false });
+  });
+  it('TUI-DESIGN-3 §4.1 rule 1 / §8 S4: every alias of the table runs its owner on Enter, in the palette and in the composer', () => {
+    const arg: Record<string, string> = { why: ' 3', theme: ' dark' };
+    for (const c of COMMANDS) {
+      for (const a of c.aliases) {
+        const run = c.availableDuringTask === 'live' ? 'live' : 'none';
+        const o = { text: `/${a}${arg[c.name] ?? ''}`, run, dispatch: { run, step: 0 } } as const;
+        expect(routeSubmit(input({ ...o, overlay: 'palette' })), a).toMatchObject({ kind: 'command', spec: { name: c.name }, line: o.text });
+        expect(routeSubmit(input(o)), a).toMatchObject({ kind: 'command', spec: { name: c.name } });
+      }
+    }
+    expect(routeSubmit(input({ text: '/s', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'status' } });
+    expect(routeSubmit(input({ text: '/m jev-on', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'mode', mode: 'jev-on' } });
+    expect(routeSubmit(input({ text: '/Q', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' } });
+  });
+  it('TUI-DESIGN-3 §4.4 F14: while a chat request is thinking (`allowCommandsWhileSubmitting`) `/` lines route instead of being dropped — the read-only set runs, /exit runs (the App cancels the request and exits), /steer answers `needs a live run`, everything else answers the still-thinking toast with the draft kept; text still waits', () => {
+    const thinking = { submitting: true, allowCommandsWhileSubmitting: true, run: 'starting' as const, dispatch: { run: 'none' as const, step: 0 } };
+    // the read-only set, every spelling
+    for (const name of ['status', 'cost', 'jev', 'help', 'panel', 'transcript', 'theme']) {
+      expect(READ_ONLY_WHILE_THINKING.has(name), name).toBe(true);
+      expect(whileThinking(findCommand(name) as CommandSpec), name).toBe('run');
+    }
+    expect(routeSubmit(input({ ...thinking, text: '/status' }))).toMatchObject({ kind: 'command', action: { kind: 'status' } });
+    expect(routeSubmit(input({ ...thinking, text: '/s' }))).toMatchObject({ kind: 'command', action: { kind: 'status' } });
+    expect(routeSubmit(input({ ...thinking, text: '/cost' }))).toMatchObject({ kind: 'command', action: { kind: 'cost' } });
+    expect(routeSubmit(input({ ...thinking, text: '/help keys' }))).toMatchObject({ kind: 'command', action: { kind: 'help', topic: 'keys' } });
+    expect(routeSubmit(input({ ...thinking, text: '/theme light' }))).toMatchObject({ kind: 'command', action: { kind: 'theme', theme: 'light' } });
+    expect(routeSubmit(input({ ...thinking, text: '/panel d', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'panel', panel: 'd' } });
+    // /exit runs (cancel + exit is the App's); /steer needs a live run (a chat request is not a run); the rest → busy toast
+    expect(whileThinking(findCommand('exit') as CommandSpec)).toBe('exit');
+    expect(routeSubmit(input({ ...thinking, text: '/exit' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' } });
+    expect(routeSubmit(input({ ...thinking, text: '/steer go' }))).toEqual({ kind: 'error', text: 'error: /steer needs a live run', label: '[ui]', keepDraft: false });
+    for (const name of ['new', 'mode', 'budget', 'undo', 'resume', 'login', 'config', 'why', 'diff', 'copy', 'model']) {
+      expect(whileThinking(findCommand(name) as CommandSpec), name).toBe('busy');
+      const sample: Record<string, string> = { why: ' 3', mode: ' jev-on' };
+      expect(routeSubmit(input({ ...thinking, text: `/${name}${sample[name] ?? ''}` })), name).toEqual({ kind: 'busy', toast: STILL_THINKING_TOAST });
+    }
+    expect(STILL_THINKING_TOAST).toBe('one moment — still thinking');
+    // a typo while thinking is still the unknown-command error (the draft kept), never a silent drop
+    expect(routeSubmit(input({ ...thinking, text: '/statuss' }))).toMatchObject({ kind: 'error', keepDraft: true });
+    // text while thinking is still ignored by the router (the App toasts); submitting without the flag ignores commands too (a run submission in flight)
+    expect(routeSubmit(input({ ...thinking, text: 'hello again' }))).toEqual({ kind: 'ignore', reason: 'submitting' });
+    expect(routeSubmit(input({ submitting: true, text: '/status' }))).toEqual({ kind: 'ignore', reason: 'submitting' });
+    // the flag without `submitting` changes nothing for a read-only command and still answers busy for the rest (chatThinking is the App's predicate)
+    expect(routeSubmit(input({ allowCommandsWhileSubmitting: true, text: '/new' }))).toEqual({ kind: 'busy', toast: STILL_THINKING_TOAST });
+    expect(routeSubmit(input({ text: '/new' }))).toMatchObject({ kind: 'command', action: { kind: 'new' } });
   });
   it('an exact command runs (session mode idle and live alike); the palette runs only an exact name or alias', () => {
     expect(routeSubmit(input({ text: '/cost' }))).toMatchObject({ kind: 'command', action: { kind: 'cost' }, line: '/cost' });
     expect(routeSubmit(input({ text: '/budget spend-cap 3', run: 'live', dispatch: { run: 'live', step: 3 } }))).toMatchObject({ kind: 'command', action: { kind: 'budget', set: { setting: 'spend-cap', usd: 3 } } });
     expect(routeSubmit(input({ text: '/quit', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' } });
     expect(routeSubmit(input({ text: '/exit', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'exit' } });
-    expect(routeSubmit(input({ text: '/bud', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: unknown command /bud; type / to list commands', label: '[ui]' });
+    expect(routeSubmit(input({ text: '/bud', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: unknown command /bud; type / to list commands', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '/budget spend-cap 3', overlay: 'palette' }))).toMatchObject({ kind: 'command', action: { kind: 'budget' } });
-    expect(routeSubmit(input({ text: '/', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: unknown command /; type / to list commands', label: '[ui]' });
+    expect(routeSubmit(input({ text: '/', overlay: 'palette' }))).toEqual({ kind: 'error', text: 'error: unknown command /; type / to list commands', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '', overlay: 'palette' }))).toMatchObject({ kind: 'error' });
   });
   it('a `/` after leading whitespace is a command, never a paid run (D-log: slash typos never start a run)', () => {
     expect(routeSubmit(input({ text: ' /help' }))).toMatchObject({ kind: 'command', action: { kind: 'help', topic: 'all' }, line: '/help' });
-    expect(routeSubmit(input({ text: '\t  /foo' }))).toEqual({ kind: 'error', text: 'error: unknown command /foo; type / to list commands', label: '[ui]' });
+    expect(routeSubmit(input({ text: '\t  /foo' }))).toEqual({ kind: 'error', text: 'error: unknown command /foo; type / to list commands', label: '[ui]', keepDraft: true });
     expect(routeSubmit(input({ text: '  /budget spend-cap abc' }))).toMatchObject({ kind: 'error', text: 'error: /budget spend-cap: expected a positive USD amount, got "abc"' });
     // `//` stays a column-0 escape: with leading whitespace it is neither a command nor the literal-slash form
     expect(routeSubmit(input({ text: ' //x' }))).toMatchObject({ kind: 'submit', full: ' //x' });
@@ -63,7 +113,7 @@ describe('routeSubmit (TUI-DESIGN §4.9)', () => {
     // a trailing single backslash is the newline key on any line, rest commands included (§3.2 row 2)
     expect(routeSubmit(input({ text: '/steer a\\', ...l }))).toEqual({ kind: 'newline', text: '/steer a' });
     expect(routeSubmit(input({ text: '/steer a\\\\', ...l }))).toMatchObject({ kind: 'command', action: { kind: 'steer', text: 'a\\\\' } });
-    expect(routeSubmit(input({ text: "/steer don't" }))).toEqual({ kind: 'error', text: 'error: /steer needs a live run', label: '[ui]' });
+    expect(routeSubmit(input({ text: "/steer don't" }))).toEqual({ kind: 'error', text: 'error: /steer needs a live run', label: '[ui]', keepDraft: false });
   });
   it('`//` is a literal slash-leading prompt; `exit`/`quit`/`:q` alone are prompts, not exits (§22 vs A9)', () => {
     expect(routeSubmit(input({ text: '//usr/bin/env is the shebang' }))).toMatchObject({ kind: 'submit', full: '/usr/bin/env is the shebang' });

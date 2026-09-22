@@ -1,0 +1,4 @@
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": "I will start by"}]},"index": 0}],"usageMetadata": {"promptTokenCount": 240,"candidatesTokenCount": 4,"totalTokenCount": 244},"modelVersion": "gemini-3.8-flash","responseId": "eFgH5678"}
+
+data: {"candidates": [{"content": {"role": "model","parts": [{"text": " listing"}]},"finishReason": "MAX_TOKENS","index": 0}],"usageMetadata": {"promptTokenCount": 240,"candidatesTokenCount": 6,"thoughtsTokenCount": 26,"totalTokenCount": 272},"modelVersion": "gemini-3.8-flash","responseId": "eFgH5678"}
+

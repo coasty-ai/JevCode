@@ -1,0 +1,5 @@
+sleep 1.4
+mark settled
+signal HUP
+sleep 1.2
+eof

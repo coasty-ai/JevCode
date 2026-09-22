@@ -1,0 +1,10 @@
+# TUI-DESIGN-3 §1.2 / §1.8 edge 26: JEVCODE_MODE=jev-only in the environment with a fake OPENROUTER_API_KEY — the badge reads `jev-only`
+# from the first frame (launch.modeHint), the session runs jev-only after applyConfig, and no wizard opens
+expect \x1b\[\?25l
+expect ╭─ (?:\x1b\[[0-9;]*m)*jev-only
+expect Say hi
+expect sess \$
+send /exit
+sleep 0.2
+send \r
+eof

@@ -1,0 +1,27 @@
+expect \x1b\[\?25l
+sleep 1.2
+send 日本語のテストです絵文字👨‍👩‍👧‍👦と結合文字éあ
+sleep 0.6
+mark cjk
+resize 24 42
+sleep 0.9
+mark narrow
+resize 24 80
+sleep 0.9
+mark wide
+send \x03
+sleep 0.3
+send مرحبا بالعالم שלום עולם
+sleep 0.6
+mark rtl
+resize 24 44
+sleep 0.9
+resize 24 80
+sleep 0.8
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

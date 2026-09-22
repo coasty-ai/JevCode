@@ -1,0 +1,24 @@
+expect \x1b\[\?25l
+sleep 1.2
+send the quick brown fox jumps over the lazy dog and keeps typing well past one hundred characters of plain ascii text here
+sleep 0.6
+mark draft
+resize 24 60
+sleep 0.9
+mark narrow
+resize 24 100
+sleep 0.9
+mark wide
+resize 24 44
+sleep 0.9
+mark narrower
+resize 24 80
+sleep 0.9
+mark back
+send \x03
+sleep 0.3
+send \x04
+sleep 0.2
+send \x04
+sleep 0.8
+eof

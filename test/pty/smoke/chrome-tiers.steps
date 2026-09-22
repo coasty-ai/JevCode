@@ -1,21 +1,21 @@
-# chrome tiers (TUI-DESIGN-2 §4.1): boxed at 24x80 (the console's top edge carries the badge), flat at 12x60 (the badge
-# leads the status left zone, no box rows), boxed again at 24x80; the shrink segment may cost one clear, the grow none.
+# chrome tiers (TUI-DESIGN-2 §4.1; TUI-DESIGN-3 §3.2): boxed at 24x80 (the console's top edge carries the badge; the resting mark under
+# the rule), flat at 12x60 (the badge leads the status left zone, no box rows, no wordmark), boxed again at 24x80 with the mark back; the shrink segment may cost one clear, the grow none.
 # Every expect precedes the sleep that follows its resize: the driver's `sleep` drains (and consumes) the pty, so a row
 # that arrived during a sleep can never be matched afterwards.
 expect \x1b\[\?25l
-expect ╭─ (?:\x1b\[[0-9;]*m)*jev-only
+expect ╭─ (?:\x1b\[[0-9;]*m)*jev\+llm
 expect sess \$
 sleep 0.3
 resize 12 60
-expect jev-only(?:\x1b\[[0-9;]*m)* · idle
+expect jev\+llm(?:\x1b\[[0-9;]*m)* · idle
 sleep 0.5
 mark shrunk
 resize 24 80
-expect ╭─ (?:\x1b\[[0-9;]*m)*jev-only
+expect ╭─ (?:\x1b\[[0-9;]*m)*jev\+llm
 sleep 0.5
 mark grown
 send Z
-expect (?:›|>) Z
+expect (?:›|>) (?:\x1b\[[0-9;]*m)*Z
 send \x03
 expect Say hi
 send /exit

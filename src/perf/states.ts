@@ -7,9 +7,9 @@
  *             `╭─ review · step 2 …╮` of TUI-DESIGN-2 §4.7, flat at 12×60 — answered with `y`
  *   palette   `/` opens it (the `╭─ commands` card in the boxed tier), two letters filter, Esc closes
  *   picker    `/resume` after a mocked run opens the session picker (`filter:`), Esc closes
- *   wizard    `chat` with no key anywhere (temp HOME / XDG, no .env): the jev-only first-run wizard of TUI-DESIGN-2 §1.4
- *             (`No Jev key found. Where do you reach Jev?`, hosted in the console as `setup · jev provider` in the boxed
- *             tier), Ctrl-C exits 2
+ *   wizard    `chat` with no key anywhere (temp HOME / XDG, no .env): the one-key first-run wizard of TUI-DESIGN-3 §1.4
+ *             (`OpenRouter API key — one key runs Jev and the code model`, hosted in the console as `setup · key` in the
+ *             boxed tier), Ctrl-C exits 2
  *   secret    a draft holding an `sk-ant-api03-…` canary + Enter: the §4.10 gate row (a console-hosted row in the boxed
  *             tier, TUI-DESIGN-2 §4.2), Esc dismisses
  *   intake    `JEVCODE_MOCK_INTAKE=ambiguous`: `the date parsing` opens the intake card `run this as a task?`
@@ -47,8 +47,8 @@
  * The retry row (`JEVCODE_FAULT=jev:429`) and the blocking panes (`jev:401`, `persist:ENOSPC`) are listed in the
  * result as not driven: those fault hooks are not implemented in the tree (only `render:<pane>` is), see the report.
  *
- * Round 2 (TUI-DESIGN-2): every scenario that needs the scripted `--mock` run says `--mode jev-on` (the default is
- * `jev-only`, §1.1, under which `--mock` would run the real synthesizer); a run is live at its `[run] start` item
+ * Round 2 (TUI-DESIGN-2): every scenario that needs the scripted `--mock` run says `--mode jev-on` explicitly (the scripted
+ * trajectory is a generator trajectory whatever `DEFAULT_MODE` is; under `jev-only` `--mock` would run the real synthesizer); a run is live at its `[run] start` item
  * (`[run] ready` is hidden by the compact transcript, §4.5); the placeholders are §4.4's.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
@@ -193,7 +193,8 @@ function specs(): Spec[] {
       args: [],
       env: {},
       isolated: true,
-      steps: ['expect \\x1b\\[\\?25l', ...(card ? [`expect ${topEdgePattern('setup · ')}`] : []), 'expect Where do you reach Jev', sleepStep(500), 'send \\x03', 'eof'],
+      // TUI-DESIGN-3 §1.4 / §1.10: under the jev+llm default the keyless first run opens on the one-key field (`setup · key`), never the Jev-provider question
+      steps: ['expect \\x1b\\[\\?25l', ...(card ? [`expect ${topEdgePattern('setup · ')}`] : []), 'expect OpenRouter API key', sleepStep(500), 'send \\x03', 'eof'],
       expectedExit: 2,
     });
     out.push({

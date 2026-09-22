@@ -993,6 +993,8 @@ boxed tier.
 
 ### 4.9 Theme: depth detection, palette, glyphs (`theme.ts`, `color-shim.ts`, `glyphs.ts`, S4)
 
+> Superseded by `docs/TUI-DESIGN-3.md` §2 (the TypeSafe pink palette, 2026-09-21): the role table below is the round-2 one; `dark` keeps its id, its colours are §2.1's.
+
 ```ts
 export type ColorDepth = 0 | 16 | 256 | 24;
 /** --no-color / NO_COLOR / TERM=dumb → 0; FORCE_COLOR 3 → 24, 2 → 256, 1 → 16; COLORTERM ∈ {truecolor, 24bit} → 24; TERM_PROGRAM iTerm.app · WezTerm · ghostty · vscode → 24, Apple_Terminal → 256; TERM /-256(color)?$/ or alacritty · xterm-kitty · wezterm · foot → 256; else 16 */
