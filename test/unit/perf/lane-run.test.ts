@@ -8,10 +8,16 @@
  * ≥ 2× bar must be exactly the bar (§6 S1: "dropped, not softened"). The spawn probe is report-only by
  * construction, which is also asserted, because §5 says a pool measured against a 2.8 ms floor proves nothing.
  */
-import { describe, expect, it } from 'vitest';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
 
-import { WARM_SPEEDUP_GATE, laneGate, type LaneSeries } from '../../../src/perf/lane-run.js';
+import { WARM_SPEEDUP_GATE, laneGate, measureLaneRun, type LaneSeries } from '../../../src/perf/lane-run.js';
 import { measureSandboxSpawn } from '../../../src/perf/sandbox-spawn.js';
+
+const havePython = spawnSync('python3', ['-c', 'pass'], { encoding: 'utf8', timeout: 20_000 }).status === 0;
 
 const series = (arm: string, p50: number, disagreements = 0): LaneSeries => ({ arm, samples: [p50], p50, p95: p50, disagreements });
 
@@ -55,4 +61,27 @@ describe('the sandbox-spawn probe', () => {
       expect(r.wrapperMs).toBeNull();
     }
   }, 30_000);
+});
+
+/**
+ * C-05: `PerfRunOptions.cwd` is the checkout a run measures. `measureLaneRun` resolved its fixtures from
+ * `process.cwd()` instead, so a run told to measure another tree measured this one — the probe would silently have
+ * run the repo's own `bench/data` whatever it was handed. Pointed at an empty root, both modes must report
+ * `unavailable` against paths UNDER that root, which is also the cheapest proof the injection is read.
+ */
+describe.skipIf(!havePython)('measureLaneRun resolves its fixtures from the injected root (skipped: python3 is not on PATH here)', () => {
+  const temps: string[] = [];
+  afterEach(() => {
+    for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  it('reports both modes unavailable under an empty root rather than measuring the repo it happens to run in', async () => {
+    const root = mkdtempSync(join(tmpdir(), 'jevcode-lane-root-'));
+    temps.push(root);
+    const r = await measureLaneRun({ runs: 1, root });
+    expect(r.modes.map((m) => m.mode)).toEqual(['candidate_file', 'pytest']);
+    expect(r.modes.map((m) => m.cwd)).toEqual([join(root, 'bench/data/quixbugs'), join(root, 'bench/data/ladder/tasks/account')]);
+    expect(r.modes.map((m) => m.gate)).toEqual(['unavailable', 'unavailable']);
+    expect(r.modes.map((m) => m.note)).toEqual(['bench/data/quixbugs/run_tests.py is not in this tree', 'bench/data/ladder/tasks/account is not in this tree']);
+  }, 120_000);
 });

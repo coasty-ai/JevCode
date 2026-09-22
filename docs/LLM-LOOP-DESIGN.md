@@ -1544,7 +1544,16 @@ contrast against the arm that preceded it.
   this wave's baseline and the confound disappears. **Prefer that ordering.**
 - Every live command runs as
   `env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env …`.
-- If `/tmp/jevcode-perf-window-open` exists, nothing starts.
+- If `/tmp/jevcode-perf-window-open` exists, nothing starts. **This is now enforced where the load is generated, not
+  only here:** `runPerf` (`src/perf/main.ts`, `openPerfWindow` / `closePerfWindow`) refuses to start while a live
+  window exists — exit 2, naming the file, when it was taken, by whom and when it goes stale — writes the protocol's
+  header line `<iso-8601 created> <pid> <owner-label> <expected-minutes>` for the length of the run, releases it in a
+  `finally` (and only if the line still names this pid), and replaces a window past its TTL — `max(expected, 30)`
+  minutes, never above 90, from the recorded creation time; a sentinel with no header line keeps the 30-minute floor
+  measured from its mtime, so a bare `touch` is honoured rather than clobbered — as a killed run's leftover, with a
+  logged note. A measurement arm still has to honour the file by hand, because an arm is a bench command rather than
+  a perf run; the half that actually costs the other session its cores no longer depends on anyone reading this
+  bullet.
 
 **Cost.** Two (later three) arms × 46 tasks at forced concurrency 1 is the most expensive honest measurement on
 offer. It is the price of attribution; a cheaper single-arm run buys a number nobody can interpret.

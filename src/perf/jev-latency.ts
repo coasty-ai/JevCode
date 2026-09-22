@@ -12,10 +12,15 @@ export interface JevLatencyResult {
   costUsd: number;
 }
 
-export async function measureJevLatency(flags: ParsedFlags): Promise<JevLatencyResult> {
+/**
+ * `ctx` is the run's own environment and working directory (`PerfRunOptions`), not the process's: `resolveConfig`
+ * reads both, so a `runPerf` given an injected env or cwd would otherwise have resolved this probe's config against
+ * the process instead. The defaults are what production passes anyway.
+ */
+export async function measureJevLatency(flags: ParsedFlags, ctx: { root?: string; env?: NodeJS.ProcessEnv } = {}): Promise<JevLatencyResult> {
   const { resolveConfig } = await import('../config/resolve.js');
   const { createJevDecider } = await import('../jev/client.js');
-  const config = await resolveConfig(flags, process.env, process.cwd());
+  const config = await resolveConfig(flags, ctx.env ?? process.env, ctx.root ?? process.cwd());
   const decider = createJevDecider(config.decider(), { redact: config.redact });
   const crit = { true: { definition: 'yes', examples: ['a', 'b'] }, false: { definition: 'no', examples: ['c', 'd'] } };
   const intent: Record<string, Question> = {
