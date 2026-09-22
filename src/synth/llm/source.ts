@@ -37,6 +37,10 @@
  * per run and in memory; when the serving provider's served p90 is past the class default the run caps
  * every further sample's `reasoning: {maxTokens}` so what it waits for is shorter. The round records the
  * deadline it fired with (`LlmRoundSummary.deadlineMs`) and the `llm:fire` line says where it came from.
+ * §4.8 rev 4 adds the other half, for the case the served p90 cannot see at all: after a sample that
+ * TIMED OUT having produced nothing, the goal's next sample waits ×`LLM_TIMEOUT_BACKOFF.factor` longer
+ * (capped at the class maximum), and `pauseAfter` such samples in a row pause that goal's sampling for
+ * one round — a `fire()` refused with `paused`, which takes no round, no sample and no dollar.
  *
  * `generateWithDeadline`, `estimatedSampleUsage` and `unfinishedSampleUsage` are the one place a
  * sample is started and priced; repro.ts reuses them for L2.
@@ -123,6 +127,38 @@ export const LLM_DEADLINE_ADAPT = {
 /** The per-run cap the samples ask for once the serving provider is slow: `reasoning: {maxTokens}` (GLM bills its reasoning, §4.13). */
 export const LLM_REASONING_CAP_TOKENS = 512;
 
+/**
+ * §4.8 rev 4 (2026-09-22, ranked change 3 of docs/research/llm-jev/oos-analysis-2026-09-22.md):
+ * the deadline also backs off after a sample that **timed out having produced nothing**.
+ *
+ * Why the adaptation above cannot do it: its input is the p90 of SERVED samples, and a sample the
+ * deadline cut was never served — so a run in which the provider answers nothing keeps re-firing
+ * at the same deadline for ever. That is what the out-of-sample slice measured: 82 of 244 ladder
+ * and 51 of 130 SWE `propose_fix` calls ended `stopReason:"timeout"` with `outputTokens: 0`
+ * (`generator.jsonl`; long_chain `20260922-055835-jrb5hkbr` 27 of 44), burning 1,170 s of 2,423 s
+ * of ladder generator sample-time and 1,532 s of 2,538 s of SWE's at the same ~10 s deadline.
+ *
+ * The growth is per GOAL and one-way within it (a served sample ends the streak but keeps the
+ * growth), exactly like the reasoning cap above: rounds of one goal stay comparable. The ceiling
+ * is the sampling class's, `deadlineCeilingMs` — 45 s on QuixBugs/ladder, 90 s on repositories —
+ * so nothing here is chosen per task.
+ */
+export const LLM_TIMEOUT_BACKOFF = {
+  /**
+   * The next sample's deadline for the goal. 1.5 puts the class ceiling exactly three growths
+   * above the class default on both classes (20 s → 30 → 45 = `cheapMaxMs`; 30 s → 45 → 67.5 →
+   * 90 = `repositoryMaxMs`), so a goal reaches the maximum a class allows inside one step's round
+   * budget (`StepBudget.llmRoundsLeft` 2 per step, §4.11) rather than after it.
+   */
+  factor: 1.5,
+  /**
+   * Consecutive zero-token timeouts on one goal that pause its sampling. Two is the smallest
+   * number that is a pattern rather than one slow request: one such sample is the tail the
+   * back-off above is for, two in a row means the provider is serving this goal nothing.
+   */
+  pauseAfter: 2,
+} as const;
+
 /** The class's default deadline — the floor of the adaptive one. */
 export function classDeadlineMs(klass: OracleClass, deadline: SynthesizerGeneration['sampleDeadline'] = LLM_SAMPLE_DEADLINE): number {
   return klass === 'repository' ? deadline.repositoryMs : deadline.maxMs;
@@ -131,6 +167,14 @@ export function classDeadlineMs(klass: OracleClass, deadline: SynthesizerGenerat
 /** The ceiling of the adaptive deadline: 45 s on the cheap classes, 90 s on repositories. */
 export function deadlineCeilingMs(klass: OracleClass): number {
   return klass === 'repository' ? LLM_DEADLINE_ADAPT.repositoryMaxMs : LLM_DEADLINE_ADAPT.cheapMaxMs;
+}
+
+/**
+ * §4.8 rev 4: the goal's round deadline after `growths` zero-token timeouts — `base × 1.5^growths`,
+ * never below the base and never past the sampling class maximum (`deadlineCeilingMs`).
+ */
+export function backedOffDeadlineMs(klass: OracleClass, baseMs: number, growths: number): number {
+  return Math.min(deadlineCeilingMs(klass), Math.round(baseMs * LLM_TIMEOUT_BACKOFF.factor ** Math.max(0, growths)));
 }
 
 /** The latency facts a deadline is computed from, all per run and in memory (nothing is persisted). */
@@ -360,7 +404,7 @@ export interface LlmFireInput {
 
 export type FireOutcome =
   | { fired: true; samples: number; cached: number; deadlineMs: number; key: string; /** dollars the fired samples hold against `budget.usdLeft` until they settle (the source's hold, not a debit: the counter is charged at settle) */ reservedUsd: number }
-  | { fired: false; reason: 'no_rounds' | 'no_usd' | 'no_samples' | 'cached' | 'aborted' | 'round_open'; cached: number; key: string | null };
+  | { fired: false; reason: 'no_rounds' | 'no_usd' | 'no_samples' | 'cached' | 'aborted' | 'round_open' | 'paused'; cached: number; key: string | null };
 
 export interface LlmRoundSummary {
   goalId: string;
@@ -425,6 +469,8 @@ export interface LlmSource {
   p50ValidMs(): number | null;
   /** §4.8 rev 3: running p90 of SERVED samples' latency this run (the adaptive deadline's input), null before `LLM_DEADLINE_ADAPT.minSamples` of them */
   p90ServedMs(): number | null;
+  /** §4.8 rev 4: the goal's zero-token-timeout state — consecutive such timeouts, deadline growths pending, and whether its next round is paused */
+  timeoutBackoff(goalId: string): TimeoutBackoff;
   /** the per-run reasoning-token cap a slow serving provider earned, else null */
   reasoningCapTokens(): number | null;
   /** `{goalId: {round, sha12: [...]}}` ≤ 4 KB for `synthState` (§4.11) */
@@ -461,7 +507,12 @@ interface RoundState {
   input: LlmFireInput;
   key: string;
   n: number;
+  /** the round's deadline before the goal's zero-token-timeout back-off: the pinned one, or the §4.8 rev 3 adaptive one */
+  baseDeadlineMs: number;
+  /** what the round's FIRST sample fired with (`baseDeadlineMs` grown by the back-off the goal carried at fire): the recorded `LlmRoundSummary.deadlineMs` */
   deadlineMs: number;
+  /** sample → the deadline it actually fired with (a later sample of a staggered round can carry more growth, §4.8 rev 4) */
+  deadlines: Map<number, number>;
   maxTokens: number;
   /** what every sample of this round sends as `reasoning` (null = the parameter is not sent): the pinned setting or the per-run cap (§4.8 rev 3) */
   reasoning: GenerateReasoning | null;
@@ -585,6 +636,33 @@ export function rateLimitedUsage(): TokenUsage {
   return { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 };
 }
 
+/**
+ * §4.8 rev 4: did this sample end AT ITS DEADLINE having produced nothing — the shape 82 of 244
+ * ladder and 51 of 130 SWE `propose_fix` calls ended in (`generator.jsonl` `stopReason:"timeout"`,
+ * `usage.outputTokens: 0`)? The stream's own facts answer it: an accounting frame that already
+ * arrived states the output tokens, otherwise nothing streamed means nothing produced. A sample
+ * the abort cut after some output (`toolChars`/`text`/`reasoningChars` > 0) was being answered, so
+ * the deadline is not what is wrong with it and it never backs one off; a cancellation, an error
+ * and a 429 say nothing about the deadline either.
+ */
+export function isZeroTokenTimeout(kind: SampleEnd['kind'], partial: CancelledGeneration | null): boolean {
+  if (kind !== 'timeout') return false;
+  if (partial === null) return true;
+  const frame = partial.usage;
+  if (frame !== undefined) return frame.outputTokens === 0;
+  return partial.toolChars === 0 && partial.text.length === 0 && partial.reasoningChars === 0;
+}
+
+/** The goal's zero-token-timeout state (§4.8 rev 4); per goal and in memory, nothing persists. */
+export interface TimeoutBackoff {
+  /** consecutive zero-token timeouts on this goal; any sample that produced something clears it */
+  streak: number;
+  /** ×`LLM_TIMEOUT_BACKOFF.factor` growths the goal's deadline carries (one-way, like the reasoning cap) */
+  growths: number;
+  /** the goal's next round is paused (armed by `pauseAfter` consecutive zero-token timeouts; the refused `fire` clears it) */
+  paused: boolean;
+}
+
 /** The fired samples of a round that were never served: settled without a result and rate-limited (`SampleArrival.rateLimited`). */
 export function unservedRateLimited(a: Pick<SampleArrival, 'sample' | 'status' | 'rateLimited'>): boolean {
   return a.sample >= 0 && a.rateLimited && (a.status === 'error' || a.status === 'cancelled' || a.status === 'timeout');
@@ -615,6 +693,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   const servedMs: number[] = [];
   /** the per-run `reasoning: {maxTokens}` cap once the serving provider was seen to be slow; one-way */
   let reasoningCap: number | null = null;
+  /** §4.8 rev 4: goal → its zero-token-timeout back-off, in memory and per goal */
+  const backoff = new Map<string, TimeoutBackoff>();
   let state: RoundState | null = null;
   /** every round not yet closed — the current one and any superseded round still draining with its holds */
   const live = new Set<RoundState>();
@@ -627,6 +707,37 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   /** The latency view of the adaptive deadline (§4.8 rev 3): the run's served p90, the probe's p90 before it exists. */
   const latencyOf = (): SampleLatency => ({ p90ServedMs: p90ServedMs(), probeP90Ms: deps.probeP90Ms ?? null });
+
+  /** The goal's zero-token-timeout state, created on first use (§4.8 rev 4). */
+  function backoffOf(goalId: string): TimeoutBackoff {
+    const cur = backoff.get(goalId);
+    if (cur !== undefined) return cur;
+    const fresh: TimeoutBackoff = { streak: 0, growths: 0, paused: false };
+    backoff.set(goalId, fresh);
+    return fresh;
+  }
+
+  /**
+   * §4.8 rev 4: book a sample that timed out having produced nothing. The goal's next sample waits
+   * `factor` × longer (up to the class ceiling), and `pauseAfter` of them in a row pause the goal's
+   * next round — the streak restarts there, so a paused goal is not paused again by the same run of
+   * timeouts, only by a new one.
+   */
+  function noteZeroTokenTimeout(goalId: string, klass: OracleClass, baseMs: number): void {
+    const b = backoffOf(goalId);
+    b.growths += 1;
+    b.streak += 1;
+    emit('llm:deadline', `goal ${goalId}: a sample timed out with 0 output tokens (nothing served); the next sample of this goal waits ${backedOffDeadlineMs(klass, baseMs, b.growths)} ms (${b.growths} × ${LLM_TIMEOUT_BACKOFF.factor} on ${baseMs} ms, capped at the ${klass} maximum ${deadlineCeilingMs(klass)} ms)`);
+    if (b.streak < LLM_TIMEOUT_BACKOFF.pauseAfter) return;
+    b.streak = 0;
+    b.paused = true;
+    emit('llm:deadline', `goal ${goalId}: ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive samples timed out with 0 output tokens — LLM sampling for this goal is paused for one round (the next fire() is refused and clears the pause)`);
+  }
+
+  /** A sample the provider produced something for ends the goal's streak; the growth it earned stands (one-way, like the reasoning cap). */
+  function noteProduced(goalId: string): void {
+    backoffOf(goalId).streak = 0;
+  }
 
   /**
    * What the next round's samples send as `reasoning`: the pinned setting, or the per-run `{maxTokens}`
@@ -767,8 +878,15 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
 
   async function handleEnd(st: RoundState, k: number, end: SampleEnd): Promise<SampleArrival> {
     if (end.kind !== 'result') {
-      const detail = end.kind === 'timeout' ? `deadline ${st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : messageOf(end.error);
-      if (endedRateLimited(end.error, st.partials.get(k) ?? null)) {
+      const partial = st.partials.get(k) ?? null;
+      // §4.8 rev 4: a timeout with nothing produced backs this goal's deadline off; one that streamed
+      // output was being answered, so it ends the streak instead of adding to it
+      if (end.kind === 'timeout') {
+        if (isZeroTokenTimeout(end.kind, partial)) noteZeroTokenTimeout(st.input.goalId, st.input.klass, st.baseDeadlineMs);
+        else noteProduced(st.input.goalId);
+      }
+      const detail = end.kind === 'timeout' ? `deadline ${st.deadlines.get(k) ?? st.deadlineMs} ms passed` : end.kind === 'cancelled' ? (end.error instanceof Error ? end.error.message : 'cancelled') : messageOf(end.error);
+      if (endedRateLimited(end.error, partial)) {
         // the rate limiter refused the sample (every attempt a 429, or the abort landed in a 429 backoff): nothing was served and
         // nothing is billed — the hold comes back, the counter is not charged, and the round's classification reads the flag
         chargeSettled(st, k, 0);
@@ -788,6 +906,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     // §4.8 rev 3: the provider served this sample — its latency is what the adaptive deadline reads, `length`
     // and malformed replies included (they were served; only a timeout, a cancellation or a 429 were not)
     servedMs.push(end.ms);
+    // §4.8 rev 4: it answered inside the deadline, so the goal's zero-token-timeout streak is over
+    noteProduced(st.input.goalId);
     const base: SampleArrival = { ...emptyArrival(k, 'valid', end.ms, ''), usage: result.usage, usd, generationId: result.generationId ?? null, rateLimited: result.rateLimited === true };
     if (isLengthStop(result.stopReason)) {
       lengthGoals.add(st.input.goalId);
@@ -829,7 +949,11 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     if (st.reasoning !== null) req.reasoning = st.reasoning;
     if (k > 0) req.seed = sampleSeed(st.input.step, k);
     const t0 = now();
-    const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, goalId: st.input.goalId, goalRound: st.input.round, deadlineMs: st.deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
+    // §4.8 rev 4: this sample's own deadline — the round's base grown by whatever zero-token timeouts
+    // the goal has collected BY NOW, so a staggered round's `release()` samples carry sample 0's back-off
+    const deadlineMs = backedOffDeadlineMs(st.input.klass, st.baseDeadlineMs, backoffOf(st.input.goalId).growths);
+    st.deadlines.set(k, deadlineMs);
+    const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, goalId: st.input.goalId, goalRound: st.input.round, deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
     st.runs.set(k, run);
     void run.promise
       .then((end) => handleEnd(st, k, end))
@@ -844,11 +968,14 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const done = new Promise<void>((resolve) => {
       resolveDone = resolve;
     });
+    const baseDeadlineMs = input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline);
     return {
       input,
       key,
       n,
-      deadlineMs: input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline),
+      baseDeadlineMs,
+      deadlineMs: backedOffDeadlineMs(input.klass, baseDeadlineMs, backoffOf(input.goalId).growths),
+      deadlines: new Map(),
       // the pinned base, or the base an overriding `reasoning` implies (3,000 on, 1,500 off); doubled once for a goal after a `length` drop
       maxTokens: input.maxTokens ?? maxTokensFor(input.goalId, input.reasoning === undefined ? gen.maxTokens : maxTokensBase(input.reasoning)),
       reasoning: input.reasoning ?? reasoningForRound(input.klass),
@@ -884,6 +1011,15 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     const hit = cache.get(key);
     const cachedUntried = hit === undefined ? 0 : hit.shas.filter((s) => !input.tried?.has(s)).length;
     if (input.signal.aborted) return { fired: false, reason: 'aborted', cached: cachedUntried, key };
+    // §4.8 rev 4: the goal's sampling is paused for one round after `pauseAfter` consecutive
+    // zero-token timeouts. Refusing here costs the step nothing — no round, no sample, no dollar is
+    // taken — and the refusal itself is what ends the pause, so it lasts exactly one round.
+    const paused = backoffOf(input.goalId);
+    if (paused.paused) {
+      paused.paused = false;
+      emit('llm:fire', `goal ${input.goalId} round ${input.round}: paused for this round — ${LLM_TIMEOUT_BACKOFF.pauseAfter} consecutive samples of this goal timed out with 0 output tokens; the next round fires again at ${backedOffDeadlineMs(input.klass, input.deadlineMs ?? sampleDeadlineMs(input.klass, latencyOf(), gen.sampleDeadline), paused.growths)} ms`);
+      return { fired: false, reason: 'paused', cached: cachedUntried, key };
+    }
     if (input.budget.roundsLeft <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_rounds', cached: 0, key };
     if (headroom(input.budget) <= 0 && cachedUntried === 0) return { fired: false, reason: 'no_usd', cached: 0, key };
     const st = newRound(input, key, n);
@@ -926,7 +1062,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     }
     const reserved = reservedUsd(st);
     const capped = st.reasoning !== null && 'maxTokens' in st.reasoning ? `, reasoning max_tokens ${st.reasoning.maxTokens}` : '';
-    emit('llm:fire', `goal ${input.goalId} round ${input.round} (${input.klass}): ${st.fired.size}/${n} samples fired${stagger ? ', staggered' : ''}, deadline ${st.deadlineMs} ms${st.deadlineMs > classDeadlineMs(input.klass, gen.sampleDeadline) ? ` (adapted from the served p90 ${p90ServedMs() ?? deps.probeP90Ms ?? 0} ms; the ${input.klass} default is ${classDeadlineMs(input.klass, gen.sampleDeadline)} ms)` : ''}, max_tokens ${st.maxTokens}${capped}, $${reserved.toFixed(4)} reserved${cachedUntried > 0 ? `, ${cachedUntried} cached` : ''}`);
+    const growths = backoffOf(input.goalId).growths;
+    const grown = growths > 0 ? ` (backed off ${growths} × ${LLM_TIMEOUT_BACKOFF.factor} from ${st.baseDeadlineMs} ms after ${growths} zero-token timeout${growths === 1 ? '' : 's'} on this goal; the ${input.klass} maximum is ${deadlineCeilingMs(input.klass)} ms)` : st.deadlineMs > classDeadlineMs(input.klass, gen.sampleDeadline) ? ` (adapted from the served p90 ${p90ServedMs() ?? deps.probeP90Ms ?? 0} ms; the ${input.klass} default is ${classDeadlineMs(input.klass, gen.sampleDeadline)} ms)` : '';
+    emit('llm:fire', `goal ${input.goalId} round ${input.round} (${input.klass}): ${st.fired.size}/${n} samples fired${stagger ? ', staggered' : ''}, deadline ${st.deadlineMs} ms${grown}, max_tokens ${st.maxTokens}${capped}, $${reserved.toFixed(4)} reserved${cachedUntried > 0 ? `, ${cachedUntried} cached` : ''}`);
     return { fired: true, samples: st.fired.size, cached: cachedUntried, deadlineMs: st.deadlineMs, key, reservedUsd: reserved };
   }
 
@@ -1000,6 +1138,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     maxTokensFor,
     p50ValidMs,
     p90ServedMs,
+    timeoutBackoff: (goalId) => ({ ...backoffOf(goalId) }),
     reasoningCapTokens: () => reasoningCap,
     exportCache,
   };

@@ -490,6 +490,10 @@ export interface StepRecord {
    * (`src/synth/search/index.ts`, `SynthesisContext`) — absent until then.
    */
   verify?: StepVerifySummary;
+  /** docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 2 (contract 1.2, llm-jev, additive): requests this step
+   *  served from the run's `requestHash` cache instead of the provider (src/jev/cache.ts). Absent = 0. A hit is also the
+   *  jev.jsonl row with `usage.calls === 0`, so the count is derivable; this member is the cheap per-step summary. */
+  jevCacheHits?: number;
   /**
    * docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed the step — `synth` (the Synthesizer) or `generic` (the per-step
    * `propose_action` fallback when `handles()` is false; stage 4 sets it). Absent in the other modes.

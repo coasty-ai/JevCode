@@ -168,6 +168,7 @@ import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStage
 import { runJudgeStage } from './stages/judge.js';
 import { runProposeStage, type ProposeStageResult } from './stages/propose.js';
 import { runReplanStage } from './stages/replan.js';
+import { createCachingDecider, type CachingDecider } from '../jev/cache.js';
 import { runSynthStage } from './stages/synth.js';
 import { computeTargets, isOwnershipRefusal, ownershipRefusal, runRiskStage, MATCHES_INTENT_THRESHOLD, SCOPE_FIGHT_AFTER, type VerifiedCompletion } from './stages/risk.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §8.1 rule 2): orchestration is imported through the ONE facade, never a file below it.
@@ -621,6 +622,15 @@ class EngineImpl implements Engine {
   readonly signal: AbortSignal;
   private readonly controller = new AbortController();
   private readonly opts: EngineOptions;
+  /**
+   * OOS 2026-09-22 ranked change 2: the run's `requestHash` -> answer cache. 454 of the slice's
+   * 2,330 requests (19.5 %) re-issued a hash already answered in the SAME run (339/1,532 ladder,
+   * 115/744 SWE, 0 QuixBugs). Lifetime is one RUN and nothing wider: the Engine is built per run
+   * and `run()` is single-shot, and `run()` clears it anyway so a reopened engine starts empty.
+   * A hit is recorded in jev.jsonl exactly like a call, with `usage.calls: 0`, `costUsd: 0` and
+   * `latencyMs: 0` — so the meter cannot bill it and the hits are countable off the records.
+   */
+  private readonly jevCache: CachingDecider;
   private readonly mode: EngineMode;
   private readonly redact: Redact;
   private readonly store: CheckpointStore;
@@ -923,6 +933,7 @@ class EngineImpl implements Engine {
     this.reopened = init.reopened === true;
     this.replayRequested = init.resume !== null && init.opts.resume?.replay === true;
     this.opts = init.opts;
+    this.jevCache = createCachingDecider(init.opts.decider);
     this.mode = init.opts.mode;
     this.redact = init.opts.redact;
     this.store = init.store;
@@ -2032,6 +2043,8 @@ class EngineImpl implements Engine {
   run(): Promise<RunResult> {
     if (this.finished) return this.finished;
     this.started = true;
+    this.jevCache.clear(); // ranked change 2: the answer cache is per RUN, never wider
+
     this.finished = this.runGuarded();
     return this.finished;
   }
@@ -2755,7 +2768,7 @@ class EngineImpl implements Engine {
     let res: AskResult;
     const retry = this.retryHooks('jev', draft.step, stage);
     try {
-      res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
+      res = await this.jevCache.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
       retry.settled(true);
     } catch (e) {
       retry.settled(false);
@@ -5062,6 +5075,7 @@ class EngineImpl implements Engine {
       completion: draft.completion,
       decisions: draft.decisions,
       jevRequests: draft.jevRequests,
+      ...(() => { const hits = draft.jevRequests.filter((r) => r.usage.calls === 0).length; return hits > 0 ? { jevCacheHits: hits } : {}; })(),
       usage: draft.usage,
       timing,
       loopSignatures: signatures,

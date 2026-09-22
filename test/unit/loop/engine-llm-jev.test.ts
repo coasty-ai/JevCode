@@ -234,13 +234,16 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     expect(s1!.risk?.reason).toContain('evidence unverified: 1→1 of 2 pass');
     expect(s1!.decisions.filter((d) => d.stage === 'risk').map((d) => [d.id, d.verdict])).toEqual([['destructive', 'ok'], ['irreversible', 'ok']]);
     expect(s1!.outcome?.status).toBe('executed');
-    // the partial done: Q22 recorded (0.10 default), no code fact → not complete, note on the window entry
+    // the partial done: no code fact → not complete. OOS 2026-09-22 ranked change 6(b): this step
+    // closes no goal and `plan.remaining` still lists one, so Q22 is NOT due and is not asked —
+    // it was recorded and never consulted on this path anyway (127 questions, 87.7 % below 0.5)
     expect(s2!.outcome?.status).toBe('noop');
-    expect(h.decider.callsAt('judge').map((c) => [c.step, Object.keys(c.questions)])).toEqual([[2, ['task_complete']]]);
-    expect(s2!.completion).toBe(0.1);
+    expect(h.decider.callsAt('judge')).toEqual([]);
+    // not asked is null, not a recorded 0.00 (JudgeStageResult.completion: 'null when it was not asked')
+    expect(s2!.completion).toBeNull();
     // not complete by fact: the record stops at the step budget (max_steps 2), never `complete`
     expect(s2!.stoppedAt).toBe('step_start');
-    expect(h.store.last()?.window.at(-1)?.notes).toContain('done rejected: no passing, current run verifies it (task_complete=0.10 recorded only)');
+    expect(h.store.last()?.window.at(-1)?.notes).toContain('done rejected: no passing, current run verifies it');
     expect(h.store.generator).toEqual([]);
   });
 
