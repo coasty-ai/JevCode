@@ -7,7 +7,7 @@
  * item builders live in `src/config/credentials.ts` (config never imports the TUI) and are
  * re-exported here for the renderers.
  */
-import { isFieldStep, reuseJevOffered, reuseOffered, skipOffered, targetMode, type FoundKey, type FoundSource, type OnboardingState, type WizardOption, type WizardProvider, type WizardStep } from './reducer.js';
+import { isFieldStep, reuseJevOffered, reuseOffered, skipOffered, targetMode, type FoundKey, type FoundSource, type ImportOption, type ImportProbeCounts, type OnboardingState, type WizardOption, type WizardProvider, type WizardStep } from './reducer.js';
 import type { EngineMode, JevProvider, SandboxLevel } from '../../core/types.js';
 import type { TrustInputs } from '../../config/trust.js';
 import { DEFAULT_MODE, MODE_BADGE_WORD, SESSION_CAP_MULTIPLIER } from '../../config/defaults.js';
@@ -372,6 +372,8 @@ export function wizardConsoleTitle(state: Pick<OnboardingState, 'step'>): string
       return 'setup · verify';
     case 'trust':
       return 'setup · trust';
+    case 'import':
+      return 'setup · import';
     default:
       return null;
   }
@@ -401,6 +403,73 @@ export function trustLines(t: TrustInputs, rows: number, columns: number, ascii 
   const line3 = `  jevcode.json (${t.jevcodeJson ? formatSize(t.jevcodeJson.bytes) : 'none'})`;
   const all = Number.isFinite(rows) && rows < 12 ? [title, WIZARD_TRUST_OPTIONS] : [title, line2, line3, WIZARD_TRUST_OPTIONS];
   return all.map((l) => clipRow(l, columns, ascii));
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §5.1 / §12.4 S87–S88: the `import` wizard step. The three rows fit D1's ≤ 4-row budget.
+// ---------------------------------------------------------------------------------------
+
+/** §12.4 S87 row 1, without the probe summary (the narrow rung). */
+export const WIZARD_IMPORT_TITLE = 'Import your memory and workflows?';
+/** §12.4 S87 row 2, verbatim (ONE leading space, exactly as S87 spells the fragment). */
+export const WIZARD_IMPORT_OPTIONS = ' 1 import now   2 later   3 never';
+/** IMPORT-DESIGN §5.1 / F-57: the narrow twin of the options row. */
+export const WIZARD_IMPORT_OPTIONS_NARROW = ' 1 import  2 later  3 never';
+/** §12.4 S87 row 3 — Esc is `2 later`, said out loud so nobody has to guess. */
+export const WIZARD_IMPORT_HINT = ' (Esc = later)';
+/** IMPORT-DESIGN §5.1: the wider hint, when the row has room for the promise that matters most. */
+export const WIZARD_IMPORT_HINT_FULL = 'Nothing is written until you approve it · Esc later · Ctrl-C closes';
+/** §12.4 S87 SR: numbered, counts spoken as words, no glyphs. */
+export const SR_IMPORT_ROWS: readonly [string, string] = [WIZARD_IMPORT_TITLE, '1. Import now  2. Later  3. Never · Enter selection (1-3):'];
+/** §12.4 S88: the read-only minsize row of the import step — it names `choose`, not `type` (nothing is typed here). */
+export const WIZARD_IMPORT_MINSIZE_CLAUSE = 'terminal too small';
+
+/**
+ * §5.1 / F-O: `found claude-code (43 notes), codex (3 servers)` — tool names and counts only, never a path.
+ * Falls back to `found 4 tools (61 items)` when the list would not fit, and to `''` when nothing was found (the
+ * step does not render at all in that case, §7 row 52).
+ */
+/**
+ * **Declared string deviation (§13.2).** §12.4 S87 and F-57 spell per-tool nouns —
+ * `found claude-code (43 notes), codex (3 servers)` — but `ImportProbe.tools` (`src/core/types.ts:3384`) carries
+ * `{ tool, display, items }` and no noun, so `items` is the only honest word this build can say. The harness
+ * request for a `noun` field is filed in the implementer report; until it lands, `items` is the substitution and
+ * `import-step.test.tsx` asserts it rather than leaving it to drift.
+ */
+export function importProbeSummary(probe: ImportProbeCounts | null, width = 80): string {
+  if (probe === null || probe.total === 0 || probe.tools.length === 0) return '';
+  const parts = probe.tools.map((t) => `${t.display} (${t.items} item${t.items === 1 ? '' : 's'})`);
+  const full = `found ${parts.join(', ')}`;
+  if (stringWidth(full) <= width) return full;
+  const short = `found ${probe.tools.length} tool${probe.tools.length === 1 ? '' : 's'} (${probe.total} item${probe.total === 1 ? '' : 's'})`;
+  // §5.8: at 40 columns the title row is the title alone — a summary that does not fit is DROPPED, never clipped
+  // (a clipped `found claude-co…` names a tool the user does not have).
+  return stringWidth(short) <= width ? short : '';
+}
+
+/** §12.4 S87 row 1: the title plus the probe summary when both fit; the bare title otherwise. */
+export function importTitleRow(probe: ImportProbeCounts | null, columns: number): string {
+  const c = cols(columns);
+  const summary = importProbeSummary(probe, Math.max(0, c - stringWidth(WIZARD_IMPORT_TITLE) - 2));
+  return summary === '' ? WIZARD_IMPORT_TITLE : `${WIZARD_IMPORT_TITLE}  ${summary}`;
+}
+
+/**
+ * §5.1: the options row, with the highlighted digit marked exactly as the `options` step marks its own.
+ *
+ * The rung is chosen **after** the mark is applied. The mark is one cell wider than the space it replaces, so
+ * picking the wide rung first and then inserting it produced a row one cell wider than the width it had been
+ * measured against — which `clipRow` then ate the tail of (`3 neve…`) at exactly 34 and 27 columns. The last
+ * resort is a clip here rather than in the caller, so the row is never wider than the terminal at any width.
+ */
+export function importOptionsRow(highlight: ImportOption | null, columns: number, ascii = false): string {
+  const marked = (base: string): string => {
+    const row = ascii ? asciiRow(base) : base;
+    if (highlight === null) return row;
+    const mark = ascii ? '>' : '▌';
+    return row.replace(new RegExp(`(^|\\s)${highlight} `), (m) => `${m.slice(0, -2)}${mark}${highlight} `);
+  };
+  return clipRow(fitRung([marked(WIZARD_IMPORT_OPTIONS), marked(WIZARD_IMPORT_OPTIONS_NARROW)], cols(columns)), columns, ascii);
 }
 
 /** TUI-DESIGN-4 §2.5 / §12: the wizard's minimum terminal size, as the rows and the toast say it. */
@@ -460,9 +529,19 @@ export function wizardMinsizeRow(state: OnboardingState, columns: number, ascii 
   }
   const choices = choiceRow(state, ascii);
   const tail = `${ge} ${size} to continue`;
-  const sized = [`${head} ${dash} ${tail}`, `${head} ${dash} ${size}`];
+  // TUI-DESIGN-5 §12.4 S88: the import step's own widest rung names what the size buys — `to choose`, not
+  // `to continue`, because nothing on that step continues by itself. Only this step gains a rung; every other
+  // step's ladder is round 4's, untouched (its rows are pinned by `onboarding/lines.test.ts`).
+  const sized =
+    state.step === 'import'
+      ? [`${head} ${dash} ${WIZARD_IMPORT_MINSIZE_CLAUSE}; ${ge} ${size} to choose`, `${head} ${dash} ${tail}`, `${head} ${dash} ${size}`]
+      : [`${head} ${dash} ${tail}`, `${head} ${dash} ${size}`];
   const picked = choices === null ? [] : [`${head} ${dash} ${choices}`, choices];
-  return fitRung([...(opts.alone === true ? [...sized, ...picked] : [...picked, ...sized]), head, 'setup'], c);
+  // TUI-DESIGN-5 §12.4 S88: the IMPORT step always leads with the sized rungs, `alone` or not — S88 is the pinned
+  // string, and the import choice is the one that costs nothing to postpone (Esc is `2 later`), so naming the size
+  // beats naming three digits the read-only minsize wizard cannot act on.
+  const sizedFirst = opts.alone === true || state.step === 'import';
+  return fitRung([...(sizedFirst ? [...sized, ...picked] : [...picked, ...sized]), head, 'setup'], c);
 }
 
 /** TUI-DESIGN-4 §2.5 edge 1: the numbered choice row of a picking step, from the same narrow tables the full wizard uses (`1 typesafe  2 openrouter` is 24 cells). */
@@ -479,6 +558,8 @@ function choiceRow(state: OnboardingState, ascii: boolean): string | null {
       return '1 trust  2 session  3 no';
     case 'verify':
       return '[y] verify  [n] skip';
+    case 'import':
+      return '1 import  2 later  3 never';
     default:
       return null;
   }
@@ -543,6 +624,21 @@ export function wizardLines(state: OnboardingState, view: WizardView): string[] 
       const mode = targetMode(state);
       const second = state.verifying ? WIZARD_VERIFYING : verifyDetail(state.jevProvider, mode, state.provider);
       return [verifyTitle(mode, state.provider), second].map(clip);
+    }
+    case 'import': {
+      // TUI-DESIGN-5 §12.4 S87: title (+ the probe summary when it fits) · the three options · `(Esc = later)`.
+      if (sr) return [...SR_IMPORT_ROWS].map(clip);
+      const title = importTitleRow(state.importProbe, c);
+      const options = importOptionsRow(state.importHighlight, c, ascii);
+      // F-57 (§5.7), the 40-column frame: when the summary does not fit BESIDE the title but does fit on a row
+      // of its own, it takes that row — `setup · import` / `found claude-code (43 items)` / `1 import  2 later
+      // 3 never`. Dropping it entirely (the old behaviour) asked "Import your memory and workflows?" with no
+      // statement of what was found, which is the one fact that makes the offer answerable; the row it replaces
+      // is `(Esc = later)`, which the options row's own `2 later` already implies.
+      const summary = importProbeSummary(state.importProbe, cols(c));
+      if (state.hint === null && summary !== '' && !title.includes(summary)) return [title, summary, options].map(clip);
+      const hint = state.hint ?? (stringWidth(WIZARD_IMPORT_HINT_FULL) <= cols(c) ? WIZARD_IMPORT_HINT_FULL : WIZARD_IMPORT_HINT);
+      return [title, options, hint].map(clip);
     }
     case 'trust': {
       const t = view.trust ?? { root: '.', agents: null, dotenv: null, jevcodeJson: null };

@@ -18,6 +18,7 @@ import { cellWidth } from '../../../src/tui/glyphs.js';
 import { READLINE_CONFIRM_KEYS, createPlainRenderer, createReadlineConfirmer, type ConfirmInput } from '../../../src/tui/plain.js';
 import { mkConfirmRequest } from '../../fixtures/tui/fixtures.js';
 import { findCommand, type CommandSpec } from '../../../src/tui/commands/registry.js';
+import { PAUSE_NEEDS_RUN } from '../../../src/tui/commands/dispatch.js';
 import { dispatchCommand } from '../../../src/tui/commands/dispatch.js';
 import { GATE_DISMISS_TIP } from '../../../src/tui/secrets/gate-lines.js';
 import { deniedMentionNotice } from '../../../src/tui/composer/submit.js';
@@ -287,7 +288,7 @@ describe('createReadlineComposer: slash commands (§5.1, §5.2)', () => {
     expect(s.fake.notes.map((n) => n.text)).toEqual([
       'error: /foo — not a command · type / to list commands',
       'error: /budget spend-cap: expected a positive USD amount, got "abc"',
-      'error: /pause needs a live run',
+      PAUSE_NEEDS_RUN, // TUI-DESIGN-5 §2.6 / §12 S45a: `/pause` is `'any'` now and refuses PER FORM
     ]);
     for (const n of s.fake.notes) expect(n).toMatchObject({ label: '[ui]', level: 'error' });
     s.composer.close();
@@ -348,10 +349,13 @@ describe('TUI-DESIGN-4 §4.6: the `--plain` numbered pick', () => {
   it('the formatter: one header, every command numbered, no row wider than the column count, and `numberedPick` agrees with the row the user reads', () => {
     const state = plainPaletteState(false);
     const lines = paletteNumberedLines('', state, PLAIN_COLUMNS);
-    expect(lines[0]).toBe('commands (41) — type a number or a name, then Enter');
-    expect(lines).toHaveLength(42); // the header + all 41 commands
+    // TUI-DESIGN-5 §2.3/§2.7/§2.9 take the table past the 40-row window, so the header counts every command and
+    // TD4 §4.6's own `… N more — /help commands` tail carries the ones past it
+    const shown = numberedShown(NAMES.length);
+    expect(lines[0]).toBe(`commands (${NAMES.length}) — type a number or a name, then Enter`);
+    expect(lines).toHaveLength(shown + (shown < NAMES.length ? 2 : 1));
     for (const l of lines) expect(cellWidth(l), l).toBeLessThanOrEqual(PLAIN_COLUMNS);
-    for (let n = 1; n <= 41; n++) {
+    for (let n = 1; n <= shown; n++) {
       const spec = numberedPick('', state, n);
       expect(spec, String(n)).not.toBeNull();
       expect(lines[n]).toContain(`/${(spec as { name: string }).name}`);
@@ -375,10 +379,10 @@ describe('TUI-DESIGN-4 §4.6: the `--plain` numbered pick', () => {
     const note = s.fake.notes.at(-1);
     expect(note?.label).toBe('[ui]');
     expect(note?.level).toBe('info');
-    expect(note?.text).toBe('commands (41) — type a number or a name, then Enter');
+    expect(note?.text).toBe(`commands (${NAMES.length}) — type a number or a name, then Enter`);
     // (b) `pendingList` is VISIBLE: an invisible one-shot would execute command 12 for a user who typed `/` by
     // accident and then a genuine numeric prompt
-    expect(s.output.text.endsWith(numberedPrompt(41))).toBe(true);
+    expect(s.output.text.endsWith(numberedPrompt(numberedShown(NAMES.length)))).toBe(true);
     expect(numberedPrompt(41)).toBe('pick 1-41, or type a message > ');
     await s.type(String(numberOf('help')));
     expect(s.fake.calls.filter((c) => c.kind === 'command').map((c) => c.args[0])).toEqual(['/help']);
@@ -409,6 +413,37 @@ describe('TUI-DESIGN-4 §4.6: the `--plain` numbered pick', () => {
     await s.type('n');
     expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(1);
     s.composer.close();
+  });
+  /**
+   * TUI-DESIGN-5 §2.7 / §12 S27: `/end` is the one ladder with THREE answers. The readline confirmer reads the
+   * answer through `confirmAnswer`, which is case-SENSITIVE for `'end'` alone — lower-casing it turned `[Y] now`
+   * into `[y] at step boundary` silently — and re-dispatches `confirmNowLine`'s `/end now`, so `EndOptions.at`
+   * still comes from the one dispatch path.
+   *
+   * **Reachability, stated:** the numbered window is `NUMBERED_MAX_ROWS` (40) rows and the table is 47 commands,
+   * so `/end` is not pickable by number today and this path is driven through its two pure functions rather than
+   * through `s.type`. R5-2's report records that as a problem for the owner, not a silent gap.
+   */
+  it("(a) §2.7: the `/end` ladder's THREE answers reach the readline twin, and `Y` means `now`", async () => {
+    const { confirmAnswer, confirmNowLine, confirmPlainPrompt } = await import('../../../src/tui/commands/confirm.js');
+    const { dispatchCommand } = await import('../../../src/tui/commands/dispatch.js');
+    expect(confirmPlainPrompt('end')).toBe('end this session? [y] at step boundary  [Y] now  [n] stay');
+    // the prompt names every answer the TUI's rung does — `transcript.log == --plain == TUI` for this ladder
+    for (const answer of ['[y] at step boundary', '[Y] now', '[n] stay']) expect(confirmPlainPrompt('end')).toContain(answer);
+    expect(confirmAnswer('end', 'Y')).toBe('yes-now');
+    expect(confirmAnswer('end', 'y')).toBe('yes');
+    expect(confirmAnswer('end', '')).toBe('no');
+    // and the composer's re-dispatch of a `yes-now` produces `at: 'now'` through `dispatchCommand`, not a re-model
+    const ctx = { run: 'live' as const, step: 7 };
+    expect(dispatchCommand(confirmNowLine('end', '/end'), ctx)).toMatchObject({ ok: true, action: { kind: 'end', opts: { at: 'now', by: 'human' } } });
+    expect(dispatchCommand(confirmNowLine('end', '/end'), ctx)).not.toMatchObject({ ok: true, action: { opts: { at: 'step' } } });
+    // the two-answer ladders are unchanged, and `Y` there is still plain "yes"
+    expect(confirmPlainPrompt('new')).toBe('start fresh? [y/N]');
+    expect(confirmAnswer('new', 'Y')).toBe('yes');
+    // `/end` is row 47 of 47 and the numbered window shows 40, so the pick cannot reach it yet (recorded, not hidden)
+    const names = paletteMatches('', plainPaletteState(false)).map((m) => m.spec.name);
+    expect(names).toContain('end');
+    expect(names.indexOf('end') + 1).toBeGreaterThan(numberedShown(names.length));
   });
   it('a HAND-TYPED destructive line is never gated (the risk is mis-selection, not mis-typing)', async () => {
     const s = setup();
@@ -446,9 +481,10 @@ describe('TUI-DESIGN-4 §4.6: the `--plain` numbered pick', () => {
   });
   it('a numbered pick of a command that NEEDS an argument is the ordinary `[ui] error:` item, and never a confirm', async () => {
     const s = setup();
-    await s.type('/');
-    await s.type(String(numberOf('ui')));
-    // `/ui` alone is §7.1's error: the pick ran `dispatchCommand`, which validated and reported
+    // TUI-DESIGN-5: `/ui` sits past the 40-row numbered window now, so the same path is driven by the typed line
+    // — `dispatchCommand` is what validates in both, which is the property §7.1's row is here to pin
+    await s.type('/ui');
+    // `/ui` alone is §7.1's error: the line ran `dispatchCommand`, which validated and reported
     expect(s.fake.notes.at(-1)?.text).toBe('error: /ui: expected reset');
     expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
     expect(s.output.text).not.toContain('[y/N]');
@@ -478,7 +514,7 @@ describe('TUI-DESIGN-4 §4.6: the `--plain` numbered pick', () => {
     expect(s.fake.calls.filter((c) => c.kind === 'submit').map((c) => c.args[0])).toEqual(['yes']);
     // the numbered one-shot closes too (the `--plain` twin of E12), so a following integer is a prompt
     await s.type('/');
-    expect(s.output.text.endsWith(numberedPrompt(41))).toBe(true);
+    expect(s.output.text.endsWith(numberedPrompt(numberedShown(NAMES.length)))).toBe(true);
     s.advance(1_600); // …outside the Ctrl-C window: two within 1.5 s still exit 0 (§14.2, asserted above)
     s.signals.fire();
     expect(s.output.text.endsWith(PLAIN_PROMPT)).toBe(true);

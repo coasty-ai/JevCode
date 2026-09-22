@@ -19,6 +19,13 @@ export const CLI_DESCRIPTIONS: Readonly<Record<Command, string>> = {
   login: 'store an API key',
   logout: 'remove a stored API key',
   sessions: 'list or maintain sessions',
+  // TUI-DESIGN-5 §6.6 (R5-6): `CLI_DESCRIPTIONS` is a TOTAL `Record<Command, string>`, so a new `Command` member
+  // is a compile error here until its row lands — the same forced one-line edit W0 made in the two `theme*.test.ts`
+  // literals for `UiLabel += '[session]'`.
+  models: 'browse the model catalogue',
+  // TUI-DESIGN-5 §5.5 (R5-5) / §4.2 (R5-4): the same forced one-line edit, one per new `Command` member
+  import: 'import memory and workflows from other agents',
+  agents: 'list the agents of a run',
   report: 'write a support bundle',
   why: 'explain a Jev decision',
   calibration: 'reliability report',

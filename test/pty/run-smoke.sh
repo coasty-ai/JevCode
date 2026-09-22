@@ -378,6 +378,10 @@ run() {
     fault-persistent-flat) steps_name=fault-persistent;;
     fault-wordmark-flat) steps_name=fault-wordmark;;
     fault-status-flat) steps_name=fault-status;;
+    # TUI-DESIGN-5 §10: the two `--ascii` twins share their sibling's .steps file — the glyph set is chosen at
+    # LAUNCH, so the twin cannot be a resize and has to be a second scenario (§12's twin rule).
+    r5-who-ascii) steps_name=r5-who;;
+    r5-model-picker-ascii) steps_name=r5-model-picker;;
   esac
   home=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-home-XXXXXX"); ws=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-ws-XXXXXX")
   extra_env=$(hermetic_env "$home")
@@ -415,6 +419,11 @@ run() {
     rundir-vanishes) extra_env="$extra_env JEVCODE_FAULT=rundir:rm:after=3";;
     stuck-submit) extra_env="$extra_env JEVCODE_FAULT=submit:hang JEVCODE_SUBMIT_WATCHDOG_MS=1500";;
     peers) extra_env="$extra_env JEVCODE_FAULT=peer:2";;
+    # --- TUI-DESIGN-5 §10: the five round-5 scenarios (verbatim from each .steps header) -------------------------
+    r5-who|r5-who-ascii) extra_env="$extra_env JEVCODE_FAULT=peer:5 JEVCODE_ASSERT_NO_NETWORK=1";;
+    r5-message) extra_env="$extra_env JEVCODE_FAULT=peer:3";;
+    r5-context) extra_env="$extra_env JEVCODE_CONTEXT_COMPACTION=code";;
+    r5-model-picker|r5-model-picker-ascii) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
     # §7.4: a read-only $HOME is the measured launch failure — chmod AFTER the hermetic dirs exist
     readonly-home) mkdir -p "$home/xdg"; chmod 500 "$home";;
   esac
@@ -619,6 +628,23 @@ run() {
     peers) grep -q 'another jevcode is working in this workspace' "$txt" && checks="$checks peers:open-item" || { ok=0; checks="$checks MISSING:peers-item"; }
       grep -qE 'pid [0-9]+' "$txt" && { ok=0; checks="$checks PID-LEAK"; } || checks="$checks no-pid";;
     ui-reset) grep -q 'nothing was latched' "$txt" && checks="$checks ui-reset:empty-state" || { ok=0; checks="$checks MISSING:ui-reset"; };;
+    # --- TUI-DESIGN-5 §10 / gate G-R5-9: each scenario's own check, then the key-byte scan every one of them runs
+    r5-who|r5-who-ascii) grep -q 'who [·-] ' "$txt" && checks="$checks r5-who:block" || { ok=0; checks="$checks MISSING:r5-who-block"; }
+      # §2.14 consequence 3: `assertNoKeyBytes` over the BEAT FILE this session wrote, not only over the frames
+      if [ -d "$home/coordination" ]; then
+        grep -rqI "$FAKE_KEY" "$home/coordination" && { ok=0; checks="$checks LEAK:beat-key-bytes"; } || checks="$checks beat-no-key-bytes"
+        grep -rqIE '"hostKey"[^,}]*[0-9a-f]{32}' "$home/coordination" && { ok=0; checks="$checks LEAK:beat-hostkey"; } || checks="$checks beat-no-long-hostkey"
+      else checks="$checks beat-absent"; fi;;
+    r5-message) grep -q 'looks like it contains a key' "$txt" && checks="$checks r5-message:s34a" || { ok=0; checks="$checks MISSING:r5-message-s34a"; };;
+    r5-context) grep -q 'context [·-] ' "$txt" && checks="$checks r5-context:block" || { ok=0; checks="$checks MISSING:r5-context-block"; };;
+    r5-pause-end) grep -q 'needs a live run' "$txt" && checks="$checks r5-pause-end:s45a" || { ok=0; checks="$checks MISSING:r5-pause-end-s45a"; };;
+    r5-model-picker) grep -qE 'models [·-] [0-9]+ of [0-9]+ providers' "$txt" && checks="$checks r5-model-picker:rule" || { ok=0; checks="$checks MISSING:r5-model-picker-rule"; };;
+    r5-model-picker-ascii) grep -qE '[·→▌↑↓─]' "$txt" && { ok=0; checks="$checks ASCII-GLYPH-LEAK"; } || checks="$checks r5-model-picker:ascii";;
+  esac
+  # TUI-DESIGN-5 gate G-R5-9: EVERY round-5 scenario scans its capture for key bytes — the frames as well as the
+  # files. `$FAKE_KEY` is only exported for two of them; the scan is unconditional so a leak from any source fails.
+  case "$name" in
+    r5-*) grep -qI "$FAKE_KEY" "$cap" && { ok=0; checks="$checks LEAK:key-bytes"; } || checks="$checks no-key-bytes";;
   esac
   [ "$ok" = "1" ] && verdict=PASS || { verdict=FAIL; fail=1; }
   echo "$name: $verdict exit=$code (expected $expected) clears_after_first_frame=$c restores=$r timeouts=$t$checks"
@@ -719,6 +745,17 @@ sel_named stuck-submit && run stuck-submit 130 24 80 chat --mock
 sel_named readonly-home && run readonly-home 2 24 80 chat --mock
 sel_named peers && run peers 0 24 80 chat --mock
 sel_named ui-reset && run ui-reset 0 24 80 chat --mock
+# --- TUI-DESIGN-5 §10: round 5's five surfaces, one scenario each plus the two `--ascii` twins. BY NAME only ----
+# Several of them assert rows that need a store this build does not have (the mailbox write, `AgentSupervisor`,
+# the models arm of `Picker.tsx`) — each .steps header says exactly which, so the default board stays green and
+# the scenario is in hand the day the dependency lands: `sh test/pty/run-smoke.sh r5-who r5-context …`
+sel_named r5-who && run r5-who 0 24 80 chat --mock
+sel_named r5-who-ascii && run r5-who-ascii 0 24 80 chat --mock --ascii
+sel_named r5-message && run r5-message 0 24 80 chat --mock --mode jev-on
+sel_named r5-context && run r5-context 0 40 120 chat --mock
+sel_named r5-pause-end && run r5-pause-end 0 24 80 chat --mock --mode jev-on
+sel_named r5-model-picker && run r5-model-picker 0 40 120 chat --mock
+sel_named r5-model-picker-ascii && run r5-model-picker-ascii 0 40 120 chat --mock --ascii
 sel review-y && run review-y 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel review-d && run review-d 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel resize && run resize 0 24 80 chat --mock

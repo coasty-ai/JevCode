@@ -5,6 +5,7 @@
  * a warning. Everything is synchronous so the `'exit'` handler can release it.
  */
 import { readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { uptime } from 'node:os';
 import { join } from 'node:path';
 import { isJsonObject, parseJson } from '../core/json.js';
 import { ConfigError } from '../errors.js';
@@ -15,6 +16,13 @@ export interface RunLock {
   pid: number;
   startedAt: string;
   host: string;
+  /**
+   * TUI-DESIGN-5 §2.10: this machine's boot instant when the lock was written. OPTIONAL — every `run.lock` on disk
+   * before round 5 lacks it, and that absence is exactly what `lockReplaceVerdict`'s `'boot-unknown'` reason
+   * names: a pid that is alive on this host after an unknown boot may be this run or may be a number the kernel
+   * handed out again, and the CLI refuses rather than guessing (`src/coordination/records.ts:807–809`).
+   */
+  bootAt?: string;
 }
 
 export type KillFn = (pid: number, signal: 0) => unknown;
@@ -41,7 +49,64 @@ export function parseRunLock(text: string): RunLock | null {
   const o = parsed.value;
   const pid = o['pid'];
   if (typeof pid !== 'number' || !Number.isInteger(pid) || pid <= 0) return null;
-  return { pid, startedAt: typeof o['startedAt'] === 'string' ? o['startedAt'] : '', host: typeof o['host'] === 'string' ? o['host'] : '' };
+  const bootAt = o['bootAt'];
+  return {
+    pid,
+    startedAt: typeof o['startedAt'] === 'string' ? o['startedAt'] : '',
+    host: typeof o['host'] === 'string' ? o['host'] : '',
+    ...(typeof bootAt === 'string' && bootAt !== '' ? { bootAt } : {}),
+  };
+}
+
+/** `Date.now() - uptime()` — this boot's instant, as both the lock writer and `sessions unlock` compute it. */
+export function bootAtNow(now: () => number = Date.now, up: () => number = uptime): string {
+  return new Date(now() - Math.round(up() * 1000)).toISOString();
+}
+
+/**
+ * Two `bootAt` stamps name the same boot when they are within a minute: both sides derive the instant from
+ * `Date.now() - os.uptime()`, whose two clocks drift by milliseconds, never by minutes.
+ */
+export const SAME_BOOT_TOLERANCE_MS = 60_000;
+
+export function sameBoot(a: string, b: string): boolean {
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  if (!Number.isFinite(x) || !Number.isFinite(y)) return false;
+  return Math.abs(x - y) <= SAME_BOOT_TOLERANCE_MS;
+}
+
+/** `src/coordination/records.ts:807–809`'s `LockReplace['reason']`, re-declared for this module's own verdict. */
+export type LockReplaceReason = 'no-lock' | 'dead-pid' | 'other-boot' | 'peer-live' | 'boot-unknown' | 'held';
+
+/** The two arms of `LockReplace`: `detail60` exists on the REFUSING one only (§2.10, §12.1 S38a, §14.2 #26). */
+export type LockReplaceVerdict = { replace: true; reason: 'no-lock' | 'dead-pid' | 'other-boot' } | { replace: false; reason: 'peer-live' | 'boot-unknown' | 'held'; detail60: string };
+
+/**
+ * TUI-DESIGN-5 §2.10: `lockReplaceVerdict`'s six-reason vocabulary over a `run.lock`, so `jevcode sessions unlock`
+ * can PRODUCE all six rather than exporting three of them as unreachable constants.
+ *
+ * The ladder, in order:
+ *   - no lock file at all            → `no-lock`      (replace)
+ *   - the pid is gone                → `dead-pid`     (replace)
+ *   - the pid is alive on ANOTHER host — a pid number from another machine means nothing in this pid table
+ *                                    → `peer-live`    (refuse)
+ *   - alive here, and the lock names a DIFFERENT boot — the kernel reused the number across a reboot
+ *                                    → `other-boot`   (replace)
+ *   - alive here, and the lock names no boot at all (written before round 5)
+ *                                    → `boot-unknown` (refuse: it may be this run, and guessing costs a double writer)
+ *   - alive here on THIS boot        → `held`         (refuse)
+ *
+ * Wiring the ENGINE's decision to the coordination verdict is harness work (§8.2 R6); this is the CLI explanation
+ * §2.10 requires, and both must print the same six words so the text and the decision cannot drift.
+ */
+export function lockReplaceVerdict(lock: RunLock | null, o: { host: string; bootAt: string; isAlive: (pid: number) => boolean }): LockReplaceVerdict {
+  if (lock === null) return { replace: true, reason: 'no-lock' };
+  if (!o.isAlive(lock.pid)) return { replace: true, reason: 'dead-pid' };
+  if (lock.host !== o.host) return { replace: false, reason: 'peer-live', detail60: `pid ${lock.pid} is alive on ${lock.host || 'an unknown host'}`.slice(0, 60) };
+  if (lock.bootAt === undefined) return { replace: false, reason: 'boot-unknown', detail60: `pid ${lock.pid} is alive here; the lock names no boot`.slice(0, 60) };
+  if (!sameBoot(lock.bootAt, o.bootAt)) return { replace: true, reason: 'other-boot' };
+  return { replace: false, reason: 'held', detail60: `pid ${lock.pid} holds this run on this boot`.slice(0, 60) };
 }
 
 /** Read `<runDir>/run.lock`; null when absent, unreadable or malformed (a bad lock never blocks). */
@@ -69,6 +134,8 @@ export interface AcquireLockOptions {
   host: string;
   /** ISO timestamp for `startedAt` (passed in: no clock inside) */
   nowIso: string;
+  /** §2.10: this boot's instant, written into the lock so `sessions unlock` can tell `other-boot` from `held` */
+  bootAt?: string;
   /** liveness probe; `isPidAlive` by default */
   isAlive?: (pid: number) => boolean;
   /** receives the "replaced a stale lock" warning (jevcode.log) */
@@ -92,7 +159,7 @@ export function acquireRunLock(runDir: string, o: AcquireLockOptions): { replace
   const isAlive = o.isAlive ?? ((pid: number) => isPidAlive(pid));
   const read = o.readLock ?? readRunLock;
   const path = join(runDir, RUN_LOCK_FILE);
-  const lock: RunLock = { pid: o.pid, startedAt: o.nowIso, host: o.host };
+  const lock: RunLock = { pid: o.pid, startedAt: o.nowIso, host: o.host, bootAt: o.bootAt ?? bootAtNow() };
   const text = `${JSON.stringify(lock)}\n`;
   /** free (no lock) · ours (same pid) · stale (replaceable); a live foreign lock throws. */
   const evaluate = (existing: RunLock | null): 'free' | 'ours' | 'stale' => {

@@ -15,10 +15,17 @@ import { RENDER_MODES, parseFps } from '../config/launch.js';
 import { RENDERERS } from '../config/ui.js';
 import { DEFAULT_MODE, MAX_FPS, MIN_FPS, MODE_BADGE_WORD } from '../config/defaults.js';
 import { THEMES } from '../tui/commands/registry.js';
+// TUI-DESIGN-5 §6.3 row 6 / §6.1 (D-AP): the seven ids, from the ZERO-IMPORT module the argv path is allowed to
+// read (`src/provider/ids.ts`'s own docblock). Never `models/providers.ts`, which would pull the whole catalogue
+// and `provider/openrouter.js` onto this path and fail gate G-R5-1.
+import { PROVIDER_IDS } from '../provider/ids.js';
 
 // TUI-DESIGN §15.2 `cli/args.ts`: `COMMANDS += chat | login | logout | sessions | report | why | calibration | completion | upgrade`
-export type Command = 'chat' | 'run' | 'config' | 'bench' | 'perf' | 'login' | 'logout' | 'sessions' | 'report' | 'why' | 'calibration' | 'completion' | 'upgrade';
-export const COMMANDS: readonly Command[] = ['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'report', 'why', 'calibration', 'completion', 'upgrade'];
+// TUI-DESIGN-5 §6.6 / §9.2 `cli/args.ts`: `Command += 'models'` (R5-6). `'import'` (R5-5) and `'agents'` (R5-4)
+// join it in the same W4 PR — each **together with its own `src/cli/<verb>.ts` and its `main.tsx` switch arm**,
+// because the switch is exhaustive and a union member with no arm is a compile error, not a missing feature.
+export type Command = 'chat' | 'run' | 'config' | 'bench' | 'perf' | 'login' | 'logout' | 'sessions' | 'models' | 'import' | 'agents' | 'report' | 'why' | 'calibration' | 'completion' | 'upgrade';
+export const COMMANDS: readonly Command[] = ['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'models', 'import', 'agents', 'report', 'why', 'calibration', 'completion', 'upgrade'];
 
 /** Flags that take a value. Kept as strings: validation happens in config/validate.ts, where env and file sources share the same code path. */
 export const STRING_FLAGS = [
@@ -72,6 +79,20 @@ export const STRING_FLAGS = [
   'source',
   // TUI-DESIGN §17 item 5: `jevcode upgrade --method <manager>`
   'method',
+  // TUI-DESIGN-5 §2.10 / §2.8: the sessions verb surface and the claim fence
+  'device',
+  'parentSession',
+  // TUI-DESIGN-5 §4.8: the orchestration flags that take a value
+  'parent',
+  'agent',
+  'manifest',
+  'own',
+  'base',
+  'split',
+  'maxAgents',
+  // TUI-DESIGN-5 §5.5: `jevcode import` (`--source`, `--resume` and `--json`/`--plain` already exist)
+  'scope',
+  'undo',
 ] as const;
 
 export const BOOLEAN_FLAGS = [
@@ -123,14 +144,28 @@ export const BOOLEAN_FLAGS = [
   'all',
   // TUI-DESIGN-4 §1.3.1: `--fullscreen` is the short form of `--renderer fullscreen` (the flag wins over the env)
   'fullscreen',
+  // TUI-DESIGN-5 §2.10 / §2.8: the sessions verb surface and the epoch bump, which `--force` deliberately is not
+  'rotate',
+  'forceTakeback',
+  // TUI-DESIGN-5 §4.8: the two boolean orchestration flags
+  'yesSplit',
+  'noWait',
+  // TUI-DESIGN-5 §5.5: `jevcode import`, and the two negating switches of D-AP
+  'dryRun',
+  'yes',
+  'noMemory',
+  'noImport',
 ] as const;
 
 export type StringFlagKey = (typeof STRING_FLAGS)[number];
 export type BooleanFlagKey = (typeof BOOLEAN_FLAGS)[number];
 
-/** TUI-DESIGN §1: `jevcode sessions [list|reindex|prune|unlock <id>]`. */
-export type SessionsOp = 'list' | 'reindex' | 'prune' | 'unlock';
-export const SESSIONS_OPS: readonly SessionsOp[] = ['list', 'reindex', 'prune', 'unlock'];
+/** TUI-DESIGN-5 §2.10: `jevcode sessions <verb> [words…]` — seventeen verbs, each a thin wrapper, none starting an engine. */
+export type SessionsOp = 'list' | 'reindex' | 'prune' | 'unlock' | 'who' | 'pause' | 'resume' | 'end' | 'tell' | 'headsup' | 'request' | 'inbox' | 'label' | 'pair' | 'unpair' | 'gc' | 'sync';
+export const SESSIONS_OPS: readonly SessionsOp[] = ['list', 'reindex', 'prune', 'unlock', 'who', 'pause', 'resume', 'end', 'tell', 'headsup', 'request', 'inbox', 'label', 'pair', 'unpair', 'gc', 'sync'];
+/** TUI-DESIGN-5 §6.6: `jevcode models [list|search <query>|refresh]`. */
+export type ModelsOp = 'list' | 'search' | 'refresh';
+export const MODELS_OPS: readonly ModelsOp[] = ['list', 'search', 'refresh'];
 /** TUI-DESIGN §17 item 4: `jevcode completion bash|zsh|fish`. */
 export type CompletionShell = 'bash' | 'zsh' | 'fish';
 export const COMPLETION_SHELLS: readonly CompletionShell[] = ['bash', 'zsh', 'fish'];
@@ -147,6 +182,12 @@ export interface ParsedFlags extends Partial<Record<StringFlagKey, string>>, Par
   configSet?: { setting: string; value: string };
   /** TUI-DESIGN §1: `jevcode sessions [list|reindex|prune|unlock <id>]`; `list` when absent. */
   sessionsOp?: SessionsOp;
+  /** TUI-DESIGN-5 §2.10: the words after `jevcode sessions <verb>` — a target, a message, `now`, `status|disable`. */
+  sessionsArgs?: readonly string[];
+  /** TUI-DESIGN-5 §6.6: `jevcode models [list|search <query>|refresh]`; `list` when absent. */
+  modelsOp?: ModelsOp;
+  /** TUI-DESIGN-5 §6.6: the `models search <query>` positional (space-joined, never a flag — it is free text). */
+  query?: string;
   /** the run id of `sessions unlock <id>`, `report <id>` and `why <id> …` (RUN_ID_RE-checked: these are ids, never titles). */
   runId?: string;
   /** `jevcode why <id> <step> <ref>` */
@@ -184,8 +225,14 @@ const SESSION: readonly Command[] = ['chat', 'run'];
 /** TUI-DESIGN §16: the `ui.*`, `log.*` and `session.*` flags (`config` prints their rows) */
 const UI: readonly Command[] = ['chat', 'run', 'config'];
 /** commands that locate the runs dir / config file without running anything */
-const PATHS: readonly Command[] = [...COMMON, 'login', 'logout', 'sessions', 'report', 'why', 'calibration'];
-const JSON_CMDS: readonly Command[] = ['chat', 'run', 'config', 'sessions', 'why', 'calibration'];
+const PATHS: readonly Command[] = [...COMMON, 'login', 'logout', 'sessions', 'import', 'agents', 'report', 'why', 'calibration'];
+const JSON_CMDS: readonly Command[] = ['chat', 'run', 'config', 'sessions', 'models', 'import', 'agents', 'why', 'calibration'];
+/** TUI-DESIGN-5 §6.6: `jevcode models` takes the five flags it can act on and nothing else. */
+const MODELS: readonly Command[] = ['models'];
+/** TUI-DESIGN-5 §5.5: `jevcode import` takes the eight flags of its own row and nothing else. */
+const IMPORT: readonly Command[] = ['import'];
+/** TUI-DESIGN-5 §4.2 / §4.9: `jevcode agents list` is a read — it takes `--json` and the two twins. */
+const AGENTS: readonly Command[] = ['agents'];
 
 export const LOG_LEVELS = ['error', 'warn', 'info', 'debug', 'trace'] as const;
 export const EXIT_CODE_POLICIES = ['zero', 'last-run'] as const;
@@ -194,7 +241,8 @@ export const CLI_SOURCES = ['cli', 'perf'] as const;
 
 /** Common flags are accepted by every run-like command: `config` needs them to print what a run would resolve to. */
 export const FLAGS: readonly FlagSpec[] = [
-  { key: 'provider', name: 'provider', type: 'string', commands: [...COMMON, 'login'], arg: 'anthropic|openrouter', help: 'generator provider' },
+  // TUI-DESIGN-5 §6.1 (D-AP) / §6.3: seven ids, named from PROVIDER_IDS rather than re-declared here
+  { key: 'provider', name: 'provider', type: 'string', commands: [...COMMON, 'login', ...MODELS], arg: PROVIDER_IDS.join('|'), help: 'generator provider (models: filter the catalogue to one provider)' },
   { key: 'model', name: 'model', type: 'string', commands: COMMON, arg: '<id>', help: 'generator model id' },
   { key: 'apiKey', name: 'api-key', type: 'string', commands: COMMON, arg: '<key>', help: 'generator API key (prefer the env var)' },
   { key: 'baseUrl', name: 'base-url', type: 'string', commands: COMMON, arg: '<url>', help: 'generator base URL' },
@@ -216,7 +264,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'config', name: 'config', type: 'string', commands: PATHS, arg: '<file>', help: 'config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)' },
   { key: 'sandbox', name: 'sandbox', type: 'string', commands: COMMON, arg: 'auto|seatbelt|none', help: 'sandbox profile' },
   { key: 'noNetwork', name: 'no-network', type: 'boolean', commands: COMMON, help: 'deny network to sandboxed commands' },
-  { key: 'plain', name: 'plain', type: 'boolean', commands: COMMON, help: 'plain line renderer instead of the TUI (readline composer on a TTY)' },
+  { key: 'plain', name: 'plain', type: 'boolean', commands: [...COMMON, ...MODELS, ...IMPORT, ...AGENTS], help: 'plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)' },
   // --- TUI-DESIGN §16 ui.* / log.* / session.* rows (chat, run; config prints them) -------------------------------
   { key: 'theme', name: 'theme', type: 'string', commands: UI, arg: THEMES.join('|'), help: 'colour theme (no auto-detect)' },
   { key: 'fps', name: 'fps', type: 'string', commands: UI, arg: '<n>', help: 'render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch' },
@@ -225,9 +273,9 @@ export const FLAGS: readonly FlagSpec[] = [
   // in its constructor, so the choice cannot be toggled in place; `/fullscreen` persists `ui.renderer` and offers a relaunch.
   { key: 'renderer', name: 'renderer', type: 'string', commands: UI, arg: RENDERERS.join('|'), help: 'renderer (default classic); fullscreen pins the header on the alternate screen (needs 18 rows / 40 cols); fixed at launch' },
   { key: 'fullscreen', name: 'fullscreen', type: 'boolean', commands: UI, help: 'shorthand for --renderer fullscreen' },
-  { key: 'ascii', name: 'ascii', type: 'boolean', commands: UI, help: 'ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch' },
+  { key: 'ascii', name: 'ascii', type: 'boolean', commands: [...UI, ...MODELS, ...IMPORT, ...AGENTS], help: 'ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch' },
   { key: 'title', name: 'title', type: 'boolean', commands: UI, help: 'set the terminal title (OSC 2)' },
-  { key: 'screenReader', name: 'screen-reader', type: 'boolean', commands: UI, help: 'screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch' },
+  { key: 'screenReader', name: 'screen-reader', type: 'boolean', commands: [...UI, ...MODELS, ...IMPORT], help: 'screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch' },
   { key: 'noAnimation', name: 'no-animation', type: 'boolean', commands: UI, help: 'reduced motion: static spinner, 1 Hz clock (default on with --screen-reader)', aliases: ['reduced-motion'] },
   { key: 'notify', name: 'notify', type: 'boolean', commands: UI, help: 'terminal notification (BEL / OSC) when a review waits or a run ends' },
   { key: 'osc52', name: 'osc52', type: 'boolean', commands: UI, help: 'allow clipboard writes through OSC 52 (write only)' },
@@ -248,7 +296,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'updateNotify', name: 'update-notify', type: 'boolean', commands: UI, help: 'post-run update check through a detached jevcode upgrade --check' },
   // --- TUI-DESIGN §1 / §8.4 session selection (chat and run) -----------------------------------------------------
   { key: 'continue', name: 'continue', type: 'boolean', commands: SESSION, short: 'c', help: 'continue the most recently used session in this workspace' },
-  { key: 'resume', name: 'resume', type: 'string', commands: [...SESSION, 'bench'], arg: '<id|title>', help: 'chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>' },
+  { key: 'resume', name: 'resume', type: 'string', commands: [...SESSION, 'bench', ...IMPORT], arg: '<id|title>', help: 'chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>; import: continue a partly-applied import by its id' },
   { key: 'force', name: 'force', type: 'boolean', commands: SESSION, help: 'with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up' },
   { key: 'listSessions', name: 'list-sessions', type: 'boolean', commands: SESSION, help: 'print the sessions of this workspace and exit' },
   { key: 'taskFile', name: 'task-file', type: 'string', commands: RUN, arg: '<path>', help: 'read the task text from a file' },
@@ -263,7 +311,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'mockGenerator', name: 'mock-generator', type: 'boolean', commands: SESSION, help: 'mocked generator with the live decider (debugging)', hidden: true },
   { key: 'perfLagProbe', name: 'perf-lag-probe', type: 'boolean', commands: SESSION, help: 'record event-loop lag (perf)', hidden: true },
   // TUI-DESIGN §8.9 / §17: `--json[=verbose]` — the NDJSON event stream for chat/run, JSON tables for the others, `--version --json`
-  { key: 'json', name: 'json', type: 'boolean', commands: JSON_CMDS, help: 'chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output' },
+  { key: 'json', name: 'json', type: 'boolean', commands: JSON_CMDS, help: 'chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output' },
   // --- bench / perf ------------------------------------------------------------------------------------------------
   { key: 'suite', name: 'suite', type: 'string', commands: BENCH, arg: 'swebench|terminal-bench|quixbugs|ladder|all', help: 'benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)' },
   { key: 'tasks', name: 'tasks', type: 'string', commands: BENCH, arg: '<n>', help: 'number of tasks' },
@@ -284,7 +332,32 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'verify', name: 'verify', type: 'boolean', commands: ['login'], help: 'verify the saved keys: one priced Jev decision (~$0.00002), one 1-token code-model completion (~$0.000002), the key info ($0)' },
   { key: 'generator', name: 'generator', type: 'boolean', commands: ['logout'], help: 'remove the saved generator key' },
   { key: 'jev', name: 'jev', type: 'boolean', commands: ['logout'], help: 'remove the saved Jev key' },
-  { key: 'all', name: 'all', type: 'boolean', commands: ['config'], help: 'include the hidden bookkeeping rows (seen.*)' },
+  { key: 'all', name: 'all', type: 'boolean', commands: ['config', 'sessions'], help: 'config: include the hidden bookkeeping rows (seen.*); sessions who: include sessions gone more than 10 minutes and ignored devices' },
+  // --- TUI-DESIGN-5 §2.10: the sessions verb surface -------------------------------------------------------------
+  { key: 'device', name: 'device', type: 'string', commands: ['sessions'], arg: '<label>', help: 'with sessions gc: the device to remove, resolved by walking the disk to 1,024 devices (never through the 16-device fold cap)' },
+  { key: 'rotate', name: 'rotate', type: 'boolean', commands: ['sessions'], help: 'with sessions pair: take a new device id and key, invalidating the old one everywhere' },
+  // --- TUI-DESIGN-5 §2.8 / §7 row 26: the epoch bump is its OWN flag; --force is a different question ------------
+  { key: 'forceTakeback', name: 'force-takeback', type: 'boolean', commands: SESSION, help: 'with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does' },
+  { key: 'parentSession', name: 'parent-session', type: 'string', commands: SESSION, arg: '<id>', help: 'the session that delegated this one (recorded on run:start; set by the agent tree)', hidden: true },
+  // --- TUI-DESIGN-5 §4.8: the nine orchestration flags (R5-4). `--parent-session` is the SAME key as §2.8's, above.
+  { key: 'parent', name: 'parent', type: 'string', commands: SESSION, arg: '<run-id>', help: 'the parent run this agent works for (set by the supervisor)', hidden: true },
+  { key: 'agent', name: 'agent', type: 'string', commands: SESSION, arg: '<slug>', help: 'run as the named agent of the parent run (set by the supervisor)', hidden: true },
+  { key: 'manifest', name: 'manifest', type: 'string', commands: SESSION, arg: '<file>', help: 'the agent manifest to run instead of deciding a split', hidden: true },
+  { key: 'own', name: 'own', type: 'string', commands: SESSION, arg: '<glob>', help: 'the paths this agent owns (write-fenced to them)', hidden: true },
+  { key: 'base', name: 'base', type: 'string', commands: SESSION, arg: '<ref>', help: 'the git ref agent worktrees branch from (default: HEAD)', hidden: true },
+  { key: 'split', name: 'split', type: 'string', commands: SESSION, arg: 'off|auto|ask', help: 'split the task across agents (default off; orchestrate.split)' },
+  { key: 'maxAgents', name: 'max-agents', type: 'string', commands: SESSION, arg: '<n>', help: 'the most agents one split may start (orchestrate.maxAgents)' },
+  { key: 'yesSplit', name: 'yes-split', type: 'boolean', commands: SESSION, help: 'with --split ask: accept the proposed manifest without the confirm' },
+  { key: 'noWait', name: 'no-wait', type: 'boolean', commands: SESSION, help: 'never wait for an agent slot: refuse rather than queue (orchestrate.agentWaitCeilingMs)' },
+  // --- TUI-DESIGN-5 §5.5: `jevcode import` (R5-5). `--resume` and `--source` already exist as string flags -------
+  { key: 'dryRun', name: 'dry-run', type: 'boolean', commands: IMPORT, help: 'plan and report only — nothing is written' },
+  { key: 'yes', name: 'yes', type: 'boolean', commands: IMPORT, help: 'apply the non-credential rows without the review step (a credential row always needs a terminal)' },
+  { key: 'scope', name: 'scope', type: 'string', commands: IMPORT, arg: 'user|project|both', help: 'where the imported rows are written (default both)' },
+  { key: 'undo', name: 'undo', type: 'string', commands: IMPORT, arg: '<importId>', help: 'restore the files one earlier import replaced' },
+  // TUI-DESIGN-5 §5.5 (D-AP): `memory.enabled` stays ONE switch, negated through the `negateEnv` idiom `ui.history`
+  // already uses — JevCode writes memory ONCE, at apply, so there is no continuous writer to gate separately.
+  { key: 'noMemory', name: 'no-memory', type: 'boolean', commands: UI, help: 'do not read the project and user memory files into the run' },
+  { key: 'noImport', name: 'no-import', type: 'boolean', commands: UI, help: 'never offer to import from the other coding agents on this machine' },
   // --- TUI-DESIGN §13.6 report, §17 upgrade ------------------------------------------------------------------------
   { key: 'includeRequests', name: 'include-requests', type: 'boolean', commands: ['report'], help: 'include the redacted jev.jsonl request bodies in the bundle' },
   { key: 'check', name: 'check', type: 'boolean', commands: ['upgrade'], help: 'only report whether a newer version exists (2 s registry timeout)' },
@@ -335,6 +408,10 @@ function isCommand(s: string): s is Command {
 
 function isSessionsOp(s: string): s is SessionsOp {
   return (SESSIONS_OPS as readonly string[]).includes(s);
+}
+
+function isModelsOp(s: string): s is ModelsOp {
+  return (MODELS_OPS as readonly string[]).includes(s);
 }
 
 function isShell(s: string): s is CompletionShell {
@@ -516,17 +593,54 @@ export function parseCliArgs(argv: readonly string[], io: ParseOptions = {}): Pa
       break;
     }
     case 'sessions': {
-      // TUI-DESIGN §1: `jevcode sessions [list|reindex|prune|unlock <id>]`
-      const [op, id, ...extra] = positionals;
+      // TUI-DESIGN-5 §2.10: `jevcode sessions <verb> [words…]` — the words after the verb are the verb's own
+      // arguments (a target, a message, `now`, `status|disable`) and reach `commandSessions` verbatim.
+      const [op, ...rest] = positionals;
       const sop = op ?? 'list';
       if (!isSessionsOp(sop)) throw new UsageError(`jevcode sessions: expected one of ${SESSIONS_OPS.join('|')}, got "${sop}". ${usageHint(command)}`);
       flags.sessionsOp = sop;
+      if (rest.length > 0) flags.sessionsArgs = rest;
       if (sop === 'unlock') {
-        flags.runId = requireRunId(command, 'the run id to unlock (jevcode sessions unlock <id>)', id);
-        if (extra.length > 0) throw new UsageError(`jevcode sessions unlock takes one run id, got "${positionals.slice(1).join(' ')}". ${usageHint(command)}`);
-      } else if (id !== undefined) {
-        throw new UsageError(`jevcode sessions ${sop} takes no further arguments, got "${positionals.slice(1).join(' ')}". ${usageHint(command)}`);
+        flags.runId = requireRunId(command, 'the run id to unlock (jevcode sessions unlock <id>)', rest[0]);
+        if (rest.length > 1) throw new UsageError(`jevcode sessions unlock takes one run id, got "${rest.join(' ')}". ${usageHint(command)}`);
+      } else if ((sop === 'list' || sop === 'reindex' || sop === 'prune') && rest.length > 0) {
+        throw new UsageError(`jevcode sessions ${sop} takes no further arguments, got "${rest.join(' ')}". ${usageHint(command)}`);
       }
+      break;
+    }
+    case 'models': {
+      // TUI-DESIGN-5 §6.6: `jevcode models [list|search <query>|refresh]`
+      const [op, ...rest] = positionals;
+      const mop = op ?? 'list';
+      if (!isModelsOp(mop)) throw new UsageError(`jevcode models: expected one of ${MODELS_OPS.join('|')}, got "${mop}". ${usageHint(command)}`);
+      flags.modelsOp = mop;
+      if (mop === 'search') {
+        // the query is free text, space-joined like `run`'s task: `jevcode models search gpt 6` is one query
+        const q = rest.join(' ').trim();
+        if (q === '') throw new UsageError(`jevcode models search needs a query (jevcode models search <query>). ${usageHint(command)}`);
+        flags.query = q;
+      } else if (rest.length > 0) {
+        throw new UsageError(`jevcode models ${mop} takes no further arguments, got "${rest.join(' ')}". ${usageHint(command)}`);
+      }
+      break;
+    }
+    case 'import': {
+      /**
+       * TUI-DESIGN-5 §5.5: one optional source id. The slash form is `/import [--dry-run] [<source>]` — a
+       * POSITIONAL — and the CLI takes the same shape, because §5.5's `--source <id>` collides head-on with the
+       * hidden perf flag of the same name whose value domain is `CLI_SOURCES` (`cli|perf`, validated at the
+       * bottom of this function). One name cannot mean two things, so the twin that has no collision wins and
+       * the clash is recorded for the owner rather than resolved by inventing a third name.
+       */
+      if (positionals.length > 1) throw new UsageError(`jevcode import takes one source id, got "${positionals.join(' ')}". ${usageHint(command)}`);
+      const src = positionals[0];
+      if (src !== undefined && src !== '') flags.source = src;
+      break;
+    }
+    case 'agents': {
+      // TUI-DESIGN-5 §4.2: `list` is the only verb round 5 builds; `src/cli/agents.ts` names the set, and the
+      // words reach it verbatim so a future verb needs no edit here.
+      if (positionals.length > 0) flags.sessionsArgs = positionals;
       break;
     }
     case 'report': {
@@ -584,7 +698,8 @@ export function parseCliArgs(argv: readonly string[], io: ParseOptions = {}): Pa
   }
   if (flags.provider !== undefined) {
     flags.provider = flags.provider.trim().toLowerCase();
-    oneOf(command, 'provider', flags.provider, ['anthropic', 'openrouter']);
+    // TUI-DESIGN-5 §6.1 (D-AP): the two-name wall was here too; `PROVIDER_IDS` is the one list
+    oneOf(command, 'provider', flags.provider, PROVIDER_IDS);
   }
   // TUI-DESIGN-2 §2.3: lowercased here so the args check and the config validator agree; §1.4: login takes typesafe|openrouter only
   if (flags.jevProvider !== undefined) {
@@ -640,7 +755,9 @@ export function parseCliArgs(argv: readonly string[], io: ParseOptions = {}): Pa
     }
   }
   if (flags.maxGeneratorTokens !== undefined) positiveInteger(command, 'max-generator-tokens', flags.maxGeneratorTokens);
-  if (flags.source !== undefined) {
+  if (flags.source !== undefined && command !== 'import') {
+    // TUI-DESIGN-5 §5.5: on `import` this holds the source id positional, whose vocabulary is `src/import/**`'s
+    // and is checked there against the known sources — never `CLI_SOURCES`, which is the perf driver's word.
     flags.source = flags.source.trim().toLowerCase();
     oneOf(command, 'source', flags.source, CLI_SOURCES);
   }
@@ -742,9 +859,29 @@ const USAGE_LINES: Readonly<Record<Command, readonly string[]>> = {
     '                [--resume <bench-id>] [--out <dir>]',
   ],
   perf: ['  jevcode perf [--live --spend-cap <usd>] [--out <file>]'],
-  login: ['  jevcode login [--key-stdin | --generator-key-stdin --jev-key-stdin] [--provider anthropic|openrouter] [--jev-provider typesafe|openrouter] [--status] [--verify]'],
+  // TUI-DESIGN-5 §6.5: `login --provider` is the seven ids (the wizard stays binary, its CLI twin does not), so
+  // the usage line reads them from the one table rather than re-declaring the pair the flag no longer accepts
+  login: [`  jevcode login [--key-stdin | --generator-key-stdin --jev-key-stdin] [--provider ${PROVIDER_IDS.join('|')}]`, '                [--jev-provider typesafe|openrouter] [--status] [--verify]'],
   logout: ['  jevcode logout [--generator] [--jev]'],
-  sessions: ['  jevcode sessions [list | reindex | prune | unlock <id>] [--json]'],
+  // TUI-DESIGN-5 §2.10: seventeen verbs, each a thin wrapper; none starts an engine.
+  sessions: [
+    '  jevcode sessions [list | reindex | prune | unlock <id>] [--json]',
+    '  jevcode sessions who [--all] | inbox | label <text> | pair [--rotate] | unpair | gc [--device <label>] | sync',
+    '  jevcode sessions pause|resume|end <target> [now] | tell <target> <text> | headsup <text> | request <target> pause|end|steer [<text>]',
+  ],
+  // TUI-DESIGN-5 §6.6: `refresh` is the only verb that goes to the network; `list`/`search` are snapshot-first
+  models: [
+    `  jevcode models [list | search <query> | refresh] [--provider ${PROVIDER_IDS.join('|')}] [--json | --plain]`,
+    '                 (list and search read the disk cache and the bundled snapshot; refresh is the explicit fetch)',
+  ],
+  // TUI-DESIGN-5 §5.5: `jevcode import` — the CLI twin of `/import`. `--yes` never applies a credential row.
+  import: [
+    '  jevcode import [<source>] [--dry-run | --yes] [--scope user|project|both] [--resume <importId>] [--undo <importId>]',
+    '                 (default: plan, review, then apply what you accept; a credential row always needs a terminal)',
+  ],
+  // TUI-DESIGN-5 §4.2: `jevcode agents list` reads the run's manifest; there is no supervisor in this build, so
+  // every row is `planned` (§4.0) and the command never starts anything.
+  agents: ['  jevcode agents [list] [--json | --plain]'],
   report: ['  jevcode report <id> [--include-requests] [--out <dir>]'],
   why: ['  jevcode why <id> <step> <ref>'],
   calibration: ['  jevcode calibration [--json]'],
@@ -761,6 +898,9 @@ const POSITIONAL_SYNOPSIS: Readonly<Record<Command, string>> = {
   login: '',
   logout: '',
   sessions: ' [list|reindex|prune|unlock <id>]',
+  models: ' [list|search <query>|refresh]',
+  import: ' [<source>]',
+  agents: ' [list]',
   report: ' <id>',
   why: ' <id> <step> <ref>',
   calibration: '',

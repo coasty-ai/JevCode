@@ -6,6 +6,7 @@
  * the Esc re-buffer, chords) live in `KeyState.armed`; every change is returned as an `arm` action so the
  * caller stores it — the resolver itself never mutates its input.
  */
+import { FOCUS_REFUSED } from '../agents/lines.js';
 import type { OverlayKind } from '../layout.js';
 import { COMMAND_KEY_ACTIONS, DEFAULT_BINDINGS, isChordPrefix, lookupBinding, type Bindings, type KeyContext } from './bindings.js';
 import { CHORD_WINDOW_MS, ESC_REBUFFER_MS, WHY_WINDOW_MS, reduceInterrupts, type InterruptAction } from './interrupts.js';
@@ -113,6 +114,22 @@ export interface KeyState {
   draftTokenOnly?: boolean;
   /** TUI-DESIGN-4 §4.7 E13: the cursor sits at the end of the draft — the reopen rule never fires mid-token. */
   cursorAtEnd?: boolean;
+  /**
+   * TUI-DESIGN-5 §4.3 (§14.2 #41): the pane holds focus. Optional and **false by default**, so the whole agents
+   * rung is inert until the controller supplies it — `UiState.paneFocus` (`src/tui/useEngine.tsx`) is its source.
+   */
+  paneFocus?: boolean;
+  /** TUI-DESIGN-5 §4.3: the pane's active tab. The agents rung resolves only for `'a'`. */
+  tab?: 'd' | 'p' | 't' | 's' | 'a';
+  /**
+   * TUI-DESIGN-5 §2.8: the picker's expanded resume card. **Three states, not a boolean**, and `'off'` by default —
+   *  - `'off'` (round 3, unchanged): this picker has no card. Enter resumes the row, Esc closes the picker, and
+   *    `r`/`f`/`d`/`w` are filter text. The whole sub-state is inert until R5-1's `/resume` card lands.
+   *  - `'closed'`: the card exists but is not expanded. Enter **opens** it (`cardOpen`), Esc closes the picker.
+   *  - `'open'`: the sub-state. Enter resumes, Esc returns to the list (`cardClose`), and the four letters resolve
+   *    (§7 row 91: the filter is inert and the card says `Esc returns to the list`).
+   */
+  pickerCard?: 'off' | 'closed' | 'open';
 }
 
 /** TUI-DESIGN §3.1: a fresh state for a mounted session or one-shot renderer. */
@@ -134,11 +151,30 @@ export function initialKeyState(mode: 'session' | 'one-shot' = 'session'): KeySt
     retrying: false,
     draftTokenOnly: false,
     cursorAtEnd: true,
+    paneFocus: false,
+    tab: 'd',
+    pickerCard: 'off',
   };
 }
 
 /** TUI-DESIGN §4.1 motions the resolver emits (word motions use the composer's segmenter). */
 export type Motion = 'left' | 'right' | 'up' | 'down' | 'home' | 'end' | 'wordLeft' | 'wordRight';
+
+/**
+ * TUI-DESIGN §8.4 / TUI-DESIGN-5 §2.8 (§14.2 #33, #40): the picker's closed op union, **extracted from the inline
+ * `KeyAction` arm it used to be** so §2.8's six card members have a name to join and the App's reducer can switch
+ * on it exhaustively. The first ten are round 3's, unchanged and in order.
+ *
+ * The six new members are the resume card's focused **sub-state** (§2.8): `cardOpen` (Enter on a row expands it),
+ * `cardClose` (Esc returns to the list) and the four card letters `r` / `f` / `d` / `w`, which resolve **only while
+ * `card !== null`**. Outside the sub-state those four are filter text — the picker's composer *is* its filter
+ * (`src/session/picker-lines.ts:1–33`) and `picker:delete` already owns a bare `x`, so binding them at picker scope
+ * would take four more letters away from typing (§7 row 91).
+ */
+export type PickerOp = 'move' | 'page' | 'open' | 'accept' | 'preview' | 'allWorkspaces' | 'rename' | 'deleteArm' | 'deleteConfirm' | 'close' | 'cardOpen' | 'cardClose' | 'cardReplay' | 'cardFresh' | 'cardDiff' | 'cardWho';
+
+/** TUI-DESIGN-5 §4.3 / F-54's keys row: the agents tab's ops. `dropArm`/`dropConfirm` are the `x` `x` chord. */
+export type AgentsOp = 'move' | 'attach' | 'pause' | 'steer' | 'budget' | 'diff' | 'kick' | 'dropArm' | 'dropConfirm' | 'land' | 'unfocus';
 
 /** TUI-DESIGN §3.1: what the controller executes, in order. */
 export type KeyAction =
@@ -182,7 +218,15 @@ export type KeyAction =
    * it stays in the union so an out-of-tree dispatcher keeps compiling until §9.2's `App.tsx` row lands.
    */
   | { type: 'palette'; op: 'move' | 'page' | 'accept' | 'enter' | 'run' | 'close'; by?: -1 | 1 }
-  | { type: 'picker'; op: 'move' | 'page' | 'open' | 'accept' | 'preview' | 'allWorkspaces' | 'rename' | 'deleteArm' | 'deleteConfirm' | 'close'; by?: -1 | 1 }
+  | { type: 'picker'; op: PickerOp; by?: -1 | 1 }
+  /**
+   * TUI-DESIGN-5 §4.3 / §7 row 99: focus the `'a'` pane tab so its eight single letters resolve at all. Refused
+   * with a non-empty draft (S86a, the same `when: 'empty draft'` guard `global:paneNext` carries), and dropped
+   * automatically by the controller when `paneTabsFor(...)` stops containing `'a'`.
+   */
+  | { type: 'paneFocus'; on: boolean }
+  /** TUI-DESIGN-5 §4.3 / F-54: the agents tab's own keys — resolved only while `paneFocus && tab === 'a'`. */
+  | { type: 'agents'; op: AgentsOp; by?: -1 | 1 }
   | { type: 'review'; op: 'approve' | 'decline' | 'note' | 'expand' | 'whyArm' | 'why' | 'noteSubmit' | 'noteCancel'; dim?: 1 | 2 | 3 | 4 | 5 }
   | { type: 'gate'; op: 'send' | 'dismiss' }
   | { type: 'followup'; op: 'start' | 'raise' | 'cancel' }
@@ -363,6 +407,10 @@ function composerAction(id: string, s: KeyState, k: KeyEvent): KeyAction[] | nul
       return s.draftEmpty ? [{ type: 'paneTab', dir: 1 }] : textActions(k);
     case 'global:panePrev':
       return s.draftEmpty ? [{ type: 'paneTab', dir: -1 }] : textActions(k);
+    case 'global:paneFocus':
+      // TUI-DESIGN-5 §7 row 99 / S86a: focus is REFUSED while the draft is non-empty — the eight agents letters
+      // must never eat a half-typed line. The refusal is a toast, not silence, so the key is never a no-op.
+      return s.draftEmpty ? [{ type: 'paneFocus', on: true }] : [{ type: 'toast', text: FOCUS_REFUSED }];
     case 'global:panelToggle':
       return [{ type: 'panel', op: 'toggle' }];
     case 'global:panelFull':
@@ -732,15 +780,32 @@ function resolvePalette(s: KeyState, k: KeyEvent, now: number, b: Bindings): Ste
   return { state: s, actions: [] };
 }
 
+/** TUI-DESIGN-5 §2.8: the four card letters, by action id — consulted ONLY while `pickerCard === true` (§7 row 91). */
+const CARD_OPS: Readonly<Record<string, PickerOp>> = {
+  'picker:cardReplay': 'cardReplay',
+  'picker:cardFresh': 'cardFresh',
+  'picker:cardDiff': 'cardDiff',
+  'picker:cardWho': 'cardWho',
+};
+
 function resolvePicker(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step {
   const one = (a: KeyAction, state: KeyState = s): Step => ({ state, actions: [a] });
-  if (isCtrl(k, 'c') || k.key.escape) return one({ type: 'picker', op: 'close' });
+  const card = s.pickerCard === 'open';
+  // §2.8: Esc in the sub-state returns to the list; Enter on a list row expands it. The two keys keep their
+  // reserved bindings (`picker:close` / `picker:open`) and are re-read here, which is why `picker:cardOpen` and
+  // `picker:cardClose` carry no keys of their own in the registry.
+  if (isCtrl(k, 'c') || k.key.escape) return one({ type: 'picker', op: card ? 'cardClose' : 'close' });
   if (isCtrl(k, 'd') || isNewlineKey(k)) return { state: s, actions: [] };
   if (k.paste) return one({ type: 'paste', text: k.input });
-  if (isEnter(k)) return one({ type: 'picker', op: 'open' });
+  if (isEnter(k)) return one({ type: 'picker', op: s.pickerCard === 'closed' ? 'cardOpen' : 'open' });
   const ks = keyString(k);
   if (ks !== null) {
     if (ks === 'y' && chordFirst(s, DELETE_ARM, now, CHORD_WINDOW_MS)) return one({ type: 'picker', op: 'deleteConfirm' }, withArmed(s, { chord: null }));
+    if (card) {
+      const cardId = lookupBinding(b, 'picker', ks);
+      const op = cardId === null ? undefined : CARD_OPS[cardId];
+      if (op !== undefined) return one({ type: 'picker', op });
+    }
     const armedDelete = s.armed.chord?.first === DELETE_ARM ? withArmed(s, { chord: null }) : s;
     const found = lookup(armedDelete, ks, ['picker'], now, b);
     if (found.armedChord) return { state: found.state, actions: [] };
@@ -765,6 +830,13 @@ function resolvePicker(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
         return one({ type: 'picker', op: 'rename' }, cleared);
       case 'picker:delete':
         return one({ type: 'picker', op: 'deleteArm' }, withArmed(cleared, { chord: { first: DELETE_ARM, at: now } }));
+      // §7 row 91: with the card CLOSED the four card letters are filter text, exactly as they were in round 3 —
+      // they fall through to `textActions` below, never to a picker op.
+      case 'picker:cardReplay':
+      case 'picker:cardFresh':
+      case 'picker:cardDiff':
+      case 'picker:cardWho':
+        return { state: cleared, actions: isPrintable(k) ? textActions(k) : [] };
       default:
         break;
     }
@@ -778,6 +850,55 @@ function resolvePicker(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
   }
   if (isPrintable(k)) return { state: s, actions: textActions(k) };
   return { state: s, actions: [] };
+}
+
+/**
+ * TUI-DESIGN-5 §4.3 (§14.2 #41), the **one new rung**, between Picker and Composer: the agents tab's eight keys.
+ *
+ * Placing it below Picker keeps §2.8's resume-card sub-state unambiguous; placing it **above** Composer is what
+ * makes eight bare letters reachable at all — `resolveKey`'s chain had no pane rung, so a sixth `KeyContext` with
+ * nowhere to sit would mean `p` types a `p`. The gate is `ui.paneFocus === true && ui.tab === 'a'`, and focus is
+ * only ever granted on an empty draft (S86a), so nothing here can eat a half-typed line.
+ *
+ * Anything this rung does not claim falls through to the composer, so `/`, `@`, `?`, `[`, `]` and every editing
+ * key keep working with the tab focused; Esc unfocuses (the tab is a focus state, not an overlay).
+ */
+function resolveAgents(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step | null {
+  const one = (a: KeyAction, state: KeyState = s): Step => ({ state, actions: [a] });
+  // a paste is the user's text, whatever it looks like: it falls to the composer, and the `draftEmpty` term of the
+  // rung's own gate (`resolveOne`) then keeps every following letter there too until the draft is cleared
+  if (k.paste === true) return null;
+  if (k.key.escape && k.input === '') return one({ type: 'paneFocus', on: false });
+  if (k.key.upArrow) return one({ type: 'agents', op: 'move', by: -1 });
+  if (k.key.downArrow) return one({ type: 'agents', op: 'move', by: 1 });
+  const ks = keyString(k);
+  if (ks === null) return null;
+  // the `x` `x` drop chord runs through the ONE chord machine (`lookup`), the same one `ctrl+x ctrl+s` uses —
+  // §4.3: a tmux pane kill loses no committed work, dropping an agent loses its uncommitted diff, so it takes two.
+  const found = lookup(s, ks, ['agents'], now, b);
+  if (found.armedChord) return one({ type: 'agents', op: 'dropArm' }, found.state);
+  if (found.chordMiss) return { state: found.state, actions: [] };
+  const st = found.state;
+  switch (found.id) {
+    case 'agents:attach':
+      return one({ type: 'agents', op: 'attach' }, st);
+    case 'agents:pause':
+      return one({ type: 'agents', op: 'pause' }, st);
+    case 'agents:steer':
+      return one({ type: 'agents', op: 'steer' }, st);
+    case 'agents:budget':
+      return one({ type: 'agents', op: 'budget' }, st);
+    case 'agents:diff':
+      return one({ type: 'agents', op: 'diff' }, st);
+    case 'agents:kick':
+      return one({ type: 'agents', op: 'kick' }, st);
+    case 'agents:land':
+      return one({ type: 'agents', op: 'land' }, st);
+    case 'agents:drop':
+      return one({ type: 'agents', op: 'dropConfirm' }, st);
+    default:
+      return null;
+  }
 }
 
 function resolveMinsize(s: KeyState, k: KeyEvent, now: number): Step {
@@ -839,6 +960,21 @@ function resolveOne(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step {
       break;
   }
   if (s.picker) return resolvePicker(s, k, now, b);
+  /**
+   * TUI-DESIGN-5 §4.3 / §7 row 99: the one pane rung — below Picker, above Composer. `null` = this rung claims
+   * nothing, so the key continues down the chain exactly as it did before round 5.
+   *
+   * **`draftEmpty` is part of the gate, not only of the focus grant.** §7 row 99's guard is applied when focus is
+   * *granted*, but the rung deliberately lets a paste through to the composer (`resolveAgents` returns `null` for
+   * `k.paste`), so the draft can become non-empty while focus is still on — and then `land it` would fire
+   * `agents:land` on the `l` and `agents:attach` on the Enter. Re-reading the same guard here is what makes the
+   * row's promise ("eight single letters can never eat a half-typed line") hold for the whole focused lifetime;
+   * the letters fall to the composer while a draft exists, and Esc Esc clears it back into the tab's keys.
+   */
+  if (s.paneFocus === true && s.tab === 'a' && s.draftEmpty !== false) {
+    const agents = resolveAgents(s, k, now, b);
+    if (agents !== null) return agents;
+  }
   if (s.historySearch) return resolveHistorySearch(s, k, now);
   return resolveComposer(s, k, now, b, ['composer', 'global']);
 }

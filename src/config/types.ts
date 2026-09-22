@@ -33,6 +33,9 @@ export type SettingName =
   // returns only the members that were actually set, and the engine keeps its own defaults for the rest (§8.1 limits).
   | 'context.mode'
   | 'context.compaction'
+  // TUI-DESIGN-5 §3.6 / §8.1 item 7 (D-AI): the kept-items ranker (docs/COORDINATION-DESIGN.md §8.6). The engine
+  // member it feeds does not exist yet — see the row's comment in defaults.ts and `resolveContextConfig`.
+  | 'context.kept'
   | 'context.compactEvery'
   | 'context.historySteps'
   | 'context.fileCacheBytes'
@@ -58,8 +61,69 @@ export type SettingName =
   | 'ui.exitCode'
   | 'ui.keybindings'
   | 'ui.noColor'
+  /**
+   * TUI-DESIGN-5 §8.1 item 7 / §8.3, `docs/COORDINATION-DESIGN.md` §4.1, §9.1, §9.3, §8.5, §6.2: the six
+   * `coordination.*` rows (R5-2's half of §9.2's config PR). Every one is printed by `jevcode config`, validated
+   * by `jevcode config set` and reachable from a config file; none is a launch setting. The ledger reads them
+   * through `src/coordination/**`, which is read-only this round — a row set here and not yet read is the honest
+   * D-AN state, exactly like `context.kept`.
+   */
+  | 'coordination.claims'
+  | 'coordination.remoteControl'
+  | 'coordination.sync'
+  | 'coordination.syncRuns'
+  | 'coordination.notify'
+  | 'coordination.maxChildren'
+  /**
+   * TUI-DESIGN-5 §4.8 / §8.3 (R5-4): the thirty-four `orchestrate.*` rows, in `docs/ORCHESTRATION-DESIGN.md`
+   * §6.4's own order (`:1427–1461` — THAT table is the authority, not this document, §14.2 #19). `depth` is a
+   * constant, not a setting, and `--yes-split` is a flag, not a setting; both are deliberately absent.
+   */
+  | 'orchestrate.split'
+  | 'orchestrate.maxAgents'
+  | 'orchestrate.maxSplits'
+  | 'orchestrate.splitEvery'
+  | 'orchestrate.preludeMaxFiles'
+  | 'orchestrate.selfContainedFloor'
+  | 'orchestrate.reserveFraction'
+  | 'orchestrate.maxReserveUsd'
+  | 'orchestrate.minAgentUsd'
+  | 'orchestrate.agentMaxSteps'
+  | 'orchestrate.agentMaxWall'
+  | 'orchestrate.agentStallMs'
+  | 'orchestrate.onStall'
+  | 'orchestrate.maxKicks'
+  | 'orchestrate.critic'
+  | 'orchestrate.criticCapUsd'
+  | 'orchestrate.criticMaxSteps'
+  | 'orchestrate.criticWriteGlobs'
+  | 'orchestrate.verify'
+  | 'orchestrate.verifyRetries'
+  | 'orchestrate.testGlobs'
+  | 'orchestrate.land'
+  | 'orchestrate.incidentalGlobs'
+  | 'orchestrate.agentMode'
+  | 'orchestrate.agentInclude'
+  | 'orchestrate.commitIdentity'
+  | 'orchestrate.dockCleanExclude'
+  | 'orchestrate.dockRetentionDays'
+  | 'orchestrate.notify'
+  | 'orchestrate.agentWaitCeilingMs'
+  | 'orchestrate.agentJsonLineBytes'
+  | 'orchestrate.agentDeltaHz'
+  | 'orchestrate.minFreeBytes'
+  | 'orchestrate.agentMemBytes'
+  // TUI-DESIGN-5 §5.5 / §8.1 item 7 (R5-5): the import surface's five rows; `seen.import` is the sixth and joins
+  // `seen.defaultMode` below as a hidden bookkeeping row.
+  | 'import.enabled'
+  | 'import.scope'
+  | 'import.sources'
+  | 'memory.enabled'
+  | 'memory.path'
   // TUI-DESIGN-3 §0.1 (D-Q): the bookkeeping row behind the one-time default-mode item — a config-file key, never a flag or a variable
   | 'seen.defaultMode'
+  // TUI-DESIGN-5 §5.1: the same contract for the wizard's one-time import step (`2 later` writes the version, `3 never` writes `never`)
+  | 'seen.import'
   | 'log.file'
   | 'log.level'
   | 'update.notify'

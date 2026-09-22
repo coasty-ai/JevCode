@@ -5,6 +5,7 @@
  * `--plain` (`--list-sessions`) and screen-reader twins; `--ascii` substitutes per §14.1. No clock inside: `nowMs` is passed.
  */
 import type { SessionRow, StopReason } from '../core/types.js';
+import { formatDuration } from '../core/time.js';
 import { stringWidth } from '../tui/composer/width.js';
 
 export type PickerSort = 'updated' | 'created';
@@ -341,4 +342,250 @@ export function recentSessionHint(s: SessionRow, nowMs: number, ascii = false): 
 /** TUI-DESIGN §24: `no session in <path> yet`. */
 export function noSessionMessage(workspace: string): string {
   return `no session in ${workspace} yet`;
+}
+
+// ── TUI-DESIGN-5 §2.8: the resume card (slot R5-1) ───────────────────────────────────────────────────────────────
+
+/**
+ * §2.8 / §10: the eight card branches. Exactly one is chosen per card; the branch decides the status row, the
+ * explanatory note and whether `[r] replay the paused proposal` is offered at all.
+ *
+ *   `fresh`              — a plain pause with nothing cached to replay
+ *   `replayable`         — `PausePoint.replayable === true` AND every `targetsSha` still matches
+ *   `targets-moved`      — the proposal is cached but a target changed under it (S23; `[r]` withheld, reason named)
+ *   `imported`           — the run's bodies stayed on the origin device (S24)
+ *   `crashed`            — no clean pause point; the step restarts (S25)
+ *   `live-elsewhere`     — a peer holds this run right now (S26; the key row becomes watch / tell / ask-to-pause)
+ *   `taken-over`         — a QUALIFIED foreign claim outranks this one (S11; `--force-takeback` is the escape)
+ *   `forked-unverified`  — an UNQUALIFIED foreign claim; annotates, never refuses (S12, §7 row 28)
+ */
+export type ResumeCardBranch = 'fresh' | 'replayable' | 'targets-moved' | 'imported' | 'crashed' | 'live-elsewhere' | 'taken-over' | 'forked-unverified';
+
+export const RESUME_CARD_BRANCHES: readonly ResumeCardBranch[] = ['fresh', 'replayable', 'targets-moved', 'imported', 'crashed', 'live-elsewhere', 'taken-over', 'forked-unverified'];
+
+/**
+ * Everything the card renders, as plain data. §2.8 says "round 5 threads a `Fold` in"; what is threaded in is the
+ * **view** (`SessionActivityView`, §2.3 / §14.2 #12 — one row model, not two), projected by `src/session/peers.ts`,
+ * so this module keeps its zero coordination imports and stays a pure, table-testable builder.
+ */
+export interface ResumeCardInput {
+  runId: string;
+  title: string;
+  branch: ResumeCardBranch;
+  /** wall ms of the pause (or of the crash); `null` before any pause point was written */
+  pausedAtMs: number | null;
+  step: number | null;
+  /** the pause point in its own words — `pause now during propose, 62 % streamed` */
+  pauseDetail: string | null;
+  steersPending: number;
+  head: { from: string; to: string; commits: number; by: string; subjects: readonly string[] } | null;
+  changedSince: readonly string[];
+  /** the live peer on this repo, from `SessionActivityView` */
+  livePeer: { label: string; step: number | null; editing: string | null } | null;
+  spend: { usd: number; capUsd: number } | null;
+  wallMs: number | null;
+  maxWallMs: number | null;
+  /**
+   * §7 row 38: built from `CheckpointState.lastPromptChars` alone and **omitted, not zeroed**, when absent. A live
+   * `ctx 0%` is informative; a resumed `ctx 0%` before any prompt was read is a lie.
+   */
+  ctxPct: number | null;
+  /** `targets-moved` (S23) */
+  targetsMoved: { path: string; by: string; head: string } | null;
+  /** `imported` (S24) */
+  importedFrom: string | null;
+  /** `crashed` (S25) */
+  crashed: { agoMs: number; step: number; stage: string; intoMs: number } | null;
+  /** `taken-over` (S11) */
+  takenOver: { label: string; at: string; epoch: number } | null;
+  /** `forked-unverified` (S12) */
+  forked: { label: string; epoch: number } | null;
+}
+
+export interface ResumeCardOptions {
+  nowMs: number;
+  columns: number;
+  ascii?: boolean;
+  cellWidth?: (s: string) => number;
+}
+
+/** §12.1 S11. */
+export function takenOverLine(o: { label: string; at: string; epoch: number }): string {
+  return `taken over by ${o.label} at ${o.at} (claim ${o.epoch}); /resume --force-takeback re-takes it`;
+}
+
+/** §12.1 S12 — the UNQUALIFIED claim: a card line, never a refusal (§7 row 28). */
+export function unqualifiedClaimLine(o: { label: string; epoch: number }): string {
+  return `${o.label} claims ${o.epoch} (unverified) — ignored; sessions pair to make it count`;
+}
+
+/** §12.1 S23. */
+export function targetsMovedLine(o: { path: string; by: string; head: string }): string {
+  return `targets changed since the proposal (${o.path} by ${o.by}@${o.head}) — replay unavailable`;
+}
+
+/** §12.1 S24. */
+export function importedRunLine(label: string): string {
+  return `the paused proposal and its samples stayed on ${label} — resuming starts a fresh step`;
+}
+
+/**
+ * §12.1 S25, verbatim: `crashed 3 m ago during step 8 (propose, 41 s in) — step 8 restarts`.
+ *
+ * The elapsed cell is this module's own `shortAgo` (`41 s`, a space), **not** `core/time.ts`'s `formatDuration`
+ * (`41s`, no space): §13.4 makes S25 a greppable anchor, and one character of drift is a zero-match grep, which
+ * that section calls a hard failure (round-5 fix pass, finding 13).
+ */
+export function crashedLine(c: { agoMs: number; step: number; stage: string; intoMs: number }, ascii = false): string {
+  const dash = ascii ? '--' : '—';
+  return `crashed ${shortAgo(c.agoMs)} ago during step ${c.step} (${c.stage}, ${shortAgo(c.intoMs)} in) ${dash} step ${c.step} restarts`;
+}
+
+/** §12.1 S26 — the key row of a run that is live on another session. */
+export function liveElsewhereRow(label: string, ascii = false): string {
+  const dash = ascii ? '--' : '—';
+  const dot = ascii ? '-' : '·';
+  const glyph = ascii ? '*' : '●';
+  return `${glyph} live on ${label} ${dash} [w] watch (read-only tail) ${dot} [t] tell ${dot} [p] ask to pause ${dot} [Esc]`;
+}
+
+/** `42 m` · `3 h` · `2 d` — the card's own age cell (`paused 42 m ago`). */
+function shortAgo(ms: number): string {
+  const v = Number.isFinite(ms) ? Math.max(0, ms) : 0;
+  if (v < 60_000) return `${Math.floor(v / 1000)} s`;
+  if (v < 3_600_000) return `${Math.floor(v / 60_000)} m`;
+  if (v < 86_400_000) return `${Math.floor(v / 3_600_000)} h`;
+  return `${Math.floor(v / 86_400_000)} d`;
+}
+
+/** §2.8's `[Enter] … [Esc]` row, with three rungs so 40 columns keeps the two keys that matter. */
+export function resumeCardKeys(input: ResumeCardInput, columns: number, ascii = false): string {
+  const dot = ascii ? '-' : '·';
+  if (input.branch === 'live-elsewhere') {
+    if (columns >= 72) return liveElsewhereRow(input.livePeer?.label ?? '?', ascii);
+    const glyph = ascii ? '*' : '●';
+    return columns >= 44 ? `${glyph} live elsewhere ${dot} w watch ${dot} t tell ${dot} p ask to pause ${dot} Esc` : `${glyph} live ${dot} w watch ${dot} Esc`;
+  }
+  const replay = input.branch === 'replayable';
+  const stepWord = input.step === null ? 'fresh' : `fresh step ${input.step}`;
+  if (columns >= 96) {
+    const parts = [`[Enter] resume (${stepWord})`];
+    if (replay) parts.push('[r] replay the paused proposal');
+    parts.push('[f] fresh', '[d] diff since pause', '[w] who', '[Esc]');
+    return parts.join('   ');
+  }
+  if (columns >= 52) {
+    const parts = ['Enter resume'];
+    if (replay) parts.push('r replay');
+    parts.push('f fresh', 'd diff', 'w who', 'Esc');
+    return parts.join(` ${dot} `);
+  }
+  const parts = ['Enter resume'];
+  if (replay) parts.push('r replay');
+  parts.push('Esc');
+  return parts.join(` ${dot} `);
+}
+
+/**
+ * TUI-DESIGN-5 §2.8: the expanded resume card — a rule head, the pause/crash row, the HEAD-drift row, the
+ * live-on-this-repo row, the branch's own explanation and the key row, each clipped to `columns`.
+ *
+ * Every row is a plain string at the caller's width, exactly as `pickerHeader` / `pickerRows` are, so the `--plain`
+ * twin, the screen-reader twin and `transcript.log` print the row the TUI drew (§13). The card is a FOCUSED
+ * SUB-STATE of the picker (`PickerState.card`, §2.8 / §7 row 91) — the last row says so, because the composer's
+ * filter is inert while it is open.
+ */
+export function resumeCardRows(input: ResumeCardInput, o: ResumeCardOptions): string[] {
+  const ascii = o.ascii === true;
+  const g = glyphs(ascii);
+  const width = o.cellWidth ?? pickerCellWidth;
+  const columns = Math.max(0, Math.floor(Number.isFinite(o.columns) ? o.columns : 0));
+  const dot = g.dot;
+  const dash = ascii ? '--' : '—';
+  const clip = (s: string): string => (columns > 0 ? truncateToCells(s, columns, width, ascii) : s);
+  const rows: string[] = [];
+
+  // 1 — the rule head
+  const head = `${g.rule} resume ${input.runId} ${dot} "${input.title}" `;
+  const headClipped = clip(head);
+  rows.push(columns > 0 ? headClipped + g.rule.repeat(Math.max(0, columns - width(headClipped))) : head);
+
+  // 2 — where it stopped
+  if (input.branch === 'crashed' && input.crashed !== null) {
+    rows.push(clip(crashedLine(input.crashed, ascii)));
+  } else {
+    const parts: string[] = [];
+    parts.push(input.pausedAtMs === null ? 'paused' : `paused ${shortAgo(o.nowMs - input.pausedAtMs)} ago`);
+    if (input.step !== null) parts.push(`now at step ${input.step}${input.pauseDetail === null ? '' : ` (${input.pauseDetail})`}`);
+    if (input.steersPending > 0) parts.push(`${input.steersPending} steer${input.steersPending === 1 ? '' : 's'} pending`);
+    rows.push(clip(parts.join(` ${dot} `)));
+  }
+
+  // 3 — HEAD drift and the files that moved under the pause
+  if (input.head !== null) {
+    const h = input.head;
+    const subjects = h.subjects.length === 0 ? '' : `: ${h.subjects.map((s) => `"${s}"`).join(', ')}`;
+    const commits = `(${h.commits} commit${h.commits === 1 ? '' : 's'} by ${h.by}${subjects})`;
+    const changed = input.changedSince.length === 0 ? '' : ` ${dot} changed since: ${input.changedSince.join(', ')}`;
+    rows.push(clip(`HEAD ${h.from} ${ascii ? '->' : '→'} ${h.to} ${commits}${changed}`));
+  }
+
+  // 4 — who else is on this repo, and what this run spent
+  const live: string[] = [];
+  if (input.livePeer !== null) {
+    const p = input.livePeer;
+    const detail = [p.step === null ? null : `step ${p.step}`, p.editing === null ? null : `editing ${p.editing}`].filter((x): x is string => x !== null).join(', ');
+    live.push(`live on this repo: ${p.label}${detail === '' ? '' : ` (${detail})`}`);
+  }
+  if (input.spend !== null) live.push(`spend $${input.spend.usd.toFixed(2)}/${input.spend.capUsd.toFixed(2)}`);
+  if (input.wallMs !== null) live.push(`wall ${formatDuration(input.wallMs)}${input.maxWallMs === null ? '' : `/${formatDuration(input.maxWallMs)}`}`);
+  // §7 row 38: OMITTED, never `ctx 0%`, when there is no `lastPromptChars` behind it
+  if (input.ctxPct !== null) live.push(`ctx ${Math.round(input.ctxPct)}%`);
+  if (live.length > 0) rows.push(clip(live.join(` ${dot} `)));
+
+  // 5 — the branch's own sentence
+  const note = resumeCardNote(input);
+  if (note !== null) rows.push(clip(note));
+
+  // 6 — the keys, and the sub-state's own escape (§7 row 91)
+  rows.push(clip(resumeCardKeys(input, columns === 0 ? 120 : columns, ascii)));
+  if (columns === 0 || columns >= 52) rows.push(clip(`Esc returns to the list${input.branch === 'taken-over' ? ` ${dash} /resume --force-takeback re-takes the run` : ''}`));
+  return rows;
+}
+
+/** The one sentence a branch adds beneath the facts, or `null` for the two branches that add none. */
+export function resumeCardNote(input: ResumeCardInput): string | null {
+  switch (input.branch) {
+    case 'targets-moved':
+      return input.targetsMoved === null ? null : targetsMovedLine(input.targetsMoved);
+    case 'imported':
+      return input.importedFrom === null ? null : importedRunLine(input.importedFrom);
+    case 'taken-over':
+      return input.takenOver === null ? null : takenOverLine(input.takenOver);
+    case 'forked-unverified':
+      return input.forked === null ? null : unqualifiedClaimLine(input.forked);
+    // `fresh`, `replayable`, `crashed` and `live-elsewhere` say everything they have to say in the status and key
+    // rows (S25 and S26 ARE those rows), so a note here would be a second copy of a pinned string.
+    case 'fresh':
+    case 'replayable':
+    case 'crashed':
+    case 'live-elsewhere':
+      return null;
+  }
+}
+
+/** §7 row 82: the screen-reader form of the card — every fact the sighted card carries, in words. */
+export function resumeCardSentence(input: ResumeCardInput, nowMs: number): string {
+  const parts: string[] = [`Resume ${input.runId}, ${input.title}.`];
+  if (input.branch === 'crashed' && input.crashed !== null) {
+    parts.push(`Crashed ${shortAgo(input.crashed.agoMs)} ago during step ${input.crashed.step} ${input.crashed.stage}; step ${input.crashed.step} restarts.`);
+  } else if (input.pausedAtMs !== null) {
+    parts.push(`Paused ${shortAgo(nowMs - input.pausedAtMs)} ago${input.step === null ? '' : ` at step ${input.step}`}.`);
+  }
+  if (input.steersPending > 0) parts.push(`${input.steersPending} steers pending.`);
+  if (input.ctxPct !== null) parts.push(`Context ${Math.round(input.ctxPct)} percent.`);
+  const note = resumeCardNote(input);
+  if (note !== null) parts.push(`${note}.`);
+  parts.push(input.branch === 'replayable' ? 'Press Enter to resume fresh, r to replay the paused proposal, Escape to return to the list.' : 'Press Enter to resume, Escape to return to the list.');
+  return parts.join(' ');
 }

@@ -1,11 +1,11 @@
 /**
- * Group C — the harness facts (TUI-DESIGN-2 §3.5, verbatim): fourteen facts assembled from the session's own state,
+ * Group C — the harness facts (TUI-DESIGN-2 §3.5, verbatim; TUI-DESIGN-5 §2.3 adds the fifteenth, `peers`): facts assembled from the session's own state,
  * each with a `topic`, `examples` (the Noul's true side) and a `text` (the `[jevcode]` line). `buildFactQuestions`
  * folds one Noul per fact (`about_<key>`) into the intake request; `selectFacts` keeps p ≥ 0.5 in probability order,
  * ≤ 4 lines, else the top 2. Sources and fingerprints only — never a key value. Core types only: this module imports
  * nothing from `src/cli/` (no cycle with the controller's `RunRecord`).
  */
-import type { Answer, EngineMode, GitState, JevProvider, LastTestRun, Question, SandboxLevel, StopReason, TestRunner } from '../core/types.js';
+import type { Answer, EngineMode, GitState, JevProvider, LastTestRun, PeerView, Question, SandboxLevel, StopReason, TestRunner } from '../core/types.js';
 import { noul, ref } from '../jev/questions.js';
 import { clip } from '../core/text.js';
 import { MODE_BADGE_WORD } from '../config/defaults.js';
@@ -13,9 +13,11 @@ import { sandboxText } from '../tui/onboarding/lines.js';
 import { usd2 } from '../tui/budget/lines.js';
 import { stepCostText } from '../tui/plain.js';
 import { modeWord } from './replies.js';
+import { formatDuration } from '../core/time.js';
 
-export type FactKey = 'what_it_is' | 'mode_now' | 'switch_mode' | 'workspace' | 'last_run' | 'last_tests' | 'keys' | 'cost_so_far' | 'sandbox' | 'how_to_task' | 'review' | 'undo' | 'commands' | 'provider';
-export const FACT_KEYS: readonly FactKey[] = ['what_it_is', 'mode_now', 'switch_mode', 'workspace', 'last_run', 'last_tests', 'keys', 'cost_so_far', 'sandbox', 'how_to_task', 'review', 'undo', 'commands', 'provider'];
+/** contract 1.8 item 10 (TUI-DESIGN-5 §2.3, §8.1): `'peers'` — "who else is working here", the fifteenth fact. */
+export type FactKey = 'what_it_is' | 'mode_now' | 'switch_mode' | 'workspace' | 'last_run' | 'last_tests' | 'keys' | 'cost_so_far' | 'sandbox' | 'how_to_task' | 'review' | 'undo' | 'commands' | 'provider' | 'peers';
+export const FACT_KEYS: readonly FactKey[] = ['what_it_is', 'mode_now', 'switch_mode', 'workspace', 'last_run', 'last_tests', 'keys', 'cost_so_far', 'sandbox', 'how_to_task', 'review', 'undo', 'commands', 'provider', 'peers'];
 
 export interface Fact {
   readonly key: FactKey;
@@ -50,6 +52,13 @@ export interface FactsInput {
   sandbox: SandboxLevel;
   runsDir: string;
   provider: { name: JevProvider; host: string; model: string; p50Ms: number | null } | null;
+  /**
+   * TUI-DESIGN-5 §2.3 / §2.4: `SessionHost.peers?()`'s four scalars — a count, a count, an age and a boolean.
+   * **OPTIONAL**, because `undefined` and `null` are different states the fact must not merge: `undefined` is a
+   * caller that has no ledger wiring at all (every pre-round-5 fixture), `null` is a ledger that is not open yet
+   * (§1.4 promise 1). No pid, no path and no device label reaches this fact — a user who wants detail types `/who`.
+   */
+  peers?: PeerView | null;
 }
 
 /** the `topic` column of §3.5 */
@@ -68,6 +77,7 @@ export const FACT_TOPICS: Readonly<Record<FactKey, string>> = {
   undo: 'how to undo or inspect changes',
   commands: 'which commands exist',
   provider: 'how Jev is reached, its model, latency and price',
+  peers: 'whether other JevCode sessions are working here',
 };
 
 /** the `examples` column of §3.5 (the Noul's true side) */
@@ -86,6 +96,7 @@ export const FACT_EXAMPLES: Readonly<Record<FactKey, readonly string[]>> = {
   undo: ['how do I undo that?', 'can I revert the last step?', 'how do I see the diff?'],
   commands: ['what commands are there?', 'how do I see the help?', 'what does /panel do?'],
   provider: ['which Jev model is this?', 'are you on typesafe or openrouter?', 'how fast is Jev?'],
+  peers: ['is anyone else working on this?', 'am I the only jevcode here?', 'who else has this repo open?'],
 };
 
 /** the `false examples` column of §3.5, verbatim (≥ 2 per key; `noul()` throws below two) */
@@ -104,6 +115,7 @@ export const FACT_FALSE_EXAMPLES: Readonly<Record<FactKey, readonly string[]>> =
   undo: ['revert the last commit', 'did the tests pass?'],
   commands: ['run the tests', 'hi'],
   provider: ['which mode is this?', 'what does parse_date do?'],
+  peers: ['which mode is this?', 'fix the failing test'],
 };
 
 /** Jev's price on both providers (§2.1: $0.042 per million input tokens, output free) */
@@ -177,13 +189,34 @@ function costText(s: FactsInput['spend']): string {
   return `Session spend: ${stepCostText(s.sessionUsd)} of ${usd2(s.sessionCapUsd)} (${runs}, ${chats}). /cost has the breakdown.`;
 }
 
+/** TUI-DESIGN-5 §2.4 / §12.1: the peer fact — TD4's two kept sentences, plus §2.4's pointer at `/who`. */
+export const PEERS_UNAVAILABLE_TEXT = 'the peer registry is not available in this build';
+export const PEERS_ALONE_TEXT = 'no other jevcode is working in this workspace';
+
+export function peersFactText(view: PeerView | null | undefined, ascii = false): string {
+  const dash = ascii ? '--' : '\u2014';
+  if (view === undefined) return `${PEERS_UNAVAILABLE_TEXT}.`;
+  if (view === null) return `The session ledger is not open yet ${dash} /who lists every jevcode on this workspace once it is.`;
+  const here = Number.isFinite(view.live) ? Math.max(0, Math.floor(view.live)) : 0;
+  const stale = Number.isFinite(view.stale) ? Math.max(0, Math.floor(view.stale)) : 0;
+  // §2.4's privacy contract: counts, an age and a boolean. Never a pid, never a path, never a device label.
+  if (here <= 1 && stale === 0) return `${PEERS_ALONE_TEXT} ${dash} /who shows what each is doing.`;
+  const others = Math.max(0, here - 1);
+  const parts: string[] = [];
+  parts.push(others === 0 ? 'No other jevcode is live here' : `${others} other jevcode ${others === 1 ? 'session is' : 'sessions are'} working here`);
+  if (stale > 0) parts.push(`${stale} stale`);
+  if (view.oldestStartedMsAgo !== null) parts.push(`the oldest started ${formatDuration(Math.max(0, view.oldestStartedMsAgo))} ago`);
+  if (view.exclusive) parts.push('one holds an exclusive lease');
+  return `${parts.join(', ')} ${dash} /peers counts them, /who shows what each is doing.`;
+}
+
 function providerText(p: FactsInput['provider']): string {
   if (p === null) return `Jev: not configured yet — jevcode login saves a key; ${JEV_PRICE_TEXT}.`;
   const latency = p.p50Ms !== null ? `about ${Math.round(p.p50Ms)} ms per decision, ` : '';
   return `Jev: ${p.name} (${p.host}), model ${p.model}, ${latency}${JEV_PRICE_TEXT}.`;
 }
 
-/** the 14 facts of §3.5; sources and fingerprints only, never a key value */
+/** the 15 facts of §3.5 + TUI-DESIGN-5 §2.3's `peers`; sources and fingerprints only, never a key value */
 export function harnessFacts(i: FactsInput): readonly Fact[] {
   const text: Record<FactKey, string> = {
     what_it_is: WHAT_IT_IS_TEXT,
@@ -200,6 +233,7 @@ export function harnessFacts(i: FactsInput): readonly Fact[] {
     undo: UNDO_TEXT,
     commands: COMMANDS_TEXT,
     provider: providerText(i.provider),
+    peers: peersFactText(i.peers),
   };
   return FACT_KEYS.map((key) => ({ key, topic: FACT_TOPICS[key], examples: FACT_EXAMPLES[key], text: text[key] }));
 }

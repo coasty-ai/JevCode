@@ -14,7 +14,7 @@ import { CREDITS_EXHAUSTED, INTAKE_KEPT, INTAKE_UNREACHABLE, JEV_KEY_REJECTED, L
 import { writeJsonStream } from '../../../src/cli/json-stream.js';
 import { readIndex } from '../../../src/session/index.js';
 import { LOOKUP_FOOTER, LOOKUP_HEADER, lookupMissText } from '../../../src/chat/lookup.js';
-import { WHAT_IT_IS_TEXT } from '../../../src/chat/facts.js';
+import { PEERS_UNAVAILABLE_TEXT, WHAT_IT_IS_TEXT, peersFactText } from '../../../src/chat/facts.js';
 import { fillReply, replyByKey } from '../../../src/chat/replies.js';
 import { ConfigError, ProviderHttpError } from '../../../src/errors.js';
 import { createMockDecider } from '../../../src/jev/mock.js';
@@ -68,13 +68,32 @@ describe('TUI-DESIGN-2 §3.8: the submit path — greetings, tool questions, tas
     expect(h.controller.view.sessionMeter.snapshot().totalUsd).toBeCloseTo(0.0002, 9);
     expect(dispatchedOf(h, 'thinking').map((a) => (a as { phase: string | null }).phase)).toEqual(['intake', null]);
     const rows = dispatchedOf(h, 'chat-decisions').at(-1) as { rows: { step: number; stage: string; id: string }[] } | undefined;
-    expect(rows?.rows.length).toBe(1 + 5 + 1 + 14);
+    // TUI-DESIGN-5 §8.1 item 10 / §2.3: `FactKey` gains `'peers'` (group C 14 -> 15), so the intake asks one more Noul
+    expect(rows?.rows.length).toBe(1 + 5 + 1 + 15);
     expect(rows?.rows.every((r) => r.step === 0 && r.stage === 'intent')).toBe(true);
     expect(rows?.rows.map((r) => r.id)).toContain('intake');
     // the meter push carries the new total to the status row
     const pushed = dispatchedOf(h, 'spend:session');
     expect(pushed.length).toBeGreaterThanOrEqual(0);
     expect(h.decider).toHaveProperty('calls');
+  });
+
+  /**
+   * TUI-DESIGN-5 §8.1 item 10 / §2.4 (round-5 fix pass, finding 9). The 15th fact costs ~140 intake tokens on a
+   * budget measured at 4,366/4,500; the controller has to SET `FactsInput.peers` or every answer is the
+   * permanently false `the peer registry is not available in this build`. `undefined` (no wiring) and `null`
+   * (ledger not open) are deliberately different states, and this is the one that proves the wiring exists.
+   */
+  it('the `peers` fact is WIRED: the controller sets it, so the answer is the ledger state, not "not available in this build"', async () => {
+    const h = await build({ decider: harnessDecider({ usage: USAGE, facts: ['peers'] }), flags: { mode: 'jev-only' } });
+    void h.controller.run();
+    await h.ready();
+    expect(await h.host.submit('what can you do?', { kind: 'prompt', secretSpans: [], pinnedFiles: [] })).toEqual({ became: 'chat' });
+    const reply = bubbles(h, '[jevcode]').at(-1);
+    // the ledger is not open in a chat-only harness, which is `null` — the honest state, and NOT `undefined`
+    expect(reply).toBe(peersFactText(null));
+    expect(reply).not.toContain(PEERS_UNAVAILABLE_TEXT);
+    expect(reply).toContain('/who lists every jevcode on this workspace once it is');
   });
 
   it('`what can you do?` → one [jevcode] item per selected fact, in probability order (what_it_is, mode_now)', async () => {

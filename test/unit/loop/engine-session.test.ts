@@ -272,7 +272,8 @@ describe('run.lock (§8.5)', () => {
     const h = await build({ turns: [read()], limits: { maxSteps: 1 } });
     const runDir = join(h.runsDir, FIXED_RUN_ID);
     const lock = readRunLock(runDir);
-    expect(lock).toEqual({ pid: process.pid, startedAt: expect.any(String), host: hostname() });
+    // TUI-DESIGN-5 §2.10: the lock also records this boot, so `sessions unlock` can tell `other-boot` from `held`
+    expect(lock).toEqual({ pid: process.pid, startedAt: expect.any(String), host: hostname(), bootAt: expect.any(String) });
     await h.engine.run();
     expect(existsSync(join(runDir, 'run.lock'))).toBe(false);
   });

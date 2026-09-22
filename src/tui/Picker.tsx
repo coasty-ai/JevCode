@@ -41,6 +41,14 @@ export interface PickerState {
   readonly renaming: boolean;
   /** `x` pressed: the next `y` deletes */
   readonly deleteArmed: boolean;
+  /**
+   * TUI-DESIGN-5 §2.8 (R5-1's card, landed here with R5-4's shared-shell PR): the expanded resume card's focused
+   * **sub-state** — `null` is the list, `{ runId }` is the card. It exists so the four card letters (`r` replay ·
+   * `f` fresh · `d` diff · `w` who) can resolve **without** taking four more letters away from the filter, which
+   * the picker's composer *is* (`src/session/picker-lines.ts:1–33`; §7 row 91). While it is set the filter is
+   * inert and the card says `Esc returns to the list`; `KeyState.pickerCard` mirrors it for `resolveKey`.
+   */
+  readonly card: { readonly runId: string } | null;
 }
 
 export type PickerAction =
@@ -51,10 +59,12 @@ export type PickerAction =
   | { type: 'preview'; lines: readonly string[] | null }
   | { type: 'rename'; on: boolean }
   | { type: 'deleteArm'; on: boolean }
+  /** TUI-DESIGN-5 §2.8: Enter on a row opens its card; Esc (`{ runId: null }`) returns to the list. */
+  | { type: 'card'; runId: string | null }
   | { type: 'sessions'; sessions: readonly SessionRow[] }
   | { type: 'clamp'; count: number };
 
-export const INITIAL_PICKER: PickerState = { kind: 'sessions', sessions: [], rewindSteps: [], workspace: '', selected: 0, widened: false, sort: 'updated', preview: null, renaming: false, deleteArmed: false };
+export const INITIAL_PICKER: PickerState = { kind: 'sessions', sessions: [], rewindSteps: [], workspace: '', selected: 0, widened: false, sort: 'updated', preview: null, renaming: false, deleteArmed: false, card: null };
 
 function clamp(selected: number, count: number): number {
   return count <= 0 ? 0 : Math.min(Math.max(0, Math.floor(selected)), count - 1);
@@ -66,17 +76,20 @@ export function pickerReducer(s: PickerState, a: PickerAction): PickerState {
     case 'open':
       return { ...INITIAL_PICKER, kind: a.kind, sessions: a.sessions ?? [], rewindSteps: a.rewindSteps ?? [], workspace: a.workspace, sort: a.sort ?? 'updated' };
     case 'move':
-      return { ...s, selected: clamp(s.selected + a.by, a.count), preview: null, deleteArmed: false };
+      // §2.8: the card belongs to ONE row, so any movement of the selection closes it back to the list
+      return { ...s, selected: clamp(s.selected + a.by, a.count), preview: null, deleteArmed: false, card: null };
     case 'page':
-      return { ...s, selected: clamp(s.selected + a.by * Math.max(1, a.size), a.count), preview: null, deleteArmed: false };
+      return { ...s, selected: clamp(s.selected + a.by * Math.max(1, a.size), a.count), preview: null, deleteArmed: false, card: null };
     case 'widen':
-      return { ...s, widened: !s.widened, selected: 0, preview: null, deleteArmed: false };
+      return { ...s, widened: !s.widened, selected: 0, preview: null, deleteArmed: false, card: null };
     case 'preview':
       return { ...s, preview: a.lines, deleteArmed: false };
     case 'rename':
       return { ...s, renaming: a.on, deleteArmed: false };
     case 'deleteArm':
       return { ...s, deleteArmed: a.on };
+    case 'card':
+      return { ...s, card: a.runId === null ? null : { runId: a.runId }, deleteArmed: false };
     case 'sessions':
       return { ...s, sessions: a.sessions, selected: clamp(s.selected, a.sessions.length) };
     case 'clamp':

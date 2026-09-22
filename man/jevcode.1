@@ -27,6 +27,15 @@ jevcode \- coding\-agent harness where Jev decides and the code model writes the
 .B jevcode sessions
 [\fIflags\fR]
 .br
+.B jevcode models
+[\fIflags\fR]
+.br
+.B jevcode import
+[\fIflags\fR]
+.br
+.B jevcode agents
+[\fIflags\fR]
+.br
 .B jevcode report
 [\fIflags\fR]
 .br
@@ -74,6 +83,16 @@ remove a stored API key
 .B sessions
 list, reindex, prune or unlock sessions
 .TP
+.B models
+browse the model catalogue (list, search or refresh); starts no engine
+.TP
+.B import
+import memory, commands and settings from the other coding agents on this
+machine
+.TP
+.B agents
+list the agents of a run from its manifest; starts nothing
+.TP
 .B report
 write a redacted support bundle for a run
 .TP
@@ -91,8 +110,8 @@ upgrade through the detected package manager
 .SH OPTIONS
 Common flags (every command):
 .TP
-.BI \-\-provider " anthropic|openrouter"
-generator provider
+.BI \-\-provider " anthropic|openrouter|openai|gemini|xai|fireworks|meta"
+generator provider (models: filter the catalogue to one provider)
 .TP
 .BI \-\-model " <id>"
 generator model id
@@ -160,11 +179,25 @@ sandbox profile
 deny network to sandboxed commands
 .TP
 .BI \-\-plain
-plain line renderer instead of the TUI (readline composer on a TTY)
+plain line renderer instead of the TUI (readline composer on a TTY;
+models/import/agents: the numbered list)
+.TP
+.BI \-\-ascii
+ASCII glyphs (auto on TERM=dumb, TERM=linux, non\-UTF\-8 locale); fixed at
+launch
+.TP
+.BI \-\-screen\-reader
+screen\-reader mode (numbered prompts, no bars; implies \-\-plain on a pipe);
+fixed at launch
+.TP
+.BI \-\-resume " <id|title>"
+chat/run: continue a run by id, or a session by exact title or unique prefix;
+bench: resume <bench\-id>; import: continue a partly\-applied import by its id
 .TP
 .BI \-\-json
 chat/run: NDJSON event stream on stdout (non\-interactive; \-\-json=verbose
-adds status events); config/sessions/why/calibration: JSON output
+adds status events); config/sessions/models/import/agents/why/calibration:
+JSON output
 .TP
 .BI \-\-help
 show usage
@@ -190,16 +223,8 @@ renderer (default classic); fullscreen pins the header on the alternate screen
 .BI \-\-fullscreen
 shorthand for \-\-renderer fullscreen
 .TP
-.BI \-\-ascii
-ASCII glyphs (auto on TERM=dumb, TERM=linux, non\-UTF\-8 locale); fixed at
-launch
-.TP
 .BI \-\-title
 set the terminal title (OSC 2)
-.TP
-.BI \-\-screen\-reader
-screen\-reader mode (numbered prompts, no bars; implies \-\-plain on a pipe);
-fixed at launch
 .TP
 .BI \-\-no\-animation
 reduced motion: static spinner, 1 Hz clock (default on with
@@ -265,10 +290,6 @@ post\-run update check through a detached jevcode upgrade \-\-check
 .BI \-\-continue
 continue the most recently used session in this workspace
 .TP
-.BI \-\-resume " <id|title>"
-chat/run: continue a run by id, or a session by exact title or unique prefix;
-bench: resume <bench\-id>
-.TP
 .BI \-\-force
 with \-\-resume/\-\-continue: resume a run whose stopReason is complete
 instead of seeding a follow\-up
@@ -280,6 +301,29 @@ print the sessions of this workspace and exit
 engine mode (default llm\-jev): jev\-only (Jev alone, no generating LLM),
 jev\-on (Jev + the code model), jev\-off (generator only), llm\-jev (candidate
 patches, tests verify, Jev arbitrates)
+.TP
+.BI \-\-force\-takeback
+with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
+ordinary resume never does
+.TP
+.BI \-\-split " off|auto|ask"
+split the task across agents (default off; orchestrate.split)
+.TP
+.BI \-\-max\-agents " <n>"
+the most agents one split may start (orchestrate.maxAgents)
+.TP
+.BI \-\-yes\-split
+with \-\-split ask: accept the proposed manifest without the confirm
+.TP
+.BI \-\-no\-wait
+never wait for an agent slot: refuse rather than queue
+(orchestrate.agentWaitCeilingMs)
+.TP
+.BI \-\-no\-memory
+do not read the project and user memory files into the run
+.TP
+.BI \-\-no\-import
+never offer to import from the other coding agents on this machine
 .PP
 Flags of \fBrun\fR:
 .TP
@@ -299,16 +343,8 @@ renderer (default classic); fullscreen pins the header on the alternate screen
 .BI \-\-fullscreen
 shorthand for \-\-renderer fullscreen
 .TP
-.BI \-\-ascii
-ASCII glyphs (auto on TERM=dumb, TERM=linux, non\-UTF\-8 locale); fixed at
-launch
-.TP
 .BI \-\-title
 set the terminal title (OSC 2)
-.TP
-.BI \-\-screen\-reader
-screen\-reader mode (numbered prompts, no bars; implies \-\-plain on a pipe);
-fixed at launch
 .TP
 .BI \-\-no\-animation
 reduced motion: static spinner, 1 Hz clock (default on with
@@ -374,10 +410,6 @@ post\-run update check through a detached jevcode upgrade \-\-check
 .BI \-\-continue
 continue the most recently used session in this workspace
 .TP
-.BI \-\-resume " <id|title>"
-chat/run: continue a run by id, or a session by exact title or unique prefix;
-bench: resume <bench\-id>
-.TP
 .BI \-\-force
 with \-\-resume/\-\-continue: resume a run whose stopReason is complete
 instead of seeding a follow\-up
@@ -392,6 +424,29 @@ read the task text from a file
 engine mode (default llm\-jev): jev\-only (Jev alone, no generating LLM),
 jev\-on (Jev + the code model), jev\-off (generator only), llm\-jev (candidate
 patches, tests verify, Jev arbitrates)
+.TP
+.BI \-\-force\-takeback
+with \-\-resume: re\-take a run a peer claimed (bumps the claim epoch); an
+ordinary resume never does
+.TP
+.BI \-\-split " off|auto|ask"
+split the task across agents (default off; orchestrate.split)
+.TP
+.BI \-\-max\-agents " <n>"
+the most agents one split may start (orchestrate.maxAgents)
+.TP
+.BI \-\-yes\-split
+with \-\-split ask: accept the proposed manifest without the confirm
+.TP
+.BI \-\-no\-wait
+never wait for an agent slot: refuse rather than queue
+(orchestrate.agentWaitCeilingMs)
+.TP
+.BI \-\-no\-memory
+do not read the project and user memory files into the run
+.TP
+.BI \-\-no\-import
+never offer to import from the other coding agents on this machine
 .PP
 Flags of \fBconfig\fR:
 .TP
@@ -411,16 +466,8 @@ renderer (default classic); fullscreen pins the header on the alternate screen
 .BI \-\-fullscreen
 shorthand for \-\-renderer fullscreen
 .TP
-.BI \-\-ascii
-ASCII glyphs (auto on TERM=dumb, TERM=linux, non\-UTF\-8 locale); fixed at
-launch
-.TP
 .BI \-\-title
 set the terminal title (OSC 2)
-.TP
-.BI \-\-screen\-reader
-screen\-reader mode (numbered prompts, no bars; implies \-\-plain on a pipe);
-fixed at launch
 .TP
 .BI \-\-no\-animation
 reduced motion: static spinner, 1 Hz clock (default on with
@@ -484,13 +531,16 @@ generator token cap under \-\-allow\-unpriced (default spend cap / 15 ×
 post\-run update check through a detached jevcode upgrade \-\-check
 .TP
 .BI \-\-all
-include the hidden bookkeeping rows (seen.*)
+config: include the hidden bookkeeping rows (seen.*); sessions who: include
+sessions gone more than 10 minutes and ignored devices
+.TP
+.BI \-\-no\-memory
+do not read the project and user memory files into the run
+.TP
+.BI \-\-no\-import
+never offer to import from the other coding agents on this machine
 .PP
 Flags of \fBbench\fR:
-.TP
-.BI \-\-resume " <id|title>"
-chat/run: continue a run by id, or a session by exact title or unique prefix;
-bench: resume <bench\-id>
 .TP
 .BI \-\-suite " swebench|terminal\-bench|quixbugs|ladder|all"
 benchmark suite (quixbugs/ladder: the jev\-only difficulty ladder)
@@ -560,6 +610,35 @@ remove the saved generator key
 .BI \-\-jev
 remove the saved Jev key
 .PP
+Flags of \fBsessions\fR:
+.TP
+.BI \-\-all
+config: include the hidden bookkeeping rows (seen.*); sessions who: include
+sessions gone more than 10 minutes and ignored devices
+.TP
+.BI \-\-device " <label>"
+with sessions gc: the device to remove, resolved by walking the disk to 1,024
+devices (never through the 16\-device fold cap)
+.TP
+.BI \-\-rotate
+with sessions pair: take a new device id and key, invalidating the old one
+everywhere
+.PP
+Flags of \fBimport\fR:
+.TP
+.BI \-\-dry\-run
+plan and report only — nothing is written
+.TP
+.BI \-\-yes
+apply the non\-credential rows without the review step (a credential row
+always needs a terminal)
+.TP
+.BI \-\-scope " user|project|both"
+where the imported rows are written (default both)
+.TP
+.BI \-\-undo " <importId>"
+restore the files one earlier import replaced
+.PP
 Flags of \fBreport\fR:
 .TP
 .BI \-\-out " <path>"
@@ -599,8 +678,9 @@ queue a directive for the next step (= Enter while live) (live)
 .B /unsteer
 take the newest queued steer back (= Up on the first row) (live)
 .TP
-.B /pause
-stop after the step in flight commits (= Esc) (live)
+.B /pause \fI[now] [<target>]\fR
+stop after the step in flight commits (= Esc); `now` interrupts, a target asks
+a peer (any)
 .TP
 .B /abort
 stop the run now (= Esc Esc); the step in flight is discarded (live)
@@ -640,7 +720,7 @@ max\-replans) (any)
 .B /model, /ml \fI[id]\fR
 generator model for the next run only (any)
 .TP
-.B /provider \fI[anthropic|openrouter]\fR
+.B /provider \fI[anthropic|openrouter|openai|gemini|xai|fireworks|meta]\fR
 generator provider for the next run only (any)
 .TP
 .B /mode, /m \fI[jev\-only|jev\-on|jev\-off|llm\-jev]\fR
@@ -664,8 +744,9 @@ reopen the workspace trust gate (idle)
 .B /theme, /t \fI<dark|light|daltonized|ansi>\fR
 colour theme for new items and the dynamic region (any)
 .TP
-.B /panel, /p \fI[d|p|t|s|off|full]\fR
-Jev panel: toggle, open a tab (d|p|t|s), collapse (off) or expand (full) (any)
+.B /panel, /p \fI[d|p|t|s|a|off|full]\fR
+Jev panel: toggle, open a tab (d|p|t|s|a), collapse (off) or expand (full)
+(any)
 .TP
 .B /transcript, /tr \fI[compact|full]\fR
 transcript view: compact (one line per step) or full (every stage line) (any)
@@ -703,10 +784,57 @@ relaunch) (any)
 print the transcript to the primary screen for copy and find (any)
 .TP
 .B /peers
-other jevcode instances working in this workspace (any)
+other jevcode instances working in this workspace · /who shows what
+each is doing (any)
 .TP
 .B /ui \fIreset\fR
 ui maintenance: reset re\-enables panes that failed to render (any)
+.TP
+.B /who \fI[\-\-all]\fR
+every jevcode session on this repo, with what each is doing (any)
+.TP
+.B /inbox \fI[\-\-all]\fR
+unread messages from other sessions, newest first (any)
+.TP
+.B /tell \fI<target> <text>\fR
+send one session a message (any)
+.TP
+.B /headsup \fI<text>\fR
+broadcast what you are about to touch to every live session here (any)
+.TP
+.B /request \fI<target> pause|end|steer [<text>]\fR
+ask a session to pause, end or take a steer — it answers y/n (any)
+.TP
+.B /end \fI[now] [<target>]\fR
+end this session — /resume afterwards needs \-\-force (any)
+.TP
+.B /context
+what the generator sees this step, and what it costs (any)
+.TP
+.B /compact
+fold the history now instead of waiting for the next trigger (live)
+.TP
+.B /split \fI[auto|ask|off]\fR
+the split policy for the next step (any)
+.TP
+.B /agents
+the agent tree — opens and focuses the `a` pane tab (Alt+A) (any)
+.TP
+.B /agent \fI<slug> pause|resume|steer|budget|land|kick|drop|diff [args]\fR
+one verb against one agent, by slug (any)
+.TP
+.B /land \fI[<slug>]\fR
+land a finished agent's work into the dock (idle)
+.TP
+.B /spawn \fI<role> <glob> [task]\fR
+one extra agent against the live manifest (live)
+.TP
+.B /import, /imp \fI[\-\-dry\-run] [<source>]\fR
+import memory, commands and settings from the other coding agents on this
+machine (idle)
+.TP
+.B /memory, /mem \fI[list|show|add|forget|reload] [<text>]\fR
+the project and user memory this run reads (any)
 .SH KEYS
 .SS Global
 .TP
@@ -735,10 +863,15 @@ repaint the dynamic region (erase\-lines + rewrite, never a clear)
 suspend to the shell (fg resumes and repaints)
 .TP
 .B ]
-next pane tab (d → p → t → s); opens a collapsed panel
+next pane tab (d → p → t → s, + a while delegating);
+opens a collapsed panel
 .TP
 .B [
 previous pane tab; opens a collapsed panel
+.TP
+.B Alt+A
+focus the agents tab so its keys resolve (Esc unfocuses); refused with a
+non\-empty draft
 .TP
 .B Alt+J
 toggle the Jev panel between the collapsed strip and the open 6\-row form (=
@@ -904,6 +1037,45 @@ then y: move the run directory to ~/.jevcode/trash/ (never rm \-rf)
 .TP
 .B Esc
 close the picker
+.TP
+.B R
+resume by replaying the paused proposal (only when it is still replayable)
+.TP
+.B F
+resume with a fresh step instead of the paused proposal
+.TP
+.B D
+diff the workspace since the pause
+.TP
+.B W
+who else is live on this repo right now
+.SS Agents tab
+.TP
+.B Enter
+attach to the highlighted agent read\-only (its transcript tails into the
+pane)
+.TP
+.B P
+pause the highlighted agent at its next step (= /agent <slug> pause)
+.TP
+.B T
+steer the highlighted agent (the composer row becomes the steer field)
+.TP
+.B +
+raise the highlighted agent's cap (= /agent <slug> budget)
+.TP
+.B D
+the highlighted agent's diff against the base (= /agent <slug> diff)
+.TP
+.B K
+kick the highlighted agent once (= /agent <slug> kick)
+.TP
+.B X X
+then x again: drop the agent — its uncommitted diff is lost, which is
+why it takes two keys
+.TP
+.B L
+land the highlighted agent into the dock (= /agent <slug> land)
 .SS Palette
 .TP
 .B Up, Ctrl+P

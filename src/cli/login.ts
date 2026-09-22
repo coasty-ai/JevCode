@@ -41,8 +41,6 @@ import {
   LOGIN_JEV_PROVIDER_REQUIRED,
   LOGIN_ONE_KEY_PROMPT,
   LOGIN_OTHER_WAYS_PROMPT,
-  PROVIDER_DISPLAY,
-  PROVIDER_ENV,
   WIZARD_REUSE_HINT,
   fixBlockLines,
   jevKeyTitle,
@@ -57,6 +55,13 @@ import {
   verifiedTypesafeText,
 } from '../tui/onboarding/lines.js';
 import { HINT_TOO_SHORT, hintPrefix, looksLikeKey, sanitizeKeyInput, type WizardProvider } from '../tui/onboarding/reducer.js';
+// TUI-DESIGN-5 §6.2 / §6.3: `provider/ids.ts` and `config/provider-tables.ts` are the two ZERO-IMPORT provider
+// modules the argv path may read (this file is on it — `src/cli/session.ts:194` imports it statically). The
+// catalogue itself (`src/models/**`) arrives only through the `await import()` in `verifyProviderKey`.
+import { PROVIDER_IDS, isProviderId, keyEnvNames } from '../provider/ids.js';
+import { PROVIDER_DISPLAY_NAME } from '../config/provider-tables.js';
+import { browseOnlyText, keyRateLimitedText, keyRejectedText, keyVerifiedText } from '../tui/models/lines.js';
+import type { ProviderId } from '../provider/ids.js';
 
 /** TUI-DESIGN §24 (CLI): the refusal for `jevcode config set generator.apiKey …` and friends. */
 export const SECRET_AS_ARGUMENT_REFUSED = "secret settings are set with 'jevcode login' (stdin or masked prompt), never as an argument";
@@ -68,14 +73,41 @@ export const KEY_STDIN_ONE_PROVIDER = '--key-stdin is the one-OpenRouter-key for
 export const LOGIN_JEV_SKIP_HINT = 'Enter = skip';
 /** TUI-DESIGN-2 §1.4: why `jevcode login` used this generator provider (printed beside a saved generator key, never silently) */
 export type GeneratorProviderWhy = '--provider' | 'JEVCODE_PROVIDER' | 'file' | 'default';
-/** `[setup] generator provider: openrouter (default)` — the generator provider is written only with a generator key, and named */
-export function generatorProviderText(provider: WizardProvider, why: GeneratorProviderWhy): string {
+/** `[setup] generator provider: openrouter (default)` — the generator provider is written only with a generator key, and named (TUI-DESIGN-5 §6.3 row 3: seven ids, not two) */
+export function generatorProviderText(provider: ProviderId, why: GeneratorProviderWhy): string {
   return `generator provider: ${provider} (${why})`;
 }
 /** TUI-DESIGN §11.1: the OpenRouter Jev prompt text (the §24 title without its counter, as a readline prompt); `jevKeyPrompt` keys it by provider. */
 export const JEV_KEY_PROMPT = 'Jev API key (JEV_API_KEY; falls back to OPENROUTER_API_KEY): ';
 /** TUI-DESIGN-2 §12 "Wizard": the provider question as a readline prompt (a plain line; nothing secret is typed there). */
 export const JEV_PROVIDER_PROMPT = `${LOGIN_JEV_PROVIDER_PROMPT}: `;
+/**
+ * TUI-DESIGN-5 §6.1 / D-AP, the runtime half: the providers `jevcode login` may write into `generator.provider`.
+ *
+ * D-AP's **type** half has landed (`ProviderName` and `GeneratorConfig.provider` are `ProviderId`,
+ * `src/core/types.ts:758`, `:2590`) but its **runtime** half has not: `src/config/validate.ts:161` still throws
+ * `one of anthropic|openrouter`, and `config.generator()` is on the ordinary startup path
+ * (`src/cli/session.ts:719`, `:2229`). Writing `provider: gemini` would therefore leave a profile in which every
+ * later `jevcode chat/run/config` exits 2 at startup and only a hand edit repairs it — the writer half of D-AP
+ * without the reader half. So the write is refused with a reason instead (§7 row 77's rule for exactly this
+ * pre-D-AP window: shown, marked, and refused as a pending value).
+ *
+ * **This constant and `providerNotPersistableText` are deleted together with the guard in `commandLogin` the
+ * moment R5-3 lands the `isProviderId(provider)` hunk in `validate.ts`** — `test/unit/cli/login.test.ts` reads
+ * that file and fails as soon as the two disagree, so the guard cannot outlive its reason.
+ */
+export const PERSISTABLE_PROVIDERS: readonly ProviderId[] = ['anthropic', 'openrouter'];
+
+/** Can `generator.provider: <id>` be read back by `src/config/validate.ts` as it stands on this tree? */
+export function isPersistableProvider(id: ProviderId): boolean {
+  return PERSISTABLE_PROVIDERS.some((p) => p === id);
+}
+
+/** The refusal, headed by §12.5 S107's own words so there is one vocabulary for "this cannot generate yet". */
+export function providerNotPersistableText(id: ProviderId): string {
+  return `${browseOnlyText(id)}; --provider ${PERSISTABLE_PROVIDERS.join('|')} sets a key a run can use today, and 'jevcode models' browses the rest`;
+}
+
 /** TUI-DESIGN §11.1: verification timeout. */
 export const VERIFY_TIMEOUT_MS = 5000;
 /** masked prompt attempts before giving up */
@@ -246,6 +278,21 @@ function parseProvider(s: string | undefined): WizardProvider | null {
   return t === 'anthropic' || t === 'openrouter' ? t : null;
 }
 
+/**
+ * TUI-DESIGN-5 §6.5 (D-AR (b)): every one of the seven ids. The hardened wizard stays binary — `WizardProvider`
+ * and `KEY_PREFIXES` are untouched (§6.3 row 4) — and the other five are reached through `jevcode login --provider
+ * <id>` and `/provider <id>`. `isProviderId` reads no prototype key, so `'toString'` is not a provider.
+ */
+export function parseAnyProvider(s: string | undefined): ProviderId | null {
+  const t = s?.trim().toLowerCase();
+  return t !== undefined && isProviderId(t) ? t : null;
+}
+
+/** The two the hardened wizard knows how to prompt for; the other five have no documented key prefix to hint at. */
+function asWizardProvider(id: ProviderId): WizardProvider | null {
+  return id === 'anthropic' || id === 'openrouter' ? id : null;
+}
+
 /** TUI-DESIGN-2 §2.3: `typesafe` | `openrouter`; `auto`, empty and unknown are null (the caller decides whether that is an error). */
 export function parseJevProvider(s: string | undefined): JevProvider | null {
   const t = s?.trim().toLowerCase();
@@ -300,15 +347,16 @@ export function loginModeSource(lookup: EnvLookup, file: Pick<CredentialsFile, '
  * TUI-DESIGN-2 §1.4: the generator provider and why — `--provider`, `JEVCODE_PROVIDER`, the file's `provider`, else the
  * wizard's prompted default `DEFAULT_PROVIDER` (openrouter, commit 2a92d0b). Throws ConfigError on an unknown `--provider`.
  */
-function generatorProviderFor(flags: LoginFlags, io: CommandIo, file: CredentialsFile): { provider: WizardProvider; why: GeneratorProviderWhy } {
-  const fromFlag = parseProvider(flags.provider);
+function generatorProviderFor(flags: LoginFlags, io: CommandIo, file: CredentialsFile): { provider: ProviderId; why: GeneratorProviderWhy } {
+  // TUI-DESIGN-5 §6.5: all seven ids here; the *wizard* stays binary (D-AR (b)), this is its CLI twin
+  const fromFlag = parseAnyProvider(flags.provider);
   if (fromFlag) return { provider: fromFlag, why: '--provider' };
-  if (flags.provider !== undefined) throw new ConfigError(`--provider: expected anthropic|openrouter, got "${flags.provider}"`, { setting: 'generator.provider' });
-  const fromEnv = parseProvider(io.env['JEVCODE_PROVIDER']);
+  if (flags.provider !== undefined) throw new ConfigError(`--provider: expected ${PROVIDER_IDS.join('|')}, got "${flags.provider}"`, { setting: 'generator.provider' });
+  const fromEnv = parseAnyProvider(io.env['JEVCODE_PROVIDER']);
   if (fromEnv) return { provider: fromEnv, why: 'JEVCODE_PROVIDER' };
-  const fromFile = parseProvider(file.provider ?? undefined);
+  const fromFile = parseAnyProvider(file.provider ?? undefined);
   if (fromFile) return { provider: fromFile, why: 'file' };
-  return { provider: parseProvider(DEFAULT_PROVIDER) ?? 'openrouter', why: 'default' };
+  return { provider: parseAnyProvider(DEFAULT_PROVIDER) ?? 'openrouter', why: 'default' };
 }
 
 /**
@@ -417,8 +465,14 @@ function printFix(io: CommandIo, mode: EngineMode, provider: WizardProvider | nu
   for (const l of fixBlockLines(mode, provider)) io.stderr.write(`${l}\n`);
 }
 
-function generatorPrompt(provider: WizardProvider): string {
-  return `${PROVIDER_DISPLAY[provider]} API key (${PROVIDER_ENV[provider]}): `;
+/**
+ * TUI-DESIGN-5 §6.3 row 5: the title reads the SEVEN-entry tables — `keyEnvNames(id)[0]` (already in
+ * `provider/ids.ts`) and `PROVIDER_DISPLAY_NAME` (the R14 fallback). The two-entry `PROVIDER_DISPLAY` /
+ * `PROVIDER_ENV` in `src/tui/onboarding/lines.ts` are R5-5's to re-point; until then the two agree for the two
+ * providers they both know, which `test/unit/config/provider.test.ts` asserts.
+ */
+function generatorPrompt(provider: ProviderId): string {
+  return `${PROVIDER_DISPLAY_NAME[provider]} API key (${keyEnvNames(provider)[0] ?? 'the provider key'}): `;
 }
 
 async function statusLines(io: CommandIo, mode: EngineMode, modeSource: string): Promise<{ lines: string[]; ok: boolean }> {
@@ -589,6 +643,92 @@ export function verifyExitCode(results: readonly VerifyResult[]): number {
   return failed.some((r) => r.reason === undefined || r.reason === 'rejected' || r.reason === 'model') ? EXIT_CODES.config : EXIT_CODES.api;
 }
 
+/**
+ * TUI-DESIGN-5 §6.5 / D-AR / §7 row 78 / §12.5 S106: **verification is the free catalogue GET, never the priced
+ * probe.** `verifyProvider` (`src/models/verify.ts:37`) sends one authenticated list (or key-info) request across
+ * all seven providers, returns `{ ok, latencyMs, via, modelCount?, error? }` and is redacted by construction —
+ * nothing from the response body is surfaced, so a gateway that echoes `Authorization` into its 401 cannot leak the
+ * key we just typed (§7 row 65).
+ *
+ * **Ctrl-C:** one `AbortController` per request (the wizard's shape, `src/tui/onboarding/Wizard.tsx:141`, `:180`) —
+ * only the in-flight call aborts and the key already typed is kept, so the caller may retry without re-pasting. An
+ * aborted check returns `aborted: true` and an **empty** `text`: a cancel prints nothing.
+ *
+ * `src/models/index.js` is reached by `await import()`, never statically: this module is on the argv path
+ * (`src/cli/session.ts:194`) and `models/index.js` pulls the whole catalogue, `provider/openrouter.js` included
+ * (§6.2, gate G-R5-1).
+ */
+export interface ProviderKeyCheck {
+  ok: boolean;
+  /** the `[setup] …` line (§12.5 S106); `''` when the request was aborted */
+  text: string;
+  aborted?: boolean;
+  /** models the key can see, when the check listed them (OpenRouter's `/key` answers without a count) */
+  modelCount?: number;
+  reason?: 'rejected' | 'rate_limited' | 'unreachable';
+}
+
+export async function verifyProviderKey(provider: ProviderId, apiKey: string, opts: { fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number } = {}): Promise<ProviderKeyCheck> {
+  const name = PROVIDER_DISPLAY_NAME[provider];
+  const { errorLabel, verifyProvider } = await import('../models/index.js');
+  let result;
+  try {
+    result = await verifyProvider(
+      { provider },
+      apiKey,
+      { ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }) },
+      { ...(opts.signal === undefined ? {} : { signal: opts.signal }), timeoutMs: opts.timeoutMs ?? VERIFY_TIMEOUT_MS },
+    );
+  } catch (e) {
+    // `verifyProvider` rethrows `signal.reason` on an abort and nothing else (`src/models/verify.ts:81`)
+    if (opts.signal?.aborted === true) return { ok: false, text: '', aborted: true };
+    throw e;
+  }
+  if (opts.signal?.aborted === true) return { ok: false, text: '', aborted: true };
+  if (result.ok) return { ok: true, text: keyVerifiedText(name, result.modelCount), ...(result.modelCount === undefined ? {} : { modelCount: result.modelCount }) };
+  const error = result.error;
+  if (error?.kind === 'auth') return { ok: false, text: keyRejectedText(name, error.status ?? 401), reason: 'rejected' };
+  if (error?.kind === 'rate_limit') return { ok: false, text: keyRateLimitedText(name), reason: 'rate_limited' };
+  // `no_key` is "nothing was typed"; `network`/`http`/`invalid` are "could not reach it and be sure". Both keep the
+  // catalogue's own sentence (§12.5 S102) rather than a second hand-written string.
+  if (error === undefined) return { ok: false, text: `${name}: could not be reached`, reason: 'unreachable' };
+  return { ok: false, text: errorLabel(provider, error), reason: error.kind === 'no_key' ? 'rejected' : 'unreachable' };
+}
+
+/**
+ * §6.5 / §7 row 78: several providers, **one `AbortController` per request** — minted here, one per id, and
+ * handed to `onRequest` so a caller can cancel a single provider without touching the others (the wizard's shape,
+ * `src/tui/onboarding/Wizard.tsx:180`). `opts.signal` is the caller's own Ctrl-C and is chained into every
+ * request through `AbortSignal.any`, so it still cancels the whole batch; the two are different powers and both
+ * exist. An aborted member answers `{ ok: false, text: '', aborted: true }` and the rest keep going.
+ */
+export async function verifyProviderKeys(
+  keys: Readonly<Partial<Record<ProviderId, string>>>,
+  opts: { fetch?: typeof fetch; signal?: AbortSignal; timeoutMs?: number; onRequest?: (id: ProviderId, controller: AbortController) => void } = {},
+): Promise<ProviderKeyCheck[]> {
+  const ids = PROVIDER_IDS.filter((id) => (keys[id] ?? '').trim() !== '');
+  const base = { ...(opts.fetch === undefined ? {} : { fetch: opts.fetch }), ...(opts.timeoutMs === undefined ? {} : { timeoutMs: opts.timeoutMs }) };
+  return Promise.all(
+    ids.map((id) => {
+      const controller = new AbortController();
+      opts.onRequest?.(id, controller);
+      const signal = opts.signal === undefined ? controller.signal : AbortSignal.any([controller.signal, opts.signal]);
+      return verifyProviderKey(id, keys[id] ?? '', { ...base, signal });
+    }),
+  );
+}
+
+/**
+ * §6.5: the free catalogue check as a row in `--verify`'s **one** results list. §6.5 describes the new outcome
+ * strings as "parallel to `verifiedGeneratorText`/`verificationFailedText`" — an addition, not a replacement of
+ * the verify step, so the decider half still runs and `verifyExitCode` still states the exit contract in one
+ * place (§13.5: a rejected key is 2, unreachable / rate limited is 5).
+ */
+export function providerCheckResult(check: ProviderKeyCheck): VerifyResult {
+  if (check.ok) return { which: 'generator', ok: true, text: check.text };
+  return { which: 'generator', ok: false, text: check.text, reason: check.reason === 'rejected' ? 'rejected' : 'unreachable' };
+}
+
 /** Write the patch and print its items/warnings; the exit code (0, or 2 on a ConfigError, 1 otherwise). */
 async function save(patch: CredentialsPatch, source: 'login' | 'stdin', flags: LoginFlags, io: CommandIo, generatorWhy: GeneratorProviderWhy): Promise<number> {
   try {
@@ -628,7 +768,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
     io.stderr.write(`jevcode: ${KEY_STDIN_ONE_PROVIDER}\n`);
     return EXIT_CODES.config;
   }
-  let generator: { provider: WizardProvider; why: GeneratorProviderWhy };
+  let generator: { provider: ProviderId; why: GeneratorProviderWhy };
   try {
     generator = generatorProviderFor(flags, io, file);
   } catch (e) {
@@ -643,10 +783,20 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
   const wantGenerator = flags.generatorKeyStdin === true;
   const wantJev = flags.jevKeyStdin === true;
   const wantOneKey = flags.keyStdin === true;
+  /**
+   * The D-AP guard (see `PERSISTABLE_PROVIDERS`): refuse **before** a key is typed, never after. `--key-stdin` is
+   * the one-OpenRouter-key form and is checked above; every other shape that reaches a generator key writes
+   * `patch.provider = provider`, which is what `src/config/validate.ts` has to be able to read back.
+   */
+  if (!wantOneKey && (generatorStep || wantGenerator) && !isPersistableProvider(provider)) {
+    io.stderr.write(`jevcode: ${providerNotPersistableText(provider)}\n`);
+    return EXIT_CODES.config;
+  }
   const interactive = io.stdin.isTTY === true || io.readMasked !== undefined;
   // §2.3: the Jev provider — the flag, the session's own resolution, else the local rules; the generator provider is never one of them
   const inferred = inferJevProvider({ flag: flags.jevProvider, resolved: await resolvedJevProvider(io, file), lookup, file });
-  const fixProvider = generatorStep || wantGenerator ? provider : null;
+  // the fix block's key lines are the wizard's two; one of the five new ids has no `KEY_PREFIXES` row to name (§6.3 row 4)
+  const fixProvider = generatorStep || wantGenerator ? asWizardProvider(provider) : null;
   /** the fix block names a generator whenever this login asked for one (§12 "Wizard": the Anthropic line is jev-on only) */
   const fixMode: EngineMode = (generatorStep || wantGenerator || wantOneKey) && mode === 'jev-only' ? 'jev-on' : mode;
   /** TUI-DESIGN-3 §1.6: `[j] Jev only` on the other-ways line — the mode is persisted after the save */
@@ -693,7 +843,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
     if (interactive) {
       // A terminal cannot deliver a "stdin line" without echoing it: the flagged keys are asked for masked instead.
       if (wantGenerator) {
-        const k = await promptKey(io, generatorPrompt(provider), provider, false);
+        const k = await promptKey(io, generatorPrompt(provider), asWizardProvider(provider), false);
         if (k === CANCELLED || k === null) {
           printFix(io, fixMode, fixProvider);
           return EXIT_CODES.config;
@@ -794,7 +944,7 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
       oneKey(k);
     }
   } else if (interactive && generatorStep) {
-    const gen = await promptKey(io, generatorPrompt(provider), provider, false);
+    const gen = await promptKey(io, generatorPrompt(provider), asWizardProvider(provider), false);
     if (gen === CANCELLED || gen === null) {
       printFix(io, fixMode, fixProvider);
       return EXIT_CODES.config;
@@ -865,12 +1015,29 @@ export async function commandLogin(flags: LoginFlags, io: CommandIo): Promise<nu
   }
 
   if (flags.verify) {
-    const verify = io.verify ?? ((input: VerifyInput) => verifyKeys(input, io.fetch ?? fetch));
+    const chosen = patch.provider ?? provider;
+    const wizardChosen = asWizardProvider(chosen);
     const verifyMode: EngineMode = persistJevOnly ? 'jev-only' : patch.apiKey !== undefined && mode === 'jev-only' ? 'jev-on' : mode;
     const jp = patch.jevProvider ?? inferred;
-    const results = await verify({ provider: patch.provider ?? provider, jevProvider: jp, generatorKey: patch.apiKey ?? null, jevKey: patch.jevApiKey ?? null, mode: verifyMode, generatorModel: loginGeneratorModel(lookup, file), jevBaseUrl: JEV_PROVIDERS[jp ?? 'openrouter'].baseUrl, jevModel: JEV_PROVIDERS[jp ?? 'openrouter'].defaultModel });
-    for (const r of results) io.stdout.write(`[setup] ${r.text}\n`);
-    return verifyExitCode(results);
+    /**
+     * TUI-DESIGN-5 §6.5 (D-AR): one of the five providers the hardened wizard does not know is verified with the
+     * **free catalogue GET**, never the priced decider probe — spending a token to prove an OpenAI key can list
+     * models is indefensible. The two the wizard does know keep `verifyKeys` (the landed priced path that also
+     * checks the decider), so no existing `--verify` run changes shape.
+     */
+    const free: VerifyResult[] = [];
+    if (wizardChosen === null && patch.apiKey !== undefined) {
+      const check = await verifyProviderKey(chosen, patch.apiKey, { ...(io.fetch ? { fetch: io.fetch } : {}) });
+      // an aborted check prints nothing (§7 row 78) and is not a failure; anything else is a row in the one list
+      if (!(check.aborted === true)) free.push(providerCheckResult(check));
+    }
+    const verify = io.verify ?? ((input: VerifyInput) => verifyKeys(input, io.fetch ?? fetch));
+    // the generator half was just checked for free; `verifyKeys` still runs, for the DECIDER key written in the
+    // same invocation — returning early here silently verified strictly less than `--verify` used to (§6.5)
+    const results = await verify({ provider: wizardChosen ?? 'openrouter', jevProvider: jp, generatorKey: wizardChosen === null ? null : (patch.apiKey ?? null), jevKey: patch.jevApiKey ?? null, mode: verifyMode, generatorModel: loginGeneratorModel(lookup, file), jevBaseUrl: JEV_PROVIDERS[jp ?? 'openrouter'].baseUrl, jevModel: JEV_PROVIDERS[jp ?? 'openrouter'].defaultModel });
+    const all = [...free, ...results];
+    for (const r of all) io.stdout.write(`[setup] ${r.text}\n`);
+    return verifyExitCode(all);
   }
   return EXIT_CODES.ok;
 }

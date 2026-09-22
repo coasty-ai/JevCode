@@ -1,9 +1,10 @@
 # JevCode interactive TUI — user guide
 
 The user-facing guide to `jevcode` on a terminal (TUI-DESIGN §21; round 2 TUI-DESIGN-2), describing the behaviour on
-disk as of 2026-09-21: modes and the mode badge, the conversation (what happens when you press Enter), the composer and
+disk as of 2026-09-22: modes and the mode badge, the conversation (what happens when you press Enter), the composer and
 its keys, reviews, the Jev panel and the console's status bar, the startup splash, sessions, follow-ups, steering and
-pause, money, secrets, undo/rewind/diff, errors, logs, exit codes, and per-terminal setup notes.
+pause, coordination (`/who`, the messaging verbs), the context meter (`/context`, `/compact`), money, secrets,
+undo/rewind/diff, errors, logs, exit codes, and per-terminal setup notes.
 The command table is generated into [`docs/COMMANDS.md`](COMMANDS.md) and the key table into
 [`docs/KEYS.md`](KEYS.md) from the registries in `src/tui/commands/registry.ts` and `src/tui/keys/bindings.ts`;
 `man jevcode` and the shell completions (`jevcode completion bash|zsh|fish`) come from the same tables, and a
@@ -450,6 +451,83 @@ follow-up has its own run cap and shares the session cap.
   `git none · not a git repository: changes made by commands are not recoverable, /diff compares against step
   pre-images only`); the status zone follows `HEAD` without spawning git; a `--resume` on a different `HEAD` warns
   that the plan may not apply. Nothing is ever committed, stashed or checked out on your behalf.
+
+## Coordination: `/who`, `/peers` and the messaging verbs (round 5)
+
+Every `jevcode` on this machine writes a heartbeat into `~/.jevcode/coordination/` while a run is live, and reads
+the other sessions' beats into one **fold**. Nothing about it ever blocks a step: the default claim mode is
+`coordination.claims: advisory`, which records an overlap as a fact and a notice and never waits.
+
+- **`/who`** — one row per session on this repo: liveness, `branch@head`, `step/max` and stage, mode, context
+  percentage, spend, the files it is editing, its sub-work and how long ago it beat. The row is built **once**
+  (`whoRowText`), so the TUI row, the `--plain` row and the `transcript.log` row are the same string; columns drop
+  right to left as the terminal narrows and the 40-column form keeps `● mbp  step 7/40 propose  beat 2 s`.
+  `/who --all` adds sessions gone more than ten minutes and ignored devices. `jevcode sessions who [--all]
+  [--json]` is the machine twin — `--plain` with no TTY renders the 120-column form.
+- **`/peers`** — the counts view: `peers · 2 here, 1 stale`, the oldest start and whether one holds an exclusive
+  lease. Never a pid, never a path, never a label; `/who` is the detailed view and the row says so.
+- **`/tell <target> <text>`, `/headsup <text>`, `/request <target> pause|end|steer [<text>]`, `/inbox`** — the
+  messaging verbs. A `request` raises a **persistent** row at the far end (it needs an answer); a `headsup` is a
+  toast that expires. A body that looks like a key is held behind `that message looks like it contains a key —
+  [y] send anyway  [n] edit  [Esc] cancel` before anything is written, and the body goes through the run's
+  redactor either way.
+- **`/pause [now] [<target>]` and `/end [now] [<target>]`** — both widened to take a target, so they reach another
+  session as well as this one. `/end` is destructive: reached through the palette it takes a confirm row whose
+  Enter is inert, and afterwards `/resume <id>` needs `--force`.
+- **`jevcode sessions <verb>`** — seventeen verbs, each a thin wrapper that starts no engine:
+  `list · reindex · prune · unlock <id> · who · pause · resume · end · tell · headsup · request · inbox · label ·
+  pair · unpair · gc · sync`. **In this build the thirteen new verbs answer `the session ledger is not available
+  in this build` and exit 2** — the verb surface parses and is documented, and the ledger it needs is not
+  constructed in production yet (`docs/STATUS.md`, "Round 5").
+
+The status line carries the zone `⇄ 2 live · 1 heads-up · ✉ 1` at 80 columns and above (the heads-up clause needs
+100). It is a status **line**, never a transcript item; the same facts reach `transcript.log` through `/who`'s
+block or a `[session]` item.
+
+## The context meter: `/context` and `/compact` (round 5)
+
+Under the relaxed context view the status line carries a `ctx` cell from 80 columns (`ctx 41%`) and its full form
+from 100 (`ctx 41% · 6 files · 12 steps`); at or past the amber and red thresholds the percentage is replaced by
+the word, with `/compact now` named as the action. Below 80 columns the cell is **absent**, never a placeholder.
+
+- **`/context`** prints one block from three reads that already exist: the prompt budget against the model's
+  window and the estimated cost per step, the recent-step split (`2 whole, 4 clipped, 6 one-line`), prompt-build
+  and file-refresh milliseconds, the rolling summary and its age, and the files in view with **why** each is there
+  (`read at step 4 · edited step 6`, `pinned by you`). It has three distinct empty states, not one: no live run,
+  a mode that builds no relaxed context (the sentence names the escape), and no prompt built yet. There is no
+  `jevcode context` verb, so `/context` has no `--json` of its own — the machine-readable form is the
+  `ContextUsage` object `--json=verbose`'s `status` event already carries.
+- **`/compact`** folds the history into the rolling summary at once, and it is **live-only**: folding history so
+  the *next* prompt fits is meaningless with no next prompt. When the fold happens the engine's own
+  `compaction: 41230 → 12840 prompt chars (code); 4 steps folded …` notice reports it in all three sinks and the
+  command says nothing more. Otherwise it answers one of three sentences — `compaction is off for this run
+  (context.compaction) — jevcode config set context.compaction code turns it on`, `nothing to compact — only the
+  newest step is in history`, or `the run is no longer live — /compact needs a live run`.
+
+`context.mode · context.compaction · context.kept · context.compactEvery · context.historySteps ·
+context.fileCacheBytes · context.budgetChars` are config rows (`jevcode config`, `JEVCODE_CONTEXT_*`).
+`context.kept: jev` is **accepted and printed but not wired in this build**, and its description says so.
+
+## The agent tree, import and the model picker (round 5, honest state)
+
+Three round-5 surfaces are **built and registered but not driven by a store in this build**, which is a deliberate
+state rather than a hidden one — every command answers out loud instead of doing nothing:
+
+- **`/agents` (Alt+A), `/agent <slug> <verb>`, `/split`, `/land`, `/spawn`** answer
+  `<verb> is not available in this build — no agent is running` until an agent supervisor exists. The `'a'` pane
+  tab, its eight keys and the collapsed `agents` status strip appear the moment rows do, and are invisible until
+  then. `jevcode agents list [--json]` reads a run's manifest and prints one `planned` row per agent.
+- **`/import` (`/imp`) and `/memory` (`/mem`)** are registered and point at the surface that works:
+  `jevcode import [<source>] [--dry-run | --yes] [--scope user|project|both] [--resume <id>] [--undo <id>]`
+  plans, reviews and applies from the CLI. See [`docs/IMPORT.md`](IMPORT.md).
+- **`/model`** with no argument still shows the current and pending model; the dedicated pane-slot picker is
+  built (`src/tui/models/**`) and not yet mounted in the shell. `jevcode models [list|search <query>|refresh]
+  [--provider <id>] [--json|--plain]` is the CLI twin and works today — `list` and `search` read the disk cache
+  and the bundled snapshot, `refresh` is the only verb that goes to the network.
+
+`--provider` now accepts all seven ids (`anthropic`, `openrouter`, `openai`, `gemini`, `xai`, `fireworks`,
+`meta`) everywhere it appears — the two-name wall is gone from `/provider`, `jevcode login --provider` and the
+argv validator alike.
 
 ## Money
 

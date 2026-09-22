@@ -8,8 +8,10 @@ import {
   HINT_PREFIX_KEY,
   HINT_REJECTED,
   HINT_TOO_SHORT,
+  IMPORT_PROBE_DEADLINE_MS,
   INITIAL_ONBOARDING,
   JEV_PROVIDER_OPTIONS,
+  importStepWanted,
   WIZARD_EXIT_CODE,
   WIZARD_OPTIONS_ORDER,
   cancelCloses,
@@ -957,5 +959,39 @@ describe('TUI-DESIGN-3 §1.4: the one-paste `key` step (D-J)', () => {
     // isFieldStep: the three masked steps and nothing else
     expect(['key', 'generatorKey', 'jevKey'].every((st) => isFieldStep(st as OnboardingState['step']))).toBe(true);
     expect(['detect', 'options', 'jevProvider', 'provider', 'save', 'verify', 'trust', 'sandbox', 'done', 'exit'].some((st) => isFieldStep(st as OnboardingState['step']))).toBe(false);
+  });
+});
+
+/**
+ * TUI-DESIGN-5 §10 names THIS file for the `'import'` step. Round 5's assertions live in the sibling
+ * `import-step.test.tsx` (a declared deviation: the step's `useWizard` half needs Ink, and rounds 3/4's pins here
+ * are not to be disturbed). These three anchors keep the two files from diverging silently — a rename or a
+ * removal on the import half fails HERE, in the file §10 names.
+ */
+describe('TUI-DESIGN-5 §5.1 — the `import` step (the anchor half; the assertions are in import-step.test.tsx)', () => {
+  it('`WizardStep` carries `import` between `sandbox` and `done`, and the step takes 3 rows', () => {
+    const s: OnboardingState = { ...INITIAL_ONBOARDING, step: 'import', importProbe: { tools: [{ display: 'claude-code', items: 43 }], total: 43 } };
+    expect(s.step).toBe('import');
+    expect(wizardRows(s, 24)).toBe(3);
+    expect(IMPORT_PROBE_DEADLINE_MS).toBe(50);
+  });
+
+  it('`sandbox-shown` routes through `importStepWanted`, and nothing else decides it', () => {
+    const at = (over: Partial<OnboardingState>): OnboardingState => ({ ...INITIAL_ONBOARDING, step: 'sandbox', ...over });
+    const found = { tools: [{ display: 'codex', items: 3 }], total: 3 };
+    expect(reduce(at({ importProbe: found }), { type: 'sandbox-shown' }).step).toBe('import');
+    expect(reduce(at({}), { type: 'sandbox-shown' }).step).toBe('done');
+    expect(importStepWanted({ importProbe: found, importSeen: false })).toBe(true);
+    expect(importStepWanted({ importProbe: found, importSeen: true })).toBe(false);
+  });
+
+  it('the import step never exits 2: Esc and Ctrl-C are both `2 later`', () => {
+    const open = reduce({ ...INITIAL_ONBOARDING, step: 'sandbox', importProbe: { tools: [{ display: 'codex', items: 3 }], total: 3 } }, { type: 'sandbox-shown' });
+    for (const action of [{ type: 'escape' } as const, { type: 'cancel' } as const]) {
+      const s = reduce(open, action);
+      expect(s.step, action.type).toBe('done');
+      expect(s.importChoice, action.type).toBe(2);
+      expect(s.exitCode, action.type).toBeNull();
+    }
   });
 });

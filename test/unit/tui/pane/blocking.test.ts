@@ -20,6 +20,8 @@ import {
   driftDetail,
   formatRetryIn,
   keyRejectedDetail,
+  landPreflightDetail,
+  leaseConflictDetail,
   parseCheckpointDegradedDetail,
   parseDriftDetail,
   severityOfEvent,
@@ -51,10 +53,11 @@ function sample(kind: BlockingKind): BlockingRequest {
       return req({ kind, detail: driftDetail('jev-1.13', 'jev-1.13-20260901'), exitCode: 2 });
     case 'sandbox-unavailable':
       return req({ kind, exitCode: 6 });
+    // TUI-DESIGN-5 §2.11: the two round-5 cards read their facts through the module's own `*Detail` encodings
     case 'land-preflight':
-      return req({ kind, detail: '2 of your uncommitted files are also changed by jevcode/fix-tests — src/a.ts, src/b.ts', stop: 'human_pause', exitCode: 4 });
+      return req({ kind, detail: landPreflightDetail(7, 2), stop: 'human_pause', exitCode: 4 });
     case 'lease-conflict':
-      return req({ kind, detail: 'src/loop/engine.ts is held by mbp (step 7, 12 s ago)', stop: 'human_pause', exitCode: 4 });
+      return req({ kind, detail: leaseConflictDetail({ path: 'src/loop/engine.ts', holder: 'mbp', step: 12, heldMs: 180_000, holderLiveness: 'live' }), stop: 'human_pause', exitCode: 4 });
   }
 }
 
@@ -66,9 +69,11 @@ const KEYS: Readonly<Record<BlockingKind, readonly string[]>> = {
   'checkpoint-degraded': ['[r]', '[c]', '[q]'],
   drift: ['[p]', '[q]'],
   'sandbox-unavailable': ['[q]'],
-  // contract 1.4 (W2b) / 1.5: the two members the TUI session's exception admitted; the row text is a placeholder, the keys are the contract
+  // TUI-DESIGN-5 §2.11 / §12 S39, S39c: round 5 owns both rows' strings, twins and keys. `[c] continue` is gone
+  // from the lease-conflict card — §2.11's four keys are `[w] wait` · `[r] read-only session` · `[t] relocate to a
+  // worktree` · `[q] quit`, and all three answers already exist on `BlockingAnswer` (`wait` / `worktree` / `stop`).
   'land-preflight': ['[c]', '[s]', '[x]'],
-  'lease-conflict': ['[w]', '[c]', '[t]', '[q]'],
+  'lease-conflict': ['[w]', '[r]', '[t]', '[q]'],
 };
 
 describe('blockingLines (§13.3, §24)', () => {

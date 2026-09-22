@@ -17,7 +17,7 @@
  */
 import { createInterface, type Interface } from 'node:readline';
 import type { SecretHit, SessionHost, SubmitOutcome } from '../core/types.js';
-import { confirmPlainPrompt } from './commands/confirm.js';
+import { confirmAnswer, confirmNowLine, confirmPlainPrompt } from './commands/confirm.js';
 import { dispatchCommand, type CommandAction, type ConfirmKind, type DispatchContext } from './commands/dispatch.js';
 import { numberedPick, numberedPrompt, numberedShown, paletteMatches, paletteNumberedLines, type PaletteState } from './commands/palette.js';
 import { isCommandLine } from './commands/parse.js';
@@ -290,15 +290,19 @@ export function createReadlineComposer(opts: ReadlineComposerOptions): ReadlineC
   async function handle(raw: string): Promise<void> {
     const text = sanitizeStream(raw.replace(/\r$/, ''));
     if (confirm !== null) {
-      // TUI-DESIGN-4 §4.5: only `y` proceeds — an empty line (readline's Enter) is "no", as the inert Enter is in the TUI
+      // TUI-DESIGN-4 §4.5 / TUI-DESIGN-5 §2.7: only an affirmative proceeds — an empty line (readline's Enter) is
+      // "no", as the inert Enter is in the TUI. `confirmAnswer` is case-SENSITIVE for the `/end` ladder, whose
+      // `[Y] now` is a different outcome from `[y] at step boundary`; `confirmNowLine` re-dispatches the same line
+      // with `now` as its first argument, so `EndOptions.at` comes from the one dispatch path and nothing here
+      // re-models the action.
       const pending = confirm;
       confirm = null;
-      const a = text.trim().toLowerCase();
-      if (a !== 'y' && a !== 'yes') {
+      const answer = confirmAnswer(pending.kind, text);
+      if (answer === 'no') {
         hint(CONFIRM_DECLINED_HINT);
         return;
       }
-      await runCommand(pending.line, []);
+      await runCommand(answer === 'yes-now' ? confirmNowLine(pending.kind, pending.line) : pending.line, []);
       return;
     }
     if (gate !== null) {

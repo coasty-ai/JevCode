@@ -2,8 +2,131 @@
 
 All notable changes to `jevcode`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
-by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.4.0; the
-0.5.0 entry is the round-4 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.5.0; the
+0.6.0 entry is the round-5 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+
+## [0.6.0] — 2026-09-22 (not yet published)
+
+Round 5 of the interactive TUI (`docs/TUI-DESIGN-5.md`, six concurrent slots and one integration pass; the record
+of what landed, with every gate number and every honest gap, is `docs/STATUS.md`, "Round 5"). Five user
+requirements: every session knows what the others are doing and never blocks one; the context is relaxed and its
+usage is visible; work can be delegated and watched; your memory and workflows come over from the other agents;
+every provider key is selectable with search.
+
+### Added — coordination: `/who`, the messaging verbs, and the write half
+
+- **`/who`** (`--all`) — one row per `jevcode` session on this repo: liveness, `branch@head`, `step/max` and
+  stage, mode, context percentage, spend, the files being edited, sub-work and beat age. The row is built **once**
+  (`whoRowText` in `src/session/peers.ts`), so the Ink row, the `--plain` row and the `transcript.log` row are the
+  same string at every width — `test/unit/tui/r5-identity.test.ts` asserts the identity at 40, 80 and 120. Nine
+  cells drop right to left as the terminal narrows; the 40-column form keeps
+  `● mbp  step 7/40 propose  beat 2 s`. `jevcode sessions who [--all] [--json]` is the machine twin, and `--plain`
+  with no TTY renders the 120-column form.
+- **`/peers`** wired to the fold: `peers · 2 here, 1 stale`, the oldest start, whether one holds an exclusive
+  lease, and a pointer at `/who`. Round 4's three superseded per-peer kv rows are gone (one of them was always
+  the literal `.`).
+- **`/tell <target> <text>`, `/headsup <text>`, `/request <target> pause|end|steer [<text>]`, `/inbox`** — the
+  messaging verbs, with one target grammar (`resolveTarget`) shared by every verb: a session id, an id fragment
+  of at least 8 characters, an exact or unique-prefix title, `device:<label[#id4]|id8>`, `@all`, or a bare device
+  label. A body that looks like a key is held behind `that message looks like it contains a key — [y] send
+  anyway  [n] edit  [Esc] cancel` **before** the write, because the composer's own gate never sees slash-command
+  arguments.
+- **`/pause [now] [<target>]` and `/end [now] [<target>]`** — both take a target, so they reach another session.
+  Both are `availableDuringTask: 'any'` (a targeted verb touches no local engine) with their own per-form
+  refusals; `/end` is destructive and takes the confirm row whose Enter is inert.
+- **The status zone** `⇄ 2 live · 1 heads-up · ✉ 1` from 80 columns (the heads-up clause from 100), never written
+  to `transcript.log`.
+- **The write half** (`src/session/publish.ts`): after the first frame a run opens the ledger, mints its claim,
+  starts the heartbeat writer and publishes its repo identity — all three after `renderer.firstFrame()`, so the
+  first-frame gate is untouched. `stop()` during an in-flight mint closes without beating; the projection epoch
+  and the beat epoch are one object; the repo key is probed once per workspace behind a dynamic import and
+  cached in `coordination/repokeys/`.
+- **The session index** gains seven kinds in one commit (`session:end`, `relocate`, `handoff`, `agent:start`,
+  `agent:end`, `land`, `import`), `pause.by` and `run:start.parentSessionId` — both **optional**, with stated
+  reader defaults, so every line already on disk still folds.
+- **`jevcode sessions <verb>`** — the verb surface parses: seventeen verbs, the words after the verb reaching the
+  command verbatim, plus `--all`, `--device <label>` and `--rotate`. **The thirteen new verbs answer
+  `the session ledger is not available in this build` and exit 2** — see "Known gaps".
+- **`jevcode sessions unlock`** now answers with all six reasons (`no-lock`, `dead-pid`, `other-boot`,
+  `peer-live`, `boot-unknown`, `held`); the run lock records the boot it was taken in, so a live pid from another
+  boot is replaceable rather than a stand-off.
+
+### Added — the context meter and compaction
+
+- **`/context`** — one block from three reads that already existed: the prompt budget against the model's window
+  with the estimated cost per step, the recent-step split, prompt-build and file-refresh milliseconds, the rolling
+  summary and its age, output pointers on disk and evicted, and the files in view **with why each is there**.
+  Three distinct empty states, not one. No `--json` of its own (deliberate: there is no `jevcode context` verb,
+  and `--json=verbose`'s `status` event already carries the object).
+- **`/compact`** — `live`-only, and the opposite of Codex CLI's idle-only gate for a stated reason. It says
+  nothing when the fold happened (the engine's own notice already reported it in all three sinks) and otherwise
+  picks among `compaction is off for this run (context.compaction) — …`, `nothing to compact — only the newest
+  step is in history`, and `the run is no longer live — /compact needs a live run`. The `off` branch is checked
+  **first**, because `Engine.compact()` returns immediately with `compaction: 'off'` and the two-row answer would
+  otherwise be a falsehood over forty foldable steps.
+- **The `ctx` status cell**, two width rungs (`ctx 41%` from 80, `ctx 41% · 6 files · 12 steps` from 100), with
+  the amber and red word replacing the percentage and `/compact now` named as the action. Below 80 columns the
+  cell is absent — never a placeholder, never `ctx —%`.
+- **`context.kept`** joins the `context.*` rows (printed, validated, persisted). The engine member it feeds does
+  not exist yet and the row's own description says so.
+
+### Added — the agent tree, import and the model picker
+
+- **The `'a'` pane tab** and its eight keys (`Enter` attach · `p` pause · `t` steer · `+` budget · `d` diff ·
+  `k` kick · `x x` drop · `l` land), a `KeyContext 'agents'` rung between Picker and Composer, `Alt+A` to focus
+  (refused on a non-empty draft, with a reason), a viewport that scrolls above 12 rows and never filters, and a
+  collapsed `agents 5 · 2 running` status strip. All of it is **invisible with nothing delegating**, which is the
+  production state in this release.
+- **`jevcode agents list [--json]`** reads a run's manifest and prints one `planned` row per agent — the same
+  `agentRows` the tab draws.
+- **`jevcode import [<source>] [--dry-run | --yes] [--scope user|project|both] [--resume <id>] [--undo <id>]`** —
+  memory, rules, slash commands and MCP servers from eleven tools, planned, reported and applied only where you
+  accept. An MCP server is always imported **disabled**; a credential row always needs a terminal and is never
+  applied by `--yes`. `docs/IMPORT.md` is the guide.
+- **`jevcode models [list | search <query> | refresh] [--provider <id>] [--json | --plain]`** — the catalogue.
+  `list` and `search` read the disk cache and the bundled snapshot with zero network; `refresh` is the only verb
+  that fetches. The `--plain` twin numbers 40 of N with a `more` token and a one-turn `pick 1-40, or type a
+  query > ` prompt.
+- **Seven providers everywhere** (`anthropic`, `openrouter`, `openai`, `gemini`, `xai`, `fireworks`, `meta`):
+  `/provider`'s palette values, `jevcode login --provider`, the argv validator and `GeneratorConfig.provider` all
+  read one table. `src/config/provider-tables.ts` is a new zero-import module, so widening the list never puts
+  `provider/openrouter.js` on the argv path.
+
+### Added — configuration
+
+- **46 new settings rows**, every one printed by `jevcode config`, validated by `jevcode config set` and
+  reachable from a config file: six `coordination.*` (`claims`, `remoteControl`, `sync`, `syncRuns`, `notify`,
+  `maxChildren`), **34 `orchestrate.*`** in `docs/ORCHESTRATION-DESIGN.md` §6.4's own order, five
+  `import.*`/`memory.*` and the hidden bookkeeping row `seen.import`. A new gate asserts that every key of OR's
+  table has a `SETTINGS` row, that no two rows share a name, an env variable or a file key, and that every
+  `orchestrate.*` env name is `JEVCODE_ORCHESTRATE_<SCREAMING_SNAKE>`.
+- **New flags**: `--force-takeback`, `--parent-session`, `--device`, `--rotate`, `--all` on `sessions`;
+  `--split`, `--max-agents`, `--yes-split`, `--no-wait`, `--parent`, `--agent`, `--manifest`, `--own`, `--base`;
+  `--dry-run`, `--yes`, `--scope`, `--undo`, `--no-memory`, `--no-import`. `--force-takeback` is its **own** flag:
+  an ordinary `--resume --force` no longer bumps the claim epoch.
+
+### Changed
+
+- The command registry is **56 rows** (was 47): every round-5 surface is registered from day one with its real
+  grammar and answers out loud when its store does not exist (`<verb> is not available in this build`). One
+  consequence, accepted and recorded: `/help` now sits at the last two rungs of its compaction ladder at every
+  width, so the key table is one `… /help keys prints the key table` pointer and the four per-terminal notes are
+  dropped. `/help keys` still prints the table.
+- `Command` is 16 members: `import`, `models` and `agents` join, each with its own `src/cli/<verb>.ts` and its own
+  `await import()` arm in `src/cli/main.tsx` — the static import list gains nothing.
+- `UiLabel` gains `'[session]'`; `SessionRow` gains three optional members; `BlockingKind` carries
+  `lease-conflict` and `land-preflight`; contract 1.8 records all of it, additively, with
+  `CheckpointEnvelope.version` unchanged at 1.
+- `jevcode import`'s source is a **positional**, not `--source <id>`: `--source` is already a hidden flag whose
+  values are `cli|perf`, and one name cannot mean two things.
+
+### Known gaps in this release (each is named, none is hidden)
+
+- **`jevcode sessions <verb>`'s thirteen new verbs answer `the session ledger is not available in this build`**
+  and exit 2 for a real user: nothing constructs a `SessionsCoordination` in production yet.
+- **`/import`, `/memory`, `/model`'s picker and the agents tab's store** are built and registered but not mounted
+  or driven in the shell; each answers out loud and points at the CLI twin where one works.
+- **`context.kept: jev`** is accepted and printed and does not reach the engine.
 
 ## [0.5.0] — 2026-09-22 (not yet published)
 

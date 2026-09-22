@@ -229,8 +229,14 @@ describe('TUI-DESIGN-3 §0.1 (D-Q): the seen.defaultMode bookkeeping row', () =>
     expect(spec.boolFlag).toBeUndefined();
     expect(spec.launch).toBeUndefined();
     expect(spec.description).toContain('bookkeeping');
-    // the only hidden row this round
-    expect(SETTINGS.filter((s) => s.hidden === true).map((s) => s.name)).toEqual(['seen.defaultMode']);
+    // TUI-DESIGN-5 §5.1: `seen.import` joins it — the SAME contract (file-only, non-secret, hidden unless `--all`),
+    // for the one-time import step of the wizard. Both are asserted, so a third hidden row cannot slip in unnamed.
+    expect(SETTINGS.filter((s) => s.hidden === true).map((s) => s.name)).toEqual(['seen.defaultMode', 'seen.import']);
+    const imp = settingSpec('seen.import');
+    expect(imp).toMatchObject({ env: [], fileKey: 'seenImport', defaultValue: null, secret: false, hidden: true });
+    expect(imp.flag).toBeUndefined();
+    expect(imp.boolFlag).toBeUndefined();
+    expect(imp.description).toContain('bookkeeping');
   });
 });
 

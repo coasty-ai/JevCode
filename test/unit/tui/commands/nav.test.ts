@@ -239,7 +239,9 @@ describe('§4.1 the safety theorem, as a property test', () => {
 
   it('the path to a destroyed session needs distinct keys and a positive `y`: the draft must be exact before any Enter can run', () => {
     // `/ne` still has four candidates, so Enter cycles; only the zero-ambiguity S-ONE accept mutates a draft
-    expect(M('/ne').map((m) => m.spec.name)).toEqual(['new', 'panel', 'unsteer', 'rename']);
+    // TUI-DESIGN-5 §3.2: `/context` joins the `/ne` candidates (`n`, `e` in order), so there are five — the
+    // theorem is about DISTINCT KEYS and an exact draft, and a fifth candidate only makes Enter cycle longer
+    expect(M('/ne').map((m) => m.spec.name)).toEqual(['new', 'panel', 'unsteer', 'context', 'rename']);
     expect(state('/ne')).toBe('browse');
     expect(step('/ne', 'enter')).toEqual({ kind: 'move', by: 1, over: 'matches', wrap: true });
     expect(state('/rew')).toBe('one'); // the one-candidate case: Enter accepts, and the command is then visible in the draft
@@ -294,6 +296,8 @@ describe('the four round-4 commands reach the machine (TUI-DESIGN-4 §1.3.1, §1
     expect(state('/ui reset', rowOf('/ui reset', 'ui'))).toBe('argdone');
     expect(state('/ui nope', rowOf('/ui nope', 'ui'))).toBe('argbad');
     expect((findCommand('ui') as CommandSpec).args[0]?.values).toEqual(['reset']);
-    expect(COMMANDS).toHaveLength(41);
+    // 37 (round 3) → 41 (round 4) → 47 with R5-2's six §2.3/§2.7/§2.9 rows → 56 with the nine of §3.2/§3.3
+    // (R5-3), §4.9 (R5-4) and §5.5 (R5-5) the integration pass landed in the one §9.2 registry PR; 56 once every round-5 slot's rows land (§9.2)
+    expect(COMMANDS).toHaveLength(56);
   });
 });

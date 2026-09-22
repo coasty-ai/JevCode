@@ -38,6 +38,18 @@ export const CONFIRM_EXIT_RUNGS: readonly string[] = [
 ];
 
 /**
+ * TUI-DESIGN-5 §2.7 / §12 S27: the `/end` ladder, widest first (the four rungs §2.7 writes verbatim). Ending a
+ * session is irreversible — a `/resume` afterwards needs `--force` — so it joins `destructive: true` and its Enter
+ * is inert, exactly like `/new`, `/abort` and `/exit`.
+ */
+export const CONFIRM_END_RUNGS: readonly string[] = [
+  'end this session: [y] at step boundary  [Y] now  [n] stay',
+  'end session: [y] at step end  [Y] now  [n] stay',
+  'end: [y] step end  [Y] now  [n] stay',
+  'y end · Y now · n stay',
+];
+
+/**
  * TUI-DESIGN-4 §4.5: the ladder of a confirm kind. **Total** — every `ConfirmKind` has a ladder, because the one
  * destructive command that has none (`/history clear`, which keeps its own `y/N` in `registry.ts` / `session.ts`)
  * is not a `ConfirmKind`: `confirmFor` answers `null` for it, so the overlay is never asked to draw an empty body.
@@ -50,6 +62,8 @@ export function confirmRungs(kind: ConfirmKind): readonly string[] {
       return CONFIRM_ABORT_RUNGS;
     case 'exit':
       return CONFIRM_EXIT_RUNGS;
+    case 'end':
+      return CONFIRM_END_RUNGS;
   }
 }
 
@@ -69,12 +83,57 @@ export function confirmRow(kind: ConfirmKind, innerCells: number, g: GlyphSet = 
 
 /**
  * TUI-DESIGN-4 §4.5 / §4.6 (a): the `--plain` twin — the numbered pick is a selection surface too, so a destructive
- * command reached by number gets the same gate, here as a readline `y/N`. The question is the narrowest rung's
+ * command reached by number gets the same gate, here as a readline prompt. The question is the narrowest rung's
  * sentence (readline has no inert Enter to explain: an empty line is "no").
+ *
+ * **A ladder with more than two answers spells all of them (the fix pass).** `/end` is a THREE-answer ladder
+ * (§12 S27: `[y]` at the step boundary, `[Y]` now, `[n]` stay), and a `[y/N]` prompt would have offered the reader
+ * no way to reach `[Y] now` and no way to know it existed — breaking `transcript.log == --plain == TUI` for the
+ * one new ladder. Its twin is the widest rung with its colon turned into a question mark, so every answer the TUI
+ * draws is on the readline row too. The two-answer ladders (`new`, `abort`, `exit`) are unchanged.
  */
 export function confirmPlainPrompt(kind: ConfirmKind): string {
   const rungs = confirmRungs(kind);
   const narrow = rungs[rungs.length - 1] ?? '';
-  const question = narrow.slice(0, narrow.indexOf('?') + 1);
-  return `${question} [y/N]`;
+  const q = narrow.indexOf('?');
+  if (q >= 0) return `${narrow.slice(0, q + 1)} [y/N]`;
+  // TUI-DESIGN-5 §2.7 / §12 S27: the `/end` ladder STATES rather than asks (`end this session: [y] …`), so its
+  // narrowest rung carries no `?`. The readline twin asks the widest rung verbatim, keeping all three answers;
+  // an empty line is still "no" (`confirmAnswer`), which is what the TUI's inert Enter means.
+  const widest = rungs[0] ?? '';
+  const colon = widest.indexOf(':');
+  return colon >= 0 ? `${widest.slice(0, colon)}?${widest.slice(colon + 1)}` : `${widest}?`;
+}
+
+/**
+ * TUI-DESIGN-5 §2.7 / §12 S27: the three answers a confirm ladder can take, so the `--plain` twin and the TUI
+ * agree on what a key means. `'yes-now'` exists only for `'end'`.
+ */
+export type ConfirmAnswer = 'no' | 'yes' | 'yes-now';
+
+/**
+ * TUI-DESIGN-4 §4.5 / TUI-DESIGN-5 §2.7: read one readline answer against a ladder. **Case-sensitive for `'end'`
+ * alone**: `Y` there is `[Y] now`, a different outcome from `[y] at step boundary`, and lower-casing the answer
+ * silently turned "now" into "at the step boundary". Everything that is not an affirmative — including the empty
+ * line readline's Enter produces — is `'no'`, which is the readline twin of the TUI's inert Enter.
+ */
+export function confirmAnswer(kind: ConfirmKind, raw: string): ConfirmAnswer {
+  const t = raw.trim();
+  if (kind === 'end' && t === 'Y') return 'yes-now';
+  const a = t.toLowerCase();
+  return a === 'y' || a === 'yes' ? 'yes' : 'no';
+}
+
+/**
+ * TUI-DESIGN-5 §2.7: the line a `'yes-now'` answer re-dispatches — `/end …` with `now` as its first argument, so
+ * the ONE dispatch path produces `EndOptions.at: 'now'` and nothing re-models the action. Identity for every other
+ * kind and for a line that already says `now`.
+ */
+export function confirmNowLine(kind: ConfirmKind, line: string): string {
+  if (kind !== 'end') return line;
+  const m = /^(\/\S+)\s*([\s\S]*)$/.exec(line.trim());
+  if (m === null) return line;
+  const rest = (m[2] ?? '').trim();
+  if (/^now\b/i.test(rest)) return line;
+  return rest === '' ? `${m[1] as string} now` : `${m[1] as string} now ${rest}`;
 }

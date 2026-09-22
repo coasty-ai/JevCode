@@ -6,6 +6,9 @@
  * command's name; no one-letter alias for a command whose Enter destroys state without a confirm (`/new`, `/exit`, `/abort`).
  */
 import { DEFAULT_MODE, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../config/defaults.js';
+// TUI-DESIGN-5 §6.1 (D-AP) / §6.3: the seven provider ids, from the ZERO-IMPORT module (`src/provider/ids.ts`'s
+// own docblock) — never `models/providers.ts`, whose `providerSpec(id)` puts `provider/openrouter.js` on this path.
+import { PROVIDER_IDS } from '../../provider/ids.js';
 import type { EngineMode } from '../../core/types.js';
 
 /** TUI-DESIGN §5.1: the argument kinds `ArgSpec` validates. */
@@ -99,8 +102,8 @@ export const EXIT_ONE_LETTER = 'q';
 /** TUI-DESIGN-2 §1.3: `/llm on|off` → `/mode jev-on` | `/mode jev-only`. */
 export const LLM_STATES = ['on', 'off'] as const;
 export const LLM_STATE_MODE: Readonly<Record<(typeof LLM_STATES)[number], 'jev-on' | 'jev-only'>> = { on: 'jev-on', off: 'jev-only' };
-/** TUI-DESIGN-2 §4.6: `/panel [d|p|t|s|off|full]`. */
-export const PANEL_ARGS = ['d', 'p', 't', 's', 'off', 'full'] as const;
+/** TUI-DESIGN-2 §4.6 / TUI-DESIGN-5 §4.3: `/panel [d|p|t|s|a|off|full]` — `'a'` is R5-4's §9.2 request, landed in this file's one PR. */
+export const PANEL_ARGS = ['d', 'p', 't', 's', 'a', 'off', 'full'] as const;
 /** TUI-DESIGN-2 §4.5: `/transcript [compact|full]`. */
 export const TRANSCRIPT_VIEWS = ['compact', 'full'] as const;
 
@@ -178,12 +181,19 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'pause',
     aliases: [],
-    args: [],
-    availableDuringTask: 'live',
+    // TUI-DESIGN-5 §2.6: `/pause [now] [<target>]`. `now` is the soft interrupt (`PauseOptions.at`); a target is a
+    // peer, resolved by `resolveTarget` (§2.5) and reached as a mailbox message, never a local engine call.
+    args: [
+      { name: 'now', kind: 'enum', values: ['now'], optional: true, hint: '[now]', valueHints: { now: { title: 'soft interrupt: the stage in flight is discarded, the proposal is kept' } } },
+      { name: 'target', kind: 'text', optional: true, hint: '[<target>]' },
+    ],
+    // TUI-DESIGN-5 §2.6 (§14.2 #16, #39): `'any'`, because `/pause mbp` touches no local engine. The generated
+    // `availabilityError` cannot express a per-FORM rule, so the dispatcher hand-writes §12 S45a for the local form.
+    availableDuringTask: 'any',
     plain: 'yes',
-    title: 'stop after the step in flight commits (= Esc)',
-    usage: '—',
-    semantics: '`engine.pause()` (= Esc)',
+    title: 'stop after the step in flight commits (= Esc); `now` interrupts, a target asks a peer',
+    usage: '[now] [<target>]',
+    semantics: '`engine.pause({ at, by: \'self\' })` (= Esc); `now` discards the stage in flight and keeps the proposal; `<target>` sends a `pause` message to a peer\'s inbox, `all` pauses this run and every live peer on this repo (§2.6)',
     category: 'run',
   },
   {
@@ -362,11 +372,13 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'provider',
     aliases: [],
-    args: [{ name: 'p', kind: 'enum', values: ['anthropic', 'openrouter'], optional: true, hint: '[anthropic|openrouter]' }],
+    // TUI-DESIGN-5 §6.1 (D-AP) / §9.2's registry row (R5-6): the two-name wall is gone — the palette offers the
+    // seven ids from `src/provider/ids.ts`, the ONE zero-import table the argv path may read (§6.3, §14.2 #5).
+    args: [{ name: 'p', kind: 'enum', values: [...PROVIDER_IDS], optional: true, hint: `[${PROVIDER_IDS.join('|')}]` }],
     availableDuringTask: 'any',
     plain: 'yes',
     title: 'generator provider for the next run only',
-    usage: '[anthropic|openrouter]',
+    usage: `[${PROVIDER_IDS.join('|')}]`,
     semantics: 'no argument shows `provider <current> (next run: <pending>)`; with one: pending for the **next** run only (memory)',
     category: 'config',
   },
@@ -455,12 +467,16 @@ export const COMMANDS: readonly CommandSpec[] = [
   {
     name: 'panel',
     aliases: ['p'],
-    args: [{ name: 'what', kind: 'enum', values: PANEL_ARGS, optional: true, hint: '[d|p|t|s|off|full]', valueHints: { d: { title: 'decisions tab' }, p: { title: 'plan tab' }, t: { title: 'timeline tab' }, s: { title: 'synth tab' }, off: { title: 'collapse to the one-row strip' }, full: { title: 'expand to the 12-row pane' } } }],
+    // TUI-DESIGN-5 §4.3 / §9.2: R5-4's request, landed here because `registry.ts` is one file with one PR.
+    // `PaneTab` already carries `'a'` and `nextPanel`'s parameter is already `PaneTab | 'off' | 'full' | null`
+    // (`src/tui/pane/commands.ts`), so the enum is the only widening `/panel a` needs. The TAB itself is still
+    // gated on `paneTabsFor(agents.length > 0)`, which is R5-4's — the argument existing is not the tab existing.
+    args: [{ name: 'what', kind: 'enum', values: PANEL_ARGS, optional: true, hint: '[d|p|t|s|a|off|full]', valueHints: { d: { title: 'decisions tab' }, p: { title: 'plan tab' }, t: { title: 'timeline tab' }, s: { title: 'synth tab' }, a: { title: 'agents tab (while something delegates)' }, off: { title: 'collapse to the one-row strip' }, full: { title: 'expand to the 12-row pane' } } }],
     availableDuringTask: 'any',
     plain: 'yes',
-    title: 'Jev panel: toggle, open a tab (d|p|t|s), collapse (off) or expand (full)',
-    usage: '[d|p|t|s|off|full]',
-    semantics: 'no argument toggles collapsed ↔ open (≤ 6 rows); `d|p|t|s` opens that tab (the same tab again collapses); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows',
+    title: 'Jev panel: toggle, open a tab (d|p|t|s|a), collapse (off) or expand (full)',
+    usage: '[d|p|t|s|a|off|full]',
+    semantics: 'no argument toggles collapsed ↔ open (≤ 6 rows); `d|p|t|s` opens that tab (the same tab again collapses) and `a` the agents tab while something delegates (§4.3); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows',
     category: 'ui',
   },
   {
@@ -596,9 +612,15 @@ export const COMMANDS: readonly CommandSpec[] = [
     args: [],
     availableDuringTask: 'any',
     plain: 'yes',
-    title: 'other jevcode instances working in this workspace',
+    // TUI-DESIGN-5 §2.4: the counts view keeps TD4's privacy contract (a count, a count, an age and a boolean —
+    // no pid, no path, no label), so the title points at `/who` and the narrow view is never a dead end.
+    title: 'other jevcode instances working in this workspace · /who shows what each is doing',
     usage: '—',
-    semantics: 'a block `peers · <n> here, <m> stale` with one kv row per peer — workspace, started <t> ago, state — never a pid and never a path (§7.10)',
+    // §2.4 / §12 "Superseded, not kept": TD4's per-peer kv rows (`workspace`, `started <t> ago`, `<state>`) are
+    // `/who`'s job now — `PeerView`'s four scalars cannot produce them. Only the four TD4 strings that survive
+    // are described here, because this text is published to users in `docs/COMMANDS.md`.
+    semantics:
+      'counts only, from `SessionHost.peers()`: `peers · <n> here, <m> stale`, else `no other jevcode is working in this workspace`, else `the peer registry is not available in this build`; a peer holding the exclusive lease raises the blocking row `[w] wait for it   [r] read-only session   [q] quit`. Never a pid, never a path, never a label — `/who` is the detailed view (§2.4)',
     category: 'session',
   },
   {
@@ -611,6 +633,217 @@ export const COMMANDS: readonly CommandSpec[] = [
     usage: 'reset',
     semantics: 'clears every `guard()` pane latch (§7.1) and answers `ui reset — <n> panes unlatched` or `nothing was latched`',
     category: 'ui',
+  },
+  // ----- TUI-DESIGN-5 §2.3, §2.7, §2.9 (R5-2's six rows of the one §9.2 registry PR). D-AN: every row is
+  // registered with its honest answer from day one — no dead pointers, no hidden rows.
+  {
+    name: 'who',
+    aliases: [],
+    args: [],
+    flags: [{ name: 'all', title: 'include sessions gone more than 10 minutes' }],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'every jevcode session on this repo, with what each is doing',
+    usage: '[--all]',
+    semantics: 'a block of one row per session — liveness, branch@head, step/stage, mode, context, spend, files being edited, sub-work and beat age (§2.3, §12 S1–S5); `jevcode sessions who [--all] --json` is the machine twin',
+    category: 'session',
+  },
+  {
+    name: 'inbox',
+    aliases: [],
+    args: [],
+    flags: [{ name: 'all', title: 'include messages already acked' }],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'unread messages from other sessions, newest first',
+    usage: '[--all]',
+    semantics: 'reads `fold.inbox` / `fold.acks` and writes nothing; a block of unread rows, newest first (§2.9)',
+    category: 'session',
+  },
+  {
+    name: 'tell',
+    aliases: [],
+    args: [
+      { name: 'target', kind: 'text', hint: '<target>' },
+      { name: 'text', kind: 'rest', hint: '<text>' },
+    ],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'send one session a message',
+    usage: '<target> <text>',
+    semantics: 'a directed message; the far end shows `[session] <label>: <text>` and `transcript.log` records it (§2.9). A body that looks like a key is gated first and is redacted either way (§12 S34a)',
+    category: 'session',
+  },
+  {
+    name: 'headsup',
+    aliases: [],
+    args: [{ name: 'text', kind: 'rest', hint: '<text>' }],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'broadcast what you are about to touch to every live session here',
+    usage: '<text>',
+    semantics: 'a broadcast to every live row on this repo; a toast at the far end, never a persistent row (§2.9)',
+    category: 'session',
+  },
+  {
+    name: 'request',
+    aliases: [],
+    args: [
+      { name: 'target', kind: 'text', hint: '<target>' },
+      { name: 'verb', kind: 'enum', values: ['pause', 'end', 'steer'], hint: 'pause|end|steer', valueHints: { pause: { title: 'ask the far end to pause' }, end: { title: 'ask the far end to end its run' }, steer: { title: 'ask the far end to take a steer' } } },
+      { name: 'text', kind: 'rest', hint: '<text>', optional: true },
+    ],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'ask a session to pause, end or take a steer — it answers y/n',
+    usage: '<target> pause|end|steer [<text>]',
+    semantics: 'a gated verb request; the far end shows a **persistent** row (never a toast, because it needs an answer) with `[y]`/`[Y]`/`[n]` (§2.9, §12 S32)',
+    category: 'session',
+  },
+  {
+    name: 'end',
+    aliases: [],
+    destructive: true,
+    args: [
+      { name: 'now', kind: 'enum', values: ['now'], optional: true, hint: '[now]', valueHints: { now: { title: 'end without waiting for the step in flight to commit' } } },
+      { name: 'target', kind: 'text', optional: true, hint: '[<target>]' },
+    ],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'end this session — /resume afterwards needs --force',
+    usage: '[now] [<target>]',
+    semantics: '`engine.end({ at, by: \'human\' })`; writes `RunMeta.ended` and one `session:end` index line, so a later `/resume <id>` needs `--force`. Takes the confirm ladder and its Enter is inert (§2.7, §12 S27–S29)',
+    category: 'run',
+  },
+
+// ----- TUI-DESIGN-5 §3.2 / §3.3 (R5-3's two rows of the one §9.2 registry PR) -------------------------------
+  {
+    name: 'context',
+    aliases: [],
+    args: [],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'what the generator sees this step, and what it costs',
+    usage: '—',
+    // §3.2 (D-AH): three reads that are already public — `status().context`, `snapshotState()` and the checkpoint
+    // store's `readContextSummary()`. §13.3 records the deliberate absence of a `--json` twin: there is no
+    // `jevcode context` verb, so the machine-readable form is `--json=verbose`'s `status` event.
+    semantics:
+      'one block: the budget and window, the recent-step split, prompt-build and file-refresh milliseconds, the rolling summary and its age, and the files in view with why each is there (§3.2, §12 S48–S53). Three distinct empty states — no live run, a mode that builds no relaxed context, and no prompt built yet. No `--json` of its own (§13.3)',
+    category: 'inspect',
+  },
+  {
+    name: 'compact',
+    aliases: [],
+    args: [],
+    // §3.3: the OPPOSITE of Codex CLI's idle-only gate — `Engine.compact()` folds history so the NEXT step's
+    // prompt fits, which is meaningless with no next prompt. The refusal is `availabilityError`'s own `'live'`
+    // sentence, nothing hand-written.
+    availableDuringTask: 'live',
+    plain: 'yes',
+    title: 'fold the history now instead of waiting for the next trigger',
+    usage: '—',
+    semantics:
+      '`engine.compact()`; the engine\'s own compaction notice reports what happened in all three sinks (§3.4), so the command says nothing when the count rose and otherwise answers one of three sentences — compaction is off for this run, only the newest step is in history, or the run is no longer live (§3.3, §12 S57–S58a)',
+    category: 'run',
+  },
+  // ----- TUI-DESIGN-5 §4.9 (D-AN: R5-4's five rows, registered honestly from day one — each answers
+  // `<verb> is not available in this build — no agent is running` until the supervisor's store exists) ---------
+  {
+    name: 'split',
+    aliases: [],
+    args: [{ name: 'policy', kind: 'enum', values: ['auto', 'ask', 'off'], optional: true, hint: '[auto|ask|off]', valueHints: { auto: { title: 'split when the ranker says it pays' }, ask: { title: 'ask before every split' }, off: { title: 'never split' } } }],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'the split policy for the next step',
+    usage: '[auto|ask|off]',
+    semantics: 'pends `orchestrate.split` for the next step; no argument shows the current policy (§4.9)',
+    category: 'run',
+  },
+  {
+    name: 'agents',
+    aliases: [],
+    args: [],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'the agent tree — opens and focuses the `a` pane tab (Alt+A)',
+    usage: '—',
+    // §4.3: the App's own pre-router (`src/tui/pane/commands.ts`) handles this line, because it opens AND focuses
+    // the tab and focus is `UiState.paneFocus`, which no host command can reproduce. In `--plain` the host prints
+    // the block. With nothing delegating the answer is D-AN's honest one, never a blank tab.
+    semantics: 'opens the `a` pane tab and focuses it so its eight letters resolve (`Alt+A` is the key twin); in `--plain` it prints the tree as a block. With nothing delegating it answers `/agents is not available in this build — no agent is running` (§4.3, §4.9, §12 S85)',
+    category: 'inspect',
+  },
+  {
+    name: 'agent',
+    aliases: [],
+    args: [
+      { name: 'slug', kind: 'text', hint: '<slug>' },
+      { name: 'verb', kind: 'enum', values: ['pause', 'resume', 'steer', 'budget', 'land', 'kick', 'drop', 'diff'], hint: 'pause|resume|steer|budget|land|kick|drop|diff', valueHints: { pause: { title: 'pause the agent at its next step' }, resume: { title: 'resume a paused agent' }, steer: { title: 'send the agent a steer' }, budget: { title: 'raise the agent\'s cap' }, land: { title: 'land the agent into the dock' }, kick: { title: 'kick a stalled agent once' }, drop: { title: 'drop the agent — its uncommitted diff is lost' }, diff: { title: 'the agent\'s diff against the base' } } },
+      { name: 'args', kind: 'rest', hint: '[args]', optional: true },
+    ],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'one verb against one agent, by slug',
+    usage: '<slug> pause|resume|steer|budget|land|kick|drop|diff [args]',
+    semantics: 'the typed twin of the `a` tab\'s eight letters (§4.3); until the supervisor\'s store exists it answers `/agent is not available in this build — no agent is running` (§4.9, §12 S85)',
+    category: 'run',
+  },
+  {
+    name: 'land',
+    aliases: [],
+    // §4.9: the only one of the seven that mutates files, so the only one that joins `EXCLUSIVE_COMMANDS`
+    // (`src/cli/session.ts`) and the only one with `destructive: true` (a confirm row whose Enter is inert).
+    destructive: true,
+    args: [{ name: 'slug', kind: 'text', optional: true, hint: '[<slug>]' }],
+    availableDuringTask: 'idle',
+    plain: 'yes',
+    title: 'land a finished agent\'s work into the dock',
+    usage: '[<slug>]',
+    semantics: 'merges the agent\'s branch into the dock behind the land preflight (§4.6); runs one at a time (`EXCLUSIVE_COMMANDS`) and takes the confirm ladder, whose Enter is inert. With nothing delegating it answers `/land is not available in this build — no agent is running` (§4.9, §12 S85)',
+    category: 'files',
+  },
+  {
+    name: 'spawn',
+    aliases: [],
+    args: [
+      { name: 'role', kind: 'text', hint: '<role>' },
+      { name: 'glob', kind: 'text', hint: '<glob>' },
+      { name: 'task', kind: 'rest', hint: '[task]', optional: true },
+    ],
+    availableDuringTask: 'live',
+    plain: 'yes',
+    title: 'one extra agent against the live manifest',
+    usage: '<role> <glob> [task]',
+    semantics: 'adds one agent to the manifest of the live run; until the supervisor\'s store exists it answers `/spawn is not available in this build — no agent is running` (§4.9, §12 S85)',
+    category: 'run',
+  },
+  // ----- TUI-DESIGN-5 §5.5 (R5-5's two rows, both `category: 'config'`) ---------------------------------------
+  {
+    name: 'import',
+    aliases: ['imp'],
+    args: [{ name: 'source', kind: 'text', optional: true, hint: '[<source>]' }],
+    flags: [{ name: 'dry-run', title: 'plan only — nothing is written' }],
+    availableDuringTask: 'idle',
+    plain: 'yes',
+    title: 'import memory, commands and settings from the other coding agents on this machine',
+    usage: '[--dry-run] [<source>]',
+    semantics: 'scans the known sources, shows one review overlay of what would be written, and applies only what you accept; a credential row always needs a terminal and is never applied by `--yes` (§5.2, §5.3). `jevcode import` is the CLI twin',
+    category: 'config',
+  },
+  {
+    name: 'memory',
+    aliases: ['mem'],
+    args: [
+      { name: 'op', kind: 'enum', values: ['list', 'show', 'add', 'forget', 'reload'], optional: true, hint: '[list|show|add|forget|reload]', valueHints: { list: { title: 'the memory entries in effect' }, show: { title: 'the merged memory text' }, add: { title: 'append one line' }, forget: { title: 'drop one entry' }, reload: { title: 're-read the memory files from disk' } } },
+      { name: 'text', kind: 'rest', optional: true, hint: '[<text>]' },
+    ],
+    availableDuringTask: 'any',
+    plain: 'yes',
+    title: 'the project and user memory this run reads',
+    usage: '[list|show|add|forget|reload] [<text>]',
+    semantics: 'reads and edits the memory files `memory.path` names; one switch (`memory.enabled`, D-AP) turns the whole feature off (§5.5)',
+    category: 'config',
   },
 ];
 
@@ -630,6 +863,21 @@ const BY_NAME: ReadonlyMap<string, CommandSpec> = (() => {
  */
 export function takesRest(spec: CommandSpec): boolean {
   return spec.args.length === 1 && spec.args[0]?.kind === 'rest' && (spec.flags?.length ?? 0) === 0;
+}
+
+/**
+ * TUI-DESIGN-5 §2.9: the index of a command's `rest` argument when it is the **last** one and the command takes no
+ * flags, else `-1`. `takesRest`'s generalisation: `/rename`, `/steer` and `/why` answer `0` (round 1's case,
+ * unchanged), `/headsup` answers `0`, `/tell` answers `1` and `/request` answers `2`. The positionals before it are
+ * read as bare whitespace-delimited tokens and the remainder is taken raw, so `/tell mbp don't touch the tests` is
+ * a message and never `unterminated quote`.
+ */
+export function restArgIndex(spec: CommandSpec): number {
+  if ((spec.flags?.length ?? 0) > 0) return -1;
+  const last = spec.args.length - 1;
+  if (last < 0 || spec.args[last]?.kind !== 'rest') return -1;
+  for (let i = 0; i < last; i++) if (spec.args[i]?.kind === 'rest') return -1;
+  return last;
 }
 
 /** TUI-DESIGN §5.1: the command for a name or alias (case-insensitive, with or without the leading `/`); null when unknown. */

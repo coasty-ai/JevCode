@@ -93,9 +93,12 @@ describe('paletteMatches (TUI-DESIGN §5.3; TUI-DESIGN-3 §4.1 rule 6)', () => {
     // an unknown or misspelt recent entry is skipped
     expect(paletteMatches('', { ...fresh, recent: ['nope', 'status'] }).slice(0, 2).map((m) => m.spec.name)).toEqual(['status', 'help']);
   });
-  it('`/b` after a spend_cap stop: /budget (Suggested) first, then /abort and /calibration by score', () => {
+  it('`/b` after a spend_cap stop: /budget (Suggested) first, then /abort, /inbox and /calibration by score', () => {
     const m = paletteMatches('/b', afterSpendCap);
-    expect(m.slice(0, 3).map((x) => x.spec.name)).toEqual(['budget', 'abort', 'calibration']);
+    // TUI-DESIGN-5 §2.9: `/inbox` carries `b` at index 2 and so outranks `/calibration` (index 4). The scorer is
+    // untouched — the pool grew — and TD §2.3's F-K frame moves with it, exactly as it did when round 4 added
+    // `/scrollback` to the same query.
+    expect(m.slice(0, 4).map((x) => x.spec.name)).toEqual(['budget', 'abort', 'inbox', 'calibration']);
     expect(m[0]?.suggested).toBe(true);
     expect(m[1]?.suggested).toBe(false);
     expect(m[0]?.spans).toEqual([[1, 2]]);
@@ -109,18 +112,21 @@ describe('paletteMatches (TUI-DESIGN §5.3; TUI-DESIGN-3 §4.1 rule 6)', () => {
     const top = (q: string): string[] => paletteMatches(q, fresh).slice(0, 2).map((m) => m.spec.name);
     expect(top('/s')).toEqual(['status', 'steer']);
     expect(top('/p')).toEqual(['panel', 'plan']);
-    expect(top('/t')).toEqual(['theme', 'trust']);
+    expect(top('/t')).toEqual(['theme', 'tell']); // TUI-DESIGN-5 §2.9: `/tell` is a prefix sibling of `t`, ahead of /trust by table order
     expect(top('/l')).toEqual(['login', 'llm']);
     expect(top('/tr')).toEqual(['transcript', 'trust']);
     expect(paletteMatches('/s', fresh)[0]?.score).toBe(1000);
     expect(paletteMatches('/S', fresh)[0]?.spec.name).toBe('status'); // case-folded like the names
     // the pinned owner keeps the spans of its name match (`s` of status); an alias-only hit has none
     expect(paletteMatches('/s', fresh)[0]?.spans).toEqual([[1, 2]]);
-    expect(paletteMatches('/q', fresh)).toMatchObject([{ spec: { name: 'exit' }, score: 1000, spans: [] }]);
+    // TUI-DESIGN-5 §2.9: `/request` is a subsequence hit for `q` behind the pinned alias owner
+    expect(paletteMatches('/q', fresh)[0]).toMatchObject({ spec: { name: 'exit' }, score: 1000, spans: [] });
+    expect(paletteMatches('/q', fresh).map((m) => m.spec.name)).toEqual(['exit', 'request']);
     // `/c`: cost pinned by its alias, then copy (prefix, table order before config)
     expect(paletteMatches('/c', fresh).slice(0, 3).map((m) => m.spec.name)).toEqual(['cost', 'copy', 'config']);
     // popularity never reorders a typed query: `/e` is score order (exit, export, errors, editor …), not the Popular order
-    expect(paletteMatches('/e', fresh).slice(0, 4).map((m) => m.spec.name)).toEqual(['exit', 'export', 'errors', 'editor']);
+    // TUI-DESIGN-5 §2.7: `/end` is a two-character prefix hit for `e` and leads the group; the order below it is unchanged
+    expect(paletteMatches('/e', fresh).slice(0, 5).map((m) => m.spec.name)).toEqual(['end', 'exit', 'export', 'errors', 'editor']);
   });
   it('TUI-DESIGN-3 §8 S4: for EVERY alias of the table `paletteMatches("/" + alias)[0].spec.name === owner` — in the fresh, live and after-stop states alike (the exact token leads even a Suggested row: Enter runs it, so the highlight agrees with Enter)', () => {
     for (const c of COMMANDS) {
@@ -165,21 +171,26 @@ describe('paletteRows / paletteLines', () => {
     for (const l of lines) expect(cells(l)).toBe(80);
     expect(lines[0]).toBe(pad('▌ /budget     b  show or set caps (spend-cap, session-spend-cap, …)    Suggested'));
     expect(lines[1]).toBe(pad('  /abort         stop the run now (= Esc Esc); the step in flight is discarded'));
-    expect(lines[2]).toBe(pad('  /calibration   reliability bins, ECE and near-threshold counts (idle only)'));
-    // TUI-DESIGN-4 §1.3.4: `/scrollback` is a fourth subsequence hit for `b`, so one sub-row gives way to it
-    expect(lines[3]).toBe(pad('  /scrollback    print the transcript to the primary screen for copy and find'));
-    expect(lines[4]).toBe(pad('  /budget spend-cap <usd>            run cap for the next /resume or run'));
-    expect(lines[5]).toBe(pad('  /budget session-spend-cap <usd>    session cap, applies now'));
-    expect(lines[6]).toBe(pad('  /budget max-steps <n>              step limit for the next /resume or run'));
+    // TUI-DESIGN-5 §2.9: `/inbox` is a fifth subsequence hit for `b` and ranks above `/calibration`, so the frame's
+    // command block grows by one row and a second sub-row gives way — the same drift round 4 recorded when
+    // `/scrollback` joined. The frame's SHAPE (alias column, 80 cells, Suggested tag, sub-rows, footer) is what is
+    // pinned; its membership follows the command table.
+    expect(lines[2]).toBe(pad('  /inbox         unread messages from other sessions, newest first'));
+    expect(lines[3]).toBe(pad('  /calibration   reliability bins, ECE and near-threshold counts (idle only)'));
+    // TUI-DESIGN-4 §1.3.4: `/scrollback` is a subsequence hit for `b` too
+    expect(lines[4]).toBe(pad('  /scrollback    print the transcript to the primary screen for copy and find'));
+    expect(lines[5]).toBe(pad('  /budget spend-cap <usd>            run cap for the next /resume or run'));
+    expect(lines[6]).toBe(pad('  /budget session-spend-cap <usd>    session cap, applies now'));
     // TUI-DESIGN-4 §4.4: `/b` is an exact alias, so the state is S-ARMED on the **owner** and the footer says so (E3)
-    expect(lines[7]).toBe(pad('  (1/4)  Enter runs /budget · Tab adds an argument · Esc closes'));
-    // and against the design document itself (TUI-DESIGN.md F-K predates the alias column: its 15-cell name column reads as 12 + 3): the three command rows and the three surviving sub-rows still match it row for row
+    expect(lines[7]).toBe(pad('  (1/5)  Enter runs /budget · Tab adds an argument · Esc closes'));
+    // and against the design document itself (TUI-DESIGN.md F-K predates the alias column: its 15-cell name column reads as 12 + 3): the frame's own rows still match it row for row where they survive
     const doc = frameFKRows().map((r) => withAliasColumn(r));
-    expect(lines.slice(0, 3).map((l) => l.trimEnd())).toEqual(doc.slice(0, 3));
-    expect(lines.slice(4, 7).map((l) => l.trimEnd())).toEqual(doc.slice(3, 6));
+    expect(lines.slice(0, 2).map((l) => l.trimEnd())).toEqual(doc.slice(0, 2));
+    expect(lines[3]?.trimEnd()).toBe(doc[2]);
+    expect(lines.slice(5, 7).map((l) => l.trimEnd())).toEqual(doc.slice(3, 5));
     const rows = paletteRows('/b', frameFK, 0, 8, 80);
-    expect(rows.map((r) => r.dim)).toEqual([false, false, true, false, false, false, false, false]);
-    expect(rows.map((r) => r.kind)).toEqual(['command', 'command', 'command', 'command', 'value', 'value', 'value', 'footer']);
+    expect(rows.map((r) => r.dim)).toEqual([false, false, false, true, false, false, false, false]);
+    expect(rows.map((r) => r.kind)).toEqual(['command', 'command', 'command', 'command', 'command', 'value', 'value', 'footer']);
     expect(rows[0]?.suggested).toBe(true);
     expect(rows[0]?.tag).toBe(SUGGESTED);
     expect(rows[0]?.alias).toBe('b');
@@ -190,8 +201,9 @@ describe('paletteRows / paletteLines', () => {
     const lines = paletteLines('/b', idleAfterStop, 0, 8, 80);
     expect(lines[0]).toBe(pad('▌ /budget     b  show or set caps (spend-cap, session-spend-cap, max-steps, …)'));
     expect(lines[1]).toBe('  /abort         stop the run now (= Esc Esc); the step in flight i… (live only)'); // the tag costs 12 cells: a plain cut (the parenthesis is not a trailing list)
-    expect(lines[2]).toBe(pad('  /calibration   reliability bins, ECE and near-threshold counts'));
-    expect(paletteRows('/b', idleAfterStop, 0, 8, 80).map((r) => r.dim).slice(0, 3)).toEqual([false, true, false]);
+    expect(lines[2]).toBe(pad('  /inbox         unread messages from other sessions, newest first'));
+    expect(lines[3]).toBe(pad('  /calibration   reliability bins, ECE and near-threshold counts'));
+    expect(paletteRows('/b', idleAfterStop, 0, 8, 80).map((r) => r.dim).slice(0, 4)).toEqual([false, true, false, false]);
   });
   it('TUI-DESIGN-3 §4.2 F-P1 verbatim from the design document: `/` after a run that changed files, history /cost + /status, 76 inner cells — Suggested → recent → Popular with the alias column; every row exactly 76 cells', () => {
     const doc = cardRows(fence(DESIGN3, '**F-P1.'));
@@ -224,10 +236,18 @@ describe('paletteRows / paletteLines', () => {
     expect(rows.slice(2, 5).map((r) => r.name)).toEqual(['/mode jev-only', '/mode jev-on', '/mode jev-off']);
     expect(mine[2]).toContain('no generating LLM; code proposes, Jev');
     expect(mine[3]).toContain(`${MODE_BADGE_WORD['jev-on']}: the code model`);
-    expect(paletteMatches('/m', fresh)).toHaveLength(6); // mode, model, llm, theme, resume, rename — the frame's `(1/6)`
+    /**
+     * TUI-DESIGN-3's frame says `(1/6)`: mode, model, llm, theme, resume, rename. TUI-DESIGN-5 §5.5 adds
+     * `/memory`/`/mem` and §3.3 adds `/compact`, so `/m` now scores NINE. The frame's row order and its ghost
+     * arrow are unchanged — `/m` is still an exact alias of `/mode` and still pins it first — and the count is
+     * read from the live matcher rather than a literal, which is what makes the row a pin and not a snapshot.
+     */
+    const m = paletteMatches('/m', fresh);
+    expect(m).toHaveLength(9);
+    expect(m[0]?.spec.name).toBe('mode');
     // TUI-DESIGN-4 §4.4: `/m` is an exact alias → S-ARMED on /mode, whose arg 0 has values
-    expect(mine[5]).toBe('  (1/6)  Enter runs /mode · Tab adds an argument · Esc closes ▼'.padEnd(76));
-    expect(paletteGhost('/m', paletteMatches('/m', fresh))).toEqual({ rest: '', more: 5, arrow: '/mode' });
+    expect(mine[5]).toBe(`  (1/${m.length})  Enter runs /mode · Tab adds an argument · Esc closes ▼`.padEnd(76));
+    expect(paletteGhost('/m', m)).toEqual({ rest: '', more: m.length - 1, arrow: '/mode' });
     // scrolled past the exact row the sub-rows give way to the matches
     expect(paletteRows('/m', fresh, 3, 6, 76).map((r) => r.kind)).toEqual(['command', 'command', 'command', 'command', 'command', 'footer']);
   });
@@ -300,16 +320,19 @@ describe('paletteRows / paletteLines', () => {
     const lines = paletteLines('/b', afterSpendCap, 1, 8, 120);
     expect(lines[0]).toBe('  /budget     b  show or set caps (spend-cap, session-spend-cap, max-steps, max-wall, max-replans)             Suggested');
     expect(lines[1]?.startsWith('▌ /abort')).toBe(true);
-    // the selected /abort has no argument values → no sub-rows, fewer lines (TUI-DESIGN-4: /scrollback is a fourth `b` hit)
-    expect(lines).toHaveLength(5);
+    // the selected /abort has no argument values → no sub-rows, fewer lines (TUI-DESIGN-4: /scrollback is a fourth `b` hit; TUI-DESIGN-5: /inbox is a fifth)
+    expect(lines).toHaveLength(6);
     // TUI-DESIGN-4 §4.4: the marker is off the draft's own row → S-PICKED, and the footer names the row Tab would take
-    expect(lines[4]).toBe(pad('  (2/4)  Tab picks /abort · Enter next · Esc closes', 120));
+    expect(lines[5]).toBe(pad('  (2/5)  Tab picks /abort · Enter next · Esc closes', 120));
   });
   it('unavailable rows carry (idle only) / (live only); rows are marked dim', () => {
     const rows = paletteRows('/calibration', live, 0, 8, 80);
     expect(rows[0]?.text).toBe(pad('▌ /calibration   reliability bins, ECE and near-threshold counts (idle only)'));
     expect(rows[0]?.dim).toBe(true);
-    const idleRows = paletteRows('/pause', fresh, 0, 8, 80);
+    // TUI-DESIGN-5 §2.6: `/pause` is `'any'` now (its local form refuses per form, §12 S45a), so the `(live only)`
+    // tag is read off `/steer`, which is still `live`
+    expect(findCommand('pause')?.availableDuringTask).toBe('any');
+    const idleRows = paletteRows('/steer', fresh, 0, 8, 80);
     expect(idleRows[0]?.text).toContain('(live only)');
   });
   it('scrolls around the selection with ▲/▼ marks; rows never exceed the slot', () => {
@@ -327,10 +350,10 @@ describe('paletteRows / paletteLines', () => {
   it('tolerates tiny widths, NaN sizes and out-of-range selection', () => {
     for (const l of paletteLines('/b', afterSpendCap, 99, 8, 20)) expect(cells(l)).toBeLessThanOrEqual(20);
     expect(paletteLines('/b', afterSpendCap, -5, Number.NaN, Number.NaN)).toEqual([]);
-    expect(paletteLines('/b', afterSpendCap, Number.NaN, 2, 80)[1]).toContain('(1/4)');
+    expect(paletteLines('/b', afterSpendCap, Number.NaN, 2, 80)[1]).toContain('(1/5)');
     const ascii = paletteLines('/b', afterSpendCap, 0, 8, 80, true);
     expect(ascii[0]?.startsWith('> /budget     b  ')).toBe(true);
-    expect(ascii[7]).toBe(pad('  (1/4)  Enter runs /budget - Tab adds an argument - Esc closes'));
+    expect(ascii[7]).toBe(pad('  (1/5)  Enter runs /budget - Tab adds an argument - Esc closes'));
   });
   it('TUI-DESIGN-3 §4.1 rule 8: the `/mode` sub-rows read the badge table, the row equal to DEFAULT_MODE ends ` (default)` (D-N: computed, never a literal) and the suffix survives the cut; /theme, /panel, /transcript, /copy, /logout, /help and the /decisions stages carry hints', () => {
     const rows = paletteRows('/mode', fresh, 0, 8, 80);
@@ -369,9 +392,18 @@ describe('paletteRows / paletteLines', () => {
     expect(paletteGhost('/budget', paletteMatches('/budget', fresh))).toBeNull();
     expect(paletteGhost('/zz', [])).toBeNull();
     // an alias, exact or as a prefix: the arrow (`rest` empty so a pre-round-3 renderer draws only `+N`)
-    expect(paletteGhost('/b', paletteMatches('/b', afterSpendCap))).toEqual({ rest: '', more: 3, arrow: '/budget' });
+    expect(paletteGhost('/b', paletteMatches('/b', afterSpendCap))).toEqual({ rest: '', more: 4, arrow: '/budget' });
     expect(paletteGhost('/quit', paletteMatches('/quit', fresh))).toEqual({ rest: '', more: 0, arrow: '/exit' });
-    expect(paletteGhost('/qu', paletteMatches('/qu', fresh))).toEqual({ rest: '', more: 0, arrow: '/exit' });
+    /**
+     * TUI-DESIGN-5 §2.9, recorded as a deliberate change: `/qu` used to ghost `→ /exit` (the `quit` alias as a
+     * PREFIX). `/request` carries `qu` contiguously at index 3 and the scorer prefers it, so the alias-prefix
+     * ghost moves. Rule 2's guarantee is about an **exact** alias and is intact: `/q` and `/quit` both still pin
+     * `/exit` with score 1000 (asserted above and below). Nothing about the scorer changed; the pool grew.
+     */
+    expect(paletteGhost('/qu', paletteMatches('/qu', fresh))).toMatchObject({ rest: '', arrow: '/request' });
+    expect(paletteMatches('/quit', fresh)[0]?.spec.name).toBe('exit');
+    // TUI-DESIGN-5 §2.9: `/q` alone now has one other hit (`/request`), so the `+N` counter moves with the table
+    expect(paletteGhost('/q', paletteMatches('/q', fresh))).toEqual({ rest: '', more: paletteMatches('/q', fresh).length - 1, arrow: '/exit' });
     expect(paletteGhost('/s', paletteMatches('/s', fresh))).toMatchObject({ arrow: '/status' });
     expect(paletteGhost('/ml', paletteMatches('/ml', fresh))).toMatchObject({ arrow: '/model' });
     expect(paletteGhost('/cp', paletteMatches('/cp', fresh))).toMatchObject({ arrow: '/copy' });
@@ -382,10 +414,10 @@ describe('paletteRows / paletteLines', () => {
     expect(e[0]?.suggested).toBe(true);
     // TUI-DESIGN-4 §4.3 P-P2: a marked row that does not extend the token now ghosts the arrow (the `arrow` shape subsumes the fuzzy hit)
     expect(paletteGhost('/e', e)).toEqual({ rest: '', more: e.length - 1, arrow: '/resume' });
-    // without the Suggested row the prefix match ghosts
+    // without the Suggested row the prefix match ghosts (TUI-DESIGN-5 §2.7: `/end` leads the `e` group now)
     const eFresh = paletteMatches('/e', fresh);
-    expect(eFresh[0]?.spec.name).toBe('exit');
-    expect(paletteGhost('/e', eFresh)).toEqual({ rest: 'xit', more: eFresh.length - 1 });
+    expect(eFresh[0]?.spec.name).toBe('end');
+    expect(paletteGhost('/e', eFresh)).toEqual({ rest: 'nd', more: eFresh.length - 1 });
   });
   it('cells / cut handle wide and combining characters and never split a grapheme cluster', () => {
     expect(cells('abc')).toBe(3);
@@ -440,7 +472,7 @@ describe('TUI-DESIGN-4 §4.3 P-P2 `paletteGhostFor`: the ghost IS the highlight'
     expect(paletteGhostFor('/m', m, 1)).toEqual({ kind: 'rest', rest: 'odel', more: m.length - 1 });
     // `arrow` — it does not, because the token is an alias (`/m` is /mode's alias) or a fuzzy hit
     expect(paletteGhostFor('/m', m, 0)).toEqual({ kind: 'arrow', target: '/mode', more: m.length - 1 });
-    expect(paletteGhostFor('/q', paletteMatches('/q', fresh), 0)).toEqual({ kind: 'arrow', target: '/exit', more: 0 });
+    expect(paletteGhostFor('/q', paletteMatches('/q', fresh), 0)).toEqual({ kind: 'arrow', target: '/exit', more: paletteMatches('/q', fresh).length - 1 });
     // `value` — an argument value of the marked sub-row
     // `/mode j` ranks jev-on · jev-off · jev-only · llm-jev (`rank` is a subsequence scorer, so `llm-jev` matches `j`)
     expect(paletteGhostFor('/mode j', paletteMatches('/mode j', fresh), 0)).toEqual({ kind: 'value', rest: 'ev-on', more: 3 });
@@ -598,14 +630,19 @@ describe('TUI-DESIGN-4 §4.4: the footer says what Enter does, in every state', 
 describe('TUI-DESIGN-4 §4.6: the numbered list both twins share', () => {
   it('the header, the numbering, the width bound and the screen-reader line', () => {
     const lines = paletteNumberedLines('', fresh, 80);
-    expect(lines[0]).toBe('commands (41) — type a number or a name, then Enter');
-    expect(lines).toHaveLength(COMMANDS.length + 1);
+    expect(lines[0]).toBe(`commands (${COMMANDS.length}) — type a number or a name, then Enter`);
+    // TUI-DESIGN-4 §4.6: past 41 commands the list shows `numberedShown` of them plus the `… N more` tail row
+    expect(lines).toHaveLength(numberedShown(COMMANDS.length) + (numberedShown(COMMANDS.length) < COMMANDS.length ? 2 : 1));
     for (const l of lines) expect(cells(l), l).toBeLessThanOrEqual(80);
     for (const l of paletteNumberedLines('', fresh, 60)) expect(cells(l), l).toBeLessThanOrEqual(60);
-    expect(paletteNumberedLines('', fresh, 80, true)[0]).toBe('commands (41) - type a number or a name, then Enter');
-    // every new command of this round is reachable by number: '/fullscreen', '/scrollback', '/peers', '/ui reset'
+    expect(paletteNumberedLines('', fresh, 80, true)[0]).toBe(`commands (${COMMANDS.length}) - type a number or a name, then Enter`);
+    // every command inside the numbered window is reachable by number, and past the window TD4 §4.6's own
+    // `… N more — /help commands` tail carries the rest (TUI-DESIGN-5 takes the table past the 40-row cap)
     const text = lines.join('\n');
-    for (const name of ['/fullscreen', '/scrollback', '/peers', '/ui']) expect(text, name).toContain(name);
+    const shown = numberedShown(COMMANDS.length);
+    for (const c of COMMANDS.slice(0, shown)) expect(text, c.name).toContain(`/${c.name}`);
+    if (shown < COMMANDS.length) expect(text).toContain(`${COMMANDS.length - shown} more — /help commands`);
+    for (const name of ['/fullscreen', '/scrollback', '/peers']) expect(text, name).toContain(name);
     // the SR announcement, byte-identical between `--plain --screen-reader` and the TUI under SR
     expect(srPaletteLine(2, 37, findCommand('resume') as CommandSpec)).toBe('palette: 3 of 37 · /resume · pick a session to continue, or continue <id|title> · Enter next, Tab picks, Esc closes');
     expect(SR_PALETTE_COALESCE_MS).toBe(400);
@@ -619,8 +656,9 @@ describe('TUI-DESIGN-4 §4.6: the numbered list both twins share', () => {
     expect(plain).toEqual(paletteNumberedLines('', { lastStop: null, unauthorized: false, changedFiles: false, rewindMenu: false, live: false }, 80));
     expect(plain[0]).toBe(`commands (${COMMANDS.length}) — type a number or a name, then Enter`);
     // the `… N more — /help commands` tail: it never fires at 41 commands (the cap is 40 and one hidden row would
-    // cost the row it saves), and from two hidden rows up it does — asserted on the formatter's own arithmetic
-    expect(plain.some((l) => l.includes('more — /help commands'))).toBe(false);
+    // cost the row it saves), and from two hidden rows up it does — asserted on the formatter's own arithmetic.
+    // TUI-DESIGN-5 §2.3/§2.7/§2.9 take the table past 41, so it fires now and the arithmetic below still pins it.
+    expect(plain.some((l) => l.includes('more — /help commands'))).toBe(COMMANDS.length > 41);
     expect(numberedShown(41)).toBe(41);
     expect(numberedShown(42)).toBe(40);
     expect(numberedShown(43)).toBe(40);
@@ -637,30 +675,52 @@ describe('helpLines (TUI-DESIGN §5.3; TUI-DESIGN-3 §4.1 rule 7, §4.4 F9)', ()
   it('≤ 60 lines at 80 columns with EVERY command on its own line and the four per-terminal notes — the round-2 rows (TUI-DESIGN-2 §1.3 /mode /llm, §4.6 /panel /transcript, the panel keys) and the round-3 aliases fit through compaction level 3, never the tail cut', () => {
     const lines = helpLines(80);
     expect(lines.length).toBeLessThanOrEqual(HELP_MAX_LINES);
-    // TUI-DESIGN-4: with 41 commands the level-4 block is exactly 60 rows at 80 columns because the `keys` header
-    // shares the first packed row — the whole key table and every command line survive at the default width
-    expect(lines[0]?.startsWith('keys  global: ')).toBe(true);
+    /**
+     * TUI-DESIGN-5 §2.3/§2.7/§2.9, recorded as a deliberate move down the ladder: six more commands take the
+     * level-4 block past `HELP_MAX_LINES` at 80 columns, so `/help` now renders **level 5** there — the key table
+     * becomes `HELP_KEYS_POINTER` and, exactly as the ladder promises, **no command is ever cut**. `/help keys`
+     * still prints the whole table, and the table returns by itself at ≥ 200 columns (asserted below).
+     */
+    expect(lines[0]).toBe('keys');
+    expect(lines[1]).toBe(cut(HELP_KEYS_POINTER, 80));
     expect(lines).toContain('commands');
-    // level 3: the key contexts pack into one block, each context named where its keys start
-    for (const ctx of ['global:', 'composer:', 'review box:', 'session picker:', 'palette:']) expect(lines.some((l) => l.includes(ctx)), ctx).toBe(true);
     expect(everyCommand(lines)).toEqual([]);
     for (const name of ['exit', 'mode', 'llm', 'panel', 'transcript', 'help', 'quit'.replace('quit', 'exit')]) expect(lines.some((l) => l.startsWith(`  /${name}`)), name).toBe(true);
-    // TUI-DESIGN-4: with 41 commands the notes go at 80 columns (level 4) — the ladder's own rule, "a command line outranks a terminal tip"
+    // TUI-DESIGN-4: the notes go before any command line — the ladder's own rule, "a command line outranks a terminal tip"
     expect(allNotes(lines)).toBe(false);
     expect(lines[lines.length - 1]).not.toBe(HELP_POINTER);
     for (const l of lines) expect(cells(l), l).toBeLessThanOrEqual(80);
-    // at 120 columns the block is whole too (41 commands push the four notes out at 100 — a command outranks a tip)
+    // at 120 columns the block is whole too, still at level 5
     const wide = helpLines(120);
     expect(wide.length).toBeLessThanOrEqual(HELP_MAX_LINES);
     expect(everyCommand(wide)).toEqual([]);
-    expect(allNotes(wide)).toBe(true);
+    expect(wide[1]).toBe(cut(HELP_KEYS_POINTER, 120));
     for (const l of wide) expect(cells(l), l).toBeLessThanOrEqual(120);
     expect(everyCommand(helpLines(100))).toEqual([]);
-    // wide terminals keep the uncompacted form: one context title line per key context and the `notes` header, one note per line
-    const level0 = helpLines(400); // TUI-DESIGN-4: 41 commands push level 0 past the cap until 400 columns
-    expect(level0).toContain('notes');
-    for (const ctx of ['  global', '  composer', '  review box', '  session picker', '  palette']) expect(level0).toContain(ctx);
-    for (const n of HELP_NOTES) expect(level0).toContain(`  ${n}`);
+    /**
+     * TUI-DESIGN-5, recorded (the integration pass, with all 56 rows of §9.2's registry PR landed): 56 command
+     * lines plus the two headers are 59 of `HELP_MAX_LINES`' 60, so **the ladder now sits at its LAST TWO rungs
+     * at every width** and the earlier "at 200 the key table and the four notes both come back" is no longer
+     * true. This is the ladder working, not failing: `HELP_COMPACTION_LEVELS` ranks a command line above a
+     * terminal tip (level 4) and the key table above nothing (level 5, one pointer row, `/help keys` still
+     * prints it). The invariant the whole ladder exists to protect — **every command keeps its own row, at every
+     * width** — is asserted below and holds at 40 … 1,000.
+     */
+    const at200 = helpLines(200);
+    expect(at200.length).toBeLessThanOrEqual(HELP_MAX_LINES);
+    expect(at200).toContain(HELP_KEYS_POINTER); // level 5: the key table is one pointer row
+    expect(allNotes(at200)).toBe(false); // level 4: the four per-terminal notes yielded to the command lines
+    expect(everyCommand(at200)).toEqual([]);
+    /**
+     * The widest form is level 4: the key contexts pack into two long rows (so the table is back, whole) and
+     * the notes stay dropped. Every command still has its own row.
+     */
+    const widest = helpLines(1000);
+    expect(widest.length).toBeLessThanOrEqual(HELP_MAX_LINES);
+    expect(widest).not.toContain('notes');
+    expect(widest).not.toContain(HELP_KEYS_POINTER);
+    expect(everyCommand(widest)).toEqual([]);
+    for (const ctx of ['global', 'composer', 'review box', 'session picker', 'palette']) expect(widest.some((l) => l.includes(`${ctx}:`)), ctx).toBe(true);
     expect(HELP_NOTES).toEqual(['Shift+Enter needs a keyboard protocol: use Ctrl+J or \\ then Enter', 'macOS: turn on "Option as Meta" for Alt-b/Alt-f', 'colour-blind? /theme daltonized', 'light terminal? /theme light']);
   });
   it('TUI-DESIGN-3 §4.1 rule 7: the command lines show the aliases after the name (`  /status, /s   <title>`), and the `live` option keeps only the tag that applies now — every tag survives the cut', () => {
@@ -705,21 +765,31 @@ describe('helpLines (TUI-DESIGN §5.3; TUI-DESIGN-3 §4.1 rule 7, §4.4 F9)', ()
       expect(narrow[1], `${width}`).toBe(cut(HELP_KEYS_POINTER, width));
       for (const l of narrow) expect(cells(l), l).toBeLessThanOrEqual(width);
     }
-    // every level keeps one `  /<name>` line per command that survives the cut (commands are never packed two to a line)
+    // every level keeps one `  /<name>` line per command that survives the cut (commands are never packed two to a
+    // line). Asserted as a COUNT: a title may legitimately name another command — TUI-DESIGN-5 §2.4 gives `/peers`
+    // the suffix ` · /who shows what each is doing` — so a ` · /` substring is not evidence of packing.
     for (const width of [40, 60, 70, 80, 100, 200]) {
       const commandLines = helpLines(width).filter((l) => l.startsWith('  /'));
-      expect(commandLines.length, `${width}`).toBeGreaterThan(0);
-      for (const l of commandLines) expect(l, `${width}`).not.toMatch(/ · \//);
+      expect(commandLines.length, `${width}`).toBe(COMMANDS.length);
     }
   });
   it('honours the effective bindings, the ascii flag and the topic filter; never exceeds the cap at narrow widths', () => {
     const b = buildBindings(new Map([['composer:externalEditor', ['ctrl+x ctrl+e']], ['global:help', []]]));
-    const lines = helpLines(100, { bindings: b });
+    // TUI-DESIGN-5: with 56 commands the block is at level 5 (the key table is one pointer row) at every width
+    // from 80 to a few hundred columns, so the effective bindings are read at 1,000 — the width where the packed
+    // table survives — and through `/help keys`, which prints it at every width. Both are the same `bindings`.
+    const lines = helpLines(1000, { bindings: b });
     expect(lines.some((l) => l.includes('Ctrl+X Ctrl+E external editor'))).toBe(true);
     expect(lines.some((l) => l.includes('?/F1 help'))).toBe(false);
+    // `/help keys` prints the table at every width; an unbound action is absent from it too
+    const keysOnly = helpLines(100, { bindings: b, topic: 'keys' });
+    expect(keysOnly[0]).toBe('keys');
+    expect(keysOnly.some((l) => l.includes('?/F1 help'))).toBe(false);
     expect(helpLines(80, { topic: 'keys' })).not.toContain('commands');
     expect(helpLines(80, { topic: 'commands' })[0]).toBe('commands');
-    expect(helpLines(100, { ascii: true }).some((l) => l.includes(' - '))).toBe(true);
+    // TUI-DESIGN-5: the ` · ` separators live in the packed key rows, which level 5 replaces with a pointer at
+    // every ordinary width — the ascii twin is read at 1,000, where those rows survive
+    expect(helpLines(1000, { ascii: true }).some((l) => l.includes(' - '))).toBe(true);
     expect(helpLines(80, { ascii: true }).some((l) => l.includes('...'))).toBe(true); // the level-5 key pointer takes its ascii twin
     const narrow = helpLines(40);
     expect(narrow.length).toBeLessThanOrEqual(HELP_MAX_LINES);

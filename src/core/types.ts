@@ -14,6 +14,7 @@
 // contract 1.5 (2026-09-22): orchestration — decompose stage, manifest, agents, landing queue per docs/ORCHESTRATION-DESIGN.md §4.1; every item is optional or a new union member; Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched.
 // contract 1.6 (2026-09-22): import — memory, rules, commands, MCP and the import plan per docs/IMPORT-DESIGN.md §7.1 row 1; the 22 section-1 shapes move here verbatim from src/import/types.ts, which re-exports them; every widening is an optional member or a new union member; CheckpointEnvelope.version stays 1.
 // contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
+// contract 1.8 (2026-09-22): TUI round 5 — coordination surface types, the context cell, the session label, the agents tab, the import overlay and the seven-provider widening, per docs/TUI-DESIGN-5.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
 /**
@@ -28,7 +29,14 @@ import type { Log } from './log.js';
  */
 import type { LedgerHandle } from '../coordination/ledger.js';
 import type { Authority, SelfIdentity, SubworkEntry } from '../coordination/types.js';
-export type { Authority, LedgerHandle, SelfIdentity, SubworkEntry };
+/**
+ * contract 1.8 item 6 (TUI-DESIGN-5 §8.1, D-AP): the THIRD type-only import outside `core/` — the docblock above
+ * still says "TWO" because contract 1.4 owns that block and round 5 never edits another contract's text; the count
+ * is three as of this line. `src/provider/ids.ts` is 54 lines with ZERO imports (its own docblock states the rule),
+ * so the first-frame/argv graph is untouched and `verbatimModuleSyntax` erases the edge entirely.
+ */
+import type { ProviderId } from '../provider/ids.js';
+export type { Authority, LedgerHandle, ProviderId, SelfIdentity, SubworkEntry };
 
 export type Json = string | number | boolean | null | Json[] | { [k: string]: Json };
 export type JsonObject = { [k: string]: Json };
@@ -741,7 +749,13 @@ export interface GenerateOptions {
    */
   onCancelled?: (partial: CancelledGeneration) => void;
 }
-export type ProviderName = 'anthropic' | 'openrouter' | 'mock';
+/**
+ * contract 1.8 item 6 (TUI-DESIGN-5 §8.1 / §6.1, D-AP): widened from `'anthropic' | 'openrouter' | 'mock'` to every
+ * `ProviderId` plus `'mock'`. A DEFAULT-PRESERVING WIDENING — every existing value stays valid and nothing narrows.
+ * `src/provider/registry.ts:16-19`'s own CONTRACT NOTE assigns this line to the TUI/session round and states that
+ * widening it "makes `createProvider()` return exactly a core `Provider` with no other change here".
+ */
+export type ProviderName = ProviderId | 'mock';
 export interface Provider {
   readonly name: ProviderName;
   readonly model: string;
@@ -1202,7 +1216,7 @@ export interface ConfigRecordValue {
   value: string | { source: string; fingerprint: string };
   source: string;
   /**
-   * contract 1.6 item 7 (TUI-DESIGN-4 §7.5): why the file layer discarded this value, so `jevcode config` can say so
+   * contract 1.7 item 7 (TUI-DESIGN-4 §7.5): why the file layer discarded this value, so `jevcode config` can say so
    * instead of printing a default. Absent / null = the value is fine; `expected` is the sentence the row suffixes
    * (`✗ expected an integer ≥ 1`). A row carrying a problem is never folded (§3.3).
    */
@@ -1824,7 +1838,15 @@ export interface CoordinationStatus {
  */
 export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui' | 'orchestration' | 'import' | 'coordination' | 'session';
 /** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1); TUI-DESIGN-2 §6 item 1 / §3.10: the chat bubbles */
-export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]';
+/**
+ * contract 1.8 item 2 (TUI-DESIGN-5 §8.1 / §2.9): `'[session]'` is the label every APPLIED remote verb writes — a
+ * peer's or a paired device's pause / end / steer, and the messaging rows of §2.9. `labelRole`
+ * (`src/tui/theme.ts:277`) falls through to `'dim'` for it, which is the DECIDED role, not an accident: a
+ * session-provenance label is chrome, not speech. `LABEL_GUTTER` is 10 cells and `'[session]'` is 9, so the
+ * round-3 gutter is unchanged. NOT additive in `test/`: the two total `Readonly<Record<UiLabel, …>>` literals in
+ * `test/unit/tui/theme.test.ts` and `test/unit/tui/theme-palette.test.ts` take a one-line edit in this same commit.
+ */
+export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]' | '[session]';
 export type ChatLabel = Extract<UiLabel, '[you]' | '[jevcode]'>;
 /** TUI-DESIGN-2 §6 item 2 / §3.3: Jev's reading of a submission (the `intake` Choice; `ambiguous` is also the fallback and the weak-`coding_task` verdict) */
 export type IntakeKind = 'greeting_or_smalltalk' | 'question_about_this_tool' | 'question_about_the_code' | 'coding_task' | 'ambiguous';
@@ -2216,7 +2238,7 @@ export interface Engine {
   /** TUI-DESIGN §15 item 15: a renderer-originated transcript line while the run is live (§15.1); false once finished, then the renderer keeps it local */
   annotate(text: string, opts?: { detail?: string; label?: UiLabel; level?: 'info' | 'warn' | 'error' }): boolean;
   /**
-   * contract 1.6 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, head first, so a command block issued while a run is
+   * contract 1.7 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, head first, so a command block issued while a run is
    * live writes the same rows to `transcript.log` from the TUI as from `--plain`. `rows` are the ALREADY-RENDERED row texts.
    * Returns false when no run is live, exactly like `annotate`. (`level` is `TranscriptLevel`, spelt out here like `annotate`'s.)
    */
@@ -2263,14 +2285,14 @@ export interface LaunchSettings {
    */
   ssh?: boolean;
   /**
-   * contract 1.6 item 6 (TUI-DESIGN-4 §1.3.1, D-S): the renderer chosen at mount — Ink fixes `alternateScreen` in its
+   * contract 1.7 item 6 (TUI-DESIGN-4 §1.3.1, D-S): the renderer chosen at mount — Ink fixes `alternateScreen` in its
    * constructor, so this MUST be a launch member. THE READER IDIOM, stated once and used everywhere:
    * `launch.renderer ?? 'classic'` (never `launch.renderer ===`). OPTIONAL for exactly the reason round 3 wrote down for
    * `ssh` above: `resolveLaunchSettings` always sets it, but a required new member breaks every LaunchSettings / UiConfig
    * literal outside the config slot's files.
    */
   renderer?: 'classic' | 'fullscreen';
-  /** contract 1.6 item 6 (§1.3.1): the one `[ui]` note naming why `fullscreen` was refused and `classic` used; absent when nothing was refused */
+  /** contract 1.7 item 6 (§1.3.1): the one `[ui]` note naming why `fullscreen` was refused and `classic` used; absent when nothing was refused */
   rendererRefusal?: string;
 }
 /** the LaunchSettings members repeat the mount-time values (source flag | env | default only) */
@@ -2292,7 +2314,7 @@ export interface UiConfig extends LaunchSettings {
   /** TUI-DESIGN-3 §6 item 4 / §3.2: the wordmark's idle animation — OPTIONAL; readers: `ui?.wordmark ?? (launch.ssh ? 'static' : 'sweep')` */
   wordmark?: 'sweep' | 'static' | 'off';
   /**
-   * contract 1.6 item 4 (TUI-DESIGN-4 §1.3.4): the fullscreen renderer's on-exit transcript dump to the primary screen.
+   * contract 1.7 item 4 (TUI-DESIGN-4 §1.3.4): the fullscreen renderer's on-exit transcript dump to the primary screen.
    * OPTIONAL, like `wordmark`. Reader: `ui?.fullscreenDump ?? true`. `renderer` is declared ONCE, on LaunchSettings
    * (item 6), and inherited here — re-declaring it would weaken a required base member (TS2430), the mistake round 3
    * documented for `ssh` above.
@@ -2348,17 +2370,100 @@ export interface SessionHost {
   workspaceCandidates(): Promise<readonly Candidate[]>;
   /** TUI-DESIGN-3 §6 item 7 (R4 F20): the host's dispatch context beyond the run phase (cli/session.ts ControllerHost declares it; the App prefers it over its own fold) */
   dispatchContext?(): Omit<import('../tui/commands/dispatch.js').DispatchContext, 'run'>;
-  /** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): the peer snapshot the TUI renders; null until the registry lands */
+  /** contract 1.7 item 9 (TUI-DESIGN-4 §7.10): the peer snapshot the TUI renders; null until the registry lands */
   peers?(): PeerView | null;
+  /**
+   * contract 1.8 item 4 (TUI-DESIGN-5 §8.1 / §2.3): the FULL activity read `/who` and `jevcode sessions who` render —
+   * `peers?()` above is unchanged and stays the four-scalar "am I stepping on myself" answer (D-AC (b)). OPTIONAL, and
+   * `null` until the ledger is open, so §1.4 promise 1 holds: before `LedgerHandle.open()` resolves this returns `null`
+   * and every surface paints its own empty state rather than a spinner.
+   */
+  who?(): readonly SessionActivityView[] | null;
   /** contract 1.5 (ORCHESTRATION-DESIGN §4.6): the agent rows the `a` tab and `jevcode agents list` render; absent until the supervisor lands (§8.3 item 34) */
   agents?(): readonly AgentRow[];
 }
-/** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): what `/peers` shows about other JevCode instances on this workspace */
+/** contract 1.7 item 9 (TUI-DESIGN-4 §7.10): what `/peers` shows about other JevCode instances on this workspace */
 export interface PeerView {
   readonly live: number;
   readonly stale: number;
   readonly oldestStartedMsAgo: number | null;
   readonly exclusive: boolean;
+}
+
+/**
+ * contract 1.8 item 4 (TUI-DESIGN-5 §8.1 / §2.1 rule 1, §2.3): the TUI-facing projection of coordination's
+ * `SessionActivity`, so `src/tui/**` never imports `src/coordination/types.js` directly.
+ *
+ * It is NOT "field-for-field a subset": it is a FLATTENED PROJECTION of `SessionActivity`
+ * (`src/coordination/types.ts:460`) PLUS its `heartbeat`. Nothing here is computed from anything but those two
+ * objects; the mapper is `activityView()` in `src/session/peers.ts` (R5-1) with its own table test.
+ */
+export interface SessionActivityView {
+  // ---- straight from SessionActivity ----
+  readonly runId: string;
+  readonly sessionId: string;
+  readonly label: string;
+  /** the session that delegated this one — §2.8's child rows need it */
+  readonly parentSessionId: string | null;
+  /** `SessionActivity.deviceId`'s first 8 chars; the full device id is a secret derivative and never leaves the fold (§7 row 61) */
+  readonly deviceId8: string;
+  readonly sameDevice: boolean;
+  readonly kind: 'run' | 'bench';
+  /**
+   * ALL FIVE `Liveness` members. `'stale-reused-pid'` is exactly §7 row 3's reused-pid case and `lockReplaceVerdict`'s
+   * own edge list — narrowing to four would LOSE a real state that §12 S3a renders in words.
+   */
+  readonly liveness: 'live' | 'stale' | 'stale-reused-pid' | 'gone' | 'unknown';
+  /** §2.1 rule 4 names this and `sameDevice` as what the renderer reads; §2.9's `(unverified)` rendering depends on it */
+  readonly authority: 'self' | 'trusted' | 'unverified';
+  readonly flags: {
+    readonly hung: boolean;
+    readonly skewed: boolean;
+    readonly forked: boolean;
+    readonly takenOver: boolean;
+    readonly noLock: boolean;
+    readonly ignoredDevice: boolean;
+    readonly unverified: boolean;
+    readonly cloned: boolean;
+  };
+  /** display only */
+  readonly beatAgeMs: number;
+  /** the liveness INPUT; `beatAgeMs` is display only */
+  readonly arrivalAgeMs: number | null;
+  /** display only, NEVER a liveness input */
+  readonly skewMs: number | null;
+  readonly syncLagMs: number | null;
+  readonly sameRepo: boolean;
+  readonly sameBranch: boolean | null;
+  /** `leases.length` — the COUNT only, never the paths (§7 row 61) */
+  readonly leaseCount: number;
+  // ---- projected from SessionActivity.heartbeat ----
+  readonly step: number | null;
+  readonly maxSteps: number | null;
+  /** `heartbeat.stage` — a `CoordStageName` or `'idle'`, carried as a string so the view has no coordination import */
+  readonly stage: string | null;
+  readonly mode: EngineMode | null;
+  /** `heartbeat.repo.branch` / `.head` — S1's `main@3f9a2c1` */
+  readonly branch: string | null;
+  readonly head: string | null;
+  readonly ctxPct: number | null;
+  readonly spend: { readonly totalUsd: number; readonly capUsd: number } | null;
+  /** `heartbeat.touched?.files ?? []` */
+  readonly editing: readonly string[];
+  /** `heartbeat.subwork` — the ONLY source for S1's `lanes 2 · samples 3`; `null` means "truncated away", not "none" (§15.1 Q20) */
+  readonly subwork: { readonly lanes: number; readonly samples: number; readonly probes: number; readonly children: number } | null;
+  readonly bench: { readonly benchId: string; readonly done: number; readonly tasks: number; readonly lanes: number } | null;
+}
+
+/**
+ * contract 1.8 item 4 (TUI-DESIGN-5 §8.1 / §2.3): the self half of the same discipline. `SelfIdentity`
+ * (`src/coordination/types.ts:395`) carries `hostKey`, a device-secret derivative that must never reach a JSON sink
+ * (§7 row 61); §13.3's `sessions who --json` emits THIS instead. Built by `selfView()` in `src/session/peers.ts`.
+ */
+export interface SelfIdentityView {
+  readonly deviceId8: string;
+  readonly label: string;
+  readonly sameDeviceCount: number;
 }
 export interface RunRow {
   runId: string;
@@ -2384,6 +2489,12 @@ export interface SessionRow {
   totalUsd: number;
   mode: EngineMode;
   branch: string | null;
+  /** contract 1.8 item 3 (TUI-DESIGN-5 §8.1 / §2.7, §2.8): the session's `/end`, so the picker can say `ended` and `/resume` can demand `--force`; absent on every row written before round 5 */
+  readonly ended?: RunEnded | null;
+  /** contract 1.8 item 3 (§2.8): the SESSION that delegated this one (`parentRunId` already exists on `RunRow`); absent reads as `null` */
+  readonly parentSessionId?: string | null;
+  /** contract 1.8 item 3 (§2.8): one session, several checkouts — relocate and handoff both append here; absent reads as `[workspace]` */
+  readonly workspaces?: readonly string[];
 }
 export interface HistoryStore {
   entries(filter: 'workspace' | 'all'): readonly string[];
@@ -2447,7 +2558,7 @@ export interface Renderer {
    */
   setBindings?(bindings: import('../tui/keys/bindings.js').Bindings): void;
   /**
-   * contract 1.6 item 3 (TUI-DESIGN-4 §3.5, D-W): the row-list form of a block body. `lines` are the ALREADY-RENDERED row
+   * contract 1.7 item 3 (TUI-DESIGN-4 §3.5, D-W): the row-list form of a block body. `lines` are the ALREADY-RENDERED row
    * texts that `renderBlock` produced (not `BlockRow[]`), so the parameter type matches §3.5's call. The DEFAULT
    * implementation is today's per-line `note`, so no renderer breaks. (`level` is `TranscriptLevel`, spelt out like `notify`'s.)
    */
@@ -2469,7 +2580,14 @@ export interface Resolved<T> {
 }
 
 export interface GeneratorConfig {
-  provider: 'anthropic' | 'openrouter';
+  /**
+   * contract 1.8 item 6 (TUI-DESIGN-5 §8.1 / §6.1, D-AP): widened from `'anthropic' | 'openrouter'` to `ProviderId`.
+   * This is the ONE item of round 5's block that is not purely optional — it is a widening of a REQUIRED field, so
+   * every existing value and every existing constructor stays valid and no reader narrows. `src/config/validate.ts`'s
+   * two-name check becomes `isProviderId(provider)` in R5-3's own wave; until the harness wires the five remaining
+   * adapters as generators (§15.1 Q9) a run configured with one of them refuses with §12's named string.
+   */
+  provider: ProviderId;
   model: string;
   apiKey: string;
   baseUrl: string;

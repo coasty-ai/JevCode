@@ -88,11 +88,13 @@ describe('score / rank (TUI-DESIGN §5.4)', () => {
   });
   it('fixed orderings for the commands and paths of the design', () => {
     const names = commandNames().map((n) => n.slice(1));
-    expect(rank('res', names).map((r) => r.candidate)).toEqual(['resume']);
-    expect(rank('re', names).map((r) => r.candidate)).toEqual(['resume', 'rename', 'rewind', 'report', 'fullscreen', 'provider']); // TUI-DESIGN-4: /fullscreen joins the subsequence tail
+    // TUI-DESIGN-5 §2.9: `/request` joins the subsequence tail of `res` (r-e-s in order)
+    expect(rank('res', names).map((r) => r.candidate)).toEqual(['resume', 'request']);
+    expect(rank('re', names).map((r) => r.candidate)).toEqual(['resume', 'rename', 'rewind', 'report', 'request', 'fullscreen', 'provider']); // TUI-DESIGN-4: /fullscreen joins the subsequence tail; TUI-DESIGN-5: /request is a word-prefix match after /report
     expect(rank('sess', names)[0]?.candidate).toBeUndefined(); // `sessions` is an alias, not a name
     expect(rank('bud', names).map((r) => r.candidate)).toEqual(['budget']);
-    expect(rank('b', names).map((r) => r.candidate).slice(0, 3)).toEqual(['budget', 'abort', 'calibration']);
+    // TUI-DESIGN-5 §2.9: `/inbox` carries `b` at index 2 and outranks `/calibration` (index 4); the scorer is unchanged, the pool grew
+    expect(rank('b', names).map((r) => r.candidate).slice(0, 4)).toEqual(['budget', 'abort', 'inbox', 'calibration']);
     const paths = ['src/parse_date.py', 'tests/test_parse_date.py', 'src/dates/parser.py', 'docs/parse.md', 'tst/a.py', 'tst/b/a.py', 'src/a.py'];
     expect(rank('parse_date', paths).map((r) => r.candidate)).toEqual(['src/parse_date.py', 'tests/test_parse_date.py']);
     expect(rank('tst/a', paths).map((r) => r.candidate)).toEqual(['tst/a.py', 'tst/b/a.py', 'tests/test_parse_date.py']);

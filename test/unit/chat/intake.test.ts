@@ -112,7 +112,8 @@ describe('§3.3 group A — the intake Choice and its paired Nouls (REPORT rules
   it('the whole request (groups A + B + C) has snake_case keys, an escape on every Choice and both-sided criteria on every Noul', () => {
     const all = buildAllIntakeQuestions(harnessFacts(keyedFixture()));
     expect(Object.keys(all)).toContain('reply');
-    expect(Object.keys(all).filter((k) => k.startsWith('about_'))).toHaveLength(14);
+    // TUI-DESIGN-5 §8.1 item 10 / §2.3: `FactKey` gains `'peers'` (14 -> 15), so group C is one Noul wider
+    expect(Object.keys(all).filter((k) => k.startsWith('about_'))).toHaveLength(15);
     for (const [id, q] of Object.entries(all)) {
       expect(id, id).toMatch(KEY_SHAPE);
       if (q.type === 'choice') {
@@ -303,11 +304,11 @@ describe('runIntake — one request, all three groups, Decision rows for the pan
     });
     const facts = harnessFacts(keyedFixture());
     const r = await runIntake({ decider, state: buildIntakeState(stateInput('fix the failing test'), identity), facts, signal: new AbortController().signal, redact: identity });
-    expect(decider.calls).toEqual([{ stage: 'intent', step: 0, questions: 1 + 5 + 1 + 14 }]);
+    expect(decider.calls).toEqual([{ stage: 'intent', step: 0, questions: 1 + 5 + 1 + 15 }]);
     expect(r.intake).toMatchObject({ kind: 'coding_task', verdict: 'chosen', probability: 0.78 });
     expect(r).toMatchObject({ provider: 'typesafe', model: 'jev-1.13.0', latencyMs: 118, requestHash: 'abc123def456' });
     expect(r.usage.costUsd).toBeCloseTo(0.000063, 9);
-    expect(r.rows).toHaveLength(21);
+    expect(r.rows).toHaveLength(22);
     for (const row of r.rows) expect(row).toMatchObject({ step: 0, stage: 'intent', latencyMs: 118, requestHash: 'abc123def456' });
     const intakeRow = r.rows.find((d) => d.id === 'intake');
     expect(intakeRow?.verdict).toBe('chosen');

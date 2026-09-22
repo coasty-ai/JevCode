@@ -1,0 +1,72 @@
+# TUI-DESIGN-5 §2.3 / §2.14 / §10 (slot R5-1): `/who` under a real pty — three peers, a bench row and a crashed
+# row at 80×24, then the 40-column rung, then `--all`, then `/peers`. Driven by the peer stub
+# (`JEVCODE_FAULT=peer:5`), so the scenario is hermetic: no second process, no network.
+#
+# TWO scenarios share this file (the `--ascii` twin cannot be a resize — the glyph set is chosen at launch):
+#   r5-who        chat --mock            the unicode rows (`●`, `◌`, `○`, `·`)
+#   r5-who-ascii  chat --mock --ascii    the same rows with `*`, `.`, `o`, `-` (§12.1 S1–S3, S10)
+#
+# What it proves, beyond "it renders":
+#   - the §2.3 column ladder drops right to left on a resize and never truncates silently (§7 row 85);
+#   - a crashed row and a bench row are DIFFERENT row shapes, not variants (§7 rows 3 and 12);
+#   - §2.14: step 1 runs a real `--mock` task FIRST, so the write half actually opens the ledger, mints the claim
+#     and starts the heartbeat writer before anything is read — the beat file below exists because of it;
+#   - gate G-R5-9 / §7 row 61 / §2.14 consequence 3: `assertNoKeyBytes` runs over the frames AND over the
+#     coordination tree this session wrote (the writer is the only thing that can put device key material near a
+#     file), and over the `run.lock`, which round 5 widened with a `bootAt`.
+#
+# run-smoke.sh needs FIVE rows for these two scenarios; `test/pty/**` is R5-2's (§9.2, W5), so they are a request
+# in R5-1's report, verbatim:
+#   alias  : r5-who-ascii) steps_name=r5-who;;
+#   env    : r5-who|r5-who-ascii) extra_env="$extra_env JEVCODE_FAULT=peer:5 JEVCODE_ASSERT_NO_NETWORK=1";;
+#   check  : r5-who|r5-who-ascii) grep -q 'who [·-] ' "$txt" && checks="$checks r5-who:block" || { ok=0; checks="$checks MISSING:r5-who-block"; }
+#   keys   : r5-who|r5-who-ascii) if [ -d "$home/coordination" ]; then grep -rqI "$FAKE_KEY" "$home/coordination" && { ok=0; checks="$checks LEAK:beat-key-bytes"; } || checks="$checks beat-no-key-bytes"; grep -rqIE '"hostKey"[^,}]*[0-9a-f]{32}' "$home/coordination" && { ok=0; checks="$checks LEAK:beat-hostkey"; } || checks="$checks beat-no-long-hostkey"; else checks="$checks beat-absent"; fi;;
+#   select : sel_named r5-who && run r5-who 0 24 80 chat --mock
+#            sel_named r5-who-ascii && run r5-who-ascii 0 24 80 chat --mock --ascii
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+
+# 0 — §2.14: a real run, so the WRITE half runs (ledger open → claim mint → heartbeat writer), all post-first-frame
+send fix the failing test
+sleep 0.2
+send \r
+expect run
+sleep 1.2
+mark ran
+
+# 1 — the full-width block at 80×24: the head, then one row per session
+send /who
+sleep 0.2
+send \r
+expect who [·-]
+sleep 0.4
+mark who-80
+
+# 2 — the 40-column rung: the same rows, three cells each (`● <label>  step n/m <stage>  beat <age>`)
+resize 24 40
+sleep 0.8
+mark who-40
+
+# 3 — back to 80 and the `--all` form (stale > 10 min and ignored-device rows join, and S9 appears only here)
+resize 24 80
+sleep 0.6
+send /who --all
+sleep 0.2
+send \r
+sleep 0.4
+mark who-all
+
+# 4 — `/peers` keeps TD4's four-scalar head beside `/who` (D-AC (b): two commands, two questions); §2.4's kv rows
+#     are superseded, so the block is the head, the counts and the ` · /who shows what each is doing` pointer
+send /peers
+sleep 0.2
+send \r
+expect peers [·-]
+sleep 0.3
+mark peers
+
+send /exit
+sleep 0.2
+send \r
+eof

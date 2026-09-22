@@ -351,3 +351,61 @@ describe('toastPhase / toastRole (TUI-DESIGN-3 §5.2 A7: the last-second dim, th
     expect(toastText({ text: 'a', level: 'ok' })).toBe('✓ a');
   });
 });
+
+/**
+ * TUI-DESIGN-5 §2.9 / §12 S31–S34, S6: which surface each cross-session verb takes, and the bodies themselves.
+ * The rules are data (`MESSAGE_SURFACES`) so the App and `src/cli/sessions.ts` cannot re-derive them differently —
+ * a `request` that arrived as a toast would expire before it was answered, which is the defect §2.9 forbids.
+ */
+describe('cross-session message surfaces (TUI-DESIGN-5 §2.9)', () => {
+  it('headsup toasts, tell toasts and counts, request is a persistent row and never a toast', async () => {
+    const { MESSAGE_SURFACES, messageSurface } = await import('../../../../src/tui/toasts.js');
+    expect(messageSurface('headsup')).toEqual({ toast: true, persistentRow: false, mailCount: false, transcriptItem: true });
+    expect(messageSurface('tell')).toEqual({ toast: true, persistentRow: false, mailCount: true, transcriptItem: true });
+    expect(messageSurface('request')).toEqual({ toast: false, persistentRow: true, mailCount: false, transcriptItem: true });
+    // "a toast is never the only record": every applied remote verb writes a `[session]` transcript item (§13.1)
+    for (const v of ['tell', 'headsup', 'request'] as const) expect(MESSAGE_SURFACES[v].transcriptItem, v).toBe(true);
+    // the one that needs an answer is the one that persists, and it is the only one
+    expect(Object.entries(MESSAGE_SURFACES).filter(([, s]) => s.persistentRow).map(([k]) => k)).toEqual(['request']);
+  });
+
+  it('§12 S31–S34: the four bodies verbatim, one line, with the `(unverified)` suffix an unpaired sender earns', async () => {
+    const { UNVERIFIED_SUFFIX, headsUpText, requestRowText, sessionMessageText, waitingForText } = await import('../../../../src/tui/toasts.js');
+    expect(sessionMessageText('mbp', 'committed 3f9a2c1 on main — engine.ts, store.ts')).toBe('mbp: committed 3f9a2c1 on main — engine.ts, store.ts');
+    // §12 S32 verbatim (pause) and its two new siblings, filed for §12.1 as S32a / S32b in the W5 docs PR
+    expect(requestRowText('mbp', 'pause')).toBe('mbp asks to pause this run — [y] pause at step end  [Y] pause now  [n] ignore');
+    // §2.7 makes `/end` a SESSION verb, so the row names the session — never "this run", which `/end` does not act on
+    expect(requestRowText('mbp', 'end')).toBe('mbp asks to end this session — [y] end at step end  [Y] end now  [n] ignore');
+    expect(requestRowText('mbp', 'steer')).toBe('mbp asks to take a steer — [y] take it  [n] ignore');
+    expect(requestRowText('mbp', 'end')).not.toContain('this run');
+    // the three rows are an anchor table, so nothing else may spell one of them (§13.4)
+    const { REQUEST_ROW_ANCHORS } = await import('../../../../src/tui/toasts.js');
+    for (const verb of ['pause', 'end', 'steer'] as const) {
+      expect(requestRowText('mbp', verb), verb).toBe(REQUEST_ROW_ANCHORS[verb].replace('<from>', 'mbp'));
+    }
+    // every row offers `[n] ignore`, and the two that can act at once offer the same `[y]`/`[Y]` pair the local ladder does
+    for (const verb of ['pause', 'end', 'steer'] as const) expect(requestRowText('mbp', verb), verb).toContain('[n] ignore');
+    for (const verb of ['pause', 'end'] as const) expect(requestRowText('mbp', verb), verb).toContain('[Y] ');
+    expect(headsUpText(['src/loop/engine.ts', 'src/loop/stop.ts'], 'make the pause exact')).toBe('heads-up: editing src/loop/engine.ts (+1) for: make the pause exact');
+    expect(headsUpText(['src/loop/engine.ts'], 'make the pause exact')).toBe('heads-up: editing src/loop/engine.ts for: make the pause exact');
+    expect(headsUpText([], '')).toBe('heads-up');
+    expect(waitingForText('mbp', 'src/x.ts')).toBe('mbp is waiting for src/x.ts — commit and move on when you can');
+    // §7 row 18: an unpaired sender's message is RENDERED, flagged, and never auto-applied
+    expect(UNVERIFIED_SUFFIX).toBe(' (unverified)');
+    expect(sessionMessageText('mbp', 'hello', false)).toBe('mbp: hello (unverified)');
+    expect(requestRowText('mbp', 'end', false).endsWith(UNVERIFIED_SUFFIX)).toBe(true);
+    // hostile sender text is one line and carries no control bytes (§14.1)
+    expect(sessionMessageText('m\nbp', 'a\u001b[2Jb')).toBe('m ⏎ bp: a[2Jb');
+  });
+
+  it('§2.2 / §12 S6: the peer zone announces once on a 0 → ≥ 1 crossing and never again', async () => {
+    const { unreadAnnounce } = await import('../../../../src/tui/toasts.js');
+    expect(unreadAnnounce(0, 1, 'mbp')).toBe('1 message from mbp — /inbox reads it');
+    expect(unreadAnnounce(0, 3, 'mbp')).toBe('3 messages from mbp — /inbox reads it');
+    // not a crossing: already non-zero, or still zero
+    expect(unreadAnnounce(1, 2, 'mbp')).toBeNull();
+    expect(unreadAnnounce(2, 1, 'mbp')).toBeNull();
+    expect(unreadAnnounce(0, 0, 'mbp')).toBeNull();
+    expect(unreadAnnounce(3, 0, 'mbp')).toBeNull();
+  });
+});

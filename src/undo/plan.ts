@@ -378,6 +378,55 @@ export interface RewindPlan {
   planAfterFrom: number | null;
   /** window entries with step ≤ this survive (§8.3) */
   windowUpTo: number;
+  /**
+   * TUI-DESIGN-5 §4.5 / §12.3 S76a: the named reason a rewind across a land boundary was refused; absent for every
+   * ordinary rewind (so a caller that never delegated sees round 3's shape byte for byte).
+   */
+  refusal?: string;
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §4.5 (`CD §F` to-do 5): the land boundary
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §4.5 / §12.3 S76a: once an agent has landed, `/undo` must offer to undo the **merge** rather than the last local
+ * step, and `/rewind` must refuse across a land boundary with a **named** reason. Both rows are built from the one
+ * fact — the step a land committed at — so the offer and the refusal can never disagree about where the boundary is.
+ *
+ * `RewindStep` gains nothing: a land is recorded by the caller as `landedAt`, the step whose merge commit is the
+ * boundary. A rewind whose target is at or below it crosses the land and is refused; a rewind above it is ordinary.
+ */
+export interface LandBoundary {
+  /** the step the merge landed at (`LaunchInput.delegationStep` / the `land` index line's step) */
+  step: number;
+  /** how many agents the merge brought in — the number S76a names */
+  agents: number;
+}
+
+/** §12.3 S76a: `step 7 landed 3 agents — /undo reverts the merge, /rewind cannot cross a land`. */
+export function landedUndoOffer(b: LandBoundary): string {
+  return `step ${b.step} landed ${b.agents} agent${b.agents === 1 ? '' : 's'} — /undo reverts the merge, /rewind cannot cross a land`;
+}
+
+/**
+ * §4.5: the refusal a `/rewind <target>` gets when the target is at or below a land boundary, or `null` when the
+ * rewind is ordinary. `null` for every run with no land, so nothing changes for a single-threaded session.
+ */
+export function rewindRefusal(target: number, boundary: LandBoundary | null): string | null {
+  if (boundary === null) return null;
+  const n = Number.isFinite(target) ? Math.floor(target) : 1;
+  return n <= boundary.step ? landedUndoOffer(boundary) : null;
+}
+
+/**
+ * §4.5: the land boundary of a run — the **highest** landed step, which is the only one a rewind can reach first.
+ * `[]` (no land) is `null`, so `rewindRefusal` is inert in every run that never delegated.
+ */
+export function landBoundaryOf(lands: readonly LandBoundary[]): LandBoundary | null {
+  let best: LandBoundary | null = null;
+  for (const l of lands) if (best === null || l.step > best.step) best = l;
+  return best;
 }
 
 export const REWIND_RULE = '─── rewind · steps with changes ─ ↑↓ Enter Esc ───';
@@ -388,14 +437,43 @@ export const REWIND_PLAN_FALLBACK_NOTICE = 'no plan snapshot for that step; the 
  * TUI-DESIGN §12.5: undo steps `last…n` in reverse (only steps with changed files need an undo); the plan of
  * step n (`planAfter`, when the step recorded one, else the parent's final plan) seeds the next run; window ≤ n.
  */
-export function planRewind(steps: readonly RewindStep[], target: number): RewindPlan {
+export function planRewind(steps: readonly RewindStep[], target: number, boundary: LandBoundary | null = null): RewindPlan {
   const n = Number.isInteger(target) && target >= 1 ? target : 1;
+  /**
+   * TUI-DESIGN-5 §4.5: a rewind across a land is REFUSED, not clamped — the merge brought in commits this run
+   * never made, so undoing "steps last…n" would silently drop another agent's work.
+   *
+   * A refused plan is **inert in every field**, not only in `order`. Emptying `order` alone still returned
+   * `windowUpTo: n` and `target: n`, and the one production caller (`src/cli/session.ts`) does not read
+   * `refusal` — so a refused rewind still seeded the next run from step *n*'s plan and still trimmed the window
+   * to *n*, which is most of the rewind it was refused. Here: no step is undone (`order: []`), no step's plan
+   * seeds the next run (`planAfterFrom: null`), **every** window entry survives (`windowUpTo: +∞`) and `target`
+   * is the newest step, whose "rewind" is the identity. `refusal` is the only field a caller must act on, and
+   * `isRefusedRewind` is the narrowing it should use.
+   */
+  const refusal = rewindRefusal(n, boundary);
+  if (refusal !== null) return { target: highestStep(steps, n), order: [], planAfterFrom: null, windowUpTo: Number.POSITIVE_INFINITY, refusal };
   const order = steps
     .filter((s) => s.step >= n && s.changedFiles.length > 0)
     .map((s) => s.step)
     .sort((a, b) => b - a);
   const at = steps.find((s) => s.step === n);
   return { target: n, order, planAfterFrom: at?.planAfter ? n : null, windowUpTo: n };
+}
+
+/** the newest step a plan can name, so a refused rewind's `target` is the identity rather than the refused one */
+function highestStep(steps: readonly RewindStep[], fallback: number): number {
+  let best = fallback;
+  for (const s of steps) if (s.step > best) best = s.step;
+  return best;
+}
+
+/**
+ * TUI-DESIGN-5 §4.5: the narrowing a `/rewind` call site must use before it touches anything. `true` means the
+ * plan is inert in every field and `plan.refusal` (S76a) is the sentence to print instead.
+ */
+export function isRefusedRewind(plan: RewindPlan): plan is RewindPlan & { refusal: string } {
+  return typeof plan.refusal === 'string' && plan.refusal.length > 0;
 }
 
 /** Steps that appear in the rewind picker: committed steps with changed files, oldest first (TUI-DESIGN §12.5). */

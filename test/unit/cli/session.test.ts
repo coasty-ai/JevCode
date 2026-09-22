@@ -552,7 +552,10 @@ describe('commands (§5.2)', () => {
     void h.controller.run();
     await h.ready();
     await h.command('/pause');
-    expect(h.renderer.notes.at(-1)).toMatchObject({ text: 'error: /pause needs a live run', label: '[ui]', level: 'error' });
+    // TUI-DESIGN-5 §2.6 / §12 S45a (§14.2 #16, #39): `/pause` is `availableDuringTask: 'any'` now, because
+    // `/pause <target>` touches no local engine; the LOCAL form's refusal is hand-written and names the form that
+    // would have worked, which the generated `availabilityError` cannot express
+    expect(h.renderer.notes.at(-1)).toMatchObject({ text: 'error: /pause with no target needs a live run — /pause <target> asks a peer, any time', label: '[ui]', level: 'error' });
     await h.command('/foo');
     // TUI-DESIGN-4 §3.1.7: the one error shape — `error: /<command> — <what went wrong> · <what to do instead>`
     expect(h.renderer.notes.at(-1)?.text).toMatch(/^error: \/foo — not a command\b/);

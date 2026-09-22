@@ -14,7 +14,8 @@ import { describe, expect, it } from 'vitest';
 import { DEFAULT_MODE, MODE_BADGE_WORD, MODE_SETTING_VALUES } from '../../../../src/config/defaults.js';
 import { COMMAND_ACTION_KINDS, dispatchCommand, type CommandAction } from '../../../../src/tui/commands/dispatch.js';
 import { paletteGhost, paletteMatches, type PaletteState } from '../../../../src/tui/commands/palette.js';
-import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, EXIT_ONE_LETTER, LLM_STATES, LLM_STATE_MODE, MODE_VALUE_HINTS, NO_ONE_LETTER_ALIAS, PANEL_ARGS, POPULAR, THEMES, TRANSCRIPT_VIEWS, availabilityError, commandNames, findCommand, isExactCommand, shortestAlias, takesRest, type CommandSpec } from '../../../../src/tui/commands/registry.js';
+import { BUDGET_SETTINGS, COMMANDS, ENGINE_MODES, EXIT_ONE_LETTER, LLM_STATES, LLM_STATE_MODE, MODE_VALUE_HINTS, NO_ONE_LETTER_ALIAS, PANEL_ARGS, POPULAR, THEMES, TRANSCRIPT_VIEWS, availabilityError, commandNames, findCommand, isExactCommand, restArgIndex, shortestAlias, takesRest, type CommandSpec } from '../../../../src/tui/commands/registry.js';
+import { PROVIDER_IDS } from '../../../../src/provider/ids.js';
 import { routeSubmit } from '../../../../src/tui/composer/submit.js';
 import { parsePanelCommand } from '../../../../src/tui/pane/commands.js';
 
@@ -54,7 +55,7 @@ const EXPECTED: readonly [name: string, avail: CommandSpec['availableDuringTask'
   ['rename', 'any', 'yes', []],
   ['steer', 'live', 'yes', []],
   ['unsteer', 'live', 'yes', []],
-  ['pause', 'live', 'yes', []],
+  ['pause', 'any', 'yes', []], // TUI-DESIGN-5 §2.6: `'any'` — `/pause <target>` touches no local engine; the local form refuses per form (§12 S45a)
   ['abort', 'live', 'yes', []],
   ['undo', 'idle', 'yes (readline `y/N`)', ['u']],
   ['rewind', 'idle', 'yes', ['rw']],
@@ -90,6 +91,26 @@ const EXPECTED: readonly [name: string, avail: CommandSpec['availableDuringTask'
   ['scrollback', 'any', 'yes', []],
   ['peers', 'any', 'yes', []],
   ['ui', 'any', 'yes', []],
+  // TUI-DESIGN-5 §2.3, §2.7, §2.9: R5-2's six rows of the one §9.2 registry PR (41 → 47, and 47 → 56 with the
+  // nine rows below — the integration pass landed every slot's rows and R5-6's `/provider` values edit)
+  ['who', 'any', 'yes', []],
+  ['inbox', 'any', 'yes', []],
+  ['tell', 'any', 'yes', []],
+  ['headsup', 'any', 'yes', []],
+  ['request', 'any', 'yes', []],
+  ['end', 'any', 'yes', []],
+  // TUI-DESIGN-5 §3.2 / §3.3 (R5-3), §4.9 (R5-4, D-AN) and §5.5 (R5-5): the nine rows that complete the one §9.2
+  // registry PR, 47 → 56. `/compact` is `'live'` (§3.3: folding history is meaningless with no next prompt) and
+  // `/land` is `'idle'` and the only `destructive` one of the seven (§4.9).
+  ['context', 'any', 'yes', []],
+  ['compact', 'live', 'yes', []],
+  ['split', 'any', 'yes', []],
+  ['agents', 'any', 'yes', []],
+  ['agent', 'any', 'yes', []],
+  ['land', 'idle', 'yes', []],
+  ['spawn', 'live', 'yes', []],
+  ['import', 'idle', 'yes', ['imp']],
+  ['memory', 'any', 'yes', ['mem']],
 ];
 
 /** TUI-DESIGN-3 §4.1: the alias table, verbatim (command → aliases after round 3) */
@@ -97,6 +118,9 @@ const ALIAS_TABLE: Readonly<Record<string, readonly string[]>> = {
   help: ['h'], panel: ['p'], mode: ['m'], plan: ['pl'], model: ['ml'], diff: ['d'], cost: ['c'], undo: ['u'], status: ['s'], theme: ['t'],
   resume: ['r', 'sessions', 'continue'], login: ['l'], new: ['nw'], budget: ['b'], exit: ['q', 'quit'], jev: ['j'], transcript: ['tr'], copy: ['cp'],
   config: ['cf'], rewind: ['rw'], why: ['w'], decisions: ['dc'], llm: [], abort: [], steer: [],
+  // TUI-DESIGN-5 §5.5: the only two round-5 rows with aliases; every other new row takes none, so no round-5
+  // command can shadow a `PANEL_ARGS` / `TRANSCRIPT_VIEWS` / `LLM_STATES` word.
+  import: ['imp'], memory: ['mem'],
 };
 const fresh: PaletteState = { lastStop: null, unauthorized: false, changedFiles: false, rewindMenu: false, live: false };
 const NAME_RE = /^[a-z][a-z0-9-]*$/;
@@ -138,9 +162,25 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     expect(findCommand('rename')?.args[0]).toMatchObject({ kind: 'rest' });
     expect(findCommand('export')?.args[0]).toMatchObject({ kind: 'path', optional: true });
     expect((findCommand('resume')?.flags ?? []).find((f) => f.name === 'sort')).toMatchObject({ value: true, values: ['updated', 'created'] });
-    expect(COMMANDS.filter(takesRest).map((c) => c.name)).toEqual(['rename', 'steer', 'why']);
+    expect(COMMANDS.filter(takesRest).map((c) => c.name)).toEqual(['rename', 'steer', 'why', 'headsup']);
+    // TUI-DESIGN-5 §2.9: `restArgIndex` generalises `takesRest` to a rest argument that is merely LAST, so
+    // `/tell mbp don't touch the tests` is a message and never `unterminated quote`
+    expect(COMMANDS.filter((c) => restArgIndex(c) >= 0).map((c) => [c.name, restArgIndex(c)])).toEqual([
+      ['rename', 0],
+      ['steer', 0],
+      ['why', 0],
+      ['tell', 1],
+      ['headsup', 0],
+      ['request', 2],
+      // TUI-DESIGN-5 §4.9 / §5.5: the round-5 rows whose LAST argument is the raw remainder — `/agent <slug>
+      // <verb> [args]`, `/spawn <role> <glob> [task]` and `/memory [op] [<text>]`. `/import`'s `[<source>]` is a
+      // bare token, not a rest, so it is deliberately absent.
+      ['agent', 2],
+      ['spawn', 2],
+      ['memory', 1],
+    ]);
   });
-  it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional jev-only|jev-on|jev-off|llm-jev; /llm <on|off>; /panel [d|p|t|s|off|full]; /transcript [compact|full] — strings verbatim', () => {
+  it('TUI-DESIGN-2 §1.3 / §4.6: /mode takes an optional jev-only|jev-on|jev-off|llm-jev; /llm <on|off>; /panel [d|p|t|s|a|off|full]; /transcript [compact|full] — strings verbatim', () => {
     const mode = findCommand('mode') as CommandSpec;
     expect(mode.args[0]).toEqual({ name: 'm', kind: 'enum', values: ['jev-only', 'jev-on', 'jev-off', 'llm-jev'], optional: true, hint: '[jev-only|jev-on|jev-off|llm-jev]', valueHints: MODE_VALUE_HINTS, defaultValue: DEFAULT_MODE });
     expect(mode.title).toBe('engine mode: show, or set for the next run');
@@ -155,8 +195,10 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     expect(llm.category).toBe('config');
     expect(LLM_STATE_MODE).toEqual({ on: 'jev-on', off: 'jev-only' });
     const panel = findCommand('panel') as CommandSpec;
-    expect(panel.args[0]).toMatchObject({ kind: 'enum', values: ['d', 'p', 't', 's', 'off', 'full'], optional: true, hint: '[d|p|t|s|off|full]' });
-    expect(panel.usage).toBe('[d|p|t|s|off|full]');
+    // TUI-DESIGN-5 §4.3 (R5-4's §9.2 request): `'a'` joins `PANEL_ARGS` in this file's one PR — the ARGUMENT
+    // exists always, the TAB only while something delegates (`paneTabsFor`, R5-4's `src/tui/pane/model.ts`)
+    expect(panel.args[0]).toMatchObject({ kind: 'enum', values: ['d', 'p', 't', 's', 'a', 'off', 'full'], optional: true, hint: '[d|p|t|s|a|off|full]' });
+    expect(panel.usage).toBe('[d|p|t|s|a|off|full]');
     expect(panel.category).toBe('ui');
     const transcript = findCommand('transcript') as CommandSpec;
     expect(transcript.args[0]).toMatchObject({ kind: 'enum', values: ['compact', 'full'], optional: true, hint: '[compact|full]' });
@@ -174,7 +216,7 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     const names = new Set(COMMANDS.map((c) => c.name));
     const all = COMMANDS.flatMap((c) => c.aliases);
     expect(new Set(all).size).toBe(all.length);
-    expect(all).toHaveLength(25); // 4 before round 3 + 21 new
+    expect(all).toHaveLength(27); // 4 before round 3 + 21 in round 3 + TUI-DESIGN-5 §5.5's `imp` and `mem`
     for (const a of all) {
       expect(a).toMatch(NAME_RE);
       expect(names.has(a), `alias ${a} is a command name`).toBe(false);
@@ -235,7 +277,10 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
     for (const m of MODE_SETTING_VALUES) expect(MODE_VALUE_HINTS[m].title).not.toMatch(/default/);
     expect(findCommand('mode')?.args[0]?.defaultValue).toBe(DEFAULT_MODE);
     expect(findCommand('model')?.args[0]).toMatchObject({ kind: 'text', optional: true, hint: '[id]' });
-    expect(findCommand('provider')?.args[0]).toMatchObject({ kind: 'enum', optional: true, values: ['anthropic', 'openrouter'] });
+    // TUI-DESIGN-5 §6.1 (D-AP) / §9.2's registry row: the palette offers the SEVEN ids, read from the one
+    // zero-import table rather than re-declared — the two-name wall is the bug §6.3 exists to remove.
+    expect(findCommand('provider')?.args[0]).toMatchObject({ kind: 'enum', optional: true, values: [...PROVIDER_IDS] });
+    expect(PROVIDER_IDS.slice(0, 2)).toEqual(['anthropic', 'openrouter']);
     const src = readFileSync(`${ROOT}src/tui/commands/registry.ts`, 'utf8');
     expect(src).not.toMatch(/jev-only \(default|, the default\)|is the default|default mode is/);
   });
@@ -251,15 +296,31 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
      * passing once the cases land, at which point this set is deleted.
      */
     const PENDING_ROUND4_HANDLERS: ReadonlySet<string> = new Set(['fullscreen', 'scrollback', 'peers', 'uiReset']);
+    /**
+     * TUI-DESIGN-5 §9.2, the same shape: R5-2 owns the six `CommandAction` arms (`src/tui/commands/dispatch.ts`)
+     * and the six registry rows, while their handlers live in `src/cli/session.ts` (R5-1's one W4 PR) — §9.2's
+     * `session.ts` row lists R5-2's two requests and omits these six cases, which R5-2's report files as an exact
+     * hunk. The set is deleted when that PR lands; until then `src/cli/session.ts`'s `assertNever(a)` is the
+     * compile-time record of the same debt.
+     */
+    // The integration pass landed R5-1's `session.ts` W4 PR, so all six have a `case` there (five of them the
+    // honest D-AN refusal, `who` the real block). The set is kept EMPTY rather than deleted so the next round's
+    // debt has a named place to go, and the `every` assertion below still holds over it.
+    const PENDING_ROUND5_HANDLERS: ReadonlySet<string> = new Set([]);
     for (const kind of kinds) {
       const handled = app.includes(`case '${kind}':`) || session.includes(`case '${kind}':`) || ((kind === 'panel' || kind === 'transcript') && parsePanelCommand(`/${kind}`)?.kind === kind);
-      expect(handled || PENDING_ROUND4_HANDLERS.has(kind), `CommandAction kind '${kind}' has no case in App.tsx runCommand or session.ts execute()`).toBe(true);
+      expect(handled || PENDING_ROUND4_HANDLERS.has(kind) || PENDING_ROUND5_HANDLERS.has(kind), `CommandAction kind '${kind}' has no case in App.tsx runCommand or session.ts execute()`).toBe(true);
     }
-    expect([...PENDING_ROUND4_HANDLERS].every((k) => (kinds as readonly string[]).includes(k))).toBe(true);
+    expect([...PENDING_ROUND4_HANDLERS, ...PENDING_ROUND5_HANDLERS].every((k) => (kinds as readonly string[]).includes(k))).toBe(true);
     // every registry command dispatches to a listed kind
-    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', history: 'clear', theme: 'dark', llm: 'on', ui: 'reset' };
+    // TUI-DESIGN-5 §4.9 / §5.5: the round-5 rows with REQUIRED positionals get a sample too — `/agent <slug>
+    // <verb>` and `/spawn <role> <glob>`. The rest (`/context`, `/compact`, `/agents`, `/split`, `/land`,
+    // `/import`, `/memory`) take none or take them optionally, so the bare name is a valid line.
+    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', history: 'clear', theme: 'dark', llm: 'on', ui: 'reset', tell: 'mbp hello', headsup: 'editing engine.ts', request: 'mbp pause', agent: 'api pause', spawn: 'api src/api/** fix the 401' };
     for (const c of COMMANDS) {
-      const r = dispatchCommand(`/${c.name} ${sample[c.name] ?? ''}`.trim(), { run: c.availableDuringTask === 'live' ? 'live' : 'none', step: 0 });
+      // TUI-DESIGN-5 §2.6 / §2.7: `/pause` and `/end` are `'any'`, but their local (no-target) form still needs a run
+      const needsRun = c.availableDuringTask === 'live' || c.name === 'pause' || c.name === 'end';
+      const r = dispatchCommand(`/${c.name} ${sample[c.name] ?? ''}`.trim(), { run: needsRun ? 'live' : 'none', step: 0 });
       expect(r.ok && kinds.includes(r.action.kind), c.name).toBe(true);
     }
     // G1: a `/name` literal in some unit test file other than this one (the dispatch loop above does not count)
@@ -295,10 +356,36 @@ describe('COMMANDS (TUI-DESIGN §5.2)', () => {
   });
   it('availability errors are the §24 sentences', () => {
     expect(availabilityError(findCommand('undo') as CommandSpec, true)).toBe('error: /undo runs when the run is idle; Esc pauses first');
-    expect(availabilityError(findCommand('pause') as CommandSpec, false)).toBe('error: /pause needs a live run');
-    expect(availabilityError(findCommand('pause') as CommandSpec, true)).toBeNull();
+    expect(availabilityError(findCommand('steer') as CommandSpec, false)).toBe('error: /steer needs a live run');
+    expect(availabilityError(findCommand('steer') as CommandSpec, true)).toBeNull();
+    // TUI-DESIGN-5 §2.6 / §2.7 (§14.2 #16, #39): `/pause` and `/end` are `'any'` and the GENERATED sentence is
+    // therefore null for both — the per-form refusal (§12 S45a / S45b) is the dispatcher's, asserted there
+    expect(availabilityError(findCommand('pause') as CommandSpec, false)).toBeNull();
+    expect(availabilityError(findCommand('end') as CommandSpec, false)).toBeNull();
     expect(availabilityError(findCommand('undo') as CommandSpec, false)).toBeNull();
     expect(availabilityError(findCommand('help') as CommandSpec, true)).toBeNull();
+  });
+  /**
+   * TUI-DESIGN-5 §2.4 / §12 "Superseded, not kept": `/peers` keeps TD4's counts view, and its help text is
+   * PUBLISHED to users through the generated `docs/COMMANDS.md`, so an advertised feature that no longer exists
+   * is a user-visible lie. The per-peer kv rows are `/who`'s job now.
+   */
+  it('§2.4: `/peers` points at `/who` and no longer advertises the superseded per-peer kv rows', () => {
+    const peers = findCommand('peers') as CommandSpec;
+    expect(peers.title).toBe('other jevcode instances working in this workspace · /who shows what each is doing');
+    expect(peers.title.endsWith(' · /who shows what each is doing')).toBe(true);
+    // the four TD4 strings §12 keeps are named; the two superseded clauses are not
+    for (const kept of ['peers · <n> here, <m> stale', 'no other jevcode is working in this workspace', 'the peer registry is not available in this build', '[w] wait for it   [r] read-only session   [q] quit']) {
+      expect(peers.semantics, kept).toContain(kept);
+    }
+    for (const gone of ['kv row', 'started <t> ago', 'workspace, started']) expect(peers.semantics.toLowerCase(), gone).not.toContain(gone.toLowerCase());
+    // the privacy contract is still stated, because it is what makes the counts view the whole view
+    expect(peers.semantics).toContain('Never a pid, never a path');
+    // …and the published doc carries the new `semantics`, not the retired kv rows (`title` is the palette's;
+    // `docs/COMMANDS.md`'s description column is `semantics`)
+    const doc = readFileSync(COMMANDS_MD, 'utf8');
+    expect(doc).toContain('`/who` is the detailed view');
+    expect(doc).not.toContain('one kv row per peer');
   });
   it('registry ↔ docs/COMMANDS.md: every command and alias is a row and no extra rows exist (generated)', () => {
     const doc = readFileSync(COMMANDS_MD, 'utf8');

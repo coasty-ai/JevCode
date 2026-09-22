@@ -11,6 +11,7 @@ import { createInterface } from 'node:readline';
 import type {
   Action,
   ActionOutcome,
+  AgentRow,
   ConfirmOutcome,
   Confirmer,
   ConfirmRequest,
@@ -40,10 +41,13 @@ import { editSummary, editTargetText, type EditSummary } from './diff/summary.js
 import type { ColorRole } from './theme.js';
 import { budgetItems } from './budget/lines.js';
 // TUI-DESIGN §14.1 / §24: `--ascii` substitutes the glyph table on stdout only (glyphs.ts imports plain.ts's hoisted `sanitizeStream`; the cycle is safe: both use the other inside functions)
-import { glyphSet, glyphTwin, type GlyphSet } from './glyphs.js';
+import { GLYPHS, glyphSet, glyphTwin, type GlyphSet } from './glyphs.js';
 import { RETRY_SLOW_MS, blockingRowsStructured } from './blocking/lines.js';
-import { REVIEW_KEYS_80, reviewDiffLines, reviewHeaderLines } from './review/lines.js';
+import { REVIEW_KEYS_80, isProposalConfirm, reviewDiffLines, reviewHeaderLines } from './review/lines.js';
 import { gatePlainPrompt, secretAckText } from './secrets/gate-lines.js';
+// TUI-DESIGN-5 §13.1: the agent tree's single row producer (pure, `import type` only from the contract shapes)
+import { AGENTS_WIDE_COLUMNS, agentRowText, agentRows } from './agents/lines.js';
+import { blockTexts, blockWidth } from './block/lines.js';
 
 // ---------------------------------------------------------------------------------------
 // Transcript items
@@ -920,6 +924,20 @@ export function confirmHeaderLines(req: ConfirmRequest): string[] {
 
 /** Preview body lines (old/new, content, diff, command); '' preview yields []. */
 export function confirmPreviewLines(req: ConfirmRequest): string[] {
+  /**
+   * TUI-DESIGN-5 §4.6 [G2] / contract 1.5 §3.7: `body` is a PRE-RENDERED preview and replaces
+   * `describeAction(proposal.action).preview` outright. It exists because `describeAction('read').preview` is the
+   * empty string, so a manifest confirm faked as a synthetic `read` action rendered a blank body — the defect the
+   * four fields close. The clip is still applied, so the row cap cannot be bypassed by a long body.
+   *
+   * **`isProposalConfirm` is the discriminant here too, not `body !== undefined`** (§4.6: "`headline` — not
+   * `badge`, not `title` — is the discriminant"). `body` and `headline` are independently optional, so keying the
+   * `--plain` twin off one field and every Ink / card / SR branch off the other makes a request with a `body` and
+   * no `headline` render the body under `--plain` and the `describeAction` diff in the TUI — the twin divergence
+   * §13's identity rule forbids. One predicate now decides the shape in all four sinks.
+   */
+  const body = isProposalConfirm(req) ? req.body : undefined;
+  if (body !== undefined) return body.length === 0 ? [] : clipDetail(body.join('\n')).split('\n');
   const d = describeAction(req.proposal.action);
   if (d.preview === '') return [];
   return clipDetail(d.preview).split('\n');
@@ -1394,4 +1412,37 @@ export function createPlainRenderer(opts: PlainRendererOptions): PlainRenderer {
       });
     },
   };
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §4.2 / §13.1: the agent tree's `--plain` and `transcript.log` twin
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §13.1 / §9.2 (`src/tui/plain.ts`'s row): the agent rows route through **this one formatter**, so the Ink tab, the
+ * `--plain` block and the `transcript.log` rows `Engine.annotateBlock` writes are the same rows by construction.
+ * The row strings themselves are `src/tui/agents/lines.ts`'s — nothing is re-declared here (the §13.4 rule).
+ *
+ * §13.2 clause 6 is the one declared difference and it is asserted, not assumed: the Ink tab's visible subset is a
+ * **viewport** (`src/tui/pane/agents.ts`), while this twin's row count equals `rows.length` — `agentRows` never
+ * filters and never caps, so a `--plain` user sees every agent whatever the terminal is doing.
+ *
+ * §13.2 clause 1's width rule applies to the default: *`--plain` without a TTY renders the 120-column form*, so a
+ * piped `jevcode agents list` keeps the branch / verify column rather than silently dropping it at
+ * `CONFIRM_HEADER_COLUMNS`'s 80 — the twin must not be narrower than the tab a TTY would have drawn.
+ */
+export function agentBlockLines(rows: readonly AgentRow[], columns = AGENTS_WIDE_COLUMNS, g: GlyphSet = GLYPHS.unicode): string[] {
+  const width = blockWidth(columns);
+  return blockTexts(agentRows(rows, { width, g }), width, g);
+}
+
+/** §4.9 / §12.3 S85 (D-AN): `/agents`'s head row for the `--plain` block and `annotateBlock`'s head argument. */
+export function agentBlockHead(rows: readonly AgentRow[]): string {
+  return rows.length === 0 ? 'agents' : `agents (${rows.length})`;
+}
+
+/** §12 SR twin: the same rows with the glyph column dropped — the state word already carries the fact it encodes. */
+export function agentScreenReaderLines(rows: readonly AgentRow[], columns = AGENTS_WIDE_COLUMNS): string[] {
+  const width = blockWidth(columns);
+  return rows.map((r) => agentRowText(r, { width, g: GLYPHS.sr, sr: true }));
 }

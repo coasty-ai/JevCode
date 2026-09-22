@@ -18,7 +18,10 @@ export const RULE_MAX_CELLS = 400;
 
 /** §7.2: `UiState` 1.1 → the pane builders' input (TUI-DESIGN-2 §3.11 / §4.6: the intakes' rows and the last risk assessment ride along). */
 export function paneStateOf(s: UiState): PaneState {
-  return { tab: s.tab, step: s.step, rows: s.rows, plan: s.plan, timeline: s.timeline, synth: s.synthView, mode: s.mode, chatRows: s.chatRows, lastRisk: s.lastRisk };
+  // TUI-DESIGN-5 §4.3 (R5-4's §9.2 hunk): `agents`, `paneFocus` and `agentCursor` ride along, so `tabLines` can
+  // mount the `'a'` tab beside d/p/t/s with its viewport on the highlighted row, and `paneRuleRow` / `panelStrip`
+  // compute their strips from `paneTabsFor(agents.length > 0)`.
+  return { tab: s.tab, step: s.step, rows: s.rows, plan: s.plan, timeline: s.timeline, synth: s.synthView, mode: s.mode, chatRows: s.chatRows, lastRisk: s.lastRisk, agents: s.agents, paneFocus: s.paneFocus, agentCursor: s.agentCursor };
 }
 
 /** TUI-DESIGN-2 §4.6 / §5.4: everything the rule row depends on. */

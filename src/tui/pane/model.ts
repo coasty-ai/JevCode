@@ -11,7 +11,10 @@ import { PAIRED_PREFIX } from '../../jev/questions.js';
 import { clip } from '../../core/text.js';
 import { PAIRED_NOUL_FLOOR } from '../../loop/stages/choose.js';
 import { PLAN_ACCEPT_THRESHOLD, PLAN_REJECT_THRESHOLD } from '../../loop/plan.js';
+import type { AgentRow } from '../../core/types.js';
+import { focusedTail } from '../agents/lines.js';
 import { GLYPHS, cellWidth, fitCells, ruleRow, truncateCells, type GlyphSet } from '../glyphs.js';
+import { agentTabRows } from './agents.js';
 import { decisionRows } from './decisions.js';
 import { planRows, planSummaryRow } from './plan.js';
 import { synthRows } from './synth.js';
@@ -242,11 +245,25 @@ export function foldStepEnd(steps: readonly TimelineStep[], record: Pick<StepRec
 // §7.2 pane state and composition
 // ---------------------------------------------------------------------------------------
 
-export type PaneTab = 'd' | 'p' | 't' | 's';
+/** TUI-DESIGN-5 §4.3 (OR §4.6 [G20]/[D7]): the fifth tab is `'a'` — the agent tree, shown only while something delegates. */
+export type PaneTab = 'd' | 'p' | 't' | 's' | 'a';
+/**
+ * **UNCHANGED: the four production tabs.** `cycleTab`'s default binds to THIS, and that is the whole point
+ * (TUI-DESIGN-5 §4.3, §14.2 #1/#31): an earlier draft widened `PANE_TABS` itself to five *and* defaulted
+ * `cycleTab`'s third parameter to it, which silently changes the two-argument answers
+ * (`cycleTab('s', 1)` → `'a'`, `cycleTab('d', -1)` → `'a'`) and turns `test/unit/tui/pane/model.test.ts:165–167`
+ * red. Binding the default here keeps those cases green **and unedited**, which is what they are the guard for.
+ */
 export const PANE_TABS: readonly PaneTab[] = ['d', 'p', 't', 's'];
+/** TUI-DESIGN-5 §4.3: the five-tab list, used only while something is delegating. */
+export const PANE_TABS_WITH_AGENTS: readonly PaneTab[] = ['d', 'p', 't', 's', 'a'];
+/** TUI-DESIGN-5 §4.3: the tab list at a moment — `PANE_TABS_WITH_AGENTS` while a child exists, the four otherwise. */
+export function paneTabsFor(hasDelegation: boolean): readonly PaneTab[] {
+  return hasDelegation ? PANE_TABS_WITH_AGENTS : PANE_TABS;
+}
 
 /** The modal slot above the composer (`OverlayKind` in `src/tui/layout.ts`, O3); the pane only asks whether it is `'none'` (§7.2). */
-export type PaneOverlay = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake';
+export type PaneOverlay = 'none' | 'review' | 'wizard' | 'followup' | 'secret' | 'blocking' | 'palette' | 'undo' | 'exitConfirm' | 'intake' | 'import';
 
 /** The last `plan` event plus what the plan tab's `done_<j>` and 120-column evidence column need (§7.2 `p` row). */
 export interface PlanView {
@@ -292,6 +309,26 @@ export interface PaneState {
   readonly chatRows?: readonly DecisionRow[];
   /** TUI-DESIGN-2 §4.6: the last risk assessment of the run (`risk 0.44 [review]` on the strip) */
   readonly lastRisk?: { risk: number; verdict: 'ok' | 'review' | 'block' } | null;
+  /**
+   * TUI-DESIGN-5 §4.3: the agent tree's rows. **Absent or empty is "nothing delegates"**, which is what makes the
+   * `'a'` tab invisible in production until real rows exist (§4.0) — every tab-list call site reads
+   * `paneTabsFor(hasDelegation(state))`, never a separate flag that could disagree with the rows.
+   */
+  readonly agents?: readonly AgentRow[];
+  /** TUI-DESIGN-5 §4.3: the agents tab holds focus (`Alt+A`); the rule row's tail says so (S86b) so it is never invisible. */
+  readonly paneFocus?: boolean;
+  /**
+   * TUI-DESIGN-5 §4.3 / §13.2 clause 6: the highlighted agent row, and therefore the row the tab's **viewport**
+   * centres on. Without it `agentTabRows` always starts at 0 and the rows below `AGENTS_TAB_ROWS` are unreachable:
+   * the marker would say `↓18 below` with no key in the build that can reach them. `UiState.agentCursor`
+   * (`src/tui/useEngine.tsx`), moved by `↑`/`↓` while the tab is focused, is its source.
+   */
+  readonly agentCursor?: number;
+}
+
+/** TUI-DESIGN-5 §4.3: the one predicate `paneTabsFor` is called with, so the tab, the strip and `]`/`[` cannot disagree. */
+export function hasDelegation(state: Pick<PaneState, 'agents'>): boolean {
+  return (state.agents?.length ?? 0) > 0;
 }
 
 /** TUI-DESIGN-2 §4.6: the ONE threshold for the strip and the open header — long tab labels, the `jev <ms>ms` segment and the 5-rule tail from here. */
@@ -303,10 +340,17 @@ export function panelMoreRow(n: number, g: GlyphSet = GLYPHS.unicode): string {
 /** the shortest rule fill between the strip's segments and its tab labels before a segment is dropped from the right */
 const STRIP_MIN_FILL = 4;
 
-/** TUI-DESIGN §7.2: `[`/`]` cycle through d → p → t → s. */
-export function cycleTab(tab: PaneTab, dir: 1 | -1): PaneTab {
-  const i = PANE_TABS.indexOf(tab);
-  return PANE_TABS[(i + dir + PANE_TABS.length) % PANE_TABS.length] ?? 'd';
+/**
+ * TUI-DESIGN §7.2: `[`/`]` cycle through d → p → t → s, and TUI-DESIGN-5 §4.3 through `d → p → t → s → a` when the
+ * caller passes `paneTabsFor(true)`. The default is the **four-member** `PANE_TABS`, so the two-argument form's
+ * answers are round 2's byte for byte (§14.2 #1/#31) and `]` / `[` skip `'a'` while nothing delegates.
+ * A `tab` outside `tabs` (the focused `'a'` tab the moment the last agent ends) restarts at the first member.
+ */
+export function cycleTab(tab: PaneTab, dir: 1 | -1, tabs: readonly PaneTab[] = PANE_TABS): PaneTab {
+  const list = tabs.length === 0 ? PANE_TABS : tabs;
+  const i = list.indexOf(tab);
+  if (i < 0) return list[dir === 1 ? 0 : list.length - 1] ?? 'd';
+  return list[(i + dir + list.length) % list.length] ?? 'd';
 }
 
 /** TUI-DESIGN §7.2 (jev-native graft): in jev-only the default tab is `s` while a step's propose stage runs and `d` otherwise. */
@@ -319,7 +363,25 @@ export function sideBySide(rows: number, columns: number, overlay: PaneOverlay):
   return columns >= 120 && rows >= 40 && overlay === 'none';
 }
 
-const TAB_TITLE: Record<PaneTab, string> = { d: 'decisions', p: 'plan', t: 'timeline', s: 'synth' };
+/** TUI-DESIGN-5 §4.3: total over `PaneTab` — TypeScript's exhaustiveness check finds a new tab here for free. */
+export const TAB_TITLE: Readonly<Record<PaneTab, string>> = { d: 'decisions', p: 'plan', t: 'timeline', s: 'synth', a: 'agents' };
+
+/**
+ * TUI-DESIGN-5 §4.3 / §12.3 S86: the **one** tab-strip builder. Round 2 wrote the strip as two literal strings
+ * (`paneRuleRow`'s ` [d]ecisions [p]lan [t]ime [s]ynth ` and `panelStrip`'s ` [d] [p] [t] [s] `); F-54's earlier
+ * `d p t s [a]` form was a *second* grammar (§14.2 #31), so round 5 keeps the landed one and appends one segment
+ * while delegating. `long` is the wide form (`[d]ecisions`), the narrow one is the bracketed letter alone.
+ * `[t]imeline` shortens to `[t]ime` below `PANELE_WIDE` in the rule row only — `wide` says which.
+ */
+export function tabStrip(tabs: readonly PaneTab[], form: 'long' | 'short', wide: boolean): string {
+  const label = (t: PaneTab): string => {
+    if (form === 'short') return `[${t}]`;
+    const title = TAB_TITLE[t];
+    const shown = t === 't' && !wide ? 'time' : title;
+    return `[${t}]${shown.slice(1)}`;
+  };
+  return tabs.map(label).join(' ');
+}
 
 /** The rule row's left label per tab (§24 "Rule row"). */
 export function paneRuleLabel(state: PaneState, columns: number, g: GlyphSet = GLYPHS.unicode): string {
@@ -336,6 +398,11 @@ export function paneRuleLabel(state: PaneState, columns: number, g: GlyphSet = G
       return `timeline ${s}`;
     case 's':
       return `synth ${s}`;
+    case 'a': {
+      // TUI-DESIGN-5 §4.3: the label is the tally, so the rule row carries the fact even when the tab is one row tall
+      const n = state.agents?.length ?? 0;
+      return n === 0 ? `agents ${s}` : `agents ${s} ${g.dot} ${n} agent${n === 1 ? '' : 's'}`;
+    }
   }
 }
 
@@ -368,9 +435,31 @@ function brandFits(left: string, right: string, columns: number, g: GlyphSet): b
 export function paneRuleRow(state: PaneState, rows: number, columns: number, overlay: PaneOverlay, opts: PaneOptions = {}): string {
   const g = opts.glyphs ?? GLYPHS.unicode;
   const wide = columns >= PANEL_WIDE_COLUMNS;
-  const tabs = ` [d]ecisions [p]lan ${wide ? '[t]imeline' : '[t]ime'} [s]ynth `;
-  const right = sideBySide(opts.terminalRows ?? rows, columns, overlay) ? `${tabs}${g.rule.repeat(3)} ${TAB_TITLE[cycleTab(state.tab, 1)]} ${g.rule}` : `${tabs}${g.rule.repeat(wide ? 5 : 2)}`;
+  // TUI-DESIGN-5 §4.3 / §12.3 S86: computed from `paneTabsFor(...)`, so the landed grammar gains exactly one
+  // segment while delegating (`[a]gents`) and is byte-for-byte round 4's otherwise.
+  const list = paneTabsFor(hasDelegation(state));
+  // §4.3: the focused strip says so, so the state is never invisible (S86b)
+  const focus = state.paneFocus === true && state.tab === 'a' ? `${g.rule.repeat(2)} ${focusedTail(g)} ${g.rule}` : '';
   const label = `${opts.chevron === true ? `${g.chevronDown} ` : ''}${paneRuleLabel(state, columns, g)}`;
+  const rightWith = (form: 'long' | 'short'): string => {
+    const tabs = ` ${tabStrip(list, form, wide)} `;
+    if (focus !== '') return `${tabs}${focus}`;
+    return sideBySide(opts.terminalRows ?? rows, columns, overlay) ? `${tabs}${g.rule.repeat(3)} ${TAB_TITLE[cycleTab(state.tab, 1, list)]} ${g.rule}` : `${tabs}${g.rule.repeat(wide ? 5 : 2)}`;
+  };
+  /**
+   * §4.12: the strip's own TEXT shortens before the strip is dropped. `ruleRow` drops the right segment whole when
+   * it does not fit, so the fifth `[a]gents` segment would have taken the whole tab list off an 80-column rule row
+   * — the one row that tells the user the tab exists. The short form is tried first, and only then is the drop
+   * `ruleRow`'s.
+   *
+   * **The fallback is gated on the fifth segment existing.** Applied unconditionally it also rewrites round 4's
+   * non-delegating rule row at every width below ~54 columns (`─── decisions s7 ──── [d] [p] [t] [s] ──` where
+   * round 4 dropped the right segment whole), which is a change nothing in round 5 asked for and no test pinned.
+   * With nothing delegating this row is byte-for-byte round 4's, and `pane/model.test.ts` asserts that at 40.
+   */
+  const long = rightWith('long');
+  const room = Math.min(Math.max(0, Math.floor(columns)), 400) - cellWidth(`${g.rule.repeat(3)} ${label} `);
+  const right = list.length > PANE_TABS.length && cellWidth(long) > room ? rightWith('short') : long;
   // §1.2 P-H1 edge 5: the same prefix, the same drop order — the brand goes first when the header runs out of width
   const branded = opts.brand === true && brandFits(label, right, columns, g);
   return ruleRow(branded ? `${brandSegment(g)}${label}` : label, right, columns, g);
@@ -412,7 +501,9 @@ export interface StripOptions {
  */
 export function panelStrip(state: PaneState & { latencies: readonly (number | null)[] }, columns: number, g: GlyphSet = GLYPHS.unicode, opts: StripOptions = {}): string {
   const wide = columns >= PANEL_WIDE_COLUMNS;
-  const tabs = wide ? ` [d]ecisions [p]lan [t]imeline [s]ynth ${g.rule.repeat(5)}` : ` [d] [p] [t] [s] ${g.rule.repeat(2)}`;
+  // TUI-DESIGN-5 §4.3 / §12.3 S86: the second literal becomes the same builder — `[d] [p] [t] [s] [a]` narrow.
+  const list = paneTabsFor(hasDelegation(state));
+  const tabs = wide ? ` ${tabStrip(list, 'long', true)} ${g.rule.repeat(5)}` : ` ${tabStrip(list, 'short', false)} ${g.rule.repeat(2)}`;
   const rungs = opts.position ?? null;
   const rows = [...(state.chatRows ?? []), ...state.rows];
   const segments: string[] =
@@ -494,6 +585,10 @@ export function tabLines(state: PaneState, tab: PaneTab, rows: number, columns: 
       return timelineRows(state, rows, columns, g);
     case 's':
       return synthRows(state, rows, columns, g);
+    case 'a':
+      // TUI-DESIGN-5 §13.2 clause 6: the viewport centres on the highlighted row, which is what makes rows 13+
+      // of a 30-row tree reachable at all (`↑`/`↓` move `UiState.agentCursor`, §4.3)
+      return agentTabRows(state, rows, columns, g, state.agentCursor === undefined ? {} : { cursor: state.agentCursor });
   }
 }
 
@@ -523,7 +618,7 @@ export function paneLines(state: PaneState, rows: number, columns: number, overl
   if (!sideBySide(opts.terminalRows ?? n, w, overlay)) return tabLines(state, state.tab, n, w, g).slice(0, n).map((l) => truncateCells(l, w, g));
   const rightCells = SIDE_RIGHT_CELLS - 1;
   const left = tabLines(state, state.tab, n, SIDE_LEFT_CELLS, g);
-  const right = sideTabLines(state, cycleTab(state.tab, 1), n, rightCells, g);
+  const right = sideTabLines(state, cycleTab(state.tab, 1, paneTabsFor(hasDelegation(state))), n, rightCells, g);
   const out: string[] = [];
   for (let i = 0; i < n && (i < left.length || i < right.length); i++) {
     const r = right[i] ?? '';

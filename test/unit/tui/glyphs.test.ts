@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GLYPHS, cellWidth, fitCells, glyphSet, glyphTwin, oneLineCells, padEndCells, padStartCells, ruleRow, stepLabelCells, truncateCells, type GlyphSet } from '../../../src/tui/glyphs.js';
+import { GLYPHS, asciiTwins, cellWidth, fitCells, glyphSet, glyphTwin, oneLineCells, padEndCells, padStartCells, ruleRow, stepLabelCells, truncateCells, type GlyphSet } from '../../../src/tui/glyphs.js';
 
 const ASCII_RE = /^[\x20-\x7e]*$/;
 
@@ -35,6 +35,11 @@ describe('GLYPHS (TUI-DESIGN §14.1)', () => {
     expect(a.spinner).toEqual(['.', '+', '#', '#', '+', '.']);
     expect([u.arrow, a.arrow, u.ge, a.ge, u.le, a.le, u.approx, a.approx]).toEqual(['→', '->', '≥', '>=', '≤', '<=', '≈', '~=']);
     expect([u.range, a.range, u.minus, a.minus, u.dash, a.dash, u.sigma, a.sigma]).toEqual(['–', '-', '−', '-', '—', '-', 'Σ', 'sum']);
+    // TUI-DESIGN-5 §12's ascii column writes `--` for the em dash; the landed value is `-` and the CODE is the
+    // decision (the docs PR amends §12). Pinned here so the conflict cannot be resolved silently in either
+    // direction: a one-cell glyph's twin must not be two cells wide on a row that was measured in cells.
+    expect(a.dash).toBe('-');
+    expect(cellWidth(a.dash)).toBe(cellWidth(u.dash));
     expect(u.range.codePointAt(0)).toBe(0x2013);
     expect(u.minus.codePointAt(0)).toBe(0x2212);
   });
@@ -66,6 +71,57 @@ describe('GLYPHS (TUI-DESIGN §14.1)', () => {
     expect(glyphSet().mode).toBe('unicode');
     expect(glyphSet({ screenReader: true }).mode).toBe('sr');
     expect(glyphSet({ ascii: true, screenReader: true }).mode).toBe('ascii');
+  });
+});
+
+/**
+ * TUI-DESIGN-5 §8.1 item 10 / §7 row 81 / §14.2 #43: the nine glyphs round 5 adds, and the one-to-one property
+ * that would have caught the collision. `asciiTwins()` is keyed by the **unicode** glyph and the first entry for a
+ * glyph wins, so two members sharing a cell silently give one of them the other's twin — which is exactly how S3
+ * came to write `◌` → `o` while S60 wrote `◌` → `.`. `○` takes `o`, `◌` takes `.`, S3 is corrected, S60 stands.
+ */
+describe('the nine round-5 glyphs (TUI-DESIGN-5 §8.1 item 10)', () => {
+  /** the nine, in §8.1 item 10's order: `● ○ ◌ ⇄ ✉ ⏸ ⟳ ↻ ↪` → `* o . <> mail = ~ @ >>` */
+  const NINE: readonly [keyof GlyphSet, string, string][] = [
+    ['live', '●', '*'],
+    ['gone', '○', 'o'],
+    ['stale', '◌', '.'],
+    ['peers', '⇄', '<>'],
+    ['mail', '✉', 'mail'],
+    ['paused', '⏸', '='],
+    ['landing', '⟳', '~'],
+    ['kicked', '↻', '@'],
+    ['adopted', '↪', '>>'],
+  ];
+
+  it('every member carries its §8.1 unicode cell and its ascii twin, and the SR set reuses the unicode cell', () => {
+    for (const [key, u, a] of NINE) {
+      expect([key, GLYPHS.unicode[key]]).toEqual([key, u]);
+      expect([key, GLYPHS.ascii[key]]).toEqual([key, a]);
+      expect([key, GLYPHS.sr[key]]).toEqual([key, u]);
+      expect(a).toMatch(ASCII_RE);
+    }
+  });
+
+  it('asciiTwins() is injective over the nine — no shared unicode cell, no shared twin, nothing shadowed', () => {
+    const m = asciiTwins();
+    const uniq = new Set(NINE.map(([, u]) => u));
+    expect(uniq.size).toBe(NINE.length);
+    const twins = new Set(NINE.map(([, a]) => a));
+    expect(twins.size).toBe(NINE.length);
+    // the map answers each of the nine with ITS OWN twin — an earlier table entry sharing the cell would show here
+    for (const [key, u, a] of NINE) expect([key, m.get(u)]).toEqual([key, a]);
+    // the collision the test exists for, stated as itself
+    expect(m.get('◌')).toBe('.');
+    expect(m.get('○')).toBe('o');
+    expect(m.get('◌')).not.toBe(m.get('○'));
+  });
+
+  it('glyphTwin folds the nine in free text, and the §12 S6 / S60 rows are pure ASCII afterwards', () => {
+    expect(glyphTwin('⇄ 2 live · 1 heads-up · ✉ 1', GLYPHS.ascii)).toBe('<> 2 live - 1 heads-up - mail 1');
+    expect(glyphTwin('● live ○ gone ◌ stale ⏸ paused ⟳ landing ↻ kicked ↪ adopted', GLYPHS.ascii)).toBe('* live o gone . stale = paused ~ landing @ kicked >> adopted');
+    expect(glyphTwin('⇄ 2 live · ✉ 1', GLYPHS.unicode)).toBe('⇄ 2 live · ✉ 1');
+    for (const [, u] of NINE) expect(glyphTwin(u, GLYPHS.ascii)).toMatch(ASCII_RE);
   });
 });
 

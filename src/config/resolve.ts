@@ -82,13 +82,15 @@ import {
   type SettingReader,
 } from './validate.js';
 import type { LoadedConfigFile, LoadedDotenv, ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeReconciliation, SettingName, SettingSpec } from './types.js';
+// TUI-DESIGN-5 §6.3 row 1: zero-import pure data (the module states the rule and a test enforces it), so this
+// import never puts `provider/registry.js` or `models/**` on the argv path.
+import { isProviderId, keyEnvNames } from '../provider/ids.js';
 
 export type { ResolveOptions, ResolvedConfigWithDiagnostics, ResumeCurrentInputs, ResumeIdentity, ResumeLimitSources, ResumeReconciliation, ResumeStateSummary, ResumeOverride } from './types.js';
 
 /** A config file larger than this is not ours to parse. */
 export const MAX_CONFIG_FILE_BYTES = 1024 * 1024;
 
-const PROVIDER_KEY_ENV: Readonly<Record<string, string>> = { anthropic: 'ANTHROPIC_API_KEY', openrouter: 'OPENROUTER_API_KEY' };
 
 /** Walk up from this module until a package.json named jevcode is found (src/config/ in dev, dist/ when bundled). */
 export function detectPackageRoot(fromDir: string = dirname(fileURLToPath(import.meta.url))): string | null {
@@ -431,6 +433,56 @@ function launchRows(flags: ParsedFlags, env: NodeJS.ProcessEnv): Map<SettingName
 }
 
 /**
+ * TUI-DESIGN-5 §3.6 (D-AI) — `context.*` → `EngineOptions.contextPolicy`, the layer without which the six schema rows
+ * are dead code exactly like the hook round 4 left behind. `ResolvedConfig.context()` is this function, and
+ * `src/cli/session.ts` passes its result at both engine-construction sites.
+ *
+ * WHICH members are present, exactly: the rows with a `defaultValue` — `context.mode` (relaxed),
+ * `context.compaction` (code) and `context.compactEvery` (8) — ALWAYS resolve, so the returned object always carries
+ * them and JevCode's config layer is what pins those three. The other three (`historySteps`, `fileCacheBytes`,
+ * `budgetChars`) have no default here, so they are absent unless the user set one and `src/core/limits.ts`'s own
+ * defaults stay in force. That is why the result is a sparse `ContextPolicyOptions` and not a total record.
+ *
+ * NON-THROWING, deliberately (this is the one place the design's "mirror `config/ui.ts`'s `enumSetting`" would have
+ * been wrong): a malformed value is reported by `jevcode config` from the row's `shape` (§7.5) and skipped here, so a
+ * stray `JEVCODE_CONTEXT_COMPACT_EVERY=-1` cannot turn into a `createEngine` crash now that the result reaches a
+ * real call site. `ui()` may throw because nothing downstream of it has a working default; every member here does.
+ *
+ * `context.kept` is NOT mapped: `ContextPolicyOptions` has no `kept` member (src/core/types.ts, harness-owned) and
+ * the Jev ranking pass is not built (`src/loop/context/compaction.ts:6`). `resolveConfig` warns once when it is set
+ * to a non-default value; the mapping lands with the harness member (round-5 request Rk).
+ */
+export function resolveContextConfig(reader: SettingReader): ContextPolicyOptions {
+  const out: { -readonly [K in keyof ContextPolicyOptions]: ContextPolicyOptions[K] } = {};
+  const view = reader.get('context.mode')?.value.trim().toLowerCase();
+  if (view === 'relaxed' || view === 'legacy') out.view = view;
+  const compaction = reader.get('context.compaction')?.value.trim().toLowerCase();
+  if (compaction === 'code' || compaction === 'llm' || compaction === 'off') out.compaction = compaction;
+  const int = (name: SettingName, min: number): number | null => {
+    const raw = reader.get(name)?.value.trim();
+    if (raw === undefined || raw === '') return null;
+    const n = Number(raw);
+    return Number.isInteger(n) && n >= min ? n : null;
+  };
+  const every = int('context.compactEvery', 0);
+  if (every !== null) out.compactEvery = every;
+  const steps = int('context.historySteps', 1);
+  if (steps !== null) out.historySteps = steps;
+  const cache = int('context.fileCacheBytes', 0);
+  if (cache !== null) out.fileCacheBytes = cache;
+  const budget = int('context.budgetChars', 1);
+  if (budget !== null) out.budgetChars = budget;
+  return out;
+}
+
+/**
+ * TUI-DESIGN-5 §3.6: the one honest consequence of a schema row whose engine member has not landed — a user who sets
+ * `context.kept jev` is told the value is parked, instead of being ignored in silence. Deleted with the row's other
+ * half when the harness lands `ContextPolicyOptions.kept`.
+ */
+export const CONTEXT_KEPT_PARKED = 'context.kept: the jev ranking pass is not wired in this build — kept items are ranked by code';
+
+/**
  * DESIGN §3 / TUI-DESIGN §16: resolve every setting with its source. Throws ConfigError only for what the first frame
  * needs (config file location and syntax, sandbox profile, the two eager booleans); every section validates lazily.
  */
@@ -513,8 +565,14 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const providerR = lookup(layers, settingSpec('generator.provider'));
   if (providerR) {
     entries.set('generator.provider', providerR);
-    const keyEnv = PROVIDER_KEY_ENV[providerR.value.trim().toLowerCase()];
-    if (keyEnv) layers.extraEnv['generator.apiKey'] = [keyEnv];
+    // TUI-DESIGN-5 §6.3 row 1 (R5-6's hunk, landed by R5-3 in the W4 config PR): the private two-entry
+    // `PROVIDER_KEY_ENV` this file used to declare was a LIVE BUG — `gemini`'s `GOOGLE_API_KEY` and `meta`'s
+    // `MODEL_API_KEY` fallbacks were unreachable, and the five 2026-09 providers had no key variable at all.
+    // `src/provider/ids.ts` is the single source of truth and has ZERO imports by contract, so reading it here
+    // keeps the argv / first-frame path free of the provider HTTP stack (gate G-R5-1). Behaviour-neutral for the
+    // two providers that were in the old table: their lists are one name long and the same name.
+    const providerId = providerR.value.trim().toLowerCase();
+    if (isProviderId(providerId)) layers.extraEnv['generator.apiKey'] = [...keyEnvNames(providerId)];
   }
   // 4b. TUI-DESIGN-2 §2.3: the Jev provider likewise — step 3 prepends its variable (TYPESAFE_API_KEY) to the decider key
   //     lookup when the provider was explicit, host- or TypeSafe-key-inferred; under `auto:openrouter-key` / `default` today's
@@ -588,6 +646,11 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const plainR = entries.get('plain');
   const noNetwork = noNetworkR ? parseBooleanSetting(reader, 'noNetwork', noNetworkR) : false;
   const plain = plainR ? parseBooleanSetting(reader, 'plain', plainR) : false;
+  // TUI-DESIGN-5 §3.6 (D-AI): `context.kept` is in the schema (so `jevcode config` can print, validate and persist
+  // it) but has no engine member yet. A user who asks for the Jev ranker is told the value is parked — the one
+  // thing D-AI exists to prevent is a setting that does nothing and says nothing.
+  const keptR = entries.get('context.kept');
+  if (keptR !== undefined && keptR.source !== 'default' && keptR.value.trim().toLowerCase() === 'jev') warnings.push(CONTEXT_KEPT_PARKED);
 
   // SecretSet (§8.4): resolved secret settings, then every secret-looking variable in every loaded .env and the config file.
   const secrets: SecretEntry[] = [];
@@ -721,27 +784,12 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     //
     // A malformed value is reported by `jevcode config` (§7.5) and skipped here rather than thrown, because the
     // record must never throw.
+    //
+    // TUI-DESIGN-5 §3.6 (D-AI): the body moved to the exported `resolveContextConfig` below, so the resolver can be
+    // table-tested on its own and so `EngineOptions.contextPolicy` has ONE producer. The member stays — and stays
+    // always-set, which is what makes this interface's own doc comment true.
     context(): ContextPolicyOptions {
-      const out: { -readonly [K in keyof ContextPolicyOptions]: ContextPolicyOptions[K] } = {};
-      const view = entries.get('context.mode')?.value.trim().toLowerCase();
-      if (view === 'relaxed' || view === 'legacy') out.view = view;
-      const compaction = entries.get('context.compaction')?.value.trim().toLowerCase();
-      if (compaction === 'code' || compaction === 'llm' || compaction === 'off') out.compaction = compaction;
-      const int = (name: SettingName, min: number): number | null => {
-        const raw = entries.get(name)?.value.trim();
-        if (raw === undefined || raw === '') return null;
-        const n = Number(raw);
-        return Number.isInteger(n) && n >= min ? n : null;
-      };
-      const every = int('context.compactEvery', 0);
-      if (every !== null) out.compactEvery = every;
-      const steps = int('context.historySteps', 1);
-      if (steps !== null) out.historySteps = steps;
-      const cache = int('context.fileCacheBytes', 0);
-      if (cache !== null) out.fileCacheBytes = cache;
-      const budget = int('context.budgetChars', 1);
-      if (budget !== null) out.budgetChars = budget;
-      return out;
+      return resolveContextConfig(reader);
     },
     sourcesConsulted: (name) => reader.sources(name),
     // TUI-DESIGN §15 item 17 / §11.1 (D5): non-throwing; the generator key is skipped for jev-only and --mock*, the Jev key for --mock

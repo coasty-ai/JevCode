@@ -1,0 +1,72 @@
+# TUI round 5 — hunks owed to the HARNESS (peer) session
+#
+# The round-5 TUI worktree edited NO harness-owned file: `src/loop/**`, `src/synth/**`, `src/coordination/**`,
+# `src/orchestrate/**`, `src/import/**`, `src/models/**`, `src/provider/**`, `src/spend/**`, `src/checkpoint/**`,
+# `src/errors.ts` and every non-TUI block of `src/core/types.ts` are byte-identical to `36f1104` (verified with
+# `git status --short`). There is therefore **nothing to revert** — this file is the request list, written as
+# hunks so the peer can apply them without a second design pass, exactly as round 4's file was.
+#
+# Three requests, each with the design row that asks for it and the observable it unblocks.
+#
+# ---------------------------------------------------------------------------------------------------------------
+# R5-H1 — `src/coordination/index.ts`: a `publicMessage(m)` projection on the facade.
+#   WHY: TUI-DESIGN-5 §13.3 pins `jevcode sessions inbox --json` as serialising "coordination's own types", but
+#   `Message` carries an optional `hostKey` (`src/coordination/types.ts:262`) — a DEVICE-SECRET DERIVATIVE that
+#   §7 row 61 forbids in a JSON sink, and the very reason `SelfIdentityView` exists. Round 5 emits flattened
+#   `SessionsInboxRow` / `SessionsAckRow` projections instead and declares that as an eighth §13.2 clause
+#   (`SESSIONS_INBOX_JSON_CLAUSE`, `src/cli/sessions.ts:427`, asserted in `test/unit/tui/r5-identity.test.ts`).
+#   A future round that wants the raw types in that sink needs this projection first.
+#
+# --- a/src/coordination/index.ts
+# +++ b/src/coordination/index.ts
+# @@
+# +/**
+# + * The public projection of a `Message`: every field a reader outside `src/coordination/**` may see. `hostKey`
+# + * and `from.pid` / `from.bootId` are DROPPED — they bind a record to a machine and a boot session, which is a
+# + * device-secret derivative (TUI-DESIGN-5 §7 row 61). Every `--json` sink serialises THIS, never `Message`.
+# + */
+# +export function publicMessage(m: Message): PublicMessage { … }
+# +export interface PublicMessage { id: string; from: { deviceId8: string; label: string; sessionId: string | null; runId: string | null }; to: string; type: MessageType; text: string; refs: Message['refs']; by?: 'human' | 'engine'; t: string }
+#
+# ---------------------------------------------------------------------------------------------------------------
+# R5-H2 — `src/core/types.ts` `ContextPolicyOptions` (`:2187`): a `kept?: 'code' | 'jev'` member, and the ranking
+#   pass behind it in `src/loop/context/compaction.ts`.
+#   WHY: TUI-DESIGN-5 §3.6 / §8.1 item 7 (D-AI) makes `context.kept` the fifth `context.*` row. It is landed as a
+#   SETTINGS row (`src/config/defaults.ts`), printed by `jevcode config`, validated by `jevcode config set` and
+#   resolved by `resolveContextConfig` — but `ContextPolicyOptions` has no member for it, so the value cannot
+#   reach the engine. `src/loop/context/compaction.ts:6` says the Jev ranking pass is not built. The row's own
+#   `description` says `jev is not wired in this build`, so nothing lies today; the honesty ends when this lands.
+#
+# --- a/src/core/types.ts
+# +++ b/src/core/types.ts
+# @@ export interface ContextPolicyOptions {
+#    compaction?: CompactionMode;
+# +  /** docs/COORDINATION-DESIGN.md §8.6: who ranks the kept items — code (deterministic across devices and
+# +   *  resumes, G3(d)) or one bounded Jev pass per compaction. Default `'code'`. */
+# +  kept?: 'code' | 'jev';
+#    budgetChars?: number;
+#  }
+#
+# ---------------------------------------------------------------------------------------------------------------
+# R5-H3 — `src/coordination/index.ts` `openLedger(...)`: accept the MINTED claim, or accept a claim after the
+#   fold is first readable.
+#   WHY: TUI-DESIGN-5 §2.8's claim fence. `src/session/publish.ts` mints the claim (`mintClaim`) and the heartbeat
+#   base carries `claim: minted`, so the BEAT epoch and the projection epoch are the same object and peers rank
+#   correctly (`compareClaim` is epoch-desc first). The ledger HANDLE, however, is still seated with the identity
+#   claim (epoch 1), because `openLedger` takes its claim before the mint can happen. Any coordination reader that
+#   ranks by the handle's seat claim rather than by the beat would disagree with every other reader. Nothing does
+#   today; the fix is one signature, and `src/coordination/**` is read-only for the TUI session.
+#
+# --- a/src/coordination/index.ts
+# +++ b/src/coordination/index.ts
+# @@ export function openLedger(input: LedgerInput): Promise<LedgerHandle> {
+# +  /** §2.8: re-seat the handle's claim after the mint, so the seat and the beat can never name two epochs. */
+# +  reseatClaim?(claim: Claim): void;
+#
+# ---------------------------------------------------------------------------------------------------------------
+# NOT a request, recorded so the next round does not rediscover it: `SessionsCoordination` is never constructed in
+# production. `commandSessions` is called from `src/cli/main.tsx` with no `coordination` member, so the thirteen
+# new `jevcode sessions <verb>` verbs answer `the session ledger is not available in this build` and exit 2 for a
+# real user. That is TUI-side work (one `openCoordination()`: an `await import('../coordination/index.js')` plus
+# `openLedger` and `close`, the same shape as `openSessionLedger` in `src/session/publish.ts`) and it is in no
+# §9.1 cell, so round 5 did not invent an owner for it. It is the single biggest remaining gap in §2.10.

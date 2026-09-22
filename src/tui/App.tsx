@@ -32,7 +32,8 @@ import { DEFAULT_MODE } from '../config/defaults.js';
 import type { TrustInputs } from '../config/trust.js';
 import { REWIND_CHOICE, type RewindStep } from '../undo/plan.js';
 import { bannerRow } from './pane/banner.js';
-import { defaultTab, cycleTab } from './pane/model.js';
+import { AGENTS_VERB_WORD, notAvailableText } from './agents/lines.js';
+import { defaultTab, cycleTab, paneTabsFor } from './pane/model.js';
 import { argTokenOf, argValues, helpLines, paletteGhostFor, paletteMatches, type PaletteState } from './commands/palette.js';
 import type { CommandAction, DispatchContext } from './commands/dispatch.js';
 import { completeDraft, dispatchCtxOf, recentCommands } from './commands/local.js';
@@ -72,7 +73,7 @@ import { INITIAL_PICKER, PICKER_PANE_WANT, moveRunsToTrash, pickerLines, pickerR
 import { IDENTITY_NO_TTY, formatTranscriptItem, headerItem, sanitizeStream, sessionHeaderItem, transcriptDumpChunks, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { maskGlyphFor, maskHits, type ReviewNote } from './Review.js';
 import type { FollowupInput } from './review/lines.js';
-import { reviewRowForDigit } from './review/lines.js';
+import { reviewRowForDigit, reviewWhyRefusal } from './review/lines.js';
 import { retryLiveLines } from './retry.js';
 import { gateLines, GATE_DISMISS_TIP } from './secrets/gate-lines.js';
 import { copyRedacted } from './secrets/clipboard.js';
@@ -1007,6 +1008,19 @@ export function App(p: AppProps): React.JSX.Element {
       dispatch({ type: 'transcript', view: c.view });
       return;
     }
+    if (c.kind === 'agents') {
+      // TUI-DESIGN-5 §4.3 / §4.9 (S66 advertises `/agents (Alt+A)`): open the panel on the tab AND focus it, so
+      // the eight letters resolve. With nothing delegating the answer is D-AN's honest one, never a blank tab.
+      if (s.agents.length === 0) {
+        noteLine(notAvailableText('/agents'), { label: '[ui]' });
+        return;
+      }
+      if (s.panel === 'collapsed') dispatch({ type: 'panel', panel: 'open' });
+      tabTouched.current = true;
+      dispatch({ type: 'tab', tab: 'a' });
+      dispatch({ type: 'paneFocus', on: true });
+      return;
+    }
     const next = nextPanel({ panel: s.panel, tab: s.tab }, c.arg);
     if (next.tab !== s.tab) {
       tabTouched.current = true;
@@ -1561,7 +1575,40 @@ export function App(p: AppProps): React.JSX.Element {
           return;
         }
         tabTouched.current = true;
-        dispatch({ type: 'tab', tab: cycleTab(s.tab, action.dir) });
+        // TUI-DESIGN-5 §4.3: `]` / `[` skip `'a'` unless something delegates — one predicate, read off the rows
+        dispatch({ type: 'tab', tab: cycleTab(s.tab, action.dir, paneTabsFor(s.agents.length > 0)) });
+        return;
+      case 'paneFocus':
+        // TUI-DESIGN-5 §4.3 / §7 row 99: Alt+A focuses the agents tab (opening a collapsed panel first, the same
+        // way `]` does) and Esc unfocuses. The refusal on a non-empty draft is the resolver's (S86a).
+        if (action.on) {
+          if (s.agents.length === 0) {
+            toast(notAvailableText('/agents'));
+            return;
+          }
+          if (s.panel === 'collapsed') dispatch({ type: 'panel', panel: 'open' });
+          tabTouched.current = true;
+        }
+        dispatch({ type: 'paneFocus', on: action.on });
+        return;
+      case 'agents':
+        /**
+         * TUI-DESIGN-5 §4.3 / §13.2 clause 6: `↑` / `↓` are the tab's own **navigation**, not a supervisor verb —
+         * they move the highlighted row, the viewport follows (`PaneState.agentCursor`), and without them the
+         * rows below `AGENTS_TAB_ROWS` are unreachable however loudly the marker says `↓18 below`.
+         */
+        if (action.op === 'move') {
+          dispatch({ type: 'agentCursor', by: action.by ?? 1 });
+          return;
+        }
+        if (action.op === 'unfocus') {
+          dispatch({ type: 'paneFocus', on: false });
+          return;
+        }
+        // §4.3 / §4.7: the supervisor VERBS need a store this build does not have (§4.0). D-AN's rule — every
+        // surface answers honestly rather than doing nothing — applies to the keys too. The refusal names the
+        // key's user-facing word (`drop`, never the internal `dropArm`).
+        toast(notAvailableText(`agents ${AGENTS_VERB_WORD[action.op]}`));
         return;
       case 'panel': {
         // TUI-DESIGN-2 §4.6: Alt+J toggles, Alt+Shift+J opens full, Alt+D/P/T/S open a tab (a second press on the same tab collapses)
@@ -1790,12 +1837,36 @@ export function App(p: AppProps): React.JSX.Element {
           case 'close':
             closePicker();
             return;
+          // TUI-DESIGN-5 §2.8 (R5-1's card; the sub-state's plumbing lands with R5-4's shared-shell PR). The
+          // reducer arm and `KeyState.pickerCard` exist here so the six ops are reachable the day
+          // `src/session/picker-lines.ts` grows the card's rows; until then `pickerCard` stays `'off'` and Enter
+          // resumes exactly as it did in round 3 (the resolver's three-state gate, not a boolean).
+          case 'cardOpen': {
+            const sess = selectedSession(picker, filter);
+            const run = sess?.runs.at(-1);
+            if (!run) return;
+            pickerDispatch({ type: 'card', runId: run.runId });
+            return;
+          }
+          case 'cardClose':
+            pickerDispatch({ type: 'card', runId: null });
+            return;
+          case 'cardReplay':
+          case 'cardFresh':
+          case 'cardDiff':
+          case 'cardWho':
+            // §2.8's four branches need `PausePoint.replayable` / the fold, which `src/session/picker-lines.ts`
+            // threads in (R5-1). D-AN: answer honestly rather than doing nothing.
+            toast(notAvailableText(`/resume ${action.op.slice(4).toLowerCase()}`));
+            return;
         }
         return;
       }
       case 'review': {
         const req = s.pendingReview;
         if (!req) return;
+        // TUI-DESIGN-5 §4.6: null for every ordinary confirm, so nothing below changes for them
+        const whyRefusal = reviewWhyRefusal(req);
         switch (action.op) {
           case 'approve':
             p.confirmer.resolve(req.id, true);
@@ -1814,8 +1885,16 @@ export function App(p: AppProps): React.JSX.Element {
             dispatch({ type: 'review:expand', expanded: !s.expanded });
             return;
           case 'whyArm':
+            // TUI-DESIGN-5 §4.6 (`CD §F` to-do 2): a manifest confirm has no risk dimensions, so `w` answers at once
+            // instead of arming a chord that could only index into an empty array (§12.3 S65 extended).
+            if (whyRefusal !== null) toast(whyRefusal);
             return;
           case 'why': {
+            // §4.6: the same refusal for the completed chord, so `w 1` … `w 5` all answer (review.test.tsx)
+            if (whyRefusal !== null) {
+              toast(whyRefusal);
+              return;
+            }
             const key = action.dim !== undefined ? reviewRowForDigit(action.dim) : null;
             const all = [...s.decisionsByStep.values()].flat();
             const d = key === null ? null : (all.find((x) => x.step === req.step && x.stage === 'risk' && x.id === key) ?? null);
@@ -2005,6 +2084,18 @@ export function App(p: AppProps): React.JSX.Element {
       noteMode: s.noteMode,
       armed: armedRef.current,
       picker: pickerOpenRef.current !== null,
+      /**
+       * TUI-DESIGN-5 §2.8: three states, not a boolean — `'off'` keeps round 3's Enter/Esc meanings byte for byte
+       * until the card has rows to show (§7 row 91's four letters are filter text meanwhile).
+       *
+       * **The sub-state is fully dark in this build, not half-wired**, and the distinction matters to the
+       * integrator: this expression can only ever produce `'off'`, because `'closed'` — the state in which Enter
+       * *opens* a card — has no predicate to produce it until R5-1's `/resume` card knows which rows have a pause
+       * point (`picker.card` can therefore never leave `null`, and the four card letters stay filter text). The
+       * `'open'` arm is written out so that the day the predicate lands, only the `'closed'` half is new.
+       * `picker/model.test.ts` and `picker.test.tsx` pin both halves against a hand-built `PickerState`.
+       */
+      pickerCard: pickerOpenRef.current === null ? 'off' : picker.card !== null ? 'open' : 'off',
       overlayArmed: s.overlayArmed,
       minsize: layoutRef.current?.degraded === 'minsize',
       retrying: s.retrying !== null,
@@ -2020,6 +2111,11 @@ export function App(p: AppProps): React.JSX.Element {
         return text.length > 0 && text === commandToken(text);
       })(),
       cursorAtEnd: b.cursor >= b.text.length,
+      // TUI-DESIGN-5 §4.3 (§9.2's `App.tsx` / `keys/resolve.ts` rows): the one pane rung's gate. Both are inert
+      // until they are supplied, and `paneFocus` can only be true while the `'a'` tab exists (the reducer holds
+      // that invariant), so the tab's eight single letters are unreachable in a build with no agents.
+      paneFocus: s.paneFocus,
+      tab: s.tab,
     };
   };
 
@@ -2471,7 +2567,7 @@ export function App(p: AppProps): React.JSX.Element {
             }),
           plainRule(columns, glyphs),
         );
-  const statusState = guard<StatusLineState | null>('status', () => statusView({ ...state, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen }), null);
+  const statusState = guard<StatusLineState | null>('status', () => statusView({ ...state, git: state.git === null ? null : { ...state.git, head: gitHead.head ?? state.git.head, frozen: gitHead.frozen } }, { picker: pickerOpen, columns, glyphs }), null);
   const badge = modeBadge(state.modeBadge.mode, state.modeBadge.pending, glyphs);
   const consoleTitle = wizardHosted ? wizardConsoleTitle(wizard.state.step, glyphs) : pickerOpen && picker.kind ? pickerConsoleTitle(picker.kind, glyphs) : null;
   const gateRow = gateUp === 1 && gateRef.current ? (gateLines(gateRef.current.hits, consoleInnerWidth(columns))[0] ?? null) : null;
@@ -2632,7 +2728,7 @@ export function App(p: AppProps): React.JSX.Element {
             dir={sessionDirName(p.cwd ?? process.cwd())}
             title={consoleTitle}
             gate={gateRow}
-            status={statusState ?? statusView(state, { picker: pickerOpen })}
+            status={statusState ?? statusView(state, { picker: pickerOpen, columns, glyphs })}
             statusOptions={statusOpts}
             wizard={wizardHosted ? { state: wizard.state, trust: (bridge.wizardHost?.trustInputs?.() ?? null) as TrustInputs | null, screenReader: launch.screenReader } : null}
             glyphs={glyphs}

@@ -11,6 +11,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { SessionRow } from '../../../src/core/types.js';
 import { INITIAL_PICKER, PICKER_HINT, moveRunsToTrash, pickerLines, pickerReducer, pickerRule, readPickerPreview, selectedSession, visibleSessions, type PickerState } from '../../../src/tui/Picker.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
+import { initialKeyState, resolveKey, type KeyEvent, type KeyFlags } from '../../../src/tui/keys/resolve.js';
 
 const NOW = Date.parse('2026-09-20T12:00:00Z');
 function session(id: string, title: string, task60: string, hoursAgo: number, workspace = '/Users/me/proj'): SessionRow {
@@ -114,5 +115,63 @@ describe('readPickerPreview / moveRunsToTrash (§8.4)', () => {
     expect(r.failed).toEqual([{ runId: 'missing', code: 'ENOENT' }, { runId: '../evil', code: 'EINVAL' }]);
     expect(existsSync(join(root, 'trash', 'r1', 'run.json'))).toBe(true);
     expect(existsSync(join(runs, 'r1'))).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §2.8 / §7 row 91: the resume card's focused sub-state (R5-4's §10 `picker.test.tsx`)
+// ---------------------------------------------------------------------------------------
+
+describe("the resume card's sub-state (TUI-DESIGN-5 §2.8, §14.2 #40)", () => {
+  it('a fresh picker has no card — the whole sub-state is inert until one is opened', () => {
+    expect(INITIAL_PICKER.card).toBeNull();
+    expect(open().card).toBeNull();
+  });
+
+  it('`card` opens on one runId and Esc closes it back to the list', () => {
+    const s = pickerReducer(open(), { type: 'card', runId: '20260920-100000-aaaaaaaa' });
+    expect(s.card).toEqual({ runId: '20260920-100000-aaaaaaaa' });
+    expect(pickerReducer(s, { type: 'card', runId: null }).card).toBeNull();
+  });
+
+  it('the card belongs to ONE row, so any movement of the selection closes it (never a card about another run)', () => {
+    const s = pickerReducer(open(), { type: 'card', runId: '20260920-100000-aaaaaaaa' });
+    expect(pickerReducer(s, { type: 'move', by: 1, count: 3 }).card).toBeNull();
+    expect(pickerReducer(s, { type: 'page', by: 1, size: 6, count: 3 }).card).toBeNull();
+    expect(pickerReducer(s, { type: 'widen' }).card).toBeNull();
+  });
+
+  it('opening a card disarms a pending delete — `x` then Enter can never delete the row it just expanded', () => {
+    const armed = pickerReducer(open(), { type: 'deleteArm', on: true });
+    expect(armed.deleteArmed).toBe(true);
+    expect(pickerReducer(armed, { type: 'card', runId: 'r1' }).deleteArmed).toBe(false);
+  });
+
+  it('a re-open resets the card with the rest of the state', () => {
+    const s = pickerReducer(open(), { type: 'card', runId: 'r1' });
+    expect(pickerReducer(s, { type: 'open', kind: 'rewind', workspace: '/w' }).card).toBeNull();
+  });
+
+  const NO_FLAGS: KeyFlags = { upArrow: false, downArrow: false, leftArrow: false, rightArrow: false, pageDown: false, pageUp: false, home: false, end: false, return: false, escape: false, ctrl: false, shift: false, tab: false, backspace: false, delete: false, meta: false, super: false, hyper: false };
+  const ENTER: KeyEvent = { input: '\r', key: { ...NO_FLAGS, return: true } };
+
+  it("the sub-state is FULLY dark in this build: `App.tsx` can only ever supply `'off'`, so no card can open", () => {
+    /**
+     * §2.8's three-state gate is `'off' | 'closed' | 'open'`, and `picker:cardOpen` fires **only** on
+     * `'closed'` — the state in which a row is known to have a pause point. `App.tsx`'s expression
+     * (`pickerOpenRef.current === null ? 'off' : picker.card !== null ? 'open' : 'off'`) has no `'closed'`
+     * branch, because the predicate that would produce it is R5-1's (`/resume`'s card rows). So
+     * `PickerState.card` can never leave `null` through the App and the four card letters stay filter text.
+     *
+     * Asserting it here keeps the integrator honest about WHICH half is missing: the reducer, the resolver
+     * sub-state and the App's six ops are all built and covered; only the `'closed'` predicate is absent.
+     */
+    const appPickerCard = (pickerOpen: boolean, card: { runId: string } | null): 'off' | 'closed' | 'open' => (!pickerOpen ? 'off' : card !== null ? 'open' : 'off');
+    expect(appPickerCard(false, null)).toBe('off');
+    expect(appPickerCard(true, null)).toBe('off'); // ← never `'closed'`, so `cardOpen` is unreachable
+    expect(appPickerCard(true, { runId: 'r1' })).toBe('open');
+    // the resolver's own gate, for the record: `'off'` is round 3's Enter, `'closed'` is the one that opens
+    expect(resolveKey({ ...initialKeyState(), picker: true, pickerCard: 'off' }, ENTER, 0)).toEqual([{ type: 'picker', op: 'open' }]);
+    expect(resolveKey({ ...initialKeyState(), picker: true, pickerCard: 'closed' }, ENTER, 0)).toEqual([{ type: 'picker', op: 'cardOpen' }]);
   });
 });

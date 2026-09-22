@@ -6,12 +6,17 @@
  * (`registry.ts`, `dispatch.ts`); this parser lets the App act on the lines with its toggle semantics (a second `/p d` on the
  * open decisions tab collapses, which the host cannot reproduce) and gives the plain twin one place to read. A malformed
  * argument yields null so the dispatcher's `[ui] error:` sentence answers it. Pure.
+ *
+ * TUI-DESIGN-5 §4.3 adds two things and needs no other change here: `PANEL_ARGS` gains `'a'` in R5-2's one
+ * `registry.ts` PR (R5-4's §9.2 request) and `nextPanel`'s parameter is **already** `PaneTab | 'off' | 'full' |
+ * null`, so `/panel a` widens for free the moment the enum does; and `/agents` joins this parser, because it
+ * opens *and* focuses the tab (`UiState.paneFocus`) and no host command can reproduce focus.
  */
 import { commandName } from '../commands/parse.js';
 import { PANEL_ARGS, TRANSCRIPT_VIEWS, findCommand } from '../commands/registry.js';
 import type { PaneTab } from './model.js';
 
-export type PanelCommand = { kind: 'panel'; arg: PaneTab | 'off' | 'full' | null } | { kind: 'transcript'; view: 'compact' | 'full' | null };
+export type PanelCommand = { kind: 'panel'; arg: PaneTab | 'off' | 'full' | null } | { kind: 'transcript'; view: 'compact' | 'full' | null } | { kind: 'agents' };
 
 /** the argument tokens after the name, whitespace-separated (these two commands take one bare word at most) */
 function argsOf(line: string): string[] {
@@ -23,9 +28,17 @@ export function parsePanelCommand(line: string): PanelCommand | null {
   const name = commandName(line);
   if (name === null) return null;
   const spec = findCommand(name);
-  if (spec === null || (spec.name !== 'panel' && spec.name !== 'transcript')) return null;
+  if (spec === null || (spec.name !== 'panel' && spec.name !== 'transcript' && spec.name !== 'agents')) return null;
   const args = argsOf(line);
   if (args.length > 1) return null;
+  /**
+   * TUI-DESIGN-5 §4.3 / §4.9: `/agents` opens **and focuses** the `'a'` tab, which no host command can reproduce —
+   * focus is `UiState.paneFocus`, so it belongs with `/panel` in the App's own pre-router rather than in the
+   * dispatcher. It takes no argument. The registry row (`agents`, `availableDuringTask: 'any'`) is R5-4's request
+   * on R5-2's one `registry.ts` PR (§9.2, W4); until it lands `findCommand('agents')` is null and this arm is
+   * unreachable, which is exactly the D-AN behaviour — the command answers `not a command`, never silently nothing.
+   */
+  if (spec.name === 'agents') return args.length === 0 ? { kind: 'agents' } : null;
   const a = args[0]?.toLowerCase();
   if (spec.name === 'panel') {
     if (a === undefined) return { kind: 'panel', arg: null };

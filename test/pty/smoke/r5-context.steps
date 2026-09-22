@@ -1,0 +1,81 @@
+# TUI-DESIGN-5 §3 / §10 (slot R5-3): `/context` then `/compact` under `--mock` at 120x40, plus the
+# `nothing to compact` branch and the `compaction is off` branch. Hermetic: `--mock` only, no network, no key.
+#
+# STATUS — this file does not run yet, and that is a dependency, not a skip.
+#   `/context` and `/compact` are §9.2's W4 rows on `src/tui/commands/registry.ts` (owner R5-2) and their handlers
+#   are R5-1's `src/cli/session.ts` arms (both hunks are written verbatim in R5-3's report). Until those two PRs
+#   land, `send /context` types a line the palette refuses, so the scenario asserts nothing. It is committed now,
+#   with the rows below, so the integrator has the scenario in hand the day the commands resolve — TD4 §14.2
+#   finding 41's "never a dead command" defect is exactly what an absent scenario lets back in.
+#
+# run-smoke.sh needs three rows for this scenario; they belong to R5-2 (§9.2 gives it `test/pty/**` in W5):
+#   env    : r5-context) extra_env="$extra_env JEVCODE_CONTEXT_COMPACTION=code";;
+#   check  : r5-context) grep -q 'context [·-] ' "$txt" && checks="$checks r5-context:block" || { ok=0; checks="$checks MISSING:r5-context-block"; }
+#   select : sel_named r5-context && run r5-context 0 40 120 chat --mock
+#
+# What it proves, beyond "it renders":
+#   - §3.2's three reads join into ONE block whose head is S48 and whose first row is `formatBudget`'s own text;
+#   - §3.7's rungs: the per-file table with its reason column at 120 and 80, the count row alone at 40;
+#   - §3.3: `/compact` on a two-step history answers S57 and the `off` run answers S58a — never the other way;
+#   - §3.4: the engine's own `compaction:` notice is unchanged and the `─ compaction ─` rule sits ABOVE it;
+#   - G-R5-9: `assertNoKeyBytes` over every frame (the block prints paths and byte counts, never a key).
+
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.4
+
+# 1 — `/context` before any run: §7 row 36's own sentence, not an empty block
+send /context
+sleep 0.2
+send \r
+expect no run is live
+sleep 0.3
+mark context-no-run
+
+# 2 — a run, so `status().context` exists; `--mock` steps are deterministic
+send do a thing
+sleep 0.2
+send \r
+sleep 1.2
+mark run-live
+
+# 3 — the full block at 120x40: the head, `budget`, `recent steps`, `files in view` and the per-file table
+send /context
+sleep 0.2
+send \r
+expect context [·-] step
+sleep 0.4
+mark context-120
+
+# 4 — the 40-column rung: the same head, the count row, and NO per-file rows (§3.7)
+resize 40 40
+sleep 0.8
+send /context
+sleep 0.2
+send \r
+sleep 0.4
+mark context-40
+
+# 5 — the 80-column rung: the per-file rows are back and the reason column survives (§3.7, §14.2 finding 1)
+resize 40 80
+sleep 0.8
+send /context
+sleep 0.2
+send \r
+sleep 0.4
+mark context-80
+
+# 6 — `/compact` with one step in history: S57, and NEVER the `off` sentence on a `code` run
+resize 40 120
+sleep 0.6
+send /compact
+sleep 0.2
+send \r
+expect nothing to compact
+sleep 0.3
+mark compact-nothing
+
+send /exit
+sleep 0.2
+send \r
+eof

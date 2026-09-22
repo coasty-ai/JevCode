@@ -46,6 +46,12 @@ export const CONTEXT_COMPACTIONS = ['code', 'llm', 'off'] as const;
 export const DEFAULT_CONTEXT_VIEW = 'relaxed';
 export const DEFAULT_CONTEXT_COMPACTION = 'code';
 export const DEFAULT_CONTEXT_COMPACT_EVERY = 8;
+/**
+ * TUI-DESIGN-5 §3.6 (D-AI) / docs/COORDINATION-DESIGN.md §8.6: who ranks the kept items — code, or one bounded Jev
+ * pass per compaction. `'code'` is the default because it is deterministic across devices and resumes (G3(d)).
+ */
+export const CONTEXT_KEPT_RANKERS = ['code', 'jev'] as const;
+export const DEFAULT_CONTEXT_KEPT = 'code';
 
 /** TUI-DESIGN-2 §2.3: the `decider.provider` row's accepted values (`auto` resolves through rules 2a–2e). */
 export const JEV_PROVIDER_SETTING_VALUES = ['auto', 'typesafe', 'openrouter'] as const;
@@ -74,10 +80,15 @@ export const DEFAULT_COMMAND_TIMEOUT_MS = 120_000;
 export const MAX_COMMAND_TIMEOUT_MS = 600_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
 
-export const BASE_URLS: Readonly<Record<'anthropic' | 'openrouter', string>> = {
-  anthropic: 'https://api.anthropic.com',
-  openrouter: 'https://openrouter.ai/api/v1',
-};
+/**
+ * TUI-DESIGN-5 §6.3 row 2 (R5-6's hunk, landed by R5-3 in the W4 config PR): the two-entry table is gone. The seven
+ * entries live in `src/config/provider-tables.ts`, which is **zero-import** — NOT in `src/models/providers.ts`,
+ * whose `providerSpec(id)` would put `src/provider/openrouter.js` on the argv path through `cli/args.ts` and fail
+ * gate G-R5-1 (§14.2 #5). The name is kept so `config/validate.ts`, `test/unit/models/providers.test.ts` and
+ * `test/unit/config/provider.test.ts` are untouched; the export is deleted when §8.2 R14 lands
+ * `PROVIDER_BASE_URL` in `src/provider/ids.ts` and every consumer reads it from there.
+ */
+export { PROVIDER_BASE_URL as BASE_URLS } from './provider-tables.js';
 
 /**
  * USD per million tokens. Used only when the API does not return a cost (OpenRouter's `usage.cost` wins when present).
@@ -112,6 +123,39 @@ export function lookupPricing(model: string): { pricing: Pricing; known: boolean
   const p = PRICING_TABLE.get(model.trim().toLowerCase());
   return p ? { pricing: { ...p }, known: true } : { pricing: { ...ZERO_PRICING }, known: false };
 }
+
+/**
+ * TUI-DESIGN-5 §8.1 item 7 / `docs/COORDINATION-DESIGN.md` §4.1, §8.5, §9.1, §9.3, §6.2 — the accepted values of
+ * the six `coordination.*` rows. Declared here, beside `SETTINGS`, because `src/coordination/**` is read-only this
+ * round and the schema may not import from it (and must not, on the argv path — gate G-R5-1).
+ */
+export const COORDINATION_CLAIM_MODES = ['advisory', 'strict', 'off'] as const;
+export const DEFAULT_COORDINATION_CLAIMS = 'advisory';
+export const COORDINATION_REMOTE_CONTROL_MODES = ['allow', 'confirm', 'never'] as const;
+export const DEFAULT_COORDINATION_REMOTE_CONTROL = 'confirm';
+export const COORDINATION_SYNC_MODES = ['off', 'shared-dir', 'git'] as const;
+export const DEFAULT_COORDINATION_SYNC = 'off';
+export const COORDINATION_SYNC_RUNS_MODES = ['off', 'projection', 'with-bodies'] as const;
+export const DEFAULT_COORDINATION_SYNC_RUNS = 'projection';
+export const COORDINATION_NOTIFY_MODES = ['all', 'repo', 'mentions', 'off'] as const;
+export const DEFAULT_COORDINATION_NOTIFY = 'repo';
+/** CD:826 — the CEILING `orchestrate.maxAgents` is clamped by, which is why the two rows are not one. */
+export const DEFAULT_COORDINATION_MAX_CHILDREN = 3;
+
+/**
+ * TUI-DESIGN-5 §4.8 — the enumerated values of the `orchestrate.*` rows that have them
+ * (`docs/ORCHESTRATION-DESIGN.md` §6.4, `:1427–1461`, is the authority for every default).
+ */
+export const ORCHESTRATE_SPLIT_MODES = ['off', 'ask', 'auto'] as const;
+export const DEFAULT_ORCHESTRATE_SPLIT = 'off';
+export const ORCHESTRATE_ON_STALL = ['notify', 'pause', 'kick'] as const;
+export const ORCHESTRATE_CRITICS = ['tests', 'run', 'off'] as const;
+export const ORCHESTRATE_LAND_MODES = ['step', 'branch'] as const;
+export const ORCHESTRATE_AGENT_MODES = ['worktree', 'copy'] as const;
+export const ORCHESTRATE_NOTIFY_MODES = ['all', 'attention', 'off'] as const;
+
+/** TUI-DESIGN-5 §5.5 / IMPORT-DESIGN §5.9: where `jevcode import` writes what it accepts. */
+export const IMPORT_SCOPES = ['user', 'project', 'both'] as const;
 
 export const SETTINGS: readonly SettingSpec[] = [
   { name: 'generator.provider', flag: 'provider', env: ['JEVCODE_PROVIDER'], fileKey: 'provider', defaultValue: DEFAULT_PROVIDER, secret: false, description: 'generator provider' },
@@ -158,6 +202,14 @@ export const SETTINGS: readonly SettingSpec[] = [
   // No flag: `src/cli/args.ts` is S1's file this round, so these are env + config-file keys only.
   { name: 'context.mode', env: ['JEVCODE_CONTEXT_MODE'], fileKey: 'contextMode', defaultValue: DEFAULT_CONTEXT_VIEW, secret: false, description: 'generator context view (relaxed|legacy)', shape: { kind: 'enum', values: CONTEXT_VIEWS } },
   { name: 'context.compaction', env: ['JEVCODE_CONTEXT_COMPACTION'], fileKey: 'contextCompaction', defaultValue: DEFAULT_CONTEXT_COMPACTION, secret: false, description: 'history compactor (code|llm|off)', shape: { kind: 'enum', values: CONTEXT_COMPACTIONS } },
+  // TUI-DESIGN-5 §3.6 / §8.1 item 7 (D-AI): the fifth row of the design's table, and the only one round 4 did not
+  // land. It is printed, validated and persisted like its five siblings, but the value cannot reach the engine yet —
+  // `ContextPolicyOptions` (src/core/types.ts, harness-owned) has no `kept` member and the Jev ranking pass is not
+  // built (`src/loop/context/compaction.ts:6` says so). `resolveConfig` warns once on a non-default value rather
+  // than failing silently, and the DESCRIPTION says so too, so `jevcode config` tells the truth without a run
+  // (the warning only reaches a session, §14.2 review finding 12); all three halves go when the harness lands the
+  // member (round-5 request Rk).
+  { name: 'context.kept', env: ['JEVCODE_CONTEXT_KEPT'], fileKey: 'contextKept', defaultValue: DEFAULT_CONTEXT_KEPT, secret: false, description: 'kept-items ranker (code|jev; jev is not wired in this build)', shape: { kind: 'enum', values: CONTEXT_KEPT_RANKERS } },
   { name: 'context.compactEvery', env: ['JEVCODE_CONTEXT_COMPACT_EVERY'], fileKey: 'contextCompactEvery', defaultValue: String(DEFAULT_CONTEXT_COMPACT_EVERY), secret: false, description: 'compact every N steps (0 disables the interval trigger)', shape: { kind: 'int', min: 0 } },
   { name: 'context.historySteps', env: ['JEVCODE_CONTEXT_HISTORY_STEPS'], fileKey: 'contextHistorySteps', defaultValue: null, secret: false, description: 'recent steps the generator sees (default 12)', shape: { kind: 'int', min: 1 } },
   { name: 'context.fileCacheBytes', env: ['JEVCODE_CONTEXT_FILE_CACHE_BYTES'], fileKey: 'contextFileCacheBytes', defaultValue: null, secret: false, description: 'file content re-read per step in bytes (default 98304)', shape: { kind: 'int', min: 0 } },
@@ -173,6 +225,68 @@ export const SETTINGS: readonly SettingSpec[] = [
   // was shown; written by the session when the item prints (the trust gate's write path), never by a flag or a variable; hidden from
   // `jevcode config` unless --all
   { name: 'seen.defaultMode', env: [], fileKey: 'seenDefaultMode', defaultValue: null, secret: false, description: 'the default mode the one-time [setup] item was shown for (bookkeeping)', hidden: true },
+  // TUI-DESIGN-5 §5.1 / IMPORT-DESIGN §5.9 row 6: the same one-time contract as `seen.defaultMode` above —
+  // `2 later` writes the version, `3 never` writes `never`, and `jevcode config` hides the row unless `--all`.
+  { name: 'seen.import', env: [], fileKey: 'seenImport', defaultValue: null, secret: false, description: 'the version the one-time [import] wizard step was shown for, or `never` (bookkeeping)', hidden: true },
+
+  // --- TUI-DESIGN-5 §8.1 item 7 / §8.3: the six `coordination.*` rows (R5-2's half of §9.2's one config PR) ------
+  // `docs/COORDINATION-DESIGN.md` §4.1, §8.5, §9.1, §9.3, §6.2 are the authority for every default. The ledger that
+  // READS them is `src/coordination/**`, read-only this round, so a row set today is printed, validated and stored
+  // and reaches the ledger when the harness wires it — the same honest state `context.kept` is in (§3.6).
+  { name: 'coordination.claims', env: ['JEVCODE_COORDINATION_CLAIMS'], fileKey: 'coordinationClaims', defaultValue: DEFAULT_COORDINATION_CLAIMS, secret: false, description: 'claim mode (advisory|strict|off); advisory never delays a step', shape: { kind: 'enum', values: COORDINATION_CLAIM_MODES } },
+  { name: 'coordination.remoteControl', env: ['JEVCODE_COORDINATION_REMOTE_CONTROL'], fileKey: 'coordinationRemoteControl', defaultValue: DEFAULT_COORDINATION_REMOTE_CONTROL, secret: false, description: 'what a peer may ask this session to do (allow|confirm|never)', shape: { kind: 'enum', values: COORDINATION_REMOTE_CONTROL_MODES } },
+  { name: 'coordination.sync', env: ['JEVCODE_COORDINATION_SYNC'], fileKey: 'coordinationSync', defaultValue: DEFAULT_COORDINATION_SYNC, secret: false, description: 'cross-device ledger sync (off|shared-dir|git); off is local-only', shape: { kind: 'enum', values: COORDINATION_SYNC_MODES } },
+  { name: 'coordination.syncRuns', env: ['JEVCODE_COORDINATION_SYNC_RUNS'], fileKey: 'coordinationSyncRuns', defaultValue: DEFAULT_COORDINATION_SYNC_RUNS, secret: false, description: 'what of a run crosses devices (off|projection|with-bodies)', shape: { kind: 'enum', values: COORDINATION_SYNC_RUNS_MODES } },
+  { name: 'coordination.notify', env: ['JEVCODE_COORDINATION_NOTIFY'], fileKey: 'coordinationNotify', defaultValue: DEFAULT_COORDINATION_NOTIFY, secret: false, description: 'which peer messages raise a notification (all|repo|mentions|off)', shape: { kind: 'enum', values: COORDINATION_NOTIFY_MODES } },
+  { name: 'coordination.maxChildren', env: ['JEVCODE_COORDINATION_MAX_CHILDREN'], fileKey: 'coordinationMaxChildren', defaultValue: String(DEFAULT_COORDINATION_MAX_CHILDREN), secret: false, description: 'live children per session — the CEILING orchestrate.maxAgents is clamped by', shape: { kind: 'int', min: 0 } },
+
+  // --- TUI-DESIGN-5 §4.8 / §8.3: the thirty-four `orchestrate.*` rows (R5-4's half) -----------------------------
+  // In `docs/ORCHESTRATION-DESIGN.md` §6.4's own order (`:1427–1461`), which gate G-R5-8 cites as the authority.
+  // Every env name is `JEVCODE_ORCHESTRATE_<SCREAMING_SNAKE>`; all are `secret: false`; none is a launch setting.
+  // `depth` is a CONSTANT, not a setting, and `--yes-split` is a FLAG, not a setting — both are absent by design.
+  { name: 'orchestrate.split', flag: 'split', env: ['JEVCODE_ORCHESTRATE_SPLIT'], fileKey: 'orchestrateSplit', defaultValue: DEFAULT_ORCHESTRATE_SPLIT, secret: false, description: 'split a task across agents (off|ask|auto)', shape: { kind: 'enum', values: ORCHESTRATE_SPLIT_MODES } },
+  { name: 'orchestrate.maxAgents', flag: 'maxAgents', env: ['JEVCODE_ORCHESTRATE_MAX_AGENTS'], fileKey: 'orchestrateMaxAgents', defaultValue: '3', secret: false, description: 'agents one split may start (a preference; coordination.maxChildren is the ceiling)', shape: { kind: 'int', min: 1 } },
+  { name: 'orchestrate.maxSplits', env: ['JEVCODE_ORCHESTRATE_MAX_SPLITS'], fileKey: 'orchestrateMaxSplits', defaultValue: '2', secret: false, description: 'splits per run, counted only on a written manifest', shape: { kind: 'int', min: 0 } },
+  { name: 'orchestrate.splitEvery', env: ['JEVCODE_ORCHESTRATE_SPLIT_EVERY'], fileKey: 'orchestrateSplitEvery', defaultValue: '8', secret: false, description: 'committed steps of cooldown between splits', shape: { kind: 'int', min: 0 } },
+  { name: 'orchestrate.preludeMaxFiles', env: ['JEVCODE_ORCHESTRATE_PRELUDE_MAX_FILES'], fileKey: 'orchestratePreludeMaxFiles', defaultValue: '8', secret: false, description: 'files a prelude may touch before the split option is deleted', shape: { kind: 'int', min: 0 } },
+  { name: 'orchestrate.selfContainedFloor', env: ['JEVCODE_ORCHESTRATE_SELF_CONTAINED_FLOOR'], fileKey: 'orchestrateSelfContainedFloor', defaultValue: '0.5', secret: false, description: 'below this an agent is dropped and merged into another', shape: { kind: 'number', min: 0, max: 1 } },
+  { name: 'orchestrate.reserveFraction', env: ['JEVCODE_ORCHESTRATE_RESERVE_FRACTION'], fileKey: 'orchestrateReserveFraction', defaultValue: '0.5', secret: false, description: 'fraction of the session remaining (net of holds) an agent set may reserve', shape: { kind: 'number', min: 0, max: 1 } },
+  { name: 'orchestrate.maxReserveUsd', env: ['JEVCODE_ORCHESTRATE_MAX_RESERVE_USD'], fileKey: 'orchestrateMaxReserveUsd', defaultValue: '2.00', secret: false, description: 'the hard ceiling on one reserve (USD)', shape: { kind: 'usd' } },
+  { name: 'orchestrate.minAgentUsd', env: ['JEVCODE_ORCHESTRATE_MIN_AGENT_USD'], fileKey: 'orchestrateMinAgentUsd', defaultValue: '0.20', secret: false, description: 'below this, fewer agents; below two agents, no split', shape: { kind: 'usd' } },
+  { name: 'orchestrate.agentMaxSteps', env: ['JEVCODE_ORCHESTRATE_AGENT_MAX_STEPS'], fileKey: 'orchestrateAgentMaxSteps', defaultValue: '12', secret: false, description: 'steps one agent may take', shape: { kind: 'int', min: 1 } },
+  { name: 'orchestrate.agentMaxWall', env: ['JEVCODE_ORCHESTRATE_AGENT_MAX_WALL'], fileKey: 'orchestrateAgentMaxWall', defaultValue: '15m', secret: false, description: 'wall clock one agent may take (floor 10 m after the parent split)', shape: { kind: 'duration' } },
+  { name: 'orchestrate.agentStallMs', env: ['JEVCODE_ORCHESTRATE_AGENT_STALL_MS'], fileKey: 'orchestrateAgentStallMs', defaultValue: '10m', secret: false, description: 'no progress for this long makes an agent stalled', shape: { kind: 'duration' } },
+  { name: 'orchestrate.onStall', env: ['JEVCODE_ORCHESTRATE_ON_STALL'], fileKey: 'orchestrateOnStall', defaultValue: 'notify', secret: false, description: 'what a stalled agent gets (notify|pause|kick)', shape: { kind: 'enum', values: ORCHESTRATE_ON_STALL } },
+  { name: 'orchestrate.maxKicks', env: ['JEVCODE_ORCHESTRATE_MAX_KICKS'], fileKey: 'orchestrateMaxKicks', defaultValue: '1', secret: false, description: 'kicks per agent per delegation', shape: { kind: 'int', min: 0 } },
+  { name: 'orchestrate.critic', env: ['JEVCODE_ORCHESTRATE_CRITIC'], fileKey: 'orchestrateCritic', defaultValue: 'tests', secret: false, description: 'how a landed agent is checked (tests|run|off)', shape: { kind: 'enum', values: ORCHESTRATE_CRITICS } },
+  { name: 'orchestrate.criticCapUsd', env: ['JEVCODE_ORCHESTRATE_CRITIC_CAP_USD'], fileKey: 'orchestrateCriticCapUsd', defaultValue: '0.15', secret: false, description: 'spend cap of a `critic: run` pass (USD)', shape: { kind: 'usd' } },
+  { name: 'orchestrate.criticMaxSteps', env: ['JEVCODE_ORCHESTRATE_CRITIC_MAX_STEPS'], fileKey: 'orchestrateCriticMaxSteps', defaultValue: '4', secret: false, description: 'steps of a `critic: run` pass', shape: { kind: 'int', min: 1 } },
+  { name: 'orchestrate.criticWriteGlobs', env: ['JEVCODE_ORCHESTRATE_CRITIC_WRITE_GLOBS'], fileKey: 'orchestrateCriticWriteGlobs', defaultValue: 'test/**,tests/**,spec/**', secret: false, description: 'the paths a critic may write (comma-separated globs; code-enforced)' },
+  { name: 'orchestrate.verify', env: ['JEVCODE_ORCHESTRATE_VERIFY'], fileKey: 'orchestrateVerify', defaultValue: null, secret: false, description: 'the verify command; empty resolves it from the workspace' },
+  { name: 'orchestrate.verifyRetries', env: ['JEVCODE_ORCHESTRATE_VERIFY_RETRIES'], fileKey: 'orchestrateVerifyRetries', defaultValue: '0', secret: false, description: 'retries of a failing verify (the design never auto-retries a test to green)', shape: { kind: 'int', min: 0 } },
+  { name: 'orchestrate.testGlobs', env: ['JEVCODE_ORCHESTRATE_TEST_GLOBS'], fileKey: 'orchestrateTestGlobs', defaultValue: 'test/**,tests/**,spec/**,**/*_test.*,**/*.test.*,**/test_*.py,**/conftest.py', secret: false, description: 'what counts as a test file (comma-separated globs)' },
+  { name: 'orchestrate.land', env: ['JEVCODE_ORCHESTRATE_LAND'], fileKey: 'orchestrateLand', defaultValue: 'step', secret: false, description: 'how agent work reaches the base (step|branch); branch stops at the verified dock', shape: { kind: 'enum', values: ORCHESTRATE_LAND_MODES } },
+  { name: 'orchestrate.incidentalGlobs', env: ['JEVCODE_ORCHESTRATE_INCIDENTAL_GLOBS'], fileKey: 'orchestrateIncidentalGlobs', defaultValue: null, secret: false, description: 'paths an agent may touch outside its own (comma-separated globs; empty always asks)' },
+  { name: 'orchestrate.agentMode', env: ['JEVCODE_ORCHESTRATE_AGENT_MODE'], fileKey: 'orchestrateAgentMode', defaultValue: 'worktree', secret: false, description: 'how an agent gets a workspace (worktree|copy); copy agents never land', shape: { kind: 'enum', values: ORCHESTRATE_AGENT_MODES } },
+  { name: 'orchestrate.agentInclude', env: ['JEVCODE_ORCHESTRATE_AGENT_INCLUDE'], fileKey: 'orchestrateAgentInclude', defaultValue: '.env,.env.*', secret: false, description: 'gitignored files copied into each agent worktree (comma-separated globs)' },
+  { name: 'orchestrate.commitIdentity', env: ['JEVCODE_ORCHESTRATE_COMMIT_IDENTITY'], fileKey: 'orchestrateCommitIdentity', defaultValue: 'jevcode <jevcode@local>', secret: false, description: 'the author an agent commit is written under' },
+  { name: 'orchestrate.dockCleanExclude', env: ['JEVCODE_ORCHESTRATE_DOCK_CLEAN_EXCLUDE'], fileKey: 'orchestrateDockCleanExclude', defaultValue: 'node_modules/,.venv/,target/,.gradle/,.tox/,.mypy_cache/', secret: false, description: 'paths the post-failure dock clean keeps (comma-separated)' },
+  { name: 'orchestrate.dockRetentionDays', env: ['JEVCODE_ORCHESTRATE_DOCK_RETENTION_DAYS'], fileKey: 'orchestrateDockRetentionDays', defaultValue: '30', secret: false, description: 'days a dock worktree survives `agents gc`', shape: { kind: 'int', min: 0 } },
+  { name: 'orchestrate.notify', env: ['JEVCODE_ORCHESTRATE_NOTIFY'], fileKey: 'orchestrateNotify', defaultValue: 'attention', secret: false, description: 'which agent events notify (all|attention|off)', shape: { kind: 'enum', values: ORCHESTRATE_NOTIFY_MODES } },
+  { name: 'orchestrate.agentWaitCeilingMs', boolFlag: { key: 'noWait', negate: true }, env: ['JEVCODE_ORCHESTRATE_AGENT_WAIT_CEILING_MS'], fileKey: 'orchestrateAgentWaitCeilingMs', defaultValue: '30m', secret: false, description: 'how long a headless run waits for an agent slot (--no-wait refuses instead)', shape: { kind: 'duration' } },
+  { name: 'orchestrate.agentJsonLineBytes', env: ['JEVCODE_ORCHESTRATE_AGENT_JSON_LINE_BYTES'], fileKey: 'orchestrateAgentJsonLineBytes', defaultValue: String(64 * 1024), secret: false, description: 'longest agent JSON line read; longer ones are skipped and counted', shape: { kind: 'int', min: 1024 } },
+  { name: 'orchestrate.agentDeltaHz', env: ['JEVCODE_ORCHESTRATE_AGENT_DELTA_HZ'], fileKey: 'orchestrateAgentDeltaHz', defaultValue: '4', secret: false, description: 'generator:delta events per second per agent', shape: { kind: 'int', min: 1 } },
+  { name: 'orchestrate.minFreeBytes', env: ['JEVCODE_ORCHESTRATE_MIN_FREE_BYTES'], fileKey: 'orchestrateMinFreeBytes', defaultValue: String(2 * 1024 * 1024 * 1024), secret: false, description: 'free disk the split pre-flight requires', shape: { kind: 'int', min: 0 } },
+  { name: 'orchestrate.agentMemBytes', env: ['JEVCODE_ORCHESTRATE_AGENT_MEM_BYTES'], fileKey: 'orchestrateAgentMemBytes', defaultValue: String(3 * 1024 * 1024 * 1024), secret: false, description: 'memory the split pre-flight budgets per agent', shape: { kind: 'int', min: 0 } },
+
+  // --- TUI-DESIGN-5 §5.5 / §8.1 item 7: the five `import.*` / `memory.*` rows (R5-5's half) ---------------------
+  // D-AP: `memory.enabled` stays ONE switch, negated by `--no-memory` through the `negateEnv` idiom `ui.history`
+  // already uses — JevCode writes memory once, at apply, so there is no continuous writer to gate separately.
+  { name: 'import.enabled', boolFlag: { key: 'noImport', negate: true }, env: [], negateEnv: ['JEVCODE_NO_IMPORT'], fileKey: 'import', defaultValue: 'true', secret: false, description: 'offer to import from the other coding agents on this machine (JEVCODE_NO_IMPORT=1 disables)', shape: { kind: 'boolean' } },
+  { name: 'import.scope', flag: 'scope', env: ['JEVCODE_IMPORT_SCOPE'], fileKey: 'importScope', defaultValue: 'both', secret: false, description: 'where imported rows are written (user|project|both)', shape: { kind: 'enum', values: IMPORT_SCOPES } },
+  { name: 'import.sources', env: ['JEVCODE_IMPORT_SOURCES'], fileKey: 'importSources', defaultValue: null, secret: false, description: 'the sources to scan (comma-separated ids; empty scans every known source)' },
+  { name: 'memory.enabled', boolFlag: { key: 'noMemory', negate: true }, env: [], negateEnv: ['JEVCODE_NO_MEMORY'], fileKey: 'memory', defaultValue: 'true', secret: false, description: 'read the project and user memory files into the run (JEVCODE_NO_MEMORY=1 disables)', shape: { kind: 'boolean' } },
+  { name: 'memory.path', env: ['JEVCODE_MEMORY_PATH'], fileKey: 'memoryPath', defaultValue: null, secret: false, description: 'the memory file this workspace reads (default: the conventional paths)' },
   { name: 'ui.title', boolFlag: { key: 'title', negate: false }, env: ['JEVCODE_TITLE'], fileKey: 'title', defaultValue: 'false', secret: false, description: 'set the terminal title (OSC 2)', shape: { kind: 'boolean' } },
   { name: 'ui.reducedMotion', boolFlag: { key: 'noAnimation', negate: false }, env: ['JEVCODE_REDUCED_MOTION'], fileKey: 'reducedMotion', defaultValue: null, secret: false, description: 'no spinner animation (default true under screen-reader mode)', shape: { kind: 'boolean' } },
   // TUI-DESIGN-3 §6 item 5 / §3.2: the wordmark's idle animation; no default row — config/ui.ts derives `static` under the SSH launch source, `sweep` otherwise

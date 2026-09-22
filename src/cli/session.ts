@@ -29,7 +29,7 @@
  */
 import { accessSync, appendFileSync, constants as fsConstants, existsSync, realpathSync, writeSync } from 'node:fs';
 import { open as openFile, readFile } from 'node:fs/promises';
-import { homedir } from 'node:os';
+import { homedir, hostname, uptime, userInfo } from 'node:os';
 import { basename, join, resolve as resolvePath, sep } from 'node:path';
 import type { SynthesizerOptions } from '../synth/index.js';
 import type {
@@ -67,6 +67,8 @@ import type {
   RunResult,
   SecretHit,
   SecretSettingName,
+  PeerView,
+  SessionActivityView,
   SessionHost,
   SessionRow,
   SignalName,
@@ -131,7 +133,12 @@ import { readPostImages, readPreImage } from '../checkpoint/images.js';
 import { INDEX_FILE, appendIndexLine as realAppendIndexLine, readIndex as realReadIndex, sessionFieldsOf, text60, type ChatSpendRow, type IndexLine } from '../session/index.js';
 import { buildSeed, carriedSteers, seedSource, type SeedParent } from '../session/seed.js';
 import { defaultExportPath, exportSession as realExportSession, type ExportRun } from '../session/export.js';
+import { activityView, peerViewOf, selfView, WHO_EMPTY, whoHeader, whoRows } from '../session/peers.js';
 import { ambiguousResumeMessage, noSessionMessage, pickerHeader, pickerRows, recentSessionHint, resolveResumeTarget } from '../session/picker-lines.js';
+// TUI-DESIGN-5 §2.14 (R5-1): the WRITE half. `openSessionLedger` is the only place `src/coordination/**` is loaded,
+// and it is behind an `await import()` INSIDE that function, so §2.1 rule 3a holds and gate G-R5-1 stays green.
+import { createPublisher, forceTakebackOf, gitInputOf, openSessionLedger as realOpenSessionLedger, probeRepoFacts, type Publisher, type SessionLedger, type SessionLedgerInput } from '../session/publish.js';
+import { VERSION } from '../version.js';
 import { listCandidates as realListCandidates } from '../workspace/files.js';
 import { probeGitState as realProbeGitState, readHead, toRunGitMetaEnd } from '../workspace/gitstate.js';
 import { createSandbox as realCreateSandbox } from '../sandbox/run.js';
@@ -143,7 +150,12 @@ import { dispatchCommand, type CommandAction, type DispatchContext } from '../tu
 import { helpLines as paletteHelpLines } from '../tui/commands/palette.js';
 import { READLINE_MAX_PROMPTS, formatTranscriptItem, itemsFromEvent, stepCostText, type LineSource } from '../tui/plain.js';
 import { plainSupports } from '../tui/plain-composer.js';
-import { blockingRowsFull } from '../tui/blocking/lines.js';
+import { blockingRowsFull, peerOpenNotice } from '../tui/blocking/lines.js';
+// TUI-DESIGN-5 §3.2 / §3.3 (R5-3): the ONE `/context` block builder and `/compact`'s four answers — the same
+// module the status line's `ctx` cell reads, so the cell and the block can never disagree (§13.1).
+import { compactAnswer, contextBlock, contextNoRelaxed } from '../tui/context/lines.js';
+// TUI-DESIGN-5 §4.9 (D-AN, §12 S85): the one refusal sentence every unwired agent verb answers with.
+import { notAvailableText } from '../tui/agents/lines.js';
 import { gatePlainPrompt, gateRefusalLine } from '../tui/secrets/gate-lines.js';
 import { copyRedacted } from '../tui/secrets/clipboard.js';
 import {
@@ -166,7 +178,7 @@ import { epilogueItemLines, epilogueLines, type EpilogueContext } from './epilog
 import { configBlock, configProblemLines } from './config-table.js';
 import { BLOCK_CAPS, BLOCK_LOG_MAX, blockWidth, renderBlock, textRows, type BlockRow, type RenderedRow } from '../tui/block/lines.js';
 import type { JsonStream, JsonStreamContext } from './json-stream.js';
-import { GLYPHS, cellWidth, type GlyphSet } from '../tui/glyphs.js';
+import { GLYPHS, cellWidth, glyphSet, type GlyphSet } from '../tui/glyphs.js';
 import { shortPath } from '../core/text.js';
 import { findDecision, parseWhyRef, whyBlock, whyErrorText } from '../tui/why.js';
 import { calibrationBlock, calibrationStats, scanCalibration } from '../tui/calibration.js';
@@ -219,7 +231,10 @@ export const STARTING_STEER_CAP: number = PENDING_DIRECTIVES_MAX;
 /** §3.3: the bound on the render flush that commits the renderer's last item (`[ui] exited on Ctrl-C ×2`) before the unmount */
 export const FINAL_FLUSH_BOUND_MS = 300;
 /** §12.4 "all checks before the first write": the commands that run one at a time (files, credentials, the session's run list) */
-export const EXCLUSIVE_COMMANDS: ReadonlySet<CommandAction['kind']> = new Set<CommandAction['kind']>(['undo', 'rewind', 'diff', 'export', 'report', 'login', 'logout', 'resume', 'new', 'trust', 'historyClear']);
+// TUI-DESIGN-5 §4.9 (R5-4's §9.2 request on this file): `land` is the only one of the seven agent rows that
+// MUTATES FILES, so it is the only one that joins this set — 11 members → 12. It is also the only one with
+// `destructive: true`, which is a different gate (a confirm row whose Enter is inert, TD4 §4.5).
+export const EXCLUSIVE_COMMANDS: ReadonlySet<CommandAction['kind']> = new Set<CommandAction['kind']>(['undo', 'rewind', 'diff', 'export', 'report', 'login', 'logout', 'resume', 'new', 'trust', 'historyClear', 'land']);
 
 // --- TUI-DESIGN-2 §12 strings of the conversational intake (§3.1, §3.6–3.8) and the mode items (§1.3) ------------------------
 /** §12 "Mode items": the `[ui] error:` text when no Jev key resolves for a chat submission */
@@ -551,6 +566,13 @@ export interface SessionDeps {
   log?: Log | undefined;
   /** `os.hostname()` (index rows) */
   hostname?: () => string;
+  /**
+   * TUI-DESIGN-5 §2.14: the ONE coordination open (`src/session/publish.ts`'s `openSessionLedger`). Injected in
+   * tests so the write half, `/who --all` and the `peers` fact can be driven without a real ledger on disk; in
+   * production this is the default, and it is still reached only through `createPublisher`, i.e. only after
+   * `renderer.firstFrame()` resolved (gate G-R5-1).
+   */
+  openSessionLedger?: (input: SessionLedgerInput) => Promise<SessionLedger>;
   /** `fs.writeSync(2, …)` for the epilogue on the engine's forced exit path */
   writeStderrSync?: (text: string) => void;
 }
@@ -1239,6 +1261,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   const createTrust = deps.createTrustStore ?? realCreateTrustStore;
   const probeTrust = deps.probeTrustInputs ?? realProbeTrustInputs;
   const probeGit = deps.probeGitState ?? ((root: string): Promise<GitState> => realProbeGitState(root));
+  const openLedgerFn = deps.openSessionLedger ?? realOpenSessionLedger;
   const loadRunFn = deps.loadRun ?? loadRun;
   const loadForResumeFn = deps.loadForResume ?? ((runsDir: string, runId: string, opts: { redact: (s: string) => string }) => realLoadForResume(runsDir, runId, opts));
   const writeCredentialsFn = deps.writeCredentials ?? realWriteCredentials;
@@ -1338,6 +1361,12 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   let runEndWaiters: (() => void)[] = [];
   let startingSteers: string[] = [];
   let firstFrameMs: number | null = null;
+  /**
+   * TUI-DESIGN-5 §2.14 / §1.4 promise 1: the coordination half. Both stay null until `startup()` has awaited
+   * `renderer.firstFrame()`, so every §2 surface renders its own empty state before then — never a spinner.
+   */
+  let sessionLedger: SessionLedger | null = null;
+  let publisher: Publisher | null = null;
   /** resolves when startup finished (or failed): a line typed into the readline composer before resolveConfig waits here instead of failing */
   let startupSettled: (() => void) | null = null;
   const startupDone = new Promise<void>((r) => {
@@ -1466,6 +1495,15 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   /** the session's glyph set (`--ascii` twins); every block row is rendered through it. */
   function glyphs(): GlyphSet {
     return o.launch.ascii ? GLYPHS.ascii : GLYPHS.unicode;
+  }
+
+  /**
+   * §12.1 S1–S5's **SR** column (§14.2 #60, §7 row 82). `glyphs()` only knows the two visual twins, so the
+   * screen-reader set had no sink at all and `whoSentence` had zero callers; `/who` is the one surface round 5
+   * gives a spoken form of its own, and this is where it is chosen.
+   */
+  function whoGlyphSet(): GlyphSet {
+    return glyphSet({ ascii: o.launch.ascii, screenReader: o.launch.screenReader });
   }
 
   /**
@@ -1657,6 +1695,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         const err = lastResult?.error ?? null;
         writeStderrSync(`${epilogueLines(err, context(), redact).join('\n')}\n`);
       }
+      // TUI-DESIGN-5 §2.14 row 1: the heartbeat writer stops on the one exit path, so a clean exit leaves no beat
+      await stopPublishing();
       restoreSessionLog();
       log.flush();
       resolveDone?.(code);
@@ -2233,6 +2273,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         redact: cfg.redact,
         secretPaths: cfg.secretPaths,
         generation: { temperature: gen.temperature, maxTokens: gen.maxTokens },
+        // TUI-DESIGN-5 §3.6 / §9.3 constraint (c)'s carve-out (R5-3): the `context.*` chain's last layer. Without
+        // this line the six schema rows, `resolveContextConfig` and `ResolvedConfig.context()` are all dead code —
+        // `EngineOptions.contextPolicy` was referenced nowhere in this file. The spread keeps the property absent
+        // when a `ResolvedConfig` fake predates the member (`exactOptionalPropertyTypes`).
+        ...(cfg.context ? { contextPolicy: cfg.context() } : {}),
         // docs/LLM-JEV-DESIGN.md §4.8: the table the llm-jev sample-cost estimate falls back to when no call has been priced yet
         ...(genCfg !== null ? { generatorPricing: genCfg.pricing } : {}),
         deciderModel: { configured: dec.model, pinned: dec.pinned },
@@ -2302,6 +2347,120 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     }
   }
 
+  /**
+   * §9.2: `src/cli/args.ts` is **R5-6's** file this round. Two flags round 5 needs there have not landed —
+   * `--force-takeback` (§12.1 S11's named escape, §7 row 26) and `--parent-session <id>` (§8.1 item 3's producer,
+   * R5-4's agent tree needs the same one) — and R5-1's report carries the exact hunk. Reading them through this
+   * widening means the day they land these two call sites pick them up with **no edit here**; until then they are
+   * `undefined`, which is the honest "not asked for" and is exactly what §7 row 26 wants of a bare `--force`.
+   */
+  interface Round5Flags {
+    forceTakeback?: boolean;
+    parentSession?: string;
+  }
+  function round5Flags(): Round5Flags {
+    return flags as ParsedFlags & Round5Flags;
+  }
+
+  /**
+   * TUI-DESIGN-5 §2.14 — the WRITE half, started once per run.
+   *
+   * Fire-and-forget by design: `createPublisher` awaits `renderer.firstFrame()` itself before it reaches the one
+   * `await import('../coordination/index.js')` inside `openSessionLedger`, so (a) the first coordination write is
+   * provably post-first-frame (gate G-R5-1) and (b) a run never waits on the ledger to start stepping
+   * (§1.4 promise 2). A ledger that cannot open is one `[ui]` notice and an empty `/who`, never a failed run.
+   */
+  function startPublishing(f: RunFacts, sid: string): void {
+    const cfg = config;
+    if (cfg === null || publisher !== null) return;
+    const p = createPublisher({
+      firstFrame: () => renderer.firstFrame(),
+      /**
+       * §7 row 26 / §12.1 S11: an ordinary `/resume` of an uncontested run does NOT bump the epoch; only
+       * `--force-takeback` does. `flags.force` is a DIFFERENT flag with a different meaning ("resume a run whose
+       * stopReason is complete instead of seeding a follow-up", `src/cli/args.ts:269`), and reading it here bumped
+       * the epoch on every `--resume <id> --force` of a finished run. `--force-takeback` is a §9.2 request to
+       * R5-6 (`args.ts`); until it lands it reaches here on the raw tail, which is also how `session.test.ts`
+       * drives it, and the day it lands this read picks it up with no edit.
+       */
+      forceTakeback: forceTakebackOf({ resumed: f.resumed, ...round5Flags() }),
+      onNotice: (text) => note(text, { label: '[session]' }),
+      open: async () => {
+        const led = await openLedgerFn({
+          home: jdir,
+          workspace: workspaceRoot,
+          hostname: hostname(),
+          username: userInfo().username,
+          jevcode: VERSION,
+          pid,
+          runId: f.runId,
+          sessionId: sid,
+          parentSessionId: round5Flags().parentSession ?? null,
+          parentRunId: f.parentRunId,
+          source: flags.source === 'perf' ? 'perf' : 'cli',
+          task60: text60(f.task, redact),
+          title60: null,
+          mode: f.mode,
+          maxSteps: cfg.limits().maxSteps,
+          maxWallMs: cfg.limits().maxWallMs,
+          /**
+           * §12.1 S1's `main@3f9a2c1` and §7 rows 7–9. One mapper (`gitInputOf`) owns branch / head oid / dirty /
+           * linkedWorktree / commonDir, and `openSessionLedger` resolves `repoKey` / `remoteKey` itself — the
+           * per-workspace cache first, then this bounded probe. The hand-written mapping this replaces read only
+           * the DETACHED arm of `GitHead` (so an ordinary checkout published `head: null`) and hardcoded both
+           * repo keys to `null`, which degraded `sameRepo` to exact `wsKey` equality: two worktrees or two clones
+           * of one repository never saw each other and `/peers` counted 0.
+           */
+          ...gitInputOf(gitAtStart),
+          repoFacts: () => probeRepoFacts(workspaceRoot),
+          worktreeSlug: null,
+          bootAt: new Date(Date.now() - Math.round(uptime() * 1000)).toISOString(),
+          redact: (x) => redact(x),
+        });
+        sessionLedger = led;
+        /**
+         * The fold → frame PUSH is deliberately NOT wired here. `Renderer` has no repaint hook and re-seating the
+         * host on every beat would raise the idle frame rate, which gate G-R5-3 forbids ("two live peers beating
+         * every 2 s must not raise the idle frame rate at all"). `SessionLedger.subscribe` is the hook R5-2's
+         * `useEngine.tsx` fold/peers slice takes (§9.2, R5-4's W3 PR); until then `/who` and `/peers` read the
+         * live fold on demand, which is exactly what §1.4 promise 1 asks for.
+         */
+        return led;
+      },
+    });
+    publisher = p;
+    void p
+      .start()
+      .then((r) => {
+        /**
+         * TUI-DESIGN-4 §7.10 item 2, finally reachable (§2.4: "round 5 changes only WHERE THE NUMBERS COME FROM").
+         * `peerOpenNotice` was built in round 4 and had zero callers because `SessionHost.peers()` always answered
+         * `null`; the fold is its first real source. The sentence itself is TD4's, unchanged (N6).
+         */
+        if (r.kind !== 'publishing' || sessionLedger === null) return;
+        const line = peerOpenNotice(peerViewOf(sessionLedger.fold, sessionLedger.self));
+        if (line !== null) note(line, { label: '[session]' });
+      })
+      .catch((e: unknown) => log.warn(`coordination: ${describe(e)}`));
+  }
+
+  /**
+   * §2.14 row 1: the writer is stopped in the same `finally` that ends the run, and again at session exit — both
+   * idempotent. Nothing writes a "clean" terminal beat: a crash must leave the LAST beat on disk, which is what
+   * makes §7 row 3's `crashed during step 8` row possible at all.
+   */
+  async function stopPublishing(): Promise<void> {
+    const p = publisher;
+    publisher = null;
+    sessionLedger = null;
+    if (p === null) return;
+    try {
+      await p.stop();
+    } catch (e) {
+      log.warn(`coordination: ${describe(e)}`);
+    }
+  }
+
   /** §13.6: the controller's lines of a live run go to `<runDir>/jevcode.log` (the run dir exists once createEngine returned) */
   function retargetLogToRun(runDir: string): void {
     if (deps.log || !config) return;
@@ -2358,7 +2517,11 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const detach = eng.events.onAny(onEvent);
     // §8.2: run:start right after createEngine; §8.9: session:start once per session
     const branch = gitAtStart?.head?.kind === 'branch' ? gitAtStart.head.name : null;
-    indexLine({ v: 1, t: f.startedAt, kind: 'run:start', sessionId: sid, runId: f.runId, parentRunId: f.parentRunId, workspace: workspaceRoot, task60: f.task, mode: f.mode, source: flags.source === 'perf' ? 'perf' : 'cli', branch, resumeOf: f.resumed ? f.runId : null });
+    // contract 1.8 item 3 / §2.8: `parentSessionId` is written here (the arm's stated reader default is `null`), so
+    // `foldIndex` has something to fold onto `SessionRow.parentSessionId` and the picker can indent a child row
+    indexLine({ v: 1, t: f.startedAt, kind: 'run:start', sessionId: sid, runId: f.runId, parentRunId: f.parentRunId, workspace: workspaceRoot, task60: f.task, mode: f.mode, source: flags.source === 'perf' ? 'perf' : 'cli', branch, resumeOf: f.resumed ? f.runId : null, parentSessionId: round5Flags().parentSession ?? null });
+    // TUI-DESIGN-5 §2.14 / N8: the run is now in the index; this is where it also becomes visible to every PEER
+    startPublishing(f, sid);
     // §8.2 / §9.4: `/budget session-spend-cap` lines issued before the session had an id carry this session's id now
     for (const b of deferredBudgetLines.splice(0)) indexLine({ v: 1, t: b.t, kind: 'budget', sessionId: sid, runId: null, setting: 'session.spendCapUsd', from: b.from, to: b.to });
     // TUI-DESIGN-2 §3.9: the chat requests before the first run (intakes, lookups, LLM turns) carry this session's id now
@@ -2568,6 +2731,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         redact: rcfg.redact,
         secretPaths: rcfg.secretPaths,
         generation: { temperature: gen.temperature, maxTokens: gen.maxTokens },
+        // TUI-DESIGN-5 §3.6 / §9.3 constraint (c)'s carve-out (R5-3): the resumed run reads the SAME chain — a
+        // `context.compaction` the user changed between runs takes effect on the resume, like every other setting
+        // `--resume` re-reads (§9 "Configuration on --resume").
+        ...(rcfg.context ? { contextPolicy: rcfg.context() } : {}),
         ...(genCfg !== null ? { generatorPricing: genCfg.pricing } : {}),
         deciderModel: { configured: dec.model, pinned: dec.pinned },
         ...(synthesizer ? { synthesizer } : {}),
@@ -3466,11 +3633,20 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
           block('peers', [{ kind: 'note', flush: true, text: 'no other jevcode is working in this workspace' }]);
           return;
         }
+        /**
+         * §2.4: TD4 §7.10's per-peer kv rows (`workspace`, `started <t> ago`, `<state>`) are **superseded, not
+         * kept** — `PeerView`'s four scalars cannot produce them, `/who` (S1–S5) answers them instead, and the
+         * `workspace` row was in any case always the literal `.` (`shortPath(p, { root: p })`,
+         * `src/core/text.ts:95`). What survives is TD4's head, its empty state and the pointer at `/who`.
+         */
         const ago = view.oldestStartedMsAgo === null ? '—' : formatDuration(view.oldestStartedMsAgo);
-        block(`peers ${glyphs().dot} ${view.live} here, ${view.stale} stale`, [
-          { kind: 'kv', key: 'workspace', value: shortPath(workspaceRoot, { root: workspaceRoot, home, width: Math.max(1, bodyWidth() - 11), measure: cellWidth }) },
-          { kind: 'kv', key: 'started', value: `${ago} ago` },
-          { kind: 'kv', key: 'state', value: view.exclusive ? 'exclusive lease held' : 'shared' },
+        const dot = glyphs().dot;
+        const counts = [`${view.live} here`, `${view.stale} stale`];
+        if (view.oldestStartedMsAgo !== null) counts.push(`the oldest started ${ago} ago`);
+        if (view.exclusive) counts.push('one holds an exclusive lease');
+        block(`peers ${dot} ${view.live} here, ${view.stale} stale`, [
+          { kind: 'facts', segments: counts },
+          { kind: 'note', flush: true, text: `/who shows what each is doing${view.stale > 0 ? ' — /who --all includes sessions gone more than 10 minutes' : ''}` },
         ]);
         return;
       }
@@ -3506,6 +3682,117 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         note("/scrollback is a fullscreen command; your terminal's scrollback already has the transcript");
         return;
       }
+      /**
+       * TUI-DESIGN-5 §2.3 (R5-1): `/who` — the full activity view, one pure builder, four render targets. The rows
+       * come from `SessionHost.who?()`, which is `null` until the ledger opens (§1.4 promise 1), so the empty state
+       * is honest rather than a false zero.
+       */
+      case 'who': {
+        const led = sessionLedger;
+        /**
+         * §2.3: `/who --all` adds the stale > 10-minute and ignored-device rows — the `opts.all` branch of
+         * `listSessions` (`fold.ts:387`). `SessionHost.who?()` (§8.1 item 4, `src/core/types.ts:2381`, R5-2's
+         * file) takes no argument, so it can only ever answer the `{ all: false }` list; the controller reads the
+         * ledger it already holds when the flag is set, and falls back to the host hook otherwise. Without this
+         * the `--all` branch was unreachable from the TUI by construction (round-5 fix pass, finding 6).
+         */
+        const rows = led !== null ? led.list({ all: a.all === true }).map(activityView) : (host.who?.() ?? null);
+        if (rows === null) {
+          block(`who ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: 'the session ledger is not open yet' }]);
+          return;
+        }
+        // §12.1's SR column (S1–S5): `whoRowText` renders `whoSentence` in the screen-reader set (§14.2 #60)
+        const g = whoGlyphSet();
+        if (rows.length === 0) {
+          block('who', [{ kind: 'note', flush: true, text: WHO_EMPTY }]);
+          return;
+        }
+        const self = led === null ? { deviceId8: '', label: '', sameDeviceCount: 0 } : selfView(led.self, led.fold);
+        const skipped = led?.fold.skipped ?? 0;
+        block(whoHeader(rows, g), whoRows(rows, self, { all: a.all, width: bodyWidth(), g, skipped }));
+        return;
+      }
+      /**
+       * §2.9's four messaging verbs are R5-2's (`src/tui/commands/dispatch.ts` + the mailbox wiring). They are
+       * REGISTERED from day one (D-AN: no dead pointers, no hidden rows) and answer honestly here until that wave
+       * lands — the `/peers` precedent, and the reason `availabilityError` cannot express this refusal (§14.2 #16).
+       */
+      case 'inbox':
+      case 'tell':
+      case 'headsup':
+      case 'request':
+      case 'end':
+        note(`/${a.kind} is not available in this build`, { label: '[session]', level: 'warn' });
+        return;
+      /**
+       * TUI-DESIGN-5 §3.2 (D-AH): `/context` — ONE block from three reads that are already public. Reads 1 and 2
+       * are `engine.status().context` and `engine.snapshotState()`; read 3 (the checkpoint store's
+       * `readContextSummary()`) is omitted here and `contextBlock` degrades to `ContextUsage.summaryAt`, which is
+       * the same row on every run whose engine has already re-read the file (§7 row 39 is the resume-timing edge
+       * alone). Every empty state is `contextBlock`'s — §12 S54, S55 and S56, never a hand-written sentence.
+       */
+      case 'context': {
+        const e = engine;
+        const st = e?.status() ?? null;
+        const snap = e?.snapshotState() ?? null;
+        const b = contextBlock(
+          {
+            mode: pending.mode ?? baseMode,
+            live: e !== null && live(),
+            step: st?.step ?? null,
+            ...(st?.context === undefined ? {} : { usage: st.context }),
+            ...(snap?.fileCache === undefined ? {} : { files: snap.fileCache }),
+            ...(snap?.fileMemory === undefined ? {} : { fileMemory: snap.fileMemory }),
+            ...(snap?.history === undefined ? {} : { history: snap.history }),
+          },
+          columns(),
+          glyphs(),
+        );
+        block(b.head, b.rows);
+        return;
+      }
+      /**
+       * TUI-DESIGN-5 §3.3: `/compact` — `Engine.compact()` returns `void` and emits its status synchronously, so
+       * the answer is a before/after comparison of `status().context` across the call. `compactAnswer` returns
+       * `null` for "say nothing": the count rose and the engine's own compaction notice (§3.4) already reported it
+       * in all three sinks. `availabilityError` has already refused the no-run case (`availableDuringTask: 'live'`).
+       */
+      case 'compact': {
+        const e = engine;
+        if (e === null || typeof e.compact !== 'function') {
+          note(contextNoRelaxed(pending.mode ?? baseMode, glyphs()), { label: '[ui]', level: 'warn' });
+          return;
+        }
+        const before = e.status().context ?? null;
+        e.compact();
+        const answer = compactAnswer(before, e.status().context ?? null, pending.mode ?? baseMode, glyphs());
+        if (answer !== null) note(answer, { label: '[ui]', level: 'warn' });
+        return;
+      }
+      /**
+       * TUI-DESIGN-5 §4.9 (D-AN): the agent tree's five rows are REGISTERED from day one — no dead pointers, no
+       * hidden rows — and answer `notAvailableText` until `AgentSupervisor`'s store exists (§4.7). The refusal
+       * names the USER-FACING verb, never an internal op name, and the dispatcher has already rejected a malformed
+       * line, so a typo is a dispatch error here rather than a refusal that hides it.
+       */
+      case 'split':
+      case 'agents':
+      case 'agent':
+      case 'land':
+      case 'spawn':
+        note(notAvailableText(`/${a.kind}`), { label: '[ui]', level: 'warn' });
+        return;
+      /**
+       * TUI-DESIGN-5 §5.5: `/import` and `/memory` are registered with the same honesty rule. The import ENGINE is
+       * built (`src/import/**`) and its CLI twin runs (`jevcode import`); what is not wired in this build is the
+       * in-session review overlay, so the refusal points at the surface that works rather than denying the feature.
+       */
+      case 'import':
+        note('/import is not available in this build — jevcode import plans, reviews and applies from the CLI', { label: '[ui]', level: 'warn' });
+        return;
+      case 'memory':
+        note('/memory is not available in this build — jevcode import brings memory in from the other agents', { label: '[ui]', level: 'warn' });
+        return;
       case 'editor':
         uiError(COMMAND_ERRORS.editor);
         return;
@@ -3890,6 +4177,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       sandbox: cfg ? detectSandboxLevel(cfg.sandbox) : 'none',
       runsDir: cfg?.runsDir ?? join(jdir, 'runs'),
       provider: providerInfo,
+      /**
+       * §8.1 item 10 / §2.4: the 15th fact, wired. `undefined` (no `peers` key at all) is `peersFactText`'s
+       * "not available in this build"; `null` is "the ledger is not open yet"; a `PeerView` is the real answer.
+       * Leaving it unset cost ~140 intake tokens for a sentence that was permanently false (round-5 fix pass,
+       * finding 9).
+       */
+      peers: sessionLedger === null ? null : peerViewOf(sessionLedger.fold, sessionLedger.self),
     };
   }
   function replyFacts(): ReplyFacts {
@@ -4051,6 +4345,17 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
       return { ok: false, reason: 'finished', queued: 0 };
     },
     unsteer: (): PendingDirective | null => engine?.unsteer() ?? null,
+    /**
+     * contract 1.7 item 9 / TUI-DESIGN-5 §2.4: `/peers`' four scalars, folded by `peerViewOf` from the live fold.
+     * `null` until the ledger is open (§1.4 promise 1), which is what makes `/peers` print TD4's
+     * `the peer registry is not available in this build` rather than a false zero.
+     */
+    peers: (): PeerView | null => (sessionLedger === null ? null : peerViewOf(sessionLedger.fold, sessionLedger.self)),
+    /**
+     * contract 1.8 item 4 / TUI-DESIGN-5 §2.3: the FULL activity read. One row model — `listSessions` through the
+     * facade, then `activityView` — so `/who`, the `--plain` twin and `sessions who --json` share one projection.
+     */
+    who: (): readonly SessionActivityView[] | null => (sessionLedger === null ? null : sessionLedger.list({ all: false }).map(activityView)),
     pause() {
       engine?.pause();
     },

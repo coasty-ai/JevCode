@@ -622,6 +622,11 @@ function contextTitle(c: KeyContext): string {
       return 'review box';
     case 'picker':
       return 'session picker';
+    // TUI-DESIGN-5 §4.3: `KeyContext` gained `'agents'` with the `'a'` pane tab; this switch is exhaustive, so the
+    // arm is a compile requirement of that member, not a choice. (This file has no round-5 owner in §9.1; landed by
+    // R5-4 with the `bindings.ts` hunk that needs it, and reported as a one-arm request.)
+    case 'agents':
+      return 'agents tab';
     case 'palette':
       return 'palette';
   }

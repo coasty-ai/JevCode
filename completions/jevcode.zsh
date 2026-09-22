@@ -18,6 +18,9 @@ _jevcode() {
     'login:store an API key'
     'logout:remove a stored API key'
     'sessions:list or maintain sessions'
+    'models:browse the model catalogue'
+    'import:import memory and workflows from other agents'
+    'agents:list the agents of a run'
     'report:write a support bundle'
     'why:explain a Jev decision'
     'calibration:reliability report'
@@ -33,7 +36,7 @@ _jevcode() {
       case "${words[1]}" in
         chat)
           _arguments \
-            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--provider[generator provider (models: filter the catalogue to one provider)]:provider:(anthropic openrouter openai gemini xai fireworks meta)' \
             '--model[generator model id]:id:' \
             '--api-key[generator API key (prefer the env var)]:key:' \
             '--base-url[generator base URL]:url:' \
@@ -55,7 +58,7 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
             '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
             '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
             '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
@@ -83,17 +86,24 @@ _jevcode() {
             '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
             '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
             '--continue[continue the most recently used session in this workspace]' \
-            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
+            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>; import: continue a partly-applied import by its id]:run id:_jevcode_runs' \
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
-            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
+            '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \
+            '--split[split the task across agents (default off; orchestrate.split)]:split:(off auto ask)' \
+            '--max-agents[the most agents one split may start (orchestrate.maxAgents)]:n:' \
+            '--yes-split[with --split ask: accept the proposed manifest without the confirm]' \
+            '--no-wait[never wait for an agent slot: refuse rather than queue (orchestrate.agentWaitCeilingMs)]' \
+            '--no-memory[do not read the project and user memory files into the run]' \
+            '--no-import[never offer to import from the other coding agents on this machine]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         run)
           _arguments \
-            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--provider[generator provider (models: filter the catalogue to one provider)]:provider:(anthropic openrouter openai gemini xai fireworks meta)' \
             '--model[generator model id]:id:' \
             '--api-key[generator API key (prefer the env var)]:key:' \
             '--base-url[generator base URL]:url:' \
@@ -115,7 +125,7 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
             '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
             '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
             '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
@@ -143,19 +153,26 @@ _jevcode() {
             '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
             '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
             '--continue[continue the most recently used session in this workspace]' \
-            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
+            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>; import: continue a partly-applied import by its id]:run id:_jevcode_runs' \
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--task-file[read the task text from a file]:<path>:_files' \
             '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
-            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
+            '--force-takeback[with --resume: re-take a run a peer claimed (bumps the claim epoch); an ordinary resume never does]' \
+            '--split[split the task across agents (default off; orchestrate.split)]:split:(off auto ask)' \
+            '--max-agents[the most agents one split may start (orchestrate.maxAgents)]:n:' \
+            '--yes-split[with --split ask: accept the proposed manifest without the confirm]' \
+            '--no-wait[never wait for an agent slot: refuse rather than queue (orchestrate.agentWaitCeilingMs)]' \
+            '--no-memory[do not read the project and user memory files into the run]' \
+            '--no-import[never offer to import from the other coding agents on this machine]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]' \
             '*:task text:'
           ;;
         config)
           _arguments \
-            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--provider[generator provider (models: filter the catalogue to one provider)]:provider:(anthropic openrouter openai gemini xai fireworks meta)' \
             '--model[generator model id]:id:' \
             '--api-key[generator API key (prefer the env var)]:key:' \
             '--base-url[generator base URL]:url:' \
@@ -177,7 +194,7 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
             '--theme[colour theme (no auto-detect)]:theme:(dark light daltonized ansi)' \
             '--fps[render frames per second, 5..30 (default 30; 15 over SSH); fixed at launch]:n:' \
             '--render-mode[Ink render mode (default standard); fixed at launch]:render-mode:(standard incremental)' \
@@ -204,14 +221,16 @@ _jevcode() {
             '--allow-unpriced[run an unpriced generator model under a token cap instead of refusing]' \
             '--max-generator-tokens[generator token cap under --allow-unpriced (default spend cap / 15 × 1e6)]:n:' \
             '--update-notify[post-run update check through a detached jevcode upgrade --check]' \
-            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
-            '--all[include the hidden bookkeeping rows (seen.*)]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
+            '--all[config: include the hidden bookkeeping rows (seen.*); sessions who: include sessions gone more than 10 minutes and ignored devices]' \
+            '--no-memory[do not read the project and user memory files into the run]' \
+            '--no-import[never offer to import from the other coding agents on this machine]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
         bench)
           _arguments \
-            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--provider[generator provider (models: filter the catalogue to one provider)]:provider:(anthropic openrouter openai gemini xai fireworks meta)' \
             '--model[generator model id]:id:' \
             '--api-key[generator API key (prefer the env var)]:key:' \
             '--base-url[generator base URL]:url:' \
@@ -233,8 +252,8 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
-            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
+            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>; import: continue a partly-applied import by its id]:run id:_jevcode_runs' \
             '--suite[benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)]:suite:(swebench terminal-bench quixbugs ladder all)' \
             '--tasks[number of tasks]:n:' \
             '--task-id[specific task ids]:id[,id...]:' \
@@ -250,7 +269,7 @@ _jevcode() {
           ;;
         perf)
           _arguments \
-            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--provider[generator provider (models: filter the catalogue to one provider)]:provider:(anthropic openrouter openai gemini xai fireworks meta)' \
             '--model[generator model id]:id:' \
             '--api-key[generator API key (prefer the env var)]:key:' \
             '--base-url[generator base URL]:url:' \
@@ -272,7 +291,7 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
-            '--plain[plain line renderer instead of the TUI (readline composer on a TTY)]' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
             '--live[use the real generator and Jev (requires --spend-cap)]' \
             '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
             '--help[show usage]' \
@@ -280,7 +299,7 @@ _jevcode() {
           ;;
         login)
           _arguments \
-            '--provider[generator provider]:provider:(anthropic openrouter)' \
+            '--provider[generator provider (models: filter the catalogue to one provider)]:provider:(anthropic openrouter openai gemini xai fireworks meta)' \
             '--jev-provider[Jev provider (default auto: typesafe when TYPESAFE_API_KEY is set, else openrouter)]:jev-provider:(typesafe openrouter)' \
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
@@ -308,7 +327,48 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
-            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
+            '--all[config: include the hidden bookkeeping rows (seen.*); sessions who: include sessions gone more than 10 minutes and ignored devices]' \
+            '--device[with sessions gc: the device to remove, resolved by walking the disk to 1,024 devices (never through the 16-device fold cap)]:label:' \
+            '--rotate[with sessions pair: take a new device id and key, invalidating the old one everywhere]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
+          ;;
+        models)
+          _arguments \
+            '--provider[generator provider (models: filter the catalogue to one provider)]:provider:(anthropic openrouter openai gemini xai fireworks meta)' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
+            '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
+            '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
+          ;;
+        import)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
+            '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
+            '--screen-reader[screen-reader mode (numbered prompts, no bars; implies --plain on a pipe); fixed at launch]' \
+            '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>; import: continue a partly-applied import by its id]:run id:_jevcode_runs' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
+            '--dry-run[plan and report only — nothing is written]' \
+            '--yes[apply the non-credential rows without the review step (a credential row always needs a terminal)]' \
+            '--scope[where the imported rows are written (default both)]:scope:(user project both)' \
+            '--undo[restore the files one earlier import replaced]:importId:' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
+          ;;
+        agents)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
+            '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
+            '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
@@ -327,7 +387,7 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
-            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;
@@ -336,7 +396,7 @@ _jevcode() {
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
-            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
           ;;

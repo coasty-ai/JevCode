@@ -1206,3 +1206,46 @@ already says the advantage is not on repositories. Iteration 2 (branch `oos-iter
 the repository `replan_stop`/pricing path, a deadline p90 that excludes zero-token samples, the one-line-regime slowdown,
 a thresholdless rule for the `token_bucket` overfit, and the `--jev off` escape-to-stop; it is measured on the same 18 + 28
 before any of it is called an improvement.
+
+## 2026-09-22 §12 names every user-visible string once, in its producer module, and §13 names every sink of it
+
+`docs/TUI-DESIGN-5.md` §12 is the round's string table (108 rows across coordination, context, the agent tree,
+import and the model picker) and §13 is its pin inventory: for each producer, which sinks read it and what the
+three sinks are allowed to differ by. The rule the two sections encode, ratified here so the next round does not
+re-argue it: **a user-visible string has exactly one home, and every other sink imports it.** `§13.4`'s corollary
+is that every string a test greps for is a *named exported constant* in that module, glyph-agnostic, with a
+two-glyph-set self-test — a zero-match grep in a pin test is a hard failure, never a skip.
+
+Why it is worth a decision entry rather than a convention: round 5 added five producer modules
+(`src/session/peers.ts`, `src/tui/context/lines.ts`, `src/tui/agents/lines.ts`, `src/config/imports.ts`,
+`src/tui/models/lines.ts`) and four of the five have three sinks each (Ink · `--plain` · `transcript.log`), with
+`--json` a fifth for three of them. The alternative — each sink formatting its own row from the same data — was
+what round 4's D-W found drifting in two places, and §13.1's `/who` row is the proof by construction: `whoRows`
+emits a `facts` `BlockRow` whose single segment **is** `whoPlainRow`'s string, so the TUI row and the `--plain`
+row cannot disagree at any width. `test/unit/tui/r5-identity.test.ts` asserts that identity at 40, 80 and 120,
+and asserts each of §13.2's eight declared clauses (the `/who` pipe width of 120, the status zone's absence from
+`transcript.log`, `annotateBlock`'s 24-row cap, the resume card's **omitted** `ctx` cell, `/cost`'s omitted
+`held`/`free` cells, the agents tab's viewport-not-filter rule, the model picker's numbered 40-of-N twin, and
+`sessions inbox --json`'s flattened rows) rather than skipping any of them.
+
+The eighth clause is the one the round added: coordination's `Message` carries an optional `hostKey`
+(`src/coordination/types.ts:262`), a device-secret derivative §7 row 61 forbids in a JSON sink, so
+`jevcode sessions inbox --json` serialises flattened projections and **declares** it
+(`SESSIONS_INBOX_JSON_CLAUSE`). Putting the raw type there needs a `publicMessage(m)` projection in the
+coordination facade first — filed as R5-H1 in `docs/research/tui/round-5/harness-session-hunks.patch`.
+
+## 2026-09-22 A command is registered from day one and answers out loud, or it is not in the registry at all
+
+D-AN, ratified for the whole product rather than for the agent tree alone. Round 5 added nine `registry.ts` rows
+(47 → 56) for surfaces whose stores do not all exist in this build: `/split`, `/agents`, `/agent`, `/land` and
+`/spawn` have no `AgentSupervisor`, `/import` and `/memory` have no in-session overlay. Each is registered with
+its real grammar, its real availability and its real arguments — **the dispatcher validates the line** — and the
+host then answers `<verb> is not available in this build — no agent is running`, or points at the CLI twin that
+does work. The three states a user can be in are therefore: the command ran, the command refused and said why,
+or the command does not exist and `Did you mean` offers the nearest one. There is no fourth state in which a
+documented command silently does nothing, which is the defect round 4 §14.2 #41 found and this rule closes.
+
+The cost is real and is accepted: nine rows push `/help` to the last two rungs of its compaction ladder at every
+width (the key table becomes one `… /help keys prints the key table` pointer and the four per-terminal notes are
+dropped), because `HELP_COMPACTION_LEVELS` ranks a command line above a terminal tip. That is the ladder working
+as designed, and `palette.test.ts` records the new reachable levels rather than raising `HELP_MAX_LINES`.

@@ -1469,3 +1469,312 @@ is a no-op for every call site); plus the two test-file edits above and the allo
 
 **Owed after this merge** (small, on `main`): ~~the `/jev` `cache hits` row~~ (landed right after the merge: the `cost` row ends with `· N cache hits`, from Σ `StepRecord.jevCacheHits`; the report bundle already carries the per-step field in `steps.tail.jsonl`); the fullscreen frame-height
 post-condition (the 368 frames above) as a fix or a round-5 slot; the `lease-conflict` / `land-preflight` pane prose (round 5, D-AF).
+
+## Round 5 — every session knows what the others do, the context is visible, delegation, import, the model picker (2026-09-22)
+
+The fifth round of the interactive TUI (`docs/TUI-DESIGN-5.md`; six slots ran concurrently on 2026-09-22 — R5-1
+coordination session state and the write half, R5-2 coordination commands and the contract block, R5-3 the context
+meter and its config chain, R5-4 the agent tree and the shared React shell, R5-5 the import surface, R5-6 the
+provider and model picker — then one integration pass, this record). The round answers the five user requirements
+of §1.1: every session knows what the others are doing and never blocks one; the context is relaxed and its usage
+is visible; work can be delegated and watched; memory and workflows come over from the other agents on the
+machine; every provider key is selectable with search.
+
+**This section is written to be read by someone deciding whether to merge.** What landed, what each gate measured,
+what deviates from the design and why, and — in its own subsection, not buried — the three surfaces that are built
+and registered but **not driven by a store in this build**.
+
+### What was built, per slot
+
+| slot | new modules | what it does |
+| --- | --- | --- |
+| **R5-1** coordination: session state, the picker, the index, the write half | `src/session/peers.ts` (558), `src/session/publish.ts` (528) | `activityView`/`selfView` (the only two shapes that cross the boundary; neither carries `hostKey`, a full device id or a pid), `whoRowText` — the **one** builder every `/who` sink calls — its nine-cell drop ladder, `whoHeader`, `whoFlagRow`, `whoSentence` (the screen-reader twin), `peerViewOf`; the eight-branch resume card in `picker-lines.ts`; `RunLock.bootAt` and `lockReplaceVerdict`'s six reasons; `src/cli/sessions.ts` 4 → 17 verbs; and §2.14's write half — ledger open, claim mint, heartbeat writer and repo-identity probe, **all after `renderer.firstFrame()`** |
+| **R5-2** coordination: commands, targets, messaging, the status zone, the contract block | `src/tui/commands/target.ts` (314) | contract 1.8 in `src/core/types.ts` (`SessionActivityView`, `SelfIdentityView`, `UiLabel += '[session]'`, three optional `SessionRow` members, the seven-provider `ProviderName`, eight renumberings); `resolveTarget`'s eight rungs, one grammar for every verb; the six coordination registry rows and their validated actions; `peerZoneText` and the `peers`/`ctx`/`agents` status segments with `DROP_ORDER` and the push order; the nine new `GlyphSet` members with their ascii and SR twins; the lease-conflict and land-preflight card builders |
+| **R5-3** the context meter, compaction, the config chain | `src/tui/context/lines.ts` (439) | `ctxText`'s two width rungs and the amber/red word; `contextBlock` — the whole `/context` body from three already-public reads — with `fileReason`, the per-file table budgeted before `layoutTable` sees it, and three distinct empty states; `compactAnswer`'s four branches with the `off` branch checked **first**; `resolveContextConfig` + `ResolvedConfig.context()`, which the engine call sites now read; `context.kept` |
+| **R5-4** the agent tree, the key resolver, the shared React shell | `src/tui/agents/lines.ts` (722), `src/tui/pane/agents.ts` (110), `src/cli/agents.ts` (154) | the 16 agent row states and four cards from one pure function; `PaneTab 'a'` with `PANE_TABS` deliberately **unwidened** and `paneTabsFor(hasDelegation)` passed at all four call sites; `KeyContext 'agents'`, the eight keys, the `x x` drop chord, the one pane rung between Picker and Composer; `UiState.agents`/`paneFocus`/`agentCursor` with the cursor clamped in the reducer; `agentStripText` in the status line; `agentBlockLines` in `plain.ts`; `jevcode agents list` |
+| **R5-5** the import surface | `src/config/imports.ts` (435), `src/cli/import.ts` (521), `src/tui/import/{lines,reducer,Report.tsx}` (741) | the 17 `[import]` item builders in **one** module that `lines.ts` re-exports and never re-declares; the overlay's reducer and rows with `CAP.import` and a protected keys row; `OverlayKind += 'import'`; the wizard's one-time `'import'` step; the CLI verb with its five twins (`--plain` numbered, SR spoken, `--ascii`, pipe/`--no-input` dry-run-only, `--json` one `ImportPlan`) and the rule that `--yes` calls `applicableRows` and nothing else |
+| **R5-6** provider, model picker, key setup | `src/tui/models/{lines,state}.ts` (554), `src/cli/models.ts` (197), `src/config/provider-tables.ts` (51, zero-import) | the picker's rung ladder, its reducer over `instantCatalogue()`, `modelsPlainLines`'s numbered twin and `modelsSrLine`; `jevcode models list|search|refresh`; the seven-provider widening in `args.ts`, `credentials.ts`, `login.ts`, `resolve.ts`'s `PROVIDER_KEY_ENV` (a live bug fix — `gemini`'s `GOOGLE_API_KEY` and `meta`'s `MODEL_API_KEY` fallbacks were unreachable) and `defaults.ts`'s `BASE_URLS`, all off the argv path |
+
+**The integration pass landed every open §9.2 cross-slot request**, in §9.3's W3 → W4 order:
+
+1. **W3 shared React shell** — `StatusLine.tsx`'s `statusView` now supplies the `ctx` cell from `ctxText` (R5-3's
+   half of the `status/lines.ts` row: R5-2 had landed the segment's position and drop rank reading a string, and
+   nothing supplied it). R5-4's own hunks (the `'a'` tab, `paneFocus`, the `agents` strip) were already in.
+2. **W4 `src/config/{types,defaults,validate,resolve}.ts`** — the 46 remaining config rows: six `coordination.*`,
+   **34 `orchestrate.*`** in `docs/ORCHESTRATION-DESIGN.md` §6.4's own order, five `import.*`/`memory.*` and the
+   hidden `seen.import`, with their value tables and the two negating boolean flags D-AP names.
+3. **W4 `src/cli/args.ts` + `src/cli/main.tsx`** — R5-1's four-edit `sessions` hunk verbatim (17 verbs,
+   `sessionsArgs`, `--all`/`--device`/`--rotate`/`--force-takeback`/`--parent-session`), R5-5's `Command +=
+   'import'` and R5-4's `+= 'agents'` with their nine orchestration flags and eight import flags, and the three
+   `await import()` switch arms. The static import list gained nothing.
+4. **W4 `src/tui/commands/registry.ts`** — the nine remaining rows (47 → **56**): `context`, `compact` (R5-3),
+   `split`, `agents`, `agent`, `land`, `spawn` (R5-4), `import`/`imp`, `memory`/`mem` (R5-5), and R5-6's
+   `/provider` values edit. Each row's `CommandAction` and its argument validation landed with it in
+   `dispatch.ts` (46 → **55** kinds).
+5. **W4 `src/cli/session.ts`** — the nine handlers. `/context` and `/compact` are **real** (they read
+   `engine.status().context` and `engine.snapshotState()` and call `engine.compact()`); the other seven answer
+   the honest D-AN sentence. `EXCLUSIVE_COMMANDS` gains `land` (11 → 12).
+6. **W4 `src/session/index.ts`** — already landed by R5-1 as its one `INDEX_KINDS` commit: 15 kinds, one
+   `IndexLine` arm each, `pause.by` and `run:start.parentSessionId` both **optional** with stated reader
+   defaults, and the array exported and re-typed `readonly IndexKind[]`.
+
+**W5 shared tests landed by the integration pass**: `test/unit/tui/r5-identity.test.ts` (new, 13 cases — the
+§13.1 `/who` producer identity at 40/80/120, the G-R5-6 width sweep at 40…200 in both glyph sets, and **each of
+§13.2's eight declared clauses**, none skipped); the gate **G-R5-8** settings lint in `contract.test.ts`, which
+parses `docs/ORCHESTRATION-DESIGN.md` §6.4's table out of the design file rather than copying it, so a row added
+there and not to `SETTINGS` fails with no second edit; the registry count/no-dead-pointer rows; and the five
+`run-smoke.sh` scenario blocks for `test/pty/smoke/r5-{who,message,context,pause-end,model-picker}.steps` with an
+unconditional key-byte scan over every `r5-*` capture (G-R5-9); the **whole-header-block** contract-order case
+(`1.1, 1.2, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7, 1.8` in one assertion, contiguous and ascending — the five per-round
+cases each check only their neighbour, so only this one catches a line inserted out of order two rounds later);
+and **`test/pty/round5.pty.test.ts`** (new, 4 cases), which is the part of G-R5-9 and G-R5-6 that runs on every
+`vitest --project pty` rather than by name on the smoke board.
+
+### The arrays, after the round
+
+| array | before | after |
+| --- | --- | --- |
+| `COMMANDS` (registry rows) | 41 (round 4) → 47 (R5-2) | **56** |
+| `COMMAND_ACTION_KINDS` | 46 | **55** (`/llm` maps onto `mode` and `/ui` onto `uiReset`) |
+| `Command` (CLI verbs) | 14 | **16** — `import`, `models`, `agents`, each named literally by gate G-R5-10 |
+| `SETTINGS` | 62 | **108** (+1 `context.kept`, +6 `coordination.*`, +34 `orchestrate.*`, +5 import/memory, +1 hidden `seen.import`) |
+| `INDEX_KINDS` | 8 | **15**, exported and typed `readonly IndexKind[]` |
+| `OverlayKind` | 10 | **11** (`import`; the model picker is a pane-slot picker, not an overlay) |
+| `KeyContext` | 5 | **6** (`agents`) |
+| `GlyphSet` | — | **+9** members, each with its ascii and SR twin, `asciiTwins()` still one-to-one |
+
+### Gates — every number, measured on this machine (Apple Silicon Mac, macOS 26, Node 22.23.2, 2026-09-22)
+
+**The machine was not quiet, and that is the biggest caveat on this table.** Other sessions ran on it throughout;
+the one-minute load average moved between 8 and **124** during the pass. Every load-sensitive number below says
+so, every load-sensitive failure was re-run alone on the same tree, and where a file could be compared against
+the **base commit** in a scratch worktree it was. Nothing in the red lists below is a round-5 surface.
+
+| gate | result |
+| --- | --- |
+| `npx tsc -p tsconfig.json --noEmit` | **clean** |
+| `node scripts/no-any.mjs` | **ok** (src, test, perf, scripts) |
+| `npx vitest run --project unit --maxWorkers=3` | 539 files, **9,406 passed**, 8 skipped, **1 failed** on the quietest pass the machine allowed (load 13.6 → 14.7) — `test/unit/tui/app.test.tsx`'s `the wizard through the App`, a **load flake**: it passes **3 / 3 alone** on this tree and **3 / 3 alone at the base commit `36f1104`** in a scratch worktree, and the whole file is **75 / 75** alone here. Four earlier passes at loads of 31, 48 and 124 produced 2, 3, 13 and 19 failures, every one of them in the same Ink-timing files (`app.test.tsx`, `round2-console`, `wizard`, `round4-chat-app`, `gitstate-probe`, `session/index`'s two perf gates) and every one green alone. **One real failure was found and fixed this way** and is not in any of those counts: `test/unit/config/defaults.test.ts` went red on the 46 new config rows (an inverted env name with no boolean flag, and a second hidden row) — fixed by giving `import.enabled` and `memory.enabled` the `--no-import` / `--no-memory` flags D-AP names, and by naming `seen.import` in the hidden-row assertion |
+| `node scripts/gen-docs.mjs` then `--check` | **exit 0** — the generator learned the three new CLI commands (the man-page table and both completion tables) and regenerates `docs/COMMANDS.md` (56 rows), `docs/KEYS.md` (the `agents` `KeyContext` and its eight rows), `man/jevcode.1` and the three completion scripts |
+| `npm run build` | `dist/jevcode.mjs` **3,140,530 B** minified from 5,513,028 B (43.0 % smaller) in ~270 ms; first-frame smoke **84–91 ms**; `--version` → `jevcode 0.5.0` (the **0.6.0 bump is the owner's**, per `docs/RELEASE.md`); `THIRD_PARTY_LICENSES.txt` 35 packages |
+| `node scripts/check-pack.mjs` | **all gates**; unpacked **3,374,795 B** < 3,500,000, tarball **1,135,280 B** < 1,500,000, 10 files, **0 dependencies** |
+| `env -u CI npx vitest run --project pty` | **88 / 88** before this pass's own file, then **91 / 92** with `test/pty/round5.pty.test.ts` added (4 new cases: the coordination reads, the context pair, the four D-AN refusals, and the 24×80 → 12×60 → 40×120 → 24×80 resize matrix — **4 / 4**). The one red is `round3`'s `first frame … < 300 ms warm` at load 17, which **passes alone**. An earlier 92-case run at load above 100 put six pre-existing timing cases red (`chat` resize storm, `review` type-ahead, two `round2` splash cases, `round3` first frame, `twins` identity); all six were green in the 88 / 88 run on the same tree |
+| `env -u CI sh test/pty/run-smoke.sh` | **exit 0**, **64 / 64 PASS**, every scenario `clears_after_first_frame=0`, `no-3j`, `no-tall-frame`; first frame 151.2 ms, splash settle 557 ms |
+| `node bin/jevcode.js perf` | **24 of 32 gate rows pass, 8 red.** The run waited **901 s** for the machine and started at load **7.99** (the suite's own limit is 8, its release rule ≤ 2) and **ended at 77.17** — other sessions came back mid-run, so **these are not release numbers** and every red row below is named with that caveat |
+
+**Perf, row by row.** Green, and the ones round 5 could move: **first frame cold p95 140.8 / 154.9 / 139.2 ms**
+at 40×120 / 24×80 / 8×40 (gate < 300), warm median 101.9–108.6 ms, splash frame 0 in 20/20 first frames at both
+wide tiers and 0/20 at the flat tier (as specified); **render lag** p95 3.15 / 2.39 / 5.11 ms at rows 40 / 12 /
+40-reduced (gate < 5 net) with **0 clears, 0 `ESC[3J`, 0 tall frames** in every geometry; **idle frames** 48 over
+30 s, peak 4/s, mean 1.60/s at both widths (gate ≤ 4 / ≤ 2); **composer idle / idle-loop** p95 7.8 / 7.2 ms;
+the **named-anchor self-test** ok in both glyph sets; **frames taller than the terminal 0 / 0 / 0 / 0**.
+
+The **8 red rows**, all of which were red in round 4's own pass or are the same family, none of which round 5
+touched: `composer palette` p95 31.8 ms, `palette-cycle` 40.4 ms and `review` 28.4 ms against a 16 ms gate (round
+4 had these green at load 2.2; at load 70 the trailing edge of Ink's 34 ms throttle dominates); `intake mock0`
+bubble p95 46.1 ms and `mock150` 24.3 ms against 16 ms (same cause; the *net* reply p95 is 39.5 ms against a
+40 ms gate, i.e. green); `state review 12×60` and `state fault-pane 24×80` **exit 124** on their anchors — the
+identical two rows round 4 named; and the whole `scroll-latency` probe of the **opt-in fullscreen renderer**
+(p95 3,261 ms, width rebuild 60.5 ms vs 50, **155 frames not exactly 40 rows**, 3 clears) — round 4 recorded
+368 such frames and owed the fix; it is still owed. `composer live-stress`, `palette-arg` and `burst30` are
+**report-only** rows by the suite's own design (a zero-latency storm and Ink's throttle window).
+
+No pre-existing gate regressed; nothing in the red list is a round-5 surface.
+
+**The five round-5 pty scenarios** (`test/pty/smoke/r5-{who,message,context,pause-end,model-picker}.steps`, plus
+the two `--ascii` twins) run **by name only** — `sh test/pty/run-smoke.sh r5-who r5-context …` — exactly as the
+eight `fault-*` scenarios do, so the default board is not red for surfaces whose stores do not exist:
+
+| scenario | result |
+| --- | --- |
+| `r5-pause-end` | **PASS** exit 0, `r5-pause-end:s45a`, 0 clears, no `ESC[3J`, **0 key bytes** |
+| `r5-who`, `r5-who-ascii` | exit 124 (a later `expect` timed out), **0 key bytes**, and §2.14 consequence 3 is clean: `beat-no-key-bytes` and `beat-no-long-hostkey` over `$home/coordination` |
+| `r5-context` | exit 124, **0 key bytes** |
+| `r5-message` | exit 124, `MISSING:r5-message-s34a`, **0 key bytes** — the far-end mailbox is not wired, which the file's own header says |
+| `r5-model-picker`, `-ascii` | exit 124, `MISSING:r5-model-picker-rule` (the `'models'` arm of `Picker.tsx` is not mounted), the ascii twin's glyph scan **passes**, **0 key bytes** |
+
+**The four `exit 124`s are the driver's hazard, not the product's, and the integration pass proved it.** Each of
+those scenarios starts with a `--mock` run and then types a command; `docs/research/tui/20-pty-driver-findings.md`
+§5 records that a non-draining `sleep` in a step file starves the child's event loop while a run floods the pty,
+so the Enter sits in stdin and the draft accumulates (`› /who/who --all` is visible in the capture). Driving the
+same commands against an **idle** session, with the same driver, answers every one of them:
+
+```
+[ui] who · unknown          the session ledger is not open yet
+[ui] peers · unknown        the peer registry is not available in this build
+[ui] context                no run is live — /context reports the run's prompt budget
+[ui] error: /compact needs a live run
+[ui] /agents is not available in this build — no agent is running
+[ui] /import is not available in this build — jevcode import plans, reviews and applies from the CLI
+[ui] model mock
+[ui] error: nothing is running to end — /end <target> ends a peer's run
+```
+
+and against a **live** `--mock` run at 40×120 the `/context` block is §12 S48–S53 in full:
+
+```
+[ui] context · step 2 · relaxed · code compaction
+[ui] budget 239k chars of the 128k-token window
+[ui] recent steps 82 of 72k (1 whole, 0 clipped, 0 one-line)
+[ui] prompt build 826 ms · file refresh 826 ms
+[ui] files in view · 1
+[ui] scratch_0.py  12  read at step 2 · edited step 1
+[ui] nothing to compact — only the newest step is in history        ← /compact, S57
+[ui] paused after step 4 — /resume continues, or type a follow-up   ← /pause
+```
+
+The §5.8 resize matrix (**24×80 → 12×60 → 40×120 → 24×80**, with a `/context` block and a `/who` block on screen
+across the moves) measured **0 clears after the first frame, 0 `ESC[3J`, no frame taller than the terminal and 0
+key bytes** with `OPENROUTER_API_KEY` exported. Captures are under `.scratch/drive/` (not committed).
+
+### Live, paid once — `docs/live/tui/round-5/`
+
+`sh docs/live/tui/round-5/run-live.sh live-round5-default 24 80 …` drove the **built bundle** against the real
+Jev service from the repository root's `./.env`, with `ANTHROPIC_API_KEY` and `JEV_API_KEY` unset in the child, a
+fresh temp `JEVCODE_HOME` and a fresh copy of the demo template, under the shipped `llm-jev` default at
+`--spend-cap 0.30`. Full table in that directory's `README.md`:
+
+| measurement | value |
+| --- | --- |
+| first frame · composer ready · splash settled | **433 ms** · 805 ms · 570 ms |
+| `hi` → reply | **306 ms**; task → `[run] started` **381 ms** |
+| the run | **36.7 s**, 8 steps, `replan_stop`, pytest **12 / 3** at step 2, `jev-1.13.0 (pinned)` |
+| **spend** | **$0.0062** — generator $0.00205 (7 calls) · jev $0.00414 (19 calls), 1,015 Jev questions |
+| clears after the first frame · `ESC[3J` · rows wider than the terminal | **0** · **0** · **0** |
+| **key bytes in any artefact** | **0** (`"key_leaks": {}` over the capture, the timing file, the run directory and the session index) |
+| the two round-5 reads, live | `[ui] who · unknown / the session ledger is not open yet` and `[ui] context / no run is live — /context reports the run's prompt budget` — both the honest empty state |
+| driver exit | 124 with **1** timeout: the **last** step (`/jev`'s `expect intake {2,}1 message`) missed its window. Every mark before it landed |
+
+Two CLI verbs, free and offline, saved beside it: `jevcode models search glm --plain` → **16 rows** across three
+providers with the provenance row `Anthropic bundled snapshot · OpenRouter bundled snapshot · +5 more`, exit 0;
+`jevcode import --dry-run` against a fixture home → `3 to import · 0 to review · 1 skipped · 565 B` with
+`mcp  1  disabled on import` and the pipe rule, exit 0.
+
+**One defect the live pass found and the integration pass fixed.** `jevcode import` died on its first line with
+`Cannot read properties of undefined (reading 'workspace')`: `main.tsx`'s new `case 'import':` was not supplying
+`ImportIo.planOptions`, and `planImport` dereferences `opts.env.workspace`. The arm now builds the
+`ImportEnvironment` itself (`home`, `env`, `platform`, `workspace`, `gitRoot`, `extraRoots`) with
+`trust: 'none'` and `decider: null` — so `jevcode import` is free and offline and the code fallbacks still
+produce a complete plan (§4.9) — and `gitRootOf` is a bounded 64-parent `existsSync` walk for `.git` (a **file**
+in a linked worktree, so not `isDirectory()`), never a `git` spawn, because this runs on the argv path. Without
+the git root the project-scope sources (`CLAUDE.md`, `.mcp.json` in the workspace) were invisible: the dry run
+went from `2 to import` to `3 to import` with the fix.
+
+### Deviations from `docs/TUI-DESIGN-5.md`, each with its reason
+
+1. **`jevcode import`'s source is a POSITIONAL, not `--source <id>`** (§5.5). `--source` already exists as a
+   hidden flag whose value domain is `CLI_SOURCES` (`cli|perf`, validated in `parseCliArgs`), and one flag name
+   cannot mean two things. The slash form §5.5 itself specifies is `/import [--dry-run] [<source>]` — a
+   positional — so the CLI takes the same shape and the clash is recorded for the owner rather than resolved by
+   inventing a third name.
+2. **`/help` now sits at the last two rungs of its compaction ladder at every width.** 56 command rows plus two
+   headers are 59 of `HELP_MAX_LINES`' 60, so the key table becomes one `… /help keys prints the key table`
+   pointer (level 5) and the four per-terminal notes are dropped (level 4). This is `HELP_COMPACTION_LEVELS`
+   working as designed — it ranks a command line above a terminal tip — and `palette.test.ts` records the new
+   reachable levels rather than raising the cap, which is a TD §5.3 number and TD4 §11's block-caps gate.
+3. **§12 S51 is rounded to whole milliseconds in the builder.** The engine measures with `performance.now()`, so
+   a real capture reads `prompt build 826.1 ms · file refresh 825.65 ms` — two precisions in one row whose job
+   is an order of magnitude. Rounded in `contextBlock`, not in the meter: the meter's number is the measurement.
+4. **`/context` after a run has *stopped* answers S54 (`no run is live`), not the block.** `ContextBlockInput.live`
+   is the controller's `live()`, which is false the moment the run ends, so a finished run's prompt budget is not
+   inspectable. The design does not say which way this should go; the live capture makes it visible, and it is
+   filed here rather than changed in an integration pass.
+5. **`PENDING_ROUND5_HANDLERS` in `registry.test.ts` is kept as an EMPTY set** rather than deleted, so the next
+   round's debt has a named place to go and the `every` assertion below it still holds over it.
+6. **`test/unit/tui/r5-identity.test.ts` lives at `test/unit/tui/`**, beside `round4-identity.test.ts`, which
+   §10 names but does not place.
+7. **`/land` is `destructive: true` and takes NO rung ladder.** §4.9 reads it as "a confirm row whose Enter is
+   inert", but `ConfirmKind` is a closed four-member union on purpose — its own docblock explains that a fifth
+   member would be a kind `confirmRow` must answer `null` for, i.e. a modal with no visible way out. `/land`
+   therefore takes the explicit `null` `historyClear` takes in the same switch, for a stronger reason: until
+   `AgentSupervisor` exists `/land` answers `not available in this build` and there is nothing to confirm, and
+   the gate it *will* take is §4.6's **manifest confirm** (D-AM) on the review surface. Both halves are pinned
+   in `dispatch.test.ts` so a later round moves it deliberately.
+
+### Not driven by a store in this build — the three honest gaps, named
+
+These are the round's real remaining work. Each is **registered, documented and answers out loud**; none of them
+is silent, and none of them is hidden behind a feature flag.
+
+1. **Nothing constructs a `SessionsCoordination` in production.** `commandSessions` is called from
+   `src/cli/main.tsx` with no `coordination` member, so the thirteen new `jevcode sessions <verb>` verbs answer
+   `jevcode sessions <verb>: the session ledger is not available in this build` and **exit 2** for a real user.
+   Inside a session the same gap makes `/who` answer `who · unknown / the session ledger is not open yet` and
+   `/peers` answer `peers · unknown`. What is missing is one `openCoordination()` — an
+   `await import('../coordination/index.js')` plus `openLedger` and `close`, the same shape as
+   `openSessionLedger` in `src/session/publish.ts`. It is in **no** §9.1 cell, so no slot owned it and the
+   integration pass did not invent an owner; it is the single biggest remaining gap in §2.10. The **write** half
+   is wired and does run: a `--mock` run opens the ledger, mints its claim and beats (the `r5-who` pty scenario's
+   step 0 exercises it, and the beat-file key-byte scan over `$home/coordination` is clean).
+2. **Three surfaces are built and not mounted in the shared React shell.** `src/tui/Picker.tsx` has no `'models'`
+   arm (so `/model` still shows the current and pending model rather than opening the pane-slot picker, and the
+   `r5-model-picker` pty scenario's rule row is missing); `src/tui/App.tsx` never opens the `'import'` overlay
+   (`Overlay.tsx`'s arm, `CAP.import` and `importLines` are all there and unit-tested); and `PickerState.card`
+   for §2.8's resume-card sub-state is absent, so `keys/resolve.ts`'s six `cardOpen`/`cardClose`/`card*` ops and
+   their `bindings.ts` rows are inert. All three are `src/tui/{App,Picker,Console}.tsx` work — R5-4's §9.2
+   shared-shell row — and all three answer honestly meanwhile.
+3. **`AgentSupervisor` does not exist** (§4.0 says so), so `/split`, `/agents`, `/agent`, `/land` and `/spawn`
+   answer `<verb> is not available in this build — no agent is running`, the `'a'` tab and its eight keys never
+   appear, and `jevcode agents list` reads a manifest and prints `planned` rows. This is the **production**
+   state the design intends for this round, not a gap in the round's own work.
+
+Two smaller ones, for completeness: `context.kept: jev` is accepted, printed and validated and cannot reach the
+engine (`ContextPolicyOptions` has no member — request R5-H2); and the ledger **handle** is still seated with the
+identity claim while the heartbeat carries the minted one (request R5-H3 — peers rank by the beat, so nothing
+disagrees today).
+
+### Hunks owed to the harness session
+
+**No harness-owned file was edited.** `src/loop/**`, `src/synth/**`, `src/coordination/**`, `src/orchestrate/**`,
+`src/import/**`, `src/models/**`, `src/provider/**`, `src/spend/**`, `src/checkpoint/**`, `src/errors.ts` and
+every non-TUI block of `src/core/types.ts` are byte-identical to the base commit `36f1104`, so there was nothing
+to revert. `docs/research/tui/round-5/harness-session-hunks.patch` is therefore a **request list**, written as
+hunks: **R5-H1** a `publicMessage(m)` projection in the coordination facade (`Message` carries an optional
+`hostKey`, which §7 row 61 forbids in the `sessions inbox --json` sink — round 5 emits flattened rows and
+declares it as the eighth §13.2 clause); **R5-H2** `ContextPolicyOptions.kept` and the Jev ranking pass behind
+it; **R5-H3** a way for `openLedger` to take the minted claim.
+
+One test file outside every round-5 cell was taken from `main` rather than edited:
+`test/unit/errors/explain.test.ts` — this branch is based on `36f1104`, which predates `main`'s `5c6c7fb`, so
+the ENSPC exit-3 assertion was stale and the file failed on the base tree as well. `git checkout main --` on
+that one file is the whole change; the owner's merge subsumes it.
+
+### Not verified here
+
+- **The five round-5 pty scenarios' later steps.** Four of the seven end in `exit 124`; the integration pass
+  proved the commands themselves answer (see above) and attributed the timeouts to the known non-draining-sleep
+  hazard, but the scenarios' own assertions past their first mark are unexercised, and `r5-message`'s far-end
+  rows and `r5-model-picker`'s rule row need the stores of gaps 1 and 2.
+- **The cross-device arms of §2.14 and §7.2.** Everything measured here is one device and one process.
+- **`--yes`, `--resume` and `--undo` on `jevcode import`.** The plan and report halves are driven; the apply
+  seam needs an `ApplyOptions` adapter this build does not have, and `importNotWired(verb)` says so out loud
+  rather than half-applying into a human's `.jevcode/`.
+- **Gate G-R5-2 (the fold storm), G-R5-3 (the peer idle-frame case), G-R5-4 (`/who` over a 200-row fold) and
+  G-R5-5 (the `model-picker` composer series)** are design thresholds with no probe on this tree: the fold
+  watcher has no consumer, the peer zone has no live fold, and the picker is not mounted. `who-bench.test.ts`
+  exists and runs; the other three are named red-by-absence rather than reported green.
+- **A second provider's live leg.** One paid drive, on TypeSafe native, as the brief scopes it.
+
+### Gate G-R5-1 … G-R5-11, as the round leaves them
+
+| gate | state |
+| --- | --- |
+| **G-R5-1** first frame + the nine-module import-graph assertion | **green** — cold p95 140.8 / 154.9 / 139.2 ms; `src/cli/main.tsx`'s static import list gained **nothing** this round: `import`, `models` and `agents` are `await import()` arms, `probeRepoFacts` reaches `node:child_process` and `../workspace/git.js` behind dynamic imports, `provider-tables.ts` is zero-import, and `gitRootOf` is `existsSync`, not a spawn |
+| **G-R5-2** the fold storm | **not measured** — the fold watcher has no consumer on this tree (§11's own caveat (a)) |
+| **G-R5-3** two live peers must not raise the idle frame rate | **not measured** — no live fold; the idle probe itself is green at 4/s peak, 1.60/s mean |
+| **G-R5-4** `/who` < 20 ms over a 200-row fold, `peerZoneText` < 1 ms | **green** — `test/unit/session/who-bench.test.ts` runs in the unit suite |
+| **G-R5-5** the `model-picker` composer series | **not measured** — the picker is not mounted (§11's caveat (b) already said it would be re-run against a real catalogue) |
+| **G-R5-6** no row of any new surface exceeds the terminal width | **green** — `r5-identity.test.ts` sweeps `/who` (including the eight-flag dim row) at every width 40…200 in both glyph sets; the per-surface sweeps are in each slot's own tests; perf reports 0 tall frames in every geometry |
+| **G-R5-7** the manifest confirm's five branches and the `risk`/`proposal` property | **green** in `review.test.tsx` (R5-4) |
+| **G-R5-8** the settings-collision lint | **green** — `contract.test.ts` parses OR §6.4's 34 keys **out of the design file**, asserts a `SETTINGS` row for each and for §8.1 item 7's seventeen, and asserts no two rows share a name, an env variable or a file key |
+| **G-R5-9** 0 key bytes, extended to device keys and imported credentials | **green** — every `r5-*` pty scenario scans its capture unconditionally, `r5-who` also scans `$home/coordination` for the fake key and for a 32-hex `hostKey`, and the live pass reports `"key_leaks": {}` |
+| **G-R5-10** the shared-array identity test | **green** — `INDEX_KINDS` 15 (imported, typed), `COMMANDS` 56 with no duplicate name or alias, `Command` 16 with `'import'`, `'models'` and `'agents'` **named literally**, plus `OverlayKind` 11, `SegmentId`/`DROP_ORDER`/`StatusZones['dropped']`, `PaneTab`, `KeyContext` 6, `UiLabel` 7 and the nine `GlyphSet` members |
+| **G-R5-11** the W−1 rebase-and-re-verify sweep | **done by the slots** (`docs/research/tui/round-5/w0-reverify.md`); the integration pass re-read it and found one stale row of its own — `test/unit/errors/explain.test.ts`, fixed from `main` |
+
+### How to read this round
+
+The round's **five requirement surfaces are all built, all registered, all documented and all width-correct**;
+three of them are not yet driven by a store, and the round says so in the product itself rather than in a note.
+If the owner wants one thing next it is `openCoordination()` — one function, the same shape as
+`openSessionLedger`, which turns thirteen `jevcode sessions` verbs and two slash commands from an honest refusal
+into the feature §2 designs.

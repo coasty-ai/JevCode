@@ -131,6 +131,44 @@ export function parseCommand(line: string): ParseResult {
   return { ok: true, command: { name, args, options, raw } };
 }
 
+/**
+ * TUI-DESIGN-5 §2.9 / §2.5: one leading positional off a line whose LAST argument is a raw `rest`
+ * (`/tell <target> <text>`, `/request <target> <verb> <text>`).
+ *
+ * §2.5 makes an **exact title** a first-class target and multi-word titles are the norm (`fix store rotation`),
+ * so the token is quote-aware: `"…"` (with backslash escapes, as `parseCommand`) and `'…'` are taken whole, and
+ * anything else is the bare `\S+` run. An **unterminated** quote falls back to the bare rule rather than failing
+ * the line: the whole point of the rest path is that a stray quote in natural-language text is text
+ * (`/tell mbp don't touch the tests`), and a target is the one token before that text.
+ *
+ * Returns the token and the untouched remainder (leading whitespace already dropped); `null` when the input is
+ * empty after trimming.
+ */
+export function takeLeadingToken(text: string): { value: string; rest: string } | null {
+  const s = text.replace(/^\s+/, '');
+  if (s === '') return null;
+  const quote = s[0];
+  if (quote === '"' || quote === "'") {
+    let v = '';
+    let i = 1;
+    while (i < s.length) {
+      const c = s[i] as string;
+      if (quote === '"' && c === '\\' && i + 1 < s.length) {
+        v += s[i + 1] as string;
+        i += 2;
+        continue;
+      }
+      if (c === quote) return { value: v, rest: s.slice(i + 1).replace(/^\s+/, '') };
+      v += c;
+      i++;
+    }
+    // unterminated: fall through to the bare rule, so the quote is just a character in the token
+  }
+  const m = /^(\S+)\s*([\s\S]*)$/.exec(s);
+  if (m === null) return null;
+  return { value: m[1] as string, rest: m[2] as string };
+}
+
 /** TUI-DESIGN §5.1: the raw remainder after the name for `rest` arguments — trimmed, one line, ≤ `max` chars. */
 export function restOf(line: string, max = 600): string {
   const raw = line.trim();

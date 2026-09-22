@@ -804,10 +804,21 @@ describe('commandLogin', () => {
     expect(t4.err.text.split('\n').filter(Boolean)).toEqual(fixBlockLines(DEFAULT_MODE, null));
   });
 
-  it('--provider is validated; JEVCODE_PROVIDER preselects; without --provider and a generator key the default is openrouter (commit 2a92d0b)', async () => {
+  it('--provider is validated over the SEVEN ids (TUI-DESIGN-5 §6.1/§6.5, D-AP); JEVCODE_PROVIDER preselects; without --provider and a generator key the default is openrouter (commit 2a92d0b)', async () => {
     const t = io(`${KEY}\n`);
-    expect(await commandLogin({ provider: 'gemini', generatorKeyStdin: true }, t)).toBe(2);
-    expect(t.err.text).toContain('--provider: expected anthropic|openrouter');
+    // round 5 widens the accepted set from two to seven: `gemini` is now a provider, `notaprovider` still is not
+    expect(await commandLogin({ provider: 'notaprovider', generatorKeyStdin: true }, t)).toBe(2);
+    expect(t.err.text).toContain('--provider: expected anthropic|openrouter|openai|gemini|xai|fireworks|meta');
+    /**
+     * TUI-DESIGN-5 §6.1 / D-AP: `gemini` PARSES (the flag accepts seven ids) but is not PERSISTED while
+     * `src/config/validate.ts:161` still throws `one of anthropic|openrouter` — writing it would leave a profile
+     * every later `jevcode chat/run/config` exits 2 on. `src/cli/login.ts`'s guard refuses it with §12.5 S107's
+     * sentence, and `test/unit/cli/login.test.ts` flips to the accepting form the moment the validate hunk lands.
+     */
+    const tg = io(`${KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg-gemini') } });
+    expect(await commandLogin({ provider: 'gemini', generatorKeyStdin: true }, tg)).toBe(2);
+    expect(tg.err.text).toContain('gemini — browse only, generation not yet available');
+    expect(tg.out.text).toBe('');
     const t2 = io(`${OR_KEY}\n`, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), JEVCODE_PROVIDER: 'openrouter' } });
     expect(await commandLogin({ generatorKeyStdin: true }, t2)).toBe(0);
     expect((await readConfig())['provider']).toBe('openrouter');

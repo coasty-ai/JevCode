@@ -1,0 +1,20 @@
+=== jevcode models search glm --plain (offline: the bundled snapshot + the disk cache) ===
+models (1-16 of 16)
+ 1 z-ai/glm-5.3 · OpenRouter · 1.3M ctx → 131k out · $0.84/M in · $2.64/M out · $0.156/M cached
+ 2 z-ai/glm-5.3-flash · OpenRouter · 1.3M ctx → 944k out · $0.15/M in · $0.50/M out · $0.05/M cached
+ 3 accounts/fireworks/models/glm-5p3-flash · Fireworks AI · $0.15/M in · $0.50/M out · $0.03/M cached · browse only
+ 4 z-ai/glm-5.3-flashx · OpenRouter · 1.0M ctx → 131k out · $0.37/M in · $1.25/M out · $0.075/M cached
+ 5 google/gemini-3.8-flash · OpenRouter · 1.0M ctx → 66k out · $0.75/M in · $3.75/M out · $0.075/M cached
+ 6 gemini-2.5-pro · Google Gemini · 1.0M ctx → 66k out · $1.25/M in · $10/M out · $0.125/M cached · browse only
+ 7 gemini-2.5-flash · Google Gemini · 1.0M ctx → 66k out · $0.30/M in · $2.50/M out · $0.03/M cached · browse only
+ 8 gemini-3.6-flash · Google Gemini · 1.0M ctx → 66k out · $0.75/M in · $3.75/M out · $0.075/M cached · browse only
+ 9 gemini-3.7-flash · Google Gemini · 1.0M ctx → 66k out · $0.75/M in · $3.75/M out · $0.075/M cached · browse only
+10 gemini-3.8-flash · Google Gemini · 1.0M ctx → 66k out · $0.75/M in · $3.75/M out · $0.075/M cached · browse only
+11 gemini-3.5-flash · Google Gemini · 1.0M ctx → 66k out · $1.50/M in · $9/M out · $0.15/M cached · browse only
+12 gemini-2.5-flash-lite · Google Gemini · 1.0M ctx → 66k out · $0.10/M in · $0.40/M out · $0.01/M cached · browse only
+13 gemini-3.1-flash-lite · Google Gemini · 1.0M ctx → 66k out · $0.25/M in · $1.50/M out · $0.025/M cached · browse only
+14 gemini-3.5-flash-lite · Google Gemini · 1.0M ctx → 66k out · $0.30/M in · $2.50/M out · $0.03/M cached · browse only
+15 gemini-3.1-pro-preview · Google Gemini · 1.0M ctx → 66k out · $2/M in · $12/M out · $0.20/M cached · browse only
+16 gemini-3-flash-preview · Google Gemini · 1.0M ctx → 66k out · $0.50/M in · $3/M out · $0.05/M cached · browse only
+Anthropic bundled snapshot · OpenRouter bundled snapshot · +5 more
+exit=0

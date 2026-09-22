@@ -12,9 +12,9 @@
  * `completion` answer before any Ink import (§17 item 3; `src/tui/terminal.ts` is imported statically for the one
  * process-wide `restoreTerminal()` — it imports no Ink at runtime, only `node:fs` and a type).
  */
-import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { basename, resolve as resolvePath } from 'node:path';
+import { basename, dirname, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NO_INPUT_NEEDS_TASK, parseCliArgs, usageText } from './args.js';
 import type { ParsedFlags } from './args.js';
@@ -449,6 +449,24 @@ async function commandPerf(flags: ParsedFlags): Promise<number> {
   return runPerf(flags);
 }
 
+/**
+ * TUI-DESIGN-5 §5.5: the git root above a workspace, for `ImportEnvironment.gitRoot` — a bounded walk of at most
+ * 64 parents looking for a `.git` entry (a directory in a clone, a FILE in a linked worktree, so `existsSync`
+ * and not `statSync().isDirectory()`). No `git` process: gate G-R5-1 keeps every spawn off the argv path, and
+ * `jevcode import` reaches this before anything else runs. `null` when there is none, which is what the engine
+ * reads as "no project scope".
+ */
+function gitRootOf(workspace: string): string | null {
+  let dir = resolvePath(workspace);
+  for (let i = 0; i < 64; i++) {
+    if (existsSync(joinPath(dir, '.git'))) return dir;
+    const up = dirname(dir);
+    if (up === dir) return null;
+    dir = up;
+  }
+  return null;
+}
+
 /** the resolved-config facts the maintenance commands need (runs dir, redactor, workspace); a broken config is exit 2 */
 async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: (s: string) => string; workspace: string; record: () => unknown; sandbox: string; secrets: () => Promise<ReadonlyMap<string, import('../core/types.js').Resolved<string>>> }> {
   const { resolveConfig } = await import('../config/resolve.js');
@@ -556,7 +574,88 @@ export async function main(argv: string[]): Promise<number> {
     case 'sessions': {
       const { commandSessions } = await import('./sessions.js');
       const p = await pathsFor(flags);
-      return commandSessions(flags, { stdout: process.stdout, stderr: process.stderr, runsDir: p.runsDir, indexPath: sessionsIndexPath(jevcodeDir(process.env, homedir(), process.cwd())), workspace: p.workspace, redact: p.redact, ascii: resolveLaunchSettings(flags, process.env).ascii });
+      const launch = resolveLaunchSettings(flags, process.env);
+      return commandSessions(flags, {
+        stdout: process.stdout,
+        stderr: process.stderr,
+        runsDir: p.runsDir,
+        indexPath: sessionsIndexPath(jevcodeDir(process.env, homedir(), process.cwd())),
+        workspace: p.workspace,
+        redact: p.redact,
+        ascii: launch.ascii,
+        // §12.1's SR column: `sessions who` renders `whoSentence` per row in the screen-reader set
+        screenReader: launch.screenReader,
+        // TUI-DESIGN-5 §2.10: the words after the verb (a target, a message, `now`, `status|disable`)
+        ...(flags.sessionsArgs !== undefined ? { args: flags.sessionsArgs } : {}),
+      });
+    }
+    /**
+     * TUI-DESIGN-5 §6.6 / §9.2 `cli/main.tsx`: one `await import()` of `src/cli/models.ts`, which is the only way
+     * `src/models/**` is ever reached — the static import list at the top of this file gains **nothing** (§2.1
+     * rule 3a, gate G-R5-1). `case 'import':` (R5-5) and `case 'agents':` (R5-4) join it in the same shape.
+     */
+    case 'models': {
+      const { commandModels } = await import('./models.js');
+      return commandModels(flags, { stdout: process.stdout, stderr: process.stderr, env: process.env, ascii: resolveLaunchSettings(flags, process.env).ascii });
+    }
+    /**
+     * TUI-DESIGN-5 §5.5 (R5-5) and §4.2 (R5-4): the two remaining `switch` arms of §9.2's `cli/main.tsx` row,
+     * each an `await import()` of its own `src/cli/<verb>.ts` — the static import list at the top of this file
+     * gains nothing, which is what keeps `src/import/**` and `src/orchestrate/**` off the argv path (G-R5-1).
+     */
+    case 'import': {
+      const { commandImport } = await import('./import.js');
+      const p = await pathsFor(flags);
+      const launch = resolveLaunchSettings(flags, process.env);
+      return commandImport(
+        {
+          ...(flags.dryRun === true ? { dryRun: true } : {}),
+          ...(flags.yes === true ? { yes: true } : {}),
+          ...(flags.scope !== undefined ? { scope: flags.scope } : {}),
+          ...(flags.source !== undefined ? { source: flags.source } : {}),
+          ...(flags.resume !== undefined ? { resume: flags.resume } : {}),
+          ...(flags.undo !== undefined ? { undo: flags.undo } : {}),
+          ...(flags.json === true ? { json: true } : {}),
+          ...(flags.plain === true ? { plain: true } : {}),
+          ...(launch.screenReader ? { screenReader: true } : {}),
+          ...(launch.ascii ? { ascii: true } : {}),
+          ...(flags.noInput === true ? { noInput: true } : {}),
+        },
+        {
+          stdout: process.stdout,
+          stderr: process.stderr,
+          isTTY: process.stdout.isTTY === true,
+          ...(typeof process.stdout.columns === 'number' ? { columns: process.stdout.columns } : {}),
+          ascii: launch.ascii,
+          screenReader: launch.screenReader,
+          jevcodeDir: jevcodeDir(process.env, homedir(), process.cwd()),
+          workspaceKey: p.workspace,
+          /**
+           * TUI-DESIGN-5 §5.5: what `planImport` needs beyond the flags, and the CALLER owns every one — the
+           * engine reads no ambient state. `trust: 'none'` is the CLI's honest default (a run's trust decision
+           * is the session's, not this verb's), `decider: null` disables the Jev grouping pass so
+           * `jevcode import` is **free and offline**, and the code fallbacks still produce a complete plan
+           * (§4.9). Without this the engine dereferences `opts.env.workspace` and the verb dies on its first
+           * line, which is how the integration pass found it.
+           */
+          planOptions: {
+            env: { home: homedir(), env: process.env, platform: process.platform, workspace: p.workspace, gitRoot: gitRootOf(p.workspace), extraRoots: [] },
+            jevcodeVersion: VERSION,
+            trust: 'none',
+            decider: null,
+          },
+        },
+      );
+    }
+    case 'agents': {
+      const { runAgents } = await import('./agents.js');
+      const p = await pathsFor(flags);
+      return runAgents(flags.sessionsArgs ?? [], {
+        stdout: process.stdout,
+        stderr: process.stderr,
+        runsDir: p.runsDir,
+        ascii: resolveLaunchSettings(flags, process.env).ascii,
+      }, { ...(flags.json === true ? { json: true } : {}) });
     }
     case 'report': {
       const { commandReport, newestSessionLog } = await import('./report.js');

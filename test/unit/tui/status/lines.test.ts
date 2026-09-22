@@ -983,27 +983,299 @@ describe('the peer segment (§7.10 item 1)', () => {
     expect(peersText({ live: Number.NaN, stale: -4, oldestStartedMsAgo: null, exclusive: false })).toBe('');
   });
 
-  it('reaches the row at 160 columns and is the first segment dropped when short (edge 2)', async () => {
-    const { statusZones } = await import('../../../../src/tui/status/lines.js');
-    const peers = { live: 2, stale: 0, oldestStartedMsAgo: 240_000, exclusive: false };
-    const wide = statusZones(live({ peers }), 160);
-    expect(wide.right).toContain('2 here');
+  /**
+   * TUI-DESIGN-5 §12 "superseded, not kept" (§14.2 #10): round 4's `<n> here` is **no longer pushed into the right
+   * zone** — `peerZoneText` (`⇄ 2 live · 1 heads-up · ✉ 1`, S6) replaced it, because the round-5 cell carries
+   * unread-message counts that a bare count cannot express. `peersText` itself stays: D-AC (b) keeps `/peers`
+   * exactly as TD4 §7.10 specifies it, and the block is `/peers`' own.
+   */
+  it('is no longer a right-zone segment; `/peers` keeps the sentence (TUI-DESIGN-5 §12)', async () => {
+    const { statusZones, statusLineText } = await import('../../../../src/tui/status/lines.js');
+    const peers = { live: 2, stale: 1, oldestStartedMsAgo: 240_000, exclusive: false };
+    const wide = statusZones(live({ peers }), 200);
+    expect(wide.right.join(' ')).not.toContain('2 here');
     expect(wide.dropped).not.toContain('peers');
-    // narrow: `peers` goes before ShortHelp, the sparkline, git, the session meter and the wall clock
-    const narrow = statusZones(live({ peers }), 56);
-    expect(narrow.right.join(' ')).not.toContain('2 here');
-    expect(narrow.dropped[0]).toBe('peers');
-    // the run's own numbers survive the drop that removed the peer count
-    expect(narrow.right.join(' ')).toContain('run ');
+    // and the row is byte-identical to the row without a peer view at all
+    expect(statusLineText(live({ peers }), 200)).toBe(statusLineText(live({}), 200));
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-5 §2.2 / §8.1 item 10 / §9.2 — the peer zone, the push order and the drop order
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §2.2: `⇄ 2 live · 1 heads-up · ✉ 1` (S6). Three rungs, not one gate; the counting rule is `fold.liveness`,
+ * `fold.inbox` and `fold.acks` and nothing else; every glyph comes from the set (§7 row 81), never a literal.
+ *
+ * §9.2's one status-line edit also lands the `ctx` and `agents` positions and `DROP_ORDER`, so F-51 and F-55
+ * cannot drift apart again (§14.2 #45) — those cases are below.
+ */
+describe('the peer zone (TUI-DESIGN-5 §2.2, §12 S6)', () => {
+  const DEV = 'k3q7m2ab';
+  const OTHER = 'zz5wq7cd';
+
+  async function coord(): Promise<typeof import('../../coordination/helpers.js')> {
+    return import('../../coordination/helpers.js');
+  }
+
+  async function foldWith(opts: { live?: number; headsUp?: number; mail?: number; acked?: boolean } = {}): Promise<import('../../../../src/coordination/index.js').Fold> {
+    const { emptyFold } = await import('../../../../src/coordination/index.js');
+    const { makeHeartbeat, makeMessage, makeAck } = await coord();
+    const fold = emptyFold({ wallMs: 0, monoMs: 0 });
+    for (let i = 0; i < (opts.live ?? 0); i++) {
+      const rid = `2026-run-peer-${i}`;
+      const beat = { ...makeHeartbeat({ runId: rid, sessionId: `s-${i}`, deviceId: OTHER, pid: 900 + i }), arrivalMono: 0 };
+      fold.live.set(rid, beat);
+      fold.liveness.set(`${OTHER}/${rid}/${900 + i}`, 'live');
+    }
+    for (let i = 0; i < (opts.headsUp ?? 0); i++) {
+      const m = makeMessage({ id: `${OTHER}-aaaa1111-${i}`, type: 'heads-up', to: '@all', from: { deviceId: OTHER, label: 'mbp', sessionId: 'sx', runId: null, user: 'u' } });
+      fold.inbox.push(m);
+      if (opts.acked === true) fold.acks.set(m.id, [makeAck({ msgId: m.id, deviceId: DEV })]);
+    }
+    for (let i = 0; i < (opts.mail ?? 0); i++) {
+      const m = makeMessage({ id: `${OTHER}-bbbb2222-${i}`, type: 'note', to: 'my-session', from: { deviceId: OTHER, label: 'mbp', sessionId: 'sx', runId: null, user: 'u' } });
+      fold.inbox.push(m);
+      if (opts.acked === true) fold.acks.set(m.id, [makeAck({ msgId: m.id, deviceId: DEV })]);
+    }
+    return fold;
+  }
+
+  const SELF = { deviceId: 'k3q7m2ab', runId: 'my-run', sessionId: 'my-session' } as const;
+
+  it('renders every count combination and is absent at 0/0/0 (never `⇄ 0 live`)', async () => {
+    const { peerZoneText, peerZoneCounts } = await import('../../../../src/tui/status/lines.js');
+    const g = GLYPHS.unicode;
+    const cases: [number, number, number, string][] = [
+      [0, 0, 0, ''],
+      [2, 0, 0, '⇄ 2 live'],
+      [0, 1, 0, '1 heads-up'],
+      [0, 0, 1, '✉ 1'],
+      [2, 1, 0, '⇄ 2 live · 1 heads-up'],
+      [2, 0, 1, '⇄ 2 live · ✉ 1'],
+      [0, 1, 1, '1 heads-up · ✉ 1'],
+      [2, 1, 1, '⇄ 2 live · 1 heads-up · ✉ 1'],
+    ];
+    for (const [live_, headsUp, mail, want] of cases) {
+      const fold = await foldWith({ live: live_, headsUp, mail });
+      expect(peerZoneCounts(fold, SELF)).toEqual({ live: live_, headsUp, mail });
+      expect(peerZoneText(fold, SELF, g, 120), `${live_}/${headsUp}/${mail}`).toBe(want);
+    }
   });
 
-  it('never prints a pid or a path (the segment is counts only)', async () => {
-    const { statusLineText } = await import('../../../../src/tui/status/lines.js');
-    const row = statusLineText(live({ peers: { live: 2, stale: 1, oldestStartedMsAgo: 60_000, exclusive: true } }), 200);
-    expect(row).toContain('2 here · 1 stale');
-    // the row's `/` characters all come from the step and meter separators; the peer segment adds none
-    expect(row).not.toMatch(/pid|\/(home|Users|tmp|proc)\b/);
-    const withoutPeers = statusLineText(live({}), 200);
-    expect((row.match(/\//g) ?? []).length).toBe((withoutPeers.match(/\//g) ?? []).length);
+  it('counts only what the fold says: my own run, a non-live verdict and an acked message are all excluded', async () => {
+    const { peerZoneCounts, peerZoneText } = await import('../../../../src/tui/status/lines.js');
+    const { makeHeartbeat } = await coord();
+    const fold = await foldWith({ live: 2, headsUp: 1, mail: 1, acked: true });
+    // every message is acked by THIS device → unread is 0, so only the live clause survives
+    expect(peerZoneCounts(fold, SELF)).toEqual({ live: 2, headsUp: 0, mail: 0 });
+    // my own run is never a peer
+    const mine = { ...makeHeartbeat({ runId: 'my-run', sessionId: 'my-session', deviceId: SELF.deviceId, pid: 42 }), arrivalMono: 0 };
+    fold.live.set('my-run', mine);
+    fold.liveness.set(`${SELF.deviceId}/my-run/42`, 'live');
+    expect(peerZoneCounts(fold, SELF).live).toBe(2);
+    // a row the fold has already judged stale is not a live peer either
+    fold.liveness.set(`${OTHER}/2026-run-peer-0/900`, 'stale');
+    expect(peerZoneCounts(fold, SELF).live).toBe(1);
+    expect(peerZoneText(fold, SELF, GLYPHS.unicode, 120)).toBe('⇄ 1 live');
+  });
+
+  it('three rungs: the heads-up clause drops at 99 and 80, the whole segment at 79 (PEERS_MIN_COLUMNS, HEADSUP_MIN_COLUMNS)', async () => {
+    const { peerZoneText, PEERS_MIN_COLUMNS, HEADSUP_MIN_COLUMNS } = await import('../../../../src/tui/status/lines.js');
+    expect([PEERS_MIN_COLUMNS, HEADSUP_MIN_COLUMNS]).toEqual([80, 100]);
+    const fold = await foldWith({ live: 2, headsUp: 1, mail: 1 });
+    const at = (cols: number): string => peerZoneText(fold, SELF, GLYPHS.unicode, cols);
+    expect(at(100)).toBe('⇄ 2 live · 1 heads-up · ✉ 1');
+    expect(at(200)).toBe('⇄ 2 live · 1 heads-up · ✉ 1');
+    expect(at(99)).toBe('⇄ 2 live · ✉ 1');
+    expect(at(80)).toBe('⇄ 2 live · ✉ 1');
+    expect(at(79)).toBe('');
+    expect(at(0)).toBe('');
+    expect(at(Number.NaN)).toBe('');
+  });
+
+  it('the `--ascii` twin goes through glyphSet({ ascii }) — `<>` and `mail`, never a literal', async () => {
+    const { peerZoneText } = await import('../../../../src/tui/status/lines.js');
+    const { glyphSet } = await import('../../../../src/tui/glyphs.js');
+    const fold = await foldWith({ live: 2, headsUp: 1, mail: 1 });
+    expect(peerZoneText(fold, SELF, glyphSet({ ascii: true }), 120)).toBe('<> 2 live - 1 heads-up - mail 1');
+    // §14.2 #53: `ascii` wins over `screenReader`, so an SR user on --ascii gets the ASCII cells
+    expect(peerZoneText(fold, SELF, glyphSet({ ascii: true, screenReader: true }), 120)).toBe('<> 2 live - 1 heads-up - mail 1');
+    // the SR set reuses the unicode glyphs
+    expect(peerZoneText(fold, SELF, glyphSet({ screenReader: true }), 120)).toBe('⇄ 2 live · 1 heads-up · ✉ 1');
+    expect(peerZoneText(fold, SELF, glyphSet({ ascii: true }), 120)).toMatch(ASCII_ONLY);
+  });
+
+  it('an unopened fold renders nothing at all (§7 row 2: the empty state, never a spinner)', async () => {
+    const { statusZones } = await import('../../../../src/tui/status/lines.js');
+    const empty = await foldWith();
+    expect(statusZones(live({ fold: empty, selfId: SELF }), 200).right.join(' ')).not.toContain('live');
+    expect(statusZones(live({ fold: null, selfId: null }), 200).right.join(' ')).not.toContain('⇄');
+  });
+
+  /**
+   * §2.2's whole argument for `peers` being fifth in `DROP_ORDER` is that `✉` is the only signal a peer is waiting
+   * on this session — and an IDLE session, which has no `runId` to identify itself with, is when that matters most.
+   * Requiring a non-null `selfId` hid the cell exactly there.
+   */
+  it('the FOLD alone renders the zone: with no identity (idle, no run) `⇄`/`✉` still appear', async () => {
+    const { statusZones, peerZoneCounts, peerZoneText } = await import('../../../../src/tui/status/lines.js');
+    const fold = await foldWith({ live: 2, headsUp: 1, mail: 1 });
+    for (const selfId of [null, undefined]) {
+      const right = statusZones(live({ fold, ...(selfId === undefined ? {} : { selfId }) }), 200).right.join(' ');
+      expect(right, String(selfId)).toContain('⇄ 2 live · 1 heads-up · ✉ 1');
+    }
+    // a session with an identity but no run still excludes its own messages by device and session
+    const idleSelf = { deviceId: SELF.deviceId, runId: null, sessionId: SELF.sessionId } as const;
+    expect(peerZoneCounts(fold, idleSelf)).toEqual({ live: 2, headsUp: 1, mail: 1 });
+    expect(peerZoneText(fold, idleSelf, GLYPHS.unicode, 120)).toBe('⇄ 2 live · 1 heads-up · ✉ 1');
+  });
+
+  /**
+   * `MessageType` has fifteen members and only one of them is `heads-up`. An earlier rule counted `heads-up` in the
+   * broadcast clause and only DIRECTED messages in `✉`, so an unread `note` / `request-release` / `who` broadcast
+   * to `@repoKey` was in neither — invisible on the one surface that says a peer is waiting.
+   */
+  it('every unread message lands in exactly one clause — a non-`heads-up` BROADCAST counts as mail, not as nothing', async () => {
+    const { peerZoneCounts, peerZoneText } = await import('../../../../src/tui/status/lines.js');
+    const { emptyFold } = await import('../../../../src/coordination/index.js');
+    const { makeMessage } = await coord();
+    const from = { deviceId: OTHER, label: 'mbp', sessionId: 'sx', runId: null, user: 'u' };
+    for (const [type, to] of [
+      ['note', '@repo:abc'],
+      ['request-release', '@repo:abc'],
+      ['who', '@all'],
+      ['handoff', '@repo:abc'],
+      ['note', 'my-session'],
+    ] as const) {
+      const fold = emptyFold({ wallMs: 0, monoMs: 0 });
+      fold.inbox.push(makeMessage({ id: `${OTHER}-cccc3333-0`, type, to, from }));
+      expect(peerZoneCounts(fold, SELF), `${type} → ${to}`).toEqual({ live: 0, headsUp: 0, mail: 1 });
+      expect(peerZoneText(fold, SELF, GLYPHS.unicode, 120), `${type} → ${to}`).toBe('✉ 1');
+    }
+    // and `heads-up` is still the only thing in the heads-up clause, so the two never double-count
+    const fold = emptyFold({ wallMs: 0, monoMs: 0 });
+    fold.inbox.push(makeMessage({ id: `${OTHER}-dddd4444-0`, type: 'heads-up', to: '@all', from }));
+    fold.inbox.push(makeMessage({ id: `${OTHER}-dddd4444-1`, type: 'note', to: '@repo:abc', from }));
+    expect(peerZoneCounts(fold, SELF)).toEqual({ live: 0, headsUp: 1, mail: 1 });
+    // my OWN broadcast, which comes back through `@all`, is still excluded
+    const mineFold = emptyFold({ wallMs: 0, monoMs: 0 });
+    mineFold.inbox.push(makeMessage({ id: `${SELF.deviceId}-eeee5555-0`, type: 'note', to: '@all', from: { deviceId: SELF.deviceId, label: 'me', sessionId: SELF.sessionId, runId: SELF.runId, user: 'u' } }));
+    expect(peerZoneCounts(mineFold, SELF)).toEqual({ live: 0, headsUp: 0, mail: 0 });
+  });
+
+  it('the segment reaches the right zone at 200 columns through `statusZones`', async () => {
+    const { statusZones } = await import('../../../../src/tui/status/lines.js');
+    const fold = await foldWith({ live: 2, headsUp: 1, mail: 1 });
+    expect(statusZones(live({ fold, selfId: SELF }), 200).right).toContain('⇄ 2 live · 1 heads-up · ✉ 1');
+  });
+});
+
+/**
+ * §2.2 / §8.1 item 10 / §14.2 #45: the push order (F-51, F-55) and the drop order are **specified separately**, so
+ * both are pinned as lists here. `'agents'` is in neither `DROP_ORDER` nor `StatusZones['dropped']`: like `run` and
+ * `step` it is the run's own money and is never dropped.
+ */
+describe('the right zone push order and DROP_ORDER (TUI-DESIGN-5 §2.2, §9.2)', () => {
+  const SELF = { deviceId: 'k3q7m2ab', runId: 'my-run', sessionId: 'my-session' } as const;
+
+  async function fullFold(): Promise<import('../../../../src/coordination/index.js').Fold> {
+    const { emptyFold } = await import('../../../../src/coordination/index.js');
+    const { makeHeartbeat } = await import('../../coordination/helpers.js');
+    const fold = emptyFold({ wallMs: 0, monoMs: 0 });
+    const rid = '2026-run-peer-0';
+    fold.live.set(rid, { ...makeHeartbeat({ runId: rid, sessionId: 's0', deviceId: 'zz5wq7cd', pid: 900 }), arrivalMono: 0 });
+    fold.liveness.set(`zz5wq7cd/${rid}/900`, 'live');
+    return fold;
+  }
+
+  async function everySegment(): Promise<StatusLineState> {
+    return live({
+      git: gitMain,
+      jevLatencies: JEV12,
+      draft: { secretHits: 1 },
+      fold: await fullFold(),
+      selfId: SELF,
+      ctx: 'ctx 41% · 6 files · 12 steps',
+      agents: 'agents 3 · $0.41/0.90',
+    });
+  }
+
+  it('pushes step · run · agents · sess · tokens · ctx · peers · git · spark · help · secret, as a list', async () => {
+    const { rightZoneSegments } = await import('../../../../src/tui/status/lines.js');
+    const { segments } = rightZoneSegments(await everySegment(), 400);
+    expect(segments.map((x) => x.id)).toEqual(['step', 'run', 'agents', 'sess', 'tokens', 'ctx', 'peers', 'git', 'spark', 'help', 'secret']);
+  });
+
+  it('DROP_ORDER is the seven entries of §2.2, `agents` deliberately absent', async () => {
+    const { DROP_ORDER } = await import('../../../../src/tui/status/lines.js');
+    expect([...DROP_ORDER]).toEqual(['help', 'spark', 'git', 'ctx', 'peers', 'sess', 'wall']);
+    expect(DROP_ORDER).not.toContain('agents');
+    expect(DROP_ORDER).not.toContain('run');
+    expect(DROP_ORDER).not.toContain('step');
+  });
+
+  it('`ctx` drops after `git` and before `peers`, and `agents` is never dropped, at 40…200 columns', async () => {
+    const { statusZones } = await import('../../../../src/tui/status/lines.js');
+    const s = await everySegment();
+    const orderSeen: string[] = [];
+    for (let cols = 200; cols >= 40; cols--) {
+      const z = statusZones(s, cols);
+      for (const d of z.dropped) if (d !== 'badge' && d !== 'centre' && !orderSeen.includes(d)) orderSeen.push(d);
+      // §14.2 #45: the strip is never in `dropped`, at any width
+      expect(z.dropped, `cols=${cols}`).not.toContain('agents');
+    }
+    expect(orderSeen.indexOf('ctx')).toBeGreaterThan(orderSeen.indexOf('git'));
+    expect(orderSeen.indexOf('ctx')).toBeLessThan(orderSeen.indexOf('peers'));
+    expect(orderSeen.indexOf('peers')).toBeLessThan(orderSeen.indexOf('sess'));
+    expect(orderSeen).toEqual(['help', 'spark', 'git', 'ctx', 'peers', 'sess', 'wall']);
+  });
+
+  it("StatusZones['dropped'] accepts 'ctx' and 'peers' (the separately spelled union, §8.1 item 10)", async () => {
+    const { statusZones } = await import('../../../../src/tui/status/lines.js');
+    const accepted: import('../../../../src/tui/status/lines.js').StatusZones['dropped'] = ['ctx', 'peers'];
+    expect(accepted).toEqual(['ctx', 'peers']);
+    const z = statusZones(await everySegment(), 90);
+    expect(z.dropped).toContain('ctx');
+  });
+
+  it('the `ctx` and `agents` slots are positional only here — R5-3 and R5-4 land their text (§8.4, §9.2)', async () => {
+    const { rightZoneSegments } = await import('../../../../src/tui/status/lines.js');
+    // no text supplied → no segment, so an unfinished slot never renders an empty cell
+    const { segments } = rightZoneSegments(live({ git: gitMain }), 400);
+    expect(segments.map((x) => x.id)).not.toContain('ctx');
+    expect(segments.map((x) => x.id)).not.toContain('agents');
+    // the agents strip is gated at AGENTS_MIN_COLUMNS = 40 (§4.4)
+    const { AGENTS_MIN_COLUMNS } = await import('../../../../src/tui/status/lines.js');
+    expect(AGENTS_MIN_COLUMNS).toBe(40);
+    expect(rightZoneSegments(live({ agents: 'agents 3' }), 39).segments.map((x) => x.id)).not.toContain('agents');
+    expect(rightZoneSegments(live({ agents: 'agents 3' }), 40).segments.map((x) => x.id)).toContain('agents');
+  });
+
+  /**
+   * §3.1 / §14.2 #38 / §10: the `ctx` cell is **two gates, not one** — `ctx 41%` from 80, the whole
+   * `formatMeter` row from 100, **absent below 80**. R5-3 lands `ctxText`, which chooses between the two strings
+   * from a `ContextUsage`; the gates and the slot are landed here, so what the test can pin today is the width
+   * behaviour and the two constants `ctxText` reads (R5-2's report files the request that R5-3 imports them).
+   */
+  it('the `ctx` cell: absent below 80, short rung from 80, full rung from 100 (CONTEXT_MIN_COLUMNS / CONTEXT_FULL_COLUMNS)', async () => {
+    const { rightZoneSegments, statusZones, CONTEXT_MIN_COLUMNS, CONTEXT_FULL_COLUMNS } = await import('../../../../src/tui/status/lines.js');
+    expect([CONTEXT_MIN_COLUMNS, CONTEXT_FULL_COLUMNS]).toEqual([80, 100]);
+    const SHORT = 'ctx 41%';
+    const FULL = 'ctx 41% · 6 files · 12 steps';
+    const cell = (text: string, cols: number): string | undefined => rightZoneSegments(live({ ctx: text }), cols).segments.find((x) => x.id === 'ctx')?.text;
+    // below the first gate the cell is ABSENT — never a placeholder, never `ctx —%` (§3.1 "absent is absent")
+    for (const cols of [24, 40, 60, 79]) expect(cell(FULL, cols), `${cols}`).toBeUndefined();
+    for (const cols of [24, 40, 60, 79]) expect(cell(SHORT, cols), `${cols}`).toBeUndefined();
+    // the short rung's band, 80…99
+    for (const cols of [80, 90, 99]) expect(cell(SHORT, cols), `${cols}`).toBe(SHORT);
+    // and the full rung's, from 100 up
+    for (const cols of [100, 120, 200]) expect(cell(FULL, cols), `${cols}`).toBe(FULL);
+    // both rungs fit the right zone they are sized for, beside `run $0.12/2.00`
+    expect(statusZones(live({ ctx: SHORT }), 80).right.join(' ')).toContain(SHORT);
+    expect(statusZones(live({ ctx: FULL }), 100).right.join(' ')).toContain(FULL);
+    // the amber/red word REPLACES the cell at both rungs and is 24 cells, so it fits at 80 (§3.1 rule 1)
+    expect(cell('ctx 87% amber · /compact now', 80)).toBe('ctx 87% amber · /compact now');
   });
 });
