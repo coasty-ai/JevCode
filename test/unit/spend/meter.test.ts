@@ -13,6 +13,8 @@ describe('createSpendMeter', () => {
       totalUsd: 0,
       capUsd: 2,
       exceeded: false,
+      // contract 1.5 (ORCHESTRATION-DESIGN §6.2 [G6]): always written, 0 when nothing is held, so the disk store round-trips it
+      heldUsd: 0,
     });
     expect(m.exceeded()).toBe(false);
   });
@@ -161,7 +163,7 @@ describe('session meter tree (TUI-DESIGN §9.1, §15 item 7)', () => {
     const rs = root.snapshot();
     expect('parent' in rs).toBe(false);
     expect('parentExceeded' in rs).toBe(false);
-    expect(Object.keys(rs).sort()).toEqual(['capUsd', 'exceeded', 'generator', 'jev', 'totalUsd']);
+    expect(Object.keys(rs).sort()).toEqual(['capUsd', 'exceeded', 'generator', 'heldUsd', 'jev', 'totalUsd']);
     child.add('jev', usage(0.5));
     expect(child.snapshot()).toMatchObject({ capUsd: 2, totalUsd: 0.5, exceeded: false, parentExceeded: false, parent: { totalUsd: 0.5, capUsd: 10 } });
     expect(JSON.stringify(root.snapshot())).not.toContain('parent');
@@ -239,5 +241,98 @@ describe('session meter tree (TUI-DESIGN §9.1, §15 item 7)', () => {
     const s = m.add('jev', usage(0.1));
     expect('parent' in s).toBe(false);
     expect(s.totalUsd).toBeCloseTo(0.1, 12);
+  });
+});
+
+describe('hold / release (ORCHESTRATION-DESIGN §6.2 [G6] [D6])', () => {
+  it('hold accumulates into snapshot().heldUsd, which starts at 0', () => {
+    const m = createSpendMeter(2);
+    expect(typeof m.hold).toBe('function');
+    expect(typeof m.release).toBe('function');
+    expect(m.snapshot().heldUsd).toBe(0);
+    m.hold?.(0.9);
+    expect(m.snapshot().heldUsd).toBeCloseTo(0.9, 12);
+    m.hold?.(0.3);
+    expect(m.snapshot().heldUsd).toBeCloseTo(1.2, 12);
+  });
+
+  it('release subtracts and clamps at 0 — a hold is never negative', () => {
+    const m = createSpendMeter(2);
+    m.hold?.(1);
+    m.release?.(0.4);
+    expect(m.snapshot().heldUsd).toBeCloseTo(0.6, 12);
+    m.release?.(99);
+    expect(m.snapshot().heldUsd).toBe(0);
+    m.release?.(1);
+    expect(m.snapshot().heldUsd).toBe(0);
+  });
+
+  it('a negative, NaN or infinite hold or release is ignored (the nonNegative discipline)', () => {
+    const m = createSpendMeter(2);
+    m.hold?.(Number.NaN);
+    m.hold?.(-5);
+    m.hold?.(Number.POSITIVE_INFINITY);
+    expect(m.snapshot().heldUsd).toBe(0);
+    m.hold?.(0.5);
+    m.release?.(Number.NaN);
+    m.release?.(-5);
+    m.release?.(Number.POSITIVE_INFINITY);
+    expect(m.snapshot().heldUsd).toBeCloseTo(0.5, 12);
+  });
+
+  it('[G6] heldUsd survives restore — it is usage-shaped, so an adopting session re-holds it', () => {
+    const m = createSpendMeter(3);
+    m.hold?.(0.75);
+    const saved = m.snapshot();
+    expect(saved.heldUsd).toBeCloseTo(0.75, 12);
+    const fresh = createSpendMeter(3);
+    fresh.restore(saved);
+    expect(fresh.snapshot().heldUsd).toBeCloseTo(0.75, 12);
+    // a snapshot written before contract 1.5 carries no heldUsd: restore reads 0, never NaN
+    fresh.restore({ generator: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, jev: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 }, totalUsd: 0, capUsd: 3, exceeded: false });
+    expect(fresh.snapshot().heldUsd).toBe(0);
+    // and a corrupt one does not throw
+    expect(() => fresh.restore({ heldUsd: 'lots' } as unknown as SpendSnapshot)).not.toThrow();
+    expect(fresh.snapshot().heldUsd).toBe(0);
+  });
+
+  it('[D6] exceeded() is untouched by a hold: on a run meter it still means "this run spent its cap"', () => {
+    const m = createSpendMeter(1);
+    m.hold?.(10);
+    expect(m.exceeded()).toBe(false);
+    expect(m.snapshot().exceeded).toBe(false);
+    expect(m.snapshot().totalUsd).toBe(0);
+    m.add('generator', usage(1));
+    expect(m.exceeded()).toBe(true);
+    m.release?.(10);
+    expect(m.exceeded()).toBe(true);
+  });
+
+  it('a hold belongs to the meter that took it and never forwards to the parent', () => {
+    const parent = createSpendMeter(10);
+    const child = parent.child(2);
+    child.hold?.(0.5);
+    expect(child.snapshot().heldUsd).toBeCloseTo(0.5, 12);
+    expect(parent.snapshot().heldUsd).toBe(0);
+    parent.hold?.(0.9);
+    expect(parent.snapshot().heldUsd).toBeCloseTo(0.9, 12);
+    expect(child.snapshot().heldUsd).toBeCloseTo(0.5, 12);
+    child.release?.(0.5);
+    expect(parent.snapshot().heldUsd).toBeCloseTo(0.9, 12);
+    // a misbehaving parent is irrelevant: hold never touches it
+    const brokenParent: SpendMeter = {
+      add: () => {
+        throw new Error('boom');
+      },
+      exceeded: () => false,
+      snapshot: () => {
+        throw new Error('boom');
+      },
+      restore: () => undefined,
+      child: (cap) => createSpendMeter(cap),
+    };
+    const lone = createSpendMeter(1, brokenParent);
+    expect(() => lone.hold?.(0.2)).not.toThrow();
+    expect(lone.snapshot().heldUsd).toBeCloseTo(0.2, 12);
   });
 });

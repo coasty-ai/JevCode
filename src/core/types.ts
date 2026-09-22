@@ -11,6 +11,7 @@
 // contract 1.2 (2026-09-21): docs/LLM-JEV-DESIGN.md §4.8 / §4.12 / §9.3 generator-channel fields, reconciled from stages 1–3 (this file is the single source; provider/* and synth/llm/* declare no contract shapes of their own). All additive and optional.
 // contract 1.3 (2026-09-21): TUI round 3 — renderer bindings, wizard `mode` outcome, ui.wordmark, host dispatch context, per docs/TUI-DESIGN-3.md §6; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 // contract 1.4 (2026-09-21): coordination — pause points, context meter, registry API per docs/COORDINATION-DESIGN.md §12.0; every item is optional or a new union member; CheckpointEnvelope.version stays 1.
+// contract 1.5 (2026-09-22): orchestration — decompose stage, manifest, agents, landing queue per docs/ORCHESTRATION-DESIGN.md §4.1; every item is optional or a new union member; Action, STOP_REASON_SET, exitCodeFor, MODES and CheckpointEnvelope.version are untouched.
 // contract 1.7 (2026-09-22): TUI round 4 — block rows, annotateBlock, diff detail kind, ui.renderer, peer view, per docs/TUI-DESIGN-4.md §8; every item is optional or a default-preserving widening; CheckpointEnvelope.version stays 1.
 
 import type { Log } from './log.js';
@@ -139,8 +140,8 @@ export interface PlanUnverified {
   step: number;
   judged: number;
 }
-/** TUI-DESIGN §15 item 2: 'human' = a steer (step > 0) or a seed / undo note (step 0) */
-export type HarnessProblemKind = 'replan' | 'rejected_claim' | 'stale_plan' | 'human';
+/** TUI-DESIGN §15 item 2: 'human' = a steer (step > 0) or a seed / undo note (step 0); contract 1.5 (§3.7): 'orchestration' = a declined or failed decomposition, which sends the next steps single-threaded */
+export type HarnessProblemKind = 'replan' | 'rejected_claim' | 'stale_plan' | 'human' | 'orchestration';
 export interface HarnessProblem {
   kind: HarnessProblemKind;
   text: string;
@@ -240,7 +241,8 @@ export interface JevResponse {
   provider?: string;
 }
 
-export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete';
+/** contract 1.5 (ORCHESTRATION-DESIGN §4.1): `decompose` is the optional stage that runs before `replan`/`intent` and, on approval, delegates the step */
+export type StageName = 'replan' | 'intent' | 'context' | 'propose' | 'risk' | 'execute' | 'judge' | 'complete' | 'decompose';
 
 /**
  * The verdict written on a resolved Choice (loop/stages/choose.ts): `chosen` = Jev's answer with its paired Noul >= floor,
@@ -389,6 +391,8 @@ export interface StepTiming {
   imagesMs?: number;
   /** docs/LLM-JEV-DESIGN.md §7.5 (llm-jev): wall of `synthesize()`; generatorMs (batch wall) and the synthesizer's Jev requests sit inside it */
   synthMs?: number;
+  /** contract 1.5 (ORCHESTRATION-DESIGN §4.1 [D13]): wall of the `decompose` stage (gate → enumerate → normalise → rank → confirm); absent when the gate was shut */
+  decomposeMs?: number;
 }
 
 export type StoppedAt = 'step_start' | 'before_execute' | 'complete';
@@ -430,6 +434,16 @@ export interface StepRecord {
    * `propose_action` fallback when `handles()` is false; stage 4 sets it). Absent in the other modes.
    */
   proposer?: StepProposer;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.6 [G1]): the sha of the harness commit this step produced inside an agent
+   * worktree (`commitStep`). Absent when the engine made no git commit — which is every non-agent run.
+   */
+  commit?: string;
+  /**
+   * contract 1.5 (§2.4 [G8]): paths this step wrote OUTSIDE the agent's `own` set — the belt-2 hole the post-`run`
+   * escape diff finds. Reported, not refused; the critic's include/drop question reads it. Absent = nothing escaped.
+   */
+  escaped?: readonly string[];
 }
 
 /** docs/LLM-JEV-DESIGN.md §9.4 */
@@ -699,6 +713,21 @@ export interface ConfirmRequest {
   matchesIntent?: number | null;
   /** TUI-DESIGN §15 item 6: the risk stage's Jev latency for the 120-column title */
   jevLatencyMs?: number;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §3.7 [D5]): replaces the computed review title verbatim (cut to `columns`).
+   * When set, `reviewTitle` / `reviewCardTitle` never call `dominantDimension` / `dimOf`.
+   */
+  title?: string;
+  /**
+   * contract 1.5 (§3.7 [D4]): <= HEADLINE_ROWS_MAX (`src/core/limits.ts`) rows that fill the gauge band of
+   * `reviewHeaderLines` / `reviewCardLines` row-for-row, padded with '' so every ladder rung keeps its exact
+   * row count. Setting it also refuses `review:why` [D5b]. `proposal` and `risk` stay REQUIRED.
+   */
+  headline?: readonly string[];
+  /** contract 1.5 (§3.7 [G2]): pre-rendered preview lines; replaces `describeAction(proposal.action).preview` in `confirmPreviewLines` */
+  body?: readonly string[];
+  /** contract 1.5 (§3.7 [G2]): e.g. 'agent tui-rows' — rendered in the header before the title */
+  badge?: string;
 }
 /** TUI-DESIGN §15 item 6: note = redacted, <= 600, one line; `...(note ? { note } : {})` */
 export interface ConfirmOutcome {
@@ -729,6 +758,13 @@ export interface SpendSnapshot {
   parentExceeded?: boolean;
   /** TUI-DESIGN §15 item 7: the parent's totals; present only with a parent */
   parent?: { totalUsd: number; capUsd: number };
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §6.2 [G6]): money reserved for live agents and not yet spent. Optional so
+   * every pre-1.5 snapshot (and every fake) is still a `SpendSnapshot`; `createSpendMeter` always writes it, and
+   * `restore` re-establishes it — it is usage-shaped, not cap-shaped. Enforcement is `sessionRemainingUsd`'s third
+   * argument [D6], never `exceeded()`.
+   */
+  heldUsd?: number;
 }
 export interface SpendMeter {
   /** never throws; records (and forwards to the parent) first, then evaluates */
@@ -742,6 +778,14 @@ export interface SpendMeter {
   child(capUsd: number): SpendMeter;
   /** TUI-DESIGN §15 item 7: root meter: replace the cap (USD or +Infinity); children keep forwarding to the same object; never recreate a meter */
   setCap?(capUsd: number): void;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §6.2 [G6]): reserve `usd` for spawned agents. OPTIONAL so every existing fake
+   * still satisfies `SpendMeter`. The hold belongs to the meter that took it and is NOT forwarded to the parent;
+   * `exceeded()` does not count it [D6]. Non-finite or negative amounts are ignored.
+   */
+  hold?(usd: number): void;
+  /** contract 1.5 (§6.2 [G6]): give back part of a hold; clamps at 0 and never forwards to the parent. */
+  release?(usd: number): void;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -1006,6 +1050,19 @@ export interface CheckpointState {
   undoLog?: UndoLogEntry[];
   /** TUI-DESIGN §15 item 9 */
   checkpointDegraded?: boolean;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.1, §8.2 D1 item 15): the delegation this run is the parent of, so a resumed
+   * or adopted process re-finds its children. Absent on every run that never delegated.
+   */
+  orchestration?: {
+    manifestId: string;
+    /** the step the manifest was confirmed at */
+    step: number;
+    dockBranch: string;
+    agents: { slug: string; state: AgentState; runId: string | null; commit: string | null }[];
+  };
+  /** contract 1.5 (§3.1): decompositions this run has made, against `orchestrate.maxSplits`; absent reads as 0 */
+  splits?: number;
   resumes: number;
   updatedAt: string;
 }
@@ -1023,7 +1080,7 @@ export interface PendingDirective {
 export const PENDING_DIRECTIVES_MAX = 8;
 export const DIRECTIVE_MAX_CHARS = 600;
 /** TUI-DESIGN §15 item 9 */
-export type UndoSkipReason = 'link' | 'escape' | 'submodule' | 'not-recoverable' | 'head-moved' | 'refused' | 'declined' | 'cap' | 'size';
+export type UndoSkipReason = 'link' | 'escape' | 'submodule' | 'not-recoverable' | 'head-moved' | 'refused' | 'declined' | 'cap' | 'size' | 'landed'; // contract 1.5 (§8.2 D3 item 25): the path came from a landed agent branch, below `RunMeta.undoUnavailableBelow`
 /** TUI-DESIGN §15 item 9 */
 export interface UndoLogEntry {
   runId: string;
@@ -1083,6 +1140,27 @@ export interface RunMeta {
   git?: RunGitMeta;
   /** TUI-DESIGN §15 item 10: AGENTS.md files folded into the generator system prompt */
   instructions?: InstructionRecord[];
+  /** contract 1.5 (ORCHESTRATION-DESIGN §4.1): this run delegated — what it spawned and what came back */
+  orchestration?: {
+    manifestId: string;
+    /** slugs, in manifest order */
+    agents: string[];
+    dockBranch: string;
+    landed: { slug: string; commit: string; step: number }[];
+  };
+  /** contract 1.5 (§4.1 [D2]): this run IS an agent — who its parent is, what it owns, and what the dirty sync replayed into its worktree */
+  agent?: {
+    slug: string;
+    parentRunId: string;
+    parentSessionId: string;
+    own: string[];
+    manifestId: string;
+    syncedDirty: SyncedDirtyEntry[];
+  };
+  /** contract 1.5 (§8.2 D3 item 25): the merges this run landed into its checkout, newest last */
+  landed?: { step: number; branch: string; commit: string }[];
+  /** contract 1.5 (§4.1; shared with COORDINATION-DESIGN §9.3): `/undo` and `/rewind` refuse below this step — a landed merge is not a harness write to revert */
+  undoUnavailableBelow?: number;
 }
 /** TUI-DESIGN §15 item 10 */
 export type RunSource = 'cli' | 'bench' | 'perf';
@@ -1205,6 +1283,12 @@ export interface EngineSeed {
   pinnedFiles?: string[];
   /** TUI-DESIGN §8.3 (additive): steers carried from the parent's pendingDirectives, for the ` · N pending steer carried` suffix of the seeded notice */
   carriedDirectives?: number;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §2.6 [D13]): the other agents of this manifest, for the child's bounded
+   * `## Agents` prompt section — what they are doing and what they own, so a child does not duplicate or fight them.
+   * Absent for every run that is not an agent.
+   */
+  siblings?: readonly { slug: string; task: string; own: readonly string[] }[];
 }
 /** §9.3: main() emits budget:clamp from it right after run:ready */
 export interface SessionClamp {
@@ -1310,6 +1394,13 @@ export interface EngineOptions {
    * real call without `usage.cost`). TODO(src/cli/session.ts): pass `config.generator.pricing` here.
    */
   generatorPricing?: GeneratorConfig['pricing'];
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.1): this engine's place in a delegation. Absent = an ordinary run that is
+   * neither a parent nor an agent (`depth: 0` with nothing else is the parent's own shape).
+   */
+  orchestration?: OrchestrationOptions;
+  /** contract 1.5 (§4.1, §6.4): every resolved `orchestrate.*` setting the decompose stage reads; absent = `DEFAULT_SPLIT_POLICY` (`split: 'off'`) */
+  splitPolicy?: OrchestrationPolicy;
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
@@ -1453,10 +1544,16 @@ export interface EngineStatus {
   pausePoint?: PausePoint | null;
   /** contract 1.4 (§12.0.3): the context meter; the context-policy branch fills it, the shape is fixed here */
   context?: ContextUsage;
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.1, §4.6): the delegation this process is the parent of — `null` once a
+   * delegation settled or when this run never delegated; absent on a process that cannot delegate at all.
+   */
+  orchestration?: { manifestId: string; agents: number; live: number; landed: number; reserveUsd: number; heldUsd: number } | null;
 }
 
 // TUI-DESIGN §15 item 14: notices and renderer labels
-export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui';
+/** contract 1.5 (ORCHESTRATION-DESIGN §4.1): 'orchestration' = the delegation surface's notices (spawned, adopted, landed, the declined split) */
+export type NoticeKind = 'offline' | 'online' | 'checkpoint:degraded' | 'checkpoint:restored' | 'sandbox' | 'drift' | 'seeded' | 'instructions' | 'config' | 'pricing' | 'lock' | 'ui' | 'orchestration';
 /** the only labels formatTranscriptItem prints instead of stepLabel() (item 19, §15.1); TUI-DESIGN-2 §6 item 1 / §3.10: the chat bubbles */
 export type UiLabel = '[ui]' | '[setup]' | '[config]' | '[sandbox]' | '[you]' | '[jevcode]';
 export type ChatLabel = Extract<UiLabel, '[you]' | '[jevcode]'>;
@@ -1522,7 +1619,22 @@ export type EngineEvent =
   // contract 1.4 (COORDINATION-DESIGN §12.0.2): emitted in finish('human_pause') after the final state.json settled and before the stop line and run:end
   | { type: 'pause:point'; point: PausePoint }
   // contract 1.4 (§8.6, §12.0.4): the context-policy branch emits it after a compaction; `chars` is before → after
-  | { type: 'context:compacted'; step: number; chars: { before: number; after: number }; by: 'code' | 'llm' };
+  | { type: 'context:compacted'; step: number; chars: { before: number; after: number }; by: 'code' | 'llm' }
+  // contract 1.5 (ORCHESTRATION-DESIGN §4.1): twelve additive members; the json stream stays `v: 1` and an
+  // unknown-type-ignoring consumer is unaffected. The `agent:*` members are HOST-emitted (the supervisor, §8.3 item 34),
+  // not engine-emitted — they ride the same emitter so every surface reads one stream.
+  | { type: 'decompose:start'; step: number; options: number }
+  | { type: 'decompose:skipped'; step: number; why: GateReason } // --json=verbose only
+  | { type: 'decompose:ranked'; step: number; splitKind: SplitKind; verdict: ChoiceVerdict; probability: number; agents: number; rejected: number }
+  | { type: 'orchestration:proposed'; step: number; manifest: Manifest }
+  | { type: 'agent:start'; agent: AgentRef } // host-emitted
+  | { type: 'agent:status'; agent: AgentRef; row: AgentRow } // host-emitted, verbose
+  | { type: 'agent:review'; agent: AgentRef; request: ConfirmRequest }
+  | { type: 'agent:end'; agent: AgentRef; stopReason: StopReason; exitCode: number; commits: number; changedFiles: number; spendUsd: number }
+  | { type: 'land:attempt'; slug: string; dockHead: string; pinned: string } // [G3] `pinned` is a sha, never a ref
+  | { type: 'land:result'; slug: string; outcome: 'landed' | 'conflicted' | 'failed-verify' | 'refused'; commit?: string; verify?: VerifyResult[]; rule?: string }
+  | { type: 'orchestration:settled'; landed: string[]; parked: string[]; dropped: string[]; dockBranch: string; spendUsd: number }
+  | { type: 'agent:adopted'; count: number; parentRunId: string };
 
 export type EngineEventType = EngineEvent['type'];
 
@@ -1545,7 +1657,10 @@ export type PausePointReason =
   | 'now' // pause({ at: 'now' }): the stage in flight was discarded under rule 1; proposal + arrived samples cached (§7.2)
   | 'now-after-execute' // pause({ at: 'now' }) landed during execute: execute finished, judge skipped, step committed (§7.2 execute row, §11 row 29)
   | 'pane' // pause() while a blocking pane was awaited: blockWaker → answer 'pause' (§7.2, §11 row 37)
-  | 'worktree'; // lease-conflict [t]: stopped for relocation; interruptedDetail.relocate set (§4.3 step 5)
+  | 'worktree' // lease-conflict [t]: stopped for relocation; interruptedDetail.relocate set (§4.3 step 5)
+  // contract 1.5 (ORCHESTRATION-DESIGN §4.2)
+  | 'delegate' // P9 "delegation accepted": the manifest was confirmed at step n; the parent has nothing left to do until children report — engine-initiated, `by: 'self'`, nothing interrupted [G17]
+  | 'review-needed'; // P10 "a child needs a human decision": a `review` verdict, or any blocking pane, inside a child
 
 /** §12.0.2: where a run stopped, so that /resume can continue it; one per pause point, emitted before `run:end` */
 export interface PausePoint {
@@ -1880,8 +1995,13 @@ export interface SessionHost {
   /** addSecret per span BEFORE engine.steer; secretsAcked = spans.length */
   steer(text: string, opts: { secretSpans: readonly string[] }): SteerResult;
   unsteer(): PendingDirective | null;
-  /** contract 1.4 (§12.0.1 rule 3): widened to the engine's shape — `at: 'now'` is `/pause now` and the `run:pauseNow` chord */
-  pause(opts?: PauseOptions): void;
+  /**
+   * contract 1.4 (§12.0.1 rule 3): widened to the engine's shape — `at: 'now'` is `/pause now` and the `run:pauseNow` chord.
+   * contract 1.5 (ORCHESTRATION-DESIGN §4.3 [D15]): the OPTIONAL `scope` rides on this signature only (never on
+   * `PauseOptions`, which `Engine.pause` shares). The default for a delegating session is `tree`; absent = this run only.
+   * Additive by method-parameter bivariance: every existing `pause(opts?: PauseOptions)` implementation still satisfies it.
+   */
+  pause(opts?: PauseOptions & { scope?: 'run' | 'tree' | 'agents' | 'all' | `agent:${string}` }): void;
   abort(reason: 'human_abort'): void;
   retryNow(): boolean;
   /** a renderer-originated line: engine.annotate() while a run is live, else a local `[ui]` item + `--json` `ui` line (§15.1) */
@@ -1899,6 +2019,8 @@ export interface SessionHost {
   dispatchContext?(): Omit<import('../tui/commands/dispatch.js').DispatchContext, 'run'>;
   /** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): the peer snapshot the TUI renders; null until the registry lands */
   peers?(): PeerView | null;
+  /** contract 1.5 (ORCHESTRATION-DESIGN §4.6): the agent rows the `a` tab and `jevcode agents list` render; absent until the supervisor lands (§8.3 item 34) */
+  agents?(): readonly AgentRow[];
 }
 /** contract 1.6 item 9 (TUI-DESIGN-4 §7.10): what `/peers` shows about other JevCode instances on this workspace */
 export interface PeerView {
@@ -2237,4 +2359,253 @@ export interface BenchDeps {
   /** present only with --live */
   liveProvider?: Provider;
   liveDecider?: Decider;
+}
+
+// ---------------------------------------------------------------------------------------
+// Orchestration, contract 1.5 (docs/ORCHESTRATION-DESIGN.md §4.1)
+//
+// Every shape below is part of the frozen contract and is re-exported by `src/orchestrate/types.ts`, which keeps only
+// the §8.1 seams (`RunGit`, `Clock`, `AskFn`, `CommitIdentity`, `DEFAULT_SPLIT_POLICY`) and the planner-internal drafts.
+// `src/core/types.ts` never imports from `src/orchestrate/**`, which is why `SplitPolicy`'s body is declared here as
+// `OrchestrationPolicy` and aliased there.
+// ---------------------------------------------------------------------------------------
+
+/** contract 1.5 (§3.2 + §3.4): the escape `no_split` is always present and is always the fallback. */
+export type SplitKind = 'by_plan_item' | 'by_directory' | 'by_failing_test' | 'by_layer' | 'as_written' | 'no_split';
+
+/** contract 1.5 (§2.5 / §3.4 rule 5 / §5.6): `research` is read-only and never lands; `critic` writes only test globs. */
+export type AgentRole = 'code' | 'research' | 'critic';
+
+/** contract 1.5 (§2.8): sixteen states; `paused` (a human asked) and `parked` (the child stopped itself) are separate [G22]. */
+export type AgentState =
+  | 'planned'
+  | 'starting'
+  | 'running'
+  | 'paused'
+  | 'parked'
+  | 'review'
+  | 'stalled'
+  | 'done'
+  | 'landing'
+  | 'landed'
+  | 'conflicted'
+  | 'failed-verify'
+  | 'kicked'
+  | 'dropped'
+  | 'crashed'
+  | 'failed-start';
+
+/** contract 1.5 (§3.1): the gate opens only when one of these holds as well as every all-of condition. */
+export type DemandReason = 'disjoint_directories' | 'failing_tests' | 'human';
+
+/** contract 1.5 (§3.1): why the gate is shut. One typed reason, so `decompose:skipped` is testable (M2). */
+export type GateReason =
+  | 'split_off'
+  | 'child_depth'
+  | 'no_ledger'
+  | 'not_git'
+  | 'unborn_head'
+  | 'no_worktree_support'
+  | 'plan_too_small'
+  | 'blocking_unverified'
+  | 'no_verification'
+  | 'dirty_too_large'
+  | 'children_live'
+  | 'max_splits'
+  | 'cooldown'
+  | 'resources'
+  | 'money'
+  | 'replan_step'
+  | 'orchestration_problem'
+  | 'no_demand';
+
+/** contract 1.5 ([D2] §2.3): one entry per file the worktree dirty-set sync wrote, binary-safe [G9]. */
+export interface SyncedDirtyEntry {
+  path: string;
+  /** sha256 of the BYTES written into the worktree; '' for a file the sync deleted */
+  sha256: string;
+  /** st_mode & 0o7777 as the sync set it */
+  mode: number;
+}
+
+/** contract 1.5 (§3.7): one row of the manifest. Produced only by the normaliser (§3.4). */
+export interface AgentSpec {
+  slug: string;
+  /** <= AGENT_TASK_CHARS after redact + one-lining */
+  task: string;
+  /** <= OWN_GLOBS_MAX globs of the §3.4 rule 2 sub-language */
+  own: readonly string[];
+  role: AgentRole;
+  /** <= VERIFY_COMMANDS_MAX commands, <= OWN_GLOB_CHARS chars each; [] only for 'research' */
+  verify: readonly string[];
+  /** slugs; a DAG of depth <= DEPENDS_DEPTH_MAX */
+  dependsOn: readonly string[];
+  capUsd: number;
+  maxSteps: number;
+  maxWallMs: number;
+  mode: EngineMode;
+  /** `jevcode/<slug>`; null for 'research' (§2.2, §3.4 rule 5) */
+  branch: string | null;
+}
+
+/** contract 1.5 (§3.4): an option deleted by a normalisation rule, or clamped by rule 7. */
+export interface RejectedOption {
+  kind: SplitKind;
+  reason: string;
+  /** Jev's probability when the option reached ranking; null when code deleted it first */
+  probability: number | null;
+}
+
+/** contract 1.5 (§3.7): the decomposition record, written to `<runDir>/orchestrate/manifest-<step>.json`. */
+export interface Manifest {
+  v: 1;
+  manifestId: string;
+  runId: string;
+  sessionId: string;
+  step: number;
+  splitKind: SplitKind;
+  verdict: ChoiceVerdict;
+  probability: number;
+  confidence: number;
+  baseSha: string;
+  repoKey: string | null;
+  dockBranch: string;
+  /**
+   * [D2] what §2.3's `dirtySync` replayed into every agent worktree: excluded from each agent's commit
+   * set (§2.6) unless that agent changed it, from §5.3's outside-`own` computation, and from the land diff.
+   */
+  syncedDirty: readonly SyncedDirtyEntry[];
+  /** [D1] the subset of `syncedDirty` inside some agent's `own`: the paths §5.7's launch must ask about */
+  dirtyOverlap: readonly string[];
+  agents: readonly AgentSpec[];
+  reserveUsd: number;
+  reserveFrom: 'session' | 'run';
+  rejected: readonly RejectedOption[];
+  demand: DemandReason;
+  createdAt: string;
+  checksum: string;
+}
+
+/** contract 1.5 (§5.1 / §5.2): one verification command's result against a tree. */
+export interface VerifyResult {
+  command: string;
+  ok: boolean;
+  exitCode: number | null;
+  durationMs: number;
+  /** <= VERIFY_TAIL_LINES lines of the combined output, redacted by the caller */
+  tail: readonly string[];
+  /** parsed by `workspace/tests.ts parseTestOutput` when the runner is known; null otherwise */
+  counts: TestCounts | null;
+  /** the command was killed by its timeout or the tree kill */
+  killed: boolean;
+}
+
+/** contract 1.5 (§5.2): one append-only line of `<runDir>/orchestrate/land.jsonl`. */
+export interface LandAttempt {
+  at: string;
+  slug: string;
+  /** [G3] the sha the branch resolved to ONCE, before verification; never a ref */
+  pinned: string;
+  /** the dock head the merge started from — what a failure resets to */
+  dockHead: string;
+  outcome: 'landed' | 'conflicted' | 'failed-verify' | 'refused';
+  /** the merge commit, when it landed */
+  commit?: string;
+  verify?: readonly VerifyResult[];
+  /** the §5.3 hard rule that refused it */
+  rule?: string;
+  /** conflicting paths, for `conflicted` */
+  conflicts?: readonly string[];
+  /** 0 on the first attempt; the kick number afterwards (§5.4) */
+  kick: number;
+}
+
+/** contract 1.5 (§2.2): how the surface names one child. */
+export interface AgentRef {
+  slug: string;
+  /** null until the child's process reports `run:ready` */
+  runId: string | null;
+  sessionId: string | null;
+}
+
+/**
+ * contract 1.5 (§4.6): the one row model every surface renders — the Ink tab, `--plain`, the screen-reader twin
+ * and `jevcode agents list`. Declared here with the rest of contract 1.5; the pure row STRINGS are
+ * built by `src/tui/agents/lines.ts` (wave D3 item 32), which is not this slot's file.
+ */
+export interface AgentRow {
+  slug: string;
+  state: AgentState;
+  step: number;
+  maxSteps: number;
+  stage: StageName | 'idle';
+  spendUsd: number;
+  capUsd: number;
+  wallMs: number;
+  maxWallMs: number;
+  own: readonly string[];
+  branch: string | null;
+  verify: readonly string[];
+  /** the last transcript line of the child, clipped by the renderer */
+  last: string;
+  /** why it is `parked` / `stalled` / `failed-verify`; '' otherwise */
+  why: string;
+}
+
+/**
+ * contract 1.5 (§4.1 `EngineOptions.splitPolicy`) — every `orchestrate.*` setting this slot reads, already resolved.
+ * `src/orchestrate/**` never imports `src/config/**` (§8.1 rule 1); wave D3 item 26 builds this object
+ * from the `SETTINGS` rows of §6.4 and hands it in. `src/orchestrate/types.ts` aliases it as `SplitPolicy`,
+ * which is the name every orchestrate module and `DEFAULT_SPLIT_POLICY` keep using.
+ */
+export interface OrchestrationPolicy {
+  split: 'off' | 'ask' | 'auto';
+  maxAgents: number;
+  /** [G15] `coordination.maxChildren` — the ceiling `maxAgents` is clamped by */
+  maxChildren: number;
+  maxSplits: number;
+  splitEvery: number;
+  preludeMaxFiles: number;
+  selfContainedFloor: number;
+  reserveFraction: number;
+  maxReserveUsd: number;
+  minAgentUsd: number;
+  agentMaxSteps: number;
+  agentMaxWallMs: number;
+  agentStallMs: number;
+  onStall: 'notify' | 'pause' | 'kick';
+  maxKicks: number;
+  critic: 'tests' | 'run' | 'off';
+  verify: readonly string[];
+  verifyRetries: number;
+  testGlobs: readonly string[];
+  land: 'step' | 'branch';
+  incidentalGlobs: readonly string[];
+  agentMode: 'worktree' | 'copy';
+  agentInclude: readonly string[];
+  dockCleanExclude: readonly string[];
+}
+
+/**
+ * contract 1.5 (§4.1 `EngineOptions.orchestration`): this engine's place in a delegation. `depth: 0` with nothing
+ * else set is a parent that may delegate; `depth: 1` with `role`/`own`/`parentRunId` is an agent, and
+ * `createEngine` refuses a deeper one (`ORCHESTRATION_DEPTH_MAX`, §2.1).
+ */
+export interface OrchestrationOptions {
+  depth: 0 | 1;
+  role?: AgentRole;
+  /** §2.4 belt 1: the globs `computeTargets` refuses to write outside of */
+  own?: readonly string[];
+  parentRunId?: string;
+  parentSessionId?: string;
+  slug?: string;
+  manifestId?: string;
+  /** §4.2 P10: the file a parked review's answer is read back from on replay */
+  reviewAnswerFile?: string;
+  /** §2.6 [G1]: the identity every harness commit is made under; never the user's */
+  commit?: { name: string; email: string };
+  /** [D2] §2.3: what the dirty-set sync replayed into this worktree — excluded from the commit set unless this agent changed it */
+  syncedDirty?: readonly SyncedDirtyEntry[];
+  /** [D10] §2.6: the harness's git seam for commit-after-step; the supervisor binds it to `runGit` with the per-worktree Sandbox. Absent = the engine makes no git commits. */
+  runGit?: (cwd: string, args: readonly string[], opts?: { timeoutMs?: number; maxOutputBytes?: number; signal?: AbortSignal }) => Promise<ExecResult>;
 }

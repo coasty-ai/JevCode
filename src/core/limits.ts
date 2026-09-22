@@ -142,3 +142,9 @@ export const LAND_LOG_LINE_BYTES = 1024;
 export const DIRTY_ENTRIES_MAX = 200;
 /** §2.6 [D2]: paths per `git add` invocation, so a 200-entry change set stays inside `ARG_MAX`. */
 export const ADD_SET_CHUNK = 256;
+/**
+ * §3.7 [D4]: rows of `ConfirmRequest.headline`. The band it fills is the one `reviewHeaderLines` /
+ * `reviewCardLines` would have given `[…RISK_DIMENSIONS gauges, matchesIntent]` — four gauges plus one row —
+ * so five is the count that keeps every ladder rung returning exactly what it returned before.
+ */
+export const HEADLINE_ROWS_MAX = 5;

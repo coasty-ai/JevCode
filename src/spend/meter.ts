@@ -9,6 +9,11 @@
  * TUI-DESIGN §9.1: `setCap()` replaces the cap of the same object (`/budget session-spend-cap` mutates the root every
  * live child forwards to — a recreated root would orphan the child), and `snapshot().parent` carries the parent's
  * totals so the engine can emit session-scope `budget:warn` without knowing the parent object.
+ *
+ * ORCHESTRATION-DESIGN §6.2 [G6] [D6]: `hold()` / `release()` reserve money for spawned agents. They are STORAGE only —
+ * `exceeded()` is deliberately untouched, because on a run meter (a real finite cap) it must keep meaning "this run spent
+ * its cap", not "this session is holding money for agents"; the enforcement is `sessionRemainingUsd(cap, spent, heldUsd)`.
+ * A hold belongs to the meter that took it and is never forwarded to the parent.
  */
 import type { SpendMeter, SpendSnapshot, SpendSource, TokenUsage } from '../core/types.js';
 
@@ -47,6 +52,8 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
   let cap = sanitiseCap(capUsd);
   let generator = zeroUsage();
   let jev = zeroUsage();
+  /** §6.2 [G6]: money reserved for live agents and not yet spent. Never negative, never non-finite, never forwarded. */
+  let held = 0;
 
   function totalUsd(): number {
     return generator.costUsd + jev.costUsd;
@@ -74,13 +81,16 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
   }
   function snapshot(): SpendSnapshot {
     const p = parentTotals();
-    // exactOptionalPropertyTypes: `parent` / `parentExceeded` are spread in only with a parent, never assigned undefined
+    // exactOptionalPropertyTypes: `parent` / `parentExceeded` are spread in only with a parent, never assigned undefined.
+    // `heldUsd` is optional on the type (every pre-1.5 snapshot lacks it) but is ALWAYS written here, as a number — the
+    // disk store must round-trip it so an adopting session can rebuild the holds after a supervisor SIGKILL (§6.2 [G6]).
     return {
       generator: { ...generator },
       jev: { ...jev },
       totalUsd: totalUsd(),
       capUsd: cap,
       exceeded: exceeded(),
+      heldUsd: held,
       ...(p ? { parentExceeded: parentExceeded(), parent: { totalUsd: p.totalUsd, capUsd: p.capUsd } } : {}),
     };
   }
@@ -104,10 +114,14 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
     restore(s: SpendSnapshot): void {
       // Only the usage is restored: the cap belongs to this run's configuration (a resume may
       // raise --spend-cap), and the parent has its own record (a bench seeds it from tasks.jsonl).
+      // ORCHESTRATION-DESIGN §6.2 [G6]: `heldUsd` IS restored, and that does not weaken the rule above — a hold is
+      // usage-shaped, not cap-shaped (it is money three live agents are already carrying), so an adopting session
+      // that drops it under-counts in-flight spend by up to `reserveUsd` and can start a run the cap cannot afford.
       // A snapshot read from a checkpoint is external input: a missing object restores zero.
       const snap: Partial<SpendSnapshot> = typeof s === 'object' && s !== null ? s : {};
       generator = sanitiseUsage(snap.generator);
       jev = sanitiseUsage(snap.jev);
+      held = nonNegative(snap.heldUsd);
     },
     child(childCapUsd: number): SpendMeter {
       return createSpendMeter(childCapUsd, meter);
@@ -115,6 +129,18 @@ export function createSpendMeter(capUsd: number, parent?: SpendMeter): SpendMete
     setCap(newCapUsd: number): void {
       // TUI-DESIGN §9.1: the same object keeps its usage and its children; only the cap changes (+Infinity = `none`).
       cap = sanitiseCap(newCapUsd);
+    },
+    hold(usd: number): void {
+      // §6.2 [G6]: reserve money for spawned agents. NOT forwarded to the parent — the hold belongs to the meter that
+      // took it (the session meter holds for its own children; a run meter's hold is that run's, not the session's).
+      // Non-finite, negative and +Infinity amounts are ignored by `nonNegative`, exactly like a malformed usage.
+      held += nonNegative(usd);
+    },
+    release(usd: number): void {
+      // §6.2 [G6]: give back part of a hold. Clamped at 0 — a release larger than the outstanding hold (a double
+      // release, or an adopted tree whose manifest disagrees with the ledger) must never make `heldUsd` negative,
+      // which would hand `sessionRemainingUsd` more money than the cap allows. Not forwarded, like `hold`.
+      held = Math.max(0, held - nonNegative(usd));
     },
   };
   return meter;
