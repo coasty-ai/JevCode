@@ -128,12 +128,17 @@ const SECRET_FALSE_EXAMPLES = [
  * The state carries `{ name, path, file, length, charset, entropyBucket, family, fileClass }`
  * per candidate: **no value bytes, no substring, not even a prefix.** Jev may promote a band item
  * into the secret class and may never demote one out of it (`joinSecretVerdict`).
+ *
+ * The question id is `c.id` — `secret_<candidateId>`, built by `secretId()` in `plan.ts` — exactly
+ * as groups III, IV and V key theirs. Group I was the last ordinal (`secret_<i>`) and the last
+ * place a `candidateId → ordinal` side table had to agree with an iteration order; the table is
+ * retired (2026-09-22) and all four groups now read `questions[c.id]`.
  */
 export function secretQuestions(cands: readonly SecretCandidate[]): QuestionBatch {
   if (cands.length === 0) return EMPTY;
   const questions: Record<string, Question> = {};
   const candidates = cands.map((c, i) => {
-    questions[`secret_${i}`] = noul(
+    questions[c.id] = noul(
       `Is the value stored at ${ref(c.dotted)} in ${ref(c.path)} a credential — an API key, token, password or private key? You are given its shape only: ${c.shape.length} characters, ${c.shape.charset}, ${c.shape.entropyBucket} entropy.`,
       {
         true: {

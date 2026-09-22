@@ -139,7 +139,9 @@ import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGi
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
-import { buildSplitMessage, buildSystemPrompt, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput } from '../provider/prompts.js';
+import { buildSplitMessage, buildSystemPrompt, memoryIndexChars, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput, type PromptMemoryBuild } from '../provider/prompts.js';
+// contract 1.6 (IMPORT-DESIGN §2.10.4, §7.5 row 42): the per-step rule/topic matcher
+import { selectMemory } from './context/memory.js';
 // contract 1.5 (§3.4 rule 9): a COUNT of secret hits, never a value
 import { detectSecrets } from '../core/redact.js';
 import { linkedAbort } from '../core/abort.js';
@@ -688,6 +690,9 @@ class EngineImpl implements Engine {
   private lastRecentSteps: RecentStepsUsage = { chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 };
   private lastRefreshMs = 0;
   private lastPromptBuildMs = 0;
+  /** contract 1.6 (IMPORT-DESIGN §2.10.3): the two memory sections of the last build, and the run's index size */
+  private lastMemoryBuild: PromptMemoryBuild | null = null;
+  private readonly memoryIndexChars: number;
 
   private readonly detector: LoopDetector;
   private wallMsUsedBefore = 0;
@@ -921,7 +926,17 @@ class EngineImpl implements Engine {
     });
     // TUI-DESIGN §15.2 constructor row: AGENTS.md text reaches the generator system prompt only (D6)
     const instructions = init.opts.instructions?.text ?? '';
-    this.systemPrompt = buildSystemPrompt({ mode: this.mode, sandboxLevel: init.sandbox.level, toolName: 'propose_action', ...(instructions.length > 0 ? { instructions } : {}) });
+    // contract 1.6 (IMPORT-DESIGN §2.10.1/§2.10.2): the always-on memory index rides the once-per-run system prompt,
+    // after `## Project instructions`; absent → the prompt is byte-identical to what it was before 1.6
+    const memoryIndex = init.opts.memory?.index?.trim() ?? '';
+    this.systemPrompt = buildSystemPrompt({
+      mode: this.mode,
+      sandboxLevel: init.sandbox.level,
+      toolName: 'propose_action',
+      ...(instructions.length > 0 ? { instructions } : {}),
+      ...(memoryIndex.length > 0 ? { memoryIndex } : {}),
+    });
+    this.memoryIndexChars = memoryIndexChars(memoryIndex);
     this.synthesizer = init.opts.synthesizer ?? null;
     this.resumed = init.resume !== null;
     this.resumeStop = null;
@@ -4197,7 +4212,12 @@ class EngineImpl implements Engine {
     const plan = planHistory(this.history, Math.floor(this.contextPolicy.budgetChars * HISTORY_SHARE));
     await this.loadPlannedOutputs(plan);
     this.lastRecentSteps = { chars: plan.chars, allowanceChars: plan.allowanceChars, whole: plan.whole, clipped: plan.clipped, oneLine: plan.oneLine, reads: plan.reads.length };
+    // contract 1.6 (IMPORT-DESIGN §2.10.4): the step's paths are its files in view plus the @-mentioned pins, the same
+    // set §8.2 uses; `selectMemory` is empty (and both sections elide) whenever the run was given no memory
+    const memory = selectMemory(this.opts.memory, [...refreshed.files.map((f) => f.rel), ...(this.opts.seed?.pinnedFiles ?? [])]);
     return {
+      ...(memory.rules.length > 0 ? { rulesInScope: memory.rules } : {}),
+      ...(memory.topics.length > 0 ? { memoryInScope: memory.topics } : {}),
       files: refreshed.files.map((f) => ({
         path: f.rel,
         content: f.content,
@@ -4228,6 +4248,8 @@ class EngineImpl implements Engine {
     this.filesInView.keepShown(built.shownFiles);
     if (startedAt !== undefined) this.lastPromptBuildMs = Math.max(0, this.clock() - startedAt);
     this.notePromptChars(built);
+    // contract 1.6 (§2.10.3): what the two memory sections cost this build; null on a run with no memory
+    this.lastMemoryBuild = built.memory ?? null;
     this.contextUsage = this.usage(this.systemPrompt.length + built.chars);
   }
 
@@ -4257,6 +4279,8 @@ class EngineImpl implements Engine {
       compactions: this.compactions,
       lastCompactionAt: over.lastCompactionAt ?? this.lastCompactionAt,
       compaction: this.contextPolicy.compaction,
+      // contract 1.6 (§2.10.3): omitted — and so omitted from ContextUsage — on a run with no memory
+      ...(this.lastMemoryBuild === null ? {} : { memory: { indexChars: this.memoryIndexChars, ...this.lastMemoryBuild } }),
     });
   }
 

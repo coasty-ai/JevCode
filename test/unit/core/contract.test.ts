@@ -24,12 +24,18 @@ import type {
   DemandReason,
   Engine,
   EngineEvent,
+  EngineMemoryOptions,
   EngineOptions,
   EngineSeed,
   EngineStatus,
   GateReason,
   HarnessProblemKind,
   HistoryStore,
+  ImportAction,
+  ImportManifest,
+  ImportPlan,
+  ImportProbe,
+  InstructionRecord,
   IntakeKind,
   InterruptReason,
   JevProvider,
@@ -38,12 +44,19 @@ import type {
   LandAttempt,
   LaunchSettings,
   Manifest,
+  McpFile,
+  McpServerRecord,
+  MemoryItem,
+  MemoryProvenance,
+  MemoryUsage,
   NoticeKind,
   OrchestrationOptions,
   OrchestrationPolicy,
   PauseOptions,
   PausePoint,
   PausePointReason,
+  PlanRow,
+  ProjectCommand,
   RejectedOption,
   Renderer,
   ResolvedConfig,
@@ -334,8 +347,9 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
     expect(i15).toBeGreaterThan(0);
     // §4.1: orchestration rebases onto the commit that lands coordination's 1.4 and never edits above it
     expect(lines[i15 - 1]?.startsWith('// contract 1.4 (2026-09-21)')).toBe(true);
-    // the TUI's round-4 block was assigned 1.7 and landed first; 1.5 slots in above it, never below
-    expect(lines[i15 + 1]?.startsWith('// contract 1.7 (2026-09-22)')).toBe(true);
+    // the TUI's round-4 block was assigned 1.7 and landed first; 1.5 slots in above it, never below, and
+    // import's 1.6 then slots in between the two (contract 1.6 header case below)
+    expect(lines[i15 + 1]?.startsWith('// contract 1.6 (2026-09-22)')).toBe(true);
     // the block is still contiguous and still ascending after 1.4
     expect(headers.map(([, i]) => i)).toEqual(headers.map((_, k) => headers[0]![1] + k));
     const later = headers.map(([l]) => l.slice('// contract '.length).split(' ')[0]!).slice(5).map(Number);
@@ -668,5 +682,180 @@ describe('contract 1.5 (ORCHESTRATION-DESIGN §4.1)', () => {
     expect(host.agents).toBeUndefined();
     const withAgents: Pick<SessionHost, 'agents'> = { agents: () => [] };
     expect(withAgents.agents?.()).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// contract 1.6 (docs/IMPORT-DESIGN.md §7.1 row 1, wave W0 / W4)
+// ---------------------------------------------------------------------------------------
+
+/** §2.3: the provenance block every imported byte carries (§0 principle 6). */
+const PROVENANCE: MemoryProvenance = { tool: 'claude-code', path: '~/.claude/CLAUDE.md', sha256: 'a'.repeat(64), imported: '2026-09-22T00:00:00.000Z', importId: 'imp_20260922T000000Z_a1b2c3' };
+
+describe('contract 1.6 (IMPORT-DESIGN §7.1 row 1)', () => {
+  it('header: the 1.6 line sits directly after 1.5 and directly before 1.7, inside one contiguous ascending block', () => {
+    const lines = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8').split('\n');
+    const headers = lines.map((l, i) => [l, i] as const).filter(([l]) => l.startsWith('// contract '));
+    const i16 = lines.findIndex((l) => l.startsWith('// contract 1.6 (2026-09-22)'));
+    expect(i16).toBeGreaterThan(0);
+    // §7.1 [G2.2]: "the import additions to src/core/types.ts go after coordination's round-3 contract line"
+    expect(lines[i16 - 1]?.startsWith('// contract 1.5 (2026-09-22)')).toBe(true);
+    // the TUI's round-4 block was assigned 1.7 and landed first; 1.6 slots in above it, never below
+    expect(lines[i16 + 1]?.startsWith('// contract 1.7 (2026-09-22)')).toBe(true);
+    // the block is still contiguous and still ascending after 1.4
+    expect(headers.map(([, i]) => i)).toEqual(headers.map((_, k) => headers[0]![1] + k));
+    const later = headers
+      .map(([l]) => l.slice('// contract '.length).split(' ')[0]!)
+      .slice(5)
+      .map(Number);
+    expect(later).toEqual([...later].sort((a, b) => a - b));
+    expect(later.slice(0, 2)).toEqual([1.5, 1.6]);
+    expect(lines[i16]).toContain('docs/IMPORT-DESIGN.md §7.1 row 1');
+    expect(lines[i16]).toContain('every widening is an optional member or a new union member');
+    expect(lines[i16]).toContain('CheckpointEnvelope.version stays 1');
+  });
+
+  it('the 22 section-1 shapes are declared in core and re-exported by src/import/types.ts, which declares none of them', () => {
+    const core = readFileSync(join(ROOT, 'src/core/types.ts'), 'utf8');
+    const imports = readFileSync(join(ROOT, 'src/import/types.ts'), 'utf8');
+    const moved = [
+      'SourceTool',
+      'SourceScope',
+      'SourceFormat',
+      'ImportClass',
+      'ImportSkipAction',
+      'ImportAction',
+      'SourceParse',
+      'SourceItem',
+      'MemoryKind',
+      'RuleTrigger',
+      'MemoryProvenance',
+      'MemoryItem',
+      'ProjectCommand',
+      'McpServerRecord',
+      'McpFile',
+      'PlanRow',
+      'PlanRoot',
+      'CannotRead',
+      'ImportPlan',
+      'ImportProbe',
+      'ImportManifestEntry',
+      'ImportManifest',
+    ];
+    expect(moved).toHaveLength(22);
+    for (const name of moved) {
+      expect(new RegExp(`^export (?:interface|type) ${name}\\b`, 'm').test(core), `core declares ${name}`).toBe(true);
+      expect(new RegExp(`^export (?:interface|type) ${name}\\b`, 'm').test(imports), `src/import/types.ts no longer declares ${name}`).toBe(false);
+      // the re-export list, so nothing outside src/import/** had to move
+      expect(new RegExp(`^  ${name},$`, 'm').test(imports), `src/import/types.ts re-exports ${name}`).toBe(true);
+    }
+    // section 3 stays local — the atlas shape and the seams are declared here, not in core
+    for (const local of ['SourceSpec', 'RootSpec', 'ImportFs', 'ImportWriteFs', 'ImportClock', 'ImportEnvironment', 'MarkdownDoc', 'ValueShape']) {
+      expect(new RegExp(`^export interface ${local}\\b`, 'm').test(imports), `${local} stays in src/import/types.ts`).toBe(true);
+      expect(new RegExp(`^export interface ${local}\\b`, 'm').test(core), `${local} is NOT in core`).toBe(false);
+    }
+  });
+
+  it('the moved shapes compile from core with the bodies they had in src/import/types.ts', () => {
+    const item: MemoryItem = {
+      name: 'test command',
+      description: 'how tests are run here',
+      kind: 'project',
+      scope: 'project',
+      paths: ['src/**/*.ts'],
+      trigger: 'paths',
+      source: PROVENANCE,
+      redacted: 0,
+      clipped: 0,
+      body: 'Run `npm test`.',
+    };
+    expect(item.paths).toEqual(['src/**/*.ts']);
+    const row: PlanRow = {
+      id: 'r1',
+      source: { id: 's1', display: '~/.claude/CLAUDE.md', tools: ['claude-code'], sha256: 'b'.repeat(64), bytes: 120, mtimeMs: 1 },
+      class: 'memory',
+      dest: 'AGENTS.md',
+      action: 'append',
+      scope: 'project',
+      bytes: 120,
+      why: 'rule 10 (markdown, headings)',
+      warnings: [],
+    };
+    // §4.6.1: every `skip:*` reason is an ImportAction, so a skipped row needs no second field
+    const skipped: ImportAction[] = ['skip:self', 'skip:secret', 'skip:transcript', 'skip:unrelated'];
+    expect(skipped.every((a) => a.startsWith('skip:'))).toBe(true);
+    const plan: ImportPlan = {
+      v: 1,
+      importId: 'imp_20260922T000000Z_a1b2c3',
+      at: '2026-09-22T00:00:00.000Z',
+      jevcodeVersion: '0.0.0',
+      workspace: '/ws',
+      workspaceKey: '/ws',
+      gitRoot: '/ws',
+      trust: 'trust',
+      roots: [],
+      rows: [row],
+      budget: { memoryBytes: 0, memoryMax: 1, indexLines: 0, indexMax: 1 },
+      jev: { requests: 0, questions: 0, usd: 0, fallbacks: 0 },
+      cannotRead: [],
+      notices: [],
+    };
+    expect(plan.rows[0]?.dest).toBe('AGENTS.md');
+    const server: McpServerRecord = { transport: 'stdio', command: 'x', enabled: false, source: { tool: 'mcp', path: '~/.mcp.json', sha256: 'c'.repeat(64), importId: plan.importId } };
+    const mcp: McpFile = { v: 1, servers: { x: server } };
+    // §1 property 16: every imported server arrives disabled — the literal `false` is the type
+    expect(mcp.servers['x']?.enabled).toBe(false);
+    const manifest: ImportManifest = { v: 1, user: [], workspaces: { '/ws': [{ importId: plan.importId, dest: 'AGENTS.md', sourceSha256: 'b'.repeat(64), destSha256: 'd'.repeat(64), scope: 'project', at: plan.at, by: 'tty' }] } };
+    expect(manifest.workspaces['/ws']).toHaveLength(1);
+    const probe: ImportProbe = { tools: [{ tool: 'codex', display: '~/.codex', items: 4 }], total: 4, ms: 12, partial: false };
+    expect(probe.total).toBe(4);
+    const command: ProjectCommand = { name: 'review', description: 'review the diff', path: '.jevcode/commands/review.md', body: 'x', scope: 'project', source: PROVENANCE, executableStripped: 1 };
+    expect(command.executableStripped).toBe(1);
+  });
+
+  it('the five widenings are members of the real declarations: InstructionRecord, EngineOptions.memory, NoticeKind, RunMeta.imports, CheckpointState.kept[].kind', () => {
+    // 1. InstructionRecord += kind?, scope? — the pre-1.6 record still compiles
+    const plain: InstructionRecord = { path: 'AGENTS.md', sha256: 'e'.repeat(64), bytes: 10 };
+    const memoryRecord: InstructionRecord = { ...plain, path: '.jevcode/memory/testing.md', kind: 'preference', scope: 'project-local' };
+    expect([plain.kind, memoryRecord.kind]).toEqual([undefined, 'preference']);
+    // 2. EngineOptions.memory?: { index?, rules?, topics? }
+    const memory: EngineMemoryOptions = { index: '- testing — how tests run here', rules: [], topics: [] };
+    const opts: Pick<EngineOptions, 'memory'> = { memory };
+    expect(opts.memory?.index).toContain('testing');
+    expect(({} as Pick<EngineOptions, 'memory'>).memory).toBeUndefined();
+    // 3. NoticeKind += 'import'
+    const kinds: NoticeKind[] = ['orchestration', 'import'];
+    const notice: Extract<EngineEvent, { type: 'notice' }> = { type: 'notice', step: null, kind: 'import', level: 'info', text: '[import] active from the next run' };
+    expect(kinds).toContain(notice.kind);
+    // 4. RunMeta.imports?: readonly string[]
+    const imports: Pick<RunMeta, 'imports'> = { imports: ['imp_20260922T000000Z_a1b2c3'] };
+    expect(imports.imports).toHaveLength(1);
+    expect(({} as Pick<RunMeta, 'imports'>).imports).toBeUndefined();
+    // 5. CheckpointState.kept?[].kind += 'memory' (the `kept` row lands with the amendment, CD §8.6 :1504)
+    const kept: NonNullable<CheckpointState['kept']> = [
+      { kind: 'fact', text: 'f() returns 2', step: 3, by: 'jev' },
+      { kind: 'file', text: 'src/a.ts', step: 4, by: 'code' },
+      { kind: 'decision', text: 'use pytest', step: 5, by: 'human' },
+      { kind: 'memory', text: 'testing — how tests run here', step: 6, by: 'code' },
+    ];
+    expect(kept.map((k) => k.kind)).toEqual(['fact', 'file', 'decision', 'memory']);
+    expect(({} as CheckpointState).kept).toBeUndefined();
+  });
+
+  it('ContextUsage.memory is the §2.10.3 counter and is OPTIONAL, so a run without memory reports what it did before', () => {
+    const usage: MemoryUsage = {
+      indexChars: 512,
+      rulesChars: 1_200,
+      rulesAllowanceChars: 6_144,
+      rulesMatched: 3,
+      rulesShown: 3,
+      memoryChars: 900,
+      memoryAllowanceChars: 8_601,
+      memoryMatched: 2,
+      memoryShown: 1,
+    };
+    const withMemory: Pick<ContextUsage, 'memory'> = { memory: usage };
+    expect(withMemory.memory?.rulesShown).toBe(3);
+    expect(({} as Pick<ContextUsage, 'memory'>).memory).toBeUndefined();
   });
 });

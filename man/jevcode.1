@@ -495,6 +495,10 @@ per\-run spend cap (default 2.00)
 .BI \-\-allow\-model\-alias
 allow an undated \-\-jev\-model
 .TP
+.BI \-\-archive\-runs
+copy each run's records (steps/decisions/jev/generator.jsonl, run.json,
+state.json, patch) gzipped into <results>/runs/<runId>/
+.TP
 .BI \-\-out " <path>"
 bench: results dir; perf: results file; report: bundle dir (default
 ~/.jevcode/reports/<id>/)

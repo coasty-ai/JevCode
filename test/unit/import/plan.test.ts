@@ -2,6 +2,11 @@
  * src/import/plan.ts (IMPORT-DESIGN §4.5 the four passes, §4.6.1 the plan shape,
  * §4.7.3 **[G1.2]** `slugOf`, §4.7.5 **[G1.3]** the nine-cell re-run matrix, §6 group E rows
  * 55–64 and §6 rows 59–60, 83–85).
+ *
+ * Contract note (2026-09-22): the four Jev question ids this module builds — `secretId`,
+ * `sameMeaningId`, `rankId`, `contradictsId` — are all **content-keyed**, `<group>_<content key>`.
+ * Group I was the last ordinal; `secretCandidateId → secret_<n>` is retired and `SecretCandidate.id`
+ * IS the question id, which is what groups III–V already did.
  */
 import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../../../src/core/hash.js';
@@ -21,6 +26,8 @@ import {
   rerunAction,
   ruleSpecOf,
   sameMeaningId,
+  secretCandidateId,
+  secretId,
   slugOf,
 } from '../../../src/import/plan.js';
 import type { PlanCandidate, PlanInput } from '../../../src/import/plan.js';
@@ -386,9 +393,11 @@ describe('buildPlan', () => {
     expect(plan.rows[0]).toMatchObject({ class: 'secret', action: 'skip:secret' });
   });
 
-  // review defect 5 — the facade numbers `secret_<i>` across the whole plan, so a per-file
-  // counter reads file 2's key with file 1's answer. That can *demote* a real credential.
-  describe('Jev is_secret answers are keyed plan-wide, not per file (review defect 5)', () => {
+  // review defect 5 — an is_secret answer read by POSITION can be read against the wrong key, which
+  // on this group is the side that *demotes* a real credential. The ordinal is gone (2026-09-22):
+  // group I keys on `secretId(secretCandidateId(itemId, dotted))`, the same convention groups III–V
+  // use, so the asker and the reader agree by construction and no side table has to be kept in step.
+  describe('Jev is_secret answers are content-keyed, never positional (review defect 5)', () => {
     // two files, one band key each, in plan order
     const bandKeys = (dotted: string, value: string) => [classifyKey({ path: dotted.split('.'), dotted, value })];
     function twoFiles(): PlanCandidate[] {
@@ -407,26 +416,34 @@ describe('buildPlan', () => {
       return [a, b];
     }
     const jevOf = (answers: Record<string, Answer>): NonNullable<PlanInput['jev']> => ({ answers, requests: 1, questions: 2, usd: 0.0001, fallbacks: 0 });
+    /** the id both sides derive: `secret_<item.id>:<dotted>` */
+    const qid = (c: PlanCandidate, dotted: string): string => secretId(secretCandidateId(c.item.id, dotted));
 
-    it('secret_0 → file 1, secret_1 → file 2 — the second answer is not file 1’s again', () => {
-      const plan = buildPlan(
-        planInput(twoFiles(), { jev: jevOf({ secret_0: { type: 'noul', noul: 0.95 }, secret_1: { type: 'noul', noul: 0.05 } }) }),
-      );
+    it('the id is `secret_<candidateId>`, the same convention as same_meaning / rank / contradicts', () => {
+      const [a] = twoFiles();
+      expect(qid(a!, 'integration.clientId')).toBe(`secret_${a!.item.id}:integration.clientId`);
+      // one shape for all four groups: `<group>_<content key>`, never `<group>_<ordinal>`
+      expect(sameMeaningId('x', 'y')).toBe('same_meaning_x_y');
+      expect(secretId('x:y')).toBe('secret_x:y');
+    });
+
+    it('file 1’s answer reaches file 1’s key, and file 2’s reaches file 2’s', () => {
+      const [a, b] = twoFiles();
+      const plan = buildPlan(planInput([a!, b!], { jev: jevOf({ [qid(a!, 'integration.clientId')]: { type: 'noul', noul: 0.95 }, [qid(b!, 'service.clientId')]: { type: 'noul', noul: 0.05 } }) }));
       const rows = plan.rows.filter((r) => r.class === 'secret');
       expect(rows.map((r) => r.source.display), 'only file 1 is a secret').toEqual(['/h/.cursor/mcp.json']);
       expect(rows[0]?.why).toContain('p=0.95');
     });
 
-    it('with the answers flipped, the credential is file 2 — a per-file counter demotes it', () => {
-      const plan = buildPlan(
-        planInput(twoFiles(), { jev: jevOf({ secret_0: { type: 'noul', noul: 0.05 }, secret_1: { type: 'noul', noul: 0.95 } }) }),
-      );
+    it('with the answers flipped, the credential is file 2 — the answer follows the key, not the slot', () => {
+      const [a, b] = twoFiles();
+      const plan = buildPlan(planInput([a!, b!], { jev: jevOf({ [qid(a!, 'integration.clientId')]: { type: 'noul', noul: 0.05 }, [qid(b!, 'service.clientId')]: { type: 'noul', noul: 0.95 } }) }));
       const rows = plan.rows.filter((r) => r.class === 'secret');
       expect(rows.map((r) => r.source.display), 'only file 2 is a secret').toEqual(['/h/.codex/config.toml']);
       expect(rows[0]?.why).toContain('p=0.95');
     });
 
-    it('a file with no band key does not consume a question id', () => {
+    it('a file inserted between them shifts no answer — the positional failure cannot recur', () => {
       const [a, b] = twoFiles();
       const plain = candidate({
         item: item('/h/.claude/settings.json', { scope: 'user' }),
@@ -434,10 +451,19 @@ describe('buildPlan', () => {
         keys: [classifyKey({ path: ['model'], dotted: 'model', value: 'z-ai/glm-5.3-flash' })],
       });
       expect(plain.keys?.[0]?.band).toBe(false);
-      const plan = buildPlan(
-        planInput([a!, plain, b!], { jev: jevOf({ secret_0: { type: 'noul', noul: 0.05 }, secret_1: { type: 'noul', noul: 0.95 } }) }),
-      );
-      expect(plan.rows.filter((r) => r.class === 'secret').map((r) => r.source.display)).toEqual(['/h/.codex/config.toml']);
+      const answers = jevOf({ [qid(a!, 'integration.clientId')]: { type: 'noul', noul: 0.05 }, [qid(b!, 'service.clientId')]: { type: 'noul', noul: 0.95 } });
+      // the same two answers, against three orderings of the same corpus: the verdict never moves
+      for (const order of [[a!, plain, b!], [plain, a!, b!], [b!, a!, plain]]) {
+        const plan = buildPlan(planInput(order, { jev: answers }));
+        expect(plan.rows.filter((r) => r.class === 'secret').map((r) => r.source.display)).toEqual(['/h/.codex/config.toml']);
+      }
+    });
+
+    it('an unanswered band key stays a secret — a miss is Jev not asked, never an answer gone astray (§0 principle 4)', () => {
+      const [a, b] = twoFiles();
+      const plan = buildPlan(planInput([a!, b!], { jev: jevOf({ [qid(b!, 'service.clientId')]: { type: 'noul', noul: 0.05 } }) }));
+      const rows = plan.rows.filter((r) => r.class === 'secret');
+      expect(rows.map((r) => r.source.display), 'the unanswered key is the conservative verdict').toEqual(['/h/.cursor/mcp.json']);
     });
   });
 
