@@ -133,15 +133,20 @@ describe('(a) the per-call signal on ctx.ask / askRecorded', () => {
     const decider = ignoresAbortDecider({ slowStage: 'intent', slowMs: RL1_INTENT_DEADLINE_MS + 150 });
     const h = await build({ mode: 'jev-on', decider, turns: TURNS(), workspace: ws(), probeGitState: repoState(), limits: { maxSteps: 1 } });
     await h.engine.run();
+    // the decider has answered; give the continuation inside `askRecorded` every chance to write before reading
     await decider.slowSettled;
+    await new Promise((r) => setTimeout(r, 50));
     const rec = h.store.steps[0] as StepRecord;
     // I4 in the record: the committed step carries no decision and no request from the ask it dropped
     expect(rec.decisions.some((d) => d.stage === 'intent')).toBe(false);
     expect(rec.jevRequests.some((r) => r.stage === 'intent')).toBe(false);
     // ... and the step's own `intentAnswer` is the code fallback, not the answer that arrived late
     expect(rec.intent).toBe('investigate');
-    // the meter saw the risk and judge asks of this step and not the abandoned one (3 asks made, 2 charged)
+    // the ask WAS made — the seam is about what it may write, not about not asking
     expect(decider.asked).toContain('intent');
+    // nothing was charged that was not recorded, and the abandoned ask is in neither
+    expect(h.store.jevRequests.map((r) => r.stage)).not.toContain('intent');
+    expect(h.meter.snapshot().jev.calls).toBe(h.store.jevRequests.length);
     expect(rec.usage.jev.calls).toBe(rec.jevRequests.length);
   }, 30_000);
 
