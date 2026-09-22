@@ -169,21 +169,17 @@ export const STRONG_SIGNALS_MIN = 2;
  * none of them". A signal a gold can carry turns a pool the gold is IN into a pool the rule calls
  * gold-free, and then the arbitration's vouch bound refuses the fix.
  *
- * THE BAR, as docs/DECISIONS.md 2026-09-22 ruling 1 states it and as iteration 3 applied it to
- * `late_guard`: a clean sweep of all 198 gold patches **AND** positive evidence on the records —
- * a replay in which the signal separates a recorded overfit from its gold. A signal with no
- * positive evidence cannot be the evidence that a pool holds no gold, however clean its sweep.
+ * THE BAR, as docs/DECISIONS.md 2026-09-22 ruling 1 states it, as iteration 3 applied it to
+ * `late_guard`, and as OOS iteration 4's review sharpened it: **a clean sweep whose POWER is
+ * stated — how many gold patches could have fired at all — AND positive evidence on the
+ * records**, a replay in which the signal separates a recorded overfit from its gold. A signal
+ * with no positive evidence cannot be the evidence that a pool holds no gold, however clean its
+ * sweep; and a clean sweep over a corpus where the rule could never fire says nothing either.
  *
- * TWO qualify today:
+ * ONE qualifies today:
  *   - `mutates_new_argument` — swept over the whole gold corpus by
  *     review-oos-iter-1-2026-09-22.md finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder
- *     golds: zero refusals"), and the `units` Ring-1 record is its positive case;
- *   - `guards_derived_local` (OOS iteration 4, item B) — 0 fires on all 198, and it FIRES on 2 of
- *     the 3 recorded iteration-1 overfits: `stats` (`ordered = sorted(values)` dereferenced by
- *     `return float(ordered[mid])` in front of the inserted guard) and `detect_cycle`
- *     (`hare = tortoise = node` dereferenced by `if hare.successor is None:` in front), while
- *     both of their golds are silent. Not `token_bucket`, whose overfit and gold guard the same
- *     two parameters and differ only in placement.
+ *     golds: zero refusals"), and the `units` Ring-1 record is its positive case.
  *
  * Every other signal is excluded, each for a measured reason:
  *   - `adds_special_case` is the input of `fewestSpecialCases` and the golds add special cases
@@ -212,8 +208,17 @@ export const STRONG_SIGNALS_MIN = 2;
  *     separates a recorded overfit from its gold.** Until one exists they doubt a single passer
  *     and never make a pool gold-free. (Iteration 4 first admitted them on the sweep alone; that
  *     was the ruling misapplied, and this is the correction.)
+ *   - `guards_derived_local` — admitted by OOS iteration 4 on 2 of 3 replay fires, and WITHDRAWN
+ *     by that iteration's review. Both of those fires rested on a use that the value the guard
+ *     rejects would NOT have made fail: `stats`' `return float(ordered[mid])` sits inside the
+ *     `if len(ordered) % 2:` branch, which the empty input never takes, so on the failing path
+ *     nothing had touched `ordered` before the guard; and `detect_cycle`'s `if hare.successor
+ *     is None:` is a dereference of `hare`, not a use a falsy `hare.successor.successor` would
+ *     have broken. With the rule corrected (defects 1a and 1b) the signal is silent on all three
+ *     records — 0 of 3 — so it is exactly `late_guard`'s position: clean on the golds, silent on
+ *     the records, LONE-PASSER only. Its sweep power is also thin (6 of 198 patches could fire).
  */
-export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument', 'guards_derived_local']);
+export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument']);
 /**
  * A hold is started or kept only while the step has this much left: the wall of ~15 median
  * QuixBugs runs per lane and two lanes' worth of SIEVE batches, so the decision that releases the
@@ -965,6 +970,13 @@ function occursIn(s: string, lines: readonly string[]): boolean {
  * (`_af_new` → `cls._af_new`, `Perm` → `cls`, and a `coerse` → `coerce` typo in a docstring), and
  * it fired. "Duplicates" means the count went UP: `wrap`'s copied loop takes its normalised line
  * from one occurrence to two, while a rename removes one and adds one.
+ *
+ * Review defect 10, recorded rather than fixed: a candidate that inserts two lines the function
+ * already has AND deletes the originals ("moved", not copied) has growth 0 for both keys and
+ * escapes — `deletes_statement` catches it instead. The count is also file-wide, so a
+ * duplication in one function can cancel against a deletion of a normalised-equal line in
+ * another. `duplicates_block` is lone-passer-only, so the cost is one Q16 question, and no
+ * record shows the shape.
  */
 function normalisedLineGrowth(applied: Pick<AppliedCandidate, 'files'>, path: string): Map<string, number> {
   const out = new Map<string, number>();
@@ -1045,6 +1057,11 @@ export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>,
     // and not `sympy__sympy-17139`'s `rv.exp.is_real`, a predicate attribute `_f` never names at
     // all, nor `pytest-dev__pytest-10081`'s `skipped`, a local the patch itself introduces two
     // lines above its own guard. Both were gold fires of the old rule.
+    //
+    // Review defect 9, the cost of that narrowing, recorded: a guard on a name the patch ITSELF
+    // introduces and never uses — a textbook dead guard — is silent now too, because the
+    // pre-patch function cannot contain it. `dead_guard` is lone-passer-only, so the loss is one
+    // Q16 question on that shape.
     const fnText = fn.map((l) => l.text);
     if (addsStatement && subjects.some((s) => occursIn(s, fnText)) && subjects.every((s) => !isUsed(s, fnText))) out.push('dead_guard');
   }

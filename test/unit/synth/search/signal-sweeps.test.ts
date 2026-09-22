@@ -24,7 +24,7 @@ import { GENERAL_PREFIX, POOL_SUSPECT_SIGNALS, STRONG_SIGNALS_MIN, commitSuspect
 import type { SuspicionSignal } from '../../../../src/synth/search/guard.js';
 import { createGuardMemory } from '../../../../src/synth/search/bases.js';
 import { analyse, guardClauses, guardsDerivedLocal, parameterDerivedLocals } from '../../../../src/synth/py/index.js';
-import { LADDER_TASKS, QUIXBUGS_DIR, dedent, goldCorpora } from './gold-corpus.helpers.js';
+import { LADDER_TASKS, QUIXBUGS_DIR, analysableImage, goldCorpora } from './gold-corpus.helpers.js';
 import type { GoldPatch } from './gold-corpus.helpers.js';
 import { candidate, committedBase, failure, goal as goalOf, oracle, plausibleOutcome, scriptedAsk, siteAt, sourceFile, summary } from './helpers.js';
 import type { HoldBudget } from '../../../../src/synth/search/guard.js';
@@ -43,10 +43,14 @@ const read = (p: string): string => readFileSync(p, 'utf8');
  * be vacuous).
  */
 function signalsOfGold(p: GoldPatch, failures: ReturnType<typeof failure>[], outputTail: string): SuspicionSignal[] | null {
-  // a SWE-bench hunk image starts at the hunk's own indentation; the ones that still do not
-  // tokenize after dedenting cannot be analysed at all and are reported as skipped, not as clean
-  const before = dedent(p.before);
-  const after = dedent(p.after);
+  // review defects 2 and 7: a SWE-bench hunk image is a window cut out of a file, so a plain
+  // dedent leaves 43 of the 92 untokenizable. `analysableImage` repairs them, and the sweep now
+  // covers all 198 rather than 155.
+  const bi = analysableImage(p.before, analyse);
+  const ai = analysableImage(p.after, analyse);
+  if (bi === null || ai === null) return null;
+  const before = bi.text;
+  const after = ai.text;
   let file: ReturnType<typeof sourceFile>;
   try {
     file = sourceFile(p.path, before);
@@ -80,17 +84,40 @@ const NONE_FAILURE = [failure('t', 'a value', "AttributeError: 'NoneType' object
 const NONE_TAIL = 'Traceback (most recent call last):\n  File "x.py", line 1, in t\nAttributeError';
 
 describe('item C + item B: the gold sweeps, per corpus', () => {
-  /** *fixture property*: the corpus is the 198 the ruling names. */
-  it('sweeps 41 QuixBugs programs, 65 ladder gold files and 92 SWE-bench Verified Python hunks — 198 patches', () => {
+  /**
+   * *fixture property*, and review defect 13: the count is DERIVED from the corpus, not pinned,
+   * so adding a ladder task is not a src change. What is pinned is the shape of the corpus —
+   * the three named suites, all 41 QuixBugs programs, and every SWE-bench instance.
+   */
+  it('sweeps every gold patch in bench/data: QuixBugs, the ladder tasks and the SWE-bench Verified hunks', () => {
     const [q, l, s] = goldCorpora();
     expect(q![1]).toHaveLength(41);
-    expect(l![1]).toHaveLength(65);
+    expect(l![1].length).toBeGreaterThanOrEqual(65);
     expect(s![1]).toHaveLength(92);
-    expect(goldCorpora().reduce((n, [, g]) => n + g.length, 0)).toBe(198);
+    expect(new Set(l![1].map((p) => p.name.split('/')[1])).size).toBeGreaterThanOrEqual(26);
+    expect(goldCorpora().reduce((n, [, g]) => n + g.length, 0)).toBe(q![1].length + l![1].length + s![1].length);
   });
 
-  /** Hunk images that do not tokenize even after dedenting: reported, never counted as clean. */
-  const SKIPPED: Readonly<Record<string, number>> = { quixbugs: 0, ladder: 0, 'swebench-verified-30': 43 };
+  /**
+   * Review defects 2 and 7: every patch is analysable now (`analysableImage` recovers the 43
+   * SWE-bench hunk fragments), and the sweep reports POWER — how many patches could have fired
+   * at all — beside the fires, because "0 fires on 198 golds" over a corpus where the rule can
+   * never return true is not evidence. The powers are asserted as lower bounds so the corpus can
+   * grow.
+   */
+  it('every patch is analysable: the 43 unparsed SWE-bench hunk fragments are recovered, 0 skipped', () => {
+    let skipped = 0;
+    let recovered = 0;
+    for (const [, golds] of goldCorpora()) {
+      for (const p of golds) {
+        const img = analysableImage(p.before, analyse);
+        if (img === null) skipped += 1;
+        else if (img.offset > 0) recovered += 1;
+      }
+    }
+    expect(skipped).toBe(0);
+    expect(recovered).toBeGreaterThanOrEqual(43);
+  });
 
   for (const [corpus, golds] of goldCorpora()) {
     it(`${corpus}: none of duplicates_block / guards_other_variable / dead_guard / guards_derived_local fires on a gold`, () => {
@@ -105,9 +132,37 @@ describe('item C + item B: the gold sweeps, per corpus', () => {
         const found = signals.filter((s) => SWEPT_HERE.includes(s));
         if (found.length > 0) firing.push(`${p.name}: ${found.join(', ')}`);
       }
-      expect({ corpus, firing, skipped }).toEqual({ corpus, firing: [], skipped: SKIPPED[corpus] });
+      expect({ corpus, firing, skipped }).toEqual({ corpus, firing: [], skipped: 0 });
     });
   }
+
+  /**
+   * The POWER of the `guards_derived_local` sweep, stated rather than implied: a patch can only
+   * fire if it adds a guard clause whose operand root is a `parameterDerivedLocals` name of the
+   * function it lands in. Measured: QuixBugs 2, ladder 4, SWE-bench Verified 0 — **6 of 198**.
+   * That is thin, and it is half of why the signal is lone-passer-only.
+   */
+  it('reports the sweep POWER of `guards_derived_local`: 6 of 198 patches could fire', () => {
+    const power: Record<string, number> = {};
+    for (const [corpus, golds] of goldCorpora()) {
+      let n = 0;
+      for (const p of golds) {
+        const bi = analysableImage(p.before, analyse);
+        const ai = analysableImage(p.after, analyse);
+        if (bi === null || ai === null) continue;
+        const bm = analyse(bi.text);
+        const am = analyse(ai.text);
+        const was = new Set(bm.blocks.filter((b) => b.kind === 'def').flatMap((b) => guardClauses(bm, b).map((c) => c.test)));
+        const can = am.blocks
+          .filter((b) => b.kind === 'def')
+          .some((b) => guardClauses(am, b).some((c) => !was.has(c.test) && c.operands.some((o) => parameterDerivedLocals(am, b).has(o.split('.')[0] ?? o))));
+        if (can) n += 1;
+      }
+      power[corpus] = n;
+    }
+    expect(power).toEqual({ quixbugs: 2, ladder: 4, 'swebench-verified-30': 0 });
+    expect(Object.values(power).reduce((a, b) => a + b, 0)).toBe(6);
+  });
 
   /**
    * *fixture property*, and the reason the sweep is not vacuous: `guards_derived_local` is
@@ -140,30 +195,52 @@ describe('item B: `guards_derived_local` on the three recorded iteration-1 overf
 
   const fires = (path: string, before: string, after: string): string[] => newlyDerivedLocalGuards({ files: [{ path, before, after }] }).map((x) => `${x.fn}:${x.guard.test}`);
 
-  /** *failing-first by mechanism*: on 5ac0042 the symbol does not exist; the shape is `20260922-…` ladder `stats`. */
-  it('`stats` FIRES: `ordered = sorted(values)` is derived from the parameter and `mid = len(ordered)` read it first', () => {
-    expect(fires('src/stats.py', STATS_SRC, STATS_OVERFIT)).toEqual(['median:not ordered']);
+  /**
+   * OOS iteration 4's review, defects 1a and 1b, overturned this. `stats` fired because
+   * `return float(ordered[mid])` counted as a use in front of the guard — but it sits inside
+   * the `if len(ordered) % 2:` branch, which an EMPTY input never takes, so on the failing path
+   * nothing had touched `ordered` before the guard at all. With `preceding` restricted to what
+   * is unconditionally reached, that use is gone, and the only candidates left
+   * (`mid = len(ordered) // 2`, `if len(ordered) % 2:`) cannot fail on an empty list.
+   */
+  it('`stats` does NOT fire: the only use in front of the guard is inside a branch the failing input never takes', () => {
+    expect(fires('src/stats.py', STATS_SRC, STATS_OVERFIT)).toEqual([]);
     const mod = analyse(STATS_OVERFIT);
     const median = mod.blocks.find((b) => b.name === 'median')!;
     expect([...parameterDerivedLocals(mod, median)].sort()).toEqual(['mid', 'ordered']);
-    // and the GOLD, which guards the parameter at the top of the same function, is silent
+    // the data-flow half still holds — `ordered` IS derived from the parameter `values` — and
+    // the clause is an emptiness test, so what it needs is a use an empty list would break
+    const clause = guardClauses(mod, median).find((c) => c.test === 'not ordered')!;
+    expect(clause.tests['ordered']).toBe('empty');
+    expect(clause.preceding.map((st) => st.text.trim())).toEqual(['ordered = sorted(values)', 'mid = len(ordered) // 2', 'if len(ordered) % 2:']);
+    // and the GOLD, which guards the parameter at the top of the same function, is silent too
     expect(fires('src/stats.py', STATS_SRC, STATS_GOLD)).toEqual([]);
   });
 
-  /** *failing-first by mechanism*: `20260922-013715-nlsygcax`'s shape, and the one iteration 3 could not separate. */
-  it('`detect_cycle` FIRES: `hare = tortoise = node` is derived and `if hare.successor is None` read it first; the gold, at the top of the `while` body, is silent', () => {
-    expect(fires('detect_cycle.py', DC_SRC, DC_OVERFIT)).toEqual(['detect_cycle:not hare.successor.successor']);
+  /**
+   * `detect_cycle` fired on a ROOT dereference: `if hare.successor is None:` touches `hare`. But
+   * the clause tests `hare.successor.successor` for truthiness, and a falsy
+   * `hare.successor.successor` would not have broken `hare.successor` — so by the rule's own
+   * justification that use was never evidence.
+   */
+  it('`detect_cycle` does NOT fire: `hare.successor` in front is not a use a falsy `hare.successor.successor` would break', () => {
+    expect(fires('detect_cycle.py', DC_SRC, DC_OVERFIT)).toEqual([]);
     expect(fires('detect_cycle.py', DC_SRC, DC_GOLD)).toEqual([]);
-    // the gold adds `hare` to the clause at position 0 of the `while` body: derived, but nothing
-    // in front of it has read `hare` yet, so the placement half of the rule is what keeps it silent
-    const mod = analyse(DC_GOLD);
+    const mod = analyse(DC_OVERFIT);
     const block = mod.blocks[0]!;
-    expect([...parameterDerivedLocals(mod, block)].sort()).toEqual(['hare', 'tortoise']);
-    const clause = guardClauses(mod, block).find((c) => c.test.startsWith('hare is None'))!;
-    expect(guardsDerivedLocal(mod, block, clause, { operands: ['hare'] })).toBe(false);
+    const clause = guardClauses(mod, block).find((c) => c.test === 'not hare.successor.successor')!;
+    expect(clause.tests['hare.successor.successor']).toBe('empty');
+    // `preceding` is right here — the prior guard IS in front of it, at the same suite level
+    expect(clause.preceding.map((st) => st.text.trim())).toEqual(['hare = tortoise = node', 'while True:', 'if hare.successor is None:', 'tortoise = tortoise.successor']);
+    // and the gold, at the top of the `while` body, has nothing in front of it either way
+    const gm = analyse(DC_GOLD);
+    const gb = gm.blocks[0]!;
+    expect([...parameterDerivedLocals(gm, gb)].sort()).toEqual(['hare', 'tortoise']);
+    const gold = guardClauses(gm, gb).find((c) => c.test.startsWith('hare is None'))!;
+    expect(guardsDerivedLocal(gm, gb, gold, { operands: ['hare'] })).toBe(false);
   });
 
-  /** *failing-first by mechanism*, and the honest negative: the overfit and the gold guard the SAME values. */
+  /** Unchanged, and the honest negative it always was: the overfit and the gold guard the SAME values. */
   it('`token_bucket` does NOT fire: both the overfit and the gold guard `cost` and `self.capacity`, which are parameters', () => {
     expect(fires('src/bucket.py', BUCKET_SRC, BUCKET_OVERFIT)).toEqual([]);
     expect(fires('src/bucket.py', BUCKET_SRC, BUCKET_GOLD)).toEqual([]);
@@ -175,46 +252,70 @@ describe('item B: `guards_derived_local` on the three recorded iteration-1 overf
   });
 
   /**
-   * The bar (docs/DECISIONS.md 2026-09-22 ruling 1, as iteration 3 applied it to `late_guard`):
-   * a clean 198-gold sweep AND a replay record where the signal separates an overfit from its
-   * gold. `guards_derived_local` has both. Item C's three have the sweep and no replay record,
-   * so they stay lone-passer-only — the sweep alone is NOT the bar, and admitting them on it was
-   * the mistake this fix pass corrects.
+   * The bar, as the review sharpened it: a clean sweep **with stated power** AND a replay record
+   * where the signal separates an overfit from its gold. `guards_derived_local` has the clean
+   * sweep, its power is 6 of 198, and after the correction it fires on **0 of the 3** records.
+   * That is exactly `late_guard`'s position in iteration 3, and it gets the same answer:
+   * LONE-PASSER ONLY. `POOL_SUSPECT_SIGNALS` is `{mutates_new_argument}` — iteration 3's set —
+   * so iteration 4 adds no pool signal, and `detect_cycle`'s class A-prime pools are NOT
+   * gold-free (`guard.test.ts` pins that they commit by `probe_majority` with no Jev request,
+   * which is the hole `20260922-013715-nlsygcax` showed and which stays open).
    */
-  it('so it clears both halves of the bar and joins POOL_SUSPECT_SIGNALS — alone', () => {
-    expect([...POOL_SUSPECT_SIGNALS].sort()).toEqual(['guards_derived_local', 'mutates_new_argument']);
-    for (const s of ['late_guard', 'adds_special_case', 'deletes_statement', 'guards_other_variable', 'dead_guard', 'duplicates_block'] as const) {
+  it('so it does NOT clear the bar: 0 of 3 replay fires, and the pool set is `{mutates_new_argument}`', () => {
+    expect([...POOL_SUSPECT_SIGNALS]).toEqual(['mutates_new_argument']);
+    for (const s of ['late_guard', 'adds_special_case', 'deletes_statement', 'guards_other_variable', 'dead_guard', 'duplicates_block', 'guards_derived_local'] as const) {
       expect(POOL_SUSPECT_SIGNALS.has(s)).toBe(false);
     }
   });
 });
 
 // ---------------------------------------------------------------------------------------
-// The fix pass: the READ clause of `guardsDerivedLocal` is a DEREFERENCE
+// Review defect 1: every shape both reviews list must stay silent
 // ---------------------------------------------------------------------------------------
 
-/**
- * OOS iteration 4 fix pass. The first version of `guardsDerivedLocal` required "a statement
- * strictly before the clause READS R", and that is the very mistake iteration 3's review killed
- * in `late_guard` (finding 1): a bare occurrence cannot fail on the value the guard rejects, so
- * it is no evidence that the guard sits behind anything. The clause is now a DEREFERENCE of R —
- * `R.attr`, `R[…]`, `R.method(…)`.
- *
- * On the ROOT, not the exact dotted path, and the records pick that: `stats`' operand is
- * `ordered` and `return float(ordered[mid])` stands in front, so either rule keeps it; but
- * `detect_cycle`'s operand is `hare.successor.successor` and what stands in front is
- * `if hare.successor is None:` — a dereference of `hare` and of nothing longer. An exact-path
- * rule loses the record the signal was built for. The `self`-collapse that forced `late_guard`
- * onto the exact path cannot recur here because R must be a `parameterDerivedLocals` name, and
- * that set excludes every parameter of the block, `self` and `cls` among them.
- */
-describe('the read clause is a dereference: a use that cannot fail is not evidence', () => {
+describe('`guards_derived_local` is silent on the correct shapes', () => {
   const fires = (before: string, after: string): string[] => newlyDerivedLocalGuards({ files: [{ path: 'm.py', before, after }] }).map((x) => `${x.fn}:${x.guard.test}`);
 
-  /** *failing-first by mechanism*: every one of these fired at 822be5b. */
-  const NOT_EVIDENCE: readonly { name: string; before: string; after: string }[] = [
+  const CORRECT: readonly { name: string; before: string; after: string }[] = [
+    // --- the six the second review measured still firing at b3c28a0 (defect 1a and 1b) ---
     {
-      name: 'passing the local to a call — `log(result)` cannot fail on None (the coordinator`s case)',
+      name: 'defect 1a: `items.sort()` succeeds on an empty list, so it is not a use an emptiness guard should have protected',
+      before: 'def f(xs):\n    items = list(xs)\n    items.sort()\n    return items[0]\n',
+      after: 'def f(xs):\n    items = list(xs)\n    items.sort()\n    if not items:\n        return None\n    return items[0]\n',
+    },
+    {
+      name: 'defect 1a: `s.lower()` succeeds on an empty string',
+      before: 'def f(text):\n    s = text.strip()\n    t = s.lower()\n    return t[0]\n',
+      after: 'def f(text):\n    s = text.strip()\n    t = s.lower()\n    if not s:\n        return ""\n    return t[0]\n',
+    },
+    {
+      name: 'defect 1a: `cfg.get("k")` succeeds on an empty dict',
+      before: 'def f(opts):\n    cfg = dict(opts)\n    v = cfg.get("k")\n    return v\n',
+      after: 'def f(opts):\n    cfg = dict(opts)\n    v = cfg.get("k")\n    if not cfg:\n        raise ValueError("e")\n    return v\n',
+    },
+    {
+      name: 'defect 1a: `rows.append(1)` succeeds on an empty list',
+      before: 'def f(src):\n    rows = list(src)\n    rows.append(1)\n    return rows\n',
+      after: 'def f(src):\n    rows = list(src)\n    rows.append(1)\n    if not rows:\n        raise ValueError("e")\n    return rows\n',
+    },
+    {
+      name: 'defect 1b: the use is inside an `if` branch the guard`s path does not take',
+      before: 'def f(xs):\n    ys = sorted(xs)\n    if xs:\n        first = ys[0]\n    else:\n        first = None\n    return first\n',
+      after: 'def f(xs):\n    ys = sorted(xs)\n    if xs:\n        first = ys[0]\n    else:\n        first = None\n    if not ys:\n        return None\n    return first\n',
+    },
+    {
+      name: 'defect 1b: the use is inside a `try` whose `except` already handles the empty case',
+      before: 'def f(xs):\n    ys = list(xs)\n    try:\n        first = ys[0]\n    except IndexError:\n        first = None\n    return first\n',
+      after: 'def f(xs):\n    ys = list(xs)\n    try:\n        first = ys[0]\n    except IndexError:\n        first = None\n    if not ys:\n        return None\n    return first\n',
+    },
+    // --- the eight the first review measured, which must stay silent ---
+    {
+      name: 'a guard on a PARAMETER, wherever it stands',
+      before: 'def f(xs, k):\n    n = len(xs)\n    return xs[k] + n\n',
+      after: 'def f(xs, k):\n    n = len(xs)\n    if not xs:\n        return None\n    return xs[k] + n\n',
+    },
+    {
+      name: 'passing the local to a call — `log(result)` cannot fail on None',
       before: 'def f(x):\n    result = compute(x)\n    log(result)\n    return result.value\n',
       after: 'def f(x):\n    result = compute(x)\n    log(result)\n    if result is None:\n        return None\n    return result.value\n',
     },
@@ -233,44 +334,20 @@ describe('the read clause is a dereference: a use that cannot fail is not eviden
       before: 'def f(rows):\n    rows2 = list(rows)\n    for r in rows2:\n        see(r)\n    return rows2\n',
       after: 'def f(rows):\n    rows2 = list(rows)\n    for r in rows2:\n        see(r)\n    if not rows2:\n        return None\n    return rows2\n',
     },
-  ];
-
-  for (const c of NOT_EVIDENCE) {
-    it(c.name, () => {
-      expect({ case: c.name, fires: fires(c.before, c.after) }).toEqual({ case: c.name, fires: [] });
-    });
-  }
-
-  it('a real dereference in front is still evidence', () => {
-    expect(fires('def f(x):\n    o = build(x)\n    o.run()\n    return o\n', 'def f(x):\n    o = build(x)\n    o.run()\n    if o is None:\n        return None\n    return o\n')).toEqual(['f:o is None']);
-    expect(fires('def f(x):\n    o = build(x)\n    v = o["k"]\n    return v\n', 'def f(x):\n    o = build(x)\n    v = o["k"]\n    if o is None:\n        return None\n    return v\n')).toEqual(['f:o is None']);
-  });
-
-  /** The measurement behind "the ROOT, not the exact dotted path". */
-  it('the root is what the records need: `detect_cycle` has no dereference of `hare.successor.successor` in front, only of `hare`', () => {
-    const mod = analyse(read(join(QUIXBUGS_DIR, 'programs/detect_cycle.py')).replace('        hare = hare.successor.successor', '        if not hare.successor.successor:\n            break\n        hare = hare.successor.successor'));
-    const block = mod.blocks[0]!;
-    const g = guardClauses(mod, block).find((c) => c.test === 'not hare.successor.successor')!;
-    expect(g.operands).toEqual(['hare.successor.successor']);
-    // nothing in front dereferences the exact path — that is iteration 3's own finding, and why
-    // `late_guard` is silent here; `hare` itself IS dereferenced, by `if hare.successor is None:`
-    expect(g.perOperand['hare.successor.successor']?.derefs).toBe(0);
-    expect(guardsDerivedLocal(mod, block, g)).toBe(true);
-  });
-});
-
-// ---------------------------------------------------------------------------------------
-// The shapes the rule must stay silent on
-// ---------------------------------------------------------------------------------------
-
-describe('`guards_derived_local` is silent on the correct shapes', () => {
-  const fires = (before: string, after: string): string[] => newlyDerivedLocalGuards({ files: [{ path: 'm.py', before, after }] }).map((x) => `${x.fn}:${x.guard.test}`);
-
-  const CORRECT: readonly { name: string; before: string; after: string }[] = [
     {
-      name: 'a guard on a PARAMETER, wherever it stands',
-      before: 'def f(xs, k):\n    n = len(xs)\n    return xs[k] + n\n',
-      after: 'def f(xs, k):\n    n = len(xs)\n    if not xs:\n        return None\n    return xs[k] + n\n',
+      name: '`visited.add(node)` cannot fail on an empty set',
+      before: 'def f(nodes):\n    visited = set(nodes)\n    visited.add(1)\n    return visited\n',
+      after: 'def f(nodes):\n    visited = set(nodes)\n    visited.add(1)\n    if not visited:\n        return None\n    return visited\n',
+    },
+    {
+      name: 'a comprehension over the local cannot fail on empty',
+      before: 'def f(rows):\n    rows2 = list(rows)\n    names = [r.name for r in rows2]\n    return names\n',
+      after: 'def f(rows):\n    rows2 = list(rows)\n    names = [r.name for r in rows2]\n    if not rows2:\n        return []\n    return names\n',
+    },
+    {
+      name: 'a nested `def` that uses the local runs when it is CALLED, not where it stands',
+      before: 'def f(xs):\n    ys = sorted(xs)\n    def g():\n        return ys[0]\n    return g\n',
+      after: 'def f(xs):\n    ys = sorted(xs)\n    def g():\n        return ys[0]\n    if not ys:\n        return None\n    return g\n',
     },
     {
       name: 'a guard on a derived local BEFORE anything reads it',
@@ -311,6 +388,33 @@ describe('`guards_derived_local` is silent on the correct shapes', () => {
     expect(fires(before, after)).toEqual([]); // nothing in front has DEREFERENCED `b` yet
     const later = 'def f(p):\n    a = normalise(p)\n    b = index(a)\n    tag = b.tag\n    if b is None:\n        return None\n    return b.value\n';
     expect(fires(before, later)).toEqual(['f:b is None']);
+  });
+
+  /**
+   * The rule is not vacuous after the two narrowings. A `X is None` clause still takes any
+   * dereference; an emptiness clause takes the uses an empty value actually breaks, and only
+   * those. Without these three the whole signal could be `return false` and every test above
+   * would still pass.
+   */
+  it('a NONE clause behind any dereference still fires', () => {
+    expect(fires('def f(x):\n    o = build(x)\n    o.run()\n    return o\n', 'def f(x):\n    o = build(x)\n    o.run()\n    if o is None:\n        return None\n    return o\n')).toEqual(['f:o is None']);
+  });
+
+  it('an EMPTINESS clause behind an indexing still fires', () => {
+    expect(fires('def f(xs):\n    ys = sorted(xs)\n    a = ys[0]\n    return a\n', 'def f(xs):\n    ys = sorted(xs)\n    a = ys[0]\n    if not ys:\n        return None\n    return a\n')).toEqual(['f:not ys']);
+  });
+
+  it('an EMPTINESS clause behind `min()` / `.pop()` / unpacking still fires', () => {
+    expect(fires('def f(xs):\n    ys = list(xs)\n    a = min(ys)\n    return a\n', 'def f(xs):\n    ys = list(xs)\n    a = min(ys)\n    if not ys:\n        return None\n    return a\n')).toEqual(['f:not ys']);
+    expect(fires('def f(xs):\n    ys = list(xs)\n    a = ys.pop()\n    return a\n', 'def f(xs):\n    ys = list(xs)\n    a = ys.pop()\n    if not ys:\n        return None\n    return a\n')).toEqual(['f:not ys']);
+    expect(fires('def f(xs):\n    ys = list(xs)\n    a, b = ys\n    return a\n', 'def f(xs):\n    ys = list(xs)\n    a, b = ys\n    if not ys:\n        return None\n    return a\n')).toEqual(['f:not ys']);
+  });
+
+  /** The clause-kind split itself, on one fixture: the same prior use, two different clauses. */
+  it('the same prior use is evidence for a NONE clause and not for an EMPTINESS clause', () => {
+    const before = 'def f(x):\n    o = build(x)\n    v = o.attr\n    return v\n';
+    expect(fires(before, 'def f(x):\n    o = build(x)\n    v = o.attr\n    if o is None:\n        return None\n    return v\n')).toEqual(['f:o is None']);
+    expect(fires(before, 'def f(x):\n    o = build(x)\n    v = o.attr\n    if not o:\n        return None\n    return v\n')).toEqual([]);
   });
 });
 

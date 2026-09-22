@@ -614,11 +614,12 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if hare.successor is not None:'))).toEqual([]);
     expect(guardSubjects(candidate(siteAt(DETECT_CYCLE, 5), '        if not f(x) or hare.successor is None:'))).toEqual([]);
   });
-  // OOS iteration 4, item B: the same overfit also guards `tortoise.successor` — a local derived
-  // from the parameter `node` — behind `if hare.successor is None:`, which has already read the
-  // family. That is `guards_derived_local`, the fifth signal on this patch.
-  it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences, guards an expression nothing reads, guards a derived local late and adds a special case; the gold adds a clause (one signal), a genuine inserted guard too', () => {
-    expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'guards_derived_local']);
+  // OOS iteration 4 briefly added `guards_derived_local` here; its review showed the prior use
+  // that carried it (`if hare.successor is None:`) is not a use a falsy `hare.successor.successor`
+  // would have broken, so the corrected rule is silent on this patch and the list is the
+  // iteration-3 four again.
+  it('detect_cycle: the committed guard copies lines 5-6, names a variable the traceback never dereferences, guards an expression nothing reads and adds a special case; the gold adds a clause (one signal), a genuine inserted guard too', () => {
+    expect(suspicionSignals(dcOverfit(), DC_GOAL)).toEqual(['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case']);
     // `hare is None or` adds a conditional (`or`) and a literal (`None`) over the replaced line: the advisory is asked, and the measured gold answered 0.85
     expect(suspicionSignals(dcGold(), DC_GOAL)).toEqual(['adds_special_case']);
     expect(specialCaseScore(dcGoldCand())).toEqual({ conditionals: 1, literals: 1, total: 2 });
@@ -626,7 +627,7 @@ describe('rule (b): code-computed structural signals on a lone passer', () => {
     expect(suspicionSignals(genuine, DC_GOAL)).toEqual(['adds_special_case']);
     // without the traceback line the other-variable signal goes
     const noTail = committedBase(DETECT_CYCLE, { ...DC_BASELINE, outputTail: '' }, [NODE]);
-    expect(suspicionSignals(plausibleOutcome(detectCycleOverfit(), noTail), DC_GOAL)).toEqual(['duplicates_block', 'dead_guard', 'adds_special_case', 'guards_derived_local']);
+    expect(suspicionSignals(plausibleOutcome(detectCycleOverfit(), noTail), DC_GOAL)).toEqual(['duplicates_block', 'dead_guard', 'adds_special_case']);
   });
   it('wrap: the loop copied under itself duplicates a block and adds a `while` with literals; the one-line gold is clean; GLM\'s `if text:` adds one conditional', () => {
     expect(suspicionSignals(wrapOver(), WRAP_GOAL)).toEqual(['duplicates_block', 'adds_special_case']);
@@ -681,7 +682,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     };
     const opts = { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample };
     const over = dcOverfit();
-    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'guards_derived_local'];
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
     const d1 = await decide([over], mem, g, ask, opts);
     expect(d1).toMatchObject({ kind: 'continue', held: 'suspect', signals, requests: 1, plausible: 1, clusters: 0, arbitrated: false });
     expect(guardState(mem).suspect).toEqual({ goalId: 'g1', outcome: over, phase: 'SEEDS', signals, noul: 0.12 });
@@ -735,7 +736,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(ask.calls).toHaveLength(2);
   });
   it('a passer with ≥ 2 signals is committed at once only when Jev vouches confidently (p ≥ LONE_PASSER_VOUCH_MIN_NOUL); the live 0.39 holds it', async () => {
-    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'guards_derived_local'];
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
     const run = async (p: number): Promise<ReturnType<typeof decide>> => {
       const mem = createGuardMemory(DC_BASE);
       const ask = scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: p } }));
@@ -778,7 +779,7 @@ describe('rule (b) in decide: hold the doubted lone passer, arbitrate it against
     expect(d2).toMatchObject({ kind: 'commit', requests: 0, signals: [] });
   });
   it('inside the budget reserve the advisory is still asked (shipping was committed unasked with 14 s left): doubted → possible overfit, confidently doubted → held and never released; no request left → committed', async () => {
-    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'guards_derived_local'];
+    const signals = ['duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case'];
     const doubted = await decide([dcOverfit()], createGuardMemory(DC_BASE), goal(DETECT_CYCLE_FAILURES), scriptedAsk(arbitrationScript({ choice: {}, escape: 0, noul: { [OVERFIT_TEXT]: 0.5 } })), { oracle: oracle(), budget: thin });
     expect(doubted).toMatchObject({ kind: 'commit', note: 'possible overfit', held: null, requests: 1, signals });
     const mem = createGuardMemory(DC_BASE);
@@ -1471,34 +1472,28 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     // so each adds an implicit-None exit and is refused before clustering. What is left are the two
     // returning guards and the donor.
     //
-    // OOS iteration 4, item B — RE-PINNED, and this is the change the item exists for. Every one
-    // of those three guards `hare.successor.successor`, a local derived from the parameter `node`,
-    // behind `if hare.successor is None:` which already DEREFERENCED `hare`:
-    // `guards_derived_local` on all of them, so the batch is a gold-free pool and the code
-    // RANKING rules are skipped. That holds under the TWO-signal `POOL_SUSPECT_SIGNALS` of the
-    // fix pass — `guards_derived_local` alone carries it, not the item-C three. The gold of
-    // `detect_cycle` replaces L5 and is in none of these clusters, which is precisely what
-    // "gold-free" means and what iteration 3 could not express (its `late_guard` was silent here,
-    // so `probe_majority` committed a guard at L9 with no Jev request at all —
-    // `20260922-013715-nlsygcax`). `dc_return` is still the candidate committed; it is now
-    // committed by Q15/Q16 instead of by code, and at the 0.3 bound rather than the 0.7 one —
-    // only one of the pick's three signals is in the two-member swept set, so `strong.length`
-    // is 1 < STRONG_SIGNALS_MIN. The assertion on the bound is below.
-    expect(d).toMatchObject({ kind: 'commit', plausible: 3, clusters: 2, arbitrated: true, requests: 1, structuralDrops: 2, codeRule: null, held: null });
+    // What is left are the two returning guards and the donor, whose probe majority commits
+    // `dc_return` by code — Q15/Q16 is not reached at all, and the break guard is never a pick
+    // or a fallback.
+    //
+    // OOS iteration 4 made this batch a GOLD-FREE POOL (arbitrated, one request) by admitting
+    // `guards_derived_local`, and its review then withdrew that signal from the pool set: the
+    // prior use carrying it here is `if hare.successor is None:`, a dereference of `hare`, and
+    // a falsy `hare.successor.successor` would not have broken it. With the rule corrected the
+    // signal is silent on this patch, `POOL_SUSPECT_SIGNALS` is `{mutates_new_argument}` again,
+    // and this batch is back to the iteration-3 behaviour recorded below. The hole
+    // `20260922-013715-nlsygcax` showed — a guard at L9 committed by code with no Jev request
+    // while the gold replaces L5 — is therefore STILL OPEN, and this assertion is what says so.
+    expect(d).toMatchObject({ kind: 'commit', plausible: 3, clusters: 2, arbitrated: false, requests: 0, structuralDrops: 2, codeRule: 'probe_majority', held: null });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_return');
-    expect(ask.calls).toHaveLength(1);
-    expect(notes.some((n) => n.includes('gold-free pool'))).toBe(true);
-    // stated rather than implied: it is `guards_derived_local` that makes this pool gold-free,
-    // and it would still do so if the item-C three were removed from the set entirely
+    expect(ask.calls).toHaveLength(0);
+    expect(notes.some((n) => n.includes('gold-free pool'))).toBe(false);
+    // the mechanism, stated: no contender carries a signal in the swept set, so `poolSuspect`
+    // is false — the batch is not called gold-free and the code ranking rules decide
     const survivors = passers.filter((o) => structuralRejection(o.applied) === null);
     expect(survivors.map((o) => o.applied.candidate.id)).toEqual(['dc_return', 'dc_return_alt', 'dc_overfit']);
-    for (const o of survivors) expect(suspicionSignals(o, g)).toContain('guards_derived_local');
-    // and the bound the pick faces is 0.3, not 0.7: `dead_guard` and `adds_special_case` are not
-    // in the swept set, so exactly one swept signal counts towards STRONG_SIGNALS_MIN
-    const pickSignals = suspicionSignals(survivors[0]!, g);
-    expect(pickSignals).toEqual(['dead_guard', 'adds_special_case', 'guards_derived_local']);
-    expect(pickSignals.filter((s) => POOL_SUSPECT_SIGNALS.has(s))).toEqual(['guards_derived_local']);
-    expect(pickSignals.filter((s) => POOL_SUSPECT_SIGNALS.has(s)).length < STRONG_SIGNALS_MIN).toBe(true);
+    for (const o of survivors) expect(suspicionSignals(o, g).filter((s) => POOL_SUSPECT_SIGNALS.has(s))).toEqual([]);
+    expect(suspicionSignals(survivors[0]!, g)).toEqual(['dead_guard', 'adds_special_case']);
     expect(d.fallbacks.map((o) => o.applied.candidate.id)).not.toContain('dc_break');
     expect(notes.filter((n) => n.includes('adds a path that leaves a function with an implicit `return None`'))).toHaveLength(2);
   });
@@ -1526,17 +1521,14 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     // three votes for the returning behaviour against one and one on both inputs: the family is the majority
     const maj = probeMajorityCluster(clusterByBehaviour(passers, sig), sig);
     expect([...maj.agreement.entries()].map(([id, n]) => `${id}=${n}`)).toEqual(['cluster_1=2', 'cluster_2=0', 'cluster_3=0']);
-    // OOS iteration 4, item B — RE-PINNED. Every survivor guards `hare.successor.successor`, so
-    // the batch is a gold-free pool and Jev arbitrates it; `a1` is still the candidate committed.
-    const vouch = scriptedAsk(arbitrationScript({ choice: { [RETURN_TEXT.trim()]: 0.8 }, escape: 0.1, noul: { [RETURN_TEXT.trim()]: 0.8 } }));
-    const d = await decide(passers, mem, g, vouch, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
-    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: true, requests: 1, structuralDrops: 1, codeRule: null });
+    // ranked change 5 refuses `b1` (a `break` out of `while True:` = an implicit-None exit)
+    // before clustering, so the probe majority decides between the two clusters that are left.
+    // OOS iteration 4 briefly routed this through Q15/Q16 as a gold-free pool; its review
+    // withdrew `guards_derived_local` from the pool set, so `throwingAsk` is right again — no
+    // contender carries a swept signal, so no Jev request is made.
+    const d = await decide(passers, mem, g, throwingAsk, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: ample });
+    expect(d).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, structuralDrops: 1, codeRule: 'probe_majority' });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('a1');
-    // and with no Jev request left the code ranking rules decide exactly as they did before
-    // (iteration 3, review finding 6: the pool ask is budget-gated and falls through)
-    const spent = await decide(passers, createGuardMemory(DC_BASE), goal(DETECT_CYCLE_FAILURES), throwingAsk, { oracle: oracle(), probe, inputs: () => Promise.resolve(dcLinkedLists()), budget: { ...ample, jevRequestsLeft: 0 } });
-    expect(spent).toMatchObject({ kind: 'commit', clusters: 2, arbitrated: false, requests: 0, structuralDrops: 1, codeRule: 'probe_majority' });
-    if (spent.kind === 'commit') expect(spent.applied.candidate.id).toBe('a1');
     // an LLM member in any cluster, or supports that differ, leave `fewestSpecialCases` in charge
     const llm = plausibleOutcome(candidate(siteAt(DETECT_CYCLE, 9, 'insert'), '        if hare.successor.successor is None:\n            return False', { id: 'llm:dc', source: 'llm', op: 'sample_0_0', prior: 1 }), DC_BASE);
     const withLlm = clusterByBehaviour([a1, b1, llm], new Map([...sig, ['llm:dc', `outputs:False${PROBE_OUTPUT_SEP}False`]]));

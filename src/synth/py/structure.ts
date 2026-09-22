@@ -1364,7 +1364,29 @@ export interface GuardClause {
   siblings: number;
   /** the placement facts per operand PATH, so a caller can ask about the operands a patch ADDED and no others */
   perOperand: Record<string, OperandPlacement>;
+  /**
+   * What the clause tests each operand FOR (OOS iteration 4 review, defect 1a): `none` for an
+   * `X is None` / `X is not None` / `X == None` shape, `empty` for a truthiness or emptiness
+   * test (`not X`, `if X:`, `len(X) == 0`, `X == []`). The two reject different values, so a use
+   * "the rejected value would have made fail" is a different use for each.
+   */
+  tests: Record<string, GuardTest>;
+  /**
+   * The statements UNCONDITIONALLY reached before this clause: the clause's own siblings in its
+   * suite (their headers only), plus, for every enclosing suite, that suite's preceding siblings
+   * and the header the clause's suite hangs off.
+   *
+   * Review defect 1b: the old caller used `mod.statements.filter(s => s.blockIndex ===
+   * block.index && s.startLine < g.line)`, and `blockIndex` is the enclosing DEF, so a statement
+   * inside an unrelated `if` branch, an `else`, a `try` whose `except` already handles the empty
+   * case, or a `while` body all counted as "in front of" the guard. They are not: on the path
+   * that reaches the guard they did not run.
+   */
+  preceding: Statement[];
 }
+
+/** What a guard clause rejects: `None` specifically, or any falsy/empty value. */
+export type GuardTest = 'none' | 'empty';
 
 /**
  * What the statements in front of a guard clause do to one of its operand paths. Only
@@ -1526,6 +1548,85 @@ function dereferencesPath(st: Statement, path: string): boolean {
 }
 
 /**
+ * Does the condition test `path` for being None specifically (`X is None`, `X is not None`,
+ * `X == None`, `None == X`), rather than for being falsy/empty? Anything else — `not X`,
+ * a bare `X`, `len(X) == 0`, `X == []` — rejects every empty value, not just None.
+ */
+function guardTestOf(cond: readonly Token[], path: string): GuardTest {
+  const parts = path.split('.');
+  for (let k = 0; k < cond.length; k++) {
+    const end = dottedChainEnd(cond, k, parts);
+    if (end < 0) continue;
+    // `X is None` / `X is not None` / `X == None` / `X != None`
+    let j = end;
+    if (isKw(cond[j], 'is')) {
+      j += 1;
+      if (isKw(cond[j], 'not')) j += 1;
+      if (isKw(cond[j], 'None')) return 'none';
+    } else if (isOp(cond[j], '==') || isOp(cond[j], '!=')) {
+      if (isKw(cond[j + 1], 'None')) return 'none';
+    }
+    // `None is X` / `None == X`
+    const b = cond[k - 1];
+    const a = cond[k - 2];
+    if (b !== undefined && a !== undefined && isKw(a, 'None') && (isKw(b, 'is') || isOp(b, '==') || isOp(b, '!='))) return 'none';
+  }
+  return 'empty';
+}
+
+/** Names whose call raises on an empty receiver, so calling one IS a use an empty value breaks. */
+const EMPTY_FAILING_METHODS: ReadonlySet<string> = new Set(['pop', 'popleft', 'popitem', 'popright']);
+/** Builtins that raise on an empty argument (`sum`/`len`/`list`/`sorted` do not, and are deliberately absent). */
+const EMPTY_FAILING_BUILTINS: ReadonlySet<string> = new Set(['min', 'max', 'next']);
+
+/**
+ * Does `st` use `path` in a way an EMPTY value would break (OOS iteration 4 review, defect 1a)?
+ *
+ * The rule's justification is "a use the value the guard rejects would have made fail". For an
+ * `X is None` guard an attribute access is such a use. For a `not X` guard it is not:
+ * `items.sort()`, `s.lower()`, `cfg.get(k)` and `rows.append(1)` all succeed on an empty
+ * container or string, so a guard added behind them is not a guard added behind a use it should
+ * have protected — and "add the emptiness guard in front of the indexing that crashed, after a
+ * harmless method call" is the single most common shape of a real `IndexError` fix.
+ *
+ * What DOES fail on empty: subscripting (`X[0]`, `X[k]` — IndexError / KeyError), the popping
+ * methods, `min(X)` / `max(X)` / `next(X)` (ValueError / StopIteration), and tuple unpacking.
+ */
+function failsOnEmpty(st: Statement, path: string): boolean {
+  const parts = path.split('.');
+  const toks = st.tokens;
+  const skip = bindingTargetOffsets(st);
+  for (let k = 0; k < toks.length; k++) {
+    const t = toks[k]!;
+    if (t.type !== 'NAME' || t.text !== parts[0] || skip.has(t.start)) continue;
+    const end = dottedChainEnd(toks, k, parts);
+    if (end < 0) continue;
+    // `X[...]`
+    if (isOp(toks[end], '[')) return true;
+    // `X.pop(...)` and friends
+    const m = toks[end + 1];
+    if (isOp(toks[end], '.') && m !== undefined && m.type === 'NAME' && EMPTY_FAILING_METHODS.has(m.text) && isOp(toks[end + 2], '(')) return true;
+    // `min(X)` / `max(X)` / `next(X)` / `next(iter(X))` — the path inside such a call's parens
+    for (let j = k - 1; j >= 0; j--) {
+      const c = toks[j]!;
+      if (c.type === 'NAME' && EMPTY_FAILING_BUILTINS.has(c.text) && isOp(toks[j + 1], '(')) return true;
+      if (c.type === 'OP' && (c.text === ';' || c.text === ':')) break;
+    }
+    // `a, b = X` / `first, *rest = X` — unpacking an empty value raises
+    if (st.kind === 'assign' && !skip.has(t.start)) {
+      const unpacks = assignTargetSpans(toks).some((span) => span.length > 1 && span.some((x) => isOp(x, ',') || isOp(x, '*')));
+      if (unpacks) return true;
+    }
+  }
+  return false;
+}
+
+/** The use that the value a clause rejects would have made fail, for the kind of test it is. */
+function failingUse(st: Statement, path: string, kind: GuardTest): boolean {
+  return kind === 'none' ? dereferencesPath(st, path) : failsOnEmpty(st, path);
+}
+
+/**
  * Does `st` BIND `root`, assign into it, `del` it, or mutate it in place? Review finding 3 adds
  * the subscript-assignment receiver (`x[0] = 1`) and `del x` / `del x[0]`, which used to be
  * neither a read nor a bind and so read as "hoistable".
@@ -1595,17 +1696,20 @@ function narrowsRoot(siblings: readonly SuiteNode[], i: number, root: string): b
 }
 
 /** Walk one suite level, recording its guard clauses, then recurse into the suites under it. */
-function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], out: GuardClause[]): void {
+function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], out: GuardClause[], enclosing: readonly Statement[] = []): void {
   const siblings = nodes.filter((n) => !isDeclaration(n.st));
   siblings.forEach((n, i) => {
     if (isGuardClause(siblings, i) && n.st.colonIndex !== null) {
-      const operands = conditionOperands(n.st.tokens.slice(1, n.st.colonIndex));
+      const cond = n.st.tokens.slice(1, n.st.colonIndex);
+      const operands = conditionOperands(cond);
       const roots = uniq(operands.map((p) => p.split('.')[0] ?? p));
       const before = siblings.slice(0, i);
       const priors = before.map(subtreeStatements);
       const perOperand: Record<string, OperandPlacement> = {};
+      const tests: Record<string, GuardTest> = {};
       for (const p of operands) {
         const root = p.split('.')[0] ?? p;
+        tests[p] = guardTestOf(cond, p);
         perOperand[p] = {
           derefs: priors.filter((sts) => sts.some((s) => dereferencesPath(s, p))).length,
           binds: priors.filter((sts) => sts.some((s) => bindsName(s, root))).length,
@@ -1615,16 +1719,21 @@ function collectGuards(nodes: readonly SuiteNode[], prefix: readonly number[], o
       }
       out.push({
         line: n.st.startLine,
-        test: renderTokens(n.st.tokens.slice(1, n.st.colonIndex)),
+        test: renderTokens(cond),
         operands,
         roots,
         path: [...prefix, i],
         position: i,
         siblings: siblings.length,
         perOperand,
+        tests,
+        // review defect 1b: the guard's own preceding siblings (headers only — a sibling's BODY
+        // is a branch the path reaching this guard did not take), under everything the enclosing
+        // suites unconditionally ran to get here
+        preceding: [...enclosing, ...before.map((x) => x.st)],
       });
     }
-    collectGuards(n.body, [...prefix, i], out);
+    collectGuards(n.body, [...prefix, i], out, [...enclosing, ...siblings.slice(0, i).map((x) => x.st), n.st]);
   });
 }
 
@@ -1748,50 +1857,47 @@ export function parameterDerivedLocals(mod: PyModule, block: Block): Set<string>
  * Is this guard clause a guard on a value the function DERIVED from its parameters, placed behind
  * the code that already used that value?
  *
- * Precisely, for at least one operand path of the clause, with root R:
+ * Precisely, for at least one operand path P of the clause, with root R:
  *   - R is a `parameterDerivedLocals` name of the enclosing `def` (so not a parameter itself);
- *   - a statement of the block strictly BEFORE the clause's first line BINDS R; and
- *   - a statement of the block strictly before the clause's first line **DEREFERENCES** R —
- *     `R.attr`, `R[…]`, `R.method(…)`, a use the value the guard rejects would have made fail.
+ *   - a statement UNCONDITIONALLY reached before the clause BINDS R (`g.preceding`); and
+ *   - a statement unconditionally reached before the clause uses P in a way **the value the
+ *     clause rejects would have made fail** — for an `X is None` clause any dereference
+ *     (`P.attr`, `P[…]`, `P(…)`), for a truthiness/emptiness clause only a use that breaks on an
+ *     empty value (`P[…]`, `P.pop()`, `min(P)`, `max(P)`, `next(P)`, unpacking).
  *
  * The three clauses together are the placement fact: the guard could have stood where the local
- * was created, and the patch put it behind a use that the guard does not protect.
+ * was created, and the patch put it behind a use the guard does not protect.
  *
- * **Why a dereference and not any read** (OOS iteration 4 fix pass; it is iteration 3's lesson
- * about `late_guard`, review finding 1, applied to this rule too). A bare occurrence cannot fail
- * on the value the guard rejects, so it is not evidence that the guard is behind anything:
- * `result = compute(x); log(result); if result is None:` and `ys = sorted(xs); n = len(ys); if
- * not ys:` and `isinstance(v2, dict)` and `for r in rows2:` all fired under the first version of
- * this rule and are all silent now.
+ * **Both refinements are iteration 3's `late_guard` lesson at one remove** (OOS iteration 4
+ * review, defects 1a and 1b), and each was forced by measured false positives:
  *
- * **Why the ROOT and not the exact dotted path**, which is what `isLateGuard` insists on. Measured
- * on the two records the signal exists for: `stats`' operand is `ordered` and `return
- * float(ordered[mid])` stands in front of the guard, so the exact path works there; but
- * `detect_cycle`'s operand is `hare.successor.successor` and what stands in front is `if
- * hare.successor is None:` — a dereference of `hare`, and of nothing longer. An exact-path rule
- * therefore loses `detect_cycle`, which is the record this signal was built for, so the evidence
- * picks the root.
+ *   - *a use that cannot fail is not evidence.* `result = compute(x); log(result); if result is
+ *     None:`, `ys = sorted(xs); n = len(ys); if not ys:`, `isinstance(v2, dict)` and
+ *     `for r in rows2:` fell to the first version of the dereference rule. `items.sort()`,
+ *     `s.lower()`, `cfg.get(k)` and `rows.append(1)` in front of an EMPTINESS guard fell to the
+ *     second, because `dereferencesPath` accepted any `R.`/`R[`/`R(` whatever the clause tested
+ *     — and "add `if not X:` in front of the indexing that crashed, behind a harmless method
+ *     call" is the commonest shape of a real `IndexError` fix. `failsOnEmpty` is the split.
+ *   - *a branch not taken is not "in front of".* `preceding` replaces
+ *     `statements.filter(s => s.blockIndex === block.index && s.startLine < g.line)`, which
+ *     counted a use inside an unrelated `if`/`else`/`try`/`while` body as preceding the guard.
  *
- * The root collapse that forced `late_guard` onto the exact path (`self.logger.debug(…)` read as
- * evidence about `self.handler`) cannot happen here, and not by luck: R is required to be a
- * `parameterDerivedLocals` name, and that set excludes every parameter of the block — `self` and
- * `cls` among them. The root is always a value THIS function computed from its own arguments,
- * never a catch-all receiver the caller handed in.
- *
- * The `detect_cycle` GOLD is the check that the placement half is load-bearing at all: it adds
- * `hare is None` to the clause at the TOP of the `while` body, where `hare` is derived from the
- * parameter `node` but nothing in front of the guard has touched it yet, so this is silent on it
- * and fires on the overfit three statements further down.
+ * The test is on the operand PATH, not its root: "the value the guard rejects" is the value of
+ * P. The earlier root-based version was what made `detect_cycle` fire, and defect 1a is the
+ * argument that it was unsound — `hare.successor` in front of `if not hare.successor.successor:`
+ * is not a use that a falsy `hare.successor.successor` would have broken. See the iteration-4
+ * entry in docs/LLM-JEV.md for what that costs on the records; it is the reason this signal is
+ * lone-passer-only.
  */
 export function guardsDerivedLocal(mod: PyModule, block: Block, g: GuardClause, opts: { operands?: readonly string[] } = {}): boolean {
   const operands = opts.operands ?? g.operands;
   if (operands.length === 0) return false;
   const derived = parameterDerivedLocals(mod, block);
   if (derived.size === 0) return false;
-  const before = mod.statements.filter((s) => s.blockIndex === block.index && s.startLine < g.line);
   return operands.some((p) => {
     const root = p.split('.')[0] ?? p;
     if (!derived.has(root)) return false;
-    return before.some((s) => bindsName(s, root)) && before.some((s) => dereferencesPath(s, root));
+    const kind = g.tests[p] ?? 'empty';
+    return g.preceding.some((s) => bindsName(s, root)) && g.preceding.some((s) => failingUse(s, p, kind));
   });
 }

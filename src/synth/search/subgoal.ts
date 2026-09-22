@@ -45,7 +45,7 @@ import type { LlmRound, SubGoalLlm } from './llm.js';
 import type { SearchMemory } from './memory.js';
 import { wasTried } from './memory.js';
 import { patchMaxFiles } from './proposal.js';
-import { WIDENED_SITES_MAX, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, taskIdentifiers, testLiterals, widenedSites } from './sites.js';
+import { WIDENED_SITES_MAX, jevRankedSites, lineEvidenceOf, nextWidenChunk, orderWidenedSites, siteKey, taskIdentifiers, testLiterals, widenedSites } from './sites.js';
 // OOS iteration 4, item A: the two text extractors moved to sites.ts (the code-side site order
 // reads them and subgoal.ts already imports that module); re-exported so every caller is unchanged.
 export { taskIdentifiers, testLiterals } from './sites.js';
@@ -447,13 +447,19 @@ export function everySiteSeedsExhausted(goal: Goal, sites: readonly Site[]): boo
  * and `REPLACE_SITES_MAX` is a cut justified by "a Jev top-3 covers 36/40". Running that order
  * out therefore exhausts the ORDER, not the space — and the recorded `--jev off` `kth` run is
  * exactly that shape: it parks in phase `LLM` with the insert gaps still open, never reaches
- * WIDENED, and so never sees the code lines its six-cut left behind. So: with no Jev evidence
- * anywhere in the list, every REPLACE site being exhausted is enough.
+ * WIDENED, and so never sees the code lines its six-cut left behind.
+ *
+ * The test for "Jev had no opinion" is `jevRankedSites`, NOT `evidence.jevProbability` (OOS
+ * iteration 4 review, defect 4): `jevProbability` is written only by Q5 anchors, so a goal whose
+ * line Choice escaped but whose Q5n Noul answered 0.90 and SHORT-CIRCUITED carried no
+ * `jevProbability` anywhere and took this clause — WIDENED opening early on a goal Jev was
+ * confident about, with five insert gaps still open. A Q5n ranking leaves its own trace on the
+ * sites, and a flat one (the `--jev off` inert 0.5) leaves none, which is exactly the split.
  */
 export function widenedReachable(goal: Goal, sites: readonly Site[]): boolean {
   if (sites.length === 0) return false;
   if (sites.every((s) => seedsExhaustedAt(goal, s))) return true;
-  if (sites.some((s) => s.evidence.jevProbability !== undefined)) return false;
+  if (jevRankedSites(sites)) return false;
   const replace = sites.filter((s) => s.kind === 'replace');
   return replace.length > 0 && replace.every((s) => seedsExhaustedAt(goal, s));
 }

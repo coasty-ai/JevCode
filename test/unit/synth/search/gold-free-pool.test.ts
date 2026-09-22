@@ -101,18 +101,17 @@ const ampleBudget: HoldBudget = { exhausted: () => false, testWallLeftMs: 600_00
 
 describe('the pool the rule is for', () => {
   /**
-   * OOS iteration 4, item B: the swept set gained ONE signal, `guards_derived_local`. The bar is
-   * the one docs/DECISIONS.md set on 2026-09-22 and iteration 3 applied to `late_guard` — a
-   * clean 198-gold sweep **AND** a replay record where the signal separates an overfit from its
-   * gold. Item C's three signals (`guards_other_variable`, `dead_guard`, `duplicates_block`) now
-   * have the clean sweep, and their fixes stand, but no replay record yet, so they stay
-   * lone-passer-only. `adds_special_case`, `deletes_statement` and `late_guard` are out for the
-   * reasons iteration 3 recorded.
+   * OOS iteration 4 ends with the swept set it started with: `{mutates_new_argument}`. The bar
+   * — a clean 198-gold sweep WITH STATED POWER **and** a replay record where the signal
+   * separates an overfit from its gold — is met by that signal alone. `guards_other_variable`,
+   * `dead_guard` and `duplicates_block` gained a clean sweep in item C (and three fixes, which
+   * stand) but have no replay record; `guards_derived_local` was admitted on two replay fires
+   * and lost both when its review corrected the rule, so it is `late_guard`'s case exactly.
    */
-  it('every contender carries a swept signal, and the swept set is the two that clear both halves of the bar', () => {
+  it('every contender carries the one swept signal, and the swept set is that signal alone', () => {
     for (const o of POOL()) expect(suspicionSignals(o, GOAL)).toContain('mutates_new_argument');
-    expect([...POOL_SUSPECT_SIGNALS].sort()).toEqual(['guards_derived_local', 'mutates_new_argument']);
-    for (const s of ['adds_special_case', 'deletes_statement', 'late_guard', 'guards_other_variable', 'dead_guard', 'duplicates_block'] as const) expect(POOL_SUSPECT_SIGNALS.has(s)).toBe(false);
+    expect([...POOL_SUSPECT_SIGNALS]).toEqual(['mutates_new_argument']);
+    for (const s of ['adds_special_case', 'deletes_statement', 'late_guard', 'guards_other_variable', 'dead_guard', 'duplicates_block', 'guards_derived_local'] as const) expect(POOL_SUSPECT_SIGNALS.has(s)).toBe(false);
     // every signal still has a plain-English line for the transcript
     const all: SuspicionSignal[] = ['deletes_statement', 'duplicates_block', 'guards_other_variable', 'dead_guard', 'adds_special_case', 'mutates_new_argument', 'late_guard', 'guards_derived_local'];
     for (const s of all) expect(SUSPICION_SIGNAL_WHY[s].length).toBeGreaterThan(10);

@@ -113,6 +113,73 @@ export function dedent(src: string): string {
   return lines.map((l) => (l.trim() === '' ? l : l.slice(min))).join('\n');
 }
 
+/**
+ * The 43 SWE-bench hunk images that do not tokenize even after `dedent`, made analysable
+ * (OOS iteration 4 review, defects 2 and 7 — the sweep covered 155 of 198 patches, and the only
+ * real-world corpus contributed almost nothing).
+ *
+ * The three failure modes are all artefacts of `hunkPatches` cutting a window out of the middle
+ * of a file, not properties of the patches: 19 `unindent does not match any outer indentation
+ * level` (the window starts inside a suite and later dedents past its own first line), 18 `EOF in
+ * multi-line string` and 6 `EOF in multi-line statement` (the window cuts a docstring or a
+ * bracketed expression in half). Two repairs fix all 43:
+ *
+ *   - an `if True:` prologue with one line at EVERY distinct indent width the fragment uses, in
+ *     ascending order, so every width the fragment can dedent to has already been pushed as an
+ *     indentation level (a ladder of fixed 1-space steps is not enough: `sympy-15345`'s window
+ *     runs 20 → 8 → 4 and only the widths it actually uses will do);
+ *   - close an odd number of `"""` / `'''` openers, and any brackets the window left open.
+ *
+ * All of it is prepended/appended OUTSIDE the patch text, so no line of the gold is altered and
+ * the fragment's physical line numbers shift by a known `offset`.
+ */
+export function repairFragment(src: string): { text: string; offset: number } {
+  const lines = src.split('\n');
+  const widths = new Set<number>();
+  for (const l of lines) {
+    if (l.trim() === '') continue;
+    widths.add(l.length - l.trimStart().length);
+  }
+  const prologue = [...widths].sort((a, b) => a - b).map((w) => `${' '.repeat(w)}if True:`);
+  const epilogue: string[] = [];
+  let triple = 0;
+  for (const l of lines) for (const _m of l.matchAll(/"""|'''/g)) triple += 1;
+  if (triple % 2 === 1) epilogue.push('"""');
+  // brackets the window cut in half; counted outside string literals only, crudely but enough
+  const stripped = src.replace(/"""[\s\S]*?"""|'''[\s\S]*?'''|"(?:[^"\\\n]|\\.)*"|'(?:[^'\\\n]|\\.)*'/g, '');
+  const open = { '(': 0, '[': 0, '{': 0 };
+  const close: Record<string, keyof typeof open> = { ')': '(', ']': '[', '}': '{' };
+  for (const ch of stripped) {
+    if (ch === '(' || ch === '[' || ch === '{') open[ch] += 1;
+    else if (ch in close) open[close[ch]!] = Math.max(0, open[close[ch]!] - 1);
+  }
+  const tail = `${')'.repeat(open['('])}${']'.repeat(open['['])}${'}'.repeat(open['{'])}`;
+  if (tail !== '') epilogue.push(tail);
+  return { text: [...prologue, ...lines, ...epilogue].join('\n'), offset: prologue.length };
+}
+
+/**
+ * The analysable image of a patch side: `dedent` when that is enough, otherwise the repaired
+ * fragment. `offset` is how many lines were prepended, so a caller mapping line numbers back to
+ * the patch can subtract it. `null` when neither works.
+ */
+export function analysableImage(src: string, analyse: (s: string) => unknown): { text: string; offset: number } | null {
+  const flat = dedent(src);
+  try {
+    analyse(flat);
+    return { text: flat, offset: 0 };
+  } catch {
+    /* fall through to the repair */
+  }
+  const repaired = repairFragment(src);
+  try {
+    analyse(repaired.text);
+    return repaired;
+  } catch {
+    return null;
+  }
+}
+
 /** LCS alignment; the 1-based BEFORE line numbers the patch removes or rewrites. */
 export function removedLines(before: readonly string[], after: readonly string[]): number[] {
   const n = before.length;
