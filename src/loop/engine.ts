@@ -3125,12 +3125,15 @@ class EngineImpl implements Engine {
   }
 
   /**
-   * contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9): ONE bounded sieve round for a single-file failing
-   * cluster, or `null` — in which case the LLM proposes as usual and nothing else about the step changes.
+   * contract 1.9 (Fastlane) docs/LLM-LOOP-DESIGN.md §4 (route R9), stage 1: may ONE bounded sieve round run for a
+   * single-file failing cluster on this step, and with what budget? `null` is the decline — the record is already on
+   * the draft — and then the LLM proposes as usual and nothing else about the step changes.
    *
    * The whole route is a BRANCH: the code default (the generator's `propose_action`) is what runs when it declines,
-   * and it declines for free on every step whose stage-1 predicate does not hold. It never applies anything (I7): an
-   * accepted proposal goes through the unchanged risk → confirm → coordinate → budget → execute → judge path.
+   * and it declines for free on every step whose predicate does not hold. This half runs OUTSIDE any stage precisely
+   * because it must cost nothing and emit nothing; `fastPathRound` is the half that is a propose stage. It never
+   * applies anything (I7): an accepted proposal goes through the unchanged risk → confirm → coordinate → budget →
+   * execute → judge path.
    */
   private async fastPathArm(draft: StepDraft): Promise<ArmedFastPath | null> {
     if (this.fastPathOption !== 'auto' || this.mode !== 'jev-on') return null;
