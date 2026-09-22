@@ -226,7 +226,39 @@ export interface PendingRetry {
  */
 export interface JobQueue {
   pop(n: number): VerifyJob[];
-  next?(): Promise<VerifyJob | null>;
+  /** streaming (docs/LLM-JEV-DESIGN.md §4.8): the next job while the queue is open, null on the close — or at once when `signal` aborts (the caller gives up its wait; the stream stays open) */
+  next?(signal?: AbortSignal): Promise<VerifyJob | null>;
+  /**
+   * Whether the queue streams (an LLM round is landing samples). A batch begun in streaming mode ends on its first
+   * `plausible` outcome — its full-suite run is behind it — so the controller decides over everything that landed
+   * and cancels the round's losers at once (§4.2, §6.2) instead of waiting for the slowest sample or its deadline;
+   * it re-enters the stream when the guard holds. A plain batch (jev-only) never streams and runs to its end.
+   */
+  readonly streaming?: boolean;
+}
+
+/** Node's timer ceiling (2³¹ − 1 ms): a longer delay fires at once, so a park's wall timer is clamped to it. */
+const MAX_TIMER_MS = 2 ** 31 - 1;
+
+/**
+ * Park on a streaming queue (§4.8) until a job lands or the queue closes. The wait ends early with null when
+ * `released` aborts (dispatch stopped: a decisive passer, the passer cap, a spent run count, a lane failure, the
+ * step signal) or after `waitMs` (the wall would no longer fit one run), so a worker never sits in `next()` past
+ * the batch's own stop rules while the round's feed is still open. Undefined when the queue cannot stream or
+ * nothing can be waited for.
+ */
+export async function awaitNextJob(queue: JobQueue, released: AbortSignal, waitMs: number): Promise<VerifyJob | undefined> {
+  if (queue.next === undefined || waitMs <= 0 || released.aborted) return undefined;
+  const park = new AbortController();
+  const release = (): void => park.abort();
+  const timer = setTimeout(release, Math.min(waitMs, MAX_TIMER_MS));
+  released.addEventListener('abort', release, { once: true });
+  try {
+    return (await queue.next(park.signal)) ?? undefined;
+  } finally {
+    clearTimeout(timer);
+    released.removeEventListener('abort', release);
+  }
 }
 
 /** The full-suite command and where it runs from (the baseline's command; paths in it are workspace-relative or absolute). */
@@ -538,8 +570,19 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const laneTimeoutMs = laneRunTimeout(oracle, baseline);
   // a run the remaining wall cannot fit (one measured goal-subset run, or the run timeout when smaller) is not started
   const minRunWallMs = Math.min(laneTimeoutMs, Math.max(1, oracle.tRunMs.goalSubset));
+  // A batch begun while the queue streams (an LLM round landing samples, §4.8) ends on its first decisive passer: a
+  // `plausible` here has its full-suite run behind it, so the controller can decide over everything that landed and
+  // cancel the round's losers the moment the guard commits (§4.2, §6.2) instead of waiting for the slowest sample or
+  // its deadline. Runs already on a lane complete and are returned; the jobs still queued wait for the next call.
+  const streamed = queue.streaming === true;
+  let passerStop = false;
+  // workers parked in `queue.next()` are released (null) when dispatch stops: a stop an active worker observed
+  // (`released.abort()` in the worker), the step signal, or — the park's own timer — the wall no longer fitting a run
+  const released = new AbortController();
+  const onAbort = (): void => released.abort();
+  ctx.signal.addEventListener('abort', onAbort, { once: true });
   const stopDispatch = (): boolean =>
-    ctx.signal.aborted || laneFailure !== null || dispatched >= runsAllowed || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs || passers >= MAX_FULL_SUITE_RUNS_PER_STEP;
+    ctx.signal.aborted || laneFailure !== null || passerStop || dispatched >= runsAllowed || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs || passers >= MAX_FULL_SUITE_RUNS_PER_STEP;
 
   // Load awareness: the batch's measured run median against the oracle's estimate; once it
   // exceeds LOAD_SCALE_MIN_RATIO the per-case cap of the rest of the batch follows it (bounded by 2 s)
@@ -711,8 +754,8 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const worker = async (): Promise<void> => {
     while (!stopDispatch()) {
       let job = carried.shift() ?? queue.pop(1)[0];
-      // a streaming queue (an LLM round landing samples): wait for the next job or the close (§4.8)
-      if (job === undefined && queue.next !== undefined) job = (await queue.next()) ?? undefined;
+      // a streaming queue (an LLM round landing samples): park until the next job or the close, released early when dispatch stops or the wall runs down (§4.8)
+      if (job === undefined) job = await awaitNextJob(queue, released.signal, wallLeft() - minRunWallMs);
       if (job === undefined) return;
       const order = dispatched;
       dispatched += 1;
@@ -728,11 +771,20 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       if (r.kind === 'defer') deferred.push(job);
       else if (r.kind === 'provisional') provisional.push({ order, pending: r.pending });
       else if (r.kind === 'killed') killed.push({ order, pending: r.pending, outcome: r.outcome });
-      else if (r.kind === 'outcome') results.push({ order, outcome: r.outcome });
+      else if (r.kind === 'outcome') {
+        results.push({ order, outcome: r.outcome });
+        if (streamed && r.outcome.status === 'plausible') passerStop = true;
+      }
+      // a worker that sees dispatch stopped (this passer, the cap, the runs, a lane failure) releases the parked ones
+      if (stopDispatch()) released.abort();
     }
   };
   const workers = Math.max(1, Math.min(pool.lanes.length, oracle.lanes));
-  await Promise.all(Array.from({ length: workers }, () => worker()));
+  try {
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+  } finally {
+    ctx.signal.removeEventListener('abort', onAbort);
+  }
   // carried jobs that dispatch never reached stay first in line
   deferred.unshift(...carried);
 
@@ -806,7 +858,8 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       : `; ${provisionalCount} provisional timeout${provisionalCount === 1 ? '' : 's'}: ${retriedCount} retried at ${RETRY_CASE_TIMEOUT_MS} ms${retriedCount > 0 ? ` (${[...retried.entries()].map(([k, v]) => `${v} ${k}`).join(', ')})` : ''}, ${pendingRetries.length} pending`;
   const loadNote = caseTimeoutNow === oracle.perTestTimeoutMs || oracle.perTestTimeoutMs === null ? '' : `; load ×${loadNow.toFixed(1)}, case timeout ${oracle.perTestTimeoutMs}→${caseTimeoutNow} ms`;
   const inFlightNote = inFlight ? `; ${killed.length} in-flight timeout${killed.length === 1 ? '' : 's'} under load ×${loadAtEnd.toFixed(1)}: re-queued once, lane timeout ${laneTimeoutMs}→${inFlightTimeoutMs} ms` : '';
-  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${inFlightNote}${retryNote}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
+  const streamNote = passerStop ? '; streamed batch ended on its first passer' : '';
+  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${loadNote}${inFlightNote}${retryNote}${streamNote}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
   ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail, candidates: dispatched, tested: outcomes.length });
   // a broken lane with nothing to show for the batch is an error the step must see; on abort the caller is stopping anyway
   if (laneFailure !== null && outcomes.length === 0 && !ctx.signal.aborted) throw new RunnerError(`lane failure during ${goal.id}: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`, { cause: laneFailure });

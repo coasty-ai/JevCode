@@ -8,6 +8,7 @@ import type { ExecResult, SandboxRunOptions } from '../../../../src/core/types.j
 import { fitOracle, LANE_MAX_CASE_TIMEOUTS, laneRunTimeout, RETRY_CASE_TIMEOUT_MS, RETRY_TIMEOUTS_MAX_PER_BATCH, shellWords } from '../../../../src/synth/search/budget.js';
 import type { OracleModel, VerifyOutcome, VerifyStatus } from '../../../../src/synth/search/types.js';
 import { sha12 } from '../../../../src/core/hash.js';
+import { VerifyQueue } from '../../../../src/synth/sieve/queue.js';
 import { classifyOutcome, forgetUnchangedTried, fullSuiteCommand, goalPasses, goalTestFiles, LANE_RUN_ENV, laneRunEnv, MAX_FULL_SUITE_RUNS_PER_STEP, restrictToFiles, type RunnerContext, type RunnerMemory, runQueue, runRegressionCheck, subsetCommand, subsetScope, timeoutKind } from '../../../../src/synth/sieve/runner.js';
 import { applyCandidate } from '../../../../src/synth/verify/apply.js';
 import { progress } from '../../../../src/synth/verify/progress.js';
@@ -962,5 +963,70 @@ describe('provisional timeouts on the lanes: slow is not hanging (jev-only-quixb
     expect(pyRuns(sb)).toBe(3);
     expect(mem.stepBudget.testRunsLeft).toBe(1500 - 3);
     expect(mem.stepBudget.testWallLeftMs).toBe(5000 - 3 * 600);
+  });
+});
+
+describe('a streamed batch (docs/LLM-JEV-DESIGN.md §4.2, §4.8, §6.2)', () => {
+  const HUNG = 'hung';
+  const bounded = <T>(p: Promise<T>, ms = 3000): Promise<T | typeof HUNG> => Promise.race([p, new Promise<typeof HUNG>((resolve) => setTimeout(() => resolve(HUNG), ms))]);
+
+  it('ends on its first plausible outcome: the parked workers are released without closing the stream, the passer is returned at once and a job landing later waits for the next call', async () => {
+    const sb = quixbugsFake();
+    const mem = memFor(oracle());
+    const q = new VerifyQueue();
+    q.open();
+    q.add(job(cands.plausible, b0));
+    const ctx = ctxFor(sb);
+    // one worker runs the passer; the other seven park on `next()` and, before this rule, waited for the close
+    const out = await bounded(runQueue(ctx, mem, q, GOAL, 10));
+    expect(out).not.toBe(HUNG);
+    if (out === HUNG) return;
+    expect(out.map((r) => r.status)).toEqual(['plausible']);
+    expect(q.streaming).toBe(true);
+    expect(ctx.events[0]?.detail).toMatch(/streamed batch ended on its first passer/);
+    expect(mem.passersThisStep).toBe(1);
+    // a sample landing after the stop stays queued for the next call (the guard may hold the passer and re-enter the stream)
+    q.add(job(cands.unchanged, b0));
+    expect(q.size).toBe(1);
+    q.close();
+    const again = await runQueue(ctxFor(sb), mem, q, GOAL, 10);
+    expect(again.map((r) => r.status)).toEqual(['unchanged']);
+  });
+
+  it('a plain batch (the queue never opened) is untouched: a passer beside another job does not end it', async () => {
+    const sb = quixbugsFake();
+    const q = new VerifyQueue();
+    // distinct ids: the real queue drops a second `c-5` as a duplicate (the helper keys ids by line)
+    expect(q.add(job({ ...cands.plausible, id: 'p' }, b0))).toBe('queued');
+    expect(q.add(job({ ...cands.unchanged, id: 'u' }, b0))).toBe('queued');
+    const out = await runQueue(ctxFor(sb), memFor(oracle()), q, GOAL, 10);
+    expect(out.map((r) => r.status).sort()).toEqual(['plausible', 'unchanged']);
+  });
+
+  it('the wall rule releases a worker parked in next(): a step whose test wall no longer fits one run returns without waiting for the close', async () => {
+    const sb = quixbugsFake();
+    // t_run 300 ms against a 450 ms wall: the park ends after ≈ 150 ms, nothing ran, the stream is untouched
+    const mem = memFor(oracle(), { stepBudget: budget({ testWallLeftMs: 450 }) });
+    const q = new VerifyQueue();
+    q.open();
+    const t0 = Date.now();
+    const out = await bounded(runQueue(ctxFor(sb), mem, q, GOAL, 10));
+    expect(out).toEqual([]);
+    const waited = Date.now() - t0;
+    expect(waited).toBeGreaterThanOrEqual(100);
+    expect(q.streaming).toBe(true);
+    expect(mem.stepBudget.testWallLeftMs).toBeLessThanOrEqual(450 - 100);
+  });
+
+  it('the step signal releases a parked worker at once', async () => {
+    const sb = quixbugsFake();
+    const ac = new AbortController();
+    const q = new VerifyQueue();
+    q.open();
+    const running = bounded(runQueue(ctxFor(sb, { signal: ac.signal }), memFor(oracle()), q, GOAL, 10));
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    ac.abort();
+    expect(await running).toEqual([]);
+    expect(q.streaming).toBe(true);
   });
 });

@@ -23,7 +23,7 @@ import { baseState } from '../beam/state.js';
 import { attemptFromOutcome, isLlmSite, reanchorLlmSite } from '../llm/candidates.js';
 import type { LlmApplied } from '../llm/candidates.js';
 import { q17Needed } from '../llm/rank.js';
-import type { LlmRoundSummary, SampleArrival } from '../llm/source.js';
+import type { CancelReason, LlmRoundSummary, SampleArrival } from '../llm/source.js';
 import type { OracleClass } from '../llm/types.js';
 import { isStatementSite, statementSiteAt } from '../localize/sites.js';
 import { scopeAt } from '../py/structure.js';
@@ -277,10 +277,12 @@ export interface SearchQueue {
   readonly size: number;
   addAll(jobs: Iterable<VerifyJob>): { queued: readonly VerifyJob[] };
   pop(n: number): VerifyJob[];
-  /** streaming (docs/LLM-JEV-DESIGN.md §4.8): the runner's worker awaits `next()` while the LLM round lands samples; all three or none */
+  /** streaming (docs/LLM-JEV-DESIGN.md §4.8): the runner's worker awaits `next()` while the LLM round lands samples; all three or none. `signal` releases a parked caller (the runner's wall and stop rules) without closing the stream. */
   open?(): void;
   close?(): void;
-  next?(): Promise<VerifyJob | null>;
+  next?(signal?: AbortSignal): Promise<VerifyJob | null>;
+  /** whether the queue streams: the runner ends a batch begun in streaming mode on its first plausible outcome (sieve/runner.ts `JobQueue.streaming`), and `runLlmStreaming` decides at once */
+  readonly streaming?: boolean;
 }
 
 /** The guard's Decision plus the bookkeeping guard.ts's GuardDecision carries (optional so a plain Decision fits). */
@@ -1075,7 +1077,7 @@ async function afterSeedBatch(st: LoopState, base: Base, results: readonly Verif
   L.graceMs += waited;
   const cands = arrived ? freshLlm(st, round.ready(), base) : [];
   const what = !arrived ? 'nothing arrived; the seeds decide' : cands.length === 0 ? 'no fresh LLM candidate; the seeds decide' : `${cands.length} LLM candidate${cands.length === 1 ? '' : 's'} arrived, running them before the decision`;
-  note(st, 'grace', `${st.goal.id}: a seed passer landed with the LLM round ${round.closed() ? 'closed' : 'in flight'}; waited ${waited} ms of ${waitMs} for ${awaiting ? 'sample 0' : 'nothing (a sample had landed)'} — ${what}`);
+  note(st, 'grace', `${st.goal.id}: a seed passer landed with the LLM round ${round.closed() ? 'closed' : 'in flight'}; waited ${waited} ms of ${waitMs} for ${awaiting ? 'sample 0' : round.closed() ? 'nothing (the round has closed)' : 'nothing (a sample had landed)'} — ${what}`);
   if (cands.length === 0) return [...results];
   const left = runsLeft(st.mem.oracle, st.mem.stepBudget);
   if (left <= 0) return [...results];
@@ -1093,7 +1095,7 @@ async function visitLlm(st: LoopState): Promise<BatchOutcome> {
   const L = st.llm;
   if (L === null || L.round === null) return CONTINUE;
   const { ctx, mem, goal } = st;
-  releaseLlm(st, 'the seed phase found no passer');
+  releaseLlm(st, mem.repository !== undefined && !L.topSiteDone ? 'the LLM phase runs first on repository class' : 'the seed phase found no passer');
   let out = await runLlmRound(st, L.round);
   if (out.kind === 'exit') return out;
   if (mem.stepBudget.exhausted()) return BUDGET_EXIT;
@@ -1190,7 +1192,15 @@ async function runLlmBatch(st: LoopState, jobs: readonly VerifyJob[], runsAllowe
   return out.kind === 'continue' ? { kind: 'continue', queued: queued.length, completed } : out;
 }
 
-/** SIEVE on a cheap oracle: the queue streams, the runner's lanes start on the first arrival, the round is closed into the queue, one decision over everything that ran (§4.8, §6.2). */
+/**
+ * SIEVE on a cheap oracle: the queue streams, the runner's lanes start on the first arrival, and the round ends on
+ * evidence, not on closure (§4.2, §6.2). The runner returns as soon as a plausible candidate — its full-suite run
+ * behind it — has landed (sieve/runner.ts `JobQueue.streaming`); the guard decides once over everything that ran by
+ * then, and on a commit the round's in-flight samples are cancelled the moment it commits, metered as cancelled,
+ * never awaited to the slowest sample or its deadline. When the guard holds (a flagged passer) while the round is
+ * still open, the stream is re-entered and what lands next forms the next batch, so nothing of the round is lost.
+ * A runner that stops short (budget, wall, signal, the passer cap) also ends the round: its samples are cancelled.
+ */
 async function runLlmStreaming(st: LoopState, round: LlmRound, committed: Base, q: { open(): void; close(): void }): Promise<BatchOutcome> {
   const { ctx, mem, goal, deps, trace } = st;
   const left = runsLeft(mem.oracle, mem.stepBudget);
@@ -1221,25 +1231,50 @@ async function runLlmStreaming(st: LoopState, round: LlmRound, committed: Base, 
     }
   };
   const feeding = feed();
-  let results: VerifyOutcome[];
-  try {
-    results = await deps.runQueue(ctx, mem, st.queue, goal, Math.min(left, leftovers + cap));
-  } catch (e) {
-    // a lane failure: the round is cancelled so the feed ends and the queue closes before the error surfaces
-    if (!round.closed()) await round.cancel(ctx.signal.aborted ? 'abort' : 'budget');
+  /** End the round — its in-flight samples cancelled and metered under `reason` — and drain the feed, so the queue is closed before the loop moves on. */
+  const end = async (reason: CancelReason): Promise<void> => {
+    if (!round.closed()) await round.cancel(reason);
     await feeding;
-    throw e;
+  };
+  const stopReason = (): CancelReason => (ctx.signal.aborted ? 'abort' : 'budget');
+  let ran = 0;
+  let completed = 0;
+  let batches = 0;
+  for (;;) {
+    let results: VerifyOutcome[];
+    try {
+      results = await deps.runQueue(ctx, mem, st.queue, goal, Math.min(runsLeft(mem.oracle, mem.stepBudget), leftovers + cap - ran));
+    } catch (e) {
+      // a lane failure: the round is cancelled so the feed ends and the queue closes before the error surfaces
+      await end(stopReason());
+      throw e;
+    }
+    batches += 1;
+    ran += results.length;
+    recordResults(st, results);
+    const mine = results.filter((r) => ids.has(r.job.candidate.id)).length;
+    completed += mine;
+    const passer = results.some((r) => r.status === 'plausible');
+    const others = results.length - mine;
+    note(st, 'llm:phase', `${goal.id}: round ${round.round} (${round.klass}) batch ${batches}: ${mine} LLM candidate${mine === 1 ? '' : 's'} classified as they streamed in${others > 0 ? ` (+${others} seed leftover${others === 1 ? '' : 's'})` : ''}${passer ? `; a passer landed — deciding now with the round ${round.closed() ? 'closed' : 'still in flight'}` : ''}`);
+    if (results.length === 0) {
+      // nothing ran: the round closed with nothing fresh, or the runner stopped short (budget, wall, signal, passer cap) while samples may still be in flight — they are cancelled, not awaited
+      await end(stopReason());
+      return { kind: 'continue', queued: ids.size, completed };
+    }
+    const out = await decideBatch(st, results, ids.size);
+    if (out.kind === 'exit') {
+      // §4.2: the losers are cancelled the moment the guard commits; a budget or parked exit ends the round as well
+      await end(out.decision.kind === 'commit' ? 'commit' : stopReason());
+      return out;
+    }
+    // the guard held the passer (or found none): the stream is re-entered while the round is open or its jobs still wait and a run is left; otherwise the round is over
+    const more = passer && (!round.closed() || st.queue.size > 0) && ran < leftovers + cap && runsLeft(mem.oracle, mem.stepBudget) > 0 && !mem.stepBudget.exhausted() && !ctx.signal.aborted;
+    if (!more) {
+      await end(stopReason());
+      return { kind: 'continue', queued: ids.size, completed };
+    }
   }
-  // the runner stopped short (budget, signal, passer cap) while samples may still be in flight: they are cancelled, not awaited
-  if (!round.closed()) await round.cancel(ctx.signal.aborted ? 'abort' : 'budget');
-  await feeding;
-  recordResults(st, results);
-  const queued = ids.size;
-  const completed = results.filter((r) => ids.has(r.job.candidate.id)).length;
-  note(st, 'llm:phase', `${goal.id}: round ${round.round} (${round.klass}) streamed ${queued} LLM candidate${queued === 1 ? '' : 's'} into the lanes as they arrived; ${completed} classified${results.length > completed ? ` (+${results.length - completed} seed leftover${results.length - completed === 1 ? '' : 's'})` : ''}`);
-  if (results.length === 0) return CONTINUE;
-  const out = await decideBatch(st, results, queued);
-  return out.kind === 'continue' ? { kind: 'continue', queued, completed } : out;
 }
 
 /** Step end for the LLM source: an open round is cancelled (a commit or the budget ended the search; §4.2) and the rounds' counts go on the trace. */
@@ -1358,6 +1393,18 @@ export async function searchSubGoal(ctx: SynthesisContext, mem: SubGoalMemory, g
   }
 }
 
+/**
+ * The phase ladder of `searchSubGoal` (docs/LLM-JEV-DESIGN.md §4.2 "Phase ladder"). The LLM phase follows the seeds
+ * on QuixBugs/ladder class, where the seeds win 25/36 true-line sets and sample 0 races them; on repository class
+ * (llm-jev with `mem.repository`) the round fired after `locate` is consumed first — the seeds are 0 % on new-logic
+ * hunks there, and a SEEDS pass ahead of the samples would cost a whole template/donor sieve (or per-source Jev
+ * rankings) per site and let weak-oracle seed "passers" take the step's five passer slots before the samples run
+ * (§4.2 "immediately on repository class", §6.1, §7.4). Without an LLM source the ladder is PHASES: jev-only unchanged.
+ */
+export function phaseLadder(opts: { llm: boolean; repository: boolean }): readonly Phase[] {
+  return opts.llm && opts.repository ? ['LLM', ...PHASES.filter((p) => p !== 'LLM')] : PHASES;
+}
+
 /** The phase ladder of `searchSubGoal` over a prepared loop state (the LLM round, if any, is already in flight). */
 async function searchPhases(st: LoopState, loc: LocalizeResult, sites: readonly Site[]): Promise<SubGoalResult> {
   const { mem, goal, trace } = st;
@@ -1370,7 +1417,7 @@ async function searchPhases(st: LoopState, loc: LocalizeResult, sites: readonly 
   const resumed = await visitPairs(st);
   if (resumed.kind === 'exit') return exitOn(st, resumed.decision);
 
-  for (const phase of PHASES) {
+  for (const phase of phaseLadder({ llm: st.llm !== null, repository: mem.repository !== undefined })) {
     let r: BatchOutcome = CONTINUE;
     switch (phase) {
       case 'SEEDS': {

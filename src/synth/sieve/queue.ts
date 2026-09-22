@@ -515,12 +515,29 @@ export class VerifyQueue {
     this.isStreaming = v;
   }
 
-  /** The best job in key order, awaiting the next `add` while the queue streams; null when it is empty and not streaming. */
-  next(): Promise<QueuedJob | null> {
+  /**
+   * The best job in key order, awaiting the next `add` while the queue streams; null when it is empty and not
+   * streaming. `signal` releases a parked caller early — null, its place in line given up, the stream left open —
+   * so the runner's stop rules (a decisive passer, the wall, the step signal) can end a worker's wait without
+   * closing the round's feed (sieve/runner.ts `awaitNextJob`).
+   */
+  next(signal?: AbortSignal): Promise<QueuedJob | null> {
     const head = this.pop(1)[0];
     if (head !== undefined) return Promise.resolve(head);
-    if (!this.isStreaming) return Promise.resolve(null);
-    return new Promise((resolve) => this.waiters.push(resolve));
+    if (!this.isStreaming || signal?.aborted === true) return Promise.resolve(null);
+    return new Promise((resolve) => {
+      const waiter = (job: QueuedJob | null): void => {
+        signal?.removeEventListener('abort', release);
+        resolve(job);
+      };
+      const release = (): void => {
+        const at = this.waiters.indexOf(waiter);
+        if (at !== -1) this.waiters.splice(at, 1);
+        resolve(null);
+      };
+      signal?.addEventListener('abort', release, { once: true });
+      this.waiters.push(waiter);
+    });
   }
 
   /** Hand the best job to the longest-waiting `next()`, if any (called after every enqueue). */

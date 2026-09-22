@@ -50,7 +50,7 @@ import type { RunSamples } from '../search/budget.js';
 import type { Goal, Lane, VerifyJob, VerifyOutcome, VerifyStatus } from '../search/types.js';
 import { createLanes } from '../sieve/lanes.js';
 import type { JobQueue, RunnerContext, RunnerMemory } from '../sieve/runner.js';
-import { MAX_FULL_SUITE_RUNS_PER_STEP, RUN_OUTPUT_BYTES } from '../sieve/runner.js';
+import { MAX_FULL_SUITE_RUNS_PER_STEP, RUN_OUTPUT_BYTES, awaitNextJob } from '../sieve/runner.js';
 import type { AppliedCandidate, Progress, TestRunSummary } from '../types.js';
 import { applyCandidate } from '../verify/apply.js';
 import { summarize } from '../verify/index.js';
@@ -218,7 +218,17 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
   const results: { order: number; outcome: VerifyOutcome }[] = [];
   const reproDurations: number[] = [];
   const regressionDurations: number[] = [];
-  const stopDispatch = (): boolean => ctx.signal.aborted || laneFailure !== null || dispatched >= runsAllowed || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs || passers >= MAX_FULL_SUITE_RUNS_PER_STEP;
+  // a batch begun while the queue streams ends on its first decisive passer (sieve/runner.ts `JobQueue.streaming`): a
+  // `plausible` here passed the reproduction twice and its scoped regression, so the controller decides at once and
+  // cancels the round's losers on the commit; runs already on a lane complete, the jobs still queued wait
+  const streamed = queue.streaming === true;
+  let passerStop = false;
+  // workers parked in `queue.next()` are released when dispatch stops (an active worker's observation, the step signal) or the wall runs down (the park's timer)
+  const released = new AbortController();
+  const onAbort = (): void => released.abort();
+  ctx.signal.addEventListener('abort', onAbort, { once: true });
+  const stopDispatch = (): boolean =>
+    ctx.signal.aborted || laneFailure !== null || passerStop || dispatched >= runsAllowed || budget.testRunsLeft <= 0 || wallLeft() < minRunWallMs || passers >= MAX_FULL_SUITE_RUNS_PER_STEP;
   const chargeRun = (): void => {
     budget.testRunsLeft = Math.max(0, budget.testRunsLeft - 1);
   };
@@ -237,10 +247,10 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
     }
   };
 
-  /** The next job in rank order across the carried and the fresh queue (one-job lookahead on the queue); with nothing carried, a streaming queue is awaited (§4.8). */
+  /** The next job in rank order across the carried and the fresh queue (one-job lookahead on the queue); with nothing carried, a streaming queue is awaited — released early when dispatch stops or the wall runs down (§4.8). */
   const nextJob = async (): Promise<VerifyJob | undefined> => {
     let fresh = queue.pop(1)[0];
-    if (fresh === undefined && carried.length === 0 && queue.next !== undefined) fresh = (await queue.next()) ?? undefined;
+    if (fresh === undefined && carried.length === 0) fresh = await awaitNextJob(queue, released.signal, wallLeft() - minRunWallMs);
     if (fresh === undefined) return carried.shift();
     const top = carried[0];
     if (top === undefined || compareRank(fresh, top) < 0) return fresh;
@@ -376,11 +386,20 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
         settle(order);
       }
       if (r.kind === 'defer') deferred.push(job);
-      else results.push({ order, outcome: r.outcome });
+      else {
+        results.push({ order, outcome: r.outcome });
+        if (streamed && r.outcome.status === 'plausible') passerStop = true;
+      }
+      // a worker that sees dispatch stopped (this passer, the cap, the runs, a lane failure) releases the parked ones
+      if (stopDispatch()) released.abort();
     }
   };
   const workers = Math.max(1, Math.min(pool.lanes.length, oracle.lanes));
-  await Promise.all(Array.from({ length: workers }, () => worker()));
+  try {
+    await Promise.all(Array.from({ length: workers }, () => worker()));
+  } finally {
+    ctx.signal.removeEventListener('abort', onAbort);
+  }
   mem.passersThisStep = passers;
   deferred.unshift(...carried);
   deferred.sort(compareRank);
@@ -405,7 +424,8 @@ export async function runRepositoryQueue(ctx: RunnerContext, mem: RunnerMemory, 
   const tRunNote = `; t_run reproduction ${oracle.tRunMs.goalSubset} ms${live.live.repro ? ' (live)' : ''}, scoped ${oracle.tRunMs.fullSuite} ms${live.live.scoped ? ' (live)' : ''}`;
   const timing = `${reproMed === null ? '' : `; reproduction median ${Math.round(reproMed)} ms`}${regMed === null ? '' : `; regression run median ${Math.round(regMed)} ms`}${tRunNote}`;
   const unstableNote = unstable === 0 ? '' : `; ${unstable} passed once and failed the confirmation run (unstable, not regression-tested)`;
-  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); ${opts.spec === null ? 'regression only' : `reproduction ${opts.spec.testId} (a pass confirmed by a second run) then regression`}; runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${unstableNote}${deferred.length > 0 ? `; ${deferred.length} deferred` : ''}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
+  const streamNote = passerStop ? '; streamed batch ended on its first passer' : '';
+  const detail = `${goal.id}: ${outcomes.length} tested on ${workers} lane${workers === 1 ? '' : 's'} (${[...counts.entries()].map(([k, v]) => `${v} ${k}`).join(', ') || 'nothing ran'}); ${opts.spec === null ? 'regression only' : `reproduction ${opts.spec.testId} (a pass confirmed by a second run) then regression`}; runs left ${budget.testRunsLeft}, test wall left ${Math.round(budget.testWallLeftMs / 1000)} s${timing}${unstableNote}${streamNote}${deferred.length > 0 ? `; ${deferred.length} deferred` : ''}${ctx.signal.aborted ? '; aborted' : ''}${failureNote}`;
   ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail, candidates: dispatched, tested: outcomes.length });
   if (laneFailure !== null && outcomes.length === 0 && !ctx.signal.aborted) throw new Error(`lane failure during ${goal.id}: ${laneFailure instanceof Error ? laneFailure.message : String(laneFailure)}`, { cause: laneFailure });
   return outcomes;

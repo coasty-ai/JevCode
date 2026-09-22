@@ -6,15 +6,18 @@
  * stagger release when the seeds miss and the streamed LLM phase (arrivals past the cap booked, not
  * queued), the feedback round with both rounds on the trace, an empty round on its deadline releasing
  * SKETCH, Q17's order on a RANK oracle after N−1 samples, the repository fire point in the best-guess
- * search overlapping Q9 and the mutation skip at repository sites. jev-only (no `deps.llm`) is untouched:
- * the existing subgoal tests cover it.
+ * search overlapping Q9 and the mutation skip at repository sites. The round ends on evidence (§4.2, §6.2): a
+ * streamed passer is decided the moment it is classified and the straggler is cancelled on the commit; a held
+ * passer re-enters the stream; on repository class the LLM phase precedes the seeds. jev-only (no `deps.llm`)
+ * is untouched: the existing subgoal tests cover it.
  */
 import { describe, expect, it } from 'vitest';
 
 import type { RepositoryMode } from '../../../../src/synth/search/memory.js';
 import { LLM_FEEDBACK_WIDEN } from '../../../../src/synth/search/llm.js';
-import { EDIT_CLASS_QUESTION_ID, LLM_ROUND_MAX_CANDIDATES, SEED_SOURCES, llmJobPrior, searchBestGuess, searchSubGoal, sourcePriorAt } from '../../../../src/synth/search/subgoal.js';
+import { EDIT_CLASS_QUESTION_ID, LLM_ROUND_MAX_CANDIDATES, SEED_SOURCES, llmJobPrior, phaseLadder, searchBestGuess, searchSubGoal, sourcePriorAt } from '../../../../src/synth/search/subgoal.js';
 import type { GuardVerdict } from '../../../../src/synth/search/subgoal.js';
+import { PHASES } from '../../../../src/synth/search/types.js';
 import type { VerifyOutcome } from '../../../../src/synth/search/types.js';
 import { GCD_OTHER_TEST, GCD_TEST, cand, choiceOn, fakeBudget, fakeCtx, fakeGoal, fakeLlm, fakeMemory, fakeQueue, fakeSubGoalDeps, fastOracle, gcdFixture, slowOracle, summary } from './controller-fakes.js';
 
@@ -48,6 +51,13 @@ describe('pure rules', () => {
     expect(llmJobPrior('ladder')).toBe(sourcePriorAt(SEED_SOURCES.length));
     expect(llmJobPrior('repository')).toBe(1);
     expect(LLM_ROUND_MAX_CANDIDATES).toBe(18);
+  });
+
+  it('the phase ladder (§4.2): PHASES as is, except that llm-jev on repository class consumes the LLM round before the seeds', () => {
+    expect(phaseLadder({ llm: false, repository: false })).toEqual(PHASES);
+    expect(phaseLadder({ llm: false, repository: true })).toEqual(PHASES);
+    expect(phaseLadder({ llm: true, repository: false })).toEqual(PHASES);
+    expect(phaseLadder({ llm: true, repository: true })).toEqual(['LLM', 'SEEDS', 'SKETCH', 'BEAM', 'WIDENED']);
   });
 });
 
@@ -425,5 +435,148 @@ describe('repository class (§4.2, §4e)', () => {
     expect(goal.exhausted.get('gcd.py:5:replace')?.has('mutation')).toBe(true);
     // the round was skipped by the adapter (null): no LLM phase, no trace rounds
     expect(r.trace.llm).toMatchObject({ rounds: 0, samples: 0 });
+  });
+
+  it('the LLM round is consumed before the seed phase (§4.2 "immediately on repository class"): its passer commits before a single seed is enumerated', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    mem.repository = repositoryOf(goal.id);
+    const llm = fakeLlm({ rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }], klass: 'repository' } : null) });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'template' ? [cand(site, WRONG, { source: 'template', op: 'guard' })] : source === 'donor' ? [cand(site, 'return gcd(a, b % a)', { source: 'donor', op: 'donor_line' })] : []),
+      statusOf: (job) => (job.candidate.text === LLM_FIX ? 'plausible' : 'unchanged'),
+      decide: commitFirstPlausible,
+    });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') expect(r.applied.candidate.source).toBe('llm');
+    // the one batch is the round's, in the repository queue place; no seed source was enumerated, no site batch ran
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.source))).toEqual([['llm']]);
+    expect(deps.rec.runBatches[0]![0]!.p).toBe(llmJobPrior('repository'));
+    expect(deps.rec.enumerations).toEqual([]);
+    expect(deps.rec.decideCalls).toHaveLength(1);
+    const phases = ctx.events.flatMap((e) => (e.type === 'synth' ? [e.phase] : []));
+    expect(phases).toContain('llm:phase');
+    expect(phases).not.toContain('site');
+    expect(r.trace.phase).toBe('LLM');
+  });
+
+  it('the LLM round finds nothing on repository class: the seeds follow in the same step, template and donor as one SIEVE batch behind the round', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    mem.repository = repositoryOf(goal.id);
+    const llm = fakeLlm({ rounds: (o) => (o.round === 1 ? { arrivals: [{ candidates: [cand(replace, 'return gcd(b, a // b)', { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }], klass: 'repository' } : null) });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'template' ? [cand(site, WRONG, { source: 'template', op: 'guard' })] : source === 'donor' ? [cand(site, 'return gcd(a, b % a)', { source: 'donor', op: 'donor_line' })] : []),
+    });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('parked');
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.source))).toEqual([['llm'], ['template', 'donor']]);
+    // round 1 ran whole without a passer, so the feedback round was offered (and skipped by the adapter) before the seeds ran
+    expect(llm.rec.fires.map((f) => f.round)).toEqual([1, 2]);
+    const phases = ctx.events.flatMap((e) => (e.type === 'synth' ? [e.phase] : []));
+    expect(phases.indexOf('llm:phase')).toBeLessThan(phases.indexOf('site'));
+    expect(r.trace.bySource.llm).toEqual({ enumerated: 1, tested: 1, passed: 0 });
+  });
+});
+
+describe('the round ends on evidence, not on closure (§4.2, §6.2)', () => {
+  it('a sample-0 passer decides the streamed round the moment it is classified: the straggler is cancelled on the commit and billed as cancelled, never awaited to its deadline', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    // sample 0 lands 5 ms after the fire with the fix; sample 1 (released with the top-site miss) would land 1500 ms later
+    const llm = fakeLlm({
+      graceMs: 1000,
+      rounds: (o) =>
+        o.round === 1
+          ? {
+              arrivals: [
+                { candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 },
+                { candidates: [cand(replace, 'return gcd(b, a // b)', { source: 'llm', op: 'sample_1_0' })], delayMs: 1500 },
+              ],
+            }
+          : null,
+    });
+    const at: { passer: number | null; decided: number | null } = { passer: null, decided: null };
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : []),
+      statusOf: (job) => {
+        if (job.candidate.text !== LLM_FIX) return 'unchanged';
+        at.passer = Date.now();
+        return 'plausible';
+      },
+      decide: (results) => {
+        if (results.some((o) => o.applied.candidate.source === 'llm')) at.decided = Date.now();
+        return commitFirstPlausible(results);
+      },
+    });
+    deps.llm = llm;
+    const t0 = Date.now();
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    const wall = Date.now() - t0;
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(LLM_FIX);
+    // the decision followed the passer's classification, not the straggler's arrival or its deadline
+    expect(at.passer).not.toBeNull();
+    expect(at.decided).not.toBeNull();
+    expect((at.decided ?? 0) - (at.passer ?? 0)).toBeLessThan(50);
+    expect(wall).toBeLessThan(1000);
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.op))).toEqual([['identifier_substitution'], ['sample_0_0']]);
+    expect(deps.rec.decideCalls).toHaveLength(2);
+    // the straggler: cancelled the moment the guard committed, booked as cancelled on the trace (§4.2, §8.1)
+    expect(llm.rec.cancelled).toEqual(['commit']);
+    expect(r.trace.llm).toMatchObject({ rounds: 1, samples: 2, valid: 1, cancelled: 1 });
+    expect(r.trace.bySource.llm).toEqual({ enumerated: 1, tested: 1, passed: 1 });
+    const phase = ctx.events.find((e) => e.type === 'synth' && e.phase === 'llm:phase');
+    expect(phase?.type === 'synth' ? phase.detail : '').toMatch(/a passer landed — deciding now with the round still in flight/);
+  });
+
+  it('the guard holds the first passer: the stream is re-entered and the rest of the round is not lost — the next arrival forms the next batch and is decided again', async () => {
+    const { file, replace } = gcdFixture();
+    const ctx = fakeCtx();
+    const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
+    const goal = fakeGoal();
+    const SECOND = 'return gcd(b, a % b)  # llm 2';
+    const llm = fakeLlm({
+      graceMs: 1000,
+      rounds: (o) =>
+        o.round === 1
+          ? {
+              arrivals: [
+                { candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 },
+                { candidates: [cand(replace, SECOND, { source: 'llm', op: 'sample_1_0' })], delayMs: 60 },
+              ],
+            }
+          : null,
+    });
+    const deps = fakeSubGoalDeps({
+      sites: [replace],
+      seed: (source, site) => (source === 'mutation' ? [cand(site, WRONG, { op: 'identifier_substitution' })] : []),
+      statusOf: (job) => (job.candidate.text === LLM_FIX || job.candidate.text === SECOND ? 'plausible' : 'unchanged'),
+      // batch 2 is the first LLM batch: the guard keeps its passer as the step's suspect (rule b) and continues
+      decide: (results, batch) => (batch === 2 ? { kind: 'continue' } : commitFirstPlausible(results)),
+    });
+    deps.llm = llm;
+    const r = await searchSubGoal(ctx, mem, goal, deps);
+    expect(r.kind).toBe('commit');
+    if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(SECOND);
+    // three batches, three decisions: the seeds, the held passer, then the re-entered stream's arrival
+    expect(deps.rec.runBatches.map((b) => b.map((j) => j.candidate.op))).toEqual([['identifier_substitution'], ['sample_0_0'], ['sample_1_0']]);
+    expect(deps.rec.decideCalls).toHaveLength(3);
+    // the round closed by itself once sample 1 landed: nothing to cancel
+    expect(llm.rec.cancelled).toEqual([]);
+    expect(r.trace.llm).toMatchObject({ rounds: 1, samples: 2, valid: 2, cancelled: 0 });
+    expect(r.trace.bySource.llm).toEqual({ enumerated: 2, tested: 2, passed: 2 });
   });
 });
