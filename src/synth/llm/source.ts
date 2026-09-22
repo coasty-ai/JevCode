@@ -611,6 +611,13 @@ export interface LlmRoundSummary {
   cacheWrite?: number;
   /** contract 1.9 (Fastlane) §3.4: `cacheRead / input tokens` over the round's priced samples, 0…1; absent when the round priced no input at all. */
   cacheHitRate?: number;
+  /**
+   * contract 1.9 (Fastlane) §3.4: the input tokens the two cache figures are a share of — `cacheHitRate`'s own
+   * denominator. A step's rate is `Σ cacheRead / Σ cacheInputTokens` over its rounds, which is not recoverable from
+   * the per-round rates alone (they would have to be weighted by exactly this). Absent with the rest when no sample
+   * of the round reported cache at all.
+   */
+  cacheInputTokens?: number;
 }
 
 export interface LlmSource {
@@ -1085,7 +1092,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
    * share of the INPUT tokens of the samples that reported usage at all — a round whose samples all timed out reports
    * no rate rather than a 0 that would read as "the cache missed".
    */
-  function cacheCountsOf(st: RoundState): { cacheRead?: number; cacheWrite?: number; cacheHitRate?: number } {
+  function cacheCountsOf(st: RoundState): { cacheRead?: number; cacheWrite?: number; cacheHitRate?: number; cacheInputTokens?: number } {
     let read = 0;
     let write = 0;
     let input = 0;
@@ -1096,7 +1103,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       input += a.usage.inputTokens;
     }
     if (read === 0 && write === 0) return {};
-    return { cacheRead: read, cacheWrite: write, ...(input > 0 ? { cacheHitRate: read / input } : {}) };
+    return { cacheRead: read, cacheWrite: write, ...(input > 0 ? { cacheHitRate: read / input, cacheInputTokens: input } : {}) };
   }
 
   /** §3.2: drop the pending hedge timer(s). A timer that outlived its round would fire a twin into a closed round and, in a test, keep the process alive. */
