@@ -88,8 +88,16 @@ export function cacheRelPath(rel: string): string | null {
 // Disk-error classification (TUI-DESIGN §13.3, §13.5: `checkpoint degraded: <code> on <file>`)
 // ---------------------------------------------------------------------------------------
 
-/** The errno codes that make a checkpoint write a degraded-but-not-fatal condition (TUI-DESIGN §13.3). */
-export const DISK_ERROR_CODES = ['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE'] as const;
+/**
+ * The errno codes that make a checkpoint write a degraded-but-not-fatal condition (TUI-DESIGN §13.3).
+ *
+ * TUI-DESIGN-4 §7.2 edge 2 adds **ENOENT**: with the runs directory removed 0.9 s into a 40-step run every write
+ * fails with ENOENT, and before round 4 that was completely silent — the run reported `complete`, exit 0, and the
+ * epilogue advertised a resume for a directory that no longer existed. Classification is only ever applied to
+ * **write** failures (`failWrite` below, and the engine's `noteDiskError`), so a read of an absent file is
+ * unaffected.
+ */
+export const DISK_ERROR_CODES = ['ENOSPC', 'EACCES', 'EROFS', 'EDQUOT', 'EIO', 'EMFILE', 'ENOENT'] as const;
 export type DiskErrorCode = (typeof DISK_ERROR_CODES)[number];
 
 export interface DiskError {
@@ -274,6 +282,40 @@ function isStepRecord(v: unknown): v is StepRecord {
   return isJsonObject(v) && typeof v['step'] === 'number' && Number.isInteger(v['step']) && v['step'] >= 1 && isJsonArray(v['decisions']);
 }
 
+// ---------------------------------------------------------------------------------------
+// Forward-version refusal (TUI-DESIGN-4 §7.9, P-D9)
+// ---------------------------------------------------------------------------------------
+
+/**
+ * TUI-DESIGN-4 §7.9: `isRunMeta` "checks v1 fields only, so old files load unchanged" — right for *older* files,
+ * wrong for *newer* ones. Reads the artefact's declared version: a number, `'corrupt'` when `v` is present but is
+ * not a number (edge: treat as corrupt, never as newer), or null when absent (a v1 file that predates the field).
+ */
+export function artefactVersion(v: unknown, key = 'v'): number | 'corrupt' | null {
+  if (!isJsonObject(v)) return null;
+  if (!(key in v)) return null;
+  const raw = v[key];
+  if (typeof raw !== 'number' || !Number.isFinite(raw)) return 'corrupt';
+  return raw;
+}
+
+/** TUI-DESIGN-4 §7.9 / §12: `run <id> was written by a newer JevCode (run.json v<n>; this build reads v<m>) — upgrade with jevcode upgrade`. */
+export function newerArtefactMessage(runId: string, file: string, found: number, reads: number = CHECKPOINT_VERSION): string {
+  return `run ${runId} was written by a newer JevCode (${file} v${found}; this build reads v${reads}) — upgrade with jevcode upgrade`;
+}
+
+/**
+ * TUI-DESIGN-4 §7.9: the refusal message when `run.json` declares a version this build cannot read, else null.
+ * `v < CHECKPOINT_VERSION` and an absent `v` keep loading; `v` present but not a number is corrupt, not newer, so
+ * it falls through to the existing shape check. The caller throws `ConfigError` (exit 2) — the refusal applies to
+ * **resume**, never to `jevcode report`, which must still bundle an unreadable run.
+ */
+export function refuseNewerRunMeta(meta: unknown, runId: string): string | null {
+  const v = artefactVersion(meta);
+  if (typeof v !== 'number' || v <= CHECKPOINT_VERSION) return null;
+  return newerArtefactMessage(runId, CHECKPOINT_FILES.meta, v);
+}
+
 export type EnvelopeParse = { ok: true; state: CheckpointState } | { ok: false; reason: string };
 
 /** Parse and verify one envelope file's text: JSON, version, checksum over the re-serialised state, shape. */
@@ -282,7 +324,14 @@ export function parseEnvelope(text: string): EnvelopeParse {
   if (!parsed.ok) return { ok: false, reason: `not JSON (${parsed.error})` };
   const env = parsed.value;
   if (!isJsonObject(env)) return { ok: false, reason: 'envelope is not an object' };
-  if (env['version'] !== CHECKPOINT_VERSION) return { ok: false, reason: `unsupported version ${JSON.stringify(env['version'])}` };
+  // TUI-DESIGN-4 §7.9: a *newer* envelope says so by name, so the caller can print the upgrade sentence rather
+  // than "corrupt checkpoint"; anything else (older, non-numeric) keeps today's wording.
+  if (env['version'] !== CHECKPOINT_VERSION) {
+    const v = env['version'];
+    if (typeof v === 'number' && Number.isFinite(v) && v > CHECKPOINT_VERSION)
+      return { ok: false, reason: `written by a newer JevCode (${CHECKPOINT_FILES.state} v${v}; this build reads v${CHECKPOINT_VERSION})` };
+    return { ok: false, reason: `unsupported version ${JSON.stringify(v)}` };
+  }
   const checksum = env['checksum'];
   if (typeof checksum !== 'string') return { ok: false, reason: 'checksum missing' };
   const state = env['state'];
@@ -299,7 +348,18 @@ export function parseEnvelope(text: string): EnvelopeParse {
 // Store
 // ---------------------------------------------------------------------------------------
 
-export function createCheckpointStore(runDir: string, redact: Redactor): DiskCheckpointStore {
+/** TUI-DESIGN-4 §7.2 (P-D2): how the store reports a degraded write to its owner. */
+export interface CheckpointStoreOptions {
+  /**
+   * Called **once per `<file>:<code>` key** the moment a write path classifies its failure, *in addition* to the
+   * throw. Before round 4 every write failure only threw, and the fire-and-forget append paths dropped it on the
+   * floor; the engine then never emitted `checkpoint:degraded`, `exitCodeFor` never saw `degraded` and the
+   * epilogue advertised a resume that could not work. Never throws out of the store: the callback is guarded.
+   */
+  onDegrade?: (info: DiskError) => void;
+}
+
+export function createCheckpointStore(runDir: string, redact: Redactor, opts: CheckpointStoreOptions = {}): DiskCheckpointStore {
   const dir = runDir;
   const pathOf = (name: string): string => join(dir, name);
   /** Per-key promise chains; the stored tail is always handled so one failure never stalls the queue. */
@@ -314,6 +374,28 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
 
   function fail(message: string, cause?: unknown): CheckpointError {
     return new CheckpointError(`${message} (${dir})`, dir, cause === undefined ? {} : { cause });
+  }
+
+  /** TUI-DESIGN-4 §7.2 item 1: the `<file>:<code>` keys already reported, so the callback fires once per key. */
+  const degradedKeys = new Set<string>();
+
+  /**
+   * TUI-DESIGN-4 §7.2 item 1: every **write** path's failure — the classification the store already computes,
+   * routed to `onDegrade` as well as thrown. Read paths keep `fail()`: an absent file is not a degradation.
+   * `artefact` is the checkpoint file the write was for, so the key is stable even when the errno text is not.
+   */
+  function failWrite(artefact: string, message: string, cause: unknown): CheckpointError {
+    const err = fail(message, cause);
+    const info = classifyDiskError(err, artefact);
+    if (info !== null && !degradedKeys.has(info.key)) {
+      degradedKeys.add(info.key);
+      try {
+        opts.onDegrade?.(info);
+      } catch {
+        /* a broken reporter never breaks the write path: the notice is best effort, the throw is not */
+      }
+    }
+    return err;
   }
 
   function toFail(e: unknown, message: string): CheckpointError {
@@ -354,7 +436,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
       try {
         await appendFile(pathOf(file), line, 'utf8');
       } catch (e) {
-        throw fail(`append to ${file} failed: ${describe(e)}`, e);
+        throw failWrite(file, `append to ${file} failed: ${describe(e)}`, e);
       }
     });
   }
@@ -391,7 +473,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
     try {
       await writeFileAtomic(pathOf(CHECKPOINT_FILES.meta), `${text}\n`, { fsync: true });
     } catch (e) {
-      throw fail(`cannot write ${CHECKPOINT_FILES.meta}: ${describe(e)}`, e);
+      throw failWrite(CHECKPOINT_FILES.meta, `cannot write ${CHECKPOINT_FILES.meta}: ${describe(e)}`, e);
     }
   }
 
@@ -405,7 +487,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
     try {
       await writeFileAtomic(tmp, text, { fsync: true });
     } catch (e) {
-      throw fail(`cannot write ${CHECKPOINT_FILES.state} temp file: ${describe(e)}`, e);
+      throw failWrite(CHECKPOINT_FILES.state, `cannot write ${CHECKPOINT_FILES.state} temp file: ${describe(e)}`, e);
     }
     try {
       // Rotation order is the durability contract: the old state becomes prev by rename
@@ -419,7 +501,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
       await rename(tmp, pathOf(CHECKPOINT_FILES.state));
     } catch (e) {
       await unlink(tmp).catch(() => undefined);
-      throw fail(`cannot rotate ${CHECKPOINT_FILES.state}: ${describe(e)}`, e);
+      throw failWrite(CHECKPOINT_FILES.state, `cannot rotate ${CHECKPOINT_FILES.state}: ${describe(e)}`, e);
     }
   }
 
@@ -554,7 +636,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
       try {
         writeFileAtomicSync(tmp, text, { fsync: true });
       } catch (e) {
-        throw fail(`cannot write ${CHECKPOINT_FILES.state} temp file: ${describe(e)}`, e);
+        throw failWrite(CHECKPOINT_FILES.state, `cannot write ${CHECKPOINT_FILES.state} temp file: ${describe(e)}`, e);
       }
       try {
         try {
@@ -570,7 +652,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
         } catch {
           /* best effort */
         }
-        throw fail(`cannot rotate ${CHECKPOINT_FILES.state}: ${describe(e)}`, e);
+        throw failWrite(CHECKPOINT_FILES.state, `cannot rotate ${CHECKPOINT_FILES.state}: ${describe(e)}`, e);
       }
     },
 
@@ -640,7 +722,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
         try {
           await writeFileAtomic(pathOf(CHECKPOINT_FILES.ui), `${text}\n`);
         } catch (e) {
-          throw fail(`cannot write ${CHECKPOINT_FILES.ui}: ${describe(e)}`, e);
+          throw failWrite(CHECKPOINT_FILES.ui, `cannot write ${CHECKPOINT_FILES.ui}: ${describe(e)}`, e);
         }
       });
     },
@@ -659,7 +741,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
         try {
           await writeFileAtomic(join(dir, CHECKPOINT_FILES.cache, ...norm.split('/')), `${text}\n`, { mkdir: true });
         } catch (e) {
-          throw fail(`cannot write ${file}: ${describe(e)}`, e);
+          throw failWrite(CHECKPOINT_FILES.cache, `cannot write ${file}: ${describe(e)}`, e);
         }
       });
     },
@@ -679,7 +761,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
           await rename(join(dir, CHECKPOINT_FILES.cache, ...a.split('/')), join(dir, CHECKPOINT_FILES.cache, ...b.split('/')));
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
-          throw fail(`cannot rename ${file}: ${describe(e)}`, e);
+          throw failWrite(CHECKPOINT_FILES.cache, `cannot rename ${file}: ${describe(e)}`, e);
         }
       });
     },
@@ -721,7 +803,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
         try {
           await writeFileAtomic(join(dir, name), body, { mkdir: true });
         } catch (e) {
-          throw fail(`cannot write ${CHECKPOINT_FILES.outputs}/${name}: ${describe(e)}`, e);
+          throw failWrite(CHECKPOINT_FILES.outputs, `cannot write ${CHECKPOINT_FILES.outputs}/${name}: ${describe(e)}`, e);
         }
         evicted = await boundOutputsDir(dir, name, Buffer.byteLength(body, 'utf8'));
       }).then(() => evicted);
@@ -744,7 +826,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor): DiskChe
         try {
           await writeFileAtomic(join(pathOf(CHECKPOINT_FILES.context), CONTEXT_SUMMARY_FILE), `${text}\n`, { mkdir: true });
         } catch (e) {
-          throw fail(`cannot write ${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}: ${describe(e)}`, e);
+          throw failWrite(CHECKPOINT_FILES.context, `cannot write ${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}: ${describe(e)}`, e);
         }
       });
     },
