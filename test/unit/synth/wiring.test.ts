@@ -81,16 +81,39 @@ describe('the wired seeds and the queue read the run facts of the run being sear
     // with the facts
     setRunFacts(ctx.runId, { introspected, history: null });
     const queue = createQueue(ctx, mem, goal);
-    const withFacts = deps.seeds.template.enumerate(gap, enumerateOptions(base, goal, ctx.task));
+    const withFacts = deps.seeds.template.enumerate(gap, enumerateOptions(base, goal, ctx.task, ctx.runId));
     const aliases = withFacts.filter((c) => c.op === 'mro_method_alias');
     expect(aliases.map((c) => c.text.trim())).toEqual(['_print_Baz = _print_Bar', '_print_Qux = _print_Bar', '_print_Baz = _print_Foo', '_print_Qux = _print_Foo']);
     expect(queue.addAll(aliases.map((c) => jobOn(c, base))).queued).toHaveLength(4);
     // without: the production is inert and `_print_Baz` is nowhere in the vocabulary
     clearRunFacts(ctx.runId);
     const bare = createQueue(ctx, mem, goal);
-    const without = deps.seeds.template.enumerate(gap, enumerateOptions(base, goal, ctx.task));
+    const without = deps.seeds.template.enumerate(gap, enumerateOptions(base, goal, ctx.task, ctx.runId));
     expect(without.some((c) => c.op === 'mro_method_alias')).toBe(false);
     expect(bare.addAll(aliases.map((c) => jobOn(c, base))).queued).toHaveLength(0);
+  });
+
+  it('two runs in one process (bench --concurrency): each wired seed reads the facts of ITS run through opts.runId, not those of the run whose queue was created last', () => {
+    const a = fakeCtx({ runId: 'wiring-race-a' });
+    const b = fakeCtx({ runId: 'wiring-race-b' });
+    const mem = fakeMemory([printer, hashed], baseline);
+    const goal = fakeGoal({ suspectedFiles: ['p.py'] });
+    const base = mem.bases[0]!;
+    const gap = siteAt(printer, 7, 'insert', '    ');
+    const deps = createSubGoalDeps();
+    setRunFacts(a.runId, { introspected, history: null }); // run A harvested Baz/Qux …
+    clearRunFacts(b.runId); // … run B harvested nothing
+    const optsA = enumerateOptions(base, goal, a.task, a.runId);
+    const optsB = enumerateOptions(base, goal, b.task, b.runId);
+    createQueue(a, mem, goal);
+    createQueue(b, mem, goal); // B's search starts after A's — the process-wide cell this replaces then held B's (empty) facts
+    const aliasesA = deps.seeds.template.enumerate(gap, optsA).filter((c) => c.op === 'mro_method_alias');
+    expect(aliasesA).toHaveLength(4);
+    expect(deps.seeds.template.enumerate(gap, optsB).some((c) => c.op === 'mro_method_alias')).toBe(false);
+    // and each run's queue accepts exactly its own names
+    expect(createQueue(a, mem, goal).addAll(aliasesA.map((c) => jobOn(c, base))).queued).toHaveLength(4);
+    expect(createQueue(b, mem, goal).addAll(aliasesA.map((c) => jobOn(c, base))).queued).toHaveLength(0);
+    clearRunFacts(a.runId);
   });
 
   it('donor: the history reversal AT the statement site rides after the donors\' top half with its provenance and the site object itself; a run without history facts sees exactly the plain donors', () => {
@@ -106,12 +129,12 @@ describe('the wired seeds and the queue read the run facts of the run being sear
     // no facts: the plain donor set
     clearRunFacts(ctx.runId);
     createQueue(ctx, mem, goal);
-    const plain = deps.seeds.donor.enumerate(site, enumerateOptions(base, goal, ctx.task));
+    const plain = deps.seeds.donor.enumerate(site, enumerateOptions(base, goal, ctx.task, ctx.runId));
     expect(plain.every((c) => c.source === 'donor')).toBe(true);
     // with the facts: the same donors, the reversal spliced in after their top half
     setRunFacts(ctx.runId, { introspected: null, history });
     createQueue(ctx, mem, goal);
-    const cands = deps.seeds.donor.enumerate(site, enumerateOptions(base, goal, ctx.task));
+    const cands = deps.seeds.donor.enumerate(site, enumerateOptions(base, goal, ctx.task, ctx.runId));
     const hist = cands.filter((c) => c.source === 'history');
     expect(hist).toHaveLength(1);
     const rev = hist[0]!;
@@ -124,7 +147,7 @@ describe('the wired seeds and the queue read the run facts of the run being sear
     expect(cands.filter((c) => c.source === 'donor').map((c) => c.id)).toEqual(plain.map((c) => c.id));
     // at the one-line site L2 the reversal (span L2-5) is not at the site: donors only
     const oneLine = siteAt(hashed, 2);
-    expect(deps.seeds.donor.enumerate(oneLine, enumerateOptions(base, goal, ctx.task)).every((c) => c.source === 'donor')).toBe(true);
+    expect(deps.seeds.donor.enumerate(oneLine, enumerateOptions(base, goal, ctx.task, ctx.runId)).every((c) => c.source === 'donor')).toBe(true);
     clearRunFacts(ctx.runId);
   });
 
@@ -157,7 +180,7 @@ describe('the wired seeds and the queue read the run facts of the run being sear
     setRunFacts(ctx.runId, { introspected: null, history: facts });
     const deps = createSubGoalDeps();
     createQueue(ctx, mem, goal);
-    const opts = enumerateOptions(base, goal, ctx.task);
+    const opts = enumerateOptions(base, goal, ctx.task, ctx.runId);
     const seed = deps.seeds.donor.enumerate(site, opts);
     expect(seed.some((c) => c.source === 'history')).toBe(false);
     expect(seed.every((c) => sameSpan(c.site, site))).toBe(true);
