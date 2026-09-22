@@ -130,7 +130,7 @@ describe('TUI-DESIGN-2 §3 conversational intake (the submit path, summary rows;
 });
 
 describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, landed in the controller)', () => {
-  const NO_OPEN_ASSIST = '/nonexistent/open-assist';
+  const NO_OPEN_ASSIST = '/nonexistent/no-extra-env';
   const modeActions = (h: Harness): unknown[] => h.renderer.dispatched.filter((a) => a.type === 'mode');
 
   it('/mode alone shows the mode in two forms (F1): one word plus ` (default)` when nothing differs, `mode <cur> — next run: <next>` otherwise; /llm on|off and /mode <m> pend with modeSetItem and a `mode` dispatch; the same mode twice says already', async () => {
@@ -1171,7 +1171,7 @@ describe('wave-4 polish: thresholds, the engine log handle, the live session cap
 });
 
 describe('TUI-DESIGN-3 §1.2 / §1.3 / §1.7 / §1.8: the session follows config.mode, the wizard\'s found state and mode outcome, the one-time default-mode item', () => {
-  const NO_OPEN_ASSIST = '/nonexistent/open-assist';
+  const NO_OPEN_ASSIST = '/nonexistent/no-extra-env';
   const OR_KEY = 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
   const TS_KEY = `ts-${'0123456789abcdef'.repeat(3)}`;
   const modeActions = (h: Harness): unknown[] => h.renderer.dispatched.filter((a) => a.type === 'mode');

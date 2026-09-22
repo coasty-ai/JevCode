@@ -394,7 +394,7 @@ requests per line (saved 19–46). The scripts do what the tables claim.
    2026-09-20: TBar (Liu et al., ISSTA 2019, https://arxiv.org/abs/1903.08409, confirmed to be the
    template-based APR paper) and QuixBugs (https://github.com/jkoppel/QuixBugs, confirmed 40 programs in Python
    and Java, each with a one-line defect). `REPORT §n` references were checked against
-   `/Users/prateekjannu/Documents/jev-research/REPORT.md`: §6 (noise up to sd 0.026 in the 0.55–0.80 band), §7
+   `<research-notes>/REPORT.md`: §6 (noise up to sd 0.026 in the 0.55–0.80 band), §7
    (question independence), §10 (positional arithmetic weak, name priors in keys, escape options), §14
    (thresholds from your own plot) all say what the report attributes to them.
 

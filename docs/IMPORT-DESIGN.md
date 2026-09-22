@@ -59,7 +59,7 @@ the whole engine without touching a file JevCode owns.
 4. **The conservative side on abstention.** Jev unreachable / 401 / 402 / 429 / timeout / `--no-jev` / `--mock`
    ⇒ the code fallback's *safe* answer: unknown value → secret; unknown file → skip; uncertain duplicate →
    keep both; uncertain conflict → review. Never the permissive side.
-5. **Per-key, not per-file, classification.** `~/.claude/settings.json` on this machine is simultaneously
+5. **Per-key, not per-file, classification.** `~/.claude/settings.json` on the reference machine is simultaneously
    WORKFLOW (`hooks`), CONFIG (`permissions`, `model`, `effortLevel`) and SECRET (`env.ANTHROPIC_API_KEY`). One
    file yields many rows with different classes.
 6. **Provenance on every byte.** Every written file carries `source: {tool, path, sha256, imported, importId}`
@@ -188,7 +188,7 @@ clipped: 0               # bytes dropped by the cap, 0 when whole
 
 `kind` accepts Claude Code's four `type` values (`user`→`preference`, `feedback`, `project`, `reference`) from
 **either** a flat top-level `type:` (what the docs describe) **or** a nested `metadata.type:` (what all 43
-topic files on this machine actually use). Neither present ⇒ `kind: reference`. Accepting both is the whole
+topic files on the reference machine actually use). Neither present ⇒ `kind: reference`. Accepting both is the whole
 mitigation for the format-drift hazard, and it costs four lines in `kindOf(fm)`.
 
 `name` is **not** the filename. The filename is `slugOf(name)`, sanitised and confined — §4.7.3 **[G1.2]**.
@@ -204,7 +204,7 @@ mitigation for the format-drift hazard, and it costs four lines in `kindOf(fm)`.
 ```
 
 The line grammar is `- [Title](file.md) — summary · <kind> · <sha8>`, a **superset** of Claude Code's observed
-`- [Title](file.md) — summary` (all index lines in all four `MEMORY.md` files on this machine match it), so a
+`- [Title](file.md) — summary` (all index lines in all four `MEMORY.md` files on the reference machine match it), so a
 Claude index imports line-for-line and a JevCode index is still readable by Claude. The HTML comment on line 1
 is the format marker; Claude Code strips block-level HTML comments when loading, so it costs the other tool
 nothing.
@@ -536,7 +536,7 @@ Docs: `https://code.claude.com/docs/en/memory`, `/skills`, `/sub-agents`, `/hook
 launch, concatenated root→cwd (closer = later = higher priority), `CLAUDE.local.md` after its sibling.
 `@path` imports resolve relative to the **containing file**, allow absolute and `@~/…`, recurse to depth 4,
 and are ignored inside code spans and fences. JevCode inlines them once, then dedupes the inlined content
-against its own row (§6 row 27 — `CoArena/CLAUDE.md` on this machine is exactly the 11 bytes `@AGENTS.md\n`).
+against its own row (§6 row 27 — `<repo A>/CLAUDE.md` on the reference machine is exactly the 11 bytes `@AGENTS.md\n`).
 
 **AGENTS.md precedence.** Claude Code (v2.1.277+) reads `AGENTS.md` directly **only** when no `CLAUDE.md` /
 `.claude/CLAUDE.md` / `CLAUDE.local.md` exists in cwd or any ancestor. JevCode's importer does not replicate
@@ -544,8 +544,8 @@ that gate — it imports both when both exist and reports the pair as a duplicat
 human's intent, not Claude's fallback rule, decides what JevCode should remember.
 
 **Project slug.** Claude's slug is the absolute path with `/`→`-`, which is **not reversible** when the path
-contains `-` (observed on this machine:
-`-Users-prateekjannu-Documents-vscode-JevCode--claude-worktrees-llm-jev-int`). Resolution order:
+contains `-` (observed on the reference machine:
+`-home-dev-projects-JevCode--claude-worktrees-llm-jev-int`). Resolution order:
 `~/.claude.json` `projects` keys (absolute paths) → a transcript record's `cwd` field → reported `unmapped`
 with the human asked to pick. Auto memory is documented as derived from the git repository, so worktree slugs
 share one memory dir; the importer merges by resolved repo root and says so.
@@ -660,7 +660,7 @@ Docs: `https://docs.github.com/en/copilot/how-tos/configure-custom-instructions/
 | --- | --- | --- | --- |
 | repo instructions | `.github/copilot-instructions.md` | M/project | |
 | scoped instructions | `.github/instructions/<name>.instructions.md` | M/rule | frontmatter `applyTo` (comma-separated globs), `description`, `excludeAgent` |
-| user instructions | `~/.copilot/instructions/**` | M/user | absent on this machine (only `config.json`, `logs/`, `ide/*.lock`) |
+| user instructions | `~/.copilot/instructions/**` | M/user | absent on the reference machine (only `config.json`, `logs/`, `ide/*.lock`) |
 | agents file | `AGENTS.md` at root and nested (nearest wins) | M | |
 | prompts | `.github/prompts/*.prompt.md` | W | frontmatter `mode`, `model`, `tools`, `description`, `agent` |
 | agents | `.github/agents/*.agent.md` | W | `memory/agent-<name>.md` `kind: reference` |
@@ -707,7 +707,7 @@ as "you have nothing".
 | Cursor **User Rules** | stored on the Cursor account | `/memory add`, or `jevcode import --from -` |
 | Cursor **Team Rules** | dashboard-managed | same |
 | Windsurf **Cascade memories** | machine-local, undocumented format | best-effort parse (§3.6), else `/memory add` |
-| Codex **memories** | `[features] memories = false` on this machine → the dir does not exist | `enable, use Codex once, re-run import` |
+| Codex **memories** | `[features] memories = false` on the reference machine → the dir does not exist | `enable, use Codex once, re-run import` |
 | Copilot **organization** instructions | server-side | `/memory add` |
 | opencode **share** history | uploaded to `opncd.ai/s/<id>` | not imported; a notice names it |
 | ChatGPT / Claude.ai **connectors** | account-side OAuth | never imported; `mcp.json` records nothing |
@@ -727,14 +727,14 @@ Read-only; counts and sizes only; **no key, no memory body and no transcript bod
 | `~/.claude` contents | `backups cache downloads file-history ide policy-limits.json remote-settings.json projects session-env sessions settings.json shell-snapshots telemetry` — **no** `CLAUDE.md`, `rules/`, `skills/`, `commands/`, `agents/`, `plugins/`, `keybindings.json`, `history.jsonl`, `.credentials.json` |
 | `~/.claude` total | 3 331 MB |
 | Claude project slugs | 12 |
-| memory dirs | 5 (CoArena 33, coarena-rl-envs 6, open-assist 5, vscode 3, JevCode 0) |
+| memory dirs | 5 (<repo A> 33, <repo B> 6, extra-env 5, vscode 3, JevCode 0) |
 | memory files | **47 markdown files = 43 topic files + 4 `MEMORY.md` indexes** |
 | `~/.claude/projects` walk | 10 220 entries, 9 911 files |
 | transcripts | **3 371** `.jsonl`, **2.7 GB** total; 20 over 5 MB; largest **151 MB**, then 104, 79, 27 |
 | Codex | `config.toml` with **3** `[mcp_servers.*]` and **6** `trust_level` entries; `rules/`, `skills/`, `sessions/` (23 rollouts, 2 541 MB), `auth.json`, 6 sqlite DBs; **no** `AGENTS.md`, `prompts/`, `memories/` |
 | Copilot | `~/.copilot/{config.json,logs/,ide/}` — no instructions dir |
 | worktrees | `JevCode/.claude/worktrees/` = **25** checkouts, 2 227 MB, ~1 992 entries each (~50 000 entries if walked) |
-| sibling instruction files | `CoArena/CLAUDE.md` (**11 B** = `@AGENTS.md`), `CoArena/AGENTS.md` (678 B), `coarena-rl-envs/AGENTS.md` (5 732 B) |
+| sibling instruction files | `<repo A>/CLAUDE.md` (**11 B** = `@AGENTS.md`), `<repo A>/AGENTS.md` (678 B), `<repo B>/AGENTS.md` (5 732 B) |
 | JevCode itself | **no** `AGENTS.md`, **no** `CLAUDE.md`; `.claude/` holds only `worktrees/` |
 | secrets to expect | `~/.claude/settings.json` `env.ANTHROPIC_API_KEY`; `~/.claude.json` `oauthAccount.{token,refreshToken}`; `~/.codex/auth.json`; `~/.claude/sessions/*.key` |
 | key-like tokens in the 43 memory bodies | **0** (regex scan by the source survey; bodies not printed) |
@@ -1054,7 +1054,7 @@ answered. Fallback: `review` anyway.
 
 #### 4.4.4 Cost
 
-Worst realistic case on this machine: 43 topic files (0 in band, all matched by rule 9), ~60 config keys with
+Worst realistic case on the reference machine: 43 topic files (0 in band, all matched by rule 9), ~60 config keys with
 ~6 in band, 1 duplicate pair in band, 0 conflicts. One request, ~70 questions, ~6 000 input tokens at
 `JEV_INPUT_USD_PER_TOKEN = 4.2e-8` (`jev/types.ts:19`) ⇒ **$0.00025**. Report line:
 `jev: 1 request · 70 questions · $0.0003 · 6 code fallbacks`. Hard cap `import.jevMaxUsd`, default `$0.01`;
@@ -1435,7 +1435,7 @@ re-exported (principle 10).
 
 **Gating.** Shown only when a **cheap probe** found something: a stat-only existence check of the nine home
 roots plus a count of `~/.claude/projects/*/memory/*.md`, bounded at **50 ms**, run *after the first frame*
-(F1 — no file I/O before frame 0, `config/launch.ts`) and after the sandbox step. Measured on this machine
+(F1 — no file I/O before frame 0, `config/launch.ts`) and after the sandbox step. Measured on the reference machine
 today: the nine-root stat probe is ~1 ms and the memory glob ~15 ms warm. If the probe finds nothing, the step
 does not render and the flow stays `sandbox → done` (§6 row 73).
 
@@ -1763,7 +1763,7 @@ for this document because the task named the case and the spine did not cover it
 
 | # | Case | Expected | Detected at | Test |
 | --- | --- | --- | --- | --- |
-| 32 | `CoArena/CLAUDE.md` is exactly `@AGENTS.md` (**real, 11 bytes**) | resolved, inlined once, then deduped against the `AGENTS.md` row → one destination, `tools` unioned, `warnings: ['@AGENTS.md inlined']` | resolve → normalise → sha256 compare | `imports.test.ts` with the real one-liner [H] |
+| 32 | `<repo A>/CLAUDE.md` is exactly `@AGENTS.md` (**real, 11 bytes**) | resolved, inlined once, then deduped against the `AGENTS.md` row → one destination, `tools` unioned, `warnings: ['@AGENTS.md inlined']` | resolve → normalise → sha256 compare | `imports.test.ts` with the real one-liner [H] |
 | 33 | `@~/.ssh/id_rsa`, `@../../.env`, `{file:~/.aws/credentials}`, `${file:/etc/shadow}` | refused; the body keeps `<!-- jevcode: unresolved @~/.ssh/id_rsa (outside <root>) -->`; `isSecretBasename` refuses independently | root check + `paths.ts:114,155` | `imports.test.ts` [H] |
 | 34 | cycle `a.md → b.md → a.md` | stops; `warnings: ['import cycle at b.md']`; both bodies present once | visited set | `imports.test.ts` [H] |
 | 35 | `@path` inside a fence or an inline code span | **not** expanded (Claude's own rule) | fence/span-aware scanner | `imports.test.ts` [H] |
@@ -2289,7 +2289,7 @@ export const IMPORT_LIMITS = {
 `jevcode import` writes nothing outside `~/.jevcode/imports/<id>/`; `--yes` (or the overlay's `y`) applies
 exactly the rows the report showed, **by row id**. Alternative considered: a wizard-driven per-tool import,
 as Claude Code's own `/import [codex|gemini|cursor]` does. Rejected: nine sources × four classes cannot be
-reviewed three rows at a time, and a per-tool loop makes cross-tool dedupe impossible — on this machine one
+reviewed three rows at a time, and a per-tool loop makes cross-tool dedupe impossible — on the reference machine one
 `AGENTS.md` is reachable by five detectors.
 
 **2026-09-21 Jev answers only literal facts, inside a band a code rule declares, from metadata only.**

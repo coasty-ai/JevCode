@@ -1,3 +1,0 @@
-corpus 400 files loaded in 555 ms; site sympy/core/function.py:510: return Float(self._imp_(*self.args), prec)
-
-TIMEOUT: signature units did not return within 300 s (killed)

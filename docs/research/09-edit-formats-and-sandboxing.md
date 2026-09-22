@@ -374,7 +374,7 @@ either fully on or fully off per Jev decision, and document `srt` as an optional
 ## Verification log (2026-09-19)
 
 Independent re-check by an adversarial pass on 2026-09-19. Every URL in this document was re-fetched (curl for raw
-GitHub / registry JSON, page fetch for docs) and every LOCAL TEST was re-run on this machine.
+GitHub / registry JSON, page fetch for docs) and every LOCAL TEST was re-run on the reference machine.
 
 Confirmed unchanged (no edit needed): `ink` 7.1.1 / MIT / node >=22; `@anthropic-ai/sandbox-runtime` 0.0.77 / Apache-2.0 /
 node >=20.11.0 / bin `srt` -> `dist/cli.js` / deps zod ^3.24.1, commander ^12.1.0, node-forge ^1.4.0,

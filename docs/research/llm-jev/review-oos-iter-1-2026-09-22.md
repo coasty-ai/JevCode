@@ -1,6 +1,6 @@
 # Adversarial review — OOS iteration 1 (`oos-iter-1` @ eb5f55f, merged at 168a599)
 
-Reviewer: an Opus subagent of the harness session, 2026-09-22, read-only in a detached worktree; full unit suite at
+Reviewer: an independent read-only review, 2026-09-22, read-only in a detached worktree; full unit suite at
 `--maxWorkers=3` 457 files / 7,629 tests green. Scope: the eight ranked changes of `docs/research/llm-jev/oos-analysis-2026-09-22.md`.
 
 ## Defects, most severe first

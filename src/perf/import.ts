@@ -6,13 +6,13 @@
  *
  * Both corpora are *generated*, never committed (§8.1): `realshape()` is 12 project slugs,
  * 43 topic files + 4 indexes, 3 fake worktrees, 3 371 zero-byte `.jsonl` placeholders and one
- * sparse 151 MB file — the author's measured shape (2.7 GB of transcripts) without committing
+ * sparse 151 MB file — a measured real-world shape (2.7 GB of transcripts) without committing
  * 2.7 GB. `scale(n)` is n memory files with controlled Jaccard overlap, n/10 rules, n/20 commands.
  *
  * NOT WIRED INTO `src/perf/main.ts`. Adding a `ProbeName` means editing `readme.ts` and the
- * README's Performance section, which the TUI session owns (§7). This module follows the
- * `jev-latency.ts` convention instead — a standalone `measureImport()` the owner of `main.ts`
- * adds in one line when the import command lands.
+ * README's Performance section (§7). This module follows the `jev-latency.ts` convention
+ * instead — a standalone `measureImport()` that `main.ts` adds in one line when the import
+ * command lands.
  */
 import { mkdirSync, rmSync, truncateSync, writeFileSync } from 'node:fs';
 import { mkdtempSync } from 'node:fs';

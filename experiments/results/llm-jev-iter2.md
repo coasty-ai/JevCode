@@ -12,7 +12,7 @@ matched). Results and their archived run records are written into this worktree 
 
 **(0) Read every wall number in this document next to its loadavg.** The machine (15 cores) was shared for the whole
 window with a peer session and other agents — among them a second continuously-running `jevcode bench` out of
-`.claude/worktrees/agent-a0e454553ff6a690f` and a `tsc` at 142 % CPU. Recorded `loadavg[0]` per task record ranges
+`.claude/worktrees/agent-<id-5>` and a `tsc` at 142 % CPU. Recorded `loadavg[0]` per task record ranges
 **2.9 to 175**. Iteration 1's arms ran at 2.4–45. Pass counts, costs, step counts, Jev traffic and every counter are
 unaffected; **wall is not**, and neither are the two tasks that died on a budget rather than on a search
 (`account`, in-sample ladder, and to a degree the fresh `hunk_merge`). One comparison in this document is
@@ -99,7 +99,7 @@ Identical to `llm-jev-iter1.md` §1.1 — same task ids, concurrency, steps, wal
 `JEVCODE_WARM` substituted per arm:
 
 ```
-cd /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter2-clean   # detached at d86c385, built, node_modules symlinked
+cd <repo>/.claude/worktrees/iter2-clean   # detached at d86c385, built, node_modules symlinked
 
 # C1 (warm off) and C2 (warm on): the fresh 18
 env -u ANTHROPIC_API_KEY JEVCODE_WARM=<off|on> node --env-file=<main>/.env bin/jevcode.js bench \

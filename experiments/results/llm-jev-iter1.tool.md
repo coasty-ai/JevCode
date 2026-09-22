@@ -388,7 +388,7 @@ topological_ordering         solved gold-identical  token-identical to correct/t
 
 Totals: solved 8/8; gold-identical 6, equivalent 2, overfit 0, unverified 0, miss 0.
 Correct by this script: 8/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-llm-jev-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-llm-jev-quixbugs/verdicts.md
 === iter1-fresh-jev-off-tuned-quixbugs ===
 quicksort                    solved gold-identical  token-identical to correct/quicksort.py (from model_patch.diff)
 rpn_eval                     solved equivalent      differs (differs at token 110: 'b' vs 'a'); reference cases: patched 6/6, reference 6/6; identical outputs on…
@@ -401,7 +401,7 @@ topological_ordering         solved gold-identical  token-identical to correct/t
 
 Totals: solved 8/8; gold-identical 4, equivalent 4, overfit 0, unverified 0, miss 0.
 Correct by this script: 8/8 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 0 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-jev-off-tuned-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-jev-off-tuned-quixbugs/verdicts.md
 
 === iter1-insample-llm-jev-quixbugs ===
 bitcount                     solved gold-identical  token-identical to correct/bitcount.py (from model_patch.diff)
@@ -417,7 +417,7 @@ wrap                         solved gold-identical  token-identical to correct/w
 
 Totals: solved 10/10; gold-identical 9, equivalent 0, overfit 1, unverified 0, miss 0.
 Correct by this script: 9/10 (gold-identical + equivalent); 0 more pass the reference cases but differ from the reference where nothing could be compared; 1 overfit the reference cases.
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter1-clean/bench/results/iter1-insample-llm-jev-quixbugs/verdicts.md
+written <repo>/.claude/worktrees/iter1-clean/bench/results/iter1-insample-llm-jev-quixbugs/verdicts.md
 exit 0
 ```
 
@@ -434,7 +434,7 @@ token_bucket       short solved overfit         strong: differs from gold in buc
 short tier: solved 4/6, correct 3/6 (gold-identical 0, equivalent 3); overfit 1 — strong 1 (token_bucket), weak only 0; unverified 0, miss 2
 long tier: solved 0/0, correct 0/0 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 0
 all tier: solved 4/6, correct 3/6 (gold-identical 0, equivalent 3); overfit 1 — strong 1 (token_bucket), weak only 0; unverified 0, miss 2
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-llm-jev-ladder-long2/verdicts.md
+written <repo>/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-llm-jev-ladder-long2/verdicts.md
 === iter1-fresh-jev-off-tuned-ladder-long2 ===
 csv_schema         short miss   miss            no patch committed; max_steps after 30 steps
 deadline_queue     short miss   miss            a committed patch still fails; max_steps after 30 steps
@@ -446,7 +446,7 @@ token_bucket       short miss   miss            no patch committed; max_steps af
 short tier: solved 0/6, correct 0/6 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 6
 long tier: solved 0/0, correct 0/0 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 0
 all tier: solved 0/6, correct 0/6 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 6
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-jev-off-tuned-ladder-long2/verdicts.md
+written <repo>/.claude/worktrees/iter1-clean/bench/results/iter1-fresh-jev-off-tuned-ladder-long2/verdicts.md
 === iter1-insample-llm-jev-ladder ===
 account            short solved equivalent      differs from gold in account.py (differs at token 245: 'start' vs '1'); identical results, exception classes and post-c…
 calendar_utils     short solved equivalent      differs from gold in calendar_utils.py (differs at token 257: 'day' vs 'return'); identical results, exception classes …
@@ -464,7 +464,7 @@ units              short solved equivalent      differs from gold in units.py (d
 short tier: solved 12/12, correct 11/12 (gold-identical 4, equivalent 7); overfit 1 — strong 0, weak only 1 (stats); unverified 0, miss 0
 long tier: solved 0/0, correct 0/0 (gold-identical 0, equivalent 0); overfit 0 — strong 0, weak only 0; unverified 0, miss 0
 all tier: solved 12/12, correct 11/12 (gold-identical 4, equivalent 7); overfit 1 — strong 0, weak only 1 (stats); unverified 0, miss 0
-written /Users/prateekjannu/Documents/vscode/JevCode/.claude/worktrees/iter1-clean/bench/results/iter1-insample-llm-jev-ladder/verdicts.md
+written <repo>/.claude/worktrees/iter1-clean/bench/results/iter1-insample-llm-jev-ladder/verdicts.md
 ```
 
 ## 4. Ring 1 — `quick.mts --ring 1` ($0, `JEVCODE_WARM=off`)

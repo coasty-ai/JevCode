@@ -19,6 +19,7 @@ import { execFile } from 'node:child_process';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { globSync } from 'node:fs';
 import type { Answer, Json } from '../../src/core/types.ts';
 import { createJevDecider } from '../../src/jev/client.ts';
@@ -26,7 +27,7 @@ import { buildCriterion, chooseBlocks, chunksWithContext, evaluateCriterion, ext
 import type { BlockChoice, BuiltCriterion, CodeBlock, Extraction, FailureKind, OracleJudgement, ReproRunResult, Verdict } from '../../src/synth/oracle/index.ts';
 import type { VerifyRunFn } from '../../src/synth/verify/types.ts';
 
-const ROOT = '/Users/prateekjannu/Documents/vscode/JevCode';
+const ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const DIR = join(ROOT, 'experiments/oracle');
 const REPOS = '/tmp/jevonly/repos';
 const SPEND_CAP = 1.5;

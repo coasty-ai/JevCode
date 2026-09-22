@@ -422,7 +422,7 @@ binary-launcher pattern (§7 ADOPT/REJECT).
    shouldClearOnUnmount`, and on Windows consoles whenever `wasFullscreen || isFullscreen`
    (comment: "Windows consoles scroll the buffer when the bottom-right cell is written … (#969)");
    the frame is then `ansiEscapes.clearTerminal + this.fullStaticOutput + outputToRender`
-   (`/Users/prateekjannu/Documents/vscode/JevCode/node_modules/ink/build/ink.js` lines 83–113 and
+   (`<repo>/node_modules/ink/build/ink.js` lines 83–113 and
    756–770, ink 7.1.1, read 2026-09-20). DESIGN.md §10's `rows − 2` budget is therefore the
    correct lever and must survive the composer (§8 open question 1).
 2. **Ink 7.1.1 already ships what Pi and Claude Code built by hand**, at zero dependency cost:

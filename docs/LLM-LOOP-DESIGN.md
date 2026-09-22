@@ -1372,7 +1372,7 @@ contrast against the arm that preceded it.
   same 18 + 28 first (as its own decision text commits it to), those fresh rows replace the `751e3bf` ones as
   this wave's baseline and the confound disappears. **Prefer that ordering.**
 - Every live command runs as
-  `env -u ANTHROPIC_API_KEY node --env-file=/Users/prateekjannu/Documents/vscode/JevCode/.env …`.
+  `env -u ANTHROPIC_API_KEY node --env-file=<repo>/.env …`.
 - If `/tmp/jevcode-perf-window-open` exists, nothing starts.
 
 **Cost.** Two (later three) arms × 46 tasks at forced concurrency 1 is the most expensive honest measurement on

@@ -96,7 +96,7 @@ const OVERLAP_PATHS_SHOWN = 8;
 /**
  * §5.7's offer. NOT a `BlockingRequest`: `BlockingKind` is consumed by four exhaustive sites in
  * `src/tui/**` and one `Record<BlockingKind, …>` in the TUI's own tests, so a `'land-preflight'`
- * member is not additive in this repo and belongs to the TUI session's wave (see the note on
+ * member is not additive in this repo and belongs to a separate interface change (see the note on
  * `BlockingKind` in `src/core/types.ts`). §5.7 says "`/land` prints the paths and offers three
  * answers" anyway, so the offer is a value the caller renders and answers — a pane is one possible
  * renderer of it, not a requirement of the mechanism.

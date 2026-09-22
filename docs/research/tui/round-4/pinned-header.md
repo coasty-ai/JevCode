@@ -236,7 +236,7 @@ breaks click-drag selection and the terminal's own wheel scrollback in every emu
 The idea: write the five mark rows at physical rows 1–5 ourselves, set the scroll region to `ESC[6;<rows>r`, and let
 Ink keep its `<Static>` + bounded-region model inside rows 6…`rows`.
 
-What the code says (no emulator was available on this machine to test scrollback semantics, so this is a
+What the code says (no emulator was available on the reference machine to test scrollback semantics, so this is a
 mechanism analysis from I8/I10 plus the DEC/xterm specification — see the falsifiable probe below):
 
 | aspect | verdict | why |

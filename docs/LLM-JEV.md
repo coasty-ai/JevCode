@@ -820,7 +820,7 @@ provider, $0.
 | task | Jev on | Jev off | verdict |
 |---|---|---|---|
 | `gcd` | pass, 2 steps / 32.2 s | pass, 2 steps / 60.2 s | **kept** (only slower, 1.87×) |
-| `kth` | **fail**, `max_replans`/`replan_stop`, 11 steps / 332.5 s | **fail**, `replan_stop`, 20 steps / 841.8 s | **vacuous** — the reference arm did not solve it either on this machine |
+| `kth` | **fail**, `max_replans`/`replan_stop`, 11 steps / 332.5 s | **fail**, `replan_stop`, 20 steps / 841.8 s | **vacuous** — the reference arm did not solve it either on the reference machine |
 | `mergesort` | fail, `replan_stop`, 10 steps / 269.9 s | **pass**, 14 steps / 988.2 s | **gained** (off solves what on does not) |
 | `tagcloud` | pass, 2 steps / 7.5 s | pass, 2 steps / 8.3 s | **kept** (1.11×) |
 | `units` | pass, 4 steps / 106.6 s | pass, 7 steps / 248.1 s | **kept** (only slower, 2.33×) |

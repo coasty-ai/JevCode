@@ -2,7 +2,7 @@
 
 Research report for the round-3 request item 1 ("keep that animation for the jevcode, not disappear once it loads").
 Written 2026-09-21 against HEAD `d09e24c` (0.3.0, the round-2 bundle at `dist/jevcode.mjs`, built 15:41). Everything
-below was read in the source or measured on this machine (Apple Silicon, macOS 26, Node 22; load average 1.4–1.8 with a
+below was read in the source or measured on the reference machine (Apple Silicon, macOS 26, Node 22; load average 1.4–1.8 with a
 peer session's `jevcode perf` run alive throughout — the CPU numbers carry that noise, the frame and byte counts do
 not). Scratch artefacts: `/tmp/jc-idle/*.json` (per-chunk pty captures), the probe `/tmp/jc-idle/idle_probe.py`; nothing
 was written into the repository except this file.

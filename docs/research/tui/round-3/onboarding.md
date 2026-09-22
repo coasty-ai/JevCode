@@ -35,7 +35,7 @@ Everything below was read from the code at HEAD; every claim carries a `file:lin
 
 ### 1.1 Layers (highest first) — `resolve.ts:4`, `lookupDetailed` `:258-282`
 
-flag > process env > `./.env` > `<OPEN_ASSIST_PATH>/.env` > config file (`./jevcode.json`, else `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json`, else legacy) > default. Empty values are unset at every layer (`:257`). The `mode` row: `--mode`/`--condition` > `JEVCODE_MODE` > dotenvs > file `mode` > `DEFAULT_MODE` (`:384-391`), validated eagerly (`mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev`, `validate.ts:103`).
+flag > process env > `./.env` > `<extra .env file>` > config file (`./jevcode.json`, else `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json`, else legacy) > default. Empty values are unset at every layer (`:257`). The `mode` row: `--mode`/`--condition` > `JEVCODE_MODE` > dotenvs > file `mode` > `DEFAULT_MODE` (`:384-391`), validated eagerly (`mode: "<v>" (from <source>) is not one of jev-only|jev-on|jev-off|llm-jev`, `validate.ts:103`).
 
 | Setting | flag | env (in order) | file key | default | notes |
 | --- | --- | --- | --- | --- | --- |
@@ -77,7 +77,7 @@ Conventions: "wizard(X)" = the startup wizard opens at step X; "startup ConfigEr
 
 ### 2.1 One variable × one source (how the layer is read; identical today and after)
 
-| Variable | process env | `./.env` | `<OPEN_ASSIST_PATH>/.env` | config file | flag |
+| Variable | process env | `./.env` | `<extra .env file>` | config file | flag |
 | --- | --- | --- | --- | --- | --- |
 | `OPENROUTER_API_KEY` | generator key under provider openrouter (`resolve.ts:507-508`) **and** Jev key (row env `defaults.ts:110`); Jev provider `openrouter` by rule 2d | same, source `dotenv:<cwd>/.env`; the trust gate lists `./.env (N vars, M secret-like)` and `3 don't trust` still reads it (`session.ts:1589-1591`) | same, `dotenv:<oa>/.env`; joins only after the config file is located (`resolve.ts:478-494`) | no such key; the file holds `apiKey` / `jevApiKey` / `provider` / `jevProvider` (`credentials.ts:234-240`) | `--api-key` (generator), `--jev-api-key` (Jev); refused as arguments only by `config set` (`login.ts:688-691`) — the flags themselves exist and are redacted |
 | `TYPESAFE_API_KEY` | Jev provider `typesafe` by rule 2c; the variable is prepended to the Jev key row (`:519-521`); never a generator key | same | same | `jevApiKey` + `jevProvider: "typesafe"` written by the wizard / `login --jev-provider typesafe` (`credentials.ts:278`); a file `jevApiKey` without `jevProvider` resolves as openrouter (rule 2e) — F4 | `--jev-api-key` + `--jev-provider typesafe`; `--jev-api-key` alone with an OpenRouter-looking key and no rule → openrouter |

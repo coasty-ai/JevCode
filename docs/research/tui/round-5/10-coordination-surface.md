@@ -456,7 +456,7 @@ comment where the scope union would grow, so orchestration's later widening is a
    `contract 1.6 item 9`. Is this a stale comment from before round 4's header was renumbered, and should round 5's
    own new header be `1.8` (per the digest's contract-number ledger) regardless of this discrepancy?
 3. `EngineOptions.coordination` and the `'coordinate'` `StageName` member are both still entirely absent from
-   `src/core/types.ts` and `src/loop/engine.ts` (§1.4) — is the harness session's plan to land the engine-side
+   `src/core/types.ts` and `src/loop/engine.ts` (§1.4) — is the harness maintainers' plan to land the engine-side
    wiring before or after round 5 ships the `/resume` claim-refusal call, the `/who`/`sessions who` fold read, and
    the messaging verbs? None of those three strictly need `EngineOptions.coordination` (they read the fold directly,
    not through a running engine's options), but `Engine.deliver?()` and the `pause`/`end` message-application path

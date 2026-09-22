@@ -675,7 +675,7 @@
         "fixups": [],
         "verdict": {
           "pass": false,
-          "actual": "CodeWrapError: Error while executing command: /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. C",
+          "actual": "CodeWrapError: Error while executing command: ~/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. C",
           "reason": "CodeWrapError raised at \"f = autowrap(expr, args=(x,), backend='cython')\""
         }
       },
@@ -684,7 +684,7 @@
         "ms": 1093,
         "verdict": {
           "pass": false,
-          "actual": "CodeWrapError: Error while executing command: /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. C",
+          "actual": "CodeWrapError: Error while executing command: ~/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. C",
           "reason": "CodeWrapError raised at \"f = autowrap(expr, args=(x,), backend='cython')\""
         }
       },
@@ -693,7 +693,7 @@
         "test_id": "repro::3492baa3",
         "call": "f = autowrap(expr, args=(x,), backend='cython')",
         "expected": "completes without raising TypeError",
-        "actual": "CodeWrapError: Error while executing command: /Users/prateekjannu/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. Command output is:\nTraceback (most rec..."
+        "actual": "CodeWrapError: Error while executing command: ~/.jevcode/runs/bench-work/20260920-210021-a74b27/sympy__sympy-16792/jev-only/workspace/.venv/bin/python setup.py build_ext --inplace. Command output is:\nTraceback (most rec..."
       },
       "notes": [
         "snippet incomplete: NameError: name 'f' is not defined"

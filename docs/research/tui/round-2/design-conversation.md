@@ -62,7 +62,7 @@ anthropic/claude-sonnet-5`. After this round:
   about the argv-only first frame changes (TUI-DESIGN §1: header, rule, composer, status from argv/env/isTTY/cwd);
   the mode word reaches the frame as the status badge `jev-only` (§7) because the default needs no file.
 - A session needs **one** key — the Jev key — from any of: `--jev-api-key` (scripts only), `JEV_API_KEY`,
-  `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, `./.env`, `<OPEN_ASSIST_PATH>/.env`, or the credentials file written by
+  `TYPESAFE_API_KEY`, `OPENROUTER_API_KEY`, `./.env`, `<extra .env file>`, or the credentials file written by
   the wizard (`jevApiKey`, `src/config/credentials.ts`). `missingSecrets('jev-only')` already returns only
   `decider.apiKey` (`src/config/resolve.ts:564-568`) and `buildProvider` already installs the `NullProvider` for
   jev-only (`src/cli/session.ts:457-460`); `config.generator()` is never called (§15.3 of TUI-DESIGN, kept).
@@ -261,7 +261,7 @@ like `--mode`.
 Resolution order inside `resolveConfig` (the block at `resolve.ts:419-420` that prepends the generator's
 provider-specific env name is the model):
 
-1. `decider.provider` through `lookup`: flag > `JEV_PROVIDER` > `./.env` > `<OPEN_ASSIST_PATH>/.env` > file `jevProvider`
+1. `decider.provider` through `lookup`: flag > `JEV_PROVIDER` > `./.env` > `<extra .env file>` > file `jevProvider`
    > default `auto`. A value other than `auto|typesafe|openrouter` is a `ConfigError` (exit 2) naming the source.
 2. `auto` resolves, in this order (the first rule that fires wins; the source records which):
    - a configured `decider.baseUrl` (any layer but default) whose host `providerForHost` recognises → that provider

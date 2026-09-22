@@ -537,5 +537,5 @@ immediately, which is the prototype's behaviour with its measured 32/40.
 `lit-search-based-repair.md` (rank → validate → judge; Ochiai on QuixBugs; Noul ranking 26/34 over 295 candidates);
 `lit-guided-synthesis.md` (slot beams 92 % S2, anchor 29/29, edit class needs its own Choice);
 `anchor-probe.md` (13/14, 14/14); `docs/JEV-ONLY.md`; `docs/DESIGN.md` §4–6, §21; `bench/data/ladder/README.md`;
-`/Users/prateekjannu/Documents/jev-research/REPORT.md` §7–11, §14. No new live requests were made for this
+`<research-notes>/REPORT.md` §7–11, §14. No new live requests were made for this
 document.

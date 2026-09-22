@@ -373,7 +373,7 @@ sessions  ~/proj (Ctrl-A all)  sort: updated  ↑↓ move · Enter resume · Spa
   2d ago     7 steps  error       $0.112  add --json to jevcode config
   3d ago    31 steps  complete    $0.871  QuixBugs ladder rung 4 (jev-only)
   3d ago     2 steps  human_abort $0.009  try the new decider alias
-  4d ago    18 steps  complete    $0.640  rename open-assist paths
+  4d ago    18 steps  complete    $0.640  rename extra-env paths
   plan  done 6 / remaining 2 / unverified 1   spend $1.532 of $1.500 (over)   stopped at step_start
   [step 23] outcome executed: ran pytest -q (exit 1, 8.2s) changed=0
   [step 23] judge succeeded=0.31 error_present=0.88 new_info=0.42 tests=39p/2f/0e fail completion=0.22
@@ -1029,7 +1029,7 @@ field, N characters entered, hidden"` updated on submit/clear only, numbered opt
 Write `${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json` (or `--config`/`JEVCODE_CONFIG`): read existing, merge
 `{ provider, apiKey?, jevApiKey? }`, `writeFileAtomic(…, { mode: 0o600, mkdir: true })`, `chmod 0600` file / `0700` dir; Windows
 prints `(Windows: protected by your user profile ACL)`. `resolve.ts` checks legacy `~/.config` and XDG, prefers XDG, warns once
-(P30). Never writes `./.env`, `./jevcode.json`, the Open Assist `.env`; warns when `./jevcode.json` exists. After `saved`,
+(P30). Never writes `./.env`, `./jevcode.json`, the extra `.env` file; warns when `./jevcode.json` exists. After `saved`,
 `resolveConfig` re-runs. Shadowing line at every start when env/dotenv overrides a file key with a different fingerprint
 (13 §5.5; item stream in `--plain`, P43). `/login` re-enters at the missing field (mid-run: pane rows first; `saved — applies
 to the next run`), `/logout`, `jevcode login [--provider] [--generator-key-stdin] [--jev-key-stdin] [--status] [--verify]`,
@@ -1302,7 +1302,7 @@ the new fields as optional.
 
 ---
 
-## 16. Configuration schema (F14, D15) — precedence flag > env > `./.env` > `<OPEN_ASSIST_PATH>/.env` > file > default
+## 16. Configuration schema (F14, D15) — precedence flag > env > `./.env` > `<extra .env file>` > file > default
 
 `SettingName` grows by the rows below (`SETTINGS` in `config/defaults.ts`); `jevcode config` prints value + source for each,
 derived defaults as `<value> (default: <rule>)`; `jevcode config set <k> <v>` writes non-secret keys to the user file.

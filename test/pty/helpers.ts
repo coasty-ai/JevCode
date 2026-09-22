@@ -197,9 +197,9 @@ export function childEnv(home: string, rows: number, cols: number, extra: Readon
   env['HOME'] = home;
   env['JEVCODE_HOME'] = home;
   env['XDG_CONFIG_HOME'] = join(home, 'xdg');
-  // `<OPEN_ASSIST_PATH>/.env` is a dotenv layer whose default is the package root's sibling `../open-assist` (src/config/resolve.ts);
-  // on a machine where that directory holds keys no scenario would ever be keyless, so it points at a directory that does not exist
-  env['OPEN_ASSIST_PATH'] = join(home, 'no-open-assist');
+  // the extra `.env` file is a dotenv layer whose default is a sibling directory of the package root (src/config/resolve.ts);
+  // where that directory holds keys no scenario would ever be keyless, so it points at a directory that does not exist
+  env['OPEN_ASSIST_PATH'] = join(home, 'no-extra-env');
   env['PTY_ROWS'] = String(rows);
   env['PTY_COLS'] = String(cols);
   if (env['LANG'] === undefined || env['LANG'] === '') env['LANG'] = 'en_US.UTF-8';

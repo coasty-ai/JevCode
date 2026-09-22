@@ -310,9 +310,9 @@ function copyConfigRecord(record: Record<string, ConfigRecordValue>): Record<str
 }
 
 /**
- * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §5.2 / §7.1: `EngineOptions.fastPath` is written by slot C and
- * `EngineOptions.routers` by slot B, both into `src/core/types.ts` AFTER this slot lands (the §7.1 writer order is
- * B0 → C → D → B → A). This intersection is the seam, and it is deliberately typed rather than cast: when the two
+ * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §5.2 / §7.1: `EngineOptions.fastPath` and `EngineOptions.routers`
+ * are declared in `src/core/types.ts`, and this module was written before they landed there.
+ * This intersection is the seam, and it is deliberately typed rather than cast: when the two
  * members land with the shapes §5.2 states, the intersection is redundant and everything still compiles; if either
  * lands with a DIFFERENT type, the intersection collapses and the assignment below fails to compile — a loud failure
  * at merge is the point, since the silent alternative is an arm that runs with both mechanisms off and measures nothing.
@@ -362,9 +362,9 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   // Writing the option is only half of it: both mechanisms are resolved env-FIRST inside the engine, so the runner
   // calls `pinMechanismEnv` before any engine is built and the pinned value below is the effective one.
   //
-  // The six older arms get an explicit `fastPath: 'off'`, which is a DIVERGENCE from the product default once slot C
-  // lands ('auto' in `jev-on`): a bench `jev-on` row measures the engine WITHOUT route R9. That is deliberate — it is
-  // the same-build, no-fast-path reference the wave is read against, and §8.5 says the default-mode flip is a separate
+  // The six older arms get an explicit `fastPath: 'off'`, which is a DIVERGENCE from the product default
+  // ('auto' in `jev-on`): a bench `jev-on` row measures the engine WITHOUT route R9. That is deliberate — it is
+  // the same-build, no-fast-path reference the fast path is read against, and §8.5 says the default-mode flip is a separate
   // decision on these rows — but it is recorded here, in `armMechanisms` and in docs/DESIGN.md §22.8 rather than left
   // to be discovered from a table. A run that wants the shipped default must use `jev-on-next-nofast`'s sibling arm or
   // the product itself, not the `jev-on` bench row.
@@ -377,11 +377,11 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
 /**
  * contract 1.9 (Fastlane) §8.1: the env switches that would otherwise BEAT the arm's pinned mechanisms.
  *
- * Both are resolved inside the engine before the option: slot C's `resolveFastPathOption` reads `JEVCODE_FASTPATH`
- * first in both directions, and slot B's `routersOn` ORs `JEVCODE_ROUTERS=on` in. An exported `JEVCODE_FASTPATH=off`
+ * Both are resolved inside the engine before the option: `resolveFastPathOption` reads `JEVCODE_FASTPATH`
+ * first in both directions, and `routersOn` ORs `JEVCODE_ROUTERS=on` in. An exported `JEVCODE_FASTPATH=off`
  * therefore runs `jev-on-next` DISARMED while `summary.json` records `mechanisms.fastPath: 'auto'`, and an exported
  * `JEVCODE_FASTPATH=auto` runs the `jev-on-next-nofast` CONTROL armed while it records `'off'` — which destroys the
- * one-mechanism contrast §8.5 clause 4 rests on, silently, in the direction that makes the wave look better.
+ * one-mechanism contrast §8.5 clause 4 rests on, silently, in the direction that makes the fast path look better.
  */
 export const MECHANISM_ENV_VARS: readonly string[] = ['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS'];
 

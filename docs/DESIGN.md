@@ -80,7 +80,7 @@ only module that spawns `git`, §8). Node pinned in `.nvmrc`, `engines`, and `.n
 
 ## 3. Configuration
 
-Precedence, highest first: CLI flag > process env var > `./.env` > `<OPEN_ASSIST_PATH>/.env`
+Precedence, highest first: CLI flag > process env var > `./.env` > `<extra .env file>`
 > config file > default. `.env` files are parsed with `node:util` `parseEnv`; they are read
 into an isolated map, never into `process.env`.
 
@@ -103,7 +103,7 @@ into an isolated map, never into `process.env`.
 | Impossible threshold | `--impossible-threshold` | `JEVCODE_IMPOSSIBLE_THRESHOLD` | `0.85` |
 | Workspace | `--workspace` | `JEVCODE_WORKSPACE` | cwd; the resolved value is `realpath`ed at first use (§8) |
 | Runs dir | `--runs-dir` | `JEVCODE_HOME` | `~/.jevcode/runs` |
-| Open Assist path | `--open-assist-path` | `OPEN_ASSIST_PATH` | sibling `../open-assist` of the package if it exists |
+| Extra env file | `--extra-env-file` | `JEVCODE_EXTRA_ENV_FILE` | none |
 | Config file | `--config` | `JEVCODE_CONFIG` | `./jevcode.json`, else `~/.config/jevcode/config.json` |
 | Sandbox profile | `--sandbox` | `JEVCODE_SANDBOX` | `auto` (seatbelt on darwin, none elsewhere) |
 | Generator pricing override | | `JEVCODE_PRICE_IN_PER_M`, `JEVCODE_PRICE_OUT_PER_M` | table in `config/defaults.ts` `[R]` |
@@ -138,7 +138,7 @@ jevcode run  <task text as positional> | --task-file <path> | stdin when stdin i
           --jev-base-url --jev-api-key --jev-model
           --spend-cap <usd> --max-steps <n> --max-wall <dur> --max-replans <n>
           --complete-threshold <p> --impossible-threshold <p>
-          --workspace <dir> --runs-dir <dir> --open-assist-path <dir> --config <file>
+          --workspace <dir> --runs-dir <dir> --extra-env-file <dir> --config <file>
           --sandbox auto|seatbelt|none --no-network --plain
   run only: --resume <run-id>   (mutually exclusive with task text / --task-file / stdin)
             --force             (with --resume: resume a run whose stopReason is `complete`)
@@ -1285,7 +1285,7 @@ silently denies everything under it); the real home comes from `os.homedir()`, n
 Later rules win in SBPL, so the read denials override `(allow default)` and the specific
 `.git` denials override the workspace allow (verified; equivalently wrap the allow in
 `(require-all (subpath "<ws>") (require-not (literal "<ws>/.git/config")) (require-not
-(subpath "<ws>/.git/hooks")))`). Verified on this machine: with the denials, `cat
+(subpath "<ws>/.git/hooks")))`). Verified on the reference machine: with the denials, `cat
 <pkg>/.env` and `ls ~/.ssh` fail with EPERM (also through a symlink created inside the
 workspace), while `python3`, `git commit`, `node`, and in-workspace writes succeed. Not
 denied on purpose: reads elsewhere (other repos, `~/Documents`) and outbound network unless
@@ -1486,7 +1486,7 @@ itself). An explicit `--workspace` is accepted only if its realpath equals
 `run.json.workspace`; an explicit `--provider`, `--model` or `--jev-model` that differs is
 `ConfigError` (exit 2). Task text together with `--resume` is a usage error (exit 2). Limits
 (`--spend-cap`, `--max-steps`, `--max-wall`, `--max-replans`) and secrets (`--api-key`,
-`--jev-api-key` and their env vars), `runsDir`, `--config` and `--open-assist-path` are
+`--jev-api-key` and their env vars), `runsDir`, `--config` and `--extra-env-file` are
 re-resolved from the current invocation under §3 precedence, never read back from
 `run.json`; a limit that differs from the stored value is appended to `run.json.overrides[]`
 as `{ setting, from, to, atStep }` (secrets never recorded). Stored `stopReason` handling:
@@ -2226,7 +2226,7 @@ nothing else from a task record.
   no container isolation, agent and verifier share a user). The Harbor installed-agent adapter
   `bench/harbor/jevcode_agent.py` (installs Node via `nvm_node_install_snippet`, runs
   `jevcode run --plain "<instruction>"` in `/app`) is shipped for official runs elsewhere and
-  is untested here (Harbor needs Python >= 3.12; this machine has 3.9).
+  is untested here (Harbor needs Python >= 3.12; the reference machine has 3.9).
 
 ## 14. Testing
 
@@ -2536,7 +2536,7 @@ stated so the reasoning is preserved):
 Refuted findings (not applied; reason preserved):
 
 - `Decision.probability`/`confidence` semantics and the stage label of batched `task_complete`: already stated in §4/§5.3/§16.1; `answer.type` is the discriminant; the stage label is an opaque single-producer field with no consumer that depends on it.
-- Loading `<OPEN_ASSIST_PATH>/.env` pulls unrelated secrets into the config map: `ResolvedConfig` is typed by the §3 table so unknown variables cannot be stored; the cwd-relative default proposed is less predictable and a wider surface. (Unused dotenv secrets are, however, added to the redaction `SecretSet` by finding 23.)
+- Loading `<extra .env file>` pulls unrelated secrets into the config map: `ResolvedConfig` is typed by the §3 table so unknown variables cannot be stored; the cwd-relative default proposed is less predictable and a wider surface. (Unused dotenv secrets are, however, added to the redaction `SecretSet` by finding 23.)
 - Plain renderer prints one line per delta and interleaves bench runs: the bench attaches no renderer and writes per-run `transcript.log`; delta handling belongs to the event taxonomy (now §10: raw writes, line ended at `proposal`).
 - Overlapping the checkpoint write with the next intent request loses a committed step on a hard crash: the on-disk exposure window is the same tmp+rename write with or without overlap; in-flight spend of the current step is lost on SIGKILL in every per-step design; the proposed `Σ usage over decisions.jsonl` would multiply-count batched questions.
 - `steps.jsonl` torn/orphaned last line undetected: nothing reconstructs state from the JSONL logs (`state.json` is authoritative); a torn append needs power loss, outside the prompt's crash modes; failing resume on log length would be a regression.
@@ -3453,9 +3453,8 @@ these rows" is exactly this: the `jev-on` bench row is not a measurement of the 
 
 ### 22.9 Deviations from `docs/LLM-JEV-DESIGN.md` recorded in the stage reports
 
-Each implementer's `deviations_from_design` (workflow journals `wf_7afb7438-077` for stages 1–3
-and `wf_c7cc2b8d-893` for stages 4–5), grouped by stage; the reviewer defects that forced them
-are in the same journals.
+Each implementer's `deviations_from_design`, grouped by stage; the review defects that forced
+them are recorded alongside.
 
 **Stage 1 — generator channel, mode plumbing, code-fact stages** (`a0f7fbc`, `64c8d3e`).
 - A verified `done` also completes by fact (`isCompleteByFact` returns true for a noop `done`

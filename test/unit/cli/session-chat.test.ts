@@ -23,8 +23,8 @@ import { harnessDecider, makeController, tick, waitFor, type Harness } from './h
 import type { UiAction } from '../../../src/tui/useEngine.js';
 
 const SECRET = 'sk-ant-api03-SECRETSECRETSECRETSECRETSECRET1234';
-/** the `<OPEN_ASSIST_PATH>/.env` fallback must never find this machine's sibling checkout in a `mock: false` test */
-const NO_OPEN_ASSIST = '/nonexistent/open-assist';
+/** the extra-`.env` fallback must never find a real sibling checkout in a `mock: false` test */
+const NO_OPEN_ASSIST = '/nonexistent/no-extra-env';
 const harnesses: Harness[] = [];
 afterEach(() => {
   for (const h of harnesses.splice(0)) h.cleanup();
@@ -259,7 +259,7 @@ describe('TUI-DESIGN-2 §3.1 rows 10, 12, 12′, 13: failures', () => {
   });
 
   it('a ConfigError from config.generator() under jev+llm (no generator key, mock off) → `[ui] error: config:` only, no bubble', async () => {
-    // `openAssistPath` off the machine's sibling checkout, so no real key resolves (and a fake provider, never reached: `generator()` throws first)
+    // the extra-`.env` setting off any real sibling checkout, so no real key resolves (and a fake provider, never reached: `generator()` throws first)
     const h = await build({ decider: harnessDecider({ usage: USAGE }), flags: { mock: false, mode: 'jev-on', openAssistPath: NO_OPEN_ASSIST }, env: { JEV_API_KEY: 'sk-or-v1-0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef' }, deps: { buildProvider: async () => fakeProvider({ text: 'never' }) } });
     void h.controller.run();
     await h.ready();

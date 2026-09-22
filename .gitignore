@@ -1,41 +1,44 @@
+# --- dependencies and build output ---
 node_modules/
 dist/
 coverage/
+*.tgz
+SHA256SUMS
+
+# --- secrets ---
 .env
 .env.*
 !.env.example
+
+# --- logs and local scratch ---
 *.log
-!docs/live/**/*.log
-!docs/live/*.log
-.DS_Store
-bench/results/*
-!bench/results/live-*/
-!bench/results/jev-only-*/
-bench/work/
-perf/results/*
-!perf/results/latest.json
 /tmp/
 .smoke/
 .vitest/
-
-# local scratch and agent worktrees (never committed)
 .scratch/
-.claude/worktrees/
-!bench/results/glm-*/
-!bench/results/llm-jev-*/
-!bench/results/oos-*/
 
-# bench --archive-runs output (src/bench/archive.ts): a results directory in bench/results now
-# archives its runs' records by default, ~4 MB gz per 22-task slice. The un-ignore rules above
-# would otherwise commit them on every bench run. A record archive is checked in DELIBERATELY and
-# as one file, the way experiments/results/oos-2026-09-22-runs.tar.gz was.
-bench/results/*/runs/
-!bench/results/iter1-*/
-!bench/results/iter2-*/
+# --- editor / OS ---
+.DS_Store
+*.swp
+.idea/
+.vscode/
+*.iml
 
-# iteration 2's harvested run transcripts (experiments/results/llm-jev-iter2.md §10 defect 1): the warm plane's
-# counters — disabledReason, fallbacks, restarts, screen:mismatch — exist ONLY as free text in the sieve's
-# `synth · verify` event, and `--archive-runs` does not copy transcript.log. They are the sole evidence for the
-# warm A/B, so the global `*.log` rule is lifted for exactly these directories (1.7 MB of text, checked in
-# deliberately). Delete the rule once the counters reach SearchTrace.
-!bench/results/iter2-*/transcripts/*.log
+# --- agent configuration written into the checkout ---
+.claude/
+
+# --- measured artefacts ---
+# Benchmark runs, recorded sessions and probe output are reproducible from the
+# drivers in bench/ and experiments/. They are megabytes of machine-written
+# JSON, and they are kept out of the tree so a clone stays small.
+bench/results/
+bench/work/
+docs/live/
+experiments/reach/out/
+experiments/probe-swebench-understand/
+experiments/results/*.tar.gz
+experiments/progress/candidates.json
+
+# perf/results keeps exactly one committed snapshot, the latest.
+perf/results/*
+!perf/results/latest.json

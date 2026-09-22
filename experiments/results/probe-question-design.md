@@ -406,7 +406,7 @@ individual items. Aggregate top-1 over 20 programs moves by up to 2 between runs
 
 ```
 git clone --depth 1 https://github.com/jkoppel/QuixBugs /tmp/quixbugs
-cd /Users/prateekjannu/Documents/vscode/JevCode
+cd <repo>
 python3 experiments/probe-questions/actual_outputs.py                       # actual-outputs.json
 env -u ANTHROPIC_API_KEY node --env-file=.env node_modules/.bin/tsx experiments/probe-questions/probe.mts - run0 --dump   # candidates.json, no requests
 python3 experiments/probe-questions/eval_candidates.py                      # candidate-pass.json
@@ -490,7 +490,7 @@ bucketsort 0.92–0.94, find_first_in_sorted 0.72–0.77, flatten 1.00, **find_i
 **Unverifiable (author's statement only):** the $0.0024 smoke test and the ≈$0.11 for three runs lost to the
 summary-stage crash (no raw rows exist); the total ≈$0.26 therefore cannot be reconciled beyond the $0.1492 in
 the JSONL plus $0.0041 for this verification. **Literature:** the file cites no external papers or URLs, only
-`/Users/prateekjannu/Documents/jev-research/REPORT.md` (§6, §10) and the in-repo anchor probe; both were re-read
+`<research-notes>/REPORT.md` (§6, §10) and the in-repo anchor probe; both were re-read
 and the §10 citation (positional indirection fails, semantic hops work) supports the "keys must name the code"
 claim. Nothing to re-fetch.
 

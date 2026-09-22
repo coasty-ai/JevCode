@@ -7,7 +7,7 @@ blocks the loop, zero terminal clears after the first frame, keys never in logs)
 **Source conventions.** Every fact below was fetched on 2026-09-20. `R:<path>` expands to
 `https://raw.githubusercontent.com/anomalyco/opencode/dev/<path>` (default branch `dev`); `O:<path>` expands to
 `https://raw.githubusercontent.com/anomalyco/opentui/main/<path>`; `NM:<path>` is a file under
-`/Users/prateekjannu/Documents/vscode/JevCode/node_modules/<path>` (installed ink 7.1.1). `github.com/sst/opencode`
+`<repo>/node_modules/<path>` (installed ink 7.1.1). `github.com/sst/opencode`
 answers `HTTP/2 301` → `https://github.com/anomalyco/opencode` (curl -I, fetched 2026-09-20). Repo metadata from
 `https://api.github.com/repos/anomalyco/opencode` (fetched 2026-09-20): `default_branch: dev`, `language: TypeScript`,
 208,832 stars, MIT, `pushed_at: 2026-09-20T17:25:05Z`. The whole tree was pulled once with
