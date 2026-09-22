@@ -66,8 +66,8 @@ import type { Json, StageName, SynthesisContext } from '../../core/types.js';
 import { choice, ESCAPE_KEY, noul } from '../../jev/questions.js';
 import type { NoulCriteriaSpec } from '../../jev/questions.js';
 import { codeLines, moduleCodeLines } from '../localize/index.js';
-import { analyse, codeTokens, fallsOffEnd, levenshtein, mutatedParameters, normaliseLine, qualifiedName, tokenizeFragment } from '../py/index.js';
-import type { Block, PyModule, ReturnFact } from '../py/index.js';
+import { analyse, codeTokens, fallsOffEnd, levenshtein, mutatedParameters, normaliseLine, qualifiedName, statementKinds, tokenizeFragment } from '../py/index.js';
+import type { Block, PyModule, ReturnFact, StatementKind } from '../py/index.js';
 import type { LanePool } from '../sieve/lanes.js';
 import type { AppliedCandidate, Candidate, CandidateSourceName, FailureView, JevAsk, SourceFile } from '../types.js';
 import { RUN_FAILURE_ID } from '../verify/text.js';
@@ -469,11 +469,38 @@ export const STRUCTURAL_REJECTION_WHY: Readonly<Record<StructuralRejection, stri
 };
 
 /**
+ * Review finding 2: argument mutation is a SUSPICION, not a refusal.
+ *
+ * `values.sort(); return values[-1]` and `if k not in d: d[k] = 0` are ordinary in-place APIs;
+ * refusing them costs solves on the SWE class, where in-place is often the contract. The two
+ * idioms are exempted in `py/structure.ts mutatedParameterDetails`, and what survives that is
+ * still only evidence: it never drops a SOLE passer (there is nothing better to fall back to,
+ * and `holdBestPartial` would throw the run's only fix away), and with two or more contenders it
+ * is handed to the arbitration that already exists (Q15/Q16) as a named signal.
+ *
+ * The one shape that stays an outright refusal is the one the record shows going wrong, stated
+ * structurally: an in-place method on a parameter the function NEVER hands back, in a goal whose
+ * tests expect a raise. That is `stats`' `values.remove(mid)` — the mutation is invisible to the
+ * function's own result, so no caller could have wanted it, and the `raises` goal is what the
+ * candidate satisfied incidentally (analysis Q6 (ii)).
+ */
+export function raisesGoal(goal: Pick<Goal, 'failures'>): boolean {
+  return goal.failures.some((f) => /\braise[sd]?\b|Error\b|Exception\b/.test(`${f.expected} ${f.actual}`));
+}
+
+/**
  * The mark `perturb.ts ladderOutputText` writes into a replayed output whose call changed its own
  * arguments — the post-call argument diff the replay harness already runs, reused here rather than
  * re-derived (a unit test asserts the two agree, so the literal cannot drift).
  */
 export const ARGS_MUTATED_MARK = '[arguments mutated to ';
+
+/**
+ * The statement kinds that own a suite, so introducing one changes the shape `suiteExits` walks
+ * (review finding 1). `def` / `class` are absent on purpose: `statementKinds` already excludes
+ * nested block bodies, and a patch that adds a helper `def` does not change how its parent exits.
+ */
+const SUITE_SHAPE_KINDS: ReadonlySet<StatementKind> = new Set(['if', 'elif', 'else', 'for', 'while', 'try', 'except', 'finally', 'with']);
 
 /** A function's `return` facts, or none when the block is not a `def` of this module. */
 function returnsOf(mod: PyModule, block: Block): readonly ReturnFact[] {
@@ -546,12 +573,48 @@ export function structuralRejection(applied: Pick<AppliedCandidate, 'files'>, ca
     const after = parsed(f.after, cache);
     if (before === null || after === null) continue;
     for (const p of functionPairs(before, after)) {
+      // Review finding 1: the difference argument requires the two revisions to be built from the
+      // same constructs. A patch that introduces a COMPOUND statement — one that owns a suite, so
+      // it changes the shape the exit analysis walks — is exactly where "unmodelled cancels out"
+      // stops being true; wrapping exiting code in `try/except` is a large fraction of real
+      // repository fixes. Leaf statements (`break`, `return`, `pass`, an expression) are NOT this:
+      // they sit inside a suite the analysis already walks and are precisely what the difference
+      // is built to see — `detect_cycle`'s added `break` must still be caught.
+      const wasShapes = new Set([...statementKinds(before, p.before)].filter((k) => SUITE_SHAPE_KINDS.has(k)));
+      if ([...statementKinds(after, p.after)].some((k) => SUITE_SHAPE_KINDS.has(k) && !wasShapes.has(k))) continue;
       if (!noneExit(before, p.before) && noneExit(after, p.after) && valueExits(after, p.after) > 0) return 'adds_implicit_none_exit';
-      const was = new Set(mutatedParameters(before, p.before));
-      if (mutatedParameters(after, p.after).some((n) => !was.has(n))) return 'mutates_new_argument';
     }
   }
   return null;
+}
+
+/** The parameters a patch newly mutates in place, exemptions already applied (`mutatedParameterDetails`). */
+export function newlyMutatedParameters(applied: Pick<AppliedCandidate, 'files'>, cache?: ParseCache): { fn: Block; mod: PyModule; names: string[] }[] {
+  const out: { fn: Block; mod: PyModule; names: string[] }[] = [];
+  for (const f of applied.files) {
+    const before = parsed(f.before, cache);
+    const after = parsed(f.after, cache);
+    if (before === null || after === null) continue;
+    for (const p of functionPairs(before, after)) {
+      const was = new Set(mutatedParameters(before, p.before));
+      const names = mutatedParameters(after, p.after).filter((n) => !was.has(n));
+      if (names.length > 0) out.push({ fn: p.after, mod: after, names });
+    }
+  }
+  return out;
+}
+
+/**
+ * The narrow refusal of review finding 2: the patch newly mutates a parameter the function never
+ * hands back, and the goal's tests expect a raise. Everything else that `newlyMutatedParameters`
+ * finds is a suspicion signal, not a refusal.
+ */
+export function mutationRefused(applied: Pick<AppliedCandidate, 'files'>, goal: Pick<Goal, 'failures'>, cache?: ParseCache): boolean {
+  if (!raisesGoal(goal)) return false;
+  return newlyMutatedParameters(applied, cache).some(({ fn, mod, names }) => {
+    const returned = mod.functions.find((x) => x.blockIndex === fn.index)?.returns ?? [];
+    return names.some((n) => !returned.some((r) => r.expr !== null && new RegExp(`^${n}\\s*(?:$|[[.])`).test(r.expr.trim())));
+  });
 }
 
 /**
@@ -574,7 +637,7 @@ export function probeArgumentMutation(o: VerifyOutcome, signature: string | unde
 // Structural suspicion signals (code) on a lone passer
 // ---------------------------------------------------------------------------------------
 
-export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard' | 'adds_special_case';
+export type SuspicionSignal = 'deletes_statement' | 'duplicates_block' | 'guards_other_variable' | 'dead_guard' | 'adds_special_case' | 'mutates_new_argument';
 
 // ---------------------------------------------------------------------------------------
 // Special-case guards (code metric): the conditionals and literals a candidate adds
@@ -755,6 +818,9 @@ export function suspicionSignals(o: VerifyOutcome, goal: Pick<Goal, 'failures'>)
     if (addsStatement && subjects.every((s) => !isUsed(s, fn.map((l) => l.text)))) out.push('dead_guard');
   }
   if (specialCaseScore(c).total > 0) out.push('adds_special_case');
+  // review finding 2: a mutation the exemptions did not excuse is a signal on a lone passer —
+  // Q16 decides the hold, and the passer is never simply dropped
+  if (newlyMutatedParameters(o.applied).length > 0) out.push('mutates_new_argument');
   return out;
 }
 
@@ -1242,7 +1308,11 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   const refused = new Map<string, StructuralRejection>();
   const parseCache: ParseCache = new Map();
   const admissible = (o: VerifyOutcome): boolean => {
-    const why = structuralRejection(o.applied, parseCache);
+    // Review finding 2: argument mutation no longer refuses on its own. Only the none-exit rule
+    // and the narrow `stats` shape (an in-place method on a parameter the function never returns,
+    // in a goal whose tests expect a raise) drop a candidate here; every other mutation becomes
+    // the `mutates_new_argument` suspicion signal below, which never drops a SOLE passer.
+    const why = structuralRejection(o.applied, parseCache) ?? (mutationRefused(o.applied, goal, parseCache) ? 'mutates_new_argument' : null);
     if (why === null) return true;
     refused.set(o.applied.candidate.id, why);
     return false;
@@ -1348,11 +1418,20 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
   // signature carries that mark while the pre-patch file mutated no parameter is refused here, at
   // the cost of reading a signature the clustering needed anyway.
   const mutators = plausible.filter((o) => probeArgumentMutation(o, signatures.get(o.applied.candidate.id), parseCache));
-  for (const o of mutators) {
+  // Review finding 2, runtime half: a replayed call that changed its own arguments refuses the
+  // candidate only in the narrow `raises`-goal shape; otherwise it is evidence that demotes it
+  // among its peers. And it NEVER empties the field: if refusing would leave no contender, the
+  // refusals are withdrawn and the candidates go to arbitration carrying the signal instead.
+  const runtimeRefused = mutators.filter((o) => mutationRefused(o.applied, goal, parseCache));
+  const dropped = runtimeRefused.length < plausible.length ? runtimeRefused : [];
+  for (const o of dropped) {
     refused.set(o.applied.candidate.id, 'mutates_new_argument');
-    note(`${goal.id}: refuses the passing candidate ${describe(o)} — its replayed calls ${STRUCTURAL_REJECTION_WHY.mutates_new_argument} (the probe's own post-call argument diff, no Jev request)`);
+    note(`${goal.id}: refuses the passing candidate ${describe(o)} — its replayed calls ${STRUCTURAL_REJECTION_WHY.mutates_new_argument}, on a parameter it never returns, for a goal whose tests expect a raise (the probe's own post-call argument diff, no Jev request)`);
   }
-  const contenders = mutators.length === 0 ? plausible : plausible.filter((o) => !refused.has(o.applied.candidate.id));
+  const contenders = dropped.length === 0 ? plausible : plausible.filter((o) => !refused.has(o.applied.candidate.id));
+  // the surviving mutators keep the signal; `arbitrationSignals` hands it to Q15/Q16 below
+  const mutationSuspects = new Set(mutators.filter((o) => !refused.has(o.applied.candidate.id)).map((o) => o.applied.candidate.id));
+  for (const o of contenders) if (mutationSuspects.has(o.applied.candidate.id)) note(`${goal.id}: ${describe(o)} mutates an argument the pre-patch code left alone — recorded as a suspicion signal for the arbitration, not a refusal (review finding 2)`);
   base.structuralDrops = refused.size;
   if (contenders.length === 0) {
     clearHeld(mem, goal);

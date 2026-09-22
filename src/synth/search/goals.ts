@@ -72,6 +72,15 @@ export const MAX_BUDGET_HIT_STEPS = 4;
  * run starts the count at 0 (in-memory, like `budgetSteps`).
  */
 export const MAX_PROGRESS_COMMITS_PER_GOAL = 3;
+/**
+ * Review finding 4: a caller shared by this many clusters or more is a shared utility, not the
+ * defect's call chain, and never merges them. Three is the smallest number that can distinguish
+ * the two: TWO clusters meeting at a caller is the coupled-defect shape the merge exists for
+ * (`crossfile`: three failing frames under one `run`), while a function that three otherwise
+ * unrelated failures all pass through is by definition general-purpose. It is a property of the
+ * relation, not a tuned threshold — at 2 the rule would refuse every merge and delete itself.
+ */
+export const SHARED_UTILITY_CLUSTERS = 3;
 /** Failures kept per goal for Jev states; the measured programs had ≤ 14 (verify STATE_FAILURES_BOUND). */
 export const GOAL_FAILURES_BOUND = STATE_FAILURES_BOUND;
 /**
@@ -365,10 +374,19 @@ function clusterByFrames(entries: FramedTest[]): Cluster[] {
  * test is right only when the tests are independent repairs.
  *
  * The structural reason to be one goal, read off the traceback and not a threshold: the two
- * clusters' frame chains meet at a SHARED CALLER — a (path, fn) source node that is on both
- * chains and is neither cluster's own key frame. That is a call chain the defect sits on, and a
- * repair on it fixes both tests at once; it is exactly the shape `crossfile` has and exactly what
- * seven per-test goals cannot express.
+ * clusters' failing frames have the SAME IMMEDIATE CALLER — the source frame directly above the
+ * key frame, shared by every member of both clusters. That is the call chain the defect sits on,
+ * and a repair there fixes both tests at once; it is exactly the shape `crossfile` has and
+ * exactly what seven per-test goals cannot express.
+ *
+ * Two guards, both from review finding 4, because the first version merged on ANY shared node:
+ *   - ADJACENCY. On a repository workspace nearly every traceback runs through `sympify`,
+ *     `Basic.__new__` or a decorator, so "shares a node somewhere" is true of almost every pair
+ *     and the union-find collapsed the whole ledger into one goal. Only the immediate caller
+ *     counts, and only when every member of the cluster reaches its key frame through it.
+ *   - SHARED UTILITIES. A caller that appears on `SHARED_UTILITY_CLUSTERS` or more clusters is a
+ *     helper — unrelated code calling one function is what a helper IS — and merging on it is
+ *     refused outright.
  *
  * What is deliberately NOT a reason:
  *
@@ -397,30 +415,78 @@ export function mergeCoupledClusters(clusters: readonly Cluster[], chains: Reado
     const rb = find(b);
     if (ra !== rb) parent[Math.max(ra, rb)] = Math.min(ra, rb);
   };
-  // the (path, fn) source nodes on each cluster's chains, minus the cluster's own key frames
-  const nodesOf = clusters.map((c) => {
-    const own = new Set<string>();
-    for (const m of c.members) {
-      const k = keys.get(m);
-      if (k !== undefined) own.add(k);
+  /**
+   * The IMMEDIATE caller of each member's key frame. Review finding 4: a merely shared node was too
+   * weak — on a repository workspace nearly every traceback runs through `sympify`,
+   * `Basic.__new__` or a decorator, so "shares a node" is true of almost every pair and the
+   * union-find collapsed the whole ledger into one goal. The immediate caller is the frame the
+   * defect actually sits under: if two failing frames have the same parent, one edit at that
+   * parent plausibly fixes both; a node six frames up says nothing.
+   *
+   * A cluster's callers are the intersection over its members — a caller only counts if EVERY
+   * member reaches its key frame through it.
+   */
+  const nodeOf = (f: Frame): string | null => (f.kind === 'source' && f.fn !== null ? `${f.path}|${f.fn}` : null);
+  /** the immediate SOURCE caller of `key` on one member's chain (chains are outermost-first) */
+  const callerOn = (chain: readonly Frame[], key: string | undefined): string | null => {
+    for (let i = 0; i < chain.length; i += 1) {
+      if (nodeOf(chain[i]!) !== key) continue;
+      for (let j = i - 1; j >= 0; j -= 1) {
+        const up = nodeOf(chain[j]!);
+        if (up !== null) return up;
+      }
+      return null;
     }
-    const nodes = new Set<string>();
+    return null;
+  };
+  const callersOf = clusters.map((c) => {
+    // the intersection over the cluster's members: a caller counts only when EVERY member
+    // reaches its key frame through it
+    let shared: string[] | null = null;
     for (const m of c.members) {
-      for (const f of chains.get(m) ?? []) {
-        if (f.kind !== 'source' || f.fn === null) continue;
-        const node = `${f.path}|${f.fn}`;
-        if (!own.has(node)) nodes.add(node);
+      const caller = callerOn(chains.get(m) ?? [], keys.get(m));
+      const mine: string[] = caller === null ? [] : [caller];
+      shared = shared === null ? mine : shared.filter((x) => mine.includes(x));
+      if (shared.length === 0) break;
+    }
+    return new Set<string>(shared ?? []);
+  });
+
+  /**
+   * A shared utility: a function that unrelated failures merely PASS THROUGH. It is counted over
+   * the clusters on whose chains the node appears somewhere OTHER than as the immediate caller of
+   * a key frame — which is the distinction that makes the two halves of review finding 4 consistent.
+   *
+   * Counting bare appearances would refuse `crossfile` itself: its three failing frames are three
+   * clusters and `src/pipeline.py|run` is on all three chains, so a flat "on >= 3 chains" test
+   * deletes the very merge the change exists for. What makes `sympify` / `Basic.__new__` / a
+   * decorator different is not how many chains carry them but WHERE: they sit far above the
+   * failing frame on chain after chain, while `run` is the frame directly above each failure. So
+   * the count ignores the adjacency uses and asks whether the node is ALSO a general waypoint.
+   */
+  const passThrough = new Map<string, number>();
+  clusters.forEach((c, ci) => {
+    const seen = new Set<string>();
+    for (const m of c.members) {
+      const chain = chains.get(m) ?? [];
+      const caller = callerOn(chain, keys.get(m));
+      for (const f of chain) {
+        const n = nodeOf(f);
+        if (n === null || n === caller || n === keys.get(m)) continue;
+        seen.add(n);
       }
     }
-    return nodes;
+    for (const n of seen) passThrough.set(n, (passThrough.get(n) ?? 0) + (ci >= 0 ? 1 : 0));
   });
-  const shares = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => {
-    for (const x of a) if (b.has(x)) return true;
+  const utility = (n: string): boolean => (passThrough.get(n) ?? 0) >= SHARED_UTILITY_CLUSTERS;
+
+  const sharesCaller = (a: ReadonlySet<string>, b: ReadonlySet<string>): boolean => {
+    for (const x of a) if (b.has(x) && !utility(x)) return true;
     return false;
   };
   for (let i = 0; i < clusters.length; i += 1) {
     for (let j = i + 1; j < clusters.length; j += 1) {
-      if (shares(nodesOf[i]!, nodesOf[j]!)) union(i, j);
+      if (sharesCaller(callersOf[i]!, callersOf[j]!)) union(i, j);
     }
   }
   const byRoot = new Map<number, Cluster>();

@@ -236,6 +236,11 @@ export function buildRecord(input: RecordInput): BenchRecord {
     jevTokensPerStep: [...result.jevTokensPerStep],
     cost: { generator: result.usage.generator.costUsd, jev: result.usage.jev.costUsd },
     jevLatencyMs: { raw, p50: percentile(raw, 50), p95: percentile(raw, 95) },
+    // review finding 8: this is the count of requests that reached a provider, which is what the
+    // comparison is about. The meter adds `usage.calls`, and a cache hit contributes 0
+    // (jev/cache.ts `asHit`) — so cached requests are excluded here by construction, exactly as
+    // the stub's are (its count travels as `stubbedJevRequests`). Rows, `draft.jevRequests.length`
+    // and `jev.jsonl` still hold every request INCLUDING the hits, marked `cached`.
     jevRequests: result.usage.jev.calls,
     jevQuestions: result.jevQuestions,
     timing: { generatorMs: result.timing.generatorMs, jevMs: result.timing.jevMs, execMs: result.timing.execMs, harnessMs: result.timing.harnessMs },
@@ -778,7 +783,7 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
   // ...and on by default for a results directory in the repository's own bench/results tree, so
   // every result directory from now on carries its records without anyone remembering the flag
   // (archive.ts archiveByDefault; the 44 OOS runs had to be tarred by hand after the fact)
-  if (archiveRunsDue(opts.archiveRuns, outDir, join(process.cwd(), 'bench', 'results'))) {
+  if (archiveRunsDue(opts.archiveRuns, outDir)) {
     await archiveRuns({ outDir, runsDir: opts.runsDir, runIds: records.map((r) => r.runId).filter((id): id is string => id !== null), log });
   }
   log(`[bench] done: ${records.length} records in ${outDir}`);

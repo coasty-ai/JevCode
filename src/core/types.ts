@@ -312,6 +312,16 @@ export interface JevRequestRecord {
   attempts: number;
   /** TUI-DESIGN-2 §2.4 / §6 item 6 (additive): `provider` when the wire carried `usage.cost`, `table` when the client priced it; absent for a decider that does not say (older jev.jsonl, fakes) */
   costBasis?: 'provider' | 'table';
+  /**
+   * contract 1.2 llm-jev (additive): this request was answered from the run's within-run
+   * `requestHash` cache (jev/cache.ts) and never reached the provider. Absent means it did.
+   *
+   * It is an explicit mark and not an inference from `usage.calls === 0`, because the bench's
+   * stub decider reports `calls: 0` on every request (bench/stub-decider.ts) — deriving hits
+   * from the usage would count every stubbed request as a hit
+   * (docs/research/llm-jev/review-oos-iter-1-2026-09-22.md finding 8).
+   */
+  cached?: true;
 }
 
 /** TUI-DESIGN-2 §2.4 (additive): how the Jev requests of a run were priced — `table` when every one was, `provider` when every one carried `usage.cost`, `mixed` otherwise; null before any request */
@@ -491,8 +501,9 @@ export interface StepRecord {
    */
   verify?: StepVerifySummary;
   /** docs/research/llm-jev/oos-analysis-2026-09-22.md ranked change 2 (contract 1.2, llm-jev, additive): requests this step
-   *  served from the run's `requestHash` cache instead of the provider (src/jev/cache.ts). Absent = 0. A hit is also the
-   *  jev.jsonl row with `usage.calls === 0`, so the count is derivable; this member is the cheap per-step summary. */
+   *  served from the run's `requestHash` cache instead of the provider (src/jev/cache.ts). Absent = 0. It is Σ of the step's
+   *  `jevRequests[].cached` — NOT of `usage.calls === 0`, which the bench's stub decider reports on every request
+   *  (review-oos-iter-1-2026-09-22.md finding 8). */
   jevCacheHits?: number;
   /**
    * docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed the step — `synth` (the Synthesizer) or `generic` (the per-step
@@ -762,6 +773,8 @@ export interface AskResult {
   id: string | null;
   /** TUI-DESIGN-2 §6 item 6 / §2.4: `provider` when the wire carried `usage.cost`, `table` when the client priced it (`~` in the UI) */
   costBasis?: 'provider' | 'table';
+  /** contract 1.2 llm-jev (additive): served from the within-run `requestHash` cache (jev/cache.ts), never sent. Absent means sent. */
+  cached?: true;
 }
 export interface Decider {
   readonly model: string;

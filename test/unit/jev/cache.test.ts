@@ -145,6 +145,34 @@ describe('within-run requestHash cache (OOS 2026-09-22 ranked change 2: 454 of 2
     expect(inner.calls).toBe(2);
   });
 
+  it('review finding 9: a hit\'s answers are CLONED, so mutating one does not poison the next hit', async () => {
+    const inner = countingDecider();
+    const cached = createCachingDecider(inner);
+    const state: Json = { task: 'fix gcd' };
+    const qs = { q: question('Is this the buggy line?') };
+    const first = await cached.ask(state, qs, OPTS);
+    const a = first.answers['q'];
+    if (a === undefined || a.type !== 'noul') throw new Error('expected a noul answer');
+    a.noul = 0.99; // a consumer that normalises or annotates in place
+    const second = await cached.ask(state, qs, OPTS);
+    const b = second.answers['q'];
+    expect(b?.type === 'noul' ? b.noul : null).toBe(0.42);
+    // ... and the two hits do not share an object either
+    const third = await cached.ask(state, qs, OPTS);
+    expect(third.answers).not.toBe(second.answers);
+    expect(third.answers['q']).not.toBe(second.answers['q']);
+  });
+
+  it('review finding 8: a hit is MARKED `cached`, never inferred from usage.calls (the bench stub reports 0 calls on every request)', async () => {
+    const inner = countingDecider();
+    const cached = createCachingDecider(inner);
+    const state: Json = { task: 'fix gcd' };
+    const qs = { q: question('Is this the buggy line?') };
+    const first = await cached.ask(state, qs, OPTS);
+    expect(first.cached).toBeUndefined(); // a real call is never marked
+    expect((await cached.ask(state, qs, OPTS)).cached).toBe(true);
+  });
+
   it('the model id is inside the hash, so the cache cannot serve one model\'s answer for another', async () => {
     const inner = countingDecider();
     const cached = createCachingDecider(inner);

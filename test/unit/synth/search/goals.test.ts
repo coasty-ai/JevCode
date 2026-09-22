@@ -29,6 +29,7 @@ import {
   reconcile,
   reopenOnChange,
   mergeCoupledClusters,
+  SHARED_UTILITY_CLUSTERS,
   splitBySiteBudget,
 } from '../../../../src/synth/search/goals.js';
 import { createMemory, dropMemory, getMemory } from '../../../../src/synth/search/memory.js';
@@ -194,40 +195,66 @@ describe('clusterFailures: coupled goals (OOS 2026-09-22 ranked change 4)', () =
     expect(goals[0]?.suspectedFiles).toEqual(['gcd.py']);
   });
 
-  it('mergeCoupledClusters is transitive and order-free, and never merges on a cluster\'s own key frame', () => {
+  it('mergeCoupledClusters groups by IMMEDIATE caller, is order-free, and never merges on a cluster\'s own key frame (review finding 4)', () => {
     const src = (path: string, fn: string): { path: string; line: number; fn: string; kind: 'source' } => ({ path, line: 1, fn, kind: 'source' });
-    const clusters = [
-      { reason: 'frame src/a.py:a', members: [0], suspectedFiles: ['src/a.py'], missingNames: [] },
-      { reason: 'frame src/b.py:b', members: [1], suspectedFiles: ['src/b.py'], missingNames: [] },
-      { reason: 'frame src/c.py:c', members: [2], suspectedFiles: ['src/c.py'], missingNames: [] },
-    ];
-    // 0 and 1 share caller `run`; 1 and 2 share caller `mid`; so all three are one goal
-    const chains = new Map<number, readonly { path: string; line: number; fn: string | null; kind: 'source' | 'test' }[]>([
+    const cluster = (i: number, path: string, fn: string): { reason: string; members: number[]; suspectedFiles: string[]; missingNames: string[] } => ({ reason: `frame ${path}:${fn}`, members: [i], suspectedFiles: [path], missingNames: [] });
+    type Chain = readonly { path: string; line: number; fn: string | null; kind: 'source' | 'test' }[];
+
+    // three failures, each directly under `run` — crossfile's shape: one goal
+    const clusters = [cluster(0, 'src/a.py', 'a'), cluster(1, 'src/b.py', 'b'), cluster(2, 'src/c.py', 'c')];
+    const chains = new Map<number, Chain>([
       [0, [src('src/p.py', 'run'), src('src/a.py', 'a')]],
-      [1, [src('src/p.py', 'run'), src('src/q.py', 'mid'), src('src/b.py', 'b')]],
-      [2, [src('src/q.py', 'mid'), src('src/c.py', 'c')]],
+      [1, [src('src/p.py', 'run'), src('src/b.py', 'b')]],
+      [2, [src('src/p.py', 'run'), src('src/c.py', 'c')]],
     ]);
-    const keys = new Map<number, string>([
-      [0, 'src/a.py|a'],
-      [1, 'src/b.py|b'],
-      [2, 'src/c.py|c'],
-    ]);
+    const keys = new Map<number, string>([[0, 'src/a.py|a'], [1, 'src/b.py|b'], [2, 'src/c.py|c']]);
     expect(mergeCoupledClusters(clusters, chains, keys)).toHaveLength(1);
     expect(mergeCoupledClusters([...clusters].reverse(), chains, keys)).toHaveLength(1);
-    // two clusters split off one function by FRAME_LINE_WINDOW share only their own key node: not merged
-    const same = [
-      { reason: 'frame src/m.py:f', members: [0], suspectedFiles: ['src/m.py'], missingNames: [] },
-      { reason: 'frame src/m.py:f', members: [1], suspectedFiles: ['src/m.py'], missingNames: [] },
-    ];
-    const sameChains = new Map<number, readonly { path: string; line: number; fn: string | null; kind: 'source' | 'test' }[]>([
-      [0, [src('src/m.py', 'f')]],
-      [1, [src('src/m.py', 'f')]],
+
+    // the caller must be IMMEDIATE: `b` sits under `mid`, not under `run`, so it is its own goal
+    const deeper = new Map<number, Chain>([
+      [0, [src('src/p.py', 'run'), src('src/a.py', 'a')]],
+      [1, [src('src/p.py', 'run'), src('src/q.py', 'mid'), src('src/b.py', 'b')]],
+      [2, [src('src/p.py', 'run'), src('src/c.py', 'c')]],
     ]);
-    const sameKeys = new Map<number, string>([
-      [0, 'src/m.py|f'],
-      [1, 'src/m.py|f'],
-    ]);
+    expect(mergeCoupledClusters(clusters, deeper, keys).map((c) => c.members)).toEqual([[0, 2], [1]]);
+
+    // two clusters split off one function by FRAME_LINE_WINDOW have no caller above their own key node: not merged
+    const same = [cluster(0, 'src/m.py', 'f'), cluster(1, 'src/m.py', 'f')];
+    same[0]!.members = [0];
+    same[1]!.members = [1];
+    const sameChains = new Map<number, Chain>([[0, [src('src/m.py', 'f')]], [1, [src('src/m.py', 'f')]]]);
+    const sameKeys = new Map<number, string>([[0, 'src/m.py|f'], [1, 'src/m.py|f']]);
     expect(mergeCoupledClusters(same, sameChains, sameKeys)).toHaveLength(2);
+  });
+
+  /**
+   * Review finding 4: two INDEPENDENT failures that merely pass through one helper are two
+   * repairs. On a repository workspace nearly every traceback runs through `sympify`,
+   * `Basic.__new__` or a decorator, and merging on that collapsed the whole ledger into one goal.
+   */
+  it('two independent clusters that both pass through util.normalise stay TWO goals (review finding 4)', () => {
+    // the helper is a WAYPOINT, not the frame above the failure: each failure has its own caller
+    const mk = (test: string, fn: string, file: string): string =>
+      `_____ ${test} _____\ntests/test_m.py:5: in ${test}\n    ${fn}()\nsrc/util.py:7: in normalise\n    wrap_${fn}()\n${file}:9: in wrap_${fn}\n    ${fn}_impl()\n${file}:11: in ${fn}\n    raise ValueError\nE   ValueError\n`;
+    const out = `=== FAILURES ===\n${mk('test_a', 'alpha', 'src/a.py')}${mk('test_b', 'beta', 'src/b.py')}=== short test summary info ===\n`;
+    const b = baselineOf(['test_a', 'test_b'].map((t) => failure(`tests/test_m.py::${t}`, t, '', 'ValueError')));
+    const goals = clusterFailures(b, { output: out });
+    // `normalise` is the immediate caller of both, but it is a helper — and either way these are
+    // two distinct repairs; what must never happen is one goal over both
+    expect(goals.map((g) => g.tests.map((t) => t.split('::')[1]))).toEqual([['test_a'], ['test_b']]);
+  });
+
+  it('a caller three or more clusters merely pass THROUGH is a shared utility and never merges them (SHARED_UTILITY_CLUSTERS)', () => {
+    const src = (path: string, fn: string): { path: string; line: number; fn: string; kind: 'source' } => ({ path, line: 1, fn, kind: 'source' });
+    type Chain = readonly { path: string; line: number; fn: string | null; kind: 'source' | 'test' }[];
+    const names = ['a', 'b', 'c'];
+    const clusters = names.map((n, i) => ({ reason: `frame src/${n}.py:${n}`, members: [i], suspectedFiles: [`src/${n}.py`], missingNames: [] }));
+    // every chain runs through `sympify` on its way down, and each failure has its own direct caller
+    const chains = new Map<number, Chain>(names.map((n, i) => [i, [src('src/core.py', 'sympify'), src(`src/${n}.py`, `wrap_${n}`), src(`src/${n}.py`, n)] as Chain]));
+    const keys = new Map<number, string>(names.map((n, i) => [i, `src/${n}.py|${n}`]));
+    expect(mergeCoupledClusters(clusters, chains, keys)).toHaveLength(3);
+    expect(SHARED_UTILITY_CLUSTERS).toBe(3);
   });
 
   it('splitBySiteBudget splits a multi-test goal whose sites outgrow the runs left, and nothing else (masked: 1 goal, 4 tests, 69 sites, plausible 0)', () => {

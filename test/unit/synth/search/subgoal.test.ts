@@ -260,10 +260,13 @@ describe('searchSubGoal: SIEVE dispatch and the phase order on a fast oracle', (
     const r = await searchSubGoal(ctx, mem, goal, deps);
     expect(r.kind).toBe('budget');
     expect(r.trace.outcome).toBe('budget');
-    expect(deps.rec.runBatches).toHaveLength(1);
+    // review finding 7: a SIEVE spends at most the SITE's share, so the 2 runs go one per site
+    // instead of both at the first source of the first site
+    expect(deps.rec.runBatches.map((b) => b.length)).toEqual([1, 1]);
     expect(goal.phase).toBe('SEEDS');
-    // the exhausted set records what ran; the rest of the site's sources wait for the next step
-    expect([...(goal.exhausted.get(siteKey(replace)) ?? [])]).toEqual(['mutation']);
+    // the replace site's mutation set (2 candidates) got 1 run of the share and is not done; the
+    // insert site's single template candidate ran whole, so only that source is exhausted
+    expect([...(goal.exhausted.get(siteKey(replace)) ?? [])]).toEqual(['template']);
   });
 });
 
@@ -294,13 +297,14 @@ describe('searchSubGoal: RANK dispatch on a slow oracle', () => {
       { source: 'mutation', line: 6, kind: 'insert' },
       { source: 'template', line: 5, kind: 'replace' },
     ]);
-    // only the candidates a run could still reach are priced (`rankPoolCap`): 16, then 11, 6, 1 as the
-    // cap is spent — never the whole set of 20 (OOS 2026-09-22 Q4: sympy-16792 ranked 27,754 to test 1,191).
+    // review finding 5: the priced pool follows the ORDER, not the step — `rankPoolCap(plan.k, left)`
+    // is 2 × k capped at the runs left, so 10, 10, 6, 1 as the cap is spent, never the whole set of
+    // 20 and never `runsLeft` (sympy-16792 ranked 27,754 to test 1,191, OOS 2026-09-22 Q4).
     // K = 5 at the gap (§2.4), then the one run the cap had left at the replace site
-    expect(deps.rec.rankCalls.map((c) => c.n)).toEqual([16, 11, 6, 1]);
+    expect(deps.rec.rankCalls.map((c) => c.n)).toEqual([10, 10, 6, 1]);
     expect(deps.rec.runBatches.map((b) => b.length)).toEqual([5, 5, 5, 1]);
     expect(r.trace.runMode).toBe('RANK');
-    expect(r.trace.candidatesRanked).toBe(34);
+    expect(r.trace.candidatesRanked).toBe(27);
     // a RANK cut leaves the rest enumerable: the sources are not exhausted at the sites
     expect(goal.exhausted.get(siteKey(insert))?.has('template')).toBe(false);
     // the 16-run cap ended the step
@@ -643,10 +647,13 @@ describe('searchSubGoal: the RANK take follows the run budget on a cheap reposit
     mem.stepBudget = fakeBudget({ jev: 60, runs: 60, wallMs: 600_000 });
     const r2 = await searchSubGoal(fakeCtx({ ask: askQ7 }), mem, goal, deps);
     expect(r2.kind).toBe('budget');
-    // OOS 2026-09-22 ranked change 1: step 1's RANK cut left 70 − 16 = 54 untested at the first source,
-    // and 54 now fits the 60 runs this step has — so it is run whole, with no ranking request spent on it
-    expect(deps.rec.runBatches.slice(4).map((b) => b.length)).toEqual([54, 3, 3]);
-    // the 60 runs are spent at the first site, so the second is not reached again this step
+    // OOS 2026-09-22 ranked change 1: step 1's RANK cut left 70 − 16 = 54 untested at the first
+    // source, and 54 fits the 60 runs this step has — so it is SIEVEd, with no ranking request
+    // spent on it. Review finding 7: the SIEVE spends the SITE's share (floor(60/2) = 30), not
+    // all 60, so the second site is still reached.
+    expect(deps.rec.runBatches.slice(4).map((b) => b.length)).toEqual([30, 15, 7, 8]);
+    // all four batches land at the first site: its share shrinks as the budget goes (30, 15, 7),
+    // and the last 8 are what the site's own leftovers took — the second site waits for step 3
     expect(r2.trace.sitesTested).toBe(1);
     expect(r2.trace.newSitesTested).toBe(0);
     expect(everySiteSeedsExhausted(goal, [replace, insert])).toBe(false);
