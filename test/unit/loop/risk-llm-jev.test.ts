@@ -9,9 +9,12 @@ import { assertQuestionBatch } from '../../../src/jev/questions.js';
 import type { StageContext } from '../../../src/loop/engine.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
 import { buildCommonState } from '../../../src/loop/state.js';
-import { RISK_LEVEL_TEXTS, assessRisk, codeOkAssessment, codeRiskReason, harmOnlyQuestions, isTestPath, recoverableRevertOk, runRiskStage, verifiedPatchOk } from '../../../src/loop/stages/risk.js';
+import { RISK_LEVEL_TEXTS, assessRisk, codeOkAssessment, codeRiskReason, harmOnlyQuestions, harmScoresDue, isTestPath, recoverableRevertOk, runRiskStage, verifiedPatchOk } from '../../../src/loop/stages/risk.js';
 import { DEFAULT_LIMITS, createFakeSandbox, createFakeWorkspace, scoreA } from './fakes.js';
 
+/** The jev-on `run rm -rf build/` reason, captured on main before change 6 — the pin that the full risk stage did not move. */
+const JEV_ON_REASON =
+  'risk 0.25 (ok) from destructive: expected level 1.00 of 4; dominant level 1 "changes files whose previous content is recoverable (`proposal.target.recoverable` true: git-tracked, or first written earlier in this run), or changes dependency manifests, configuration or CI files inside the workspace, or installs into a project-local environment (venv, node_modules)"; Jev confidence 1.00 | irreversible: expected level 1.00 of 4; dominant level 1 "restorable by regenerating or reinstalling inside the workspace"; Jev confidence 1.00';
 const GOAL_TEST = 'tests/test_a.py::test_f';
 const DIFF = '--- a/src/a.py\n+++ b/src/a.py\n@@ -1,2 +1,2 @@\n def f():\n-    return 1\n+    return 2\n';
 
@@ -143,7 +146,7 @@ describe('runRiskStage in llm-jev', () => {
     });
   const intent = { intent: 'edit' as const, answer: 'edit' as const, probability: 1 };
 
-  it('a verified patch is ok before ctx.ask; an unverified one asks the two harm Scores and is gated by them alone', async () => {
+  it('a verified patch is ok before ctx.ask; a non-test `run` asks the two harm Scores and is gated by them alone', async () => {
     const asked: { stage: StageName; ids: string[] }[] = [];
     const ctx = stageCtx(asked);
     const verified = await runRiskStage(ctx, common(), patch(evidence()), intent);
@@ -153,13 +156,70 @@ describe('runRiskStage in llm-jev', () => {
     expect(verified.matchesIntent).toBe(1);
     expect(verified.evidenceConsistent).toBeNull();
     expect(verified.targets.map((t) => t.path)).toEqual(['src/a.py']);
-    const unverified = await runRiskStage({ ...ctx, step: 2 }, common(), patch(evidence({ after: { passed: 1, failed: 1, errors: 0, total: 2 }, newlyPassing: [], selection: 'sieve' })), intent);
+    // change 6: an unverified patch no longer asks — only a `run` that is not the workspace test command does
+    const nonTestRun: Proposal = { goal: 'install', action: { kind: 'run', command: 'pip install requests' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' };
+    const gated = await runRiskStage({ ...ctx, step: 2 }, common(), nonTestRun, intent);
     expect(asked).toEqual([{ stage: 'risk', ids: ['destructive', 'irreversible'] }]);
     // level 1 on both harm dims: risk 0.25, ok; the alignment dims were not asked and read as level 0
-    expect(unverified.risk).toMatchObject({ verdict: 'ok', risk: 0.25 });
-    expect(unverified.risk.dims.destructive.level).toBe(1);
-    expect(unverified.risk.dims.plan_mismatch.level).toBe(0);
-    expect(unverified.risk.reason).toContain('harm-only (llm-jev)');
-    expect(unverified.risk.reason).toContain('evidence unverified: 1→1 of 2 pass');
+    expect(gated.risk).toMatchObject({ verdict: 'ok', risk: 0.25 });
+    expect(gated.risk.dims.destructive.level).toBe(1);
+    expect(gated.risk.dims.plan_mismatch.level).toBe(0);
+    expect(gated.risk.reason).toContain('harm-only (llm-jev)');
+  });
+  /**
+   * docs/research/llm-jev/oos-analysis-2026-09-22.md change 6 (the half left for `src/loop/stages/risk.ts`):
+   * `risk|destructive` and `risk|irreversible` were asked 51 times each for ONE distinct answer, because on the synth
+   * path a proposal is only `patch` / `run <the workspace test command>` / `done`. `harmScoresDue` keeps the family
+   * for exactly the case the analysis names — "destructive `run` actions outside the synth path" — and drops it
+   * everywhere else; the unasked dimensions keep the level-0 / confidence-1 record `runHarmOnlyRiskStage` writes.
+   */
+  describe('change 6: the harm Scores are due for a `run` that is not the workspace test command', () => {
+    const test = { command: 'pytest -q', runner: 'pytest' as const };
+    const run = (command: string): Proposal => ({ goal: 'run', action: { kind: 'run', command }, plan: { done: [], remaining: [], openProblems: [] }, rawText: '' });
+
+    it('harmScoresDue: only a `run`, and only one that is not the workspace test command; a `run` outside the synth path always asks', () => {
+      expect(harmScoresDue('run', 'rm -rf build/', test)).toBe(true);
+      expect(harmScoresDue('run', 'pytest -q', test)).toBe(false);
+      expect(harmScoresDue('run', 'pytest -q tests/test_a.py::test_f', test)).toBe(false);
+      // shell composition around the runner is not the verification run — it asks
+      expect(harmScoresDue('run', 'pytest -q; rm -rf build', test)).toBe(true);
+      // outside the synth path there is no detected workspace test command: every `run` asks
+      expect(harmScoresDue('run', 'pytest -q', null)).toBe(true);
+      expect(harmScoresDue('run', 'rm -rf build/', null)).toBe(true);
+      for (const kind of ['patch', 'edit', 'write', 'done', 'read'] as const) expect(harmScoresDue(kind, null, test)).toBe(false);
+    });
+
+    it('a synth-path `run pytest -q`, an unverified patch and a partial `done` ask zero harm questions; `run rm -rf build/` asks both', async () => {
+      const asked: { stage: StageName; ids: string[] }[] = [];
+      const ctx = stageCtx(asked);
+      const done: Proposal = { goal: 'done', action: { kind: 'done', summary: 'as far as it goes' }, plan: { done: [], remaining: ['more'], openProblems: [] }, rawText: '' };
+
+      const verification = await runRiskStage(ctx, common(), run('pytest -q'), intent);
+      expect(asked).toEqual([]);
+      expect(verification.risk.verdict).toBe('ok');
+
+      const unverified = await runRiskStage({ ...ctx, step: 2 }, common(), patch(evidence({ after: { passed: 1, failed: 1, errors: 0, total: 2 }, newlyPassing: [], selection: 'sieve' })), intent);
+      expect(asked).toEqual([]);
+      expect(unverified.risk.verdict).toBe('ok');
+      expect(unverified.risk.reason).toMatch(/^risk 0\.00 \(ok\) by code: patch: the harm Scores gate a `run`/);
+      for (const d of Object.values(unverified.risk.dims)) expect(d).toMatchObject({ level: 0, risk: 0, confidence: 1, expected: 0 });
+
+      const partial = await runRiskStage({ ...ctx, step: 3 }, common(), done, intent);
+      expect(asked).toEqual([]);
+      expect(partial.risk.verdict).toBe('ok');
+
+      const harmful = await runRiskStage({ ...ctx, step: 4 }, common(), run('rm -rf build/'), intent);
+      expect(asked).toEqual([{ stage: 'risk', ids: ['destructive', 'irreversible'] }]);
+      expect(harmful.risk.dims.destructive.level).toBe(1);
+      expect(harmful.risk.reason).toContain('harm-only (llm-jev)');
+    });
+
+    it('a jev-on step is byte-identical to before: the four Scores plus matches_intent, and the same reason', async () => {
+      const asked: { stage: StageName; ids: string[] }[] = [];
+      const ctx: StageContext = { ...stageCtx(asked), mode: 'jev-on' };
+      const r = await runRiskStage(ctx, common(), run('rm -rf build/'), intent);
+      expect(asked).toEqual([{ stage: 'risk', ids: ['destructive', 'out_of_scope', 'plan_mismatch', 'irreversible', 'matches_intent'] }]);
+      expect(r.risk.reason).toBe(JEV_ON_REASON);
+    });
   });
 });
