@@ -129,18 +129,23 @@ the short version:
   (the pink shade pulse; `◆ thinking` under reduced motion) and the composer reads `(thinking…)` from the
   first frame after Enter; Ctrl-C once stops the request. The intake costs about $0.00007 per message and is charged to the
   session meter. No keyword list ever starts a run.
-- **Mode.** `jev-on` by default (badge `jev+llm`: the code model writes the code, Jev decides every
-  step; caps $2.00 per run, $10.00 per session); `/mode jev-only` (alias `/llm off`) switches the next
-  run to Jev alone (badge `jev-only · next run` until the run starts; $0.25 / $1.25); `/mode jev-on`
-  (alias `/llm on`, or `/m jev-on`) switches back and, when no generator key is configured, opens the
-  wizard's key step inside the console; `jevcode config set mode <m>` persists a choice; `/mode` alone
-  shows the current mode, ` (default)` after the default's word, and the next run's when it differs. A
-  keyed start without a `mode` row in the config file prints `[setup] mode jev+llm (default) — caps
-  $2.00 per run · $10.00 per session; …` once. A fourth mode, `llm-jev` (`--mode llm-jev`, `/mode
-  llm-jev`, badge `llm+jev · verified`), keeps the jev-only search and lets the generator write candidate
-  patches inside it — Jev localises, ranks and arbitrates, tests verify; it takes the jev-on spend caps
-  (design: `docs/LLM-JEV-DESIGN.md`).
+- **Mode.** `llm-jev` by default (badge `llm+jev · verified`): the code model writes candidate patches inside
+  the Jev-only search, tests verify them and Jev localises, ranks and arbitrates — no candidate lands without a
+  passing test. `/mode jev-on` (badge `jev+llm`: the code model writes the code, Jev decides every step),
+  `/mode jev-only` (Jev alone, $0.25 / $1.25 caps) and `/mode jev-off` switch the next run; when no code-model
+  key is configured the wizard's provider and generator-key steps open inside the console; `jevcode config set
+  mode <m>` persists it; `/mode` alone shows the current and next mode. A keyed start prints the `[setup] mode
+  llm+jev · verified (default) — caps $2.00 per run · $10.00 per session; …` item once. Why this default (same
+  28 tasks — QuixBugs 10, ladder short tier 12, SWE-bench Verified 6 — same code model, one run per arm):
 
+| arm (tree) | pass | correct (22 cheap) + SWE | wall median / mean | $ total (gen + Jev) | $/solved | steps mean |
+|---|---|---|---|---|---|---|
+| jev-off, generator-only (2a92d0b) | 19/28 | 16/22 (0 overfit) + 3/6 | 391 s / 480 s | $0.506 ($0.506 + $0) | $0.027 | 10.8 |
+| jev-off-tuned, generator-only (066816f) | 22/28 | 16/22 (2 overfit) + 4/6 | 111 s / 128 s | $0.243 ($0.243 + $0) | $0.011 | 13.6 |
+| llm-jev v1 (626fc40, outage runs re-run) | 23/28 | 17/22 (5 overfit) + 1/6 | 80 s / 114 s | $0.302 ($0.072 + $0.231) | $0.013 | 3.6 |
+| **llm-jev v2 (066816f)** | **28/28** | **20/22 (2 overfit) + 6/6** | **62 s / 77 s** | **$0.144 ($0.046 + $0.099)** | **$0.005** | **3.1** |
+
+  Discordant pairs on pass: v2 vs baseline 9–0, v2 vs tuned 6–0 — 0 discordant losses on pass; 2 on correctness (`detect_cycle`, `stats`), both fixed since. Wilson 95 % for 28/28 is [88 %, 100 %]. Footnotes: (a) wall — the pooled medians include ten baseline runs that hit the hard cap; on the 19 tasks both arms solved the median is 35 s vs 112 s (0.31×), and against the tuned arm the per-task median ratio is 0.84 (v2 slower on 9 of 22); (b) cost — 37 of v2's 100 generator rows are estimated (30 % of its generator cost) and Jev's $0.099 is table-rated (the TypeSafe endpoint returns no cost). Caveats: one run per arm; guard thresholds were tuned on some of these programs (LLM-JEV-DESIGN §7 disclosure); the SWE evaluator is unofficial. Verification: experiments/results/llm-jev-headtohead-v2.verification.md (every number reproduces). pinned to `--mode jev-on`; an llm-jev `--mock` row is reported until the peer sends a measured budget.
 - **Composer.** A multi-line, readline-style editor: Ctrl+A/E, Alt+B/F, Ctrl+K/U/W/Y, Ctrl+T,
   100-step undo (Ctrl+_), Up/Down through history on the first/last row, Ctrl+R incremental
   history search, Tab completion (never focus). Ctrl+J, Alt+Enter or a trailing `\` insert a
@@ -288,7 +293,7 @@ reported as `ignored:launch`.
 | Decider base URL | `--jev-base-url` | `JEV_BASE_URL` | by provider: `https://api.typesafe.ai/v1/systemone` / `https://openrouter.ai/api/alpha/decisions` (the other provider's host is refused offline) |
 | Decider key | `--jev-api-key` | `TYPESAFE_API_KEY` first under `typesafe`; `JEV_API_KEY`, falling back to `OPENROUTER_API_KEY` | none (wizard / `jevcode login`) |
 | Decider model | `--jev-model` | `JEV_MODEL` | by provider: `jev-1.13.0` (the only pinned id TypeSafe serves; `jev-latest` is its alias) / `typesafe/jev-1.13-20260917` (dated id; aliases are resolved and warned about); the other provider's id is refused offline |
-| Run spend cap, USD, generator + Jev | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `2.00` under the default `jev-on` (and `jev-off`, `llm-jev`), `0.25` under `jev-only` |
+| Run spend cap, USD, generator + Jev | `--spend-cap` | `JEVCODE_SPEND_CAP_USD` | `2.00` under the default `llm-jev` (and `jev-on`, `jev-off`), `0.25` under `jev-only` |
 | Session spend cap | `--session-spend-cap <usd\|none>` | `JEVCODE_SESSION_SPEND_CAP_USD` | 5 × the run cap (`derived`); `none` = uncapped |
 | Unpriced model allowed | `--allow-unpriced` | `JEVCODE_ALLOW_UNPRICED` | `false` (refuse with exit 2) |
 | Generator token cap | `--max-generator-tokens` | `JEVCODE_MAX_GENERATOR_TOKENS` | spend cap / 15 × 1e6 (only under `--allow-unpriced`) |
@@ -297,7 +302,7 @@ reported as `ignored:launch`.
 | Max replans | `--max-replans` | `JEVCODE_MAX_REPLANS` | `5` |
 | Completion threshold | `--complete-threshold` | `JEVCODE_COMPLETE_THRESHOLD` | `0.85` |
 | Impossible threshold | `--impossible-threshold` | `JEVCODE_IMPOSSIBLE_THRESHOLD` | `0.85` |
-| Engine mode | `--mode` | `JEVCODE_MODE` (also the config key `mode`; `jevcode config set mode <m>`) | `jev-on` (Jev + the code model; badge `jev+llm`) — the default; `jev-only` (no generating LLM; one Jev key); `jev-off` (generator only); `llm-jev` (badge `llm+jev · verified`). `/mode` / `/llm on\|off` set it for the next run |
+| Engine mode | `--mode` | `JEVCODE_MODE` (also the config key `mode`; `jevcode config set mode <m>`) | `llm-jev` (candidate patches inside the Jev search, tests verify; badge `llm+jev · verified`) — the default; `jev-only` (no generating LLM; one Jev key); `jev-off` (generator only); `llm-jev` (badge `llm+jev · verified`). `/mode` / `/llm on\|off` set it for the next run |
 | Session selection | `-c`/`--continue`, `--resume <id\|title>` [`--force`], `--list-sessions` | — | — |
 | Workspace | `--workspace` | `JEVCODE_WORKSPACE` | current directory |
 | Runs dir | `--runs-dir` | `JEVCODE_HOME` (runs live in `<home>/runs`) | `~/.jevcode/runs` |

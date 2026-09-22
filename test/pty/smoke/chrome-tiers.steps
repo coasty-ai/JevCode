@@ -3,15 +3,15 @@
 # Every expect precedes the sleep that follows its resize: the driver's `sleep` drains (and consumes) the pty, so a row
 # that arrived during a sleep can never be matched afterwards.
 expect \x1b\[\?25l
-expect ╭─ (?:\x1b\[[0-9;]*m)*jev\+llm
+expect ╭─ (?:\x1b\[[0-9;]*m)*llm\+jev · verified
 expect sess \$
 sleep 0.3
 resize 12 60
-expect jev\+llm(?:\x1b\[[0-9;]*m)* · idle
+expect llm\+jev · verified(?:\x1b\[[0-9;]*m)* · idle
 sleep 0.5
 mark shrunk
 resize 24 80
-expect ╭─ (?:\x1b\[[0-9;]*m)*jev\+llm
+expect ╭─ (?:\x1b\[[0-9;]*m)*llm\+jev · verified
 sleep 0.5
 mark grown
 send Z

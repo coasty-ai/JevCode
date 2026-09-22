@@ -1211,16 +1211,21 @@ Computed in code from the diff `baseSha..<pinned>`:
 | **no `.git`, no submodule, no `secretPaths`, no `syncedIgnored` file committed** | path check over the diff | hard fail |
 | **the merge introduces no conflict markers** | grep `^<<<<<<< ` / `^>>>>>>> ` in the merged tree | hard fail |
 | **the pinned sha still matches at merge time** [G3] | `rev-parse` re-check | hard fail (`the branch moved during verification`) |
-| ~~no write outside `own`~~ → **a land-time question** [G8] | `git diff --name-only baseSha..<pinned>` ∩ complement(`own`) **∖ `Manifest.syncedDirty`** [D2] | **demoted**: `fix-store touched 2 files outside its slice (package-lock.json, dist/x.js) — [a] include them · [d] drop them from the merge · [x] refuse`. `[d]` re-merges with those paths checked out from the dock head; only `[d]`/`[x]` consume a kick |
+| ~~no write outside `own`~~ → **a land-time question** [G8] | `git diff --name-only baseSha..<pinned>` ∩ complement(`own`) **∖ `carried`** (the still-byte-identical synced-dirty subset, §2.6) [D2] | **demoted**: `fix-store touched 2 files outside its slice (package-lock.json, dist/x.js) — [a] include them · [d] drop them from the merge · [x] refuse`. `[d]` re-merges with those paths checked out from the dock head; only `[d]`/`[x]` consume a kick |
 
 The demotion is forced by the belt-2 hole of §2.4: with `run` actions uncovered, a formatter or a lockfile regeneration
 makes this the **routine** case, and a hard fail there would read as a bug report and burn the single allowed kick.
 
-**[D2] and the `∖ Manifest.syncedDirty` term is what keeps the question rare enough to be worth asking.** §2.6 keeps
-untouched carried paths out of the commit, so they are already absent from `baseSha..<pinned>`; the subtraction here
-is the belt for the case where the *same* path is both carried and genuinely edited by the agent — the diff then
-contains the parent's hunks as well as the agent's, which is correct (the agent built on that work) but must not be
-reported to the human as "touched a file outside its slice". It is also what §5.7's pre-flight keys on.
+**[D2] and the `∖ carried` term is what keeps the question rare enough to be worth asking** (amended 2026-09-22 —
+review `docs/research/orchestration/review-planner-2026-09-22.md` finding 1; the term was `∖ Manifest.syncedDirty`).
+`carried` is §2.6's one definition — the synced-dirty paths whose bytes in the worktree are **still identical** to
+what the sync wrote (`carriedPaths`). §2.6 already keeps those out of the commit, so they are absent from
+`baseSha..<pinned>` and the subtraction is the belt for the residual. A synced-dirty path the agent **rewrote** is *not*
+carried, and when it lies outside the agent's `own` it **is** reported: that is exactly the two-sibling collision §2.4
+exists to catch (the dirty set is synced into every worktree, so these are the paths two agents are most likely to both
+edit), and the human decides `[a]/[d]/[x]` with the parent's hunks and the agent's both visible. The in-slice version
+(the parent's dirty file inside the agent's own `own`) is corner row 54 and stays legitimate. §5.7's pre-flight keys on
+the same `carried` set.
 
 The only route past a real hard fail is `/agent <slug> land --anyway` typed twice, which records a
 `RunMeta.overrides[]` entry `{ setting: 'land.hardRule', from: '<rule>', to: 'overridden' }` and prints the rule in the
@@ -1540,7 +1545,7 @@ review-pass defects [D1]–[D14]**.
 | 16 | the parent's dirty set is huge (an un-ignored `node_modules`) | untracked entries are dropped from the sync (the `lanes.ts:45` `DIRTY_ENTRIES_MAX` rule); above 200 **tracked** entries the gate is shut with the reason | `statusPorcelain` (`git.ts:163`) count | commit or stash, then `/split` | `worktree.test.ts` dirty cap |
 | 17 | the parent has a dirty **binary** file (a fixture `.png`, a `.db`) | copied as **bytes** with its mode preserved [G9] and recorded in `syncedDirty` with its `sha256` [D2]; the `utf8` read of `lanes.ts:171` would have corrupted it, and without [D2] even an uncorrupted copy would have been committed onto every branch by `git add -A` | the lifted `dirtySnapshot` is `Buffer`-based; the sha is what `carried` compares | none needed: the file is `carried`, so no agent commits it unless it changed it | `worktree.test.ts` binary dirty file (sha round-trip); `commit.test.ts` carried-not-committed |
 | 18 | an agent proposes an **edit/write/patch** outside its `own` set | code refusal before any write: `outcome = { status:'blocked', reason: "outside this agent's ownership: src/y.ts (owns src/tui/**)" }`, counted, visible to Jev and the generator | `computeTargets` (`risk.ts:537`) ∩ complement(`own`) | 3 in a row → `parked` with `scope-fight`; the row offers `[k] kick with a wider slice` | `ownership.test.ts` |
-| 19 | an agent's **`run` command** writes outside `own` (a formatter, codegen, a regenerated lockfile) | **not** blocked — `computeTargets` yields no paths for `run` [G8]. The post-images are diffed against `own`, the paths are recorded in `StepRecord.escaped` and shown on the row, and at land time the human is asked `[a] include · [d] drop · [x] refuse` | post-image diff ∩ complement(`own`) ∖ `Manifest.syncedDirty` [D2] | `[d]` re-merges with those paths taken from the dock head; only `[d]`/`[x]` consume a kick | `ownership.test.ts` run-escape; `land.test.ts` include/drop; `land.test.ts` asserts a 200-entry synced-dirty set produces **zero** escape prompts |
+| 19 | an agent's **`run` command** writes outside `own` (a formatter, codegen, a regenerated lockfile) | **not** blocked — `computeTargets` yields no paths for `run` [G8]. The post-images are diffed against `own`, the paths are recorded in `StepRecord.escaped` and shown on the row, and at land time the human is asked `[a] include · [d] drop · [x] refuse` | post-image diff ∩ complement(`own`) ∖ `carried` [D2] | `[d]` re-merges with those paths taken from the dock head; only `[d]`/`[x]` consume a kick | `ownership.test.ts` run-escape; `land.test.ts` include/drop; `land.test.ts` asserts a 200-entry synced-dirty set produces **zero** escape prompts |
 | 20 | an agent tries to spawn its own agents | refused in `createEngine` (`orchestration.depth === 1` shuts the gate; `--agent` with `--split` is a `ConfigError`), not only in the TUI, so a hand-typed `jevcode run --parent …` cannot make grandchildren | `orchestration.depth` | the message names the cap | `engine-orchestration.test.ts` depth |
 | 21 | an agent's `--json` pipe floods or backs up | bounded reader: ≤ 64 KiB per line, `generator:delta` rate-limited to `agentDeltaHz` (4/s) and the rest dropped; the agent's own `transcript.log` remains the complete record | line length, a per-agent token bucket | the row's last line may lag ≤ 250 ms; nothing is lost on disk | `supervisor.test.ts` flood |
 | 22 | an agent's json line is torn, oversized, or of an unknown type | skipped and counted (`row.skipped`), never parsed into a path or a command | length / `parseJson` / the type switch | `/agents --all` shows `skipped 3`; the run continues | `supervisor.test.ts` hostile lines |

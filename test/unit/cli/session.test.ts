@@ -178,18 +178,19 @@ describe('TUI-DESIGN-2 §1.3: /mode and /llm (S2\'s `case \'mode\'` request, lan
   });
 
   it('llm-jev (docs/LLM-JEV-DESIGN.md): /mode llm-jev pends the fourth mode with MODE_LLM_JEV_SET and a `mode` dispatch; the badge word is `llm+jev · verified` (D-N)', async () => {
-    const h = await build();
+    // llm-jev is the default since 2026-09-22: start the session in jev-on so the switch pends instead of answering `already`
+    const h = await build({ flags: { mode: 'jev-on' } });
     void h.controller.run();
     await h.ready();
     await h.command('/mode llm-jev');
     expect(h.controller.view.pending.mode).toBe('llm-jev');
     expect(h.renderer.notes.at(-1)?.text).toBe(MODE_LLM_JEV_SET);
     expect(MODE_LLM_JEV_SET).toBe('mode llm+jev · verified from the next run — the code model writes candidate patches, tests verify them, Jev arbitrates (persist: jevcode config set mode llm-jev)');
-    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: DEFAULT_MODE, pending: 'llm-jev' });
+    expect(modeActions(h).at(-1)).toEqual({ type: 'mode', mode: 'jev-on', pending: 'llm-jev' }); // the base is the explicit jev-on start (llm-jev is the default now)
     await h.command('/mode llm-jev');
     expect(h.renderer.notes.at(-1)?.text).toBe('mode llm+jev · verified already');
     await h.command('/mode');
-    expect(h.renderer.notes.at(-1)?.text).toBe(`mode ${modeBadgeWord(DEFAULT_MODE)} — next run: llm+jev · verified`);
+    expect(h.renderer.notes.at(-1)?.text).toBe('mode jev+llm — next run: llm+jev · verified (default)'); // base jev-on (explicit), next run = the default → ` (default)`
   });
 
   it('/mode jev-on without a generator key opens the wizard with reason mode for jev-on: cancelled → `mode stays jev-only — no generator key was saved` (warn, nothing pends); saved → pends, MODE_JEV_ON_SET, no login toast', async () => {

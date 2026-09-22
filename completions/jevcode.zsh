@@ -84,7 +84,7 @@ _jevcode() {
             '--resume[chat/run: continue a run by id, or a session by exact title or unique prefix; bench: resume <bench-id>]:run id:_jevcode_runs' \
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
-            '--mode[engine mode (default jev-on): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
@@ -143,7 +143,7 @@ _jevcode() {
             '--force[with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up]' \
             '--list-sessions[print the sessions of this workspace and exit]' \
             '--task-file[read the task text from a file]:<path>:_files' \
-            '--mode[engine mode (default jev-on): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
+            '--mode[engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)]:mode:(jev-only jev-on jev-off llm-jev)' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]' \

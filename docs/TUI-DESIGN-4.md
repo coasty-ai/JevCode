@@ -2886,7 +2886,7 @@ fault pty captures.
 
 ---
 
-## 8. Contract changes — contract 1.6 (additive, ordered)
+## 8. Contract changes — contract 1.7 (additive, ordered; numbered 1.6 in the drafts — 1.4 coordination, 1.5 orchestration and 1.6 import are the peer session's blocks, so round 4's header is `// contract 1.7`, placed after them when they exist)
 
 **A note on the number.** The brief asked for "contract 1.5"; `// contract 1.4` is already claimed by
 `docs/COORDINATION-DESIGN.md` §12.0 and `// contract 1.5` by `docs/ORCHESTRATION-DESIGN.md` §4.1, and both land in

@@ -12,6 +12,7 @@ import { DEFAULT_MODE, MODE_SETTING_VALUES } from '../../../src/config/defaults.
 const ROOT = join(import.meta.dirname, '../../..');
 const DEFAULTS = 'src/config/defaults.ts';
 /** the phrasings that name a default mode in prose; `default <mode>` computed from DEFAULT_MODE is the only allowed form */
+const MODE_WORD_RE = /jev-only|jev-on\b|jev-off|llm-jev|jev\+llm|llm\+jev|llm-only/;
 const LITERAL_RE = /jev-only \(default|, the default\)|is the default|default mode is|default jev-only|default: jev-only|default jev-on\b|jev-on \(default|default llm-jev/;
 
 function walk(dir: string, out: string[] = []): string[] {
@@ -32,7 +33,8 @@ describe('TUI-DESIGN-3 §1.1 / D-N: no literal names the default mode outside de
       if (rel === DEFAULTS) continue;
       const lines = readFileSync(f, 'utf8').split('\n');
       lines.forEach((l, i) => {
-        if (LITERAL_RE.test(l)) hits.push(`${rel}:${i + 1}: ${l.trim().slice(0, 120)}`);
+        // only lines that name an engine mode count: `, the default)` also appears in prose about other settings (e.g. a compaction default)
+        if (LITERAL_RE.test(l) && MODE_WORD_RE.test(l)) hits.push(`${rel}:${i + 1}: ${l.trim().slice(0, 120)}`);
       });
     }
     expect(hits).toEqual([]);

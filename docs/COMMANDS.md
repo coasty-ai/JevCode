@@ -26,7 +26,7 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/budget`, alias `/b` | [spend-cap\|session-spend-cap\|max-steps\|max-wall\|max-replans <v>] | any | yes | show or set (§9.4); `session-spend-cap none` lifts the session cap; `max-generator-tokens <n>` is the --allow-unpriced token cap (§9.5) |
 | `/model`, alias `/ml` | [id] | any | yes | no argument shows `model <current> (next run: <pending>)`; with one: pending for the **next** run only (memory); a differing `--model` on `/resume` stays `ConfigError` |
 | `/provider` | [anthropic\|openrouter] | any | yes | no argument shows `provider <current> (next run: <pending>)`; with one: pending for the **next** run only (memory) |
-| `/mode`, alias `/m` | [jev-only\|jev-on\|jev-off\|llm-jev] | any | yes | no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard's generator step in place; persist with `jevcode config set mode <m>` (default jev-on) |
+| `/mode`, alias `/m` | [jev-only\|jev-on\|jev-off\|llm-jev] | any | yes | no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard's generator step in place; persist with `jevcode config set mode <m>` (default llm-jev) |
 | `/llm` | <on\|off> | any | yes | `/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only` |
 | `/config`, alias `/cf` | — | any | yes | masked table with `source` column, effective session cap, sandbox footer |
 | `/login`, alias `/l` | — | any | `/login` raw-mode prompt | wizard field re-entry (§11.2); `saved — applies to the next run` |

@@ -47,7 +47,7 @@ export const MODE_SETTING_VALUES = ['jev-only', 'jev-on', 'jev-off', 'llm-jev'] 
  * writes, Jev decides every step) since round 3; later: `llm-jev` (the peer's flip) — nothing else moves. No string outside this file
  * names which mode is the default (D-N; `/mode` computes ` (default)` from it).
  */
-export const DEFAULT_MODE: EngineMode = 'jev-on';
+export const DEFAULT_MODE: EngineMode = 'llm-jev'; // flipped 2026-09-22 on the peer's verified head-to-head (docs/LLM-JEV.md; experiments/results/llm-jev-headtohead-v2.md)
 /** D-N: the badge word per mode — the ONLY table that maps a mode to a word; `·` is folded to the glyph set's dot by `modeBadgeWord(mode, g)` */
 export const MODE_BADGE_WORD: Readonly<Record<EngineMode, string>> = { 'jev-only': 'jev-only', 'jev-on': 'jev+llm', 'jev-off': 'llm-only', 'llm-jev': 'llm+jev · verified' };
 /** the badge is capped so `<badge> · next run` fits the 60-column top edge (`consoleTopEdgeParts`, console-lines.ts:14 `TOP_EDGE_FIXED = 8`) */

@@ -72,7 +72,7 @@ complete -c jevcode -n '__fish_seen_subcommand_from chat run bench' -l resume -x
 complete -c jevcode -n '__fish_seen_subcommand_from chat run' -l force -d 'with --resume/--continue: resume a run whose stopReason is complete instead of seeding a follow-up'
 complete -c jevcode -n '__fish_seen_subcommand_from chat run' -l list-sessions -d 'print the sessions of this workspace and exit'
 complete -c jevcode -n '__fish_seen_subcommand_from run' -l task-file -r -F -d 'read the task text from a file'
-complete -c jevcode -n '__fish_seen_subcommand_from chat run' -l mode -x -a 'jev-only jev-on jev-off llm-jev' -d 'engine mode (default jev-on): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)'
+complete -c jevcode -n '__fish_seen_subcommand_from chat run' -l mode -x -a 'jev-only jev-on jev-off llm-jev' -d 'engine mode (default llm-jev): jev-only (Jev alone, no generating LLM), jev-on (Jev + the code model), jev-off (generator only), llm-jev (candidate patches, tests verify, Jev arbitrates)'
 complete -c jevcode -n '__fish_seen_subcommand_from chat run config sessions why calibration' -l json -d 'chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/why/calibration: JSON output'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l suite -x -a 'swebench terminal-bench quixbugs ladder all' -d 'benchmark suite (quixbugs/ladder: the jev-only difficulty ladder)'
 complete -c jevcode -n '__fish_seen_subcommand_from bench' -l tasks -x -d 'number of tasks'
