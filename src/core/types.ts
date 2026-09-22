@@ -2136,8 +2136,17 @@ export interface EngineStatus {
  * It is a projection of the fold, never the fold: nothing here is a `Map`, a record or a mutable ledger object.
  */
 export interface CoordinationStatus {
-  /** §3.6: one row per peer run on this repo that is not this run; `cloned` is `Fold.cloned` — one deviceKey on two machines, so every gated action is suspended for it until it is re-paired (§10.3) */
-  peers: readonly { runId: string; sessionId: string; deviceId: string; label: string; step: number; stage: string; phase: EngineRunPhase; beatAgeMs: number; sameDevice: boolean; blocked: string | null; live: boolean; cloned: boolean }[];
+  /**
+   * §3.6: one row per peer run on this repo that is not this run; `cloned` is `Fold.cloned` — one deviceKey on two
+   * machines, so every gated action is suspended for it until it is re-paired (§10.3).
+   *
+   * `beatAgeMs` is the age of the last HEARTBEAT, never how long the peer has been running: a live row's beat age is
+   * bounded above by the honoured TTL, so it reads as seconds for an instance that started this morning.
+   * `startedMsAgo` is the start age (the heartbeat's own `startedAt`), and it is what a surface may render as
+   * "started <t> ago"; absent when the producer does not report one, and `peerViewOf` then declines rather than
+   * substituting the beat age.
+   */
+  peers: readonly { runId: string; sessionId: string; deviceId: string; label: string; step: number; stage: string; phase: EngineRunPhase; beatAgeMs: number; startedMsAgo?: number; sameDevice: boolean; blocked: string | null; live: boolean; cloned: boolean }[];
   /** `peers.filter(live).length`, so the zone does not have to count */
   live: number;
   /** §4.1: the conflicts the LAST `coordinate` saw; 0 between steps and whenever the gate was clear */

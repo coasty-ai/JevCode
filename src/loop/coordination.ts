@@ -681,6 +681,7 @@ export class CoordinationRuntime {
     const fold = this.ledger.fold;
     const st = this.ledger.status();
     const self = this.ledger.self;
+    const nowMs = this.now();
     const peers = listSessions(fold, self)
       .filter((s) => s.runId !== self.runId)
       .slice(0, 16)
@@ -693,6 +694,10 @@ export class CoordinationRuntime {
         stage: s.heartbeat.stage,
         phase: s.heartbeat.phase,
         beatAgeMs: s.beatAgeMs,
+        // §3.6: the START age, which `beatAgeMs` is NOT — a live peer's beat age is bounded above by the honoured
+        // TTL, so a surface rendering it as "started <t> ago" reports an all-day run as seconds old. Omitted (not
+        // zeroed, not guessed) when the beat carries no parseable `startedAt` or the clock reads it as the future.
+        ...startedMsAgoOf(s.heartbeat.startedAt, nowMs),
         sameDevice: s.sameDevice,
         blocked: s.heartbeat.blocked,
         live: s.liveness === 'live',
@@ -709,6 +714,19 @@ export class CoordinationRuntime {
       waiting: this.waiting,
     };
   }
+}
+
+/**
+ * §3.6: `{ startedMsAgo }` when the beat's `startedAt` parses to a wall time at or before now, `{}` otherwise.
+ *
+ * Spread, not assigned, so an unparseable or future `startedAt` leaves the optional member ABSENT rather than
+ * present-and-wrong: `peerViewOf` reads absence as "this producer has no start time" and renders `—`, and a clock
+ * that jumped backwards on the reader must not turn into a negative duration on the peer's row.
+ */
+function startedMsAgoOf(startedAt: string, nowMs: number): { startedMsAgo?: number } {
+  const t = Date.parse(startedAt);
+  if (!Number.isFinite(t) || t > nowMs) return {};
+  return { startedMsAgo: Math.max(0, Math.floor(nowMs - t)) };
 }
 
 /**
