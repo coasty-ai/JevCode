@@ -12,6 +12,15 @@
  *   * `mismatch()` — one screen/confirm disagreement — disables the plane for the whole run;
  *   * `disable()` is one-way. Nothing re-enables the plane inside a run.
  *
+ * And a WATCHDOG over all of it, because the failure that mattered in the field was not a wrong
+ * verdict but no verdict at all: an eight-lane batch whose workers never attached left the
+ * harness at 0 % CPU with no child processes for an hour, and the sieve reported "0 tested on 8
+ * lanes (nothing ran)" while the step's whole test wall drained into boot deadlines. So every
+ * `serve()` races its own budget (`watchdogMs`), a call that outlives it abandons the attempt
+ * and disables the plane, and a worker that times out — no ready line, no fifo peer, no reply —
+ * disables it on the FIRST occurrence rather than after a restart budget: a hang is a property
+ * of the mechanism, and the wall it costs comes out of the step, not out of the plane.
+ *
  * Every transition is counted in `stats()` so the sieve's `synth` line, and through it the trace,
  * records how much of a step was screened, how often the plane fell back and why.
  */
@@ -19,11 +28,18 @@ import { join } from 'node:path';
 
 import type { Sandbox } from '../../core/types.js';
 import type { Lane, OracleModel } from '../search/types.js';
-import { interpreterFor, requestFor, type WarmMode, type WarmRunResult } from './protocol.js';
-import { WarmError, WarmWorker, writeWarmServer } from './worker.js';
+import { interpreterFor, requestFor, type WarmMode, type WarmRunRequest, type WarmRunResult } from './protocol.js';
+import { WARM_BOOT_TIMEOUT_MS, WARM_RESPONSE_SLACK_MS, WarmError, WarmWorker, writeWarmServer } from './worker.js';
 
 /** Restarts allowed per lane before the plane gives up on the mechanism for the run. */
 export const WARM_MAX_RESTARTS_PER_LANE = 2;
+/**
+ * Worker failures allowed across ALL lanes before the plane gives up for the run. The per-lane
+ * budget alone is not a budget: eight lanes could each pay three boots, and a boot that ends at
+ * its deadline costs the STEP's test wall, not the plane's. The run that made this necessary
+ * spent its whole 600 s test wall on 10 restarts and tested nothing.
+ */
+export const WARM_MAX_FAILURES_PER_RUN = 4;
 /** Subdirectory of the run's lane area that holds the server source and the per-lane FIFOs. */
 export const WARM_SUBDIR = 'tmp/synth/warm';
 /** `JEVCODE_WARM=off` restores today's cold path exactly; `on` forces it where it is not the default. */
@@ -87,6 +103,12 @@ export interface WarmPlaneOptions {
   quixbugsDir?: string;
   /** the environment a cold lane run gets (`laneRunEnv`), so the worker boots in the same one */
   bootEnv?: Readonly<Record<string, string>>;
+  /**
+   * How long a worker has to boot, and with it the plane's watchdog budget. Default
+   * `WARM_BOOT_TIMEOUT_MS`; the tests that drive the watchdog with a worker that sleeps for
+   * ever pass a small one so the case costs a second rather than a minute.
+   */
+  bootTimeoutMs?: number;
 }
 
 /**
@@ -129,7 +151,7 @@ export class WarmPlane implements WarmScreen {
   private readonly workers = new Map<number, WarmWorker>();
   private readonly restarts = new Map<number, number>();
   private readonly booting = new Map<number, Promise<WarmWorker | null>>();
-  private serverPath: string | null = null;
+  private serverPath: Promise<string> | null = null;
   private qbDir: string | null = null;
   private off: string | null = null;
   private readonly counts: WarmStats = emptyWarmStats();
@@ -194,6 +216,49 @@ export class WarmPlane implements WarmScreen {
       if (this.qbDir !== req.dir) return null;
     }
     this.counts.offered += 1;
+    return this.watched(lane.index, this.attempt(lane, req, deadlineMs, env), this.watchdogMs(deadlineMs));
+  }
+
+  /**
+   * The wall after which a warm call is a WEDGE, not a slow candidate: a boot and a request are
+   * each bounded by their own timer, so anything still outstanding here is a syscall that never
+   * returned or a reply that never came. Worth having twice over, because the first version of
+   * this plane hung the whole harness on a blocking `open(2)` that no timer could interrupt.
+   */
+  private watchdogMs(deadlineMs: number): number {
+    return (this.opts.bootTimeoutMs ?? WARM_BOOT_TIMEOUT_MS) * 2 + Math.max(0, deadlineMs) + WARM_RESPONSE_SLACK_MS;
+  }
+
+  /**
+   * The plane's watchdog. A warm attempt that outlives `ms` is abandoned — the caller gets null
+   * and runs the command cold — the lane's worker is dropped, and the plane is DISABLED for the
+   * run with a `disabledReason` the sieve prints. Nothing re-enables it, so a mechanism that
+   * wedged once costs a run one deadline and never a second.
+   */
+  private watched(index: number, work: Promise<WarmRunResult | null>, ms: number): Promise<WarmRunResult | null> {
+    return new Promise<WarmRunResult | null>((resolve) => {
+      let settled = false;
+      const finish = (r: WarmRunResult | null): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        resolve(r);
+      };
+      const timer = setTimeout(() => {
+        if (settled) return;
+        this.counts.fallbacks += 1;
+        this.counts.restarts += 1;
+        this.forget(index);
+        this.disable(`a warm call on lane ${index} did not come back within ${ms} ms`);
+        finish(null);
+      }, ms);
+      // the abandoned attempt must not surface as an unhandled rejection
+      void work.then(finish, () => finish(null));
+    });
+  }
+
+  /** One warm attempt: boot the lane's worker if needed and run. Never throws — a failure is a cold run. */
+  private async attempt(lane: Lane, req: WarmRunRequest, deadlineMs: number, env: Readonly<Record<string, string>>): Promise<WarmRunResult | null> {
     const worker = await this.workerFor(lane);
     if (worker === null) return null;
     try {
@@ -204,11 +269,18 @@ export class WarmPlane implements WarmScreen {
     } catch (e: unknown) {
       this.counts.fallbacks += 1;
       if (e instanceof WarmError && e.invalidated) this.counts.invalidations += 1;
-      this.workers.delete(lane.index);
-      worker.dispose();
-      this.note(lane.index, e instanceof Error ? e.message : String(e));
+      this.forget(lane.index);
+      this.note(lane.index, e instanceof Error ? e.message : String(e), e instanceof WarmError && e.timedOut);
       return null;
     }
+  }
+
+  /** Drop a lane's worker and stop its interpreter. */
+  private forget(index: number): void {
+    const w = this.workers.get(index);
+    if (w === undefined) return;
+    this.workers.delete(index);
+    w.dispose();
   }
 
   private async workerFor(lane: Lane): Promise<WarmWorker | null> {
@@ -229,40 +301,57 @@ export class WarmPlane implements WarmScreen {
     const o = this.opts;
     try {
       const root = join(o.runDir, WARM_SUBDIR);
-      this.serverPath ??= await writeWarmServer(root);
+      // the PROMISE is memoised, not its value: eight lanes boot at once, and eight concurrent
+      // `writeFile` calls truncate the file a ninth interpreter may be reading right then
+      this.serverPath ??= writeWarmServer(root);
+      const serverPath = await this.serverPath;
       const qbDir = this.qbDir ?? o.quixbugsDir ?? null;
       const worker = await WarmWorker.start({
         sandbox: o.sandbox,
         signal: o.signal,
         dir: join(root, `lane${lane.index}`),
-        serverPath: this.serverPath,
+        serverPath,
         cwd: lane.dir,
         mode: o.mode,
+        ...(o.bootTimeoutMs === undefined ? {} : { bootTimeoutMs: o.bootTimeoutMs }),
         interpreter: o.interpreter,
         roots: [o.workspaceRoot, lane.dir],
         ...(o.bootEnv === undefined ? {} : { env: o.bootEnv }),
         ...(qbDir === null ? {} : { quixbugsDir: qbDir }),
       });
+      // the watchdog (or a mismatch) may have disabled the plane while this was booting
+      if (this.off !== null) {
+        worker.dispose();
+        return null;
+      }
       this.workers.set(lane.index, worker);
       return worker;
     } catch (e: unknown) {
       this.counts.fallbacks += 1;
-      this.note(lane.index, `could not start a warm worker: ${e instanceof Error ? e.message : String(e)}`);
+      this.note(lane.index, `could not start a warm worker: ${e instanceof Error ? e.message : String(e)}`, e instanceof WarmError && e.timedOut);
       return null;
     }
   }
 
   /**
-   * Record one worker failure and decide whether the mechanism is finished. Per lane it is a
-   * restart budget; across lanes, a plane that has never once served a command is an environment
-   * without a usable interpreter (no python3, a seatbelt denial, a sandbox stub in a test) and
-   * retrying it on every lane only burns wall.
+   * Record one worker failure and decide whether the mechanism is finished.
+   *
+   * A TIMEOUT ends it immediately, whatever the budgets say: a worker that never announced
+   * itself or never answered is a broken mechanism, not a difficult candidate, and the wall a
+   * deadline costs comes out of the STEP's test budget — the run this rule was written for
+   * spent 600 s of test wall on repeated boot deadlines and classified nothing. A crash is
+   * different: it is plausibly this candidate's doing, so it keeps a per-lane restart budget,
+   * a run-wide failure budget, and the older rule that a plane which has never once served a
+   * command is an environment without a usable interpreter (no python3, a seatbelt denial, a
+   * sandbox stub in a test).
    */
-  private note(index: number, why: string): void {
+  private note(index: number, why: string, timedOut: boolean): void {
     const n = (this.restarts.get(index) ?? 0) + 1;
     this.restarts.set(index, n);
     this.counts.restarts += 1;
-    if (n > WARM_MAX_RESTARTS_PER_LANE) this.disable(`lane ${index} failed ${n} times, the last: ${why}`);
+    if (timedOut) this.disable(`lane ${index} stopped answering: ${why}`);
+    else if (n > WARM_MAX_RESTARTS_PER_LANE) this.disable(`lane ${index} failed ${n} times, the last: ${why}`);
+    else if (this.counts.restarts > WARM_MAX_FAILURES_PER_RUN) this.disable(`the warm plane failed ${this.counts.restarts} times across its lanes, the last: ${why}`);
     else if (this.counts.screened === 0 && this.counts.restarts > WARM_MAX_RESTARTS_PER_LANE) this.disable(`no warm worker ever served a command: ${why}`);
   }
 

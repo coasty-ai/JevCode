@@ -22,12 +22,33 @@
  * the wrong id, a request that outlives its deadline, an exit — makes the worker `dead`. The
  * caller (src/synth/warm/plane.ts) then runs the candidate cold; nothing here can turn an
  * anomaly into a verdict.
+ *
+ * THE TRANSPORT NEVER BLOCKS AND NEVER TOUCHES LIBUV. Both facts were paid for:
+ *
+ *   * `fs.createWriteStream` / `fs.createReadStream` over a FIFO look like ordinary file streams
+ *     and are not. `open(2)` on the write end blocks until a reader appears and every `read(2)`
+ *     on the read end blocks until a line arrives — each inside a `uv__fs_work` thread, and the
+ *     pool holds FOUR of them. An eight-lane batch parked all four (one per idle lane's pending
+ *     read, the rest on opens whose worker had already given up at `--connect-ms`) and every
+ *     `fs` call in the whole harness — the candidate writes, the checkpoint, the next lane's
+ *     boot — queued behind them for ever: a harness at 0 % CPU with no child processes.
+ *   * `net.Socket({ fd })`, the usual answer, is WRONG HERE on macOS: kqueue's read filter on a
+ *     FIFO delivers only what was already in the pipe when the watcher was armed. Measured
+ *     while fixing this: a 200 KB reply written one second after the socket attached delivered
+ *     0 bytes — for every combination of `O_RDONLY`/`O_RDWR`, blocking/non-blocking and
+ *     plain/`{readable, writable}` — while `select(2)` on the very same fd from Python
+ *     reported it readable at once. A truncating candidate's reply is exactly that shape, so
+ *     this would have been a silent hang in the field rather than a failure in a test.
+ *
+ * So the two fifo ends are raw `O_NONBLOCK` fds driven by `readSync`/`writeSync` off a timer
+ * that runs ONLY while a request is in flight. Non-blocking is what makes the sync calls safe
+ * (they return `EAGAIN` instead of waiting), the timer is what makes readiness our own business
+ * rather than kqueue's, and an idle lane costs neither a thread nor a wakeup.
  */
-import { createReadStream, createWriteStream } from 'node:fs';
+import { closeSync, constants as fsConstants, open as fsOpen, readSync, writeSync } from 'node:fs';
 import { mkdir, writeFile } from 'node:fs/promises';
-import { createInterface, type Interface } from 'node:readline';
+import { StringDecoder } from 'node:string_decoder';
 import { join } from 'node:path';
-import type { ReadStream, WriteStream } from 'node:fs';
 
 import type { Sandbox } from '../../core/types.js';
 import { TAIL_BYTES } from '../../sandbox/run.js';
@@ -47,15 +68,81 @@ export const WARM_MAX_LIFETIME_MS = 1_800_000;
 export const WARM_WORKER_OUTPUT_BYTES = 64 * 1024;
 /** Written once per run; every lane's worker reads the same file. */
 export const WARM_SERVER_FILENAME = 'warm_server.py';
+/** How often the request FIFO is re-tried while the worker has not yet opened its read end. */
+export const WARM_FIFO_POLL_MS = 5;
+/**
+ * How often an in-flight request's fifo is read, in three bands: a warm screen is meant to cost
+ * tens of milliseconds, so the first band is tight, and a candidate that runs for a second is
+ * polled lazily. Nothing is polled at all when no request is in flight.
+ */
+export const WARM_POLL_BANDS: readonly { untilMs: number; everyMs: number }[] = [
+  { untilMs: 200, everyMs: 1 },
+  { untilMs: 2_000, everyMs: 5 },
+  { untilMs: Number.POSITIVE_INFINITY, everyMs: 20 },
+];
+/** One `read(2)` off the response fifo. */
+const READ_CHUNK = 64 * 1024;
 
 export class WarmError extends Error {
   /** true when the warm parent's import set went stale: restart, and run this candidate cold */
   readonly invalidated: boolean;
-  constructor(message: string, opts: { invalidated?: boolean; cause?: unknown } = {}) {
+  /**
+   * true when nothing came back in time (no ready line, no reader on the fifo, no response).
+   * The plane treats a timeout as a failure of the MECHANISM rather than of one candidate: a
+   * hang is never local, and paying for a second one is how a run loses its wall (see
+   * `WarmPlane.note`).
+   */
+  readonly timedOut: boolean;
+  constructor(message: string, opts: { invalidated?: boolean; timedOut?: boolean; cause?: unknown } = {}) {
     super(`WarmError: ${message}`, opts.cause === undefined ? {} : { cause: opts.cause });
     this.name = 'WarmError';
     this.invalidated = opts.invalidated === true;
+    this.timedOut = opts.timedOut === true;
   }
+}
+
+/** `fs.open`, promisified to the RAW fd; `WarmWorker.close` owns it from there. */
+function openFd(path: string, flags: number): Promise<number> {
+  return new Promise<number>((res, rej) => {
+    fsOpen(path, flags, (e: NodeJS.ErrnoException | null, fd: number) => (e === null ? res(fd) : rej(e)));
+  });
+}
+
+/**
+ * Open one end of a FIFO without ever parking a libuv thread (see the module header).
+ *
+ * `O_NONBLOCK` changes what a FIFO open MEANS: the read end opens immediately whether or not a
+ * writer exists, and the write end fails with ENXIO instead of blocking until a reader appears.
+ * So the write end is polled until the worker has opened its read end, bounded by `deadlineAt`
+ * — a worker that died before opening (the `--connect-ms` give-up) ends as a timeout here
+ * rather than as a thread blocked in `open(2)` for the life of the process.
+ *
+ * The response end is opened `O_RDWR`, not `O_RDONLY`: a read-only end of a FIFO with no writer
+ * yet reads EOF at once, and the worker opens ITS end only after this side has attached, so a
+ * read-only open would race into a spurious "the worker closed the response fifo". Holding a
+ * (never written) write end keeps the pipe from ever reading EOF; the worker's death is
+ * observed through the `sandbox.run` promise, the per-request timer and the plane's watchdog.
+ */
+async function openFifo(path: string, end: 'request' | 'response', deadlineAt: number, budgetMs: number, sleep: (ms: number) => Promise<void>): Promise<number> {
+  const flags = end === 'request' ? fsConstants.O_WRONLY | fsConstants.O_NONBLOCK : fsConstants.O_RDWR | fsConstants.O_NONBLOCK;
+  for (;;) {
+    try {
+      return await openFd(path, flags);
+    } catch (e: unknown) {
+      const code = (e as NodeJS.ErrnoException).code;
+      // ENXIO: no reader yet. ENOENT: the worker has not reached its mkfifo (it announces after,
+      // so this is only a filesystem lagging behind). Anything else is a real failure.
+      if (code !== 'ENXIO' && code !== 'ENOENT') throw new WarmError(`cannot open the ${end} fifo: ${e instanceof Error ? e.message : String(e)}`, { cause: e });
+      if (Date.now() >= deadlineAt) throw new WarmError(`the ${end} fifo had no peer within ${budgetMs} ms`, { timedOut: true });
+      await sleep(WARM_FIFO_POLL_MS);
+    }
+  }
+}
+
+/** How long to wait before the next poll of an in-flight request, by how long it has been running. */
+export function pollDelayMs(elapsedMs: number): number {
+  for (const band of WARM_POLL_BANDS) if (elapsedMs < band.untilMs) return band.everyMs;
+  return WARM_POLL_BANDS[WARM_POLL_BANDS.length - 1]?.everyMs ?? 20;
 }
 
 export interface WarmWorkerOptions {
@@ -81,6 +168,14 @@ export interface WarmWorkerOptions {
    */
   env?: Readonly<Record<string, string>>;
   now?: () => number;
+  /** injectable for the tests that drive the fifo retry loop; default a real timer */
+  sleep?: (ms: number) => Promise<void>;
+  /**
+   * How long the boot may take: the ready line, then both fifo ends, then the ping. Default
+   * `WARM_BOOT_TIMEOUT_MS`; a test that drives the watchdog with a worker that sleeps for ever
+   * passes a small one so the case costs a second rather than a minute.
+   */
+  bootTimeoutMs?: number;
 }
 
 interface Pending {
@@ -102,13 +197,22 @@ export async function writeWarmServer(warmRoot: string): Promise<string> {
 
 export class WarmWorker {
   private readonly opts: WarmWorkerOptions;
-  private req: WriteStream | null = null;
-  private resp: ReadStream | null = null;
-  private lines: Interface | null = null;
+  /** raw O_NONBLOCK fds; see the module header for why they are not streams */
+  private reqFd: number | null = null;
+  private respFd: number | null = null;
+  /** the request bytes `writeSync` has not taken yet (a fifo write is atomic only to PIPE_BUF) */
+  private outbox = Buffer.alloc(0);
+  /** response bytes read so far, up to the last newline */
+  private inbox = '';
+  private readonly decoder = new StringDecoder('utf8');
+  private readonly chunk = Buffer.allocUnsafe(READ_CHUNK);
+  private poll: NodeJS.Timeout | null = null;
   private pending: Pending | null = null;
   private nextId = 1;
   private state: 'booting' | 'ready' | 'dead' = 'booting';
   private deathReason = '';
+  /** whether `deathReason` was a deadline rather than a crash; the plane treats the two differently */
+  private diedOnTimeout = false;
   /** set while `boot()` waits for the ready line, so a worker that exits at once fails boot at once */
   private bootFailed: ((e: WarmError) => void) | null = null;
 
@@ -132,7 +236,7 @@ export class WarmWorker {
 
   private command(): string {
     const o = this.opts;
-    const parts = ['PYTHONDONTWRITEBYTECODE=1', o.interpreter, shellQuote(o.serverPath), '--dir', shellQuote(o.dir), '--mode', o.mode, '--idle-ms', String(WARM_IDLE_MS), '--max-ms', String(WARM_MAX_LIFETIME_MS), '--connect-ms', String(WARM_BOOT_TIMEOUT_MS)];
+    const parts = ['PYTHONDONTWRITEBYTECODE=1', o.interpreter, shellQuote(o.serverPath), '--dir', shellQuote(o.dir), '--mode', o.mode, '--idle-ms', String(WARM_IDLE_MS), '--max-ms', String(WARM_MAX_LIFETIME_MS), '--connect-ms', String(o.bootTimeoutMs ?? WARM_BOOT_TIMEOUT_MS)];
     if (o.mode === 'quixbugs' && o.quixbugsDir !== undefined) parts.push('--quixbugs-dir', shellQuote(o.quixbugsDir));
     for (const r of o.roots) parts.push('--root', shellQuote(r));
     return parts.join(' ');
@@ -140,6 +244,7 @@ export class WarmWorker {
 
   private async boot(): Promise<void> {
     const o = this.opts;
+    const bootMs = o.bootTimeoutMs ?? WARM_BOOT_TIMEOUT_MS;
     await mkdir(o.dir, { recursive: true });
     let announce: (() => void) | null = null;
     const ready = new Promise<void>((res, rej) => {
@@ -160,54 +265,31 @@ export class WarmWorker {
         (e: unknown) => this.die(`worker failed: ${e instanceof Error ? e.message : String(e)}`),
       )
       .catch(() => undefined);
-    const timer = setTimeout(() => this.die(`no ${WARM_READY_PREFIX} within ${WARM_BOOT_TIMEOUT_MS} ms`), WARM_BOOT_TIMEOUT_MS);
+    const timer = setTimeout(() => this.die(`no ${WARM_READY_PREFIX} within ${bootMs} ms`, true), bootMs);
     try {
       await ready;
     } finally {
       clearTimeout(timer);
       this.bootFailed = null;
     }
-    if (this.state === 'dead') throw new WarmError(this.deathReason);
+    if (this.state === 'dead') throw new WarmError(this.deathReason, { timedOut: this.diedOnTimeout });
     try {
-      // The worker opens `req` for reading and then `resp` for writing, and opening a FIFO blocks
-      // until the peer opens its end — so the order here is fixed (write end first, read end
-      // second) and BOTH opens are bounded: a worker that died between its ready line and its
-      // open would otherwise leave this promise pending for ever, hanging the whole batch.
-      this.req = createWriteStream(join(o.dir, WARM_REQ_FIFO));
-      await this.opened(this.req, 'request fifo');
-      this.req.on('error', (e) => this.die(`request fifo: ${e.message}`));
-      this.resp = createReadStream(join(o.dir, WARM_RESP_FIFO));
-      await this.opened(this.resp, 'response fifo');
-      this.resp.on('error', (e) => this.die(`response fifo: ${e.message}`));
-      this.lines = createInterface({ input: this.resp });
-      this.lines.on('line', (l) => this.onLine(l));
-      this.lines.on('close', () => this.die('response fifo closed'));
+      // The worker opens `req` for reading and then `resp` for writing, so the order here is
+      // fixed (write end first, read end second). Both opens are non-blocking and bounded by
+      // one deadline: a worker that died between its ready line and its own open is a timeout
+      // here, never a libuv thread left in `open(2)` for the life of the process.
+      const attachBy = Date.now() + bootMs;
+      const sleep = o.sleep ?? ((ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms)));
+      this.reqFd = await openFifo(join(o.dir, WARM_REQ_FIFO), 'request', attachBy, bootMs, sleep);
+      this.respFd = await openFifo(join(o.dir, WARM_RESP_FIFO), 'response', attachBy, bootMs, sleep);
       this.state = 'ready';
       // a ping proves the whole transport, not just the process (the health check of §3 M6)
-      await this.send({ op: 'ping' }, WARM_BOOT_TIMEOUT_MS);
+      await this.send({ op: 'ping' }, bootMs);
     } catch (e: unknown) {
       const err = e instanceof WarmError ? e : new WarmError(e instanceof Error ? e.message : String(e));
-      this.die(err.message);
+      this.die(err.message, err.timedOut);
       throw err;
     }
-  }
-
-  /** Wait for a fifo end to open, bounded; on the deadline the stream is destroyed, not left pending. */
-  private opened(stream: { once(event: string, listener: (...args: never[]) => void): unknown; destroy(): unknown }, what: string): Promise<void> {
-    return new Promise<void>((res, rej) => {
-      const timer = setTimeout(() => {
-        stream.destroy();
-        rej(new WarmError(`the ${what} did not open within ${WARM_BOOT_TIMEOUT_MS} ms`));
-      }, WARM_BOOT_TIMEOUT_MS);
-      stream.once('open', () => {
-        clearTimeout(timer);
-        res();
-      });
-      stream.once('error', ((e: Error) => {
-        clearTimeout(timer);
-        rej(new WarmError(`cannot open the ${what}: ${e.message}`, { cause: e }));
-      }) as (...args: never[]) => void);
-    });
   }
 
   private onLine(line: string): void {
@@ -254,55 +336,131 @@ export class WarmWorker {
     else p.resolve(value ?? { stdout: '', stderr: '', exitCode: null, timedOut: false, truncated: false, durationMs: 0 });
   }
 
-  private die(reason: string): void {
+  private die(reason: string, timedOut = false): void {
     if (this.state === 'dead') return;
     this.state = 'dead';
     this.deathReason = reason;
+    this.diedOnTimeout = timedOut;
     // an interpreter that exits before announcing itself fails the boot now, not at the boot timeout
-    this.bootFailed?.(new WarmError(reason));
+    this.bootFailed?.(new WarmError(reason, { timedOut }));
     const p = this.pending;
     if (p !== null) {
       this.pending = null;
       clearTimeout(p.timer);
-      p.reject(new WarmError(reason));
+      p.reject(new WarmError(reason, { timedOut }));
     }
     this.close();
   }
 
   private close(): void {
-    try {
-      this.req?.end();
-    } catch {
-      /* the fifo is already gone */
+    this.stopPolling();
+    // closing the request end is the worker's own EOF signal, and the one thing that must happen
+    for (const fd of [this.reqFd, this.respFd]) {
+      if (fd === null) continue;
+      try {
+        closeSync(fd);
+      } catch {
+        /* already gone */
+      }
     }
+    this.reqFd = null;
+    this.respFd = null;
+    this.outbox = Buffer.alloc(0);
+  }
+
+  /** A method, not a comparison: the narrowing of a field cannot see that `onLine` may kill us. */
+  private isDead(): boolean {
+    return this.state === 'dead';
+  }
+
+  private stopPolling(): void {
+    if (this.poll === null) return;
+    clearTimeout(this.poll);
+    this.poll = null;
+  }
+
+  /**
+   * Drive the fifos while a request is outstanding: flush whatever of the request `writeSync`
+   * has not taken (a fifo write is atomic only to PIPE_BUF, 512 bytes on macOS), then read every
+   * complete response line. Re-arms itself until the request is answered, the outbox is empty
+   * or the worker dies; an idle worker polls nothing at all.
+   */
+  private tick(startedAt: number): void {
+    this.poll = null;
+    if (this.isDead()) return;
+    this.flush();
+    this.drain();
+    if (this.isDead()) return;
+    if (this.pending === null && this.outbox.length === 0) return;
+    const timer = setTimeout(() => this.tick(startedAt), pollDelayMs(Date.now() - startedAt));
+    // the transport must never be the reason the harness stays alive
+    timer.unref();
+    this.poll = timer;
+  }
+
+  private arm(): void {
+    if (this.poll !== null || this.isDead()) return;
+    const startedAt = Date.now();
+    const timer = setTimeout(() => this.tick(startedAt), pollDelayMs(0));
+    timer.unref();
+    this.poll = timer;
+  }
+
+  /** Push what is left of the request; EAGAIN just means the next tick tries again. */
+  private flush(): void {
+    const fd = this.reqFd;
+    if (fd === null || this.outbox.length === 0) return;
     try {
-      this.lines?.removeAllListeners('close');
-      this.lines?.close();
-    } catch {
-      /* already closed */
+      const n = writeSync(fd, this.outbox);
+      this.outbox = n >= this.outbox.length ? Buffer.alloc(0) : this.outbox.subarray(n);
+    } catch (e: unknown) {
+      const code = (e as NodeJS.ErrnoException).code;
+      if (code === 'EAGAIN') return;
+      this.die(`cannot write the request: ${e instanceof Error ? e.message : String(e)}`);
     }
-    try {
-      this.resp?.close();
-    } catch {
-      /* already closed */
+  }
+
+  /** Read every byte the response fifo has, and hand each complete line to `onLine`. */
+  private drain(): void {
+    const fd = this.respFd;
+    if (fd === null) return;
+    for (;;) {
+      let n = 0;
+      try {
+        n = readSync(fd, this.chunk, 0, this.chunk.length, null);
+      } catch (e: unknown) {
+        const code = (e as NodeJS.ErrnoException).code;
+        if (code === 'EAGAIN') return;
+        this.die(`cannot read the response: ${e instanceof Error ? e.message : String(e)}`);
+        return;
+      }
+      // 0 is impossible while this side holds the fifo's write end too (see `openFifo`)
+      if (n === 0) return;
+      this.inbox += this.decoder.write(this.chunk.subarray(0, n));
+      let at = this.inbox.indexOf('\n');
+      while (at !== -1) {
+        const line = this.inbox.slice(0, at).trim();
+        this.inbox = this.inbox.slice(at + 1);
+        if (line !== '') {
+          this.onLine(line);
+          if (this.isDead()) return;
+        }
+        at = this.inbox.indexOf('\n');
+      }
     }
-    this.req = null;
-    this.resp = null;
-    this.lines = null;
   }
 
   private send(body: Record<string, string | number | boolean | readonly string[] | Record<string, string>>, waitMs: number, wantsRun = false): Promise<WarmRunResult> {
-    if (this.state === 'dead') return Promise.reject(new WarmError(this.deathReason || 'worker is dead'));
+    if (this.state === 'dead') return Promise.reject(new WarmError(this.deathReason || 'worker is dead', { timedOut: this.diedOnTimeout }));
     if (this.pending !== null) return Promise.reject(new WarmError('a request is already in flight on this lane'));
     const id = this.nextId++;
-    const stream = this.req;
-    if (stream === null) return Promise.reject(new WarmError('worker has no request channel'));
+    if (this.reqFd === null) return Promise.reject(new WarmError('worker has no request channel'));
     return new Promise<WarmRunResult>((resolve, reject) => {
-      const timer = setTimeout(() => this.die(`no response within ${waitMs} ms`), waitMs);
+      const timer = setTimeout(() => this.die(`no response within ${waitMs} ms`, true), waitMs);
       this.pending = { id, wantsRun, resolve, reject, timer };
-      stream.write(`${JSON.stringify({ id, ...body })}\n`, (e) => {
-        if (e) this.die(`cannot write the request: ${e.message}`);
-      });
+      this.outbox = Buffer.concat([this.outbox, Buffer.from(`${JSON.stringify({ id, ...body })}\n`, 'utf8')]);
+      this.flush();
+      this.arm();
     });
   }
 
