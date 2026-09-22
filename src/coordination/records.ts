@@ -234,9 +234,9 @@ const oneOf =
 
 const PHASES = ['starting', 'running', 'pausing', 'paused', 'blocked', 'aborting', 'ended'] as const;
 const SOURCES = ['cli', 'bench', 'perf'] as const;
-const LEASE_TYPES = ['intent', 'exclusive', 'command', 'lane', 'worktree', 'takeover'] as const;
+const LEASE_TYPES = ['intent', 'exclusive', 'command', 'lane', 'worktree', 'takeover', 'agent'] as const;
 const LEASE_OUTCOMES = ['committed', 'discarded', 'expired', 'ended'] as const;
-const MESSAGE_TYPES = ['heads-up', 'handoff', 'note', 'request-release', 'steer', 'pause', 'resume', 'end', 'abort', 'ack', 'who'] as const;
+const MESSAGE_TYPES = ['heads-up', 'handoff', 'note', 'request-release', 'steer', 'pause', 'resume', 'end', 'abort', 'ack', 'who', 'budget', 'review', 'kick', 'land'] as const;
 const ACK_OUTCOMES = ['delivered', 'applied', 'refused', 'expired'] as const;
 const SUBWORK_KINDS = ['sample', 'lane', 'probe', 'child'] as const;
 
@@ -360,7 +360,10 @@ function checkHeartbeat(o: JsonObject): Bad | null {
   if (!isJsonObject(tokens) || !isNum(tokens['used']) || !isNumOrNull(tokens['cap'])) return 'shape';
   if (!isNum(o['wallMs']) || !isNum(o['maxWallMs'])) return 'shape';
   const ctx = o['context'];
-  if (!isJsonObject(ctx) || !isNum(ctx['pct']) || !isNum(ctx['files']) || !isNum(ctx['historyEntries']) || !isNumOrNull(ctx['summaryAt']) || !isNum(ctx['tokensInWindow']) || !isNum(ctx['windowBudget']) || !isNum(ctx['compactions'])) return 'shape';
+  // contract 1.4 (W2b): `budgetTokens` + `windowTokens`, the `ContextUsage` names (§12.0.3); `windowBudget` is not an
+  // accepted spelling, so a record written by a build that predates the rename is `shape`-rejected rather than folded
+  // with a silently-zero meter.
+  if (!isJsonObject(ctx) || !isNum(ctx['pct']) || !isNum(ctx['files']) || !isNum(ctx['historyEntries']) || !isNumOrNull(ctx['summaryAt']) || !isNum(ctx['tokensInWindow']) || !isNum(ctx['budgetTokens']) || !isNum(ctx['windowTokens']) || !isNum(ctx['compactions'])) return 'shape';
   if (o['lockHeld'] !== undefined && !isBool(o['lockHeld'])) return 'shape';
   if (o['pausePoint'] !== undefined) {
     const bad2 = checkPausePoint(o['pausePoint']);

@@ -295,6 +295,10 @@ export function pausedWord(kind: BlockingKind): string {
       return 'paused: model drift';
     case 'sandbox-unavailable':
       return 'paused: sandbox unavailable';
+    case 'land-preflight':
+      return 'paused: land pre-flight';
+    case 'lease-conflict':
+      return 'paused: lease conflict';
   }
 }
 

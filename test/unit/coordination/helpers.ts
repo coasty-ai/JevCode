@@ -97,7 +97,7 @@ export function makeHeartbeat(patch: Deep<Heartbeat> & { repo?: Partial<Heartbea
     tokens: { used: 100, cap: null },
     wallMs: 1000,
     maxWallMs: 1_800_000,
-    context: { pct: 41, files: 6, historyEntries: 12, summaryAt: null, tokensInWindow: 29_000, windowBudget: 70_400, compactions: 0 },
+    context: { pct: 41, files: 6, historyEntries: 12, summaryAt: null, tokensInWindow: 29_000, budgetTokens: 70_400, windowTokens: 128_000, compactions: 0 },
     startedAt: iso(T0 - 60_000),
     beatAt: iso(T0),
     beatSeq: 1,

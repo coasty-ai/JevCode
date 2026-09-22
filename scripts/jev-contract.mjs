@@ -37,6 +37,7 @@ const ALLOW = [
   { file: 'src/chat/lookup.ts', sites: 1, why: 'TUI-DESIGN-2 §3.6 chat lookup Nouls: no workspace mutation reachable from the answer' },
   { file: 'src/chat/intake.ts', sites: 1, why: 'TUI-DESIGN-2 §3.13 intake Choice: escape + can_* pairs, code fallback coding_task' },
   { file: 'src/undo/apply.ts', sites: 1, why: 'not Jev: the undo picker asks the human which checkpoint to restore' },
+  { file: 'src/loop/coordination.ts', sites: 1, why: "not Jev: `input.ask(req)` is the lease-conflict BLOCKING PANE (COORDINATION-DESIGN \u00a74.3 step 4) through the engine's existing Confirmer/blocker seam \u2014 a `BlockingRequest` answered by a human with [w]/[c]/[t]/[q], not a Choice. \u00a72.1 keeps Jev off the coordination path entirely: no decider is reachable from this module, so jev-off, --no-input and an unreachable Jev are byte-identical here" },
   { file: 'src/perf/jev-latency.ts', sites: 1, why: 'the --live latency probe: fixed question batch, no action reachable' },
   { file: 'src/jev/cache.ts', sites: 1, why: 'createCachingDecider: a memoizing decorator that forwards the caller\'s own state and questions to `inner.ask` untouched — it builds no question and takes no decision, so the four clauses belong to the site that called it' },
   { file: 'src/synth/index.ts', sites: 1, why: 'llm-jev dispatcher: the batch is built and guarded by the synthesizer stage that owns it' },

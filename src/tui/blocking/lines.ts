@@ -166,6 +166,11 @@ export function blockingRowsStructured(req: BlockingRequest): BlockingRows {
     }
     case 'sandbox-unavailable':
       return { title: ['sandbox: seatbelt requested but sandbox-exec is unavailable'], middle: [], keys: `[q] stop ${exit}`, inline: false };
+    // contract 1.4 (W2b) / 1.5 placeholder rows — the TUI session's round 5 replaces the prose (ORCHESTRATION-DESIGN §5.7 [D1], COORDINATION-DESIGN §4.3 step 4)
+    case 'land-preflight':
+      return { title: ['land pre-flight'], middle: [clipCodePoints(terminalSafeLine(req.detail), BLOCKING_MESSAGE_MAX)], keys: `[c] commit first   [s] stash   [x] cancel ${exit}`, inline: false };
+    case 'lease-conflict':
+      return { title: ['lease conflict'], middle: [clipCodePoints(terminalSafeLine(req.detail), BLOCKING_MESSAGE_MAX)], keys: `[w] wait   [c] continue   [t] worktree   [q] stop ${exit}`, inline: false };
   }
 }
 
@@ -248,6 +253,10 @@ export function blockingStatusWord(kind: BlockingKind): string {
       return 'paused: model drift';
     case 'sandbox-unavailable':
       return 'paused: sandbox unavailable';
+    case 'land-preflight':
+      return 'paused: land pre-flight';
+    case 'lease-conflict':
+      return 'paused: lease conflict';
   }
 }
 
