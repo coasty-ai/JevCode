@@ -4,7 +4,7 @@
  * them for control flow. Shapes are deliberately loose (`?` everywhere): both APIs document
  * that new fields and event types may appear and must be ignored.
  */
-import type { GeneratorConfig, Json, JsonObject, ReasoningEffort } from '../core/types.js';
+import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, ReasoningEffort, ToolCall } from '../core/types.js';
 
 // ---------------------------------------------------------------------------------------
 // Shared transport
@@ -248,3 +248,88 @@ export interface OpenRouterToolDef {
   function: { name: string; description: string; parameters: JsonObject; strict: true };
 }
 export type OpenRouterToolChoice = 'auto' | 'required' | { type: 'function'; function: { name: string } };
+
+// ---------------------------------------------------------------------------------------
+// Multi-provider additions (2026-09-21): the ids, the structural Provider the new HTTP clients
+// return, the config subset they read, and the outcome every client hands to `finishGeneration`.
+//
+// CONTRACT NOTE for the core owner (src/core/types.ts is owned by the TUI/session round): core's
+// `ProviderName` is still `'anthropic' | 'openrouter' | 'mock'` and `GeneratorConfig.provider` still
+// `'anthropic' | 'openrouter'`. Widening them to `ProviderId` (below) makes `GenerationProvider`
+// exactly `Provider`, and `createProvider(...)` directly usable by loop/engine.ts; until then the
+// registry is typed on the structural `GenerationProvider` (core `Provider` is assignable to it).
+// ---------------------------------------------------------------------------------------
+
+/** Every provider the registry can build a generator for (registry.ts `PROVIDERS`); `mock` and `null` are test doubles, not registry rows. */
+export type ProviderId = 'anthropic' | 'openrouter' | 'openai' | 'gemini' | 'fireworks' | 'meta' | 'xai';
+
+/** `Provider.name` widened by the test doubles' ids; core `ProviderName` is a subset of it. */
+export type GenerationProviderName = ProviderId | 'mock';
+
+/**
+ * Structurally core's `Provider` with a widened `name` (core `Provider` is assignable to this; the reverse holds once
+ * `ProviderName` is widened — see the contract note above). Every `create<X>Provider` returns one.
+ */
+export interface GenerationProvider {
+  readonly name: GenerationProviderName;
+  readonly model: string;
+  generate(req: GenerateRequest, opts: GenerateOptions): Promise<GenerateResult>;
+}
+
+/**
+ * Everything an HTTP client reads out of `GeneratorConfig` — a `GeneratorConfig` is assignable to it, and a caller that
+ * has no `provider` field yet (the registry, tests) can build one. `priced` keeps its `GeneratorConfig` meaning
+ * (TUI-DESIGN §9.5): absent/false ⇒ a call the API did not price yields `costUsd` NaN (`budget:unpriced`), never a table price.
+ */
+export interface ProviderConfig {
+  model: string;
+  apiKey: string;
+  baseUrl: string;
+  /** null = do not send the sampling parameter at all */
+  temperature: number | null;
+  maxTokens: number;
+  pricing: Pricing;
+  priced?: boolean;
+}
+
+/**
+ * What one completed stream produced, in the shape `finishGeneration` (http.ts) turns into a `GenerateResult`.
+ * `cost` is set only when the API itself reported a price (OpenRouter `usage.cost`, xAI `usage.cost_in_usd_ticks`);
+ * everything else is priced from the table or surfaced as NaN.
+ */
+export interface ProviderOutcome {
+  text: string;
+  toolCalls: ToolCall[];
+  tokens: TokenBreakdown;
+  cost: number | null;
+  reasoningTokens: number | null;
+  model: string | null;
+  generationId: string | null;
+  servedProvider: string | null;
+  /** the wire's finish reason, normalised to the vocabulary synth/llm/schema.ts `isLengthStop` reads (`length` / `max_tokens`) */
+  stopReason: string;
+}
+
+/** One model as the provider's own catalogue endpoint reports it (registry.ts `ProviderSpec.listModels`). */
+export interface ModelInfo {
+  id: string;
+  /** the provider's own label when it has one (Anthropic `display_name`, Gemini `displayName`, OpenRouter `name`) */
+  displayName?: string;
+  /** context window in tokens when the API reports one (OpenAI's does not) */
+  contextTokens?: number;
+  maxOutputTokens?: number;
+  /** unix seconds, as reported */
+  created?: number;
+  ownedBy?: string;
+  /** the API said this model takes function/tool calls (absent = the API does not say) */
+  tools?: boolean;
+  /** the API said this model reasons / thinks (absent = the API does not say) */
+  reasoning?: boolean;
+  vision?: boolean;
+  /** an announced retirement (OpenAI `shutdown_date`, OpenRouter `expiration_date`), verbatim */
+  shutdownDate?: string;
+  /** per-million USD when the catalogue itself carries prices (xAI, OpenRouter); never from our table */
+  pricing?: Pricing;
+  /** ids the provider accepts for the same weights (xAI `aliases`) */
+  aliases?: readonly string[];
+}

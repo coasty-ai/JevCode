@@ -1,0 +1,1 @@
+{"error":{"code":null,"message":"only `\"auto\"` is supported for `tool_choice`. `\"none\"`, `\"required\"`, and named function choices are not currently supported","param":"tool_choice","type":"invalid_request_error"}}
