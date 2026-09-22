@@ -156,7 +156,7 @@ export const MAX_COLUMNS = 4096;
 /** The jev-only propose marker (`StatusLine.tsx` SYNTH_MARKER, kept). */
 export const SYNTH_MARKER = '[synth]';
 const ZONE_GAP = 2;
-const STEP_WORDS: readonly string[] = ['intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete', 'replan'];
+const STEP_WORDS: readonly string[] = ['intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete', 'replan', 'decompose'];
 
 // ---------------------------------------------------------------------------------------
 // Cells (§4.2 via O2's width.ts; §14.1 ellipsis twin)
