@@ -51,14 +51,15 @@ depend on POSIX features.
 One key is enough. `OPENROUTER_API_KEY` serves both Jev and the code model:
 
 ```sh
-export OPENROUTER_API_KEY=…    # or put it in a .env file next to your project
+export OPENROUTER_API_KEY=…    # or put it in a .env file in the directory you run jevcode from
 jevcode
 ```
 
 With no key at all, just run `jevcode` in a terminal. The wordmark appears first, then a two-step
 wizard asks which provider writes the code (OpenRouter or Anthropic), takes the key at a masked
 prompt — never echoed, never accepted as a command-line argument — and then offers to reuse that
-same key for Jev. It can verify the keys before you start, and tells you the price of doing so
+same key for Jev; when `TYPESAFE_API_KEY` is present, Jev speaks to TypeSafe natively and the wizard's second
+step offers it. It can verify the keys before you start, and tells you the price of doing so
 first (free health checks plus one Jev decision, about $0.0001). It asks once whether you trust
 this project's `AGENTS.md`. Keys land in `~/.config/jevcode/config.json`, written `0600` in a
 `0700` directory. Then the session opens and you type your first task.
@@ -67,9 +68,11 @@ Without a terminal — `--no-input`, `--json`, or a pipe — JevCode does not pr
 code 2 and prints the exact environment variable or `jevcode login` command that would fix it.
 
 `jevcode login` re-runs the wizard. `jevcode config` prints every setting with the source it came
-from. `jevcode doctor`, which checks your setup in one pass, arrives in the next release.
+from. A second `.env` file can be read as a fallback with `--extra-env-file <path>` (or `JEVCODE_EXTRA_ENV_FILE`).
+`jevcode doctor`, which checks your setup in one pass, arrives in 0.6.0.
 
-Try it in 60 seconds on the bundled demo workspace, a small Python package with two planted bugs:
+Try it in 60 seconds on the demo workspace in the repository checkout (`examples/demo-py`), a small Python
+package with two planted bugs:
 
 ```sh
 cp -r examples/demo-py /tmp/demo && cd /tmp/demo
@@ -97,9 +100,10 @@ under it.
   flat cost. On easy single-file bugs a tuned loop is slightly faster than JevCode, so "faster" is
   a claim about the plain loop only, never a general one.
   [Measurements](docs/measurements/README.md)
-- **It installs as one file and starts instantly.** Zero runtime dependencies — `npm install
-  jevcode` adds exactly one package — a 1 MB tarball, and a first frame in about 130 ms in a real
-  terminal with the network untouched, against a design budget of 300 ms.
+- **It installs as one bundled JavaScript file plus a two-line launcher and starts instantly.** Zero
+  runtime dependencies — Ink and React are compiled in, and `npm install jevcode` adds exactly one
+  package — a tarball of about 1 MB, and a first frame in about 130 ms in a real terminal with the
+  network untouched, against a design budget of 300 ms.
   [Measurements](docs/measurements/README.md)
 
 ## Modes
