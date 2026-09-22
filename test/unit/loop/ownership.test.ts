@@ -15,7 +15,9 @@ import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, turn } 
 import { OWNERSHIP_REFUSAL_PREFIX, RESEARCH_REFUSAL_PREFIX, SCOPE_FIGHT_AFTER, isOwnershipRefusal, ownershipRefusal } from '../../../src/loop/stages/risk.js';
 import { PROPOSE_ACTION_TOOL, proposeActionToolFor } from '../../../src/provider/actions.js';
 import { RESEARCH_ACTION_KINDS } from '../../../src/core/types.js';
-import type { ActionKind, OrchestrationOptions } from '../../../src/core/types.js';
+import type { Action, ActionKind, OrchestrationOptions } from '../../../src/core/types.js';
+import { escapedPaths } from '../../../src/loop/launch.js';
+import { tempRepo } from '../orchestrate/helpers.js';
 
 const harnesses: Harness[] = [];
 afterEach(() => {
@@ -189,5 +191,56 @@ describe('[G8] the post-run escape diff — reported, never blocked', () => {
     const { escapedPaths } = await import('../../../src/loop/launch.js');
     const out = await escapedPaths('/nowhere', { changed: ['package-lock.json', 'src/tui/Pane.tsx'], own: ['src/tui/**'], syncedDirty: [] });
     expect(out).toEqual(['package-lock.json']);
+  });
+});
+
+describe('review 2026-09-22 finding 4 — belt 2 fails CLOSED on an empty or absent `own`', () => {
+  const codeChild = (own?: readonly string[]): OrchestrationOptions => ({ depth: 1, role: 'code', ...(own === undefined ? {} : { own }) });
+
+  it('a depth-1 `code` child with NO `own` refuses every write target', () => {
+    // `OrchestrationOptions.own` is optional, so this is a reachable spawn, and it used to mean "owns everything".
+    // Everywhere else in the design an absent or unparsable `own` owns NOTHING; belt 2 was the one place it inverted.
+    for (const action of [
+      { kind: 'write', path: 'src/a.ts', content: 'x' },
+      { kind: 'edit', path: 'src/a.ts', old: 'a', new: 'b' },
+      { kind: 'patch', diff: 'diff --git a/src/a.ts b/src/a.ts\n--- a/src/a.ts\n+++ b/src/a.ts\n@@ -1 +1 @@\n-a\n+b\n' },
+    ] satisfies Action[]) {
+      const r = ownershipRefusal(action, codeChild());
+      expect(r, `${action.kind} must be refused`).not.toBeNull();
+      expect(r!.status).toBe('blocked');
+      expect(isOwnershipRefusal(r!.reason)).toBe(true);
+      expect(r!.reason).toContain('owns nothing');
+    }
+    // an explicitly EMPTY list is the same case
+    expect(ownershipRefusal({ kind: 'write', path: 'src/a.ts', content: 'x' }, codeChild([]))).not.toBeNull();
+  });
+
+  it('…but read / run / done are still allowed, and a depth-0 run is untouched', () => {
+    for (const action of [{ kind: 'read', paths: ['src/a.ts'] }, { kind: 'run', command: 'npm test' }, { kind: 'done', summary: 'x' }] satisfies Action[]) {
+      expect(ownershipRefusal(action, codeChild())).toBeNull();
+    }
+    // depth 0 is an ordinary run: no ownership model at all
+    expect(ownershipRefusal({ kind: 'write', path: 'src/a.ts', content: 'x' }, { depth: 0 })).toBeNull();
+    expect(ownershipRefusal({ kind: 'write', path: 'src/a.ts', content: 'x' }, undefined)).toBeNull();
+  });
+
+  it('an `own` list that parses to NOTHING is an empty own, not a free pass', () => {
+    // every glob rejected by the §3.4 sub-language: the agent owns nothing, so it may write nothing
+    const r = ownershipRefusal({ kind: 'write', path: 'src/a.ts', content: 'x' }, { depth: 1, role: 'code', own: ['../escape/**', '/etc/passwd', '!not-this'] });
+    expect(r).not.toBeNull();
+    expect(isOwnershipRefusal(r!.reason)).toBe(true);
+  });
+
+  it('the post-`run` escape diff also fails closed: with no `own`, every changed path escaped', async () => {
+    const dir = tempRepo({ 'a.ts': 'a\n' });
+    try {
+      // `escapedPaths` returned [] on an empty own, so a `run` in a child with no slice reported nothing escaped
+      const escaped = await escapedPaths(dir.ws, { changed: ['a.ts', 'src/b.ts'], own: [], syncedDirty: [] });
+      expect(escaped).toEqual(['a.ts', 'src/b.ts']);
+      // and with a real slice only the outside paths are reported, as before
+      expect(await escapedPaths(dir.ws, { changed: ['a.ts', 'src/b.ts'], own: ['src/**'], syncedDirty: [] })).toEqual(['a.ts']);
+    } finally {
+      dir.cleanup();
+    }
   });
 });

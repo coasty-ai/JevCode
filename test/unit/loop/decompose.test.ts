@@ -15,7 +15,11 @@ import { RISK_DIMENSIONS, type Answer, type ConfirmRequest, type Decision, type 
 import { HEADLINE_ROWS_MAX } from '../../../src/core/limits.js';
 import { DEFAULT_SPLIT_POLICY, type SplitPolicy } from '../../../src/orchestrate/index.js';
 import { DECOMPOSE_RISK_REASON, ZERO_DIM, runDecomposeStage, type DecomposeFacts, type DecomposeInput, type DecomposeStageContext } from '../../../src/loop/stages/decompose.js';
-import { choiceA, noulA } from './fakes.js';
+import { choiceA, execResult, noulA } from './fakes.js';
+import { createHash } from 'node:crypto';
+import { git, tempRepo, write } from '../orchestrate/helpers.js';
+import { disjoint, parseOwnGlob } from '../../../src/orchestrate/index.js';
+import { dirtyOverlapOf, dirtyOverlapWarning, measureRepoFacts } from '../../../src/loop/stages/decompose.js';
 
 const PLAN: Plan = {
   done: [],
@@ -44,7 +48,6 @@ function facts(over: Partial<DecomposeFacts> = {}): DecomposeFacts {
     lastTestRun: null,
     dirtyEntries: 0,
     syncedDirty: [],
-    dirtyOverlap: [],
     liveChildren: 0,
     splits: 0,
     lastSplitStep: null,
@@ -230,9 +233,15 @@ describe('decompose: the confirm [G2][D4][D5]', () => {
 
   it('[D1]: a non-empty `dirtyOverlap` puts the warning in the FIRST headline row, in §3.7’s prose', async () => {
     const s = seams();
+    // review 2026-09-22 finding 6: the overlap is DERIVED from the real dirty set ∩ the chosen split's owns,
+    // so the fixture supplies dirty files that the by_directory split actually owns — it can no longer be
+    // asserted into existence, which is why the row was unreachable in production while this test passed.
     const dirty = facts({
-      syncedDirty: Array.from({ length: 7 }, (_, i) => ({ path: `d${i}.txt`, sha256: 'x', mode: 0o644 })),
-      dirtyOverlap: ['alpha/one.ts', 'beta/one.ts'],
+      syncedDirty: [
+        ...Array.from({ length: 5 }, (_, i) => ({ path: `d${i}.txt`, sha256: 'x', mode: 0o644 })),
+        { path: 'alpha/one.ts', sha256: 'x', mode: 0o644 },
+        { path: 'beta/one.ts', sha256: 'x', mode: 0o644 },
+      ],
     });
     const r = await runDecomposeStage(makeCtx(s, directoryAnswers(['alpha', 'beta', 'gamma'])), input(s, { facts: dirty }));
     expect(r.kind).toBe('proposed');
@@ -300,5 +309,93 @@ describe('decompose: the events (§4.1)', () => {
     const r = await runDecomposeStage({ ...ctx, proposeSplit: spy }, input(s));
     expect(spy).toHaveBeenCalledTimes(1);
     expect(r.kind === 'proposed' || r.kind === 'no_split').toBe(true);
+  });
+});
+
+describe('review 2026-09-22 findings 5 + 6 — decomposeFacts MEASURES, and the gate refuses what it cannot measure', () => {
+  it('fold is read from the volume, not hardcoded false', async () => {
+    const r = tempRepo({ 'a.ts': 'a\n' });
+    try {
+      const f = await measureRepoFacts(r.runGit, r.ws);
+      expect(f.unmeasured).toEqual([]);
+      // `git config core.ignorecase` is what git itself decided at init, by probing the filesystem
+      const configured = git(r.ws, 'config', 'core.ignorecase').trim();
+      expect(String(f.fold)).toBe(configured === '' ? 'false' : configured);
+      // and it is a real boolean, whichever volume this runs on
+      expect(typeof f.fold).toBe('boolean');
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('a case-folding volume makes `src/Foo/**` and `src/foo/**` the SAME slice, so the option is rejected', () => {
+    // this is what `fold: false` hid: on APFS the two globs own the same files and rule 3's disjointness
+    // proof — "the whole safety argument" — passes while two agents write the same tree
+    const a = parseOwnGlob('src/Foo/**');
+    const b = parseOwnGlob('src/foo/**');
+    expect(a.ok && b.ok).toBe(true);
+    if (!a.ok || !b.ok) throw new Error('fixture globs must parse');
+    expect(disjoint([a.glob], [b.glob], true).ok).toBe(false);
+    expect(disjoint([a.glob], [b.glob], false).ok).toBe(true);
+  });
+
+  it('existingBranches is the real ref list, so rule 1 can rename a slug that would collide', async () => {
+    const r = tempRepo({ 'a.ts': 'a\n' });
+    try {
+      git(r.ws, 'branch', 'jevcode/taken');
+      git(r.ws, 'branch', 'jevcode/also-taken');
+      const f = await measureRepoFacts(r.runGit, r.ws);
+      expect(f.existingBranches).toContain('jevcode/taken');
+      expect(f.existingBranches).toContain('jevcode/also-taken');
+      expect(f.existingBranches).toContain('main');
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('syncedDirty is the real dirty set with a real sha256 and mode — the sync will replay exactly these', async () => {
+    const r = tempRepo({ 'a.ts': 'a\n', 'b.ts': 'b\n' });
+    try {
+      write(r.ws, 'a.ts', 'locally edited\n');
+      write(r.ws, 'new.ts', 'untracked\n');
+      const f = await measureRepoFacts(r.runGit, r.ws);
+      expect(f.syncedDirty.map((e) => e.path).sort()).toEqual(['a.ts', 'new.ts']);
+      const a = f.syncedDirty.find((e) => e.path === 'a.ts')!;
+      expect(a.sha256).toBe(createHash('sha256').update('locally edited\n').digest('hex'));
+      expect(a.mode & 0o777).toBeGreaterThan(0);
+      expect(f.unmeasured).toEqual([]);
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('a git that cannot answer is UNMEASURED, and the gate refuses rather than guessing permissive', async () => {
+    const r = tempRepo({ 'a.ts': 'a\n' });
+    try {
+      const broken: typeof r.runGit = async (cwd, args, opts) => {
+        if (args.includes('for-each-ref')) return execResult({ exitCode: 128, ok: false, stdout: '', stderr: 'boom' });
+        return r.runGit(cwd, args, opts);
+      };
+      const f = await measureRepoFacts(broken, r.ws);
+      expect(f.unmeasured).toContain('existingBranches');
+      // the gate's own half of this — an `unmeasured` list shuts it with its own reason — is asserted in
+      // test/unit/orchestrate/gate.test.ts, where an otherwise-open GateInput already exists.
+    } finally {
+      r.cleanup();
+    }
+  });
+
+  it('[D1]: the card headline names the overlap, which is now reachable', () => {
+    // dirtyOverlap = the dirty set ∩ what some agent owns, so the row renders for a real dirty parent
+    const overlap = dirtyOverlapOf([{ path: 'src/a/x.ts', sha256: 'h', mode: 0o644 }, { path: 'README.md', sha256: 'h', mode: 0o644 }], ['src/a/**']);
+    expect(overlap).toEqual(['src/a/x.ts']);
+    const row = dirtyOverlapWarning(7, overlap);
+    expect(row).not.toBeNull();
+    expect(row!).toContain('your checkout has 7 uncommitted files');
+    expect(row!).toContain('src/a/x.ts');
+    expect(row!).toContain('/land will ask you to commit or stash');
+    // and nothing owned means no row at all
+    expect(dirtyOverlapOf([{ path: 'README.md', sha256: 'h', mode: 0o644 }], ['src/a/**'])).toEqual([]);
+    expect(dirtyOverlapWarning(7, [])).toBeNull();
   });
 });

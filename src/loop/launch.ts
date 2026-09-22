@@ -50,7 +50,10 @@ export interface EscapeInput {
  * never sees a raw path list: it hands `syncedDirty` to `outsideOwn`, which does the sha compare.
  */
 export async function escapedPaths(dir: string, input: EscapeInput): Promise<string[]> {
-  if (input.own.length === 0 || input.changed.length === 0) return [];
+  if (input.changed.length === 0) return [];
+  // review 2026-09-22 finding 4: an empty `own` owns NOTHING, so everything this `run` touched escaped it.
+  // `outsideOwn` would answer the same, but it needs a git call to do it; this is the cheap, obvious form.
+  if (input.own.length === 0) return [...new Set(input.changed)].sort();
   return outsideOwn(dir, {
     changed: input.changed,
     own: input.own,
@@ -144,9 +147,18 @@ export function mergeAction(pinned: string): RunAction {
   return { kind: 'run', command: `git merge --no-ff --no-edit ${pinned}` };
 }
 
-/** §5.7 `[c]`: `git add -- <overlap> && git commit -m "wip before landing N agents"`. */
+/**
+ * §5.7 `[c]`: `git add -- <overlap> && git commit --only -m "wip before landing N agents" -- <overlap>`.
+ *
+ * `--only` and the trailing pathspec are the whole point (review 2026-09-22 finding 2): a bare `git commit`
+ * commits the WHOLE INDEX, so a file the user had staged themselves — deliberately, and never shown to the
+ * harness — was swept into a harness commit they did not review. `--only` commits exactly the named paths and
+ * leaves the rest of the index staged and uncommitted, which is what "commit the overlapping files" says.
+ */
 export function wipCommitAction(overlap: readonly string[], agents: number): RunAction {
-  return { kind: 'run', command: `git add -- ${quoteAll(overlap)} && git commit -m ${shellQuote(`wip before landing ${agents} ${agents === 1 ? 'agent' : 'agents'}`)}` };
+  const paths = quoteAll(overlap);
+  const message = shellQuote(`wip before landing ${agents} ${agents === 1 ? 'agent' : 'agents'}`);
+  return { kind: 'run', command: `git add -- ${paths} && git commit --only -m ${message} -- ${paths}` };
 }
 
 /** §5.7 `[s]`: `git stash push -u -- <overlap>`. */
@@ -166,8 +178,17 @@ export function launchProposal(action: Action, goal: string, plan: PlanDraft): P
   return { goal, action, plan, rawText: `harness-seeded: ${goal}` };
 }
 
-/** The three seeds of §5.7, by answer. `'stop'` (`[x]`) seeds nothing: the dock stays. */
+/**
+ * The three seeds of §5.7, by answer. `'stop'` (`[x]`) seeds nothing: the dock stays.
+ *
+ * An EMPTY `overlap` also seeds nothing, whatever the answer (review 2026-09-22 finding 1). Both verbs take a
+ * pathspec, and git reads an empty one as "everything": `git stash push -u --` takes the whole working tree,
+ * tracked and untracked, and `git add -- && git commit` commits whatever the index held. There is no answer for
+ * which "the overlapping files" being none of them means "all of them", so the guard is here rather than only at
+ * the caller — `seedFor` is exported and the next caller will not remember.
+ */
 export function seedFor(answer: LaunchAnswer, overlap: readonly string[], input: LaunchInput, plan: PlanDraft): Proposal | null {
+  if (overlap.length === 0) return null;
   if (answer === 'commit') return launchProposal(wipCommitAction(overlap, input.agents), `commit the ${overlap.length} overlapping file(s) before landing ${input.agents} agents`, plan);
   if (answer === 'stash') return launchProposal(stashAction(overlap), `stash the ${overlap.length} overlapping file(s) before landing ${input.agents} agents`, plan);
   return null;
