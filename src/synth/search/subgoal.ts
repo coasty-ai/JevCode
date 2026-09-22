@@ -389,8 +389,8 @@ export function taskIdentifiers(task: string): string[] {
  * `collapse_collection_to_element` — read it and enumerate only in WIDENED (jev-only-rungs-1-2.md
  * §16: SEEDS totals unchanged on 40/40 QuixBugs sites).
  */
-export function enumerateOptions(base: Base, goal: Goal, task: string): EnumerateOptions {
-  return { cap: ENUMERATE_CAP, testLiterals: testLiterals(goal.failures), taskIdentifiers: taskIdentifiers(task), corpus: base.files, phase: goal.phase };
+export function enumerateOptions(base: Base, goal: Goal, task: string, runId?: string): EnumerateOptions {
+  return { cap: ENUMERATE_CAP, testLiterals: testLiterals(goal.failures), taskIdentifiers: taskIdentifiers(task), corpus: base.files, phase: goal.phase, ...(runId === undefined ? {} : { runId }) };
 }
 
 /**
@@ -797,7 +797,7 @@ function freshOf(st: LoopState, enumerated: readonly Candidate[], base: Base): C
 
 /** Enumerate one seed source at one site on one base: its fresh candidates. */
 function enumerateSeed(st: LoopState, base: Base, site: Site, source: CandidateSourceName): Candidate[] {
-  return freshOf(st, seedSource(st.deps, source).enumerate(site, enumerateOptions(base, st.goal, st.ctx.task)), base);
+  return freshOf(st, seedSource(st.deps, source).enumerate(site, enumerateOptions(base, st.goal, st.ctx.task, st.ctx.runId)), base);
 }
 
 /**
@@ -817,7 +817,7 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
   else if (phase === 'SKETCH' || phase === 'BEAM') {
     if (mem.stepBudget.jevRequestsLeft <= 0) return BUDGET_EXIT;
     const jev = phase === 'SKETCH' ? deps.sketch : deps.beam;
-    const r = await jev.enumerate({ ctx, mem, goal, site, opts: enumerateOptions(base, goal, ctx.task), prior: st.prior });
+    const r = await jev.enumerate({ ctx, mem, goal, site, opts: enumerateOptions(base, goal, ctx.task, ctx.runId), prior: st.prior });
     spend(mem, r.requests);
     trace.jevRequests += r.requests;
     if (st.prior === null && r.editClass !== undefined) st.prior = r.editClass;
@@ -1569,7 +1569,7 @@ async function bestGuessPhases(st: LoopState, sites: readonly Site[], committed:
   if (sites.length === 0 && st.llm?.round === null) return finish(st, { kind: 'parked', reason: `no site located for ${goal.tests[0] ?? goal.id} from the issue text` });
 
   // sources 1–3 at each site, fresh (not tried, not the unchanged line)
-  const opts = enumerateOptions(committed, goal, ctx.task);
+  const opts = enumerateOptions(committed, goal, ctx.task, ctx.runId);
   const perSite: { site: Site; cands: Candidate[] }[] = [];
   for (const site of sites) {
     checkAborted(ctx);

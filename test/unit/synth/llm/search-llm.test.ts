@@ -151,3 +151,42 @@ describe('the source outlives the step: transcript lines land under the current 
     await llm.stepEnd(second);
   });
 });
+
+/**
+ * contract 1.4 (COORDINATION-DESIGN §8.8 column 3) / TUI-DESIGN-5 §8.2 R13: the controller threads the engine's
+ * relaxed view from `SynthesisContext.contextText` onto `LlmFireInput.contextText`, which is what puts it in every
+ * sample's user message. Absent on the context = absent on the fire input = the message the round sent before.
+ */
+describe('§8.8 column 3: the relaxed view reaches the sample prompt', () => {
+  it('ctx.contextText rides into every sample; without it the message is unchanged', async () => {
+    const view = '# Step 3\n\n## Task\nadd(None, 2) should return 2\n\n## Recent steps (last 1, oldest first)\n### step 2: run pytest -q';
+    const withView = served();
+    const a = setup('search-ctx-on', withView.generate);
+    const llmA = createSearchLlm({ pricing: LLM_SERVED_PRICING });
+    const r1 = llmA.fire({ ...a.ctx, contextText: view }, a.mem, a.goal, loc(), { round: 1, stagger: false });
+    expect(r1).not.toBeNull();
+    if (r1 === null) return;
+    await r1.rest();
+    const sent = withView.requests();
+    expect(sent.length).toBeGreaterThan(0);
+    for (const req of sent) {
+      const content = req.messages[0]!.content;
+      expect(content).toContain(view);
+      expect(content.indexOf('## Code')).toBeLessThan(content.indexOf(view));
+      expect(content.indexOf(view)).toBeLessThan(content.indexOf('## Reply'));
+    }
+    await llmA.stepEnd(a.ctx);
+
+    const without = served();
+    const b = setup('search-ctx-off', without.generate);
+    const llmB = createSearchLlm({ pricing: LLM_SERVED_PRICING });
+    const r2 = llmB.fire(b.ctx, b.mem, b.goal, loc(), { round: 1, stagger: false });
+    expect(r2).not.toBeNull();
+    if (r2 === null) return;
+    await r2.rest();
+    const plain = without.requests()[0]!.messages[0]!.content;
+    expect(plain).not.toContain('Harness context');
+    expect(plain.endsWith('## Reply\nCall `propose_fix`.')).toBe(true);
+    await llmB.stepEnd(b.ctx);
+  });
+});
