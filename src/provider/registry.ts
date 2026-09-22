@@ -19,6 +19,7 @@
  * `createProvider()` return exactly a core `Provider` with no other change here.
  */
 import { ConfigError } from '../errors.js';
+import { PROVIDER_KEY_ENV } from './ids.js';
 import { ANTHROPIC_VERSION, createAnthropicProvider } from './anthropic.js';
 import { createOpenRouterProvider, OPENROUTER_REFERER, OPENROUTER_TITLE } from './openrouter.js';
 import { createOpenAiProvider, listOpenAiModels, OPENAI_BASE_URL, OPENAI_DEFAULT_MODEL } from './openai.js';
@@ -42,7 +43,11 @@ export interface ProviderCapabilities {
 export interface ProviderSpec {
   readonly id: ProviderId;
   readonly displayName: string;
-  /** the environment variable the key comes from (config/resolve.ts prepends it to the generator.apiKey lookup) */
+  /**
+   * The environment variable the key comes from (config/resolve.ts prepends it to the generator.apiKey lookup):
+   * JevCode's canonical name for the provider, i.e. the first entry of `PROVIDER_KEY_ENV[id]` (provider/ids.ts owns
+   * the list; a provider that also answers to a vendor SDK's name has that alias there, not here).
+   */
   readonly keyEnv: string;
   readonly baseUrl: string;
   readonly defaultModel: string;
@@ -170,7 +175,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'anthropic',
     displayName: 'Anthropic',
-    keyEnv: 'ANTHROPIC_API_KEY',
+    keyEnv: PROVIDER_KEY_ENV.anthropic[0],
     baseUrl: 'https://api.anthropic.com',
     defaultModel: 'claude-sonnet-5',
     docsUrl: 'https://docs.claude.com/en/api/messages',
@@ -182,7 +187,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'openrouter',
     displayName: 'OpenRouter',
-    keyEnv: 'OPENROUTER_API_KEY',
+    keyEnv: PROVIDER_KEY_ENV.openrouter[0],
     baseUrl: 'https://openrouter.ai/api/v1',
     defaultModel: 'z-ai/glm-5.3-flash',
     docsUrl: 'https://openrouter.ai/docs/api-reference/chat-completion',
@@ -193,7 +198,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'openai',
     displayName: 'OpenAI',
-    keyEnv: 'OPENAI_API_KEY',
+    keyEnv: PROVIDER_KEY_ENV.openai[0],
     baseUrl: OPENAI_BASE_URL,
     defaultModel: OPENAI_DEFAULT_MODEL,
     docsUrl: 'https://developers.openai.com/api/docs/api-reference/responses/create',
@@ -204,7 +209,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'gemini',
     displayName: 'Google Gemini',
-    keyEnv: 'GEMINI_API_KEY',
+    keyEnv: PROVIDER_KEY_ENV.gemini[0],
     baseUrl: GEMINI_BASE_URL,
     defaultModel: GEMINI_DEFAULT_MODEL,
     docsUrl: 'https://ai.google.dev/api/generate-content',
@@ -215,7 +220,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'fireworks',
     displayName: 'Fireworks AI',
-    keyEnv: 'FIREWORKS_API_KEY',
+    keyEnv: PROVIDER_KEY_ENV.fireworks[0],
     baseUrl: FIREWORKS_BASE_URL,
     defaultModel: FIREWORKS_DEFAULT_MODEL,
     docsUrl: 'https://docs.fireworks.ai/api-reference/post-chatcompletions',
@@ -226,7 +231,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'meta',
     displayName: 'Meta',
-    keyEnv: 'META_API_KEY',
+    keyEnv: PROVIDER_KEY_ENV.meta[0],
     baseUrl: META_BASE_URL,
     defaultModel: META_DEFAULT_MODEL,
     docsUrl: 'https://ai.developer.meta.com/docs/model-api',
@@ -240,7 +245,7 @@ export const PROVIDERS: readonly ProviderSpec[] = [
   {
     id: 'xai',
     displayName: 'xAI (Grok)',
-    keyEnv: 'XAI_API_KEY',
+    keyEnv: PROVIDER_KEY_ENV.xai[0],
     baseUrl: XAI_BASE_URL,
     defaultModel: XAI_DEFAULT_MODEL,
     docsUrl: 'https://docs.x.ai/docs/api-reference',
@@ -292,5 +297,10 @@ export function createProvider(spec: ProviderSpec, cfg: ProviderConfig, deps: Pr
   return spec.create(cfg, deps);
 }
 
-/** Every registry id, in table order (anthropic, openrouter, then the five 2026-09 additions). */
-export const PROVIDER_IDS: readonly ProviderId[] = PROVIDERS.map((p) => p.id);
+/**
+ * Every registry id, re-exported from the zero-import `./ids.js` that owns the list (the first-frame rule: the config
+ * layer reads the ids without loading the seven adapters this module imports). It is ids.ts's display order —
+ * anthropic, openrouter, then the five 2026-09 additions — which for the last two is not the order of the `PROVIDERS`
+ * rows above; a test asserts the two cover the same set.
+ */
+export { PROVIDER_IDS } from './ids.js';

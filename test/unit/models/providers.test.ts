@@ -112,8 +112,11 @@ describe('keys from the environment', () => {
     expect(providersWithKeys(env)).toEqual(PROVIDER_IDS);
   });
 
-  it('mirrors the Google SDK precedence: GOOGLE_API_KEY wins over GEMINI_API_KEY', () => {
-    expect(keyFromEnv('gemini', { GEMINI_API_KEY: 'g', GOOGLE_API_KEY: 'goog' })).toBe('goog');
+  // provider/ids.ts owns the order and puts jevcode's name first, so GEMINI_API_KEY wins over the Google SDKs'
+  // own precedence ("If both are set, GOOGLE_API_KEY takes precedence"); GOOGLE_API_KEY is still accepted alone.
+  it("prefers jevcode's GEMINI_API_KEY over GOOGLE_API_KEY, and still reads GOOGLE_API_KEY", () => {
+    expect(keyFromEnv('gemini', { GEMINI_API_KEY: 'g', GOOGLE_API_KEY: 'goog' })).toBe('g');
+    expect(keyFromEnv('gemini', { GOOGLE_API_KEY: 'goog' })).toBe('goog');
     expect(keyFromEnv('gemini', { GEMINI_API_KEY: 'g' })).toBe('g');
   });
 

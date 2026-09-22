@@ -22,7 +22,10 @@ const cfg = (over: Partial<ProviderConfig> = {}): ProviderConfig => ({
 
 describe('PROVIDERS', () => {
   it('covers the seven generator surfaces with unique ids and key env vars', () => {
-    expect(PROVIDER_IDS).toEqual(['anthropic', 'openrouter', 'openai', 'gemini', 'fireworks', 'meta', 'xai']);
+    // PROVIDER_IDS comes from provider/ids.ts (the importless source of truth), so it is that file's display
+    // order rather than the order of the rows below — the set is what has to match, and it does.
+    expect(PROVIDER_IDS).toEqual(['anthropic', 'openrouter', 'openai', 'gemini', 'xai', 'fireworks', 'meta']);
+    expect([...PROVIDER_IDS].sort()).toEqual(PROVIDERS.map((p) => p.id).sort());
     expect(new Set(PROVIDERS.map((p) => p.id)).size).toBe(PROVIDERS.length);
     expect(new Set(PROVIDERS.map((p) => p.keyEnv)).size).toBe(PROVIDERS.length);
     // typesafe is the decider endpoint (jev/providers.ts), not a generator: it must not appear here
