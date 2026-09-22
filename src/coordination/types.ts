@@ -152,7 +152,15 @@ export interface Heartbeat {
   tokens: { used: number; cap: number | null };
   wallMs: number;
   maxWallMs: number;
-  context: { pct: number; files: number; historyEntries: number; summaryAt: number | null; tokensInWindow: number; windowBudget: number; compactions: number };
+  /**
+   * §3.3 / §12.0.3. contract 1.4 (W2b): the member names are `ContextUsage`'s, which is the ONE definition
+   * (`src/core/types.ts`). `windowBudget` is gone — §12.0.3 settled in revision 4 that it "read as the model's
+   * window and made `ctx 41%` look like 41 % of the window when it is 41 % of a budget that is itself ~55 % of it",
+   * so the beat carries `budgetTokens` (the PROMPT BUDGET) and `windowTokens` (the model's own window) and a peer's
+   * `sessions who` row can spell both out exactly as `/context` does. There is no alias: two names for one number
+   * across a record boundary is how the two drift.
+   */
+  context: { pct: number; files: number; historyEntries: number; summaryAt: number | null; tokensInWindow: number; budgetTokens: number; windowTokens: number; compactions: number };
   /**
    * §12.0.2: on the final `phase:'ended'` beat of a human_pause. It travels in a 4 KiB record that a hostile writer
    * also controls, so `parseRecord` bounds it: `llm.goalId` by length, `llm.arrived` by count, every counter by

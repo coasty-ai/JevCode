@@ -10,7 +10,7 @@
 import { describe, expect, it } from 'vitest';
 import { CONTROL_MESSAGE_TYPES, HOLDING_LEASE_TYPES, classifyIncoming, keyDir, parseRecord } from '../../../src/coordination/index.js';
 import type { Lease, MessageType, RecordOrigin, SelfIdentity } from '../../../src/coordination/index.js';
-import { DEV_A, DEV_B, REPO, makeLease, makeMessage, runId } from './helpers.js';
+import { DEV_A, DEV_B, REPO, makeHeartbeat, makeLease, makeMessage, runId } from './helpers.js';
 
 /** contract 1.4 (W2b): the four facts, named once so both halves below read the same list. */
 const NEW_MESSAGE_TYPES = ['budget', 'review', 'kick', 'land'] as const satisfies readonly MessageType[];
@@ -41,6 +41,25 @@ describe("contract 1.4 (W2b): parseRecord's bounded lists carry every widened me
     const bogus = parseRecord(JSON.stringify({ ...makeMessage(), type: 'shutdown' }), 'message', msgCtx);
     expect(bogus.ok).toBe(false);
     if (!bogus.ok) expect(bogus.reason).toBe('shape');
+  });
+
+  it("Heartbeat.context speaks ContextUsage's names: budgetTokens + windowTokens, and `windowBudget` is rejected", () => {
+    const hbCtx = { origin: 'local' as const, deviceId: DEV_A, hostKey: 'abcd1234' };
+    const good = makeHeartbeat();
+    const r = parseRecord(JSON.stringify(good), 'heartbeat', hbCtx);
+    expect(r.ok, r.ok ? '' : r.reason).toBe(true);
+    if (r.ok) {
+      // §12.0.3: `pct` is a share of the BUDGET, and the budget is itself ~55 % of the window — two numbers, so a
+      // peer's `sessions who` row can say `ctx 41% · budget 70k of 128k` instead of implying 41 % of the window
+      expect(r.record.context.budgetTokens).toBe(70_400);
+      expect(r.record.context.windowTokens).toBe(128_000);
+    }
+    // the old spelling is not an accepted alias: a record that still carries it is `shape`-rejected rather than
+    // folded with a silently-zero meter, which is the whole reason there is no alias
+    const { budgetTokens: _b, windowTokens: _w, ...rest } = good.context;
+    const stale = parseRecord(JSON.stringify({ ...good, context: { ...rest, windowBudget: 70_400 } }), 'heartbeat', hbCtx);
+    expect(stale.ok).toBe(false);
+    if (!stale.ok) expect(stale.reason).toBe('shape');
   });
 
   it('none of the four is CONTROL: they can never pause, end, abort or steer a run, and never need a [y]', () => {

@@ -360,7 +360,10 @@ function checkHeartbeat(o: JsonObject): Bad | null {
   if (!isJsonObject(tokens) || !isNum(tokens['used']) || !isNumOrNull(tokens['cap'])) return 'shape';
   if (!isNum(o['wallMs']) || !isNum(o['maxWallMs'])) return 'shape';
   const ctx = o['context'];
-  if (!isJsonObject(ctx) || !isNum(ctx['pct']) || !isNum(ctx['files']) || !isNum(ctx['historyEntries']) || !isNumOrNull(ctx['summaryAt']) || !isNum(ctx['tokensInWindow']) || !isNum(ctx['windowBudget']) || !isNum(ctx['compactions'])) return 'shape';
+  // contract 1.4 (W2b): `budgetTokens` + `windowTokens`, the `ContextUsage` names (§12.0.3); `windowBudget` is not an
+  // accepted spelling, so a record written by a build that predates the rename is `shape`-rejected rather than folded
+  // with a silently-zero meter.
+  if (!isJsonObject(ctx) || !isNum(ctx['pct']) || !isNum(ctx['files']) || !isNum(ctx['historyEntries']) || !isNumOrNull(ctx['summaryAt']) || !isNum(ctx['tokensInWindow']) || !isNum(ctx['budgetTokens']) || !isNum(ctx['windowTokens']) || !isNum(ctx['compactions'])) return 'shape';
   if (o['lockHeld'] !== undefined && !isBool(o['lockHeld'])) return 'shape';
   if (o['pausePoint'] !== undefined) {
     const bad2 = checkPausePoint(o['pausePoint']);

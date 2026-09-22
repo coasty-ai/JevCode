@@ -1283,6 +1283,19 @@ class EngineImpl implements Engine {
       spend: { generatorUsd: snap.generator.costUsd, jevUsd: snap.jev.costUsd, sessionUsd: snap.parent?.totalUsd ?? null, capUsd: snap.capUsd },
       tokens: { used: this.generatorTokens, cap: this.opts.limits.maxGeneratorTokens ?? null },
       wallMs: this.wallMsUsed(),
+      // §3.3 / §12.0.3: the meter a peer's `sessions who` row shows, filled from the ONE `ContextUsage` the status
+      // event carries. `budgetTokens` is the PROMPT BUDGET and `windowTokens` the model's own window, so a peer can
+      // print `ctx 41% · budget 70k of 128k` without re-deriving either — and neither is a second definition here.
+      context: {
+        pct: this.contextUsage.pct,
+        files: this.contextUsage.files,
+        historyEntries: this.contextUsage.historyEntries,
+        summaryAt: this.contextUsage.summaryAt,
+        tokensInWindow: this.contextUsage.tokensInWindow,
+        budgetTokens: this.contextUsage.budgetTokens,
+        windowTokens: this.contextUsage.windowTokens,
+        compactions: this.contextUsage.compactions,
+      },
       lockHeld: this.lockHeld,
     };
   }
