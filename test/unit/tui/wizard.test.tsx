@@ -5,6 +5,9 @@
  * before the `[setup]` items (the host's order), Esc clears then steps back, Ctrl-C exits 2 with no run and closes the
  * wizard mid-run; every row ≤ columns cells.
  */
+// Load-sensitive REAL-RENDERER tests (Ink on a real event loop): under a shared-machine load spike a single case can miss its
+// frame window and fail while passing alone (round-4/5 owner's passes, harness session 2026-09-22). Every top-level suite
+// carries `{ retry: 1 }`: one retry absorbs a hiccup; a real regression still fails twice and stays red.
 import { cleanup, render } from 'ink-testing-library';
 import { afterEach, describe, expect, it } from 'vitest';
 import { Text } from 'ink';
@@ -28,7 +31,7 @@ async function until(cond: () => boolean, timeoutMs = 2000): Promise<void> {
 }
 const KEY = 'sk-ant-api03-SECRET-CANARY-0123456789abcdef';
 
-describe('<MaskedField>', () => {
+describe('<MaskedField>', { retry: 1 }, () => {
   it('renders `> ` + bullets (min(len, columns − 3)), `*` in ASCII, and places the cursor after them', () => {
     const positions: (CursorPosition | undefined)[] = [];
     const ui = render(<MaskedField length={12} columns={40} top={2} cursor={(p) => positions.push(p)} />);
@@ -98,7 +101,7 @@ function harness(hostOver: Partial<WizardHost> = {}): Harness {
   return h;
 }
 
-describe('useWizard + <Wizard> (§11.1)', () => {
+describe('useWizard + <Wizard> (§11.1)', { retry: 1 }, () => {
   it('provider step (a non-openrouter provider preselected): digits pick; the key field masks every byte and only `length` reaches the reducer; Enter < 8 hints', async () => {
     const h = harness();
     h.ctl().start({ missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-on', provider: 'anthropic', trustNeeded: false });

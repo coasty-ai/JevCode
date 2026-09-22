@@ -7,6 +7,9 @@
  * count returns to 0 when hidden (observed through frame counts); `attentionAt` tiers; a key commit 5 ms after an animation
  * frame paints synchronously (D-F re-asserted beside the loop).
  */
+// Load-sensitive REAL-RENDERER tests (Ink on a real event loop): under a shared-machine load spike a single case can miss its
+// frame window and fail while passing alone (round-4/5 owner's passes, harness session 2026-09-22). Every top-level suite
+// carries `{ retry: 1 }`: one retry absorbs a hiccup; a real regression still fails twice and stays red.
 import { Box, Text, render } from 'ink';
 import { afterEach, describe, expect, it } from 'vitest';
 import { LOOP_ATTENTIVE_MS, LOOP_PASS_TICKS, LOOP_SLEEP_MS, loopBand } from '../../../src/tui/wordmark.js';
@@ -127,7 +130,7 @@ function passDone(seen: readonly Seen[], from = 0): boolean {
   return last15 !== -1 && tail.slice(last15 + 1).some((s) => s.phase === 'rest');
 }
 
-describe('attentionAt (TUI-DESIGN-3 §3.6)', () => {
+describe('attentionAt (TUI-DESIGN-3 §3.6)', { retry: 1 }, () => {
   it('< 60 s attentive · < 10 min calm · else asleep; non-finite input is attentive', () => {
     expect(attentionAt(10_000, 10_000)).toBe('attentive');
     expect(attentionAt(10_000 + LOOP_ATTENTIVE_MS - 1, 10_000)).toBe('attentive');
@@ -139,7 +142,7 @@ describe('attentionAt (TUI-DESIGN-3 §3.6)', () => {
   });
 });
 
-describe('useIdleLoop on the real renderer (TUI-DESIGN-3 §3.6)', () => {
+describe('useIdleLoop on the real renderer (TUI-DESIGN-3 §3.6)', { retry: 1 }, () => {
   it('starts in `rest` when activated and writes no band before the rest interval; then one pass of 16 written frames (k = 1..16, the last clears the band) and the rest writes nothing', async () => {
     const m = mount(ACTIVE);
     // the pass: k = 1..15 in order, each with the §3.4 band, then the clearing frame (band none) — 16 written frames
