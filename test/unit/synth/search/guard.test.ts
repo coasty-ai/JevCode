@@ -58,6 +58,8 @@ import {
   siteBatchDone,
   specialCaseScore,
   STRONG_SIGNALS_MIN,
+  POOL_SUSPECT_SIGNALS,
+  structuralRejection,
   suspicionSignals,
   unreleasable,
 } from '../../../../src/synth/search/guard.js';
@@ -1471,17 +1473,32 @@ describe('head-to-head v2 fix, class A′: an all-seed split of equal support is
     //
     // OOS iteration 4, item B — RE-PINNED, and this is the change the item exists for. Every one
     // of those three guards `hare.successor.successor`, a local derived from the parameter `node`,
-    // behind `if hare.successor is None:` which already read it: `guards_derived_local` on all of
-    // them, so the batch is a gold-free pool and the code RANKING rules are skipped. The gold of
+    // behind `if hare.successor is None:` which already DEREFERENCED `hare`:
+    // `guards_derived_local` on all of them, so the batch is a gold-free pool and the code
+    // RANKING rules are skipped. That holds under the TWO-signal `POOL_SUSPECT_SIGNALS` of the
+    // fix pass — `guards_derived_local` alone carries it, not the item-C three. The gold of
     // `detect_cycle` replaces L5 and is in none of these clusters, which is precisely what
     // "gold-free" means and what iteration 3 could not express (its `late_guard` was silent here,
     // so `probe_majority` committed a guard at L9 with no Jev request at all —
     // `20260922-013715-nlsygcax`). `dc_return` is still the candidate committed; it is now
-    // committed by Q15/Q16 at general 0.70 ≥ the 0.7 vouch bound instead of by code.
+    // committed by Q15/Q16 instead of by code, and at the 0.3 bound rather than the 0.7 one —
+    // only one of the pick's three signals is in the two-member swept set, so `strong.length`
+    // is 1 < STRONG_SIGNALS_MIN. The assertion on the bound is below.
     expect(d).toMatchObject({ kind: 'commit', plausible: 3, clusters: 2, arbitrated: true, requests: 1, structuralDrops: 2, codeRule: null, held: null });
     if (d.kind === 'commit') expect(d.applied.candidate.id).toBe('dc_return');
     expect(ask.calls).toHaveLength(1);
     expect(notes.some((n) => n.includes('gold-free pool'))).toBe(true);
+    // stated rather than implied: it is `guards_derived_local` that makes this pool gold-free,
+    // and it would still do so if the item-C three were removed from the set entirely
+    const survivors = passers.filter((o) => structuralRejection(o.applied) === null);
+    expect(survivors.map((o) => o.applied.candidate.id)).toEqual(['dc_return', 'dc_return_alt', 'dc_overfit']);
+    for (const o of survivors) expect(suspicionSignals(o, g)).toContain('guards_derived_local');
+    // and the bound the pick faces is 0.3, not 0.7: `dead_guard` and `adds_special_case` are not
+    // in the swept set, so exactly one swept signal counts towards STRONG_SIGNALS_MIN
+    const pickSignals = suspicionSignals(survivors[0]!, g);
+    expect(pickSignals).toEqual(['dead_guard', 'adds_special_case', 'guards_derived_local']);
+    expect(pickSignals.filter((s) => POOL_SUSPECT_SIGNALS.has(s))).toEqual(['guards_derived_local']);
+    expect(pickSignals.filter((s) => POOL_SUSPECT_SIGNALS.has(s)).length < STRONG_SIGNALS_MIN).toBe(true);
     expect(d.fallbacks.map((o) => o.applied.candidate.id)).not.toContain('dc_break');
     expect(notes.filter((n) => n.includes('adds a path that leaves a function with an implicit `return None`'))).toHaveLength(2);
   });

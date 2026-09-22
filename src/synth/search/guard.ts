@@ -169,27 +169,21 @@ export const STRONG_SIGNALS_MIN = 2;
  * none of them". A signal a gold can carry turns a pool the gold is IN into a pool the rule calls
  * gold-free, and then the arbitration's vouch bound refuses the fix.
  *
- * FIVE qualify today. `mutates_new_argument` was swept over the whole gold corpus by
- * review-oos-iter-1-2026-09-22.md finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder
- * golds: zero refusals"). The other four are OOS iteration 4, items B and C, swept over all 198
- * gold patches by `test/unit/synth/search/signal-sweeps.test.ts` (QuixBugs 41, ladder 65,
- * SWE-bench Verified 92 Python hunks of which 30 do not tokenize as fragments and are reported
- * as skipped rather than clean):
- *   - `guards_other_variable` — 0 fires as it stood;
- *   - `dead_guard` — 2 gold fires as it stood (`sympy__sympy-17139`'s `rv.exp.is_real`, a
- *     predicate attribute the function never names, and `pytest-dev__pytest-10081`'s `skipped`,
- *     a local the patch itself introduces). Narrowed to "the subject OCCURS in the pre-patch
- *     function and is never dereferenced there", which is exactly `detect_cycle`'s
- *     `tortoise.successor`, and 0 fires after;
- *   - `duplicates_block` — 1 gold fire as it stood (`sympy__sympy-12489`, an in-place rename:
- *     abstracting identifiers is what makes a renamed line look like the line it replaced).
- *     Narrowed to "the patch RAISES the count of that normalised line", which is exactly
- *     `wrap`'s loop copied under itself, and 0 fires after;
- *   - `guards_derived_local` (item B) — 0 fires, and it FIRES on 2 of the 3 recorded iteration-1
- *     overfits (`stats`, `detect_cycle`; not `token_bucket`, whose overfit and gold guard the
- *     same two parameters and differ only in placement). Both halves of the bar, so it is the
- *     first signal admitted to the pool with positive evidence behind it as well as a clean
- *     sweep — which is what `late_guard` lacked.
+ * THE BAR, as docs/DECISIONS.md 2026-09-22 ruling 1 states it and as iteration 3 applied it to
+ * `late_guard`: a clean sweep of all 198 gold patches **AND** positive evidence on the records —
+ * a replay in which the signal separates a recorded overfit from its gold. A signal with no
+ * positive evidence cannot be the evidence that a pool holds no gold, however clean its sweep.
+ *
+ * TWO qualify today:
+ *   - `mutates_new_argument` — swept over the whole gold corpus by
+ *     review-oos-iter-1-2026-09-22.md finding 2 ("Sweep of all 41 QuixBugs golds and 20 ladder
+ *     golds: zero refusals"), and the `units` Ring-1 record is its positive case;
+ *   - `guards_derived_local` (OOS iteration 4, item B) — 0 fires on all 198, and it FIRES on 2 of
+ *     the 3 recorded iteration-1 overfits: `stats` (`ordered = sorted(values)` dereferenced by
+ *     `return float(ordered[mid])` in front of the inserted guard) and `detect_cycle`
+ *     (`hare = tortoise = node` dereferenced by `if hare.successor is None:` in front), while
+ *     both of their golds are silent. Not `token_bucket`, whose overfit and gold guard the same
+ *     two parameters and differ only in placement.
  *
  * Every other signal is excluded, each for a measured reason:
  *   - `adds_special_case` is the input of `fewestSpecialCases` and the golds add special cases
@@ -207,9 +201,19 @@ export const STRONG_SIGNALS_MIN = 2;
  *     plain-reads `cost`, `detect_cycle` never dereferences `hare.successor.successor`). A signal
  *     with no positive evidence on the records cannot be the evidence that a pool holds no gold.
  *     Iteration 4 left that ruling standing: the sweep is clean, the records are silent, so it
- *     is a LONE-PASSER signal, where one Q16 answer decides and nothing is dropped.
+ *     is a LONE-PASSER signal, where one Q16 answer decides and nothing is dropped;
+ *   - `guards_other_variable`, `dead_guard` and `duplicates_block` — OOS iteration 4, item C
+ *     swept all three for the first time and FIXED all three against a concrete gold each
+ *     (`topological_ordering.py`'s `not in` read as a guarded name; `sympy__sympy-17139`'s
+ *     `rv.exp.is_real` and `pytest-dev__pytest-10081`'s `skipped`, neither of which the pre-patch
+ *     function names; `sympy__sympy-12489`'s in-place rename read as a copied block). All three
+ *     are now 0 fires on 198, and those fixes stand — they are correct as LONE-PASSER signals.
+ *     What each still lacks is the second half of the bar: **a replay record in which it
+ *     separates a recorded overfit from its gold.** Until one exists they doubt a single passer
+ *     and never make a pool gold-free. (Iteration 4 first admitted them on the sweep alone; that
+ *     was the ruling misapplied, and this is the correction.)
  */
-export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument', 'guards_other_variable', 'dead_guard', 'duplicates_block', 'guards_derived_local']);
+export const POOL_SUSPECT_SIGNALS: ReadonlySet<SuspicionSignal> = new Set<SuspicionSignal>(['mutates_new_argument', 'guards_derived_local']);
 /**
  * A hold is started or kept only while the step has this much left: the wall of ~15 median
  * QuixBugs runs per lane and two lanes' worth of SIEVE batches, so the decision that releases the

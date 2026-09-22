@@ -115,8 +115,10 @@ describe('item C + item B: the gold sweeps, per corpus', () => {
    * other three need the None-dereference failure the fixture supplies.
    */
   it('the sweep is not vacuous: the same harness fires on a synthetic derived-local guard', () => {
-    const before = 'def median(values):\n    ordered = sorted(values)\n    mid = len(ordered) // 2\n    return ordered[mid]\n';
-    const after = 'def median(values):\n    ordered = sorted(values)\n    mid = len(ordered) // 2\n    if not ordered:\n        raise ValueError("empty")\n    return ordered[mid]\n';
+    // `first = ordered[0]` is the DEREFERENCE in front — `mid = len(ordered) // 2` on its own is
+    // not one, and after the fix pass it is not evidence either (see the read-clause cases below)
+    const before = 'def median(values):\n    ordered = sorted(values)\n    first = ordered[0]\n    return ordered[-1] - first\n';
+    const after = 'def median(values):\n    ordered = sorted(values)\n    first = ordered[0]\n    if not ordered:\n        raise ValueError("empty")\n    return ordered[-1] - first\n';
     expect(newlyDerivedLocalGuards({ files: [{ path: 'm.py', before, after }] }).map((x) => `${x.fn}:${x.guard.test}`)).toEqual(['median:not ordered']);
   });
 });
@@ -172,12 +174,88 @@ describe('item B: `guards_derived_local` on the three recorded iteration-1 overf
     expect(parameterDerivedLocals(mod, waitFor).has('self')).toBe(false);
   });
 
-  /** 2 of 3 is the bar ruling 1 set for a pool signal, and the sweep above is the other half. */
-  it('so it clears both halves of the bar and joins POOL_SUSPECT_SIGNALS', () => {
-    expect([...POOL_SUSPECT_SIGNALS].sort()).toEqual(['dead_guard', 'duplicates_block', 'guards_derived_local', 'guards_other_variable', 'mutates_new_argument']);
-    expect(POOL_SUSPECT_SIGNALS.has('late_guard')).toBe(false);
-    expect(POOL_SUSPECT_SIGNALS.has('adds_special_case')).toBe(false);
-    expect(POOL_SUSPECT_SIGNALS.has('deletes_statement')).toBe(false);
+  /**
+   * The bar (docs/DECISIONS.md 2026-09-22 ruling 1, as iteration 3 applied it to `late_guard`):
+   * a clean 198-gold sweep AND a replay record where the signal separates an overfit from its
+   * gold. `guards_derived_local` has both. Item C's three have the sweep and no replay record,
+   * so they stay lone-passer-only — the sweep alone is NOT the bar, and admitting them on it was
+   * the mistake this fix pass corrects.
+   */
+  it('so it clears both halves of the bar and joins POOL_SUSPECT_SIGNALS — alone', () => {
+    expect([...POOL_SUSPECT_SIGNALS].sort()).toEqual(['guards_derived_local', 'mutates_new_argument']);
+    for (const s of ['late_guard', 'adds_special_case', 'deletes_statement', 'guards_other_variable', 'dead_guard', 'duplicates_block'] as const) {
+      expect(POOL_SUSPECT_SIGNALS.has(s)).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// The fix pass: the READ clause of `guardsDerivedLocal` is a DEREFERENCE
+// ---------------------------------------------------------------------------------------
+
+/**
+ * OOS iteration 4 fix pass. The first version of `guardsDerivedLocal` required "a statement
+ * strictly before the clause READS R", and that is the very mistake iteration 3's review killed
+ * in `late_guard` (finding 1): a bare occurrence cannot fail on the value the guard rejects, so
+ * it is no evidence that the guard sits behind anything. The clause is now a DEREFERENCE of R —
+ * `R.attr`, `R[…]`, `R.method(…)`.
+ *
+ * On the ROOT, not the exact dotted path, and the records pick that: `stats`' operand is
+ * `ordered` and `return float(ordered[mid])` stands in front, so either rule keeps it; but
+ * `detect_cycle`'s operand is `hare.successor.successor` and what stands in front is
+ * `if hare.successor is None:` — a dereference of `hare` and of nothing longer. An exact-path
+ * rule loses the record the signal was built for. The `self`-collapse that forced `late_guard`
+ * onto the exact path cannot recur here because R must be a `parameterDerivedLocals` name, and
+ * that set excludes every parameter of the block, `self` and `cls` among them.
+ */
+describe('the read clause is a dereference: a use that cannot fail is not evidence', () => {
+  const fires = (before: string, after: string): string[] => newlyDerivedLocalGuards({ files: [{ path: 'm.py', before, after }] }).map((x) => `${x.fn}:${x.guard.test}`);
+
+  /** *failing-first by mechanism*: every one of these fired at 822be5b. */
+  const NOT_EVIDENCE: readonly { name: string; before: string; after: string }[] = [
+    {
+      name: 'passing the local to a call — `log(result)` cannot fail on None (the coordinator`s case)',
+      before: 'def f(x):\n    result = compute(x)\n    log(result)\n    return result.value\n',
+      after: 'def f(x):\n    result = compute(x)\n    log(result)\n    if result is None:\n        return None\n    return result.value\n',
+    },
+    {
+      name: '`len(ys)` cannot fail on empty, which is what the guard rejects',
+      before: 'def f(xs):\n    ys = sorted(xs)\n    n = len(ys)\n    return n\n',
+      after: 'def f(xs):\n    ys = sorted(xs)\n    n = len(ys)\n    if not ys:\n        return None\n    return n\n',
+    },
+    {
+      name: '`isinstance(v2, dict)` is a type test, not a use',
+      before: 'def f(v):\n    v2 = norm(v)\n    ok = isinstance(v2, dict)\n    return ok\n',
+      after: 'def f(v):\n    v2 = norm(v)\n    ok = isinstance(v2, dict)\n    if v2 is None:\n        return None\n    return ok\n',
+    },
+    {
+      name: 'iterating the local cannot fail on empty',
+      before: 'def f(rows):\n    rows2 = list(rows)\n    for r in rows2:\n        see(r)\n    return rows2\n',
+      after: 'def f(rows):\n    rows2 = list(rows)\n    for r in rows2:\n        see(r)\n    if not rows2:\n        return None\n    return rows2\n',
+    },
+  ];
+
+  for (const c of NOT_EVIDENCE) {
+    it(c.name, () => {
+      expect({ case: c.name, fires: fires(c.before, c.after) }).toEqual({ case: c.name, fires: [] });
+    });
+  }
+
+  it('a real dereference in front is still evidence', () => {
+    expect(fires('def f(x):\n    o = build(x)\n    o.run()\n    return o\n', 'def f(x):\n    o = build(x)\n    o.run()\n    if o is None:\n        return None\n    return o\n')).toEqual(['f:o is None']);
+    expect(fires('def f(x):\n    o = build(x)\n    v = o["k"]\n    return v\n', 'def f(x):\n    o = build(x)\n    v = o["k"]\n    if o is None:\n        return None\n    return v\n')).toEqual(['f:o is None']);
+  });
+
+  /** The measurement behind "the ROOT, not the exact dotted path". */
+  it('the root is what the records need: `detect_cycle` has no dereference of `hare.successor.successor` in front, only of `hare`', () => {
+    const mod = analyse(read(join(QUIXBUGS_DIR, 'programs/detect_cycle.py')).replace('        hare = hare.successor.successor', '        if not hare.successor.successor:\n            break\n        hare = hare.successor.successor'));
+    const block = mod.blocks[0]!;
+    const g = guardClauses(mod, block).find((c) => c.test === 'not hare.successor.successor')!;
+    expect(g.operands).toEqual(['hare.successor.successor']);
+    // nothing in front dereferences the exact path — that is iteration 3's own finding, and why
+    // `late_guard` is silent here; `hare` itself IS dereferenced, by `if hare.successor is None:`
+    expect(g.perOperand['hare.successor.successor']?.derefs).toBe(0);
+    expect(guardsDerivedLocal(mod, block, g)).toBe(true);
   });
 });
 
@@ -230,8 +308,8 @@ describe('`guards_derived_local` is silent on the correct shapes', () => {
   it('but a chain through two locals still fires (the derivation is transitive)', () => {
     const before = 'def f(p):\n    a = normalise(p)\n    b = index(a)\n    return b.value\n';
     const after = 'def f(p):\n    a = normalise(p)\n    b = index(a)\n    if b is None:\n        return None\n    return b.value\n';
-    expect(fires(before, after)).toEqual([]); // nothing in front READS `b` yet
-    const later = 'def f(p):\n    a = normalise(p)\n    b = index(a)\n    log(b)\n    if b is None:\n        return None\n    return b.value\n';
+    expect(fires(before, after)).toEqual([]); // nothing in front has DEREFERENCED `b` yet
+    const later = 'def f(p):\n    a = normalise(p)\n    b = index(a)\n    tag = b.tag\n    if b is None:\n        return None\n    return b.value\n';
     expect(fires(before, later)).toEqual(['f:b is None']);
   });
 });

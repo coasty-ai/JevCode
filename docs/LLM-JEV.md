@@ -481,14 +481,28 @@ behind the first statement that used that value, is a patch for the one path the
 one operand path of a guard clause the patch ADDS, with root R — R is a `parameterDerivedLocals` name of the
 enclosing `def` (bound, to a fixed point, from an expression that reads a parameter, and not a parameter itself), a
 statement of the block strictly before the clause BINDS R, and a statement of the block strictly before the clause
-READS R (`readsName`, so a binder's own target is not a read of itself). An inserted clause is judged on all of its
-operands, a condition rewrite only on the operands the edit added — the same INSERTED/EDITED split
-`newlyLateGuards` uses.
+**DEREFERENCES** R (`R.attr`, `R[…]`, `R.method(…)`). An inserted clause is judged on all of its operands, a
+condition rewrite only on the operands the edit added — the same INSERTED/EDITED split `newlyLateGuards` uses.
+
+**Why a dereference and not any read** (fix pass, after review). The first version of this rule said "READS R", and
+that is exactly the mistake iteration 3's review killed in `late_guard` (finding 1): a bare occurrence cannot fail on
+the value the guard rejects, so it is no evidence that the guard sits behind anything. Four shapes fired under it and
+are silent now — `result = compute(x); log(result); if result is None:`, `ys = sorted(xs); n = len(ys); if not ys:`,
+`isinstance(v2, dict)` and `for r in rows2:`.
+
+**Why the ROOT and not the exact dotted path**, which is what `isLateGuard` insists on — the records pick it, and the
+choice is uniform, not fitted. `stats`' operand is `ordered` and `return float(ordered[mid])` stands in front, so
+either rule keeps it; but `detect_cycle`'s operand is `hare.successor.successor` and what stands in front is
+`if hare.successor is None:` — a dereference of `hare` and of nothing longer (`perOperand['hare.successor.successor']
+.derefs` is 0, which is why `late_guard` is silent here). An exact-path rule loses the record the signal was built
+for. The `self`-collapse that forced `late_guard` onto the exact path cannot recur here, and not by luck: R must be a
+`parameterDerivedLocals` name, and that set excludes every parameter of the block, `self` and `cls` among them — the
+root is always a value the function computed from its own arguments, never a catch-all receiver the caller handed in.
+Note that `mid = len(ordered) // 2` is NOT what carries `stats`; `return float(ordered[mid])` is.
 
 Only the first half of the item's definition is implemented. The second ("whose operand is not on the path from any
 parameter to the failing expression") is already `guards_other_variable` — "the added guard names no root the failing
-traceback dereferences" — and item C sweeps that one clean, so it carries that half into the pool itself rather than
-being duplicated inside this signal.
+traceback dereferences" — so it is that signal's job, not a second disjunct here.
 
 | corpus | patches | `guards_derived_local` fires | not analysable |
 |---|---|---|---|
@@ -501,8 +515,8 @@ The iteration-1 replay, which is the half `late_guard` failed:
 
 | record | patch | fires? | why |
 |---|---|---|---|
-| ladder `stats` | `if not ordered: raise …` inserted before `return (ordered[mid-1] + …)` | **YES** (`median:not ordered`) | `ordered = sorted(values)` is derived from the parameter, and `mid = len(ordered) // 2` read it first |
-| QuixBugs `detect_cycle` (`20260922-013715-nlsygcax`) | `if not hare.successor.successor: break` inserted before `hare = hare.successor.successor` | **YES** (`detect_cycle:not hare.successor.successor`) | `hare = tortoise = node` is derived, and `if hare.successor is None:` read it first |
+| ladder `stats` | `if not ordered: raise …` inserted before `return (ordered[mid-1] + …)` | **YES** (`median:not ordered`) | `ordered = sorted(values)` is derived from the parameter, and `return float(ordered[mid])` DEREFERENCES it first |
+| QuixBugs `detect_cycle` (`20260922-013715-nlsygcax`) | `if not hare.successor.successor: break` inserted before `hare = hare.successor.successor` | **YES** (`detect_cycle:not hare.successor.successor`) | `hare = tortoise = node` is derived, and `if hare.successor is None:` DEREFERENCES it first |
 | ladder `token_bucket` | `if self.refill_per_second <= 0.0:` → `if cost > self.capacity or …` | **no** | the overfit and the GOLD guard the same two values, `cost` and `self.capacity`, and both are parameters of `wait_for`; what separates them there is placement, not data flow |
 
 Both golds beside them are silent, and the `detect_cycle` gold is the check that the placement half is load-bearing:
@@ -516,9 +530,9 @@ false positive:
 
 | signal | QuixBugs 41 | ladder 65 | SWE 92 (30 unparsed) | as it stood | after the fix |
 |---|---|---|---|---|---|
-| `guards_other_variable` | 0 | 0 | 0 | clean | clean → joins the pool set |
-| `dead_guard` | 1 — `topological_ordering.py` | 0 | 2 — `sympy__sympy-17139`, `pytest-dev__pytest-10081` | 3 fires | **0** → joins |
-| `duplicates_block` | 0 | 0 | 1 — `sympy__sympy-12489` | 1 fire | **0** → joins |
+| `guards_other_variable` | 0 | 0 | 0 | clean | clean — **stays lone-passer-only** |
+| `dead_guard` | 1 — `topological_ordering.py` | 0 | 2 — `sympy__sympy-17139`, `pytest-dev__pytest-10081` | 3 fires | **0** — **stays lone-passer-only** |
+| `duplicates_block` | 0 | 0 | 1 — `sympy__sympy-12489` | 1 fire | **0** — **stays lone-passer-only** |
 
 The three fixes, each with the gold that forced it:
 
@@ -538,14 +552,36 @@ The three fixes, each with the gold that forced it:
   copied loop takes its normalised line from one occurrence to two, a rename removes one and adds one. `wrap` still
   fires.
 
-`POOL_SUSPECT_SIGNALS` is therefore `{mutates_new_argument, guards_other_variable, dead_guard, duplicates_block,
-guards_derived_local}`. `adds_special_case`, `deletes_statement` and `late_guard` stay out for the reasons iteration 3
-recorded. **The consequence, stated plainly: `detect_cycle`'s guard pools are now gold-free pools.** The two class A′
-tests that used to commit `dc_return` / `a1` by `probe_majority` with no Jev request now arbitrate them and commit the
-same candidate at general 0.70 ≥ the 0.7 vouch bound; with no Jev request left the code rules still decide, unchanged,
-and both of those are re-pinned with the reason. That is the hole `20260922-013715-nlsygcax` showed and the reason
-item B exists — and it is also the largest behaviour change in this branch and the one a measurement should look at
-first.
+**These three do NOT join `POOL_SUSPECT_SIGNALS`, and the fixes above stand on their own.** The bar is the one
+docs/DECISIONS.md set on 2026-09-22 and iteration 3 applied to `late_guard`: a clean 198-gold sweep **AND** positive
+evidence on the records — a replay in which the signal separates a recorded overfit from its gold. These three now
+have the first half and not the second. A clean sweep says only "no gold carries this"; it does not say the signal
+ever marks an overfit, and a signal that marks nothing cannot be the evidence that a pool holds no gold. (This
+iteration first admitted them on the sweep alone. That was the ruling misapplied; the branch corrects it, and what
+each still lacks is named in `guard.ts`: a replay record where it separates an overfit from a gold.)
+
+`POOL_SUSPECT_SIGNALS` is therefore `{mutates_new_argument, guards_derived_local}` — one signal more than iteration 3
+shipped. `adds_special_case`, `deletes_statement` and `late_guard` stay out for the reasons iteration 3 recorded;
+`guards_other_variable`, `dead_guard` and `duplicates_block` stay out pending a replay record.
+
+**Which pools are gold-free under the two-signal set — the thing the next measurement must look at.** The
+`detect_cycle` guard pools still are, and `guards_derived_local` carries them on its own: the three contenders that
+survive the structural rules (`dc_return`, `dc_return_alt`, `dc_overfit`; the two `break` guards are refused as
+implicit-None exits) all guard `hare.successor.successor`, a local derived from the parameter `node`, behind
+`if hare.successor is None:` which already dereferenced `hare`. That is asserted per contender in `guard.test.ts`, so
+it is not inferred from the batch's disposition. The two class A′ tests that used to commit `dc_return` / `a1` by
+`probe_majority` with no Jev request therefore still arbitrate them and still commit the same candidate — and the
+bound they face is the **0.3** one, not 0.7, because only one of the pick's three signals (`dead_guard`,
+`adds_special_case`, `guards_derived_local`) is in the two-member swept set, so `strong.length` is 1 < 2. Measured:
+`strong = ['guards_derived_local'] → bound 0.3`, and the pick answers 0.70. With no Jev request left the code rules
+decide, unchanged. That is the hole `20260922-013715-nlsygcax` showed and the reason item B exists.
+
+What is NOT gold-free any more, compared with the five-signal set this branch first carried: any pool whose
+contenders share only `dead_guard`, `duplicates_block` or `guards_other_variable` — a pool of `wrap`-shaped copied
+blocks, or of guards on a variable the traceback never dereferences, now goes back to the code ranking rules with no
+Jev request. The one recorded pool of that shape is `detect_cycle`'s, and it is covered by `guards_derived_local`
+anyway, so no record distinguishes the two configurations. That is exactly why the three are held back rather than
+shipped: there is no measurement either way.
 
 **D. Lone vs pool bound symmetry** — the asymmetry is real, and the records say to leave it. The lone branch takes
 `signals.length >= STRONG_SIGNALS_MIN`, the pool branch takes
@@ -583,9 +619,13 @@ away with the reserve spent. Of the 27 holds:
 So the 0.7 bound DELAYED a gold-equivalent lone passer to step end and marked it "possible overfit"; it never refused
 one. Item D's condition for changing the lone path is not met, so **the lone path is left counting every signal**, and
 `signal-sweeps.test.ts` pins that with the mechanism (0.50 → held → `commitSuspect` releases it as a possible
-overfit; 0.12 → held → never released). The honest caveat: `POOL_SUSPECT_SIGNALS` has just grown from one member to
-five, so the POOL bound will now reach 0.7 far more often than it did when this replay was recorded, and the replay
-says nothing about that.
+overfit; 0.12 → held → never released). The caveat is smaller than it was before the fix pass but still real:
+`POOL_SUSPECT_SIGNALS` grew from one member to **two**, not five, so the POOL bound reaches 0.7 only when a pick
+carries both `guards_derived_local` and `mutates_new_argument` — which no record shows. Under the two-signal set the
+pool's 0.3 branch is therefore live again, where the five-signal set would have made it nearly dead for guard pools
+(`dead_guard` and `guards_derived_local` co-fire on every one of `detect_cycle`'s contenders). That is a second
+reason the fix pass is the right configuration, and it is not something the replay measured — it follows from the
+set.
 
 **Ring 1, by hand at the end.** The load gate was met when the arms started (`sysctl -n vm.loadavg` first value
 **4.56**) and broke while they ran: another live bench took the machine to **79–118** within minutes, which is where
@@ -618,10 +658,18 @@ record says why, which is the useful part:
   was two problems stacked, and iteration 4 removed the localisation one: the rest is candidate generation, which is
   the next iteration's, not this one's.
 
+The Ring-1 arms above ran on the five-signal `POOL_SUSPECT_SIGNALS` this branch first carried, before the fix pass
+cut it to two, and they were **not re-run**. Checked rather than assumed: over the 30 Ring-1-era run records of
+those five tasks, 14 reach a ≥ 2-passer arbitration, and **not one of them logs `gold-free pool` or "carries a swept
+code signal"** — `poolSuspect` never became true in any Ring-1 arm, so the size of `POOL_SUSPECT_SIGNALS` did not
+enter a single Ring-1 decision and the table stands for both configurations.
+
 **Tests, labelled by what they establish** (a test that fails on `5ac0042` only because a symbol did not exist is not
 a failing-first record):
 
-*Failing-first by mechanism* — `code-order.test.ts` "the six replace sites hold L12 …" (on `5ac0042`:
+*Failing-first by mechanism* — `signal-sweeps.test.ts`'s four read-clause cases (`log(result)`, `len(ys)`,
+`isinstance(v2, dict)`, `for r in rows2:`), every one of which fired at `822be5b` before the read clause became a
+dereference; `code-order.test.ts` "the six replace sites hold L12 …" (on `5ac0042`:
 `[2, 3, 4, 10, 12, 14]`, driven by the inert-0.5 Q5n), "round-robin across functions: one function cannot take all
 six", "is total and stable …", and the three `widenedReachable` cases; `signal-sweeps.test.ts` "`stats` FIRES",
 "`detect_cycle` FIRES", "`token_bucket` does NOT fire" and "the recorded 0.50 is HELD, not refused";
@@ -645,4 +693,4 @@ same 198 patches.
 
 Gates on this tree: `tsc --noEmit` clean; `scripts/no-any.mjs` ok (src, test, perf, scripts); `scripts/jev-contract.mjs`
 ok (32 Jev call sites, 2 four-clause blocks, 30 allow-listed); `vitest --project unit --maxWorkers=2 test/unit/synth
-test/unit/jev test/unit/loop test/unit/bench` → **205 files / 2,772 passed**.
+test/unit/jev test/unit/loop test/unit/bench` → **205 files / 2,778 passed**.

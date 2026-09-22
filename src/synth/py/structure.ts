@@ -1751,15 +1751,37 @@ export function parameterDerivedLocals(mod: PyModule, block: Block): Set<string>
  * Precisely, for at least one operand path of the clause, with root R:
  *   - R is a `parameterDerivedLocals` name of the enclosing `def` (so not a parameter itself);
  *   - a statement of the block strictly BEFORE the clause's first line BINDS R; and
- *   - a statement of the block strictly before the clause's first line READS R
- *     (`readsName`, so the binder's own target does not count as a read of itself).
+ *   - a statement of the block strictly before the clause's first line **DEREFERENCES** R —
+ *     `R.attr`, `R[…]`, `R.method(…)`, a use the value the guard rejects would have made fail.
  *
- * The two clauses together are the placement fact: the guard could have stood where the local was
- * created, and the patch put it after the first use instead. The `detect_cycle` GOLD is the check
- * that the "after the first use" half is load-bearing — it adds `hare is None` to the clause at
- * the top of the `while` body, where `hare` is derived from the parameter `node` but nothing in
- * front of the guard has read it yet, so this is silent on it and fires on the overfit two
- * statements further down.
+ * The three clauses together are the placement fact: the guard could have stood where the local
+ * was created, and the patch put it behind a use that the guard does not protect.
+ *
+ * **Why a dereference and not any read** (OOS iteration 4 fix pass; it is iteration 3's lesson
+ * about `late_guard`, review finding 1, applied to this rule too). A bare occurrence cannot fail
+ * on the value the guard rejects, so it is not evidence that the guard is behind anything:
+ * `result = compute(x); log(result); if result is None:` and `ys = sorted(xs); n = len(ys); if
+ * not ys:` and `isinstance(v2, dict)` and `for r in rows2:` all fired under the first version of
+ * this rule and are all silent now.
+ *
+ * **Why the ROOT and not the exact dotted path**, which is what `isLateGuard` insists on. Measured
+ * on the two records the signal exists for: `stats`' operand is `ordered` and `return
+ * float(ordered[mid])` stands in front of the guard, so the exact path works there; but
+ * `detect_cycle`'s operand is `hare.successor.successor` and what stands in front is `if
+ * hare.successor is None:` — a dereference of `hare`, and of nothing longer. An exact-path rule
+ * therefore loses `detect_cycle`, which is the record this signal was built for, so the evidence
+ * picks the root.
+ *
+ * The root collapse that forced `late_guard` onto the exact path (`self.logger.debug(…)` read as
+ * evidence about `self.handler`) cannot happen here, and not by luck: R is required to be a
+ * `parameterDerivedLocals` name, and that set excludes every parameter of the block — `self` and
+ * `cls` among them. The root is always a value THIS function computed from its own arguments,
+ * never a catch-all receiver the caller handed in.
+ *
+ * The `detect_cycle` GOLD is the check that the placement half is load-bearing at all: it adds
+ * `hare is None` to the clause at the TOP of the `while` body, where `hare` is derived from the
+ * parameter `node` but nothing in front of the guard has touched it yet, so this is silent on it
+ * and fires on the overfit three statements further down.
  */
 export function guardsDerivedLocal(mod: PyModule, block: Block, g: GuardClause, opts: { operands?: readonly string[] } = {}): boolean {
   const operands = opts.operands ?? g.operands;
@@ -1770,6 +1792,6 @@ export function guardsDerivedLocal(mod: PyModule, block: Block, g: GuardClause, 
   return operands.some((p) => {
     const root = p.split('.')[0] ?? p;
     if (!derived.has(root)) return false;
-    return before.some((s) => bindsName(s, root)) && before.some((s) => readsName(s, root));
+    return before.some((s) => bindsName(s, root)) && before.some((s) => dereferencesPath(s, root));
   });
 }
