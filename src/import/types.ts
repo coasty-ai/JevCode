@@ -1,334 +1,66 @@
 /**
  * docs/IMPORT-DESIGN.md §7.1 row 1 — the import contract.
  *
- * TEMPORARY HOME. Every type in section 1 below is declared here only because the two designs
- * that own `src/core/types.ts` next have not landed yet: the whole block moves verbatim to
- * `src/core/types.ts` under a `// contract 1.6` marker **after** coordination 1.4 and
- * orchestration 1.5 land (§7.1 [G2.2]: "the import additions to src/core/types.ts go after
- * coordination's round-3 contract line"). Until then nothing outside `src/import/**` may import
- * from this file, and `src/core/types.ts` is not edited at all.
+ * LANDED AT contract 1.6 (2026-09-22). The 22 shapes section 1 used to declare here now live in
+ * `src/core/types.ts` under the `// contract 1.6` header, which sits directly after coordination's
+ * 1.4 and orchestration's 1.5 exactly as §7.1 [G2.2] requires ("the import additions to
+ * src/core/types.ts go after coordination's round-3 contract line"). This file re-exports every one
+ * of them, so `src/import/**` and its tests keep the single import they were written against and no
+ * other module moved.
  *
- * Section 2 holds the four **widenings** of existing `src/core/types.ts` declarations. They are
- * written here as separate local types because widening the real declaration would edit a file
- * this slot does not own on this branch; each one names the member it merges into at 1.6.
+ * The five widenings section 2 used to declare as stand-in aliases are now members of the real
+ * declarations, and the aliases are gone: `InstructionRecord += kind?, scope?`;
+ * `EngineOptions.memory?: EngineMemoryOptions`; `NoticeKind += 'import'`; `RunMeta.imports?`;
+ * `CheckpointState.kept?[].kind += 'memory'` (the `kept` row itself landed with 1.6 as the
+ * amendment to COORDINATION-DESIGN §8.6 `:1504` that [G2.2] calls for).
  *
  * Section 3 is engine-local and does **not** move: the atlas shape, the parser results and the
  * seams `src/import/**` is injected with. `src/import/**` imports nothing from `src/tui`,
  * `src/cli`, `src/config`, `src/session` or `src/chat` (§7 ownership), so every root, clock and
  * filesystem call arrives as an argument.
  */
-import type { Json } from '../core/types.js';
+// the four contract shapes section 3's own declarations refer to: `export … from` re-exports do not
+// create local bindings, so they are imported as well as re-exported
+import type { ImportClass, Json, SourceFormat, SourceScope, SourceTool } from '../core/types.js';
 
 // =======================================================================================
-// 1. contract 1.6 — moves to src/core/types.ts after coordination 1.4 / orchestration 1.5
+// 1. contract 1.6 — declared in src/core/types.ts, re-exported here
 // =======================================================================================
 
-/** §3: the nine tools the atlas knows, plus Claude Desktop, the MCP-only rows and stdin pastes (§3.11). */
-export type SourceTool =
-  | 'claude-code'
-  | 'claude-desktop'
-  | 'codex'
-  | 'opencode'
-  | 'cursor'
-  | 'windsurf'
-  | 'aider'
-  | 'gemini'
-  | 'copilot'
-  | 'mcp'
-  | 'pasted';
-
-/** §2.2 / §4.2.5: scope is meaning (§0 principle 7) — never flattened. `managed` is a system-wide root. */
-export type SourceScope = 'user' | 'project' | 'project-local' | 'managed';
-
-/** §4.2.5: how a source is read. A Codex `*.rules` file is `text` (no parser claims it). */
-export type SourceFormat = 'md' | 'mdc' | 'json' | 'jsonc' | 'toml' | 'yaml' | 'jsonl' | 'sqlite' | 'text' | 'js' | 'sh';
-
-/**
- * §4.4.0 / §4.6.1: `PlanRow.class`, and the class an atlas row declares (§3.1 `SourceSpec.class`).
- * The design's five letters map on: M → `memory` | `rule`, W → `command`, C → `config` | `mcp`,
- * S → `secret`, T → `transcript`, X → `skip` (an atlas row that is never imported at all).
- */
-export type ImportClass = 'memory' | 'rule' | 'command' | 'mcp' | 'config' | 'secret' | 'transcript' | 'skip';
-
-/** §4.4.0: the fourteen named `skip:*` reasons — "unknown" is never a silent bucket. */
-export type ImportSkipAction =
-  | 'skip:unchanged'
-  | 'skip:self'
-  | 'skip:secret'
-  | 'skip:executable'
-  | 'skip:unsupported'
-  | 'skip:oversize'
-  | 'skip:not-text'
-  | 'skip:not-a-file'
-  | 'skip:parse-error'
-  | 'skip:symlink'
-  | 'skip:transcript'
-  | 'skip:third-party'
-  | 'skip:tool-managed'
-  | 'skip:unknown-format'
-  | 'skip:remote'
-  | 'skip:unrelated'
-  | 'skip:untrusted';
-
-/** §4.6.1: exactly one action per discovered artefact (§1 property 2 — there is no "other" bucket). */
-export type ImportAction = 'create' | 'append' | 'update' | 'merge' | 'review' | 'suggest' | ImportSkipAction;
-
-/** §4.2.5: the tolerant parse summary carried on a `SourceItem`. Shapes only — never a body. */
-export interface SourceParse {
-  ok: boolean;
-  error?: string;
-  frontmatterKeys?: readonly string[];
-  /** redacted and clipped to `jevHeadingCells`, at most `jevHeadings` of them */
-  headings?: readonly string[];
-  lines?: number;
-  fences?: number;
-}
-
-/** §4.2.5: one line of `sources.jsonl`. Keyed by realpath (§4.2.3), so five detectors yield one item. */
-export interface SourceItem {
-  /** `sha256(realpath).slice(0, 12)` */
-  id: string;
-  realpath: string;
-  /** `~/…` form; never an absolute home path in an artefact */
-  display: string;
-  tools: readonly SourceTool[];
-  /** the atlas row id, e.g. `claude.auto-memory.topic` */
-  artefact: string;
-  format: SourceFormat;
-  scope: SourceScope;
-  bytes: number;
-  sha256: string;
-  mtime: string;
-  parse: SourceParse;
-  notices: readonly string[];
-}
-
-/** §2.3: `kind` in a topic file's frontmatter; Claude Code's four `type` values map on to the first four. */
-export type MemoryKind = 'project' | 'preference' | 'reference' | 'feedback' | 'rule';
-
-/** §2.5: when a rule is injected. `always` is a rule file with `paths: ["**"]`, never an AGENTS.md promotion. */
-export type RuleTrigger = 'always' | 'paths' | 'manual';
-
-/** §2.3: the `source:` block written into every imported file — provenance on every byte (§0 principle 6). */
-export interface MemoryProvenance {
-  tool: SourceTool;
-  /** `~/…` display form */
-  path: string;
-  sha256: string;
-  /** ISO-8601 */
-  imported: string;
-  importId: string;
-  /** present only when N detectors found the same realpath (§4.2.3) */
-  tools?: readonly SourceTool[];
-}
-
-/** §2.3 / §2.5: one topic or rule file, frontmatter + body, as the engine renders it. */
-export interface MemoryItem {
-  /** the human name; the filename is `slugOf(name)` (§4.7.3) — they are not the same thing */
-  name: string;
-  description: string;
-  kind: MemoryKind;
-  scope: 'user' | 'project' | 'project-local';
-  /** required when `trigger === 'paths'`; absent = index-only, loaded on demand */
-  paths?: readonly string[];
-  /** rules only */
-  trigger?: RuleTrigger;
-  source: MemoryProvenance;
-  /** count of `[REDACTED:*]` substitutions made at write time (§2.9) */
-  redacted: number;
-  /** bytes dropped by the cap; 0 when whole */
-  clipped: number;
-  /** redacted, bidi-stripped, CRLF-normalised, capped body */
-  body: string;
-}
-
-/** §2.6 / §5.8.3: an inert imported command (A63). The body never executes — see `executableStripped`. */
-export interface ProjectCommand {
-  name: string;
-  description: string;
-  argumentHint?: string;
-  /** destination path, repo- or `~`-relative */
-  path: string;
-  body: string;
-  scope: 'user' | 'project';
-  source: MemoryProvenance;
-  /** how many `` !`cmd` ``/```` ```! ````/`!{cmd}`/`@{file}`/`$(cmd)` segments became ```` ```text (not run) ```` fences */
-  executableStripped: number;
-}
-
-/** §2.7 / §3.10: the one normalised MCP dialect. Every server arrives disabled. */
-export interface McpServerRecord {
-  transport: 'stdio' | 'http' | 'sse';
-  command?: string;
-  args?: readonly string[];
-  url?: string;
-  /** values are `${VAR}` references only — a literal credential is replaced by its variable name (§4.8.3) */
-  env?: Readonly<Record<string, string>>;
-  headers?: Readonly<Record<string, string>>;
-  /** §2.7: always false on arrival; §1 property 16 asserts it */
-  enabled: false;
-  source: { tool: SourceTool; path: string; sha256: string; importId: string };
-  /** dropped extras and credential substitutions, rendered in the report */
-  notes?: readonly string[];
-}
-
-/** §2.7: the `mcp.json` document. */
-export interface McpFile {
-  v: 1;
-  servers: Readonly<Record<string, McpServerRecord>>;
-}
-
-/**
- * §4.6.1: one row of the plan. **No field of this type can hold a value** — that is the
- * structural half of §1 property 4; `test/unit/import/leak.test.ts` is the other half.
- */
-export interface PlanRow {
-  /** stable: `sha256(source.id + dest).slice(0, 12)` */
-  id: string;
-  source: {
-    id: string;
-    display: string;
-    tools: readonly SourceTool[];
-    sha256: string;
-    bytes: number;
-    /** carried only as a cheap pre-filter for the re-hash of §4.7.2 */
-    mtimeMs: number;
-  };
-  class: Exclude<ImportClass, 'skip'>;
-  /** repo- or `~`-relative; null for report-only rows */
-  dest: string | null;
-  action: ImportAction;
-  scope: 'user' | 'project' | 'project-local';
-  /** destination bytes this row would write */
-  bytes: number;
-  /** `rule 9 (frontmatter name+description+metadata.type)` | `jev kind_3 … p=0.82 can_=0.71` | `code fallback (jev unavailable: HTTP 429)` */
-  why: string;
-  warnings: readonly string[];
-  /** conflict / duplicate group id */
-  group?: string;
-}
-
-/** §4.6.1: one root as the report's `## Sources` section names it. */
-export interface PlanRoot {
-  display: string;
-  tool: SourceTool;
-  via: 'default' | 'env';
-  env?: string;
-  exists: boolean;
-}
-
-/** §3.11: rendered even when empty, so "nothing found" never reads as "you have nothing". */
-export interface CannotRead {
-  what: string;
-  why: string;
-  paste: string;
-}
-
-/** §4.6.1: the artefact phases 1–3 produce. The report *is* the plan (§0 principle 9). */
-export interface ImportPlan {
-  v: 1;
-  importId: string;
-  /** ISO-8601 */
-  at: string;
-  jevcodeVersion: string;
-  workspace: string;
-  /** `realpath(gitRoot ?? workspace)` [G1.3] */
-  workspaceKey: string;
-  gitRoot: string | null;
-  trust: 'trust' | 'session' | 'none';
-  roots: readonly PlanRoot[];
-  rows: readonly PlanRow[];
-  budget: { memoryBytes: number; memoryMax: number; indexLines: number; indexMax: number };
-  jev: { requests: number; questions: number; usd: number; fallbacks: number; reason?: string };
-  cannotRead: readonly CannotRead[];
-  notices: readonly string[];
-}
-
-/** §5.1: the ≤ 50 ms wizard probe. Counts and tool names only — never a value, never a body. */
-export interface ImportProbe {
-  tools: readonly { tool: SourceTool; display: string; items: number }[];
-  /** sum of `tools[].items` */
-  total: number;
-  /** wall time of the probe, for the perf row */
-  ms: number;
-  /** true when a cap or the deadline stopped the probe early */
-  partial: boolean;
-}
-
-/** §4.7.5: one applied row, as the manifest remembers it. */
-export interface ImportManifestEntry {
-  importId: string;
-  /** repo- or `~`-relative destination */
-  dest: string;
-  /** the source's sha256 at apply time, so a changed source becomes `update` */
-  sourceSha256: string;
-  /** the destination's sha256 immediately after the write */
-  destSha256: string;
-  scope: 'user' | 'project' | 'project-local';
-  at: string;
-  /** §4.8.2: only the human's own terminal or their own `--yes` is authority */
-  by: 'tty' | 'flag';
-}
-
-/**
- * §4.7.5 [G1.3]: keyed by workspace — a single global list against repo-relative destinations
- * makes a second clone of the same repo look already-imported.
- */
-export interface ImportManifest {
-  v: 1;
-  user: readonly ImportManifestEntry[];
-  /** `realpath(gitRoot ?? workspace)` → its entries */
-  workspaces: Readonly<Record<string, readonly ImportManifestEntry[]>>;
-  lastRun?: string;
-}
+export type {
+  CannotRead,
+  ImportAction,
+  ImportClass,
+  ImportManifest,
+  ImportManifestEntry,
+  ImportPlan,
+  ImportProbe,
+  ImportSkipAction,
+  McpFile,
+  McpServerRecord,
+  MemoryItem,
+  MemoryKind,
+  MemoryProvenance,
+  PlanRoot,
+  PlanRow,
+  ProjectCommand,
+  RuleTrigger,
+  SourceFormat,
+  SourceItem,
+  SourceParse,
+  SourceScope,
+  SourceTool,
+} from '../core/types.js';
 
 // =======================================================================================
-// 2. the widenings — each merges into an existing src/core/types.ts declaration at 1.6
+// 2. the widenings — members of the real src/core/types.ts declarations since 1.6
 // =======================================================================================
 
 /**
- * §7.1 row 1, widening 1: `InstructionRecord += kind?, scope?`. Declared here as a distinct type
- * because `src/core/types.ts` is not edited on this branch; at 1.6 the two members are added to
- * `InstructionRecord` itself and this alias is deleted.
+ * §7.1 row 1, widening 2: the type of `EngineOptions.memory`. Re-exported rather than re-declared,
+ * because `src/loop/**` and `src/provider/**` read it from the contract and `src/import/**` produces it.
  */
-export interface ImportedInstructionRecord {
-  path: string;
-  sha256: string;
-  bytes: number;
-  kind?: MemoryKind;
-  scope?: 'user' | 'project' | 'project-local';
-}
-
-/**
- * §7.1 row 1, widening 2: `EngineOptions.memory?: {index?, rules?, topics?}`. At 1.6 this becomes
- * the type of a new optional `memory` member on `EngineOptions`.
- */
-export interface EngineMemoryOptions {
-  /** the `## Memory (index)` system-prompt section, already capped at `memoryIndexPromptBytes` */
-  index?: string;
-  /** rule files the per-step matcher may activate (§2.10.4) */
-  rules?: readonly MemoryItem[];
-  /** topic headers; bodies are read on demand */
-  topics?: readonly MemoryItem[];
-}
-
-/**
- * §7.1 row 1, widening 3: `NoticeKind += 'import'`. At 1.6 the literal joins the `NoticeKind`
- * union in `src/core/types.ts`; until then engine notices carry it through this alias.
- */
-export type ImportNoticeKind = 'import';
-
-/**
- * §7.1 row 1, widening 4: `RunMeta.imports?: readonly string[]` — the import ids folded into a run.
- */
-export type RunMetaImports = readonly string[];
-
-/**
- * §7.1 row 1, amendment: `CheckpointState.kept?[].kind += 'memory'`. `kept` itself is a
- * coordination-design addition (CD :1174), so this is an amendment to that row [G2.2], not an
- * independent change.
- */
-export type KeptMemoryKind = 'memory';
+export type { EngineMemoryOptions, MemoryUsage } from '../core/types.js';
 
 // =======================================================================================
 // 3. engine-local — stays in src/import/, never moves to src/core/types.ts
