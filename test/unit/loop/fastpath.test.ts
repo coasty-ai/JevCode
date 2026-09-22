@@ -294,4 +294,22 @@ describe('I2: fastPath off', () => {
     // and the armed run never proposed through the fast path on a workspace it does not cover
     expect(on.store.steps.some((s) => s.proposer === 'fastpath')).toBe(false);
   });
+
+  it("keeps JEV'S OWN STATE byte-identical: `durationMs` is the engine's private fact, never a state member", async () => {
+    const off = await build({ mode: 'jev-on', turns: script, sandbox: createFakeSandbox(() => failingTests), engine: { fastPath: 'off' } });
+    await off.engine.run();
+    // the run really did ask Jev about a workspace whose last test run is known (otherwise this proves nothing)
+    const runs = off.decider.calls.map((c) => (c.state as { workspace?: { lastTestRun?: Record<string, unknown> | null } }).workspace?.lastTestRun ?? null).filter((r): r is Record<string, unknown> => r !== null);
+    expect(runs.length).toBeGreaterThan(0);
+    // I2: Jev's own state bytes are what they were before contract 1.9 — `durationMs` is the engine's, not Jev's
+    for (const r of runs) expect(Object.keys(r).sort()).toEqual(['allPassed', 'command', 'errors', 'failed', 'passed', 'step']);
+  });
+
+  it('rounds the run wall it persists: a checkpoint carries whole milliseconds, not a 14-decimal float', async () => {
+    const on = await build({ mode: 'jev-on', turns: script, sandbox: createFakeSandbox(() => failingTests), engine: { fastPath: 'auto' } });
+    await on.engine.run();
+    const durations = on.store.states.map((c) => c.lastTestRun?.durationMs).filter((d): d is number => typeof d === 'number');
+    expect(durations.length).toBeGreaterThan(0);
+    for (const d of durations) expect(Number.isInteger(d)).toBe(true);
+  });
 });

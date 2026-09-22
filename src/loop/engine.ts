@@ -5301,7 +5301,7 @@ class EngineImpl implements Engine {
     if (status === 'executed' && draft.changedFiles.length > 0 && proposal && proposal.action.kind !== 'run' && proposal.action.kind !== 'read') this.lastChangeStep = step;
     if (draft.tests?.parsed) {
       // contract 1.9 (Fastlane) §4.3 T5: `durationMs` is the member that lets the fast-path predicate survive a resume
-      this.lastTestRun = { step, command: draft.tests.command, passed: draft.tests.parsed.passed, failed: draft.tests.parsed.failed, errors: draft.tests.parsed.errors, allPassed: draft.tests.allPassed === true, durationMs: Math.max(0, draft.timing.execMs) };
+      this.lastTestRun = { step, command: draft.tests.command, passed: draft.tests.parsed.passed, failed: draft.tests.parsed.failed, errors: draft.tests.parsed.errors, allPassed: draft.tests.allPassed === true, durationMs: Math.round(Math.max(0, draft.timing.execMs)) };
       // the run's output tail for the `done` state's `lastRun.output` (loop/synth team request; state.ts ExecutedInfo.lastRunOutput)
       this.lastTestRunOutput = draft.output;
       // contract 1.9 (Fastlane) §4.3 T3 / §6 row 14: the scope-usability verdict on the loop's OWN run
