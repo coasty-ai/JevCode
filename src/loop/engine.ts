@@ -101,6 +101,8 @@ import type { AskResult,
   StepUsage,
   StopReason,
   StoppedAt,
+  SubworkEntry,
+  SynthSubwork,
   SynthesisContext,
   Synthesizer,
   TargetInfo,
@@ -192,7 +194,7 @@ import {
 import { escapedLine, escapedPaths, landPreflightOffer, launchOverlap, launchProposal, mergeAction, seedFor, type LandPreflightOffer, type LaunchAnswer, type LaunchInput } from './launch.js';
 // contract 1.4 (W2b), COORDINATION-DESIGN §4 / §5 / §6: the engine's ONE import of the coordination ledger.
 // `createCoordination` returns null when there is no handle, which is the whole of "coordination off".
-import { coordinates, createCoordination, type CoordinateOutcome, type CoordinationRuntime, type HeartbeatBase, type HeartbeatDynamic } from './coordination.js';
+import { SUBWORK_MAX, coordinates, createCoordination, type CoordinateOutcome, type CoordinationRuntime, type HeartbeatBase, type HeartbeatDynamic } from './coordination.js';
 
 // ---------------------------------------------------------------------------------------
 // Dependency injection (concurrently written modules)
@@ -671,6 +673,8 @@ class EngineImpl implements Engine {
    * rather than a flag twenty branches have to honour (`engine-coordination-off.test.ts` is the proof).
    */
   private readonly coord: CoordinationRuntime | null;
+  /** contract 1.4 (W3), §6 / W3 item 28: `SynthesisContext.coordination`, built once per run by `synthSubwork()` */
+  private subworkAdapter: SynthSubwork | null = null;
   /**
    * §12.0.1 rule 5: `setIdentity({ repoKey, runId })` after `run:ready`; its promise resolves once every newly
    * reachable watch root has been walked ONCE. Awaited before the FIRST `coordinate` and never again — `fs.watch`
@@ -3008,6 +3012,36 @@ class EngineImpl implements Engine {
     return (this.synthHandles = handles);
   }
 
+  /**
+   * contract 1.4 (W3), COORDINATION-DESIGN §6 / W3 item 28: `SynthesisContext.coordination`, built once per run.
+   *
+   * `CoordinationRuntime.subworkEnded(kind, id)` needs the kind; the synthesizer's seam takes the id alone (a producer
+   * that must repeat its own kind to close a row gets it wrong eventually). The adapter is therefore the one thing
+   * that remembers the pairing, in a map bounded by the runtime's own `SUBWORK_MAX`: a row the runtime dropped for
+   * the cap is still closed here, and the map cannot outgrow what the heartbeat carries.
+   */
+  private synthSubwork(): SynthSubwork {
+    const existing = this.subworkAdapter;
+    if (existing !== null) return existing;
+    const kinds = new Map<string, SubworkEntry['kind']>();
+    const adapter: SynthSubwork = {
+      subworkStarted: (entry) => {
+        if (this.coord === null) return;
+        if (!kinds.has(entry.id) && kinds.size >= SUBWORK_MAX) return;
+        kinds.set(entry.id, entry.kind);
+        this.coord.subworkStarted(entry.kind, entry.id, entry.stage, entry.detail, entry.laneDir);
+      },
+      subworkEnded: (id) => {
+        const kind = kinds.get(id);
+        if (kind === undefined) return;
+        kinds.delete(id);
+        this.coord?.subworkEnded(kind, id);
+      },
+    };
+    this.subworkAdapter = adapter;
+    return adapter;
+  }
+
   private synthesisContext(draft: StepDraft, contextFiles: readonly FileView[]): SynthesisContext {
     const self = this;
     const decider: Decider = {
@@ -3052,6 +3086,9 @@ class EngineImpl implements Engine {
       // The synthesizer's LLM source is built once per run and keeps the FIRST step's function (search/llm.ts runOf): the
       // step a sample belongs to is the step it is dispatched in, so the draft is resolved at call time — the engine's
       // current draft, or this step's when none is open — never bound to the context that handed the function out.
+      // contract 1.4 (W3), §6 / W3 item 28: the heartbeat's sub-work rows. One adapter per run, so an `ended` finds the
+      // `kind` its `started` used; absent when coordination is off, which is the whole of "zero cost when absent".
+      ...(this.coord === null ? {} : { coordination: this.synthSubwork() }),
       ...(this.mode === 'jev-only'
         ? {}
         : {

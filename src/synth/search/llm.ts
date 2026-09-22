@@ -428,6 +428,9 @@ export function createSearchLlm(opts: SearchLlmOptions = {}): SubGoalLlm {
       },
       now,
       cache: persistedLlmCache(ctx.synthState),
+      // contract 1.4 (W3), COORDINATION-DESIGN §6 / W3 item 28: the source outlives the step it was built in, so the
+      // hook is read through `stepCtx()` like the emitter — one adapter per run, absent when coordination is off.
+      ...(ctx.coordination === undefined ? {} : { coordination: { subworkStarted: (e) => stepCtx().coordination?.subworkStarted(e), subworkEnded: (id) => stepCtx().coordination?.subworkEnded(id) } }),
       probeP90Ms: opts.probeP90Ms ?? null,
       ...(opts.generation === undefined ? {} : { generation: opts.generation }),
     });

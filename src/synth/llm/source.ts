@@ -47,7 +47,7 @@
  */
 import { sha12 } from '../../core/hash.js';
 import { ProviderHttpError } from '../../errors.js';
-import type { CancelledGeneration, GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
+import type { CancelledGeneration, GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthSubwork, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
 import { monotonicNow, percentile } from '../../core/time.js';
 import { linkedAbort } from '../../provider/sse.js';
 import type { SourceFile } from '../types.js';
@@ -512,6 +512,18 @@ export interface LlmSourceDeps {
   probeP90Ms?: number | null;
   /** what every sample sends (§10.1: pinned per bench arm and recorded verbatim); default `LLM_DEFAULT_GENERATION` */
   generation?: SynthesizerGeneration;
+  /**
+   * contract 1.4 (W3) (COORDINATION-DESIGN §6, W3 item 28): the heartbeat's sub-work rows. One `sample` row per
+   * sample in flight, id `goalId:round:sampleIx`, opened where the request goes out and closed where the sample
+   * settles — which is every sample, exactly once, however it ended (the source's own invariant). Absent when
+   * coordination is off, so a run without it allocates nothing and calls nothing.
+   */
+  coordination?: SynthSubwork;
+}
+
+/** §6.1: the id of a sample's sub-work row — `goalId:round:sampleIx`, unique for the life of the run. */
+export function sampleSubworkId(goalId: string, round: number, sample: number): string {
+  return `${goalId}:${round}:${sample}`;
 }
 
 interface CachedRound {
@@ -869,6 +881,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
   /** Record one arrival. The queue push, the pending count and the close run in `finally`, so a throwing `emit`/`onSample` cannot leave the round open. */
   function settle(st: RoundState, a: SampleArrival): void {
     st.arrivals.push(a);
+    // contract 1.4 (W3), §6 / W3 item 28: every started sample settles exactly once, so this closes every row it
+    // opened — a cancelled, timed-out or errored sample included.
+    deps.coordination?.subworkEnded(sampleSubworkId(st.input.goalId, st.input.round, a.sample));
     try {
       const drops = a.dropped.length > 0 ? ` (${a.dropped.map((d) => d.reason).join(', ')})` : '';
       emit('llm:sample', `k=${a.sample} ${a.status} ${a.ms} ms: ${a.candidates.length} candidates${drops}${a.estimated ? `, est. $${a.usd.toFixed(4)}` : ''}${a.status === 'valid' || a.status === 'empty' || a.status === 'cached' ? '' : ` — ${a.detail}`}`);
@@ -981,6 +996,8 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     // the goal has collected BY NOW, so a staggered round's `release()` samples carry sample 0's back-off
     const deadlineMs = backedOffDeadlineMs(st.input.klass, st.baseDeadlineMs, backoffOf(st.input.goalId).growths);
     st.deadlines.set(k, deadlineMs);
+    // contract 1.4 (W3), §6 / W3 item 28: the sample becomes a heartbeat row here and stops being one in `settle`.
+    deps.coordination?.subworkStarted({ kind: 'sample', id: sampleSubworkId(st.input.goalId, st.input.round, k), stage: 'propose', detail: `${st.input.klass} sample ${k} of ${st.n}, ${deadlineMs} ms` });
     const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, goalId: st.input.goalId, goalRound: st.input.round, deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
     st.runs.set(k, run);
     void run.promise

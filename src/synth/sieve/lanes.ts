@@ -19,7 +19,7 @@
 import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, isAbsolute, join, normalize, sep } from 'node:path';
 
-import type { ExecResult, Sandbox, SandboxRunOptions } from '../../core/types.js';
+import type { ExecResult, Sandbox, SandboxRunOptions, SynthSubwork } from '../../core/types.js';
 import type { LaneMode, Lane, OracleModel } from '../search/types.js';
 import { LARGE_WORKSPACE_BYTES } from '../search/budget.js';
 import type { AppliedCandidate, SourceFile } from '../types.js';
@@ -57,6 +57,17 @@ export interface LaneContext {
   sandbox: Pick<Sandbox, 'run'>;
   signal: AbortSignal;
   workspaceInfo: { root: string; git: boolean };
+  /**
+   * contract 1.4 (W3) (COORDINATION-DESIGN §6, W3 item 28): the heartbeat's sub-work rows. Structural, so a
+   * `SynthesisContext` is still a `LaneContext` with no conversion; absent (coordination off, or a test's small
+   * object) means every producer here is a no-op `?.` call.
+   */
+  coordination?: SynthSubwork;
+}
+
+/** §6.1: the id of a lane's sub-work row — stable for the life of the pool, and short enough for the 40-char field. */
+export function laneKey(lane: Pick<Lane, 'index' | 'mode'>): string {
+  return `${lane.mode}-lane${lane.index}`;
 }
 
 export interface CreateLanesOptions {
@@ -288,12 +299,18 @@ export async function createLanes(ctx: LaneContext, oracle: OracleModel, opts: C
   const withLane = async <T>(fn: (lane: Lane) => Promise<T>): Promise<T> => {
     if (disposed) throw new LaneError('lanes disposed');
     const lane = await acquire();
+    // contract 1.4 (W3), COORDINATION-DESIGN §6 / W3 item 28: one `lane` sub-work row for as long as the lane is
+    // held, keyed by the lane's own key. This is the one place a lane is acquired and released, so the row cannot
+    // leak: the `finally` that resets the lane ends it. Absent hook = two `?.` and nothing else.
+    const key = laneKey(lane);
+    ctx.coordination?.subworkStarted({ kind: 'lane', id: key, stage: 'verify', detail: `${lane.mode} lane ${lane.index}`, laneDir: lane.dir });
     try {
       return await fn(lane);
     } finally {
       try {
         await resetLane(lane);
       } finally {
+        ctx.coordination?.subworkEnded(key);
         release(lane);
       }
     }

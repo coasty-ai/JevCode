@@ -1597,6 +1597,20 @@ export interface SampleOptions {
   goalRound?: number;
 }
 
+/**
+ * contract 1.4 (W3) (COORDINATION-DESIGN §6, §3.3; W3 item 28): the sub-work the heartbeat carries, as the synthesizer
+ * produces it. The heartbeat has had `subwork` rows (≤ 16, `subworkStarted` / `subworkEnded` on `CoordinationRuntime`)
+ * since W2b and nothing under `src/synth/**` wrote one; this is the seam that fills them — an llm-jev sample
+ * (`sample`, id `goalId:round:sampleIx`), a sieve lane run (`lane`, id the lane's key) and a perturbation probe
+ * (`probe`). It is OPTIONAL and undefined whenever coordination is off, which is what makes it free: a producer
+ * writes `ctx.coordination?.subworkStarted(...)`, so a non-coordinating run allocates nothing and calls nothing.
+ * `subworkEnded` takes the id alone — the engine's adapter remembers which kind it started it as.
+ */
+export interface SynthSubwork {
+  subworkStarted(entry: { kind: SubworkEntry['kind']; id: string; stage: string; detail: string; laneDir?: string }): void;
+  subworkEnded(id: string): void;
+}
+
 export interface SynthesisContext {
   runId: string;
   /** absolute path of the run directory (shadow lanes, traces live under <runDir>/synth/) */
@@ -1648,6 +1662,12 @@ export interface SynthesisContext {
    * the same step merge over earlier ones. Absent in the other modes.
    */
   reportVerify?: (counts: Partial<StepVerifySummary>) => void;
+  /**
+   * contract 1.4 (W3) (COORDINATION-DESIGN §6, W3 item 28): the heartbeat's sub-work rows. Threaded from the engine's
+   * `CoordinationRuntime` when there is one; ABSENT when coordination is off, so every producer is one `?.` away from
+   * zero cost and jev-only / legacy paths are byte-identical.
+   */
+  coordination?: SynthSubwork;
 }
 
 /**
