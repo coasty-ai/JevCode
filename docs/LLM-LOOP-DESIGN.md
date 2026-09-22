@@ -372,7 +372,7 @@ default is already running — R9 is the only one in this wave.
 | id | ask today | becomes | code fallback (and its named test) | deadline | consumer | cost of a dropped or wrong answer |
 |---|---|---|---|---|---|---|
 | **RL1** | Q7 intent, `stages/intent.ts:195` | order route | `INTENT_FALLBACK = 'investigate'`, or `codeIntent(lastProposal.kind)` when a previous step exists — `test/unit/loop/router.test.ts` › *intent falls back to investigate when the decider throws* | 250 ms | the prompt's intent section only | one sentence of one prompt |
-| **RL2** | Q2–Q6 context, `stages/context.ts:94` | order route over the code pre-filter | today's pre-filter order; traceback frames and changed files are always members — › *context keeps the traceback frame when the decider throws* | 400 ms | `contextFiles`, the prompt's file section | a worse file order in one prompt |
+| **RL2** *(built in the finishing pass, §7.5b — not in slot B)* | Q2–Q6 context, `stages/context.ts` | order route over the code pre-filter | today's pre-filter order; traceback frames and changed files are always members — › *context keeps the traceback frame when the decider throws* | 400 ms | `contextFiles`, the prompt's file section | a worse file order in one prompt |
 | **RL3** | risk, `stages/risk.ts:688` / `:741` | **NOT a router — a code-first gate with Jev as a verifier** (§2.4) | `dangerousCommand()` (new, `src/jev/danger.ts`) decides `review`; `codeRiskReason()` (`risk.ts:364`) decides `allow`; Jev's Scores may only **escalate** — › *risk yields the code verdict with `jevUnavailable` when the decider throws* | — | execution | the code verdict stands, `riskSource: 'code'` recorded |
 | **RL4** | judge Q19/Q21, `stages/judge.ts:226`, `:261` | **recorded-only** (adopting `llm-jev`'s rule) | the code comparison of parsed failing counts — › *judge outcome is the parsed counts when the decider throws* | 400 ms | the plan note | none: a wrong Noul is data |
 | **RL5** | completion Q22, built `stages/complete.ts:16`, **decided `engine.ts:4514`** | **recorded-only on evidence-bearing steps** (§2.5) | `isCompleteByFact()` (`complete.ts:243`) over the harness's own current, passing run — › *completion is the engine's own run when the decider throws* | — | the stop rule | none |
@@ -1282,6 +1282,34 @@ wiring: every path from the engine's `finally` to `settle`'s `clearHedgeTimer` i
 (`generateWithDeadline`'s `.then/.finally`, `handleEnd`'s non-result branch has no `await`, and its result
 branch calls `st.served.add(k)` before any), and a `setTimeout` cannot interleave with a microtask chain. The
 guard is therefore a structural fix for a real engine-side hole rather than a fix for an observed run.
+
+#### 7.5b RL2, as built (the finishing pass, F27)
+
+Slot B's list above names `context.ts` among the six conversions, and its allow-list bullet names the
+`context.ts` row among the five to delete. **Neither happened**: the six conversions landed as five, the context
+stage kept its inline `await ctx.ask('context', …)` and its allow-list row, and so **I1 was not true end to
+end** — with `routers: 'on'` a Jev 503 at the context stage still rejected the stage and ended a
+`jev-on-next` run, which is precisely the failure the wave exists to remove (the head-to-head lost
+`sympy-17139`, `django-15128` and `django-15315` to exactly this shape).
+
+As built now:
+
+- the ask is a `routeSpeculative<CandidateView[]>` with `id: 'RL2'`, `RL2_CONTEXT_DEADLINE_MS` (400 ms), the
+  step signal, the §2.6 step token and the §7.5a per-call signal; its drop is folded into the step's ledger
+  through `noteStepRoute` → `commitStepRouters`, so a dropped context ask is a `StepRecord.router` row and not
+  an error;
+- **the code order is `selectCandidatesCode(views)`** — the pre-filter order with the files this run TOUCHED
+  first, under the same 12-file / 60 KB caps. It is *not* `selectCandidates(views, new Map())`: with no answers
+  every probability defaults to 0, below the 0.5 threshold, so the "code selection" would be the empty
+  selection — Jev withholding every candidate by being unreachable, the exact shape I1 forbids. Touched-first is
+  what makes §2.2's "traceback frames and changed files are always members" true when the 12-file cap bites;
+- **the ANSWERED path is unchanged**: when Jev answers inside the deadline the selection is still
+  `p >= 0.5` descending under the caps, byte for byte what the inline ask produced. RL2 changes what happens
+  when Jev does *not* answer, and nothing else;
+- with the routers **off** the stage is the pre-1.9 stage: one `if`, false — no token is minted, no key is
+  opened (I2's half of the switch, pinned in `test/unit/loop/router.test.ts`);
+- `scripts/jev-contract.mjs`'s `src/loop/stages/context.ts` row is **deleted** and the site carries the
+  four-clause block of §2.3 (the ratchet is two-sided, so the row could not merely be left behind).
 
 ### 7.6 Slot A — the S2 generator path
 
