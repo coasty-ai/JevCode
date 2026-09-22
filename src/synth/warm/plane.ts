@@ -19,7 +19,7 @@ import { join } from 'node:path';
 
 import type { Sandbox } from '../../core/types.js';
 import type { Lane, OracleModel } from '../search/types.js';
-import { requestFor, type WarmMode, type WarmRunResult } from './protocol.js';
+import { interpreterFor, requestFor, type WarmMode, type WarmRunResult } from './protocol.js';
 import { WarmError, WarmWorker, writeWarmServer } from './worker.js';
 
 /** Restarts allowed per lane before the plane gives up on the mechanism for the run. */
@@ -46,6 +46,8 @@ export interface WarmStats {
   invalidations: number;
   /** scoped runs that reported zero collected tests and were re-run at full scope */
   scopeUnusable: number;
+  /** warm runs that hit a deadline and were therefore re-run cold instead of being classified */
+  deadlineRechecks: number;
   /** wall spent inside warm runs (ms, as the worker measured it) */
   screenMs: number;
   /** wall spent in cold confirmations (ms) */
@@ -67,6 +69,8 @@ export interface WarmScreen {
   mismatch(): void;
   /** a scoped run reported zero collected tests and was widened */
   scopeUnusable(): void;
+  /** a warm run hit a deadline, so the caller discarded it and ran the command cold */
+  deadlineRecheck(): void;
   stats(): WarmStats;
   dispose(): void;
 }
@@ -77,7 +81,7 @@ export interface WarmPlaneOptions {
   runDir: string;
   workspaceRoot: string;
   mode: WarmMode;
-  /** `python` or `python3`, taken from the cold command */
+  /** the interpreter word of the cold command, verbatim (`interpreterFor`) */
   interpreter: string;
   /** directory holding run_tests.py (quixbugs mode) */
   quixbugsDir?: string;
@@ -98,13 +102,8 @@ export function warmModeFor(oracle: Pick<OracleModel, 'runner'>, env: Readonly<R
   return null;
 }
 
-/** `python` when the cold command uses the workspace venv's interpreter, `python3` otherwise. */
-export function interpreterOf(command: string): string {
-  return /(^|\s)python(\s|$)/.test(command) ? 'python' : 'python3';
-}
-
 export function emptyWarmStats(): WarmStats {
-  return { offered: 0, screened: 0, confirmed: 0, mismatches: 0, fallbacks: 0, restarts: 0, invalidations: 0, scopeUnusable: 0, screenMs: 0, confirmMs: 0, disabledReason: null };
+  return { offered: 0, screened: 0, confirmed: 0, mismatches: 0, fallbacks: 0, restarts: 0, invalidations: 0, scopeUnusable: 0, deadlineRechecks: 0, screenMs: 0, confirmMs: 0, disabledReason: null };
 }
 
 /** What happened between two snapshots: the counters are cumulative over a run, the sieve reports per batch. */
@@ -118,6 +117,7 @@ export function warmDelta(before: WarmStats, after: WarmStats): WarmStats {
     restarts: after.restarts - before.restarts,
     invalidations: after.invalidations - before.invalidations,
     scopeUnusable: after.scopeUnusable - before.scopeUnusable,
+    deadlineRechecks: after.deadlineRechecks - before.deadlineRechecks,
     screenMs: after.screenMs - before.screenMs,
     confirmMs: after.confirmMs - before.confirmMs,
     disabledReason: before.disabledReason === null ? after.disabledReason : null,
@@ -170,6 +170,10 @@ export class WarmPlane implements WarmScreen {
     this.counts.scopeUnusable += 1;
   }
 
+  deadlineRecheck(): void {
+    this.counts.deadlineRechecks += 1;
+  }
+
   /**
    * Serve one lane command warm, or return null so the caller runs it cold. Never throws: a
    * thrown warm error is a fallback, and a fallback is only ever slower, never wrong.
@@ -178,6 +182,11 @@ export class WarmPlane implements WarmScreen {
     if (this.off !== null || this.opts.signal.aborted) return null;
     const req = requestFor(this.opts.mode, command);
     if (req === null) return null;
+    // The plane booted ONE interpreter. A command naming another one (a venv python where the
+    // baseline was the system one, or the reverse) has different site-packages, so answering it
+    // here would screen the candidate under the wrong environment — and a non-passing screen is
+    // never cold-confirmed. Refusing costs one cold run.
+    if (interpreterFor(this.opts.mode, command) !== this.opts.interpreter) return null;
     if (req.kind === 'quixbugs') {
       // the warm parent imported ONE run_tests.py; a run pointed at a different bench directory
       // would be answered by the wrong module, so it stays cold
@@ -197,7 +206,7 @@ export class WarmPlane implements WarmScreen {
       if (e instanceof WarmError && e.invalidated) this.counts.invalidations += 1;
       this.workers.delete(lane.index);
       worker.dispose();
-      this.note(lane.index, `restarted too often: ${e instanceof Error ? e.message : String(e)}`);
+      this.note(lane.index, e instanceof Error ? e.message : String(e));
       return null;
     }
   }
@@ -253,7 +262,7 @@ export class WarmPlane implements WarmScreen {
     const n = (this.restarts.get(index) ?? 0) + 1;
     this.restarts.set(index, n);
     this.counts.restarts += 1;
-    if (n > WARM_MAX_RESTARTS_PER_LANE) this.disable(`lane ${index} ${why}`);
+    if (n > WARM_MAX_RESTARTS_PER_LANE) this.disable(`lane ${index} failed ${n} times, the last: ${why}`);
     else if (this.counts.screened === 0 && this.counts.restarts > WARM_MAX_RESTARTS_PER_LANE) this.disable(`no warm worker ever served a command: ${why}`);
   }
 
@@ -272,6 +281,7 @@ export function warmNote(s: WarmStats): string {
   if (s.fallbacks > 0) bits.push(`${s.fallbacks} fallback${s.fallbacks === 1 ? '' : 's'}`);
   if (s.restarts > 0) bits.push(`${s.restarts} restart${s.restarts === 1 ? '' : 's'}`);
   if (s.invalidations > 0) bits.push(`${s.invalidations} invalidation${s.invalidations === 1 ? '' : 's'}`);
+  if (s.deadlineRechecks > 0) bits.push(`${s.deadlineRechecks} deadline recheck${s.deadlineRechecks === 1 ? '' : 's'} cold`);
   if (s.mismatches > 0) bits.push(`${s.mismatches} screen:mismatch`);
   if (s.scopeUnusable > 0) bits.push(`${s.scopeUnusable} scope_unusable`);
   if (s.disabledReason !== null) bits.push(`warm off: ${s.disabledReason}`);

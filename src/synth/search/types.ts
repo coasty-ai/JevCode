@@ -128,6 +128,17 @@ export interface VerifyOutcome {
    * docs/HARNESS-NEXT-DESIGN.md §3 M6: at least one of this candidate's runs was produced by a
    * warm lane worker (a fork of a persistent interpreter) rather than a fresh process. A screen,
    * not a verdict — see `confirmedCold`.
+   *
+   * UNFINISHED CONTRACT, handed on by wave S1 and named here so it is not lost. §3 M6 requires
+   * `screened: true` to ride into `ProposalEvidence`, and §4.4 / §5 require `screened` and
+   * `screenMismatches` in `GoalSearchTrace` with `screenMismatches = 0` as a BLOCKING Ring-2
+   * metric. Both readers are outside wave S1's boundary — `src/synth/search/guard.ts` builds
+   * `ProposalEvidence` and `src/core/types.ts` declares `GoalSearchTrace`, and both are held by
+   * other branches in flight. Until they land, the only signal is the free-text `warm …,
+   * N screen:mismatch` clause the sieve appends to its `synth` verify event (`warmNote`), which
+   * a human can read in the transcript but `experiments/fastlane/quick-table.mts` cannot read
+   * out of `steps.jsonl`. The numbers themselves are already computed and cumulative on
+   * `RunnerMemory.warm.stats()`, so wiring them is a field and an assignment, not a mechanism.
    */
   screened?: boolean;
   /**

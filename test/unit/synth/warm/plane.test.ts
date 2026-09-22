@@ -12,7 +12,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import type { ExecResult, Sandbox, SandboxRunOptions } from '../../../../src/core/types.js';
 import type { Lane } from '../../../../src/synth/search/types.js';
 import { quixbugsTestCommand } from '../../../../src/synth/verify/quixbugs.js';
-import { emptyWarmStats, interpreterOf, WARM_MAX_RESTARTS_PER_LANE, WarmPlane, warmDelta, warmModeFor, warmNote } from '../../../../src/synth/warm/index.js';
+import { emptyWarmStats, WARM_MAX_RESTARTS_PER_LANE, WarmPlane, warmDelta, warmModeFor, warmNote } from '../../../../src/synth/warm/index.js';
 
 let tmp: string | null = null;
 afterEach(() => {
@@ -57,11 +57,6 @@ describe('warmModeFor', () => {
     expect(warmModeFor({ runner: 'quixbugs' }, { JEVCODE_WARM: 'on' })).toBe('quixbugs');
   });
 
-  it('interpreterOf follows the cold command', () => {
-    expect(interpreterOf('python -m pytest -q')).toBe('python');
-    expect(interpreterOf('python3 -m pytest -q')).toBe('python3');
-    expect(interpreterOf("PYTHONDONTWRITEBYTECODE=1 python3 '/b/run_tests.py' gcd /l/gcd.py")).toBe('python3');
-  });
 });
 
 describe('the plane falls back and gives up rather than retrying for ever', () => {
@@ -95,6 +90,16 @@ describe('the plane falls back and gives up rather than retrying for ever', () =
     expect(plane.stats().mismatches).toBe(1);
     expect(plane.stats().disabledReason).toBe('screen/confirm mismatch');
     expect(await plane.serve(lane(0), CMD, 1_000)).toBeNull();
+    plane.dispose();
+  });
+
+  it('a command naming a different interpreter than the plane booted stays cold', async () => {
+    const sb = deadSandbox();
+    const { plane, lane } = planeOver(sb);
+    // the plane above booted `python3`; this command is the venv's python, with other site-packages
+    expect(await plane.serve(lane(0), quixbugsTestCommand('/b/quixbugs', 'gcd', '/l/gcd.py').replace('python3', '/ws/.venv/bin/python'), 1_000)).toBeNull();
+    expect(plane.stats().offered).toBe(0);
+    expect(sb.runs).toHaveLength(0);
     plane.dispose();
   });
 

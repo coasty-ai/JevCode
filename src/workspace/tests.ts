@@ -22,6 +22,13 @@
  */
 import type { TestCommand, TestCounts, TestRunner } from '../core/types.js';
 
+/**
+ * The id `src/synth/verify/text.ts` gives the failure it synthesises for a run that produced no
+ * parsed result. Declared here rather than imported so this module stays free of `src/synth`
+ * (the dependency runs the other way); `test/unit/workspace/tests-scope.test.ts` pins them equal.
+ */
+const RUN_FAILURE_ID = '<test run>';
+
 export interface ManifestReader {
   /** relative path -> text (bounded) or null when missing / unreadable / not allowed */
   read(relPath: string): Promise<string | null>;
@@ -429,9 +436,12 @@ export function vitestScope(command: string): ScopeBuilder {
 }
 
 /**
- * cargo: `cargo test <filter>` matches a substring of the test path (`module::test_name`), so a
- * Rust path target is turned into its module path and a name target passes through. `--` is never
- * appended: everything here is a cargo-level filter, not a harness argument.
+ * cargo: `cargo test <TESTNAME>` takes exactly ONE filter, matched as a substring of the test
+ * path (`module::test_name`), so a Rust path target is turned into its module path and a name
+ * target passes through. Two or more targets cannot be expressed — `cargo test a b` is a usage
+ * error, not a union — so the command is returned unscoped and the whole suite runs: a scope
+ * that cannot be built is one extra run, a scope built wrongly is a silent zero-test pass
+ * (R-14). `--` is never appended: everything here is a cargo-level filter.
  */
 export function cargoScope(command: string): ScopeBuilder {
   return (targets) => {
@@ -454,7 +464,8 @@ export function cargoScope(command: string): ScopeBuilder {
         filters.push(s);
       }
     }
-    return appendRunnerArgs(command, uniq(filters).map(quoteArg));
+    const one = uniq(filters);
+    return one.length === 1 ? appendRunnerArgs(command, one.map(quoteArg)) : command;
   };
 }
 
@@ -519,10 +530,17 @@ export function scopeBuilderFor(runner: TestRunner, command: string): ScopeBuild
  * runs zero tests on every runner here, and "0 failing" then reads as success. Zero collected
  * means the scope is unusable, and the caller must fall back to the full suite and record
  * `scope_unusable` — never treat the empty run as a pass.
+ *
+ * `summarize()` synthesises a `<test run>` failure (`errors += 1`) for any non-zero exit with no
+ * parsed failure — which is exactly what jest, cargo and go print for a filter that matched
+ * nothing. Counting it would make every wrong scope on those runners read as "usable", i.e.
+ * would make this guard silently do nothing on the four runners R-14 is about; so it is
+ * subtracted out here rather than in each caller.
  */
-export function scopeUsable(counts: TestCounts | null): boolean {
+export function scopeUsable(counts: (TestCounts & { failing?: readonly string[] }) | null): boolean {
   if (counts === null) return false;
-  return counts.passed + counts.failed + counts.errors + counts.skipped > 0;
+  const synthetic = counts.failing !== undefined && counts.failing.includes(RUN_FAILURE_ID) ? 1 : 0;
+  return counts.passed + counts.failed + Math.max(0, counts.errors - synthetic) + counts.skipped > 0;
 }
 
 // ---------------------------------------------------------------------------------------

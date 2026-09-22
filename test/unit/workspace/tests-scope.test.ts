@@ -8,6 +8,7 @@
 import { describe, expect, it } from 'vitest';
 
 import { cargoScope, goScope, jestScope, scopeBuilderFor, scopeUsable, vitestScope } from '../../../src/workspace/tests.js';
+import { RUN_FAILURE_ID } from '../../../src/synth/verify/text.js';
 
 describe('jest / vitest scope builders', () => {
   it('jest: file paths become escaped path regexes, node-id names become -t filters', () => {
@@ -50,6 +51,15 @@ describe('cargo / go scope builders', () => {
     expect(scope([])).toBe('cargo test');
   });
 
+  it('cargo: two targets cannot be one filter, so the suite is left unscoped rather than mis-scoped', () => {
+    const scope = cargoScope('cargo test');
+    // `cargo test a b` is a usage error, not a union: one extra run beats a silent zero-test pass
+    expect(scope(['parses_empty', 'parses_nested'])).toBe('cargo test');
+    expect(scope(['src/parser.rs::a', 'src/lexer.rs::b'])).toBe('cargo test');
+    // the same target twice is still one filter
+    expect(scope(['src/parser.rs::a', 'src/parser.rs::a'])).toBe('cargo test parser::a');
+  });
+
   it('go: paths become packages, names become one anchored -run alternation', () => {
     const scope = goScope('go test ./...');
     expect(scope(['pkg/lexer/lexer_test.go'])).toBe('go test ./pkg/lexer');
@@ -76,5 +86,14 @@ describe('the scope-usability guard', () => {
     expect(scopeUsable({ passed: 0, failed: 1, errors: 0, skipped: 0 })).toBe(true);
     expect(scopeUsable({ passed: 0, failed: 0, errors: 1, skipped: 0 })).toBe(true);
     expect(scopeUsable({ passed: 0, failed: 0, errors: 0, skipped: 2 })).toBe(true);
+  });
+
+  it('the synthesised <test run> failure is not a collected test — the exact shape a bad jest/cargo/go filter makes', () => {
+    // `summarize()` turns "exit 1, nothing parsed" into errors += 1 with this id. Counting it
+    // would make every wrong scope on those runners read as usable, i.e. would disable the guard.
+    expect(scopeUsable({ passed: 0, failed: 0, errors: 1, skipped: 0, failing: [RUN_FAILURE_ID] })).toBe(false);
+    // a real error alongside it still counts
+    expect(scopeUsable({ passed: 0, failed: 0, errors: 2, skipped: 0, failing: [RUN_FAILURE_ID, 'pkg/a_test.go::TestX'] })).toBe(true);
+    expect(scopeUsable({ passed: 2, failed: 0, errors: 1, skipped: 0, failing: [RUN_FAILURE_ID] })).toBe(true);
   });
 });

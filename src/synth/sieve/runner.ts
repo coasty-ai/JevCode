@@ -68,7 +68,7 @@ import { progress } from '../verify/progress.js';
 import { CASE_TIMEOUT_ENV, hangsOnEveryFailure, isCaseNotRun, isCaseTimeout, MAX_CASE_TIMEOUTS_ENV, quixbugsTestCommand } from '../verify/quixbugs.js';
 import { RUN_FAILURE_ID, shellQuote } from '../verify/text.js';
 import { scopeUsable } from '../../workspace/tests.js';
-import { emptyWarmStats, interpreterOf, WarmPlane, warmDelta, warmModeFor, warmNote, type WarmScreen, type WarmStats } from '../warm/index.js';
+import { emptyWarmStats, interpreterFor, WarmPlane, warmDelta, warmModeFor, warmNote, type WarmScreen, type WarmStats } from '../warm/index.js';
 import { createLanes, type LanePool } from './lanes.js';
 
 /** §4.3: full-suite regression runs per step, "stop after the fifth passer" (decide() arbitrates ≤ 5 plausible). */
@@ -158,8 +158,14 @@ export interface RunnerMemory {
    * The warm verification plane (docs/HARNESS-NEXT-DESIGN.md §3 M6): one persistent interpreter
    * per lane, screening candidate runs at fork cost. Lives beside the lane pool because it is
    * bound to the lane directories, is created lazily on the first servable command, and is
-   * disposed whenever the pool is rebuilt. Absent, disabled or unservable, every run takes
-   * exactly today's cold path.
+   * disposed whenever the pool is rebuilt (here and in `oracle/verify.ts runRepositoryQueue`,
+   * the two places that rebuild it). Absent, disabled or unservable, every run takes exactly
+   * today's cold path.
+   *
+   * Run-end teardown is the lane pool's: nothing disposes either at the end of a run, and both
+   * are ended by `sandbox.killAll()` (`src/loop/engine.ts`) — which is layer 4 of the worker's
+   * liveness ladder, and is also what closing the harness's end of the request fifo would do on
+   * its own. Until then an idle worker exits by itself after `WARM_IDLE_MS`.
    */
   warm?: WarmScreen;
   /** `${base.id}|${scope}` → baseline restricted to the goal subset (pytest without passing ids needs one run) */
@@ -413,6 +419,30 @@ export function classifyOutcome(input: ClassifyInput): VerifyStatus {
   return 'unchanged';
 }
 
+/**
+ * Did this run hit a deadline the BASELINE does not already hit (docs/HARNESS-NEXT-DESIGN.md
+ * §3 M6, risk R-2)?
+ *
+ * A deadline is the one measurement the warm and the cold path cannot charge from the same
+ * instant: a cold cap covers process start and the runner's own imports, a warm one covers a
+ * fork, and the worker can only subtract a *measured estimate* of the difference. So a warm run
+ * that hits a NEW deadline is never a verdict — `runTests` discards it and runs the command
+ * cold, which decides. Without that, a real fix the warm cap happened to cut short would be
+ * classified `timeout`, marked `tried`, and dropped for the run with nothing re-checking it.
+ *
+ * "New" is what keeps the guard affordable. A candidate that hangs exactly where the baseline
+ * hangs tells the same story on both paths — that is `bitcount`'s 203 hanging candidates, whose
+ * wall IS the per-case cap — and re-running every one of them cold would double the wall of the
+ * task class the warm plane was built for, while deciding nothing. A timeout the baseline does
+ * not have is the opposite: it is either a candidate that made things worse, or the cap being
+ * wrong, and only a cold run can tell which.
+ */
+export function newDeadlineHit(run: Pick<TestRunSummary, 'timedOut' | 'failures'>, baseline: Pick<TestRunSummary, 'timedOut' | 'failures'>): boolean {
+  if (run.timedOut) return !baseline.timedOut;
+  const known = new Set(baseline.failures.filter((f) => isCaseTimeout(f.actual)).map((f) => f.testId));
+  return run.failures.some((f) => isCaseTimeout(f.actual) && !known.has(f.testId));
+}
+
 /** Whether a `timeout` verdict is final ('hang') or awaits a retry at the full cap ('provisional'). */
 export type TimeoutKind = 'hang' | 'provisional';
 
@@ -512,20 +542,28 @@ type JobResult =
 type LaneRun = TestRunSummary & { aborted: boolean; warm: boolean };
 
 /**
- * The run's warm plane for this oracle, or null when the warm path is off (a non-Python runner,
- * `JEVCODE_WARM=off`, or a plane a screen/confirm mismatch has already disabled). Created lazily
- * and kept on the memory beside the lane pool; disposed with it.
+ * The run's warm plane for this oracle, or null when the warm path is off: a non-Python runner,
+ * `JEVCODE_WARM=off`, a suite command whose interpreter cannot be read off the command itself,
+ * or a plane a screen/confirm mismatch has already disabled. Created lazily and kept on the
+ * memory beside the lane pool; disposed with it.
+ *
+ * Exported for `test/unit/synth/sieve/warm-wiring.test.ts`: this is the only production
+ * construction site of `WarmPlane`, so the default-on decision, the interpreter it boots and the
+ * disabled latch are all decided here and nowhere else.
  */
-function warmPlaneFor(ctx: RunnerContext, mem: Pick<RunnerMemory, 'warm'>, oracle: OracleModel, spec: SuiteSpec): WarmScreen | null {
+export function warmPlaneFor(ctx: RunnerContext, mem: Pick<RunnerMemory, 'warm'>, oracle: OracleModel, spec: SuiteSpec): WarmScreen | null {
   const mode = warmModeFor(oracle);
-  if (mode === null) {
+  // The interpreter is the word the command names, never a guess: the plane boots that one and
+  // `WarmPlane.serve` refuses any command naming another (site-packages are part of a verdict).
+  const interpreter = mode === null ? null : interpreterFor(mode, spec.command);
+  if (mode === null || interpreter === null) {
     mem.warm?.dispose();
     delete mem.warm;
     return null;
   }
   const have = mem.warm;
   if (have !== undefined) return have.disabled ? null : have;
-  const plane = new WarmPlane({ sandbox: ctx.sandbox, signal: ctx.signal, runDir: ctx.runDir, workspaceRoot: ctx.workspaceInfo.root, mode, interpreter: interpreterOf(spec.command), bootEnv: LANE_RUN_ENV });
+  const plane = new WarmPlane({ sandbox: ctx.sandbox, signal: ctx.signal, runDir: ctx.runDir, workspaceRoot: ctx.workspaceInfo.root, mode, interpreter, bootEnv: LANE_RUN_ENV });
   mem.warm = plane;
   return plane;
 }
@@ -689,20 +727,31 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
   const runTests = async (command: string, lane: Lane, s: RunSettings, how: { cold?: boolean } = {}): Promise<LaneRun> => {
     const o = oracleFor(s);
     const runTimeoutMs = s.runTimeoutMs ?? (o === oracle ? laneTimeoutMs : laneRunTimeout(o, baseline));
-    const timeoutMs = Math.max(1, Math.min(runTimeoutMs, Math.max(1, wallLeft())));
-    const truncated = timeoutMs < runTimeoutMs;
+    const capMs = (): number => Math.max(1, Math.min(runTimeoutMs, Math.max(1, wallLeft())));
     const env = laneRunEnv(o, { stopRule: s.stopRule });
-    const started = now();
     // §3 M6: the warm plane screens; it never decides. A null here (command not servable, plane
     // disabled, worker anomaly) is the cold path below, unchanged.
     if (how.cold !== true && warm !== null) {
-      const hot = await warm.serve(lane, command, timeoutMs, env);
+      const warmStarted = now();
+      const hot = await warm.serve(lane, command, capMs(), env);
       if (hot !== null) {
-        const sum = summarize(command, hot, hot.durationMs > 0 ? hot.durationMs : now() - started);
-        const wallCut = truncated && hot.timedOut;
-        return { ...sum, aborted: wallCut || ctx.signal.aborted, warm: true };
+        const sum = summarize(command, hot, hot.durationMs > 0 ? hot.durationMs : now() - warmStarted);
+        // A deadline is the one thing the two paths cannot be made to mean exactly the same
+        // (the cold cap includes process start; the worker subtracts a *measured* estimate of
+        // it, which is an estimate). So a warm run that hit a deadline the baseline does NOT
+        // already hit is not a verdict at all: it is discarded and the command runs cold, which
+        // is what decides. Without this the sieve would mark a candidate `tried` on a timeout
+        // the cold path never saw, and a non-passer is never cold-confirmed by screen/confirm.
+        if (!newDeadlineHit(sum, baseline)) {
+          const wallCut = capMs() < runTimeoutMs && hot.timedOut;
+          return { ...sum, aborted: wallCut || ctx.signal.aborted, warm: true };
+        }
+        warm.deadlineRecheck();
       }
     }
+    const timeoutMs = capMs();
+    const truncated = timeoutMs < runTimeoutMs;
+    const started = now();
     try {
       const res = await ctx.sandbox.run(command, { timeoutMs, maxOutputBytes: RUN_OUTPUT_BYTES, signal: ctx.signal, cwd: lane.dir, env });
       const sum = summarize(command, res, res.durationMs > 0 ? res.durationMs : now() - started);
@@ -790,7 +839,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     const settings = mode === 'retry' ? (retryOf?.runTimeoutMs === undefined ? RETRY : inFlightRetry(retryOf)) : firstRun();
     const sub = await runGoalSubset(lane, settings);
     if (sub.aborted) return { kind: 'defer' };
-    const subset: TestRunSummary = sub;
+    let subsetRun: TestRunSummary = sub;
     let screened = sub.warm;
     // an unusable scope widened the run to the whole suite: compare it with the base's own summary
     const base = sub.fullScope && scope.kind === 'files' ? job.base.summary : subsetBase;
@@ -801,11 +850,11 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
     // saved, not a recalibration — and keeping the estimate cold is also what reserves enough
     // remaining wall (`minRunWallMs`) for the cold confirmation of a passer found late in a batch.
     if (mode === 'first' && !sub.warm) {
-      subsetDurations.push(subset.durationMs);
+      subsetDurations.push(subsetRun.durationMs);
       observeLoad();
     }
-    const subsetProgress = progress(base, subset);
-    const passesGoal = goalPasses(goal, subset, subsetProgress);
+    const subsetProgress = progress(base, subsetRun);
+    const passesGoal = goalPasses(goal, subsetRun, subsetProgress);
 
     let full: TestRunSummary | undefined;
     let fullProgress: Progress | undefined;
@@ -814,7 +863,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
         // the subset already was the whole suite: the run is spent and decides, whatever the passer count
         // (the cap of §4.3 bounds full-suite runs; here there is none to bound, and tests are the oracle)
         passers += 1;
-        full = subset;
+        full = subsetRun;
       } else {
         if (passers >= MAX_FULL_SUITE_RUNS_PER_STEP || budget.testRunsLeft <= 0) return { kind: 'defer' };
         passers += 1;
@@ -830,7 +879,7 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       }
       fullProgress = progress(job.base.summary, full);
     }
-    let status = classifyOutcome({ subset, subsetProgress, passesGoal, ...(full !== undefined ? { full } : {}), ...(fullProgress !== undefined ? { fullProgress } : {}) });
+    let status = classifyOutcome({ subset: subsetRun, subsetProgress, passesGoal, ...(full !== undefined ? { full } : {}), ...(fullProgress !== undefined ? { fullProgress } : {}) });
     let confirmedCold = false;
     // ------------------------------------------------------------------------------------
     // §3 M6: screen hot, confirm COLD. A passer any part of which was produced on a warm worker
@@ -860,17 +909,24 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       fullProgress = coldProgress;
       status = coldStatus;
       confirmedCold = true;
+      // when the subset run WAS the whole suite, the cold confirmation replaces it outright:
+      // what reaches guard.ts decide() (which re-checks `subset` in `isPlausible`) is then cold
+      // end to end, not a warm screen carried alongside a cold verdict
+      if (subsetIsFull) subsetRun = cold;
       if (coldStatus !== 'plausible') {
+        // the warm pass the cap was spent on is disowned: it must not consume one of the step's
+        // MAX_FULL_SUITE_RUNS_PER_STEP passers, nor feed stopDispatch()
+        passers -= 1;
         // one disagreement ends the mechanism for the whole run and re-queues what it classified
         warm?.mismatch();
         ctx.emit({ type: 'synth', step: ctx.step, phase: 'verify', detail: `${goal.id}: screen:mismatch — a hot-screened passer at ${applied.candidate.site.file.path}:${applied.candidate.site.line} came back ${coldStatus} cold; the warm plane is off for the run and its batch re-runs cold`, candidates: 1, tested: 1 });
         requeueScreened();
       }
     }
-    const outcome: VerifyOutcome = { job, applied, subset, progress: fullProgress ?? subsetProgress, status, ...(full !== undefined ? { full } : {}), ...(screened ? { screened: true } : {}), ...(confirmedCold ? { confirmedCold: true } : {}) };
+    const outcome: VerifyOutcome = { job, applied, subset: subsetRun, progress: fullProgress ?? subsetProgress, status, ...(full !== undefined ? { full } : {}), ...(screened ? { screened: true } : {}), ...(confirmedCold ? { confirmedCold: true } : {}) };
     if (status === 'timeout' && mode === 'first') {
       // which run hung: the full suite of a subset passer, else the subset
-      const hung = full !== undefined && (full.timedOut || hangsOnEveryFailure(full)) ? { run: full, base: job.base.summary } : { run: subset, base };
+      const hung = full !== undefined && (full.timedOut || hangsOnEveryFailure(full)) ? { run: full, base: job.base.summary } : { run: subsetRun, base };
       if (hung.run.timedOut) {
         // the sandbox killed the run at the lane timeout: a hang, unless the whole batch was killed under load (the batch end decides; `tried` waits)
         return { kind: 'killed', pending: { job, applied, diffHash, subset: hung.run, caseTimeoutMs: settings.caseTimeoutMs ?? DEFAULT_CASE_TIMEOUT_MS, baseline }, outcome };
@@ -881,8 +937,9 @@ export async function runQueue(ctx: RunnerContext, mem: RunnerMemory, queue: Job
       }
     }
     // a warm verdict nothing cold confirmed is only a screen: recorded so that one screen/confirm
-    // disagreement anywhere in the batch can withdraw it (`requeueScreened`)
-    if (screened && !confirmedCold && mode === 'first') screenedThisBatch.push({ job, diffHash });
+    // disagreement anywhere in the batch can withdraw it (`requeueScreened`) — in retry mode too,
+    // where a withdrawn classification is just as wrong as in first mode
+    if (screened && !confirmedCold) screenedThisBatch.push({ job, diffHash });
     mem.tried.add(diffHash); // only a finally classified candidate is "tried"; a deferred or provisional one runs again
     if (status === 'unchanged') recordUnchanged(mem, goal.id, diffHash); // stale once a progress commit changes what the goal's tests fail on
     if (mode === 'retry') retried.set(status, (retried.get(status) ?? 0) + 1);

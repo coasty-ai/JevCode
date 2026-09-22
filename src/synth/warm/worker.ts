@@ -30,8 +30,9 @@ import { join } from 'node:path';
 import type { ReadStream, WriteStream } from 'node:fs';
 
 import type { Sandbox } from '../../core/types.js';
+import { TAIL_BYTES } from '../../sandbox/run.js';
 import { shellQuote } from '../verify/text.js';
-import { parseResponse, type WarmMode, type WarmRunRequest, type WarmRunResult } from './protocol.js';
+import { parseResponse, WARM_OUTPUT_BYTES, type WarmMode, type WarmRunRequest, type WarmRunResult } from './protocol.js';
 import { WARM_READY_PREFIX, WARM_REQ_FIFO, WARM_RESP_FIFO, WARM_SERVER_PY } from './server-source.js';
 
 /** How long the interpreter has to import its runner and announce itself. */
@@ -233,7 +234,7 @@ export class WarmWorker {
         this.die('run answered without a result');
         return;
       }
-      this.settle(p, null, { stdout: '', stderr: '', exitCode: 0, timedOut: false, durationMs: 0 });
+      this.settle(p, null, { stdout: '', stderr: '', exitCode: 0, timedOut: false, truncated: false, durationMs: 0 });
       return;
     }
     if (res.kind === 'invalidate') {
@@ -250,7 +251,7 @@ export class WarmWorker {
     this.pending = null;
     clearTimeout(p.timer);
     if (err !== null) p.reject(err);
-    else p.resolve(value ?? { stdout: '', stderr: '', exitCode: null, timedOut: false, durationMs: 0 });
+    else p.resolve(value ?? { stdout: '', stderr: '', exitCode: null, timedOut: false, truncated: false, durationMs: 0 });
   }
 
   private die(reason: string): void {
@@ -309,9 +310,15 @@ export class WarmWorker {
    * Run one candidate. `deadlineMs` is the wall the *worker* enforces with killpg(SIGKILL), the
    * same role the sandbox timeout plays on the cold path; the transport waits a little longer so
    * a timeout is reported as a timed-out run, not as a dead worker.
+   *
+   * The worker charges that wall from before its fork and subtracts what it measured a cold run
+   * to spend on process start, so `deadlineMs` buys the same amount of CANDIDATE compute on both
+   * paths. It can still only be an approximation, which is why `runQueue` re-runs any warm run
+   * that hit a deadline on the cold path before it is allowed to be a verdict.
    */
   async run(req: WarmRunRequest, deadlineMs: number, env: Readonly<Record<string, string>> = {}): Promise<WarmRunResult> {
-    const body: Record<string, string | number | boolean | readonly string[] | Record<string, string>> = { op: 'run', kind: req.kind, deadlineMs, env: { ...env } };
+    // the same output budget `src/sandbox/run.ts` gives a cold run, shared across the two streams
+    const body: Record<string, string | number | boolean | readonly string[] | Record<string, string>> = { op: 'run', kind: req.kind, deadlineMs, outputBytes: WARM_OUTPUT_BYTES, tailBytes: TAIL_BYTES, env: { ...env } };
     if (req.kind === 'quixbugs') {
       body['dir'] = req.dir;
       body['name'] = req.name;

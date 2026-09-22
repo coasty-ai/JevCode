@@ -50,7 +50,6 @@ or changed answers "invalidate", and the harness then runs that candidate cold a
 worker. Any exception in the parent is a fatal error answer, with the same consequence.
 """
 import argparse
-import errno
 import hashlib
 import json
 import os
@@ -63,6 +62,28 @@ READY = "JEVCODE_WARM_READY"
 PREWARM_MAX = 500
 REAP_GRACE_S = 2.0
 READ_CHUNK = 65536
+# src/sandbox/run.ts TAIL_BYTES and the sieve's RUN_OUTPUT_BYTES: a warm run's output is bounded
+# exactly where a cold run's is. Without it a chatty candidate's whole output crosses the fifo
+# into the harness process, and the two paths summarise the same candidate differently.
+TAIL_BYTES = 16384
+DEFAULT_OUTPUT_BYTES = 262144
+# A warm cap is never cut below this fraction of the cold one, however large the measured
+# start-up allowance: a warm timeout only costs the caller a cold re-run, never a verdict.
+MIN_DEADLINE_FRACTION = 0.5
+# Between a case's own deadline and the read of its pipe: a fork's write-to-read latency.
+PIPE_SLACK_S = 0.005
+# sandbox-exec + /bin/sh (docs/HARNESS-NEXT-DESIGN.md §3 M6, measured): paid by every cold run
+# before its interpreter starts, by no warm one.
+SHELL_SPAWN_S = 0.007
+# How long a start-up measurement describes the machine it was taken on. The cost being
+# corrected for is load-dependent (67-74 ms idle, several hundred under an 8-lane bench), so a
+# value taken once at boot goes stale; re-measuring costs two interpreter starts per window.
+STARTUP_TTL_S = 15.0
+# Bias: the allowance is deliberately over-stated, because a warm cap that is too TIGHT only
+# costs the caller a cold re-run (it discards any warm run that hit a deadline), while one that
+# is too loose lets a candidate the cold path kills finish warm -- a false negative nothing
+# re-checks.
+STARTUP_SAFETY = 1.25
 
 
 def _sha256(path):
@@ -123,11 +144,60 @@ def _reap(pid):
         time.sleep(0.0005)
 
 
-def _drain(fds, deadlines, on_expire):
-    """Read every fd until EOF or its own deadline. Returns {fd: bytes}; expired fds call on_expire(fd)."""
-    buf = {}
-    for fd in fds:
-        buf[fd] = []
+class _Sink(object):
+    """One stream, bounded exactly as src/sandbox/run.ts StreamCollector bounds a cold run's: a
+    head of at most 'cap' bytes out of a budget SHARED by the run's streams, then a rolling tail
+    of 'tail_bytes', then the same marker and the same omitted-byte count. 'cap=None' is
+    unbounded, which is what the per-case pipes inside run_tests.py are on the cold path too."""
+
+    def __init__(self, shared, cap, tail_bytes):
+        self.shared = shared
+        self.cap = cap
+        self.tail_bytes = tail_bytes
+        self.parts = []
+        self.head_len = 0
+        self.tail = b""
+        self.seen = 0
+
+    def push(self, chunk):
+        self.seen += len(chunk)
+        if self.cap is None:
+            self.parts.append(chunk)
+            self.head_len += len(chunk)
+            return
+        room = max(0, self.cap - self.shared["head"])
+        if room >= len(chunk):
+            self.parts.append(chunk)
+            self.head_len += len(chunk)
+            self.shared["head"] += len(chunk)
+            return
+        if room > 0:
+            self.parts.append(chunk[:room])
+            self.head_len += room
+            self.shared["head"] += room
+        self.shared["truncated"] = True
+        self.tail = (self.tail + chunk[room:])[-self.tail_bytes:]
+
+    def finish(self):
+        head = b"".join(self.parts)
+        if not self.tail:
+            return head
+        # drop a leading partial UTF-8 sequence so the tail decodes cleanly, as the cold path does
+        start = 0
+        while start < len(self.tail) and start < 4 and (self.tail[start] & 0xC0) == 0x80:
+            start += 1
+        dropped = self.seen - self.head_len - len(self.tail)
+        marker = "\\n\\u2026[output truncated: %d bytes omitted]\\u2026\\n" % dropped
+        return head + marker.encode("utf-8") + self.tail[start:]
+
+
+def _sinks_for(fds, shared, cap, tail_bytes=TAIL_BYTES):
+    return dict((fd, _Sink(shared, cap, tail_bytes)) for fd in fds)
+
+
+def _drain(fds, deadlines, on_expire, sinks):
+    """Read every fd until EOF or its own deadline into its _Sink. Returns {fd: bytes}; expired
+    fds call on_expire(fd)."""
     live = set(fds)
     while live:
         now = time.monotonic()
@@ -140,23 +210,70 @@ def _drain(fds, deadlines, on_expire):
         wait = max(0.0, min(deadlines[fd] for fd in live) - now)
         try:
             ready, _w, _x = select.select(list(live), [], [], wait)
-        except (OSError, ValueError):
-            break
         except InterruptedError:
             continue
+        except (OSError, ValueError):
+            break
         for fd in ready:
             try:
                 chunk = os.read(fd, READ_CHUNK)
-            except OSError as e:
-                if e.errno == errno.EINTR:
-                    continue
+            except InterruptedError:
+                continue
+            except OSError:
                 live.discard(fd)
                 continue
             if not chunk:
                 live.discard(fd)
             else:
-                buf[fd].append(chunk)
-    return dict((fd, b"".join(parts)) for fd, parts in buf.items())
+                sinks[fd].push(chunk)
+    return dict((fd, sink.finish()) for fd, sink in sinks.items())
+
+
+def _interpreter_start_s(samples=3):
+    """What a COLD run spends before the candidate's first instruction, measured here, on this
+    machine, at this load, by actually starting the interpreter three times.
+
+    Every warm deadline has this subtracted, so that a cap of T means the same amount of
+    CANDIDATE compute on both paths (docs/HARNESS-NEXT-DESIGN.md §3 M6): cold spends interpreter
+    start plus the runner's own imports inside T, warm spends ~0.5 ms of fork(). The MAXIMUM of
+    the samples is deliberate -- overstating the allowance makes the warm path stricter than the
+    cold one, and a warm timeout is re-run cold by the caller, while understating it would let a
+    candidate the cold run kills finish warm, which is a false negative nothing re-checks."""
+    import subprocess
+    worst = 0.0
+    for _ in range(max(1, samples)):
+        t = time.monotonic()
+        try:
+            subprocess.call([sys.executable, "-c", "0"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except BaseException:
+            return 0.0
+        worst = max(worst, time.monotonic() - t)
+    return worst
+
+
+_STARTUP = {"at": None, "s": 0.0}
+
+
+def _refresh_startup(samples=2):
+    """Re-measure the cost of starting an interpreter, at most once per STARTUP_TTL_S.
+
+    Measuring once at boot is not enough: under an 8-lane bench the cold start-up this corrects
+    for grows several-fold, and an allowance frozen at the idle value leaves the warm cap too
+    generous exactly when it matters (measured: 5 of 82 QuixBugs pairs at a 0.5 s cap under a
+    24-way load, every one of them a cold-only timeout).
+
+    Called AFTER a reply, never before a fork: the measurement costs two interpreter starts and
+    must not land inside a run the probe is timing."""
+    now = time.monotonic()
+    if _STARTUP["at"] is None or now - _STARTUP["at"] > STARTUP_TTL_S:
+        _STARTUP["s"] = _interpreter_start_s(samples)
+        _STARTUP["at"] = time.monotonic()
+    return _STARTUP["s"]
+
+
+def _charged(nominal_s, allowance_s):
+    """The warm deadline for a cold cap of 'nominal_s', never below half of it."""
+    return max(nominal_s * MIN_DEADLINE_FRACTION, nominal_s - max(0.0, allowance_s))
 
 
 def _text(raw):
@@ -165,6 +282,10 @@ def _text(raw):
 
 class Quixbugs(object):
     """run_tests.py imported once; its case semantics are reused, never re-implemented."""
+
+    startup_s = 0.0
+    boot_s = 0.0
+    boot_startup_s = 0.0
 
     def __init__(self, directory):
         import importlib.util
@@ -198,9 +319,14 @@ class Quixbugs(object):
             pass
         os._exit(0)
 
-    def _run_cases(self, module, name, cases, timeout, include_slow, jobs):
+    def _run_cases(self, module, name, cases, timeout, include_slow, jobs, allowance):
         """One fork() per case in waves of --jobs, each case under its own deadline: run_tests.py's
-        pool-of-subprocesses shape at fork cost, with the per-case SIGKILL kept."""
+        pool-of-subprocesses shape at fork cost, with the per-case SIGKILL kept.
+
+        'allowance' is what run_tests.py's own per-case child spends before the candidate runs
+        (interpreter start, importing run_tests.py, importing the candidate) and which this fork
+        does not: subtracting it is what makes a '--timeout T' cap mean the same compute here as
+        it does cold. The reported limit stays the nominal one, so the failure text matches."""
         rt = self.rt
         results = [None] * len(cases)
         for i, case in enumerate(cases):
@@ -213,6 +339,7 @@ class Quixbugs(object):
             by_fd = {}
             deadlines = {}
             limits = {}
+            sinks = {}
             for i in wave:
                 limit = max(timeout, float(cases[i].get("timeout", 0)))
                 limits[i] = limit
@@ -226,9 +353,12 @@ class Quixbugs(object):
                         os._exit(70)
                 os.close(w)
                 by_fd[r] = (i, pid)
-                deadlines[r] = time.monotonic() + limit + 0.05
+                # unbounded, exactly like run_tests.py's own capture of a case subprocess: what
+                # the candidate prints goes to the run's stderr pipe, which IS bounded
+                sinks[r] = _Sink({"head": 0, "truncated": False}, None, TAIL_BYTES)
+                deadlines[r] = time.monotonic() + _charged(limit, allowance) + PIPE_SLACK_S
             expired = set()
-            raw = _drain(list(by_fd), deadlines, expired.add)
+            raw = _drain(list(by_fd), deadlines, expired.add, sinks)
             for fd, (i, pid) in by_fd.items():
                 if fd in expired:
                     _kill(pid, False)
@@ -305,6 +435,7 @@ class Quixbugs(object):
         if os.path.isfile(json_tests):
             with open(json_tests) as f:
                 cases = json.load(f)
+            t_load = time.monotonic()
             try:
                 module = rt._load_candidate(name, path)
             except BaseException as exc:
@@ -312,7 +443,10 @@ class Quixbugs(object):
                 results = [{"input": c["input"], "expected": c["expected"], "status": "error", "actual": text}
                            for c in cases]
             else:
-                results = self._run_cases(module, name, cases, timeout, include_slow, jobs)
+                # the cold per-case child pays interpreter start, importing run_tests.py and
+                # importing the candidate inside its own --timeout; this fork pays none of them
+                allowance = (self.startup_s + self.boot_s + (time.monotonic() - t_load)) * STARTUP_SAFETY
+                results = self._run_cases(module, name, cases, timeout, include_slow, jobs, allowance)
         elif os.path.isfile(module_tests):
             results = self._run_module(name, path, module_tests, timeout)
         else:
@@ -340,6 +474,10 @@ class Quixbugs(object):
 
 
 class Pytest(object):
+    startup_s = 0.0
+    boot_s = 0.0
+    boot_startup_s = 0.0
+
     def __init__(self):
         import pytest
         self.pytest = pytest
@@ -347,10 +485,6 @@ class Pytest(object):
 
     def run(self, req, meta_w):
         args = [str(a) for a in req.get("args", [])]
-        for k, v in (req.get("env") or {}).items():
-            os.environ[str(k)] = str(v)
-        for k in (req.get("envUnset") or []):
-            os.environ.pop(str(k), None)
         # 'python -m pytest' puts the cwd first on sys.path; this process was started as a script,
         # so its own directory is there instead. Match the cold command byte for byte.
         if sys.path:
@@ -375,11 +509,17 @@ class Pytest(object):
         return code
 
 
-def _fork_candidate(handler, req, deadline_s, want_meta):
-    """Run one candidate in a fork; returns (stdout, stderr, exit, timed_out, meta)."""
+def _fork_candidate(handler, req, deadline_s, want_meta, out_cap, tail_bytes):
+    """Run one candidate in a fork; returns (stdout, stderr, exit, timed_out, truncated, meta).
+
+    The deadline is charged from BEFORE the fork and the caller has already subtracted what a
+    cold run spends on process start, so 'deadline_s' means the same compute on both paths. The
+    two output streams share one 'out_cap' byte budget, exactly as src/sandbox/run.ts shares one
+    across a cold run's streams."""
     out_r, out_w = os.pipe()
     err_r, err_w = os.pipe()
     meta_r, meta_w = os.pipe() if want_meta else (None, None)
+    started = time.monotonic()
     pid = os.fork()
     if pid == 0:
         code = 70
@@ -389,6 +529,10 @@ def _fork_candidate(handler, req, deadline_s, want_meta):
             if meta_r is not None:
                 os.close(meta_r)
             os.setsid()
+            # per-run environment, set in the CHILD so every candidate sees what its cold twin
+            # would and nothing leaks into the next one; both handlers get it, not just pytest
+            for k, v in (req.get("env") or {}).items():
+                os.environ[str(k)] = str(v)
             os.dup2(out_w, 1)
             os.dup2(err_w, 2)
             if out_w > 2:
@@ -411,10 +555,14 @@ def _fork_candidate(handler, req, deadline_s, want_meta):
     if meta_w is not None:
         os.close(meta_w)
     fds = [out_r, err_r] + ([meta_r] if meta_r is not None else [])
-    deadline = time.monotonic() + deadline_s
+    shared = {"head": 0, "truncated": False}
+    sinks = _sinks_for([out_r, err_r], shared, out_cap, tail_bytes)
+    if meta_r is not None:
+        sinks[meta_r] = _Sink({"head": 0, "truncated": False}, None, tail_bytes)
+    deadline = started + deadline_s
     deadlines = dict((fd, deadline) for fd in fds)
     expired = []
-    raw = _drain(fds, deadlines, expired.append)
+    raw = _drain(fds, deadlines, expired.append, sinks)
     timed_out = len(expired) > 0
     if timed_out:
         _kill(pid, True)
@@ -435,7 +583,7 @@ def _fork_candidate(handler, req, deadline_s, want_meta):
                 meta = json.loads(line.splitlines()[-1])
             except ValueError:
                 meta = None
-    return _text(raw.get(out_r, b"")), _text(raw.get(err_r, b"")), code, timed_out, meta
+    return _text(raw.get(out_r, b"")), _text(raw.get(err_r, b"")), code, timed_out, shared["truncated"], meta
 
 
 def _prewarm(entries, roots):
@@ -491,14 +639,31 @@ def main(argv=None):
         os.mkfifo(p, 0o600)
 
     try:
+        boot_t0 = time.monotonic()
         if args.mode == "quixbugs":
             handler = Quixbugs(args.quixbugs_dir or os.getcwd())
         else:
             handler = Pytest()
+        # what a cold run pays for the runner's own imports (exec run_tests.py / import pytest)
+        handler.boot_s = time.monotonic() - boot_t0
+        handler.boot_startup_s = _interpreter_start_s(3)
+        handler.startup_s = handler.boot_startup_s
+        _STARTUP["s"] = handler.boot_startup_s
+        _STARTUP["at"] = time.monotonic()
     except BaseException as exc:
         sys.stderr.write("jevcode warm boot failed: " + repr(exc) + "\\n")
         sys.stderr.flush()
         return 3
+
+    def _allowance():
+        """What a cold run of this command spends before the candidate's first instruction.
+        The runner's own imports (exec run_tests.py / import pytest) were timed at boot and are
+        scaled by how much slower an interpreter start is now than it was then: both are the
+        same kind of CPU-bound work, so the same load factor applies to both."""
+        now_s = _STARTUP["s"]
+        base = handler.boot_startup_s or now_s or 1.0
+        handler.startup_s = now_s
+        return (now_s + handler.boot_s * (now_s / base) + SHELL_SPAWN_S) * STARTUP_SAFETY
     # the import set this interpreter is allowed to hold, by content hash; anything that differs
     # later means a candidate edited a module the parent already has, and the parent is stale
     baseline = _workspace_imports(roots)
@@ -563,15 +728,23 @@ def main(argv=None):
             return 6
         t0 = time.monotonic()
         want_meta = args.mode == "pytest" and prewarm_names is None
+        cap = int(msg.get("outputBytes", DEFAULT_OUTPUT_BYTES))
+        tail = int(msg.get("tailBytes", TAIL_BYTES))
+        nominal_s = max(0.001, float(msg.get("deadlineMs", 120000)) / 1000.0)
+        # re-read before the fork, so the forked child inherits a current handler.startup_s
+        run_allowance = _allowance()
         try:
-            out, err, code, timed_out, meta = _fork_candidate(
-                handler, msg, max(0.001, float(msg.get("deadlineMs", 120000)) / 1000.0), want_meta)
+            out, err, code, timed_out, truncated, meta = _fork_candidate(
+                handler, msg, _charged(nominal_s, run_allowance), want_meta,
+                cap if cap > 0 else None, tail if tail > 0 else TAIL_BYTES)
         except BaseException as exc:
             reply({"id": rid, "ok": False, "error": "warm parent: " + repr(exc), "fatal": True})
             return 7
         ms = (time.monotonic() - t0) * 1000.0
         reply({"id": rid, "ok": True, "stdout": out, "stderr": err, "exit": code,
-               "timedOut": bool(timed_out), "ms": round(ms, 3)})
+               "timedOut": bool(timed_out), "truncated": bool(truncated), "ms": round(ms, 3)})
+        # the caller is now parsing that reply: the idle moment to re-price a cold start
+        _refresh_startup()
         if want_meta and isinstance(meta, dict):
             prewarm_names = meta.get("modules", [])
             try:

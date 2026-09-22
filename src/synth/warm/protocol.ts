@@ -9,7 +9,6 @@
  */
 import { isFiniteNumber, isJsonObject, isString, parseJson } from '../../core/json.js';
 import { shellWords } from '../search/budget.js';
-import { CASE_TIMEOUT_ENV, MAX_CASE_TIMEOUTS_ENV } from '../verify/quixbugs.js';
 
 /** The two lane shapes the warm server implements; everything else stays on the cold path. */
 export type WarmMode = 'quixbugs' | 'pytest';
@@ -41,6 +40,8 @@ export interface WarmRunResult {
   stderr: string;
   exitCode: number | null;
   timedOut: boolean;
+  /** the output hit `WARM_OUTPUT_BYTES` and carries the same marker a cold run's would (ExecResult.truncated) */
+  truncated: boolean;
   durationMs: number;
 }
 
@@ -51,8 +52,15 @@ export type WarmResponse =
   | { kind: 'invalidate'; id: number; path: string }
   | { kind: 'error'; id: number; message: string };
 
-/** Environment keys the lane sets per run; the warm child sets exactly these and unsets the rest. */
-export const WARM_ENV_KEYS: readonly string[] = [CASE_TIMEOUT_ENV, MAX_CASE_TIMEOUTS_ENV];
+/**
+ * The output budget a warm run is held to. It must be the sieve's own `RUN_OUTPUT_BYTES`, and
+ * `test/unit/synth/warm/protocol.test.ts` pins the two together — it is not imported from
+ * `src/synth/sieve/runner.ts` only because the runner imports this module. An unbounded warm run
+ * would both serialise a runaway candidate's whole output onto the fifo (measured: 25 MB and
+ * +61 MB RSS for one lane) and disagree with its cold twin, which pytest-summarises a truncated
+ * run as "exit != 0 with no failing test".
+ */
+export const WARM_OUTPUT_BYTES = 256 * 1024;
 
 /**
  * Characters that make a command more than one program: a warm request replays an argv, not a
@@ -124,27 +132,45 @@ export function quixbugsRequestFor(command: string): WarmQuixbugsRequest | null 
   return req;
 }
 
-/** `[VAR=v …] python[3] -m pytest <args…>` or `pytest <args…>` → a warm request; null otherwise. */
+/**
+ * `[VAR=v …] python[3] -m pytest <args…>` → a warm request; null otherwise.
+ *
+ * A bare or absolute `pytest` head (`pytest -q`, `/ws/.venv/bin/pytest -q`) is **refused**, even
+ * though `pytest.main()` would reproduce it: the warm worker has to boot *an interpreter*, and
+ * the one behind a console script is only knowable by reading its shebang. Screening a suite
+ * under a different interpreter — different site-packages — is exactly the false negative that
+ * "screen hot, confirm cold" does not cover, because a non-passer is never cold-confirmed. The
+ * command runs cold instead, which costs wall and nothing else (§1.2 clause 4).
+ */
 export function pytestRequestFor(command: string): WarmPytestRequest | null {
   if (SHELL_CONTROL.test(command)) return null;
   const words = shellWords(command);
   const { at } = splitAssignments(words);
-  const head = words[at] ?? '';
-  let argsAt: number;
-  if (isPythonWord(head)) {
-    if (words[at + 1] !== '-m' || words[at + 2] !== 'pytest') return null;
-    argsAt = at + 3;
-  } else if (/(^|\/)(pytest|py\.test)$/.test(head)) {
-    argsAt = at + 1;
-  } else {
-    return null;
-  }
-  return { kind: 'pytest', args: words.slice(argsAt) };
+  if (!isPythonWord(words[at] ?? '')) return null;
+  if (words[at + 1] !== '-m' || words[at + 2] !== 'pytest') return null;
+  return { kind: 'pytest', args: words.slice(at + 3) };
 }
 
 /** The warm request a lane command maps to under `mode`, or null when it must run cold. */
 export function requestFor(mode: WarmMode, command: string): WarmRunRequest | null {
   return mode === 'quixbugs' ? quixbugsRequestFor(command) : pytestRequestFor(command);
+}
+
+/**
+ * The interpreter word of a servable command, verbatim (`python3`, `python3.11`,
+ * `/ws/.venv/bin/python`), or null when the command is not servable at all.
+ *
+ * Taken from the word the parser already extracted, never guessed from the line: a plane booted
+ * on a *different* interpreter than the cold command names has different site-packages, and the
+ * candidates it screens are classified against the wrong environment. `WarmPlane.serve` re-checks
+ * this per request against the interpreter the plane actually booted, so a lane command that
+ * changes interpreter mid-run runs cold rather than on the wrong one.
+ */
+export function interpreterFor(mode: WarmMode, command: string): string | null {
+  if (requestFor(mode, command) === null) return null;
+  const words = shellWords(command);
+  const head = words[splitAssignments(words).at] ?? '';
+  return isPythonWord(head) ? head : null;
 }
 
 /** Parse one response line. Anything unexpected is an `error` response, never a silent pass. */
@@ -171,6 +197,7 @@ export function parseResponse(line: string): WarmResponse {
       stderr: isString(o['stderr']) ? o['stderr'] : '',
       exitCode: isFiniteNumber(exit) ? exit : null,
       timedOut: o['timedOut'] === true,
+      truncated: o['truncated'] === true,
       durationMs: isFiniteNumber(o['ms']) ? o['ms'] : 0,
     },
   };

@@ -16,7 +16,7 @@ import { afterEach, describe, expect, it } from 'vitest';
 import { summarize } from '../../../../src/synth/verify/index.js';
 import { quixbugsTestCommand } from '../../../../src/synth/verify/quixbugs.js';
 import { WarmError, WarmWorker, writeWarmServer } from '../../../../src/synth/warm/index.js';
-import { havePython, haveRunner, QUIXBUGS_DIR, warmFixture, type WarmFixture } from './helpers.js';
+import { havePython, haveRunner, haveSeatbelt, QUIXBUGS_DIR, warmFixture, type WarmFixture } from './helpers.js';
 
 let fx: WarmFixture | null = null;
 afterEach(() => {
@@ -103,6 +103,29 @@ describe.skipIf(!havePython || !haveRunner)('the warm worker on the QuixBugs run
     }
   }, 60_000);
 
+  it('the per-run environment reaches the candidate on the quixbugs path too, and does not leak to the next run', async () => {
+    // `laneRunEnv` sets per-run keys that a cold run gets as process env; the warm child must
+    // get exactly the same ones. Applying them per handler is how they silently stop arriving
+    // on one of the two paths, so they are applied once, in the fork, for both.
+    fx = warmFixture();
+    const f = fx;
+    const w = await quixbugsWorker(f);
+    try {
+      const candidate = join(f.lane.dir, 'gcd.py');
+      writeFileSync(candidate, ['import os', '', 'def gcd(a, b):', "    if os.environ.get('JEV_WARM_ENV_PROBE') != 'yes':", "        raise RuntimeError('env not applied')", '    return a if b == 0 else gcd(b, a % b)', ''].join('\n'));
+      const req = { kind: 'quixbugs' as const, dir: QUIXBUGS_DIR, name: 'gcd', path: candidate, maxFailures: 1000, timeout: 2 };
+      const withEnv = await w.run(req, 30_000, { JEV_WARM_ENV_PROBE: 'yes' });
+      expect(summarize('warm', withEnv, 1).passed).toBe(6);
+      // the next request gets its own fork, so the key is gone again
+      const without = await w.run(req, 30_000);
+      const s = summarize('warm', without, 1);
+      expect(s.passed).toBe(0);
+      expect(s.failures.every((x) => /env not applied/.test(x.actual))).toBe(true);
+    } finally {
+      w.dispose();
+    }
+  }, 60_000);
+
   it('an exception in the warm parent is a fatal error answer and kills the worker (the caller then runs cold)', async () => {
     fx = warmFixture();
     const f = fx;
@@ -154,6 +177,40 @@ describe.skipIf(!havePython || !haveRunner)('the warm worker on the QuixBugs run
     while (alive() > 0 && Date.now() - started < 10_000) await new Promise((r) => setTimeout(r, 100));
     expect(alive()).toBe(0);
   }, 40_000);
+});
+
+describe.skipIf(!havePython || !haveRunner || !haveSeatbelt)('under the real seatbelt', () => {
+  /**
+   * The design's whole reason for starting the worker through `ctx.sandbox.run` instead of a
+   * second `spawn` is that it then inherits the profile. Everything the warm path asks of that
+   * profile is something a cold run never asks: `os.mkfifo` under the run dir, a `fork()` per
+   * candidate, `setsid()`, and a process that outlives the command that started it. So one case
+   * pays the real `sandbox-exec` and checks that the verdict is still the cold one.
+   */
+  it('boots, forks, and agrees with the cold run of the same command', async () => {
+    fx = warmFixture('jev-warm-sb-', 'seatbelt');
+    const f = fx;
+    expect(f.sandbox.level).toBe('seatbelt');
+    const w = await quixbugsWorker(f);
+    try {
+      const candidate = join(f.lane.dir, 'gcd.py');
+      copyFileSync(join(QUIXBUGS_DIR, 'correct/gcd.py'), candidate);
+      const command = quixbugsTestCommand(QUIXBUGS_DIR, 'gcd', candidate, { timeoutSec: 2 });
+      const hot = await w.run({ kind: 'quixbugs', dir: QUIXBUGS_DIR, name: 'gcd', path: candidate, maxFailures: 1000, timeout: 2 }, 60_000);
+      const summary = summarize(command, hot, hot.durationMs);
+      expect(summary.passed).toBe(6);
+      expect(verdict(summary)).toEqual(verdict(await cold(f, command)));
+      // the per-case SIGKILL still fires inside the confined fork
+      writeFileSync(candidate, 'def gcd(a, b):\n    while True:\n        pass\n');
+      const hung = await w.run({ kind: 'quixbugs', dir: QUIXBUGS_DIR, name: 'gcd', path: candidate, maxFailures: 1000, timeout: 0.2 }, 30_000);
+      const hungSummary = summarize(command, hung, hung.durationMs);
+      expect(hungSummary.passed).toBe(0);
+      expect(hungSummary.failures.every((x) => /TIMEOUT after 0\.2s/.test(x.actual))).toBe(true);
+      expect(w.alive).toBe(true);
+    } finally {
+      w.dispose();
+    }
+  }, 90_000);
 });
 
 describe.skipIf(!havePython)('a misbehaving worker never becomes a verdict', () => {

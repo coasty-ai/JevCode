@@ -22,7 +22,7 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import type { Lane, VerifyOutcome } from '../../../../src/synth/search/types.js';
-import { runQueue, type RunnerContext, type RunnerMemory } from '../../../../src/synth/sieve/runner.js';
+import { newDeadlineHit, runQueue, type RunnerContext, type RunnerMemory } from '../../../../src/synth/sieve/runner.js';
 import { emptyWarmStats, type WarmRunResult, type WarmScreen, type WarmStats } from '../../../../src/synth/warm/index.js';
 import { base, budget, candidate, fakeSandbox, fifoQueue, GCD_BASELINE, GCD_BUGGY, GCD_TESTS, goal, job, oracle, runTestsJson, site, sourceFile, summary } from './helpers.js';
 
@@ -77,6 +77,9 @@ function scriptedScreen(answer: (command: string, n: number) => WarmRunResult | 
     scopeUnusable(): void {
       counts.scopeUnusable += 1;
     },
+    deadlineRecheck(): void {
+      counts.deadlineRechecks += 1;
+    },
     stats: (): WarmStats => ({ ...counts }),
     dispose(): void {
       s.off = true;
@@ -99,7 +102,7 @@ function ctxFor(sandbox: ReturnType<typeof fakeSandbox>): RunnerContext {
 function warm(result: WarmRunResult | null): WarmRunResult | null {
   return result;
 }
-const hot = (stdout: string, exitCode: number): WarmRunResult => ({ stdout, stderr: '', exitCode, timedOut: false, durationMs: 4 });
+const hot = (stdout: string, exitCode: number, timedOut = false): WarmRunResult => ({ stdout, stderr: '', exitCode, timedOut, truncated: false, durationMs: 4 });
 
 /** One candidate whose warm run says "passes" and whose cold run says whatever `coldStdout` says. */
 function setUp(coldStdout: string, screen: WarmScreen): { mem: RunnerMemory; ctx: RunnerContext; queue: ReturnType<typeof fifoQueue> } {
@@ -123,6 +126,9 @@ describe('screen hot, confirm cold (§3 M6)', () => {
     expect(screen.counts.confirmed).toBe(1);
     expect(runsBefore - mem.stepBudget.testRunsLeft).toBe(2);
     expect(o.full?.passed).toBe(6);
+    // the subset run WAS the whole suite here, so the cold confirmation replaces it outright:
+    // what guard.ts `isPlausible` re-checks is cold end to end, not a warm screen carried along
+    expect(o.subset).toBe(o.full);
     expect(emitted.join('\n')).toContain('cold confirm');
   });
 
@@ -144,6 +150,8 @@ describe('screen hot, confirm cold (§3 M6)', () => {
     const out = await runQueue(ctx, mem, queue, GOAL, 5);
     expect(out.map((o) => o.status)).not.toContain('plausible');
     expect(screen.counts.mismatches).toBe(1);
+    // the disowned warm pass must not have consumed one of the step's full-suite runs
+    expect(mem.passersThisStep ?? 0).toBe(0);
     expect(screen.disabled).toBe(true);
     expect(emitted.join('\n')).toContain('screen:mismatch');
     // the cold run is what the outcome carries
@@ -167,6 +175,67 @@ describe('screen hot, confirm cold (§3 M6)', () => {
     // Only the candidate whose own cold confirmation decided it stays `tried`.
     expect(mem.tried.size).toBe(1);
     expect(mem.deferred?.get(GOAL.id)?.map((j) => j.candidate.text)).toEqual(['return a % b']);
+  });
+
+  it('a warm run that hit a deadline is discarded and the command is re-run cold', async () => {
+    // The one measurement the two paths cannot charge from the same instant: the cold cap covers
+    // process start, the warm one covers a fork. So a warm timeout is never a verdict — without
+    // this the candidate would be marked `tried` on a timeout the cold path never saw, and a
+    // non-passer is never cold-confirmed by the screen/confirm rule.
+    const screen = scriptedScreen(() => warm(hot(PASSING, 0, true)));
+    const { mem, ctx, queue } = setUp(PASSING, screen);
+    const runsBefore = mem.stepBudget.testRunsLeft;
+    const out = await runQueue(ctx, mem, queue, GOAL, 5);
+    expect(screen.counts.deadlineRechecks).toBe(1);
+    // the COLD run decided, so nothing is marked screened and no confirmation was needed
+    expect(out.map((o) => o.status)).toEqual(['plausible']);
+    expect(out[0]?.screened).toBeUndefined();
+    expect(out[0]?.confirmedCold).toBeUndefined();
+    expect(screen.counts.confirmed).toBe(0);
+    // and the fall-through is inside the one charged run, not a second one
+    expect(runsBefore - mem.stepBudget.testRunsLeft).toBe(1);
+  });
+
+  it('a hang the baseline already has is not re-checked: bitcount must not cost two caps a candidate', async () => {
+    // 203 of bitcount's candidates hang on the case the buggy program hangs on. That says the
+    // same thing warm or cold, so re-running each of them cold would double the wall of the
+    // exact task class the warm plane exists for and decide nothing.
+    const hung = (input: number[]): string => JSON.stringify({ name: 'gcd', passed: 5, failed: 0, errors: 1, timeouts: 1, skipped: 0, total: 6, failures: [{ input, expected: 1, actual: 'TIMEOUT after 2s' }] });
+    const baseline = summary({ ...GCD_BASELINE, command: GCD_BASELINE.command, failures: [{ testId: 'gcd(13, 13)', call: 'gcd(13, 13)', expected: '1', actual: 'TIMEOUT after 2s' }], failing: ['gcd(13, 13)'], passed: 5, errors: 1, failed: 0, total: 6 });
+    const screen = scriptedScreen(() => warm(hot(hung([13, 13]), 1)));
+    const sandbox = fakeSandbox((command) => (/run_tests\.py/.test(command) ? { stdout: PASSING, exitCode: 0 } : {}));
+    const mem: RunnerMemory = { baseline, oracle: oracle({ lanes: 1 }), stepBudget: budget(), tried: new Set(), warm: screen };
+    const c = candidate(site(gcd, 2), 'return a % b');
+    const out = await runQueue(ctxFor(sandbox), mem, fifoQueue([job(c, base([gcd], baseline))]), goal(['gcd(13, 13)']), 5);
+    expect(screen.counts.screened).toBe(1);
+    expect(screen.counts.deadlineRechecks).toBe(0);
+    // the warm run is what classified it — no cold run of the same command was made
+    expect(out[0]?.screened).toBe(true);
+    // classified (as a hang the baseline shares), without a second, cold run of the same command
+    expect(out[0]?.status).toBe('timeout');
+  });
+
+  it('newDeadlineHit is about NEW deadlines only', () => {
+    const t = (id: string): { testId: string; call: string; expected: string; actual: string } => ({ testId: id, call: id, expected: '1', actual: 'TIMEOUT after 2s' });
+    const baseline = summary({ failures: [t('a')], failing: ['a'], errors: 1, total: 3, passed: 2 });
+    expect(newDeadlineHit({ timedOut: false, failures: [t('a')] }, baseline)).toBe(false);
+    expect(newDeadlineHit({ timedOut: false, failures: [t('a'), t('b')] }, baseline)).toBe(true);
+    expect(newDeadlineHit({ timedOut: false, failures: [] }, baseline)).toBe(false);
+    // a non-timeout failure is not a deadline
+    expect(newDeadlineHit({ timedOut: false, failures: [{ testId: 'b', call: 'b', expected: '1', actual: 'AssertionError' }] }, baseline)).toBe(false);
+    // the whole run killed at the lane timeout, which the baseline survived
+    expect(newDeadlineHit({ timedOut: true, failures: [] }, baseline)).toBe(true);
+    expect(newDeadlineHit({ timedOut: true, failures: [] }, { ...baseline, timedOut: true })).toBe(false);
+  });
+
+  it('a per-case TIMEOUT in a warm run is a deadline too, even when the run itself finished', async () => {
+    const CASE_TIMEOUT = JSON.stringify({ name: 'gcd', passed: 5, failed: 0, errors: 1, timeouts: 1, skipped: 0, total: 6, failures: [{ input: [13, 13], expected: 1, actual: 'TIMEOUT after 2s' }] });
+    const screen = scriptedScreen(() => warm(hot(CASE_TIMEOUT, 1)));
+    const { mem, ctx, queue } = setUp(PASSING, screen);
+    const out = await runQueue(ctx, mem, queue, GOAL, 5);
+    expect(screen.counts.deadlineRechecks).toBe(1);
+    expect(out[0]?.screened).toBeUndefined();
+    expect(out.map((o) => o.status)).toEqual(['plausible']);
   });
 
   it('a cold-only batch confirms nothing and marks nothing screened (byte-identical to today)', async () => {

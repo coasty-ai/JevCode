@@ -11,6 +11,12 @@
  * milliseconds apart under the same load is exactly what M6's gate is about.
  *
  * Gate (§6 S1): the warm path must be at least 2x on this probe, or the mechanism is dropped.
+ *
+ * `--profile seatbelt` runs both paths under the real `sandbox-exec`, which is the configuration
+ * the design's justification rests on: the warm worker is started through `ctx.sandbox.run`
+ * precisely so that it inherits the profile, and mkfifo / fork / setsid / a 30-minute process
+ * are all things a cold run never asks of it. Default `none`, because the ratio is the point and
+ * the seatbelt taxes both paths; run it once per change under `seatbelt` as well.
  */
 import { spawnSync } from 'node:child_process';
 import { copyFileSync, cpSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
@@ -18,6 +24,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { SandboxProfile } from '../../src/core/types.js';
 import { createSandbox } from '../../src/sandbox/run.js';
 import type { Lane } from '../../src/synth/search/types.js';
 import { quixbugsTestCommand } from '../../src/synth/verify/quixbugs.js';
@@ -31,6 +38,8 @@ const LADDER = join(REPO, 'bench/data/ladder/tasks');
 
 const repsArg = process.argv.indexOf('--reps');
 const REPS = repsArg === -1 ? 30 : Math.max(3, Number(process.argv[repsArg + 1] ?? 30));
+const profileArg = process.argv.indexOf('--profile');
+const PROFILE: SandboxProfile = profileArg !== -1 && process.argv[profileArg + 1] === 'seatbelt' ? 'seatbelt' : 'none';
 
 /**
  * The sandbox scrubs the environment and remaps HOME, so a `pip install --user` pytest is not
@@ -69,7 +78,7 @@ async function measure(task: string, mode: 'quixbugs' | 'pytest', setUp: (laneDi
   const laneDir = join(runDir, 'tmp/synth/lane0');
   mkdirSync(ws, { recursive: true });
   mkdirSync(laneDir, { recursive: true });
-  const sandbox = createSandbox({ workspaceRoot: ws, runDir, profile: 'none', noNetwork: false, secretReadDenies: [], redact: (s) => s });
+  const sandbox = createSandbox({ workspaceRoot: ws, runDir, profile: PROFILE, noNetwork: false, secretReadDenies: [], redact: (s) => s });
   const signal = new AbortController().signal;
   const lane: Lane = { index: 0, dir: laneDir, mode: 'candidate_file', busy: false };
   const command = setUp(laneDir);
@@ -129,7 +138,7 @@ rows.push(
 rows.push(await quixbugs('bitcount', false));
 
 const cell = (n: number): string => n.toFixed(1).padStart(8);
-console.log(`\nP2 lane-run, ${REPS} interleaved repetitions per task (ms)\n`);
+console.log(`\nP2 lane-run, ${REPS} interleaved repetitions per task, sandbox profile ${PROFILE} (ms)\n`);
 console.log('task                 cold p50  cold p95  warm p50  warm p95     ratio  verdicts');
 for (const r of rows) console.log(`${r.task.padEnd(20)}${cell(r.coldP50)}${cell(r.coldP95)}${cell(r.warmP50)}${cell(r.warmP95)}${r.ratio.toFixed(2).padStart(10)}x  ${r.agree ? 'identical' : 'DIFFER'}${r.gated ? '' : '  (hang-dominated control, not gated)'}`);
 const worst = Math.min(...rows.filter((r) => r.gated).map((r) => r.ratio));
