@@ -440,8 +440,12 @@ export class FastPathRunner {
       if (!this.judgedOracle && !this.judgedSites) {
         const m = this.measured();
         if (m === null) {
-          ctx.emit({ type: 'synth', step: ctx.step, phase: 'fastpath:declined', detail: 'stage 2: no baseline was measured' });
-          return { kind: 'declined', reason: 'no_wall', telemetry: telemetry() };
+          // §4.7's `emptyStepBudget` row: the round returned without ever measuring a baseline, so stage 2 was never
+          // decidable. Unreachable on the normal path (`step()` re-baselines whenever `mem.baseline` is null) and
+          // therefore reported as the broken-round shape it is, never as a proposal.
+          state.disarmed = true;
+          ctx.emit({ type: 'synth', step: ctx.step, phase: 'fastpath:abandoned', detail: 'stage 2: no baseline was measured' });
+          return { kind: 'failed', reason: 'empty_step_budget', outcome: 'error', telemetry: telemetry() };
         }
         this.judgeStage2(m.oracle, m.budget, this.trace()?.sitesConsidered ?? 1);
       }

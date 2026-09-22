@@ -640,7 +640,8 @@ round's ENTRY baseline and the clamp's `observe` judges only a baseline whose id
 round 2 would abort on round 1's oracle at the `freshBudget` that runs before the re-baseline a changed workspace is
 about to force. The wrapped localiser is the deterministic point (after the baseline, before any candidate is
 enumerated, and the only place the real site count exists); a round that reaches neither is judged on its last
-measurement at the end, and a round that measured nothing at all declines rather than proposing.
+measurement at the end, and a round that measured nothing at all takes §4.7's `empty_step_budget` row (disarm,
+`outcome: 'error'`) rather than proposing out of a round whose eligibility was never established.
 
 **The fast path fires iff the round would be a SIEVE round.**
 
