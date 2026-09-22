@@ -15,7 +15,7 @@ disagree, the code wins and the disagreement is a bug; where the code deviates f
 
 | You type | What runs | Composer | Leaves with |
 | --- | --- | --- | --- |
-| `jevcode`, `jevcode chat`, or `jevcode run` with no task on a terminal | an interactive **session** in the default mode (`jev+llm`, the badge in the console's top edge; `jev-only` with `--mode jev-only` or a `mode` row): the composer opens first under the resting wordmark; nothing runs (and no money is spent) until Jev has read a submission as a task — a greeting or a question gets a reply, not a run | Ink composer | `/exit`, Ctrl-D ×2, Ctrl-C ×2 while idle → exit 0 (`--exit-code last-run` returns the last run's code instead) |
+| `jevcode`, `jevcode chat`, or `jevcode run` with no task on a terminal | an interactive **session** in the default mode (`llm+jev · verified`, the badge in the console's top edge; `jev-only` with `--mode jev-only` or a `mode` row): the composer opens first under the resting wordmark; nothing runs (and no money is spent) until Jev has read a submission as a task — a greeting or a question gets a reply, not a run | Ink composer | `/exit`, Ctrl-D ×2, Ctrl-C ×2 while idle → exit 0 (`--exit-code last-run` returns the last run's code instead) |
 | `jevcode run "<task>"`, `--task-file <path>`, `--resume <id\|title>`, `-c` | **one-shot**: one run, started right after `run:ready`; the composer is mounted for steering only | Ink (Enter = steer while live) | the run's exit code (table at the end) |
 | `jevcode [chat] --plain` on a terminal | the same session over a plain `> ` readline prompt: no panes, no colours, the same slash commands | `node:readline` | as a session; Ctrl-C and EOF follow the same matrix (below) |
 | a pipe, `CI`, `TERM=dumb`, `--no-input` | one run with the plain line renderer, no composer; the task comes from argv, `--task-file` or stdin; every prompt takes its safe default (key wizard → the fix block and exit 2, trust → instruction files skipped, follow-up over the session cap → silent clamp, a secret in the task → refused with exit 2, a review → declined) | none | the run's exit code |
@@ -25,7 +25,7 @@ disagree, the code wins and the disagreement is a bug; where the code deviates f
 reads its task like `run` and exits at `run:end`. The interactive rule is `stdin.isTTY && stdout.isTTY && !CI &&
 TERM !== 'dumb' && !--plain && !--json && !--no-input` (`CI` / `CONTINUOUS_INTEGRATION` set and not `0`/`false`).
 
-**Engine modes and the badge.** `jev-on` (the default since round 3, badge `jev+llm`: the code model writes the code,
+**Engine modes and the badge.** `llm-jev` (the default since 2026-09-22, badge `llm+jev · verified`: the code model writes candidate patches inside the Jev-only search, tests verify, Jev arbitrates — docs/LLM-JEV-DESIGN.md), `jev-on` (badge `jev+llm`: the code model writes the code,
 Jev decides every step; one OpenRouter key serves both; run cap $2.00, session cap $10.00), `jev-only` (badge `jev-only`:
 no generating LLM — code proposes candidate fixes, Jev decides, tests verify; one Jev key; $0.25 / $1.25), `jev-off`
 (`llm-only`: the generator alone, a bench condition) and `llm-jev` (`llm+jev · verified`: the jev-only search with the
