@@ -1030,3 +1030,68 @@ generator record depends on which model wrote a paragraph of Markdown (the bench
 `src/bench/conditions.ts`). Consequences: nothing in the repository encodes the choice — it is a session setting, reverted by switching
 back when the limit lifts; anything a subagent asserts about behaviour is still checked against the code or a run record before it is
 written down, which is the rule regardless of model.
+
+## 2026-09-22 Contract blocks are numbered by assignment and ordered ascending in the file, whatever order they land
+
+`src/core/types.ts` header lines read `1.1, 1.2, 1.2, 1.3, 1.4` (coordination), then every later block in **ascending** number order:
+1.5 orchestration, 1.6 import, 1.7 TUI round 4. Numbers are assigned when a design is accepted, not when it merges, so a block that
+lands early (1.7 landed before 1.5 and 1.6) sits *below* the numbers reserved above it and a later block is inserted, contiguous,
+between its neighbours. Reason: three designs queued for the same file on one day and "numbered in landing order" would have made
+every rebase renumber someone else's block; assignment order makes the number stable in the design documents that cite it.
+Consequences: `test/unit/core/contract.test.ts` asserts the first five lines and that every later number is greater than 1.4 and
+ascending; the 1.4 line sits directly after 1.3 (where the harness rebased it); each owner edits only its own block.
+
+## 2026-09-22 Harness-owned files touched by the TUI session arrive as hunks
+
+`src/loop/engine.ts`, `src/checkpoint/**`, `src/core/**` (other than the TUI's contract block) and `src/errors.ts` are edited by the
+harness session only; the TUI session sends the exact hunks it needs (round 4's `annotateBlock`, the degrade emit, the ENOENT
+classification, `artefactVersion`, `shortPath`, `explainFsError`) and the harness lands them, or the TUI commits them alone at a hash
+the harness then rebases over (2350c3a). Reason: two sessions editing one engine file in a shared working tree blocked a merge for an
+hour (an uncommitted block in `types.ts`) and shipped a raw U+2028 inside a regex literal that TypeScript accepts and esbuild does
+not (`src/errors.ts:368`, fixed 9f26fb6), taking ~40 test files down on a clean checkout while the shared tree looked green.
+Consequences: `test/unit/hygiene/no-raw-line-separators.test.ts` scans `src/**` and `scripts/**`; the round-4 integrator's
+instructions carry the rule; an uncommitted edit in a shared file is a merge blocker, not a courtesy.
+
+## 2026-09-22 Wall-clock gates on the shared machine: bounded workers, best-of-N, and hermetic process checks
+
+Full unit runs use `--maxWorkers=3`; wall-clock assertions take the best of N samples (`engine-perf` harnessMs skips when
+`loadavg > cpus`, `prompts-context`'s build gate is best-of-5, `parse/markdown`'s three gates best-of-3); a test that inspects the
+host's process table matches only the process it spawned (`sandbox/run.test.ts` tags its `sleep` uniquely). Reason: two sessions and
+up to a dozen agents ran suites concurrently at load 30–100; unbounded runs manufactured failures in tests verified green moments
+earlier, `sandbox/run.test.ts` failed whenever any other worktree ran the same suite, and single-sample budgets (50 ms, 200 ms) failed
+on the load alone. Consequences: a gate that still fails best-of-N is a real regression; release perf numbers come only from
+`perf/*` under `LOAD_QUIET`, never from a unit test; the TUI's real-timer tests remain the known noise and are checked against
+`main` alone before being attributed to a branch.
+
+## 2026-09-22 Orchestration ships with the split gate shut, lands per step, and asks about rewritten shared files
+
+`orchestrate.split` defaults to `'off'` with a one-time hint (design §10 Q1); `orchestrate.land` defaults to `'step'` (Q3); the agents
+tab is `PaneTab 'a'`, last and skipped when no delegation exists (Q2). The land-time ownership question subtracts `carried` — the
+synced-dirty paths whose bytes are *still identical* to what the sync wrote — not `Manifest.syncedDirty`: a parent-dirty file an agent
+**rewrote** outside its `own` is reported, because that is the two-sibling collision the ownership rule exists to catch. Rule 9's
+secret scan covers `verify` as well as `task` and `own`, and `readManifest` recomputes `manifestId` from the parsed contents (the
+unkeyed checksum detects corruption, not tampering). Reason: the adversarial review of the planner reproduced an adopted manifest
+edited on disk to `task: 'exfiltrate everything'`, a collapse that minted `src/**` past a denied `src/secrets`, and an ownership belt
+that ignored byte changes to synced files (`docs/research/orchestration/review-planner-2026-09-22.md`). Consequences: design §3.4
+rule 9, §5.3 and §8.1 amended (`canonical.ts` added); `validateOwnList` re-checks the collapsed list; `applyDropRule` re-validates
+ownership and disjointness and falls back to `no_split`.
+
+## 2026-09-22 Import classification runs the identity rules before the atlas class
+
+`skip:self`, the secret basename, the never-imported atlas classes, oversize, not-text and unsupported are decided **before** the atlas
+row's import class (design §4.4.1 rules 1–7). Reason: every discovered artefact has an atlas row, so with the class first the identity
+verdicts were unreachable and the repo's own `AGENTS.md` — a destination — would have been classified a source and appended to itself
+on every run; hoisting the never-imported classes above the size checks reports an oversize transcript by what it *is*
+(`skip:transcript`), while keeping it below the secret rule so a credential store is still named a secret. Consequences: the atlas
+class is rule 7; whole-file destinations are judged by their own sha on a re-run (a `create` writes no markers, so marker presence is
+required only for shared destinations such as `AGENTS.md`); Jev question ids for groups III–V are content-keyed
+(`same_meaning_<a>_<b>`, `rank_<rowId>`, `contradicts_<a>_<b>`) so a fold in pass 1 cannot shift pass 2's answers.
+
+## 2026-09-22 Claim epochs: the holder is the highest qualified epoch
+
+A run's holder is the claim with the highest epoch that is self-owned or trust- and HMAC-qualified (design §3.2, §9.3, §10.7); the
+merged ledger's minimum-holder rule is being re-keyed to match. Reason: claim epochs exist for fork fencing — a legitimate later
+resume takes over and the stale process must stop; a minimum-holder rule would call the resumer the fork. Consequences:
+`forkVerdict`, `claimHolderOf`, `byRunId` and the `/resume` refusal follow the maximum; `--force-takeback` mints above the maximum of
+qualified and (strictly-below-bound) unqualified epochs and refuses `'epoch-exhausted'` at the bound; qualified foreign epochs come
+from the sixth record kind `claims` at `runs/<deviceId>/<runId>/claims.json`, never from `run.json`.
