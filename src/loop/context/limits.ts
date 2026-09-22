@@ -134,6 +134,8 @@ export interface ResolvedContextPolicy {
   /** 0 disables the interval trigger */
   compactEvery: number;
   compaction: CompactionMode;
+  /** §8.6: who ranks the kept items — `'code'` (default, deterministic, free) or one bounded Jev pass */
+  kept: 'code' | 'jev';
   budget: ContextBudget;
   /** `budget.chars`, the value every section share is taken from */
   budgetChars: number;
@@ -165,6 +167,7 @@ export function resolveContextPolicy(p?: ContextPolicyOptions, budget?: Omit<Bud
     fileCacheBytes: positive(p?.fileCacheBytes, FILE_CACHE_BYTES),
     compactEvery: compactEvery !== undefined && Number.isFinite(compactEvery) && compactEvery >= 0 ? Math.floor(compactEvery) : COMPACT_EVERY,
     compaction: p?.compaction ?? 'code',
+    kept: p?.kept ?? 'code',
     budget: resolved,
     budgetChars: resolved.chars,
     windowTokens: resolved.windowTokens,
