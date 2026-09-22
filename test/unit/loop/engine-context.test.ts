@@ -9,9 +9,9 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { EngineStatus } from '../../../src/core/types.js';
 import { hasContextStore } from '../../../src/checkpoint/types.js';
-import { COMPACT_AT_PCT, HISTORY_STEPS, contextBudgetChars } from '../../../src/loop/context/limits.js';
+import { CHARS_PER_TOKEN, COMPACT_AT_PCT, HISTORY_STEPS, contextBudgetChars } from '../../../src/loop/context/limits.js';
 import { compactCode } from '../../../src/loop/context/compaction.js';
-import type { ContextUsage, HistoryEntry } from '../../../src/core/types.js';
+import type { ContextUsage, HistoryEntry, Synthesizer } from '../../../src/core/types.js';
 import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, turn, type Harness } from './fakes.js';
 
 const harnesses: Harness[] = [];
@@ -25,6 +25,22 @@ afterEach(() => {
 function usage(status: EngineStatus): ContextUsage {
   expect(status.context).toBeDefined();
   return status.context!;
+}
+
+/**
+ * contract 1.4 (§8.8 column 3): an llm-jev synthesizer that proposes one `run` per step and records the
+ * `SynthesisContext.contextText` it was handed, so a test can read the relaxed view from the consumer's side.
+ */
+function synthRunning(seen: (string | undefined)[]): Synthesizer {
+  let i = 0;
+  return {
+    name: 'ctx-probe',
+    mode: 'llm-jev',
+    async synthesize(ctx) {
+      seen.push(ctx.contextText);
+      return { goal: 'keep going', action: { kind: 'run', command: `echo ${'abcdefghijklmnopqrst'[i++ % 20]}` }, plan: { done: [], remaining: ['keep going'], openProblems: [] }, rawText: '' };
+    },
+  };
 }
 
 /** `steps` run steps whose output is `chars` long (letters, not digits: signature normalisation strips digits). */
@@ -461,23 +477,101 @@ describe('§8 checkpoint compatibility (additive)', () => {
     expect((state as { history?: unknown[] }).history).toHaveLength(1);
   });
 
-  it('review D5: the modes that do not read the relaxed view never pay for it and show no meter', async () => {
-    for (const mode of ['jev-only', 'llm-jev'] as const) {
-      const h = await makeEngine({
-        mode,
-        synthesizer: { propose: async () => ({ proposal: { goal: 'stop', action: { kind: 'done', summary: 'nothing to do' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: 'done' }, decisions: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 } }) } as never,
-        limits: { maxSteps: 1 },
-      });
-      harnesses.push(h);
-      await h.engine.run();
-      // no meter at all — never a `ctx 0%` that cannot move
-      expect((h.engine.status() as { context?: unknown }).context).toBeUndefined();
-      // and none of §8's disk or state weight
-      expect(h.store.outputs.size).toBe(0);
-      expect(h.store.summary).toBeNull();
-      const state = h.store.last();
-      if (state !== undefined) for (const key of ['history', 'fileCache', 'fileMemory', 'summaryAt', 'compactions']) expect(state).not.toHaveProperty(key);
-    }
+  /**
+   * INVERTED for llm-jev by contract 1.4 (§8.8 column 3) / TUI-DESIGN-5 §8.2 R13: D5 deferred llm-jev only "until
+   * `SynthesisContext.contextText` exists", because a view nothing read would have been dead weight with a meter
+   * stuck at 0 %. It exists, the candidate source reads it, so llm-jev now pays for the view like the generator
+   * modes and shows the meter — see the test below. `jev-only` is the one D5 mode left: it prompts no generator at
+   * all, so it still builds nothing.
+   */
+  it('review D5 (as amended by TUI-DESIGN-5 R13): jev-only reads no relaxed view, never pays for it and shows no meter', async () => {
+    const h = await makeEngine({
+      mode: 'jev-only',
+      synthesizer: { propose: async () => ({ proposal: { goal: 'stop', action: { kind: 'done', summary: 'nothing to do' }, plan: { done: [], remaining: [], openProblems: [] }, rawText: 'done' }, decisions: [], usage: { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 0 } }) } as never,
+      limits: { maxSteps: 1 },
+    });
+    harnesses.push(h);
+    await h.engine.run();
+    // no meter at all — never a `ctx 0%` that cannot move
+    expect((h.engine.status() as { context?: unknown }).context).toBeUndefined();
+    for (const e of h.events) if (e.type === 'status') expect((e as { status: { context?: unknown } }).status.context).toBeUndefined();
+    // no generator call, and none of §8's disk or state weight
+    expect(h.provider.requests).toHaveLength(0);
+    expect(h.store.outputs.size).toBe(0);
+    expect(h.store.summary).toBeNull();
+    const state = h.store.last();
+    if (state !== undefined) for (const key of ['history', 'fileCache', 'fileMemory', 'summaryAt', 'compactions']) expect(state).not.toHaveProperty(key);
+  });
+
+  /**
+   * contract 1.4 (§8.8 column 3, §12.0.3) / TUI-DESIGN-5 §8.2 R13: the other half of the inversion above. llm-jev is
+   * the shipped DEFAULT_MODE, so before this the `ctx N%` meter and `/context` were blind for most users.
+   */
+  it('TUI-DESIGN-5 R13: an llm-jev run builds the relaxed view — the meter moves, `outputs/` fills, and the synthesizer is handed `contextText`', async () => {
+    const seen: (string | undefined)[] = [];
+    const h = await makeEngine({
+      mode: 'llm-jev',
+      synthesizer: synthRunning(seen),
+      sandbox: createFakeSandbox((c) => execResult({ stdout: `${c}\n${'x'.repeat(5_000 - c.length - 2)}\n` })),
+      limits: { maxSteps: 3 },
+    });
+    harnesses.push(h);
+    await h.engine.run();
+
+    const u = usage(h.engine.status());
+    expect(u.promptChars).toBeGreaterThan(0);
+    // §12.0.3: the percentage is of the PROMPT BUDGET, in tokens, and the three numbers agree
+    expect(u.tokensInWindow).toBe(Math.round(u.promptChars / CHARS_PER_TOKEN));
+    expect(u.budgetTokens).toBe(Math.round(u.budgetChars / CHARS_PER_TOKEN));
+    expect(u.pct).toBe(Math.round((100 * u.tokensInWindow) / u.budgetTokens));
+    // §12.0.3 cadence point 1: the last recompute was step 3's prompt build, which saw steps 1–2 in the history
+    expect(u.historyEntries).toBe(2);
+    // every `status` carries the SAME object, so a surface never sees the member appear and vanish
+    const statuses = h.events.filter((e) => e.type === 'status');
+    expect(statuses.length).toBeGreaterThan(0);
+    expect(statuses.every((e) => (e as { status: { context?: unknown } }).status.context !== undefined)).toBe(true);
+
+    // §8.3 / §8.5: the whole outputs are on disk and the checkpoint carries the additions
+    expect([...h.store.outputs.keys()]).toEqual([1, 2, 3]);
+    expect((h.store.last()! as { history?: unknown[] }).history).toHaveLength(3);
+
+    // §8.8 column 3: the synthesizer got the assembled sections — and NOT the `propose_action` reply block
+    expect(seen).toHaveLength(3);
+    const last = seen.at(-1)!;
+    expect(last).toContain('## Task');
+    expect(last).toContain('## Plan (accepted by the harness)');
+    expect(last).toContain('## Recent steps');
+    expect(last).not.toContain('## Your reply');
+    expect(last).not.toContain('propose_action');
+    // step 1 has no history yet; by step 3 the earlier steps' outputs are in the text the synthesizer holds
+    expect(seen[0]).not.toContain('### step 2:');
+    expect(last).toContain('### step 2:');
+    // llm-jev calls no generator through the engine's propose stage — the view rides the synthesizer's own samples
+    expect(h.provider.requests).toHaveLength(0);
+  });
+
+  it('TUI-DESIGN-5 R13: the §8.6 compaction and the Q16 `context:warn` cadence fire on llm-jev exactly as on jev-on', async () => {
+    const seen: (string | undefined)[] = [];
+    const h = await makeEngine({
+      mode: 'llm-jev',
+      synthesizer: synthRunning(seen),
+      sandbox: createFakeSandbox((c) => execResult({ stdout: `${c}\n${'x'.repeat(5_000 - c.length - 2)}\n` })),
+      limits: { maxSteps: 6 },
+      engine: {
+        contextPolicy: { view: 'relaxed', windowTokens: 20_000, compactEvery: 0 },
+        instructions: { files: [{ path: 'AGENTS.md', sha256: 'ab'.repeat(32), bytes: 40_000 }], text: 'house style. '.repeat(3_077) },
+      },
+    });
+    harnesses.push(h);
+    await h.engine.run();
+    const warns = h.events.filter((e) => e.type === 'context:warn');
+    expect(warns.length).toBeGreaterThanOrEqual(1);
+    for (const w of warns) expect((w as { pct: number }).pct).toBeGreaterThanOrEqual(COMPACT_AT_PCT);
+    const compacted = h.events.filter((e) => e.type === 'context:compacted');
+    expect(compacted.length).toBeGreaterThanOrEqual(1);
+    expect(h.store.summary).not.toBeNull();
+    // and the fold reaches the text the synthesizer is handed on the next step
+    expect(seen.at(-1)!).toContain('## Summary (rolling');
   });
 
   it('review D18: the legacy pin carries no `context` on status either', async () => {

@@ -124,6 +124,13 @@ export interface EnumerateOptions {
    * 'LLM' is the llm-jev round phase (docs/LLM-JEV-DESIGN.md §4.2); no code source enumerates in it.
    */
   phase?: 'SEEDS' | 'LLM' | 'SKETCH' | 'BEAM' | 'WIDENED';
+  /**
+   * The run whose harvested facts the wired seeds read (src/synth/index.ts `enrichEnumerateOptions` →
+   * introspect/facts.ts `runFacts`). Carried on the options because `enumerate(site, opts)` has no run in
+   * reach and a bench process searches several runs at once — a process-wide "current run" cell let one
+   * run's seeds enumerate with another run's names and history. Absent = no facts.
+   */
+  runId?: string;
 }
 
 export interface CandidateSource {
