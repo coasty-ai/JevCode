@@ -1034,7 +1034,7 @@ written down, which is the rule regardless of model.
 ## 2026-09-22 Contract blocks are numbered by assignment and ordered ascending in the file, whatever order they land
 
 `src/core/types.ts` header lines read `1.1, 1.2, 1.2, 1.3, 1.4` (coordination), then every later block in **ascending** number order:
-1.5 orchestration, 1.6 import, 1.7 TUI round 4. Numbers are assigned when a design is accepted, not when it merges, so a block that
+1.5 orchestration, 1.6 import, 1.7 TUI round 4, 1.8 TUI round 5, 1.9 Fastlane (HARNESS-NEXT). Numbers are assigned when a design is accepted, not when it merges, so a block that
 lands early (1.7 landed before 1.5 and 1.6) sits *below* the numbers reserved above it and a later block is inserted, contiguous,
 between its neighbours. Reason: three designs queued for the same file on one day and "numbered in landing order" would have made
 every rebase renumber someone else's block; assignment order makes the number stable in the design documents that cite it.
