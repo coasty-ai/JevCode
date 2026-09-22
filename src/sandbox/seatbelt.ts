@@ -13,6 +13,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 import type { SandboxLevel, SandboxProfile } from '../core/types.js';
+import { ConfigError } from '../errors.js';
 import { canonicalPathSync, isWithin } from './paths.js';
 
 export interface ProfileOptions {
@@ -176,15 +177,40 @@ export function buildProfile(opts: ProfileOptions): string {
   // ORCHESTRATION-DESIGN §5.2 [G3]: the child deny list, its own rule so nothing else can weaken it
   // (`protectGit: false` is the infrastructure sandbox's knob and has no business relaxing this one).
   // It sits after the write allow because later rules win; without the ordering the deny is inert.
-  // The four paths are relative to the git COMMON dir: `refs/` and `packed-refs` hold the branch the
-  // landing layer pinned, `logs/` its reflog, and `worktrees/<name>/HEAD` the file that decides what
-  // any linked worktree — this agent's own included — considers its current branch. The agent's own
-  // per-worktree `logs/` and `refs/` live under `<commonDir>/worktrees/<name>/` and stay writable.
+  //
+  // Everything here is relative to the git COMMON dir, and every entry is a thing that decides what a
+  // later `git merge` merges, or merges INTO:
+  //   refs/, packed-refs, reftable/  the branch the landing layer pinned, in all three storage formats
+  //                                  (`extensions.refStorage = reftable` makes the first two inert on
+  //                                  their own — review 2026-09-22 finding 8)
+  //   logs/                          its reflog
+  //   HEAD, index                    the MAIN worktree's current branch and staged tree. Under
+  //                                  `orchestrate.land: 'step'` the user's own checkout is the merge
+  //                                  target, so these were the most valuable writable files left
+  //                                  (review 2026-09-22 finding 3, probed under sandbox-exec)
+  //   ORIG_HEAD, MERGE_HEAD,         the in-flight state of a merge/rebase/cherry-pick: cheap to deny,
+  //   sequencer/                     and each one steers what a resumed operation does
+  //   worktrees/<name>/HEAD          what any linked worktree — this agent's own included — considers
+  //                                  its current branch
+  // The agent's own per-worktree `logs/`, `refs/` and `index` live under `<commonDir>/worktrees/<name>/`
+  // and stay writable, which is what leaves its own work possible.
+  //
+  // The subpaths lead deliberately: `(deny file-write* (subpath` is how the tests tell this rule apart
+  // from the `.git` knob denies, which open with `(literal`.
   if (opts.agentChild === true) {
-    const agentCommon = commonDir ?? join(ws, '.git');
+    // review 2026-09-22 finding 7: REFUSE rather than degrade. In an agent worktree `<ws>/.git` is a FILE,
+    // so the old `commonDir ?? join(ws, '.git')` fallback aimed every rule at a path that does not exist and
+    // the whole of [G3] silently evaporated. A depth-1 sandbox without a probed common dir is a wiring bug.
+    // `commonOpt`, not the derived `commonDir`: the derivation falls back to `gitDir`, and a gitDir-only call
+    // at depth 1 is still a guess about where the refs live. The probe knows; require that it was asked.
+    if (commonOpt === null) {
+      throw new ConfigError('a depth-1 (agentChild) seatbelt profile needs gitCommonDir: without it the [G3] ref denies would point at nothing', { setting: 'gitCommonDir' });
+    }
+    const q = (...parts: string[]): string => sbplString(join(commonOpt, ...parts));
     lines.push(
-      `(deny file-write* (subpath ${sbplString(join(agentCommon, 'refs'))}) (literal ${sbplString(join(agentCommon, 'packed-refs'))}) (subpath ${sbplString(join(agentCommon, 'logs'))}) ` +
-        `(regex ${sbplRegex(`^${regexQuote(join(agentCommon, 'worktrees'))}/[^/]+/HEAD$`)}))`,
+      `(deny file-write* (subpath ${q('refs')}) (subpath ${q('logs')}) (subpath ${q('reftable')}) (subpath ${q('sequencer')}) ` +
+        `(literal ${q('packed-refs')}) (literal ${q('HEAD')}) (literal ${q('index')}) (literal ${q('ORIG_HEAD')}) (literal ${q('MERGE_HEAD')}) ` +
+        `(regex ${sbplRegex(`^${regexQuote(join(commonOpt, 'worktrees'))}/[^/]+/HEAD$`)}))`,
     );
   }
 

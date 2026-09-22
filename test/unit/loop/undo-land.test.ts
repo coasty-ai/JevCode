@@ -13,6 +13,8 @@
  * therefore proposes NO merge at all and offers `[c]` / `[s]` / `[x]`, each itself a judged step.
  */
 import { spawnSync } from 'node:child_process';
+import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import type { Harness } from './fakes.js';
 import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, turn } from './fakes.js';
@@ -106,8 +108,9 @@ describe('§5.7 [D1] — the three answers, each an ordinary judged step (corner
     expect(offer.exitCode).toBe(4);
   });
 
-  it('[c] seeds `git add -- <overlap> && git commit -m "wip before landing N agents"`', () => {
-    expect(wipCommitAction(['a.ts', "pages/[slug].tsx"], 3)).toEqual({ kind: 'run', command: `git add -- 'a.ts' 'pages/[slug].tsx' && git commit -m 'wip before landing 3 agents'` });
+  it('[c] seeds `git add -- <overlap> && git commit --only -m "wip before landing N agents" -- <overlap>`', () => {
+    // --only + the trailing pathspec: review 2026-09-22 finding 2 (a bare `git commit` takes the whole index)
+    expect(wipCommitAction(['a.ts', "pages/[slug].tsx"], 3)).toEqual({ kind: 'run', command: `git add -- 'a.ts' 'pages/[slug].tsx' && git commit --only -m 'wip before landing 3 agents' -- 'a.ts' 'pages/[slug].tsx'` });
   });
 
   it('[s] seeds `git stash push -u -- <overlap>`', () => {
@@ -196,6 +199,82 @@ describe('§5.7 — Engine.land seeds ordinary judged steps', () => {
     const action = h.store.steps[0]!.proposal!.action;
     expect(action.kind === 'run' && action.command).toBe(`git stash push -u -- 'a.ts'`);
   });
+
+describe('review 2026-09-22 finding 1 — a failed `git status` is its own case, never an empty-overlap offer', () => {
+  it('seedFor returns null on an EMPTY overlap for every answer: an empty pathspec is a whole-tree verb', () => {
+    const { input } = withDock();
+    // `git stash push -u --` with no pathspec stashes the whole working tree, and `git add -- && git commit`
+    // commits whatever the index already held. Neither is ever what the pre-flight meant to seed.
+    expect(seedFor('stash', [], input, emptyPlan)).toBeNull();
+    expect(seedFor('commit', [], input, emptyPlan)).toBeNull();
+    expect(seedFor('stop', [], input, emptyPlan)).toBeNull();
+    // a non-empty overlap is unaffected
+    expect(seedFor('stash', ['a.ts'], input, emptyPlan)).not.toBeNull();
+  });
+
+  it('REAL GIT: `git stash push -u --` with an empty pathspec really does take the whole tree (why the guard exists)', () => {
+    const { r } = withDock();
+    write(r.ws, 'a.ts', 'locally edited\n');
+    write(r.ws, 'untracked.ts', 'new\n');
+    git(r.ws, 'stash', 'push', '-u', '--');
+    expect(git(r.ws, 'status', '--porcelain').trim()).toBe('');
+    expect(existsSync(join(r.ws, 'untracked.ts'))).toBe(false);
+  });
+
+  it('a failing `git status --porcelain` REFUSES: nothing is seeded, nothing is committed or stashed, the tree is untouched', async () => {
+    const { r, input } = withDock();
+    write(r.ws, 'a.ts', 'locally edited\n');
+    write(r.ws, 'untracked.ts', 'new\n');
+    const before = git(r.ws, 'status', '--porcelain');
+    const head = headSha(r.ws);
+    // the one seam that fails: `status --porcelain` (a corrupt index, a permission error, a git that is not there)
+    const brokenGit: typeof r.runGit = async (cwd, args, opts) => {
+      if (args.includes('status')) return execResult({ exitCode: 128, ok: false, stdout: '', stderr: 'fatal: not a git repository' });
+      return r.runGit(cwd, args, opts);
+    };
+    const h = await engineOver(r, { engine: { orchestration: { depth: 0, runGit: brokenGit } } });
+    const res = await h.engine.land!(input, async () => 'stash');
+
+    expect(res).toEqual({ seeded: null, overlap: [] });
+    expect(h.of('transcript').some((t) => t.text.includes('could not read your checkout (git status failed): nothing was committed or stashed'))).toBe(true);
+    // and the offer was never made: a refusal is not three choices over an empty list
+    expect(h.of('transcript').some((t) => t.text.includes('[c] commit them first'))).toBe(false);
+    await h.engine.run();
+    expect(h.store.steps.some((st) => st.proposal?.action.kind === 'run' && /git (stash|commit|merge)/.test(st.proposal.action.command))).toBe(false);
+    // the working tree is byte-for-byte what it was
+    expect(git(r.ws, 'status', '--porcelain')).toBe(before);
+    expect(headSha(r.ws)).toBe(head);
+    expect(git(r.ws, 'stash', 'list').trim()).toBe('');
+    expect(existsSync(join(r.ws, 'untracked.ts'))).toBe(true);
+  });
+});
+
+describe('review 2026-09-22 finding 2 — [c] commits ONLY the overlap, never the rest of the index', () => {
+  it('wipCommitAction uses `git commit --only … -- <overlap>`', () => {
+    expect(wipCommitAction(['a.ts', 'pages/[slug].tsx'], 3)).toEqual({
+      kind: 'run',
+      command: `git add -- 'a.ts' 'pages/[slug].tsx' && git commit --only -m 'wip before landing 3 agents' -- 'a.ts' 'pages/[slug].tsx'`,
+    });
+  });
+
+  it('REAL GIT: a separately staged, unrelated file is NOT swept into the harness commit', () => {
+    const { r } = withDock();
+    write(r.ws, 'a.ts', 'locally edited\n'); // the overlap
+    write(r.ws, 'c.ts', 'the user staged this themselves\n');
+    git(r.ws, 'add', '--', 'c.ts'); // staged, deliberately, and NOT reviewed by the harness
+    const action = wipCommitAction(['a.ts'], 3);
+    const out = spawnSync('sh', ['-c', action.command], {
+      cwd: r.ws,
+      encoding: 'utf8',
+      env: { PATH: process.env['PATH'] ?? '/usr/bin:/bin', HOME: r.ws, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' },
+    });
+    expect(out.status).toBe(0);
+    // the commit holds a.ts and nothing else
+    expect(git(r.ws, 'show', '--name-only', '--format=', 'HEAD').trim().split('\n').filter(Boolean)).toEqual(['a.ts']);
+    // and the user's own staged file is still staged, still uncommitted
+    expect(git(r.ws, 'diff', '--cached', '--name-only').trim()).toBe('c.ts');
+  });
+});
 
   it('[x]: nothing is seeded, the dock stays, and the transcript says /diff still works', async () => {
     const { r, input } = withDock();

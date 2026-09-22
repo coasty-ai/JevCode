@@ -134,15 +134,20 @@ import { computeContextUsage, restoredContextUsage } from './context/meter.js';
 import type { ContextReadHooks, ContextSummary } from './context/types.js';
 import { acquireRunLock, releaseRunLock } from '../session/lock.js';
 import { seedNoticeText } from '../session/seed.js';
+// [D6]: `sessionRemainingUsd`'s third argument (heldUsd) landed with d8490fa, so the engine reads the ONE
+// definition instead of the local twin it carried while that was in flight.
 import { nextBudgetWarn, seedAnnounced, sessionRemainingUsd, stepsLeftEstimate, suggestedSpendCapUsd, type BudgetPct } from '../tui/budget/lines.js';
 import { checkpointDegradedDetail, driftDetail, keyRejectedDetail } from '../tui/blocking/lines.js';
 import { EQUIVALENT_IDS, equivalentIdsRow, equivalentJevModel, jevModelMatches, normaliseModelId, sameJevWeights } from '../jev/providers.js';
 import { VERSION } from '../version.js';
 import { headDriftWarning, headMoved, notRepoState, probeGitState as realProbeGitState, toRunGitMeta } from '../workspace/gitstate.js';
+import { runGit } from '../workspace/git.js';
 import { decisionConfidence, decisionProbability } from '../jev/confidence.js';
 import { assertQuestionBatch } from '../jev/questions.js';
 import { summariseAction } from '../provider/actions.js';
-import { buildSplitMessage, buildSystemPrompt, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput } from '../provider/prompts.js';
+import { buildSplitMessage, buildSystemPrompt, memoryIndexChars, splitToolsFor, PROPOSE_SPLIT_TOOL_NAME, type PromptBuild, type PromptContextView, type PromptHints, type PromptInput, type PromptMemoryBuild } from '../provider/prompts.js';
+// contract 1.6 (IMPORT-DESIGN §2.10.4, §7.5 row 42): the per-step rule/topic matcher
+import { selectMemory } from './context/memory.js';
 // contract 1.5 (§3.4 rule 9): a COUNT of secret hits, never a value
 import { detectSecrets } from '../core/redact.js';
 import { linkedAbort } from '../core/abort.js';
@@ -157,7 +162,7 @@ import { buildWindowEntry, foldStepRecord, pushWindow } from './window.js';
 import { isComplete, isCompleteByFact, type CompletionFactInput } from './stages/complete.js';
 import { prefilterCandidates, runContextStage } from './stages/context.js';
 // contract 1.5 (ORCHESTRATION-DESIGN §3, §8.2 D1 item 15): the decompose stage
-import { checkpointOrchestration, decomposeShutByOptions, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
+import { checkpointOrchestration, decomposeShutByOptions, measureRepoFacts, parseSplitDraft, runDecomposeStage, splitPrefixTree, type DecomposeFacts, type DecomposeStageContext } from './stages/decompose.js';
 import { runExecuteStage } from './stages/execute.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
 import { runJudgeStage } from './stages/judge.js';
@@ -700,6 +705,9 @@ class EngineImpl implements Engine {
   private lastRecentSteps: RecentStepsUsage = { chars: 0, allowanceChars: 0, whole: 0, clipped: 0, oneLine: 0, reads: 0 };
   private lastRefreshMs = 0;
   private lastPromptBuildMs = 0;
+  /** contract 1.6 (IMPORT-DESIGN §2.10.3): the two memory sections of the last build, and the run's index size */
+  private lastMemoryBuild: PromptMemoryBuild | null = null;
+  private readonly memoryIndexChars: number;
 
   private readonly detector: LoopDetector;
   private wallMsUsedBefore = 0;
@@ -936,7 +944,17 @@ class EngineImpl implements Engine {
     });
     // TUI-DESIGN §15.2 constructor row: AGENTS.md text reaches the generator system prompt only (D6)
     const instructions = init.opts.instructions?.text ?? '';
-    this.systemPrompt = buildSystemPrompt({ mode: this.mode, sandboxLevel: init.sandbox.level, toolName: 'propose_action', ...(instructions.length > 0 ? { instructions } : {}) });
+    // contract 1.6 (IMPORT-DESIGN §2.10.1/§2.10.2): the always-on memory index rides the once-per-run system prompt,
+    // after `## Project instructions`; absent → the prompt is byte-identical to what it was before 1.6
+    const memoryIndex = init.opts.memory?.index?.trim() ?? '';
+    this.systemPrompt = buildSystemPrompt({
+      mode: this.mode,
+      sandboxLevel: init.sandbox.level,
+      toolName: 'propose_action',
+      ...(instructions.length > 0 ? { instructions } : {}),
+      ...(memoryIndex.length > 0 ? { memoryIndex } : {}),
+    });
+    this.memoryIndexChars = memoryIndexChars(memoryIndex);
     this.synthesizer = init.opts.synthesizer ?? null;
     this.resumed = init.resume !== null;
     this.resumeStop = null;
@@ -3570,6 +3588,7 @@ class EngineImpl implements Engine {
       lastTestRunCommand: this.lastTestRun?.command ?? this.wsInfo.testCommand?.command ?? null,
     });
     const snap = this.opts.meter.snapshot();
+    const measured = await measureRepoFacts((cwd, args, o) => runGit(this.sandbox, cwd, args, o ?? {}), this.workspace.root);
     const problem = [...this.plan.harnessProblems].reverse().find((h) => h.kind === 'orchestration');
     return {
       // [G5]: past the short-circuit this is true by construction — it is re-stated so the gate stays pure
@@ -3577,9 +3596,13 @@ class EngineImpl implements Engine {
       git: { isRepo: git?.repo === true, headBorn: headOid !== null, worktreeSupported: git?.repo === true },
       baseSha: headOid ?? '',
       repoKey: git?.commonDir ?? null,
-      existingBranches: [],
+      existingBranches: measured.existingBranches,
       deny: ['.git', ...this.opts.secretPaths],
-      fold: false,
+      // review 2026-09-22 findings 5 + 6: measured, not `false`/`[]`. Every one of these placeholders made the
+      // planner more permissive than the truth; `unmeasured` carries whatever git could not answer and the gate
+      // refuses on it rather than guessing. All of it runs BEHIND the short-circuit, so M2 is untouched.
+      fold: measured.fold,
+      unmeasured: measured.unmeasured,
       repoPaths: listing,
       listing,
       // D1 has no item→file join: `fileMemory` is keyed by path, not by plan item, so the association is
@@ -3589,8 +3612,9 @@ class EngineImpl implements Engine {
       packages: [],
       lastTestRun: this.lastTestRun !== null && !this.lastTestRun.allPassed ? { failingFiles: [this.lastTestRun.command] } : null,
       dirtyEntries: git?.dirty.entries.length ?? 0,
-      syncedDirty: [],
-      dirtyOverlap: [],
+      // [D1]: the OVERLAP is not a fact of the repo — it is the dirty set intersected with the chosen split's
+      // owns, which do not exist until the normaliser has run, so the stage derives it at manifest time.
+      syncedDirty: measured.syncedDirty,
       liveChildren: 0,
       splits: this.splits,
       lastSplitStep: this.lastSplitStep,
@@ -4004,8 +4028,10 @@ class EngineImpl implements Engine {
   private async noteEscaped(draft: StepDraft, changed: readonly string[]): Promise<void> {
     const o = this.opts.orchestration;
     if (o === undefined || o.depth !== 1 || draft.proposal?.action.kind !== 'run') return;
+    // review 2026-09-22 finding 4: an empty `own` is NOT a reason to skip the diff — it is the case where
+    // every changed path escaped. `escapedPaths` fails closed; this only skips when nothing changed at all.
     const own = o.own ?? [];
-    if (own.length === 0 || changed.length === 0) return;
+    if (changed.length === 0) return;
     try {
       const escaped = await escapedPaths(this.workspace.root, { changed, own, syncedDirty: o.syncedDirty ?? [] });
       if (escaped.length === 0) return;
@@ -4225,7 +4251,15 @@ class EngineImpl implements Engine {
     if (runGit === undefined) return { seeded: null, overlap: [] };
     const { overlap, ok } = await launchOverlap(runGit, input);
     const plan: PlanDraft = { done: this.plan.done.map((d) => d.text), remaining: [...this.plan.remaining], openProblems: [...this.plan.openProblems] };
-    if (ok && overlap.length === 0) {
+    // review 2026-09-22 finding 1: `!ok` is its OWN case. `launchOverlap` reports `ok: false` when
+    // `statusEntries` failed, and its `overlap` is then `[]` — which is indistinguishable from "your checkout is
+    // clean" and used to fall through to the offer branch, where an empty pathspec made `[s]` mean "stash your
+    // entire working tree". We cannot read the checkout, so we cannot say what overlaps: refuse, seed nothing.
+    if (!ok) {
+      this.emit({ type: 'transcript', step: null, level: 'warn', text: `/land: could not read your checkout (git status failed): nothing was committed or stashed — ${input.dockBranch} stays and /diff still works` });
+      return { seeded: null, overlap: [] };
+    }
+    if (overlap.length === 0) {
       this.pendingLand = { branch: input.dockBranch, agents: input.agents, delegatedAt: input.delegationStep ?? this.step + 1 };
       this.seedStep(launchProposal(mergeAction(input.pinned), `land ${input.agents} agents: merge ${input.dockBranch}`, plan), `step ${this.step + 1}: landing ${input.agents} agents — ${input.dockBranch} merges as an ordinary judged step`);
       return { seeded: 'merge', overlap: [] };
@@ -4524,7 +4558,12 @@ class EngineImpl implements Engine {
     const plan = planHistory(this.history, Math.floor(this.contextPolicy.budgetChars * HISTORY_SHARE));
     await this.loadPlannedOutputs(plan);
     this.lastRecentSteps = { chars: plan.chars, allowanceChars: plan.allowanceChars, whole: plan.whole, clipped: plan.clipped, oneLine: plan.oneLine, reads: plan.reads.length };
+    // contract 1.6 (IMPORT-DESIGN §2.10.4): the step's paths are its files in view plus the @-mentioned pins, the same
+    // set §8.2 uses; `selectMemory` is empty (and both sections elide) whenever the run was given no memory
+    const memory = selectMemory(this.opts.memory, [...refreshed.files.map((f) => f.rel), ...(this.opts.seed?.pinnedFiles ?? [])]);
     return {
+      ...(memory.rules.length > 0 ? { rulesInScope: memory.rules } : {}),
+      ...(memory.topics.length > 0 ? { memoryInScope: memory.topics } : {}),
       files: refreshed.files.map((f) => ({
         path: f.rel,
         content: f.content,
@@ -4555,6 +4594,8 @@ class EngineImpl implements Engine {
     this.filesInView.keepShown(built.shownFiles);
     if (startedAt !== undefined) this.lastPromptBuildMs = Math.max(0, this.clock() - startedAt);
     this.notePromptChars(built);
+    // contract 1.6 (§2.10.3): what the two memory sections cost this build; null on a run with no memory
+    this.lastMemoryBuild = built.memory ?? null;
     this.contextUsage = this.usage(this.systemPrompt.length + built.chars);
   }
 
@@ -4584,6 +4625,8 @@ class EngineImpl implements Engine {
       compactions: this.compactions,
       lastCompactionAt: over.lastCompactionAt ?? this.lastCompactionAt,
       compaction: this.contextPolicy.compaction,
+      // contract 1.6 (§2.10.3): omitted — and so omitted from ContextUsage — on a run with no memory
+      ...(this.lastMemoryBuild === null ? {} : { memory: { indexChars: this.memoryIndexChars, ...this.lastMemoryBuild } }),
     });
   }
 

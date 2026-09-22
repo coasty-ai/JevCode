@@ -848,7 +848,10 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
         try {
           await writeFileAtomic(join(dir, root, ...norm.split('/')), `${text}\n`, { mkdir: true });
         } catch (e) {
-          throw failWrite(CHECKPOINT_FILES.cache, `cannot write ${file}: ${describe(e)}`, e);
+          // review 2026-09-22 finding 9: the degrade is keyed against the ARTEFACT, not the directory. An
+          // `orchestrate/` write keyed as `cache` named the wrong file in the notice AND let a later real
+          // `cache` failure of the same code be swallowed as a duplicate of it.
+          throw failWrite(file, `cannot write ${file}: ${describe(e)}`, e);
         }
       });
     },
@@ -871,7 +874,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
           await rename(join(dir, a.root, ...a.rel.split('/')), join(dir, b.root, ...b.rel.split('/')));
         } catch (e) {
           if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
-          throw failWrite(CHECKPOINT_FILES.cache, `cannot rename ${file}: ${describe(e)}`, e);
+          throw failWrite(file, `cannot rename ${file}: ${describe(e)}`, e);
         }
       });
     },

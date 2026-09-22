@@ -15,6 +15,7 @@ import {
   DEFAULT_GENERATOR_CONTEXT_TOKENS,
   FILE_CACHE_BYTES,
   HISTORY_STEPS,
+  IMPORT_LIMITS,
 } from '../../core/limits.js';
 import type { CompactionMode, ContextPolicyOptions } from '../../core/types.js';
 
@@ -89,6 +90,35 @@ export function contextBudget(input: BudgetInput = {}): ContextBudget {
 /** The window-only form, kept for callers that have no money context (tests, tools). */
 export function contextBudgetChars(windowTokens: number = DEFAULT_GENERATOR_CONTEXT_TOKENS): number {
   return contextBudget({ windowTokens }).chars;
+}
+
+// ---------------------------------------------------------------------------------------
+// contract 1.6 — the two per-step memory sections (docs/IMPORT-DESIGN.md §2.10.3 [G2.7])
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §2.10.3: the memory sections are **shares of the step's context budget**, not absolutes.
+ *
+ * The spine sized them 12 KiB and 16 KiB. At the floor (`CONTEXT_BUDGET_MIN_CHARS`, 60 000) those two
+ * absolutes would take ~47 % of the budget before the first file is added, which is why [G2.7] made them
+ * shares and kept the absolutes as the upper clamps: a large-window model still gets the spine's numbers.
+ *
+ * `clamp(round(share × budgetChars), min, max)` with the four constants from `IMPORT_LIMITS`, so there is
+ * exactly one place either number can change. At today's default budget the pair is ~6 KiB + ~8 KiB.
+ */
+function shareOf(budgetChars: number, share: number, min: number, max: number): number {
+  const wanted = Math.round(Math.max(0, budgetChars) * share);
+  return Math.min(max, Math.max(min, wanted));
+}
+
+/** §2.10.3: `clamp(round(0.10 × contextBudgetChars), 2 KiB, 12 KiB)` — the `## Rules in scope` allowance. */
+export function rulesInScopeChars(budgetChars: number): number {
+  return shareOf(budgetChars, IMPORT_LIMITS.rulesInScopeShare, IMPORT_LIMITS.rulesInScopeMin, IMPORT_LIMITS.rulesInScopeMax);
+}
+
+/** §2.10.3: `clamp(round(0.14 × contextBudgetChars), 2 KiB, 16 KiB)` — the `## Memory in scope` allowance. */
+export function memoryInScopeChars(budgetChars: number): number {
+  return shareOf(budgetChars, IMPORT_LIMITS.memoryInScopeShare, IMPORT_LIMITS.memoryInScopeMin, IMPORT_LIMITS.memoryInScopeMax);
 }
 
 // ---------------------------------------------------------------------------------------

@@ -1,9 +1,10 @@
-import { appendFile, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
+import { appendFile, chmod, mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../../../src/core/hash.js';
 import type { CheckpointEnvelope } from '../../../src/core/types.js';
 import { CheckpointError } from '../../../src/errors.js';
+import type { DiskError } from '../../../src/checkpoint/store.js';
 import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, ORCHESTRATE_FILE_BYTES, cacheRelPath, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
 import { FAKE_KEY, REDACTED, fakeRedact, makeDecision, makeMeta, makeState, makeStepRecord, withTempDir } from '../../fixtures/checkpoint/make.js';
 
@@ -478,6 +479,28 @@ describe('contract 1.4 additions (COORDINATION-DESIGN §7.2, §7.4)', () => {
       await expect(store.renameCache('orchestrate/manifest-1.json', 'manifest-1.json')).rejects.toBeInstanceOf(CheckpointError);
       await store.writeCache('step-1.json', { v: 1 });
       await expect(store.renameCache('step-1.json', 'orchestrate/step-1.json')).rejects.toBeInstanceOf(CheckpointError);
+    }));
+
+  it('review 2026-09-22 finding 9: an `orchestrate/` write degrades against ITS OWN file, not `cache`', () =>
+    withTempDir(async (dir) => {
+      const seen: DiskError[] = [];
+      const store = createCheckpointStore(dir, identity, { onDegrade: (i) => seen.push(i) });
+      await store.create(makeMeta());
+      // make <run>/orchestrate unwritable so the manifest write fails with a disk-class errno
+      await mkdir(join(dir, CHECKPOINT_FILES.orchestrate), { recursive: true });
+      await chmod(join(dir, CHECKPOINT_FILES.orchestrate), 0o500);
+      try {
+        await expect(store.writeCache('orchestrate/manifest-11.json', { v: 1 })).rejects.toBeInstanceOf(CheckpointError);
+      } finally {
+        await chmod(join(dir, CHECKPOINT_FILES.orchestrate), 0o700);
+      }
+      expect(seen).toHaveLength(1);
+      // the key is what the engine dedupes on and what the notice names: `cache` would have said the wrong
+      // file, and worse, a later REAL cache failure of the same code would have been swallowed as a dupe
+      expect(seen[0]!.file).toBe('orchestrate/manifest-11.json');
+      expect(seen[0]!.key).toBe('orchestrate/manifest-11.json:EACCES');
+      expect(seen[0]!.text).toContain('orchestrate/manifest-11.json');
+      expect(seen[0]!.text).not.toContain('cache');
     }));
 
   it('contract 1.5: an orchestrate rel is validated and bounded exactly like a cache rel', () =>
