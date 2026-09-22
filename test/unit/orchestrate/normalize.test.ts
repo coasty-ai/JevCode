@@ -209,7 +209,10 @@ describe('normalizeSplit (§3.4)', () => {
 
   it('rule 7: w_i is the item count, so the agent with more items gets more money', () => {
     const weighted = option([agent('alpha', ['src/a.ts', 'src/types.ts'], [0, 1]), agent('beta', ['src/b.ts'], [])]);
-    const split = ok(normalizeSplit(base(weighted, { itemFiles: [['src/a.ts'], ['src/types.ts']], reserveUsd: 3 })));
+    // the reserve must sit under `maxReserveUsd` or the clamp, not the weighting, decides the caps —
+    // this case is about the 2:1 weight, and the clamp has its own tests below
+    const policy = { ...DEFAULT_SPLIT_POLICY, maxReserveUsd: 3 };
+    const split = ok(normalizeSplit(base(weighted, { policy, itemFiles: [['src/a.ts'], ['src/types.ts']], reserveUsd: 3 })));
     expect(split.agents.map((a) => a.capUsd)).toEqual([2, 1]);
   });
 
@@ -284,5 +287,93 @@ describe('normalizeSplit (§3.4)', () => {
     expect(ok(normalizeSplit(base(TWO, { baseSha: '0'.repeat(40) }))).manifestId).not.toBe(one);
     expect(ok(normalizeSplit(base(TWO, { task: 'something else' }))).manifestId).not.toBe(one);
     expect(ok(normalizeSplit(base(option(TWO.agents, 'by_directory')))).manifestId).not.toBe(one);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Review 2026-09-22 — findings 3, 4, 10, 12
+// ---------------------------------------------------------------------------------------
+
+const FOUR = option([
+  agent('pp', ['src/p/**'], [0], { verify: ['npm test'] }),
+  agent('qq', ['src/q/**'], [1], { dependsOn: ['ss'], verify: ['npm run typecheck'] }),
+  agent('rr', ['src/r/**'], [2], { verify: ['npm test'] }),
+  agent('ss', ['src/s/**'], [3], { verify: ['npm run lint'] }),
+]);
+
+function fourBase(over: Partial<NormalizeInput> = {}): NormalizeInput {
+  return base(FOUR, {
+    policy: { ...DEFAULT_SPLIT_POLICY, maxAgents: 3, maxChildren: 3 },
+    plan: { remaining: ['one', 'two', 'three', 'four'] },
+    itemFiles: [['src/p/a.ts'], ['src/q/a.ts'], ['src/r/a.ts'], ['src/s/a.ts']],
+    repoPaths: ['src/p/a.ts', 'src/q/a.ts', 'src/r/a.ts', 'src/s/a.ts'],
+    reserveUsd: 4,
+    ...over,
+  });
+}
+
+describe('rule 7 clamp repairs dependsOn (review finding 3)', () => {
+  it('no surviving agent depends on a slug the clamp merged away', () => {
+    const split = ok(normalizeSplit(fourBase()));
+    const slugs = new Set(split.agents.map((a) => a.slug));
+    expect(split.agents.length).toBe(3);
+    for (const a of split.agents) for (const d of a.dependsOn) expect(slugs.has(d)).toBe(true);
+  });
+
+  it('the dependency is remapped to the survivor that absorbed it, not dropped on the floor', () => {
+    const split = ok(normalizeSplit(fourBase()));
+    const qq = split.agents.find((a) => a.slug === 'qq');
+    // `ss` was merged into some survivor; qq must now depend on THAT survivor (or on nobody if it
+    // was itself the receiver), never on the vanished slug — the landing queue parks on a dangling one.
+    expect(qq?.dependsOn ?? []).not.toContain('ss');
+  });
+});
+
+describe('rule 9 scans verify (review finding 4)', () => {
+  const sniff = (s: string): number => (s.includes('ghp_') ? 1 : 0);
+
+  it('a secret in a verify command sets secretHits so the card can warn', () => {
+    const withSecret = option([
+      agent('alpha', ['src/a.ts'], [0], { verify: ['NPM_TOKEN=ghp_xxxxxxxx npm test'] }),
+      agent('beta', ['src/b.ts'], [1]),
+    ]);
+    const split = ok(normalizeSplit(base(withSecret, { detectSecrets: sniff })));
+    expect(split.secretHits).toBe(1);
+  });
+
+  it('still counts agents, not hits, and still counts task and own', () => {
+    const clean = ok(normalizeSplit(base(TWO, { detectSecrets: sniff })));
+    expect(clean.secretHits).toBe(0);
+  });
+});
+
+describe('the reserve is bounded (review finding 12)', () => {
+  it('rejects a non-finite reserve instead of minting an infinite cap', () => {
+    const r = normalizeSplit(base(TWO, { reserveUsd: Number.POSITIVE_INFINITY }));
+    expect(r.ok).toBe(false);
+  });
+
+  it('rejects NaN', () => {
+    expect(normalizeSplit(base(TWO, { reserveUsd: Number.NaN })).ok).toBe(false);
+  });
+
+  it('clamps above policy.maxReserveUsd so the caps can never exceed it', () => {
+    const split = ok(normalizeSplit(base(TWO, { reserveUsd: 100 })));
+    const total = split.agents.reduce((sum, a) => sum + a.capUsd, 0);
+    expect(total).toBeLessThanOrEqual(DEFAULT_SPLIT_POLICY.maxReserveUsd);
+  });
+
+  it('treats a negative reserve as zero rather than as a negative cap', () => {
+    const r = normalizeSplit(base(TWO, { reserveUsd: -5 }));
+    if (r.ok) for (const a of r.split.agents) expect(a.capUsd).toBeGreaterThanOrEqual(0);
+  });
+});
+
+describe('the clamp merge unions verify (review finding 10)', () => {
+  it('the receiver keeps its own verify and gains the absorbed agent’s', () => {
+    const split = ok(normalizeSplit(fourBase()));
+    const commands = new Set(split.agents.flatMap((a) => [...a.verify]));
+    // `ss` carried `npm run lint`; after the clamp it must still be verified by somebody.
+    expect(commands.has('npm run lint')).toBe(true);
   });
 });

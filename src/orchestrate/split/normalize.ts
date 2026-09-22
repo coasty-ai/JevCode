@@ -18,7 +18,7 @@ import type { EngineMode } from '../../core/types.js';
 import { manifestIdOf } from '../canonical.js';
 import { VERIFY_COMMAND_CHARS } from '../verify.js';
 import type { AgentRole, AgentSpec, DraftSplit, NormalizeResult, RejectedOption, SplitPolicy } from '../types.js';
-import { collapseOwn, disjoint, ownStrings, ownsPath, validateOwnList, type OwnGlob } from './globs.js';
+import { collapseOwn, disjoint, ownStrings, ownsPath, parseOwnGlob, validateOwnList, type OwnGlob } from './globs.js';
 
 /** §2.2: the slug grammar. Forty characters, because it is a branch component and a TUI column. */
 export const SLUG_RE = /^[a-z0-9][a-z0-9-]{0,39}$/;
@@ -152,7 +152,64 @@ function dirOwned(globs: readonly OwnGlob[], token: string, fold: boolean): bool
 
 // ---------------------------------------------------------------------------------------
 
-function mergeInto(survivors: readonly Working[], dropped: Working, fold: boolean): void {
+/** The shape both merge sites share: §3.4 rule 7's clamp here, and §3.5's drop rule in `rank.ts`. */
+export interface Mergeable {
+  slug: string;
+  task: string;
+  own: readonly string[];
+  role: AgentRole;
+  verify: readonly string[];
+  capUsd: number;
+}
+
+export interface MergedFields {
+  own: string[];
+  verify: string[];
+  role: AgentRole;
+  branch: string | null;
+  capUsd: number;
+}
+
+/**
+ * ONE merge, used by rule 7's clamp and by §3.5's drop rule (review 2026-09-22 finding 10: the two
+ * had drifted, and this one dropped the absorbed agent's `verify` entirely, so a clamp could leave a
+ * code agent with work nobody verifies).
+ *
+ * Two properties beyond the obvious union. **`verify` is unioned, capped** — an agent that absorbs
+ * another's files inherits the commands that prove them. **A `research` receiver that absorbs a
+ * `code` agent is promoted to `code` and gets its branch back** (finding 9): a `research` agent has
+ * `branch: null` and never lands, so without this the absorbed agent's `own`, `verify` AND money
+ * would move to an agent structurally incapable of landing any of it.
+ */
+export function mergeAgentFields(receiver: Mergeable, dropped: Mergeable, opts: { fold: boolean; deny?: readonly string[] }): MergedFields {
+  const globs: OwnGlob[] = [];
+  for (const raw of [...receiver.own, ...dropped.own]) {
+    const p = parseOwnGlobSafe(raw);
+    if (p !== null) globs.push(p);
+  }
+  const collapsed = collapseOwn(globs, OWN_GLOBS_MAX, opts.fold, opts.deny ?? []);
+  const role: AgentRole = receiver.role === 'code' || dropped.role === 'code' ? 'code' : receiver.role;
+  return {
+    own: ownStrings(collapsed),
+    verify: [...new Set([...receiver.verify, ...dropped.verify])].slice(0, VERIFY_COMMANDS_MAX),
+    role,
+    branch: role === 'research' ? null : `jevcode/${receiver.slug}`,
+    capUsd: receiver.capUsd + dropped.capUsd,
+  };
+}
+
+/** Rule 2 already validated every glob in play here, so an unparsable one is a caller bug, not input. */
+function parseOwnGlobSafe(raw: string): OwnGlob | null {
+  const p = parseOwnGlob(raw);
+  return p.ok ? p.glob : null;
+}
+
+/**
+ * Merge `dropped` into the nearest survivor and RETURN that survivor, so the caller can remap every
+ * `dependsOn` that named the vanished slug (review finding 3: without the remap the landing queue
+ * parks a healthy agent with "its dependency <gone> did not land").
+ */
+function mergeInto(survivors: readonly Working[], dropped: Working, fold: boolean, deny: readonly string[]): Working | null {
   let best: Working | null = null;
   let bestScore = -1;
   for (const survivor of survivors) {
@@ -163,17 +220,118 @@ function mergeInto(survivors: readonly Working[], dropped: Working, fold: boolea
       bestScore = score;
     }
   }
-  if (best === null) return;
+  if (best === null) return null;
   best.items = [...new Set([...best.items, ...dropped.items])].sort((x, y) => x - y);
+  const merged = mergeAgentFields(best, dropped, { fold, deny });
   // the own set moves with the items: rule 4's coverage was true before the clamp and must stay true
-  best.globs = collapseOwn([...best.globs, ...dropped.globs], OWN_GLOBS_MAX, fold);
-  best.own = ownStrings(best.globs);
+  best.own = merged.own;
+  best.globs = merged.own.map(parseOwnGlobSafe).filter((g): g is OwnGlob => g !== null);
+  best.verify = merged.verify;
+  best.role = merged.role;
+  best.capUsd = merged.capUsd;
   best.task = oneLine(`${best.task}; ${dropped.task}`);
+  return best;
+}
+
+/**
+ * Rule 6's check, as a function, because it has to run TWICE: once over the draft, and again after
+ * rule 7's clamp has merged agents away and `remapDependsOn` has repointed the edges (review
+ * 2026-09-22 finding 3). Returns the rejection reason, or null when the graph is a DAG within depth.
+ */
+/**
+ * Is there a cycle in these `dependsOn` edges? Exported because `rank.ts`'s drop rule repoints edges
+ * at a merge receiver and must not be able to close a loop: `nextLandStep` would then find every
+ * member blocked by another non-terminal member and the landing queue would never settle.
+ */
+export function hasDependencyCycle(list: readonly { slug: string; dependsOn: readonly string[] }[]): boolean {
+  const edges = new Map(list.map((a) => [a.slug, a.dependsOn]));
+  const done = new Set<string>();
+  const visiting = new Set<string>();
+  const walk = (slug: string): boolean => {
+    if (done.has(slug)) return false;
+    if (visiting.has(slug)) return true;
+    visiting.add(slug);
+    for (const dep of edges.get(slug) ?? []) if (walk(dep)) return true;
+    visiting.delete(slug);
+    done.add(slug);
+    return false;
+  };
+  for (const a of list) if (walk(a.slug)) return true;
+  return false;
+}
+
+function dagProblem(list: readonly Working[]): string | null {
+  const slugs = new Set(list.map((a) => a.slug));
+  const edges = new Map<string, readonly string[]>();
+  for (const agent of list) {
+    for (const dep of agent.dependsOn) {
+      if (!slugs.has(dep)) return `agent ${agent.slug} depends on unknown slug ${clip(dep, 40)}`;
+    }
+    edges.set(agent.slug, [...agent.dependsOn]);
+  }
+  const depth = new Map<string, number>();
+  const visiting = new Set<string>();
+  const depthOf = (slug: string): number | null => {
+    const known = depth.get(slug);
+    if (known !== undefined) return known;
+    if (visiting.has(slug)) return null;
+    visiting.add(slug);
+    let deepest = 0;
+    for (const dep of edges.get(slug) ?? []) {
+      const below = depthOf(dep);
+      if (below === null) return null;
+      deepest = Math.max(deepest, below + 1);
+    }
+    visiting.delete(slug);
+    depth.set(slug, deepest);
+    return deepest;
+  };
+  for (const agent of list) {
+    const d = depthOf(agent.slug);
+    if (d === null) return `dependsOn has a cycle through agent ${agent.slug}`;
+    if (d > DEPENDS_DEPTH_MAX) return `dependsOn is ${d} deep through agent ${agent.slug}; the limit is ${DEPENDS_DEPTH_MAX}`;
+  }
+  return null;
+}
+
+/**
+ * Point every `dependsOn` at the survivor that absorbed the named agent, then drop what is still
+ * unknown (self-edges included). Rule 6 is re-run by the caller over the result.
+ */
+function remapDependsOn(live: readonly Working[], absorbed: ReadonlyMap<string, string>): void {
+  const alive = new Set(live.map((a) => a.slug));
+  const resolve = (slug: string): string | null => {
+    let cur = slug;
+    for (let hops = 0; hops < 8; hops++) {
+      if (alive.has(cur)) return cur;
+      const next = absorbed.get(cur);
+      if (next === undefined) return null;
+      cur = next;
+    }
+    return null;
+  };
+  for (const agent of live) {
+    const mapped: string[] = [];
+    for (const d of agent.dependsOn) {
+      const to = resolve(d);
+      if (to !== null && to !== agent.slug && !mapped.includes(to)) mapped.push(to);
+    }
+    agent.dependsOn = mapped;
+  }
 }
 
 export function normalizeSplit(input: NormalizeInput): NormalizeResult {
   const { option, policy } = input;
   const kind = option.kind;
+
+  // §6.1's reserve is an arithmetic input, so a non-finite one is refused before it can become a cap:
+  // `Infinity` produced an infinite per-agent cap, which the manifest then serialised as `capUsd: null`
+  // and `readManifest` refused for ever — a delegation that could never be adopted and so re-spawned
+  // on every resume (review 2026-09-22 finding 12). Above `maxReserveUsd` it is clamped, not refused,
+  // because a caller passing more money than the ceiling means the ceiling, not an error.
+  if (!Number.isFinite(input.reserveUsd)) return reject(kind, `the reserve must be a finite number of dollars, got ${String(input.reserveUsd)}`);
+  const maxReserve = Number.isFinite(policy.maxReserveUsd) ? Math.max(0, policy.maxReserveUsd) : Number.POSITIVE_INFINITY;
+  const reserveUsd = Math.min(Math.max(0, input.reserveUsd), maxReserve);
 
   // `no_split` is the zero-agent escape (§3.2): the nine rules are all about agents, and rule 4 would
   // reject it for covering no plan item. It is always valid and always available.
@@ -273,54 +431,33 @@ export function normalizeSplit(input: NormalizeInput): NormalizeResult {
   }
 
   // --- rule 6: the dependency DAG -------------------------------------------------------
-  const slugs = new Set(agents.map((a) => a.slug));
-  const edges = new Map<string, string[]>();
   for (const agent of agents) {
     // rule 1 may have renamed the target, and the draft names the pre-rename slug
     agent.dependsOn = unique(agent.dependsOn.map((d) => renamed.get(d) ?? d)).filter((d) => d !== agent.slug);
-    for (const dep of agent.dependsOn) {
-      if (!slugs.has(dep)) return reject(kind, `agent ${agent.slug} depends on unknown slug ${clip(dep, 40)}`);
-    }
-    edges.set(agent.slug, [...agent.dependsOn]);
   }
-  const depth = new Map<string, number>();
-  const visiting = new Set<string>();
-  const depthOf = (slug: string): number | null => {
-    const known = depth.get(slug);
-    if (known !== undefined) return known;
-    if (visiting.has(slug)) return null;
-    visiting.add(slug);
-    let deepest = 0;
-    for (const dep of edges.get(slug) ?? []) {
-      const below = depthOf(dep);
-      if (below === null) return null;
-      deepest = Math.max(deepest, below + 1);
-    }
-    visiting.delete(slug);
-    depth.set(slug, deepest);
-    return deepest;
-  };
-  for (const agent of agents) {
-    const d = depthOf(agent.slug);
-    if (d === null) return reject(kind, `dependsOn has a cycle through agent ${agent.slug}`);
-    if (d > DEPENDS_DEPTH_MAX) return reject(kind, `dependsOn is ${d} deep through agent ${agent.slug}; the limit is ${DEPENDS_DEPTH_MAX}`);
-  }
+  const dagFault = dagProblem(agents);
+  if (dagFault !== null) return reject(kind, dagFault);
 
   // --- rule 7: caps, then the §6.1 money split ------------------------------------------
   const notes: string[] = [];
   let live = agents;
+  /** dropped slug → the survivor that absorbed it, so `dependsOn` can be repaired (finding 3) */
+  const absorbed = new Map<string, string>();
   const ceiling = Math.max(1, Math.min(policy.maxAgents, policy.maxChildren));
   if (live.length > ceiling) {
     const before = live.length;
     const kept = live.slice(0, ceiling);
-    for (const extra of live.slice(ceiling)) mergeInto(kept, extra, input.fold);
+    for (const extra of live.slice(ceiling)) {
+      const receiver = mergeInto(kept, extra, input.fold, input.deny);
+      if (receiver !== null) absorbed.set(extra.slug, receiver.slug);
+    }
     live = kept;
     const which = policy.maxChildren <= policy.maxAgents ? 'coordination.maxChildren' : 'orchestrate.maxAgents';
     notes.push(`${before} agents clamped to ${ceiling} by ${which}`);
   }
 
   // `w_i` is a code weight — the agent's item count. Jev has no say in money (§6.1).
-  const reserveCents = Math.max(0, Math.floor(input.reserveUsd * 100 + 1e-6));
+  const reserveCents = Math.max(0, Math.floor(reserveUsd * 100 + 1e-6));
   const minCents = Math.max(0, Math.round(policy.minAgentUsd * 100));
   for (;;) {
     const weights = live.map((agent) => Math.max(1, agent.items.length));
@@ -335,12 +472,15 @@ export function normalizeSplit(input: NormalizeInput): NormalizeResult {
       break;
     }
     if (live.length <= 2) {
-      return reject(kind, `the reserve $${input.reserveUsd.toFixed(2)} cannot give 2 agents the minimum $${policy.minAgentUsd.toFixed(2)} each`);
+      return reject(kind, `the reserve $${reserveUsd.toFixed(2)} cannot give 2 agents the minimum $${policy.minAgentUsd.toFixed(2)} each`);
     }
     const before = live.length;
     const kept = live.slice(0, live.length - 1);
     const extra = live[live.length - 1];
-    if (extra !== undefined) mergeInto(kept, extra, input.fold);
+    if (extra !== undefined) {
+      const receiver = mergeInto(kept, extra, input.fold, input.deny);
+      if (receiver !== null) absorbed.set(extra.slug, receiver.slug);
+    }
     live = kept;
     notes.push(`${before} agents reduced to ${live.length} to keep every cap at or above $${policy.minAgentUsd.toFixed(2)}`);
   }
@@ -354,6 +494,17 @@ export function normalizeSplit(input: NormalizeInput): NormalizeResult {
       const result = disjoint(a.globs, b.globs, input.fold);
       if (!result.ok) return reject(kind, `agents ${a.slug} and ${b.slug} both own ${result.left} / ${result.right} after the clamp`);
     }
+  }
+
+  // …and a clamp that merged an agent away leaves every `dependsOn` naming it dangling, which the
+  // landing queue reads as "its dependency <gone> did not land" and parks a perfectly healthy agent
+  // for ever (review 2026-09-22 finding 3). Repoint the edges at the absorbing survivor, then re-run
+  // rule 6 over the result, because a remap can itself create a cycle (a → b where b absorbed a's
+  // dependency becomes a → a's own receiver).
+  if (absorbed.size > 0) {
+    remapDependsOn(live, absorbed);
+    const afterClamp = dagProblem(live);
+    if (afterClamp !== null) return reject(kind, `${afterClamp} (after the clamp)`);
   }
 
   const share = input.parentRemainingWallMs === undefined ? null : Math.max(AGENT_WALL_FLOOR_MS, Math.floor(input.parentRemainingWallMs / Math.max(1, live.length)));
@@ -385,9 +536,17 @@ export function normalizeSplit(input: NormalizeInput): NormalizeResult {
   }
 
   // --- rule 9: secrets, counted, never quoted -------------------------------------------
+  // `verify` is scanned too (review 2026-09-22 finding 4). The design's own wording was "over every
+  // `task` and `own`", and `manifest.ts` then justified writing `verify` unredacted by pointing at
+  // this rule — so a `verify` of `NPM_TOKEN=ghp_… npm test` reached the confirm card and every
+  // `land.jsonl` line with `secretHits === 0` and no `⚠ secret?` badge. It is a command that gets
+  // EXECUTED, so it is still clipped rather than redacted; the flag is what the human acts on.
   let secretHits = 0;
   for (const agent of live) {
-    const hit = input.detectSecrets(agent.task) > 0 || agent.own.some((glob) => input.detectSecrets(glob) > 0);
+    const hit =
+      input.detectSecrets(agent.task) > 0 ||
+      agent.own.some((glob) => input.detectSecrets(glob) > 0) ||
+      agent.verify.some((command) => input.detectSecrets(command) > 0);
     if (hit) secretHits += 1;
   }
 

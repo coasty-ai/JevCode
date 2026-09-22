@@ -219,3 +219,48 @@ describe('validateOwnList', () => {
     expect(r.reason).toContain('..');
   });
 });
+
+// ---------------------------------------------------------------------------------------
+// Review 2026-09-22, finding 2: the deny list was applied to the INPUT globs and the collapse
+// ran afterwards, so 33 `src/aN/` entries over a `max` of 32 collapsed to `src/**` — a glob the
+// same call refuses when it is written directly. §3.4 rule 2: "never a `secretPaths` entry".
+// ---------------------------------------------------------------------------------------
+
+describe('collapse never widens past the deny list (review finding 2)', () => {
+  it('refuses 33 src/aN/ entries that would collapse to src/** over a denied src/secrets', () => {
+    const many = Array.from({ length: 33 }, (_, i) => `src/a${i}/`);
+    expect(validateOwnList(many, { max: 32, deny: ['src/secrets'] }).ok).toBe(false);
+  });
+
+  it('is consistent: what it refuses written directly it refuses via collapse', () => {
+    expect(validateOwnList(['src/**'], { max: 32, deny: ['src/secrets'] }).ok).toBe(false);
+  });
+
+  it('collapseOwn refuses a merge target that swallows a denied prefix', () => {
+    const globs = Array.from({ length: 33 }, (_, i) => g(`src/a${i}/`));
+    expect(ownStrings(collapseOwn(globs, 32, false, ['src/secrets']))).not.toContain('src/**');
+  });
+
+  it('still collapses when the parent swallows nothing denied', () => {
+    const globs = Array.from({ length: 33 }, (_, i) => g(`src/a${i}/`));
+    expect(ownStrings(collapseOwn(globs, 32, false, ['vendor/sub']))).toContain('src/**');
+  });
+});
+
+// Review finding 14e: the segment class admitted invisible characters that make two different
+// paths render identically (so two agents could "own" what a human reads as one file), and
+// excluded astral code points, so an emoji filename was unownable.
+describe('the segment class (review finding 14e)', () => {
+  it.each([
+    ['src/a​b.ts', 'zero-width space'],
+    ['src/a‮b.ts', 'bidi override'],
+    ['src/﻿a.ts', 'zero-width no-break space'],
+    ['src/a⁦b.ts', 'isolate control'],
+  ])('refuses %j (%s)', (raw) => {
+    expect(parseOwnGlob(raw).ok).toBe(false);
+  });
+
+  it('accepts an astral code point (an emoji filename is a real file)', () => {
+    expect(parseOwnGlob('src/\u{1f600}.ts').ok).toBe(true);
+  });
+});

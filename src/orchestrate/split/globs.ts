@@ -39,8 +39,19 @@ export interface OwnGlob {
 
 export type ParseResult = { ok: true; glob: OwnGlob } | { ok: false; reason: string };
 
-/** Characters a path segment may hold. Deliberately narrow: no `*`, `?`, `[`, `{`, `!`, `\`, NUL. */
-const SEGMENT_RE = /^[A-Za-z0-9._@+~¡-￿-]+$/u;
+/**
+ * Characters a path segment may hold. Deliberately narrow: no `*`, `?`, `[`, `{`, `!`, `\`, NUL.
+ * The upper bound is `\u{10ffff}`, not `￿`, so an astral code point — an emoji filename — is
+ * ownable; the old bound made such a file impossible to name in an `own` set.
+ */
+const SEGMENT_RE = /^[-A-Za-z0-9._@+~¡-\u{10ffff}]+$/u;
+/**
+ * …but never an invisible one. A zero-width space, a bidi override or a byte-order mark makes two
+ * different paths render identically to a human, so a reviewer approving a manifest card could not
+ * see that two agents "own" what reads as one file — and §3.4 rule 3's disjointness would hold of
+ * the strings while being false of the repository. Separators are excluded for the same reason.
+ */
+const INVISIBLE_RE = /[\p{Cc}\p{Cf}\p{Cs}\p{Z}]/u;
 const EXT_RE = /^\*(\.[A-Za-z0-9_-]+)+$/u;
 
 function nfc(s: string): string {
@@ -51,6 +62,7 @@ function badSegments(segments: readonly string[]): string | null {
   for (const s of segments) {
     if (s === '') return 'empty path segment';
     if (s === '.' || s === '..') return `"${s}" is not allowed in an own glob`;
+    if (INVISIBLE_RE.test(s)) return 'a path segment holds an invisible or bidirectional control character';
     if (!SEGMENT_RE.test(s)) return `segment "${s}" holds a character the own sub-language does not allow`;
   }
   return null;
@@ -193,18 +205,37 @@ function parentDir(g: OwnGlob): string {
 }
 
 /**
+ * True when owning the tree `dir` would also own something in `deny` — the check that has to run on
+ * a COLLAPSE TARGET and not only on the input globs (review 2026-09-22 finding 2: 33 `src/aN/`
+ * entries over a `max` of 32 collapsed to `src/**`, which owns the denied `src/secrets/keys.ts`,
+ * and the same call refuses `src/**` when it is written directly).
+ */
+function swallowsDenied(dir: string, deny: readonly string[], fold: boolean): boolean {
+  const head = key(dir, fold);
+  for (const d of deny) {
+    const dk = key(nfc(d).replace(/\/+$/, ''), fold);
+    if (dk.length === 0) continue;
+    if (head === dk || dk.startsWith(`${head}/`) || head.startsWith(`${dk}/`)) return true;
+  }
+  return false;
+}
+
+/**
  * Prefix-collapse to at most `max` globs (§3.4 rule 2's "prefix-collapsed above that"). Contained
  * globs go first; if that is not enough, the deepest sibling group is replaced by its parent tree,
  * repeatedly. A group whose parent would be the repository root is left alone — `**` is never a
- * legal `own` — so the result can still exceed `max`, which rule 2 then rejects.
+ * legal `own` — and so is one whose parent would swallow a `deny` entry, so the result can still
+ * exceed `max`, which rule 2 then rejects. Refusing to collapse is always safe; widening is not.
  */
-export function collapseOwn(globs: readonly OwnGlob[], max: number = OWN_GLOBS_MAX, fold = false): OwnGlob[] {
+export function collapseOwn(globs: readonly OwnGlob[], max: number = OWN_GLOBS_MAX, fold = false, deny: readonly string[] = []): OwnGlob[] {
   let out = dedupeContained(globs, fold);
   while (out.length > max) {
     const groups = new Map<string, OwnGlob[]>();
     for (const g of out) {
       const p = parentDir(g);
       if (p === '') continue;
+      // never collapse into a parent that would own a denied path
+      if (swallowsDenied(p, deny, fold)) continue;
       const list = groups.get(p);
       if (list === undefined) groups.set(p, [g]);
       else list.push(g);
@@ -257,16 +288,30 @@ export function validateOwnList(raws: readonly string[], opts: ValidateOwnOption
     if (!p.ok) return { ok: false, reason: p.reason };
     globs.push(p.glob);
   }
-  for (const g of globs) {
+  const deny = opts.deny ?? [];
+  const forbidden = (g: OwnGlob): ValidateOwnResult | null => {
     const head = key(g.dir, fold);
     if (head === '.git' || head.startsWith('.git/')) return { ok: false, reason: `own glob "${g.raw}" names the git directory` };
-    for (const d of opts.deny ?? []) {
+    for (const d of deny) {
       const dk = key(nfc(d).replace(/\/+$/, ''), fold);
       if (dk.length === 0) continue;
       if (head === dk || head.startsWith(`${dk}/`) || dk.startsWith(`${head}/`)) return { ok: false, reason: `own glob "${g.raw}" overlaps "${d}", which an agent may never own` };
     }
+    return null;
+  };
+
+  for (const g of globs) {
+    const bad = forbidden(g);
+    if (bad !== null) return bad;
   }
-  const collapsed = collapseOwn(globs, max, fold);
+  const collapsed = collapseOwn(globs, max, fold, deny);
+  // The collapse can only ever WIDEN, so the deny check has to run again on what it produced:
+  // checking the input alone let 33 `src/aN/` entries become `src/**` over a denied `src/secrets`
+  // (review 2026-09-22 finding 2). `collapseOwn` already declines such a merge; this is the belt.
+  for (const g of collapsed) {
+    const bad = forbidden(g);
+    if (bad !== null) return bad;
+  }
   if (collapsed.length > max) return { ok: false, reason: `own holds ${collapsed.length} globs after prefix-collapse; the limit is ${max}` };
   return { ok: true, globs: collapsed };
 }

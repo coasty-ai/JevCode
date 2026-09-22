@@ -1,19 +1,22 @@
 /**
  * Ranking the surviving split options (docs/ORCHESTRATION-DESIGN.md §3.5), and the landing order (§5.2/§5.5).
  *
- * THE INVARIANT OF THIS MODULE, and the one M2 asserts: **when only `no_split` survives — `input.options` is
- * empty — no Jev request is made at all.** `deps.ask` is not merely ignored, it is never reached: the empty
- * check is the first statement of `rankSplits`, before the state is built and before the questions are built.
- * That is O1(a). The unit test binds an `ask` that fails the test when invoked.
+ * THE INVARIANT OF THIS MODULE, and the one M2 asserts: **when only `no_split` survives, no Jev request is
+ * made at all.** `deps.ask` is not merely ignored, it is never reached: the check is the first statement of
+ * `rankSplits`, before the state is built and before the questions are built. That is O1(a). The unit test
+ * binds an `ask` that fails the test when invoked. The check counts RANKABLE options — those with a Choice
+ * option key — not array length, because a list holding only a `no_split`-kind split would otherwise build
+ * an empty Choice and throw (review 2026-09-22 finding 11).
  *
  * The second invariant: this module RETURNS ON EVERY PATH. A decider error, a timeout, a 401, a below-floor
  * Noul, the escape, `jev-off`, `--split=auto` — each has a code answer, none throws, and none opens a
  * `jev-unreachable` pane (CD §11 row 33: coordination-class calls never open a pane).
  */
 import { clip } from '../../core/text.js';
-import { AGENT_TASK_CHARS, OWN_GLOBS_MAX, VERIFY_COMMANDS_MAX } from '../../core/limits.js';
+import { AGENT_TASK_CHARS } from '../../core/limits.js';
 import { annotateChoiceRows, resolveChoice, type ChoiceResolution } from '../../loop/stages/choose.js';
-import { collapseOwn, ownStrings, parseOwnGlob, type OwnGlob } from './globs.js';
+import { parseOwnGlob, type OwnGlob } from './globs.js';
+import { hasDependencyCycle, mergeAgentFields } from './normalize.js';
 import { SPLIT_ESCAPE, SPLIT_KIND_OF, WHICH_SPLIT, buildDecomposeState, optionKeyOf, planDecomposeQuestions, selfContainedId } from './questions.js';
 import type { Answer, Decision } from '../../core/types.js';
 import type { AgentSpec, AskFn, NormalizedSplit, RankedSplit, RejectedOption, SplitPolicy } from '../types.js';
@@ -90,23 +93,28 @@ function nearestAgent(dropped: AgentSpec, survivors: readonly AgentSpec[]): numb
 }
 
 /**
- * Merge a dropped agent into its nearest neighbour.
+ * Merge a dropped agent into its nearest neighbour, through the ONE `mergeAgentFields` that rule 7's
+ * clamp also uses (review 2026-09-22 finding 10: two merges had drifted apart, and this was the only
+ * one that unioned `verify`). `AgentSpec` carries no `items`, so the task text is what moves.
  *
- * `AgentSpec` carries no `items`, so there is nothing structural to move: the honest merge is the dropped
- * agent's TASK TEXT appended to the receiver's (clipped), its `own` unioned through the glob collapser, and
- * its money added to the receiver's cap so the reserve arithmetic of §6.1 is unchanged. A full
- * re-normalisation of the merged option (coverage, disjointness, the caps) belongs to the decompose stage,
- * which owns §3.4; that is why the merged split's `manifestId` is blanked below rather than left stale.
+ * Finding 9 lives in the shared function: a `research` receiver absorbing a `code` agent is promoted
+ * to `code` and gets its branch back, because a `research` agent has `branch: null` and never lands —
+ * without the promotion the dropped agent's `own`, `verify` and money all moved somewhere structurally
+ * incapable of landing any of it.
+ *
+ * A full re-normalisation of the merged option (coverage, disjointness, the caps) belongs to the
+ * decompose stage, which owns §3.4; that is why the merged split's `manifestId` is blanked below.
  */
 function mergeInto(receiver: AgentSpec, dropped: AgentSpec): AgentSpec {
-  const own = ownStrings(collapseOwn(parseOwn([...receiver.own, ...dropped.own]), OWN_GLOBS_MAX));
-  const verify = [...new Set([...receiver.verify, ...dropped.verify])].slice(0, VERIFY_COMMANDS_MAX);
+  const merged = mergeAgentFields(receiver, dropped, { fold: false });
   return {
     ...receiver,
     task: clip(`${receiver.task} Also, merged from the dropped agent \`${dropped.slug}\`: ${dropped.task}`, AGENT_TASK_CHARS),
-    own,
-    verify,
-    capUsd: receiver.capUsd + dropped.capUsd,
+    own: merged.own,
+    verify: merged.verify,
+    role: merged.role,
+    branch: merged.branch,
+    capUsd: merged.capUsd,
   };
 }
 
@@ -137,7 +145,25 @@ export function applyDropRule(split: NormalizedSplit, answers: Record<string, An
     if (survivors.length < 2) return { split: null, rejected };
     const at = nearestAgent(d, survivors);
     const next = survivors.map((a, i) => (i === at ? mergeInto(a, d) : a));
-    agents = next.map((a) => ({ ...a, dependsOn: a.dependsOn.filter((s) => s !== d.slug) }));
+    // Repoint, do not delete: the receiver now holds the dropped agent's work, so anything that waited
+    // on `d` must wait on the receiver. Deleting the edge would let a dependant land FIRST and see none
+    // of the work it declared a dependency on (the same class as review finding 3, one layer up).
+    const receiver = next[at]?.slug ?? null;
+    const repoint = (a: AgentSpec): AgentSpec => {
+      const kept: string[] = [];
+      for (const s of a.dependsOn.map((x) => (x === d.slug ? receiver : x))) {
+        if (s !== null && s !== a.slug && !kept.includes(s)) kept.push(s);
+      }
+      return { ...a, dependsOn: kept };
+    };
+    const repointed = next.map(repoint);
+    // …unless the repoint would close a loop (X depended on the dropped agent, and the receiver
+    // depends on X). A cycle leaves every member blocked by a non-terminal member and the landing
+    // queue never settles, so in that one case the edge is dropped instead — losing an ordering
+    // constraint is recoverable, a wedged queue is not.
+    agents = hasDependencyCycle(repointed)
+      ? next.map((a) => ({ ...a, dependsOn: a.dependsOn.filter((s) => s !== d.slug) }))
+      : repointed;
   }
   if (agents.length < 2) return { split: null, rejected };
   // The merged option is NOT re-normalised here (§3.4 is the decompose stage's), so its id is recomputed by
@@ -151,19 +177,25 @@ export function applyDropRule(split: NormalizedSplit, answers: Record<string, An
 
 export async function rankSplits(input: RankInput, deps: { ask: AskFn | null }): Promise<RankedSplit> {
   // ---- M2 / O1(a): only `no_split` survived. NO JEV REQUEST IS MADE. `deps.ask` is not touched. ----
-  if (input.options.length === 0) return noSplit('code', false, input.rejected);
+  // `no_split` has no Choice option key (it is the fallback, not a candidate), so an `options` list
+  // that holds only `no_split`-kind splits builds an EMPTY Choice and `choice()` throws
+  // `QuestionBuildError` — against this function's "returns a value on every path" contract, and
+  // outside the try below, so it escaped to the caller (review 2026-09-22 finding 11). Filter first:
+  // the M2 guard is about what can actually be ranked, not about array length.
+  const rankable = input.options.filter((o) => optionKeyOf(o.kind) !== null);
+  if (rankable.length === 0) return noSplit('code', false, input.rejected);
 
-  const first = input.options[0];
+  const first = rankable[0];
   // (e) `split: 'auto'`: the first option in enumerate order, deterministically, with nothing asked.
   if (input.auto && first !== undefined) {
-    const rejected = [...input.rejected, ...input.options.slice(1).map((o) => loser(o, `not the first option in enumerate order, which is what --split=auto takes (\`${first.kind}\`)`, null))];
+    const rejected = [...input.rejected, ...rankable.slice(1).map((o) => loser(o, `not the first option in enumerate order, which is what --split=auto takes (\`${first.kind}\`)`, null))];
     return { split: first, splitKind: first.kind, verdict: 'code', probability: 0, confidence: 0, rejected, askedJev: false };
   }
 
   // (a) jev-off, or the caller refuses to ask: `no_split`, still without calling anything.
-  if (deps.ask === null) return noSplit('code', false, [...input.rejected, ...input.options.map((o) => loser(o, 'no decider: the split was not ranked', null))]);
+  if (deps.ask === null) return noSplit('code', false, [...input.rejected, ...rankable.map((o) => loser(o, 'no decider: the split was not ranked', null))]);
 
-  const plan = planDecomposeQuestions(input.options, first ?? null);
+  const plan = planDecomposeQuestions(rankable, first ?? null);
   const state = buildDecomposeState({
     task: input.task,
     remaining: input.remaining,
@@ -171,7 +203,7 @@ export async function rankSplits(input: RankInput, deps: { ask: AskFn | null }):
     directories: input.directories,
     failingTests: input.failingTests,
     verification: input.verification,
-    options: input.options,
+    options: rankable,
   });
 
   let answers: Record<string, Answer>;
@@ -182,7 +214,7 @@ export async function rankSplits(input: RankInput, deps: { ask: AskFn | null }):
     rows = got.rows;
   } catch {
     // (b) corner row 4: the decider rejected (error, timeout, 401). Never rethrow, never open a pane.
-    return noSplit('fallback', true, [...input.rejected, ...input.options.map((o) => loser(o, 'the decider did not answer; the split was not ranked', null))]);
+    return noSplit('fallback', true, [...input.rejected, ...rankable.map((o) => loser(o, 'the decider did not answer; the split was not ranked', null))]);
   }
 
   const keys = plan.optionKeys;
@@ -200,7 +232,7 @@ export async function rankSplits(input: RankInput, deps: { ask: AskFn | null }):
     // The decisions pane must read `fallback` on the Choice row whatever `resolveChoice` would have written.
     const forced: ChoiceResolution<string> = { option: SPLIT_ESCAPE, verdict: 'fallback', answer: resolved.answer, probability: resolved.probability, pairedNoul: 0 };
     annotateChoiceRows(rows, WHICH_SPLIT, forced);
-    const out = noSplit('fallback', true, [...input.rejected, ...input.options.map((o) => loser(o, reason, pOf(o)))]);
+    const out = noSplit('fallback', true, [...input.rejected, ...rankable.map((o) => loser(o, reason, pOf(o)))]);
     return { ...out, confidence };
   };
 
@@ -213,12 +245,12 @@ export async function rankSplits(input: RankInput, deps: { ask: AskFn | null }):
   if (resolved.verdict === 'fallback') return fellBack('no paired Noul reached the floor; the option was not delegable');
 
   const kind = SPLIT_KIND_OF[resolved.option];
-  const winner = kind === undefined ? undefined : input.options.find((o) => o.kind === kind);
+  const winner = kind === undefined ? undefined : rankable.find((o) => o.kind === kind);
   if (winner === undefined) return fellBack('the ranked option is not one of the surviving splits');
   annotateChoiceRows(rows, WHICH_SPLIT, resolved);
 
   const dropped = applyDropRule(winner, answers, input.policy);
-  const losers = input.options.filter((o) => o !== winner).map((o) => loser(o, 'ranked below the chosen split', pOf(o)));
+  const losers = rankable.filter((o) => o !== winner).map((o) => loser(o, 'ranked below the chosen split', pOf(o)));
   const rejected = [...input.rejected, ...losers, ...dropped.rejected];
   if (dropped.split === null) {
     return { ...noSplit('fallback', true, [...rejected, loser(winner, 'fewer than two agents were self-contained', resolved.probability)]), confidence };

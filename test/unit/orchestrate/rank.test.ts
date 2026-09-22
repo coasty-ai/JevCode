@@ -8,7 +8,8 @@ import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_SPLIT_POLICY } from '../../../src/orchestrate/types.js';
 import { OPTION_KEY_OF, WHICH_SPLIT, selfContainedId } from '../../../src/orchestrate/split/questions.js';
-import { rankLandingOrder, rankSplits, type RankInput } from '../../../src/orchestrate/split/rank.js';
+import { applyDropRule, rankLandingOrder, rankSplits, type RankInput } from '../../../src/orchestrate/split/rank.js';
+import { hasDependencyCycle } from '../../../src/orchestrate/split/normalize.js';
 import type { Answer, Decision, Question } from '../../../src/core/types.js';
 import type { AgentSpec, AskFn, NormalizedSplit, SplitKind } from '../../../src/orchestrate/types.js';
 
@@ -183,8 +184,11 @@ describe('§3.5 rankSplits', () => {
     expect(receiver?.task).toContain('merged from the dropped agent `tui-pane`');
     expect(receiver?.own).toEqual(['src/tui/rows/**', 'src/tui/pane/**']);
     expect(receiver?.capUsd).toBeCloseTo(0.5, 10);
-    // the dropped slug leaves every dependsOn, and the manifest records the slug and the value
-    expect(r.split?.agents[1]?.dependsOn).toEqual([]);
+    // The dropped slug is REPOINTED at the agent that absorbed it, not deleted. `cli-args` declared a
+    // dependency on `tui-pane`'s work; that work now belongs to `tui-rows`, so the edge has to follow it.
+    // This assertion used to expect `[]`, which would have let `cli-args` land first and see none of the
+    // work it waited for — the same defect the review found in rule 7's clamp (finding 3), one layer up.
+    expect(r.split?.agents[1]?.dependsOn).toEqual(['tui-rows']);
     const note = r.rejected.find((x) => x.reason.includes('tui-pane'));
     expect(note?.reason).toContain('0.20');
     expect(note?.probability).toBe(0.2);
@@ -263,5 +267,93 @@ describe('§5.2 rankLandingOrder', () => {
     ];
     expect(rankLandingOrder({ a: 1, b: 2 }, cyclic).sort()).toEqual(['a', 'b', 'c']);
     expect(rankLandingOrder({}, [])).toEqual([]);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// Review 2026-09-22 — findings 9 and 11
+// ---------------------------------------------------------------------------------------
+
+describe('the drop-rule merge promotes a research receiver (review finding 9)', () => {
+  it('a research agent that absorbs a code agent becomes code and gets a branch', () => {
+    const research = agent('reader', { role: 'research', branch: null, verify: [], own: ['src/reader/**'] });
+    const coder = agent('writer', { role: 'code', own: ['src/reader/deep/**'], verify: ['npm test'] });
+    const keeper = agent('keeper', { own: ['src/keeper/**'] });
+    const before = split('by_plan_item', [research, coder, keeper]);
+    const answers: Record<string, Answer> = {
+      [selfContainedId('reader')]: noulA(0.9),
+      [selfContainedId('writer')]: noulA(0.1),
+      [selfContainedId('keeper')]: noulA(0.9),
+    };
+    const out = applyDropRule(before, answers, DEFAULT_SPLIT_POLICY);
+    expect(out.split).not.toBeNull();
+    const receiver = out.split?.agents.find((a) => a.slug === 'reader');
+    expect(receiver).toBeDefined();
+    // it now owns code work and carries a verify command, so it MUST be able to land
+    expect(receiver?.role).toBe('code');
+    expect(receiver?.branch).toBe('jevcode/reader');
+    expect(receiver?.verify).toContain('npm test');
+  });
+
+  it('a research receiver that absorbs another research agent stays research', () => {
+    const one = agent('reader', { role: 'research', branch: null, verify: [], own: ['src/reader/**'] });
+    const two = agent('scanner', { role: 'research', branch: null, verify: [], own: ['src/reader/deep/**'] });
+    const keeper = agent('keeper', { own: ['src/keeper/**'] });
+    const answers: Record<string, Answer> = {
+      [selfContainedId('reader')]: noulA(0.9),
+      [selfContainedId('scanner')]: noulA(0.1),
+      [selfContainedId('keeper')]: noulA(0.9),
+    };
+    const out = applyDropRule(split('by_plan_item', [one, two, keeper]), answers, DEFAULT_SPLIT_POLICY);
+    const receiver = out.split?.agents.find((a) => a.slug === 'reader');
+    expect(receiver?.role).toBe('research');
+    expect(receiver?.branch).toBeNull();
+  });
+});
+
+describe('the drop-rule repoint never closes a dependency loop', () => {
+  it('drops the edge instead of creating a cycle that would wedge the landing queue', () => {
+    // `keeper` waits on `doomed`; `reader` (which will absorb `doomed`) waits on `keeper`.
+    // Repointing blindly gives keeper -> reader -> keeper, and `nextLandStep` would then find both
+    // blocked by a non-terminal agent for ever.
+    const reader = agent('reader', { own: ['src/x/deep/**'], dependsOn: ['keeper'] });
+    const keeper = agent('keeper', { own: ['src/keeper/**'], dependsOn: ['doomed'] });
+    const doomed = agent('doomed', { own: ['src/x/**'] });
+    const answers: Record<string, Answer> = {
+      [selfContainedId('reader')]: noulA(0.9),
+      [selfContainedId('keeper')]: noulA(0.9),
+      [selfContainedId('doomed')]: noulA(0.1),
+    };
+    const out = applyDropRule(split('by_plan_item', [reader, keeper, doomed]), answers, DEFAULT_SPLIT_POLICY);
+    const agents = out.split?.agents ?? [];
+    expect(agents.length).toBe(2);
+    expect(hasDependencyCycle(agents)).toBe(false);
+    for (const a of agents) expect(a.dependsOn).not.toContain('doomed');
+  });
+});
+
+describe('rankSplits returns on every path (review finding 11)', () => {
+  it('does not throw when the only surviving option is a no_split-kind split', async () => {
+    const asked: number[] = [];
+    const ask: AskFn = async () => {
+      asked.push(1);
+      return { answers: {}, rows: [] };
+    };
+    const input: RankInput = {
+      task: 't',
+      remaining: ['a', 'b', 'c'],
+      unverified: [],
+      directories: ['src'],
+      failingTests: [],
+      verification: ['npm test'],
+      options: [split('no_split', [])],
+      rejected: [],
+      policy: DEFAULT_SPLIT_POLICY,
+      auto: false,
+    };
+    const out = await rankSplits(input, { ask });
+    expect(out.splitKind).toBe('no_split');
+    expect(out.split).toBeNull();
+    expect(asked).toEqual([]);
   });
 });

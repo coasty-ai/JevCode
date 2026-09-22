@@ -73,8 +73,8 @@ export type { GateInput, GateVerdict } from './split/gate.js';
 export { enumerateSplits, prefixTree, topLevelDirs, PREFIX_TREE_MAX, PRELUDE_SLUG } from './split/enumerate.js';
 export type { EnumerateInput } from './split/enumerate.js';
 
-export { normalizeSplit, AGENT_WALL_FLOOR_MS, SLUG_RE } from './split/normalize.js';
-export type { NormalizeInput } from './split/normalize.js';
+export { hasDependencyCycle, mergeAgentFields, normalizeSplit, AGENT_WALL_FLOOR_MS, SLUG_RE } from './split/normalize.js';
+export type { Mergeable, MergedFields, NormalizeInput } from './split/normalize.js';
 
 export {
   buildDecomposeQuestions,
