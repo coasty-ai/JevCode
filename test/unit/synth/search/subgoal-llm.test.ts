@@ -126,7 +126,12 @@ describe('the race and the grace (§4.2, §6.2)', () => {
     const ctx = fakeCtx();
     const mem = fakeMemory([file], baseline(), { oracle: fastOracle(), stepBudget: llmBudget() });
     const goal = fakeGoal();
-    const llm = fakeLlm({ graceMs: 0, rounds: () => ({ arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }] }) });
+    // docs/DECISIONS.md (2026-09-22, wall-clock gates on the shared machine): `graceMs` is measured with the
+    // source's OWN clock (`L.deps.now()` in src/synth/search/subgoal.ts:1101-1103), so freezing that clock turns
+    // the assertion below from "the machine was quick enough" into the fact the case is about — the loop adds
+    // nothing to the ledger when it does not wait. The discriminating half is `runBatches` having length 1 and the
+    // round being cancelled on the commit: had the loop waited the 5 ms, sample 0 would have landed and run.
+    const llm = { ...fakeLlm({ graceMs: 0, rounds: () => ({ arrivals: [{ candidates: [cand(replace, LLM_FIX, { source: 'llm', op: 'sample_0_0' })], delayMs: 5 }] }) }), now: () => 0 };
     const deps = fakeSubGoalDeps({
       sites: [replace],
       seed: (source, site) => (source === 'mutation' ? [cand(site, FIX, { op: 'argument_swap' })] : []),
@@ -139,7 +144,7 @@ describe('the race and the grace (§4.2, §6.2)', () => {
     if (r.kind === 'commit') expect(r.applied.candidate.text).toBe(FIX);
     expect(deps.rec.runBatches).toHaveLength(1);
     expect(llm.rec.cancelled).toEqual(['commit']);
-    expect(r.trace.llm?.graceMs).toBeLessThan(5);
+    expect(r.trace.llm?.graceMs).toBe(0);
   });
 
   it('the grace runs at any site: the top-site seeds miss (release), a seed passer at the second site waits for sample 0 and the batch is decided once over the union', async () => {
