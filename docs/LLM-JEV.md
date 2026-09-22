@@ -257,7 +257,11 @@ inserted behind `mid = len(ordered) // 2`; the gold inserts `if not values: rais
 `wait_for`). It is a SIGNAL, arbitrated by Q15/Q16 — never a rejection: a sole passer whose only fault is a late guard
 is asked about and committed when Jev keeps it. **Gold sweep: 0 of 41 QuixBugs gold patches and 0 of 65 ladder gold
 files (26 tasks, the long-2 six included) add a late guard, and no gold is refused by any structural rule**
-(`test/unit/synth/search/late-guard.test.ts`).
+(`test/unit/synth/search/late-guard.test.ts`). Replayed over the patches iteration 1 actually COMMITTED — the 46 of 64
+archived `model_patch.diff.gz` that are non-empty and apply to the pristine bench source — it fires **3 times**, and
+the three are `token_bucket`, `stats` and `detect_cycle`: the whole of that measurement's correctness losses and
+nothing else. (It fired a fourth time before `isDeclaration` landed, on `hunk_merge`'s local `within()` helper; a
+nested `def` runs nothing where it stands, so it is not a position a guard can be behind.)
 
 **2. Why `detect_cycle` was outvoted — and it was not the `SUSPECT_NOUL_MAX` threshold.** Replaying
 `20260922-013715-nlsygcax` shows the guard DID hold the passer the analysis' Q6 row names: `general_cand_01` 0.44 with
