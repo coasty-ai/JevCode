@@ -24,7 +24,7 @@ function question(text: string): Question {
 function countingDecider(over: { throwOn?: number } = {}): Decider & { calls: number; states: Json[] } {
   let calls = 0;
   const states: Json[] = [];
-  const answers: Record<string, Answer> = { q: { type: 'noul', noul: 0.42, confidence: 0.9 } };
+  const answers: Record<string, Answer> = { q: { type: 'noul', noul: 0.42 } };
   return {
     model: 'jev-1.13.0',
     provider: 'typesafe',
