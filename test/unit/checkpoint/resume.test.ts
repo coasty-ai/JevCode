@@ -248,6 +248,46 @@ describe('loadForResume', () => {
       expect(r.warnings.join(' ')).toMatch(/falling back to state\.prev\.json/);
     }));
 
+  /**
+   * docs/DECISIONS.md "A forward-version `run.json` is refused for resume, never for report" (TUI-DESIGN-4 §7.9):
+   * `readMeta` runs `isRunMeta`, which checks v1 fields only — so before this guard a run written by a NEWER
+   * JevCode loaded here and was resumed under this build's semantics. `loadForResume` is the one door every
+   * resume goes through (`src/cli/session.ts` included), so the refusal belongs to it.
+   */
+  it('refuses a run.json written by a newer JevCode with ConfigError exit 2 and the ratified sentence', () =>
+    withTempDir(async (tmp) => {
+      const runsDir = join(tmp, 'runs');
+      const { runId, runDir } = await createRunDir(runsDir, new Date('2026-09-19T12:00:00Z'));
+      const store = createCheckpointStore(runDir, fakeRedact);
+      await store.create(makeMeta({ runId }));
+      await store.writeState(makeState({ runId, step: 1 }));
+      await store.appendStep(makeStepRecord(2));
+      const metaPath = join(runDir, CHECKPOINT_FILES.meta);
+      const base = JSON.parse(await readFile(metaPath, 'utf8')) as Record<string, unknown>;
+      const withVersion = async (v: unknown): Promise<void> => {
+        await writeFile(metaPath, `${JSON.stringify(v === undefined ? base : { v, ...base }, null, 2)}\n`);
+      };
+
+      await withVersion(99);
+      const err: unknown = await loadForResume(runsDir, runId, { redact: fakeRedact, now }).then(
+        () => null,
+        (e: unknown) => e,
+      );
+      expect(err).toBeInstanceOf(ConfigError);
+      expect((err as ConfigError).exitCode).toBe(2);
+      expect((err as ConfigError).message).toBe(`run ${runId} was written by a newer JevCode (run.json v99; this build reads v1) — upgrade with jevcode upgrade`);
+      // nothing was read past the refusal: the fold never ran, so no resume state was built
+      expect(err).not.toBeInstanceOf(CheckpointError);
+
+      // and the three shapes the decision leaves alone still load: this build's version, an older one, no `v`
+      // at all (a v1 file that predates the field), and a `v` that is present but not a number (corrupt, not newer)
+      for (const v of [1, 0, undefined, 'two']) {
+        await withVersion(v);
+        const r = await loadForResume(runsDir, runId, { redact: fakeRedact, now });
+        expect(r.state.step, `v=${String(v)}`).toBe(2);
+      }
+    }));
+
   it('maps id and directory failures to ConfigError / CheckpointError', () =>
     withTempDir(async (tmp) => {
       await expect(loadForResume(tmp, 'bogus', { redact: fakeRedact })).rejects.toBeInstanceOf(ConfigError);

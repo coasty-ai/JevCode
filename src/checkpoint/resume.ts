@@ -13,7 +13,8 @@
  */
 import { clip, headTail } from '../core/text.js';
 import type { Action, CheckpointState, RunMeta, StepRecord, StopReason, WindowEntry } from '../core/types.js';
-import { createCheckpointStore, type DiskCheckpointStore, type Redactor } from './store.js';
+import { ConfigError } from '../errors.js';
+import { createCheckpointStore, refuseNewerRunMeta, type DiskCheckpointStore, type Redactor } from './store.js';
 import { resolveRunDir } from './run-id.js';
 
 /** Window bounds mirror loop/window.ts (§6): last 4 steps, output head 400 + tail 200. */
@@ -187,11 +188,22 @@ export function foldStepsIntoState(state: CheckpointState, steps: readonly StepR
   };
 }
 
-/** Validate the id, open the store, load the truth, fold the steps.jsonl tail. Read-only. */
+/**
+ * Validate the id, open the store, refuse a forward-version run, load the truth, fold the steps.jsonl tail.
+ * Read-only.
+ *
+ * The forward-version refusal (docs/DECISIONS.md "A forward-version `run.json` is refused for resume, never for
+ * report"; TUI-DESIGN-4 §7.9) lives here rather than in a caller because this is the one door every resume goes
+ * through. `readMeta` only runs `isRunMeta`, which by its own comment checks v1 fields alone — right for an *older*
+ * file, silently wrong for a newer one, which would otherwise be resumed under this build's semantics. `v` below
+ * `CHECKPOINT_VERSION`, an absent `v` and a non-numeric `v` are unaffected: they keep loading exactly as before.
+ */
 export async function loadForResume(runsDir: string, runId: string, opts: ResumeOptions): Promise<ResumeLoad> {
   const runDir = await resolveRunDir(runsDir, runId);
   const store = createCheckpointStore(runDir, opts.redact);
   const loaded = await store.load();
+  const newer = refuseNewerRunMeta(loaded.meta, loaded.meta.runId);
+  if (newer !== null) throw new ConfigError(newer);
   const warnings = [...store.lastWarnings()];
   const foldedSteps = await store.readStepsAfter(loaded.state.step);
   warnings.push(...store.lastWarnings());
