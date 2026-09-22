@@ -7,7 +7,9 @@
  * the step's LLM counters (budget.ts `decideLlmN`), wraps a fired round as an `LlmRound` whose
  * arrivals are pumped into a buffer (so the grace of §6.2 can wait on the first one and the LLM
  * phase can drain the rest), asks Q17 for an order in RANK mode, and keeps one `LlmSource` per run
- * (its cache, running p50 and doubled `max_tokens` outlive a step; its transcript lines are logged
+ * (its cache, its latency series — the running p50 and the served p90 the adaptive deadline of §4.8
+ * rev 3 reads, plus the per-run `reasoning: {maxTokens}` cap a slow serving provider earns — and its
+ * doubled `max_tokens` outlive a step; its transcript lines are logged
  * under the step that is current when they are emitted, not the step the source was built in). A
  * round the rate limiter refused whole (`LlmRoundSummary.rateLimitedRound`: every fired sample
  * answered HTTP 429, nothing served, $0 booked) is refunded to the step's LLM counters when it

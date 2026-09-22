@@ -30,8 +30,14 @@
  *                   - one cluster mixing a code seed and an LLM candidate → its LLM member (§6.2);
  *                   - a cluster holding a strict MAJORITY of the independent support (distinct
  *                     source × site pairs, `clusterSupport`) → its representative;
- *                   - clusters split → the representative adding the FEWEST special-case guards
+ *                   - clusters split, some cluster holding an LLM member or the supports differing
+ *                     → the representative adding the FEWEST special-case guards
  *                     (`specialCaseScore`: conditionals + literals beyond the replaced line);
+ *                   - clusters split with NO LLM member and equal support (`seedOnlySplit`, class A′
+ *                     of llm-jev-headtohead-v2.md §9: the count committed `stats` and `detect_cycle`
+ *                     as overfits) → the cluster agreeing with the passers' majority on the
+ *                     perturbed inputs (`probeMajorityCluster`), and NEVER the count: when the probe
+ *                     separates none of them the request below decides;
  *                   - a residual tie (or a single all-seed cluster of ≥ 2) → ONE request: Q15
  *                     `genuine_fix` Choice over ≤ 20 representatives + Q16 `general_<xx>` Nouls,
  *                     with the PERTURBATION TABLE (which inputs differ, each output) in the state.
@@ -304,6 +310,10 @@ export function majorityCluster(clusters: readonly BehaviourCluster[]): Behaviou
  * fewest special-case guards (`specialCaseScore`), when it is alone at the minimum; null on a tie,
  * which goes to Q15. `wrap` (llm-jev-headtohead.md §8.1): the gold `lines.append(text)` adds 0,
  * GLM's `if text:` variant 1, the copied loop 5 — code picks the gold that Jev's Choice had at 0.05.
+ *
+ * **Not applicable to an all-seed split of equal support** (`seedOnlySplit`, class A′ of
+ * llm-jev-headtohead-v2.md §9): there the count is not evidence at all and `decide` never reaches
+ * this rule — `probeMajorityCluster` decides, or Jev does.
  */
 export function fewestSpecialCases(reps: readonly VerifyOutcome[]): VerifyOutcome | null {
   let best: VerifyOutcome | null = null;
@@ -318,6 +328,99 @@ export function fewestSpecialCases(reps: readonly VerifyOutcome[]): VerifyOutcom
     } else if (s === bestScore) tied = true;
   }
   return tied ? null : best;
+}
+
+/** The prefix and separator of a behaviour-probe signature that carries per-input outputs (`perturb.ts` `parseBehaviourProbe` / `parseLadderReplay`). */
+export const PROBE_OUTPUTS_PREFIX = 'outputs:';
+export const PROBE_OUTPUT_SEP = '\u001f';
+
+/** The per-input outputs of a probe signature, or null for a P2P-only, `import_error:` or foreign one. */
+export function probeOutputs(signature: string | undefined): string[] | null {
+  return signature !== undefined && signature.startsWith(PROBE_OUTPUTS_PREFIX) ? signature.slice(PROBE_OUTPUTS_PREFIX.length).split(PROBE_OUTPUT_SEP) : null;
+}
+
+/**
+ * An all-seed split of equal support: every cluster carries the same independent support
+ * (`clusterSupport`) and none holds an `llm` member. Class A′ (llm-jev-headtohead-v2.md §9): this is
+ * exactly the shape in which `fewestSpecialCases` committed two overfits — `stats`
+ * (`values.remove(mid)` +0c beat the gold `if not values: raise` +1c/+1l, because the defect *was* a
+ * missing guard) and `detect_cycle` (`if not hare.successor.successor: break` +1c beat
+ * `guard_empty_return` +1c/+1l, because the least-guarded of three guards was the wrong guard) —
+ * with the LLM sample gone (timed out at 20 s, cancelled at 19.3 s) so `preferLlmInCluster` and
+ * Q15/Q16 never entered. The count decides nothing here; the probe (§6.2) or Jev does.
+ */
+export function seedOnlySplit(clusters: readonly BehaviourCluster[]): boolean {
+  if (clusters.length < 2) return false;
+  if (clusters.some((c) => c.members.some(isLlm))) return false;
+  const support = clusters.map((c) => clusterSupport(c));
+  return support.every((s) => s === support[0]);
+}
+
+export interface ProbeMajority {
+  /** cluster id → the number of differing perturbed inputs on which its behaviour was the majority */
+  agreement: Map<string, number>;
+  /** perturbed inputs on which the clusters' probe outputs differ at all: the only ones that can separate them */
+  differing: number;
+  /** the cluster alone at the top of `agreement` (with at least one input behind it), else null — the probe separates none of them */
+  winner: BehaviourCluster | null;
+}
+
+/**
+ * Class A′, the code half: **prefer the cluster that agrees with the majority on the perturbed
+ * inputs**. On every input where the clusters' probe outputs differ the passers vote — a cluster
+ * casts one vote per member, since every member of a cluster produced that behaviour from its own
+ * edit — and the output with the strictly largest vote is the majority behaviour on that input;
+ * each cluster that produced it agrees once. The cluster alone at the top of the agreement count
+ * wins; a split vote (`stats` has none, `detect_cycle`'s three clusters can) names no majority on
+ * that input, and when no cluster is alone at the top the probe has not separated them and Jev
+ * decides on the perturbation table.
+ *
+ * Why member votes and not `clusterSupport`: the callers gate this rule on equal support
+ * (`seedOnlySplit`), so the near-duplicate worry `clusterSupport` documents (three mutation forms
+ * of one wrong boundary at one site) cannot decide anything here, while the 4-vs-1 member count of
+ * `stats`'s guard family against the single `values.remove(mid)` mutation — available to the rule
+ * that committed the overfit and unused — can.
+ */
+export function probeMajorityCluster(clusters: readonly BehaviourCluster[], signatures: ReadonlyMap<string, string>): ProbeMajority {
+  const outputsOf = new Map<string, string[]>();
+  const weightOf = new Map<string, number>();
+  for (const c of clusters) {
+    weightOf.set(c.id, c.members.length);
+    for (const m of c.members) {
+      const outs = probeOutputs(signatures.get(m.applied.candidate.id));
+      // every member of a cluster shares its behaviour signature: the first one that carries outputs speaks for it
+      if (outs !== null) {
+        outputsOf.set(c.id, outs);
+        break;
+      }
+    }
+  }
+  const agreement = new Map<string, number>(clusters.map((c) => [c.id, 0]));
+  let differing = 0;
+  const width = outputsOf.size < 2 ? 0 : Math.min(...[...outputsOf.values()].map((o) => o.length));
+  for (let k = 0; k < width; k++) {
+    const votes = new Map<string, number>();
+    for (const [id, outs] of outputsOf) {
+      const o = outs[k];
+      if (o === undefined) continue;
+      votes.set(o, (votes.get(o) ?? 0) + (weightOf.get(id) ?? 0));
+    }
+    // every cluster behaves alike on this input: it separates nothing and is not counted
+    if (votes.size < 2) continue;
+    differing += 1;
+    const top = Math.max(...votes.values());
+    if ([...votes.values()].filter((v) => v === top).length > 1) continue;
+    for (const [id, outs] of outputsOf) {
+      const o = outs[k];
+      if (o !== undefined && votes.get(o) === top) agreement.set(id, (agreement.get(id) ?? 0) + 1);
+    }
+  }
+  const scored = [...clusters].sort((a, b) => (agreement.get(b.id) ?? 0) - (agreement.get(a.id) ?? 0));
+  const first = scored[0];
+  const second = scored[1];
+  const best = first === undefined ? 0 : (agreement.get(first.id) ?? 0);
+  const runnerUp = second === undefined ? 0 : (agreement.get(second.id) ?? 0);
+  return { agreement, differing, winner: first !== undefined && best > 0 && best > runnerUp ? first : null };
 }
 
 // ---------------------------------------------------------------------------------------
@@ -674,8 +777,8 @@ export interface PerturbationRow {
 export function perturbationTable(reps: readonly Representative[], inputs: readonly PerturbedInput[], signatures: ReadonlyMap<string, string>): PerturbationRow[] {
   const outputsOf = new Map<string, string[]>();
   for (const r of reps) {
-    const sig = signatures.get(r.outcome.applied.candidate.id);
-    if (sig !== undefined && sig.startsWith('outputs:')) outputsOf.set(r.key, sig.slice('outputs:'.length).split('\u001f'));
+    const outs = probeOutputs(signatures.get(r.outcome.applied.candidate.id));
+    if (outs !== null) outputsOf.set(r.key, outs);
   }
   if (outputsOf.size < 2) return [];
   const rows: PerturbationRow[] = [];
@@ -771,7 +874,7 @@ export async function adviseLonePasser(ctx: ArbitrateContext, o: VerifyOutcome, 
 export type HoldKind = 'pending' | 'suspect';
 
 /** The code rule that decided a commit without a Jev request (rule (2) and DESIGN §22.5), when one did. */
-export type CodeRule = 'llm_in_cluster' | 'majority_cluster' | 'fewest_special_cases';
+export type CodeRule = 'llm_in_cluster' | 'majority_cluster' | 'probe_majority' | 'fewest_special_cases';
 
 /** The bookkeeping every guard decision carries beside the Decision itself. */
 export interface GuardFields {
@@ -1101,13 +1204,33 @@ export async function decide(results: readonly VerifyOutcome[], mem: GuardMemory
       return commit(mem, pick, { ...common, fallbacks, codeRule: 'majority_cluster' });
     }
     const reps = clusters.map((c) => c.representative);
-    const fewest = fewestSpecialCases(reps);
-    if (fewest !== null) {
-      clearHeld(mem, goal);
-      const fallbacks = reps.filter((r) => r !== fewest).sort((a, b) => specialCaseScore(a.applied.candidate).total - specialCaseScore(b.applied.candidate).total || byEditCost(a, b));
-      guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
-      note(`${goal.id}: ${plausible.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); the clusters split; committing ${describe(fewest)} with the fewest added special-case guards (${scoreSummary(reps)}) by code (no arbitration)`);
-      return commit(mem, fewest, { ...common, fallbacks, codeRule: 'fewest_special_cases' });
+    const split = `${goal.id}: ${plausible.length} passers (${carried.length} held) in ${clusters.length} behaviour clusters (${probeNote}; ${supportSummary(clusters)}); the clusters split`;
+    if (seedOnlySplit(clusters)) {
+      // Class A′ (llm-jev-headtohead-v2.md §8.2, §9): no cluster holds an LLM member and every cluster
+      // carries the same independent support, so the special-case count is not evidence — it committed
+      // `stats` and `detect_cycle` as overfits. The probe's majority decides; when it separates none of
+      // them Q15/Q16 does, with the perturbation table, and the all-overfit signature still drops the set.
+      const maj = probeMajorityCluster(clusters, signatures);
+      const agreement = clusters.map((c) => `${c.id} ${maj.agreement.get(c.id) ?? 0}/${maj.differing}`).join(', ');
+      if (maj.winner !== null) {
+        const winner = maj.winner;
+        clearHeld(mem, goal);
+        const pick = winner.representative;
+        const fallbacks = clusters.filter((c) => c !== winner).map((c) => c.representative);
+        guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
+        note(`${split} with no LLM member and equal support; committing ${describe(pick)} — ${winner.id} agrees with the passers' majority on the perturbed inputs (${agreement}; ${scoreSummary(reps)}) by code (no arbitration)`);
+        return commit(mem, pick, { ...common, fallbacks, codeRule: 'probe_majority' });
+      }
+      note(`${split} with no LLM member and equal support, and the probe separates none of them (${maj.differing} differing input${maj.differing === 1 ? '' : 's'}; ${agreement}); the special-case count does not decide here (${scoreSummary(reps)}) — arbitrating`);
+    } else {
+      const fewest = fewestSpecialCases(reps);
+      if (fewest !== null) {
+        clearHeld(mem, goal);
+        const fallbacks = reps.filter((r) => r !== fewest).sort((a, b) => specialCaseScore(a.applied.candidate).total - specialCaseScore(b.applied.candidate).total || byEditCost(a, b));
+        guardState(mem).fallbacks = { goalId: goal.id, outcomes: fallbacks };
+        note(`${split}; committing ${describe(fewest)} with the fewest added special-case guards (${scoreSummary(reps)}) by code (no arbitration)`);
+        return commit(mem, fewest, { ...common, fallbacks, codeRule: 'fewest_special_cases' });
+      }
     }
   }
   // The residual: a single all-seed cluster of ≥ 2, or split clusters whose representatives tie on
