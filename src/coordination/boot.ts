@@ -17,8 +17,10 @@
  *     child's own timeout, because an injected probe may never settle. A machine that cannot answer in 200 ms must
  *     not delay the first frame; §3.5's budget rule applies to identity too.
  *   · MEMOISED per process: the id cannot change while the process lives, and the §3.4 comparison runs on every
- *     record. Only the DEFAULT probe is memoised — an injected one always re-runs, so a test never reads another
- *     test's answer and a caller with its own probe is never served a stale one.
+ *     record. Only the DEFAULT, DEFAULT-DEADLINE probe is memoised — any injected option (`probe`, `platform` or
+ *     `timeoutMs`) makes the call re-run and leaves the memo untouched, so a test never reads another test's answer,
+ *     a caller with its own probe is never served a stale one, and a caller that passes a short `timeoutMs` neither
+ *     silently ignores it on a warm memo nor poisons the process-wide answer with the `null` a 1 ms budget returns.
  *   · `null` ON ANY FAILURE, never a throw and never a guess. `null` is "unknown", which stays PERMISSIVE exactly as
  *     an unknown `hostKey` does (§3.2): a boot id denies, it never grants — so a missing one can only cost a refusal
  *     the reader would otherwise have been able to make, never a wrong replacement of a live lock.
@@ -53,7 +55,12 @@ export interface BootIdOptions {
   probe?: BootProbe;
   /** default `process.platform`; only `'darwin'` and `'linux'` have a boot identity JevCode can read */
   platform?: NodeJS.Platform;
-  /** default `BOOT_ID_DEADLINE_MS` */
+  /**
+   * default `BOOT_ID_DEADLINE_MS`. Setting it makes the call COUNT AS INJECTED: a probe run under a caller's own
+   * deadline is neither served from the process memo nor written into it, so `bootIdOf({ timeoutMs: 1 })` cannot
+   * answer `null` on behalf of every later `bootIdOf()` in the process (the memo is the §3.4 answer for the whole
+   * process, and an answer computed under someone else's budget is not it).
+   */
   timeoutMs?: number;
 }
 
@@ -89,14 +96,29 @@ export function normaliseBootId(raw: string): string | null {
 let memoised: Promise<string | null> | null = null;
 
 /**
+ * Whether THIS call may read and write the process memo: only the fully default one may.
+ *
+ * Its own function because the memo key is the whole of the correctness argument and it is not observable from
+ * outside — every branch answers `string | null`, so a wrong key is a silent, permanent wrong answer rather than a
+ * failure. `timeoutMs` belongs in it for both directions: a caller that passes one and is served the memo silently
+ * ignored its own deadline, and a caller that passes a short one and WRITES the memo makes its `null` the answer
+ * every later `bootIdOf()` in the process gets (`bootIdOf({ timeoutMs: 1 })` before the first default call left
+ * `lockReplaceVerdict`'s `other-boot` branch dead for the life of the process, on a machine that can read its boot
+ * id perfectly well).
+ */
+export function bootIdMemoisable(o: BootIdOptions): boolean {
+  return o.probe === undefined && o.platform === undefined && o.timeoutMs === undefined;
+}
+
+/**
  * This boot's identity, or `null` when it cannot be read. Never throws, never blocks longer than the deadline, and
  * never spawns on a platform that has no boot identity to read.
  */
 export function bootIdOf(o: BootIdOptions = {}): Promise<string | null> {
-  const injected = o.probe !== undefined || o.platform !== undefined;
-  if (!injected && memoised !== null) return memoised;
+  const memoise = bootIdMemoisable(o);
+  if (memoise && memoised !== null) return memoised;
   const p = resolveBootId(o.probe ?? nodeBootProbe, o.platform ?? process.platform, o.timeoutMs ?? BOOT_ID_DEADLINE_MS);
-  if (!injected) memoised = p;
+  if (memoise) memoised = p;
   return p;
 }
 

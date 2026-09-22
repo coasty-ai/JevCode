@@ -539,32 +539,48 @@ export function childrenOf(fold: Fold, self: SelfIdentity, parentSessionId: stri
  * — what `/peers`, the open notice and the peer blocking pane read). Nothing said how one becomes the other, so the
  * `⇄` zone and `/peers` could show different numbers for one fold, and `src/tui/status/lines.ts` had already had to
  * invent a reconciling rule of its own. This function is the relationship, and it is a projection of the SAME array
- * the zone counts, so `peerViewOf(status).live === status.live` holds by construction (asserted in
- * `test/unit/coordination/facade.test.ts`).
+ * the zone counts.
+ *
+ * THE COUNTING CONVENTION, because the two shapes do not share it and the first cut of this function got it wrong:
+ * `CoordinationStatus.peers` is "one row per peer run that is NOT this run" (§3.6), so `CoordinationStatus.live` is
+ * self-EXCLUSIVE; **`PeerView.live` is self-INCLUSIVE** — it is the number of instances in this workspace, this one
+ * included, and it is the number `peersText` renders as `<n> here`. Every consumer already reads it that way and
+ * their tests pin it: `peersText` is empty at `live <= 1` ("Empty when this is the only instance",
+ * `src/tui/status/lines.ts`), `peerOpenNotice` is null at `live <= 1`, and `peerLeaseRows` blocks only on
+ * `exclusive && live > 1` (`src/tui/blocking/lines.ts`). So the relationship is
+ * `peerViewOf(status).live === status.live + 1`, NOT equality: copying `status.live` through verbatim made one other
+ * instance holding an exclusive lease render as nothing in the zone, a null open notice, and a blocking pane that
+ * offers `[c] continue` — the exact case all three surfaces exist for.
  *
  * The four fields, and exactly what each means:
- *   · `live`   — live PEER runs; this run is NOT counted (`CoordinationStatus.peers` is "one row per peer run that is
- *                not this run", §3.6) and a peer on THIS device counts exactly like one on another: two instances in
- *                one multiplexer is the common case the surface exists for (TUI-DESIGN-4 §7.10 edge 6), not a case to
- *                filter away.
- *   · `stale`  — every other row: a peer the fold still lists whose heartbeat is no longer live (`gone`, `stale`,
- *                `stale-reused-pid`). Bounded by the producer's own cap of 16 rows, like `live`.
- *   · `oldestStartedMsAgo` — the largest `beatAgeMs` among the LIVE rows: the best lower bound on "started <t> ago"
- *                that this projection HAS. `CoordinationStatus.peers` carries no start time, so this is honestly a
- *                beat age and not a start age; a stale row's age is excluded because it measures when a dead instance
- *                stopped, never how long a live one has been working. `null` with no live peer.
+ *   · `live`   — live instances in this workspace INCLUDING this one: live peer rows + 1. A peer on THIS device
+ *                counts exactly like one on another: two instances in one multiplexer is the common case the surface
+ *                exists for (TUI-DESIGN-4 §7.10 edge 6), not a case to filter away. The floor is 1, never 0: this
+ *                run is running, so `/peers`'s empty state is `live <= 1 && stale === 0`, not `live === 0`.
+ *   · `stale`  — every other ROW: a peer the fold still lists whose heartbeat is no longer live (`gone`, `stale`,
+ *                `stale-reused-pid`). Self is never stale, so this one stays a peer-only count, bounded by the
+ *                producer's own cap of 16 rows.
+ *   · `oldestStartedMsAgo` — how long the longest-running LIVE peer has been running, from `startedMsAgo` on the
+ *                row (§3.6, the heartbeat's own `startedAt`). `null` when no live row carries one: a producer that
+ *                does not report a start time gets `—` in `/peers` and no parenthetical in the open notice, because
+ *                both consumers render this verbatim as a START age and `beatAgeMs` is not one. A live row's beat
+ *                age is bounded ABOVE by the honoured heartbeat TTL (`4 × HEARTBEAT_TTL_MS`, `records.ts`), so
+ *                substituting it reports an instance that has been working all day as "started 4s ago" — a number
+ *                that is not a lower bound on anything. Declining is the only honest answer this projection has.
+ *                A stale row is excluded either way: its age measures when a dead instance stopped.
  *   · `exclusive` — a peer lease is holding this step right now (`waiting !== null`, §4.3 step 4). That is the exact
  *                condition `peerLeaseRows` renders as "another jevcode holds this workspace"; a peer merely being
  *                live is never exclusivity.
  */
 export function peerViewOf(status: CoordinationStatus): PeerView {
-  let live = 0;
+  let livePeers = 0;
   let oldest: number | null = null;
   for (const p of status.peers) {
     if (!p.live) continue;
-    live += 1;
-    const age = Number.isFinite(p.beatAgeMs) ? Math.max(0, Math.floor(p.beatAgeMs)) : null;
+    livePeers += 1;
+    const started = p.startedMsAgo;
+    const age = started !== undefined && Number.isFinite(started) ? Math.max(0, Math.floor(started)) : null;
     if (age !== null && (oldest === null || age > oldest)) oldest = age;
   }
-  return { live, stale: Math.max(0, status.peers.length - live), oldestStartedMsAgo: oldest, exclusive: status.waiting !== null };
+  return { live: livePeers + 1, stale: Math.max(0, status.peers.length - livePeers), oldestStartedMsAgo: oldest, exclusive: status.waiting !== null };
 }

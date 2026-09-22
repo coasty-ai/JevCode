@@ -320,4 +320,30 @@ describe('§12.0.3 the status meter', () => {
     expect(st?.coordination?.mirror).toBeNull();
     expect(st?.coordination?.off).toBeNull();
   });
+
+  /**
+   * D2 (the producer half). The row carried `beatAgeMs` and nothing else about time, so `peerViewOf` had no start
+   * age to project and the surfaces that render "started <t> ago" were being handed a HEARTBEAT age — bounded above
+   * by the honoured TTL, so a peer running since this morning read as seconds old. This fixture's peer started
+   * 60 s ago and beat 1 s ago, which is exactly the two numbers coming apart.
+   */
+  it('§3.6: the peer row carries startedMsAgo, and it is the START age, not the beat age', async () => {
+    const { ledger } = await ledgerOn({ peerHoldsPaths: ['src/other.py'] });
+    const h = await build(ledger);
+    let seen: ReturnType<typeof h.engine.status> | null = null;
+    h.engine.events.on('status', (e) => {
+      if (e.status.coordination !== undefined && e.status.coordination.peers.length > 0) seen = e.status;
+    });
+    await h.engine.run();
+    const row = (seen as ReturnType<typeof h.engine.status> | null)?.coordination?.peers[0];
+    expect(row).toBeDefined();
+    const started = row?.startedMsAgo;
+    expect(typeof started).toBe('number');
+    // the peer's `startedAt` is now − 60 s; the run takes a moment, so the window is generous on one side only
+    expect(started).toBeGreaterThanOrEqual(59_000);
+    expect(started).toBeLessThan(180_000);
+    // and it is NOT the beat age: the beat landed a second ago
+    expect(row?.beatAgeMs).toBeLessThan(30_000);
+    expect(started).toBeGreaterThan((row?.beatAgeMs ?? 0) + 20_000);
+  });
 });

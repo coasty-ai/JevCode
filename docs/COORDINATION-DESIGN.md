@@ -2949,6 +2949,22 @@ for TUI slots in round 3 (TD3:1562); this round assigns it to the TUI session ex
 additive. LOC are new / changed lines excluding tests; tests roughly equal. Each wave lands only when `npm run typecheck` (tsc +
 `no-any`) and the named unit tests are green; nothing in W1–W4 changes an existing artefact's shape.
 
+#### Open requests to the TUI session (harness cannot touch `src/cli/**`, `src/tui/**`, `src/session/**`)
+
+1. **`/peers`' empty state is off by one against `PeerView.live` (`src/cli/session.ts:3465`).** `PeerView.live` counts the
+   instances in this workspace **including this one** — that is the convention all three renderers already use
+   (`peersText` is empty at `live <= 1`, `peerOpenNotice` is null at `live <= 1`, `peerLeaseRows` blocks on
+   `exclusive && live > 1`) and it is what `peerViewOf` (`src/coordination/fold.ts`) now produces. The `/peers` empty
+   test is `view.live === 0 && view.stale === 0`, which no live registry can ever satisfy, so a lone instance prints
+   `peers · 1 here, 0 stale` instead of `no other jevcode is working in this workspace`. **Requested change:**
+   `if (view.live <= 1 && view.stale === 0)`.
+2. **Feed `SessionHost.peers()` from the one projection.** When the TUI wires `EngineOptions.coordination`, the hook should
+   be `peerViewOf(status.coordination)` (exported from `src/coordination/index.ts`) rather than a second count, so the `⇄`
+   zone and `/peers` are the same numbers by construction. `oldestStartedMsAgo` is a **start** age (from the row's
+   `startedMsAgo`) and is `null` when the producer reports none — `/peers` already renders `—` for that, and
+   `peerOpenNotice` already drops the parenthetical; neither should substitute `beatAgeMs`, which is bounded above by the
+   honoured heartbeat TTL.
+
 ### W0 — contract, identity, limits (harness; ½ day) — lands first, alone
 
 | # | File | Change | LOC |
