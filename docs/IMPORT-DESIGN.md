@@ -494,7 +494,7 @@ interface SourceSpec {
   roots: readonly RootSpec[];
   pattern: string;                   // glob, relative to the root
   format: SourceFormat;
-  class: ImportClass;                // the rule-1 verdict (§4.4.1)
+  class: ImportClass;                // the atlas-class verdict, rule 6 after the 2026-09-22 amendment (§4.4.1)
   scope: SourceScope;
   destination: DestinationSpec;      // where a row of this kind lands
   precedence?: number;               // within a tool, for "first match wins" chains
@@ -901,14 +901,20 @@ runs per *artefact-key*, not per file, and the report groups by destination rath
 First match wins. `p` is the code rule's own confidence and is used **only** to decide whether the row is in
 the band.
 
+**Amended 2026-09-22** (review `docs/research/import/review-engine-2026-09-22.md` defect 11): the five *identity*
+rules run **before** the atlas class. Every discovered artefact has an atlas row, so with the atlas class first the
+identity verdicts were unreachable and the repo's own `AGENTS.md` — a destination — would have been classified as a
+source and appended to itself on every run. The order below is normative; the previous order (atlas class as rule 1)
+is withdrawn.
+
 | # | Rule | Verdict | `p` |
 | --- | --- | --- | --- |
-| 1 | the atlas row declares a class and the parse succeeded | that class | 1.0 |
-| 2 | basename matches a destination name, or realpath ∈ destinations | `skip:self` | 1.0 |
-| 3 | `isSecretBasename(name)` | SECRET (named, not read) | 1.0 |
-| 4 | bytes > `sourceReadCapBytes` (4 MiB) | `skip:oversize` | 1.0 |
-| 5 | not valid UTF-8 after BOM strip, or contains a NUL in the first 8 KiB | `skip:not-text` | 1.0 |
-| 6 | format ∈ {js, sh, sqlite} | `skip:unsupported` | 1.0 |
+| 1 | basename matches a destination name, or realpath ∈ destinations | `skip:self` | 1.0 |
+| 2 | `isSecretBasename(name)` | SECRET (named, not read) | 1.0 |
+| 3 | bytes > `sourceReadCapBytes` (4 MiB) | `skip:oversize` | 1.0 |
+| 4 | not valid UTF-8 after BOM strip, or contains a NUL in the first 8 KiB | `skip:not-text` | 1.0 |
+| 5 | format ∈ {js, sh, sqlite} | `skip:unsupported` | 1.0 |
+| 6 | the atlas row declares a class and the parse succeeded | that class | 1.0 |
 | 7 | frontmatter has `paths` / `globs` / `applyTo` / `trigger` / `alwaysApply` | MEMORY/rule | 0.95 |
 | 8 | frontmatter has `argument-hint` / `arguments` / `allowed-tools` / `mode` / `template` / `prompt`, **or** the body contains `$ARGUMENTS` / `$1` | WORKFLOW | 0.90 |
 | 9 | frontmatter has `name` + `description` and (`metadata.type` or `type`) | MEMORY/learned | 0.90 |
