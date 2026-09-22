@@ -1310,14 +1310,11 @@ describe('§14.2 item 13: the item formatter\'s static import graph', () => {
       'src/checkpoint/store.ts',
       // §6.3 edge 8: `isSecretPath`, purely lexical (sandbox/paths.ts:120–135 — "safe to run over a 5,000-entry listing")
       'src/core/atomic.ts',
-      // contract 1.5 (2400a0c) / W2b (7efac12): `src/tui/review/lines.ts` needs `buildRiskQuestions` / `riskLevelTexts` from
-      // `src/loop/stages/risk.ts`, which now imports `ownsPath` / `parseOwnGlob` from the ORCHESTRATE BARREL (`src/orchestrate/index.ts`),
-      // and the barrel re-exports these three `node:fs` / `child_process` importers. Nothing in the formatter calls them; the reach is
-      // the barrel's. Requested of the harness session (round-4 merge, 2026-09-22): import the leaf module in risk.ts, then delete
-      // these three rows so the guard tightens again.
-      'src/orchestrate/land.ts',
-      'src/orchestrate/manifest.ts',
-      'src/orchestrate/worktree.ts',
+      // `src/orchestrate/{land,manifest,worktree}.ts` were here while `src/loop/stages/risk.ts` — which
+      // `src/tui/review/lines.ts` needs for `buildRiskQuestions` / `riskLevelTexts` — imported `ownsPath` /
+      // `parseOwnGlob` from the orchestrate BARREL, which re-exports those three `node:fs` / `child_process`
+      // importers. The harness session (OOS iteration 2) now imports the leaf `src/orchestrate/split/globs.ts`
+      // instead, whose only import is `core/limits.js`, so the three rows are gone and the guard is tighter.
       'src/sandbox/paths.ts',
       'src/workspace/gitstate.ts',
     ]);
