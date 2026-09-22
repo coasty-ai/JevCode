@@ -272,7 +272,8 @@ export interface RouterLedger {
   waitMs: number;
   /** the sum of the measured per-route `heldMs` — not a contract member; the step's router wall, for the bench row and for a test that can fail */
   heldMs: number;
-  rows: { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
+  /** `drop` is why this route did not take Jev's answer (§5.2 / review defect A7); absent on an applied row. */
+  rows: { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean; drop?: RouteDrop }[];
 }
 
 export function emptyRouterLedger(): RouterLedger {
@@ -288,6 +289,8 @@ export function noteRoute<T>(ledger: RouterLedger, r: RouteResult<T>): RouterLed
   else ledger.applied += 1;
   ledger.waitMs += r.waitMs;
   ledger.heldMs += r.heldMs;
-  if (ledger.rows.length < ROUTER_ROWS_MAX) ledger.rows.push({ id: r.id, source: r.source, appliedAt: r.appliedAt, dropped: r.dropped });
+  // review defect A7: the REASON rides the row. `dropped: true` alone cannot distinguish "the deadline is too
+  // short for this site's batch" from "Jev was down", and those call for opposite actions.
+  if (ledger.rows.length < ROUTER_ROWS_MAX) ledger.rows.push({ id: r.id, source: r.source, appliedAt: r.appliedAt, dropped: r.dropped, ...(r.drop === null ? {} : { drop: r.drop }) });
   return ledger;
 }

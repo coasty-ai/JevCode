@@ -134,11 +134,17 @@ function firstLine(r: ExecResult): string {
   return line.length > 120 ? `${line.slice(0, 119)}…` : line;
 }
 
-export async function measureLaneRun(opts: { runs?: number; warmRunner?: WarmRunner | null; env?: Record<string, string>; onProgress?: (line: string) => void } = {}): Promise<LaneRunResult> {
+/**
+ * `root` is the checkout the fixtures are resolved against — `PerfRunOptions.cwd`, which is `process.cwd()` in
+ * production. It is passed in rather than read here so that what a `runPerf` was told its working directory is, is
+ * also what this probe measures; reading `process.cwd()` made the injection silently untrue for the one probe that
+ * depends on tree layout.
+ */
+export async function measureLaneRun(opts: { runs?: number; root?: string; warmRunner?: WarmRunner | null; env?: Record<string, string>; onProgress?: (line: string) => void } = {}): Promise<LaneRunResult> {
   const runs = opts.runs ?? 10;
   const progress = opts.onProgress ?? ((): void => undefined);
   const python = pythonOnPath();
-  const repo = process.cwd();
+  const repo = opts.root ?? process.cwd();
   const quixbugs = resolve(repo, 'bench/data/quixbugs');
   const ladder = resolve(repo, 'bench/data/ladder/tasks/account');
 

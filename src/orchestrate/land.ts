@@ -297,6 +297,7 @@ export interface RestoreDockResult {
  * (row 39), and it is what the old code did, because the reset was guarded and the clean was not.
  * A reset that git itself refuses is the same case and skips the clean for the same reason.
  */
+// NO CALLER — reachable only from the supervisor (ORCHESTRATION-DESIGN §8.3 item 34)
 export async function restoreDock(runGit: RunGit, dockDir: string, previousHead: string, exclude: readonly string[]): Promise<RestoreDockResult> {
   if (!SHA_RE.test(previousHead)) {
     // The value is not echoed: it is caller-supplied and reaches the transcript and land.jsonl.

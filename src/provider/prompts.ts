@@ -85,11 +85,18 @@ export interface PromptFileInView {
 }
 
 /** §8.6: one `## Kept (do not re-derive)` item. */
+/**
+ * §8.6's kept item, as the section renders it. `kind` and `by` are widened to the full `KeptItem` vocabulary
+ * (`src/loop/context/compaction.ts`, `CheckpointState.kept`) by F26's finishing pass: the extractor's own
+ * candidates are `by: 'code'` — the only provenance a run has before a surface adds a `/keep` or `kept: 'jev'`
+ * ranks them — so the narrower pair described a shape nothing could produce, which is half of why the section
+ * rendered for nobody. Additive: no prompt built before this change carried an item at all.
+ */
 export interface PromptKeptItem {
-  kind: 'fact' | 'file' | 'decision';
+  kind: 'fact' | 'file' | 'decision' | 'memory';
   text: string;
   step: number;
-  by: 'jev' | 'human';
+  by: 'jev' | 'human' | 'code';
 }
 
 /**
@@ -196,6 +203,12 @@ export interface PromptInput {
    * everything volatile → window — which is §3.3's `system → repo map → files → window`. Nothing is added, removed
    * or rewritten: only the order changes, and only for a caller that asks. The `view: 'legacy'` goldens therefore
    * stay byte-identical (§7.6's gate), and `prefixChars` on the build says how long the head that repeats is.
+   *
+   * **Who asks** (F25, the finishing pass). Until then NOBODY did — the member was built and never set, which is
+   * why the `jev-on-next` arm's `mechanisms.s2: true` was false in fact. `Engine.promptInput()` now sets it
+   * whenever the S2 switch resolves to anything but `'off'` (`s2Mode`, `src/synth/llm/hedge.ts`: `jev-on` only,
+   * `JEVCODE_S2=on`, default off). The default is what keeps `test/unit/loop/router-golden.test.ts` and every
+   * `view: 'legacy'` golden valid without a re-capture: an S2-off run still asks for the legacy order.
    */
   prefixOrder?: 'legacy' | 'pinned';
 }

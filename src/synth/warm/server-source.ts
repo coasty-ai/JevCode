@@ -38,6 +38,10 @@ Isolation is the cold path's, not a weaker one:
   * the per-case SIGKILL timeout is kept -- each JSON case is its own fork() with its own
     deadline, enforced by select() + SIGKILL, exactly as run_tests.py's per-case subprocess
     timeout does;
+  * importing the candidate is inside a deadline too (SIGALRM, at the largest cap any case that
+    will run could claim), because the cold path imports it inside each case's own child: a
+    module body that never returns reports a TIMEOUT per case here as well, instead of holding
+    the lane until the whole run's wall;
   * the whole candidate run has a wall deadline enforced with killpg(SIGKILL);
   * PYTHONDONTWRITEBYTECODE is set here as well as by the harness, so no .pyc can go stale;
   * the seatbelt applies, because the harness starts this process through its own sandbox.
@@ -374,6 +378,31 @@ class Quixbugs(object):
                     pass
         return [dict({"input": c["input"], "expected": c["expected"]}, **r) for c, r in zip(cases, results)]
 
+    def _import_cap(self, cases, timeout, include_slow):
+        """The deadline the candidate's import gets, and the one every case reports if it blows it.
+
+        run_tests.py imports the candidate INSIDE each case's own child, so a module body that never
+        returns is an ordinary per-case TIMEOUT there, at that case's own cap (--timeout, raised by the
+        case's "timeout"). Here the import happens once for the whole wave, so it is armed with the
+        largest cap any case that will actually run could claim: never shorter than the cold path
+        allows, so a slow-but-finite import cannot be failed here and passed cold."""
+        caps = [timeout] + [float(c.get("timeout", 0)) for c in cases
+                            if not (c.get("slow") and not include_slow)]
+        return max(caps)
+
+    def _import_timeout_rows(self, cases, timeout, include_slow):
+        """The cold rows for an import that never returned: each case reports its own cap as a TIMEOUT,
+        and a slow case that was going to be skipped is still skipped (run_tests.py checks "slow" before
+        it spawns anything, so the hanging import never reaches it)."""
+        rows = []
+        for c in cases:
+            if c.get("slow") and not include_slow:
+                r = {"status": "skipped", "actual": "skipped (slow; pass --slow)"}
+            else:
+                r = {"status": "timeout", "actual": "TIMEOUT after %gs" % max(timeout, float(c.get("timeout", 0)))}
+            rows.append(dict({"input": c["input"], "expected": c["expected"]}, **r))
+        return rows
+
     def _run_module(self, name, path, test_file, timeout):
         """run_tests.py's _child_module in this fork: the module's tests share state, as under pytest."""
         import importlib.util
@@ -382,15 +411,37 @@ class Quixbugs(object):
         rt = self.rt
         with open(test_file) as f:
             expected_names = re.findall(r"^def (test\\w*)\\(", f.read(), re.M)
+        # The import runs under a deadline this worker owns, exactly as each test below does. Without it
+        # the one piece of candidate code outside every warm deadline was the module body, and a
+        # candidate that hangs there held the lane until the whole run's wall -- for every case, and then
+        # again cold.
+        #
+        # The deadline is the COLD one, not the per-case cap: run_tests.py gives this same import the whole
+        # module wall (run_tests.py:209, overall = timeout * (len(expected_names) + 1) + 5, applied to the
+        # --_child-module subprocess that does _load_candidate + exec_module), so arming it at "timeout"
+        # would fail a slow-but-finite module body here that passes cold -- a CORRECT candidate thrown away
+        # by the screen. That is the same rule _import_cap states on the JSON path ("never shorter than the
+        # cold path allows"), and it applies here for the same reason. A true hang is still bounded by the
+        # worker rather than by the run's wall, and the rows are worded exactly as run_tests.py:229 words
+        # them, so warm is byte-identical to cold and not merely the same status.
+        overall = timeout * (len(expected_names) + 1) + 5
+        signal.signal(signal.SIGALRM, rt._alarm)
+        signal.setitimer(signal.ITIMER_REAL, overall)
         try:
             rt._load_candidate(name, path)
             spec = importlib.util.spec_from_file_location(name + "_test", test_file)
             tmod = importlib.util.module_from_spec(spec)
             spec.loader.exec_module(tmod)
+        except rt._Timeout:
+            return [{"input": t, "expected": "pass", "status": "timeout",
+                     "actual": "TIMEOUT (module wall-clock %gs exceeded)" % overall} for t in expected_names]
         except BaseException as exc:
             text = rt._exc_text(exc, test_file)
             return [{"input": t, "expected": "pass", "status": "error", "actual": "import error: " + text}
                     for t in expected_names]
+        finally:
+            # the per-test loop arms its own; nothing may stay armed across the tests
+            signal.setitimer(signal.ITIMER_REAL, 0)
         tests = [(k, v) for k, v in vars(tmod).items() if k.startswith("test") and isinstance(v, types.FunctionType)]
         docs = {}
         for k, v in tests:
@@ -436,13 +487,26 @@ class Quixbugs(object):
             with open(json_tests) as f:
                 cases = json.load(f)
             t_load = time.monotonic()
+            # the import is the one piece of candidate code that used to run outside every deadline this
+            # worker owns; a module body that never returns held the lane until the run's whole wall
+            module = None
+            imported = False
+            signal.signal(signal.SIGALRM, rt._alarm)
+            signal.setitimer(signal.ITIMER_REAL, self._import_cap(cases, timeout, include_slow))
             try:
                 module = rt._load_candidate(name, path)
+                imported = True
+            except rt._Timeout:
+                results = self._import_timeout_rows(cases, timeout, include_slow)
             except BaseException as exc:
                 text = rt._exc_text(exc)
                 results = [{"input": c["input"], "expected": c["expected"], "status": "error", "actual": text}
                            for c in cases]
-            else:
+            finally:
+                # disarmed before the cases run: each of them is a fork with its own deadline, and a
+                # timer still ticking here would raise _Timeout in the middle of the wave
+                signal.setitimer(signal.ITIMER_REAL, 0)
+            if imported:
                 # the cold per-case child pays interpreter start, importing run_tests.py and
                 # importing the candidate inside its own --timeout; this fork pays none of them
                 allowance = (self.startup_s + self.boot_s + (time.monotonic() - t_load)) * STARTUP_SAFETY

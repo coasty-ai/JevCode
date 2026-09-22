@@ -16,7 +16,7 @@ import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { isFiniteNumber, isJsonObject, isString, parseJson } from '../core/json.js';
 import type { JsonObject } from '../core/types.js';
-import type { FastPathSummary, StepsSummary } from './types.js';
+import type { FastPathSummary, S2State, StepsSummary } from './types.js';
 
 export const STEPS_FILE = 'steps.jsonl';
 
@@ -34,7 +34,7 @@ export function emptyStepsSummary(): StepsSummary {
     fastPath: emptyFastPathSummary(),
     routers: { issued: 0, applied: 0, dropped: 0, maxWaitMs: 0 },
     risk: { codeVerdicts: 0, jevUnavailable: 0 },
-    s2: { ttfbMs: [], hedges: 0, hedgeWins: 0, cacheRead: 0, cacheWrite: 0 },
+    s2: { ttfbMs: [], hedges: 0, hedgeWins: 0, cacheRead: 0, cacheWrite: 0, cacheInput: 0 },
   };
 }
 
@@ -105,11 +105,43 @@ function addWaveMembers(s: StepsSummary, row: JsonObject): void {
   if (isJsonObject(verify)) {
     const ttfb = verify['ttfbMs'];
     if (Array.isArray(ttfb)) for (const v of ttfb) if (isFiniteNumber(v)) s.s2.ttfbMs.push(v);
-    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) {
+    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheInput'] as const) {
       const v = verify[k];
       if (isFiniteNumber(v)) s.s2[k] += v;
     }
   }
+  // F05 / B4: what the step said about the §3 mechanisms THEMSELVES (`StepRecord.mechanisms.s2`, slot A's F25) —
+  // not a count, so it is unioned rather than summed. This is the bridge that makes summary.json's `mechanisms.s2`
+  // the run's own answer instead of a constant: `observedArmS2` reads it back, the runner records it and the §8.3
+  // table reads the same member.
+  const mech = row['mechanisms'];
+  if (isJsonObject(mech)) setS2State(s, unionS2(s.s2.state, s2StateOf(mech['s2'])));
+}
+
+/**
+ * One step row's `mechanisms.s2`, read as loosely as everything else that crosses the steps.jsonl boundary: an
+ * absent member and a value outside the union are both "this build reported nothing", never an `'on'`. Private:
+ * the wave already shipped one exported S2 reader with no caller in src (B4), and callers want the ARM's answer
+ * (`bench/next-arms.ts observedArmS2`), not a row's.
+ */
+function s2StateOf(v: unknown): S2State | null {
+  return v === 'on' || v === 'partial' || v === 'off' ? v : null;
+}
+
+/**
+ * The union of two S2 observations. Steps (or runs) that disagree fold to `'partial'`: rounding a mixed run up to
+ * `'on'` would let one S2 step stand for an arm whose whole purpose is to be a one-mechanism contrast. An absent
+ * side never dilutes a present one, and two absent sides stay absent.
+ */
+function unionS2(a: S2State | undefined, b: S2State | null): S2State | undefined {
+  if (b === null) return a;
+  if (a === undefined || a === b) return b;
+  return 'partial';
+}
+
+/** `exactOptionalPropertyTypes`: an absent observation leaves the member absent rather than writing `undefined` into it. */
+function setS2State(s: StepsSummary, state: S2State | undefined): void {
+  if (state !== undefined) s.s2.state = state;
 }
 
 /**
@@ -243,7 +275,12 @@ export function withWaveMembers(part: StepsSummary): StepsSummary {
   const s2 = obj(part['s2']);
   const ttfb = s2?.['ttfbMs'];
   if (Array.isArray(ttfb)) for (const v of ttfb) if (isFiniteNumber(v)) s.s2.ttfbMs.push(v);
-  for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] = num(s2, k);
+  for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheInput'] as const) s.s2[k] = num(s2, k);
+  // carried for the same reason `deadlineGrowth` is, below: this function rebuilds the part from
+  // `emptyStepsSummary()` and anything it does not name is erased — which would drop the observation on every
+  // `--resume` and every arm-wide merge, and summary.json would go back to recording the pin (F05, B4).
+  const state = s2StateOf(s2?.['state']);
+  if (state !== null) s.s2.state = state;
   // OOS iteration 3, item 3: NOT a count, so it is carried rather than summed — and it must be carried, because this
   // function rebuilds the part from `emptyStepsSummary()` and anything it does not name is erased. `deadlineGrowth`
   // landed on `main` after this normaliser was written, so before this line every `mergeStepsSummaries` and every
@@ -289,7 +326,8 @@ export function mergeStepsSummaries(parts: readonly StepsSummary[]): StepsSummar
     s.risk.codeVerdicts += p.risk.codeVerdicts;
     s.risk.jevUnavailable += p.risk.jevUnavailable;
     s.s2.ttfbMs.push(...p.s2.ttfbMs);
-    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] += p.s2[k];
+    for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheInput'] as const) s.s2[k] += p.s2[k];
+    setS2State(s, unionS2(s.s2.state, p.s2.state ?? null));
     if (p.deadlineGrowth !== undefined) s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === p.deadlineGrowth ? p.deadlineGrowth : 'mixed';
     if (p.warm !== undefined) addWarm(s, p.warm.mode, p.warm, p.warm.disabled, p.warm.disabledReason);
   }

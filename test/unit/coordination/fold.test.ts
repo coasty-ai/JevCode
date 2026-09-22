@@ -188,10 +188,18 @@ describe('listSessions (§3.6) and the caps (§3.5)', () => {
     const fold = foldOf(entries);
     expect(fold.live.size).toBeGreaterThanOrEqual(200);
     listSessions(fold, self); // warm
-    const start = performance.now();
-    for (let i = 0; i < 5; i++) listSessions(fold, self);
-    const perCall = (performance.now() - start) / 5;
-    expect(perCall, `listSessions took ${perCall.toFixed(3)} ms`).toBeLessThan(5);
+    // docs/DECISIONS.md (2026-09-22, wall-clock gates on the shared machine): the BEST of the five samples, not
+    // their mean. The mean failed this gate on a single GC pause in one sample while the other four were an order
+    // of magnitude inside it; the best keeps the discriminating power, because genuinely slow code is slow in
+    // every sample (the shape of `bestOfMs` in test/unit/import/parse/markdown.test.ts:18-24).
+    const samples: number[] = [];
+    for (let i = 0; i < 5; i++) {
+      const started = performance.now();
+      listSessions(fold, self);
+      samples.push(performance.now() - started);
+    }
+    const best = Math.min(...samples);
+    expect(best, `listSessions best of 5 = ${best.toFixed(3)} ms (samples ${samples.map((s) => s.toFixed(3)).join(', ')})`).toBeLessThan(5);
   });
 });
 

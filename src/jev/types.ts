@@ -19,7 +19,7 @@ export const DEFAULT_TYPESAFE_BASE_URL = 'https://api.typesafe.ai/v1/systemone';
 export const JEV_INPUT_USD_PER_TOKEN = 4.2e-8;
 
 /** OpenRouter attribution headers (`HTTP-Referer`, `X-Title`; TUI-DESIGN-2 §2.2 — the typesafe spec sends neither). */
-export const DEFAULT_REFERER = 'https://github.com/prateekjannu/jevcode';
+export const DEFAULT_REFERER = 'https://github.com/coasty-ai/JevCode';
 export const APP_TITLE = 'jevcode';
 
 /** Fixed token overhead per request and per short question (REPORT §4), used by the mock. */

@@ -437,6 +437,28 @@ Cent-scale suites cannot show cost dominance in raw dollars whatever the design 
 
 All additive: optional fields on `SynthesisContext`, `GenerateRequest`, `GenerateResult`, `GenerateOptions`, `GeneratorCallRecord`, `TokenUsage`, `StepTiming`, `StepRecord`, `JudgeResult`, `ProposalEvidence` (`selection: 'llm'`, `completion`); one new `EngineMode` member (with every enumeration site of §9.2 stage 1); one new `CandidateSourceName`; `EnumerateOptions.phase` union member; `OracleOutcome` two members; `JobQueue.next/close`. **TUI contract changes (small, additive):** `generator:*` events carry `sample?`; `/mode llm-jev` joins `ENGINE_MODES` and the badge; the onboarding wizard requires both keys in this mode; the intent line shows `verdict: 'code'`. Checkpoint format unchanged except `synthState` content (`tried` + `llm` cache ≤ 4 KB, under the 64 KB cap).
 
+**`StepRecord.verify` is written more widely from F04 on, and the bench row moved with it (finishing-pass review,
+defect A6).** Before F04 the member had ONE writer, `mode === 'llm-jev' && proposer === 'synth'`, and
+`reportVerify` was not even installed in `jev-only` — so the warm plane's `unsupported-runner` /
+`unsupported-command` rows were silently dropped under `JEVCODE_WARM=on --mode jev-only`, and the contract 1.9
+§8.3 S2 row was structurally empty for every `jev-on` arm. The writer is now
+`draft.verify.reported !== null || s2Measured(draft) || (llm-jev && proposer === 'synth')`.
+
+This is INTENDED, and its blast radius is stated here rather than discovered from a table. The real synthesizer
+calls `ctx.reportVerify?.({candidatesTested, passers, partials, …})` unconditionally
+(`src/synth/search/index.ts`), and the fast path forwards the engine's context verbatim
+(`src/synth/search/fastpath.ts`), so `verify` is now present on every `jev-only` step that ran a search and on
+every `jev-on` fast-path round that reached a verdict. `src/bench/step-records.ts` then takes its `verify`
+branch instead of the `proposal.evidence` fallback, which means for the `jev-only` and `jev-on*` arms:
+
+- `StepsSummary.verify.candidatesTested` changes SOURCE, from the committed proposal's
+  `evidence.candidatesTested` to the search's own `trace.candidatesTested`;
+- `passers`, `partials` and `distinct` go from structurally 0 to real values.
+
+**`StepsSummary.verify` for those arms is therefore not comparable with run archives written before F04.** The
+`llm-jev` shape is unchanged (that arm always reported), so the llm-jev head-to-head tables of §10 stand. A
+`jev-only` or `jev-on*` comparison that spans the commit must re-read `steps.jsonl`, not the summary.
+
 ### 9.4 `handles()` and the generic fallback (graft, Salvo) *(rev 2: specified)*
 
 `Synthesizer.handles(workspaceInfo, files)` is true when the workspace has Python files and either a detected pytest/QuixBugs runner or a repository with an issue oracle candidate. When false (non-Python, no tests, feature work), the engine falls back per step to `runProposeStage` (one `propose_action` sample) with `draft.proposer = 'generic'`: the system prompt is the `llm-jev` variant (§9.2 stage 1), plan claims take **verbatim** evidence (`commit()`'s `jev-off` branch at `engine.ts:2267` keyed on the flag, not the mode), risk is Q20 harm-only on `run`/`write`/`edit` and code `ok` on `read`, judge is code, and a `done` stops the run as `generator_done` (`:1947`, keyed on the flag). Recorded as `proposer: 'generic'` in the StepRecord and the bench column. Outside the dominance claim; not benchmarked here.

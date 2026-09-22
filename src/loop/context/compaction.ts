@@ -6,7 +6,9 @@
  * jev-only. The `'llm'` template is not here (it is a generator call; §8.6 second bullet).
  *
  * §8.6 fourth bullet, `context.kept: 'code' | 'jev'` (TUI round-5 request R5-H2, landed below as `rankKept`): the KEPT
- * ITEMS' ranking pass. Extraction stays the caller's (code, always); this module owns the ORDER. `'code'` — the default —
+ * ITEMS' ranking pass. Extraction stays the caller's (code, always) and lives in `./kept.ts` (`extractKept`, F26 of
+ * the finishing pass — it did not exist when `rankKept` landed, so this pass ranked an empty list in both switch
+ * positions); this module owns the ORDER. `'code'` — the default —
  * never touches `compactCode` and never asks anything, so the `'code'` compactor stays pure, free, deterministic across
  * devices and resumes (G3(d)) and available in `jev-off`. `'jev'` spends ONE bounded request per compaction and falls
  * back to the code order on an escape or any failure.

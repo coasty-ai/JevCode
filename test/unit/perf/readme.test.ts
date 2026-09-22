@@ -3,9 +3,19 @@
  * table rows (shared with the console table), the section text, and the in-place replacement that touches only the
  * `## Performance` section of a README. The render-lag fixture has the three realistic-rate geometries (gated) and the
  * stress row (lag and frame rate reported only); the composer fixture has the six series.
+ *
+ * Plus the guard on the write path itself (F01): `updateReadmePerformance` rewrites the `## Performance` section of
+ * whatever file it is handed, and `jevcode perf` used to hand it `<cwd>/README.md` on the strength of `!partial`
+ * alone — which says which probes were *asked for*, never whose README this is. `rewriteReadmePerformance` is the
+ * only caller in the command, and it writes nothing outside a JevCode checkout.
  */
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { afterEach, describe, expect, it } from 'vitest';
 import type { PerfResult } from '../../../src/perf/main.js';
+import { PERFORMANCE_PAGE, README_NOT_A_CHECKOUT, isJevCodeCheckout, rewriteReadmePerformance } from '../../../src/perf/main.js';
 import type { LagGeometry } from '../../../src/perf/render-lag.js';
 import type { ComposerSeries } from '../../../src/perf/composer-latency.js';
 import type { IntakeSeries } from '../../../src/perf/intake-latency.js';
@@ -410,5 +420,109 @@ describe('performanceSection() / replacePerformanceSection()', () => {
     expect(next).toBe('# JevCode\n\nintro\n\n## Performance\n\nnew\n\n## Bench\n\nbench text\n');
     expect(replacePerformanceSection('# JevCode\n\n## Performance\n\nlast section\n', '## Performance\n\nnew\n')).toBe('# JevCode\n\n## Performance\n\nnew\n');
     expect(replacePerformanceSection('# JevCode\n\nno such section\n', '## Performance\n')).toBeNull();
+  });
+});
+
+describe('rewriteReadmePerformance() writes only inside a JevCode checkout (F01)', () => {
+  const temps: string[] = [];
+  const dir = (prefix: string): string => {
+    const d = mkdtempSync(join(tmpdir(), prefix));
+    temps.push(d);
+    return d;
+  };
+  afterEach(() => {
+    for (const d of temps.splice(0)) rmSync(d, { recursive: true, force: true });
+  });
+
+  /** Someone else's project, standing in the CWD when `jevcode perf` is typed. */
+  const FOREIGN = ['# Some Other Project', '', 'intro', '', '## Performance', '', 'Handles 40k requests per second.', '', '## Licence', '', 'MIT', ''].join('\n');
+
+  it('leaves a foreign README byte-identical and says why, even when the tree carries a bin/jevcode.js', () => {
+    const root = dir('jevcode-perf-foreign-');
+    writeFileSync(join(root, 'README.md'), FOREIGN);
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'someone-elses-project', version: '9.9.9' }));
+    // a vendored copy of the binary is not a checkout: `package.json` decides whose README this is
+    mkdirSync(join(root, 'bin'), { recursive: true });
+    writeFileSync(join(root, 'bin/jevcode.js'), '#!/usr/bin/env node\n');
+    expect(isJevCodeCheckout(root)).toBe(false);
+
+    const line = rewriteReadmePerformance(root, 'perf/results/latest.json', result());
+    expect(line).toBe(README_NOT_A_CHECKOUT);
+    expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe(FOREIGN);
+  });
+
+  it('leaves a README alone in a directory with no package.json and in one with no perf binary', () => {
+    const bare = dir('jevcode-perf-bare-');
+    writeFileSync(join(bare, 'README.md'), FOREIGN);
+    expect(rewriteReadmePerformance(bare, 'out.json', result())).toBe(README_NOT_A_CHECKOUT);
+    expect(readFileSync(join(bare, 'README.md'), 'utf8')).toBe(FOREIGN);
+
+    const noBin = dir('jevcode-perf-nobin-');
+    writeFileSync(join(noBin, 'README.md'), FOREIGN);
+    writeFileSync(join(noBin, 'package.json'), JSON.stringify({ name: 'jevcode' }));
+    expect(isJevCodeCheckout(noBin)).toBe(false);
+    expect(rewriteReadmePerformance(noBin, 'out.json', result())).toBe(README_NOT_A_CHECKOUT);
+    expect(readFileSync(join(noBin, 'README.md'), 'utf8')).toBe(FOREIGN);
+  });
+
+  it('rewrites the section of the measurements page in a real checkout, and reports a page that has no such section', () => {
+    const root = dir('jevcode-perf-checkout-');
+    mkdirSync(join(root, 'bin'), { recursive: true });
+    writeFileSync(join(root, 'bin/jevcode.js'), '#!/usr/bin/env node\n');
+    writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'jevcode', version: '0.0.0-test' }));
+    // the public README carries no table any more; the page under docs/measurements does (PERFORMANCE_PAGE)
+    mkdirSync(join(root, 'docs/measurements'), { recursive: true });
+    const page = join(root, PERFORMANCE_PAGE);
+    writeFileSync(join(root, 'README.md'), '# JevCode\n\nsummary only\n');
+    writeFileSync(page, '# JevCode\n\n## Performance\n\nold table\n\n## Bench\n\nbench text\n');
+    expect(isJevCodeCheckout(root)).toBe(true);
+
+    expect(rewriteReadmePerformance(root, 'perf/results/latest.json', result())).toBe(`${PERFORMANCE_PAGE} Performance section rewritten from perf/results/latest.json\n`);
+    expect(readFileSync(join(root, 'README.md'), 'utf8')).toBe('# JevCode\n\nsummary only\n');
+    const written = readFileSync(page, 'utf8');
+    expect(written).toContain('| Measurement | Result | Gate | Status |');
+    expect(written).toContain('Measured 2026-09-21 (10:00Z)');
+    // only that section moved
+    expect(written.startsWith('# JevCode\n')).toBe(true);
+    expect(written).toContain('\n## Bench\n\nbench text\n');
+    expect(written).not.toContain('old table');
+
+    writeFileSync(page, '# JevCode\n\nno such section\n');
+    expect(rewriteReadmePerformance(root, 'out.json', result())).toBe(`${PERFORMANCE_PAGE} has no "## Performance" section; nothing rewritten\n`);
+    expect(readFileSync(page, 'utf8')).toBe('# JevCode\n\nno such section\n');
+  });
+});
+
+/**
+ * C-06: the three cases above exercise the guarded helper, which is what F01 added — but nothing pinned that the
+ * COMMAND still goes through it. Re-introducing `updateReadmePerformance(resolve(root, 'README.md'), result)` at
+ * the call site, the exact regression F01 is about, left every one of them green.
+ *
+ * `measureAll` is not exported and its write path only runs after a complete release set of real pty probes, so
+ * there is no in-process seam to assert against. The call site is a source fact, so it is asserted as one: the
+ * only `updateReadmePerformance(` call in `src/perf/main.ts` is the one inside `rewriteReadmePerformance`, and
+ * that function still refuses ahead of it.
+ */
+describe('the command reaches the README only through the guarded helper (C-06)', () => {
+  const MAIN_TS = join(dirname(fileURLToPath(import.meta.url)), '../../../src/perf/main.ts');
+
+  it('has exactly one updateReadmePerformance( call in src/perf/main.ts, inside rewriteReadmePerformance, behind the checkout guard', () => {
+    const src = readFileSync(MAIN_TS, 'utf8');
+    const from = src.indexOf('export function rewriteReadmePerformance(');
+    expect(from, 'rewriteReadmePerformance must still be the guarded helper in src/perf/main.ts').toBeGreaterThan(-1);
+    // a top-level function ends at the first `}` in column 0 after its header
+    const close = src.indexOf('\n}\n', from);
+    expect(close).toBeGreaterThan(from);
+    const body = src.slice(from, close);
+
+    const calls = [...src.matchAll(/updateReadmePerformance\s*\(/g)].map((m) => m.index ?? -1);
+    expect(calls, 'the README writer must still be called: a vacuous pass here is the regression').toHaveLength(1);
+    for (const at of calls) {
+      const line = src.slice(0, at).split('\n').length;
+      expect(at >= from && at < close, `src/perf/main.ts:${line} calls updateReadmePerformance( outside rewriteReadmePerformance — that is the unguarded write F01 removed`).toBe(true);
+    }
+    // and the refusal is still ahead of the call, not beside it
+    expect(body).toContain('if (!isJevCodeCheckout(root)) return README_NOT_A_CHECKOUT;');
+    expect(body.indexOf('isJevCodeCheckout')).toBeLessThan(body.indexOf('updateReadmePerformance('));
   });
 });

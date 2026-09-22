@@ -138,11 +138,16 @@ export const CONDITIONS_PARAGRAPH =
   'after a `length` stop, reasoning effort low, a 20 s per-call deadline that drops the call — no retry, the step ends — and ' +
   'meters it from an estimate, plan capped at 200 chars). ' +
   '**jev-on-next** and **jev-on-next-nofast** (contract 1.9, docs/LLM-LOOP-DESIGN.md §8.1) are the LLM-loop wave: the ' +
-  'jev-on engine — the generator still proposes — with the router table on, the S2 generation mechanisms on (one hedge ' +
-  'per round at clamp(2 × TTFB p50, 3 s, 8 s), the byte-stable prefix, a 256-token reasoning cap on the cheap classes) ' +
-  'and the jev-off-tuned generation parameters. They differ in ONE mechanism: `jev-on-next` arms the bounded sieve fast ' +
+  'jev-on engine — the generator still proposes — with the router table on and the jev-off-tuned generation parameters. ' +
+  'The §3 S2 mechanisms are the THIRD switch, pinned per arm like the other two and recorded in `mechanisms.s2`: ' +
+  'F25 put the measurement half (the byte-stable prefix, TTFB, the cache shares and the one-hedge-per-step race) ' +
+  'behind `EngineOptions.s2` on the jev-on propose path, default OFF, so an S2-off run is byte-for-byte the pre-1.9 ' +
+  'run. Read the row, never this sentence: `mechanisms.s2` is the value the RUN reported when it reported one ' +
+  '(`off` / `partial` / `on`, where `partial` is the measurement half with the §3.2 hedge switched off by ' +
+  '`JEVCODE_HEDGE=off`), and the arm\'s pin only when no step reported anything. The SYNTHESIZER\'s own round hedge ' +
+  'is still not pinnable by an arm (`LlmSourceDeps.hedge`; F05 in §9.1 owns it). They differ in ONE mechanism: `jev-on-next` arms the bounded sieve fast ' +
   'path (`fastPath: auto`, the structural predicate decides per step) and `jev-on-next-nofast` does not. That pair is the ' +
-  'wave\'s only same-build contrast, and without it a jev-on-next win confounds tuned generation, S2, the routers and the ' +
+  'wave\'s only same-build contrast, and without it a jev-on-next win confounds tuned generation, the routers and the ' +
   'fast path; both run at `--concurrency 1`, because the fast path runs test commands inside the step. ' +
   'Generation parameters are PINNED per arm (the table below); jev-off ' +
   'runs exactly the checked-in baseline parameters, never the user config.';
@@ -186,6 +191,22 @@ function declineReasons(summary: StepsSummary): string {
   return hist.map((h) => `${h.reason} ${h.n} (${(h.share * 100).toFixed(0)} %)`).join(', ');
 }
 
+/**
+ * OOS iteration 2, defect 2 / defect 4: the S1 warm verification plane as one cell. `off` — not an omitted row and
+ * not a line of zeros — when no step of the arm recorded a plane, which is every run with `JEVCODE_WARM` unset: a
+ * warm A/B that quietly loses its row reads as a warm arm that measured nothing.
+ *
+ * `mode` leads because it is the ARM and the counts are only readable under it: `unsupported-runner` with a
+ * `disabledReason` is how the report counts the tasks the A/B did not actually cover, so the reason rides along
+ * rather than being left in the transcript.
+ */
+function warmCell(summary: StepsSummary): string {
+  const w = summary.warm;
+  if (w === undefined) return 'off';
+  const counts = `${w.mode} / ${w.offered} / ${w.screened} / ${w.confirmed} / ${w.mismatches} / ${w.fallbacks}`;
+  return w.disabled === 0 ? counts : `${counts} (${w.disabled} disabled${w.disabledReason === undefined ? '' : `: ${w.disabledReason}`})`;
+}
+
 function metricRows(conds: readonly BenchCondition[], m: Record<string, ConditionMetrics>): string[][] {
   const get = (c: BenchCondition): ConditionMetrics => m[c]!;
   const row = (label: string, f: (x: ConditionMetrics) => string): string[] => [label, ...conds.map((c) => f(get(c)))];
@@ -227,7 +248,18 @@ function metricRows(conds: readonly BenchCondition[], m: Record<string, Conditio
     row('fast path: decline reasons (R-d)', (x) => declineReasons(x.synth)),
     row('routers: issued / applied / dropped / max wait ms (R-a)', (x) => `${x.synth.routers.issued} / ${x.synth.routers.applied} / ${x.synth.routers.dropped} / ${x.synth.routers.maxWaitMs}`),
     row('risk: code verdicts / Jev unavailable (R-e)', (x) => `${x.synth.risk.codeVerdicts} / ${x.synth.risk.jevUnavailable}`),
-    row('S2: TTFB p50 / p90 ms (n) / hedges / hedge wins / cache read+write', (x) => `${fmt(percentile(x.synth.s2.ttfbMs, 50), 0)} / ${fmt(percentile(x.synth.s2.ttfbMs, 90), 0)} (n=${x.synth.s2.ttfbMs.length}) / ${x.synth.s2.hedges} / ${x.synth.s2.hedgeWins} / ${x.synth.s2.cacheRead}+${x.synth.s2.cacheWrite}`),
+    // §3.3 / §3.4: the hit rate is recomputed here as Σread / Σinput over the steps that REPORTED cache. It is NOT
+    // the mean of the steps' own `cacheHitRate`s, which is a different and flattering number, and `n/a` (never 0)
+    // when no step of the arm reported a priced sample — a provider that served no cache did not miss, it measured
+    // nothing. The label says "reporting steps" because the denominator is not the arm's whole input: a round whose
+    // samples reported neither a read nor a write contributes nothing at all (B5 / F26 in §9.1 owns closing that),
+    // so this share can only overstate, and the row must not be read as "the arm's prompts were 90 % cached".
+    row('S2: TTFB p50 / p90 ms (n) / hedges / hedge wins / cache read+write / hit rate over the reporting steps', (x) => `${fmt(percentile(x.synth.s2.ttfbMs, 50), 0)} / ${fmt(percentile(x.synth.s2.ttfbMs, 90), 0)} (n=${x.synth.s2.ttfbMs.length}) / ${x.synth.s2.hedges} / ${x.synth.s2.hedgeWins} / ${x.synth.s2.cacheRead}+${x.synth.s2.cacheWrite} / ${x.synth.s2.cacheInput === 0 ? 'n/a' : `${x.synth.s2.cacheRead}/${x.synth.s2.cacheInput} ${pct(x.synth.s2.cacheRead / x.synth.s2.cacheInput)}`}`),
+    // OOS iterations 2 and 3: the two ARM markers. They are summed into tasks.jsonl and carried through `--resume`,
+    // and until these rows existed they appeared nowhere in the artefact a human reads — the numbers reached the
+    // file and stopped one hop short of the table the arm is judged from.
+    row('warm plane: mode / offered / screened / confirmed / mismatches / fallbacks', (x) => warmCell(x.synth)),
+    row('deadline growth arm', (x) => x.synth.deadlineGrowth ?? 'n/a'),
   ];
 }
 

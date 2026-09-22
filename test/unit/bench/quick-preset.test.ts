@@ -52,17 +52,16 @@ describe('§3.5 / M16 the --quick preset', () => {
 });
 
 /**
- * Review defect 6. The preset is reachable from `runBenchFromFlags` but NOT from a command line: `src/cli/args.ts`
- * owns the flag table (`BOOLEAN_FLAGS` + `FLAGS`) and carries `archiveRuns` but not `quick`, and `src/cli` is
- * outside this wave's writable set — exactly as the `BenchFlags` widening above says. This case states the gap
- * instead of leaving it silent: it is the failing half of §3.5's deliverable, and it goes RED (so it is deleted,
- * with this comment) the moment args.ts lands the `'quick'` row.
+ * Review defect 6, CLOSED: `0fb7af3` ("bench argv boundary for the LLM-loop wave") landed the `'quick'` row in
+ * `src/cli/args.ts`'s flag table beside `archiveRuns`, so the preset is reachable from a command line and not
+ * only from `runBenchFromFlags`. This case used to state the gap; it now pins the flag, which is what keeps a
+ * later edit of the table from quietly making `jevcode bench --quick` an "Unknown option" again.
  */
-describe('§3.5 the gap: `--quick` cannot be typed yet', () => {
+describe('§3.5 `--quick` is typeable', () => {
   it('`jevcode bench --quick` parses as a boolean flag (src/cli/args.ts carries the row beside --archive-runs)', () => {
     expect(parseCliArgs(['bench', '--quick']).quick).toBe(true);
     expect(parseCliArgs(['bench']).quick).toBeUndefined();
-    // the sibling boolean of the same wave IS in the table, so this is a missing row and not a parser limitation
+    // the sibling boolean of the same wave, kept beside it: the two rows land and are removed together
     expect(parseCliArgs(['bench', '--archive-runs']).archiveRuns).toBe(true);
   });
 });

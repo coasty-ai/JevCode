@@ -148,9 +148,10 @@ describe('arms (docs/LLM-JEV-DESIGN.md §10.1)', () => {
     const t = await tempDir();
     cleanups.push(t.cleanup);
     const script: EngineScript = () => ({ result: { steps: 1 } });
-    // src/synth's real factory: jev-only and llm-jev are echoed (llm-jev with the very generation object it was handed, or the
-    // source's default when none was); llm-sieve's code defaults are not wired yet and the factory says so instead of running the
-    // llm-jev search under that name
+    // src/synth's real factory: every arm is echoed (llm-jev and llm-sieve with the very generation object they were handed, or
+    // the source's default when none was). F06: llm-sieve is CONSTRUCTED as llm-jev and echoes its own mode — the arm's "every
+    // Jev question replaced by its code default" is the stub in the DECIDER slot, not a second search — so `--conditions
+    // llm-sieve` runs the arm instead of writing one `engine_create_failed` record per task
     const decider: Decider = { model: 'm', provider: 'openrouter', ask: () => Promise.reject(new Error('unused')) };
     expect(createRealSynthesizer({ decider, redact: (s) => s }).mode).toBe('jev-only');
     const jevOnly = createRealSynthesizer({ decider, redact: (s) => s, mode: 'jev-only' });
@@ -163,16 +164,21 @@ describe('arms (docs/LLM-JEV-DESIGN.md §10.1)', () => {
     expect(typeof llmJev.handles).toBe('function');
     expect(createRealSynthesizer({ decider, redact: (s) => s, mode: 'llm-jev' }).generation).toBe(LLM_DEFAULT_GENERATION);
     expect(synthesizerMismatch(createRealSynthesizer({ decider, redact: (s) => s, mode: 'llm-jev', generation: LLM_DEFAULT_GENERATION }), 'llm-jev', LLM_DEFAULT_GENERATION)).toBeNull();
-    expect(() => createRealSynthesizer({ decider, redact: (s) => s, mode: 'llm-sieve', generation: LLM_DEFAULT_GENERATION })).toThrow('mode "llm-sieve" is not wired');
+    const sieve = createRealSynthesizer({ decider, redact: (s) => s, mode: 'llm-sieve', generation: pinned });
+    expect(sieve.mode).toBe('llm-sieve');
+    expect(sieve.generation).toBe(pinned);
+    expect(synthesizerMismatch(sieve, 'llm-sieve', pinned)).toBeNull();
     const real = createFakeDeps({ script });
     real.deps.createSynthesizer = createRealSynthesizer;
     const out = await runBenchWithSources([syntheticSource({ id: 't1' })], baseOptions(join(t.dir, 'runs'), join(t.dir, 'out'), { conditions: ['jev-only', 'llm-jev', 'llm-sieve'] }), real.deps);
     const rec = (c: string) => out.records.find((r) => r.condition === c)!;
     expect(rec('jev-only')).toMatchObject({ pass: true, stopReason: 'complete' });
     expect(rec('llm-jev')).toMatchObject({ pass: true, stopReason: 'complete' });
-    expect(rec('llm-sieve')).toMatchObject({ pass: null, evaluator: 'none', stopReason: 'error' });
-    expect(rec('llm-sieve').reason).toContain('engine_create_failed: synthesizer: mode "llm-sieve" is not wired');
-    expect(real.captured.engines.map((e) => e.opts.mode)).toEqual(['jev-only', 'llm-jev']);
+    // F06: the arm runs. It used to be the one condition in CONDITION_ORDER that could not be typed without producing a
+    // directory of errors (test/unit/bench/conditions.test.ts is the item's own test).
+    expect(rec('llm-sieve')).toMatchObject({ pass: true, stopReason: 'complete' });
+    expect(rec('llm-sieve').reason).toBeUndefined();
+    expect(real.captured.engines.map((e) => e.opts.mode)).toEqual(['jev-only', 'llm-jev', 'llm-jev']);
 
     // a factory that returns a synthesizer without the echo: refused with the reason on the record, no engine created
     const silent = createFakeDeps({ script });

@@ -2848,6 +2848,13 @@ lanes beside the code seeds, and lets the guard commit what passes. Design: `doc
 This section describes what is in the tree at `626fc40` (2026-09-21) — file names are the ones to
 open, not the design's anchors — and lists where the tree departs from the design and why.
 
+> **Every environment switch that changes what a run does is tabulated once, in `docs/LLM-JEV.md` §5a**
+> ("Harness environment switches": name / accepted values / default / effect / reading file, for `JEVCODE_JEV`,
+> `JEVCODE_ROUTERS`, `JEVCODE_FASTPATH`, `JEVCODE_WARM`, `JEVCODE_HEDGE`, `JEVCODE_DEADLINE_GROWTH`,
+> `JEVCODE_CASE_TIMEOUT_MS`, `JEVCODE_MAX_CASE_TIMEOUTS` and `JEVCODE_BENCH_CONTEXT`). Nothing in this section or
+> in §22.3–§22.8 restates a default that table owns. Settings-shaped variables (`JEVCODE_MODE`, `JEVCODE_MODEL`, …)
+> belong to `src/config/defaults.ts`'s settings table instead.
+
 What landed when (`git log 2a92d0b..HEAD`, all 2026-09-21): the map (`214bf55`) and the design
 (`22e5153`); stage 1 — the sanctioned generator channel, mode plumbing and code-fact stages
 (`a0f7fbc`, fixes `64c8d3e`); stage 2 — GLM details on the OpenRouter provider (`61c15b6`, fixes
@@ -3634,23 +3641,37 @@ describe the code as it now stands.
 
 ### 22.10 Open items
 
-- **The head-to-head is not yet reported.** The measurement of design §10 (four arms, QuixBugs
-  twice, ladder both tiers, SWE-bench Verified 30) is being produced now; until
-  `experiments/results/llm-jev-headtohead.md` / `docs/LLM-JEV.md` exist, nothing in this section
-  is a claim about pass, wall or dollars.
+> **Swept 2026-09-22 at `d297b29` (finishing pass F21).** Five of the bullets below had closed and are struck in place with
+> the landing commit rather than deleted, so the history of the claim survives. `test/unit/hygiene/doc-claims.test.ts`
+> asserts, for every "not landed" claim still standing here, that the cited symbol really is absent from `src/**` — a bullet
+> cannot silently rot a second time.
+
+- ~~**The head-to-head is not yet reported.**~~ **CLOSED 2026-09-21/22.** Both artefacts the bullet
+  gated on exist: `experiments/results/llm-jev-headtohead.md` and `-v2.md` (plus the `.oos` and
+  `.tool` companions) and `docs/LLM-JEV.md`, whose dated entries run to OOS iteration 4. The section's
+  numbers are measured, and every one of them carries its run ids and its load disclosure there.
+  What is NOT measured, and is the standing gap, is `Ring 1 --jev off` at or after `main` `d297b29`
+  (`docs/DECISIONS.md`, "the provenance of every Ring-1 `--jev off` number").
 - **`llm-sieve` is not wired** in `src/synth/index.ts createSynthesizer` (it throws; the bench
   records `engine_create_failed`), so criterion 5 (attribution) and the per-question ablation
-  cannot be measured yet; `src/cli/args.ts CONDITIONS` does not list `llm-sieve` /
-  `jev-off-tuned`, so the arms are reachable only through `runBench`.
-- **`StepRecord.verify` is typed but never filled**: `SynthesisContext` has no channel for the
-  synthesizer's `GoalSearchTrace.llm` counts (samples, distinct, malformed, timeouts, cancelled,
-  misanchored, graceMs, localisationMissed), so the bench rows built on it, the `synth.*`
-  sub-buckets of §7.5 and `l2FalsePositive` are absent.
-- **Cancelled rows carry no generation id**: `src/loop/engine.ts` does not pass
-  `GenerateOptions.onCancelled`, so `recordUnfinishedSample` cannot fill `generationId` /
-  `servedProvider` and the post-hoc `GET /api/v1/generation?id=` reconciliation of §4.8 is not
-  possible from the records. Cancelled samples stay booked at full price (probe: 0.90× over two
-  samples).
+  cannot be measured yet. **STILL OPEN — owner: finishing-pass F06.** The second half of this bullet
+  is struck: ~~`src/cli/args.ts CONDITIONS` does not list `llm-sieve` / `jev-off-tuned`, so the arms
+  are reachable only through `runBench`~~ — `CONDITIONS` has carried all eight arms since `0fb7af3`
+  (`src/cli/args.ts:308`), so the arms are typeable and only the synthesizer is missing.
+- ~~**`StepRecord.verify` is typed but never filled**: `SynthesisContext` has no channel for the
+  synthesizer's `GoalSearchTrace.llm` counts …~~ **CLOSED.** The channel is
+  `SynthesisContext.reportVerify?: (counts: Partial<StepVerifySummary>) => void`
+  (`src/core/types.ts:1985`), reported from `src/synth/search/index.ts` and written onto the record at
+  `src/loop/engine.ts:5654` (`llm-jev` + `proposer === 'synth'` only, so `jev-only` rows are byte-identical).
+  Contract 1.9 then added the S2 members (TTFB, hedge, cache) to the same block, and the warm plane added
+  `verify.warm` (`StepWarmSummary`, `warm-plane-fix-2`). `l2FalsePositive` remains unmeasured — that is the
+  "Unmeasured Jev behaviour" bullet below, not this one.
+- ~~**Cancelled rows carry no generation id**: `src/loop/engine.ts` does not pass
+  `GenerateOptions.onCancelled` …~~ **CLOSED** by the LLM-loop wave's §3.1 work: the engine passes
+  `onCancelled` (`src/loop/engine.ts:3539`), holds the partial for its own row and forwards it to the
+  synthesizer's callback when one was asked for. The §4.8 post-hoc `GET /api/v1/generation?id=`
+  reconciliation is therefore possible from the records; whether it is worth its request is a separate,
+  unfiled question. Cancelled samples are still booked at full price.
 - **Default spend cap** for `llm-jev` is $2.00 (`src/config/ui.ts defaultRunSpendCapUsd`,
   "jev-on, jev-off and llm-jev all pay a generator"), not the $0.50 the design's §8.4 named.
 - **First-round deadline vs the tail** — *addressed 2026-09-21, still to be re-measured.* The fixed
@@ -3676,7 +3697,9 @@ describe the code as it now stands.
   `mem.committed` is not persisted; the completion facts still hold.
 - **`handles()`** sends a QuixBugs/pytest layout without a detected `testCommand` to the generic
   fallback; the checked-in layouts detect pytest from `tests/`.
-- **Default mode.** `jev-only` remains the default (`src/config/defaults.ts DEFAULT_MODE`,
-  DECISIONS 2026-09-21 "Jev-only is the default"); flipping Python workspaces with tests to
-  `llm-jev` is gated on the head-to-head passing criteria 1–4 (design §12 item 9; DECISIONS
-  2026-09-21 "The default-mode flip is gated on the head-to-head").
+- ~~**Default mode.** `jev-only` remains the default …~~ **CLOSED 2026-09-22:**
+  `DEFAULT_MODE: EngineMode = 'llm-jev'` (`src/config/defaults.ts:60`), flipped on the peer's verified
+  head-to-head (`docs/LLM-JEV.md`, `experiments/results/llm-jev-headtohead-v2.md`), which is exactly the
+  gate DECISIONS 2026-09-21 "The default-mode flip is gated on the head-to-head" named. The flip still
+  pending is a *different* one — `llm-jev` → `jev-on`, gated on the arms named in DECISIONS
+  2026-09-22 "The LLM-loop wave lands with both switches off".

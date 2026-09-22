@@ -13,7 +13,8 @@
  */
 import { clip, headTail } from '../core/text.js';
 import type { Action, CheckpointState, RunMeta, StepRecord, StopReason, WindowEntry } from '../core/types.js';
-import { createCheckpointStore, type DiskCheckpointStore, type Redactor } from './store.js';
+import { ConfigError } from '../errors.js';
+import { createCheckpointStore, refuseNewerRunMeta, type DiskCheckpointStore, type Redactor } from './store.js';
 import { resolveRunDir } from './run-id.js';
 
 /** Window bounds mirror loop/window.ts (§6): last 4 steps, output head 400 + tail 200. */
@@ -187,10 +188,37 @@ export function foldStepsIntoState(state: CheckpointState, steps: readonly StepR
   };
 }
 
-/** Validate the id, open the store, load the truth, fold the steps.jsonl tail. Read-only. */
+/** The `runId` a raw `run.json` claims, when it claims one as a string — the id the refusal sentence names. */
+function metaRunId(raw: unknown): string | null {
+  if (typeof raw !== 'object' || raw === null) return null;
+  const id = (raw as { runId?: unknown }).runId;
+  return typeof id === 'string' && id !== '' ? id : null;
+}
+
+/**
+ * Validate the id, open the store, refuse a forward-version run, load the truth, fold the steps.jsonl tail.
+ * Read-only.
+ *
+ * The forward-version refusal (docs/DECISIONS.md "A forward-version `run.json` is refused for resume, never for
+ * report"; TUI-DESIGN-4 §7.9) lives here rather than in a caller because this is the one door every resume goes
+ * through. `readMeta` only runs `isRunMeta`, which by its own comment checks v1 fields alone — right for an *older*
+ * file, silently wrong for a newer one, which would otherwise be resumed under this build's semantics. `v` below
+ * `CHECKPOINT_VERSION`, an absent `v` and a non-numeric `v` are unaffected: they keep loading exactly as before.
+ *
+ * It is asked **before** `store.load()`, off the raw JSON (`peekMeta`), and that ordering is the guard, not a
+ * detail. `CHECKPOINT_VERSION` is one constant: the build that bumps it writes the new number into `run.json`'s
+ * `v` AND into the `state.json` envelope's `version`, so a refusal placed after the load never ran for the shape a
+ * newer build actually produces — `parseEnvelope` rejected the envelope first and the answer was `CheckpointError`
+ * exit 3 "no usable checkpoint" instead of the ratified exit-2 upgrade sentence. Reading the raw value also covers
+ * the second thing a newer build is free to change, `run.json`'s shape, which `isRunMeta` would answer with
+ * "invalid shape" (exit 3) for a file that says perfectly clearly which build wrote it.
+ */
 export async function loadForResume(runsDir: string, runId: string, opts: ResumeOptions): Promise<ResumeLoad> {
   const runDir = await resolveRunDir(runsDir, runId);
   const store = createCheckpointStore(runDir, opts.redact);
+  const raw = await store.peekMeta();
+  const newer = refuseNewerRunMeta(raw, metaRunId(raw) ?? runId);
+  if (newer !== null) throw new ConfigError(newer);
   const loaded = await store.load();
   const warnings = [...store.lastWarnings()];
   const foldedSteps = await store.readStepsAfter(loaded.state.step);

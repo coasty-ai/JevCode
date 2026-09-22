@@ -18,7 +18,18 @@ One zero-dependency package. `package.json` `files` is the allowlist:
 | `README.md`, `LICENSE`, `package.json` | always included by npm |
 
 Not shipped: `dist/jevcode.mjs.map`, `dist/meta.json`, `src/`, `docs/`, tests. `scripts/check-pack.mjs`
-enforces this (allowlist equality, forbidden paths, unpacked < 2 MB, tarball < 1.5 MB, `--version` smoke).
+enforces this: allowlist equality, forbidden paths, an unpacked-size gate, a tarball-size gate, a `--version`
+smoke, and — since 2026-09-22 (finish-E) — gate 9, that `dist/jevcode.mjs` carries no `sourceMappingURL`
+directive, since the map it would point at is one of the things not shipped (`scripts/build.mjs` writes the map
+with `sourcemap: 'external'`, which emits no directive).
+
+**The size gates are the script's `UNPACKED_MAX` and `TARBALL_MAX`, and this document deliberately does not restate
+them.** This paragraph carried a hand-copied 2 MB figure through two raises of the real gate — 3.0 MB, then 3.5 MB
+at `ca8e71c` — which is how a release note comes to promise a bound the build does not enforce. Read the two
+constants at the top of `scripts/check-pack.mjs`, or just run it: the pass line prints the measured size against
+the gate. `test/unit/hygiene/doc-claims.test.ts` fails if any byte figure printed here beside either constant's
+name stops matching the script. (finish-E re-measured the pack at 0.5.0 on 2026-09-22 and the figures are in that
+branch's report and in the `check-pack` pass line; they are deliberately not copied here, for the reason above.)
 
 ## One-time setup (before the first release)
 
@@ -83,7 +94,9 @@ pre-releases look like `0.2.0-rc.1` and land on the `next` dist-tag automaticall
    git push origin v<v>
    ```
 
-   The job (Node 24, npm ≥ 11.5.1, `id-token: write`) runs `npm ci`, `typecheck`, `test`, `build`,
+   The job (Node 24, npm ≥ 11.5.1, `id-token: write`) runs `npm ci`, `check` (typecheck — `tsc --noEmit` plus
+   `scripts/no-any.mjs` — then `jev-contract`, then the unit suite; it ran `typecheck` and `test` as a pair and
+   skipped the Jev contract lint entirely until 2026-09-22), `build`,
    `pack:check`, `gen-docs --check`, packs, publishes with `--provenance --access public --tag next|latest`,
    creates the GitHub Release with the tarball and `SHA256SUMS`, and prints the Homebrew bump lines in the
    job summary. Watch it: `gh run watch`.
