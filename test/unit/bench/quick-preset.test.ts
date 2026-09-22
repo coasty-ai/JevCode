@@ -59,8 +59,9 @@ describe('§3.5 / M16 the --quick preset', () => {
  * with this comment) the moment args.ts lands the `'quick'` row.
  */
 describe('§3.5 the gap: `--quick` cannot be typed yet', () => {
-  it('`jevcode bench --quick` is rejected by the parser until src/cli/args.ts carries the flag', () => {
-    expect(() => parseCliArgs(['bench', '--quick'])).toThrow(/Unknown option '--quick'/);
+  it('`jevcode bench --quick` parses as a boolean flag (src/cli/args.ts carries the row beside --archive-runs)', () => {
+    expect(parseCliArgs(['bench', '--quick']).quick).toBe(true);
+    expect(parseCliArgs(['bench']).quick).toBeUndefined();
     // the sibling boolean of the same wave IS in the table, so this is a missing row and not a parser limitation
     expect(parseCliArgs(['bench', '--archive-runs']).archiveRuns).toBe(true);
   });

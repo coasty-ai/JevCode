@@ -156,10 +156,8 @@ describe('the jev-on-next arms (§8.1)', () => {
     expect(() => validateOptions({ ...base, conditions: ['llm-jev'], concurrency: 4 }, deps)).not.toThrow();
   });
 
-  it('are NOT yet reachable from the CLI — src/cli/args.ts keeps its own allow-list (the one cross-slot handoff)', () => {
-    // src/cli/** is not this slot's to edit. When the two rows are added there, replace this assertion with
-    // `expect([...CONDITIONS]).toEqual([...CONDITION_ORDER])` — the gap, not the fix, is what must not be silent.
-    expect(CONDITION_ORDER.filter((c) => !(CONDITIONS as readonly string[]).includes(c))).toEqual(['jev-on-next', 'jev-on-next-nofast']);
+  it('are reachable from the CLI — src/cli/args.ts CONDITIONS equals CONDITION_ORDER (the cross-slot handoff landed with the flag rows)', () => {
+    expect([...CONDITIONS]).toEqual([...CONDITION_ORDER]);
   });
 });
 
