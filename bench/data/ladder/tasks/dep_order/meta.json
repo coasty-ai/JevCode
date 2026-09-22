@@ -1,0 +1,25 @@
+{
+  "name": "dep_order",
+  "tier": "long-2",
+  "hunks": 3,
+  "kinds": [
+    "off_by_one",
+    "constant",
+    "two_files"
+  ],
+  "files": [
+    "src/layers.py",
+    "src/order.py",
+    "src/plan.py"
+  ],
+  "difficulty": 5,
+  "description": "An install-order resolver whose two off-by-ones cancel. (A) layers.depth folds with `max(..., default=0)` where the empty fold must be -1, so a package that requires nothing comes out at depth 1 and every depth in the graph is one too high. (B) order.round_number returns depth(graph, name) without the `+ FIRST_ROUND` that turns a 0-based depth into a 1-based round. A's shift is exactly B's missing offset, so every round_number, schedule and max_rounds test passes on the buggy tree, and layers() is unaffected because a constant shift does not change the grouping: the only visible failures are the four tests/test_layers.py depth tests. Fixing either one alone turns the four order tests red. (C) plan.check walks `wanted` only, so an unknown name in `installed` is never reported; the gold walks `list(wanted) + list(installed)`, which is also what pins the order of the two. Six tests fail, twenty-six pass. Plausible wrong fixes, all verified: (W1) repair layers.depth and stop -- the four depth tests are the only ones that name it, and it breaks test_the_shallowest_packages_go_in_round_one, test_a_round_per_step_down_the_chain, test_the_schedule_numbers_every_package and test_max_rounds_counts_the_rounds (still 6 failed / 26 passed, a different six); (W2) the coupled pair plus check() switched from `wanted` to `installed`, the name the failing test complains about -- five of the six target tests green and the previously passing tests/test_plan.py::test_check_reports_an_unknown_wanted_package red (2 failed / 30 passed); (W3) repair order.round_number alone -- fixes nothing and breaks the four order tests as well (10 failed / 22 passed).",
+  "expected_failing": [
+    "tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero",
+    "tests/test_layers.py::test_an_isolated_package_is_at_depth_zero_too",
+    "tests/test_layers.py::test_depth_follows_the_longest_chain_not_the_shortest",
+    "tests/test_layers.py::test_depth_is_one_more_than_the_deepest_requirement",
+    "tests/test_plan.py::test_check_reports_an_unknown_installed_package",
+    "tests/test_plan.py::test_check_reports_the_wanted_ones_before_the_installed_ones"
+  ]
+}
