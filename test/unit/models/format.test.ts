@@ -73,7 +73,7 @@ describe('provenance', () => {
 describe('error copy', () => {
   it('names the env var when a key is missing', () => {
     expect(errorLabel('openai', { kind: 'no_key', status: null, message: '', retryable: false })).toBe('OpenAI: no API key — set OPENAI_API_KEY');
-    expect(errorLabel('gemini', { kind: 'no_key', status: null, message: '', retryable: false })).toContain('GOOGLE_API_KEY');
+    expect(errorLabel('gemini', { kind: 'no_key', status: null, message: '', retryable: false })).toContain('GEMINI_API_KEY');
   });
 
   it('has a line for every failure kind', () => {

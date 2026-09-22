@@ -21,8 +21,16 @@
  * from a missing one.
  */
 import { OPENROUTER_REFERER, OPENROUTER_TITLE } from '../provider/openrouter.js';
+import { PROVIDER_IDS, PROVIDER_KEY_ENV, keyEnvNames } from '../provider/ids.js';
 import type { GeneratorConfig } from '../core/types.js';
 import type { ProviderId } from './types.js';
+
+/**
+ * The ids and the key env names live in `provider/ids.ts` (zero imports, so the config layer can read them on the
+ * first-frame path without loading this module's catalogue). They are re-exported here so that every caller of this
+ * table keeps its import site; this file adds only the endpoint metadata around them.
+ */
+export { PROVIDER_IDS, keyEnvNames } from '../provider/ids.js';
 
 /** One row of the provider table. */
 export interface ProviderSpecEntry {
@@ -68,7 +76,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
     listPath: '/models',
     listQuery: { limit: String(MAX_PAGE_SIZE) },
     listKeys: ['data'],
-    keyEnv: ['ANTHROPIC_API_KEY'],
+    keyEnv: PROVIDER_KEY_ENV.anthropic,
     keyCheckPath: null,
     keyUrl: 'https://console.anthropic.com/settings/keys',
   },
@@ -80,7 +88,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
     listPath: '/models',
     listQuery: {},
     listKeys: ['data'],
-    keyEnv: ['OPENAI_API_KEY'],
+    keyEnv: PROVIDER_KEY_ENV.openai,
     keyCheckPath: null,
     keyUrl: 'https://platform.openai.com/api-keys',
   },
@@ -92,7 +100,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
     listPath: '/models',
     listQuery: {},
     listKeys: ['data'],
-    keyEnv: ['OPENROUTER_API_KEY'],
+    keyEnv: PROVIDER_KEY_ENV.openrouter,
     // the list is public; /key is what a key check must call
     keyCheckPath: '/key',
     keyUrl: 'https://openrouter.ai/keys',
@@ -105,8 +113,9 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
     listPath: '/models',
     listQuery: { pageSize: String(MAX_PAGE_SIZE) },
     listKeys: ['models'],
-    // the official SDKs read GOOGLE_API_KEY first ("If both are set, GOOGLE_API_KEY takes precedence")
-    keyEnv: ['GOOGLE_API_KEY', 'GEMINI_API_KEY'],
+    // GEMINI_API_KEY first: it is jevcode's canonical name, and it wins over the Google SDKs' own order
+    // ("If both are set, GOOGLE_API_KEY takes precedence") for a user who has set both — see provider/ids.ts
+    keyEnv: PROVIDER_KEY_ENV.gemini,
     keyCheckPath: null,
     keyUrl: 'https://aistudio.google.com/apikey',
   },
@@ -124,7 +133,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
     listPath: '/models',
     listQuery: {},
     listKeys: ['data', 'models'],
-    keyEnv: ['XAI_API_KEY'],
+    keyEnv: PROVIDER_KEY_ENV.xai,
     keyCheckPath: '/api-key',
     keyUrl: 'https://console.x.ai',
   },
@@ -136,7 +145,7 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
     listPath: '/models',
     listQuery: {},
     listKeys: ['data'],
-    keyEnv: ['FIREWORKS_API_KEY'],
+    keyEnv: PROVIDER_KEY_ENV.fireworks,
     keyCheckPath: null,
     keyUrl: 'https://fireworks.ai/account/api-keys',
   },
@@ -148,15 +157,12 @@ export const PROVIDERS: Readonly<Record<ProviderId, ProviderSpecEntry>> = {
     listPath: '/models',
     listQuery: {},
     listKeys: ['data'],
-    // the Meta Model API docs name MODEL_API_KEY; META_API_KEY is jevcode's own name for it
-    keyEnv: ['META_API_KEY', 'MODEL_API_KEY'],
+    // the Meta Model API docs name MODEL_API_KEY; META_API_KEY is jevcode's own name for it and is read first
+    keyEnv: PROVIDER_KEY_ENV.meta,
     keyCheckPath: null,
     keyUrl: 'https://ai.developer.meta.com',
   },
 };
-
-/** Stable display order: the two wired generators first, then by name. */
-export const PROVIDER_IDS: readonly ProviderId[] = ['anthropic', 'openrouter', 'openai', 'gemini', 'xai', 'fireworks', 'meta'];
 
 /**
  * Providers a run can actually generate with today — typed against core `GeneratorConfig['provider']`
@@ -178,14 +184,9 @@ export function providerDisplayName(id: ProviderId): string {
   return PROVIDERS[id].displayName;
 }
 
-/** The env var names a key-setup flow reads for `id`, in precedence order. */
-export function keyEnvNames(id: ProviderId): readonly string[] {
-  return PROVIDERS[id].keyEnv;
-}
-
 /** First non-empty `keyEnv` value in `env`, or null. Trims; an all-whitespace value counts as unset. */
 export function keyFromEnv(id: ProviderId, env: NodeJS.ProcessEnv): string | null {
-  for (const name of PROVIDERS[id].keyEnv) {
+  for (const name of keyEnvNames(id)) {
     const v = env[name]?.trim();
     if (v !== undefined && v !== '') return v;
   }

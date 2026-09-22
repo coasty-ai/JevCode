@@ -5,6 +5,7 @@
  * that new fields and event types may appear and must be ignored.
  */
 import type { GenerateOptions, GenerateRequest, GenerateResult, GeneratorConfig, Json, JsonObject, ReasoningEffort, ToolCall } from '../core/types.js';
+import type { ProviderId } from './ids.js';
 
 // ---------------------------------------------------------------------------------------
 // Shared transport
@@ -260,8 +261,12 @@ export type OpenRouterToolChoice = 'auto' | 'required' | { type: 'function'; fun
 // registry is typed on the structural `GenerationProvider` (core `Provider` is assignable to it).
 // ---------------------------------------------------------------------------------------
 
-/** Every provider the registry can build a generator for (registry.ts `PROVIDERS`); `mock` and `null` are test doubles, not registry rows. */
-export type ProviderId = 'anthropic' | 'openrouter' | 'openai' | 'gemini' | 'fireworks' | 'meta' | 'xai';
+/**
+ * Every provider the registry can build a generator for (registry.ts `PROVIDERS`); `mock` and `null` are test
+ * doubles, not registry rows. Declared in the zero-import `./ids.js` (the first-frame rule — the config layer reads
+ * the ids without loading an adapter) and re-exported here so that `provider/types.js` stays the one import site.
+ */
+export type { ProviderId };
 
 /** `Provider.name` widened by the test doubles' ids; core `ProviderName` is a subset of it. */
 export type GenerationProviderName = ProviderId | 'mock';
