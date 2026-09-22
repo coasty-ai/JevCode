@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { Action, Confirmer, EngineOptions, MockTurn, PlanDraft } from '../core/types.js';
 import { percentile } from '../core/time.js';
+import { bucketStats, labelStats, stepTimeline, timelineEnabled, type BucketStat } from './timeline.js';
 
 export interface StepOverheadResult {
   steps: number;
@@ -47,6 +48,12 @@ export interface StepOverheadResult {
   dirtyBytes: number;
   pass: boolean;
   gateMs: number;
+  /**
+   * HARNESS-NEXT-DESIGN §4.4 / §6 S0: where the step's wall went, per bucket and per label — only with
+   * `JEVCODE_TIMELINE` set, because the recorder would otherwise be measuring itself inside the gated number. This
+   * is the readout that says whether a harness p95 is images, lane spawns, the decider double or the engine.
+   */
+  timeline: { buckets: BucketStat[]; labels: BucketStat[] } | null;
 }
 
 const neverAsked: Confirmer = { identity: 'perf', confirm: async () => false };
@@ -170,6 +177,8 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       }
     });
     await engine.run();
+    const snap = stepTimeline.snapshot();
+    const timeline = timelineEnabled() && snap.steps.length > 0 ? { buckets: bucketStats(snap), labels: labelStats(snap) } : null;
     const hashSkipped = readHashSkipped(runs, artefactStep);
     const p95 = percentile(harnessMs, 95);
     const imagesP95 = percentile(imagesMs, 95);
@@ -194,6 +203,7 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       dirtyBytes,
       pass: p95 !== null && p95 < gateMs && harnessMs.length >= Math.min(opts.steps, 10) && hashSkipped === true,
       gateMs,
+      timeline,
     };
   } finally {
     rmSync(ws, { recursive: true, force: true });

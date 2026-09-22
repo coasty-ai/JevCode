@@ -113,6 +113,7 @@ import { buildSystemPrompt, type PromptHints, type PromptInput } from '../provid
 import { linkedAbort } from '../core/abort.js';
 import { lookupPricing } from '../config/defaults.js';
 import { formatTranscriptItem, itemsFromEvent, sanitizeStream } from '../tui/plain.js';
+import { stepTimeline, writeTimelineFile } from '../perf/timeline.js';
 import { checkBudgets, armWallDeadline, type WallDeadline } from './budget.js';
 import { INTENT_UNRESOLVED_SIGNATURE, computeSignatures, createLoopDetector, directiveMove, loopTripText, signatureKind, type LoopDetector } from './loopdetect.js';
 import { PLAN_MAX_HARNESS_PROBLEMS, applyPlanDraft, boundHarnessProblems, emptyPlan, newClaims, type ClaimEvidence } from './plan.js';
@@ -1033,6 +1034,8 @@ class EngineImpl implements Engine {
   }
 
   private async main(): Promise<RunResult> {
+    // HARNESS-NEXT-DESIGN §4.4 (wave S0): the per-step timing buckets, off unless JEVCODE_TIMELINE is set
+    stepTimeline.beginRun(this.runId, this.mode);
     this.emit({ type: 'run:start', runId: this.runId, task: this.opts.task, mode: this.mode, resumedFromStep: this.resumed ? this.step : null });
     if (this.resumeStop !== null) {
       // the items decided before run() still reach the listeners (transcript.log is muted for a refused resume)
@@ -1539,6 +1542,7 @@ class EngineImpl implements Engine {
   private async stage<T>(name: StageName, fn: () => Promise<T>): Promise<T> {
     const step = this.draft?.step ?? this.step + 1;
     this.currentStage = name;
+    stepTimeline.stage(name);
     const t0 = this.clock();
     this.emit({ type: 'stage:start', step, stage: name });
     try {
@@ -1548,6 +1552,7 @@ class EngineImpl implements Engine {
       throw e;
     } finally {
       trace(`stage ${name} finally`);
+      stepTimeline.stage('');
       this.emit({ type: 'stage:end', step, stage: name, ms: Math.max(0, this.clock() - t0) });
       this.emitStatus();
       trace(`stage ${name} end emitted`);
@@ -1607,6 +1612,8 @@ class EngineImpl implements Engine {
     trace(`engine.ask ${stage} step=${draft.step} start`);
     let res: AskResult;
     const retry = this.retryHooks('jev', draft.step, stage);
+    // HARNESS-NEXT-DESIGN §4.4: `jevWaitMs` per stage — per router once §3.x labels its asks
+    const endJevWait = stepTimeline.span('jev', stage);
     try {
       res = await this.opts.decider.ask(state, questions, { signal: this.signal, stage, step: draft.step, onRetry: retry.onRetry, wake: retry.wake });
       retry.settled(true);
@@ -1614,6 +1621,8 @@ class EngineImpl implements Engine {
       retry.settled(false);
       trace(`engine.ask ${stage} rejected ${e instanceof Error ? e.name : typeof e}`);
       throw e;
+    } finally {
+      endJevWait();
     }
     trace(`engine.ask ${stage} resolved attempts=${res.attempts}`);
     // TUI-DESIGN §13.2: a reachable Jev restarts the unreachable backoff (30 s again on the next pause)
@@ -1767,6 +1776,18 @@ class EngineImpl implements Engine {
    * the REPORT question rules), so a synthesizer cannot spend Jev budget or take a decision the
    * run does not record. The signal is the engine's; a synthesizer's own signal is ignored.
    */
+  /** The workspace listing, in the `listing` timing bucket (HARNESS-NEXT-DESIGN §4.4); a failed listing is an empty one, as before. */
+  private async listCandidatesTimed(): Promise<Awaited<ReturnType<Workspace['listCandidates']>>> {
+    const end = stepTimeline.span('listing', 'candidates');
+    try {
+      return await this.workspace.listCandidates();
+    } catch {
+      return [];
+    } finally {
+      end();
+    }
+  }
+
   /**
    * docs/LLM-JEV-DESIGN.md §9.4: whether the synthesizer covers this workspace, decided once per run from the workspace listing
    * (the layout does not change under the run); a synthesizer without `handles` covers everything.
@@ -1774,7 +1795,7 @@ class EngineImpl implements Engine {
   private async synthesizerHandles(synthesizer: Synthesizer): Promise<boolean> {
     if (this.synthHandles !== null) return this.synthHandles;
     if (synthesizer.handles === undefined) return (this.synthHandles = true);
-    const listing = await this.workspace.listCandidates().catch(() => []);
+    const listing = await this.listCandidatesTimed();
     const handles = synthesizer.handles(this.wsInfo, listing.map((c) => c.path));
     if (!handles) this.emit({ type: 'transcript', step: this.step + 1, level: 'info', text: `synthesizer ${synthesizer.name} does not cover this workspace; proposing through the generic per-step fallback (docs/LLM-JEV-DESIGN.md §9.4)` });
     return (this.synthHandles = handles);
@@ -1926,6 +1947,9 @@ class EngineImpl implements Engine {
     // frame when it had arrived, or a rate-limited end (`CancelledGeneration.rateLimited`); null when the callback never fired
     const held: { partial: CancelledGeneration | null } = { partial: null };
     let res: GenerateResult;
+    // HARNESS-NEXT-DESIGN §4.1 queue 2: the sample wait, per sample; the bucket's `ms` is the union, so a round of
+    // eight concurrent samples reports the round's exposed wall and `sumMs` the summed time
+    const endSampleWait = stepTimeline.span('sample', sample === undefined ? 'one-shot' : `sample${sample.sample}`);
     try {
       res = await this.opts.provider.generate(req, {
         signal: link?.signal ?? this.signal,
@@ -1964,6 +1988,7 @@ class EngineImpl implements Engine {
       }
       throw e;
     } finally {
+      endSampleWait();
       link?.unlink();
       if (sample !== undefined) this.noteSampleEnd(draft);
     }
@@ -2167,6 +2192,7 @@ class EngineImpl implements Engine {
     const draft = this.newDraft(step);
     this.draft = draft;
     this.stageBlock = null;
+    stepTimeline.beginStep(step);
     this.emit({ type: 'step:start', step, startedAt: draft.startedAt });
     // llm-jev (docs/LLM-JEV-DESIGN.md §3): replan on a trip, otherwise straight to the synth propose stage — no intent or context request
     let stage: StageName = usesJev(this.mode) ? (this.detector.tripped() ? 'replan' : this.mode === 'llm-jev' ? 'propose' : 'intent') : 'propose';
@@ -2229,7 +2255,7 @@ class EngineImpl implements Engine {
           // to the generic `propose_action` sample — the flag (not the mode) keys `generator_done` and the verbatim claim evidence
           if (llmJev && !(await this.synthesizerHandles(synthesizer))) {
             draft.proposer = 'generic';
-            const listing = await this.workspace.listCandidates().catch(() => []);
+            const listing = await this.listCandidatesTimed();
             const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
             const prompt = this.promptInput(draft, changedFiles, [], candidates);
             p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
@@ -2293,7 +2319,7 @@ class EngineImpl implements Engine {
       } else {
         stage = 'propose';
         // Same <= 300 pre-filter (mention count, then recency) as the context stage (§13).
-        const listing = await this.workspace.listCandidates().catch(() => []);
+        const listing = await this.listCandidatesTimed();
         const candidates = prefilterCandidates(this.opts.task, listing, new Set([...changedFiles, ...this.createdThisRun]));
         const prompt = this.promptInput(draft, changedFiles, [], candidates);
         const p = await this.stage('propose', () => runProposeStage(ctx, this.systemPrompt, prompt));
@@ -2307,7 +2333,7 @@ class EngineImpl implements Engine {
 
       if (draft.outcome === null && draft.proposal !== null) {
         // Await the overlapped checkpoint of the previous step before anything touches the workspace (§9).
-        if (this.pendingCheckpoint) await this.pendingCheckpoint;
+        if (this.pendingCheckpoint) await stepTimeline.measure('store', 'pending-checkpoint', () => this.pendingCheckpoint ?? Promise.resolve());
         if (this.blocked !== null) {
           // TUI-DESIGN §13.3: that checkpoint failed on a disk class (or a pause was requested by a write): nothing executes until the pane is answered
           this.interrupted = { step, stage: 'execute', proposal: draft.proposal };
@@ -2402,6 +2428,7 @@ class EngineImpl implements Engine {
     // a `run` with nothing dirty has nothing to copy: no pre-image directory (clean tracked files are recoverable from HEAD)
     if (source === 'run' && targets.length === 0) return null;
     const t0 = this.clock();
+    const endImages = stepTimeline.span('images', 'pre');
     try {
       const r = await writePreImages(this.runDir, draft.step, targets, { root: this.workspace.root, source, now: () => this.clock() });
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + r.ms;
@@ -2410,6 +2437,8 @@ class EngineImpl implements Engine {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'pre', e);
       return null;
+    } finally {
+      endImages();
     }
   }
 
@@ -2424,6 +2453,7 @@ class EngineImpl implements Engine {
     // run would overwrite those modifications (§12.4 rule 3)
     const probe = this.gitState;
     const t0 = this.clock();
+    const endImages = stepTimeline.span('images', 'post');
     try {
       const r = await writePostImages(this.runDir, draft.step, changedFiles, {
         root: this.workspace.root,
@@ -2438,6 +2468,8 @@ class EngineImpl implements Engine {
     } catch (e) {
       draft.timing.imagesMs = (draft.timing.imagesMs ?? 0) + Math.max(0, this.clock() - t0);
       this.noteImagesFailure(draft, 'post', e);
+    } finally {
+      endImages();
     }
   }
 
@@ -2917,7 +2949,9 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §8.7 / §15 item 3: the committed plan after this step, bounded, so /rewind N seeds without replaying drafts
     record.planAfter = planSnapshot(plan);
 
+    const endSerialise = stepTimeline.span('serialise', 'checkpoint-state');
     const snapshot = this.buildCheckpointState();
+    endSerialise();
     const c0 = this.clock();
     this.pendingCheckpoint = (async () => {
       // TUI-DESIGN §12.3: nothing is hashed in here, where the lag gate could not see it
@@ -2942,6 +2976,8 @@ class EngineImpl implements Engine {
     draft.closed = true;
     this.draft = null;
     this.currentStage = 'idle';
+    stepTimeline.stage('');
+    stepTimeline.endStep();
     return { stop: null };
   }
 
@@ -3006,6 +3042,9 @@ class EngineImpl implements Engine {
         this.recordTranscript(endEvent);
         await Promise.allSettled([...this.pendingPersists]);
         await this.store.flush();
+        // HARNESS-NEXT-DESIGN §4.4: the run's timing buckets, written once at the end (never per step)
+        stepTimeline.endStep();
+        await writeTimelineFile(this.runDir);
       })();
       let timer: NodeJS.Timeout | null = null;
       const bound = new Promise<'timeout'>((resolve) => {

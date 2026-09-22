@@ -197,21 +197,46 @@ function defaultScore(question: Extract<Question, { type: 'score' }>, state: Jso
   return scoreAnswer(question, { 0: 0.95, 1: 0.05 });
 }
 
-/** Context Nouls name their candidate literally (§5.5); find which one this question is about. */
-function candidateFor(question: Question, state: Json): JsonObject | null {
-  const candidates = obj(at(state, 'candidates'));
-  if (candidates === null) return null;
-  const text = textOf(question.instructions);
-  let bestKey: string | null = null;
-  for (const key of Object.keys(candidates)) {
-    if (text.includes(`\`${key}\``) || text.includes(`[${JSON.stringify(key)}]`)) {
-      if (bestKey === null || key.length > bestKey.length) bestKey = key;
+/** The literal spellings a context Noul uses for its candidate (§5.5): `key` and ["key"]. */
+function namesIn(text: string): string[] {
+  const out: string[] = [];
+  for (const m of text.matchAll(/`([^`]+)`/g)) out.push(m[1]!);
+  for (const m of text.matchAll(/\[("(?:[^"\\]|\\.)*")\]/g)) {
+    try {
+      const v: unknown = JSON.parse(m[1]!);
+      if (typeof v === 'string') out.push(v);
+    } catch {
+      /* not a JSON string: not a candidate spelling */
     }
   }
-  return bestKey === null ? null : obj(candidates[bestKey]);
+  return out;
 }
 
-function defaultNoul(id: string, question: Question, state: Json, chosen: ReadonlySet<string>): Answer {
+/**
+ * Context Nouls name their candidate literally (§5.5); find which one this question is about — the longest candidate
+ * key the instructions name as `key` or ["key"].
+ *
+ * HARNESS-NEXT-DESIGN §6 S0: the obvious shape (scan every candidate key for every question, with a `JSON.stringify`
+ * and two `String.includes` per pair) is O(questions × candidates) and measured **12 ms of CPU per step** on the
+ * `step-overhead` fixture (300 candidates × ~50 context Nouls). That CPU runs inside `decider.ask`, and a mock
+ * reports `latencyMs: 0`, so all of it landed in the gated `harnessMs` — about a quarter of the 50 ms budget, spent
+ * by the test double rather than by the harness. The lookup is inverted instead: the spellings are read off the
+ * instructions once per question and probed against the candidate map, which is O(text) and gives the same key.
+ */
+function candidateFinder(state: Json): (question: Question) => JsonObject | null {
+  const candidates = obj(at(state, 'candidates'));
+  if (candidates === null) return () => null;
+  return (question) => {
+    let bestKey: string | null = null;
+    for (const name of namesIn(textOf(question.instructions))) {
+      if (!Object.hasOwn(candidates, name)) continue;
+      if (bestKey === null || name.length > bestKey.length) bestKey = name;
+    }
+    return bestKey === null ? null : obj(candidates[bestKey]);
+  };
+}
+
+function defaultNoul(id: string, question: Question, state: Json, chosen: ReadonlySet<string>, findCandidate: (q: Question) => JsonObject | null): Answer {
   if (id.startsWith(PAIRED_PREFIX)) return noulAnswer(chosen.has(id.slice(PAIRED_PREFIX.length)) ? 0.9 : 0.2);
   if (id === 'task_complete') {
     const testsCurrent = at(state, 'workspace', 'testsCurrent') === true;
@@ -247,7 +272,7 @@ function defaultNoul(id: string, question: Question, state: Json, chosen: Readon
     case 'task_impossible':
       return noulAnswer(0.05);
     default: {
-      const candidate = candidateFor(question, state);
+      const candidate = findCandidate(question);
       if (candidate !== null) {
         const mentions = candidate['mentionsInTask'];
         const relevant = (typeof mentions === 'number' && mentions > 0) || candidate['touchedThisRun'] === true;
@@ -302,9 +327,11 @@ export function defaultAnswers(state: Json, questions: Record<string, Question>,
       if (a.type === 'choice') chosen.add(a.choice);
     }
   }
+  // one candidate finder per request, not one full scan per question (see `candidateFinder`)
+  const findCandidate = candidateFinder(state);
   for (const [id, q] of Object.entries(questions)) {
     if (out[id] !== undefined) continue;
-    out[id] = q.type === 'score' ? defaultScore(q, state) : defaultNoul(id, q, state, chosen);
+    out[id] = q.type === 'score' ? defaultScore(q, state) : defaultNoul(id, q, state, chosen, findCandidate);
   }
   return out;
 }
