@@ -13,10 +13,11 @@
 import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
 import { CONDITION_ORDER, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
+import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
 import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
 import { buildRecord, validateOptions } from '../../../src/bench/runner.js';
-import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows } from '../../../src/bench/step-records.js';
-import type { BenchRecord } from '../../../src/bench/types.js';
+import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows, withWaveMembers } from '../../../src/bench/step-records.js';
+import type { BenchRecord, StepsSummary } from '../../../src/bench/types.js';
 import type { BenchCondition } from '../../../src/core/types.js';
 import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource } from './helpers.js';
 
@@ -133,6 +134,47 @@ describe('the §5.5 bench bridge', () => {
     expect(old.fastPath.considered).toBe(0);
     expect(old.routers.maxWaitMs).toBe(0);
     expect(old.risk).toEqual({ codeVerdicts: 0, jevUnavailable: 0 });
+  });
+});
+
+/**
+ * Every results dir checked in under `bench/results/` carries `synth: { genericSteps, steps, synthMs, synthSteps,
+ * verify }` and no `fastPath` / `routers` / `risk` / `s2` key — the four blocks contract 1.9 added. `isRecord`
+ * (runner.ts) never validates `synth`, so `--resume` parses one of those rows back, accepts it, and hands it to the
+ * end-of-bench summariser AFTER every run has been paid for. The type says the blocks are there; the FILE is the
+ * authority.
+ */
+describe('a tasks.jsonl written before contract 1.9', () => {
+  const legacySynth = (): StepsSummary =>
+    ({
+      steps: 3,
+      synthSteps: 2,
+      synthMs: 500,
+      genericSteps: 1,
+      verify: { samples: 4, distinct: 3, malformed: 0, timeouts: 0, cancelled: 0, misanchored: 0, candidatesTested: 9, passers: 1, partials: 0, graceMs: 0, localisationMissed: 0 },
+    }) as unknown as StepsSummary;
+
+  it('merges without throwing: the missing wave blocks read as zeros, the older members still count', () => {
+    const fresh = summariseStepRows(step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 10, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } }));
+    const merged = mergeStepsSummaries([legacySynth(), fresh]);
+    expect(merged.steps).toBe(4);
+    expect(merged.verify.candidatesTested).toBe(9);
+    expect(merged.fastPath.considered).toBe(1);
+    expect(merged.routers).toEqual({ issued: 1, applied: 1, dropped: 0, maxWaitMs: 0 });
+    // normalising a legacy part is the identity on the older members and empty on the new ones
+    expect(withWaveMembers(legacySynth())).toEqual({ ...emptyStepsSummary(), steps: 3, synthSteps: 2, synthMs: 500, genericSteps: 1, verify: { ...emptyStepsSummary().verify, samples: 4, distinct: 3, candidatesTested: 9, passers: 1 } });
+  });
+
+  it('survives the end-of-bench summary and every --resume: computeSuiteMetrics folds it', () => {
+    const records = [
+      { ...rec('a', 'llm-jev'), synth: legacySynth() },
+      { ...rec('b', 'llm-jev'), synth: legacySynth() },
+    ];
+    const metrics = computeSuiteMetrics(records, 'quixbugs', ['llm-jev'], 20);
+    const synth = metrics.perCondition['llm-jev']!.synth;
+    expect(synth.verify.candidatesTested).toBe(18);
+    expect(synth.fastPath).toEqual(emptyStepsSummary().fastPath);
+    expect(synth.s2.ttfbMs).toEqual([]);
   });
 });
 

@@ -154,9 +154,50 @@ export async function readStepsSummary(runDir: string): Promise<StepsSummary | n
   return summariseStepRows(text);
 }
 
+/**
+ * contract 1.9 (Fastlane) §5.5: one `StepsSummary` read back from a `tasks.jsonl`, normalised.
+ *
+ * The type says every part is there; the FILE is the authority, and every results dir written before this contract
+ * carries `synth: { genericSteps, steps, synthMs, synthSteps, verify }` and none of the four wave blocks. `isRecord`
+ * (runner.ts) never validates `synth`, so `--resume` parses one of those rows, accepts it, and hands it to the
+ * end-of-bench summariser AFTER every run has been paid for — an unguarded `p.fastPath[k]` there is a crash that
+ * destroys a finished bench. So each part is filled from the empty summary on the way in, the same way
+ * `withTokenSeries` backfills an older token series, and a member that is not a finite number reads 0 rather than
+ * poisoning every later sum with NaN.
+ */
+export function withWaveMembers(part: StepsSummary): StepsSummary {
+  const s = emptyStepsSummary();
+  if (!isJsonObject(part)) return s;
+  const num = (o: JsonObject | undefined, k: string): number => {
+    const v = o?.[k];
+    return isFiniteNumber(v) ? v : 0;
+  };
+  const obj = (v: unknown): JsonObject | undefined => (isJsonObject(v) ? v : undefined);
+  for (const k of ['steps', 'synthSteps', 'synthMs', 'genericSteps'] as const) s[k] = num(part, k);
+  const verify = obj(part['verify']);
+  for (const k of VERIFY_COUNTS) s.verify[k] = num(verify, k);
+  s.verify.localisationMissed = num(verify, 'localisationMissed');
+  const fp = obj(part['fastPath']);
+  for (const k of FASTPATH_TOTALS) s.fastPath[k] = num(fp, k);
+  for (const k of FASTPATH_COUNTS) s.fastPath[k] = num(fp, k);
+  const reasons = obj(fp?.['reasons']);
+  if (reasons !== undefined) for (const [reason, n] of Object.entries(reasons)) s.fastPath.reasons[reason] = isFiniteNumber(n) ? n : 0;
+  const routers = obj(part['routers']);
+  for (const k of ['issued', 'applied', 'dropped', 'maxWaitMs'] as const) s.routers[k] = num(routers, k);
+  const risk = obj(part['risk']);
+  for (const k of ['codeVerdicts', 'jevUnavailable'] as const) s.risk[k] = num(risk, k);
+  const s2 = obj(part['s2']);
+  const ttfb = s2?.['ttfbMs'];
+  if (Array.isArray(ttfb)) for (const v of ttfb) if (isFiniteNumber(v)) s.s2.ttfbMs.push(v);
+  for (const k of ['hedges', 'hedgeWins', 'cacheRead', 'cacheWrite'] as const) s.s2[k] = num(s2, k);
+  return s;
+}
+
 export function mergeStepsSummaries(parts: readonly StepsSummary[]): StepsSummary {
   const s = emptyStepsSummary();
-  for (const p of parts) {
+  for (const raw of parts) {
+    // never trust the static type here: see withWaveMembers
+    const p = withWaveMembers(raw);
     s.steps += p.steps;
     s.synthSteps += p.synthSteps;
     s.synthMs += p.synthMs;
