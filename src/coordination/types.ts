@@ -60,20 +60,11 @@ export type Authority = 'self' | 'trusted' | 'unverified';
 /** §7.1 */
 export type RunPhase = 'starting' | 'running' | 'pausing' | 'paused' | 'blocked' | 'aborting' | 'ended';
 
-/** §12.0.2 (a): where a run stopped, so that /resume can continue it; one per pause point, emitted before `run:end` */
-export interface PausePoint {
-  step: number;
-  round: number | null;
-  phase: CoordStageName | 'idle' | 'pane';
-  reason: PausePointReason;
-  resumableAt: 'boundary' | `cache/step-${number}.json`;
-  replayable: boolean;
-  pane?: BlockingKind;
-  synthPhase?: string;
-  by: 'self' | `peer:${string}` | `device:${string}`;
-  end: boolean;
-}
-export type PausePointReason = 'step' | 'now' | 'now-after-execute' | 'pane' | 'worktree';
+/**
+ * §12.0.2 (a): the pause point. ONE definition — `src/core/types.ts` `// contract 1.4` (landed at 0c7bd79); the
+ * coordination module re-exports it so `Heartbeat.pausePoint?` and `checkPausePoint` bind to the canonical shape.
+ */
+export type { PausePoint, PausePointReason } from '../core/types.js';
 
 /** §6.1 one sub-work row of a heartbeat (≤ 16) */
 export interface SubworkEntry {
@@ -95,6 +86,14 @@ export interface Heartbeat {
   user: string;
   pid: number;
   bootAt: string;
+  /**
+   * §3.2 / §3.4 (design revision 5): the OS boot identity. Like `hostKey` it can only DENY `sameDevice`, never grant
+   * it: a record in my own local subtree whose `bootId` is not mine is by construction not this boot's process, so the
+   * pane / debugger / clock case cannot apply to it and beat FRESHNESS decides instead — which is the one fact that
+   * separates a previous boot of my machine (stopped renewing) from a live clone (still renewing). Absent = an older
+   * build wrote it; such a record with a live pid is never auto-replaced (§3.4).
+   */
+  bootId?: string | null;
   /** §3.2: the writer's `hostKey` — binds the record to the MACHINE, so a beat under my own deviceId from another machine is never `sameDevice` */
   hostKey?: string;
   jevcode: string;
@@ -140,7 +139,11 @@ export interface Heartbeat {
   wallMs: number;
   maxWallMs: number;
   context: { pct: number; files: number; historyEntries: number; summaryAt: number | null; tokensInWindow: number; windowBudget: number; compactions: number };
-  /** §12.0.2: on the final phase:'ended' beat of a human_pause */
+  /**
+   * §12.0.2: on the final `phase:'ended'` beat of a human_pause. It travels in a 4 KiB record that a hostile writer
+   * also controls, so `parseRecord` bounds it: `llm.goalId` by length, `llm.arrived` by count, every counter by
+   * `isCount` (see `checkPausePoint`).
+   */
   pausePoint?: PausePoint;
   /** + §11 row 15: false when `takeRunLock` reported `held:false` (the heartbeat is the second liveness signal); absent = unknown */
   lockHeld?: boolean;
@@ -171,8 +174,16 @@ export interface Lease {
   runId: string;
   sessionId: string;
   deviceId: string;
+  /** §3.1 / §4.3: the writer's `hostKey` — binds the lease to the MACHINE, like every other record (§3.2) */
+  hostKey?: string;
   label: string;
-  repoKey: string;
+  /**
+   * §4.3 (design revision 5): the run's real `repoKey`, or `null` when it does not have one yet (before `run:ready`,
+   * a shallow clone with no origin, a non-git workspace). It is NOT back-filled with `wsKey`: the two keys are both
+   * in the record, and the FILE is written under `keyDir(repoKey)` **and** `keyDir(wsKey)` when they differ, so the
+   * reader accepts either directory and `check()` can match by `wsKey` whenever either side lacks a `repoKey`.
+   */
+  repoKey: string | null;
   remoteKey: string | null;
   wsKey: string;
   branch: string | null;
@@ -205,7 +216,12 @@ export interface Message {
   kind: 'message';
   /** `<deviceId>-<actor8>-<seq>` (MSG_ID_RE) */
   id: string;
-  from: { deviceId: string; label: string; sessionId: string | null; runId: string | null; user: string };
+  /**
+   * §5.1 / §5.4 rule 5 (design revision 5): `pid` is DISPLAY AND AUDIT ONLY — it is never an `isPidAlive` input, because
+   * a sender's pid means nothing in the reader's pid table. `bootId` DENIES the no-confirm same-device path for the
+   * control types: a `pause` that arrived in my own subtree from another boot session is not mine to apply silently.
+   */
+  from: { deviceId: string; label: string; sessionId: string | null; runId: string | null; user: string; pid?: number; bootId?: string | null };
   /** §3.2: the writer's `hostKey` — a `pause` from another machine under one shared `deviceId` is never `self` */
   hostKey?: string;
   /** '<sessionId>' | '@<repoKey>' | '@all' */
@@ -259,9 +275,43 @@ export interface DeviceRecord {
   checksum: string;
 }
 
-export type RecordKind = 'heartbeat' | 'lease' | 'message' | 'ack' | 'device';
-export type RecordOf<K extends RecordKind> = K extends 'heartbeat' ? Heartbeat : K extends 'lease' ? Lease : K extends 'message' ? Message : K extends 'ack' ? Ack : DeviceRecord;
-export type AnyRecord = Heartbeat | Lease | Message | Ack | DeviceRecord;
+/**
+ * runs/<deviceId>/<runId>/claims.json — ≤ 4 KiB — the AUTHENTICATED CLAIM PROJECTION (§9.3, design revision 5).
+ *
+ * The SIXTH record kind, and the only file the §7.3 step 1(a) / §9.3 claim refusal ever reads. Revision 4 required
+ * an hmac on `run.json` or on its projection but defined `hmac` / `keyId` on the five record kinds only, so NO
+ * foreign epoch could ever be qualified: the refusal was fail-safe against a planted ceiling and silently dead for
+ * the legitimate takeover it was written for. `run.json` is `CheckpointStore`'s artefact — its canonical form would
+ * change with every additive `RunMeta` field, invalidating signatures an older build wrote — so the authenticated
+ * epoch lives in a RECORD, where `MAX_CLAIM_EPOCH`, the id-vs-path binding, the size cap and `verified` already are.
+ *
+ * Written by the run's OWN process at every `claims[]` mint (`createEngine`, an import, and `writeTakeoverLease` —
+ * which writes it even for a run with no local run dir) and again whenever `forked` or `ended` changes. An epoch
+ * counts only when the parse is `ok` AND `verified` AND the PATH's deviceId is in `trusted-devices.json`.
+ */
+export interface ClaimsProjection {
+  v: 1;
+  kind: 'claims';
+  deviceId: string;
+  hostKey?: string;
+  runId: string;
+  sessionId: string;
+  /** ≤ MAX_CLAIMS_PER_RUN (64): the first + the newest 63 (§3.2); every epoch 0 ≤ e ≤ MAX_CLAIM_EPOCH or `bounds` */
+  claims: Claim[];
+  /** ≤ 16 — `imports[].claim` reduced; no sha256 of a body, no workspace path */
+  imports: { fromDeviceId: string; at: string; epoch: number }[];
+  forked?: { atStep: number; loserEpoch: number; winnerEpoch: number; at: string };
+  ended?: { at: string; by: 'human' | 'remote' };
+  at: string;
+  stamp: Stamp;
+  keyId?: string;
+  checksum: string;
+  hmac?: string;
+}
+
+export type RecordKind = 'heartbeat' | 'lease' | 'message' | 'ack' | 'device' | 'claims';
+export type RecordOf<K extends RecordKind> = K extends 'heartbeat' ? Heartbeat : K extends 'lease' ? Lease : K extends 'message' ? Message : K extends 'ack' ? Ack : K extends 'claims' ? ClaimsProjection : DeviceRecord;
+export type AnyRecord = Heartbeat | Lease | Message | Ack | DeviceRecord | ClaimsProjection;
 
 /** §3.5: the in-memory fold every reader uses (caps: ≤ 512 heartbeats, ≤ 2,048 leases, ≤ 200 messages per target) */
 export interface Fold {
@@ -277,7 +327,15 @@ export interface Fold {
   inbox: Message[];
   /** acks by msgId */
   acks: Map<string, Ack[]>;
-  devices: Map<string, DeviceRecord & { lastSeen: string; syncLagMs: number | null; ignored: boolean }>;
+  devices: Map<string, DeviceRecord & { lastSeen: string; syncLagMs: number | null; ignored: boolean; cloned: boolean }>;
+  /**
+   * §3.2 / §10.3 (design revision 5): every `deviceId` the fold saw TWO OR MORE live heartbeats for with DIFFERENT
+   * `bootId`s — one `deviceKey` on two machines, which can therefore no longer speak for either. The write facade
+   * suspends every gated action for such a device until it is re-paired; a peer never deletes or rewrites anything of
+   * theirs. For MY OWN deviceId this is the `duplicate-identity` case and the later booter adopts a new id (§3.2).
+   * A separate set because a clone may have no `device.json` in the fold at all.
+   */
+  cloned: Set<string>;
   /**
    * + review major 12: the liveness verdict of EVERY heartbeat the fold holds — the claim holder AND every fork — by
    * `${deviceId}/${runId}/${pid}`. `listSessions` shows one row per record; without this a fork row has no verdict.
@@ -311,6 +369,11 @@ export interface SelfIdentity {
    */
   hostKey?: string;
   bootAt: string;
+  /**
+   * §3.2 / §3.4 (design revision 5): this process's boot identity, resolved by the caller (one bounded local `sysctl` /
+   * `/proc` read, cached per process). `null` = unknown, which stays permissive exactly as an unknown `hostKey` does.
+   */
+  bootId?: string | null;
   sessionId: string | null;
   runId: string | null;
   wsKey: string;
@@ -344,6 +407,13 @@ export interface LivenessEnv {
   bootAt: string;
   /** §3.2 / §5.4 rule 4: this reader's `hostKey`; a record carrying a DIFFERENT one is never same-device, whatever the path says */
   hostKey?: string;
+  /**
+   * §3.2 / §3.4 (design revision 5): this reader's `bootId`. A local-subtree record naming a DIFFERENT one is judged by
+   * beat freshness (a live clone keeps renewing; a previous boot of this machine does not) and by pid death — never by
+   * `startedAt ≥ bootAt`, the wall-arithmetic rule revision 5 withdraws (a forward clock step read a LIVE process as
+   * `stale-reused-pid`, after which `takeRunLock` replaced its lock and two engines co-wrote one `state.json`).
+   */
+  bootId?: string | null;
   isPidAlive: (pid: number) => boolean;
   /** foreign staleness bound beyond `ttlMs` (120 s shared-dir, 180 s git) */
   syncSlackMs?: number;
@@ -360,7 +430,7 @@ export interface SessionActivity {
   sameDevice: boolean;
   kind: 'run' | 'bench';
   liveness: Liveness;
-  flags: { hung: boolean; skewed: boolean; forked: boolean; takenOver: boolean; noLock: boolean; ignoredDevice: boolean; unverified: boolean };
+  flags: { hung: boolean; skewed: boolean; forked: boolean; takenOver: boolean; noLock: boolean; ignoredDevice: boolean; unverified: boolean; cloned: boolean };
   /** + review blockers 5 / 6: `'self'` = read from my own local subtree; `'trusted'` = hmac-valid from a paired device */
   authority: Authority;
   /** beatAt − wall now when skewed (> 300 s); display only (§3.4) */
@@ -378,7 +448,7 @@ export interface SessionActivity {
 }
 
 export type FoldChange =
-  | { kind: 'heartbeat' | 'lease' | 'message' | 'ack' | 'device'; deviceId: string; id: string }
+  | { kind: 'heartbeat' | 'lease' | 'message' | 'ack' | 'device' | 'claims'; deviceId: string; id: string }
   | { kind: 'poll' }
   | { kind: 'offline'; code: string }
   | { kind: 'online' };
@@ -437,18 +507,40 @@ export interface LeaseConflict {
   stamp: Stamp;
 }
 export type LeaseCheck =
-  | { kind: 'clear'; /** + the lease ids the judgment was made over — the strict fence's "was it there before my write?" set */ snapshot: readonly string[] }
+  | { kind: 'clear'; declared: DeclaredFact[]; snapshot: LeaseSnapshot }
   | {
       kind: 'conflict';
       conflicts: LeaseConflict[];
       /**
        * an overlapping exclusive lease with a LOWER stamp exists (§4.5), OR — review blocker 4 — one appeared in the
-       * write-then-read window that the judgment could not have seen. Either way the judgment re-runs NOW.
+       * write-then-read window that the judgment could not have seen. DISPLAY only.
        */
       contested: boolean;
       requested: { path: string; by: string; agoMs: number }[];
-      snapshot: readonly string[];
+      declared: DeclaredFact[];
+      snapshot: LeaseSnapshot;
     };
+
+/**
+ * §4.3 step 2 / §12.0.4 (design revision 5): an overlapping lease of type `'intent'` — a DECLARATION, not a hold.
+ *
+ * It is the §5.2 `heads-up` trigger and an advisory fact, and it NEVER makes `check()` return `kind:'conflict'`.
+ * Revision 4's "every live, unexpired lease is a conflict" had two consequences that made `strict` unusable: the F2
+ * re-declarer conflicted with the very peer that had just yielded to it (a yield rewrites the lease to `intent`), and
+ * every `strict` step conflicted with every peer's step-1 `intent`, which is what EVERY writer writes before it knows
+ * whether it may proceed. Only the HOLDING types conflict: `exclusive | command | lane | worktree | takeover`.
+ */
+export interface DeclaredFact {
+  path: string;
+  /** the holder's label */
+  by: string;
+  leaseId: string;
+  step: number;
+  agoMs: number;
+}
+
+/** §4.3 step 2 (revision 5): the lease types that are a HOLD, and therefore a conflict. `intent` is not one. */
+export const HOLDING_LEASE_TYPES: ReadonlySet<Lease['type']> = new Set(['exclusive', 'command', 'lane', 'worktree', 'takeover']);
 
 /**
  * + review blocker 4: the strict write-then-read fence is SYMMETRIC. `refold` is the judgment re-run after my own rename
@@ -481,18 +573,66 @@ export type StrictDeclare =
   | (LeaseHandle & { fence: 'decided'; refold: LeaseCheck; appeared: LeaseConflict[]; proceed: boolean })
   | (LeaseHandle & { fence: 'blind'; scanned: number; total: number });
 
-/** §4.5: the overlapping exclusive lease ids a `check()` saw, so the re-fold can say which APPEARED afterwards. */
-export type LeaseSnapshot = ReadonlySet<string> | readonly string[];
+/**
+ * §4.5 (design revision 5): the `leaseId`s of the overlapping leases that were **`exclusive`** at that `check()`.
+ *
+ * Three properties follow, and they are what make `appeared` mean what F1 needs. (i) It holds `leaseId`s — not stamps,
+ * not paths: a `leaseId` is minted once with its lease and survives every rewrite (§3.2), so a peer's
+ * `intent → exclusive → released` sequence is one identity throughout and the TWO on-disk copies of one lease
+ * (§4.3, revision 5) are one entry. (ii) A lease that was `intent` here is NOT in the set, so a peer that turned
+ * `exclusive` between my check and my re-fold is correctly `appeared` — which is the whole race the fence exists for.
+ * (iii) My own `leaseId` is in neither set.
+ *
+ * Revision 4's snapshot was every leaseId in the fold, which made (ii) false: a peer's `intent` was already in `seen`,
+ * so its rewrite to `exclusive` inside the write-then-read window never `appeared`, and the fence missed exactly the
+ * interleaving it exists for.
+ */
+export type LeaseSnapshot = ReadonlySet<string>;
+
+/**
+ * §4.5 F2 (design revision 5): what a yield CAPTURES, so the later decision cannot drift with the fold.
+ *
+ * Taken at the moment of the downgrade, from `appeared`. `fenceWake` computes the minimum over THESE stamps and never
+ * over the fold's current copies, so a lease a peer's GC has already removed still counts and both sides of a
+ * both-see race compute the same minimum from the same two records.
+ */
+export interface FenceYield {
+  /** my own lease's stamp — one end of the F2 comparison */
+  mine: Stamp;
+  yieldedTo: {
+    leaseId: string;
+    stamp: Stamp;
+    deviceId: string;
+    sameDevice: boolean;
+    /**
+     * `arrivalMono + ttlMs + syncSlackMs` of the lease's OWNER heartbeat — the instant this side will call it stale on
+     * its OWN monotonic clock. `null` for a same-device lease, where pid death is the event and staleness is immediate.
+     */
+    staleAtMono: number | null;
+  }[];
+  /**
+   * §4.3 step 4: `max(strictWaitMs, the latest staleAtMono)`, capped at `ttlMs + syncSlackMs + 5_000` (170 s at the
+   * defaults). A yield is not a judgment — it is a safety act F1 took on this run's behalf — so discarding the step
+   * because the PEER died is exactly the liveness failure F2 exists to prevent, and across devices a crashed peer is
+   * only detectable at `ttl + slack` (165 s), which is past `strictWaitMs` (60 s). A derived bound, not a new tunable.
+   */
+  deadlineMono: number;
+}
+
 export interface LeaseHandle {
   leaseId: string;
   stamp: Stamp;
   renew(): void;
   /**
-   * §4.5 F1 (design revision 4): `'exclusive'` → `'intent'` on a fence yield — same stamp, same leaseId, so every
-   * observer keeps agreeing about the order while this side stops being a fence for anyone else. Awaited: the yield is
-   * only real once the rename has landed.
+   * §4.5 F1: `'exclusive'` → `'intent'` on a fence yield — same stamp, same leaseId, so every observer keeps agreeing
+   * about the order while this side stops being a fence for anyone else, and F2's wake condition on the other side
+   * ("everything I yielded to is now `intent`") can become true. Rewritten in BOTH key directories (§4.3, revision 5).
+   * Awaited: the yield is only real once the renames have landed.
+   *
+   * Revision 5: it RETURNS the `FenceYield` the later F2 decision is made from — captured here, from `appeared`, so
+   * the decision cannot drift with the fold.
    */
-  downgrade(): Promise<void>;
+  downgrade(): Promise<FenceYield>;
   release(outcome: LeaseOutcome, changed?: Record<string, string | null>, head?: string): void;
 }
 
@@ -538,6 +678,12 @@ export interface GcReport {
   removed: number;
   /** by kind, for `sessions gc` output */
   byKind: Record<'heartbeat' | 'lease' | 'message' | 'ack', number>;
+  /**
+   * §5.1 / + re-check (9): `inbox/seen/<myDeviceId>/<consumerId>.json` files this GC removed. They are not records
+   * and never enter the fold, so they are counted separately — and they are removed by MTIME, because a `seen` file
+   * whose consumer is gone has nothing left to identify it by.
+   */
+  seen: number;
   /** lane dirs of dead runs the sweep may prune (§6.2 (a)) — paths are never removed by the ledger itself */
   staleLanes: { runId: string; laneDir: string }[];
   /** files that could not be removed, by errno — a GC never throws for a disk fault (§11 row 13) */

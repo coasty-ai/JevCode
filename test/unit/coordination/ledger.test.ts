@@ -7,16 +7,18 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { join } from 'node:path';
-import { GC_RETENTION_MS, MAX_DEVICES, TRACKED_ACKS_MAX, ignoreDeviceOn, gc as gcOf, openLedger, readFold, setDeviceLabel, syncDisable, unignoreDeviceOn, writeTakeoverLease } from '../../../src/coordination/ledger.js';
+import { utimes } from 'node:fs/promises';
+import { GC_RETENTION_MS, MAX_DEVICES, SEEN_RETENTION_MS, TRACKED_ACKS_MAX, ignoreDeviceOn, gc as gcOf, openLedger, readFold, setDeviceLabel, syncDisable, unignoreDeviceOn, writeTakeoverLease } from '../../../src/coordination/ledger.js';
 import { nodeFs } from '../../../src/coordination/fs.js';
 import { commonsPaths } from '../../../src/coordination/paths.js';
 import { mintCommonsKey, readCommonsKey, trustDevice, writeCommonsKey } from '../../../src/coordination/ids.js';
-import { EPOCH_MAX, canMintAbove, qualifiedEpochs } from '../../../src/coordination/claims.js';
-import { MESSAGE_TTL_MS } from '../../../src/coordination/records.js';
+import { EPOCH_MAX, MAX_CLAIM_EPOCH, canMintAbove, forceTakebackPlan, qualifiedEpochs } from '../../../src/coordination/claims.js';
+import { MESSAGE_TTL_MS, parseRecord, serializeRecord, withChecksum } from '../../../src/coordination/records.js';
 import { sessionTargets } from '../../../src/coordination/fold.js';
+import { check, declare } from '../../../src/coordination/leases.js';
 import { loadSeen, purgeInbox } from '../../../src/coordination/mailbox.js';
 import type { FoldChange, LedgerHandle } from '../../../src/coordination/index.js';
-import { DEV_A, DEV_B, KEY_A, KEY_B, REPO, T0, claim, faultFs, fakeClock, fakeTimers, iso, makeAck, makeDevice, makeHeartbeat, makeLease, makeMessage, makeSelf, putAck, putDevice, putFile, putHeartbeat, putLease, putMessage, runId, signed, stamp, tempHome } from './helpers.js';
+import { DEV_A, DEV_B, KEY_A, KEY_B, REPO, T0, WS, claim, faultFs, fakeClock, fakeTimers, iso, makeAck, makeDevice, makeHeartbeat, makeLease, makeMessage, makeSelf, putAck, putDevice, putFile, putHeartbeat, putLease, putMessage, runId, signed, stamp, tempHome } from './helpers.js';
 
 const cleanups: (() => Promise<void>)[] = [];
 afterEach(async () => {
@@ -136,13 +138,66 @@ describe('review blocker 1: setIdentity re-derives everything keyed on a moved f
 
   it('the lease dir follows repoKey: a fresh clone and a running peer meet at the first coordinate', async () => {
     const h = await harness({ self: { repoKey: null } });
-    await putLease(h.root, makeLease({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), leaseId: `${runId(9)}-9`, stamp: stamp(9, DEV_B, runId(9)) }));
+    // a peer in ANOTHER checkout of the same repo: its `wsKey` copy is in a directory we do not fold, so only the
+    // `repoKey` this patch adds can reach it (a peer in MY checkout would already be visible — see the dual-key test)
+    await putLease(h.root, makeLease({ deviceId: DEV_B, runId: runId(9), sessionId: runId(9), leaseId: `${runId(9)}-9`, wsKey: 'ws:00000000deadbeef', stamp: stamp(9, DEV_B, runId(9)) }));
     await h.l.open();
     expect(h.l.fold.leases.size).toBe(0); // REPO is not a key we fold yet
     // §3.5 (design revision 4): the one-shot walk means the new root is already folded when the promise resolves —
     // no `refresh` and no 15 s poll in between, which is what made the first `check()` after a resume read `clear`.
     await h.l.setIdentity({ repoKey: REPO });
     expect(h.l.fold.leases.size).toBe(1);
+  });
+
+  /**
+   * §3.5 / §4.3 (design revision 5): `setIdentity({ repoKey })` MOVES the live leases.
+   *
+   * A lease's directory is derived from the run's keys and `repoKey` only arrives after `run:ready`, so a lease
+   * declared before it lived under `keyDir(wsKey)` alone for the life of the run — invisible in the
+   * `keyDir(repoKey)` directory every peer that computed the key first is reading and fencing in.
+   *
+   * Fails before the fix: the `keyDir(repoKey)` copy never appears.
+   */
+  it('setIdentity({repoKey}) re-declares the live leases under the new key directory, keeping the wsKey copy', async () => {
+    const h = await harness({ self: { repoKey: null } });
+    await h.l.open();
+    const handle = declare(h.l, { paths: ['src/x.ts'], type: 'exclusive', reason60: 'edit', step: 1, stage: 'coordinate', branch: 'main', head: null }, 'advisory');
+    await h.l.enqueue('flush', async () => undefined); // an advisory declare is fire-and-forget on the write chain
+    await h.l.refresh('leases');
+    const p = commonsPaths(h.root);
+    // before the key arrives there is exactly ONE copy, under the wsKey
+    await expect(nodeFs.stat(p.leaseFile(DEV_A, WS, handle.leaseId))).resolves.toBeTruthy();
+    await expect(nodeFs.stat(p.leaseFile(DEV_A, REPO, handle.leaseId))).rejects.toThrow(/ENOENT/);
+
+    await h.l.setIdentity({ repoKey: REPO });
+    // one release + one re-declare: the repoKey copy exists AND the wsKey copy is NOT released (§4.3, revision 5)
+    const under = async (key: string) => JSON.parse((await nodeFs.readBounded(p.leaseFile(DEV_A, key, handle.leaseId), 8192)).text) as { repoKey: string | null; type: string; released?: unknown; stamp: { n: number } };
+    const repoCopy = await under(REPO);
+    const wsCopy = await under(WS);
+    expect(repoCopy.repoKey).toBe(REPO);
+    expect(repoCopy.type).toBe('exclusive');
+    expect(wsCopy.released).toBeUndefined();
+    // same leaseId and the SAME stamp: two observations of one lease can never disagree about the order (§3.2)
+    expect(repoCopy.stamp.n).toBe(handle.stamp.n);
+    expect(wsCopy.stamp.n).toBe(handle.stamp.n);
+    // and the fold, keyed by leaseId, still holds ONE lease
+    await h.l.refresh('leases');
+    expect([...h.l.fold.leases.keys()].filter((id) => id === handle.leaseId)).toHaveLength(1);
+  });
+
+  it('a key change to ANOTHER repoKey removes the directory we left', async () => {
+    const h = await harness();
+    await h.l.open();
+    const handle = declare(h.l, { paths: ['src/x.ts'], type: 'exclusive', reason60: 'edit', step: 1, stage: 'coordinate', branch: 'main', head: null }, 'advisory');
+    await h.l.enqueue('flush', async () => undefined); // an advisory declare is fire-and-forget on the write chain
+    await h.l.refresh('leases');
+    const p = commonsPaths(h.root);
+    await expect(nodeFs.stat(p.leaseFile(DEV_A, REPO, handle.leaseId))).resolves.toBeTruthy();
+    const other = '00112233445566ff';
+    await h.l.setIdentity({ repoKey: other });
+    await expect(nodeFs.stat(p.leaseFile(DEV_A, other, handle.leaseId))).resolves.toBeTruthy();
+    await expect(nodeFs.stat(p.leaseFile(DEV_A, REPO, handle.leaseId))).rejects.toThrow(/ENOENT/); // nothing left behind
+    await expect(nodeFs.stat(p.leaseFile(DEV_A, WS, handle.leaseId))).resolves.toBeTruthy(); // the wsKey copy stays
   });
 
   it('a new runId re-seeds the stamp clock above everything the handle issued', async () => {
@@ -270,16 +325,18 @@ describe('review blocker 2: the write verbs the surface owns', () => {
   it('setDeviceLabel rewrites both device.json files as the PUBLIC subset — never the commons key', async () => {
     const h = await harness();
     await h.l.open();
-    await writeCommonsKey(nodeFs, h.root, mintCommonsKey());
+    const p = commonsPaths(h.root, h.l.hostKey);
+    await writeCommonsKey(nodeFs, p.hostDir, mintCommonsKey());
     const rec = await setDeviceLabel(h.l, 'studio-2');
     expect(rec.label).toBe('studio-2');
-    const p = commonsPaths(h.root);
+    // §3.1 (revision 5): the private copy is per HOST, the published one per DEVICE
+    expect(p.deviceFile).toContain(join('devices', h.l.hostKey));
     for (const file of [p.deviceFile, p.deviceRecordFile(DEV_A)]) {
       const text = (await nodeFs.readBounded(file, 4096)).text;
       expect(JSON.parse(text)).toEqual(rec);
       expect(text).not.toContain('keyHex');
     }
-    expect(await readCommonsKey(nodeFs, h.root)).toMatch(/^[0-9a-f]{64}$/);
+    expect(await readCommonsKey(nodeFs, p.hostDir)).toMatch(/^[0-9a-f]{64}$/);
     expect(h.l.self.label).toBe('studio-2');
   });
 
@@ -331,7 +388,9 @@ describe('review blocker 2: the write verbs the surface owns', () => {
     await putHeartbeat(h.root, makeHeartbeat({ deviceId: DEV_B, runId: runId(23), sessionId: runId(23), phase: 'ended', beatAt: iso(old), stamp: stamp(1, DEV_B, runId(23)), claim: claim({ deviceId: DEV_B, runId: runId(23), pid: 923 }) }));
     await h.l.open();
     const report = await gcOf(h.l);
-    expect(report.byKind).toEqual({ heartbeat: 1, lease: 1, message: 1, ack: 0 });
+    // §4.3 (revision 5): the expired lease has TWO copies on disk (keyDir(repoKey) and keyDir(wsKey)), so the GC
+    // removes two files for one lease — the fold, keyed by leaseId, still saw exactly one.
+    expect(report.byKind).toEqual({ heartbeat: 1, lease: 2, message: 1, ack: 0 });
     expect(report.staleLanes).toEqual([{ runId: runId(22), laneDir: 'tmp/synth/lane3' }]);
     expect(report.failed).toEqual([]);
     await expect(nodeFs.stat(commonsPaths(h.root).heartbeatFile(DEV_B, runId(23)))).resolves.toBeTruthy();
@@ -519,6 +578,305 @@ describe('§11 row 13: a ledger error is bookkeeping, never fatal', () => {
   });
 });
 
+describe('+ re-check of the merged ledger: the three breadth defects', () => {
+  /**
+   * RE-CHECK 1 — trusted devices past MAX_DEVICES starved FOREVER.
+   *
+   * `pickDevices` put self + every trusted device in `head`, truncated it with no rotation, and gave `rest`
+   * `slots = max(0, cap - head.length)` — zero once `head` alone filled the cap. With 20 paired devices and a cap of
+   * 16 the same four ids were dropped on every pass, so their beats never entered `fold.live`, their leases never
+   * entered `byPath`, and under `strict` their exclusive holds were simply not there. The M19 fixture planted only
+   * UNTRUSTED devices, which is why the rotation looked complete.
+   *
+   * Fails before the fix: four of the twenty are never seen, however many passes run.
+   */
+  it('re-check 1: twenty PAIRED devices are all seen within a few passes — the head rotates too', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const ids: string[] = [];
+    const trustKeys = new Map<string, string>();
+    for (let i = 0; i < 20; i++) {
+      const id = `zz${'abcdefghijklmnopqrst'[i]}wq7c${'abcdefghijklmnopqrst'[i]}`.slice(0, 8);
+      ids.push(id);
+      trustKeys.set(id, KEY_B);
+      const rid = runId(30 + i);
+      await putHeartbeat(t.root, makeHeartbeat({ deviceId: id, runId: rid, sessionId: rid, pid: 3000 + i, claim: claim({ deviceId: id, runId: rid, pid: 3000 + i }), stamp: stamp(1, id, rid) }));
+    }
+    expect(new Set(ids).size).toBe(20); // the ids really are distinct
+    expect(ids.length).toBeGreaterThan(MAX_DEVICES);
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true, trustKeys });
+    await l.open();
+    const seen = new Set<string>();
+    for (let pass = 0; pass < 12; pass++) {
+      await l.refresh('all');
+      for (const hb of l.fold.live.values()) seen.add(hb.deviceId);
+    }
+    expect([...seen].sort()).toEqual([...ids].sort());
+    await l.close();
+  });
+
+  /**
+   * RE-CHECK 2 — `ignoreDevice` never restored the strict fence.
+   *
+   * `pickDevices` got the UNFILTERED listing and `fence.complete` was derived from `devices.length < all.length`,
+   * both counting ignored subtrees — so the fix §4.5 itself names ("the ordinary fix for a hostile or junk-filled
+   * folder — `sessions gc --device … --i-know-it-is-gone` — also restores the fence") did nothing, and `strict`
+   * stayed permanently `fence:'blind'`.
+   *
+   * Fails before the fix: `complete` is still false after every junk subtree is tombstoned.
+   */
+  it('re-check 2: tombstoning the junk subtrees RESTORES the fence', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const junk = ['zz2wq7c2', 'zz3wq7c3', 'zz4wq7c4', 'zz5wq7c5', 'zz6wq7c6', 'zz7wq7c7'];
+    for (const id of junk) await nodeFs.mkdir(commonsPaths(t.root).leaseDir(id, REPO), 0o700);
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    const before = await l.refreshFence({ maxDevices: 4 });
+    expect(before.complete).toBe(false); // six subtrees, four slots: strict cannot decide
+    for (const id of junk) await ignoreDeviceOn(l, id, 'junk');
+    const after = await l.refreshFence({ maxDevices: 4 });
+    expect(after.complete).toBe(true); // an ignored subtree is not a subtree the fence has to see
+    expect(after.total).toBe(1); // only this device's own subtree is left to count
+    await l.close();
+  });
+
+  /**
+   * RE-CHECK 3 — the general scan capped leases at 16 and then SWEPT the subtrees it had skipped.
+   *
+   * `cap = kind === 'leases' ? deviceCap : MAX_DEVICES` with `deviceCap = MAX_DEVICES` for `scan('all')`, and the
+   * prune loop deleted every entry not in `seen` unless the TIME budget had set `partial`. With more than 16 lease
+   * subtrees each 15 s poll therefore dropped a rotating subset of live peers' exclusive leases out of
+   * `this.entries`, and the advisory `check()` that reads them answered `clear` for paths a live peer held.
+   *
+   * Fails before the fix: the peer's lease is gone from the fold after a second general scan.
+   */
+  it('re-check 3: a general scan neither caps leases at MAX_DEVICES nor prunes what it skipped', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    // one real peer holding my path, plus enough junk lease subtrees to push past the 16-subtree FOLD cap
+    const ridPeer = runId(9);
+    await putHeartbeat(t.root, makeHeartbeat({ deviceId: DEV_B, runId: ridPeer, sessionId: ridPeer, claim: claim({ deviceId: DEV_B, runId: ridPeer, pid: 900 }), stamp: stamp(9, DEV_B, ridPeer) }));
+    await putLease(t.root, makeLease({ deviceId: DEV_B, runId: ridPeer, sessionId: ridPeer, leaseId: `${ridPeer}-9`, type: 'exclusive', paths: ['src/x.ts'], stamp: stamp(9, DEV_B, ridPeer) }));
+    for (let i = 0; i < 24; i++) {
+      const id = `zz${'abcdefghijklmnopqrstuvwx'[i]}wq7c${'abcdefghijklmnopqrstuvwx'[i]}`.slice(0, 8);
+      await nodeFs.mkdir(commonsPaths(t.root).leaseDir(id, REPO), 0o700);
+    }
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    for (let pass = 0; pass < 6; pass++) {
+      await l.refresh('all');
+      // the peer's exclusive lease must survive EVERY pass — a fold that drops it makes `check()` read `clear`
+      expect(l.fold.leases.has(`${ridPeer}-9`), `pass ${pass}`).toBe(true);
+      const r = check(l.fold, l.self, { paths: ['src/x.ts'], type: 'exclusive', reason60: 'edit', step: 1, stage: 'coordinate', branch: 'main', head: null });
+      expect(r.kind, `pass ${pass}`).toBe('conflict');
+    }
+    await l.close();
+  });
+});
+
+describe('+ re-check: runtime trust, the persisted sessionless id, and the seen sweep', () => {
+  /**
+   * RE-CHECK 10 — trust was ONE-WAY at runtime.
+   *
+   * `unpairDevice` reloaded `trustKeys` and cleared `sigs`; nothing did the reverse. `trustKeys` was read once in
+   * `open()`, so after a `sessions pair` in the same process the peer stayed `unverified` until a restart — and
+   * because `sigs` was not cleared, `refresh` would not even re-parse the files whose authority had changed.
+   *
+   * Fails before the fix: `pairDeviceOn` does not exist, and writing the trust file by hand leaves the peer
+   * unverified until the process restarts.
+   */
+  it('re-check 10: pairing inside a running process makes the peer verified from the next scan', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const rid = runId(9);
+    const hb = signed(makeHeartbeat({ deviceId: DEV_B, runId: rid, sessionId: rid, claim: claim({ deviceId: DEV_B, runId: rid, pid: 900 }), stamp: stamp(9, DEV_B, rid) }), KEY_B, DEV_B);
+    await putHeartbeat(t.root, hb);
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    expect(l.fold.origins.get(`${DEV_B}/${rid}`)?.authenticated).toBe(false); // not paired yet
+    await l.pairDevice({ deviceId: DEV_B, label: 'studio', keyHex: KEY_B });
+    expect(l.fold.origins.get(`${DEV_B}/${rid}`)?.authenticated).toBe(true); // NOW, not after a restart
+    // and it is symmetric: unpairing takes the authority away again, in the same process
+    await l.unpairDevice(DEV_B);
+    expect(l.fold.origins.get(`${DEV_B}/${rid}`)?.authenticated).toBe(false);
+    await l.close();
+  });
+
+  /**
+   * RE-CHECK 9 — a sessionless consumer minted a fresh `actor8` per process.
+   *
+   * `actor8Of(null)` is random, and it names `inbox/seen/<deviceId>/<consumerId>.json` — so two TUI launches over
+   * one home had two consumer ids, every unexpired broadcast re-toasted on every start, and `inbox/seen/` grew one
+   * file per launch forever (`gc()` walked only `ownEntries()`, which never includes a `seen` file).
+   *
+   * Fails before the fix: the two handles have different actor8s.
+   */
+  it('re-check 9: a sessionless consumer keeps ONE actor8 across launches', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const mk = async () => {
+      const l = openLedger({ home: t.home, self: makeSelf({ runId: null, sessionId: null }), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+      await l.open();
+      return l;
+    };
+    const first = await mk();
+    const id = first.actor8;
+    await first.close();
+    const second = await mk();
+    expect(second.actor8).toBe(id);
+    await second.close();
+    // a RUN's actor8 is still its run id's tail and is never persisted
+    const run = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await run.open();
+    expect(run.actor8).toBe(runId(1).slice(-8));
+    await run.close();
+  });
+
+  it('re-check 9: gc() sweeps `inbox/seen/` by MTIME, keeping the newest', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    const dir = commonsPaths(t.root).seenDir(DEV_A);
+    await nodeFs.mkdir(dir, 0o700);
+    const stale = join(dir, `${runId(40)}-abcdefgh.json`);
+    const fresh = join(dir, `${runId(41)}-abcdefgh.json`);
+    for (const f of [stale, fresh]) await nodeFs.writeAtomic(f, '{"v":1,"ids":[]}\n', { fsync: false, mode: 0o600 });
+    // age the stale one past the 30 d retention. `seen` files carry no timestamp of their own — a consumer that is
+    // gone left nothing to identify it by — so MTIME is the only retention input there is.
+    const longAgo = new Date(clock.wall - (SEEN_RETENTION_MS + 86_400_000));
+    await utimes(stale, longAgo, longAgo);
+    await utimes(fresh, new Date(clock.wall), new Date(clock.wall));
+    const report = await gcOf(l);
+    expect(report.seen).toBe(1);
+    await expect(nodeFs.stat(stale)).rejects.toThrow(/ENOENT/);
+    await expect(nodeFs.stat(fresh)).resolves.toBeTruthy();
+    await l.close();
+  });
+});
+
+describe("§9.3 (revision 5): the sixth record kind — the AUTHENTICATED claim projection", () => {
+  const projection = (o: { deviceId: string; runId: string; epochs: number[]; imports?: { fromDeviceId: string; at: string; epoch: number }[] }) =>
+    withChecksum({
+      v: 1 as const,
+      kind: 'claims' as const,
+      deviceId: o.deviceId,
+      runId: o.runId,
+      sessionId: o.runId,
+      claims: o.epochs.map((epoch) => claim({ epoch, deviceId: o.deviceId, runId: o.runId, pid: 900 })),
+      imports: o.imports ?? [],
+      at: iso(T0),
+      stamp: stamp(1, o.deviceId, o.runId),
+      checksum: '',
+    });
+
+  const put = async (root: string, rec: ReturnType<typeof projection>, key?: string) => {
+    const signedRec = key === undefined ? rec : signed(rec, key, rec.deviceId);
+    await putFile(commonsPaths(root).claimsFile(rec.deviceId, rec.runId), `${JSON.stringify(signedRec)}\n`);
+  };
+
+  /**
+   * ITEM 4 FIXTURE — revision 4 left the §7.3 1(a) refusal DEAD.
+   *
+   * It required an hmac on `run.json` or on its projection but defined `hmac` / `keyId` on the five record kinds
+   * only, so no foreign epoch could ever be qualified: fail-safe against a planted ceiling and silently disabled for
+   * the legitimate takeover. The sixth kind is what makes the refusal live.
+   *
+   * Fails before the fix: `parseRecord(text, 'claims', …)` is not a kind, and `readClaimEpochs` does not exist.
+   */
+  it("a foreign epoch counts only when it is ok AND verified AND from a trusted device", async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const rid = runId(9);
+    await put(t.root, projection({ deviceId: DEV_B, runId: rid, epochs: [7] }), KEY_B); // signed …
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    // … but NOT paired: the epoch is reported and unqualified (the card shows it; it refuses nothing)
+    expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 7, deviceId: DEV_B, qualified: false }]);
+    await l.pairDevice({ deviceId: DEV_B, label: 'studio', keyHex: KEY_B });
+    expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 7, deviceId: DEV_B, qualified: true }]);
+    // a paired device whose signature does NOT match its key is unqualified again — `verified` is not `ok`
+    await put(t.root, projection({ deviceId: DEV_B, runId: rid, epochs: [8] }), KEY_A);
+    expect(await l.readClaimEpochs(rid)).toEqual([{ epoch: 8, deviceId: DEV_B, qualified: false }]);
+    await l.close();
+  });
+
+  it('MAX_CLAIM_EPOCH is enforced on THIS parse path — the one a planted projection takes', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const clock = fakeClock();
+    const rid = runId(9);
+    const planted = projection({ deviceId: DEV_B, runId: rid, epochs: [1] });
+    // a planted safe-integer ceiling: it must be `bounds` BEFORE it can reach any comparison
+    const hostile = withChecksum({ ...planted, claims: [{ ...planted.claims[0]!, epoch: 9_007_199_254_740_990 }], checksum: '' });
+    expect(parseRecord(serializeRecord(hostile), 'claims', { deviceId: DEV_B, runId: rid })).toEqual({ ok: false, reason: 'bounds' });
+    // and the reader simply does not see it
+    await putFile(commonsPaths(t.root).claimsFile(DEV_B, rid), `${JSON.stringify(hostile)}\n`);
+    const l = openLedger({ home: t.home, self: makeSelf(), now: clock.now, monotonicNow: clock.monotonicNow, scanOnly: true, fs: nodeFs, isPidAlive: () => true });
+    await l.open();
+    expect(await l.readClaimEpochs(rid)).toEqual([]);
+    await l.close();
+  });
+
+  it('the projection is bound to BOTH path components it sits under', async () => {
+    const rid = runId(9);
+    const rec = projection({ deviceId: DEV_B, runId: rid, epochs: [3] });
+    expect(parseRecord(serializeRecord(rec), 'claims', { deviceId: DEV_B, runId: rid }).ok).toBe(true);
+    // another run's directory
+    expect(parseRecord(serializeRecord(rec), 'claims', { deviceId: DEV_B, runId: runId(8) })).toEqual({ ok: false, reason: 'id' });
+    // another device's subtree
+    expect(parseRecord(serializeRecord(rec), 'claims', { deviceId: DEV_A, runId: rid })).toEqual({ ok: false, reason: 'id' });
+  });
+
+  it('writeTakeoverLease writes the projection too — even for a run with NO local run dir', async () => {
+    const h = await harness();
+    await h.l.open();
+    const rid = runId(9);
+    const lease = await writeTakeoverLease(h.l, { runId: rid, sessionId: rid, reason60: 'that device is gone' });
+    const path = commonsPaths(h.root, h.l.hostKey).claimsFile(DEV_A, rid);
+    const text = (await nodeFs.readBounded(path, 4096)).text;
+    const parsed = parseRecord(text, 'claims', { deviceId: DEV_A, runId: rid });
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.record.claims.map((c) => c.epoch)).toEqual([lease.claim?.epoch]);
+    // it is a permanent fact, so it is our OWN local truth and therefore qualified without any pairing
+    expect(await h.l.readClaimEpochs(rid)).toEqual([{ epoch: lease.claim?.epoch, deviceId: DEV_A, qualified: true }]);
+  });
+
+  it("--force-takeback: Q filtered AT the bound, U strictly BELOW, mint max(Q ∪ U) + 1, else 'epoch-exhausted'", async () => {
+    // pure algebra first (§9.3's own table)
+    expect(forceTakebackPlan({ local: [3], foreign: [] }).epoch).toBe(4);
+    // an UNQUALIFIED epoch is minted over — the point of the flag is to end up above anything any observer compares
+    expect(forceTakebackPlan({ local: [3], foreign: [{ epoch: 50, qualified: false }] }).epoch).toBe(51);
+    // … but one planted AT the ceiling is DROPPED, not minted over: an unqualified epoch refuses nothing, so a
+    // hostile one must not be able to disable the flag (revision 4 minted 1e9 + 1, above the parse bound, and every
+    // other device then rejected the winner's own records as `bounds`)
+    const hostile = forceTakebackPlan({ local: [3], foreign: [{ epoch: MAX_CLAIM_EPOCH, qualified: false }] });
+    expect(hostile.epoch).toBe(4);
+    expect(hostile.droppedUnqualified).toBe(1);
+    // a QUALIFIED epoch at the ceiling is a real state, and the honest answer is a refusal
+    expect(forceTakebackPlan({ local: [3], foreign: [{ epoch: MAX_CLAIM_EPOCH, qualified: true }] })).toMatchObject({ epoch: null, exhausted: true });
+    expect(forceTakebackPlan({ local: [MAX_CLAIM_EPOCH], foreign: [] })).toMatchObject({ epoch: null, exhausted: true });
+    // local truth is FILTERED, never refused: an out-of-range local row is ignored and the run still loads
+    expect(forceTakebackPlan({ local: [3, 9_007_199_254_740_990], foreign: [] }).epoch).toBe(4);
+
+    // and the ledger wires the refusal
+    const h = await harness();
+    await h.l.open();
+    const rid = runId(9);
+    await putFile(commonsPaths(h.root).claimsFile(DEV_A, rid), `${JSON.stringify(withChecksum({ v: 1 as const, kind: 'claims' as const, deviceId: DEV_A, runId: rid, sessionId: rid, claims: [claim({ epoch: MAX_CLAIM_EPOCH, deviceId: DEV_A, runId: rid })], imports: [], at: iso(T0), stamp: stamp(1, DEV_A, rid), checksum: '' }))}\n`);
+    await expect(h.l.forceTakebackEpochFor(rid)).rejects.toMatchObject({ code: 'epoch-exhausted' });
+  });
+});
+
 describe('subscribe (§3.5) and the poll', () => {
   it('a refresh notifies subscribers with the change kind, and unsubscribe stops it', async () => {
     const h = await harness();
@@ -549,7 +907,9 @@ describe('subscribe (§3.5) and the poll', () => {
     const seen: FoldChange[] = [];
     h.l.subscribe((_f, c) => seen.push(c));
     h.timers.tick(15_000);
-    await new Promise((r) => setTimeout(r, 5));
+    // the poll runs a real async scan, so wait for its emission rather than for a fixed 5 ms — on a loaded machine
+    // one macrotask is not enough and the fixed sleep made this the suite's only flaky assertion
+    for (let i = 0; i < 200 && !seen.some((c) => c.kind === 'poll'); i++) await new Promise((r) => setTimeout(r, 5));
     expect(seen.some((c) => c.kind === 'poll')).toBe(true);
   });
 });
@@ -608,10 +968,13 @@ describe('§11 rows 3 / 11 / 27: two devices, a returning device, a copied home'
     const t = await tempHome();
     cleanups.push(t.cleanup);
     const key = mintCommonsKey();
-    await trustDevice(nodeFs, t.root, { deviceId: DEV_B, label: 'studio', pairedAt: iso(T0), keyHex: key });
-    const text = (await nodeFs.readBounded(commonsPaths(t.root).trustedFile, 4096)).text;
-    expect(commonsPaths(t.root).trustedFile).toContain('trusted-devices.json');
+    const p = commonsPaths(t.root, 'a1b2c3d4');
+    await trustDevice(nodeFs, p.hostDir, { deviceId: DEV_B, label: 'studio', pairedAt: iso(T0), keyHex: key });
+    const text = (await nodeFs.readBounded(p.trustedFile, 4096)).text;
+    expect(p.trustedFile).toContain('trusted-devices.json');
+    // §3.1 (revision 5): the paired keys are PER HOST and are never mirrored
+    expect(p.trustedFile).toContain(join('devices', 'a1b2c3d4'));
     expect(text).toContain(key);
-    expect(commonsPaths(t.root).seenDir).toContain(join('inbox', 'seen'));
+    expect(p.seenDir(DEV_A)).toContain(join('inbox', 'seen', DEV_A));
   });
 });

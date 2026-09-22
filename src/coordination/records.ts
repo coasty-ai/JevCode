@@ -3,14 +3,14 @@
  * redact, the liveness rule of §3.4 and the path overlap of §4.3 step 2. Pure functions; no I/O.
  */
 import { isJsonObject, parseJson } from '../core/json.js';
-import { byteLength } from '../core/text.js';
+import { byteLength, clip } from '../core/text.js';
 import type { JsonObject } from '../core/types.js';
 import { DIRECTIVE_MAX_CHARS } from '../core/types.js';
 import { checksumOf, withChecksum } from './checksum.js';
-import { MAX_CLAIM_EPOCH, hmacValid, isValidClaim } from './claims.js';
+import { MAX_CLAIM_EPOCH, MAX_CLAIMS_PER_RUN, hmacValid, isValidClaim } from './claims.js';
 import { keyDir } from './paths.js';
 import { ACTOR8_RE, CONSUMER_ID_RE, COUNTER_MAX, DEVICE_ID_RE, LANE_DIR_RE, LEASE_ID_RE, LEASE_PATHS_MAX, HOST_KEY_RE, MSG_ID_RE, OID_RE, REPO_KEY_RE, RUN_ID_RE, SLUG_RE, TOUCHED_RECENT_MAX, isValidBranch, isValidRelPath, isValidTarget } from './ids.js';
-import type { Ack, AnyRecord, DeviceRecord, Heartbeat, Lease, LivenessEnv, LivenessVerdict, Message, RecordKind, RecordOf, RecordOrigin, Stamp } from './types.js';
+import type { Ack, AnyRecord, ClaimsProjection, DeviceRecord, Heartbeat, Lease, LivenessEnv, LivenessVerdict, Message, RecordKind, RecordOf, RecordOrigin, Stamp } from './types.js';
 
 export { checksumOf, withChecksum } from './checksum.js';
 
@@ -83,7 +83,7 @@ export function coordinationCodeOf(errno: string | null): CoordinationErrorCode 
 // ── bounds ────────────────────────────────────────────────────────────────────────────────────────────────────────────
 
 /** §3.3 / §4.3 / §5.1: the on-disk size each record kind may reach — refused, never truncated. */
-export const RECORD_MAX_BYTES: Readonly<Record<RecordKind, number>> = { heartbeat: 4096, lease: 8192, message: 2048, ack: 2048, device: 2048 };
+export const RECORD_MAX_BYTES: Readonly<Record<RecordKind, number>> = { heartbeat: 4096, lease: 8192, message: 2048, ack: 2048, device: 2048, claims: 4096 };
 /** §2.1 rule 6: no read pulls more than this into memory. */
 export const READ_MAX_BYTES = 65_536;
 /** §3.3: the heartbeat interval and the ttl (3 beats) */
@@ -94,6 +94,20 @@ export const SYNC_SLACK_SHARED_MS = 120_000;
 export const SYNC_SLACK_GIT_MS = 180_000;
 /** §3.4: `beatAt` this far ahead of the reader's wall clock is `skewed` (display only) */
 export const SKEW_MS = 300_000;
+/**
+ * + re-check (5): the ttl a READER will honour, whatever a record claims. `ttlMs` is a writer-controlled number and
+ * `isLive` adds it to the slack, so `ttlMs: 1e9` (≈ 11.6 days, inside `COUNTER_MAX`) kept a foreign heartbeat — and
+ * therefore every `exclusive` lease it holds — `live` for a week and a half. B4 removed the `expiresAt` gate on the
+ * lease precisely because a beating owner's lease never expires, so this clamp is the only bound left on the window.
+ * A legitimate beat is 15 s with a 45 s ttl; four beats of slack is generous and still bounded.
+ */
+export const HONOURED_TTL_MAX_MS = 4 * HEARTBEAT_TTL_MS;
+/** + re-check (5): the largest `ttlMs` a record may even CARRY; past this the record is a `bounds` rejection. */
+export const RECORD_TTL_MAX_MS = 10 * HEARTBEAT_TTL_MS;
+/** + re-check (5): the ttl `isLive` uses — never the raw field. */
+export function honouredTtlMs(ttlMs: number): number {
+  return Math.min(Number.isSafeInteger(ttlMs) && ttlMs > 0 ? ttlMs : HEARTBEAT_TTL_MS, HONOURED_TTL_MAX_MS);
+}
 /** §3.4: a stale run keeps its facts in the fold this long as `gone` */
 export const GONE_KEEP_MS = 600_000;
 /** §4.3 step 7: lease ttl; renewed every heartbeat while the owner beats */
@@ -105,8 +119,12 @@ export const CONTROL_MESSAGE_TYPES: ReadonlySet<string> = new Set(['pause', 'abo
 export const SUBWORK_MAX = 16;
 /** review #35: the bound every integer field of a record must stay inside (declared in `ids.ts`; re-exported here) */
 export { COUNTER_MAX };
-/** review #35: an observed Lamport `n` further than this above our own is a hostile value and is not adopted */
-export const STAMP_ADOPT_MAX_DELTA = 1_000_000_000;
+/**
+ * review #35 / + re-check (6): an observed Lamport `n` further than this above our own is a hostile value and is not
+ * adopted. Revision 4's 1e9 was the whole counter range, so one observation could put a clock a thousand issues from
+ * the saturation ceiling; 1e6 is ~30 years of one issue a second and cannot be reached by use.
+ */
+export const STAMP_ADOPT_MAX_DELTA = 1_000_000;
 /**
  * + review major 16: the clock never ADOPTS a value inside this margin of `COUNTER_MAX`. `issue()` saturates at the cap
  * (ids.ts), so adopting the cap itself would leave every later stamp equal and the Lamport order flat; refusing the top
@@ -242,6 +260,44 @@ function checkIdOrNull(v: unknown, re: RegExp): Bad | null {
   return v === null ? null : checkId(v, re);
 }
 
+/** §3.2: an opaque boot identity — absent, null, or a bounded printable string (a uuid on both platforms we read). */
+const BOOT_ID_MAX_CHARS = 128;
+function isBootId(v: unknown): boolean {
+  return v === undefined || v === null || (typeof v === 'string' && v.length > 0 && v.length <= BOOT_ID_MAX_CHARS && !/[\u0000-\u001f\u007f]/.test(v));
+}
+
+/** §12.0.2 (P3): the synthesizer goal ids and arrived-sample ids a pause point may carry. */
+export const PAUSE_GOAL_ID_MAX_CHARS = 64;
+export const PAUSE_ARRIVED_MAX = 16;
+
+/**
+ * §12.0.2 / §3.3: a `pausePoint` travels inside a heartbeat, which a hostile writer also controls — so it is
+ * bounded like every other member. Revision 4 replaced the free-text `synthPhase` with the typed
+ * `llm: { goalId, round, arrived }`, and `arrived` is an ARRAY: unbounded, it is 4 KiB of sample ids a renderer then
+ * walks, and `goalId` is a string a resume card prints. Both are capped here, at the parse.
+ */
+function checkPausePoint(v: unknown): Bad | null {
+  if (!isJsonObject(v)) return 'shape';
+  if (!isCount(v['step']) || !isBool(v['replayable']) || !isBool(v['end'])) return 'shape';
+  if (!(v['round'] === null || isCount(v['round']))) return 'shape';
+  for (const k of ['phase', 'reason', 'resumableAt', 'by'] as const) if (!isStr(v[k])) return 'shape';
+  if (!oneOf(PAUSE_REASONS)(v['reason'])) return 'shape';
+  if (v['pane'] !== undefined && !isStr(v['pane'])) return 'shape';
+  const llm = v['llm'];
+  if (llm !== undefined) {
+    if (!isJsonObject(llm) || !isCount(llm['round'])) return 'shape';
+    if (!isStr(llm['goalId']) || llm['goalId'].length === 0) return 'shape';
+    if (llm['goalId'].length > PAUSE_GOAL_ID_MAX_CHARS) return 'bounds';
+    const arrived = llm['arrived'];
+    if (!Array.isArray(arrived)) return 'shape';
+    if (arrived.length > PAUSE_ARRIVED_MAX) return 'bounds';
+    for (const a of arrived) if (!isCount(a)) return 'shape';
+  }
+  // the free-text `synthPhase` of revision 3 is not a member any more, and a record may not smuggle one back in
+  if (v['synthPhase'] !== undefined) return 'shape';
+  return null;
+}
+
 function checkHeartbeat(o: JsonObject): Bad | null {
   if (o['kind'] !== 'heartbeat' && o['kind'] !== 'bench') return 'shape';
   let bad = checkId(o['deviceId'], DEVICE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE) ?? checkIdOrNull(o['parentSessionId'], RUN_ID_RE) ?? checkIdOrNull(o['parentRunId'], RUN_ID_RE);
@@ -249,6 +305,8 @@ function checkHeartbeat(o: JsonObject): Bad | null {
   for (const k of ['label', 'host', 'user', 'jevcode', 'task60', 'startedAt', 'beatAt', 'bootAt', 'mode', 'stage'] as const) if (!isStr(o[k])) return 'shape';
   // §3.2: the machine the beat was written on; `isPidAlive` may only be asked about a pid from THIS machine
   if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id';
+  // §3.2 / §3.4 (revision 5): the boot session. Bounded like every other opaque id leaf; absent = an older build.
+  if (!isBootId(o['bootId'])) return 'shape';
   if (o['truncated'] !== undefined && !isBool(o['truncated'])) return 'shape'; // + blocker 2: the degraded-beat marker
   if (!isCount(o['pid']) || o['pid'] <= 0) return 'shape';
   if (!oneOf(SOURCES)(o['source']) || !isStrOrNull(o['title60'])) return 'shape';
@@ -304,8 +362,13 @@ function checkHeartbeat(o: JsonObject): Bad | null {
   const ctx = o['context'];
   if (!isJsonObject(ctx) || !isNum(ctx['pct']) || !isNum(ctx['files']) || !isNum(ctx['historyEntries']) || !isNumOrNull(ctx['summaryAt']) || !isNum(ctx['tokensInWindow']) || !isNum(ctx['windowBudget']) || !isNum(ctx['compactions'])) return 'shape';
   if (o['lockHeld'] !== undefined && !isBool(o['lockHeld'])) return 'shape';
-  if (o['pausePoint'] !== undefined && !isJsonObject(o['pausePoint'])) return 'shape';
+  if (o['pausePoint'] !== undefined) {
+    const bad2 = checkPausePoint(o['pausePoint']);
+    if (bad2 !== null) return bad2;
+  }
   if (!isCount(o['beatSeq']) || !isCount(o['ttlMs'])) return 'shape';
+  // + re-check (5): a writer-chosen liveness window. `COUNTER_MAX` let a record claim 11.6 days of freshness.
+  if (o['ttlMs'] <= 0 || o['ttlMs'] > RECORD_TTL_MAX_MS) return 'bounds';
   // + review blocker 3: the immutable claim the fork rule compares
   if (isJsonObject(o['claim']) && typeof o['claim']['epoch'] === 'number' && !(Number.isSafeInteger(o['claim']['epoch']) && o['claim']['epoch'] >= 1 && o['claim']['epoch'] <= MAX_CLAIM_EPOCH)) return 'bounds';
   if (!isValidClaim(o['claim'])) return 'shape';
@@ -316,9 +379,12 @@ function checkHeartbeat(o: JsonObject): Bad | null {
 
 function checkLease(o: JsonObject): Bad | null {
   if (o['kind'] !== 'lease') return 'shape';
-  let bad = checkId(o['leaseId'], LEASE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE) ?? checkId(o['deviceId'], DEVICE_ID_RE) ?? checkId(o['repoKey'], REPO_KEY_RE) ?? checkIdOrNull(o['remoteKey'], REPO_KEY_RE) ?? checkId(o['wsKey'], REPO_KEY_RE);
+  let bad = checkId(o['leaseId'], LEASE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE) ?? checkId(o['deviceId'], DEVICE_ID_RE) ?? checkIdOrNull(o['repoKey'], REPO_KEY_RE) ?? checkIdOrNull(o['remoteKey'], REPO_KEY_RE) ?? checkId(o['wsKey'], REPO_KEY_RE);
   if (bad !== null) return bad;
   if (!(o['leaseId'] as string).startsWith(`${o['runId'] as string}-`)) return 'id';
+  // §4.3 (revision 5): `repoKey` may be null (before `run:ready`, a shallow clone, a non-git workspace); `wsKey`
+  // never is, because it is the key the run always has and the directory the fence's safety proof runs in.
+  if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id';
   for (const k of ['label', 'reason60', 'stage', 'issuedAt', 'expiresAt', 'renewedAt'] as const) if (!isStr(o[k])) return 'shape';
   if (!oneOf(LEASE_TYPES)(o['type']) || !isBool(o['truncated']) || !isCount(o['step'])) return 'shape';
   if (!isOidOrNull(o['head']) || !isBranchOrNull(o['branch'])) return 'id'; // review #36
@@ -356,6 +422,10 @@ function checkMessage(o: JsonObject): Bad | null {
   bad = checkId(from['deviceId'], DEVICE_ID_RE) ?? checkIdOrNull(from['sessionId'], RUN_ID_RE) ?? checkIdOrNull(from['runId'], RUN_ID_RE);
   if (bad !== null) return bad;
   if (!isStr(from['label']) || !isStr(from['user'])) return 'shape';
+  // §5.1 / §5.4 rule 5 (revision 5): `pid` is display and audit only (never an isPidAlive input); `bootId` DENIES the
+  // no-confirm same-device path for the control types. Both are additive, so absent is legal.
+  if (from['pid'] !== undefined && (!isCount(from['pid']) || from['pid'] <= 0)) return 'shape';
+  if (!isBootId(from['bootId'])) return 'shape';
   if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id'; // §3.2
   if (!isStr(o['to'])) return 'shape';
   if (!isValidTarget(o['to'])) return 'id';
@@ -396,7 +466,78 @@ function checkDevice(o: JsonObject): Bad | null {
   return null;
 }
 
-const CHECKERS: Record<RecordKind, (o: JsonObject) => Bad | null> = { heartbeat: checkHeartbeat, lease: checkLease, message: checkMessage, ack: checkAck, device: checkDevice };
+
+/**
+ * + re-check (lower 2): the top-level keys each kind may carry. `parseRecord` type-checked every field it KNEW and
+ * ignored the rest, so a record could carry arbitrary extra JSON — which then rode into memory, into
+ * `stableStringify`'s canonical text and therefore into the checksum and the HMAC a paired device signs. Nothing
+ * downstream reads an unknown key and no prototype pollution was reachable (`parseJson` already drops `__proto__`),
+ * but a record is a closed shape and a reader that says so is the cheap half of the rule. An unknown key is `'shape'`.
+ */
+const RECORD_KEYS: Readonly<Record<RecordKind, ReadonlySet<string>>> = {
+  heartbeat: new Set(['v', 'kind', 'deviceId', 'label', 'host', 'user', 'pid', 'bootAt', 'bootId', 'hostKey', 'jevcode', 'runId', 'sessionId', 'parentSessionId', 'parentRunId', 'source', 'title60', 'task60', 'repo', 'mode', 'phase', 'step', 'maxSteps', 'stage', 'action80', 'pausing', 'pauseNow', 'blocked', 'retrying', 'stopReason', 'plan', 'declared', 'touched', 'touchedRecent', 'leases', 'subwork', 'bench', 'spend', 'tokens', 'wallMs', 'maxWallMs', 'context', 'pausePoint', 'lockHeld', 'startedAt', 'beatAt', 'beatSeq', 'ttlMs', 'stamp', 'claim', 'truncated', 'keyId', 'checksum', 'hmac']),
+  lease: new Set(['v', 'kind', 'leaseId', 'runId', 'sessionId', 'deviceId', 'hostKey', 'label', 'repoKey', 'remoteKey', 'wsKey', 'branch', 'head', 'type', 'paths', 'truncated', 'command60', 'exclusiveTree', 'laneDir', 'slug', 'reason60', 'step', 'stage', 'stamp', 'issuedAt', 'expiresAt', 'renewedAt', 'released', 'claim', 'keyId', 'checksum', 'hmac']),
+  message: new Set(['v', 'kind', 'id', 'from', 'hostKey', 'to', 'type', 'text', 'refs', 'by', 't', 'stamp', 'expiresAt', 'keyId', 'checksum', 'hmac']),
+  ack: new Set(['v', 'kind', 'msgId', 'by', 'sessionId', 'deviceId', 'hostKey', 'at', 'outcome', 'detail60', 'stamp', 'keyId', 'checksum', 'hmac']),
+  device: new Set(['v', 'kind', 'deviceId', 'hostKey', 'label', 'host', 'user', 'jevcode', 'createdAt', 'syncMode', 'keyId', 'checksum', 'hmac']),
+  claims: new Set(['v', 'kind', 'deviceId', 'hostKey', 'runId', 'sessionId', 'claims', 'imports', 'forked', 'ended', 'at', 'stamp', 'keyId', 'checksum', 'hmac']),
+};
+
+/** Every top-level key of `o` is one this kind declares (`undefined` members are dropped before the write). */
+function keysAllowed(kind: RecordKind, o: JsonObject): boolean {
+  const allowed = RECORD_KEYS[kind];
+  for (const k of Object.keys(o)) if (!allowed.has(k)) return false;
+  return true;
+}
+
+/** §9.3 (design revision 5): `imports[]` is bounded at 16 — a reduced row per import, never a body or a workspace. */
+export const CLAIM_IMPORTS_MAX = 16;
+
+/**
+ * §9.3 (design revision 5): the sixth kind. This is the parse path a PLANTED projection takes, which is what finally
+ * puts `MAX_CLAIM_EPOCH` and the id-vs-path binding where the §7.3 1(a) refusal actually reads — revision 4 attributed
+ * the bound to `parseRecord` while the only reader of a foreign epoch was `run.json`, which goes through no parser at
+ * all. Every epoch here is bounded BEFORE it can reach a comparison, so the ceiling is unreachable by construction.
+ */
+function checkClaims(o: JsonObject): Bad | null {
+  if (o['kind'] !== 'claims') return 'shape';
+  const bad = checkId(o['deviceId'], DEVICE_ID_RE) ?? checkId(o['runId'], RUN_ID_RE) ?? checkId(o['sessionId'], RUN_ID_RE);
+  if (bad !== null) return bad;
+  if (o['hostKey'] !== undefined && (!isStr(o['hostKey']) || !HOST_KEY_RE.test(o['hostKey']))) return 'id';
+  if (!isStr(o['at'])) return 'shape';
+  const claims = o['claims'];
+  if (!Array.isArray(claims) || claims.length > MAX_CLAIMS_PER_RUN) return 'bounds';
+  for (const c of claims) {
+    if (!isJsonObject(c)) return 'shape';
+    // the bound FIRST: a planted `9007199254740990` must be `bounds`, not `shape`, and must never reach a comparison
+    if (typeof c['epoch'] === 'number' && !(Number.isSafeInteger(c['epoch']) && c['epoch'] >= 1 && c['epoch'] <= MAX_CLAIM_EPOCH)) return 'bounds';
+    if (!isValidClaim(c)) return 'shape';
+    // every claim in the projection belongs to the run and the device the FILE's path names (bound in locationMatches)
+    if (c['deviceId'] !== o['deviceId'] || c['runId'] !== o['runId']) return 'id';
+  }
+  const imports = o['imports'];
+  if (!Array.isArray(imports) || imports.length > CLAIM_IMPORTS_MAX) return 'bounds';
+  for (const i of imports) {
+    if (!isJsonObject(i) || !isStr(i['at'])) return 'shape';
+    if (checkId(i['fromDeviceId'], DEVICE_ID_RE) !== null) return 'id';
+    if (typeof i['epoch'] !== 'number' || !Number.isSafeInteger(i['epoch']) || i['epoch'] < 1 || i['epoch'] > MAX_CLAIM_EPOCH) return 'bounds';
+  }
+  const forked = o['forked'];
+  if (forked !== undefined) {
+    if (!isJsonObject(forked) || !isCount(forked['atStep']) || !isStr(forked['at'])) return 'shape';
+    for (const k of ['loserEpoch', 'winnerEpoch'] as const) {
+      const v = forked[k];
+      if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1 || v > MAX_CLAIM_EPOCH) return 'bounds';
+    }
+  }
+  const ended = o['ended'];
+  if (ended !== undefined && !(isJsonObject(ended) && isStr(ended['at']) && (ended['by'] === 'human' || ended['by'] === 'remote'))) return 'shape';
+  return checkStamp(o['stamp']);
+}
+
+const PAUSE_REASONS = ['step', 'now', 'now-after-execute', 'pane', 'worktree'] as const;
+
+const CHECKERS: Record<RecordKind, (o: JsonObject) => Bad | null> = { heartbeat: checkHeartbeat, lease: checkLease, message: checkMessage, ack: checkAck, device: checkDevice, claims: checkClaims };
 
 /**
  * + review blocker 6: a record must agree with the PATH it was read from. Nothing in a record binds its `deviceId` to the
@@ -408,8 +549,12 @@ export interface ParseContext {
   deviceId: string;
   /** for a message: the `<target>` directory component */
   target?: string;
-  /** §3.1 / §4.3 (revision 4): for a lease, the `<keyDir>` directory component — `keyDir(repoKey ?? wsKey)` must equal it */
+  /** §3.1 / §4.3: for a lease, the `<keyDir>` directory component — `keyDir(repoKey)` OR `keyDir(wsKey)` must equal it */
   keyDir?: string;
+  /** §5.1 / + re-check (lower 3): for an ack, the `<msgId>` directory component it was read from */
+  msgId?: string;
+  /** §9.3 (revision 5): for a `kind:'claims'` projection, the `<runId>` directory component it was read from */
+  runId?: string;
   /**
    * §10.3 (revision 4): the verification key for the PATH's device, looked up by the reader. The record's own `keyId`
    * is display text and is never how a verifier finds a key. Absent → `verified: false`, which is a fact, not a failure.
@@ -430,10 +575,15 @@ function locationMatches(kind: RecordKind, o: JsonObject, ctx: ParseContext): bo
       const claim = o['claim'];
       const claimDevice = isJsonObject(claim) ? claim['deviceId'] : ctx.deviceId; // + re-review (3): claim.deviceId is bound too
       if (o['deviceId'] !== ctx.deviceId || stampDevice !== ctx.deviceId || claimDevice !== ctx.deviceId) return false;
-      // §4.3 (revision 4): the lease's own `keyDir(repoKey ?? wsKey)` must equal the directory it sits in, or a peer
-      // could park a lease for MY repo under a key nobody folds — invisible to the fence that is supposed to see it.
+      // §3.1 / §4.3 (revision 5): a lease with a `repoKey` is written under BOTH `keyDir(repoKey)` and
+      // `keyDir(wsKey)`, so the reader accepts EITHER and nothing else; a lease whose `repoKey` is null is still
+      // bound to the single `keyDir(wsKey)`. Both keys are inside the record, so a file still cannot be planted
+      // under an unrelated key directory — invisible to the fence that is supposed to see it.
       if (ctx.keyDir !== undefined) {
         const repoKey = o['repoKey'];
+        const wsKey = o['wsKey'];
+        if (typeof wsKey !== 'string') return false;
+        if (keyDir(wsKey) === ctx.keyDir) return true;
         return typeof repoKey === 'string' && keyDir(repoKey) === ctx.keyDir;
       }
       return true;
@@ -444,9 +594,17 @@ function locationMatches(kind: RecordKind, o: JsonObject, ctx: ParseContext): bo
       return ctx.target === undefined || o['to'] === ctx.target;
     }
     case 'ack':
+      // + re-check (lower 3): the `<msgId>` DIRECTORY is part of an ack's identity too. Without it a record acking
+      // message X could be planted under `acks/<dev>/<Y>/…`, where `awaitAck(Y)` would read it as a receipt for Y.
+      if (ctx.msgId !== undefined && o['msgId'] !== ctx.msgId) return false;
       return o['deviceId'] === ctx.deviceId && stampDevice === ctx.deviceId;
     case 'device':
       return o['deviceId'] === ctx.deviceId;
+    case 'claims':
+      // §9.3 (revision 5): the projection is bound to BOTH path components it sits under — `runs/<deviceId>/<runId>/`
+      // — so a planted file cannot claim another run's epochs or another device's authority.
+      if (ctx.runId !== undefined && o['runId'] !== ctx.runId) return false;
+      return o['deviceId'] === ctx.deviceId && stampDevice === ctx.deviceId;
   }
 }
 
@@ -463,6 +621,7 @@ export function parseRecord<K extends RecordKind>(text: string, kind: K, ctx?: P
   const o = parsed.value;
   if (o['v'] !== 1) return { ok: false, reason: 'version' };
   if (typeof o['checksum'] !== 'string') return { ok: false, reason: 'shape' };
+  if (!keysAllowed(kind, o)) return { ok: false, reason: 'shape' }; // + re-check (lower 2): a record is a CLOSED shape
   const bad = CHECKERS[kind](o);
   if (bad !== null) return { ok: false, reason: bad };
   if (ctx !== undefined && !locationMatches(kind, o, ctx)) return { ok: false, reason: 'id' };
@@ -485,6 +644,8 @@ export function recordKindOf(r: AnyRecord): RecordKind {
       return 'message';
     case 'ack':
       return 'ack';
+    case 'claims':
+      return 'claims';
   }
 }
 
@@ -503,6 +664,10 @@ export function isAck(r: AnyRecord): r is Ack {
 export function isDeviceRecord(r: AnyRecord): r is DeviceRecord {
   return !('kind' in r);
 }
+/** §9.3 (revision 5): the authenticated claim projection — the only reader of a foreign epoch. */
+export function isClaimsProjection(r: AnyRecord): r is ClaimsProjection {
+  return 'kind' in r && r.kind === 'claims';
+}
 
 // ── liveness (§3.4) ───────────────────────────────────────────────────────────────────────────────────────────────────
 
@@ -517,42 +682,71 @@ function parseIso(s: string): number {
 }
 
 /**
- * Same device: `phase !== 'ended'` ∧ `isPidAlive(pid)` ∧ `startedAt ≥ bootAt` — beat age is a display flag (`hung`) only.
- * Other device: `phase !== 'ended'` ∧ `monoNow − arrivalMono < ttl + slack` from the RECEIVER's monotonic clock; wall `beatAt`
- * only feeds `skewed`. `arrival === null` (a listed file that could not be read this cycle) → `unknown`.
+ * §3.4 (design revision 5).
  *
- * + review blocker 6: "same device" is `origin.self` — the file was read from THIS process's own local subtree — never
- * `record.deviceId === env.deviceId`, which a file planted under my device id in a shared mirror satisfies (and would then
- * hand an attacker-chosen `pid` to `isPidAlive`). `origin` omitted defaults to FOREIGN: conservative, so a bare in-memory
- * record is judged by arrival time, never by a pid probe.
+ * Same device — the record was read from THIS process's own local subtree AND its `hostKey` is mine AND its `bootId` is
+ * mine (or either side does not know one): `phase !== 'ended'` ∧ `isPidAlive(pid)`. Beat age is a display flag (`hung`)
+ * only, so a live process on a pane, in a debugger or after a wall-clock jump is never read as crashed and its leases
+ * are never ignored while its pid lives.
+ *
+ * The wall-arithmetic rule of revision 2 (`startedAt ≥ bootAt`) is WITHDRAWN: a forward clock step larger than the
+ * process's age-since-boot (NTP after sleep, a VM snapshot restore, a manual set) made a LIVE process read
+ * `stale-reused-pid`, after which `takeRunLock` replaced its `run.lock` and a second engine opened the same run dir —
+ * the one-writer invariant of `state.json`, broken by a clock.
+ *
+ * `duplicate-identity` (§3.2, rewritten in revision 5 around beat FRESHNESS, because `isPidAlive` cannot separate two
+ * clones: they run the same workload, allocate similar pids, and the foreign pid is alive in MY pid table). A record in
+ * my own local subtree is FOREIGN when (i) its `hostKey` is not mine; or (ii) its `bootId` is not mine AND its beat is
+ * fresh; or (iii) its `bootId` is not mine and `isPidAlive(pid)` is false. Clause (ii) is the discriminator a hash
+ * cannot provide: *a previous boot of my own machine stops renewing; a live clone does not.* Hence `stale-reused-pid`
+ * **only** when the `bootId` differs and no fresh beat exists — a differing `bootId` with a fresh beat is not a reused
+ * pid at all, it is a clone, it folds as foreign, and it is live.
+ *
+ * A record with NO `bootId` (an older build) whose pid answers `kill(pid, 0)` stays live and is never auto-replaced.
+ *
+ * Other device: `phase !== 'ended'` ∧ `monoNow − arrivalMono < ttl + slack` from the RECEIVER's monotonic clock; wall
+ * `beatAt` only feeds `skewed`. `arrival === null` (a listed file that could not be read this cycle) → `unknown`.
+ *
+ * + review blocker 6: "same device" is `origin.self` — never `record.deviceId === env.deviceId`, which a file planted
+ * under my device id in a shared mirror satisfies. `origin` omitted defaults to FOREIGN: conservative, so a bare
+ * in-memory record is judged by arrival time, never by a pid probe.
  */
 export function isLive(record: Heartbeat, now: Now, arrival: { arrivalMono: number } | null, env: LivenessEnv, origin: RecordOrigin = { self: false, source: null, authenticated: false }): LivenessVerdict {
   const beatAt = parseIso(record.beatAt);
   const skewMs = Number.isFinite(beatAt) && beatAt - now.wallMs > SKEW_MS ? beatAt - now.wallMs : null;
   const skewed = skewMs !== null;
-  // §3.2 `duplicate-identity`: two clones reporting one machine identifier share a deviceId, so the local subtree is not
-  // proof of "my machine". A record naming another hostKey is judged by ARRIVAL, never by a pid probe against a foreign
-  // pid table. `hostKey` DENIES same-device; it can never grant it (the local read location is still required).
-  if (origin.self && !sameHost(record.hostKey, env.hostKey)) {
+  const ttlMs = honouredTtlMs(record.ttlMs); // + re-check (5): never the raw, writer-controlled field
+  const foreignRow = (): LivenessVerdict => {
     if (arrival === null) return { liveness: 'unknown', hung: false, skewed, skewMs };
     if (record.phase === 'ended') return { liveness: 'stale', hung: false, skewed, skewMs };
-    const live = now.monoMs - arrival.arrivalMono < record.ttlMs + (env.syncSlackMs ?? SYNC_SLACK_SHARED_MS);
+    const live = now.monoMs - arrival.arrivalMono < ttlMs + (env.syncSlackMs ?? SYNC_SLACK_SHARED_MS);
     return { liveness: live ? 'live' : 'stale', hung: false, skewed, skewMs };
-  }
+  };
+  // (i) `hostKey` DENIES same-device; it can never grant it (the local read location is still required). Such a record
+  // is judged by ARRIVAL, never by a pid probe against a foreign pid table.
+  if (origin.self && !sameHost(record.hostKey, env.hostKey)) return foreignRow();
   if (origin.self) {
+    if (!sameBoot(record.bootId, env.bootId)) {
+      if (record.phase === 'ended') return { liveness: 'stale', hung: false, skewed, skewMs };
+      // (ii) a FRESH beat is a live clone, not a reboot: fold it as foreign and let arrival decide.
+      if (arrival !== null && now.monoMs - arrival.arrivalMono <= ttlMs) return foreignRow();
+      // (iii) a dead pid is simply gone; a LIVE pid with no fresh beat is the reused-pid case, and the only one.
+      return { liveness: env.isPidAlive(record.pid) ? 'stale-reused-pid' : 'stale', hung: false, skewed, skewMs };
+    }
     if (record.phase === 'ended') return { liveness: 'stale', hung: false, skewed, skewMs };
-    const started = parseIso(record.startedAt);
-    const boot = parseIso(env.bootAt);
-    if (Number.isFinite(started) && Number.isFinite(boot) && started < boot) return { liveness: 'stale-reused-pid', hung: false, skewed, skewMs };
     if (!env.isPidAlive(record.pid)) return { liveness: 'stale', hung: false, skewed, skewMs };
-    const hung = Number.isFinite(beatAt) && now.wallMs - beatAt > record.ttlMs;
+    const hung = Number.isFinite(beatAt) && now.wallMs - beatAt > ttlMs;
     return { liveness: 'live', hung, skewed, skewMs };
   }
-  if (arrival === null) return { liveness: 'unknown', hung: false, skewed, skewMs };
-  if (record.phase === 'ended') return { liveness: 'stale', hung: false, skewed, skewMs };
-  const slack = env.syncSlackMs ?? SYNC_SLACK_SHARED_MS;
-  const live = now.monoMs - arrival.arrivalMono < record.ttlMs + slack;
-  return { liveness: live ? 'live' : 'stale', hung: false, skewed, skewMs };
+  return foreignRow();
+}
+
+/**
+ * §3.2 / §3.4 (design revision 5): unknown on either side stays permissive — an older build wrote no `bootId`, and such
+ * a record with a live pid is never auto-replaced (§3.4). Only a KNOWN difference denies same-device.
+ */
+export function sameBoot(a: string | null | undefined, b: string | null | undefined): boolean {
+  return a === undefined || a === null || b === undefined || b === null || a === b;
 }
 
 /** §3.2 / §5.4 rule 4: unknown on either side stays permissive; only a KNOWN difference refuses same-device. */
@@ -589,4 +783,60 @@ export function overlap(mine: readonly string[], theirs: readonly string[], o: O
   const out: { path: string; with: string }[] = [];
   for (const m of mine) for (const t of theirs) if (pathsOverlap(m, t, o)) out.push({ path: m, with: t });
   return out;
+}
+
+// ── run.lock replacement (§3.4, design revision 5) ────────────────────────────────────────────────────────────────────
+
+/** The `run.lock` fields this verdict reads (`src/session/lock.ts` owns the file; `parseRunLock` already reads pid/host). */
+export interface RunLockFacts {
+  pid: number;
+  host?: string;
+  deviceId?: string;
+  /** additive (§3.4): the boot session that took the lock; absent = an older build wrote it */
+  bootId?: string | null;
+}
+
+/** What `foreignLive(fold, self, runId)` returned — a FOREIGN live heartbeat for this run, or null. */
+export interface PeerLiveFacts {
+  deviceId: string;
+  label: string;
+  step: number;
+  beatAgeMs: number;
+}
+
+export type LockReplace =
+  | { replace: true; reason: 'no-lock' | 'dead-pid' | 'other-boot' }
+  | { replace: false; reason: 'peer-live' | 'boot-unknown' | 'held'; detail60: string };
+
+/**
+ * §3.2 / §3.4 (design revision 5), pure: may `takeRunLock` replace this `run.lock`?
+ *
+ * **A fresh heartbeat is never overridden.** `peerLive !== null` refuses whatever the pid verdict says — revision 4
+ * protected only a *missing* `bootId`, so the moment a clone's pid happened to be alive locally the verdict was
+ * `stale-reused-pid`, the LIVE `run.lock` was replaced and two engines co-wrote one `state.json`. Only
+ * `peerLive === null` lets anything be replaced, and then:
+ *   - no lock at all → replace;
+ *   - a `bootId` that is known and differs from mine → replace (a previous boot of this machine; the pid, if alive, is
+ *     a reused one);
+ *   - a lock with NO `bootId` whose pid answers `kill(pid, 0)` → refuse `'boot-unknown'` and never guess (§3.4:
+ *     `sessions who` prints `pid N alive, boot unknown — sessions unlock <id> if that process is gone`);
+ *   - a dead pid → replace;
+ *   - otherwise the lock is genuinely held by a live process of this boot → refuse.
+ *
+ * `--force` is the caller's own bypass and is deliberately not modelled here: this function answers the automatic
+ * question only.
+ */
+export function lockReplaceVerdict(o: { lock: RunLockFacts | null; peerLive: PeerLiveFacts | null; self?: { bootId?: string | null; isPidAlive?: (pid: number) => boolean } }): LockReplace {
+  if (o.peerLive !== null) {
+    const p = o.peerLive;
+    const ago = Math.max(0, Math.round(p.beatAgeMs / 1000));
+    return { replace: false, reason: 'peer-live', detail60: clip(`live on ${p.label} (step ${p.step}, last beat ${ago}s ago)`, 60) };
+  }
+  if (o.lock === null) return { replace: true, reason: 'no-lock' };
+  const alive = (o.self?.isPidAlive ?? (() => true))(o.lock.pid);
+  const mine = o.self?.bootId;
+  if (o.lock.bootId !== undefined && o.lock.bootId !== null && mine !== undefined && mine !== null && o.lock.bootId !== mine) return { replace: true, reason: 'other-boot' };
+  if (!alive) return { replace: true, reason: 'dead-pid' };
+  if (o.lock.bootId === undefined || o.lock.bootId === null) return { replace: false, reason: 'boot-unknown', detail60: clip(`pid ${o.lock.pid} alive, boot unknown`, 60) };
+  return { replace: false, reason: 'held', detail60: clip(`pid ${o.lock.pid} is running this run`, 60) };
 }

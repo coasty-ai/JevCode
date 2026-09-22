@@ -5,7 +5,7 @@
  * reported once and left poll-only.
  */
 import { describe, expect, it } from 'vitest';
-import { createWatcher, nodeTimers, POLL_MS, WATCH_DEBOUNCE_MS } from '../../../src/coordination/watch.js';
+import { createWatcher, nodeTimers, POLL_MS, RETRY_WATCH_MS, WATCH_DEBOUNCE_MS } from '../../../src/coordination/watch.js';
 import type { WatchFn } from '../../../src/coordination/watch.js';
 import { fakeTimers } from './helpers.js';
 
@@ -44,17 +44,19 @@ function harness(o: { debounceMs?: number; pollMs?: number } = {}) {
   const timers = fakeTimers();
   const bursts: string[][] = [];
   let polls = 0;
+  let wall = 1_000_000;
   const errors: { dir: string; code: string }[] = [];
   const w = createWatcher({
     watch,
     timers,
+    now: () => wall,
     ...(o.debounceMs !== undefined ? { debounceMs: o.debounceMs } : {}),
     ...(o.pollMs !== undefined ? { pollMs: o.pollMs } : {}),
     onChange: (dirs) => bursts.push([...dirs].sort()),
     onPoll: () => polls++,
     onError: (dir, e) => errors.push({ dir, code: (e as { code?: string }).code ?? 'EUNKNOWN' }),
   });
-  return { w, made, fail, timers, bursts, errors, polls: () => polls };
+  return { w, made, fail, timers, bursts, errors, polls: () => polls, advanceWall: (ms: number) => void (wall += ms) };
 }
 
 describe('the watcher (§3.5)', () => {
@@ -111,14 +113,31 @@ describe('the watcher (§3.5)', () => {
     expect(h.bursts).toEqual([['/c/registry']]);
   });
 
-  it("a root that emits 'error' is dropped and reported, and can be re-added later", () => {
+  it("a root that emits 'error' is dropped and reported, and can be re-added after the backoff", () => {
     const h = harness();
     h.w.add('/c/registry');
     h.made[0]!.error(Object.assign(new Error('gone'), { code: 'ESTALE' }));
     expect(h.errors).toEqual([{ dir: '/c/registry', code: 'ESTALE' }]);
     expect(h.w.has('/c/registry')).toBe(false);
+    // + re-check (lower 7): NOT immediately. `attachWatchers()` runs on every 15 s poll, so an immediate re-add
+    // turned one bad root into a repeating syscall storm plus one `onError` per root per tick, for the whole
+    // process — which is exactly the EMFILE case that produced the failure in the first place.
+    expect(h.w.add('/c/registry')).toBe(false);
+    expect(h.errors).toHaveLength(1); // and no second notice
+    h.advanceWall(RETRY_WATCH_MS + 1);
     expect(h.w.add('/c/registry')).toBe(true);
     expect(h.w.has('/c/registry')).toBe(true);
+  });
+
+  it('+ re-check (lower 7): a root whose watch CREATION throws is not retried on every poll either', () => {
+    const h = harness();
+    h.fail.add('/c/leases'); // the fake watch throws ENOSPC for a listed dir
+    expect(h.w.add('/c/leases')).toBe(false);
+    for (let tick = 0; tick < 10; tick++) expect(h.w.add('/c/leases')).toBe(false);
+    expect(h.errors).toHaveLength(1); // one notice, not eleven
+    h.advanceWall(RETRY_WATCH_MS + 1);
+    expect(h.w.add('/c/leases')).toBe(false); // still failing, so still false — but it was retried
+    expect(h.errors).toHaveLength(2);
   });
 
   it('add is idempotent and close() releases every watcher and timer', () => {

@@ -26,6 +26,8 @@ export interface HeartbeatBase {
   pid: number;
   /** §3.2: this machine's `hostKey`, so a peer sharing our `deviceId` under one `~/.jevcode` is not read as us */
   hostKey?: string;
+  /** §3.2 / §3.4 (revision 5): this boot's identity; a beat from another boot in my own subtree is never mine */
+  bootId?: string | null;
   bootAt: string;
   jevcode: string;
   runId: string;
@@ -119,6 +121,9 @@ function buildAt(base: HeartbeatBase, dyn0: HeartbeatDynamic, o: { beatSeq: numb
     user: base.user,
     pid: base.pid,
     ...(base.hostKey !== undefined ? { hostKey: base.hostKey } : {}),
+    // §3.2 / §3.4 (revision 5): a DISQUALIFIER like `hostKey` — a beat in my own subtree from another boot session
+    // is never `sameDevice`, and its FRESHNESS is what separates a previous boot from a live clone.
+    ...(base.bootId !== undefined && base.bootId !== null ? { bootId: base.bootId } : {}),
     bootAt: base.bootAt,
     jevcode: base.jevcode,
     runId: base.runId,

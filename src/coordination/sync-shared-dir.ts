@@ -124,6 +124,17 @@ export function createMirror(o: MirrorOptions): Mirror {
   const probe = async (): Promise<boolean> => {
     if (refused !== null) return false;
     try {
+      // + re-check (8): the mirror root has to be BOOTSTRAPPED. `stat(<sharedDir>/jevcode-commons)` of a folder the
+      // user just named in `sessions sync enable` is ENOENT, which failed the probe into `offline`, and `copy()` /
+      // `remove()` return early while offline — so nothing ever created the root and the mirror could never come up.
+      //
+      // The PARENT is stat'ed first and is never created. `CoordFs.mkdir` is recursive, so creating the root blind
+      // would materialise the whole chain on the local disk at an UNMOUNTED mount point — shadowing the real share
+      // when it comes back and silently mirroring to a directory no other device can see. An unmounted `sharedDir`
+      // must stay `offline`; a real one gains exactly one directory.
+      const parent = await withTimeout(o.fs.stat(o.sharedDir), timeoutMs, 'shared dir probe');
+      if (!parent.isDirectory) throw Object.assign(new Error('the shared dir is not a directory'), { code: 'ENOTDIR' });
+      await withTimeout(o.fs.mkdir(root, DIR_MODE), timeoutMs, 'mirror mkdir');
       const s = await withTimeout(o.fs.stat(root), timeoutMs, 'mirror probe');
       if (!s.isDirectory) throw Object.assign(new Error('mirror root is not a directory'), { code: 'ENOTDIR' });
       const local = o.localRoot;

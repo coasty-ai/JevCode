@@ -325,6 +325,61 @@ describe('§4.7 / §11 row 17: the bench lock', () => {
     expect(won[0]).toBe(333); // the runner that actually created the file holds it
   });
 
+  /**
+   * RE-CHECK 4 FIXTURE — B6's O_EXCL create still admitted two runners.
+   *
+   * The unlink above the create was UNCONDITIONAL, and after an unlink `EEXIST` cannot happen — so the re-judge B6
+   * added was unreachable on exactly the path that mattered. The interleaving, which this fixture scripts:
+   *
+   *   A and B both read the same stale lock L0
+   *   A unlinks L0 and creates LA
+   *   B — still holding its verdict about L0 — unlinks **LA** and creates LB
+   *   both return, both run the same bench against one `tasks.jsonl`
+   *
+   * The fix is a compare-and-swap: re-read and re-`evaluate` IMMEDIATELY before the unlink, and unlink only when the
+   * file still holds the exact record the verdict was formed about.
+   *
+   * Fails before the fix: `won` has two entries and the lock on disk names the loser.
+   */
+  it('re-check 4: a runner may not unlink a lock that changed under it — the stale replacement is a CAS', async () => {
+    const t = await tempHome();
+    cleanups.push(t.cleanup);
+    const dir = join(t.home, 'bench', 'cas');
+    // L0, left by a runner that is now dead
+    acquireBenchLock(dir, { benchId: 'cas', pid: 111, host: 'mbp.local', nowIso: iso(T0), isAlive: () => true });
+    const alive = new Set([222, 333]);
+    const isAlive = (pid: number) => alive.has(pid);
+    const won: number[] = [];
+    let raced = false;
+    // A runs to completion the moment B has READ L0 and formed its verdict. B's verdict is now about a record that
+    // is no longer on disk — the exact interleaving the re-check describes, and the one a CAS has to catch.
+    const racingRead: CoordFs = {
+      ...nodeFs,
+      readFileSync(p: string, max: number) {
+        const r = nodeFs.readFileSync(p, max);
+        if (!raced) {
+          raced = true;
+          try {
+            acquireBenchLock(dir, { benchId: 'cas', pid: 333, host: 'mbp.local', nowIso: iso(T0 + 2), isAlive, fs: nodeFs });
+            won.push(333);
+          } catch {
+            /* refused */
+          }
+        }
+        return r;
+      },
+    };
+    try {
+      acquireBenchLock(dir, { benchId: 'cas', pid: 222, host: 'mbp.local', nowIso: iso(T0 + 1), isAlive, fs: racingRead });
+      won.push(222);
+    } catch {
+      /* refused */
+    }
+    expect(won).toHaveLength(1); // the unconditional unlink let BOTH through
+    expect(won[0]).toBe(333); // A created the file; B must re-read, see a LIVE holder and refuse
+    expect(readBenchLock(dir)?.pid).toBe(333); // and the lock on disk is the winner's, not the loser's
+  });
+
   it('release removes only a lock this process wrote; a malformed lock reads as absent', async () => {
     const t = await tempHome();
     cleanups.push(t.cleanup);
