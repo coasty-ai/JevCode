@@ -1,0 +1,782 @@
+{
+  "benchId": "20260922-152438-877d6c",
+  "createdAt": "2026-09-22T15:24:38.994Z",
+  "finishedAt": "2026-09-22T15:26:00.978Z",
+  "mocked": false,
+  "suites": [
+    "quixbugs"
+  ],
+  "conditions": {
+    "llm-jev": {
+      "condition": "llm-jev",
+      "mode": "llm-jev",
+      "generatorModel": "z-ai/glm-5.3-flash",
+      "deciderModel": "jev-1.13.0",
+      "temperature": null,
+      "maxTokens": 3000,
+      "generation": {
+        "proposer": "synthesizer",
+        "temperature": null,
+        "sampleTemperatures": [
+          0,
+          0.8
+        ],
+        "maxTokens": 3000,
+        "reasoning": {
+          "effort": "low"
+        },
+        "deadlineMs": 20000,
+        "repositoryDeadlineMs": 30000,
+        "lengthHandling": "double-once",
+        "servedRate": {
+          "inputPerM": 0.15,
+          "outputPerM": 0.5
+        },
+        "synthesizer": {
+          "reasoning": {
+            "effort": "low"
+          },
+          "maxTokens": 3000,
+          "sampleDeadline": {
+            "minMs": 10000,
+            "maxMs": 20000,
+            "repositoryMs": 30000
+          },
+          "sampleTemperature": {
+            "first": 0,
+            "rest": 0.8,
+            "feedbackFirst": 0.6,
+            "feedbackRest": 1
+          }
+        }
+      },
+      "maxSteps": 12,
+      "maxWallMs": 480000,
+      "maxReplans": 5,
+      "taskSpendCapUsd": 0.06,
+      "sandboxProfile": "auto",
+      "noNetwork": false,
+      "commandTimeoutMs": 120000,
+      "maxCommandTimeoutMs": 600000,
+      "maxOutputBytes": 204800,
+      "completeThreshold": 0.85,
+      "impossibleThreshold": 0.85
+    }
+  },
+  "conditionOrder": [
+    "llm-jev"
+  ],
+  "generatorModel": "z-ai/glm-5.3-flash",
+  "spendCapUsd": 0.5,
+  "taskSpendCapUsd": 0.06,
+  "spentUsd": {
+    "generator": 0.0030361000000000003,
+    "jev": 0.0024451559999999995,
+    "total": 0.005481256
+  },
+  "capFired": null,
+  "notRun": {
+    "count": 0,
+    "tasks": []
+  },
+  "pairedTasks": {
+    "quixbugs": 8
+  },
+  "records": 8,
+  "perSuite": {
+    "quixbugs": {
+      "suite": "quixbugs",
+      "perCondition": {
+        "llm-jev": {
+          "condition": "llm-jev",
+          "tasks": 8,
+          "evaluated": 8,
+          "passed": 8,
+          "passRate": 1,
+          "passRateText": "8/8 (n=8)",
+          "passRateWilson": {
+            "lo": 0.6755843804891231,
+            "hi": 1
+          },
+          "unevaluated": [],
+          "unsupported": [],
+          "notRun": [],
+          "stepsToSolve": {
+            "n": 8,
+            "mean": 2.625,
+            "median": 3,
+            "values": [
+              2,
+              2,
+              2,
+              3,
+              3,
+              3,
+              3,
+              3
+            ]
+          },
+          "solveCurve": [
+            {
+              "k": 1,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 2,
+              "solved": 3,
+              "fraction": 0.375
+            },
+            {
+              "k": 3,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 4,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 5,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 6,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 7,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 8,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 9,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 10,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 11,
+              "solved": 8,
+              "fraction": 1
+            },
+            {
+              "k": 12,
+              "solved": 8,
+              "fraction": 1
+            }
+          ],
+          "stepsUsed": {
+            "n": 8,
+            "mean": 2.625,
+            "median": 3
+          },
+          "stopReasons": {
+            "complete": 8
+          },
+          "tokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 7645.875,
+              "n": 8
+            },
+            {
+              "step": 2,
+              "mean": 1017.375,
+              "n": 8
+            },
+            {
+              "step": 3,
+              "mean": 2047,
+              "n": 5
+            }
+          ],
+          "generatorTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 2236.5,
+              "n": 8
+            },
+            {
+              "step": 2,
+              "mean": 0,
+              "n": 8
+            },
+            {
+              "step": 3,
+              "mean": 0,
+              "n": 5
+            }
+          ],
+          "jevTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 5409.375,
+              "n": 8
+            },
+            {
+              "step": 2,
+              "mean": 1017.375,
+              "n": 8
+            },
+            {
+              "step": 3,
+              "mean": 2047,
+              "n": 5
+            }
+          ],
+          "meanTokensPerStep": {
+            "mean": 3787.6666666666665,
+            "steps": 21
+          },
+          "meanGeneratorTokensPerStep": {
+            "mean": 852,
+            "steps": 21
+          },
+          "meanJevTokensPerStep": {
+            "mean": 2935.6666666666665,
+            "steps": 21
+          },
+          "jevLatencyMs": {
+            "p50": 189.43062500000087,
+            "p95": 354.206541,
+            "n": 35
+          },
+          "jevRequests": 35,
+          "jevQuestions": 104,
+          "generatorCalls": 10,
+          "blocked": 0,
+          "reviews": 0,
+          "declined": 0,
+          "loops": 0,
+          "replans": 0,
+          "reads": {
+            "total": 0,
+            "meanPerRun": 0
+          },
+          "cost": {
+            "generator": 0.0030361,
+            "jev": 0.0024451559999999995,
+            "total": 0.0054812559999999995
+          },
+          "costPerSolved": 0.0006851569999999999,
+          "wallMs": {
+            "n": 8,
+            "mean": 30477.004963624997,
+            "median": 26606.327875
+          },
+          "generator": {
+            "calls": 10,
+            "samples": 10,
+            "valid": 8,
+            "malformed": 0,
+            "lengthStops": 0,
+            "cancelled": 2,
+            "timeouts": 2,
+            "inputTokens": 16154,
+            "outputTokens": 1738,
+            "reasoningTokens": 192,
+            "costUsd": 0.0030361,
+            "estimatedUsd": 0.0003316,
+            "latencyMs": {
+              "n": 10,
+              "p50": 8883,
+              "p90": 20001.1935,
+              "max": 20005.220375000004
+            },
+            "validLatencyMs": {
+              "n": 8,
+              "p50": 8716,
+              "p90": 10608,
+              "max": 10608
+            },
+            "latencyRawMs": [
+              8895,
+              8716,
+              8901,
+              8883,
+              7102,
+              7729,
+              20005.220375000004,
+              20001.1935,
+              6435,
+              10608
+            ],
+            "validLatencyRawMs": [
+              8895,
+              8716,
+              8901,
+              8883,
+              7102,
+              7729,
+              6435,
+              10608
+            ]
+          },
+          "synth": {
+            "steps": 21,
+            "synthSteps": 21,
+            "synthMs": 238712.149957,
+            "genericSteps": 0,
+            "verify": {
+              "samples": 10,
+              "distinct": 6,
+              "malformed": 0,
+              "timeouts": 2,
+              "cancelled": 0,
+              "misanchored": 0,
+              "candidatesTested": 4862,
+              "passers": 13,
+              "partials": 0,
+              "graceMs": 0,
+              "localisationMissed": 0
+            }
+          },
+          "stubbedJevRequests": 0,
+          "modelDrift": [],
+          "runsWithError": []
+        }
+      },
+      "comparison": {
+        "suite": "quixbugs",
+        "conditions": [
+          "llm-jev"
+        ],
+        "pairedTasks": [
+          "quicksort",
+          "rpn_eval",
+          "shortest_path_lengths",
+          "shortest_paths",
+          "sieve",
+          "subsequences",
+          "to_base",
+          "topological_ordering"
+        ],
+        "incompletePairs": [],
+        "excludedForDrift": [],
+        "perCondition": {
+          "llm-jev": {
+            "condition": "llm-jev",
+            "tasks": 8,
+            "evaluated": 8,
+            "passed": 8,
+            "passRate": 1,
+            "passRateText": "8/8 (n=8)",
+            "passRateWilson": {
+              "lo": 0.6755843804891231,
+              "hi": 1
+            },
+            "unevaluated": [],
+            "unsupported": [],
+            "notRun": [],
+            "stepsToSolve": {
+              "n": 8,
+              "mean": 2.625,
+              "median": 3,
+              "values": [
+                2,
+                2,
+                2,
+                3,
+                3,
+                3,
+                3,
+                3
+              ]
+            },
+            "solveCurve": [
+              {
+                "k": 1,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 2,
+                "solved": 3,
+                "fraction": 0.375
+              },
+              {
+                "k": 3,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 4,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 5,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 6,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 7,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 8,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 9,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 10,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 11,
+                "solved": 8,
+                "fraction": 1
+              },
+              {
+                "k": 12,
+                "solved": 8,
+                "fraction": 1
+              }
+            ],
+            "stepsUsed": {
+              "n": 8,
+              "mean": 2.625,
+              "median": 3
+            },
+            "stopReasons": {
+              "complete": 8
+            },
+            "tokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 7645.875,
+                "n": 8
+              },
+              {
+                "step": 2,
+                "mean": 1017.375,
+                "n": 8
+              },
+              {
+                "step": 3,
+                "mean": 2047,
+                "n": 5
+              }
+            ],
+            "generatorTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 2236.5,
+                "n": 8
+              },
+              {
+                "step": 2,
+                "mean": 0,
+                "n": 8
+              },
+              {
+                "step": 3,
+                "mean": 0,
+                "n": 5
+              }
+            ],
+            "jevTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 5409.375,
+                "n": 8
+              },
+              {
+                "step": 2,
+                "mean": 1017.375,
+                "n": 8
+              },
+              {
+                "step": 3,
+                "mean": 2047,
+                "n": 5
+              }
+            ],
+            "meanTokensPerStep": {
+              "mean": 3787.6666666666665,
+              "steps": 21
+            },
+            "meanGeneratorTokensPerStep": {
+              "mean": 852,
+              "steps": 21
+            },
+            "meanJevTokensPerStep": {
+              "mean": 2935.6666666666665,
+              "steps": 21
+            },
+            "jevLatencyMs": {
+              "p50": 189.43062500000087,
+              "p95": 354.206541,
+              "n": 35
+            },
+            "jevRequests": 35,
+            "jevQuestions": 104,
+            "generatorCalls": 10,
+            "blocked": 0,
+            "reviews": 0,
+            "declined": 0,
+            "loops": 0,
+            "replans": 0,
+            "reads": {
+              "total": 0,
+              "meanPerRun": 0
+            },
+            "cost": {
+              "generator": 0.0030361,
+              "jev": 0.0024451559999999995,
+              "total": 0.0054812559999999995
+            },
+            "costPerSolved": 0.0006851569999999999,
+            "wallMs": {
+              "n": 8,
+              "mean": 30477.004963624997,
+              "median": 26606.327875
+            },
+            "generator": {
+              "calls": 10,
+              "samples": 10,
+              "valid": 8,
+              "malformed": 0,
+              "lengthStops": 0,
+              "cancelled": 2,
+              "timeouts": 2,
+              "inputTokens": 16154,
+              "outputTokens": 1738,
+              "reasoningTokens": 192,
+              "costUsd": 0.0030361,
+              "estimatedUsd": 0.0003316,
+              "latencyMs": {
+                "n": 10,
+                "p50": 8883,
+                "p90": 20001.1935,
+                "max": 20005.220375000004
+              },
+              "validLatencyMs": {
+                "n": 8,
+                "p50": 8716,
+                "p90": 10608,
+                "max": 10608
+              },
+              "latencyRawMs": [
+                8895,
+                8716,
+                8901,
+                8883,
+                7102,
+                7729,
+                20005.220375000004,
+                20001.1935,
+                6435,
+                10608
+              ],
+              "validLatencyRawMs": [
+                8895,
+                8716,
+                8901,
+                8883,
+                7102,
+                7729,
+                6435,
+                10608
+              ]
+            },
+            "synth": {
+              "steps": 21,
+              "synthSteps": 21,
+              "synthMs": 238712.149957,
+              "genericSteps": 0,
+              "verify": {
+                "samples": 10,
+                "distinct": 6,
+                "malformed": 0,
+                "timeouts": 2,
+                "cancelled": 0,
+                "misanchored": 0,
+                "candidatesTested": 4862,
+                "passers": 13,
+                "partials": 0,
+                "graceMs": 0,
+                "localisationMissed": 0
+              }
+            },
+            "stubbedJevRequests": 0,
+            "modelDrift": [],
+            "runsWithError": []
+          }
+        },
+        "rows": [
+          {
+            "task": "quicksort",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 2
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.000707732
+            },
+            "wallMs": {
+              "llm-jev": 25649.54625
+            }
+          },
+          {
+            "task": "rpn_eval",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 2
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.000784898
+            },
+            "wallMs": {
+              "llm-jev": 25262.349959000003
+            }
+          },
+          {
+            "task": "shortest_path_lengths",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 3
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.000666612
+            },
+            "wallMs": {
+              "llm-jev": 27415.582541999996
+            }
+          },
+          {
+            "task": "shortest_paths",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 3
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.000661724
+            },
+            "wallMs": {
+              "llm-jev": 35803.706167000004
+            }
+          },
+          {
+            "task": "sieve",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 3
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.000453302
+            },
+            "wallMs": {
+              "llm-jev": 26606.327875
+            }
+          },
+          {
+            "task": "subsequences",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 3
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.000607764
+            },
+            "wallMs": {
+              "llm-jev": 26063.868541
+            }
+          },
+          {
+            "task": "to_base",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 3
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.00035180399999999994
+            },
+            "wallMs": {
+              "llm-jev": 31586.531333
+            }
+          },
+          {
+            "task": "topological_ordering",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 2
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.00124742
+            },
+            "wallMs": {
+              "llm-jev": 45428.127042
+            }
+          }
+        ]
+      }
+    }
+  },
+  "resumed": false
+}
