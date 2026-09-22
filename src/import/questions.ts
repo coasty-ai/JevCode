@@ -493,6 +493,11 @@ export async function askImport(batches: readonly QuestionBatch[], deps: AskDeps
       break;
     }
     try {
+      // jev-contract: import groups I–V — classification hints for `jevcode import` (IMPORT-DESIGN §4.4.3; contract 1.6)
+      //   escape: every question in the batch is built by src/jev/questions.ts (choice/noul/score) and `assertQuestionBatch` re-checks the escape option and the paired `can_` Nouls before the batch leaves this file
+      //   guard: the answers pass the floors above (CHOICE_FLOOR / PAIRED_NOUL_FLOOR / NOUL_FLOOR) and then the plan's own rules — the five identity rules, the secret-basename and oversize refusals and the destination routing all run after, and can only refuse more
+      //   fallback: an unanswered id counts in `fallbacks` and the code classification stands; a reject/timeout/402 returns a complete JevOutcome with `reason` and no answers (askImport never throws); test: test/unit/import/questions.test.ts
+      //   no-gating: ordering only — Jev sees shapes, never content (§0 principle 3), and no answer can make a file be written: apply still re-checks every destination
       const res = await deps.decider.ask(batch.state, batch.questions, { signal: deps.signal, stage: 'context', step: 0 });
       requests += 1;
       questions += countQuestions(batch);

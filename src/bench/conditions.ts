@@ -14,10 +14,11 @@
  * synthesizer does not echo its mode and generation), the tuned arm's are the tuned provider's own parameters.
  */
 import { lookupPricing } from '../config/defaults.js';
-import type { BenchCondition, BenchDeps, BenchSuite, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
+import type { BenchCondition, BenchDeps, BenchSuite, ConfigRecordValue, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
 import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/source.js';
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
+import { JEV_OFF_MODEL, jevOffModeFrom } from '../jev/off.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
 import type { BenchOptions, ConditionConfig, PinnedGeneration, ServedRate } from './types.js';
 
@@ -179,6 +180,8 @@ export function tunedParamsFor(generatorModel: string, suite: BenchSuite): Tuned
 function deciderModelOf(condition: BenchCondition, opts: BenchOptions): string | null {
   if (engineModeOf(condition) === 'jev-off') return null;
   if (usesStubDecider(condition)) return STUB_DECIDER_MODEL;
+  // HARNESS-NEXT-DESIGN §1.2: with the `--jev off` switch on, the slot holds the switch's double and summary.json says so
+  if (jevOffModeFrom() !== null) return JEV_OFF_MODEL;
   return opts.deciderModel.configured;
 }
 
@@ -228,6 +231,13 @@ export interface EngineBuildInput {
  * per pair. `generation` is the arm's PINNED parameters (never `opts.generation`, which is the user's config); the
  * llm-sieve arm pins its decider model to the stub's so the drift check reads the stub as the configured model.
  */
+/** A per-worker copy of the config record — the entry and its `value` object (see buildEngineOptions). */
+function copyConfigRecord(record: Record<string, ConfigRecordValue>): Record<string, ConfigRecordValue> {
+  const out: Record<string, ConfigRecordValue> = {};
+  for (const [k, v] of Object.entries(record)) out[k] = { value: typeof v.value === 'string' ? v.value : { ...v.value }, source: v.source };
+  return out;
+}
+
 export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions): EngineOptions {
   const generation = pinnedGeneration(input.condition, input.provider.model);
   const out: EngineOptions = {
@@ -242,11 +252,18 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
     limits: { ...opts.limits, spendCapUsd: opts.taskSpendCapUsd },
     sandboxProfile: opts.sandboxProfile,
     noNetwork: opts.noNetwork,
-    configRecord: opts.configRecord,
+    // HARNESS-NEXT-DESIGN §6 S0 / §2 (mini-swe-agent v2.4.x "deep-copy per-worker config"): every pair gets its
+    // own copy. `--concurrency N` runs N of these engines in one process, each writing its `configRecord` into its
+    // own run dir; a shared object means one worker's engine can observe — or leave behind — another's edit, and
+    // the symptom would be a run dir describing the wrong configuration rather than a crash. The record is
+    // `ConfigRecordValue` is `{ value: string | { source; fingerprint }, source: string }`, so copying the entry
+    // and its `value` object is a deep copy of the whole record.
+    configRecord: copyConfigRecord(opts.configRecord),
     redact: opts.redact,
-    secretPaths: opts.secretPaths,
+    secretPaths: [...opts.secretPaths],
     generation: { temperature: generation.temperature, maxTokens: generation.maxTokens },
-    deciderModel: usesStubDecider(input.condition) ? { configured: STUB_DECIDER_MODEL, pinned: true } : { configured: opts.deciderModel.configured, pinned: opts.deciderModel.pinned },
+    // the model the engine's drift check compares against: the stub's, the `--jev off` switch's, or the configured one
+    deciderModel: usesStubDecider(input.condition) ? { configured: STUB_DECIDER_MODEL, pinned: true } : jevOffModeFrom() !== null ? { configured: JEV_OFF_MODEL, pinned: true } : { configured: opts.deciderModel.configured, pinned: opts.deciderModel.pinned },
     // TUI-DESIGN §15.2 bench/conditions.ts row: a bench run is its own session and writes neither index.jsonl nor history.jsonl (§1)
     session: { sessionId: null, parentRunId: null, source: 'bench' },
   };

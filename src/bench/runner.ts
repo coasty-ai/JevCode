@@ -20,6 +20,7 @@ import { readGeneratorRecords, summariseGeneratorRecords } from './generator-rec
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
 import { readStepsSummary } from './step-records.js';
 import { createStubDecider, type StubDecider } from './stub-decider.js';
+import { withJevOff } from '../jev/off.js';
 import { createTunedProvider, type TunedProvider } from './tuned-provider.js';
 import { renderComparison } from './report.js';
 import { loadLadderSources } from './ladder/loader.js';
@@ -550,7 +551,12 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
     const provider: Provider = tuned ?? baseProvider;
     // llm-sieve: zero Jev requests — the stub answers (and counts) whatever still reaches the decider slot
     const stub: StubDecider | null = usesStubDecider(condition) ? createStubDecider() : null;
-    const decider: Decider = stub ?? (mocked ? deps.createMockDecider() : deps.liveDecider!);
+    // HARNESS-NEXT-DESIGN §1.2 / §5 Ring 1: with `JEVCODE_JEV=off` the Decider slot holds the switch's deterministic
+    // double, so an arm that still finishes proves every router took its named code fallback (`--jev off` gate).
+    // The stub wins: `deciderModelOf` and `buildEngineOptions` both check `usesStubDecider` BEFORE the switch, so
+    // wrapping an llm-sieve arm here would pin `deciderModel` to the stub's name while the decider served
+    // `none (--jev off)` — a pinned model drift, i.e. `JevModelDriftError` and exit 2 on the first ask.
+    const decider: Decider = stub ?? withJevOff(mocked ? deps.createMockDecider() : deps.liveDecider!);
     if (!jevOnly) generatorModel ??= baseProvider.model;
     const synthMode = synthesizerModeOf(condition);
     const synthGeneration = synthesizerGenerationOf(condition, baseProvider.model);

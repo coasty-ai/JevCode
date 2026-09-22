@@ -20,6 +20,7 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import type { Action, Confirmer, EngineOptions, MockTurn, PlanDraft } from '../core/types.js';
 import { percentile } from '../core/time.js';
+import { bucketStats, labelStats, stepTimeline, timelineEnabled, type BucketStat } from './timeline.js';
 
 export interface StepOverheadResult {
   steps: number;
@@ -62,6 +63,12 @@ export interface StepOverheadResult {
   dirtyBytes: number;
   pass: boolean;
   gateMs: number;
+  /**
+   * HARNESS-NEXT-DESIGN §4.4 / §6 S0: where the step's wall went, per bucket and per label — only with
+   * `JEVCODE_TIMELINE` set, because the recorder would otherwise be measuring itself inside the gated number. This
+   * is the readout that says whether a harness p95 is images, lane spawns, the decider double or the engine.
+   */
+  timeline: { buckets: BucketStat[]; labels: BucketStat[] } | null;
 }
 
 const neverAsked: Confirmer = { identity: 'perf', confirm: async () => false };
@@ -207,6 +214,10 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       }
     });
     await engine.run();
+    // the timeline snapshot is taken HERE, before the §8.3 cold-start engine below runs: `stepTimeline` is a
+    // process-wide recorder, so a second engine over the same run dir would append its steps to this snapshot.
+    const snap = stepTimeline.snapshot();
+    const timeline = timelineEnabled() && snap.steps.length > 0 ? { buckets: bucketStats(snap), labels: labelStats(snap) } : null;
     // §8.3 cold-start row: a second process over the same run dir, where no `outputs/step-n.txt` has been read yet
     let coldPromptBuildMs: number | null = null;
     try {
@@ -258,6 +269,7 @@ export async function measureStepOverhead(opts: { steps: number; gateMs?: number
       dirtyBytes,
       pass: p95 !== null && p95 < gateMs && harnessMs.length >= Math.min(opts.steps, 10) && hashSkipped === true && (promptBuildMs.length === 0 || (percentile(promptBuildMs, 95) ?? 0) < promptBuildGateMs),
       gateMs,
+      timeline,
     };
   } finally {
     rmSync(ws, { recursive: true, force: true });

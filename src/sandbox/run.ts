@@ -19,6 +19,7 @@ import { SandboxError, isAbortError, isBudgetError } from '../errors.js';
 import { killTree } from './kill.js';
 import type { KillTreeOptions, KillTreeResult } from './kill.js';
 import { canonicalPath, canonicalPathSync, isWithin } from './paths.js';
+import { commandLabel, stepTimeline } from '../perf/timeline.js';
 import { SANDBOX_EXEC, buildProfile, detectSandboxLevel } from './seatbelt.js';
 
 export const TAIL_BYTES = 16 * 1024;
@@ -409,5 +410,15 @@ export function createSandbox(opts: SandboxCreateOptions, internals: SandboxInte
     await Promise.allSettled([...entries.map((e) => e.done), ...strays.map((pgid) => killImpl(pgid, internals.killTreeOptions ?? {}))]);
   }
 
-  return { level, run, killAll };
+  /**
+   * HARNESS-NEXT-DESIGN §4.1 queues 1 and 5 (wave S0): every sandboxed process run is the lane/candidate queue —
+   * `exec` inside the agent's own execute stage, `lane` everywhere else (candidate runs, lane setup, the `git status`
+   * refresh), labelled by argv0. Off unless `JEVCODE_TIMELINE` is set, where it is `run` itself with no wrapper.
+   */
+  const timedRun = (command: string, o: SandboxRunOptions): Promise<ExecResult> => {
+    if (!stepTimeline.isEnabled()) return run(command, o);
+    return stepTimeline.measure(stepTimeline.currentStage() === 'execute' ? 'exec' : 'lane', commandLabel(command), () => run(command, o));
+  };
+
+  return { level, run: timedRun, killAll };
 }

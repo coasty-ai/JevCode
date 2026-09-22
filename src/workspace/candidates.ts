@@ -10,6 +10,7 @@ import { lstat, open, readdir } from 'node:fs/promises';
 import { join, posix, relative, sep } from 'node:path';
 
 import type { Candidate } from '../core/types.js';
+import { stepTimeline } from '../perf/timeline.js';
 
 export const MAX_CANDIDATE_BYTES = 1024 * 1024;
 export const MAX_LIST_ENTRIES = 20_000;
@@ -26,6 +27,22 @@ export interface CandidateEntry {
   touchedThisRun: boolean;
   /** dropped for size, type or content; kept so invalidation does not re-stat it */
   excluded: boolean;
+  /**
+   * HARNESS-NEXT-DESIGN §3 M7 (wave S0): the `mtime` and `ctime` the entry's `binary` verdict was sniffed at.
+   * `noteChanged` skips the 8 KB sniff only when `bytes`, `mtimeMs` **and** `ctimeMs` are all unchanged.
+   *
+   * mtime and size alone are not enough, and the writers that break them are ordinary agent commands: `tar -x`,
+   * `cp -p`, `rsync -t`, `unzip` and anything restoring a cached build artefact all set mtime from the archive, so a
+   * same-size file can gain new content under an unchanged (even an older) mtime — and a file that became binary
+   * would stay a listed text candidate. `ctime` is the inode-change time: the kernel moves it on every write **and**
+   * on `utimes`/`utimensat`, and no userspace API can set it backwards, so a restored mtime cannot hide behind it.
+   * It rides the same `lstat` the gate already makes, so the extra field costs nothing.
+   *
+   * Absent on an entry that was never stat-gated (an old cache, a stat that failed), which simply sniffs.
+   */
+  mtimeMs?: number;
+  /** the ctime of the same `lstat` — see `mtimeMs`; both must match for the sniff to be reused */
+  ctimeMs?: number;
 }
 
 export interface CandidateDeps {
@@ -110,11 +127,25 @@ async function mapBounded<T, R>(items: readonly T[], limit: number, fn: (item: T
   return results;
 }
 
+/**
+ * §3 M7 stat gate: may the 8 KB `binary` sniff that produced `prev` be reused for `st`?
+ *
+ * Only when size, mtime **and** ctime all match. Dropping ctime would be wrong for writers an agent runs every day
+ * (`tar -x`, `cp -p`, `rsync -t`, `unzip`, a restored build cache): they set mtime from the archive, so new content
+ * can arrive under an unchanged — or older — mtime at an unchanged size. ctime moves on every write and on every
+ * `utimes`, and userspace cannot move it backwards, so it closes that hole for free out of the same `lstat`.
+ *
+ * An entry from before the gate carries neither stamp; `undefined === number` is false, so it simply sniffs once.
+ */
+export function statGateHit(prev: CandidateEntry | undefined, st: { size: number; mtimeMs: number; ctimeMs: number }): prev is CandidateEntry {
+  return prev !== undefined && prev.bytes === st.size && prev.mtimeMs === st.mtimeMs && prev.ctimeMs === st.ctimeMs;
+}
+
 export function createCandidateCache(deps: CandidateDeps): CandidateCache {
   let cache: Map<string, CandidateEntry> | null = null;
   let building: Promise<Map<string, CandidateEntry>> | null = null;
 
-  async function inspect(rel: string, touched: boolean): Promise<CandidateEntry | null> {
+  async function inspect(rel: string, touched: boolean, prev?: CandidateEntry): Promise<CandidateEntry | null> {
     // The entry itself must not be a symlink: git lists untracked symlinks as bare paths
     // (no 120000 mode to filter on) and an in-workspace target would otherwise appear twice.
     try {
@@ -131,15 +162,18 @@ export function createCandidateCache(deps: CandidateDeps): CandidateCache {
     } catch {
       return null;
     }
-    if (!st.isFile()) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true };
-    if (st.size > MAX_CANDIDATE_BYTES) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true };
+    if (!st.isFile()) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    if (st.size > MAX_CANDIDATE_BYTES) return { bytes: st.size, binary: false, touchedThisRun: touched, excluded: true, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    if (statGateHit(prev, st)) {
+      return { bytes: st.size, binary: prev.binary, touchedThisRun: touched, excluded: prev.binary, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
+    }
     let binary = false;
     try {
       binary = st.size > 0 && (await sniffBinary(canonical));
     } catch {
       return null;
     }
-    return { bytes: st.size, binary, touchedThisRun: touched, excluded: binary };
+    return { bytes: st.size, binary, touchedThisRun: touched, excluded: binary, mtimeMs: st.mtimeMs, ctimeMs: st.ctimeMs };
   }
 
   async function names(): Promise<string[]> {
@@ -188,14 +222,31 @@ export function createCandidateCache(deps: CandidateDeps): CandidateCache {
       for (const key of [...m.keys()]) if (!current.has(key)) m.delete(key);
       await fill(m, [...current]);
     },
+    /**
+     * HARNESS-NEXT-DESIGN §6 S0 (the harness-overhead gate): every `run` outcome re-inspects the whole reported
+     * dirty set, which on the `step-overhead` fixture is 50 files that did not change. The inspections are
+     * independent, so they run at `STAT_CONCURRENCY` like `fill` instead of one at a time, and the stat gate in
+     * `inspect` skips the 8 KB sniff of an unchanged file. Results are applied in input order, so a repeated path
+     * still ends on its last reading and the cache is what the serial loop produced.
+     */
     async noteChanged(paths) {
       const m = await ensure();
+      const rels: string[] = [];
       for (const raw of paths) {
         const rel = toPosix(relative(deps.root, join(deps.root, raw)));
         if (rel.length === 0 || rel.startsWith('..')) continue;
-        const entry = await inspect(rel, true);
-        if (entry) m.set(rel, entry);
-        else m.delete(rel);
+        rels.push(rel);
+      }
+      if (rels.length === 0) return;
+      const end = stepTimeline.span('listing', 'note-changed');
+      try {
+        const inspected = await mapBounded(rels, STAT_CONCURRENCY, async (rel) => [rel, await inspect(rel, true, m.get(rel))] as const);
+        for (const [rel, entry] of inspected) {
+          if (entry) m.set(rel, entry);
+          else m.delete(rel);
+        }
+      } finally {
+        end();
       }
     },
     entries() {
