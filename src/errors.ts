@@ -249,14 +249,30 @@ export class CheckpointError extends JevCodeError {
   }
 }
 
-export type AbortReason = 'human_abort' | 'signal' | 'error';
+/** contract 1.4 (COORDINATION-DESIGN §7.2, W0 item 2): `human_pause` is the pause-now soft interrupt through the shared controller */
+export type AbortReason = 'human_abort' | 'signal' | 'error' | 'human_pause';
+
+/** contract 1.4 (COORDINATION-DESIGN §12.0.2 exit-code table): the exit code an AbortError carries per reason */
+function abortExitCode(reason: AbortReason, signalName: SignalName | null): number {
+  switch (reason) {
+    case 'signal':
+      return signalName === 'SIGTERM' ? EXIT_CODES.sigterm : signalName === 'SIGHUP' ? EXIT_CODES.sighup : EXIT_CODES.sigint;
+    case 'human_abort':
+      return EXIT_CODES.sigint;
+    case 'human_pause':
+      // exit 4, the human_pause family (stop.ts exitCodeFor): a serialised pause never reads exit 1
+      return EXIT_CODES.budget;
+    case 'error':
+      return EXIT_CODES.unexpected;
+  }
+}
 
 export class AbortError extends JevCodeError {
   readonly reason: AbortReason;
   /** TUI-DESIGN §15 item 19: the signal behind abort('signal'), read by exitCodeFor for 130 / 143 / 129 (§13.5) */
   readonly signalName: SignalName | null;
   constructor(reason: AbortReason, signalName: SignalName | null = null) {
-    super('abort', `aborted: ${reason}`, { exitCode: reason === 'signal' ? (signalName === 'SIGTERM' ? 143 : signalName === 'SIGHUP' ? 129 : 130) : reason === 'human_abort' ? 130 : 1 });
+    super('abort', `aborted: ${reason}`, { exitCode: abortExitCode(reason, signalName) });
     this.reason = reason;
     this.signalName = signalName;
   }

@@ -17,7 +17,6 @@ import { lookupPricing } from '../config/defaults.js';
 import type { BenchCondition, BenchDeps, BenchSuite, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
 import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/source.js';
-import type { EngineOptionsWithContextPolicy } from '../loop/context/types.js';
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
 import type { BenchOptions, ConditionConfig, PinnedGeneration, ServedRate } from './types.js';
@@ -254,7 +253,7 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   // docs/COORDINATION-DESIGN.md §8.2 / review D7: every frozen arm keeps HEAD's prompt until a head-to-head has measured
   // the relaxed context, or the baselines in `experiments/results/` stop being comparable the moment §8 lands. Pass
   // `contextPolicy: { view: 'relaxed' }` (or set `JEVCODE_BENCH_CONTEXT=relaxed`) for the arm that measures it.
-  (out as EngineOptionsWithContextPolicy).contextPolicy = { view: process.env['JEVCODE_BENCH_CONTEXT'] === 'relaxed' ? 'relaxed' : 'legacy' };
+  out.contextPolicy = { view: process.env['JEVCODE_BENCH_CONTEXT'] === 'relaxed' ? 'relaxed' : 'legacy' };
   if (input.synthesizer) out.synthesizer = input.synthesizer;
   if (input.resume) out.resume = input.resume;
   if (input.now) out.now = input.now;

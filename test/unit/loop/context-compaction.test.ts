@@ -9,7 +9,7 @@ import { SUMMARY_SECTIONS, compactCode, compactionDue, isContextSummary, renderS
 import { buildHistoryEntry, foldableCount, needsOutputFile, outputRefFor, pushHistory } from '../../../src/loop/context/history.js';
 import { CHARS_PER_TOKEN, COMPACT_AT_PCT, COMPACT_EVERY, SUMMARY_TEXT_MAX_CHARS, contextBudget, resolveContextPolicy } from '../../../src/loop/context/limits.js';
 import { computeContextUsage, formatBudget, formatMeter, formatRecentSteps, meterLevel, restoredContextUsage } from '../../../src/loop/context/meter.js';
-import type { HistoryEntry } from '../../../src/loop/context/types.js';
+import type { HistoryEntry } from '../../../src/core/types.js';
 import { buildWindowEntry } from '../../../src/loop/window.js';
 
 function plan(): Plan {

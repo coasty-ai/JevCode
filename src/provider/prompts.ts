@@ -16,7 +16,7 @@ import { DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { Candidate, ChoiceVerdict, EngineMode, FileView, Intent, IntentAnswer, Plan, ReplanDirective, SandboxLevel, WindowEntry } from '../core/types.js';
 import type { RenderedHistoryEntry } from '../loop/context/history.js';
 import { FILES_SHARE, HISTORY_SHARE, KEPT_ITEM_CHARS, KEPT_MAX_ITEMS, OTHER_SESSIONS_MAX_CHARS, SUMMARY_MAX_CHARS } from '../core/limits.js';
-import type { FilePin } from '../loop/context/types.js';
+import type { FilePin } from '../core/types.js';
 
 export const PROMPT_LIMITS = {
   /** hard ceiling on one user message; sections are bounded individually well below it */

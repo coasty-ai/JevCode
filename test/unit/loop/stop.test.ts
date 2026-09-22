@@ -60,6 +60,26 @@ describe('budget stop set (TUI-DESIGN §8.7, §15 item 19)', () => {
   });
 });
 
+describe('contract 1.4: human_pause through the shared controller (COORDINATION-DESIGN §7.2, §12.0.2 exit-code table)', () => {
+  it('AbortError(human_pause).exitCode is 4 — a serialised pause never reads exit 1', () => {
+    const e = new AbortError('human_pause');
+    expect(e.reason).toBe('human_pause');
+    expect(e.exitCode).toBe(EXIT_CODES.budget);
+    expect(e.toJSON()).toMatchObject({ code: 'abort', exitCode: 4 });
+  });
+
+  it('classifyAbort maps it to the human_pause interrupt and stop; exitCodeFor agrees (4), degraded turns it into 3', () => {
+    expect(classifyAbort(new AbortError('human_pause'))).toEqual({ interrupt: 'human_pause', stop: 'human_pause' });
+    expect(exitCodeFor(classifyAbort(new AbortError('human_pause')).stop)).toBe(4);
+    expect(exitCodeFor('human_pause', undefined, true)).toBe(3);
+    // the rest of the table is unchanged
+    expect(classifyAbort(new AbortError('human_abort'))).toEqual({ interrupt: 'human_abort', stop: 'human_abort' });
+    expect(classifyAbort(new AbortError('error'))).toEqual({ interrupt: 'error', stop: 'error' });
+    expect(classifyAbort(new Error('x'))).toEqual({ interrupt: 'error', stop: 'error' });
+    expect(isBudgetStop('human_pause')).toBe(false);
+  });
+});
+
 describe('AbortError.signalName (TUI-DESIGN §15 item 19)', () => {
   it('defaults to null and keeps the 130 / 130 / 1 exit codes', () => {
     expect(new AbortError('signal').signalName).toBeNull();

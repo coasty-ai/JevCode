@@ -212,6 +212,9 @@ export interface SampleRunOptions {
   purpose: GeneratePurpose;
   /** the parent (step) signal; the sample's own controller is linked to it */
   signal: AbortSignal;
+  /** contract 1.4 (COORDINATION-DESIGN §12.0.2 P3): the goal and round this sample is fired for — the engine records them on the pause cache and on `PausePoint.llm` */
+  goalId?: string;
+  goalRound?: number;
   deadlineMs: number;
   now?: () => number;
   /** §4.8 facts of a stream the abort cut after its headers (forwarded to the generator; the estimate is `unfinishedSampleUsage`'s) */
@@ -228,7 +231,7 @@ export function generateWithDeadline(generate: GenerateFn, req: GenerateRequest,
   // the call starts synchronously so a caller can observe it right after `fire()` (and so the accounting sees one call per fired sample)
   let started: Promise<GenerateResult>;
   try {
-    started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal, ...(o.onCancelled === undefined ? {} : { onCancelled: o.onCancelled }) });
+    started = generate(req, { sample: o.sample, purpose: o.purpose, signal: controller.signal, ...(o.goalId === undefined ? {} : { goalId: o.goalId }), ...(o.goalRound === undefined ? {} : { goalRound: o.goalRound }), ...(o.onCancelled === undefined ? {} : { onCancelled: o.onCancelled }) });
   } catch (e) {
     started = Promise.reject(e instanceof Error ? e : new Error(String(e)));
   }
@@ -826,7 +829,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     if (st.reasoning !== null) req.reasoning = st.reasoning;
     if (k > 0) req.seed = sampleSeed(st.input.step, k);
     const t0 = now();
-    const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, deadlineMs: st.deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
+    const run = generateWithDeadline(deps.generate, req, { sample: k, purpose: 'propose_fix', signal: st.input.signal, goalId: st.input.goalId, goalRound: st.input.round, deadlineMs: st.deadlineMs, now, onCancelled: (partial) => st.partials.set(k, partial) });
     st.runs.set(k, run);
     void run.promise
       .then((end) => handleEnd(st, k, end))

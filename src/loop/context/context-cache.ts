@@ -18,7 +18,7 @@ import { normaliseRelPath } from '../../checkpoint/images.js';
 import { sha256Hex } from '../../core/hash.js';
 import type { FileView, Workspace } from '../../core/types.js';
 import { FILE_CACHE_BYTES, FILE_CACHE_MAX_ENTRIES, FILE_HASH_MAX_BYTES, FILE_MEMORY_MAX_ENTRIES, FILE_VIEW_MAX_CHARS, READ_MAX_TOTAL_CHARS } from './limits.js';
-import type { FileCacheEntry, FileMemory, FileMemoryEntry, FilePin } from './types.js';
+import type { FileCacheEntry, FileMemory, FileMemoryEntry, FilePin } from '../../core/types.js';
 
 // ---------------------------------------------------------------------------------------
 // fileCache (pure)

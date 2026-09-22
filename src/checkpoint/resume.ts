@@ -168,7 +168,10 @@ export function foldStepsIntoState(state: CheckpointState, steps: readonly StepR
   // A rule-1 diagnostic is stale once a committed row exists at or past its step number.
   const interrupted = state.interrupted && step >= state.interrupted.step ? null : state.interrupted;
 
-  const { error: _droppedError, ...rest } = state;
+  // contract 1.4 (COORDINATION-DESIGN §7.3 step 4): the replay detail drops together with `interrupted` (same condition), and
+  // a `pausePoint` whose step a committed row reached is stale too — a boundary point (step = committed + 1) survives, so the
+  // resume card of a run whose last checkpoint landed after the point still says where it stopped
+  const { error: _droppedError, interruptedDetail, pausePoint, ...rest } = state;
   void _droppedError;
   return {
     ...rest,
@@ -176,6 +179,8 @@ export function foldStepsIntoState(state: CheckpointState, steps: readonly StepR
     window,
     lastChangeStep,
     interrupted,
+    ...(interrupted !== null && interruptedDetail !== undefined ? { interruptedDetail } : {}),
+    ...(pausePoint !== undefined && pausePoint.step > step ? { pausePoint } : {}),
     stopReason: null,
     resumes: state.resumes + 1,
     updatedAt,

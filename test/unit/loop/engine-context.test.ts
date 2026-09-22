@@ -11,7 +11,7 @@ import type { EngineStatus } from '../../../src/core/types.js';
 import { hasContextStore } from '../../../src/checkpoint/types.js';
 import { HISTORY_STEPS, contextBudgetChars } from '../../../src/loop/context/limits.js';
 import { compactCode } from '../../../src/loop/context/compaction.js';
-import type { ContextUsage, HistoryEntry } from '../../../src/loop/context/types.js';
+import type { ContextUsage, HistoryEntry } from '../../../src/core/types.js';
 import { createFakeSandbox, createFakeWorkspace, execResult, makeEngine, turn, type Harness } from './fakes.js';
 
 const harnesses: Harness[] = [];
@@ -21,11 +21,10 @@ afterEach(() => {
   for (const d of dirs.splice(0)) rmSync(d, { recursive: true, force: true });
 });
 
-/** `EngineStatus.context` (the §12.0.3 subtype the engine returns until core/types.ts carries the member). */
+/** `EngineStatus.context` — the §12.0.3 member, now on the core contract (contract 1.4); absent only in the modes that build no view. */
 function usage(status: EngineStatus): ContextUsage {
-  const c = (status as EngineStatus & { context?: ContextUsage }).context;
-  expect(c).toBeDefined();
-  return c!;
+  expect(status.context).toBeDefined();
+  return status.context!;
 }
 
 /** `steps` run steps whose output is `chars` long (letters, not digits: signature normalisation strips digits). */
@@ -235,6 +234,31 @@ describe('§8.4 files in view', () => {
 });
 
 describe('§8.6 / §12.0.3 compaction and the meter', () => {
+  it('contract 1.4 `Engine.compact()` (`/compact now`): folds at once outside the triggers; a no-op under the legacy pin', async () => {
+    const h = await runSteps(9, 5_000, { compactEvery: 0 });
+    h.engine.events.on('step:end', (e) => {
+      if (e.record.step === 8) h.engine.compact!();
+    });
+    await h.engine.run();
+    const notices = h.events.filter((e) => e.type === 'notice' && 'text' in e && e.text.startsWith('compaction:'));
+    expect(notices).toHaveLength(1);
+    expect((notices[0] as { text: string }).text).toMatch(/ \(requested\)$/);
+    // contract 1.4: the typed event rides the union now, beside the one human-readable notice line
+    const events = h.events.filter((e) => e.type === 'context:compacted');
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: 'context:compacted', step: 8, by: 'code' });
+    const state = h.store.last()!;
+    expect(state.summaryAt).toBe(8);
+    expect(state.compactions).toBe(1);
+
+    // `view: 'legacy'` builds no context at all, so the verb does nothing (and never throws)
+    const h2 = await runSteps(9, 5_000, { view: 'legacy', compactEvery: 0 });
+    h2.engine.events.on('step:end', () => h2.engine.compact!());
+    await h2.engine.run();
+    expect(h2.events.filter((e) => e.type === 'context:compacted')).toEqual([]);
+    expect(h2.store.last()!.compactions).toBeUndefined();
+  });
+
   it('compacts on the 8th step, folds the history, writes the summary and announces context:compacted', async () => {
     const h = await runSteps(9, 5_000);
     await h.engine.run();

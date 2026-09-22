@@ -23,7 +23,8 @@ import {
   SUMMARY_OBJECTIVE_CHARS,
   SUMMARY_TEXT_MAX_CHARS,
 } from './limits.js';
-import type { CompactionMode, ContextSummary, FileMemory, HistoryEntry, SummarySection } from './types.js';
+import type { CompactionMode, FileMemory, HistoryEntry } from '../../core/types.js';
+import type { ContextSummary, SummarySection } from './types.js';
 
 export const SUMMARY_SECTIONS: readonly SummarySection[] = ['Objective', 'Completed', 'Active', 'Blocked', 'Files', 'Tests', 'Notes'];
 
@@ -146,7 +147,7 @@ export function compactCode(input: CompactionInput): CompactionResult {
  * §8.6: every trigger. `'manual'` is `/compact` — the TUI command owns that verb, so the engine seam is
  * `compactionDue({ manual: true })`; `'resume'` is the §8.6 fourth trigger, taken only when the resume folded rows past
  * the history window (review finding 53).
- * TODO(§12.0.2): `/compact` reaches the engine when `Engine.compact?()` joins the contract 1.4 block.
+ * `/compact now` reaches it through `Engine.compact()` (contract 1.4, §12.0.2).
  */
 export type CompactionTrigger = 'interval' | 'budget' | 'manual' | 'resume';
 

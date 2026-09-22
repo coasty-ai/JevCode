@@ -16,7 +16,7 @@ import {
   FILE_CACHE_BYTES,
   HISTORY_STEPS,
 } from '../../core/limits.js';
-import type { CompactionMode, ContextPolicyOptions } from './types.js';
+import type { CompactionMode, ContextPolicyOptions } from '../../core/types.js';
 
 export * from '../../core/limits.js';
 
@@ -119,10 +119,8 @@ function positive(v: number | undefined, fallback: number): number {
  * §8.2 / §12.0.1: the policy for one run.
  *
  * `windowTokens` comes from `contextPolicy.windowTokens`, else from the pricing table's `contextTokens` column when the
- * caller passes one, else the 128k default.
- * TODO(§14 Q4, contract 1.4): `GeneratorConfig['pricing']` has no `contextTokens` member at HEAD, so `EngineOptions
- * .generatorPricing` cannot supply it yet — `engine.ts` passes `contextPolicy.windowTokens` and this default until the
- * column lands, at which point the engine passes `generatorPricing.contextTokens` here and nothing else changes.
+ * caller passes one (contract 1.4 landed the column, and `engine.ts` passes `generatorPricing.contextTokens`), else the
+ * 128k default.
  */
 export function resolveContextPolicy(p?: ContextPolicyOptions, budget?: Omit<BudgetInput, 'windowTokens' | 'override'>): ResolvedContextPolicy {
   const compactEvery = p?.compactEvery;

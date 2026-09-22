@@ -18,27 +18,21 @@ import {
   HISTORY_SHOWN_FILES_MAX,
   OUTPUT_FILE_MAX_CHARS,
 } from '../core/limits.js';
-import type { CheckpointState, CheckpointStore, Json, WindowEntry } from '../core/types.js';
-import type { ContextCheckpointExtension, FileCacheEntry, FileMemory, FilePin, HistoryEntry } from '../loop/context/types.js';
+import type { CheckpointState, CheckpointStore, FileCacheEntry, FileMemory, FilePin, HistoryEntry, WindowEntry } from '../core/types.js';
 import { normaliseRelPath } from './images.js';
 
-export type { CheckpointStateWithContext, ContextCheckpointExtension } from '../loop/context/types.js';
+/**
+ * The six optional `CheckpointState` members of §8.3 / §8.4 / §8.6, as one object — `readContextExtension` returns it and
+ * `buildCheckpointState` spreads it. The members themselves are the contract's (core/types.ts, contract 1.4); this is the
+ * Pick over them, not a second declaration.
+ */
+export type ContextCheckpointExtension = Pick<CheckpointState, 'history' | 'fileCache' | 'fileMemory' | 'summaryAt' | 'compactions' | 'lastCompactionAt'>;
 
-/** The store methods the context policy needs; optional on the contract so injected fakes keep type-checking (`hasContextStore`). */
-export interface ContextStoreExtension {
-  /**
-   * `<runDir>/outputs/step-<n>.txt`: the whole (redacted) output of a step, ≤ 1 MiB (head + tail with a marker), 64 MiB per
-   * run then oldest deleted. Resolves with the steps whose file the per-run bound deleted, so the caller can stop pointing
-   * at them (§8.5 "no clip is silent"; review D12).
-   */
-  writeOutput(step: number, text: string): Promise<number[]>;
-  /** the stored output of a step; null when none was written (or it was deleted by the per-run bound) */
-  readOutput(step: number): Promise<string | null>;
-  /** `<runDir>/context/summary.json`: the rolling summary, redacted, atomic */
-  writeContextSummary(summary: Json): Promise<void>;
-  /** the stored summary; null when absent or unusable */
-  readContextSummary(): Promise<Json | null>;
-}
+/**
+ * The four context artefacts as REQUIRED methods: `CheckpointStore` declares them optional (contract 1.4, so injected fakes
+ * keep type-checking), and `hasContextStore` narrows a store to this shape before the context policy writes anything.
+ */
+export type ContextStoreExtension = Required<Pick<CheckpointStore, 'writeOutput' | 'readOutput' | 'writeContextSummary' | 'readContextSummary'>>;
 
 export type CheckpointStoreWithContext = CheckpointStore & ContextStoreExtension;
 

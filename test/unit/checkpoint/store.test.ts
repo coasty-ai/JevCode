@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 import { sha256Hex } from '../../../src/core/hash.js';
 import type { CheckpointEnvelope } from '../../../src/core/types.js';
 import { CheckpointError } from '../../../src/errors.js';
-import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
+import { CHECKPOINT_FILES, CORRUPT_STATE_FILE, cacheRelPath, createCheckpointStore, parseEnvelope, redactDeep, serialiseEnvelope } from '../../../src/checkpoint/store.js';
 import { FAKE_KEY, REDACTED, fakeRedact, makeDecision, makeMeta, makeState, makeStepRecord, withTempDir } from '../../fixtures/checkpoint/make.js';
 
 const identity = (s: string): string => s;
@@ -383,6 +383,74 @@ describe('serialisation failures', () => {
 // ---------------------------------------------------------------------------------------
 // TUI-DESIGN §15 item 10 / §13.3 / §19.0: CHECKPOINT_FILES additions, writeUi, updateMeta({ git }), classifyDiskError
 // ---------------------------------------------------------------------------------------
+
+describe('contract 1.4 additions (COORDINATION-DESIGN §7.2, §7.4)', () => {
+  it('writeCache writes <run>/cache/<rel> atomically and redacted, readCache reads it back, a missing file is null', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, fakeRedact);
+      await store.create(makeMeta());
+      await store.writeCache('step-3.json', { v: 1, step: 3, partial: { text: `key ${FAKE_KEY}`, chars: 4 } });
+      const files = await readdir(join(dir, CHECKPOINT_FILES.cache));
+      expect(files).toEqual(['step-3.json']);
+      const text = await readFile(join(dir, CHECKPOINT_FILES.cache, 'step-3.json'), 'utf8');
+      expect(text.endsWith('\n')).toBe(true);
+      expect(text).not.toContain(FAKE_KEY);
+      expect(text).toContain(REDACTED);
+      expect(await store.readCache('step-3.json')).toEqual({ v: 1, step: 3, partial: { text: `key ${REDACTED}`, chars: 4 } });
+      expect(await store.readCache('step-4.json')).toBeNull();
+      // nested rels create their parents; the store's flush awaits the chain
+      void store.writeCache('llm/g1/0/2.json', { body: 'x' });
+      await store.flush();
+      expect(await store.readCache('llm/g1/0/2.json')).toEqual({ body: 'x' });
+      // not JSON → null, never a throw
+      await writeFile(join(dir, CHECKPOINT_FILES.cache, 'bad.json'), '{');
+      expect(await store.readCache('bad.json')).toBeNull();
+    }));
+
+  it('renameCache supersedes a cache file: the bytes move, the old name is gone, a missing source is not an error, a bad rel rejects', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.writeCache('step-3.json', { v: 1, step: 3 });
+      await store.renameCache('step-3.json', 'step-3.superseded.json');
+      expect(await store.readCache('step-3.json')).toBeNull();
+      expect(await store.readCache('step-3.superseded.json')).toEqual({ v: 1, step: 3 });
+      expect(await readdir(join(dir, CHECKPOINT_FILES.cache))).toEqual(['step-3.superseded.json']);
+      // nothing to supersede is the common case (a boundary pause wrote no cache)
+      await expect(store.renameCache('step-9.json', 'step-9.superseded.json')).resolves.toBeUndefined();
+      await expect(store.renameCache('../escape.json', 'step-1.json')).rejects.toBeInstanceOf(CheckpointError);
+      await expect(store.renameCache('step-1.json', '/abs.json')).rejects.toBeInstanceOf(CheckpointError);
+    }));
+
+  it('a cache rel is validated: relative, no .., no absolute, no backslash; the writer rejects with CheckpointError', () =>
+    withTempDir(async (dir) => {
+      expect(cacheRelPath('step-1.json')).toBe('step-1.json');
+      expect(cacheRelPath('llm/./g1//0.json')).toBe('llm/g1/0.json');
+      for (const bad of ['', '../x.json', '/abs.json', 'a/../../b.json', 'a\\b.json', '..', '.']) expect(cacheRelPath(bad)).toBeNull();
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await expect(store.writeCache('../escape.json', { v: 1 })).rejects.toBeInstanceOf(CheckpointError);
+      expect(await store.readCache('../escape.json')).toBeNull();
+    }));
+
+  it('updateMeta({ ended }) replaces as a scalar and null clears it; resumes[] entries keep `reopened`', () =>
+    withTempDir(async (dir) => {
+      const store = createCheckpointStore(dir, identity);
+      await store.create(makeMeta());
+      await store.updateMeta({ ended: { at: '2026-09-21T12:00:00.000Z', by: 'human' } });
+      let onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.ended).toEqual({ at: '2026-09-21T12:00:00.000Z', by: 'human' });
+      await store.updateMeta({ resumes: [{ resumedAt: '2026-09-21T13:00:00.000Z', previousStopReason: 'human_pause', reopened: true }], ended: null });
+      onDisk = JSON.parse(await readFile(join(dir, CHECKPOINT_FILES.meta), 'utf8')) as ReturnType<typeof makeMeta>;
+      expect(onDisk.ended).toBeNull();
+      expect(onDisk.resumes).toEqual([{ resumedAt: '2026-09-21T13:00:00.000Z', previousStopReason: 'human_pause', reopened: true }]);
+      expect(onDisk.task).toBe('fix the bug');
+      // the loader still accepts the meta
+      const loaded = await createCheckpointStore(dir, identity).load().catch((e: unknown) => e);
+      expect(loaded).toBeInstanceOf(CheckpointError); // no state.json yet — but the meta parsed (the error names the state files, not run.json)
+      expect(String((loaded as Error).message)).toContain('no usable checkpoint');
+    }));
+});
 
 describe('contract 1.1 additions (TUI-DESIGN §15 item 19, §13.3)', () => {
   it('CHECKPOINT_FILES names the session-era artefacts', async () => {

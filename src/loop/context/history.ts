@@ -28,7 +28,7 @@ import {
   OUTPUT_FILE_MIN_CHARS,
   OUTPUT_READ_PREFIX,
 } from './limits.js';
-import type { HistoryEntry } from './types.js';
+import type { HistoryEntry } from '../../core/types.js';
 
 export const OUTPUTS_DIR = 'outputs';
 const OUTPUT_REF_RE = /^outputs\/step-([1-9]\d{0,8})\.txt$/;

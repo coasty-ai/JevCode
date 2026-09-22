@@ -4,7 +4,8 @@
  * the engine keeps the last object and `status()` returns it unchanged.
  */
 import { CHARS_PER_TOKEN, DEFAULT_GENERATOR_CONTEXT_TOKENS, METER_AMBER_PCT, METER_RED_PCT, type ContextBudget } from './limits.js';
-import type { CompactionMode, ContextCheckpointExtension, ContextUsage, RecentStepsUsage } from './types.js';
+import type { CompactionMode, ContextUsage, RecentStepsUsage } from '../../core/types.js';
+import type { ContextCheckpointExtension } from '../../checkpoint/types.js';
 
 export interface ContextUsageInput {
   /** §12.0.3 / review D15: the WHOLE prompt — the system prompt plus the step's user message */

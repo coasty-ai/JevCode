@@ -10,7 +10,7 @@ import { describe, expect, it } from 'vitest';
 import type { FileView, Plan } from '../../../src/core/types.js';
 import { buildHistoryEntry, expandHistory, needsOutputFile, outputRefFor, outputView, pushHistory } from '../../../src/loop/context/history.js';
 import { contextBudgetChars } from '../../../src/loop/context/limits.js';
-import type { HistoryEntry } from '../../../src/loop/context/types.js';
+import type { HistoryEntry } from '../../../src/core/types.js';
 import { buildWindowEntry } from '../../../src/loop/window.js';
 import { PROMPT_LIMITS, buildPrompt, buildUserMessage, type PromptContextView, type PromptFileInView, type PromptInput } from '../../../src/provider/prompts.js';
 

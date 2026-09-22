@@ -22,7 +22,7 @@ import {
   type FilesInViewDeps,
 } from '../../../src/loop/context/context-cache.js';
 import { FILE_CACHE_MAX_ENTRIES, FILE_MEMORY_MAX_ENTRIES } from '../../../src/loop/context/limits.js';
-import type { FileCacheEntry, FileMemory } from '../../../src/loop/context/types.js';
+import type { FileCacheEntry, FileMemory } from '../../../src/core/types.js';
 
 /** An in-memory disk: content by path, a stat that only moves when the content is replaced. */
 function disk(files: Record<string, string>) {
