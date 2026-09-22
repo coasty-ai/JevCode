@@ -20,15 +20,17 @@
  * the cold confirmation, MORE LANES THAN THE THREADPOOL HAS THREADS (the shape that wedged),
  * and the watchdog, driven by a worker script that really does sleep for ever.
  */
-import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 
 import type { Lane } from '../../../../src/synth/search/types.js';
+import type { TestRunSummary } from '../../../../src/synth/types.js';
 import { summarize } from '../../../../src/synth/verify/index.js';
+import { quixbugsTestCommand } from '../../../../src/synth/verify/quixbugs.js';
 import { WARM_OUTPUT_BYTES, WarmPlane } from '../../../../src/synth/warm/index.js';
-import { havePython, havePytest, PY_ENV, warmFixture, type WarmFixture } from './helpers.js';
+import { havePython, havePytest, haveRunner, PY_ENV, QUIXBUGS_DIR, warmFixture, type WarmFixture } from './helpers.js';
 
 /** Larger than libuv's default filesystem threadpool (4): the width that exposed the wedge. */
 const LANES = 6;
@@ -160,6 +162,75 @@ describe.skipIf(!havePytest)('the warm plane over a real lane (skipped: python3 
     expect(second.filter((r) => r === null)).toEqual([]);
     expect(p.stats().screened).toBe(LANES * 2);
   }, 180_000);
+});
+
+/**
+ * F08: the one piece of candidate code that used to run outside every deadline the warm worker owns was the
+ * candidate's own `import`. `_load_candidate` was called before the per-case alarm was armed, so a module body that
+ * never returns held the lane for the whole run's wall — for one candidate, and then again when the caller re-ran it
+ * cold. The cold path has no such hole: `run_tests.py` imports the candidate INSIDE each case's child, so the same
+ * hang is an ordinary per-case TIMEOUT there. This is the shape, measured against that cold twin.
+ */
+describe.skipIf(!havePython || !haveRunner)('a candidate whose import never returns (skipped: python3 with bench/data/quixbugs is not available here)', () => {
+  /** the whole verdict, failure texts included: warm may be faster, never different */
+  const fullVerdict = (s: TestRunSummary): unknown => ({
+    passed: s.passed,
+    failed: s.failed,
+    errors: s.errors,
+    skipped: s.skipped,
+    total: s.total,
+    failing: s.failing,
+    passing: s.passing,
+    timedOut: s.timedOut,
+    failures: s.failures.map((f) => [f.testId, f.expected, f.actual]),
+  });
+
+  it('reports a timeout for every case inside the per-case cap, and the lane and the plane survive it', async () => {
+    fx = warmFixture('jev-warm-import-hang-');
+    const f = fx;
+    const p = new WarmPlane({ sandbox: f.sandbox, signal: f.signal, runDir: f.runDir, workspaceRoot: f.ws, mode: 'quixbugs', interpreter: 'python3', bootEnv: PY_ENV });
+    plane = p;
+    // knapsack: ten JSON cases, the last one flagged `slow` — so the fixture also pins that a case the cold
+    // path never spawns is still SKIPPED here, rather than being swept into the import's timeout
+    const candidate = join(f.lane.dir, 'knapsack.py');
+    writeFileSync(candidate, ['import time', '', '# the module body never returns: an infinite loop, a blocking read, a wait on a lock', 'time.sleep(30)', '', 'def knapsack(capacity, items):', '    return 0', ''].join('\n'));
+    const command = quixbugsTestCommand(QUIXBUGS_DIR, 'knapsack', candidate, { timeoutSec: 0.4 });
+
+    const started = Date.now();
+    const hot = await p.serve(f.lane, command, SERVE_DEADLINE_MS, {});
+    const took = Date.now() - started;
+    expect(hot, 'the plane refused to serve the hanging candidate').not.toBeNull();
+    // bounded by the CASE cap, not by the run's deadline and not by the plane's watchdog behind it
+    expect(hot!.timedOut, 'the run must come back on its own, not be killed at the run deadline').toBe(false);
+    expect(took).toBeLessThan(SERVE_DEADLINE_MS / 2);
+
+    const warm = summarize(command, hot!, hot!.durationMs);
+    expect(warm.total).toBe(10);
+    expect(warm.passed).toBe(0);
+    expect(warm.skipped).toBe(1);
+    expect(warm.errors).toBe(9);
+    expect(warm.failures.map((x) => x.actual)).toEqual(Array.from({ length: 9 }, () => 'TIMEOUT after 0.4s'));
+
+    // and the cold twin agrees, failure text included
+    const res = await f.sandbox.run(command, { timeoutMs: SERVE_DEADLINE_MS, maxOutputBytes: WARM_OUTPUT_BYTES, signal: f.signal, cwd: f.lane.dir, env: { ...PY_ENV } });
+    expect(fullVerdict(warm)).toEqual(fullVerdict(summarize(command, res, res.durationMs)));
+
+    // the plane is untouched: no fallback, no restart, no disable — and the next candidate is served warm
+    expect(p.disabled).toBe(false);
+    expect(p.stats().disabledReason).toBeNull();
+    expect(p.stats().screened).toBe(1);
+    expect(p.stats().fallbacks).toBe(0);
+    expect(p.stats().restarts).toBe(0);
+
+    copyFileSync(join(QUIXBUGS_DIR, 'correct/knapsack.py'), candidate);
+    const after = await p.serve(f.lane, command, SERVE_DEADLINE_MS, {});
+    expect(after, 'the lane must still be alive after the hang').not.toBeNull();
+    const healthy = summarize(command, after!, after!.durationMs);
+    expect(healthy.passed).toBe(9);
+    expect(healthy.failed).toBe(0);
+    expect(p.stats().screened).toBe(2);
+    expect(p.stats().fallbacks).toBe(0);
+  }, 120_000);
 });
 
 describe.skipIf(!havePython)('the plane watchdog (skipped: python3 is not on PATH here)', () => {
