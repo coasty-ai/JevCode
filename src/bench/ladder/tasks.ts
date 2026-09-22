@@ -6,9 +6,11 @@
  *
  * Tiers: the original twelve tasks are tier "short" (the default when meta.json has no `tier`);
  * the long-horizon tasks (README "The long tier") declare `tier: "long"` and `expected_failing`,
- * the exact failing set of the buggy tree. Records are ordered short tier first, then long, each
- * in index order, so `--tasks 12` still selects exactly the original twelve in their original
- * order and the long tasks follow at positions 13-20.
+ * the exact failing set of the buggy tree; the coupled-defect tasks (README "The long-2 tier")
+ * declare `tier: "long-2"` and `expected_failing` the same way. Records are ordered short tier
+ * first, then long, then long-2, each in index order, so `--tasks 12` still selects exactly the
+ * original twelve in their original order, the long tasks follow at positions 13-20 and the
+ * long-2 tasks at 21-26.
  */
 import { readFile, stat } from 'node:fs/promises';
 import { basename, join } from 'node:path';
@@ -18,9 +20,14 @@ import { ConfigError } from '../../errors.js';
 
 export const LADDER_DIR = 'ladder';
 export const LADDER_KINDS = ['operator', 'off_by_one', 'guard', 'import', 'attribute', 'call_args', 'new_branch', 'constant', 'rename', 'two_files'] as const;
-/** in selection order: every "short" task precedes every "long" one */
-export const LADDER_TIERS = ['short', 'long'] as const;
+/** in selection order: every "short" task precedes every "long" one, which precedes every "long-2" one */
+export const LADDER_TIERS = ['short', 'long', 'long-2'] as const;
 export type LadderTier = (typeof LADDER_TIERS)[number];
+
+export function isTier(v: unknown): v is LadderTier {
+  return typeof v === 'string' && (LADDER_TIERS as readonly string[]).includes(v);
+}
+
 /** `tests/test_<module>.py::test_<name>` with an optional parametrised suffix */
 const TEST_ID_RE = /^tests\/[A-Za-z0-9_]+\.py::[A-Za-z0-9_]+(\[[^\]]*\])?$/;
 
@@ -37,9 +44,9 @@ export interface LadderMeta {
   description: string;
   /** tasks/<name>, relative to bench/data/ladder */
   path: string;
-  /** "short" (the original twelve; the default) or "long" (tasks 13-20) */
+  /** "short" (the original twelve; the default), "long" (tasks 13-20) or "long-2" (tasks 21-26) */
   tier: LadderTier;
-  /** the buggy tree's exact failing test ids, sorted; required for tier "long", absent otherwise */
+  /** the buggy tree's exact failing test ids, sorted; required for the "long" and "long-2" tiers */
   expectedFailing?: string[];
 }
 
@@ -76,7 +83,7 @@ export function validateMeta(v: Json, where: string): LadderMeta {
   const rel = isString(path) ? path : `tasks/${name}`;
   if (rel.startsWith('/') || rel.split('/').includes('..')) throw new ConfigError(`${w}: path "${rel}" is not relative`);
   const tierValue = v['tier'];
-  const tier: LadderTier = tierValue === undefined ? 'short' : tierValue === 'short' || tierValue === 'long' ? tierValue : (() => {
+  const tier: LadderTier = tierValue === undefined ? 'short' : isTier(tierValue) ? tierValue : (() => {
     throw new ConfigError(`${w}: tier must be one of ${LADDER_TIERS.join(', ')}`);
   })();
   const expected = v['expected_failing'];
@@ -86,8 +93,8 @@ export function validateMeta(v: Json, where: string): LadderMeta {
     for (const id of expected) if (!TEST_ID_RE.test(id)) throw new ConfigError(`${w}: expected_failing entry "${id}" is not a pytest id under tests/`);
     if (new Set(expected).size !== expected.length) throw new ConfigError(`${w}: expected_failing has duplicates`);
     out.expectedFailing = [...expected].sort();
-  } else if (tier === 'long') {
-    throw new ConfigError(`${w}: tier long requires expected_failing`);
+  } else if (tier !== 'short') {
+    throw new ConfigError(`${w}: tier ${tier} requires expected_failing`);
   }
   return out;
 }
@@ -96,7 +103,7 @@ export function tierRank(tier: LadderTier): number {
   return LADDER_TIERS.indexOf(tier);
 }
 
-/** Stable: short tier first, then long, each keeping the given order. */
+/** Stable: short tier first, then long, then long-2, each keeping the given order. */
 export function orderByTier<T extends { tier: LadderTier }>(metas: readonly T[]): T[] {
   return [...metas].sort((a, b) => tierRank(a.tier) - tierRank(b.tier));
 }

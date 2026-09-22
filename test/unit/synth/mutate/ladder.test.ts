@@ -30,9 +30,10 @@ interface Hunk {
 function singleLineHunks(): Hunk[] {
   const out: Hunk[] = [];
   // the short tier is the original twelve tasks these counts were measured on (the long tier, tasks
-  // 13–20, measures the horizon and is exercised by test/unit/bench/ladder-long.test.ts)
+  // 13–20, and the long-2 tier, tasks 21–26, measure the horizon and coupled reach and are exercised
+  // by test/unit/bench/ladder-long.test.ts)
   const index = JSON.parse(readFileSync(join(LADDER, '..', 'index.json'), 'utf8')) as { name: string; tier?: string }[];
-  const shortTier = new Set(index.filter((t) => t.tier !== 'long').map((t) => t.name));
+  const shortTier = new Set(index.filter((t) => (t.tier ?? 'short') === 'short').map((t) => t.name));
   for (const task of readdirSync(LADDER).sort().filter((t) => shortTier.has(t))) {
     const goldDir = join(LADDER, task, 'gold');
     for (const file of readdirSync(goldDir).sort()) {

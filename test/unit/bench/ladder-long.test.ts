@@ -1,8 +1,9 @@
 /**
- * The long tier of the ladder (bench/data/ladder README "The long tier", tasks 13-20): the
- * eight long-horizon tasks load behind the original twelve without disturbing them (`--tasks 12`
- * still selects exactly the originals in the original order), every meta declares its tier and
- * the buggy tree's exact failing set, every gold diff applies cleanly to a copy of its tree and
+ * The long tiers of the ladder (bench/data/ladder README "The long tier", tasks 13-20, and "The
+ * long-2 tier", tasks 21-26): the fourteen long-horizon tasks load behind the original twelve
+ * without disturbing them (`--tasks 12` still selects exactly the originals in the original
+ * order, `--tasks 20` the originals plus the long tier), every meta declares its tier and the
+ * buggy tree's exact failing set, every gold diff applies cleanly to a copy of its tree and
  * yields gold, and (when a pytest interpreter is available) a real pytest run of each buggy tree
  * fails exactly `expected_failing` while the gold tree is green. The live part prefers the shared
  * bench venv `~/.jevcode/runs/ladder-venv` and falls back to the system python3; it is skipped
@@ -27,6 +28,9 @@ const REAL_LADDER = existsSync(join(LADDER, 'index.json'));
 const ORIGINAL_12 = ['account', 'calendar_utils', 'events', 'grades', 'inventory', 'profiles', 'shipping', 'stats', 'table', 'tagcloud', 'textstats', 'units'];
 /** Tasks 13-20 (tier "long"), alphabetical within the tier. */
 const LONG_8 = ['crossfile', 'import_and_guard', 'ledger5', 'long_chain', 'masked', 'regress_trap', 'shared_frame', 'six_hunks'];
+/** Tasks 21-26 (tier "long-2", coupled defects across files), alphabetical within the tier. */
+const LONG2_6 = ['csv_schema', 'deadline_queue', 'dep_order', 'hunk_merge', 'route_match', 'token_bucket'];
+const ALL_26 = [...ORIGINAL_12, ...LONG_8, ...LONG2_6];
 
 function importsPytest(python: string): boolean {
   return spawnSync(python, ['-c', 'import pytest'], { encoding: 'utf8' }).status === 0;
@@ -73,45 +77,56 @@ describe('ladder meta: tier and expected_failing', () => {
     expect(long.tier).toBe('long');
     expect(long.expectedFailing).toEqual(['tests/test_x.py::test_a', 'tests/test_x.py::test_b[case-1]']);
     expect(validateMeta({ ...base, tier: 'short', expected_failing: ['tests/test_x.py::test_a'] }, 'w').expectedFailing).toEqual(['tests/test_x.py::test_a']);
-    expect(() => validateMeta({ ...base, tier: 'medium' }, 'w')).toThrow(/tier must be one of short, long/);
+    const long2 = validateMeta({ ...base, tier: 'long-2', expected_failing: ['tests/test_x.py::test_a'] }, 'w');
+    expect(long2.tier).toBe('long-2');
+    expect(() => validateMeta({ ...base, tier: 'medium' }, 'w')).toThrow(/tier must be one of short, long, long-2/);
     expect(() => validateMeta({ ...base, tier: 'long' }, 'w')).toThrow(/tier long requires expected_failing/);
+    expect(() => validateMeta({ ...base, tier: 'long-2' }, 'w')).toThrow(/tier long-2 requires expected_failing/);
     expect(() => validateMeta({ ...base, tier: 'long', expected_failing: [] }, 'w')).toThrow(/non-empty string array/);
     expect(() => validateMeta({ ...base, tier: 'long', expected_failing: ['src/x.py::test_a'] }, 'w')).toThrow(/not a pytest id under tests\//);
     expect(() => validateMeta({ ...base, tier: 'long', expected_failing: ['tests/test_x.py::test_a', 'tests/test_x.py::test_a'] }, 'w')).toThrow(/duplicates/);
-    expect(LADDER_TIERS).toEqual(['short', 'long']);
+    expect(LADDER_TIERS).toEqual(['short', 'long', 'long-2']);
     expect(tierRank('short')).toBeLessThan(tierRank('long'));
+    expect(tierRank('long')).toBeLessThan(tierRank('long-2'));
   });
 
-  it('parseIndex orders short before long, stably, whatever the file order', () => {
+  it('parseIndex orders short before long before long-2, stably, whatever the file order', () => {
     const entries = [
       { ...base, name: 'l1', tier: 'long', expected_failing: ['tests/test_l1.py::test_a'] },
+      { ...base, name: 'c1', tier: 'long-2', expected_failing: ['tests/test_c1.py::test_a'] },
       { ...base, name: 's1' },
       { ...base, name: 'l2', tier: 'long', expected_failing: ['tests/test_l2.py::test_a'] },
       { ...base, name: 's2', tier: 'short' },
+      { ...base, name: 'c2', tier: 'long-2', expected_failing: ['tests/test_c2.py::test_a'] },
     ];
-    expect(parseIndex(JSON.stringify(entries), 'w').map((m) => m.name)).toEqual(['s1', 's2', 'l1', 'l2']);
-    expect(orderByTier([{ tier: 'long', n: 1 }, { tier: 'short', n: 2 }, { tier: 'long', n: 3 }] as const).map((x) => x.n)).toEqual([2, 1, 3]);
+    expect(parseIndex(JSON.stringify(entries), 'w').map((m) => m.name)).toEqual(['s1', 's2', 'l1', 'l2', 'c1', 'c2']);
+    expect(orderByTier([{ tier: 'long-2', n: 0 }, { tier: 'long', n: 1 }, { tier: 'short', n: 2 }, { tier: 'long', n: 3 }] as const).map((x) => x.n)).toEqual([2, 1, 3, 0]);
   });
 });
 
-describe.skipIf(!REAL_LADDER)('ladder real data: the long tier behind the original twelve', () => {
-  it('loads all 20; --tasks 12 selects exactly the original twelve in order; the long tasks follow and are selectable by id', async () => {
+describe.skipIf(!REAL_LADDER)('ladder real data: the long tiers behind the original twelve', () => {
+  it('loads all 26; --tasks 12 selects exactly the original twelve in order; the long tiers follow and are selectable by id', async () => {
     const records = await loadLadderRecords(LADDER);
-    expect(records.map((r) => r.meta.name)).toEqual([...ORIGINAL_12, ...LONG_8]);
+    expect(records.map((r) => r.meta.name)).toEqual(ALL_26);
     expect(records.slice(0, 12).every((r) => r.meta.tier === 'short' && r.meta.expectedFailing === undefined)).toBe(true);
-    expect(records.slice(12).every((r) => r.meta.tier === 'long')).toBe(true);
+    expect(records.slice(12, 20).every((r) => r.meta.tier === 'long')).toBe(true);
+    expect(records.slice(20).every((r) => r.meta.tier === 'long-2')).toBe(true);
     const sources = await loadLadderSources(REAL_DATA, { mocked: false });
-    expect(sources.map((s) => s.id)).toEqual([...ORIGINAL_12, ...LONG_8]);
+    expect(sources.map((s) => s.id)).toEqual(ALL_26);
     expect(selectSources(sources, { tasks: 12, taskIds: null }).map((s) => s.id)).toEqual(ORIGINAL_12);
     expect(selectSources(sources, { tasks: 20, taskIds: null }).map((s) => s.id)).toEqual([...ORIGINAL_12, ...LONG_8]);
+    expect(selectSources(sources, { tasks: 26, taskIds: null }).map((s) => s.id)).toEqual(ALL_26);
     expect(selectSources(sources, { tasks: 13, taskIds: null }).map((s) => s.id)).toEqual([...ORIGINAL_12, 'crossfile']);
+    // the long-2 tier is selected by id: `--task-id csv_schema,deadline_queue,dep_order,hunk_merge,route_match,token_bucket`
+    expect(selectSources(sources, { tasks: null, taskIds: LONG2_6 }).map((s) => s.id)).toEqual(LONG2_6);
     expect(selectSources(sources, { tasks: null, taskIds: ['ledger5', 'masked', 'shared_frame', 'crossfile', 'import_and_guard', 'regress_trap', 'six_hunks', 'long_chain'] }).map((s) => s.id))
       .toEqual(['ledger5', 'masked', 'shared_frame', 'crossfile', 'import_and_guard', 'regress_trap', 'six_hunks', 'long_chain']);
   });
 
-  it('every long task: 3-6 modules, 20-60 tests worth of expected_failing ids under its own tests/, its own pytest.ini, and a task text without the description', async () => {
-    const records = (await loadLadderRecords(LADDER)).filter((r) => r.meta.tier === 'long');
-    expect(records).toHaveLength(8);
+  it('every long-tier task: 2-6 modules, expected_failing ids under its own tests/, its own pytest.ini, and a task text without the description', async () => {
+    const records = (await loadLadderRecords(LADDER)).filter((r) => r.meta.tier !== 'short');
+    expect(records).toHaveLength(14);
+    expect(records.filter((r) => r.meta.tier === 'long-2')).toHaveLength(6);
     for (const r of records) {
       const w = r.meta.name;
       expect(r.meta.files.length, w).toBeGreaterThanOrEqual(2);
@@ -124,9 +139,26 @@ describe.skipIf(!REAL_LADDER)('ladder real data: the long tier behind the origin
     }
   });
 
-  it('every gold diff (all 20) applies cleanly to a copy of src/ and yields gold', async () => {
+  it('every long-2 task couples at least two modules and keeps a regression suite of 12+ passing tests', async () => {
+    const records = (await loadLadderRecords(LADDER)).filter((r) => r.meta.tier === 'long-2');
+    expect(records.map((r) => r.meta.name)).toEqual(LONG2_6);
+    for (const r of records) {
+      const w = r.meta.name;
+      // the tier's defining property: the fix is hunks in two or more files
+      expect(r.meta.files.length, w).toBeGreaterThanOrEqual(2);
+      expect(r.meta.hunks, w).toBeGreaterThanOrEqual(r.meta.files.length);
+      expect(r.meta.kinds, w).toContain('two_files');
+      // 4-8 failing tests, and the failing set never covers a whole test file's worth of the suite
+      expect(r.meta.expectedFailing!.length, w).toBeGreaterThanOrEqual(4);
+      expect(r.meta.expectedFailing!.length, w).toBeLessThanOrEqual(8);
+      // the failing tests are spread over at least two test modules, so no one file is the whole goal
+      expect(new Set(r.meta.expectedFailing!.map((id) => id.split('::')[0]!)).size, w).toBeGreaterThanOrEqual(2);
+    }
+  });
+
+  it('every gold diff (all 26) applies cleanly to a copy of src/ and yields gold', async () => {
     const records = await loadLadderRecords(LADDER);
-    expect(records).toHaveLength(20);
+    expect(records).toHaveLength(26);
     const t = await tempDir();
     cleanups.push(t.cleanup);
     for (const r of records) {
@@ -164,10 +196,10 @@ describe.skipIf(!REAL_LADDER)('ladder real data: the long tier behind the origin
       expect(gold.status, `${r.meta.name} gold: ${gold.out.slice(-400)}`).toBe(0);
       expect(gold.failing, r.meta.name).toEqual([]);
       expect(gold.passed, r.meta.name).toBe(buggy.passed + buggy.failing.length);
-      if (r.meta.tier === 'long') {
+      if (r.meta.tier !== 'short') {
         expect(gold.passed, `${r.meta.name} tests`).toBeGreaterThanOrEqual(20);
         expect(gold.passed, `${r.meta.name} tests`).toBeLessThanOrEqual(60);
       }
     }
-  }, 180_000);
+  }, 300_000);
 });

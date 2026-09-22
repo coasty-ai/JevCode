@@ -48,8 +48,8 @@ export interface LadderTask {
 export function ladderTasks(): LadderTask[] {
   const index = JSON.parse(readFileSync(join(LADDER, 'index.json'), 'utf8')) as { name: string; files: string[]; path: string; tier?: string }[];
   // the short tier is the original twelve tasks these expectations were measured on; the long tier
-  // (tasks 13–20) measures the horizon, not donor reach
-  return index.filter((t) => t.tier !== 'long').map((t) => {
+  // (tasks 13–20) and the long-2 tier (tasks 21–26) measure the horizon and coupled reach, not donor reach
+  return index.filter((t) => (t.tier ?? 'short') === 'short').map((t) => {
     const files = new Map<string, SourceFile>();
     const gold = new Map<string, string>();
     for (const rel of t.files) {
