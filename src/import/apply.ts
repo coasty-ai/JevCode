@@ -651,6 +651,21 @@ export async function undoImport(opts: UndoOptions): Promise<UndoResult> {
     return { restored: [], left: [{ dest: '', why: `an import is applying (pid ${lock.held.pid}, ${Math.round(lock.ageMs / 1000)} s ago) — try again when it finishes` }], manifest, exitCode: 2 };
   }
   const preDir = `${opts.artifactDir}${opts.artifactDir.endsWith(sep) ? '' : sep}pre`;
+  // §4.7.6 "restoring the mode" means the **pre-image's** mode, which is not always the one apply
+  // wrote: a `0640` file that apply rewrote `0644` must come back `0640`. `pre/index.jsonl` records it.
+  const preModes = new Map<string, number>();
+  const index = await opts.fs.readFile(`${preDir}${sep}index.jsonl`).then((b) => b.toString('utf8')).catch(() => '');
+  for (const line of index.split('\n')) {
+    if (line.length === 0) continue;
+    try {
+      const entry: unknown = JSON.parse(line);
+      if (typeof entry !== 'object' || entry === null) continue;
+      const o = entry as { row?: unknown; mode?: unknown };
+      if (typeof o.row === 'string' && typeof o.mode === 'number') preModes.set(o.row, o.mode & 0o777);
+    } catch {
+      // a torn line is simply not an entry; the applied mode is the fallback
+    }
+  }
   const restored: string[] = [];
   const left: { dest: string; why: string }[] = [];
   try {
@@ -686,9 +701,10 @@ export async function undoImport(opts: UndoOptions): Promise<UndoResult> {
         left.push({ dest, why: 'review — the pre-image does not match what was recorded; left alone' });
         continue;
       }
+      const mode = preModes.get(line.row) ?? line.mode;
       try {
-        await opts.fs.writeFile(dest, pre.toString('utf8'), { mode: line.mode, mkdir: true });
-        await opts.fs.chmod(dest, line.mode);
+        await opts.fs.writeFile(dest, pre.toString('utf8'), { mode, mkdir: true });
+        await opts.fs.chmod(dest, mode);
         restored.push(dest);
       } catch (e) {
         left.push({ dest, why: `could not restore: ${errorText(e)}` });

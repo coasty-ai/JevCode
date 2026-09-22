@@ -101,10 +101,11 @@ async function applied(): Promise<Applied> {
   await mkdir(join(ws, '.jevcode', 'memory-local'), { recursive: true });
 
   const pre = new Map<string, { text: string; mode: number }>();
+  // 0640, deliberately NOT the 0644 apply will write: "restoring the mode" means the pre-image's mode
   const existing = join(ws, '.jevcode', 'memory', 'kept.md');
-  await writeFile(existing, 'the original bytes\nwith two lines\n', { mode: 0o644 });
-  await chmod(existing, 0o644);
-  pre.set(existing, { text: 'the original bytes\nwith two lines\n', mode: 0o644 });
+  await writeFile(existing, 'the original bytes\nwith two lines\n', { mode: 0o640 });
+  await chmod(existing, 0o640);
+  pre.set(existing, { text: 'the original bytes\nwith two lines\n', mode: 0o640 });
   const personal = join(ws, '.jevcode', 'memory-local', 'personal.md');
   await writeFile(personal, 'private notes\n', { mode: 0o600 });
   await chmod(personal, 0o600);
@@ -201,6 +202,9 @@ describe('undoImport (§4.7.6, §1 property 9, §8.2 R3)', () => {
       expect(sha256Hex(readFileSync(path))).toBe(sha256Hex(want.text));
       expect(statSync(path).mode & 0o777).toBe(want.mode);
     }
+    // the 0640 file came back 0640, not the 0644 the apply had written over it
+    expect(statSync(join(a.ws, '.jevcode', 'memory', 'kept.md')).mode & 0o777).toBe(0o640);
+    expect(a.log.find((l) => l.dest?.endsWith('kept.md'))?.mode).toBe(0o644);
     // §4.7.6: entries are removed for the rows that were restored
     expect(r.manifest.workspaces[a.opts.plan.workspaceKey]).toEqual([]);
   });
