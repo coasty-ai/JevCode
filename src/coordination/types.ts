@@ -441,8 +441,13 @@ export interface SelfIdentity {
   hostKey?: string;
   bootAt: string;
   /**
-   * §3.2 / §3.4 (design revision 5): this process's boot identity, resolved by the caller (one bounded local `sysctl` /
-   * `/proc` read, cached per process). `null` = unknown, which stays permissive exactly as an unknown `hostKey` does.
+   * §3.2 / §3.4 (design revision 5): this process's boot identity — one bounded local `sysctl` / `/proc` read, cached
+   * per process. `null` = unknown, which stays permissive exactly as an unknown `hostKey` does.
+   *
+   * The PRODUCER is `bootIdOf()` in `./boot.ts` (re-exported by the facade), and `openCoordination()` calls it: until
+   * it landed there was no `sysctl` and no `/proc` read anywhere in `src/`, so this field was always absent and
+   * `lockReplaceVerdict`'s `other-boot` branch, the `duplicate-identity` clause (ii) of §3.2 and §5.4 rule 5's
+   * disqualifier were unreachable. A caller that assembles this identity by hand still may pass its own.
    */
   bootId?: string | null;
   sessionId: string | null;
@@ -524,6 +529,17 @@ export type FoldChange =
   | { kind: 'offline'; code: string }
   | { kind: 'online' };
 
+/**
+ * The narrow READER half of the opened object — `root`, `self`, `fold`, `open`, `setIdentity`, `subscribe`, `close`.
+ *
+ * NAMING, stated once (§12.0.4; the surface met this as two same-named concepts). Inside `src/coordination/**` this
+ * interface keeps the name `Ledger`, because every write verb (`declare`, `send`, `ack`, `gc`, …) takes THIS and
+ * recovers the handle internally with `asHandle()`. OUTSIDE the module the facade renames both halves so a consumer
+ * cannot pick the wrong one: `index.ts` exports `LedgerBase` for this interface and `Ledger` for `LedgerHandle` —
+ * the ~50-member object `openLedger` actually returns and `EngineOptions.coordination.ledger` carries. A consumer
+ * who typed a handle as this narrow shape and then passed it somewhere expecting a writer met `asHandle()`'s throw
+ * at RUNTIME; under the facade's names that mistake is a type error instead.
+ */
 export interface Ledger {
   readonly root: string;
   readonly self: SelfIdentity;

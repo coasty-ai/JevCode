@@ -1,12 +1,41 @@
 /**
- * The coordination facade (§12.0.4): the ONLY import path for `src/session/**`, `src/cli/**`, `src/tui/**` and the engine.
+ * The coordination facade (§12.0.4): the import path for every consumer of the coordination plane.
+ *
+ * WHO IMPORTS IT TODAY, as built rather than as planned: the engine imports it through `src/loop/coordination.ts`;
+ * `src/session/**`, `src/cli/**` and `src/tui/**` have no importer yet. The header used to call this "the ONLY
+ * import path for `src/session/**`, `src/cli/**`, `src/tui/**` and the engine", which read as a description of the
+ * tree and was a plan: none of those three directories imports this file at all, so `/peers` still answers `the peer
+ * registry is not available in this build` and nothing sets `EngineOptions.coordination`. The claim and the tree are
+ * pinned to each other in `test/unit/coordination/facade.test.ts`, which fails the day an importer appears without
+ * this sentence moving with it.
+ *
  * Re-exports every §12.0 type (declared in `./types.ts` until they move to `core/types.ts` after the round-3 hash) and the
- * API exactly as built: identity (`ids.ts`), records (`records.ts`), the fold (`fold.ts`), the ledger (`ledger.ts`, the
- * watcher behind `Ledger.subscribe`), leases, the mailbox, the heartbeat writer, sub-work + the bench lock, the shared-dir
- * mirror. Nothing here imports `src/session/**`, `src/cli/**`, `src/tui/**` or `src/config/**` (§12.0.1 rule 1).
+ * API exactly as built: identity (`ids.ts`), this boot's identity (`boot.ts`), records (`records.ts`), the fold
+ * (`fold.ts`), the ledger (`ledger.ts`, the watcher behind `Ledger.subscribe`), leases, the mailbox, the heartbeat
+ * writer, sub-work + the bench lock, the shared-dir mirror — plus `openCoordination()` at the foot of this file, the
+ * one entry point that composes them, so a consumer never assembles a `SelfIdentity` by hand.
+ *
+ * Nothing here imports `src/session/**`, `src/cli/**`, `src/tui/**` or `src/config/**` (§12.0.1 rule 1).
  */
 
-// contract types (§12.0.4 shapes, structurally identical; see ./types.ts header for the `+` additions)
+import { hostname as osHostname, uptime as osUptime, userInfo as osUserInfo } from 'node:os';
+import { bootIdOf, type BootProbe } from './boot.js';
+import { nodeFs } from './fs.js';
+import { deviceIdentity, readRepoKeyCache, repoKeyOf, wsKeyOf, type DeviceIdentityResult, type RepoFacts } from './ids.js';
+import { openLedger, type LedgerHandle, type OpenLedgerOptions } from './ledger.js';
+import { commonsPaths, coordinationRoot } from './paths.js';
+import type { DeviceRecord, SelfIdentity } from './types.js';
+
+/**
+ * contract types (§12.0.4 shapes, structurally identical; see ./types.ts header for the `+` additions).
+ *
+ * ONE NAME PER CONCEPT, and the one a consumer wants is the default: **`Ledger` is what `openLedger()` returns** (the
+ * ~50-member writer's handle, `LedgerHandle` in `ledger.ts`, what `EngineOptions.coordination.ledger` carries and
+ * what `openCoordination()` hands back). The narrow 7-member reader's base is exported beside it as **`LedgerBase`**
+ * and is what every write verb's parameter is typed as inside the module. Both names are below, in the `ledger.ts`
+ * block. Type against `Ledger` unless you hold a reader and nothing else; a handle is a `LedgerBase` too, never the
+ * other way round, and `asHandle()`'s runtime throw is the error a consumer used to meet for choosing wrong.
+ */
 export { HOLDING_LEASE_TYPES } from './types.js';
 export type {
   Ack,
@@ -31,7 +60,6 @@ export type {
   LeaseHandle,
   LeaseIntent,
   LeaseOutcome,
-  Ledger,
   Liveness,
   LivenessEnv,
   LivenessVerdict,
@@ -152,6 +180,10 @@ export {
 } from './ids.js';
 export type { DeviceIdentityOptions, DeviceIdentityResult, DeviceIdentityStatus, IgnoredDevice, MachineRecord, RandomBytes, RepoFacts, RepoKeyCacheEntry, RepoKeys, StampClock, TrustedDevice } from './ids.js';
 
+// boot.ts — this boot's identity (§3.2, §3.4): the one producer of `SelfIdentity.bootId` in the tree
+export { BOOT_ID_DEADLINE_MS, BOOT_ID_MAX_CHARS, BOOT_ID_PATH_LINUX, BOOT_ID_SYSCTL_ARGS, BOOT_ID_SYSCTL_CMD, bootIdOf, nodeBootProbe, normaliseBootId } from './boot.js';
+export type { BootIdOptions, BootProbe } from './boot.js';
+
 // records.ts — schemas, parse, checksum, liveness, overlap (§3.3, §3.4, §4.3)
 export {
   CONTROL_MESSAGE_TTL_MS,
@@ -225,6 +257,7 @@ export {
   messageOrigin,
   messageOriginKey,
   originOf,
+  peerViewOf,
   recordKeyOf,
   seenEpochs,
   sessionDevices,
@@ -235,20 +268,24 @@ export type { FoldEnv, FoldState, RecordEntry } from './fold.js';
 /**
  * ledger.ts / paths.ts / watch.ts — the store, the handle, readFold, the watcher (§3.1, §3.5, §12.0.4).
  *
- * contract 1.4 (W2b), the one naming note the surface needs: §12.0.4 calls the opened object `Ledger`; as built the
- * name is SPLIT and both halves are exported here.
+ * contract 1.4 (W2b), the naming note the surface needs: §12.0.4 calls the opened object `Ledger`; as built the
+ * implementation SPLITS it in two, and the FACADE names the two halves so the consumer's default is the right one.
  *
- *   `Ledger`        (`types.ts`)  — the narrow base: `root`, `self`, `fold`, `open`, `setIdentity`, `subscribe`, `close`.
- *                                  Every write verb (`declare`, `send`, `ack`, `gc`, …) takes THIS, and recovers the
- *                                  handle internally with `asHandle()`, so a caller can hold the small type.
- *   `LedgerHandle`  (`ledger.ts`) — `extends Ledger` with the forty members a WRITER needs (`enqueue`, `writeOwn`,
- *                                  `refreshFence`, `foreignLive`, `forkVerdict`, `claim`, `stamps`, `mirror`, …). It is
- *                                  what `openLedger` returns and what `EngineOptions.coordination.ledger` carries,
- *                                  because the engine calls all of them.
+ *   facade `Ledger`      = `LedgerHandle` (`ledger.ts`) — the ~50 members a WRITER needs (`enqueue`, `writeOwn`,
+ *                          `refreshFence`, `foreignLive`, `forkVerdict`, `claim`, `stamps`, `mirror`, …) on top of the
+ *                          base. It is what `openLedger` returns, what `openCoordination()` hands back and what
+ *                          `EngineOptions.coordination.ledger` carries, because the engine calls all of them.
+ *   facade `LedgerBase`  = `Ledger` (`types.ts`) — the narrow base: `root`, `self`, `fold`, `open`, `setIdentity`,
+ *                          `subscribe`, `close`. Every write verb (`declare`, `send`, `ack`, `gc`, …) takes THIS and
+ *                          recovers the handle internally with `asHandle()`, so a READER can hold the small type.
+ *   `LedgerHandle` is still exported under its own name: round 5 and the engine type against it and nothing moves.
  *
- * The design's `openLedger(opts): Ledger` line is corrected to `LedgerHandle` in the same commit. Renaming the base to
- * something else was the alternative and was rejected: it would rewrite every signature in `leases.ts`, `mailbox.ts`,
- * `subwork.ts` and `worktree.ts` for a word, and `Ledger` is the right name for the thing a READER holds.
+ * Why the rename is at the FACADE and not in `types.ts`: the module's own signatures in `leases.ts`, `mailbox.ts`,
+ * `subwork.ts`, `heartbeat.ts` and `worktree.ts` all read `Ledger` for the base and are right to — inside the module
+ * the base IS the ledger a verb takes. Outside it, two exported names for two shapes where one name is a subset of
+ * the other is a trap with a RUNTIME punishment: a consumer who annotated a handle with the 7-member type and passed
+ * it on met `asHandle()`'s throw. Under the facade's names that is a type error, and no signature in the module moved.
+ * The design's `openLedger(opts): Ledger` line is correct again by construction.
  */
 export {
   ACK_TRACK_MAX_MS,
@@ -278,6 +315,10 @@ export {
   writeTakeoverLease,
 } from './ledger.js';
 export type { FenceScan, LedgerHandle, LedgerNotice, LedgerStatus, OpenLedgerOptions, PeerLive } from './ledger.js';
+/** the facade's public name for the opened object: `Ledger` IS the handle `openLedger` returns (see the type-list note above) */
+export type { LedgerHandle as Ledger } from './ledger.js';
+/** the narrow reader's base (`types.ts`'s own `Ledger`): what every write verb takes and what `asHandle()` recovers a handle from */
+export type { Ledger as LedgerBase } from './types.js';
 export {
   COMMONS_KINDS,
   COORDINATION_DIR,
@@ -361,3 +402,144 @@ export {
   sweepWorktrees,
 } from './worktree.js';
 export type { CreateWorktreeInput, CreatedWorktree, GitWorktreeEntry, RemoveWorktreeInput, RemoveWorktreeResult, RunGit, SweepReport, WorktreeIo } from './worktree.js';
+
+// ── openCoordination — the one entry point (§3.1, §3.2, §3.5, §12.0.4) ────────────────────────────────────────────────
+
+/** every `openLedger` option a caller may still want to set; `home`, `self`, `hostKey` and `bootId` are composed here */
+type LedgerPassThrough = Pick<
+  OpenLedgerOptions,
+  'sharedDir' | 'claim' | 'pid' | 'now' | 'monotonicNow' | 'watch' | 'pollMs' | 'debounceMs' | 'fs' | 'timers' | 'isPidAlive' | 'redact' | 'syncSlackMs' | 'opTimeoutMs' | 'budgetMs' | 'onNotice' | 'random' | 'scanOnly' | 'commonsKey' | 'trustKeys' | 'actor8'
+>;
+
+export interface OpenCoordinationOptions extends LedgerPassThrough {
+  /** `jevcodeDir(env, home, cwd)` — the store is `<home>/coordination/` (§3.1); `JEVCODE_HOME` has already moved it */
+  home: string;
+  /** `realpath(git toplevel ?? workspace)`: `wsKey` is derived from it with zero spawns (§3.2) */
+  workspaceRealpath: string;
+  /** null for a TUI with no run yet; `Ledger.setIdentity({ sessionId })` moves it later (§3.5) */
+  sessionId: string | null;
+  runId: string | null;
+  /** the running build's version string — `DeviceRecord.jevcode` */
+  jevcodeVersion: string;
+  /**
+   * §3.2: what the repository probe learnt, spawned by the CALLER off the critical path (`src/coordination/**` runs no
+   * git). Absent, the keys come from this host's `repokeys/` cache for this workspace, and are `null` when it has no
+   * entry yet — exactly the state `setIdentity({ repoKey })` exists to leave behind after `run:ready`.
+   */
+  repo?: RepoFacts;
+  branch?: string | null;
+  /** the device label to create with; an existing `device.json` keeps its own (`setDeviceLabel` renames it) */
+  label?: string;
+  syncMode?: DeviceRecord['syncMode'];
+  /** defaults to `os.hostname()` / `os.userInfo().username`; injected by tests and by a caller that already resolved them */
+  hostname?: string;
+  username?: string;
+  /** §3.2: `IOPlatformUUID` / `/etc/machine-id`, probed by the caller; absent, `hostKey` is the two-input hash */
+  machineId?: string;
+  /** §3.4: injected boot probe (tests, and a caller with its own); absent, the memoised `nodeBootProbe` answers */
+  bootProbe?: BootProbe;
+  /** ms since the machine booted; defaults to `os.uptime() * 1000` (`bootAt = now − uptime`) */
+  uptimeMs?: () => number;
+}
+
+export interface OpenCoordinationResult {
+  /** the writer's handle, NOT yet opened: call `ledger.open()` after `renderer.firstFrame()` (§3.5) */
+  ledger: LedgerHandle;
+  /** `ledger.self` — the composed identity, with `hostKey` and `bootId` already seated by the handle */
+  self: SelfIdentity;
+  /**
+   * what `deviceIdentity()` decided. `'created'` / `'loaded'` / `'readopted'` need no attention; **`'foreign'` does**:
+   * `devices/<hostKey>/device.json` names another host + user (§11 row 27), and the surface must ask
+   * `adopt as a new device? [y]` before this process writes anything as that device. Nothing has been written for a
+   * foreign identity and the ledger is unopened, so a caller that refuses can `close()` and call `adoptNewDevice()`.
+   */
+  device: DeviceIdentityResult;
+  close(): Promise<void>;
+}
+
+/**
+ * Open the coordination plane for this process: the ONE call a consumer needs (§12.0.4).
+ *
+ * The plane was fully built, contract-typed and unit-tested and still had no production caller, because reaching it
+ * meant assembling eleven `SelfIdentity` fields by hand from four different modules and producing a `bootId` that
+ * nothing in the tree produced. This composes exactly that: `deviceIdentity()` (§3.2) → `wsKeyOf` / `repoKeyOf`
+ * (§3.2) → `bootIdOf()` (§3.4, `./boot.ts`) → `openLedger()` (§3.5).
+ *
+ * What it deliberately does NOT do:
+ *   · it never opens the ledger. `open()` is the caller's, after `renderer.firstFrame()` — the §3.5 rule that there
+ *     is zero scanning, watching and polling before the first frame is unchanged. Identity itself is two bounded
+ *     awaited file operations (read `device.json`, write it when this host has none); a surface that wants literally
+ *     no I/O before its first frame calls this after it too.
+ *   · it never prompts and never adopts. `'foreign'` is reported, never resolved: `Prompter.adoptDevice?` is the
+ *     surface's and `adoptNewDevice()` is the explicit writer (§3.2).
+ *   · it never spawns git and never mints a commons key. Repo facts arrive from the caller's own probe, and pairing
+ *     (`mintCommonsKey` / `writeCommonsKey` / `trustDevice`, §10.3) is a surface verb with its own consent step.
+ */
+export async function openCoordination(o: OpenCoordinationOptions): Promise<OpenCoordinationResult> {
+  const { home, workspaceRealpath, sessionId, runId, jevcodeVersion, repo, branch, label, syncMode, hostname, username, machineId, bootProbe, uptimeMs, ...pass } = o;
+  const fs = pass.fs ?? nodeFs;
+  const nowMs = (pass.now ?? Date.now)();
+  const root = coordinationRoot(home);
+  const host = hostname ?? safeHostname();
+  const user = username ?? safeUsername();
+
+  const device = await deviceIdentity({
+    root,
+    fs,
+    hostname: host,
+    username: user,
+    jevcode: jevcodeVersion,
+    nowIso: new Date(nowMs).toISOString(),
+    ...(label !== undefined ? { label } : {}),
+    ...(syncMode !== undefined ? { syncMode } : {}),
+    ...(machineId !== undefined ? { machineId } : {}),
+    ...(pass.random !== undefined ? { random: pass.random } : {}),
+  });
+  const keys = repo !== undefined ? repoKeyOf(repo) : await readRepoKeyCache(fs, commonsPaths(root, device.hostKey).hostDir, workspaceRealpath);
+  const bootId = await bootIdOf(bootProbe === undefined ? {} : { probe: bootProbe });
+
+  const self: SelfIdentity = {
+    deviceId: device.device.deviceId,
+    label: device.device.label,
+    host,
+    user,
+    hostKey: device.hostKey,
+    bootAt: bootAtOf(nowMs, uptimeMs),
+    bootId,
+    sessionId,
+    runId,
+    wsKey: wsKeyOf(workspaceRealpath),
+    repoKey: keys?.repoKey ?? null,
+    remoteKey: keys?.remoteKey ?? null,
+    branch: branch ?? null,
+  };
+  const ledger = openLedger({ ...pass, home, self, hostKey: device.hostKey, bootId });
+  return { ledger, self: ledger.self, device, close: () => ledger.close() };
+}
+
+/** §3.4: the machine's boot wall time (`now − uptime`), display and `stale-reused-pid` only — never a liveness input. */
+function bootAtOf(nowMs: number, uptimeMs?: () => number): string {
+  const up = (uptimeMs ?? (() => osUptime() * 1_000))();
+  const at = Number.isFinite(up) && up >= 0 && up <= nowMs ? nowMs - up : nowMs;
+  return new Date(at).toISOString();
+}
+
+/** `os.hostname()` throws on a host with no resolvable name; an unknown name is a worse `hostKey`, never a crash. */
+function safeHostname(): string {
+  try {
+    const h = osHostname().trim();
+    return h === '' ? 'unknown-host' : h;
+  } catch {
+    return 'unknown-host';
+  }
+}
+
+/** `os.userInfo()` throws with no passwd entry (a container with a bare uid). */
+function safeUsername(): string {
+  try {
+    const u = osUserInfo().username.trim();
+    return u === '' ? 'unknown-user' : u;
+  } catch {
+    return 'unknown-user';
+  }
+}
