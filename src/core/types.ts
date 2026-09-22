@@ -598,7 +598,16 @@ export interface StepRouter {
   dropped: number;
   /** I3: MUST be 0 */
   waitMs: number;
-  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
+  /**
+   * `drop` (review defect A7) is WHY the route did not take Jev's answer, and it is ABSENT on an applied row.
+   * Without it every non-application is one undifferentiated `dropped: true`, and the two facts a reader needs
+   * to tell apart are exactly the two it hides: `'deadline'` says the site's own deadline is the binding
+   * constraint and must be resized against that site's real batch, `'error'` says Jev was down. RL2 is the case
+   * that made it necessary — it sends the loop's LARGEST batch (one Noul per candidate, up to
+   * `CONTEXT_MAX_CANDIDATES`) against a deadline measured over the loop's asks in general, so an arm that
+   * quietly ran `selectCandidatesCode` on every step would have looked exactly like an arm Jev was down for.
+   */
+  rows: readonly { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean; drop?: 'deadline' | 'error' | 'aborted' | 'committed' | 'empty' | 'work_settled' | 'off' }[];
 }
 
 /** docs/LLM-JEV-DESIGN.md §9.4; contract 1.9 (Fastlane) §5.2 (slot C) widens it with `fastpath` — the bounded sieve round proposed the step */
@@ -718,6 +727,16 @@ export interface StepVerifySummary {
   cacheWrite?: number;
   /** contract 1.9 (Fastlane) §3.4: `cacheRead / (input tokens of the step's priced samples)`, 0…1 — the §3.3 prefix-pinning measurement. */
   cacheHitRate?: number;
+  /**
+   * contract 1.9 (Fastlane) §3.4: the input tokens of the step's priced samples — `cacheHitRate`'s own DENOMINATOR,
+   * recorded beside it because the rate alone does not compose. A run or an arm's hit rate is `Σ cacheRead / Σ
+   * cacheInput`, and averaging the steps' rates is a different (and flattering) number: 10/1,000 with 90/100 is a
+   * true 9.1 % and a mean-of-ratios 45.5 %. Absent whenever `cacheRead` / `cacheWrite` are, and for the same reason
+   * — which also bounds what the summed rate means: a round whose samples reported NEITHER a read nor a write is
+   * absent from both sums, so `Σ read / Σ input` is over the reporting steps, never over the step's whole input
+   * (B5; docs/LLM-LOOP-DESIGN.md §9.1 F26 owns emitting the denominator on a measured miss too).
+   */
+  cacheInput?: number;
   /**
    * OOS iteration 3, item 3 (llm-jev, additive): the per-goal deadline high-water mark's evidence
    * rule this run ran under — `JEVCODE_DEADLINE_GROWTH`, default `always` (the behaviour OOS
@@ -1389,6 +1408,16 @@ export interface CheckpointState {
    * is a kept item that outlives the run (§2.10.3). Optional and absent on every checkpoint written before it.
    */
   kept?: { kind: 'fact' | 'file' | 'decision' | 'memory'; text: string; step: number; by: 'jev' | 'human' | 'code' }[];
+  /**
+   * contract 1.9 (Fastlane) §8.1 (F25, the finishing pass): the three mechanisms of the wave as this engine
+   * RESOLVED them, the same object `EngineStatus.mechanisms` carries and under the same rule — **absent means
+   * every one of them resolved off**, so a control arm's `state.json` is byte-identical to a pre-wave run's.
+   *
+   * `EngineStatus` is only readable while the process is alive; an archived run directory could therefore be
+   * checked against `summary.json.conditions[arm].mechanisms` only by re-running it. This is the same answer,
+   * persisted, so "the arm's row is a record of the run rather than of an intention" survives the run.
+   */
+  mechanisms?: { s2: 'on' | 'partial' | 'off'; routers: 'on' | 'off'; fastPath: 'auto' | 'off' };
   /** contract 1.4 (§12.0.3): compactions over the run's life, all resumes (ContextUsage.compactions) */
   compactions?: number;
   /** contract 1.4 (§12.0.3): ISO time of the last compaction (ContextUsage.lastCompactionAt) */
@@ -1853,7 +1882,9 @@ export interface EngineOptions {
    * docs/LLM-JEV-DESIGN.md §4.8 / §8 (additive): the generator's resolved pricing (config overrides included) for the
    * estimate of a cancelled or failed llm-jev sample when no finished sibling and no run mean give a served rate. Absent ->
    * the engine reads the pricing table for `provider.model`; an unknown model is then unpriced (`budget:unpriced`, as a
-   * real call without `usage.cost`). TODO(src/cli/session.ts): pass `config.generator.pricing` here.
+   * real call without `usage.cost`). Filled by src/cli/session.ts from config.generator.pricing; absent only for bench,
+   * perf and tests — both engine-construction sites have passed it since the models-catalogue wave, and
+   * test/unit/hygiene/comment-refs.test.ts pins that they still do.
    */
   generatorPricing?: GeneratorConfig['pricing'];
   /**
@@ -1886,6 +1917,18 @@ export interface EngineOptions {
    * `jev-on` gate is checked before either.
    */
   routers?: 'on' | 'off';
+  /**
+   * contract 1.9 (Fastlane) §0.3 / §3: the S2 generation path on the `jev-on` propose call — the pinned prefix
+   * order (§3.3), the TTFB callback (§3.1), the hedge (§3.2) and the cache accounting (§3.4). `jev-on` only, and
+   * **default off** everywhere on `main` (§0.3's rule for a new mechanism), which is what keeps every
+   * `view: 'legacy'` prompt golden and `router-golden.test.ts` valid without a re-capture.
+   *
+   * **This member beats `JEVCODE_S2`**, in both directions; the env var only fills an ABSENT option, exactly as
+   * `routers` beats `JEVCODE_ROUTERS` (`s2Enabled`, `src/synth/llm/hedge.ts`). It exists because without it the
+   * bench could not pin S2 per arm: `armMechanisms('jev-on-next')` recorded `s2: true` while nothing set the
+   * variable, and an exported `JEVCODE_S2=on` armed the plain `jev-on` CONTROL arm while its row said `false`.
+   */
+  s2?: 'on' | 'off';
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)
 }
 
@@ -2076,6 +2119,27 @@ export interface EngineStatus {
   subwork?: readonly SubworkEntry[];
   /** contract 1.4 (W2b) (§3.6, §8.7, §12.0.3): the `⇄` status zone and the `/who` pane; absent when coordination is off */
   coordination?: CoordinationStatus;
+  /**
+   * contract 1.9 (Fastlane) §8.1 (F25, the finishing pass): the three mechanisms of the wave, as this engine
+   * RESOLVED them — not as an arm intended them.
+   *
+   * `ConditionConfig.mechanisms` records what the bench asked for, and an exported `JEVCODE_FASTPATH` or
+   * `JEVCODE_ROUTERS` used to beat it silently (§7.5a item 2); `mechanisms.s2: true` was recorded for
+   * `jev-on-next` while none of the four S2 mechanisms ran on its propose path at all. This member is the
+   * engine's own answer, so a summary can be checked against the run rather than against its intention.
+   *
+   * `s2: 'partial'` is the honest middle: the §3.1/§3.3/§3.4 measurement half is on and the §3.2 hedge is off
+   * because `JEVCODE_HEDGE=off` said so — a hedge counter of 0 then means "switched off", not "nothing was
+   * slow enough".
+   *
+   * **ABSENT means "every one of the three resolved off"** (review defect A8), and not only on an engine that
+   * does not resolve them (fakes, the generator-only factory). It is written as a conditional spread for the
+   * same reason the adjacent `coordination` / `phase` / `subwork` triple is: `status` rides the `--json=verbose`
+   * NDJSON stream, and a member on every line of every mode would change that stream for every CONTROL arm of
+   * the §8 head-to-head — arms whose whole job is to be the pre-wave build. A reader that sees no `mechanisms`
+   * has read `{ s2: 'off', routers: 'off', fastPath: 'off' }`.
+   */
+  mechanisms?: { s2: 'on' | 'partial' | 'off'; routers: 'on' | 'off'; fastPath: 'auto' | 'off' };
 }
 
 /**
@@ -2084,8 +2148,17 @@ export interface EngineStatus {
  * It is a projection of the fold, never the fold: nothing here is a `Map`, a record or a mutable ledger object.
  */
 export interface CoordinationStatus {
-  /** §3.6: one row per peer run on this repo that is not this run; `cloned` is `Fold.cloned` — one deviceKey on two machines, so every gated action is suspended for it until it is re-paired (§10.3) */
-  peers: readonly { runId: string; sessionId: string; deviceId: string; label: string; step: number; stage: string; phase: EngineRunPhase; beatAgeMs: number; sameDevice: boolean; blocked: string | null; live: boolean; cloned: boolean }[];
+  /**
+   * §3.6: one row per peer run on this repo that is not this run; `cloned` is `Fold.cloned` — one deviceKey on two
+   * machines, so every gated action is suspended for it until it is re-paired (§10.3).
+   *
+   * `beatAgeMs` is the age of the last HEARTBEAT, never how long the peer has been running: a live row's beat age is
+   * bounded above by the honoured TTL, so it reads as seconds for an instance that started this morning.
+   * `startedMsAgo` is the start age (the heartbeat's own `startedAt`), and it is what a surface may render as
+   * "started <t> ago"; absent when the producer does not report one, and `peerViewOf` then declines rather than
+   * substituting the beat age.
+   */
+  peers: readonly { runId: string; sessionId: string; deviceId: string; label: string; step: number; stage: string; phase: EngineRunPhase; beatAgeMs: number; startedMsAgo?: number; sameDevice: boolean; blocked: string | null; live: boolean; cloned: boolean }[];
   /** `peers.filter(live).length`, so the zone does not have to count */
   live: number;
   /** §4.1: the conflicts the LAST `coordinate` saw; 0 between steps and whenever the gate was clear */
@@ -2531,6 +2604,7 @@ export interface Engine {
    * proposed at all and `ask` decides `[c]` / `[s]` / `[x]`; with no `ask` (headless) the offer is printed and nothing
    * is seeded. A no-op without `EngineOptions.orchestration.runGit`.
    */
+  // NO CALLER — reachable only from the supervisor (ORCHESTRATION-DESIGN §8.3 item 34)
   land?(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }>;
 }
 
@@ -2861,10 +2935,16 @@ export type BenchStopReason = StopReason | 'not_run';
  * generator hygiene (bench/conditions.ts `engineModeOf`).
  *
  * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.1: `jev-on-next` = the `jev-on` engine with the router table, the
- * synth fast path armed (`fastPath: 'auto'`) and the S2 generation mechanisms on; `jev-on-next-nofast` is the SAME arm
+ * synth fast path armed (`fastPath: 'auto'`) and the tuned generation parameters; `jev-on-next-nofast` is the SAME arm
  * with the fast path OFF — the paired in-session control that keeps a `jev-on-next` win from confounding tuned
- * generation + S2 + routers + the fast path (§8.5 clause 4 rests on it, not on the recorded rows). Both are bench-side
+ * generation, the routers and the fast path (§8.5 clause 4 rests on it, not on the recorded rows). Both are bench-side
  * substitutions on the `jev-on` mode; neither is an EngineMode (bench/conditions.ts `engineModeOf`, `armMechanisms`).
+ *
+ * The §3 S2 generation mechanisms are NOT among them, and this block used to say they were (F05). They live on the
+ * `llm-jev` sample path, which `jev-on` never enters: nothing sets `PromptInput.prefixOrder`, `onFirstByte` is
+ * forwarded only from that path, and hedging plus the §3.4 reasoning cap are in `src/synth/llm/source.ts`. So
+ * `armMechanisms` clamps a pinned `s2` to `'off'` outside `llm-jev` and records what the run reported instead;
+ * wiring the mechanisms onto `jev-on` is F17 in docs/LLM-LOOP-DESIGN.md §9.1, not a claim this type may make.
  */
 export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned' | 'jev-on-next' | 'jev-on-next-nofast';
 

@@ -16,18 +16,20 @@
 import { lookupPricing } from '../config/defaults.js';
 import type { BenchCondition, BenchDeps, BenchSuite, ConfigRecordValue, Confirmer, Decider, Engine, EngineMode, EngineOptions, GenerateReasoning, Provider, SpendMeter, Synthesizer, SynthesizerArmMode, SynthesizerGeneration } from '../core/types.js';
 import { AbortError, ConfigError } from '../errors.js';
+import { s2ReachableOn } from '../synth/llm/hedge.js';
 import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/source.js';
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { JEV_OFF_MODEL, jevOffModeFrom } from '../jev/off.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
-import type { ArmMechanisms, BenchOptions, ConditionConfig, PinnedGeneration, S2Generation, ServedRate } from './types.js';
+import type { ArmMechanisms, BenchOptions, ConditionConfig, PinnedGeneration, S2Generation, S2State, ServedRate } from './types.js';
 
 export const CONDITION_ORDER: readonly BenchCondition[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast'];
 
 /**
  * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.1: the two arms of the LLM-loop wave. `jev-on-next` is the `jev-on`
- * engine with the router table, the synth fast path armed and the S2 generation mechanisms on; `jev-on-next-nofast` is the
- * same arm with the fast path off. They are bench-side substitutions on the `jev-on` mode exactly as `jev-off-tuned` is one
+ * engine with the router table and the synth fast path armed; `jev-on-next-nofast` is the same arm with the fast path off.
+ * The wave's third mechanism, the §3 S2 generation path, is NOT on either arm — `armMechanisms` says so and explains why
+ * (F05: it lives on the llm-jev sample path, and these arms' mode is `jev-on`). They are bench-side substitutions on the `jev-on` mode exactly as `jev-off-tuned` is one
  * on `jev-off`: the arm's mechanisms are PINNED here (`armMechanisms`) and recorded in summary.json, so a run directory says
  * which mechanisms were live rather than leaving it to be inferred from the engine's defaults.
  */
@@ -40,17 +42,50 @@ export function isNextArm(condition: BenchCondition): boolean {
 /**
  * The three mechanisms of the wave, per arm (§8.1 arm table; the shape lives in bench/types.ts beside `ConditionConfig`,
  * which records it). `fastPath: 'auto'` = armed, the stage-1 predicate decides per step (§4.3); `routers` = the §2 router
- * table; `s2` = the §3 generation path, whose pinned parameters ride on `PinnedGeneration.s2`.
+ * table; `s2` = the §3 generation path.
+ *
+ * **F05 — an arm may not pin a mechanism it cannot run.** The two next arms pinned `s2: true` and the whole
+ * `S2_GENERATION` block, and summary.json therefore described the §3 generation path as live days before the
+ * head-to-head was read off that file. It never was: nothing READ the flag — `buildEngineOptions` applied
+ * `fastPath` and `routers`, and `s2` had no reader anywhere in src, so the pin was a sentence in a report and
+ * nothing else. The clamp is the answer: an arm whose mode cannot honour the pin records `'off'`, whatever the
+ * arm table says.
+ *
+ * **Which modes CAN honour it moved under this function, and the predicate is no longer written here.** When F05
+ * was written the §3 mechanisms lived only on the synthesizer sample path (`src/synth/llm/source.ts`), so this
+ * clamp named `'llm-jev'`. F25 then built the reader on the OTHER mode: `EngineOptions.s2` (src/core/types.ts) is
+ * resolved by `s2Mode(mode, opt, env)`, which honours it on `jev-on` and nothing else — the synthesizer path is
+ * fed by `LlmSourceDeps` and nothing threads the option into it. Two hand-written mode lists, exact opposites, one
+ * per branch. `s2ReachableOn` is the question asked once, beside the resolver that answers it.
+ *
+ * `observed` is the other half: when the run reported what it did (`StepRecord.mechanisms.s2`, folded onto
+ * `StepsSummary.s2.state` by the §5.5 bridge and read back by `bench/next-arms.ts observedArmS2`), THAT is recorded
+ * and the clamp does not apply — the record follows the run in both directions, and can never be a constant again.
+ *
+ * B4: `observed` is `S2State | null | undefined`, and only a real measurement overrides. "No run reported the
+ * member" (`null`) and "the run reported that S2 was off" (`'off'`) are different facts, and the reader this
+ * argument was written for used to collapse both to `'off'` — which would silently overwrite a pinned `'on'` with
+ * a measurement nobody made the moment the runner started passing an observation in (it never did: the argument
+ * had no caller in src at all until B4 wired it).
  */
-export function armMechanisms(condition: BenchCondition): ArmMechanisms {
+export function armMechanisms(condition: BenchCondition, observed?: S2State | null): ArmMechanisms {
+  const mech = (fastPath: ArmMechanisms['fastPath'], routers: boolean, pinnedS2: S2State): ArmMechanisms => ({
+    fastPath,
+    routers,
+    // the clamp: a pinned claim survives only on an arm whose mode reaches the mechanisms; a MEASURED value always
+    // wins. The predicate is `s2ReachableOn`, which asks `s2Mode` — the resolver that actually honours the option —
+    // rather than repeating its mode list here, because a repeated list is exactly how F05 and F25 came to name
+    // opposite modes (see the function's own docblock in src/synth/llm/hedge.ts).
+    s2: observed ?? (s2ReachableOn(engineModeOf(condition)) ? pinnedS2 : 'off'),
+  });
   switch (condition) {
     case 'jev-on-next':
-      return { fastPath: 'auto', routers: true, s2: true };
+      return mech('auto', true, 'on');
     case 'jev-on-next-nofast':
       // §8.1: the single most valuable device in the plan — everything jev-on-next has EXCEPT route R9
-      return { fastPath: 'off', routers: true, s2: true };
+      return mech('off', true, 'on');
     default:
-      return { fastPath: 'off', routers: false, s2: false };
+      return mech('off', false, 'off');
   }
 }
 
@@ -191,9 +226,15 @@ export function pinnedGeneration(condition: BenchCondition, generatorModel: stri
       return { proposer: 'generator', temperature: null, maxTokens: TUNED_MAX_TOKENS, reasoning: HYGIENE_REASONING, deadlineMs: TUNED_DEADLINE_MS, repositoryDeadlineMs: TUNED_REPOSITORY_DEADLINE_MS, lengthHandling: 'double-once', servedRate };
     case 'jev-on-next':
     case 'jev-on-next-nofast':
-      // contract 1.9 (Fastlane) §8.1: "the jev-off-tuned object plus the S2 hedge/prefix fields". The proposer is the
-      // GENERATOR — the fast path is a per-step detour that builds its own jev-only synthesizer (§4.2), it is not the
-      // arm's proposer, which is why `usesSynthesizer` is false here and no SynthesizerGeneration is pinned.
+      // contract 1.9 (Fastlane) §8.1 called this "the jev-off-tuned object plus the S2 hedge/prefix fields". The
+      // proposer is the GENERATOR — the fast path is a per-step detour that builds its own jev-only synthesizer
+      // (§4.2), it is not the arm's proposer, which is why `usesSynthesizer` is false here and no
+      // SynthesizerGeneration is pinned.
+      //
+      // F05: and the S2 block is NOT pinned here any more. It was, and it made summary.json state hedge, prefix and
+      // reasoning-cap parameters for an arm whose mode is `jev-on`, where none of the three is reachable. Pinning
+      // parameters for a mechanism that cannot run is a claim about the run, and this file exists to make those
+      // claims true. `S2_GENERATION` stays declared above, for F17 (§9.1) to pin on an arm that can run it.
       return {
         proposer: 'generator',
         temperature: null,
@@ -203,7 +244,6 @@ export function pinnedGeneration(condition: BenchCondition, generatorModel: stri
         repositoryDeadlineMs: TUNED_REPOSITORY_DEADLINE_MS,
         lengthHandling: 'double-once',
         servedRate,
-        s2: S2_GENERATION,
       };
     case 'jev-only':
       // no generating LLM: the NullProvider throws if called; the values are the engine's inert defaults
@@ -255,7 +295,18 @@ function deciderModelOf(condition: BenchCondition, opts: BenchOptions): string |
   return opts.deciderModel.configured;
 }
 
-export function conditionConfig(condition: BenchCondition, opts: BenchOptions, generatorModel: string): ConditionConfig {
+/**
+ * The arm's row in `summary.json.conditions`.
+ *
+ * F05: `observed` is how `mechanisms.s2` stops being a constant. Everything else here is pinned BEFORE the run by
+ * definition (it is the arm's specification), but "did the §3 generation path run?" is a fact ABOUT the run, and a
+ * pinned answer to it is how summary.json came to describe a run that did not happen. The bench runner passes
+ * `{ s2: observedArmS2(records, condition) }` at the END of the run, from the step records the run wrote (B4 — until
+ * that wiring landed this argument had no caller in src and the record was the constant again); `null` or omitted and
+ * the row reads the arm's pinned value, which `armMechanisms` clamps to `'off'` on every arm whose mode cannot reach
+ * the mechanisms.
+ */
+export function conditionConfig(condition: BenchCondition, opts: BenchOptions, generatorModel: string, observed?: { s2?: S2State | null }): ConditionConfig {
   const model = condition === 'jev-only' ? NULL_GENERATOR_MODEL : generatorModel;
   const generation = pinnedGeneration(condition, model);
   return {
@@ -277,7 +328,7 @@ export function conditionConfig(condition: BenchCondition, opts: BenchOptions, g
     maxOutputBytes: opts.limits.maxOutputBytes,
     completeThreshold: opts.limits.completeThreshold,
     impossibleThreshold: opts.limits.impossibleThreshold,
-    mechanisms: armMechanisms(condition),
+    mechanisms: armMechanisms(condition, observed?.s2),
   };
 }
 
@@ -317,7 +368,7 @@ function copyConfigRecord(record: Record<string, ConfigRecordValue>): Record<str
  * lands with a DIFFERENT type, the intersection collapses and the assignment below fails to compile — a loud failure
  * at merge is the point, since the silent alternative is an arm that runs with both mechanisms off and measures nothing.
  */
-export type WaveEngineOptions = EngineOptions & { fastPath?: 'auto' | 'off'; routers?: 'on' | 'off' };
+export type WaveEngineOptions = EngineOptions & { fastPath?: 'auto' | 'off'; routers?: 'on' | 'off'; s2?: 'on' | 'off' };
 
 export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions): WaveEngineOptions {
   const generation = pinnedGeneration(input.condition, input.provider.model);
@@ -371,6 +422,16 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
   const mech = armMechanisms(input.condition);
   out.fastPath = mech.fastPath;
   out.routers = mech.routers ? 'on' : 'off';
+  // F25's headline gap, closed (review defect A5): the THIRD mechanism is pinned here like the other two. Until
+  // it was, `armMechanisms('jev-on-next')` returned `s2: true` while no option was written and `s2Mode` read
+  // `JEVCODE_S2` — which nothing in `src/bench` set — so the arm ran with S2 OFF and `summary.json` said `true`.
+  //
+  // The comparison is against `'off'` and not a truthiness test. F25 wrote `mech.s2 ? 'on' : 'off'` while
+  // `ArmMechanisms.s2` was a BOOLEAN; F05 widened it to `S2State` on another branch, and `'off'` is a truthy
+  // string — so taking both built EVERY arm, including the plain `jev-on` control, with `s2: 'on'` under a
+  // `summary.json` row saying `'off'`. `'partial'` maps to `'on'` because the option is the two-state switch and
+  // the missing half is `JEVCODE_HEDGE`, which `s2Mode` reads for itself.
+  out.s2 = mech.s2 === 'off' ? 'off' : 'on';
   return out;
 }
 
@@ -382,8 +443,23 @@ export function buildEngineOptions(input: EngineBuildInput, opts: BenchOptions):
  * therefore runs `jev-on-next` DISARMED while `summary.json` records `mechanisms.fastPath: 'auto'`, and an exported
  * `JEVCODE_FASTPATH=auto` runs the `jev-on-next-nofast` CONTROL armed while it records `'off'` — which destroys the
  * one-mechanism contrast §8.5 clause 4 rests on, silently, in the direction that makes the wave look better.
+ *
+ * **`JEVCODE_S2` and `JEVCODE_HEDGE` are here too** (review defect A5). `s2Mode` gates on `mode === 'jev-on'`, and
+ * `engineModeOf('jev-on') === 'jev-on'`, so the plain `jev-on` CONTROL arm passes that gate: an exported
+ * `JEVCODE_S2=on` armed the whole §3 generation path on the control and on `jev-on-next-nofast` while both rows
+ * recorded `mechanisms.s2: false`. It did not exist before F25 only because the variable was inert.
+ * `JEVCODE_HEDGE` rides with it because it is the half-switch that turns a pinned `s2: 'on'` into `'partial'` —
+ * an arm whose hedge counters read 0 for a reason its own row does not name is the same lie one level down, and
+ * it also arms the SYNTHESIZER's own round hedge (`hedgeEnabled(deps.hedge, env)`, src/synth/llm/source.ts),
+ * which no `ConditionConfig.mechanisms` row records at all.
+ *
+ * **Consequence, recorded:** clearing it means a bench arm can no longer express either hedge through the
+ * environment. That is the right default — an unrecorded mechanism is exactly what this function exists to
+ * stop — but an arm that WANTS the synthesizer's round hedge now needs a pin of its own: an `ArmMechanisms`
+ * member plus `LlmSourceDeps.hedge` threaded through `BenchDeps.createSynthesizer`, which is outside this
+ * file. Nothing in `armMechanisms` asks for it today, so no recorded arm loses anything.
  */
-export const MECHANISM_ENV_VARS: readonly string[] = ['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS'];
+export const MECHANISM_ENV_VARS: readonly string[] = ['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS', 'JEVCODE_S2', 'JEVCODE_HEDGE'];
 
 /**
  * Removes those switches from the bench process's environment and returns what it removed, so the runner can say so

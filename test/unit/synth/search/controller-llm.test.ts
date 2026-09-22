@@ -454,6 +454,11 @@ describe('§3.1 / §3.2 / §3.4 the generator-path figures reach `StepRecord.ver
     expect(reported.cacheRead).toBe(900);
     expect(reported.cacheWrite).toBe(100);
     expect(reported.cacheHitRate).toBeCloseTo(0.75, 12);
+    // B7/F19: the DENOMINATOR travels with the rate. Without it the fold in src/bench/step-records.ts has nothing
+    // to sum and a run-level rate is unrecoverable — the fold's own test feeds hand-written steps.jsonl rows, so
+    // this is the only assertion that pins `fastlaneCounts` actually writing `cacheInput` onto the step record.
+    expect(reported.cacheInput).toBe(1_200);
+    expect(reported.cacheRead! / reported.cacheInput!).toBeCloseTo(reported.cacheHitRate!, 12);
     // the §9.3 counts it already reported are untouched by the addition
     expect(reported).toMatchObject({ distinct: 2, misanchored: 0, graceMs: 40 });
   });
@@ -463,6 +468,6 @@ describe('§3.1 / §3.2 / §3.4 the generator-path figures reach `StepRecord.ver
     const ctx = ctxFor({ runId: 'llm-ctl-fastlane-off', step: 1 });
     await h.synth.synthesize(ctx);
     const reported = ctx.verifyReports.at(-1)!;
-    for (const key of ['ttfbMs', 'hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheHitRate']) expect(key in reported).toBe(false);
+    for (const key of ['ttfbMs', 'hedges', 'hedgeWins', 'cacheRead', 'cacheWrite', 'cacheHitRate', 'cacheInput']) expect(key in reported).toBe(false);
   });
 });

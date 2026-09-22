@@ -619,7 +619,17 @@ export interface RunScratch {
  * (`prior` is the first search's trace). Every member is ABSENT when nothing measured it: a run with hedging off must
  * not report `hedges: 0` as if a hedge had been declined, and a provider that served no cache must not report a
  * `cacheHitRate` of 0, which reads as "the cache missed" rather than "nothing was measured". `cacheHitRate` is
- * computed from the summed READ and the summed INPUT tokens, never averaged over the rounds' own rates.
+ * computed from the summed READ and the summed INPUT tokens, never averaged over the rounds' own rates — and
+ * `cacheInput`, that denominator, is reported too, so the run and the arm can do the same sum over their steps
+ * (F19: without it the only run-level figure available was the mean of the steps' ratios, which is the error the
+ * line above rules out one level down).
+ *
+ * The guard below is also what BOUNDS that sum (B5): a round whose samples reported neither a read nor a write
+ * reaches this function with `cacheRead === cacheWrite === cacheInput === 0` — `LlmSource.cacheCountsOf` emits
+ * nothing for it — so its input tokens are in neither sum and `Σ read / Σ input` is over the reporting steps, not
+ * over the step's whole input. Closing that means emitting the denominator on a measured miss here, in
+ * `search/subgoal.ts`'s trace fold and in `llm/source.ts`, which changes what the §3.4 instrument reports on every
+ * provider: docs/LLM-LOOP-DESIGN.md §9.1 F26, owned by §3.4, not by a finishing pass.
  */
 function fastlaneCounts(prior: LlmTrace | undefined, llm: LlmTrace): Partial<StepVerifySummary> {
   const ttfbMs = [...(prior?.ttfbMs ?? []), ...(llm.ttfbMs ?? [])];
@@ -630,7 +640,9 @@ function fastlaneCounts(prior: LlmTrace | undefined, llm: LlmTrace): Partial<Ste
   return {
     ...(ttfbMs.length > 0 ? { ttfbMs } : {}),
     ...(hedges > 0 ? { hedges, hedgeWins: (prior?.hedgeWins ?? 0) + (llm.hedgeWins ?? 0) } : {}),
-    ...(cacheRead > 0 || cacheWrite > 0 ? { cacheRead, cacheWrite, ...(cacheInput > 0 ? { cacheHitRate: cacheRead / cacheInput } : {}) } : {}),
+    // `cacheInput` rides WITH the rate, never instead of it: the rate is the step's own answer and the denominator is
+    // what lets a run or an arm recompute one over many steps (`Σ read / Σ input`) instead of averaging the rates
+    ...(cacheRead > 0 || cacheWrite > 0 ? { cacheRead, cacheWrite, ...(cacheInput > 0 ? { cacheInput, cacheHitRate: cacheRead / cacheInput } : {}) } : {}),
   };
 }
 

@@ -1,7 +1,17 @@
 /**
- * Guard: no raw U+2028 / U+2029 anywhere under src/** or scripts/**. TypeScript accepts them inside a regex or string literal, but
- * esbuild (vitest's transformer, and our bundler) rejects them ("Unterminated regular expression"), so a single stray character
- * turns every importer's test file red on a clean checkout (2026-09-22, src/errors.ts:368). Write `\u2028` / `\u2029` instead.
+ * Guard: no raw U+2028 / U+2029 anywhere under src/**, scripts/** or bin/**.
+ *
+ * The failure is narrower than it was first written (F24b): esbuild \u2014 vitest's transformer, and our bundler \u2014 rejects a raw
+ * U+2028/U+2029 inside a REGEX LITERAL with "Unterminated regular expression", because it terminates the literal as a line
+ * break; inside a string literal it is legal and esbuild accepts it. Two test fixtures rely on exactly that
+ * (test/unit/import/parse/markdown.test.ts:132-145 and test/unit/coordination/records.test.ts:113 hold the raw characters in
+ * strings and transform fine), which is why this walk covers shipped code and not test/**. One stray character in a regex
+ * turned every importer's test file red on a clean checkout (2026-09-22, src/errors.ts:368, fixed 9f26fb6). The scan stays
+ * blunt \u2014 any raw occurrence, regex or not \u2014 because the cost of writing `\u2028` / `\u2029` is nil and telling the two
+ * contexts apart needs a parser.
+ *
+ * `bin/` is scanned because package.json `files` ships it VERBATIM (it is not bundled): a raw separator there reaches an
+ * installed copy, where no test would see it. It is clean today and stays that way.
  */
 import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -18,12 +28,12 @@ function walk(dir: string, out: string[] = []): string[] {
   return out;
 }
 
-describe('source hygiene: no raw U+2028 / U+2029 in src/** or scripts/**', () => {
+describe('source hygiene: no raw U+2028 / U+2029 in src/**, scripts/** or bin/**', () => {
   it('every file uses the escaped forms', () => {
     const hits: string[] = [];
     // harness-owned files reported to the harness session on 2026-09-22; the allow-list shrinks as they escape their characters
     const PENDING_HARNESS_FILES = new Set<string>();
-    for (const f of [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'scripts'))]) {
+    for (const f of [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'scripts')), ...walk(join(ROOT, 'bin'))]) {
       if (PENDING_HARNESS_FILES.has(relative(ROOT, f))) continue;
       const text = readFileSync(f, 'utf8');
       const i = text.search(/[\u2028\u2029]/);

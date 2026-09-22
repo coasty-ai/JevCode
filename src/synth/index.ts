@@ -11,7 +11,6 @@
  * (search/subgoal.ts), whose collaborators are injected so they are unit-tested with fakes.
  */
 import type { Decider, SynthesisContext, Synthesizer, SynthesizerArmMode, SynthesizerGeneration, WorkspaceInfo } from '../core/types.js';
-import { ConfigError } from '../errors.js';
 import { createTokenBeamSource } from './beam/index.js';
 import { createDonorSource } from './donor/index.js';
 import { fillSketches } from './fill/beam.js';
@@ -307,13 +306,28 @@ export function synthesizerHandles(info: Pick<WorkspaceInfo, 'testCommand'>, fil
  * LLM candidate source rides in (`SynthesisContext.generate`, when the engine exposes it) with the pinned generation
  * parameters (`opts.generation`, default `LLM_DEFAULT_GENERATION`: the L1 rounds and the L2 writer send them, and the
  * synthesizer echoes the very object), the controller takes its llm-jev switches and `handles()` answers the engine's §9.4
- * question. `jev-only` is the unchanged synthesizer. The llm-sieve code defaults are not wired yet: asked for that arm the
- * factory says so instead of running a different one (the bench turns the throw into an `engine_create_failed` record).
+ * question. `jev-only` is the unchanged synthesizer.
+ *
+ * `llm-sieve` is built as `llm-jev` and echoes its OWN mode (F06). The arm is not a different search: §10.1 defines it
+ * as llm-jev with "every Jev question replaced by its code default", and the substitution is made in the DECIDER slot,
+ * not here — `bench/conditions.ts usesStubDecider` puts `bench/stub-decider.ts` there, whose inert answers are exactly
+ * those defaults (a Noul at 0.5 sits under every yes-cut and above every no-cut so no gate fires and rankings fall
+ * through to the code order; all Choice mass on the first non-escape option IS arrival order; Score level 0) and which
+ * COUNTS what it absorbed as `stubbedJevRequests`. Nothing in this factory's `mode` would issue a Jev request the stub
+ * has not already taken, so constructing the arm as llm-jev runs the arm rather than a different one.
+ *
+ * It is the only construction path: `--mode` (`src/cli/args.ts MODES`) has no `llm-sieve`, so the arm is reachable only
+ * through `jevcode bench --conditions`, where the runner always pairs it with the stub. Before this, the throw here
+ * turned `--conditions llm-sieve` into one `engine_create_failed` record per task — a whole run directory of failures
+ * for a typeable flag — and left head-to-head criterion 5a permanently `not_evaluable`.
+ *
+ * Residual, recorded rather than hidden: §10.1's row also says "no L2 (code oracle only)", and the L2 reproduction
+ * writer is an llm-jev mechanism the stub does not switch off (it only stubs L2's Jev judgement). docs/LLM-LOOP-DESIGN.md
+ * §9.1 carries it as F17's sibling; an `l2: false` controller switch is a mechanism change, not a finishing fix.
  */
 export function createSynthesizer(opts: SynthesizerOptions): Synthesizer {
   const mode: SynthesizerArmMode = opts.mode ?? 'jev-only';
   if (mode === 'jev-only') return Object.assign(new LedgerSieveSynthesizer(searchDeps()), { mode });
-  if (mode !== 'llm-jev') throw new ConfigError(`synthesizer: mode "${mode}" is not wired in this build (the search implements jev-only and llm-jev; docs/LLM-JEV-DESIGN.md §9.2 stage 5)`, { setting: 'mode' });
   const generation = opts.generation ?? LLM_DEFAULT_GENERATION;
   const llm = createSearchLlm({ ...(opts.llm ?? {}), generation });
   const inner = new LedgerSieveSynthesizer(searchDeps({ llm }), { llmJev: true, generation });

@@ -10,6 +10,7 @@
  *
  * What each test asserts, in the same words the site's clause 3 uses:
  *   RL1 intent falls back to investigate when the decider throws
+ *   RL2 context keeps the traceback frame when the decider throws
  *   RL4 judge outcome is the parsed counts when the decider throws
  *   RL5 completion is the engine's own run when the decider throws
  *   RL6 replan continues on the code directive when the decider throws
@@ -25,14 +26,15 @@ import type { StageContext } from '../../../src/loop/engine.js';
 import { createLoopDetector } from '../../../src/loop/loopdetect.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
 import { buildCommonState, type ExecutedInfo } from '../../../src/loop/state.js';
-import { commitStepRouters, noteStepRoute, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
+import { RL2_CONTEXT_DEADLINE_MS, commitStepRouters, noteStepRoute, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
 import type { RouteResult } from '../../../src/jev/router.js';
 import { INTENT_FALLBACK, codeIntentOrder, runIntentStage } from '../../../src/loop/stages/intent.js';
+import { CONTEXT_MAX_CANDIDATES, buildContextQuestions, runContextStage, selectCandidatesCode } from '../../../src/loop/stages/context.js';
 import { runJudgeStage } from '../../../src/loop/stages/judge.js';
 import { completionDecision, type CompletionFactInput } from '../../../src/loop/stages/complete.js';
 import { REPLAN_FALLBACK, runReplanStage } from '../../../src/loop/stages/replan.js';
 import { codeRiskFloor, codeRiskVerdict, escalateVerdict, runRiskStage } from '../../../src/loop/stages/risk.js';
-import { DEFAULT_LIMITS, choiceOver, createFakeSandbox, createFakeWorkspace, execResult, noulA, scoreA } from './fakes.js';
+import { DEFAULT_LIMITS, choiceOver, createFakeSandbox, createFakeWorkspace, execResult, makeEngine, noulA, passingTests, scoreA, turn, type FakeWorkspace, type Harness } from './fakes.js';
 
 /** the outage the head-to-head recorded */
 const OUTAGE = (): Promise<never> => Promise.reject(new JevHttpError('no healthy upstream', { status: 503, retryable: true }));
@@ -47,6 +49,9 @@ interface CtxOptions {
   asked?: StageName[];
   /** every Decision row the engine would have recorded, AFTER the stage's annotate callback ran (or did not) */
   rows?: Decision[];
+  /** RL2: the files this run has already touched — they are members of the code order whatever Jev answers */
+  changedFiles?: readonly string[];
+  workspace?: FakeWorkspace;
 }
 
 function stageCtx(o: CtxOptions): StageContext {
@@ -61,10 +66,10 @@ function stageCtx(o: CtxOptions): StageContext {
     signal: new AbortController().signal,
     redact: (s) => s,
     generation: { temperature: null, maxTokens: 1500 },
-    workspace: createFakeWorkspace(),
+    workspace: o.workspace ?? createFakeWorkspace(),
     sandbox: createFakeSandbox(),
     workspaceInfo: { root: '/ws', git: true, hasTests: true, testCommand: { command: 'pytest -q', runner: 'pytest' } },
-    changedFiles: [],
+    changedFiles: o.changedFiles ?? [],
     createdThisRun: new Set<string>(),
     patchTargets: [],
     now: () => 0,
@@ -129,6 +134,151 @@ describe('the router table with a decider that throws (routers: on)', () => {
     // one fact, the only one the function reads (review 2026-09-22 defect 8: the unread `runGreen` is gone)
     expect(codeIntentOrder({ changeUnverified: false })).toEqual(['investigate', 'verify', 'edit', 'fix_environment', 'finish']);
     expect(codeIntentOrder({ changeUnverified: true })).toEqual(['verify', 'investigate', 'edit', 'fix_environment', 'finish']);
+  });
+
+  /**
+   * F27 (finishing pass) — RL2, the LAST loop ask that could still end a `jev-on-next` run through a Jev outage.
+   * Slot B converted RL1, RL4, RL5 and RL6 and left the context stage inline, so I1 ("Jev routes, never gates")
+   * was not true end to end: a 503 at `stages/context.ts` rejected the stage and the run died there.
+   */
+  it('context keeps the traceback frame when the decider throws', async () => {
+    const intent = { intent: 'investigate' as const, answer: 'investigate' as const, probability: 0.9 };
+    const ctx = stageCtx({ ask: OUTAGE, step: 41, changedFiles: ['src/a.py'] });
+    const r = await runContextStage(ctx, common(), intent);
+    // the code order is the step: the file this run already touched leads, and nothing was withheld by the outage
+    expect(r.files.map((f) => f.path)).toEqual(['src/a.py', 'tests/test_a.py']);
+    expect(r.candidates).toBe(2);
+    expect(r.bytes).toBeGreaterThan(0);
+    // and the outage is a ROW, not a throw: issued 1, applied 0, dropped 1, and I3's measured wait is 0
+    const ledger = commitStepRouters('r-router', 41);
+    expect(ledger).toMatchObject({ issued: 1, applied: 0, dropped: 1, waitMs: 0 });
+    expect(ledger?.rows[0]).toMatchObject({ id: 'RL2', source: 'code', dropped: true });
+  });
+
+  it('RL2: an answer that lands in time still selects, exactly as the inline ask did', async () => {
+    const intent = { intent: 'investigate' as const, answer: 'investigate' as const, probability: 0.9 };
+    const ctx = stageCtx({
+      step: 42,
+      ask: async (_stage, questions) => {
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(id === 'show:tests/test_a.py' ? 0.95 : 0.05);
+        return out;
+      },
+    });
+    const r = await runContextStage(ctx, common(), intent);
+    expect(r.files.map((f) => f.path)).toEqual(['tests/test_a.py']);
+    expect(commitStepRouters('r-router', 42)).toMatchObject({ issued: 1, applied: 1, dropped: 0, waitMs: 0 });
+  });
+
+  it('RL2 I3: a 500 ms ask is held for the 400 ms deadline and the code selection stands', async () => {
+    const intent = { intent: 'investigate' as const, answer: 'investigate' as const, probability: 0.9 };
+    const ctx = stageCtx({
+      step: 43,
+      changedFiles: ['tests/test_a.py'],
+      ask: async (_stage, questions) => {
+        await new Promise((r) => setTimeout(r, 500));
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(0.95);
+        return out;
+      },
+    });
+    const t0 = Date.now();
+    const r = await runContextStage(ctx, common(), intent);
+    const wall = Date.now() - t0;
+    expect(wall).toBeLessThan(490);
+    expect(wall).toBeGreaterThanOrEqual(300);
+    // the touched file leads the code order, which is the whole of "changed files are always members"
+    expect(r.files.map((f) => f.path)).toEqual(['tests/test_a.py', 'src/a.py']);
+    const ledger = commitStepRouters('r-router', 43);
+    expect(ledger).toMatchObject({ issued: 1, applied: 0, dropped: 1, waitMs: 0 });
+  });
+
+  it('RL2 I4: an answer landing after the step committed is dropped and selects nothing', async () => {
+    const intent = { intent: 'investigate' as const, answer: 'investigate' as const, probability: 0.9 };
+    const ctx = stageCtx({
+      step: 44,
+      ask: async (_stage, questions) => {
+        await new Promise((r) => setTimeout(r, 30));
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(id === 'show:tests/test_a.py' ? 0.95 : 0.05);
+        return out;
+      },
+    });
+    const pending = runContextStage(ctx, common(), intent);
+    commitStepRouters('r-router', 44);
+    const r = await pending;
+    // the code order, not Jev's single file: the answer arrived for a step that no longer exists
+    expect(r.files.map((f) => f.path)).toEqual(['src/a.py', 'tests/test_a.py']);
+  });
+
+  /**
+   * Review defect **A7**, the half that is reachable without a live Jev. RL2 carries the LARGEST question batch
+   * on the loop — one Noul per candidate, up to `CONTEXT_MAX_CANDIDATES` (300) — against a deadline
+   * (`RL2_CONTEXT_DEADLINE_MS`, 400 ms) justified by a p50/p95 measured over the loop's asks IN GENERAL, none of
+   * which is a 300-Noul batch. If that batch is routinely slower than the deadline, `jev-on-next` does not gain
+   * a route at RL2: it silently LOSES Jev context selection and runs `selectCandidatesCode` every step.
+   *
+   * What can be fixed offline is the word "silently". The per-route drop REASON now rides the ledger row, so the
+   * measurement the review asks for — "measure the context batch's own latency on a jev-on-next task before the
+   * arm is run" — is a read of that arm's own `steps.jsonl` rather than a new experiment: `drop: 'deadline'` on
+   * every RL2 row says the deadline is the binding constraint and must be resized; `drop: 'error'` says Jev was
+   * down; no `drop` at all says the answer was applied. Sizing the constant itself still needs the measurement.
+   */
+  it('RL2 A7: the drop REASON is recorded, so a deadline-bound arm is visible in its own run directory', async () => {
+    const intent = { intent: 'investigate' as const, answer: 'investigate' as const, probability: 0.9 };
+    // the deadline, on the batch the site really sends
+    const slow = stageCtx({
+      step: 45,
+      ask: async (_stage, questions) => {
+        await new Promise((r) => setTimeout(r, RL2_CONTEXT_DEADLINE_MS + 120));
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(0.95);
+        return out;
+      },
+    });
+    await runContextStage(slow, common(), intent);
+    expect(commitStepRouters('r-router', 45)?.rows[0]).toMatchObject({ id: 'RL2', dropped: true, drop: 'deadline' });
+
+    // an outage is a DIFFERENT reason, and a reader must be able to tell them apart — one says "resize the
+    // deadline", the other says "Jev was down"; before this they were the same `dropped: true`
+    const down = stageCtx({ ask: OUTAGE, step: 46 });
+    await runContextStage(down, common(), intent);
+    expect(commitStepRouters('r-router', 46)?.rows[0]).toMatchObject({ id: 'RL2', dropped: true, drop: 'error' });
+
+    // and an applied answer carries no reason at all, so the member is absent on the row it cannot describe
+    const fast = stageCtx({
+      step: 47,
+      ask: (_stage, questions) => {
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(id === 'show:tests/test_a.py' ? 0.95 : 0.05);
+        return Promise.resolve(out);
+      },
+    });
+    await runContextStage(fast, common(), intent);
+    const applied = commitStepRouters('r-router', 47)?.rows[0];
+    expect(applied).toMatchObject({ id: 'RL2', dropped: false });
+    expect(applied?.drop).toBeUndefined();
+  });
+
+  /**
+   * A7's other half, as a fact rather than a worry: RL2's batch really is the loop's largest, so the generic
+   * per-site deadline is being applied to the one site it was never measured on. `CONTEXT_MAX_CANDIDATES` Nouls
+   * against RL1/RL4/RL6's single Choice.
+   */
+  it('RL2 A7: the batch is one Noul per candidate, up to CONTEXT_MAX_CANDIDATES — the largest ask on the loop', () => {
+    const views = Array.from({ length: CONTEXT_MAX_CANDIDATES + 40 }, (_, i) => ({ path: `src/f${i}.py`, bytes: 100, mentionsInTask: 0, touchedThisRun: false }));
+    const questions = buildContextQuestions(views.slice(0, CONTEXT_MAX_CANDIDATES), 'investigate');
+    expect(Object.keys(questions)).toHaveLength(CONTEXT_MAX_CANDIDATES);
+    for (const q of Object.values(questions)) expect(q.type).toBe('noul');
+  });
+
+  it('RL2 the code order: touched first, then mentions, then path, under the 12-file / 60 KB caps', () => {
+    const view = (path: string, over: { bytes?: number; mentionsInTask?: number; touchedThisRun?: boolean } = {}) => ({ path, bytes: over.bytes ?? 100, mentionsInTask: over.mentionsInTask ?? 0, touchedThisRun: over.touchedThisRun ?? false });
+    const order = selectCandidatesCode([view('c.py', { mentionsInTask: 2 }), view('a.py'), view('b.py', { touchedThisRun: true }), view('d.py', { mentionsInTask: 2 })]);
+    expect(order.map((v) => v.path)).toEqual(['b.py', 'c.py', 'd.py', 'a.py']);
+    // the caps are the code's and Jev cannot lift them: 20 candidates in, 12 out
+    const many = Array.from({ length: 20 }, (_, i) => view(`f${String(i).padStart(2, '0')}.py`));
+    expect(selectCandidatesCode(many)).toHaveLength(12);
   });
 
   it('judge outcome is the parsed counts when the decider throws', async () => {
@@ -446,10 +596,26 @@ describe('I2: with routers off every stage is the pre-1.9 stage', () => {
   it('a throwing decider is a stage failure again — exactly what it was before contract 1.9', async () => {
     const ctx = stageCtx({ ask: OUTAGE });
     await expect(runIntentStage(ctx, common())).rejects.toThrow(/no healthy upstream/);
+    await expect(runContextStage(ctx, common(), { intent: 'investigate', answer: 'investigate', probability: 0.9 })).rejects.toThrow(/no healthy upstream/);
     await expect(runJudgeStage(ctx, common(), runProposal('pytest -q'), executed(), [])).rejects.toThrow(/no healthy upstream/);
     await expect(runReplanStage(ctx, common(), TRIPPED(), ['executed'])).rejects.toThrow(/no healthy upstream/);
     await expect(runRiskStage(ctx, common(), runProposal('pytest -q'), { intent: 'verify', answer: 'verify', probability: 1 })).rejects.toThrow(/no healthy upstream/);
     expect(commitStepRouters('r-router', 1)).toBeNull();
+  });
+
+  it('RL2 with routers off: the answered selection is HEAD\'s, and no router key is opened', async () => {
+    const ctx = stageCtx({
+      step: 51,
+      ask: async (_stage, questions) => {
+        const out: Record<string, Answer> = {};
+        for (const id of Object.keys(questions)) out[id] = noulA(id === 'show:src/a.py' ? 0.9 : 0.2);
+        return out;
+      },
+    });
+    const r = await runContextStage(ctx, common(), { intent: 'investigate', answer: 'investigate', probability: 0.9 });
+    expect(r.files.map((f) => f.path)).toEqual(['src/a.py']);
+    // I2: a routers-off run must not close a (runId, step) key — that would disarm the next run reusing the id
+    expect(commitStepRouters('r-router', 51)).toBeNull();
   });
 
   it('`stop_and_report` still ends the run, and the risk result carries no riskSource', async () => {
@@ -525,4 +691,54 @@ describe('the switch is per MODE, not per process (review 2026-09-22, defects 3 
       expect(commitStepRouters('r-router', 1)).toBeNull();
     });
   }
+});
+
+/**
+ * F27 end to end: the whole point of RL2. A Jev outage at the context stage must not be the end of a
+ * `jev-on-next` run — `record.error` stays undefined, the step commits, the next step runs.
+ */
+describe('F27 end to end — a Jev outage at the context stage does not end the run', () => {
+  const harnesses: Harness[] = [];
+  afterEach(() => {
+    for (const h of harnesses.splice(0)) h.cleanup();
+    resetStepRouters();
+  });
+
+  it('routers on: the run survives a 503 at every context ask and the router row says `dropped`', async () => {
+    const h: Harness = await makeEngine({
+      mode: 'jev-on',
+      turns: [turn({ kind: 'run', command: 'pytest -q' }, { remaining: ['keep going'] }), turn({ kind: 'done', summary: 'green' })],
+      sandbox: createFakeSandbox(() => passingTests),
+      deciderOptions: { failAt: [{ stage: 'context', status: 503 }] },
+      limits: { maxSteps: 2 },
+      engine: { routers: 'on' },
+    });
+    harnesses.push(h);
+    const r = await h.engine.run();
+    expect(r.steps).toBe(2);
+    for (const rec of h.store.steps) expect(rec.error).toBeUndefined();
+    // the first step really ran its command: the outage cost ordering quality and nothing else
+    expect(h.store.steps[0]!.outcome?.status).toBe('executed');
+    // the outage is recorded as a drop on the step that took it, and nothing was gated by it
+    expect(h.store.steps[0]!.router).toMatchObject({ dropped: 1 });
+    expect(h.store.steps[0]!.router?.rows.some((row) => row.id === 'RL2')).toBe(true);
+    // the prompt still carried files: the code selection applied
+    expect(h.of('context')[0]!.files.length).toBeGreaterThan(0);
+  });
+
+  it('routers off: the same 503 ends the run, exactly as it did before contract 1.9', async () => {
+    const h: Harness = await makeEngine({
+      mode: 'jev-on',
+      turns: [turn({ kind: 'run', command: 'pytest -q' }, { remaining: ['keep going'] })],
+      sandbox: createFakeSandbox(() => passingTests),
+      deciderOptions: { failAt: [{ stage: 'context', status: 503 }] },
+      limits: { maxSteps: 2 },
+      engine: { routers: 'off' },
+    });
+    harnesses.push(h);
+    const r = await h.engine.run();
+    expect(r.steps).toBeGreaterThanOrEqual(1);
+    expect(h.store.steps.some((rec) => rec.error !== undefined)).toBe(true);
+    expect(h.store.steps.every((rec) => rec.router === undefined)).toBe(true);
+  });
 });

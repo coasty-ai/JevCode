@@ -22,7 +22,7 @@ import { createEmitter } from '../core/events.js';
 import { sha12 } from '../core/hash.js';
 import { toJson } from '../core/json.js';
 import { clip } from '../core/text.js';
-import { monotonicNow, nowIso, sleep } from '../core/time.js';
+import { monotonicNow, nowIso, percentile, sleep } from '../core/time.js';
 // TUI-DESIGN §8.6 (F7): the steer bounds are defined once, next to PendingDirective; re-exported below under the engine's names
 import { DEFAULT_COMMIT_IDENTITY, DIRECTIVE_MAX_CHARS, PENDING_DIRECTIVES_MAX } from '../core/types.js';
 import type { AskResult,
@@ -130,7 +130,8 @@ import { fileMemoryFromPostImage, writePostImages, writePreImages, type ImageSou
 import { hasContextStore, readContextExtension, type ContextCheckpointExtension } from '../checkpoint/types.js';
 import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, REPLAY_HASH_MAX_FILES, hashTargets, parseStepCache, promptHashOf, proposalPaths, stepCacheName, stepCacheRel, stepCacheSupersededName, verifyTargets, type CachedSample, type StepCache } from '../checkpoint/replay.js';
 // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (Jev's window is untouched — two windows, §8.1)
-import { compactCode, compactionDue, isContextSummary, type CompactionTrigger } from './context/compaction.js';
+import { compactCode, compactionDue, isContextSummary, rankKept, type CompactionTrigger, type KeptItem } from './context/compaction.js';
+import { extractKept, readKeptItems } from './context/kept.js';
 import { FilesInView, boundMemory, dropFile, evictFiles, forgetFile, noteShown, rememberFile, touchFile, workspaceFilesInViewDeps } from './context/context-cache.js';
 import { buildHistoryEntry, foldHistoryRecord, foldableCount, needsOutputFile, outputRefFor, outputView, parseOutputRef, planHistory, pushHistory, renderHistory, seedHistoryEntry, tierText, type HistoryPlan, type OutputView } from './context/history.js';
 import { AGENT_MEM_BYTES, MIN_FREE_BYTES, ORCHESTRATION_DEPTH_MAX } from '../core/limits.js';
@@ -184,7 +185,8 @@ import { isRepositoryWorkspace } from '../synth/oracle/index.js';
 import { synthesizerHandles } from '../synth/index.js';
 // contract 1.9 (Fastlane) §3.2: a hedge twin's sample index carries its origin — the one fact `noteSampleStart` needs
 // to tell "a second copy of a sample of the open round" from "a new round" (slot A's defect 11)
-import { hedgeOriginOf } from '../synth/llm/source.js';
+import { LLM_DEADLINE_ADAPT, hedgeOriginOf } from '../synth/llm/source.js';
+import { hedgedCall, providerOrderFor, s2Mode } from '../synth/llm/hedge.js';
 import { warmPlaneEnabled } from '../synth/warm/index.js';
 import { scopeUsable } from '../workspace/tests.js';
 import { runIntentStage, INTENT_FALLBACK, PLAN_STALE_THRESHOLD, type IntentStageResult } from './stages/intent.js';
@@ -527,7 +529,18 @@ interface StepDraft {
    * docs/LLM-JEV-DESIGN.md §9.3 (llm-jev): the step's verification counts for `StepRecord.verify` — the engine's own tallies
    * of the sample rows it wrote, and what the synthesizer reported through `SynthesisContext.reportVerify` (merged over them).
    */
-  verify: { samples: number; timeouts: number; cancelled: number; malformed: number; reported: Partial<StepVerifySummary> | null };
+  verify: {
+    samples: number;
+    timeouts: number;
+    cancelled: number;
+    malformed: number;
+    reported: Partial<StepVerifySummary> | null;
+    /**
+     * contract 1.9 (Fastlane) §3.1–§3.4 (F25): what the ENGINE measured about this step's own propose call.
+     * Filled only when the S2 switch is on, so an S2-off step's `StepRecord` is byte-identical to HEAD's.
+     */
+    s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number };
+  };
   /** docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed — the synthesizer, or the generic per-step fallback (stage 4); null in the other modes */
   proposer: StepProposer | null;
   /** contract 1.9 (Fastlane) §5.2: the fast path's row for this step; null when it never armed (I2: nothing is written then) */
@@ -613,8 +626,134 @@ function addUsage(a: TokenUsage, b: TokenUsage): void {
 function jevChargedMs(draft: Pick<StepDraft, 'timing'>): number {
   return Math.max(draft.timing.jevMs, draft.timing.jevWallMs);
 }
+
+// ---------------------------------------------------------------------------------------
+// contract 1.9 (Fastlane) §3 (F25) — the S2 generation path on the `jev-on` propose call
+// ---------------------------------------------------------------------------------------
+
+/**
+ * §3.1: how many TTFB readings a run keeps. The p50 is a running statistic, not a series: past a few hundred
+ * readings another one cannot move it, and an unbounded array on a 40-step run with a hedge per step is memory
+ * spent on nothing. The per-step copy takes the same bound so a pathological step cannot grow `steps.jsonl`.
+ */
+export const TTFB_READINGS_MAX = 256;
+
+/**
+ * §3.2: one leg of a hedged one-shot propose call, as `Engine.generate` sees it. `sample` is set ONLY on the
+ * twin (`HEDGE_TWIN_OFFSET`), so an unhedged call's events and `generator.jsonl` row are byte-identical to HEAD's.
+ */
+interface OneShotLeg {
+  signal: AbortSignal;
+  onFirstByte: (ms: number) => void;
+  sample?: number;
+}
+
+/**
+ * §3.2: what the twin sends — the origin's request with its upstream order ROTATED, so the provider that is
+ * currently silent is the twin's last choice instead of its first. A request without a `providerPrefs.order`
+ * (which is every request the loop sends today) is returned unchanged, and the twin is then a pure latency race.
+ */
+function twinRequest(req: GenerateRequest): GenerateRequest {
+  const order = req.providerPrefs?.order ?? [];
+  if (order.length < 2) return req;
+  return { ...req, providerPrefs: { requireParameters: req.providerPrefs?.requireParameters ?? true, order: [...providerOrderFor(order, true)] } };
+}
+
+/** §3.1–§3.4: did the engine measure anything about this step's own propose call? Only then is `verify` written. */
+function s2Measured(draft: Pick<StepDraft, 'verify'>): boolean {
+  const s2 = draft.verify.s2;
+  return s2.ttfbMs.length > 0 || s2.hedges > 0 || s2.cacheRead > 0 || s2.cacheWrite > 0;
+}
+
 function zeroTiming(): StepTiming {
   return { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 0 };
+}
+
+/**
+ * F13 (finishing pass): the OPTIONAL `StepTiming` buckets that are summed onto the run.
+ *
+ * `imagesMs`, `synthMs`, `decomposeMs` and `jevWallMs` were summed; `coordinateMs`, `coordWaitMs` (contract 1.4
+ * W2b, COORDINATION-DESIGN §4.2) and `fastPathMs` / `fastPathJevMs` (contract 1.9 Fastlane §4.4, §5.2) were
+ * written per step and summed nowhere, so `state.json`'s run timing block silently disagreed with the sum of
+ * `steps.jsonl` and an archived run could not be read for its coordinate or fast-path wall at all.
+ *
+ * `routerWaitMs` is deliberately NOT here: contract 1.9 §0.4 I3 asserts it per ROUTED SITE (it reads 0 on every
+ * path that is not a bug) and the bench-wide row is still open (docs/LLM-LOOP-DESIGN.md §7.5, recorded gaps), so
+ * a run-level sum would be a figure no design names.
+ */
+export const RUN_TIMING_BUCKETS = ['imagesMs', 'synthMs', 'decomposeMs', 'coordinateMs', 'coordWaitMs', 'fastPathMs', 'fastPathJevMs', 'jevWallMs'] as const;
+
+/**
+ * F13 / review defect **A10**: the optional `StepTiming` buckets a step reached, as ONE list.
+ *
+ * They used to be spread inline at two places — the commit path's `StepTiming` literal and `llmJevTiming` — and
+ * the two lists had already drifted: `llmJevTiming` omitted `fastPathMs` / `fastPathJevMs`, so in `llm-jev` a
+ * COMMITTED step could never sum them onto the run while `absorbDiscardedTiming` reads `draft.fastPathMs`
+ * directly for both branches and would. Unreachable today only because `resolveFastPathOption` forces `'off'`
+ * outside `jev-on` — which is an accident of a switch, not a property. An inline list at two sites is exactly
+ * how four buckets went unsummed in the first place, so there is one builder and `RUN_TIMING_BUCKETS` is its
+ * pair (the test asserts they agree, minus `synthMs`, which only the llm-jev builder writes and writes always).
+ *
+ * Each member is ABSENT rather than 0 when its gate did not run, which is what keeps a coordination-off /
+ * fast-path-off step's row byte-identical to HEAD's (contract 1.9 I2). `imagesMs: 0` is the exception and is
+ * deliberate: it is a MEASUREMENT (the image pass ran and cost nothing), so only `null` means "did not run".
+ */
+export function optionalStepTiming(d: { imagesMs: number | null; decomposeMs: number; coordinateMs: number; coordWaitMs: number; jevWallMs: number; fastPathMs: number; fastPathJevMs: number }): Partial<StepTiming> {
+  return {
+    // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
+    ...(d.imagesMs !== null ? { imagesMs: d.imagesMs } : {}),
+    // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
+    ...(d.decomposeMs > 0 ? { decomposeMs: d.decomposeMs } : {}),
+    // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
+    ...(d.coordinateMs > 0 ? { coordinateMs: d.coordinateMs } : {}),
+    ...(d.coordWaitMs > 0 ? { coordWaitMs: d.coordWaitMs } : {}),
+    // contract 1.9 (Fastlane) §5.2 (slot C): the round's own wall and the Jev latency inside it; absent when no round ran
+    ...(d.fastPathMs > 0 ? { fastPathMs: d.fastPathMs } : {}),
+    ...(d.fastPathJevMs > 0 ? { fastPathJevMs: d.fastPathJevMs } : {}),
+    // OOS iteration 2, defect 3: the wall measured inside `decider.ask`, the number `jevChargedMs` charges
+    // `harnessMs` by when the decider under-reports (every mock, stub and `--jev off` double). Absent when
+    // nothing was asked.
+    ...(d.jevWallMs > 0 ? { jevWallMs: d.jevWallMs } : {}),
+  };
+}
+
+/** The `StepDraft` members `optionalStepTiming` reads — two of them live beside `draft.timing`, not inside it. */
+function optionalTimingInput(draft: StepDraft): Parameters<typeof optionalStepTiming>[0] {
+  return {
+    imagesMs: draft.timing.imagesMs,
+    decomposeMs: draft.timing.decomposeMs,
+    coordinateMs: draft.timing.coordinateMs,
+    coordWaitMs: draft.timing.coordWaitMs,
+    jevWallMs: draft.timing.jevWallMs,
+    fastPathMs: draft.fastPathMs,
+    fastPathJevMs: draft.fastPathJevMs,
+  };
+}
+
+/**
+ * Fold one committed step's timing into the run's. The five required members add; each optional bucket adds only
+ * where the step carried it, so a bucket no step of the run wrote stays ABSENT on the run — which is what keeps a
+ * coordination-off / fast-path-off run's `state.json` byte-identical (contract 1.9 I2,
+ * test/unit/loop/engine-coordination-off.test.ts).
+ *
+ * **What `RunResult.timing` is, exactly** (review defect A9). It is the sum of the COMMITTED steps — the
+ * `steps.jsonl` rows — **plus the wall of any attempt §9.1 rule 1 discarded**. A discarded attempt writes no
+ * `StepRecord` (a blocking pause landed before any action ran and the step NUMBER is replayed with a fresh
+ * draft), but it really spent that wall and that money, so `absorbDiscardedTiming` adds its buckets to the run
+ * directly. That was already true of `decomposeMs` and `generatorMs` before this wave; F13 made it true of four
+ * more. So a reader reconciling `state.json` against `steps.jsonl` on a run with a blocking pause will find the
+ * run LARGER, by exactly the discarded attempt's share, and that is the contract — not a leak.
+ */
+export function addStepTimingToRun(run: StepTiming, step: StepTiming): void {
+  run.generatorMs += step.generatorMs;
+  run.jevMs += step.jevMs;
+  run.execMs += step.execMs;
+  run.harnessMs += step.harnessMs;
+  run.totalMs += step.totalMs;
+  for (const k of RUN_TIMING_BUCKETS) {
+    const v = step[k];
+    if (v !== undefined) run[k] = (run[k] ?? 0) + v;
+  }
 }
 function zeroCounters(): RunCounters {
   return { blocked: 0, reviews: 0, declined: 0, failed: 0, loops: 0, replans: 0, reads: 0 };
@@ -805,6 +944,14 @@ class EngineImpl implements Engine {
   private fileMemory: FileMemory = {};
   private summary: ContextSummary | null = null;
   private summaryAt: number | null = null;
+  /**
+   * docs/COORDINATION-DESIGN.md §8.6 fourth bullet (F26): the kept items, re-extracted at every compaction and
+   * persisted as `CheckpointState.kept`. Empty until the run's first compaction, which is what keeps a short
+   * run's `state.json` byte-identical to the one it wrote before this landed.
+   */
+  private kept: KeptItem[] = [];
+  /** §8.6 `context.kept: 'jev'`: one bounded ordering request is owed for the compaction just made */
+  private keptRankPending = false;
   private compactions = 0;
   private lastCompactionAt: string | null = null;
   private contextUsage: ContextUsage;
@@ -957,6 +1104,18 @@ class EngineImpl implements Engine {
    * all false, which is the whole of I2 (byte identity).
    */
   private readonly fastPathOption: 'auto' | 'off';
+  /**
+   * contract 1.9 (Fastlane) §3 (F25): the S2 generation path's effective mode for this run — `jev-on` only,
+   * `JEVCODE_S2=on`, default off. `'partial'` is the measurement half without the §3.2 hedge (`JEVCODE_HEDGE=off`).
+   * Every S2 mechanism on the propose path is behind `this.s2 !== 'off'`, so an S2-off run is the pre-1.9 run byte
+   * for byte: the legacy prefix order, no TTFB callback, no twin, and no `StepRecord.verify` on a jev-on step.
+   */
+  private readonly s2: 'on' | 'partial' | 'off';
+  /**
+   * contract 1.9 (Fastlane) §3.1: every TTFB this run's propose calls observed — the input of the §3.2 threshold,
+   * exactly as `ttfbMsAll` is in the synthesizer's source. Bounded: a long run must not accumulate a reading per step.
+   */
+  private readonly ttfbMsAll: number[] = [];
   private fastPathRunner: FastPathRunner | null = null;
   /** T2, cached once per run: does the fast path's own synthesizer cover this workspace (`synthesizerHandles`)? */
   private fastPathHandles: boolean | null = null;
@@ -1107,6 +1266,8 @@ class EngineImpl implements Engine {
     this.synthesizer = init.opts.synthesizer ?? null;
     // contract 1.9 (Fastlane) §0.3: the engine derives the default from the mode; the env override is the bench's switch
     this.fastPathOption = resolveFastPathOption(this.mode, init.opts.fastPath);
+    // §3 / §0.3: read once, at construction, like every other mechanism switch
+    this.s2 = s2Mode(this.mode, init.opts.s2);
     this.resumed = init.resume !== null;
     // contract 1.4 (W0 item 1, §9.3): the epochs THIS device has already minted or accepted for the run, as the
     // resumed `run.json` recorded them. The resume gate's local set starts here rather than at this process's own
@@ -1242,6 +1403,10 @@ class EngineImpl implements Engine {
         this.fileCache = s.fileCache ?? [];
         this.fileMemory = s.fileMemory ?? {};
         this.summaryAt = s.summaryAt ?? null;
+        // §8.6 (F26): the kept items ride the checkpoint like `history` and `fileCache`. The human `/keep` items
+        // inside them are the ONLY channel a human item has today (`/keep` is `src/tui`'s), so a resume that
+        // dropped them would lose the one part of the list the code cannot re-derive.
+        this.kept = readKeptItems(init.resume.state);
         this.compactions = s.compactions ?? 0;
         this.lastCompactionAt = s.lastCompactionAt ?? null;
         const newest = this.history[this.history.length - 1]?.step ?? 0;
@@ -1634,8 +1799,27 @@ class EngineImpl implements Engine {
       // contract 1.4 (W2b) (§3.6, §7.1, §6.1): the coordination zone, the lifecycle word and the sub-work rows.
       // All three are ABSENT with no ledger, so `--json=verbose` on a run without coordination is byte-identical.
       ...(this.coord !== null ? { phase: this.runPhase(), coordination: this.coord.status(), subwork: this.coord.subworkRows() } : {}),
+      // contract 1.9 (Fastlane) §8.1 (F25): what this engine RESOLVED, so a bench summary can be checked against the
+      // run instead of against its own intention. All three are read once at construction and never move.
+      //
+      // Review defect A8: a CONDITIONAL spread, in the same shape as the coordination triple above and for the
+      // same reason — `status` rides the `--json=verbose` NDJSON stream, and writing the member unconditionally
+      // added one to every line of every mode, including every control arm of the §8 head-to-head. Absent is
+      // `{ s2: 'off', routers: 'off', fastPath: 'off' }` and says so in the type.
+      ...this.mechanismsMember(),
     };
     return status;
+  }
+
+  /**
+   * contract 1.9 (Fastlane) §8.1 (F25) / review defect A8: the ONE place the three mechanisms are projected, for
+   * `EngineStatus` and for `CheckpointState` alike. Empty — so the member is ABSENT — when all three resolved
+   * off, which is every control arm; a reader that sees nothing has read `off / off / off`.
+   */
+  private mechanismsMember(): Pick<EngineStatus, 'mechanisms'> {
+    const routers = routersOn(this.mode, this.opts.routers) ? 'on' : 'off';
+    if (this.s2 === 'off' && routers === 'off' && this.fastPathOption === 'off') return {};
+    return { mechanisms: { s2: this.s2, routers, fastPath: this.fastPathOption } };
   }
 
   /** TUI-DESIGN-2 §2.4: `table` when every Jev request of this process was table-priced, `provider` when every one carried `usage.cost`, `mixed` otherwise; null before any. */
@@ -2812,6 +2996,11 @@ class EngineImpl implements Engine {
       ...(this.lastPromptChars !== null ? { lastPromptChars: this.lastPromptChars } : {}),
       // docs/COORDINATION-DESIGN.md §8.3 / §8.4 / §12.0.3 (additive, conditional): absent while empty, so older readers and goldens are unchanged
       ...this.contextExtension(),
+      // contract 1.9 (Fastlane) §8.1 (F25, the finishing pass): the same resolution `EngineStatus` reports, and
+      // under the same absent-means-all-off rule — an ARCHIVED run directory can now be checked against
+      // `summary.json.conditions[arm].mechanisms` without re-running it, and a control arm's state.json is
+      // byte-identical to a pre-wave run's.
+      ...this.mechanismsMember(),
       resumes: this.resumes,
       updatedAt: nowIso(),
     };
@@ -2853,7 +3042,7 @@ class EngineImpl implements Engine {
       synthJevWallMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
       closed: false,
-      verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
+      verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null, s2: { ttfbMs: [], hedges: 0, hedgeWins: 0, cacheRead: 0, cacheWrite: 0 } },
       proposer: null,
       fastPath: null,
       scopeUsable: null,
@@ -2931,7 +3120,7 @@ class EngineImpl implements Engine {
       // contract 1.9 (Fastlane) §7.5 seam (b): spread in only when the caller pinned it, so a run that pins
       // nothing hands the stages exactly the object it handed them before the wave (I2)
       ...(this.opts.routers !== undefined ? { routers: this.opts.routers } : {}),
-      generate: (req, attempt) => self.generate(draft, req, attempt),
+      generate: (req, attempt) => self.generateProposal(draft, req, attempt),
       noteMalformed: (attempt) => {
         const rec = draft.generatorRecords.find((r) => r.attempt === attempt);
         if (rec) rec.malformed = true;
@@ -3397,15 +3586,17 @@ class EngineImpl implements Engine {
       // contract 1.4 (W3), §6 / W3 item 28: the heartbeat's sub-work rows. One adapter per run, so an `ended` finds the
       // `kind` its `started` used; absent when coordination is off, which is the whole of "zero cost when absent".
       ...(this.coord === null ? {} : { coordination: this.synthSubwork() }),
-      ...(this.mode === 'jev-only'
-        ? {}
-        : {
-            generate: (req: GenerateRequest, o: SampleOptions) => self.generate(self.draft ?? draft, req, 1, o),
-            reportVerify: (counts: Partial<StepVerifySummary>) => {
-              const d = self.draft ?? draft;
-              d.verify.reported = { ...(d.verify.reported ?? {}), ...counts };
-            },
-          }),
+      ...(this.mode === 'jev-only' ? {} : { generate: (req: GenerateRequest, o: SampleOptions) => self.generate(self.draft ?? draft, req, 1, o) }),
+      // F04 (finishing pass): the RECORDING channel is not the LLM channel, and gating them together made
+      // `JEVCODE_WARM=on --mode jev-only` the very silent no-op `warmPlaneFor`'s `unsupported-runner` /
+      // `unsupported-command` rows exist to kill — the synthesizer called `ctx.reportVerify?.(…)` on `undefined`
+      // and the step recorded nothing. It costs nothing when nobody calls it (`draft.verify.reported` stays null
+      // and `StepRecord.verify` stays absent), so it is installed in every mode; `generate` above stays gated,
+      // because jev-only has no generating LLM and must never acquire one.
+      reportVerify: (counts: Partial<StepVerifySummary>) => {
+        const d = self.draft ?? draft;
+        d.verify.reported = { ...(d.verify.reported ?? {}), ...counts };
+      },
     };
   }
 
@@ -3471,6 +3662,68 @@ class EngineImpl implements Engine {
   }
 
   /**
+   * contract 1.9 (Fastlane) §3.1 (F25): the run's TTFB p50, `null` until there is enough of it to act on.
+   *
+   * The `LLM_DEADLINE_ADAPT.minSamples` floor is the synthesizer's own rule and it is here for the same reason
+   * (review defect 8): one fast first byte is not evidence about a run, and acting on it would pin the §3.2
+   * threshold at its 3 s floor for the rest of the run from a single observation.
+   */
+  private p50TtfbMs(): number | null {
+    return this.ttfbMsAll.length >= LLM_DEADLINE_ADAPT.minSamples ? percentile(this.ttfbMsAll, 50) : null;
+  }
+
+  /** §3.1: one propose leg's time to first byte — the run's p50, and this step's `StepRecord.verify.ttfbMs`. */
+  private noteProposeFirstByte(draft: StepDraft, ms: number): void {
+    if (!(Number.isFinite(ms) && ms >= 0)) return;
+    if (this.ttfbMsAll.length < TTFB_READINGS_MAX) this.ttfbMsAll.push(ms);
+    if (draft.verify.s2.ttfbMs.length < TTFB_READINGS_MAX) draft.verify.s2.ttfbMs.push(ms);
+  }
+
+  /**
+   * contract 1.9 (Fastlane) §3.1–§3.3 (F25): the propose stage's call, with the S2 generation path on it.
+   *
+   * With the switch off this is `generate` and nothing else — the same one call, the same options object, byte for
+   * byte what `jev-on` has always sent. With it on the call becomes a §3.2 race: the origin goes out at once, and if
+   * it has produced NO FIRST BYTE for `hedgeAfterMs(this run's TTFB p50)` one twin follows it on the ROTATED upstream
+   * order. The first leg with a result wins, the other is cancelled and booked, and the counters land on
+   * `StepRecord.verify` so the §8.3 S2 row is a measurement rather than an intention.
+   *
+   * The decision half — the threshold, the twin index, the rotation — is `src/synth/llm/hedge.ts`, the same module
+   * the synthesizer's round uses. What is NOT shared is the round's scheduling: the dollar hold, `samplesLeft` and
+   * the arrival ledger have no meaning for one call.
+   */
+  private async generateProposal(draft: StepDraft, req: GenerateRequest, attempt: number): Promise<GenerateResult> {
+    if (this.s2 === 'off') return this.generate(draft, req, attempt);
+    const t0 = this.clock();
+    const out = await hedgedCall<GenerateResult>({
+      signal: this.signal,
+      // `'partial'` is the measurement half without the hedge: `JEVCODE_HEDGE=off` said so explicitly
+      hedge: this.s2 === 'on',
+      p50TtfbMs: () => this.p50TtfbMs(),
+      onHedge: (text) => this.emit({ type: 'transcript', step: draft.step, level: 'info', text: `hedge: ${text}` }),
+      run: (leg) =>
+        this.generate(draft, leg.twin ? twinRequest(req) : req, attempt, undefined, {
+          signal: leg.signal,
+          onFirstByte: (ms) => {
+            this.noteProposeFirstByte(draft, ms);
+            leg.onFirstByte(ms);
+          },
+          ...(leg.twin ? { sample: leg.sample } : {}),
+        }),
+    });
+    draft.verify.s2.hedges += out.hedges;
+    draft.verify.s2.hedgeWins += out.hedgeWins;
+    // Review defect A2: the RACE's wall, exactly as `noteSampleEnd` takes the batch wall for a round — not the
+    // winner's provider-reported latency alone. On a twin win the twin's own `latencyMs` starts at the hedge
+    // threshold, so booking only it left the origin's whole 3–8 s wait in NO named bucket, and the residual
+    // formula at the commit charged all of it to `harnessMs` — the harness-overhead metric the 50 ms p95 budget
+    // is read against. The loser's latency stays on its own cancelled row and is never added here (that would
+    // double-count one wall as two). `max` of the two so a clock that cannot see the wait still books the call.
+    draft.timing.generatorMs += Math.max(out.result.latencyMs, Math.max(0, this.clock() - t0));
+    return out.result;
+  }
+
+  /**
    * The one metered, recorded path to the generating LLM. Without `sample` it is the propose stage's call (jev-on, jev-off:
    * one attempt, the engine's signal). With `sample` (llm-jev, docs/LLM-JEV-DESIGN.md §4.8) it is one sample of the
    * synthesizer's round: the sample's signal is linked to the engine's, every event and the generator.jsonl row carry the
@@ -3478,7 +3731,7 @@ class EngineImpl implements Engine {
    * (`recordUnfinishedSample`) and rejects with the signal's reason, a sample already cancelled when it arrives is never
    * dispatched (no event, no row, no metering), and `timing.generatorMs` takes the wall of the round, not the sum of the samples.
    */
-  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions): Promise<GenerateResult> {
+  private async generate(draft: StepDraft, req: GenerateRequest, attempt: number, sample?: SampleOptions, leg?: OneShotLeg): Promise<GenerateResult> {
     // Defence in depth for docs/JEV-ONLY.md: even with a real provider in the slot, jev-only never reaches it.
     if (this.mode === 'jev-only') throw new ConfigError('jev-only mode: the generating LLM must not be called', { setting: 'mode' });
     // §4.8: a sample cancelled before it reached the channel (a loser cancellation racing a stagger fire, or the engine
@@ -3488,7 +3741,10 @@ class EngineImpl implements Engine {
     // contract 1.4 (§12.0.2 P3): the round the pause cache names comes from the synthesizer's own sample options, never from
     // the free-text `synth` event; the samples of one batch carry the same pair, so the last one dispatched is the round
     if (sample?.goalId !== undefined) draft.llmGoal = { goalId: sample.goalId, round: sample.goalRound ?? Math.max(0, draft.llmRounds - 1) };
-    const at = sample === undefined ? {} : { sample: sample.sample };
+    // contract 1.9 (Fastlane) §3.2 (F25): a hedge TWIN of the one-shot propose call carries its twin index on every
+    // event and on its `generator.jsonl` row, which is how `hedgeOriginOf` reads it back. The ORIGIN keeps the shape
+    // it has always had (no `sample`), so an unhedged jev-on step's rows are byte-identical to HEAD's.
+    const at = sample === undefined ? (leg?.sample === undefined ? {} : { sample: leg.sample }) : { sample: sample.sample };
     if (sample !== undefined) {
       // contract 1.4 (COORDINATION-DESIGN §6.4, §7.3 step 3, P3): a sample that arrived before the pause is served from the round
       // cache — no provider call, no metering, no row (nothing was bought); the events say so for the renderers
@@ -3518,7 +3774,7 @@ class EngineImpl implements Engine {
     const endSampleWait = stepTimeline.span('sample', sample === undefined ? 'one-shot' : `sample${sample.sample}`);
     try {
       res = await this.opts.provider.generate(req, {
-        signal: link?.signal ?? this.signal,
+        signal: link?.signal ?? leg?.signal ?? this.signal,
         ...at,
         onDelta: (text) => {
           textChars += text.length;
@@ -3545,7 +3801,7 @@ class EngineImpl implements Engine {
         // contract 1.9 (Fastlane) §3.1: time to first byte, forwarded verbatim. It is the §3.2 hedge's only input, so the
         // channel must not swallow it; absent when the caller asked for none, which is a one-shot propose call and every
         // sample of a synthesizer that does not measure TTFB.
-        ...(sample?.onFirstByte === undefined ? {} : { onFirstByte: sample.onFirstByte }),
+        ...(sample?.onFirstByte === undefined ? (leg?.onFirstByte === undefined ? {} : { onFirstByte: leg.onFirstByte }) : { onFirstByte: sample.onFirstByte }),
       });
       retry.settled(true);
     } catch (e) {
@@ -3561,6 +3817,13 @@ class EngineImpl implements Engine {
         const stopReason = link.signal.aborted ? abortStopReason(sample.signal.aborted ? sample.signal.reason : this.signal.reason) : partial?.rateLimited === true ? 'rate_limited' : 'error';
         this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason, partial });
       }
+      // §3.2 (F25): "a hedge makes a step faster, never free" — the cancelled leg of a hedged propose call is booked
+      // through the SAME estimator the synthesizer's loser is, so both legs reach `generator.jsonl` and the meter.
+      if (sample === undefined && leg !== undefined) {
+        const latencyMs = Math.max(0, this.clock() - t0);
+        const stopReason = leg.signal.aborted ? 'cancelled' : 'error';
+        this.recordUnfinishedSample(draft, req, attempt, { sample: leg.sample ?? 0, purpose: 'propose_fix' }, { latencyMs, streamedChars: toolChars + textChars, stopReason, partial: held.partial, oneShotLeg: true });
+      }
       throw e;
     } finally {
       endSampleWait();
@@ -3574,8 +3837,15 @@ class EngineImpl implements Engine {
     // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN) cost; the record, the event, the step draft and the sum take the clamped copy
     const usage = pricedUsage(res.usage);
     addUsage(draft.usage.generator, usage);
-    // the one-sample call adds the provider's latency; a round's samples close their batch wall in noteSampleEnd
-    if (sample === undefined) draft.timing.generatorMs += res.latencyMs;
+    // the one-sample call adds the provider's latency; a round's samples close their batch wall in noteSampleEnd.
+    // §3.2 (F25): a hedged call has two legs and only the WINNER's latency is the step's, so `generateProposal` adds
+    // it once after the race rather than each leg adding its own here.
+    if (sample === undefined && leg === undefined) draft.timing.generatorMs += res.latencyMs;
+    // §3.4 (F25): the provider's own cache shares of this step's propose call, for `StepRecord.verify` and the §8.3 row
+    if (this.s2 !== 'off') {
+      draft.verify.s2.cacheRead += Number.isFinite(res.usage.cacheReadTokens) ? (res.usage.cacheReadTokens ?? 0) : 0;
+      draft.verify.s2.cacheWrite += Number.isFinite(res.usage.cacheWriteTokens) ? (res.usage.cacheWriteTokens ?? 0) : 0;
+    }
     const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
     if (sample !== undefined && draft.arrivedSamples.length < CACHED_SAMPLES_MAX) {
       // contract 1.4 (§6.4): the arrived sample joins the step's round cache (bounded), so a pause-now keeps what was bought
@@ -3594,13 +3864,17 @@ class EngineImpl implements Engine {
       latencyMs: res.latencyMs,
       stopReason: res.stopReason,
       malformed: false,
-      ...(sample !== undefined ? { sample: sample.sample, purpose: sample.purpose } : {}),
+      // §3.2 (F25) / review defect A3: a WINNING hedge leg carries its index too. Without it a twin that won wrote
+      // a row `hedgeOriginOf` could not read back — contradicting the comment on `at` above and §7.6a — and the
+      // loser was the only leg counted, so a step that SUCCEEDED reported `samples: 1, cancelled: 1`. The ORIGIN
+      // leg has no index (`OneShotLeg.sample` is set only on the twin), so an unhedged call's row is unchanged.
+      ...(sample !== undefined ? { sample: sample.sample, purpose: sample.purpose } : leg?.sample === undefined ? {} : { sample: leg.sample, purpose: 'propose_fix' as const }),
       ...(res.usage.reasoningTokens !== undefined ? { reasoningTokens: res.usage.reasoningTokens } : {}),
       ...(res.generationId !== undefined ? { generationId: res.generationId } : {}),
       ...(res.servedProvider !== undefined ? { servedProvider: res.servedProvider } : {}),
       // the chain recovered from a 429: the round's classification reads it, the result is the result
       ...(res.rateLimited === true ? { rateLimited: true } : {}),
-    });
+    }, sample === undefined && leg !== undefined ? 'one-shot-leg' : 'sample');
     this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: res.latencyMs, finishReason: res.stopReason, ...at });
     return res;
   }
@@ -3609,9 +3883,17 @@ class EngineImpl implements Engine {
    * §4.8: one row per call, under the step the call was dispatched in, and the step's own verification tallies (§9.3). A row
    * that arrives after its step was committed or discarded — a round draining across the step boundary, a sample the
    * synthesizer let run past `synthesize()` — cannot ride the step's flush any more: it is appended at once, never dropped.
+   *
+   * `counts` (review defect A3): `draft.verify.samples` / `timeouts` / `cancelled` / `malformed` are the
+   * SYNTHESIZER's round tallies — §9.3's "how many candidates did the sieve's LLM source produce, and how many
+   * of them died". A §3.2 hedge leg of the one-shot propose call carries a `sample` index for one reason only,
+   * that `hedgeOriginOf` can read the twin back off its `generator.jsonl` row; it is not a sample of a round,
+   * there is no round, and counting it made a jev-on-next arm with S2 on report
+   * `samples == cancelled == (hedged steps)` — a 100 % cancellation rate on an arm that has no synthesizer.
+   * The legs are recorded where they belong instead: `StepVerifySummary.hedges` / `hedgeWins`.
    */
-  private pushGeneratorRecord(draft: StepDraft, rec: GeneratorCallRecord): void {
-    if (rec.sample !== undefined) {
+  private pushGeneratorRecord(draft: StepDraft, rec: GeneratorCallRecord, counts: 'sample' | 'one-shot-leg' = 'sample'): void {
+    if (rec.sample !== undefined && counts === 'sample') {
       draft.verify.samples += 1;
       if (rec.stopReason === 'timeout') draft.verify.timeouts += 1;
       else if (rec.stopReason === 'cancelled') draft.verify.cancelled += 1;
@@ -3630,6 +3912,7 @@ class EngineImpl implements Engine {
    * `candidatesTested`, `distinct`, `misanchored`, `passers`, `partials`, `graceMs`, `localisationMissed`).
    */
   private verifySummary(draft: StepDraft, proposal: Proposal | null): StepVerifySummary {
+    const s2 = draft.verify.s2;
     const own: StepVerifySummary = {
       samples: draft.verify.samples,
       distinct: 0,
@@ -3642,6 +3925,13 @@ class EngineImpl implements Engine {
       partials: 0,
       graceMs: 0,
       localisationMissed: false,
+      // contract 1.9 (Fastlane) §3.1–§3.4 (F25): what the ENGINE measured about this step's propose call. Each member
+      // is ABSENT when nothing measured it, which is what keeps the llm-jev shape (where the synthesizer reports its
+      // own, merged over these below) exactly what it was — an S2-off step contributes none of them.
+      ...(s2.ttfbMs.length > 0 ? { ttfbMs: [...s2.ttfbMs] } : {}),
+      ...(s2.hedges > 0 ? { hedges: s2.hedges, hedgeWins: s2.hedgeWins } : {}),
+      ...(s2.cacheRead > 0 ? { cacheRead: s2.cacheRead } : {}),
+      ...(s2.cacheWrite > 0 ? { cacheWrite: s2.cacheWrite } : {}),
     };
     return { ...own, ...(draft.verify.reported ?? {}) };
   }
@@ -3712,8 +4002,9 @@ class EngineImpl implements Engine {
     draft: StepDraft,
     req: GenerateRequest,
     attempt: number,
-    sample: SampleOptions,
-    o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null },
+    // F25: only the index and the purpose are read, so a hedged one-shot leg books itself through the same estimator
+    sample: Pick<SampleOptions, 'sample' | 'purpose'>,
+    o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null; oneShotLeg?: boolean },
   ): void {
     const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
     const p = o.partial;
@@ -3755,7 +4046,9 @@ class EngineImpl implements Engine {
       ...(p?.generationId !== undefined ? { generationId: p.generationId } : {}),
       ...(p?.servedProvider !== undefined ? { servedProvider: p.servedProvider } : {}),
       ...(p?.rateLimited === true ? { rateLimited: true } : {}),
-    });
+      // review defect A3: a losing §3.2 leg is booked exactly like a losing sample — metered, priced, one row —
+      // but it is not a sample of a synthesizer round and does not join that round's tallies
+    }, o.oneShotLeg === true ? 'one-shot-leg' : 'sample');
     this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: o.stopReason, sample: sample.sample });
   }
 
@@ -4796,6 +5089,17 @@ class EngineImpl implements Engine {
     this.timing.totalMs += total;
     // contract 1.5 (§4.1 [D13]): a discarded step still paid for its decomposition (corner row 8)
     if (draft.timing.decomposeMs > 0) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + draft.timing.decomposeMs;
+    // F13 (finishing pass): and for its coordinate gate and its fast-path round, which were short the same way as
+    // the commit path. The attempt really spent this wall — §9.1 rule 1 replays the step NUMBER with a fresh draft,
+    // so nothing here is counted twice — and each stays absent when the discarded attempt never reached it.
+    //
+    // Review defect A9: this is the one place `RunResult.timing` exceeds the sum of the `steps.jsonl` rows, and
+    // it does so by design — no `StepRecord` is written for a discarded attempt (see just above), so its wall
+    // has nowhere else to be recorded. The two doc comments that claimed "the sum of the rows" now say so.
+    if (draft.timing.coordinateMs > 0) this.timing.coordinateMs = (this.timing.coordinateMs ?? 0) + draft.timing.coordinateMs;
+    if (draft.timing.coordWaitMs > 0) this.timing.coordWaitMs = (this.timing.coordWaitMs ?? 0) + draft.timing.coordWaitMs;
+    if (draft.fastPathMs > 0) this.timing.fastPathMs = (this.timing.fastPathMs ?? 0) + draft.fastPathMs;
+    if (draft.fastPathJevMs > 0) this.timing.fastPathJevMs = (this.timing.fastPathJevMs ?? 0) + draft.fastPathJevMs;
     if (this.mode === 'llm-jev') {
       const t = this.llmJevTiming(draft, total);
       this.timing.harnessMs += t.harnessMs;
@@ -4821,15 +5125,11 @@ class EngineImpl implements Engine {
       harnessMs: Math.max(0, total - synthMs - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs - shellJevMs),
       totalMs: total,
       synthMs,
-      ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
-      ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
-      // contract 1.4 (W2b) (§4.2): absent when the gate did not run, so a run without a ledger writes HEAD's row
-      ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
-      ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
-      // OOS iteration 2, defect 3: the measured ask wall, which `jevChargedMs` (and `shellJevMs` above) charge
-      // `harnessMs` by and which nothing persisted — `grep -c jevWallMs` over iteration 2's state.json and
-      // steps.jsonl archives read 0. Absent when nothing was asked, so a step without Jev writes HEAD's row.
-      ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
+      // review defect A10: the SAME optional-bucket builder the commit path uses. It used to be an inline list
+      // here, and it was already two members short (`fastPathMs`, `fastPathJevMs`) — which
+      // `absorbDiscardedTiming` reads for both branches, so a discarded llm-jev attempt could contribute
+      // fast-path wall to the run that a committed one could not.
+      ...optionalStepTiming(optionalTimingInput(draft)),
     };
   }
 
@@ -4983,6 +5283,11 @@ class EngineImpl implements Engine {
       contextFiles,
       candidates,
       toolName: 'propose_action',
+      // contract 1.9 (Fastlane) §3.3 (F25): the byte-stable prefix — task -> repo map -> files -> everything
+      // volatile -> window. Nothing is added, removed or rewritten; only the order changes, and only under the S2
+      // switch, which is `jev-on` only and off by default. That default is what keeps `router-golden.test.ts` and
+      // every `view: 'legacy'` prompt golden valid without a re-capture.
+      ...(this.s2 === 'off' ? {} : { prefixOrder: 'pinned' as const }),
       // TUI-DESIGN §8.6: one hints line per directive for exactly this step; §15 item 11: the @-mentioned files
       humanDirectives: this.activeHuman?.step === draft.step ? [...this.activeHuman.texts] : [],
       pinnedFiles: [...(this.opts.seed?.pinnedFiles ?? [])],
@@ -4993,13 +5298,23 @@ class EngineImpl implements Engine {
   // docs/COORDINATION-DESIGN.md §8: the generator's relaxed context (history, files in view, compaction, meter)
   // -------------------------------------------------------------------------------------
 
-  /** The optional CheckpointState fields (§8.3, §8.4, §12.0.3), each present only when it carries something. */
-  private contextExtension(): ContextCheckpointExtension {
-    const ext: ContextCheckpointExtension = {};
+  /**
+   * The optional CheckpointState fields (§8.3, §8.4, §8.6, §12.0.3), each present only when it carries something.
+   *
+   * F26 widens the return past `ContextCheckpointExtension` by `kept` alone: that `Pick` lives in
+   * `src/checkpoint/types.ts` beside `readContextExtension`, which is a different owner's file, and `kept` is
+   * validated on the way in by `readKeptItems` (`context/kept.ts`) instead. The member itself is
+   * `CheckpointState['kept']`, so nothing here is a second declaration.
+   */
+  private contextExtension(): ContextCheckpointExtension & Pick<CheckpointState, 'kept'> {
+    const ext: ContextCheckpointExtension & Pick<CheckpointState, 'kept'> = {};
     if (this.history.length > 0) ext.history = this.history.map((e) => ({ ...e, shownFiles: [...e.shownFiles], notes: [...e.notes] }));
     if (this.fileCache.length > 0) ext.fileCache = this.fileCache.map((e) => ({ ...e }));
     if (Object.keys(this.fileMemory).length > 0) ext.fileMemory = { ...this.fileMemory };
     if (this.summaryAt !== null) ext.summaryAt = this.summaryAt;
+    // §8.6 (F26): absent until the first compaction extracted something, so a run that never compacts (and every
+    // run written before the extractor existed) carries the same object it always did
+    if (this.kept.length > 0) ext.kept = this.kept.map((k) => ({ ...k }));
     if (this.compactions > 0) ext.compactions = this.compactions;
     if (this.lastCompactionAt !== null) ext.lastCompactionAt = this.lastCompactionAt;
     return ext;
@@ -5071,6 +5386,7 @@ class EngineImpl implements Engine {
       const trigger = compactionDue({ step: this.step, compactEvery: this.contextPolicy.compactEvery, pct: 0, mode: this.contextPolicy.compaction, foldable: foldableCount(this.history), resume: true });
       if (trigger !== null) this.compactContext(this.step, trigger);
     }
+    await this.rankKeptItems(step);
     const refreshed = await this.filesInView.refresh(this.fileCache, step, this.contextPolicy.fileCacheBytes);
     this.lastRefreshMs = refreshed.ms;
     if (refreshed.failed.length > 0) {
@@ -5094,6 +5410,13 @@ class EngineImpl implements Engine {
     const sessions = coordFacts !== null && (coordFacts.others > 0 || coordFacts.conflicts.length > 0 || coordFacts.requested.length > 0 || coordFacts.messages.length > 0) ? coordFacts : null;
     return {
       ...(sessions === null ? {} : { coordination: sessions }),
+      // §8.6 fourth bullet (F26, the finishing pass): the extracted items reach the prompt's
+      // `## Kept (do not re-derive)`. Until this line nothing filled `PromptContextView.kept`, so the extractor,
+      // the `context.kept` switch and `CheckpointState.kept` were a mechanism with no consumer — the section
+      // rendered for nobody. ABSENT while the list is empty (every run before its first compaction, and every
+      // run that never compacts), so `keptSection` elides exactly as it did and no relaxed prompt moves until
+      // there is something to say. `view: 'legacy'` never reaches this method at all.
+      ...(this.kept.length > 0 ? { kept: this.kept.map((k) => ({ ...k })) } : {}),
       ...(memory.rules.length > 0 ? { rulesInScope: memory.rules } : {}),
       ...(memory.topics.length > 0 ? { memoryInScope: memory.topics } : {}),
       files: refreshed.files.map((f) => ({
@@ -5256,6 +5579,34 @@ class EngineImpl implements Engine {
   }
 
   /**
+   * §8.6 `context.kept: 'jev'` (F26): the ONE bounded ordering request the last compaction owes, paid once, just
+   * before the prompt that would render the order. `'code'` — the default — never reaches `rankKept`'s Jev branch
+   * at all (`deps.kept` decides that inside `rankKept`, which also refuses under `jev-off`), so the default
+   * compactor stays free and deterministic and this method is a single `if` on every step of every run.
+   *
+   * Jev routes, never gates: every route out of the branch (policy, `jev-off`, no asker, nothing askable, an
+   * escape, a throw) returns `rankKeptCode`'s order untouched, so a Jev outage costs the ORDER of a prompt hint
+   * and nothing else. The flag is cleared before the await, so a failure cannot re-arm the request.
+   */
+  private async rankKeptItems(step: number): Promise<void> {
+    if (!this.keptRankPending) return;
+    this.keptRankPending = false;
+    const draft = this.draft;
+    const r = await rankKept(
+      { task: this.opts.task, plan: this.plan, candidates: this.kept },
+      {
+        kept: this.contextPolicy.kept,
+        mode: this.mode,
+        // the engine's one metered, recorded path; absent when there is no open draft to charge the request to,
+        // which `rankKept` reports as `fellBackTo: 'no-asker'` and answers with the code order
+        ...(draft === null ? {} : { ask: async (state: Json, questions: Record<string, Question>): Promise<AskResult> => (await this.askRecorded(draft, 'context', state, questions)).res }),
+      },
+    );
+    this.kept = r.kept;
+    if (r.by === 'jev') this.emit({ type: 'transcript', step, level: 'info', text: `kept: ${r.kept.length} item${r.kept.length === 1 ? '' : 's'} ordered by Jev (1 request)` });
+  }
+
+  /**
    * §8.6 `'code'`: fold the history into the rolling summary, persist it, announce `context:compacted`, recompute the meter.
    * `'llm'` (the second bullet of §8.6 — one generator call with the opencode template) is not built here; it degrades to
    * `'code'`, which §8.6 already names as its fallback, so the event always reports `by: 'code'` while `ContextUsage.compaction`
@@ -5276,6 +5627,31 @@ class EngineImpl implements Engine {
     this.history = r.history;
     this.summary = r.summary;
     this.summaryAt = step;
+    // §8.6 fourth bullet (F26): the extraction, which is the whole mechanism under `context.kept: 'code'` — pure,
+    // free, deterministic, and run over the history BEFORE the fold collapsed it is not needed: every input here
+    // (`plan`, `fileMemory`, `lastTestRun`, the folded history's own reasons) survives the fold. The human items
+    // already on the list are carried forward unranked; nothing else about them is this module's business.
+    this.kept = extractKept({
+      task: this.opts.task,
+      plan: this.plan,
+      history: this.history,
+      fileMemory: this.fileMemory,
+      lastTestRun: this.lastTestRun,
+      // §8.6's "failing test ids + assertion lines", read by the same code the oracle and the fast path use, so
+      // the kept facts name the tests the way every other artefact of this run names them
+      failingTests: this.lastTestRun === null ? [] : fastPathFailingIds(this.lastTestRun.command, this.lastTestRunOutput),
+      testOutput: this.lastTestRunOutput,
+      human: this.kept.filter((k) => k.by === 'human'),
+      // §8.6 "do not re-derive" (review defect A4): the derived items this run already holds. Without them the
+      // extraction is a pure function of the 12-step history window, so a fact left `kept` at exactly the moment
+      // it left the prompt — `kept` then held nothing the prompt did not already carry, which is the one thing
+      // §8.6 exists to do. `KEPT_MAX` still bounds the union and recency still cuts the oldest first.
+      carried: this.kept.filter((k) => k.by !== 'human'),
+    });
+    // §8.6: one bounded ordering request per compaction, and only under `'jev'`. It is owed rather than made here
+    // because `compactContext` is synchronous (it runs inside `commit`); `contextView` pays it before the next
+    // prompt is built, which is the first moment the order can matter and the last moment it is free to wait.
+    this.keptRankPending = this.contextPolicy.kept === 'jev' && this.kept.length > 0;
     this.compactions += 1;
     this.lastCompactionAt = at;
     if (hasContextStore(this.store)) this.persist(this.store.writeContextSummary(toJson(r.summary)), `${CHECKPOINT_FILES.context}/${CONTEXT_SUMMARY_FILE}`);
@@ -5522,31 +5898,16 @@ class EngineImpl implements Engine {
             execMs: draft.timing.execMs,
             harnessMs: Math.max(0, total - draft.timing.generatorMs - jevChargedMs(draft) - draft.timing.execMs - draft.timing.confirmMs - draft.timing.coordWaitMs),
             totalMs: total,
-            // TUI-DESIGN §12.3 / §15 item 3: image time is already inside harnessMs and is reported separately for perf/step-overhead.ts
-            ...(draft.timing.imagesMs !== null ? { imagesMs: draft.timing.imagesMs } : {}),
-            // contract 1.5 (§4.1 [D13]): likewise inside harnessMs, absent when the gate was shut — M2 reads its p95
-            ...(draft.timing.decomposeMs > 0 ? { decomposeMs: draft.timing.decomposeMs } : {}),
-            // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
-            ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
-            ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
-            // contract 1.9 (Fastlane) §5.2 (slot C): the round's own wall and the Jev latency inside it; absent when no round ran
-            ...(draft.fastPathMs > 0 ? { fastPathMs: draft.fastPathMs } : {}),
-            ...(draft.fastPathJevMs > 0 ? { fastPathJevMs: draft.fastPathJevMs } : {}),
-            // OOS iteration 2, defect 3: the wall measured inside `decider.ask`, the number `jevChargedMs` charges
-            // `harnessMs` by when the decider under-reports (every mock, stub and `--jev off` double). Absent when
-            // nothing was asked.
-            ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
+            // review defect A10: the ONE optional-bucket builder, shared with `llmJevTiming`
+            ...optionalStepTiming(optionalTimingInput(draft)),
           };
-    this.timing.generatorMs += timing.generatorMs;
-    this.timing.jevMs += timing.jevMs;
-    this.timing.execMs += timing.execMs;
-    this.timing.harnessMs += timing.harnessMs;
-    this.timing.totalMs += timing.totalMs;
-    if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
-    if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
-    if (timing.decomposeMs !== undefined) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + timing.decomposeMs;
-    // OOS iteration 2, defect 3: summed for the run's own `RunResult.timing` (state.json), like the buckets above
-    if (timing.jevWallMs !== undefined) this.timing.jevWallMs = (this.timing.jevWallMs ?? 0) + timing.jevWallMs;
+    // F13 (finishing pass): ONE fold over `RUN_TIMING_BUCKETS`, so `RunResult.timing` is by construction the sum
+    // of the committed `steps.jsonl` rows PLUS the wall of any discarded attempt (§9.1 rule 1, see
+    // `absorbDiscardedTiming` and the `addStepTimingToRun` header — review defect A9: the original wording here
+    // claimed the rows alone, which is false on any run with a blocking pause). Four buckets (`coordinateMs`,
+    // `coordWaitMs`, `fastPathMs`, `fastPathJevMs`) were written per step and named in no run-level sum; an
+    // inline list is exactly how they were missed.
+    addStepTimingToRun(this.timing, timing);
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;
@@ -5650,8 +6011,13 @@ class EngineImpl implements Engine {
       // §6 row 14: the verdict the TRIGGER read, not the verdict this step's own run left behind
       record.scopeUsable = draft.scopeUsable ?? this.lastTestRunScopeUsable;
     }
-    // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
-    if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
+    // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts. F04 (finishing pass) widens
+    // the writer from "llm-jev and the synthesizer proposed" to "OR something was reported on this step": a jev-only
+    // synthesizer's warm counters, and (contract 1.9 §3.1–§3.4) the S2 facts the jev-on propose path records about its
+    // own call, both have a reporter and neither is `llm-jev` + `proposer: 'synth'`. The llm-jev shape is unchanged —
+    // that arm always reports or has tallies to write — so contract 1.9 optionality and the llm-jev goldens hold, and a
+    // step nobody reported on still writes no `verify` member at all.
+    if (draft.verify.reported !== null || s2Measured(draft) || (this.mode === 'llm-jev' && draft.proposer === 'synth')) record.verify = this.verifySummary(draft, proposal);
     // contract 1.4 (W2b) (§4.1): a conditional spread everywhere else, a conditional assignment here — a step
     // whose gate saw nothing writes the row it wrote before this wave, which is half of what M2 means by zero cost
     if (draft.coord !== null) record.coord = draft.coord;

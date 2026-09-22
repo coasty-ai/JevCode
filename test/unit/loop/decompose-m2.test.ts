@@ -187,6 +187,25 @@ describe('P9: the call site is live (§3, §4.2)', () => {
  * Everything else — all 19 generator prompts, byte for byte, the Jev call count, the sandbox commands, the
  * candidate invalidations and the rest of the event sequence — must be identical.
  */
+
+/**
+ * F26, the finishing pass: `## Kept (do not re-derive)` (docs/COORDINATION-DESIGN.md §8.6) now has a writer, so
+ * a relaxed-view run that has compacted carries one section this golden's capture does not.
+ *
+ * The golden is NOT re-captured. Re-capturing would overwrite the pre-wave bytes with today's and make the test
+ * tautological — the provenance in `commit` is the whole evidence. Instead the ONE intended difference is named
+ * and removed, and the test then asserts what it always asserted: every other byte is identical. The strip is
+ * exact (split / filter / join on the section separator is the identity minus those blocks), and the cases below
+ * assert that the section really was there, so a silently-empty strip cannot hide a second change.
+ */
+const KEPT_HEADING = '## Kept (do not re-derive)';
+function withoutKeptSection(prompt: string): string {
+  return prompt
+    .split('\n\n')
+    .filter((block) => !block.startsWith(KEPT_HEADING))
+    .join('\n\n');
+}
+
 describe('M2 against the pre-wave commit a17c7f6 (the real golden)', () => {
   const golden = JSON.parse(readFileSync(join(import.meta.dirname, '../../fixtures/loop/m2-golden-a17c7f6.json'), 'utf8')) as {
     commit: string;
@@ -202,12 +221,24 @@ describe('M2 against the pre-wave commit a17c7f6 (the real golden)', () => {
   const STOP_ROW = /^\[run\] (?:warn: )?stop: /;
   /** the run:end row carries a real wall clock (`· 173ms ·` in round 4's sentence); normalise every duration token or the golden is a stopwatch, not a contract */
   const norm = (l: string): string => l.replace(/wall=\d+(?:\.\d+)?m?s/g, 'wall=<n>').replace(/ [·-] \d+(?:\.\d+)?\s?(?:ms|s|m)(?= [·-] |$)/g, ' · <t>');
+  /**
+   * F26: the compaction notice reports PROMPT CHARS, and §8.6's kept section is prompt chars — so the two
+   * numbers on that one row move with it. Everything else about the row (the fold count, the step, the trigger)
+   * is a fact about the compaction and is compared unchanged; the assertion below proves the row is the ONLY
+   * one that moved, so normalising the pair here cannot hide a second difference.
+   */
+  const COMPACTION_ROW = /^\[ui\] compaction: \d+ → \d+ prompt chars /;
+  const normChars = (l: string): string => l.replace(/^(\[ui\] compaction: )\d+ → \d+( prompt chars )/, '$1<n> → <n>$2');
 
-  it('every generator prompt is byte-identical to the pre-wave run', async () => {
+  it('every generator prompt is byte-identical to the pre-wave run, but for F26\'s one new section', async () => {
     const off = await run({ splitPolicy: { ...DEFAULT_SPLIT_POLICY, split: 'off' }, orchestration: { depth: 0 } });
     expect(golden.commit).toBe('a17c7f6');
     expect(golden.prompts.length).toBe(19);
-    expect(off.prompts).toEqual(golden.prompts);
+    // M2 is about the ORCHESTRATION gate costing nothing while it is shut, and it still does: the only
+    // difference is §8.6's kept section, which this wave did not add and which is absent from the golden.
+    expect(off.prompts.some((t) => t.includes(KEPT_HEADING))).toBe(true);
+    expect(golden.prompts.some((t) => t.includes(KEPT_HEADING))).toBe(false);
+    expect(off.prompts.map(withoutKeptSection)).toEqual(golden.prompts);
   });
 
   it('the Jev calls, the sandbox commands and the candidate invalidations are unchanged', async () => {
@@ -240,7 +271,11 @@ describe('M2 against the pre-wave commit a17c7f6 (the real golden)', () => {
       // rows equal the golden's line for line, the stop row is gone from both (D-V), and no sink prints a bare `[run]`.
       const today = h.store.transcript.map(norm);
       const before = golden.transcript.map(norm);
-      expect(today).toEqual(before);
+      // F26: exactly the compaction rows differ, and only in their two prompt-char figures
+      const differing = today.filter((l, i) => l !== before[i]);
+      expect(differing.every((l) => COMPACTION_ROW.test(l))).toBe(true);
+      expect(differing.length).toBeGreaterThan(0);
+      expect(today.map(normChars)).toEqual(before.map(normChars));
       expect(today.filter((l) => STOP_ROW.test(l))).toEqual([]);
       expect(today.filter((l) => /^\[run\]\s*$/.test(l)), 'no sink prints a bare [run]').toEqual([]);
     } finally {

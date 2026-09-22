@@ -1516,6 +1516,57 @@ on fresh file bytes, which is why the wording is "deterministic given (state, bu
   meant to isolate the generator, and a non-deterministic `kept` (hence prompt) across devices and resumes, against G3(d). `/keep <text>` adds a human item. Kept items render as `## Kept (do not
   re-derive)` and ride `buildSeed` into follow-ups (`seed.ts:47`).
 
+**As built (the finishing pass, F26).** The ranking pass (`rankKept`) landed first and the EXTRACTION did not, so
+`CheckpointState.kept` had no writer at all: `'code'` ranked an empty list and `'jev'` had nothing to ask about —
+the switch was inert in both positions. The extractor is `src/loop/context/kept.ts` (`extractKept`), pure and
+dependency-free, run at every compaction over the same inputs the fold takes:
+
+1. the failing-test summary of `lastTestRun`, unless the suite is green (a green run is nothing to carry);
+2. each failing test id with its **assertion line** — the ids come from the engine's own reader
+   (`fastPathFailingIds`, the one the oracle uses), bounded at `KEPT_FAILING_IDS_MAX` (8);
+3. every file `fileMemory` records as EDITED (a file merely read is already in `## Files in view`);
+4. the `declined` / `blocked` / `failed` history entries with their reason;
+5. `plan.harnessProblems` with their step, and `plan.openProblems` as step-0 facts (they rank last by recency).
+
+Deduplicated on (kind, text) keeping the newer step, cut to `KEPT_MAX` (24) **before** any ranking, human `/keep`
+items first in the order they were given and never ranked. `state.json` is untrusted input, so `kept` is
+validated and bounded on the way back in (`readKeptItems`) exactly as `history` and `fileCache` are. Under
+`'jev'` the one bounded request is paid once per compaction, at the next prompt build (`Engine.rankKeptItems`),
+because the fold itself is synchronous.
+
+**The list ACCUMULATES; it is not re-derived** (finishing-pass review, defect A4). The six sources above all
+read the still-visible state — `plan`, `fileMemory`, `lastTestRun`, and a `history` bounded at `HISTORY_STEPS`
+(12) — so an extraction that took only them was a pure function of what the prompt already shows: a fact left
+`kept` at exactly the moment it left the prompt, and `kept` could never hold anything worth not re-deriving.
+Measured on a run of 18 steps at `compactEvery: 2`, the `[replan, step 4]` line was on checkpoint 3 and gone by
+checkpoint 7, replaced by the step-16 copy of the same sentence, and `kept` never held more than three items.
+
+So `extractKept` takes a seventh source: `carried`, the previous compaction's own derived items
+(`Engine.compactContext` passes `this.kept.filter(k => k.by !== 'human')`; the human ones travel in `human` and
+are pinned first as before). They join as ordinary candidates, LAST, so the (kind, text) dedup keeps the newer
+step and a fact this compaction proved again REFRESHES rather than duplicating. Accumulation is bounded, not
+unbounded: `KEPT_MAX` (24) still cuts the list and `rankKeptCode`'s recency order eats the oldest first, so an
+aged fact survives exactly as long as nothing newer needs its slot.
+
+**The section renders** (F26's last sub-part). `Engine.contextView()` fills `PromptContextView.kept` when the
+list is non-empty, and `keptSection` builds `## Kept (do not re-derive)`; `PromptKeptItem`'s `kind` / `by` are
+widened to the full `KeptItem` vocabulary, because the extractor's own candidates are `by: 'code'` — the only
+provenance a run has before a surface adds a `/keep` — and the narrower pair described a shape nothing could
+produce. Absent while the list is empty, so every run before its first compaction, every run that never
+compacts and every `view: 'legacy'` run (which runs no compaction at all: the frozen bench arms) builds exactly
+the bytes it built before.
+
+**What that moved, stated rather than re-captured.** A relaxed-view run that HAS compacted now carries one
+section its pre-wave capture does not, which two byte-identity goldens see:
+`test/unit/loop/router-golden.test.ts` (contract 1.9 **I2**, against `d86c385`) and
+`test/unit/loop/decompose-m2.test.ts` (contract 1.5 **M2**, against `a17c7f6`). Neither golden was re-captured —
+overwriting the pre-wave bytes with today's would make both tests tautological and the provenance in their
+`commit` field is the entire evidence. Instead each strips exactly the `## Kept` block and asserts that every
+other byte of every prompt is identical, and that the section really was present (so an empty strip cannot hide
+a second change). In `decompose-m2` the transcript's compaction notice reports PROMPT CHARS and therefore moves
+too; the test asserts that the compaction rows are the ONLY rows that differ and that they differ only in that
+pair of figures.
+
 ### 8.7 Visible usage
 
 `EngineStatus.context?: { promptChars, budgetChars, pct, files, historyEntries, summaryAt: number|null, lastCompactionStep }` — plus the
@@ -2192,10 +2243,11 @@ object on every `status` line; `/context` lists the sections (§8.7).
 
 | File | What the surface imports from it (through `index.ts`) |
 | --- | --- |
-| `src/coordination/index.ts` (new, W0) | the ONLY import path for `src/session/**`, `src/cli/**`, `src/tui/**`: re-exports everything below |
-| `records.ts` (+ `types.ts`, `claims.ts`, `fold.ts`) | `Heartbeat`, `Lease`, `Message`, `Ack`, `DeviceRecord`, **`ClaimsProjection`** (revision 5, §9.3), `Stamp`, `Claim`, `Liveness`, `parseRecord`, `checksumOf`, `compareStamp`, `compareClaim`, `isLive`, `overlap`, `redactRecord`, `CoordinationError`, `MAX_CLAIM_EPOCH`. **As built** the module split is by concern rather than by one file: the contract *types* are `types.ts`, the claim fence and record authenticity (`compareClaim`, `forkVerdict`, `claimHolder`, `claimRefusal`, `hmacOf` / `hmacValid` / `withHmac`, `authorityOf`) are `claims.ts`, and the fold's readers — **`byRunId`** (the design's `byRun`), `claimHolderOf`, `seenEpochs`, `listSessions`, `originOf` / `ackOrigin` — are `fold.ts`. `oneLine` is the redacting one-liner (the design's `oneLineSafe`); `peerTransitions` is §3.6's rule table, still to land with the renderers. `MAX_GC_DEVICES` is `ledger.ts`, beside the enumeration it bounds |
+| `src/coordination/index.ts` (new, W0) | the import path for every consumer of the plane: re-exports everything below, plus **`openCoordination(opts)`** — the ONE entry point, composing `deviceIdentity()` + `wsKeyOf` / `repoKeyOf` + `bootIdOf()` + `openLedger()` into `{ ledger, self, device, close }`, so a caller never assembles a `SelfIdentity` by hand (it never opens the ledger, never prompts, never spawns git). **As built**, the importer claim is corrected: the engine imports the facade through `src/loop/coordination.ts`; `src/session/**`, `src/cli/**` and `src/tui/**` have **no importer yet**, which is why `/peers` still answers `the peer registry is not available in this build` and nothing sets `EngineOptions.coordination`. The header sentence and the tree are pinned to each other by `test/unit/coordination/facade.test.ts`. **Naming**, one concept one name: the facade exports **`Ledger` = `LedgerHandle`** (what `openLedger` returns) and **`LedgerBase`** for the narrow 7-member reader's base (`types.ts`'s own `Ledger`, what every write verb takes) — a consumer who annotated a handle with the narrow type used to meet `asHandle()`'s throw at runtime; it is a type error now |
+| `boot.ts` (new) | **`bootIdOf({ probe?, platform?, timeoutMs? })`** — the ONE producer of `SelfIdentity.bootId` / `OpenLedgerOptions.bootId` in the tree: `sysctl -n kern.bootsessionuuid` on darwin, `/proc/sys/kernel/random/boot_id` on linux, a 200 ms deadline over the whole probe, memoised per process, `null` on any failure and no throw. The OS read is INJECTED (`BootProbe`) and the one production spawn is quarantined in `nodeBootProbe`, which loads `node:child_process` lazily — importing the facade still pulls no spawning module into the graph. Until it landed no `sysctl` and no `/proc` read existed anywhere in `src/`, so `bootId` was always absent and `lockReplaceVerdict`'s `other-boot` branch, §3.2's `duplicate-identity` clause (ii) and §5.4 rule 5's disqualifier were unreachable |
+| `records.ts` (+ `types.ts`, `claims.ts`, `fold.ts`) | `Heartbeat`, `Lease`, `Message`, `Ack`, `DeviceRecord`, **`ClaimsProjection`** (revision 5, §9.3), `Stamp`, `Claim`, `Liveness`, `parseRecord`, `checksumOf`, `compareStamp`, `compareClaim`, `isLive`, `overlap`, `redactRecord`, `CoordinationError`, `MAX_CLAIM_EPOCH`. **As built** the module split is by concern rather than by one file: the contract *types* are `types.ts`, the claim fence and record authenticity (`compareClaim`, `forkVerdict`, `claimHolder`, `claimRefusal`, `hmacOf` / `hmacValid` / `withHmac`, `authorityOf`) are `claims.ts`, and the fold's readers — **`byRunId`** (the design's `byRun`), `claimHolderOf`, `seenEpochs`, `listSessions`, `originOf` / `ackOrigin` — are `fold.ts`. `oneLine` is the redacting one-liner (the design's `oneLineSafe`); `peerTransitions` is §3.6's rule table, still to land with the renderers. `MAX_GC_DEVICES` is `ledger.ts`, beside the enumeration it bounds. **`peerViewOf(status): PeerView`** (revision 5 addition, §3.6) is the ONE projection from `CoordinationStatus` to the four-scalar `PeerView` the `/peers` block, the open notice and the peer blocking pane read: `live` counts live PEER runs exactly as the `⇄` zone does (this run is not a peer; a peer on THIS device counts like any other — two instances in one multiplexer is the case the surface exists for), `stale` is every other row, `oldestStartedMsAgo` is the largest `beatAgeMs` among the live rows (the honest lower bound: the projection carries no start time) and `exclusive` is `waiting !== null`. Two unrelated peer shapes with no stated relationship had let the two surfaces disagree |
 | `ids.ts` | **as built**: `deviceIdentity(opts)` (the pure reader, with a `status`; it never prompts) + `adoptNewDevice(opts)` (the explicit writer, §3.2 clone adoption), `hostKeyOf(host, user, machineId?)`, `wsKeyOf(realpath)`, `repoKeyOf(...)`, `normaliseOriginUrl(url)`, `mintActor8()`, `consumerIdOf(self, actor8)` (in `mailbox.ts`, where the `seen` file it names is written), `hostRoot(root, hostKey)`, the `devices/<hostKey>/` readers and writers — `readTrusted` / `writeTrusted` / `trustDevice` / `readTrustKeys` / `readIgnoredDevices` / `ignoreDevice` / `unignoreDevice` / `readCommonsKey` / `writeCommonsKey` / `readMachineRecord` / `writeMachineRecord` / `read`+`writeRepoKeyCache`, **each taking `(fs, hostDir, …)`** — and the validators `DEVICE_ID_RE`, `HOST_KEY_RE`, `REPO_KEY_RE`, `MSG_ID_RE`, `CONSUMER_ID_RE`, `OID_RE`, `LANE_DIR_RE`, `SLUG_RE`, `SEQ_RE`, `LEASE_ID_RE`, `RUN_ID_RE`, `ACTOR8_RE`, `isValidTarget`, `isValidBranch`, `isValidRelPath` (§3.1) |
-| `ledger.ts` + `paths.ts` | `COORDINATION_DIR`, `coordinationRoot(home)`, **`commonsPaths(root, hostKey?)`** (§3.1 per-host; `paths.ts` owns it), **`openLedger(opts): LedgerHandle`** (as built — the name is SPLIT: `Ledger` (`types.ts`) is the narrow base every write verb takes, and `LedgerHandle` (`ledger.ts`) is what `openLedger` returns, what `EngineOptions.coordination.ledger` carries and what `asHandle()` recovers inside the module. Revision 5 wrote `Ledger` for both, which made the engine's option look like the 5-member base rather than the 40-member handle it must call), `readFold(opts): Promise<Fold>`, the `Ledger`-taking write verbs (`gc`, `setDeviceLabel`, `syncDisable`, `syncStatus`, `writeTakeoverLease`, `ignoreDeviceOn`, `unignoreDeviceOn`, `pairDeviceOn`, `unpairDeviceOn`), `MAX_DEVICES`, `MAX_FENCE_DEVICES`, `STRICT_FENCE_MS`, `MAX_GC_DEVICES`, `ENTRIES_MAX`, `TRACKED_ACKS_MAX`, `ACK_TRACK_MAX_MS` |
+| `ledger.ts` + `paths.ts` | `COORDINATION_DIR`, `coordinationRoot(home)`, **`commonsPaths(root, hostKey?)`** (§3.1 per-host; `paths.ts` owns it), **`openLedger(opts): LedgerHandle`** (as built — the name is SPLIT: `Ledger` (`types.ts`) is the narrow base every write verb takes, and `LedgerHandle` (`ledger.ts`) is what `openLedger` returns, what `EngineOptions.coordination.ledger` carries and what `asHandle()` recovers inside the module. Revision 5 wrote `Ledger` for both, which made the engine's option look like the 5-member base rather than the 40-member handle it must call. The FACADE resolves the two same-named concepts rather than leaving the consumer to choose: `index.ts` exports **`Ledger` = `LedgerHandle`** and **`LedgerBase`** for the narrow base, so the wrong choice is a type error instead of `asHandle()`'s runtime throw, and no signature inside `src/coordination/**` moved), `readFold(opts): Promise<Fold>`, the `Ledger`-taking write verbs (`gc`, `setDeviceLabel`, `syncDisable`, `syncStatus`, `writeTakeoverLease`, `ignoreDeviceOn`, `unignoreDeviceOn`, `pairDeviceOn`, `unpairDeviceOn`), `MAX_DEVICES`, `MAX_FENCE_DEVICES`, `STRICT_FENCE_MS`, `MAX_GC_DEVICES`, `ENTRIES_MAX`, `TRACKED_ACKS_MAX`, `ACK_TRACK_MAX_MS` |
 | `watch.ts` | the implementation behind `Ledger.subscribe` (fs.watch + poll + debounce) |
 | `leases.ts` | `check`, `declare`, `release`, `renew`, `LeaseIntent`, `LeaseCheck`, `LeaseConflict`, `LeaseHandle`, `CoordinationFacts`, **`FenceYield`**, **`fenceWake`**, and as built **`fenceYield`** / **`FenceWait`** (F1 + F2 as one object), **`leaseSnapshot`**, **`LeaseSnapshot`**, **`DeclaredFact`**, **`StrictDeclare`**, **`FENCE_WAIT_CAP_MS`**, **`STRICT_WAIT_MS`** (revision 5, §4.3 / §4.5) |
 | `mailbox.ts` | `send`, `inbox`, `ack`, `awaitAck`, `resolveTarget`, `purgeInbox` |
@@ -2947,6 +2999,22 @@ Every agreed case maps to §11 rows (rows 45–50 are added there for the cases 
 for TUI slots in round 3 (TD3:1562); this round assigns it to the TUI session explicitly (§14 Q6). Every `types.ts` change is
 additive. LOC are new / changed lines excluding tests; tests roughly equal. Each wave lands only when `npm run typecheck` (tsc +
 `no-any`) and the named unit tests are green; nothing in W1–W4 changes an existing artefact's shape.
+
+#### Open requests to the TUI session (harness cannot touch `src/cli/**`, `src/tui/**`, `src/session/**`)
+
+1. **`/peers`' empty state is off by one against `PeerView.live` (`src/cli/session.ts:3465`).** `PeerView.live` counts the
+   instances in this workspace **including this one** — that is the convention all three renderers already use
+   (`peersText` is empty at `live <= 1`, `peerOpenNotice` is null at `live <= 1`, `peerLeaseRows` blocks on
+   `exclusive && live > 1`) and it is what `peerViewOf` (`src/coordination/fold.ts`) now produces. The `/peers` empty
+   test is `view.live === 0 && view.stale === 0`, which no live registry can ever satisfy, so a lone instance prints
+   `peers · 1 here, 0 stale` instead of `no other jevcode is working in this workspace`. **Requested change:**
+   `if (view.live <= 1 && view.stale === 0)`.
+2. **Feed `SessionHost.peers()` from the one projection.** When the TUI wires `EngineOptions.coordination`, the hook should
+   be `peerViewOf(status.coordination)` (exported from `src/coordination/index.ts`) rather than a second count, so the `⇄`
+   zone and `/peers` are the same numbers by construction. `oldestStartedMsAgo` is a **start** age (from the row's
+   `startedMsAgo`) and is `null` when the producer reports none — `/peers` already renders `—` for that, and
+   `peerOpenNotice` already drops the parenthetical; neither should substitute `beatAgeMs`, which is bounded above by the
+   honoured heartbeat TTL.
 
 ### W0 — contract, identity, limits (harness; ½ day) — lands first, alone
 

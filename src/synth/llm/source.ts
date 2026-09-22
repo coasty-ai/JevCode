@@ -46,7 +46,8 @@
  * sample is started and priced; repro.ts reuses them for L2.
  */
 import { sha12 } from '../../core/hash.js';
-import { LLM_HEDGES_PER_ROUND, LLM_HEDGE_AFTER, LLM_SAMPLE_CONTEXT_MAX_CHARS } from '../../core/limits.js';
+import { LLM_HEDGES_PER_ROUND, LLM_SAMPLE_CONTEXT_MAX_CHARS } from '../../core/limits.js';
+import { HEDGE_TWIN_OFFSET, LLM_REASONING_CAP_CHEAP_TOKENS, LLM_REASONING_CAP_TOKENS, hedgeAfterMs, hedgeEnabled, providerOrderFor, reasoningCapTokens } from './hedge.js';
 import { ProviderHttpError } from '../../errors.js';
 import type { CancelledGeneration, GeneratePurpose, GenerateReasoning, GenerateRequest, GenerateResult, Json, SynthSubwork, SynthesizerGeneration, TokenUsage } from '../../core/types.js';
 import { monotonicNow, percentile } from '../../core/time.js';
@@ -125,72 +126,23 @@ export const LLM_DEADLINE_ADAPT = {
   repositoryMaxMs: 90_000,
 } as const;
 
-/** The per-run cap the samples ask for once the serving provider is slow: `reasoning: {maxTokens}` (GLM bills its reasoning, §4.13). */
-export const LLM_REASONING_CAP_TOKENS = 512;
-
-/**
- * contract 1.9 (Fastlane) §3.4 (docs/LLM-LOOP-DESIGN.md): the cap the CHEAP classes ask for from their first
- * round, rather than only after the serving provider has already been measured slow.
- *
- * Why only the cheap classes, and why smaller than `LLM_REASONING_CAP_TOKENS`. A QuixBugs or ladder fix is a
- * few lines inside one function that the prompt already names; the thinking budget buys nothing there, and GLM
- * bills it (§4.13) and waits for it — which is exactly the tail the adaptive deadline keeps lifting. A
- * repository fix is not that shape, so `deadline.repositoryMs` rounds are left alone and keep the reactive
- * 512-token cap. Off by default (`LlmSourceDeps.reasoningCapCheap`): it changes what every cheap sample asks
- * for, so it is a bench arm's choice, not a silent one.
- */
-export const LLM_REASONING_CAP_CHEAP_TOKENS = 256;
-
 // ---------------------------------------------------------------------------------------
-// contract 1.9 (Fastlane) §3.2 — the hedge (docs/LLM-LOOP-DESIGN.md §3.2)
+// contract 1.9 (Fastlane) §3.2 / §3.4 — the hedge and the reasoning cap
 // ---------------------------------------------------------------------------------------
 
-/** `JEVCODE_HEDGE=on` arms the §3.2 hedge where the caller pinned nothing; `off` disables it where the caller armed it. */
-export const HEDGE_ENV_FLAG = 'JEVCODE_HEDGE';
-
 /**
- * The sample index a hedge twin takes: its origin's index plus this offset. A twin is a full sample in every
- * ledger the round keeps — it takes its own hold, its own `samplesLeft`, its own heartbeat row and its own
- * arrival — so it needs an index of its own, and one that can be read back as "the twin of k" without a second
- * map in the accounting. `SAMPLES_PER_ROUND` is single digits, so nothing can collide with the offset.
- */
-export const HEDGE_TWIN_OFFSET = 1000;
-
-/** Is this sample index a hedge twin, and of whom? */
-export function hedgeOriginOf(sample: number): number | null {
-  return sample >= HEDGE_TWIN_OFFSET ? sample - HEDGE_TWIN_OFFSET : null;
-}
-
-/**
- * §3.2: how long a sample may produce NO FIRST BYTE before its twin is fired —
- * `clamp(2 × the running TTFB p50, 3 s, 8 s)`.
+ * F25 (the finishing pass): these eight moved to `./hedge.ts` UNCHANGED and are re-exported here.
  *
- * The input is time to first byte, not latency: a sample that has started streaming is being served and a
- * second copy of it buys nothing, so the timer is cancelled the moment its first byte lands
- * (`GenerateOptions.onFirstByte`, §3.1). Before a run has any TTFB at all the threshold is the CEILING, not
- * the floor: the first round of a run is also the round whose provider connection is coldest, and hedging it
- * at 3 s would double the spend of every run's first round on no evidence.
+ * They were the whole of §3.2 and §3.4, and they lived in a module `jev-on` never enters — which is why the
+ * `jev-on-next` arm recorded `mechanisms.s2: true` with no hedge, no rotation and no cap on its propose call.
+ * The loop's propose path now uses the same functions (`hedgedCall`, `providerOrderFor`), so the two consumers
+ * share the DECISION rather than each carrying a copy of it.
+ *
+ * Re-exported rather than relocated for the callers, because every existing importer names `source.js`
+ * (`src/loop/engine.ts`, `test/unit/provider/provider-order.test.ts`, `test/unit/synth/llm/*`): the identity is
+ * the point — this module's behaviour is byte-identical and those tests are the pin.
  */
-export function hedgeAfterMs(ttfbP50Ms: number | null): number {
-  if (ttfbP50Ms === null) return LLM_HEDGE_AFTER.maxMs;
-  return Math.min(LLM_HEDGE_AFTER.maxMs, Math.max(LLM_HEDGE_AFTER.minMs, Math.round(LLM_HEDGE_AFTER.factor * ttfbP50Ms)));
-}
-
-/**
- * §3.2: the provider order a hedge twin sends — the caller's order rotated by one, so the upstream that is
- * currently silent (or rate-limiting) is the twin's LAST choice instead of its first. An order of fewer than
- * two entries cannot rotate: the twin then sends the caller's order unchanged and is a pure latency race.
- */
-export function rotatedProviderOrder(order: readonly string[]): readonly string[] {
-  if (order.length < 2) return order;
-  return [...order.slice(1), ...order.slice(0, 1)];
-}
-
-/** Is the §3.2 hedge armed? The caller's pin wins; `JEVCODE_HEDGE` decides when it pinned nothing; off is the default (§0.3's rule for a new mechanism). */
-export function hedgeEnabled(pinned: boolean | undefined, env: Readonly<Record<string, string | undefined>> = process.env): boolean {
-  if (pinned !== undefined) return pinned;
-  return (env[HEDGE_ENV_FLAG] ?? '').trim().toLowerCase() === 'on';
-}
+export { HEDGE_ENV_FLAG, HEDGE_TWIN_OFFSET, LLM_REASONING_CAP_CHEAP_TOKENS, LLM_REASONING_CAP_TOKENS, hedgeAfterMs, hedgeEnabled, hedgeOriginOf, rotatedProviderOrder } from './hedge.js';
 
 /**
  * §4.8 rev 4 (2026-09-22, ranked change 3 of docs/research/llm-jev/oos-analysis-2026-09-22.md):
@@ -1079,7 +1031,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     // the reactive cap by taking the SMALLER of the two — the reactive one is evidence that the provider is slow, and the
     // cheap-class one is a standing judgement about what the class needs; neither may raise what the other already lowered.
     const cheap = deps.reasoningCapCheap === true && klass !== 'repository' ? LLM_REASONING_CAP_CHEAP_TOKENS : null;
-    const cap = reasoningCap === null ? cheap : cheap === null ? reasoningCap : Math.min(reasoningCap, cheap);
+    const cap = reasoningCapTokens(reasoningCap, cheap);
     return cap === null ? gen.reasoning : { maxTokens: cap };
   }
 
@@ -1338,7 +1290,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       toolChoice: { name: PROPOSE_FIX_TOOL_NAME },
       // §3.2: the twin rotates the order, so a 429 or a stall on the original's upstream leaves it live. With no order
       // configured this is the object every sample has always sent.
-      providerPrefs: { requireParameters: true, ...(providerOrder.length === 0 ? {} : { order: twin ? rotatedProviderOrder(providerOrder) : providerOrder }) },
+      providerPrefs: { requireParameters: true, ...(providerOrder.length === 0 ? {} : { order: providerOrderFor(providerOrder, twin) }) },
     };
     // the round's reasoning verbatim (null = not sent): the fire input's override, the pinned setting, or the per-run cap
     if (st.reasoning !== null) req.reasoning = st.reasoning;
@@ -1425,7 +1377,7 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
       return;
     }
     st.hedges += 1;
-    emit('llm:hedge', `goal ${st.input.goalId} round ${st.input.round}: sample ${k} produced no first byte in ${hedgeAfterMs(p50TtfbMs())} ms — twin ${twin} fired${providerOrder.length > 1 ? ` on the rotated provider order (${rotatedProviderOrder(providerOrder).join(', ')})` : ''}; the loser is cancelled at the first result`);
+    emit('llm:hedge', `goal ${st.input.goalId} round ${st.input.round}: sample ${k} produced no first byte in ${hedgeAfterMs(p50TtfbMs())} ms — twin ${twin} fired${providerOrder.length > 1 ? ` on the rotated provider order (${providerOrderFor(providerOrder, true).join(', ')})` : ''}; the loser is cancelled at the first result`);
   }
 
   /**

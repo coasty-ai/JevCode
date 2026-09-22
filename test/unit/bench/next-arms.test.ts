@@ -10,15 +10,17 @@
  *      the cases that must NOT read as a pass (no control, no gate report, an arm that was never armed);
  *   4. the one cross-slot gap: `src/cli/args.ts` keeps its own `--conditions` allow-list.
  */
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { CONDITIONS } from '../../../src/cli/args.js';
 import { resolveFastPathOption } from '../../../src/loop/engine.js';
+import { s2Mode, s2ReachableOn } from '../../../src/synth/llm/hedge.js';
 import { CONDITION_ORDER, MECHANISM_ENV_VARS, armMechanisms, buildEngineOptions, conditionConfig, engineModeOf, isNextArm, parseConditions, pinMechanismEnv, pinnedGeneration, requiresSerialBench, usesSynthesizer, usesTunedProvider } from '../../../src/bench/conditions.js';
 import { computeSuiteMetrics } from '../../../src/bench/metrics.js';
-import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
+import { evaluateAcceptRule, evaluatePredictions, FASTPATH_REASONS, FRESH_18, measurementRows, observedArmS2, recorded, RECORDED_BUILD } from '../../../src/bench/next-arms.js';
 import { buildRecord, runBenchWithSources, validateOptions } from '../../../src/bench/runner.js';
-import { emptyStepsSummary, mergeStepsSummaries, summariseStepRows, withWaveMembers } from '../../../src/bench/step-records.js';
+import { STEPS_FILE, emptyStepsSummary, mergeStepsSummaries, summariseStepRows, withWaveMembers } from '../../../src/bench/step-records.js';
 import type { BenchRecord, StepsSummary } from '../../../src/bench/types.js';
 import type { BenchCondition } from '../../../src/core/types.js';
 import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource, tempDir } from './helpers.js';
@@ -47,17 +49,18 @@ describe('the jev-on-next arms (§8.1)', () => {
       expect(usesTunedProvider(arm)).toBe(false);
       expect(isNextArm(arm)).toBe(true);
       expect(pinnedGeneration(arm, 'z-ai/glm-5.3-flash')).toMatchObject({ proposer: 'generator', maxTokens: 1500, deadlineMs: 20_000, repositoryDeadlineMs: 30_000, lengthHandling: 'double-once' });
-      expect(pinnedGeneration(arm, 'z-ai/glm-5.3-flash').s2).toEqual({ hedges: { perRound: 1, afterMsMin: 3_000, afterMsMax: 8_000, ttfbP50Multiple: 2 }, prefix: 'byte-stable', reasoningMaxTokens: 256 });
     }
-    // the tuned object, minus the S2 block, is what the arms pin: the two differ only in `s2`
-    const { s2, ...next } = pinnedGeneration('jev-on-next', 'm');
-    expect(s2).toBeDefined();
-    expect(next).toEqual(pinnedGeneration('jev-off-tuned', 'm'));
+    // F05: the arms ARE the tuned object. The S2 block used to ride on them and named mechanisms `jev-on` cannot
+    // reach; the block returns with F17 (docs/LLM-LOOP-DESIGN.md §9.1), on whatever arm can actually run it.
+    expect(pinnedGeneration('jev-on-next', 'm')).toEqual(pinnedGeneration('jev-off-tuned', 'm'));
+    expect(pinnedGeneration('jev-on-next', 'm').s2).toBeUndefined();
     // ONE mechanism apart — that is what makes the pair a contrast
-    expect(armMechanisms('jev-on-next')).toEqual({ fastPath: 'auto', routers: true, s2: true });
-    expect(armMechanisms('jev-on-next-nofast')).toEqual({ fastPath: 'off', routers: true, s2: true });
+    // integration (F05 x F25): the arms pin S2 ON again, because F25 built the reader the clamp asks for
+    // (`EngineOptions.s2`, honoured by `s2Mode` on `jev-on`); the six older arms pin every mechanism off.
+    expect(armMechanisms('jev-on-next')).toEqual({ fastPath: 'auto', routers: true, s2: 'on' });
+    expect(armMechanisms('jev-on-next-nofast')).toEqual({ fastPath: 'off', routers: true, s2: 'on' });
     for (const older of ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned'] as const) {
-      expect(armMechanisms(older)).toEqual({ fastPath: 'off', routers: false, s2: false });
+      expect(armMechanisms(older)).toEqual({ fastPath: 'off', routers: false, s2: 'off' });
     }
     expect(parseConditions('jev-on-next,jev-on-next-nofast')).toEqual(['jev-on-next', 'jev-on-next-nofast']);
   });
@@ -71,15 +74,15 @@ describe('the jev-on-next arms (§8.1)', () => {
     process.env['JEVCODE_FASTPATH'] = 'auto';
     try {
       // the env says 'auto' for every arm; the arm's own row is what lands
-      expect(buildEngineOptions({ ...input, condition: 'jev-on' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'off' });
-      expect(buildEngineOptions({ ...input, condition: 'jev-on-next' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'auto', routers: 'on' });
-      expect(buildEngineOptions({ ...input, condition: 'jev-on-next-nofast' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'on' });
+      expect(buildEngineOptions({ ...input, condition: 'jev-on' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'off', s2: 'off' });
+      expect(buildEngineOptions({ ...input, condition: 'jev-on-next' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'auto', routers: 'on', s2: 'on' });
+      expect(buildEngineOptions({ ...input, condition: 'jev-on-next-nofast' }, opts)).toMatchObject({ mode: 'jev-on', fastPath: 'off', routers: 'on', s2: 'on' });
     } finally {
       if (prev === undefined) delete process.env['JEVCODE_FASTPATH'];
       else process.env['JEVCODE_FASTPATH'] = prev;
     }
-    expect(conditionConfig('jev-on-next', opts, 'm').mechanisms).toEqual({ fastPath: 'auto', routers: true, s2: true });
-    expect(conditionConfig('llm-jev', opts, 'm').mechanisms).toEqual({ fastPath: 'off', routers: false, s2: false });
+    expect(conditionConfig('jev-on-next', opts, 'm').mechanisms).toEqual({ fastPath: 'auto', routers: true, s2: 'on' });
+    expect(conditionConfig('llm-jev', opts, 'm').mechanisms).toEqual({ fastPath: 'off', routers: false, s2: 'off' });
   });
 
   /**
@@ -94,14 +97,18 @@ describe('the jev-on-next arms (§8.1)', () => {
    * resolver's new polarity.
    */
   it('clears the mechanism env switches, and the PINNED option beats an env that survives anyway', () => {
-    expect([...MECHANISM_ENV_VARS]).toEqual(['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS']);
-    const env: Record<string, string | undefined> = { JEVCODE_FASTPATH: 'auto', JEVCODE_ROUTERS: 'on', JEVCODE_WARM: 'off' };
+    expect([...MECHANISM_ENV_VARS]).toEqual(['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS', 'JEVCODE_S2', 'JEVCODE_HEDGE']);
+    const env: Record<string, string | undefined> = { JEVCODE_FASTPATH: 'auto', JEVCODE_ROUTERS: 'on', JEVCODE_S2: 'on', JEVCODE_HEDGE: 'off', JEVCODE_WARM: 'off' };
     expect(pinMechanismEnv(env)).toEqual([
       { name: 'JEVCODE_FASTPATH', was: 'auto' },
       { name: 'JEVCODE_ROUTERS', was: 'on' },
+      { name: 'JEVCODE_S2', was: 'on' },
+      { name: 'JEVCODE_HEDGE', was: 'off' },
     ]);
     expect('JEVCODE_FASTPATH' in env).toBe(false);
     expect('JEVCODE_ROUTERS' in env).toBe(false);
+    expect('JEVCODE_S2' in env).toBe(false);
+    expect('JEVCODE_HEDGE' in env).toBe(false);
     // only these two: JEVCODE_WARM is the documented escape every arm of the recorded runs was taken under
     expect(env['JEVCODE_WARM']).toBe('off');
     expect(pinMechanismEnv(env)).toEqual([]);
@@ -125,6 +132,41 @@ describe('the jev-on-next arms (§8.1)', () => {
     } finally {
       if (saved === undefined) delete process.env['JEVCODE_FASTPATH'];
       else process.env['JEVCODE_FASTPATH'] = saved;
+    }
+  });
+
+  /**
+   * F25's HEADLINE claim, and review defect **A5**. Every S2 mechanism was built and reachable, but behind
+   * `JEVCODE_S2=on`, which nothing in `src/bench` set: `armMechanisms('jev-on-next')` returned `s2: true` while
+   * `buildEngineOptions` wrote no `s2` option, so the arm ran with S2 OFF and its `summary.json` said `true`.
+   * The converse half was live contamination: `JEVCODE_S2` was in nobody's `MECHANISM_ENV_VARS`, so an exported
+   * `JEVCODE_S2=on` armed the whole generation path on the plain `jev-on` CONTROL arm and on
+   * `jev-on-next-nofast` while both rows recorded `s2: false`.
+   *
+   * The pin is end to end: the arm's row, the option it writes, and what the ENGINE's own resolver makes of that
+   * option against a hostile environment.
+   */
+  it("jev-on-next really runs S2 and jev-on really does not, whatever JEVCODE_S2 says (F25 headline / A5)", () => {
+    const opts = baseOptions('/r', '/o');
+    const input = { task: 't', workspace: '/w', provider: { model: 'm' }, decider: {}, meter: {} } as unknown as Parameters<typeof buildEngineOptions>[0];
+    const saved = process.env['JEVCODE_S2'];
+    try {
+      for (const hostile of ['on', 'off'] as const) {
+        process.env['JEVCODE_S2'] = hostile;
+        for (const arm of CONDITION_ORDER) {
+          const built = buildEngineOptions({ ...input, condition: arm }, opts);
+          // `!== 'off'`, never a truthiness test: F05 widened `ArmMechanisms.s2` from boolean to `S2State` on
+          // another branch, and `'off'` is a truthy string — the merge of the two turned this very assertion into
+          // one that passes while every arm is built armed (integration; see the describe at the foot of the file)
+          const want = armMechanisms(arm).s2 !== 'off';
+          expect(built.s2, `${arm} builds the option its row pins`).toBe(want ? 'on' : 'off');
+          // the engine's own resolver, with the hostile env still set: the arm's row is what runs
+          expect(s2Mode(engineModeOf(arm), built.s2) !== 'off', `${arm} resolves to its row`).toBe(want && engineModeOf(arm) === 'jev-on');
+        }
+      }
+    } finally {
+      if (saved === undefined) delete process.env['JEVCODE_S2'];
+      else process.env['JEVCODE_S2'] = saved;
     }
   });
 
@@ -167,13 +209,219 @@ describe('the jev-on-next arms (§8.1)', () => {
   });
 });
 
+/**
+ * F05 — the record must not describe a run that did not happen.
+ *
+ * `armMechanisms` pinned `s2: true` for both next arms and `pinnedGeneration` pinned the whole
+ * `S2_GENERATION` block on them, so summary.json said the §3 generation path was live. It was not, and
+ * nothing read the flag: `conditionConfig` applies `mech.fastPath` and `mech.routers` and `mech.s2` had
+ * no reader anywhere in src. Both arms run `engineModeOf === 'jev-on'`, and in `jev-on` no S2 mechanism
+ * is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the
+ * synthesizer sample path, and hedging plus the §3.4 reasoning cap live in `src/synth/llm/source.ts`,
+ * which `jev-on` never enters. The head-to-head is measured from that file days later.
+ *
+ * Two rules, and the second is what keeps the first from rotting:
+ *
+ *   1. a PINNED `s2` other than `'off'` requires `engineModeOf(condition) === 'llm-jev'`; and
+ *   2. what summary.json records is the OBSERVED value when the run reported one — never a constant —
+ *      so slot A (F25) wiring S2 onto the `jev-on` path cannot make the record disagree with the run in
+ *      the other direction either.
+ */
+describe('§8.1 the recorded mechanisms are the mechanisms that ran (F05)', () => {
+  const opts = baseOptions('/r', '/o');
+
+  it('a pinned s2 implies a mode that honours the pin, for every condition', () => {
+    for (const c of CONDITION_ORDER) {
+      const m = armMechanisms(c);
+      // INTEGRATION: rule 1 is unchanged, the MODE it names is not. F05 wrote `'llm-jev'` because that is where
+      // the §3 mechanisms lived when nothing read the pin at all; F25 built the reader on `jev-on`
+      // (`EngineOptions.s2` → `s2Mode`), and nothing threads the option into the synthesizer sample path. The rule
+      // now asks `s2ReachableOn`, so it cannot name a mode the resolver disagrees with in the first place.
+      if (m.s2 !== 'off') expect(s2ReachableOn(engineModeOf(c)), `${c} pins s2 ${m.s2}`).toBe(true);
+      expect(conditionConfig(c, opts, 'm').mechanisms.s2).toBe(m.s2);
+    }
+    expect(armMechanisms('jev-on-next')).toEqual({ fastPath: 'auto', routers: true, s2: 'on' });
+    expect(armMechanisms('jev-on-next-nofast')).toEqual({ fastPath: 'off', routers: true, s2: 'on' });
+    // and the clamp still bites where it must: llm-jev and llm-sieve reach no S2 reader, so neither may pin one
+    for (const c of ['llm-jev', 'llm-sieve'] as const) expect(s2ReachableOn(engineModeOf(c))).toBe(false);
+  });
+
+  it('no arm pins the S2 generation block either — the next arms ARE the tuned object', () => {
+    for (const arm of ['jev-on-next', 'jev-on-next-nofast'] as const) {
+      expect(pinnedGeneration(arm, 'm').s2).toBeUndefined();
+      expect(pinnedGeneration(arm, 'm')).toEqual(pinnedGeneration('jev-off-tuned', 'm'));
+    }
+  });
+
+  it('summary.json records the OBSERVED value when the run reported one, and NOTHING when it reported none (B4)', () => {
+    // absent -> null, never 'off': "no run reported the member" and "the run reported that S2 was off" are
+    // different facts, and only the second may overwrite an arm's pin. The reader this argument was written for
+    // returned 'off' for both, so `armMechanisms(c, observed)` would have overwritten a pinned 'on' with a
+    // measurement nobody made — and it had no caller in src at all, so summary.json kept the constant.
+    const arm = (...rows: string[]): BenchRecord[] => [{ ...rec('t', 'jev-on-next'), synth: summariseStepRows(rows.join('\n')) }];
+    const m = (s2: unknown): string => step({ mechanisms: { s2 } });
+    expect(observedArmS2([], 'jev-on-next')).toBeNull();
+    expect(observedArmS2(arm(step({ step: 1 }), step({ step: 2, mechanisms: {} })), 'jev-on-next')).toBeNull();
+    expect(observedArmS2(arm(m('on'), m('on')), 'jev-on-next')).toBe('on');
+    // some steps ran it and some did not: that is 'partial', never rounded up to 'on'
+    expect(observedArmS2(arm(m('on'), m('off')), 'jev-on-next')).toBe('partial');
+    expect(observedArmS2(arm(m('partial')), 'jev-on-next')).toBe('partial');
+    // a value the union does not know is not a measurement
+    expect(observedArmS2(arm(m('yes')), 'jev-on-next')).toBeNull();
+    // a measured 'off' IS a measurement and does overwrite
+    expect(observedArmS2(arm(m('off')), 'jev-on-next')).toBe('off');
+    // …and it is the ARM's own records that are read: another arm's steps are not this arm's observation
+    expect(observedArmS2(arm(m('on')), 'jev-on-next-nofast')).toBeNull();
+    // the observation WINS over the arm's row, in both directions: the record follows the run
+    expect(armMechanisms('jev-on-next', 'on').s2).toBe('on');
+    // …while an ABSENT observation leaves the pin (and its clamp) exactly where it was — which, after the F05 x F25
+    // integration, is the arm's own `'on'`: F25 made the pin reachable, so B4's "null is not 'off'" rule finally
+    // has the case it was written for (a measurement nobody made must not overwrite a pin that WILL run).
+    expect(armMechanisms('jev-on-next', null).s2).toBe('on');
+    expect(conditionConfig('jev-on-next', opts, 'm', { s2: 'partial' }).mechanisms.s2).toBe('partial');
+    expect(conditionConfig('jev-on-next', opts, 'm', { s2: 'off' }).mechanisms.s2, 'a MEASURED off still overwrites the pin').toBe('off');
+    expect(conditionConfig('jev-on-next', opts, 'm', { s2: null }).mechanisms.s2).toBe('on');
+    expect(conditionConfig('jev-on-next', opts, 'm').mechanisms.s2).toBe('on');
+  });
+
+  it('the measurement table carries an S2 row that says why it cannot be evaluated', () => {
+    const rows = measurementRows([], 'jev-on-next', ['quixbugs']);
+    const s2 = rows.find((r) => r.id === 'R-s2');
+    expect(s2).toBeDefined();
+    // integration: the arm PINS S2 on (F25 built the reader), and no record reported anything — armed but
+    // unmeasured is still "nothing to report", and the reason now says which of the three reasons it is
+    expect(s2!.status).toBe('not_evaluable');
+    expect(s2!.detail).toBe("this arm pins S2 on and no step reported mechanisms.s2; its mode is jev-on");
+    // it reports, it does not gate: §8.5's clauses are unchanged by it
+    expect(s2!.gating).toBe(false);
+    const rule = evaluateAcceptRule({ records: [], arm: 'jev-on-next', control: 'jev-on-next-nofast', rows, predictions: [], gatesGreen: true });
+    expect(rule.clauses.map((c) => c.n)).toEqual([1, 2, 3, 4, 5]);
+  });
+
+  // B6: `measurementRows` takes any `BenchCondition`, so the hard-coded mode in the row's reason made the row
+  // self-contradictory on every arm but the two it was written for: "this arm's mode is jev-on" printed under
+  // `measurementRows(records, 'llm-jev', …)`. Integration: the reason also had to stop naming the WRONG mode as
+  // the one that runs S2 — after F25 it is `jev-on`, and `llm-jev`'s synthesizer path is the one the option does
+  // not reach.
+  it("the S2 row names the arm's OWN mode, not the mode the row was written for", () => {
+    const detailOf = (c: BenchCondition): string => measurementRows([], c, ['quixbugs']).find((r) => r.id === 'R-s2')!.detail;
+    const unreachable = "S2 is honoured only on the jev-on propose path (EngineOptions.s2); this arm's mode is ";
+    expect(detailOf('llm-jev')).toBe(`${unreachable}llm-jev`);
+    expect(detailOf('llm-sieve')).toBe(`${unreachable}llm-jev`);
+    expect(detailOf('jev-off-tuned')).toBe(`${unreachable}jev-off`);
+    // a mode that WOULD honour a pin but whose arm pinned nothing is a different sentence, and must not read as
+    // "this build cannot run it"
+    expect(detailOf('jev-on')).toBe('this arm pins S2 off; its mode (jev-on) would honour a pin');
+    // every reason names the arm's OWN mode, in whichever of the three sentences it took
+    for (const c of CONDITION_ORDER) expect(detailOf(c), c).toMatch(new RegExp(`mode (is |\\()${engineModeOf(c)}\\b`));
+  });
+});
+
+/**
+ * F05's second half, B4 — the OBSERVED value must actually be observed.
+ *
+ * `observedS2` was written, exported and tested, and then had no caller in `src`: `runner.ts` still built every
+ * `ConditionConfig` with `conditionConfig(c, opts, model)` — three arguments — so `mechanisms.s2` in summary.json
+ * was the constant the item's owner note forbids ("record it from that runtime value … never from a constant").
+ * It is gone: `observedArmS2` replaces it with the reader the runner and the §8.3 table BOTH call, so there is one
+ * observation and no second copy to leave unwired.
+ * It reads correctly today only because 'off' is also what ran; the moment slot A's F25 writes a runtime
+ * `mechanisms.s2: 'on'` onto the step records, summary.json keeps saying 'off' and the §8.3 table keeps saying
+ * `not_evaluable` — the same class of defect F05 exists to remove, in the other direction.
+ *
+ * So the observation travels the way every other steps.jsonl fact travels (§5.5): folded by
+ * `src/bench/step-records.ts` onto `StepsSummary.s2.state`, carried by the normaliser and the merge, and read
+ * ONCE — by the runner for summary.json and by `measurementRows` for the table, so the two cannot disagree.
+ */
+describe('§8.1 the observed s2 reaches summary.json and the §8.3 table (F05 second half, B4)', () => {
+  const mech = (s2: unknown, over: Record<string, unknown> = {}): string => step({ mechanisms: { s2 }, ...over });
+
+  it('the §5.5 bridge folds mechanisms.s2 out of steps.jsonl, and an absent member stays absent', () => {
+    expect(summariseStepRows([mech('on'), mech('on')].join('\n')).s2.state).toBe('on');
+    // steps that disagree fold to 'partial': one S2 step must not stand for the arm
+    expect(summariseStepRows([mech('on'), mech('off')].join('\n')).s2.state).toBe('partial');
+    expect(summariseStepRows([mech('partial')].join('\n')).s2.state).toBe('partial');
+    // a build that does not report the member, and a value the union does not know, are both "nothing measured"
+    expect(summariseStepRows(step({ timing: { synthMs: 1 } })).s2.state).toBeUndefined();
+    expect(summariseStepRows(mech('yes')).s2.state).toBeUndefined();
+    expect(emptyStepsSummary().s2.state).toBeUndefined();
+  });
+
+  it('the normaliser and the merge carry it, so --resume and an arm-wide fold do not erase the observation', () => {
+    // `withWaveMembers` rebuilds the part from `emptyStepsSummary()`: a member it does not name is LOST
+    expect(withWaveMembers(summariseStepRows(mech('on'))).s2.state).toBe('on');
+    expect(mergeStepsSummaries([summariseStepRows(mech('on')), summariseStepRows(mech('on'))]).s2.state).toBe('on');
+    expect(mergeStepsSummaries([summariseStepRows(mech('on')), summariseStepRows(mech('off'))]).s2.state).toBe('partial');
+    // a run that reported nothing does not dilute one that did — and does not invent one either
+    expect(mergeStepsSummaries([summariseStepRows(mech('on')), emptyStepsSummary()]).s2.state).toBe('on');
+    expect(mergeStepsSummaries([emptyStepsSummary(), emptyStepsSummary()]).s2.state).toBeUndefined();
+  });
+
+  it('the §8.3 S2 row reads the SAME observation, so the table cannot disagree with summary.json', () => {
+    const on = [{ ...rec('t1', 'jev-on-next'), synth: summariseStepRows([mech('on', { verify: { ttfbMs: [100], hedges: 2, hedgeWins: 1, cacheRead: 90, cacheWrite: 0, cacheInput: 100 } })].join('\n')) }];
+    expect(observedArmS2(on, 'jev-on-next')).toBe('on');
+    const row = measurementRows(on, 'jev-on-next', ['quixbugs']).find((r) => r.id === 'R-s2')!;
+    expect(row.status).toBe('reported');
+    expect(row.detail).toContain('S2 on');
+    expect(row.detail).toContain('90/100');
+    // still reported, never gating: an arm that ran a mechanism does not thereby gate the wave on it
+    expect(row.gating).toBe(false);
+    // and with no observation the row is back to the clamp's reason
+    expect(observedArmS2([rec('t1', 'jev-on-next')], 'jev-on-next')).toBeNull();
+    expect(measurementRows([rec('t1', 'jev-on-next')], 'jev-on-next', ['quixbugs']).find((r) => r.id === 'R-s2')!.status).toBe('not_evaluable');
+  });
+
+  it('summary.json records what the run reported, end to end through the runner', async () => {
+    const t = await tempDir();
+    const runsDir = join(t.dir, 'runs');
+    const rows = [
+      { step: 1, proposer: 'generator', mechanisms: { s2: 'on' }, timing: { generatorMs: 1, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1 } },
+      { step: 2, proposer: 'generator', mechanisms: { s2: 'on' }, timing: { generatorMs: 1, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1 } },
+    ];
+    const { deps, captured } = createFakeDeps({
+      script: () => ({
+        result: { steps: 2 },
+        spendUsd: 0.01,
+        effect: async () => {
+          const runId = captured.engines.at(-1)!.runId;
+          await writeFile(join(runsDir, runId, STEPS_FILE), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+        },
+      }),
+    });
+    const opts = baseOptions(runsDir, join(t.dir, 'out'), { conditions: ['jev-on-next'], concurrency: 1 });
+    try {
+      const out = await runBenchWithSources([syntheticSource({ id: 't1' })], opts, deps);
+      // the arm pins 'on' and the run said 'on': the record follows the RUN, which is what makes the agreement
+      // meaningful rather than a tautology — the case below is the same reader with the run silent
+      expect(armMechanisms('jev-on-next').s2).toBe('on');
+      expect(out.summary.conditions['jev-on-next']!.mechanisms.s2).toBe('on');
+    } finally {
+      await t.cleanup();
+    }
+  });
+
+  it('…and records the pin when the run reported nothing, rather than a measurement nobody made', async () => {
+    const t = await tempDir();
+    const { deps } = createFakeDeps({ script: () => ({ result: { steps: 2 }, spendUsd: 0.01 }) });
+    const opts = baseOptions(join(t.dir, 'runs'), join(t.dir, 'out'), { conditions: ['jev-on-next'], concurrency: 1 });
+    try {
+      const out = await runBenchWithSources([syntheticSource({ id: 't1' })], opts, deps);
+      // the PIN, not a measurement nobody made: B4's whole point, and after the F05 x F25 integration the pin is
+      // 'on', so the two branches of `observed ?? pin` finally have different values and the test can tell them apart
+      expect(out.summary.conditions['jev-on-next']!.mechanisms.s2).toBe('on');
+    } finally {
+      await t.cleanup();
+    }
+  });
+});
+
 describe('the §5.5 bench bridge', () => {
   // the rows below are the shapes slot C's writer actually produces (`llm-loop-C-fastpath` src/loop/stages/fastpath.ts
   // `declinedRecord` / `firedRecord`): `stage: 1` ONLY on a free decline, `stage: 2` on every row of a round that ran,
   // `decision: 'fired'` ONLY on a proposal, and `decision: 'failed'` with outcome timeout/refused/error otherwise.
   it('folds fastPath, router, riskSource and the S2 verify members out of steps.jsonl', () => {
     const text = [
-      step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', candidatesTested: 12, testRuns: 3, jevRequests: 2, wallMs: 4000, budgetMs: 45_000 }, router: { issued: 3, applied: 2, dropped: 1, waitMs: 0 }, riskSource: 'code', verify: { ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10 } }),
+      step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', candidatesTested: 12, testRuns: 3, jevRequests: 2, wallMs: 4000, budgetMs: 45_000 }, router: { issued: 3, applied: 2, dropped: 1, waitMs: 0 }, riskSource: 'code', verify: { ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10, cacheInput: 1_000 } }),
       step({ step: 2, fastPath: { decision: 'declined', reason: 'multi_file', stage: 1, outcome: 'skipped', wallMs: 1, budgetMs: 45_000 }, router: { issued: 2, applied: 2, dropped: 0, waitMs: 7 }, riskSource: 'jev', jevUnavailable: true }),
       step({ step: 3, fastPath: { decision: 'declined', reason: 'no_passer_class', stage: 2, outcome: 'skipped', wallMs: 900, budgetMs: 45_000 } }),
       // a round that ran and blew its own budget: R-b counts it whatever it then decided, and against the budget THAT
@@ -192,7 +440,9 @@ describe('the §5.5 bench bridge', () => {
     expect(s.fastPath.reasons).toEqual({ multi_file: 1, no_passer_class: 1, error: 1 });
     expect(s.routers).toEqual({ issued: 5, applied: 4, dropped: 1, maxWaitMs: 7 });
     expect(s.risk).toEqual({ codeVerdicts: 1, jevUnavailable: 1 });
-    expect(s.s2).toEqual({ ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10 });
+    // F19: `cacheInput` is the §3.4 hit rate's DENOMINATOR and travels with the two counts, so the run-level rate is
+    // Σread / Σinput. The four rows without a `verify` block add nothing to it, exactly as they add nothing to the rest.
+    expect(s.s2).toEqual({ ttfbMs: [300, 500], hedges: 1, hedgeWins: 1, cacheRead: 100, cacheWrite: 10, cacheInput: 1_000 });
 
     const merged = mergeStepsSummaries([s, s, emptyStepsSummary()]);
     expect(merged.fastPath.fired).toBe(2);
@@ -263,7 +513,7 @@ describe('the §8.3 rows', () => {
       withSynth('b', 'jev-on-next', [step({ fastPath: { decision: 'declined', reason: 'multi_file', stage: 1, outcome: 'skipped', wallMs: 1, budgetMs: 45_000 }, router: { issued: 1, applied: 1, dropped: 0, waitMs: 0 } })]),
     ];
     const rows = measurementRows(clean, 'jev-on-next', ['quixbugs']);
-    expect(rows.map((r) => [r.id, r.status])).toEqual([['R-a', 'pass'], ['R-b', 'pass'], ['R-c', 'pass'], ['R-d', 'pass'], ['R-e', 'reported']]);
+    expect(rows.map((r) => [r.id, r.status])).toEqual([['R-a', 'pass'], ['R-b', 'pass'], ['R-c', 'pass'], ['R-d', 'pass'], ['R-e', 'reported'], ['R-s2', 'not_evaluable']]);
 
     const dirty = [
       withSynth('a', 'jev-on-next', [step({ fastPath: { decision: 'fired', reason: 'none', stage: 2, outcome: 'proposed', wallMs: 60_000, budgetMs: 45_000 }, router: { issued: 1, applied: 0, dropped: 1, waitMs: 120 } })]),
@@ -271,7 +521,7 @@ describe('the §8.3 rows', () => {
       withSynth('b', 'jev-on-next', [step({ fastPath: { decision: 'declined', reason: 'error', stage: 2, outcome: 'error', wallMs: 1, budgetMs: 1 } }), step({ step: 2, fastPath: { decision: 'declined', reason: 'error', stage: 2, outcome: 'error', wallMs: 1, budgetMs: 1 } })]),
     ];
     const bad = measurementRows(dirty, 'jev-on-next', ['quixbugs']);
-    expect(bad.map((r) => [r.id, r.status])).toEqual([['R-a', 'fail'], ['R-b', 'fail'], ['R-c', 'fail'], ['R-d', 'fail'], ['R-e', 'reported']]);
+    expect(bad.map((r) => [r.id, r.status])).toEqual([['R-a', 'fail'], ['R-b', 'fail'], ['R-c', 'fail'], ['R-d', 'fail'], ['R-e', 'reported'], ['R-s2', 'not_evaluable']]);
     expect(bad[2]!.detail).toContain('the predicate is wrong, not the budget');
     // 2 stage-2 declines out of 3 rounds that ran
     expect(bad[2]!.detail).toContain('quixbugs 2/3 = 0.67');
@@ -372,7 +622,10 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
     const partial = evaluatePredictions({ records: records.slice(0, 5), arm: 'jev-on-next', control: 'jev-on-next-nofast', slice });
     expect(partial.find((p) => p.id === 'a')).toMatchObject({ status: 'not_evaluable' });
     expect(partial.find((p) => p.id === 'a')!.detail).toContain('must not retire route R9');
-    expect(predictions.find((p) => p.id === 'f')!.detail).toContain('confounds tuned generation');
+    // B1: the EMITTED copy of the confound list. F05 struck S2 off the arms, report.ts's paragraph and §8.1 —
+    // and left this one, which is the copy a reader of the §8.3 table actually sees.
+    expect(predictions.find((p) => p.id === 'f')!.detail).toBe('the jev-on-next-nofast control has no evaluated record — without it a win confounds tuned generation, the routers and the fast path');
+    expect(predictions.find((p) => p.id === 'f')!.detail).not.toContain('S2');
     const verdict = evaluateAcceptRule({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', rows, predictions, gatesGreen: true });
     expect(verdict.accept).toBe(false);
     expect(verdict.clauses.find((c) => c.n === 4)).toMatchObject({ status: 'not_evaluable' });
@@ -463,8 +716,73 @@ describe('the §8.4 predictions and the §8.5 accept rule', () => {
     expect(predictions.find((p) => p.id === 'e')).toMatchObject({ status: 'fail', retiresR9: true });
     const verdict = evaluateAcceptRule({ records, arm: 'jev-on-next', control: 'jev-on-next-nofast', rows, predictions, gatesGreen: true });
     expect(verdict.retireR9).toBe(true);
-    expect(verdict.clauses.find((c) => c.n === 4)!.detail).toContain('ship S2 + routers');
+    // B3: the escape may only name a mechanism the wave MEASURED. After F05 no arm in the plan runs S2, so
+    // "ship S2 + routers alone" authorised shipping an unmeasured mechanism on the strength of a measured one.
+    const clause4 = verdict.clauses.find((c) => c.n === 4)!;
+    expect(clause4.detail).toContain('ship the routers');
+    expect(clause4.detail).not.toContain('S2');
+    expect(clause4.title).toContain('the wave ships as the routers alone');
+    expect(clause4.title).not.toContain('S2');
     // …and the wave still does not accept, because clause 3 carries (a)
     expect(verdict.accept).toBe(false);
+  });
+});
+
+/**
+ * The finishing-pass INTEGRATION reconciliation of F05 (slot B) and F25 (slot A), which were written in parallel
+ * against opposite facts and both landed in this file.
+ *
+ * F05's premise was true when it was written: `ArmMechanisms.s2` had no reader anywhere in `src`, so `jev-on-next`
+ * recorded `s2: true` for a mechanism no `jev-on` engine could run, and F05 answered with a CLAMP — a pinned `s2`
+ * survives only on an arm whose `engineModeOf` is `'llm-jev'`. F25 then BUILT the reader on the other mode:
+ * `EngineOptions.s2` (`src/core/types.ts`), resolved by `s2Mode(mode, opt, env)` (`src/synth/llm/hedge.ts`), which
+ * honours the pin on **`jev-on`** and on nothing else — `llm-jev`'s synthesizer sample path is fed by
+ * `LlmSourceDeps`, and nothing threads `EngineOptions.s2` into it. So after the merge the clamp named exactly the
+ * wrong mode, and the two defects the merge itself created are:
+ *
+ *   1. `buildEngineOptions` wrote `out.s2 = mech.s2 ? 'on' : 'off'`, which F25 wrote while `ArmMechanisms.s2` was a
+ *      BOOLEAN and F05 widened to `S2State`. `'off'` is a truthy string, so **every arm** — including the plain
+ *      `jev-on` CONTROL — was built with `s2: 'on'` while its `summary.json` row said `'off'`. That is the precise
+ *      contamination F25's own review defect A5 and F05 were each closing, re-created by taking both.
+ *   2. the clamp then forced `armMechanisms('jev-on-next').s2` to `'off'`, so the arm that exists to measure the
+ *      mechanism could not pin it at all.
+ *
+ * The invariant below is the one both slots were reaching for and neither could state alone, because neither tree
+ * had both halves: **what the engine will resolve from the arm's built options is what the arm's row records.** It
+ * is asked of the real resolver (`s2Mode`) over every condition, so a third writer cannot re-open the gap by
+ * editing one side; `s2ReachableOn` is the same question asked once, in `hedge.ts`, beside the resolver.
+ */
+describe('§8.1 the built option and the recorded row agree about S2, for every arm (finishing-pass integration)', () => {
+  const opts = baseOptions('/r', '/o');
+  const input = { task: 't', workspace: '/w', provider: { model: 'm' }, decider: {}, meter: {} } as unknown as Parameters<typeof buildEngineOptions>[0];
+
+  it('resolves from the built options to exactly what summary.json records, for every condition', () => {
+    for (const c of CONDITION_ORDER) {
+      const built = buildEngineOptions({ ...input, condition: c }, opts);
+      const recordedRow = conditionConfig(c, opts, 'm').mechanisms.s2;
+      // `env: {}` so the question is about the OPTION: the arm's row may not depend on the operator's shell
+      expect(s2Mode(engineModeOf(c), built.s2, {}), `${c}: the engine resolves what the row claims`).toBe(recordedRow);
+    }
+  });
+
+  it('never arms the control: only the two next arms are built with S2 on', () => {
+    const armed = CONDITION_ORDER.filter((c) => s2Mode(engineModeOf(c), buildEngineOptions({ ...input, condition: c }, opts).s2, {}) !== 'off');
+    expect(armed, 'a jev-on control armed with S2 destroys the one-mechanism contrast §8.5 clause 4 rests on').toEqual(['jev-on-next', 'jev-on-next-nofast']);
+    expect(buildEngineOptions({ ...input, condition: 'jev-on' }, opts).s2).toBe('off');
+  });
+
+  it('asks the resolver which modes honour the pin, rather than keeping a second list', () => {
+    // the clamp's predicate IS the reader: turn the reader off for a mode and the clamp follows in the same commit
+    expect(s2ReachableOn('jev-on')).toBe(true);
+    for (const mode of ['jev-off', 'jev-only', 'llm-jev'] as const) expect(s2ReachableOn(mode)).toBe(false);
+    // …and F05's rule 1, restated over the merged truth: a pinned value other than 'off' implies a mode that runs it
+    for (const c of CONDITION_ORDER) if (armMechanisms(c).s2 !== 'off') expect(s2ReachableOn(engineModeOf(c))).toBe(true);
+  });
+
+  it('keeps F05 rule 2: a measurement still beats the pin, in both directions', () => {
+    expect(armMechanisms('jev-on-next', 'off').s2).toBe('off');
+    expect(armMechanisms('jev-on-next', 'partial').s2).toBe('partial');
+    expect(armMechanisms('jev-on-next', null).s2, 'no observation leaves the pin').toBe('on');
+    expect(armMechanisms('jev-on', 'on').s2, 'a control that REPORTED S2 says so — the record follows the run').toBe('on');
   });
 });

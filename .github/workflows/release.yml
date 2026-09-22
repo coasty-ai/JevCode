@@ -74,8 +74,10 @@ jobs:
           esac
 
       - run: npm ci
-      - run: npm run typecheck
-      - run: npm test
+      # `check` is the composite the sessions type and the one every merge message cites: typecheck (tsc --noEmit +
+      # scripts/no-any.mjs), then `node scripts/jev-contract.mjs` — the four-clause lint that had never run at tag
+      # time — then the unit suite. Running the pieces separately here is what let the Jev contract lint fall out.
+      - run: npm run check
       - run: npm run build # bundle (minify + keepNames, version define, smoke) then THIRD_PARTY_LICENSES.txt
       - run: npm run pack:check # private removed, LICENSE, allowlist == tarball, size, no .map/docs/src
       - name: Generated docs are current (man page, completions, KEYS.md, COMMANDS.md)

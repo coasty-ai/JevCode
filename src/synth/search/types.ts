@@ -137,16 +137,19 @@ export interface VerifyOutcome {
    * warm lane worker (a fork of a persistent interpreter) rather than a fresh process. A screen,
    * not a verdict — see `confirmedCold`.
    *
-   * UNFINISHED CONTRACT, handed on by wave S1 and named here so it is not lost. §3 M6 requires
-   * `screened: true` to ride into `ProposalEvidence`, and §4.4 / §5 require `screened` and
-   * `screenMismatches` in `GoalSearchTrace` with `screenMismatches = 0` as a BLOCKING Ring-2
-   * metric. Both readers are outside wave S1's boundary — `src/synth/search/guard.ts` builds
-   * `ProposalEvidence` and `src/core/types.ts` declares `GoalSearchTrace`, and both are held by
-   * other branches in flight. Until they land, the only signal is the free-text `warm …,
-   * N screen:mismatch` clause the sieve appends to its `synth` verify event (`warmNote`), which
-   * a human can read in the transcript but `experiments/fastlane/quick-table.mts` cannot read
-   * out of `steps.jsonl`. The numbers themselves are already computed and cumulative on
-   * `RunnerMemory.warm.stats()`, so wiring them is a field and an assignment, not a mechanism.
+   * LANDED — the counts reach `steps.jsonl`. The half of wave S1's unfinished contract that was
+   * about MEASUREMENT is done: `RunnerMemory.warm.stats()` is folded per step into
+   * `StepRecord.verify.warm` (`core/types.ts StepWarmSummary`) and summed run-wide by
+   * `src/bench/step-records.ts` into `StepsSummary.warm`, so `screenMismatches` is readable out of
+   * a run directory rather than only out of the free-text `warm …, N screen:mismatch` clause the
+   * sieve appends to its `synth` verify event (`warmNote`).
+   *
+   * RESIDUAL, one item: `ProposalEvidence` still has no `screened` member, so §3 M6's "`screened:
+   * true` rides into `ProposalEvidence`" — and with it the BLOCKING Ring-2 `screenMismatches = 0`
+   * metric of §4.4 / §5 read off `GoalSearchTrace` — is not wired. `src/synth/search/guard.ts`
+   * builds the evidence and `GoalSearchTrace` is declared below in this file; both are a field and
+   * an assignment, not a mechanism. Deferred deliberately: docs/LLM-LOOP-DESIGN.md §9.1,
+   * "`screened` / `screenMismatches` in `ProposalEvidence` / `GoalSearchTrace`".
    */
   screened?: boolean;
   /**

@@ -18,6 +18,7 @@ import { createNullProvider } from '../provider/null.js';
 import { CONDITION_ORDER, NULL_GENERATOR_MODEL, buildEngineOptions, conditionConfig, createEngineFor, isBenchCondition, isNextArm, pinMechanismEnv, requiresGenerator, requiresSerialBench, servedRateFor, synthesizerGenerationOf, synthesizerModeOf, tunedParamsFor, usesStubDecider, usesSynthesizer, usesTunedProvider } from './conditions.js';
 import { readGeneratorRecords, summariseGeneratorRecords } from './generator-records.js';
 import { computeSuiteMetrics, isNotRun, suitesIn, withPairComplete } from './metrics.js';
+import { observedArmS2 } from './next-arms.js';
 import { readStepsSummary } from './step-records.js';
 import { createStubDecider, type StubDecider } from './stub-decider.js';
 import { withJevOff } from '../jev/off.js';
@@ -754,7 +755,11 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
   const spend = root.snapshot();
   const notRunRecs = records.filter(isNotRun);
   const conditionsCfg: Summary['conditions'] = {};
-  for (const c of conditions) conditionsCfg[c] = conditionConfig(c, opts, model);
+  // F05 / B4: `mechanisms.s2` is recorded from what the RUNS reported (`StepRecord.mechanisms.s2`, folded onto
+  // `StepsSummary.s2.state` by the §5.5 bridge), never from a constant — an arm's pin is a specification and this
+  // member is a fact about the run. `observedArmS2` is `null` when no run of the arm reported the member, and then
+  // the pin (already clamped by the arm's mode) stands. §8.3's R-s2 row reads the same observation.
+  for (const c of conditions) conditionsCfg[c] = conditionConfig(c, opts, model, { s2: observedArmS2(records, c) });
   const summary: Summary = {
     benchId,
     createdAt,

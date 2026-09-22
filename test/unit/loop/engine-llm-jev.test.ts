@@ -630,7 +630,10 @@ describe('llm-jev: recording — step keying, cancellation facts, rate limits, v
     expect(s1!.proposer).toBe('synth');
     expect(s1!.verify).toEqual({ samples: 3, distinct: 2, malformed: 0, timeouts: 1, cancelled: 1, misanchored: 0, candidatesTested: 640, passers: 1, partials: 0, graceMs: 250, localisationMissed: true });
 
-    // without a report the evidence's count stands in; a jev-only row is untouched (no `verify`, no `reportVerify` in its context)
+    // without a report the evidence's count stands in; a jev-only row that reports NOTHING is untouched (no `verify`).
+    // F04 (finishing pass): `reportVerify` itself is now installed in jev-only too — gating the recording channel with
+    // the LLM channel is what made `JEVCODE_WARM=on --mode jev-only` a silent no-op (test/unit/loop/engine-warm-record.test.ts).
+    // What keeps the jev-only row byte-identical is that nobody called it, not that it was missing.
     const quiet: Synthesizer = {
       name: 'evidence-only',
       async synthesize() {
@@ -655,7 +658,8 @@ describe('llm-jev: recording — step keying, cancellation facts, rate limits, v
       limits: { maxSteps: 1 },
     });
     await h3.engine.run();
-    expect(contexts[0]!.reportVerify).toBeUndefined();
+    expect(typeof contexts[0]!.reportVerify).toBe('function');
+    expect(contexts[0]!.generate).toBeUndefined();
     expect('verify' in h3.store.steps[0]!).toBe(false);
   });
 
