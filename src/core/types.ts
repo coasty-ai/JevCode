@@ -531,9 +531,14 @@ export type ReasoningEffort = 'low' | 'medium';
 /**
  * docs/LLM-JEV-DESIGN.md §4.12 verbatim: `{enabled: false}` turns thinking off where the model allows it; `{effort}` asks
  * for it at a level (on OpenRouter `effort` alone implies enabled). Providers send it as given, never rewritten; absent =
- * the model's default. Discriminate on the member present (`'effort' in r`), never on a truthy read.
+ * the model's default. Discriminate on the member present (`'effort' in r`, `'maxTokens' in r`), never on a truthy read.
+ *
+ * `{maxTokens}` (additive, 2026-09-21) is OpenRouter's `reasoning: {max_tokens: N}` — a thinking budget in tokens, the
+ * alternative to `effort` (the two are mutually exclusive on the wire). A pass-through for a later tuning of GLM's fat
+ * latency tail (`experiments/results/llm-jev-headtohead.md` §6: valid p90 25.6 s at effort `low`): whether the GLM endpoint
+ * honours a token budget or OpenRouter folds it into an effort level is NOT verified live — nothing in the tree sends it yet.
  */
-export type GenerateReasoning = { enabled: false } | { effort: ReasoningEffort };
+export type GenerateReasoning = { enabled: false } | { effort: ReasoningEffort } | { maxTokens: number };
 /** docs/LLM-JEV-DESIGN.md §4.12 verbatim: OpenRouter routes only to endpoints that support every parameter sent (tools, seed, …). */
 export interface GenerateProviderPrefs {
   requireParameters: boolean;
@@ -565,6 +570,12 @@ export interface GenerateResult {
   generationId?: string;
   /** docs/LLM-JEV-DESIGN.md §4.12: OpenRouter's response `provider` field — the upstream that served the request (bills at its own rate, §8); absent on Anthropic */
   servedProvider?: string;
+  /**
+   * true when at least one attempt of this call was answered HTTP 429 before the result arrived (the retry chain recovered).
+   * A fact for the controller — a round whose samples all needed a 429 retry is running into a rate limit even when it
+   * succeeded — never a reason to change the result. Absent (not false) otherwise.
+   */
+  rateLimited?: true;
 }
 /** TUI-DESIGN §15 item 5: why a client is about to sleep before a retry; message = redacted <= 200-char hint, never a body */
 export interface RetryCause {
@@ -603,6 +614,14 @@ export interface CancelledGeneration {
   reasoningChars: number;
   /** present only when the accounting frame had already arrived (the abort landed between it and the end of the stream): read and priced like a completed call, not estimated */
   usage?: TokenUsage;
+  /**
+   * true when the sample ended rate-limited: every attempt of the retry chain was answered HTTP 429 (the chain gave up), or
+   * the signal aborted the sample while it was waiting out a 429 backoff. Delivered with zero streamed sizes and no ids when
+   * no stream ever opened (nothing was served, nothing is billed — the engine records the sample with `stopReason`
+   * 'rate_limited' and zero usage rather than an estimate); the source classifies a round whose samples all ended so as
+   * `rate_limited`, not exhausted, so the controller may fire it again next step. Absent (not false) otherwise.
+   */
+  rateLimited?: true;
 }
 export interface GenerateOptions {
   signal: AbortSignal;
@@ -617,8 +636,10 @@ export interface GenerateOptions {
   sample?: number;
   /**
    * docs/LLM-JEV-DESIGN.md §4.8: called at most once, after the stream's abort and before `signal.reason` is rethrown, when the
-   * signal aborted a stream whose response headers had arrived. Runs outside the retry loop: a throwing callback is a harness
-   * bug and propagates as a typed 'internal' error in place of the abort reason, exactly like a throwing `onDelta`.
+   * signal aborted a stream whose response headers had arrived — or, with `rateLimited: true`, when the call ended rate-limited
+   * without a stream (every retry answered 429, or the abort landed during a 429 backoff; `CancelledGeneration.rateLimited`).
+   * Runs outside the retry loop: a throwing callback is a harness bug and propagates as a typed 'internal' error in place of
+   * the abort reason, exactly like a throwing `onDelta`.
    */
   onCancelled?: (partial: CancelledGeneration) => void;
 }
@@ -1047,12 +1068,18 @@ export interface GeneratorCallRecord {
   /** reasoning tokens the provider reported, when known */
   reasoningTokens?: number;
   /**
-   * true when the sample yielded no GenerateResult — cancelled, timed out, or failed after it had streamed (`stopReason`
-   * 'cancelled' | 'timeout' | 'error'); `usage` is then an estimate (`usage.estimated`)
+   * true when the sample yielded no GenerateResult — cancelled, timed out, rate-limited, or failed by the provider
+   * (`stopReason` 'cancelled' | 'timeout' | 'rate_limited' | 'error'); `usage` is then an estimate (`usage.estimated`) when
+   * the sample was served, or the accounting frame's reading when it had arrived, or zero when nothing was served (a 429 /
+   * an error before any response)
    */
   cancelled?: boolean;
   /** the provider's generation id, when it arrived */
   generationId?: string;
+  /** the upstream that served the sample (OpenRouter's `provider` field), when it arrived */
+  servedProvider?: string;
+  /** true when the sample hit HTTP 429 — the call recovered by retrying (a completed row), or ended rate-limited (a cancelled row; `CancelledGeneration.rateLimited`) */
+  rateLimited?: true;
 }
 
 export interface CheckpointStore {
@@ -1263,9 +1290,19 @@ export interface SynthesisContext {
   /**
    * docs/LLM-JEV-DESIGN.md §4.8 (llm-jev; absent in jev-only): the one sanctioned path to the generating LLM. The engine
    * meters, records (generator.jsonl, one row per sample, cancelled samples with an estimate) and emits `generator:*` with
-   * the sample index; an aborted sample rejects with its signal's reason and yields no GenerateResult.
+   * the sample index; an aborted sample rejects with its signal's reason and yields no GenerateResult. The row and the events
+   * carry the step the sample was DISPATCHED in, whichever step's context the function was taken from (a synthesizer may hold
+   * it across steps); a sample that ends after its step was committed is still written, under that step.
    */
   generate?: (req: GenerateRequest, o: SampleOptions) => Promise<GenerateResult>;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.2 stage 1 / §9.3 (llm-jev; additive): the synthesizer's own per-step verification counts for
+   * `StepRecord.verify`. The engine fills what it can see itself (`samples`, `timeouts`, `cancelled` from the step's sample
+   * rows, `candidatesTested` from the proposal's evidence); a call here supplies or overrides the rest (`distinct`,
+   * `misanchored`, `passers`, `partials`, `graceMs`, `localisationMissed`, a run-wide `candidatesTested`). Later calls in
+   * the same step merge over earlier ones. Absent in the other modes.
+   */
+  reportVerify?: (counts: Partial<StepVerifySummary>) => void;
 }
 
 /**

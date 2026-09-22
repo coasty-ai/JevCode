@@ -220,7 +220,7 @@ export interface OpenRouterRequestBody {
   temperature?: number;
   /** integer; a supported parameter of z-ai/glm-5.3-flash (config/defaults.ts) */
   seed?: number;
-  /** https://openrouter.ai/docs/use-cases/reasoning-tokens: `{enabled: false}` disables thinking; `{effort}` asks for it at a level (effort implies enabled) */
+  /** https://openrouter.ai/docs/use-cases/reasoning-tokens: `{enabled: false}` disables thinking; `{effort}` asks for it at a level (effort implies enabled); `{max_tokens}` is a thinking budget (one of effort / max_tokens, never both) */
   reasoning?: OpenRouterReasoning;
   /** ProviderPreferences (research 07 §2.2) */
   provider?: OpenRouterProviderPrefs;
@@ -233,8 +233,13 @@ export interface OpenRouterRequestBody {
  * came back HTTP 400 "Reasoning is mandatory for this endpoint and cannot be disabled" (unbilled). The working GLM call
  * is `{effort: 'low'}` (a forced tool call streamed in 486 ms with `reasoning_tokens: 0`); `medium` is not in GLM's
  * list, and omitting `reasoning` runs at the default effort, `max` (research 07 §5: the budget goes to thinking).
+ *
+ * `{max_tokens}` (core `{maxTokens}`, 2026-09-21): OpenRouter's documented thinking budget ("Anthropic-style"; the docs say
+ * effort and max_tokens are alternatives, and that a model supporting only one of them has the other translated — a
+ * budget into an effort level by its share of `max_tokens`). Whether the GLM endpoints, which list `supported_efforts`,
+ * honour a budget directly is not verified live; the client sends it as given (a pass-through for the latency-tail tuning).
  */
-export type OpenRouterReasoning = { enabled: false } | { effort: ReasoningEffort };
+export type OpenRouterReasoning = { enabled: false } | { effort: ReasoningEffort } | { max_tokens: number };
 export interface OpenRouterProviderPrefs {
   require_parameters: boolean;
 }

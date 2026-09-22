@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AbortError, JevCodeError, ProviderHttpError } from '../../../src/errors.js';
-import { MAX_MESSAGE_CHARS } from '../../../src/provider/sse.js';
+import { MAX_ATTEMPTS, MAX_MESSAGE_CHARS } from '../../../src/provider/sse.js';
 import { OPENROUTER_REFERER, OPENROUTER_TITLE, buildOpenRouterBody, createOpenRouterProvider } from '../../../src/provider/openrouter.js';
 import type { CancelledGeneration, GenerateRequest } from '../../../src/core/types.js';
 import type { OpenRouterRequestBody } from '../../../src/provider/types.js';
@@ -293,6 +293,8 @@ describe('openrouter GLM details (LLM-JEV-DESIGN §4.12)', () => {
     // the union is discriminated on the member present: `{effort}` never degrades to `reasoning: {}` (= the model's default effort, GLM's max)
     expect(buildOpenRouterBody(glmCfg, ext({ reasoning: { effort: 'medium' } })).reasoning).toEqual({ effort: 'medium' });
     expect(buildOpenRouterBody(glmCfg, ext({ reasoning: { enabled: false } })).reasoning).toEqual({ enabled: false });
+    // the thinking-budget pass-through (core `{maxTokens}` → OpenRouter `max_tokens`; effort and max_tokens are alternatives, never both)
+    expect(buildOpenRouterBody(glmCfg, ext({ reasoning: { maxTokens: 2000 } })).reasoning).toEqual({ max_tokens: 2000 });
     expect(buildOpenRouterBody(glmCfg, ext({ providerPrefs: { requireParameters: false } })).provider).toEqual({ require_parameters: false });
     // the jev-on propose path sends none of them (byte-identical body to before)
     const plain = buildOpenRouterBody(glmCfg, request());
@@ -435,5 +437,84 @@ describe('openrouter GLM details (LLM-JEV-DESIGN §4.12)', () => {
     expect(err.code).toBe('internal');
     expect(err.message).toBe('renderer bug');
     expect(f.calls.length).toBe(1);
+  });
+
+  it('a reasoning.maxTokens that is not a positive integer is rejected before any request', async () => {
+    for (const maxTokens of [0, -5, 1.5, Number.NaN]) {
+      const f = scriptedFetch([]);
+      const { deps } = testDeps(f.fetch);
+      await expect(createOpenRouterProvider(glmCfg, deps).generate(ext({ reasoning: { maxTokens } }), genOpts())).rejects.toMatchObject({ status: 0, retryable: false, message: expect.stringContaining('reasoning.maxTokens') });
+      expect(f.calls).toHaveLength(0);
+    }
+  });
+
+  const rateLimited429 = (retryAfter?: string) => ({ status: 429, ...(retryAfter !== undefined ? { headers: { 'retry-after': retryAfter } } : {}), body: '{"error":{"code":429,"message":"Provider returned error","metadata":{"provider_name":"Wafer","raw":"rate limited"}}}' });
+
+  it('429 → retry → success: Retry-After honoured, the result carries rateLimited: true; a call that never saw a 429 carries nothing', async () => {
+    const f = scriptedFetch([rateLimited429('2'), sse('openrouter-tool.sse')]);
+    const { deps, sleeps } = testDeps(f.fetch, 0);
+    const cancelled: CancelledGeneration[] = [];
+    const res = await createOpenRouterProvider(glmCfg, deps).generate(ext({ tools: [PROPOSE_TOOL], toolChoice: { name: 'propose_action' }, seed: 1 }), genOpts({ sample: 0, onCancelled: (c) => cancelled.push(c) }));
+    expect(f.calls).toHaveLength(2);
+    expect(sleeps).toEqual([2000]);
+    expect(res.toolCalls).toHaveLength(1);
+    expect(res.rateLimited).toBe(true);
+    // the fact rides the result; the retry chain recovered, so nothing was cancelled
+    expect(cancelled).toEqual([]);
+
+    const g = scriptedFetch([sse('openrouter-tool.sse')]);
+    const clean = await createOpenRouterProvider(glmCfg, testDeps(g.fetch).deps).generate(ext({ seed: 1 }), genOpts());
+    expect('rateLimited' in clean).toBe(false);
+  });
+
+  it('three 429s: exponential backoff with jitter between the tries, then the 429 propagates and onCancelled reports rateLimited with nothing streamed', async () => {
+    const f = scriptedFetch([rateLimited429(), rateLimited429(), rateLimited429()]);
+    // random 0.5 → subtract-only jitter of 12.5 %: 500 → 438, 1000 → 875 (sse.ts backoffMs)
+    const { deps, sleeps } = testDeps(f.fetch, 0.5);
+    const cancelled: CancelledGeneration[] = [];
+    const retries: number[] = [];
+    const p = createOpenRouterProvider(glmCfg, deps).generate(ext({ seed: 2 }), genOpts({ sample: 2, onCancelled: (c) => cancelled.push(c), onRetry: (info) => retries.push(info.attempt) }));
+    const err = (await p.catch((e: unknown) => e)) as ProviderHttpError;
+    expect(err).toBeInstanceOf(ProviderHttpError);
+    expect(err.status).toBe(429);
+    expect(err.retryable).toBe(true);
+    expect(f.calls).toHaveLength(MAX_ATTEMPTS);
+    expect(retries).toEqual([1, 2]);
+    expect(sleeps).toEqual([438, 875]);
+    // §4.8 facts of a rate-limited end: no ids, zero streamed sizes, no usage — the engine books the sample at zero, not from an estimate
+    expect(cancelled).toEqual([{ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true }]);
+  });
+
+  it('the sample deadline landing in a 429 backoff: the abort reason propagates, onCancelled reports rateLimited (the chain never outlives the deadline)', async () => {
+    const f = scriptedFetch([rateLimited429('30')]);
+    const ac = new AbortController();
+    const reason = new Error('llm sample deadline 20000 ms');
+    const { deps } = testDeps(f.fetch, 0);
+    // the deadline fires while the 30 s Retry-After sleep is pending: the sleep rejects with the signal's reason
+    deps.sleep = async (_ms: number, signal?: AbortSignal) => {
+      ac.abort(reason);
+      throw signal?.reason;
+    };
+    const cancelled: CancelledGeneration[] = [];
+    const p = createOpenRouterProvider(glmCfg, deps).generate(ext({ seed: 3 }), genOpts({ signal: ac.signal, sample: 1, onCancelled: (c) => cancelled.push(c) }));
+    await expect(p).rejects.toBe(reason);
+    expect(f.calls).toHaveLength(1);
+    expect(cancelled).toEqual([{ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true }]);
+  });
+
+  it('a chain whose last word is not a 429 is not rate-limited: 429 then 503 twice gives up with the 503 and fires no onCancelled; a mid-stream 429 frame counts as a 429', async () => {
+    const f = scriptedFetch([rateLimited429('1'), { status: 503, body: fixture('openrouter-503.json') }, { status: 503, body: fixture('openrouter-503.json') }]);
+    const { deps } = testDeps(f.fetch, 0);
+    const cancelled: CancelledGeneration[] = [];
+    await expect(createOpenRouterProvider(glmCfg, deps).generate(ext({ seed: 4 }), genOpts({ onCancelled: (c) => cancelled.push(c) }))).rejects.toMatchObject({ status: 503 });
+    expect(f.calls).toHaveLength(3);
+    expect(cancelled).toEqual([]);
+
+    // the upstream's 429 delivered as an error frame after HTTP 200 (research 07 §2.3) is the same rate limit
+    const g = scriptedFetch([sse('openrouter-midstream-error.sse'), sse('openrouter-midstream-error.sse'), sse('openrouter-midstream-error.sse')]);
+    const mid: CancelledGeneration[] = [];
+    await expect(createOpenRouterProvider(glmCfg, testDeps(g.fetch, 0).deps).generate(ext({ seed: 5 }), genOpts({ onCancelled: (c) => mid.push(c) }))).rejects.toMatchObject({ status: 429 });
+    expect(g.calls).toHaveLength(3);
+    expect(mid).toEqual([{ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true }]);
   });
 });

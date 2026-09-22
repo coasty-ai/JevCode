@@ -3,7 +3,9 @@
  * cannot carry: the `synthMs` bucket (§7.5), the `StepRecord.verify` counts (samples, distinct, malformed, timeouts,
  * cancelled, misanchored, candidatesTested, passers, partials, graceMs, localisationMissed) summed over the run's steps,
  * and the steps the generic fallback proposed (§9.4). Rows are read loosely — only the fields summed here are
- * dereferenced — so a run written by an older engine (no `verify`, no `synthMs`) contributes zeros, never an error.
+ * dereferenced — so a run written by an older engine (no `verify`, no `synthMs`) contributes zeros, never an error; a row
+ * without `verify` still contributes its proposal evidence's `candidatesTested` (the engines before 2026-09-21 wrote the
+ * evidence but never the `verify` block, which is why every head-to-head record's `synth.verify` read all zeros).
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
@@ -29,7 +31,14 @@ export function addStepRow(s: StepsSummary, row: JsonObject): void {
   }
   if (row['proposer'] === 'generic') s.genericSteps += 1;
   const verify = row['verify'];
-  if (!isJsonObject(verify)) return;
+  if (!isJsonObject(verify)) {
+    // an older engine's row: the committed decision's candidate count is on the proposal evidence (core/types.ts ProposalEvidence)
+    const proposal = row['proposal'];
+    const evidence = isJsonObject(proposal) ? proposal['evidence'] : undefined;
+    const tested = isJsonObject(evidence) ? evidence['candidatesTested'] : undefined;
+    if (isFiniteNumber(tested)) s.verify.candidatesTested += tested;
+    return;
+  }
   for (const k of VERIFY_COUNTS) {
     const v = verify[k];
     if (isFiniteNumber(v)) s.verify[k] += v;

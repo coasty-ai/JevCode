@@ -3,8 +3,11 @@
  * synthesizer wired into the engine, generator calls recorded and never asserted zero (the jev-only invalidation stays
  * jev-only's), a synthesizer required by validateOptions.
  */
+import { readFile, writeFile } from 'node:fs/promises';
+import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { JEV_ONLY_GENERATOR_CALLED, buildRecord, runBenchWithSources, validateOptions } from '../../../src/bench/runner.js';
+import { IN_PROGRESS, JEV_ONLY_GENERATOR_CALLED, buildRecord, readTasksJsonl, runBenchWithSources, validateOptions } from '../../../src/bench/runner.js';
+import { STEPS_FILE } from '../../../src/bench/step-records.js';
 import { CONDITION_ORDER, conditionConfig, isBenchCondition, parseConditions, requiresGenerator, requiresSynthesizer, usesSynthesizer } from '../../../src/bench/conditions.js';
 import { baseOptions, createFakeDeps, fakeRunResult, syntheticSource, tempDir, type EngineScript } from './helpers.js';
 
@@ -59,5 +62,41 @@ describe('llm-jev condition', () => {
     expect(out.records[0]).toMatchObject({ condition: 'llm-jev', pass: true, evaluator: 'mock', generatorCalls: 1 });
     expect(out.records[0]!.reason).not.toBe(JEV_ONLY_GENERATOR_CALLED);
     expect(out.records[0]!.cost.generator).toBeCloseTo(0.02, 9);
+  });
+
+  it("the record's synth.verify sums the run's steps.jsonl — the engine's verify block, or an older row's evidence count — and the in-progress marker is gone from tasks.jsonl at the end", async () => {
+    const t = await tempDir();
+    cleanups.push(t.cleanup);
+    const runsDir = join(t.dir, 'runs');
+    const { deps, captured } = createFakeDeps({
+      script: (_task, _mode) => ({
+        result: { steps: 3 },
+        spendUsd: 0.01,
+        // what the engine writes: one step with a verify block, one committed by an engine that wrote only the evidence, one `run` step
+        effect: async () => {
+          const runId = captured.engines.at(-1)!.runId;
+          const rows = [
+            { step: 1, proposer: 'synth', timing: { generatorMs: 1, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1, synthMs: 4000 }, proposal: { action: { kind: 'patch', diff: '' }, evidence: { candidatesTested: 3 } }, verify: { samples: 3, distinct: 2, malformed: 0, timeouts: 1, cancelled: 1, misanchored: 0, candidatesTested: 640, passers: 1, partials: 0, graceMs: 250, localisationMissed: true } },
+            { step: 2, proposer: 'synth', timing: { generatorMs: 1, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1, synthMs: 1000 }, proposal: { action: { kind: 'patch', diff: '' }, evidence: { candidatesTested: 1445 } } },
+            { step: 3, proposer: 'synth', timing: { generatorMs: 0, jevMs: 0, execMs: 0, harnessMs: 0, totalMs: 1, synthMs: 500 }, proposal: { action: { kind: 'run', command: 'pytest -q' } } },
+          ];
+          await writeFile(join(runsDir, runId, STEPS_FILE), rows.map((r) => JSON.stringify(r)).join('\n') + '\n');
+        },
+      }),
+    });
+    const out = await runBenchWithSources([syntheticSource({ id: 't1' })], baseOptions(runsDir, join(t.dir, 'out'), { conditions: ['llm-jev'] }), deps);
+    expect(out.records).toHaveLength(1);
+    const synth = out.records[0]!.synth;
+    expect(synth).toBeDefined();
+    expect(synth!.steps).toBe(3);
+    expect(synth!.synthSteps).toBe(3);
+    expect(synth!.synthMs).toBe(5500);
+    expect(synth!.verify).toEqual({ samples: 3, distinct: 2, malformed: 0, timeouts: 1, cancelled: 1, misanchored: 0, candidatesTested: 640 + 1445, passers: 1, partials: 0, graceMs: 250, localisationMissed: 1 });
+    // the `in_progress` placeholder written when the engine started is superseded and dropped by the end-of-bench rewrite
+    const lines = (await readFile(join(out.outDir, 'tasks.jsonl'), 'utf8')).trim().split('\n');
+    expect(lines).toHaveLength(1);
+    const onDisk = await readTasksJsonl(join(out.outDir, 'tasks.jsonl'));
+    expect(onDisk.map((r) => [r.stopReason, r.reason === IN_PROGRESS])).toEqual([['complete', false]]);
+    expect(out.summary.notRun.count).toBe(0);
   });
 });

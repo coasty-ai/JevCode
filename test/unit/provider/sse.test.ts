@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { AbortError, JevCodeError, ProviderHttpError } from '../../../src/errors.js';
-import { IdleTimeoutError, MAX_MESSAGE_CHARS, backoffMs, clipMessage, costFromPricing, httpError, isRetryableStatus, notify, parseRetryAfter, parseSse, readBodyCapped, withRetry } from '../../../src/provider/sse.js';
+import { IdleTimeoutError, MAX_MESSAGE_CHARS, backoffMs, clipMessage, costFromPricing, httpError, isRateLimit, isRetryableStatus, notify, parseRetryAfter, parseSse, rateLimitLedger, rateLimitedCancellation, readBodyCapped, withRetry } from '../../../src/provider/sse.js';
 import type { SseRecord } from '../../../src/provider/types.js';
 import { PRICING, bodyStream, encode, fixture, splitEvery } from './helpers.js';
 
@@ -159,6 +159,27 @@ describe('retry policy helpers', () => {
   it('classifies statuses per research 07 §5', () => {
     for (const s of [408, 409, 429, 500, 502, 503, 504, 529]) expect(isRetryableStatus(s)).toBe(true);
     for (const s of [400, 401, 402, 403, 404, 413, 200, 0]) expect(isRetryableStatus(s)).toBe(false);
+  });
+
+  it('rateLimitLedger: counts the attempts a 429 answered and remembers whether the last word was one; the cancellation facts are zero sizes + rateLimited', async () => {
+    const ledger = rateLimitLedger();
+    const e429 = new ProviderHttpError('busy', { status: 429, retryable: true });
+    const e503 = new ProviderHttpError('down', { status: 503, retryable: true });
+    await expect(ledger.track(() => Promise.reject(e429))).rejects.toBe(e429);
+    expect([ledger.attempts, ledger.last]).toEqual([1, true]);
+    await expect(ledger.track(() => Promise.reject(e503))).rejects.toBe(e503);
+    expect([ledger.attempts, ledger.last]).toEqual([1, false]);
+    await expect(ledger.track(() => Promise.reject(e429))).rejects.toBe(e429);
+    expect([ledger.attempts, ledger.last]).toEqual([2, true]);
+    // an abort reason is not a 429; a success leaves the ledger as it was
+    await expect(ledger.track(() => Promise.reject(new AbortError('signal')))).rejects.toBeInstanceOf(AbortError);
+    expect([ledger.attempts, ledger.last]).toEqual([2, false]);
+    await expect(ledger.track(() => Promise.resolve('ok'))).resolves.toBe('ok');
+    expect([ledger.attempts, ledger.last]).toEqual([2, false]);
+    expect(isRateLimit(e429)).toBe(true);
+    expect(isRateLimit(e503)).toBe(false);
+    expect(isRateLimit(new RangeError('bug'))).toBe(false);
+    expect(rateLimitedCancellation()).toEqual({ text: '', toolChars: 0, reasoningChars: 0, rateLimited: true });
   });
 
   it('withRetry: three attempts, retryAfterMs preferred over backoff, then gives up with the last error', async () => {

@@ -33,6 +33,7 @@ import type { AskResult,
   BlockingRequest,
   CheckpointState,
   ConfirmOutcome,
+  CancelledGeneration,
   CheckpointStore,
   ConfirmRequest,
   Decider,
@@ -60,6 +61,7 @@ import type { AskResult,
   Plan,
   PlanSnapshot,
   StepProposer,
+  StepVerifySummary,
   Proposal,
   Question,
   ReplanDirective,
@@ -314,6 +316,16 @@ interface StepDraft {
   synthJevMs: number;
   /** docs/LLM-JEV-DESIGN.md §4.8: the in-flight samples of the llm-jev round, for the batch wall in `timing.generatorMs` */
   generatorBatch: { inFlight: number; startedAt: number };
+  /**
+   * §4.8: true once the step's rows were flushed for the last time (the record committed, or the step discarded). A sample
+   * dispatched in this step that ends later cannot ride the step's flush any more: `pushGeneratorRecord` writes its row at once.
+   */
+  closed: boolean;
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.3 (llm-jev): the step's verification counts for `StepRecord.verify` — the engine's own tallies
+   * of the sample rows it wrote, and what the synthesizer reported through `SynthesisContext.reportVerify` (merged over them).
+   */
+  verify: { samples: number; timeouts: number; cancelled: number; malformed: number; reported: Partial<StepVerifySummary> | null };
   /** docs/LLM-JEV-DESIGN.md §9.4 (llm-jev): who proposed — the synthesizer, or the generic per-step fallback (stage 4); null in the other modes */
   proposer: StepProposer | null;
   generatorFailReason: string | null;
@@ -1505,6 +1517,8 @@ class EngineImpl implements Engine {
       synthMs: null,
       synthJevMs: 0,
       generatorBatch: { inFlight: 0, startedAt: 0 },
+      closed: false,
+      verify: { samples: 0, timeouts: 0, cancelled: 0, malformed: 0, reported: null },
       proposer: null,
       generatorFailReason: null,
       errorClass: null,
@@ -1806,8 +1820,19 @@ class EngineImpl implements Engine {
         if (text.length > SYNTH_STATE_MAX_BYTES) self.emit({ type: 'transcript', step: draft.step, level: 'warn', text: `synth state dropped: ${text.length} bytes exceeds ${SYNTH_STATE_MAX_BYTES}` });
       },
       // docs/LLM-JEV-DESIGN.md §4.8: the sanctioned generator channel — metered, recorded per sample, events carry the sample
-      // index; absent in jev-only, where the propose stage never reaches the LLM (generate() throws there in any case)
-      ...(this.mode === 'jev-only' ? {} : { generate: (req: GenerateRequest, o: SampleOptions) => self.generate(draft, req, 1, o) }),
+      // index; absent in jev-only, where the propose stage never reaches the LLM (generate() throws there in any case).
+      // The synthesizer's LLM source is built once per run and keeps the FIRST step's function (search/llm.ts runOf): the
+      // step a sample belongs to is the step it is dispatched in, so the draft is resolved at call time — the engine's
+      // current draft, or this step's when none is open — never bound to the context that handed the function out.
+      ...(this.mode === 'jev-only'
+        ? {}
+        : {
+            generate: (req: GenerateRequest, o: SampleOptions) => self.generate(self.draft ?? draft, req, 1, o),
+            reportVerify: (counts: Partial<StepVerifySummary>) => {
+              const d = self.draft ?? draft;
+              d.verify.reported = { ...(d.verify.reported ?? {}), ...counts };
+            },
+          }),
     };
   }
 
@@ -1897,6 +1922,9 @@ class EngineImpl implements Engine {
     const link = sample === undefined ? null : this.linkSample(sample);
     const t0 = this.clock();
     if (sample !== undefined) this.noteSampleStart(draft);
+    // §4.8: the provider's facts on a sample that yields no result — the ids and streamed sizes of an aborted stream, its usage
+    // frame when it had arrived, or a rate-limited end (`CancelledGeneration.rateLimited`); null when the callback never fired
+    const held: { partial: CancelledGeneration | null } = { partial: null };
     let res: GenerateResult;
     try {
       res = await this.opts.provider.generate(req, {
@@ -1912,6 +1940,13 @@ class EngineImpl implements Engine {
         },
         onRetry: retry.onRetry,
         wake: retry.wake,
+        ...(sample !== undefined
+          ? {
+              onCancelled: (partial: CancelledGeneration) => {
+                held.partial = partial;
+              },
+            }
+          : {}),
       });
       retry.settled(true);
     } catch (e) {
@@ -1919,10 +1954,13 @@ class EngineImpl implements Engine {
       if (sample !== undefined && link !== null) {
         const streamedChars = toolChars + textChars;
         const latencyMs = Math.max(0, this.clock() - t0);
-        // §4.8: an aborted sample (deadline, loser cancellation, or the engine's own abort) yields no result but was served — meter the estimate
-        if (link.signal.aborted) this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason: abortStopReason(sample.signal.aborted ? sample.signal.reason : this.signal.reason) });
-        // §2 principle 8: a sample the provider failed after it had streamed (stream cut, 5xx once the retries ran out) was served too
-        else if (streamedChars > 0) this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason: 'error' });
+        const partial = held.partial;
+        // §4.8: every dispatched sample gets a row. An aborted sample (deadline, loser cancellation, or the engine's own abort)
+        // yields no result but may have been served — the estimate, or the provider's facts when its callback fired; one that
+        // ended rate-limited (every retry a 429, or the abort landed in a 429 backoff) was not served at all; §2 principle 8: a
+        // sample the provider failed (stream cut, 5xx once the retries ran out, an error before any byte) is booked too.
+        const stopReason = link.signal.aborted ? abortStopReason(sample.signal.aborted ? sample.signal.reason : this.signal.reason) : partial?.rateLimited === true ? 'rate_limited' : 'error';
+        this.recordUnfinishedSample(draft, req, attempt, sample, { latencyMs, streamedChars, stopReason, partial });
       }
       throw e;
     } finally {
@@ -1938,7 +1976,7 @@ class EngineImpl implements Engine {
     addUsage(draft.usage.generator, usage);
     // the one-sample call adds the provider's latency; a round's samples close their batch wall in noteSampleEnd
     if (sample === undefined) draft.timing.generatorMs += res.latencyMs;
-    draft.generatorRecords.push({
+    this.pushGeneratorRecord(draft, {
       step: draft.step,
       attempt,
       promptHash: sha12(toJson({ system: req.system, messages: req.messages })),
@@ -1953,9 +1991,51 @@ class EngineImpl implements Engine {
       ...(sample !== undefined ? { sample: sample.sample, purpose: sample.purpose } : {}),
       ...(res.usage.reasoningTokens !== undefined ? { reasoningTokens: res.usage.reasoningTokens } : {}),
       ...(res.generationId !== undefined ? { generationId: res.generationId } : {}),
+      ...(res.servedProvider !== undefined ? { servedProvider: res.servedProvider } : {}),
+      // the chain recovered from a 429: the round's classification reads it, the result is the result
+      ...(res.rateLimited === true ? { rateLimited: true } : {}),
     });
     this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: res.latencyMs, finishReason: res.stopReason, ...at });
     return res;
+  }
+
+  /**
+   * §4.8: one row per call, under the step the call was dispatched in, and the step's own verification tallies (§9.3). A row
+   * that arrives after its step was committed or discarded — a round draining across the step boundary, a sample the
+   * synthesizer let run past `synthesize()` — cannot ride the step's flush any more: it is appended at once, never dropped.
+   */
+  private pushGeneratorRecord(draft: StepDraft, rec: GeneratorCallRecord): void {
+    if (rec.sample !== undefined) {
+      draft.verify.samples += 1;
+      if (rec.stopReason === 'timeout') draft.verify.timeouts += 1;
+      else if (rec.stopReason === 'cancelled') draft.verify.cancelled += 1;
+      if (rec.malformed) draft.verify.malformed += 1;
+    }
+    if (draft.closed) this.persist(this.store.appendGenerator(rec), 'generator.jsonl');
+    else draft.generatorRecords.push(rec);
+  }
+
+  /**
+   * docs/LLM-JEV-DESIGN.md §9.3: `StepRecord.verify` of an llm-jev step the synthesizer proposed — the engine's tallies of the
+   * sample rows (samples, timeouts, cancelled, malformed) and the proposal's evidence (`candidatesTested` of the committed
+   * decision), with whatever the synthesizer reported through `SynthesisContext.reportVerify` merged over them (a run-wide
+   * `candidatesTested`, `distinct`, `misanchored`, `passers`, `partials`, `graceMs`, `localisationMissed`).
+   */
+  private verifySummary(draft: StepDraft, proposal: Proposal | null): StepVerifySummary {
+    const own: StepVerifySummary = {
+      samples: draft.verify.samples,
+      distinct: 0,
+      malformed: draft.verify.malformed,
+      timeouts: draft.verify.timeouts,
+      cancelled: draft.verify.cancelled,
+      misanchored: 0,
+      candidatesTested: proposal?.evidence?.candidatesTested ?? 0,
+      passers: 0,
+      partials: 0,
+      graceMs: 0,
+      localisationMissed: false,
+    };
+    return { ...own, ...(draft.verify.reported ?? {}) };
   }
 
   /** llm-jev: one controller aborted by either the sample's signal (deadline / cancellation) or the engine's (stop / budget). */
@@ -1987,32 +2067,56 @@ class EngineImpl implements Engine {
   }
 
   /**
-   * docs/LLM-JEV-DESIGN.md §4.8 / §2 principle 8: a sample aborted by its deadline or a loser cancellation — or failed by the
-   * provider after it had streamed — yields no GenerateResult, but it was served. Input tokens = a finished sibling's prompt
-   * tokens (same prompt hash: the round shares one prefix; any other finished row — an L2 reproduction request, an earlier
-   * round — is a different prompt and says nothing), else the prompt's chars / 4; output tokens = streamed chars / 4; cost per
-   * `estimateCostUsd`. The usage is marked `estimated`, metered so the spend cap and the token cap see it, and written as a
-   * generator.jsonl row with `cancelled: true` and `stopReason` 'timeout' | 'cancelled' | 'error'. `GET /api/v1/generation?id=`
-   * can replace the estimate post hoc once stage 2 surfaces the generation id on the abort (TODO src/provider/openrouter.ts).
+   * docs/LLM-JEV-DESIGN.md §4.8 / §2 principle 8: a sample that yields no GenerateResult — aborted by its deadline or a loser
+   * cancellation, failed by the provider, or rate-limited — is still booked, one generator.jsonl row with `cancelled: true`
+   * and `stopReason` 'timeout' | 'cancelled' | 'error' | 'rate_limited', under the step it was dispatched in. Its usage, in
+   * order of what is known (core/types.ts `CancelledGeneration` precedence):
+   *   - the accounting frame had arrived (`usage`): read and priced like a completed call;
+   *   - nothing was served — the provider said the sample ended rate-limited without a stream (`rateLimited`), or it answered
+   *     an error before any byte reached the client (no callback, nothing streamed): zero, a fact, not an estimate (an
+   *     estimate here would charge the spend cap for prompts a 4xx / 5xx never ran);
+   *   - else the estimate — an abort before the headers (the prompt may still be billed) or a sample that had streamed: input
+   *     tokens = a finished sibling's prompt tokens (same prompt hash: the round shares one prefix; any other finished row — an
+   *     L2 reproduction request, an earlier round — is a different prompt and says nothing), else the prompt's chars / 4;
+   *     output tokens = streamed chars / 4 (the provider's count of tool, text and reasoning chars when its callback fired,
+   *     else the engine's own count of the deltas it saw); cost per `estimateCostUsd`; `estimated: true`.
+   * Every usage is metered so the spend cap and the token cap see it. The ids the callback carried (`generationId`,
+   * `servedProvider`) go on the row, so `GET /api/v1/generation?id=` can replace an estimate post hoc.
    */
-  private recordUnfinishedSample(draft: StepDraft, req: GenerateRequest, attempt: number, sample: SampleOptions, o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' }): void {
+  private recordUnfinishedSample(
+    draft: StepDraft,
+    req: GenerateRequest,
+    attempt: number,
+    sample: SampleOptions,
+    o: { latencyMs: number; streamedChars: number; stopReason: 'timeout' | 'cancelled' | 'error' | 'rate_limited'; partial: CancelledGeneration | null },
+  ): void {
     const promptHash = sha12(toJson({ system: req.system, messages: req.messages }));
-    const sibling = draft.generatorRecords.find((r) => r.cancelled !== true && r.promptHash === promptHash);
-    const promptChars = req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0);
-    const inputTokens = sibling !== undefined ? sibling.usage.inputTokens : Math.ceil(promptChars / 4);
-    const outputTokens = Math.ceil(o.streamedChars / 4);
-    const raw: TokenUsage = { inputTokens, outputTokens, costUsd: this.estimateCostUsd(sibling, inputTokens, outputTokens), calls: 1, estimated: true };
+    const p = o.partial;
+    const unserved = p !== null ? p.rateLimited === true : o.stopReason === 'error' && o.streamedChars === 0;
+    let raw: TokenUsage;
+    if (p !== null && p.usage !== undefined) {
+      raw = { ...p.usage, calls: 1 };
+    } else if (unserved) {
+      raw = { inputTokens: 0, outputTokens: 0, costUsd: 0, calls: 1 };
+    } else {
+      const sibling = draft.generatorRecords.find((r) => r.cancelled !== true && r.promptHash === promptHash);
+      const promptChars = req.system.length + req.messages.reduce((n, m) => n + m.content.length, 0);
+      const inputTokens = sibling !== undefined ? sibling.usage.inputTokens : Math.ceil(promptChars / 4);
+      const streamedChars = p !== null ? p.toolChars + p.reasoningChars + p.text.length : o.streamedChars;
+      const outputTokens = Math.ceil(streamedChars / 4);
+      raw = { inputTokens, outputTokens, costUsd: this.estimateCostUsd(sibling, inputTokens, outputTokens), calls: 1, estimated: true };
+    }
     this.opts.meter.add('generator', raw);
-    this.generatorTokens += inputTokens + outputTokens;
+    this.generatorTokens += raw.inputTokens + raw.outputTokens;
     this.noteUsage('generator', this.opts.provider.model, draft.step, 'propose', raw);
     // TUI-DESIGN §9.5: noteUsage read the raw (possibly NaN = unpriced) cost; the record, the event and the step sum take the clamped copy
     const usage = pricedUsage(raw);
     addUsage(draft.usage.generator, usage);
-    draft.generatorRecords.push({
+    this.pushGeneratorRecord(draft, {
       step: draft.step,
       attempt,
       promptHash,
-      model: this.opts.provider.model,
+      model: p?.model ?? this.opts.provider.model,
       temperature: req.temperature,
       maxTokens: req.maxTokens,
       usage,
@@ -2022,6 +2126,10 @@ class EngineImpl implements Engine {
       sample: sample.sample,
       purpose: sample.purpose,
       cancelled: true,
+      ...(usage.reasoningTokens !== undefined ? { reasoningTokens: usage.reasoningTokens } : {}),
+      ...(p?.generationId !== undefined ? { generationId: p.generationId } : {}),
+      ...(p?.servedProvider !== undefined ? { servedProvider: p.servedProvider } : {}),
+      ...(p?.rateLimited === true ? { rateLimited: true } : {}),
     });
     this.emit({ type: 'generator:end', step: draft.step, usage, latencyMs: o.latencyMs, finishReason: o.stopReason, sample: sample.sample });
   }
@@ -2347,6 +2455,8 @@ class EngineImpl implements Engine {
   private absorbDiscardedTiming(draft: StepDraft): void {
     // Discarded steps (§9.1 rule 1) still consumed wall time and money; the run totals keep them.
     this.flushGeneratorRecords(draft);
+    // §4.8: a sample of this step that ends from here on writes its row itself (pushGeneratorRecord)
+    draft.closed = true;
     const total = Math.max(0, this.clock() - draft.t0);
     this.timing.generatorMs += draft.timing.generatorMs;
     this.timing.jevMs += draft.timing.jevMs;
@@ -2798,6 +2908,8 @@ class EngineImpl implements Engine {
       loopSignatures: signatures,
     };
     if (draft.proposer !== null) record.proposer = draft.proposer;
+    // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
+    if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
     if (draft.interruptedAt) record.interruptedAt = draft.interruptedAt;
     if (draft.error) record.error = draft.error;
     if (this.completeAfter(draft)) record.stoppedAt = 'complete';
@@ -2824,6 +2936,10 @@ class EngineImpl implements Engine {
     // TUI-DESIGN-2 §6 item 3: money for the `[step N]` summary line (absent → the renderer falls back to tokens)
     this.emit({ type: 'step:end', record, costUsd: { generator: record.usage.generator.costUsd, jev: record.usage.jev.costUsd } });
     this.emitStatus();
+    // §4.8: rows of samples that ended after the propose stage's flush (a round draining through execute / judge) go out with
+    // the step; from here on a late sample of this step writes its own row (pushGeneratorRecord)
+    this.flushGeneratorRecords(draft);
+    draft.closed = true;
     this.draft = null;
     this.currentStage = 'idle';
     return { stop: null };

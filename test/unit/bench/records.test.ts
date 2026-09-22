@@ -62,4 +62,20 @@ describe('steps.jsonl summary', () => {
     expect(mergeStepsSummaries([s, s]).verify.candidatesTested).toBe(18);
     expect(mergeStepsSummaries([]).steps).toBe(0);
   });
+
+  it("a row without `verify` (an engine before 2026-09-21) contributes its proposal evidence's candidatesTested; a `verify` block wins over the evidence", () => {
+    const text = [
+      // the head-to-head runs: evidence on the committed patch, no verify block (why every record's synth.verify read zero)
+      JSON.stringify({ step: 1, proposer: 'synth', timing: { synthMs: 100 }, proposal: { action: { kind: 'patch', diff: '' }, evidence: { kind: 'shadow_test_run', candidatesTested: 1445, selection: 'sieve', arbitrated: true } } }),
+      // a `run` fallback step: no evidence, nothing to add
+      JSON.stringify({ step: 2, proposer: 'synth', timing: { synthMs: 100 }, proposal: { action: { kind: 'run', command: 'pytest -q' } } }),
+      // a current row: the verify block is the count, the evidence is not added twice
+      JSON.stringify({ step: 3, proposer: 'synth', timing: { synthMs: 100 }, proposal: { action: { kind: 'patch', diff: '' }, evidence: { candidatesTested: 999 } }, verify: { samples: 4, distinct: 2, malformed: 0, timeouts: 1, cancelled: 0, misanchored: 0, candidatesTested: 640, passers: 1, partials: 0, graceMs: 0, localisationMissed: false } }),
+    ].join('\n');
+    const s = summariseStepRows(text);
+    expect(s.steps).toBe(3);
+    expect(s.verify.candidatesTested).toBe(1445 + 640);
+    expect(s.verify.samples).toBe(4);
+    expect(s.verify.timeouts).toBe(1);
+  });
 });

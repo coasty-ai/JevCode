@@ -140,7 +140,10 @@ export const CONDITIONS_PARAGRAPH =
 
 function fmtReasoning(g: Summary['conditions'][string]['generation']): string {
   const r = g.reasoning;
-  return r === null ? 'not sent' : 'effort' in r ? `effort ${r.effort}` : 'off';
+  if (r === null) return 'not sent';
+  if ('effort' in r) return `effort ${r.effort}`;
+  if ('maxTokens' in r) return `max_tokens ${r.maxTokens}`;
+  return 'off';
 }
 
 function conditionRows(summary: Summary): string[][] {
