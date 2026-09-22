@@ -2317,6 +2317,32 @@ import time, and the prompt size distribution per mode before and after compacti
 | 63 | §5.3 (`resolveTarget` precedence), §12.0.4 |
 | 64 | §11 rows 1–7, 15, 18, 26, 27, 30, 31, 37, 45, 46 and the new 51–55; the W0–W3 test lines; M3, M7, M8, M9 |
 
+16. **Decisions taken 2026-09-21 (harness session).** Five contract-adjacent questions this document left implicit, answered by the
+    harness session so the TUI session can code against them; each is a decision, not a proposal, and none changes an agreed member
+    except where item 15 already flagged it.
+    - **`bootId` is written into `run.lock` at creation, never derived later.** The boot identity (§3.4) is read once per process and
+      cached (`sysctl -n kern.bootsessionuuid` on macOS, `/proc/sys/kernel/random/boot_id` on Linux) and `acquireRunLock` writes it
+      into the lock file it creates, so **the synchronous lock path never spawns**: the `sysctl` happens on the way to the lock, not
+      inside it, and the `'exit'` handler can still release synchronously (`src/session/lock.ts:5`). A lock file without a `bootId`
+      (older build) whose pid is alive stays un-replaceable, as §3.4 says; the reader compares, it never computes. W0 item 4 owns the
+      reader, W1 item 13 the lock fields.
+    - **`context.mode: 'legacy'` is the new prompt builder behind a mode switch, not a second code path.** One builder, one switch,
+      and a **golden byte-identity test** is what defines `legacy`: the whole generator prompt under `context.mode: 'legacy'` is
+      byte-identical to HEAD's on a recorded fixture (M9), so the relaxed policy can move freely and the comparison arm cannot rot.
+      Its lifetime (the open half of item 15) is therefore cheap to keep: the switch costs one config value and one fixture.
+    - **`SynthesisContext.cache` / `onRound` are additive and called from the synthesizer's own `onSample`.** The engine never reaches
+      into the LLM source: the synthesizer calls `cache?.writeSample(goalId, round, sample, json)` from the `onSample` it already has
+      (`src/synth/search/llm.ts`) and `onRound?(goalId, round, arrived)` at each fire, both optional, so an engine without the hooks
+      behaves exactly as today and `PausePoint.llm` / `cache/llm/**` simply stay absent (§6.4, §12.0.2 P3, W3 item 28).
+    - **`ContextUsage.windowBudget` is kept for now**, pending the TUI session's ack on the rename. Revision 3 item #51 renames it to
+      `budgetTokens` + `windowTokens` and §12.0.3 / W0 item 1 spell the new shape; until the TUI session acks it with the rest of
+      §14 item 15, the **agreed** member name from §12.0 stands, because it is the one contract member this revision renames and the
+      surface has already scoped work against it. One ack flips it in one place.
+    - **`RunMeta.claims[]` is append-only, typed after the round-3 contract line.** A claim is never rewritten, expired or GC'd (§4.6
+      row 1, §9.3); `createEngine` appends one entry per incarnation and reads the maximum epoch back out. The declaration goes in
+      `src/core/types.ts` **after** the round-3 `// contract 1.3` header line, under `// contract 1.4`, so the TUI's uncommitted
+      header does not conflict and the `+1` line drift of item 14(g) resolves itself when round 3 lands.
+
 ### Rejected critiques
 
 Every finding of the three reviews is applied above in place — **no item of the third review (revision 3) was rejected outright**.

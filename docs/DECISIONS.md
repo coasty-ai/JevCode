@@ -874,3 +874,91 @@ reason (one key, no generator spend); a default should follow the behaviour on d
 document. Consequences: the wizard, the badge and the help text list the mode without preferring it; `defaultRunSpendCapUsd`
 treats `llm-jev` like the other generator modes ($2.00 — the design's §8.4 named $0.50, open); `handles()` false
 (non-Python, test-less, feature work) falls back to the generic per-step proposer and is outside the dominance claim.
+## 2026-09-21 The probe's majority decides an all-seed split, before any special-case count
+
+When ≥ 2 behaviour clusters survive, no cluster holds an `llm` member and every cluster carries the same independent support
+(`seedOnlySplit`, `src/synth/search/guard.ts`), the guard commits the cluster that agrees with the passers' **majority on the perturbed
+inputs** (`probeMajorityCluster`, `CodeRule 'probe_majority'`) and never the one adding the fewest special-case guards: on each input where
+the clusters' probe outputs differ the passers vote, a cluster casting one vote per member, and the cluster alone at the top of the
+agreement count wins; a split vote on every differing input (or a probe that separates none of them) falls through to the one Q15 + Q16
+request with the perturbation table, and the all-overfit signature still drops the set. `fewestSpecialCases` keeps its place everywhere
+else — when some cluster holds an LLM member or the supports differ. Reason: "fewest added conditionals/literals" is exactly right when
+the bug is a wrong expression and a guard would only be fitting the tests (`wrap`) and exactly wrong when the defect *is* a missing guard;
+in the v2 head-to-head it committed the two remaining overfits (llm-jev-headtohead-v2.md §9 class A′) — ladder `stats`
+(`values.remove(mid)` +0c beat the gold `if not values: raise` +1c/+1l) and QuixBugs `detect_cycle` (the least-guarded of three guards) —
+both with the LLM sample gone, so `preferLlmInCluster` and Q15/Q16 never entered. Member votes rather than `clusterSupport` because the
+rule is gated on equal support, so the near-duplicate worry `clusterSupport` exists for cannot bite, while the 4-vs-1 member count that
+was available and unused can. Consequences: `stats` re-run live (`bench/results/llm-jev-v2-leftovers-stats`) commits the +1c/+1l guard and
+is now a **weak, exception-class-only overfit at 2/111** differential inputs where v2's was strong at 9/111; the guard emits the agreement
+counts in its decision line; nothing changes for a set that holds an LLM candidate.
+
+## 2026-09-21 The sample deadline adapts up from the served p90; a slow provider caps reasoning at 512 tokens
+
+`sampleDeadlineMs` (`src/synth/llm/source.ts`) is `clamp(LLM_DEADLINE_ADAPT.factor 2 × the running p90 of SERVED samples this run, the
+class default, the class ceiling)` — floor 20 s cheap / 30 s repository, ceiling 45 s / 90 s — used from 2 served samples on, with the
+§10.2 probe's p90 standing in before that and the class default when there is neither; per run, in memory, nothing persisted, and the round
+records what it fired with (`LlmRoundSummary.deadlineMs`). Only **served** samples count: a timeout, a cancellation and a 429 served
+nothing, so a sample the deadline cut cannot drag the deadline down. When the served p90 is past the class default (`providerSlow`) the run
+caps every further sample's `reasoning: {maxTokens}` at `LLM_REASONING_CAP_TOKENS` 512, one-way, and says so on `llm:deadline`. Reason: the
+fixed 20 s / 30 s cap cut **31 of 100 samples** in v2 (61 % on QuixBugs; every timed-out row served by the one provider whose served samples
+ran at p50 7–10 s) and two overfits were then decided with no LLM candidate in the set; served latencies are right-censored by the deadline
+itself, so the observed p90 is a lower bound on the tail the next round must fit — which is why the rule moved from `2 × p50` to `2 × p90`
+and why it can only raise the deadline, never lower it. The cap is the other half: when waiting longer is not enough, ask for less
+reasoning (GLM bills it) rather than widen the wall again; `{maxTokens}` keeps reasoning on, which `{enabled: false}` cannot do on GLM
+(HTTP 400). Consequences: a round's wall is bounded by the ceiling, not by a provider's tail; the first-passer early stop still ends most
+rounds long before either bound; the 15 % `verify.timeouts / samples` gate is now read against the adapted deadline. Not yet re-measured
+live under a slow provider — the two leftovers runs were served in 6.7 s and 8.7 s, inside the class default.
+
+## 2026-09-21 Completion and the code judge compare against the base commit's known failures, not against zero
+
+The claiming run's evidence carries `knownFailures` on the repository class — `failed + errors` of the scoped suite at the **base commit** —
+and both the completion fact and the code judge read it: the suite counts as passing when `unexpectedFailures = max(0, failed + errors −
+knownFailures)` is 0 with `passed > 0`, and `errorPresent` is 1 only for errors the baseline did not already have
+(`src/loop/stages/complete.ts` `KnownFailuresEvidence` / `unexpectedFailures` / `isCompleteByFact`, `judge.ts codeJudge`, written from
+`RepositoryMode.knownFailures` in `src/synth/search/index.ts`). `core/types.ts` owns `CompletionEvidence`, so the count travels as an
+optional structural extension declared where it is consumed, absent (= 0) off the repository class. The count is the base commit's by
+construction: the first rebaseline of a run measures it and every later one may only **lower** it — a commit that fixed one — never raise
+it, so a regression this run caused can never travel as a pre-existing failure; a resumed run keeps the persisted count. Reason:
+`sympy-11618`'s scoped suite has 43 pre-existing collection errors in its environment; the fix landed at step 3 but the claiming run read
+`644 passed / 0 failed / 43 errors`, the fact compared against zero and never held, the synthesizer re-claimed `done partial` at steps 5, 6
+and 7, the loop tripped, and the run ended `replan_stop` at step 10 with the correct patch on disk that the evaluator passed
+(llm-jev-headtohead-v2.md §9 class E′). Pre-existing failures are not the engineer's to fix and are not evidence against a verified patch;
+anything above them is. Consequences: with `knownFailures = 0` — every QuixBugs and ladder run and every repository whose scoped suite is
+green at the base — the rule is bit-for-bit the old `failed = errors = 0`, and the runner's own `allPassed` is still required there; with a
+non-zero count the runner exits non-zero by construction, so `allPassed` is dropped from the test and the arithmetic decides. A run whose
+own goal sits among the pre-existing failures still cannot complete on them: the repository clause needs the reproduction to pass under a
+code oracle. Not re-measured live (no repository run in the leftovers round).
+
+## 2026-09-21 GREEN sent for the default-mode flip after the v2 head-to-head
+
+The harness session sent the TUI session GREEN for the `DEFAULT_MODE` flip of TUI-DESIGN-3 §1.10 commit 2. What the signal rests on: v2
+(`experiments/results/llm-jev-headtohead-v2.md`, docs/LLM-JEV.md 2026-09-21 entry) passes **28/28** against the baseline's 19/28 and the
+hygiene-tuned arm's 22/28, is correct on **20/22** cheap-test tasks with 2 overfits and **6/6** on SWE-bench, at a **62 s** median wall
+against 391 s and **$0.144** total against $0.506 — and every pre-registered criterion the reduced subset can reach passes (ladder 1–4,
+wall 3 and cost 4 on all three suites, S1–S3, Jev share of wall 3–9 %, attribution 5b). The honest caveat, recorded so the flip is not read
+as more than it is: QuixBugs criteria 1–2 and SWE criterion 1 remain **unreachable by construction** at n = 10/12/6 (the baseline's 7/10 and
+3/6 cap b − c below the absolute bars) and the QuixBugs sign test stays at p = 0.125, so the §1.3 criterion is still not *formally* met and
+only a full §10.3 re-run (90 paired tasks) can meet it; the earlier gate entry ("The default-mode flip is gated on the head-to-head") stands
+as written and this entry is the signal against it, not a rewrite of it. An independent verification of the v2 report landed the same
+day (`experiments/results/llm-jev-headtohead-v2.verification.md`, commit `edf6def`) and every headline number reproduces to the digit —
+but it sharpens the caveat in four ways this entry adopts: the 28 tasks are a **development set** and no out-of-sample evidence for the
+mode exists at any build (C1); the both-solved wall ratio is **0.31×, not 0.16×**, because the baseline runs into its hard cap on 10 of 28
+runs (C1c); "SWE 6/6 correct" is a tautology — `src/bench/headtohead.ts:92` defines SWE correctness as pass (C1i); and
+"overfits only `detect_cycle` and `stats`" is **refuted as a behavioural statement** — ladder `units` diverges from gold on 10 of 20
+string inputs (`int(float(text))` for `int(text)`) where the harness's own perturbations cannot see it, so the honest cheap-test count is
+**19/22 with 3 divergences**, not 20/22 with 2 (C2d). GREEN is sent on the pass, wall and cost margins, which are large and reproduce;
+it is not sent on a claim of out-of-sample correctness, which nobody has measured. Consequences: the flip itself is the peer's work and one literal in
+`src/config/defaults.ts` plus the mechanical re-pin list of §1.10; this session changed no default, no config and no source. The three
+classes v2 left open are now built and two of them spot-checked live (this log's three entries above); a full re-run is what would turn the
+signal into a measurement.
+
+## 2026-09-21 Subagents run on Opus 5 while the Fable usage limit holds
+
+Work in this repo that is delegated to subagents (doc rewrites, code reads, bench-record inspection, research sweeps) runs on Opus 5
+(1M context) for as long as the Fable model's usage limit is in force, rather than waiting the limit out or dropping to a smaller model.
+Reason: the tasks are long-context reading tasks over a 3,500-line design document and several 1,000-line source files, where context length
+and the quality of the summary are what matter and the model is not in any measured path — no benchmark number, no `tasks.jsonl` row and no
+generator record depends on which model wrote a paragraph of Markdown (the bench arms pin `z-ai/glm-5.3-flash` and `jev-1.13.0` explicitly,
+`src/bench/conditions.ts`). Consequences: nothing in the repository encodes the choice — it is a session setting, reverted by switching
+back when the limit lifts; anything a subagent asserts about behaviour is still checked against the code or a run record before it is
+written down, which is the rule regardless of model.
