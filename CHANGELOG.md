@@ -5,7 +5,7 @@ the project uses semantic versioning. `package.json` is the single source of tru
 by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.4.0; the
 0.5.0 entry is the round-4 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
 
-## [0.5.0] — 2026-09-22 (`package.json` bump is the owner's)
+## [0.5.0] — 2026-09-22 (not yet published)
 
 Round 4 of the interactive TUI (`docs/TUI-DESIGN-4.md`, six concurrent slots and one integration pass; the record
 of what landed, with every gate number, is `docs/STATUS.md`, "Round 4"). The brand stays on screen, command output
