@@ -68,7 +68,10 @@ describe('stub decider (llm-sieve)', () => {
       async synthesize(ctx) {
         const { answers } = await ctx.ask('propose', { candidates: 2 }, { pick: { type: 'choice', instructions: 'which', criteria: { cand_01: 'a', cand_02: 'b', none_of_these: null } } });
         if (answers['pick'] !== undefined) picks.push(answers['pick']);
-        return { goal: 'partial', action: { kind: 'done', summary: 'nothing verified yet' }, plan: { done: [], remaining: ['fix f'], openProblems: [] }, rawText: '' };
+        // a non-test `run`: since oos-analysis-2026-09-22 change 6 the harm Scores are the shell's questions for
+        // exactly this action (a `patch` or a `done` is now recorded at level 0 by code and asks nothing), and the
+        // shell asking something beyond the synthesizer's own request is what this test is about
+        return { goal: 'install the missing dependency', action: { kind: 'run', command: 'pip install requests' }, plan: { done: [], remaining: ['fix f'], openProblems: [] }, rawText: '' };
       },
     };
     const h = await makeEngine({ mode: 'llm-jev', synthesizer: synth, decider, deciderModel: { configured: STUB_DECIDER_MODEL, pinned: true }, limits: { maxSteps: 1 } });
