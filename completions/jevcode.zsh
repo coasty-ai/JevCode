@@ -237,6 +237,7 @@ _jevcode() {
             '--live[use the real generator and Jev (requires --spend-cap)]' \
             '--task-spend-cap[per-run spend cap (default 2.00)]:usd:' \
             '--allow-model-alias[allow an undated --jev-model]' \
+            '--archive-runs[copy each run'\''s records (steps/decisions/jev/generator.jsonl, run.json, state.json, patch) gzipped into <results>/runs/<runId>/]' \
             '--out[bench: results dir; perf: results file; report: bundle dir (default ~/.jevcode/reports/<id>/)]:<path>:_files' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'
