@@ -10,6 +10,12 @@ import type { FSWatcher } from 'node:fs';
 
 export const WATCH_DEBOUNCE_MS = 100;
 export const POLL_MS = 15_000;
+/**
+ * + re-check (lower 7): how long a root whose `fs.watch` failed is left alone before it is tried again. Longer than
+ * the poll, so `attachWatchers()` does not re-attempt the same bad root every tick (an `EMFILE` storm); short enough
+ * that a transient failure heals within a minute. The poll still READS the root, so only the event stream is lost.
+ */
+export const RETRY_WATCH_MS = 60_000;
 
 export interface Timers {
   setTimeout(fn: () => void, ms: number): unknown;
@@ -42,6 +48,8 @@ export interface WatcherOptions {
   timers?: Timers;
   debounceMs?: number;
   pollMs?: number;
+  /** injected wall clock for the failed-root backoff (+ re-check lower 7) */
+  now?: () => number;
   /** the debounced burst: every directory that fired at least one event */
   onChange(dirs: ReadonlySet<string>): void;
   /** the poll tick */
@@ -67,6 +75,13 @@ export function createWatcher(o: WatcherOptions): Watcher {
   const debounceMs = o.debounceMs ?? WATCH_DEBOUNCE_MS;
   const pollMs = o.pollMs ?? POLL_MS;
   const watchers = new Map<string, FSWatcher>();
+  /**
+   * + re-check (lower 7): roots whose `fs.watch` FAILED. `attachWatchers()` runs on every 15 s poll and re-`add`ed
+   * every failed root each time, so an `EMFILE` (or a directory the OS cannot watch at all) became a repeating
+   * syscall storm plus one `onError` per root per tick for the life of the process. A failed root is remembered and
+   * retried only after `RETRY_WATCH_MS`; the poll still reads it, so nothing is missed — only the event stream is.
+   */
+  const failed = new Map<string, number>();
   const fired = new Set<string>();
   let timer: unknown = null;
   let poll: unknown = null;
@@ -100,17 +115,23 @@ export function createWatcher(o: WatcherOptions): Watcher {
   return {
     add(dir) {
       if (closed || watchers.has(dir)) return watchers.has(dir);
+      const failedAt = failed.get(dir);
+      // + re-check (lower 7): back off instead of re-trying a known-bad root on every 15 s `attachWatchers()`
+      if (failedAt !== undefined && (o.now ?? Date.now)() - failedAt < RETRY_WATCH_MS) return false;
       let w: FSWatcher;
       try {
         w = watchImpl(dir, { persistent: false }, () => schedule(dir));
       } catch (e) {
+        failed.set(dir, (o.now ?? Date.now)());
         o.onError(dir, e);
         return false;
       }
+      failed.delete(dir);
       watchers.set(dir, w);
       w.on('error', (e) => {
         if (closed) return;
         drop(dir);
+        failed.set(dir, (o.now ?? Date.now)());
         o.onError(dir, e);
       });
       return true;

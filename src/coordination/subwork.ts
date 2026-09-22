@@ -171,14 +171,38 @@ export function acquireBenchLock(benchDir: string, o: AcquireBenchLockOptions): 
     return 'stale';
   };
   fs.mkdirSync(benchDir, 0o700);
+  /**
+   * + re-check (4): replacing a stale lock is a COMPARE-AND-SWAP, not an unconditional unlink.
+   *
+   * B6 added the O_EXCL create and a re-judge on `EEXIST`, but the unlink above it was unconditional — and after an
+   * unlink `EEXIST` cannot happen, so the re-judge was unreachable on the path that mattered. The interleaving: A and
+   * B both read the same stale lock L0; A unlinks L0 and creates LA; B, still holding its stale verdict, unlinks
+   * **LA** and creates LB. Two runners, one `tasks.jsonl`.
+   *
+   * The fix is to unlink only after confirming the file STILL holds the exact record the verdict was formed about.
+   * The window is then a re-read plus an unlink of a file whose contents we have just matched, and the loser's
+   * `writeExclusiveSync` fails `EEXIST` and re-judges against the winner's live lock — which throws.
+   */
+  const sameLock = (a: BenchLock | null, b: BenchLock | null): boolean =>
+    a !== null && b !== null && a.pid === b.pid && a.startedAt === b.startedAt && a.host === b.host && a.benchId === b.benchId;
   let existing = readBenchLock(benchDir, fs);
   let verdict = evaluate(existing);
   for (let attempt = 0; attempt < BENCH_LOCK_TRIES; attempt++) {
     if (verdict !== 'free') {
-      try {
-        fs.unlinkSync(path);
-      } catch (e) {
-        if (errnoCode(e) !== 'ENOENT') throw e;
+      // re-read and re-evaluate IMMEDIATELY before the unlink; anything else and we are deleting someone else's lock
+      const now = readBenchLock(benchDir, fs);
+      if (now !== null && !sameLock(now, existing)) {
+        existing = now;
+        verdict = evaluate(now); // throws when the new holder is live
+        if (verdict === 'ours') return { replaced: null };
+        continue;
+      }
+      if (now !== null) {
+        try {
+          fs.unlinkSync(path);
+        } catch (e) {
+          if (errnoCode(e) !== 'ENOENT') throw e;
+        }
       }
     }
     try {

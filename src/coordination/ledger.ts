@@ -12,7 +12,7 @@ import { authorityOf, compareClaim, forkVerdict, hmacValid, isValidClaim, mintCl
 import { ackOrigin, buildFold, emptyFold, emptyFoldState, leaseKeysOf, maxStampN, seenEpochs, sessionDevices, sessionTargets, type FoldState, type RecordEntry } from './fold.js';
 import type { CoordFs } from './fs.js';
 import { DIR_MODE, FILE_MODE, classifyLedgerError, nodeFs, withTimeout } from './fs.js';
-import { DEVICE_ID_RE, LABEL_MAX_CHARS, LANE_DIR_RE, RUN_ID_RE, actor8Of, hostKeyOf, buildDeviceRecord, createStampClock, parseDeviceRecord, readCommonsKey, readIgnoredDevices, readMachineRecord, readTrustKeys, readTrusted, writeDeviceRecord, writeTrusted, ignoreDevice as writeIgnoreDevice, unignoreDevice as writeUnignoreDevice, type RandomBytes, type StampClock } from './ids.js';
+import { DEVICE_ID_RE, LABEL_MAX_CHARS, LANE_DIR_RE, RUN_ID_RE, actor8Of, hostKeyOf, buildDeviceRecord, createStampClock, parseDeviceRecord, readCommonsKey, readIgnoredDevices, readMachineRecord, readTrustKeys, writeMachineRecord, ACTOR8_RE, readTrusted, trustDevice, writeDeviceRecord, writeTrusted, ignoreDevice as writeIgnoreDevice, unignoreDevice as writeUnignoreDevice, type RandomBytes, type StampClock } from './ids.js';
 import { COMMONS_KINDS, DEVICE_FILE, FOLD_KINDS, commonsPaths, coordinationRoot, decodeTargetComponent, deviceClaimFile, deviceClaimsDir, isDeviceIdDir, isTargetDir, leaseRel, parseAckName, parseHeartbeatName, parseLeaseName, parseMessageName, type Commons, type CommonsKind } from './paths.js';
 import { CoordinationError, CONTROL_MESSAGE_TTL_MS, LEASE_TTL_MS, MESSAGE_TTL_MS, READ_MAX_BYTES, SYNC_SLACK_SHARED_MS, adoptableStampN, fitsRecordSize, finalizeRecord, parseRecord, sameHost, serializeRecord, type Now, type ParseContext, type ParseRecordResult } from './records.js';
 import { ICLOUD_PLACEHOLDER_RE, MIRROR_OFFLINE_NOTICE_MS, createMirror, type Mirror } from './sync-shared-dir.js';
@@ -94,6 +94,8 @@ export interface OpenLedgerOptions {
    * identifier could be read) and `self.hostKey` is always defined from that moment on.
    */
   hostKey?: string;
+  /** + re-check (9): inject the sender id (tests, and a caller that already resolved a sessionless one) */
+  actor8?: string;
   /**
    * §3.2 / §3.4 (design revision 5): THIS boot's identity — `/proc/sys/kernel/random/boot_id` (Linux) or
    * `sysctl -n kern.bootsessionuuid` (macOS), resolved by the CALLER (this module spawns nothing). Every record this
@@ -106,6 +108,10 @@ export interface OpenLedgerOptions {
 export const LEDGER_OP_TIMEOUT_MS = 5_000;
 export const READ_FOLD_BUDGET_MS = 500;
 /** §3.1: ended heartbeats and released leases stay ≥ 24 h before our GC removes them */
+/** §5.1 / + re-check (9): a `seen` file idle longer than this is GC'd — 30 d, the design's own number. */
+export const SEEN_RETENTION_MS = 30 * 86_400_000;
+/** §5.1: the newest `seen` files are kept whatever their age, so an idle consumer never re-toasts its backlog. */
+export const SEEN_FILES_KEPT = 200;
 export const GC_RETENTION_MS = 24 * 3_600_000;
 /**
  * + review major 19 / §10.9: the number of device subtrees one scan walks per kind. `trusted-devices.json` devices and
@@ -170,6 +176,15 @@ export interface PeerLive {
   verified: boolean;
 }
 
+/**
+ * §3.5 / §4.3 (design revision 5): what a tracked lease must be able to do when the run's key set moves. `leases.ts`
+ * implements it; the ledger only calls it, so the two modules stay one-directional.
+ */
+export interface LeaseMover {
+  /** re-declare this lease for the new identity: write every new key directory, remove every directory we left */
+  move(next: SelfIdentity): Promise<void>;
+}
+
 /** The full handle `openLedger` returns: the §12.0.4 `Ledger` plus what leases / mailbox / heartbeat need. */
 export interface LedgerHandle extends Ledger {
   readonly paths: Commons;
@@ -184,7 +199,14 @@ export interface LedgerHandle extends Ledger {
   readonly stamps: StampClock;
   readonly mirror: Mirror | null;
   readonly opened: boolean;
-  /** the sender id of a CLI twin (the run id's tail for a run) */
+  /**
+   * the sender id of a CLI twin (the run id's tail for a run).
+   *
+   * + re-check (9): for a SESSIONLESS consumer (a TUI before its first run, a `sessions` twin) this is PERSISTED in
+   * the private `devices/<hostKey>/machine.json`, because it names `inbox/seen/<deviceId>/<consumerId>.json`. A
+   * fresh random one per process meant a new `seen` file on every launch: every unexpired broadcast re-toasted at
+   * every TUI start, and `inbox/seen/` grew one file per launch forever.
+   */
   readonly actor8: string;
   /** the injected timers (`awaitAck`'s timeout, the heartbeat timer) */
   readonly timers: Timers;
@@ -197,6 +219,15 @@ export interface LedgerHandle extends Ledger {
   /** the `'exit'` handler's variant (§3.3 point 6): one bounded synchronous write, no mirror */
   writeOwnSync(kind: CommonsKind, relInDevice: string, record: object): void;
   removeOwn(kind: CommonsKind, relInDevice: string): Promise<boolean>;
+  /**
+   * §3.5 (design revision 5): the live leases THIS handle holds, so `setIdentity({ repoKey })` can move them.
+   *
+   * A lease's directory is derived from the run's keys, and `repoKey` arrives after `run:ready` — so a lease declared
+   * before it lives under `keyDir(wsKey)` alone and would stay there for the life of the run. The ledger therefore
+   * tracks its own handles and performs one release + one re-declare per tracked lease when the key set changes.
+   */
+  trackLease(leaseId: string, mover: LeaseMover): void;
+  untrackLease(leaseId: string): void;
   /** + re-check (lower 1): remove one of our own files by the path it was read from */
   removeOwnFile(kind: CommonsKind, path: string): Promise<boolean>;
   /** re-scan now; `'leases'` = one readdir of every peer's `leases/<keyDir>/` (§4.5) */
@@ -244,6 +275,10 @@ export interface LedgerHandle extends Ledger {
   ignoreDevice(deviceId: string, label: string): Promise<void>;
   /** + review minor 25: lift a tombstone (`sessions gc --device <label> --undo`) */
   unignoreDevice(deviceId: string): Promise<void>;
+  /** §10.3 / + re-check (10): pair a device inside a RUNNING process and re-read every record's authority */
+  pairDevice(o: { deviceId: string; label: string; keyHex: string; pairedAt?: string }): Promise<void>;
+  /** + re-check (10): re-read `trusted-devices.json` and drop the parse cache, so authority changes take effect now */
+  reloadTrust(): Promise<void>;
   /** + re-review (2): `gc --device` / `ignore` accept a label, a `label#id4`, an id8 or a full device id */
   resolveDeviceRef(ref: string, extra?: readonly string[]): string | null;
   /** every device subtree on disk, bounded by `MAX_GC_DEVICES` — what `gc --device` resolves against (+ re-check (4)) */
@@ -334,7 +369,8 @@ class LedgerImpl implements LedgerHandle {
   readonly redact: (s: string) => string;
   stamps: StampClock;
   readonly mirror: Mirror | null;
-  readonly actor8: string;
+  /** + re-check (9): NOT readonly on the implementation — `open()` may adopt the persisted sessionless id. */
+  actor8: string;
   readonly timers: Timers;
   /**
    * + review minor 24: NOT readonly on the implementation. The claim is minted once per (process, RUN); `parseRecord`
@@ -398,7 +434,7 @@ class LedgerImpl implements LedgerHandle {
     this.isPidAlive = o.isPidAlive ?? ((pid) => defaultIsPidAlive(pid));
     this.opTimeoutMs = o.opTimeoutMs ?? LEDGER_OP_TIMEOUT_MS;
     this.budgetMs = o.budgetMs ?? READ_FOLD_BUDGET_MS;
-    this.actor8 = actor8Of(o.self.runId, o.random);
+    this.actor8 = o.actor8 ?? actor8Of(o.self.runId, o.random);
     this.stamps = createStampClock(o.self.deviceId, o.self.runId ?? this.actor8);
     this.claim = o.claim ?? mintClaim({ deviceId: o.self.deviceId, runId: o.self.runId ?? this.actor8, pid: o.pid ?? process.pid, startedAt: new Date(this.now()).toISOString() });
     this.commonsKey = o.commonsKey ?? null;
@@ -477,6 +513,23 @@ class LedgerImpl implements LedgerHandle {
       const machine = await readMachineRecord(this.fs, this.paths.hostDir);
       if (machine?.bootId !== undefined) this.bootId = machine.bootId;
     }
+    // + re-check (9): a SESSIONLESS consumer keeps ONE actor8 across launches, so its `seen` set survives a restart
+    // and `inbox/seen/` does not grow a file per launch. A run's actor8 is its run id's tail and is never persisted.
+    if (this.o.self.runId === null && this.o.actor8 === undefined) {
+      const machine = await readMachineRecord(this.fs, this.paths.hostDir);
+      if (machine?.tuiActor8 !== undefined && ACTOR8_RE.test(machine.tuiActor8)) {
+        if (machine.tuiActor8 !== this.actor8) {
+          this.actor8 = machine.tuiActor8;
+          this.stamps = createStampClock(this.self.deviceId, this.actor8, this.stamps.current().n);
+        }
+      } else {
+        try {
+          await writeMachineRecord(this.fs, this.paths.hostDir, { ...(machine ?? { machineId: '' }), hostKey: this.hostKey, tuiActor8: this.actor8 });
+        } catch (e) {
+          this.noteError(this.paths.hostDir, e); // a read-only home keeps the per-process id; nothing else breaks
+        }
+      }
+    }
     // §10.3: our signing key and the paired devices' verification keys — read once; a missing key file is "not paired yet"
     if (this.o.commonsKey === undefined) this.commonsKey = await readCommonsKey(this.fs, this.paths.hostDir);
     if (this.o.trustKeys === undefined) this.trustKeys = await readTrustKeys(this.fs, this.paths.hostDir);
@@ -516,6 +569,7 @@ class LedgerImpl implements LedgerHandle {
       ...(patch.label !== undefined ? { label: patch.label.slice(0, LABEL_MAX_CHARS) } : {}),
     };
     const runIdMoved = next.runId !== this.self.runId;
+    const keysMoved = next.repoKey !== this.self.repoKey || next.remoteKey !== this.self.remoteKey || next.wsKey !== this.self.wsKey;
     this.self = next;
     // the stamp clock is per RUN: a new runId needs a new tiebreak, seeded above everything this handle has observed
     if (runIdMoved) {
@@ -527,6 +581,12 @@ class LedgerImpl implements LedgerHandle {
       // epoch already seen for the NEW runId, keeping this process's pid and start time.
       this.claim = mintClaim({ deviceId: next.deviceId, runId: rid, pid: this.claim.pid, startedAt: this.claim.startedAt, seenEpochs: seenEpochs(this.fold, rid) });
     }
+    // §3.5 / §4.3 (design revision 5): a key change MOVES the live leases. Their directory is derived from the run's
+    // keys, and `repoKey` only arrives after `run:ready`, so a lease declared before it would otherwise stay under
+    // `keyDir(wsKey)` alone for the life of the run — invisible in the `keyDir(repoKey)` directory every peer that
+    // computed the key first is reading. One release + one re-declare per tracked lease, same leaseId, same stamp;
+    // the `wsKey` copy is NOT released, it simply becomes the second copy of a two-directory lease.
+    if (keysMoved) for (const mover of [...this.leaseMovers.values()]) await mover.move(next);
     this.rebuild();
     this.attachWatchers();
     // §3.5 (design revision 4): ONE bounded walk of the roots this patch made reachable, on the ledger's own chain,
@@ -627,6 +687,16 @@ class LedgerImpl implements LedgerHandle {
     }
   }
 
+  /** §3.5 (revision 5): the live leases this handle holds, by leaseId — `setIdentity` moves them, `release` drops them */
+  private readonly leaseMovers = new Map<string, LeaseMover>();
+
+  trackLease(leaseId: string, mover: LeaseMover): void {
+    this.leaseMovers.set(leaseId, mover);
+  }
+  untrackLease(leaseId: string): void {
+    this.leaseMovers.delete(leaseId);
+  }
+
   private readonly dirs = new Set<string>();
   private dirExists(dir: string): boolean {
     return this.dirs.has(dir);
@@ -689,8 +759,13 @@ class LedgerImpl implements LedgerHandle {
     let skipped = 0;
     this.partial = false;
     const budget = bounds.budgetMs ?? this.budgetMs;
-    const deviceCap = bounds.maxDevices ?? MAX_DEVICES;
+    // + re-check (3): the LEASE breadth of a GENERAL scan is the FENCE's bound, not the fold's — the same
+    // `this.entries` the advisory `check()` folds is what a capped lease scan would then prune. An explicit
+    // `bounds.maxDevices` (what `refreshFence` passes, and what the fence-blind fixture forces down to 3) still wins.
+    const leaseCap = bounds.maxDevices ?? MAX_FENCE_DEVICES;
     const fence: FenceScan = { complete: true, scanned: 0, total: 0 };
+    /** + re-check (3): true when a device CAP (not the time budget) left subtrees unvisited this pass. */
+    let capped = false;
     const budgetLeft = (): boolean => {
       if (this.monotonicNow() - start <= budget) return true;
       this.partial = true;
@@ -739,14 +814,26 @@ class LedgerImpl implements LedgerHandle {
     for (const store of stores) {
       for (const kind of kinds) {
         if (!budgetLeft()) break;
-        const all = await store.devices(kind);
-        // §4.5: the LEASE scan takes `MAX_FENCE_DEVICES` (256 by default, not the 16-subtree fold cap), because a peer
-        // beyond the fold's breadth can still hold an overlapping exclusive lease; every other kind takes MAX_DEVICES.
-        const cap = kind === 'leases' ? deviceCap : MAX_DEVICES;
+        // + re-check (2): an IGNORED subtree is not a subtree this pass has to walk, so it is filtered BEFORE the cap
+        // and before the fence's own comparison. Both counted tombstoned devices, which made the documented fix for a
+        // hostile or junk-filled folder — `sessions gc --device … --i-know-it-is-gone`, which §4.5 names as the way
+        // to restore the fence — do nothing at all: `fence.complete` stayed false forever and `strict` was
+        // permanently `fence:'blind'`. `registry` still walks them, so `who --all` has rows and `unignore` has names.
+        const listed = await store.devices(kind);
+        const all = kind === 'registry' ? listed : listed.filter((d) => !this.ignored.has(d));
+        // §4.5 / + re-check (3): the LEASE scan takes `MAX_FENCE_DEVICES` (256), never the 16-subtree fold cap — a
+        // peer beyond the fold's breadth can still hold an overlapping exclusive lease, and the GENERAL scan reads
+        // the same `this.entries` the advisory `check()` folds. Capping leases at 16 there and then sweeping the
+        // subtrees it had skipped dropped a rotating subset of live peer leases on every 15 s poll, so `check()`
+        // read `clear` for paths a live peer held.
+        const cap = kind === 'leases' ? leaseCap : MAX_DEVICES;
         const devices = await this.pickDevices(all, store.paths, kind, cap);
-        devicesSkipped += all.length - devices.length;
+        devicesSkipped = Math.max(devicesSkipped, all.length - devices.length);
+        // + re-check (3): a subtree the CAP skipped was not reached, exactly like one the time budget cut short. The
+        // prune loop below may not delete its entries, or every pass would drop the peers it did not rotate to.
+        if (devices.length < all.length) capped = true;
         if (kind === 'leases') {
-          fence.total += all.filter((d) => !this.ignored.has(d)).length;
+          fence.total += all.length;
           if (devices.length < all.length) fence.complete = false;
         }
         for (const deviceId of devices) {
@@ -784,6 +871,9 @@ class LedgerImpl implements LedgerHandle {
         }
       }
     }
+    // + re-check (lower 6): ONE number, not an accumulation over stores x kinds (up to 4x over-reported, which
+    // drove the "N device subtrees ignored" notice and `SyncStatus.skippedDevices`). The bound is a property of the
+    // folder, so it is the WIDEST kind that says how many subtrees this reader is not walking.
     this.devicesSkipped = devicesSkipped;
     skipped += devicesSkipped;
     if (scope === 'leases') {
@@ -794,7 +884,7 @@ class LedgerImpl implements LedgerHandle {
     // + review major 10: a PARTIAL scan still prunes — but only inside the directories it listed to the end.
     for (const path of [...this.entries.keys()]) {
       if (seen.has(path)) continue;
-      if (this.partial && !completed.has(dirname(path))) continue;
+      if ((this.partial || capped) && !completed.has(dirname(path))) continue;
       const e = this.entries.get(path)!;
       if (scope === 'leases' && e.kind !== 'lease') continue;
       if (scope === 'leases' && e.source !== null && this.mirror?.state === 'offline') continue;
@@ -812,13 +902,30 @@ class LedgerImpl implements LedgerHandle {
    * most-recently-touched by directory mtime; the remainder is ROTATED by the scan counter before the cap bites, so a
    * subtree that lost the cut this pass is first in line the next one.
    */
+  /**
+   * §3.5: the bounded, ordered set of device subtrees one pass walks — trusted first, then this device, then the
+   * most-recently-seen by subtree mtime, up to `cap`; the rest are counted in `fold.skippedDevices`.
+   *
+   * + re-check (1): the HEAD rotates too. `head` was self + every trusted device in sorted-id order, truncated with
+   * no rotation, and `rest` then got `slots = max(0, cap - head.length)` — zero once `head` alone fills the cap. With
+   * 20 paired devices and `MAX_DEVICES` 16, four of them were invisible FOREVER: every pass picked the same first
+   * sixteen ids, so their heartbeats never entered the fold, their leases never entered `byPath`, and under `strict`
+   * their exclusive holds were simply not there. Self is exempt from the rotation (never dropping my own subtree is
+   * what `syncLagMs` and every "is that me?" test rely on); the trusted set rotates by the same counter as the rest,
+   * so over `ceil(n / cap)` passes every paired device is seen, and the poll is 15 s.
+   */
   private async pickDevices(all: readonly string[], paths: Commons, kind: CommonsKind, cap: number): Promise<string[]> {
     if (all.length <= cap) return [...all];
-    const head: string[] = [];
+    const trusted: string[] = [];
     const rest: { deviceId: string; mtimeMs: number }[] = [];
+    let hasSelf = false;
     for (const deviceId of all) {
-      if (deviceId === this.self.deviceId || this.trustKeys.has(deviceId)) {
-        head.push(deviceId);
+      if (deviceId === this.self.deviceId) {
+        hasSelf = true;
+        continue;
+      }
+      if (this.trustKeys.has(deviceId)) {
+        trusted.push(deviceId);
         continue;
       }
       let mtimeMs = 0;
@@ -829,11 +936,23 @@ class LedgerImpl implements LedgerHandle {
       }
       rest.push({ deviceId, mtimeMs });
     }
+    const rotate = <T>(xs: readonly T[]): T[] => {
+      if (xs.length === 0) return [];
+      const offset = this.scanRotation % xs.length;
+      return [...xs.slice(offset), ...xs.slice(0, offset)];
+    };
+    trusted.sort();
     rest.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.deviceId < b.deviceId ? -1 : 1));
-    const slots = Math.max(0, cap - head.length);
-    const offset = rest.length === 0 ? 0 : this.scanRotation % rest.length;
-    const rotated = [...rest.slice(offset), ...rest.slice(0, offset)];
-    return [...head.slice(0, cap), ...rotated.slice(0, slots).map((r) => r.deviceId)];
+    const out = hasSelf ? [this.self.deviceId] : [];
+    for (const deviceId of rotate(trusted)) {
+      if (out.length >= cap) break;
+      out.push(deviceId);
+    }
+    for (const r of rotate(rest)) {
+      if (out.length >= cap) break;
+      out.push(r.deviceId);
+    }
+    return out;
   }
 
   /**
@@ -1349,15 +1468,33 @@ class LedgerImpl implements LedgerHandle {
    * what goes is the authority — from the next scan its records are `unverified`, so they can raise a flag and never
    * stop a run or apply a control verb.
    */
+  /**
+   * + re-check (10): trust was ONE-WAY at runtime. `unpairDevice` reloads `trustKeys` and clears `sigs`, but nothing
+   * did the reverse: `trustKeys` was read once in `open()`, so after a `trustDevice(...)` — a `sessions pair` in the
+   * same process — every record from that device stayed `unverified` until a RESTART, and because `sigs` was not
+   * cleared a `refresh` would not even re-parse the files whose authority had just changed. M11's mid-run gap.
+   */
+  async reloadTrust(): Promise<void> {
+    this.trustKeys = await readTrustKeys(this.fs, this.paths.hostDir);
+    this.sigs.clear(); // every foreign record must be re-read: its authority has changed
+    await this.refresh('all');
+  }
+
+  /** §10.3: pair a device inside a RUNNING process — the upsert plus the reload `reloadTrust` does. */
+  async pairDevice(o: { deviceId: string; label: string; keyHex: string; pairedAt?: string }): Promise<void> {
+    if (!DEVICE_ID_RE.test(o.deviceId)) throw new CoordinationError('unknown-device', `pair: '${o.deviceId}' is not a device id`);
+    if (o.deviceId === this.self.deviceId) throw new CoordinationError('self-device', 'pair: that is this device');
+    await trustDevice(this.fs, this.paths.hostDir, { deviceId: o.deviceId, label: o.label.slice(0, LABEL_MAX_CHARS), keyHex: o.keyHex, pairedAt: o.pairedAt ?? new Date(this.now()).toISOString() });
+    await this.reloadTrust();
+  }
+
   async unpairDevice(deviceId: string): Promise<void> {
     if (!DEVICE_ID_RE.test(deviceId)) throw new CoordinationError('unknown-device', `unpair: '${deviceId}' is not a device id`);
     const paired = await readTrusted(this.fs, this.paths.hostDir);
     const remaining = paired.filter((d) => d.deviceId !== deviceId);
     if (remaining.length === paired.length) throw new CoordinationError('not-paired', `unpair: '${deviceId}' is not a paired device`);
     await writeTrusted(this.fs, this.paths.hostDir, remaining);
-    this.trustKeys = await readTrustKeys(this.fs, this.paths.hostDir);
-    this.sigs.clear(); // every foreign record must be re-read: its authority has changed
-    await this.refresh('all');
+    await this.reloadTrust();
   }
 
   trackAck(msgId: string, ttlMs = CONTROL_MESSAGE_TTL_MS): void {
@@ -1396,7 +1533,7 @@ class LedgerImpl implements LedgerHandle {
   async gc(o: { retentionMs?: number } = {}): Promise<GcReport> {
     const wall = this.now();
     const retention = o.retentionMs ?? GC_RETENTION_MS;
-    const report: GcReport = { removed: 0, byKind: { heartbeat: 0, lease: 0, message: 0, ack: 0 }, staleLanes: [], failed: [] };
+    const report: GcReport = { removed: 0, byKind: { heartbeat: 0, lease: 0, message: 0, ack: 0 }, seen: 0, staleLanes: [], failed: [] };
     const rm = async (kind: CommonsKind, path: string, counted: keyof GcReport['byKind']): Promise<void> => {
       const rel = path.slice(this.paths.deviceDir(kind, this.self.deviceId).length + 1);
       await this.removeOwn(kind, rel);
@@ -1452,6 +1589,38 @@ class LedgerImpl implements LedgerHandle {
       }
     }
     this.rebuild();
+    // §5.1 / + re-check (9): the `seen` sweep. These files are not records, so `ownEntries()` never walks them and
+    // nothing else would ever remove one: before the persisted `actor8` a sessionless consumer minted a fresh id per
+    // launch and leaked one file per launch, forever. They carry no timestamp of their own, so retention is MTIME,
+    // and the newest `SEEN_FILES_KEPT` are kept whatever their age (a consumer that is simply idle keeps its set).
+    const seenDir = this.paths.seenDir(this.self.deviceId);
+    const seenNames = (await this.listDir(seenDir)) ?? [];
+    const rows: { path: string; mtimeMs: number }[] = [];
+    for (const name of seenNames) {
+      if (parseAckName(name) === null) continue; // a consumerId, validated exactly like an ack's
+      const path = join(seenDir, name);
+      try {
+        rows.push({ path, mtimeMs: (await withTimeout(this.fs.stat(path), this.opTimeoutMs, `stat ${path}`)).mtimeMs });
+      } catch {
+        /* a file that vanished under us is already gone */
+      }
+    }
+    rows.sort((a, b) => b.mtimeMs - a.mtimeMs);
+    // `consumerId` is `<sessionId ?? 'tui'>-<actor8>` (§5.1); inlined so ledger.ts does not import mailbox.ts
+    const ownSeen = this.paths.seenFile(this.self.deviceId, `${this.self.sessionId ?? 'tui'}-${this.actor8}`);
+    for (const [i, row] of rows.entries()) {
+      // §4.6 row 1: idle > 30 d, AND the directory is capped at the 200 newest whatever their age. My OWN set is
+      // never removed — dropping it would re-toast every unexpired broadcast at the next fold.
+      if (row.path === ownSeen) continue;
+      if (wall - row.mtimeMs <= SEEN_RETENTION_MS && i < SEEN_FILES_KEPT) continue;
+      try {
+        await this.fs.unlink(row.path);
+        report.seen++;
+        report.removed++;
+      } catch (e) {
+        if (classifyLedgerError(e) !== 'ENOENT') report.failed.push({ path: row.path, code: classifyLedgerError(e) });
+      }
+    }
     return report;
   }
 }
@@ -1561,6 +1730,14 @@ export async function unignoreDeviceOn(ledger: Ledger, ref: string): Promise<voi
 }
 
 /** `sessions unpair <device>` — forget a paired key (§10.3, design revision 5). */
+/**
+ * §10.3 / + re-check (10): `sessions pair` inside a RUNNING process. The peer's records become `verified` from the
+ * next scan rather than from the next restart — which is what "pair, then this device's beats count" has to mean.
+ */
+export async function pairDeviceOn(ledger: Ledger, o: { deviceId: string; label: string; keyHex: string }): Promise<void> {
+  return asHandle(ledger).pairDevice(o);
+}
+
 export async function unpairDeviceOn(ledger: Ledger, ref: string): Promise<void> {
   const h = asHandle(ledger);
   const deviceId = DEVICE_ID_RE.test(ref) ? ref : h.resolveDeviceRef(ref, await h.allDeviceIds());

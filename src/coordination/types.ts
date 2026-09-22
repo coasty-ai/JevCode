@@ -649,6 +649,12 @@ export interface GcReport {
   removed: number;
   /** by kind, for `sessions gc` output */
   byKind: Record<'heartbeat' | 'lease' | 'message' | 'ack', number>;
+  /**
+   * §5.1 / + re-check (9): `inbox/seen/<myDeviceId>/<consumerId>.json` files this GC removed. They are not records
+   * and never enter the fold, so they are counted separately — and they are removed by MTIME, because a `seen` file
+   * whose consumer is gone has nothing left to identify it by.
+   */
+  seen: number;
   /** lane dirs of dead runs the sweep may prune (§6.2 (a)) — paths are never removed by the ledger itself */
   staleLanes: { runId: string; laneDir: string }[];
   /** files that could not be removed, by errno — a GC never throws for a disk fault (§11 row 13) */

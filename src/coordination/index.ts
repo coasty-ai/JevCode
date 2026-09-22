@@ -238,6 +238,7 @@ export {
   setDeviceLabel,
   syncDisable,
   syncStatus,
+  pairDeviceOn,
   unignoreDeviceOn,
   unpairDeviceOn,
   writeTakeoverLease,

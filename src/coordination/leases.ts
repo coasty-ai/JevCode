@@ -333,6 +333,20 @@ function makeHandle(h: LedgerHandle, initial: Lease, awaitedWrites: boolean): Le
     current = next;
     for (const rel of leaseRels(next)) await h.writeOwn('leases', rel, next, { fsync: false });
   };
+  // §3.5 (revision 5): the ledger tracks its own live leases so a `setIdentity({ repoKey })` can move this one.
+  h.trackLease(initial.leaseId, {
+    async move(next) {
+      if (released) return;
+      const moved = finalizeRecord({ ...current, repoKey: next.repoKey, remoteKey: next.remoteKey, wsKey: next.wsKey, renewedAt: nowIso(h) }, h.redact);
+      const before = leaseRels(current);
+      const after = leaseRels(moved);
+      current = moved;
+      // re-declare FIRST, so the lease is never absent from every directory at once — a peer folding the gap would
+      // read `clear` for a path this run still holds, which under `strict` is the clobber the fence exists to stop.
+      for (const rel of after) await h.writeOwn('leases', rel, moved, { fsync: false });
+      for (const rel of before) if (!after.includes(rel)) await h.removeOwn('leases', rel);
+    },
+  });
   return {
     leaseId: initial.leaseId,
     stamp: initial.stamp,
@@ -363,6 +377,7 @@ function makeHandle(h: LedgerHandle, initial: Lease, awaitedWrites: boolean): Le
     release(outcome: LeaseOutcome, changed: Record<string, string | null> = {}, head?: string) {
       if (released) return;
       released = true;
+      h.untrackLease(initial.leaseId);
       const entries = Object.entries(changed).filter(([k]) => isValidRelPath(k)).slice(0, LEASE_PATHS_MAX);
       const rel: NonNullable<Lease['released']> = { at: nowIso(h), outcome, changed: Object.fromEntries(entries), ...(head !== undefined ? { head } : {}) };
       let next = finalizeRecord({ ...current, released: rel }, h.redact);

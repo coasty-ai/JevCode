@@ -413,6 +413,12 @@ export interface MachineRecord {
   hostKey?: string;
   /** the OS boot identity, when the caller resolved one (decision (a)) */
   bootId?: string;
+  /**
+   * + re-check (9): the PERSISTED `actor8` of this host's sessionless consumers (a TUI before its first run). It
+   * names `inbox/seen/<deviceId>/<consumerId>.json`, so a fresh random one per process re-toasted every unexpired
+   * broadcast at every launch and leaked one `seen` file per launch. Private, never published, never mirrored.
+   */
+  tuiActor8?: string;
 }
 
 export async function readMachineRecord(fs: CoordFs, hostDir: string): Promise<MachineRecord | null> {
@@ -422,17 +428,26 @@ export async function readMachineRecord(fs: CoordFs, hostDir: string): Promise<M
     const parsed = parseJson(r.text);
     if (!parsed.ok || !isJsonObject(parsed.value) || parsed.value['v'] !== 1) return null;
     const id = parsed.value['machineId'];
-    if (typeof id !== 'string' || id === '') return null;
+    if (typeof id !== 'string') return null;
     const bootId = parsed.value['bootId'];
     const hostKey = parsed.value['hostKey'];
-    return { v: 1, machineId: id, ...(typeof hostKey === 'string' && HOST_KEY_RE.test(hostKey) ? { hostKey } : {}), ...(typeof bootId === 'string' ? { bootId } : {}) };
+    const tuiActor8 = parsed.value['tuiActor8'];
+    return {
+      v: 1,
+      machineId: id,
+      ...(typeof hostKey === 'string' && HOST_KEY_RE.test(hostKey) ? { hostKey } : {}),
+      ...(typeof bootId === 'string' ? { bootId } : {}),
+      ...(typeof tuiActor8 === 'string' && ACTOR8_RE.test(tuiActor8) ? { tuiActor8 } : {}),
+    };
   } catch {
     return null;
   }
 }
 
 export async function writeMachineRecord(fs: CoordFs, hostDir: string, rec: Omit<MachineRecord, 'v'>): Promise<void> {
-  if (rec.machineId.trim() === '') throw new ConfigError('coordination: a machine id cannot be empty', { setting: 'coordination' });
+  // + re-check (9): the record may exist for the persisted `tuiActor8` alone, on a host whose machine id is
+  // unreadable (§3.2's stated fallback). An empty id is stored as such; only a WHITESPACE id is a caller error.
+  if (rec.machineId !== '' && rec.machineId.trim() === '') throw new ConfigError('coordination: a machine id cannot be empty', { setting: 'coordination' });
   await fs.mkdir(hostDir, DIR_MODE);
   await fs.writeAtomic(join(hostDir, MACHINE_FILE), `${JSON.stringify({ v: 1, ...rec })}\n`, { fsync: true, mode: FILE_MODE });
 }
@@ -469,9 +484,11 @@ export async function deviceIdentity(o: DeviceIdentityOptions): Promise<DeviceId
   if (existing !== null) {
     // + re-review (6)(i): `host + user` collides on two default-named Macs and on cloned VMs sharing one `~/.jevcode`;
     // the cached machine id is what makes `kind:'foreign'` reachable in exactly that case, so the CLI can ask to adopt.
-    const sameMachine = o.machineId === undefined || machine === null || machine.machineId === o.machineId;
+    // + re-check (9): a `machine.json` written for the persisted `tuiActor8` alone carries `machineId: ''`, which is
+    // "not recorded", not "a different machine" — it must not make a returning device read as foreign.
+    const sameMachine = o.machineId === undefined || machine === null || machine.machineId === '' || machine.machineId === o.machineId;
     if (existing.host === o.hostname && existing.user === o.username && sameMachine) {
-      if (o.machineId !== undefined && machine === null) await writeMachineRecord(o.fs, hostDir, { machineId: o.machineId, hostKey });
+      if (o.machineId !== undefined && (machine === null || machine.machineId === '')) await writeMachineRecord(o.fs, hostDir, { ...(machine ?? {}), machineId: o.machineId, hostKey });
       return { status: 'loaded', device: existing, path, hostKey };
     }
     return { status: 'foreign', device: existing, path, hostKey };
