@@ -1318,6 +1318,11 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
    */
   function fireHedge(st: RoundState, k: number): void {
     if (st.closed || st.noMore || st.hedges >= LLM_HEDGES_PER_ROUND) return;
+    // review defect 2: a SUPERSEDED round is not closed and not `noMore` — it drains with its accounting while
+    // `fire()` hands the source to the next round — but `PumpedRound.pump()` has already stopped reading it, so a
+    // twin fired here could never produce a candidate and would still take a live sample and a full dollar hold.
+    // The supersede branch of `fire()` clears its timers; this is the guard that makes the rule true whatever fires.
+    if (st !== state) return;
     // nothing to hedge: the sample settled (a result, a timeout, an error) between the timer and this tick
     if (st.served.has(k) || st.arrivals.some((a) => a.sample === k)) return;
     const twin = k + HEDGE_TWIN_OFFSET;
@@ -1398,6 +1403,9 @@ export function createLlmSource(deps: LlmSourceDeps): LlmSource {
     if (cur !== null && !cur.closed) {
       // a staggered round still awaiting release() is open; a cancelled or fully-fired round only drains — it keeps its accounting and cache write while the new round takes over
       if (!cur.noMore && !cur.released) return { fired: false, reason: 'round_open', cached: 0, key: null };
+      // review defect 2: the superseded round keeps its accounting and its in-flight samples, but no reader is left
+      // for what they produce — so it stops hedging here rather than spending a live sample on a discarded arrival.
+      for (const k of [...cur.hedgeTimers.keys()]) clearHedgeTimer(cur, k);
       emit('llm:fire', `goal ${cur.input.goalId} round ${cur.input.round}: superseded while ${cur.pending} samples drain`);
     }
     const n = input.n ?? samplesFor(input.klass, input.tReproMs ?? null);

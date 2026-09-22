@@ -226,6 +226,36 @@ describe('§3.2 the loser', () => {
   });
 });
 
+describe('§3.2 a round that is over for the loop', () => {
+  /**
+   * Review defect 2. `fire()` may SUPERSEDE an open round: the old one keeps its accounting and drains, but
+   * `PumpedRound.pump()` has already stopped reading it (`mine()` is false), so nothing it produces from here on
+   * can ever reach a candidate. A twin fired into that round is pure spend — it decrements the LIVE step budget
+   * (`budgetView` reads `mem.stepBudget` at every access) and takes a full-estimate dollar hold — for a result
+   * that is discarded on arrival. The old round's timers are therefore cleared where it is superseded, and
+   * `fireHedge` refuses any round that is no longer the source's current one.
+   */
+  it('fires no twin for a superseded round: only the current round may hedge', async () => {
+    vi.useFakeTimers();
+    const g = parked();
+    const src = source({ generate: g.generate, hedge: true });
+    const b = budget();
+    expect(src.fire(fireInput(b)).fired).toBe(true);
+    // round 2 supersedes round 1 while its one sample drains (round 1 is released, not closed and not noMore)
+    expect(src.fire(fireInput(b, { round: 2 })).fired).toBe(true);
+    await vi.advanceTimersByTimeAsync(hedgeAfterMs(null) * 2);
+    // exactly ONE twin, and it belongs to round 2 — round 1's silent sample is not hedged, because no reader is left for it
+    expect(g.legs.map((l) => l.sample)).toEqual([0, 0, HEDGE_TWIN_OFFSET]);
+    expect(b.samplesLeft).toBe(12 - 3);
+    expect(src.round()!.hedges).toBe(1);
+    // and the refusal is not booked against the live round either: nothing was declined, the round simply ended
+    expect(src.round()!.hedgesRefused).toBe(0);
+    for (const leg of g.legs) leg.answer();
+    await vi.advanceTimersByTimeAsync(0);
+    await src.collectAll();
+  });
+});
+
 describe('§3.2 the refusal', () => {
   it('refuses the hedge when the dollar counter cannot hold one more sample at its FULL estimate', async () => {
     vi.useFakeTimers();
