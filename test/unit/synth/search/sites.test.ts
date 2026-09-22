@@ -170,6 +170,72 @@ describe('replace sites: Q5 ∪ Q5n ∪ SBFL, unioned and ordered', () => {
     expect(g.ordered.map((s) => `${s.line}${s.kind === 'insert' ? 'i' : 'r'}`)).toEqual(['9r', '10i', '9i', '7r', '15r', '16i', '15i', '8r', '8i', '2r', '4r', '7i']);
   });
 
+  /**
+   * OOS iteration 3, item 4 — the third and deepest `--jev off` hole, and the one that survived
+   * iteration 2's localiser fallback and this iteration's wider escaped code order.
+   *
+   * `jevProbability` is ABSENT on an anchor the code order produced (localize/index.ts sets it
+   * only on a Jev anchor, on purpose: "these anchors carry no Jev evidence and say so"). The
+   * `p ≥ Q5_ANCHOR_MIN_P` filter then dropped every one of them, so with every Choice escaped the
+   * goal's site list had NO REPLACE SITE AT ALL. The recorded `--jev off` `kth` run
+   * (`20260922-155658-35hfmbqm`) is exactly that: nine sites, every one an insert gap
+   * (`kth.py:2 (gap), kth.py:10 (gap), kth.py:12 (gap), kth.py:15 (gap), +5 more`), `plausible 0`
+   * on every step, `replan_stop` at 11 — while the gold REPLACES L12. `p ≥ 0.05` is a filter on a
+   * FLAT answer ("below 0.05 a line is noise"); it cannot also mean "no answer at all".
+   */
+  it('a localisation with NO Jev probability anywhere still yields replace sites: the code order is the fallback, not the empty list', async () => {
+    const { result } = await localizeWith({ [ESCAPE_KEY]: 1 });
+    // the localiser answered in code: every anchor says so and none carries a probability
+    const replaceSites = result.sites.filter((s) => s.kind === 'replace');
+    expect(replaceSites.length).toBeGreaterThan(0);
+    expect(replaceSites.every((s) => s.evidence.jevProbability === undefined)).toBe(true);
+    const anchors = q5Anchors(result);
+    expect(anchors.length).toBeGreaterThan(0);
+    expect(anchors.every((a) => a.kind === 'replace')).toBe(true);
+    // `def` lines are still never anchors, and the whole located function is offered rather than
+    // a top-3 of an order nothing ranked
+    expect(anchors.some((a) => a.line === 1)).toBe(false);
+    expect(anchors.length).toBeGreaterThan(3);
+    // and the goal's site list has them, so the search has something to replace
+    const { ctx } = ctxWith((call) => answerAll(call, () => 0.05, () => ({})));
+    const g = await buildGoalSites(ctx, goal(), result, undefined, {});
+    expect(g.replace.length).toBeGreaterThan(0);
+    expect(g.ordered.some((s) => s.kind === 'replace')).toBe(true);
+  });
+
+  it('a Jev that DID answer keeps the top-3-per-function cut: the fallback is the no-answer case only', async () => {
+    const { result } = await localizeWith(Q5);
+    expect(lines(q5Anchors(result))).toEqual([9, 8, 15]);
+  });
+
+  /**
+   * Review finding 5. `evidenced` was a GLOBAL predicate over the whole localisation, so the
+   * fallback died the moment ANY one Choice answered — which is the normal Jev-on case, one
+   * function ranked and another escaped or unasked. The review's probe: a two-file localisation
+   * with `a.py:3` answered 0.8 and `b.py` fully escaped returned ONE anchor (`a.py:3`), dropping
+   * b.py's five code-order replace sites. It is now decided per function group.
+   */
+  it('a MIXED localisation keeps the escaped group`s code order and still cuts the answered group to its top-3', () => {
+    const a = fixtureFile('twofn.py');
+    const b = sf('other.py', ['def fb(x):', '    y = x + 1', '    z = y + 2', '    w = z + 3', '    return w', ''].join('\n'));
+    const replaceAt = (file: typeof a, line: number, p?: number): Site => {
+      const site = siteAt(file, line);
+      return p === undefined ? site : { ...site, evidence: { ...site.evidence, jevProbability: p } };
+    };
+    // a.py: one answered line plus two more the Choice ranked; b.py: five code-order lines, no probability
+    const localized: LocalizeResult = {
+      files: [{ path: a.path, probability: 1 }, { path: b.path, probability: 1 }],
+      functions: [],
+      requests: 1,
+      sites: [replaceAt(a, 3, 0.8), replaceAt(a, 4, 0.2), replaceAt(a, 5, 0.1), replaceAt(a, 6, 0.01), replaceAt(b, 2), replaceAt(b, 3), replaceAt(b, 4), replaceAt(b, 5)],
+    };
+    const anchors = q5Anchors(localized);
+    // b.py's four code-order sites all survive — they did before this fix only when a.py escaped too
+    expect(anchors.filter((x) => x.file.path === 'other.py').map((x) => x.line)).toEqual([2, 3, 4, 5]);
+    // and a.py, which DID get an answer, keeps its measured top-3 and drops the 0.01 noise line
+    expect(anchors.filter((x) => x.file.path === a.path).map((x) => x.line)).toEqual([3, 4, 5]);
+  });
+
   it('insert sites come first when Q5 put ≥ 0.3 on none_of_these or Q7 puts ≥ 0.5 on insert_new_line', async () => {
     const { result, escape } = await localizeWith({ line_9: 0.3, line_8: 0.2, [ESCAPE_KEY]: 0.35 });
     expect(escape()).toBeCloseTo(0.35, 6);

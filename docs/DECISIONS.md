@@ -1189,7 +1189,18 @@ S1 review did not run a real lane either. Consequences: every warm-path unit tes
 with a REAL-LANE integration test (the actual Python worker over a fixture project) and a watchdog (a worker that never announces
 READY or never replies is `disabledReason`, the sieve falls back cold — a run must never wedge again); the default returns to on
 only when that test and Ring 1 pass with the plane on; no live number taken between 66aa019 and f5df14f with the default on is
-trusted (the bench arms ran with `JEVCODE_WARM=off`).
+trusted (the bench arms ran with `JEVCODE_WARM=off`). **Root cause, found the same day (07df581):** the warm worker drove its
+lane FIFOs with `fs.createWriteStream` / `fs.createReadStream`, whose blocking `open(2)` (a FIFO write-end waits for a reader)
+and `read(2)` park a libuv filesystem-pool thread each; with eight lanes and four threads the pool was gone, and every `fs` call
+in the harness queued behind opens whose workers had already exited at `--connect-ms` — 0 % CPU, no children, `0 tested`. The
+fakes could not see it: the parity tests script a `WarmScreen` with no descriptors, the worker tests drive one lane. Fix: raw
+`O_NONBLOCK` descriptors driven by `readSync`/`writeSync` on a timer that runs only while a request is in flight (`net.Socket`
+was measured and rejected — kqueue's read filter on a FIFO delivers only what was already in the pipe when the watcher armed),
+a `serve()` watchdog (`disabledReason`, cold fallback; a worker timeout disables the plane on first occurrence;
+`WARM_MAX_FAILURES_PER_RUN` = 4), and the server source written once per run; `test/unit/synth/warm/real-lane.test.ts` boots the
+real Python worker, runs six lanes at once with a concurrent `readFile` proving the pool is free, and drives two hangs to
+`disabled` in under 1.2 s. Mock A/B on one task: warm on 23.6 s vs off 31.6 s, identical trajectory. The default stays OFF until
+a real-model A/B on the measured 18-task slice.
 
 ## 2026-09-22 Iteration 1 measured: the default stands; iteration 2 targets the repository stop rule and the timeouts
 
@@ -1249,3 +1260,89 @@ The cost is real and is accepted: nine rows push `/help` to the last two rungs o
 width (the key table becomes one `… /help keys prints the key table` pointer and the four per-terminal notes are
 dropped), because `HELP_COMPACTION_LEVELS` ranks a command line above a terminal tip. That is the ladder working
 as designed, and `palette.test.ts` records the new reachable levels rather than raising `HELP_MAX_LINES`.
+
+## 2026-09-22 Iteration 2 measured: the first win outside QuixBugs; the warm plane stays OFF until its calibration defect is fixed and re-measured
+
+*Proposed by the measurement agent; ratified by the harness session, 2026-09-22.* Ratification notes: (i) the warm default stays OFF; the loss is
+a calibration defect, not the plane — with the plane on, `oracle.tRunMs` is taught only from the cold re-runs of deadline-hit screens, i.e. from
+timeouts (`src/synth/sieve/runner.ts:847`), which collapses the SIEVE budget; it is fixed on `warm-plane-fix-2` together with persisting `WarmStats`
+and `timing.jevWallMs` into the records and recording `JEVCODE_WARM=on` as unsupported on the SWE runner, and the A/B is re-run on the same
+pre-registered criterion after that; (ii) the QuixBugs slowdown claimed in iteration 1 (1.41×) was confounded by `llm-jev`'s own lane load and is
+1.16× at matched load, at 0.28× the cost; (iii) ladder long-2 has no stable level at this build (4/6, 4/6, 5/6) and is not quoted as one.
+
+**Status: proposed, not ratified.** Written by the agent that took the measurement
+(`experiments/results/llm-jev-iter2.md`, frozen `d86c385`, branch `bench-iter2`, $1.0413 of a $4 cap, same 18 + 28
+tasks and limits as iteration 1). Nothing here changes a default until it is ratified.
+
+On the fresh 18: `llm-jev` **14/18** [54.8 %, 91.0 %] against the tuned generator's 9/18, **b = 5 / c = 0, sign
+p = 0.0312** (iteration 1: 12/18, b = 4 / c = 1, p = 0.1875), correct-by-verdict 13 vs 9 at flat cost. **SWE is
+2/4, off iteration 1's zero**, and the five-step `replan_stop` that ended every repository run is gone: the three
+that still stop by replan do so at 14, 17 and 14 steps having tested 1,060 candidates against 751 priced (was 20
+against 6,960). In-sample 28: **27/28 with `django__django-15128` recovered** (`complete` at 6 steps); the one
+loss is ladder `account` under loadavg 99–175, which passes at loadavg 13 in another arm of the same build.
+**`detect_cycle` is gold-identical.** Of the four landed changes, `doneClaimEscalation` (8 escalations fresh, 3
+in-sample), `rankPoolCap` and the per-goal deadline high-water mark (**0 shrinks after a zero-token timeout in 45
+events**; zero-token timeouts 46.6 % → 27.2 % of fresh samples, 33.6 % → 6.9 % in-sample) all held; the localiser
+fallback half-held (Ring 1's QuixBugs `--jev off` gate passes, `gcd` and `mergesort` recovered; the ladder gate
+still fails on `units`). Ring 1 is still red, Ring 2 still REJECTs. `token_bucket` is a strong overfit for the
+third measurement running and its rule was never written.
+
+**Decision proposed: `JEVCODE_WARM` stays OFF by default.** The `07df581` transport fix is sound — 93,460 offered
+screens over seven warm-on arms with **0 fallbacks, 0 restarts, 0 screen:mismatch, 0 `disabledReason`, 0 wedges**,
+and Ring 1 completes with the plane on (12.5 min) where iteration 1 had to kill it — and at matched load the plane
+is **23 % faster** (median per-task ratio 0.767, faster on 7/7 of the tasks both arms solve). It is held off on the
+second of the four pre-registered criteria (written before the matched pair ran,
+`llm-jev-iter2.tool.md` §6.2): **pass parity fails.** Warm-on loses `topological_ordering` twice independently (at
+loadavg 150 and at loadavg 35) and `shortest_path_length` once — 4 cold-wins against 2 warm-wins over 54 paired
+tasks — and the loss reproduces on the load-matched QuixBugs pair (the ladder pairs are at parity). Root cause, with the cold run beside it:
+`src/synth/sieve/runner.ts:847` teaches `oracle.tRunMs` from cold runs only (correctly, for a fresh-process
+estimate), but with the plane on the **only** candidates that reach the cold path are those whose hot screen hit a
+deadline the baseline does not (`:740-750`, `newDeadlineHit` → `deadlineRecheck()`), so the calibration sample is
+nothing but timeouts: `run median 11,655 ms` against 510 ms cold on the identical 185-candidate batch.
+`refineTRun` writes that into the lane timeouts and the SIEVE/RANK plan, `runs left` collapses 1,315 → 16, and
+every later batch reports `0 tested (nothing ran)` until the run dies at `max_steps` on a task the cold path
+solves in 42 s. Consequences if ratified: the default stays off; the fix is (i) keep a deadline-recheck run out of
+`subsetDurations` and (ii) pass `warm.serve` the sieve's adapted per-case timeout rather than the lane run cap
+(`:736`); the back-to-back QuixBugs triple is re-run after it and the default flips only if `c = 0` and the ratio
+holds; Ring 1's ladder `units` failure is tracked separately, since it fails identically with the plane off.
+
+Three measurement defects are recorded with the decision and are the reason parts of this A/B had to be taken by
+hand. (1) `WarmStats` — `disabledReason`, `fallbacks`, `restarts`, `mismatches` — exists only as free text in the
+sieve's `synth · verify` event (`src/synth/sieve/runner.ts:1065`, `src/synth/warm/plane.ts:368`) and is in no
+archived record; `--archive-runs` does not copy `transcript.log`, so every warm number in the report was harvested
+from `~/.jevcode/runs/<runId>/` before the next arm overwrote the working set (`src/synth/search/types.ts:129-141`
+already calls this "a field and an assignment"). (2) `timing.jevWallMs` is declared on the engine's step timing
+(`src/loop/engine.ts:440`) and never persisted. (3) `JEVCODE_WARM=on` is a silent **no-op on SWE-bench** —
+`warmModeFor` (`src/synth/warm/plane.ts:122`) admits only the `quixbugs` and `pytest` runners and the SWE oracle's
+runner is `other` — so "the warm A/B on the measured 18-task slice" is really an A/B on 14 of them.
+
+Finally, a correction to the previous entry rather than a new finding: `llm-jev` generates its own machine load
+(eight SIEVE lanes × concurrency 4) and `jev-off-tuned` generates none, so iteration 1's QuixBugs timing
+comparison ran the candidate at loadavg 4.2→23.2 against a baseline pinned at 3.1–3.4. Its "26.0 s vs 19.7 s,
+per-task ratio median 1.406" overstates the gap; measured back-to-back in one window the median per-task ratio is
+**1.163** (slower on 6 of 8, at 0.28× the cost). This whole measurement ran at loadavg 3–175 on 15 cores, and
+outside the one matched window no wall number in it is a controlled result.
+
+## 2026-09-22 Iteration 3 lands unmeasured; a structural signal reaches the pool rule only with a gold sweep behind it, and Jev's state stays signal-free
+
+Iteration 3 (`oos-iter-3`, review `docs/research/llm-jev/review-oos-iter-3-2026-09-22.md`, 16 findings, 11 confirmed by probe)
+found the real `detect_cycle` hole — a pool of two or more passers never computed its suspicion signals and a code rule committed a
+guard with no Jev request — and, in fixing it, showed how a structural rule goes wrong: the first `late_guard` fired on a SWE-bench
+Verified gold (`sympy__sympy-17139`) and on ordinary attribute guards. Rulings, applied on the branch before the merge:
+(1) a suspicion signal may make a pool "gold-free" (skip the code ranking rules, ask Jev, hold the pick to the lone-passer bound)
+only after a sweep of every gold patch in the repository's bench data — QuixBugs 41, ladder 65 files, SWE-bench Verified 30 — shows
+zero fires; `late_guard`, rewritten to fire only on a dereference of the operand's exact dotted path with no bind or narrowing in
+front, is clean on all 198 but no longer fires on `stats`/`token_bucket`/`detect_cycle` either, so it is a lone-passer signal only and
+`POOL_SUSPECT_SIGNALS` is `{mutates_new_argument}`; iteration 4 owns the data-flow property that actually separates those three
+(the gold guards the parameter at the top, the overfit guards a derived local after use). (2) A refused pick is HELD (`st.suspect`,
+step-end `commitSuspect`), never dropped: the pool path may be no harsher than the lone path. (3) The pool ask is gated on the step's
+Jev budget and falls through to the code rules, with a note, when it cannot ask or Jev escapes; Jev routes, never gates. (4) The
+signals stay out of the arbitration state: the 0.3/0.7 bounds were calibrated on a signal-free Noul and the recorded replays are
+evidence only about that state; only swept signals count toward the strong bound (`adds_special_case` rides on every inserted guard).
+(5) The Q16 `true` example names the position of the guard, not the variable the failure names (the `stats` gold guards `values`
+while the traceback names `ordered`). (6) A Jev-ON trajectory is allowed to change when the request budget is spent mid-beam — the
+code-derived anchors enter in that case — and that case is pinned beside the fully-answered one. (7) `JEVCODE_DEADLINE_GROWTH=served`
+means: a zero-token timeout backs a goal's deadline off only once a sample of that goal has actually been served; a provider that
+never answers stays at the class base; default `always` is byte-identical to before. Ring 1 at the merged tip is unmeasured (the
+localiser changed after the last run); the next measurement runs it from a frozen worktree of the merged tip. `kth` under `--jev off`
+is expected to fail until iteration 4 ranks replace sites without a Jev ranking (`REPLACE_SITES_MAX = 6` in file order).

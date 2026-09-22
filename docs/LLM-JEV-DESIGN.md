@@ -143,10 +143,32 @@ User message (3–6k tokens; every section bounded, `PROMPT_LIMITS_FIX`):
      identical to your step k patch (graft, FactGate: tried-set instant verdict)
 ## Best partial so far   held base's diff ≤ 1,200 chars ("you may include it")
 ## Hint           h0 none | h1 Jev anchor (gated) | h2 "prefer the smallest change" | h3 "a statement may be missing — insert" | h4 edit class from Q7 (soft)
+## Harness context  the relaxed context view, fenced as data, ≤ LLM_SAMPLE_CONTEXT_MAX_CHARS (amendment below)
 ## Reply          call propose_fix
 ```
 
-No plan, no intent, no window of prior steps, no `stale_plan`/`rejected_claim` text: the attempt ledger is code-computed from `VerifyOutcome`s.
+No intent, no `stale_plan`/`rejected_claim` text: the attempt ledger is code-computed from `VerifyOutcome`s.
+
+**Amendment (2026-09-22, contract 1.4 §8.8 column 3 / TUI-DESIGN-5 §8.2 R13): the relaxed context now feeds the
+candidate source.** `llm-jev` was excluded from the engine's relaxed context view (`contextEnabled`, COORDINATION-DESIGN
+§8) while nothing consumed it — review `docs/research/context-policy/review-2026-09-22.md` D5 deferred it precisely
+"until `SynthesisContext.contextText` exists", because the view's bookkeeping would otherwise have been dead weight
+behind a meter stuck at 0 %. The member exists, so llm-jev — the shipped `DEFAULT_MODE` — now builds the view like the
+generator modes: `src/loop/engine.ts` assembles it once per step on the synth propose path (`contextView(step)` →
+`buildPrompt` → `notePromptBuilt`, the §12.0.3 cadence, minus the `## Your reply` block, which names `propose_action`),
+populates `EngineStatus.context` and the `status` event — so `ctx N%` and `/context` are no longer blind for most
+users — and hands the text to the synthesizer, which puts it in **every** `propose_fix` sample between `## Hint` and
+`## Reply`, fenced as data and bounded by `LLM_SAMPLE_CONTEXT_MAX_CHARS` (24 KiB, `src/core/limits.ts`; a longer view
+is clipped head-first with a named notice outside the fence). The head of the view carries the task and the plan, so
+the two lines this section restores to a prompt that had "no plan, no window of prior steps" are exactly the run-level
+facts the sample was missing; `LLM_GRACE_MS`, the deadlines and the hedging are untouched, and the splice is a pure
+function of the text, so a row's `promptHash` stays deterministic.
+
+The cost is the generator modes' cost, and it is bounded: one `outputs/step-<n>.txt` per step with a non-empty output
+under the **64 MiB per-run** output budget (the oldest are evicted past it, §8.5 / review D12), one
+`context/summary.json` once a compaction runs, and the `history` / `fileCache` / `fileMemory` additions on each
+checkpoint. `jev-only` is unchanged — it prompts no generator at all, so it builds no view, writes no `outputs/` and
+carries no `status.context` — and `view: 'legacy'` remains byte-identical everywhere.
 
 ### 4.5 Structured output (`src/synth/llm/schema.ts`)
 

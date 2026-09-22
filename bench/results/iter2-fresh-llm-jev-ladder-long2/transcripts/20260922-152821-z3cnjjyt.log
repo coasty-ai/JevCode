@@ -1,0 +1,90 @@
+[run] started · llm+jev verified · The install planner under `src/` reports the wrong depths and misses a bad name. ⏎  ⏎ `layers.depth` must put a package that requires nothing at depth 0 and ev…
+[run] git main · clean
+[step 1] synth · baseline · 26/32 pass, 6 failed, 0 errors in 511 ms (pytest, pytest, python3 -m pytest -q)
+[step 1] synth · goal · g1: fix tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero in tests/test_layers.py (1 test, attempt 1, picked by jev)
+[step 1] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 20000 ms, max_tokens 3000, $0.0018 reserved
+[step 1] synth · site · g1: src/layers.py:22:insert (gap, indent 4) on committed: mutation 88, template 65, donor 254 — insert after anchor L21
+[step 1] synth · llm:sample · k=0 valid 5722 ms: 1 candidates
+[step 1] synth · verify · g1: 338 tested on 8 lanes (242 regressed, 96 unchanged); runs left 1154, test wall left 76 s; run median 265 ms, t_run 265 ms · 338 candidates, 338 tested
+[step 1] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0037 reserved
+[step 1] synth · llm:release · g1: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 1] synth · site · g1: src/layers.py:21:insert (gap, indent 4) on committed: mutation 88, template 79, donor 254 — insert before anchor L21
+[step 1] synth · llm:sample · k=1 valid 12267 ms: 1 candidates
+[step 1] synth · llm:sample · k=2 valid 13587 ms: 1 candidates
+[step 1] synth · llm:round · goal g1 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 3 distinct candidates, 28786 ms, $0.0014
+[step 1] synth · verify · g1: 352 tested on 8 lanes (265 regressed, 87 unchanged); runs left 802, test wall left 58 s; run median 311 ms, t_run 311 ms · 352 candidates, 352 tested
+[step 1] synth · site · g1: src/order.py:17:insert (gap, indent 4) on committed: mutation 140, template 6, donor 176 — insert after anchor L16
+[step 1] synth · verify · g1: 268 tested on 8 lanes (268 unchanged); runs left 534, test wall left 46 s; run median 285 ms, t_run 285 ms · 268 candidates, 268 tested
+[step 1] synth · site · g1: src/order.py:16:insert (gap, indent 4) on committed: mutation 140, template 34, donor 175 — insert before anchor L16
+[step 1] synth · verify · g1: 295 tested on 8 lanes (295 unchanged); runs left 239, test wall left 32 s; run median 299 ms, t_run 299 ms · 295 candidates, 295 tested
+[step 1] synth · verify · g1: 34 tested on 8 lanes (34 unchanged); runs left 205, test wall left 30 s; run median 292 ms, t_run 292 ms · 34 candidates, 34 tested
+[step 1] synth · verify · g1: 10 tested on 8 lanes (10 unchanged); runs left 195, test wall left 30 s; run median 404 ms, t_run 404 ms · 10 candidates, 10 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 190, test wall left 29 s; run median 245 ms, t_run 245 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 31 tested on 8 lanes (31 unchanged); runs left 159, test wall left 28 s; run median 281 ms, t_run 281 ms · 31 candidates, 31 tested
+[step 1] synth · verify · g1: 26 tested on 8 lanes (26 unchanged); runs left 133, test wall left 27 s; run median 278 ms, t_run 278 ms · 26 candidates, 26 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 128, test wall left 26 s; run median 280 ms, t_run 280 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 123, test wall left 26 s; run median 235 ms, t_run 235 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 24 tested on 8 lanes (24 unchanged); runs left 99, test wall left 25 s; run median 258 ms, t_run 258 ms · 24 candidates, 24 tested
+[step 1] synth · verify · g1: 24 tested on 8 lanes (24 unchanged); runs left 75, test wall left 24 s; run median 239 ms, t_run 239 ms · 24 candidates, 24 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 70, test wall left 24 s; run median 237 ms, t_run 237 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 65, test wall left 24 s; run median 193 ms, t_run 193 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 60, test wall left 23 s; run median 179 ms, t_run 179 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 60 tested on 8 lanes (60 unchanged); runs left 0, test wall left 21 s; run median 188 ms, t_run 188 ms · 60 candidates, 60 tested
+[step 1] synth · llm:phase · g1: round 1 (ladder) batch 1: 0 LLM candidates classified as they streamed in (+60 seed leftovers)
+[step 1] synth · search · g1 budget (phase LLM, SIEVE, sites 11, requests 26, runs 1492, plausible 0) · 4919 candidates, 1492 tested
+[step 1] synth · budget · g1: budget-hit step 1 of 4 (progress: 6 new sites of 6 tested); the goal stays open
+[step 1] synth · ledger · fixed 0, open 6, parked 0
+[step 1] proposal · run $ python3 -m pytest -q 'tests/test_layers.py' · "record the failing behaviour of tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero"
+[step 1] intent · verify · 1.00 (confidence 1.00)
+[step 1] risk 0.00 ok · destructive 0 · irreversible 0
+[step 1] done · exit 1 · exit 1 · 133ms
+[step 1] judge 0.00 · tests 4p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 1] plan · 0 done · 7 remaining
+[step 1] run $ python3 -m pytest -q 'tests/test_laye… · risk 0.00 ok · tests 4p/4f/0e · judge 0.00 · 1m13s · $0.003
+[step 2] synth · goal · g1: fix tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero in tests/test_layers.py (1 test, attempt 2, picked by jev)
+[step 2] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 27174 ms (adapted from the served p90 13587 ms; the ladder default is 20000 ms), max_tokens 3000, $0.0019 reserved
+[step 2] synth · site · g1: src/plan.py:15:insert (gap, indent 4) on committed: mutation 20, donor 206 — insert after anchor L14
+[step 2] synth · verify · g1: 182 tested on 8 lanes (182 unchanged); runs left 1318, test wall left 85 s; run median 198 ms, t_run 198 ms · 182 candidates, 182 tested
+[step 2] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0056 reserved
+[step 2] synth · llm:release · g1: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 2] synth · site · g1: src/plan.py:14:insert (gap, indent 4) on committed: mutation 21, template 63, donor 206 — insert before anchor L14
+[step 2] synth · llm:sample · k=0 valid 7239 ms: 1 candidates
+[step 2] synth · verify · g1: 243 tested on 8 lanes (243 unchanged); runs left 1075, test wall left 76 s; run median 214 ms, t_run 214 ms · 243 candidates, 243 tested
+[step 2] synth · site · g1: src/layers.py:21:replace on committed: mutation 210, template 66 — jev anchor #1 in depth
+[step 2] synth · llm:sample · k=2 valid 16075 ms: 1 candidates
+[step 2] synth · llm:sample · k=1 valid 20129 ms: 1 candidates (duplicate)
+[step 2] synth · llm:round · goal g1 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 3 distinct candidates, 26062 ms, $0.0014
+[step 2] synth · verify · g1: 244 tested on 8 lanes (15 unchanged, 229 regressed); runs left 830, test wall left 64 s; run median 316 ms, t_run 316 ms · 244 candidates, 244 tested
+[step 2] synth · verify · g1: 123 tested on 8 lanes (107 regressed, 16 unchanged); runs left 707, test wall left 59 s; run median 290 ms, t_run 290 ms · 123 candidates, 123 tested
+[step 2] synth · site · g1: src/order.py:16:replace on committed: template 59 — jev anchor #1 in round_number
+[step 2] synth · verify · g1: 55 tested on 8 lanes (55 unchanged); runs left 652, test wall left 56 s; run median 302 ms, t_run 302 ms · 55 candidates, 55 tested
+[step 2] synth · verify · g1: 103 tested on 8 lanes (103 unchanged); runs left 549, test wall left 51 s; run median 313 ms, t_run 313 ms · 103 candidates, 103 tested
+[step 2] synth · site · g1: src/plan.py:13:replace on committed: mutation 83, template 102, donor 205 — jev anchor #2 in check
+[step 2] synth · verify · g1: 312 tested on 8 lanes (312 unchanged); runs left 237, test wall left 35 s; run median 316 ms, t_run 316 ms · 312 candidates, 312 tested
+[step 2] synth · verify · g1: 112 tested on 8 lanes (112 unchanged); runs left 125, test wall left 30 s; run median 309 ms, t_run 309 ms · 112 candidates, 112 tested
+[step 2] synth · verify · g1: 3 tested on 8 lanes (3 plausible); runs left 119, test wall left 29 s; run median 239 ms, t_run 239 ms; streamed batch ended on its first passer · 3 candidates, 3 tested
+[step 2] synth · llm:phase · g1: round 1 (ladder) batch 1: 3 LLM candidates classified as they streamed in; a passer landed — deciding now with the round closed
+[step 2] synth · guard · g1: harvested 38 test calls over 15 functions of src.graph, src.layers, src.order, src.plan (tests/test_layers.py); 32 perturbed inputs for the probe
+[step 2] synth · guard · g1: arbitrated 3 passers (0 held) in 1 cluster (probe 32 inputs, 3/3 signatures); escape 0.18, max general 0.41; pick llm/sample_2_0 at src/layers.py:21:replace
+[step 2] synth · search · g1 commit (phase LLM, SIEVE, sites 11, requests 1, runs 1381, plausible 3) · 1685 candidates, 1377 tested
+[step 2] synth · ledger · fixed 1, open 5, parked 0
+[step 2] proposal · patch 3 files +3 −3 (src/layers.py, src/order.py, src/plan.py) · "apply verified fix: tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero now passes (26→32 of 32), no regressions; llm/sample_2_0 at src/layers.py:21"
+[step 2] intent · edit · 1.00 (confidence 1.00)
+[step 2] risk 0.00 ok · destructive 0 · irreversible 0
+[step 2] done · patch applied (3 files) · 3 files (src/layers.py, src/order.py, src/plan.py)
+[step 2] judge skipped · complete n/a
+[step 2] plan · 0 done · 7 remaining
+[step 2] patch 3 files +3 −3 (src/layers.py, src/order… "apply verified fix: tests/test_…" · risk 0.00 ok · 3 files +3 −3 · 1m2s · $0.002 · /diff 2
+[step 3] synth · files · 5 Python files: 2 unchanged since the last load (reused), 3 analysed (9 ms)
+[step 3] synth · baseline · lane run adopted as the baseline: every touched file reads as the lane's post-image (32/32 pass); no re-run
+[step 3] synth · baseline · 32/32 pass, 0 failed, 0 errors in 241 ms (pytest, pytest, python3 -m pytest -q)
+[step 3] synth · verify · src/layers.py, src/order.py, src/plan.py changed since the engine's last test run: python3 -m pytest -q
+[step 3] synth · ledger · fixed 6, open 0, parked 0
+[step 3] proposal · run $ python3 -m pytest -q · "verify the suite after fixing tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero (src/layers.py, src/order.py, src/plan.py changed since the last test run; expect 32 of 32 te…"
+[step 3] intent · verify · 1.00 (confidence 1.00)
+[step 3] risk 0.00 ok · destructive 0 · irreversible 0
+[step 3] done · exit 0 · exit 0 · 199ms · 3 files (src/layers.py, src/order.py, src/plan.py)
+[step 3] judge 1.00 · tests 32p/0f/0e pass · 6 of 6 claims accepted · complete 0.90
+[step 3] plan · 6 done · 1 remaining
+[step 3] run $ python3 -m pytest -q · risk 0.00 ok · 3 files · tests 32p/0f/0e · judge 1.00 · complete 0.90 · 0.4s · $0.0002 · /diff 3
+[run] finished · complete · 3 steps · 2m16s · $0.004 (generator $0.003 · jev $0.001) · exit 0

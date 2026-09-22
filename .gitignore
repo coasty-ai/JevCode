@@ -31,3 +31,11 @@ perf/results/*
 # as one file, the way experiments/results/oos-2026-09-22-runs.tar.gz was.
 bench/results/*/runs/
 !bench/results/iter1-*/
+!bench/results/iter2-*/
+
+# iteration 2's harvested run transcripts (experiments/results/llm-jev-iter2.md §10 defect 1): the warm plane's
+# counters — disabledReason, fallbacks, restarts, screen:mismatch — exist ONLY as free text in the sieve's
+# `synth · verify` event, and `--archive-runs` does not copy transcript.log. They are the sole evidence for the
+# warm A/B, so the global `*.log` rule is lifted for exactly these directories (1.7 MB of text, checked in
+# deliberately). Delete the rule once the counters reach SearchTrace.
+!bench/results/iter2-*/transcripts/*.log

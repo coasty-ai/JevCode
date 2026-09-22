@@ -235,3 +235,210 @@ repositories** (SWE 6,960 ranked / 20 tested); **change 3** — zero-token timeo
 `adds_implicit_none_exit` over 58 runs, and neither named correctness loss caught. Change 8 has no counter-example here.
 Ring 1 **FAILs** the `--jev off` gate (loses `gcd`, `mergesort`, `units`); Ring 2 is 5/5 pass but **REJECT** (Jev
 requests up on `units`).
+
+## 2026-09-22 — iteration 2 measured: SWE off zero, the in-sample regression recovered, and a warm plane that is faster and still must stay off
+
+Full report `experiments/results/llm-jev-iter2.md`, script output `…-iter2.tool.md`, records and their archives under
+`bench/results/iter2-{fresh,insample,bb}-*` (branch `bench-iter2`). Build `d86c385`, jevcode 0.5.0, generator
+`openrouter z-ai/glm-5.3-flash`, Jev `jev-1.13.0`, total spend **$1.0413** of a $4 cap. Same 18 + 28 tasks and the
+same limits as iteration 1, so the two are paired task for task.
+
+**0. Read every wall number next to its loadavg.** 15 cores, shared all day with a peer session, a second
+continuously-running `jevcode bench` and a 142 %-CPU `tsc`; recorded `loadavg[0]` per record ranges **2.9 to 175**
+(iteration 1: 2.4–45). Pass, cost and every counter are unaffected; wall is not, and two task losses (`account`,
+`hunk_merge`) are budget casualties that pass in a quieter arm of the same build. One window is load-matched and is
+the only timing result quoted: the **back-to-back QuixBugs triple** (warm-off → warm-on → `jev-off-tuned`, 8 tasks
+each, 17:46–17:53 Z). It also **corrects iteration 1**: `llm-jev` generates its own load (8 SIEVE lanes ×
+concurrency 4), so iteration 1's QuixBugs arm ran at loadavg 4.2→23.2 against a tuned control pinned at 3.1–3.4.
+The "26.0 s vs 19.7 s, ratio median 1.406" of that report is a 5–7× load gap as much as a program difference; at
+matched load the per-task median is **1.163** (slower on 6/8, at 0.28× the cost).
+
+**1. Fresh 18: 14/18** [54.8 %, 91.0 %] against the tuned generator's 9/18 [29.0 %, 71.0 %], **b = 5 / c = 0,
+sign p = 0.0312** (iteration 1: 12/18, b = 4 / c = 1, p = 0.1875); correct-by-verdict 13 vs 9; $0.2489 vs $0.2435.
+**SWE moves off zero: 2/4** (`django__django-15375`, `django__django-16100`), and the five-step `replan_stop` that
+ended all four iteration-1 repository runs is gone — the three that still stop by replan do so at **14, 17 and 14
+steps** having tested **1,060 candidates against 751 priced** (iteration 1: 20 tested against 6,960 priced).
+QuixBugs is 8/8, zero overfits. Ladder long-2 is 4/6 again but a *different* four, and a third run of the tier at this build (the back-to-back
+warm-off arm) scores **5/6**: across three samples (4/6, 4/6, 5/6) `deadline_queue`, `dep_order` and
+`token_bucket` always solve, `route_match` never does, and `csv_schema` and `hunk_merge` flip — so the tier reads
+**3 stable + 2 coin-flips** and neither iteration's 4/6 is a level. The shared solves cost a third of iteration
+1's steps (`deadline_queue` 9 → 3, `dep_order` 12 → 3). `token_bucket` is a strong overfit in **all four** ladder
+long-2 arms run today, always at the same divergence; its rule was never written.
+
+**2. In-sample 28: 27/28 pass, 25/28 correct, with the regression recovered.** `django__django-15128` — iteration 1's only loss, the
+case change 9 was written for — ends **`complete` at 6 steps** and passes. The single loss is ladder `account` at
+`max_replans` under **loadavg 99–175**, which passes at loadavg 13 in the warm arm forty minutes later (b = 1 /
+c = 1, p = 0.75). **`detect_cycle` is gold-identical** — the overfit iteration 1 named for change 5. `stats` is
+still weakly overfit and `wrap` picks up a fresh one that is gold-identical in the other arm the same evening.
+Cost and Jev traffic rose 2.1× against iteration 1 on a slice whose median loadavg was 88 against 16.
+
+**3. Predictions.** `doneClaimEscalation` fires 8× fresh / 3× in-sample and is what buys SWE and django-15128
+(**held**). `rankPoolCap` turns 6,960 priced / 20 tested into 751 / 1,060 (**held**). The deadline high-water mark
+is exact — **no goal's deadline shrank after a zero-token timeout in any of six arms** (0 of 45 `llm:deadline`
+events) — and zero-token timeouts fall 46.6 % → **27.2 %** of fresh samples and 33.6 % → **6.9 %** in-sample
+(sample-seconds 63.6 % → 40.9 % and 46.0 % → 19.8 %) (**held; the residual 27 % is not fixed**). The localiser
+fallback **half-holds**: Ring 1's QuixBugs `--jev off` gate now passes (`gcd`, `mergesort` recovered) with the
+plane off *and* on, but the ladder gate still fails on `units`, so Ring 1 is red. Ring 2 is 5/5 pass, REJECT.
+
+**4. The warm A/B: faster, safe as a transport, and it loses tasks — keep the default OFF.** Over 93,460 offered
+screens in seven warm-on arms: **0 fallbacks, 0 restarts, 0 screen:mismatch, 0 `disabledReason`, 0 wedges**;
+iteration 1's `nothing ran` / `LaneError` signature never appears, and Ring 1 with the plane on completes in
+12.5 min where iteration 1 had to kill it. At matched load warm is **23 % faster** (median per-task ratio
+**0.767**, faster on **7/7** both-solved; 207.8 s → 154.6 s) with the S0 bucket shares unchanged. But warm-on
+loses QuixBugs tasks cold solves — `topological_ordering` **twice independently** (loadavg 150 and 35) and
+`shortest_path_length` once, 4 cold-wins against 2 warm-wins over 54 paired tasks (the two ladder pairs are at
+parity: 5/6 both ways in the back-to-back pair, both missing only `route_match`). The cause is a calibration
+defect, not the transport: `src/synth/sieve/runner.ts:847` teaches `tRunMs` from cold runs only, and with the
+plane on the only candidates reaching the cold path are those whose hot screen hit a deadline (`:740-750`,
+`newDeadlineHit` → `deadlineRecheck()`), so the sample is **nothing but timeouts** — `run median 11,655 ms`
+against 510 ms cold on the same batch — `refineTRun` writes it into the run plan, `runs left` collapses 1,315 → 16
+and every later batch reports `0 tested (nothing ran)`. Fix that (and give `warm.serve` the adapted per-case
+timeout instead of the lane run cap, `:736`) and re-run the matched pair before flipping the default.
+Also recorded: `JEVCODE_WARM=on` is a **no-op on SWE-bench** — `warmModeFor` admits only the `quixbugs` and
+`pytest` runners and the SWE oracle's runner is `other` — so the A/B covers 14 of the 18 tasks, and nothing in the
+output says so. And the warm counters live **only** in the live `transcript.log`, which `--archive-runs` does not
+copy (`src/synth/search/types.ts:129-141`); every warm number above was harvested by hand.
+
+## 2026-09-22 — iteration 3 (implemented; Ring 1 measured, then reviewed and cut back)
+
+Branch `oos-iter-3` from `d86c385`, after the adversarial review of `c469c9e`
+(`/tmp/review-iter3-2026-09-22.md`, 16 findings). **The only thing measured on this build is the Ring-1 gate below**
+($0, offline, mock provider); every other number comes from the iteration-1 records replayed offline (the archived
+`decisions.jsonl.gz` / `steps.jsonl.gz` / `model_patch.diff.gz` of each `bench/results/iter1-…` run, and
+`~/.jevcode/runs/20260922-013715-nlsygcax`) or from a code sweep of `bench/data`. No pass, wall or cost number for
+the mode is claimed here.
+
+**1. `late_guard` — kept as a lone-passer signal, WITHDRAWN from the pool rule.** A guard CLAUSE (an `if` with no
+`elif`/`else` whose body leaves the suite) is late when a preceding sibling DEREFERENCES its operand's exact dotted
+path — `p.attr`, `p[…]`, `p.method(…)`, a use the rejected value would make fail — and nothing in front BINDS that
+path's root and nothing in front NARROWS it with an exiting guard of its own
+(`src/synth/py/structure.ts` `guardClauses` / `isLateGuard` / `OperandPlacement`, differenced by
+`src/synth/search/guard.ts` `newlyLateGuards`).
+
+The review killed the shipped version: its shape (b) ("nothing in front binds it, so it could stand at the top")
+degenerated to "not the first statement", because nothing ever binds a parameter; and its shape (a) counted any
+occurrence of the operand ROOT, so `self.logger.debug(…)` was evidence about `self.handler`. It fired on
+`bench/data/swebench-verified-30.gold.json` → `sympy__sympy-17139`, a real gold, and on seven other correct shapes.
+All of those are now silent (`test/unit/synth/search/late-guard.test.ts`, 16 cases + the sympy gold).
+
+The sweep, and it is the reason the signal lost its pool role:
+
+| corpus | patches | `late_guard` fires |
+|---|---|---|
+| QuixBugs golds | 41 | **0** |
+| ladder golds | 65 files, 26 tasks | **0** |
+| SWE-bench Verified golds (`swebench-verified-30.gold.json`, the four fresh django ones included) | 92 Python hunks / 30 instances | **0** |
+| iteration-1 recorded overfits (`stats`, `token_bucket`, `detect_cycle`) | 3 | **0** |
+
+The last row is the finding. `stats` binds `ordered` in front of the guard; `token_bucket`'s prior statement only
+plain-reads `cost`; `detect_cycle` never dereferences `hare.successor.successor` in front. A signal with no positive
+evidence on the records cannot be the evidence that a pool holds no gold, so `POOL_SUSPECT_SIGNALS` is now
+`{mutates_new_argument}` alone and `late_guard` only ever triggers the lone-passer Q16 advisory, which drops nothing.
+
+**2. The gold-free-pool rule, re-specified.** `decide` still computes the signals for every contender and still
+skips the three code RANKING rules when every contender carries a swept signal — but: the refused pick is HELD as
+`st.suspect`, exactly as on the lone path, so the budget-reserve release and step-end `commitSuspect` apply to it
+(the old `dropped` was strictly harsher than the rule it claimed to copy — the same `stats` candidate at 0.49 was
+held-then-committed alone and killed outright in a pool of two); the pool ask is gated on `jevRequestsLeft`, and with
+none left the code rules decide with `requests: 0` (it used to overspend the budget or throw); a missing or non-Noul
+answer for the pick falls through to the code rules instead of refusing every contender at `p = 0`; and only a SWEPT
+signal counts toward `STRONG_SIGNALS_MIN`, since `adds_special_case` rides on every inserted guard and made the 0.3
+branch dead. `preferLlmInCluster` still fires first and is untouched.
+
+**3. The signals are NOT shown to Jev.** `arbitrateState` is back to the measured five keys. The 0.3 / 0.7 bounds
+were calibrated on a signal-free state and `adviseLonePasser` still asks on one, so gating them on a Noul asked over
+a state that names a candidate's suspicious properties compares against a number nobody measured — and an annotation
+present on some options and absent on others reads as "not computed" rather than "clean". The signals stay code-side.
+
+**4. Q16 wording.** The `true` example is "a missing guard added in front of the code that uses the value" — the
+name-match clause is gone, because `stats`' own gold guards the parameter `values` while the failure is an
+`IndexError` on the derived local `ordered`, and guarding the parameter while the traceback names a derived local is
+the majority shape. The `false` counter-example is "a guard on a variable that is not on the path from the failing
+input to the failure". Both sides keep ≥ 2 examples, nothing counts, no 0.5.
+
+**5. `JEVCODE_DEADLINE_GROWTH=served|always`, default `always`.** The review showed the shipped `served` arm could
+not raise a deadline at all — `growths` never incremented and `floorMs` only records a latency a sample BEAT, so it
+can never exceed the deadline that sample ran under; the arm was "no timeout backoff", not "served evidence", and
+the test that appeared to show growth pinned `deadlineMs: 1_000` on `fire`, an override the bench never uses. It now
+means what it says: a zero-token timeout backs the deadline off only once the provider has actually SERVED a sample
+of that goal (`end.kind === 'result'`). Measured through the real `fire` path, deadlines scaled to ms:
+
+| provider | `served` | `always` |
+|---|---|---|
+| never answers | 20, 20, 20, 20 (growths 0) | 20, 30, 45, 68 (growths 4) |
+| answers once, then times out | 20, 30, 45 after the served round | identical |
+
+`always` is byte-identical to iteration 2. The arm is recorded, not logged: `LlmTrace.deadlineGrowth` →
+`StepRecord.verify.deadlineGrowth` → `StepsSummary.deadlineGrowth` (`tasks.jsonl` `synth`).
+
+**6. The three `--jev off` localiser holes, and a fourth the review found.** (a) the escaped code order was cut at
+`anchorsPerFunction` = 3, a bound measured on a Jev ranking — `escapedAnchors` (40) applies on the escaped branch
+only; (b) `codeDerivedFunctions` and the unaffordable tail of the line beam were gated behind the very budget whose
+exhaustion they exist for; (c) `q5Anchors` dropped every replace site with no `jevProbability`, so an all-escape
+localisation had no replace site at all. **(d) review finding 5:** that `evidenced` test was GLOBAL, so the fallback
+died the moment any one Choice answered — the normal Jev-on case. It is now decided per function group: on a mixed
+localisation the answered group keeps its measured top-3 and the escaped group keeps its whole code order.
+
+**Review finding 7, stated honestly:** a Jev-ON trajectory is **not** unchanged when the budget is spent mid-beam.
+It was never claimed to be by the code, only by the commit message. Measured on `review.test.ts`'s budget-1 SBFL
+case: main `sites=11`, geometry replace order `17,16,15,14`; this branch `sites=14`, order `17,14,15,16`. That is
+accepted — Jev routes, it never gates, and a function the router could not afford an opinion about must still be
+searchable — and it is now pinned rather than denied.
+
+**Review finding 12:** `escapedAnchors` also grew what reaches the MODEL. `listingsFor` fed every site to
+`listingSet`, so one escaped function's anchors could crowd a second located function out of the four `## Code`
+listings entirely. The site list keeps its 40; the prompt anchors are capped at `anchorsPerFunction` per located
+function. Note that under `REPLACE_SITES_MAX = 6` in file order the widening still cannot rescue `kth` — **iteration
+4 owns the no-Jev site ranking.**
+
+**Review finding 15:** `guardClauses` is memoised per (module, block), so an 8-contender decision no longer repeats
+an O(n²) suite walk eight times on a repository-class file.
+
+**Ring 1, the one thing here that IS measured** (offline, $0, mock provider, at `6e22007`; the four arms of
+`experiments/harness-next/quick.mts ring1` run by hand at `--concurrency 2/3` because a live bench held the machine at
+load 40–130 all morning, which is also why the Jev-ON reference arm is noisy):
+
+| task | Jev on | Jev off | verdict |
+|---|---|---|---|
+| `gcd` | pass, 6 steps / 110.7 s | pass, 6 steps / 168.7 s | **kept** (only slower, 1.52×) |
+| `kth` | pass, 8 steps / 366.3 s | **fail**, `max_replans`, 17 steps | **LOST** — the one remaining Ring-1 loss |
+| `mergesort` | fail, `replan_stop`, 10 steps | not run (the Jev-on arm did not solve it) | vacuous |
+| `tagcloud` | pass, 2 steps / 8.1 s | pass, 2 steps / 3.8 s | **kept** |
+| `units` | pass, 4 steps / 83.5 s | pass, 5 steps / 188.7 s | **kept** (only slower, 2.26×) — was the iteration-1 loss |
+
+So the ladder half of the gate is **green** (on 2/2 → off 2/2) where iteration 1 lost `units`, and the QuixBugs half
+still fails on `kth`. The first `--jev off` run of `kth` with these fixes does reach replace sites in the code order
+(it visited none at all before), but `REPLACE_SITES_MAX` = 6 and the SEEDS cut take the first six in file order and
+`kth`'s gold is the tenth code line of its only function, so the site the fix made available is not one the step
+reaches. **That cut — a site budget justified by a Jev ranking's quality, applied where there is no ranking — is the
+next point, and it is not one of this iteration's four items.**
+
+**What Ring 1 caught in this branch's own work.** The first run of the ladder arm at `33279b2` read "every passer of
+the batch is structurally suspect and the pick `composite/donor_body_unit:parse_size:2stmt` (deletes_statement,
+adds_special_case) answered general 0.50 < 0.7; dropping the 3 passers" and `replan_stop`ped `units` **with Jev ON**
+at 15 steps. `deletes_statement` fires on a gold-shaped REWRITE, and the `units` gold IS a rewrite. Membership of
+`POOL_SUSPECT_SIGNALS` is now "swept against the golds and found on none of them" — and after the review's sweep
+that is `mutates_new_argument` alone. That is the whole reason to run the gate.
+
+**Tests, labelled by what they actually establish** (review finding 16: a test that fails on main only because the
+symbol did not exist is not a failing-first record):
+
+*Failing-first by mechanism* — fails on `d86c385` src with the symbol present, for the reason the fix names:
+`sites.test.ts` "no Jev probability anywhere still yields replace sites" and "a MIXED localisation keeps the escaped
+group's code order"; `jev-off-fallback.test.ts` kth-L12 / mergesort-L17 and the spent-budget case;
+`review.test.ts` "budget 1 with SBFL: the starved beam contributes its code order" (main: 11 sites / 17,16,15,14);
+`deadline-growth.test.ts` the two provider probes and the emit-string case; `gold-free-pool.test.ts` finding 2's
+alone-vs-pool identity, finding 6's spent budget and finding 11's escaped Noul; `llm-adapter.test.ts` "one escaped
+function cannot crowd another out".
+
+*Regression pin* — passes on main and must keep passing: `sites.test.ts` "a Jev that DID answer keeps the
+top-3-per-function cut"; the whole of `guard.test.ts`, which is restored to its `d86c385` text and passes unchanged
+against this branch's `src` (the only diff is the Q16 snapshot); `late-guard.test.ts`'s 16 correct shapes and the
+`sympy__sympy-17139` gold, which is the review's own counter-example.
+
+*Fixture property* — asserts what the corpus contains, not what the code does: `late-guard.test.ts`'s three sweep
+cases and its corpus-coverage case; `gold-free-pool.test.ts`'s Q16 wording cases.
+
+Files: `src/synth/py/{structure,index}.ts`, `src/synth/search/{guard,llm,sites,subgoal,index,types}.ts`,
+`src/synth/llm/source.ts`, `src/synth/localize/{index,types}.ts`, `src/bench/{step-records,types}.ts`,
+`src/core/types.ts`. Flag: **`JEVCODE_DEADLINE_GROWTH`** (`served` | `always`, default `always`).

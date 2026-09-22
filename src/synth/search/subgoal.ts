@@ -389,8 +389,8 @@ export function taskIdentifiers(task: string): string[] {
  * `collapse_collection_to_element` — read it and enumerate only in WIDENED (jev-only-rungs-1-2.md
  * §16: SEEDS totals unchanged on 40/40 QuixBugs sites).
  */
-export function enumerateOptions(base: Base, goal: Goal, task: string): EnumerateOptions {
-  return { cap: ENUMERATE_CAP, testLiterals: testLiterals(goal.failures), taskIdentifiers: taskIdentifiers(task), corpus: base.files, phase: goal.phase };
+export function enumerateOptions(base: Base, goal: Goal, task: string, runId?: string): EnumerateOptions {
+  return { cap: ENUMERATE_CAP, testLiterals: testLiterals(goal.failures), taskIdentifiers: taskIdentifiers(task), corpus: base.files, phase: goal.phase, ...(runId === undefined ? {} : { runId }) };
 }
 
 /**
@@ -797,7 +797,7 @@ function freshOf(st: LoopState, enumerated: readonly Candidate[], base: Base): C
 
 /** Enumerate one seed source at one site on one base: its fresh candidates. */
 function enumerateSeed(st: LoopState, base: Base, site: Site, source: CandidateSourceName): Candidate[] {
-  return freshOf(st, seedSource(st.deps, source).enumerate(site, enumerateOptions(base, st.goal, st.ctx.task)), base);
+  return freshOf(st, seedSource(st.deps, source).enumerate(site, enumerateOptions(base, st.goal, st.ctx.task, st.ctx.runId)), base);
 }
 
 /**
@@ -817,7 +817,7 @@ async function visitSource(st: LoopState, phase: Phase, base: Base, site: Site, 
   else if (phase === 'SKETCH' || phase === 'BEAM') {
     if (mem.stepBudget.jevRequestsLeft <= 0) return BUDGET_EXIT;
     const jev = phase === 'SKETCH' ? deps.sketch : deps.beam;
-    const r = await jev.enumerate({ ctx, mem, goal, site, opts: enumerateOptions(base, goal, ctx.task), prior: st.prior });
+    const r = await jev.enumerate({ ctx, mem, goal, site, opts: enumerateOptions(base, goal, ctx.task, ctx.runId), prior: st.prior });
     spend(mem, r.requests);
     trace.jevRequests += r.requests;
     if (st.prior === null && r.editClass !== undefined) st.prior = r.editClass;
@@ -1327,6 +1327,8 @@ async function settleLlm(st: LoopState, outcome: GoalSearchTrace['outcome']): Pr
     misanchored: sum((s) => s.misanchored),
     graceMs: L.graceMs,
     fixAbsent: L.fixAbsent,
+    // OOS iteration 3, item 3: which deadline-growth arm produced these rounds (recorded, never a gate)
+    deadlineGrowth: L.deps.deadlineGrowth,
   };
 }
 
@@ -1569,7 +1571,7 @@ async function bestGuessPhases(st: LoopState, sites: readonly Site[], committed:
   if (sites.length === 0 && st.llm?.round === null) return finish(st, { kind: 'parked', reason: `no site located for ${goal.tests[0] ?? goal.id} from the issue text` });
 
   // sources 1–3 at each site, fresh (not tried, not the unchanged line)
-  const opts = enumerateOptions(committed, goal, ctx.task);
+  const opts = enumerateOptions(committed, goal, ctx.task, ctx.runId);
   const perSite: { site: Site; cands: Candidate[] }[] = [];
   for (const site of sites) {
     checkAborted(ctx);
@@ -1592,14 +1594,33 @@ async function bestGuessPhases(st: LoopState, sites: readonly Site[], committed:
   // its candidates then go before every seed (§6.1 repository class: p = 1.0 − i·ε)
   const llmRest: Promise<SampleArrival[]> = st.llm !== null && st.llm.round !== null ? st.llm.round.rest() : Promise.resolve([]);
 
-  // Jev ranks each site's set; the sets merge by probability (§2.4: K is a budget, never a threshold)
+  // Jev ranks each site's set; the sets merge by probability (§2.4: K is a budget, never a threshold).
+  //
+  // OOS iteration 2, question 1(b): the price is capped here as it is on the sub-goal paths
+  // (`visitSource`, `runLlmRound`). Ranked change 1 put `rankPoolCap` on those two and left this
+  // one, which is the ONLY RANK site a repository-class best guess reaches — so the fresh SWE arm
+  // of iteration 1 priced 6,960 candidates against 20 tested (1,740 against 5 per instance,
+  // `bench/results/iter1-fresh-llm-jev-swebench`), every one of them a Noul Jev answered about a
+  // candidate no run of that step could ever have reached. The merge below runs
+  // `k = min(plan.k, plan.runsAllowed, ranked.length)`, so `rankPoolCap` of that k is exactly what
+  // the order can pick; the cap is shared out over the sites the way §2.4 shares runs (`siteShare`
+  // arithmetic: the remaining budget over the sites still to visit), so no site is starved by the
+  // first, and what is not priced is not queued, stays out of `tried` and comes back enumerable
+  // next step (§2.3).
+  const priceLeft = runsLeft(mem.oracle, mem.stepBudget);
+  const pooled = perSite.reduce((n, s) => n + s.cands.length, 0);
+  const prePlan = decideRunPlan(pooled, sites[0] ?? perSite[0]?.site ?? { kind: 'replace' }, mem.oracle, mem.stepBudget);
+  let priceBudget = rankPoolCap(prePlan.mode === 'RANK' ? prePlan.k : pooled, priceLeft);
   const ranked: { candidate: Candidate; probability: number; site: Site }[] = [];
-  for (const { site, cands } of perSite) {
-    if (mem.stepBudget.jevRequestsLeft <= 0) break;
-    const r = await deps.rank(ctx, mem, cands, site, goal);
+  for (const [i, { site, cands }] of perSite.entries()) {
+    if (mem.stepBudget.jevRequestsLeft <= 0 || priceBudget <= 0) break;
+    const share = Math.max(1, Math.ceil(priceBudget / (perSite.length - i)));
+    const priced = cands.slice(0, Math.min(share, priceBudget));
+    const r = await deps.rank(ctx, mem, priced, site, goal);
     spend(mem, r.requests);
     trace.jevRequests += r.requests;
     trace.candidatesRanked += r.ranked.length;
+    priceBudget -= priced.length;
     for (const x of r.ranked) ranked.push({ candidate: x.candidate, probability: x.probability, site });
   }
   const llmCands = freshLlm(st, await llmRest, committed);

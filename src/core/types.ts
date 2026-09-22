@@ -550,6 +550,14 @@ export interface StepVerifySummary {
   graceMs: number;
   /** true when the committed change lies outside every Jev-ranked listing (the localisation missed) */
   localisationMissed: boolean;
+  /**
+   * OOS iteration 3, item 3 (llm-jev, additive): the per-goal deadline high-water mark's evidence
+   * rule this run ran under — `JEVCODE_DEADLINE_GROWTH`, default `always` (the behaviour OOS
+   * iteration 2 shipped), `served` grows the mark only on a sample the provider actually served
+   * past it. Recorded so a bench record says which arm produced it; it gates nothing and is absent
+   * on a step written without an LLM source (jev-only) or by an engine before the flag existed.
+   */
+  deadlineGrowth?: 'served' | 'always';
 }
 
 export interface RunCounters {

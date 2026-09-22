@@ -1,0 +1,1480 @@
+{
+  "benchId": "20260922-164743-1e32c0",
+  "createdAt": "2026-09-22T16:47:43.647Z",
+  "finishedAt": "2026-09-22T17:06:04.361Z",
+  "mocked": false,
+  "suites": [
+    "swebench"
+  ],
+  "conditions": {
+    "llm-jev": {
+      "condition": "llm-jev",
+      "mode": "llm-jev",
+      "generatorModel": "z-ai/glm-5.3-flash",
+      "deciderModel": "jev-1.13.0",
+      "temperature": null,
+      "maxTokens": 3000,
+      "generation": {
+        "proposer": "synthesizer",
+        "temperature": null,
+        "sampleTemperatures": [
+          0,
+          0.8
+        ],
+        "maxTokens": 3000,
+        "reasoning": {
+          "effort": "low"
+        },
+        "deadlineMs": 20000,
+        "repositoryDeadlineMs": 30000,
+        "lengthHandling": "double-once",
+        "servedRate": {
+          "inputPerM": 0.15,
+          "outputPerM": 0.5
+        },
+        "synthesizer": {
+          "reasoning": {
+            "effort": "low"
+          },
+          "maxTokens": 3000,
+          "sampleDeadline": {
+            "minMs": 10000,
+            "maxMs": 20000,
+            "repositoryMs": 30000
+          },
+          "sampleTemperature": {
+            "first": 0,
+            "rest": 0.8,
+            "feedbackFirst": 0.6,
+            "feedbackRest": 1
+          }
+        }
+      },
+      "maxSteps": 25,
+      "maxWallMs": 1500000,
+      "maxReplans": 5,
+      "taskSpendCapUsd": 0.25,
+      "sandboxProfile": "auto",
+      "noNetwork": false,
+      "commandTimeoutMs": 120000,
+      "maxCommandTimeoutMs": 600000,
+      "maxOutputBytes": 204800,
+      "completeThreshold": 0.85,
+      "impossibleThreshold": 0.85
+    }
+  },
+  "conditionOrder": [
+    "llm-jev"
+  ],
+  "generatorModel": "z-ai/glm-5.3-flash",
+  "spendCapUsd": 1,
+  "taskSpendCapUsd": 0.25,
+  "spentUsd": {
+    "generator": 0.04530547473633394,
+    "jev": 0.025196430000000006,
+    "total": 0.07050190473633394
+  },
+  "capFired": null,
+  "notRun": {
+    "count": 0,
+    "tasks": []
+  },
+  "pairedTasks": {
+    "swebench": 4
+  },
+  "records": 4,
+  "perSuite": {
+    "swebench": {
+      "suite": "swebench",
+      "perCondition": {
+        "llm-jev": {
+          "condition": "llm-jev",
+          "tasks": 4,
+          "evaluated": 4,
+          "passed": 2,
+          "passRate": 0.5,
+          "passRateText": "2/4 (n=4)",
+          "passRateWilson": {
+            "lo": 0.15003570882017148,
+            "hi": 0.8499642911798285
+          },
+          "unevaluated": [],
+          "unsupported": [],
+          "notRun": [],
+          "stepsToSolve": {
+            "n": 2,
+            "mean": 11.5,
+            "median": 9,
+            "values": [
+              9,
+              14
+            ]
+          },
+          "solveCurve": [
+            {
+              "k": 1,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 2,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 3,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 4,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 5,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 6,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 7,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 8,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 9,
+              "solved": 1,
+              "fraction": 0.25
+            },
+            {
+              "k": 10,
+              "solved": 1,
+              "fraction": 0.25
+            },
+            {
+              "k": 11,
+              "solved": 1,
+              "fraction": 0.25
+            },
+            {
+              "k": 12,
+              "solved": 1,
+              "fraction": 0.25
+            },
+            {
+              "k": 13,
+              "solved": 1,
+              "fraction": 0.25
+            },
+            {
+              "k": 14,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 15,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 16,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 17,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 18,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 19,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 20,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 21,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 22,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 23,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 24,
+              "solved": 2,
+              "fraction": 0.5
+            },
+            {
+              "k": 25,
+              "solved": 2,
+              "fraction": 0.5
+            }
+          ],
+          "stepsUsed": {
+            "n": 4,
+            "mean": 12.75,
+            "median": 9
+          },
+          "stopReasons": {
+            "replan_stop": 3,
+            "max_replans": 1
+          },
+          "tokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 141272,
+              "n": 4
+            },
+            {
+              "step": 2,
+              "mean": 15752.75,
+              "n": 4
+            },
+            {
+              "step": 3,
+              "mean": 22272.5,
+              "n": 4
+            },
+            {
+              "step": 4,
+              "mean": 16459.25,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 1954,
+              "n": 4
+            },
+            {
+              "step": 6,
+              "mean": 3374.25,
+              "n": 4
+            },
+            {
+              "step": 7,
+              "mean": 2687.5,
+              "n": 4
+            },
+            {
+              "step": 8,
+              "mean": 11552.25,
+              "n": 4
+            },
+            {
+              "step": 9,
+              "mean": 8394,
+              "n": 3
+            },
+            {
+              "step": 10,
+              "mean": 12930,
+              "n": 2
+            },
+            {
+              "step": 11,
+              "mean": 2338.5,
+              "n": 2
+            },
+            {
+              "step": 12,
+              "mean": 3484,
+              "n": 2
+            },
+            {
+              "step": 13,
+              "mean": 1918,
+              "n": 2
+            },
+            {
+              "step": 14,
+              "mean": 1930,
+              "n": 2
+            },
+            {
+              "step": 15,
+              "mean": 6733,
+              "n": 1
+            },
+            {
+              "step": 16,
+              "mean": 3549,
+              "n": 1
+            },
+            {
+              "step": 17,
+              "mean": 3549,
+              "n": 1
+            },
+            {
+              "step": 18,
+              "mean": 6504,
+              "n": 1
+            },
+            {
+              "step": 19,
+              "mean": 3593,
+              "n": 1
+            },
+            {
+              "step": 20,
+              "mean": 3593,
+              "n": 1
+            }
+          ],
+          "generatorTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 21125,
+              "n": 4
+            },
+            {
+              "step": 2,
+              "mean": 12515.25,
+              "n": 4
+            },
+            {
+              "step": 3,
+              "mean": 9436.75,
+              "n": 4
+            },
+            {
+              "step": 4,
+              "mean": 6958.75,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 6,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 7,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 8,
+              "mean": 3945.75,
+              "n": 4
+            },
+            {
+              "step": 9,
+              "mean": 6169.333333333333,
+              "n": 3
+            },
+            {
+              "step": 10,
+              "mean": 9771,
+              "n": 2
+            },
+            {
+              "step": 11,
+              "mean": 0,
+              "n": 2
+            },
+            {
+              "step": 12,
+              "mean": 0,
+              "n": 2
+            },
+            {
+              "step": 13,
+              "mean": 0,
+              "n": 2
+            },
+            {
+              "step": 14,
+              "mean": 0,
+              "n": 2
+            },
+            {
+              "step": 15,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 16,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 17,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 18,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 19,
+              "mean": 0,
+              "n": 1
+            },
+            {
+              "step": 20,
+              "mean": 0,
+              "n": 1
+            }
+          ],
+          "jevTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 120147,
+              "n": 4
+            },
+            {
+              "step": 2,
+              "mean": 3237.5,
+              "n": 4
+            },
+            {
+              "step": 3,
+              "mean": 12835.75,
+              "n": 4
+            },
+            {
+              "step": 4,
+              "mean": 9500.5,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 1954,
+              "n": 4
+            },
+            {
+              "step": 6,
+              "mean": 3374.25,
+              "n": 4
+            },
+            {
+              "step": 7,
+              "mean": 2687.5,
+              "n": 4
+            },
+            {
+              "step": 8,
+              "mean": 7606.5,
+              "n": 4
+            },
+            {
+              "step": 9,
+              "mean": 2224.6666666666665,
+              "n": 3
+            },
+            {
+              "step": 10,
+              "mean": 3159,
+              "n": 2
+            },
+            {
+              "step": 11,
+              "mean": 2338.5,
+              "n": 2
+            },
+            {
+              "step": 12,
+              "mean": 3484,
+              "n": 2
+            },
+            {
+              "step": 13,
+              "mean": 1918,
+              "n": 2
+            },
+            {
+              "step": 14,
+              "mean": 1930,
+              "n": 2
+            },
+            {
+              "step": 15,
+              "mean": 6733,
+              "n": 1
+            },
+            {
+              "step": 16,
+              "mean": 3549,
+              "n": 1
+            },
+            {
+              "step": 17,
+              "mean": 3549,
+              "n": 1
+            },
+            {
+              "step": 18,
+              "mean": 6504,
+              "n": 1
+            },
+            {
+              "step": 19,
+              "mean": 3593,
+              "n": 1
+            },
+            {
+              "step": 20,
+              "mean": 3593,
+              "n": 1
+            }
+          ],
+          "meanTokensPerStep": {
+            "mean": 18807.882352941175,
+            "steps": 51
+          },
+          "meanGeneratorTokensPerStep": {
+            "mean": 4979.921568627451,
+            "steps": 51
+          },
+          "meanJevTokensPerStep": {
+            "mean": 13827.960784313726,
+            "steps": 51
+          },
+          "jevLatencyMs": {
+            "p50": 157.71508299990091,
+            "p95": 364.8615000000136,
+            "n": 238
+          },
+          "jevRequests": 190,
+          "jevQuestions": 6324,
+          "generatorCalls": 56,
+          "blocked": 0,
+          "reviews": 0,
+          "declined": 0,
+          "loops": 14,
+          "replans": 10,
+          "reads": {
+            "total": 0,
+            "meanPerRun": 0
+          },
+          "cost": {
+            "generator": 0.04530547473633394,
+            "jev": 0.025196430000000006,
+            "total": 0.07050190473633394
+          },
+          "costPerSolved": 0.03525095236816697,
+          "wallMs": {
+            "n": 4,
+            "mean": 374717.9906462501,
+            "median": 295012.389084
+          },
+          "generator": {
+            "calls": 56,
+            "samples": 56,
+            "valid": 34,
+            "malformed": 0,
+            "lengthStops": 2,
+            "cancelled": 20,
+            "timeouts": 16,
+            "inputTokens": 199000,
+            "outputTokens": 54976,
+            "reasoningTokens": 23601,
+            "costUsd": 0.04530547473633394,
+            "estimatedUsd": 0.01772271473633394,
+            "latencyMs": {
+              "n": 56,
+              "p50": 22710,
+              "p90": 47078,
+              "max": 90001.400334
+            },
+            "validLatencyMs": {
+              "n": 34,
+              "p50": 16915,
+              "p90": 35994,
+              "max": 47205
+            },
+            "latencyRawMs": [
+              20021.401750000005,
+              20000.411750000007,
+              20001.220957999998,
+              10011,
+              10084,
+              15964,
+              16318,
+              16915,
+              17516,
+              17523,
+              26852,
+              30000.551208000048,
+              30002.485541999922,
+              30003.00445899996,
+              3122,
+              3122,
+              6020,
+              25588,
+              30024.066332999995,
+              30025.939458000008,
+              30026.746167000005,
+              20139,
+              20587,
+              30029.559542000003,
+              30051.26754100001,
+              7048,
+              24367,
+              32733,
+              47078,
+              19309,
+              57918.539833999996,
+              6814,
+              21618,
+              71767,
+              72853,
+              16891,
+              36031,
+              47205,
+              10618,
+              10823,
+              90001.400334,
+              11936,
+              19923,
+              22710,
+              33780,
+              7543,
+              7560,
+              9849,
+              30000.818958000047,
+              30000.306125000003,
+              30000.789667000063,
+              30000.84816699999,
+              35994,
+              41975.95141699992,
+              41975.989750000066,
+              41976.12929199997
+            ],
+            "validLatencyRawMs": [
+              10011,
+              10084,
+              15964,
+              16318,
+              16915,
+              17516,
+              17523,
+              26852,
+              3122,
+              3122,
+              6020,
+              25588,
+              20139,
+              20587,
+              7048,
+              24367,
+              32733,
+              47078,
+              19309,
+              6814,
+              21618,
+              16891,
+              36031,
+              47205,
+              10618,
+              10823,
+              11936,
+              19923,
+              22710,
+              33780,
+              7543,
+              7560,
+              9849,
+              35994
+            ]
+          },
+          "synth": {
+            "steps": 51,
+            "synthSteps": 51,
+            "synthMs": 1364977.2917130003,
+            "genericSteps": 0,
+            "verify": {
+              "samples": 56,
+              "distinct": 9,
+              "malformed": 0,
+              "timeouts": 16,
+              "cancelled": 4,
+              "misanchored": 3,
+              "candidatesTested": 553,
+              "passers": 6,
+              "partials": 1,
+              "graceMs": 0,
+              "localisationMissed": 0
+            }
+          },
+          "stubbedJevRequests": 0,
+          "modelDrift": [],
+          "runsWithError": []
+        }
+      },
+      "comparison": {
+        "suite": "swebench",
+        "conditions": [
+          "llm-jev"
+        ],
+        "pairedTasks": [
+          "django__django-14725",
+          "django__django-14787",
+          "django__django-15375",
+          "django__django-16100"
+        ],
+        "incompletePairs": [],
+        "excludedForDrift": [],
+        "perCondition": {
+          "llm-jev": {
+            "condition": "llm-jev",
+            "tasks": 4,
+            "evaluated": 4,
+            "passed": 2,
+            "passRate": 0.5,
+            "passRateText": "2/4 (n=4)",
+            "passRateWilson": {
+              "lo": 0.15003570882017148,
+              "hi": 0.8499642911798285
+            },
+            "unevaluated": [],
+            "unsupported": [],
+            "notRun": [],
+            "stepsToSolve": {
+              "n": 2,
+              "mean": 11.5,
+              "median": 9,
+              "values": [
+                9,
+                14
+              ]
+            },
+            "solveCurve": [
+              {
+                "k": 1,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 2,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 3,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 4,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 5,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 6,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 7,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 8,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 9,
+                "solved": 1,
+                "fraction": 0.25
+              },
+              {
+                "k": 10,
+                "solved": 1,
+                "fraction": 0.25
+              },
+              {
+                "k": 11,
+                "solved": 1,
+                "fraction": 0.25
+              },
+              {
+                "k": 12,
+                "solved": 1,
+                "fraction": 0.25
+              },
+              {
+                "k": 13,
+                "solved": 1,
+                "fraction": 0.25
+              },
+              {
+                "k": 14,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 15,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 16,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 17,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 18,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 19,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 20,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 21,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 22,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 23,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 24,
+                "solved": 2,
+                "fraction": 0.5
+              },
+              {
+                "k": 25,
+                "solved": 2,
+                "fraction": 0.5
+              }
+            ],
+            "stepsUsed": {
+              "n": 4,
+              "mean": 12.75,
+              "median": 9
+            },
+            "stopReasons": {
+              "replan_stop": 3,
+              "max_replans": 1
+            },
+            "tokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 141272,
+                "n": 4
+              },
+              {
+                "step": 2,
+                "mean": 15752.75,
+                "n": 4
+              },
+              {
+                "step": 3,
+                "mean": 22272.5,
+                "n": 4
+              },
+              {
+                "step": 4,
+                "mean": 16459.25,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 1954,
+                "n": 4
+              },
+              {
+                "step": 6,
+                "mean": 3374.25,
+                "n": 4
+              },
+              {
+                "step": 7,
+                "mean": 2687.5,
+                "n": 4
+              },
+              {
+                "step": 8,
+                "mean": 11552.25,
+                "n": 4
+              },
+              {
+                "step": 9,
+                "mean": 8394,
+                "n": 3
+              },
+              {
+                "step": 10,
+                "mean": 12930,
+                "n": 2
+              },
+              {
+                "step": 11,
+                "mean": 2338.5,
+                "n": 2
+              },
+              {
+                "step": 12,
+                "mean": 3484,
+                "n": 2
+              },
+              {
+                "step": 13,
+                "mean": 1918,
+                "n": 2
+              },
+              {
+                "step": 14,
+                "mean": 1930,
+                "n": 2
+              },
+              {
+                "step": 15,
+                "mean": 6733,
+                "n": 1
+              },
+              {
+                "step": 16,
+                "mean": 3549,
+                "n": 1
+              },
+              {
+                "step": 17,
+                "mean": 3549,
+                "n": 1
+              },
+              {
+                "step": 18,
+                "mean": 6504,
+                "n": 1
+              },
+              {
+                "step": 19,
+                "mean": 3593,
+                "n": 1
+              },
+              {
+                "step": 20,
+                "mean": 3593,
+                "n": 1
+              }
+            ],
+            "generatorTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 21125,
+                "n": 4
+              },
+              {
+                "step": 2,
+                "mean": 12515.25,
+                "n": 4
+              },
+              {
+                "step": 3,
+                "mean": 9436.75,
+                "n": 4
+              },
+              {
+                "step": 4,
+                "mean": 6958.75,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 6,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 7,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 8,
+                "mean": 3945.75,
+                "n": 4
+              },
+              {
+                "step": 9,
+                "mean": 6169.333333333333,
+                "n": 3
+              },
+              {
+                "step": 10,
+                "mean": 9771,
+                "n": 2
+              },
+              {
+                "step": 11,
+                "mean": 0,
+                "n": 2
+              },
+              {
+                "step": 12,
+                "mean": 0,
+                "n": 2
+              },
+              {
+                "step": 13,
+                "mean": 0,
+                "n": 2
+              },
+              {
+                "step": 14,
+                "mean": 0,
+                "n": 2
+              },
+              {
+                "step": 15,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 16,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 17,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 18,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 19,
+                "mean": 0,
+                "n": 1
+              },
+              {
+                "step": 20,
+                "mean": 0,
+                "n": 1
+              }
+            ],
+            "jevTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 120147,
+                "n": 4
+              },
+              {
+                "step": 2,
+                "mean": 3237.5,
+                "n": 4
+              },
+              {
+                "step": 3,
+                "mean": 12835.75,
+                "n": 4
+              },
+              {
+                "step": 4,
+                "mean": 9500.5,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 1954,
+                "n": 4
+              },
+              {
+                "step": 6,
+                "mean": 3374.25,
+                "n": 4
+              },
+              {
+                "step": 7,
+                "mean": 2687.5,
+                "n": 4
+              },
+              {
+                "step": 8,
+                "mean": 7606.5,
+                "n": 4
+              },
+              {
+                "step": 9,
+                "mean": 2224.6666666666665,
+                "n": 3
+              },
+              {
+                "step": 10,
+                "mean": 3159,
+                "n": 2
+              },
+              {
+                "step": 11,
+                "mean": 2338.5,
+                "n": 2
+              },
+              {
+                "step": 12,
+                "mean": 3484,
+                "n": 2
+              },
+              {
+                "step": 13,
+                "mean": 1918,
+                "n": 2
+              },
+              {
+                "step": 14,
+                "mean": 1930,
+                "n": 2
+              },
+              {
+                "step": 15,
+                "mean": 6733,
+                "n": 1
+              },
+              {
+                "step": 16,
+                "mean": 3549,
+                "n": 1
+              },
+              {
+                "step": 17,
+                "mean": 3549,
+                "n": 1
+              },
+              {
+                "step": 18,
+                "mean": 6504,
+                "n": 1
+              },
+              {
+                "step": 19,
+                "mean": 3593,
+                "n": 1
+              },
+              {
+                "step": 20,
+                "mean": 3593,
+                "n": 1
+              }
+            ],
+            "meanTokensPerStep": {
+              "mean": 18807.882352941175,
+              "steps": 51
+            },
+            "meanGeneratorTokensPerStep": {
+              "mean": 4979.921568627451,
+              "steps": 51
+            },
+            "meanJevTokensPerStep": {
+              "mean": 13827.960784313726,
+              "steps": 51
+            },
+            "jevLatencyMs": {
+              "p50": 157.71508299990091,
+              "p95": 364.8615000000136,
+              "n": 238
+            },
+            "jevRequests": 190,
+            "jevQuestions": 6324,
+            "generatorCalls": 56,
+            "blocked": 0,
+            "reviews": 0,
+            "declined": 0,
+            "loops": 14,
+            "replans": 10,
+            "reads": {
+              "total": 0,
+              "meanPerRun": 0
+            },
+            "cost": {
+              "generator": 0.04530547473633394,
+              "jev": 0.025196430000000006,
+              "total": 0.07050190473633394
+            },
+            "costPerSolved": 0.03525095236816697,
+            "wallMs": {
+              "n": 4,
+              "mean": 374717.9906462501,
+              "median": 295012.389084
+            },
+            "generator": {
+              "calls": 56,
+              "samples": 56,
+              "valid": 34,
+              "malformed": 0,
+              "lengthStops": 2,
+              "cancelled": 20,
+              "timeouts": 16,
+              "inputTokens": 199000,
+              "outputTokens": 54976,
+              "reasoningTokens": 23601,
+              "costUsd": 0.04530547473633394,
+              "estimatedUsd": 0.01772271473633394,
+              "latencyMs": {
+                "n": 56,
+                "p50": 22710,
+                "p90": 47078,
+                "max": 90001.400334
+              },
+              "validLatencyMs": {
+                "n": 34,
+                "p50": 16915,
+                "p90": 35994,
+                "max": 47205
+              },
+              "latencyRawMs": [
+                20021.401750000005,
+                20000.411750000007,
+                20001.220957999998,
+                10011,
+                10084,
+                15964,
+                16318,
+                16915,
+                17516,
+                17523,
+                26852,
+                30000.551208000048,
+                30002.485541999922,
+                30003.00445899996,
+                3122,
+                3122,
+                6020,
+                25588,
+                30024.066332999995,
+                30025.939458000008,
+                30026.746167000005,
+                20139,
+                20587,
+                30029.559542000003,
+                30051.26754100001,
+                7048,
+                24367,
+                32733,
+                47078,
+                19309,
+                57918.539833999996,
+                6814,
+                21618,
+                71767,
+                72853,
+                16891,
+                36031,
+                47205,
+                10618,
+                10823,
+                90001.400334,
+                11936,
+                19923,
+                22710,
+                33780,
+                7543,
+                7560,
+                9849,
+                30000.818958000047,
+                30000.306125000003,
+                30000.789667000063,
+                30000.84816699999,
+                35994,
+                41975.95141699992,
+                41975.989750000066,
+                41976.12929199997
+              ],
+              "validLatencyRawMs": [
+                10011,
+                10084,
+                15964,
+                16318,
+                16915,
+                17516,
+                17523,
+                26852,
+                3122,
+                3122,
+                6020,
+                25588,
+                20139,
+                20587,
+                7048,
+                24367,
+                32733,
+                47078,
+                19309,
+                6814,
+                21618,
+                16891,
+                36031,
+                47205,
+                10618,
+                10823,
+                11936,
+                19923,
+                22710,
+                33780,
+                7543,
+                7560,
+                9849,
+                35994
+              ]
+            },
+            "synth": {
+              "steps": 51,
+              "synthSteps": 51,
+              "synthMs": 1364977.2917130003,
+              "genericSteps": 0,
+              "verify": {
+                "samples": 56,
+                "distinct": 9,
+                "malformed": 0,
+                "timeouts": 16,
+                "cancelled": 4,
+                "misanchored": 3,
+                "candidatesTested": 553,
+                "passers": 6,
+                "partials": 1,
+                "graceMs": 0,
+                "localisationMissed": 0
+              }
+            },
+            "stubbedJevRequests": 0,
+            "modelDrift": [],
+            "runsWithError": []
+          }
+        },
+        "rows": [
+          {
+            "task": "django__django-14725",
+            "pass": {
+              "llm-jev": false
+            },
+            "steps": {
+              "llm-jev": 8
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.00841782218380744
+            },
+            "wallMs": {
+              "llm-jev": 76108.26641700004
+            }
+          },
+          {
+            "task": "django__django-14787",
+            "pass": {
+              "llm-jev": false
+            },
+            "steps": {
+              "llm-jev": 20
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.03698594108010095
+            },
+            "wallMs": {
+              "llm-jev": 747677.7005
+            }
+          },
+          {
+            "task": "django__django-15375",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 9
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.017032263753127313
+            },
+            "wallMs": {
+              "llm-jev": 295012.389084
+            }
+          },
+          {
+            "task": "django__django-16100",
+            "pass": {
+              "llm-jev": true
+            },
+            "steps": {
+              "llm-jev": 14
+            },
+            "reads": {
+              "llm-jev": 0
+            },
+            "cost": {
+              "llm-jev": 0.008065877719298247
+            },
+            "wallMs": {
+              "llm-jev": 380073.606584
+            }
+          }
+        ]
+      }
+    }
+  },
+  "resumed": false
+}

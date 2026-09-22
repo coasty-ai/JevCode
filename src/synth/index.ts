@@ -75,19 +75,14 @@ const BEAM_CONFIDENT_EXPAND = 0.9;
 const LOCALIZE_MAX_REQUESTS = 20;
 
 /**
- * The harvested facts of the run being searched (search/index.ts harvestIntrospection /
- * harvestHistoryFacts → introspect/facts.ts): `CandidateSource.enumerate(site, opts)` has no run in
- * reach, so `createQueue` (called at the start of every sub-goal search) and `locate` refresh this
- * ref from the registry, and the wrapped sources read it.
- */
-const runFactsRef: { current: RunFacts | null } = { current: null };
-
-/**
  * The options a source sees: the plain ones plus the run's introspection, history and the names the
  * vocabulary must accept for this file (`extraNames`: the flat introspected names ∪ the alias names
- * the file's own dispatch prefix composes from them). Unchanged when nothing was harvested.
+ * the file's own dispatch prefix composes from them). Unchanged when nothing was harvested. The facts
+ * are the run's own — `opts.runId` (search/subgoal.ts enumerateOptions) looked up in introspect/facts.ts —
+ * never a process-wide "current run": a bench process searches several runs at once, and a cell refreshed
+ * by whichever run's `createQueue`/`locate` ran last handed one run's names and history to another's seeds.
  */
-export function enrichEnumerateOptions(site: Site, opts: EnumerateOptions, facts: RunFacts | null = runFactsRef.current): EnumerateOptions {
+export function enrichEnumerateOptions(site: Site, opts: EnumerateOptions, facts: RunFacts | null = opts.runId === undefined ? null : runFacts(opts.runId)): EnumerateOptions {
   if (facts === null) return opts;
   const out: EnumerateOptions = { ...opts };
   if (facts.introspected !== null) {
@@ -117,8 +112,7 @@ function functionListing(site: Site): string {
  */
 export function createQueue(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal): SearchQueue {
   const committed = mem.bases.find((b) => b.origin === 'committed');
-  runFactsRef.current = runFacts(ctx.runId);
-  const introspected = runFactsRef.current?.introspected ?? null;
+  const introspected = runFacts(ctx.runId)?.introspected ?? null;
   const vocab = new Map<string, Vocabulary>();
   for (const [path, file] of committed?.files ?? []) {
     const base = vocabularyOf(file, goal.failures, ctx.task);
@@ -136,7 +130,8 @@ export function createQueue(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goa
 async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, opts: { batchQ6Fallback?: boolean } = {}): Promise<LocalizeResult> {
   const committed = mem.bases.find((b) => b.origin === 'committed');
   const files = committed?.files ?? new Map<string, SourceFile>();
-  runFactsRef.current = runFacts(ctx.runId);
+  // this run's facts, read before the awaits below: another run's search may start in between (bench concurrency)
+  const facts = runFacts(ctx.runId);
   const captured = captureLineChoiceEscape(ctx.ask);
   // repository mode: the issue's traceback (the frames Jev judged inside the fix, and the reproduction's raising frames) anchors the goal
   const traceback = mem.repository !== undefined && mem.repository.goalId === goal.id ? mem.repository.traceback : null;
@@ -153,7 +148,6 @@ async function locate(ctx: SynthesisContext, mem: SubGoalMemory, goal: Goal, opt
   // the introspected names' sites (≤ 3, after the Jev-ranked list): the gap before the statement an operand
   // was read in, the class-body gap of the class the failing call's objects point at, when a localised file
   // defines it, and that file's import gap; one that collides with a located site is merged onto it
-  const facts = runFactsRef.current;
   const localised = [...new Set([...goal.suspectedFiles, ...localized.files.map((f) => f.path), ...goalSites.ordered.map((s) => s.file.path)])];
   let sites: Site[] = goalSites.ordered;
   const describe = (s: Site): string => `${s.file.path}:${s.line} (${s.kind === 'insert' ? `gap, indent ${s.indent.length}` : `replace${s.endLine === undefined ? '' : `, span L${s.line}-${s.endLine}`}`}; ${s.evidence.notes.find((n) => n.startsWith('introspection:') || n.startsWith('history:')) ?? s.evidence.notes[0] ?? ''})`;

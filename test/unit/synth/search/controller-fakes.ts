@@ -564,6 +564,7 @@ export function fakeLlm(o: FakeLlmOptions): SubGoalLlm & { rec: FakeLlmRecord; s
     rec,
     spent: 0,
     graceMs: o.graceMs ?? 0,
+    deadlineGrowth: 'always',
     now: () => Date.now(),
     fire: (_ctx, _mem, goal, _loc, opts) => {
       rec.fires.push(opts);

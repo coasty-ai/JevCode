@@ -164,8 +164,13 @@ async function localize(ctx: LocalizeContext, o: LocalizerOptions): Promise<Loca
 
   // Stage 3: functions, one Choice per beam file; when not even one Choice is affordable, the
   // traceback and SBFL name the functions in code so the last request can still go to lines.
-  let fnBeam = await stageFunctions(ctx, o, asker, fileBeam, frames);
-  if (fnBeam.length === 0 && asker.canAsk()) fnBeam = codeDerivedFunctions(fileBeam, frames, sbfl, o.functionBeam);
+  let fnBeam = await stageFunctions(ctx, o, asker, fileBeam, frames, sbfl);
+  // OOS iteration 3, item 4: the fallback used to be gated on `asker.canAsk()`, which is backwards
+  // — it costs no request and exists FOR the case where none is left. With `--jev off` the file
+  // and confirm stages spend the whole localise budget (6 requests), `stageFunctions` can then
+  // afford nobody, and the run parked with `no site located for …` and `sites 0` on every goal
+  // (the ladder `units` Ring-1 loss, run `20260922-155631-5dprh2ue`: 12 steps, 1 s, 0 candidates).
+  if (fnBeam.length === 0) fnBeam = codeDerivedFunctions(fileBeam, frames, sbfl, o.functionBeam);
 
   // Stage 4: lines, one Choice per beam function.
   const anchors = await stageLines(ctx, o, asker, fnBeam, frames, sbfl);
@@ -248,7 +253,7 @@ function functionRequest(f: FileBeamEntry, ctx: LocalizeContext, o: LocalizerOpt
   }
 }
 
-async function stageFunctions(ctx: LocalizeContext, o: LocalizerOptions, asker: Asker, beam: readonly FileBeamEntry[], frames: readonly TracebackFrame[]): Promise<FunctionBeamEntry[]> {
+async function stageFunctions(ctx: LocalizeContext, o: LocalizerOptions, asker: Asker, beam: readonly FileBeamEntry[], frames: readonly TracebackFrame[], sbfl: ReadonlyMap<string, RankedLine>): Promise<FunctionBeamEntry[]> {
   // A file without a single def has only module-level code: no Choice to ask, the answer is code.
   const free: FunctionBeamEntry[] = [];
   const askable: FileBeamEntry[] = [];
@@ -268,7 +273,10 @@ async function stageFunctions(ctx: LocalizeContext, o: LocalizerOptions, asker: 
         if (entry === undefined) continue;
         out.push({ entry, fileProbability: f.probability, probability: p, joint: f.probability * p });
       }
-      return out;
+      // §1.2 clause 3 (OOS iteration 2, question 5): an all-escape Choice leaves `choiceProbs`
+      // EMPTY — the escape is a named fallback trigger, so the answer is the code order for this
+      // file, not the loss of its functions. With `--jev off` every Choice is that answer.
+      return out.some((e) => e.probability > 0) ? out : escapedFunctions(f, frames, sbfl, o.functionBeam);
     }),
   );
   // Flattened in beam order (not completion order) so equal joint scores rank deterministically.
@@ -297,6 +305,42 @@ function codeDerivedFunctions(beam: readonly FileBeamEntry[], frames: readonly T
   for (const fr of [...frames].reverse()) add(fr.path, fr.line);
   for (const r of [...sbfl.values()].sort((a, b) => a.rank - b.rank)) add(r.file, r.line);
   return out.slice(0, max);
+}
+
+/**
+ * The function order for a file whose Choice ESCAPED (§1.2 clause 3, OOS iteration 2 question 5):
+ * its traceback- and SBFL-named defs first, and — when the evidence names none — its own defs in
+ * file order. This is only reached for a file Jev was ASKED about and had no opinion on, so it
+ * never guesses on a budget the caller chose not to spend (`codeDerivedFunctions` above keeps
+ * that contract: with no code evidence it stays empty and the stage asks nothing).
+ */
+function escapedFunctions(f: FileBeamEntry, frames: readonly TracebackFrame[], sbfl: ReadonlyMap<string, RankedLine>, max: number): FunctionBeamEntry[] {
+  const named = codeDerivedFunctions([f], frames, sbfl, max);
+  if (named.length > 0) return named;
+  const entries = functionEntries(f.file);
+  const all = entries.length === 0 ? [moduleEntry(f.file)] : entries;
+  return all.slice(0, max).map((entry) => ({ entry, fileProbability: f.probability, probability: f.probability, joint: f.probability }));
+}
+
+/**
+ * The line order a Choice would have ranked, in code (OOS iteration 2, question 5): the focus
+ * line (innermost traceback frame in the entry, else its best SBFL line), then the entry's other
+ * traceback frames innermost first, then its SBFL lines by rank, then its own code lines top
+ * down. Used when the line Choice comes back with no option carrying mass — an escape, which
+ * §1.2 clause 3 names as a fallback trigger, not as "there is no line".
+ */
+function codeDerivedLines(entry: FunctionEntry, listing: readonly CodeLine[], focus: number | null, frames: readonly TracebackFrame[], sbfl: ReadonlyMap<string, RankedLine>, max: number): number[] {
+  const inListing = new Set(listing.map((l) => l.line));
+  const out: number[] = [];
+  const add = (line: number | null): void => {
+    if (line === null || !inListing.has(line) || out.includes(line)) return;
+    out.push(line);
+  };
+  add(focus);
+  for (const fr of [...frames].reverse()) if (fr.path === entry.file.path) add(fr.line);
+  for (const r of [...sbfl.values()].sort((a, b) => a.rank - b.rank)) if (r.file === entry.file.path) add(r.line);
+  for (const l of listing) add(l.line);
+  return out.slice(0, Math.max(0, max));
 }
 
 /** The most suspicious line of `entry` known before asking: innermost traceback frame, else the best SBFL line. */
@@ -344,28 +388,46 @@ async function askLines(ctx: LocalizeContext, o: LocalizerOptions, asker: Asker,
 }
 
 async function stageLines(ctx: LocalizeContext, o: LocalizerOptions, asker: Asker, beam: readonly FunctionBeamEntry[], frames: readonly TracebackFrame[], sbfl: ReadonlyMap<string, RankedLine>): Promise<Anchor[]> {
-  const asked = beam.slice(0, asker.affordable(0));
+  // OOS iteration 3, item 4: a beam function the budget cannot pay a Choice for used to be
+  // DROPPED, which is the same clause-3 hole as the function stage's — the code order costs no
+  // request. `affordable(0)` decides who is ASKED about; everybody else is answered in code.
+  const affordable = asker.affordable(0);
   const perFunction = await Promise.all(
-    asked.map(async (f): Promise<{ anchor: Anchor; score: number }[]> => {
+    beam.map(async (f, i): Promise<{ anchor: Anchor; score: number; jev: boolean }[]> => {
       const focus = focusFor(f.entry.file, f.entry, frames, sbfl);
       const listing = listingFor(f.entry, focus, o.maxChoiceOptions);
       if (listing.length === 0) return [];
-      const probs = await askLines(ctx, o, asker, f.entry.file, listing, focus, { file: f.entry.file.path, function: f.entry.qualname });
+      const probs = i < affordable ? await askLines(ctx, o, asker, f.entry.file, listing, focus, { file: f.entry.file.path, function: f.entry.qualname }) : new Map<number, number>();
       const top = byProbabilityDesc([...probs.keys()], (l) => probs.get(l) ?? 0).slice(0, o.anchorsPerFunction);
-      const out: { anchor: Anchor; score: number }[] = [];
+      const out: { anchor: Anchor; score: number; jev: boolean }[] = [];
       top.forEach((line, i) => {
         const p = probs.get(line) ?? 0;
         if (p <= 0) return;
         out.push({
           anchor: { file: f.entry.file, line, entry: f.entry.kind === 'module' ? null : f.entry, jevProbability: p, lineProbabilities: probs, notes: [`jev anchor #${i + 1} in ${f.entry.qualname}`] },
           score: f.joint * p,
+          jev: true,
         });
       });
-      return out;
+      if (out.length > 0) return out;
+      // §1.2 clause 3: no option carried mass (an escape, or a Jev with no opinion) — the code
+      // order stands in, with no `jevProbability`: these anchors carry no Jev evidence and say so.
+      // OOS iteration 3, item 4: and it stands in with `escapedAnchors`, not the Jev beam's 3 —
+      // the code order is not a ranking, so cutting it at a ranking's width leaves the defect out
+      // of the site list whenever it is not in the first three lines of its function.
+      const why = i < affordable ? 'no Jev opinion: the line Choice escaped' : 'no Jev request left for this function';
+      return codeDerivedLines(f.entry, listing, focus, frames, sbfl, o.escapedAnchors).map((line, k) => ({
+        anchor: { file: f.entry.file, line, entry: f.entry.kind === 'module' ? null : f.entry, lineProbabilities: new Map<number, number>(), notes: [`code anchor #${k + 1} in ${f.entry.qualname} (${why})`] },
+        score: f.joint / (k + 1),
+        jev: false,
+      }));
     }),
   );
   // Flattened in beam order so equal scores rank deterministically regardless of completion order.
-  return byProbabilityDesc(perFunction.flat(), (s) => s.score).map((s) => s.anchor);
+  // OOS iteration 3, item 4: an anchor with no Jev evidence never outranks one that has it — the
+  // code order is what stands in for a missing opinion, not something that competes with one.
+  const flat = perFunction.flat();
+  return [...byProbabilityDesc(flat.filter((a) => a.jev), (s) => s.score), ...byProbabilityDesc(flat.filter((a) => !a.jev), (s) => s.score)].map((s) => s.anchor);
 }
 
 /** Union with SBFL: its top-k lines become anchors too (measured: union of two top-3 lists covered 38/40). */
@@ -399,7 +461,17 @@ async function singleFileFlat(ctx: LocalizeContext, o: LocalizerOptions, asker: 
   if (!asker.canAsk()) return { files, functions: [], sites: [], requests: 0 };
   const listing = codeLines(file.mod, 1, file.mod.lines.length);
   const focus = focusFor(file, { startLine: 1, endLine: file.mod.lines.length }, frames, sbfl);
-  const probs = await askLines(ctx, o, asker, file, listing, focus, undefined);
+  let probs = await askLines(ctx, o, asker, file, listing, focus, undefined);
+  // §1.2 clause 3 (OOS iteration 2, question 5): an all-escape Choice answers an empty map, which
+  // used to leave this workspace with no anchor, no function and no site — the Ring-1 `gcd` /
+  // `mergesort` losses. The code order stands in; the probabilities are code-derived ranks, so
+  // the mass ordering below still works and nothing claims a Jev opinion it does not have.
+  // OOS iteration 3, item 4: `escapedAnchors` lines, not the Jev beam's 3 — see LocalizerOptions.
+  const escaped = [...probs.values()].every((p) => p <= 0);
+  if (escaped) {
+    const derived = codeDerivedLines(moduleEntry(file), listing, focus, frames, sbfl, o.escapedAnchors);
+    probs = new Map(derived.map((line, i) => [line, 1 / (i + 1)]));
+  }
 
   // Functions are derived in code by summing the line mass inside each def (no extra request).
   const mass = new Map<FunctionEntry | null, number>();
@@ -415,13 +487,16 @@ async function singleFileFlat(ctx: LocalizeContext, o: LocalizerOptions, asker: 
       return { file, name: entry.qualname, startLine: entry.startLine, endLine: entry.endLine, probability: Math.min(1, p) };
     });
 
-  const top = byProbabilityDesc([...probs.keys()], (l) => probs.get(l) ?? 0).slice(0, o.anchorsPerFunction);
+  const top = byProbabilityDesc([...probs.keys()], (l) => probs.get(l) ?? 0).slice(0, escaped ? o.escapedAnchors : o.anchorsPerFunction);
   const anchors: Anchor[] = [];
   top.forEach((line, i) => {
     const p = probs.get(line) ?? 0;
     if (p <= 0) return;
     const entry = entryAt(entries, line) ?? null;
-    anchors.push({ file, line, entry, jevProbability: p, lineProbabilities: probs, notes: [`jev anchor #${i + 1}`] });
+    const anchor: Anchor = escaped
+      ? { file, line, entry, lineProbabilities: new Map<number, number>(), notes: [`code anchor #${i + 1} (no Jev opinion: the line Choice escaped)`] }
+      : { file, line, entry, jevProbability: p, lineProbabilities: probs, notes: [`jev anchor #${i + 1}`] };
+    anchors.push(anchor);
   });
   addSbflAnchors(anchors, ctx, o, sbfl);
   return { files, functions, sites: buildSites({ anchors, sbfl, frames, window: o.window }), requests: asker.requests };

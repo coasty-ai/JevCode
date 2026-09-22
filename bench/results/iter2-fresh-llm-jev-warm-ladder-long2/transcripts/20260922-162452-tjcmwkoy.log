@@ -1,0 +1,125 @@
+[run] started · llm+jev verified · The install planner under `src/` reports the wrong depths and misses a bad name. ⏎  ⏎ `layers.depth` must put a package that requires nothing at depth 0 and ev…
+[run] git main · clean
+[step 1] synth · baseline · 26/32 pass, 6 failed, 0 errors in 1725 ms (pytest, pytest, python3 -m pytest -q)
+[step 1] synth · goal · g1: fix tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero in tests/test_layers.py (1 test, attempt 1, picked by jev)
+[step 1] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 20000 ms, max_tokens 3000, $0.0018 reserved
+[step 1] synth · site · g1: src/layers.py:22:insert (gap, indent 4) on committed: mutation 88, template 65, donor 254 — insert after anchor L21
+[step 1] synth · llm:sample · k=0 valid 8493 ms: 1 candidates
+[step 1] synth · verify · g1: 338 tested on 8 lanes (242 regressed, 96 unchanged); runs left 1154, test wall left 66 s; warm 346/346, screen 140142 ms · 338 candidates, 338 tested
+[step 1] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0037 reserved
+[step 1] synth · llm:release · g1: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 1] synth · site · g1: src/layers.py:21:insert (gap, indent 4) on committed: mutation 88, template 79, donor 254 — insert before anchor L21
+[step 1] synth · llm:sample · k=1 valid 11591 ms: 1 candidates
+[step 1] warning · generator retried 2 times over 376ms — gave up
+[step 1] synth · llm:sample · k=2 timeout 20001 ms: 0 candidates, est. $0.0009 — deadline 20000 ms passed
+[step 1] synth · llm:round · goal g1 round 1: 3 fired, 2 valid, 0 malformed, 0 length, 1 timeout, 0 cancelled, 0 error, 2 distinct candidates, 44756 ms, $0.0017 (est. $0.0009)
+[step 1] synth · verify · g1: 352 tested on 8 lanes (265 regressed, 87 unchanged); runs left 802, test wall left 43 s; warm 352/352, screen 142993 ms · 352 candidates, 352 tested
+[step 1] synth · site · g1: src/order.py:17:insert (gap, indent 4) on committed: mutation 140, template 6, donor 176 — insert after anchor L16
+[step 1] synth · verify · g1: 268 tested on 8 lanes (268 unchanged); runs left 534, test wall left 26 s; warm 268/268, screen 97680 ms · 268 candidates, 268 tested
+[step 1] synth · site · g1: src/order.py:16:insert (gap, indent 4) on committed: mutation 140, template 34, donor 175 — insert before anchor L16
+[step 1] synth · verify · g1: 295 tested on 8 lanes (295 unchanged); runs left 239, test wall left 9 s; warm 295/295, screen 98841 ms · 295 candidates, 295 tested
+[step 1] synth · verify · g1: 20 tested on 8 lanes (20 unchanged); runs left 219, test wall left 8 s; warm 20/20, screen 6642 ms · 20 candidates, 20 tested
+[step 1] synth · verify · g1: 10 tested on 8 lanes (10 unchanged); runs left 209, test wall left 7 s; warm 10/10, screen 3348 ms · 10 candidates, 10 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 204, test wall left 7 s; warm 5/5, screen 1358 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 199, test wall left 6 s; warm 5/5, screen 1807 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 15 tested on 8 lanes (15 unchanged); runs left 184, test wall left 5 s; warm 15/15, screen 5015 ms · 15 candidates, 15 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 179, test wall left 4 s; warm 5/5, screen 1694 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 174, test wall left 4 s; warm 5/5, screen 1667 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 169, test wall left 3 s; warm 5/5, screen 1719 ms · 5 candidates, 5 tested
+[step 1] synth · verify · g1: 5 tested on 8 lanes (5 unchanged); runs left 164, test wall left 3 s; warm 5/5, screen 1238 ms · 5 candidates, 5 tested
+[step 1] synth · search · g1 budget (phase SEEDS, RANK, sites 11, requests 29, runs 1328, plausible 0) · 5073 candidates, 1328 tested
+[step 1] synth · budget · g1: budget-hit step 1 of 4 (progress: 5 new sites of 5 tested); the goal stays open
+[step 1] synth · ledger · fixed 0, open 6, parked 0
+[step 1] proposal · run $ python3 -m pytest -q 'tests/test_layers.py' · "record the failing behaviour of tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero"
+[step 1] intent · verify · 1.00 (confidence 1.00)
+[step 1] risk 0.00 ok · destructive 0 · irreversible 0
+[step 1] done · exit 1 · exit 1 · 475ms
+[step 1] judge 0.00 · tests 4p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 1] plan · 0 done · 7 remaining
+[step 1] run $ python3 -m pytest -q 'tests/test_laye… · risk 0.00 ok · tests 4p/4f/0e · judge 0.00 · 1m34s · $0.003
+[step 2] synth · goal · g1: fix tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero in tests/test_layers.py (1 test, attempt 2, picked by jev)
+[step 2] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 23182 ms (adapted from the served p90 11591 ms; the ladder default is 20000 ms), max_tokens 3000, $0.0019 reserved
+[step 2] synth · site · g1: src/plan.py:15:insert (gap, indent 4) on committed: mutation 65, donor 206 — insert after anchor L14
+[step 2] synth · llm:sample · k=0 valid 7077 ms: 1 candidates
+[step 2] synth · verify · g1: 227 tested on 8 lanes (227 unchanged); runs left 1273, test wall left 78 s; warm 227/227, screen 68717 ms · 227 candidates, 227 tested
+[step 2] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0039 reserved
+[step 2] synth · llm:release · g1: samples 1..2 released (the top-site seed batch returned without a passer)
+[step 2] synth · site · g1: src/plan.py:14:insert (gap, indent 4) on committed: mutation 140, template 69, donor 206 — insert before anchor L14
+[step 2] synth · verify · g1: 362 tested on 8 lanes (362 unchanged); runs left 911, test wall left 59 s; warm 362/362, screen 103039 ms · 362 candidates, 362 tested
+[step 2] synth · site · g1: src/layers.py:21:replace on committed: mutation 210 — jev anchor #1 in depth
+[step 2] synth · llm:sample · k=1 valid 22197 ms: 1 candidates
+[step 2] synth · llm:sample · k=2 valid 22865 ms: 1 candidates
+[step 2] synth · llm:round · goal g1 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 3 distinct candidates, 35045 ms, $0.0013
+[step 2] synth · verify · g1: 210 tested on 8 lanes (11 unchanged, 199 regressed); runs left 700, test wall left 47 s; warm 211/211, screen 65905 ms · 210 candidates, 210 tested
+[step 2] synth · verify · g1: 123 tested on 8 lanes (107 regressed, 16 unchanged); runs left 577, test wall left 39 s; warm 123/123, screen 45123 ms · 123 candidates, 123 tested
+[step 2] synth · site · g1: src/plan.py:13:replace on committed: mutation 83, template 102, donor 205 — jev anchor #2 in check
+[step 2] synth · verify · g1: 312 tested on 8 lanes (312 unchanged); runs left 265, test wall left 23 s; warm 312/312, screen 94702 ms · 312 candidates, 312 tested
+[step 2] synth · verify · g1: 112 tested on 8 lanes (112 unchanged); runs left 153, test wall left 17 s; warm 112/112, screen 34112 ms · 112 candidates, 112 tested
+[step 2] synth · verify · g1: 3 tested on 8 lanes (1 plausible, 2 regressed); runs left 147, test wall left 16 s; streamed batch ended on its first passer; warm 5/5, screen 838 ms, 1 cold confirm 394 ms · 3 candidates, 3 tested
+[step 2] synth · llm:phase · g1: round 1 (ladder) batch 1: 3 LLM candidates classified as they streamed in; a passer landed — deciding now with the round closed
+[step 2] synth · guard · g1: holds the lone passer llm/sample_0_0 at src/layers.py:21:replace as suspect (adds_special_case; general 0.12 < 0.3): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins
+[step 2] synth · llm:deadline · the serving provider is slow (served p90 22865 ms > the ladder default deadline 20000 ms): every further sample of this run caps reasoning at 512 tokens to shorten it
+[step 2] synth · llm:fire · goal g1 round 2 (ladder): 2/3 samples fired, deadline 45000 ms (adapted from the served p90 22865 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0037 reserved
+[step 2] synth · llm:feedback · g1: round 1 ran 3 candidates without a passer; feedback round L1′ (1 of 2 this run) with the verdicts and 3 more listing members
+[step 2] synth · llm:sample · k=1 valid 6609 ms: 0 candidates (tried)
+[step 2] synth · verify · g1: 0 tested on 8 lanes (nothing ran); runs left 147, test wall left 1 s · 0 candidates, 0 tested
+[step 2] synth · llm:phase · g1: round 2 (ladder) batch 1: 0 LLM candidates classified as they streamed in
+[step 2] synth · llm:cancel · goal g1 round 2: 1 in-flight samples cancelled (budget), metered from what they streamed
+[step 2] warning · generator retried 3 times over 1s — gave up
+[step 2] synth · llm:sample · k=0 cancelled 15236 ms: 0 candidates, est. $0.0010 — llm sample cancelled: budget
+[step 2] synth · llm:round · goal g1 round 2: 2 fired, 1 valid, 0 malformed, 0 length, 0 timeout, 1 cancelled, 0 error, 0 distinct candidates, 15237 ms, $0.0015 (est. $0.0010)
+[step 2] synth · verify · g1: 1 tested on 8 lanes (1 regressed); runs left 142, test wall left 0 s; warm 5/5, screen 1639 ms, 4 deadline rechecks cold · 5 candidates, 1 tested
+[step 2] synth · guard · g1: the budget reserve is spent but the held suspect llm/sample_0_0 at src/layers.py:21:replace (general 0.12 < 0.3) is not released; the step ends on its partial or parks
+[step 2] synth · search · g1 budget (phase SKETCH, RANK, sites 11, requests 7, runs 1353, plausible 1) · 1600 candidates, 1350 tested
+[step 2] synth · budget · g1: budget-hit step 2 of 4 (nothing new: 1 of 2 stagnant); the goal stays open
+[step 2] synth · ledger · fixed 0, open 6, parked 0
+[step 2] proposal · run $ python3 -m pytest -q 'tests/test_layers.py' · "record the failing behaviour of tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero"
+[step 2] intent · verify · 1.00 (confidence 1.00)
+[step 2] risk 0.00 ok · destructive 0 · irreversible 0
+[step 2] done · exit 1 · exit 1 · 418ms
+[step 2] judge 0.00 · tests 4p/4f/0e fail · 0 of 0 claims accepted · complete n/a
+[step 2] plan · 0 done · 7 remaining
+[step 2] run $ python3 -m pytest -q 'tests/test_laye… · risk 0.00 ok · tests 4p/4f/0e · judge 0.00 · 1m32s · $0.004
+[step 3] synth · goal · g1: fix tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero in tests/test_layers.py (1 test, attempt 3, picked by jev)
+[step 3] synth · llm:fire · goal g1 round 1 (ladder): 1/3 samples fired, staggered, deadline 45000 ms (adapted from the served p90 22865 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0019 reserved
+[step 3] synth · llm:fire · goal g1 round 1: released 2 more samples (top-site seeds returned no passer), $0.0056 reserved
+[step 3] synth · llm:release · g1: samples 1..2 released (the seed phase found no passer)
+[step 3] synth · llm:sample · k=0 valid 10648 ms: 0 candidates (tried)
+[step 3] synth · llm:sample · k=2 valid 12760 ms: 1 candidates
+[step 3] synth · verify · g1: 5 tested on 8 lanes (4 regressed, 1 plausible); runs left 1493, test wall left 76 s; streamed batch ended on its first passer; warm 6/6, screen 2130 ms, 1 cold confirm 276 ms · 5 candidates, 5 tested
+[step 3] synth · llm:phase · g1: round 1 (ladder) batch 1: 1 LLM candidate classified as they streamed in (+4 seed leftovers); a passer landed — deciding now with the round still in flight
+[step 3] synth · guard · g1: holds the lone passer llm/sample_2_0 at src/layers.py:21:replace as suspect (dead_guard, adds_special_case; general 0.23 < 0.3): never released on the budget reserve — the step ends on its partial or parks unless a later passer wins
+[step 3] synth · llm:sample · k=1 valid 14398 ms: 0 candidates (tried)
+[step 3] synth · llm:round · goal g1 round 1: 3 fired, 3 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 1 distinct candidates, 14399 ms, $0.0014
+[step 3] synth · verify · g1: 0 tested on 8 lanes (nothing ran); runs left 1493, test wall left 76 s · 0 candidates, 0 tested
+[step 3] synth · llm:phase · g1: round 1 (ladder) batch 2: 0 LLM candidates classified as they streamed in
+[step 3] synth · llm:fire · goal g1 round 2 (ladder): 2/3 samples fired, deadline 45000 ms (adapted from the served p90 22865 ms; the ladder default is 20000 ms), max_tokens 3000, reasoning max_tokens 512, $0.0037 reserved
+[step 3] synth · llm:feedback · g1: round 1 ran 1 candidates without a passer; feedback round L1′ (2 of 2 this run) with the verdicts and 3 more listing members
+[step 3] synth · llm:sample · k=0 valid 6760 ms: 1 candidates
+[step 3] synth · llm:sample · k=1 valid 13741 ms: 2 candidates
+[step 3] synth · llm:round · goal g1 round 2: 2 fired, 2 valid, 0 malformed, 0 length, 0 timeout, 0 cancelled, 0 error, 3 distinct candidates, 13936 ms, $0.0012
+[step 3] synth · verify · g1: 2 tested on 8 lanes (1 regressed, 1 plausible); runs left 1488, test wall left 61 s; streamed batch ended on its first passer; warm 4/4, screen 1341 ms, 1 cold confirm 300 ms · 2 candidates, 2 tested
+[step 3] synth · llm:phase · g1: round 2 (ladder) batch 1: 2 LLM candidates classified as they streamed in; a passer landed — deciding now with the round closed
+[step 3] synth · guard · g1: harvested 38 test calls over 15 functions of src.graph, src.layers, src.order, src.plan (tests/test_layers.py); 32 perturbed inputs for the probe
+[step 3] synth · guard · g1: arbitrated 2 passers (1 held) in 1 cluster (probe 32 inputs, 2/2 signatures); escape 0.27, max general 0.37; pick llm/sample_2_0 at src/layers.py:21:replace
+[step 3] synth · search · g1 commit (phase LLM, SIEVE, sites 11, requests 2, runs 10, plausible 2) · 4 candidates, 7 tested
+[step 3] synth · ledger · fixed 1, open 5, parked 0
+[step 3] proposal · patch 3 files +4 −3 (src/layers.py, src/order.py, src/plan.py) · "apply verified fix: tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero now passes (26→32 of 32), no regressions; llm/sample_2_0 at src/layers.py:21"
+[step 3] intent · edit · 1.00 (confidence 1.00)
+[step 3] risk 0.00 ok · destructive 0 · irreversible 0
+[step 3] done · patch applied (3 files) · 3 files (src/layers.py, src/order.py, src/plan.py)
+[step 3] judge skipped · complete n/a
+[step 3] patch 3 files +4 −3 (src/layers.py, src/order… "apply verified fix: tests/test_…" · risk 0.00 ok · 3 files +4 −3 · 30s · $0.003 · /diff 3
+[step 4] synth · files · 5 Python files: 2 unchanged since the last load (reused), 3 analysed (10 ms)
+[step 4] synth · baseline · lane run adopted as the baseline: every touched file reads as the lane's post-image (32/32 pass); no re-run
+[step 4] synth · baseline · 32/32 pass, 0 failed, 0 errors in 276 ms (pytest, pytest, python3 -m pytest -q)
+[step 4] synth · verify · src/layers.py, src/order.py, src/plan.py changed since the engine's last test run: python3 -m pytest -q
+[step 4] synth · ledger · fixed 6, open 0, parked 0
+[step 4] proposal · run $ python3 -m pytest -q · "verify the suite after fixing tests/test_layers.py::test_a_package_that_requires_nothing_is_at_depth_zero (src/layers.py, src/order.py, src/plan.py changed since the last test run; expect 32 of 32 te…"
+[step 4] intent · verify · 1.00 (confidence 1.00)
+[step 4] risk 0.00 ok · destructive 0 · irreversible 0
+[step 4] done · exit 0 · exit 0 · 237ms · 3 files (src/layers.py, src/order.py, src/plan.py)
+[step 4] judge 1.00 · tests 32p/0f/0e pass · 6 of 6 claims accepted · complete 0.91
+[step 4] plan · 6 done · 1 remaining
+[step 4] run $ python3 -m pytest -q · risk 0.00 ok · 3 files · tests 32p/0f/0e · judge 1.00 · complete 0.91 · 0.5s · $0.0002 · /diff 4
+[run] finished · complete · 4 steps · 3m38s · $0.009 (generator $0.006 · jev $0.003) · exit 0
