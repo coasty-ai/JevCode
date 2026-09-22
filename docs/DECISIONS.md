@@ -1043,8 +1043,31 @@ ascending; the 1.4 line sits directly after 1.3 (where the harness rebased it); 
 
 ## 2026-09-22 Harness-owned files touched by the TUI session arrive as hunks
 
-`src/loop/engine.ts`, `src/checkpoint/**`, `src/core/**` (other than the TUI's contract block) and `src/errors.ts` are edited by the
-harness session only; the TUI session sends the exact hunks it needs (round 4's `annotateBlock`, the degrade emit, the ENOENT
+**Widened 2026-09-22 at `d297b29` (finishing pass F17).** As drafted this paragraph named four paths, while both sessions had
+long been treating eleven-plus as harness-owned (the peer's own round-5 patch header enumerates them) and four top-level `src/`
+directories were on neither list. The partition below is complete: every top-level directory of `src/` appears in exactly one
+bucket, asserted by `test/unit/hygiene/decisions-consistency.test.ts`.
+
+<!-- ownership:begin -->
+**Harness-owned:** `src/bench/**`, `src/checkpoint/**`, `src/coordination/**`, `src/core/**` (additive optional members inside
+EXISTING contract blocks only — never a new header; the contract block itself is the peer's), `src/import/**`, `src/jev/**`,
+`src/loop/**` (`engine.ts` included), `src/models/**`, `src/orchestrate/**`, `src/perf/**`, `src/provider/**`, `src/sandbox/**`,
+`src/synth/**`, `src/workspace/**`, and the single file `src/errors.ts`. Also `scripts/**`, `test/unit/**`, `experiments/**`,
+`docs/*-DESIGN.md`, `docs/LLM-JEV.md`, `docs/DECISIONS.md`, `docs/MERGE-QUEUE.md` and `docs/research/**`.
+
+**TUI-owned** (the reverse list, and the harness session may not edit these at all — it writes the exact sentence it needs into
+its report instead): `src/chat/**`, `src/cli/**`, `src/config/**`, `src/session/**`, `src/tui/**`, plus `README.md`,
+`docs/COMMANDS.md` and `docs/STATUS.md`.
+
+**Owned by hunk** (both sessions legitimately land in these, so whoever is not holding the tree sends a hunk or commits alone at
+a hash the other rebases over — the same protocol as the harness files below): `src/spend/**` (the harness's decompose stage and
+the TUI's `SpendMeter.setCap` both live here), `src/undo/**` (TUI round 4 and the harness's checkpoint images), `vitest.config.ts`
+and the `scripts` block of `package.json`. The last two are in neither session's original list and both are landing targets this
+pass (F07, F11); a `package.json` edit additionally obliges the editor to re-run `node scripts/gen-docs.mjs` (see the `manDate()`
+row of `docs/HARNESS-NEXT-DESIGN.md` §9.1).
+<!-- ownership:end -->
+
+The harness session edits the harness list only; the TUI session sends the exact hunks it needs (round 4's `annotateBlock`, the degrade emit, the ENOENT
 classification, `artefactVersion`, `shortPath`, `explainFsError`) and the harness lands them, or the TUI commits them alone at a hash
 the harness then rebases over (2350c3a). Reason: two sessions editing one engine file in a shared working tree blocked a merge for an
 hour (an uncommitted block in `types.ts`) and shipped a raw U+2028 inside a regex literal that TypeScript accepts and esbuild does
@@ -1268,8 +1291,11 @@ hand. (1) `WarmStats` — `disabledReason`, `fallbacks`, `restarts`, `mismatches
 sieve's `synth · verify` event (`src/synth/sieve/runner.ts:1065`, `src/synth/warm/plane.ts:368`) and is in no
 archived record; `--archive-runs` does not copy `transcript.log`, so every warm number in the report was harvested
 from `~/.jevcode/runs/<runId>/` before the next arm overwrote the working set (`src/synth/search/types.ts:129-141`
-already calls this "a field and an assignment"). (2) `timing.jevWallMs` is declared on the engine's step timing
-(`src/loop/engine.ts:440`) and never persisted. (3) `JEVCODE_WARM=on` is a silent **no-op on SWE-bench** —
+already calls this "a field and an assignment"). (2) ~~`timing.jevWallMs` is declared on the engine's step timing and never persisted~~ — **RESOLVED
+2026-09-22 by `warm-plane-fix-2` (`11e1acc`, merged `0556f1a`)**: it is written at both step-record construction sites
+(`src/loop/engine.ts:4832` and `:5538`, each guarded `> 0` so a zero stays absent) and summed onto the run's own
+`RunResult.timing` at `:5549`; the type is `StepTiming.jevWallMs?` (`src/core/types.ts:479`). The original `engine.ts:440`
+citation now points at `resolveFastPathOption` — the standing hazard with line-numbered references in this log. (3) `JEVCODE_WARM=on` is a silent **no-op on SWE-bench** —
 `warmModeFor` (`src/synth/warm/plane.ts:122`) admits only the `quixbugs` and `pytest` runners and the SWE oracle's
 runner is `other` — so "the warm A/B on the measured 18-task slice" is really an A/B on 14 of them.
 
@@ -1413,7 +1439,8 @@ while the traceback names `ordered`). (6) A Jev-ON trajectory is allowed to chan
 code-derived anchors enter in that case — and that case is pinned beside the fully-answered one. (7) `JEVCODE_DEADLINE_GROWTH=served`
 means: a zero-token timeout backs a goal's deadline off only once a sample of that goal has actually been served; a provider that
 never answers stays at the class base; default `always` is byte-identical to before. Ring 1 at the merged tip is unmeasured (the
-localiser changed after the last run); the next measurement runs it from a frozen worktree of the merged tip. `kth` under `--jev off`
+localiser changed after the last run); the next measurement runs it from a frozen worktree of the merged tip. That is the standing status of
+the ring, not a note local to this entry — see the Ring-1 provenance entry at the end of this log. `kth` under `--jev off`
 is expected to fail until iteration 4 ranks replace sites without a Jev ranking (`REPLACE_SITES_MAX = 6` in file order).
 
 ## 2026-09-22 The LLM-loop wave lands with both switches off; the nine design defaults are ratified; the live head-to-head waits on two CLI rows and the router engine seam
@@ -1425,18 +1452,29 @@ makes `jev-on` the primary LLM-driven loop on the new harness: S2 generator path
 `--quick`), S4 speculative routers (`routeSpeculative`, `ROUTER_DEADLINE_MS`, the exact-digest cache; nine sites four-clause), and the Ledger+Sieve
 synthesizer as a bounded fast path (route R9: one SIEVE round on a single-file cluster whose pool fits `t_run`, cold-confirmed, proposes and never
 applies, one-strike disarm). Contract 1.9 header and optional members only. Landed on `main` from `llm-loop-integration` @ 13414f0 (merge order
-design → B → A → C → D; three merge-exposed defects fixed failing-first; full suite 530 files / 8,786 passed; Ring 1 `--jev off` all gates met;
+design → B → A → C → D; three merge-exposed defects fixed failing-first; full suite 530 files / 8,786 passed; Ring 1 `--jev off` all gates met **on the PRE-merge integration tip `cbbdbb9` (2026-09-22) — amended
+2026-09-22 at `d297b29`: that run is recorded as a sentence in the merge message with no arm counts and no artefact, and the localiser changed
+under it at `856023a` (oos-iter-4), so it is not a statement about `main`; see the Ring-1 provenance entry at the end of this log**;
 `router-golden` and `fastpath` §I2 byte-identity hold). **Switches on `main`:** `routers: 'off'` in every mode; `fastPath: 'auto'` only when
 `mode === 'jev-on'`, `'off'` otherwise; `DEFAULT_MODE` stays `'llm-jev'`; env `JEVCODE_ROUTERS`/`JEVCODE_FASTPATH` fill an absent option only.
-**§9 ratified as written by the harness owner:** Q1 NO risk-polarity change (a failed Q20 still means ask, never allow; `riskSource`/`jevUnavailable`
-are recorded for a later decision); Q2 routers stay off until §8.5 accepts, the flip is its own DECISIONS line; Q3 the fast path ships even with
+**§9 ratified as written by the harness owner:** Q1 **YES — corrected 2026-09-22 at `d297b29`. This row read "NO risk-polarity change" and
+contradicted the dedicated entry above ("The risk verdict is code-first (contract 1.9 §2.4)"), which ratifies the code-first verdict that
+`src/loop/stages/risk.ts:420` (`codeRiskVerdict`) actually ships.** The two are reconciled as built: `risk.ts` ships the code-first polarity
+**behind `routers`**, so with `routers: 'off'` — every mode on `main` — a failed Q20 still means ask and the verdict is Jev's byte for byte, which
+is all the old "NO" was ever true of; with `routers: 'on'` the code verdict stands when no answer reached the step (allow-list yields `ok`,
+deny-list yields `review`, **anything else yields `review`**, never allow), and `riskSource`/`jevUnavailable` record which half ran; Q2 routers stay off until §8.5 accepts, the flip is its own DECISIONS line; Q3 the fast path ships even with
 Ring 1 red under `--jev off`, refusing under the off-decider (Ring 1 came back green on the merged tree anyway); Q4–Q6 `ROUTER_DEADLINE_MS` 400,
 `FASTPATH_MAX_T_RUN_MS` 800, `FASTPATH_WALL_MAX_MS` 45 s / 0.35 share ship and are retuned from Ring-2 data only; Q7 no legacy golden re-capture;
 Q8 the plain `jev-on` arm is funded; Q9 `runFactsRef` was fixed on `main` (c7ae106) outside the wave, so the `--concurrency 1` pin is no longer
-forced by it. **Still owed before the head-to-head (arms `jev-on-next`, `jev-on-next-nofast`, `jev-on` on the fresh 18 + in-sample 28):** the two
-`CONDITIONS` rows and the `--quick` flag in `src/cli/args.ts` (TUI session), and slot B's engine seam (per-call abort on router asks, the record
-writer for `routerWaitMs`/`router`/`riskSource`/`jevUnavailable`, `completionDecision` at `completeAfter`, per-request retry waker, option-over-env
-precedence) on branch `llm-loop-seam`. The default-mode flip to `jev-on` is decided only on those rows, never bundled.
+forced by it. **Still owed before the head-to-head (arms `jev-on-next`, `jev-on-next-nofast`, `jev-on` on the fresh 18 + in-sample 28)
+— amended 2026-09-22 at `d297b29`: all three clauses are satisfied on `main` and are struck:** ~~the two `CONDITIONS` rows and the `--quick`
+flag in `src/cli/args.ts` (TUI session)~~ landed at `0fb7af3` (`CONDITIONS` equals `src/bench`'s `CONDITION_ORDER` again; the `'quick'` row is
+`src/cli/args.ts:86` and `:278`); ~~slot B's engine seam (per-call abort on router asks, the record writer for
+`routerWaitMs`/`router`/`riskSource`/`jevUnavailable`, `completionDecision` at `completeAfter`, per-request retry waker, option-over-env
+precedence)~~ landed at `c811899` and merged at `d297b29`. **What actually remains:** (a) the §3.2 hedge is unreachable from a `jev-on` run —
+`hedgeEnabled` takes the caller's pin first and no site under `src/` sets `LlmSourceDeps.hedge`, so only `JEVCODE_HEDGE=on` can arm it
+(finishing-pass **F05**); (b) the context stage was never converted to the router table, so a Jev outage in `jev-on-next` can still end a run
+there — invariant I1 is not end-to-end (finishing-pass **F09**). The default-mode flip to `jev-on` is decided only on those two, never bundled.
 
 ## 2026-09-22 Iteration 4 lands; the overfit-signal search stops here; what is open is named
 
@@ -1459,3 +1497,43 @@ reads: clean sweep WITH stated power, plus positive replay evidence. **Consequen
 hole (a ≥ 2-passer pool committed by a code rule with no Jev request) is open again. **By the user's direction of 2026-09-22 the
 overfit-signal search stops here**: no iteration 5; the open items (the detect_cycle pool, the `kth` generation gap, the item-C
 signals' missing replay evidence, Ring 1 re-measurement on the merged tip) are recorded in `docs/LLM-JEV.md` for whoever picks them up.
+
+## 2026-09-22 The perf-window sentinel protocol, and the provenance of every Ring-1 `--jev off` number
+
+Two pieces of shared-machine protocol that lived only in agent prompts and private memory, written here because this is the one
+document both sessions provably read. Recorded with the finishing pass (F17); the sentinel half is what F15 enforces in code.
+
+**The perf-window sentinel: `/tmp/jevcode-perf-window-open`.** The machine is shared between two Claude sessions and up to a
+dozen agents, and a perf or bench number taken while a unit suite is compiling is not a number (this is the same failure that
+made `docs/HARNESS-NEXT-DESIGN.md` §9.1's post-merge row unmeasurable). The protocol, in full:
+
+- **Who creates it.** Whoever is about to take a *timing* measurement — a `perf` run, a bench arm, `experiments/harness-next/quick.mts`
+  ring 0/1/2, or any test that asserts a wall — creates the file **before** the first arm and writes one line into it:
+  `<iso-8601 created> <pid> <owner-label> <expected-minutes>`. A reader that cannot parse that line treats the file as stale.
+- **Who polls it.** Everyone else, *before* starting a build or a test run, never during: if the file exists, wait and re-check.
+  This is the rule every agent prompt in this repository already carries ("wait while `/tmp/jevcode-perf-window-open` exists
+  before tests or builds") and it is now written where it can be cited. `experiments/harness-next/quick.mts` already refuses to
+  start against it (`docs/LLM-LOOP-DESIGN.md` §7.6: "If `/tmp/jevcode-perf-window-open` exists, nothing starts").
+- **The TTL.** `max(expected-minutes, 30) minutes` from the recorded creation time, and never more than **90 minutes** whatever
+  the header claims. A window longer than its own TTL is stale by definition — a measurement that needs longer takes it in
+  segments, re-creating the file per segment, so a crash can never hold the machine for an unbounded time.
+- **Who clears a stale file.** The creator clears it in its own `finally`. Past the TTL **any** session may delete it, and should
+  say so in its report (one line: the header it found and the age). A session that deletes a *live* window because it did not
+  check the age has corrupted somebody's measurement, so the age check is not optional; when the recorded pid is still alive and
+  the age is inside the TTL, wait instead.
+- **What it is not.** It is not a lock on the repository and it never gates correctness work: editing files, `tsc`, `no-any` and
+  `jev-contract` all run inside an open window. Only *builds* and *test runs* wait, because only those contend for CPU.
+
+**Ring-1 `--jev off` provenance — the authoritative statement.** Two entries in this log disagreed about it, so here is the whole
+record in one place, and both of them now point at this line:
+
+| Tip | Date | Arms, as recorded | Verdict |
+| --- | --- | --- | --- |
+| `d86c385` (frozen worktree, OOS iteration 2) | 2026-09-22 | `JEVCODE_WARM=off`: QuixBugs Jev-on 1/3 → off **2/3** (pass); ladder on 2/2 → off **1/2**, `units` lost (FAIL). `JEVCODE_WARM=on`: QuixBugs 3/3 → 3/3 (pass); ladder FAIL on `units` again | **a gate failed**, both runs (`experiments/results/llm-jev-iter2.md` §9) |
+| `cbbdbb9` (pre-merge `llm-loop-integration`) | 2026-09-22 | **not recorded** — no arm counts, no artefact; the claim exists only as the clause "Ring 1 `--jev off` all gates met" in the `73a2ca6` merge message | green **as reported**, unverifiable from the tree |
+| `main` @ `d297b29` | — | **never run** | **unmeasured** |
+
+So: the only Ring-1 `--jev off` run with arm counts is iteration 2's, and it FAILED on the ladder; the only green run has no
+counts and predates `856023a` (oos-iter-4), which changed the localiser the gate turns on. **There is no Ring-1 `--jev off`
+measurement at or after `main` `d297b29`, and no release note, README line or design row may claim one.** The next measurement
+runs from a frozen worktree of the merged tip, inside a declared perf window, and lands its counts in this table.
