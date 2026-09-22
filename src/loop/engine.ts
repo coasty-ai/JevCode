@@ -4518,6 +4518,10 @@ class EngineImpl implements Engine {
       // contract 1.4 (W2b) (§4.2): absent when the gate did not run, so a run without a ledger writes HEAD's row
       ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
       ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
+      // OOS iteration 2, defect 3: the measured ask wall, which `jevChargedMs` (and `shellJevMs` above) charge
+      // `harnessMs` by and which nothing persisted — `grep -c jevWallMs` over iteration 2's state.json and
+      // steps.jsonl archives read 0. Absent when nothing was asked, so a step without Jev writes HEAD's row.
+      ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
     };
   }
 
@@ -5195,6 +5199,10 @@ class EngineImpl implements Engine {
             // contract 1.4 (W2b) (§4.2): the coordinate gate, absent when it did not run (no ledger, or a read/done action)
             ...(draft.timing.coordinateMs > 0 ? { coordinateMs: draft.timing.coordinateMs } : {}),
             ...(draft.timing.coordWaitMs > 0 ? { coordWaitMs: draft.timing.coordWaitMs } : {}),
+            // OOS iteration 2, defect 3: the wall measured inside `decider.ask`, the number `jevChargedMs` charges
+            // `harnessMs` by when the decider under-reports (every mock, stub and `--jev off` double). Absent when
+            // nothing was asked.
+            ...(draft.timing.jevWallMs > 0 ? { jevWallMs: draft.timing.jevWallMs } : {}),
           };
     this.timing.generatorMs += timing.generatorMs;
     this.timing.jevMs += timing.jevMs;
@@ -5204,6 +5212,8 @@ class EngineImpl implements Engine {
     if (timing.imagesMs !== undefined) this.timing.imagesMs = (this.timing.imagesMs ?? 0) + timing.imagesMs;
     if (timing.synthMs !== undefined) this.timing.synthMs = (this.timing.synthMs ?? 0) + timing.synthMs;
     if (timing.decomposeMs !== undefined) this.timing.decomposeMs = (this.timing.decomposeMs ?? 0) + timing.decomposeMs;
+    // OOS iteration 2, defect 3: summed for the run's own `RunResult.timing` (state.json), like the buckets above
+    if (timing.jevWallMs !== undefined) this.timing.jevWallMs = (this.timing.jevWallMs ?? 0) + timing.jevWallMs;
     // TUI-DESIGN §9.2: the per-step cost series behind `stepsLeftEstimate`
     this.costPerStep.push(draft.usage.generator.costUsd + draft.usage.jev.costUsd);
     const generatorTokens = draft.usage.generator.inputTokens + draft.usage.generator.outputTokens;

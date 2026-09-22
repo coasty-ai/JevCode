@@ -890,6 +890,11 @@ export class LedgerSieveSynthesizer implements Synthesizer {
       candidatesTested: (prior?.candidatesTested ?? 0) + r.trace.candidatesTested,
       passers: (prior?.plausible ?? 0) + r.trace.plausible,
       partials: r.kind === 'commit' && !r.allGoalTestsPass ? 1 : 0,
+      // OOS iteration 2, defect 2: the warm plane's own counters for this step (sieve/runner.ts
+      // `recordWarmStep`), so `steps.jsonl` carries what until now existed only as free text in
+      // the sieve's `synth · verify` event. The accumulator is per step and already covers every
+      // batch and every goal of it, so a later call in the same step reports a superset.
+      ...(mem.warmStep?.step === ctx.step ? { warm: mem.warmStep.warm } : {}),
       ...(r.trace.llm === undefined
         ? {}
         : {

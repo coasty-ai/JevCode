@@ -890,6 +890,49 @@ confirm, truncation, six concurrent lanes, two hang shapes). `warmModeFor` defau
 Python shapes); the M6 gate is measured behind that switch until a real-model A/B on the 18-task slice. Micro-benchmark, 8 lanes
 × 12 runs: warm 1.13 s vs cold 11.4 s; mock bench one task: 23.6 s vs 31.6 s.
 
+**As built after the iteration-2 measurement (2026-09-22, `warm-plane-fix-2`).** The real-model A/B that switch was
+put in for (`experiments/results/llm-jev-iter2.md` §7) found the transport sound — 93,460/93,460 screened over seven
+warm-on arms, 0 fallbacks, 0 restarts, 0 `screen:mismatch`, 0 `disabledReason`, 0 wedges — and 23 % faster at matched
+load (median per-task ratio 0.767, faster on 7/7), but it FAILED the pre-registered pass-parity criterion: warm-on lost
+QuixBugs `topological_ordering` twice independently and `shortest_path_length` once. Four defects are fixed here; the
+default stays **OFF** until the A/B is re-run. (1) *The t_run calibration sample was selected by failure.*
+`runQueue` taught `oracle.tRunMs` from cold runs only, and with the plane on the only candidates that reach the cold
+path are the ones whose hot screen hit a deadline and was discarded — so the sample was nothing but timeouts: on the
+recorded 185-candidate `topological_ordering` batch it taught `run median 11655 ms` where the identical batch measured
+510 ms cold, which sized `laneTimeoutMs`, `minRunWallMs` and the run plan, collapsed `runs left` 1,315 → 16, and left
+every later batch reporting `0 tested (nothing ran)`. The sample is now built by `sampleRun`
+(`src/synth/sieve/runner.ts`): a deadline re-run teaches **nothing** (`LaneRun.recheck` — a timeout is a bound, not a
+measurement of the candidate, on either path); a cold run that was nobody's re-run is the truth, as before; and a hot
+screen is kept in its own sample as a **lower bound** on the cold run it stands for (its served duration plus
+`PROCESS_OVERHEAD_MS`, the process start a screen does not pay), which may hold or RAISE `tRunMs` but never lower it.
+The one-way bound is deliberate: a screen skips more than process start — in pytest mode the warm parent has already
+imported the suite — and pricing the step's run budget on one would send pools to SIEVE that only the SCREEN can
+afford while every confirmation is still a cold run (`test/unit/synth/sieve/screen-confirm-budget.test.ts` pins that
+from the other side, and it is why the original rule excluded warm runs outright). Replayed on the recorded batch:
+**t_run 11,655 ms → 510 ms**, which is exactly what the warm-off arm measured on the identical 185 candidates. The
+load scaling and the in-flight-timeout rule read the cold samples when the batch has any and the hot bounds otherwise,
+and a hot-only batch's event says `run median ≥ N ms hot` rather than claiming a measurement. (1b) *The screen was bounded by the lane RUN
+cap.* `warm.serve` was handed `capMs()`; a screen that hits a deadline is thrown away and re-run cold, so the step paid
+both (≈14 s + 14 s per diverging candidate). It is now given `screenDeadline` — the lane run timeout's own shape with
+the cold path's 10 s process-start slack replaced by one per-case cap, floored at `MIN_RUN_TIMEOUT_MS` and never above
+the cold cap (13,200 ms → 2,030 ms on the recorded oracle) — and, because that bound is tighter than the cold run's,
+**any** timed-out screen is now re-run cold rather than only one that hits a deadline the baseline does not
+(`newDeadlineHit` alone would accept a whole-run kill against a timed-out baseline). (2) *The counters were
+unobservable from a bench run.* `WarmStats` existed only in `warmNote()`'s clause on the sieve's `synth · verify`
+event, and `--archive-runs` does not copy `transcript.log`, so every warm number in the iteration-2 report was
+harvested by hand from the live run directory. The sieve now sums them per step on `RunnerMemory.warmStep`,
+`search/index.ts` reports them at `reportVerify`, and they are persisted as **`StepRecord.verify.warm`**
+(`StepWarmSummary`, `src/core/types.ts`: `mode`, `offered`, `screened`, `confirmed`, `mismatches`, `fallbacks`,
+`restarts`, `invalidations`, `scopeUnusable`, `deadlineRechecks`, `screenMs`, `confirmMs`, `disabledReason?`) and
+summed onto **`StepsSummary.warm`** (`src/bench/types.ts`, with `disabled` and the mode unioned the way
+`deadlineGrowth` is). (3) *`timing.jevWallMs` was declared and never written* — the number `jevChargedMs` charges
+`harnessMs` by when a decider under-reports; it is now an optional member of `StepTiming`, on the step record and
+summed onto the run's. (4) *`JEVCODE_WARM=on` was a silent no-op on an unsupported runner* — SWE-bench's oracle runner
+is `other`, so the "18-task warm A/B" was really 14. `warmRequested()` now separates "the flag is off" from "the flag
+is on and this oracle has no warm shape", and the latter records `warm.mode = 'unsupported-runner'`
+(or `'unsupported-command'`) plus one `synth` line per step. All four record members are optional and absent unless
+the flag asked for the plane, so every warm-off record is byte-identical to one written before them.
+
 ### 9.3 S2–S6 — status
 
 None has started. Verified by the absence, on main, of the symbol each wave is defined by.

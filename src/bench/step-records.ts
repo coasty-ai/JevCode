@@ -9,7 +9,7 @@
  */
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isFiniteNumber, isJsonObject, parseJson } from '../core/json.js';
+import { isFiniteNumber, isJsonObject, isString, parseJson } from '../core/json.js';
 import type { JsonObject } from '../core/types.js';
 import type { StepsSummary } from './types.js';
 
@@ -20,6 +20,41 @@ export function emptyStepsSummary(): StepsSummary {
 }
 
 const VERIFY_COUNTS = ['samples', 'distinct', 'malformed', 'timeouts', 'cancelled', 'misanchored', 'candidatesTested', 'passers', 'partials', 'graceMs'] as const;
+
+/**
+ * OOS iteration 2, defect 2: the warm-plane counters of `StepRecord.verify.warm`
+ * (core/types.ts `StepWarmSummary`), summed the way the verify counts are. `mode` and
+ * `disabledReason` are not counts and are handled beside them.
+ */
+const WARM_COUNTS = ['offered', 'screened', 'confirmed', 'mismatches', 'fallbacks', 'restarts', 'invalidations', 'scopeUnusable', 'deadlineRechecks', 'screenMs', 'confirmMs'] as const;
+
+type WarmSummary = NonNullable<StepsSummary['warm']>;
+
+function emptyWarm(mode: WarmSummary['mode']): WarmSummary {
+  return { mode, offered: 0, screened: 0, confirmed: 0, mismatches: 0, fallbacks: 0, restarts: 0, invalidations: 0, scopeUnusable: 0, deadlineRechecks: 0, screenMs: 0, confirmMs: 0, disabled: 0 };
+}
+
+function warmModeOf(v: unknown): WarmSummary['mode'] | null {
+  return v === 'on' || v === 'unsupported-runner' || v === 'unsupported-command' || v === 'mixed' ? v : null;
+}
+
+/** The arm, not a count: unioned exactly as `deadlineGrowth` is. */
+function unionWarmMode(a: WarmSummary['mode'] | undefined, b: WarmSummary['mode']): WarmSummary['mode'] {
+  return a === undefined || a === b ? b : 'mixed';
+}
+
+/** One step's (or one part's) warm block folded into the run's. */
+function addWarm(s: StepsSummary, mode: WarmSummary['mode'], counts: Readonly<Record<string, unknown>>, disabled: number, reason: string | undefined): void {
+  const w = s.warm ?? emptyWarm(mode);
+  w.mode = unionWarmMode(s.warm?.mode, mode);
+  for (const k of WARM_COUNTS) {
+    const v = counts[k];
+    if (isFiniteNumber(v)) w[k] += v;
+  }
+  w.disabled += disabled;
+  if (w.disabledReason === undefined && reason !== undefined) w.disabledReason = reason;
+  s.warm = w;
+}
 
 /** One committed step's contribution (a non-object or field-less row counts as a step and nothing else). */
 export function addStepRow(s: StepsSummary, row: JsonObject): void {
@@ -47,6 +82,16 @@ export function addStepRow(s: StepsSummary, row: JsonObject): void {
   // OOS iteration 3, item 3: the arm, not a count — unioned so a run that somehow saw both says so
   const growth = verify['deadlineGrowth'];
   if (growth === 'served' || growth === 'always') s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === growth ? growth : 'mixed';
+  // OOS iteration 2, defect 2 / defect 4: the warm plane's per-step counters. Absent on every
+  // warm-off record (the default), so nothing is added for a run that never asked for the plane.
+  const warm = verify['warm'];
+  if (isJsonObject(warm)) {
+    const mode = warmModeOf(warm['mode']);
+    if (mode !== null) {
+      const reason = warm['disabledReason'];
+      addWarm(s, mode, warm, isString(reason) ? 1 : 0, isString(reason) ? reason : undefined);
+    }
+  }
 }
 
 /** Every well-formed line of a steps.jsonl (a torn last line is skipped). */
@@ -81,6 +126,7 @@ export function mergeStepsSummaries(parts: readonly StepsSummary[]): StepsSummar
     for (const k of VERIFY_COUNTS) s.verify[k] += p.verify[k];
     s.verify.localisationMissed += p.verify.localisationMissed;
     if (p.deadlineGrowth !== undefined) s.deadlineGrowth = s.deadlineGrowth === undefined || s.deadlineGrowth === p.deadlineGrowth ? p.deadlineGrowth : 'mixed';
+    if (p.warm !== undefined) addWarm(s, p.warm.mode, p.warm, p.warm.disabled, p.warm.disabledReason);
   }
   return s;
 }
