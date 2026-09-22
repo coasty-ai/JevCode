@@ -1,0 +1,1827 @@
+{
+  "benchId": "20260922-071513-a0a12c",
+  "createdAt": "2026-09-22T07:15:13.143Z",
+  "finishedAt": "2026-09-22T07:25:56.729Z",
+  "mocked": false,
+  "suites": [
+    "swebench"
+  ],
+  "conditions": {
+    "jev-off-tuned": {
+      "condition": "jev-off-tuned",
+      "mode": "jev-off",
+      "generatorModel": "z-ai/glm-5.3-flash",
+      "deciderModel": null,
+      "temperature": null,
+      "maxTokens": 1500,
+      "generation": {
+        "proposer": "generator",
+        "temperature": null,
+        "maxTokens": 1500,
+        "reasoning": {
+          "effort": "low"
+        },
+        "deadlineMs": 20000,
+        "repositoryDeadlineMs": 30000,
+        "lengthHandling": "double-once",
+        "servedRate": {
+          "inputPerM": 0.15,
+          "outputPerM": 0.5
+        }
+      },
+      "maxSteps": 25,
+      "maxWallMs": 1500000,
+      "maxReplans": 5,
+      "taskSpendCapUsd": 0.25,
+      "sandboxProfile": "auto",
+      "noNetwork": false,
+      "commandTimeoutMs": 120000,
+      "maxCommandTimeoutMs": 600000,
+      "maxOutputBytes": 204800,
+      "completeThreshold": 0.85,
+      "impossibleThreshold": 0.85
+    }
+  },
+  "conditionOrder": [
+    "jev-off-tuned"
+  ],
+  "generatorModel": "z-ai/glm-5.3-flash",
+  "spendCapUsd": 1.2,
+  "taskSpendCapUsd": 0.25,
+  "spentUsd": {
+    "generator": 0.13198665000000004,
+    "jev": 0,
+    "total": 0.13198665000000004
+  },
+  "capFired": null,
+  "notRun": {
+    "count": 0,
+    "tasks": []
+  },
+  "pairedTasks": {
+    "swebench": 4
+  },
+  "records": 4,
+  "perSuite": {
+    "swebench": {
+      "suite": "swebench",
+      "perCondition": {
+        "jev-off-tuned": {
+          "condition": "jev-off-tuned",
+          "tasks": 4,
+          "evaluated": 4,
+          "passed": 0,
+          "passRate": 0,
+          "passRateText": "0/4 (n=4)",
+          "passRateWilson": {
+            "lo": 0,
+            "hi": 0.48990002040399916
+          },
+          "unevaluated": [],
+          "unsupported": [],
+          "notRun": [],
+          "stepsToSolve": {
+            "n": 0,
+            "mean": null,
+            "median": null,
+            "values": []
+          },
+          "solveCurve": [
+            {
+              "k": 1,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 2,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 3,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 4,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 5,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 6,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 7,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 8,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 9,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 10,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 11,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 12,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 13,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 14,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 15,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 16,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 17,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 18,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 19,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 20,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 21,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 22,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 23,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 24,
+              "solved": 0,
+              "fraction": 0
+            },
+            {
+              "k": 25,
+              "solved": 0,
+              "fraction": 0
+            }
+          ],
+          "stepsUsed": {
+            "n": 4,
+            "mean": 25,
+            "median": 25
+          },
+          "stopReasons": {
+            "max_steps": 4
+          },
+          "tokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 7984.75,
+              "n": 4
+            },
+            {
+              "step": 2,
+              "mean": 6666.75,
+              "n": 4
+            },
+            {
+              "step": 3,
+              "mean": 6887.25,
+              "n": 4
+            },
+            {
+              "step": 4,
+              "mean": 7058,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 7298.5,
+              "n": 4
+            },
+            {
+              "step": 6,
+              "mean": 7707.25,
+              "n": 4
+            },
+            {
+              "step": 7,
+              "mean": 7811.5,
+              "n": 4
+            },
+            {
+              "step": 8,
+              "mean": 7750.5,
+              "n": 4
+            },
+            {
+              "step": 9,
+              "mean": 7804.75,
+              "n": 4
+            },
+            {
+              "step": 10,
+              "mean": 10032.5,
+              "n": 4
+            },
+            {
+              "step": 11,
+              "mean": 8351.75,
+              "n": 4
+            },
+            {
+              "step": 12,
+              "mean": 8424.5,
+              "n": 4
+            },
+            {
+              "step": 13,
+              "mean": 8520.75,
+              "n": 4
+            },
+            {
+              "step": 14,
+              "mean": 8722.75,
+              "n": 4
+            },
+            {
+              "step": 15,
+              "mean": 15594.25,
+              "n": 4
+            },
+            {
+              "step": 16,
+              "mean": 8728,
+              "n": 4
+            },
+            {
+              "step": 17,
+              "mean": 8857.75,
+              "n": 4
+            },
+            {
+              "step": 18,
+              "mean": 8702.25,
+              "n": 4
+            },
+            {
+              "step": 19,
+              "mean": 11192.5,
+              "n": 4
+            },
+            {
+              "step": 20,
+              "mean": 11407.5,
+              "n": 4
+            },
+            {
+              "step": 21,
+              "mean": 11761,
+              "n": 4
+            },
+            {
+              "step": 22,
+              "mean": 8678,
+              "n": 4
+            },
+            {
+              "step": 23,
+              "mean": 8862.5,
+              "n": 4
+            },
+            {
+              "step": 24,
+              "mean": 8807,
+              "n": 4
+            },
+            {
+              "step": 25,
+              "mean": 8887.75,
+              "n": 4
+            }
+          ],
+          "generatorTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 7984.75,
+              "n": 4
+            },
+            {
+              "step": 2,
+              "mean": 6666.75,
+              "n": 4
+            },
+            {
+              "step": 3,
+              "mean": 6887.25,
+              "n": 4
+            },
+            {
+              "step": 4,
+              "mean": 7058,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 7298.5,
+              "n": 4
+            },
+            {
+              "step": 6,
+              "mean": 7707.25,
+              "n": 4
+            },
+            {
+              "step": 7,
+              "mean": 7811.5,
+              "n": 4
+            },
+            {
+              "step": 8,
+              "mean": 7750.5,
+              "n": 4
+            },
+            {
+              "step": 9,
+              "mean": 7804.75,
+              "n": 4
+            },
+            {
+              "step": 10,
+              "mean": 10032.5,
+              "n": 4
+            },
+            {
+              "step": 11,
+              "mean": 8351.75,
+              "n": 4
+            },
+            {
+              "step": 12,
+              "mean": 8424.5,
+              "n": 4
+            },
+            {
+              "step": 13,
+              "mean": 8520.75,
+              "n": 4
+            },
+            {
+              "step": 14,
+              "mean": 8722.75,
+              "n": 4
+            },
+            {
+              "step": 15,
+              "mean": 15594.25,
+              "n": 4
+            },
+            {
+              "step": 16,
+              "mean": 8728,
+              "n": 4
+            },
+            {
+              "step": 17,
+              "mean": 8857.75,
+              "n": 4
+            },
+            {
+              "step": 18,
+              "mean": 8702.25,
+              "n": 4
+            },
+            {
+              "step": 19,
+              "mean": 11192.5,
+              "n": 4
+            },
+            {
+              "step": 20,
+              "mean": 11407.5,
+              "n": 4
+            },
+            {
+              "step": 21,
+              "mean": 11761,
+              "n": 4
+            },
+            {
+              "step": 22,
+              "mean": 8678,
+              "n": 4
+            },
+            {
+              "step": 23,
+              "mean": 8862.5,
+              "n": 4
+            },
+            {
+              "step": 24,
+              "mean": 8807,
+              "n": 4
+            },
+            {
+              "step": 25,
+              "mean": 8887.75,
+              "n": 4
+            }
+          ],
+          "jevTokensPerStepCurve": [
+            {
+              "step": 1,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 2,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 3,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 4,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 5,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 6,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 7,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 8,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 9,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 10,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 11,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 12,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 13,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 14,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 15,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 16,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 17,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 18,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 19,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 20,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 21,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 22,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 23,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 24,
+              "mean": 0,
+              "n": 4
+            },
+            {
+              "step": 25,
+              "mean": 0,
+              "n": 4
+            }
+          ],
+          "meanTokensPerStep": {
+            "mean": 8900,
+            "steps": 100
+          },
+          "meanGeneratorTokensPerStep": {
+            "mean": 8900,
+            "steps": 100
+          },
+          "meanJevTokensPerStep": {
+            "mean": 0,
+            "steps": 100
+          },
+          "jevLatencyMs": {
+            "p50": null,
+            "p95": null,
+            "n": 0
+          },
+          "jevRequests": 0,
+          "jevQuestions": 0,
+          "generatorCalls": 108,
+          "blocked": 0,
+          "reviews": 0,
+          "declined": 0,
+          "loops": 7,
+          "replans": 0,
+          "reads": {
+            "total": 20,
+            "meanPerRun": 5
+          },
+          "cost": {
+            "generator": 0.13198665,
+            "jev": 0,
+            "total": 0.13198665
+          },
+          "costPerSolved": null,
+          "wallMs": {
+            "n": 4,
+            "mean": 243955.4598435,
+            "median": 221850.0615
+          },
+          "generator": {
+            "calls": 106,
+            "samples": 0,
+            "valid": 97,
+            "malformed": 6,
+            "lengthStops": 0,
+            "cancelled": 3,
+            "timeouts": 3,
+            "inputTokens": 856385,
+            "outputTokens": 33615,
+            "reasoningTokens": 15055,
+            "costUsd": 0.13198665,
+            "estimatedUsd": 0.00379935,
+            "latencyMs": {
+              "n": 106,
+              "p50": 6634,
+              "p90": 19597,
+              "max": 30004
+            },
+            "validLatencyMs": {
+              "n": 97,
+              "p50": 6206,
+              "p90": 17111,
+              "max": 28911
+            },
+            "latencyRawMs": [
+              14962,
+              8409,
+              4185,
+              3284,
+              3608,
+              6268,
+              15496,
+              3216,
+              3278,
+              2462,
+              2837,
+              8396,
+              2906,
+              16771,
+              5135,
+              9251,
+              9323,
+              1719,
+              10818,
+              22409,
+              3323,
+              4788,
+              8868,
+              8297,
+              13387,
+              3094,
+              18505,
+              6919,
+              22052,
+              7631,
+              1890,
+              3328,
+              4809,
+              4395,
+              13921,
+              2521,
+              9827,
+              2967,
+              3434,
+              2716,
+              30004,
+              6210,
+              2233,
+              15006,
+              25954,
+              8848,
+              4973,
+              18791,
+              3148,
+              30003,
+              12903,
+              1880,
+              2765,
+              8131,
+              9341,
+              8610,
+              1612,
+              9965,
+              1165,
+              9346,
+              1468,
+              6206,
+              11193,
+              9454,
+              2832,
+              2344,
+              14052,
+              13313,
+              7385,
+              2031,
+              6898,
+              10931,
+              2125,
+              2059,
+              21241,
+              2310,
+              13335,
+              2005,
+              2675,
+              10851,
+              5017,
+              2892,
+              9946,
+              30001,
+              28911,
+              6634,
+              6486,
+              2335,
+              9195,
+              5091,
+              3964,
+              1956,
+              13951,
+              19597,
+              17111,
+              2155,
+              1689,
+              2322,
+              5224,
+              24819,
+              18100,
+              4814,
+              26387,
+              12609,
+              10990,
+              16822
+            ],
+            "validLatencyRawMs": [
+              8409,
+              4185,
+              3284,
+              3608,
+              6268,
+              15496,
+              3216,
+              3278,
+              2462,
+              2837,
+              8396,
+              2906,
+              16771,
+              5135,
+              9251,
+              9323,
+              1719,
+              10818,
+              3323,
+              4788,
+              8868,
+              8297,
+              13387,
+              3094,
+              18505,
+              6919,
+              22052,
+              7631,
+              1890,
+              3328,
+              4809,
+              4395,
+              13921,
+              2521,
+              9827,
+              2967,
+              3434,
+              2716,
+              2233,
+              15006,
+              25954,
+              8848,
+              4973,
+              18791,
+              3148,
+              12903,
+              1880,
+              2765,
+              8131,
+              9341,
+              8610,
+              1612,
+              9965,
+              1165,
+              9346,
+              1468,
+              6206,
+              11193,
+              9454,
+              2832,
+              2344,
+              14052,
+              7385,
+              2031,
+              6898,
+              10931,
+              2125,
+              2059,
+              21241,
+              2310,
+              13335,
+              2005,
+              2675,
+              10851,
+              5017,
+              2892,
+              9946,
+              28911,
+              6634,
+              6486,
+              2335,
+              5091,
+              3964,
+              1956,
+              13951,
+              19597,
+              17111,
+              2155,
+              1689,
+              2322,
+              5224,
+              24819,
+              4814,
+              26387,
+              12609,
+              10990,
+              16822
+            ]
+          },
+          "synth": {
+            "steps": 100,
+            "synthSteps": 0,
+            "synthMs": 0,
+            "genericSteps": 0,
+            "verify": {
+              "samples": 0,
+              "distinct": 0,
+              "malformed": 0,
+              "timeouts": 0,
+              "cancelled": 0,
+              "misanchored": 0,
+              "candidatesTested": 0,
+              "passers": 0,
+              "partials": 0,
+              "graceMs": 0,
+              "localisationMissed": 0
+            }
+          },
+          "stubbedJevRequests": 0,
+          "modelDrift": [],
+          "runsWithError": []
+        }
+      },
+      "comparison": {
+        "suite": "swebench",
+        "conditions": [
+          "jev-off-tuned"
+        ],
+        "pairedTasks": [
+          "sympy__sympy-13798",
+          "sympy__sympy-16792",
+          "sympy__sympy-20428",
+          "sympy__sympy-22080"
+        ],
+        "incompletePairs": [],
+        "excludedForDrift": [],
+        "perCondition": {
+          "jev-off-tuned": {
+            "condition": "jev-off-tuned",
+            "tasks": 4,
+            "evaluated": 4,
+            "passed": 0,
+            "passRate": 0,
+            "passRateText": "0/4 (n=4)",
+            "passRateWilson": {
+              "lo": 0,
+              "hi": 0.48990002040399916
+            },
+            "unevaluated": [],
+            "unsupported": [],
+            "notRun": [],
+            "stepsToSolve": {
+              "n": 0,
+              "mean": null,
+              "median": null,
+              "values": []
+            },
+            "solveCurve": [
+              {
+                "k": 1,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 2,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 3,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 4,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 5,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 6,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 7,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 8,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 9,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 10,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 11,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 12,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 13,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 14,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 15,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 16,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 17,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 18,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 19,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 20,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 21,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 22,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 23,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 24,
+                "solved": 0,
+                "fraction": 0
+              },
+              {
+                "k": 25,
+                "solved": 0,
+                "fraction": 0
+              }
+            ],
+            "stepsUsed": {
+              "n": 4,
+              "mean": 25,
+              "median": 25
+            },
+            "stopReasons": {
+              "max_steps": 4
+            },
+            "tokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 7984.75,
+                "n": 4
+              },
+              {
+                "step": 2,
+                "mean": 6666.75,
+                "n": 4
+              },
+              {
+                "step": 3,
+                "mean": 6887.25,
+                "n": 4
+              },
+              {
+                "step": 4,
+                "mean": 7058,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 7298.5,
+                "n": 4
+              },
+              {
+                "step": 6,
+                "mean": 7707.25,
+                "n": 4
+              },
+              {
+                "step": 7,
+                "mean": 7811.5,
+                "n": 4
+              },
+              {
+                "step": 8,
+                "mean": 7750.5,
+                "n": 4
+              },
+              {
+                "step": 9,
+                "mean": 7804.75,
+                "n": 4
+              },
+              {
+                "step": 10,
+                "mean": 10032.5,
+                "n": 4
+              },
+              {
+                "step": 11,
+                "mean": 8351.75,
+                "n": 4
+              },
+              {
+                "step": 12,
+                "mean": 8424.5,
+                "n": 4
+              },
+              {
+                "step": 13,
+                "mean": 8520.75,
+                "n": 4
+              },
+              {
+                "step": 14,
+                "mean": 8722.75,
+                "n": 4
+              },
+              {
+                "step": 15,
+                "mean": 15594.25,
+                "n": 4
+              },
+              {
+                "step": 16,
+                "mean": 8728,
+                "n": 4
+              },
+              {
+                "step": 17,
+                "mean": 8857.75,
+                "n": 4
+              },
+              {
+                "step": 18,
+                "mean": 8702.25,
+                "n": 4
+              },
+              {
+                "step": 19,
+                "mean": 11192.5,
+                "n": 4
+              },
+              {
+                "step": 20,
+                "mean": 11407.5,
+                "n": 4
+              },
+              {
+                "step": 21,
+                "mean": 11761,
+                "n": 4
+              },
+              {
+                "step": 22,
+                "mean": 8678,
+                "n": 4
+              },
+              {
+                "step": 23,
+                "mean": 8862.5,
+                "n": 4
+              },
+              {
+                "step": 24,
+                "mean": 8807,
+                "n": 4
+              },
+              {
+                "step": 25,
+                "mean": 8887.75,
+                "n": 4
+              }
+            ],
+            "generatorTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 7984.75,
+                "n": 4
+              },
+              {
+                "step": 2,
+                "mean": 6666.75,
+                "n": 4
+              },
+              {
+                "step": 3,
+                "mean": 6887.25,
+                "n": 4
+              },
+              {
+                "step": 4,
+                "mean": 7058,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 7298.5,
+                "n": 4
+              },
+              {
+                "step": 6,
+                "mean": 7707.25,
+                "n": 4
+              },
+              {
+                "step": 7,
+                "mean": 7811.5,
+                "n": 4
+              },
+              {
+                "step": 8,
+                "mean": 7750.5,
+                "n": 4
+              },
+              {
+                "step": 9,
+                "mean": 7804.75,
+                "n": 4
+              },
+              {
+                "step": 10,
+                "mean": 10032.5,
+                "n": 4
+              },
+              {
+                "step": 11,
+                "mean": 8351.75,
+                "n": 4
+              },
+              {
+                "step": 12,
+                "mean": 8424.5,
+                "n": 4
+              },
+              {
+                "step": 13,
+                "mean": 8520.75,
+                "n": 4
+              },
+              {
+                "step": 14,
+                "mean": 8722.75,
+                "n": 4
+              },
+              {
+                "step": 15,
+                "mean": 15594.25,
+                "n": 4
+              },
+              {
+                "step": 16,
+                "mean": 8728,
+                "n": 4
+              },
+              {
+                "step": 17,
+                "mean": 8857.75,
+                "n": 4
+              },
+              {
+                "step": 18,
+                "mean": 8702.25,
+                "n": 4
+              },
+              {
+                "step": 19,
+                "mean": 11192.5,
+                "n": 4
+              },
+              {
+                "step": 20,
+                "mean": 11407.5,
+                "n": 4
+              },
+              {
+                "step": 21,
+                "mean": 11761,
+                "n": 4
+              },
+              {
+                "step": 22,
+                "mean": 8678,
+                "n": 4
+              },
+              {
+                "step": 23,
+                "mean": 8862.5,
+                "n": 4
+              },
+              {
+                "step": 24,
+                "mean": 8807,
+                "n": 4
+              },
+              {
+                "step": 25,
+                "mean": 8887.75,
+                "n": 4
+              }
+            ],
+            "jevTokensPerStepCurve": [
+              {
+                "step": 1,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 2,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 3,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 4,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 5,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 6,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 7,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 8,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 9,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 10,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 11,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 12,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 13,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 14,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 15,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 16,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 17,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 18,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 19,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 20,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 21,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 22,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 23,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 24,
+                "mean": 0,
+                "n": 4
+              },
+              {
+                "step": 25,
+                "mean": 0,
+                "n": 4
+              }
+            ],
+            "meanTokensPerStep": {
+              "mean": 8900,
+              "steps": 100
+            },
+            "meanGeneratorTokensPerStep": {
+              "mean": 8900,
+              "steps": 100
+            },
+            "meanJevTokensPerStep": {
+              "mean": 0,
+              "steps": 100
+            },
+            "jevLatencyMs": {
+              "p50": null,
+              "p95": null,
+              "n": 0
+            },
+            "jevRequests": 0,
+            "jevQuestions": 0,
+            "generatorCalls": 108,
+            "blocked": 0,
+            "reviews": 0,
+            "declined": 0,
+            "loops": 7,
+            "replans": 0,
+            "reads": {
+              "total": 20,
+              "meanPerRun": 5
+            },
+            "cost": {
+              "generator": 0.13198665,
+              "jev": 0,
+              "total": 0.13198665
+            },
+            "costPerSolved": null,
+            "wallMs": {
+              "n": 4,
+              "mean": 243955.4598435,
+              "median": 221850.0615
+            },
+            "generator": {
+              "calls": 106,
+              "samples": 0,
+              "valid": 97,
+              "malformed": 6,
+              "lengthStops": 0,
+              "cancelled": 3,
+              "timeouts": 3,
+              "inputTokens": 856385,
+              "outputTokens": 33615,
+              "reasoningTokens": 15055,
+              "costUsd": 0.13198665,
+              "estimatedUsd": 0.00379935,
+              "latencyMs": {
+                "n": 106,
+                "p50": 6634,
+                "p90": 19597,
+                "max": 30004
+              },
+              "validLatencyMs": {
+                "n": 97,
+                "p50": 6206,
+                "p90": 17111,
+                "max": 28911
+              },
+              "latencyRawMs": [
+                14962,
+                8409,
+                4185,
+                3284,
+                3608,
+                6268,
+                15496,
+                3216,
+                3278,
+                2462,
+                2837,
+                8396,
+                2906,
+                16771,
+                5135,
+                9251,
+                9323,
+                1719,
+                10818,
+                22409,
+                3323,
+                4788,
+                8868,
+                8297,
+                13387,
+                3094,
+                18505,
+                6919,
+                22052,
+                7631,
+                1890,
+                3328,
+                4809,
+                4395,
+                13921,
+                2521,
+                9827,
+                2967,
+                3434,
+                2716,
+                30004,
+                6210,
+                2233,
+                15006,
+                25954,
+                8848,
+                4973,
+                18791,
+                3148,
+                30003,
+                12903,
+                1880,
+                2765,
+                8131,
+                9341,
+                8610,
+                1612,
+                9965,
+                1165,
+                9346,
+                1468,
+                6206,
+                11193,
+                9454,
+                2832,
+                2344,
+                14052,
+                13313,
+                7385,
+                2031,
+                6898,
+                10931,
+                2125,
+                2059,
+                21241,
+                2310,
+                13335,
+                2005,
+                2675,
+                10851,
+                5017,
+                2892,
+                9946,
+                30001,
+                28911,
+                6634,
+                6486,
+                2335,
+                9195,
+                5091,
+                3964,
+                1956,
+                13951,
+                19597,
+                17111,
+                2155,
+                1689,
+                2322,
+                5224,
+                24819,
+                18100,
+                4814,
+                26387,
+                12609,
+                10990,
+                16822
+              ],
+              "validLatencyRawMs": [
+                8409,
+                4185,
+                3284,
+                3608,
+                6268,
+                15496,
+                3216,
+                3278,
+                2462,
+                2837,
+                8396,
+                2906,
+                16771,
+                5135,
+                9251,
+                9323,
+                1719,
+                10818,
+                3323,
+                4788,
+                8868,
+                8297,
+                13387,
+                3094,
+                18505,
+                6919,
+                22052,
+                7631,
+                1890,
+                3328,
+                4809,
+                4395,
+                13921,
+                2521,
+                9827,
+                2967,
+                3434,
+                2716,
+                2233,
+                15006,
+                25954,
+                8848,
+                4973,
+                18791,
+                3148,
+                12903,
+                1880,
+                2765,
+                8131,
+                9341,
+                8610,
+                1612,
+                9965,
+                1165,
+                9346,
+                1468,
+                6206,
+                11193,
+                9454,
+                2832,
+                2344,
+                14052,
+                7385,
+                2031,
+                6898,
+                10931,
+                2125,
+                2059,
+                21241,
+                2310,
+                13335,
+                2005,
+                2675,
+                10851,
+                5017,
+                2892,
+                9946,
+                28911,
+                6634,
+                6486,
+                2335,
+                5091,
+                3964,
+                1956,
+                13951,
+                19597,
+                17111,
+                2155,
+                1689,
+                2322,
+                5224,
+                24819,
+                4814,
+                26387,
+                12609,
+                10990,
+                16822
+              ]
+            },
+            "synth": {
+              "steps": 100,
+              "synthSteps": 0,
+              "synthMs": 0,
+              "genericSteps": 0,
+              "verify": {
+                "samples": 0,
+                "distinct": 0,
+                "malformed": 0,
+                "timeouts": 0,
+                "cancelled": 0,
+                "misanchored": 0,
+                "candidatesTested": 0,
+                "passers": 0,
+                "partials": 0,
+                "graceMs": 0,
+                "localisationMissed": 0
+              }
+            },
+            "stubbedJevRequests": 0,
+            "modelDrift": [],
+            "runsWithError": []
+          }
+        },
+        "rows": [
+          {
+            "task": "sympy__sympy-13798",
+            "pass": {
+              "jev-off-tuned": false
+            },
+            "steps": {
+              "jev-off-tuned": 25
+            },
+            "reads": {
+              "jev-off-tuned": 3
+            },
+            "cost": {
+              "jev-off-tuned": 0.029870545499999998
+            },
+            "wallMs": {
+              "jev-off-tuned": 258361.761375
+            }
+          },
+          {
+            "task": "sympy__sympy-16792",
+            "pass": {
+              "jev-off-tuned": false
+            },
+            "steps": {
+              "jev-off-tuned": 25
+            },
+            "reads": {
+              "jev-off-tuned": 6
+            },
+            "cost": {
+              "jev-off-tuned": 0.030229261000000004
+            },
+            "wallMs": {
+              "jev-off-tuned": 221850.0615
+            }
+          },
+          {
+            "task": "sympy__sympy-20428",
+            "pass": {
+              "jev-off-tuned": false
+            },
+            "steps": {
+              "jev-off-tuned": 25
+            },
+            "reads": {
+              "jev-off-tuned": 5
+            },
+            "cost": {
+              "jev-off-tuned": 0.0322052015
+            },
+            "wallMs": {
+              "jev-off-tuned": 185122.128083
+            }
+          },
+          {
+            "task": "sympy__sympy-22080",
+            "pass": {
+              "jev-off-tuned": false
+            },
+            "steps": {
+              "jev-off-tuned": 25
+            },
+            "reads": {
+              "jev-off-tuned": 6
+            },
+            "cost": {
+              "jev-off-tuned": 0.03968164200000001
+            },
+            "wallMs": {
+              "jev-off-tuned": 310487.88841599994
+            }
+          }
+        ]
+      }
+    }
+  },
+  "resumed": false
+}
