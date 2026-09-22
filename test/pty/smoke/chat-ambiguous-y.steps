@@ -11,7 +11,7 @@ expect run this as a task\?
 sleep 0.25
 send y
 expect \[run\](?:\x1b\[[0-9;]*m)* start 
-expect end (complete|max_steps|generator_done)
+expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question
 send /exit
 sleep 0.2

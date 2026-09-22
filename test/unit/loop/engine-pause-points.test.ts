@@ -124,7 +124,9 @@ describe('P1 — step boundary', () => {
     expect(p).toEqual({ step: 2, round: null, phase: 'idle', reason: 'step', resumableAt: 'boundary', replayable: false, by: 'self', end: false });
     // order: … status → pause:point → transcript stop line → run:end
     const iPoint = indexOf(h, (e) => e.type === 'pause:point');
-    const iStop = indexOf(h, (e) => e.type === 'transcript' && /^stop: human_pause/.test(e.text));
+    // TUI-DESIGN-4 §3.6 / §3.7 G1 (D-V): the stop EVENT still fires here (this test is about ordering); what the
+    // round deletes is the ITEM, in `itemsFromEvent` — see the transcript assertion below.
+    const iStop = indexOf(h, (e) => e.type === 'transcript' && (e.text === '' || /^stop: [a-z_]+ at step \d+/.test(e.text)));
     const iEnd = indexOf(h, (e) => e.type === 'run:end');
     expect(iPoint).toBeGreaterThan(0);
     expect(iPoint).toBeLessThan(iStop);
@@ -135,8 +137,10 @@ describe('P1 — step boundary', () => {
     expect(h.store.last()!.interruptedDetail).toBeUndefined();
     expect(h.engine.status().pausePoint).toEqual(p);
     expect(h.engine.status().pauseNow).toBe(false);
-    // the transcript is unchanged by the event (pause:point yields no line)
-    expect(h.store.transcript.at(-2)).toBe('[run] warn: stop: human_pause at step 1');
+    // the transcript is unchanged by the event (pause:point yields no line); TUI-DESIGN-4 §3.7 G1 deleted the
+    // `stop:` line as well, so `[run] finished` is the last row
+    expect(h.store.transcript.some((l) => l.includes('stop: human_pause'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] human_pause [·-] /);
   });
 
   it('pause now between steps (before run) is the same as pause at step: nothing to interrupt, zero steps, exit 4', async () => {

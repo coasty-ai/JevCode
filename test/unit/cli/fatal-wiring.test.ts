@@ -10,7 +10,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import type { SerializedError, SignalName } from '../../../src/core/types.js';
 import { JevCodeError } from '../../../src/errors.js';
-import { HANGUP_EXIT_CODE, RESTORE, createRestoreTerminal, wireFatalHandlers, type FatalProcessLike, type FatalStdin, type FatalWiringDeps } from '../../../src/cli/fatal.js';
+import { ALT_SCREEN_LEAVE, HANGUP_EXIT_CODE, RESTORE, alternateScreenEntered, createRestoreTerminal, markAlternateScreen, wireFatalHandlers, type FatalProcessLike, type FatalStdin, type FatalWiringDeps } from '../../../src/cli/fatal.js';
 
 const CANARY = 'sk-ant-CANARY0123456789abcdefghijklmnop';
 const redact = (s: string): string => s.split(CANARY).join('[REDACTED:test]');
@@ -110,7 +110,9 @@ describe('wireFatalHandlers: the fatal path over the real process surface (§13.
     expect(h.abort).toHaveBeenCalledWith('error', { error: { name: 'JevCodeError', code: 'jev_http', message: 'Jev HTTP 500: [REDACTED:test]', exitCode: 5 } });
     const epilogue = h.writes[2]?.text ?? '';
     expect(epilogue.split('\n')[0]).toBe('jevcode: stopped — jev_http: Jev HTTP 500: [REDACTED:test] (exit 5)');
-    expect(epilogue).toContain('  resume    jevcode run --resume r1');
+    // TUI-DESIGN-4 §3.1: the epilogue's rows are `kv` block rows now, so the key column's width is derived from
+    // the longest key rather than hard-coded — the assertion is on the row, not on the padding
+    expect(epilogue).toMatch(/^ {2}resume {2,}jevcode run --resume r1$/m);
     expect(JSON.stringify(h.writes) + JSON.stringify(h.abort.mock.calls)).not.toContain(CANARY);
     expect(w.fatalExit.fired()).toBe(true);
     w.uninstall();
@@ -207,7 +209,9 @@ describe('wireFatalHandlers: the hang-up path (§13.4, §13.5 → 129)', () => {
     h.proc.stdout.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
     expect(h.abort).toHaveBeenCalledWith('signal', { signal: 'SIGHUP' });
     expect(h.proc.exits).toEqual([129]);
-    expect(h.writes).toEqual([]);
+    // TUI-DESIGN-4 §2.8 P-R11: nothing on fd 1 (the terminal is a pipe and may be closed), one line on fd 2
+    expect(h.writes.map((x) => x.fd)).toEqual([2]);
+    expect(h.writes[0]?.text).toMatch(/^jevcode: stdout closed; run checkpointed at \S/);
     const other = harness({ stdoutTTY: false });
     wireFatalHandlers(other.deps);
     other.proc.stderr.emit('error', Object.assign(new Error(`ENOSPC ${CANARY}`), { code: 'ENOSPC' }));
@@ -245,6 +249,31 @@ describe('createRestoreTerminal (§13.4 step 2, §14.2)', () => {
         throw new Error('EIO');
       })(),
     ).not.toThrow();
+  });
+
+  /**
+   * TUI-DESIGN-4 §1.3.1: a fullscreen mount must never strand the user on a blank alternate buffer. The flag is
+   * set by `createTuiRenderer` through `markAlternateScreen()`; the classic renderer never sets it, and a classic
+   * session's restore must not swap the screen out from under it.
+   */
+  it('writes ESC[?1049l before RESTORE only when the alternate screen was entered (§1.3.1)', () => {
+    try {
+      expect(alternateScreenEntered()).toBe(false);
+      const classic: { fd: number; text: string }[] = [];
+      createRestoreTerminal({ stdin: new FakeStream({ isRaw: false }), stdout: { isTTY: true } }, (fd, text) => classic.push({ fd, text }))();
+      expect(classic).toEqual([{ fd: 1, text: RESTORE }]);
+      markAlternateScreen();
+      expect(alternateScreenEntered()).toBe(true);
+      const full: { fd: number; text: string }[] = [];
+      createRestoreTerminal({ stdin: new FakeStream({ isRaw: false }), stdout: { isTTY: true } }, (fd, text) => full.push({ fd, text }))();
+      expect(full).toEqual([{ fd: 1, text: `${ALT_SCREEN_LEAVE}${RESTORE}` }]);
+      expect(ALT_SCREEN_LEAVE).toBe('\x1b[?1049l');
+      // never ESC[2J / ESC[3J: the scrollback is the user's (§14.2)
+      expect(full[0]?.text).not.toContain('\x1b[2J');
+      expect(full[0]?.text).not.toContain('\x1b[3J');
+    } finally {
+      markAlternateScreen(false);
+    }
   });
 
   it('an injected restore (O9 restoreTerminal) replaces the default and runs before the epilogue', async () => {

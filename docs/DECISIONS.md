@@ -1095,3 +1095,50 @@ resume takes over and the stale process must stop; a minimum-holder rule would c
 `forkVerdict`, `claimHolderOf`, `byRunId` and the `/resume` refusal follow the maximum; `--force-takeback` mints above the maximum of
 qualified and (strictly-below-bound) unqualified epochs and refuses `'epoch-exhausted'` at the bound; qualified foreign epochs come
 from the sixth record kind `claims` at `runs/<deviceId>/<runId>/claims.json`, never from `run.json`.
+
+## 2026-09-22 A pane that keeps throwing degrades once, and a failing checkpoint says so
+
+`guard()` gains a per-pane latch with `PaneBoundary`'s semantics: a deterministic builder throw used to be an
+unbounded render-and-dispatch loop committing one `<Static>` item per iteration on Ink's immediate path — an
+unkillable flood whose only escape was `kill -9`. Every remaining React-boundary hole is closed, including round 3's
+wordmark, which is the idle tenant and was rendering outside every boundary. A failing checkpoint write now emits
+`checkpoint:degraded`, sets exit code 3, and the epilogue computes `resumable` from a post-write `stat` and lists
+only the files that exist — before this, deleting or chmod-ing the runs dir mid-run was completely silent and the
+epilogue advertised a resume for a directory that no longer existed. A 45 s submission watchdog and an unconditional
+second-Ctrl-C exit close the one window in which `host.abort()` does nothing while the App has already dispatched
+`run:aborting`. `explainFsError` turns raw errnos into a sentence and a fix, `jevcode config` reports wrong-typed and
+unknown settings instead of printing defaults silently, the session index is folded from the tail with a skip count,
+and the support bundle carries `state.json`, the rotated log, the launch tier and the locale — streamed and capped
+instead of read whole. Consequences: one typed `parseFault` with thirteen scenarios replaces string matching in three
+files and rejects an unknown value loudly before Ink mounts, so a typo'd fault in CI fails the test instead of
+silently passing (TUI-DESIGN-4 §7, D-AA).
+
+## 2026-09-22 `ENOENT` joins the degraded checkpoint codes, and the degraded notice is a sentence
+
+`DISK_ERROR_CODES` gains `ENOENT` beside ENOSPC/EACCES/EROFS/EDQUOT/EIO/EMFILE, and `DiskError` gains a `sentence`
+field — `checkpoint degraded: <code> on <file> — <what it means>; this run cannot be resumed` — beside the existing
+`text`. Reason: the measured silent failure is a **removed** run directory, whose every write fails with ENOENT, and
+the old notice printed the errno's raw `open '<path>'` suffix into a row that has no room for it. Classification is
+applied to **write** paths only (the store's new `failWrite`, and the engine's `noteDiskError`), so reading a file
+that does not exist is unaffected. `text` is kept unchanged so existing captures, `plain.ts` pins and the engine's
+own tests do not move; the engine's emit switches to `sentence` when the two named `src/loop/engine.ts` edits land
+(TUI-DESIGN-4 §7.2, §7.11 scenario 3, §12).
+
+## 2026-09-22 A forward-version `run.json` is refused for resume, never for report
+
+`refuseNewerRunMeta` and `parseEnvelope` name a newer artefact — `run <id> was written by a newer JevCode (run.json
+v<n>; this build reads v<m>) — upgrade with jevcode upgrade`, exit 2 — while `v < CHECKPOINT_VERSION` and an absent
+`v` keep loading unchanged. A `v` that is present but not a number is treated as **corrupt**, not as newer, so it
+falls through to the existing shape check. The refusal applies to resume, not to `jevcode report`: a support bundle
+for an unreadable run is exactly what you want. `jevcode sessions reindex` counts newer runs in a separate `newer`
+field rather than folding them into `skipped` alone (TUI-DESIGN-4 §7.9).
+
+## 2026-09-22 The session index is folded from its tail, and its skips are counted by reason
+
+`readIndex` reads at most the last `INDEX_FOLD_MAX_BYTES = 8 MiB` of `sessions/index.jsonl`, starting at the first
+complete line inside the window. Reason: the index is append-only and time-ordered, so its tail is what the picker
+needs, and the fold ran on the post-first-frame path — 51 MB / 200 000 lines took 581 ms, once per session open; the
+window brings it under 100 ms and older history stays on disk, reachable through `jevcode sessions reindex`.
+`foldIndex` additionally returns a per-reason tally (`not-json`, `bad-shape`, `over-length`, `unknown-kind`) so
+`jevcode sessions` can say `<n> index lines were unreadable and skipped — run jevcode sessions reindex` instead of
+printing the fresh-install sentence over a corrupt index (TUI-DESIGN-4 §7.6).

@@ -98,7 +98,7 @@ import { consoleInnerWidth } from '../../../../src/tui/console-lines.js';
 import type { EngineMode } from '../../../../src/core/types.js';
 import { stringWidth } from '../../../../src/tui/composer/width.js';
 import * as credentials from '../../../../src/config/credentials.js';
-import { asciiRow, clipRow } from '../../../../src/tui/onboarding/lines.js';
+import { WIZARD_MINSIZE_STATIC_ITEM, WIZARD_MINSIZE_TOAST, asciiRow, clipRow, wizardMinsizeRow } from '../../../../src/tui/onboarding/lines.js';
 
 /** a jev-on first run with both keys missing and nothing inferred — TUI-DESIGN-3 §1.4: the one-paste `key` step */
 const detectKey: OnboardingAction = { type: 'detect', missing: ['generator.apiKey', 'decider.apiKey'], mode: 'jev-on', provider: null, trustNeeded: true };
@@ -747,5 +747,84 @@ describe('TUI-DESIGN-3 §1.4.2 / §10: the `key` and `options` steps, their twin
     for (const t of [capsItem('jev-on', 2, 10), defaultModeItem('jev-on', 2, 10), verifiedJevText('m', 318, 0.00002), verifiedGeneratorText('m', 0.000002)]) expect(t).not.toMatch(/e-\d/);
     // no vendor name in any mode-bearing item (R3 F9)
     for (const m of MODE_SETTING_VALUES as readonly EngineMode[]) expect(capsItem(m, 2, 10)).not.toMatch(/Claude|GLM writes/);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §2.5 (P-R6, D4) — `wizardMinsizeRow`: the read-only one-row wizard twin.
+// ---------------------------------------------------------------------------------------
+describe('wizardMinsizeRow (TUI-DESIGN-4 §2.5, P-R6)', () => {
+  const STEPS = ['key', 'options', 'jevProvider', 'provider', 'generatorKey', 'jevKey', 'verify', 'trust'] as const;
+  const at = (step: OnboardingState['step'], extra: Partial<OnboardingState> = {}): OnboardingState => ({ ...INITIAL_ONBOARDING, step, ...extra } as OnboardingState);
+
+  it('§12: the normative `key` row, byte for byte, and its `--ascii` twin', () => {
+    expect(wizardMinsizeRow(at('key'), 60)).toBe('setup · key — terminal too small; ≥ 40×8 to type');
+    expect(wizardMinsizeRow(at('key'), 60, true)).toBe('setup - key - terminal too small; >= 40x8 to type');
+    expect(wizardMinsizeRow(at('key'), 60, true)).toMatch(/^[\x20-\x7e]*$/);
+  });
+
+  it('§10 S2: every step at 20 / 30 / 40 columns, `cellWidth ≤ columns` and never empty', () => {
+    for (const step of STEPS) {
+      for (const columns of [20, 30, 40]) {
+        for (const ascii of [false, true]) {
+          const row = wizardMinsizeRow(at(step, { length: 0 }), columns, ascii);
+          expect(row, `${step}/${columns}`).not.toBe('');
+          expect(cells(row), `${step}/${columns}: ${row}`).toBeLessThanOrEqual(columns);
+          expect(row, `${step}/${columns}`).not.toMatch(/…$/);
+          if (ascii) expect(row, `${step}/${columns}`).toMatch(/^[\x20-\x7e]*$/);
+        }
+      }
+    }
+  });
+
+  it('every width 1…80 fits, at every step, with and without entered text', () => {
+    for (const step of STEPS) {
+      for (let c = 1; c <= 80; c++) {
+        for (const length of [0, 1, 51]) {
+          const row = wizardMinsizeRow(at(step, { length }), c);
+          if (c >= cells('setup')) expect(cells(row), `${step}/${c}/${length}`).toBeLessThanOrEqual(c);
+        }
+      }
+    }
+  });
+
+  it('edge 2: **no masked byte and no length** — a field step shows a capped `•` count of text that already exists, or nothing', () => {
+    expect(wizardMinsizeRow(at('key', { length: 0 }), 60)).toContain('terminal too small');
+    expect(wizardMinsizeRow(at('key', { length: 3 }), 60)).toBe('setup · key — •••; ≥ 40×8 to type');
+    const long = wizardMinsizeRow(at('key', { length: 51 }), 60);
+    expect(long).toBe('setup · key — ••••••••; ≥ 40×8 to type');
+    expect(long).not.toContain('51');
+    expect(long).not.toContain('›');
+    expect(long).not.toMatch(/[A-Za-z]{20,}/); // no key-shaped run of characters anywhere
+    expect(wizardMinsizeRow(at('key', { length: 3 }), 60, true)).toBe('setup - key - ***; >= 40x8 to type');
+  });
+
+  it('edge 1: a picking step keeps its numbered choices, and `1 typesafe  2 openrouter` (24 cells) fits at 40', () => {
+    expect(wizardMinsizeRow(at('jevProvider'), 40)).toBe('1 typesafe  2 openrouter');
+    expect(cells('1 typesafe  2 openrouter')).toBe(24);
+    expect(wizardMinsizeRow(at('options'), 60)).toContain('1 OpenRouter');
+    expect(wizardMinsizeRow(at('trust'), 40)).toContain('1 trust');
+    expect(wizardMinsizeRow(at('verify'), 40)).toContain('[y]');
+  });
+
+  it('a step with no wizard row answers `\'\'` (detect, save, sandbox, done, exit)', () => {
+    for (const step of ['detect', 'save', 'sandbox', 'done', 'exit'] as const) {
+      expect(wizardMinsizeRow(at(step), 40), step).toBe('');
+    }
+  });
+
+  it('§12 / §2.5 edge 3: the read-only toast and the `rows < 3` static item are the strings the glossary names', () => {
+    expect(WIZARD_MINSIZE_TOAST).toBe('resize to at least 40×8 to continue setup');
+    expect(WIZARD_MINSIZE_STATIC_ITEM).toBe('setup needs a terminal of at least 40×8');
+  });
+
+  it('§2.5: a key pressed at minsize changes NO wizard state — the reducer is not driven, the toast is (the row is read-only)', () => {
+    // the design states the rule once: keys are consumed and produce one toast. The row itself carries no caret and
+    // no invitation, so a first-run user cannot mistake it for a field.
+    const before = at('key', { length: 4 });
+    expect(wizardMinsizeRow(before, 40)).not.toContain('›');
+    expect(wizardMinsizeRow(before, 40)).not.toContain('_');
+    // and the same state rendered twice is the same row (no cursor, no animation, nothing to blink)
+    expect(wizardMinsizeRow(before, 40)).toBe(wizardMinsizeRow(before, 40));
   });
 });

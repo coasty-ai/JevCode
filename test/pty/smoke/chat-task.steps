@@ -10,7 +10,7 @@ send \r
 expect \[you\](?:\x1b\[[0-9;]*m)* (?:\x1b\[[0-9;]*m)*fix the failing test
 expect \[run\](?:\x1b\[[0-9;]*m)* start 
 expect \[step 1\](?:\x1b\[[0-9;]*m)* 
-expect end (complete|max_steps|generator_done)
+expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question
 send /exit
 sleep 0.2

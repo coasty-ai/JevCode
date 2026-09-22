@@ -8,15 +8,32 @@
  * (`stringWidth`), so CJK and emoji bodies wrap where a terminal breaks them; a single token wider than the row is cut
  * by grapheme. Under `--ascii` the separator is ` - ` (`glyphs.dot`).
  *
- * Identity (§5.3): the rows never reorder, drop or add a token — strip each row's leading spaces, join with one space,
- * collapse space runs, and the body comes back byte for byte (`joinWrapped`). `transcript.log` and `--plain` never see
- * these rows; the TUI's `<Static>` is the only reader.
+ * Identity (§5.3, strengthened by TUI-DESIGN-4 §2.4 / P-R3): the rows never reorder, drop or add a token — strip each
+ * row's leading spaces, join the rows, collapse space runs, and the body comes back byte for byte. The join is one
+ * space **except at a cut**, where it is the empty string: at the supported minimum of 40 columns the body width is 30,
+ * so any path, sha or run id of 31+ cells is hard-split by grapheme and the old unconditional space join was wrong
+ * (measured: `edited packages/app/src/components/SomeVeryLongName.test.tsx in one step` fails at widths 30 and 40 and
+ * passes at 70). `wrapBodyCut` reports those row indices as `cuts`; `wrapBody` stays the thin wrapper that drops them,
+ * so **no caller changes**, and `joinWrapped(rows, cuts)` is now exact at every width. `transcript.log` and `--plain`
+ * never see these rows; the TUI's `<Static>` is the only reader.
  */
 import { stringWidth } from '../composer/width.js';
 import { GLYPHS, type GlyphSet } from '../glyphs.js';
 
 /** TUI-DESIGN-3 §5.1 rule 3: a final token narrower than this many cells joins the previous word on its row. */
 export const ORPHAN_MIN_CELLS = 4;
+
+/**
+ * TUI-DESIGN-4 §2.4 (P-R3): a wrapped body and the rows that continue their predecessor **mid-token**. `cuts` holds
+ * row indices (never 0), ascending and unique: `rows[i]` was produced by a grapheme cut of the token that ends
+ * `rows[i − 1]`, so the §5.3 join must put no space between them. Row indices, never cell offsets, so a cut inside a
+ * wide (CJK) cluster needs no special case.
+ */
+export interface WrappedBody {
+  rows: string[];
+  /** indices `i` where `rows[i]` continues `rows[i − 1]` mid-token */
+  cuts: readonly number[];
+}
 
 /** the segment separator of a body in this glyph set (` · `, ` - ` under `--ascii`) */
 export function segmentSeparator(g: GlyphSet = GLYPHS.unicode): string {
@@ -58,9 +75,21 @@ function hardSplit(token: string, width: number): string[] {
   return out;
 }
 
-/** the words of a chunk laid greedily into rows of ≤ `room(rowIndex)` cells; a word wider than its row is cut by grapheme */
-function packWords(words: readonly string[], room: (rowIndex: number) => number, startRow: number, seed: string): { rows: string[]; last: string } {
+/** rows plus the row still being filled, and the cut indices over `[...rows, last]` (TUI-DESIGN-4 §2.4). */
+interface Packed {
+  rows: string[];
+  last: string;
+  cuts: number[];
+}
+
+/**
+ * the words of a chunk laid greedily into rows of ≤ `room(rowIndex)` cells; a word wider than its row is cut by
+ * grapheme, and every piece after the first opens a row that continues its predecessor mid-token (a **cut**, indexed
+ * over `[...rows, last]`).
+ */
+function packWords(words: readonly string[], room: (rowIndex: number) => number, startRow: number, seed: string): Packed {
   const rows: string[] = [];
+  const cuts: number[] = [];
   let cur = seed;
   let index = startRow;
   const push = (): void => {
@@ -81,23 +110,26 @@ function packWords(words: readonly string[], room: (rowIndex: number) => number,
     }
     const pieces = hardSplit(word, Math.max(1, room(index)));
     for (let i = 0; i < pieces.length; i++) {
+      // pieces[i] (i ≥ 1) opens the row `rows.length`, directly after pieces[i − 1] was pushed: that row is a cut
+      if (i > 0) cuts.push(rows.length);
       cur = pieces[i]!;
       if (i < pieces.length - 1) push();
     }
   }
-  return { rows, last: cur };
+  return { rows, last: cur, cuts };
 }
 
 /**
  * Greedy word wrap of `text` into rows of ≤ `width` cells; `prefix` opens every row after the first (a leading `· `). A run of
  * two or more spaces is a group boundary (TUI-DESIGN-3 §5.1 rule 4: the epilogue's `<value>  (transcript.log, …)` keeps its
  * parenthetical whole on the next row rather than splitting it at the first word that fits); inside a group the words pack
- * greedily. Every character of every token is kept (§5.3).
+ * greedily. Every character of every token is kept (§5.3), and a grapheme cut is reported as a cut row (§2.4).
  */
-function wordWrap(text: string, width: number, prefix = ''): string[] {
-  if (text.trim() === '') return [text];
+function wordWrap(text: string, width: number, prefix = ''): WrappedBody {
+  if (text.trim() === '') return { rows: [text], cuts: [] };
   const parts = text.split(/( {2,})/);
   const rows: string[] = [];
+  const cuts: number[] = [];
   let cur = '';
   const room = (rowIndex: number): number => (rowIndex === 0 ? width : width - stringWidth(prefix));
   const flush = (): void => {
@@ -118,7 +150,11 @@ function wordWrap(text: string, width: number, prefix = ''): string[] {
       cur = chunk;
       continue;
     }
+    // `packWords` indexes its cuts over `[...its rows, its last]`, which lands at `rows.length + c` here: its rows are
+    // pushed in order from the current length and its `last` becomes `cur`, which is flushed at that same index.
+    const base = rows.length;
     const packed = packWords(chunk.split(' ').filter((w) => w !== ''), room, rows.length, '');
+    for (const c of packed.cuts) cuts.push(base + c);
     for (const r of packed.rows) {
       cur = r;
       flush();
@@ -126,17 +162,22 @@ function wordWrap(text: string, width: number, prefix = ''): string[] {
     cur = packed.last;
   }
   if (cur !== '' || rows.length === 0) flush();
-  return rows;
+  return { rows, cuts };
 }
 
 /**
  * TUI-DESIGN-3 §5.1 rule 3: the no-orphan rule over word-wrapped rows — when the final row's own text (after any
  * separator prefix) is narrower than `ORPHAN_MIN_CELLS` and the previous row holds at least two tokens, the previous
  * row's last token moves down to join it, provided the joined row still fits `width`.
+ *
+ * TUI-DESIGN-4 §2.4 edge 4: it moves **whole tokens only**, so it must never move one into a row that continues its
+ * predecessor mid-token — `… abc` + `def` would gain a space that the cut says is not there. A cut final row is left
+ * alone. No row is added or removed either way, so every cut index survives unchanged.
  */
-export function joinOrphan(rows: readonly string[], width: number, prefix = ''): string[] {
+export function joinOrphan(rows: readonly string[], width: number, prefix = '', cuts: readonly number[] = []): string[] {
   if (rows.length < 2) return [...rows];
   const out = [...rows];
+  if (cuts.includes(out.length - 1)) return out;
   const last = out[out.length - 1]!;
   const lastPrefix = prefix !== '' && last.startsWith(prefix) ? prefix : '';
   const lastBody = last.slice(lastPrefix.length);
@@ -161,19 +202,33 @@ export function joinOrphan(rows: readonly string[], width: number, prefix = ''):
 }
 
 /**
- * TUI-DESIGN-3 §5.1 rule 3 (D-L): the rows of a body at `width` cells — segment-aware (` · `) with the separator leading
- * every continuation row, word wrap otherwise, the no-orphan rule last. `width ≤ 0` or a non-finite width returns the
- * body as one row (the caller had no geometry). Never adds, drops or reorders a token (§5.3).
+ * TUI-DESIGN-3 §5.1 rule 3 (D-L) + TUI-DESIGN-4 §2.4 (P-R3): the rows of a body at `width` cells **and** the indices of
+ * the rows that continue their predecessor mid-token — segment-aware (` · `) with the separator leading every
+ * continuation row, word wrap otherwise, the no-orphan rule last. `width ≤ 0` or a non-finite width returns the body as
+ * one row with no cuts (the caller had no geometry). Never adds, drops or reorders a token (§5.3).
  */
-export function wrapBody(text: string, width: number, g: GlyphSet = GLYPHS.unicode): string[] {
-  if (!Number.isFinite(width) || width <= 0) return [text];
+export function wrapBodyCut(text: string, width: number, g: GlyphSet = GLYPHS.unicode): WrappedBody {
+  if (!Number.isFinite(width) || width <= 0) return { rows: [text], cuts: [] };
   const w = Math.floor(width);
-  if (stringWidth(text) <= w) return [text];
+  if (stringWidth(text) <= w) return { rows: [text], cuts: [] };
   const sep = segmentSeparator(g);
   const lead = `${g.dot} `;
-  if (!text.includes(sep)) return joinOrphan(wordWrap(text, w), w);
+  /**
+   * §11's frame rule ("no row is ever wider than the terminal") beats the segment rule when there is no room for
+   * both. A continuation row opens with `lead` (2 cells), so a segment row needs `stringWidth(lead) + 1` cells to
+   * carry one cell of content; at `width ≤ 2` the segment branch used to commit a 3-cell `· c` row into a 1- and
+   * 2-column terminal (measured: `a · b · c` at 1 and 2 → `["a","· b","· c"]`, in BOTH renderers, because
+   * `itemRenderRows` and `buildIndex` call this one function). Below that floor the whole body takes the word rule,
+   * which §2.4 already names as the fallback "a segment wider than a row falls back to the word rule" — at these
+   * widths every segment is. The §5.3 join is unaffected: `joinWrapped(["a","·","b","·","c"])` is the body again.
+   */
+  if (!text.includes(sep) || w <= stringWidth(lead)) {
+    const wrapped = wordWrap(text, w);
+    return { rows: joinOrphan(wrapped.rows, w, '', wrapped.cuts), cuts: wrapped.cuts };
+  }
   const segments = text.split(sep);
   const rows: string[] = [];
+  const cuts: number[] = [];
   let cur = '';
   for (const seg of segments) {
     const first = rows.length === 0 && cur === '';
@@ -191,26 +246,46 @@ export function wrapBody(text: string, width: number, g: GlyphSet = GLYPHS.unico
     // a segment wider than a row: the word rule inside it — the separator is the first word of its first row, so the
     // rows after it carry no separator (the §5.3 join would otherwise invent one)
     let wrapped = wordWrap(own, w);
-    // the segment's first word is itself wider than the row: keep the separator glued to its first piece (never a lone `·` row)
-    if (wrapped[0] === g.dot) wrapped = wordWrap(seg, w - stringWidth(lead)).map((r, k) => (k === 0 ? `${lead}${r}` : r));
-    rows.push(...wrapped.slice(0, -1));
-    cur = wrapped[wrapped.length - 1] ?? '';
+    // the segment's first word is itself wider than the row: keep the separator glued to its first piece (never a
+    // lone `·` row) — but only when the glued row still FITS. `· 本` is 4 cells: at 3 columns the cosmetic rule
+    // used to commit a row wider than the terminal, which §11 forbids, so there the lone `·` row stands. The §5.3
+    // join returns the body in both shapes (`joinWrapped(['·','本']) === '· 本'`).
+    if (wrapped.rows[0] === g.dot) {
+      const room = w - stringWidth(lead);
+      const inner = room > 0 ? wordWrap(seg, room) : null;
+      if (inner && stringWidth(`${lead}${inner.rows[0] ?? ''}`) <= w) wrapped = { rows: inner.rows.map((r, k) => (k === 0 ? `${lead}${r}` : r)), cuts: inner.cuts };
+    }
+    // `cur` is always pushed at `rows.length`, so the wrapped block occupies `[base, base + wrapped.rows.length)`
+    const base = rows.length;
+    for (const c of wrapped.cuts) cuts.push(base + c);
+    rows.push(...wrapped.rows.slice(0, -1));
+    cur = wrapped.rows[wrapped.rows.length - 1] ?? '';
   }
   if (cur !== '') rows.push(cur);
-  return joinOrphan(rows, w, lead);
+  return { rows: joinOrphan(rows, w, lead, cuts), cuts };
 }
 
 /**
- * TUI-DESIGN-3 §5.3 — the identity normaliser (R5 `polish.md:521`, no separator clause): strip the leading spaces of
- * every row, join with one space, collapse space runs. For any rows `wrapBody` produced this returns the body — exactly
- * whenever no single token is wider than the row (a 71-cell path at a 40-cell width is cut by grapheme, and the join then
- * carries one space inside it; nothing is lost); for a rendered item (label row + hanging continuations) it returns
- * `formatTranscriptItem(item)`.
+ * TUI-DESIGN-3 §5.1 rule 3 (D-L): the rows of a body at `width` cells — the thin wrapper over `wrapBodyCut` that drops
+ * the cut list, so every caller that only draws rows is unchanged.
  */
-export function joinWrapped(rows: readonly string[]): string {
-  return rows
-    .map((r) => r.replace(/^ +/, ''))
-    .join(' ')
-    .replace(/ {2,}/g, ' ')
-    .trim();
+export function wrapBody(text: string, width: number, g: GlyphSet = GLYPHS.unicode): string[] {
+  return wrapBodyCut(text, width, g).rows;
+}
+
+/**
+ * TUI-DESIGN-3 §5.3 / TUI-DESIGN-4 §2.4 — the identity normaliser (R5 `polish.md:521`, no separator clause): strip the
+ * leading spaces of every row, join with one space **except at a cut**, where the join is empty, collapse space runs.
+ * For any rows `wrapBodyCut` produced this returns the body **unconditionally**, at every width; called without `cuts`
+ * (the default `[]`) it is exactly the round-3 behaviour, so the two existing helpers keep compiling. For a rendered
+ * item (label row + hanging continuations) it returns `formatTranscriptItem(item)`.
+ */
+export function joinWrapped(rows: readonly string[], cuts: readonly number[] = []): string {
+  const cut = new Set(cuts);
+  let out = '';
+  for (let i = 0; i < rows.length; i++) {
+    const row = (rows[i] ?? '').replace(/^ +/, '');
+    out = i === 0 ? row : `${out}${cut.has(i) ? '' : ' '}${row}`;
+  }
+  return out.replace(/ {2,}/g, ' ').trim();
 }

@@ -2,8 +2,195 @@
 
 All notable changes to `jevcode`. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 the project uses semantic versioning. `package.json` is the single source of truth for the version and is bumped
-by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-21 (`package.json` reads 0.3.0; the
-0.4.0 entry is the round-3 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+by the release procedure in `docs/RELEASE.md` — the entries below describe the tree at 2026-09-22 (`package.json` reads 0.4.0; the
+0.5.0 entry is the round-4 tree awaiting its bump); nothing has been pushed to the npm registry or the Homebrew tap.
+
+## [0.5.0] — 2026-09-22 (`package.json` bump is the owner's)
+
+Round 4 of the interactive TUI (`docs/TUI-DESIGN-4.md`, six concurrent slots and one integration pass; the record
+of what landed, with every gate number, is `docs/STATUS.md`, "Round 4"). The brand stays on screen, command output
+gets one grammar, a resize never deletes scrollback, Enter walks the palette, the conversation is turns, file edits
+get a real diff — and the product stops failing quietly.
+
+### Added — the renderer, the palette and the grammar
+
+- **An opt-in full-screen renderer** (§1.3): `--fullscreen`, `--renderer fullscreen`, `JEVCODE_RENDERER=fullscreen`
+  or `ui.renderer: fullscreen` in the config file (read at launch, so `/fullscreen`'s "set for the next launch" is
+  true). The header is pinned at row 1, the transcript becomes a scrollable **viewport** (PgUp / PgDn / Shift+↑ /
+  Shift+↓ / Ctrl+Home / Ctrl+End) with a `<n>/<m> · <pct> % · PgUp` rung on the rule row and a
+  `▲ <n> earlier rows · PgUp` marker while scrolled, and the allocator's post-condition is `total === rows`
+  **exactly**. It refuses, in the table's order, below 18 rows, below 40 columns, under a screen reader and with
+  no usable `TERM` — with one `[ui]` note that names the reason. Entering the alternate screen is recorded, so
+  every restore path — `restoreTerminal()`, `fatalExit`, SIGHUP — writes `ESC[?1049l` before `RESTORE` and a
+  crash can never strand the user on a blank buffer.
+- **`/scrollback` and the on-exit dump** (§1.3.4): under `fullscreen`, `/scrollback` suspends, prints the whole
+  transcript to the **primary** screen (native copy and find) and waits for a key; on exit the same transcript is
+  written out after `1049l`, so the session ends with the scrollback classic would have left. Both go through
+  `transcriptDumpChunks`, i.e. the same `formatTranscriptItem` rows `createPlainRenderer` writes, in 64 KiB chunks
+  so a slow link cannot push the exit past `UNMOUNT_TIMEOUT_MS`. Under `classic`, `/scrollback` answers that the
+  terminal's own scrollback already has it.
+- **`src/tui/scrollback-guard.ts`** (§1.4): a one-method write filter on the stream handed to `render()`. Ink's
+  `clearTerminal` is `ESC[2J ESC[3J ESC[H`, and **`ESC[3J` erases the terminal's saved lines** — everything the
+  user had scrolled through, including the shell history from before `jevcode` started. The guard rewrites it to
+  `ESC[2J ESC[H` and elides the `fullStaticOutput` prefix it has itself observed, so N clearing frames no longer
+  leave N+1 copies of the transcript. `ESC[3J` is now **0 in every capture the repository takes**, live included.
+- **The palette's Enter-cycling model** (§4.2, D-X): *Tab goes deeper. Enter runs what is written. Enter with
+  nothing written yet walks the list.* Nine states, seven keys, one pure table (`src/tui/commands/nav.ts`), and a
+  safety theorem that holds structurally — from `/` the state is S-BROWSE, whose Enter is a marker move, so no
+  sequence of Enter presses alone can run anything. The ghost follows the marker (§4.3 P-P2), the marker resets to
+  the top on every query change (P-P3), and in S-ARG Enter walks the argument **values** as a ghost without
+  touching the draft.
+- **Four new commands** (37 → 41): `/fullscreen`, `/scrollback`, `/peers`, `/ui reset`.
+- **One command-output grammar** (§3.1–§3.5, D-W): every §3 command answers with one `block(head, rows)` —
+  key/value, table or note — sized by `blockWidth` at four width tiers, with the declared normaliser making the
+  TUI's one labelled item and `--plain`'s one `[ui] <row>` per row provably the same rows.
+- **A real diff for a file edit** (§6, D-Z): `editSummary(action)` names the files and counts of every edit action
+  including `patch`, `diffRows` is the one place a diff becomes rows, and `ColorRole` gains `added` · `removed` ·
+  `hunk` · `diffMeta` with the sign already in the text. The review card's title reads
+  `edit src/a.py +1 −1 "fix the off-by-one"` and its body is a unified diff, not two unlabelled blobs.
+
+### Changed — resize, the narrow ladder and the history text
+
+- **A resize commits synchronously** (§2.2 P-R1) on any shrinking dimension **and on every width change**, so the
+  stale, taller tree is never painted at the new viewport and no frame carries two widths. Measured over a
+  four-geometry ladder plus a 20-event storm at 24×80, 40×120, 12×60 and 60×200: **zero torn frames**, zero clears
+  on a grow, at most one per shrink segment, zero `ESC[3J`.
+- **The narrow ladder** (§2.3–§2.6): `fitRung` picks the widest rung that fits, `gutterMode` gives the transcript
+  three rungs (`gutter` → `stacked` → `flush`), and no row is ever wider than the terminal — including at **1 and
+  2 columns**, where the segment-aware wrap used to commit a 3-cell `· c` row, and at 3 columns, where it used to
+  glue the 2-cell `· ` lead to a 2-cell grapheme.
+- **The wizard survives minimum size** (§2.5 P-R6, D4): below 40×8 the slot is notice(1) · wizard(1) and there is
+  **no composer** — a first-run user is no longer invited to type a task into a composer whose Enter cannot start
+  anything. The wizard is read-only there: every key answers `resize to at least 40×8 to continue setup` and
+  changes no wizard state. P-R5 reorders the minsize allocation to notice → composer → status, so at budget 1 the
+  one row is the explanation rather than a spinner-less status row.
+- **Every engine item is a sentence** (§3.6, §3.7, D-V): `[run] start <id> mode=jev-on task: t` becomes
+  `[run] started · jev+llm · t`, `[run] end complete steps=2` becomes `[run] finished · complete · 2 steps · …`,
+  `run:ready` and the `stop:` line are deleted as items, `intent=edit p=0.82 c=0.71` becomes
+  `intent · edit · 0.82 (confidence 0.71)`, and an `ok` risk verdict drops from eight terminal rows to one. The
+  run id is in one place — the epilogue. Every pin moved with it: 17 `.steps` files, six `*.pty.test.ts`,
+  `run-smoke.sh`, `src/perf/pty.ts`'s two constants and `polish-check.mjs`'s V13 / V17 anchors, all written
+  glyph-agnostically so an `--ascii` capture measures the same window.
+- **`TERM=dumb jevcode chat` says why** (§2.8 P-R10) instead of `missing task text`, with the three ways out; an
+  **EPIPE** hang-up writes `jevcode: stdout closed; run checkpointed at <dir>` to stderr before exiting 129
+  (P-R11), where it used to exit with an empty stderr.
+- **Ctrl+Z works again.** §1.4's write proxy made `App.tsx`'s `stdout === process.stdout` guard false for the real
+  terminal, so `suspendProcess` was never called and Ctrl+Z was a no-op; the guard now compares against the
+  memoised proxy. (A round-4 regression, caught by the pty suite's Ctrl-Z leg.)
+- **`GlyphSet` gains `triangleUp`** (`▲` → `^`), so TD §14.1's one-to-one twin table covers the viewport's marker.
+- **`GLYPH_DOT_CLASS` is an alternation, not a bracket class.** `[·-]` compiled against a **byte** subject — which
+  is what `perf/drivers/pty_type.py` does — is a one-byte class that can never match the two-byte `·`. Every perf
+  scenario that waits for `[run] started` matched nothing on a unicode capture and everything on an `--ascii` one;
+  `anchorSelfTest()` now compiles each anchor byte-wise as well, so the shape cannot drift again.
+
+### Added — hardening, faults, perf, pty (S6)
+
+- **`jevcode report` is the bundle a TUI bug needs** (§7.7). It now copies `state.json`, `jevcode.log.1` (the
+  rotated half — a rotation used to lose the crash), `ui.json`, the last 200 `decisions.jsonl` rows and the
+  effective `keybindings.json`. Every copied file is capped at 2 MiB head + 2 MiB tail with a
+  `… <n> bytes elided (original <m> bytes) …` marker and is redacted **line by line**, so a hundreds-of-megabyte
+  `transcript.log` is no longer read into one string. `versions.txt` gains `isTTY`, `LANG`, `LC_ALL`, `TZ`,
+  `COLORTERM`, `NO_COLOR`, presence booleans (never values) for `SSH_TTY` / `TMUX` / `STY` and a `launch` block
+  (tier, fps, `renderMode`, `renderer`, `ascii`, `screenReader`, `reducedMotion`, `plain`, `theme`).
+  `README.txt` is written first with `(bundle incomplete)` and rewritten last without it; the command prints the
+  total size and a `tar -czf <id>.tgz -C <parent> <id>` line.
+- **A typed fault injector** (§7.11). One `parseFault()` (`src/tui/faults.ts`) with thirteen scenarios —
+  `render:<pane>[:lines][:sticky]`, `persist:<CODE>[:after=n]`, `rundir:rm`, `submit:hang`, `jev:429|401|5xx`,
+  `net:*`, `stdout:EPIPE`, `clock:jump`, `index:corrupt|huge`, `config:*`, `loop:hog`, `peer:<n>` — replacing
+  three string comparisons; `PaneBoundary` matches through the typed `renderFaultMode()`, not by string, so
+  `render:<pane>:lines[:sticky]` can no longer match a boundary it was never meant for. `readFaultEnv()` builds
+  the loud rejection — the value plus the twelve-row grammar — but **the pre-mount call site is not wired in
+  this release** (it belongs in `src/cli/main.tsx`): today an unknown `JEVCODE_FAULT` is a silent no-op at run
+  time and the grammar is enforced by the unit test. `JEVCODE_ASSERT_HEIGHT=1` is parsed and likewise has no
+  consumer yet; the frame-height gate is enforced by `npm run perf` and `run-smoke.sh` on every capture.
+- **`explainFsError`** (§7.4): a file-system errno becomes a sentence that names the fix — `cannot create the
+  runs directory <dir>: permission denied` + `set JEVCODE_HOME to a writable directory, or pass --runs-dir <dir>`,
+  `the disk holding <dir> is full`, `the run directory <dir> disappeared during the run`, `cannot read <path>:
+  permission denied`, `too many open files`.
+- **A peer surface** (§7.10, stub-driven until the registry of `docs/COORDINATION-DESIGN.md` lands): the status
+  segment `<n> here` / `<n> stale` (counts only, dropped first when short), the session-open item
+  `another jevcode is working in this workspace (started 4m ago) — /peers lists them`, and a dismissible
+  blocking pane `[w] wait for it   [r] read-only session   [q] quit` (`[c] continue` when only stale entries
+  remain).
+- **Perf gates** (§11): `no ESC[3J ever` and `no frame taller than the terminal` are **measured** per geometry
+  by `src/perf/render-lag.ts` (both join `hygieneOk`) and by `test/pty/run-smoke.sh` on every capture, with
+  `no3JSelfTest()` as the precondition rather than the gate; and glyph-agnostic **named anchors** for every
+  measured window — matched against two glyph sets, including an errored run, with a zero match a hard failure
+  rather than a silently whole-capture window.
+- **Two perf rows of contract 1.7 item 11**: the `scroll-latency` probe (`src/perf/scroll-latency.ts`, fullscreen
+  only under D-S — scroll key → frame p95 < 16 ms, ≤ 6 KB per scroll frame, a width-change rebuild < 50 ms; it
+  **skips** with the renderer's own refusal text rather than failing where fullscreen is unavailable) and two
+  composer series, `palette-cycle` (200 Enter presses over the full command list, gated) and `palette-arg` (200
+  Enters in S-ARG over `/mode `, reported). Neither has been run on a real pty yet — see `docs/STATUS.md`,
+  "Round 4", deviations.
+
+### Changed
+
+- **A failing checkpoint write degrades loudly** (§7.2). The store reports every write-path failure through a new
+  `onDegrade` callback as well as throwing, once per `<file>:<code>`; `ENOENT` joins the degraded set, so a runs
+  directory removed mid-run is no longer completely silent (it used to report `complete`, exit 0, and advertise a
+  resume for a directory that did not exist). The notice is a sentence —
+  `checkpoint degraded: EACCES on state.json — the run directory is not writable; this run cannot be resumed` —
+  never a raw `open '<path>'` suffix, and the run exits **3** even when the stop reason is `complete`.
+- **Launch-time file-system failures go through `fatalExit`** (§7.4): stderr, the epilogue, the fix block and
+  exit **2** (3 for a vanished run directory, and for a disk that filled while writing inside one), instead of
+  `[ui] error: <raw errno>` on stdout with exit 1. **Which** row an errno gets is derived from where its path
+  is — the config file, the live run directory, the runs directory — and an errno that is none of those (a
+  workspace file) stays unclassified and keeps exit 1 rather than being relabelled a runs-dir failure; the path
+  in the sentence is `~`-abbreviated through `shortPath`. `EMFILE`/`ENFILE` carry no path and are classified on
+  the code alone.
+- **The degradation notice fits** (§7.12): `ui: <pane> failed (<Error.name>) — run continues; see <log>` at
+  ≥ 64 columns, `ui: <pane> failed (<Error.name>)` below it with the log in the item's detail, and no `see …`
+  clause when no log is open. `Error.name` is made terminal-safe and clipped to 32 characters.
+- **The session index is bounded and honest** (§7.6): `readIndex` folds only the last 8 MiB, read from the end and
+  starting at a line boundary — 200 000 lines now fold in under 100 ms (581 ms before). Unreadable lines are
+  counted by reason (`not-json`, `bad-shape`, `over-length`, `unknown-kind`) and `jevcode sessions` says
+  `<n> index lines were unreadable and skipped — run jevcode sessions reindex` instead of printing the
+  fresh-install sentence; past 8 MiB it offers `jevcode sessions prune`.
+- **A newer `run.json` is refused by name, not read as corrupt** (§7.9):
+  `run <id> was written by a newer JevCode (run.json v<n>; this build reads v<m>) — upgrade with jevcode upgrade`.
+  Older and version-less files keep loading; `jevcode sessions reindex` counts newer runs separately; `jevcode
+  report` still bundles them.
+- **Two memory bounds** (§7.13): decisions are now capped **within** a step as well as across steps (a steer storm
+  in one step grew without limit), and `appendItems`' comment no longer claims `UiState.items` keeps every item.
+- **A submission watchdog** (§7.8): 45 s without a `run:start`, a `thinking` change or a stream byte appends
+  `the request has not answered in 45s — Esc cancels it, or press Ctrl-C twice to leave`, measured on a monotonic
+  clock. `nothing to abort` replaces the silent no-op.
+- **Every run-frame anchor is glyph-agnostic and named** (§3.7 G1, the R2 guard). D-V renamed `[run] start <id>
+  mode=… task: …` to `[run] started · <badge> · <task>` and `[run] end <reason> steps=<n>` to
+  `[run] finished · <reason> · <n> steps · …`, so `src/perf/pty.ts`'s `END_PATTERN` / `RUN_STARTED_PATTERN`,
+  `test/pty/helpers.ts`'s `RUN_STARTED_STEP`, the 17 `.steps` files carrying `expect end …`, six `*.pty.test.ts`
+  files, `test/pty/run-smoke.sh` and `scripts/pty/polish-check.mjs`'s V17 anchor all move **in this commit**.
+  They are written `[·-]`, never `·`: `glyphs.ts` renders `dot: '-'` under `--ascii`, and a hard-coded `·` would
+  silently stop matching in every `--ascii` capture — which is exactly how a stale anchor turns the render-lag
+  window into the whole capture and the gate into a lie.
+- **V13 is un-deferred, V17 can no longer pass vacuously** (§11). `polish-check.mjs` gates V13 (no `k=v` pair and
+  no ` | ` separator in a scrollback row outside the allowlist) now that D-V has landed; `--no-v13` replays a
+  capture taken against an older build. V17's run-end anchor is the exported `RUN_END_RE` with a two-glyph-set
+  self-test, and a capture in which a run demonstrably started **and** stopped while the anchor matched **zero**
+  rows is now a hard failure, where round 3 reported success with `no run ended in this capture`.
+
+### Fixed by the integration pass
+
+- **V22 and V23** (§2.9 P-R13) join `scripts/pty/polish-check.mjs` beside V6: **V22** — within one frame every row
+  that opens with a box glyph is exactly the width of that frame's rule row and none ends in the truncation
+  ellipsis (the torn-frame predicate D1 needs; V6 catches neither half, because no row is *wider than the
+  terminal*); **V23** — no scrollback continuation is indented past its rung's gutter, learning the value columns
+  §3.1's blocks legitimately hang under. The smoke suite now reports `polish-check:pass(22)`.
+- **`perf/drivers/pty_type.py` can match a unicode capture again.** Two defects in the §3.7 G1 anchor migration,
+  both of which made a measurement silently vacuous: `RUN_STARTED_PATTERN` carried one SGR gap where the frame
+  writes two (the label's span closes before the space, the text's opens after it), and `GLYPH_DOT_CLASS` was a
+  bracket class over a two-byte glyph. Between them, `composer live`, `composer live-stress`, `composer review`,
+  `scroll-latency` and five `states` scenarios reported `0/200 keys` and exit 124 after waiting 20 s for a row
+  that had been on screen the whole time. `anchorSelfTest()` now compiles every anchor byte-wise as well.
+
+### Removed
+
+- **`createResizeDebounce` / `RESIZE_DEBOUNCE_MS` / `Debounced` leave `src/tui/index.ts`** (§2.2 P-R2) with their
+  one consumer, `App.tsx`'s `wrapColumns`. The 50 ms trailing debounce kept the draft one width behind the box
+  edges (≈ 130 ms at `--fps 15`): 4 of 24 frames carried a box row whose right border was the truncation ellipsis.
+  A **public API change**.
+- Nothing else. Every contract-1.7 member is optional and every default is unchanged.
 
 ## [0.4.0] — 2026-09-21 (not yet published; `package.json` bump is the integrator's)
 

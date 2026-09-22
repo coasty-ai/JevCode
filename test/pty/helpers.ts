@@ -15,6 +15,9 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DEFAULT_MODE, MODE_BADGE_WORD } from '../../src/config/defaults.js';
+// TUI-DESIGN-4 §3.7 (the R2 guard): the run-frame anchors are imported by name from the ONE formatter, never
+// hard-coded here — a literal `·` stops matching in every `--ascii` capture (`glyphs.ts` renders `dot: '-'`).
+import { GLYPH_DOT_CLASS, RUN_FINISHED_WORD, RUN_STARTED_WORD } from '../../src/tui/plain.js';
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const EXPECT_BIN = '/usr/bin/expect';
@@ -89,6 +92,13 @@ export const BADGE_JEV_LLM = 'jev\\+llm';
 export const BADGE_DEFAULT = MODE_BADGE_WORD[DEFAULT_MODE].replace(/[\\^$.|?*+()[\]{}]/g, '\\$&');
 /** the default mode's badge word as plain text (for `toContain` / `startsWith` checks on stripped captures) */
 export const BADGE_DEFAULT_TEXT = MODE_BADGE_WORD[DEFAULT_MODE];
+/**
+ * The first WORD of the default badge, escaped — `llm\+jev` for `llm+jev · verified`. Since the round-3
+ * `DEFAULT_MODE` flip the badge carries a ` · verified` suffix, so an item that names it (`Mode: <badge> — …`)
+ * wraps between the two at 80 columns and no `expect` can ever see the whole badge on one line. Scenario steps
+ * anchor on this head; the suffix, where it matters, is asserted separately on the stripped capture.
+ */
+export const BADGE_DEFAULT_HEAD = BADGE_DEFAULT.split(' ')[0] ?? BADGE_DEFAULT;
 export { DEFAULT_MODE };
 /**
  * A settle pattern for a geometry: one row of exactly `cols` visible cells between two line breaks, SGR sequences
@@ -553,10 +563,16 @@ export function subsequenceOf(rows: readonly string[], transcript: readonly stri
   return { matched, missing: null };
 }
 
-/** the stage lines the compact transcript hides (TUI-DESIGN-2 §4.5): `[step N] intent=…`, `context …`, `proposal …`, `risk …`, `outcome …`, `judge …`, `plan …`, and `[run] ready …` */
-// the compact-hidden kinds' text shapes (src/tui/plain.ts COMPACT_HIDDEN_KINDS): `intent=…`, `context N files…`, `synth <phase>: …`, `proposal <kind> …`,
-// `risk=0.01 ok: …`, `outcome …`, `judge …`, `plan done=…`, and `[run] ready …`
-export const HIDDEN_STAGE_RE = /^ *\[step \d+\] (?:intent=|context |synth |proposal |risk[= ]|outcome |judge |plan )|^ *\[run\] ready /;
+/**
+ * The stage lines the compact transcript hides (TUI-DESIGN-2 §4.5), in their TUI-DESIGN-4 §3.6 (D-V) text:
+ * `[step N] intent · …`, `context · …`, `synth · …`, `proposal · …`, `risk <p> <verdict> …`, `done · …`,
+ * `judge <p> · …` / `judge skipped · …`, `plan · …`, and `[run] ready …` (deleted as an item by G1).
+ *
+ * The separator is written `[·-]`, never `·` — `glyphs.ts` renders `dot: '-'` under `--ascii`. And `done` MUST
+ * carry its separator: the compact transcript's own `[step N]` SUMMARY row also opens with `done` (`done scratch
+ * work complete · risk 0.01 ok · …`, `stepOutcomeText`) and is the one row this predicate must NOT match.
+ */
+export const HIDDEN_STAGE_RE = /^ *\[step \d+\] (?:intent [·-] |context [·-] |synth [·-] |proposal [·-] |risk \d|done [·-] |judge (?:\d|skipped)|plan [·-] )|^ *\[run\] ready /;
 
 /** true when a stripped frame line is a boxed-tier console or card edge (TUI-DESIGN-2 §4.1: `╭ … ╮`, `╰ … ╯`; `+-` under --ascii) */
 export function isBoxEdge(line: string): boolean {
@@ -771,17 +787,29 @@ export const CHAT_OPEN: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHO
 /** the narrow-terminal opening: the status line may drop the `sess` badge, so the sandbox item stands in for the host */
 export const CHAT_OPEN_NARROW: readonly string[] = [FIRST_FRAME_STEP, `expect ${PLACEHOLDER_TASK}`, RAW_MODE_STEP, 'expect \\[sandbox\\]'];
 /**
- * The run is live: the `[run] start <id> mode=… task: …` item (TUI-DESIGN-2 §4.5 shows `run:start` in the compact
- * transcript; `[run] ready …` is one of the hidden kinds, so `expect ready` no longer works — the start item precedes it
- * on every path). Every mocked run of the pty project says `--mode jev-on` explicitly (`MOCK_RUN_MODE`): the scripted
+ * The run is live: the `[run] started · <badge> · <task>` item (TUI-DESIGN-4 §3.6 G1 deleted `[run] ready` as an
+ * item and rewrote `[run] start <id> mode=… task: …`; TUI-DESIGN-2 §4.5 shows `run:start` in the compact transcript).
+ * Written **glyph-agnostic** (`[·-]`, §3.7): `glyphs.ts` renders `dot: '·'` and `dot: '-'`, so a hard-coded `·`
+ * would silently stop matching in every `--ascii` scenario — including round 3's V21 twin sweep. Every mocked run of the pty project says `--mode jev-on` explicitly (`MOCK_RUN_MODE`): the scripted
  * `--mock` trajectory is a generator trajectory, and under the round-2 default `jev-only` (§1.1) the real synthesizer
  * would run instead of it.
  */
-export const RUN_STARTED_STEP = labelStep('run', 'start ');
+export const RUN_STARTED_STEP = labelStep('run', `${RUN_STARTED_WORD} ${GLYPH_DOT_CLASS} `);
+/**
+ * TUI-DESIGN-4 §3.6 (G1) / §3.7: the run's last item, `finished · <reason> · <n> steps · …`. `reason` is a Tcl
+ * alternation (`complete|max_steps`), written without a capture group so `drive.exp`'s `-re` keeps one match.
+ */
+export function runFinishedStep(reason: string): string {
+  return `expect ${RUN_FINISHED_WORD} ${GLYPH_DOT_CLASS} ${reason}`;
+}
+/** the glyph-agnostic `[run] finished · …` anchor over a **stripped** capture row (the gutter is 0–9 cells) */
+export const RUN_FINISHED_ROW_RE = new RegExp(`^ {0,9}\\[run\\] ${RUN_FINISHED_WORD} ${GLYPH_DOT_CLASS} `);
+/** the glyph-agnostic `[run] started · …` anchor over a **stripped** capture row */
+export const RUN_STARTED_ROW_RE = new RegExp(`^ {0,9}\\[run\\] ${RUN_STARTED_WORD} ${GLYPH_DOT_CLASS} `);
 export const MOCK_RUN_MODE: readonly string[] = ['--mode', 'jev-on'];
 /** the opening of a one-shot `run` scenario: the first frame, raw mode (the steering composer), then the run's start item */
 export const RUN_OPEN: readonly string[] = [FIRST_FRAME_STEP, RAW_MODE_STEP, RUN_STARTED_STEP];
-/** type a task and submit it; the run is live once its `[run] start` item appears (the mock intake reads a ≥ 3-word imperative without `?` as `coding_task`, TUI-DESIGN-2 §3.13) */
+/** type a task and submit it; the run is live once its `[run] started` item appears (the mock intake reads a ≥ 3-word imperative without `?` as `coding_task`, TUI-DESIGN-2 §3.13) */
 export function submitTask(text: string): string[] {
   return [`send ${text}`, echoStep(text), 'send \\r', RUN_STARTED_STEP];
 }

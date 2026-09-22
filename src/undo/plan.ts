@@ -321,6 +321,27 @@ export function undoSummaryLine(step: number, restored: readonly string[], skipp
   return skipped.length === 0 ? head : `${head}, skipped ${skipped.length} (${pathList(skippedText)})`;
 }
 
+/**
+ * TUI-DESIGN-4 §6.8 (D-Z): the same facts as one block instead of one unbounded line that wraps into a paragraph
+ * with no structure — head `undo · step 4 · 3 restored, 1 skipped`, then a kv row per side. `undoSummaryLine` above
+ * stays: it is what `src/undo/apply.ts` puts in the outcome, and `--plain` prints these same rows through
+ * `Renderer.blockLines` (§3.5).
+ */
+export function undoBlockHead(step: number, restored: number, skipped: number): string {
+  const parts = [`${restored} restored`];
+  if (skipped > 0) parts.push(`${skipped} skipped`);
+  return `undo · step ${step} · ${parts.join(', ')}`;
+}
+
+/** §6.8: the block's body rows as `{ key, value }` pairs — `renderBlock` turns them into kv rows at the body width. */
+export function undoBlockRows(restored: readonly string[], skipped: readonly { path: string; reason: UndoSkipReason; message?: string }[]): { key: string; value: string }[] {
+  const rows: { key: string; value: string }[] = [];
+  // §3.1.7: nothing restored gets the sentence, never an empty row
+  if (restored.length > 0) rows.push({ key: 'restored', value: pathList(restored) });
+  if (skipped.length > 0) rows.push({ key: 'skipped', value: pathList(skipped.map((s) => `${s.path} — ${s.message ?? s.reason}`)) });
+  return rows;
+}
+
 /** `human reverted step 7: src/a.py, src/b.py, tests/test_a.py` — the next run's seed note (TUI-DESIGN §12.4). */
 export function undoNote(step: number, restored: readonly string[]): string {
   return `human reverted step ${step}: ${pathList(restored)}`;

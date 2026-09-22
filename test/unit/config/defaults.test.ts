@@ -1,6 +1,6 @@
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
-import {
+import { CONTEXT_COMPACTIONS, CONTEXT_VIEWS, DEFAULT_CONTEXT_COMPACTION, DEFAULT_CONTEXT_COMPACT_EVERY, DEFAULT_CONTEXT_VIEW, expectedText, isClampProblem, settingProblem,
   CACHE_READ_FACTOR,
   CACHE_WRITE_FACTOR,
   DEFAULT_FPS,
@@ -65,6 +65,12 @@ describe('the §16 SETTINGS table', () => {
       'decider.provider', // TUI-DESIGN-2 §2.3
       'mode', // TUI-DESIGN-2 §1.2
       'seen.defaultMode', // TUI-DESIGN-3 §0.1 (D-Q)
+      'context.mode', // TUI-DESIGN-4 §8 (the round-4 config rows) over COORDINATION-DESIGN §8
+      'context.compaction',
+      'context.compactEvery',
+      'context.historySteps',
+      'context.fileCacheBytes',
+      'context.budgetChars',
     ];
     for (const n of expected) expect(names).toContain(n);
     const envNames = SETTINGS.flatMap((s) => [...s.env, ...(s.negateEnv ?? [])]);
@@ -225,5 +231,70 @@ describe('TUI-DESIGN-3 §0.1 (D-Q): the seen.defaultMode bookkeeping row', () =>
     expect(spec.description).toContain('bookkeeping');
     // the only hidden row this round
     expect(SETTINGS.filter((s) => s.hidden === true).map((s) => s.name)).toEqual(['seen.defaultMode']);
+  });
+});
+
+describe('TUI-DESIGN-4 §8 (the round-4 config rows): the relaxed-context policy, resolve only', () => {
+  it('six rows, env + file keys only (no flag, no launch), with the three defaults §8 fixes', () => {
+    expect(settingSpec('context.mode')).toMatchObject({ env: ['JEVCODE_CONTEXT_MODE'], fileKey: 'contextMode', defaultValue: DEFAULT_CONTEXT_VIEW, secret: false });
+    expect(settingSpec('context.compaction')).toMatchObject({ env: ['JEVCODE_CONTEXT_COMPACTION'], fileKey: 'contextCompaction', defaultValue: DEFAULT_CONTEXT_COMPACTION });
+    expect(settingSpec('context.compactEvery').defaultValue).toBe(String(DEFAULT_CONTEXT_COMPACT_EVERY));
+    expect([DEFAULT_CONTEXT_VIEW, DEFAULT_CONTEXT_COMPACTION, DEFAULT_CONTEXT_COMPACT_EVERY]).toEqual(['relaxed', 'code', 8]);
+    for (const n of ['context.historySteps', 'context.fileCacheBytes', 'context.budgetChars'] as const) expect(settingSpec(n).defaultValue).toBeNull();
+    for (const n of ['context.mode', 'context.compaction', 'context.compactEvery', 'context.historySteps', 'context.fileCacheBytes', 'context.budgetChars'] as const) {
+      expect(settingSpec(n).flag).toBeUndefined();
+      expect(settingSpec(n).boolFlag).toBeUndefined();
+      expect(settingSpec(n).launch).toBeUndefined();
+      expect(settingSpec(n).ignoredFileKey).toBeUndefined();
+      expect(settingSpec(n).shape).toBeDefined();
+    }
+    expect(CONTEXT_VIEWS).toEqual(['relaxed', 'legacy']);
+    expect(CONTEXT_COMPACTIONS).toEqual(['code', 'llm', 'off']);
+  });
+});
+
+describe('TUI-DESIGN-4 §7.5 (P-D5): `jevcode config` validates', () => {
+  it('`expectedText` is the sentence the ✗ row suffixes', () => {
+    expect(expectedText({ kind: 'int', min: 1 })).toBe('an integer ≥ 1');
+    expect(expectedText({ kind: 'number', min: 0, max: 1 })).toBe('a number between 0 and 1');
+    expect(expectedText({ kind: 'boolean' })).toBe('true or false');
+    expect(expectedText({ kind: 'enum', values: ['code', 'llm', 'off'] })).toBe('one of code|llm|off');
+    expect(expectedText({ kind: 'usd', none: true })).toBe('a dollar amount or none');
+    expect(expectedText({ kind: 'duration' })).toBe('a duration like 30m, 90s or 1h30m');
+  });
+
+  it('the measured broken config: `limits.maxSteps: "lots"` is wrong-type, `ui.theme: "nope"` is wrong-type, `ui.fps: -5` clamps', () => {
+    expect(settingProblem(settingSpec('limits.maxSteps'), 'lots')).toEqual({ kind: 'wrong-type', expected: 'an integer ≥ 1' });
+    expect(settingProblem(settingSpec('limits.maxSteps'), '40')).toBeNull();
+    expect(settingProblem(settingSpec('limits.maxSteps'), '0')).toEqual({ kind: 'out-of-range', expected: 'an integer ≥ 1' });
+    expect(settingProblem(settingSpec('ui.theme'), 'nope')).toEqual({ kind: 'wrong-type', expected: 'one of dark|light|daltonized|ansi' });
+    expect(settingProblem(settingSpec('ui.theme'), 'DARK')).toBeNull();
+    expect(settingProblem(settingSpec('generator.temperature'), 'hot')).toEqual({ kind: 'wrong-type', expected: 'a number between 0 and 2' });
+    // a value that is valid but dangerous is CLAMPED with a ⚠, not refused with a ✗
+    const clamped = settingProblem(settingSpec('ui.fps'), '240');
+    expect(clamped).toEqual({ kind: 'out-of-range', expected: 'clamped to 30' });
+    expect(isClampProblem(clamped!)).toBe(true);
+    expect(settingProblem(settingSpec('ui.fps'), '-5')).toEqual({ kind: 'out-of-range', expected: 'clamped to 5' });
+    expect(isClampProblem({ kind: 'out-of-range', expected: 'an integer ≥ 1' })).toBe(false);
+  });
+
+  it('booleans, durations, money and the `none` cap; an empty value and a shapeless setting are never a problem', () => {
+    expect(settingProblem(settingSpec('ui.notify'), 'yes')).toBeNull();
+    expect(settingProblem(settingSpec('ui.notify'), 'maybe')).toEqual({ kind: 'wrong-type', expected: 'true or false' });
+    expect(settingProblem(settingSpec('limits.maxWall'), '30m')).toBeNull();
+    expect(settingProblem(settingSpec('limits.maxWall'), '1h30m')).toBeNull();
+    expect(settingProblem(settingSpec('limits.maxWall'), 'soon')).toEqual({ kind: 'wrong-type', expected: 'a duration like 30m, 90s or 1h30m' });
+    expect(settingProblem(settingSpec('session.spendCapUsd'), 'none')).toBeNull();
+    expect(settingProblem(settingSpec('limits.spendCapUsd'), 'none')).toEqual({ kind: 'wrong-type', expected: 'a dollar amount' });
+    expect(settingProblem(settingSpec('limits.spendCapUsd'), '-1')).toEqual({ kind: 'out-of-range', expected: 'a dollar amount' });
+    expect(settingProblem(settingSpec('limits.maxSteps'), '  ')).toBeNull();
+    expect(settingProblem(settingSpec('generator.model'), 'anything/at-all')).toBeNull();
+  });
+
+  it('every row that has a shape accepts its own default', () => {
+    for (const spec of SETTINGS) {
+      if (spec.defaultValue === null || spec.shape === undefined) continue;
+      expect(settingProblem(spec, spec.defaultValue), spec.name).toBeNull();
+    }
   });
 });

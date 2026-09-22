@@ -12,6 +12,7 @@ import { CAP, chromeRows, computeLayout, type LayoutInput } from '../../../src/t
 import type { LaunchSettings } from '../../../src/core/types.js';
 import { LIVE_FLUSH_MS, createEventBus, createTuiConfirmer } from '../../../src/tui/useEngine.js';
 import { stringWidth } from '../../../src/tui/composer/width.js';
+import { WORDMARK_LIVE_MIN_ROWS } from '../../../src/tui/wordmark.js';
 import type { Action } from '../../../src/core/types.js';
 import { mkConfirmRequest, mkDecision, mkStatus, tick } from '../../fixtures/tui/fixtures.js';
 import { StubStdin, StubStdout, dynamicRegion, stripSgr } from './stub-stdout.js';
@@ -91,7 +92,8 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
       // H-F1: rule 1 + card 9 + preview 7 + console 5 = 22 (the panel is collapsed: its strip sits on the rule row)
       expect(text).toContain('╭─ review · step 1');
       expect(text).toContain('content line 0');
-      expect(text).toMatch(/^─── ▸ jev s1 · 12 decisions/m);
+      // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 edge 9 / D-T a): the post-run strip leads with `◆ jevcode`
+      expect(text).toMatch(/^─── ◆ jevcode ─ ▸ jev s1 · 12 decisions/m);
       expect(text).not.toContain('content line 39');
       for (const line of dyn) if (/^[╭│├╰]/.test(line)) expect(stringWidth(line)).toBe(80);
     }
@@ -110,9 +112,10 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
     expect(dyn.length).toBeLessThanOrEqual(38);
     expect(dyn.length).toBe(computeLayout(reviewInput(40, 100, 'full')).total);
     expect(dyn.join('\n')).toContain('dim29');
-    // CAP.preview = 8: seven content rows plus the `…[k more preview lines · e expands]` tail
-    expect(dyn.filter((l) => l.includes('content line')).length).toBe(7);
-    expect(dyn.filter((l) => l.includes('more preview lines · e expands')).length).toBe(1);
+    // CAP.preview = 8 — TUI-DESIGN-4 §6.3 (D-Z): the preview is now `diffRows`, so two of the eight rows are the
+    // fence and the `old new` heading, five are `+` body rows and the last is §6.3 item 3's truthful tail
+    expect(dyn.filter((l) => l.includes('content line')).length).toBe(5);
+    expect(dyn.filter((l) => /…\[\+\d+ rows · e expands to \d+\]/.test(l)).length).toBe(1);
   });
 
   it('live streaming without a review: live 2 + console; the last two stream lines show', async () => {
@@ -136,7 +139,8 @@ describe('height budget (§2, TUI-DESIGN-2 §4.2)', () => {
     const { frame } = await renderBusy(6, 80, undefined, { review: false });
     const lines = stripSgr(frame).replace(/\n$/, '').split('\n');
     expect(lines.some((l) => l.includes('terminal 80×6 is below the 40×8 minimum — panes hidden, transcript above'))).toBe(true);
-    expect(lines.some((l) => l.includes('[run] start r1 mode=jev-on'))).toBe(true); // `run:ready` is hidden by the compact view (TUI-DESIGN-2 §4.5)
+    // TUI-DESIGN-4 §3.6 / §3.7 G1 (D-V): `started · <badge> · <task>`, and `run:ready` is no longer an item at all
+    expect(lines.some((l) => l.includes('[run] started · jev+llm · budget task'))).toBe(true);
     expect(lines.at(-1)).toContain('step 1/40');
   });
 
@@ -180,11 +184,21 @@ describe('height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × c
     [40, 120],
     [50, 40],
     [50, 120],
+    // P-H2's boundary, both sides, at a width where the mark fits (64+): 31 yields, 32 keeps it
+    [31, 120],
+    [32, 120],
   ])('rows=%i columns=%i (live, no review): the region is ≤ rows − 2, equals computeLayout().total and every row fits the width', async (rows, columns) => {
     const { frame } = await renderBusy(rows, columns, undefined, { review: false });
     const dyn = dynamicRegion(frame, columns);
     expect(dyn.length).toBeLessThanOrEqual(rows - 2);
-    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2 }).total);
+    // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H2 / D-T b): at >= WORDMARK_LIVE_MIN_ROWS rows and >= 64 columns the
+    // 5-row mark now stays up **during** a live run, so the expected budget grants it (whole or absent, `paneWhole`).
+    // The condition is RESTATED here, never read back from `wordmarkWanted`: deriving the expectation from the very
+    // predicate under test would move the expected total in the same direction as a bug in it.
+    const live = rows >= WORDMARK_LIVE_MIN_ROWS && columns >= 64 && chromeRows(rows, columns, false) === 3;
+    expect(dyn.length).toBe(computeLayout({ ...reviewInput(rows, columns), overlay: 'none', overlayWant: 0, previewWant: 0, liveWant: 2, ...(live ? { paneWant: CAP.splash, paneWhole: true } : {}) }).total);
+    // and the frame itself agrees with that condition — the mark is either drawn or it is not
+    expect(dyn.some((l) => l.includes('██')), `${rows}x${columns}`).toBe(live);
     for (const line of dyn) expect(stringWidth(line)).toBeLessThanOrEqual(columns);
     expect(frame).toContain('step 1/40');
   });
@@ -196,7 +210,13 @@ describe('height budget across columns (§2.2 × §19.3: rows 8/12/24/40/50 × c
     expect(dyn.length).toBe(computeLayout(reviewInput(24, columns)).total);
     for (const line of dyn) expect(stringWidth(line)).toBeLessThanOrEqual(columns);
     expect(dyn.join('\n')).toContain('review · step 1');
-    expect(dyn.join('\n')).toContain('[y] approve');
+    // TUI-DESIGN-4 §2.6 (P-R7): the keys row is a LADDER, not a truncation — at 40 columns the card's inner width
+    // is 36, so the 42-cell rung does not fit and the 15-cell one is drawn; it still names every action
+    const keys = dyn.find((l) => /\[y\] approve|y ok|y\/n\/d\/e\/w/.test(l))!;
+    expect(keys, `${columns}`).toBeDefined();
+    for (const letter of ['y', 'n', 'd', 'e', 'w']) expect(keys).toContain(letter);
+    expect(keys).toContain('esc');
+    if (columns >= 80) expect(keys).toContain('[y] approve');
   });
 
   it.each([40, 80, 120])('columns=%i: the normalised session first frame (reduced motion: the brand row, no splash) matches its snapshot', async (columns) => {

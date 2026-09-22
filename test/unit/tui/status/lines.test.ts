@@ -955,3 +955,55 @@ describe('statusSpans (TUI-DESIGN-3 §5.2 P6, D-P)', () => {
     }
   });
 });
+
+/**
+ * TUI-DESIGN-4 §7.10 (P-D10) item 1: the peer segment `<n> here` — the **count only**, never a pid, never a path —
+ * and edge 2: it is the first thing dropped when the status line runs out of columns.
+ *
+ * Measured before round 4: two instances in one workspace ran to completion concurrently with **zero** mention of
+ * each other.
+ */
+describe('the peer segment (§7.10 item 1)', () => {
+  it('shows the count only, and nothing when this is the only instance', async () => {
+    const { peersText } = await import('../../../../src/tui/status/lines.js');
+    expect(peersText({ live: 2, stale: 0, oldestStartedMsAgo: 240_000, exclusive: false })).toBe('2 here');
+    expect(peersText({ live: 3, stale: 1, oldestStartedMsAgo: null, exclusive: false })).toBe('3 here · 1 stale');
+    // §7.10 item 1: the segment exists "when ANOTHER instance holds the same workspace". Dead registry rows do
+    // not make a workspace shared, so `live <= 1` is empty whatever `stale` says — the stale count belongs to
+    // `/peers` and to the blocking pane (edge 1), which is where `[c] continue` is. Without this a workspace
+    // whose only peers are killed instances showed a peer segment for ever.
+    expect(peersText({ live: 1, stale: 1, oldestStartedMsAgo: null, exclusive: false })).toBe('');
+    expect(peersText({ live: 1, stale: 2, oldestStartedMsAgo: null, exclusive: false })).toBe('');
+    expect(peersText({ live: 0, stale: 5, oldestStartedMsAgo: null, exclusive: false })).toBe('');
+    // the only instance, and the registry absent (the stub): no segment at all
+    expect(peersText({ live: 1, stale: 0, oldestStartedMsAgo: null, exclusive: false })).toBe('');
+    expect(peersText(null)).toBe('');
+    expect(peersText(undefined)).toBe('');
+    // hostile numbers never produce a row like `NaN here`
+    expect(peersText({ live: Number.NaN, stale: -4, oldestStartedMsAgo: null, exclusive: false })).toBe('');
+  });
+
+  it('reaches the row at 160 columns and is the first segment dropped when short (edge 2)', async () => {
+    const { statusZones } = await import('../../../../src/tui/status/lines.js');
+    const peers = { live: 2, stale: 0, oldestStartedMsAgo: 240_000, exclusive: false };
+    const wide = statusZones(live({ peers }), 160);
+    expect(wide.right).toContain('2 here');
+    expect(wide.dropped).not.toContain('peers');
+    // narrow: `peers` goes before ShortHelp, the sparkline, git, the session meter and the wall clock
+    const narrow = statusZones(live({ peers }), 56);
+    expect(narrow.right.join(' ')).not.toContain('2 here');
+    expect(narrow.dropped[0]).toBe('peers');
+    // the run's own numbers survive the drop that removed the peer count
+    expect(narrow.right.join(' ')).toContain('run ');
+  });
+
+  it('never prints a pid or a path (the segment is counts only)', async () => {
+    const { statusLineText } = await import('../../../../src/tui/status/lines.js');
+    const row = statusLineText(live({ peers: { live: 2, stale: 1, oldestStartedMsAgo: 60_000, exclusive: true } }), 200);
+    expect(row).toContain('2 here · 1 stale');
+    // the row's `/` characters all come from the step and meter separators; the peer segment adds none
+    expect(row).not.toMatch(/pid|\/(home|Users|tmp|proc)\b/);
+    const withoutPeers = statusLineText(live({}), 200);
+    expect((row.match(/\//g) ?? []).length).toBe((withoutPeers.match(/\//g) ?? []).length);
+  });
+});

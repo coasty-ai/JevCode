@@ -2,7 +2,7 @@
 
 # Slash commands
 
-Type `/` at the start of an empty composer to open the palette; Enter runs a command only on an exact name or alias match — a `/` token that matches nothing keeps the draft and appends `[ui] error: unknown command /foo; type / to list commands` (a submitted line is a paid run). Aliases are shortcuts: `/s` is `/status`, `/m jev-on` is `/mode jev-on`; in the palette an exact alias pins its command to the top and the alias column shows the shortest one (TUI-DESIGN-3 §4.1). `avail`: idle | live | any — an idle-only command while a run is live answers `/x runs when the run is idle; Esc pauses first` (the draft is cleared: nothing to fix); a live-only command while idle answers `/x needs a live run`. `plain`: support in the `--plain` readline composer. Arguments follow TUI-DESIGN §5.1: bare words, `"double quotes"` with `\` escapes, `'single quotes'`; `--flag` and `--flag=value` are options; Tab completes an argument (enum values, settings, changed steps, session titles) and never wipes a typed one.
+Type `/` at the start of an empty composer to open the palette; Enter runs a command only when the draft is an exact name or alias and the palette marker is on its own row — otherwise Enter walks the list and Tab puts the highlighted row in the draft (TUI-DESIGN-4 §4.2). A `/` token that matches nothing keeps the draft and appends `[ui] error: /foo — not a command · type / to list commands`, and gains `. Did you mean /budget?` when one of the 41 names or 21 aliases ranks at or above the word-prefix band (§3.1.7; an `(idle only)` / `(live only)` note follows the suggestion when it cannot run now); a submitted line is a paid run. Aliases are shortcuts: `/s` is `/status`, `/m jev-on` is `/mode jev-on`; in the palette an exact alias pins its command to the top and the alias column shows the shortest one (TUI-DESIGN-3 §4.1). `avail`: idle | live | any — an idle-only command while a run is live answers `/x runs when the run is idle; Esc pauses first` (the draft is cleared: nothing to fix); a live-only command while idle answers `/x needs a live run`. `plain`: support in the `--plain` readline composer. Arguments follow TUI-DESIGN §5.1: bare words, `"double quotes"` with `\` escapes, `'single quotes'`; `--flag` and `--flag=value` are options; Tab completes an argument (enum values, settings, changed steps, session titles) and never wipes a typed one.
 
 | Command | Args | avail | plain | Semantics |
 | --- | --- | --- | --- | --- |
@@ -28,14 +28,14 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/provider` | [anthropic\|openrouter] | any | yes | no argument shows `provider <current> (next run: <pending>)`; with one: pending for the **next** run only (memory) |
 | `/mode`, alias `/m` | [jev-only\|jev-on\|jev-off\|llm-jev] | any | yes | no argument: current and next mode; with one: pending for the **next** run (memory); `jev-on` with no generator key opens the wizard's generator step in place; persist with `jevcode config set mode <m>` (default llm-jev) |
 | `/llm` | <on\|off> | any | yes | `/llm on` = `/mode jev-on`, `/llm off` = `/mode jev-only` |
-| `/config`, alias `/cf` | — | any | yes | masked table with `source` column, effective session cap, sandbox footer |
+| `/config`, alias `/cf` | — | any | yes | masked table with `source` column, effective session cap, sandbox footer. Flags: `--all` show every setting, including the rows folded at their defaults |
 | `/login`, alias `/l` | — | any | `/login` raw-mode prompt | wizard field re-entry (§11.2); `saved — applies to the next run` |
 | `/logout` | [generator\|jev] | any | yes | rewrites the credentials file atomically and reports env-sourced keys without touching them (§11.2) |
 | `/trust` | — | idle | yes | reopen the trust gate |
 | `/theme`, alias `/t` | <dark\|light\|daltonized\|ansi> | any | n/a | new items and the dynamic region only |
 | `/panel`, alias `/p` | [d\|p\|t\|s\|off\|full] | any | yes | no argument toggles collapsed ↔ open (≤ 6 rows); `d\|p\|t\|s` opens that tab (the same tab again collapses); `off` collapses to the one-row strip; `full` expands to the 12-row pane (§4.6); `--plain` prints the rows |
 | `/transcript`, alias `/tr` | [compact\|full] | any | always full | no argument shows the current view; `compact` (default) hides the stage kinds and shows one `[step N]` line per step; `full` shows every item (new items only, §4.5); `--plain` is always `full` |
-| `/copy`, alias `/cp` | [last\|proposal\|diff\|draft] | any | n/a | §10.5 |
+| `/copy`, alias `/cp` | [last\|proposal\|diff\|draft\|conversation] | any | n/a | §10.5 |
 | `/export` | [file] | idle | yes | §8.7 |
 | `/status`, alias `/s` | — | any | yes | run id, session id, step/max, stage, sandbox, workspace, git, stop reason, lock |
 | `/errors` | — | any | yes | append recent warnings/errors as items; acknowledges `!n` |
@@ -43,5 +43,9 @@ Type `/` at the start of an empty composer to open the palette; Enter runs a com
 | `/history` | clear | any | yes | truncate `history.jsonl` after `y/N` |
 | `/editor` | — | any | n/a | = Ctrl+G |
 | `/exit`, alias `/q`, alias `/quit` | — | any | yes | exit 0 (`exitConfirm` first while live; `--exit-code=last-run` opt-in) |
+| `/fullscreen` | — | any | yes | persist `ui.renderer: fullscreen` and offer a relaunch — the renderer is fixed at `render()` (§1.3.1), so it never switches in place; under `fullscreen` already, it persists `classic` back |
+| `/scrollback` | — | any | yes | fullscreen only: suspend, print the whole transcript through `createPlainRenderer`, wait for a key, resume (§1.3.4); under `classic` it answers that the terminal's own scrollback already has it |
+| `/peers` | — | any | yes | a block `peers · <n> here, <m> stale` with one kv row per peer — workspace, started <t> ago, state — never a pid and never a path (§7.10) |
+| `/ui` | reset | any | yes | clears every `guard()` pane latch (§7.1) and answers `ui reset — <n> panes unlatched` or `nothing was latched` |
 
 Deferred (TUI-DESIGN §22): `/doctor` (CLI `jevcode doctor` first), `/cd`, project commands (A63), `/redo`.

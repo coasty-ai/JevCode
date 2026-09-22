@@ -19,7 +19,7 @@
  * `starting` phase without a chat phase keeps the previous idle word (no wrong chrome between Enter and the bubble); the
  * centre shows `/rename` titles only, never the run id.
  */
-import type { BlockingKind, BlockingRequest, ConfirmRequest, EngineMode, EngineStatus, GitHead, RetryCause, RunResult, SandboxLevel, SpendSnapshot, StopReason } from '../../core/types.js';
+import type { BlockingKind, BlockingRequest, ConfirmRequest, EngineMode, EngineStatus, GitHead, PeerView, RetryCause, RunResult, SandboxLevel, SpendSnapshot, StopReason } from '../../core/types.js';
 import { MODE_BADGE_WORD } from '../../config/defaults.js';
 import { exitCodeFor } from '../../loop/stop.js';
 import { SPARKLINE_CELLS, eighthBar, sparkline } from '../bars.js';
@@ -98,6 +98,11 @@ export interface StatusLineState {
   readonly modeBadge?: { mode: EngineMode; pending: EngineMode | null } | null;
   /** TUI-DESIGN-2 §4.8: the conversational phase of a submission (`⠹ thinking` · `⠹ looking` · `⠹ replying`) */
   readonly thinking?: ThinkingPhase | null;
+  /**
+   * TUI-DESIGN-4 §7.10 (P-D10) item 1: the peer snapshot the controller supplies (`SessionHost.peers()`, contract
+   * 1.7 item 9); null until the registry lands. The segment shows the **count only** — never a pid, never a path.
+   */
+  readonly peers?: PeerView | null;
 }
 
 /** TUI-DESIGN-2 §4.8: the three phases between Enter and a reply. */
@@ -398,7 +403,7 @@ export function flatBadgePrefix(s: StatusLineState, o: StatusLineOptions = {}): 
 // Right zone and assembly (§7.4)
 // ---------------------------------------------------------------------------------------
 
-type SegmentId = 'step' | 'run' | 'sess' | 'tokens' | 'git' | 'spark' | 'help' | 'secret';
+type SegmentId = 'step' | 'run' | 'sess' | 'tokens' | 'git' | 'spark' | 'help' | 'secret' | 'peers';
 interface Segment {
   id: SegmentId;
   text: string;
@@ -409,8 +414,34 @@ function seg(id: SegmentId, text: string): Segment {
   return { id, text, width: stringWidth(text) };
 }
 
-/** TUI-DESIGN §7.4 drop order when short: ShortHelp → sparkline → git → session meter → wall (→ centre, which needs ≥ 24 free cells anyway); the flat-tier badge prefix goes before all of them (TUI-DESIGN-2 §1.5). */
-export const DROP_ORDER: readonly ('help' | 'spark' | 'git' | 'sess' | 'wall')[] = ['help', 'spark', 'git', 'sess', 'wall'];
+/**
+ * TUI-DESIGN §7.4 drop order when short: the peer count → ShortHelp → sparkline → git → session meter → wall (→
+ * centre, which needs ≥ 24 free cells anyway); the flat-tier badge prefix goes before all of them (TUI-DESIGN-2
+ * §1.5). TUI-DESIGN-4 §7.10 edge 2 puts `peers` **first**: it is informational, and the run's own numbers are not.
+ */
+export const DROP_ORDER: readonly ('peers' | 'help' | 'spark' | 'git' | 'sess' | 'wall')[] = ['peers', 'help', 'spark', 'git', 'sess', 'wall'];
+
+/**
+ * TUI-DESIGN-4 §7.10 item 1 / §12: the peer segment — `<n> here` when another instance holds this workspace, plus
+ * `· <m> stale` when the registry still lists entries from killed instances. Empty when this is the only instance
+ * (`live <= 1`) and nothing is stale, or when the registry is absent. Counts only: a pid or a path would identify
+ * another user's process, and two instances by the same user in one multiplexer is the common case (edge 6), so
+ * the copy is informational and never a warning colour.
+ */
+export function peersText(view: PeerView | null | undefined): string {
+  if (view === null || view === undefined) return '';
+  const here = Number.isFinite(view.live) ? Math.max(0, Math.floor(view.live)) : 0;
+  const stale = Number.isFinite(view.stale) ? Math.max(0, Math.floor(view.stale)) : 0;
+  /**
+   * §7.10 item 1 is explicit: the segment exists "**when another instance holds the same workspace**". A
+   * workspace whose only peers are dead registry rows is NOT shared, so `{ live: 1, stale: 2 }` shows nothing —
+   * the stale count belongs to `/peers` and to the blocking pane (edge 1), which is where `[c] continue` is.
+   */
+  if (here <= 1) return '';
+  const parts: string[] = [`${here} here`];
+  if (stale > 0) parts.push(`${stale} stale`);
+  return parts.join(' · ');
+}
 
 /**
  * TUI-DESIGN §24: `? help` / `Tab ⇥` / `Esc closes`; '' for overlays whose own rows list the keys (wizard,
@@ -471,6 +502,9 @@ export function rightZoneSegments(s: StatusLineState, columns: number, o: Status
     if (g.length > 0) segments.push(seg('git', g));
   }
   if (columns >= SPARKLINE_MIN_COLUMNS && s.jevLatencies !== undefined && s.jevLatencies.length > 0) segments.push(seg('spark', sparklineText(s.jevLatencies, ascii)));
+  // TUI-DESIGN-4 §7.10 item 1: the peer count sits before ShortHelp and is the first segment dropped (edge 2)
+  const peers = peersText(s.peers);
+  if (peers.length > 0) segments.push(seg('peers', peers));
   const help = shortHelp(s, ascii);
   if (help.length > 0) segments.push(seg('help', help));
   const secret = secretBadge(s, ascii);
@@ -494,7 +528,7 @@ export interface StatusZones {
   centre: string;
   right: string[];
   /** which drops were needed to fit */
-  dropped: ('badge' | 'help' | 'spark' | 'git' | 'sess' | 'wall' | 'centre')[];
+  dropped: ('badge' | 'peers' | 'help' | 'spark' | 'git' | 'sess' | 'wall' | 'centre')[];
 }
 
 /** The usable width: NaN and negatives → 0, +Infinity and anything absurd → `MAX_COLUMNS`, fractions floored. */

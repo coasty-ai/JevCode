@@ -6,7 +6,8 @@
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { COMMAND_ACTION_KINDS, COMMAND_TOKENS, argumentCandidates, dispatchCommand, parseCommandLine, resolveRunTarget, unknownCommandText, type CommandAction, type DispatchContext } from '../../../../src/tui/commands/dispatch.js';
+import { COMMAND_ACTION_KINDS, COMMAND_TOKENS, SUGGEST_MIN_SCORE, UNKNOWN_COMMAND_MAX, argumentCandidates, confirmFor, didYouMean, dispatchCommand, parseCommandLine, resolveRunTarget, unknownCommandText, type CommandAction, type ConfirmKind, type DispatchContext } from '../../../../src/tui/commands/dispatch.js';
+import { confirmRow } from '../../../../src/tui/commands/confirm.js';
 import { parseCommand } from '../../../../src/tui/commands/parse.js';
 import { COMMANDS, findCommand, type CommandSpec } from '../../../../src/tui/commands/registry.js';
 
@@ -32,12 +33,13 @@ function keeps(line: string, ctx: DispatchContext = idle): boolean {
 }
 
 describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
-  it('an unknown command never resolves: `error: unknown command /foo; type / to list commands`', () => {
-    expect(bad('/foo')).toBe('error: unknown command /foo; type / to list commands');
-    expect(bad('/')).toBe('error: unknown command /; type / to list commands');
-    expect(bad('/bud')).toBe('error: unknown command /bud; type / to list commands');
-    expect(unknownCommandText('foo')).toBe('error: unknown command /foo; type / to list commands');
-    expect(dispatchCommand('hello', idle)).toMatchObject({ ok: false, text: 'error: unknown command /hello; type / to list commands' });
+  it('an unknown command never resolves: the TUI-DESIGN-4 §3.1.7 shape with the optional `Did you mean` clause', () => {
+    // with no clause there is no full stop before the separator — `.` immediately followed by ` · ` reads as a typo
+    expect(bad('/foo')).toBe('error: /foo — not a command · type / to list commands');
+    expect(bad('/')).toBe('error: / — not a command · type / to list commands');
+    expect(bad('/bud')).toBe('error: /bud — not a command. Did you mean /budget? · type / to list commands');
+    expect(unknownCommandText('foo')).toBe('error: /foo — not a command · type / to list commands');
+    expect(dispatchCommand('hello', idle)).toMatchObject({ ok: false, text: 'error: /hello — not a command · type / to list commands' });
   });
   it('tokeniser errors keep the command name: `/export: unterminated quote`, `dangling backslash`', () => {
     expect(bad('/export "abc')).toBe('error: /export: unterminated quote');
@@ -230,10 +232,10 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     const p = parseCommand('/budget spend-cap 3');
     expect(p.ok).toBe(true);
     if (p.ok) expect(dispatchCommand(p.command, idle)).toMatchObject({ ok: true, action: { kind: 'budget' } });
-    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', budget: '', model: 'm', provider: 'anthropic', mode: 'jev-on', llm: 'on', theme: 'dark', history: 'clear' };
+    const sample: Record<string, string> = { rename: 'x', steer: 'x', why: '3', budget: '', model: 'm', provider: 'anthropic', mode: 'jev-on', llm: 'on', theme: 'dark', history: 'clear', ui: 'reset' };
     // TUI-DESIGN-3 §8 S4 (G5): the kinds list is exhaustive over the union (compile-time) and every dispatched kind is in it
     const kinds: readonly CommandAction['kind'][] = COMMAND_ACTION_KINDS;
-    expect(kinds).toHaveLength(36);
+    expect(kinds).toHaveLength(40); // TUI-DESIGN-4: +fullscreen +scrollback +peers +uiReset
     expect(new Set(kinds).size).toBe(kinds.length);
     for (const c of COMMANDS) {
       const ctx = c.availableDuringTask === 'live' ? live : idle;
@@ -292,6 +294,86 @@ describe('dispatchCommand (TUI-DESIGN §5.1, §5.2)', () => {
     expect(COMMAND_TOKENS).toContain('/llm');
     expect(argumentCandidates(findCommand('mode') as CommandSpec, 0, idle)).toEqual(['jev-only', 'jev-on', 'jev-off', 'llm-jev']);
     expect(argumentCandidates(findCommand('panel') as CommandSpec, 0, idle)).toEqual(['d', 'p', 't', 's', 'off', 'full']);
+  });
+  it('TUI-DESIGN-4 §3.1.7 "Did you mean": `rank(token, command names)` at or above the word-prefix band (700), the best AVAILABLE match preferred, and no clause when nothing clears it', () => {
+    expect(didYouMean('bud')?.name).toBe('budget');
+    expect(didYouMean('renam')?.name).toBe('rename');
+    expect(didYouMean('hel')?.name).toBe('help');
+    expect(didYouMean('exi')?.name).toBe('exit');
+    expect(didYouMean('/bud')?.name).toBe('budget'); // the slash is stripped before ranking
+    expect(didYouMean('BUD')?.name).toBe('budget'); // case-folded
+    // a wrong guess is worse than none: `xyzzy` (and `bogus`, which is not a subsequence of any name) get no clause
+    expect(didYouMean('xyzzy')).toBeNull();
+    expect(didYouMean('bogus')).toBeNull();
+    expect(didYouMean('')).toBeNull();
+    expect(didYouMean('/')).toBeNull();
+    expect(SUGGEST_MIN_SCORE).toBe(700);
+    // §3.1.7's pool is "41 names + 21 aliases": a hit on an ALIAS resolves to its owner
+    expect(didYouMean('qui')?.name).toBe('exit'); // `quit`, an alias of /exit
+    expect(didYouMean('nw')?.name).toBe('new'); // an exact alias never reaches this path in the product, but it ranks
+    expect(didYouMean('cf')?.name).toBe('config');
+    // `rank` is a subsequence scorer, so a typo that ADDS a letter clears nothing: `/quitt`, `/budgett`, `/bogus`
+    for (const t of ['quitt', 'budgett', 'undoo', 'cost2']) expect(didYouMean(t), t).toBeNull();
+    // prefer the best match that is AVAILABLE now, and fall back to the best overall WITH the availability note
+    expect(didYouMean('abor', true)?.name).toBe('abort');
+    expect(didYouMean('abor', false)?.name).toBe('abort');
+    // `un` ranks /undo (idle only) first and /unsteer (live only) second, so the preference flips with the phase
+    expect(didYouMean('un', false)?.name).toBe('undo');
+    expect(didYouMean('un', true)?.name).toBe('unsteer');
+    // the fall-back carries the note, so the user is not sent into `/x needs a live run` on the next Enter
+    expect(unknownCommandText('/stee', false)).toBe('error: /stee — not a command. Did you mean /steer? (live only) · type / to list commands');
+    expect(unknownCommandText('/stee', true)).toBe('error: /stee — not a command. Did you mean /steer? · type / to list commands');
+    expect(unknownCommandText('/und', true)).toBe('error: /und — not a command. Did you mean /undo? (idle only) · type / to list commands');
+    // the whole rejected line is quoted, clipped at 80 — the measured `/bogus/steer` cascade stays legible
+    expect(unknownCommandText('/bogus/steer')).toBe('error: /bogus/steer — not a command · type / to list commands');
+    const long = `/${'z'.repeat(200)}`;
+    expect(unknownCommandText(long).startsWith(`error: ${long.slice(0, UNKNOWN_COMMAND_MAX - 1)}…`)).toBe(true);
+    expect(UNKNOWN_COMMAND_MAX).toBe(80);
+  });
+  it('TUI-DESIGN-4 §4.5 (D-X): `confirm` is non-null only for a destructive command reached through a SELECTION surface', () => {
+    const sel: DispatchContext = { ...idle, fromPalette: true };
+    const selLive: DispatchContext = { ...live, fromPalette: true };
+    expect(dispatchCommand('/new', sel)).toMatchObject({ ok: true, confirm: 'new' });
+    expect(dispatchCommand('/exit', sel)).toMatchObject({ ok: true, confirm: 'exit' });
+    expect(dispatchCommand('/abort', selLive)).toMatchObject({ ok: true, confirm: 'abort' });
+    // `/history clear` is destructive AND has no rung ladder: §4.5 gives it its own readline `y/N` (`session.ts`,
+    // `prompter?.historyClear`), so `confirm` is null and no overlay is ever asked to draw an empty body
+    expect(dispatchCommand('/history clear', sel)).toMatchObject({ ok: true, action: { kind: 'historyClear' }, confirm: null });
+    // the alias reaches the same gate (the owner is what carries `destructive`)
+    expect(dispatchCommand('/q', sel)).toMatchObject({ ok: true, action: { kind: 'exit' }, confirm: 'exit' });
+    expect(dispatchCommand('/nw', sel)).toMatchObject({ ok: true, action: { kind: 'new' }, confirm: 'new' });
+    // a HAND-TYPED line is never gated — the risk is mis-selection, not mis-typing (EXIT_IDLE, test/pty/helpers.ts:789)
+    for (const line of ['/new', '/exit', '/q', '/history clear']) expect(dispatchCommand(line, idle), line).toMatchObject({ ok: true, confirm: null });
+    expect(dispatchCommand('/abort', live)).toMatchObject({ ok: true, confirm: null });
+    // and a non-destructive command is never gated, selection surface or not
+    for (const line of ['/status', '/cost', '/help', '/undo']) expect(dispatchCommand(line, sel), line).toMatchObject({ ok: true, confirm: null });
+    // exactly four specs carry `destructive`
+    expect(COMMANDS.filter((c) => c.destructive === true).map((c) => c.name)).toEqual(['new', 'abort', 'history', 'exit']);
+    // `confirmFor` reads the ACTION, so a `/history` that never resolved to `historyClear` cannot reach a confirm row
+    const hist = findCommand('history') as CommandSpec;
+    expect(confirmFor(hist, { kind: 'historyClear' }, true)).toBeNull();
+    expect(confirmFor(hist, { kind: 'status' }, true)).toBeNull();
+    expect(confirmFor(hist, { kind: 'historyClear' }, false)).toBeNull();
+    // every `ConfirmKind` `confirmFor` can produce has a ladder — `confirmRow` is total, so S1 can render it
+    // unconditionally (the null-body overlay of the review is structurally impossible)
+    const news = findCommand('new') as CommandSpec;
+    for (const k of [confirmFor(news, { kind: 'new' }, true), confirmFor(findCommand('exit') as CommandSpec, { kind: 'exit' }, true)]) {
+      expect(k).not.toBeNull();
+      expect(confirmRow(k as ConfirmKind, 76).length).toBeGreaterThan(0);
+    }
+    // a `/history` that failed validation is an error, not an action, so it never reaches the gate at all
+    expect(dispatchCommand('/history', sel)).toMatchObject({ ok: false });
+    expect(dispatchCommand('/history nope', sel)).toMatchObject({ ok: false });
+  });
+  it('TUI-DESIGN-4 §1.3.1 / §1.3.4 / §7.10 / §7.1: the four new commands dispatch, and `/ui` takes only `reset`', () => {
+    expect(ok('/fullscreen')).toEqual({ kind: 'fullscreen' });
+    expect(ok('/scrollback')).toEqual({ kind: 'scrollback' });
+    expect(ok('/peers')).toEqual({ kind: 'peers' });
+    expect(ok('/ui reset')).toEqual({ kind: 'uiReset' });
+    expect(bad('/ui')).toBe('error: /ui: expected reset');
+    expect(bad('/ui nope')).toBe('error: /ui: expected reset, got "nope"');
+    expect(keeps('/ui nope')).toBe(true);
+    expect(bad('/peers now')).toMatch(/^error: \/peers/);
   });
   it('dispatch.ts never imports cli/** (the controller depends on it, not the reverse)', () => {
     const src = readFileSync(fileURLToPath(new URL('../../../../src/tui/commands/dispatch.ts', import.meta.url)), 'utf8');

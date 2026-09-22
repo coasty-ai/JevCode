@@ -52,9 +52,52 @@ PY
 BADGE=$(default_badge)
 BADGE_RE=$(printf '%s' "$BADGE" | sed 's/[+.]/\\&/g')
 # the variables every child loses (see the header); `env -u` takes them one by one
-UNSET="-u CI -u CONTINUOUS_INTEGRATION -u JEV_API_KEY -u TYPESAFE_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u JEVCODE_API_KEY -u JEVCODE_MODE -u JEV_PROVIDER -u JEVCODE_CONFIG -u JEVCODE_MOCK_INTAKE -u JEVCODE_MOCK_REVIEW_AT -u JEVCODE_MOCK_JEV_MS -u JEVCODE_ASSERT_NO_NETWORK -u JEVCODE_TRACE -u JEVCODE_FAULT"
+UNSET="-u CI -u CONTINUOUS_INTEGRATION -u JEV_API_KEY -u TYPESAFE_API_KEY -u OPENROUTER_API_KEY -u ANTHROPIC_API_KEY -u JEVCODE_API_KEY -u JEVCODE_MODE -u JEV_PROVIDER -u JEVCODE_CONFIG -u JEVCODE_MOCK_INTAKE -u JEVCODE_MOCK_REVIEW_AT -u JEVCODE_MOCK_JEV_MS -u JEVCODE_ASSERT_NO_NETWORK -u JEVCODE_TRACE -u JEVCODE_FAULT -u JEVCODE_SUBMIT_WATCHDOG_MS -u JEVCODE_ASSERT_HEIGHT"
 # the isolated home of one child: `hermetic_env <home>` prints the VAR=value words every scenario gets
 hermetic_env() { echo "HOME=$1 XDG_CONFIG_HOME=$1/xdg JEVCODE_HOME=$1 OPEN_ASSIST_PATH=$1/no-open-assist"; }
+# TUI-DESIGN-4 §7.1 / §11: the frame count of a capture (every Ink frame of the App opens with ESC[?2026h).
+# A latched pane must not raise it: an unlatched persistent throw was one UNTHROTTLED frame per iteration.
+frames_in() {
+  python3 - "$1" <<'PYF'
+import sys
+b = open(sys.argv[1], 'rb').read()
+print(max(0, b.count(b'\x1b[?2026h')))
+PYF
+}
+# TUI-DESIGN-4 §11 / §1.4: `ESC[3J` deletes the USER's scrollback and must never be written — not by Ink's
+# `clearTerminal`, not at unmount, not at any geometry. `guardStdout` (src/tui/scrollback-guard.ts) drops it;
+# this counts it in the raw capture so the guard cannot regress silently. Zero in EVERY scenario, always.
+three_j() {
+  python3 - "$1" <<'PYJ'
+import re, sys
+print(len(re.findall(rb'\x1b\[[0-9;]*3J', open(sys.argv[1], 'rb').read())))
+PYJ
+}
+# TUI-DESIGN-4 §11 (new row): NO FRAME TALLER THAN THE TERMINAL. The dynamic region starts at the rule row; a
+# frame that paints more than `rows` rows below it scrolls the scrollback away. Counted per frame over the whole
+# capture; the first frame after each `resize` is skipped (it is laid out for the geometry that just left —
+# §2.0: a terminal receives that frame whatever the renderer does).
+tall_frames() {
+  python3 - "$1" "$2" <<'PYT'
+import re, sys
+b = open(sys.argv[1], 'rb').read()
+rows = int(sys.argv[2])
+frames = b.split(b'\x1b[?2026h')[1:]
+strip = lambda f: re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f)
+# EXACTLY `src/perf/pty.ts`'s RULE_ROW_RE and paintedRows(): the LAST rule row opens the region (a frame may
+# carry two rule-shaped rows), and the three dashes must be followed by a space, a dash, a rule byte or the end
+# of the row — `^-{3}` alone matched any scrollback row beginning `---` and measured a healthy frame as tall.
+RULE = re.compile(rb'^(?:(?:\xe2\x94\x80){3}|-{3})(?:[ -]|\xe2|$)')
+bad = 0
+for f in frames:
+    ls = [l.rstrip(b'\r') for l in strip(f).split(b'\n')]
+    while ls and ls[-1] == b'': ls.pop()
+    i = next((k for k in range(len(ls) - 1, -1, -1) if RULE.match(ls[k])), None)
+    if i is None: continue
+    if len(ls) - i > rows: bad += 1
+print(bad)
+PYT
+}
 fail=0
 clears() {
   python3 - "$1" <<'PY'
@@ -180,8 +223,8 @@ frames=[re.sub(rb'\x1b\[[0-9;?]*[ -/]*[@-~]', b'', f) for f in b.split(b'\x1b[?2
 mark=lambda f: sum(1 for l in f.split(b'\r\n') if b'\xe2\x96\x88\xe2\x96\x88' in l)>=5
 which=sys.argv[2]
 if which=='handoff':
-    start=next((i for i,f in enumerate(frames) if re.search(rb'\[run\] start ', f)), None)
-    end=next((i for i,f in enumerate(frames) if re.search(rb'\] end (complete|max_steps|generator_done)', f)), None)
+    start=next((i for i,f in enumerate(frames) if re.search(rb'\[run\] started (?:\xc2\xb7|-) ', f)), None)
+    end=next((i for i,f in enumerate(frames) if re.search(rb'\] finished (?:\xc2\xb7|-) (complete|max_steps|generator_done)', f)), None)
     if start is None or end is None: print('no-run'); sys.exit()
     # the mark is hidden for the whole run; the frame that commits `[run] end` also commits the state change, so it may already
     # carry the mark back (TUI-DESIGN-3 §3.2 "run:end -> idle": one frame earlier than the prose's "the frame after end")
@@ -194,7 +237,7 @@ if which=='handoff':
     off=next((i for i in range(panel+1,len(after)) if b'\xe2\x96\xb8 jev' in after[i] and mark(after[i])), None)
     print('ok' if off is not None else 'no-return-after-panel-off')
 elif which=='postrun22':
-    end=next((i for i,f in enumerate(frames) if re.search(rb'\] end (complete|max_steps|generator_done)', f)), None)
+    end=next((i for i,f in enumerate(frames) if re.search(rb'\] finished (?:\xc2\xb7|-) (complete|max_steps|generator_done)', f)), None)
     echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
     if end is None or echo is None: print('no-run-or-echo'); sys.exit()
     if any(mark(f) for f in frames[end:echo]): print('mark-before-first-key'); sys.exit()
@@ -203,7 +246,10 @@ elif which=='palette21':
     pal=[f for f in frames if b'Tab' in f and b'commands' in f]
     print('ok' if pal and all(mark(f) for f in pal) else 'palette-handoff')
 elif which=='flat-no-mark':
-    flat=[f for f in frames if re.search(rb'\xc2\xb7 idle', f) and b'\xe2\x95\xad' not in f]
+    # TUI-DESIGN-2 §1.5: the flat tier's badge prefix is the FIRST thing dropped when the row runs short, and the
+    # `llm-jev` default badge is 18 cells — a 60-column flat status row cannot carry it. A flat frame is one with
+    # a status row at column 0 and no rounded box edge.
+    flat=[f for f in frames if re.search(rb'\r\nidle {2,}step 0/', f) and b'\xe2\x95\xad' not in f]
     print('ok' if flat and not any(b'\xe2\x96\x88\xe2\x96\x88' in f for f in flat) else 'mark-in-flat-tier')
 elif which=='head-after-echo':
     echo=next((i for i,f in enumerate(frames) if re.search(rb'(?:\xe2\x80\xba|>) h', f)), None)
@@ -289,10 +335,11 @@ hermetic_check() {
   # shellcheck disable=SC2086
   ctrl=$(cd "$ws" && HOME="$fake_home" env $UNSET -u XDG_CONFIG_HOME JEVCODE_HOME="$home" OPEN_ASSIST_PATH="$home/no-open-assist" node "$BIN" config --workspace "$ws" 2>&1)
   ok=1; checks=""
-  echo "$out" | grep -q 'file:' && { ok=0; checks="$checks LEAK:file-source"; } || checks="$checks no-file-source"
+  # TUI-DESIGN-4 §3.3: `config-table.ts` renders the source as a `(file)` note row now, not a `file:<path>` column
+  echo "$out" | grep -qE '\(file\)|file:' && { ok=0; checks="$checks LEAK:file-source"; } || checks="$checks no-file-source"
   echo "$out" | grep -q "$FAKE_KEY" && { ok=0; checks="$checks LEAK:key-bytes"; } || checks="$checks no-key-bytes"
   echo "$out" | grep -q 'legacy' && { ok=0; checks="$checks LEAK:legacy-warning"; } || checks="$checks no-legacy-warning"
-  echo "$ctrl" | grep -q 'file:' && checks="$checks control:legacy-file-read" || { ok=0; checks="$checks CONTROL-DID-NOT-READ-LEGACY-FILE"; }
+  echo "$ctrl" | grep -qE '\(file\)|file:' && checks="$checks control:legacy-file-read" || { ok=0; checks="$checks CONTROL-DID-NOT-READ-LEGACY-FILE"; }
   [ "$ok" = "1" ] && verdict=PASS || { verdict=FAIL; fail=1; }
   echo "hermetic: $verdict exit=$code (jevcode config under the smoke's env with a legacy credentials file in HOME)$checks"
   rm -rf "$fake_home" "$home" "$ws"
@@ -301,10 +348,37 @@ case "$1" in
   --wordmark) wordmark "$2"; exit 0;;
   --hermetic) hermetic_check; exit $fail;;
 esac
+# TUI-DESIGN-4 §7.4 / §10 S6: the launch failure with stdout and stderr in SEPARATE files. A read-only $HOME
+# used to print `[ui] error: EACCES: permission denied, mkdir '<home>/runs'` on **stdout**, with an empty stderr,
+# no epilogue and exit 1. The gate: stdout empty, stderr carries the sentence AND its fix row, exit 2.
+readonly_home_nopty() {
+  h=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-rohome-XXXXXX"); w=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-rows-XXXXXX")
+  mkdir -p "$h/xdg"; chmod 500 "$h"
+  o="$OUT/readonly-home.nopty.out"; e="$OUT/readonly-home.nopty.err"
+  # shellcheck disable=SC2086
+  (cd "$w" && env $UNSET $(hermetic_env "$h") node "$BIN" run "say hi" --mode jev-on --mock --mock-steps 1 --workspace "$w" >"$o" 2>"$e" </dev/null)
+  rc=$?
+  chmod -R u+rwx "$h" 2>/dev/null || true; rm -rf "$h" "$w"
+  [ "$rc" = "2" ] || { echo "exit=$rc(want 2)"; return 0; }
+  [ -s "$o" ] && { echo "stdout-not-empty"; return 0; }
+  grep -q 'cannot create the runs directory' "$e" || { echo "no-explain-on-stderr"; return 0; }
+  grep -q 'set JEVCODE_HOME to a writable directory' "$e" || { echo "no-fix-on-stderr"; return 0; }
+  echo ok
+}
 run() {
   name=$1; expected=$2; rows=$3; cols=$4; shift 4
   steps_name=$name
   case "$name" in polish-wide) steps_name=polish;; wordmark-idle-wide) steps_name=wordmark-idle;; esac
+  # TUI-DESIGN-4 §10 S6: the eight `fault-<pane>` scenarios share three steps files — the boundaries that only
+  # render during a run, the ones in the idle frame, and the two with a shape of their own — and each runs at
+  # BOTH 24×80 (boxed) and 12×60 (flat), which is the tier where a fallback's height is hardest to get right.
+  case "$name" in
+    fault-pane|fault-overlay) steps_name=fault-run;;
+    fault-composer|fault-static|fault-transcript) steps_name=fault-idle;;
+    fault-persistent-flat) steps_name=fault-persistent;;
+    fault-wordmark-flat) steps_name=fault-wordmark;;
+    fault-status-flat) steps_name=fault-status;;
+  esac
   home=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-home-XXXXXX"); ws=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-ws-XXXXXX")
   extra_env=$(hermetic_env "$home")
   case "$name" in
@@ -324,6 +398,25 @@ run() {
     trust-esc) printf '# instructions\nBe careful.\n' > "$ws/AGENTS.md";;
     keybindings) printf '{ "global:help": "none" }\n' > "$ws/kb.json"; set -- chat --mock --keybindings "$ws/kb.json";;
     taskfile-header) printf 'create one scratch file and stop\n' > "$ws/todo.md"; set -- run --task-file "$ws/todo.md" --mode jev-on --mock --mock-steps 3;;
+    # --- TUI-DESIGN-4 §7 (round 4): the fault scenarios. One typed JEVCODE_FAULT per row (§7.11's grammar).
+    # NOTE: the pre-mount rejection of an unknown value (`readFaultEnv` -> stderr -> exit 2) is NOT wired yet —
+    # its call site is `src/cli/main.tsx`, another slot's file — so a typo here is a silent no-op at run time
+    # and the scenario fails on its own `expect` instead. `test/unit/tui/faults.test.ts` is what holds the
+    # grammar honest until the §9.2 request lands.
+    fault-persistent|fault-persistent-flat) extra_env="$extra_env JEVCODE_FAULT=render:transcript:lines:sticky";;
+    fault-wordmark|fault-wordmark-flat) extra_env="$extra_env JEVCODE_FAULT=render:wordmark";;
+    fault-status|fault-status-flat) extra_env="$extra_env JEVCODE_FAULT=render:status";;
+    fault-live) extra_env="$extra_env JEVCODE_FAULT=render:live";;
+    fault-pane) extra_env="$extra_env JEVCODE_FAULT=render:pane";;
+    fault-overlay) extra_env="$extra_env JEVCODE_FAULT=render:overlay JEVCODE_MOCK_REVIEW_AT=2";;
+    fault-composer) extra_env="$extra_env JEVCODE_FAULT=render:composer";;
+    fault-static) extra_env="$extra_env JEVCODE_FAULT=render:static";;
+    fault-transcript) extra_env="$extra_env JEVCODE_FAULT=render:transcript";;
+    rundir-vanishes) extra_env="$extra_env JEVCODE_FAULT=rundir:rm:after=3";;
+    stuck-submit) extra_env="$extra_env JEVCODE_FAULT=submit:hang JEVCODE_SUBMIT_WATCHDOG_MS=1500";;
+    peers) extra_env="$extra_env JEVCODE_FAULT=peer:2";;
+    # §7.4: a read-only $HOME is the measured launch failure — chmod AFTER the hermetic dirs exist
+    readonly-home) mkdir -p "$home/xdg"; chmod 500 "$home";;
   esac
   cap="$OUT/$name.cap"; tim="$OUT/$name.jsonl"; rm -f "$cap" "$tim"
   # shellcheck disable=SC2086
@@ -332,14 +425,27 @@ run() {
   code=$?
   txt="$OUT/$name.txt"; strip_cap "$cap" > "$txt"
   c=$(clears "$cap"); t=$(grep -c '"op":"timeout"' "$tim"); r=$(restores "$cap"); checks=""; ok=1
+  # TUI-DESIGN-4 §11 (new row): no `ESC[3J` ever, in every capture, at every geometry
+  j=$(three_j "$cap"); [ "$j" = "0" ] && checks="$checks no-3j" || { ok=0; checks="$checks ESC-3J=$j"; }
+  # TUI-DESIGN-4 §11 (new row): NO FRAME TALLER THAN THE TERMINAL — `paintedRows <= rows`, every frame, every
+  # capture. A capture has ONE geometry here, so the gate is exact and zero is the only allowance. A capture with
+  # a `resize` step has several, and telling a stale-geometry frame from an over-tall one needs the SIGWINCH byte
+  # offset that only the typist records — `src/perf/states.ts` gates those per geometry segment (`regionMax`,
+  # `stalePaints`, `budgetOk`), so this leg SKIPS them instead of judging every frame at the smallest geometry.
+  if grep -qE '^resize ' "$STEPS/$steps_name.steps" 2>/dev/null; then
+    checks="$checks tall-frames=(states.ts, per segment)"
+  else
+    tf=$(tall_frames "$cap" "$rows")
+    [ "$tf" = "0" ] && checks="$checks no-tall-frame" || { ok=0; checks="$checks TALL-FRAMES=$tf(>${rows}rows)"; }
+  fi
   [ "$code" = "$expected" ] || ok=0
   [ "$t" = "0" ] || ok=0
   # §14.2: the exit string exactly once per exit in every scenario (the process-wide restoreTerminal is shared by unmount, fatalExit, the engine's exit hook, finishSession and process 'exit')
   [ "$r" = "1" ] || ok=0
   case "$name" in
-    resize|chrome-tiers|r3-wizard-resize) [ "$c" -le 1 ] || ok=0; checks=" clears<=1(one shrink segment)";;
-    resize-live) [ "$c" -le 2 ] || ok=0; checks=" clears<=2(two shrink segments)"
-      grep -q 'end human_abort' "$txt" && checks="$checks run:human_abort" || { ok=0; checks="$checks MISSING:human_abort"; };;
+    resize|chrome-tiers|r3-wizard-resize) [ "$c" -le 1 ] || ok=0; checks="$checks clears<=1(one shrink segment)";;
+    resize-live) [ "$c" -le 2 ] || ok=0; checks="$checks clears<=2(two shrink segments)"
+      grep -qE 'finished (·|-) human_abort' "$txt" && checks="$checks run:human_abort" || { ok=0; checks="$checks MISSING:human_abort"; };;
     plainwarn|taskfile-missing|firstframe) ;;
     *) [ "$c" = "0" ] || ok=0;;
   esac
@@ -352,18 +458,18 @@ run() {
     sigmid-trust|sigmid-early) grep -q 'stopped — signal: SIGINT (exit 130)' "$txt" && checks="$checks epilogue:130" || { ok=0; checks="$checks MISSING:epilogue"; };;
     taskfile-missing) grep -q -- '--task-file: cannot read .*ENOENT' "$txt" && checks="$checks usage-line" || { ok=0; checks="$checks MISSING:usage-line"; };;
     oneshot-ctrlc) grep -q 'stopped — human_abort (exit 130)' "$txt" && checks="$checks epilogue:130" || { ok=0; checks="$checks MISSING:epilogue"; };;
-    exitlast) grep -q 'end max_steps' "$txt" && checks="$checks run:max_steps";;
+    exitlast) grep -qE 'finished (·|-) max_steps' "$txt" && checks="$checks run:max_steps";;
     # TUI-DESIGN-2 §8.2 chat-task gates "run dir + jevcode.log": a scenario that must run fails without them
     chat-task|review-y|review-d|s2-esc-pause|s2-ctrlc-abort|chat-ambiguous-y|panel|wordmark-handoff|wordmark-22-postrun|theme-pink|polish|polish-wide) [ -f "$home/runs/$(ls "$home/runs" 2>/dev/null | head -1)/jevcode.log" ] && checks="$checks run-dir:jevcode.log" || { ok=0; checks="$checks MISSING:run-dir-jevcode.log"; };;
   esac
   case "$name" in
     # TUI-DESIGN-2 §4.5: the compact transcript shows one `[step N]` summary line per step and hides the stage lines
     chat-task) grep -q '^ *\[step 1\] ' "$txt" && checks="$checks step-line" || { ok=0; checks="$checks MISSING:step-line"; }
-      grep -qE '^ *\[step [0-9]+\] (intent=|context [0-9]+ files|proposal (edit|write|patch|run|read|done) |risk |outcome |judge succeeded=)' "$txt" && { ok=0; checks="$checks STAGE-LINES-VISIBLE"; } || checks="$checks compact:no-stage-lines"
+      grep -qE '^ *\[step [0-9]+\] (intent (·|-)|context (·|-)|proposal (·|-)|risk [0-9]|done (·|-)|judge [0-9]|plan (·|-))' "$txt" && { ok=0; checks="$checks STAGE-LINES-VISIBLE"; } || checks="$checks compact:no-stage-lines"
       grep -qE '^ *\[run\] ready' "$txt" && { ok=0; checks="$checks RUN-READY-VISIBLE"; } || checks="$checks compact:no-run-ready";;
     # TUI-DESIGN-2 §3.1 rows 6–7, §8.2: a reply and no run; the wall time Enter → [jevcode] from the mark pair (gate 1.5 s, the live round-2 gate of §9; the mock answers at once)
     chat-hi|chat-facts|chat-ambiguous|chat-ambiguous-flat|mode-switch|mode-switch-keyed|zero-arg-chat|zero-arg-run|splash|splash-wide|wordmark-reduced|splash-settle|chrome-tiers|wordmark-idle|wordmark-idle-wide|wordmark-key-during-pass|wordmark-21|wordmark-20|wordmark-nocolor|theme-light|theme-ansi|r3-env-jev-only|ts-only-restart|commands-idle|commands-thinking|keybindings)
-      grep -qE '^ *\[run\] start' "$txt" && { ok=0; checks="$checks RUN-STARTED"; } || checks="$checks no-run"
+      grep -qE '^ *\[run\] started (·|-) ' "$txt" && { ok=0; checks="$checks RUN-STARTED"; } || checks="$checks no-run"
       [ -d "$home/runs" ] && [ -n "$(ls "$home/runs" 2>/dev/null)" ] && { ok=0; checks="$checks RUN-DIR"; };;
   esac
   case "$name" in
@@ -375,8 +481,9 @@ run() {
     chat-ambiguous-flat) grep -q 'run this as a task?  \[y\] \[n\]  Esc keeps' "$txt" && checks="$checks intake-row:narrow" || { ok=0; checks="$checks MISSING:intake-row"; }
       grep -q '╭─ run this as a task' "$txt" && { ok=0; checks="$checks CARD-IN-FLAT-TIER"; }
       ic=$(intake_card_check "$cap"); [ "$ic" = "ok" ] && checks="$checks enter-inert" || { ok=0; checks="$checks ENTER-NOT-INERT:$ic"; };;
-    # §9 review invariants: Enter on the armed card is inert and only `y` approves — exactly one `confirm … approved` in transcript.log, the typed `y` never an echo
-    review-y) n_ok=$(grep -c 'confirm [^ ]* approved' "$home/runs/$(ls "$home/runs" 2>/dev/null | head -1)/transcript.log" 2>/dev/null); [ "$n_ok" = "1" ] && checks="$checks one-approval" || { ok=0; checks="$checks APPROVALS=$n_ok"; }
+    # §9 review invariants: Enter on the armed card is inert and only `y` approves — exactly one `review approved`
+    # row in transcript.log (TUI-DESIGN-4 §3.6 G5 renamed `confirm c-2 approved`), the typed `y` never an echo
+    review-y) n_ok=$(grep -c 'review approved' "$home/runs/$(ls "$home/runs" 2>/dev/null | head -1)/transcript.log" 2>/dev/null); [ "$n_ok" = "1" ] && checks="$checks one-approval" || { ok=0; checks="$checks APPROVALS=$n_ok"; }
       grep -q '› y' "$txt" && { ok=0; checks="$checks Y-TYPED-AS-TEXT"; } || checks="$checks enter-inert:no-y-echo";;
     mode-switch) grep -q 'Pick the generator provider' "$txt" && { ok=0; checks="$checks STARTUP-WIZARD"; } || checks="$checks in-place-wizard";;
     mode-switch-keyed) grep -q 'jev+llm · next run' "$txt" && checks="$checks badge:next-run" || { ok=0; checks="$checks MISSING:badge"; };;
@@ -435,10 +542,12 @@ run() {
     commands-thinking) grep -q '\[ui\] status' "$txt" && grep -q '\[jevcode\] Hi\.' "$txt" && checks="$checks status-while-thinking+reply" || { ok=0; checks="$checks MISSING:status-or-reply"; };;
     trust-esc) grep -q 'trust unchanged' "$txt" && checks="$checks trust-unchanged" || { ok=0; checks="$checks MISSING:trust-unchanged"; };;
     keybindings) grep -q '› ?' "$txt" && checks="$checks ?-inserted" || { ok=0; checks="$checks MISSING:?-as-text"; }
-      grep -q 'Tab completes' "$txt" && { ok=0; checks="$checks HELP-OPENED"; } || checks="$checks no-help";;
+      grep -q 'Tab picks' "$txt" && { ok=0; checks="$checks HELP-OPENED"; } || checks="$checks no-help";;
     # TUI-DESIGN-3 §3.2: no wordmark at 12×60 (the flat frame carries no `██` row), the mark back at 24×80
-    chrome-tiers) grep -q "╭─ $BADGE" "$txt" && grep -q "$BADGE · idle" "$txt" && checks="$checks boxed+flat" || { ok=0; checks="$checks MISSING:tier-rows"; }
-      flat_rows=$(wm_rows_at "$cap" "$BADGE_RE \xc2\xb7 idle"); [ "$flat_rows" -ge 1 ] && [ "$flat_rows" -le 10 ] && checks="$checks flat-rows=$flat_rows" || { ok=0; checks="$checks FLAT-ROWS=$flat_rows"; }
+    # the flat tier's anchor is its SHAPE (a status row at column 0), not the badge prefix: TUI-DESIGN-2 §1.5
+    # drops that prefix first when short, and the `llm-jev` default badge (18 cells) cannot fit 60 columns
+    chrome-tiers) grep -q "╭─ $BADGE" "$txt" && grep -qE '^idle {2,}step 0/' "$txt" && checks="$checks boxed+flat" || { ok=0; checks="$checks MISSING:tier-rows"; }
+      flat_rows=$(wm_rows_at "$cap" "\r\nidle {2,}step 0/"); [ "$flat_rows" -ge 1 ] && [ "$flat_rows" -le 10 ] && checks="$checks flat-rows=$flat_rows" || { ok=0; checks="$checks FLAT-ROWS=$flat_rows"; }
       w=$(wm_handoff "$cap" flat-no-mark); [ "$w" = "ok" ] && checks="$checks no-mark-in-flat" || { ok=0; checks="$checks $w"; }
       m=$(wm_mark_after "$cap" "(?:\xe2\x80\xba|>) (?:\x1b\[[0-9;]*m)*Z"); [ "$m" = "1" ] && checks="$checks mark-back-at-24x80" || { ok=0; checks="$checks MARK-NOT-BACK"; };;
     zero-arg-chat|zero-arg-run) grep -q "╭─ $BADGE" "$txt" && checks="$checks badge:default($BADGE)" || { ok=0; checks="$checks MISSING:badge"; }
@@ -470,15 +579,63 @@ run() {
     r3-env-jev-only) grep -q '╭─ jev-only' "$txt" && checks="$checks badge:jev-only" || { ok=0; checks="$checks MISSING:badge"; }
       grep -q 'OpenRouter API key\|Where do you reach Jev' "$txt" && { ok=0; checks="$checks WIZARD"; } || checks="$checks no-wizard";;
     panel) grep -q '▾ decisions' "$txt" && grep -q 'more rows' "$txt" && checks="$checks panel:open+more-row" || { ok=0; checks="$checks MISSING:panel-rows"; };;
+    # --- TUI-DESIGN-4 §7 / §10 (S6): the hardening gates
+    # §7.1: a builder throwing on EVERY render degrades EXACTLY ONCE. More than one row means the latch is not holding.
+    # the notice is `ui: <pane> failed (<Error.name>)` (§7.12); the App-level `[ui]` item still carries round 3's
+    # `ui: <pane> pane failed to render (…)` until §9.2's App.tsx row lands, so the anchor accepts both spellings
+    fault-persistent|fault-persistent-flat) n=$(grep -cE 'ui: [a-z]+ (pane failed to render|failed) \(' "$txt"); [ "$n" = "1" ] && checks="$checks latch:one-notice" || { ok=0; checks="$checks LATCH:$n-notices"; }
+      f=$(frames_in "$cap"); checks="$checks frames=$f"; [ "$f" -le 400 ] || { ok=0; checks="$checks FRAME-FLOOD"; };;
+    # §7.3 item 2 / §1.2 P-H3: the wordmark's fallback is BLANK rows of the same height, never a notice row
+    fault-wordmark|fault-wordmark-flat) grep -qE 'ui: wordmark (pane failed to render|failed) \(' "$txt" && checks="$checks wordmark:boundary-caught" || { ok=0; checks="$checks MISSING:wordmark-boundary"; }
+      grep -q '\[jevcode\]' "$txt" && checks="$checks reply-still-arrived" || { ok=0; checks="$checks REPLY-LOST"; };;
+    # §7.3 item 4: ONE ROW degrades, not the box — the four border characters survive the throw
+    fault-status) grep -qE 'ui: status (pane failed to render|failed) \(' "$txt" && checks="$checks status:boundary-caught" || { ok=0; checks="$checks MISSING:status-boundary"; }
+      grep -q '╭─' "$txt" && grep -q '╰' "$txt" && checks="$checks console:box-intact" || { ok=0; checks="$checks BOX-GONE"; };;
+    # §7.3 item 4 at the FLAT tier: 12×60 draws no box, so the gate is that the row degrades and the composer
+    # still answers — the box check above would be vacuous here (§2.4: `boxed` needs rows ≥ 16 and cols ≥ 40)
+    fault-status-flat) grep -qE 'ui: status (pane failed to render|failed) \(' "$txt" && checks="$checks status:boundary-caught" || { ok=0; checks="$checks MISSING:status-boundary"; }
+      grep -q '╭─' "$txt" && { ok=0; checks="$checks BOX-IN-FLAT-TIER"; } || checks="$checks flat:no-box";;
+    # §7.3 items 1/2/5 / §10 S6: the boundary catches, the frame stays usable, and the session still exits 0
+    fault-live|fault-pane|fault-overlay|fault-composer|fault-static|fault-transcript) \
+      grep -qE 'ui: [a-z]+ (pane failed to render|failed) \(' "$txt" && checks="$checks boundary:caught" || { ok=0; checks="$checks MISSING:boundary-notice"; };;
+    # §2.5 / §11: the narrow ladder — every row fits, and the `no frame taller than the terminal` row above is
+    # the gate that matters here (the draft is longer than the terminal is wide)
+    narrow) grep -q 'Say hi' "$txt" && checks="$checks narrow:placeholder" || { ok=0; checks="$checks MISSING:placeholder"; };;
+    # §7.2: loud degradation, an epilogue that does not lie, exit 3
+    rundir-vanishes) grep -q 'checkpoint degraded' "$txt" && checks="$checks degraded:item" || { ok=0; checks="$checks MISSING:degraded-item"; }
+      grep -q 'not resumable' "$txt" && checks="$checks epilogue:not-resumable" || { ok=0; checks="$checks MISSING:not-resumable"; }
+      grep -q 'jevcode run --resume' "$txt" && { ok=0; checks="$checks RESUME-ADVERTISED"; } || checks="$checks no-resume-row";;
+    # §7.8: the watchdog fires on the MONOTONIC clock, Esc cancels, and a second Ctrl-C always ends the process
+    stuck-submit) grep -q 'has not answered in' "$txt" && checks="$checks watchdog:line" || { ok=0; checks="$checks MISSING:watchdog-line"; };;
+    # §7.4: the sentence AND its fix reach the terminal with the epilogue, and the code is 2.
+    # `$OUT/<name>.stdout` holds expect's own diagnostics, NOT the child's output — `drive.exp` sets `log_user 0`
+    # and routes the child through `log_file -a $capture`, so the capture (`$txt`) is the only place it lands.
+    readonly-home) grep -q 'cannot create the runs directory' "$txt" && checks="$checks explain:line" || { ok=0; checks="$checks MISSING:explain-line"; }
+      grep -q 'set JEVCODE_HOME to a writable directory' "$txt" && checks="$checks explain:fix" || { ok=0; checks="$checks MISSING:explain-fix"; }
+      # …and the half a pty cannot see: "it reached **stderr**, not stdout" is the whole point of §7.4, and the
+      # harness merges both into one file. A second, non-pty leg with separate redirects is what proves it.
+      s=$(readonly_home_nopty); [ "$s" = "ok" ] && checks="$checks stderr-only:exit2" || { ok=0; checks="$checks NO-PTY:$s"; };;
+    # §7.10: counts only — a pid or a path in the frame is a leak
+    peers) grep -q 'another jevcode is working in this workspace' "$txt" && checks="$checks peers:open-item" || { ok=0; checks="$checks MISSING:peers-item"; }
+      grep -qE 'pid [0-9]+' "$txt" && { ok=0; checks="$checks PID-LEAK"; } || checks="$checks no-pid";;
+    ui-reset) grep -q 'nothing was latched' "$txt" && checks="$checks ui-reset:empty-state" || { ok=0; checks="$checks MISSING:ui-reset"; };;
   esac
   [ "$ok" = "1" ] && verdict=PASS || { verdict=FAIL; fail=1; }
   echo "$name: $verdict exit=$code (expected $expected) clears_after_first_frame=$c restores=$r timeouts=$t$checks"
+  # TUI-DESIGN-4 §7.4: `readonly-home` sets the home 0500 on purpose; `rm -rf` cannot unlink inside a directory
+  # with no owner write bit, so without this the tree (and its `xdg` child) leaks on EVERY invocation.
+  case "$name" in readonly-home) chmod -R u+rwx "$home" 2>/dev/null || true;; esac
   # ts-only-start keeps its HOME for ts-only-restart
   [ "$name" = "ts-only-start" ] || rm -rf "$home"
   rm -rf "$ws"
 }
 want="$*"
 sel() { [ -z "$want" ] || echo " $want " | grep -q " $1 "; }
+# TUI-DESIGN-4 §7 / §9.2: the fault scenarios exercise wiring that lands in `src/tui/App.tsx` (S1's file: the
+# `guard()` latch, the boundary catalogue, `abortRun` + the watchdog) and in `src/loop/engine.ts` (the
+# `checkpoint:degraded` emit). Until those rows land they run BY NAME only, so the default smoke board is not
+# red for the other five slots:  test/pty/run-smoke.sh fault-persistent rundir-vanishes …
+sel_named() { [ -n "$want" ] && echo " $want " | grep -q " $1 "; }
 MOCK_RUN="--mode jev-on --mock"
 sel hermetic && hermetic_check
 sel firstframe && run firstframe 0 24 80 chat --mock --perf-exit-after-first-frame
@@ -538,6 +695,30 @@ sel s1-clear && run s1-clear 0 24 80 chat --mock
 # 200 mocked steps (~4 s at ~20 ms/step): the key must land while the run is live (a 40-step run ends in ~0.8 s)
 sel s2-ctrlc-abort && run s2-ctrlc-abort 0 24 80 chat $MOCK_RUN --mock-steps 200 --max-steps 200 --max-replans 50
 sel s2-esc-pause && run s2-esc-pause 0 24 80 chat $MOCK_RUN --mock-steps 200 --max-steps 200 --max-replans 50
+# round 4 (TUI-DESIGN-4 §7, D-AA): hardening and the typed fault injector — by name until S1's App.tsx rows land
+sel_named fault-persistent && run fault-persistent 0 24 80 chat --mock
+sel_named fault-wordmark && run fault-wordmark 0 24 80 chat --mock
+sel_named fault-status && run fault-status 0 24 80 chat --mock
+# …and the same three at the flat tier (12×60), where a fallback's height is hardest to get right
+sel_named fault-persistent-flat && run fault-persistent-flat 0 12 60 chat --mock
+sel_named fault-wordmark-flat && run fault-wordmark-flat 0 12 60 chat --mock
+sel_named fault-status-flat && run fault-status-flat 0 12 60 chat --mock
+# the five remaining boundaries of §7.3's catalogue that this tree mounts, each at both tiers
+# MEASURED 2026-09-22: `render:live` still does not fire at 24x80, with or without the panel open — the shipped
+# `--mock` trajectory produces no STREAMING text, so `layout.live` stays 0 and the boundary never renders. §7.3
+# item 6's other half needs a streaming mock (`src/cli/mock-trajectory.ts`, S5's file): §9.2 request row.
+sel_named fault-live && run fault-live 0 24 80 chat $MOCK_RUN --mock-steps 200 --max-steps 200 --max-replans 50
+sel_named fault-pane && run fault-pane 0 24 80 chat $MOCK_RUN --mock-steps 200 --max-steps 200 --max-replans 50
+sel_named fault-overlay && run fault-overlay 0 24 80 chat $MOCK_RUN --mock-steps 200 --max-steps 200 --max-replans 50
+sel_named fault-composer && run fault-composer 0 24 80 chat --mock
+sel_named fault-static && run fault-static 0 24 80 chat --mock
+sel_named fault-transcript && run fault-transcript 0 24 80 chat --mock
+sel_named narrow && run narrow 0 12 40 chat --mock
+sel_named rundir-vanishes && run rundir-vanishes 3 24 80 chat $MOCK_RUN --mock-steps 40 --max-steps 40
+sel_named stuck-submit && run stuck-submit 130 24 80 chat --mock
+sel_named readonly-home && run readonly-home 2 24 80 chat --mock
+sel_named peers && run peers 0 24 80 chat --mock
+sel_named ui-reset && run ui-reset 0 24 80 chat --mock
 sel review-y && run review-y 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel review-d && run review-d 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel resize && run resize 0 24 80 chat --mock

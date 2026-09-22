@@ -158,11 +158,12 @@ describe('blockingLines (§13.3, §24)', () => {
     }
   });
 
-  it('checkpoint degraded: three rows; the middle names the file and the step', () => {
+  it('checkpoint degraded: four rows; the middle names the file, the consequence (§7.2 edge 6) and the fix (§7.4 item 6)', () => {
     const r = sample('checkpoint-degraded');
     expect(blockingLines(r, 4, 120)).toEqual([
       'checkpoint degraded: ENOSPC on state.json',
-      'state.json could not be written since step 1 — the run cannot be resumed from here.',
+      'state.json could not be written since step 1 — the disk is full; this run cannot be resumed.',
+      'free space, or pass --runs-dir <dir> on another volume',
       '[r] retry the write   [c] continue without checkpoints   [q] stop now (exit 3)',
     ]);
     expect(blockingLines(r, 2, 120)).toEqual(['checkpoint degraded: ENOSPC on state.json', '[r] retry the write   [c] continue without checkpoints   [q] stop now (exit 3)']);
@@ -180,7 +181,7 @@ describe('blockingLines (§13.3, §24)', () => {
     ]);
     const codeOnly = blockingLines(req({ kind: 'checkpoint-degraded', step: 2, detail: 'ENOSPC', exitCode: 3 }), 4, 120);
     expect(codeOnly[0]).toBe('checkpoint degraded: ENOSPC on state.json');
-    expect(codeOnly[1]).toBe('state.json could not be written since step 2 — the run cannot be resumed from here.');
+    expect(codeOnly[1]).toBe('state.json could not be written since step 2 — the disk is full; this run cannot be resumed.');
     expect(parseCheckpointDegradedDetail('')).toEqual({ code: 'unknown', file: 'state.json' });
     expect(parseCheckpointDegradedDetail('   ')).toEqual({ code: 'unknown', file: 'state.json' });
     expect(parseCheckpointDegradedDetail('ENOSPC')).toEqual({ code: 'ENOSPC', file: 'state.json' });
@@ -329,5 +330,67 @@ describe('severity → surface (§13.1)', () => {
     expect(severityToast('info', 'x')).toBeNull();
     expect(severityToast('blocking', 'x')).toBeNull();
     expect([...severityToast('warning', 'y'.repeat(200))!].length).toBeLessThanOrEqual(62);
+  });
+});
+
+/**
+ * TUI-DESIGN-4 §7.10 (P-D10) item 3: the peer-lease pane, and item 2's session-open notice.
+ *
+ * It is **not** a `BlockingKind`: the registry is another design's (`docs/COORDINATION-DESIGN.md`) and contract 1.7
+ * adds no blocking kind, so nothing in `core/types.ts` moves for it — the rows go through the same structure and
+ * the same fitter.
+ */
+describe('the peer-lease pane (§7.10 item 3)', () => {
+  const view = (o: Partial<{ live: number; stale: number; oldestStartedMsAgo: number | null; exclusive: boolean }> = {}) => ({
+    live: 2,
+    stale: 0,
+    oldestStartedMsAgo: 240_000,
+    exclusive: true,
+    ...o,
+  });
+
+  it('a live exclusive lease offers wait / read-only / quit', async () => {
+    const { PEER_LEASE_KEYS, peerLeaseLines, peerLeaseRows } = await import('../../../../src/tui/blocking/lines.js');
+    const rows = peerLeaseRows(view());
+    expect(rows.keys).toBe(PEER_LEASE_KEYS);
+    expect(rows.keys).toBe('[w] wait for it   [r] read-only session   [q] quit');
+    const lines = peerLeaseLines(view(), 4, 120);
+    expect(lines[0]).toBe('another jevcode holds this workspace (2 here)');
+    expect(lines[lines.length - 1]).toBe(PEER_LEASE_KEYS);
+  });
+
+  it('edge 1: a stale entry from a killed instance never blocks — it offers [c] continue', async () => {
+    const { PEER_STALE_KEYS, peerLeaseLines } = await import('../../../../src/tui/blocking/lines.js');
+    const lines = peerLeaseLines(view({ live: 1, stale: 1, exclusive: true }), 4, 120);
+    expect(lines[0]).toContain('1 stale entry');
+    expect(lines[lines.length - 1]).toBe(PEER_STALE_KEYS);
+    expect(PEER_STALE_KEYS).toBe('[c] continue');
+    // not exclusive: informational only, never the wait keys
+    expect(peerLeaseLines(view({ exclusive: false, stale: 2 }), 4, 120).at(-1)).toBe(PEER_STALE_KEYS);
+  });
+
+  it('every row fits the columns, at every slot height, and the keys always survive', async () => {
+    const { peerLeaseLines } = await import('../../../../src/tui/blocking/lines.js');
+    for (const columns of [20, 40, 60, 80, 120]) {
+      for (const rows of [1, 2, 3, 4]) {
+        const out = peerLeaseLines(view({ stale: 3 }), rows, columns);
+        expect(out.length, `${columns}x${rows}`).toBeLessThanOrEqual(rows);
+        for (const r of out) expect(stringWidth(r), `${columns}x${rows}: ${r}`).toBeLessThanOrEqual(columns);
+      }
+    }
+    expect(peerLeaseLines(view(), 0, 80)).toEqual([]);
+  });
+
+  it('item 2 / §12: the session-open notice names /peers, which is a real command this round', async () => {
+    const { peerAgoText, peerOpenNotice } = await import('../../../../src/tui/blocking/lines.js');
+    expect(peerOpenNotice(view({ oldestStartedMsAgo: 240_000 }))).toBe('another jevcode is working in this workspace (started 4m ago) — /peers lists them');
+    expect(peerOpenNotice(view({ oldestStartedMsAgo: null }))).toBe('another jevcode is working in this workspace — /peers lists them');
+    // the only instance, or the registry absent: no notice
+    expect(peerOpenNotice(view({ live: 1 }))).toBeNull();
+    expect(peerOpenNotice(null)).toBeNull();
+    expect(peerAgoText(0)).toBe('0s');
+    expect(peerAgoText(59_000)).toBe('59s');
+    expect(peerAgoText(60_000)).toBe('1m');
+    expect(peerAgoText(3 * 3600_000 + 60_000)).toBe('3h');
   });
 });

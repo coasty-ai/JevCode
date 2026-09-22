@@ -30,7 +30,7 @@ mark grown-again
 send \x03
 expect Type to steer
 send \x03
-expect end human_abort
+expect finished [·-] human_abort
 expect Follow-up, question
 send /exit
 sleep 0.2

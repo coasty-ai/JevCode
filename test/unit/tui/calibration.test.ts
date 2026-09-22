@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { GLYPHS } from '../../../src/tui/glyphs.js';
+import { GLYPHS, cellWidth } from '../../../src/tui/glyphs.js';
 import {
   CALIBRATION_BINS,
   CALIBRATION_MAX_BYTES,
@@ -121,7 +121,7 @@ describe('bins, ECE, near-threshold, sharpness', () => {
     expect(s).toMatchObject({ runs: 0, decisions: 0, labelled: 0, ece: null, sharpness: null });
     const block = calibrationBlock(s);
     expect(block[0]).toBe('calibration  0 runs  0 decisions  0 with a label');
-    expect(block.find((l) => l.includes('ECE'))).toBe('  ECE — (no labels)   near-threshold (|p−t| ≤ 0.03): 0 (0%)');
+    expect(block.find((l) => l.includes('ECE'))).toBe('  ECE — (no labels)   near-threshold (|p−t| ≤ 0.03): 0 (0 %)');
     expect(block.at(-1)).toBe('  sharpness: — outside 0.2–0.8');
     expect(block.at(-1)!.codePointAt(block.at(-1)!.indexOf('0.2') + 3)).toBe(0x2013);
     expect(CALIBRATION_MAX_RUNS).toBe(50);
@@ -138,35 +138,87 @@ describe('calibrationBlock (§7.6, §24 `[ui] calibration  N runs  N decisions  
   it('renders the head, the label sources, the bin table, ECE / near-threshold, the per-threshold counts and sharpness', () => {
     const block = calibrationBlock(calibrationStats([r]));
     expect(block[0]).toBe('calibration  1 runs  2 decisions  2 with a label');
-    expect(block[1]).toBe(`  labels: ${LABEL_SOURCE_TEXT.review} 0 · ${LABEL_SOURCE_TEXT.done} 1`);
-    expect(block[2]).toBe(`          ${LABEL_SOURCE_TEXT.complete} 0 · ${LABEL_SOURCE_TEXT.succeeded} 1`);
-    expect(block[3]).toBe('  bin           n  mean p  observed  bar');
-    expect(block[4]).toBe('  0.0–0.1       0       —         —');
-    expect(block[6]).toBe('  0.2–0.3       1    0.20      0.00  ··········');
-    expect(block[13]).toBe('  0.9–1.0       1    0.90      1.00  ██████████');
-    expect(block[14]).toBe('  ECE 0.150 (10 equal-width bins)   near-threshold (|p−t| ≤ 0.03): 0 (0%)');
-    expect(block[15]).toBe('  risk@.30 0  risk@.70 0  complete@.85 0  plan@.70 0  context@.50 0');
-    expect(block[16]).toBe('  sharpness: 50% outside 0.2–0.8');
-    expect(block.length).toBe(17);
+    // TUI-DESIGN-4 §3.3 / §11: the four label sources pack at ` · ` and hang under the `labels: ` column instead of
+    // being two FIXED rows of 88 cells (which overflowed an 80-column terminal's 70-cell body by 18)
+    expect(block[1]).toBe(`  labels: ${LABEL_SOURCE_TEXT.review} 0`);
+    expect(block[2]).toBe(`          ${LABEL_SOURCE_TEXT.done} 1`);
+    expect(block[3]).toBe(`          ${LABEL_SOURCE_TEXT.complete} 0`);
+    expect(block[4]).toBe(`          ${LABEL_SOURCE_TEXT.succeeded} 1`);
+    expect(block[5]).toBe('  bin           n  mean p  observed  bar');
+    expect(block[6]).toBe('  0.0–0.1       0       —         —');
+    expect(block[8]).toBe('  0.2–0.3       1    0.20      0.00  ··········');
+    expect(block[15]).toBe('  0.9–1.0       1    0.90      1.00  ██████████');
+    // §11: the joined ECE + near-threshold row is 74 cells, so at the 70-cell body of an 80-column terminal the
+    // second clause takes a row of its own rather than being truncated
+    expect(block[16]).toBe('  ECE 0.150 (10 equal-width bins)');
+    expect(block[17]).toBe('  near-threshold (|p−t| ≤ 0.03): 0 (0 %)');
+    expect(calibrationBlock(calibrationStats([r]), GLYPHS.unicode, 80).find((l) => l.includes('ECE'))).toBe('  ECE 0.150 (10 equal-width bins)   near-threshold (|p−t| ≤ 0.03): 0 (0 %)');
+    expect(block[18]).toBe('  risk@.30 0  risk@.70 0  complete@.85 0  plan@.70 0  context@.50 0');
+    expect(block[19]).toBe('  sharpness: 50 % outside 0.2–0.8');
+    expect(block.length).toBe(20);
+    for (const line of block.slice(1)) expect(cellWidth(line), JSON.stringify(line)).toBeLessThanOrEqual(70);
   });
-  it('prints the near-threshold share with one decimal below 10 % (§7.6 `57 (1.2%)`) and whole above', () => {
+  it('TUI-DESIGN-4 §3.1.4: the near-threshold share is `<n> %` — one space, no decimals, at every magnitude', () => {
     const near = { step: 1, stage: 'context', id: 'a.py', probability: 0.51 };
     const far = (i: number): { step: number; stage: string; id: string; probability: number } => ({ step: 1, stage: 'judge', id: `succeeded_${i}`, probability: 0.9 });
     const decisions = [near, ...Array.from({ length: 82 }, (_, i) => far(i))];
     const block = calibrationBlock(calibrationStats([{ runId: 'r', decisions, steps: [] }]));
-    expect(block.find((l) => l.includes('near-threshold'))).toMatch(/: 1 \(1\.2%\)$/);
+    expect(block.find((l) => l.includes('near-threshold'))).toMatch(/: 1 \(1 %\)$/);
     const half = calibrationBlock(calibrationStats([{ runId: 'r', decisions: [near, far(0)], steps: [] }]));
-    expect(half.find((l) => l.includes('near-threshold'))).toMatch(/: 1 \(50%\)$/);
+    expect(half.find((l) => l.includes('near-threshold'))).toMatch(/: 1 \(50 %\)$/);
     const all = calibrationBlock(calibrationStats([{ runId: 'r', decisions: [near], steps: [] }]));
-    expect(all.find((l) => l.includes('near-threshold'))).toMatch(/: 1 \(100%\)$/);
+    expect(all.find((l) => l.includes('near-threshold'))).toMatch(/: 1 \(100 %\)$/);
   });
+  it('TUI-DESIGN-4 §3.3: the width ladder drops `bar` first, then `observed`, and every row fits the width', () => {
+    const stats = calibrationStats([r]);
+    // the header is found by CONTENT, never by index: the label rows wrap, so their count is a function of width
+    const header = (w: number): string => calibrationBlock(stats, GLYPHS.unicode, w).find((l) => l.startsWith('  bin ')) ?? '';
+    expect(header(70)).toBe('  bin           n  mean p  observed  bar');
+    // 47 is the widest bin row (`  bin(9) n(5)  meanP(6)  observed(8)  bar(10)`); one cell less drops the bar
+    expect(header(47)).toBe('  bin           n  mean p  observed  bar');
+    expect(header(46)).toBe('  bin           n  mean p  observed');
+    // 35 is the widest bar-less bin row; one cell less drops `observed` too
+    expect(header(35)).toBe('  bin           n  mean p  observed');
+    expect(header(34)).toBe('  bin           n  mean p');
+    expect(calibrationBlock(stats, GLYPHS.unicode, 30).find((l) => l.startsWith('  0.9'))).toBe('  0.9–1.0       1    0.90');
+    for (const width of [30, 34, 35, 46, 47, 70]) {
+      // row 0 is the block HEAD (the item's own text, wrapped by the transcript's gutter); the BODY is the block
+      for (const line of calibrationBlock(stats, GLYPHS.unicode, width).slice(1)) {
+        expect(cellWidth(line), `${width}: ${JSON.stringify(line)}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  it('TUI-DESIGN-4 §3.3 / §2.6: no TRAILING COUNT is ever lost — every over-wide row wraps at its hang instead of being elided', () => {
+    const stats = calibrationStats([r]);
+    for (const width of [30, 34, 47, 50, 70]) {
+      const block = calibrationBlock(stats, GLYPHS.unicode, width);
+      const joined = block.slice(1).join('\n');
+      // every label source keeps its count: the source text and its number both survive, in order
+      for (const key of Object.keys(LABEL_SOURCE_TEXT) as (keyof typeof LABEL_SOURCE_TEXT)[]) {
+        const words = LABEL_SOURCE_TEXT[key].split(' ');
+        const last = words[words.length - 1] as string;
+        expect(joined.replace(/\n\s*/g, ' '), `${width}: ${key}`).toContain(`${last} ${stats.sources[key]}`);
+      }
+      // the ECE, near-threshold, per-threshold and sharpness rows keep their numbers too
+      const flat = joined.replace(/\n\s*/g, ' ');
+      expect(flat, `${width}: ece`).toContain('(10 equal-width bins)');
+      expect(flat, `${width}: near`).toMatch(/near-threshold \(\|p−t\| ≤ 0\.03\): \d+ \(\d+ %\)/);
+      expect(flat, `${width}: thresholds`).toContain('context@.50 0');
+      expect(flat, `${width}: sharpness`).toMatch(/sharpness: \d+ % outside 0\.2–0\.8/);
+      // and no BODY row is wider than the block was given (row 0 is the head)
+      for (const line of block.slice(1)) expect(cellWidth(line), `${width}: ${JSON.stringify(line)}`).toBeLessThanOrEqual(width);
+    }
+  });
+
   it('has ascii and screen-reader twins', () => {
     const ascii = calibrationBlock(calibrationStats([r]), GLYPHS.ascii);
     for (const l of ascii) expect(l).toMatch(/^[\x20-\x7e]*$/);
-    expect(ascii[14]).toBe('  ECE 0.150 (10 equal-width bins)   near-threshold (|p-t| <= 0.03): 0 (0%)');
-    expect(ascii[16]).toBe('  sharpness: 50% outside 0.2-0.8');
-    expect(ascii[4]).toBe('  0.0-0.1       0       -         -');
+    expect(ascii.find((l) => l.includes('ECE'))).toBe('  ECE 0.150 (10 equal-width bins)');
+    expect(ascii.find((l) => l.includes('near-threshold'))).toBe('  near-threshold (|p-t| <= 0.03): 0 (0 %)');
+    expect(ascii.find((l) => l.includes('sharpness'))).toBe('  sharpness: 50 % outside 0.2-0.8');
+    expect(ascii.find((l) => l.startsWith('  0.0'))).toBe('  0.0-0.1       0       -         -');
     const sr = calibrationBlock(calibrationStats([r]), GLYPHS.sr);
-    expect(sr[13]).toBe('  0.9–1.0       1    0.90      1.00');
+    expect(sr.find((l) => l.startsWith('  0.9'))).toBe('  0.9–1.0       1    0.90      1.00');
   });
 });

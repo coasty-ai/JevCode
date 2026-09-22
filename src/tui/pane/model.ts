@@ -346,6 +346,22 @@ export interface PaneOptions {
   glyphs?: GlyphSet;
   /** TUI-DESIGN-2 §4.6: the open / full panel's header leads with `▾ ` before the tab name */
   chevron?: boolean;
+  /**
+   * TUI-DESIGN-4 §1.2 P-H1 edge 5: the open / full panel's tab header takes the **same** `◆ jevcode` prefix through the
+   * same helper and the same drop order — it is the rule row in that state, so the brand must not vanish when a panel
+   * opens. Dropped first when the header runs out of width (`STRIP_MIN_FILL`), exactly as on the strip.
+   */
+  brand?: boolean;
+}
+
+/** §1.2 P-H1: the brand segment and the one rule cell that separates it from the pane information (`* jevcode -` under `--ascii`). */
+export function brandSegment(g: GlyphSet = GLYPHS.unicode): string {
+  return `${g.brand} jevcode ${g.rule} `;
+}
+
+/** §1.2 P-H1: `brand + left` when the row still keeps `STRIP_MIN_FILL` rule cells between the two halves, else `left` — the brand is dropped first. */
+function brandFits(left: string, right: string, columns: number, g: GlyphSet): boolean {
+  return Math.min(Math.max(0, Math.floor(columns)), 400) - cellWidth(`${g.rule.repeat(3)} ${brandSegment(g)}${left} `) - cellWidth(right) >= STRIP_MIN_FILL;
 }
 
 /** TUI-DESIGN §7.2 / §24 / TUI-DESIGN-2 §4.6: the pane's rule row — `─── [▾ ]decisions s7 · c~ derived |2p−1| ────── [d]ecisions [p]lan [t]ime [s]ynth ──` (`[t]imeline` and the 5-rule tail from `PANEL_WIDE_COLUMNS`; the second tab's name appended when side by side). */
@@ -355,7 +371,9 @@ export function paneRuleRow(state: PaneState, rows: number, columns: number, ove
   const tabs = ` [d]ecisions [p]lan ${wide ? '[t]imeline' : '[t]ime'} [s]ynth `;
   const right = sideBySide(opts.terminalRows ?? rows, columns, overlay) ? `${tabs}${g.rule.repeat(3)} ${TAB_TITLE[cycleTab(state.tab, 1)]} ${g.rule}` : `${tabs}${g.rule.repeat(wide ? 5 : 2)}`;
   const label = `${opts.chevron === true ? `${g.chevronDown} ` : ''}${paneRuleLabel(state, columns, g)}`;
-  return ruleRow(label, right, columns, g);
+  // §1.2 P-H1 edge 5: the same prefix, the same drop order — the brand goes first when the header runs out of width
+  const branded = opts.brand === true && brandFits(label, right, columns, g);
+  return ruleRow(branded ? `${brandSegment(g)}${label}` : label, right, columns, g);
 }
 
 /** TUI-DESIGN-2 §4.6: `plan <done>/<done + remaining>` of the plan tab's view, or null without a plan. */
@@ -365,33 +383,65 @@ export function planProgress(state: PaneState): { done: number; total: number } 
   return { done: plan.done.length, total: plan.done.length + plan.remaining.length };
 }
 
+/** TUI-DESIGN-4 §1.2 P-H1 / §1.3.2: the two optional strip members round 4 adds. Absent = round 2's strip, byte for byte. */
+export interface StripOptions {
+  /**
+   * P-H1 (D-T a): prepend the permanent `◆ jevcode` brand segment (`* jevcode` under `--ascii`), separated from the pane
+   * information by one rule cell. It is the **first** segment dropped when the strip runs out of width, so a 40-column
+   * strip is byte-for-byte the brandless one. Drawn whether or not the 5-row mark is up (F-H1, F-H2; TD3 §729).
+   */
+  brand?: boolean;
+  /**
+   * §1.3.2: the fullscreen position ladder, widest rung first (`1 240/3 512 · 35 % · PgUp` → `35 % · PgUp` → `35 %`).
+   * It **replaces** the tab labels as the strip's right segment and degrades rung by rung, then drops — after the brand
+   * and before any pane information. Absent (classic) = today's `[d] [p] [t] [s]` tail.
+   */
+  position?: readonly string[];
+}
+
 /**
- * TUI-DESIGN-2 §4.6 / §12 "Rule row": the collapsed panel's strip on the rule row —
- * `─── ▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5[ · jev 231ms] ─── [d] [p] [t] [s] ──` (long labels
- * `[d]ecisions [p]lan [t]imeline [s]ynth`, the `jev <ms>ms` segment and the 5-rule tail from `PANEL_WIDE_COLUMNS`);
- * segments are dropped from the right while fewer than four rule cells would separate them from the labels; with no
- * decisions yet `─── ▸ jev · no decisions yet ──── [d] [p] [t] [s] ──`. Exactly `min(columns, 400)` cells.
+ * TUI-DESIGN-2 §4.6 / §12 "Rule row", amended by TUI-DESIGN-4 §1.2 P-H1 and §1.3.2: the collapsed panel's strip on the
+ * rule row — `─── [◆ jevcode ─ ]▸ jev s7 · 12 decisions · risk 0.44 [review] · plan 2/5[ · jev 231ms] ─── [d] [p] [t] [s] ──`
+ * (long labels `[d]ecisions [p]lan [t]imeline [s]ynth`, the `jev <ms>ms` segment and the 5-rule tail from
+ * `PANEL_WIDE_COLUMNS`); with no decisions yet `─── ▸ jev · no decisions yet ──── [d] [p] [t] [s] ──`.
+ * Exactly `min(columns, 400)` cells.
+ *
+ * Drop order when fewer than four rule cells would separate the left from the right (`STRIP_MIN_FILL`):
+ * **the brand first**, then the position rungs (widest → narrowest → dropped), then pane segments from the right.
+ * With neither option the loop is round 2's `while (segments.length > 1)` verbatim.
  */
-export function panelStrip(state: PaneState & { latencies: readonly (number | null)[] }, columns: number, g: GlyphSet = GLYPHS.unicode): string {
+export function panelStrip(state: PaneState & { latencies: readonly (number | null)[] }, columns: number, g: GlyphSet = GLYPHS.unicode, opts: StripOptions = {}): string {
   const wide = columns >= PANEL_WIDE_COLUMNS;
-  const right = wide ? ` [d]ecisions [p]lan [t]imeline [s]ynth ${g.rule.repeat(5)}` : ` [d] [p] [t] [s] ${g.rule.repeat(2)}`;
+  const tabs = wide ? ` [d]ecisions [p]lan [t]imeline [s]ynth ${g.rule.repeat(5)}` : ` [d] [p] [t] [s] ${g.rule.repeat(2)}`;
+  const rungs = opts.position ?? null;
   const rows = [...(state.chatRows ?? []), ...state.rows];
-  if (rows.length === 0) return ruleRow(`${g.chevronRight} jev ${g.dot} no decisions yet`, right, columns, g);
-  const segments: string[] = [`${g.chevronRight} jev s${state.step}`, `${rows.length} decision${rows.length === 1 ? '' : 's'}`];
-  const risk = state.lastRisk ?? null;
-  if (risk !== null) segments.push(`risk ${p2(risk.risk)} ${risk.verdict === 'ok' ? 'ok' : `[${risk.verdict}]`}`);
-  const plan = planProgress(state);
-  if (plan !== null) segments.push(`plan ${plan.done}/${plan.total}`);
-  const last = state.latencies.length > 0 ? state.latencies[state.latencies.length - 1] : null;
-  if (wide && last !== null && last !== undefined && Number.isFinite(last)) segments.push(`jev ${Math.round(last)}ms`);
-  const w = Math.min(Math.max(0, Math.floor(columns)), 400);
-  while (segments.length > 1) {
-    const left = segments.join(` ${g.dot} `);
-    const fill = w - cellWidth(`${g.rule.repeat(3)} ${left} `) - cellWidth(right);
-    if (fill >= STRIP_MIN_FILL) break;
-    segments.pop();
+  const segments: string[] =
+    rows.length === 0
+      ? [`${g.chevronRight} jev ${g.dot} no decisions yet`]
+      : [`${g.chevronRight} jev s${state.step}`, `${rows.length} decision${rows.length === 1 ? '' : 's'}`];
+  if (rows.length > 0) {
+    const risk = state.lastRisk ?? null;
+    if (risk !== null) segments.push(`risk ${p2(risk.risk)} ${risk.verdict === 'ok' ? 'ok' : `[${risk.verdict}]`}`);
+    const plan = planProgress(state);
+    if (plan !== null) segments.push(`plan ${plan.done}/${plan.total}`);
+    const last = state.latencies.length > 0 ? state.latencies[state.latencies.length - 1] : null;
+    if (wide && last !== null && last !== undefined && Number.isFinite(last)) segments.push(`jev ${Math.round(last)}ms`);
   }
-  return ruleRow(segments.join(` ${g.dot} `), right, columns, g);
+  const w = Math.min(Math.max(0, Math.floor(columns)), 400);
+  let brand = opts.brand === true;
+  let rung = 0;
+  const brandText = brandSegment(g);
+  const rightOf = (): string => (rungs === null ? tabs : rung < rungs.length ? ` ${rungs[rung] ?? ''} ${g.rule.repeat(2)}` : g.rule.repeat(2));
+  const leftOf = (): string => `${brand ? brandText : ''}${segments.join(` ${g.dot} `)}`;
+  for (;;) {
+    const fill = w - cellWidth(`${g.rule.repeat(3)} ${leftOf()} `) - cellWidth(rightOf());
+    if (fill >= STRIP_MIN_FILL) break;
+    if (brand) brand = false;
+    else if (rungs !== null && rung < rungs.length) rung += 1;
+    else if (segments.length > 1) segments.pop();
+    else break;
+  }
+  return ruleRow(leftOf(), rightOf(), columns, g);
 }
 
 function p2(x: number): string {

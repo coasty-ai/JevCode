@@ -26,9 +26,9 @@ describe('budgets', () => {
     expect(st.interrupted).toMatchObject({ step: 1, stage: 'execute' });
     expect(st.interrupted?.proposal?.action).toEqual({ kind: 'run', command: 'pytest -q' });
     expect(st.spend.totalUsd).toBeGreaterThanOrEqual(0.5);
-    // the stop line goes through the shared item model; the run:end line is the last one (§10)
-    expect(h.store.transcript.at(-2)).toBe('[run] warn: stop: spend_cap at step 0 (before_execute)');
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end spend_cap steps=0 /);
+    // TUI-DESIGN-4 §3.7 G1 (D-V): the `stop:` line is deleted; the run:end line is the last one (§10)
+    expect(h.store.transcript.some((l) => l.includes('stop: spend_cap'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] spend_cap [·-] 0 steps [·-] /);
     // usage in RunResult includes the paid call
     expect(r.usage.generator.costUsd).toBeCloseTo(0.5);
   });

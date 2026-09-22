@@ -104,6 +104,8 @@ interface FrameState {
   badge: string | null;
   /** a card's title when the frame has one */
   card?: string;
+  /** TUI-DESIGN-4 D-Z: the title the DOCUMENT's frame carries, when round 4 changed the one the function builds */
+  cardDoc?: string;
 }
 
 const riskState = (step: number, rows: number, risk: number, verdict: 'ok' | 'review', plan: [number, number] | null): PaneState => ({
@@ -140,6 +142,10 @@ const STATES: Readonly<Record<string, (wide: boolean) => FrameState>> = {
     rule: (c) => panelStrip({ ...riskState(7, 12, 0.44, 'review', [2, 5]), latencies: [244] }, c),
     badge: 'jev+llm',
     card: reviewCardTitle(workedRequest(), wide ? 120 : 80),
+    // TUI-DESIGN-4 D-Z / §6.1: the title's target now names the edit's counts (`edit src/a.py +1 −1`), which
+    // TUI-DESIGN-2's H-F1 frame predates (A6-1: an edit action used to name no counts at all). The document's own
+    // row is still read back verbatim against THIS title, so a drift on either side is still a failure.
+    cardDoc: reviewCardTitle(workedRequest(), wide ? 120 : 80).replace(' +1 −1', ''),
   }),
   'H-G1': (wide) => ({ status: base({ spend: { run: null, session: sess125 }, git: wide ? git({ modified: 0, untracked: 0 }) : null }), rule: (c) => brandRow(VERSION, c), badge: 'jev+llm · next run' }),
   'H-H2': (wide) => ({ status: base({ overlay: 'wizard', spend: { run: null, session: sess125 }, git: wide ? git({ modified: 0, untracked: 0 }) : null }), rule: (c) => brandRow(VERSION, c), badge: 'setup · generator key' }),
@@ -180,7 +186,9 @@ describe('TUI-DESIGN-2 §4.10 frames rebuilt from the twins (§8.1 S4, §13 find
     if (st.card !== undefined) {
       const cardTopRow = dynamic.findIndex((l) => l.startsWith('╭─ ') && !l.endsWith(' proj ─╮'));
       expect(cardTopRow, `${f.id} card top`).toBeGreaterThanOrEqual(0);
-      expect(dynamic[cardTopRow]).toBe(cardTop(st.card, W, GLYPHS.unicode));
+      expect(dynamic[cardTopRow]).toBe(cardTop(st.cardDoc ?? st.card, W, GLYPHS.unicode));
+      // and the round-4 title still draws a full-width, well-formed card edge
+      expect(cellWidth(cardTop(st.card, W, GLYPHS.unicode))).toBe(W);
       expect(dynamic[top - 1]).toBe(cardBottom(W));
     }
   });

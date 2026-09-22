@@ -30,16 +30,49 @@ function turn(goal: string, action: Action, plan: PlanDraft, latencyMs: number):
   };
 }
 
-export function mockTrajectory(steps: number, latencyMs: number = mockStepMs(process.env)): MockTurn[] {
+/**
+ * TUI-DESIGN-4 §6.9: `JEVCODE_MOCK_PATCH=1` extends the cycle with two `patch` turns — one that edits two files at
+ * once and one that is deliberately unappliable — so the patch card, the patch title and the patch failure text get
+ * pty coverage. **Off by default**, so every existing smoke and perf number is byte-unchanged (edge 1).
+ */
+export function mockPatchEnabled(env: NodeJS.ProcessEnv): boolean {
+  return env['JEVCODE_MOCK_PATCH'] === '1';
+}
+
+/** §6.9: the two-file patch of turn 5 — it modifies the scratch file turn 4 last edited and creates one new file. */
+export function mockTwoFilePatch(target: number, from: number, to: number): string {
+  return [
+    `--- a/scratch_${target}.py`,
+    `+++ b/scratch_${target}.py`,
+    '@@ -1 +1 @@',
+    `-VALUE_${target} = ${from}`,
+    `+VALUE_${target} = ${to}`,
+    '--- /dev/null',
+    `+++ b/notes_${to}.md`,
+    '@@ -0,0 +1 @@',
+    `+patched at step ${to}`,
+    '',
+  ].join('\n');
+}
+
+/** §6.9: the patch that must fail at `git apply --check`, leaving the tree clean (edge 3). */
+export function mockBadPatch(target: number): string {
+  return [`--- a/scratch_${target}.py`, `+++ b/scratch_${target}.py`, '@@ -1 +1 @@', '-THIS LINE IS NOT IN THE FILE', '+nor is this one', ''].join('\n');
+}
+
+export function mockTrajectory(steps: number, latencyMs: number = mockStepMs(process.env), patch: boolean = mockPatchEnabled(process.env)): MockTurn[] {
   const turns: MockTurn[] = [];
   const remaining = ['create the scratch module', 'exercise it', 'verify with a command'];
+  const cycle = patch ? 6 : 4;
   for (let i = 0; i < Math.max(1, steps - 1); i++) {
-    const k = i % 4;
+    const k = i % cycle;
     const plan: PlanDraft = { done: [], remaining, openProblems: [] };
     if (k === 0) turns.push(turn(`Create scratch_${i}.py`, { kind: 'write', path: `scratch_${i}.py`, content: `VALUE_${i} = ${i}\n` }, plan, latencyMs));
     else if (k === 1) turns.push(turn(`Read scratch_${i - 1}.py`, { kind: 'read', paths: [`scratch_${i - 1}.py`] }, plan, latencyMs));
     else if (k === 2) turns.push(turn('Check the shell works', { kind: 'run', command: `printf 'ok %s\\n' ${i}` }, plan, latencyMs));
-    else turns.push(turn(`Edit scratch_${i - 3}.py`, { kind: 'edit', path: `scratch_${i - 3}.py`, old: `VALUE_${i - 3} = ${i - 3}`, new: `VALUE_${i - 3} = ${i}` }, plan, latencyMs));
+    else if (k === 3) turns.push(turn(`Edit scratch_${i - 3}.py`, { kind: 'edit', path: `scratch_${i - 3}.py`, old: `VALUE_${i - 3} = ${i - 3}`, new: `VALUE_${i - 3} = ${i}` }, plan, latencyMs));
+    else if (k === 4) turns.push(turn(`Patch scratch_${i - 4}.py and add notes_${i}.md`, { kind: 'patch', diff: mockTwoFilePatch(i - 4, i - 1, i) }, plan, latencyMs));
+    else turns.push(turn(`Patch scratch_${i - 5}.py (this one does not apply)`, { kind: 'patch', diff: mockBadPatch(i - 5) }, plan, latencyMs));
   }
   turns.push(turn('All done', { kind: 'done', summary: 'scratch work complete' }, { done: remaining, remaining: [], openProblems: [] }, latencyMs));
   return turns;

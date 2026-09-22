@@ -80,7 +80,9 @@ describe('collectDiffStat (§12.6)', () => {
     expect(byPath.has('src/b.py')).toBe(false); // unchanged: no row
     expect(summary).toEqual({ files: 5, added: 6, deleted: 3, untracked: 2, binary: 1, skipped: 0 });
     const block = await diffStatBlockFromGit({ sandbox: t.sandbox, root: t.ws, runId: 'r1', changedFiles: changed, untracked: ['new.txt', 'blob.bin'], created: new Set(['staged.txt']), dirtyAtStart: new Set(['src/a.py']) }, 80);
-    expect(block.lines[0]).toBe('diff (run r1 · 5 files · +6 −3 · 2 untracked · 1 binary · 0 skipped)');
+    expect(block.lines[0]).toBe('diff · run r1 · 5 files · +6 −3');
+    expect(block.lines).toContain('2 untracked');
+    expect(block.lines).toContain('1 binary');
     expect(block.lines.some((l) => l.startsWith(' M src/a.py†'))).toBe(true);
     expect(block.lines.some((l) => l.startsWith(' ? new.txt'))).toBe(true);
     expect(block.lines.at(-1)).toBe('† also modified before this run');
@@ -142,7 +144,8 @@ describe('collectDiffStat (§12.6)', () => {
     const fake = createFakeSandbox((cmd) => (cmd.includes('--no-index') ? { exitCode: 1, stdout: `1\t0\t\0${DEV_NULL}\0u.txt\0` } : { exitCode: 128, stderr: 'fatal: bad revision HEAD\n' }));
     const r = await diffStatBlockFromGit({ sandbox: fake, root: t.ws, runId: 'r1', changedFiles: ['src/a.py', 'u.txt'], untracked: ['u.txt'] }, 80);
     expect(r.errors).toEqual(['diff: fatal: bad revision HEAD']);
-    expect(r.lines[0]).toBe('diff (run r1 · 1 files · +1 −0 · 1 untracked · 0 binary · 0 skipped)');
+    expect(r.lines[0]).toBe('diff · run r1 · 1 file · +1 −0');
+    expect(r.lines).toContain('1 untracked');
     expect(r.lines[1]).toMatch(/^ \? u\.txt/);
     // a sandbox that rejects (abort) is recorded too
     const ac = new AbortController();

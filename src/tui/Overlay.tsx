@@ -17,8 +17,10 @@ import type { BlockingRequest, ConfirmRequest, SecretHit } from '../core/types.j
 import { blockingLines } from './blocking/lines.js';
 import { cardBottom, cardLines, cardRow, cardTop } from './card.js';
 import { paletteRows, type PaletteRow, type PaletteState } from './commands/palette.js';
-import { CAP, type OverlayKind } from './layout.js';
-import { GLYPHS, cellWidth, type GlyphSet, truncateCells } from './glyphs.js';
+import { CAP, MIN_COLUMNS, MIN_ROWS, type OverlayKind } from './layout.js';
+import { fitRung, fitRungIn } from './fit.js';
+import { wizardMinsizeRow } from './onboarding/lines.js';
+import { GLYPHS, type GlyphSet, truncateCells } from './glyphs.js';
 import { Review, previewWant, type ReviewNote } from './Review.js';
 import { followupLines, type FollowupInput } from './review/lines.js';
 import { gateLines } from './secrets/gate-lines.js';
@@ -34,9 +36,14 @@ export const EXIT_CONFIRM_ROW = 'a run is live: [y] abort and exit   [n] stay   
  * at 80 columns would otherwise cut `(Enter does nothing)`, the statement that justifies the inert Enter.
  */
 export const EXIT_CONFIRM_ROW_COMPACT = 'a run is live: [y] abort and exit   [n] stay   (Enter does nothing)';
-/** TUI-DESIGN-2 §4.7: the exit-confirm row that fits `innerCells` whole — the §24 row when it fits, else its compact twin. */
-export function exitConfirmRow(innerCells: number): string {
-  return cellWidth(EXIT_CONFIRM_ROW) <= innerCells ? EXIT_CONFIRM_ROW : EXIT_CONFIRM_ROW_COMPACT;
+/** TUI-DESIGN-4 §2.6 (P-R7): the two narrower rungs, so a 40-column card still names both keys and the inert Enter. */
+export const EXIT_CONFIRM_ROW_NARROW = 'run live: [y] abort+exit  [n] stay  (Enter: no)';
+export const EXIT_CONFIRM_ROW_TINY = '[y] abort+exit [n] stay';
+/** TUI-DESIGN-2 §4.7 / TUI-DESIGN-4 §2.6: the ladder, widest first — `fitRung` picks against the card's inner width. */
+export const EXIT_CONFIRM_RUNGS: readonly string[] = [EXIT_CONFIRM_ROW, EXIT_CONFIRM_ROW_COMPACT, EXIT_CONFIRM_ROW_NARROW, EXIT_CONFIRM_ROW_TINY];
+/** TUI-DESIGN-2 §4.7 / TUI-DESIGN-4 §2.6 (P-R7): the exit-confirm row that fits `innerCells` whole — the widest rung of the ladder. */
+export function exitConfirmRow(innerCells: number, g: GlyphSet = GLYPHS.unicode): string {
+  return fitRungIn(EXIT_CONFIRM_RUNGS, innerCells, g);
 }
 /** TUI-DESIGN-2 §12 "Cards": the card titles of the boxed tier. */
 export const CARD_TITLE_EXIT = 'exit?';
@@ -45,11 +52,45 @@ export const CARD_TITLE_COMMANDS = 'commands';
 export const CARD_TITLE_FILES = 'files';
 /** TUI-DESIGN-2 §4.2: the blocking card is at most six rows — its first row becomes the title edge, so `blockingLines` (≤ 4 rows) + the bottom edge. */
 export const BLOCKING_CARD_MAX = 6;
-/** §24 / §2.1: the minimum-size notice. */
-export function minsizeNotice(columns: number, rows: number, g: GlyphSet = GLYPHS.unicode): string {
+/**
+ * §24 / §2.1 + TUI-DESIGN-4 §2.5 (P-R4): the minimum-size notice, as a **ladder measured after substitution**.
+ *
+ * The top rung is 72 cells at `30×5` and is only ever shown when the terminal is smaller than 40×8, so it was
+ * **always** truncated: PROBED `terminal 30×5 is below the 40…` at 5×30, and `terminal 30×40 is below the 4…`
+ * mid-resize, which reads as if 40 rows were too few. The rung cannot be picked by a constant either — the builder
+ * interpolates `${columns}${times}${rows}`, so the same sentence is 72 cells at `30×5`, **73** at `100×5` and **75**
+ * at `100×120`. `fitRung` measures each formatted candidate and takes the widest that fits (§2.6).
+ *
+ * The middle of the ladder **names the short dimension**, which is the half the old sentence lost: below 8 rows it
+ * says rows, below 40 columns it says columns, and when both are short it says both.
+ */
+export function minsizeRungs(columns: number, rows: number, g: GlyphSet = GLYPHS.unicode): string[] {
   const times = g.mode === 'ascii' ? 'x' : '×';
   const dash = g.mode === 'ascii' ? '-' : '—';
-  return `terminal ${columns}${times}${rows} is below the 40${times}8 minimum ${dash} panes hidden, transcript above`;
+  const c = Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 0;
+  const r = Number.isFinite(rows) ? Math.max(0, Math.floor(rows)) : 0;
+  const shortRows = r < MIN_ROWS;
+  const shortCols = c < MIN_COLUMNS;
+  const both = `${MIN_COLUMNS}${times}${MIN_ROWS}`;
+  // Neither dimension short is unreachable from `computeLayout` (it sets `minsize` only below the minimum), and the
+  // ladder has no true sentence for it — every other rung would claim a dimension that is fine. State the minimum and
+  // nothing else rather than `too narrow: need 40 cols` at 100×120 (§12 already carries `40×8 min`).
+  if (!shortRows && !shortCols) return [`${both} min`];
+  const need = shortRows && shortCols ? `need ${both}` : shortRows ? `need ${MIN_ROWS} rows` : `need ${MIN_COLUMNS} cols`;
+  const small = shortRows && shortCols ? `too small: ${need}` : shortRows ? `too short: ${need}` : `too narrow: ${need}`;
+  return [
+    `terminal ${c}${times}${r} is below the ${both} minimum ${dash} panes hidden, transcript above`,
+    `${c}${times}${r} < ${both} minimum ${dash} panes hidden`,
+    small,
+    need,
+    `${both} min`,
+  ];
+}
+
+/** §24 / §2.1 / TUI-DESIGN-4 §2.5: the widest minsize rung that fits `columns` — never truncated, and the short dimension is named. */
+export function minsizeNotice(columns: number, rows: number, g: GlyphSet = GLYPHS.unicode): string {
+  const c = Number.isFinite(columns) ? Math.max(0, Math.floor(columns)) : 0;
+  return truncateCells(fitRung(minsizeRungs(c, rows, g), c), c, g);
 }
 
 /** TUI-DESIGN-2 §3.7: the intake card's rows as `src/chat/lines.ts` builds them — the boxed title + body and the flat one-row form. */
@@ -281,7 +322,25 @@ export function Overlay(p: OverlayProps): React.JSX.Element | null {
   const inner = Math.max(1, p.columns - 4);
   if (p.degraded === 'minsize') {
     if (rows === 0) return null;
-    return <Rows lines={[minsizeNotice(p.columns, p.terminalRows, g)]} rows={rows} columns={p.columns} glyphs={g} role="warn" theme={theme} color={color} />;
+    // TUI-DESIGN-4 §2.5 (P-R6, D4): the wizard is the worst corner in the corpus — at minsize `computeLayout` grants
+    // notice(1) · wizard(1) and **no composer**, so the first-run user is never invited to type into a composer whose
+    // Enter cannot start anything. The wizard row is read-only and informational (§2.5, stated once): it never draws a
+    // caret and never a key byte, keys produce one toast, and growing back to ≥ 40×8 restores the full wizard.
+    const notice = minsizeNotice(p.columns, p.terminalRows, g);
+    // The dispatch is keyed on the DATA, not on `kind`: `App.tsx:2248` passes `kind='none'` whenever
+    // `layout.degraded === 'minsize'` (it is S1's file, §9.2), so a branch gated on `kind === 'wizard'` is dead code
+    // as wired and D4 — the worst corner in the corpus — stays open. `overlayData.wizard` is non-null exactly when
+    // `state.overlay === 'wizard'` (`App.tsx`'s builder), so this reaches a frame through the product path today.
+    const w = p.data.wizard;
+    if (w) {
+      // With two rows the notice leads and the wizard's row sits under it (§2.5 P-R6's notice(1) · wizard(1)). With
+      // ONE row — all `computeLayout`'s minsize branch grants until S1 lands P-R6 — the wizard's own row wins: it
+      // names setup *and* the size (`setup · key — terminal too small; ≥ 40×8 to type`), where the generic notice
+      // never says that a first run is waiting. `alone` asks `wizardMinsizeRow` for a rung that carries the size.
+      const row = wizardMinsizeRow(w.state, p.columns, g.mode === 'ascii', { alone: rows < 2 });
+      if (row !== '') return <Rows lines={rows < 2 ? [row] : [notice, row]} rows={rows} columns={p.columns} glyphs={g} role="warn" theme={theme} color={color} />;
+    }
+    return <Rows lines={[notice]} rows={rows} columns={p.columns} glyphs={g} role="warn" theme={theme} color={color} />;
   }
   if (rows === 0 && p.kind !== 'review') return null;
   switch (p.kind) {
@@ -347,7 +406,8 @@ export function Overlay(p: OverlayProps): React.JSX.Element | null {
     }
     case 'exitConfirm':
       // the card's body is `columns − 4` cells wide (`cardRow`): the row that fits it whole (finding 5)
-      if (boxed && rows >= 3) return <Card title={CARD_TITLE_EXIT} body={[exitConfirmRow(Math.max(0, Math.floor(p.columns) - 4))]} rows={rows} columns={p.columns} glyphs={g} edgeRole="warn" theme={theme} color={color} />;
+      // §2.6 edge 2: the rung is measured in the glyph set it will be drawn in, so `g` goes to the builder too
+      if (boxed && rows >= 3) return <Card title={CARD_TITLE_EXIT} body={[exitConfirmRow(Math.max(0, Math.floor(p.columns) - 4), g)]} rows={rows} columns={p.columns} glyphs={g} edgeRole="warn" theme={theme} color={color} />;
       return <Rows lines={[EXIT_CONFIRM_ROW]} rows={rows} columns={p.columns} glyphs={g} role="warn" theme={theme} color={color} />;
     case 'intake': {
       const d = p.data.intake;

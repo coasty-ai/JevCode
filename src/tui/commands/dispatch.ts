@@ -10,6 +10,7 @@ import { isValidRunId } from '../../checkpoint/run-id.js';
 import { parseDuration } from '../../core/time.js';
 import type { EngineMode, StageName } from '../../core/types.js';
 import type { KeyRunPhase } from '../keys/resolve.js';
+import { rank } from './fuzzy.js';
 import { commandName, parseCommand, restOf, type ParseResult, type ParsedCommand } from './parse.js';
 import { BUDGET_SETTINGS, COMMANDS, LLM_STATE_MODE, LLM_STATES, PANEL_ARGS, THEMES, TRANSCRIPT_VIEWS, availabilityError, findCommand, takesRest, type ArgSpec, type CommandSpec } from './registry.js';
 
@@ -25,6 +26,13 @@ export interface DispatchContext {
   readonly sessions?: readonly { readonly id: string; readonly title: string }[];
   /** the `@` denylist for `path` arguments */
   readonly isDeniedPath?: (rel: string) => boolean;
+  /**
+   * TUI-DESIGN-4 §4.5 (D-X): the line came from a **selection** surface — the palette's accept or cycle
+   * (`acceptedRef`, set only by an accept or a `move` effect and cleared by any composer edit) or the `--plain`
+   * numbered pick. **Never** `overlay === 'palette'`: the palette is open while a hand-typed `/exit` is written, and
+   * that Enter must keep exiting at once (`EXIT_IDLE`, `test/pty/helpers.ts:789`, ends nearly every pty scenario).
+   */
+  readonly fromPalette?: boolean;
 }
 
 /** TUI-DESIGN §9.4: a validated `/budget <setting> <value>`. */
@@ -67,14 +75,19 @@ export type CommandAction =
   | { kind: 'logout'; which: 'generator' | 'jev' | null }
   | { kind: 'trust' }
   | { kind: 'theme'; theme: (typeof THEMES)[number] }
-  | { kind: 'copy'; what: 'last' | 'proposal' | 'diff' | 'draft' }
+  | { kind: 'copy'; what: 'last' | 'proposal' | 'diff' | 'draft' | 'conversation' }
   | { kind: 'export'; file: string | null }
   | { kind: 'status' }
   | { kind: 'errors' }
   | { kind: 'report' }
   | { kind: 'historyClear' }
   | { kind: 'editor' }
-  | { kind: 'exit' };
+  | { kind: 'exit' }
+  // TUI-DESIGN-4 §1.3.1 / §1.3.4 / §7.10 / §7.1: the four commands round 4 adds
+  | { kind: 'fullscreen' }
+  | { kind: 'scrollback' }
+  | { kind: 'peers' }
+  | { kind: 'uiReset' };
 
 /**
  * TUI-DESIGN §4.9 / TUI-DESIGN-3 §4.4 F21: the resolution — an action, or the item text (`error: …`, printed under the `[ui]`
@@ -82,8 +95,23 @@ export type CommandAction =
  * clears the draft, so the next line never appends to it: `› /steer x/pause`, R4 F21).
  */
 export type DispatchResult =
-  | { readonly ok: true; readonly action: CommandAction; readonly spec: CommandSpec }
+  | { readonly ok: true; readonly action: CommandAction; readonly spec: CommandSpec; readonly confirm: ConfirmKind | null }
   | { readonly ok: false; readonly text: string; readonly label: '[ui]'; readonly keepDraft: boolean };
+
+/**
+ * TUI-DESIGN-4 §4.5: the one-row confirm a destructive command reached **through a selection surface** gets, in the
+ * existing `exitConfirm` overlay slot, with Enter inert (TD §2149). Null for a hand-typed line: the risk the gate
+ * closes is mis-**selection**, not mis-typing.
+ *
+ * **Three members, not four.** §4.5 also names `/history clear`, and then says in the same paragraph that it
+ * "keeps its own `y/N` (`registry.ts`)" — the readline prompt at `src/cli/session.ts` (`prompter?.historyClear`).
+ * It therefore has no rung ladder, so a fourth member would be a `ConfirmKind` for which `confirmRow` must answer
+ * `null`: an overlay slot asked to draw an empty body for a destructive command whose Enter is deliberately inert
+ * (a modal with no visible way out), or a silent bypass of the gate if the caller guards the null. Leaving it out
+ * makes `confirmRow` total, so neither can happen; `/history` keeps `destructive: true` for the inventory test and
+ * `confirmFor` answers `null` for its action.
+ */
+export type ConfirmKind = 'new' | 'abort' | 'exit';
 
 /**
  * TUI-DESIGN-3 §8 S4 (G5): every `CommandAction['kind']`, once — the exhaustiveness check of the dispatch-loop test (a `case`
@@ -92,17 +120,74 @@ export type DispatchResult =
 export const COMMAND_ACTION_KINDS = [
   'help', 'new', 'resume', 'rename', 'steer', 'unsteer', 'pause', 'abort', 'undo', 'rewind', 'diff', 'plan', 'decisions', 'why', 'calibration', 'jev', 'cost',
   'budget', 'model', 'provider', 'mode', 'panel', 'transcript', 'config', 'login', 'logout', 'trust', 'theme', 'copy', 'export', 'status', 'errors', 'report',
-  'historyClear', 'editor', 'exit',
+  'historyClear', 'editor', 'exit', 'fullscreen', 'scrollback', 'peers', 'uiReset',
 ] as const satisfies readonly CommandAction['kind'][];
 /** the type-level twin: a kind missing from `COMMAND_ACTION_KINDS` fails here */
 type MissingKind = Exclude<CommandAction['kind'], (typeof COMMAND_ACTION_KINDS)[number]>;
 const _everyKindListed: MissingKind extends never ? true : never = true;
 void _everyKindListed;
 
-/** TUI-DESIGN §24: the unknown-command item (a `/` token that matches nothing never submits). */
-export function unknownCommandText(token: string): string {
-  const t = token.startsWith('/') ? token : `/${token}`;
-  return `error: unknown command ${t}; type / to list commands`;
+/** TUI-DESIGN-4 §3.1.7: the suggestion is shown only at or above `rank`'s word-prefix band — a guess below it is noise. */
+export const SUGGEST_MIN_SCORE = 700;
+/** TUI-DESIGN-4 §3.1.7: the rejected line is quoted whole, clipped here, so a `/bogus/steer` cascade is legible on the first repeat. */
+export const UNKNOWN_COMMAND_MAX = 80;
+
+/**
+ * TUI-DESIGN-4 §3.1.7 "Did you mean": the best command whose score is at or above the word-prefix band, preferring
+ * one that is **available now** and falling back to the best overall. `null` when nothing clears the band — a wrong
+ * guess is worse than none (`/xyzzy` gets no clause).
+ *
+ * The pool is `rank` over the **41 names and every alias** (§3.1.7's "41 names + 21 aliases"; the tree carries 25
+ * aliases after this round's four commands, so the pool is 66 — still O(n) and run on Enter, never per key): a
+ * hit on an alias resolves to its owner, so `/quitt` suggests `/exit`. A command reached by both its name and an
+ * alias keeps its better score, and the owner is listed once.
+ */
+export function didYouMean(token: string, live = false): CommandSpec | null {
+  const q = token.trim().replace(/^\/+/, '').toLowerCase();
+  if (q === '') return null;
+  const pool: string[] = [];
+  for (const c of COMMANDS) {
+    pool.push(c.name);
+    for (const a of c.aliases) pool.push(a);
+  }
+  const best = new Map<CommandSpec, number>();
+  for (const r of rank(q, pool, Number.POSITIVE_INFINITY)) {
+    if (r.score < SUGGEST_MIN_SCORE) continue;
+    const spec = findCommand(r.candidate);
+    if (spec === null) continue;
+    const prev = best.get(spec);
+    if (prev === undefined || r.score > prev) best.set(spec, r.score);
+  }
+  if (best.size === 0) return null;
+  // `rank` already returns its rows best first and ties by the shorter candidate, so the insertion order of the map
+  // is the ranking; the only re-ordering is §3.1.7's availability preference
+  const specs = [...best.keys()];
+  return specs.find((c) => availabilityError(c, live) === null) ?? specs[0] ?? null;
+}
+
+/**
+ * TUI-DESIGN-4 §3.1.7: the availability note on a fall-back suggestion — the best match is not runnable now, so the
+ * clause says so instead of sending the user into `/x needs a live run` on the next Enter.
+ */
+function availabilityNote(spec: CommandSpec, live: boolean): string {
+  if (availabilityError(spec, live) === null) return '';
+  return spec.availableDuringTask === 'idle' ? ' (idle only)' : ' (live only)';
+}
+
+/**
+ * TUI-DESIGN §24 / TUI-DESIGN-4 §3.1.7: the unknown-command item (a `/` token that matches nothing never submits), in
+ * the round-4 error shape with the optional `Did you mean /<name>?` clause and its availability note.
+ *
+ * With no clause the sentence keeps **no** full stop before the separator (`error: /zz — not a command · type / to
+ * list commands`): `.` immediately followed by ` · ` reads as a typo, and the `·` clause is the sentence's own tail.
+ */
+export function unknownCommandText(token: string, live = false): string {
+  const raw = token.trim();
+  const t = raw.startsWith('/') ? raw : `/${raw}`;
+  const clipped = t.length > UNKNOWN_COMMAND_MAX ? `${t.slice(0, UNKNOWN_COMMAND_MAX - 1)}…` : t;
+  const guess = didYouMean(t, live);
+  const mean = guess === null ? '' : `. Did you mean /${guess.name}?${availabilityNote(guess, live)}`;
+  return `error: ${clipped} — not a command${mean} · type / to list commands`;
 }
 
 /** a fixable error: the draft is kept */
@@ -251,6 +336,29 @@ export function parseCommandLine(line: string): ParseResult {
 }
 
 /**
+ * TUI-DESIGN-4 §4.5: the confirm key for a resolved **action** — `null` unless the spec is `destructive` **and** the
+ * line came from a selection surface. Reading the action, not the spec, is what keeps a `/history` that failed
+ * validation (`/history`, `/history nope`) out of the confirm row: only the resolved `historyClear` gets that far,
+ * and it answers `null` because it owns a readline `y/N` of its own (`session.ts`, `prompter?.historyClear`).
+ */
+export function confirmFor(spec: CommandSpec, action: CommandAction, fromPalette: boolean): ConfirmKind | null {
+  if (!fromPalette || spec.destructive !== true) return null;
+  switch (action.kind) {
+    case 'new':
+      return 'new';
+    case 'abort':
+      return 'abort';
+    case 'exit':
+      return 'exit';
+    // `historyClear` is destructive and deliberately has no rung ladder — its own y/N prompt is the gate (§4.5)
+    case 'historyClear':
+      return null;
+    default:
+      return null;
+  }
+}
+
+/**
  * TUI-DESIGN §5.2 `dispatchCommand` — resolve a parsed command (or a raw line) against the registry and
  * the context. Enter runs a command only on an exact name/alias match; an unknown name keeps the draft
  * (`error: unknown command /foo; type / to list commands`); a failed `ArgSpec` yields
@@ -263,14 +371,15 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
   if (typeof input === 'string') {
     const r = parseCommandLine(input);
     if (!r.ok) {
-      if (r.error === 'not-a-command' || r.error === 'empty name') return err(unknownCommandText(input.trim().split(/\s+/)[0] ?? '/'));
+      // TUI-DESIGN-4 §3.1.7: quote the whole rejected line, not its first token
+      if (r.error === 'not-a-command' || r.error === 'empty name') return err(unknownCommandText(input.trim() === '' ? '/' : input.trim(), ctx.run !== 'none'));
       return r.name === null ? err(`error: ${r.reason}`) : cmdErr(r.name, r.reason);
     }
     p = r.command;
   } else p = input;
-  const spec = findCommand(p.name);
-  if (spec === null) return err(unknownCommandText(p.name));
   const live = ctx.run !== 'none';
+  const spec = findCommand(p.name);
+  if (spec === null) return err(unknownCommandText(p.name, live));
   const unavailable = availabilityError(spec, live);
   if (unavailable !== null) return availErr(unavailable);
   const flagErr = checkFlags(spec, p);
@@ -279,7 +388,9 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
     if (f.idleOnly && live && p.options[f.name] !== undefined) return availErr(`error: /${spec.name} --${f.name} runs when the run is idle; Esc pauses first`);
   }
   const a0 = p.args[0];
-  const ok = (action: CommandAction): DispatchResult => ({ ok: true, action, spec });
+  // TUI-DESIGN-4 §4.5: `confirm` is set only when the spec is destructive AND the caller says the line came from a
+  // selection surface — `/history clear` is the `historyClear` action, so the key is read off the action
+  const ok = (action: CommandAction): DispatchResult => ({ ok: true, action, spec, confirm: confirmFor(spec, action, ctx.fromPalette === true) });
 
   switch (spec.name) {
     case 'help': {
@@ -305,10 +416,20 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
     case 'errors':
     case 'report':
     case 'editor':
-    case 'exit': {
+    case 'exit':
+    case 'fullscreen':
+    case 'scrollback':
+    case 'peers': {
       const t = tooMany(spec, p, 0);
       if (t) return t;
       return ok({ kind: spec.name } as CommandAction);
+    }
+    // TUI-DESIGN-4 §7.1: `/ui reset` is the only shape; anything else says so
+    case 'ui': {
+      const t = tooMany(spec, p, 1);
+      if (t) return t;
+      if (a0 === undefined || enumArg(spec.args[0] as ArgSpec, a0) === null) return cmdErr(spec.name, `expected reset${a0 === undefined ? '' : `, got "${a0}"`}`);
+      return ok({ kind: 'uiReset' });
     }
     case 'resume': {
       const t = tooMany(spec, p, 1);
@@ -456,7 +577,7 @@ export function dispatchCommand(input: ParsedCommand | string, ctx: DispatchCont
       if (a0 === undefined) return ok({ kind: 'copy', what: 'last' });
       const v = enumArg(spec.args[0] as ArgSpec, a0);
       if (v === null) return cmdErr(spec.name, enumReason(spec.args[0] as ArgSpec, a0));
-      return ok({ kind: 'copy', what: v as 'last' | 'proposal' | 'diff' | 'draft' });
+      return ok({ kind: 'copy', what: v as 'last' | 'proposal' | 'diff' | 'draft' | 'conversation' });
     }
     case 'export': {
       const t = tooMany(spec, p, 1);

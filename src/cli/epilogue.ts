@@ -11,7 +11,10 @@
  * and the indent form the session-mode `[ui] stopped — …` item (§24 renderer-originated items).
  */
 import type { SerializedError, SignalName, StopReason } from '../core/types.js';
+import { shortPath } from '../core/text.js';
 import { exitCodeFor } from '../loop/stop.js';
+import { TIER_NARROW_MIN, blockTexts, blockWidth, type BlockRow } from '../tui/block/lines.js';
+import { cellWidth } from '../tui/glyphs.js';
 import { terminalSafeLine } from '../tui/blocking/lines.js';
 
 /** TUI-DESIGN §13.5 / §14.1: the one-row sanitiser the epilogue applies to every untrusted string (re-exported for fatal.ts). */
@@ -33,20 +36,26 @@ export interface EpilogueContext {
   degraded?: boolean;
   /** $HOME, for the `~` abbreviation of runDir; no substitution when absent */
   home?: string;
+  /**
+   * TUI-DESIGN-4 §7.2 item 4 (P-D5/P-D2): the run-directory artefacts that ACTUALLY exist, so the epilogue never
+   * advertises a file that is not there. Absent = the historical `(transcript.log, state.json, jevcode.log)`.
+   */
+  files?: readonly string[];
+  /** §7.2 item 4 / §12: the run directory was removed or became unwritable during the run — the `files` row says so */
+  gone?: boolean;
 }
 
 export const FILES_SUFFIX = '(transcript.log, state.json, jevcode.log)';
 export const NOT_RESUMABLE = 'state.json missing — not resumable';
 export const REPORT_SUFFIX = '(redacted bundle written locally; nothing is sent)';
 
-/** `~` for the home prefix (TUI-DESIGN §13.5 example); a trailing slash marks the directory. */
-export function abbreviateDir(dir: string, home?: string): string {
-  let out = dir;
-  if (home && home.length > 1) {
-    const h = home.endsWith('/') ? home.slice(0, -1) : home;
-    if (out === h) out = '~';
-    else if (out.startsWith(`${h}/`)) out = `~${out.slice(h.length)}`;
-  }
+/**
+ * `~` for the home prefix (TUI-DESIGN §13.5 example); a trailing slash marks the directory. TUI-DESIGN-4 §3.4:
+ * a thin wrapper over `shortPath` now — one function, every path. `width` 0 means "never elide": the epilogue's
+ * `files` row must keep the run id whole (§3.4 measured motivation), and the block wraps it instead.
+ */
+export function abbreviateDir(dir: string, home?: string, width = 0): string {
+  const out = shortPath(dir, { root: '', ...(home !== undefined ? { home } : {}), width, measure: cellWidth });
   return out.endsWith('/') ? out : `${out}/`;
 }
 
@@ -71,30 +80,58 @@ export function stoppedLine(err: SerializedError | null, ctx: EpilogueContext, r
   return `stopped — ${reason}${detail} (exit ${code})`;
 }
 
-/** TUI-DESIGN §13.5: the `run` / `files` / `resume` / `report` rows without indentation; empty when no run exists. */
-export function epilogueRows(ctx: EpilogueContext): string[] {
+/** TUI-DESIGN-4 §12 / §7.2 item 4: the `files` row when the run directory is gone. */
+export const FILES_GONE = 'gone (the run directory was removed or became unwritable during the run)';
+
+/**
+ * TUI-DESIGN-4 §3.3: the epilogue as `BlockRow[]` — kv rows at the 10-cell key column with `shortPath`, so the
+ * `report` row's continuation hangs under its value instead of landing at column 0 where it reads as a new key
+ * (§3.4 measured motivation, PROBED `postrun`). Empty when no run exists.
+ */
+export function epilogueBlockRows(ctx: EpilogueContext, width = 0): BlockRow[] {
   if (ctx.runId === null) return [];
-  const rows = [`${'run'.padEnd(10)}${ctx.runId}`];
-  if (ctx.runDir !== null) rows.push(`${'files'.padEnd(10)}${abbreviateDir(ctx.runDir, ctx.home)}  ${FILES_SUFFIX}`);
-  rows.push(`${'resume'.padEnd(10)}${ctx.resumable ? `jevcode run --resume ${ctx.runId}` : NOT_RESUMABLE}`);
-  rows.push(`${'report'.padEnd(10)}jevcode report ${ctx.runId}   ${REPORT_SUFFIX}`);
+  // §3.1.5: `run`, `resume` and `report` carry an IDENTIFIER (and a copy-pasteable command) — never elided
+  const rows: BlockRow[] = [{ kind: 'kv', key: 'run', value: ctx.runId, id: true }];
+  if (ctx.runDir !== null) {
+    // §7.2 item 4: the row NEVER advertises a file that is not there, and a vanished (or empty, or unwritable)
+    // directory replaces the whole row. There is no `(empty)` sentence in §12 and there never was one.
+    const gone = ctx.gone === true || (ctx.files !== undefined && ctx.files.length === 0);
+    // §3.4: the directory is given the row's own room, so it is shortened to `…/<run id>/` rather than hard-split
+    // mid-id by the block's wrap (the measured `…/runs/2` ⏎ `0260922-…` defect this round set out to remove)
+    const dir = abbreviateDir(ctx.runDir, ctx.home, width <= 0 ? 0 : Math.max(1, (width >= TIER_NARROW_MIN ? width - 11 : width - 2)));
+    const suffix = gone ? FILES_GONE : ctx.files === undefined ? FILES_SUFFIX : `(${ctx.files.join(', ')})`;
+    // NOT `path: true`: the value is the dir PLUS the artefact list, so a left elision would eat the directory.
+    // The kv wrap breaks at the space between them and the run id stays whole (§3.4 measured motivation).
+    rows.push({ kind: 'kv', key: 'files', value: gone ? `${dir} — ${suffix}` : `${dir}  ${suffix}`, id: true });
+  }
+  rows.push({ kind: 'kv', key: 'resume', value: ctx.resumable ? `jevcode run --resume ${ctx.runId}` : NOT_RESUMABLE, id: true });
+  rows.push({ kind: 'kv', key: 'report', value: `jevcode report ${ctx.runId}   ${REPORT_SUFFIX}`, id: true });
   return rows;
+}
+
+/**
+ * TUI-DESIGN §13.5 / TUI-DESIGN-4 §3.3: the `run` / `files` / `resume` / `report` rows without indentation, at the
+ * block body width (`blockWidth(columns())`); empty when no run exists.
+ */
+export function epilogueRows(ctx: EpilogueContext, width: number = blockWidth(80)): string[] {
+  return blockTexts(epilogueBlockRows(ctx, width), width);
 }
 
 /**
  * TUI-DESIGN §13.5: the stderr epilogue for every `run:end` and fatal path in one-shot mode; `<msg>` passes
  * `redact`. Pure; joined with `\n` by the writer.
  */
-export function epilogueLines(err: SerializedError | null, ctx: EpilogueContext, redact: (s: string) => string): string[] {
-  return [`jevcode: ${stoppedLine(err, ctx, redact)}`, ...epilogueRows(ctx).map((r) => `  ${r}`)];
+export function epilogueLines(err: SerializedError | null, ctx: EpilogueContext, redact: (s: string) => string, columns = 80): string[] {
+  // §3.3: the stderr twin indents two cells, so its body width is `columns − 2`, not the block's rung width
+  return [`jevcode: ${stoppedLine(err, ctx, redact)}`, ...epilogueRows(ctx, Math.max(1, Math.floor(columns) - 2)).map((r) => `  ${r}`)];
 }
 
 /**
  * TUI-DESIGN §24: the session-mode twin — `stopped — …` as the item text (the `[ui]` label is the item's) and
  * the rows as its detail lines.
  */
-export function epilogueItemLines(err: SerializedError | null, ctx: EpilogueContext, redact: (s: string) => string): { text: string; detail: string[] } {
-  return { text: stoppedLine(err, ctx, redact), detail: epilogueRows(ctx) };
+export function epilogueItemLines(err: SerializedError | null, ctx: EpilogueContext, redact: (s: string) => string, width: number = blockWidth(80)): { text: string; detail: string[] } {
+  return { text: stoppedLine(err, ctx, redact), detail: epilogueRows(ctx, width) };
 }
 
 // ---------------------------------------------------------------------------------------

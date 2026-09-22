@@ -1,0 +1,15 @@
+# TUI-DESIGN-4 §7.3 item 4: in the boxed tier the status line is a `status={…}` PROP of <Console>, inside the
+# composer's boundary — so a StatusLine throw used to take the whole console box with it for the rest of the run
+# (measured). With the status wrapped in its own boundary ONE ROW degrades and the four box characters survive.
+# JEVCODE_FAULT=render:status.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.8
+send hi
+sleep 0.2
+send \r
+sleep 0.8
+send /exit
+sleep 0.2
+send \r
+eof

@@ -2,7 +2,7 @@
 // The hero-frame checklist (docs/TUI-DESIGN-3.md §9, V1–V21) over a pty capture:
 //
 //   node scripts/pty/polish-check.mjs <capture.cap> [--txt <capture.txt>] [--timing <timing.jsonl>] [--rows 24] [--cols 80]
-//                                     [--ascii] [--version 0.3.0] [--max-fps 30] [--json]
+//                                     [--ascii] [--version 0.3.0] [--max-fps 30] [--no-v13] [--json]
 //
 // Frame grammar (§9): the capture is cut into frames at the synchronized-output bracket `ESC[?2026h` (every Ink frame of
 // the App opens with one; the cursor hide `ESC[?25l` is the fallback). Inside a frame the rows above the rule row — the
@@ -26,13 +26,94 @@ export const CURSOR_HIDE = '\x1b[?25l';
 const ANSI_RE = /\x1b\[[0-9;?]*[ -/]*[@-~]|\x1b\][^\x07\x1b]*(?:\x07|\x1b\\)|\x1b[()][0-9A-Za-z]|\x1b[c78=>]/g;
 const SGR_RE = /\x1b\[([0-9;]*)m/g;
 export const RUN_ID_RE = /\d{8}-\d{6}-[a-z0-9]{8}/;
+/**
+ * TUI-DESIGN-4 §3.7 / §11 ("V17's anchor from the constant"): the one place the run's terminal row is named, as an
+ * **exported named constant**. D-V (§3.6) replaced `[run] end complete steps=…` with `[run] finished · <reason> · …`.
+ * Written **glyph-agnostic** (`[·-]`): `glyphs.ts` renders `dot: '·'` and `dot: '-'`, so a hard-coded `·` would
+ * silently stop matching in every `--ascii` capture — and a silent miss is exactly A3's risk R2, an anchor that
+ * reports a vacuous pass. This file is a standalone `.mjs` (shell scripts run it with no build step), so the pattern
+ * is re-spelt here and `runEndSelfTest()` below is what keeps it honest against `src/tui/plain.ts`'s constants.
+ */
+export const RUN_END_RE = /^ {0,9}\[run\] finished [\u00b7-] /;
+/** the run's first row, same treatment — V17 needs it to tell "no run in this capture" from "the anchor is stale" */
+export const RUN_STARTED_RE = /^ {0,9}\[run\] started [\u00b7-] /;
+/** the epilogue row every terminated run writes; a run that started AND stopped MUST have a `[run] finished` row */
+export const RUN_STOPPED_RE = /^ {0,9}\[ui\] stopped [\u2014-] /;
+
+/**
+ * TUI-DESIGN-4 §11: the two-glyph-set self-test. Both anchors must match the unicode **and** the `--ascii`
+ * rendering of the same row, and must not match the round-3 grammar they replaced (a stale anchor is the defect).
+ */
+export function runEndSelfTest() {
+  const failures = [];
+  const cases = [
+    [RUN_END_RE, '    [run] finished \u00b7 complete \u00b7 4 steps \u00b7 9s', true],
+    [RUN_END_RE, '    [run] finished - complete - 4 steps - 9s', true],
+    [RUN_END_RE, '    [run] end complete steps=4 wall=9s', false],
+    [RUN_STARTED_RE, '    [run] started \u00b7 jev+llm \u00b7 fix the failing test', true],
+    [RUN_STARTED_RE, '    [run] started - jev+llm - fix the failing test', true],
+    [RUN_STARTED_RE, '    [run] start 20260922-000000-aaaaaaaa mode=jev-on task: t', false],
+    [RUN_STOPPED_RE, '    [ui] stopped \u2014 complete (exit 0)', true],
+    [RUN_STOPPED_RE, '    [ui] stopped - complete (exit 0)', true],
+  ];
+  for (const [re, row, want] of cases) if (re.test(row) !== want) failures.push(`${re} ${want ? 'missed' : 'matched'} ${JSON.stringify(row)}`);
+  // TUI-DESIGN-4 §11: the V13 allowlist is itself two-glyph-set tested — an entry spelt with a literal `·`
+  // fails every `--ascii` capture, which is how the session-header row got there in the first place.
+  for (const row of ['    [run] jevcode session \u00b7 jevcode | step 0/\u2013 starting', '    [run] jevcode session - jevcode | step 0/- starting']) {
+    if (v13Rows([row], row.includes('\u00b7') ? false : true).length !== 0) failures.push(`V13 allowlist missed ${JSON.stringify(row)}`);
+  }
+  if (v13Rows(['    [step 1] outcome blocked reason=denied']).length !== 1) failures.push('V13 allowlist swallowed a real k=v row');
+  return { ok: failures.length === 0, failures };
+}
+/**
+ * TUI-DESIGN-4 §11 / §3.6 edge 10: the two producers of `k=v` / `|` scrollback text that are **read-only** this
+ * round and are therefore allowed — `src/loop/plan.ts`'s directive text and `src/session/seed.ts`'s seed notice.
+ * The third producer, `outcome blocked/declined/failed`'s interpolated reason, is inside `plain.ts` and is fixed
+ * by §3.6's new row, not allowlisted.
+ */
+export const V13_ALLOWLIST = [
+  /^ {0,9}\[run\]\s+seeded from run /,
+  /^ {0,9}\[step \d+\]\s+directive /,
+  // A THIRD producer the §11 inventory missed, found by running the predicate: `sessionHeaderItem`
+  // (`src/tui/plain.ts`, the `chat` prologue) writes `jevcode session · <dir> | step 0/– starting` — a `|`
+  // separator in the FIRST scrollback row of every session. It is S5's file and one character
+  // (`|` -> `·`); until that lands the row is allowlisted rather than red-lighting every capture.
+  // Written GLYPH-AGNOSTIC (`[·-]`): `sessionHeaderItem` goes out through `glyphTwin`, so an `--ascii` capture
+  // carries `jevcode session - <dir> | step 0/– starting`. A literal `·` here failed V13 on every ascii
+  // capture — including round 3's V21 twin sweep — which is the very defect this pass removed everywhere else.
+  /^ {0,9}\[run\]\s+jevcode session [\u00b7-] .* \| step /,
+];
+/**
+ * TUI-DESIGN-4 §11: V13 is **un-deferred by D-V**, which has landed (§3.6's engine-item rewrite). `--no-v13` turns
+ * it off for a capture taken against an older build.
+ */
+export const V13_DEFAULT = true;
+
+/**
+ * TUI-DESIGN-4 §11: "no `k=v` pair and no `|` separator in any scrollback row **outside the two-entry allowlist**".
+ * Returns the offending rows.
+ */
+export function v13Rows(scrollback, ascii = false) {
+  const bad = [];
+  for (const row of scrollback) {
+    if (row.trim() === '') continue;
+    if (V13_ALLOWLIST.some((re) => re.test(row))) continue;
+    // a box edge is not a separator; `|` under --ascii draws the console frame
+    const body = ascii ? row.replace(/^[|+]|[|+]$/g, '') : row;
+    if (/\b[a-z][a-zA-Z0-9_.]*=[^\s=]/.test(body) || / \| /.test(body)) bad.push(row.trim().slice(0, 72));
+  }
+  return bad;
+}
 const LABEL_RE = /^ {0,9}\[(?:run|step \d+|ui|setup|config|sandbox|you|jevcode)\] /;
 const STEP_100_RE = /^\[step \d{3,}\] /;
 /** the two pinks and their twins at every depth (TUI-DESIGN-3 §2): 256 cells 211 / 169 (dark), 125 / 89 (light); truecolor; ANSI-16 magenta(Bright) */
 export const PINK_FG = new Set(['38;5;211', '38;5;169', '38;5;125', '38;5;89', '38;2;243;134;161', '38;2;212;91;182', '38;2;190;24;93', '38;2;131;24;67', '35', '95']);
 /** the primary pink = the accent (TUI-DESIGN-3 D-P: the spinner glyph's colour) */
 export const ACCENT_FG = new Set(['38;5;211', '38;2;243;134;161', '95', '38;5;125', '38;2;190;24;93', '35']);
-const PROSE = new Set(['—', '–', '…', '’', '“', '”', '×', '·']);
+// TUI-DESIGN-4 §12 adds two key glyphs to the status ShortHelp — `⏎ next` and `Tab ⇥` — whose `--ascii` twins are
+// spelt at the call site (`status/lines.ts`: `ascii ? 'Tab' : 'Tab ⇥'`) rather than in `glyphs.ts`'s §14.1 table,
+// so V9's glyph set does not know them. They are prose here until that table gains the two rows.
+const PROSE = new Set(['—', '–', '…', '’', '“', '”', '×', '·', '⏎', '⇥']);
 const SPINNERS = new Set(['░', '▒', '▓', '█', '◆', '⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏', '.', '+', '#', '*', '|', '/', '-', '\\', '•']);
 
 export function stripAnsi(s) {
@@ -256,7 +337,7 @@ export function checkPolish(capture, opts = {}) {
   const prologueRows = stripAnsi(splitFrames(capture).prologue).replace(/\r\n|\r/g, '\n').split('\n').map((r) => r.replace(/\s+$/, ''));
   while (prologueRows.length > 0 && prologueRows[prologueRows.length - 1] === '') prologueRows.pop();
   const allScroll = [...prologueRows, ...scrollback];
-  const runStartAt = frames.findIndex((f) => f.scrollback.some((r) => /^ {0,9}\[run\] start /.test(r)));
+  const runStartAt = frames.findIndex((f) => f.scrollback.some((r) => RUN_STARTED_RE.test(r)));
   const captionFits = cols >= 73;
   const settledIdx = frames.findIndex((f, i) => (runStartAt < 0 || i < runStartAt) && f.dynamic.filter((r) => isWordmarkRow(r, ascii)).length >= 5 && !/[▓▒░]{3}|#\+\./.test(f.dynamic.slice(0, 7).join('\n')) && (!captionFits || /[◆*] \d+\.\d+\.\d+/.test(f.dynamic.join('\n'))));
 
@@ -310,6 +391,55 @@ export function checkPolish(capture, opts = {}) {
   const wide = [];
   for (const f of all) for (const r of f.rows) if (cellWidth(r) > cols) wide.push(`frame ${f.index}: ${cellWidth(r)} cells: ${JSON.stringify(r.slice(0, 70))}`);
   add('V6', wide.length === 0, wide.length === 0 ? `no row wider than ${cols}` : wide.slice(0, 3).join(' | '));
+  /**
+   * TUI-DESIGN-4 §2.9 P-R13 — the two width predicates V6 catches neither half of (A2's `resize-probe/widths.mjs`
+   * and `borders.mjs`, moved here as the design asks).
+   *
+   * **V22 — self-consistent frame width.** Within ONE frame, every row that opens with a box glyph is exactly the
+   * width of that frame's rule row, and none of them ends in the truncation ellipsis. A frame that mixes two
+   * widths is D1's torn frame: the box edges have already followed the new geometry while the body still wraps at
+   * the old one. Baseline to beat (A2's `out/tear`): 4 of 24 frames. Exempt: a frame with no rule row (minsize,
+   * static-only) and `--screen-reader`, which draws no box.
+   *
+   * **V23 — no over-indented continuation.** No scrollback continuation row starts with more spaces than the
+   * gutter of its rung (§2.3: 10 in `gutter`, 2 in `stacked`, 0 in `flush`), so the widest legal indent is 10.
+   */
+  const BOX_OPEN_RE = ascii ? /^[+|]/ : /^[╭│├╰┌]/;
+  const torn = [];
+  for (const f of frames) {
+    const rule = f.dynamic[0];
+    if (rule === undefined) continue;
+    const want = cellWidth(rule);
+    for (const r of f.dynamic) {
+      if (!BOX_OPEN_RE.test(r)) continue;
+      const w = cellWidth(r.replace(/\s+$/, ''));
+      if (w !== want) torn.push(`frame ${f.index}: a box row is ${w} cells, the rule row ${want}: ${JSON.stringify(r.slice(0, 60))}`);
+      else if (/(?:…|\.\.\.)\s*$/.test(r.replace(/\s+$/, ''))) torn.push(`frame ${f.index}: a box row ends in the truncation ellipsis: ${JSON.stringify(r.slice(-30))}`);
+    }
+  }
+  add('V22', torn.length === 0, torn.length === 0 ? `every box row equals its frame's rule row (${frames.length} frames), none truncated` : `${torn.length}: ${torn.slice(0, 3).join(' | ')}`);
+  const overIndent = [];
+  // columns a BLOCK legitimately aligns to: §3.1's kv / table rows put their value column past the 10-cell gutter,
+  // and a value that wraps hangs under itself. Reset at every label row, so one block's columns never excuse the
+  // next block's rows; an indent that matches no column any row of this block opened at is the defect A2 D10 names.
+  let blockCols = new Set();
+  for (const r of allScroll) {
+    if (r === '' || isWordmarkRow(r, ascii)) continue;
+    if (/^ {0,9}\[/.test(r)) {
+      blockCols = new Set();
+      const m = /^( {10,})\S/.exec(r);
+      if (m) blockCols.add(m[1].length);
+      continue;
+    }
+    const m = /^( {10,})\S/.exec(r);
+    if (m === null) continue;
+    const indent = m[1].length;
+    if (indent > 10 && !blockCols.has(indent)) overIndent.push(r);
+    // every column this row opens a span at is a legal hang for the rows under it (`key␠␠value` → the value column)
+    for (const mm of r.matchAll(/(?:^|\s\s)(?=\S)/g)) blockCols.add(mm.index === 0 ? 0 : mm.index + 2);
+    blockCols.add(indent);
+  }
+  add('V23', overIndent.length === 0, overIndent.length === 0 ? 'no continuation row indented past the 10-cell gutter or its block\'s value column' : `${overIndent.length}: ${overIndent.slice(0, 3).map((r) => JSON.stringify(r.slice(0, 50))).join(' | ')}`);
   // V7 / V8 / V10 / V18 — scrollback grammar
   const orphans = [];
   const badRows = [];
@@ -367,7 +497,13 @@ export function checkPolish(capture, opts = {}) {
     if (si >= 0 && RUN_ID_RE.test(f.rows[si] ?? '')) idRows.push(`frame ${f.index}`);
   }
   add('V12', idRows.length === 0, idRows.length === 0 ? 'no run id in a status row' : `run id in the status row of ${idRows.slice(0, 3).join(', ')}`);
-  add('V13', null, 'deferred with D-M (engine item text rewrites go to round 4)');
+  // V13 — no `k=v` pair and no `|` separator in a scrollback row outside the two-entry allowlist (§11, un-deferred by D-V)
+  if (opts.v13 ?? V13_DEFAULT) {
+    const v13 = v13Rows(allScroll, ascii);
+    add('V13', v13.length === 0, v13.length === 0 ? 'no k=v pair and no | separator outside the allowlist' : `${v13.length} row(s): ${v13.slice(0, 3).join(' | ')}`);
+  } else {
+    add('V13', null, 'skipped with --no-v13 (a capture taken against a pre-D-V build)');
+  }
   // V14 / V15 — the status row's colours
   const v14 = [];
   const v15 = [];
@@ -394,9 +530,36 @@ export function checkPolish(capture, opts = {}) {
   const v16 = frames.filter((f) => f.dynamic.some((r) => /\bstarting\b/.test(r)) && f.dynamic.some((r) => r.includes('Type to steer'))).map((f) => f.index);
   add('V16', v16.length === 0, v16.length === 0 ? 'no frame reads `starting` beside `Type to steer`' : `frames ${v16.slice(0, 5).join(', ')}`);
   // V17 — no loop banner in the dynamic region after [run] end
-  const endAt = frames.findIndex((f) => f.scrollback.some((r) => /^ {0,9}\[run\] end /.test(r)));
+  const endAt = frames.findIndex((f) => f.scrollback.some((r) => RUN_END_RE.test(r)));
   const v17 = endAt < 0 ? [] : frames.slice(endAt).filter((f) => f.dynamic.some((r) => /^loop ·|^loop {2}/.test(r))).map((f) => f.index);
-  add('V17', v17.length === 0, endAt < 0 ? 'no run ended in this capture' : v17.length === 0 ? 'no loop banner after [run] end' : `banner rows in frames ${v17.slice(0, 5).join(', ')}`);
+  // TUI-DESIGN-4 §3.7 (the R2 guard): a **zero-match anchor is a hard failure, never a vacuous pass**. Round 3
+  // reported V17 as a success with `no run ended in this capture` whenever the anchor missed, which is the one
+  // way a stale anchor survives a green board. A capture in which a run demonstrably started and the epilogue
+  // was printed MUST carry a `[run] finished` row; only a capture with no run at all is legitimately skipped.
+  // Both halves of the anchor are searched over the SAME text (prologue + every frame's scrollback). Searching
+  // `endAt` over `frames[].scrollback` alone while `startedAnywhere` scanned `allScroll` reported a `[run]
+  // finished` row written into the prologue as a stale anchor.
+  const startedAnywhere = allScroll.some((r) => RUN_STARTED_RE.test(r));
+  const endedAnywhere = endAt >= 0 || allScroll.some((r) => RUN_END_RE.test(r));
+  const stoppedAnywhere = allScroll.some((r) => RUN_STOPPED_RE.test(r));
+  // the ONE legitimate reason a started run has no end row: the driver killed the child on its timeout
+  const killed = (opts.timing?.steps ?? []).some((st) => st.op === 'timeout' || st.op === 'kill');
+  const selfTest = runEndSelfTest();
+  if (!selfTest.ok) add('V17', false, `the run-end anchor failed its two-glyph-set self-test: ${selfTest.failures.join('; ')}`);
+  else if (!startedAnywhere) add('V17', null, 'no run in this capture');
+  else if (!endedAnywhere && killed) add('V17', null, 'the capture was killed on the driver timeout before the run ended');
+  else if (!endedAnywhere)
+    // TUI-DESIGN-4 §3.7 (the R2 guard): a **zero-match anchor is a hard failure, never a vacuous pass**. Round 3
+    // reported V17 as a success with `no run ended in this capture` whenever the anchor missed, which is the one
+    // way a stale anchor survives a green board. Gating that failure on the epilogue row being present left the
+    // same hole open for every capture whose epilogue goes to stderr (one-shot, the signal paths).
+    add(
+      'V17',
+      false,
+      `a run started in this capture but ${RUN_END_RE} matched 0 rows${stoppedAnywhere ? ' although the run stopped' : ''} — the anchor is stale (TUI-DESIGN-4 §3.7 R2)`,
+    );
+  else if (endAt < 0) add('V17', true, 'the run ended in the prologue (no frame carries the row); no dynamic region to check');
+  else add('V17', v17.length === 0, v17.length === 0 ? 'no loop banner after [run] finished' : `banner rows in frames ${v17.slice(0, 5).join(', ')}`);
   add('V18', uiIndent.length === 0, uiIndent.length === 0 ? 'every row after a [ui] head is indented' : `rows after a [ui] head not at column 10: ${uiIndent.slice(0, 4).join(', ')}`);
   // V19 / V20 — timing-based
   const timing = opts.timing ?? null;
@@ -495,6 +658,9 @@ function main(argv) {
     else if (a === '--version') opts.version = args.shift();
     else if (a === '--max-fps') opts.maxFps = Number(args.shift());
     else if (a === '--ascii') opts.ascii = true;
+    // TUI-DESIGN-4 §11: V13 is un-deferred by D-V and on by default; `--no-v13` is for a pre-D-V capture
+    else if (a === '--v13') opts.v13 = true;
+    else if (a === '--no-v13') opts.v13 = false;
     else if (a === '--json') json = true;
     else if (a.startsWith('--')) {
       process.stderr.write(`polish-check: unknown option ${a}\n`);
@@ -502,7 +668,7 @@ function main(argv) {
     } else cap = a;
   }
   if (cap === null) {
-    process.stderr.write('usage: node scripts/pty/polish-check.mjs <capture.cap> [--txt <capture.txt>] [--timing <timing.jsonl>] [--rows 24] [--cols 80] [--ascii] [--version 0.3.0] [--json]\n');
+    process.stderr.write('usage: node scripts/pty/polish-check.mjs <capture.cap> [--txt <capture.txt>] [--timing <timing.jsonl>] [--rows 24] [--cols 80] [--ascii] [--version 0.3.0] [--no-v13] [--json]\n');
     return 2;
   }
   const capture = readFileSync(cap, 'latin1');

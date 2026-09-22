@@ -208,7 +208,8 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     // the fake decider's task_complete default (0.10) is recorded, not consulted: the stop is the code fact (§6.6)
     expect(s2!.completion).toBe(0.1);
     expect(s2!.stoppedAt).toBe('complete');
-    expect(h.store.transcript).toContain('[step 1] synth llm:round: 2 valid, 1 timeout');
+    // TUI-DESIGN-4 §3.7 G2 (D-V): `synth · llm:round · 2 valid, 1 timeout`
+    expect(h.store.transcript).toContain('[step 1] synth · llm:round · 2 valid, 1 timeout');
   });
 
   it('unverified best-guess patch and a partial done are gated on the two harm Scores only; the done is recorded, not complete', async () => {
@@ -360,7 +361,10 @@ describe('llm-jev: sanctioned generator channel, mode plumbing, code-fact stages
     expect(h1.of('budget:unpriced')).toEqual([{ type: 'budget:unpriced', side: 'generator', model: 'vendor/unknown-model', step: 1, tokens: { input: 4, output: 0 } }]);
     expect(r1.stopReason).toBe('error');
     expect(r1.steps).toBe(1);
-    expect(h1.store.transcript.at(-2)).toBe('[run] warn: stop: error at step 1 (unpriced_usage)');
+    // §3.7 G1: the `stop:` line is deleted; `[run] finished` names the reason and the error code
+    expect(h1.store.transcript.some((l) => l.includes('stop: error'))).toBe(false);
+    // §14.2 review item 5: the error clause moved after `exit <n>` so `RUN_END_PATTERN` still matches a failed run
+    expect(h1.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] error [·-] \d+ steps [·-] .* [·-] config: generator usage\.cost missing/);
     expect(h1.store.generator[0]!.usage).toEqual({ inputTokens: 4, outputTokens: 0, costUsd: 0, calls: 1, estimated: true });
     // the resolved config pricing (overrides included) prices the same estimate
     const p2 = deferredProvider('vendor/unknown-model');

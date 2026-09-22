@@ -7,12 +7,13 @@
  * item builders live in `src/config/credentials.ts` (config never imports the TUI) and are
  * re-exported here for the renderers.
  */
-import { reuseJevOffered, reuseOffered, skipOffered, targetMode, type FoundKey, type FoundSource, type OnboardingState, type WizardOption, type WizardProvider } from './reducer.js';
+import { isFieldStep, reuseJevOffered, reuseOffered, skipOffered, targetMode, type FoundKey, type FoundSource, type OnboardingState, type WizardOption, type WizardProvider, type WizardStep } from './reducer.js';
 import type { EngineMode, JevProvider, SandboxLevel } from '../../core/types.js';
 import type { TrustInputs } from '../../config/trust.js';
 import { DEFAULT_MODE, MODE_BADGE_WORD, SESSION_CAP_MULTIPLIER } from '../../config/defaults.js';
 import { defaultRunSpendCapUsd } from '../../config/ui.js';
 import { ELLIPSIS, stringWidth, truncateCells } from '../composer/width.js';
+import { fitRung } from '../fit.js';
 
 /** TUI-DESIGN §11.3: the trust prompt's inputs (declared in config/trust.ts; re-exported for the renderers). */
 export type { TrustInputs } from '../../config/trust.js';
@@ -400,6 +401,87 @@ export function trustLines(t: TrustInputs, rows: number, columns: number, ascii 
   const line3 = `  jevcode.json (${t.jevcodeJson ? formatSize(t.jevcodeJson.bytes) : 'none'})`;
   const all = Number.isFinite(rows) && rows < 12 ? [title, WIZARD_TRUST_OPTIONS] : [title, line2, line3, WIZARD_TRUST_OPTIONS];
   return all.map((l) => clipRow(l, columns, ascii));
+}
+
+/** TUI-DESIGN-4 §2.5 / §12: the wizard's minimum terminal size, as the rows and the toast say it. */
+export const WIZARD_MINSIZE_COLUMNS = 40;
+export const WIZARD_MINSIZE_ROWS = 8;
+/** TUI-DESIGN-4 §2.5 edge 3 / §12: the one `<Static>` item a `rows < 3` terminal gets (per size drop, never per frame; the App commits it). */
+export const WIZARD_MINSIZE_STATIC_ITEM = 'setup needs a terminal of at least 40×8';
+/** TUI-DESIGN-4 §2.5 / §12: the read-only-wizard toast — every key at minsize produces this and changes no wizard state. */
+export const WIZARD_MINSIZE_TOAST = 'resize to at least 40×8 to continue setup';
+/** TUI-DESIGN-4 §2.5 edge 2: the minsize row never shows more than this many `•`, so a long key is a progress mark, not a length leak. */
+export const WIZARD_MINSIZE_MASK_MAX = 8;
+
+/** TUI-DESIGN-4 §2.5: the one-row wizard twin's step word (the console title's tail, so the two never drift). */
+function minsizeStepWord(step: WizardStep): string | null {
+  const title = wizardConsoleTitle({ step });
+  return title === null ? null : title.replace(/^setup · /, '');
+}
+
+/**
+ * TUI-DESIGN-4 §2.5 (P-R6, D4): **one row per wizard step at minimum size, read-only.** `computeLayout` grants
+ * notice(1) · wizard(1) and no composer below 40×8, and this is the wizard's row. Every step's row is informational:
+ * keys are consumed and produce `WIZARD_MINSIZE_TOAST`, so a first-run user is never invited to type into a composer
+ * whose Enter cannot start anything, and — edge 2 — an invisible masked field is never drawn. When text was already
+ * entered at a larger size the row shows a **`•` count of what exists** (capped, never a caret, never a character):
+ * a progress indicator for text that exists, never an invitation to add to it.
+ *
+ * Every candidate is measured after substitution and chosen with `fitRung` (§2.6), so the row is never truncated and
+ * `cellWidth(row) ≤ columns` at every width. Returns `''` for a step with no wizard row (`detect`, `save`, `sandbox`,
+ * `done`, `exit`).
+ */
+export interface WizardMinsizeOptions {
+  /**
+   * TUI-DESIGN-4 §2.5 (P-R6): the row is the **only** one the overlay draws — `computeLayout`'s minsize branch grants
+   * one row, not P-R6's notice(1) · wizard(1), so no sentence above it says why the panes are gone. The ladder then
+   * leads with the rungs that name the size, because a numbered choice the user cannot act on (the wizard is
+   * read-only at minsize) is worth less than the reason it is read-only. With the notice above it, the choices lead.
+   */
+  readonly alone?: boolean;
+}
+
+export function wizardMinsizeRow(state: OnboardingState, columns: number, ascii = false, opts: WizardMinsizeOptions = {}): string {
+  const word = minsizeStepWord(state.step);
+  if (word === null) return '';
+  const c = cols(columns);
+  const g = glyphs(ascii);
+  const dash = ascii ? '-' : '—';
+  const ge = ascii ? '>=' : '≥';
+  const times = ascii ? 'x' : '×';
+  const size = `${WIZARD_MINSIZE_COLUMNS}${times}${WIZARD_MINSIZE_ROWS}`;
+  const head = `setup ${g.dot} ${word}`;
+  if (isFieldStep(state.step)) {
+    // edge 2: the `•` count of already-entered text only — never a caret, never a character, never the length itself
+    const mask = state.length > 0 ? g.bullet.repeat(Math.min(state.length, WIZARD_MINSIZE_MASK_MAX)) : '';
+    const clause = mask === '' ? 'terminal too small' : mask;
+    // the widest rung is §12's normative key row and already names the size, so `alone` changes nothing here
+    return fitRung([`${head} ${dash} ${clause}; ${ge} ${size} to type`, `${head} ${dash} ${ge} ${size}`, `${head} ${dash} ${size}`, head, 'setup'], c);
+  }
+  const choices = choiceRow(state, ascii);
+  const tail = `${ge} ${size} to continue`;
+  const sized = [`${head} ${dash} ${tail}`, `${head} ${dash} ${size}`];
+  const picked = choices === null ? [] : [`${head} ${dash} ${choices}`, choices];
+  return fitRung([...(opts.alone === true ? [...sized, ...picked] : [...picked, ...sized]), head, 'setup'], c);
+}
+
+/** TUI-DESIGN-4 §2.5 edge 1: the numbered choice row of a picking step, from the same narrow tables the full wizard uses (`1 typesafe  2 openrouter` is 24 cells). */
+function choiceRow(state: OnboardingState, ascii: boolean): string | null {
+  const squeeze = (s: string): string => s.trim().replace(/ {2,}/g, '  ');
+  switch (state.step) {
+    case 'options':
+      return squeeze(ascii ? asciiRow(WIZARD_OPTIONS_NARROW) : WIZARD_OPTIONS_NARROW);
+    case 'provider':
+      return squeeze(WIZARD_PROVIDER_OPTIONS_NARROW);
+    case 'jevProvider':
+      return squeeze(WIZARD_JEV_PROVIDER_OPTIONS_NARROW);
+    case 'trust':
+      return '1 trust  2 session  3 no';
+    case 'verify':
+      return '[y] verify  [n] skip';
+    default:
+      return null;
+  }
 }
 
 /**

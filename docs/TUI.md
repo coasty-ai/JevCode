@@ -592,11 +592,42 @@ are not written to `jev.jsonl`.
 | Jev model alias drift on the first call | `jev: model alias <configured> resolved to <served> on the first call` | `[p] pin --jev-model <served> for the next run   [q] stop (exit 2)` |
 | `--sandbox seatbelt` requested but unavailable | `sandbox: seatbelt requested but sandbox-exec is unavailable` | `[q] stop (exit 6)` |
 
-A pane that fails to render is replaced by one row (`ui: <pane> pane failed to render (<Error>) — run
-continues; details in <log>`) and the run goes on; a failed review pane declines the review; a failed composer
-falls back to a single-row input. Every run end and every fatal path prints the epilogue — `jevcode: stopped —
-<code>: <msg> (exit N)` with the message redacted, then the `run`, `files`, `resume` and `report` rows — on stderr
-in one-shot mode and as a `[ui]` item in a session.
+A pane that fails to render is replaced by one row and the run goes on; a failed review pane declines the
+review; a failed composer keeps its box and swaps only the interactive input for a masked one-line draft. The
+notice is width-aware (TUI-DESIGN-4 §7.12): at ≥ 64 columns `ui: <pane> failed (<Error>) — run continues; see
+<log>`, below 64 `ui: <pane> failed (<Error>)` with the log in the item's detail, and with no log open the
+`see …` clause is dropped and the detail reads `the run log (start with --log <file>)`. A pane that keeps
+throwing is **latched**: the builder is not called again, one item is appended, and it is retried only on the
+next run, on `/ui reset`, or when the slot remounts — `ui reset — <n> panes unlatched`, then
+`ui: <pane> pane recovered` when it renders again.
+
+A failing checkpoint write is never silent (TUI-DESIGN-4 §7.2): the store reports `ENOSPC`, `EACCES`, `EROFS`,
+`EDQUOT`, `EIO` and `ENOENT` once per `<file>:<code>` as
+`checkpoint degraded: <code> on <file> — <what it means>; this run cannot be resumed`, the run's exit code
+becomes **3** even when the stop reason is `complete`, and the epilogue lists only files that still exist —
+with the run directory gone the whole row is replaced by
+`files      <dir> — gone (the run directory was removed or became unwritable during the run)`.
+
+A file-system failure at launch names the fix rather than the errno (TUI-DESIGN-4 §7.4): `cannot create the
+runs directory <dir>: permission denied` with `set JEVCODE_HOME to a writable directory, or pass --runs-dir
+<dir>`; `the disk holding <dir> is full`; `cannot read <path>: permission denied`; `too many open files`. Every
+one of them goes through the one fatal path, so it reaches **stderr** with the epilogue and exit **2** (exit 3
+for a run directory that disappeared mid-run, and for a disk that filled while writing inside one), never
+stdout with exit 1. Which sentence an errno gets is decided by **where** its path is — the config file, the
+live run directory, the runs directory — and an errno that is none of those (a workspace file) stays
+unclassified and keeps exit 1 rather than being relabelled. An unclassified error keeps the raw message; the
+`run with JEVCODE_DEBUG=1 for the stack` row belongs to the renderer's `[ui] error:` fallback and **is not
+appended yet** (`DEBUG_STACK_HINT` is exported from `src/cli/fatal.ts` for the App-level site, which is another
+slot's file this round).
+
+A submission that has produced no `run:start`, no `thinking` phase change and no stream byte for 45 s appends
+`the request has not answered in 45s — Esc cancels it, or press Ctrl-C twice to leave`; the deadline is
+monotonic, so an NTP jump can neither fire it early nor suppress it. A second Ctrl-C always ends the process,
+and `Ctrl-C` with nothing to abort says `nothing to abort` instead of wedging the state.
+
+Every run end and every fatal path prints the epilogue — `jevcode: stopped — <code>: <msg> (exit N)` with the
+message redacted, then the `run`, `files`, `resume` and `report` rows — on stderr in one-shot mode and as a
+`[ui]` item in a session.
 
 ## Logs and reports
 
@@ -609,6 +640,39 @@ rotation. `jevcode report <id>` and `/report` write a redacted bundle to `~/.jev
 `transcript.log`, `jevcode.log` — the session log stands in when the run directory has none — the last 20
 `steps.jsonl` rows, `config.json`, `versions.txt`, `README.txt`; `--include-requests` adds the redacted
 `jev.jsonl` bodies). Nothing is sent anywhere.
+
+Round 4 (TUI-DESIGN-4 §7.7) makes the bundle the one a TUI bug actually needs. It also copies `state.json`
+(the file the epilogue calls the important one), `jevcode.log.1` (the rotated half — before this, a rotation
+lost the crash), `ui.json`, the last 200 `decisions.jsonl` rows and the effective `keybindings.json`. Every
+copied file is capped at **2 MiB head + 2 MiB tail** with a `… <n> bytes elided (original <m> bytes) …` marker
+between them and is redacted **line by line**, so a multi-hour `transcript.log` of hundreds of megabytes no
+longer becomes one string at the moment you are filing a bug. `versions.txt` adds `isTTY`, `LANG`, `LC_ALL`,
+`TZ`, `COLORTERM`, `NO_COLOR`, presence booleans (never values) for `SSH_TTY` / `TMUX` / `STY`, and a `launch`
+block with the resolved tier, fps, `renderMode`, `renderer`, `ascii`, `screenReader`, `reducedMotion`, `plain`
+and `theme` — the variables that decide which frame you were looking at. `README.txt` is written **first**
+carrying `(bundle incomplete)` and rewritten last without it, so a bundle interrupted by a full disk is
+self-describing (and exits 3 with the §7.4 explanation). The command prints the total size and the one-line
+`tar -czf <id>.tgz -C <parent> <id>` that turns the directory into an attachment.
+
+The session index has its own health (TUI-DESIGN-4 §7.6). `jevcode sessions` folds only the last **8 MiB** of
+`~/.jevcode/sessions/index.jsonl`, read from the end and starting at the first complete line — the index is
+append-only and time-ordered, so its tail is what the picker needs, and a 200 000-line index now folds in
+under 100 ms instead of 581. Lines it could not read are counted by reason and reported:
+`<n> index lines were unreadable and skipped — run jevcode sessions reindex`; an index past 8 MiB adds
+`the session index is <n> MB — jevcode sessions prune keeps the recent ones`. An index full of garbage no
+longer looks like a fresh install. A run written by a newer JevCode is refused by name rather than read as
+corrupt — `run <id> was written by a newer JevCode (run.json v<n>; this build reads v<m>) — upgrade with
+jevcode upgrade` — and `jevcode sessions reindex` counts it separately; `jevcode report` still bundles it,
+because a support bundle for an unreadable run is exactly what you want.
+
+Two instances in one workspace now know about each other (TUI-DESIGN-4 §7.10). The status line carries
+`<n> here` (and `· <n> stale` beside it) — the **count only**, never a pid and never a path, and the first
+segment dropped when the row runs short. The segment appears only when another instance is **live** in this
+workspace: dead registry rows do not make a workspace shared, so a `1 here · 2 stale` snapshot shows nothing on
+the status line and the stale count is reported by `/peers` and by the blocking pane, which is where
+`[c] continue` is. A session that opens beside another gets one item, `another jevcode is working in this
+workspace (started 4m ago) — /peers lists them`; and `/peers` prints a block with one row per peer. With the
+registry absent this build says so in one row rather than pretending.
 
 ## Exit codes
 
@@ -629,6 +693,10 @@ rotation. `jevcode report <id>` and `/report` write a redacted bundle to `~/.jev
 | `/exit` (incl. `[y]` while live), Ctrl-D ×2, Ctrl-C ×2 idle | — | 0 (`--exit-code last-run`: the last run's code; an aborted run counts as 130) |
 
 ## Terminal setup notes
+
+**Below 3 rows JevCode is scrollback-only**: there is no dynamic row to allocate, so the composer is alive but
+has no row to draw in (`layout.ts`'s `static-only` tier). The one `<Static>` item written at the size drop is
+what tells you; grow the terminal and the composer reappears with your draft intact.
 
 JevCode's terminal posture is deliberately conservative (TUI-DESIGN §14): no keyboard-protocol negotiation
 (kitty or `modifyOtherKeys`), no terminal queries (`DA1`, `OSC 11`, `CSI ? u`, …), no mouse reporting, no
@@ -694,6 +762,19 @@ with no key at all. `PTY_AUTO_REVIEW=y` makes the driver answer review cards; `n
 project of the same kind (`test/pty/*.pty.test.ts`, macOS, sequential, rebuilds a stale bundle first; 30 round-1
 tests moved to the round-2 sentinels plus the 33 of `test/pty/round2.pty.test.ts`, 4 of which are `it.fails` records
 of open defects — run results in `docs/STATUS.md`, "Round 2"). `JEVCODE_TRACE=<file>` records startup and run-lifecycle checkpoints (key classes only, never a key or a
-draft); `JEVCODE_FAULT=render:<pane>` makes one pane throw once to exercise the render boundary. `node
+draft); `JEVCODE_FAULT` injects one typed fault (TUI-DESIGN-4 §7.11) — `render:<pane>[:lines][:sticky]` ·
+`persist:<ENOSPC|EACCES|EROFS|ENOENT>[:after=<n>]` · `rundir:rm[:after=<n>]` · `submit:hang` ·
+`jev:429[:<s>]|jev:401|jev:5xx:<n>` · `net:ENOTFOUND|ETIMEDOUT|ECONNRESET[:mid-stream]` ·
+`stdout:EPIPE[:after=<n>]` · `clock:jump:<±s>[:at=<n>]` · `index:corrupt|index:huge:<n>` ·
+`config:<truncated|wrong-type|unreadable>` · `loop:hog:<ms>` · `peer:<n>`. The `:sticky` variant of
+`render:` throws on **every** render, which is what the per-pane latch has to survive. The parser and its loud
+rejection — the value, then the twelve-row grammar, written to stderr **before Ink mounts** so a typo in CI
+fails the test instead of silently measuring the unfaulted frame — are `readFaultEnv()` in `src/tui/faults.ts`;
+**the pre-mount call site is not wired yet** (it belongs in `src/cli/main.tsx`, another slot's file this round),
+so today an unknown value is still a silent no-op at run time and only the unit test enforces the grammar. Of
+the thirteen scenarios only the `render:<pane>` family has a consumer in the tree; the rest parse and are
+reported as "not driven" by `npm run perf`. `JEVCODE_ASSERT_HEIGHT=1` is likewise read by `readFaultEnv` and
+**has no consumer yet**; the frame-height gate is enforced by `src/perf/render-lag.ts` and `run-smoke.sh`
+instead, on every capture. `node
 scripts/gen-docs.mjs` regenerates `docs/KEYS.md`, `docs/COMMANDS.md`, the man page and the completions; `--check`
 reports what is stale.

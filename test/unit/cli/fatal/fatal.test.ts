@@ -8,7 +8,7 @@ import { EventEmitter } from 'node:events';
 import { describe, expect, it, vi } from 'vitest';
 import type { SerializedError, SignalName } from '../../../../src/core/types.js';
 import { JevCodeError } from '../../../../src/errors.js';
-import { FATAL_UNMOUNT_TIMEOUT_MS, HANGUP_EXIT_CODE, RESTORE, createFatalExit, fatalLines, installFatalHandlers, isHangupError, type FatalDeps } from '../../../../src/cli/fatal.js';
+import { FATAL_UNMOUNT_TIMEOUT_MS, HANGUP_EXIT_CODE, RESTORE, createFatalExit, fatalLines, hangupStderrLine, installFatalHandlers, isHangupError, type FatalDeps } from '../../../../src/cli/fatal.js';
 
 const CANARY = 'sk-ant-CANARY0123456789abcdefghijklmnop';
 const redact = (s: string): string => s.split(CANARY).join('[REDACTED:test]');
@@ -70,7 +70,14 @@ describe('createFatalExit (§13.4)', () => {
     // spy order: the RESTORE bytes land on stdout before a single epilogue byte on stderr
     expect(h.written[0]).toEqual({ fd: 1, text: RESTORE });
     expect(h.written[1]?.fd).toBe(2);
-    expect(h.written[1]?.text).toBe(['jevcode: stopped — jev_http: Jev HTTP 500: [REDACTED:test] (exit 5)', '  run       r1', '  files     /tmp/runs/r1/  (transcript.log, state.json, jevcode.log)', '  resume    jevcode run --resume r1', '  report    jevcode report r1   (redacted bundle written locally; nothing is sent)'].join('\n') + '\n');
+    // the epilogue body is `epilogueLines`' (S3 owns its column widths, TUI-DESIGN-4 §3.1): pin the rows, not the padding
+    const epilogue = h.written[1]?.text ?? '';
+    expect(epilogue.split('\n')[0]).toBe('jevcode: stopped — jev_http: Jev HTTP 500: [REDACTED:test] (exit 5)');
+    expect(epilogue).toMatch(/\n {2}run +r1\n/);
+    expect(epilogue).toMatch(/\n {2}files +\/tmp\/runs\/r1\/ {2}\(transcript\.log, state\.json, jevcode\.log\)\n/);
+    expect(epilogue).toMatch(/\n {2}resume +jevcode run --resume r1\n/);
+    expect(epilogue).toContain('jevcode report r1');
+    expect(epilogue.endsWith('\n')).toBe(true);
     expect(h.written.map((w) => w.text).join('')).not.toContain(CANARY);
     expect(fatalExit.fired()).toBe(true);
   });
@@ -216,14 +223,20 @@ describe('installFatalHandlers (§13.4)', () => {
     expect(proc.listenerCount('unhandledRejection')).toBe(0);
   });
 
-  it('stdio EIO / EPIPE → abort(signal SIGHUP), exit 129, no terminal writes, no epilogue', () => {
+  it('stdio EIO / EPIPE → abort(signal SIGHUP), exit 129, P-R11\'s one stderr line, no terminal writes, no epilogue', () => {
     const h = harness();
     const stdout = new EventEmitter();
     const stderr = new EventEmitter();
     const uninstall = installFatalHandlers({ ...h.deps, streams: [stdout, stderr] }, new EventEmitter());
     stdout.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
-    expect(h.calls).toEqual(['exitCode:129', `abort:signal:${JSON.stringify({ signal: 'SIGHUP' })}`, 'exit:129']);
-    expect(h.written).toEqual([]);
+    // TUI-DESIGN-4 §2.8 P-R11 / §12: the empty stderr is the measured defect — one line names the checkpoint and
+    // the code stays 129. Nothing goes to fd 1 and there is still no epilogue.
+    expect(h.calls).toEqual(['exitCode:129', `abort:signal:${JSON.stringify({ signal: 'SIGHUP' })}`, 'write:2', 'exit:129']);
+    expect(h.written.map((w) => w.fd)).toEqual([2]);
+    expect(h.written[0]?.text).toBe('jevcode: stdout closed; run checkpointed at /tmp/runs/r1\n');
+    expect(hangupStderrLine(null, null)).toBeNull();
+    expect(hangupStderrLine(null, '/tmp/runs')).toBe('jevcode: stdout closed; run checkpointed at /tmp/runs');
+    h.written.length = 0;
     // a second stream error is ignored
     stderr.emit('error', Object.assign(new Error('EIO'), { code: 'EIO' }));
     expect(h.calls.filter((c) => c.startsWith('exit:'))).toEqual(['exit:129']);
@@ -243,5 +256,120 @@ describe('installFatalHandlers (§13.4)', () => {
     await new Promise((r) => setTimeout(r, 5));
     expect(h.calls).toContain('restore');
     expect(h.calls.at(-1)).toBe('exit:1');
+  });
+});
+
+/**
+ * TUI-DESIGN-4 §7.4 (P-D4) / §10 (S6 `cli/fatal.test.ts`): a thrown EACCES → exit 2, stderr carries the epilogue
+ * **and** the fix block, stdout empty.
+ *
+ * Measured before round 4: a read-only `$HOME` gave `[ui] error: EACCES: permission denied, mkdir '<home>/runs'`
+ * on **stdout**, an empty stderr, no epilogue and exit **1**.
+ */
+describe('fatalExit routes a file-system failure through §7.4 (P-D4)', () => {
+  const errno = (code: string, path: string, syscall = 'mkdir'): Error => Object.assign(new Error(`${code}: permission denied, ${syscall} '${path}'`), { code, path, syscall });
+
+  it('EACCES on mkdir of the runs dir: exit 2, the sentence and the fix on stderr, nothing on stdout', async () => {
+    const h = harness();
+    await createFatalExit(h.deps)(errno('EACCES', '/home/u/.jevcode/runs'));
+    expect(h.exitCodes).toEqual([2]);
+    expect(h.calls).toContain('exit:2');
+    const err = h.written.filter((w) => w.fd === 2).map((w) => w.text).join('');
+    expect(err).toContain('cannot create the runs directory /home/u/.jevcode/runs: permission denied');
+    expect(err).toContain('set JEVCODE_HOME to a writable directory, or pass --runs-dir <dir>');
+    // the raw errno text never reaches the user
+    expect(err).not.toContain("mkdir '/home/u/.jevcode/runs'");
+    // stdout carries only the RESTORE bytes: the message itself never goes there (the measured defect)
+    expect(h.written.filter((w) => w.fd === 1)).toEqual([{ fd: 1, text: RESTORE }]);
+  });
+
+  it('ENOSPC inside the live run dir is exit 3 with the volume fix; at launch it is 2; an unclassified error keeps today\'s epilogue and exit 1', async () => {
+    // §7.4 row 2: the harness's `context().runDir` is `/tmp/runs/r1`, so a write INSIDE it means this run cannot be
+    // checkpointed. The design puts the split in `explainFsError`; that file is the harness session's under the
+    // 2026-09-22 ownership rule, so it is made at this call site and the `src/errors.ts` hunk is owed (STATUS.md).
+    const full = harness();
+    await createFatalExit(full.deps)(errno('ENOSPC', '/tmp/runs/r1/state.json', 'write'));
+    expect(full.exitCodes).toEqual([3]);
+    expect(full.written.map((w) => w.text).join('')).toContain('free space, or pass --runs-dir <dir> on another volume');
+    // the same code while the LAUNCH creates the runs directory is a configuration problem: exit 2
+    const launch = harness({ places: () => ({ runsDir: '/tmp/runs' }) });
+    await createFatalExit(launch.deps)(errno('ENOSPC', '/tmp/runs', 'mkdir'));
+    expect(launch.exitCodes).toEqual([2]);
+    const plain = harness();
+    await createFatalExit(plain.deps)(new Error('a plain bug'));
+    expect(plain.exitCodes).toEqual([1]);
+    expect(plain.written.map((w) => w.text).join('')).not.toContain('--runs-dir');
+    // a stream ENOSPC carries no `path`: a broken terminal is not a misconfigured runs dir, so it keeps exit 1
+    const stream = harness();
+    await createFatalExit(stream.deps)(Object.assign(new Error('disk'), { code: 'ENOSPC' }));
+    expect(stream.exitCodes).toEqual([1]);
+  });
+
+  /**
+   * TUI-DESIGN-4 §7.4 (review finding 3): the first pass labelled EVERY error carrying a string `path` as
+   * `op: 'runs-dir'`, which broke three rows at once. One case per branch.
+   */
+  it('the op is derived from the path: config, run-dir, runs-dir — and anything else stays unclassified at exit 1', async () => {
+    const places = (): { runsDir: string; runDir: string; configPath: string } => ({ runsDir: '/tmp/runs', runDir: '/tmp/runs/r1', configPath: '/home/u/.config/jevcode/config.json' });
+    // (a) §7.4 row 4: an EACCES on the CONFIG FILE is `cannot read <path>` with `chmod u+r`, never a runs-dir line
+    const cfg = harness({ places });
+    await createFatalExit(cfg.deps)(errno('EACCES', '/home/u/.config/jevcode/config.json', 'open'));
+    const cfgErr = cfg.written.filter((w) => w.fd === 2).map((w) => w.text).join('');
+    expect(cfg.exitCodes).toEqual([2]);
+    expect(cfgErr).toContain('cannot read /home/u/.config/jevcode/config.json: permission denied');
+    expect(cfgErr).toContain('chmod u+r /home/u/.config/jevcode/config.json, or pass --config <path>');
+    expect(cfgErr).not.toContain('cannot create the runs directory');
+
+    // (b) §7.4 row 3: a mid-run ENOENT inside the run dir — exit 3, "cannot be resumed"
+    const gone = harness({ places });
+    await createFatalExit(gone.deps)(errno('ENOENT', '/tmp/runs/r1/state.json', 'open'));
+    expect(gone.exitCodes).toEqual([3]);
+    expect(gone.written.filter((w) => w.fd === 2).map((w) => w.text).join('')).toContain('disappeared during the run');
+
+    // (c) an unrelated workspace file keeps exit 1 and is NOT relabelled a runs-dir failure
+    const ws = harness({ places });
+    await createFatalExit(ws.deps)(errno('EACCES', '/work/src/app.ts', 'open'));
+    expect(ws.exitCodes).toEqual([1]);
+    expect(ws.written.map((w) => w.text).join('')).not.toContain('cannot create the runs directory');
+
+    // (d) a sibling of the runs dir is not inside it
+    const sib = harness({ places });
+    await createFatalExit(sib.deps)(errno('EACCES', '/tmp/runs2/x', 'open'));
+    expect(sib.exitCodes).toEqual([1]);
+  });
+
+  /** TUI-DESIGN-4 §7.4 edge 2: the path in the epilogue is `~`-abbreviated through the injected `shorten`. */
+  it('the path is `~`-abbreviated against the epilogue context home', async () => {
+    const h = harness({ context: () => ({ runId: null, runDir: null, resumable: false, home: '/home/u' }) });
+    await createFatalExit(h.deps)(errno('EACCES', '/home/u/.jevcode/runs'));
+    const err = h.written.filter((w) => w.fd === 2).map((w) => w.text).join('');
+    expect(err).toContain('cannot create the runs directory ~/.jevcode/runs: permission denied');
+    expect(err).not.toContain('/home/u/.jevcode/runs');
+  });
+
+  /** §7.4 row 5: EMFILE / ENFILE name no path at all and are classified on the code alone. */
+  it('EMFILE is `too many open files` with the ulimit fix and exit 2, without a path', async () => {
+    const h = harness();
+    await createFatalExit(h.deps)(Object.assign(new Error('EMFILE: too many open files'), { code: 'EMFILE' }));
+    expect(h.exitCodes).toEqual([2]);
+    const err = h.written.filter((w) => w.fd === 2).map((w) => w.text).join('');
+    expect(err).toContain('too many open files');
+    expect(err).toContain('raise the file-descriptor limit (ulimit -n)');
+  });
+
+  it('an already-typed error keeps its own exit code (a CheckpointError stays 3)', async () => {
+    const h = harness();
+    await createFatalExit(h.deps)(new JevCodeError('checkpoint', 'no usable checkpoint', { exitCode: 3 }));
+    expect(h.exitCodes).toEqual([3]);
+  });
+
+  it('fatalLines appends at most the explanation`s two rows, indented, redacted', () => {
+    const err: SerializedError = { name: 'ConfigError', code: 'config', message: 'cannot read /x: permission denied', exitCode: 2 };
+    const withFix = fatalLines(err, { runId: null, runDir: null, resumable: false }, redact, {
+      explain: { line: 'cannot read /x: permission denied', fix: [`chmod u+r /x/${CANARY}`], code: 'EACCES', exitCode: 2 },
+    });
+    expect(withFix.at(-1)).toBe('  chmod u+r /x/[REDACTED:test]');
+    // no explanation → the epilogue is byte-identical to today's
+    expect(fatalLines(err, { runId: null, runDir: null, resumable: false }, redact)).toEqual(fatalLines(err, { runId: null, runDir: null, resumable: false }, redact, { explain: null }));
   });
 });

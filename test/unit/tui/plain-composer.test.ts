@@ -12,7 +12,9 @@ import { PassThrough } from 'node:stream';
 import { describe, expect, it } from 'vitest';
 import type { Candidate, PendingDirective, SecretHit, SessionHost, SessionRow, SteerResult, SubmitOutcome, UiLabel } from '../../../src/core/types.js';
 import type { KeyRunPhase } from '../../../src/tui/keys/resolve.js';
-import { CTRL_C_AGAIN_HINT, PLAIN_PROMPT, RUN_ENDING_HINT, STEER_QUEUE_FULL_HINT, createReadlineComposer, plainSupports, plainUnavailableError, type SignalSource } from '../../../src/tui/plain-composer.js';
+import { CONFIRM_DECLINED_HINT, CTRL_C_AGAIN_HINT, PLAIN_COLUMNS, PLAIN_PROMPT, RUN_ENDING_HINT, STEER_QUEUE_FULL_HINT, createReadlineComposer, plainPaletteState, plainSupports, plainUnavailableError, type SignalSource } from '../../../src/tui/plain-composer.js';
+import { NUMBERED_MAX_ROWS, numberedPick, numberedPrompt, numberedShown, paletteMatches, paletteNumberedLines } from '../../../src/tui/commands/palette.js';
+import { cellWidth } from '../../../src/tui/glyphs.js';
 import { READLINE_CONFIRM_KEYS, createPlainRenderer, createReadlineConfirmer, type ConfirmInput } from '../../../src/tui/plain.js';
 import { mkConfirmRequest } from '../../fixtures/tui/fixtures.js';
 import { findCommand, type CommandSpec } from '../../../src/tui/commands/registry.js';
@@ -283,7 +285,7 @@ describe('createReadlineComposer: slash commands (§5.1, §5.2)', () => {
     await s.type('/pause');
     expect(s.fake.calls).toHaveLength(2);
     expect(s.fake.notes.map((n) => n.text)).toEqual([
-      'error: unknown command /foo; type / to list commands',
+      'error: /foo — not a command · type / to list commands',
       'error: /budget spend-cap: expected a positive USD amount, got "abc"',
       'error: /pause needs a live run',
     ]);
@@ -334,6 +336,156 @@ describe('createReadlineComposer: slash commands (§5.1, §5.2)', () => {
     expect(plainUnavailableError(findCommand('theme') as CommandSpec)).toBe('error: /theme: not available in --plain (n/a)');
     const ok = dispatchCommand('/help', { run: 'none', step: 0 });
     expect(ok.ok && plainSupports(ok.spec, ok.action)).toEqual({ ok: true });
+    s.composer.close();
+  });
+});
+
+describe('TUI-DESIGN-4 §4.6: the `--plain` numbered pick', () => {
+  /** the palette order the plain twin ranks with: no Suggested group, no history, just `live` */
+  const NAMES = paletteMatches('', plainPaletteState(false)).map((m) => m.spec.name);
+  const numberOf = (name: string): number => NAMES.indexOf(name) + 1;
+
+  it('the formatter: one header, every command numbered, no row wider than the column count, and `numberedPick` agrees with the row the user reads', () => {
+    const state = plainPaletteState(false);
+    const lines = paletteNumberedLines('', state, PLAIN_COLUMNS);
+    expect(lines[0]).toBe('commands (41) — type a number or a name, then Enter');
+    expect(lines).toHaveLength(42); // the header + all 41 commands
+    for (const l of lines) expect(cellWidth(l), l).toBeLessThanOrEqual(PLAIN_COLUMNS);
+    for (let n = 1; n <= 41; n++) {
+      const spec = numberedPick('', state, n);
+      expect(spec, String(n)).not.toBeNull();
+      expect(lines[n]).toContain(`/${(spec as { name: string }).name}`);
+      expect((lines[n] as string).trimStart().startsWith(`${n}  `)).toBe(true);
+    }
+    expect(numberedPick('', state, 0)).toBeNull();
+    expect(numberedPick('', state, 42)).toBeNull();
+    expect(numberedPick('', state, 1.5)).toBeNull();
+    // the cap never fires at exactly one hidden row (its tail would cost the row it replaces, and the header would
+    // then count a command nobody could pick); from two up it does
+    expect(numberedShown(NUMBERED_MAX_ROWS + 1)).toBe(NUMBERED_MAX_ROWS + 1);
+    expect(numberedShown(NUMBERED_MAX_ROWS + 2)).toBe(NUMBERED_MAX_ROWS);
+    // a pipe uses 80 columns; a narrower terminal cuts the titles, never the numbering
+    const at60 = paletteNumberedLines('', state, 60);
+    expect(at60).toHaveLength(42);
+    for (const l of at60) expect(cellWidth(l), l).toBeLessThanOrEqual(60);
+  });
+  it('a submitted `/` prints the block and the prompt says so for exactly that turn; a number then picks, and the next turn a bare integer is an ordinary prompt', async () => {
+    const s = setup();
+    await s.type('/');
+    const note = s.fake.notes.at(-1);
+    expect(note?.label).toBe('[ui]');
+    expect(note?.level).toBe('info');
+    expect(note?.text).toBe('commands (41) — type a number or a name, then Enter');
+    // (b) `pendingList` is VISIBLE: an invisible one-shot would execute command 12 for a user who typed `/` by
+    // accident and then a genuine numeric prompt
+    expect(s.output.text.endsWith(numberedPrompt(41))).toBe(true);
+    expect(numberedPrompt(41)).toBe('pick 1-41, or type a message > ');
+    await s.type(String(numberOf('help')));
+    expect(s.fake.calls.filter((c) => c.kind === 'command').map((c) => c.args[0])).toEqual(['/help']);
+    // the prompt reverted, and the same digits are now an ordinary prompt
+    expect(s.output.text.endsWith(PLAIN_PROMPT)).toBe(true);
+    await s.type(String(numberOf('help')));
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(1);
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(1);
+    s.composer.close();
+  });
+  it('(a) the pick is `fromPalette`, so a destructive command reached by number gets the §4.5 gate as a readline y/N — `y` runs it, anything else does not', async () => {
+    const s = setup();
+    await s.type('/');
+    await s.type(String(numberOf('new')));
+    // nothing ran: the question is on stdout and the host has not been touched
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    expect(s.output.text.endsWith('start fresh? [y/N] ')).toBe(true);
+    await s.type('y');
+    expect(s.fake.calls.filter((c) => c.kind === 'command').map((c) => c.args[0])).toEqual(['/new']);
+    // and the declining path
+    await s.type('/');
+    await s.type(String(numberOf('new')));
+    await s.type('');
+    expect(s.stderr.text).toContain(CONFIRM_DECLINED_HINT);
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(1);
+    await s.type('/');
+    await s.type(String(numberOf('new')));
+    await s.type('n');
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(1);
+    s.composer.close();
+  });
+  it('a HAND-TYPED destructive line is never gated (the risk is mis-selection, not mis-typing)', async () => {
+    const s = setup();
+    await s.type('/new');
+    expect(s.fake.calls.filter((c) => c.kind === 'command').map((c) => c.args[0])).toEqual(['/new']);
+    await s.type('/exit');
+    expect(s.fake.calls.filter((c) => c.kind === 'command').map((c) => c.args[0])).toEqual(['/new', '/exit']);
+    s.composer.close();
+  });
+  it('the list is one-shot — every other line clears it, an out-of-range integer is an ordinary prompt, and a bare integer with no list is always a prompt', async () => {
+    const s = setup();
+    await s.type('/');
+    await s.type('hello');
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(1);
+    expect(s.output.text.endsWith(PLAIN_PROMPT)).toBe(true);
+    // the list is gone, so the next number is a prompt
+    await s.type('3');
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(2);
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    // an integer OUTSIDE 1..N while the list is up is an ordinary prompt too
+    await s.type('/');
+    await s.type('99');
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(3);
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    // …and `12` typed in a turn that never saw a list has always been a prompt
+    await s.type('12');
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(4);
+    // a 4+ digit integer while the list IS armed is a prompt as well (the pick regex is bounded at three digits,
+    // and 1000 is outside `1..41` in any case) — a user pasting an amount never runs a command
+    await s.type('/');
+    await s.type('1000');
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(5);
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    s.composer.close();
+  });
+  it('a numbered pick of a command that NEEDS an argument is the ordinary `[ui] error:` item, and never a confirm', async () => {
+    const s = setup();
+    await s.type('/');
+    await s.type(String(numberOf('ui')));
+    // `/ui` alone is §7.1's error: the pick ran `dispatchCommand`, which validated and reported
+    expect(s.fake.notes.at(-1)?.text).toBe('error: /ui: expected reset');
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    expect(s.output.text).not.toContain('[y/N]');
+    // the same for `/history`, whose only argument is the destructive one — the y/N it owns is `session.ts`'s, and
+    // an unresolved `/history` must never reach a gate
+    await s.type('/');
+    await s.type(String(numberOf('history')));
+    expect(s.fake.notes.at(-1)?.text).toMatch(/^error: \/history/);
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    // the one-shot is spent either way: the next integer is a prompt
+    await s.type('2');
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(1);
+    s.composer.close();
+  });
+  it('SIGINT cancels a pending y/N and the armed list — the next line is a message, never the answer', async () => {
+    const s = setup();
+    await s.type('/');
+    await s.type(String(numberOf('new')));
+    expect(s.output.text.endsWith('start fresh? [y/N] ')).toBe(true);
+    // the measured trap: `showPrompt()` reads only `pendingList`, so an armed confirm survived Ctrl-C behind an
+    // ordinary `> ` and the next line the user typed was consumed as its answer
+    s.signals.fire();
+    expect(s.stderr.text).toContain(CONFIRM_DECLINED_HINT);
+    expect(s.output.text.endsWith(PLAIN_PROMPT)).toBe(true);
+    await s.type('yes');
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    expect(s.fake.calls.filter((c) => c.kind === 'submit').map((c) => c.args[0])).toEqual(['yes']);
+    // the numbered one-shot closes too (the `--plain` twin of E12), so a following integer is a prompt
+    await s.type('/');
+    expect(s.output.text.endsWith(numberedPrompt(41))).toBe(true);
+    s.advance(1_600); // …outside the Ctrl-C window: two within 1.5 s still exit 0 (§14.2, asserted above)
+    s.signals.fire();
+    expect(s.output.text.endsWith(PLAIN_PROMPT)).toBe(true);
+    expect(s.fake.exits).toEqual([]);
+    await s.type('2');
+    expect(s.fake.calls.filter((c) => c.kind === 'command')).toHaveLength(0);
+    expect(s.fake.calls.filter((c) => c.kind === 'submit')).toHaveLength(2);
     s.composer.close();
   });
 });
@@ -510,7 +662,7 @@ describe('createReadlineComposer: history follows the host call; command lines p
     // a typo still never reaches the gate or the host
     await s.type(`/renam ${SECRET}`);
     expect(s.fake.calls).toHaveLength(4);
-    expect(s.fake.notes.at(-1)?.text).toMatch(/^error: unknown command/);
+    expect(s.fake.notes.at(-1)?.text).toMatch(/^error: \/renam — not a command/);
     s.composer.close();
   });
 });

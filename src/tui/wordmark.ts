@@ -38,6 +38,14 @@ export const LOOP_QUIET_AFTER_KEY_MS = 3_000;
 export const WORDMARK_MIN_ROWS = 21;
 /** §3.2: the mark returns right after `run:end` only when the 8-row epilogue still fits above it */
 export const WORDMARK_POST_RUN_MIN_ROWS = 24;
+/**
+ * TUI-DESIGN-4 §1.2 P-H2 (D-T b): at this many rows the 5-row mark stays up **during a live run**. The worst-case live
+ * region is `rule 1 + live 2 + banner 1 + queue 2 + mark 5 + chrome 3 + composer 1 + status 1 = 16`, so 32 rows still
+ * leave 16 rows of visible conversation — the floor. Below it the run needs the rows and the mark yields (the
+ * whole-or-absent grant of `computeLayout` 1.2 does it for free). The idle sweep is **not** enabled while live
+ * (`App.tsx`'s `useIdleLoop` gate), so a run still writes zero decoration frames.
+ */
+export const WORDMARK_LIVE_MIN_ROWS = 32;
 
 /** TUI-DESIGN-3 §3.1: every input already exists in `UiState` / the App. */
 export interface WordmarkInput {
@@ -66,13 +74,14 @@ export interface WordmarkInput {
 }
 
 /** TUI-DESIGN-2 §3.1 / TUI-DESIGN-3 §3.1: an engine run owns the session — `live`, `aborting`, `pausing` (`starting` is a submission in flight). */
-function runIsLive(run: RunPhase): boolean {
+export function runIsLive(run: RunPhase): boolean {
   return run === 'live' || run === 'aborting' || run === 'pausing';
 }
 
 /**
- * TUI-DESIGN-3 §3.1: the WANT — true iff `boxed ∧ rows ≥ 21 ∧ columns ≥ 64 ∧ ¬screenReader ∧ ¬runIsLive(run) ∧ panel === 'collapsed'
- * ∧ ¬pickerOpen ∧ overlay ≠ 'review' ∧ ¬expanded ∧ setting ≠ 'off' ∧ (rows ≥ 24 ∨ ¬postRun)`. The layout's whole-or-absent grant decides the SHOW.
+ * TUI-DESIGN-3 §3.1, amended by TUI-DESIGN-4 §1.2 P-H2 (D-T b): the WANT — true iff `boxed ∧ rows ≥ 21 ∧ columns ≥ 64 ∧
+ * ¬screenReader ∧ (¬runIsLive(run) ∨ rows ≥ 32) ∧ panel === 'collapsed' ∧ ¬pickerOpen ∧ overlay ≠ 'review' ∧ ¬expanded ∧
+ * setting ≠ 'off' ∧ (rows ≥ 24 ∨ ¬postRun)`. The layout's whole-or-absent grant decides the SHOW.
  */
 export function wordmarkWanted(i: WordmarkInput): boolean {
   const rows = Number.isFinite(i.rows) ? Math.floor(i.rows) : 0;
@@ -82,7 +91,8 @@ export function wordmarkWanted(i: WordmarkInput): boolean {
     rows >= WORDMARK_MIN_ROWS &&
     columns >= WORDMARK_MIN_COLUMNS &&
     !i.screenReader &&
-    !runIsLive(i.run) &&
+    // TUI-DESIGN-4 §1.2 P-H2: the mark stays up during a live run once the terminal is tall enough for 16 rows of conversation under it
+    (!runIsLive(i.run) || rows >= WORDMARK_LIVE_MIN_ROWS) &&
     i.panel === 'collapsed' &&
     !i.pickerOpen &&
     i.overlay !== 'review' &&

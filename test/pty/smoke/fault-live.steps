@@ -1,0 +1,18 @@
+# TUI-DESIGN-4 §7.3 item 6 / §10 S6: `render:live`. The live region (`layout.live`) is the streaming slot, and it
+# is allocated only while the run has live text to show — the decisions panel takes those rows when it is open,
+# which is why this scenario does NOT open the panel (`fault-run.steps` does, for `pane` and `overlay`).
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.5
+send start the fault run
+sleep 0.2
+send \r
+expect \[run\](?:\x1b\[[0-9;]*m)* started [·-] 
+sleep 3
+send \x03
+expect Follow-up, question|Say hi
+sleep 0.4
+send /exit
+sleep 0.2
+send \r
+eof

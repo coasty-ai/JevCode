@@ -75,7 +75,11 @@ describe('F-G: the seven-row pane and the review header at 80×24', () => {
     const state = paneState({ rows: rows(frameGDecisions()) });
     expect(decisionRows(state, 7, 80)).toEqual(f.slice(1, 8));
     const header = reviewHeaderLines(workedRequest(), 8, 80);
-    expect(header[0]).toBe(f[8]);
+    // TUI-DESIGN-4 D-Z / §6.1: the title's target now names the edit's files AND counts (`edit src/a.py +1 −1`),
+    // which TUI-DESIGN-2's frame predates — A6-1's whole point is that an edit action used to name no counts at
+    // all. The document's own row is still read back verbatim below, so neither side can drift unnoticed.
+    expect(f[8]).toBe('review  step 7  risk 0.44 (tail)  edit src/a.py "make parse_date timezone-aware"');
+    expect(header[0]).toBe('review  step 7  risk 0.44 (tail)  edit src/a.py +1 −1 "make parse_date timezon…"');
     expect(header[1]).toBe(f[9]);
     // ruler: the frame's `dimension     lvl` (5 spaces) cannot align with its own gauge rows; compare the tokens
     expect(collapse(header[2]!)).toBe(collapse(f[10]!));
@@ -99,7 +103,11 @@ describe('F-J: the wide decisions tab at 120×40 with latency and consumedBy', (
     });
     expect(paneRuleRow(state, 12, 120, 'review')).toBe(f[0]);
     const header = reviewHeaderLines(workedRequest(), 8, 120);
-    expect(header[0]).toBe(f[13]);
+    // TUI-DESIGN-4 D-Z / §6.1: the title's target now names the edit's files AND counts (`edit src/a.py +1 −1`),
+    // which TUI-DESIGN-2's frame predates — A6-1's whole point is that an edit action used to name no counts at
+    // all. The document's own row is still read back verbatim below, so neither side can drift unnoticed.
+    expect(f[13]).toBe('review  step 7  risk 0.44 (tail on plan_mismatch)  edit src/a.py  "make parse_date timezone-aware"             jev 244ms');
+    expect(header[0]).toBe('review  step 7  risk 0.44 (tail on plan_mismatch)  edit src/a.py +1 −1  "make parse_date timezone-aware"       jev 244ms');
     expect(header[1]).toBe(f[14]);
     for (let i = 0; i < 5; i++) {
       const mine = collapse(partial(header[3 + i]!)).split(' ');
@@ -163,7 +171,12 @@ describe('F-P and F-X: the follow-up box and the 120-column compact review', () 
   });
   it('F-X title, keys and the three-dimension compact row are exact', () => {
     const f = frame('F-X');
-    expect(reviewHeaderLines(workedRequest(), 3, 120)).toEqual(f.slice(1, 4));
+    const header = reviewHeaderLines(workedRequest(), 3, 120);
+    // TUI-DESIGN-4 D-Z / §6.1: the title's target now names the edit's files AND counts (`edit src/a.py +1 −1`),
+    // which TUI-DESIGN-2's frame predates — A6-1's whole point is that an edit action used to name no counts at
+    // all. The document's own row is still read back verbatim below, so neither side can drift unnoticed.
+    expect(header[0]).toBe('review  step 7  risk 0.44 (tail on plan_mismatch)  edit src/a.py +1 −1  "make parse_date timezone-aware"       jev 244ms');
+    expect(header.slice(1)).toEqual(f.slice(2, 4));
   });
 });
 

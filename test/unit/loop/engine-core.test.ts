@@ -127,11 +127,13 @@ describe('transcript.log (§10 shared item model)', () => {
       }
     }
     expect(h.store.transcript).toEqual(expected);
-    expect(h.store.transcript[0]).toMatch(/^\[run\] start /);
-    expect(h.store.transcript.some((l) => /^\[step 1\] intent=investigate p=0\.90 c=/.test(l))).toBe(true);
-    expect(h.store.transcript.some((l) => /^\[step 1\] outcome executed: read 1 file\(s\)$/.test(l))).toBe(true);
-    expect(h.store.transcript.at(-2)).toBe('[run] stop: complete at step 2');
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end complete steps=2 wall=/);
+    // TUI-DESIGN-4 §3.6 / §3.7 G1–G4 (D-V): the run frame, the stage rows and the outcome row are sentences now,
+    // and the `stop:` line is deleted (`[run] finished` already says it)
+    expect(h.store.transcript[0]).toMatch(/^\[run\] started [·-] /);
+    expect(h.store.transcript.some((l) => /^\[step 1\] intent [·-] investigate [·-] 0\.90 \(confidence /.test(l))).toBe(true);
+    expect(h.store.transcript.some((l) => /^\[step 1\] done [·-] read 1 file$/.test(l))).toBe(true);
+    expect(h.store.transcript.some((l) => l.startsWith('[run] stop'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] complete [·-] 2 steps [·-] /);
     // pane-only events never produce a line
     expect(h.store.transcript.some((l) => /decision|status|stage:/.test(l))).toBe(false);
   });
@@ -145,7 +147,7 @@ describe('transcript.log (§10 shared item model)', () => {
     expect(r2.steps).toBe(2);
     expect(r2.jevQuestions).toBe(h.store.steps.reduce((n, s) => n + s.decisions.length, 0));
     const added = h.store.transcript.slice(before);
-    expect(added[0]).toMatch(/^\[run\] start .* resumed from step 1 /);
+    expect(added[0]).toMatch(/^\[run\] started [·-] .* resumed at step 1 [·-] /);
     expect(added).toContain('[run] resumed at step 2');
     expect(added.filter((l) => l.startsWith('[step 2] ')).length).toBeGreaterThan(0);
     expect(added.some((l) => l.startsWith('[step 1] '))).toBe(false);
@@ -276,7 +278,8 @@ describe('risk policy', () => {
     expect(result.counters.declined).toBe(1);
     expect(h.of('confirm:request')).toHaveLength(1);
     expect(h.of('confirm:resolved')[0]).toMatchObject({ step: 1, id: `${h.engine.runId}:1`, approved: false, aborted: false });
-    expect(h.store.transcript).toContain(`[step 1] confirm ${h.engine.runId}:1 declined`);
+    // §3.6 (G5): `review declined` — the confirm id is machine-only (it is in decisions.jsonl)
+    expect(h.store.transcript).toContain('[step 1] review declined');
     expect(result.stopReason).toBe('max_steps');
   });
 

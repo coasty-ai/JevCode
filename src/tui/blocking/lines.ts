@@ -6,7 +6,9 @@
  * encodes each kind's facts into `BlockingRequest.detail` so the rows can be rendered from the contract alone.
  * Rows are measured and cut in cells (O2's `width.ts`, §4.2), never by Ink wrapping (§2.1).
  */
-import type { BlockingKind, BlockingRequest, EngineEvent } from '../../core/types.js';
+import type { BlockingKind, BlockingRequest, EngineEvent, PeerView } from '../../core/types.js';
+import { type DiskErrorCode, DISK_ERROR_CODES, degradedConsequence } from '../../checkpoint/store.js';
+import { explainFsError } from '../../errors.js';
 import { JEV_RETRY } from '../../jev/types.js';
 import { stringWidth, truncateCells } from '../composer/width.js';
 import { sanitizeStream } from '../plain.js';
@@ -115,6 +117,88 @@ function sideWord(req: BlockingRequest): 'jev' | 'generator' {
   return req.side ?? 'jev';
 }
 
+function isDiskCode(code: string): code is DiskErrorCode {
+  return (DISK_ERROR_CODES as readonly string[]).includes(code);
+}
+
+/** TUI-DESIGN-4 §7.2 edge 6: the consequence clause, or today's wording for a code the store does not classify. */
+function consequenceFor(code: string): string {
+  return isDiskCode(code) ? degradedConsequence(code) : 'the run cannot be resumed from here';
+}
+
+/**
+ * TUI-DESIGN-4 §7.4 item 6: the one-row fix `explainFsError` names for this errno, or null when it has none.
+ * The pane has no path, so the generic `run-dir` wording is used — the row is the *fix*, not the location.
+ */
+function fsFixFor(code: string): string | null {
+  const x = explainFsError({ code }, { op: 'run-dir' });
+  return x === null ? null : (x.fix[0] ?? null);
+}
+
+// ---------------------------------------------------------------------------------------
+// The peer-lease pane (TUI-DESIGN-4 §7.10 item 3, P-D10)
+// ---------------------------------------------------------------------------------------
+
+/** TUI-DESIGN-4 §7.10 item 3 / §12: the keys when a live peer holds the exclusive lease. */
+export const PEER_LEASE_KEYS = '[w] wait for it   [r] read-only session   [q] quit';
+/** TUI-DESIGN-4 §7.10 edge 1 / §12: a stale entry from a killed instance must never block. */
+export const PEER_STALE_KEYS = '[c] continue';
+
+/**
+ * TUI-DESIGN-4 §7.10 item 3: the blocking pane shown when a peer holds an exclusive lease on this workspace and
+ * this instance would write.
+ *
+ * Structure only, through the same `blockingRowsStructured` shape, so `blockingLines`' fitting, the `--plain`
+ * twin and the screen-reader twin are the existing ones. It is **not** a `BlockingKind`: the registry is another
+ * design's (`docs/COORDINATION-DESIGN.md`) and contract 1.7 adds no blocking kind, so nothing in `core/types.ts`
+ * moves for it. Edge 1: with only stale entries the pane offers `[c] continue` and never waits. Edge 5: the pane
+ * is dismissible — a peer problem must never wedge the composer (§7.1's lesson).
+ */
+export function peerLeaseRows(view: PeerView): BlockingRows {
+  const live = Number.isFinite(view.live) ? Math.max(0, Math.floor(view.live)) : 0;
+  const stale = Number.isFinite(view.stale) ? Math.max(0, Math.floor(view.stale)) : 0;
+  const blocking = view.exclusive && live > 1;
+  const title = blocking
+    ? [`another jevcode holds this workspace (${live} here${stale > 0 ? `, ${stale} stale` : ''})`]
+    : [`the peer registry lists ${stale} stale entr${stale === 1 ? 'y' : 'ies'} for this workspace`];
+  return {
+    title,
+    middle: blocking ? ['a read-only session can browse the transcript and run /diff, but writes nothing.'] : ['a stale entry is left by a killed instance and never blocks.'],
+    keys: blocking ? PEER_LEASE_KEYS : PEER_STALE_KEYS,
+    inline: false,
+  };
+}
+
+/** TUI-DESIGN-4 §7.10 item 3: `peerLeaseRows` fitted to the overlay slot, exactly like `blockingLines`. */
+export function peerLeaseLines(view: PeerView, rows: number, columns: number): string[] {
+  const budget = Math.min(BLOCKING_MAX_ROWS, Number.isFinite(rows) ? Math.floor(rows) : 0);
+  const cols = Number.isFinite(columns) ? Math.max(1, Math.floor(columns)) : 80;
+  if (budget <= 0) return [];
+  const s = peerLeaseRows(view);
+  return fitRows([s.title.join(' · '), ...s.middle, s.keys], budget).map((r) => truncateCells(r, cols));
+}
+
+/**
+ * TUI-DESIGN-4 §7.10 item 2 / §12: the `[ui]` item at session open —
+ * `another jevcode is working in this workspace (started 4m ago) — /peers lists them`. Null when this is the only
+ * instance. `/peers` is a real command this round (§7.10 item 2), so the pointer is never dead.
+ */
+export function peerOpenNotice(view: PeerView | null): string | null {
+  if (view === null || !Number.isFinite(view.live) || view.live <= 1) return null;
+  const ago = view.oldestStartedMsAgo;
+  const when = ago === null || !Number.isFinite(ago) || ago < 0 ? '' : ` (started ${peerAgoText(ago)} ago)`;
+  return `another jevcode is working in this workspace${when} — /peers lists them`;
+}
+
+/** TUI-DESIGN-4 §12's `started 4m ago`: the compact form (`<n>s` · `<n>m` · `<n>h`), never a date. */
+export function peerAgoText(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h`;
+}
+
 /** TUI-DESIGN §24 blocking panes as structure: title, middle rows, keys, per kind. Pure. */
 export function blockingRowsStructured(req: BlockingRequest): BlockingRows {
   const exit = `(exit ${req.exitCode})`;
@@ -148,9 +232,15 @@ export function blockingRowsStructured(req: BlockingRequest): BlockingRows {
     }
     case 'checkpoint-degraded': {
       const { code, file } = parseCheckpointDegradedDetail(req.detail);
+      /**
+       * TUI-DESIGN-4 §7.4 item 6: the same explanation `explainFsError` gives the epilogue must be reachable from
+       * the blocking pane, so §7.2's degraded pane names the fix instead of an errno. The second middle row is
+       * the fix; it is dropped first by `fitRows` when the slot is short, and the reason row survives.
+       */
+      const fix = fsFixFor(code);
       return {
         title: [`checkpoint degraded: ${checkpointDegradedDetail(code, file)}`],
-        middle: [`${file} could not be written since step ${req.step} — the run cannot be resumed from here.`],
+        middle: [`${file} could not be written since step ${req.step} — ${consequenceFor(code)}.`, ...(fix === null ? [] : [fix])],
         keys: `[r] retry the write   [c] continue without checkpoints   [q] stop now ${exit}`,
         inline: false,
       };

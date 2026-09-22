@@ -23,6 +23,7 @@ import type { Engine, Renderer, RendererOptions, SignalName } from '../core/type
 import { patternRedact } from '../core/redact.js';
 import { exitCodeFor } from '../loop/stop.js';
 import { resolveLaunchSettings } from '../config/launch.js';
+import { SETTINGS, configDirsFor } from '../config/defaults.js';
 import { VERSION } from '../version.js';
 import { epilogueLines, type EpilogueContext } from './epilogue.js';
 import { wireFatalHandlers, type FatalWiring } from './fatal.js';
@@ -41,6 +42,14 @@ export interface LaunchFacts {
   env: NodeJS.ProcessEnv;
 }
 
+/**
+ * TUI-DESIGN-4 §2.8 (P-R10): **why** the §1 `interactive` rule said no. PROBED: `TERM=dumb jevcode chat` becomes
+ * `jevcode: missing task text` (exit 2) and the word `TERM` never appears anywhere in the output, so the user is told
+ * their command is malformed when in fact their terminal was refused. `'flag'` covers `--plain` / `--json` /
+ * `--no-input`; `null` means the renderer is interactive and nothing was refused.
+ */
+export type RendererRefusal = 'dumb' | 'ci' | 'stdin-not-tty' | 'stdout-not-tty' | 'flag';
+
 export interface RendererSelection {
   kind: RendererKind;
   /** TUI-DESIGN §1: `session` needs a composer (Ink or readline); everything else is one-shot */
@@ -49,6 +58,98 @@ export interface RendererSelection {
   readline: boolean;
   /** the §1 `interactive` rule (an Ink composer) */
   interactive: boolean;
+  /** TUI-DESIGN-4 §2.8 (P-R10): the first clause of the §1 rule that failed, in the rule's own order; `null` when interactive */
+  reason: RendererRefusal | null;
+}
+
+/**
+ * TUI-DESIGN-4 §1.3.1 / §8 item 6 — `wanted = launch.renderer ?? ui.renderer ?? 'classic'`, the file layer.
+ *
+ * `--fullscreen`, `--renderer` and `JEVCODE_RENDERER` reach `createTuiRenderer` through `LaunchSettings`, but
+ * `ui.renderer` in the config file does not: `resolveUiConfig` runs long after `render()`, and Ink fixes
+ * `alternateScreen` in its constructor. Without this, `/fullscreen` — which persists exactly that row and then
+ * says "fullscreen is set for the next launch" — promised something the relaunch did not deliver.
+ *
+ * §1's "the first frame comes from argv, env, isTTY and cwd only" forbids `resolveConfig` here (network-free but
+ * async, dotenv chains, Open Assist). This is **one guarded synchronous read of one key** from the same candidate
+ * files `resolveConfig` consults, in the same order, and it is skipped entirely when a flag or the environment
+ * already named the renderer. Any error — missing file, bad JSON, wrong type, unreadable directory — is
+ * `undefined`, i.e. classic: a broken config file must never stop the session from starting.
+ */
+export function rendererFromConfigFile(io: { env: NodeJS.ProcessEnv; home: string; cwd: string; configFlag?: string | null }): 'classic' | 'fullscreen' | undefined {
+  const spec = SETTINGS.find((sp) => sp.name === 'ui.renderer');
+  const key = spec?.fileKey;
+  if (key === undefined) return undefined;
+  const flag = io.configFlag?.trim();
+  const envPath = io.env['JEVCODE_CONFIG']?.trim();
+  const candidates = flag
+    ? [resolvePath(io.cwd, flag)]
+    : envPath
+      ? [resolvePath(io.cwd, envPath)]
+      : [resolvePath(io.cwd, 'jevcode.json'), ...configDirsFor(io.home, io.env).map((d) => resolvePath(d, 'config.json'))];
+  for (const path of candidates) {
+    let text: string;
+    try {
+      text = readFileSync(path, 'utf8');
+    } catch {
+      continue; // absent or unreadable: the next candidate, exactly as resolveConfig walks them
+    }
+    try {
+      const parsed: unknown = JSON.parse(text);
+      if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined;
+      const v = (parsed as Record<string, unknown>)[key];
+      return v === 'fullscreen' || v === 'classic' ? v : undefined;
+    } catch {
+      return undefined; // a config file that does not parse is `resolveConfig`'s error to report, not the renderer's
+    }
+  }
+  return undefined;
+}
+
+/**
+ * TUI-DESIGN-4 §2.8 (P-R10): the first clause of the §1 `interactive` rule that is false, evaluated in the rule's
+ * order (`stdin.isTTY && stdout.isTTY && !isInCi && TERM !== 'dumb' && !plain && !json && !noInput`), so the message
+ * names the thing the user can most plausibly change. Pure.
+ */
+export function rendererRefusal(flags: ParsedFlags, facts: LaunchFacts): RendererRefusal | null {
+  if (!facts.stdinIsTTY) return 'stdin-not-tty';
+  if (!facts.stdoutIsTTY) return 'stdout-not-tty';
+  if (isInCi(facts.env)) return 'ci';
+  if (facts.env['TERM'] === 'dumb') return 'dumb';
+  if (flags.plain === true || flags.json === true || flags.noInput === true) return 'flag';
+  return null;
+}
+
+/** TUI-DESIGN-4 §2.8 / §12: the sentence that names the refusal, with `TERM` spelled out when that is the cause. */
+export function rendererRefusalLine(reason: RendererRefusal, env: NodeJS.ProcessEnv = process.env): string {
+  const head = 'jevcode: chat needs an interactive terminal';
+  switch (reason) {
+    case 'dumb':
+      return `${head}; this one reports TERM=${env['TERM'] ?? 'dumb'}, so the plain renderer is used.`;
+    case 'ci':
+      return `${head}; CI is set, so the plain renderer is used.`;
+    case 'stdin-not-tty':
+      return `${head}; stdin is not a terminal, so the plain renderer is used.`;
+    case 'stdout-not-tty':
+      return `${head}; stdout is not a terminal, so the plain renderer is used.`;
+    case 'flag':
+      return `${head}; a flag asked for the plain renderer.`;
+  }
+}
+
+/**
+ * TUI-DESIGN-4 §2.8 / §12: the three ways out, printed under `rendererRefusalLine` by the usage error at
+ * `src/cli/session.ts:325–327` (S3's file, §9.2). The `TERM` row is only offered when `TERM` is the cause.
+ */
+export function rendererRefusalFixes(reason: RendererRefusal): string[] {
+  const rows = [`· run 'jevcode chat --plain' for the line renderer`, `· or 'jevcode run "<task>"' for a one-shot run`];
+  if (reason === 'dumb') rows.push('· or set a real TERM (e.g. TERM=xterm-256color)');
+  return rows;
+}
+
+/** TUI-DESIGN-4 §2.8 (P-R10): the whole refusal message — the sentence plus its ways out, one per row. */
+export function rendererRefusalRows(reason: RendererRefusal, env: NodeJS.ProcessEnv = process.env): string[] {
+  return [rendererRefusalLine(reason, env), ...rendererRefusalFixes(reason)];
 }
 
 /**
@@ -61,7 +162,8 @@ export function selectRenderer(flags: ParsedFlags, command: 'chat' | 'run', fact
   const kind: RendererKind = flags.json === true ? 'json' : interactive ? 'tui' : 'plain';
   const readline = kind === 'plain' && facts.stdinIsTTY && facts.stdoutIsTTY && flags.noInput !== true && !isInCi(facts.env) && facts.env['TERM'] !== 'dumb';
   const mode: RendererSelection['mode'] = command === 'chat' && (interactive || readline) ? 'session' : 'one-shot';
-  return { kind, mode, readline, interactive };
+  // TUI-DESIGN-4 §2.8 (P-R10): carry *why*, so `chat` on a refused terminal never reports `missing task text`
+  return { kind, mode, readline, interactive, reason: interactive ? null : rendererRefusal(flags, facts) };
 }
 
 /** TUI-DESIGN §17 item 3: `--version --json` — `{ name, version, node, ink, react, bundle }` (the two inlined runtime deps are named, §17 item 1). */
@@ -182,7 +284,11 @@ async function startSession(flags: ParsedFlags, command: 'chat' | 'run'): Promis
   const facts: LaunchFacts = { stdinIsTTY: Boolean(process.stdin.isTTY), stdoutIsTTY: Boolean(process.stdout.isTTY), env };
   if (command === 'chat' && flags.noInput) throw new UsageError(NO_INPUT_NEEDS_TASK);
   const sel = selectRenderer(flags, command, facts);
-  const launch = resolveLaunchSettings(flags, env);
+  const launchBase = resolveLaunchSettings(flags, env);
+  // §1.3.1: the config file's `ui.renderer` is the last layer of `wanted`, below the flag and the variable, and it
+  // is read only when neither of those named one — otherwise `/fullscreen`'s "set for the next launch" is a lie.
+  const fileRenderer = sel.kind === 'tui' && launchBase.renderer === undefined ? rendererFromConfigFile({ env, home: homedir(), cwd, configFlag: flags.config ?? null }) : undefined;
+  const launch = fileRenderer === undefined ? launchBase : { ...launchBase, renderer: fileRenderer };
   const fatal = ensureWiring();
 
   // TUI-DESIGN §14.2 / research 20 item 2: SIGINT and SIGTERM are handled before the first frame
@@ -250,6 +356,8 @@ async function startSession(flags: ParsedFlags, command: 'chat' | 'run'): Promis
     renderer,
     rendererKind: sel.kind,
     interactive: sel.interactive,
+    // TUI-DESIGN-4 §2.8 (P-R10): `chat` refused a composer explains itself instead of reporting `missing task text`
+    ...(command === 'chat' && sel.reason !== null ? { rendererRefusalRows: rendererRefusalRows(sel.reason, env) } : {}),
     launch,
     stdout: process.stdout,
     stderr: process.stderr,

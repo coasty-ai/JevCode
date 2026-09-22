@@ -219,8 +219,10 @@ describe('finding 2: the rule row between Enter and the reply (TUI-DESIGN-2 §5.
     expect(markShown(m)).toBe(false);
     expect(dynamicLines(m.lastFrame())).toHaveLength(6);
     m.bus.emit({ type: 'run:ready', runId: 'r1', step: 0, maxSteps: 40, task: 'Fix the failing test', resumed: false });
-    await waitFor(() => m.lastFrame().includes('─── ▸ jev · no decisions yet'));
-    expect(ruleRow(m)).toMatch(/^─── ▸ jev · no decisions yet ─+ \[d\] \[p\] \[t\] \[s\] ──$/);
+    // RE-PINNED BY SLOT S1 (TUI-DESIGN-4 §1.2 P-H1 / D-T a): at `run:ready` the strip appears WITH the permanent
+    // `◆ jevcode` prefix. The pre-`run:ready` assertions above (the plain rule, then the brand row) are unchanged.
+    await waitFor(() => m.lastFrame().includes('─── ◆ jevcode ─ ▸ jev · no decisions yet'));
+    expect(ruleRow(m)).toMatch(/^─── ◆ jevcode ─ ▸ jev · no decisions yet ─+ \[d\] \[p\] \[t\] \[s\] ──$/);
     expect(markShown(m)).toBe(false);
   });
 });

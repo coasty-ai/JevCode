@@ -187,7 +187,11 @@ describe('budget:unpriced (§9.5 A135–A137)', () => {
     expect(r.stopReason).toBe('error');
     expect(r.steps).toBe(1); // the step committed first
     expect(r.error).toMatchObject({ code: 'config', exitCode: 2, message: expect.stringContaining('--allow-unpriced') });
-    expect(h.store.transcript.at(-2)).toBe('[run] warn: stop: error at step 1 (unpriced_usage)');
+    // §3.7 G1: the `stop:` line is deleted; `[run] finished` names the reason and the error code
+    expect(h.store.transcript.some((l) => l.includes('stop: error'))).toBe(false);
+    // TUI-DESIGN-4 §3.7 G1 + §14.2 review item 5: the error clause is the LAST segment, after `exit <n>` — in
+    // front of the step count it broke `RUN_END_PATTERN`, the anchor `src/perf/pty.ts` and `render-lag.ts` grep for
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] error [·-] \d+ steps [·-] .* [·-] config: /);
     expect(h.of('run:end')[0]!.exitCode).toBe(2);
   });
 

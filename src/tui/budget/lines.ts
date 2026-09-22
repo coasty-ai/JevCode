@@ -5,6 +5,7 @@
  * epilogue (§9.4). Shared by the Ink, `--plain` and screen-reader twins so parity is a unit test; no I/O, no clock.
  */
 import type { EngineEvent, EngineMode } from '../../core/types.js';
+import type { BlockRow } from '../block/lines.js';
 
 export type BudgetPct = 50 | 80 | 95;
 /** TUI-DESIGN §9.2 (A131, C51): the three announced thresholds, ascending. */
@@ -35,9 +36,21 @@ export function usd2(x: number): string {
   return Number.isFinite(x) ? `$${x.toFixed(2)}` : '$?';
 }
 
-/** `1,204` — grouped integer for question counts. */
+/** `1,204` — grouped integer for question counts. Feeds the ENGINE items of §3.7's pin inventory (S5's D-V). */
 export function grouped(n: number): string {
   return Number.isFinite(n) ? Math.round(n).toLocaleString('en-US') : '?';
+}
+
+/**
+ * TUI-DESIGN-4 §3.1.4: the count form of the round-4 BLOCK grammar — `12 480`, a plain space (never a comma, and
+ * never a narrow no-break space, which has no `--ascii` twin). §3.1.4 names `grouped` as its source of truth, but
+ * `grouped` also formats the engine's `budget stop: tokens cap 133,333 …` item, whose text belongs to §3.7's
+ * mechanical pin inventory (S5's D-V commit series) — so the block grammar takes its own function and `grouped`
+ * keeps the engine items byte-identical until that series moves them.
+ */
+export function countText(n: number): string {
+  if (!Number.isFinite(n)) return '?';
+  return Math.round(n).toLocaleString('en-US').replaceAll(',', ' ');
 }
 
 /**
@@ -359,4 +372,68 @@ export function costBlock(i: CostBlockInput): string[] {
   for (const p of i.pending.slice(0, 4)) out.push(`pending: ${p.setting} ${p.value} (next /resume or run)`);
   out.push('raise: /budget spend-cap <usd> · /budget session-spend-cap <usd|none>');
   return out.slice(0, 12);
+}
+
+/**
+ * TUI-DESIGN-4 §3.3 / F-B2: `/cost` as `BlockRow[]` — one kv row per fact at the 10-cell key column, ` · ` between
+ * the segments of a row, `$0.000006 each` (never scientific notation, §3.1.4), `1 run` not `(1 runs)`, and the
+ * §3.1.7 empty state when no run has happened yet. `costBlock` above stays the flat line form for any caller that
+ * still wants one; this is what `session.ts` hands `renderBlock`.
+ */
+export function costRows(i: CostBlockInput, chat?: { messages: number; costUsd: number; p50Ms: number | null }): BlockRow[] {
+  const money = (x: number): string => (i.unpriced ? '$?' : usd3(x));
+  const rows: BlockRow[] = [];
+  const runs = i.session.runs;
+  if (i.run === null) {
+    // §3.1.7: `/cost` before a run is a sentence in the body, not a data row promoted to the head
+    rows.push({ kind: 'note', flush: true, text: `no runs yet — the session has spent ${usd2(i.session.spentUsd)} of ${usd2(i.session.capUsd)}` });
+  } else {
+    const pct = budgetPct(i.run.spentUsd, i.run.capUsd);
+    rows.push({ kind: 'kv', key: 'run', value: `${money(i.run.spentUsd)} of ${usd2(i.run.capUsd)}${pct === null ? '' : ` · ${pct} %`}` });
+  }
+  const spct = budgetPct(i.session.spentUsd, i.session.capUsd);
+  // §3.1.4 / F-B2: money ≥ $0.001 is THREE decimals and only a CAP is `usd2` — `usd2` on the amount spent printed
+  // `$0.00` for any session under half a cent, one row below a `run` row that printed the same quantity as `$0.001`
+  rows.push({ kind: 'kv', key: 'session', value: `${money(i.session.spentUsd)} of ${usd2(i.session.capUsd)} · ${spct === null ? 'uncapped' : `${spct} %`} · ${runs} run${runs === 1 ? '' : 's'}` });
+  if (i.run && i.run.perStepUsd.length > 0) {
+    const p50 = median(i.run.perStepUsd);
+    const last = i.run.perStepUsd[i.run.perStepUsd.length - 1]!;
+    const left = stepsLeftEstimate(i.run.spentUsd, i.run.capUsd, last);
+    rows.push({ kind: 'kv', key: 'per step', value: `p50 ${p50 === null ? '$?' : money(p50)} · last ${money(last)}${left === null ? '' : ` · about ${countText(left)} steps left`}` });
+  }
+  if (i.mode !== 'jev-only' && i.gen) {
+    rows.push({ kind: 'kv', key: 'generator', value: `${money(i.gen.usd)}${i.basis.generator === null ? '' : ` · ${i.basis.generator}`}` });
+  }
+  if (i.jev) {
+    const each = i.jev.questions > 0 ? i.jev.usd / i.jev.questions : null;
+    const segs = [usd3(i.jev.usd), `${countText(i.jev.questions)} question${i.jev.questions === 1 ? '' : 's'}`];
+    if (each !== null) segs.push(`${perUnitUsdText(each)} each`);
+    if (i.jev.p50Ms !== null) segs.push(`p50 ${Math.round(i.jev.p50Ms)} ms`);
+    rows.push({ kind: 'kv', key: 'jev', value: segs.join(' · ') });
+  }
+  if (chat && chat.messages > 0) {
+    const segs = [stepCostTextLocal(chat.costUsd), `${chat.messages} message${chat.messages === 1 ? '' : 's'}`];
+    if (chat.p50Ms !== null) segs.push(`p50 ${Math.round(chat.p50Ms)} ms`);
+    rows.push({ kind: 'kv', key: 'chat', value: segs.join(' · ') });
+  }
+  for (const p of i.pending.slice(0, 4)) rows.push({ kind: 'kv', key: 'pending', value: `${p.setting} ${p.value}`, role: 'accent' });
+  rows.push({ kind: 'kv', key: 'raise it', value: '/budget spend-cap <usd> · /budget session-spend-cap <usd|none>' });
+  return rows;
+}
+
+/**
+ * TUI-DESIGN-4 §3.1.4: per-unit money — `$0.000006`, six decimals with the trailing zeros dropped, NEVER
+ * scientific notation and (unlike `eachUsdText`, which keeps TD3's `~` prefix for the flat `/cost` line) no tilde:
+ * F-B2's row reads `$0.000006 each`.
+ */
+export function perUnitUsdText(each: number): string {
+  if (!Number.isFinite(each)) return '$?';
+  const fixed = each.toFixed(6).replace(/0+$/, '');
+  return `$${fixed.endsWith('.') ? `${fixed}0` : fixed}`;
+}
+
+/** the sub-millicent chat form (`$0.0001`): four decimals below a tenth of a cent, three above (§3.1.4). */
+function stepCostTextLocal(usd: number): string {
+  if (!Number.isFinite(usd)) return '$?';
+  return usd > 0 && usd < 0.001 ? `$${usd.toFixed(4)}` : `$${usd.toFixed(3)}`;
 }

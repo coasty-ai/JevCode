@@ -95,27 +95,34 @@ describe('<Console> (TUI-DESIGN-2 §4.3)', () => {
     expect(filter[0]).toBe('╭─ sessions · filter ─────────────────────────────────────────────────── proj ─╮');
     expect(filter[1]).toBe(`│ › filter: par${' '.repeat(76 - 13)} │`);
   });
-  it('finding 6: `bodyColumns` (the App’s debounced width) lays the draft out while the edges follow `columns` — inside the 50 ms debounce the rows the layout granted and the rows the box wraps agree', () => {
+  // MINIMAL, MARKED EDIT BY SLOT S2 (TUI-DESIGN-4 §2.2 P-R2). Round 2's finding 6 kept the box and the body in step by
+  // laying the draft out at the App's *debounced* `wrapColumns` and passing it as a second `bodyColumns` prop — which
+  // is exactly the D1 skew round 4 deletes: A2 measured 4 of 24 frames with a box row whose right border is the
+  // truncation ellipsis. `bodyColumns` is GONE from `ConsoleProps` (round-4 review finding 9), so the assertion is
+  // inverted and the prop is removed from these three renders: a second width can no longer reach a frame at all.
+  // The rest of the file is untouched; `console.test.ts` pins the type.
+  it('TUI-DESIGN-4 §2.2 (P-R2): there is ONE geometry per frame, so the edges and the draft can never disagree', () => {
     const text = 'x'.repeat(90);
     const b = reduceBuffer(createBuffer(), { type: 'insert', text });
-    // shrink 120 → 80: the edges already at 80, the body still wrapped at 120 (one row, as `composerWant` at 116 inner cells says)
-    expect(draftRows(text, [], 116, '› ')).toBe(1);
-    const shrink = strip(render(<Console buffer={b} columns={80} bodyColumns={120} height={draftRows(text, [], 116, '› ')} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev-only" dir="proj" status={idle} statusOptions={{}} />).lastFrame());
-    expect(shrink).toHaveLength(5); // top · one body row · divider · status · bottom
-    expect(shrink[0]).toBe('╭─ jev-only ──────────────────────────────────────────────────────────── proj ─╮');
-    expect(shrink[1]?.startsWith(`│ › ${'x'.repeat(60)}`)).toBe(true);
-    expect(shrink[2]).toBe(`├${'─'.repeat(78)}┤`);
-    cleanup();
-    // grow 80 → 120: the edges at 120, the body still wrapped at 80 (two rows, as `composerWant` at 76 inner cells says)
+    // a narrow terminal: the body wraps at 76, exactly like the edges (round 2 passed `bodyColumns={120}` here)
     expect(draftRows(text, [], 76, '› ')).toBe(2);
-    const grow = wideRows(<Console buffer={b} columns={120} bodyColumns={80} height={draftRows(text, [], 76, '› ')} top={1} scrollTop={0} cursor={noop} active mode="task" rows={40} badge="jev-only" dir="proj" status={idle} statusOptions={{}} />);
-    expect(grow).toHaveLength(6);
+    const shrink = strip(render(<Console buffer={b} columns={80} height={2} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev-only" dir="proj" status={idle} statusOptions={{}} />).lastFrame());
+    expect(shrink).toHaveLength(6); // top · two body rows · divider · status · bottom
+    expect(shrink[0]).toBe('╭─ jev-only ──────────────────────────────────────────────────────────── proj ─╮');
+    expect(shrink[1]).toBe(`│ › ${'x'.repeat(74)} │`);
+    expect(shrink[2]).toBe(`│   ${'x'.repeat(16)}${' '.repeat(76 - 2 - 16)} │`);
+    expect(shrink[3]).toBe(`├${'─'.repeat(78)}┤`);
+    cleanup();
+    // a wide terminal: one row at 116 inner cells, again exactly like the edges (round 2 passed `bodyColumns={80}`)
+    expect(draftRows(text, [], 116, '› ')).toBe(1);
+    const grow = wideRows(<Console buffer={b} columns={120} height={1} top={1} scrollTop={0} cursor={noop} active mode="task" rows={40} badge="jev-only" dir="proj" status={idle} statusOptions={{}} />);
+    expect(grow).toHaveLength(5);
     expect(grow[0]).toBe(`╭─ jev-only ${'─'.repeat(120 - 20)} proj ─╮`);
-    expect(grow[1]).toBe(`│ › ${'x'.repeat(74)} │`);
-    expect(grow[2]).toBe(`│   ${'x'.repeat(16)}${' '.repeat(76 - 2 - 16)} │`);
-    expect(grow[3]).toBe(`├${'─'.repeat(118)}┤`);
-    // settled (bodyColumns === columns, or omitted): identical to consoleLines()
-    const settled = strip(render(<Console buffer={b} columns={80} bodyColumns={80} height={2} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev-only" dir="proj" status={idle} statusOptions={{}} />).lastFrame());
+    expect(grow[1]).toBe(`│ › ${'x'.repeat(90)}${' '.repeat(116 - 2 - 90)} │`);
+    expect(grow[2]).toBe(`├${'─'.repeat(118)}┤`);
+    cleanup();
+    // the rows are `consoleLines()` at `columns` — byte for byte, with no second width anywhere in the call
+    const settled = strip(render(<Console buffer={b} columns={80} height={2} top={1} scrollTop={0} cursor={noop} active mode="task" rows={24} badge="jev-only" dir="proj" status={idle} statusOptions={{}} />).lastFrame());
     expect(settled).toEqual(consoleLines({ columns: 80, badge: 'jev-only', dir: 'proj', body: [`› ${'x'.repeat(74)}`, `  ${'x'.repeat(16)}`], status: statusLineText(idle, 76) }));
   });
   it('the --ascii twin is pure ASCII at every row', () => {

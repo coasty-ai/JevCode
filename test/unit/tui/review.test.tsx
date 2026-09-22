@@ -42,15 +42,23 @@ describe('reviewRows / reviewPreview (§6.1, §6.2)', () => {
     expect(stringWidth(noteFieldRow({ text: 'a'.repeat(200), gate: null }, 40))).toBeLessThanOrEqual(40);
   });
 
-  it('the preview is confirmPreviewLines indented, cut to the rows with the `…[k more preview lines · e expands]` tail only when rows are hidden', () => {
-    expect(previewWant(big)).toBe(30);
+  it('TUI-DESIGN-4 §6.3: the preview is `diffRows` from the Action (signs, numbers, a fence header), cut to the rows with the truthful `…[+N rows · e expands to M]` tail', () => {
+    // a 30-line `write` is `A +30 −0`: a fence row, the `old new` heading, 30 `+` rows and git's own
+    // `\\ No newline at end of file` meta row (§6.2 edge 8) — and `e` is told the truth
+    expect(previewWant(big)).toBe(33);
     const four = reviewPreview(big, 4, 80);
     expect(four).toHaveLength(4);
-    expect(four[0]).toBe('  content line 0');
-    expect(four[3]).toBe('…[27 more preview lines · e expands]');
+    expect(four[0]).toBe('  ╶──── big.txt');
+    expect(four[1]).toBe('  old new');
+    expect(four[3]).toBe('…[+30 rows · e expands to 33]');
+    // §6.3 item 3: no `/diff <n>` pointer on a PRE-APPLY card (the overlay swallows printable keys and the step has no checkpoint image yet)
+    for (const l of four) expect(l).not.toContain('/diff');
     const all = reviewPreview(big, 40, 80);
-    expect(all).toHaveLength(30);
-    expect(all.some((l) => l.includes('more preview'))).toBe(false);
+    expect(all).toHaveLength(33);
+    expect(all.some((l) => l.includes('e expands'))).toBe(false);
+    // §6.3 edge 3 (A6-9): a `write` preview never ends with a blank row
+    expect(all.at(-1)?.trim()).not.toBe('');
+    expect(all[2]).toBe('        1 │+content line 0');
     expect(reviewPreview(big, 0, 80)).toEqual([]);
     expect(previewWant(mkConfirmRequest('c2', 1, { kind: 'read', paths: ['a.py'] }))).toBe(0);
   });
@@ -63,7 +71,7 @@ describe('<Review>', () => {
     const lines = (ui.lastFrame() ?? '').replace(/\x1b\[[0-9;]*m/g, '').split('\n');
     expect(lines).toHaveLength(12);
     expect(lines[1]).toBe(`${NOTE_LABEL}ok`);
-    expect(lines[8]).toBe('  content line 0');
+    expect(lines[8]).toBe('  ╶──── big.txt');
     expect(positions.at(-1)).toEqual({ x: NOTE_LABEL.length + 2, y: 4 });
   });
 

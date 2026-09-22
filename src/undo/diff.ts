@@ -19,6 +19,8 @@ import { normaliseRelPath } from '../checkpoint/images.js';
 import type { ExecResult, Sandbox } from '../core/types.js';
 import { isSecretPath } from '../sandbox/paths.js';
 import { cellWidth, stringWidth, truncateCells } from '../tui/composer/width.js';
+// TUI-DESIGN-4 §14.2 review item 13: the pure line diff moved to an ink-free, fs-free module; this file re-exports it below
+import { unifiedDiff } from '../tui/diff/text.js';
 import { runGit, shellQuote, type GitRunOptions } from '../workspace/git.js';
 
 // ---------------------------------------------------------------------------------------
@@ -197,14 +199,37 @@ export function diffStatRows(input: DiffStatInput): { rows: DiffStatRow[]; summa
   return { rows, summary };
 }
 
-/** `diff (run <id> · N files · +a −b · c untracked · d binary · e skipped)` (TUI-DESIGN §12.6, §24). */
+/** TUI-DESIGN-4 §6.5 / §12: the run id shortened for a head — the distinguishing suffix, as `coordination/ids.ts:118` takes it. */
+export function shortRunId(runId: string): string {
+  return runId.length > 8 ? runId.slice(-8) : runId;
+}
+
+/**
+ * TUI-DESIGN-4 §6.5 item 2 / §12: `diff · run <id8> · N files · +a −b` — **short by construction** (≤ 52 cells) so it
+ * is never truncated (A6-4 destroyed `0 skipped)` at 80 columns and still wrapped). Zero-valued clauses are dropped;
+ * the non-zero `untracked` / `binary` / `skipped` counts move to their own rows at the bottom of the block
+ * (`diffStatNoteRows`). 0 files → `diff · run <id8> · no changes` (edge 1).
+ */
 export function diffStatHeader(runId: string, s: DiffStatSummary): string {
-  return `diff (run ${runId} · ${s.files} files · +${s.added} −${s.deleted} · ${s.untracked} untracked · ${s.binary} binary · ${s.skipped} skipped)`;
+  const head = `diff · run ${shortRunId(runId)}`;
+  if (s.files === 0) return `${head} · no changes`;
+  return `${head} · ${s.files} file${s.files === 1 ? '' : 's'} · +${s.added} −${s.deleted}`;
+}
+
+/** §6.5 item 2: the clauses the short head dropped, one row each, only when non-zero. */
+export function diffStatNoteRows(s: DiffStatSummary): string[] {
+  const rows: string[] = [];
+  if (s.untracked > 0) rows.push(`${s.untracked} untracked`);
+  if (s.binary > 0) rows.push(`${s.binary} binary`);
+  if (s.skipped > 0) rows.push(`${s.skipped} skipped`);
+  return rows;
 }
 
 /** TUI-DESIGN §12.6: a ≤ `cells` bar of `+` then `-`, scaled to `maxTotal`; each non-zero side keeps at least one cell when there is room. */
 export function diffBar(added: number, deleted: number, maxTotal: number, cells = DIFF_BAR_CELLS): string {
   if (cells <= 0 || maxTotal <= 0 || !Number.isFinite(maxTotal)) return '';
+  // TUI-DESIGN-4 §6.5 item 4 (A6-17): a bar that is full on every row carries no information — the caller passes
+  // `maxTotal <= 0` for that case, which the guard above already answers; the branch below stays the scaling one.
   const a = Math.max(0, added);
   const d = Math.max(0, deleted);
   if (a + d === 0) return '';
@@ -254,7 +279,9 @@ export const DIFF_BAR_MIN_COLUMNS = 52;
 export const DIFF_PADDED_COUNTS_MIN_COLUMNS = 40;
 
 /**
- * TUI-DESIGN §12.6 / §24: the inline `/diff` block. Header, rows ` M src/a.py            +120 −12  ++++++++--`
+ * TUI-DESIGN §12.6 / §24 (+ TUI-DESIGN-4 §6.5): the inline `/diff` block. `columns` is the **body** width — the
+ * caller passes `blockWidth(columns())`, not the terminal width, so round 3's 10-cell gutter no longer pushes every
+ * row 10 cells past the right edge (A6-15). Header, rows ` M src/a.py            +120 −12  ++++++++--`
  * (path left-truncated by grapheme to `columns − 32`, `†` after paths dirty before the run), the `†` legend when
  * any, skipped files, and `… N more files (/diff --all)` past 40 rows unless `all`. Below 52 columns the bar is
  * dropped, below 40 the counts are compact, and every row is finally cut to `columns` cells (§2.1). Colour is the
@@ -272,14 +299,19 @@ export function diffStatBlock(input: DiffStatInput, columns: number): string[] {
   // §12.6: the path column is `columns − 32` with the bar; without it the margin is what the letter, gaps and counts need
   const margin = withBar ? DIFF_PATH_MARGIN : 5 + countsWidth;
   const pathWidth = Math.max(8, cols - margin);
-  const maxTotal = rows.reduce((m, r) => Math.max(m, r.added + r.deleted), 0);
+  // §6.5 item 4 (A6-17): when every row's churn is equal the bar is a full 10 cells everywhere — pure noise, so drop it
+  const totals = rows.map((r) => r.added + r.deleted);
+  const maxTotal = totals.reduce((m, t) => Math.max(m, t), 0);
+  const equalChurn = totals.length > 1 && totals.every((t) => t === totals[0]);
   shown.forEach((r, i) => {
     const label = r.from !== null ? `${r.from} → ${r.path}` : r.path;
     const mark = r.dirtyBefore ? '†' : '';
     const path = truncateLeftCells(label, pathWidth - stringCells(mark)) + mark;
-    const bar = withBar && !r.binary && r.bytes === null ? diffBar(r.added, r.deleted, maxTotal) : '';
+    const bar = withBar && !equalChurn && !r.binary && r.bytes === null ? diffBar(r.added, r.deleted, maxTotal) : '';
     lines.push(` ${r.letter} ${padEndCells(path, pathWidth)}  ${padEndCells(counts[i] ?? '', countsWidth)}  ${bar}`.trimEnd());
   });
+  // §6.5 item 2: the counts the short head dropped, above the `†` footnote that explains a glyph in the rows
+  for (const note of diffStatNoteRows(summary)) lines.push(note);
   if (shown.some((r) => r.dirtyBefore)) lines.push(DIFF_LEGEND);
   for (const s of input.skipped ?? []) lines.push(`   skipped ${s.path}: ${s.reason}`);
   if (shown.length < rows.length) lines.push(`… ${rows.length - shown.length} more files (/diff --all)`);
@@ -287,207 +319,17 @@ export function diffStatBlock(input: DiffStatInput, columns: number): string[] {
 }
 
 // ---------------------------------------------------------------------------------------
-// Line diff (Myers, O((N+M)·D), bounded)
+// Line diff (Myers) — TUI-DESIGN-4 §14.2 review item 13: the pure half lives in `src/tui/diff/text.ts`
 // ---------------------------------------------------------------------------------------
 
-export type DiffOp = { op: 'eq' | 'del' | 'ins'; line: string };
-
-/** Beyond this edit distance the diff degrades to "everything removed, everything added" (memory bound ≈ D² ints). */
-export const DIFF_MAX_D = 1500;
-
 /**
- * TUI-DESIGN §12.6: split into lines for diffing; `noEol` records a missing trailing newline so the diff can
- * print `\ No newline at end of file` like git does.
+ * `lineDiff` / `unifiedDiff` / `lineDiffCounts` / `splitLines` are **pure** and now live in the ink-free, fs-free
+ * `src/tui/diff/text.ts`, because `src/tui/plain.ts` (the one item formatter, on the first-frame path) and
+ * `src/tui/diff/summary.ts` need them and must not pull `node:fs/promises`, `checkpoint/images.ts`,
+ * `sandbox/paths.ts` and `workspace/git.ts` in behind one function. Every name is re-exported here, so no existing
+ * importer of `src/undo/diff.ts` changes.
  */
-export function splitLines(text: string): { lines: string[]; noEol: boolean } {
-  if (text.length === 0) return { lines: [], noEol: false };
-  const lines = text.split('\n');
-  const noEol = !text.endsWith('\n');
-  if (!noEol) lines.pop();
-  return { lines, noEol };
-}
-
-function myers(a: readonly string[], b: readonly string[], maxD: number): DiffOp[] | null {
-  const n = a.length;
-  const m = b.length;
-  const max = n + m;
-  if (max === 0) return [];
-  const limit = Math.min(max, maxD);
-  const offset = limit + 1;
-  const trace: Int32Array[] = [];
-  let v = new Int32Array(2 * offset + 1);
-  v[offset + 1] = 0;
-  for (let d = 0; d <= limit; d++) {
-    const snapshot = new Int32Array(v);
-    trace.push(snapshot);
-    for (let k = -d; k <= d; k += 2) {
-      let x: number;
-      if (k === -d || (k !== d && (v[offset + k - 1] ?? 0) < (v[offset + k + 1] ?? 0))) x = v[offset + k + 1] ?? 0;
-      else x = (v[offset + k - 1] ?? 0) + 1;
-      let y = x - k;
-      while (x < n && y < m && a[x] === b[y]) {
-        x++;
-        y++;
-      }
-      v[offset + k] = x;
-      if (x >= n && y >= m) return backtrack(a, b, trace, offset, d);
-    }
-  }
-  return null;
-}
-
-function backtrack(a: readonly string[], b: readonly string[], trace: readonly Int32Array[], offset: number, dEnd: number): DiffOp[] {
-  const ops: DiffOp[] = [];
-  let x = a.length;
-  let y = b.length;
-  for (let d = dEnd; d > 0; d--) {
-    const v = trace[d]!;
-    const k = x - y;
-    let prevK: number;
-    if (k === -d || (k !== d && (v[offset + k - 1] ?? 0) < (v[offset + k + 1] ?? 0))) prevK = k + 1;
-    else prevK = k - 1;
-    const prevX = v[offset + prevK] ?? 0;
-    const prevY = prevX - prevK;
-    while (x > prevX && y > prevY) {
-      x--;
-      y--;
-      ops.push({ op: 'eq', line: a[x]! });
-    }
-    if (x === prevX) {
-      y--;
-      ops.push({ op: 'ins', line: b[y]! });
-    } else {
-      x--;
-      ops.push({ op: 'del', line: a[x]! });
-    }
-  }
-  while (x > 0 && y > 0) {
-    x--;
-    y--;
-    ops.push({ op: 'eq', line: a[x]! });
-  }
-  ops.reverse();
-  return ops;
-}
-
-/**
- * TUI-DESIGN §12.6: a dependency-free line diff (Myers) with common prefix/suffix trimming; past `maxD` edits
- * it returns the whole-file replacement so memory stays bounded. Applying the ops to `a` always yields `b`.
- */
-export function lineDiff(a: readonly string[], b: readonly string[], maxD = DIFF_MAX_D): DiffOp[] {
-  let start = 0;
-  while (start < a.length && start < b.length && a[start] === b[start]) start++;
-  let endA = a.length;
-  let endB = b.length;
-  while (endA > start && endB > start && a[endA - 1] === b[endB - 1]) {
-    endA--;
-    endB--;
-  }
-  const head: DiffOp[] = a.slice(0, start).map((line) => ({ op: 'eq', line }));
-  const tail: DiffOp[] = a.slice(endA).map((line) => ({ op: 'eq', line }));
-  const midA = a.slice(start, endA);
-  const midB = b.slice(start, endB);
-  const mid = myers(midA, midB, Math.max(0, maxD)) ?? [...midA.map((line): DiffOp => ({ op: 'del', line })), ...midB.map((line): DiffOp => ({ op: 'ins', line }))];
-  return [...head, ...mid, ...tail];
-}
-
-/** Added / deleted line counts for the non-git `/diff` fallback (TUI-DESIGN §12.6). */
-export function lineDiffCounts(a: string, b: string): { added: number; deleted: number } {
-  const ops = lineDiff(splitLines(a).lines, splitLines(b).lines);
-  let added = 0;
-  let deleted = 0;
-  for (const o of ops) {
-    if (o.op === 'ins') added++;
-    else if (o.op === 'del') deleted++;
-  }
-  return { added, deleted };
-}
-
-export interface UnifiedDiffOptions {
-  aPath: string;
-  bPath: string;
-  /** context lines per hunk side (default 3) */
-  context?: number;
-  maxD?: number;
-}
-
-const NO_EOL = '\\ No newline at end of file';
-/** Appended to a last line that has no trailing newline so the line diff sees it as a different line (git's rule). */
-const NOEOL_MARK = '\u0000\u0000noeol';
-
-function taggedLines(text: string): string[] {
-  const { lines, noEol } = splitLines(text);
-  if (noEol && lines.length > 0) lines[lines.length - 1] = `${lines[lines.length - 1]!}${NOEOL_MARK}`;
-  return lines;
-}
-
-function hunkRange(start: number, len: number): string {
-  // unified format: `start,len`; `len` omitted when 1; an empty side reports the line before it
-  if (len === 0) return `${start},0`;
-  return len === 1 ? `${start + 1}` : `${start + 1},${len}`;
-}
-
-function pushLine(out: string[], sign: string, line: string): void {
-  if (line.endsWith(NOEOL_MARK)) {
-    out.push(`${sign}${line.slice(0, -NOEOL_MARK.length)}`);
-    out.push(NO_EOL);
-  } else {
-    out.push(`${sign}${line}`);
-  }
-}
-
-/**
- * TUI-DESIGN §12.6: unified diff lines (`--- a/x`, `+++ b/x`, `@@ -s,n +s,n @@`, ` `/`-`/`+` rows, git's
- * `\\ No newline at end of file`) between two texts. Empty when the texts are identical.
- */
-export function unifiedDiff(a: string, b: string, opts: UnifiedDiffOptions): string[] {
-  const context = Math.max(0, Math.floor(opts.context ?? 3));
-  const ops = lineDiff(taggedLines(a), taggedLines(b), opts.maxD);
-  const changeIdx: number[] = [];
-  ops.forEach((o, i) => {
-    if (o.op !== 'eq') changeIdx.push(i);
-  });
-  if (changeIdx.length === 0) return [];
-  const out: string[] = [`--- ${opts.aPath}`, `+++ ${opts.bPath}`];
-  // hunks: change runs separated by more than 2 × context equal lines
-  const groups: [number, number][] = [];
-  let gs = changeIdx[0]!;
-  let ge = gs;
-  for (const i of changeIdx.slice(1)) {
-    // (i - ge - 1) equal lines sit between two changes; more than 2 × context of them starts a new hunk
-    if (i - ge - 1 > 2 * context) {
-      groups.push([gs, ge]);
-      gs = i;
-    }
-    ge = i;
-  }
-  groups.push([gs, ge]);
-  // a/b line index at every op position
-  const aAt = new Int32Array(ops.length + 1);
-  const bAt = new Int32Array(ops.length + 1);
-  let ai = 0;
-  let bi = 0;
-  ops.forEach((o, i) => {
-    aAt[i] = ai;
-    bAt[i] = bi;
-    if (o.op !== 'ins') ai++;
-    if (o.op !== 'del') bi++;
-  });
-  aAt[ops.length] = ai;
-  bAt[ops.length] = bi;
-  for (const [s, e] of groups) {
-    const from = Math.max(0, s - context);
-    const to = Math.min(ops.length - 1, e + context);
-    const aStart = aAt[from]!;
-    const bStart = bAt[from]!;
-    out.push(`@@ -${hunkRange(aStart, aAt[to + 1]! - aStart)} +${hunkRange(bStart, bAt[to + 1]! - bStart)} @@`);
-    for (let i = from; i <= to; i++) {
-      const o = ops[i]!;
-      pushLine(out, o.op === 'eq' ? ' ' : o.op === 'del' ? '-' : '+', o.line);
-    }
-  }
-  return out;
-}
+export { DIFF_MAX_D, lineDiff, lineDiffCounts, splitLines, unifiedDiff, type DiffOp, type UnifiedDiffOptions } from '../tui/diff/text.js';
 
 // ---------------------------------------------------------------------------------------
 // /diff <step> from images

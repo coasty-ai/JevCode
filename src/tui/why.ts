@@ -13,7 +13,7 @@ import { PAIRED_NOUL_FLOOR } from '../loop/stages/choose.js';
 import { RISK_TAIL_FROM_LEVEL } from '../jev/confidence.js';
 import { clip } from '../core/text.js';
 import { eighthBar } from './bars.js';
-import { GLYPHS, oneLineCells, padEndCells, padStartCells, type GlyphSet } from './glyphs.js';
+import { cellWidth, GLYPHS, oneLineCells, padEndCells, padStartCells, type GlyphSet } from './glyphs.js';
 import { p2 } from './plain.js';
 import { RISK_BLOCK_THRESHOLD, RISK_REVIEW_THRESHOLD, consumerRule, criteriaText, riskDimensionMode, type DecisionThresholds } from './pane/model.js';
 import { reviewRowForDigit } from './review/lines.js';
@@ -33,7 +33,10 @@ export const WHY_KEPT_STEPS = 3;
  */
 export function whyErrorText(ref: string, reason: 'missing' | 'grammar'): string {
   const r = ref.trim();
-  return reason === 'missing' ? `error: /why: no decision ${r} in the last ${WHY_KEPT_STEPS} steps` : `error: /why: ${r} is not a decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)`;
+  // TUI-DESIGN-4 §3.1.7 / §12: `error: /<command> <arg> — <what went wrong> — <what to do instead>`
+  return reason === 'missing'
+    ? `error: /why ${r} — no decision ${r} in the last ${WHY_KEPT_STEPS} steps — /decisions lists the recent ones`
+    : `error: /why ${r} — not a decision ref — use s<N>.<stage>.<id>, a digit 1–5, or intake`;
 }
 /** Instructions and criteria texts are clipped to one line of this many characters. */
 const WHY_TEXT_CHARS = 160;
@@ -236,7 +239,75 @@ function choiceBody(d: Decision, ctx: WhyContext, g: GlyphSet): string[] {
 }
 
 /** TUI-DESIGN §7.6 `/why`: the head line followed by the two-space-indented body, ≤ WHY_MAX_LINES lines in total. */
-export function whyBlock(d: Decision, ctx: WhyContext = {}, g: GlyphSet = GLYPHS.unicode): string[] {
+/**
+ * TUI-DESIGN-4 §3.3: an L3 / L4 prose row wraps with a hanging indent UNDER the probability column, never to
+ * column 0 (where a continuation reads as a new criterion). `width` 0 / absent means "do not wrap".
+ */
+/**
+ * §3.3: the cell column a continuation hangs at. The rows §3.3 names are `L<k> <bar>  <p>  <prose>` (a score
+ * body) and `<option> <bar>  <p>  <paired>` (a choice body), so the anchor is the column AFTER the probability —
+ * the LAST numeric column, not the first token. Probing the first token matched nothing on an `L3 …` row (it
+ * starts with an uppercase `L`) and hung the continuation at column 4, directly under the level marker, where
+ * §3.3 says it reads as a new criterion.
+ */
+const HANG_AFTER_P_RE = /^(\s*\S+ \S*\s{2}[01]\.\d{2}\s{2})/;
+const HANG_FIRST_TOKEN_RE = /^(\s*)((?:[01]\.\d{2}|[a-z][\w.-]*)\s+)/;
+
+function hangWrap(line: string, width: number): string[] {
+  if (width <= 0 || cellWidth(line) <= width) return [line];
+  const indent = /^\s*/.exec(line)?.[0] ?? '';
+  const afterP = HANG_AFTER_P_RE.exec(line);
+  // the probability column: `  L3 ██········  0.20  <prose>` hangs under `<prose>`; anything else hangs two cells in
+  const probe = afterP === null ? HANG_FIRST_TOKEN_RE.exec(line) : null;
+  const wanted =
+    afterP !== null
+      ? ' '.repeat(cellWidth(afterP[1] as string))
+      : probe === null
+        ? `${indent}  `
+        : ' '.repeat(cellWidth(probe[1] as string) + cellWidth(probe[2] as string));
+  // §2.6's rule: a hang that leaves less than half the row is worse than no hang — at width 30 a 23-cell hang
+  // under the probability column left 7 cells, so the row could not be wrapped at all and overflowed
+  const hang = cellWidth(wanted) * 2 > width ? `${indent}  ` : wanted;
+  const out: string[] = [];
+  let rest = line;
+  let prefix = '';
+  while (cellWidth(prefix + rest) > width) {
+    const room = width - cellWidth(prefix);
+    if (room <= 1) break;
+    let cut = -1;
+    let used = 0;
+    for (let i = 0; i < rest.length; i++) {
+      used += cellWidth(rest[i] as string);
+      if (used > room) break;
+      if (rest[i] === ' ') cut = i;
+    }
+    if (cut <= 0) {
+      // one token wider than the room: cut it there (lossless) rather than emitting a row wider than the width
+      let piece = '';
+      let w = 0;
+      for (const ch of rest) {
+        const cw = cellWidth(ch);
+        if (w + cw > room) break;
+        piece += ch;
+        w += cw;
+      }
+      if (piece === '' || piece.length >= rest.length) break;
+      out.push((prefix + piece).replace(/\s+$/, ''));
+      rest = rest.slice(piece.length);
+      prefix = hang;
+      continue;
+    }
+    // §3.3 edge 6: a produced row never ends in a space — the cut lands on the LAST space that fit, and an
+    // alignment gap (`0.10  text`) leaves the first of the pair behind unless it is trimmed here
+    out.push((prefix + rest.slice(0, cut)).replace(/\s+$/, ''));
+    rest = rest.slice(cut + 1).replace(/^\s+/, '');
+    prefix = hang;
+  }
+  out.push((prefix + rest).replace(/\s+$/, ''));
+  return out;
+}
+
+export function whyBlock(d: Decision, ctx: WhyContext = {}, g: GlyphSet = GLYPHS.unicode, width = 0): string[] {
   let body: string[];
   switch (d.answer.type) {
     case 'score':
@@ -249,7 +320,7 @@ export function whyBlock(d: Decision, ctx: WhyContext = {}, g: GlyphSet = GLYPHS
       body = choiceBody(d, ctx, g);
       break;
   }
-  const lines = [whyHead(d, ctx), ...body.map((l) => `  ${oneLineCells(l)}`)];
+  const lines = [whyHead(d, ctx), ...body.flatMap((l) => hangWrap(`  ${oneLineCells(l)}`, width))];
   if (lines.length <= WHY_MAX_LINES) return lines;
   return [...lines.slice(0, WHY_MAX_LINES - 1), `  ${g.ellipsis}[${lines.length - WHY_MAX_LINES + 1} lines omitted]`];
 }

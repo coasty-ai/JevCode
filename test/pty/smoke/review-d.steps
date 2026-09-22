@@ -14,8 +14,8 @@ expect note \(
 send skip the tests
 sleep 0.2
 send \r
-expect declined \(note: skip the tests\)
-expect end (complete|max_steps|generator_done)
+expect review declined (?:\x1b\[[0-9;]*m)*[·-] "skip the tests"
+expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question
 send /exit
 sleep 0.2

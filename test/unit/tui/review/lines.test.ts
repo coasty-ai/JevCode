@@ -1,6 +1,24 @@
 import { describe, expect, it } from 'vitest';
 import { RISK_DIMENSIONS, type ConfirmRequest } from '../../../../src/core/types.js';
 import { GLYPHS, cellWidth } from '../../../../src/tui/glyphs.js';
+import { fillRung } from '../../../../src/tui/fit.js';
+import { buildBindings } from '../../../../src/tui/keys/bindings.js';
+import {
+  REVIEW_KEYS_DEFAULT_FILL,
+  REVIEW_KEYS_RUNGS,
+  SR_DIFF_ROWS,
+  closeTitleQuote,
+  reviewCardLines,
+  reviewCardTitle,
+  reviewDiffLines,
+  reviewDiffScreenReaderLines,
+  reviewDiffTail,
+  reviewKeyFill,
+  reviewKeys,
+  reviewPreviewWant,
+  spokenCode,
+  spokenPath,
+} from '../../../../src/tui/review/lines.js';
 import {
   FOLLOWUP_NOTE,
   FOLLOWUP_TITLE,
@@ -42,7 +60,7 @@ describe('reviewHeaderLines(req, n, columns) — the ladder (TUI-DESIGN §6.1, �
   it('n=8 is the full header: title, keys, ruler, four gauges in RISK_DIMENSIONS order with fixed digits, matches_intent', () => {
     const lines = reviewHeaderLines(req, 8, 80);
     expect(lines.length).toBe(8);
-    expect(lines[0]).toBe('review  step 7  risk 0.44 (tail)  edit src/a.py "make parse_date timezone-aware"');
+    expect(lines[0]).toBe('review  step 7  risk 0.44 (tail)  edit src/a.py +1 −1 "make parse_date timezon…"');
     expect(lines[1]).toBe(REVIEW_KEYS_80);
     expect(lines[2]).toBe("dimension        lvl 0  ┆   ┆ 1  risk bnd  conf  Jev's dominant level (why)");
     RISK_DIMENSIONS.forEach((d, i) => expect(lines[3 + i]!.startsWith(`${i + 1} ${d}`)).toBe(true));
@@ -87,7 +105,7 @@ describe('reviewHeaderLines(req, n, columns) — the ladder (TUI-DESIGN §6.1, �
     const full = reviewHeaderLines(swapped, 8, 80);
     expect(full[3]!.startsWith('1 destructive')).toBe(true);
     expect(full[5]!.startsWith('3 plan_mismatch')).toBe(true);
-    expect(full[0]).toBe('review  step 7  risk 0.80 (tail)  edit src/a.py "make parse_date timezone-aware"');
+    expect(full[0]).toBe('review  step 7  risk 0.80 (tail)  edit src/a.py +1 −1 "make parse_date timezon…"');
     expect(dominantDimension(swapped)).toBe('destructive');
   });
   it('n ≤ 2: title, keys; n = 1: title; n ≤ 0 / NaN / columns 0 → []', () => {
@@ -106,11 +124,11 @@ describe('reviewHeaderLines(req, n, columns) — the ladder (TUI-DESIGN §6.1, �
 describe('title, keys, ruler at 120 columns (§6.1, §24 "Review box")', () => {
   it('the 120 title adds `(tail on plan_mismatch)`, the full goal and a right-aligned `jev 244ms`', () => {
     const t = reviewTitle(req, 120);
-    expect(t).toBe('review  step 7  risk 0.44 (tail on plan_mismatch)  edit src/a.py  "make parse_date timezone-aware"             jev 244ms');
+    expect(t).toBe('review  step 7  risk 0.44 (tail on plan_mismatch)  edit src/a.py +1 −1  "make parse_date timezone-aware"       jev 244ms');
     expect(cellWidth(t)).toBe(120);
     const noJev = workedRequest();
     delete noJev.jevLatencyMs;
-    expect(reviewTitle(noJev, 120)).toBe('review  step 7  risk 0.44 (tail on plan_mismatch)  edit src/a.py  "make parse_date timezone-aware"');
+    expect(reviewTitle(noJev, 120)).toBe('review  step 7  risk 0.44 (tail on plan_mismatch)  edit src/a.py +1 −1  "make parse_date timezone-aware"');
   });
   it('keys and ruler are the §24 strings', () => {
     expect(reviewHeaderLines(req, 8, 120)[1]).toBe(REVIEW_KEYS_120);
@@ -195,14 +213,18 @@ describe('twins (§6.5, §14.1)', () => {
   });
   it('the screen-reader twin has no ruler and no bars, aria labels per dimension and the §24 selection rows', () => {
     const sr = reviewScreenReaderLines(req);
-    expect(sr.length).toBe(8);
+    // TUI-DESIGN-4 §6.10: the spoken change (a `change:` sentence, a `file 1 of 1` sentence and the changed lines)
+    // sits between the aria rows and the two selection rows — an SR user used to be read NOTHING of the change
+    expect(sr.length).toBe(12);
     expect(sr[0]).toBe(reviewTitle(req, 80));
     expect(sr.some((l) => l.startsWith('dimension'))).toBe(false);
     for (const l of sr) expect(l).not.toMatch(/[█▏▎▍▌▋▊▉·┆]/);
     expect(sr[3]).toBe('3 plan_mismatch level 2, risk 0.44 tail, confidence 0.61, skips a planned verification step');
     expect(sr[5]!.startsWith('5 matches_intent probability 0.88 of 1, derived confidence 0.76, ')).toBe(true);
-    expect(sr[6]).toBe(SR_REVIEW_CHOICES);
-    expect(sr[7]).toBe(SR_REVIEW_PROMPT);
+    expect(sr[6]).toBe('change: 1 file, 1 line added, 1 removed');
+    expect(sr[7]).toBe('file 1 of 1, src slash a dot py, modified, 1 added, 1 removed');
+    expect(sr.at(-2)).toBe(SR_REVIEW_CHOICES);
+    expect(sr.at(-1)).toBe(SR_REVIEW_PROMPT);
     expect(reviewAriaLabel(req, 'plan_mismatch')).toBe('plan_mismatch level 2, risk 0.44 tail, confidence 0.61, skips a planned verification step');
   });
   it('reviewHeaderLines with the screen-reader set never draws the ruler nor a bar or band glyph (§6.5 "no ruler row")', () => {
@@ -292,5 +314,223 @@ describe('performance', () => {
     const perCall = (performance.now() - t0) / 1000;
     console.log(`[measured] reviewHeaderLines 8 rows × 120 columns: ${perCall.toFixed(3)} ms per call (bound 1 ms)`);
     expect(perCall).toBeLessThan(1);
+  });
+});
+
+// ---------------------------------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §2.6 (P-R7, S2's §9.2 request landed by S5) and §6.3 (D-Z): the keys ladder and the diff card.
+// ---------------------------------------------------------------------------------------------------------------
+
+describe('§2.6 P-R7: the review keys row is a five-rung ladder, not a truncation', () => {
+  it('the five default renderings measure exactly 113 / 76 / 55 / 42 / 15 cells (§12)', () => {
+    const rendered = REVIEW_KEYS_RUNGS.map((r) => fillRung(r, REVIEW_KEYS_DEFAULT_FILL));
+    expect(rendered.map((r) => cellWidth(r))).toEqual([113, 76, 55, 42, 15]);
+    expect(rendered[0]).toBe('[y] approve  [n] decline  [d] decline+note  [e] expand preview  [w]1-5 why  [esc] decline      [ctrl-c] abort run');
+    expect(rendered[1]).toBe('[y] approve [n] decline [d] decline+note [e] expand [w]1-5 why [esc] decline');
+    expect(rendered[2]).toBe('[y] ok [n] no [d] note [e] expand [w] why [esc] decline');
+    expect(rendered[3]).toBe('y ok · n no · d note · e exp · w why · esc');
+    expect(rendered[4]).toBe('y/n/d/e/w · esc');
+    // the two round-1 constants are still exactly rungs 1 and 2, so every existing pin holds
+    expect(REVIEW_KEYS_120).toBe(rendered[0]);
+    expect(REVIEW_KEYS_80).toBe(rendered[1]);
+  });
+
+  it('for widths 20…160 the chosen rung fits and still names every one of the six actions', () => {
+    for (let columns = 20; columns <= 160; columns++) {
+      const row = reviewKeys(columns);
+      expect(cellWidth(row), `${columns}: ${row}`).toBeLessThanOrEqual(columns);
+      // matched by the EFFECTIVE binding, not the literal letter
+      for (const letter of ['y', 'n', 'd', 'e', 'w']) expect(row, `${columns}: ${row}`).toContain(letter);
+      expect(row, `${columns}: ${row}`).toContain('esc');
+    }
+    // the ladder really is a ladder: it is monotone in the width
+    const widths = [20, 40, 60, 80, 120, 160].map((c) => cellWidth(reviewKeys(c)));
+    for (let i = 1; i < widths.length; i++) expect(widths[i]!).toBeGreaterThanOrEqual(widths[i - 1]!);
+    // §2.6 edge 6: the 113-cell rung newly fits at 113, not at 112
+    expect(reviewKeys(112)).toBe(REVIEW_KEYS_80);
+    expect(reviewKeys(113)).toBe(REVIEW_KEYS_120);
+    // below the narrowest rung, `truncateCells` is the last resort and the row is never empty
+    expect(cellWidth(reviewKeys(10))).toBeLessThanOrEqual(10);
+    expect(reviewKeys(10).length).toBeGreaterThan(0);
+  });
+
+  it('edge 4: approve rebound to ctrl+y prints the right letter, and the rung is re-measured after filling', () => {
+    const bindings = buildBindings(new Map([['review:declineNote', ['ctrl+y']]]));
+    const fill = reviewKeyFill(bindings);
+    expect(fill['note']).toBe('ctrl-y');
+    // the rung is measured AFTER filling: `[ctrl-y]` is five cells wider than `[d]`, so rung 2 (81 cells now) no
+    // longer fits 80 and the ladder steps down to rung 3 — which is the whole point of §2.6 edge 4
+    expect(fillRung(REVIEW_KEYS_RUNGS[1] ?? '', fill)).toHaveLength(81);
+    const row = reviewKeys(80, GLYPHS.unicode, { bindings });
+    expect(row).toBe('[y] ok [n] no [ctrl-y] note [e] expand [w] why [esc] decline');
+    expect(cellWidth(row)).toBeLessThanOrEqual(80);
+    expect(reviewKeys(90, GLYPHS.unicode, { bindings })).toContain('[ctrl-y] decline+note');
+    // TD §6.2 invariant: `y` is reserved for approve and can never be taken
+    expect(reviewKeyFill(buildBindings(new Map([['review:expand', ['y']]])))['approve']).toBe('y');
+  });
+
+  it('edge 5: `[ctrl-c] abort run` is DROPPED (not truncated) when no run is live, and the rung is re-measured shorter', () => {
+    const noRun = fillRung(REVIEW_KEYS_RUNGS[0] ?? '', { ...REVIEW_KEYS_DEFAULT_FILL, abort: null });
+    expect(noRun).toBe('[y] approve  [n] decline  [d] decline+note  [e] expand preview  [w]1-5 why  [esc] decline');
+    expect(cellWidth(noRun)).toBe(89);
+    expect(noRun.endsWith(' ')).toBe(false);
+    // at 89–112 the wide rung now fits where the 76-cell one used to be chosen
+    expect(reviewKeys(90, GLYPHS.unicode, { live: false })).toBe(noRun);
+  });
+
+  it('edge 2: `--ascii` is the same letters with `·` → `-`, measured in the set it is drawn in', () => {
+    expect(reviewKeys(42, GLYPHS.ascii)).toBe('y ok - n no - d note - e exp - w why - esc');
+    expect(reviewKeys(15, GLYPHS.ascii)).toBe('y/n/d/e/w - esc');
+    for (let columns = 20; columns <= 160; columns++) expect(cellWidth(reviewKeys(columns, GLYPHS.ascii))).toBeLessThanOrEqual(columns);
+  });
+});
+
+describe('§6.3: the review card body is a diff, and its tail tells the truth about `e`', () => {
+  const patchReq = (): ConfirmRequest => ({
+    ...req,
+    proposal: {
+      ...req.proposal,
+      action: {
+        kind: 'patch',
+        diff: ['diff --git a/calc/ops.py b/calc/ops.py', '--- a/calc/ops.py', '+++ b/calc/ops.py', '@@ -12,2 +12,2 @@', '-    return a - b', '+    return a + b', 'diff --git a/README.md b/README.md', '--- /dev/null', '+++ b/README.md', '@@ -0,0 +1,2 @@', '+one', '+two', ''].join('\n'),
+      },
+    },
+  });
+
+  it('item 1: ≥ 2 files gets a summary block first, then the hunks of the FIRST file only', () => {
+    const rows = reviewDiffLines(patchReq(), 20, 76);
+    expect(rows[0]).toBe('  M calc/ops.py  +1 −1');
+    expect(rows[1]).toBe('  A README.md  +2 −0');
+    expect(rows[2]).toBe('  ╶──── calc/ops.py');
+    expect(rows.some((l) => l.includes('+one'))).toBe(false);
+  });
+
+  it('item 3: the tail is `…[+N rows · e expands to M]` and carries NO `/diff` token on a pre-apply card', () => {
+    const r = patchReq();
+    const want = reviewPreviewWant(r, 76);
+    const cut = reviewDiffLines(r, 3, 76);
+    expect(cut).toHaveLength(3);
+    expect(cut[2]).toBe(`…[+${want - 2} rows · e expands to ${want}]`);
+    for (const l of [...cut, ...reviewDiffLines(r, 50, 76)]) expect(l).not.toContain('/diff');
+    expect(reviewDiffTail(9, 18)).toBe('…[+9 rows · e expands to 18]');
+  });
+
+  it('every card row is exactly `columns` cells for n ∈ 3…20, in all three glyph sets', () => {
+    for (const g of [GLYPHS.unicode, GLYPHS.ascii, GLYPHS.sr]) {
+      for (let n = 3; n <= 20; n++) {
+        for (const columns of [40, 60, 80, 120]) {
+          const card = reviewCardLines(patchReq(), n, 6, columns, g);
+          expect(card.length).toBeLessThanOrEqual(n + 6);
+          for (const l of card) expect(cellWidth(l), `${g.mode} ${n}×${columns}: ${l}`).toBe(columns);
+        }
+      }
+    }
+  });
+
+  it('A6-22: a title cut mid-goal closes its quote, and `read` / `run` keep today\'s target', () => {
+    const long = { ...req, proposal: { ...req.proposal, goal: 'g'.repeat(200) } };
+    const card = reviewCardLines(long, 3, 0, 100);
+    expect(card[0]).toMatch(/"g+…" ─╮$/);
+    expect(closeTitleQuote('review · a "bcdefghij"', 18, GLYPHS.unicode)).toBe('review · a "bcde…"');
+    expect(closeTitleQuote('review · a "bcd"', 40, GLYPHS.unicode)).toBe('review · a "bcd"'); // nothing cut, nothing added
+    const run: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'run', command: 'pytest -q' } } };
+    expect(reviewCardTitle(run, 80)).toContain('run $ pytest -q');
+    expect(reviewDiffLines(run, 6, 76).every((l) => !l.includes('│'))).toBe(true);
+  });
+
+  it('§6.10: the SR twin speaks the change — signs as words, paths with slash / dot, bounded by SR_DIFF_ROWS', () => {
+    const sr = reviewDiffScreenReaderLines(patchReq());
+    expect(sr[0]).toBe('change: 2 files, 3 lines added, 1 removed');
+    expect(sr[1]).toBe('file 1 of 2, calc slash ops dot py, modified, 1 added, 1 removed');
+    expect(sr).toContain('line 12 removed: return a minus b');
+    expect(sr).toContain('line 12 added: return a plus b');
+    expect(spokenPath('calc/ops.py')).toBe('calc slash ops dot py');
+    expect(spokenCode('return a - b')).toBe('return a minus b');
+    // a pinned assertion of §6.10: with GLYPHS.sr no bar and no box glyph appears
+    for (const l of reviewScreenReaderLines(patchReq())) expect(l).not.toMatch(/[█▏▎▍▌▋▊▉┆│╭╰─]/);
+    // bounded, with the tail sentence
+    const many: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'write', path: 'big.py', content: Array.from({ length: 40 }, (_, i) => `line ${i}`).join('\n') } } };
+    const long = reviewDiffScreenReaderLines(many);
+    expect(long.filter((l) => /^line \d+ (added|removed)/.test(l))).toHaveLength(SR_DIFF_ROWS);
+    expect(long.at(-1)).toMatch(/^… \d+ more changed lines; press 3 then diff for the full text$/);
+  });
+
+  // ---------------------------------------------------------------------------------------------------------
+  // §14.2 review items 8, 9, 10, 12 and the four §6.3 cases the first draft's "ten cases" were missing.
+  // ---------------------------------------------------------------------------------------------------------
+
+  it('item 12 / §6.3: a two-file patch card title still carries its quoted goal at 80 columns', () => {
+    const r = patchReq();
+    const title = reviewCardLines(r, 13, 8, 80)[0]!;
+    // F-E1: the named two-file form overflows the title's 30-cell target budget, so it folds — it used to eat the
+    // whole goal and leave the row ending in `… …`, with no quote left for `closeTitleQuote` to repair
+    expect(title).toContain('patch 2 files +3 −1');
+    expect(title).toMatch(/"[^"]*"/);
+    expect(title).not.toContain('… …');
+    expect(cellWidth(title)).toBe(80);
+    expect(reviewCardTitle(r, 80)).toBe('review · step 7 · risk 0.44 (tail) · patch 2 files +3 −1 "make parse_date timezone-aware"');
+  });
+
+  it('item 8 / §6.2: an `edit` keeps its `@@` row and drops the two columns — its numbers are snippet-relative', () => {
+    const edit: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'edit', path: 'src/a.py', old: 'x = 1\ny = 2\n', new: 'x = 2\ny = 2\n' } } };
+    const rows = reviewDiffLines(edit, 20, 76);
+    // no `old  new` heading and no number column: nothing on the card claims to know the file offset
+    expect(rows.some((l) => l.trim() === 'old new')).toBe(false);
+    expect(rows.some((l) => /^\s*\d+\s+\d*\s*│/.test(l))).toBe(false);
+    expect(rows.some((l) => l.includes('@@ -1,2 +1,2 @@'))).toBe(true);
+    expect(rows).toContain('  -x = 1');
+    expect(rows).toContain('  +x = 2');
+    // a `write` and a `patch` ARE file-absolute, so they keep the columns
+    const write: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'write', path: 'new.py', content: 'a\nb\n' } } };
+    expect(reviewDiffLines(write, 20, 76).some((l) => l.trim() === 'old new')).toBe(true);
+    expect(reviewDiffLines(patchReq(), 20, 76).some((l) => l.trim() === 'old new')).toBe(true);
+  });
+
+  it('item 9 / §6.3 edge 8: a write to a secret path shows the row and `content withheld (secret path)`, never a line', () => {
+    const secret: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'write', path: '.env', content: 'API_KEY=sk-live-aaaaaaaaaaaaaaaa\nDB=postgres://u:p@h/db\n' } } };
+    const rows = reviewDiffLines(secret, 20, 76);
+    expect(rows).toContain('  content withheld (secret path)');
+    for (const l of rows) expect(l).not.toContain('sk-live');
+    // …in the card, in the SR twin and in the `--plain` confirmer, which all come through the same builder
+    for (const l of reviewCardLines(secret, 13, 8, 80)) expect(l).not.toContain('sk-live');
+    const sr = reviewDiffScreenReaderLines(secret);
+    expect(sr).toContain('content withheld (secret path)');
+    for (const l of sr) expect(l).not.toContain('sk-live');
+    // a nested secret is caught by the basename rule too, and a normal path is untouched
+    expect(reviewDiffLines({ ...req, proposal: { ...req.proposal, action: { kind: 'write', path: 'cfg/id_rsa', content: 'PRIVATE' } } }, 20, 76).some((l) => l.includes('PRIVATE'))).toBe(false);
+    expect(reviewDiffLines({ ...req, proposal: { ...req.proposal, action: { kind: 'write', path: '.env.example', content: 'API_KEY=' } } }, 20, 76).some((l) => l.includes('API_KEY='))).toBe(true);
+  });
+
+  it('item 10 / §6.10: a whitespace-only change is ONE spoken sentence, not two identical ones', () => {
+    const ws: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'patch', diff: ['--- a/a.py', '+++ b/a.py', '@@ -13 +13 @@', '-x = 1   ', '+x = 1', ''].join('\n') } } };
+    const sr = reviewDiffScreenReaderLines(ws);
+    expect(sr).toContain('line 13 changed: trailing whitespace removed');
+    expect(sr.filter((l) => /^line \d+ (added|removed)/.test(l))).toHaveLength(0);
+    // a genuine change still speaks both sides
+    const real: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'patch', diff: ['--- a/a.py', '+++ b/a.py', '@@ -13 +13 @@', '-x = 1', '+x = 2', ''].join('\n') } } };
+    expect(reviewDiffScreenReaderLines(real).filter((l) => /^line \d+ (added|removed)/.test(l))).toHaveLength(2);
+  });
+
+  it('§6.3 edge 7: a binary file is ONE row naming its sizes — never a byte of it', () => {
+    const bin: ConfirmRequest = {
+      ...req,
+      proposal: { ...req.proposal, action: { kind: 'patch', diff: ['diff --git a/assets/logo.png b/assets/logo.png', 'index 111..222 100644', 'GIT binary patch', 'literal 4200', 'zzzzzzzzzzzz', 'literal 5100', ''].join('\n') } },
+    };
+    const rows = reviewDiffLines(bin, 20, 76);
+    expect(rows[0]).toBe('  ╶──── assets/logo.png');
+    expect(rows.some((l) => l.includes('zzzz'))).toBe(false);
+    expect(reviewCardTitle(bin, 80)).toContain('patch assets/logo.png binary');
+    expect(reviewDiffScreenReaderLines(bin)[1]).toBe('binary file, 4.1 kibibytes before, 5.0 kibibytes after');
+  });
+
+  it('§6.3 edge 2: on a 5 000-line patch the tail names the TRUE total, past `clipDetail`\'s 60-line clip (A6-11)', () => {
+    const body = Array.from({ length: 2500 }, (_, i) => [`-old ${i}`, `+new ${i}`]).flat();
+    const big: ConfirmRequest = { ...req, proposal: { ...req.proposal, action: { kind: 'patch', diff: ['--- a/big.py', '+++ b/big.py', '@@ -1,2500 +1,2500 @@', ...body, ''].join('\n') } } };
+    const want = reviewPreviewWant(big, 76);
+    expect(want).toBeGreaterThan(60);
+    const rows = reviewDiffLines(big, 8, 76);
+    expect(rows).toHaveLength(8);
+    expect(rows[7]).toBe(`…[+${want - 7} rows · e expands to ${want}]`);
+    expect(rows[7]).not.toContain('/diff');
   });
 });

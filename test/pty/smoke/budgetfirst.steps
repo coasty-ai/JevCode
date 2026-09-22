@@ -9,12 +9,12 @@ expect session cap \$10.00 → \$15.00 \(applies now\)
 send make the tests pass
 sleep 0.2
 send \r
-expect end (complete|max_steps|generator_done)
+expect finished [·-] (complete|max_steps|generator_done)
 expect Follow-up, question
 send /budget
 sleep 0.2
 send \r
-expect session cap \$15.00
+expect of \$15\.00
 send /exit
 sleep 0.2
 send \r

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import type { Answer, Decision } from '../../../src/core/types.js';
-import { GLYPHS } from '../../../src/tui/glyphs.js';
+import { GLYPHS, cellWidth } from '../../../src/tui/glyphs.js';
 import { WHY_KEPT_STEPS, WHY_MAX_LINES, findDecision, findIntakeDecision, intakeConsumedBy, parseWhyRef, stepWhyBlocks, whyBlock, whyErrorText, whyHead, whyRef } from '../../../src/tui/why.js';
 import { INTAKE_KINDS, answersOfRows, buildAllIntakeQuestions, decisionRows, resolveIntake } from '../../../src/chat/intake.js';
 import { annotateChoiceRows } from '../../../src/loop/stages/choose.js';
@@ -29,17 +29,19 @@ function intakeRows(kind: string, p: number, paired: number): Decision[] {
 }
 
 describe('whyErrorText (TUI-DESIGN-3 §4.4 F8 / §10): one failure text for the App and the controller', () => {
-  it('`missing` → `error: /why: no decision <ref> in the last 3 steps`; `grammar` → `error: /why: <ref> is not a decision ref (…)`; the ref is trimmed', () => {
-    expect(whyErrorText('s7.risk.plan_mismatch', 'missing')).toBe('error: /why: no decision s7.risk.plan_mismatch in the last 3 steps');
-    expect(whyErrorText(' 3 ', 'missing')).toBe('error: /why: no decision 3 in the last 3 steps');
-    expect(whyErrorText('intake.nope', 'missing')).toBe('error: /why: no decision intake.nope in the last 3 steps');
-    expect(whyErrorText('foo', 'grammar')).toBe('error: /why: foo is not a decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)');
-    expect(whyErrorText('intake.Nope', 'grammar')).toBe('error: /why: intake.Nope is not a decision ref (s<N>.<stage>.<id>, a digit 1–5, or intake)');
+  it('TUI-DESIGN-4 §3.1.7: both texts take the one error shape `error: /why <ref> — <what> — <what to do>`; the ref is trimmed', () => {
+    expect(whyErrorText('s7.risk.plan_mismatch', 'missing')).toBe('error: /why s7.risk.plan_mismatch — no decision s7.risk.plan_mismatch in the last 3 steps — /decisions lists the recent ones');
+    expect(whyErrorText(' 3 ', 'missing')).toBe('error: /why 3 — no decision 3 in the last 3 steps — /decisions lists the recent ones');
+    expect(whyErrorText('intake.nope', 'missing')).toBe('error: /why intake.nope — no decision intake.nope in the last 3 steps — /decisions lists the recent ones');
+    expect(whyErrorText('foo', 'grammar')).toBe('error: /why foo — not a decision ref — use s<N>.<stage>.<id>, a digit 1–5, or intake');
+    expect(whyErrorText('intake.Nope', 'grammar')).toBe('error: /why intake.Nope — not a decision ref — use s<N>.<stage>.<id>, a digit 1–5, or intake');
     expect(WHY_KEPT_STEPS).toBe(3);
     // the two texts never depend on the renderer: a grammar failure is exactly what parseWhyRef rejects
     for (const ref of ['foo', '6', 's7.risk', 'intake.']) {
       expect(parseWhyRef(ref)).toBeNull();
-      expect(whyErrorText(ref, 'grammar')).toMatch(/^error: \/why: .* is not a decision ref/);
+      // §3.1.7's shape, asserted as a shape: `error: /<command> <arg> — <what went wrong> — <what to do instead>`
+      expect(whyErrorText(ref, 'grammar')).toMatch(/^error: \/why \S+ — [^—]+ — .+$/);
+      expect(whyErrorText(ref, 'missing')).toMatch(/^error: \/why \S+ — [^—]+ — .+$/);
     }
   });
 });
@@ -128,6 +130,67 @@ describe('whyBlock shape', () => {
     for (const l of whyBlock(decs[0]!, { siblings: decs }, GLYPHS.ascii)) expect(l).toMatch(ascii);
     expect(whyBlock(decs.find((d) => d.id === 'task_complete')!, {}, GLYPHS.ascii).at(-1)).toBe('  consumed by: >= 0.85 -> stop');
     for (const l of stepWhyBlocks(decs, 7, GLYPHS.ascii).flat()) expect(l).toMatch(ascii);
+  });
+});
+
+describe('TUI-DESIGN-4 §3.3: `/why` takes the block body width and hangs its continuations', () => {
+  const long = (): Decision => {
+    const decs = stepSevenDecisions();
+    return decs.find((d) => d.id === 'plan_mismatch') as Decision;
+  };
+
+  it('width 0 (the default) is today\'s un-wrapped block — no caller is changed by the new parameter', () => {
+    expect(whyBlock(long(), {}, GLYPHS.unicode, 0)).toEqual(whyBlock(long()));
+  });
+
+  it('every row fits the width at 30 / 50 / 70 / 110', () => {
+    for (const width of [30, 50, 70, 110]) {
+      // row 0 is the block HEAD (`session.ts` sends it as such); the BODY is what the width governs
+      for (const line of whyBlock(long(), { siblings: stepSevenDecisions() }, GLYPHS.unicode, width).slice(1)) {
+        expect(cellWidth(line), `${width}: ${JSON.stringify(line)}`).toBeLessThanOrEqual(width);
+      }
+    }
+  });
+
+  it('an L-row continuation hangs UNDER the probability column, never at column 0 (§3.3)', () => {
+    const rows = whyBlock(long(), { siblings: stepSevenDecisions() }, GLYPHS.unicode, 40);
+    const wrapped = rows.filter((r) => /^ {6,}\S/.test(r));
+    expect(wrapped.length).toBeGreaterThan(0);
+    // no body row ever starts at column 0: the head is row 0 and every body row is indented at least two cells
+    for (const r of rows.slice(1)) expect(r === '' || r.startsWith('  ')).toBe(true);
+  });
+
+  it('an L3 row\'s continuation starts at the SAME column as its criterion text (§3.3, the measured defect)', () => {
+    const decs = stepSevenDecisions();
+    const score = decs.find((d) => d.answer.type === 'score') as Decision;
+    const rows = whyBlock(score, { siblings: decs }, GLYPHS.unicode, 50);
+    const i = rows.findIndex((r) => /^ {2}L\d /.test(r) && rows[rows.indexOf(r) + 1]?.startsWith('     ') === true);
+    expect(i, rows.join('|')).toBeGreaterThan(0);
+    const first = rows[i] as string;
+    const cont = rows[i + 1] as string;
+    // the criterion text starts right after `L<k> <bar>  <p>  ` — the continuation hangs at exactly that column
+    const prefix = /^( {2}L\d \S*\s{2}[01]\.\d{2}\s{2})/.exec(first)?.[1] ?? '';
+    expect(prefix, JSON.stringify(first)).not.toBe('');
+    expect(cont.startsWith(' '.repeat(cellWidth(prefix))), `${JSON.stringify(first)} / ${JSON.stringify(cont)}`).toBe(true);
+    expect(cont.trimStart().length, JSON.stringify(cont)).toBeGreaterThan(0);
+    // and never at column 4, under the level marker, where a continuation reads as a new criterion
+    expect(/^ {4}\S/.test(cont)).toBe(false);
+  });
+
+  it('no row of the block carries a trailing space at any width (the App-local caller prints them verbatim)', () => {
+    const decs = stepSevenDecisions();
+    for (const width of [0, 24, 30, 40, 50, 70, 110]) {
+      for (const d of decs) {
+        for (const r of whyBlock(d, { siblings: decs }, GLYPHS.unicode, width)) {
+          expect(r, `${width}: ${JSON.stringify(r)}`).not.toMatch(/ $/);
+        }
+      }
+    }
+  });
+
+  it('the cap still applies after wrapping — a narrow width never grows the block past WHY_MAX_LINES', () => {
+    const decs = stepSevenDecisions();
+    for (const d of decs) expect(whyBlock(d, { siblings: decs }, GLYPHS.unicode, 24).length).toBeLessThanOrEqual(WHY_MAX_LINES);
   });
 });
 

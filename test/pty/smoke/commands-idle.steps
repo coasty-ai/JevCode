@@ -5,10 +5,12 @@ expect \x1b\[\?25l
 expect Say hi
 expect sess \$
 sleep 0.3
-# `/` and `s` are two keystrokes: `composer:palette` (keys/resolve.ts:416) opens the palette on the `/` key alone, and the
-# ghost arrow is drawn only while the palette is open (App.tsx:2149) — one `send /s` write is a single input event and opens nothing
+# `/` and `s` are two keystrokes: `composer:palette` (keys/resolve.ts) opens the palette on the `/` key alone, and the
+# ghost arrow is drawn only while the palette is open (App.tsx). MINIMAL, MARKED (S4, TUI-DESIGN-4 §4.7 E9): one
+# `send /s` write is a single input event that used to open nothing; it now opens the palette with `s` as the query,
+# so the two-keystroke form below is kept deliberately — it is the sequence this scenario was written for.
 send /
-expect Tab completes
+expect Tab picks
 send s
 expect → /status
 sleep 0.3
@@ -27,9 +29,20 @@ expect ▸(?:\x1b\[[0-9;]*m)* jev|─{10}
 sleep 0.3
 send /budgett
 sleep 0.2
+# TUI-DESIGN-4 §4.2 (D-X) is landed: `/budgett` matches nothing, which is S-NONE, and S-NONE's Enter is the §12
+# TOAST — it never submits, so the `[ui] error:` item does not appear while the card is open. That is the whole
+# point of §4.1's safety theorem. Esc closes the card; the same Enter then takes round 3's submit path and the
+# error item arrives, with the draft kept.
+send \r
+expect nothing to pick
+sleep 0.3
+send \x1b
+sleep 0.2
 send \r
 expect unknown command|no such command|error
 expect (?:›|>) (?:\x1b\[[0-9;]*m)*/budgett
+# the palette is closed, so this Ctrl-C is the ordinary CLEAR_DRAFT rule and is unchanged by §4.7 E12 (which only
+# fires with the card OPEN and the whole draft one token)
 send \x03
 expect Follow-up, question|Say hi
 send /exit

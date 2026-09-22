@@ -47,7 +47,7 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     const r = await drive({
       name: 'twins-plain-tty',
       args: ['chat', '--plain', ...MOCK_RUN_MODE, '--mock', '--mock-steps', '4'],
-      steps: ['expect \\[sandbox\\]', 'send fix the failing test\\r', 'expect \\[you\\] fix the failing test', 'expect \\[run\\] start', 'expect end complete', 'expect \\[ui\\] stopped — complete \\(exit 0\\)', 'expect \\n> ', 'send /exit\\r', 'eof'],
+      steps: ['expect \\[sandbox\\]', 'send fix the failing test\\r', 'expect \\[you\\] fix the failing test', 'expect \\[run\\] started [·-]', 'expect finished [·-] complete', 'expect \\[ui\\] stopped — complete \\(exit 0\\)', 'expect \\n> ', 'send /exit\\r', 'eof'],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -55,14 +55,14 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     expect(plain).toMatch(/^\[run\] jevcode session · \S+ \| step 0\/– starting$/m);
     // TUI-DESIGN-2 §3.10: the `[you]` bubble is the same line in the plain twin; the mock intake reads the line as `coding_task`
     expect(plain).toMatch(/^\[you\] fix the failing test$/m);
-    expect(plain).toMatch(/\[run\] start \S+ mode=jev-on task: fix the failing test/);
-    expect(plain).toMatch(/\[run\] end complete steps=4/);
+    expect(plain).toMatch(/\[run\] started [·-] jev\+llm [·-] fix the failing test/);
+    expect(plain).toMatch(/\[run\] finished [·-] complete [·-] 4 steps/);
     // cooked mode: the typed line is echoed by the kernel after the `> ` prompt, then the items follow
     expect(plain).toContain('fix the failing test\n');
     expect(plain).not.toContain('\x1b[?25l');
     expect(r.text).not.toContain('\x1b[?2004h'); // no bracketed paste on the plain twin (§1)
     const transcript = r.transcript();
-    expect(transcript?.at(-1)).toMatch(/^\[run\] end complete /);
+    expect(transcript?.at(-1)).toMatch(/^\[run\] finished [·-] complete /);
   });
 
   it('--json on a pipe: `stream:start` envelope first, every line parses, no `status`, run:end carries exitCode', () => {
@@ -95,7 +95,7 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
 
   it('identity (TUI-DESIGN-2 §9): transcript.log = plain item lines; the TUI <Static> item lines are the compact subsequence (640 columns, no wrapping; 24x80, wraps re-joined)', async () => {
     // leg 1 — the TUI in a real pty, one-shot; 640 columns so no static row wraps and the items are read off the capture alone
-    const tui = await drive({ name: 'twins-identity-tui', args: ['run', TASK, ...MOCK_5], rows: 24, cols: 640, steps: [FIRST_FRAME_STEP, 'expect end complete', 'eof'] });
+    const tui = await drive({ name: 'twins-identity-tui', args: ['run', TASK, ...MOCK_5], rows: 24, cols: 640, steps: [FIRST_FRAME_STEP, 'expect finished [·-] complete', 'eof'] });
     expect(tui.timeouts).toBe(0);
     expect(tui.code).toBe(0);
     expect(countClears(afterFirstFrame(tui.text))).toBe(0);
@@ -112,8 +112,8 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     expect(sub.missing).toBeNull();
     expect(tuiItems.length).toBeGreaterThan(3);
     expect(tuiItems.filter((r) => HIDDEN_STAGE_RE.test(r))).toEqual([]);
-    expect(tuiItems.some((r) => /^\[run\] start /.test(r))).toBe(true);
-    expect(tuiItems.some((r) => /^\[run\] end complete /.test(r))).toBe(true);
+    expect(tuiItems.some((r) => /^\[run\] started [·-] /.test(r))).toBe(true);
+    expect(tuiItems.some((r) => /^\[run\] finished [·-] complete /.test(r))).toBe(true);
     expect(tuiItems.filter((r) => /^\[step \d+\] /.test(r)).length).toBeGreaterThanOrEqual(5); // one summary line per mocked step
     expect(tuiTranscript!.some((r) => HIDDEN_STAGE_RE.test(r))).toBe(true); // transcript.log keeps every stage line
     // the round-1 detail rows under a proposal (§15.1) belonged to the hidden `proposal` items; a `compact` TUI shows none
@@ -122,7 +122,7 @@ describe.skipIf(!hasExpect)('pty: --plain, --json and the three-way identity (§
     // leg 1b — the same TUI run at the brief's 24x80: Ink soft-wraps the long items; re-joined against the transcript
     // lines the TUI shows, the rows rebuild those lines exactly, every labelled row is accounted for, and the leftovers
     // are only local items and their continuations
-    const narrow = await drive({ name: 'twins-identity-tui-80', args: ['run', TASK, ...MOCK_5], rows: 24, cols: 80, steps: [FIRST_FRAME_STEP, 'expect end complete', 'eof'] });
+    const narrow = await drive({ name: 'twins-identity-tui-80', args: ['run', TASK, ...MOCK_5], rows: 24, cols: 80, steps: [FIRST_FRAME_STEP, 'expect finished [·-] complete', 'eof'] });
     expect(narrow.timeouts).toBe(0);
     expect(narrow.code).toBe(0);
     expect(countClears(afterFirstFrame(narrow.text))).toBe(0);

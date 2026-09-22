@@ -1,6 +1,13 @@
 /**
  * Unified-diff application through `git apply` (DESIGN.md §8, §19.3; research 09 §2.2).
  *
+ * TUI-DESIGN-4 §6.7 (D-Z): `gitFirstError` kept only the **first** `error:` line, so git's two-line diagnosis
+ * (`error: patch failed: f:12` *and* `error: f: patch does not apply`) reached the user as half a sentence.
+ * `parsePatchErrors` types the whole thing — `{ file, line, message }` per pair — `patchFailureMessage` builds the
+ * one-line `patch failed: <file>:<line> — <message>` the outcome carries, and `patchHunkDetail` the TUI-only body.
+ * **Partial apply stays impossible** (`--check` first, never `--reject`), so no message here may suggest a
+ * half-applied tree.
+ *
  * Header paths are validated with resolveInside(write) before git sees the diff so the
  * generator gets a clear PathEscapeError instead of a stray `tmp/...` directory (git strips
  * a leading `/` under -p1 and re-roots the path). `--check` runs first; only then the real
@@ -185,9 +192,10 @@ export async function applyPatch(diff: string, deps: ApplyPatchDeps): Promise<{ 
   try {
     const plain = deps.plainApply === true;
     const check = await applyCheck(deps.sandbox, deps.ws, patchFile, { plain });
-    if (!check.ok) throw new PatchError(gitFirstError(check.stderr, 'git apply --check failed'), check.stderr.trim() || check.stdout.trim());
+    // §6.7: git's whole diagnosis, not just its first `error:` line; the raw stderr stays in `hunk` for the detail
+    if (!check.ok) throw new PatchError(patchFailureMessage(parsePatchErrors(check.stderr), gitFirstError(check.stderr, 'git apply --check failed')), check.stderr.trim() || check.stdout.trim());
     const applied = await apply(deps.sandbox, deps.ws, patchFile, { plain });
-    if (!applied.ok) throw new PatchError(gitFirstError(applied.stderr, 'git apply failed'), applied.stderr.trim() || applied.stdout.trim());
+    if (!applied.ok) throw new PatchError(patchFailureMessage(parsePatchErrors(applied.stderr), gitFirstError(applied.stderr, 'git apply failed')), applied.stderr.trim() || applied.stdout.trim());
   } finally {
     await unlink(patchFile).catch(() => undefined);
   }
@@ -197,4 +205,99 @@ export async function applyPatch(diff: string, deps: ApplyPatchDeps): Promise<{ 
 function gitFirstError(stderr: string, fallback: string): string {
   const line = stderr.split('\n').find((l) => l.startsWith('error:')) ?? stderr.split('\n').find((l) => l.trim().length > 0);
   return line ? line.trim() : fallback;
+}
+
+// ---------------------------------------------------------------------------------------
+// TUI-DESIGN-4 §6.7: git's whole diagnosis, typed
+// ---------------------------------------------------------------------------------------
+
+/** One entry of git's diagnosis: the file it names, the line when it gave one, and what it said. */
+export interface PatchHunkError {
+  readonly file: string;
+  readonly line: number | null;
+  readonly message: string;
+}
+
+/** §6.7 edge 10: 200 failing hunks show the first three rows plus `… +197 more`. */
+export const PATCH_HUNK_ROWS_MAX = 3;
+/** §6.7: the outcome line carries at most this many of git's messages; the rest go to the TUI-only detail. */
+export const PATCH_ERROR_MESSAGES_MAX = 2;
+
+const PATCH_FAILED_RE = /^patch failed: (.+):(\d+)$/;
+const FILE_MESSAGE_RE = /^(.+?): (.+)$/;
+
+/**
+ * §6.7: git's stderr as a typed list. git normally emits a **pair** — `error: patch failed: <file>:<line>` then
+ * `error: <file>: <message>` — and `gitFirstError` threw the second half away. The locale is already pinned
+ * (`GIT_ENV` sets `LC_ALL: 'C'`, `src/workspace/git.ts`), so this parse is stable. `[]` for an empty stderr; a
+ * stderr with no `error:` line at all yields one entry carrying its first non-empty line.
+ */
+export function parsePatchErrors(stderr: string): PatchHunkError[] {
+  const out: PatchHunkError[] = [];
+  let pending: { file: string; line: number } | null = null;
+  const flush = (message: string): void => {
+    if (pending === null) return;
+    out.push({ file: pending.file, line: pending.line, message });
+    pending = null;
+  };
+  let sawError = false;
+  for (const raw of stderr.split('\n')) {
+    const t = raw.trim();
+    if (!t.startsWith('error: ')) continue;
+    sawError = true;
+    const rest = t.slice('error: '.length).trim();
+    const failed = PATCH_FAILED_RE.exec(rest);
+    if (failed !== null) {
+      flush('patch failed');
+      pending = { file: failed[1] ?? '', line: Number(failed[2]) };
+      continue;
+    }
+    const pair = FILE_MESSAGE_RE.exec(rest);
+    if (pending !== null && pair !== null && pair[1] === pending.file) {
+      flush(pair[2] ?? rest);
+      continue;
+    }
+    if (pending !== null) {
+      flush(rest);
+      continue;
+    }
+    if (pair !== null && !pair[1]?.includes(' ')) out.push({ file: pair[1] ?? '', line: null, message: pair[2] ?? rest });
+    else out.push({ file: '', line: null, message: rest });
+  }
+  flush('patch failed');
+  if (out.length === 0 && !sawError) {
+    const first = stderr.split('\n').find((l) => l.trim().length > 0);
+    if (first !== undefined) out.push({ file: '', line: null, message: first.trim() });
+  }
+  return out;
+}
+
+/** `<file>:<line>` · `<file>` · `''` — the place clause of one entry. */
+export function patchErrorWhere(h: PatchHunkError): string {
+  if (h.file === '') return '';
+  return h.line === null ? h.file : `${h.file}:${h.line}`;
+}
+
+/**
+ * §6.7: the one line the outcome carries — `patch failed: calc/ops.py:12 — patch does not apply`, at most
+ * `PATCH_ERROR_MESSAGES_MAX` of git's messages joined by `; `. `fallback` when git said nothing usable.
+ */
+export function patchFailureMessage(hunks: readonly PatchHunkError[], fallback: string): string {
+  if (hunks.length === 0) return fallback;
+  const parts = hunks.slice(0, PATCH_ERROR_MESSAGES_MAX).map((h) => {
+    const where = patchErrorWhere(h);
+    return where === '' ? h.message : `${where} — ${h.message}`;
+  });
+  return `patch failed: ${parts.join('; ')}`;
+}
+
+/** §6.7: the TUI-only detail body — one row per entry, the first three plus `… +N more` (edge 10). */
+export function patchHunkDetail(hunks: readonly PatchHunkError[]): string {
+  if (hunks.length === 0) return '';
+  const rows = hunks.slice(0, PATCH_HUNK_ROWS_MAX).map((h) => {
+    const where = patchErrorWhere(h);
+    return where === '' ? h.message : `${where}   ${h.message}`;
+  });
+  if (hunks.length > PATCH_HUNK_ROWS_MAX) rows.push(`… +${hunks.length - PATCH_HUNK_ROWS_MAX} more`);
+  return rows.join('\n');
 }

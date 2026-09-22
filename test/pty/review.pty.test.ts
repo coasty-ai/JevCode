@@ -25,7 +25,7 @@ describe.skipIf(!hasExpect)('pty: review prompt (§6)', () => {
     const r = await drive({
       name: 'review-deferral-typeahead',
       ...REVIEW,
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send y', `expect ${PROMPT} ${SGR_GAP}y`, PENDING, CARD, BOX, 'sleep 0.25', 'send y', 'expect confirm \\S+ approved', 'expect end complete', `expect ${PROMPT} ${SGR_GAP}y`, 'send \\x03', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), 'send y', `expect ${PROMPT} ${SGR_GAP}y`, PENDING, CARD, BOX, 'sleep 0.25', 'send y', 'expect review approved', 'expect finished [·-] complete', `expect ${PROMPT} ${SGR_GAP}y`, 'send \\x03', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
@@ -50,11 +50,11 @@ describe.skipIf(!hasExpect)('pty: review prompt (§6)', () => {
     const plain = stripAnsi(r.text);
     const boxAt = plain.indexOf('[y] approve');
     expect(boxAt).toBeGreaterThan(0);
-    expect(plain.slice(0, boxAt)).not.toMatch(/confirm \S+ approved/);
+    expect(plain.slice(0, boxAt)).not.toMatch(/review approved/);
     expect(plain.slice(0, boxAt)).toContain('review pending');
     const transcript = r.transcript();
-    expect(transcript!.filter((l) => /confirm \S+ approved/.test(l))).toHaveLength(1);
-    expect(transcript!.some((l) => /confirm \S+ declined/.test(l))).toBe(false);
+    expect(transcript!.filter((l) => /review approved/.test(l))).toHaveLength(1);
+    expect(transcript!.some((l) => /review declined/.test(l))).toBe(false);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
     console.log(`review deferral: request pending ${requestLag} ms after the typed-ahead key, box ${held} ms after the request (${deferral} ms after the key)`);
   });
@@ -64,22 +64,22 @@ describe.skipIf(!hasExpect)('pty: review prompt (§6)', () => {
       name: 'review-enter-inert',
       ...REVIEW,
       // the card is armed 150 ms after its committed frame (§6.3): Enter lands on the armed card, `y` a quarter second later
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), CARD, BOX, 'sleep 0.3', 'send \\r', 'sleep 0.3', 'mark enter-sent', 'send y', 'expect confirm \\S+ approved', 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), CARD, BOX, 'sleep 0.3', 'send \\r', 'sleep 0.3', 'mark enter-sent', 'send y', 'expect review approved', 'expect finished [·-] complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const plain = stripAnsi(r.text);
     // one approval, by `y`: had Enter approved, the run would have gone on and the later `y` would sit in the composer as text
     const transcript = r.transcript()!;
-    expect(transcript.filter((l) => /confirm \S+ approved/.test(l))).toHaveLength(1);
-    expect(transcript.some((l) => /confirm \S+ declined/.test(l))).toBe(false);
+    expect(transcript.filter((l) => /review approved/.test(l))).toHaveLength(1);
+    expect(transcript.some((l) => /review declined/.test(l))).toBe(false);
     expect(plain).not.toMatch(/[›>] y\b/);
     // the card frames form one contiguous run from the first card frame to the approval: Enter neither answered nor closed it
     const all = syncFrames(r.text);
     const card = syncFramesWith(all, /^╭─ review · step 2/);
     expect(card.length).toBeGreaterThan(0);
     expect(contiguous(card)).toBe(true);
-    const approved = syncFramesWith(all, /confirm \S+ approved/);
+    const approved = syncFramesWith(all, /review approved/);
     expect(approved.length).toBeGreaterThan(0);
     expect(approved[0]!).toBeGreaterThanOrEqual(card.at(-1)!);
     // the Enter itself: the approval frame arrived after `y` was sent, not after the Enter
@@ -92,30 +92,30 @@ describe.skipIf(!hasExpect)('pty: review prompt (§6)', () => {
     console.log(`review Enter inert: card up for frames ${card[0]}–${card.at(-1)}, approval frame ${approved[0]} ${ok.t - ySent.t} ms after y`);
   });
 
-  it('`n` declines: `confirm <id> declined` and the run continues to complete', async () => {
+  it('`n` declines: `review declined` and the run continues to complete', async () => {
     const r = await drive({
       name: 'review-n',
       ...REVIEW,
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), CARD, BOX, 'sleep 0.25', 'send n', 'expect confirm \\S+ declined', 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), CARD, BOX, 'sleep 0.25', 'send n', 'expect review declined', 'expect finished [·-] complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const transcript = r.transcript();
-    expect(transcript!.some((l) => /^\[step 2\] confirm \S+ declined/.test(l))).toBe(true);
-    expect(transcript!.some((l) => /confirm \S+ approved/.test(l))).toBe(false);
-    expect(transcript!.at(-1)).toMatch(/^\[run\] end complete /);
+    expect(transcript!.some((l) => /^\[step 2\] review declined/.test(l))).toBe(true);
+    expect(transcript!.some((l) => /review approved/.test(l))).toBe(false);
+    expect(transcript!.at(-1)).toMatch(/^\[run\] finished [·-] complete /);
   });
 
   it('`d <note>` declines with the note; the note reaches transcript.log verbatim', async () => {
     const r = await drive({
       name: 'review-d-note',
       ...REVIEW,
-      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), CARD, BOX, 'sleep 0.25', 'send d', 'expect note \\(', 'send skip the tests', 'expect skip the tests', 'send \\r', 'expect declined \\(note: skip the tests\\)', 'expect end complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...submitTask('make the tests pass'), CARD, BOX, 'sleep 0.25', 'send d', 'expect note \\(', 'send skip the tests', 'expect skip the tests', 'send \\r', 'expect review declined (?:\\x1b\\[[0-9;]*m)*[·-] "skip the tests"', 'expect finished [·-] complete', `expect ${PLACEHOLDER_FOLLOWUP}`, ...EXIT_IDLE],
     });
     expect(r.timeouts).toBe(0);
     expect(r.code).toBe(0);
     const transcript = r.transcript();
-    expect(transcript!.some((l) => /^\[step 2\] confirm \S+ declined \(note: skip the tests\)$/.test(l))).toBe(true);
+    expect(transcript!.some((l) => /^\[step 2\] review declined [·-] "skip the tests"$/.test(l))).toBe(true);
     // the box's keys line and the composer's collapsed row were drawn while the review was pending
     const plain = stripAnsi(r.text);
     expect(plain).toContain('review pending');

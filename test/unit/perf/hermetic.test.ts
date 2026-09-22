@@ -19,8 +19,8 @@ import { BIN, CHILD_ENV_UNSET, DIST, ROOT, childEnv } from '../../pty/helpers.js
 const FAKE = `sk-fake-${'q'.repeat(40)}`;
 const haveBundle = existsSync(DIST) && existsSync(BIN);
 
-function configOutput(env: Record<string, string | undefined>, cwd: string): string {
-  const r = spawnSync(process.execPath, [BIN, 'config', '--workspace', cwd], { cwd, env, encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
+function configOutput(env: Record<string, string | undefined>, cwd: string, extra: readonly string[] = []): string {
+  const r = spawnSync(process.execPath, [BIN, 'config', '--workspace', cwd, ...extra], { cwd, env, encoding: 'utf8', timeout: 60_000, stdio: ['ignore', 'pipe', 'pipe'] });
   return `${r.stdout ?? ''}${r.stderr ?? ''}`;
 }
 
@@ -49,7 +49,8 @@ describe.skipIf(!haveBundle)('hermetic child environments (legacy credentials fi
 
   it('control: without the isolation the legacy file is read (`file:` source) — so the cases below are live', () => {
     const out = configOutput({ PATH: process.env['PATH'], HOME: fakeHome, TERM: 'dumb', OPEN_ASSIST_PATH: join(ws, 'none') }, ws);
-    expect(out).toContain('file:');
+    // TUI-DESIGN-4 §3.3: the source is a `(file)` note row under the value now, not a `file:<path>` column
+    expect(out).toMatch(/\(file\)|file:/);
   });
 
   it('test/pty/helpers.ts childEnv: HOME, XDG_CONFIG_HOME and JEVCODE_HOME isolated, JEVCODE_CONFIG and every key variable unset', () => {
@@ -62,11 +63,17 @@ describe.skipIf(!haveBundle)('hermetic child environments (legacy credentials fi
       for (const k of ['JEVCODE_CONFIG', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'JEV_API_KEY', 'ANTHROPIC_API_KEY', 'CI']) expect(env[k]).toBeUndefined();
       expect(CHILD_ENV_UNSET).toContain('JEVCODE_CONFIG');
       const out = configOutput(env, ws);
-      expect(out).not.toContain('file:');
+      expect(out).not.toMatch(/\(file\)|file:/);
       expect(out).not.toContain('legacy');
       expect(out).not.toContain(FAKE);
-      // the env reached the child: the runs dir is the isolated home's
-      expect(out).toMatch(new RegExp(`runsDir\\s+${home.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}/runs`));
+      // The env reached the child: the runs dir is the isolated home's. TUI-DESIGN-4 §3.3 gives the table a
+      // width-bounded value column, so a long temp path is elided (`/var/folders/…/T/jevcode-…00…`) and the
+      // TABLE can no longer carry the assertion — `--json` is the exact, width-independent form of the same row.
+      const json = configOutput(env, ws, ['--json']);
+      expect(json).not.toContain(FAKE);
+      const parsed = JSON.parse(json) as Record<string, { value?: unknown }>;
+      const runsDir = parsed['runsDir']?.value;
+      expect(typeof runsDir === 'string' ? runsDir : '').toBe(join(home, 'runs'));
     } finally {
       rmSync(home, { recursive: true, force: true });
     }

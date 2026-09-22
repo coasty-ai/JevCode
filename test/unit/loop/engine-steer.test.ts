@@ -121,7 +121,7 @@ describe('steer / unsteer (§8.6 queue)', () => {
     expect(h.of('steer:withdrawn')).toEqual([]);
     expect(h.events).toHaveLength(before);
     expect(h.engine.status().pendingDirectives).toBe(2);
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end /);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] /);
   });
 
   it('a steer during the run is emitted with the step that will consume it, and that step consumes it', async () => {
@@ -161,9 +161,9 @@ describe('pause (§9.1 rule 1: only at the loop top)', () => {
     expect(last.stopReason).toBe('human_pause');
     expect(last.step).toBe(1);
     expect(last.interrupted).toBeNull();
-    // the stop and end lines go through the shared item model like every other stop
-    expect(h.store.transcript.at(-2)).toBe('[run] warn: stop: human_pause at step 1');
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end human_pause steps=1 /);
+    // TUI-DESIGN-4 §3.7 G1 (D-V): the `stop:` line is deleted; `[run] finished` is the one row that says it
+    expect(h.store.transcript.some((l) => l.includes('stop: human_pause'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] human_pause [·-] 1 steps [·-] /);
     expect(h.of('run:end')[0]!.result.stopReason).toBe('human_pause');
   });
 
@@ -312,7 +312,10 @@ describe('finish() in flight reads as finished (§8.6: a steer confirmed to the 
     const results: Record<string, unknown> = {};
     h.engine.events.on('transcript', (e) => {
       if (/^budget max_steps reached at step start$/.test(e.text)) results['beforeFinish'] = h.engine.steer('survives the pause');
-      if (e.text.startsWith('stop:')) {
+      // §3.7 G1: the stop EVENT still fires at the same point in the lifecycle — the deletion is in the item
+      // formatter (`itemsFromEvent`), so no sink prints it, but the event is still the lifecycle anchor this
+      // ordering test needs. `src/loop/stop.ts` is the harness session's, so the event text is unchanged.
+      if (/^stop: [a-z_]+ at step \d+/.test(e.text) || e.text === '') {
         results['onStopLine'] = h.engine.steer('too late');
         results['unsteerOnStop'] = h.engine.unsteer();
         results['annotateOnStop'] = h.engine.annotate('late line');
@@ -344,8 +347,8 @@ describe('finish() in flight reads as finished (§8.6: a steer confirmed to the 
     expect(h.of('steer:withdrawn')).toEqual([]);
     expect(h.of('notice').filter((n) => n.kind === 'ui')).toEqual([]);
     // the transcript ends with the run:end line: no steer or [ui] line after it
-    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] end /);
-    expect(h.store.transcript.filter((l) => /steer|late/.test(l))).toEqual(['[step 2] steer queued (1) for step 2: survives the pause']);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] /);
+    expect(h.store.transcript.filter((l) => /steer|late/.test(l))).toEqual(['[step 2] steer queued · step 2 · "survives the pause" · 1 waiting']);
     expect(h.engine.steer('after end')).toEqual({ ok: false, reason: 'finished', queued: 1 });
   });
 

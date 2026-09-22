@@ -1,0 +1,19 @@
+# TUI-DESIGN-4 §7.8 (P-D8) / §7.11 scenario 5: `host.submit()` never settles (JEVCODE_FAULT=submit:hang).
+# The window the audit found: `run: 'starting'` is set by the App but the controller has not set `thinkingPhase`
+# and no engine exists, so `host.abort()` falls through all three branches and does nothing while `abortRun()` has
+# already dispatched `run:aborting`. The watchdog names the exit after SUBMIT_WATCHDOG_MS, Esc cancels locally, and
+# the SECOND Ctrl-C always ends the process. Run with JEVCODE_SUBMIT_WATCHDOG_MS=1500 so the scenario is seconds.
+expect \x1b\[\?25l
+expect Say hi
+sleep 0.3
+send make the tests pass
+sleep 0.2
+send \r
+expect has not answered in
+sleep 0.3
+send \x1b
+sleep 0.5
+send \x03
+sleep 0.3
+send \x03
+eof

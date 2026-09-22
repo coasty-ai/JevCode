@@ -1,0 +1,30 @@
+{"t":77,"step":1,"op":"expect","arg":"\\x1b\\[\\?25l"}
+{"t":98,"step":2,"op":"expect","arg":"\\x1b\\[\\?2004h"}
+{"t":699,"step":3,"op":"sleep","arg":"0.6"}
+{"t":699,"step":4,"op":"send","arg":"make the tests pass"}
+{"t":1000,"step":5,"op":"sleep","arg":"0.3"}
+{"t":1000,"step":6,"op":"send","arg":"\\r"}
+{"t":1279,"step":7,"op":"expect","arg":"finished [·-]"}
+{"t":2279,"step":8,"op":"sleep","arg":"1.0"}
+{"t":2279,"step":9,"op":"mark","arg":"ran"}
+{"t":2279,"step":10,"op":"send","arg":"\\x1b\\[5~"}
+{"t":2779,"step":11,"op":"sleep","arg":"0.5"}
+{"t":2779,"step":12,"op":"mark","arg":"pgup"}
+{"t":2779,"step":13,"op":"send","arg":"\\x1b\\[5~"}
+{"t":3279,"step":14,"op":"sleep","arg":"0.5"}
+{"t":3279,"step":15,"op":"mark","arg":"pgup2"}
+{"t":3279,"step":16,"op":"send","arg":"\\x1b\\[6~"}
+{"t":3779,"step":17,"op":"sleep","arg":"0.5"}
+{"t":3779,"step":18,"op":"mark","arg":"pgdn"}
+{"t":3780,"step":19,"op":"send","arg":"\\x1b\\[1;5H"}
+{"t":4281,"step":20,"op":"sleep","arg":"0.5"}
+{"t":4281,"step":21,"op":"mark","arg":"ctrlhome"}
+{"t":4281,"step":22,"op":"send","arg":"\\x1b\\[1;5F"}
+{"t":4782,"step":23,"op":"sleep","arg":"0.5"}
+{"t":4782,"step":24,"op":"mark","arg":"ctrlend"}
+{"t":4782,"step":25,"op":"send","arg":"\\x03"}
+{"t":5083,"step":26,"op":"sleep","arg":"0.3"}
+{"t":5083,"step":27,"op":"send","arg":"\\x03"}
+{"t":5583,"step":28,"op":"sleep","arg":"0.5"}
+{"t":5598,"step":29,"op":"eof","arg":""}
+{"t":5598,"step":0,"op":"exit","arg":"0"}

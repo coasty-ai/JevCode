@@ -47,6 +47,11 @@ export interface RuleRowInput {
   version: string;
   glyphs?: GlyphSet;
   pickerHeader?: string | null;
+  /**
+   * TUI-DESIGN-4 §1.3.2: the fullscreen renderer's position ladder (widest rung first), fed to `panelStrip` as its right
+   * segment. Absent under the classic renderer, which keeps the `[d] [p] [t] [s]` tail.
+   */
+  position?: readonly string[] | null;
 }
 
 /**
@@ -66,9 +71,17 @@ export function ruleRowText(i: RuleRowInput): string {
   if (wordmark && !i.ranBefore) return plainRule(cols, g);
   if (i.splash === 'running' && !wordmark) return brandRow(i.version, cols, i.splashTime, g);
   // the open (6-row) panel never goes side by side; `full` keeps TD §7.2's rule (columns ≥ 120 && rows ≥ 40 && overlay none)
-  if (i.panel !== 'collapsed' && i.paneRows > 0) return paneRuleRow(i.state, i.paneRows, cols, i.overlay, { terminalRows: i.panel === 'full' ? i.terminalRows : 0, glyphs: g, chevron: true });
+  // TUI-DESIGN-4 §1.2 P-H1 edge 5: with a panel open or full, `paneRuleRow` IS the rule row and `wordmarkWanted`
+  // requires `panel === 'collapsed'`, so without the prefix here the word `jevcode` is nowhere on screen — exactly
+  // the state D-T a says must not exist. The tab header therefore takes the same `◆ jevcode` prefix through the same
+  // helper and the same drop order (`brandFits`, dropped first below ~64 columns). Gated on `ranBefore` because P-H1
+  // is "after the first `run:ready`": before it the pre-run panel header is byte-for-byte round 2's.
+  if (i.panel !== 'collapsed' && i.paneRows > 0) return paneRuleRow(i.state, i.paneRows, cols, i.overlay, { terminalRows: i.panel === 'full' ? i.terminalRows : 0, glyphs: g, chevron: true, brand: i.ranBefore });
   if (!i.ranBefore) return brandRow(i.version, cols, null, g);
-  return panelStrip({ ...i.state, latencies: i.latencies }, cols, g);
+  // TUI-DESIGN-4 §1.2 P-H1 (D-T a): after the first `run:ready` the strip carries the permanent brand — **whether or not**
+  // the 5-row mark is up (F-H1, F-H2; TD3 §729 "the strip keeps its information; the mark sits under it"). It is the first
+  // segment the shrink loop drops, so a 40-column strip is byte-for-byte the brandless one.
+  return panelStrip({ ...i.state, latencies: i.latencies }, cols, g, { brand: true, ...(i.position !== undefined && i.position !== null ? { position: i.position } : {}) });
 }
 
 /** The plain rule (`─` × columns): before the first run, on tiny terminals, and whenever the pane has no rows. */

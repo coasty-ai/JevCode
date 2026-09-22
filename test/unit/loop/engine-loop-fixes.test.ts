@@ -60,7 +60,10 @@ describe('Fix 1: a done after the engine\'s own green run is completion the harn
     expect(r.counters).toMatchObject({ reviews: 0, declined: 0, blocked: 0 });
     expect(s2!.outcome?.status).toBe('noop');
     expect(s2!.completion).toBe(0.95);
-    expect(h.store.transcript.some((l) => /^\[step 2\] risk=0\.36 ok: completion verified by the engine's own passing run `pytest -q` at step 1;/.test(l))).toBe(true);
+    // TUI-DESIGN-4 §3.7 G3 (D-V): the `risk` item is ONE row and no longer interpolates the audit string; the
+    // clause is asserted on `RiskAssessment.reason` above (`:55`), which §3.6 edge 9 leaves untouched
+    expect(h.store.transcript.some((l) => /^\[step 2\] risk 0\.36 ok [·-] destructive 0 [·-] irreversible 0$/.test(l))).toBe(true);
+    expect(h.store.transcript.some((l) => l.includes('completion verified by'))).toBe(false);
   });
 
   it('ladder round 6: the judge state of the green `done` carries the run (`executed.tests`, `testsCurrent`, `executed.lastRun` with the tail), so the completion Noul sees the evidence rather than a bare `done`', async () => {
@@ -244,7 +247,9 @@ describe('Fix 3: loop signatures for refused proposals', () => {
     expect(r.counters.replans).toBe(1);
     expect(h.store.last()!.loopDetector.tripsBySignature[sig]).toMatchObject({ trips: 2, directives: [{ step: 4 }] });
     expect(h.store.transcript.some((l) => l.startsWith(`[step 7] replan: gather_context directed again for ${sig} (already directed at step 4); treated as stop_and_report`))).toBe(true);
-    expect(h.store.transcript.at(-2)).toBe(`[run] warn: stop: replan_stop at step 6 (gather_context directed again for ${sig} (already directed at step 4))`);
+    // §3.7 G1: the `stop:` line is deleted — it restated, one row later, the `[step 7] replan:` row above it
+    expect(h.store.transcript.some((l) => l.includes('stop: replan_stop'))).toBe(false);
+    expect(h.store.transcript.at(-1)).toMatch(/^\[run\] finished [·-] replan_stop [·-] /);
   });
 
   it('a second replan that picks another move is not the exit; a first gather_context on a run signature is not either', async () => {

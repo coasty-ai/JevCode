@@ -339,16 +339,21 @@ export function bannerInput(g: GitState): GitBannerInput {
  * never misreported as "not a git repository". `timeout` covers every `dirtyUnknownState` outcome — a status that
  * timed out, failed or overflowed — until O1 adds a distinct reason.
  */
+/**
+ * TUI-DESIGN-4 §3.6 (D-V, G6): ONE clause, not two saying the same thing. The old default row said both "changes
+ * made by commands are not recoverable" and "/diff compares against step pre-images only" in two different
+ * grammars; §12 fixes the wording.
+ */
 export function notRepoReason(reason: GitState['reason']): string {
   switch (reason) {
     case 'git-missing':
-      return 'git not found on PATH: /undo and /diff use step pre-images only';
+      return 'git not found on PATH — /diff <step> compares pre-images';
     case 'timeout':
-      return 'git status failed or timed out: /undo and /diff use step pre-images only';
+      return 'git status failed or timed out — /diff <step> compares pre-images';
     case 'bare':
-      return 'bare repository: no work tree to edit; /undo and /diff use step pre-images only';
+      return 'bare repository, no work tree — /diff <step> compares pre-images';
     default:
-      return 'not a git repository: changes made by commands are not recoverable, /diff compares against step pre-images only';
+      return 'no repository — changes are not recoverable; /diff <step> compares pre-images';
   }
 }
 
@@ -356,7 +361,8 @@ export function notRepoReason(reason: GitState['reason']): string {
 export function gitBannerLine(git: GitBannerInput, opts: { ascii?: boolean } = {}): { text: string; level: 'info' | 'warn' } {
   const ascii = opts.ascii === true;
   const sep = ascii ? ' - ' : ' · ';
-  if (!git.repo) return { text: `git none${sep}${notRepoReason(git.reason)}`, level: 'info' };
+  // §3.6 (G6): `git · no repository — changes are not recoverable; /diff <step> compares pre-images`
+  if (!git.repo) return { text: `git${sep}${notRepoReason(git.reason)}`, level: 'info' };
   const head = git.head;
   let text = 'git ';
   if (head === null) text += 'HEAD';

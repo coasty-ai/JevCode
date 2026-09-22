@@ -66,7 +66,11 @@ describe('createPlainPrompter().intake — the §3.7 readline twin', () => {
   it('y / yes run; n / no chat; empty, 3, keep and esc keep; the row is the §12 literal and the source is released afterwards', async () => {
     const s = setup();
     expect(await s.answer('y')).toBe('run');
+    // TUI-DESIGN-4 §5.6 P-C17: the readline twin gains the card's top-rung words (Ctrl-C cancels)
+    // §5.6 / §14.2 review item 17: the readline prompt is a ladder and the exported constant is its 80-column rung
+    // (the 96-cell top rung wrapped on the default terminal and put the answer cursor on a continuation line)
     expect(s.out[0]).toBe('run this as a task? [y] run it  [n] just chatting  [Esc/empty] keep the text > ');
+    expect(s.out[0]).toBe(INTAKE_READLINE_PROMPT);
     expect(s.lines.borrowed()).toBe(false);
     expect(await s.answer('yes')).toBe('run');
     expect(await s.answer('n')).toBe('chat');

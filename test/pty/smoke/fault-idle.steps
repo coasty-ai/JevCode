@@ -1,0 +1,13 @@
+# TUI-DESIGN-4 §7.3 / §10 S6: the boundaries that render in the IDLE frame — `composer`, `static`, `transcript`.
+# The anchor is the degradation notice itself, never the composer placeholder: `render:composer`'s fallback IS a
+# bare `>` with no placeholder for the rest of the session (that is the §13.4 contract), so a scenario that waited
+# for `Say hi` would wedge on exactly the pane it is testing. The exit is Ctrl-C twice for the same reason — with
+# a degraded composer there is no row to type `/exit` into, and "a second Ctrl-C always ends the process" (§7.8)
+# is the rule that has to hold under a fault.
+expect \x1b\[\?25l
+expect ui: [a-z]+ (pane failed to render|failed) \(
+sleep 0.8
+send \x03
+sleep 0.4
+send \x03
+eof
