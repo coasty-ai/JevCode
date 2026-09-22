@@ -22,7 +22,7 @@ describe('source hygiene: no raw U+2028 / U+2029 in src/** or scripts/**', () =>
   it('every file uses the escaped forms', () => {
     const hits: string[] = [];
     // harness-owned files reported to the harness session on 2026-09-22; the allow-list shrinks as they escape their characters
-    const PENDING_HARNESS_FILES = new Set(['src/import/parse/markdown.ts']);
+    const PENDING_HARNESS_FILES = new Set<string>();
     for (const f of [...walk(join(ROOT, 'src')), ...walk(join(ROOT, 'scripts'))]) {
       if (PENDING_HARNESS_FILES.has(relative(ROOT, f))) continue;
       const text = readFileSync(f, 'utf8');

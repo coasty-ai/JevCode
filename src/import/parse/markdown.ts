@@ -118,7 +118,7 @@ export function looksBinary(buf: Buffer, sniffBytes: number = IMPORT_LIMITS.bina
 
 /** JS line terminators, so `^` and `$` under the `m` flag are reproduced exactly. */
 function isLineTerminator(c: string | undefined): boolean {
-  return c === '\n' || c === '\r' || c === ' ' || c === ' ';
+  return c === '\n' || c === '\r' || c === '\u2028' || c === '\u2029';
 }
 
 /**
