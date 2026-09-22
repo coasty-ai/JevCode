@@ -1641,9 +1641,16 @@ export interface EngineOptions {
    */
   coordination?: CoordinationOptions;
   /**
-   * contract 1.9 (Fastlane) §0.3: the speculative routers of §2. Default **'off'** in every mode on `main` — the
-   * wave carries three polarity changes (risk, the replan stop, completion) and none of them reaches a user run
-   * before the head-to-head of §8 decides. The bench arm sets `'on'`. Env override: `JEVCODE_ROUTERS=on|off`.
+   * contract 1.9 (Fastlane) §0.3: the speculative routers of §2, and ONLY in `mode: 'jev-on'` — the wave carries
+   * three polarity changes (§2.4 risk, §2.5 the replan stop and completion) and the other modes are the controls
+   * the §8 head-to-head measures `jev-on` against. Default **'off'** everywhere on `main`: none of the three
+   * reaches a user run before that head-to-head decides.
+   *
+   * **RESERVED until the §7.5 engine seam** (review 2026-09-22, defect 3): nothing reads this member yet. The seam
+   * that lifts it off the run and hands it to `routersOn(mode, opt)` at the four routed sites lands in slot B's
+   * post-C commit to `src/loop/engine.ts` (§7.1 allows one slot in that file at a time, and slot C holds it).
+   * Until then the switch a bench arm can express is `JEVCODE_ROUTERS=on|off` in the worker's own process, read
+   * inside `src/loop/routers.ts` and gated on `jev-on` exactly as this member will be.
    */
   routers?: 'on' | 'off';
   // NOT here: git / gitDir / gitCommonDir — probed inside createEngine before createSandbox and handed to createWorkspace (§12.1)

@@ -5,9 +5,24 @@
  * will read: whether routers are on at all, the per-step token of I4, and the per-step ledger that becomes
  * `StepRecord.router`.
  *
- * **Default off.** `routersOn()` is false unless `EngineOptions.routers === 'on'` or `JEVCODE_ROUTERS=on`, so
- * every stage below takes exactly the path it took before contract 1.9 and invariant I2 (byte identity when off)
- * holds by construction rather than by inspection: the new code is entered from one `if` per stage, all false.
+ * **Default off, and `jev-on` only.** `routersOn(mode)` is false unless the mode is `jev-on` AND
+ * (`EngineOptions.routers === 'on'` or `JEVCODE_ROUTERS=on`), so every stage below takes exactly the path it took
+ * before contract 1.9 and invariant I2 (byte identity when off) holds by construction rather than by inspection:
+ * the new code is entered from one `if` per stage, all false.
+ *
+ * **The mode gate is not decoration** (review 2026-09-22, defect 4). `runReplanStage` is the ONE replan site for
+ * every mode — unlike judge (`judge.ts` branches to `runCodeJudgeStage` for llm-jev) and risk (`runHarmOnlyRiskStage`)
+ * it has no per-mode variant — so without the gate a process-wide `JEVCODE_ROUTERS=on` demoted `stop_and_report`
+ * and `task_impossible` in `llm-jev`, `jev-only` and `jev-off` too: the arms the §8 head-to-head exists to compare
+ * `jev-on` AGAINST. The wave's three polarity changes (§2.4 risk, §2.5 the replan stop and completion) are the
+ * subject of the `jev-on` arm and must be absent from every control arm.
+ *
+ * **Where the switch comes from** (review 2026-09-22, defect 3). `opt` is `EngineOptions.routers`, and the engine
+ * seam that reads it off the run and hands it to these four sites lands with the `askRecorded` seam of §7.5 — slot
+ * B's post-C commit, because §7.1 forbids two slots holding `src/loop/engine.ts` at once and slot C holds it. Until
+ * that commit the option is **reserved** (so tagged in `src/core/types.ts`) and the expressible switch is
+ * `JEVCODE_ROUTERS=on` in the bench worker's own process, under the same `jev-on` gate. No caller passes `opt` yet;
+ * it is a parameter and not a global exactly so that the seam is one argument and not a rewrite.
  *
  * **The token and the ledger are per (runId, step).** A stage asks for them by name, so the six stages of one
  * step share one token and one ledger without the engine having to thread anything through `StageContext`.
@@ -17,6 +32,7 @@
  * `engine.ts` at once) the token is invalidated by the next step's mint, which bounds a late write to one step.
  */
 import { createStepToken, emptyRouterLedger, invalidateStepToken, noteRoute, routersEnabled, type RouteResult, type RouterLedger, type StepToken } from '../jev/router.js';
+import type { EngineMode } from '../core/types.js';
 
 /** §2.2 per-site deadlines. Each is the wall a site may wait for Jev before the code order stands. */
 export const RL1_INTENT_DEADLINE_MS = 250;
@@ -24,8 +40,13 @@ export const RL2_CONTEXT_DEADLINE_MS = 400;
 export const RL4_JUDGE_DEADLINE_MS = 400;
 export const RL6_REPLAN_DEADLINE_MS = 500;
 
-/** §0.3: `EngineOptions.routers`, with the `JEVCODE_ROUTERS` override read here, inside `src/loop`. */
-export function routersOn(opt?: 'on' | 'off'): boolean {
+/**
+ * §0.3: the switch, read at each of the four routed sites. `mode` is `StageContext.mode`; `opt` is
+ * `EngineOptions.routers` once the §7.5 engine seam hands it down (see the header). The `jev-on` gate is first and
+ * unconditional: no env var and no option can turn the routers on in a control arm.
+ */
+export function routersOn(mode: EngineMode, opt?: 'on' | 'off'): boolean {
+  if (mode !== 'jev-on') return false;
   return routersEnabled(opt);
 }
 

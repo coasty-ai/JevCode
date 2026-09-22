@@ -236,7 +236,7 @@ export async function runIntentStage(ctx: StageContext, common: JsonObject): Pro
     });
     return out;
   };
-  if (!routersOn()) {
+  if (!routersOn(ctx.mode)) {
     const answered = await asked();
     resolved = answered.resolved;
     planStillValid = answered.planStillValid;

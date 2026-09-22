@@ -24,7 +24,7 @@ import type { StageContext } from '../../../src/loop/engine.js';
 import { createLoopDetector } from '../../../src/loop/loopdetect.js';
 import { emptyPlan } from '../../../src/loop/plan.js';
 import { buildCommonState, type ExecutedInfo } from '../../../src/loop/state.js';
-import { commitStepRouters, resetStepRouters, stepTokenFor } from '../../../src/loop/routers.js';
+import { commitStepRouters, resetStepRouters, routersOn, stepTokenFor } from '../../../src/loop/routers.js';
 import { INTENT_FALLBACK, codeIntentOrder, runIntentStage } from '../../../src/loop/stages/intent.js';
 import { runJudgeStage } from '../../../src/loop/stages/judge.js';
 import { completionDecision, type CompletionFactInput } from '../../../src/loop/stages/complete.js';
@@ -339,4 +339,56 @@ describe('I2: with routers off every stage is the pre-1.9 stage', () => {
     expect(risk.jevUnavailable).toBeUndefined();
     expect(risk.risk.verdict).toBe('ok');
   });
+});
+
+describe('the switch is per MODE, not per process (review 2026-09-22, defects 3 and 4)', () => {
+  beforeEach(() => {
+    process.env['JEVCODE_ROUTERS'] = 'on';
+    resetStepRouters();
+  });
+  afterEach(() => {
+    delete process.env['JEVCODE_ROUTERS'];
+    resetStepRouters();
+  });
+
+  it('routersOn is true for jev-on alone — the §8 head-to-head compares against the OTHER arms', () => {
+    expect(routersOn('jev-on')).toBe(true);
+    expect(routersOn('llm-jev')).toBe(false);
+    expect(routersOn('jev-only')).toBe(false);
+    expect(routersOn('jev-off')).toBe(false);
+    // and the per-engine option is read where it is passed, still under the mode gate
+    delete process.env['JEVCODE_ROUTERS'];
+    expect(routersOn('jev-on', 'on')).toBe(true);
+    expect(routersOn('llm-jev', 'on')).toBe(false);
+    expect(routersOn('jev-on', 'off')).toBe(false);
+    expect(routersOn('jev-on')).toBe(false);
+  });
+
+  for (const mode of ['llm-jev', 'jev-only', 'jev-off'] as const) {
+    it(`${mode}: \`stop_and_report\` still ends the run with JEVCODE_ROUTERS=on in the process`, async () => {
+      const keys = ['change_approach', 'gather_context', 'fix_environment', 'revert_changes', 'stop_and_report', 'none_of_these'];
+      const ctx = stageCtx({
+        mode,
+        ask: async (_stage, questions) => {
+          const out: Record<string, Answer> = { next_move: choiceOver(keys, 'stop_and_report', 0.9) };
+          for (const id of Object.keys(questions)) {
+            if (id.startsWith('can_')) out[id] = noulA(id === 'can_stop_and_report' ? 0.95 : 0.05);
+            if (id === 'task_impossible') out[id] = noulA(0.05);
+          }
+          return out;
+        },
+      });
+      const r = await runReplanStage(ctx, common(), TRIPPED(), ['executed']);
+      // runReplanStage is the ONE replan site for every mode (engine.ts:3840 — unlike judge and risk it has no
+      // per-mode variant), so a process-wide switch demoted the two Jev-decided run-enders in the arms the
+      // head-to-head is meant to compare against.
+      expect(r).toMatchObject({ kind: 'stop', reason: 'replan_stop' });
+    });
+
+    it(`${mode}: a throwing decider is a stage failure again — the routers are jev-on's`, async () => {
+      const ctx = stageCtx({ ask: OUTAGE, mode });
+      await expect(runIntentStage(ctx, common())).rejects.toThrow(/no healthy upstream/);
+      expect(commitStepRouters('r-router', 1)).toBeNull();
+    });
+  }
 });

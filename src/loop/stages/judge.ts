@@ -267,7 +267,7 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
     completion = a.completion;
     for (const c of a.claims) claimProbabilities.set(c.text, c.judged);
   };
-  if (!routersOn()) {
+  if (!routersOn(ctx.mode)) {
     apply(await asked());
   } else {
     const route = await routeSpeculative<JudgeAsked>({

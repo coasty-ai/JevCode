@@ -287,7 +287,7 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
     });
     return out;
   };
-  const routers = routersOn();
+  const routers = routersOn(ctx.mode);
   if (!routers) {
     const a = await asked();
     resolved = a.resolved;

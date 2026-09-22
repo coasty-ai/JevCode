@@ -761,7 +761,7 @@ export async function runRiskStage(ctx: StageContext, common: JsonObject, propos
   let assessment: RiskAssessment | null = null;
   let matchesIntent = 1;
   let evidenceConsistent: number | null = null;
-  const routers = routersOn();
+  const routers = routersOn(ctx.mode);
   // §2.4: with routers on the code verdict is computed BEFORE the request is made, so a failed ask has an answer
   // to fall back to. When Jev does answer, only the narrower deny-list floor applies (codeRiskFloor, below).
   const code = routers ? codeRiskVerdict(proposal, targets, testCommand, opts.verifiedCompletion) : null;
