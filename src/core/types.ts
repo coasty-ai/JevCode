@@ -1645,8 +1645,8 @@ export interface EngineOptions {
   synthesizer?: Synthesizer;
   // slot C — contract 1.9 (Fastlane) §5.2
   /**
-   * contract 1.9 (Fastlane) §0.3: the bounded sieve fast path (route R9). `'auto'` is the default in `jev-on` and
-   * `'off'` in every other mode; the engine derives it, so no `src/config` and no `src/cli` change exists. Env
+   * contract 1.9 (Fastlane) §0.3: the bounded sieve fast path (route R9). Absent resolves to `'auto'` under `jev-on`
+   * and to `'off'` under every other mode; the engine derives it, so no `src/config` and no `src/cli` change exists. Env
    * override: `JEVCODE_FASTPATH=off|auto`, read inside `src/loop` exactly as `JEVCODE_WARM` is read in
    * `src/synth/warm/plane.ts`. `'off'` is byte-identical to today's `jev-on` (I2).
    */
