@@ -402,8 +402,14 @@ runs (`transcript.log` is the documented source of truth); Ctrl-C during the dum
 
 #### 1.3.5 What does *not* change
 
-`<FullApp>` reuses `Console`, `Overlay`, `Review`, `Composer`, `StatusLine`, `Transcript`'s builders and the key
-resolver **unchanged**; only `<Static>` → `<Viewport>` and the allocator differ. If `ui.renderer` is `classic` the tree
+**As built (round 5, finishing audit #20): there is no `<FullApp>` component — the fullscreen renderer IS
+`<App renderer="fullscreen">`, which `createTuiRenderer` (`src/tui/App.tsx`) selects with `selectRenderer` (§1.3.1)
+and mounts directly.** The named wrapper this section once asked for (`src/tui/fullscreen/FullApp.tsx`) was a
+one-line `<App renderer="fullscreen" />` with no importer outside the `src/tui/index.ts` barrel, so it never entered
+the bundle and is deleted; every `<FullApp>` below reads as that App branch.
+
+`<App renderer="fullscreen">` reuses `Console`, `Overlay`, `Review`, `Composer`, `StatusLine`, `Transcript`'s
+builders and the key resolver **unchanged**; only `<Static>` → `<Viewport>` and the allocator differ. If `ui.renderer` is `classic` the tree
 is byte-for-byte today's. This discipline is the whole risk mitigation for the second renderer (§9 records it as slot
 S1's standing rule, and §10 makes it a test: the two renderers' item rows must be equal for the same item list).
 
@@ -2971,7 +2977,7 @@ harness (`test/unit/tui/app-harness.tsx`, read-only this round) — never in `ap
 
 | Slot | Owns (edit unless marked **new**) | Sections |
 | --- | --- | --- |
-| **S1 header, layout, fullscreen** | **`src/tui/App.tsx`**, `src/tui/wordmark.ts`, `src/tui/splash.ts`, `src/tui/Pane.tsx`, `src/tui/pane/model.ts`, `src/tui/layout.ts`, `src/tui/terminal.ts`, `src/tui/scrollback-guard.ts` (**new**), `src/tui/index.ts`, `src/tui/fullscreen/**` (**new**: `layout.ts`, `viewport.ts`, `Viewport.tsx`, `FullApp.tsx`), `src/config/launch.ts`, `src/cli/args.ts`, `test/unit/tui/{wordmark,splash,layout,pane,scrollback-guard}.test.ts*`, `test/unit/tui/fullscreen/**` (new), `test/unit/tui/round4-header-app.test.tsx` (new) — **declared carve-out (integrator, 2026-09-22, finding 21):** the rule-row change re-pins seven lines outside this list, each carrying an explicit `DECLARED CARVE-OUT` comment: `test/unit/tui/app.test.tsx:106, :111, :127, :141` (the panel tab headers, forced by finding 5's `brand: i.ranBefore`), `test/unit/tui/round2-lines.test.ts`, `test/unit/tui/round2-app.test.tsx`, `test/unit/tui/round3-wordmark-app.test.tsx` and `test/unit/tui/height.test.tsx`. §1.2 edge 9 already enumerates the last four as "the rule-row fixtures that re-pin in the same commit"; this row is the §9.1 half of that grant, which §9.1 and §1.2 edge 9 contradicted each other about | §1, §2.2 P-R1 |
+| **S1 header, layout, fullscreen** | **`src/tui/App.tsx`**, `src/tui/wordmark.ts`, `src/tui/splash.ts`, `src/tui/Pane.tsx`, `src/tui/pane/model.ts`, `src/tui/layout.ts`, `src/tui/terminal.ts`, `src/tui/scrollback-guard.ts` (**new**), `src/tui/index.ts`, `src/tui/fullscreen/**` (**new**: `layout.ts`, `viewport.ts`, `Viewport.tsx`; the planned `FullApp.tsx` was deleted in round 5 — see §1.3.5), `src/config/launch.ts`, `src/cli/args.ts`, `test/unit/tui/{wordmark,splash,layout,pane,scrollback-guard}.test.ts*`, `test/unit/tui/fullscreen/**` (new), `test/unit/tui/round4-header-app.test.tsx` (new) — **declared carve-out (integrator, 2026-09-22, finding 21):** the rule-row change re-pins seven lines outside this list, each carrying an explicit `DECLARED CARVE-OUT` comment: `test/unit/tui/app.test.tsx:106, :111, :127, :141` (the panel tab headers, forced by finding 5's `brand: i.ranBefore`), `test/unit/tui/round2-lines.test.ts`, `test/unit/tui/round2-app.test.tsx`, `test/unit/tui/round3-wordmark-app.test.tsx` and `test/unit/tui/height.test.tsx`. §1.2 edge 9 already enumerates the last four as "the rule-row fixtures that re-pin in the same commit"; this row is the §9.1 half of that grant, which §9.1 and §1.2 edge 9 contradicted each other about | §1, §2.2 P-R1 |
 | **S2 resize, terminal, narrow ladder** | `src/tui/Transcript.tsx`, `src/tui/transcript/wrap.ts`, **`src/tui/Console.tsx`**, `src/tui/Overlay.tsx`, `src/tui/composer/filter.ts`, `src/tui/glyphs.ts`, `src/tui/fit.ts` (**new** — `fitRung`, §2.6), `src/tui/gutter.ts` (**new**, zero-import — the rung and `LABEL_GUTTER`, §2.3), `src/tui/console-lines.ts`, `src/tui/onboarding/lines.ts`, `src/cli/main.tsx`, `test/unit/tui/{transcript,console,overlay,glyphs,console-lines,fit,gutter}.test.ts*`, `test/unit/tui/transcript/wrap.test.ts`, `test/unit/tui/onboarding/lines.test.ts`, `test/unit/tui/round4-resize-app.test.tsx` (new) | §2, §5.1 P-C3 |
 | **S3 command output, blocks, local items** | `src/tui/block/**` (**new**), **`src/cli/session.ts`**, `src/cli/config-table.ts`, `src/cli/epilogue.ts`, `src/tui/budget/lines.ts`, `src/tui/why.ts`, `src/tui/calibration.ts`, `src/core/text.ts`, `src/config/resolve.ts`, `src/config/{types,ui,defaults}.ts`, `test/unit/tui/block/**` (new), `test/unit/cli/{session,config-table,epilogue}.test.ts`, `test/unit/tui/{budget,why,calibration}*.test.ts`, `test/unit/config/**`, `test/unit/tui/round4-block-app.test.tsx` (new) | §3.1–§3.5, §7.5 |
 | **S4 palette, keys, composer** | `src/tui/commands/**` (`nav.ts` **new**), `src/tui/keys/**`, `src/tui/composer/{submit,Composer.tsx,buffer,history,paste}`, `src/tui/plain-composer.ts`, `scripts/gen-docs.mjs`, generated `docs/{COMMANDS,KEYS}.md`, `man/jevcode.1`, `completions/*`, `test/unit/tui/commands/**`, `test/unit/tui/{submit,plain-composer,keys,interrupts}*.test.ts*`, `test/unit/tui/round4-palette-app.test.tsx` (new) | §4, §5.3 |
@@ -3421,7 +3427,7 @@ the 16 ms composer gate at 60×200 with the default renderer (17.15 ms p95 vs 3.
 find-in-scrollback and whole-session copy, and has a cliff — a tree one row too tall produces a full clear on every
 frame (37 clears for 36 frames). The classic changes are ≈ 200 lines and answer the user's sentence for every
 terminal size; the renderer answers it literally for anyone who opts in. Consequences: two render trees, whose drift
-is prevented by the standing rule that `<FullApp>` reuses every component and only swaps `<Static>` for `<Viewport>`
+is prevented by the standing rule that the fullscreen branch reuses every component and only swaps `<Static>` for `<Viewport>`
 and the allocator; `RESTORE` gains `ESC[?1049l` when the alternate screen was entered; a new `scroll-latency` probe.
 
 ## 2026-09-21 A window resize stops deleting the terminal's history, and a frame is never two widths

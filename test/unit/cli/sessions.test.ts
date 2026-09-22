@@ -12,7 +12,6 @@ import {
   LOCK_REFUSE_REASONS,
   LOCK_REPLACE_REASONS,
   LOCK_REPLACE_SENTENCE,
-  SESSIONS_INBOX_JSON_CLAUSE,
   SESSIONS_VERBS,
   WHO_PIPED_COLUMNS,
   commandSessions,
@@ -97,6 +96,39 @@ describe('sessions reindex / prune', () => {
     expect(s.io.out.join('')).toContain('pruned 1 of 2 indexed runs whose directory is gone');
     expect((await readIndex(s.indexPath)).sessions.map((x) => x.sessionId)).toEqual([a]);
     expect(readFileSync(s.indexPath, 'utf8')).not.toContain(b);
+  });
+
+  /**
+   * Round-5 item 6 (TUI-DESIGN-4 §7.9, docs/DECISIONS.md): `reindex` counts a forward-version run in BOTH
+   * `skipped` and `newer`, and the line printed only `skipped` — so a user with one run from a newer build was
+   * told their run directory was unreadable, which is the one thing it is not. Two causes, two clauses, two fixes.
+   */
+  it('a forward-version run.json is reported as `written by a newer JevCode`, separately from the unreadable count', async () => {
+    const s = setup();
+    const good = scriptedRunId(3);
+    const future = scriptedRunId(4);
+    const broken = scriptedRunId(5);
+    writeRun(s.runsDir, good);
+    writeRun(s.runsDir, future);
+    // the same run.json with a version this build does not read
+    const p = join(s.runsDir, future, 'run.json');
+    writeFileSync(p, JSON.stringify({ ...(JSON.parse(readFileSync(p, 'utf8')) as Record<string, unknown>), v: 99 }));
+    mkdirSync(join(s.runsDir, broken), { recursive: true });
+    writeFileSync(join(s.runsDir, broken, 'run.json'), '{ not json');
+
+    expect(await commandSessions({ command: 'sessions', sessionsOp: 'reindex' }, s.io)).toBe(0);
+    const line = s.io.out.join('');
+    expect(line).toBe(`reindexed 1 run into ${s.indexPath} (1 unreadable run dir skipped, 1 written by a newer JevCode — upgrade with jevcode upgrade)\n`);
+    // the newer run is NOT double-counted as unreadable
+    expect(line).not.toContain('2 unreadable');
+
+    // and with only the newer run there is no unreadable clause at all
+    const t = setup();
+    writeRun(t.runsDir, future);
+    const q = join(t.runsDir, future, 'run.json');
+    writeFileSync(q, JSON.stringify({ ...(JSON.parse(readFileSync(q, 'utf8')) as Record<string, unknown>), v: 99 }));
+    expect(await commandSessions({ command: 'sessions', sessionsOp: 'reindex' }, t.io)).toBe(0);
+    expect(t.io.out.join('')).toBe(`reindexed 0 runs into ${t.indexPath} (1 written by a newer JevCode — upgrade with jevcode upgrade)\n`);
   });
 });
 
@@ -411,7 +443,37 @@ describe('sessions inbox (§2.9, §13.3)', () => {
     // §13.2 clause 8 as amended (fix pass, finding 10): the truncated form is spelled `deviceId8` everywhere
     expect(parsed.acks).toEqual([{ msgId: 'm-1', by: 'S1-aaaaaaaa', deviceId8: 'k3q7m2ab', at: '2026-09-21T23:00:05.000Z', outcome: 'applied' }]);
     for (const key of ['hostKey', 'checksum', 'hmac']) expect(j.io.out.join('')).not.toContain(key);
-    expect(SESSIONS_INBOX_JSON_CLAUSE).toContain('no hostKey');
+  });
+
+  /**
+   * §13.3 as ratified (round-5 owner item): `--json` serialises coordination's OWN `publicMessage(m)` projection
+   * when the seam supplies it, rather than a second flattening declared in a sentence in this file.
+   */
+  it('--json prefers the `publicMessage` projection from the seam, and it carries no hostKey / checksum / hmac', async () => {
+    const s = setup();
+    const coord = fakeCoordination();
+    const withPublic = {
+      ...coord,
+      publicInbox: async () => [
+        {
+          id: 'm-1',
+          from: { deviceId8: 'zz5wq7cd', label: 'air', sessionId: 'S2-bbbbbbbb', runId: 'R2' },
+          to: '@all',
+          type: 'heads-up' as const,
+          text: 'editing store.ts',
+          refs: {},
+          t: '2026-09-21T23:00:00.000Z',
+        },
+      ],
+    } as unknown as SessionsCoordination;
+    expect(await commandSessions({ command: 'sessions', json: true }, { ...s.io, verb: 'inbox', coordination: withPublic })).toBe(0);
+    const parsed = JSON.parse(s.io.out.join('')) as { messages: { from: { deviceId8: string } }[] };
+    expect(parsed.messages[0]?.from.deviceId8).toBe('zz5wq7cd');
+    for (const key of ['hostKey', 'checksum', 'hmac']) expect(s.io.out.join('')).not.toContain(key);
+    // a seam without it still answers the shape from the flattened rows — no build loses the sink
+    const t = setup();
+    expect(await commandSessions({ command: 'sessions', json: true }, { ...t.io, verb: 'inbox', coordination: fakeCoordination() })).toBe(0);
+    expect((JSON.parse(t.io.out.join('')) as { messages: unknown[] }).messages).toHaveLength(1);
   });
 
   it('a build whose seam has no ack read still emits the shape, with an honest empty list', async () => {

@@ -727,7 +727,7 @@ Read-only; counts and sizes only; **no key, no memory body and no transcript bod
 | `~/.claude` contents | `backups cache downloads file-history ide policy-limits.json remote-settings.json projects session-env sessions settings.json shell-snapshots telemetry` — **no** `CLAUDE.md`, `rules/`, `skills/`, `commands/`, `agents/`, `plugins/`, `keybindings.json`, `history.jsonl`, `.credentials.json` |
 | `~/.claude` total | 3 331 MB |
 | Claude project slugs | 12 |
-| memory dirs | 5 (CoArena 33, coarena-rl-envs 6, open-assist 5, vscode 3, JevCode 0) |
+| memory dirs | 5 (CoArena 33, coarena-rl-envs 6, a fourth sibling 5, vscode 3, JevCode 0) |
 | memory files | **47 markdown files = 43 topic files + 4 `MEMORY.md` indexes** |
 | `~/.claude/projects` walk | 10 220 entries, 9 911 files |
 | transcripts | **3 371** `.jsonl`, **2.7 GB** total; 20 over 5 MB; largest **151 MB**, then 104, 79, 27 |

@@ -10,7 +10,7 @@
  *
  * Nothing here does I/O, reads a clock or holds state: `fold.at` is the clock and every age is derived from it.
  */
-import type { Fold, Heartbeat, Lease, SelfIdentity, SessionActivity } from '../coordination/index.js';
+import type { Fold, Heartbeat, Lease, Liveness, SelfIdentity, SessionActivity } from '../coordination/index.js';
 import type { PeerView, SelfIdentityView, SessionActivityView } from '../core/types.js';
 import { type BlockRow, elideRight } from '../tui/block/lines.js';
 import { cellWidth, type GlyphSet } from '../tui/glyphs.js';
@@ -100,12 +100,20 @@ export function peerViewOf(fold: Fold, self: SelfIdentity): PeerView {
   const counted = new Set<string>();
   const holders = new Set<string>();
 
-  const consider = (hb: Heartbeat): void => {
+  /**
+   * G1's recorded problem, closed: `/who` and `/peers` DISAGREED about one fold. `listSessions` pushes every
+   * `fold.live` row as `'live'` (src/coordination/fold.ts), while this projection read `fold.liveness`, which only
+   * carries a key once `livenessOf` was called for it — so our OWN freshly adopted row counted as neither live nor
+   * stale and `/who · 1 live` sat beside `/peers · 0 here`. `fallback` is what the bucket the row came OUT of
+   * already says: `'live'` from `fold.live`, `'gone'` from `fold.gone`, `'unknown'` from a fork. A key that IS in
+   * `fold.liveness` still wins — that is the recomputed verdict, and it may have aged past the bucket.
+   */
+  const consider = (hb: Heartbeat, fallback: Liveness): void => {
     const key = livenessKeyOf(hb);
     if (counted.has(key)) return;
     if (!sameWorkspace(hb.repo, self)) return;
     counted.add(key);
-    const verdict = fold.liveness.get(key) ?? 'unknown';
+    const verdict = fold.liveness.get(key) ?? fallback;
     if (verdict === 'live') live += 1;
     else if (verdict !== 'unknown') stale += 1;
     if (isSelfRecord(fold, hb, self)) return;
@@ -117,9 +125,9 @@ export function peerViewOf(fold: Fold, self: SelfIdentity): PeerView {
     }
   };
 
-  for (const hb of fold.live.values()) consider(hb);
-  for (const list of fold.forks?.values() ?? []) for (const hb of list) consider(hb);
-  for (const hb of fold.gone.values()) consider(hb);
+  for (const hb of fold.live.values()) consider(hb, 'live');
+  for (const list of fold.forks?.values() ?? []) for (const hb of list) consider(hb, 'unknown');
+  for (const hb of fold.gone.values()) consider(hb, 'gone');
 
   for (const lease of fold.leases.values()) {
     if (lease.released !== undefined) continue;

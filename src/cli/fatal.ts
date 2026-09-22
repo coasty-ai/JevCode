@@ -219,9 +219,9 @@ export function createFatalExit(deps: FatalDeps): FatalExit {
      * The same errno while the LAUNCH creates the runs directory stays a configuration problem the user fixes
      * with `--runs-dir` (exit 2), so the split keys on `fsCtx.op`, not on the code alone.
      *
-     * The design puts this in `explainFsError` (`src/errors.ts`); that file is the harness session's under the
-     * 2026-09-22 ownership rule, so the hunk is OWED TO THE HARNESS SESSION (docs/STATUS.md 'Round 4') and the
-     * split is made at this call site meanwhile. It is a no-op here once the hunk lands.
+     * The design puts the split in `explainFsError` (`src/errors.ts`), which classifies every errno for the whole
+     * codebase and today answers exit 2 for ENOSPC regardless of context. It is made here instead, at the one call
+     * site that knows the `fsCtx.op`, and becomes a no-op the day `explainFsError` takes the context itself.
      */
     const runDirDiskFull = fsCtx?.op === 'run-dir' && DISK_FULL_CODES.has(errnoCode(e) ?? '');
     const err: SerializedError = runDirDiskFull ? { ...base, exitCode: EXIT_CODES.checkpoint } : base;

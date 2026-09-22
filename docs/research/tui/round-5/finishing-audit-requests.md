@@ -68,3 +68,5 @@ not re-implemented. Line numbers below are as the auditor saw them on `main` (d2
 The repository is https://github.com/coasty-ai/JevCode (clone URL https://github.com/coasty-ai/JevCode.git). Any URL a TUI/CLI surface or a
 doc written in this wave prints uses exactly that (e.g. `jevcode report`'s "file an issue" pointer, `doctor`'s fix lines, the facts file).
 Never push from a worktree or a work branch: only the harness session pushes `main` and `archive/measurements` after each merge.
+
+## Added 2026-09-22 ~15:20 PDT (slot A): src/cli/report.ts `ISSUES_URL` → https://github.com/coasty-ai/JevCode/issues (currently the old personal URL); grep src/cli src/tui for any other github.com URL and fix likewise.

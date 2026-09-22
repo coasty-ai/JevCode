@@ -41,6 +41,11 @@ import { MODELS_LOADING, MODELS_PLAIN_CAP, SR_COALESCE_MS, modelCheck, modelsPic
 import { catalogueSettled, snapshotResults } from '../../../src/tui/models/state.js';
 import { tick } from '../../fixtures/tui/fixtures.js';
 import { CTRL_R, DOWN, ESC, fakeHost, mountApp, waitFor, type FakeHost, type MountOptions, type Mounted } from './app-harness.js';
+// R5-H4: the peer-zone seam — the reducer, the `statusView` pass-through and the zone it feeds
+import { initialUiState, uiReducer, type UiState } from '../../../src/tui/useEngine.js';
+import { statusView } from '../../../src/tui/StatusLine.js';
+import { peerZoneCounts, peerZoneText, statusZones } from '../../../src/tui/status/lines.js';
+import type { Fold } from '../../../src/coordination/index.js';
 
 afterEach(() => cleanup());
 
@@ -897,5 +902,79 @@ describe('the invariants the shared shell must not break (TD4 §4.5, §6.2)', ()
     expect([...KEY_CONTEXTS].sort()).toEqual(['agents', 'composer', 'global', 'palette', 'picker', 'review']);
     expect(KEY_CONTEXTS).toHaveLength(6);
     expect([...new Set(KEY_ACTIONS.map((b) => b.context))].every((c) => KEY_CONTEXTS.includes(c))).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------------------
+// R5-H4 (gap wave, finding 9) — the `peers` status zone is no longer dark
+// ---------------------------------------------------------------------------------------
+
+/**
+ * `statusZones` has read `StatusLineState.fold` / `.selfId` since R5-2, and `peerZoneText` has been tested on its
+ * own since then, but nothing ever SUPPLIED them: `UiState` carried no fold, so the §12.1 S6 zone could not light
+ * in a real session. This file's three cases are the seam end to end — the reducer arm, the `statusView`
+ * pass-through and the zone that falls out of it — plus the invariant that a run reset must not blank a
+ * SESSION-level fact, and the first-frame gate that keeps `src/coordination/**` a type-only import here.
+ */
+describe('(h) R5-H4: `peers:fold` lights the §12.1 S6 peer zone (TUI-DESIGN-5 §2.2)', () => {
+  const OTHER = 'ffee0011';
+  const SELF = { deviceId: 'k3q7m2ab', runId: 'my-run', sessionId: 'my-session' } as const;
+
+  async function foldWith(opts: { live?: number; headsUp?: number; mail?: number } = {}): Promise<Fold> {
+    const { emptyFold } = await import('../../../src/coordination/index.js');
+    const { makeHeartbeat, makeMessage } = await import('../coordination/helpers.js');
+    const fold = emptyFold({ wallMs: 0, monoMs: 0 });
+    for (let i = 0; i < (opts.live ?? 0); i++) {
+      const rid = `2026-run-peer-${i}`;
+      fold.live.set(rid, { ...makeHeartbeat({ runId: rid, sessionId: `s-${i}`, deviceId: OTHER, pid: 900 + i }), arrivalMono: 0 });
+      fold.liveness.set(`${OTHER}/${rid}/${900 + i}`, 'live');
+    }
+    for (let i = 0; i < (opts.headsUp ?? 0); i++) {
+      fold.inbox.push(makeMessage({ id: `${OTHER}-aaaa1111-${i}`, type: 'heads-up', to: '@all', from: { deviceId: OTHER, label: 'mbp', sessionId: 'sx', runId: null, user: 'u' } }));
+    }
+    for (let i = 0; i < (opts.mail ?? 0); i++) {
+      fold.inbox.push(makeMessage({ id: `${OTHER}-bbbb2222-${i}`, type: 'note', to: 'my-session', from: { deviceId: OTHER, label: 'mbp', sessionId: 'sx', runId: null, user: 'u' } }));
+    }
+    return fold;
+  }
+
+  const zones = (state: UiState): string => statusZones(statusView(state, { columns: 200, glyphs: GLYPHS.unicode }), 200).right.join(' ');
+
+  it('an initial state has no fold and no peer segment; one `peers:fold` action lights the zone', async () => {
+    const start = initialUiState('t', null);
+    expect(start.fold).toBeNull();
+    expect(start.selfId).toBeNull();
+    expect(zones(start)).not.toContain('⇄');
+    const fold = await foldWith({ live: 2, headsUp: 1, mail: 1 });
+    const next = uiReducer(start, { type: 'peers:fold', fold, selfId: SELF });
+    expect(next.fold).toBe(fold);
+    expect(next.selfId).toEqual(SELF);
+    expect(peerZoneCounts(fold, SELF)).toEqual({ live: 2, headsUp: 1, mail: 1 });
+    expect(zones(next)).toContain(peerZoneText(fold, SELF, GLYPHS.unicode, 200));
+    expect(zones(next)).toContain('⇄ 2 live · 1 heads-up · ✉ 1');
+  });
+
+  it('an EMPTY fold still shows nothing — the zone is absent at 0/0/0, never `⇄ 0 live` (§13.2 clause 5)', async () => {
+    const fold = await foldWith();
+    const state = uiReducer(initialUiState('t', null), { type: 'peers:fold', fold, selfId: SELF });
+    expect(state.fold).toBe(fold);
+    expect(zones(state)).not.toContain('⇄');
+    expect(zones(state)).not.toContain('live');
+  });
+
+  it('a run:start reset keeps the fold: peers are a SESSION fact, so the zone does not blink off at every run', async () => {
+    const fold = await foldWith({ live: 1 });
+    const withFold = uiReducer(initialUiState('t', null), { type: 'peers:fold', fold, selfId: SELF });
+    const started = uiReducer(withFold, { type: 'event', event: { type: 'run:start', runId: 'r1', task: 't', mode: 'llm-jev', resumedFromStep: null }, at: 1_000 });
+    expect(started.runId).toBe('r1');
+    expect(started.fold).toBe(fold);
+    expect(started.selfId).toEqual(SELF);
+    expect(zones(started)).toContain('⇄ 1 live');
+  });
+
+  it('gate G-R5-1: `useEngine.tsx` reaches `src/coordination/**` by TYPE only, so the fold stays off the first-frame graph', () => {
+    const src = readFileSync(new URL('../../../src/tui/useEngine.tsx', import.meta.url), 'utf8');
+    expect(src.match(/^import (?!type )[^\n]*from '\.\.\/coordination\//gm) ?? []).toEqual([]);
+    expect(src).toContain("import type { Fold } from '../coordination/index.js';");
   });
 });

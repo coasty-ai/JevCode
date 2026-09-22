@@ -113,7 +113,7 @@ export function contextWarnLine(pct: ContextPct, g: GlyphSet = GLYPHS.unicode): 
  * jumps from 40 % to 97 % announces **red once** and arms amber silently, because two notices for one jump are
  * noise and the amber sentence would be stale the moment it was written. The invariant is therefore *at most once
  * per threshold per process, and the highest crossed threshold is always the one announced* — **not** "exactly once
- * per threshold", which no highest-wins rule can satisfy. §10's wording is corrected in this slot's report.
+ * per threshold", which no highest-wins rule can satisfy (§10's wording says the latter and is wrong).
  *
  * §7 row 98: the set is per PROCESS and is never seeded from the checkpoint. `ContextUsage.compactions` counts "over
  * the run's life, all resumes" (`src/core/types.ts`), so a persisted set would mean a user who resumes at 90 % is

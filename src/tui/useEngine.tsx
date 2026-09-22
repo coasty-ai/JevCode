@@ -33,7 +33,9 @@ import { DEFAULT_COMPLETE_THRESHOLD, DEFAULT_IMPOSSIBLE_THRESHOLD, DEFAULT_MODE 
 import { foldByStep, foldPlanRecord, foldStageEnd, foldStepEnd, toDecisionRow, type DecisionRow, type PaneTab, type PlanView, type SynthView, type TimelineStep } from './pane/model.js';
 import { IDENTITY_REVIEWER, itemsFromEvent, localItem, sanitizeStream, synthText, type TranscriptItem, type TranscriptLevel } from './plain.js';
 import { retryViewFrom, startTicker, type RetryView } from './retry.js';
-import type { GitZone, ThinkingPhase } from './status/lines.js';
+import type { GitZone, PeerZoneSelf, ThinkingPhase } from './status/lines.js';
+// TUI-DESIGN-5 §2.2 (R5-H4): TYPE-only — `src/coordination/**` must stay off the first-frame graph (§2.1 rule 3)
+import type { Fold } from '../coordination/index.js';
 import { toastReducer, type Toast } from './toasts.js';
 
 export type { RetryView } from './retry.js';
@@ -289,11 +291,18 @@ export interface UiState {
   readonly scroll: { readonly anchor: 'bottom' } | { readonly anchor: 'row'; readonly top: number };
   /** TUI-DESIGN-4 §5.3 P-C7: the one-slot submission queue — Enter while thinking remembers the text instead of dropping it; null when empty */
   readonly queued: string | null;
+  // ----- TUI-DESIGN-5 §2.2 (R5-H4): the `peers` status zone
+  /** the coordination fold, the peer zone's only source; null until the ledger opens (never before the first frame, §2.1 rule 3) */
+  readonly fold: Fold | null;
+  /** this session's identity, so my own run is not counted as a peer; null excludes nothing (§2.2) */
+  readonly selfId: PeerZoneSelf | null;
 }
 
 /** TUI-DESIGN §15 item 20 `UiAction` (today's four, the design's additions, and the additive `picker` / `title` / `spend:session` / `git:dirs`). */
 export type UiAction =
   | { type: 'event'; event: EngineEvent; at?: number }
+  /** TUI-DESIGN-5 §2.2 (R5-H4): a fold whose peer COUNTS moved — the session controller drops a beat that moves nothing */
+  | { type: 'peers:fold'; fold: Fold; selfId: PeerZoneSelf }
   | { type: 'live'; text: string; toolChars?: number }
   | { type: 'confirm:request'; request: ConfirmRequest; at?: number }
   | { type: 'confirm:settled'; id: string }
@@ -366,6 +375,9 @@ export function initialUiState(task: string, resumeId: string | null, opts: Init
   return {
     items: [],
     seq: 0,
+    // TUI-DESIGN-5 §2.2 (R5-H4): no ledger before the first frame, so the peer zone starts absent, never a placeholder
+    fold: null,
+    selfId: null,
     live: '',
     toolChars: 0,
     synth: null,
@@ -568,6 +580,10 @@ export function uiReducer(state: UiState, action: UiAction): UiState {
       return state.title === action.title ? state : { ...state, title: action.title };
     case 'spend:session':
       return { ...state, spend: { ...state.spend, session: action.session } };
+    case 'peers:fold':
+      // TUI-DESIGN-5 §2.2: `statusView` already reads `s.fold` / `s.selfId` (`src/tui/status/lines.ts`), so the
+      // zone lights from this arm alone — the App spreads the state into it and needs no edit of its own.
+      return { ...state, fold: action.fold, selfId: action.selfId };
     case 'thresholds': {
       const complete = Number.isFinite(action.complete) ? action.complete : state.thresholds.complete;
       const impossible = Number.isFinite(action.impossible) ? action.impossible : state.thresholds.impossible;

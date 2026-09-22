@@ -2,7 +2,7 @@
  * TUI-DESIGN-5 §10 (R5-3) / §3.6 (D-AI) — the `context.*` config chain, all three layers.
  *
  * D-AI exists because (a) alone — the schema rows — ships dead code exactly like the hook round 4 left behind. So
- * this file pins the whole chain: every row resolves through env > `./.env` > `<OPEN_ASSIST_PATH>/.env` > config
+ * this file pins the whole chain: every row resolves through env > `./.env` > `<JEVCODE_EXTRA_ENV_FILE>` > config
  * file > default; `resolveContextConfig` turns those entries into a sparse `ContextPolicyOptions`;
  * `ResolvedConfig.context()` is ALWAYS set after `resolveConfig` (which is what makes the member's own doc comment
  * in `src/core/types.ts` true); and `EngineOptions.contextPolicy` is non-undefined at BOTH `createEngine` sites in
@@ -17,10 +17,9 @@ import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { parseCliArgs, type ParsedFlags } from '../../../src/cli/args.js';
 import { commandConfigSet } from '../../../src/cli/login.js';
-import { CONTEXT_KEPT_PARKED, resolveConfig, resolveContextConfig, type ResolveOptions } from '../../../src/config/resolve.js';
+import { resolveConfig, resolveContextConfig, type ResolveOptions } from '../../../src/config/resolve.js';
 import { BASE_URLS, CONTEXT_COMPACTIONS, CONTEXT_KEPT_RANKERS, CONTEXT_VIEWS, DEFAULT_CONTEXT_COMPACTION, DEFAULT_CONTEXT_COMPACT_EVERY, DEFAULT_CONTEXT_KEPT, DEFAULT_CONTEXT_VIEW, SETTINGS, settingSpec } from '../../../src/config/defaults.js';
-import { PROVIDER_BASE_URL } from '../../../src/config/provider-tables.js';
-import { PROVIDER_IDS, keyEnvNames } from '../../../src/provider/ids.js';
+import { PROVIDER_BASE_URL, PROVIDER_IDS, keyEnvNames } from '../../../src/provider/ids.js';
 import type { SettingName } from '../../../src/config/types.js';
 import type { SettingReader } from '../../../src/config/validate.js';
 import type { ContextPolicyOptions, Resolved } from '../../../src/core/types.js';
@@ -31,22 +30,20 @@ const CONTEXT_ROWS: readonly SettingName[] = ['context.mode', 'context.compactio
 let root: string;
 let cwd: string;
 let home: string;
-let pkg: string;
 let oa: string;
 beforeEach(async () => {
   root = await realpath(await mkdtemp(join(tmpdir(), 'jevcode-ctx-')));
   cwd = join(root, 'ws');
   home = join(root, 'home');
-  pkg = join(root, 'pkg', 'JevCode');
   oa = join(root, 'oa');
-  for (const d of [cwd, home, pkg, oa]) await mkdir(d, { recursive: true });
+  for (const d of [cwd, home, oa]) await mkdir(d, { recursive: true });
 });
 afterEach(async () => {
   await rm(root, { recursive: true, force: true });
 });
 
 const run = (...argv: string[]): ParsedFlags => parseCliArgs(['run', 'task', ...argv]);
-const resolve = (flags: ParsedFlags, env: NodeJS.ProcessEnv = {}, opts: ResolveOptions = {}) => resolveConfig(flags, env, cwd, { packageRoot: pkg, homedir: home, ...opts });
+const resolve = (flags: ParsedFlags, env: NodeJS.ProcessEnv = {}, opts: ResolveOptions = {}) => resolveConfig(flags, env, cwd, { homedir: home, ...opts });
 
 /** A one-entry reader, so `resolveContextConfig` can be table-tested without a filesystem. */
 function reader(entries: Partial<Record<SettingName, string>>): SettingReader {
@@ -83,7 +80,7 @@ describe('§3.6 the schema — five rows in the design, seven on the tree, one o
   });
 });
 
-describe('§3.6 / §10 — every row resolves through the chain: env > ./.env > OPEN_ASSIST_PATH/.env > file > default', () => {
+describe('§3.6 / §10 — every row resolves through the chain: env > ./.env > JEVCODE_EXTRA_ENV_FILE/.env > file > default', () => {
   it('the default layer answers for the three rows that have a default, and the other four stay absent', async () => {
     const c = await resolve(run());
     expect(c.entries.get('context.mode')).toEqual({ value: DEFAULT_CONTEXT_VIEW, source: 'default' });
@@ -102,21 +99,21 @@ describe('§3.6 / §10 — every row resolves through the chain: env > ./.env > 
     for (const name of CONTEXT_ROWS) expect(fromFile.entries.get(name)?.source, name).toBe(file);
     expect(fromFile.entries.get('context.budgetChars')?.value).toBe('12345');
 
-    // <OPEN_ASSIST_PATH>/.env beats the file
+    // <JEVCODE_EXTRA_ENV_FILE> beats the file
     await writeFile(join(oa, '.env'), 'JEVCODE_CONTEXT_COMPACTION=off\n');
-    const fromOa = await resolve(run(), { OPEN_ASSIST_PATH: oa });
+    const fromOa = await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') });
     expect(fromOa.entries.get('context.compaction')).toEqual({ value: 'off', source: `dotenv:${join(oa, '.env')}` });
 
-    // ./.env beats <OPEN_ASSIST_PATH>/.env
+    // ./.env beats <JEVCODE_EXTRA_ENV_FILE>
     await writeFile(join(cwd, '.env'), 'JEVCODE_CONTEXT_COMPACTION=llm\nJEVCODE_CONTEXT_HISTORY_STEPS=9\n');
-    const fromDotenv = await resolve(run(), { OPEN_ASSIST_PATH: oa });
+    const fromDotenv = await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') });
     expect(fromDotenv.entries.get('context.compaction')).toEqual({ value: 'llm', source: `dotenv:${join(cwd, '.env')}` });
     expect(fromDotenv.entries.get('context.historySteps')).toEqual({ value: '9', source: `dotenv:${join(cwd, '.env')}` });
 
     // the process environment beats every one of them
-    const fromEnv = await resolve(run(), { OPEN_ASSIST_PATH: oa, JEVCODE_CONTEXT_MODE: 'relaxed', JEVCODE_CONTEXT_COMPACTION: 'code', JEVCODE_CONTEXT_KEPT: 'code', JEVCODE_CONTEXT_COMPACT_EVERY: '16', JEVCODE_CONTEXT_HISTORY_STEPS: '20', JEVCODE_CONTEXT_FILE_CACHE_BYTES: '65536', JEVCODE_CONTEXT_BUDGET_CHARS: '90000' });
+    const fromEnv = await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env'), JEVCODE_CONTEXT_MODE: 'relaxed', JEVCODE_CONTEXT_COMPACTION: 'code', JEVCODE_CONTEXT_KEPT: 'code', JEVCODE_CONTEXT_COMPACT_EVERY: '16', JEVCODE_CONTEXT_HISTORY_STEPS: '20', JEVCODE_CONTEXT_FILE_CACHE_BYTES: '65536', JEVCODE_CONTEXT_BUDGET_CHARS: '90000' });
     for (const name of CONTEXT_ROWS) expect(fromEnv.entries.get(name)?.source, name).toBe('env');
-    expect(fromEnv.context?.()).toEqual({ view: 'relaxed', compaction: 'code', compactEvery: 16, historySteps: 20, fileCacheBytes: 65_536, budgetChars: 90_000 });
+    expect(fromEnv.context?.()).toEqual({ view: 'relaxed', compaction: 'code', kept: 'code', compactEvery: 16, historySteps: 20, fileCacheBytes: 65_536, budgetChars: 90_000 });
   });
 
   it('`sourcesConsulted` names the layers a user has to look in for every row (`jevcode config --explain`)', async () => {
@@ -151,40 +148,38 @@ describe('§3.6 — `resolveContextConfig`, the sparse policy (D-AI layer 2)', (
     expect(resolveContextConfig(reader({ 'context.compactEvery': '' }))).toEqual({});
   });
 
-  it('`context.kept` is NOT mapped: `ContextPolicyOptions` has no member for it yet, and a parked value warns instead of vanishing', async () => {
-    expect(resolveContextConfig(reader({ 'context.kept': 'jev' }))).toEqual({});
-    const parked = await resolve(run(), { JEVCODE_CONTEXT_KEPT: 'jev' });
-    expect(parked.warnings).toContain(CONTEXT_KEPT_PARKED);
-    // the default, and the code ranker that IS wired, say nothing
-    expect((await resolve(run())).warnings).not.toContain(CONTEXT_KEPT_PARKED);
-    expect((await resolve(run(), { JEVCODE_CONTEXT_KEPT: 'code' })).warnings).not.toContain(CONTEXT_KEPT_PARKED);
+  it('round-5 item 19: `context.kept` IS mapped into ContextPolicyOptions, both values, and nothing is parked', async () => {
+    expect(resolveContextConfig(reader({ 'context.kept': 'jev' })).kept).toBe('jev');
+    expect(resolveContextConfig(reader({ 'context.kept': 'code' })).kept).toBe('code');
+    expect(resolveContextConfig(reader({ 'context.kept': ' JEV ' })).kept).toBe('jev');
+    // a malformed value is skipped like every other row, never thrown and never a default in disguise
+    expect(resolveContextConfig(reader({ 'context.kept': 'sideways' }))).toEqual({});
+    // the old `CONTEXT_KEPT_PARKED` warning is gone from every layer
+    const jev = await resolve(run(), { JEVCODE_CONTEXT_KEPT: 'jev' });
+    expect(jev.warnings.filter((w) => w.startsWith('context.kept:'))).toEqual([]);
+    expect(jev.context?.().kept).toBe('jev');
+    expect((await resolve(run())).context?.().kept).toBe(DEFAULT_CONTEXT_KEPT);
   });
 
-  it('the parked warning fires from EVERY layer, exactly once per resolve, whatever the spelling', async () => {
+  it('round-5 item 19: `context.kept` reaches the engine from every layer, and the SETTINGS row no longer says it is unwired', async () => {
+    expect(settingSpec('context.kept').description).toBe('kept-items ranker (code|jev)');
     // the config file
     await writeFile(join(cwd, 'jevcode.json'), JSON.stringify({ contextKept: 'jev' }));
     const fromFile = await resolve(run());
     expect(fromFile.entries.get('context.kept')?.source).toBe(`file:${join(cwd, 'jevcode.json')}`);
-    expect(fromFile.warnings.filter((w) => w === CONTEXT_KEPT_PARKED)).toHaveLength(1);
-
-    // `./.env`, which beats the file — the warning follows the RESOLVED value, not the layer
+    expect(fromFile.context?.().kept).toBe('jev');
+    // `./.env`, which beats the file
     await writeFile(join(cwd, '.env'), 'JEVCODE_CONTEXT_KEPT=code\n');
-    expect((await resolve(run())).warnings).not.toContain(CONTEXT_KEPT_PARKED);
-    await writeFile(join(cwd, '.env'), 'JEVCODE_CONTEXT_KEPT=jev\n');
-    const fromDotenv = await resolve(run());
-    expect(fromDotenv.entries.get('context.kept')?.source).toBe(`dotenv:${join(cwd, '.env')}`);
-    expect(fromDotenv.warnings.filter((w) => w === CONTEXT_KEPT_PARKED)).toHaveLength(1);
-
-    // <OPEN_ASSIST_PATH>/.env
+    expect((await resolve(run())).context?.().kept).toBe('code');
+    // <JEVCODE_EXTRA_ENV_FILE>, below `./.env`
     await rm(join(cwd, '.env'));
     await writeFile(join(oa, '.env'), 'JEVCODE_CONTEXT_KEPT=jev\n');
-    expect((await resolve(run(), { OPEN_ASSIST_PATH: oa })).warnings.filter((w) => w === CONTEXT_KEPT_PARKED)).toHaveLength(1);
-
-    // the value is normalised before it is judged, so ` JEV ` is the same parked value
-    expect((await resolve(run(), { JEVCODE_CONTEXT_KEPT: ' JEV ' })).warnings).toContain(CONTEXT_KEPT_PARKED);
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env') })).context?.().kept).toBe('jev');
+    // the process env beats them all
+    expect((await resolve(run(), { JEVCODE_EXTRA_ENV_FILE: join(oa, '.env'), JEVCODE_CONTEXT_KEPT: 'code' })).context?.().kept).toBe('code');
   });
 
-  it('`jevcode config set context.kept jev` round-trips through the file the next resolve reads, warning included', async () => {
+  it('`jevcode config set context.kept jev` round-trips through the file the next resolve reads and reaches the engine', async () => {
     const configPath = join(root, 'xdg-config.json');
     const env: NodeJS.ProcessEnv = { JEVCODE_CONFIG: configPath };
     const out: string[] = [];
@@ -203,14 +198,12 @@ describe('§3.6 — `resolveContextConfig`, the sparse policy (D-AI layer 2)', (
 
     const c = await resolve(run(), env);
     expect(c.entries.get('context.kept')).toEqual({ value: 'jev', source: `file:${configPath}` });
-    expect(c.warnings.filter((w) => w === CONTEXT_KEPT_PARKED)).toHaveLength(1);
-    // and it still does not reach the engine — the setting is printed, persisted and parked, all three
-    expect(c.context?.()).not.toHaveProperty('kept');
+    expect(c.warnings.filter((w) => w.startsWith('context.kept:'))).toEqual([]);
+    expect(c.context?.().kept).toBe('jev');
 
-    // `code` round-trips the same way and is silent
     const back: string[] = [];
     expect(await commandConfigSet('context.kept', 'code', { ...io, stdout: { write: (x: string) => void back.push(x) } })).toBe(0);
-    expect((await resolve(run(), env)).warnings).not.toContain(CONTEXT_KEPT_PARKED);
+    expect((await resolve(run(), env)).context?.().kept).toBe('code');
   });
 });
 
@@ -258,13 +251,13 @@ describe('§8.1 item 8 / §10 — `ResolvedConfig.context()` is ALWAYS set after
     for (const flags of [run(), run('--mode', 'jev-only'), run('--mock'), run('--plain')]) {
       const c = await resolve(flags);
       expect(typeof c.context).toBe('function');
-      expect(c.context?.()).toEqual({ view: 'relaxed', compaction: 'code', compactEvery: 8 });
+      expect(c.context?.()).toEqual({ view: 'relaxed', compaction: 'code', kept: 'code', compactEvery: 8 });
     }
   });
 
   it('it is the same function `resolveContextConfig` is, so `jevcode config` and the engine can never disagree', async () => {
     const c = await resolve(run(), { JEVCODE_CONTEXT_COMPACTION: 'off', JEVCODE_CONTEXT_BUDGET_CHARS: '50000' });
-    expect(c.context?.()).toEqual({ view: 'relaxed', compaction: 'off', compactEvery: 8, budgetChars: 50_000 });
+    expect(c.context?.()).toEqual({ view: 'relaxed', compaction: 'off', kept: 'code', compactEvery: 8, budgetChars: 50_000 });
     expect(c.context?.()).toEqual(resolveContextConfig({ get: (n) => c.entries.get(n), sources: () => [] }));
   });
 
@@ -281,7 +274,7 @@ describe('§8.1 item 8 / §10 — `ResolvedConfig.context()` is ALWAYS set after
     const fromEntries: SettingReader = { get: (n) => c.entries.get(n), sources: (n) => c.sourcesConsulted(n) };
     for (const name of CONTEXT_ROWS) expect(fromEntries.get(name), name).toEqual(c.entries.get(name));
     expect(c.context?.()).toEqual(resolveContextConfig(fromEntries));
-    expect(c.context?.()).toEqual({ view: 'legacy', compaction: 'llm', compactEvery: 3, historySteps: 7, fileCacheBytes: 4096 });
+    expect(c.context?.()).toEqual({ view: 'legacy', compaction: 'llm', kept: 'code', compactEvery: 3, historySteps: 7, fileCacheBytes: 4096 });
     // and the member is stable: two calls build two equal objects, never a memoised alias a caller could mutate
     expect(c.context?.()).not.toBe(c.context?.());
     expect(c.context?.()).toEqual(c.context?.());
@@ -307,7 +300,7 @@ describe('§3.6 / §9.3 constraint (c) — `EngineOptions.contextPolicy` at EVER
     expect(h.factory.calls).toHaveLength(1);
     const opts = h.factory.calls[0]!;
     expect(opts.contextPolicy).toBeDefined();
-    expect(opts.contextPolicy).toEqual({ view: 'relaxed', compaction: 'off', compactEvery: 8, historySteps: 4 });
+    expect(opts.contextPolicy).toEqual({ view: 'relaxed', compaction: 'off', kept: 'code', compactEvery: 8, historySteps: 4 });
   });
 
   it('the RESUME site passes it too, re-read from the chain so a setting changed between runs takes effect', async () => {
@@ -330,6 +323,6 @@ describe('§3.6 / §9.3 constraint (c) — `EngineOptions.contextPolicy` at EVER
     await h.command(`/resume ${resumed}`);
     expect(h.factory.calls).toHaveLength(1);
     expect(h.factory.calls[0]!.resume).toEqual({ runId: resumed, force: false });
-    expect(h.factory.calls[0]!.contextPolicy).toEqual({ view: 'relaxed', compaction: 'llm', compactEvery: 8 });
+    expect(h.factory.calls[0]!.contextPolicy).toEqual({ view: 'relaxed', compaction: 'llm', kept: 'code', compactEvery: 8 });
   });
 });

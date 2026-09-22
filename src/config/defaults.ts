@@ -81,14 +81,13 @@ export const MAX_COMMAND_TIMEOUT_MS = 600_000;
 export const DEFAULT_MAX_OUTPUT_BYTES = 200 * 1024;
 
 /**
- * TUI-DESIGN-5 §6.3 row 2 (R5-6's hunk, landed by R5-3 in the W4 config PR): the two-entry table is gone. The seven
- * entries live in `src/config/provider-tables.ts`, which is **zero-import** — NOT in `src/models/providers.ts`,
- * whose `providerSpec(id)` would put `src/provider/openrouter.js` on the argv path through `cli/args.ts` and fail
- * gate G-R5-1 (§14.2 #5). The name is kept so `config/validate.ts`, `test/unit/models/providers.test.ts` and
- * `test/unit/config/provider.test.ts` are untouched; the export is deleted when §8.2 R14 lands
- * `PROVIDER_BASE_URL` in `src/provider/ids.ts` and every consumer reads it from there.
+ * TUI-DESIGN-5 §8.2 R14: the seven generator base URLs, re-exported under the config layer's historical name from
+ * `src/provider/ids.ts` — the one zero-import home for provider data, beside `PROVIDER_KEY_ENV`. NOT
+ * `src/models/providers.ts`, whose `providerSpec(id)` would put `src/provider/openrouter.js` on the argv path
+ * through `cli/args.ts` and fail gate G-R5-1 (§14.2 #5). The alias keeps `config/validate.ts` and the tests that
+ * name `BASE_URLS` unchanged.
  */
-export { PROVIDER_BASE_URL as BASE_URLS } from './provider-tables.js';
+export { PROVIDER_BASE_URL as BASE_URLS } from '../provider/ids.js';
 
 /**
  * USD per million tokens. Used only when the API does not return a cost (OpenRouter's `usage.cost` wins when present).
@@ -184,7 +183,7 @@ export const SETTINGS: readonly SettingSpec[] = [
   { name: 'workspace', flag: 'workspace', env: ['JEVCODE_WORKSPACE'], fileKey: 'workspace', defaultValue: null, secret: false, description: 'workspace directory' },
   // JEVCODE_HOME names the jevcode home; the runs dir is <home>/runs (resolve.ts). --runs-dir sets the runs dir directly.
   { name: 'runsDir', flag: 'runsDir', env: ['JEVCODE_HOME'], fileKey: 'runsDir', defaultValue: null, secret: false, description: 'runs directory' },
-  { name: 'openAssistPath', flag: 'openAssistPath', env: ['OPEN_ASSIST_PATH'], fileKey: 'openAssistPath', defaultValue: null, secret: false, description: 'Open Assist path' },
+  { name: 'extraEnvFile', flag: 'extraEnvFile', env: ['JEVCODE_EXTRA_ENV_FILE'], fileKey: 'extraEnvFile', defaultValue: null, secret: false, description: 'an additional .env file whose keys are read as a fallback' },
   { name: 'configFile', flag: 'config', env: ['JEVCODE_CONFIG'], defaultValue: null, secret: false, description: 'config file' },
   { name: 'sandbox', flag: 'sandbox', env: ['JEVCODE_SANDBOX'], fileKey: 'sandbox', defaultValue: DEFAULT_SANDBOX, secret: false, description: 'sandbox profile' },
   { name: 'noNetwork', boolFlag: { key: 'noNetwork', negate: false }, env: [], fileKey: 'noNetwork', defaultValue: 'false', secret: false, description: 'deny network in the sandbox', shape: { kind: 'boolean' } },
@@ -209,7 +208,7 @@ export const SETTINGS: readonly SettingSpec[] = [
   // than failing silently, and the DESCRIPTION says so too, so `jevcode config` tells the truth without a run
   // (the warning only reaches a session, §14.2 review finding 12); all three halves go when the harness lands the
   // member (round-5 request Rk).
-  { name: 'context.kept', env: ['JEVCODE_CONTEXT_KEPT'], fileKey: 'contextKept', defaultValue: DEFAULT_CONTEXT_KEPT, secret: false, description: 'kept-items ranker (code|jev; jev is not wired in this build)', shape: { kind: 'enum', values: CONTEXT_KEPT_RANKERS } },
+  { name: 'context.kept', env: ['JEVCODE_CONTEXT_KEPT'], fileKey: 'contextKept', defaultValue: DEFAULT_CONTEXT_KEPT, secret: false, description: 'kept-items ranker (code|jev)', shape: { kind: 'enum', values: CONTEXT_KEPT_RANKERS } },
   { name: 'context.compactEvery', env: ['JEVCODE_CONTEXT_COMPACT_EVERY'], fileKey: 'contextCompactEvery', defaultValue: String(DEFAULT_CONTEXT_COMPACT_EVERY), secret: false, description: 'compact every N steps (0 disables the interval trigger)', shape: { kind: 'int', min: 0 } },
   { name: 'context.historySteps', env: ['JEVCODE_CONTEXT_HISTORY_STEPS'], fileKey: 'contextHistorySteps', defaultValue: null, secret: false, description: 'recent steps the generator sees (default 12)', shape: { kind: 'int', min: 1 } },
   { name: 'context.fileCacheBytes', env: ['JEVCODE_CONTEXT_FILE_CACHE_BYTES'], fileKey: 'contextFileCacheBytes', defaultValue: null, secret: false, description: 'file content re-read per step in bytes (default 98304)', shape: { kind: 'int', min: 0 } },

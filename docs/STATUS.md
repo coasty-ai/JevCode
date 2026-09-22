@@ -2,7 +2,7 @@
 
 ## What was built
 
-One package at `vscode/JevCode` (its own git repository, nothing imported from Open Assist):
+One package at `vscode/JevCode` (its own git repository, nothing imported from any sibling checkout):
 
 - **Loop.** Intent Choice with an escape option and a paired Noul per option → context Nouls over
   path-keyed candidate files (one request) → one tool-call proposal from the generator
@@ -710,7 +710,7 @@ driver's clock, 1 ms resolution):**
 | Boxed console rows at 24×80 | first frame 11 dynamic rows (rule · 5 wordmark rows · 5 console rows), idle 6 (brand row + console), intake card 9, open panel ≤ 12 | ≤ rows − 2 = 22 |
 
 **`jevcode perf`, run 1** — `env -u CI -u CONTINUOUS_INTEGRATION npm run perf` started 12:16Z on the bundle it built at
-12:16Z (before the S5 fixes that followed: the hermetic `OPEN_ASSIST_PATH` in `src/perf/pty.ts` and the review series'
+12:16Z (before the S5 fixes that followed: the hermetic `JEVCODE_EXTRA_ENV_FILE` in `src/perf/pty.ts` and the review series'
 `/panel full`), with the other slots' test runs alive (1-minute load 2.0 → 7.5 during the run):
 
 | Measurement | Result | Gate | Status |
@@ -880,13 +880,14 @@ at the time named (the other slots kept landing; a row marked *pending* may alre
 re-run the scenario named to see).
 
 1. **No wizard for a keyless zero-argument start on this machine — the sibling `.env` (design §1.1, §8.2
-   `zero-arg-wizard`).** `<OPEN_ASSIST_PATH>/.env` is a dotenv layer whose default is the package root's sibling
-   `../open-assist` (`src/config/resolve.ts:450`); on this machine that directory holds keys, so a session with no key in
-   the environment, the workspace or the credentials file still resolved `decider.apiKey` from
-   `dotenv:/Users/…/open-assist/.env` (checked 12:2xZ with `jevcode config` in the isolated environment) and never opened
+   `zero-arg-wizard`).** `<JEVCODE_EXTRA_ENV_FILE>` is a second dotenv layer, and in round 1 it still had a built-in
+   default pointing at a sibling checkout of the package (`src/config/resolve.ts:450`); on this machine that directory
+   held keys, so a session with no key in the environment, the workspace or the credentials file still resolved
+   `decider.apiKey` from that file (checked 12:2xZ with `jevcode config` in the isolated environment) and never opened
    the wizard. Not a defect of the tree — a property of the machine — but every "hermetic" pty environment of round 1
    inherited it. Fixed on the S5 side: `test/pty/run-smoke.sh`, `test/pty/helpers.ts` `childEnv` and `src/perf/pty.ts`
-   `baseEnv` point `OPEN_ASSIST_PATH` at a directory that does not exist and unset every key variable. The design's
+   `baseEnv` point `JEVCODE_EXTRA_ENV_FILE` at a path that does not exist and unset every key variable (round 5's
+   rename dropped the sibling default outright, so the row is unset by default). The design's
    zero-argument wizard (`No Jev key found. Where do you reach Jev?`) is exercised by `zero-arg-wizard` after that fix
    (its result is in the smoke row above). **Fix pass:** the same environments were still not hermetic against a saved
    login — `childEnv` isolated `XDG_CONFIG_HOME` but passed the real `HOME`, and `src/config/resolve.ts` falls back to

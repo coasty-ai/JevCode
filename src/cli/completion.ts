@@ -26,6 +26,7 @@ export const CLI_DESCRIPTIONS: Readonly<Record<Command, string>> = {
   // TUI-DESIGN-5 §5.5 (R5-5) / §4.2 (R5-4): the same forced one-line edit, one per new `Command` member
   import: 'import memory and workflows from other agents',
   agents: 'list the agents of a run',
+  doctor: 'check this machine and print one fix per problem',
   report: 'write a support bundle',
   why: 'explain a Jev decision',
   calibration: 'reliability report',
@@ -51,7 +52,7 @@ export function renderBash(): string {
   const enums = new Map<string, string[]>();
   for (const f of FLAGS) if (!f.hidden && f.arg !== undefined && ENUM_ARG_RE.test(f.arg)) enums.set(f.name, f.arg.split('|'));
   for (const [name, values] of enums) L.push(`    --${name}) COMPREPLY=( $(compgen -W ${shQuote(values.join(' '))} -- "$cur") ); return 0 ;;`);
-  L.push('    --task-file|--config|--out) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;', '    --workspace|--runs-dir|--open-assist-path) COMPREPLY=( $(compgen -d -- "$cur") ); return 0 ;;', '  esac');
+  L.push('    --task-file|--config|--out|--extra-env-file) COMPREPLY=( $(compgen -f -- "$cur") ); return 0 ;;', '    --workspace|--runs-dir) COMPREPLY=( $(compgen -d -- "$cur") ); return 0 ;;', '  esac');
   L.push('  if [ -z "$cmd" ]; then', `    COMPREPLY=( $(compgen -W ${shQuote([...CLI_COMMANDS, '--help', '--version'].join(' '))} -- "$cur") )`, '    return 0', '  fi', '  case "$cmd" in');
   for (const c of CLI_COMMANDS) L.push(`    ${c}) COMPREPLY=( $(compgen -W ${shQuote(flagsFor(c).map((f) => `--${f.name}`).join(' '))} -- "$cur") ) ;;`);
   L.push('  esac', '  return 0', '}', 'complete -F _jevcode jevcode', '');

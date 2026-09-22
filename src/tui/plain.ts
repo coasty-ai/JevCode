@@ -30,6 +30,7 @@ import type {
 import { DEFAULT_COMPLETE_THRESHOLD, MODE_BADGE_WORD } from '../config/defaults.js';
 import { AbortError } from '../errors.js';
 import { clip, firstLine } from '../core/text.js';
+import { METER_RED_PCT } from '../core/limits.js';
 import { formatDuration } from '../core/time.js';
 import { MIN_SECRET_LENGTH, detectSecrets as detectSecretsByPattern, patternRedact } from '../core/redact.js';
 import { gitBannerLine, headDriftWarning, headMoved } from '../workspace/gitstate.js';
@@ -85,6 +86,17 @@ export type TranscriptKind =
   // contract 1.2 (TUI-DESIGN-2 §6 item 17, §4.5): the one-line step summary (`step:end`) and the `[you]` / `[jevcode]` bubbles (§3.10)
   | 'step'
   | 'chat';
+
+/**
+ * TUI-DESIGN-5 D-AG — the `context:warn` row, word-for-word the `ctx` status cell at its amber/red form
+ * (`src/tui/context/lines.ts` `ctxText`): the WORD beside the percent, then the action, so `NO_COLOR`, `--ascii`
+ * and a screen reader read the same crossing a colour would have shown. Built here from `METER_RED_PCT` rather
+ * than by importing `context/lines.ts`, which would drag `src/loop/context/**` into the item formatter's static
+ * import graph (the §14.2 item 13 gate); `plain.test.ts` pins this string equal to `ctxText`'s at every percent.
+ */
+export function contextWarnItemText(pct: number): string {
+  return `ctx ${pct}% ${pct >= METER_RED_PCT ? 'red' : 'amber'}${SEP}/compact now`;
+}
 
 /** TUI-DESIGN-2 §4.5: the stage kinds the TUI's `compact` transcript hides (stamped `hidden: true` at append time); every sink still writes them */
 export const COMPACT_HIDDEN_KINDS: ReadonlySet<TranscriptKind> = new Set<TranscriptKind>(['intent', 'context', 'synth', 'proposal', 'risk', 'outcome', 'judge', 'plan', 'run:ready']);
@@ -175,7 +187,7 @@ export function kTokens(n: number): string {
  * which matches the raw pty capture). `·` is U+00B7 = two UTF-8 bytes, so `[·-]` in a bytes regex is the one-byte
  * class `{0xC2, 0xB7, 0x2D}` and can never match the two-byte `·` followed by a space.
  *
- * MEASURED 2026-09-22 (integrator): with the bracket form, every perf scenario that waits for `[run] started`
+ * MEASURED 2026-09-22: with the bracket form, every perf scenario that waits for `[run] started`
  * matched nothing on a **unicode** capture and everything on an `--ascii` one — `composer live`,
  * `composer live-stress`, `composer review` and five `states` scenarios reported `0/200 keys` and exit 124 after
  * a 20 s wait for a row that had been on screen for 20 s. `(?:·|-)` is one character in all three engines.
@@ -633,8 +645,8 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
     case 'transcript':
       // §3.6 / §3.7 G1 (D-V): the `stop:` line is DELETED as an item — `[run] finished · <reason> · …` already says
       // it, and the same stop used to be stated three times in three consecutive rows (A3 §2.9). The design put the
-      // deletion at `src/loop/stop.ts:56`; that file is the harness session's under the 2026-09-22 ownership rule,
-      // so the deletion lands here instead, in the ONE formatter §3.6 names first. Every sink §3.7 lists reads this
+      // deletion at `src/loop/stop.ts:56`, but the engine keeps emitting the line, so the drop lands here instead,
+      // in the ONE formatter §3.6 names first — one place, not four. Every sink §3.7 lists reads this
       // function — transcript.log (`src/loop/engine.ts:1981`), `--plain`, the TUI and the session controller — so
       // the four stay identical, and `--json` consumers, which read EVENTS and never item text, are untouched.
       // The hunk owed to `stop.ts` is a cosmetic follow-up (the event would then carry ''), not a behaviour change.
@@ -662,6 +674,16 @@ export function itemsFromEvent(e: EngineEvent, seq: number, state: ItemStreamSta
     case 'budget:warn':
       // TUI-DESIGN §9.2 / §24: `[run] budget: …` through the shared money lines; 80 % and 95 % are warnings, 50 % is information
       return budgetItems(e).map((text) => one(null, 'budget', text, e.pct >= 80 ? 'warn' : 'info'));
+    case 'context:warn':
+      // TUI-DESIGN-5 D-AG (deviation 16): the engine's one-per-upward-crossing event, as a row in all three sinks.
+      // Before this arm `--json` carried the crossing and every interactive and `--plain` user saw nothing at 85 %.
+      return make(e.step, 'notice', contextWarnItemText(e.pct), 'warn');
+    case 'context:compacted':
+      // TUI-DESIGN-5 D-AJ (b) / deviation 3: the typed event yields NO row of its own. The engine emits a
+      // `notice{kind:'ui', label:'[ui]'}` beside it whose text already states `<before> → <after> prompt chars`,
+      // the fold count, the step and the TRIGGER (`src/loop/engine.ts`), and that notice goes through the `notice`
+      // arm below into all three sinks. A row here would print the same compaction twice, with strictly less in it.
+      return [];
     case 'budget:stop':
     case 'budget:unpriced':
       return budgetItems(e).map((text) => one(null, 'budget', text, 'warn'));

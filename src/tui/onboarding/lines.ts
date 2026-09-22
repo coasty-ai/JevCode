@@ -8,12 +8,13 @@
  * re-exported here for the renderers.
  */
 import { isFieldStep, reuseJevOffered, reuseOffered, skipOffered, targetMode, type FoundKey, type FoundSource, type ImportOption, type ImportProbeCounts, type OnboardingState, type WizardOption, type WizardProvider, type WizardStep } from './reducer.js';
-import type { EngineMode, JevProvider, SandboxLevel } from '../../core/types.js';
+import type { EngineMode, JevProvider, SandboxLevel, SandboxProfile } from '../../core/types.js';
 import type { TrustInputs } from '../../config/trust.js';
 import { DEFAULT_MODE, MODE_BADGE_WORD, SESSION_CAP_MULTIPLIER } from '../../config/defaults.js';
 import { defaultRunSpendCapUsd } from '../../config/ui.js';
 import { ELLIPSIS, stringWidth, truncateCells } from '../composer/width.js';
 import { fitRung } from '../fit.js';
+import { PROVIDER_DISPLAY_NAME, PROVIDER_KEY_ENV, type ProviderId } from '../../provider/ids.js';
 
 /** TUI-DESIGN §11.3: the trust prompt's inputs (declared in config/trust.ts; re-exported for the renderers). */
 export type { TrustInputs } from '../../config/trust.js';
@@ -38,8 +39,12 @@ export interface WizardView {
 
 /** TUI-DESIGN §11.1: the env variable each provider's key is read from. */
 export const PROVIDER_ENV: Readonly<Record<WizardProvider, string>> = { anthropic: 'ANTHROPIC_API_KEY', openrouter: 'OPENROUTER_API_KEY' };
-/** Display names for the `<Provider> API key (<ENV>)` title. */
-export const PROVIDER_DISPLAY: Readonly<Record<WizardProvider, string>> = { anthropic: 'Anthropic', openrouter: 'OpenRouter' };
+/**
+ * Display names for the `<Provider> API key (<ENV>)` title. TUI-DESIGN-5 §8.2 R14: the two wizard providers' names
+ * are READ from `src/provider/ids.ts` (zero-import, so the first-frame graph is untouched) rather than re-declared,
+ * so the wizard title, the picker column and `errorLabel` cannot drift to two spellings of one provider.
+ */
+export const PROVIDER_DISPLAY: Readonly<Record<WizardProvider, string>> = { anthropic: PROVIDER_DISPLAY_NAME.anthropic, openrouter: PROVIDER_DISPLAY_NAME.openrouter };
 /** TUI-DESIGN-2 §1.4: the wizard's prompted generator provider default follows `DEFAULT_PROVIDER` (openrouter, commit 2a92d0b). */
 export const DEFAULT_WIZARD_PROVIDER: WizardProvider = 'openrouter';
 /** TUI-DESIGN-2 §2.2: the variable each Jev provider's key is read from (the OpenRouter row falls back to `OPENROUTER_API_KEY`). */
@@ -682,18 +687,36 @@ export function dotenvSourceText(path: string): string {
   return `dotenv: ${path}`;
 }
 
+/** the fallbacks every `none` sentence ends with, whatever the reason the sandbox is not there */
+const SANDBOX_NONE_TAIL = 'cwd confinement, env scrubbing, timeout, output cap and tree kill only';
+
+/**
+ * Why `detectSandboxLevel` reported `none`, from the profile the user asked for. `detectSandboxLevel` returns `none`
+ * for `profile === 'none'` BEFORE it probes anything (`src/sandbox/seatbelt.ts`), so the level alone cannot tell
+ * "the user turned it off" from "this platform has no sandbox-exec" — and printing the platform sentence for
+ * `--sandbox none` on macOS was a false statement (finishing audit #5).
+ */
+function sandboxNoneReason(profile: SandboxProfile, platform: string): string {
+  if (profile === 'none') return 'off by request (--sandbox none)';
+  if (profile === 'seatbelt') return `seatbelt requested, but sandbox-exec is not available on ${platform}`;
+  return `sandbox-exec is not available on ${platform}`;
+}
+
 /**
  * TUI-DESIGN §24 sandbox line (`[sandbox]` label). TUI-DESIGN-3 §5.1 rule 13: one thought per row, ` · ` separators (the renderer
  * breaks it at ` · `); the old sentence is the TUI-only `detail` (`sandboxDetail`). A renderer-local item, never in `transcript.log`.
+ *
+ * `profile` is what the user ASKED for and `level` is what was detected, so the `none` row states which of the three
+ * true things happened: chosen, unavailable, or requested-and-unavailable.
  */
-export function sandboxText(level: SandboxLevel, platform: string = process.platform): string {
-  return level === 'seatbelt' ? 'seatbelt · writes only in the workspace and run dirs · secrets, ~/.ssh, ~/.aws unreadable · network on (--no-network)' : `none · sandbox-exec is not available on ${platform} · cwd confinement, env scrubbing, timeout, output cap and tree kill only`;
+export function sandboxText(level: SandboxLevel, profile: SandboxProfile = 'auto', platform: string = process.platform): string {
+  return level === 'seatbelt' ? 'seatbelt · writes only in the workspace and run dirs · secrets, ~/.ssh, ~/.aws unreadable · network on (--no-network)' : `none · ${sandboxNoneReason(profile, platform)} · ${SANDBOX_NONE_TAIL}`;
 }
-/** TUI-DESIGN-3 §5.1 rule 13: the `[sandbox]` item's TUI-only detail body — today's sentence */
-export function sandboxDetail(level: SandboxLevel, platform: string = process.platform): string {
+/** TUI-DESIGN-3 §5.1 rule 13: the `[sandbox]` item's TUI-only detail body — the same three reasons, in the detail's `—`/`:` shape */
+export function sandboxDetail(level: SandboxLevel, profile: SandboxProfile = 'auto', platform: string = process.platform): string {
   return level === 'seatbelt'
     ? 'seatbelt — writes confined to the workspace and run dirs; harness secret files, ~/.ssh, ~/.aws unreadable; reads elsewhere and network allowed unless --no-network'
-    : `none — sandbox-exec is not available on ${platform}: cwd confinement, env scrubbing, timeout, output cap and tree kill only`;
+    : `none — ${sandboxNoneReason(profile, platform)}: ${SANDBOX_NONE_TAIL}`;
 }
 
 /** TUI-DESIGN-3 §1.6 / §10: the jev-only fix block keeps today's five lines verbatim */
@@ -707,8 +730,16 @@ export const FIX_BLOCK_ONE_KEY: readonly string[] = [
   '                              # Jev alone: jevcode config set mode jev-only',
 ];
 export const FIX_BLOCK_ANTHROPIC_LINE = 'export ANTHROPIC_API_KEY=…    # the code model under --provider anthropic';
-/** TUI-DESIGN-3 §1.6: the pipe ConfigError text when only the generator key is missing under a generator mode */
-export const MISSING_GENERATOR_ONLY = 'missing generator.apiKey: set OPENROUTER_API_KEY (the code model), run with --mode jev-only, or run jevcode login';
+/**
+ * TUI-DESIGN-3 §1.6 / round-5 item 4: the pipe ConfigError text when only the generator key is missing under a
+ * generator mode. It names the RESOLVED provider's own variable: the constant this replaced always said
+ * `OPENROUTER_API_KEY`, so `--provider anthropic --no-input` told the user to export a variable that would not
+ * work. `PROVIDER_KEY_ENV` (src/provider/ids.ts, zero-import) is the one table of key names.
+ */
+export function missingGeneratorOnly(provider: ProviderId | null): string {
+  const env = (provider !== null ? PROVIDER_KEY_ENV[provider][0] : undefined) ?? 'OPENROUTER_API_KEY';
+  return `missing generator.apiKey: set ${env} (the code model), run with --mode jev-only, or run jevcode login`;
+}
 
 /**
  * TUI-DESIGN §11.1 / §24, TUI-DESIGN-2 §1.4 / §12 "Wizard" and TUI-DESIGN-3 §1.6: the ONE fix block, printed after the ConfigError

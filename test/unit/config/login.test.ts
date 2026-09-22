@@ -221,7 +221,7 @@ describe('the pure helpers (TUI-DESIGN-2 §1.2, §1.4, §2.3)', () => {
     const none = { jevProvider: null, jevApiKey: null };
     expect(inferJevProvider({ flag: 'typesafe', lookup: lookupOf({ JEV_API_KEY: 'x' }), file: none })).toBe('typesafe');
     expect(inferJevProvider({ flag: 'auto', lookup: lookupOf({ JEV_PROVIDER: 'typesafe', JEV_API_KEY: 'x' }), file: none })).toBe('typesafe');
-    // the resolved provider (main.tsx's resolveConfig: env, ./.env, <OPEN_ASSIST_PATH>/.env, the file, the auto rules) outranks the local rules
+    // the resolved provider (main.tsx's resolveConfig: env, ./.env, <JEVCODE_EXTRA_ENV_FILE>, the file, the auto rules) outranks the local rules
     expect(inferJevProvider({ flag: undefined, resolved: 'typesafe', lookup: lookupOf({ JEV_PROVIDER: 'openrouter', JEV_API_KEY: 'x' }), file: none })).toBe('typesafe');
     expect(inferJevProvider({ flag: 'openrouter', resolved: 'typesafe', lookup: lookupOf({}), file: none })).toBe('openrouter');
     expect(inferJevProvider({ flag: undefined, resolved: null, lookup: lookupOf({ JEV_PROVIDER: 'typesafe' }), file: none })).toBe('typesafe');
@@ -247,7 +247,7 @@ describe('the pure helpers (TUI-DESIGN-2 §1.2, §1.4, §2.3)', () => {
     expect(await resolvedJevProvider(resolver('typesafe', 'derived'), noKey)).toBe('typesafe');
     expect(await resolvedJevProvider(resolver('openrouter', 'env'), noKey)).toBe('openrouter');
     expect(await resolvedJevProvider(resolver('typesafe', 'flag'), noKey)).toBe('typesafe');
-    expect(await resolvedJevProvider(resolver('typesafe', 'dotenv:/w/open-assist/.env'), noKey)).toBe('typesafe');
+    expect(await resolvedJevProvider(resolver('typesafe', 'dotenv:/w/extra/.env'), noKey)).toBe('typesafe');
     expect(await resolvedJevProvider(resolver('openrouter', 'default'), withKey)).toBeNull();
     expect(await resolvedJevProvider(resolver('typesafe', 'file:/x/config.json'), withKey)).toBe('typesafe');
     expect(await resolvedJevProvider(resolver('typesafe', 'file:/x/config.json'), noKey)).toBeNull();
@@ -618,12 +618,12 @@ describe('commandLogin', () => {
     const t = io(null, {
       env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV },
       readMasked: async (p) => (prompts.push(p), TS_KEY),
-      resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: TS_KEY, source: 'dotenv:/w/open-assist/.env' }], ['decider.provider', { value: 'typesafe', source: 'derived' }]]),
+      resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: TS_KEY, source: 'dotenv:/w/extra/.env' }], ['decider.provider', { value: 'typesafe', source: 'derived' }]]),
     });
     expect(await commandLogin({}, t)).toBe(0);
     expect(prompts).toEqual([]);
     expect(t.asked).toEqual([]);
-    expect(t.out.text).toBe(`[setup] decider.apiKey: already set from dotenv:/w/open-assist/.env (sha256:${fingerprint(TS_KEY)}) — Jev key step skipped\n`);
+    expect(t.out.text).toBe(`[setup] decider.apiKey: already set from dotenv:/w/extra/.env (sha256:${fingerprint(TS_KEY)}) — Jev key step skipped\n`);
     expect(t.out.text).not.toContain(TS_KEY);
     await expect(stat(configPath())).rejects.toThrow();
     const env = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readMasked: async () => TS_KEY, resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.apiKey', { value: TS_KEY, source: 'env' }]]) });
@@ -641,7 +641,7 @@ describe('commandLogin', () => {
     expect(file.asked).toEqual([]);
     expect(prompts).toEqual(['Jev API key (TYPESAFE_API_KEY): ']);
     expect(await readConfig()).toEqual({ jevApiKey: TS_KEY, jevProvider: 'typesafe' });
-    // the session's resolution (an OPENROUTER_API_KEY in <OPEN_ASSIST_PATH>/.env the local rules never see) decides the provider
+    // the session's resolution (an OPENROUTER_API_KEY in <JEVCODE_EXTRA_ENV_FILE> the local rules never see) decides the provider
     await rm(configPath());
     prompts.length = 0;
     const resolved = io(null, { env: { XDG_CONFIG_HOME: join(home, 'xdg'), ...JEV_ONLY_ENV }, readMasked: async (p) => (prompts.push(p), OR_KEY), resolveSecrets: async () => new Map<string, Resolved<string>>([['decider.provider', { value: 'openrouter', source: 'derived' }]]) });

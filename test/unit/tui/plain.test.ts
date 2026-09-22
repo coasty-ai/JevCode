@@ -32,6 +32,7 @@ import {
   formatTranscriptItem,
   headerItem,
   isChatLabel,
+  contextWarnItemText,
   itemsFromEvent,
   localItem,
   normaliseNote,
@@ -47,12 +48,15 @@ import {
   type NoteGate,
 } from '../../../src/tui/plain.js';
 import { REVIEW_KEYS_80, reviewHeaderLines } from '../../../src/tui/review/lines.js';
+import { joinWrapped, wrapBody, wrapBodyCut } from '../../../src/tui/transcript/wrap.js';
+import { ctxText } from '../../../src/tui/context/lines.js';
+import { computeContextUsage } from '../../../src/loop/context/meter.js';
 import { cellWidth, glyphSet, glyphTwin } from '../../../src/tui/glyphs.js';
 import { makeEngine, turn } from '../loop/fakes.js';
 import { budgetItems } from '../../../src/tui/budget/lines.js';
 import { gitBannerLine, headDriftWarning } from '../../../src/workspace/gitstate.js';
 import { AbortError } from '../../../src/errors.js';
-import type { EngineEvent, JudgeResult, LaunchSettings, NoticeKind, RunGitMeta, SecretHit, SessionHost } from '../../../src/core/types.js';
+import type { ContextUsage, EngineEvent, JudgeResult, LaunchSettings, NoticeKind, RunGitMeta, SecretHit, SessionHost } from '../../../src/core/types.js';
 import { makeProposal, makeStepRecord } from '../../fixtures/checkpoint/make.js';
 import { fakeEngine, loadRunEvents, mkConfirmRequest, tick } from '../../fixtures/tui/fixtures.js';
 // TUI-DESIGN-2 §3.7 / §6 item 11: the --plain twin of Renderer.restoreDraft
@@ -579,6 +583,22 @@ describe('createReadlineConfirmer: d <note> (TUI-DESIGN §6.4, §6.5, §10.7)', 
 
 describe('itemsFromEvent: the contract 1.1 engine items (TUI-DESIGN §15.1 item table, §24 strings)', () => {
   const line = (e: EngineEvent, seq = 0): string[] => itemsFromEvent(e, seq).map(formatTranscriptItem);
+  /** audit #7: the harness's own `computeContextUsage` is the producer, so the test never re-models `pct`. */
+  const usageAtPct = (pct: number): ContextUsage =>
+    computeContextUsage({
+      promptChars: pct * 1_000,
+      budgetChars: 100_000,
+      files: 6,
+      historyEntries: 12,
+      summaryAt: 8,
+      lastCompactionStep: 8,
+      compactions: 3,
+      lastCompactionAt: '2026-09-22T14:02:09.000Z',
+      compaction: 'code',
+      promptBuildMs: 41,
+      refreshMs: 6,
+      recentSteps: { chars: 71_000, allowanceChars: 71_000, whole: 2, clipped: 4, oneLine: 6, reads: 3 },
+    });
 
   it('steer:queued / steer:applied / steer:withdrawn / pause:requested', () => {
     expect(line({ type: 'steer:queued', step: 8, index: 1, text: 'also update the docs', queued: 1 })).toEqual(['[step 8] steer queued · step 8 · "also update the docs" · 1 waiting']);
@@ -609,6 +629,81 @@ describe('itemsFromEvent: the contract 1.1 engine items (TUI-DESIGN §15.1 item 
     expect(line(clamp)).toEqual(['[run] budget: run cap clamped to $0.700 (session $9.300 of $10.000)']);
     expect(line(override)).toEqual(['[run] budget override: limits.spendCapUsd 2 → 3 (applies to this resume)']);
     expect(line(unpriced)).toEqual(['[run] budget: generator usage.cost missing for vendor/x — unpriced']);
+  });
+
+  /**
+   * Finishing audit #7 / TUI-DESIGN-5 D-AG, deviation 16. The engine emits `context:warn` once per UPWARD crossing
+   * of the 85 % line and `contextEnabled` now includes `llm-jev` (the shipped default), so before this arm the
+   * crossing reached `--json` only: every interactive and `--plain` user saw nothing at 85 %. The row is the `ctx`
+   * status cell's own amber/red form, so the transcript and the status line cannot disagree.
+   *
+   * `context:compacted` deliberately produces NO row (D-AJ (b), deviation 3): the engine emits a
+   * `notice{kind:'ui'}` beside the typed event whose text already carries `<before> → <after> prompt chars`, the
+   * fold count, the step and the trigger — a second row would print one compaction twice.
+   */
+  it('audit #7: `context:warn` is one row in all three sinks, word-for-word the `ctx` cell; `context:compacted` stays notice-only', () => {
+    const warn85: EngineEvent = { type: 'context:warn', step: 7, pct: 85, budgetTokens: 100_000, tokensInWindow: 85_000 };
+    const warn87: EngineEvent = { type: 'context:warn', step: 7, pct: 87, budgetTokens: 100_000, tokensInWindow: 87_000 };
+    const warn95: EngineEvent = { type: 'context:warn', step: 9, pct: 95, budgetTokens: 100_000, tokensInWindow: 95_000 };
+    expect(contextWarnItemText(87)).toBe('ctx 87% amber · /compact now');
+    expect(contextWarnItemText(95)).toBe('ctx 95% red · /compact now');
+    // the ONE wording: `plain.ts` builds it from `core/limits.ts` rather than importing `context/lines.ts` (the
+    // §14.2 item 13 import-graph gate below), so the two strings are pinned equal here instead
+    for (const pct of [85, 87, 94, 95, 99]) expect(contextWarnItemText(pct)).toBe(ctxText(usageAtPct(pct), 120));
+    const items = itemsFromEvent(warn87, 11);
+    expect(items).toHaveLength(1);
+    expect(items[0]).toMatchObject({ kind: 'notice', step: 7, level: 'warn', seq: 11, text: 'ctx 87% amber · /compact now' });
+    // transcript.log == --plain == TUI: one formatter, one string, with the step label the other item rows use
+    expect(line(warn87)).toEqual(['[step 7] ctx 87% amber · /compact now']);
+    expect(line(warn85)).toEqual(['[step 7] ctx 85% amber · /compact now']);
+    expect(line(warn95)).toEqual(['[step 9] ctx 95% red · /compact now']);
+    // and it wraps, never cuts, at every rung
+    for (const width of [40, 80, 120]) {
+      const rows = wrapBody('ctx 87% amber · /compact now', width);
+      expect(joinWrapped(rows)).toBe('ctx 87% amber · /compact now');
+      for (const r of rows) expect(cellWidth(r)).toBeLessThanOrEqual(width);
+    }
+    // the typed compaction event yields nothing; the engine's companion `[ui]` notice is the one row
+    expect(line({ type: 'context:compacted', step: 4, chars: { before: 41_000, after: 12_000 }, by: 'code' })).toEqual([]);
+    const companion: EngineEvent = {
+      type: 'notice',
+      step: 4,
+      kind: 'ui',
+      level: 'info',
+      label: '[ui]',
+      text: 'compaction: 41000 → 12000 prompt chars (code); 3 steps folded into the summary at step 4 (every 8 steps)',
+      detail: JSON.stringify({ type: 'context:compacted', step: 4, chars: { before: 41_000, after: 12_000 }, by: 'code' }),
+    };
+    expect(line(companion)).toEqual(['[ui] compaction: 41000 → 12000 prompt chars (code); 3 steps folded into the summary at step 4 (every 8 steps)']);
+  });
+
+  /**
+   * Finishing audit #12's follow-up — the harness's `[setup]` synthesizer-scope notice, verbatim. `llm-jev` is the
+   * shipped default and `synthesizerHandles` is false for a workspace with no non-test `.py` file, so the run takes
+   * the generic per-step propose while the badge still reads `llm+jev · verified`. The notice is a plain
+   * `notice{kind:'config', label:'[setup]'}` with no new `EngineEvent` member, so `itemsFromEvent` renders it
+   * today — this test is the pin that the TUI row, the `--plain` row and `transcript.log` are the same string and
+   * that it WRAPS, never cuts, at 40 columns.
+   */
+  it("audit #12: the `[setup]` synthesizer-scope notice is one string in all three sinks and wraps at 40 columns", () => {
+    const text =
+      'synthesizer composite covers Python workspaces with a detected test runner; this workspace takes the generic per-step propose (docs/LLM-JEV-DESIGN.md §9.4)';
+    const notice: EngineEvent = { type: 'notice', step: null, kind: 'config', level: 'info', label: '[setup]', text };
+    const items = itemsFromEvent(notice, 3);
+    expect(items).toHaveLength(1);
+    // the item text is the engine's text verbatim — no `notice config:` prefix, no clip (the string is under TRANSCRIPT_TEXT_MAX)
+    expect(items[0]!.text).toBe(text);
+    expect(items[0]).toMatchObject({ kind: 'notice', step: null, label: '[setup]', level: 'info' });
+    // transcript.log and `--plain` print `formatTranscriptItem`; the TUI prints the same item's `text` under the same label
+    expect(formatTranscriptItem(items[0]!)).toBe(`[setup] ${text}`);
+    expect(line(notice)).toEqual([`[setup] ${text}`]);
+    // 40 columns: wrapped, never cut — every token survives and the join is the original
+    const body = wrapBodyCut(text, 40);
+    expect(body.cuts).toEqual([]);
+    expect(joinWrapped(body.rows, body.cuts)).toBe(text);
+    expect(body.rows.length).toBeGreaterThan(1);
+    for (const r of body.rows) expect(cellWidth(r)).toBeLessThanOrEqual(40);
+    expect(body.rows.join(' ').split(/\s+/).filter((w) => w !== '')).toEqual(text.split(/\s+/));
   });
 
   it('retry:settled: one `warning:` line only when the chain failed or lasted > 10 s; `retry` itself is pane-only', () => {

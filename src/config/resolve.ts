@@ -1,9 +1,9 @@
 /**
  * Configuration resolution (DESIGN.md §3, TUI-DESIGN §16) and the pure --resume reconciliation (§9).
  *
- * Precedence, highest first: flag > process env > ./.env > <OPEN_ASSIST_PATH>/.env > config
+ * Precedence, highest first: flag > process env > ./.env > <JEVCODE_EXTRA_ENV_FILE> > config
  * file > default. Every entry records its source. Nothing is validated here except what is
- * needed to find the other sources (config file, Open Assist path) and the eager, cheap
+ * needed to find the other sources (config file, the extra .env file) and the eager, cheap
  * settings (sandbox, booleans, paths); generator(), decider(), limits() and ui() validate lazily
  * so `jevcode run` / `jevcode chat` can render the first frame before any key is checked.
  *
@@ -110,14 +110,6 @@ export function detectPackageRoot(fromDir: string = dirname(fileURLToPath(import
     dir = parent;
   }
   return null;
-}
-
-function isDirectory(p: string): boolean {
-  try {
-    return statSync(p).isDirectory();
-  } catch {
-    return false;
-  }
 }
 
 function isFile(p: string): boolean {
@@ -359,7 +351,7 @@ function layerReader(layers: Layers, name: SettingName, row: Resolved<string> | 
  */
 function resolveJevProvider(layers: Layers): JevProviderResolution {
   const row = lookup(layers, settingSpec('decider.provider')) ?? { value: 'auto', source: 'default' };
-  // rule 1: flag > JEV_PROVIDER > ./.env > <OPEN_ASSIST_PATH>/.env > file jevProvider; any other value is a ConfigError naming the source
+  // rule 1: flag > JEV_PROVIDER > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file jevProvider; any other value is a ConfigError naming the source
   const v = parseJevProviderSetting(layerReader(layers, 'decider.provider', row), row);
   if (v === 'typesafe' || v === 'openrouter') return { provider: v, providerSource: isExplicitProviderSource(row.source) ? row.source : 'default', entry: { value: v, source: row.source } };
   // rule 2a: a configured base URL whose host the table knows
@@ -388,7 +380,7 @@ export function isEngineMode(v: unknown): v is EngineMode {
 }
 
 // ---------------------------------------------------------------------------------------
-// TUI-DESIGN-2 §1.2 (D-A): the `mode` setting — flag > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > DEFAULT_MODE
+// TUI-DESIGN-2 §1.2 (D-A): the `mode` setting — flag > JEVCODE_MODE > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `mode` > DEFAULT_MODE
 // ---------------------------------------------------------------------------------------
 
 /** The `mode` row through the chain; `--condition` (args.ts's hidden alias, not the row's flag key) counts as the flag layer. */
@@ -448,9 +440,9 @@ function launchRows(flags: ParsedFlags, env: NodeJS.ProcessEnv): Map<SettingName
  * stray `JEVCODE_CONTEXT_COMPACT_EVERY=-1` cannot turn into a `createEngine` crash now that the result reaches a
  * real call site. `ui()` may throw because nothing downstream of it has a working default; every member here does.
  *
- * `context.kept` is NOT mapped: `ContextPolicyOptions` has no `kept` member (src/core/types.ts, harness-owned) and
- * the Jev ranking pass is not built (`src/loop/context/compaction.ts:6`). `resolveConfig` warns once when it is set
- * to a non-default value; the mapping lands with the harness member (round-5 request Rk).
+ * `context.kept` IS mapped (round-5 item 19): `ContextPolicyOptions.kept` (`'code' | 'jev'`, src/core/types.ts) and
+ * `rankKept` landed with peer-hunks-r5, so the row reaches the engine like every other one and the parked warning
+ * that stood in for it is gone.
  */
 export function resolveContextConfig(reader: SettingReader): ContextPolicyOptions {
   const out: { -readonly [K in keyof ContextPolicyOptions]: ContextPolicyOptions[K] } = {};
@@ -458,6 +450,8 @@ export function resolveContextConfig(reader: SettingReader): ContextPolicyOption
   if (view === 'relaxed' || view === 'legacy') out.view = view;
   const compaction = reader.get('context.compaction')?.value.trim().toLowerCase();
   if (compaction === 'code' || compaction === 'llm' || compaction === 'off') out.compaction = compaction;
+  const kept = reader.get('context.kept')?.value.trim().toLowerCase();
+  if (kept === 'code' || kept === 'jev') out.kept = kept;
   const int = (name: SettingName, min: number): number | null => {
     const raw = reader.get(name)?.value.trim();
     if (raw === undefined || raw === '') return null;
@@ -476,19 +470,11 @@ export function resolveContextConfig(reader: SettingReader): ContextPolicyOption
 }
 
 /**
- * TUI-DESIGN-5 §3.6: the one honest consequence of a schema row whose engine member has not landed — a user who sets
- * `context.kept jev` is told the value is parked, instead of being ignored in silence. Deleted with the row's other
- * half when the harness lands `ContextPolicyOptions.kept`.
- */
-export const CONTEXT_KEPT_PARKED = 'context.kept: the jev ranking pass is not wired in this build — kept items are ranked by code';
-
-/**
  * DESIGN §3 / TUI-DESIGN §16: resolve every setting with its source. Throws ConfigError only for what the first frame
  * needs (config file location and syntax, sandbox profile, the two eager booleans); every section validates lazily.
  */
 export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, cwd: string, opts: ResolveOptions = {}): Promise<ResolvedConfigWithDiagnostics> {
   const home = opts.homedir ?? osHomedir();
-  const packageRoot = opts.packageRoot ?? detectPackageRoot();
   const warnings: string[] = [];
   const consultedPaths: string[] = [];
   const layers: Layers = { flags, env, dotenvs: [], file: null, extraEnv: {} };
@@ -500,7 +486,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   if (localEnv) layers.dotenvs.push(localEnv);
 
   // 2. config file: flag > env > ./.env, then ./jevcode.json, the XDG file, the legacy file (TUI-DESIGN §16, P30: XDG
-  //    preferred, legacy checked with a one-time warning). It cannot come from the Open Assist .env or from itself.
+  //    preferred, legacy checked with a one-time warning). It cannot come from the extra .env file or from itself.
   let configFile: LoadedConfigFile | null = null;
   let configFileEntry: Resolved<string> | null = null;
   const cfgSpec = settingSpec('configFile');
@@ -536,22 +522,17 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     warnings.push(`configFile: ${configFile.path} sets launch settings that a file cannot change (${keys.join(', ')}); use the flag or the environment variable (ignored:launch)`);
   }
 
-  // 3. Open Assist path: flag > env > ./.env > file > sibling default; then its .env joins the chain.
-  const oaSpec = settingSpec('openAssistPath');
-  let oaEntry: Resolved<string> | null = null;
-  const oaR = lookup(layers, oaSpec);
-  if (oaR) oaEntry = { value: resolvePath(cwd, oaR.value), source: oaR.source };
-  else if (packageRoot) {
-    const sibling = join(dirname(packageRoot), 'open-assist');
-    if (isDirectory(sibling)) oaEntry = { value: sibling, source: 'default' };
-  }
-  if (oaEntry) {
-    const oaDotenv = join(oaEntry.value, '.env');
-    if (oaDotenv !== cwdDotenv) {
-      consultedPaths.push(oaDotenv);
-      const loaded = await readDotenv(oaDotenv);
-      if (loaded) layers.dotenvs.push(loaded);
-    }
+  // 3. The extra .env file (`--extra-env-file` / JEVCODE_EXTRA_ENV_FILE / `extraEnvFile`): flag > env > ./.env >
+  //    file. There is NO default — an unset row reads no second dotenv, so nothing outside the workspace is
+  //    consulted unless the user named it. The file's keys join the chain BELOW `./.env`, as a fallback.
+  const extraSpec = settingSpec('extraEnvFile');
+  let extraEntry: Resolved<string> | null = null;
+  const extraR = lookup(layers, extraSpec);
+  if (extraR) extraEntry = { value: resolvePath(cwd, extraR.value), source: extraR.source };
+  if (extraEntry && extraEntry.value !== cwdDotenv) {
+    consultedPaths.push(extraEntry.value);
+    const loaded = await readDotenv(extraEntry.value);
+    if (loaded) layers.dotenvs.push(loaded);
   }
 
   // 3b. TUI-DESIGN-2 §1.2: the `mode` setting, resolved once every layer is loaded and before the mode-keyed cap default below.
@@ -590,7 +571,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   let logFileHit: Hit | null = null;
   let deciderKeyHit: Hit | null = null;
   for (const spec of SETTINGS) {
-    if (spec.name === 'generator.provider' || spec.name === 'decider.provider' || spec.name === 'mode' || spec.name === 'configFile' || spec.name === 'openAssistPath') continue;
+    if (spec.name === 'generator.provider' || spec.name === 'decider.provider' || spec.name === 'mode' || spec.name === 'configFile' || spec.name === 'extraEnvFile') continue;
     if (spec.launch) continue; // TUI-DESIGN §16: launch rows never read the file (added below from resolveLaunchSettings)
     const hit = lookupDetailed(layers, spec);
     if (!hit) continue;
@@ -617,7 +598,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   if (!capR || capR.source === 'default') entries.set('limits.spendCapUsd', { value: String(defaultRunSpendCapUsd(mode)), source: 'default' });
   for (const [name, r] of launchRows(flags, env)) entries.set(name, r);
   if (configFileEntry) entries.set('configFile', configFileEntry);
-  if (oaEntry) entries.set('openAssistPath', oaEntry);
+  if (extraEntry) entries.set('extraEnvFile', extraEntry);
 
   // Paths: workspace defaults to cwd; JEVCODE_HOME is the home whose runs/ is the runs dir.
   const wsR = entries.get('workspace');
@@ -646,12 +627,6 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
   const plainR = entries.get('plain');
   const noNetwork = noNetworkR ? parseBooleanSetting(reader, 'noNetwork', noNetworkR) : false;
   const plain = plainR ? parseBooleanSetting(reader, 'plain', plainR) : false;
-  // TUI-DESIGN-5 §3.6 (D-AI): `context.kept` is in the schema (so `jevcode config` can print, validate and persist
-  // it) but has no engine member yet. A user who asks for the Jev ranker is told the value is parked — the one
-  // thing D-AI exists to prevent is a setting that does nothing and says nothing.
-  const keptR = entries.get('context.kept');
-  if (keptR !== undefined && keptR.source !== 'default' && keptR.value.trim().toLowerCase() === 'jev') warnings.push(CONTEXT_KEPT_PARKED);
-
   // SecretSet (§8.4): resolved secret settings, then every secret-looking variable in every loaded .env and the config file.
   const secrets: SecretEntry[] = [];
   const secretNames = new Set<string>(SECRET_SETTINGS);
@@ -760,7 +735,7 @@ export async function resolveConfig(flags: ParsedFlags, env: NodeJS.ProcessEnv, 
     },
     workspace: workspace.value,
     runsDir: runsDir.value,
-    openAssistPath: oaEntry ? oaEntry.value : null,
+    extraEnvFile: extraEntry ? extraEntry.value : null,
     configFile: configFileEntry ? configFileEntry.value : null,
     dotenvFiles,
     sandbox,

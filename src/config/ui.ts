@@ -1,6 +1,6 @@
 /**
  * Session UI settings (TUI-DESIGN §16, §15 item 17): everything in `UiConfig` that is not a launch setting follows the
- * full chain flag > env > ./.env > <OPEN_ASSIST_PATH>/.env > file > default through the same `SettingReader` as every
+ * full chain flag > env > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file > default through the same `SettingReader` as every
  * other section, after `firstFrame()`. The launch members are copied from the `LaunchSettings` argument and never
  * re-resolved (Ink fixed them at mount). Also here: the `session.spendCapUsd` parser (`none` = +Infinity, §9.1).
  */

@@ -223,15 +223,12 @@ describe('parseAnyProvider (§6.5, D-AP)', () => {
 let dir: string;
 let home: string;
 let cwd: string;
-let pkg: string;
 beforeEach(async () => {
   dir = await mkdtemp(join(tmpdir(), 'jevcode-r5-login-'));
   home = join(dir, 'home');
   cwd = join(dir, 'ws');
-  pkg = join(dir, 'pkg');
   await mkdir(home, { recursive: true });
   await mkdir(cwd, { recursive: true });
-  await mkdir(pkg, { recursive: true });
 });
 afterEach(async () => {
   await rm(dir, { recursive: true, force: true });
@@ -299,7 +296,7 @@ describe('the write half of D-AP is gated on its read half (§6.1, §8.1 item 6)
      * `test/unit/config/provider.test.ts` asserted the REFUSAL, and nothing asserted that the two meet. This
      * does — `config.generator()` is on the ordinary startup path (`src/cli/session.ts:719`, `:2229`).
      */
-    const resolved = await resolveConfig(parseCliArgs(['run', 'task']), { XDG_CONFIG_HOME: join(home, 'xdg') }, cwd, { homedir: home, packageRoot: pkg });
+    const resolved = await resolveConfig(parseCliArgs(['run', 'task']), { XDG_CONFIG_HOME: join(home, 'xdg') }, cwd, { homedir: home });
     expect(() => resolved.generator()).not.toThrow();
     expect(resolved.generator().provider).toBe('openrouter');
   });
@@ -309,7 +306,7 @@ describe('the write half of D-AP is gated on its read half (§6.1, §8.1 item 6)
       const xdg = join(home, `xdg-${id}`);
       const t = loginIo('sk-test-0123456789abcdefghijklmn\n', { env: { XDG_CONFIG_HOME: xdg } });
       expect(await commandLogin({ provider: id, generatorKeyStdin: true }, t)).toBe(EXIT_CODES.ok);
-      const resolved = await resolveConfig(parseCliArgs(['run', 'task', '--model', 'claude-sonnet-5']), { XDG_CONFIG_HOME: xdg }, cwd, { homedir: home, packageRoot: pkg });
+      const resolved = await resolveConfig(parseCliArgs(['run', 'task', '--model', 'claude-sonnet-5']), { XDG_CONFIG_HOME: xdg }, cwd, { homedir: home });
       expect(() => resolved.generator()).not.toThrow();
       expect(resolved.generator().provider).toBe(id);
     }

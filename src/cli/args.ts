@@ -24,8 +24,8 @@ import { PROVIDER_IDS } from '../provider/ids.js';
 // TUI-DESIGN-5 §6.6 / §9.2 `cli/args.ts`: `Command += 'models'` (R5-6). `'import'` (R5-5) and `'agents'` (R5-4)
 // join it in the same W4 PR — each **together with its own `src/cli/<verb>.ts` and its `main.tsx` switch arm**,
 // because the switch is exhaustive and a union member with no arm is a compile error, not a missing feature.
-export type Command = 'chat' | 'run' | 'config' | 'bench' | 'perf' | 'login' | 'logout' | 'sessions' | 'models' | 'import' | 'agents' | 'report' | 'why' | 'calibration' | 'completion' | 'upgrade';
-export const COMMANDS: readonly Command[] = ['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'models', 'import', 'agents', 'report', 'why', 'calibration', 'completion', 'upgrade'];
+export type Command = 'chat' | 'run' | 'config' | 'bench' | 'perf' | 'login' | 'logout' | 'sessions' | 'models' | 'import' | 'agents' | 'doctor' | 'report' | 'why' | 'calibration' | 'completion' | 'upgrade';
+export const COMMANDS: readonly Command[] = ['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'models', 'import', 'agents', 'doctor', 'report', 'why', 'calibration', 'completion', 'upgrade'];
 
 /** Flags that take a value. Kept as strings: validation happens in config/validate.ts, where env and file sources share the same code path. */
 export const STRING_FLAGS = [
@@ -48,7 +48,7 @@ export const STRING_FLAGS = [
   'impossibleThreshold',
   'workspace',
   'runsDir',
-  'openAssistPath',
+  'extraEnvFile',
   'config',
   'sandbox',
   'taskFile',
@@ -226,8 +226,8 @@ const SESSION: readonly Command[] = ['chat', 'run'];
 /** TUI-DESIGN §16: the `ui.*`, `log.*` and `session.*` flags (`config` prints their rows) */
 const UI: readonly Command[] = ['chat', 'run', 'config'];
 /** commands that locate the runs dir / config file without running anything */
-const PATHS: readonly Command[] = [...COMMON, 'login', 'logout', 'sessions', 'import', 'agents', 'report', 'why', 'calibration'];
-const JSON_CMDS: readonly Command[] = ['chat', 'run', 'config', 'sessions', 'models', 'import', 'agents', 'why', 'calibration'];
+const PATHS: readonly Command[] = [...COMMON, 'login', 'logout', 'sessions', 'import', 'agents', 'doctor', 'report', 'why', 'calibration'];
+const JSON_CMDS: readonly Command[] = ['chat', 'run', 'config', 'sessions', 'models', 'import', 'agents', 'doctor', 'why', 'calibration'];
 /** TUI-DESIGN-5 §6.6: `jevcode models` takes the five flags it can act on and nothing else. */
 const MODELS: readonly Command[] = ['models'];
 /** TUI-DESIGN-5 §5.5: `jevcode import` takes the eight flags of its own row and nothing else. */
@@ -261,7 +261,7 @@ export const FLAGS: readonly FlagSpec[] = [
   { key: 'impossibleThreshold', name: 'impossible-threshold', type: 'string', commands: COMMON, arg: '<p>', help: 'task-impossible probability threshold' },
   { key: 'workspace', name: 'workspace', type: 'string', commands: PATHS, arg: '<dir>', help: 'workspace directory (default: cwd)' },
   { key: 'runsDir', name: 'runs-dir', type: 'string', commands: PATHS, arg: '<dir>', help: 'run directory root (default: ~/.jevcode/runs)' },
-  { key: 'openAssistPath', name: 'open-assist-path', type: 'string', commands: COMMON, arg: '<dir>', help: 'Open Assist checkout whose .env is a fallback' },
+  { key: 'extraEnvFile', name: 'extra-env-file', type: 'string', commands: COMMON, arg: '<path>', help: 'an additional .env file whose keys are read as a fallback' },
   { key: 'config', name: 'config', type: 'string', commands: PATHS, arg: '<file>', help: 'config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)' },
   { key: 'sandbox', name: 'sandbox', type: 'string', commands: COMMON, arg: 'auto|seatbelt|none', help: 'sandbox profile' },
   { key: 'noNetwork', name: 'no-network', type: 'boolean', commands: COMMON, help: 'deny network to sandboxed commands' },
@@ -884,6 +884,8 @@ const USAGE_LINES: Readonly<Record<Command, readonly string[]>> = {
   // TUI-DESIGN-5 §4.2: `jevcode agents list` reads the run's manifest; there is no supervisor in this build, so
   // every row is `planned` (§4.0) and the command never starts anything.
   agents: ['  jevcode agents [list] [--json | --plain]'],
+  // round-5 item: `doctor` is a READ — free GETs only, 3 s each, and it prints a one-line fix per row
+  doctor: ['  jevcode doctor [--json]', '                 (node, provider keys and reachability, sandbox, config modes, runs dir, terminal)'],
   report: ['  jevcode report <id> [--include-requests] [--out <dir>]'],
   why: ['  jevcode why <id> <step> <ref>'],
   calibration: ['  jevcode calibration [--json]'],
@@ -903,6 +905,7 @@ const POSITIONAL_SYNOPSIS: Readonly<Record<Command, string>> = {
   models: ' [list|search <query>|refresh]',
   import: ' [<source>]',
   agents: ' [list]',
+  doctor: '',
   report: ' <id>',
   why: ' <id> <step> <ref>',
   calibration: '',

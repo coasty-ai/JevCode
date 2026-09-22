@@ -2929,7 +2929,7 @@ export interface ResolvedConfig {
   limits(): RunLimits;
   workspace: string;
   runsDir: string;
-  openAssistPath: string | null;
+  extraEnvFile: string | null;
   configFile: string | null;
   /** dotenv files that were actually read */
   dotenvFiles: readonly string[];

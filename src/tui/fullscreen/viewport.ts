@@ -70,8 +70,8 @@ export interface ViewportIndex {
 }
 
 /**
- * §12's `▲` and its `--ascii` twin `^` come from `GlyphSet.triangleUp` (the S2 request is LANDED, integrator
- * 2026-09-22): the pair is one row of TD §14.1's one-to-one twin table, so `glyphTwin` sees it too.
+ * §12's `▲` and its `--ascii` twin `^` come from `GlyphSet.triangleUp`: the pair is one row of TD §14.1's
+ * one-to-one twin table, so `glyphTwin` sees it too.
  */
 
 /** The `▲ <n> earlier rows · see transcript.log` marker (§1.3.3 edge 1 / §12) — the rows past the cap are gone from the index but are in the log. */

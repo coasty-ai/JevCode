@@ -74,6 +74,40 @@ function peerHb(patch: Parameters<typeof makeHeartbeat>[0] = {}): Heartbeat {
   return makeHeartbeat({ deviceId: DEV_B, label: 'air', pid: 7, ...patch });
 }
 
+/**
+ * The gap-closure wave's recorded problem, closed: `/who` and `/peers` DISAGREED about one fold. `listSessions`
+ * pushes every `fold.live` row as `'live'`, while `peerViewOf` read `fold.liveness`, which only carries a key
+ * once `livenessOf` has been called for it — so a freshly adopted OWN row counted as neither live nor stale and
+ * the capture read `who · 1 live, 0 gone` beside `peers · 0 here, 0 stale`. `consider` now takes the bucket the
+ * row came out of as its fallback.
+ */
+describe('peerViewOf — a fold row with no recomputed liveness verdict falls back to its BUCKET', () => {
+  it('a freshly adopted own row with no `fold.liveness` entry counts as live, and /who and /peers agree', () => {
+    const fold = foldOf([selfRow]);
+    fold.liveness.clear();
+    expect(peerViewOf(fold, SELF_ID)).toEqual({ live: 1, stale: 0, oldestStartedMsAgo: null, exclusive: false });
+    // the two readers of one fold now answer the same number
+    expect(listSessions(fold, SELF_ID, { all: false })).toHaveLength(peerViewOf(fold, SELF_ID).live);
+  });
+
+  it('a `fold.gone` row with no verdict counts as stale, and a fork with none counts as neither', () => {
+    const gone = foldOf([{ hb: peerHb({ runId: runId(2) }), liveness: 'gone', where: 'gone' }]);
+    gone.liveness.clear();
+    expect(peerViewOf(gone, SELF_ID).stale).toBe(1);
+    expect(peerViewOf(gone, SELF_ID).live).toBe(0);
+
+    const fork = foldOf([{ hb: peerHb({ runId: runId(3) }), liveness: 'unknown', where: 'fork' }]);
+    fork.liveness.clear();
+    expect(peerViewOf(fork, SELF_ID)).toMatchObject({ live: 0, stale: 0 });
+  });
+
+  it('a recomputed verdict still WINS over the bucket — it may have aged past it', () => {
+    // in `fold.live`, but `livenessOf` has since judged it stale: the verdict, not the bucket
+    const aged = foldOf([{ hb: peerHb({ runId: runId(2) }), liveness: 'stale', where: 'live' }]);
+    expect(peerViewOf(aged, SELF_ID)).toMatchObject({ live: 0, stale: 1 });
+  });
+});
+
 describe('peerViewOf (TUI-DESIGN-5 §2.4) — twelve fold fixtures', () => {
   it('1 — an empty fold: no peers, no age, not exclusive', () => {
     expect(peerViewOf(emptyFold(NOW), SELF_ID)).toEqual({ live: 0, stale: 0, oldestStartedMsAgo: null, exclusive: false });

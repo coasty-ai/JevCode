@@ -28,7 +28,7 @@
  * `planImport`, `summarisePlan`, `applicableRows`, `asImportPlan`) and leaves the three WRITE verbs absent; a
  * `--yes` / `--resume` / `--undo` that reaches the production loader is refused **before anything is read**,
  * with `importNotWired`'s sentence and exit 2, rather than planning and then failing. A host that has the
- * adapter (the TUI session's `openImport`, or a later wave) passes `ImportIo.engine` and every write path below
+ * adapter (the in-session `openImport`, or a later wave) passes `ImportIo.engine` and every write path below
  * runs unchanged — that is what the seam is for, and what every test here exercises.
  *
  * Exit codes (§5.6, `src/errors.ts`): `0` a plan or a clean apply · `2` a usage error, a write failure, a held

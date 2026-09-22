@@ -81,7 +81,9 @@ vi.mock('../../../src/coordination/index.js', async () => {
       return extra.find((d) => d === head || d.startsWith(head)) ?? null;
     },
   };
+  const records = await import('../../../src/coordination/records.js');
   return {
+    publicMessage: records.publicMessage,
     coordinationRoot: (home: string) => `${home}/coordination`,
     nodeFs: {},
     deviceIdentity: async () => {

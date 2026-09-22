@@ -1,22 +1,21 @@
 # TUI-DESIGN-5 §3 / §10 (slot R5-3): `/context` then `/compact` under `--mock` at 120x40, plus the
 # `nothing to compact` branch and the `compaction is off` branch. Hermetic: `--mock` only, no network, no key.
 #
-# STATUS — this file does not run yet, and that is a dependency, not a skip.
-#   `/context` and `/compact` are §9.2's W4 rows on `src/tui/commands/registry.ts` (owner R5-2) and their handlers
-#   are R5-1's `src/cli/session.ts` arms (both hunks are written verbatim in R5-3's report). Until those two PRs
-#   land, `send /context` types a line the palette refuses, so the scenario asserts nothing. It is committed now,
-#   with the rows below, so the integrator has the scenario in hand the day the commands resolve — TD4 §14.2
-#   finding 41's "never a dead command" defect is exactly what an absent scenario lets back in.
+# MODE — the SHIPPED DEFAULT, deliberately. The scenario takes no `--mode`: R13 put `llm-jev` inside
+#   `contextEnabled`, so the `ctx` status cell and the `/context` block are what an ORDINARY user sees. Pinning
+#   this to `--mode jev-on` proved the feature in a mode nobody runs by default. The jev-only twin — where there
+#   is no generator context and the cell must be ABSENT rather than `ctx —%` (§7 row 35) — is the second case in
+#   `test/pty/round5.pty.test.ts`.
 #
-# run-smoke.sh needs three rows for this scenario; they belong to R5-2 (§9.2 gives it `test/pty/**` in W5):
+# run-smoke.sh rows for this scenario:
 #   env    : r5-context) extra_env="$extra_env JEVCODE_CONTEXT_COMPACTION=code";;
-#   check  : r5-context) grep -q 'context [·-] ' "$txt" && checks="$checks r5-context:block" || { ok=0; checks="$checks MISSING:r5-context-block"; }
+#   check  : the block, the `ctx NN%` cell, and no `ctx —%` placeholder
 #   select : sel_named r5-context && run r5-context 0 40 120 chat --mock
 #
 # What it proves, beyond "it renders":
 #   - §3.2's three reads join into ONE block whose head is S48 and whose first row is `formatBudget`'s own text;
 #   - §3.7's rungs: the per-file table with its reason column at 120 and 80, the count row alone at 40;
-#   - §3.3: `/compact` on a two-step history answers S57 and the `off` run answers S58a — never the other way;
+#   - §3.3: `/compact` after the run answers `availabilityError`'s generated live-only sentence (see step 6);
 #   - §3.4: the engine's own `compaction:` notice is unchanged and the `─ compaction ─` rule sits ABOVE it;
 #   - G-R5-9: `assertNoKeyBytes` over every frame (the block prints paths and byte counts, never a key).
 
@@ -65,15 +64,22 @@ send \r
 sleep 0.4
 mark context-80
 
-# 6 — `/compact` with one step in history: S57, and NEVER the `off` sentence on a `code` run
+# 6 — `/compact` AFTER the mock run has ended. The step this replaced waited for S57 (`nothing to compact`),
+#     which only a LIVE run can answer; by the time the four `/context` reads above have been typed the
+#     `--mock` run is long finished, so the scenario timed out for 67 s on every invocation and then failed on
+#     the exit code rather than on anything about `/compact`. `availabilityError`'s own live-only sentence is
+#     what this position actually proves — and that it is the GENERATED one, never a hand-written twin.
+#     S57 / S58a (`nothing to compact` vs `compaction is off`) are covered live in
+#     `test/unit/cli/session*.test.ts`; a pty scenario cannot type into a live `--mock` run without the
+#     stdin-starvation hazard of docs/research/tui/20-pty-driver-findings.md §5.
 resize 40 120
 sleep 0.6
 send /compact
 sleep 0.2
 send \r
-expect nothing to compact
+expect needs a live run
 sleep 0.3
-mark compact-nothing
+mark compact-after-run
 
 send /exit
 sleep 0.2

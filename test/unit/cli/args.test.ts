@@ -20,7 +20,7 @@ function usage(argv: readonly string[]): UsageError {
 }
 
 describe('gate G-R5-10: the Command array, its new members named literally', () => {
-  it('has exactly its expected members, with `import`, `models` and `agents` named (not merely counted)', () => {
+  it('has exactly its expected members, with `import`, `models`, `agents` and `doctor` named (not merely counted)', () => {
     /**
      * G-R5-10's own wording: "`Command` has exactly its 16 members, the three new ones named literally:
      * `'import'`, `'models'`, `'agents'`" — "its expected members" would have passed with `agents` absent, which
@@ -28,11 +28,13 @@ describe('gate G-R5-10: the Command array, its new members named literally', () 
      * AND its `main.tsx` `switch` arm, because the switch is exhaustive and a member with no arm is a compile
      * error, not a missing feature.
      */
-    for (const c of ['import', 'models', 'agents'] as const) expect(COMMANDS, c).toContain(c);
+    for (const c of ['import', 'models', 'agents', 'doctor'] as const) expect(COMMANDS, c).toContain(c);
     expect(new Set(COMMANDS).size).toBe(COMMANDS.length);
-    const expected: readonly Command[] = ['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'models', 'import', 'agents', 'report', 'why', 'calibration', 'completion', 'upgrade'];
+    const expected: readonly Command[] = ['chat', 'run', 'config', 'bench', 'perf', 'login', 'logout', 'sessions', 'models', 'import', 'agents', 'doctor', 'report', 'why', 'calibration', 'completion', 'upgrade'];
     expect(COMMANDS).toEqual(expected);
-    expect(COMMANDS).toHaveLength(16);
+    // 16 after round 5's W4 PR; 17 with the finishing wave's `doctor`, which arrived the same way — its own
+    // `src/cli/doctor.ts` AND its own `main.tsx` arm
+    expect(COMMANDS).toHaveLength(17);
   });
 });
 

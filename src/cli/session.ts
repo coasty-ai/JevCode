@@ -106,7 +106,7 @@ import {
   INSTRUCTIONS_NOT_TRUSTED_LINE,
   LOGIN_ONE_KEY_PROMPT,
   LOGIN_OTHER_WAYS_PROMPT,
-  MISSING_GENERATOR_ONLY,
+  missingGeneratorOnly,
   MOCK_VERIFY_NOTE,
   PANEL_HANDLED_BY_TUI,
   TRANSCRIPT_ALWAYS_FULL,
@@ -126,6 +126,8 @@ import type { WizardVerifyInput, WizardVerifyResult } from '../tui/onboarding/Wi
 import { keyEnteredText } from '../config/credentials.js';
 import { fingerprint } from '../core/hash.js';
 import { detectSandboxLevel } from '../sandbox/seatbelt.js';
+// TUI-DESIGN-5 §6.3 / round-5 item 4: the zero-import id module — never `provider/registry.js` or `models/**`.
+import { isProviderId, type ProviderId } from '../provider/ids.js';
 import { isMentionDenied } from '../sandbox/paths.js';
 import { loadForResume as realLoadForResume } from '../checkpoint/resume.js';
 import { CHECKPOINT_FILES, createCheckpointStore, isRunMeta } from '../checkpoint/store.js';
@@ -1888,7 +1890,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
   function applyConfig(): void {
     if (!config) return;
     workspaceRoot = config.workspace;
-    // TUI-DESIGN-3 §1.2 (R3 F1/F2): flag > JEVCODE_MODE > ./.env > <OPEN_ASSIST_PATH>/.env > file `mode` > DEFAULT_MODE (resolve.ts). A pending
+    // TUI-DESIGN-3 §1.2 (R3 F1/F2): flag > JEVCODE_MODE > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file `mode` > DEFAULT_MODE (resolve.ts). A pending
     // `/mode` re-enters the flag layer through pendingFlagOverrides(), so after a reresolve() config.mode equals the PENDING mode: the base
     // moves only while nothing is pending, and the badge action carries the pending mode separately (` · next run` survives a wizard save)
     if (pending.mode === undefined) baseMode = config.mode;
@@ -1952,6 +1954,16 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     return saved;
   }
 
+  /**
+   * Round-5 item 4: the resolved generator provider as one of the SEVEN ids, for the error that names its key
+   * variable. `providerOfConfig` below narrows to the wizard's two and answers `null` for the other five, which is
+   * right for the wizard and wrong for `missingGeneratorOnly` — `--provider anthropic` must not be told to export
+   * `OPENROUTER_API_KEY`.
+   */
+  function providerIdOfConfig(cfg: ResolvedConfigWithDiagnostics): ProviderId | null {
+    const v = cfg.entries.get('generator.provider')?.value.trim().toLowerCase();
+    return v !== undefined && isProviderId(v) ? v : null;
+  }
   /** the resolved generator provider (`anthropic` | `openrouter`), or null when the entry is unknown */
   function providerOfConfig(cfg: ResolvedConfigWithDiagnostics): WizardProvider | null {
     const v = cfg.entries.get('generator.provider')?.value;
@@ -2498,7 +2510,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         });
         sessionLedger = led;
         /**
-         * TUI-DESIGN-5 §15.2 (the harness session's binding rule) — **read `ledger.fold` on mount and after every
+         * TUI-DESIGN-5 §15.2, the ledger binding rule — **read `ledger.fold` on mount and after every
          * own write, then subscribe.** `adoptOwn` seats our own record in `ledger.fold` synchronously but does not
          * `emit()`, so a push-only view lags its own row by the 100 ms debounce (up to 15 s with no `fs.watch`).
          * `/who`, `/peers` and the chat `peers` fact read `sessionLedger.fold` **on demand** — that is the mount
@@ -3583,6 +3595,18 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         if (id === null || id.trim() === '') {
           const currentModel = generatorModelLabel();
           note(pending.model !== undefined && pending.model !== currentModel ? `model ${currentModel} (next run: ${pending.model})` : `model ${currentModel}`);
+          /**
+           * §6.4 D-AQ (R4b): the TUI opens the pane-slot picker here (`App.tsx`'s `case 'model'`), so this is its
+           * `--plain` twin — the numbered one-shot list and its prompt, from the same producers the picker uses,
+           * never a pane. Everything is bundled and offline: `instantCatalogue()` costs no I/O.
+           */
+          const models = await import('../models/index.js');
+          const { MODELS_PLAIN_CAP, modelsPickPrompt, modelsPlainLines } = await import('../tui/models/lines.js');
+          const { snapshotResults } = await import('../tui/models/state.js');
+          const catalogue = models.instantCatalogue();
+          const lines = modelsPlainLines({ models: catalogue, text: models, results: snapshotResults(catalogue, models.SNAPSHOT_AT), total: catalogue.length, columns: bodyWidth(), glyphs: glyphs(), prompt: false });
+          textBlock(lines[0] ?? 'models', lines.slice(1));
+          note(modelsPickPrompt(Math.min(catalogue.length, MODELS_PLAIN_CAP)), { label: '[ui]' });
           return;
         }
         pending.model = id;
@@ -3924,9 +3948,36 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
        * built (`src/import/**`) and its CLI twin runs (`jevcode import`); what is not wired in this build is the
        * in-session review overlay, so the refusal points at the surface that works rather than denying the feature.
        */
-      case 'import':
-        note('/import is not available in this build — jevcode import plans, reviews and applies from the CLI', { label: '[ui]', level: 'warn' });
+      case 'import': {
+        /**
+         * TUI-DESIGN-5 §13.1 / §5.7 (R4a): ONE producer, two sinks. `App.tsx` intercepts `/import` and opens the
+         * overlay, so this arm is the `--plain` (and `--screen-reader`) twin — the SAME `initImportUi` state,
+         * printed as the numbered form. It must never be a second sentence.
+         */
+        const { planImport, summarisePlan, applicableRows } = await import('../import/index.js');
+        const { initImportUi } = await import('../tui/import/reducer.js');
+        const { IMPORT_DRY_RUN_REFUSAL, IMPORT_NOTHING_FOUND, importPlainLines, importScreenReaderLines } = await import('../tui/import/lines.js');
+        const { gitRootOf } = await import('../tui/import/git-root.js');
+        const plan = await planImport({
+          env: { home, env, platform: process.platform, workspace: workspaceRoot, gitRoot: gitRootOf(workspaceRoot), extraRoots: [] },
+          jevcodeVersion: VERSION,
+          trust: 'session',
+          decider: null,
+          redact: config?.redact ?? patternRedact, // §5.4 item 1, exactly as the TUI twin passes it
+          ...(a.source !== null ? { optIn: [a.source] } : {}),
+        });
+        if (plan.rows.length === 0) {
+          note(IMPORT_NOTHING_FOUND, { label: '[ui]', level: 'warn' });
+          return;
+        }
+        const input = { plan, summary: summarisePlan(plan), applicable: applicableRows(plan, { scope: 'both' }) };
+        const ui = initImportUi(input);
+        // §5.7: the prompt is printed only when something reads the answer, and nothing in this build does
+        const rows = o.launch.screenReader === true ? importScreenReaderLines(ui, { prompt: false, input }) : importPlainLines(ui, input, bodyWidth(), glyphs(), { prompt: false });
+        textBlock(rows[0] ?? 'Import', rows.slice(1));
+        note(a.dryRun ? IMPORT_DRY_RUN_REFUSAL : 'jevcode import --yes applies this plan', { label: '[ui]' });
         return;
+      }
       case 'memory':
         note('/memory is not available in this build — jevcode import brings memory in from the other agents', { label: '[ui]', level: 'warn' });
         return;
@@ -4651,7 +4702,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         const names = config.missingSecrets(after);
         if (!prompter?.wizard && (o.mode === 'one-shot' || !o.interactive)) {
           // TUI-DESIGN-3 §1.6: a pipe with a Jev key but no generator names the three ways out
-          const text = names.length === 1 && names[0] === 'generator.apiKey' ? MISSING_GENERATOR_ONLY : `missing ${names.join(', ')}: set the environment variable or run jevcode login`;
+          const text = names.length === 1 && names[0] === 'generator.apiKey' ? missingGeneratorOnly(providerIdOfConfig(config)) : `missing ${names.join(', ')}: set the environment variable or run jevcode login`;
           throw new ConfigError(text, { ...(names[0] !== undefined ? { setting: names[0] } : {}) });
         }
         // TUI-DESIGN-3 §1.8 edges 3 / 24: a startup wizard the user left (Ctrl-C) exits 2 with the §1.6 fix block. The Ink
@@ -4677,7 +4728,7 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     if (exiting) return;
     trace('startup: trust gate done');
     // TUI-DESIGN-3 §5.1 rule 13: the one-thought `[sandbox]` item; today's sentence is its TUI-only detail
-    note(sandboxText(detectSandboxLevel(config.sandbox)), { label: '[sandbox]', detail: sandboxDetail(detectSandboxLevel(config.sandbox)) });
+    note(sandboxText(detectSandboxLevel(config.sandbox), config.sandbox), { label: '[sandbox]', detail: sandboxDetail(detectSandboxLevel(config.sandbox), config.sandbox) });
     const cfg = config;
     candidates = trackCandidates(listCandidatesFn(workspaceRoot, { secretPaths: cfg.secretPaths, redact: cfg.redact }).catch(() => []));
     await refold();
@@ -4779,8 +4830,8 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     },
     persistCredentials,
     trustInputs: () => lastTrustInputs,
-    sandboxLine: () => (config ? sandboxText(detectSandboxLevel(config.sandbox)) : null),
-    sandboxDetail: () => (config ? sandboxDetail(detectSandboxLevel(config.sandbox)) : null),
+    sandboxLine: () => (config ? sandboxText(detectSandboxLevel(config.sandbox), config.sandbox) : null),
+    sandboxDetail: () => (config ? sandboxDetail(detectSandboxLevel(config.sandbox), config.sandbox) : null),
     mode: () => pending.mode ?? baseMode,
     runsDir: () => config?.runsDir ?? null,
     verifyForWizard,

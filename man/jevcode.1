@@ -36,6 +36,9 @@ jevcode \- coding\-agent harness where Jev decides and the code model writes the
 .B jevcode agents
 [\fIflags\fR]
 .br
+.B jevcode doctor
+[\fIflags\fR]
+.br
 .B jevcode report
 [\fIflags\fR]
 .br
@@ -92,6 +95,11 @@ machine
 .TP
 .B agents
 list the agents of a run from its manifest; starts nothing
+.TP
+.B doctor
+check this machine — node, provider keys and reachability (free GETs, 3
+s each), sandbox, config file modes, runs dir, terminal — and print one
+fix per problem; exit 1 when something failed
 .TP
 .B report
 write a redacted support bundle for a run
@@ -165,8 +173,8 @@ workspace directory (default: cwd)
 .BI \-\-runs\-dir " <dir>"
 run directory root (default: ~/.jevcode/runs)
 .TP
-.BI \-\-open\-assist\-path " <dir>"
-Open Assist checkout whose .env is a fallback
+.BI \-\-extra\-env\-file " <path>"
+an additional .env file whose keys are read as a fallback
 .TP
 .BI \-\-config " <file>"
 config file (default: ./jevcode.json, else

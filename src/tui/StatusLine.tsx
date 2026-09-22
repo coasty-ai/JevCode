@@ -73,6 +73,13 @@ export function statusView(s: UiState, o: { picker?: boolean; columns?: number; 
      * `status.context` is absent whenever the run builds no relaxed context, which is the same omission.
      */
     ctx: s.status?.context === undefined ? null : ctxText(s.status.context, o.columns ?? 0, o.glyphs ?? GLYPHS.unicode),
+    /**
+     * TUI-DESIGN-5 §2.2 (R5-H4): the `peers` zone's ONLY source. `statusZones` (`src/tui/status/lines.ts`) already
+     * reads both, and the reducer's `peers:fold` arm is the supply — this pass-through is what connects them, so a
+     * fold that moved a count lights the zone and a session that never opened a ledger shows nothing at all.
+     */
+    fold: s.fold,
+    selfId: s.selfId,
   };
 }
 

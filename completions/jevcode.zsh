@@ -21,6 +21,7 @@ _jevcode() {
     'models:browse the model catalogue'
     'import:import memory and workflows from other agents'
     'agents:list the agents of a run'
+    'doctor:check this machine and print one fix per problem'
     'report:write a support bundle'
     'why:explain a Jev decision'
     'calibration:reliability report'
@@ -54,7 +55,7 @@ _jevcode() {
             '--impossible-threshold[task-impossible probability threshold]:p:' \
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
-            '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
+            '--extra-env-file[an additional .env file whose keys are read as a fallback]:<path>:_files' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
@@ -121,7 +122,7 @@ _jevcode() {
             '--impossible-threshold[task-impossible probability threshold]:p:' \
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
-            '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
+            '--extra-env-file[an additional .env file whose keys are read as a fallback]:<path>:_files' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
@@ -190,7 +191,7 @@ _jevcode() {
             '--impossible-threshold[task-impossible probability threshold]:p:' \
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
-            '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
+            '--extra-env-file[an additional .env file whose keys are read as a fallback]:<path>:_files' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
@@ -248,7 +249,7 @@ _jevcode() {
             '--impossible-threshold[task-impossible probability threshold]:p:' \
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
-            '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
+            '--extra-env-file[an additional .env file whose keys are read as a fallback]:<path>:_files' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
@@ -288,7 +289,7 @@ _jevcode() {
             '--impossible-threshold[task-impossible probability threshold]:p:' \
             '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
             '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
-            '--open-assist-path[Open Assist checkout whose .env is a fallback]:<dir>:_files' \
+            '--extra-env-file[an additional .env file whose keys are read as a fallback]:<path>:_files' \
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--sandbox[sandbox profile]:sandbox:(auto seatbelt none)' \
             '--no-network[deny network to sandboxed commands]' \
@@ -369,6 +370,15 @@ _jevcode() {
             '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--plain[plain line renderer instead of the TUI (readline composer on a TTY; models/import/agents: the numbered list)]' \
             '--ascii[ASCII glyphs (auto on TERM=dumb, TERM=linux, non-UTF-8 locale); fixed at launch]' \
+            '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
+            '--help[show usage]' \
+            '--version[print the version (--json: name, version, node, ink, react, bundle)]'
+          ;;
+        doctor)
+          _arguments \
+            '--workspace[workspace directory (default: cwd)]:<dir>:_files -/' \
+            '--runs-dir[run directory root (default: ~/.jevcode/runs)]:<dir>:_files -/' \
+            '--config[config file (default: ./jevcode.json, else ${XDG_CONFIG_HOME:-~/.config}/jevcode/config.json)]:<file>:_files' \
             '--json[chat/run: NDJSON event stream on stdout (non-interactive; --json=verbose adds status events); config/sessions/models/import/agents/why/calibration: JSON output]' \
             '--help[show usage]' \
             '--version[print the version (--json: name, version, node, ink, react, bundle)]'

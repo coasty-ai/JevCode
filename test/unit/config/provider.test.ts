@@ -3,14 +3,13 @@
  * `GOOGLE_API_KEY` and `MODEL_API_KEY` (the live bug of §6.3 row 1); `validate.ts` accepts all seven once R9 lands
  * and rejects a non-id.
  *
- * Plus the zero-import gate on `src/config/provider-tables.ts` (§8.2 R14's TUI-side fallback), which mirrors
- * `test/unit/provider/ids.test.ts`'s gate on `src/provider/ids.ts`: both modules are read by the config layer and
- * the argv path, and one import in either would put the provider HTTP stack in front of the first frame.
+ * Plus §8.2 R14: `src/config/provider-tables.ts` is DELETED and `PROVIDER_BASE_URL` / `PROVIDER_DISPLAY_NAME` live
+ * in `src/provider/ids.ts` beside `PROVIDER_KEY_ENV` — one zero-import home, read by the config layer and the argv
+ * path, where one import would put the provider HTTP stack in front of the first frame.
  */
-import { readFileSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
-import { PROVIDER_IDS, PROVIDER_KEY_ENV, isProviderId, keyEnvNames } from '../../../src/provider/ids.js';
-import { PROVIDER_BASE_URL, PROVIDER_DISPLAY_NAME } from '../../../src/config/provider-tables.js';
+import { PROVIDER_BASE_URL, PROVIDER_DISPLAY_NAME, PROVIDER_IDS, PROVIDER_KEY_ENV, isProviderId, keyEnvNames } from '../../../src/provider/ids.js';
 import { PROVIDER_DISPLAY, PROVIDER_ENV } from '../../../src/tui/onboarding/lines.js';
 import { BASE_URLS } from '../../../src/config/defaults.js';
 import { validateGenerator, type SettingReader } from '../../../src/config/validate.js';
@@ -18,9 +17,8 @@ import { ConfigError } from '../../../src/errors.js';
 import type { ProviderId } from '../../../src/provider/ids.js';
 
 /**
- * Totality without an import in the module itself: the compiler checks it here, once. `provider-tables.ts` may
- * not import `ProviderId` (it may not import anything), so the `Readonly<Record<ProviderId, string>>` annotation
- * it cannot carry lives in this assignment — a missing or misspelled id is a build error, not a runtime hole.
+ * Totality over `ProviderId`, checked by the compiler here once: a missing or misspelled id is a build error, not
+ * a runtime hole.
  */
 function totalOverProviderId(t: Readonly<Record<ProviderId, string>>): Readonly<Record<ProviderId, string>> {
   return t;
@@ -102,12 +100,20 @@ describe('validate.ts and the seven (§6.1, D-AP / §8.2 R9)', () => {
   });
 });
 
-describe('src/config/provider-tables.ts — the R14 fallback (§8.2 R14, §6.3 row 2/row 5)', () => {
-  it('has ZERO imports, like src/provider/ids.ts — one import would put the catalogue on the argv path', () => {
-    const src = readFileSync('src/config/provider-tables.ts', 'utf8');
+describe('§8.2 R14 — the tables live in src/provider/ids.ts and config/provider-tables.ts is gone', () => {
+  it('src/config/provider-tables.ts no longer exists and nothing imports it', () => {
+    expect(existsSync('src/config/provider-tables.ts')).toBe(false);
+    for (const f of ['src/config/defaults.ts', 'src/cli/login.ts', 'src/tui/onboarding/lines.ts']) {
+      expect(readFileSync(f, 'utf8'), f).not.toContain('provider-tables');
+    }
+    // `defaults.ts` re-exports the ids table under the config layer's historical name
+    expect(readFileSync('src/config/defaults.ts', 'utf8')).toContain("export { PROVIDER_BASE_URL as BASE_URLS } from '../provider/ids.js';");
+  });
+
+  it('src/provider/ids.ts still has ZERO imports — one would put the catalogue on the argv path', () => {
+    const src = readFileSync('src/provider/ids.ts', 'utf8');
     expect(src).not.toMatch(/^\s*import\b/m);
     expect(src).not.toMatch(/\brequire\s*\(/);
-    // and it says so, so the next reader does not add one
     expect(src).toContain('ZERO imports');
   });
 
@@ -121,10 +127,10 @@ describe('src/config/provider-tables.ts — the R14 fallback (§8.2 R14, §6.3 r
   });
 
   it('it AGREES with the two-entry tables it is the superset of, so the swap is behaviour-neutral (§6.3)', () => {
-    // `config/defaults.ts:77` BASE_URLS (R5-3 replaces it with an import of this table, §6.3 row 2)
+    // `config/defaults.ts` BASE_URLS is now an alias of this very table (§6.3 row 2, R14)
     expect(PROVIDER_BASE_URL.anthropic).toBe(BASE_URLS.anthropic);
     expect(PROVIDER_BASE_URL.openrouter).toBe(BASE_URLS.openrouter);
-    // `tui/onboarding/lines.ts:39,41` PROVIDER_DISPLAY / PROVIDER_ENV (R5-5 re-points them, §6.3 row 5)
+    // `tui/onboarding/lines.ts` PROVIDER_DISPLAY reads this table (§6.3 row 5, R14); PROVIDER_ENV stays its own
     expect(PROVIDER_DISPLAY_NAME.anthropic).toBe(PROVIDER_DISPLAY.anthropic);
     expect(PROVIDER_DISPLAY_NAME.openrouter).toBe(PROVIDER_DISPLAY.openrouter);
     expect(keyEnvNames('anthropic')[0]).toBe(PROVIDER_ENV.anthropic);

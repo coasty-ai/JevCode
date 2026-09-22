@@ -129,7 +129,7 @@ export type SettingName =
   | 'update.notify'
   | 'workspace'
   | 'runsDir'
-  | 'openAssistPath'
+  | 'extraEnvFile'
   | 'configFile'
   | 'sandbox'
   | 'noNetwork'
@@ -237,8 +237,6 @@ export interface LoadedConfigFile {
 }
 
 export interface ResolveOptions {
-  /** package root used for the `../open-assist` sibling default; detected from this module's location when absent */
-  packageRoot?: string;
   /** home directory used for `~/.jevcode/runs` and `~/.config/jevcode/config.json`; os.homedir() when absent */
   homedir?: string;
   /**

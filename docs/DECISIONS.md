@@ -8,13 +8,13 @@ the build prompt or from `~/Documents/jev-research/REPORT.md` are also listed in
 
 The parent folder `vscode/` already had an empty `.git` with no commits. JevCode is
 initialised as its own repository so the package has an independent history and can be
-published or moved without the sibling checkouts (Open Assist, CoArena, ...). Nothing is
-imported from Open Assist; the only relationship is the optional `<OPEN_ASSIST_PATH>/.env`
-fallback in config precedence.
+published or moved without the sibling checkouts in `vscode/`. Nothing is imported from any
+of them; the only relationship is the optional `<JEVCODE_EXTRA_ENV_FILE>` fallback in config
+precedence.
 
 ## 2026-09-19 Live generator runs go through OpenRouter, default stays Anthropic
 
-`ANTHROPIC_API_KEY` is empty in both `JevCode/.env` and `open-assist/.env`;
+`ANTHROPIC_API_KEY` is empty in both `JevCode/.env` and the extra `.env` file;
 `OPENROUTER_API_KEY` is set. The default config remains provider `anthropic`, model
 `claude-sonnet-5` as the prompt requires. Every live run in this build passes
 `--provider openrouter` (or `JEVCODE_PROVIDER=openrouter`) with an OpenRouter Claude
@@ -160,7 +160,7 @@ transcripts are saved under `docs/live/`.
 ## 2026-09-19 The session's own ANTHROPIC_API_KEY is not used
 
 The shell this build runs in carries an `ANTHROPIC_API_KEY` that belongs to the Claude Code
-session, not to the project (`JevCode/.env` and `open-assist/.env` both have it empty). The
+session, not to the project (`JevCode/.env` and the extra `.env` file both have it empty). The
 first `test:live` run picked it up through normal env precedence and the Anthropic-direct
 generator test passed (one call, $0.0019), which incidentally verified `provider/anthropic.ts`
 against the real Messages API. From this point every live command is run with that variable

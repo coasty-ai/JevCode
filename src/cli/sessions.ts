@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import type { ParsedFlags } from './args.js';
 // TUI-DESIGN-5 §2.1 rule 3a / gate G-R5-1: every coordination name here is `import type`, which erases; the ONE
 // value import of the tree is the `await import('../coordination/index.js')` inside `openCoordination()` below.
-import type { Fold, LedgerHandle, Message, SelfIdentity } from '../coordination/index.js';
+import type { Fold, LedgerHandle, Message, PublicMessage, SelfIdentity } from '../coordination/index.js';
 import type { SelfIdentityView, SessionActivityView } from '../core/types.js';
 import { ConfigError, EXIT_CODES, JevCodeError, UsageError } from '../errors.js';
 import { COORDINATION_NOT_OPENABLE, COORDINATION_UNAVAILABLE, coordinationAvailability, coordinationOffText, withoutPaths, type CoordinationHomeIo, type CoordinationOffReason } from '../session/coordination.js';
@@ -111,7 +111,17 @@ async function runDirCount(runsDir: string): Promise<number> {
 export async function sessionsReindex(io: SessionsIo): Promise<number> {
   try {
     const r = await reindex(io.runsDir, io.indexPath, { redact: io.redact });
-    io.stdout.write(`reindexed ${r.runs} run${r.runs === 1 ? '' : 's'} into ${io.indexPath}${r.skipped > 0 ? ` (${r.skipped} unreadable run dir${r.skipped === 1 ? '' : 's'} skipped)` : ''}\n`);
+    /**
+     * TUI-DESIGN-4 §7.9 (round-5 item 6): `reindex` counts a forward-version run in BOTH `skipped` and `newer`,
+     * and printing only `skipped` told a user with a newer run that their run directory was unreadable — the one
+     * thing it is not. The two causes are now separate clauses with separate repairs, and the newer one carries
+     * the sentence docs/DECISIONS.md ratified for it.
+     */
+    const unreadable = Math.max(0, r.skipped - r.newer);
+    const clauses: string[] = [];
+    if (unreadable > 0) clauses.push(`${unreadable} unreadable run dir${unreadable === 1 ? '' : 's'} skipped`);
+    if (r.newer > 0) clauses.push(`${r.newer} written by a newer JevCode — upgrade with jevcode upgrade`);
+    io.stdout.write(`reindexed ${r.runs} run${r.runs === 1 ? '' : 's'} into ${io.indexPath}${clauses.length > 0 ? ` (${clauses.join(', ')})` : ''}\n`);
     return EXIT_CODES.ok;
   } catch (e) {
     io.stderr.write(`jevcode sessions reindex: ${e instanceof Error ? e.message : String(e)}\n`);
@@ -294,6 +304,18 @@ export interface SessionsCoordination {
    */
   send(input: { to: string; type: 'note' | 'heads-up' | 'request-release' | 'pause' | 'resume' | 'end'; text: string }): Promise<{ messageId: string; delivered: number; refused: readonly SessionsRefusedRow[] }>;
   inbox(): Promise<readonly SessionsInboxRow[]>;
+  /**
+   * §13.3 as amended (round 5): what `sessions inbox --json` serialises — coordination's OWN
+   * `publicMessage(m)` projection, which is the type `src/coordination/records.ts` built for exactly this sink and
+   * which carries `from.deviceId8` rather than `hostKey`, no `checksum` and no `hmac` (§7 row 61). OPTIONAL so a
+   * build whose ledger cannot open still compiles; the text sink keeps reading `inbox()`'s flattened rows.
+   *
+   * `unverified` rides ALONGSIDE the projection rather than inside it: record authority is the CLI's read of
+   * `fold.origins` (§7 row 18), not a property of the message, and dropping it from `--json` while the text sink
+   * still printed `(unverified)` would have made the two sinks disagree about the one security-relevant fact
+   * either of them carries.
+   */
+  publicInbox?(): Promise<readonly (PublicMessage & { unverified: boolean })[]>;
   /**
    * §13.3: `fold.acks`, flattened. OPTIONAL so a build whose ledger has no ack read still compiles; absent answers
    * the same empty list the shape always promised, and `sessions inbox --json` says which it was through the row
@@ -500,23 +522,18 @@ export async function sessionsHeadsup(flags: ParsedFlags, io: SessionsIo, args: 
   return EXIT_CODES.ok;
 }
 
-/**
- * §13.2, an eighth declared clause (round-5 fix pass, finding 18). §13.3 pins `sessions inbox --json` as
- * `{ messages, acks }` "serialising coordination's own types", but coordination's `Message` carries an optional
- * `hostKey` (`src/coordination/types.ts:262`) — a device-secret derivative §7 row 61 forbids in a JSON sink, which
- * is the very reason `SelfIdentityView` exists. The clause: *`inbox --json` emits the FLATTENED `SessionsInboxRow`
- * / `SessionsAckRow` projections, which carry no `hostKey`, no `checksum` and no `hmac`; the field names are
- * coordination's.* `acks` is a real read, never a hardcoded `[]`.
- */
-export const SESSIONS_INBOX_JSON_CLAUSE = 'sessions inbox --json emits the flattened message/ack rows: no hostKey, no checksum, no hmac (§7 row 61)';
-
 /** §2.9 / §13.3: `sessions inbox [--json]`. */
 export async function sessionsInbox(flags: ParsedFlags, io: SessionsIo): Promise<number> {
   const coord = needCoord(io, 'inbox', flags);
   if (coord === null) return EXIT_CODES.config;
   const rows = await coord.inbox();
   if (flags.json) {
-    jsonOut(io, { messages: rows, acks: (await coord.acks?.()) ?? [] });
+    /**
+     * §13.3 as ratified: `messages` is coordination's OWN `publicMessage(m)` projection — `from.deviceId8`, no
+     * `hostKey`, no `checksum`, no `hmac` (§7 row 61). The declared clause that stood in for it while this sink
+     * flattened the rows itself is retired: one projection, owned by the module that owns the record.
+     */
+    jsonOut(io, { messages: (await coord.publicInbox?.()) ?? rows, acks: (await coord.acks?.()) ?? [] });
     return EXIT_CODES.ok;
   }
   if (rows.length === 0) {
@@ -984,6 +1001,10 @@ export function coordinationOver(c: typeof import('../coordination/index.js'), h
     async inbox() {
       const seen = await c.loadSeen(handle);
       return c.inbox(handle.fold, self, seen).map((m: Message) => inboxRowOf(c, handle.fold, m));
+    },
+    async publicInbox() {
+      const seen = await c.loadSeen(handle);
+      return c.inbox(handle.fold, self, seen).map((m: Message) => ({ ...c.publicMessage(m), unverified: inboxRowOf(c, handle.fold, m).unverified }));
     },
     acks: () =>
       Promise.resolve(

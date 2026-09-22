@@ -10,7 +10,7 @@
  * only the Jev key is asked for; under a generator mode (`DEFAULT_MODE`, `JEVCODE_MODE`, `./.env`, the file's `mode` key) with
  * nothing resolving, the other-ways line and ONE masked OpenRouter key serve Jev and the code model (`--key-stdin` is the piped
  * form: one line → four file keys). The Jev provider is `--jev-provider`, else the session's own
- * resolution of `decider.provider` (`io.resolveSecrets()`: `JEV_PROVIDER`, `./.env`, `<OPEN_ASSIST_PATH>/.env`, the
+ * resolution of `decider.provider` (`io.resolveSecrets()`: `JEV_PROVIDER`, `./.env`, `<JEVCODE_EXTRA_ENV_FILE>`, the
  * file's `jevProvider`, then §2.3 rules 2a–2d), else — without a resolver — the same rules over the process env and
  * `./.env`. A `jevProvider` note left in the file after `logout --jev` (no `jevApiKey` beside it) is not a chosen provider.
  * The generator provider never infers the Jev provider: the one shortcut is the wizard's reuse — the OpenRouter key just
@@ -55,11 +55,10 @@ import {
   verifiedTypesafeText,
 } from '../tui/onboarding/lines.js';
 import { HINT_TOO_SHORT, hintPrefix, looksLikeKey, sanitizeKeyInput, type WizardProvider } from '../tui/onboarding/reducer.js';
-// TUI-DESIGN-5 §6.2 / §6.3: `provider/ids.ts` and `config/provider-tables.ts` are the two ZERO-IMPORT provider
-// modules the argv path may read (this file is on it — `src/cli/session.ts:194` imports it statically). The
-// catalogue itself (`src/models/**`) arrives only through the `await import()` in `verifyProviderKey`.
-import { PROVIDER_IDS, isProviderId, keyEnvNames } from '../provider/ids.js';
-import { PROVIDER_DISPLAY_NAME } from '../config/provider-tables.js';
+// TUI-DESIGN-5 §6.2 / §6.3 / §8.2 R14: `provider/ids.ts` is the ONE zero-import provider module the argv path may
+// read (this file is on it — `src/cli/session.ts:194` imports it statically). The catalogue itself
+// (`src/models/**`) arrives only through the `await import()` in `verifyProviderKey`.
+import { PROVIDER_DISPLAY_NAME, PROVIDER_IDS, isProviderId, keyEnvNames } from '../provider/ids.js';
 import { browseOnlyText, keyRateLimitedText, keyRejectedText, keyVerifiedText } from '../tui/models/lines.js';
 import type { ProviderId } from '../provider/ids.js';
 
@@ -389,7 +388,7 @@ export function inferJevProvider(i: { flag: string | undefined; resolved?: JevPr
 
 /**
  * TUI-DESIGN-2 §2.3: the session's own resolution of `decider.provider` through `io.resolveSecrets()` (flag > `JEV_PROVIDER` >
- * `./.env` > `<OPEN_ASSIST_PATH>/.env` > file `jevProvider` > rules 2a–2d), so `jevcode login` and the session never disagree
+ * `./.env` > `<JEVCODE_EXTRA_ENV_FILE>` > file `jevProvider` > rules 2a–2d), so `jevcode login` and the session never disagree
  * about the provider on the same machine. `default` (rule 2e) is not an inference; a `file:` source without a saved
  * `jevApiKey` is the stale note `logout --jev` leaves and does not count either. Null without a resolver or on a ConfigError.
  */
@@ -467,7 +466,7 @@ function printFix(io: CommandIo, mode: EngineMode, provider: WizardProvider | nu
 
 /**
  * TUI-DESIGN-5 §6.3 row 5: the title reads the SEVEN-entry tables — `keyEnvNames(id)[0]` (already in
- * `provider/ids.ts`) and `PROVIDER_DISPLAY_NAME` (the R14 fallback). The two-entry `PROVIDER_DISPLAY` /
+ * `provider/ids.ts`) and `PROVIDER_DISPLAY_NAME` (the same module, R14). The two-entry `PROVIDER_DISPLAY` /
  * `PROVIDER_ENV` in `src/tui/onboarding/lines.ts` are R5-5's to re-point; until then the two agree for the two
  * providers they both know, which `test/unit/config/provider.test.ts` asserts.
  */

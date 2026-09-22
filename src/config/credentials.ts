@@ -5,7 +5,7 @@
  * `jevApiKey?` for keys), `writeFileAtomic(…, { mode: 0o600, mkdir: true })`, then `chmod` the
  * file 0600 — and the directory 0700 only when it is the jevcode config dir (never a workspace or
  * `$HOME` a `--config` path points into); Windows prints the ACL note instead (P41). Never `./.env`,
- * `./jevcode.json` or the Open Assist `.env` (A118). Keys only ever leave this module as
+ * `./jevcode.json` or the extra `.env` file (A118). Keys only ever leave this module as
  * fingerprints. The `[setup]`/`[config]` string builders live here so `src/tui` depends on
  * `src/config`, never the reverse.
  */

@@ -26,7 +26,7 @@ rm -f "$OUT/$name.cap" "$OUT/$name.jsonl"
 env -u CI -u CONTINUOUS_INTEGRATION -u ANTHROPIC_API_KEY -u JEV_API_KEY -u JEVCODE_MODE -u JEVCODE_CONFIG \
   JEV_PROVIDER="${prov:-auto}" \
   TYPESAFE_API_KEY="$TS_KEY" OPENROUTER_API_KEY="$OR_KEY" \
-  JEVCODE_HOME="$H" OPEN_ASSIST_PATH="$H/no-open-assist" PTY_ROWS="$rows" PTY_COLS="$cols" PTY_AUTO_REVIEW=y \
+  JEVCODE_HOME="$H" JEVCODE_EXTRA_ENV_FILE="$H/no-extra-env" PTY_ROWS="$rows" PTY_COLS="$cols" PTY_AUTO_REVIEW=y \
   "$ROOT/scripts/pty/drive.exp" --kill-on-timeout "$steps" "$OUT/$name.cap" "$OUT/$name.jsonl" 600 -- \
   node "$ROOT/bin/jevcode.js" --workspace "$WS" --spend-cap 0.30 >"$OUT/$name.driver.out" 2>&1
 code=$?

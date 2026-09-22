@@ -179,7 +179,7 @@ export function cleanupScratch(): void {
  * must not decide), `JEVCODE_CONFIG` (a configured credentials file would be read before the XDG/legacy candidates,
  * `src/config/resolve.ts`) and the terminal multiplexer markers.
  */
-export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'OPEN_ASSIST_PATH', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
+export const CHILD_ENV_UNSET: readonly string[] = ['CI', 'CONTINUOUS_INTEGRATION', 'NO_COLOR', 'FORCE_COLOR', 'SSH_TTY', 'SSH_CONNECTION', 'JEVCODE_TRACE', 'JEVCODE_FAULT', 'JEVCODE_MOCK_REVIEW_AT', 'JEVCODE_MOCK_INTAKE', 'JEVCODE_MOCK_JEV_MS', 'JEVCODE_HOME', 'JEVCODE_CONFIG', 'JEVCODE_ASSERT_NO_NETWORK', 'JEVCODE_MODE', 'JEV_PROVIDER', 'JEV_API_KEY', 'TYPESAFE_API_KEY', 'OPENROUTER_API_KEY', 'ANTHROPIC_API_KEY', 'JEVCODE_API_KEY', 'JEVCODE_EXTRA_ENV_FILE', 'PTY_TERM', 'PTY_KILL_ON_TIMEOUT', 'PTY_AUTO_REVIEW', 'TERM_PROGRAM', 'TMUX', 'STY'];
 
 /**
  * The child environment: the caller's env minus `CHILD_ENV_UNSET`, plus an isolated `HOME`, `JEVCODE_HOME` and XDG
@@ -197,9 +197,10 @@ export function childEnv(home: string, rows: number, cols: number, extra: Readon
   env['HOME'] = home;
   env['JEVCODE_HOME'] = home;
   env['XDG_CONFIG_HOME'] = join(home, 'xdg');
-  // `<OPEN_ASSIST_PATH>/.env` is a dotenv layer whose default is the package root's sibling `../open-assist` (src/config/resolve.ts);
-  // on a machine where that directory holds keys no scenario would ever be keyless, so it points at a directory that does not exist
-  env['OPEN_ASSIST_PATH'] = join(home, 'no-open-assist');
+  // `JEVCODE_EXTRA_ENV_FILE` names a second dotenv layer (src/config/resolve.ts). The variable may already be set in
+  // the developer's shell at a file that holds keys, which would make a scenario keyless by accident, so it is
+  // overwritten with a path that does not exist rather than merely unset
+  env['JEVCODE_EXTRA_ENV_FILE'] = join(home, 'no-extra-env');
   env['PTY_ROWS'] = String(rows);
   env['PTY_COLS'] = String(cols);
   if (env['LANG'] === undefined || env['LANG'] === '') env['LANG'] = 'en_US.UTF-8';

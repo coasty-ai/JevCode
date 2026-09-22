@@ -23,7 +23,8 @@ import {
   whoRowText,
   whoRows,
 } from '../../../src/session/peers.js';
-import { SESSIONS_INBOX_JSON_CLAUSE, WHO_PIPED_COLUMNS } from '../../../src/cli/sessions.js';
+import { WHO_PIPED_COLUMNS } from '../../../src/cli/sessions.js';
+import { publicMessage } from '../../../src/coordination/index.js';
 import { CONTEXT_MIN_COLUMNS, contextBlock, ctxText } from '../../../src/tui/context/lines.js';
 import { resumeCardRows, type ResumeCardInput } from '../../../src/session/picker-lines.js';
 import { sessionRemainingUsd } from '../../../src/tui/budget/lines.js';
@@ -233,9 +234,25 @@ describe('§13.2 — every declared clause, asserted', () => {
     expect(whole.filter((l) => /^\s*\d+[.)]?\s/.test(l))).toHaveLength(rows.length);
   });
 
-  it('clause 8 (R5-1’s, §13.3): `sessions inbox --json` emits FLATTENED rows — coordination’s `Message` carries a hostKey', () => {
-    expect(SESSIONS_INBOX_JSON_CLAUSE).toContain('hostKey');
-    expect(SESSIONS_INBOX_JSON_CLAUSE).toContain('§7 row 61');
+  it('§13.3 as ratified: `sessions inbox --json` serialises coordination’s own `publicMessage(m)` — no hostKey, checksum or hmac', () => {
+    // the declared clause that stood in for this is RETIRED (round-5 owner item): the projection is the contract,
+    // and it lives in the module that owns the record rather than as a sentence in the CLI.
+    const projected = publicMessage({
+      id: 'm-1',
+      from: { deviceId: 'k3q7m2abcdef0000', label: 'air', sessionId: 'S1-aaaaaaaa', runId: 'R1' },
+      to: '@all',
+      type: 'heads-up',
+      text: 'editing store.ts',
+      refs: {},
+      t: '2026-09-21T23:00:00.000Z',
+      hostKey: 'never-serialised',
+      checksum: 'never-serialised',
+    } as unknown as Parameters<typeof publicMessage>[0]);
+    const json = JSON.stringify(projected);
+    for (const key of ['hostKey', 'checksum', 'hmac', 'never-serialised']) expect(json).not.toContain(key);
+    // the full device id never leaves: the projection carries the id8 under a name that says id8 (§7 row 61)
+    expect(projected.from.deviceId8).toBe('k3q7m2ab');
+    expect(json).not.toContain('k3q7m2abcdef0000');
   });
 });
 

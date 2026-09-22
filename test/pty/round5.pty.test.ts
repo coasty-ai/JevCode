@@ -265,6 +265,62 @@ describe.skipIf(!hasExpect)('pty round 5: the context pair (TUI-DESIGN-5 §3.2, 
     assertNoKeyBytes(r, FAKE_KEY);
     assertEveryRowFits(r, 120);
   });
+
+  /**
+   * Round-5 finishing wave, the context re-pin. R13 put `llm-jev` — the SHIPPED DEFAULT — inside
+   * `contextEnabled`, so the `ctx` status cell and the `/context` block are what an ordinary user sees with no
+   * `--mode` at all. The scenario used to be pinned to `--mode jev-on`, which proved the feature worked in a mode
+   * nobody runs by default and said nothing about the one everybody does.
+   *
+   * The jev-only twin below is the other half: under a mode with no generator there is no prompt budget to
+   * report, so the cell must be ABSENT rather than `ctx —%` (§7 row 35).
+   */
+  it('under the SHIPPED DEFAULT (llm-jev, no --mode) a live run shows the `ctx` cell and /context reports the budget', async () => {
+    const r = await drive({
+      name: 'r5-context-default',
+      args: ['chat', '--mock', '--mock-steps', '2'],
+      rows: 40,
+      cols: 120,
+      env: { ...NO_NETWORK, JEVCODE_CONTEXT_COMPACTION: 'code', OPENROUTER_API_KEY: FAKE_KEY },
+      steps: [...CHAT_OPEN, 'sleep 1.2', ...submitTask('fix the failing test'), runFinishedStep('[a-z_]+'), 'sleep 1.0', ...cmd('/context'), 'expect context', 'sleep 0.8', ...EXIT_IDLE],
+      timeoutS: 60,
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const text = stripAnsi(r.text);
+    /**
+     * THE re-pin assertion: the `ctx` status cell, under the shipped default and nothing else. At 120 columns
+     * it is `formatMeter`'s full form (`ctx 41% · 6 files · 12 steps`), which is also the proof that
+     * `contextEnabled` covers `llm-jev` — before R13 this cell was `jev-on`-only and a default session never
+     * saw it. §7 row 35: never a `ctx —%` placeholder, at any width.
+     */
+    expect(text).toMatch(/ctx \d+% [·-] \d+ files?/);
+    expect(text).not.toContain('ctx —%');
+    // and `/context` itself answers: either the block or — when the mock run has already finished by the time
+    // the command is typed — S54's own sentence. Never nothing, and never a placeholder.
+    expect(/context [·-] /.test(text) || text.includes("no run is live — /context reports the run's prompt budget")).toBe(true);
+    assertNoKeyBytes(r, FAKE_KEY);
+    assertEveryRowFits(r, 120);
+  }, 120_000);
+
+  it('under `--mode jev-only` there is no generator context, so the `ctx` cell is ABSENT (never `ctx —%`)', async () => {
+    const r = await drive({
+      name: 'r5-context-jev-only',
+      args: ['chat', '--mock', '--mock-steps', '2', '--mode', 'jev-only'],
+      rows: 40,
+      cols: 120,
+      env: { ...NO_NETWORK, JEVCODE_CONTEXT_COMPACTION: 'code', TYPESAFE_API_KEY: FAKE_KEY },
+      steps: [...CHAT_OPEN, 'sleep 1.2', ...cmd('/context'), 'sleep 0.8', ...EXIT_IDLE],
+      timeoutS: 60,
+    });
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    const text = stripAnsi(r.text);
+    expect(text).not.toMatch(/ctx \d+%/);
+    expect(text).not.toContain('ctx —%');
+    assertNoKeyBytes(r, FAKE_KEY);
+    assertEveryRowFits(r, 120);
+  }, 120_000);
 });
 
 describe.skipIf(!hasExpect)('pty round 5: D-AN — every registered surface answers out loud (§4.9, §5.5)', () => {

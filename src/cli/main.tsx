@@ -12,12 +12,12 @@
  * `completion` answer before any Ink import (§17 item 3; `src/tui/terminal.ts` is imported statically for the one
  * process-wide `restoreTerminal()` — it imports no Ink at runtime, only `node:fs` and a type).
  */
-import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
+import { appendFileSync, readFileSync, realpathSync } from 'node:fs';
 import { homedir, hostname, userInfo } from 'node:os';
-import { basename, dirname, join as joinPath, resolve as resolvePath } from 'node:path';
+import { basename, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NO_INPUT_NEEDS_TASK, parseCliArgs, usageText } from './args.js';
-import type { ParsedFlags } from './args.js';
+import type { Command, ParsedFlags } from './args.js';
 import { EXIT_CODES, UsageError } from '../errors.js';
 import type { Engine, Renderer, RendererOptions, SignalName } from '../core/types.js';
 import { patternRedact } from '../core/redact.js';
@@ -29,6 +29,10 @@ import { epilogueLines, type EpilogueContext } from './epilogue.js';
 import { wireFatalHandlers, type FatalWiring } from './fatal.js';
 import { INK_VERSION, REACT_VERSION } from './report.js';
 import { restoreTerminal } from '../tui/terminal.js';
+// TUI-DESIGN-5 §5.5 (R2): ONE `gitRootOf` for both import sinks — `/import` (src/tui/App.tsx) binds this module
+// too, so the session and the CLI can never plan different project scopes. Pure, `existsSync` only, no spawn, so
+// it stays legal on the argv path (gate G-R5-1).
+import { gitRootOf } from '../tui/import/git-root.js';
 /**
  * TUI-DESIGN-5 §2.1 rule 6 / gate G-R5-1: `src/session/coordination.ts` has **zero value imports** of its own
  * (`test/unit/cli/sessions.test.ts` pins that), so naming it here is a static edge to a leaf of pure strings and
@@ -78,7 +82,7 @@ export interface RendererSelection {
  * says "fullscreen is set for the next launch" — promised something the relaunch did not deliver.
  *
  * §1's "the first frame comes from argv, env, isTTY and cwd only" forbids `resolveConfig` here (network-free but
- * async, dotenv chains, Open Assist). This is **one guarded synchronous read of one key** from the same candidate
+ * async, dotenv chains, the extra .env file). This is **one guarded synchronous read of one key** from the same candidate
  * files `resolveConfig` consults, in the same order, and it is skipped entirely when a flag or the environment
  * already named the renderer. Any error — missing file, bad JSON, wrong type, unreadable directory — is
  * `undefined`, i.e. classic: a broken config file must never stop the session from starting.
@@ -456,24 +460,6 @@ async function commandPerf(flags: ParsedFlags): Promise<number> {
   return runPerf(flags);
 }
 
-/**
- * TUI-DESIGN-5 §5.5: the git root above a workspace, for `ImportEnvironment.gitRoot` — a bounded walk of at most
- * 64 parents looking for a `.git` entry (a directory in a clone, a FILE in a linked worktree, so `existsSync`
- * and not `statSync().isDirectory()`). No `git` process: gate G-R5-1 keeps every spawn off the argv path, and
- * `jevcode import` reaches this before anything else runs. `null` when there is none, which is what the engine
- * reads as "no project scope".
- */
-function gitRootOf(workspace: string): string | null {
-  let dir = resolvePath(workspace);
-  for (let i = 0; i < 64; i++) {
-    if (existsSync(joinPath(dir, '.git'))) return dir;
-    const up = dirname(dir);
-    if (up === dir) return null;
-    dir = up;
-  }
-  return null;
-}
-
 /** the resolved-config facts the maintenance commands need (runs dir, redactor, workspace); a broken config is exit 2 */
 async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: (s: string) => string; workspace: string; record: () => unknown; sandbox: string; setting: (name: string) => string | undefined; secrets: () => Promise<ReadonlyMap<string, import('../core/types.js').Resolved<string>>> }> {
   const { resolveConfig } = await import('../config/resolve.js');
@@ -499,7 +485,7 @@ async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: 
      */
     setting: settingReader(config.entries),
     // the two secrets, plus `decider.provider` (TUI-DESIGN-2 §2.3): `jevcode login` infers the Jev provider from the session's own
-    // resolution (flag > JEV_PROVIDER > ./.env > <OPEN_ASSIST_PATH>/.env > file > auto rules) so login and the session never disagree
+    // resolution (flag > JEV_PROVIDER > ./.env > <JEVCODE_EXTRA_ENV_FILE> > file > auto rules) so login and the session never disagree
     secrets: async () => {
       const m = new Map<string, import('../core/types.js').Resolved<string>>();
       for (const name of ['generator.apiKey', 'decider.apiKey', 'decider.provider'] as const) {
@@ -545,6 +531,39 @@ async function loginIo(flags: ParsedFlags): Promise<import('./login.js').Command
   };
 }
 
+/**
+ * TUI-DESIGN-5 / round-5 item 8: `JEVCODE_JEV` is a BENCH AND PERF fault switch, not a product setting. Its one
+ * production reader is `withJevOff` (`src/jev/off.ts`), wired at `src/bench/runner.ts` only, so setting it in a
+ * shell and then running a product command changed nothing while reading as if it had — a keyed `jevcode run`
+ * would make real Jev calls and spend real money under a variable the user believed had disabled them.
+ *
+ * The CLI therefore REFUSES to start, before any command runs and before any network, for every product command.
+ * `bench` and `perf` are exempt: `npm run bench` / `npm run perf` set the variable themselves, which is the whole
+ * supported way to use it.
+ *
+ * The value is echoed so the user can see WHICH stale export they are carrying, redacted to its first 16 code
+ * points (`[...value]`, not `slice`, so an astral character is never cut in half). `--plain` and `--json` print
+ * the identical two lines on stderr: a fatal that only the TUI renderer could show would be invisible in exactly
+ * the pipes this switch gets set in.
+ */
+export const JEVCODE_JEV_ENV = 'JEVCODE_JEV';
+export const JEVCODE_JEV_FIX = 'unset JEVCODE_JEV';
+export function jevcodeJevRefusal(value: string): string {
+  const shown = [...value].slice(0, 16).join('');
+  return `JEVCODE_JEV is set ("${shown}") — it is a bench/perf fault switch, not a product setting; unset it, or run the bench and perf suites through npm run bench / npm run perf, which set it themselves`;
+}
+/** the two `[setup]` rows, in order, for the refusal block (one producer for the CLI and its tests). */
+export function jevcodeJevRefusalRows(value: string): string[] {
+  return [`[setup] ${jevcodeJevRefusal(value)}`, JEVCODE_JEV_FIX];
+}
+/** `null` when the command may run; the rows to print (exit 2) when it may not. */
+export function jevcodeJevRefusalFor(command: Command, env: NodeJS.ProcessEnv): string[] | null {
+  if (command === 'bench' || command === 'perf') return null;
+  const value = env[JEVCODE_JEV_ENV];
+  if (value === undefined) return null;
+  return jevcodeJevRefusalRows(value);
+}
+
 export async function main(argv: string[]): Promise<number> {
   let flags: ParsedFlags;
   try {
@@ -561,6 +580,12 @@ export async function main(argv: string[]): Promise<number> {
   if (flags.version) {
     process.stdout.write(flags.json ? `${JSON.stringify(versionJson())}\n` : `jevcode ${VERSION}\n`);
     return 0;
+  }
+  // round-5 item 8: before any command runs and before any network (see `jevcodeJevRefusalFor`)
+  const jevRefusal = jevcodeJevRefusalFor(flags.command, process.env);
+  if (jevRefusal !== null) {
+    process.stderr.write(`${jevRefusal.join('\n')}\n`);
+    return EXIT_CODES.config;
   }
   switch (flags.command) {
     case 'chat':
@@ -684,6 +709,11 @@ export async function main(argv: string[]): Promise<number> {
             jevcodeVersion: VERSION,
             trust: 'none',
             decider: null,
+            // TUI-DESIGN-5 §5.4 item 1 (R1): the CONFIGURED-secret layer. `planImport`'s default redactor is
+            // `redactSecrets(s, undefined)` — the 15 pattern families only — so a `config.addSecret` value that
+            // matches no family survives into `PlanRow.why`, the warnings and the report. `pathsFor` already
+            // returns the session's redactor; the TUI twin passes exactly the same thing.
+            redact: p.redact,
           },
         },
       );
@@ -697,6 +727,10 @@ export async function main(argv: string[]): Promise<number> {
         runsDir: p.runsDir,
         ascii: resolveLaunchSettings(flags, process.env).ascii,
       }, { ...(flags.json === true ? { json: true } : {}) });
+    }
+    case 'doctor': {
+      const { commandDoctor, defaultDoctorIo } = await import('./doctor.js');
+      return commandDoctor(flags, await defaultDoctorIo(flags));
     }
     case 'report': {
       const { commandReport, newestSessionLog } = await import('./report.js');
