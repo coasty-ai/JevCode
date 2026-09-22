@@ -59,6 +59,16 @@ export interface FactsInput {
    * (§1.4 promise 1). No pid, no path and no device label reaches this fact — a user who wants detail types `/who`.
    */
   peers?: PeerView | null;
+  /**
+   * TUI-DESIGN-5 §12.1, gap 1 (fix pass, finding 7): **which** of the two causes `peers: undefined` is.
+   *
+   * `undefined` alone printed the bare `the peer registry is not available in this build.` — a sentence that is
+   * now false, because the build DOES have coordination; what it does not have here is a ledger, and the reason
+   * is either the configuration or an unwritable home. `src/cli/session.ts` passes
+   * `COORDINATION_OFF_CLAUSE[reason]`, and the fact appends it exactly as `/who` and `/peers` do, so the three
+   * sinks the brief names cannot disagree. Ignored unless `peers` is `undefined`.
+   */
+  peersOffClause?: string;
 }
 
 /** the `topic` column of §3.5 */
@@ -193,10 +203,23 @@ function costText(s: FactsInput['spend']): string {
 export const PEERS_UNAVAILABLE_TEXT = 'the peer registry is not available in this build';
 export const PEERS_ALONE_TEXT = 'no other jevcode is working in this workspace';
 
-export function peersFactText(view: PeerView | null | undefined, ascii = false): string {
+/**
+ * TUI-DESIGN-5 §12.1 / §2.3: the ONE "the ledger has not opened yet" sentence, shared by the chat fact and by
+ * `/peers`' `view === null` block (fix pass, finding 8) so the two surfaces cannot drift. It starts with
+ * `COORDINATION_NOT_OPEN` (`src/session/coordination.ts`) verbatim, which `facts.test.ts` pins.
+ */
+export function peersNotOpenText(ascii = false): string {
+  return `the session ledger is not open yet ${ascii ? '--' : '\u2014'} /who lists every jevcode on this workspace once it is`;
+}
+
+export function peersFactText(view: PeerView | null | undefined, ascii = false, offClause?: string): string {
   const dash = ascii ? '--' : '\u2014';
-  if (view === undefined) return `${PEERS_UNAVAILABLE_TEXT}.`;
-  if (view === null) return `The session ledger is not open yet ${dash} /who lists every jevcode on this workspace once it is.`;
+  // gap 1 / finding 7: `undefined` is "there will be no ledger", and the clause says which of the two causes
+  if (view === undefined) return offClause === undefined || offClause === '' ? `${PEERS_UNAVAILABLE_TEXT}.` : `${PEERS_UNAVAILABLE_TEXT} ${dash} ${offClause}.`;
+  if (view === null) {
+    const t = peersNotOpenText(ascii);
+    return `${t.slice(0, 1).toUpperCase()}${t.slice(1)}.`;
+  }
   const here = Number.isFinite(view.live) ? Math.max(0, Math.floor(view.live)) : 0;
   const stale = Number.isFinite(view.stale) ? Math.max(0, Math.floor(view.stale)) : 0;
   // §2.4's privacy contract: counts, an age and a boolean. Never a pid, never a path, never a device label.
@@ -233,7 +256,7 @@ export function harnessFacts(i: FactsInput): readonly Fact[] {
     undo: UNDO_TEXT,
     commands: COMMANDS_TEXT,
     provider: providerText(i.provider),
-    peers: peersFactText(i.peers),
+    peers: peersFactText(i.peers, false, i.peersOffClause),
   };
   return FACT_KEYS.map((key) => ({ key, topic: FACT_TOPICS[key], examples: FACT_EXAMPLES[key], text: text[key] }));
 }

@@ -37,8 +37,19 @@ export interface ModelsText {
   isGeneratorProvider(id: ProviderId): boolean;
 }
 
-/** Both halves of the seam — what the `'models'` arm binds from one `await import('../models/index.js')`. */
-export interface ModelsApi extends ModelsText, ModelsSearch {}
+/**
+ * Both halves of the seam — what the `'models'` arm binds from one `await import('../models/index.js')`.
+ *
+ * The two **catalogue** members are optional and are the picker's first paint: `instantCatalogue()` is the
+ * bundled snapshot (no I/O, no await) and `SNAPSHOT_AT` is the date its provenance row reports. They are here
+ * rather than in a second seam because `src/models/index.ts` already exports both — binding the module gives the
+ * App all four halves from ONE `await import()`, so `AppProps.models` alone really does mean "nothing is
+ * imported at all" instead of quietly needing `instantModels` beside it to be true.
+ */
+export interface ModelsApi extends ModelsText, ModelsSearch {
+  instantCatalogue?(): readonly ModelInfo[];
+  SNAPSHOT_AT?: string;
+}
 
 // ---------------------------------------------------------------------------------------
 // §12.5 strings. Every one is a named export so §13.4's pin test greps a constant, never a literal.
@@ -63,6 +74,17 @@ export function browseOnlyText(id: string): string {
  * `models (1-0 of 0)` and arming `pick 1-0`. One sentence, the shape of S104's refusal (a new §12.5 row — see the
  * owner request in R5-6's report).
  */
+/**
+ * §6.2 / §7 row 71: the body row of a models picker whose **catalogue seam has not arrived yet**.
+ *
+ * `openModelsPicker` binds the seam before it opens the pane, so the mounted `/model` never shows this. An
+ * external `Renderer.openPicker({ kind: 'models' })` can, and its first frame used to read `no model matches …`
+ * beside a rule row already claiming `models · 512 of 7 providers` — a frame that contradicts itself, which is
+ * the one thing §6.2 says frame 1 may never be. Zero hits because nothing is loaded and zero hits because the
+ * query missed are different facts and now say different things.
+ */
+export const MODELS_LOADING = 'loading the catalogue …';
+
 export function noModelMatchText(query: string): string {
   const q = query.trim();
   return q === '' ? 'no models to show — type a query, or Esc closes' : `no model matches ${q} — type a query, or Esc closes`;

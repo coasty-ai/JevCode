@@ -208,6 +208,44 @@ export function importHintLocked(pid: number, secondsAgo: number): string {
 export const IMPORT_SCANNING_ROW = 'Import — scanning your other agents … (Esc cancels; nothing is written)';
 /** §12.4 S92: `/import` with an empty probe. */
 export const IMPORT_NOTHING_FOUND = 'nothing to import — no claude-code, codex or cursor configuration found';
+/**
+ * §5.3 / D-AN: `y` with no apply seam, **as a rung ladder** (§5.8, like every other row of this overlay).
+ *
+ * The three WRITE verbs of `src/import/index.ts` take an `ApplyOptions` / `UndoOptions` this build cannot
+ * construct (`src/cli/import.ts`'s header records the same gap for the CLI), so the key names **exactly what it
+ * would have written** — the intersection `selectedRowIds` computed, never the group flag — and points at the
+ * twin that does run.
+ *
+ * The ladder is not decoration. The one-rung form is 105 cells, the overlay's body at the DEFAULT 24×80 geometry
+ * is `blockWidth(80)`, and `noteRow` elides right: the half that carried the promise (`jevcode import --yes
+ * writes them`) was the half that got cut, leaving `…is not available in this b…`. D-AN's rule is "name what it
+ * would write and point at the twin that does run" — a rung that keeps the pointer and drops the apology is the
+ * only honest narrow form, so every rung below still ends in `jevcode import --yes`.
+ */
+export function importApplyNotWiredRungs(rows: number): readonly string[] {
+  const n = `${rows} row${rows === 1 ? '' : 's'}`;
+  return [
+    `${n} ready {dash} applying from the session is not available in this build; jevcode import --yes writes them`,
+    `${n} ready {dash} not available in this build; jevcode import --yes writes them`,
+    `${n} ready {dash} jevcode import --yes writes them`,
+    `${rows} ready {dash} jevcode import --yes`,
+    `jevcode import --yes`,
+  ];
+}
+
+/** §5.3: the widest rung of the refusal that fits `width` cells (the whole ladder at `Infinity`). */
+export function importApplyNotWired(rows: number, width: number = Number.POSITIVE_INFINITY, g: GlyphSet = GLYPHS.unicode): string {
+  return fitRungIn(importApplyNotWiredRungs(rows), width, g, { dash: g.dash });
+}
+
+/**
+ * §7 row 54 / the registry's own title for the flag (`plan only — nothing is written`): what `y` answers when the
+ * overlay was opened by `/import --dry-run`. Accepting the flag and then offering an armed `[y] import all N`
+ * that writes would make the flag a lie the moment the apply seam lands, and a flag that silently does nothing is
+ * the D-AN failure this round exists to remove.
+ */
+export const IMPORT_DRY_RUN_REFUSAL = 'dry run — nothing is written; /import without --dry-run applies, Esc closes';
+
 /** §7 row 59, behaviour 3: Esc closes the overlay and the plan is kept on disk. */
 export function importClosedRow(importId: string, g: GlyphSet = GLYPHS.unicode): string {
   return `import closed ${g.dash} the plan is kept: jevcode import --resume ${importId}`;
@@ -321,15 +359,84 @@ export function importScreenReaderHead(toImport: number, toReview: number, skipp
   return `Import: ${toImport} to import, ${toReview} to review, ${importCount(skipped)} skipped, ${importSize(bytes).replace(' KiB', ' kibibytes').replace(' MiB', ' mebibytes').replace(' B', ' bytes')}`;
 }
 
-/** §5.7 / §12.4 S90 SR: the numbered group list, spoken, no bullets. */
-export function importScreenReaderLines(state: ImportUiState, opts: { prompt?: boolean } = {}): string[] {
+/** §5.2 SR: the pre-plan frame, spoken. `IMPORT_SCANNING_ROW` carries an ellipsis, which a reader says nothing about. */
+export const IMPORT_SCANNING_SR = 'Import: scanning your other agents. Nothing is written; Escape cancels.';
+
+/** One spoken group row (`1. memory, 5 rows, on`) — the same sentence the block and the focus line both use. */
+function srGroupRow(gr: ImportGroupRow, i: number): string {
+  return `${i + 1}. ${gr.key}, ${gr.rows} ${gr.rows === 1 ? 'row' : 'rows'}${gr.key === 'review' ? ', needs you' : gr.selectable > 0 ? ', on' : ', nothing to import'}`;
+}
+
+/**
+ * §5.7 / §12.4 S89–S95 SR / §7 row 82: the spoken block **of the step the overlay is on**.
+ *
+ * Every step needs its own sentence form, and returning the group list whatever the step is worse than silence:
+ * a reader that hears "1. memory, 5 rows, on" while the screen is showing the review queue has been told the
+ * wrong thing, not merely told nothing. `opts.input` is the plan the row and review steps name their rows from;
+ * without it those steps still answer with their position and counts, never with another step's block.
+ *
+ * `opts.prompt` belongs to the `groups` block alone — it is `--plain`'s `Enter selection (1-N):`, and the CLI
+ * (which only ever passes a fresh `initImportUi`) is unchanged by every branch below it.
+ */
+export function importScreenReaderLines(state: ImportUiState, opts: { prompt?: boolean; input?: ImportUiInput } = {}): string[] {
   const s = state.summary;
+  switch (state.step) {
+    case 'scanning':
+      return [IMPORT_SCANNING_SR];
+    case 'rows': {
+      const key = state.expanded;
+      const rows = opts.input !== undefined && key !== null ? rowsOfGroup(opts.input.plan, key) : [];
+      const out = [`Import group ${key ?? 'none'}: ${rows.length} ${rows.length === 1 ? 'row' : 'rows'}. Space toggles, a all, n none, Enter goes back, y imports.`];
+      rows.forEach((r, i) => out.push(`${i + 1}. ${r.source.display}, ${state.off.has(r.id) ? 'off' : 'on'}`));
+      return out;
+    }
+    case 'review': {
+      const queue = opts.input === undefined ? [] : reviewRowsOf(opts.input.plan);
+      const at = queue[state.reviewAt];
+      const pos = `Import review ${queue.length === 0 ? 0 : state.reviewAt + 1} of ${queue.length}`;
+      // `why` is engine-generated and may carry a `·`, a `—` or a `→`, none of which a reader says anything
+      // about. The spoken form takes the ASCII twins — `GLYPHS.sr` keeps the unicode marks (they are what a
+      // SIGHTED reader sees), so the substitution a sentence needs is the ascii one (§12.4 SR, §7 row 81).
+      return at === undefined ? [`${pos}.`] : [`${pos}: ${at.source.display}. ${glyphTwin(at.why, GLYPHS.ascii)}`];
+    }
+    case 'applying':
+      return ['Import: applying. Control-C stops after the current file.'];
+    case 'done': {
+      const a = state.applied;
+      if (state.interrupted) return [`Import stopped: ${a?.ok ?? 0} of ${a?.total ?? 0} applied. jevcode import --resume ${state.importId} continues it.`];
+      return a === null ? ['Import: applying.'] : [`Import applied ${a.ok} of ${a.total}${a.failed > 0 ? `, ${a.failed} failed` : ''}.`];
+    }
+    default:
+      break;
+  }
   const out = [importScreenReaderHead(s.toImport, s.toReview, s.skipped, s.bytes)];
-  state.groups.forEach((gr, i) => {
-    out.push(`${i + 1}. ${gr.key}, ${gr.rows} ${gr.rows === 1 ? 'row' : 'rows'}${gr.key === 'review' ? ', needs you' : gr.selectable > 0 ? ', on' : ', nothing to import'}`);
-  });
+  state.groups.forEach((gr, i) => out.push(srGroupRow(gr, i)));
   if (opts.prompt !== false) out.push(importSelectionPrompt(state.groups.length));
   return out;
+}
+
+/**
+ * §7 row 82 / §12.4 SR: **one** sentence for where the cursor is right now, so a move or a Space toggle is
+ * heard. The block above is what a step CHANGE speaks; this is what every other change speaks, coalesced by the
+ * same rule the models picker uses (`srDue`) — a reader arrowing down a group list must hear the group it landed
+ * on, and must not hear the whole block five times.
+ */
+export function importSrFocusLine(state: ImportUiState, input?: ImportUiInput): string {
+  // a hint is the ANSWER to the key just pressed (`nothing selected …`, the apply refusal, the dry-run
+  // sentence). It is what a sighted user reads in place of the keys row, so it is what the reader hears.
+  if (state.hint !== null && state.hint !== '') return glyphTwin(state.hint, GLYPHS.ascii);
+  if (state.step === 'groups') {
+    const gr = state.groups[state.cursor];
+    const n = state.groups.length;
+    return gr === undefined ? `Import: ${n} groups.` : `Import group ${state.cursor + 1} of ${n}: ${srGroupRow(gr, state.cursor).replace(/^\d+\. /, '')}`;
+  }
+  if (state.step === 'rows') {
+    const key = state.expanded;
+    const rows = input !== undefined && key !== null ? rowsOfGroup(input.plan, key) : [];
+    const r = rows[state.rowCursor];
+    return r === undefined ? `Import group ${key ?? 'none'}: no rows.` : `Row ${state.rowCursor + 1} of ${rows.length}: ${r.source.display}, ${state.off.has(r.id) ? 'off' : 'on'}`;
+  }
+  return importScreenReaderLines(state, { prompt: false, ...(input !== undefined ? { input } : {}) })[0] ?? '';
 }
 
 // ---------------------------------------------------------------------------------------

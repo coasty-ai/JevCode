@@ -133,6 +133,7 @@ import { readPostImages, readPreImage } from '../checkpoint/images.js';
 import { INDEX_FILE, appendIndexLine as realAppendIndexLine, readIndex as realReadIndex, sessionFieldsOf, text60, type ChatSpendRow, type IndexLine } from '../session/index.js';
 import { buildSeed, carriedSteers, seedSource, type SeedParent } from '../session/seed.js';
 import { defaultExportPath, exportSession as realExportSession, type ExportRun } from '../session/export.js';
+import { COORDINATION_NOT_OPEN, COORDINATION_OFF_CLAUSE, coordinationAvailability, coordinationEnabledFrom, coordinationOffText, settingReader, type CoordinationOffReason } from '../session/coordination.js';
 import { activityView, peerViewOf, selfView, WHO_EMPTY, whoHeader, whoRows } from '../session/peers.js';
 import { ambiguousResumeMessage, noSessionMessage, pickerHeader, pickerRows, recentSessionHint, resolveResumeTarget } from '../session/picker-lines.js';
 // TUI-DESIGN-5 §2.14 (R5-1): the WRITE half. `openSessionLedger` is the only place `src/coordination/**` is loaded,
@@ -192,7 +193,7 @@ import { budgetItems, BUDGET_THRESHOLDS, type BudgetPct } from '../tui/budget/li
 import { buildIntakeState, chatKindAfterNo, filesBucket, routeOf, routeOfKind, runIntake, testsFromCandidates, type ChatKind, type ChatRoute, type IntakeResult } from '../chat/intake.js';
 import { INTAKE_READLINE_PROMPT, INTAKE_SR_LINES, parseIntakeAnswer } from '../chat/lines.js';
 import { fillReply, pickReply, replyByKey, type ReplyFacts } from '../chat/replies.js';
-import { harnessFacts, selectFacts, type FactsInput } from '../chat/facts.js';
+import { harnessFacts, peersNotOpenText, PEERS_UNAVAILABLE_TEXT, selectFacts, type FactsInput } from '../chat/facts.js';
 import { LOOKUP_READ_BYTES, lookupCode, lookupLines, type LookupInput } from '../chat/lookup.js';
 import { CHAT_FILES_MAX, CHAT_FILE_BYTES, CHAT_FIXED_INPUT_TOKENS, chatMaxTokens, llmChatTurn, type LlmTurnInput } from '../chat/llm-turn.js';
 import { CHAT_LABELS, bubbleLines, type ChatRole } from '../chat/bubbles.js';
@@ -1367,6 +1368,18 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
    */
   let sessionLedger: SessionLedger | null = null;
   let publisher: Publisher | null = null;
+  /**
+   * TUI-DESIGN-5 §2.10 / §12.1, gap 1: WHY there is no ledger, when there is none. `null` = coordination is on
+   * (the ledger is simply not open yet, §1.4 promise 1); `'disabled'` / `'unwritable'` are the two real causes,
+   * and `/who`, `/peers` and the chat `peers` fact all say which rather than repeating "not in this build" at a
+   * user whose ledger would open fine. Resolved once, after `renderer.firstFrame()`, never before it.
+   */
+  let coordinationOff: CoordinationOffReason | null = null;
+  let coordinationPreflight: Promise<CoordinationOffReason | null> | null = null;
+  /** §15.2: the fold subscription of the ONE handle — dropped in the same `finally` that stops the writer. */
+  let coordUnsubscribe: (() => void) | null = null;
+  /** §2.4: armed while this session is alone, so the peer-arrival notice fires on the edge and never per beat. */
+  let peerNoticeArmed = true;
   /** resolves when startup finished (or failed): a line typed into the readline composer before resolveConfig waits here instead of failing */
   let startupSettled: (() => void) | null = null;
   const startupDone = new Promise<void>((r) => {
@@ -2370,9 +2383,72 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
    * provably post-first-frame (gate G-R5-1) and (b) a run never waits on the ledger to start stepping
    * (§1.4 promise 2). A ledger that cannot open is one `[ui]` notice and an empty `/who`, never a failed run.
    */
+  /**
+   * TUI-DESIGN-5 §2.10 / §12.1, gap 1 — the **configuration** half of the pre-flight, and it is deliberately
+   * SYNCHRONOUS and exact: `ResolvedConfig.entries` is already in memory, so "the user turned coordination off"
+   * is knowable at the instant `startPublishing` runs and must not depend on a promise having settled. The
+   * asynchronous half (`checkHomeWritable`) only ever *adds* a reason the caller could not have known.
+   */
+  function coordinationDisabledByConfig(): boolean {
+    const cfg = config;
+    // fix pass, finding 18: `settingReader` is the ONE place the `undefined`-is-on rule lives; both this file and
+    // `src/cli/main.tsx` inlined `entries.get(name)?.value` beside it, so the rule was written three times.
+    return cfg !== null && !coordinationEnabledFrom(settingReader(cfg.entries));
+  }
+
+  /**
+   * The disk half: can this home hold a ledger at all? Memoised, and it awaits `renderer.firstFrame()` before it
+   * touches the filesystem exactly as `createPublisher` does, so the first frame pays for neither the `mkdir`
+   * nor the `access(W_OK)` (gate G-R5-1). It is fire-and-forget on purpose — it **never gates the open**: making
+   * `startPublishing` wait on it put two real I/O hops between a run's start and `sessionLedger`, and `/who`
+   * typed straight after a run then read a ledger that had not been seated yet.
+   */
+  function checkHomeWritable(): Promise<CoordinationOffReason | null> {
+    coordinationPreflight ??= (async (): Promise<CoordinationOffReason | null> => {
+      await renderer.firstFrame();
+      const a = await coordinationAvailability({ home: jdir, read: settingReader(config?.entries) });
+      coordinationOff = a.kind === 'off' ? a.reason : null;
+      return coordinationOff;
+    })();
+    return coordinationPreflight;
+  }
+
+  /**
+   * §12.1: the reason `/who`, `/peers` and the chat `peers` fact print **right now** — `null` means "coordination
+   * is on, the ledger is simply not open yet" (§1.4 promise 1), which is the landed sentence unchanged.
+   */
+  function coordinationReason(): CoordinationOffReason | null {
+    if (coordinationDisabledByConfig()) return 'disabled';
+    void checkHomeWritable();
+    return coordinationOff;
+  }
+
+  /**
+   * §8.1 item 10 / §12.1, gap 1 (fix pass, finding 7): the chat `peers` fact's two keys, decided in ONE place so
+   * `/who`, `/peers` and the fact cannot answer three different things about the same session.
+   *
+   *  - a ledger → the real `PeerView`;
+   *  - no ledger and no reason → `null`, which is `peersFactText`'s honest "not open yet";
+   *  - no ledger and a reason → the key is OMITTED (`undefined`) **and** the clause rides along, so the fact
+   *    reads `the peer registry is not available in this build — coordination is off in this configuration …`
+   *    instead of the bare sentence the build makes false.
+   */
+  function peersFactFields(): Pick<FactsInput, 'peers' | 'peersOffClause'> {
+    const led = sessionLedger;
+    if (led !== null) return { peers: peerViewOf(led.fold, led.self) };
+    const reason = coordinationReason();
+    return reason === null ? { peers: null } : { peersOffClause: COORDINATION_OFF_CLAUSE[reason] };
+  }
+
   function startPublishing(f: RunFacts, sid: string): void {
     const cfg = config;
     if (cfg === null || publisher !== null) return;
+    // gap 1: coordination off by configuration opens NOTHING, and says so through `/who` and `/peers` rather than
+    // through a notice per run — a user who turned it off does not need telling every time.
+    if (coordinationDisabledByConfig()) {
+      coordinationOff = 'disabled';
+      return;
+    }
     const p = createPublisher({
       firstFrame: () => renderer.firstFrame(),
       /**
@@ -2384,7 +2460,10 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
        * drives it, and the day it lands this read picks it up with no edit.
        */
       forceTakeback: forceTakebackOf({ resumed: f.resumed, ...round5Flags() }),
-      onNotice: (text) => note(text, { label: '[session]' }),
+      // gap 1: a ledger that is OFF is not a failure to report — the honest answer lives on `/who` and `/peers`
+      onNotice: (text) => {
+        if (coordinationOff === null) note(text, { label: '[session]' });
+      },
       open: async () => {
         const led = await openLedgerFn({
           home: jdir,
@@ -2419,12 +2498,23 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         });
         sessionLedger = led;
         /**
-         * The fold → frame PUSH is deliberately NOT wired here. `Renderer` has no repaint hook and re-seating the
+         * TUI-DESIGN-5 §15.2 (the harness session's binding rule) — **read `ledger.fold` on mount and after every
+         * own write, then subscribe.** `adoptOwn` seats our own record in `ledger.fold` synchronously but does not
+         * `emit()`, so a push-only view lags its own row by the 100 ms debounce (up to 15 s with no `fs.watch`).
+         * `/who`, `/peers` and the chat `peers` fact read `sessionLedger.fold` **on demand** — that is the mount
+         * read and the after-write read in one, and it is why this file needs no cached copy.
+         *
+         * The subscription below is the third clause, and it has exactly ONE consumer, deliberately: the 0 → ≥ 1
+         * peer edge. The fold → frame PUSH is still not wired — `Renderer` has no repaint hook, and re-seating the
          * host on every beat would raise the idle frame rate, which gate G-R5-3 forbids ("two live peers beating
-         * every 2 s must not raise the idle frame rate at all"). `SessionLedger.subscribe` is the hook R5-2's
-         * `useEngine.tsx` fold/peers slice takes (§9.2, R5-4's W3 PR); until then `/who` and `/peers` read the
-         * live fold on demand, which is exactly what §1.4 promise 1 asks for.
+         * every 2 s must not raise the idle frame rate at all") — so the callback emits at most one line per
+         * transition, never one per beat. `UiState.fold` (the `peers` status zone) is the remaining half and is a
+         * §9.2 request to the shared-shell owner, recorded in this wave's report.
          */
+        coordUnsubscribe?.();
+        coordUnsubscribe = led.subscribe(() => {
+          announcePeerEdge();
+        });
         return led;
       },
     });
@@ -2438,10 +2528,31 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
          * `null`; the fold is its first real source. The sentence itself is TD4's, unchanged (N6).
          */
         if (r.kind !== 'publishing' || sessionLedger === null) return;
-        const line = peerOpenNotice(peerViewOf(sessionLedger.fold, sessionLedger.self));
-        if (line !== null) note(line, { label: '[session]' });
+        announcePeerEdge();
       })
       .catch((e: unknown) => log.warn(`coordination: ${describe(e)}`));
+  }
+
+  /**
+   * TUI-DESIGN-4 §7.10 item 2 / TUI-DESIGN-5 §2.4: the peer line, on the **edge** only.
+   *
+   * `peerOpenNotice` was built in round 4 with zero callers because `SessionHost.peers()` always answered `null`;
+   * the fold is its first real source. It is called from two places — once when the ledger finishes opening, and
+   * again from the fold subscription — and `peerNoticeArmed` is what keeps the second from firing per beat: a
+   * session that is alone stays armed, the first peer disarms it, and being alone again re-arms it. The sentence
+   * itself is TD4's, unchanged (N6).
+   */
+  function announcePeerEdge(): void {
+    const led = sessionLedger;
+    if (led === null) return;
+    const line = peerOpenNotice(peerViewOf(led.fold, led.self));
+    if (line === null) {
+      peerNoticeArmed = true;
+      return;
+    }
+    if (!peerNoticeArmed) return;
+    peerNoticeArmed = false;
+    note(line, { label: '[session]' });
   }
 
   /**
@@ -2453,6 +2564,14 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
     const p = publisher;
     publisher = null;
     sessionLedger = null;
+    // §15.2: the subscription is dropped with the handle it belongs to — one handle, one subscription, one close
+    try {
+      coordUnsubscribe?.();
+    } catch {
+      /* an unsubscribe that threw must not fail the exit path */
+    }
+    coordUnsubscribe = null;
+    peerNoticeArmed = true;
     if (p === null) return;
     try {
       await p.stop();
@@ -3625,12 +3744,28 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
         // `SessionHost.peers()` has one behind it this is the declared stub row, so `/peers` is never a dead command.
         // `SessionHost.peers()` (contract 1.7 item 9) is this controller's own hook; null until a registry drives it
         const view = host.peers?.() ?? null;
+        const offReason = coordinationReason();
         if (view === null) {
-          block(`peers ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: 'the peer registry is not available in this build' }]);
+          /**
+           * gap 1 / §12.1 (fix pass, finding 8): **two different states, two different sentences.**
+           *
+           * `the peer registry is not available in this build` was the base of BOTH, so the commonest case of
+           * all — coordination on, home writable, the ledger simply not open yet — told the user the feature was
+           * missing from the build while `/who` two lines away answered the honest "not open yet". The build
+           * sentence is now reserved for a reason that is genuinely true of it; `peersNotOpenText` is the same
+           * string the chat `peers` fact prints for `view === null`, so the two cannot drift.
+           */
+          block(`peers ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: offReason === null ? peersNotOpenText(o.launch.ascii) : coordinationOffText(PEERS_UNAVAILABLE_TEXT, offReason) }]);
           return;
         }
         if (view.live === 0 && view.stale === 0) {
-          block('peers', [{ kind: 'note', flush: true, text: 'no other jevcode is working in this workspace' }]);
+          /**
+           * §12.1 (fix pass, finding 5): the empty state carries the DOT like every other §12.1 head. Without it
+           * `/peers` was the one block head in the file with no ` · ` in it, and the `r5-who` smoke scenario's
+           * `expect peers [·-]` step could never match — the scenario hard-timed out at exit 124 and went out
+           * unmeasured. The counts are the head, the sentence is the body, exactly as the non-empty branch.
+           */
+          block(`peers ${glyphs().dot} 0 here, 0 stale`, [{ kind: 'note', flush: true, text: 'no other jevcode is working in this workspace' }]);
           return;
         }
         /**
@@ -3698,7 +3833,9 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
          */
         const rows = led !== null ? led.list({ all: a.all === true }).map(activityView) : (host.who?.() ?? null);
         if (rows === null) {
-          block(`who ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: 'the session ledger is not open yet' }]);
+          // gap 1 / §12.1: `COORDINATION_NOT_OPEN` stays the PREFIX (round5.pty.test.ts pins it), and when the
+          // ledger will never open in this configuration the clause says which of the two causes it is
+          block(`who ${glyphs().dot} unknown`, [{ kind: 'note', flush: true, text: coordinationOffText(COORDINATION_NOT_OPEN, coordinationReason()) }]);
           return;
         }
         // §12.1's SR column (S1–S5): `whoRowText` renders `whoSentence` in the screen-reader set (§14.2 #60)
@@ -4183,7 +4320,13 @@ export function createSessionController(o: SessionControllerOptions): SessionCon
        * Leaving it unset cost ~140 intake tokens for a sentence that was permanently false (round-5 fix pass,
        * finding 9).
        */
-      peers: sessionLedger === null ? null : peerViewOf(sessionLedger.fold, sessionLedger.self),
+      /**
+       * gap 1 (fix pass, finding 7): `undefined` is "there will be no ledger" and `peersOffClause` says WHICH —
+       * the brief's "say which in the string" applies to all three sinks, and omitting the key alone left the
+       * fact printing the bare, now-false `the peer registry is not available in this build.` `null` is the
+       * honest "not open yet"; a `PeerView` is the real answer.
+       */
+      ...peersFactFields(),
     };
   }
   function replyFacts(): ReplyFacts {

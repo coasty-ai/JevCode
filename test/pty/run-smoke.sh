@@ -382,6 +382,7 @@ run() {
     # LAUNCH, so the twin cannot be a resize and has to be a second scenario (§12's twin rule).
     r5-who-ascii) steps_name=r5-who;;
     r5-model-picker-ascii) steps_name=r5-model-picker;;
+    r5-import-overlay-ascii) steps_name=r5-import-overlay;;
   esac
   home=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-home-XXXXXX"); ws=$(mktemp -d "${TMPDIR:-/tmp}/jevcode-pty-ws-XXXXXX")
   extra_env=$(hermetic_env "$home")
@@ -420,10 +421,21 @@ run() {
     stuck-submit) extra_env="$extra_env JEVCODE_FAULT=submit:hang JEVCODE_SUBMIT_WATCHDOG_MS=1500";;
     peers) extra_env="$extra_env JEVCODE_FAULT=peer:2";;
     # --- TUI-DESIGN-5 §10: the five round-5 scenarios (verbatim from each .steps header) -------------------------
-    r5-who|r5-who-ascii) extra_env="$extra_env JEVCODE_FAULT=peer:5 JEVCODE_ASSERT_NO_NETWORK=1";;
+    # fix pass, finding 19: `JEVCODE_FAULT=peer:5` is parsed and validated by src/tui/faults.ts and read by
+    # NOTHING (`grep -rn "kind === 'peer'" src/` is empty), so it was a dead pointer that made a reader believe
+    # the rows in this capture came from an injected fault. The rows are real: step 0 runs a `--mock` task, which
+    # opens the ledger and starts the heartbeat writer, and step 1 renders this session's own row off the fold.
+    r5-who|r5-who-ascii) extra_env="$extra_env JEVCODE_ASSERT_NO_NETWORK=1";;
     r5-message) extra_env="$extra_env JEVCODE_FAULT=peer:3";;
     r5-context) extra_env="$extra_env JEVCODE_CONTEXT_COMPACTION=code";;
     r5-model-picker|r5-model-picker-ascii) extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1";;
+    # §5.2: the hermetic $HOME has nothing to import, so the overlay would be §12.4 S92's one row. One memory file
+    # is seeded so the five-group view is the thing under test; the key is exported so gate G-R5-9 has a target.
+    r5-import-overlay|r5-import-overlay-ascii)
+      extra_env="$extra_env OPENROUTER_API_KEY=$FAKE_KEY JEVCODE_ASSERT_NO_NETWORK=1"
+      mkdir -p "$home/.claude"
+      printf '# notes\n\nAlways run the tests before proposing a patch.\n' > "$home/.claude/CLAUDE.md"
+      ;;
     # §7.4: a read-only $HOME is the measured launch failure — chmod AFTER the hermetic dirs exist
     readonly-home) mkdir -p "$home/xdg"; chmod 500 "$home";;
   esac
@@ -452,7 +464,9 @@ run() {
   # §14.2: the exit string exactly once per exit in every scenario (the process-wide restoreTerminal is shared by unmount, fatalExit, the engine's exit hook, finishSession and process 'exit')
   [ "$r" = "1" ] || ok=0
   case "$name" in
-    resize|chrome-tiers|r3-wizard-resize) [ "$c" -le 1 ] || ok=0; checks="$checks clears<=1(one shrink segment)";;
+    # TUI-DESIGN-5 §5.8 / §7 row 85: `r5-import-overlay` drives 24x80 -> 12x60 -> 40x120 with the overlay up, so
+    # it has exactly ONE shrink segment and research 20 item 1's one-clear-per-shrink allowance applies to it.
+    resize|chrome-tiers|r3-wizard-resize|r5-import-overlay|r5-import-overlay-ascii) [ "$c" -le 1 ] || ok=0; checks="$checks clears<=1(one shrink segment)";;
     resize-live) [ "$c" -le 2 ] || ok=0; checks="$checks clears<=2(two shrink segments)"
       grep -qE 'finished (·|-) human_abort' "$txt" && checks="$checks run:human_abort" || { ok=0; checks="$checks MISSING:human_abort"; };;
     plainwarn|taskfile-missing|firstframe) ;;
@@ -640,6 +654,17 @@ run() {
     r5-pause-end) grep -q 'needs a live run' "$txt" && checks="$checks r5-pause-end:s45a" || { ok=0; checks="$checks MISSING:r5-pause-end-s45a"; };;
     r5-model-picker) grep -qE 'models [·-] [0-9]+ of [0-9]+ providers' "$txt" && checks="$checks r5-model-picker:rule" || { ok=0; checks="$checks MISSING:r5-model-picker-rule"; };;
     r5-model-picker-ascii) grep -qE '[·→▌↑↓─]' "$txt" && { ok=0; checks="$checks ASCII-GLYPH-LEAK"; } || checks="$checks r5-model-picker:ascii";;
+    # §5.2 / §5.8: a POSITIVE probe. `$home/.claude/CLAUDE.md` is seeded above precisely so the overlay has rows,
+    # so `nothing to import` is no longer an acceptable outcome here — accepting it made the resize matrix and the
+    # `clears<=1` gate pass vacuously on a run where the overlay never mounted. The keys row is the anchor
+    # (`importRendered`'s `protectTail: 1` keeps it at every width) and a group row proves the body is there.
+    r5-import-overlay)
+      grep -qE '\[y\] import all [0-9]+|y all [0-9]+' "$txt" && checks="$checks r5-import-overlay:keys" || { ok=0; checks="$checks MISSING:r5-import-keys"; }
+      grep -qE '(memory|rules|commands|mcp|config|review) +[0-9]+' "$txt" && checks="$checks r5-import-overlay:rows" || { ok=0; checks="$checks MISSING:r5-import-rows"; }
+      grep -qE 'Import [-·—]' "$txt" && checks="$checks r5-import-overlay:head" || { ok=0; checks="$checks MISSING:r5-import-head"; };;
+    r5-import-overlay-ascii)
+      grep -qE '[·→▌↑↓─]' "$txt" && { ok=0; checks="$checks ASCII-GLYPH-LEAK"; } || checks="$checks r5-import-overlay:ascii"
+      grep -qE '\[y\] import all [0-9]+|y all [0-9]+' "$txt" && checks="$checks r5-import-overlay-ascii:keys" || { ok=0; checks="$checks MISSING:r5-import-ascii-keys"; };;
   esac
   # TUI-DESIGN-5 gate G-R5-9: EVERY round-5 scenario scans its capture for key bytes — the frames as well as the
   # files. `$FAKE_KEY` is only exported for two of them; the scan is unconditional so a leak from any source fails.
@@ -756,6 +781,8 @@ sel_named r5-context && run r5-context 0 40 120 chat --mock
 sel_named r5-pause-end && run r5-pause-end 0 24 80 chat --mock --mode jev-on
 sel_named r5-model-picker && run r5-model-picker 0 40 120 chat --mock
 sel_named r5-model-picker-ascii && run r5-model-picker-ascii 0 40 120 chat --mock --ascii
+sel_named r5-import-overlay && run r5-import-overlay 0 24 80 chat --mock
+sel_named r5-import-overlay-ascii && run r5-import-overlay-ascii 0 24 80 chat --mock --ascii
 sel review-y && run review-y 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel review-d && run review-d 0 24 80 chat $MOCK_RUN --mock-steps 5
 sel resize && run resize 0 24 80 chat --mock

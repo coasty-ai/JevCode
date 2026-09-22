@@ -15,7 +15,7 @@ import { applicableRows, summarisePlan } from '../../../../src/import/index.js';
 import type { ImportPlan } from '../../../../src/core/types.js';
 import { GLYPHS, cellWidth, glyphTwin } from '../../../../src/tui/glyphs.js';
 import { blockWidth } from '../../../../src/tui/block/lines.js';
-import { IMPORT_HINT_NOTHING, IMPORT_HINT_NOT_APPLICABLE, importReducer, initImportUi, scanningImportUi as scanning, type ImportUiInput } from '../../../../src/tui/import/reducer.js';
+import { IMPORT_HINT_NOTHING, IMPORT_HINT_NOT_APPLICABLE, groupKeyOf, importReducer, initImportUi, scanningImportUi as scanning, type ImportUiInput } from '../../../../src/tui/import/reducer.js';
 
 const RAW = readFileSync(new URL('../../../fixtures/import/plan.json', import.meta.url), 'utf8');
 const plan = (): ImportPlan => JSON.parse(RAW) as ImportPlan;
@@ -307,6 +307,54 @@ describe('the block (D-AO) and the twins', () => {
       expect(row).not.toContain('…');
     }
     expect(sr[sr.length - 1]).toBe(lines.importSelectionPrompt(s.groups.length));
+  });
+
+  /**
+   * §7 row 82: every card and row needs its own sentence form. The first cut returned the GROUP block whatever
+   * the step was, so a reader inside the review queue was told "1. memory, 5 rows, on" — not silence, which is
+   * bad, but the wrong thing, which is worse.
+   */
+  it('the spoken block is the STEP it is on: rows, review, applying, done and scanning each say their own thing', () => {
+    const input = inputOf();
+    const base = initImportUi(input);
+    const say = (st: Parameters<typeof lines.importScreenReaderLines>[0]): string[] => lines.importScreenReaderLines(st, { prompt: false, input });
+
+    expect(say(scanning())).toEqual([lines.IMPORT_SCANNING_SR]);
+
+    const rows = say({ ...base, step: 'rows', expanded: 'memory', rowCursor: 0 });
+    expect(rows[0]).toMatch(/^Import group memory: \d+ rows?\./);
+    expect(rows.slice(1).every((l) => /^\d+\. .+, (on|off)$/.test(l))).toBe(true);
+    // a row the human turned off says so
+    const first = input.plan.rows.filter((r) => groupKeyOf(r) === 'memory')[0];
+    const off = say({ ...base, step: 'rows', expanded: 'memory', off: new Set([first?.id ?? '']) });
+    expect(off.some((l) => l.endsWith(', off'))).toBe(true);
+
+    const review = say({ ...base, step: 'review', reviewAt: 0 });
+    expect(review[0]).toMatch(/^Import review \d+ of \d+/);
+    expect(review.some((l) => l.includes('memory, 5 rows'))).toBe(false);
+
+    expect(say({ ...base, step: 'applying' })[0]).toContain('Control-C stops after the current file');
+    expect(say({ ...base, step: 'done', applied: { ok: 3, failed: 0, total: 3 } })[0]).toBe('Import applied 3 of 3.');
+    expect(say({ ...base, step: 'done', interrupted: true, applied: { ok: 1, failed: 0, total: 9 } })[0]).toContain('--resume');
+
+    // …and every one of them is glyph-free, like the group block (§12.4 SR)
+    for (const st of [scanning(), { ...base, step: 'rows' as const, expanded: 'memory' as const }, { ...base, step: 'review' as const }, { ...base, step: 'applying' as const }, { ...base, step: 'done' as const, applied: { ok: 1, failed: 0, total: 2 } }]) {
+      for (const l of say(st)) expect(l, l).not.toMatch(/[·—…→▌]/);
+    }
+  });
+
+  it('the focus line is ONE sentence for where the cursor is, so a move and a toggle are heard (§7 row 82)', () => {
+    const input = inputOf();
+    const base = initImportUi(input);
+    expect(lines.importSrFocusLine(base, input)).toMatch(/^Import group 1 of \d+: memory, \d+ rows?, /);
+    expect(lines.importSrFocusLine({ ...base, cursor: 1 }, input)).toMatch(/^Import group 2 of \d+: /);
+    const rowsState = { ...base, step: 'rows' as const, expanded: 'memory' as const, rowCursor: 1 };
+    expect(lines.importSrFocusLine(rowsState, input)).toMatch(/^Row 2 of \d+: .+, on$/);
+    const rowId = input.plan.rows.filter((r) => groupKeyOf(r) === 'memory')[1]?.id ?? '';
+    expect(lines.importSrFocusLine({ ...rowsState, off: new Set([rowId]) }, input)).toMatch(/, off$/);
+    // the other steps fall back to their block's first sentence — never silence
+    expect(lines.importSrFocusLine({ ...base, step: 'applying' }, input)).toContain('applying');
+    for (const l of [lines.importSrFocusLine(base, input), lines.importSrFocusLine(rowsState, input)]) expect(l, l).not.toMatch(/[·—…→▌]/);
   });
 });
 

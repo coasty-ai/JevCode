@@ -10,12 +10,17 @@ import { readdir } from 'node:fs/promises';
 import { hostname } from 'node:os';
 import { join } from 'node:path';
 import type { ParsedFlags } from './args.js';
+// TUI-DESIGN-5 §2.1 rule 3a / gate G-R5-1: every coordination name here is `import type`, which erases; the ONE
+// value import of the tree is the `await import('../coordination/index.js')` inside `openCoordination()` below.
+import type { Fold, LedgerHandle, Message, SelfIdentity } from '../coordination/index.js';
 import type { SelfIdentityView, SessionActivityView } from '../core/types.js';
-import { EXIT_CODES } from '../errors.js';
+import { ConfigError, EXIT_CODES, JevCodeError, UsageError } from '../errors.js';
+import { COORDINATION_NOT_OPENABLE, COORDINATION_UNAVAILABLE, coordinationAvailability, coordinationOffText, withoutPaths, type CoordinationHomeIo, type CoordinationOffReason } from '../session/coordination.js';
 import { INDEX_PRUNE_NOTICE_BYTES, indexSkippedNotice, indexTooLargeNotice, readIndex, reindex, splitIndexText, foldIndex } from '../session/index.js';
 import { bootAtNow, lockInUseMessage, lockReplaceVerdict, readRunLock, releaseRunLock, isPidAlive, type LockReplaceReason } from '../session/lock.js';
-import { foldCapNotice, labelResolver, WHO_EMPTY, whoFlagRow, whoHeader, whoPlainRow } from '../session/peers.js';
+import { activityView, foldCapNotice, labelResolver, selfView, WHO_EMPTY, whoFlagRow, whoHeader, whoPlainRow } from '../session/peers.js';
 import { noSessionMessage, pickerHeader, pickerRows } from '../session/picker-lines.js';
+import { resolveTarget as resolveTargetGrammar, unknownTargetMessage, type TargetResult } from '../tui/commands/target.js';
 import { glyphSet } from '../tui/glyphs.js';
 
 export interface SessionsIo {
@@ -40,14 +45,28 @@ export interface SessionsIo {
   /** the file reader behind `prune` (default `fs/promises.readFile`) */
   readIndexText?: (path: string) => Promise<string>;
   /**
-   * TUI-DESIGN-5 §2.10: the verb, and the words after it. `src/cli/args.ts` parses only the first four verbs today
-   * (`SessionsOp`, `:132`), so the thirteen coordination verbs arrive here until R5-6's §9.2 hunk widens it;
-   * `flags.sessionsOp` still wins for the four it knows. `args` never contains the verb itself.
+   * TUI-DESIGN-5 §2.10: the verb, and the words after it. R5-6's §9.2 hunk LANDED — `src/cli/args.ts:164` now
+   * parses all seventeen into `flags.sessionsOp`, and `flags.sessionsArgs` carries the tail — so this seam is
+   * the test/TUI injection point rather than the production route. `sessionsVerbOf` states the precedence
+   * (`flags.sessionsOp` wins) and is the ONE place it is computed, here and in `main.tsx`'s ledger gate
+   * (fix pass, finding 17). `args` never contains the verb itself.
    */
   verb?: SessionsVerb;
   args?: readonly string[];
   /** TUI-DESIGN-5 §2.10: the narrow coordination seam; absent = no ledger in this build (every verb says so honestly) */
   coordination?: SessionsCoordination;
+  /**
+   * TUI-DESIGN-5 §2.10 / §12.1: why `coordination` is absent — `CoordinationOpen.message`, which is the landed
+   * `the session ledger is not available in this build` **plus** the clause that names the cause (off in this
+   * configuration, an unwritable home, or a one-line redacted open failure). Never a path, never a pid.
+   */
+  coordinationOff?: string;
+  /**
+   * TUI-DESIGN-5 §13.3 (fix pass, finding 14): the machine-readable half of `coordinationOff`, so a `--json`
+   * consumer is handed `{ ok:false, reason, message }` rather than a sentence on stderr. `'error'` is the ledger
+   * that threw on the way up; the two others are the pre-flight's.
+   */
+  coordinationOffReason?: CoordinationOffReason | 'error';
 }
 
 /** TUI-DESIGN §8.2: `sessions list` — picker rows of this workspace (`--json`: the fold). */
@@ -174,9 +193,9 @@ export function sessionsUnlock(runId: string, io: SessionsIo, flags?: ParsedFlag
  * each a thin wrapper over `src/coordination/index.ts`'s existing write API, each with a `--json` shape (§13.3),
  * **each starting no engine**. `sync` takes one sub-word (`status | disable`), which is why it is one verb, not two.
  *
- * `src/cli/args.ts` still parses only the first four (`SessionsOp`, `:132`); widening it is a §9.2 request to R5-6
- * (R5-1's report carries the exact hunk). Until it lands the extra thirteen are reachable through `SessionsIo.verb`
- * / `SessionsIo.args`, which is also how `test/unit/cli/sessions.test.ts` drives all seventeen today.
+ * `src/cli/args.ts:164` parses all seventeen (R5-6's §9.2 hunk landed), so `jevcode sessions who` reaches
+ * `commandSessions` with `flags.sessionsOp = 'who'` and `flags.sessionsArgs` holding the tail. `SessionsIo.verb`
+ * / `SessionsIo.args` remain the injection seam `test/unit/cli/sessions.test.ts` drives all seventeen through.
  */
 export type SessionsVerb = 'list' | 'reindex' | 'prune' | 'unlock' | 'who' | 'pause' | 'resume' | 'end' | 'tell' | 'headsup' | 'request' | 'inbox' | 'label' | 'pair' | 'unpair' | 'gc' | 'sync';
 
@@ -186,7 +205,7 @@ export const SESSIONS_VERBS: readonly SessionsVerb[] = ['list', 'reindex', 'prun
 export type SessionsTarget =
   | { kind: 'resolved'; runId: string; id8: string; label: string }
   | { kind: 'ambiguous'; text: string; candidates: readonly { id8: string; title60: string; label: string }[]; truncated: boolean; message: string }
-  | { kind: 'notFound'; text: string; message: string };
+  | { kind: 'notFound'; text: string; message: string; reason?: 'gone' };
 
 /** §2.10: one inbox row, flattened for the CLI (the `--json` form emits coordination's own `Message`/`Ack`). */
 export interface SessionsInboxRow {
@@ -198,14 +217,52 @@ export interface SessionsInboxRow {
   unverified: boolean;
 }
 
-/** §13.3: one ack row, flattened — coordination's `Ack` minus `checksum`/`hmac` (§7 row 61, the clause below). */
+/**
+ * §13.3: one ack row, flattened — coordination's `Ack` minus `checksum`/`hmac` (§7 row 61, the clause below).
+ *
+ * **§13.2 clause 8, amended (fix pass, finding 10).** The field was `deviceId` and held an **id8**, so
+ * `sessions inbox --json` had two meanings for one name: `acks[].deviceId` was truncated while `devices[].id8`
+ * said so. Every other view type in this repository spells the truncated form `deviceId8`
+ * (`SessionActivityView`, `SelfIdentityView`, `src/session/peers.ts:165`), and this row now does too. The clause:
+ * *no `--json` field named `deviceId` ever carries a truncated id; the truncated form is always `deviceId8`.*
+ */
 export interface SessionsAckRow {
   msgId: string;
   by: string;
-  deviceId: string;
+  /** the first 8 characters of the acking device's id — never the whole id (§7 row 61) */
+  deviceId8: string;
   at: string;
   outcome: string;
   detail60?: string;
+}
+
+/**
+ * §13.3 (fix pass, finding 4): one per-target refusal of a `send`.
+ *
+ * The field was `deviceId` and held **`to.slice(0, 8)`** — the head of a SESSION id, which for `RUN_ID_RE`'s
+ * `<YYYYMMDD>-<HHMMSS>-<8 random>` shape is the DATE. A `--json` consumer that joined it against `devices[].id8`
+ * or `acks[].deviceId8` got `"20260922"`. `deviceId8` is now resolved back through the fold to the device that
+ * would have received the message (our own when the route is `@all` or the row has already left the fold), so it
+ * is always one of `devices[].id8`; `target` carries what was actually addressed.
+ */
+export interface SessionsRefusedRow {
+  /** always one of `devices[].id8` */
+  deviceId8: string;
+  /** the route this refusal belongs to: a session id, or `@all` */
+  target: string;
+  detail60: string;
+}
+
+/**
+ * §2.10 / §7 row 14 (fix pass, finding 11): what `gc` did. `removed` counts records **deleted**; `ignored`
+ * counts devices given a LOCAL TOMBSTONE, which is all `--device <ref>` ever does (`ignoreDeviceOn`'s own doc:
+ * "a LOCAL tombstone; nothing foreign is ever deleted", §4.6 row 4). They were one number, so the verb told the
+ * user it had removed a record it had not touched.
+ */
+export interface SessionsGcResult {
+  removed: number;
+  ignored?: number;
+  devices: readonly SessionsDeviceRow[];
 }
 
 /** §2.10: one device row — `pair | unpair | label | gc | sync --json` all emit this list (§13.3). */
@@ -229,7 +286,13 @@ export interface SessionsCoordination {
   /** `Fold.skipped` — devices past `MAX_DEVICES` (16), §7 row 11 */
   skipped(): number;
   resolve(text: string): Promise<SessionsTarget>;
-  send(input: { to: string; type: 'note' | 'heads-up' | 'request-release' | 'pause' | 'resume' | 'end'; text: string }): Promise<{ messageId: string; delivered: number; refused: readonly { deviceId: string; detail60: string }[] }>;
+  /**
+   * §2.9 / §13.3: route one message. `delivered` is the number of SESSIONS that can read it, never the number of
+   * write attempts (fix pass, finding 3): a broadcast is ONE `@all` outbox file read by every live row, so
+   * counting the loop hard-wired `delivered: 1` even with no session on the machine, and `sessionsControl`'s
+   * "no live session accepted it" branch was unreachable for it.
+   */
+  send(input: { to: string; type: 'note' | 'heads-up' | 'request-release' | 'pause' | 'resume' | 'end'; text: string }): Promise<{ messageId: string; delivered: number; refused: readonly SessionsRefusedRow[] }>;
   inbox(): Promise<readonly SessionsInboxRow[]>;
   /**
    * §13.3: `fold.acks`, flattened. OPTIONAL so a build whose ledger has no ack read still compiles; absent answers
@@ -244,7 +307,7 @@ export interface SessionsCoordination {
    * §2.10 / §7 row 14: `--device <label>` resolves by **walking the disk** to `MAX_GC_DEVICES` (1,024), never
    * through `fold.devices`, which caps at 16 — the fold cannot reach the junk the verb exists to remove.
    */
-  gc(opts: { device?: string }): Promise<{ removed: number; devices: readonly SessionsDeviceRow[] }>;
+  gc(opts: { device?: string }): Promise<SessionsGcResult>;
   syncStatus(): Promise<{ mode: string; state: string; lagMs: number | null; reason: string | null; devices: readonly SessionsDeviceRow[] }>;
   syncDisable(): Promise<{ removed: readonly string[]; devices: readonly SessionsDeviceRow[] }>;
   close(): Promise<void>;
@@ -282,9 +345,22 @@ function jsonOut(io: SessionsIo, value: unknown): void {
   io.stdout.write(`${JSON.stringify(value, null, 2)}\n`);
 }
 
-function needCoord(io: SessionsIo, verb: SessionsVerb): SessionsCoordination | null {
+/**
+ * TUI-DESIGN-5 §2.10 / §12.1, gap 1: the refusal, and **which** reason it is.
+ *
+ * Before `openCoordination()` existed this sentence was true of every install; now it is true only when
+ * coordination is off in the configuration or the JevCode home cannot be written, so it must say which — an
+ * honest answer is D-AN's rule, not merely a non-silent one. `io.coordinationOff` carries the whole sentence
+ * (`coordinationOffText`, which keeps the landed string as its PREFIX so every pin still matches); a caller that
+ * supplies no coordination and no reason — a unit test, a build with no wiring — still gets the bare sentence.
+ */
+function needCoord(io: SessionsIo, verb: SessionsVerb, flags?: ParsedFlags): SessionsCoordination | null {
   if (io.coordination !== undefined) return io.coordination;
-  io.stderr.write(`jevcode sessions ${verb}: the session ledger is not available in this build\n`);
+  const message = io.coordinationOff ?? COORDINATION_UNAVAILABLE;
+  // §13.3 (fix pass, finding 14): a `--json` caller is handed the SHAPE, never a sentence on stderr and an
+  // empty stdout — the same `{ ok:false, reason, message }` every other refusal here emits.
+  if (flags?.json === true) jsonOut(io, { ok: false, reason: io.coordinationOffReason ?? 'unavailable', message });
+  else io.stderr.write(`jevcode sessions ${verb}: ${message}\n`);
   return null;
 }
 
@@ -299,7 +375,7 @@ function needArg(io: SessionsIo, verb: SessionsVerb, args: readonly string[], wh
 
 /** §13.3: every `sessions <verb> <target> --json` that cannot resolve emits the `TargetResult` fields, never a re-modelled shape. */
 function refuseTarget(flags: ParsedFlags, io: SessionsIo, t: Exclude<SessionsTarget, { kind: 'resolved' }>): number {
-  if (flags.json) jsonOut(io, t.kind === 'ambiguous' ? { ok: false, reason: 'ambiguous', candidates: t.candidates, message: t.message } : { ok: false, reason: 'notFound', message: t.message });
+  if (flags.json) jsonOut(io, t.kind === 'ambiguous' ? { ok: false, reason: 'ambiguous', candidates: t.candidates, message: t.message } : { ok: false, reason: t.reason ?? 'notFound', message: t.message });
   else io.stderr.write(`jevcode sessions: ${t.message}\n`);
   return EXIT_CODES.config;
 }
@@ -312,7 +388,7 @@ export const WHO_PIPED_COLUMNS = 120;
 
 /** §2.3 / §13.3: `jevcode sessions who [--all] [--json]`. */
 export async function sessionsWho(flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, 'who');
+  const coord = needCoord(io, 'who', flags);
   if (coord === null) return EXIT_CODES.config;
   const all = args.includes('--all') || flags.all === true;
   const rows = await coord.activity({ all });
@@ -352,7 +428,7 @@ export async function sessionsWho(flags: ParsedFlags, io: SessionsIo, args: read
  * `{ ok, runId, at, reason }`; none of them starts an engine (the far end's own `[y]`/`[n]` ladder decides).
  */
 export async function sessionsControl(verb: 'pause' | 'resume' | 'end', flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, verb);
+  const coord = needCoord(io, verb, flags);
   if (coord === null) return EXIT_CODES.config;
   const rest = args.filter((a) => a !== 'now');
   const now = args.includes('now');
@@ -374,9 +450,17 @@ export async function sessionsControl(verb: 'pause' | 'resume' | 'end', flags: P
  */
 export const BROADCAST_TARGET = '@all';
 
+/**
+ * §12.1 (fix pass, finding 3): the refusal for a target that is in `fold.gone`. `/who --all` is named because
+ * that is the one surface that still lists the row, so the sentence is also its own documentation.
+ */
+export function goneTargetMessage(label: string): string {
+  return `${label} has ended — only a live session can be paused, resumed, ended or told; 'jevcode sessions who --all' lists the ones that are gone`;
+}
+
 /** §2.9 / §13.3: `sessions tell|request <target> <text>` — the two DIRECTED verbs. */
 export async function sessionsMessage(verb: 'tell' | 'request', flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, verb);
+  const coord = needCoord(io, verb, flags);
   if (coord === null) return EXIT_CODES.config;
   const text = needArg(io, verb, args, 'a target and a message');
   if (text === null) return EXIT_CODES.config;
@@ -403,7 +487,7 @@ export async function sessionsMessage(verb: 'tell' | 'request', flags: ParsedFla
  * finding 8). The whole tail is the body and the target is always `BROADCAST_TARGET`.
  */
 export async function sessionsHeadsup(flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, 'headsup');
+  const coord = needCoord(io, 'headsup', flags);
   if (coord === null) return EXIT_CODES.config;
   const body = args.join(' ').trim();
   if (body === '') {
@@ -428,7 +512,7 @@ export const SESSIONS_INBOX_JSON_CLAUSE = 'sessions inbox --json emits the flatt
 
 /** §2.9 / §13.3: `sessions inbox [--json]`. */
 export async function sessionsInbox(flags: ParsedFlags, io: SessionsIo): Promise<number> {
-  const coord = needCoord(io, 'inbox');
+  const coord = needCoord(io, 'inbox', flags);
   if (coord === null) return EXIT_CODES.config;
   const rows = await coord.inbox();
   if (flags.json) {
@@ -445,7 +529,7 @@ export async function sessionsInbox(flags: ParsedFlags, io: SessionsIo): Promise
 
 /** §2.10 / §13.3: `sessions label <text>`. */
 export async function sessionsLabel(flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, 'label');
+  const coord = needCoord(io, 'label', flags);
   if (coord === null) return EXIT_CODES.config;
   const next = needArg(io, 'label', args, 'a label (jevcode sessions label "mbp")');
   if (next === null) return EXIT_CODES.config;
@@ -460,7 +544,7 @@ export const PAIR_ROTATED_SENTENCE = 'this device took a new id (<id8>) and a ne
 
 /** §2.10 / §13.3: `sessions pair [--rotate]` — the phrase is shown, the 32-byte key never is (§7 row 66). */
 export async function sessionsPair(flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, 'pair');
+  const coord = needCoord(io, 'pair', flags);
   if (coord === null) return EXIT_CODES.config;
   const rotate = args.includes('--rotate') || extraFlags(flags).rotate === true;
   const r = await coord.pair({ rotate });
@@ -479,7 +563,7 @@ export function unpairedSentence(label: string): string {
 
 /** §2.10 / §13.3: `sessions unpair <device>`. */
 export async function sessionsUnpair(flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, 'unpair');
+  const coord = needCoord(io, 'unpair', flags);
   if (coord === null) return EXIT_CODES.config;
   const ref = needArg(io, 'unpair', args, 'a device (a label, an id8 prefix or label#id4)');
   if (ref === null) return EXIT_CODES.config;
@@ -489,9 +573,18 @@ export async function sessionsUnpair(flags: ParsedFlags, io: SessionsIo, args: r
   return EXIT_CODES.ok;
 }
 
+/**
+ * §12.1 / §7 row 14 (fix pass, finding 11): what `gc --device <ref>` ACTUALLY did. `ignoreDeviceOn` writes a
+ * local tombstone and deletes nothing foreign, so `gc removed 1 record of <ref>` named a deletion that never
+ * happened. The sentence now says what the tombstone does and when the records really go.
+ */
+export function deviceIgnoredSentence(ref: string): string {
+  return `${ref} is now ignored — its records are hidden from /who and 'jevcode sessions gc' drops them as they expire`;
+}
+
 /** §2.10 / §7 row 14 / §13.3: `sessions gc [--device <label>]`. */
 export async function sessionsGc(flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, 'gc');
+  const coord = needCoord(io, 'gc', flags);
   if (coord === null) return EXIT_CODES.config;
   const at = args.indexOf('--device');
   // the raw tail (the test/TUI seam) or `args.ts`'s parsed `--device <label>`, whichever this build supplies
@@ -502,14 +595,14 @@ export async function sessionsGc(flags: ParsedFlags, io: SessionsIo, args: reado
     return EXIT_CODES.config;
   }
   const r = await coord.gc(device === undefined ? {} : { device });
-  if (flags.json) jsonOut(io, { ok: true, devices: r.devices });
-  else io.stdout.write(device === undefined ? `gc removed ${r.removed} record${r.removed === 1 ? '' : 's'}\n` : `gc removed ${r.removed} record${r.removed === 1 ? '' : 's'} of ${device}\n`);
+  if (flags.json) jsonOut(io, { ok: true, removed: r.removed, ...(r.ignored !== undefined ? { ignored: r.ignored } : {}), devices: r.devices });
+  else io.stdout.write(`${device === undefined ? `gc removed ${r.removed} record${r.removed === 1 ? '' : 's'}` : deviceIgnoredSentence(device)}\n`);
   return EXIT_CODES.ok;
 }
 
 /** §2.10 / §13.3: `sessions sync status|disable`. */
 export async function sessionsSync(flags: ParsedFlags, io: SessionsIo, args: readonly string[]): Promise<number> {
-  const coord = needCoord(io, 'sync');
+  const coord = needCoord(io, 'sync', flags);
   if (coord === null) return EXIT_CODES.config;
   const sub = (args[0] ?? 'status').trim();
   if (sub !== 'status' && sub !== 'disable') {
@@ -571,13 +664,474 @@ export async function runSessionsVerb(verb: SessionsVerb, args: readonly string[
   }
 }
 
-/** TUI-DESIGN §1 / TUI-DESIGN-5 §2.10: the `sessions` command dispatcher — seventeen verbs. */
+/**
+ * TUI-DESIGN §1 / TUI-DESIGN-5 §2.10: the `sessions` command dispatcher — seventeen verbs.
+ *
+ * Gap 1 added the second `catch`: with a REAL ledger behind the thirteen coordination verbs, a disk fault, a
+ * `CoordinationError` (an unknown `--device` ref, a message over 2 KiB, a muted sender) or an unwired verb is a
+ * thrown value, and §1.4 promise 2 says coordination never takes the caller down. Every one of them is one
+ * redacted line on stderr and exit 2 — the same shape as every other refusal here — and the `close()` in the
+ * `finally` still runs, so a faulting verb never leaks the handle either.
+ */
 export async function commandSessions(flags: ParsedFlags, io: SessionsIo): Promise<number> {
-  // the precedence the `SessionsIo.verb` doc comment states: a verb `args.ts` PARSED wins over the injected seam
-  const verb: SessionsVerb = flags.sessionsOp ?? io.verb ?? 'list';
+  const verb = sessionsVerbOf(flags, io);
   try {
     return await runSessionsVerb(verb, io.args ?? [], flags, io);
+  } catch (e) {
+    return sessionsThrew(verb, e, flags, io);
   } finally {
-    await io.coordination?.close();
+    await io.coordination?.close().catch(() => undefined);
   }
+}
+
+/**
+ * §2.10 (fix pass, finding 17): the ONE place the verb is computed, so `src/cli/main.tsx`'s ledger gate and this
+ * dispatcher cannot disagree. The precedence is the `SessionsIo.verb` doc comment's: a verb `args.ts` PARSED wins
+ * over the injected seam, and `list` is the default. `main.tsx` has no `SessionsIo` when it decides whether to
+ * open a ledger, which is why `io` is optional.
+ */
+export function sessionsVerbOf(flags: ParsedFlags, io?: Pick<SessionsIo, 'verb'>): SessionsVerb {
+  return flags.sessionsOp ?? io?.verb ?? 'list';
+}
+
+/** §2.10: the four verbs that read `sessions/index.jsonl` and must NEVER open a ledger (`main.tsx`'s gate). */
+export const SESSIONS_INDEX_VERBS: readonly SessionsVerb[] = ['list', 'reindex', 'prune', 'unlock'];
+
+/** §2.10: does this verb need a `SessionsCoordination`? The complement of `SESSIONS_INDEX_VERBS`. */
+export function sessionsVerbNeedsCoordination(verb: SessionsVerb): boolean {
+  return !SESSIONS_INDEX_VERBS.includes(verb);
+}
+
+/**
+ * §1.4 promise 2 / §13.3 (fix pass, finding 14): a verb that THREW.
+ *
+ * Every throw used to be `EXIT_CODES.config` and a bare line on stderr even under `--json`, which told a user
+ * that a `TypeError` inside `sessionsList` was a configuration problem and handed a `--json` consumer nothing at
+ * all. A refusal the CALLER can fix — a `CoordinationError` (an unknown `--device` ref, an over-large message, a
+ * muted sender), a `ConfigError`, a `UsageError` — stays exit 2; anything else is `EXIT_CODES.unexpected`, which
+ * is what `sessionsReindex` has always answered for a fault of its own. The cause loses its paths BEFORE the
+ * redactor sees it (finding 2): `createRedactor` substitutes secret values and API-key shapes, and nothing in it
+ * strips the absolute path every errno message carries.
+ */
+export function sessionsThrew(verb: SessionsVerb, e: unknown, flags: ParsedFlags, io: SessionsIo): number {
+  const err = e instanceof Error ? e : new Error(String(e));
+  const coord = isCoordinationError(err);
+  const refusal = coord || err instanceof ConfigError || err instanceof UsageError;
+  const reason = coord ? err.code : err instanceof JevCodeError ? err.code : 'unexpected';
+  const message = safeCause(err.message, io.redact);
+  if (flags.json) jsonOut(io, { ok: false, reason, message });
+  else io.stderr.write(`jevcode sessions ${verb}: ${message}\n`);
+  return refusal ? EXIT_CODES.config : EXIT_CODES.unexpected;
+}
+
+/**
+ * `src/coordination/records.ts`'s `CoordinationError`, recognised WITHOUT importing it: a value import would put
+ * the coordination tree on the `sessions list` path and break gate G-R5-1 (§2.1 rule 3a). `name` + a string
+ * `code` is the whole shape this file needs.
+ */
+function isCoordinationError(e: Error): e is Error & { code: string } {
+  return e.name === 'CoordinationError' && typeof (e as { code?: unknown }).code === 'string';
+}
+
+// ── TUI-DESIGN-5 §2.10 gap 1: `openCoordination()` — the ONE production constructor ─────────────────────────────
+
+/**
+ * `docs/STATUS.md` "Not driven by a store in this build" item 1, closed: **nothing constructed a
+ * `SessionsCoordination`**, so the thirteen coordination verbs answered `the session ledger is not available in
+ * this build` and exited 2 for a real user whose ledger was perfectly openable.
+ *
+ * The shape is `openSessionLedger`'s (`src/session/publish.ts`), deliberately, and for the same three reasons:
+ *
+ *  1. **One `await import('../coordination/index.js')`, inside this function body** (§2.1 rule 3a). Every
+ *     coordination *type* below is reached with `import type`, which erases, so `src/cli/main.tsx`'s static graph
+ *     still reaches nothing under `src/coordination/**` and gate G-R5-1 holds. `sessions list|reindex|prune|unlock`
+ *     never call this, so they never pay for the tree either.
+ *  2. **One `openLedger`, one `close`.** The handle is created here and closed in `commandSessions`' `finally`;
+ *     nothing else in the process opens a second one (§2.1 rule 3).
+ *  3. **The fold is read on mount and after every own write, then subscribed** (§15.2's binding rule: `adoptOwn`
+ *     puts our own record in `ledger.fold` synchronously but does **not** `emit()`, so a push-only view lags its
+ *     own write by the 100 ms debounce). `handle.open()` is the mount read; `refresh()` after each write verb is
+ *     the second half; `subscribe` is registered so a long-lived caller (`src/cli/session.ts`) sees changes
+ *     without a timer (gate G-R5-3).
+ *
+ * The ledger's identity is a **reader's**: `sessionId` and `runId` are `null` (`SelfIdentity` declares both
+ * nullable exactly for "a TUI without a run or a CLI twin"), no claim is minted and no heartbeat is written — a
+ * `jevcode sessions who` must never make itself appear in its own answer.
+ */
+export interface OpenCoordinationInput {
+  /** `~/.jevcode` (JEVCODE_HOME) */
+  home: string;
+  /** the workspace REALPATH (`wsKeyOf`'s input) */
+  workspace: string;
+  hostname: string;
+  username: string;
+  jevcode: string;
+  pid: number;
+  redact: (s: string) => string;
+  /** `ResolvedConfig.entries`-backed reader; `coordination.claims = off` is the off switch (§12.1) */
+  read?: (name: string) => string | undefined;
+  /** this machine's boot instant; `bootAtNow()` when absent */
+  bootAt?: string;
+  label?: string;
+  sharedDir?: string | null;
+  repoKey?: string | null;
+  remoteKey?: string | null;
+  branch?: string | null;
+  /** re-render hook for a long-lived caller; the CLI verbs never pass one */
+  onChange?: () => void;
+  /**
+   * §5.1 / `ledger.ts:97`: the per-process sender id. Absent, `openCoordination` mints a fresh one per
+   * invocation — see the `openLedger` call below for why a CLI twin must NOT inherit the persisted `tuiActor8`.
+   */
+  actor8?: string;
+  /** the ONE dynamic import, injected by `test/unit/session/coordination.test.ts` */
+  facade?: () => Promise<typeof import('../coordination/index.js')>;
+  /** the writability pre-flight's `node:fs/promises`, injected by the tests */
+  homeIo?: CoordinationHomeIo;
+  nowIso?: () => string;
+}
+
+/** §2.10 / §12.1: an open ledger, or the reason there is none — never a throw, never a dead session (§1.4 promise 2). */
+export type CoordinationOpen = { readonly kind: 'open'; readonly coordination: SessionsCoordination } | { readonly kind: 'off'; readonly reason: CoordinationOffReason | 'error'; readonly message: string };
+
+/**
+ * §12.1 / §2.10: the CLI sentence for a ledger that threw on the way up.
+ *
+ * **Two fixes (fix pass, finding 2).** The base was `COORDINATION_UNAVAILABLE`, which says the BUILD has no
+ * ledger — the very lie gap 1 set out to stop, since a build that can throw `ENOTDIR` from `openLedger`
+ * demonstrably has one. `COORDINATION_NOT_OPENABLE` names the home instead, and the two "in this build"
+ * sentences are reserved for the two causes that really are true of the build. And the cause goes through
+ * `safeCause`, which strips paths BEFORE the redactor — `createRedactor` knows secret values and API-key shapes
+ * and nothing else, so every errno message used to print its absolute path straight to stderr.
+ */
+export function coordinationOpenFailed(cause: string, redact: (s: string) => string): string {
+  return `${COORDINATION_NOT_OPENABLE} (${safeCause(cause, redact)})`;
+}
+
+/**
+ * One line, bounded. The default bound is generous because the §12 sentences a refusing verb prints are
+ * *designed* strings (the `pair` refusal names two working verbs), and truncating one mid-word turns a sentence
+ * that documents itself into a fragment; `detail60` passes its own 60 (§13.3's field, not a message).
+ */
+function oneLineCause(s: string, max = 220): string {
+  return withoutPaths(s).replace(/\s+/g, ' ').trim().slice(0, max);
+}
+
+/**
+ * §7 row 61 (fix pass, finding 2): one line, no path, then the caller's redactor. The ORDER matters — the
+ * redactor only knows secret values and key SHAPES, so a path that reached it survived to stderr; the property
+ * test in `test/unit/session/coordination.test.ts` now drives this function with the PRODUCTION redactor.
+ */
+function safeCause(s: string, redact: (x: string) => string, max = 220): string {
+  return withoutPaths(redact(oneLineCause(s, max)));
+}
+
+/**
+ * §2.10 / §13.3: `SessionsAckRow` / `SessionsInboxRow` carry an **id8**, never a full device id — the full id is a
+ * secret derivative (`src/core/types.ts`'s `SessionActivityView.deviceId8` says so) and `sessions inbox --json` is
+ * a JSON sink (§7 row 61, §13.2 clause 8).
+ */
+const ID8 = 8;
+
+export async function openCoordination(input: OpenCoordinationInput): Promise<CoordinationOpen> {
+  const availability = await coordinationAvailability({ home: input.home, ...(input.read !== undefined ? { read: input.read } : {}), ...(input.homeIo !== undefined ? { io: input.homeIo } : {}) });
+  if (availability.kind === 'off') return { kind: 'off', reason: availability.reason, message: coordinationOffText(COORDINATION_UNAVAILABLE, availability.reason) };
+  const nowIso = input.nowIso ?? ((): string => new Date().toISOString());
+  try {
+    // §2.1 rule 3a: the ONE place this CLI path loads the coordination tree
+    const c = await (input.facade ?? ((): Promise<typeof import('../coordination/index.js')> => import('../coordination/index.js')))();
+    const root = c.coordinationRoot(input.home);
+    const identity = await c.deviceIdentity({ root, fs: c.nodeFs, hostname: input.hostname, username: input.username, jevcode: input.jevcode, nowIso: nowIso(), ...(input.label !== undefined ? { label: input.label } : {}) });
+    const self: SelfIdentity = {
+      deviceId: identity.device.deviceId,
+      label: identity.device.label,
+      host: input.hostname,
+      user: input.username,
+      ...(identity.hostKey !== undefined ? { hostKey: identity.hostKey } : {}),
+      bootAt: input.bootAt ?? bootAtNow(),
+      // a READER: this CLI twin is not a session and must never appear in its own `who`
+      sessionId: null,
+      runId: null,
+      wsKey: c.wsKeyOf(input.workspace),
+      repoKey: input.repoKey ?? null,
+      remoteKey: input.remoteKey ?? null,
+      branch: input.branch ?? null,
+    };
+    /**
+     * Two options the CLI twin must get right, each a defect the fix pass found:
+     *
+     *  - **`actor8` (finding 1, a blocker).** Without it `LedgerImpl.open()` takes the SESSIONLESS path: it
+     *    persists `tuiActor8` in `machine.json` and reuses it on every launch (`ledger.ts:524–540`), while the
+     *    stamp counter `n` is seeded only from records this process can fold — and a message addressed at a
+     *    PEER's sessionId is not in our own target set, so it never raises the seed. Consecutive
+     *    `jevcode sessions tell` processes therefore minted IDENTICAL `<deviceId>-<actor8>-<n>` message ids and
+     *    `foldRecords` dropped all but one (`fold.ts:273`): three files on disk, one message delivered, and the
+     *    CLI printed `delivered to 1 session` each time. A fresh random `actor8` per invocation makes the id
+     *    unique without touching `src/coordination/**`, and it is safe HERE precisely because the CLI only
+     *    `loadSeen`s and never marks seen — the reason the id is persisted for a TUI (one `inbox/seen/**` file
+     *    per launch, forever) cannot arise.
+     *  - **`scanOnly` (finding 13).** `open()` builds a `createWatcher`, attaches `fs.watch` to every device
+     *    subtree and starts a 15 s poll timer unless `scanOnly` is set (`ledger.ts:547`). A one-shot verb exits
+     *    milliseconds later and passes no `onChange`, so the watcher had no consumer at all; a long-lived caller
+     *    (a future `src/cli/session.ts` reader) asks for changes and gets them.
+     */
+    const handle = c.openLedger({
+      home: input.home,
+      self,
+      pid: input.pid,
+      redact: input.redact,
+      actor8: input.actor8 ?? c.mintActor8(),
+      ...(input.onChange === undefined ? { scanOnly: true } : {}),
+      ...(input.sharedDir !== undefined ? { sharedDir: input.sharedDir } : {}),
+    });
+    // §15.2: the mount read. `open()` scans, folds and seats `handle.fold`; nothing below ever copies it.
+    await handle.open();
+    return { kind: 'open', coordination: coordinationOver(c, handle, self, input) };
+  } catch (e) {
+    return { kind: 'off', reason: 'error', message: coordinationOpenFailed(e instanceof Error ? e.message : String(e), input.redact) };
+  }
+}
+
+/**
+ * §2.10: the seventeen-verb seam over one open `LedgerHandle`. Separated from `openCoordination` so the whole
+ * verb surface is testable against a mocked facade and a fake handle without a filesystem (§10, R5-1's table).
+ */
+export function coordinationOver(c: typeof import('../coordination/index.js'), handle: LedgerHandle, self: SelfIdentity, input: Pick<OpenCoordinationInput, 'redact' | 'onChange'>): SessionsCoordination {
+  /**
+   * §2.5 / §13.3: the coordination `to` list behind each `SessionsTarget` this instance handed out. The CLI's
+   * `SessionsTarget` carries a **runId** (that is what `sessions pause --json` prints), while `send()` addresses a
+   * **sessionId**, a `@<repoKey>` or `@all`; without this map a `pause <run-id>` was written to a `to` no reader
+   * subscribes to and vanished. Bounded by the number of targets one process resolves.
+   */
+  const routes = new Map<string, readonly string[]>();
+  const unsub = input.onChange === undefined ? null : handle.subscribe(() => input.onChange?.());
+  /** §15.2: the read after every own write — `adoptOwn` does not `emit()`, so a write is not a fold change. */
+  const afterWrite = async (): Promise<void> => {
+    try {
+      await handle.refresh();
+    } catch {
+      /* a refresh that failed costs one stale row in the answer, never the verb */
+    }
+  };
+  /** §10.3: `trusted-devices.json`, re-read after a write that can change it — the `paired` column of every device row. */
+  let trustedIds: ReadonlySet<string> = new Set<string>();
+  const devices = (): readonly SessionsDeviceRow[] => [...handle.fold.devices.values()].map((d) => ({ id8: d.deviceId.slice(0, ID8), label: d.label, paired: trustedIds.has(d.deviceId), ignored: d.ignored }));
+  const reloadTrusted = async (): Promise<void> => {
+    try {
+      trustedIds = new Set((await c.readTrusted(c.nodeFs, handle.paths.hostDir)).map((t) => t.deviceId));
+    } catch {
+      /* an unreadable trust file is "nothing is paired", never a failed verb (§10.3) */
+      trustedIds = new Set<string>();
+    }
+  };
+  /**
+   * The first trust read, awaited by every verb that prints a device row rather than fired and forgotten: a
+   * `paired: false` printed because a promise had not settled yet is a wrong answer, not a slow one.
+   */
+  const trustReady = reloadTrusted();
+  const rowsOfFold = (all: boolean): readonly SessionActivityView[] => c.listSessions(handle.fold, self, { all }).map(activityView);
+  const routeOf = (to: string): readonly string[] => routes.get(to) ?? (to === BROADCAST_TARGET ? ['@all'] : [to]);
+  /**
+   * §13.3 (fix pass, finding 4): the DEVICE behind a route target, as an id8. A route holds session ids (or the
+   * literal `@all`), and truncating one of those into a field named `deviceId` handed a `--json` consumer the
+   * date head of a run id. `@all`, and a row that has left the fold between the resolve and the write, are our
+   * own refusal, so they carry our own device — which keeps the promise the field name makes: every value is
+   * one of `devices[].id8`.
+   */
+  const deviceId8Of = (target: string): string => {
+    for (const hb of [...handle.fold.live.values(), ...handle.fold.gone.values()]) {
+      if (hb.sessionId === target || hb.runId === target) return hb.deviceId.slice(0, ID8);
+    }
+    return self.deviceId.slice(0, ID8);
+  };
+
+  return {
+    self: () => selfView(self, handle.fold),
+    activity: (opts) => Promise.resolve(rowsOfFold(opts.all === true)),
+    skipped: () => handle.fold.skipped,
+    resolve: (text) => Promise.resolve(toSessionsTarget(resolveTargetGrammar(text, handle.fold, selfView(self, handle.fold)), handle.fold, routes)),
+    /**
+     * §2.9 / §13.3 (fix pass, finding 3 and finding 4): `delivered` counts RECIPIENTS, not write attempts, and
+     * a refusal names a real device.
+     *
+     * `routeOf('@all')` is the single literal `['@all']` — one outbox file that every live row reads — so the
+     * loop hard-wired `delivered: 1` and `ok: true` for a broadcast on a machine with no other session at all,
+     * and `sessionsControl`'s `sent.delivered === 0` branch ("no live session accepted it") was unreachable for
+     * it. A broadcast's count is therefore read from the FOLD; a directed send keeps the per-route count, which
+     * for a resolved live target is the number of sessions the route names.
+     */
+    async send(m) {
+      const to = routeOf(m.to);
+      const broadcast = to.length === 1 && to[0] === BROADCAST_TARGET;
+      let written = 0;
+      const refused: SessionsRefusedRow[] = [];
+      let messageId = '';
+      for (const one of to) {
+        try {
+          const r = await c.send(handle, { to: one, type: m.type, text: m.text, by: 'human' });
+          messageId = messageId === '' ? r.id : messageId;
+          written += 1;
+        } catch (e) {
+          refused.push({ deviceId8: deviceId8Of(one), target: one, detail60: oneLineCause(e instanceof Error ? e.message : String(e), 60) });
+        }
+      }
+      await afterWrite();
+      // the broadcast's reach is the number of live rows the `@all` outbox is read by, and zero when the one
+      // write failed; a directed route delivered exactly what it wrote
+      const delivered = broadcast ? (written === 0 ? 0 : c.listSessions(handle.fold, self, { all: false }).length) : written;
+      return { messageId, delivered, refused };
+    },
+    async inbox() {
+      const seen = await c.loadSeen(handle);
+      return c.inbox(handle.fold, self, seen).map((m: Message) => inboxRowOf(c, handle.fold, m));
+    },
+    acks: () =>
+      Promise.resolve(
+        [...handle.fold.acks.values()].flat().map((a) => ({
+          msgId: a.msgId,
+          by: a.by,
+          // §7 row 61 / §13.2 clause 8 as amended: the id8 under a name that SAYS id8 (fix pass, finding 10)
+          deviceId8: a.deviceId.slice(0, ID8),
+          at: a.at,
+          outcome: a.outcome,
+          ...(a.detail60 !== undefined ? { detail60: a.detail60 } : {}),
+        })),
+      ),
+    async label(next) {
+      await trustReady;
+      const rec = await c.setDeviceLabel(handle, next);
+      await afterWrite();
+      return { id8: rec.deviceId.slice(0, ID8), label: rec.label, paired: trustedIds.has(rec.deviceId), ignored: false };
+    },
+    /**
+     * §2.10 / §7 row 66: **not wired, and it says so.** `sessions pair` is the 8-word phrase → scrypt transport of
+     * `docs/COORDINATION-DESIGN.md` §10.3, and `src/coordination/**` (read-only this round) exports the *second*
+     * half only — `pairDeviceOn({ deviceId, label, keyHex })` pairs with a peer whose key you already hold. There
+     * is no phrase builder to call, and minting one here would print a secret this build cannot then consume, so
+     * the verb refuses by name. Request R5-H5 in the report carries the hunk.
+     */
+    pair: () => Promise.reject(new ConfigError("pairing is not wired in this build — the phrase transport of COORDINATION-DESIGN §10.3 has no builder in the coordination facade; 'jevcode sessions label' and 'jevcode sessions unpair' do work")),
+    /**
+     * §12.1 S35 (fix pass, finding 12): the label in the sentence is resolved by the SAME resolver that performed
+     * the write.
+     *
+     * The local lookup took the first `deviceId === ref || startsWith(ref) || label === ref` hit out of
+     * `fold.devices` with no ambiguity check, while `unpairDeviceOn` uses `resolveDeviceRef`, which also
+     * understands `label#id4` and REFUSES an ambiguous ref (`ledger.ts:1858`). With `ref = 'mbp#ab12'` the local
+     * lookup missed and S35 printed the raw ref; with two devices sharing a label prefix the two resolvers could
+     * name different devices, so the sentence said one device had been unpaired and another had been. Resolving
+     * AFTER the write, through `allDeviceIds()` + `resolveDeviceRef`, means the two cannot disagree — and the
+     * disk walk also reaches the devices past `MAX_DEVICES` (16) that `fold.devices` caps away.
+     */
+    async unpair(ref) {
+      await trustReady;
+      await c.unpairDeviceOn(handle, ref);
+      await reloadTrusted();
+      await afterWrite();
+      return { label: await unpairedLabel(handle, ref), devices: devices() };
+    },
+    async gc(opts) {
+      await trustReady;
+      if (opts.device === undefined) {
+        const r = await c.gc(handle);
+        await afterWrite();
+        return { removed: r.removed, devices: devices() };
+      }
+      // §7 row 14: `ignoreDeviceOn` resolves the ref by walking the DISK to `MAX_GC_DEVICES` (1,024), never through
+      // `fold.devices`, which caps at `MAX_DEVICES` (16) — the fold cannot reach the junk this verb exists to remove.
+      await c.ignoreDeviceOn(handle, opts.device, opts.device);
+      await afterWrite();
+      // fix pass, finding 11: a LOCAL TOMBSTONE removes nothing. `removed: 0`, `ignored: 1`, and the sentence says so.
+      return { removed: 0, ignored: 1, devices: devices() };
+    },
+    async syncStatus() {
+      await trustReady;
+      const s = c.syncStatus(handle);
+      return { mode: s.mode, state: s.state, lagMs: s.lagMs, reason: s.refused ?? s.code, devices: devices() };
+    },
+    async syncDisable() {
+      await trustReady;
+      const r = await c.syncDisable(handle);
+      await afterWrite();
+      return { removed: [...r.removed], devices: devices() };
+    },
+    async close() {
+      unsub?.();
+      await handle.close();
+    },
+  };
+}
+
+/**
+ * §12.1 S35 (fix pass, finding 12): the label of the device `unpairDeviceOn(handle, ref)` just unpaired.
+ *
+ * `resolveDeviceRef` is the resolver the WRITE used, so this cannot name a different device; `allDeviceIds()`
+ * is the disk walk, so a device past the fold's 16-row cap still gets its own name in the sentence. A ref that
+ * no longer resolves (the record was removed by the unpair itself on some builds) falls back to the ref the
+ * user typed, which is what they will recognise.
+ */
+async function unpairedLabel(handle: LedgerHandle, ref: string): Promise<string> {
+  try {
+    const ids = await handle.allDeviceIds();
+    const id = handle.resolveDeviceRef(ref, ids);
+    if (id === null) return ref;
+    return handle.fold.devices.get(id)?.label ?? ref;
+  } catch {
+    return ref;
+  }
+}
+
+/** §2.9 / §13.3: one fold message, flattened — no `hostKey`, no `checksum`, no `hmac` (§13.2 clause 8). */
+function inboxRowOf(c: Pick<typeof import('../coordination/index.js'), 'authorityOf' | 'messageOrigin'>, fold: Fold, m: Message): SessionsInboxRow {
+  return { id: m.id, from: m.from.label, type: m.type, text: m.text, at: m.t, unverified: c.authorityOf(c.messageOrigin(fold, m)) === 'unverified' };
+}
+
+/**
+ * §2.5: `src/tui/commands/target.ts`'s grammar — the ONE resolver `/pause`, `/end`, `/tell` and these verbs share —
+ * projected onto the CLI's `SessionsTarget`, and the `to` list the resolution implies recorded in `routes` so
+ * `send()` addresses what the user named rather than re-guessing it.
+ */
+function toSessionsTarget(r: TargetResult, fold: Fold, routes: Map<string, readonly string[]>): SessionsTarget {
+  if (r.kind === 'ambiguous') return { kind: 'ambiguous', text: r.text, candidates: r.candidates, truncated: r.truncated, message: r.message };
+  if (r.kind === 'notFound') return { kind: 'notFound', text: r.text, message: r.message };
+  /**
+   * §2.5 (fix pass, finding 3): LIVE rows first, and a target that only a GONE row answers to is refused.
+   *
+   * `pick` searched `live ∪ gone` in one pass, so `jevcode sessions pause <a run that ended an hour ago>`
+   * resolved, wrote a control message into a mailbox nothing reads and reported `delivered 1 / asked <label>`.
+   * A gone row is still a `/resume` target and still answers `/who --all`, so the grammar keeps matching it —
+   * what changes is that these verbs say it is gone instead of claiming they reached it.
+   */
+  const live = [...fold.live.values()];
+  const gone = [...fold.gone.values()];
+  const t = r.target;
+  type Row = { runId: string; sessionId: string; deviceId: string; label: string; title60: string | null };
+  let goneOnly = false;
+  const pick = (test: (hb: Row) => boolean): { runId: string; to: readonly string[]; label: string } | null => {
+    const hits = live.filter((hb) => test(hb));
+    const rows = hits.length > 0 ? hits : gone.filter((hb) => test(hb));
+    const first = rows[0];
+    if (first === undefined) return null;
+    goneOnly = hits.length === 0;
+    return { runId: first.runId, to: [...new Set(rows.map((hb) => hb.sessionId))], label: first.label };
+  };
+  const hit =
+    t.kind === 'all'
+      ? { runId: BROADCAST_TARGET, to: ['@all'] as readonly string[], label: 'every live session on this repo' }
+      : t.kind === 'run'
+        ? pick((hb) => hb.runId === t.runId)
+        : t.kind === 'session'
+          ? pick((hb) => hb.sessionId === t.sessionId)
+          : t.kind === 'title'
+            ? pick((hb) => (hb.title60 ?? '') === t.title)
+            : t.kind === 'device'
+              ? pick((hb) => hb.label === t.label)
+              : null;
+  if (hit === null) {
+    // `self` with no session (every CLI twin) and a target whose row left the fold between the two reads
+    return { kind: 'notFound', text: r.id8 ?? '', message: unknownTargetMessage(r.id8 ?? '') };
+  }
+  if (goneOnly) return { kind: 'notFound', text: r.id8 ?? hit.label, message: goneTargetMessage(hit.label), reason: 'gone' };
+  routes.set(hit.runId, hit.to);
+  return { kind: 'resolved', runId: hit.runId, id8: r.id8 ?? hit.runId.slice(-ID8), label: hit.label };
 }

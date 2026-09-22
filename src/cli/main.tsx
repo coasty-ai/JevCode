@@ -13,7 +13,7 @@
  * process-wide `restoreTerminal()` — it imports no Ink at runtime, only `node:fs` and a type).
  */
 import { appendFileSync, existsSync, readFileSync, realpathSync } from 'node:fs';
-import { homedir } from 'node:os';
+import { homedir, hostname, userInfo } from 'node:os';
 import { basename, dirname, join as joinPath, resolve as resolvePath } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { NO_INPUT_NEEDS_TASK, parseCliArgs, usageText } from './args.js';
@@ -29,6 +29,13 @@ import { epilogueLines, type EpilogueContext } from './epilogue.js';
 import { wireFatalHandlers, type FatalWiring } from './fatal.js';
 import { INK_VERSION, REACT_VERSION } from './report.js';
 import { restoreTerminal } from '../tui/terminal.js';
+/**
+ * TUI-DESIGN-5 §2.1 rule 6 / gate G-R5-1: `src/session/coordination.ts` has **zero value imports** of its own
+ * (`test/unit/cli/sessions.test.ts` pins that), so naming it here is a static edge to a leaf of pure strings and
+ * predicates — it reaches nothing under `src/coordination/**`, which stays behind the one `await import()` in
+ * `openCoordination()`.
+ */
+import { settingReader } from '../session/coordination.js';
 import { createSessionController, isInCi, isInteractive, jevcodeDir, sessionsIndexPath, type Prompter, type PromptingRenderer, type RendererKind, type SessionController } from './session.js';
 import type { JsonStream } from './json-stream.js';
 import type { ReadlineComposer } from '../tui/plain-composer.js';
@@ -468,7 +475,7 @@ function gitRootOf(workspace: string): string | null {
 }
 
 /** the resolved-config facts the maintenance commands need (runs dir, redactor, workspace); a broken config is exit 2 */
-async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: (s: string) => string; workspace: string; record: () => unknown; sandbox: string; secrets: () => Promise<ReadonlyMap<string, import('../core/types.js').Resolved<string>>> }> {
+async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: (s: string) => string; workspace: string; record: () => unknown; sandbox: string; setting: (name: string) => string | undefined; secrets: () => Promise<ReadonlyMap<string, import('../core/types.js').Resolved<string>>> }> {
   const { resolveConfig } = await import('../config/resolve.js');
   const config = await resolveConfig(flags, process.env, process.cwd());
   let workspace = config.workspace;
@@ -483,6 +490,14 @@ async function pathsFor(flags: ParsedFlags): Promise<{ runsDir: string; redact: 
     workspace,
     record: () => config.record(),
     sandbox: config.sandbox,
+    /**
+     * TUI-DESIGN-5 §2.10 / §12.1: one non-secret setting through the whole config chain. `openCoordination` reads
+     * `coordination.claims` (and `coordination.enabled`, the row a later build may add) through it to answer the
+     * "off in this configuration" refusal by name. `settingReader` is that one reader (fix pass, finding 18): it
+     * was exported and documented as this call site's, and both this file and `src/cli/session.ts` inlined the
+     * lookup instead, so the `undefined`-is-on rule lived in three places and was pinned in none.
+     */
+    setting: settingReader(config.entries),
     // the two secrets, plus `decider.provider` (TUI-DESIGN-2 §2.3): `jevcode login` infers the Jev provider from the session's own
     // resolution (flag > JEV_PROVIDER > ./.env > <OPEN_ASSIST_PATH>/.env > file > auto rules) so login and the session never disagree
     secrets: async () => {
@@ -572,19 +587,45 @@ export async function main(argv: string[]): Promise<number> {
       return commandLogout({ ...(flags.generator ? { generator: true } : {}), ...(flags.jev ? { jev: true } : {}), ...(flags.config !== undefined ? { config: flags.config } : {}) }, await loginIo(flags));
     }
     case 'sessions': {
-      const { commandSessions } = await import('./sessions.js');
+      const { commandSessions, openCoordination, sessionsVerbNeedsCoordination, sessionsVerbOf } = await import('./sessions.js');
       const p = await pathsFor(flags);
       const launch = resolveLaunchSettings(flags, process.env);
+      const home = jevcodeDir(process.env, homedir(), process.cwd());
+      /**
+       * TUI-DESIGN-5 §2.10, gap 1 (`docs/STATUS.md` "Not driven by a store in this build" item 1): the thirteen
+       * coordination verbs get a **real** `SessionsCoordination` over the ledger under `JEVCODE_HOME`.
+       *
+       * Three properties of this call site, each load-bearing:
+       *
+       *  - `openCoordination` is reached through the SAME `await import('./sessions.js')` as `commandSessions`, and
+       *    it loads `src/coordination/**` through one `await import()` of its own, so `main.tsx`'s static import
+       *    list gains nothing and gate G-R5-1 holds (asserted by `test/unit/cli/sessions.test.ts`).
+       *  - the four index verbs (`list`, `reindex`, `prune`, `unlock`) never open a ledger: they do not need one,
+       *    and opening one would write this device's record for a verb that only reads `sessions/index.jsonl`.
+       *  - a refusal is a **value**, never a throw: `off` carries the §12.1 sentence with the clause that names
+       *    the cause, and `needCoord` prints it.
+       */
+      /**
+       * Fix pass, finding 17: the gate and `commandSessions`' dispatch compute the verb with the SAME helper.
+       * They used to disagree by an `?? io.verb` term — harmless today because nothing here sets `io.verb`, but
+       * the seam is documented as the way the thirteen verbs are reached, and the first caller to use it would
+       * have got a coordination verb with no ledger AND no reason string.
+       */
+      const verb = sessionsVerbOf(flags);
+      const opened = sessionsVerbNeedsCoordination(verb) ? await openCoordination({ home, workspace: p.workspace, hostname: hostname(), username: userInfo().username, jevcode: VERSION, pid: process.pid, redact: p.redact, read: p.setting }) : null;
       return commandSessions(flags, {
         stdout: process.stdout,
         stderr: process.stderr,
         runsDir: p.runsDir,
-        indexPath: sessionsIndexPath(jevcodeDir(process.env, homedir(), process.cwd())),
+        indexPath: sessionsIndexPath(home),
         workspace: p.workspace,
         redact: p.redact,
         ascii: launch.ascii,
         // §12.1's SR column: `sessions who` renders `whoSentence` per row in the screen-reader set
         screenReader: launch.screenReader,
+        ...(opened?.kind === 'open' ? { coordination: opened.coordination } : {}),
+        // §13.3 (fix pass, finding 14): the sentence AND its machine-readable reason, so `--json` can carry it
+        ...(opened?.kind === 'off' ? { coordinationOff: opened.message, coordinationOffReason: opened.reason } : {}),
         // TUI-DESIGN-5 §2.10: the words after the verb (a target, a message, `now`, `status|disable`)
         ...(flags.sessionsArgs !== undefined ? { args: flags.sessionsArgs } : {}),
       });

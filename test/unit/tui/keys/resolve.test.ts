@@ -878,8 +878,37 @@ describe("the resume card's sub-state (TUI-DESIGN-5 §2.8, §7 row 91)", () => {
     expect(acts(after(p, k('escape'), 0), ESC_EXPIRED, 31)).toEqual([{ type: 'picker', op: 'cardClose' }]);
   });
 
-  it('`x` keeps its bare delete arm in the sub-state — the card never steals a landed key', () => {
+  /**
+   * §7 row 91's NEGATIVE half, which the first cut of this file got backwards: the card is a **focused**
+   * sub-state, so the list's own keys are inert while it is open — including the two that do something
+   * irreversible.
+   *
+   * The measured defect: `x` armed the delete chord behind the card (`pickerLines`' card branch returns before
+   * `PICKER_DELETE_HINT` is ever built, so nothing on screen said so) and the following `y` reached
+   * `deleteConfirm`, which the App turns into `moveRunsToTrash`. A run directory in the trash with no visible
+   * arm is exactly what the two-key chord exists to prevent, and "the card never steals a landed key" was the
+   * wrong reading of row 91 — the row says only r/f/d/w and Esc route.
+   */
+  it('everything else is INERT while the card is open: no filter text, no preview, no rename, and `x` then `y` can never trash a run', () => {
     const p = st({ picker: true, pickerCard: 'open' });
-    expect(acts(p, text('x'))).toEqual([{ type: 'picker', op: 'deleteArm' }]);
+    // the filter is inert: a printable that is not one of the four letters produces nothing at all
+    for (const key of ['q', 'z', '1', 'g', 'e']) expect(acts(p, text(key)), key).toEqual([]);
+    // Space is `picker:preview` in the list and nothing here
+    expect(acts(p, text(' '))).toEqual([]);
+    // Ctrl-R cannot start a rename the card's own keys row does not advertise
+    expect(acts(p, k('ctrl+r'))).toEqual([]);
+    // Ctrl-A cannot widen the list that is not on screen
+    expect(acts(p, k('ctrl+a'))).toEqual([]);
+    // and the chord: `x` does not arm …
+    const armed = after(p, text('x'), 0);
+    expect(acts(p, text('x'))).toEqual([]);
+    // … so a `y` inside the window is not a confirmation of anything
+    expect(acts(armed, text('y'), 10)).toEqual([]);
+    // the same `x` `y` pair in the LIST is round 3's arm-then-confirm, unchanged
+    const list = st({ picker: true });
+    expect(acts(list, text('x')).at(-1)).toEqual({ type: 'picker', op: 'deleteArm' });
+    expect(acts(after(list, text('x'), 0), text('y'), 10)).toEqual([{ type: 'picker', op: 'deleteConfirm' }]);
+    // a paste is filter text too, and filter text is inert
+    expect(acts(p, paste('anything'))).toEqual([]);
   });
 });

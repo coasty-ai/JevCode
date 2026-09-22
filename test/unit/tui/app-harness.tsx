@@ -7,7 +7,7 @@
  */
 import { render } from 'ink-testing-library';
 import type { HistoryStore, LaunchSettings, RetryInfo, SecretHit, SessionHost, SteerResult } from '../../../src/core/types.js';
-import { App, createBridge, type Bridge } from '../../../src/tui/App.js';
+import { App, createBridge, type AppProps, type Bridge } from '../../../src/tui/App.js';
 import { createEventBus, createTuiConfirmer, type UiAction, type UiState } from '../../../src/tui/useEngine.js';
 import { detectSecrets, patternRedact } from '../../../src/core/redact.js';
 import { mkStatus } from '../../fixtures/tui/fixtures.js';
@@ -140,6 +140,17 @@ export interface MountOptions {
   bridge?: Bridge;
   runsDir?: string;
   home?: string;
+  /**
+   * TUI-DESIGN-5 §6.4 / §5.2 (R5-4's shared-shell wave): the two seams the mounted round-5 surfaces take. Both
+   * are **optional and absent by default**, so every existing case mounts exactly the tree it did before; with
+   * them supplied `<App>` does no `await import()` at all, which is what keeps `round5-shell-app.test.tsx`
+   * offline and free of `src/models/**` / `src/import/**` module side effects.
+   */
+  models?: AppProps['models'];
+  instantModels?: AppProps['instantModels'];
+  importEngine?: AppProps['importEngine'];
+  applyImport?: AppProps['applyImport'];
+  env?: NodeJS.ProcessEnv;
 }
 
 /** Mount through ink-testing-library: real key parsing, `debug` frames (static + dynamic in one string). */
@@ -167,6 +178,11 @@ export function mountApp(opts: MountOptions = {}): Mounted {
       {...(opts.launch ? { launch: opts.launch } : {})}
       {...(opts.runsDir !== undefined ? { runsDir: opts.runsDir } : {})}
       {...(opts.home !== undefined ? { home: opts.home } : {})}
+      {...(opts.models !== undefined ? { models: opts.models } : {})}
+      {...(opts.instantModels !== undefined ? { instantModels: opts.instantModels } : {})}
+      {...(opts.importEngine !== undefined ? { importEngine: opts.importEngine } : {})}
+      {...(opts.applyImport !== undefined ? { applyImport: opts.applyImport } : {})}
+      {...(opts.env !== undefined ? { env: opts.env } : {})}
       bridge={bridge}
     />,
   );

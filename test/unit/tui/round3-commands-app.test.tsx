@@ -97,7 +97,11 @@ describe('the popular set through the mounted App (TUI-DESIGN-3 §4.1, §8 S4)',
     const host = fakeHost();
     const m = mountApp({ mode: 'session', host });
     await settle(m);
-    const hostLines = POPULAR.filter((n) => !['help', 'panel', 'theme', 'exit', 'plan'].includes(n)).map((n) => `/${n}`);
+    // TUI-DESIGN-5 §6.4 (D-AQ): `/model` joined the App-local set when R5-4 mounted the pane-slot picker — with
+    // NO argument it opens the picker and never reaches the host (`/model <id>` still forwards verbatim, which
+    // `test/unit/tui/round5-shell-app.test.tsx` asserts along with the picker itself; App-level round-5 cases
+    // belong in that file, not this one).
+    const hostLines = POPULAR.filter((n) => !['help', 'panel', 'theme', 'exit', 'plan', 'model'].includes(n)).map((n) => `/${n}`);
     for (const line of hostLines) {
       await enter(m, line);
       await waitFor(() => host.commands.includes(line));

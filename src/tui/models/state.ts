@@ -47,8 +47,16 @@ export interface ModelsPickerState {
 }
 
 export type ModelsAction =
-  /** first paint: the snapshot rows, plus the providers a load was started for (zero awaits) */
-  | { type: 'open'; models: readonly ModelInfo[]; pending?: readonly ProviderId[] }
+  /**
+   * first paint: the snapshot rows, plus the providers a load was started for (zero awaits).
+   *
+   * `results` is the **provenance the caller already holds** at open — for the mounted `/model` picker that is
+   * `snapshotResults(instantCatalogue(), SNAPSHOT_AT)`, one `source: 'static'` row per provider, so the very first
+   * frame reads `models · 512 of 7 providers` and `… bundled snapshot` instead of `of 0 providers` with a blank
+   * provenance row (§12.5 S99's own rule, stated for `providersCovered`). It costs no I/O and no await; a real
+   * `listModels` answer replaces its provider's row through `settled` exactly as before.
+   */
+  | { type: 'open'; models: readonly ModelInfo[]; pending?: readonly ProviderId[]; results?: readonly ListResult[] }
   /** one provider's `listModels` settled — its rows replace in place */
   | { type: 'settled'; result: ListResult }
   | { type: 'move'; by: number; count: number }
@@ -97,7 +105,7 @@ export function replaceProviderRows(models: readonly ModelInfo[], provider: Prov
 export function modelsReducer(s: ModelsPickerState, a: ModelsAction): ModelsPickerState {
   switch (a.type) {
     case 'open':
-      return { models: a.models, results: [], pending: a.pending ?? [], selected: 0, open: true };
+      return { models: a.models, results: a.results ?? [], pending: a.pending ?? [], selected: 0, open: true };
     case 'settled': {
       const provider = a.result.provider;
       // one row per provider: a second answer (a refresh) replaces the first, it never appends
@@ -142,6 +150,29 @@ export function visibleModels(s: ModelsPickerState, search: ModelsSearch, query:
  */
 export function providersCovered(s: ModelsPickerState): number {
   return s.results.length + s.pending.length;
+}
+
+/**
+ * §6.2 / §12.5 S99: the bundled snapshot expressed as one `ListResult` per provider — **pure, no I/O, no clock**.
+ *
+ * The picker's first paint is `instantCatalogue()` (a flat `ModelInfo[]`), but every provenance string
+ * (`sourceLabel`, `errorLabel`, `catalogueSummary`) and the rule row's provider count are written against
+ * `ListResult`. Without this the first frame would have to claim either seven `pending` providers (a lie — no load
+ * was started) or zero providers (§12.5 S99's named failure, `models · 69 of 0 providers`). One `source: 'static'`
+ * row per provider is the truth: the rows are the bundled snapshot, nothing was fetched, and `catalogueSettled`
+ * stays false so `/model <id>` still warns rather than refusing (§7 row 100).
+ *
+ * Providers keep first-appearance order, which is `sortModels`' order, so the provenance row lists them in the
+ * same order the rows do. `fetchedAt` is the snapshot date the caller read from the catalogue (`SNAPSHOT_AT`).
+ */
+export function snapshotResults(models: readonly ModelInfo[], fetchedAt: string): ListResult[] {
+  const byProvider = new Map<ProviderId, ModelInfo[]>();
+  for (const m of models) {
+    const rows = byProvider.get(m.provider);
+    if (rows === undefined) byProvider.set(m.provider, [m]);
+    else rows.push(m);
+  }
+  return [...byProvider].map(([provider, rows]) => ({ provider, models: rows, source: 'static' as const, fetchedAt, stale: true }));
 }
 
 /** The row Enter picks, or null when the query matched nothing. */

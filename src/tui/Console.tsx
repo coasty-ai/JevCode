@@ -31,6 +31,7 @@ import { consoleBottom, consoleDivider, consoleInnerWidth, consoleTopEdgeParts }
 import { GLYPHS, fitCells, padEndCells, truncateCells, type GlyphSet } from './glyphs.js';
 import type { PaletteGhost } from './commands/palette.js';
 import { maskGlyphFor } from './Review.js';
+import type { PickerKind } from './Picker.js';
 import { wizardConsoleTitle as wizardStepTitle, wizardLines, type WizardView } from './onboarding/lines.js';
 import { isFieldStep, type OnboardingState } from './onboarding/reducer.js';
 import { statusSpans, type StatusLineOptions, type StatusLineState } from './status/lines.js';
@@ -66,8 +67,13 @@ export function ghostText(ghost: ConsoleGhost | null | undefined, g: GlyphSet = 
   return `${ghost.rest}${ghost.more > 0 ? ` +${ghost.more}` : ''}`;
 }
 
-/** TUI-DESIGN-2 §4.3 / §12 "Console": the console title while the picker filters — `sessions · filter` / `rewind · filter`. */
-export function pickerConsoleTitle(kind: 'sessions' | 'rewind', g: GlyphSet = GLYPHS.unicode): string {
+/**
+ * TUI-DESIGN-2 §4.3 / §12 "Console": the console title while the picker filters — `sessions · filter` /
+ * `rewind · filter`, and TUI-DESIGN-5 §6.4's `models · filter`. The kind IS the word: D-AQ puts the model picker
+ * in the same pane slot with the same composer-as-filter contract, so it takes the same title by construction
+ * rather than a third literal (§13.4).
+ */
+export function pickerConsoleTitle(kind: PickerKind, g: GlyphSet = GLYPHS.unicode): string {
   return `${kind} ${g.dot} filter`;
 }
 

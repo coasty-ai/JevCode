@@ -185,7 +185,7 @@ function fakeCoordination(o: { rows?: readonly SessionActivityView[]; skipped?: 
     },
     acks: async () => {
       calls.push('acks');
-      return o.acks ?? [{ msgId: 'm-1', by: 'S1-aaaaaaaa', deviceId: 'k3q7m2ab', at: '2026-09-21T23:00:05.000Z', outcome: 'applied' }];
+      return o.acks ?? [{ msgId: 'm-1', by: 'S1-aaaaaaaa', deviceId8: 'k3q7m2ab', at: '2026-09-21T23:00:05.000Z', outcome: 'applied' }];
     },
     label: async (next) => {
       calls.push(`label(${next})`);
@@ -408,7 +408,8 @@ describe('sessions inbox (§2.9, §13.3)', () => {
     const parsed = JSON.parse(j.io.out.join('')) as { messages: unknown[]; acks: Record<string, unknown>[] };
     expect(Object.keys(parsed).sort()).toEqual(['acks', 'messages']);
     // §13.2's eighth clause: `acks` is a REAL read, and neither projection carries a hostKey / checksum / hmac
-    expect(parsed.acks).toEqual([{ msgId: 'm-1', by: 'S1-aaaaaaaa', deviceId: 'k3q7m2ab', at: '2026-09-21T23:00:05.000Z', outcome: 'applied' }]);
+    // §13.2 clause 8 as amended (fix pass, finding 10): the truncated form is spelled `deviceId8` everywhere
+    expect(parsed.acks).toEqual([{ msgId: 'm-1', by: 'S1-aaaaaaaa', deviceId8: 'k3q7m2ab', at: '2026-09-21T23:00:05.000Z', outcome: 'applied' }]);
     for (const key of ['hostKey', 'checksum', 'hmac']) expect(j.io.out.join('')).not.toContain(key);
     expect(SESSIONS_INBOX_JSON_CLAUSE).toContain('no hostKey');
   });
@@ -453,9 +454,14 @@ describe('sessions label | pair | unpair | gc | sync (§2.10, §13.3 — one dev
     const s = setup();
     const coord = fakeCoordination({ devicesPastCap: ['ancient-laptop'] });
     expect(await commandSessions({ command: 'sessions' }, { ...s.io, verb: 'gc', args: ['--device', 'ancient-laptop'], coordination: coord })).toBe(0);
-    // the seam walks the DISK (MAX_GC_DEVICES = 1,024), so the junk past the fold's 16 is reachable and removed
+    // the seam walks the DISK (MAX_GC_DEVICES = 1,024), so the junk past the fold's 16 is reachable at all
     expect(coord.calls).toContain('gc(ancient-laptop)');
-    expect(s.io.out.join('')).toBe('gc removed 12 records of ancient-laptop\n');
+    /**
+     * Fix pass, finding 11: `--device <ref>` writes a LOCAL TOMBSTONE and deletes nothing (`ignoreDeviceOn`'s
+     * own doc, §4.6 row 4), so the old sentence named a removal that had not happened. The verb says what the
+     * tombstone does and when the records really go (§7 row 14's own wording).
+     */
+    expect(s.io.out.join('')).toBe("ancient-laptop is now ignored — its records are hidden from /who and 'jevcode sessions gc' drops them as they expire\n");
     const bare = setup();
     await commandSessions({ command: 'sessions' }, { ...bare.io, verb: 'gc', coordination: fakeCoordination() });
     expect(bare.io.out.join('')).toBe('gc removed 3 records\n');
@@ -621,5 +627,73 @@ describe('sessions unlock — the six `LockReplace` reasons (§2.10, §12.1 S38a
     writeFileSync(join(s.runsDir, id, 'run.lock'), JSON.stringify({ pid: 4242, startedAt: '2026-09-20T14:00:00.000Z', host: 'h' }));
     expect(sessionsUnlock(id, s.io)).toBe(0);
     expect(s.io.out.join('')).toContain(LOCK_REPLACE_SENTENCE['dead-pid']);
+  });
+});
+
+/**
+ * TUI-DESIGN-5 §2.1 rule 3a / gate **G-R5-1**, gap 1: `openCoordination()` lands the ONE production constructor,
+ * and the whole point of its shape is that it does **not** put `src/coordination/**` on the argv path. These are
+ * source-text assertions on purpose — an `await import()` that became a static import is invisible to every
+ * behavioural test in this file and is exactly the regression that makes the first frame pay for the ledger.
+ */
+describe('gap 1: the import graph `openCoordination()` must not widen (G-R5-1)', () => {
+  const read = async (rel: string): Promise<string> => {
+    const { readFileSync } = await import('node:fs');
+    const { fileURLToPath } = await import('node:url');
+    return readFileSync(fileURLToPath(new URL(rel, import.meta.url)), 'utf8');
+  };
+
+  it('`src/cli/sessions.ts` reaches the coordination tree exactly once, and only through `await import()`', async () => {
+    const src = await read('../../../src/cli/sessions.ts');
+    // the only static mention is the erasing one
+    expect(src).toMatch(/import type \{[^}]*\} from '\.\.\/coordination\/index\.js';/);
+    expect(src).not.toMatch(/^import \{[^}]*\} from '\.\.\/coordination\//m);
+    expect(src).not.toMatch(/from '\.\.\/coordination\/(ledger|fold|claims|records|leases|mailbox|heartbeat)\.js'/);
+    // …and exactly ONE `import()` in VALUE position (`typeof import(...)` is a type and erases)
+    const code = src
+      .split('\n')
+      .filter((l) => !l.trimStart().startsWith('*') && !l.trimStart().startsWith('//'))
+      .join('\n');
+    expect(code.match(/(?<!typeof )import\('\.\.\/coordination\/index\.js'\)/g)).toHaveLength(1);
+  });
+
+  it('`src/cli/main.tsx` still reaches `sessions.ts` only through `await import()`, and names no coordination module', async () => {
+    const src = await read('../../../src/cli/main.tsx');
+    expect(src).toContain("await import('./sessions.js')");
+    expect(src).not.toMatch(/^import .* from '\.\/sessions\.js';/m);
+    /**
+     * The forbidden edge is `src/coordination/**`, static OR dynamic. `src/session/coordination.ts` — the
+     * pre-flight — is a different module with ZERO value imports of its own (the case below pins that), and
+     * `main.tsx` does name it statically since the fix pass wired `settingReader` (finding 18); an edge to a
+     * leaf of pure strings and predicates widens nothing.
+     */
+    expect(src).not.toMatch(/^import .* from '\.\.\/coordination\//m);
+    expect(src).not.toMatch(/import\('[^']*\/coordination\/[^']*'\)/);
+    // the one `src/session/coordination.js` edge is allowed, and it is the ONLY one outside `sessions.js`
+    expect(src.match(/from '\.\.\/session\/coordination\.js'/g)).toHaveLength(1);
+  });
+
+  /**
+   * Fix pass, finding 17: the gate that decides whether a ledger is opened is the SAME expression the dispatcher
+   * uses, not a second copy of the verb list.
+   */
+  it('`main.tsx`’s ledger gate is `sessionsVerbNeedsCoordination(sessionsVerbOf(flags))`, not an inline verb list', async () => {
+    const src = await read('../../../src/cli/main.tsx');
+    expect(src).toContain('const verb = sessionsVerbOf(flags);');
+    expect(src).toContain('sessionsVerbNeedsCoordination(verb)');
+    expect(src).not.toMatch(/verb === 'list' \|\| verb === 'reindex'/);
+    // the refusal reaches `commandSessions` as BOTH halves (finding 14)
+    expect(src).toContain('coordinationOffReason: opened.reason');
+  });
+
+  it('`src/session/coordination.ts` — the pre-flight — has NO value import at all (it may sit on the argv path)', async () => {
+    const src = await read('../../../src/session/coordination.ts');
+    expect(src).not.toMatch(/^import \{/m);
+    expect(src).not.toMatch(/^import [A-Za-z]/m);
+    // the one filesystem read is inside a function body, behind a dynamic import
+    expect(src).toContain("await import('node:fs/promises')");
+    // …and the probe does NOT create the home it is probing (fix pass, finding 16): two `access(W_OK)`, no mkdir
+    expect(src).not.toMatch(/\bfs\.mkdir\b/);
+    expect(src.match(/fs\.access\(/g)).toHaveLength(2);
   });
 });

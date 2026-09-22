@@ -130,6 +130,16 @@ export interface KeyState {
    *    (§7 row 91: the filter is inert and the card says `Esc returns to the list`).
    */
   pickerCard?: 'off' | 'closed' | 'open';
+  /**
+   * TUI-DESIGN-5 §6.4 (D-AQ): **this picker's composer is a free-text query, not a session filter.** The models
+   * picker lives in the same pane slot with the same "the composer IS the filter" contract, but three of the
+   * session picker's ops are bound to keys a query needs — `space` (`picker:preview`), `x` (`picker:delete`) and
+   * `ctrl+a` (`picker:allWorkspaces`) — and none of the three has any meaning for a catalogue row. With this set
+   * they resolve as **text** (or as nothing, for the non-printable one), so `z-ai/glm 5` types and `x` is an `x`.
+   *
+   * Optional and **false by default**: the sessions and rewind arms are byte-for-byte round 3's.
+   */
+  pickerFilter?: boolean;
 }
 
 /** TUI-DESIGN §3.1: a fresh state for a mounted session or one-shot renderer. */
@@ -154,6 +164,7 @@ export function initialKeyState(mode: 'session' | 'one-shot' = 'session'): KeySt
     paneFocus: false,
     tab: 'd',
     pickerCard: 'off',
+    pickerFilter: false,
   };
 }
 
@@ -234,6 +245,13 @@ export type KeyAction =
   | { type: 'exitConfirm'; op: 'abortExit' | 'stay' }
   /** TUI-DESIGN-2 §3.7: the intake card — `y` runs (armed), `n` replies from the answers in hand, Esc / Ctrl-C keep the text */
   | { type: 'intake'; op: 'run' | 'chat' | 'keep' }
+  /**
+   * TUI-DESIGN-5 §5.2 / §7 row 59: the import overlay. The ops are `ImportAction`'s own names
+   * (`src/tui/import/reducer.ts`), so the App's arm is one `importDispatch({ type: action.op })` and the reducer
+   * stays the single owner of what each key means. **No new `KeyContext`**: like every other y-gated overlay
+   * (`resolveYGated`) the keys are literal here, so `KeyContext` stays the six members gate G-R5-10 pins.
+   */
+  | { type: 'import'; op: 'move' | 'open' | 'back' | 'toggle' | 'all' | 'none' | 'review' | 'apply' | 'escape'; by?: -1 | 1 }
   | { type: 'wizard'; op: 'input' | 'submit' | 'back' | 'backspace' | 'clear'; text?: string }
   | { type: 'blocking'; key: 'r' | 'c' | 'q' | 'p' | 'l' }
   | { type: 'toast'; text: string }
@@ -243,6 +261,8 @@ export type KeyAction =
 export const REVIEW_PENDING_TOAST = 'review pending: y n d e w · Esc declines';
 /** TUI-DESIGN-2 §3.7 / §12 "Status": the toast for a printable while the intake card owns the input. */
 export const INTAKE_PENDING_TOAST = 'intake pending: y n · Esc keeps the text';
+/** TUI-DESIGN-5 §5.2 / §12.4 S91: the toast for a non-key printable while the import overlay owns the input. */
+export const IMPORT_PENDING_TOAST = 'import open: y r Space Enter · Esc closes (the plan is kept)';
 
 const CSI_LEAK = /^\[(?:I|O|\?\d+[uc]|\d+;\d+R|27;\d+;\d+~|<\d+;\d+;\d+[Mm]|\?62;[\d;]*c)$/;
 /**
@@ -716,6 +736,51 @@ function resolveYGated(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
   }
 }
 
+/**
+ * TUI-DESIGN-5 §5.2 / IMPORT-DESIGN §5.2 / §7 row 59: the import overlay's keys, in one place.
+ *
+ * `y` **is not y-gated here.** `overlayArmed` exists for the confirms that let a model's proposal touch the
+ * workspace (§6.3); `/import` is a human-initiated command whose overlay the human just asked for, and the
+ * design's own keys row (`[y] import all 41`) is armed from the frame it is drawn. What `y` applies is decided
+ * by `selectedRowIds` (`applicableRows` ∩ the human's selection, never a `secret` row) — the guard is the
+ * reducer's, not a frame timer's.
+ *
+ * Esc / Ctrl-C are **one op** (`escape`) because §7 row 59's three behaviours are three reducer states, not three
+ * keys: during `applying` it stops at the row boundary and keeps the resume hint; inside an expanded group or the
+ * review queue it steps back; at the top it closes and the plan is kept.
+ */
+function resolveImport(s: KeyState, k: KeyEvent): Step {
+  const one = (a: KeyAction): Step => ({ state: s, actions: [a] });
+  const none: Step = { state: s, actions: [] };
+  if (isCtrl(k, 'c') || k.key.escape) return one({ type: 'import', op: 'escape' });
+  if (k.paste === true) return none;
+  if (isCtrl(k, 'd') || isNewlineKey(k)) return none;
+  if (isEnter(k)) return one({ type: 'import', op: 'open' });
+  if (k.key.upArrow) return one({ type: 'import', op: 'move', by: -1 });
+  if (k.key.downArrow) return one({ type: 'import', op: 'move', by: 1 });
+  if (k.key.leftArrow || k.key.backspace) return one({ type: 'import', op: 'back' });
+  if (k.key.ctrl || k.key.meta) return none;
+  if (k.input === ' ') return one({ type: 'import', op: 'toggle' });
+  switch (k.input) {
+    case 'y':
+    case 'Y':
+      return one({ type: 'import', op: 'apply' });
+    case 'r':
+    case 'R':
+      return one({ type: 'import', op: 'review' });
+    case 'a':
+    case 'A':
+      return one({ type: 'import', op: 'all' });
+    case 'n':
+    case 'N':
+      return one({ type: 'import', op: 'none' });
+    default:
+      break;
+  }
+  // every other printable is answered by the hint row rather than falling into the collapsed composer (§5.2)
+  return isPrintable(k) ? one({ type: 'toast', text: IMPORT_PENDING_TOAST }) : none;
+}
+
 function resolveWizard(s: KeyState, k: KeyEvent, now: number): Step {
   const one = (a: KeyAction): Step => ({ state: s, actions: [a] });
   if (isCtrl(k, 'c')) return interrupt(s, 'ctrl-c', now);
@@ -796,16 +861,30 @@ function resolvePicker(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
   // `picker:cardClose` carry no keys of their own in the registry.
   if (isCtrl(k, 'c') || k.key.escape) return one({ type: 'picker', op: card ? 'cardClose' : 'close' });
   if (isCtrl(k, 'd') || isNewlineKey(k)) return { state: s, actions: [] };
-  if (k.paste) return one({ type: 'paste', text: k.input });
+  // §7 row 91: the filter is inert in the card, and a paste is filter text like any other
+  if (k.paste) return card ? { state: s, actions: [] } : one({ type: 'paste', text: k.input });
   if (isEnter(k)) return one({ type: 'picker', op: s.pickerCard === 'closed' ? 'cardOpen' : 'open' });
   const ks = keyString(k);
   if (ks !== null) {
-    if (ks === 'y' && chordFirst(s, DELETE_ARM, now, CHORD_WINDOW_MS)) return one({ type: 'picker', op: 'deleteConfirm' }, withArmed(s, { chord: null }));
+    /**
+     * §2.8 / §7 row 91: with the card OPEN the picker is a **focused sub-state**, and this is the whole of it.
+     * Enter (resume) and Esc (back to the list) were handled above; of everything else only the four card
+     * letters route, and every other key — printable or not — resolves to NOTHING.
+     *
+     * The early return is the point, not a tidiness: with the fallthrough in place the list's own bindings
+     * still fired behind a pane that is showing the card, so `x` armed the delete chord while `pickerLines`'
+     * card branch had already returned (no `PICKER_DELETE_HINT` row was ever built), and the following `y`
+     * reached `deleteConfirm` → `moveRunsToTrash`. A run directory trashed with no visible arm is exactly the
+     * outcome the two-key chord exists to prevent, so the sub-state takes the y-gated-overlay shape: one gate,
+     * above the lookup, with no `textActions` behind it.
+     */
     if (card) {
       const cardId = lookupBinding(b, 'picker', ks);
       const op = cardId === null ? undefined : CARD_OPS[cardId];
       if (op !== undefined) return one({ type: 'picker', op });
+      return { state: s, actions: [] };
     }
+    if (ks === 'y' && s.pickerFilter !== true && chordFirst(s, DELETE_ARM, now, CHORD_WINDOW_MS)) return one({ type: 'picker', op: 'deleteConfirm' }, withArmed(s, { chord: null }));
     const armedDelete = s.armed.chord?.first === DELETE_ARM ? withArmed(s, { chord: null }) : s;
     const found = lookup(armedDelete, ks, ['picker'], now, b);
     if (found.armedChord) return { state: found.state, actions: [] };
@@ -822,13 +901,20 @@ function resolvePicker(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
         return one({ type: 'picker', op: 'page', by: 1 }, cleared);
       case 'picker:accept':
         return one({ type: 'picker', op: 'accept' }, cleared);
+      // §6.4: `space`, `x`, `ctrl+a` and `ctrl+r` belong to a SESSION row. In a free-text picker (`pickerFilter`)
+      // they are query characters — or, for the two chords, nothing at all — never a preview, a delete arm, a
+      // workspace widening or a rename of a row that is a model id.
       case 'picker:preview':
+        if (s.pickerFilter === true) break;
         return one({ type: 'picker', op: 'preview' }, cleared);
       case 'picker:allWorkspaces':
+        if (s.pickerFilter === true) break;
         return one({ type: 'picker', op: 'allWorkspaces' }, cleared);
       case 'picker:rename':
+        if (s.pickerFilter === true) break;
         return one({ type: 'picker', op: 'rename' }, cleared);
       case 'picker:delete':
+        if (s.pickerFilter === true) break;
         return one({ type: 'picker', op: 'deleteArm' }, withArmed(cleared, { chord: { first: DELETE_ARM, at: now } }));
       // §7 row 91: with the card CLOSED the four card letters are filter text, exactly as they were in round 3 —
       // they fall through to `textActions` below, never to a picker op.
@@ -848,7 +934,8 @@ function resolvePicker(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step
     if (isPrintable(k)) return { state: cleared, actions: textActions(k) };
     return { state: cleared, actions: [] };
   }
-  if (isPrintable(k)) return { state: s, actions: textActions(k) };
+  // the same gate for a printable `keyString` cannot name (an emoji, a combining sequence): inert in the card
+  if (isPrintable(k) && !card) return { state: s, actions: textActions(k) };
   return { state: s, actions: [] };
 }
 
@@ -954,6 +1041,8 @@ function resolveOne(s: KeyState, k: KeyEvent, now: number, b: Bindings): Step {
     case 'exitConfirm':
     case 'intake':
       return resolveYGated(s, k, now, b);
+    case 'import':
+      return resolveImport(s, k);
     case 'palette':
       return resolvePalette(s, k, now, b);
     default:

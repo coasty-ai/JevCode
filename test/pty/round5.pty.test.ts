@@ -19,11 +19,29 @@
  * sentences is the D-AN contract under test — a surface that silently did nothing would pass a "no crash" test
  * and fail this one.
  */
+import { spawn } from 'node:child_process';
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { CHAT_OPEN, EXIT_IDLE, cleanupScratch, drive, echoStep, hasExpect, stripAnsi, syncFrames, type Drive } from './helpers.js';
+import { CHAT_OPEN, EXIT_IDLE, MOCK_RUN_MODE, binPath, childEnv, cleanupScratch, drive, echoStep, hasExpect, runFinishedStep, stripAnsi, submitTask, syncFrames, type Drive } from './helpers.js';
 
+/**
+ * Fix pass, finding 15: the spawned peer is killed from an `afterEach`, not from a `finally` around the
+ * assertions. `peers` is populated inside `during`, and the old `try { … } finally { kill }` started only after
+ * `await drive(…)` RESOLVED — so a hard timeout or a harness error left a `jevcode run … --mock-steps 40`
+ * child alive, writing into a scratch home `cleanupScratch` was about to delete. This hook runs before
+ * `cleanupScratch` (vitest runs `afterEach`es in registration order) and is unconditional.
+ */
+const spawnedPeers: ReturnType<typeof spawn>[] = [];
+afterEach(() => {
+  for (const p of spawnedPeers.splice(0)) {
+    try {
+      p.kill('SIGKILL');
+    } catch {
+      /* already gone */
+    }
+  }
+});
 afterEach(cleanupScratch);
 
 const FAKE_KEY = `sk-fake-${'x'.repeat(40)}`;
@@ -65,6 +83,21 @@ function assertEveryRowFits(r: Drive, cols: number): void {
   expect(widest, `widest rendered row at ${cols} columns`).toBeLessThanOrEqual(cols);
 }
 
+/**
+ * TUI-DESIGN-5 §2.14: a real second session — `jevcode run … --plain --mock`, headless so `firstFrame()`
+ * resolves at once, under the SAME `JEVCODE_HOME` and the SAME workspace (the `wsKey` both sessions publish is
+ * derived from that realpath, and with no git repository under `/tmp` the `repoKey` degrades to it).
+ */
+function spawnPeer(workspace: string, home: string, steps: number, secret: string): void {
+  spawnedPeers.push(
+    spawn(process.execPath, [binPath(), 'run', 'keep the peer session alive', '--plain', '--mock', '--mock-steps', String(steps), ...MOCK_RUN_MODE, '--workspace', workspace], {
+      cwd: workspace,
+      env: childEnv(home, 24, 120, { ...NO_NETWORK, OPENROUTER_API_KEY: secret, JEVCODE_MOCK_JEV_MS: '400' }),
+      stdio: 'ignore',
+    }),
+  );
+}
+
 /** type a slash command on an idle composer and wait for its echo, then submit */
 const cmd = (line: string): readonly string[] => ['sleep 0.3', `send ${line}`, echoStep(line), 'sleep 0.2', 'send \\r'];
 
@@ -76,6 +109,19 @@ describe.skipIf(!hasExpect)('pty round 5: the coordination reads answer honestly
       rows: 24,
       cols: 80,
       env: { ...NO_NETWORK, OPENROUTER_API_KEY: FAKE_KEY },
+      /**
+       * Gap 1(b), the DISCLOSED RESIDUAL, measured rather than asserted in prose. A second session is really
+       * running under this home for the whole scenario, and the idle TUI still answers the honest unknown —
+       * because `startPublishing` (and with it the ONE handle) is reached from `runEngineInner`, not from
+       * `renderer.firstFrame()`. Promoting the open is blocked on the frozen contract, not on this file:
+       * `SessionActivity.kind` is `'run' | 'bench'` (`src/coordination/types.ts:467`) and a heartbeat needs a
+       * `runId` and a claim, so a session that has run nothing has no row shape to publish and no reason to
+       * open a ledger it could not appear in. This case is what keeps that residual honest and visible.
+       */
+      during: async ({ workspace, home }) => {
+        spawnPeer(workspace, home, 40, FAKE_KEY);
+        return await new Promise<string>((res) => setTimeout(() => res('spawned'), 1_500));
+      },
       steps: [...CHAT_OPEN, ...cmd('/who'), 'expect who', ...cmd('/who --all'), 'sleep 0.6', ...cmd('/peers'), 'expect peers', 'sleep 0.4', ...EXIT_IDLE],
       timeoutS: 40,
     });
@@ -86,10 +132,115 @@ describe.skipIf(!hasExpect)('pty round 5: the coordination reads answer honestly
     expect(text).toContain('who · unknown');
     expect(text).toContain('the session ledger is not open yet');
     expect(text).toContain('peers · unknown');
+    /**
+     * Fix pass, finding 8: `/peers` no longer blames the BUILD for a state that is only "not open yet". The two
+     * surfaces answer the same sentence, and neither of them says the feature is missing from this binary.
+     */
+    expect(text).not.toContain('the peer registry is not available in this build');
+    /**
+     * The rest of the sentence WRAPS at 80 columns (the `[ui]` block continuation indents the tail), so a
+     * frame-level `toContain` of the whole string is a test of the wrapper — the same reason this file asserts
+     * only the head of `/memory`'s refusal. The whole string is pinned byte-for-byte in
+     * `test/unit/cli/session-coordination.test.ts` against `peersNotOpenText()`.
+     */
+    expect(text).toContain('/who lists every');
+    // a peer really was beating into this home while the reads above ran — the residual is measured, not assumed
+    expect(existsSync(join(r.home, 'coordination'))).toBe(true);
     // §7 row 61: never a pid, never an absolute path
     expect(text).not.toMatch(/pid \d+/);
     assertNoKeyBytes(r, FAKE_KEY);
     assertEveryRowFits(r, 80);
+  });
+
+  /**
+   * TUI-DESIGN-5 §2.3 / §2.14 / §10, **gap 1**: two `jevcode --mock` sessions under ONE `JEVCODE_HOME` and one
+   * workspace see each other in `/who`.
+   *
+   * This is the case nothing could exercise before `openCoordination()` landed and the read half was pinned to the
+   * writer's handle: the write half already beat (the `r5-who.steps` beat-file scan proved that), but no reader
+   * was ever driven against another session's beat, so §2's whole premise — "every session knows what the others
+   * are doing" — had never once been observed end to end.
+   *
+   * The peer is a real second process, spawned from `during` so it shares the scenario's own temp workspace (the
+   * `wsKey` both sessions publish is derived from that realpath, and with no git repository under `/tmp` the
+   * `repoKey` degrades to it). It runs headless (`run … --plain`), which resolves `firstFrame()` at once, so its
+   * ledger opens, its claim mints and its heartbeat writer starts exactly as the TUI's does.
+   */
+  it('two --mock sessions under one JEVCODE_HOME: `/who` shows the peer’s row, and no key byte reaches a frame or the ledger', async () => {
+    const r = await drive({
+      name: 'r5-who-peer',
+      args: ['chat', '--mock', '--mock-steps', '2'],
+      rows: 24,
+      cols: 120,
+      env: { ...NO_NETWORK, OPENROUTER_API_KEY: FAKE_KEY },
+      during: async ({ workspace, home }) => {
+        spawnPeer(workspace, home, 40, FAKE_KEY);
+        return await new Promise<string>((res) => setTimeout(() => res('spawned'), 1_500));
+      },
+      steps: [
+        ...CHAT_OPEN,
+        'sleep 1.5',
+        ...submitTask('fix the failing test'),
+        // the mock trajectory ends `generator_done`, not `complete` — the anchor takes whatever reason it carries
+        runFinishedStep('[a-z_]+'),
+        'sleep 1.2',
+        ...cmd('/who --all'),
+        'expect who',
+        'sleep 1.0',
+        ...EXIT_IDLE,
+      ],
+      timeoutS: 60,
+    });
+    {
+      const text = stripAnsi(r.text);
+      expect(r.timeouts).toBe(0);
+      expect(r.code).toBe(0);
+      // the ledger IS open now, so the honest-unknown answer of the case above must NOT appear
+      expect(text).not.toContain('who · unknown');
+      // §12.1 S7: the header counts what the fold holds — this session and the peer
+      expect(text).toMatch(/who [·-] [2-9]\d* live/);
+      // §7 row 61 / gate G-R5-9: the row names the session, never a pid and never an absolute path
+      expect(text).not.toMatch(/pid \d+/);
+      expect(text).not.toMatch(/\/(?:private\/)?(?:tmp|var)\/jevcode-pty/);
+      assertNoKeyBytes(r, FAKE_KEY);
+      assertEveryRowFits(r, 120);
+      // §2.14 consequence 3: the peer's own subtree is in the same home and is scanned by `assertNoKeyBytes`
+      expect(existsSync(join(r.home, 'coordination'))).toBe(true);
+    }
+  });
+
+  /**
+   * Fix pass, the review's "a `--ascii` twin and a 40-column rung" gap: the two-session case above is the only
+   * capture of REAL peer rows, and it measured exactly one geometry (24×120, unicode). The row ladder of §2.3
+   * drops right to left as the width falls and the glyph set is chosen at launch, so the narrow rung and the
+   * ascii twin are different code paths, not variants of one. Both are exercised in ONE spawn.
+   */
+  it('the same two sessions at 24×40 with `--ascii`: three cells per row, ascii glyphs, every row still fits', async () => {
+    const r = await drive({
+      name: 'r5-who-peer-ascii40',
+      args: ['chat', '--mock', '--mock-steps', '2', '--ascii'],
+      rows: 24,
+      cols: 40,
+      env: { ...NO_NETWORK, OPENROUTER_API_KEY: FAKE_KEY },
+      during: async ({ workspace, home }) => {
+        spawnPeer(workspace, home, 40, FAKE_KEY);
+        return await new Promise<string>((res) => setTimeout(() => res('spawned'), 1_500));
+      },
+      steps: [...CHAT_OPEN, 'sleep 1.5', ...submitTask('fix the failing test'), runFinishedStep('[a-z_]+'), 'sleep 1.2', ...cmd('/who --all'), 'expect who', 'sleep 1.0', ...EXIT_IDLE],
+      timeoutS: 60,
+    });
+    const text = stripAnsi(r.text);
+    expect(r.timeouts).toBe(0);
+    expect(r.code).toBe(0);
+    // §12.1 S1–S3, S10: the ascii set is `*`, `.`, `o`, `-`; the head's separator is `-`, never `·`
+    expect(text).toMatch(/who - [2-9]\d* live/);
+    expect(text).not.toContain('who ·');
+    expect(text).not.toContain('who · unknown');
+    // gate G-R5-6: the narrow rung clips rather than overflowing, at the geometry it was rendered for
+    assertEveryRowFits(r, 40);
+    expect(text).not.toMatch(/pid \d+/);
+    expect(text).not.toMatch(/\/(?:private\/)?(?:tmp|var)\/jevcode-pty/);
+    assertNoKeyBytes(r, FAKE_KEY);
   });
 });
 
@@ -117,14 +268,14 @@ describe.skipIf(!hasExpect)('pty round 5: the context pair (TUI-DESIGN-5 §3.2, 
 });
 
 describe.skipIf(!hasExpect)('pty round 5: D-AN — every registered surface answers out loud (§4.9, §5.5)', () => {
-  it('`/agents`, `/land`, `/import` and `/memory` name the build, and `/model` still shows the current model', async () => {
+  it('`/agents` and `/land` name the build, `/memory` points at the twin that works, and `/model` now OPENS the picker (§6.4)', async () => {
     const r = await drive({
       name: 'r5-honest-idle',
       args: ['chat', '--mock'],
       rows: 24,
       cols: 80,
       env: { ...NO_NETWORK, OPENROUTER_API_KEY: FAKE_KEY },
-      steps: [...CHAT_OPEN, ...cmd('/agents'), 'expect not available', 'sleep 0.4', ...cmd('/land'), 'sleep 0.4', ...cmd('/import'), 'sleep 0.4', ...cmd('/memory'), 'sleep 0.4', ...cmd('/model'), 'sleep 0.4', ...EXIT_IDLE],
+      steps: [...CHAT_OPEN, ...cmd('/agents'), 'expect not available', 'sleep 0.4', ...cmd('/land'), 'sleep 0.4', ...cmd('/memory'), 'sleep 0.4', ...cmd('/model'), 'sleep 0.8', 'send \\x1b', 'sleep 0.4', ...EXIT_IDLE],
       timeoutS: 40,
     });
     expect(r.timeouts).toBe(0);
@@ -133,14 +284,19 @@ describe.skipIf(!hasExpect)('pty round 5: D-AN — every registered surface answ
     // §12 S85, verbatim, for the agent verbs
     expect(text).toContain('/agents is not available in this build — no agent is running');
     expect(text).toContain('/land is not available in this build — no agent is running');
-    // §5.5: the import pair points at the surface that DOES work rather than denying the feature. The sentence
+    // §5.5: `/memory` still points at the surface that DOES work rather than denying the feature. The sentence
     // WRAPS at 80 columns (the `[ui]` block continuation indents the tail), so the head is what a frame-level
     // `toContain` may assert; the whole string is pinned byte-for-byte in `test/unit/cli/sessions.test.ts`'s sinks.
-    expect(text).toContain('/import is not available in this build');
-    expect(text).toContain('jevcode import plans, reviews');
     expect(text).toContain('/memory is not available in this build');
-    // §6.4: `/model` with no argument is unchanged — it shows, it never opens a picker that is not mounted
-    expect(text).toMatch(/model mock/);
+    /**
+     * §6.4 / D-AQ — CHANGED by R5-4's shared-shell wave (`docs/STATUS.md`'s gap 2): `/model` with no argument no
+     * longer prints `model <current>`, it opens the **pane-slot picker** over the bundled snapshot (zero network,
+     * which `JEVCODE_ASSERT_NO_NETWORK` above makes a failure rather than a hope), and Esc closes it. The rule row
+     * is the assertion; the picker's own behaviour is `test/pty/smoke/r5-model-picker.steps` and
+     * `test/unit/tui/round5-shell-app.test.tsx`. `/import` moved to its own scenario
+     * (`test/pty/smoke/r5-import-overlay.steps`) for the same reason — it is an overlay now, not one row.
+     */
+    expect(text).toMatch(/models [·-] \d+/);
     // the refusal never leaks an internal op name (`dropArm` / `dropConfirm`)
     expect(text).not.toMatch(/dropArm|dropConfirm/);
     assertNoKeyBytes(r, FAKE_KEY);

@@ -1,6 +1,31 @@
-# TUI-DESIGN-5 §2.3 / §2.14 / §10 (slot R5-1): `/who` under a real pty — three peers, a bench row and a crashed
-# row at 80×24, then the 40-column rung, then `--all`, then `/peers`. Driven by the peer stub
-# (`JEVCODE_FAULT=peer:5`), so the scenario is hermetic: no second process, no network.
+# TUI-DESIGN-5 §2.3 / §2.14 / §10 (slot R5-1): `/who` under a real pty — the row ladder at 80×24, then the
+# 40-column rung, then `--all`, then `/peers`. Hermetic: no network, no second process.
+#
+# GAP 1 UPDATE (`openCoordination()` / the read half pinned to the writer's handle), plus the round-5 fix pass.
+# Four facts about this file changed and are written here rather than left to be rediscovered:
+#
+#   - **The rows are real now, and it is MEASURED.** Before gap 1 closed, step 1 answered `who · unknown / the
+#     session ledger is not open yet` and every later step measured nothing: the write half beat, but no reader
+#     was wired to the handle. Step 0's `--mock` run opens the ledger, and step 1 now renders THIS session's own
+#     row off the live fold. `sh test/pty/run-smoke.sh r5-who r5-who-ascii` → **both PASS, exit 0, timeouts=0**
+#     (`who · 1 live, 0 gone` / `who - 1 live, 0 gone`), with `beat-no-key-bytes` and `beat-no-long-hostkey`.
+#     Run `node scripts/build.mjs` first: this script drives `bin/jevcode.js`, which loads `dist/jevcode.mjs`, so
+#     a stale bundle measures the previous commit.
+#   - **Step 4 used to hard-time-out, and the fix is in `/peers`, not here.** With the ledger open `host.peers()`
+#     returns a real `PeerView` whose counts are 0, so `/peers` took the empty-state branch — which was the one
+#     §12.1 block head in the file with no ` · ` in it, and `expect peers [·-]` could therefore never match
+#     (exit 124, timeouts=1, pre-existing at the branch tip). The empty state now carries the dot like every
+#     other head (`peers · 0 here, 0 stale`) and the sentence is its body (fix pass, finding 5).
+#   - **`JEVCODE_FAULT=peer:5` is GONE from the env row** (fix pass, finding 19). `src/tui/faults.ts` parses and
+#     validates `peer:<n>` and nothing in the tree reads it (`grep -rn "kind === 'peer'" src/` is empty), so a
+#     reader of `run-smoke.sh` was being told the rows came from an injected fault. They come from step 0's run.
+#   - **Two sessions seeing each other is proved in vitest, not here.** A `.steps` file cannot spawn the second
+#     process or seed a fixture before the child starts, and the peer's `wsKey` has to be this scenario's own
+#     temp workspace or the two never meet. `test/pty/round5.pty.test.ts`'s `r5-who-peer` case does it with
+#     `Scenario.during`, spawns a real second `jevcode run … --plain --mock` under the SAME `JEVCODE_HOME` and
+#     the same workspace, and asserts `who · 2 live` plus `assertNoKeyBytes` over both sessions' subtrees. Its
+#     `--ascii` / 40-column twin (`r5-who-peer-ascii40`) lives beside it, so the only capture of REAL peer rows
+#     is no longer a single geometry.
 #
 # TWO scenarios share this file (the `--ascii` twin cannot be a resize — the glyph set is chosen at launch):
 #   r5-who        chat --mock            the unicode rows (`●`, `◌`, `○`, `·`)
@@ -8,7 +33,9 @@
 #
 # What it proves, beyond "it renders":
 #   - the §2.3 column ladder drops right to left on a resize and never truncates silently (§7 row 85);
-#   - a crashed row and a bench row are DIFFERENT row shapes, not variants (§7 rows 3 and 12);
+#   - a crashed row and a bench row are DIFFERENT row shapes, not variants (§7 rows 3 and 12) — both need a
+#     second writer and are therefore exercised by the fold fixtures of `test/unit/session/peers.test.ts`, not
+#     by this capture;
 #   - §2.14: step 1 runs a real `--mock` task FIRST, so the write half actually opens the ledger, mints the claim
 #     and starts the heartbeat writer before anything is read — the beat file below exists because of it;
 #   - gate G-R5-9 / §7 row 61 / §2.14 consequence 3: `assertNoKeyBytes` runs over the frames AND over the
@@ -18,7 +45,7 @@
 # run-smoke.sh needs FIVE rows for these two scenarios; `test/pty/**` is R5-2's (§9.2, W5), so they are a request
 # in R5-1's report, verbatim:
 #   alias  : r5-who-ascii) steps_name=r5-who;;
-#   env    : r5-who|r5-who-ascii) extra_env="$extra_env JEVCODE_FAULT=peer:5 JEVCODE_ASSERT_NO_NETWORK=1";;
+#   env    : r5-who|r5-who-ascii) extra_env="$extra_env JEVCODE_ASSERT_NO_NETWORK=1";;
 #   check  : r5-who|r5-who-ascii) grep -q 'who [·-] ' "$txt" && checks="$checks r5-who:block" || { ok=0; checks="$checks MISSING:r5-who-block"; }
 #   keys   : r5-who|r5-who-ascii) if [ -d "$home/coordination" ]; then grep -rqI "$FAKE_KEY" "$home/coordination" && { ok=0; checks="$checks LEAK:beat-key-bytes"; } || checks="$checks beat-no-key-bytes"; grep -rqIE '"hostKey"[^,}]*[0-9a-f]{32}' "$home/coordination" && { ok=0; checks="$checks LEAK:beat-hostkey"; } || checks="$checks beat-no-long-hostkey"; else checks="$checks beat-absent"; fi;;
 #   select : sel_named r5-who && run r5-who 0 24 80 chat --mock
