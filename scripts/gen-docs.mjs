@@ -29,12 +29,18 @@ const TARGETS = {
   fish: 'completions/jevcode.fish',
 };
 
-/** the .TH date (YYYY-MM-DD): SOURCE_DATE_EPOCH > package.json's last commit date > today */
+/**
+ * The .TH date (YYYY-MM-DD): SOURCE_DATE_EPOCH > the commit that introduced the CURRENT package.json content > today.
+ * Keyed off the blob (`--find-object`), not the path: `git log -1 -- package.json` depends on merge topology, so
+ * `gen-docs --check` was red on a feature branch and green on the same tree merged into main (harness session, 2026-09-22).
+ */
 export function manDate(env = process.env) {
   const epoch = env.SOURCE_DATE_EPOCH;
   if (epoch && /^\d+$/.test(epoch)) return new Date(Number(epoch) * 1000).toISOString().slice(0, 10);
+  const git = (args) => execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
   try {
-    const out = execFileSync('git', ['log', '-1', '--format=%cs', '--', 'package.json'], { cwd: ROOT, encoding: 'utf8', stdio: ['ignore', 'pipe', 'ignore'], timeout: 10_000 }).trim();
+    const blob = git(['rev-parse', 'HEAD:package.json']);
+    const out = /^[0-9a-f]{40}$/.test(blob) ? git(['log', '-1', '--format=%cs', `--find-object=${blob}`]) : git(['log', '-1', '--format=%cs', '--', 'package.json']);
     if (/^\d{4}-\d{2}-\d{2}$/.test(out)) return out;
   } catch {
     // no git: fall through
