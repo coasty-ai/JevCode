@@ -111,7 +111,8 @@ import type { AskResult,
   RecentStepsUsage,
 } from '../core/types.js';
 import { AbortError, CheckpointError, ConfigError, GeneratorResponseError, JevCodeError, JevHttpError, JevModelDriftError, JevResponseError, ProviderHttpError, isAbortError, isBudgetError, isJevCodeError, toJevCodeError, type BudgetKind } from '../errors.js';
-import { CHECKPOINT_FILES, CONTEXT_SUMMARY_FILE, classifyDiskError, outputFileName } from '../checkpoint/store.js';
+import type { DiskError } from '../checkpoint/store.js';
+import { CHECKPOINT_FILES, CONTEXT_SUMMARY_FILE, attachDegradeListener, classifyDiskError, outputFileName } from '../checkpoint/store.js';
 import { fileMemoryFromPostImage, writePostImages, writePreImages, type ImageSource, type PostImage, type PreImageResult } from '../checkpoint/images.js';
 import { hasContextStore, readContextExtension, type ContextCheckpointExtension } from '../checkpoint/types.js';
 import { CACHED_SAMPLES_MAX, CACHED_SAMPLE_MAX_CHARS, PARTIAL_TEXT_MAX_CHARS, REPLAY_HASH_MAX_FILES, hashTargets, parseStepCache, promptHashOf, proposalPaths, stepCacheName, stepCacheRel, stepCacheSupersededName, verifyTargets, type CachedSample, type StepCache } from '../checkpoint/replay.js';
@@ -246,6 +247,12 @@ export { DIRECTIVE_MAX_CHARS };
 /** TUI-DESIGN §8.6 annotate(): a renderer-originated line is clipped at 600 and its TUI-only body at 12,000 (through sanitizeStream) */
 export const ANNOTATE_TEXT_MAX_CHARS = 600;
 export const ANNOTATE_DETAIL_MAX_CHARS = 12_000;
+/**
+ * contract 1.7 item 2 (TUI-DESIGN-4 §3.5 D-W, edge 2): `annotateBlock` logs at most this many BODY rows, then one
+ * `… +N more rows`. A 42-row `/config` issued while a run is live would otherwise be 42 events through the redacting
+ * emit and 42 lines in `transcript.log`, which is a support artefact, not a pager mirror.
+ */
+export const BLOCK_LOG_MAX = 24;
 /** TUI-DESIGN §13.2 / §13.3: `paused: jev unreachable` auto-retries after 30 s, doubling to 5 min across consecutive pauses */
 export const JEV_UNREACHABLE_RETRY_MS = 30_000;
 export const JEV_UNREACHABLE_RETRY_MAX_MS = 300_000;
@@ -793,6 +800,13 @@ class EngineImpl implements Engine {
     this.mode = init.opts.mode;
     this.redact = init.opts.redact;
     this.store = init.store;
+    // contract 1.7 item 8 (TUI-DESIGN-4 §7.2 P-D2 item 1): the store reports every write path's own classification here.
+    // Registration happens AFTER the store is final (a resume replaces it with `loadForResume`'s), which is why this is a
+    // post-construction listener rather than a `createCheckpointStore` option: `CheckpointStoreFactory` is
+    // `(runsDir, runId, redact)` and never sees one. Detached in `finish()`, so a late write cannot emit into a dead engine.
+    attachDegradeListener(this.store, (info) => {
+      this.noteDisk(info, this.draft?.step ?? null);
+    });
     this.workspace = init.workspace;
     this.sandbox = init.sandbox;
     this.wsInfo = init.wsInfo;
@@ -1547,6 +1561,30 @@ class EngineImpl implements Engine {
     return true;
   }
 
+  /**
+   * contract 1.7 item 2 (TUI-DESIGN-4 §3.5, D-W): one `notice ui` per row, HEAD FIRST, exactly as `--plain`'s
+   * `note(head); for (const l of lines) note(l)` loop does — so a command block issued while a run is live writes the
+   * same rows to `transcript.log` from the TUI as from `--plain`, and the three sinks match. Returns false when no run
+   * is live, exactly like `annotate`, and the caller then keeps the rows local.
+   *
+   * Edge 1: the loop is ATOMIC with respect to `isFinished()` — liveness is read once, before the first emit, so a
+   * listener that pauses (or a run that ends) between two rows can never truncate a block into half a card.
+   * Edge 2: at most `BLOCK_LOG_MAX` body rows, then one `… +N more rows`.
+   */
+  annotateBlock(head: string, rows: readonly string[], opts: { level?: 'info' | 'warn' | 'error'; label?: UiLabel } = {}): boolean {
+    if (!this.started || this.isFinished()) return false;
+    const step = this.draft?.step ?? null;
+    const level = opts.level ?? 'info';
+    const label = opts.label ?? '[ui]';
+    const shown = rows.length > BLOCK_LOG_MAX ? rows.slice(0, BLOCK_LOG_MAX) : rows;
+    const overflow = rows.length - shown.length;
+    const lines = [head, ...shown, ...(overflow > 0 ? [`… +${overflow} more rows`] : [])];
+    for (const line of lines) {
+      this.emit({ type: 'notice', step, kind: 'ui', level, text: clipText(sanitizeStream(line), ANNOTATE_TEXT_MAX_CHARS), label });
+    }
+    return true;
+  }
+
   run(): Promise<RunResult> {
     if (this.finished) return this.finished;
     this.started = true;
@@ -1837,6 +1875,17 @@ class EngineImpl implements Engine {
   private noteDiskError(e: unknown, file: string | undefined, step: number | null): boolean {
     const disk = classifyDiskError(e, file);
     if (disk === null) return false;
+    return this.noteDisk(disk, step, e);
+  }
+
+  /**
+   * contract 1.7 item 8 (TUI-DESIGN-4 §7.2 P-D2 item 1): the same emit + block path, entered from a classification the
+   * STORE made. The store reports every write path's failure through `attachDegradeListener`, which is what closes the
+   * measured hole: `enqueue()` handles the tail of a chain whose caller never awaited it, so before round 4 a run whose
+   * directory vanished mid-flight reported `complete`, exit 0, and the epilogue advertised a resume that could not work.
+   * The once-per-`<file>:<code>` rule lives here, in `this.warned`, so the two entry points can never double-report.
+   */
+  private noteDisk(disk: DiskError, step: number | null, cause: unknown = null): boolean {
     if (!this.warned.has(disk.key)) {
       this.warned.add(disk.key);
       this.emit({ type: 'notice', step, kind: 'checkpoint:degraded', level: 'error', text: disk.text });
@@ -1844,7 +1893,7 @@ class EngineImpl implements Engine {
     // `[c] continue without checkpoints` was chosen: later state.json failures stay notices, the run is already degraded;
     // a failure of the FINAL write (finish() in flight) has no loop top left to pause at — it makes the run exit 3 instead
     if (disk.file === CHECKPOINT_FILES.state && this.blocked === null && !this.checkpointDegraded && !this.finishing) {
-      this.installBlock({ step: step ?? this.step, kind: 'checkpoint-degraded', detail: checkpointDegradedDetail(disk.code, disk.file), stop: 'error', exitCode: 3 }, e);
+      this.installBlock({ step: step ?? this.step, kind: 'checkpoint-degraded', detail: checkpointDegradedDetail(disk.code, disk.file), stop: 'error', exitCode: 3 }, cause);
       this.emitStatus();
     }
     return true;
@@ -4016,6 +4065,9 @@ class EngineImpl implements Engine {
     }
     // TUI-DESIGN §8.5: the lock ends with the run
     this.releaseLock();
+    // §7.2 item 1: and so does the degrade listener — the last write above has settled, and `noteDisk` on a finished
+    // engine would emit a notice no renderer is listening for.
+    attachDegradeListener(this.store, null);
     if (this.exitHandler) {
       process.removeListener('exit', this.exitHandler);
       this.exitHandler = null;

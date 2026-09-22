@@ -223,6 +223,13 @@ export type Redactor = (s: string) => string;
 export interface DiskCheckpointStore extends CheckpointStore {
   /** Warnings collected by the most recent load() or readStepsAfter() (torn lines, prev fallback). */
   lastWarnings(): readonly string[];
+  /**
+   * TUI-DESIGN-4 §7.2 P-D2 item 1, the second entry point to `CheckpointStoreOptions.onDegrade`: the ENGINE cannot
+   * pass constructor options (its `CheckpointStoreFactory` is `(runsDir, runId, redact)`, `engine.ts:173`, and a
+   * resume REPLACES the store with the one `loadForResume` built), so it registers here instead and detaches at
+   * `run:end`. One listener slot, two ways in. `null` detaches.
+   */
+  setDegradeListener(cb: ((info: DiskError) => void) | null): void;
   /** TUI-DESIGN §15 item 10: ui.json (required on the disk store; optional on the contract so fakes type-check). */
   writeUi(ui: Json): Promise<void>;
   /** contract 1.4 (COORDINATION-DESIGN §7.2, §6.4): the cache files (required on the disk store; optional on the contract). */
@@ -402,6 +409,25 @@ export interface CheckpointStoreOptions {
   onDegrade?: (info: DiskError) => void;
 }
 
+/** The one member of `DiskCheckpointStore` the engine needs; a fake store without it is simply not wired. */
+interface DegradeAware {
+  setDegradeListener(cb: ((info: DiskError) => void) | null): void;
+}
+
+function isDegradeAware(store: object): store is DegradeAware {
+  return typeof (store as { setDegradeListener?: unknown }).setDegradeListener === 'function';
+}
+
+/**
+ * TUI-DESIGN-4 §7.2 item 1: point a store's own disk-error classification at a listener. Returns false when the
+ * store does not report (an old fake), so the caller keeps today's behaviour instead of failing to construct.
+ */
+export function attachDegradeListener(store: CheckpointStore, cb: ((info: DiskError) => void) | null): boolean {
+  if (!isDegradeAware(store)) return false;
+  store.setDegradeListener(cb);
+  return true;
+}
+
 export function createCheckpointStore(runDir: string, redact: Redactor, opts: CheckpointStoreOptions = {}): DiskCheckpointStore {
   const dir = runDir;
   const pathOf = (name: string): string => join(dir, name);
@@ -414,6 +440,8 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
    * renames would leave no valid envelope at all.
    */
   let primaryUnusable = false;
+  /** §7.2 item 1: the current sink. Seeded from the constructor option; the engine replaces it with `setDegradeListener`. */
+  let degradeListener: ((info: DiskError) => void) | null = opts.onDegrade ?? null;
 
   function fail(message: string, cause?: unknown): CheckpointError {
     return new CheckpointError(`${message} (${dir})`, dir, cause === undefined ? {} : { cause });
@@ -433,7 +461,7 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
     if (info !== null && !degradedKeys.has(info.key)) {
       degradedKeys.add(info.key);
       try {
-        opts.onDegrade?.(info);
+        degradeListener?.(info);
       } catch {
         /* a broken reporter never breaks the write path: the notice is best effort, the throw is not */
       }
@@ -899,6 +927,10 @@ export function createCheckpointStore(runDir: string, redact: Redactor, opts: Ch
 
     lastWarnings() {
       return [...warnings];
+    },
+
+    setDegradeListener(cb: ((info: DiskError) => void) | null) {
+      degradeListener = cb;
     },
   };
   return store;

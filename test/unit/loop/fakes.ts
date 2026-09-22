@@ -50,6 +50,7 @@ import type {
 import { sleep } from '../../../src/core/time.js';
 import { AbortError, EditError, FileNotFoundError, JevHttpError, PatchError, PathEscapeError, ProviderHttpError } from '../../../src/errors.js';
 import type { CheckpointStoreWithContext } from '../../../src/checkpoint/types.js';
+import type { DiskError } from '../../../src/checkpoint/store.js';
 import { createEngine, type EngineDeps, type GitProbe } from '../../../src/loop/engine.js';
 
 import { notRepoState } from '../../../src/workspace/gitstate.js';
@@ -490,6 +491,11 @@ export interface FakeStore extends CheckpointStoreWithContext {
   cache: Map<string, Json>;
   /** contract 1.4: when set, writeCache rejects with this error (a cache write failure is a notice only) */
   failCache: Error | null;
+  /** contract 1.7 (TUI-DESIGN-4 §7.2 item 1): whatever the engine registered, so a test can drive the store's report */
+  degradeListener: ((info: DiskError) => void) | null;
+  setDegradeListener(cb: ((info: DiskError) => void) | null): void;
+  /** drive one classified write failure the way a real write path would */
+  reportDegrade(info: DiskError): void;
   seed(meta: RunMeta, state: CheckpointState, extraSteps?: StepRecord[]): void;
   last(): CheckpointState | undefined;
 }
@@ -498,6 +504,13 @@ export function createFakeStore(dir = '/runs/fake'): FakeStore {
   const st: FakeStore = {
     dir,
     meta: null,
+    degradeListener: null,
+    setDegradeListener(cb: ((info: DiskError) => void) | null) {
+      st.degradeListener = cb;
+    },
+    reportDegrade(info: DiskError) {
+      st.degradeListener?.(info);
+    },
     outputs: new Map<number, string>(),
     summary: null,
     outputsMax: 0,
