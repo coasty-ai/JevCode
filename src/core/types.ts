@@ -2346,6 +2346,13 @@ export interface SandboxCreateOptions {
   gitCommonDir?: string;
   /** TUI-DESIGN §15 item 18: resolved jevcode config dirs appended to the file-read denies (§12.7) */
   configDirs?: readonly string[];
+  /**
+   * contract 1.5 (ORCHESTRATION-DESIGN §5.2 [G3]): set when `EngineOptions.orchestration.depth === 1`, so the
+   * child's profile denies writing `<commonDir>/refs/**`, `packed-refs`, `logs/**` and `worktrees/<name>/HEAD`. The
+   * supervisor's own per-worktree sandbox ([D10]) is built in the depth-0 parent and never sets it, which is why
+   * the harness's `git commit` still works while a child's `run` action cannot move the pinned ref.
+   */
+  agentChild?: boolean;
 }
 
 /** Everything the bench runner needs, injected so bench/* compiles and tests without the real modules. */
