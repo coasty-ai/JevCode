@@ -30,6 +30,7 @@ import {
   rateLimitLedger,
   rateLimitedCancellation,
   readBodyCapped,
+  reportFirstByte,
   requestIdOf,
   resolveDeps,
   sanitiseRequestId,
@@ -390,8 +391,10 @@ export function createOpenRouterProvider(cfg: GeneratorConfig, deps: ProviderDep
       }
       if (!res.body) throw new TransportError('stream', 'openrouter: 200 without a body');
       const remaining = Math.max(1, FIRST_BYTE_TIMEOUT_MS - (d.now() - t0));
-        // contract 1.9 (Fastlane) §3.1: TTFB measured from the request going out (header phase included), reported once per attempt
-        const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => notify(opts.onFirstByte, Math.round(d.now() - t0));
+      // contract 1.9 (Fastlane) §3.1: TTFB measured from the request going out (header phase included); `reportFirstByte`
+      // reports it once per `generate()` — this client's retry loop re-runs the body, and a mid-stream 429/5xx frame lands
+      // AFTER the stream opened, so a per-attempt report would enter two readings into the §3.2 threshold's p50.
+      const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => reportFirstByte(opts, Math.round(d.now() - t0));
       try {
         return await consumeStream(res.body, { opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, held, ...(onFirstByte === undefined ? {} : { onFirstByte }) });
       } catch (e) {

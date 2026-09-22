@@ -26,6 +26,7 @@ import {
   httpError,
   linkedAbort,
   notify,
+  reportFirstByte,
   parseJsonObject,
   rateLimitLedger,
   rateLimitedCancellation,
@@ -201,10 +202,10 @@ export function createCaller(d: Required<ProviderDeps>): ProviderCaller {
         }
         if (!res.body) throw new TransportError('stream', `${call.label}: 200 without a body`);
         const remaining = Math.max(1, FIRST_BYTE_TIMEOUT_MS - (d.now() - t0));
-        // contract 1.9 (Fastlane) §3.1: TTFB is measured from the request going out, not from the body's first read, and is
-        // reported once per ATTEMPT — a retried call reports the attempt that actually streamed. `notify` keeps a throwing
-        // callback a typed 'internal' error rather than a transport failure the retry loop would re-bill.
-        const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => notify(opts.onFirstByte, Math.round(d.now() - t0));
+        // contract 1.9 (Fastlane) §3.1: TTFB is measured from the request going out, not from the body's first read, and
+        // `reportFirstByte` makes it once per `generate()` — the first attempt that actually streamed — rather than once
+        // per attempt. It keeps a throwing callback a typed 'internal' error, not a transport failure the loop re-bills.
+        const onFirstByte = opts.onFirstByte === undefined ? undefined : (): void => reportFirstByte(opts, Math.round(d.now() - t0));
         try {
           return await call.consume(res.body, { opts, redact: d.redact, firstByteTimeoutMs: remaining, requestId, held, ...(onFirstByte === undefined ? {} : { onFirstByte }) });
         } catch (e) {

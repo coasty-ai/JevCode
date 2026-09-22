@@ -11,7 +11,7 @@ import { isFiniteNumber, isJsonObject, parseJson } from '../core/json.js';
 import { clip } from '../core/text.js';
 import { monotonicNow, sleep as defaultSleep } from '../core/time.js';
 import type { SleepFn } from '../core/time.js';
-import type { CancelledGeneration, Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
+import type { CancelledGeneration, GenerateOptions, Json, JsonObject, RetryCause, RetryInfo, TokenUsage } from '../core/types.js';
 import type { Pricing, ProviderDeps, SseOptions, SseRecord, StreamPartial, TokenBreakdown } from './types.js';
 
 export const FIRST_BYTE_TIMEOUT_MS = 30_000;
@@ -354,6 +354,24 @@ export function notify<T>(fn: ((value: T) => void) | undefined, value: T): void 
   } catch (e) {
     throw toJevCodeError(e);
   }
+}
+
+/**
+ * contract 1.9 (Fastlane) §3.1 (review defect 3): `GenerateOptions.onFirstByte` is documented as "called at most once
+ * per `generate()`", but `withRetry` wraps the WHOLE attempt — so a retryable failure that lands after the stream
+ * opened (research 07 §2.3's `data: {"error": …}` frame on a 200) runs the attempt body again and would report a
+ * second TTFB. Two readings would enter the §3.2 threshold's p50 twice and double-count `StepVerifySummary.ttfbMs`.
+ *
+ * The latch is keyed on the OPTIONS OBJECT, which is exactly what one `generate()` owns and every attempt of it
+ * shares: the harness hears about the first attempt that actually streamed, whatever the client's retry shape is, and
+ * a client added later cannot forget the rule as long as it reports through here. The latch closes BEFORE the callback
+ * runs, so a throwing callback (a harness bug, raised typed by `notify`) cannot let the next attempt report either.
+ */
+const firstByteReported = new WeakSet<GenerateOptions>();
+export function reportFirstByte(opts: GenerateOptions, ms: number): void {
+  if (opts.onFirstByte === undefined || firstByteReported.has(opts)) return;
+  firstByteReported.add(opts);
+  notify(opts.onFirstByte, ms);
 }
 
 /**

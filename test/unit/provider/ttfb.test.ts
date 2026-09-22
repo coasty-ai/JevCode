@@ -117,4 +117,31 @@ describe('§3.1 the clients: TTFB is measured from the request going out', () =>
     // the 503 never opened a stream, so it reports nothing: the hedge threshold must not learn from a failed attempt
     expect(seen).toHaveLength(1);
   });
+
+  /**
+   * Review defect 3. The retryable failure that matters here lands AFTER the stream opened — research 07 §2.3's
+   * `data: {"error": …}` frame on a 200 — so the first attempt DID report a TTFB and `withRetry` then ran the
+   * attempt body again. `core/types.ts` promises "called at most once per `generate()`"; two readings would
+   * enter `ttfbMsAll` twice and drag the §3.2 threshold's p50 toward a stream that never finished, and would
+   * double-count `StepVerifySummary.ttfbMs`.
+   */
+  it('reports once per `generate()`, not once per attempt, when the retry lands MID-STREAM (200 then an error frame)', async () => {
+    const midStream = { status: 200, headers: { 'content-type': 'text/event-stream' }, body: ['data: {"choices":[{"delta":{"content":"hi"}}]}\n\n', 'data: {"error":{"code":503,"message":"upstream gone"}}\n\n'] };
+    const f = scriptedFetch([midStream, sse('openrouter-tool.sse')]);
+    const { deps } = testDeps(f.fetch);
+    const seen: number[] = [];
+    const res = await createOpenRouterProvider(openrouterCfg(), deps).generate(request(), genOpts({ onFirstByte: (ms) => seen.push(ms) }));
+    expect(res.toolCalls).toHaveLength(1);
+    expect(f.calls).toHaveLength(2);
+    // both attempts opened a stream; the caller is told about the first one only
+    expect(seen).toHaveLength(1);
+
+    // the same rule on the shared http caller (openai/chat) — its retry loop is the one in provider/http.ts
+    const g = scriptedFetch([midStream, sse('openai-chat-tool.sse')]);
+    const gd = providerDeps(g.fetch);
+    const openaiSeen: number[] = [];
+    await createOpenAiProvider(providerCfg({ model: 'gpt-5.6-terra', baseUrl: 'https://api.openai.com/v1' }), gd.deps, { api: 'chat' }).generate(request(), genOpts({ onFirstByte: (ms) => openaiSeen.push(ms) }));
+    expect(g.calls).toHaveLength(2);
+    expect(openaiSeen).toHaveLength(1);
+  });
 });
