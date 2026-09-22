@@ -63,7 +63,10 @@ describe.skipIf(!hasExpect)('pty: Ctrl-C / Esc / Ctrl-D matrix (§3.3)', () => {
     const records = readFileSync(steps, 'utf8').split('\n').filter((l) => l !== '');
     expect(records.length).toBeGreaterThanOrEqual(1);
     expect(records[0]).toMatch(/"step":1\b/);
-    expect(records.join('\n')).not.toMatch(/"declined"/);
+    // `ActionOutcome.status === 'declined'` is what this asserts did not happen (the confirmer refused a step). The
+    // bare `/"declined"/` also matched `StepFastPath.decision` (contract 1.9 Fastlane §5.2), which every armed
+    // `jev-on` step writes and which says nothing about the confirmer.
+    expect(records.join('\n')).not.toMatch(/"status":"declined"/);
     expect(plain).toMatch(/\[run\] finished [·-] human_abort [·-] [1-9]\d* steps/);
     expect(countClears(afterFirstFrame(r.text))).toBe(0);
   });

@@ -136,7 +136,10 @@ export function buildCommonState(input: CommonStateInput): JsonObject {
       changedFiles: ws.changedFiles.slice(0, 100),
       createdThisRun: ws.createdThisRun.slice(0, 100),
       lastChangeStep: ws.lastChangeStep,
-      lastTestRun: ws.lastTestRun ? { ...ws.lastTestRun } : null,
+      // contract 1.9 (Fastlane) §0.4 I2: `durationMs` is the ENGINE's private fact (the fast-path predicate's `t_run`,
+      // persisted for a resume) and is stripped here, so Jev's state bytes are what they were before contract 1.9 on
+      // every run — `fastPath: 'off'` and `'auto'` alike. The member stays on `CheckpointState.lastTestRun`.
+      lastTestRun: ws.lastTestRun ? stateTestRun(ws.lastTestRun) : null,
       testsCurrent: testsCurrent(ws.lastTestRun, ws.lastChangeStep),
       sandbox: ws.sandbox,
     },
@@ -149,6 +152,12 @@ export function buildCommonState(input: CommonStateInput): JsonObject {
 
 function round4(x: number): number {
   return Math.round(x * 10_000) / 10_000;
+}
+
+/** contract 1.9 (Fastlane) §0.4 I2: the run as JEV sees it — everything but the engine-private `durationMs`. */
+function stateTestRun(run: LastTestRun): JsonObject {
+  const { durationMs: _engineOnly, ...seen } = run;
+  return { ...seen };
 }
 
 export function actionJson(proposal: Proposal): JsonObject {

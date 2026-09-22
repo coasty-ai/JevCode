@@ -678,7 +678,7 @@ All must hold.
 
 | # | condition | source |
 |---|---|---|
-| T1 | `mode === 'jev-on'` and `fastPath === 'auto'` | option |
+| T1 | `mode === 'jev-on'` and `fastPath === 'auto'`, and the warm plane is OFF (`warmPlaneEnabled()`, I8 — §4.5) | option, `src/synth/warm/plane.ts` |
 | T2 | `synthesizerHandles(wsInfo, files)` true (cached once per run) | `src/synth/index.ts:305` |
 | T3 | the last executed action was a test `run` (`isTestCommand`, `stages/execute.ts:33`) whose parse is **`scopeUsable`** with `failed + errors >= 1` | `src/workspace/tests.ts:540` |
 | T4 | no workspace write since that run (`lastChangeStep` / `changedFiles`) | engine state |
@@ -687,9 +687,9 @@ All must hold.
 | T7 | failing test count ≤ 8 (one cluster, not a broken build) | parsed counts |
 | T8 | `isRepositoryWorkspace(testCommand, paths)` false and `detectLayout(paths) !== 'other'` | `search/index.ts` |
 | T9 | spend remaining > 0, and **wall left ≥ 2 × the fast-path budget** | budgets |
-| T10 | this `(file, failing-test-id-set)` fingerprint has not already been declined or exhausted this run | per-run set |
+| T10 | this `(file, failing-test-id-set)` fingerprint has not already been declined or exhausted this run — the IDS, read out of the run's own output by `fastPathFailingIds` (the oracle's own `summarize`); the failing/errors COUNTS are the fallback used only when the output named no test, because two different clusters with equal counts share a counts key and the second would read as `fingerprint_seen` | per-run set |
 | T11 | `goal.attempts < FASTPATH_ATTEMPTS_MAX = 2` for this cluster, and **the fast path is not disarmed** (§4.5) | per-run state |
-| T12 | the loop detector is not tripped, no pause point is pending, and no coordination lease conflict is known on the implicated file | engine state |
+| T12 | the loop detector is not tripped, no pause point is pending, and no coordination lease conflict is known on the implicated file — the LEDGER's verdict (`CoordinationRuntime.conflictOn`, the same pure `check()` the coordinate micro-stage runs over the already-folded ledger), never this run's own dirty-file list: a file this run modified earlier is not a lease conflict and must not be counted as one in §8 | engine state + `src/loop/coordination.ts` |
 
 **T5 is the graft that makes the predicate survive a resume** (judge 1 §7). Reading `t_run` "off the engine's own
 clock" does not survive a process restart: `LastTestRun` (`src/core/types.ts:1066`) has **no duration** and
@@ -706,6 +706,15 @@ hole in the *judge* — which this design does not fix — becomes visible in th
 one-strike disarm.
 
 #### Stage 2 — inside the facade, after the synth's own baseline + `fitOracle` + `locate`, before one candidate runs
+
+The verdict is **per round and reached on a measurement that round made**. `RunMemory` outlives the round (one
+synthesizer per `runId`), so `mem.baseline !== null` does not mean "this round measured one": the facade records the
+round's ENTRY baseline and the clamp's `observe` judges only a baseline whose identity differs from it — otherwise
+round 2 would abort on round 1's oracle at the `freshBudget` that runs before the re-baseline a changed workspace is
+about to force. The wrapped localiser is the deterministic point (after the baseline, before any candidate is
+enumerated, and the only place the real site count exists); a round that reaches neither is judged on its last
+measurement at the end, and a round that measured nothing at all takes §4.7's `empty_step_budget` row (disarm,
+`outcome: 'error'`) rather than proposing out of a round whose eligibility was never established.
 
 **The fast path fires iff the round would be a SIEVE round.**
 
@@ -754,15 +763,34 @@ if (fp !== undefined) {
 | dimension | cap |
 |---|---|
 | wall | `fastPathBudgetMs = clamp(min(FASTPATH_WALL_MAX_MS = 45_000, 0.35 × stepWallRemaining), FASTPATH_WALL_MIN_MS = 8 × tRunMs, FASTPATH_WALL_MAX_MS)` — below the floor the round cannot test enough to matter, so **decline rather than enter** |
-| test runs | `min(FASTPATH_TEST_RUNS_MAX = 400, runsLeft(oracle, stepBudget))` — against QuixBugs class's own 1 500; this is one round, not a step |
+| test runs | `min(FASTPATH_TEST_RUNS_MAX = 400, runsLeft(oracle, stepBudget))` — against QuixBugs class's own 1 500; this is one round, not a step. The engine has no oracle at stage 1, so the `runsLeft` half enters where the oracle exists: the clamp mins 400 with the synthesizer's own `testRunsLeft`, which `freshBudget` computed from the fitted oracle |
 | Jev requests | `FASTPATH_JEV_MAX = 6` — up to 5 for `locate` (Q2–Q6) and one for RS5 arbitration. **Zero is legal**: with the budget spent or Jev down, `locate` falls to code order and `decide`'s `canAsk` guard drops arbitration |
 | generator | **0 by construction** (`mode: 'jev-only'`) |
 | full-suite runs | today's `MAX_FULL_SUITE_RUNS_PER_STEP = 5`, counted on `mem.passersThisStep` |
 | cold-confirm reserve | `2 × tRunMs.fullSuite`, held **outside** the wall share |
+| run-wide wall | `FASTPATH_RUN_WALL_SHARE = 0.25 × maxWallMs` over **all** rounds of the run (`FastPathRunState.wallSpentMs`) — T9 bounds one round, this bounds their sum |
 
 **The cold-confirm reserve is held outside the wall share** because *a passer without its confirm run is not a
 result*. Spending the last of the wall on one more candidate and then having no wall to confirm it produces
 exactly the failure mode the fast path must never have.
+
+**The reserve is INSTALLED, not merely computed** (review fix, slot C): the clamp sets
+`testWallLeftMs = min(honest, wallMs + reserveMs)` and publishes `StepBudget.reserveWallMs = reserveMs`, which the
+sieve's dispatch rule (`runQueue`'s `stopDispatch`, the streaming park and the retry loop) holds back — a run already
+on a lane may spend it, no NEW candidate is dispatched into it. `reserveWallMs` is absent for every other caller and
+absent means 0, so this is exactly today's dispatch rule everywhere but the fast path. Without it the counter the
+confirm run debits is the same counter the candidates emptied, `budgetAllowsHold` refuses, and the round ends in a
+one-strike disarm — the §4.4 failure mode, reachable.
+
+**`budgetMs` in the record is the round's CEILING, not the share.** Only `testWallLeftMs` is clamped to the share; the
+round's own baseline run, the localiser's asks and the confirm run are all outside that counter, so a round's measured
+wall is routinely over its share by construction. The bound that actually holds is
+`fastPathCeilingMs = wallMs + reserveMs + graceMs`, which the abort enforces, so that is what the record carries and
+what R-b tests. The installed share is recorded beside it as `shareMs`.
+
+**There is no per-step wall limit.** `Limits` bounds the RUN (`maxWallMs`, `checkBudgets`), so the share is taken of
+the run's remaining wall and `FastPathBudgetInput.wallRemainingMs` is named for that. The aggregate is bounded by the
+run-wide ledger row above rather than by a per-step number that does not exist.
 
 **Three bounds, in order of who actually stops the round:**
 
@@ -789,9 +817,12 @@ other ask; the measured median is 4.5 per QuixBugs task and `FASTPATH_JEV_MAX` c
   **and** a non-timed-out full-suite regression run with nothing newly failing.
 
 With `JEVCODE_WARM` off (I8, mandatory here) every run is already cold, so this reduces to the regression run
-existing and passing. If the warm plane is ever turned on, `screened: true` without `confirmedCold` can never
-reach `decide()`, and a screen mismatch re-queues the whole batch cold — which will usually hit the wall cap
-first, a clean budget exit.
+existing and passing. **That reduction is a PRECONDITION, and it is enforced rather than assumed** (review fix,
+slot C): nothing in a `Proposal`'s evidence says whether the run behind it was warm-screened, so a warm-screened
+passer would be recorded `confirmedCold: true` on no evidence of coldness at all. `fastPathStage1Free` therefore
+refuses to arm while `warmPlaneEnabled()` is true — the named decline `'warm_plane'`, before any wall is spent —
+so a false `confirmedCold` is unreachable rather than merely unlikely. The fast path owns its synthesizer but not
+the plane's switch, which is why the answer is "do not enter" rather than "turn it off".
 
 Anything else — `{kind:'budget'|'parked'}`, a `run`/`done` proposal, a throw, a timeout, a dropped or unreleasably
 held passer — means **the LLM proposes as usual**, and the wall already spent is the only loss.
@@ -804,7 +835,8 @@ cost risk.
 **`refused` is not `no_passer`.** The guard can refuse passers silently: `structuralRejection` and
 `mutationRefused` drop them before any rule, and a lone passer under `LONE_PASSER_HOLD_MAX_NOUL = 0.3` is held
 **unreleasably**. Reading only `kind` would report "no passer" when the truth is "passers found and refused". The
-facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into the record and such a step records
+facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into the record (`held` as the boolean
+`heldAny`, because `GuardFields.held` is `HoldKind | null` and there is no count to read) and such a step records
 `outcome: 'refused'`, never `'no_passer'`.
 
 ### 4.6 State ownership
@@ -834,7 +866,7 @@ facade surfaces `GuardFields.dropped / structuralDrops / held / signals` into th
 | stage-2 miss | after baseline + `fitOracle` + `locate` | LLM proposes | `decision: 'declined'`, `stage: 2`, `reason`, `runMode: 'RANK'` |
 | `emptyStepBudget` trap | `candidatesTested === 0` with `kind: 'budget'` | LLM proposes | `outcome: 'error'`, `reason: 'empty_step_budget'` — **and the facade's first unit test asserts `candidatesTested > 0` on a known-solvable cluster**, because this failure is indistinguishable from an honest decline without it |
 | localiser returns 0 sites (the Ring 1 defect — code-fixed at `0d61eef`, unmeasured) | `sites === 0` | LLM proposes, **disarm** | `reason: 'no_sites'` — **gated on Ring 1 RE-MEASURED green under `--jev off` before C merges**, because otherwise a Jev outage turns the fast path into a silent "found nothing" |
-| passers found and refused | guard fields | LLM proposes, **disarm** | `outcome: 'refused'`, `held`, `structuralDrops`, `dropped` |
+| passers found and refused | guard fields | LLM proposes, **disarm** | `outcome: 'refused'`, `heldAny`, `structuralDrops`, `dropped` |
 | cold confirm failed / timed out | `isPlausible` | LLM proposes, **disarm** | `outcome: 'refused'`, `confirmedCold: false` |
 | round timeout | wall bound 1 or 2 | LLM proposes, **disarm** | `outcome: 'timeout'`, `wallMs` |
 | throw | try/catch in the facade | LLM proposes, **disarm** | `outcome: 'error'`, `reason` |
@@ -903,11 +935,15 @@ export interface StepFastPath {
   testRuns: number;
   jevRequests: number;
   wallMs: number;
+  /** the round's CEILING (share + confirm reserve + grace) — the bound R-b tests, and the one the abort enforces */
   budgetMs: number;
+  /** the wall share installed on the round's synthesizer */
+  shareMs: number;
   passer: boolean;
   confirmedCold: boolean;
   structuralDrops: number;
-  held: number;
+  /** `GuardFields.held` is `HoldKind | null` — a presence, not a count; the record says so */
+  heldAny: boolean;
   dropped: number;
   disarmed: boolean;
 }
@@ -926,7 +962,7 @@ export interface StepRouter {
 `FastPathReason` is a **string union**, not a free string, so the decline histogram of §8 is exhaustive:
 `'off' | 'not_jev_on' | 'no_synthesizer' | 'no_parsed_run' | 'scope_unusable' | 'all_passing' | 'workspace_changed' |
 't_run_too_slow' | 'multi_file' | 'too_many_failures' | 'repository_class' | 'no_wall' | 'fingerprint_seen' |
-'attempts_exhausted' | 'disarmed' | 'loop_tripped' | 'pause_pending' | 'lease_conflict' | 'oracle_class' |
+'attempts_exhausted' | 'disarmed' | 'loop_tripped' | 'pause_pending' | 'lease_conflict' | 'warm_plane' | 'oracle_class' |
 'too_many_sites' | 'pool_exceeds_run_budget' | 'no_sites' | 'empty_step_budget' | 'confirm_timeout' | 'held' | 'error'`.
 
 **`StepProposer`** (`src/core/types.ts:526`) widens:
@@ -1024,14 +1060,14 @@ rows read zero for a reason that has nothing to do with the fast path.
 | 4 | **Fast-path passer fails the cold confirm** | `isPlausible` never yields a `commit`; if the confirm run itself times out inside the reserve the facade returns `{kind:'failed', reason:'confirm timeout'}`, **disarms**, marks the T10 fingerprint, and the LLM proposes | no unconfirmed patch ever reaches `draft.proposal` | `outcome: 'refused'`, `confirmedCold: false` |
 | 5 | **Fast path on a repository** | refused **three** times: T8 at stage 1, `oracleClass !== 'quixbugs_class'` at stage 2, and `decideRunPlan → RANK` at stage 2 | this is the `sympy-16792` shape; repository rounds also route through `runRepositoryQueue` (`src/synth/oracle/verify.ts`), a path this design does not claim to cover. Without T8 the synth's own `rebaseline` would fire a full-suite run of up to `REPO_BASELINE_TIMEOUT_MS = 300_000` inside a ≤ 45 s share | `reason: 'repository_class'` or `'pool_exceeds_run_budget'` — a **counted** decline, not a silent no-op |
 | 6 | **Loop detector trips** | the detector is code and evaluates at step boundaries, so it cannot fire mid-round. On the next step T12 keeps the fast path out and the step opens at `replan`, as `jev-on` does today. A trip whose signature is a repeated fast-path patch additionally **disarms** the fast path | RL6 may re-order the directive but cannot stop the run; T10 is **not** cleared by a replan, because the same cluster against a monotone `mem.tried` would enumerate nothing | `reason: 'loop_tripped'`, `disarmed: true` |
-| 7 | **Pause point lands inside a round** | the round runs under `AbortSignal.any([ctx.signal, timeout])`, so a `human_pause` aborts it exactly like any in-flight propose: `searchSubGoal` returns on `ctx.signal.aborted`, lanes are torn down by the engine's layer-4 `sandbox.killAll()`. The partial round is **discarded**, never cached as a replayable proposal | no new pause point and no new `PausePoint.phase`, because the fast path is not a stage | `outcome: 'error'`, `wallMs`, `interruptedAt: { stage: 'propose' }` |
+| 7 | **Pause point lands inside a round** | the round IS a propose stage — `this.stage('propose', …)` wraps it, so it emits one matched `stage:start` / `stage:end` pair, holds `currentStage` for its whole length and records a `stepTimeline` span (stage 1 stays outside: a decline must cost nothing and emit nothing, and a step whose round fired and declined has two matched propose spans, the round's and the LLM's). It runs under `AbortSignal.any([ctx.signal, timeout])`, so a `human_pause` aborts it exactly like any in-flight propose: `searchSubGoal` returns on `ctx.signal.aborted`, lanes are torn down by the engine's layer-4 `sandbox.killAll()`. The partial round is **discarded**, never cached as a replayable proposal | no new pause point and no new `PausePoint.phase`, because the fast path is not a stage | `outcome: 'error'`, `wallMs`, `interruptedAt: { stage: 'propose' }` |
 | 8 | **Resume after a process restart** | `lastTestRunOutput` is in-memory only, so the predicate **cannot arm** until the next verification run — which is correct. `LastTestRun.durationMs` survives, so T5 is evaluable as soon as one does | the round is not resumed; the fingerprint is re-evaluated from scratch and `mem.tried` is fresh | `reason: 'no_parsed_run'` — recorded, never silent |
 | 9 | **Coordination lease conflict** | the round itself edits nothing in the workspace (candidates apply under `<runDir>/lanes/laneN`), so no lease is needed to **search**. The returned proposal goes through the unchanged coordinate micro-stage and `checkBudgets` at `engine.ts:3986–3998` | T12 additionally declines to arm when a conflict on the implicated file is already known, so the round's wall is not spent on a patch that cannot land | `reason: 'lease_conflict'` |
 | 10 | **Lanes are invisible to a peer** | a fast-path round's lanes write under `<runDir>/lanes/`, outside the workspace and outside the lease | correct (they are shadow copies), but it means a round is invisible to a peer's conflict view until the patch is proposed | — (named, not recorded) |
 | 11 | **The ledger claims a commit the engine never executed** | the synthesizer records a commit when it **proposes**. If risk blocks, a human declines, or the apply fails, `patchNotExecutedLastStep(window)` + `rollbackUnexecutedPatch` undo it — but only on the **next** fast-path entry. If the fast path is never re-entered the stale record survives to run end and is dropped by `dropMemory(runId)` | bounded and harmless (nothing outside the synth memory reads that ledger in `jev-on`), **provided** the facade calls `observeWindow` on **every** step of an armed run (§4.6) | — |
 | 12 | **Second fast path on the same cluster** | `mem.tried` is monotone, so the second round enumerates nothing. T10 and T11 make it unreachable rather than merely fast | three mechanisms take hashes back out (`forgetUnchangedTried`, `requeueScreened`, a re-baseline) and the facade assumes none of them ran | `reason: 'fingerprint_seen'` / `'attempts_exhausted'` |
 | 13 | **`emptyStepBudget` trap** | cannot occur: the fast path calls the public `synthesize()`, so `rebaseline` installs `mem.stepBudget` (`search/index.ts:1262`) | a caller entering at `searchSubGoal` would get `exhausted: () => true` (`memory.ts:164`) and an instant `{kind:'budget'}` indistinguishable from an honest decline | the facade's **first unit test** asserts `candidatesTested > 0` on a known-solvable cluster |
-| 14 | **Narrow test command reads green** | T3 applies `scopeUsable` to the engine's own last test run before the fast path trusts it | closes the hole **for the trigger**; the same hole in the **judge** remains and is out of scope — which is why `scopeUsable` is recorded on every step even with the fast path off | `scopeUsable: false`, `reason: 'scope_unusable'` |
+| 14 | **Narrow test command reads green** | T3 applies `scopeUsable` to the engine's own last test run before the fast path trusts it; the record carries the verdict the TRIGGER saw (snapshotted into the draft at propose time), because this step's own run replaces it before the row is written | closes the hole **for the trigger**; the same hole in the **judge** remains and is out of scope — which is why `scopeUsable` is recorded on every step even with the fast path off | `scopeUsable: false`, `reason: 'scope_unusable'` |
 | 15 | **Two concurrent fast paths in one process** | `runFactsRef` (`src/synth/index.ts:83`) is process-global and read after awaits at `:90`/`:156`; `src/bench/runner.ts` runs `--concurrency` tasks in one process | **the `jev-on-next` arm runs at `--concurrency 1`**, asserted by slot D, until the ref is made per-run | a named bench constraint, not a silent hazard |
 | 16 | **A late router answer after step commit** | `token.valid === false` → recorded `dropped`, applied nowhere (I4) | the only concurrency this wave introduces | `router.dropped` |
 | 17 | **Both the LLM proposal and a fast-path round succeed** | cannot happen: R9 is a branch route, not a race. The predicate is evaluated before the generator call; when it holds the round runs first and the generator is called only if the round did not commit | prompt assembly (pure, no network) may proceed in parallel — that is the overlap saving | `proposer: 'fastpath'` or `'generic'`, never both |
@@ -1094,7 +1130,8 @@ and `:5063`). **No two slots hold `engine.ts` at the same time.**
 2. `npx vitest run --maxWorkers=3` — the full unit suite.
 3. **The facade's first unit test asserts `candidatesTested > 0`** on a known-solvable cluster (§6 row 13).
 4. **I2 golden**: `fastPath: 'off'` on the existing `jev-on` fixtures is byte-identical.
-5. `fastPath.wallMs <= budgetMs` on every fired step in the test fixtures.
+5. `fastPath.wallMs <= budgetMs` (the round's CEILING, §4.4) on every fired step in the test fixtures, asserted on a
+   round with a real slow baseline rather than on a hand-built telemetry literal.
 6. **Ring 1 re-measured green under `--jev off`** — a **hard merge gate** (see §7.7). The code fix landed at
    `0d61eef`; the measurement has not been taken.
 7. `node scripts/check-pack.mjs` at the 3.5 MB unpacked gate.
@@ -1287,7 +1324,7 @@ discordant pairs, Wilson intervals, the median-wall Wilcoxon, `$/task` and `$/so
 | row | source | pass condition |
 |---|---|---|
 | R-a | `routers.waitMs` p95 over every step | **= 0** |
-| R-b | `fastPath.wallMs <= budgetMs` over every fired step | **100 %** |
+| R-b | `fastPath.wallMs <= budgetMs` over every fired step, where `budgetMs` is the round's ceiling (§4.4) | **100 %** |
 | R-c | stage-1-fired / stage-2-declined ratio, per suite | **≤ 0.3**; above that the **predicate** is wrong, not the budget |
 | R-d | the per-reason `fastPath.reason` decline histogram on every ineligible step | exhaustive over `FastPathReason`, no `'error'` bucket > 5 % |
 | R-e | `riskSource: 'code'` count and `jevUnavailable` count | reported; any step where a *harmful* command was allowed under a dropped ask **reverts the §2.4 ratification** |
