@@ -833,9 +833,13 @@ is untouched since `2a92d0b`; the hygiene lives in `src/bench/tuned-provider.ts`
 `DROPPED_CALL_STOP_REASON` in `src/loop/stages/propose.ts` so a dropped call ends the step once). Consequences: `BenchCondition
 = EngineMode | 'llm-sieve' | 'jev-off-tuned'`; `stubbedJevRequests`, the tuned ledger (`timeouts`, `doubled`), `servedRate`,
 the generator-call summary and `os.loadavg()` at engine start go on the record; criterion 5 (attribution) gates which
-questions survive the per-question ablation, not the dominance claim itself. Open: `llm-sieve` is not yet wired in
-`src/synth/index.ts` (the factory throws; the bench records the refusal rather than measuring the wrong arm), and
-`src/cli/args.ts CONDITIONS` does not list the two arms.
+questions survive the per-question ablation, not the dominance claim itself. Open at the time of writing: `llm-sieve` is
+not yet wired in `src/synth/index.ts` (the factory throws; the bench records the refusal rather than measuring the wrong
+arm), and `src/cli/args.ts CONDITIONS` does not list the two arms. **Both closed since** — `0fb7af3` landed the two arms
+in `CONDITIONS`, and the finishing pass (F06) constructs `llm-sieve` as `llm-jev` echoing its own mode, on the grounds
+that "every Jev question replaced by its code default" is the STUB DECIDER's job and not a second search. Residual, on
+the §9.1 list: §10.1's row also says "no L2", and the L2 reproduction writer is an llm-jev mechanism the stub does not
+switch off — it only stubs L2's Jev judgement.
 
 ## 2026-09-21 Merge plan with the TUI session: `src/core/types.ts` has a single writer
 
@@ -1385,9 +1389,14 @@ on before that commit lands; §7.5 carries the table.
 
 `docs/LLM-LOOP-DESIGN.md` §8 asks for the predictions to be written down **before** the arms run; this is that entry, and
 nothing live has run against it. Two bench arms exist as of this commit: **`jev-on-next`** — the `jev-on` engine (the
-generator still proposes) with the §2 router table on, the §3 S2 generation mechanisms on, the §4 bounded sieve fast path
-armed, and the `jev-off-tuned` generation parameters pinned — and **`jev-on-next-nofast`**, the same arm with the fast path
-off. The control is not optional: it is the only same-build contrast in the plan, because the recorded rows
+generator still proposes) with the §2 router table on, ~~the §3 S2 generation mechanisms on~~, the §4 bounded sieve fast
+path armed, and the `jev-off-tuned` generation parameters pinned — and **`jev-on-next-nofast`**, the same arm with the
+fast path off. **Corrected before any arm ran (finishing pass F05):** the S2 clause was false. Both arms run
+`engineModeOf === 'jev-on'` and every §3 mechanism is on the llm-jev sample path, which `jev-on` never enters — nothing
+sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only from that path, and hedging plus the §3.4 reasoning cap
+live in `src/synth/llm/source.ts`. The arms carry TWO mechanisms, not three; `armMechanisms` records `s2: 'off'` and
+`measurementRows` carries an `R-s2` row saying why. Wiring S2 onto `jev-on` is F17 (LLM-LOOP-DESIGN §9.1), and what
+summary.json records is the value the run reported, never a constant. The control is not optional: it is the only same-build contrast in the plan, because the recorded rows
 (`experiments/results/llm-jev-iter1.md`: fresh 18 `llm-jev` 12/18, `jev-off-tuned` 9/18, 26.0 s vs 19.7 s on the 8
 both-solved; in-sample 28 `llm-jev` 27/28) were taken at `751e3bf` and `main` now carries the nine unmeasured changes of
 `oos-iter-2`. If `oos-iter-2` is measured on the same 18 + 28 first, those rows replace the `751e3bf` ones and the confound

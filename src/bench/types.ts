@@ -137,8 +137,21 @@ export interface StepsSummary {
    * contract 1.9 (Fastlane) §3 / §5.2: the S2 members of `StepVerifySummary`. `ttfbMs` is kept raw so a quantile over a
    * merged run set is exact rather than an average of averages — the hedge threshold is `2 × running TTFB p50`, so a
    * p50 that was itself computed from p50s would be measuring the wrong thing.
+   *
+   * `cacheInput` is the same rule for the §3.3 prefix-pinning measurement, which is why the per-step
+   * `StepVerifySummary.cacheHitRate` is NOT carried here: the run's hit rate is `cacheRead / cacheInput` over the
+   * summed tokens, and the mean of the steps' own rates is a different number (10/1,000 with 90/100 is a true 9.1 %
+   * and a mean-of-ratios 45.5 %). Recomputing beats folding a ratio, so the denominator travels and the rate does not.
+   * (F26 in §9.1: `cacheInput` covers the rounds whose provider reported cache at all — a round that reported none
+   * contributes neither numerator nor denominator, so the rate is over the reporting steps, not over the arm's input.)
+   *
+   * `state` is NOT a count and not a token figure: it is what the run said about the §3 mechanisms themselves
+   * (`StepRecord.mechanisms.s2`, slot A's F25), unioned exactly as `deadlineGrowth` and `warm.mode` are — steps that
+   * disagree fold to `'partial'`, because one S2 step must not stand for an arm that exists to be a one-mechanism
+   * contrast. ABSENT means no step reported the member, which is a different fact from a measured `'off'`: only the
+   * second may overwrite an arm's pinned `ArmMechanisms.s2` (F05, B4; `bench/next-arms.ts observedArmS2`).
    */
-  s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number };
+  s2: { ttfbMs: number[]; hedges: number; hedgeWins: number; cacheRead: number; cacheWrite: number; cacheInput: number; state?: S2State };
   /**
    * OOS iteration 2, defect 2 / defect 4: the S1 warm verification plane's counters, summed over
    * the run's steps (`StepRecord.verify.warm`, core/types.ts `StepWarmSummary`). Absent when no
@@ -402,8 +415,11 @@ export interface PinnedGeneration {
    */
   synthesizer?: SynthesizerGeneration;
   /**
-   * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §3: the S2 mechanisms the `jev-on-next*` arms pin. Absent on every
-   * other arm, which is what "S2 is off here" means in summary.json.
+   * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §3: the pinned S2 mechanisms of an arm that can RUN them.
+   * Absent on every arm today (F05): the block rode on `jev-on-next*`, whose mode is `jev-on`, where no S2
+   * mechanism is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the
+   * synthesizer sample path, and hedging plus the §3.4 cap live in `src/synth/llm/source.ts`. It comes back with
+   * F17 (§9.1), on whichever arm the mechanisms are wired onto. Absent is what "S2 is off here" means.
    */
   s2?: S2Generation;
 }
@@ -418,11 +434,24 @@ export interface S2Generation {
   reasoningMaxTokens: number | null;
 }
 
+/**
+ * contract 1.9 (Fastlane) §8.1 / F05: the §3 generation path as a STATE of the run, not a promise made before it.
+ * `'partial'` is the honest answer when some of the run's steps reported S2 and others did not — it is never rounded
+ * up to `'on'`, because the arm's whole purpose is a one-mechanism contrast.
+ */
+export type S2State = 'on' | 'partial' | 'off';
+
 /** contract 1.9 (Fastlane) §8.1: which of the wave's three mechanisms an arm runs with (bench/conditions.ts `armMechanisms`). */
 export interface ArmMechanisms {
   fastPath: 'off' | 'auto';
   routers: boolean;
-  s2: boolean;
+  /**
+   * F05: what the RUN did, never a constant. `armMechanisms` yields the arm's pinned value and refuses to pin
+   * anything but `'off'` on an arm whose `engineModeOf` is not `'llm-jev'` (no S2 mechanism is reachable outside the
+   * synthesizer sample path); `conditionConfig`'s `observed` argument overrides it with the value read off the run's
+   * own records at the end of the run, so the record cannot disagree with what ran in either direction.
+   */
+  s2: S2State;
 }
 
 export interface ConditionConfig {
@@ -449,7 +478,8 @@ export interface ConditionConfig {
   /**
    * contract 1.9 (Fastlane) §8.1: the wave mechanisms this arm ran with. Recorded on every arm (all-off on the six older
    * ones) so a results directory answers "was the fast path armed?" from summary.json alone — the question every row of
-   * §8.3 is conditional on.
+   * §8.3 is conditional on. "Ran with" is meant literally: F05 found `s2` recorded as `true` on two arms that could not
+   * reach a single S2 mechanism, so `s2` is now clamped by the arm's mode and overridden by what the run reported.
    */
   mechanisms: ArmMechanisms;
 }

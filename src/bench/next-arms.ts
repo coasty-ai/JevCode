@@ -28,9 +28,10 @@
  */
 import { formatDuration } from '../core/time.js';
 import type { BenchCondition, BenchSuite, FastPathReason } from '../core/types.js';
+import { armMechanisms, engineModeOf } from './conditions.js';
 import { isEvaluated, median } from './metrics.js';
 import { emptyStepsSummary, mergeStepsSummaries } from './step-records.js';
-import type { BenchRecord, StepsSummary } from './types.js';
+import type { BenchRecord, S2State, StepsSummary } from './types.js';
 
 // ---------------------------------------------------------------------------------------
 // §8.1 the recorded arms
@@ -163,7 +164,7 @@ export const ERROR_BUCKET_BAR = 0.05;
 export type RowStatus = 'pass' | 'fail' | 'reported' | 'not_evaluable';
 
 export interface MeasurementRow {
-  id: 'R-a' | 'R-b' | 'R-c' | 'R-d' | 'R-e';
+  id: 'R-a' | 'R-b' | 'R-c' | 'R-d' | 'R-e' | 'R-s2';
   title: string;
   /** false = reported, never gates (R-e is the only one) */
   gating: boolean;
@@ -251,7 +252,45 @@ export function measurementRows(records: readonly BenchRecord[], condition: Benc
     // reading the steps, not by a counter, so the row reports the two counts and says what would revert it.
     detail: `code verdicts ${all.risk.codeVerdicts}, Jev unavailable ${all.risk.jevUnavailable} over ${all.steps} step(s) — any step where a HARMFUL command was allowed under a dropped ask reverts the §2.4 ratification`,
   });
+
+  // F05. The §3 generation path is the wave's third mechanism and it has no row, because on these arms it has no RUN:
+  // `jev-on-next*` are the `jev-on` engine, and every S2 mechanism lives on the synthesizer sample path
+  // (`src/synth/llm/source.ts` for hedging and the §3.4 cap; `PromptInput.prefixOrder` has no writer; `onFirstByte` is
+  // forwarded only from the sample path). The arms used to RECORD `s2: true` regardless, which is the half of this the
+  // conditions file fixes; this row is the other half — the table says so out loud instead of leaving a mechanism
+  // unmentioned, which reads as "measured, nothing to report". It reports and never gates: an arm that cannot run a
+  // mechanism must not fail the wave for it (§8.5's clauses are R-a/R-b/R-c and the predictions).
+  //
+  // B4: the row reads THE SAME observation summary.json records (`all.s2.state`, folded from the run's steps.jsonl by
+  // §5.5) — before this it read `armMechanisms(condition)` with no observation, so the moment a run reports
+  // `mechanisms.s2` the table would have said `not_evaluable` under a summary.json saying `'on'`.
+  // B6: the reason names the arm's OWN mode. `measurementRows` takes any `BenchCondition` and every condition now
+  // clamps to `'off'`, so the hard-coded "jev-on" made the row contradict itself on `llm-jev` and `llm-sieve`.
+  const s2 = armMechanisms(condition, all.s2.state ?? null).s2;
+  out.push({
+    id: 'R-s2',
+    title: 'S2 (§3): hedging, byte-stable prefix, reasoning cap',
+    gating: false,
+    status: s2 === 'off' ? 'not_evaluable' : 'reported',
+    detail: s2 === 'off' ? `S2 lives on the llm-jev sample path; this arm's mode is ${engineModeOf(condition)}` : `S2 ${s2}: TTFB n=${all.s2.ttfbMs.length}, hedges ${all.s2.hedges} (${all.s2.hedgeWins} won), cache ${all.s2.cacheInput === 0 ? 'not measured' : `${all.s2.cacheRead}/${all.s2.cacheInput}`}`,
+  });
   return out;
+}
+
+/**
+ * F05 / B4: what one arm's runs REPORTED about the §3 mechanisms, or `null` when none of them reported anything.
+ *
+ * The wave shipped with a reader for this that nothing in `src` ever called, so `summary.json.conditions[arm]
+ * .mechanisms.s2` stayed the constant F05's owner note forbids. This one has TWO callers and they are the two
+ * artefacts that must agree: `src/bench/runner.ts` hands it to `conditionConfig` for summary.json, and
+ * `measurementRows` reads the same member for the §8.3 R-s2 row.
+ *
+ * `null` is not `'off'` — an arm no run measured keeps the pin (which the mode clamp has already answered), and
+ * only a measurement overrides it. The value itself is folded per step by `src/bench/step-records.ts` (§5.5), so it
+ * survives `--resume` and the arm-wide merge, and steps that disagree read `'partial'`.
+ */
+export function observedArmS2(records: readonly BenchRecord[], condition: BenchCondition): S2State | null {
+  return armSteps(records, condition).s2.state ?? null;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -387,7 +426,7 @@ export function evaluatePredictions(input: PredictionInput): PredictionResult[] 
     id: 'f',
     title: `${arm} - ${control} on solve count > 0`,
     status: ctrl.n === 0 || mine.n === 0 ? 'not_evaluable' : mine.solved - ctrl.solved > 0 ? 'pass' : 'fail',
-    detail: ctrl.n === 0 ? `the ${control} control has no evaluated record — without it a win confounds tuned generation + S2 + routers + the fast path` : `${mine.solved}/${mine.n} vs ${ctrl.solved}/${ctrl.n} (delta ${mine.solved - ctrl.solved})`,
+    detail: ctrl.n === 0 ? `the ${control} control has no evaluated record — without it a win confounds tuned generation, the routers and the fast path` : `${mine.solved}/${mine.n} vs ${ctrl.solved}/${ctrl.n} (delta ${mine.solved - ctrl.solved})`,
     retiresR9: false,
   });
   return out;
@@ -419,7 +458,7 @@ export interface AcceptInput extends PredictionInput {
   gatesGreen: boolean | null;
 }
 
-/** §8.5: the wave is accepted when all five hold. Clause 4 has the documented escape — retire R9 and ship S2 + routers alone. */
+/** §8.5: the wave is accepted when all five hold. Clause 4 has the documented escape — retire R9 and ship the routers alone. */
 export function evaluateAcceptRule(input: AcceptInput): AcceptVerdict {
   const row = (id: MeasurementRow['id']): MeasurementRow | undefined => input.rows.find((r) => r.id === id);
   const pred = (id: PredictionResult['id']): PredictionResult | undefined => input.predictions.find((p) => p.id === id);
@@ -437,12 +476,17 @@ export function evaluateAcceptRule(input: AcceptInput): AcceptVerdict {
     { n: 3, title: 'prediction (a) holds AND (b) holds', status: ab.length < 2 ? 'not_evaluable' : worst(ab), detail: ab.map((p) => `(${p.id}) ${p.status}`).join(', ') },
     {
       n: 4,
-      title: 'the paired control attributes the win to the fast path — or R9 is retired and the wave ships as S2 + routers alone',
+      // B3: the escape names THE ROUTERS, and nothing else. It used to name the §3 generation path alongside them,
+      // which after F05 — `armMechanisms` clamping `s2` to 'off' on both arms, `pinnedGeneration` losing the
+      // generation block — instructs the reader to ship a mechanism no arm of the plan ran, on the strength of one
+      // that did. The §3 path ships with F17 (§9.1), on an arm whose mode can reach it and against its own
+      // measurement.
+      title: 'the paired control attributes the win to the fast path — or R9 is retired and the wave ships as the routers alone',
       // the escape is "the control RAN and the fast path lost", not "there is no control": a retired R9 still needs
-      // an evaluated contrast before "ship S2 + routers alone" is a measured statement rather than a hope. So the
+      // an evaluated contrast before "ship the routers alone" is a measured statement rather than a hope. So the
       // `retireR9` branch is taken only on an evaluated (f) — `not_evaluable` stays `not_evaluable`.
       status: f === undefined ? 'not_evaluable' : f.status === 'pass' ? 'pass' : retireR9 && f.status === 'fail' ? 'pass' : f.status,
-      detail: f === undefined ? 'prediction (f) was not evaluated' : f.status === 'pass' ? f.detail : retireR9 && f.status === 'fail' ? `(f) fail, and (a)/(e) already retire route R9 — ship S2 + routers with fastPath defaulted 'off' in every mode` : `${f.detail} — and a retired R9 does not substitute for the contrast: clause 4 needs the control to have RUN`,
+      detail: f === undefined ? 'prediction (f) was not evaluated' : f.status === 'pass' ? f.detail : retireR9 && f.status === 'fail' ? `(f) fail, and (a)/(e) already retire route R9 — ship the routers with fastPath defaulted 'off' in every mode (the §3 generation path is not on these arms: F05, and F17 in §9.1 owns wiring it)` : `${f.detail} — and a retired R9 does not substitute for the contrast: clause 4 needs the control to have RUN`,
     },
     // §2.4: whether a HARMFUL command was allowed under a dropped ask is read off the steps by a person, not off a
     // counter — there is no machine condition here and the title says so rather than claiming one. R-e's two counts

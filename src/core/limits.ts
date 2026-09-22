@@ -100,7 +100,7 @@ export const LLM_SAMPLE_CONTEXT_MAX_CHARS = 24 * 1024;
  *
  * This is the file-header move of the duplicated copy in `src/coordination/claims.ts`: `src/checkpoint/**` writes
  * the capped array and must not import the ledger to learn the bound, and this module imports nothing, which is
- * exactly why it exists. `test/unit/core/limits-claims.test.ts` pins the two to the same number.
+ * exactly why it exists. `test/unit/checkpoint/run-claims.test.ts` pins the two to the same number.
  */
 export const MAX_CLAIMS_PER_RUN = 64;
 

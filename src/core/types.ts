@@ -728,6 +728,16 @@ export interface StepVerifySummary {
   /** contract 1.9 (Fastlane) §3.4: `cacheRead / (input tokens of the step's priced samples)`, 0…1 — the §3.3 prefix-pinning measurement. */
   cacheHitRate?: number;
   /**
+   * contract 1.9 (Fastlane) §3.4: the input tokens of the step's priced samples — `cacheHitRate`'s own DENOMINATOR,
+   * recorded beside it because the rate alone does not compose. A run or an arm's hit rate is `Σ cacheRead / Σ
+   * cacheInput`, and averaging the steps' rates is a different (and flattering) number: 10/1,000 with 90/100 is a
+   * true 9.1 % and a mean-of-ratios 45.5 %. Absent whenever `cacheRead` / `cacheWrite` are, and for the same reason
+   * — which also bounds what the summed rate means: a round whose samples reported NEITHER a read nor a write is
+   * absent from both sums, so `Σ read / Σ input` is over the reporting steps, never over the step's whole input
+   * (B5; docs/LLM-LOOP-DESIGN.md §9.1 F26 owns emitting the denominator on a measured miss too).
+   */
+  cacheInput?: number;
+  /**
    * OOS iteration 3, item 3 (llm-jev, additive): the per-goal deadline high-water mark's evidence
    * rule this run ran under — `JEVCODE_DEADLINE_GROWTH`, default `always` (the behaviour OOS
    * iteration 2 shipped), `served` grows the mark only on a sample the provider actually served
@@ -1872,7 +1882,9 @@ export interface EngineOptions {
    * docs/LLM-JEV-DESIGN.md §4.8 / §8 (additive): the generator's resolved pricing (config overrides included) for the
    * estimate of a cancelled or failed llm-jev sample when no finished sibling and no run mean give a served rate. Absent ->
    * the engine reads the pricing table for `provider.model`; an unknown model is then unpriced (`budget:unpriced`, as a
-   * real call without `usage.cost`). TODO(src/cli/session.ts): pass `config.generator.pricing` here.
+   * real call without `usage.cost`). Filled by src/cli/session.ts from config.generator.pricing; absent only for bench,
+   * perf and tests — both engine-construction sites have passed it since the models-catalogue wave, and
+   * test/unit/hygiene/comment-refs.test.ts pins that they still do.
    */
   generatorPricing?: GeneratorConfig['pricing'];
   /**
@@ -2592,6 +2604,7 @@ export interface Engine {
    * proposed at all and `ask` decides `[c]` / `[s]` / `[x]`; with no `ask` (headless) the offer is printed and nothing
    * is seeded. A no-op without `EngineOptions.orchestration.runGit`.
    */
+  // NO CALLER — reachable only from the supervisor (ORCHESTRATION-DESIGN §8.3 item 34)
   land?(input: LaunchInput, ask?: (offer: LandPreflightOffer) => Promise<BlockingAnswer>): Promise<{ seeded: 'merge' | 'commit' | 'stash' | 'stop' | null; overlap: string[] }>;
 }
 
@@ -2922,10 +2935,16 @@ export type BenchStopReason = StopReason | 'not_run';
  * generator hygiene (bench/conditions.ts `engineModeOf`).
  *
  * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.1: `jev-on-next` = the `jev-on` engine with the router table, the
- * synth fast path armed (`fastPath: 'auto'`) and the S2 generation mechanisms on; `jev-on-next-nofast` is the SAME arm
+ * synth fast path armed (`fastPath: 'auto'`) and the tuned generation parameters; `jev-on-next-nofast` is the SAME arm
  * with the fast path OFF — the paired in-session control that keeps a `jev-on-next` win from confounding tuned
- * generation + S2 + routers + the fast path (§8.5 clause 4 rests on it, not on the recorded rows). Both are bench-side
+ * generation, the routers and the fast path (§8.5 clause 4 rests on it, not on the recorded rows). Both are bench-side
  * substitutions on the `jev-on` mode; neither is an EngineMode (bench/conditions.ts `engineModeOf`, `armMechanisms`).
+ *
+ * The §3 S2 generation mechanisms are NOT among them, and this block used to say they were (F05). They live on the
+ * `llm-jev` sample path, which `jev-on` never enters: nothing sets `PromptInput.prefixOrder`, `onFirstByte` is
+ * forwarded only from that path, and hedging plus the §3.4 reasoning cap are in `src/synth/llm/source.ts`. So
+ * `armMechanisms` clamps a pinned `s2` to `'off'` outside `llm-jev` and records what the run reported instead;
+ * wiring the mechanisms onto `jev-on` is F17 in docs/LLM-LOOP-DESIGN.md §9.1, not a claim this type may make.
  */
 export type BenchCondition = EngineMode | 'llm-sieve' | 'jev-off-tuned' | 'jev-on-next' | 'jev-on-next-nofast';
 

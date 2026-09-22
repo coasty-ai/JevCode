@@ -20,14 +20,15 @@ import { LLM_DEFAULT_GENERATION, LLM_DEFAULT_REASONING } from '../synth/llm/sour
 import { STUB_DECIDER_MODEL } from './stub-decider.js';
 import { JEV_OFF_MODEL, jevOffModeFrom } from '../jev/off.js';
 import { PLAN_CAP_CHARS, type TunedProviderParams } from './tuned-provider.js';
-import type { ArmMechanisms, BenchOptions, ConditionConfig, PinnedGeneration, S2Generation, ServedRate } from './types.js';
+import type { ArmMechanisms, BenchOptions, ConditionConfig, PinnedGeneration, S2Generation, S2State, ServedRate } from './types.js';
 
 export const CONDITION_ORDER: readonly BenchCondition[] = ['jev-on', 'jev-off', 'jev-only', 'llm-jev', 'llm-sieve', 'jev-off-tuned', 'jev-on-next', 'jev-on-next-nofast'];
 
 /**
  * contract 1.9 (Fastlane), docs/LLM-LOOP-DESIGN.md §8.1: the two arms of the LLM-loop wave. `jev-on-next` is the `jev-on`
- * engine with the router table, the synth fast path armed and the S2 generation mechanisms on; `jev-on-next-nofast` is the
- * same arm with the fast path off. They are bench-side substitutions on the `jev-on` mode exactly as `jev-off-tuned` is one
+ * engine with the router table and the synth fast path armed; `jev-on-next-nofast` is the same arm with the fast path off.
+ * The wave's third mechanism, the §3 S2 generation path, is NOT on either arm — `armMechanisms` says so and explains why
+ * (F05: it lives on the llm-jev sample path, and these arms' mode is `jev-on`). They are bench-side substitutions on the `jev-on` mode exactly as `jev-off-tuned` is one
  * on `jev-off`: the arm's mechanisms are PINNED here (`armMechanisms`) and recorded in summary.json, so a run directory says
  * which mechanisms were live rather than leaving it to be inferred from the engine's defaults.
  */
@@ -40,17 +41,43 @@ export function isNextArm(condition: BenchCondition): boolean {
 /**
  * The three mechanisms of the wave, per arm (§8.1 arm table; the shape lives in bench/types.ts beside `ConditionConfig`,
  * which records it). `fastPath: 'auto'` = armed, the stage-1 predicate decides per step (§4.3); `routers` = the §2 router
- * table; `s2` = the §3 generation path, whose pinned parameters ride on `PinnedGeneration.s2`.
+ * table; `s2` = the §3 generation path.
+ *
+ * **F05 — an arm may not pin a mechanism it cannot run.** The two next arms pinned `s2: true` and the whole
+ * `S2_GENERATION` block, and summary.json therefore described the §3 generation path as live days before the
+ * head-to-head was read off that file. It never was: both arms run `engineModeOf === 'jev-on'`, and in `jev-on` no S2
+ * mechanism is reachable — nothing sets `PromptInput.prefixOrder`, `onFirstByte` is forwarded only on the synthesizer
+ * sample path, and hedging plus the §3.4 reasoning cap live in `src/synth/llm/source.ts`, which `jev-on` never enters.
+ * Nothing caught it because nothing READ the flag: `buildEngineOptions` applies `fastPath` and `routers`, and `s2` had
+ * no reader anywhere in src. So the clamp below is the reader: outside the llm-jev sample path the pinned value is
+ * `'off'`, whatever the arm table says.
+ *
+ * `observed` is the other half and the one that survives slot A wiring S2 onto `jev-on` (F17, §9.1): when the run
+ * reported what it did (`StepRecord.mechanisms.s2`, folded onto `StepsSummary.s2.state` by the §5.5 bridge and read
+ * back by `bench/next-arms.ts observedArmS2`), THAT is recorded and the clamp does not apply — the record follows
+ * the run in both directions, and can never be a constant again.
+ *
+ * B4: `observed` is `S2State | null | undefined`, and only a real measurement overrides. "No run reported the
+ * member" (`null`) and "the run reported that S2 was off" (`'off'`) are different facts, and the reader this
+ * argument was written for used to collapse both to `'off'` — which would silently overwrite a pinned `'on'` with
+ * a measurement nobody made the moment the runner started passing an observation in (it never did: the argument
+ * had no caller in src at all until B4 wired it).
  */
-export function armMechanisms(condition: BenchCondition): ArmMechanisms {
+export function armMechanisms(condition: BenchCondition, observed?: S2State | null): ArmMechanisms {
+  const mech = (fastPath: ArmMechanisms['fastPath'], routers: boolean, pinnedS2: S2State): ArmMechanisms => ({
+    fastPath,
+    routers,
+    // the clamp: a pinned claim survives only on an arm whose mode reaches the mechanisms; a MEASURED value always wins
+    s2: observed ?? (engineModeOf(condition) === 'llm-jev' ? pinnedS2 : 'off'),
+  });
   switch (condition) {
     case 'jev-on-next':
-      return { fastPath: 'auto', routers: true, s2: true };
+      return mech('auto', true, 'on');
     case 'jev-on-next-nofast':
       // §8.1: the single most valuable device in the plan — everything jev-on-next has EXCEPT route R9
-      return { fastPath: 'off', routers: true, s2: true };
+      return mech('off', true, 'on');
     default:
-      return { fastPath: 'off', routers: false, s2: false };
+      return mech('off', false, 'off');
   }
 }
 
@@ -191,9 +218,15 @@ export function pinnedGeneration(condition: BenchCondition, generatorModel: stri
       return { proposer: 'generator', temperature: null, maxTokens: TUNED_MAX_TOKENS, reasoning: HYGIENE_REASONING, deadlineMs: TUNED_DEADLINE_MS, repositoryDeadlineMs: TUNED_REPOSITORY_DEADLINE_MS, lengthHandling: 'double-once', servedRate };
     case 'jev-on-next':
     case 'jev-on-next-nofast':
-      // contract 1.9 (Fastlane) §8.1: "the jev-off-tuned object plus the S2 hedge/prefix fields". The proposer is the
-      // GENERATOR — the fast path is a per-step detour that builds its own jev-only synthesizer (§4.2), it is not the
-      // arm's proposer, which is why `usesSynthesizer` is false here and no SynthesizerGeneration is pinned.
+      // contract 1.9 (Fastlane) §8.1 called this "the jev-off-tuned object plus the S2 hedge/prefix fields". The
+      // proposer is the GENERATOR — the fast path is a per-step detour that builds its own jev-only synthesizer
+      // (§4.2), it is not the arm's proposer, which is why `usesSynthesizer` is false here and no
+      // SynthesizerGeneration is pinned.
+      //
+      // F05: and the S2 block is NOT pinned here any more. It was, and it made summary.json state hedge, prefix and
+      // reasoning-cap parameters for an arm whose mode is `jev-on`, where none of the three is reachable. Pinning
+      // parameters for a mechanism that cannot run is a claim about the run, and this file exists to make those
+      // claims true. `S2_GENERATION` stays declared above, for F17 (§9.1) to pin on an arm that can run it.
       return {
         proposer: 'generator',
         temperature: null,
@@ -203,7 +236,6 @@ export function pinnedGeneration(condition: BenchCondition, generatorModel: stri
         repositoryDeadlineMs: TUNED_REPOSITORY_DEADLINE_MS,
         lengthHandling: 'double-once',
         servedRate,
-        s2: S2_GENERATION,
       };
     case 'jev-only':
       // no generating LLM: the NullProvider throws if called; the values are the engine's inert defaults
@@ -255,7 +287,18 @@ function deciderModelOf(condition: BenchCondition, opts: BenchOptions): string |
   return opts.deciderModel.configured;
 }
 
-export function conditionConfig(condition: BenchCondition, opts: BenchOptions, generatorModel: string): ConditionConfig {
+/**
+ * The arm's row in `summary.json.conditions`.
+ *
+ * F05: `observed` is how `mechanisms.s2` stops being a constant. Everything else here is pinned BEFORE the run by
+ * definition (it is the arm's specification), but "did the §3 generation path run?" is a fact ABOUT the run, and a
+ * pinned answer to it is how summary.json came to describe a run that did not happen. The bench runner passes
+ * `{ s2: observedArmS2(records, condition) }` at the END of the run, from the step records the run wrote (B4 — until
+ * that wiring landed this argument had no caller in src and the record was the constant again); `null` or omitted and
+ * the row reads the arm's pinned value, which `armMechanisms` clamps to `'off'` on every arm whose mode cannot reach
+ * the mechanisms.
+ */
+export function conditionConfig(condition: BenchCondition, opts: BenchOptions, generatorModel: string, observed?: { s2?: S2State | null }): ConditionConfig {
   const model = condition === 'jev-only' ? NULL_GENERATOR_MODEL : generatorModel;
   const generation = pinnedGeneration(condition, model);
   return {
@@ -277,7 +320,7 @@ export function conditionConfig(condition: BenchCondition, opts: BenchOptions, g
     maxOutputBytes: opts.limits.maxOutputBytes,
     completeThreshold: opts.limits.completeThreshold,
     impossibleThreshold: opts.limits.impossibleThreshold,
-    mechanisms: armMechanisms(condition),
+    mechanisms: armMechanisms(condition, observed?.s2),
   };
 }
 
