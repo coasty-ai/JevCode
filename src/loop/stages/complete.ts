@@ -46,6 +46,32 @@ export function isComplete(completion: number | null, threshold: number): boolea
   return completion !== null && completion >= threshold;
 }
 
+// ---------------------------------------------------------------------------------------
+// Change 6(b): when `task_complete` is due at all
+// ---------------------------------------------------------------------------------------
+
+export interface CompleteQuestionInput {
+  /** a plan item was claimed done on this step (engine `draft.claims`) / a ledger goal closed */
+  goalJustClosed: boolean;
+  /** items left in the accepted plan once this step's claims are counted (`plan.remaining.length`) */
+  planRemaining: number;
+}
+
+/**
+ * Change 6(b) (docs/research/llm-jev/oos-analysis-2026-09-22.md Q2(d)): `task_complete` was asked on
+ * every step of every run — 127 questions over the slice, 87.7 % of them below 0.5 — while the stop is
+ * decided by `isCompleteByFact` and the answer is, in this file's own words, "recorded, never consulted".
+ * The question can only be non-trivial in a state where completion is *conceivable*, and that state is a
+ * code fact of the plan, not a probability: either this step closed something (`goalJustClosed`, the
+ * engine's newly claimed items) or nothing is left to close (`planRemaining === 0`). Both are counts of
+ * plan items, not tuned constants, and neither names a task.
+ *
+ * Asked from judge.ts (which this wave may not edit); see the hunks in the change report.
+ */
+export function completeQuestionDue(i: CompleteQuestionInput): boolean {
+  return i.goalJustClosed || i.planRemaining === 0;
+}
+
 /** docs/LLM-JEV-DESIGN.md §6.6: `tests_pass_unparsed` stands in for the parsed counts only when the runner's output could not be parsed. */
 export const TESTS_PASS_UNPARSED_THRESHOLD = 0.85;
 
@@ -67,8 +93,70 @@ export interface KnownFailuresEvidence {
   knownFailures?: number;
 }
 
-/** What the synthesizer writes on the claiming `run`: the §6.6 facts plus the base commit's known failures. */
-export type ClaimingCompletionEvidence = CompletionEvidence & KnownFailuresEvidence;
+// ---------------------------------------------------------------------------------------
+// Change 8: a second, independently derived witness before a repository-class self-termination
+// ---------------------------------------------------------------------------------------
+
+/**
+ * One selection whose verdict witnesses the fix: the issue reproduction, or the scoped regression
+ * selection that went failing → passing. `selection` is the identity of *what was run* — the
+ * reproduction's test id (`repro::<hash>`), or the scoped test ids that flipped — so two witnesses
+ * are independent exactly when their `selection` strings differ.
+ */
+export interface CompletionWitness {
+  kind: 'repro' | 'regression';
+  selection: string;
+}
+
+/**
+ * The witnesses the synthesizer declares beside the completion evidence (`synth/search/index.ts`).
+ * `core/types.ts` owns the shape of `CompletionEvidence`, so they travel as an optional structural
+ * extension exactly as `KnownFailuresEvidence` does — absent means none were derived.
+ *
+ * Why it exists (docs/research/llm-jev/oos-analysis-2026-09-22.md Q4, change 8): `sympy-20428`
+ * (`20260922-063746-h3qflvih`) committed a patch at step 2, its step-3 claiming run read
+ * `319 → 320 passed` with `newlyPassing: ["repro::8813d39a"]` — the engine's own issue reproduction
+ * and nothing else — and it self-terminated `complete` on the step-4 `done`. SWE-bench eval returned
+ * 1: the patch satisfied the engine's oracle and not FAIL_TO_PASS. The 320-test scoped suite is not a
+ * second witness; it passed before the patch too.
+ */
+export interface SecondWitnessEvidence {
+  witnesses?: readonly CompletionWitness[];
+}
+
+/** What the synthesizer writes on the claiming `run`: the §6.6 facts plus the base commit's known failures and its witnesses. */
+export type ClaimingCompletionEvidence = CompletionEvidence & KnownFailuresEvidence & SecondWitnessEvidence;
+
+/**
+ * Two, and the number is structural rather than tuned: independence is a relation between two
+ * derivations, so one witness cannot be independent of itself, and the change is "require a SECOND
+ * witness" verbatim. Any value above 2 would be a constant fitted to a slice of four SWE instances.
+ */
+export const INDEPENDENT_WITNESSES_REQUIRED = 2;
+
+/** The distinct selections among the declared witnesses — the structural test of independence (same selection = same derivation). */
+export function independentWitnessSelections(c: SecondWitnessEvidence | undefined): string[] {
+  const seen = new Set<string>();
+  for (const w of c?.witnesses ?? []) {
+    const id = w.selection.trim();
+    if (id.length > 0) seen.add(id);
+  }
+  return [...seen].sort();
+}
+
+/**
+ * The repository class of §6.6: an oracle was sought, or a reproduction ran. Off it (QuixBugs, the
+ * ladder, any plain pytest workspace) the failing tests ARE the task and no second witness applies.
+ */
+export function isRepositoryClass(c: CompletionEvidence): boolean {
+  return c.oracle !== null || c.repro !== 'none';
+}
+
+/** Change 8: on the repository class, `complete` needs two witnesses derived from different selections. */
+export function secondWitnessHolds(c: ClaimingCompletionEvidence): boolean {
+  if (!isRepositoryClass(c)) return true;
+  return independentWitnessSelections(c).length >= INDEPENDENT_WITNESSES_REQUIRED;
+}
 
 /** A declared known-failure count, sanitised: a finite count above 0, else 0 (a missing declaration means "none"). */
 export function knownFailureCount(n: number | undefined): number {
@@ -88,6 +176,20 @@ export function knownFailuresOf(completion: ClaimingCompletionEvidence | undefin
  */
 export function unexpectedFailures(counts: Pick<TestCounts, 'failed' | 'errors'>, knownFailures: number): number {
   return Math.max(0, counts.failed + counts.errors - Math.max(0, knownFailures));
+}
+
+/**
+ * Change 8: the `done` is the synthesizer declaring itself finished, not a run the engine verified
+ * against the evidence — until now it completed on `verifiedDone` alone, which is how `sympy-20428`
+ * stopped one step after its own claiming run had already been refused (its oracle was `llm_valid`,
+ * not a `COMPLETING_ORACLE_OUTCOMES` code oracle). A `done` that declares completion evidence is now
+ * held to the same §6.6 facts as the claiming run, plus the second independent witness. A `done` that
+ * declares none (QuixBugs, the ladder, jev-only: no repository class, no `evidence.completion`) is
+ * unchanged — there is nothing declared to hold it to.
+ */
+export function doneCompletionAllowed(c: ClaimingCompletionEvidence | undefined): boolean {
+  if (c === undefined) return true;
+  return completionFactsHold(c) && secondWitnessHolds(c);
 }
 
 export interface CompletionFactInput {
@@ -112,11 +214,20 @@ export interface CompletionFactInput {
  * the reproduction passes under a code oracle: an `llm_valid` / `llm_weak` oracle never completes, nor does a run whose
  * oracle search found nothing. When the evidence names the suite command, the executed run must be that command.
  */
-export function completionEvidenceHolds(c: CompletionEvidence, executedCommand: string): boolean {
-  if (!c.ledgerFixed || c.testsChanged.length > 0 || c.guardPending) return false;
+export function completionEvidenceHolds(c: ClaimingCompletionEvidence, executedCommand: string): boolean {
   if (c.command !== undefined && c.command.trim() !== executedCommand.trim()) return false;
-  const repository = c.oracle !== null || c.repro !== 'none';
-  return !repository || (c.repro === 'pass' && c.oracle !== null && COMPLETING_ORACLE_OUTCOMES.includes(c.oracle));
+  return completionFactsHold(c);
+}
+
+/**
+ * The same §6.6 facts minus the one that names this step's executed command: every ledger goal fixed,
+ * no committed candidate touched a test file, every multi-passer batch arbitrated, and on the
+ * repository class a passing reproduction under a code oracle. A `done` executes no command, so this
+ * is the part of the fact it can be held to.
+ */
+export function completionFactsHold(c: CompletionEvidence): boolean {
+  if (!c.ledgerFixed || c.testsChanged.length > 0 || c.guardPending) return false;
+  return !isRepositoryClass(c) || (c.repro === 'pass' && c.oracle !== null && COMPLETING_ORACLE_OUTCOMES.includes(c.oracle));
 }
 
 /**
@@ -130,7 +241,7 @@ export function completionEvidenceHolds(c: CompletionEvidence, executedCommand: 
  * current run verifies it (a partial `done` never does). `task_complete` is recorded, never consulted.
  */
 export function isCompleteByFact(i: CompletionFactInput): boolean {
-  if (i.action === 'done') return i.outcome === 'noop' && i.verifiedDone;
+  if (i.action === 'done') return i.outcome === 'noop' && i.verifiedDone && doneCompletionAllowed(i.completion);
   if (i.action !== 'run' || i.outcome !== 'executed' || i.completion === undefined || i.tests === null || !i.testsCurrent) return false;
   if (!completionEvidenceHolds(i.completion, i.tests.command)) return false;
   const parsed = i.tests.parsed;

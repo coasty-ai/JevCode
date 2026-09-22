@@ -9,10 +9,18 @@ import { resolve } from 'node:path';
 import type { ParsedFlags } from '../cli/args.js';
 import type { Decider, Provider } from '../core/types.js';
 import { UsageError } from '../errors.js';
+import { ARCHIVE_DIR } from './archive.js';
 import { parseConditions, requiresGenerator } from './conditions.js';
 import type { BenchDepsWithSynth, BenchOptions } from './types.js';
 
-export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
+/**
+ * `--archive-runs`. cli/args.ts owns the flag table (`BOOLEAN_FLAGS` + `FLAGS`) and is not this
+ * wave's to edit, so the parsed value is read through this widening: `ParsedFlags` is assignable to
+ * it, and the key resolves once args.ts carries `'archiveRuns'` in `BOOLEAN_FLAGS`.
+ */
+type BenchFlags = ParsedFlags & { archiveRuns?: boolean };
+
+export async function runBenchFromFlags(flags: BenchFlags): Promise<number> {
   const { resolveConfig } = await import('../config/resolve.js');
   const config = await resolveConfig(flags, process.env, process.cwd());
   const limits = config.limits();
@@ -94,9 +102,10 @@ export async function runBenchFromFlags(flags: ParsedFlags): Promise<number> {
     redact: config.redact,
     secretPaths: config.secretPaths,
     dataDir: resolve('bench/data'),
+    archiveRuns: flags.archiveRuns === true,
   };
   const { runBench } = await import('./runner.js');
   const result = await runBench(opts, deps);
-  process.stdout.write(`bench: ${result.records.length} records -> ${result.outDir}\n  tasks.jsonl, summary.json, comparison.md, predictions.<condition>.jsonl\n`);
+  process.stdout.write(`bench: ${result.records.length} records -> ${result.outDir}\n  tasks.jsonl, summary.json, comparison.md, predictions.<condition>.jsonl${flags.archiveRuns === true ? `, ${ARCHIVE_DIR}/<runId>/*.gz` : ''}\n`);
   return 0;
 }
