@@ -1310,6 +1310,14 @@ describe('§14.2 item 13: the item formatter\'s static import graph', () => {
       'src/checkpoint/store.ts',
       // §6.3 edge 8: `isSecretPath`, purely lexical (sandbox/paths.ts:120–135 — "safe to run over a 5,000-entry listing")
       'src/core/atomic.ts',
+      // contract 1.5 (2400a0c) / W2b (7efac12): `src/tui/review/lines.ts` needs `buildRiskQuestions` / `riskLevelTexts` from
+      // `src/loop/stages/risk.ts`, which now imports `ownsPath` / `parseOwnGlob` from the ORCHESTRATE BARREL (`src/orchestrate/index.ts`),
+      // and the barrel re-exports these three `node:fs` / `child_process` importers. Nothing in the formatter calls them; the reach is
+      // the barrel's. Requested of the harness session (round-4 merge, 2026-09-22): import the leaf module in risk.ts, then delete
+      // these three rows so the guard tightens again.
+      'src/orchestrate/land.ts',
+      'src/orchestrate/manifest.ts',
+      'src/orchestrate/worktree.ts',
       'src/sandbox/paths.ts',
       'src/workspace/gitstate.ts',
     ]);
