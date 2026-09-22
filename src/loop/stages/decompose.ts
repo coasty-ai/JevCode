@@ -25,7 +25,9 @@
  *   and `orchestration.depth === 1` BEFORE it gathers any of them (M2). A shut gate emits nothing at all
  *   unless `verbose` is set, which is `--json=verbose` — the one line that makes the gate testable (§3.1).
  */
-import { HEADLINE_ROWS_MAX } from '../../core/limits.js';
+import { readFile, stat } from 'node:fs/promises';
+import { join } from 'node:path';
+import { DIRTY_ENTRIES_MAX, HEADLINE_ROWS_MAX } from '../../core/limits.js';
 import { RISK_DIMENSIONS, type Answer, type CheckpointState, type ConfirmOutcome, type ConfirmRequest, type Decision, type EngineEvent, type EngineMode, type Json, type Plan, type PlanDraft, type Proposal, type Question, type RiskAssessment, type RiskDimensionResult } from '../../core/types.js';
 import {
   DEFAULT_SPLIT_POLICY,
@@ -44,7 +46,13 @@ import {
   type RejectedOption,
   type SplitPolicy,
   type SyncedDirtyEntry,
+  dirtyPaths,
+  ownsPath,
+  parseOwnGlob,
   splitGate,
+  syncedDirtyEntry,
+  type OwnGlob,
+  type RunGit,
 } from '../../orchestrate/index.js';
 
 // ---------------------------------------------------------------------------------------
@@ -122,6 +130,12 @@ export interface DecomposeStageContext {
 export interface DecomposeFacts {
   /** §3.1 [G5]. No ledger → no delegation: children could not be tracked, so the gate stays shut. */
   hasLedger: boolean;
+  /**
+   * review 2026-09-22 findings 5 + 6: the names of the facts the harness could NOT measure. Non-empty shuts
+   * the gate with `'unmeasured'` — a planner whose every other unknown resolves AGAINST the split must not
+   * have one that resolves for it. Absent reads as none, so every existing fixture is unchanged.
+   */
+  unmeasured?: readonly string[];
   git: { isRepo: boolean; headBorn: boolean; worktreeSupported: boolean };
   baseSha: string;
   repoKey: string | null;
@@ -142,8 +156,6 @@ export interface DecomposeFacts {
   /** TRACKED `statusPorcelain` entries (corner row 16) */
   dirtyEntries: number;
   syncedDirty: readonly SyncedDirtyEntry[];
-  /** [D1]: the subset of `syncedDirty` inside some agent's `own` — the card's first headline row */
-  dirtyOverlap: readonly string[];
   liveChildren: number;
   splits: number;
   lastSplitStep: number | null;
@@ -280,6 +292,8 @@ export async function runDecomposeStage(ctx: DecomposeStageContext, input: Decom
     policy,
     depth: input.depth,
     hasLedger: facts.hasLedger,
+    // review 2026-09-22 findings 5 + 6: what the harness could not measure refuses the split
+    unmeasured: facts.unmeasured ?? [],
     git: facts.git,
     plan: { remaining: input.plan.remaining, unverified: input.plan.unverified },
     verificationResolvable: facts.verification.length > 0,
@@ -424,7 +438,10 @@ export async function runDecomposeStage(ctx: DecomposeStageContext, input: Decom
     baseSha: facts.baseSha,
     repoKey: facts.repoKey,
     syncedDirty: facts.syncedDirty,
-    dirtyOverlap: facts.dirtyOverlap,
+    // [D1] (review 2026-09-22 finding 6): computed HERE, against the chosen split — before normalisation there
+    // are no owns to intersect with, which is why the facts carried an unreachable `[]` and the card's first
+    // headline row, the one fact that changes what `/land` does later, could never render.
+    dirtyOverlap: dirtyOverlapOf(facts.syncedDirty, ranked.split.agents.flatMap((a) => [...a.own]), facts.fold),
     reserveUsd: input.reserveUsd,
     reserveFrom: input.reserveFrom,
     rejected: ranked.rejected,
@@ -494,6 +511,100 @@ export function decomposeShutByOptions(policy: SplitPolicy | undefined, depth: n
   // `off` — and this is decided from the options alone, which keeps the M2 property whatever the setting says.
   if (hasLedger !== true) return 'no_ledger';
   return null;
+}
+
+// ---------------------------------------------------------------------------------------
+// review 2026-09-22 findings 5 + 6 — the repository facts, MEASURED
+//
+// `fold`, `existingBranches` and `syncedDirty` were hardcoded to `false` / `[]` / `[]`. Each placeholder
+// made the planner MORE permissive than the truth, which is the one direction this module never goes:
+//   fold: false            on a case-folding volume `src/Foo/**` and `src/foo/**` are the same files, so
+//                          rule 3's disjointness proof — "the whole safety argument" — passed while two
+//                          agents owned one tree.
+//   existingBranches: []   rule 1's collision rename never fired, so a manifest could name a
+//                          `jevcode/<slug>` that already exists and §5.2's `rev-parse` would pin someone
+//                          else's branch.
+//   syncedDirty: []        the [D1] card row — the one fact that changes what `/land` does later — could
+//                          never render, so the card was silently reassuring about a dirty checkout.
+// Each is one cheap git call, and all three run BEHIND the gate's short-circuit, so M2 is untouched: with
+// `orchestrate.split` off none of them is made. What cannot be measured is NAMED, and the gate refuses.
+// ---------------------------------------------------------------------------------------
+
+/** What the harness measured, and what it could not. */
+export interface RepoFacts {
+  /** `git config core.ignorecase`: the volume folds case, so two globs differing only in case collide */
+  fold: boolean;
+  /** short `refs/heads/*` names, for §3.4 rule 1's collision rename */
+  existingBranches: string[];
+  /** the parent's real dirty set — what §2.3's `dirtySync` will replay into every agent worktree */
+  syncedDirty: SyncedDirtyEntry[];
+  /** the names of the facts above that could NOT be measured; non-empty shuts the gate (`'unmeasured'`) */
+  unmeasured: string[];
+}
+
+/** Injected so the measurement is testable without a filesystem; `nodeFileReader` is the production one. */
+export type FileReader = (abs: string) => Promise<{ bytes: Buffer; mode: number } | null>;
+
+export function nodeFileReader(): FileReader {
+  return async (abs) => {
+    try {
+      const [bytes, st] = await Promise.all([readFile(abs), stat(abs)]);
+      return { bytes, mode: st.mode };
+    } catch {
+      return null;
+    }
+  };
+}
+
+/**
+ * §2.3 / §3.4: measure what the planner is about to reason with. Never throws — a git that cannot answer
+ * is recorded in `unmeasured`, which is the gate's business, not an exception's.
+ */
+export async function measureRepoFacts(runGit: RunGit, dir: string, read: FileReader = nodeFileReader()): Promise<RepoFacts> {
+  const unmeasured: string[] = [];
+
+  // `git config` exits 1 when the key is simply unset, which is not a failure: git writes `core.ignorecase`
+  // at init from its own probe of the filesystem, and an absent key means a case-SENSITIVE volume.
+  let fold = false;
+  const cfg = await runGit(dir, ['config', '--get', 'core.ignorecase']).catch(() => null);
+  if (cfg === null) unmeasured.push('fold');
+  else if (cfg.ok) fold = cfg.stdout.trim().toLowerCase() === 'true';
+  else if (cfg.exitCode !== 1) unmeasured.push('fold');
+
+  let existingBranches: string[] = [];
+  const refs = await runGit(dir, ['for-each-ref', '--format=%(refname:short)', 'refs/heads']).catch(() => null);
+  if (refs === null || !refs.ok) unmeasured.push('existingBranches');
+  else existingBranches = refs.stdout.split('\n').map((l) => l.trim()).filter((l) => l.length > 0);
+
+  const syncedDirty: SyncedDirtyEntry[] = [];
+  const dirty = await dirtyPaths(runGit, dir).catch(() => ({ paths: [] as string[], ok: false }));
+  if (!dirty.ok) unmeasured.push('syncedDirty');
+  else {
+    // bounded by the same cap the sync itself honours (§2.3 [G9], corner row 16), and binary-safe: the sha
+    // is over the BYTES, because a dirty `.png` is replayed byte for byte and `carried` compares this hash.
+    for (const rel of dirty.paths.slice(0, DIRTY_ENTRIES_MAX)) {
+      const f = await read(join(dir, rel));
+      // a path `git status` named but we cannot read (a deletion, a permission error) is simply not carried
+      if (f !== null) syncedDirty.push(syncedDirtyEntry(rel, f.bytes, f.mode));
+    }
+  }
+  return { fold, existingBranches, syncedDirty, unmeasured };
+}
+
+/**
+ * [D1]: the subset of the parent's dirty set that falls inside SOME agent's `own` — the paths §5.7's launch
+ * will have to ask about, and the card's first headline row. Computed against the CHOSEN split, which is why
+ * it lives here and not in the facts: before normalisation there are no owns to intersect with.
+ */
+export function dirtyOverlapOf(syncedDirty: readonly SyncedDirtyEntry[], own: readonly string[], fold = false): string[] {
+  // `fold` rides through to `ownsPath`: on a case-folding volume a dirty `src/Foo/x.ts` IS owned by `src/foo/**`
+  const globs: OwnGlob[] = [];
+  for (const raw of own) {
+    const p = parseOwnGlob(raw);
+    if (p.ok) globs.push(p.glob);
+  }
+  if (globs.length === 0) return [];
+  return [...new Set(syncedDirty.map((e) => e.path).filter((p) => ownsPath(globs, p, fold)))].sort();
 }
 
 /** §3.3: the prefix tree the generator's split prompt is shown, bounded by `PREFIX_TREE_MAX`. */

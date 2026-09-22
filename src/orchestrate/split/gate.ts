@@ -19,6 +19,12 @@ import type { DemandReason, GateReason, SplitPolicy } from '../types.js';
 export type GateVerdict = { open: false; why: GateReason } | { open: true; demand: DemandReason };
 
 export interface GateInput {
+  /**
+   * review 2026-09-22 findings 5 + 6: the names of the facts the caller could NOT measure (`fold`,
+   * `existingBranches`, `syncedDirty`). Non-empty shuts the gate with `'unmeasured'`. Absent reads as none,
+   * so every existing caller and fixture is unchanged.
+   */
+  unmeasured?: readonly string[];
   policy: SplitPolicy;
   /** `EngineOptions.orchestration.depth`; only a depth-0 run may become a parent (§2.1) */
   depth: number;
@@ -82,6 +88,11 @@ export function splitGate(input: GateInput): GateVerdict {
 
   // 2. [G5] no ledger, no delegation: the children's leases and heartbeats have nowhere to live
   if (!input.hasLedger) return { open: false, why: 'no_ledger' };
+
+  // 2b. review 2026-09-22 findings 5 + 6: refuse a fact we could not measure, BEFORE anything derived from
+  //     one is consulted. Every placeholder this replaced widened the split, and a planner whose every other
+  //     unknown resolves against the split must not have one that resolves for it.
+  if ((input.unmeasured ?? []).length > 0) return { open: false, why: 'unmeasured' };
 
   // 3. corner row 14: a worktree needs a repository, a born HEAD and git >= 2.5
   if (!input.git.isRepo) return { open: false, why: 'not_git' };
@@ -151,6 +162,7 @@ const REASON_TEXT: Record<GateReason, string> = {
   money: 'the remaining budget cannot fund two agents',
   replan_step: 'this step is a replan',
   orchestration_problem: 'a recent orchestration problem still suppresses the gate',
+  unmeasured: 'could not measure the repository facts a safe split needs',
   no_demand: 'nothing about this task asks for more than one agent',
 };
 
