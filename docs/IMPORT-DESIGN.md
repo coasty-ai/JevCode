@@ -494,7 +494,7 @@ interface SourceSpec {
   roots: readonly RootSpec[];
   pattern: string;                   // glob, relative to the root
   format: SourceFormat;
-  class: ImportClass;                // the atlas-class verdict, rule 6 after the 2026-09-22 amendment (§4.4.1)
+  class: ImportClass;                // the atlas-class verdict, rule 7 after the 2026-09-22 amendments (§4.4.1)
   scope: SourceScope;
   destination: DestinationSpec;      // where a row of this kind lands
   precedence?: number;               // within a tool, for "first match wins" chains
@@ -905,16 +905,19 @@ the band.
 rules run **before** the atlas class. Every discovered artefact has an atlas row, so with the atlas class first the
 identity verdicts were unreachable and the repo's own `AGENTS.md` — a destination — would have been classified as a
 source and appended to itself on every run. The order below is normative; the previous order (atlas class as rule 1)
-is withdrawn.
+is withdrawn. Rule 3 (the never-imported atlas classes) sits above the size and text checks — ratified
+2026-09-22 — so an oversize transcript is reported by what it *is* (`skip:transcript`), not by its size; it stays below rule 2
+so a credential store is still named as a secret.
 
 | # | Rule | Verdict | `p` |
 | --- | --- | --- | --- |
 | 1 | basename matches a destination name, or realpath ∈ destinations | `skip:self` | 1.0 |
 | 2 | `isSecretBasename(name)` | SECRET (named, not read) | 1.0 |
-| 3 | bytes > `sourceReadCapBytes` (4 MiB) | `skip:oversize` | 1.0 |
-| 4 | not valid UTF-8 after BOM strip, or contains a NUL in the first 8 KiB | `skip:not-text` | 1.0 |
-| 5 | format ∈ {js, sh, sqlite} | `skip:unsupported` | 1.0 |
-| 6 | the atlas row declares a class and the parse succeeded | that class | 1.0 |
+| 3 | the atlas row is a never-imported class (transcripts, session stores, caches, …) — needs no parse | that `skip:*` reason (`skip:transcript`, …) | 1.0 |
+| 4 | bytes > `sourceReadCapBytes` (4 MiB) | `skip:oversize` | 1.0 |
+| 5 | not valid UTF-8 after BOM strip, or contains a NUL in the first 8 KiB | `skip:not-text` | 1.0 |
+| 6 | format ∈ {js, sh, sqlite} | `skip:unsupported` | 1.0 |
+| 7 | the atlas row declares an import class and the parse succeeded | that class | 1.0 |
 | 7 | frontmatter has `paths` / `globs` / `applyTo` / `trigger` / `alwaysApply` | MEMORY/rule | 0.95 |
 | 8 | frontmatter has `argument-hint` / `arguments` / `allowed-tools` / `mode` / `template` / `prompt`, **or** the body contains `$ARGUMENTS` / `$1` | WORKFLOW | 0.90 |
 | 9 | frontmatter has `name` + `description` and (`metadata.type` or `type`) | MEMORY/learned | 0.90 |
