@@ -172,13 +172,25 @@ describe('the ledger and the switch', () => {
     expect(ledger.rows.map((r) => `${r.id}:${r.source}`)).toEqual(['RL1:jev', 'RL6:code']);
   });
 
-  it('routersEnabled: off by default, on by option, and the env override wins both ways', () => {
+  /**
+   * contract 1.9 (Fastlane) §7.5 seam (b): the EXPLICIT OPTION WINS; `JEVCODE_ROUTERS` only fills an ABSENT one.
+   * This used to OR the env in, so an exported `JEVCODE_ROUTERS=on` armed an arm whose own row said `'off'` —
+   * the §8 head-to-head's control arms, armed, with `summary.json` still saying they were not.
+   * `resolveFastPathOption` has the same polarity (test/unit/loop/fastpath.test.ts).
+   */
+  it('routersEnabled: off by default, and the explicit option beats JEVCODE_ROUTERS both ways', () => {
     expect(routersEnabled(undefined, {})).toBe(false);
     expect(routersEnabled('off', {})).toBe(false);
     expect(routersEnabled('on', {})).toBe(true);
-    expect(routersEnabled('off', { JEVCODE_ROUTERS: 'on' })).toBe(true);
-    expect(routersEnabled('on', { JEVCODE_ROUTERS: 'off' })).toBe(false);
+    // the option wins, whichever way the two disagree
+    expect(routersEnabled('off', { JEVCODE_ROUTERS: 'on' })).toBe(false);
+    expect(routersEnabled('on', { JEVCODE_ROUTERS: 'off' })).toBe(true);
     expect(routersEnabled('on', { JEVCODE_ROUTERS: 'nonsense' })).toBe(true);
+    // absent option: the env decides, and only then — case and padding tolerated, anything else is off
+    expect(routersEnabled(undefined, { JEVCODE_ROUTERS: 'on' })).toBe(true);
+    expect(routersEnabled(undefined, { JEVCODE_ROUTERS: ' ON ' })).toBe(true);
+    expect(routersEnabled(undefined, { JEVCODE_ROUTERS: 'off' })).toBe(false);
+    expect(routersEnabled(undefined, { JEVCODE_ROUTERS: 'nonsense' })).toBe(false);
     expect(ROUTER_DEADLINE_MS).toBe(400);
   });
 });

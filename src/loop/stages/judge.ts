@@ -238,11 +238,15 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
     //   fallback: codeJudge() over the harness's own parsed counts and exit code, with completion `null` ("not answered", which no stop rule reads as complete) — test: test/unit/loop/router.test.ts
     //   no-gating: with routers on nothing here can end a run: a dropped answer judges by code and completes
     //             nothing. With routers off this site is exactly the pre-1.9 stage.
-    await ctx.ask('judge', state, questions, (answers, rows: Decision[]) => {
-    // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
-    // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
-    // nothing and applies nothing. `ctx.ask` still takes no per-call signal — that is the `askRecorded` seam of
-    // §7.5, slot B's post-C commit — so the request itself runs on; what it may no longer do is write a verdict.
+    await ctx.ask(
+      'judge',
+      state,
+      questions,
+      (answers, rows: Decision[]) => {
+      // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
+      // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
+      // nothing and applies nothing. The belt stays even though §7.5 seam (a) has landed and `askRecorded` now
+      // abandons the call before this callback can run: the token check is the ONE drop the signal cannot see.
       if (signal?.aborted === true || routed?.valid === false) return;
       for (const r of rows) if (r.id === TASK_COMPLETE_ID) r.stage = 'complete';
       const askedCompletion = noulOf(answers, TASK_COMPLETE_ID, 0);
@@ -267,7 +271,11 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
         completion: askedCompletion,
         claims: doneClaims,
       };
-    });
+      },
+      // §7.5 seam (a): the PER-CALL signal — a dropped ask is cancelled AND charges nothing. Absent (and so the
+      // pre-1.9 call) on the routers-off path.
+      signal,
+    );
     return out;
   };
   const apply = (a: JudgeAsked): void => {
@@ -275,7 +283,7 @@ export async function runJudgeStage(ctx: StageContext, common: JsonObject, propo
     completion = a.completion;
     for (const c of a.claims) claimProbabilities.set(c.text, c.judged);
   };
-  if (!routersOn(ctx.mode)) {
+  if (!routersOn(ctx.mode, ctx.routers)) {
     apply(await asked());
   } else {
     routed = stepTokenFor(ctx.runId, ctx.step);

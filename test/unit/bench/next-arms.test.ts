@@ -83,15 +83,17 @@ describe('the jev-on-next arms (§8.1)', () => {
   });
 
   /**
-   * The arm's row in summary.json is only the truth if nothing beats it at resolution time, and both mechanisms are
-   * resolved from the environment FIRST: slot C's `resolveFastPathOption` (llm-loop-C-fastpath@5ddcbf6
-   * src/loop/engine.ts) reads `JEVCODE_FASTPATH` before the option — in BOTH directions — and slot B's `routersOn`
-   * (llm-loop-B-routers src/loop/routers.ts) ORs `JEVCODE_ROUTERS=on` in. An exported `JEVCODE_FASTPATH=off` would
-   * run `jev-on-next` disarmed while recording `'auto'`; an exported `JEVCODE_FASTPATH=auto` would run the
-   * `jev-on-next-nofast` CONTROL armed while recording `'off'`, destroying the one-mechanism contrast clause 4
-   * rests on. Neither is observable in the output. So the bench clears both before any engine is built.
+   * The arm's row in summary.json is only the truth if nothing beats it at resolution time. When this slot landed
+   * both mechanisms were resolved from the environment FIRST: `resolveFastPathOption` read `JEVCODE_FASTPATH`
+   * before the option in BOTH directions and `routersOn` ORed `JEVCODE_ROUTERS=on` in, so an exported
+   * `JEVCODE_FASTPATH=off` ran `jev-on-next` disarmed while recording `'auto'` and `=auto` ran the
+   * `jev-on-next-nofast` CONTROL armed while recording `'off'` — destroying the one-mechanism contrast clause 4
+   * rests on, unobservably. **Both resolvers were inverted by the §7.5 engine seam** (slot B's post-C commit):
+   * the explicit option now wins and the env only fills an absent one. `pinMechanismEnv` stays, as the belt that
+   * makes an arm's row true for a worker that pins nothing, and the assertions below now drive the real
+   * resolver's new polarity.
    */
-  it('clears the mechanism env switches so the PINNED option is the effective one', () => {
+  it('clears the mechanism env switches, and the PINNED option beats an env that survives anyway', () => {
     expect([...MECHANISM_ENV_VARS]).toEqual(['JEVCODE_FASTPATH', 'JEVCODE_ROUTERS']);
     const env: Record<string, string | undefined> = { JEVCODE_FASTPATH: 'auto', JEVCODE_ROUTERS: 'on', JEVCODE_WARM: 'off' };
     expect(pinMechanismEnv(env)).toEqual([
@@ -104,17 +106,21 @@ describe('the jev-on-next arms (§8.1)', () => {
     expect(env['JEVCODE_WARM']).toBe('off');
     expect(pinMechanismEnv(env)).toEqual([]);
 
-    // slot C has merged (integration, 2026-09-22), so this drives the REAL resolver instead of the mirror this slot
-    // shipped: `resolveFastPathOption` is env-first in both directions, and the ONLY way the arm's pinned value
-    // survives is an environment `pinMechanismEnv` has already emptied.
+    // the REAL resolver, after the §7.5 seam inverted it: the arm's pinned value stands whether or not the
+    // environment was cleared, and it still stands once it has been
     const saved = process.env['JEVCODE_FASTPATH'];
     try {
       for (const pinned of ['auto', 'off'] as const) {
         const opposite = pinned === 'auto' ? 'off' : 'auto';
         process.env['JEVCODE_FASTPATH'] = opposite;
-        expect(resolveFastPathOption('jev-on', pinned)).toBe(opposite);
+        expect(resolveFastPathOption('jev-on', pinned)).toBe(pinned);
         pinMechanismEnv();
         expect(resolveFastPathOption('jev-on', pinned)).toBe(pinned);
+        // an arm that pins NOTHING is still the environment's to set — which is why `pinMechanismEnv` stays
+        process.env['JEVCODE_FASTPATH'] = 'off';
+        expect(resolveFastPathOption('jev-on', undefined)).toBe('off');
+        pinMechanismEnv();
+        expect(resolveFastPathOption('jev-on', undefined)).toBe('auto');
       }
     } finally {
       if (saved === undefined) delete process.env['JEVCODE_FASTPATH'];

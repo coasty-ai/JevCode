@@ -317,10 +317,23 @@ describe('resolveFastPathOption', () => {
     });
   });
 
-  it('is overridden by JEVCODE_FASTPATH, and an env typo is ignored rather than fatal', () => {
-    withEnv('off', () => expect(resolveFastPathOption('jev-on', 'auto')).toBe('off'));
-    withEnv('auto', () => expect(resolveFastPathOption('jev-on', 'off')).toBe('auto'));
+  /**
+   * contract 1.9 (Fastlane) §7.5 seam (b): the EXPLICIT OPTION WINS and `JEVCODE_FASTPATH` only fills an absent
+   * one. This resolver used to read the env first in both directions, so an exported `JEVCODE_FASTPATH=off` ran
+   * `jev-on-next` disarmed while `summary.json` recorded `'auto'`, and `=auto` armed the `jev-on-next-nofast`
+   * CONTROL while it recorded `'off'` — the one-mechanism contrast the §8 arms rest on, gone, with nothing in the
+   * output to show it. `routersEnabled` has the same polarity (test/unit/jev/router.test.ts).
+   */
+  it('takes the explicit option over JEVCODE_FASTPATH in BOTH directions; the env fills an absent option; an env typo is ignored rather than fatal', () => {
+    // the option wins, whichever way the two disagree
+    withEnv('off', () => expect(resolveFastPathOption('jev-on', 'auto')).toBe('auto'));
+    withEnv('auto', () => expect(resolveFastPathOption('jev-on', 'off')).toBe('off'));
+    // ... and the jev-on gate is still ahead of both
     withEnv('auto', () => expect(resolveFastPathOption('llm-jev', 'auto')).toBe('off'));
+    withEnv('off', () => expect(resolveFastPathOption('llm-jev', undefined)).toBe('off'));
+    // absent option: the env decides, and only then
+    withEnv('off', () => expect(resolveFastPathOption('jev-on', undefined)).toBe('off'));
+    withEnv('auto', () => expect(resolveFastPathOption('jev-on', undefined)).toBe('auto'));
     withEnv('yes please', () => expect(resolveFastPathOption('jev-on', undefined)).toBe('auto'));
   });
 });

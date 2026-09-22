@@ -247,15 +247,20 @@ export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteRe
 }
 
 /**
- * §0.3: `routers` is an `EngineOptions` member with an env override read inside the loop, exactly as
+ * §0.3: `routers` is an `EngineOptions` member with an env **default** read inside the loop, exactly as
  * `JEVCODE_WARM` is read in `src/synth/warm/plane.ts`. The default is **off** in every mode on `main`; only the
  * bench arm turns it on. An unset or unrecognised value is off, so nothing about a user run changes by accident.
+ *
+ * **The explicit option wins; the env only fills an ABSENT option** (§7.5 seam (b), slot D's finding). This used
+ * to OR the env in, so an exported `JEVCODE_ROUTERS=on` armed an arm whose own row said `routers: 'off'` and
+ * `jev-on-next-nofast`'s one-mechanism contrast was destroyed without a single observable difference in the
+ * output. A caller that says what it wants gets what it said; a caller that says nothing gets the environment's
+ * answer, which is how a bisect and a worker process still express the switch.
  */
 export function routersEnabled(opt?: 'on' | 'off', env: Readonly<Record<string, string | undefined>> = process.env): boolean {
+  if (opt !== undefined) return opt === 'on';
   const e = env['JEVCODE_ROUTERS']?.trim().toLowerCase();
-  if (e === 'on') return true;
-  if (e === 'off') return false;
-  return opt === 'on';
+  return e === 'on';
 }
 
 /** One step's router rows, folded into `StepRecord.router` by the engine seam (§5.2). */

@@ -282,20 +282,28 @@ export async function runReplanStage(ctx: StageContext, common: JsonObject, dete
     //             changes 7 and 9, which is code over the detector's own history, still ends a spent run.
     //   fallback: REPLAN_FALLBACK = 'change_approach', the move the stage already resolves to when the Choice is escaped or absent — test: test/unit/loop/router.test.ts
     //   no-gating: with routers on a dropped answer continues the run on the code directive; it can never end one.
-    await ctx.ask('replan', state, buildReplanQuestions({ taskImpossible: askImpossible }), (answers, rows) => {
-    // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token, settled
-    // work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it annotates
-    // nothing and applies nothing. `ctx.ask` still takes no per-call signal — that is the `askRecorded` seam of
-    // §7.5, slot B's post-C commit — so the request itself runs on; what it may no longer do is write a verdict.
-      if (signal?.aborted === true || routed?.valid === false) return;
-      const r = resolveChoice<ReplanOption>({ choiceId: 'next_move', answers, options: REPLAN_LIST, escape: 'none_of_these', fallback: REPLAN_FALLBACK });
-      annotateChoiceRows(rows, 'next_move', r);
-      const ti = answers['task_impossible'];
-      out = { resolved: r, taskImpossible: ti && ti.type === 'noul' ? ti.noul : 0, confidence: rows.find((q) => q.id === 'next_move')?.confidence ?? 0 };
-    });
+    await ctx.ask(
+      'replan',
+      state,
+      buildReplanQuestions({ taskImpossible: askImpossible }),
+      (answers, rows) => {
+        // review 2026-09-22 defect 2: the router's signal, threaded. A dropped ask (deadline, committed token,
+        // settled work) is CANCELLED by routeSpeculative, and a cancelled answer is not this step's answer: it
+        // annotates nothing and applies nothing. The belt stays even though §7.5 seam (a) has landed and
+        // `askRecorded` now abandons the call before this callback can run: the token check is the ONE drop the
+        // signal cannot see.
+        if (signal?.aborted === true || routed?.valid === false) return;
+        const r = resolveChoice<ReplanOption>({ choiceId: 'next_move', answers, options: REPLAN_LIST, escape: 'none_of_these', fallback: REPLAN_FALLBACK });
+        annotateChoiceRows(rows, 'next_move', r);
+        const ti = answers['task_impossible'];
+        out = { resolved: r, taskImpossible: ti && ti.type === 'noul' ? ti.noul : 0, confidence: rows.find((q) => q.id === 'next_move')?.confidence ?? 0 };
+      },
+      // §7.5 seam (a): the PER-CALL signal — a dropped ask is cancelled AND charges nothing.
+      signal,
+    );
     return out;
   };
-  const routers = routersOn(ctx.mode);
+  const routers = routersOn(ctx.mode, ctx.routers);
   if (!routers) {
     const a = await asked();
     resolved = a.resolved;
