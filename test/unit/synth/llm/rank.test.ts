@@ -54,8 +54,13 @@ describe('Q17: order only, chunked Nouls', () => {
     for (const r of plan.requests) for (const [id, q] of Object.entries(r.questions)) if (id !== Q17_CHOICE_ID) expect(q.type === 'noul' && q.criteria !== undefined).toBe(true);
     // every candidate has a unique key and the state names its hunks without position keys
     expect(new Set(plan.keyOf.values()).size).toBe(60);
-    const state = first!.state as { candidates: Record<string, { hunks: { file: string; lines: string; replaces: string; with: string }[]; rationale: string }>; tests: unknown[]; program: Record<string, Record<string, string>> };
+    const state = first!.state as { candidates: Record<string, { hunks: { file: string; lines: string; replaces: string; with: string }[] }>; tests: unknown[]; program: Record<string, Record<string, string>> };
     const oddKey = plan.keyOf.get(applied(1).candidate.id)!;
+    // the generator's own `rationale` (provenance 'variant i') reaches neither the state nor the option descriptions: Jev reads the hunks
+    expect(Object.keys(state.candidates[oddKey]!)).toEqual(['hunks']);
+    expect(JSON.stringify(first!.state)).not.toContain('variant ');
+    expect(JSON.stringify(first!.state)).not.toContain('rationale');
+    if (choice.type === 'choice') expect(JSON.stringify(choice.criteria)).not.toMatch(/variant |rationale/);
     expect(state.candidates[oddKey]!.hunks.map((h) => [h.file, h.lines])).toEqual([
       ['src/calc.py', 'L4'],
       ['src/util.py', 'L2'],

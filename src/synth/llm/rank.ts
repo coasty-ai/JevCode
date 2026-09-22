@@ -4,7 +4,9 @@
  * Choice `fix` over ≤ 8 candidates (+ escape) sets the queue order, one full-criteria Noul per
  * candidate (`is_fix_patch_<sha4>`, chunks ≤ 50) breaks ties and orders the candidates beyond
  * the Choice. Keys carry no position (order-only keys collapse, REPORT §10); descriptions are the
- * hunks as `{file, lines, replaces, with}` (≤ 400 chars per hunk, ≤ 3 shown). The fix-absent
+ * hunks as `{file, lines, replaces, with}` (≤ 400 chars per hunk, ≤ 3 shown) and nothing else —
+ * the sample's own `rationale` (`LlmCandidate.provenance`) is transcript-only: Jev reads the hunks
+ * literally and is never handed the generator's plea for its patch (§5 Q17). The fix-absent
  * signals (strong: P(escape) − p_max ≥ 0.10 ∧ max Noul < 0.3; weak: exactly one of the two)
  * are recorded for routing after the runs returned 0 passers — never consumed as a gate.
  */
@@ -172,12 +174,12 @@ function testsOf(input: Q17Input): Json {
   return input.failures.slice(0, Q17_TESTS).map((f) => ({ id: f.testId, call: clip(f.call, 400), expected: clip(f.expected, 400), actual_with_bug: clip(f.actual, 400) }));
 }
 
+/** The option description and the state entry of one candidate: its hunks only (no `rationale` — the generator's prose stays in the transcript). */
 function candidateJson(a: LlmApplied): Json {
   const hunks = hunksOf(a);
   const shown = hunks.slice(0, Q17_HUNKS_SHOWN).map(hunkJson);
   const out: Record<string, Json> = { hunks: shown };
   if (hunks.length > shown.length) out['more_hunks'] = hunks.length - shown.length;
-  if (a.candidate.provenance !== undefined && a.candidate.provenance !== '') out['rationale'] = clip(a.candidate.provenance, 200);
   return out;
 }
 

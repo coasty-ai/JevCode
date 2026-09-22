@@ -3,7 +3,9 @@
  * a user message whose every section is bounded by `PROMPT_LIMITS_FIX`. The listing set is code
  * ∪ jev: the enclosing function of every traceback frame inside the workspace (≤ 3 deepest,
  * always present) plus the Jev anchors, ≤ 4 functions of ≤ 120 lines (or a ±40-line module-level
- * window). No plan, no intent, no window of prior steps: the attempt ledger is code-computed.
+ * window) — the feedback round L1′ widens the set by up to `listingsWidenMax` more members (§4.9),
+ * and `## Code` renders every member the caller built, never a hard slice at 4. No plan, no
+ * intent, no window of prior steps: the attempt ledger is code-computed.
  * Hint h1 ("Jev put p=0.xx on L<n>") is given only when Q5's P(top) ≥ 0.9 (the 92 % bin);
  * below it the localisation section lists the candidate lines without a pointer.
  */
@@ -31,6 +33,8 @@ export const PROMPT_LIMITS_FIX = {
   jevLines: 5,
   listingLines: 120,
   listings: 4,
+  /** the feedback round's widening at most (§4.9: 3 members, 6 on a strong fix-absent signal); `## Code` never shows more than `listings + listingsWidenMax` */
+  listingsWidenMax: 6,
   /** ± window for a module-level listing member */
   moduleWindowLines: 40,
   outlines: 5,
@@ -115,6 +119,8 @@ export interface FixPromptInput {
   attempts: readonly AttemptRecord[];
   partial?: { diff: string } | null;
   hint: FixHint;
+  /** `## Code` members shown; default every listing given (the caller's `listingSet` bounds them), never above `listings + listingsWidenMax` */
+  maxListings?: number;
 }
 
 // ---------------------------------------------------------------------------------------
@@ -336,9 +342,15 @@ function localisationSection(input: FixPromptInput): string {
   return ['## Localisation', ...rows].join('\n');
 }
 
-function codeSection(listings: readonly Listing[]): string {
+/** The `## Code` cap a prompt input asks for: its `maxListings` or every listing, bounded by `listings + listingsWidenMax`. */
+export function codeListingCap(input: Pick<FixPromptInput, 'listings' | 'maxListings'>): number {
+  const L = PROMPT_LIMITS_FIX;
+  return Math.max(0, Math.min(input.maxListings ?? input.listings.length, L.listings + L.listingsWidenMax));
+}
+
+function codeSection(listings: readonly Listing[], max: number): string {
   const parts = ['## Code'];
-  for (const l of listings.slice(0, PROMPT_LIMITS_FIX.listings)) {
+  for (const l of listings.slice(0, max)) {
     const lines = l.lines.slice(0, PROMPT_LIMITS_FIX.listingLines);
     parts.push(`${l.path} — ${l.name === null ? 'module level' : `fn ${l.name}`} L${l.startLine}-L${l.startLine + lines.length - 1}`);
     lines.forEach((text, i) => parts.push(`L${l.startLine + i}: ${text}`));
@@ -384,7 +396,7 @@ export function buildFixUserMessage(input: FixPromptInput): string {
     taskSection(input.task),
     failureSection(input),
     localisationSection(input),
-    codeSection(input.listings),
+    codeSection(input.listings, codeListingCap(input)),
     outlineSection(input.outlines),
     attemptsSection(input.attempts),
     partialSection(input.partial),
@@ -397,9 +409,9 @@ export function buildFixUserMessage(input: FixPromptInput): string {
   return sections.filter((s): s is string => s !== null).join('\n\n');
 }
 
-/** Sum of the section caps: an upper bound on the user message a caller can assert against (chars). */
-export function fixPromptCharBound(): number {
+/** Sum of the section caps: an upper bound on the user message a caller can assert against (chars); `widen` = the feedback round's extra listing members (≤ `listingsWidenMax`). */
+export function fixPromptCharBound(widen = 0): number {
   const L = PROMPT_LIMITS_FIX;
-  const listing = L.listings * L.listingLines * 200;
+  const listing = (L.listings + Math.min(Math.max(0, widen), L.listingsWidenMax)) * L.listingLines * 200;
   return 2000 + L.taskHeadChars + L.taskTailChars + L.failures * (L.callChars + L.expectedChars + L.actualChars + 200) + L.tracebackChars + L.reproScriptLines * 200 + L.reproOutputChars + (L.tracebackFrames + L.jevLines) * 200 + listing + L.outlines * (L.outlineSymbols * 40 + 200) + L.attempts * (L.attemptChars + 10) + L.partialChars + 400;
 }
