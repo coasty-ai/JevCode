@@ -3397,15 +3397,17 @@ class EngineImpl implements Engine {
       // contract 1.4 (W3), §6 / W3 item 28: the heartbeat's sub-work rows. One adapter per run, so an `ended` finds the
       // `kind` its `started` used; absent when coordination is off, which is the whole of "zero cost when absent".
       ...(this.coord === null ? {} : { coordination: this.synthSubwork() }),
-      ...(this.mode === 'jev-only'
-        ? {}
-        : {
-            generate: (req: GenerateRequest, o: SampleOptions) => self.generate(self.draft ?? draft, req, 1, o),
-            reportVerify: (counts: Partial<StepVerifySummary>) => {
-              const d = self.draft ?? draft;
-              d.verify.reported = { ...(d.verify.reported ?? {}), ...counts };
-            },
-          }),
+      ...(this.mode === 'jev-only' ? {} : { generate: (req: GenerateRequest, o: SampleOptions) => self.generate(self.draft ?? draft, req, 1, o) }),
+      // F04 (finishing pass): the RECORDING channel is not the LLM channel, and gating them together made
+      // `JEVCODE_WARM=on --mode jev-only` the very silent no-op `warmPlaneFor`'s `unsupported-runner` /
+      // `unsupported-command` rows exist to kill — the synthesizer called `ctx.reportVerify?.(…)` on `undefined`
+      // and the step recorded nothing. It costs nothing when nobody calls it (`draft.verify.reported` stays null
+      // and `StepRecord.verify` stays absent), so it is installed in every mode; `generate` above stays gated,
+      // because jev-only has no generating LLM and must never acquire one.
+      reportVerify: (counts: Partial<StepVerifySummary>) => {
+        const d = self.draft ?? draft;
+        d.verify.reported = { ...(d.verify.reported ?? {}), ...counts };
+      },
     };
   }
 
@@ -5650,8 +5652,13 @@ class EngineImpl implements Engine {
       // §6 row 14: the verdict the TRIGGER read, not the verdict this step's own run left behind
       record.scopeUsable = draft.scopeUsable ?? this.lastTestRunScopeUsable;
     }
-    // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts (llm-jev only; jev-only rows are unchanged)
-    if (this.mode === 'llm-jev' && draft.proposer === 'synth') record.verify = this.verifySummary(draft, proposal);
+    // docs/LLM-JEV-DESIGN.md §9.3: the synthesizer's step carries its verification counts. F04 (finishing pass) widens
+    // the writer from "llm-jev and the synthesizer proposed" to "OR something was reported on this step": a jev-only
+    // synthesizer's warm counters, and (contract 1.9 §3.1–§3.4) the S2 facts the jev-on propose path records about its
+    // own call, both have a reporter and neither is `llm-jev` + `proposer: 'synth'`. The llm-jev shape is unchanged —
+    // that arm always reports or has tallies to write — so contract 1.9 optionality and the llm-jev goldens hold, and a
+    // step nobody reported on still writes no `verify` member at all.
+    if (draft.verify.reported !== null || (this.mode === 'llm-jev' && draft.proposer === 'synth')) record.verify = this.verifySummary(draft, proposal);
     // contract 1.4 (W2b) (§4.1): a conditional spread everywhere else, a conditional assignment here — a step
     // whose gate saw nothing writes the row it wrote before this wave, which is half of what M2 means by zero cost
     if (draft.coord !== null) record.coord = draft.coord;

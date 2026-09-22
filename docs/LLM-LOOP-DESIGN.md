@@ -682,7 +682,11 @@ Choosing `'jev-only'` is the design, not thrift (I6): on the ten OOS QuixBugs pr
 
 The call is `synthesizer.synthesize(sctx)` — the whole-step callable — **not** a re-entry at `searchSubGoal`
 (§1.5). The engine already builds the required `SynthesisContext` at `engine.ts:3078` (`synthesisContext(draft,
-contextFiles)`); `generate` and `reportVerify` are optional and omitted.
+contextFiles)`); `generate` is optional and omitted (the fast path's synthesizer is `jev-only` and has no LLM
+source). `reportVerify` is **installed in every mode** as of the finishing pass (F04): gating the recording
+channel together with the LLM channel made `JEVCODE_WARM=on --mode jev-only` a silent no-op, and it is also the
+hop §3.4's S2 figures take on the jev-on propose path. It costs nothing when nobody calls it — `StepRecord.verify`
+is written only when something was reported (or in llm-jev, where the synthesizer proposed).
 
 ### 4.3 The trigger predicate — two stages, structural, no task names
 
