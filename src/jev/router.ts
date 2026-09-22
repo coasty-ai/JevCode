@@ -12,27 +12,56 @@
  *  2. `ask` is issued in the same tick, under a controller linked to the step signal (`linkedAbort`).
  *  3. An answer landing inside `deadlineMs`, before the dispatched work settles, and **while `token.valid`**, is
  *     applied — it re-orders the pending tail only.
- *  4. A deadline, a `JevError`, a 503/529, an abort, an invalidated token and a malformed answer are **one branch**:
+ *  4. A deadline, a `JevError`, a 503/529, an invalidated token and a malformed answer are **one branch**:
  *     `dropped: true`, the code order stands, nothing is thrown. That single failure branch is what makes "a Jev
- *     outage is slower, never wrong" a structural property rather than a per-site promise.
+ *     outage is slower, never wrong" a structural property rather than a per-site promise. **It is Jev's failures
+ *     only** (review 2026-09-22, defect 5): the step signal aborting (a human pause, `/stop`), a wall-time
+ *     `BudgetError`, a `JevModelDriftError` and a `QuestionBuildError` are the harness's own stop conditions and a
+ *     programming error, not an outage — `isRouterFatal` sends them back up unchanged, exactly as they travel with
+ *     routers off. Swallowing them is how an aborted run keeps running stages.
  *  5. The thunk is injected: `ask` is the stage's own `ctx.ask`, which already routes through the engine's one
  *     metered, recorded path (`askRecorded`). No router reaches the decider by any other road.
+ *  6. A dropped ask is **cancelled**: the router aborts the linked controller whose signal it handed the thunk, so
+ *     an ask nobody is waiting on stops rather than running on to write against a committed step.
  *
- * **I3, `waitMs === 0`, and what it means here.** The ask is still made, still metered, still written to
- * `jev.jsonl`; `jevMs` may grow. `routerWaitMs` is the wall the router holds the step for *beyond* that ask —
- * and it is 0 by construction, because the router never waits past the earliest of {the answer, the deadline, the
- * dispatched work, the step signal}. The deadline can only make a step wait **less** than today's inline await,
- * never more. (The remaining half of I3 — overlapping the ask with the next stage's work so that even the sub-
- * deadline wall disappears — is the engine's `askRecorded` seam, §7.5, and lands with it.)
+ * **I3, `waitMs`, and what it means here.** The ask is still made, still metered, still written to `jev.jsonl`;
+ * `jevMs` may grow. `routerWaitMs` is the wall the router holds the step for *beyond* that ask, and it is
+ * **measured, not asserted**: `heldMs` is the clock from entry to the settled race and `waitMs` is what is left of
+ * it after the ask's own elapsed time. It reads 0 because the router never waits past the earliest of {the answer,
+ * the deadline, the dispatched work, the step signal} — but a router that did wait longer would report it, which a
+ * hard-coded `0` never could (review 2026-09-22, defect 7). The deadline can only make a step wait **less** than
+ * today's inline await, never more. (The remaining half of I3 — overlapping the ask with the next stage's work so
+ * that even the sub-deadline wall disappears — is the engine's `askRecorded` seam, §7.5, and lands with it.)
  *
- * **I4, no late write.** Application is guarded by a step-scoped `StepToken` invalidated at step commit: an
- * in-flight ask that outlives its step can never write to a committed `StepRecord` or a superseded draft. A late
- * answer is recorded `dropped`, never applied.
+ * **I4, no late APPLICATION.** Application is guarded by a step-scoped `StepToken` invalidated at step commit: a
+ * late answer is recorded `dropped` and applied to nothing, and its ask is aborted (clause 6). What the router
+ * alone cannot yet promise is that the *engine* writes nothing late: `ctx.ask` takes no per-call signal until the
+ * `askRecorded` seam of §7.5 lands (slot B's post-C commit, §7.1 — no two slots hold `engine.ts` at once), so
+ * until then a decider that ignores its signal can still finish inside `askRecorded` and charge its own step.
  */
 import { linkedAbort } from '../core/abort.js';
+import { AbortError, JevModelDriftError, isAbortError, isBudgetError } from '../errors.js';
+import { QuestionBuildError } from './questions.js';
+
+/**
+ * §2.1 clause 4 is about **Jev's** failures. These four are not Jev's: an aborted step signal (a human pause,
+ * `/stop`, an operator signal), an exhausted budget, a served model that is not the pinned one, and a malformed
+ * question batch. With routers off each of them rejects the stage; with routers on each must still reject it,
+ * or a paused, over-budget or mis-served run keeps executing stages (review 2026-09-22, defect 5).
+ */
+export function isRouterFatal(e: unknown): boolean {
+  return isAbortError(e) || isBudgetError(e) || e instanceof JevModelDriftError || e instanceof QuestionBuildError;
+}
 
 /** §2.1: the default router deadline. Measured Jev latency is p50 237 ms / p95 547 ms, so 400 ms keeps the median answer and drops the tail. */
 export const ROUTER_DEADLINE_MS = 400;
+
+/**
+ * The scheduling hop between the ask's promise settling and the race result being observed — one microtask, made
+ * visible at all only by `Date.now()`'s 1 ms granularity. It is not blocked wall, so `waitMs` (I3) does not count
+ * it; anything above it is the router genuinely holding the step past its own ask, and is reported.
+ */
+export const ROUTER_SETTLE_SLACK_MS = 2;
 
 /** §2.2, the router table. `RL3` and `RS5` are deliberately absent: they are gates, not routers. */
 export type RouterId = 'RL1' | 'RL2' | 'RL4' | 'RL5' | 'RL6' | 'RS1' | 'RS2' | 'RS3' | 'RS4' | 'R9';
@@ -63,8 +92,10 @@ export interface RouteResult<T> {
   readonly appliedAt: number | null;
   readonly dropped: boolean;
   readonly id: RouterId;
-  /** I3, in the type: a router contributes zero blocked wall */
-  readonly waitMs: 0;
+  /** I3, MEASURED: the wall the router held the step BEYOND the ask it was making anyway (`heldMs` minus the ask's own elapsed time). 0 on every path that is not a bug. */
+  readonly waitMs: number;
+  /** the raw wall from entry to the settled race — the ceiling the deadline puts on a slow ask, and what makes `waitMs` falsifiable */
+  readonly heldMs: number;
   /** null when the answer was applied */
   readonly drop: RouteDrop | null;
 }
@@ -90,7 +121,13 @@ function isPromise(v: unknown): v is Promise<unknown> {
   return typeof v === 'object' && v !== null && typeof (v as { then?: unknown }).then === 'function';
 }
 
-type Settled<T> = { kind: 'answer'; order: readonly T[] | null } | { kind: 'error' } | { kind: 'deadline' } | { kind: 'work' } | { kind: 'aborted' };
+type Settled<T> = { kind: 'answer'; order: readonly T[] | null } | { kind: 'error'; error: unknown } | { kind: 'deadline' } | { kind: 'work' } | { kind: 'aborted' };
+
+/** The reason a step signal carries, as something throwable: an `AbortError` travels unchanged, anything else becomes one. */
+function abortReasonOf(signal: AbortSignal): unknown {
+  const r: unknown = signal.reason;
+  return isAbortError(r) || r instanceof Error ? r : new AbortError('signal');
+}
 
 /**
  * Route one ask. Never throws, never rejects: every failure is the one drop branch of clause 4.
@@ -104,7 +141,17 @@ export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteRe
   if (codeOrder.length === 0) throw new RangeError(`routeSpeculative(${id}): codeOrder must be non-empty — the code order is the step, not a fallback`);
   const now = input.now ?? Date.now;
   const deadlineMs = Math.max(0, input.deadlineMs ?? ROUTER_DEADLINE_MS);
-  const code = (drop: RouteDrop): RouteResult<T> => ({ order: codeOrder, source: 'code', appliedAt: null, dropped: true, id, waitMs: 0, drop });
+  const t0 = now();
+  // I3, measured: the ask's own elapsed time, so `waitMs` is the wall the ROUTER added and not the wall the step
+  // was spending anyway. Null while the ask is still in flight — then the router held the step for less than the
+  // ask, and the difference is 0.
+  let askDoneAt: number | null = null;
+  const held = (): { heldMs: number; waitMs: number } => {
+    const heldMs = Math.max(0, now() - t0);
+    const askMs = askDoneAt === null ? heldMs : Math.max(0, askDoneAt - t0);
+    return { heldMs, waitMs: Math.max(0, heldMs - askMs - ROUTER_SETTLE_SLACK_MS) };
+  };
+  const code = (drop: RouteDrop): RouteResult<T> => ({ order: codeOrder, source: 'code', appliedAt: null, dropped: true, id, ...held(), drop });
 
   // clause 1: the code order is dispatched in THIS tick, before anything is awaited
   let work: Promise<unknown> | null = null;
@@ -125,10 +172,14 @@ export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteRe
     (async (): Promise<Settled<T>> => {
       try {
         const order = await input.ask(link.controller.signal);
+        askDoneAt = now();
         return { kind: 'answer', order };
-      } catch {
-        // clause 4: a JevError, a 503/529, an abort and a timeout are ONE branch
-        return { kind: 'error' };
+      } catch (e) {
+        askDoneAt = now();
+        // clause 4: a JevError, a 503/529 and a malformed answer are ONE branch. The error is CARRIED, not
+        // swallowed here, so the settle below can send the four non-Jev failures back up (clause 4, defect 5) —
+        // and carrying it instead of rethrowing keeps this promise settled even when the race is already over.
+        return { kind: 'error', error: e };
       }
     })(),
   );
@@ -140,10 +191,21 @@ export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteRe
     }),
   );
   if (work !== null) races.push(work.then((): Settled<T> => ({ kind: 'work' })));
-  if (input.signal !== undefined) {
-    const s = input.signal;
-    if (s.aborted) races.push(Promise.resolve<Settled<T>>({ kind: 'aborted' }));
-    else races.push(new Promise<Settled<T>>((resolve) => s.addEventListener('abort', () => resolve({ kind: 'aborted' }), { once: true })));
+  // review 2026-09-22 defect 1: the listener is HELD and removed in the same finally as the timer and the link.
+  // One per routed ask, never removed, is ~120 live listeners on a run-scoped signal by step 40 — past Node's
+  // max-listeners warning, each retaining a race promise that never settles.
+  const stepSignal = input.signal;
+  let onStepAbort: (() => void) | null = null;
+  if (stepSignal !== undefined) {
+    if (stepSignal.aborted) races.push(Promise.resolve<Settled<T>>({ kind: 'aborted' }));
+    else {
+      races.push(
+        new Promise<Settled<T>>((resolve) => {
+          onStepAbort = (): void => resolve({ kind: 'aborted' });
+          stepSignal.addEventListener('abort', onStepAbort, { once: true });
+        }),
+      );
+    }
   }
 
   let settled: Settled<T>;
@@ -151,18 +213,30 @@ export async function routeSpeculative<T>(input: RouteInput<T>): Promise<RouteRe
     settled = await Promise.race(races);
   } finally {
     if (timer !== null) clearTimeout(timer);
+    if (onStepAbort !== null && stepSignal !== undefined) stepSignal.removeEventListener('abort', onStepAbort);
     link.unlink();
   }
 
-  if (settled.kind === 'deadline') return code('deadline');
-  if (settled.kind === 'work') return code('work_settled');
-  if (settled.kind === 'aborted') return code('aborted');
-  if (settled.kind === 'error') return code('error');
+  // clause 4, the harness's own stops: not Jev's failures, so they travel up exactly as they do with routers off
+  if (settled.kind === 'aborted' && stepSignal !== undefined) throw abortReasonOf(stepSignal);
+  if (settled.kind === 'error' && isRouterFatal(settled.error)) throw settled.error;
+
+  // clause 6: whatever the router does not use, it cancels — an ask nobody awaits must not run on
+  const drop = (reason: RouteDrop): RouteResult<T> => {
+    const out = code(reason);
+    link.controller.abort(new Error(`routeSpeculative(${id}): dropped (${reason}) — the router no longer needs this answer`));
+    return out;
+  };
+
+  if (settled.kind === 'deadline') return drop('deadline');
+  if (settled.kind === 'work') return drop('work_settled');
+  if (settled.kind === 'aborted') return drop('aborted');
+  if (settled.kind === 'error') return drop('error');
   // I4: the answer may not be applied to a committed step
-  if (!token.valid) return code('committed');
+  if (!token.valid) return drop('committed');
   const order = settled.order;
-  if (order === null || order.length === 0) return code('empty');
-  return { order, source: 'jev', appliedAt: now(), dropped: false, id, waitMs: 0, drop: null };
+  if (order === null || order.length === 0) return drop('empty');
+  return { order, source: 'jev', appliedAt: now(), dropped: false, id, ...held(), drop: null };
 }
 
 /**
@@ -182,12 +256,15 @@ export interface RouterLedger {
   issued: number;
   applied: number;
   dropped: number;
+  /** I3: the sum of the measured per-route `waitMs`; this is what becomes `StepTiming.routerWaitMs` and it MUST be 0 */
   waitMs: number;
+  /** the sum of the measured per-route `heldMs` — not a contract member; the step's router wall, for the bench row and for a test that can fail */
+  heldMs: number;
   rows: { id: string; source: 'jev' | 'code'; appliedAt: number | null; dropped: boolean }[];
 }
 
 export function emptyRouterLedger(): RouterLedger {
-  return { issued: 0, applied: 0, dropped: 0, waitMs: 0, rows: [] };
+  return { issued: 0, applied: 0, dropped: 0, waitMs: 0, heldMs: 0, rows: [] };
 }
 
 /** Bounded at 12 rows (§5.2); the counters keep counting past the bound. */
@@ -198,6 +275,7 @@ export function noteRoute<T>(ledger: RouterLedger, r: RouteResult<T>): RouterLed
   if (r.dropped) ledger.dropped += 1;
   else ledger.applied += 1;
   ledger.waitMs += r.waitMs;
+  ledger.heldMs += r.heldMs;
   if (ledger.rows.length < ROUTER_ROWS_MAX) ledger.rows.push({ id: r.id, source: r.source, appliedAt: r.appliedAt, dropped: r.dropped });
   return ledger;
 }
