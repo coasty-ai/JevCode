@@ -16,7 +16,7 @@
  */
 import { createReadStream, createWriteStream } from 'node:fs';
 import { mkdir, stat } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { createGzip } from 'node:zlib';
 
@@ -97,4 +97,28 @@ export async function archiveRuns(i: ArchiveRunsInput): Promise<ArchiveRunsResul
   log(`[bench] archived ${result.files} record files of ${result.runs}/${ids.length} runs to ${dir} (${result.skipped} missing${result.errors.length > 0 ? `, ${result.errors.length} failed` : ''})`);
   for (const e of result.errors) log(`[bench] archive: ${e}`);
   return result;
+}
+
+/**
+ * Archive without being asked when the results directory is the repository's own
+ * `bench/results/...` and no flag said otherwise (`archiveRuns === undefined`).
+ *
+ * Why this default and not "always": the 44 run directories the 2026-09-22 out-of-sample analysis
+ * reads live under `~/.jevcode/runs/`, outside the repository, and had to be tarred by hand
+ * afterwards to make the analysis reproducible from a checkout. `bench/results/*` is the tree the
+ * repository keeps (.gitignore un-ignores `oos-*`, `llm-jev-*`, `live-*`, `jev-only-*`, `glm-*`),
+ * so a result directory there is exactly the one that must carry its own records. A results
+ * directory somewhere else is a scratch run and is left alone. An explicit `--archive-runs` /
+ * `--no-archive-runs` always wins, which is why the test is `undefined` and not falsy.
+ */
+export function archiveByDefault(outDir: string, resultsRoot: string): boolean {
+  const norm = (x: string): string => resolve(x).replace(/\\/g, '/').replace(/\/+$/, '');
+  const root = norm(resultsRoot);
+  const dir = norm(outDir);
+  return dir === root || dir.startsWith(`${root}/`);
+}
+
+/** `archiveRuns` when it was set, else the `bench/results` default. */
+export function archiveRunsDue(flag: boolean | undefined, outDir: string, resultsRoot: string): boolean {
+  return flag ?? archiveByDefault(outDir, resultsRoot);
 }

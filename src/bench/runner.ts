@@ -26,7 +26,7 @@ import { loadLadderSources } from './ladder/loader.js';
 import { LADDER_VENV_DIR } from './ladder/venv.js';
 import { loadQuixbugsSources } from './quixbugs/loader.js';
 import { BENCH_CACHE_DIR, loadSwebenchSources } from './swebench/loader.js';
-import { archiveRuns } from './archive.js';
+import { archiveRuns, archiveRunsDue } from './archive.js';
 import { modelNameOrPath, readSavedModelPatch, writePredictions, type PredictionEntry } from './swebench/predictions.js';
 import { loadTerminalBenchSources } from './terminalbench/loader.js';
 import { TB_VENV_DIR } from './terminalbench/shim.js';
@@ -769,7 +769,10 @@ export async function runBenchWithSources(sources: readonly BenchTaskSource[], o
   }
   // last, and after everything the bench is judged on is on disk: the archive is a convenience and
   // never a reason for a finished bench to fail (bench/archive.ts)
-  if (opts.archiveRuns === true) {
+  // ...and on by default for a results directory in the repository's own bench/results tree, so
+  // every result directory from now on carries its records without anyone remembering the flag
+  // (archive.ts archiveByDefault; the 44 OOS runs had to be tarred by hand after the fact)
+  if (archiveRunsDue(opts.archiveRuns, outDir, join(process.cwd(), 'bench', 'results'))) {
     await archiveRuns({ outDir, runsDir: opts.runsDir, runIds: records.map((r) => r.runId).filter((id): id is string => id !== null), log });
   }
   log(`[bench] done: ${records.length} records in ${outDir}`);

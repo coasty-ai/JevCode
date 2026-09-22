@@ -5,11 +5,11 @@
  * is dependency-injected so it can be tested without these modules; this file is the only
  * place the real ones meet.
  */
-import { resolve } from 'node:path';
+import { join, resolve } from 'node:path';
 import type { ParsedFlags } from '../cli/args.js';
 import type { Decider, Provider } from '../core/types.js';
 import { UsageError } from '../errors.js';
-import { ARCHIVE_DIR } from './archive.js';
+import { ARCHIVE_DIR, archiveRunsDue } from './archive.js';
 import { parseConditions, requiresGenerator } from './conditions.js';
 import type { BenchDepsWithSynth, BenchOptions } from './types.js';
 
@@ -102,10 +102,11 @@ export async function runBenchFromFlags(flags: BenchFlags): Promise<number> {
     redact: config.redact,
     secretPaths: config.secretPaths,
     dataDir: resolve('bench/data'),
-    archiveRuns: flags.archiveRuns === true,
+    // undefined (no flag) lets the runner take the bench/results default (archive.ts archiveRunsDue)
+    ...(flags.archiveRuns === undefined ? {} : { archiveRuns: flags.archiveRuns }),
   };
   const { runBench } = await import('./runner.js');
   const result = await runBench(opts, deps);
-  process.stdout.write(`bench: ${result.records.length} records -> ${result.outDir}\n  tasks.jsonl, summary.json, comparison.md, predictions.<condition>.jsonl${flags.archiveRuns === true ? `, ${ARCHIVE_DIR}/<runId>/*.gz` : ''}\n`);
+  process.stdout.write(`bench: ${result.records.length} records -> ${result.outDir}\n  tasks.jsonl, summary.json, comparison.md, predictions.<condition>.jsonl${archiveRunsDue(flags.archiveRuns, result.outDir, join(process.cwd(), 'bench', 'results')) ? `, ${ARCHIVE_DIR}/<runId>/*.gz` : ''}\n`);
   return 0;
 }
