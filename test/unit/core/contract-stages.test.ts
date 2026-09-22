@@ -22,7 +22,7 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import type { StageName } from '../../../src/core/types.js';
-import { TIMELINE_STAGES } from '../../../src/tui/pane/timeline.js';
+import { TIMELINE_EXCLUDED_STAGES, TIMELINE_STAGES } from '../../../src/tui/pane/timeline.js';
 
 const ROOT = join(import.meta.dirname, '../../..');
 
@@ -44,17 +44,9 @@ const STAGE_TWIN: Record<StageName, true> = {
 };
 const ALL_STAGES: readonly StageName[] = ['decompose', 'replan', 'intent', 'context', 'propose', 'risk', 'execute', 'judge', 'complete'];
 
-/**
- * TUI wave D0 item 6b / D3 item 31 owe the one-word additions: 'decompose' into src/tui/why.ts STAGES (:56) and
- * stepWhyBlocks' order array (:259), into src/tui/status/lines.ts STEP_WORDS (:159), and the `D` letter into
- * src/tui/pane/timeline.ts TIMELINE_STAGES beside the new TIMELINE_EXCLUDED_STAGES export.
- * DELETE THIS CONSTANT (and this comment) in the same commit that adds the word — the guard then bites for real.
- */
-const PENDING_TUI_STAGES = ['decompose'] as const;
 
-/** Every `StageName` the four tables are held to today: the union minus the words the TUI session still owes. */
-const pending: ReadonlySet<string> = new Set<string>(PENDING_TUI_STAGES);
-const expectedStages = (excluded: readonly StageName[] = []): StageName[] => ALL_STAGES.filter((s) => !pending.has(s) && !excluded.includes(s));
+/** Every `StageName` a table is held to: the union minus that table's explicit exclusion set. */
+const expectedStages = (excluded: readonly StageName[] = []): StageName[] => ALL_STAGES.filter((s) => !excluded.includes(s));
 
 /** Read one file of `src/tui/**` once; these are sources, not modules, because the three tables are not exported. */
 function source(file: string): string {
@@ -88,22 +80,12 @@ const STEP_WORDS_RE = /const STEP_WORDS\s*:[^=]*=\s*\[([^\]]*)\]/;
 const STAGES_EXCLUDED: readonly StageName[] = [];
 const ORDER_EXCLUDED: readonly StageName[] = [];
 const STEP_WORDS_EXCLUDED: readonly StageName[] = [];
-/**
- * `src/tui/pane/timeline.ts` does NOT export `TIMELINE_EXCLUDED_STAGES` yet. The pending export is
- *   `export const TIMELINE_EXCLUDED_STAGES: readonly StageName[] = ['replan', 'complete'];`
- * (TUI wave D3 item 31, landing with `decompose`'s `D` letter). Until it exists this guard COMPUTES the set the
- * strip implies and holds it to the value below, so the partition property is enforced today; when the export
- * lands, import it and assert `TIMELINE_EXCLUDED_STAGES` equals the computed set instead.
- */
-const TIMELINE_EXCLUDED_AT_HEAD: readonly StageName[] = ['replan', 'complete'];
 
 describe('the stage guard [G14] [D3] — four tables, four explicit exclusion sets', () => {
   it('ALL_STAGES is the runtime twin of StageName (the Record above is the compile-time half)', () => {
     expect(ALL_STAGES.length).toBe(Object.keys(STAGE_TWIN).length);
     expect([...ALL_STAGES].sort()).toEqual(Object.keys(STAGE_TWIN).sort());
     expect(new Set(ALL_STAGES).size).toBe(ALL_STAGES.length);
-    // every word the allow-list forgives must still be a real stage, or the allow-list has outlived its comment
-    for (const s of PENDING_TUI_STAGES) expect(ALL_STAGES).toContain(s);
   });
 
   it('STAGES (src/tui/why.ts:56) covers every StageName; its exclusion set is empty', () => {
@@ -129,7 +111,7 @@ describe('the stage guard [G14] [D3] — four tables, four explicit exclusion se
     expect(words.filter((s) => !ALL_STAGES.includes(s as StageName))).toEqual([]);
   });
 
-  it('TIMELINE_STAGES plus TIMELINE_EXCLUDED_STAGES partition StageName exactly (the export is still owed)', () => {
+  it('TIMELINE_STAGES plus TIMELINE_EXCLUDED_STAGES partition StageName exactly (TIMELINE_EXCLUDED_STAGES is the exported half)', () => {
     const strip = TIMELINE_STAGES.map((t) => t.stage);
     expect(new Set(strip).size).toBe(strip.length);
     expect(strip.filter((s) => !ALL_STAGES.includes(s))).toEqual([]);
@@ -137,8 +119,11 @@ describe('the stage guard [G14] [D3] — four tables, four explicit exclusion se
     const impliedExcluded = ALL_STAGES.filter((s) => !strip.includes(s));
     expect(strip.filter((s) => impliedExcluded.includes(s))).toEqual([]);
     expect([...strip, ...impliedExcluded].sort()).toEqual([...ALL_STAGES].sort());
-    // and the excluded half is exactly the documented, pre-existing choice — a DIFFERENT stage going missing fails here
-    expect(impliedExcluded.filter((s) => !pending.has(s))).toEqual(TIMELINE_EXCLUDED_AT_HEAD);
+    // and the excluded half is exactly the exported, documented choice — a DIFFERENT stage going missing fails here
+    expect(impliedExcluded).toEqual([...TIMELINE_EXCLUDED_STAGES]);
+    expect([...TIMELINE_EXCLUDED_STAGES]).toEqual(['replan', 'complete']);
+    // the strip letters `decompose` as `D` (ORCHESTRATION-DESIGN §8.3 row 52)
+    expect(TIMELINE_STAGES.find((x) => x.stage === 'decompose')?.letter).toBe('D');
     // one letter per lettered stage, all distinct (the strip is read by letter)
     expect(new Set(TIMELINE_STAGES.map((t) => t.letter)).size).toBe(TIMELINE_STAGES.length);
   });

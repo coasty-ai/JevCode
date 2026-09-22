@@ -55,7 +55,8 @@ export type JsonControllerLine = JsonSessionStart | JsonSessionEnd | JsonSession
 export type JsonStreamLine = JsonStreamStart | JsonEventLine | JsonControllerLine | JsonStreamError;
 
 /** Event types that ride the stream only with `--json=verbose` (§8.9: "status events only with --json=verbose"). */
-export const VERBOSE_ONLY_TYPES: ReadonlySet<EngineEvent['type']> = new Set<EngineEvent['type']>(['status']);
+// `decompose:skipped` fires on every gated step while orchestrate.split is on (ORCHESTRATION-DESIGN §4.1): verbose only, like `status`
+export const VERBOSE_ONLY_TYPES: ReadonlySet<EngineEvent['type']> = new Set<EngineEvent['type']>(['status', 'decompose:skipped']);
 
 export interface JsonStreamOptions {
   out: { write(chunk: string): unknown };
